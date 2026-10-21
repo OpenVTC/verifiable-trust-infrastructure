@@ -1702,14 +1702,11 @@ async fn vti_dir_100_a_groups_grants_are_provisioned_onto_its_members_entries() 
         "{doc}"
     );
 
-    // Leaving the group takes it away (VTI-DIR-100).
-    let (status, doc) = fix
-        .as_admin(
-            "members/remove",
-            json!({ "groupId": group_id, "entryId": moderator_entry }),
-        )
-        .await;
-    assert_eq!(status, StatusCode::OK, "{doc}");
+    // Leaving the group takes it away (VTI-DIR-100). The membership ends as
+    // the tasks end it (their gates are `group_authority.rs`'s).
+    vtc_service::groups::remove_membership(state.directory.ks(), &group_id, &moderator_entry)
+        .await
+        .unwrap();
     let changed = authority::provision(state, &moderator.did).await.unwrap();
     assert_eq!(changed.removed.len(), 1);
     assert!(

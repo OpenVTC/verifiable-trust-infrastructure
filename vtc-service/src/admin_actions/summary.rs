@@ -155,6 +155,30 @@ const STORAGE_CREATE: &str = crate::trust_tasks::storage_tasks::CREATE_TYPE;
 const STORAGE_UPDATE: &str = crate::trust_tasks::storage_tasks::UPDATE_TYPE;
 const STORAGE_RETIRE: &str = crate::trust_tasks::storage_tasks::RETIRE_TYPE;
 const ROOM_STORAGE_ASSIGN: &str = crate::trust_tasks::storage_tasks::ASSIGN_TYPE;
+const GROUPS_MEMBERS_ADD: &str = crate::trust_tasks::group_tasks::MEMBERS_ADD_TYPE;
+const GROUPS_MEMBERS_REMOVE: &str = crate::trust_tasks::group_tasks::MEMBERS_REMOVE_TYPE;
+const GROUPS_BINDINGS_ADD: &str = crate::trust_tasks::group_tasks::BINDINGS_ADD_TYPE;
+const GROUPS_BINDINGS_REMOVE: &str = crate::trust_tasks::group_tasks::BINDINGS_REMOVE_TYPE;
+const GROUPS_DELETE: &str = crate::trust_tasks::group_tasks::DELETE_TYPE;
+
+// A group carrying authority (VTI-DIR-104): its membership changes are grants
+// and reductions of what it confers.
+const GROUP_MEMBER_GRANT_EFFECT: &str = "The member {entryId} joins the group {groupId}, which \
+                                         carries authority: what it confers is written onto \
+                                         their access-control entry, within their role's \
+                                         ceiling, for as long as they stay in it.";
+const GROUP_BIND_EFFECT: &str = "Every member of the group {groupId} whose role admits it is given \
+                                 {grants}{role} — now, and each member added later, for as long \
+                                 as the binding stands.";
+const GROUP_MEMBER_REDUCE_EFFECT: &str = "The member {entryId} leaves the group {groupId} and \
+                                          loses what it gave them. They are not asked: a party \
+                                          to a removal never decides it.";
+const GROUP_UNBIND_EFFECT: &str = "Every member of the group {groupId} loses what the binding \
+                                   {bindingId} gave them. They are not asked: a party to a \
+                                   removal never decides it.";
+const GROUP_DELETE_EFFECT: &str = "The group {groupId} is deleted, and every member loses what it \
+                                   gave them. They are not asked: a party to a removal never \
+                                   decides it.";
 
 const STORAGE_CREATE_EFFECT: &str = "A new place this community can keep its members' room files: \
                                      {label} ({settings}). It takes rooms once one is assigned to \
@@ -259,6 +283,61 @@ const VETTING_REVIEW_EFFECT: &str = "{issuer} withdrew the vetting statement {st
 
 /// Every template this build renders.
 pub const TEMPLATES: &[Template] = &[
+    Template {
+        kind: KIND_GRANT_AUTHORITY,
+        type_uri: GROUPS_MEMBERS_ADD,
+        title: "Add {entryId} to the group {groupId}",
+        effect: GROUP_MEMBER_GRANT_EFFECT,
+        fields: &[
+            f("groupId", "/groupId", "text"),
+            f("entryId", "/entryId", "text"),
+            f("reason", "/reason", "text"),
+        ],
+    },
+    Template {
+        kind: KIND_GRANT_AUTHORITY,
+        type_uri: GROUPS_BINDINGS_ADD,
+        title: "Give authority through the group {groupId}",
+        effect: GROUP_BIND_EFFECT,
+        fields: &[
+            f("groupId", "/groupId", "text"),
+            f("grants", "/binding/grants", "text"),
+            f("role", "/binding/role", "text"),
+            f("reason", "/reason", "text"),
+        ],
+    },
+    Template {
+        kind: KIND_REDUCE_AUTHORITY,
+        type_uri: GROUPS_MEMBERS_REMOVE,
+        title: "Remove {entryId} from the group {groupId}",
+        effect: GROUP_MEMBER_REDUCE_EFFECT,
+        fields: &[
+            f("groupId", "/groupId", "text"),
+            f("entryId", "/entryId", "text"),
+            f("reason", "/reason", "text"),
+        ],
+    },
+    Template {
+        kind: KIND_REDUCE_AUTHORITY,
+        type_uri: GROUPS_BINDINGS_REMOVE,
+        title: "Stop giving authority through the group {groupId}",
+        effect: GROUP_UNBIND_EFFECT,
+        fields: &[
+            f("groupId", "/groupId", "text"),
+            f("bindingId", "/bindingId", "text"),
+            f("reason", "/reason", "text"),
+        ],
+    },
+    Template {
+        kind: KIND_REDUCE_AUTHORITY,
+        type_uri: GROUPS_DELETE,
+        title: "Delete the group {groupId}",
+        effect: GROUP_DELETE_EFFECT,
+        fields: &[
+            f("groupId", "/groupId", "text"),
+            f("reason", "/reason", "text"),
+        ],
+    },
     Template {
         kind: KIND_GRANT_AUTHORITY,
         type_uri: ACL_GRANT_V0_2,
@@ -732,6 +811,31 @@ pub const TEMPLATES: &[Template] = &[
 /// (`admin-ui/src/lib/action-summary.ts`) — is updated with it: what approvers
 /// are shown cannot move silently.
 pub const PINNED: &[(&str, &str, &str)] = &[
+    (
+        KIND_GRANT_AUTHORITY,
+        GROUPS_MEMBERS_ADD,
+        "zQmZr8mXvAph3Sxdxbv9ge82svqswrBn9xunstWKDsSD1tG",
+    ),
+    (
+        KIND_GRANT_AUTHORITY,
+        GROUPS_BINDINGS_ADD,
+        "zQmXa9sTSnLan8LEf7QyEzavkt5doEHVz6jZ9c34Yg8bKi9",
+    ),
+    (
+        KIND_REDUCE_AUTHORITY,
+        GROUPS_MEMBERS_REMOVE,
+        "zQmQVW9TAVk3kGCAiCwc7vvyhKCXYJobPYRxxfD9nphPMfi",
+    ),
+    (
+        KIND_REDUCE_AUTHORITY,
+        GROUPS_BINDINGS_REMOVE,
+        "zQmPdSegnSr9GKnqAyFoiBrBQV4pHHHea4sQ9oKeyu1FsSq",
+    ),
+    (
+        KIND_REDUCE_AUTHORITY,
+        GROUPS_DELETE,
+        "zQmemh2M3haEy21mKWDKRoaswuSUeD6oSRyjUKGwUSENWZz",
+    ),
     (
         KIND_GRANT_AUTHORITY,
         ACL_GRANT_V0_2,

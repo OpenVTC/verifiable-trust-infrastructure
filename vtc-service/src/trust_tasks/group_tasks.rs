@@ -12,7 +12,7 @@
 //! | `requests/list/0.1`, `requests/decide/0.1` | a manager of the request's group; nobody decides their own |
 //! | `managers/add/0.1` | a manager of the group, who covers the grant they write |
 //! | `managers/remove/0.1` | the manager themselves, or `vtc.groups.manage` unqualified |
-//! | `bindings/{add,remove}/0.1` | a manager of the group who also holds `vtc.rooms.manage`, after their bound gesture |
+//! | `bindings/{add,remove}/0.1` | a manager of the group, after their bound gesture: holding `vtc.rooms.manage` for a room; for grants, holding what it confers, and with consent where that confers authority (VTI-DIR-104) |
 //! | `bindings/list/0.1` | a manager of the group |
 //!
 //! None has a REST route. A group the caller may not see answers `notFound`
@@ -48,9 +48,12 @@ use vti_common::pagination::Cursor;
 use super::admin_tasks::member_signer;
 use super::helpers::{
     TrustTaskOutcome, app_error_to_reject, extended_code, reject_with, reject_with_code,
-    success_response,
+    success_response, task_error_to_reject,
 };
 use super::{JoinAuthCtx, parse_spec_payload};
+use crate::acl::admin_consent::{self, Act};
+use crate::acl::{CapRef, VtcAclEntry, get_acl_entry};
+use crate::error::TaskError;
 use crate::groups::identity::{self, Failure};
 use crate::groups::policy::{self as group_policy, Facts, GroupFacts};
 use crate::groups::{self, Audience, Group, JoinPolicy, JoinRequest, Membership, Standing};
@@ -113,12 +116,14 @@ codes! {
     UPDATE_ERR_NOT_FOUND = group_update::NOT_FOUND;
     UPDATE_ERR_RULE_INVALID = group_update::RULE_INVALID;
     UPDATE_ERR_SETTINGS_INVALID = group_update::SETTINGS_INVALID;
+    UPDATE_ERR_AUTHORITY_GROUP_LOCKED = group_update::AUTHORITY_GROUP_LOCKED;
     DELETE_ERR_NOT_FOUND = group_delete::NOT_FOUND;
     LIST_ERR_CURSOR_INVALID = group_list::CURSOR_INVALID;
     SHOW_ERR_NOT_FOUND = group_show::NOT_FOUND;
     ADD_ERR_NOT_FOUND = members_add::NOT_FOUND;
     ADD_ERR_ENTRY_NOT_FOUND = members_add::ENTRY_NOT_FOUND;
     ADD_ERR_ALREADY_MEMBER = members_add::ALREADY_MEMBER;
+    ADD_ERR_EXCEEDS_ROLE_CEILING = members_add::EXCEEDS_ROLE_CEILING;
     ADD_ERR_KEY_HOLDER_UNAVAILABLE = members_add::KEY_HOLDER_UNAVAILABLE;
     ADD_ERR_KEY_HOLDER_REFUSED = members_add::KEY_HOLDER_REFUSED;
     REMOVE_ERR_NOT_FOUND = members_remove::NOT_FOUND;
@@ -150,7 +155,10 @@ codes! {
     BINDINGS_ADD_ERR_ROOM_NOT_FOUND = bindings_add::ROOM_NOT_FOUND;
     BINDINGS_ADD_ERR_BINDING_EXISTS = bindings_add::BINDING_EXISTS;
     BINDINGS_ADD_ERR_TOO_MANY_BINDINGS = bindings_add::TOO_MANY_BINDINGS;
-    BINDINGS_ADD_ERR_KIND_NOT_SERVED = bindings_add::KIND_NOT_SERVED;
+    BINDINGS_ADD_ERR_GROUP_NOT_ELIGIBLE = bindings_add::GROUP_NOT_ELIGIBLE;
+    BINDINGS_ADD_ERR_UNKNOWN_CAPABILITY = bindings_add::UNKNOWN_CAPABILITY;
+    BINDINGS_ADD_ERR_UNKNOWN_ROLE = bindings_add::UNKNOWN_ROLE;
+    BINDINGS_ADD_ERR_EXCEEDS_BINDER_AUTHORITY = bindings_add::EXCEEDS_BINDER_AUTHORITY;
     BINDINGS_REMOVE_ERR_NOT_FOUND = bindings_remove::NOT_FOUND;
     BINDINGS_REMOVE_ERR_BINDING_NOT_FOUND = bindings_remove::BINDING_NOT_FOUND;
     BINDINGS_LIST_ERR_NOT_FOUND = bindings_list::NOT_FOUND;
@@ -206,6 +214,170 @@ fn denied(doc: &TrustTask<Value>, why: &str) -> TrustTaskOutcome {
             reason: why.to_string(),
         },
     )
+}
+
+/// The requester's gesture bound to `doc`, then the consent of the other
+/// holders of `stake` (VTI-DIR-104 through [`admin_consent`]): parked as `act`
+/// on `subject` and answered with the held action, or — on its execution, or
+/// in single-administrator mode — spent here. Call it last before the write.
+#[allow(clippy::too_many_arguments)]
+async fn consent_gate(
+    state: &AppState,
+    requester: &str,
+    doc: &TrustTask<Value>,
+    act: admin_consent::Act,
+    stake: &[CapRef],
+    subject: &str,
+    gesture_reason: &str,
+    consent_summary: &str,
+) -> Result<(), TrustTaskOutcome> {
+    use admin_consent::{Operation, SignedGate};
+    let type_uri = doc.type_uri.to_string();
+    let gate = admin_consent::gesture_then_consent_for(
+        state,
+        act,
+        stake,
+        requester,
+        subject,
+        Operation {
+            type_uri: &type_uri,
+            payload: &doc.payload,
+        },
+        gesture_reason,
+        consent_summary,
+    )
+    .await;
+    match gate {
+        Ok(SignedGate::Ready(ready)) => ready
+            .spend(state)
+            .await
+            .map_err(|e| app_error_to_reject(doc, &e)),
+        Ok(SignedGate::StepUpRequired(request)) => {
+            Err(task_error_to_reject(doc, &TaskError::step_up(request)))
+        }
+        Err(e) => Err(app_error_to_reject(doc, &e)),
+    }
+}
+
+/// The gate on withdrawing a group's authority from every member at once —
+/// removing its `grants` or `role` binding `binding_id`, or (`None`) deleting
+/// the group: each member's loss is a reduction (VTI-DIR-104, VTI-APV-019;
+/// bindings/remove item 3, delete item 5). Where a member other than the
+/// requester loses an authority-conferring capability, it is held for the
+/// consent of a holder of what is lost who is in the group neither as
+/// requester nor as a member ([`Act::ReduceGroupAuthority`]); where nobody is
+/// left who could consent, the requester's gesture suffices and the reduction
+/// is recorded `Critical` per member once it lands — the entries returned,
+/// for [`admin_consent::record_unopposed_reduction`]. It has no cooling-off:
+/// a cooling-off suspends its one subject, and this reduction has many.
+async fn group_reduction_gate(
+    state: &AppState,
+    who: &Standing,
+    doc: &TrustTask<Value>,
+    group: &Group,
+    binding_id: Option<&str>,
+    gesture_reason: &str,
+) -> Result<Vec<VtcAclEntry>, TrustTaskOutcome> {
+    let now = vti_common::auth::session::now_epoch();
+    let mut lost: Vec<CapRef> = Vec::new();
+    let mut affected = Vec::new();
+    let dids = groups::member_dids(state, &group.group_id)
+        .await
+        .map_err(|e| app_error_to_reject(doc, &e))?;
+    for did in dids.iter().filter(|d| **d != who.did) {
+        let Some(prior) = get_acl_entry(&state.acl_ks, did)
+            .await
+            .map_err(|e| app_error_to_reject(doc, &e))?
+        else {
+            continue;
+        };
+        let after = groups::authority::without(&prior, &group.group_id, binding_id);
+        let theirs = admin_consent::lost_conferring(&prior, Some(&after), now);
+        if theirs.is_empty() {
+            continue;
+        }
+        for c in theirs {
+            if !lost.contains(&c) {
+                lost.push(c);
+            }
+        }
+        affected.push(prior);
+    }
+    if lost.is_empty() {
+        crate::trust_tasks::community_room_tasks::bound_step_up(
+            state,
+            &who.did,
+            doc,
+            gesture_reason,
+        )
+        .await?;
+        return Ok(Vec::new());
+    }
+    let subject = admin_consent::group_subject(&group.group_id);
+    let third = if admin_consent::single_admin_mode(state).await {
+        0
+    } else {
+        admin_consent::approvers_for(
+            state,
+            Act::ReduceGroupAuthority,
+            &lost,
+            &who.did,
+            &subject,
+            now,
+        )
+        .await
+        .map_err(|e| app_error_to_reject(doc, &e))?
+        .len()
+    };
+    if third > 0 || crate::admin_actions::executing().is_some() {
+        consent_gate(
+            state,
+            &who.did,
+            doc,
+            Act::ReduceGroupAuthority,
+            &lost,
+            &subject,
+            gesture_reason,
+            &format!(
+                "Take {} away from the members of the group “{}” who hold it through the group",
+                lost.iter()
+                    .map(CapRef::display)
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                group.name
+            ),
+        )
+        .await?;
+        return Ok(Vec::new());
+    }
+    crate::trust_tasks::community_room_tasks::bound_step_up(state, &who.did, doc, gesture_reason)
+        .await?;
+    tracing::warn!(
+        requester = %who.did,
+        group = %group.group_id,
+        members = affected.len(),
+        "taking a group's authority from its members with nobody else left to consent \
+         (VTI-APV-019): the requester's step-up is the only gate"
+    );
+    Ok(affected)
+}
+
+/// Record each unopposed reduction [`group_reduction_gate`] let through, once
+/// the write has landed.
+async fn record_unopposed(
+    state: &AppState,
+    who: &Standing,
+    doc: &TrustTask<Value>,
+    affected: &[VtcAclEntry],
+) {
+    let task = doc.type_uri.to_string();
+    for prior in affected {
+        if let Err(e) =
+            admin_consent::record_unopposed_reduction(state, &who.did, prior, &task).await
+        {
+            tracing::warn!(error = %e, "an unopposed group reduction could not be recorded");
+        }
+    }
 }
 
 /// The signer's standing: a portal sign-in key the member delegated
@@ -557,6 +729,19 @@ async fn handle_update(
         .and_then(JoinPolicy::parse)
         && j != next.join_policy
     {
+        // Item 3: a group carrying authority stays closed (VTI-DIR-103).
+        match groups::authority::carries_authority(state, &before.group_id).await {
+            Ok(true) if j != JoinPolicy::Closed => {
+                return declared(
+                    &doc,
+                    UPDATE_ERR_AUTHORITY_GROUP_LOCKED,
+                    "The group carries authority and must stay closed: only its managers add \
+                     members.",
+                );
+            }
+            Ok(_) => {}
+            Err(e) => return app_error_to_reject(&doc, &e),
+        }
         next.join_policy = j;
         changed.push("joinPolicy".to_string());
     }
@@ -656,8 +841,9 @@ async fn handle_update(
 
 // ─── delete ───────────────────────────────────────────────────────────────
 
-/// `delete/0.1` (items 1 – 5). Nothing to withdraw yet: no binding is served,
-/// so the group carries no room admission and no grant.
+/// `delete/0.1` (items 1 – 5). Room bindings go into removal with the group;
+/// what a group carrying authority conferred is a reduction of every member
+/// ([`group_reduction_gate`]), withdrawn before the answer.
 async fn handle_delete(
     state: &AppState,
     ctx: &JoinAuthCtx,
@@ -679,6 +865,36 @@ async fn handle_delete(
     let group = match managed_group(state, &doc, &who, &group_id, DELETE_ERR_NOT_FOUND).await {
         Ok(g) => g,
         Err(reject) => return reject,
+    };
+    // Item 5: deleting a group carrying authority takes it from every member,
+    // a reduction of each (VTI-DIR-104).
+    let carries = match groups::authority::carries_authority(state, &group.group_id).await {
+        Ok(c) => c,
+        Err(e) => return app_error_to_reject(&doc, &e),
+    };
+    let members = match groups::member_dids(state, &group.group_id).await {
+        Ok(m) => m,
+        Err(e) => return app_error_to_reject(&doc, &e),
+    };
+    let unopposed = if carries {
+        match group_reduction_gate(
+            state,
+            &who,
+            &doc,
+            &group,
+            None,
+            &format!(
+                "Delete the group “{}”, taking away what it gives its members",
+                group.name
+            ),
+        )
+        .await
+        {
+            Ok(a) => a,
+            Err(reject) => return reject,
+        }
+    } else {
+        Vec::new()
     };
     if let Err(e) = audit(
         state,
@@ -705,17 +921,34 @@ async fn handle_delete(
     if let Err(e) = groups::managers::withdraw_all(state, &group.group_id).await {
         return app_error_to_reject(&doc, &e);
     }
+    let bindings_removed =
+        match groups::bindings::of_group(state.directory.ks(), &group.group_id).await {
+            Ok(b) => b.len(),
+            Err(e) => return app_error_to_reject(&doc, &e),
+        };
     let members_removed = match groups::remove(state.directory.ks(), &group.group_id).await {
         Ok(n) => n,
         Err(e) => return app_error_to_reject(&doc, &e),
     };
+    // Item 3: what it conferred goes before the answer, as its records did.
+    if carries {
+        for did in &members {
+            if let Err(e) = groups::authority::provision(state, did).await {
+                return app_error_to_reject(&doc, &e);
+            }
+        }
+        if let Err(e) = groups::authority::forget_removed(state).await {
+            return app_error_to_reject(&doc, &e);
+        }
+        record_unopposed(state, &who, &doc, &unopposed).await;
+    }
     success_response(
         &doc,
         json!({
             "groupId": group.group_id,
             "state": "deleted",
             "membersRemoved": members_removed,
-            "bindingsRemoved": 0,
+            "bindingsRemoved": bindings_removed,
         }),
     )
 }
@@ -1013,6 +1246,10 @@ async fn handle_members_add(
         Ok(None) => {}
         Err(e) => return app_error_to_reject(&doc, &e),
     }
+    // Item 5, and VTI-DIR-104: joining a group carrying authority is a grant.
+    if let Err(reject) = authority_admission_gate(state, &who, &did, &group, &doc).await {
+        return reject;
+    }
     let m = match admit(state, &group, &did, entry_id, "added").await {
         Ok(m) => m,
         Err(f) => {
@@ -1043,6 +1280,10 @@ async fn handle_members_add(
     {
         return app_error_to_reject(&doc, &e);
     }
+    // What the group confers is theirs now, not at the reconciler's next pass.
+    if let Err(e) = groups::authority::provision(state, &did).await {
+        return app_error_to_reject(&doc, &e);
+    }
     success_response(
         &doc,
         json!({
@@ -1052,8 +1293,98 @@ async fn handle_members_add(
     )
 }
 
-/// `members/remove/0.1` (items 1 – 5). Nothing beside the membership to
-/// withdraw yet: no binding is served.
+/// The gate on admitting `did` to `group` when it carries authority
+/// (`members/add` item 5, VTI-DIR-104): every grant it would provision must lie
+/// inside the member's role ceiling (`exceedsRoleCeiling`), and admitting them
+/// is a grant of what it confers — held for the consent of its other holders
+/// when that is authority-conferring ([`Act::GroupAuthority`]), else the
+/// requester's gesture bound to this document. `Ok` when the group carries
+/// none.
+async fn authority_admission_gate(
+    state: &AppState,
+    who: &Standing,
+    did: &str,
+    group: &Group,
+    doc: &TrustTask<Value>,
+) -> Result<(), TrustTaskOutcome> {
+    let carries = groups::authority::carries_authority(state, &group.group_id)
+        .await
+        .map_err(|e| app_error_to_reject(doc, &e))?;
+    if !carries {
+        return Ok(());
+    }
+    let Some(entry) = get_acl_entry(&state.acl_ks, did)
+        .await
+        .map_err(|e| app_error_to_reject(doc, &e))?
+    else {
+        return Ok(());
+    };
+    let rows = groups::authority::rows_for(state, &entry, group, Utc::now())
+        .await
+        .map_err(|e| app_error_to_reject(doc, &e))?;
+    let mut outside: Vec<String> = Vec::new();
+    for r in &rows {
+        let shown = r.cap_ref().display();
+        if !entry.admin.ceiling_admits(&r.cap_ref()) && !outside.contains(&shown) {
+            outside.push(shown);
+        }
+    }
+    if !outside.is_empty() {
+        outside.truncate(32);
+        return Err(declared_with(
+            doc,
+            ADD_ERR_EXCEEDS_ROLE_CEILING,
+            format!(
+                "The group confers {}, which the member's administrative role does not admit: a \
+                 group confers capabilities within a role's ceiling, never the ceiling \
+                 (VTI-DIR-105).",
+                outside.join(", ")
+            ),
+            json!({ "capabilities": outside }),
+        ));
+    }
+    if rows.is_empty() {
+        return Ok(());
+    }
+    let after = groups::authority::with(&entry, &rows);
+    let stake = admin_consent::newly_conferred(
+        Some(&entry),
+        &after,
+        vti_common::auth::session::now_epoch(),
+    );
+    let gesture = format!(
+        "Add a member to the group “{}”, giving them what it confers",
+        group.name
+    );
+    if stake.is_empty() {
+        return crate::trust_tasks::community_room_tasks::bound_step_up(
+            state, &who.did, doc, &gesture,
+        )
+        .await;
+    }
+    consent_gate(
+        state,
+        &who.did,
+        doc,
+        Act::GroupAuthority,
+        &stake,
+        did,
+        &gesture,
+        &format!(
+            "Give {did} {} through the group “{}”",
+            stake
+                .iter()
+                .map(CapRef::display)
+                .collect::<Vec<_>>()
+                .join(", "),
+            group.name
+        ),
+    )
+    .await
+}
+
+/// `members/remove/0.1` (items 1 – 5): what the group conferred goes with the
+/// membership, a reduction where it was authority ([`authority_removal_gate`]).
 async fn handle_members_remove(
     state: &AppState,
     ctx: &JoinAuthCtx,
@@ -1073,7 +1404,13 @@ async fn handle_members_remove(
         Ok(g) => g,
         Err(reject) => return reject,
     };
-    end_membership(
+    // VTI-DIR-104: removing a member from a group carrying authority is a
+    // reduction of what it gave them, on the terms of any reduction.
+    let reduced = match authority_removal_gate(state, &who, &group, entry_id, &doc).await {
+        Ok(r) => r,
+        Err(reject) => return reject,
+    };
+    let outcome = end_membership(
         state,
         &doc,
         &who,
@@ -1082,7 +1419,88 @@ async fn handle_members_remove(
         "removed",
         REMOVE_ERR_NOT_IN_GROUP,
     )
+    .await;
+    if let Some((prior, agreement)) = reduced {
+        let after = get_acl_entry(&state.acl_ks, &prior.did)
+            .await
+            .ok()
+            .flatten();
+        if let Err(e) = admin_consent::after_reduction(
+            state,
+            &who.did,
+            &prior,
+            after.as_ref(),
+            agreement,
+            &doc.type_uri.to_string(),
+            reason_of(&doc).as_deref(),
+            true,
+        )
+        .await
+        {
+            tracing::warn!(error = %e, "a group member's reduction could not be recorded");
+        }
+    }
+    outcome
+}
+
+/// The gate on removing `entry_id` from `group` when the group gave them
+/// something (VTI-DIR-104, VTI-APV-019): [`admin_consent::settle_reduction_as`]
+/// over their entry as it is and as it will be, parked as
+/// [`Act::ReduceGroupAuthority`]. `Ok(None)` when the group gave them nothing,
+/// or the reduction needs nothing beyond what it took.
+async fn authority_removal_gate(
+    state: &AppState,
+    who: &Standing,
+    group: &Group,
+    entry_id: &str,
+    doc: &TrustTask<Value>,
+) -> Result<Option<(VtcAclEntry, admin_consent::Agreement)>, TrustTaskOutcome> {
+    let Some(card) = crate::directory::cards::get(state.directory.ks(), entry_id)
+        .await
+        .map_err(|e| app_error_to_reject(doc, &e))?
+    else {
+        return Ok(None);
+    };
+    let Some(prior) = get_acl_entry(&state.acl_ks, &card.did)
+        .await
+        .map_err(|e| app_error_to_reject(doc, &e))?
+    else {
+        return Ok(None);
+    };
+    if !prior
+        .group_grants
+        .iter()
+        .any(|g| g.group_id == group.group_id)
+    {
+        return Ok(None);
+    }
+    let after = groups::authority::without(&prior, &group.group_id, None);
+    let type_uri = doc.type_uri.to_string();
+    match admin_consent::settle_reduction_as(
+        state,
+        Act::ReduceGroupAuthority,
+        &who.did,
+        &prior,
+        Some(&after),
+        admin_consent::Operation {
+            type_uri: &type_uri,
+            payload: &doc.payload,
+        },
+        &format!(
+            "Remove a member from the group “{}”, taking away what it gave them",
+            group.name
+        ),
+        &format!(
+            "Take away what the group “{}” gives {}",
+            group.name, prior.did
+        ),
+    )
     .await
+    {
+        Ok(Some(agreement)) => Ok(Some((prior, agreement))),
+        Ok(None) => Ok(None),
+        Err(e) => Err(task_error_to_reject(doc, &e)),
+    }
 }
 
 /// End `entry_id`'s membership of `group` (`members/remove` items 3 – 5):
@@ -1123,6 +1541,16 @@ async fn end_membership(
     .await
     {
         return app_error_to_reject(doc, &e);
+    }
+    // Item 5: what the group conferred goes with the membership, at once.
+    match crate::directory::cards::get(ks, entry_id).await {
+        Ok(Some(card)) => {
+            if let Err(e) = groups::authority::provision(state, &card.did).await {
+                return app_error_to_reject(doc, &e);
+            }
+        }
+        Ok(None) => {}
+        Err(e) => return app_error_to_reject(doc, &e),
     }
     let state_word = if change == "left" { "left" } else { "removed" };
     let mut body = json!({
@@ -1860,8 +2288,8 @@ async fn handle_managers_remove(
 
 // ─── bindings ─────────────────────────────────────────────────────────────
 
-/// `bindings/add/0.1`. Room bindings only: a grants or role binding is refused
-/// `kindNotServed` once item 1 has passed (item 7), and nothing is recorded.
+/// `bindings/add/0.1`. A grants or role binding is
+/// [`bindings_add_authority`]'s.
 ///
 /// A room binding admits every member of the group to the room, as
 /// `vtc/rooms/community/members/add` admits one, so it takes the same
@@ -1891,13 +2319,15 @@ async fn handle_bindings_add(
         Ok(g) => g,
         Err(reject) => return reject,
     };
-    // Item 7.
+    if groups::authority::confers_authority(&spec) {
+        return bindings_add_authority(state, &doc, &who, &group, spec, reason).await;
+    }
     let Some(rb) = RoomBinding::from_spec(&spec) else {
-        return declared(
+        return app_error_to_reject(
             &doc,
-            BINDINGS_ADD_ERR_KIND_NOT_SERVED,
-            "this community binds groups to rooms only; a grants or role binding is not \
-             recorded",
+            &AppError::Validation(
+                "the room binding's validFor is not a whole number of days".into(),
+            ),
         );
     };
     // Item 2.
@@ -1978,6 +2408,192 @@ async fn handle_bindings_add(
     success_response(&doc, json!({ "binding": b.wire() }))
 }
 
+/// `bindings/add/0.1` for a `grants` or `role` binding (items 3 – 5, 8):
+/// the group must be static and closed (`groupNotEligible`), every capability
+/// one this community recognises (`unknownCapability`) or a defined role's
+/// (`unknownRole`), and held by the requester themselves, never through a
+/// group (`exceedsBinderAuthority`, VTI-ACL-071). Binding an
+/// authority-conferring capability is granting it (VTI-DIR-104): held for the
+/// consent of its other holders ([`Act::GroupAuthority`]) and recorded only
+/// when that executes, re-checked then. A binding of capabilities that confer
+/// none takes the requester's gesture bound to this document. Once recorded,
+/// every member's entry is provisioned before the answer.
+async fn bindings_add_authority(
+    state: &AppState,
+    doc: &TrustTask<Value>,
+    who: &Standing,
+    group: &Group,
+    spec: Value,
+    reason: String,
+) -> TrustTaskOutcome {
+    use crate::groups::authority::{self, AuthorityBinding};
+    use crate::groups::bindings::{self, Binding};
+    // Item 3.
+    if group.join_policy != JoinPolicy::Closed {
+        return declared(
+            doc,
+            BINDINGS_ADD_ERR_GROUP_NOT_ELIGIBLE,
+            "A group carrying authority is static and closed: only its managers add members \
+             (VTI-DIR-103). Close the group first.",
+        );
+    }
+    let caps = match spec.get("kind").and_then(Value::as_str) {
+        Some("grants") => match authority::parse_grants(&spec) {
+            Ok(c) => c,
+            Err(mut unknown) => {
+                unknown.truncate(32);
+                return declared_with(
+                    doc,
+                    BINDINGS_ADD_ERR_UNKNOWN_CAPABILITY,
+                    format!(
+                        "This community's capability registry has no {}.",
+                        unknown.join(", ")
+                    ),
+                    json!({ "capabilities": unknown }),
+                );
+            }
+        },
+        _ => {
+            let name = spec.get("role").and_then(Value::as_str).unwrap_or_default();
+            match authority::role_capabilities(state, name).await {
+                Ok(Some(c)) => c,
+                Ok(None) => {
+                    return declared(
+                        doc,
+                        BINDINGS_ADD_ERR_UNKNOWN_ROLE,
+                        format!("No role named “{name}” is defined."),
+                    );
+                }
+                Err(e) => return app_error_to_reject(doc, &e),
+            }
+        }
+    };
+    if AuthorityBinding::from_spec(&spec).is_none() {
+        return app_error_to_reject(
+            doc,
+            &AppError::Validation("the binding names no grant set".into()),
+        );
+    }
+    let binder = match get_acl_entry(&state.acl_ks, &who.did).await {
+        Ok(e) => e,
+        Err(e) => return app_error_to_reject(doc, &e),
+    };
+    let mut beyond: Vec<String> = caps
+        .iter()
+        .filter(|c| {
+            !binder
+                .as_ref()
+                .is_some_and(|b| authority::binder_holds(b, c))
+        })
+        .map(CapRef::display)
+        .collect();
+    if !beyond.is_empty() {
+        beyond.truncate(32);
+        return declared_with(
+            doc,
+            BINDINGS_ADD_ERR_EXCEEDS_BINDER_AUTHORITY,
+            format!(
+                "You do not hold {} yourself, other than through a group, so you cannot bind it \
+                 (VTI-ACL-071).",
+                beyond.join(", ")
+            ),
+            json!({ "capabilities": beyond }),
+        );
+    }
+    let ks = state.directory.ks();
+    let existing = match bindings::of_group(ks, &group.group_id).await {
+        Ok(b) => b,
+        Err(e) => return app_error_to_reject(doc, &e),
+    };
+    if existing
+        .iter()
+        .any(|b| b.binding == spec && b.state == Binding::ACTIVE)
+    {
+        return declared(
+            doc,
+            BINDINGS_ADD_ERR_BINDING_EXISTS,
+            "An equal binding already exists.",
+        );
+    }
+    if existing.len() >= bindings::MAX_BINDINGS {
+        return declared(
+            doc,
+            BINDINGS_ADD_ERR_TOO_MANY_BINDINGS,
+            format!("The group already has {} bindings.", bindings::MAX_BINDINGS),
+        );
+    }
+    let stake: Vec<CapRef> = caps
+        .iter()
+        .filter(|c| c.is_authority_conferring())
+        .cloned()
+        .collect();
+    let shown = caps
+        .iter()
+        .map(CapRef::display)
+        .collect::<Vec<_>>()
+        .join(", ");
+    let gesture = format!(
+        "Give every member of the group “{}” {shown}, through the group",
+        group.name
+    );
+    let gate = if stake.is_empty() {
+        crate::trust_tasks::community_room_tasks::bound_step_up(state, &who.did, doc, &gesture)
+            .await
+    } else {
+        consent_gate(
+            state,
+            &who.did,
+            doc,
+            Act::GroupAuthority,
+            &stake,
+            &admin_consent::group_subject(&group.group_id),
+            &gesture,
+            &format!(
+                "Give {shown} to every member of the group “{}” whose role admits it — now, and \
+                 to each member added later",
+                group.name
+            ),
+        )
+        .await
+    };
+    if let Err(reject) = gate {
+        return reject;
+    }
+    // Item 4: recorded, then every member provisioned.
+    let b = Binding {
+        binding_id: bindings::new_binding_id(),
+        group_id: group.group_id.clone(),
+        binding: spec,
+        state: Binding::ACTIVE.into(),
+        created_at: Utc::now(),
+        created_by: who.did.clone(),
+        reason: reason.clone(),
+        delegated_by: None,
+    };
+    if let Err(e) = bindings::put(ks, &b).await {
+        return app_error_to_reject(doc, &e);
+    }
+    if let Err(e) = audit(
+        state,
+        &who.did,
+        AuditEvent::GroupChanged(GroupChangedData {
+            group_id: group.group_id.clone(),
+            change: "bindingAdded".into(),
+            fields: vec![b.binding_id.clone()],
+            reason: Some(reason),
+        }),
+    )
+    .await
+    {
+        return app_error_to_reject(doc, &e);
+    }
+    if let Err(e) = authority::provision_group(state, &group.group_id).await {
+        tracing::warn!(group = %group.group_id, error = %e,
+            "a new binding's grants were not all provisioned; the reconciler finishes it");
+    }
+    success_response(doc, json!({ "binding": b.wire() }))
+}
+
 /// `bindings/remove/0.1`: the binding goes into removal, and the reconciler
 /// withdraws each admission only it covered, then deletes it (item 2). One that
 /// covered nobody is deleted at once.
@@ -2018,6 +2634,9 @@ async fn handle_bindings_remove(
         }
         Err(e) => return app_error_to_reject(&doc, &e),
     };
+    if groups::authority::confers_authority(&b.binding) {
+        return bindings_remove_authority(state, &doc, &who, &group, b, reason).await;
+    }
     let room_label = match b.room() {
         Some(rb) => {
             if !who.can(crate::acl::Capability::RoomsManage) {
@@ -2080,6 +2699,66 @@ async fn handle_bindings_remove(
         return app_error_to_reject(&doc, &e);
     }
     success_response(&doc, json!({ "bindingId": b.binding_id, "state": outcome }))
+}
+
+/// `bindings/remove/0.1` for a `grants` or `role` binding (items 2 – 4): every
+/// member's loss is a reduction ([`group_reduction_gate`]); then the binding
+/// goes into removal, each member's rows from it are withdrawn before the
+/// answer, and the binding, named by nothing, is deleted.
+async fn bindings_remove_authority(
+    state: &AppState,
+    doc: &TrustTask<Value>,
+    who: &Standing,
+    group: &Group,
+    mut b: crate::groups::bindings::Binding,
+    reason: String,
+) -> TrustTaskOutcome {
+    use crate::groups::bindings::{self, Binding};
+    let unopposed = match group_reduction_gate(
+        state,
+        who,
+        doc,
+        group,
+        Some(&b.binding_id),
+        &format!(
+            "Stop giving the members of the group “{}” what this binding confers",
+            group.name
+        ),
+    )
+    .await
+    {
+        Ok(a) => a,
+        Err(reject) => return reject,
+    };
+    let ks = state.directory.ks();
+    b.state = Binding::REMOVING.into();
+    if let Err(e) = bindings::put(ks, &b).await {
+        return app_error_to_reject(doc, &e);
+    }
+    if let Err(e) = groups::authority::provision_group(state, &group.group_id).await {
+        return app_error_to_reject(doc, &e);
+    }
+    let outcome = match bindings::get(ks, &group.group_id, &b.binding_id).await {
+        Ok(None) => "removed",
+        Ok(Some(_)) => "removing",
+        Err(e) => return app_error_to_reject(doc, &e),
+    };
+    if let Err(e) = audit(
+        state,
+        &who.did,
+        AuditEvent::GroupChanged(GroupChangedData {
+            group_id: group.group_id.clone(),
+            change: "bindingRemoved".into(),
+            fields: vec![b.binding_id.clone()],
+            reason: Some(reason),
+        }),
+    )
+    .await
+    {
+        return app_error_to_reject(doc, &e);
+    }
+    record_unopposed(state, who, doc, &unopposed).await;
+    success_response(doc, json!({ "bindingId": b.binding_id, "state": outcome }))
 }
 
 /// `bindings/list/0.1`: to managers of the group only, and `notFound` alike for

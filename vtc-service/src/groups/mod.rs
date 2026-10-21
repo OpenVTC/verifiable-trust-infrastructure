@@ -405,6 +405,19 @@ pub async fn members_of(ks: &KeyspaceHandle, group_id: &str) -> Result<Vec<Membe
     Ok(out)
 }
 
+/// The DIDs of `group_id`'s members, active or pending, read through their
+/// directory entries.
+pub async fn member_dids(state: &AppState, group_id: &str) -> Result<BTreeSet<String>, AppError> {
+    let ks = state.directory.ks();
+    let mut out = BTreeSet::new();
+    for m in members_of(ks, group_id).await? {
+        if let Some(card) = crate::directory::cards::get(ks, &m.entry_id).await? {
+            out.insert(card.did);
+        }
+    }
+    Ok(out)
+}
+
 /// The groups an entry belongs to, active or pending.
 pub async fn groups_of(ks: &KeyspaceHandle, entry_id: &str) -> Result<Vec<Membership>, AppError> {
     let mut out = Vec::new();

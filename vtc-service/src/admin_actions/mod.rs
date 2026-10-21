@@ -517,7 +517,7 @@ async fn save(state: &AppState, rec: &ActionRecord) -> Result<(), AppError> {
 fn suspends(rec: &ActionRecord) -> bool {
     rec.status.is_open()
         && rec.cooling_off_until.is_some()
-        && rec.act == Act::ReduceUnrestricted
+        && matches!(rec.act, Act::ReduceUnrestricted | Act::ReduceGroupAuthority)
         && rec.category == Category::Approval
 }
 
@@ -4209,6 +4209,18 @@ pub(crate) async fn sign_requests(
             json!({ "subject": rec.subject }),
             "Where this community keeps its members' room files, or what it uses to reach them, \
              changes.",
+        ),
+        Act::GroupAuthority => (
+            "authorityGrant",
+            json!({ "subject": rec.subject }),
+            "What the group confers is written onto its members' access-control entries: the \
+             subject, or every member of the group, gains it.",
+        ),
+        Act::ReduceGroupAuthority => (
+            "authorityRevoke",
+            json!({ "subject": rec.subject }),
+            "What the group conferred is taken off its members' access-control entries. The \
+             members are not asked: a party to a removal never decides it.",
         ),
     };
     let effect = Effect::new(kind, rec.summary_text.clone())

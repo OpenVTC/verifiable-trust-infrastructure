@@ -1,9 +1,7 @@
 //! What a group's members receive through it: its **bindings**
-//! (`vtc/groups/bindings/{add,remove,list}`). Room bindings are served; a
-//! grants or role binding is refused `kindNotServed` (bindings/add item 7)
-//! until its tasks take the consent it needs. What such a binding provisions
-//! onto members' entries is [`super::authority`]'s, run by the same
-//! reconciler.
+//! (`vtc/groups/bindings/{add,remove,list}`). A room binding is described
+//! here; what a grants or role binding provisions onto members' entries is
+//! [`super::authority`]'s, run by the same reconciler.
 //!
 //! # A room binding
 //!

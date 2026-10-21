@@ -68,6 +68,45 @@ impl AuthorityBinding {
     }
 }
 
+/// A `grants` binding's capabilities as received: `Err` names each this
+/// community does not recognise, or recognises at no such qualifier
+/// (`bindings/add` `unknownCapability`).
+pub fn parse_grants(spec: &Value) -> Result<Vec<CapRef>, Vec<String>> {
+    let mut out = Vec::new();
+    let mut unknown = Vec::new();
+    for g in spec
+        .get("grants")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        let name = g.get("capability").and_then(Value::as_str).unwrap_or("");
+        let resource = g.get("resource").and_then(Value::as_str);
+        let shown = match resource {
+            Some(r) => format!("{name}@{r}"),
+            None => name.to_string(),
+        };
+        let Ok(capability) = name.parse::<crate::acl::Capability>() else {
+            unknown.push(shown);
+            continue;
+        };
+        let resource = match resource.map(str::parse::<crate::acl::ResourceQualifier>) {
+            None => None,
+            Some(Ok(q)) if capability.admits(&q) => Some(q),
+            Some(_) => {
+                unknown.push(shown);
+                continue;
+            }
+        };
+        out.push(CapRef::new(capability, resource));
+    }
+    if unknown.is_empty() {
+        Ok(out)
+    } else {
+        Err(unknown)
+    }
+}
+
 /// Whether `spec` is a `grants` or `role` binding — one that makes its group
 /// carry authority.
 pub fn confers_authority(spec: &Value) -> bool {
@@ -160,8 +199,9 @@ async fn desired(state: &AppState, entry: &VtcAclEntry) -> Result<Vec<GroupGrant
     Ok(out)
 }
 
-/// The rows `group` provisions onto `entry`, a member of it.
-async fn rows_for(
+/// The rows `group` provisions onto `entry`, as a member of it — what
+/// admitting them would write (`members/add` item 5).
+pub(crate) async fn rows_for(
     state: &AppState,
     entry: &VtcAclEntry,
     group: &Group,
@@ -203,6 +243,27 @@ async fn rows_for(
         }
     }
     Ok(out)
+}
+
+/// `entry` as it stands once `group_id`'s rows are gone — only `binding_id`'s,
+/// when one is named: what a removal from the group, or of the binding, leaves.
+pub fn without(entry: &VtcAclEntry, group_id: &str, binding_id: Option<&str>) -> VtcAclEntry {
+    let mut after = entry.clone();
+    after
+        .group_grants
+        .retain(|g| g.group_id != group_id || binding_id.is_some_and(|b| g.binding_id != b));
+    after
+}
+
+/// `entry` as it stands once `rows` are added to it.
+pub fn with(entry: &VtcAclEntry, rows: &[GroupGrant]) -> VtcAclEntry {
+    let mut after = entry.clone();
+    for r in rows {
+        if !after.group_grants.iter().any(|g| g.same_row(r)) {
+            after.group_grants.push(r.clone());
+        }
+    }
+    after
 }
 
 /// What one [`provision`] changed.
@@ -285,7 +346,47 @@ pub async fn provision_all(state: &AppState) -> Result<usize, AppError> {
             }
         }
     }
+    forget_removed(state).await?;
     Ok(n)
+}
+
+/// Delete each authority binding in removal that no entry's row names any
+/// longer (bindings/remove item 2).
+pub async fn forget_removed(state: &AppState) -> Result<usize, AppError> {
+    let ks = state.directory.ks();
+    let removing: Vec<Binding> = bindings::all(ks)
+        .await?
+        .into_iter()
+        .filter(|b| b.state == Binding::REMOVING && confers_authority(&b.binding))
+        .collect();
+    if removing.is_empty() {
+        return Ok(0);
+    }
+    let named: BTreeSet<String> = crate::acl::list_acl_entries(&state.acl_ks)
+        .await?
+        .into_iter()
+        .flat_map(|e| e.group_grants.into_iter().map(|g| g.binding_id))
+        .collect();
+    let mut n = 0;
+    for b in removing {
+        if !named.contains(&b.binding_id) {
+            bindings::delete(ks, &b.group_id, &b.binding_id).await?;
+            n += 1;
+        }
+    }
+    Ok(n)
+}
+
+/// [`provision`] every member of `group_id` now, then forget the authority
+/// bindings nothing names: what a task that changed the group's authority
+/// does before it answers, so the change is in force at once (members/remove
+/// item 5).
+pub async fn provision_group(state: &AppState, group_id: &str) -> Result<(), AppError> {
+    for did in super::member_dids(state, group_id).await? {
+        provision(state, &did).await?;
+    }
+    forget_removed(state).await?;
+    Ok(())
 }
 
 /// Whether `group_id` carries authority: it has a `grants` or `role` binding

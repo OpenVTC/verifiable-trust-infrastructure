@@ -1528,10 +1528,40 @@ fn witnesses() -> Vec<Witness> {
             "vtc_groups_bindings_add_refuses_what_its_specification_declares"
         ),
         witness!(
-            s::groups::bindings::add::v0_1::error_codes::KIND_NOT_SERVED,
-            crate::trust_tasks::group_tasks::BINDINGS_ADD_ERR_KIND_NOT_SERVED,
-            "community_rooms.rs",
-            "vtc_groups_bindings_add_refuses_what_its_specification_declares"
+            s::groups::bindings::add::v0_1::error_codes::GROUP_NOT_ELIGIBLE,
+            crate::trust_tasks::group_tasks::BINDINGS_ADD_ERR_GROUP_NOT_ELIGIBLE,
+            "group_authority.rs",
+            "authority_bindings_add_refuses_what_its_specification_declares"
+        ),
+        witness!(
+            s::groups::bindings::add::v0_1::error_codes::UNKNOWN_CAPABILITY,
+            crate::trust_tasks::group_tasks::BINDINGS_ADD_ERR_UNKNOWN_CAPABILITY,
+            "group_authority.rs",
+            "authority_bindings_add_refuses_what_its_specification_declares"
+        ),
+        witness!(
+            s::groups::bindings::add::v0_1::error_codes::UNKNOWN_ROLE,
+            crate::trust_tasks::group_tasks::BINDINGS_ADD_ERR_UNKNOWN_ROLE,
+            "group_authority.rs",
+            "authority_bindings_add_refuses_what_its_specification_declares"
+        ),
+        witness!(
+            s::groups::bindings::add::v0_1::error_codes::EXCEEDS_BINDER_AUTHORITY,
+            crate::trust_tasks::group_tasks::BINDINGS_ADD_ERR_EXCEEDS_BINDER_AUTHORITY,
+            "group_authority.rs",
+            "authority_bindings_add_refuses_what_its_specification_declares"
+        ),
+        witness!(
+            s::groups::members::add::v0_1::error_codes::EXCEEDS_ROLE_CEILING,
+            crate::trust_tasks::group_tasks::ADD_ERR_EXCEEDS_ROLE_CEILING,
+            "group_authority.rs",
+            "authority_bindings_add_refuses_what_its_specification_declares"
+        ),
+        witness!(
+            s::groups::update::v0_1::error_codes::AUTHORITY_GROUP_LOCKED,
+            crate::trust_tasks::group_tasks::UPDATE_ERR_AUTHORITY_GROUP_LOCKED,
+            "group_authority.rs",
+            "authority_bindings_add_refuses_what_its_specification_declares"
         ),
         witness!(
             s::groups::bindings::remove::v0_1::error_codes::NOT_FOUND,
@@ -2512,27 +2542,17 @@ fn unwitnessed() -> Vec<DeclaredErrorCode> {
         // before anything else, so different bytes are `chunkMismatch` first;
         // the same bytes are the idempotent `stored: false`.
         s::website::upload::chunk::v0_1::error_codes::ALREADY_STORED,
-        // A group carries authority only through a `grants` or `role` binding,
-        // and no binding is served yet, so no group is locked `closed`.
-        s::groups::update::v0_1::error_codes::AUTHORITY_GROUP_LOCKED,
         // Deleting a group asks the community's VTA nothing until bindings are
         // served: its authority is revoked in the community's own list.
         s::groups::delete::v0_1::error_codes::KEY_HOLDER_UNAVAILABLE,
-        // Only static groups are served, and no binding confers a grant, so a
-        // membership change never meets a dynamic group, an opt-out or a role
-        // ceiling.
+        // Only static groups are served, so a membership change never meets a
+        // dynamic group or an opt-out.
         s::groups::members::add::v0_1::error_codes::DYNAMIC_GROUP,
-        s::groups::members::add::v0_1::error_codes::EXCEEDS_ROLE_CEILING,
         s::groups::members::remove::v0_1::error_codes::DYNAMIC_GROUP,
         s::groups::leave::v0_1::error_codes::ALREADY_OPTED_OUT,
-        // A grants or role binding is refused `kindNotServed` before any of
-        // its own checks (bindings/add item 7): until the community provisions
-        // grants from groups, nothing reaches the eligibility, capability, role
-        // or binder-authority refusals.
-        s::groups::bindings::add::v0_1::error_codes::GROUP_NOT_ELIGIBLE,
-        s::groups::bindings::add::v0_1::error_codes::UNKNOWN_CAPABILITY,
-        s::groups::bindings::add::v0_1::error_codes::UNKNOWN_ROLE,
-        s::groups::bindings::add::v0_1::error_codes::EXCEEDS_BINDER_AUTHORITY,
+        // `kindNotServed` is for a community serving room bindings only
+        // (bindings/add item 7). This one serves every kind.
+        s::groups::bindings::add::v0_1::error_codes::KIND_NOT_SERVED,
         // BASELINE-END
     ]
 }
