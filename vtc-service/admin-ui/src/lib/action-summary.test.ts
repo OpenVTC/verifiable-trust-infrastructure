@@ -167,8 +167,8 @@ describe("refusal", () => {
     expect((out as SummaryRefusal).reason).toBe("badFormat");
   });
 
-  it("pins exactly forty-four (kind, typeUri) pairs, one per server template", () => {
-    expect(Object.keys(PINNED_TEMPLATE_DIGESTS)).toHaveLength(44);
+  it("pins exactly forty-nine (kind, typeUri) pairs, one per server template", () => {
+    expect(Object.keys(PINNED_TEMPLATE_DIGESTS)).toHaveLength(49);
   });
 });
 

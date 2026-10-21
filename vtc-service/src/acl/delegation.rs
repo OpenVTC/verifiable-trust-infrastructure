@@ -189,11 +189,18 @@ pub async fn repoint(state: &AppState, old: &str, new: &str) -> Result<u32, AppE
                 changed = true;
             }
         }
+        for g in e.group_grants.iter_mut() {
+            if g.delegated_by == old {
+                g.delegated_by = new.to_string();
+                changed = true;
+            }
+        }
         if changed {
             store_acl_entry(&state.acl_ks, &e).await?;
         }
     }
     drop(_git);
+    crate::groups::bindings::repoint(state.directory.ks(), old, new).await?;
     for mut review in list(state).await? {
         let moved = review.subject == old;
         if review.granter == old {

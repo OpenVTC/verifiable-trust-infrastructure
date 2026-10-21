@@ -69,6 +69,7 @@ mod election_tasks;
 mod emergency_bootstrap;
 mod endorsements;
 mod git_ns_vtc_client;
+mod group_authority;
 mod groups;
 mod hidden_vetting_tasks;
 mod inbox_collection;

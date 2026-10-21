@@ -1354,6 +1354,7 @@ async fn vtc_rooms_community_reads_answer_not_found() {
         updated_by: None,
         expires_at: None,
         resource_grants: Vec::new(),
+        group_grants: Vec::new(),
         label_set_by_subject: false,
         suspension: None,
     };
@@ -2002,6 +2003,7 @@ async fn host_admin_only(fix: &Fixture) -> Party {
         updated_by: None,
         expires_at: None,
         resource_grants: Vec::new(),
+        group_grants: Vec::new(),
         label_set_by_subject: false,
         suspension: None,
     };
@@ -3026,8 +3028,6 @@ const BINDINGS_LIST: &str = "https://trusttasks.org/spec/vtc/groups/bindings/lis
 const OFFERS_V0_3: &str = "https://trusttasks.org/spec/vtc/rooms/offers/list/0.3";
 const BINDINGS_ADD_ERR_NOT_FOUND: &str =
     trust_tasks_rs::specs::vtc::groups::bindings::add::v0_1::error_codes::NOT_FOUND.code;
-const BINDINGS_ADD_ERR_KIND_NOT_SERVED: &str =
-    trust_tasks_rs::specs::vtc::groups::bindings::add::v0_1::error_codes::KIND_NOT_SERVED.code;
 const BINDINGS_ADD_ERR_ROOM_NOT_FOUND: &str =
     trust_tasks_rs::specs::vtc::groups::bindings::add::v0_1::error_codes::ROOM_NOT_FOUND.code;
 const BINDINGS_ADD_ERR_BINDING_EXISTS: &str =
@@ -3266,22 +3266,6 @@ async fn vtc_groups_bindings_add_refuses_what_its_specification_declares() {
         "{doc}"
     );
 
-    let grants =
-        json!({ "kind": "grants", "grants": [{ "capability": "vtc.invitations.manage" }] });
-    let (_, doc) = admin_call(&mut fix, BINDINGS_ADD, add(&group, grants)).await;
-    assert_eq!(
-        tt_error_code(&doc),
-        Some(BINDINGS_ADD_ERR_KIND_NOT_SERVED),
-        "{doc}"
-    );
-    assert!(
-        vtc_service::groups::bindings::of_group(fix.vtc.state.directory.ks(), &group)
-            .await
-            .unwrap()
-            .is_empty(),
-        "nothing stored"
-    );
-
     let (_, doc) = admin_call(
         &mut fix,
         BINDINGS_ADD,
@@ -3319,6 +3303,7 @@ async fn vtc_groups_bindings_add_refuses_what_its_specification_declares() {
                 created_at: Utc::now(),
                 created_by: fix.admin.did.clone(),
                 reason: "filler".into(),
+                delegated_by: None,
             },
         )
         .await

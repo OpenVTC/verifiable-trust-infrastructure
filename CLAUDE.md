@@ -1421,8 +1421,8 @@ new flow, update both this section and the relevant `docs/*.md`.
   revocation list and an expiry. Served: `create`, `update`, `delete`, `list`,
   `show`, `members/{add,remove,list}`, `join`, `leave`, `requests/{list,decide}`
   `managers/{add,remove}` for **static** groups (a dynamic one is checked, then
-  refused `kindNotServed`), and `bindings/{add,remove,list}` for **room**
-  bindings (grants/role bindings refused `kindNotServed`, nothing stored).
+  refused `kindNotServed`), and `bindings/{add,remove,list}` for **room**,
+  **grants** and **role** bindings.
 - **Room bindings** (`groups::bindings`): a manager holding `vtc.rooms.manage`
   binds a community room, after the bound gesture `members/add` takes (never
   parked). The reconciler is the one owner of every effect: it offers each
@@ -1433,6 +1433,26 @@ new flow, update both this section and the relevant `docs/*.md`.
   admission — and renews bound admissions into `offers/list/0.3` `renewals`
   (membership + authority, never an invitation; the renewed `validUntil` becomes
   the admission's own).
+- **Group grants** (`acl::group_grant`, `groups::authority`, VTI-DIR-100 – 105):
+  what a `grants`/`role` binding confers is written onto each member's entry as
+  `groupGrants` rows (one per capability × binding, naming the group), and
+  every gate still asks `VtcAclEntry::can`. A row counts only inside the
+  member's role ceiling and while it may act — **at read time**, so a role
+  change that brings one into force is a conferral `newly_conferred` sees
+  (`VtcAclEntry::conferring` counts rows) — and confers nothing to approve.
+  `authority::provision` is the one writer (git-ns write lock; `acl/*` writes
+  keep the rows as stored); it writes only what the binding's delegator holds
+  **not through a group**, nothing for a group that is not `closed`, keeps a
+  suspended member's rows, and is run by the binding reconciler each pass. The
+  tasks gate every change (VTI-DIR-104): binding an authority-conferring
+  capability and adding a member are `Act::GroupAuthority` (subject
+  `group:<id>` or the member), removing a member is `settle_reduction_as(
+  Act::ReduceGroupAuthority)` (cooling-off included), removing the binding or
+  deleting the group is one group-wide `Act::ReduceGroupAuthority` whose
+  approvers exclude every group member (unopposed: gesture + `Critical` per
+  member, no cooling-off). Their requester is the group's manager, so
+  `requester_still_authorized` asks `vtc.groups.manage`, not an admin role.
+  Nothing is recorded while parked; the approval re-runs the handler.
 - **Where identities are published** (`did_hosting`): the runtime key
   `dids.webvh_server` (`local` or a VTA hosting-server id; `config/patch`,
   import, the Groups page) is read live at every group and community-room

@@ -284,6 +284,25 @@ pub enum Act {
     /// two holders of `vtc.elections.manage`. The subject is the election's
     /// identifier; the consent is pinned to there being no election under it.
     CreateBindingElection,
+    /// **VTI-DIR-104** — conferring authority through a group: binding an
+    /// authority-conferring capability to a group (`vtc/groups/bindings/add`,
+    /// subject `group:<groupId>`), or adding a member to a group carrying one
+    /// (`vtc/groups/members/add`, `vtc/groups/requests/decide`; subject the
+    /// member's DID). The stake is what is conferred; the approvers hold and
+    /// may approve it, as for any grant of it. The requester is the group's
+    /// manager, whose `vtc.groups.manage` is what they must still hold.
+    GroupAuthority,
+    /// **VTI-DIR-104** with **VTI-APV-019** — withdrawing a group's
+    /// authority from every member at once: removing its `grants` or `role`
+    /// binding, or deleting the group. The subject is `group:<groupId>`, and
+    /// every member who loses something is a party to it, so none of them
+    /// approves; the stake is what they lose.
+    ReduceGroupAuthority,
+}
+
+/// The subject a group-wide act names: `group:<groupId>`.
+pub fn group_subject(group_id: &str) -> String {
+    format!("group:{group_id}")
 }
 
 impl Act {
@@ -312,6 +331,7 @@ impl Act {
             Self::ChangeJoinCriteria
             | Self::ChangeHiddenVetting
             | Self::ChangeRecognitionPolicy(_) => "VTI-APV-023",
+            Self::GroupAuthority | Self::ReduceGroupAuthority => "VTI-DIR-104",
         }
     }
 
@@ -323,6 +343,11 @@ impl Act {
             Self::JoinReview => "join-deciders",
             Self::VettingReview => "vetting-managers-except-subject",
             Self::DirectAdmission => "member-managers-except-subject",
+            // The member a change names, or every member of a group a
+            // group-wide change reaches.
+            Self::GroupAuthority | Self::ReduceGroupAuthority => {
+                "capability-holders-except-parties"
+            }
             _ => APPROVER_SET,
         }
     }
@@ -334,6 +359,8 @@ impl Act {
         matches!(
             self,
             Self::ReduceUnrestricted
+                | Self::GroupAuthority
+                | Self::ReduceGroupAuthority
                 | Self::GrantsReview
                 | Self::BreakGlassReview
                 | Self::JoinReview
@@ -362,7 +389,9 @@ impl Act {
             | Self::ReduceUnrestricted
             | Self::LowerThreshold
             | Self::OperatorWrite
-            | Self::GrantsReview => vec![CapRef::all(Capability::RolesAssign)],
+            | Self::GrantsReview
+            | Self::GroupAuthority
+            | Self::ReduceGroupAuthority => vec![CapRef::all(Capability::RolesAssign)],
             Self::ChangeAuthorityPolicy(purpose) => vec![CapRef::new(
                 Capability::PolicyAdmin,
                 Some(ResourceQualifier::Policy(purpose)),
@@ -444,6 +473,8 @@ impl Act {
             Self::ChangeDirectoryPrivacy => s::KIND_DIRECTORY_FIELD_WIDEN,
             Self::CreateBindingElection => s::KIND_ELECTION_BINDING_CREATE,
             Self::ChangeRecognitionPolicy(_) => s::KIND_POLICY_RECOGNITION,
+            Self::GroupAuthority => s::KIND_GRANT_AUTHORITY,
+            Self::ReduceGroupAuthority => s::KIND_REDUCE_AUTHORITY,
         }
     }
 }
@@ -468,10 +499,9 @@ pub struct Operation<'a> {
 pub fn newly_conferred(prev: Option<&VtcAclEntry>, next: &VtcAclEntry, now: u64) -> Vec<CapRef> {
     let held: Vec<CapRef> = prev
         .filter(|p| !p.is_expired(now))
-        .map(|p| p.admin.conferring())
+        .map(VtcAclEntry::conferring)
         .unwrap_or_default();
-    next.admin
-        .conferring()
+    next.conferring()
         .into_iter()
         .filter(|c| !held.iter().any(|h| h.covers(c)))
         .collect()
@@ -494,10 +524,9 @@ pub fn lost_conferring(prev: &VtcAclEntry, next: Option<&VtcAclEntry>, now: u64)
     });
     let kept: Vec<CapRef> = next
         .filter(|_| !shortened)
-        .map(|n| n.admin.conferring())
+        .map(VtcAclEntry::conferring)
         .unwrap_or_default();
-    prev.admin
-        .conferring()
+    prev.conferring()
         .into_iter()
         .filter(|c| !kept.iter().any(|k| k.covers(c)))
         .collect()
@@ -990,6 +1019,33 @@ pub async fn gate_reduction(
     gesture_reason: &str,
     consent_summary: &str,
 ) -> Result<ReductionGate, AppError> {
+    gate_reduction_as(
+        state,
+        Act::ReduceUnrestricted,
+        requester,
+        subject,
+        after,
+        op,
+        gesture_reason,
+        consent_summary,
+    )
+    .await
+}
+
+/// [`gate_reduction`] parked as `act` — [`Act::ReduceGroupAuthority`] for a
+/// member's removal from a group carrying authority (VTI-DIR-104), whose
+/// requester is the group's manager rather than a role assigner.
+#[allow(clippy::too_many_arguments)]
+pub async fn gate_reduction_as(
+    state: &AppState,
+    act: Act,
+    requester: &str,
+    subject: &VtcAclEntry,
+    after: Option<&VtcAclEntry>,
+    op: Operation<'_>,
+    gesture_reason: &str,
+    consent_summary: &str,
+) -> Result<ReductionGate, AppError> {
     use super::bound_step_up::{self, EvidencedGate, Gate};
 
     let now = now_epoch();
@@ -1039,16 +1095,9 @@ pub async fn gate_reduction(
         let third = if single_admin_mode(state).await {
             0
         } else {
-            approvers_for(
-                state,
-                Act::ReduceUnrestricted,
-                &lost,
-                requester,
-                &subject.did,
-                now,
-            )
-            .await?
-            .len()
+            approvers_for(state, act, &lost, requester, &subject.did, now)
+                .await?
+                .len()
         };
         // First to act wins (§8.2): with nobody else to decide, a
         // counter-request lands the earlier one.
@@ -1081,7 +1130,7 @@ pub async fn gate_reduction(
             return Ok(
                 match gesture_then_consent_for(
                     state,
-                    Act::ReduceUnrestricted,
+                    act,
                     &lost,
                     requester,
                     &subject.did,
@@ -1130,13 +1179,7 @@ pub async fn gate_reduction(
             {
                 check_attrition(state, &subject.did).await?;
             }
-            crate::admin_actions::check_limits(
-                state,
-                Act::ReduceUnrestricted,
-                requester,
-                &subject.did,
-            )
-            .await?;
+            crate::admin_actions::check_limits(state, act, requester, &subject.did).await?;
             let evidence = match bound_step_up::redeem_or_request_with_evidence(
                 state,
                 requester,
@@ -1159,11 +1202,11 @@ pub async fn gate_reduction(
                 "ending an unrestricted admin's authority with nobody else left to consent \
                  (VTI-APV-019): parked for its cooling-off, the subject suspended until it lands"
             );
-            let pin = pin_for(state, Act::ReduceUnrestricted, &subject.did).await?;
+            let pin = pin_for(state, act, &subject.did).await?;
             let action = crate::admin_actions::park(
                 state,
                 crate::admin_actions::Parking {
-                    act: Act::ReduceUnrestricted,
+                    act,
                     stake: lost.clone(),
                     requester,
                     subject: &subject.did,
@@ -1318,11 +1361,37 @@ pub async fn settle_reduction(
     gesture_reason: &str,
     consent_summary: &str,
 ) -> Result<Option<Agreement>, crate::error::TaskError> {
+    settle_reduction_as(
+        state,
+        Act::ReduceUnrestricted,
+        requester,
+        prior,
+        after,
+        op,
+        gesture_reason,
+        consent_summary,
+    )
+    .await
+}
+
+/// [`settle_reduction`] parked as `act` ([`gate_reduction_as`]).
+#[allow(clippy::too_many_arguments)]
+pub async fn settle_reduction_as(
+    state: &AppState,
+    act: Act,
+    requester: &str,
+    prior: &VtcAclEntry,
+    after: Option<&VtcAclEntry>,
+    op: Operation<'_>,
+    gesture_reason: &str,
+    consent_summary: &str,
+) -> Result<Option<Agreement>, crate::error::TaskError> {
     if !prior.is_administrator() {
         return Ok(None);
     }
-    match gate_reduction(
+    match gate_reduction_as(
         state,
+        act,
         requester,
         prior,
         after,
@@ -1530,12 +1599,22 @@ pub(crate) async fn approvers_for(
     now: u64,
 ) -> Result<Vec<String>, AppError> {
     let stake = act.stake_or_default(stake);
+    // A group-wide act has a party in every member of the group: each gains
+    // or loses by it, so none decides it.
+    let parties = match subject.strip_prefix("group:") {
+        Some(group_id) if matches!(act, Act::GroupAuthority | Act::ReduceGroupAuthority) => {
+            crate::groups::member_dids(state, group_id).await?
+        }
+        _ => Default::default(),
+    };
     Ok(list_acl_entries(&state.acl_ks)
         .await?
         .into_iter()
         .filter(|e| may_decide(e, act, &stake, now))
         .map(|e| e.did)
-        .filter(|d| d != requester && !(act.excludes_subject() && d == subject))
+        .filter(|d| {
+            d != requester && !(act.excludes_subject() && d == subject) && !parties.contains(d)
+        })
         .collect())
 }
 
@@ -1553,7 +1632,15 @@ pub(crate) fn requester_still_authorized(
     // A suspended requester authorizes nothing while its own reduction cools
     // off (`vtc-action-list.md` §8.2), so what it asked for can no longer run
     // as it.
-    if entry.is_expired(now) || !entry.admin.is_administrator() || entry.is_suspended() {
+    if entry.is_expired(now) || entry.is_suspended() {
+        return false;
+    }
+    // A group's manager may hold no administrative role: their appointment is
+    // a resource grant (`groups::managers`).
+    if matches!(act, Act::GroupAuthority | Act::ReduceGroupAuthority) {
+        return entry.can_any(Capability::GroupsManage);
+    }
+    if !entry.admin.is_administrator() {
         return false;
     }
     match act {
@@ -1596,6 +1683,10 @@ pub(crate) fn requester_still_authorized(
         Act::ChangeRecognitionPolicy(p) => entry
             .admin
             .can(Capability::PolicyAdmin, Some(&ResourceQualifier::Policy(p))),
+        // Answered above: a group's manager, for some group. The handler
+        // re-reads which, and every other bound, when the action executes
+        // (VTI-APV-017).
+        Act::GroupAuthority | Act::ReduceGroupAuthority => true,
     }
 }
 
@@ -1609,6 +1700,25 @@ pub(crate) async fn pin_for(
     let value = match act {
         Act::GrantUnrestricted | Act::ReduceUnrestricted | Act::OperatorWrite => {
             return state_pin(state, subject).await;
+        }
+        // A member's entry, like any grant or reduction of it — or, for a
+        // group-wide act, the group's join policy and its bindings: either
+        // moving means what the approvers agreed to is not what would run.
+        Act::GroupAuthority | Act::ReduceGroupAuthority => {
+            let Some(group_id) = subject.strip_prefix("group:") else {
+                return state_pin(state, subject).await;
+            };
+            let ks = state.directory.ks();
+            let group = crate::groups::get(ks, group_id).await?;
+            let bindings: Vec<Value> = crate::groups::bindings::of_group(ks, group_id)
+                .await?
+                .iter()
+                .map(crate::groups::bindings::Binding::wire)
+                .collect();
+            json!({
+                "joinPolicy": group.map(|g| g.join_policy),
+                "bindings": bindings,
+            })
         }
         // VTI-APV-020: the consent is to lowering *this* threshold. Once it
         // moves, what the approvers agreed to is not what would happen.
@@ -1717,6 +1827,7 @@ mod tests {
             updated_by: None,
             expires_at,
             resource_grants: Vec::new(),
+            group_grants: Vec::new(),
             label_set_by_subject: false,
             suspension: None,
         }
@@ -1844,6 +1955,8 @@ mod tests {
             Act::ChangeDirectoryPrivacy,
             Act::CreateBindingElection,
             Act::ChangeRecognitionPolicy(PolicyPurpose::Personhood),
+            Act::GroupAuthority,
+            Act::ReduceGroupAuthority,
         ] {
             assert!(may_approve(&approver, &act.default_stake(), now), "{act:?}");
         }
@@ -1878,6 +1991,17 @@ mod tests {
         use crate::policy::PolicyPurpose;
         use crate::trust_tasks as tt;
         for (act, uri) in [
+            (Act::GroupAuthority, tt::group_tasks::MEMBERS_ADD_TYPE),
+            (Act::GroupAuthority, tt::group_tasks::BINDINGS_ADD_TYPE),
+            (
+                Act::ReduceGroupAuthority,
+                tt::group_tasks::MEMBERS_REMOVE_TYPE,
+            ),
+            (
+                Act::ReduceGroupAuthority,
+                tt::group_tasks::BINDINGS_REMOVE_TYPE,
+            ),
+            (Act::ReduceGroupAuthority, tt::group_tasks::DELETE_TYPE),
             (Act::GrantUnrestricted, tt::ACL_GRANT_TYPE),
             (Act::GrantUnrestricted, tt::ACL_CHANGE_ROLE_TYPE),
             (Act::GrantUnrestricted, tt::ACL_UPDATE_TYPE),

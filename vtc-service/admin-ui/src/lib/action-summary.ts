@@ -83,6 +83,17 @@ export const MEMBERS_MAKE_MEMBERSHIP_URI = `${SPEC}/vtc/members/make-membership/
  * new kind (or a changed template) needs an entry in both places.
  */
 export const PINNED_TEMPLATE_DIGESTS: Readonly<Record<string, string>> = Object.freeze({
+  // A group carrying authority (VTI-DIR-104).
+  [pinKey("acl.grant.authority", `${SPEC}/vtc/groups/members/add/0.1`)]:
+    "zQmZr8mXvAph3Sxdxbv9ge82svqswrBn9xunstWKDsSD1tG",
+  [pinKey("acl.grant.authority", `${SPEC}/vtc/groups/bindings/add/0.1`)]:
+    "zQmXa9sTSnLan8LEf7QyEzavkt5doEHVz6jZ9c34Yg8bKi9",
+  [pinKey("acl.reduce.authority", `${SPEC}/vtc/groups/members/remove/0.1`)]:
+    "zQmQVW9TAVk3kGCAiCwc7vvyhKCXYJobPYRxxfD9nphPMfi",
+  [pinKey("acl.reduce.authority", `${SPEC}/vtc/groups/bindings/remove/0.1`)]:
+    "zQmPdSegnSr9GKnqAyFoiBrBQV4pHHHea4sQ9oKeyu1FsSq",
+  [pinKey("acl.reduce.authority", `${SPEC}/vtc/groups/delete/0.1`)]:
+    "zQmemh2M3haEy21mKWDKRoaswuSUeD6oSRyjUKGwUSENWZz",
   [pinKey("acl.grant.authority", `${SPEC}/acl/grant/0.2`)]:
     "zQmNiciJtH7xnKdQUxEwp44mpbCrVt8tfBrt1XKg7VfAc71",
   [pinKey("acl.grant.authority", `${SPEC}/acl/update/0.2`)]:

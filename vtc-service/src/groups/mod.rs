@@ -30,6 +30,7 @@
 //! Only static groups are served: a dynamic group's create is refused
 //! (`kindNotServed` once the specification declares it), never stored.
 
+pub mod authority;
 pub mod bindings;
 pub mod credential;
 pub mod identity;
@@ -401,6 +402,19 @@ pub async fn members_of(ks: &KeyspaceHandle, group_id: &str) -> Result<Vec<Membe
         }
     }
     out.sort_by(|a, b| a.entry_id.cmp(&b.entry_id));
+    Ok(out)
+}
+
+/// The DIDs of `group_id`'s members, active or pending, read through their
+/// directory entries.
+pub async fn member_dids(state: &AppState, group_id: &str) -> Result<BTreeSet<String>, AppError> {
+    let ks = state.directory.ks();
+    let mut out = BTreeSet::new();
+    for m in members_of(ks, group_id).await? {
+        if let Some(card) = crate::directory::cards::get(ks, &m.entry_id).await? {
+            out.insert(card.did);
+        }
+    }
     Ok(out)
 }
 

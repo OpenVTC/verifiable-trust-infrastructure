@@ -8,6 +8,7 @@ pub mod delegation;
 pub mod elevation;
 pub mod entry;
 pub mod granting;
+pub mod group_grant;
 pub mod migrate;
 pub mod resource_grant;
 pub mod role;

@@ -25,11 +25,11 @@ This page says what this build serves.
 | `vtc/groups/requests/decide/0.1` | a manager, never the requester | Approve or decline a request |
 | `vtc/groups/managers/add/0.1` | a manager of the group | Appoint an active member a manager of it |
 | `vtc/groups/managers/remove/0.1` | the manager, or `vtc.groups.manage` unqualified | End an appointment; a manager may step down |
-| `vtc/groups/bindings/{add,remove}/0.1` | a manager of the group who holds `vtc.rooms.manage`, after a bound gesture | Bind the group to a community room, or end the binding |
+| `vtc/groups/bindings/{add,remove}/0.1` | a manager of the group, after a bound gesture — with `vtc.rooms.manage` for a room, holding what it confers for grants | Bind the group to a community room or to capabilities, or end the binding |
 | `vtc/groups/bindings/list/0.1` | a manager of the group | The group's bindings |
 
-Room bindings are served; a grants or role binding is refused `kindNotServed` and nothing
-is stored ([Room bindings](#room-bindings)). The member portal signs these tasks with its sign-in key
+Room bindings ([Room bindings](#room-bindings)) and grants and role bindings
+([Groups that carry authority](#groups-that-carry-authority)) are served. The member portal signs these tasks with its sign-in key
 for the member (`signingScope` `vtc/groups`), as it does the directory's.
 
 Only **static** groups are served. A dynamic group's rule is checked — it may read only
@@ -255,10 +255,47 @@ to the group: every member of the group is offered admission to it with the bind
 A VTA that does not answer is retried with a capped, jittered backoff; the reconciler runs
 every minute and whenever a group's members or bindings change.
 
+## Groups that carry authority
+
+A **grants** binding (`{"kind": "grants", "grants": [{"capability": "vtc.invitations.manage"}]}`)
+or a **role** binding (`{"kind": "role", "role": "moderator"}` — that role's ceiling, by
+reference, read as it is defined now) makes the group carry authority: what it confers is
+written onto each member's access-control entry, as `groupGrants` naming the group as their
+source, and taken off when they leave (VTI-DIR-100). The group itself never answers whether
+anyone may do anything; every gate reads the entry. The entry's
+`ext["org.openvtc"].groupGrants` shows each row, its group and whether it is in effect.
+
+- **Inside the member's role.** A group confers capabilities within the ceiling of the
+  member's administrative role, never the ceiling (VTI-DIR-105): a row counts only while
+  the role admits it and the entry may act. A member whose role does not admit something
+  the group confers is refused `exceedsRoleCeiling`, so a member with no administrative
+  role cannot join a group that carries authority. A row confers nothing to approve.
+- **What the binder holds.** Each capability is provisioned only while the administrator
+  who made the binding holds it themselves, other than through a group (VTI-DIR-102,
+  VTI-ACL-071) — so binding what you do not hold is refused `exceedsBinderAuthority`, and
+  a binder who loses it takes it from every member.
+- **Static and closed.** Only a `closed` group may carry authority (`groupNotEligible`),
+  and it stays closed while it does (`update` refuses `authorityGroupLocked`), so nobody
+  joins it by their own act (VTI-DIR-103).
+- **Consent** (VTI-DIR-104). Binding an authority-conferring capability is granting it,
+  and adding a member to such a group is granting it to them: each is held in the action
+  list for another administrator who holds and may approve it, and runs on the approval,
+  re-checked then. Removing a member is a reduction of what the group gave them, on the
+  same terms as any reduction — the consent of someone other than the requester and the
+  member, or, where nobody is left, the requester's gesture, a `Critical` record and the
+  cooling-off. Removing the binding or deleting the group is a reduction of every member at
+  once: consented by someone who is not in the group, or, where nobody is, the gesture and
+  a `Critical` record per member, with no cooling-off — a cooling-off suspends its one
+  subject, and this reduction has many. Capabilities that confer no authority take the
+  requester's gesture bound to the request. Leaving is the member's own and needs nobody.
+
+Each change to a member's grants is audited (`GroupGrantsChanged`) by group, binding,
+member entry and capability.
+
 ## Deleting a group
 
 Deleting revokes the group's authority credential in the community's revocation list
-and ends every membership. The group's DID log stays served, so credentials it issued
+and ends every membership, taking whatever it conferred with it. The group's DID log stays served, so credentials it issued
 still resolve their issuer until they expire.
 
 ## Storage
