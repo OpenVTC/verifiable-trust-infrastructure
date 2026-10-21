@@ -1248,6 +1248,38 @@ pub(super) async fn handle_trustee_justify(
     }
 }
 
+/// `vta/pcs/trustee/read/0.1`: `voting/trustees/status` or `voting/election/show`, signed as
+/// the trustee (items 3 – 5). Keeps nothing, so it is not audited, as `voter/read` is not.
+pub(super) async fn handle_trustee_read(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    use spec::trustee::read::v0_1 as t;
+    let (_context, community, trustee) =
+        match trustee_preamble::<t::Payload>(state, auth, &doc).await {
+            Ok(v) => v,
+            Err(r) => return r,
+        };
+    match crate::operations::pcs_trustee::sign_read(
+        state,
+        auth,
+        &trustee,
+        &community,
+        str_of(&doc, "electionId"),
+        str_of(&doc, "ballotBox"),
+        str_of(&doc, "read"),
+    )
+    .await
+    {
+        Ok(document) => respond::<t::Response>(&doc, json!({ "document": document })),
+        Err(e) => refuse(&doc, e, |e| match e {
+            PcsError::TrusteeNotHeld(_) => Some(t::error_codes::TRUSTEE_NOT_HELD),
+            _ => None,
+        }),
+    }
+}
+
 /// `vta/pcs/trustee/decrypt/0.1`.
 pub(super) async fn handle_trustee_decrypt(
     state: &AppState,

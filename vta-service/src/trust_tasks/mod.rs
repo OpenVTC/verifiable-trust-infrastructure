@@ -2686,6 +2686,8 @@ dispatch_table! {
         [ None Metadata true ],
     vta_sdk::trust_tasks::TASK_VTA_PCS_TRUSTEE_DECRYPT_0_1 => pcs::handle_trustee_decrypt
         [ None Metadata true ],
+    vta_sdk::trust_tasks::TASK_VTA_PCS_TRUSTEE_READ_0_1 => pcs::handle_trustee_read
+        [ None Metadata true ],
     // ─── Witnessed party (`vta/witness/*`) ─────────────────────────
     // Classes match each specification's own declarations: the VTA acts as the
     // relationship DID at open and present; accept stores what the witness said.

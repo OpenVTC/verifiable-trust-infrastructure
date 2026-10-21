@@ -131,6 +131,17 @@ the ballot box (TSP or DIDComm; HTTPS where it has no session):
 | 5 | `vta/pcs/trustee/keys` again, with the formed `electionKey` — the trustee's share computed, checked against its published verification key, and kept | — |
 | 6 | after close, `vta/pcs/trustee/decrypt` with the targets `status` lists — one partial decryption per target, each with its proof. Refused before `closedAt` (VTI-VOT-063) | `voting/trustees/decrypt` |
 
+Every step reads the ballot box first: `voting/election/show` for the manifest and
+`voting/trustees/status` for where the ceremony stands. A private board answers those only to
+the community, its auditors and its trustees, so the client has the VTA sign them as the trustee
+with `vta/pcs/trustee/read` — which signs those two reads of one election and nothing else.
+
+`pnm elections trustee step <election> --community <did> --ballot-box <did> --trustee <did>
+--context <ctx>` runs the whole round from the command line. It reads both, takes every step the
+ceremony needs of this trustee now, and carries each document to the ballot box's HTTPS door.
+Run it again at any time, or pass `--watch` to repeat every 30 seconds until the result is out.
+`pnm elections trustee status` shows where the ceremony stands.
+
 The transport secret and the polynomial are re-derived from the trustee's path on every use,
 domain-separated, so a repeated `deal` is the same dealing and `justify` reveals exactly the
 share that was dealt. The key share is the sum of other trustees' shares and cannot be

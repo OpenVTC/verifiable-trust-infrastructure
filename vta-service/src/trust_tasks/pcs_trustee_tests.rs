@@ -658,3 +658,91 @@ async fn the_trustee_tasks_refuse_with_the_codes_their_specifications_declare() 
         "vta/pcs/vote-encrypted:notOpen"
     );
 }
+
+/// `vta/pcs/trustee/read`: the trustee's client, holding no trustee key, has the VTA sign the
+/// two reads a private board answers only to a trustee (CONVENTIONS §4, §9.6) — and the ballot
+/// box answers them. A trustee the VTA does not hold is `trusteeNotHeld`; no other read is
+/// signed.
+#[tokio::test]
+async fn a_trustee_reads_its_election_on_a_private_board_through_the_vta() {
+    let (state, _dir) = build_signing_test_app_state().await;
+    crate::contexts::create_context(&state.contexts_ks, CTX, CTX)
+        .await
+        .unwrap();
+    let auth = claims("did:key:z6MkOperator");
+    let mut personas = Vec::new();
+    for label in ["trustee-1", "trustee-2"] {
+        personas.push(
+            did_key_persona(
+                &state.keys_ks,
+                &state.internal_ks,
+                &state.contexts_ks,
+                &state.acl_ks,
+                &state.seed_store,
+                &state.audit_sink,
+                CTX,
+                label,
+            )
+            .await
+            .did,
+        );
+    }
+    let (box_did, _) = box_key();
+    let mut m = manifest(&personas, &box_did);
+    m["board"]["visibility"] = json!("private");
+    let digest = manifest_digest(&m).unwrap();
+    let mut rng = StdRng::seed_from_u64(0xC1);
+    let reg = Registrar::generate(COMMUNITY, &mut rng).unwrap();
+    let mut bb = BallotBox::new(&box_did);
+    bb.register(
+        COMMUNITY,
+        &json!({ "community": COMMUNITY, "manifest": m,
+                 "manifestDigest": digest_multibase(&digest),
+                 "parameters": { "suite": "ps-ddh-bls12381", "votingKey": reg.public_text().unwrap() } }),
+        chrono::Utc::now() - chrono::Duration::hours(2),
+    )
+    .unwrap();
+    let now = chrono::Utc::now() - chrono::Duration::hours(2);
+    let sel = json!({ "community": COMMUNITY, "electionId": "sealed-2027" });
+    assert!(bb.show(BoxCaller::Anonymous, &sel, now).is_err());
+
+    let read = |which: &str, trustee: &str| {
+        trustee_doc(
+            uris::TASK_VTA_PCS_TRUSTEE_READ_0_1,
+            trustee,
+            json!({ "ballotBox": box_did, "read": which }),
+        )
+    };
+    let shown = ok(&handle_trustee_read(&state, &auth, read("election", &personas[1])).await);
+    let d = &shown["document"];
+    assert_eq!(
+        d["type"],
+        "https://trusttasks.org/spec/voting/election/show/0.1"
+    );
+    assert_eq!(d["recipient"], box_did.as_str());
+    assert_eq!(d["payload"], sel);
+    let signer = proven(d).await;
+    assert_eq!(
+        bb.show(BoxCaller::Did(&signer), &d["payload"], now)
+            .unwrap()["manifest"],
+        m
+    );
+    let status = ok(&handle_trustee_read(&state, &auth, read("status", &personas[0])).await);
+    let d = &status["document"];
+    assert_eq!(
+        d["type"],
+        "https://trusttasks.org/spec/voting/trustees/status/0.1"
+    );
+    let signer = proven(d).await;
+    assert_eq!(
+        bb.trustees_status(BoxCaller::Did(&signer), &d["payload"], now)
+            .unwrap()["phase"],
+        "enrolling"
+    );
+
+    // A trustee this VTA holds no key of, and a read the task does not sign.
+    let out = handle_trustee_read(&state, &auth, read("status", "did:key:z6MkNotHeldHere")).await;
+    assert_eq!(code(&out), "vta/pcs/trustee/read:trusteeNotHeld");
+    let out = handle_trustee_read(&state, &auth, read("board", &personas[0])).await;
+    assert_eq!(code(&out), "malformedRequest");
+}

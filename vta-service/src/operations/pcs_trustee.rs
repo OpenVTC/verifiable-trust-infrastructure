@@ -166,6 +166,47 @@ async fn document(
     Ok(doc)
 }
 
+/// `vta/pcs/trustee/read` items 3 – 5: `voting/trustees/status` or `voting/election/show` for
+/// one election, signed as `trustee` and addressed to `ballot_box` — nothing else, and nothing
+/// kept. `read` has already been held to the two the task names.
+///
+/// # Errors
+/// [`PcsError::TrusteeNotHeld`] for a DID this VTA holds no authentication key of the caller may
+/// act as.
+pub async fn sign_read(
+    state: &AppState,
+    auth: &crate::auth::AuthClaims,
+    trustee: &str,
+    community: &str,
+    election_id: &str,
+    ballot_box: &str,
+    read: &str,
+) -> Result<Value> {
+    let type_uri = match read {
+        "status" => task_uri("status"),
+        "election" => "https://trusttasks.org/spec/voting/election/show/0.1".to_string(),
+        other => {
+            return Err(malformed(format!(
+                "`{other}` is not a read this task signs"
+            )));
+        }
+    };
+    let signer = signer(state, auth, trustee).await?;
+    let now = Utc::now();
+    let stamp = |t: DateTime<Utc>| t.to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+    let mut doc = json!({
+        "id": format!("urn:uuid:{}", uuid::Uuid::new_v4()),
+        "type": type_uri,
+        "issuer": trustee,
+        "recipient": ballot_box,
+        "issuedAt": stamp(now),
+        "expiresAt": stamp(now + chrono::Duration::hours(1)),
+        "payload": { "community": community, "electionId": election_id },
+    });
+    signer.sign(&mut doc).await?;
+    Ok(doc)
+}
+
 /// The transport secret and the dealing's randomness, both from this election's member seed,
 /// each under its own domain.
 fn transport_secret(seed: &[u8; 32], index: u32) -> Result<TransportSecret> {

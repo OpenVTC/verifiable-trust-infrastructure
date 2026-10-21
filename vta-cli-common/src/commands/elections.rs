@@ -220,7 +220,7 @@ fn ballot_from_answers(manifest: &Value, digest: &str, answers: &[String]) -> Cl
 
 /// The ballot box's HTTPS Trust Task base, from its DID document (`TrustTaskHTTPS`) — the door
 /// a cast from a one-time key is always accepted on (VTI-VOT-004).
-async fn ballot_box_url(did: &str) -> CliResult<String> {
+pub(crate) async fn ballot_box_url(did: &str) -> CliResult<String> {
     let resolver = vta_sdk::resolver::shared_did_resolver_from_env()
         .await
         .map_err(|e| format!("build a DID resolver: {e}"))?;

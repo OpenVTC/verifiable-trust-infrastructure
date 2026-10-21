@@ -693,7 +693,9 @@ impl BallotBox {
     ) -> Result<Value, Failure> {
         let p: show::Payload = parse(payload)?;
         let e = self.election(p.community.as_str(), p.election_id.as_str(), now)?;
-        if !e.readable_by(caller) {
+        // A trustee reads the election it takes part in on any board: its tasks take the
+        // manifest, and its decryption the time voting closed (CONVENTIONS §4, §9.6).
+        if !(e.readable_by(caller) || e.is_trustee(caller)) {
             return Err(Failure::unknown());
         }
         respond::<show::Response>(json!({

@@ -340,4 +340,19 @@ impl VtaClient {
         )
         .await
     }
+
+    /// `vta/pcs/trustee/read/0.1` — `voting/trustees/status` or `voting/election/show`, signed as
+    /// the trustee, to send to the ballot box yourself: a private board answers them only to a
+    /// trustee.
+    pub async fn pcs_trustee_read(
+        &self,
+        req: &pcs::trustee::read::v0_1::Payload,
+    ) -> Result<pcs::trustee::read::v0_1::Response, VtaError> {
+        self.pcs_call(
+            trust_tasks::TASK_VTA_PCS_TRUSTEE_READ_0_1,
+            req,
+            PCS_TT_TIMEOUT,
+        )
+        .await
+    }
 }

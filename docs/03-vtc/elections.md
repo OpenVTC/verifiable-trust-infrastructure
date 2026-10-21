@@ -127,6 +127,8 @@ kept beside it, never instead of it. A certified result authorizes nothing by it
 
 The trustees generate the election key on the board before voting opens (`voting/trustees/*`,
 each trustee's VTA holding its keys — see [the trustee's round](../02-vta/pcs-engine.md#the-trustees-round)).
+A trustee takes part with `pnm elections trustee step <election> --watch`, started once the
+election is registered and left running until the result is out.
 If no key has formed by `votingOpens`, the ceremony has failed: no cast is admitted, and the
 community cancels the election. Voters cast with `vta/pcs/vote-encrypted`; after close any
 `threshold` trustees decrypt, and the ballot box publishes the result — every sealed ballot

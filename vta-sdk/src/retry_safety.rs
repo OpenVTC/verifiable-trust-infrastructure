@@ -547,6 +547,8 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     (trust_tasks::TASK_VTA_PCS_TRUSTEE_KEYS_0_1, RetrySafe),
     (trust_tasks::TASK_VTA_PCS_TRUSTEE_JUSTIFY_0_1, RetrySafe),
     (trust_tasks::TASK_VTA_PCS_TRUSTEE_DECRYPT_0_1, RetrySafe),
+    // Signs a read as the trustee and keeps nothing.
+    (trust_tasks::TASK_VTA_PCS_TRUSTEE_READ_0_1, RetrySafe),
     // ── Witnessed party (`vta/witness/*`) ───────────────────────────────
     // Each step is safe to repeat (`vta/_shared/0.6/CONVENTIONS.md` §5): a
     // repeated open is an unsent, expiring session; a repeated present builds a

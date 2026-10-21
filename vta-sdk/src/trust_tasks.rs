@@ -2541,6 +2541,11 @@ pub const TASK_VTA_PCS_TRUSTEE_JUSTIFY_0_1: &str =
 pub const TASK_VTA_PCS_TRUSTEE_DECRYPT_0_1: &str =
     <trust_tasks_rs::specs::vta::pcs::trustee::decrypt::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
+/// `vta/pcs/trustee/read/0.1` — `voting/trustees/status` or `voting/election/show`, signed as
+/// the trustee.
+pub const TASK_VTA_PCS_TRUSTEE_READ_0_1: &str =
+    <trust_tasks_rs::specs::vta::pcs::trustee::read::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
 // ─── Witnessed party (`vta/witness/*/0.2`, trust-tasks-tf #779, #799) ──────
 // The VTA is the participating party of a `witness/session` for its principal:
 // it builds and signs every document as the relationship DID, and verifies and
@@ -2883,6 +2888,7 @@ pub const ALL_URIS: &[&str] = &[
     TASK_VTA_PCS_TRUSTEE_KEYS_0_1,
     TASK_VTA_PCS_TRUSTEE_JUSTIFY_0_1,
     TASK_VTA_PCS_TRUSTEE_DECRYPT_0_1,
+    TASK_VTA_PCS_TRUSTEE_READ_0_1,
     TASK_VTA_WITNESS_OPEN_0_2,
     TASK_VTA_WITNESS_PRESENT_0_2,
     TASK_VTA_WITNESS_ACCEPT_0_2,

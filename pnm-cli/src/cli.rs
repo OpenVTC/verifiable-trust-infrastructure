@@ -394,6 +394,47 @@ pub(crate) struct ElectionTarget {
     pub(crate) context: String,
 }
 
+/// The election a trustee serves, and who the trustee is.
+#[derive(clap::Args)]
+pub(crate) struct TrusteeTarget {
+    /// The community's DID: the registrar that registered the election.
+    #[arg(long)]
+    pub(crate) community: String,
+    /// The ballot box's DID (the manifest's `ballotBox`).
+    #[arg(long)]
+    pub(crate) ballot_box: String,
+    /// Your trustee DID: a persona your VTA holds, named in the manifest's `trustees.dids`.
+    #[arg(long)]
+    pub(crate) trustee: String,
+    /// The VTA context that persona lives in.
+    #[arg(long)]
+    pub(crate) context: String,
+}
+
+/// A trustee's commands for a sealed or tallied-encrypted election.
+#[derive(Subcommand)]
+pub(crate) enum TrusteeCommands {
+    /// Where the trustees' ceremony stands, as the ballot box reports it to you.
+    Status {
+        election_id: String,
+        #[command(flatten)]
+        target: TrusteeTarget,
+    },
+    /// Take every step the ceremony needs of you now: enrol, deal, confirm or answer a
+    /// complaint, keep your key share, and after close decrypt.
+    ///
+    /// Safe to run again at any time; with `--watch` it keeps going until nothing more is
+    /// needed of you.
+    Step {
+        election_id: String,
+        /// Ask again every 30 seconds until the result is out.
+        #[arg(long)]
+        watch: bool,
+        #[command(flatten)]
+        target: TrusteeTarget,
+    },
+}
+
 /// A member's election commands.
 #[derive(Subcommand)]
 pub(crate) enum ElectionCommands {
@@ -428,6 +469,12 @@ pub(crate) enum ElectionCommands {
         #[command(flatten)]
         target: ElectionTarget,
     },
+    /// Serve as a trustee of a sealed or tallied-encrypted election: your VTA holds your
+    /// transport key and your share of the election key, and signs every step as you.
+    ///
+    /// Needs the `pcsTrustee` capability in the context your trustee persona lives in.
+    #[command(subcommand)]
+    Trustee(TrusteeCommands),
 }
 
 /// Mediator operations as a VTA-managed DID.

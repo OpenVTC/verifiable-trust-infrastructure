@@ -463,6 +463,20 @@ fn vot_062_a_private_board_runs_its_ceremony_for_its_trustees_alone() {
             .local,
         "electionUnknown"
     );
+    // A trustee reads the election itself — the manifest its tasks take, and later when voting
+    // closed — and an outsider still learns nothing.
+    let shown = run
+        .bb
+        .show(Caller::Did(TRUSTEES[2]), &sel, t(BEFORE))
+        .unwrap();
+    assert_eq!(shown["manifest"], run.manifest);
+    assert_eq!(
+        run.bb
+            .show(Caller::Did("did:key:z6MkNotATrustee"), &sel, t(BEFORE))
+            .unwrap_err()
+            .local,
+        "electionUnknown"
+    );
     run.ceremony();
     let p = run.cast(400, run.ballot(Some("ben"), &[]));
     run.bb.cast_encrypted(&p, t(DURING)).unwrap();

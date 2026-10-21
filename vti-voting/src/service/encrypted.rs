@@ -82,7 +82,7 @@ impl ElectionRecord {
     }
 
     /// Whether the proven caller is one of the manifest's trustees.
-    fn is_trustee(&self, caller: Caller<'_>) -> bool {
+    pub(super) fn is_trustee(&self, caller: Caller<'_>) -> bool {
         let Caller::Did(did) = caller else {
             return false;
         };

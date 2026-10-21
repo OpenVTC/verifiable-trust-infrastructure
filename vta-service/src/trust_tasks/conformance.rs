@@ -2659,6 +2659,15 @@ fn table() -> Vec<(&'static str, Conformance)> {
                         "d": PCS_B58, "proof": sigma() }] }))
             ),
         ),
+        (
+            uris::TASK_VTA_PCS_TRUSTEE_READ_0_1,
+            checked!(
+                specs::vta::pcs::trustee::read::v0_1::Payload,
+                specs::vta::pcs::trustee::read::v0_1::Response,
+                trustee_payload(json!({ "ballotBox": VOTING_BOX, "read": "status" })),
+                trustee_document("status", json!({ "community": PCS_COMMUNITY, "electionId": "agm-2027" }))
+            ),
+        ),
         // ─── vta/witness — the witnessed party ───────────────────
         (
             uris::TASK_VTA_WITNESS_OPEN_0_2,
