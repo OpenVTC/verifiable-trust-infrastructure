@@ -817,7 +817,7 @@ mod tests {
         with_tsp_in_rendered_document(true, true, &mut doc).expect("tsp added");
         assert_eq!(
             service_types(&doc),
-            ["TSPTransport", "DIDCommMessaging", "VTARest"]
+            ["TSPTransport", "DIDCommMessaging", "TrustTaskHTTPS"]
         );
         assert_eq!(doc["service"][0]["serviceEndpoint"], ROOM_MEDIATOR);
     }

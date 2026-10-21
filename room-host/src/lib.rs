@@ -687,13 +687,9 @@ async fn create(state: &HostState, doc: &TrustTask<Value>, payload: Value) -> An
         // second way to be authorized.
         owner_did: authorized.owner_did().to_string(),
         visibility: req.visibility,
-        // Every room this host creates is chained: joining a room means being able to read
-        // it, and the alternative silently loses the room's contents at the first membership
-        // change. Not yet a per-room choice because `rooms/create/0.1` has no member for one
-        // and its schema is `additionalProperties: false` — inventing a field locally would
-        // put these rooms out of conformance. A room wanting `FromJoin` is a spec change
-        // first, exactly as `retention_days` was.
-        retention_policy: vti_rooms::RetentionPolicy::Chained,
+        // The owner's choice, `chained` when unstated: joining a room means being able to
+        // read it, and the alternative loses the room's contents at each membership change.
+        retention_policy: req.retention_policy.unwrap_or_default(),
         // What the caller asked for, or the default that draws no expectation.
         anchor_cadence: req.anchor_cadence.unwrap_or_default(),
         epoch: 1,
@@ -2193,6 +2189,36 @@ mod tests {
             answer.get("thid").is_none(),
             "and it carries no second, disagreeing copy of that: {answer}"
         );
+    }
+
+    /// `rooms/create/0.1` declares `retentionPolicy`, and `rooms/owner/register/0.2`
+    /// passes it on. A host that refused the member as unknown refused every room an
+    /// owner asked to keep from-join — and one that ignored it would store epoch links the
+    /// room said it would not have.
+    #[tokio::test]
+    async fn a_room_registered_from_join_is_stored_so() {
+        let (_d, st) = state();
+        let app = router(st.clone());
+        let f = RoomFixture::new(Visibility::Attributed).await;
+        let (status, body) = call(
+            &app,
+            ROOMS_CREATE_TYPE,
+            serde_json::json!({
+                "roomId": f.room.room_id,
+                "ownerDid": f.room.owner_did,
+                "visibility": f.room.visibility,
+                "retentionPolicy": "fromJoin",
+                "ext": { "org.example": { "note": "ignored" } },
+            }),
+            &f.owner,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let room = vti_rooms::storage::get_room(st.rooms(), &f.room.room_id)
+            .await
+            .unwrap();
+        assert_eq!(room.retention_policy, vti_rooms::RetentionPolicy::FromJoin);
+        assert!(!room.retention_policy.links_epochs());
     }
 
     /// Registration is the one verb no chain can authorize, so the proof on the request

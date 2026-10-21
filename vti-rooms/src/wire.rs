@@ -281,10 +281,19 @@ pub struct CreateRoomBody {
     pub owner_did: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retention_days: Option<u32>,
+    /// Whether the room keeps its history readable across a membership change. Absent
+    /// means [`crate::RetentionPolicy::Chained`]. Fixed at creation: a host refuses an
+    /// epoch link for a `fromJoin` room.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retention_policy: Option<crate::RetentionPolicy>,
     /// What this room intends about anchoring. Absent reads as
     /// [`crate::AnchorCadence::Manual`], which draws no expectation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub anchor_cadence: Option<crate::AnchorCadence>,
+    /// Extension members (framework SPEC §4.5.1). Accepted because the schema declares
+    /// it; nothing here reads one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ext: Option<serde_json::Value>,
 }
 
 /// `rooms/create/0.1#response`.

@@ -2502,3 +2502,27 @@ fn ballot_box_builtin_advertises_tsp_didcomm_and_the_cast_door() {
         json!([format!("{BALLOT_BOX_DID}#key-1")])
     );
 }
+
+/// A room host advertises its `rooms/*` surface as `TrustTaskHTTPS` at `URL` — the
+/// HTTPS binding's own service type, which every Trust Task client reads — and never
+/// `VTARest`: a room host is not a VTA, and a client looking for the binding's type
+/// (the wallet's console) found none and refused to register rooms with it.
+#[test]
+fn room_host_builtin_advertises_trust_task_https_not_vta_rest() {
+    let mut vars = TemplateVars::new();
+    vars.insert_string("DID", "did:webvh:QmHost:rooms.example.com");
+    vars.insert_string("SIGNING_KEY_MB", "z6MkHOSTsigning");
+    vars.insert_string("KA_KEY_MB", "z6LSHOSTka");
+    vars.insert_string("WEBVH_SERVER", "prod");
+    vars.insert_string("URL", "https://rooms.example.com");
+    vars.insert_string("MEDIATOR_DID", "did:webvh:QmMediator:mediator.example.com");
+    let doc = load_embedded("room-host").unwrap().render(&vars).unwrap();
+    let rest: Vec<&Value> = doc["service"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|s| s["serviceEndpoint"] == "https://rooms.example.com")
+        .collect();
+    assert_eq!(rest.len(), 1, "{doc:#}");
+    assert_eq!(rest[0]["type"], "TrustTaskHTTPS");
+}

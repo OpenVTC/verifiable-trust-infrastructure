@@ -191,10 +191,9 @@ pub enum RetentionPolicy {
     /// because a key they have read is a key they have. What this policy withholds is the
     /// means to derive one again — after a restart, on another device, or on joining.
     ///
-    /// Never reached by deserialisation, and not yet reachable over the wire: choosing it
-    /// needs a member on `rooms/create`, which is a spec change. It exists so that
-    /// [`links_epochs`](Self::links_epochs) has something to mean, and so a host that is one
-    /// day told a room does not chain refuses rungs for it rather than storing them anyway.
+    /// Never the default. Chosen at creation with `rooms/create`'s `retentionPolicy`
+    /// (`rooms/owner/register/0.2` passes it on), and a host then refuses rungs for the
+    /// room rather than storing ones it said it would not have.
     FromJoin,
 }
 

@@ -71,7 +71,9 @@ fn create_room_conforms() {
             owner_did: "did:key:z6MkOwner".into(),
             visibility,
             retention_days: Some(90),
+            retention_policy: Some(vti_rooms::RetentionPolicy::FromJoin),
             anchor_cadence: Some(vti_rooms::AnchorCadence::Renewal),
+            ext: None,
         };
         check::<Payload>(
             &format!("CreateRoomBody ({visibility:?})"),
@@ -86,7 +88,9 @@ fn create_room_conforms() {
         owner_did: "did:key:z6MkOwner".into(),
         visibility: Visibility::Open,
         retention_days: None,
+        retention_policy: None,
         anchor_cadence: Some(vti_rooms::AnchorCadence::Renewal),
+        ext: None,
     };
     let value = serde_json::to_value(&body).expect("serialise");
     check::<Payload>("CreateRoomBody with no retention", &value);

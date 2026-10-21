@@ -897,8 +897,31 @@ cargo build --release --locked -p room-host
 room-host \
   --data-dir /var/lib/room-host \
   --listen 127.0.0.1:8300 \
-  --resolve-dids           # required for did:webvh rooms; see below
+  --resolve-dids \         # required for did:webvh rooms; see below
+  --vta-did <your VTA DID> --vta-context <context>   # serve as that context's DID
 ```
+
+- **`--listen` is opt-in.** Without it the host opens no socket and is reached
+  only through its mediator (`--mediator-did`), which is enough for a VTA: it
+  speaks to a host over TSP, DIDComm or HTTPS, whichever the host's DID
+  advertises, and the host takes the owner from the request's own proof either
+  way. A **browser** is different — the wallet moves room files straight to the
+  host over HTTPS — so a host members use from the wallet or the portal needs
+  `--listen` behind a TLS reverse proxy, and that `https://` URL published.
+- **Give the host an identity a client can find.** Mint its DID from the
+  `room-host` template with `URL` set to that public base URL: the document
+  then carries a `TrustTaskHTTPS` service, which is what a VTA, `pnm` and the
+  wallet's console look for (`<URL>/trust-tasks`). The console will not set a
+  room up on a host whose DID publishes no `TrustTaskHTTPS` endpoint, since its
+  members could not move files there; it stops at step 2 and says so. Hosts
+  minted before the template published `TrustTaskHTTPS` (it said `VTARest`)
+  need their DID updated.
+- **Enrolment.** With `--vta-did`, the host's first start mints a throwaway
+  `did:key` and prints the grant to make: an **`admin` role scoped to the
+  context** (`pnm acl create --did <key> --role admin --contexts <context>`).
+  Admin because the host fetches its DID's keys at startup, which needs
+  `key-export`; scoped, because an admin with no context is a super-admin of
+  the whole VTA. Start it again once granted.
 
 - **`--resolve-dids` is off by default and is a real decision.** A room's
   credentials are normally issued by a `did:webvh` room, so a host without it
@@ -911,11 +934,11 @@ room-host \
   roster is the portability guarantee: there is nothing in the binary that could
   consult one.
 - **It is not part of the VTA, on purpose.** The process guarding a master seed
-  should not also terminate presentations from arbitrary DIDs. If you want the
-  host to have its own identity for addressing, provision it with the
-  `room-host` DID template (`WEBVH_SERVER`, `URL`, `MEDIATOR_DID`) — though
-  nothing in the binary consumes that bundle yet, since it verifies presentations
-  and signs nothing.
+  should not also terminate presentations from arbitrary DIDs. The host's own
+  identity comes from its VTA context (above), never from the VTA's own DID.
+- **Choose `attributed` for a sealed room.** A `private` room is stored but
+  every request on it is refused until the zero-knowledge profile is settled
+  (§2).
 - **Storage** is a plain fjall store under `--data-dir`, unencrypted at rest. On
   `attributed`/`private` the records are already sealed; on `open` they are
   cleartext, so the data directory deserves the same care as any content store.
