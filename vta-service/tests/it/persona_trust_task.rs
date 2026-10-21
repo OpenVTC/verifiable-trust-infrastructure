@@ -4527,6 +4527,93 @@ async fn a_contacts_annotations_are_the_holders_and_append_no_revision() {
     assert!(payload_of(&body).get("petname").is_none());
 }
 
+/// put 1.1 linking form: a directory member whose DID the holder was not
+/// shown is starred by their entry; the same entry finds the same contact, and
+/// a filing naming a DID is a contact of its own.
+#[tokio::test]
+async fn a_directory_member_is_starred_without_their_did() {
+    let (router, ctx) = build_test_app().await;
+    let t = authed(&ctx, "linking", "admin", &[CTX]).await;
+    let persona = "did:key:z6MkMembershipDid";
+    let entry = json!({ "vtcDid": "did:web:climbing.example", "entryId": "dir_RouteSetter" });
+
+    let (status, body) = post(
+        &router,
+        &t,
+        CONTACT_PUT_1_1,
+        json!({ "contextId": CTX, "knownByPersona": persona, "directoryRef": entry, "starred": true }),
+    )
+    .await;
+    assert!(!refused(status, &body), "link: {status} {body}");
+    let p = payload_of(&body);
+    assert_eq!(p["created"], true);
+    assert_eq!(p["rev"], 1);
+    let linked = p["contactId"].as_str().unwrap().to_string();
+
+    // The same entry and persona: the same contact, no revision.
+    let (_, body) = post(
+        &router,
+        &t,
+        CONTACT_PUT_1_1,
+        json!({ "contextId": CTX, "knownByPersona": persona, "directoryRef": entry,
+                "petname": "the route-setter" }),
+    )
+    .await;
+    assert_eq!(payload_of(&body)["contactId"], linked.as_str(), "{body}");
+    assert_eq!(payload_of(&body)["created"], false);
+    assert_eq!(payload_of(&body)["rev"], 1);
+
+    let (_, body) = post(
+        &router,
+        &t,
+        CONTACT_GET_1_1,
+        json!({ "contextId": CTX, "contactId": linked }),
+    )
+    .await;
+    let got = payload_of(&body);
+    assert!(got.get("subjectDid").is_none(), "{body}");
+    assert_eq!(got["starred"], true);
+    assert_eq!(got["petname"], "the route-setter");
+    assert_eq!(got["directoryRef"]["entryId"], "dir_RouteSetter");
+    let (_, body) = post(
+        &router,
+        &t,
+        CONTACT_LIST_1_1,
+        json!({ "contextId": CTX, "directoryVtcDid": "did:web:climbing.example" }),
+    )
+    .await;
+    assert_eq!(
+        payload_of(&body)["contacts"].as_array().map(Vec::len),
+        Some(1),
+        "{body}"
+    );
+
+    // A 1.0 reader cannot omit a DID, so it is not shown the linked contact.
+    let (_, body) = post(
+        &router,
+        &t,
+        CONTACT_GET,
+        json!({ "contextId": CTX, "contactId": linked }),
+    )
+    .await;
+    assert_eq!(code(&body), "persona/contact/get:notFound", "{body}");
+
+    // A filing naming a DID with the same link is a contact of its own.
+    let (_, body) = post(
+        &router,
+        &t,
+        CONTACT_PUT_1_1,
+        json!({ "contextId": CTX, "subjectDid": "did:key:z6MkRouteSetter", "knownByPersona": persona,
+                "document": { "claims": [] }, "directoryRef": entry }),
+    )
+    .await;
+    assert_ne!(
+        payload_of(&body)["contactId"],
+        linked.as_str(),
+        "never merged: {body}"
+    );
+}
+
 /// Every declared refusal of the 1.1 contact tasks and the lists family.
 #[tokio::test]
 async fn the_contact_annotation_tasks_refuse_what_they_declare() {

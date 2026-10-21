@@ -321,6 +321,68 @@ impl PersonaStore {
             .await
     }
 
+    /// The linking form (put 1.1 item 4): the contact this context keeps for
+    /// the directory entry `directory_ref` and the persona `known_by_persona`,
+    /// made on the first request for that key — `rev` 1, an empty document, no
+    /// subject DID — with `change` applied, appending no revision. Never the
+    /// contact a filing made, whatever its directory link: the two are not
+    /// merged. Returns `(contact id, rev, created, annotations changed)`.
+    pub async fn link_contact(
+        &self,
+        context_id: &str,
+        directory_ref: &DirectoryRef,
+        known_by_persona: &str,
+        change: &AnnotationChange,
+    ) -> Result<(String, u64, bool, bool), AnnotateError> {
+        let _guard = self.write_lock.lock().await;
+        self.check_annotation_change(context_id, change).await?;
+        let annotations = self.context_annotations(context_id).await?;
+        let found = self
+            .list_contacts(context_id, Some(known_by_persona))
+            .await?
+            .into_iter()
+            .find(|c| {
+                c.subject_did.is_empty()
+                    && annotations
+                        .get(&c.contact_id)
+                        .and_then(|a| a.directory_ref.as_ref())
+                        == Some(directory_ref)
+            });
+        let mut change = change.clone();
+        change.directory_ref = Change::Set(directory_ref.clone());
+        if let Some(c) = found {
+            let changed = self
+                .apply_annotations_locked(context_id, &c.contact_id, &change)
+                .await?;
+            return Ok((c.contact_id, c.rev, false, changed));
+        }
+        let contact = crate::Contact {
+            contact_id: ulid::Ulid::generate().to_string(),
+            // A linked contact has no DID: the holder was not shown one.
+            subject_did: String::new(),
+            known_by_persona: known_by_persona.to_string(),
+            rev: 1,
+            document: crate::ContactDocument {
+                publisher: None,
+                card_version: None,
+                claims: Vec::new(),
+            },
+            credential_refs: Vec::new(),
+            notes: None,
+            has_unreviewed_change: false,
+            received_at: Some(now_rfc3339()),
+        };
+        self.ks
+            .insert(
+                crate::storage::contact_key(context_id, &contact.contact_id),
+                &contact,
+            )
+            .await?;
+        self.apply_annotations_locked(context_id, &contact.contact_id, &change)
+            .await?;
+        Ok((contact.contact_id, 1, true, true))
+    }
+
     /// Forget a deleted contact's annotations (item 12).
     pub(crate) async fn forget_annotations(
         &self,

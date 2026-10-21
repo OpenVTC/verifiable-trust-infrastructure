@@ -2323,8 +2323,9 @@ pub(super) async fn handle_contact_get(
     let id = req.contact_id.to_string();
     let s = store(state);
 
+    // A linked contact (put 1.1) has no DID, which a 1.0 answer cannot omit.
     let Some(contact) = (match s.get_contact(&ctx, &id).await {
-        Ok(c) => c,
+        Ok(c) => c.filter(|c| !c.subject_did.is_empty()),
         Err(e) => return reject(&doc, e),
     }) else {
         return reject(&doc, AppError::NotFound(format!("contact {id}")));
@@ -2412,7 +2413,8 @@ pub(super) async fn handle_contact_list(
         json!({
             // Summaries carry no claim values: finding one contact does not
             // require disclosing the details of every contact.
-            "contacts": sums.iter().map(|s| json!({
+            // A linked contact (put 1.1) has no DID, which 1.0 cannot omit.
+            "contacts": sums.iter().filter(|s| !s.subject_did.is_empty()).map(|s| json!({
                 "contactId": s.contact_id,
                 "subjectDid": s.subject_did,
                 "knownByPersona": s.known_by_persona,
@@ -3891,6 +3893,43 @@ pub(super) async fn handle_contact_put_v1_1(
         );
     }
 
+    // The linking form (item 4): a directory member whose DID the holder was
+    // not shown.
+    if req.subject_did.is_none()
+        && let (Some(persona), Some(dref)) = (
+            &req.known_by_persona,
+            doc.payload
+                .get("directoryRef")
+                .and_then(|v| serde_json::from_value::<vta_persona::DirectoryRef>(v.clone()).ok()),
+        )
+    {
+        let (contact_id, rev, created, changed) = match s
+            .link_contact(&ctx, &dref, &persona.to_string(), &change)
+            .await
+        {
+            Ok(r) => r,
+            Err(e) => return annotate_refusal(&doc, e),
+        };
+        audit_persona(
+            state,
+            "persona.contact.link",
+            auth,
+            Some(&contact_id),
+            Some(&ctx),
+            None,
+        )
+        .await;
+        return success_response(
+            &doc,
+            json!({
+                "contactId": contact_id,
+                "rev": rev,
+                "created": created,
+                "annotationsChanged": changed,
+            }),
+        );
+    }
+
     // The filing form.
     let (Some(subject), Some(persona), Some(document)) =
         (&req.subject_did, &req.known_by_persona, &req.document)
@@ -4006,12 +4045,15 @@ pub(super) async fn handle_contact_get_v1_1(
     .await;
     let mut body = json!({
         "contactId": contact.contact_id,
-        "subjectDid": contact.subject_did,
         "knownByPersona": contact.known_by_persona,
         "rev": req.rev.map_or(contact.rev, std::num::NonZeroU64::get),
         "document": document,
         "credentialRefs": contact.credential_refs,
     });
+    // A linked contact has none (put 1.1 linking form).
+    if !contact.subject_did.is_empty() {
+        body["subjectDid"] = json!(contact.subject_did);
+    }
     put_annotations(&mut body, &annotations, &held);
     put_opt(&mut body, "notes", contact.notes.clone());
     if let Some(h) = history {
@@ -4131,13 +4173,15 @@ pub(super) async fn handle_contact_list_v1_1(
         .map(|(c, a)| {
             let mut v = json!({
                 "contactId": c.contact_id,
-                "subjectDid": c.subject_did,
                 "knownByPersona": c.known_by_persona,
                 "rev": c.rev,
                 "claimCount": c.document.claims.len(),
                 "receivedAt": c.received_at.clone().unwrap_or_else(|| chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true)),
                 "hasUnreviewedChange": c.has_unreviewed_change,
             });
+            if !c.subject_did.is_empty() {
+                v["subjectDid"] = json!(c.subject_did);
+            }
             // The contact's own disclosed name — never the DID or the petname.
             if let Some(name) = c
                 .document
