@@ -1764,7 +1764,11 @@ new flow, update both this section and the relevant `docs/*.md`.
   (`vtc-voting-pcs-secret/v1`), unrelated to hidden vetting's. The trusted ballot boxes are
   host config (`[voting] trusted_ballot_boxes`, VTI-VOT-082). `certify` reads everything from
   the ballot box, never the requester, and re-verifies the board from the community's own key
-  (`vti_voting::audit`); auditors' attestations are evidence beside it, never instead.
+  (`vti_voting::audit`); auditors' attestations are evidence beside it, never instead. A trustee
+  step counts only as a `trusteeStep` entry carrying the trustee's signed request as received,
+  its proof verified by the reader (`vti_voting::steps::ProvenRequests`, CONVENTIONS §9.6); the
+  election key `show` carries is formed by the community from those steps alone, never taken
+  from `voting/trustees/status`, which carries no proof.
 - **Code**: `vtc-service/src/elections/`, `vtc-service/src/trust_tasks/election_tasks.rs`,
   `vtc-service/tests/it/election_tasks.rs`.
 - **Docs**: `docs/03-vtc/elections.md`.

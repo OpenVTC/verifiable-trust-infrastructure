@@ -107,8 +107,9 @@ audit names the election, never a tag, a cast or a receipt (VTI-VOT-100). An MCP
 host confirms every `vote` (`vta-mcp`'s guard counts it destructive).
 
 In a **sealed** or **tallied-encrypted** election (VTI-VOT-060 – 064, conventions §9) step 4
-is `vta/pcs/vote-encrypted`, given the election key the ballot box's
-`voting/trustees/status` reports: the ballot is sealed to that key whole, or encrypted option
+is `vta/pcs/vote-encrypted`, given the election key `vtc/elections/show` carries — the key the
+community formed itself from the trustees' signed steps on the board, never one the ballot box
+merely reports: the ballot is sealed to that key whole, or encrypted option
 by option with proofs that each is 0 or 1 and the question's count is one the manifest admits.
 The attestation is made over the encrypted form, and the cleartext ballot never leaves the VTA.
 `vta/pcs/vote` refuses such a manifest. The receipt is checked the same way.
@@ -135,6 +136,11 @@ domain-separated, so a repeated `deal` is the same dealing and `justify` reveals
 share that was dealt. The key share is the sum of other trustees' shares and cannot be
 re-derived; it is kept wrapped under the seed-derived KEK (`secret:trustee:…` in
 `pcs_engine`). No task returns either. An MCP host confirms every `justify` and `decrypt`.
+
+The ballot box puts each enrolment, dealing, confirmation and justification on the board as the
+trustee's request exactly as received, proof included (a `trusteeStep` entry, conventions §9.6),
+so the community and every auditor verify each step as this trustee's. That signature is what
+stops a ballot box dealing in a trustee's name and holding the election key itself.
 
 ## Audit
 

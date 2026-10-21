@@ -102,9 +102,9 @@ enum Tamper {
     ForgeCast,
     /// The published totals changed.
     Result,
-    /// The trustees' status reports an election key its dealings do not form — one whose
-    /// secret the ballot box could hold.
-    ElectionKey,
+    /// The trustees' dealings served without their proofs — as a dealing the ballot box made in
+    /// a trustee's name would have to be, since it cannot sign as one.
+    UnsignedStep,
 }
 
 /// The real ballot box, in process.
@@ -163,13 +163,21 @@ impl InProcessBox {
             .iter()
             .map(|e| e["entry"].clone())
             .collect();
-        if matches!(
-            *self.tamper.lock().unwrap(),
-            Tamper::RewriteEntry | Tamper::ForgeCast
-        ) && let Some(cast) = entries.iter_mut().find(|e| e["kind"] == "cast")
+        let tamper = *self.tamper.lock().unwrap();
+        if matches!(tamper, Tamper::RewriteEntry | Tamper::ForgeCast)
+            && let Some(cast) = entries.iter_mut().find(|e| e["kind"] == "cast")
         {
             let choice = &mut cast["cast"]["ballot"]["answers"][0]["choice"][0];
             *choice = json!(if choice == "alice" { "bob" } else { "alice" });
+        }
+        if tamper == Tamper::UnsignedStep {
+            for e in entries.iter_mut().filter(|e| {
+                e["request"]["type"]
+                    .as_str()
+                    .is_some_and(|t| t.contains("/trustees/deal/"))
+            }) {
+                e["request"].as_object_mut().unwrap().remove("proof");
+            }
         }
         entries
     }
@@ -236,16 +244,6 @@ impl BallotBoxChannel for InProcessBox {
                     }
                     r
                 }),
-            "voting/trustees/status" => {
-                bb.trustees_status(Caller::Did(signer), payload, now)
-                    .map(|mut st| {
-                        if tamper == Tamper::ElectionKey && st.get("electionKey").is_some() {
-                            st["electionKey"]["key"] =
-                                st["electionKey"]["verification"][0]["key"].clone();
-                        }
-                        st
-                    })
-            }
             "voting/result/show" => bb.result(Caller::Did(signer), payload, now).map(|mut r| {
                 if tamper == Tamper::Result {
                     r["result"]["questions"][0]["choice"]["alice"] = json!(99);
@@ -846,20 +844,32 @@ async fn a_board_with_more_ballots_than_tickets_is_not_certified() {
 }
 
 /// Trustees for a sealed election, run against the in-process box directly — the community never
-/// carries their documents (CONVENTIONS §9.6).
+/// carries their documents (CONVENTIONS §9.6). Each signs its own requests, as its VTA would, so
+/// the community can verify every step on the board as that trustee's.
 struct Trustees {
-    dids: Vec<String>,
+    parties: Vec<Party>,
     keys: Vec<vti_voting::trustees::TrusteeKey>,
 }
 
-const TRUSTEE_DIDS: [&str; 3] = [
-    "did:key:z6MkTrusteeAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-    "did:key:z6MkTrusteeBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
-    "did:key:z6MkTrusteeCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC",
-];
+impl Trustees {
+    fn dids(&self) -> Vec<String> {
+        self.parties.iter().map(|p| p.did.clone()).collect()
+    }
+}
+
+/// `from`'s `voting/trustees/<task>` request, signed and addressed to the ballot box.
+async fn trustee_request(from: &Party, task: &str, payload: Value) -> Value {
+    signed_to(
+        from,
+        BOX,
+        &format!("{SPEC}voting/trustees/{task}/0.1"),
+        payload,
+    )
+    .await
+}
 
 /// The key ceremony on `bx`'s board, at the box's own clock.
-fn run_ceremony(bx: &InProcessBox, ctx: &[u8], id: &str) -> Trustees {
+async fn run_ceremony(bx: &InProcessBox, parties: Vec<Party>, ctx: &[u8], id: &str) -> Trustees {
     use vti_voting::trustees::{
         Dealing, Threshold, TransportSecret, TrusteeKey, deal, open_share, seal_share, verify_share,
     };
@@ -873,24 +883,32 @@ fn run_ceremony(bx: &InProcessBox, ctx: &[u8], id: &str) -> Trustees {
         v
     };
     let now = bx.now();
-    let mut bb = bx.bb.lock().unwrap();
+    let status = |did: &str| {
+        bx.bb
+            .lock()
+            .unwrap()
+            .trustees_status(Caller::Did(did), &sel, now)
+            .unwrap()
+    };
     let secrets: Vec<TransportSecret> = (1..=3)
         .map(|j| TransportSecret::generate(j, &mut rng))
         .collect();
-    for (s, did) in secrets.iter().zip(TRUSTEE_DIDS) {
+    for (s, p) in secrets.iter().zip(&parties) {
         let tk = s.publish(ctx, &mut rng);
-        bb.trustees_enrol(
-            did,
-            &with(json!({ "transportKey": vti_voting::wire::transport_key_value(&tk) })),
-            now,
+        let doc = trustee_request(
+            p,
+            "enrol",
+            with(json!({ "transportKey": vti_voting::wire::transport_key_value(&tk) })),
         )
-        .unwrap();
+        .await;
+        bx.bb
+            .lock()
+            .unwrap()
+            .trustees_enrol(&p.did, &doc, now)
+            .unwrap();
     }
     let th = Threshold::new(2, 3).unwrap();
-    let status = bb
-        .trustees_status(Caller::Did(TRUSTEE_DIDS[0]), &sel, now)
-        .unwrap();
-    let tks: Vec<_> = status["transportKeys"]
+    let tks: Vec<_> = status(&parties[0].did)["transportKeys"]
         .as_array()
         .unwrap()
         .iter()
@@ -912,23 +930,26 @@ fn run_ceremony(bx: &InProcessBox, ctx: &[u8], id: &str) -> Trustees {
             dealing,
             shares: sealed,
         };
-        bb.trustees_deal(
-            TRUSTEE_DIDS[i as usize - 1],
-            &with(json!({ "dealing": vti_voting::wire::dealing_value(&sd) })),
-            now,
+        let p = &parties[i as usize - 1];
+        let doc = trustee_request(
+            p,
+            "deal",
+            with(json!({ "dealing": vti_voting::wire::dealing_value(&sd) })),
         )
-        .unwrap();
+        .await;
+        bx.bb
+            .lock()
+            .unwrap()
+            .trustees_deal(&p.did, &doc, now)
+            .unwrap();
     }
-    let status = bb
-        .trustees_status(Caller::Did(TRUSTEE_DIDS[0]), &sel, now)
-        .unwrap();
-    let dealings: Vec<_> = status["dealings"]
+    let dealings: Vec<_> = status(&parties[0].did)["dealings"]
         .as_array()
         .unwrap()
         .iter()
         .map(|v| vti_voting::wire::dealing(v).unwrap())
         .collect();
-    for (j, did) in TRUSTEE_DIDS.iter().enumerate() {
+    for (j, p) in parties.iter().enumerate() {
         for sd in &dealings {
             let s = open_share(
                 &secrets[j],
@@ -940,20 +961,22 @@ fn run_ceremony(bx: &InProcessBox, ctx: &[u8], id: &str) -> Trustees {
             verify_share(&sd.dealing, &s).unwrap();
             shares[j].push(s);
         }
-        bb.trustees_confirm(
-            did,
-            &with(json!({ "trustee": j + 1, "complaints": [] })),
-            now,
+        let doc = trustee_request(
+            p,
+            "confirm",
+            with(json!({ "trustee": j + 1, "complaints": [] })),
         )
-        .unwrap();
+        .await;
+        bx.bb
+            .lock()
+            .unwrap()
+            .trustees_confirm(&p.did, &doc, now)
+            .unwrap();
     }
-    let status = bb
-        .trustees_status(Caller::Did(TRUSTEE_DIDS[0]), &sel, now)
-        .unwrap();
-    let ek = vti_voting::wire::election_key(&status["electionKey"], th).unwrap();
+    let ek = vti_voting::wire::election_key(&status(&parties[0].did)["electionKey"], th).unwrap();
     let plain: Vec<Dealing> = dealings.iter().map(|d| d.dealing.clone()).collect();
     Trustees {
-        dids: TRUSTEE_DIDS.iter().map(|d| d.to_string()).collect(),
+        parties,
         keys: (0..3)
             .map(|j| TrusteeKey::from_shares(j as u32 + 1, &shares[j], &plain, &ek).unwrap())
             .collect(),
@@ -965,17 +988,22 @@ fn run_ceremony(bx: &InProcessBox, ctx: &[u8], id: &str) -> Trustees {
 /// as itself), members take tickets, read the election key from `show` — they cannot read the
 /// board — and cast sealed ballots, two trustees decrypt after close, and the community
 /// certifies the board — the ceremony, every encrypted cast and every partial re-verified from
-/// its own voting key (VTI-VOT-060 – 073; show item 6).
+/// its own voting key (VTI-VOT-060 – 073; show item 6). The key the community shows is the one
+/// the trustees' own signed steps form; a board whose dealings carry no trustee's proof shows
+/// none (CONVENTIONS §9.6).
 #[tokio::test]
 async fn a_sealed_election_is_created_decrypted_by_its_trustees_and_certified() {
     let bx = InProcessBox::new();
     let tv = community(bx.clone()).await;
     let chair = admin(&tv).await;
 
+    let parties: Vec<Party> = (0..3).map(|_| Party::new()).collect();
+    let trustee_dids: Vec<String> = parties.iter().map(|p| p.did.clone()).collect();
+
     // The trustee rules are the community's to check too.
     let mut broken = manifest("sealed", false);
     broken["secrecy"] = json!("sealed");
-    broken["trustees"] = json!({ "dids": TRUSTEE_DIDS, "threshold": 4 });
+    broken["trustees"] = json!({ "dids": trustee_dids, "threshold": 4 });
     let (_, doc) = create(&tv, &chair, broken).await;
     assert_eq!(tt_error_code(&doc), CREATE_ERR_INVALID_MANIFEST, "{doc}");
 
@@ -984,15 +1012,15 @@ async fn a_sealed_election_is_created_decrypted_by_its_trustees_and_certified() 
     bx.ahead.store(-2 * 3600, Ordering::SeqCst);
     let mut m = manifest("sealed", false);
     m["secrecy"] = json!("sealed");
-    m["trustees"] = json!({ "dids": TRUSTEE_DIDS, "threshold": 2 });
+    m["trustees"] = json!({ "dids": trustee_dids, "threshold": 2 });
     m["board"]["visibility"] = json!("private");
     let (status, doc) = create(&tv, &chair, m.clone()).await;
     assert_eq!(status, StatusCode::OK, "{doc}");
     let (alice, bob) = (member(&tv).await, member(&tv).await);
     let b = read_election(&tv, &alice, "sealed").await;
     let ctx = b.election.trustee_context();
-    let trustees = run_ceremony(&bx, &ctx, "sealed");
-    assert_eq!(trustees.dids.len(), 3);
+    let trustees = run_ceremony(&bx, parties, &ctx, "sealed").await;
+    assert_eq!(trustees.dids(), trustee_dids);
 
     // Voting: each member's agent seals the ballot to the election key and casts it.
     bx.ahead.store(0, Ordering::SeqCst);
@@ -1007,8 +1035,8 @@ async fn a_sealed_election_is_created_decrypted_by_its_trustees_and_certified() 
     );
     let (_, shown) = call(&tv, &alice, &uri("show"), json!({ "electionId": "sealed" })).await;
     assert!(payload(&shown).get("electionKey").is_none(), "not read yet");
-    // A key the reported dealings do not form is never shown.
-    bx.set_tamper(Tamper::ElectionKey);
+    // A key formed from dealings no trustee signed is never shown.
+    bx.set_tamper(Tamper::UnsignedStep);
     vtc_service::elections::sweeper::pass(&tv.state, Utc::now())
         .await
         .unwrap();
@@ -1066,9 +1094,12 @@ async fn a_sealed_election_is_created_decrypted_by_its_trustees_and_certified() 
     assert_eq!(tt_error_code(&doc), CERTIFY_ERR_NOT_TALLIED, "{doc}");
     for j in [0usize, 2] {
         let now = bx.now();
-        let mut bb = bx.bb.lock().unwrap();
-        let status = bb
-            .trustees_status(Caller::Did(TRUSTEE_DIDS[0]), &sel, now)
+        let did = trustees.parties[j].did.clone();
+        let status = bx
+            .bb
+            .lock()
+            .unwrap()
+            .trustees_status(Caller::Did(&did), &sel, now)
             .unwrap();
         let partials: Vec<Value> = status["targets"]
             .as_array()
@@ -1088,7 +1119,12 @@ async fn a_sealed_election_is_created_decrypted_by_its_trustees_and_certified() 
         let mut p = sel.clone();
         p["trustee"] = json!(j + 1);
         p["partials"] = json!(partials);
-        bb.trustees_decrypt(&trustees.dids[j], &p, now).unwrap();
+        let doc = trustee_request(&trustees.parties[j], "decrypt", p).await;
+        bx.bb
+            .lock()
+            .unwrap()
+            .trustees_decrypt(&did, &doc, now)
+            .unwrap();
     }
 
     let (status, doc) = call(&tv, &chair, &uri("certify"), certify).await;

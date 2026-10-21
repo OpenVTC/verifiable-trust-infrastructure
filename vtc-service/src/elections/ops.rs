@@ -13,6 +13,7 @@ use vti_voting::{
     election::{Election, ElectionId},
     registrar::Registrar,
     rules::{self, RuleError},
+    steps::ProvenRequests,
 };
 
 use super::link::{BoxAnswer, LinkError};
@@ -674,10 +675,12 @@ pub async fn checkpoint(state: &AppState, election_id: &str, final_head: bool) {
     }
 }
 
-/// Read a sealed or tallied-encrypted election's key from the ballot box and keep it, so voters
-/// who cannot read a private board get it from `show` (show item 6, CONVENTIONS §9.6). Kept only
-/// when it is the key the qualified dealings in the same answer form; a box that reports any
-/// other is not believed, and nothing is kept.
+/// Form a sealed or tallied-encrypted election's key from the board and keep it, so voters who
+/// cannot read a private board get it from `show` (show item 6, CONVENTIONS §9.6). The community
+/// reads the board through its `electionKey` entry and replays the ceremony from the trustees'
+/// own signed steps, each proof verified here: a key is kept only when the entry states the key
+/// that replay forms. Nothing the ballot box asserts is believed — a key it holds can only come
+/// from steps no trustee signed, and those do not count.
 pub async fn read_election_key(state: &AppState, election_id: &str) {
     let ks = state.elections.ks();
     let Ok(Some(rec)) = store::get(ks, election_id).await else {
@@ -687,70 +690,82 @@ pub async fn read_election_key(state: &AppState, election_id: &str) {
         return;
     }
     let community = community_did(state).await;
-    let payload = json!({ "community": community, "electionId": election_id });
-    let Ok(BoxAnswer::Success { payload, .. }) =
-        exchange(state, &rec.ballot_box, "voting/trustees/status", &payload).await
-    else {
+    let sel = json!({ "community": community, "electionId": election_id });
+    let Ok((_, entries)) = read_board(state, &rec.ballot_box, &sel).await else {
         return;
     };
-    let Some(key) = payload.get("electionKey") else {
-        return;
+    let proven = prove_trustee_steps(state, &entries).await;
+    let key = match vti_voting::audit::election_key(&rec.manifest, &community, &entries, &proven) {
+        Ok(Some(key)) => key,
+        Ok(None) => return,
+        Err(why) => {
+            tracing::warn!(election = election_id, %why, "the board's key ceremony does not hold; no election key kept");
+            return;
+        }
     };
-    if let Err(why) = key_formed_by_dealings(&community, &rec, key, &payload["dealings"]) {
-        tracing::warn!(election = election_id, %why, "the ballot box reported an election key its dealings do not form; not kept");
-        return;
-    }
     // Re-read: a close or a certify may have written meanwhile.
     let Ok(Some(mut rec)) = store::get(ks, election_id).await else {
         return;
     };
-    rec.election_key = Some(key.clone());
+    rec.election_key = Some(key);
     if let Err(e) = store::put(ks, &rec).await {
         tracing::warn!(election = election_id, error = %e, "could not keep the election key");
     }
 }
 
-/// `key` is `Σ C_i0` and the verification keys of the qualified dealings among `dealings`, each
-/// of which verifies for this election (CONVENTIONS §9.6 item 5).
-fn key_formed_by_dealings(
-    community: &str,
-    rec: &ElectionRecord,
-    key: &Value,
-    dealings: &Value,
-) -> Result<(), String> {
-    use vti_voting::trustees::{ElectionKey, Threshold};
-    let trustees = &rec.manifest["trustees"];
-    let th = Threshold::new(
-        trustees["threshold"].as_u64().unwrap_or(0) as u32,
-        trustees["dids"].as_array().map_or(0, Vec::len) as u32,
-    )
-    .map_err(|e| e.to_string())?;
-    let digest = rules::digest_from_multibase(&rec.manifest_digest).ok_or("manifest digest")?;
-    let ctx = Election::new(
-        community,
-        ElectionId::new(&rec.election_id).map_err(|e| e.to_string())?,
-        digest,
-    )
-    .map_err(|e| e.to_string())?
-    .trustee_context();
-    let reported = vti_voting::wire::election_key(key, th).map_err(|e| e.to_string())?;
-    let qualified: Vec<_> = dealings
-        .as_array()
-        .ok_or("no dealings")?
-        .iter()
-        .map(|d| vti_voting::wire::dealing(d).map(|sd| sd.dealing))
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|e| e.to_string())?
-        .into_iter()
-        .filter(|d| reported.qualified.contains(&d.dealer))
-        .collect();
-    let formed = ElectionKey::from_dealings(&qualified, th, &ctx).map_err(|e| e.to_string())?;
-    if formed.qualified != reported.qualified
-        || vti_voting::wire::election_key_value(&formed) != *key
-    {
-        return Err("the key is not the one its qualified dealings form".into());
+/// The signer of each trustee step on a board: the DID its request's proof verifies as
+/// (framework SPEC §4.7), resolved here. A request whose proof does not verify is not vouched
+/// for, and the audit refuses its step (CONVENTIONS §9.6 item 4).
+async fn prove_trustee_steps(state: &AppState, entries: &[Value]) -> ProvenRequests {
+    let resolver = state.trust_task_vm_resolver();
+    let resolver = &resolver;
+    ProvenRequests::prove(entries, |request| async move {
+        vti_common::auth::verify_trust_task_proof_value(&request, resolver)
+            .await
+            .ok()
+    })
+    .await
+}
+
+/// The ballot box's current head and every entry under it, read from the ballot box itself.
+async fn read_board(
+    state: &AppState,
+    ballot_box: &str,
+    sel: &Value,
+) -> Result<(Value, Vec<Value>), CertifyError> {
+    let unavailable = |e: LinkError| CertifyError::BallotBoxUnavailable(e.to_string());
+    let head = match exchange(state, ballot_box, "voting/board/head", sel).await {
+        Ok(BoxAnswer::Success { payload, .. }) => payload["head"].clone(),
+        Ok(BoxAnswer::Refused { message, .. }) => {
+            return Err(CertifyError::BallotBoxUnavailable(message));
+        }
+        Err(e) => return Err(unavailable(e)),
+    };
+    let tree_size = vti_voting::audit::HeadRef::from_wire(&head)
+        .map_err(|e| CertifyError::BallotBoxUnavailable(e.to_string()))?
+        .tree_size;
+    let mut entries: Vec<Value> = Vec::new();
+    while (entries.len() as u64) < tree_size {
+        let mut page = sel.clone();
+        page["from"] = json!(entries.len());
+        page["limit"] = json!(READ_PAGE);
+        page["treeSize"] = json!(tree_size);
+        let read = match exchange(state, ballot_box, "voting/board/read", &page).await {
+            Ok(BoxAnswer::Success { payload, .. }) => payload,
+            Ok(BoxAnswer::Refused { message, .. }) => {
+                return Err(CertifyError::BallotBoxUnavailable(message));
+            }
+            Err(e) => return Err(unavailable(e)),
+        };
+        let got = read["entries"].as_array().cloned().unwrap_or_default();
+        if got.is_empty() {
+            return Err(CertifyError::BallotBoxUnavailable(
+                "the board read returned no entries".into(),
+            ));
+        }
+        entries.extend(got.into_iter().map(|e| e["entry"].clone()));
     }
-    Ok(())
+    Ok((head, entries))
 }
 
 // ─── certify ─────────────────────────────────────────────────────────────
@@ -833,36 +848,11 @@ pub async fn certify(
         Ok(_) => return Err(CertifyError::NotTallied),
         Err(e) => return Err(unavailable(e)),
     };
-    let head = match exchange(state, &rec.ballot_box, "voting/board/head", &sel).await {
-        Ok(BoxAnswer::Success { payload, .. }) => payload["head"].clone(),
-        Ok(BoxAnswer::Refused { message, .. }) => {
-            return Err(CertifyError::BallotBoxUnavailable(message));
-        }
-        Err(e) => return Err(unavailable(e)),
-    };
+    let (head, entries) = read_board(state, &rec.ballot_box, &sel).await?;
     let final_head =
         HeadRef::from_wire(&head).map_err(|e| CertifyError::BallotBoxUnavailable(e.to_string()))?;
-    let mut entries: Vec<Value> = Vec::new();
-    while (entries.len() as u64) < final_head.tree_size {
-        let mut page = sel.clone();
-        page["from"] = json!(entries.len());
-        page["limit"] = json!(READ_PAGE);
-        page["treeSize"] = json!(final_head.tree_size);
-        let read = match exchange(state, &rec.ballot_box, "voting/board/read", &page).await {
-            Ok(BoxAnswer::Success { payload, .. }) => payload,
-            Ok(BoxAnswer::Refused { message, .. }) => {
-                return Err(CertifyError::BallotBoxUnavailable(message));
-            }
-            Err(e) => return Err(unavailable(e)),
-        };
-        let got = read["entries"].as_array().cloned().unwrap_or_default();
-        if got.is_empty() {
-            return Err(CertifyError::BallotBoxUnavailable(
-                "the board read returned no entries".into(),
-            ));
-        }
-        entries.extend(got.into_iter().map(|e| e["entry"].clone()));
-    }
+    // Item 8, the encrypted levels: every trustee step is verified as its trustee's.
+    let proven = prove_trustee_steps(state, &entries).await;
 
     // Items 4 – 9.
     let checkpoints: Vec<HeadRef> = rec
@@ -880,6 +870,7 @@ pub async fn certify(
         checkpoints: &checkpoints,
         result: &result,
         tickets_issued: rec.tickets_issued,
+        proven: &proven,
     })
     .map_err(|f| match f {
         AuditFailure::RootMismatch => {

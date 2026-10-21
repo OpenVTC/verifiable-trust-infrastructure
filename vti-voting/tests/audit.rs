@@ -145,6 +145,7 @@ fn check(r: &Run, entries: &[Value], result: &Value, tickets: u64) -> Result<u64
         checkpoints: &[r.checkpoint],
         result,
         tickets_issued: tickets,
+        proven: &Default::default(),
     })
     .map(|v| v.ballots_counted)
 }
@@ -187,6 +188,7 @@ fn every_kind_of_tampering_is_caught() {
             checkpoints: &[forged],
             result: &r.result,
             tickets_issued: 3,
+            proven: &Default::default(),
         })
         .unwrap_err(),
         AuditFailure::CheckpointInconsistent {
@@ -223,6 +225,7 @@ fn every_kind_of_tampering_is_caught() {
             checkpoints: &[],
             result: &r.result,
             tickets_issued: 3,
+            proven: &Default::default(),
         }),
         Err(AuditFailure::CastInvalid { .. })
     ));

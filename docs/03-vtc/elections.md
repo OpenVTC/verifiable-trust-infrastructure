@@ -70,8 +70,9 @@ builds the cast under a key made for it alone; `pnm` posts the cast to the ballo
 its own connection after a random pause. Running `vote` again after a lost answer resends;
 where the manifest allows, a later vote replaces the earlier one. In a sealed or
 tallied-encrypted election the VTA encrypts the ballot (`vta/pcs/vote-encrypted`) under the
-election key `show` carries: the community reads it from the ballot box once the trustees have
-formed it, and keeps it only if the qualified dealings reported with it form it. A voter never
+election key `show` carries: once the trustees have formed it, the community reads the board,
+verifies every step of the ceremony as its trustee's signed request, and keeps the key only if
+those steps form it — never a key the ballot box merely reports. A voter never
 needs to read the board for it, so this works on a private board too, where the trustees read
 their own ceremony and nobody else outside the community and its auditors reads anything.
 
@@ -130,8 +131,11 @@ If no key has formed by `votingOpens`, the ceremony has failed: no cast is admit
 community cancels the election. Voters cast with `vta/pcs/vote-encrypted`; after close any
 `threshold` trustees decrypt, and the ballot box publishes the result — every sealed ballot
 opened (or marked spoiled, uncounted, when it does not open to a valid ballot), or each
-option's total and nothing else. Certification re-runs all of it from the board: the ceremony,
-every cast's attestation over its encrypted form and a tallied ballot's proofs, every partial
+option's total and nothing else. Every step of the ceremony is on the board as the trustee's own
+signed request (a `trusteeStep` entry, CONVENTIONS §9.6), and the community verifies each proof
+against the trustee's DID: a ballot box that dealt in a trustee's name, to hold the election key
+itself, would have to sign as that trustee. Certification re-runs all of it from the board: the
+ceremony, every step's signature, every cast's attestation over its encrypted form and a tallied ballot's proofs, every partial
 decryption, and the openings and totals they give.
 
 ## Code

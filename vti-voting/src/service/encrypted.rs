@@ -1,8 +1,9 @@
 //! The sealed and tallied-encrypted levels (CONVENTIONS §9): the trustees' tasks, the encrypted
 //! cast, and the decryption that ends in the result.
 //!
-//! Every step a trustee takes is a board entry, and replaying the board re-runs it through the
-//! same [`Ceremony`], so the ceremony is rebuilt the way the open levels' tag record is.
+//! Every step a trustee takes is a board entry — its signed request, as received (`trusteeStep`,
+//! [`crate::steps`]) — and replaying the board re-runs it through the same [`Ceremony`], so the
+//! ceremony is rebuilt the way the open levels' tag record is.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -17,6 +18,7 @@ use trust_tasks_rs::specs::voting::{
 use super::*;
 use crate::{
     ceremony::{CeremonyError, Phase, Step},
+    steps,
     trustees::{
         EncryptedQuestion, Sealed, admitted_counts, open_with, question_ctx, tally as read_total,
         total, verify_vote,
@@ -88,6 +90,22 @@ impl ElectionRecord {
             .trustees
             .as_ref()
             .is_some_and(|t| t.dids.iter().any(|d| d.as_str() == did))
+    }
+
+    fn trustee_dids(&self) -> Vec<String> {
+        self.manifest
+            .trustees
+            .as_ref()
+            .map(|t| t.dids.iter().map(|d| d.to_string()).collect())
+            .unwrap_or_default()
+    }
+
+    fn step_election<'a>(&'a self, trustees: &'a [&'a str]) -> steps::Election<'a> {
+        steps::Election {
+            community: &self.community,
+            election_id: self.id(),
+            trustees,
+        }
     }
 
     fn ceremony_or(&mut self, not_now: &'static str) -> Result<&mut Ceremony, Failure> {
@@ -283,39 +301,20 @@ impl ElectionRecord {
     ) -> Result<bool, Failure> {
         let fail = |what: &str, e: String| journal_failure(format!("entry {leaf} ({what}): {e}"));
         match entry["kind"].as_str() {
-            Some("transportKey") => {
-                let tk = wire::transport_key(&entry["transportKey"])
-                    .map_err(|e| fail("transportKey", e.to_string()))?;
-                self.ceremony_or("notEnrolling")?
-                    .enrol(tk)
-                    .map_err(|e| fail("transportKey", e.to_string()))?;
+            Some(steps::KIND) => {
+                // The box verified the proof when the request arrived; its own journal is not
+                // re-verified, only re-read as that trustee's step.
+                let request = &entry["request"];
+                let signer = request["issuer"].as_str().unwrap_or_default();
+                let dids = self.trustee_dids();
+                let trustees: Vec<&str> = dids.iter().map(String::as_str).collect();
+                let step = steps::read(request, self.step_election(&trustees), signer)
+                    .map_err(|e| fail("trusteeStep", e.to_string()))?;
+                step.apply(self.ceremony_or("notEnrolling")?)
+                    .map_err(|e| fail("trusteeStep", e.to_string()))?;
             }
-            Some("dealing") => {
-                let d =
-                    wire::dealing(&entry["dealing"]).map_err(|e| fail("dealing", e.to_string()))?;
-                self.ceremony_or("notDealing")?
-                    .deal(d)
-                    .map_err(|e| fail("dealing", e.to_string()))?;
-            }
-            Some("confirmation") => {
-                let trustee = index(&entry["trustee"])?;
-                let complaints = entry["complaints"]
-                    .as_array()
-                    .map(|a| a.iter().map(index).collect::<Result<BTreeSet<u32>, _>>())
-                    .transpose()?
-                    .unwrap_or_default();
-                self.ceremony_or("notConfirming")?
-                    .confirm(trustee, complaints)
-                    .map_err(|e| fail("confirmation", e.to_string()))?;
-            }
-            Some("justification") => {
-                let share =
-                    crate::trustees::scalar_from_text(entry["share"].as_str().unwrap_or_default())
-                        .map_err(|e| fail("justification", e.to_string()))?;
-                let (dealer, recipient) = (index(&entry["dealer"])?, index(&entry["recipient"])?);
-                self.ceremony_or("notConfirming")?
-                    .justify(dealer, recipient, share)
-                    .map_err(|e| fail("justification", e.to_string()))?;
+            Some(k) if steps::RETIRED_KINDS.contains(&k) => {
+                return Err(fail(k, "a retired entry kind".into()));
             }
             Some("electionKey") => {
                 let c = self.ceremony_or("notConfirming")?;
@@ -481,18 +480,17 @@ impl BallotBox {
     pub fn trustees_enrol(
         &mut self,
         signer: &str,
-        payload: &Value,
+        request: &Value,
         now: DateTime<Utc>,
     ) -> Result<Value, Failure> {
+        let payload = &request["payload"];
         let _: enrol::Payload = parse(payload)?;
         let (e, _) = self.trustee_election(signer, payload, "/transportKey/trustee", now)?;
         let tk = wire::transport_key(&payload["transportKey"]).map_err(|_| {
             Failure::task("transportKeyInvalid", "the transport key does not decode")
         })?;
         if e.ceremony_or("notEnrolling")?.enrol(tk)? == Step::Accepted {
-            e.append(
-                &json!({ "kind": "transportKey", "transportKey": wire::transport_key_value(&tk) }),
-            )?;
+            e.append(&steps::entry(request))?;
         }
         respond::<enrol::Response>(Self::trustee_answer(e, now))
     }
@@ -504,16 +502,16 @@ impl BallotBox {
     pub fn trustees_deal(
         &mut self,
         signer: &str,
-        payload: &Value,
+        request: &Value,
         now: DateTime<Utc>,
     ) -> Result<Value, Failure> {
+        let payload = &request["payload"];
         let _: deal::Payload = parse(payload)?;
         let (e, _) = self.trustee_election(signer, payload, "/dealing/dealer", now)?;
         let d = wire::dealing(&payload["dealing"])
             .map_err(|err| Failure::task("dealingInvalid", err.to_string()))?;
-        let entry = json!({ "kind": "dealing", "dealing": wire::dealing_value(&d) });
         if e.ceremony_or("notDealing")?.deal(d)? == Step::Accepted {
-            e.append(&entry)?;
+            e.append(&steps::entry(request))?;
         }
         respond::<deal::Response>(Self::trustee_answer(e, now))
     }
@@ -525,9 +523,10 @@ impl BallotBox {
     pub fn trustees_confirm(
         &mut self,
         signer: &str,
-        payload: &Value,
+        request: &Value,
         now: DateTime<Utc>,
     ) -> Result<Value, Failure> {
+        let payload = &request["payload"];
         let _: confirm::Payload = parse(payload)?;
         let (e, trustee) = self.trustee_election(signer, payload, "/trustee", now)?;
         let complaints: BTreeSet<u32> = payload["complaints"]
@@ -535,10 +534,8 @@ impl BallotBox {
             .map_or(Ok(BTreeSet::new()), |a| a.iter().map(index).collect())?;
         let c = e.ceremony_or("notConfirming")?;
         let was = c.phase();
-        if c.confirm(trustee, complaints.clone())? == Step::Accepted {
-            e.append(
-                &json!({ "kind": "confirmation", "trustee": trustee, "complaints": complaints }),
-            )?;
+        if c.confirm(trustee, complaints)? == Step::Accepted {
+            e.append(&steps::entry(request))?;
             e.key_entry_if_formed(was)?;
         }
         respond::<confirm::Response>(Self::trustee_answer(e, now))
@@ -551,9 +548,10 @@ impl BallotBox {
     pub fn trustees_justify(
         &mut self,
         signer: &str,
-        payload: &Value,
+        request: &Value,
         now: DateTime<Utc>,
     ) -> Result<Value, Failure> {
+        let payload = &request["payload"];
         let _: justify::Payload = parse(payload)?;
         let (e, dealer) = self.trustee_election(signer, payload, "/dealer", now)?;
         let recipient = index(&payload["recipient"])?;
@@ -563,12 +561,7 @@ impl BallotBox {
         let c = e.ceremony_or("notConfirming")?;
         let was = c.phase();
         if c.justify(dealer, recipient, share)? == Step::Accepted {
-            e.append(&json!({
-                "kind": "justification",
-                "dealer": dealer,
-                "recipient": recipient,
-                "share": crate::trustees::scalar_text(&share),
-            }))?;
+            e.append(&steps::entry(request))?;
             e.key_entry_if_formed(was)?;
         }
         respond::<justify::Response>(Self::trustee_answer(e, now))
@@ -581,9 +574,10 @@ impl BallotBox {
     pub fn trustees_decrypt(
         &mut self,
         signer: &str,
-        payload: &Value,
+        request: &Value,
         now: DateTime<Utc>,
     ) -> Result<Value, Failure> {
+        let payload = &request["payload"];
         let _: decrypt::Payload = parse(payload)?;
         let (e, trustee) = self.trustee_election(signer, payload, "/trustee", now)?;
         let parts = payload["partials"]

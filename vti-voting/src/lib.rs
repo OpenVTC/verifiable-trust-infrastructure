@@ -32,6 +32,7 @@ pub mod registrar;
 pub mod rules;
 pub mod scheme;
 pub mod service;
+pub mod steps;
 pub mod tally;
 pub mod trustees;
 pub mod voter;

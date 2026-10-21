@@ -1,10 +1,10 @@
 //! Checks 3 – 5 of [`super::audit`] for a sealed or tallied-encrypted board (CONVENTIONS §9):
-//! re-run the trustees' ceremony from its entries, re-admit every encrypted cast — attestation
+//! re-run the trustees' ceremony from their signed steps, re-admit every encrypted cast — attestation
 //! over the encrypted form, and a tallied ballot's proofs — re-verify every partial decryption,
 //! and recount from what they decrypt. Nothing the ballot box computed is taken on trust: each
 //! `unsealed` and `spoiled` entry must be what the partials give.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, HashMap};
 
 use serde_json::Value;
 use trust_tasks_rs::specs::voting::{
@@ -16,10 +16,12 @@ use super::{AuditFailure, canonical};
 use crate::{
     ballot_box::{BallotBox, MemoryNullifiers, Revote as BoxRevote},
     ceremony::{Ceremony, Decryption, Phase},
-    rules, tally,
+    rules,
+    steps::{self, ProvenRequests},
+    tally,
     trustees::{
         EncryptedQuestion, Sealed, Threshold, admitted_counts, open_with, question_ctx,
-        scalar_from_text, tally as read_total, total, verify_vote,
+        tally as read_total, total, verify_vote,
     },
     voter::Cast,
     wire::{self, Target},
@@ -43,6 +45,102 @@ fn idx(v: &Value, index: u64) -> Result<u32, AuditFailure> {
         .ok_or_else(|| bad_step(index, "a trustee index"))
 }
 
+/// What the ceremony's steps are read against.
+pub(super) struct Steps<'a> {
+    pub community: &'a str,
+    pub ctx: Vec<u8>,
+    pub proven: &'a ProvenRequests,
+}
+
+/// A ceremony replayed from the board's entries, one at a time.
+struct Replay<'a> {
+    ceremony: Ceremony,
+    community: &'a str,
+    election_id: &'a str,
+    trustees: Vec<&'a str>,
+    proven: &'a ProvenRequests,
+}
+
+impl<'a> Replay<'a> {
+    fn new(manifest: &'a Manifest, s: &Steps<'a>) -> Result<Self, AuditFailure> {
+        let trustees = manifest
+            .trustees
+            .as_ref()
+            .ok_or_else(|| AuditFailure::Unreadable("no trustees".into()))?;
+        let th = Threshold::new(
+            u32::try_from(trustees.threshold).unwrap_or(0),
+            u32::try_from(trustees.dids.len()).unwrap_or(0),
+        )
+        .map_err(|e| AuditFailure::Unreadable(e.to_string()))?;
+        Ok(Self {
+            ceremony: Ceremony::new(th, s.ctx.clone()),
+            community: s.community,
+            election_id: manifest.election_id.as_str(),
+            trustees: trustees.dids.iter().map(|d| d.as_str()).collect(),
+            proven: s.proven,
+        })
+    }
+
+    /// Take `entry` if it is the ceremony's; whether it was.
+    fn take(&mut self, index: u64, entry: &Value) -> Result<bool, AuditFailure> {
+        match entry["kind"].as_str() {
+            Some(steps::KIND) => {
+                let request = &entry["request"];
+                let signer = self
+                    .proven
+                    .signer(request)
+                    .ok_or_else(|| bad_step(index, steps::StepError::Unproven))?;
+                let election = steps::Election {
+                    community: self.community,
+                    election_id: self.election_id,
+                    trustees: &self.trustees,
+                };
+                steps::read(request, election, signer)
+                    .map_err(|e| bad_step(index, e))?
+                    .apply(&mut self.ceremony)
+                    .map_err(|e| bad_step(index, e))?;
+            }
+            Some(k) if steps::RETIRED_KINDS.contains(&k) => {
+                return Err(bad_step(
+                    index,
+                    "a retired entry kind, which carries no proof",
+                ));
+            }
+            Some("electionKey") => {
+                if self.ceremony.phase() != Phase::Keyed {
+                    self.ceremony.deadline();
+                }
+                if self.ceremony.key().map(wire::election_key_value).as_ref()
+                    != Some(&entry["electionKey"])
+                {
+                    return Err(bad_step(index, "not the key the board's ceremony forms"));
+                }
+            }
+            Some("opened") => {
+                self.ceremony.deadline();
+            }
+            _ => return Ok(false),
+        }
+        Ok(true)
+    }
+}
+
+/// The key the board's ceremony formed, through its `electionKey` entry; `None` before it.
+pub(super) fn formed_key(
+    manifest: &Manifest,
+    steps: Steps<'_>,
+    entries: &[Value],
+) -> Result<Option<Value>, AuditFailure> {
+    let mut replay = Replay::new(manifest, &steps)?;
+    for (i, entry) in entries.iter().enumerate() {
+        replay.take(i as u64, entry)?;
+        if entry["kind"] == "electionKey" {
+            return Ok(Some(entry["electionKey"].clone()));
+        }
+    }
+    Ok(None)
+}
+
 /// The counted ballots and their totals, from the board alone.
 ///
 /// # Errors
@@ -50,21 +148,13 @@ fn idx(v: &Value, index: u64) -> Result<u32, AuditFailure> {
 pub(super) fn recount<'a>(
     manifest: &Manifest,
     digest: &[u8; 32],
-    ctx: Vec<u8>,
+    steps: Steps<'_>,
     verifier: &BallotBox<MemoryNullifiers>,
     revote: BoxRevote,
     entries: &'a [Value],
 ) -> Result<(u64, Value, Option<&'a Value>), AuditFailure> {
-    let trustees = manifest
-        .trustees
-        .as_ref()
-        .ok_or_else(|| AuditFailure::Unreadable("no trustees".into()))?;
-    let th = Threshold::new(
-        u32::try_from(trustees.threshold).unwrap_or(0),
-        u32::try_from(trustees.dids.len()).unwrap_or(0),
-    )
-    .map_err(|e| AuditFailure::Unreadable(e.to_string()))?;
-    let mut ceremony = Ceremony::new(th, ctx.clone());
+    let ctx = steps.ctx.clone();
+    let mut replay = Replay::new(manifest, &steps)?;
     let mut round: Option<Decryption<Target>> = None;
     let mut counted: HashMap<String, (u64, Form)> = HashMap::new();
     let mut owed: Option<(String, u64, u64)> = None;
@@ -73,54 +163,11 @@ pub(super) fn recount<'a>(
 
     for (i, entry) in entries.iter().enumerate() {
         let index = i as u64;
+        if replay.take(index, entry)? {
+            continue;
+        }
+        let ceremony = &replay.ceremony;
         match entry["kind"].as_str() {
-            Some("transportKey") => {
-                let tk =
-                    wire::transport_key(&entry["transportKey"]).map_err(|e| bad_step(index, e))?;
-                ceremony.enrol(tk).map_err(|e| bad_step(index, e))?;
-            }
-            Some("dealing") => {
-                let d = wire::dealing(&entry["dealing"]).map_err(|e| bad_step(index, e))?;
-                ceremony.deal(d).map_err(|e| bad_step(index, e))?;
-            }
-            Some("confirmation") => {
-                let complaints = entry["complaints"]
-                    .as_array()
-                    .map(|a| {
-                        a.iter()
-                            .map(|c| idx(c, index))
-                            .collect::<Result<BTreeSet<_>, _>>()
-                    })
-                    .transpose()?
-                    .unwrap_or_default();
-                ceremony
-                    .confirm(idx(&entry["trustee"], index)?, complaints)
-                    .map_err(|e| bad_step(index, e))?;
-            }
-            Some("justification") => {
-                let share = scalar_from_text(entry["share"].as_str().unwrap_or_default())
-                    .map_err(|e| bad_step(index, e))?;
-                ceremony
-                    .justify(
-                        idx(&entry["dealer"], index)?,
-                        idx(&entry["recipient"], index)?,
-                        share,
-                    )
-                    .map_err(|e| bad_step(index, e))?;
-            }
-            Some("electionKey") => {
-                if ceremony.phase() != Phase::Keyed {
-                    ceremony.deadline();
-                }
-                if ceremony.key().map(wire::election_key_value).as_ref()
-                    != Some(&entry["electionKey"])
-                {
-                    return Err(bad_step(index, "not the key the board's ceremony forms"));
-                }
-            }
-            Some("opened") => {
-                ceremony.deadline();
-            }
             Some("encryptedCast") => {
                 if let Some((_, _, by)) = owed {
                     return Err(AuditFailure::ReplacementInvalid {

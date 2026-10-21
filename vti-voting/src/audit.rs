@@ -10,7 +10,10 @@
 //!    rather than a consistency proof, which is the stronger check.
 //! 3. Every cast would have been admitted: its ballot names this election and manifest and
 //!    answers as the manifest admits, its attestation is of this election's class, and it
-//!    verifies for this election's point with the ballot bound in.
+//!    verifies for this election's point with the ballot bound in. On an encrypted board, every
+//!    step of the trustees' ceremony before it is the named trustee's signed request, its proof
+//!    vouched for by the caller ([`ProvenRequests`], CONVENTIONS §9.6), and the key a cast is
+//!    checked under is the one those steps form.
 //! 4. Every tag counts once: under `refuse`, no tag twice; under `replace`, a later cast under a
 //!    tag is followed by a `replaced` entry naming the two, and only the last counts.
 //! 5. The result is the board's: recomputed from the counted ballots, it equals the published
@@ -32,6 +35,7 @@ use crate::{
     election::{Election, ElectionId},
     rules::{self, digest_from_multibase},
     scheme::VotingParams,
+    steps::ProvenRequests,
     tally,
     voter::Cast,
 };
@@ -110,6 +114,9 @@ pub struct Evidence<'a> {
     pub result: &'a Value,
     /// How many tickets the community issued.
     pub tickets_issued: u64,
+    /// The signers of the trustees' requests on the board, as the caller verified them. Empty
+    /// for an open election.
+    pub proven: &'a ProvenRequests,
 }
 
 /// What a board that verified holds: the counted ballots and the result recomputed from them.
@@ -175,8 +182,18 @@ pub fn audit(e: Evidence<'_>) -> Result<Verified, AuditFailure> {
         let ctx = election.trustee_context();
         let verifier = BallotBox::new(e.params, election, revote, MemoryNullifiers::default())
             .map_err(|err| AuditFailure::Unreadable(err.to_string()))?;
-        let (n, questions, result_entry) =
-            encrypted::recount(&manifest, &digest, ctx, &verifier, revote, e.entries)?;
+        let (n, questions, result_entry) = encrypted::recount(
+            &manifest,
+            &digest,
+            encrypted::Steps {
+                community: e.params.community(),
+                ctx,
+                proven: e.proven,
+            },
+            &verifier,
+            revote,
+            e.entries,
+        )?;
         return finish(e, &board, &digest, n, questions, result_entry);
     }
     let verifier = BallotBox::new(e.params, election, revote, MemoryNullifiers::default())
@@ -258,6 +275,46 @@ pub fn audit(e: Evidence<'_>) -> Result<Verified, AuditFailure> {
     let questions = serde_json::to_value(&questions)
         .map_err(|err| AuditFailure::Unreadable(err.to_string()))?;
     finish(e, &board, &digest, n, questions, result_entry)
+}
+
+/// The election key a sealed or tallied-encrypted board's ceremony formed, once its `electionKey`
+/// entry is on the board: replayed from the trustees' steps alone, each the named trustee's
+/// request with a proof `proven` vouches for (CONVENTIONS §9.6), and returned only when the entry
+/// states the very key that replay forms. `None` while no key has formed.
+///
+/// This is what a community shows its voters (`vtc/elections/show` item 6): whatever else a
+/// ballot box serves, a key formed only from trustees' own dealings is one it does not hold.
+///
+/// # Errors
+/// [`AuditFailure::CeremonyInvalid`] at the first step or key entry that does not hold, and
+/// [`AuditFailure::Unreadable`] for a manifest without trustees.
+pub fn election_key(
+    manifest: &Value,
+    community: &str,
+    entries: &[Value],
+    proven: &ProvenRequests,
+) -> Result<Option<Value>, AuditFailure> {
+    let typed: Manifest = serde_json::from_value(manifest.clone())
+        .map_err(|err| AuditFailure::Unreadable(format!("manifest: {err}")))?;
+    let digest = rules::manifest_digest(manifest)
+        .map_err(|err| AuditFailure::Unreadable(err.to_string()))?;
+    let ctx = Election::new(
+        community,
+        ElectionId::new(typed.election_id.as_str())
+            .map_err(|err| AuditFailure::Unreadable(err.to_string()))?,
+        digest,
+    )
+    .map_err(|err| AuditFailure::Unreadable(err.to_string()))?
+    .trustee_context();
+    encrypted::formed_key(
+        &typed,
+        encrypted::Steps {
+            community,
+            ctx,
+            proven,
+        },
+        entries,
+    )
 }
 
 /// Checks 5 and 6, on the totals the board gives.

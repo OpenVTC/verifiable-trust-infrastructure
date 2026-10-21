@@ -174,7 +174,7 @@ async fn trustees_and_a_voter_run_a_sealed_election_through_the_vta() {
         let signer = proven(&d).await;
         assert_eq!(d["recipient"], box_did.as_str());
         let before = now() - chrono::Duration::hours(2);
-        bb.trustees_enrol(&signer, &d["payload"], before).unwrap();
+        bb.trustees_enrol(&signer, &d, before).unwrap();
         // A repeat is the same transport key, which the box answers as the first.
         let again = ok(&handle_trustee_enrol(
             &state,
@@ -209,8 +209,7 @@ async fn trustees_and_a_voter_run_a_sealed_election_through_the_vta() {
         )
         .await)["document"]
             .clone();
-        bb.trustees_deal(&proven(&d).await, &d["payload"], before())
-            .unwrap();
+        bb.trustees_deal(&proven(&d).await, &d, before()).unwrap();
     }
     let status = bb
         .trustees_status(BoxCaller::Anonymous, &sel, before())
@@ -228,7 +227,7 @@ async fn trustees_and_a_voter_run_a_sealed_election_through_the_vta() {
         .await);
         assert_eq!(out["complaints"], json!([]));
         let d = out["document"].clone();
-        bb.trustees_confirm(&proven(&d).await, &d["payload"], before())
+        bb.trustees_confirm(&proven(&d).await, &d, before())
             .unwrap();
     }
     let status = bb
@@ -375,8 +374,7 @@ async fn trustees_and_a_voter_run_a_sealed_election_through_the_vta() {
         )
         .await)["document"]
             .clone();
-        bb.trustees_decrypt(&proven(&d).await, &d["payload"], now())
-            .unwrap();
+        bb.trustees_decrypt(&proven(&d).await, &d, now()).unwrap();
     }
     let result = bb.result(BoxCaller::Anonymous, &sel, now()).unwrap();
     assert_eq!(

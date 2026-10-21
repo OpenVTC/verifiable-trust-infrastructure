@@ -304,11 +304,13 @@ pub async fn answer(state: &AppState, body: &[u8], transport_sender: Option<&str
             Task::Consistency => bb.board_consistency(caller, p, now),
             Task::Result => bb.result(caller, p, now),
             Task::CastEncrypted => bb.cast_encrypted(p, now),
-            Task::Enrol => bb.trustees_enrol(signer_did, p, now),
-            Task::Deal => bb.trustees_deal(signer_did, p, now),
-            Task::Confirm => bb.trustees_confirm(signer_did, p, now),
-            Task::Justify => bb.trustees_justify(signer_did, p, now),
-            Task::Decrypt => bb.trustees_decrypt(signer_did, p, now),
+            // A trustee's step goes on the board as the request received, proof included
+            // (CONVENTIONS §9.6).
+            Task::Enrol => bb.trustees_enrol(signer_did, &received, now),
+            Task::Deal => bb.trustees_deal(signer_did, &received, now),
+            Task::Confirm => bb.trustees_confirm(signer_did, &received, now),
+            Task::Justify => bb.trustees_justify(signer_did, &received, now),
+            Task::Decrypt => bb.trustees_decrypt(signer_did, &received, now),
             Task::TrusteeStatus => bb.trustees_status(caller, p, now),
         }
     };
