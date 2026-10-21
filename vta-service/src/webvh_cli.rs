@@ -30,6 +30,41 @@ pub(crate) fn cli_super_admin() -> AuthClaims {
     AuthClaims::unsafe_local_cli_super_admin("webvh")
 }
 
+/// [`DIDCommBridge::signing_only`] for the offline commands: a bridge that
+/// signs as this VTA, so they can reach a DID hosting server at all.
+///
+/// A signing key that will not load is a warning, not an error, so that a
+/// local-only delete, which signs nothing, still works as a break-glass.
+/// Anything that does sign then fails as it did before.
+async fn offline_signing_bridge(
+    config: &AppConfig,
+    keys_ks: &crate::store::KeyspaceHandle,
+    imported_ks: &crate::store::KeyspaceHandle,
+    contexts_ks: &crate::store::KeyspaceHandle,
+    seed_store: &dyn crate::keys::seed_store::SeedStore,
+    audit: &vta_audit::SharedAuditSink,
+) -> Arc<DIDCommBridge> {
+    match DIDCommBridge::signing_only(
+        config.vta_did.as_deref(),
+        keys_ks,
+        imported_ks,
+        contexts_ks,
+        seed_store,
+        audit,
+    )
+    .await
+    {
+        Ok(bridge) => Arc::new(bridge),
+        Err(e) => {
+            eprintln!(
+                "warning: could not load this VTA's signing key ({e}); nothing sent to a DID \
+                 hosting server can be signed"
+            );
+            Arc::new(DIDCommBridge::placeholder())
+        }
+    }
+}
+
 pub async fn run_add_server(
     config_path: Option<PathBuf>,
     id: String,
@@ -230,7 +265,15 @@ pub async fn run_create_did(
     };
 
     let did_resolver = vta_sdk::resolver::shared_did_resolver_from_env().await?;
-    let no_bridge: Arc<DIDCommBridge> = Arc::new(DIDCommBridge::placeholder());
+    let signing_bridge = offline_signing_bridge(
+        &config,
+        &keys_ks,
+        &imported_ks,
+        &contexts_ks,
+        &*seed_store,
+        &audit,
+    )
+    .await;
     let deps = operations::did_webvh::CreateDidWebvhDeps {
         keys_ks: &keys_ks,
         imported_ks: &imported_ks,
@@ -241,7 +284,7 @@ pub async fn run_create_did(
         seed_store: &*seed_store,
         config: &config,
         did_resolver: &did_resolver,
-        didcomm_bridge: &no_bridge,
+        didcomm_bridge: &signing_bridge,
         acl_ks: None,
         // Offline: no mediator socket to lend, so the seam cannot choose
         #[cfg(feature = "tsp")]
@@ -386,7 +429,15 @@ pub async fn run_delete_did(
 
     let auth = cli_super_admin();
     let did_resolver = vta_sdk::resolver::shared_did_resolver_from_env().await?;
-    let no_bridge: Arc<DIDCommBridge> = Arc::new(DIDCommBridge::placeholder());
+    let signing_bridge = offline_signing_bridge(
+        &config,
+        &keys_ks,
+        &imported_ks,
+        &contexts_ks,
+        &*seed_store,
+        &audit,
+    )
+    .await;
     let deps = operations::did_webvh::WebvhDeps {
         delete_cascade: Some(crate::operations::did_webvh::DeleteCascadeDeps {
             acl_ks: &acl_ks,
@@ -400,7 +451,7 @@ pub async fn run_delete_did(
         audit: &audit,
         seed_store: &*seed_store,
         did_resolver: &did_resolver,
-        didcomm_bridge: &no_bridge,
+        didcomm_bridge: &signing_bridge,
         // Offline: no mediator socket to lend, so the seam cannot choose
         #[cfg(feature = "tsp")]
         tsp: None,
@@ -522,9 +573,17 @@ pub async fn run_edit_did(
     let audit_ks = cs.keyspace(crate::keyspaces::AUDIT)?;
     let audit: vta_audit::SharedAuditSink = vta_audit::shared_keyspace_sink(audit_ks.clone());
     let did_resolver = vta_sdk::resolver::shared_did_resolver_from_env().await?;
-    let didcomm_bridge: Arc<DIDCommBridge> = Arc::new(DIDCommBridge::placeholder());
     let seed_store: Arc<dyn crate::keys::seed_store::SeedStore> =
         Arc::from(create_seed_store(&config)?);
+    let didcomm_bridge = offline_signing_bridge(
+        &config,
+        &keys_ks,
+        &imported_ks,
+        &contexts_ks,
+        &*seed_store,
+        &audit,
+    )
+    .await;
 
     // Look up the DID record for scid (update_did_webvh keys off it).
     let record = crate::webvh_store::get_did(&webvh_ks, &did)
@@ -702,9 +761,17 @@ pub async fn run_register_did(
     let audit_ks = cs.keyspace(crate::keyspaces::AUDIT)?;
     let audit: vta_audit::SharedAuditSink = vta_audit::shared_keyspace_sink(audit_ks.clone());
     let did_resolver = vta_sdk::resolver::shared_did_resolver_from_env().await?;
-    let didcomm_bridge: Arc<DIDCommBridge> = Arc::new(DIDCommBridge::placeholder());
     let seed_store: Arc<dyn crate::keys::seed_store::SeedStore> =
         Arc::from(create_seed_store(&config)?);
+    let didcomm_bridge = offline_signing_bridge(
+        &config,
+        &keys_ks,
+        &imported_ks,
+        &contexts_ks,
+        &*seed_store,
+        &audit,
+    )
+    .await;
 
     let auth = cli_super_admin();
     let deps = operations::did_webvh::WebvhDeps {
