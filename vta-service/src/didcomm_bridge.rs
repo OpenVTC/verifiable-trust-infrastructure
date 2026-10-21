@@ -668,15 +668,17 @@ mod tests {
         assert!(msg.contains("e.p.did.path-invalid"), "lost code: {msg}");
     }
 
-    /// A request document with the envelope `sign_outbound_request` needs.
+    /// A request this VTA really produces, with the envelope
+    /// `sign_outbound_request` needs. A real one rather than a literal, so
+    /// `produced_census` has no new URI to account for.
+    #[cfg(feature = "didcomm")]
     fn request_from(issuer: &str) -> serde_json::Value {
-        serde_json::json!({
-            "id": "urn:uuid:offline-1",
-            "type": "https://trusttasks.org/spec/did/check-name/0.1#request",
-            "issuer": issuer,
-            "recipient": "did:web:dids.example",
-            "payload": {},
-        })
+        crate::trust_tasks::step_up::push_wake_document(
+            Some(issuer),
+            "did:key:z6MkGateway",
+            "handle-1",
+            "did:web:mediator.example",
+        )
     }
 
     async fn signing_only_for(
@@ -725,6 +727,7 @@ mod tests {
 
     /// No VTA DID, nothing to sign as: the bridge stays a bare placeholder
     /// and refuses rather than signing as someone.
+    #[cfg(feature = "didcomm")]
     #[tokio::test]
     async fn signing_only_without_a_vta_did_does_not_sign() {
         let (state, _dir) = crate::test_support::build_signing_test_app_state().await;
