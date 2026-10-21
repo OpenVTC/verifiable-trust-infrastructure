@@ -684,8 +684,10 @@ aws-smithy-types = ">=1.6.1, <1.9"
 # and `vta/pcs/vote` (trust-tasks-tf #834), and the `pcsVoter` capability
 # (appended, #835). 0.32.4: `pcs-voter` in device/_shared 0.1 too (#836).
 # 0.32.7: the encrypted levels — `voting/trustees/*`, `voting/ballot/cast-encrypted`,
-# `vta/pcs/{trustee/*,vote-encrypted}` and `pcsTrustee` (#845, #847).
-trust-tasks-rs = { version = "0.32.7", default-features = false, features = [
+# `vta/pcs/{trustee/*,vote-encrypted}` and `pcsTrustee` (#845, #847). 0.32.8:
+# trustees read their ceremony on any board; `vtc/elections/show` carries the
+# election key (#852).
+trust-tasks-rs = { version = "0.32.8", default-features = false, features = [
   "validate",
   "all-specs",
 ] }

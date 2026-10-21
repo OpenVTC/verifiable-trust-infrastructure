@@ -275,6 +275,7 @@ pub async fn create(
         checkpoints: Vec::new(),
         final_checkpoint: false,
         certified: None,
+        election_key: None,
     };
     if !store::put_new(state.elections.ks(), &rec).await? {
         return Err(CreateError::ElectionExists);
@@ -671,6 +672,85 @@ pub async fn checkpoint(state: &AppState, election_id: &str, final_head: bool) {
     if let Err(e) = store::put(ks, &rec).await {
         tracing::warn!(election = election_id, error = %e, "could not keep a board checkpoint");
     }
+}
+
+/// Read a sealed or tallied-encrypted election's key from the ballot box and keep it, so voters
+/// who cannot read a private board get it from `show` (show item 6, CONVENTIONS §9.6). Kept only
+/// when it is the key the qualified dealings in the same answer form; a box that reports any
+/// other is not believed, and nothing is kept.
+pub async fn read_election_key(state: &AppState, election_id: &str) {
+    let ks = state.elections.ks();
+    let Ok(Some(rec)) = store::get(ks, election_id).await else {
+        return;
+    };
+    if rec.election_key.is_some() || rec.manifest.get("trustees").is_none() {
+        return;
+    }
+    let community = community_did(state).await;
+    let payload = json!({ "community": community, "electionId": election_id });
+    let Ok(BoxAnswer::Success { payload, .. }) =
+        exchange(state, &rec.ballot_box, "voting/trustees/status", &payload).await
+    else {
+        return;
+    };
+    let Some(key) = payload.get("electionKey") else {
+        return;
+    };
+    if let Err(why) = key_formed_by_dealings(&community, &rec, key, &payload["dealings"]) {
+        tracing::warn!(election = election_id, %why, "the ballot box reported an election key its dealings do not form; not kept");
+        return;
+    }
+    // Re-read: a close or a certify may have written meanwhile.
+    let Ok(Some(mut rec)) = store::get(ks, election_id).await else {
+        return;
+    };
+    rec.election_key = Some(key.clone());
+    if let Err(e) = store::put(ks, &rec).await {
+        tracing::warn!(election = election_id, error = %e, "could not keep the election key");
+    }
+}
+
+/// `key` is `Σ C_i0` and the verification keys of the qualified dealings among `dealings`, each
+/// of which verifies for this election (CONVENTIONS §9.6 item 5).
+fn key_formed_by_dealings(
+    community: &str,
+    rec: &ElectionRecord,
+    key: &Value,
+    dealings: &Value,
+) -> Result<(), String> {
+    use vti_voting::trustees::{ElectionKey, Threshold};
+    let trustees = &rec.manifest["trustees"];
+    let th = Threshold::new(
+        trustees["threshold"].as_u64().unwrap_or(0) as u32,
+        trustees["dids"].as_array().map_or(0, Vec::len) as u32,
+    )
+    .map_err(|e| e.to_string())?;
+    let digest = rules::digest_from_multibase(&rec.manifest_digest).ok_or("manifest digest")?;
+    let ctx = Election::new(
+        community,
+        ElectionId::new(&rec.election_id).map_err(|e| e.to_string())?,
+        digest,
+    )
+    .map_err(|e| e.to_string())?
+    .trustee_context();
+    let reported = vti_voting::wire::election_key(key, th).map_err(|e| e.to_string())?;
+    let qualified: Vec<_> = dealings
+        .as_array()
+        .ok_or("no dealings")?
+        .iter()
+        .map(|d| vti_voting::wire::dealing(d).map(|sd| sd.dealing))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .filter(|d| reported.qualified.contains(&d.dealer))
+        .collect();
+    let formed = ElectionKey::from_dealings(&qualified, th, &ctx).map_err(|e| e.to_string())?;
+    if formed.qualified != reported.qualified
+        || vti_voting::wire::election_key_value(&formed) != *key
+    {
+        return Err("the key is not the one its qualified dealings form".into());
+    }
+    Ok(())
 }
 
 // ─── certify ─────────────────────────────────────────────────────────────

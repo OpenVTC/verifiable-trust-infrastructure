@@ -45,7 +45,6 @@ vti-rooms = { path = "../vti-rooms", version = "0.19", default-features = false,
 ] }
 affinidi-crypto = { workspace = true }
 chrono = { workspace = true }
-uuid = { workspace = true }
 ed25519-dalek = { workspace = true }
 ratatui = { workspace = true }
 serde = { workspace = true }

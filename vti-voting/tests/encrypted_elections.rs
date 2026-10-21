@@ -34,7 +34,7 @@ fn t(s: &str) -> DateTime<Utc> {
     s.parse().unwrap()
 }
 
-fn manifest(secrecy: &str) -> Value {
+fn manifest(secrecy: &str, visibility: &str) -> Value {
     json!({
         "electionId": "board-2027",
         "community": COMMUNITY,
@@ -53,7 +53,7 @@ fn manifest(secrecy: &str) -> Value {
         "votingOpens": "2026-11-03T00:00:00Z",
         "votingCloses": "2026-11-07T18:00:00Z",
         "revote": "replace",
-        "board": { "visibility": "public", "auditors": [] },
+        "board": { "visibility": visibility, "auditors": [] },
         "ballotBox": BOX,
         "binding": false,
         "allowEarlyClose": false,
@@ -84,9 +84,13 @@ const AFTER: &str = "2026-11-08T00:00:00Z";
 
 impl Run {
     fn new(secrecy: &str) -> Self {
+        Self::on_board(secrecy, "public")
+    }
+
+    fn on_board(secrecy: &str, visibility: &str) -> Self {
         let mut rng = StdRng::seed_from_u64(7);
         let reg = Registrar::generate(COMMUNITY, &mut rng).unwrap();
-        let manifest = manifest(secrecy);
+        let manifest = manifest(secrecy, visibility);
         let digest = manifest_digest(&manifest).unwrap();
         let journal = Arc::new(MemoryJournal::default());
         let mut bb = BallotBox::with_journal(BOX, journal.clone());
@@ -143,7 +147,7 @@ impl Run {
     fn status(&mut self, now: &str) -> Value {
         let sel = self.sel();
         self.bb
-            .trustees_status(Caller::Anonymous, &sel, t(now))
+            .trustees_status(Caller::Did(TRUSTEES[0]), &sel, t(now))
             .unwrap()
     }
 
@@ -371,6 +375,47 @@ fn vot_070_an_encrypted_board_certifies_and_a_doctored_opening_does_not() {
     run.decrypt(2);
     run.decrypt(1);
     assert_eq!(run.certify(|_| {}), Ok(1));
+}
+
+/// On a private board the trustees still read their ceremony, as themselves (CONVENTIONS §4,
+/// §9.6): the election runs to its result. Anybody else is answered as if it did not exist.
+#[test]
+fn vot_062_a_private_board_runs_its_ceremony_for_its_trustees_alone() {
+    let mut run = Run::on_board("sealed", "private");
+    let sel = run.sel();
+    assert_eq!(
+        run.bb
+            .trustees_status(Caller::Anonymous, &sel, t(BEFORE))
+            .unwrap_err()
+            .local,
+        "electionUnknown"
+    );
+    assert_eq!(
+        run.bb
+            .trustees_status(Caller::Did("did:key:z6MkNotATrustee"), &sel, t(BEFORE))
+            .unwrap_err()
+            .local,
+        "electionUnknown"
+    );
+    run.ceremony();
+    let p = run.cast(400, run.ballot(Some("ben"), &[]));
+    run.bb.cast_encrypted(&p, t(DURING)).unwrap();
+    run.decrypt(1);
+    assert_eq!(run.decrypt(2)["phase"], "done");
+    // The result is the community's to read on a private board, not a trustee's.
+    let result = run
+        .bb
+        .result(Caller::Did(COMMUNITY), &sel, t(AFTER))
+        .unwrap();
+    assert_eq!(
+        result["result"]["questions"][0]["choice"],
+        json!({ "ana": 0, "ben": 1, "cai": 0 })
+    );
+    assert!(
+        run.bb
+            .result(Caller::Did(TRUSTEES[0]), &sel, t(AFTER))
+            .is_err()
+    );
 }
 
 #[test]

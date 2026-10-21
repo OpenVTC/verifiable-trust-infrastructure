@@ -92,6 +92,10 @@ pub struct ElectionRecord {
     /// The certification, once recorded: `{result, certifiedAt, auditAttestations}`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub certified: Option<Value>,
+    /// A sealed or tallied-encrypted election's key, once its trustees formed it, as the ballot
+    /// box reported it and checked against the dealings it reported with it (show item 6).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub election_key: Option<Value>,
 }
 
 impl ElectionRecord {
@@ -280,6 +284,7 @@ mod tests {
             checkpoints: Vec::new(),
             final_checkpoint: false,
             certified: None,
+            election_key: None,
         }
     }
 

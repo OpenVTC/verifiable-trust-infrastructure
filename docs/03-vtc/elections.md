@@ -69,10 +69,11 @@ The VTA signs the community's reads and the ticket request as the member
 builds the cast under a key made for it alone; `pnm` posts the cast to the ballot box from
 its own connection after a random pause. Running `vote` again after a lost answer resends;
 where the manifest allows, a later vote replaces the earlier one. In a sealed or
-tallied-encrypted election `pnm` first reads the election key from the ballot box's
-`voting/trustees/status` and the VTA encrypts the ballot under it (`vta/pcs/vote-encrypted`);
-on a private board only the community and its auditors can read that status, so a voter
-cannot yet get the key there.
+tallied-encrypted election the VTA encrypts the ballot (`vta/pcs/vote-encrypted`) under the
+election key `show` carries: the community reads it from the ballot box once the trustees have
+formed it, and keeps it only if the qualified dealings reported with it form it. A voter never
+needs to read the board for it, so this works on a private board too, where the trustees read
+their own ceremony and nobody else outside the community and its auditors reads anything.
 
 ### What the community checks on create
 

@@ -109,6 +109,11 @@ async fn settle(
             } else if now >= rec.voting_opens && checkpoint_due(&rec, now) {
                 ops::checkpoint(state, &rec.election_id, false).await;
             }
+            // The trustees form the key before voting opens, at the latest; keep reading until
+            // it is held.
+            if !closed && rec.election_key.is_none() && rec.manifest.get("trustees").is_some() {
+                ops::read_election_key(state, &rec.election_id).await;
+            }
             if now >= rec.voting_closes {
                 discard_pre_credentials(state, &rec.election_id).await?;
             }

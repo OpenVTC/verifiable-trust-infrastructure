@@ -506,6 +506,10 @@ async fn handle_show(
         body["ticketsIssued"] = json!(rec.tickets_issued);
     }
     // Item 6.
+    if let Some(k) = &rec.election_key {
+        body["electionKey"] = k.clone();
+    }
+    // Item 7.
     if let Some(c) = &rec.certified {
         body["certified"] = c.clone();
     }

@@ -79,6 +79,17 @@ impl ElectionRecord {
         }
     }
 
+    /// Whether the proven caller is one of the manifest's trustees.
+    fn is_trustee(&self, caller: Caller<'_>) -> bool {
+        let Caller::Did(did) = caller else {
+            return false;
+        };
+        self.manifest
+            .trustees
+            .as_ref()
+            .is_some_and(|t| t.dids.iter().any(|d| d.as_str() == did))
+    }
+
     fn ceremony_or(&mut self, not_now: &'static str) -> Result<&mut Ceremony, Failure> {
         self.ceremony
             .as_mut()
@@ -604,10 +615,11 @@ impl BallotBox {
         respond::<decrypt::Response>(Self::trustee_answer(e, now))
     }
 
-    /// `voting/trustees/status`.
+    /// `voting/trustees/status`. A trustee the manifest names reads it on any board: it cannot
+    /// take its next step without it, and nothing here is secret (CONVENTIONS §4, §9.6).
     ///
     /// # Errors
-    /// `electionUnknown`, for an election the caller may not read.
+    /// `electionUnknown`, for an election the caller may not read and is no trustee of.
     pub fn trustees_status(
         &mut self,
         caller: Caller<'_>,
@@ -616,7 +628,7 @@ impl BallotBox {
     ) -> Result<Value, Failure> {
         let p: status::Payload = parse(payload)?;
         let e = self.election(p.community.as_str(), p.election_id.as_str(), now)?;
-        if !e.readable_by(caller) {
+        if !(e.readable_by(caller) || e.is_trustee(caller)) {
             return Err(Failure::unknown());
         }
         let Some(c) = &e.ceremony else {
