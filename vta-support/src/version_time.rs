@@ -300,12 +300,20 @@ mod tests {
 
         assert!(update > genesis, "update must be strictly after genesis");
         assert_eq!(update.timestamp(), genesis.timestamp() + 1);
-        // Paused tokio time only advances via `sleep` — this confirms the
-        // second call actually awaited rather than returning immediately
-        // with a stamped-but-invalid future timestamp.
+        // Paused tokio time only advances via `sleep`, so any elapsed time
+        // means the second call awaited rather than returning at once with a
+        // future-dated timestamp. How much is not a fixed second: the wait
+        // runs from the real clock's sub-second position to the next whole
+        // second (851 ms from x.149 s), and a busy machine can carry the real
+        // clock past the target during the first, instant, virtual sleep —
+        // which is the wait working, not a short one.
         assert!(
-            elapsed >= std::time::Duration::from_secs(1),
+            elapsed > std::time::Duration::ZERO,
             "must have waited out the collision, elapsed={elapsed:?}"
+        );
+        assert!(
+            elapsed <= std::time::Duration::from_secs(MAX_WAIT_SECONDS as u64),
+            "the wait never exceeds its budget, elapsed={elapsed:?}"
         );
     }
 
