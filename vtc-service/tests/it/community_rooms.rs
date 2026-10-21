@@ -1354,6 +1354,7 @@ async fn vtc_rooms_community_reads_answer_not_found() {
         updated_by: None,
         expires_at: None,
         resource_grants: Vec::new(),
+        group_grants: Vec::new(),
         label_set_by_subject: false,
         suspension: None,
     };
@@ -2002,6 +2003,7 @@ async fn host_admin_only(fix: &Fixture) -> Party {
         updated_by: None,
         expires_at: None,
         resource_grants: Vec::new(),
+        group_grants: Vec::new(),
         label_set_by_subject: false,
         suspension: None,
     };
@@ -3319,6 +3321,7 @@ async fn vtc_groups_bindings_add_refuses_what_its_specification_declares() {
                 created_at: Utc::now(),
                 created_by: fix.admin.did.clone(),
                 reason: "filler".into(),
+                delegated_by: None,
             },
         )
         .await

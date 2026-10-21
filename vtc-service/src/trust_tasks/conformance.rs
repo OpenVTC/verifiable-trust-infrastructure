@@ -370,6 +370,7 @@ fn sample_binding() -> crate::groups::bindings::Binding {
             .with_timezone(&chrono::Utc),
         created_by: "did:example:administrator".into(),
         reason: "The working group's room.".into(),
+        delegated_by: None,
     }
 }
 

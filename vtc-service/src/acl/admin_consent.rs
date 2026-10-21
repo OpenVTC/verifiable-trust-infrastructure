@@ -459,10 +459,9 @@ pub struct Operation<'a> {
 pub fn newly_conferred(prev: Option<&VtcAclEntry>, next: &VtcAclEntry, now: u64) -> Vec<CapRef> {
     let held: Vec<CapRef> = prev
         .filter(|p| !p.is_expired(now))
-        .map(|p| p.admin.conferring())
+        .map(VtcAclEntry::conferring)
         .unwrap_or_default();
-    next.admin
-        .conferring()
+    next.conferring()
         .into_iter()
         .filter(|c| !held.iter().any(|h| h.covers(c)))
         .collect()
@@ -485,10 +484,9 @@ pub fn lost_conferring(prev: &VtcAclEntry, next: Option<&VtcAclEntry>, now: u64)
     });
     let kept: Vec<CapRef> = next
         .filter(|_| !shortened)
-        .map(|n| n.admin.conferring())
+        .map(VtcAclEntry::conferring)
         .unwrap_or_default();
-    prev.admin
-        .conferring()
+    prev.conferring()
         .into_iter()
         .filter(|c| !kept.iter().any(|k| k.covers(c)))
         .collect()
@@ -1700,6 +1698,7 @@ mod tests {
             updated_by: None,
             expires_at,
             resource_grants: Vec::new(),
+            group_grants: Vec::new(),
             label_set_by_subject: false,
             suspension: None,
         }

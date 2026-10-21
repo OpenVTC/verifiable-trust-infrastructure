@@ -52,7 +52,7 @@ pub use event::{
     DirectoryExportedData, DirectoryFieldChangedData, DirectoryImageStoredData,
     DirectoryNoteAccessData, EmergencyBootstrapData, EndorsementTypeDeletedData,
     EndorsementTypeRegisteredData, FieldChange, GitNsBreakGlassData, GitNsOperationData,
-    GroupChangedData, GroupMembershipChangedData, HiddenVetterEnrolledData,
+    GroupChangedData, GroupGrantsChangedData, GroupMembershipChangedData, HiddenVetterEnrolledData,
     HiddenVetterReissuedData, HiddenVetterTokensIssuedData, HiddenVettingChangedData,
     InvitationDeliveredData, InvitationIssuedData, InvitationRevokedData, JoinRequestData,
     JoinRequestRejectedData, JoinRequestSupplementedData, JoinRequestWithdrawnData,

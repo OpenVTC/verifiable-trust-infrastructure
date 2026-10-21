@@ -637,6 +637,12 @@ pub enum AuditEvent {
     /// member's entry, never their DID or a request's message.
     GroupMembershipChanged(GroupMembershipChangedData),
 
+    /// Capabilities a group carrying authority provisioned onto a member's
+    /// access-control entry, or withdrew from it (VTI-DIR-100). By reference:
+    /// the group, the binding, the member's entry and the capabilities — the
+    /// source an auditor asks of provisioned authority.
+    GroupGrantsChanged(GroupGrantsChangedData),
+
     /// An admin changed whether the join manifest answers a caller the
     /// community cannot identify (`PUT /v1/community/join-discovery`).
     ///
@@ -1156,6 +1162,7 @@ impl AuditEvent {
             Self::DirectoryExported(..) => "DirectoryExported",
             Self::GroupChanged(..) => "GroupChanged",
             Self::GroupMembershipChanged(..) => "GroupMembershipChanged",
+            Self::GroupGrantsChanged(..) => "GroupGrantsChanged",
             Self::CommunityJoinDiscoveryUpdated(..) => "CommunityJoinDiscoveryUpdated",
             Self::CommunityRequestedAttributesUpdated(..) => "CommunityRequestedAttributesUpdated",
             Self::EndorsementTypeRegistered(..) => "EndorsementTypeRegistered",
@@ -2775,6 +2782,22 @@ pub struct GroupMembershipChangedData {
     pub reason: Option<String>,
 }
 
+/// Payload for [`AuditEvent::GroupGrantsChanged`].
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct GroupGrantsChangedData {
+    pub group_id: String,
+    pub binding_id: String,
+    /// The member's entry identifier, never their DID.
+    pub entry_id: String,
+    /// Capabilities written, as `cap[@resource]`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub added: Vec<String>,
+    /// Capabilities withdrawn, as `cap[@resource]`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub removed: Vec<String>,
+}
+
 /// Payload for [`AuditEvent::DirectoryExported`].
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -4324,6 +4347,16 @@ mod tests {
                     reason: None,
                 }),
                 "GroupMembershipChanged",
+            ),
+            (
+                AuditEvent::GroupGrantsChanged(GroupGrantsChangedData {
+                    group_id: "grp_AAAAAAAAAAAAAAAAAAAAAA".into(),
+                    binding_id: "gb_AAAAAAAAAAAAAAAAAAAAAA".into(),
+                    entry_id: "dir_aaaaaaaaaaaaaaaa".into(),
+                    added: vec!["vtc.invitations.manage".into()],
+                    removed: Vec::new(),
+                }),
+                "GroupGrantsChanged",
             ),
             (
                 AuditEvent::DirectoryImageStored(DirectoryImageStoredData {

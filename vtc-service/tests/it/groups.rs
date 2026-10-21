@@ -1558,3 +1558,259 @@ async fn did_hosting_list_refuses_what_its_specification_declares() {
     let (_, doc) = call(&unlinked.vtc, &unlinked.admin, DID_HOSTING_LIST, json!({})).await;
     assert_eq!(tt_error_code(&doc), DID_HOSTING_ERR_NO_KEY_HOLDER, "{doc}");
 }
+
+// ─── groups carrying authority (VTI-DIR-100 – 103) ──────────────────────
+
+/// Make `who` a moderator narrowed to `vtc.join.decide`: a ceiling a group may
+/// provision inside.
+async fn narrow_to_moderator(vtc: &TestVtc, who: &Party) {
+    use vtc_service::acl::{
+        AdminAuthority, AdminRole, CapRef, Capability, CapabilityGrant, CapabilityScope,
+    };
+    let mut entry = vtc_service::acl::get_acl_entry(&vtc.state.acl_ks, &who.did)
+        .await
+        .unwrap()
+        .unwrap();
+    entry.admin = AdminAuthority::for_role(AdminRole::Moderator);
+    entry.admin.capabilities = CapabilityScope::Listed {
+        grants: vec![CapabilityGrant::from(CapRef::all(Capability::JoinDecide))],
+    };
+    vtc_service::acl::store_acl_entry(&vtc.state.acl_ks, &entry)
+        .await
+        .unwrap();
+}
+
+/// A `grants` binding written as `vtc/groups/bindings/add` will once it serves
+/// them, made under `binder`'s authority.
+async fn bind_grants(vtc: &TestVtc, group_id: &str, binder: &str, grants: Value) -> String {
+    let b = vtc_service::groups::bindings::Binding {
+        binding_id: vtc_service::groups::bindings::new_binding_id(),
+        group_id: group_id.to_string(),
+        binding: json!({ "kind": "grants", "grants": grants }),
+        state: "active".into(),
+        created_at: Utc::now(),
+        created_by: binder.to_string(),
+        reason: "working group members may invite".into(),
+        delegated_by: None,
+    };
+    vtc_service::groups::bindings::put(vtc.state.directory.ks(), &b)
+        .await
+        .unwrap();
+    b.binding_id
+}
+
+async fn acl(vtc: &TestVtc, who: &Party) -> vtc_service::acl::VtcAclEntry {
+    vtc_service::acl::get_acl_entry(&vtc.state.acl_ks, &who.did)
+        .await
+        .unwrap()
+        .unwrap()
+}
+
+/// VTI-DIR-100 – 102: a group carrying authority writes its capabilities onto
+/// each member's entry with the group as their source, inside the member's
+/// role ceiling and the binder's own holdings, and takes them back when the
+/// member leaves.
+#[tokio::test]
+async fn vti_dir_100_a_groups_grants_are_provisioned_onto_its_members_entries() {
+    use vtc_service::acl::Capability;
+    use vtc_service::groups::authority;
+    let fix = fixture().await;
+    let state = &fix.vtc.state;
+    let group_id = fix.group("closed", "members", "members").await;
+    let (moderator, moderator_entry) = fix.another_member().await;
+    narrow_to_moderator(&fix.vtc, &moderator).await;
+    let plain_entry = entry_of(&fix.vtc, &fix.member).await;
+    for entry in [&moderator_entry, &plain_entry] {
+        let (status, doc) = fix
+            .as_admin(
+                "members/add",
+                json!({ "groupId": group_id, "entryId": entry }),
+            )
+            .await;
+        assert_eq!(status, StatusCode::OK, "{doc}");
+    }
+    assert!(
+        !acl(&fix.vtc, &moderator)
+            .await
+            .can(Capability::InvitationsManage, None)
+    );
+
+    let binding = bind_grants(
+        &fix.vtc,
+        &group_id,
+        &fix.admin.did,
+        json!([{ "capability": "vtc.invitations.manage" }]),
+    )
+    .await;
+    let changed = authority::provision(state, &moderator.did).await.unwrap();
+    assert_eq!(changed.added.len(), 1);
+    let entry = acl(&fix.vtc, &moderator).await;
+    assert!(entry.can(Capability::InvitationsManage, None));
+    let row = &entry.group_grants[0];
+    assert_eq!(row.group_id, group_id);
+    assert_eq!(row.binding_id, binding);
+    assert_eq!(row.delegated_by, fix.admin.did, "VTI-ACL-072");
+    // Idempotent: a second pass changes nothing.
+    assert!(
+        authority::provision(state, &moderator.did)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+
+    // VTI-DIR-105: no administrative role, no ceiling — written, never in effect.
+    authority::provision(state, &fix.member.did).await.unwrap();
+    let plain = acl(&fix.vtc, &fix.member).await;
+    assert_eq!(plain.group_grants.len(), 1);
+    assert!(!plain.can(Capability::InvitationsManage, None));
+
+    // Audited by reference.
+    let audited: Vec<vti_common::audit::GroupGrantsChangedData> = state
+        .audit_ks
+        .prefix_iter_raw(Vec::new())
+        .await
+        .unwrap()
+        .into_iter()
+        .filter_map(|(_, v)| serde_json::from_slice::<vti_common::audit::AuditEnvelope>(&v).ok())
+        .filter_map(|env| match env.event {
+            vti_common::audit::AuditEvent::GroupGrantsChanged(d) => Some(d),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        audited.iter().any(|d| d.entry_id == moderator_entry
+            && d.binding_id == binding
+            && d.added == ["vtc.invitations.manage"]),
+        "the provisioning is audited by reference: {audited:?}"
+    );
+
+    // An `acl/*` write keeps what the groups provisioned: they are not its axis.
+    let (status, doc) = call(
+        &fix.vtc,
+        &moderator,
+        "https://trusttasks.org/spec/acl/update/0.2",
+        json!({ "subject": moderator.did, "label": "Working-group inviter" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{doc}");
+    let entry = acl(&fix.vtc, &moderator).await;
+    assert_eq!(entry.label.as_deref(), Some("Working-group inviter"));
+    assert_eq!(entry.group_grants.len(), 1, "kept across the ACL write");
+    assert_eq!(
+        doc["payload"]["entry"]["ext"]["org.openvtc"]["groupGrants"][0]["groupId"],
+        group_id.as_str(),
+        "{doc}"
+    );
+
+    // Leaving the group takes it away (VTI-DIR-100).
+    let (status, doc) = fix
+        .as_admin(
+            "members/remove",
+            json!({ "groupId": group_id, "entryId": moderator_entry }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{doc}");
+    let changed = authority::provision(state, &moderator.did).await.unwrap();
+    assert_eq!(changed.removed.len(), 1);
+    assert!(
+        !acl(&fix.vtc, &moderator)
+            .await
+            .can(Capability::InvitationsManage, None)
+    );
+}
+
+/// VTI-DIR-102: a binding provisions only what its binder holds, and nothing
+/// once the binder no longer does. VTI-DIR-103: an open group provisions
+/// nothing.
+#[tokio::test]
+async fn vti_dir_102_a_binding_provisions_only_what_its_binder_holds() {
+    use vtc_service::acl::Capability;
+    use vtc_service::groups::authority;
+    let fix = fixture().await;
+    let state = &fix.vtc.state;
+    let group_id = fix.group("closed", "members", "members").await;
+    let (moderator, moderator_entry) = fix.another_member().await;
+    narrow_to_moderator(&fix.vtc, &moderator).await;
+    fix.as_admin(
+        "members/add",
+        json!({ "groupId": group_id, "entryId": moderator_entry }),
+    )
+    .await;
+
+    // Bound by someone who holds none of it: nothing is provisioned.
+    let (outsider, _) = fix.another_member().await;
+    bind_grants(
+        &fix.vtc,
+        &group_id,
+        &outsider.did,
+        json!([{ "capability": "vtc.members.manage" }]),
+    )
+    .await;
+    authority::provision(state, &moderator.did).await.unwrap();
+    assert!(
+        !acl(&fix.vtc, &moderator)
+            .await
+            .can(Capability::MembersManage, None)
+    );
+
+    // Bound by an administrator who holds it, who then loses it.
+    let (binder, _) = fix.another_member().await;
+    {
+        let mut e = acl(&fix.vtc, &binder).await;
+        e.admin = vtc_service::acl::AdminAuthority::community_admin();
+        vtc_service::acl::store_acl_entry(&state.acl_ks, &e)
+            .await
+            .unwrap();
+    }
+    bind_grants(
+        &fix.vtc,
+        &group_id,
+        &binder.did,
+        json!([{ "capability": "vtc.members.manage" }]),
+    )
+    .await;
+    authority::provision(state, &moderator.did).await.unwrap();
+    assert!(
+        acl(&fix.vtc, &moderator)
+            .await
+            .can(Capability::MembersManage, None)
+    );
+    {
+        let mut e = acl(&fix.vtc, &binder).await;
+        e.admin = vtc_service::acl::AdminAuthority::none();
+        vtc_service::acl::store_acl_entry(&state.acl_ks, &e)
+            .await
+            .unwrap();
+    }
+    authority::provision(state, &moderator.did).await.unwrap();
+    assert!(
+        !acl(&fix.vtc, &moderator)
+            .await
+            .can(Capability::MembersManage, None)
+    );
+
+    // VTI-DIR-103: a group that is not closed provisions nothing.
+    let mut group = vtc_service::groups::get(state.directory.ks(), &group_id)
+        .await
+        .unwrap()
+        .unwrap();
+    bind_grants(
+        &fix.vtc,
+        &group_id,
+        &fix.admin.did,
+        json!([{ "capability": "vtc.invitations.manage" }]),
+    )
+    .await;
+    authority::provision(state, &moderator.did).await.unwrap();
+    assert!(
+        acl(&fix.vtc, &moderator)
+            .await
+            .can(Capability::InvitationsManage, None)
+    );
+    group.join_policy = vtc_service::groups::JoinPolicy::Open;
+    vtc_service::groups::put(state.directory.ks(), &group)
+        .await
+        .unwrap();
+    authority::provision(state, &moderator.did).await.unwrap();
+    assert!(acl(&fix.vtc, &moderator).await.group_grants.is_empty());
+}

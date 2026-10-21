@@ -30,6 +30,7 @@
 //! Only static groups are served: a dynamic group's create is refused
 //! (`kindNotServed` once the specification declares it), never stored.
 
+pub mod authority;
 pub mod bindings;
 pub mod credential;
 pub mod identity;

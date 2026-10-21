@@ -1429,6 +1429,17 @@ new flow, update both this section and the relevant `docs/*.md`.
   admission — and renews bound admissions into `offers/list/0.3` `renewals`
   (membership + authority, never an invitation; the renewed `validUntil` becomes
   the admission's own).
+- **Group grants** (`acl::group_grant`, `groups::authority`, VTI-DIR-100 – 105):
+  what a `grants`/`role` binding confers is written onto each member's entry as
+  `groupGrants` rows (one per capability × binding, naming the group), and
+  every gate still asks `VtcAclEntry::can`. A row counts only inside the
+  member's role ceiling and while it may act — **at read time**, so a role
+  change that brings one into force is a conferral `newly_conferred` sees
+  (`VtcAclEntry::conferring` counts rows) — and confers nothing to approve.
+  `authority::provision` is the one writer (git-ns write lock; `acl/*` writes
+  keep the rows as stored); it writes only what the binding's delegator holds
+  **not through a group**, nothing for a group that is not `closed`, keeps a
+  suspended member's rows, and is run by the binding reconciler each pass.
 - **Where identities are published** (`did_hosting`): the runtime key
   `dids.webvh_server` (`local` or a VTA hosting-server id; `config/patch`,
   import, the Groups page) is read live at every group and community-room

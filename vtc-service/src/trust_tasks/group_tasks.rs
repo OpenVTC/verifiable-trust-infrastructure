@@ -1956,6 +1956,7 @@ async fn handle_bindings_add(
         created_at: Utc::now(),
         created_by: who.did.clone(),
         reason: reason.clone(),
+        delegated_by: None,
     };
     if let Err(e) = bindings::put(ks, &b).await {
         return app_error_to_reject(&doc, &e);

@@ -1,7 +1,9 @@
 //! What a group's members receive through it: its **bindings**
-//! (`vtc/groups/bindings/{add,remove,list}`). Room bindings only, for now: a
+//! (`vtc/groups/bindings/{add,remove,list}`). Room bindings are served; a
 //! grants or role binding is refused `kindNotServed` (bindings/add item 7)
-//! until the community provisions resource grants from groups (P5).
+//! until its tasks take the consent it needs. What such a binding provisions
+//! onto members' entries is [`super::authority`]'s, run by the same
+//! reconciler.
 //!
 //! # A room binding
 //!
@@ -72,6 +74,11 @@ pub struct Binding {
     pub created_at: DateTime<Utc>,
     pub created_by: String,
     pub reason: String,
+    /// For a `grants` or `role` binding, the administrator whose authority it
+    /// was made under — the delegator of every grant it provisions
+    /// (VTI-DIR-102). Absent: `created_by`. Follows a key rotation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delegated_by: Option<String>,
 }
 
 impl Binding {
@@ -189,6 +196,23 @@ pub async fn of_group(ks: &KeyspaceHandle, group_id: &str) -> Result<Vec<Binding
 /// Every binding.
 pub async fn all(ks: &KeyspaceHandle) -> Result<Vec<Binding>, AppError> {
     under(ks, b"gbind:".to_vec()).await
+}
+
+/// `old` rolled its entry to `new` (`acl/swap-key`): the bindings made under
+/// `old`'s authority are made under `new`'s, so what they provision does not
+/// lapse with the old name.
+pub async fn repoint(ks: &KeyspaceHandle, old: &str, new: &str) -> Result<usize, AppError> {
+    let mut n = 0;
+    for mut b in all(ks).await? {
+        if b.delegated_by.as_deref() == Some(old)
+            || (b.delegated_by.is_none() && b.created_by == old)
+        {
+            b.delegated_by = Some(new.to_string());
+            put(ks, &b).await?;
+            n += 1;
+        }
+    }
+    Ok(n)
 }
 
 /// Put every binding of a deleted group into removal: what they provided is
@@ -318,8 +342,16 @@ async fn members_of(state: &AppState, group_id: &str) -> Result<BTreeSet<String>
     Ok(out)
 }
 
-/// One pass at `now`.
+/// One pass at `now`: the room bindings' offers, withdrawals and renewals,
+/// then every member's group grants (`super::authority`).
 pub async fn reconcile(state: &AppState, now: DateTime<Utc>) -> Result<Report, AppError> {
+    let report = reconcile_rooms(state, now).await?;
+    super::authority::provision_all(state).await?;
+    Ok(report)
+}
+
+/// The room bindings' part of [`reconcile`].
+async fn reconcile_rooms(state: &AppState, now: DateTime<Utc>) -> Result<Report, AppError> {
     let mut report = Report::default();
     let ks = state.directory.ks();
     let bindings: Vec<Binding> = all(ks)

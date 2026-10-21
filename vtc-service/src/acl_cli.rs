@@ -162,6 +162,10 @@ pub async fn run_acl_add(args: AclAddArgs) -> CliResult {
             .as_ref()
             .map(|e| e.resource_grants.clone())
             .unwrap_or_default(),
+        group_grants: existing
+            .as_ref()
+            .map(|e| e.group_grants.clone())
+            .unwrap_or_default(),
         // Written by the operator, not by the subject (VTI-ACL-052 item 2).
         label_set_by_subject: false,
         suspension: None,
