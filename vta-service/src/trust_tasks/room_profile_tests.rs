@@ -318,7 +318,12 @@ async fn sealed_room() -> Sealed {
 /// Admit a member holding `actions` with their own VTA, through the owner's
 /// `rooms/owner/group/add/0.2` at the real host; the member joins from the Welcome.
 async fn admit(s: &Sealed, actions: &[&str]) -> Vta {
-    let m = vta(&s.room, &s.host, MEMBER_KEY_PATH, actions).await;
+    admit_at(s, MEMBER_KEY_PATH, actions).await
+}
+
+/// [`admit`], the member's persona at `key_path` — so a room can take a second member.
+async fn admit_at(s: &Sealed, key_path: &str, actions: &[&str]) -> Vta {
+    let m = vta(&s.room, &s.host, key_path, actions).await;
     let kp = room_groups::mint_key_package(
         &m.state.room_groups_ks,
         &Member::new(&s.room.did, &m.persona).unwrap(),
@@ -813,4 +818,281 @@ async fn a_write_that_keeps_losing_its_version_is_contended() {
     // And no reader takes what landed for the profile.
     let read = read(&owner, &room.did, &host).await;
     assert_ne!(read["payload"]["status"], "found", "{read}");
+}
+
+// ─── Reading a record across epochs: repair before refusing ─────────────────────────────
+//
+// `rooms/keys/read/0.1`, *Opening, and when it cannot*: a member behind by a commit, or
+// one who joined after a record was written, is repaired from the host before the record
+// is refused — and what still will not open is `cannotOpen` with its reason.
+
+const SECOND_MEMBER_KEY_PATH: &str = "m/44'/0'/7'/0'/4'";
+
+/// Put a record the owner sealed under the room's current epoch at the host, as the
+/// owner's client would after `rooms/keys/seal`.
+async fn owner_writes(s: &Sealed, key: &str, text: &str) {
+    let room = vti_rooms::storage::get_room(s.host.state.rooms(), &s.room.did)
+        .await
+        .unwrap();
+    let owner = Member::new(&s.room.did, &s.owner.persona).unwrap();
+    let sealed = room_groups::seal_record(
+        &s.owner.state.room_groups_ks,
+        &owner,
+        key,
+        room.next_version,
+        text.as_bytes(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(sealed.epoch, room.epoch, "sealed under the room's epoch");
+    put_sealed(s, key, sealed.epoch, sealed.ciphertext, sealed.nonce).await;
+}
+
+async fn put_sealed(s: &Sealed, key: &str, epoch: u32, ciphertext: String, nonce: String) {
+    vti_rooms::storage::put_record(
+        s.host.state.rooms(),
+        s.host.state.records(),
+        &s.room.did,
+        vti_rooms::Record {
+            key: key.to_string(),
+            version: 0,
+            epoch: Some(epoch),
+            status: vti_rooms::RecordStatus::Active,
+            pinned: false,
+            sealed: Some(ciphertext),
+            nonce: Some(nonce),
+            sealed_version: None,
+            cleartext: None,
+            author: Some(s.owner.persona.clone()),
+            updated_at: 0,
+        },
+        Some(0),
+        Utc::now().timestamp() as u64,
+    )
+    .await
+    .expect("the host stores the record");
+}
+
+async fn read_record(v: &Vta, s: &Sealed, key: &str) -> Value {
+    body(
+        super::super::room_group::handle_read(
+            &v.state,
+            &admin(),
+            request(
+                vta_sdk::trust_tasks::TASK_ROOMS_KEYS_READ_0_1,
+                json!({ "roomId": s.room.did, "host": s.host.did, "key": key }),
+            ),
+        )
+        .await,
+    )
+}
+
+fn plaintext_of(got: &Value) -> String {
+    use base64::Engine as _;
+    let b64 = got["payload"]["plaintext"]
+        .as_str()
+        .unwrap_or_else(|| panic!("{got}"));
+    String::from_utf8(
+        base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(b64)
+            .unwrap(),
+    )
+    .unwrap()
+}
+
+async fn held(v: &Vta, s: &Sealed) -> room_groups::HeldRoom {
+    room_groups::held_room(
+        &v.state.room_groups_ks,
+        &Member::new(&s.room.did, &v.persona).unwrap(),
+    )
+    .await
+    .unwrap()
+}
+
+/// **Behind by a commit.** A second admission moves the room to epoch 3 and leaves the first
+/// member at 2; reading what was sealed under 3 applies the commit the host relays, then
+/// opens it — no `keys commit` by hand.
+#[tokio::test]
+async fn a_member_behind_by_a_commit_catches_up_before_opening() {
+    let s = sealed_room().await;
+    let a = admit(&s, &["read", "write"]).await;
+    let _b = admit_at(&s, SECOND_MEMBER_KEY_PATH, &["read"]).await;
+    assert_eq!(
+        held(&a, &s).await.epoch,
+        2,
+        "the first member missed the second's commit"
+    );
+
+    owner_writes(&s, "rec-after-second-member", "written at epoch 3").await;
+    let got = read_record(&a, &s, "rec-after-second-member").await;
+    assert_eq!(plaintext_of(&got), "written at epoch 3");
+    assert_eq!(
+        held(&a, &s).await.epoch,
+        3,
+        "the commit was applied and kept"
+    );
+}
+
+/// **Joined late.** A record written before a member joined opens on their first read:
+/// their VTA fetches the epoch link from the host, keeps it, and opens.
+#[tokio::test]
+async fn a_member_who_joined_late_fetches_the_history_before_opening() {
+    let s = sealed_room().await;
+    owner_writes(&s, "rec-before-joining", "written at epoch 1").await;
+    let a = admit(&s, &["read"]).await;
+    assert_eq!(held(&a, &s).await.earliest_readable_epoch, 2);
+
+    let got = read_record(&a, &s, "rec-before-joining").await;
+    assert_eq!(plaintext_of(&got), "written at epoch 1");
+    assert_eq!(
+        held(&a, &s).await.earliest_readable_epoch,
+        1,
+        "the link is kept"
+    );
+}
+
+/// A page opening many records at once repairs once: every read opens, and the group
+/// state each one leaves behind is the same.
+#[tokio::test]
+async fn concurrent_reads_share_one_repair() {
+    let s = sealed_room().await;
+    let a = admit(&s, &["read"]).await;
+    let _b = admit_at(&s, SECOND_MEMBER_KEY_PATH, &["read"]).await;
+    for i in 0..4 {
+        owner_writes(&s, &format!("rec-{i}"), &format!("record {i}")).await;
+    }
+    let reads = (0..4).map(|i| {
+        let (a, s) = (&a, &s);
+        async move { (i, read_record(a, s, &format!("rec-{i}")).await) }
+    });
+    for (i, got) in futures_util::future::join_all(reads).await {
+        assert_eq!(plaintext_of(&got), format!("record {i}"));
+    }
+    assert_eq!(held(&a, &s).await.epoch, 3);
+}
+
+/// What the host cannot supply is `cannotOpen` — never a malformed request — with the
+/// record's epoch, the reason, and why the repair stopped.
+#[tokio::test]
+async fn a_commit_the_host_never_got_is_cannot_open_not_delivered() {
+    let s = sealed_room().await;
+    let a = admit(&s, &["read"]).await;
+    // The room moves to 3 at the host with no commit relayed for it.
+    vti_rooms::storage::advance_epoch(
+        s.host.state.rooms(),
+        &s.room.did,
+        3,
+        Utc::now().timestamp() as u64,
+    )
+    .await
+    .unwrap();
+    put_sealed(
+        &s,
+        "rec-unreachable",
+        3,
+        "AAAA".into(),
+        "AAAAAAAAAAAAAAAA".into(),
+    )
+    .await;
+
+    let got = read_record(&a, &s, "rec-unreachable").await;
+    let p = &got["payload"];
+    assert_eq!(p["code"], "rooms/keys/read:cannotOpen", "{got}");
+    assert_eq!(p["details"]["reason"], "notDelivered", "{got}");
+    assert_eq!(p["details"]["heldEpoch"], 2, "{got}");
+    assert_eq!(p["details"]["epoch"], 3, "{got}");
+    assert!(
+        p["message"]
+            .as_str()
+            .unwrap()
+            .contains("no commit producing room epoch 3"),
+        "{got}"
+    );
+    assert_eq!(held(&a, &s).await.epoch, 2, "nothing was applied");
+}
+
+/// A host that does not answer is `hostUnreachable` for a record read — retryable, and not
+/// a malformed request: the request was fine.
+#[tokio::test]
+async fn a_record_read_at_a_host_nobody_answers_is_host_unreachable() {
+    let mut s = sealed_room().await;
+    let (dead, doc) = unreachable_host();
+    knows(&mut s.owner, &dead, doc).await;
+    let got = body(
+        super::super::room_group::handle_read(
+            &s.owner.state,
+            &admin(),
+            request(
+                vta_sdk::trust_tasks::TASK_ROOMS_KEYS_READ_0_1,
+                json!({ "roomId": s.room.did, "host": dead, "key": "anything" }),
+            ),
+        )
+        .await,
+    );
+    assert_eq!(
+        got["payload"]["code"], "rooms/keys/read:hostUnreachable",
+        "{got}"
+    );
+}
+
+/// The other host failures, by their declared codes: a host that does not serve the room is
+/// `hostRefused` for a record read and for backfill, with its own code in `details`; one
+/// nobody answers at is backfill's `hostUnreachable`.
+#[tokio::test]
+async fn record_read_and_backfill_name_the_host_failure() {
+    let mut s = sealed_room().await;
+    let other = start_host().await;
+    knows(&mut s.owner, &other.did, other.doc.clone()).await;
+    let (dead, doc) = unreachable_host();
+    knows(&mut s.owner, &dead, doc).await;
+
+    let read = |host: String| {
+        let s = &s;
+        async move {
+            body(
+                super::super::room_group::handle_read(
+                    &s.owner.state,
+                    &admin(),
+                    request(
+                        vta_sdk::trust_tasks::TASK_ROOMS_KEYS_READ_0_1,
+                        json!({ "roomId": s.room.did, "host": host, "key": "anything" }),
+                    ),
+                )
+                .await,
+            )
+        }
+    };
+    let got = read(other.did.clone()).await;
+    assert_eq!(
+        got["payload"]["code"], "rooms/keys/read:hostRefused",
+        "{got}"
+    );
+    assert!(got["payload"]["details"]["code"].is_string(), "{got}");
+
+    let backfill = |host: String| {
+        let s = &s;
+        async move {
+            body(
+                super::super::room_group::handle_backfill(
+                    &s.owner.state,
+                    &admin(),
+                    request(
+                        vta_sdk::trust_tasks::TASK_ROOMS_KEYS_BACKFILL_0_1,
+                        json!({ "roomId": s.room.did, "host": host }),
+                    ),
+                )
+                .await,
+            )
+        }
+    };
+    let got = backfill(other.did.clone()).await;
+    assert_eq!(
+        got["payload"]["code"], "rooms/keys/backfill:hostRefused",
+        "{got}"
+    );
+    let got = backfill(dead).await;
+    assert_eq!(
+        got["payload"]["code"], "rooms/keys/backfill:hostUnreachable",
+        "{got}"
+    );
 }

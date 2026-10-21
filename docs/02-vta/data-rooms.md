@@ -631,7 +631,19 @@ pnm rooms keys commit --room <room-did> --host <host-url> --host-did <host-did>
 ```
 
 which asks the host for every commit above the epoch this VTA holds and applies
-them in order, then says whether the host is still ahead. A commit delivered
+them in order, then says whether the host is still ahead.
+
+**A read catches up by itself.** `rooms/keys/read` — what the wallet and the member
+portal use to show a record — repairs before it refuses (trust-tasks-tf #848): a
+record sealed under a later epoch makes the VTA fetch and apply the relayed commits
+from the host it is reading, and one sealed before the member joined makes it fetch
+the epoch links, then it opens the record again. Same host, same persona, same `read`
+grant; at most once per read; serialised per member, so a page opening many records
+fetches each commit once; never for a removed member. What still will not open is
+`rooms/keys/read:cannotOpen`, with `details.reason` (`notDelivered` / `beyondChain` /
+`removed`) and the record's `details.epoch` — then the commands here are the
+diagnosis, not the routine. (`rooms/keys/open` and `file-key` carry no host, so they
+cannot repair; reading the record first does it for them.) A commit delivered
 some other way is applied with `--commit <file> --epoch <room epoch it
 produces>`. A member who misses one
 is stuck at their last epoch and can open nothing sealed after it. The symptom
@@ -1667,7 +1679,8 @@ recover but a fresh invitation from every owner.
 | the chain "does not confer this on room …" | Wrong action for the chain (agent with `read` writing), or a chain rooted somewhere other than this room |
 | a valid-looking presentation refused on a *different* signer | Presentations are bound to the presenter. A captured one is worthless — this is working as intended |
 | `this VTA holds N AuthorityCredentials issued by room …` | Two credentials of one kind for one room; the oracle will not guess which to attenuate |
-| record "does not open", VTA reports an older epoch | A missed commit (§6). Deliver it |
+| record "does not open", VTA reports an older epoch | A missed commit (§6). A read fetches it from the host itself; still refused (`cannotOpen`, `notDelivered`) means the host does not have it — the owner re-delivers it |
+| `rooms/keys/read:cannotOpen`, `beyondChain` | Written before the member joined, and the host keeps no epoch link that far back (§6). Nothing on the member's side recovers it |
 | `an authority credential must name \`validUntil\`` | `rooms/owner/issue-authority` with no expiry. There is no default and no revocation — pick a window (§5.3) |
 | `no invitation presented for room …` | `key-package`/`welcome` without the VIC |
 | `the invitation names …, which is not a persona you may act as here` | The VIC names a DID this VTA does not hold for you — another context's persona, a DID it holds nothing for (the two read alike), or your client's own `did:key`. Invite the persona, and call from its context |

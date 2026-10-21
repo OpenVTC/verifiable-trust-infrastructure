@@ -625,10 +625,13 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     // and re-fetching from the host yields the same rungs. A retry that arrives
     // after the first succeeded stores nothing and reports the same reach.
     (trust_tasks::TASK_ROOMS_KEYS_BACKFILL_0_1, RetrySafe),
-    // A read stores nothing and changes nothing at either end: the host serves
-    // the same record, and this agent opens it again. What a retry costs is one
-    // more disclosure of the presentation to the host, which is why it is safe
-    // rather than free.
+    // A read changes nothing at the host: it serves the same record, and this
+    // agent opens it again. What it may change here is the agent's own epoch
+    // state — before refusing, it applies relayed commits and keeps epoch links
+    // (trust-tasks-tf #848) — and both are idempotent by epoch, exactly as
+    // `rooms/keys/commit` and `rooms/keys/backfill` above, so a retry repeats
+    // nothing. What a retry costs is one more disclosure of the presentation to
+    // the host, which is why it is safe rather than free.
     // `Keyed`, and the reason is that "harmless duplicate" is not quite true
     // here. A second anchor supersedes the first and says the same thing, so it
     // converges on state — but each attempt appends a permanent witnessed log

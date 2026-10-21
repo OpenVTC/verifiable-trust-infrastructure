@@ -591,3 +591,10 @@ body {
 .group-actions {
   margin: 16px 0;
 }
+
+/* A notice, not a failure: what happened and what to do next, in the brand's
+   colour rather than `.alert`'s danger. */
+.vtc-signin .alert.alert-info {
+  border-color: color-mix(in srgb, var(--brand) 40%, var(--border));
+  background: color-mix(in srgb, var(--brand) 8%, var(--bg-elev));
+}

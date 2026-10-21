@@ -244,6 +244,48 @@ export function shareRefusalHint(reason: string): string | null {
   return null;
 }
 
+/**
+ * Why a record did not open, for a member: a short label for the list and what it means.
+ *
+ * Read from the wallet's words, which carry the member's agent's own (`rooms/keys/read`
+ * `cannotOpen`, `rooms/keys/open` `unknownEpoch`) — the page is handed a message, not the
+ * reason code. An up-to-date agent has already fetched what it could from the host before
+ * saying any of these, so each names who can still act. `null`: not an epoch case.
+ */
+export function openFailure(e: unknown): { label: string; hint: string } | null {
+  const text = e instanceof Error ? e.message : String(e);
+  if (/was removed from the room's group|removedAtEpoch|"removed"/.test(text)) {
+    return {
+      label: "Added after you left",
+      hint: "This was added after you were removed from the room, so it will never open for you.",
+    };
+  }
+  if (/a commit has not been delivered|notDelivered/.test(text)) {
+    return {
+      label: "Waiting for a room update",
+      hint:
+        "This was added after the room's members changed, and your agent does not have that change yet. " +
+        "Your agent fetches it from the community by itself when it can; if this stays, the community does " +
+        "not have it either — ask the room's owner to send the room's latest update again.",
+    };
+  }
+  if (/cannot reach|chain reaches back only to|beyondChain/.test(text)) {
+    return {
+      label: "Added before you joined",
+      hint:
+        "This was added before you joined, and the community keeps no history for this room that reaches " +
+        "back that far, so it cannot be opened for you.",
+    };
+  }
+  if (/hostUnreachable|could not be reached|does not resolve/.test(text)) {
+    return {
+      label: "Community unreachable",
+      hint: "Your agent could not reach this community to fetch it. Try again in a moment.",
+    };
+  }
+  return null;
+}
+
 /** The rooms a member can still act on: offers, and acceptances begun anywhere and not finished. */
 export function actionableOffers(offers: readonly PageOffer[]): PageOffer[] {
   return offers.filter((o) => o.state === "offered" || o.state === "unfinished");

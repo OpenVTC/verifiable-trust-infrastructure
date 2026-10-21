@@ -720,7 +720,7 @@ pub(super) async fn handle_backfill(
         payload["limit"] = serde_json::json!(u64::from(limit));
     }
 
-    let reply = match send_as_member(
+    let reply = match send_as_member_typed(
         state,
         auth,
         &member,
@@ -732,7 +732,16 @@ pub(super) async fn handle_backfill(
     .await
     {
         Ok(v) => v,
-        Err(e) => return app_error_to_reject(&doc, e),
+        Err(e) => {
+            use trust_tasks_rs::specs::rooms::keys::backfill::v0_1::error_codes as codes;
+            return host_failure(
+                &doc,
+                e,
+                &req.host,
+                codes::HOST_UNREACHABLE,
+                codes::HOST_REFUSED,
+            );
+        }
     };
     let member = member.member;
 
@@ -832,12 +841,47 @@ pub(super) async fn send_as_member(
     resolver: &affinidi_did_resolver_cache_sdk::DIDCacheClient,
     host: &str,
     task: &str,
-    mut payload: Value,
+    payload: Value,
 ) -> Result<Value, vti_common::error::AppError> {
+    send_as_member_typed(state, auth, member, resolver, host, task, payload)
+        .await
+        .map_err(MemberSendError::into_app_error)
+}
+
+/// Why [`send_as_member_typed`] got no answer: something here, or the host.
+pub(super) enum MemberSendError {
+    /// Building or signing the request failed before anything was sent.
+    Local(vti_common::error::AppError),
+    /// The host refused, could not be reached, or answered unusably.
+    Host(crate::operations::room_host::RoomTaskError),
+}
+
+impl MemberSendError {
+    pub(super) fn into_app_error(self) -> vti_common::error::AppError {
+        match self {
+            Self::Local(e) => e,
+            Self::Host(e) => e.into_app_error(),
+        }
+    }
+}
+
+/// [`send_as_member`], keeping the host's failures apart from this agent's, so a task that
+/// declares `hostUnreachable` / `hostRefused` can say which.
+pub(super) async fn send_as_member_typed(
+    state: &AppState,
+    auth: &AuthClaims,
+    member: &PresentingMember,
+    resolver: &affinidi_did_resolver_cache_sdk::DIDCacheClient,
+    host: &str,
+    task: &str,
+    mut payload: Value,
+) -> Result<Value, MemberSendError> {
     payload["presentation"] = member.presentation.clone();
     let document = crate::operations::room_host::build_room_task(task, host, &member.did, payload);
-    crate::operations::room_act::check_schema(&document)?;
-    let document = crate::operations::room_act::sign_as(state, auth, &member.did, document).await?;
+    crate::operations::room_act::check_schema(&document).map_err(MemberSendError::Local)?;
+    let document = crate::operations::room_act::sign_as(state, auth, &member.did, document)
+        .await
+        .map_err(MemberSendError::Local)?;
     crate::operations::room_host::send_signed_room_task_typed(
         &state.room_groups_ks,
         &member.member,
@@ -847,7 +891,37 @@ pub(super) async fn send_as_member(
         &format!("{task}#response"),
     )
     .await
-    .map_err(crate::operations::room_host::RoomTaskError::into_app_error)
+    .map_err(MemberSendError::Host)
+}
+
+/// A failed send as the task's declared `hostUnreachable` / `hostRefused` (`rooms/keys/read`
+/// and `rooms/keys/backfill` 0.1). A host that could not be found or did not answer is
+/// `unreachable`, never a malformed request: the request was fine.
+fn host_failure(
+    doc: &TrustTask<Value>,
+    e: MemberSendError,
+    host: &str,
+    unreachable: trust_tasks_rs::DeclaredErrorCode,
+    refused: trust_tasks_rs::DeclaredErrorCode,
+) -> TrustTaskOutcome {
+    use crate::operations::room_host::RoomTaskError;
+    match e {
+        MemberSendError::Local(e) => app_error_to_reject(doc, e),
+        MemberSendError::Host(RoomTaskError::Refused { code, reason, .. }) => {
+            super::helpers::reject_with_code(
+                doc,
+                declared(refused),
+                format!("room host `{host}` refused: {code}: {reason}"),
+                Some(serde_json::json!({ "code": code, "reason": reason })),
+            )
+        }
+        MemberSendError::Host(RoomTaskError::Unknown(e)) => super::helpers::reject_with_code(
+            doc,
+            declared(unreachable),
+            format!("room host `{host}` could not be reached: {e}"),
+            None,
+        ),
+    }
 }
 
 /// A resolver, or the refusal that says there is none — every task that speaks to a host
@@ -1074,7 +1148,8 @@ pub(super) async fn handle_read(
         Err(e) => return app_error_to_reject(&doc, e),
     };
 
-    let reply = match send_as_member(
+    use trust_tasks_rs::specs::rooms::keys::read::v0_1::error_codes as read_codes;
+    let reply = match send_as_member_typed(
         state,
         auth,
         &presenting,
@@ -1086,9 +1161,17 @@ pub(super) async fn handle_read(
     .await
     {
         Ok(v) => v,
-        Err(e) => return app_error_to_reject(&doc, e),
+        Err(e) => {
+            return host_failure(
+                &doc,
+                e,
+                &req.host,
+                read_codes::HOST_UNREACHABLE,
+                read_codes::HOST_REFUSED,
+            );
+        }
     };
-    let member = presenting.member;
+    let member = presenting.member.clone();
 
     // `send_room_task` has already verified the reply's proof AND bound the
     // proven signer to the host that was addressed — a proof that verifies
@@ -1166,21 +1249,62 @@ pub(super) async fn handle_read(
         } else {
             room_groups::Search::Earlier
         };
-        let (plaintext, opened_at) = match room_groups::open_record_at(
-            &state.room_groups_ks,
-            &member,
-            &served.record.key,
-            sealed_at,
-            &sealed.ciphertext,
-            &sealed.nonce,
-            sealed.epoch,
-            search,
-        )
-        .await
-        {
-            Ok(opened) => opened,
-            Err(e) => return app_error_to_reject(&doc, vti_common::error::AppError::from(e)),
+        // Repair before refusing (`rooms/keys/read/0.1`, *Opening, and when it cannot*): a
+        // member who is behind applies the commits the host relays, one who joined late
+        // fetches the links, each at most once per request; a removed member is never
+        // repaired. Only then is it `cannotOpen`, with the reason.
+        let mut repaired: Option<Result<(), String>> = None;
+        let (plaintext, opened_at) = loop {
+            let opened = room_groups::open_record_at(
+                &state.room_groups_ks,
+                &member,
+                &served.record.key,
+                sealed_at,
+                &sealed.ciphertext,
+                &sealed.nonce,
+                sealed.epoch,
+                search,
+            )
+            .await;
+            match opened {
+                Ok(opened) => break opened,
+                Err(
+                    e @ (room_groups::OpenError::NotDelivered { .. }
+                    | room_groups::OpenError::BeyondChain { .. }),
+                ) if repaired.is_none() => {
+                    let outcome = super::room_catch_up::repair(
+                        state,
+                        auth,
+                        &presenting,
+                        &resolver,
+                        &req.host,
+                        &e,
+                    )
+                    .await;
+                    if let Err(why) = &outcome {
+                        tracing::warn!(
+                            room = %req.room_id,
+                            epoch = sealed.epoch,
+                            reason = %why,
+                            "could not repair this member's epoch state before opening a record"
+                        );
+                    }
+                    repaired = Some(outcome);
+                }
+                Err(e) => {
+                    return read_cannot_open(&doc, e, sealed.epoch, repaired.and_then(Result::err));
+                }
+            }
         };
+        // A record this agent could not place before the repair may be the room's own
+        // profile, which is not opened here.
+        if repaired.is_some() && is_profile_location(state, &member, &served.record).await {
+            payload["ext"] = serde_json::json!({
+                room_member::MEMBER_EXT: { "roomProfile": true },
+            });
+            record(state, "rooms.keys.read", auth, &req.room_id).await;
+            return success_response(&doc, payload);
+        }
         // A reader checks the author's signed location against the version the body was
         // sealed at; where that is not the record's own, say which it is.
         if opened_at != served.record.version {
@@ -1755,6 +1879,37 @@ async fn file_key_at(
             "epoch": epoch,
         }),
     )
+}
+
+/// `rooms/keys/read/0.1`'s `cannotOpen`: the record was fetched and its epoch key is not
+/// held, after the repair its reason admits. `details` carries the epoch and the reason in
+/// `rooms/keys/open/0.2`'s words, and the repair's failure where it failed, so a member is
+/// told which party has to act. Anything else that stopped the open is not an epoch case.
+fn read_cannot_open(
+    doc: &TrustTask<Value>,
+    e: room_groups::OpenError,
+    epoch: u32,
+    repair_failed: Option<String>,
+) -> TrustTaskOutcome {
+    use trust_tasks_rs::specs::rooms::keys::read::v0_1::error_codes::CANNOT_OPEN;
+    let mut message = e.to_string();
+    let mut details = match e {
+        room_groups::OpenError::NotDelivered { held, .. } => {
+            serde_json::json!({ "reason": "notDelivered", "heldEpoch": held })
+        }
+        room_groups::OpenError::BeyondChain { earliest, .. } => {
+            serde_json::json!({ "reason": "beyondChain", "earliestEpoch": earliest })
+        }
+        room_groups::OpenError::Removed { removed_at, .. } => {
+            serde_json::json!({ "reason": "removed", "removedAtEpoch": removed_at })
+        }
+        room_groups::OpenError::App(e) => return app_error_to_reject(doc, e),
+    };
+    details["epoch"] = serde_json::json!(epoch);
+    if let Some(why) = repair_failed {
+        message = format!("{message} (fetching what was missing from the host: {why})");
+    }
+    super::helpers::reject_with_code(doc, declared(CANNOT_OPEN), message, Some(details))
 }
 
 /// `rooms/keys/open`'s refusal for a record that did not open.

@@ -205,8 +205,6 @@ fn unwitnessed() -> Vec<DeclaredErrorCode> {
         s::provision::integration::v0_3::error_codes::INVALID_BOOTSTRAP_REQUEST,
         s::provision::integration::v0_3::error_codes::TEMPLATE_NOT_FOUND,
         s::provision::integration::v0_3::error_codes::TEMPLATE_VARS_INVALID,
-        s::rooms::keys::backfill::v0_1::error_codes::HOST_REFUSED,
-        s::rooms::keys::backfill::v0_1::error_codes::HOST_UNREACHABLE,
         s::rooms::keys::backfill::v0_1::error_codes::NOT_A_MEMBER,
         s::rooms::keys::browse::v0_1::error_codes::HOST_REFUSED,
         s::rooms::keys::browse::v0_1::error_codes::HOST_UNREACHABLE,
@@ -218,9 +216,6 @@ fn unwitnessed() -> Vec<DeclaredErrorCode> {
         s::rooms::keys::key_package::v0_1::error_codes::NOT_INVITED,
         s::rooms::keys::open::v0_2::error_codes::DID_NOT_OPEN,
         s::rooms::keys::present::v0_2::error_codes::ACTION_NOT_HELD,
-        s::rooms::keys::read::v0_1::error_codes::CANNOT_OPEN,
-        s::rooms::keys::read::v0_1::error_codes::HOST_REFUSED,
-        s::rooms::keys::read::v0_1::error_codes::HOST_UNREACHABLE,
         s::rooms::keys::read::v0_1::error_codes::NOT_A_MEMBER,
         s::rooms::keys::welcome::v0_1::error_codes::NOT_INVITED,
         s::rooms::owner::anchor::v0_1::error_codes::HOST_REFUSED,
@@ -436,7 +431,7 @@ fn unwitnessed() -> Vec<DeclaredErrorCode> {
 /// The ceiling [`unwitnessed`]'s length may never exceed — a ratchet, not a
 /// count. Only *growing* the baseline past it needs an edit, which always
 /// wants a human decision.
-const UNWITNESSED_CEILING: usize = 372;
+const UNWITNESSED_CEILING: usize = 367;
 
 /// Every declared code in scope, keyed by code, with the URI declaring it.
 fn declared_in_scope() -> BTreeMap<&'static str, (&'static str, DeclaredErrorCode)> {

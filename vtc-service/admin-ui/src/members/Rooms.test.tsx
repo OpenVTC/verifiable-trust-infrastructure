@@ -8,7 +8,7 @@
 // asked, and the portal's server never asked about a room.
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { RoomPage, RoomsPage, downloadName } from "./Rooms";
@@ -222,10 +222,55 @@ describe("data rooms in the portal", () => {
     await screen.findByText(/Joined Board pack/);
     expect(wallet.acceptOffer).toHaveBeenCalledWith({ hostDid: HOST, roomId: ROOM, member: MEMBER });
 
-    // Then it can be shared here, pre-ticked in the wallet's window.
-    fireEvent.click(screen.getByRole("button", { name: /Share it here/ }));
+    // Then it opens here: shared through the wallet's window, pre-ticked, and then shown.
+    const notice = screen.getByRole("status");
+    expect(notice.className).toContain("alert-info");
+    fireEvent.click(within(notice).getByRole("button", { name: /Open it here/ }));
     await waitFor(() => expect(wallet.choose).toHaveBeenCalledWith({ hostDid: HOST, suggest: ROOM, member: MEMBER }));
+    await waitFor(() => expect(window.location.hash).toBe(`#/rooms/${encodeURIComponent(ROOM)}`));
     expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("a joined room already shared here opens directly, and the acceptance notice gives way to its row", async () => {
+    let state: "offered" | "joined" = "offered";
+    const wallet = fakeWallet({
+      list: vi.fn(async () => ({
+        rooms: [{ roomId: ROOM, held: true, epoch: 3, earliestReadableEpoch: 1, sharedAt: "2026-10-16T00:00:00Z", expiresAt: "2026-11-15T00:00:00Z" }],
+      })),
+      offers: vi.fn(async () => ({ offers: [{ ...OFFER, state }] })),
+      acceptOffer: vi.fn(async () => {
+        state = "joined";
+        return { roomId: ROOM, member: MEMBER, visibility: "private", joined: true, epoch: 2, resumed: false };
+      }),
+    });
+    (window as { vtaWallet?: unknown }).vtaWallet = { rooms: wallet };
+    renderWith(<RoomsPage hostDid={HOST} member={MEMBER} />);
+    fireEvent.click(await screen.findByRole("button", { name: /Accept/ }));
+    await screen.findByText(/as you · joined/);
+    // One way to open it, not two: no notice repeating the row.
+    expect(screen.queryByText(/Joined Board pack/)).toBeNull();
+    const open = screen.getByRole("link", { name: "Open" });
+    expect(open.getAttribute("href")).toBe(`#/rooms/${encodeURIComponent(ROOM)}`);
+    expect(screen.queryByRole("button", { name: /Open it here|Share it here/ })).toBeNull();
+    expect(wallet.choose).not.toHaveBeenCalled();
+  });
+
+  it("a record its agent cannot open says why, in a member's words, beside the agent's", async () => {
+    const wallet = fakeWallet({
+      read: vi.fn(async () => {
+        throw new Error(
+          "rooms/keys/read:cannotOpen: record is sealed under epoch 3 and this VTA holds the room at epoch 2; a commit has not been delivered",
+        );
+      }),
+    });
+    (window as { vtaWallet?: unknown }).vtaWallet = { rooms: wallet };
+    renderWith(<RoomPage hostDid={HOST} roomId={ROOM} />);
+    const title = await screen.findByText("Waiting for a room update");
+    expect(screen.queryByText("Did not open")).toBeNull();
+    fireEvent.click(title.closest("button")!);
+    await screen.findByText(/does not have that change yet/);
+    expect(screen.getByText(/a commit has not been delivered/)).toBeTruthy();
+    expect(screen.queryByRole("alert")).toBeNull();
   });
 
   it("shows what an offered room is for, as text and never as markup", async () => {

@@ -96,6 +96,7 @@ mod produced_census;
 mod provision_integration;
 pub(crate) mod received;
 mod room_act;
+mod room_catch_up;
 mod room_group;
 mod room_keys;
 mod room_label;
