@@ -4,13 +4,14 @@
 
 import { useEffect, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { BadgeCheck, BookUser, Boxes, LogOut, Sparkles } from "lucide-react";
+import { BadgeCheck, BookUser, Boxes, GitBranch, LogOut, Sparkles } from "lucide-react";
 
 import { MemberApiError, memberFetch, postMember, vtcDid, type MemberMe } from "./api";
 import { DirectoryPage, EntryPage, MyCardPage } from "./Directory";
 import { GroupPage, GroupsPage } from "./Groups";
 import { listFields, showCard } from "./directory-api";
 import { MemberAvatar, nameOf, text } from "./member-card";
+import { ReposPage } from "./Repos";
 import { RoomPage, RoomsPage } from "./Rooms";
 import { Passkeys } from "./Passkeys";
 import { forgetMemberSessionKey } from "@/lib/console-key";
@@ -32,7 +33,7 @@ async function fetchMe(): Promise<MemberMe | null> {
 
 /** The portal's page, from the location hash: `#/rooms`, `#/rooms/<roomId>`,
  *  `#/directory`, `#/directory/<entryId>`, `#/card`, `#/groups`,
- *  `#/groups/<groupId>`, else home. */
+ *  `#/groups/<groupId>`, `#/repos`, else home. */
 export type Route =
   | { page: "home" }
   | { page: "rooms" }
@@ -41,11 +42,13 @@ export type Route =
   | { page: "entry"; entryId: string }
   | { page: "card" }
   | { page: "groups" }
-  | { page: "group"; groupId: string };
+  | { page: "group"; groupId: string }
+  | { page: "repos" };
 
 export function routeOf(hash: string): Route {
   const path = hash.replace(/^#/, "");
   if (path === "/rooms") return { page: "rooms" };
+  if (path === "/repos") return { page: "repos" };
   if (path === "/directory") return { page: "directory" };
   if (path === "/card") return { page: "card" };
   if (path === "/groups") return { page: "groups" };
@@ -139,16 +142,17 @@ export function Portal() {
   );
 }
 
-/** A signed-in member's pages. The room pages need the community's DID: the
- *  member's wallet holds them to the portal that DID's document names. */
+/** A signed-in member's pages. The room and repository pages need the
+ *  community's DID: the member's wallet holds them to the portal that DID's
+ *  document names. */
 function SignedIn({ me }: { me: MemberMe }) {
   const route = useRoute();
-  const roomPage = route.page === "rooms" || route.page === "room";
+  const walletPage = route.page === "rooms" || route.page === "room" || route.page === "repos";
   const host = useQuery({
     queryKey: ["community-did"],
     queryFn: async () => me.community.did ?? (await vtcDid()),
     staleTime: Infinity,
-    enabled: roomPage,
+    enabled: walletPage,
   });
   if (route.page === "home") return <Home me={me} />;
   if (route.page === "directory") return <DirectoryPage />;
@@ -163,6 +167,7 @@ function SignedIn({ me }: { me: MemberMe }) {
       </main>
     );
   }
+  if (route.page === "repos") return <ReposPage hostDid={host.data} member={me.did} />;
   return route.page === "rooms" ? (
     <RoomsPage hostDid={host.data} member={me.did} />
   ) : (
@@ -319,6 +324,22 @@ function Home({ me }: { me: MemberMe }) {
           </p>
         </section>
 
+        <section className="card" aria-labelledby="repos-card-heading">
+          <div className="card-head">
+            <GitBranch size={18} aria-hidden="true" />
+            <h2 id="repos-card-heading">Repositories</h2>
+          </div>
+          <p className="muted">
+            The repositories you can create, own, maintain and sign commits for, what is shared on
+            the ones you own, and your linked forge accounts.
+          </p>
+          <p>
+            <a className="btn btn-primary" href="#/repos">
+              See your repositories
+            </a>
+          </p>
+        </section>
+
         <section className="card card-soon" aria-labelledby="soon-heading">
           <div className="card-head">
             <Sparkles size={18} aria-hidden="true" />
@@ -326,7 +347,6 @@ function Home({ me }: { me: MemberMe }) {
           </div>
           <ul className="soon">
             <li>Your credentials and their status</li>
-            <li>Repositories you can create, own and sign for</li>
             <li>Relationships and endorsements</li>
           </ul>
         </section>

@@ -356,6 +356,8 @@ describe("portal routes", () => {
     expect(routeOf("#/directory")).toEqual({ page: "directory" });
     expect(routeOf("#/card")).toEqual({ page: "card" });
     expect(routeOf("#/groups")).toEqual({ page: "groups" });
+    expect(routeOf("#/repos")).toEqual({ page: "repos" });
+    expect(routeOf("#/repos/github.com")).toEqual({ page: "home" });
     expect(routeOf("#/groups/grp_W5k2N8xRb3Qz7TpLAAAAAA")).toEqual({
       page: "group",
       groupId: "grp_W5k2N8xRb3Qz7TpLAAAAAA",

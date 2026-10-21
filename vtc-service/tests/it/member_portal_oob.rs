@@ -57,12 +57,16 @@ async fn fixture() -> Fixture {
 }
 
 async fn enrol_member(vtc: &TestVtc, did: &str, label: Option<&str>) {
+    enrol_as(vtc, did, label, VtcRole::Member).await;
+}
+
+async fn enrol_as(vtc: &TestVtc, did: &str, label: Option<&str>, role: VtcRole) {
     store_acl_entry(
         &vtc.state.acl_ks,
         &VtcAclEntry {
             did: did.into(),
-            admin: VtcRole::Member.implied_authority(),
-            role: VtcRole::Member,
+            admin: role.implied_authority(),
+            role,
             label: label.map(str::to_string),
             delegated_by: None,
             created_at: now_epoch(),
@@ -2050,7 +2054,12 @@ async fn sign_in_v0_2(f: &Fixture, scope: Option<Value>) -> (Browser, Party, Rep
     assert_eq!(pr.body["type"], format!("{}#response", t2("prove")));
     assert_eq!(
         pr.body["payload"]["signingScope"],
-        json!(["vtc/directory", "vtc/groups"])
+        json!([
+            "vtc/directory",
+            "vtc/groups",
+            "git-ns/view",
+            "git-ns/account/link-status"
+        ])
     );
     let digest = oob::context_digest(&pr.body).unwrap();
     let scope = scope.unwrap_or_else(|| pr.body["payload"]["signingScope"].clone());
@@ -2230,13 +2239,124 @@ async fn the_portal_key_uploads_a_picture_larger_than_the_default_document_limit
     assert_eq!(refused.body["payload"]["details"]["maxBytes"], 65536);
 }
 
+const GIT_NS: &str = "https://trusttasks.org/spec/git-ns";
+
+/// The portal's Repos page: `K_b` reads the member's own `git-ns/view/0.4` and
+/// where a link they began stands, as the member — and nothing that changes a
+/// right or an account binding, whatever the scope names (grant 0.2 consumer
+/// item 6). Those are the member's own signature, through their wallet.
+#[tokio::test]
+async fn the_portal_key_reads_the_members_repos_and_never_changes_them() {
+    let f = fixture().await;
+    let (b, member, _, done) = sign_in_v0_2(&f, None).await;
+    assert_eq!(done.status, StatusCode::OK, "{}", done.body);
+
+    let admin = Party::new();
+    enrol_as(&f.vtc, &admin.did, None, VtcRole::Admin).await;
+    for (task, payload) in [
+        (
+            "namespace/bind/0.1",
+            json!({ "forge": "github.com", "owner": "acme", "mode": "manual" }),
+        ),
+        (
+            "right/grant/0.3",
+            json!({
+                "subject": member.did,
+                "right": "git.commit.sign",
+                "resource": "github.com/acme",
+            }),
+        ),
+    ] {
+        let r = post(
+            &f.vtc,
+            &doc(
+                &admin,
+                &format!("{GIT_NS}/{task}"),
+                payload,
+                None,
+                "authentication",
+            )
+            .await,
+            "198.51.100.20",
+            None,
+        )
+        .await;
+        assert_eq!(r.status, StatusCode::OK, "{task}: {}", r.body);
+    }
+
+    let view = as_portal(&f, &b, &format!("{GIT_NS}/view/0.4"), json!({})).await;
+    assert_eq!(view.status, StatusCode::OK, "{}", view.body);
+    let p = &view.body["payload"];
+    assert_eq!(p["namespaces"][0]["owner"], "acme", "{p}");
+    let rights = p["rights"].as_array().unwrap();
+    assert_eq!(rights.len(), 1, "{p}");
+    assert_eq!(rights[0]["subject"], member.did);
+    assert_eq!(rights[0]["right"], "git.commit.sign");
+    assert_eq!(p["accounts"], json!([]));
+
+    // A link the member never began is unknown to them, read as the member.
+    let status = as_portal(
+        &f,
+        &b,
+        &format!("{GIT_NS}/account/link-status/0.1"),
+        json!({ "linkId": "lnk_nothing" }),
+    )
+    .await;
+    assert_ne!(code(&status), "permissionDenied", "{}", status.body);
+    assert_ne!(status.status, StatusCode::OK, "{}", status.body);
+
+    // Linking, unlinking and granting are outside the scope: the key is nobody.
+    for (task, payload) in [
+        ("account/link/0.1", json!({ "forge": "github.com" })),
+        ("account/unlink/0.1", json!({ "forge": "github.com" })),
+        (
+            "right/grant/0.3",
+            json!({
+                "subject": member.did,
+                "right": "git.repo.create",
+                "resource": "github.com/acme",
+            }),
+        ),
+    ] {
+        let r = as_portal(&f, &b, &format!("{GIT_NS}/{task}"), payload).await;
+        assert_ne!(r.status, StatusCode::OK, "{task}: {}", r.body);
+    }
+    let again = as_portal(&f, &b, &format!("{GIT_NS}/view/0.4"), json!({})).await;
+    assert_eq!(
+        again.body["payload"]["rights"].as_array().map(Vec::len),
+        Some(1),
+        "a portal key changed a right: {}",
+        again.body
+    );
+
+    // Signed out, the key reads nothing.
+    for s in vti_common::auth::session::list_sessions(&f.vtc.state.member_sessions_ks)
+        .await
+        .unwrap()
+        .iter()
+        .filter(|s| s.did == member.did)
+    {
+        vti_common::auth::session::delete_session(&f.vtc.state.member_sessions_ks, &s.session_id)
+            .await
+            .unwrap();
+    }
+    let gone = as_portal(&f, &b, &format!("{GIT_NS}/view/0.4"), json!({})).await;
+    assert_eq!(code(&gone), "permissionDenied", "{}", gone.body);
+}
+
 /// Item 3: the grant's scope must be the one step 2 offered.
 #[tokio::test]
 async fn a_grant_widening_the_offered_scope_is_refused() {
     let f = fixture().await;
     let (_, _, rs, _) = sign_in_v0_2(
         &f,
-        Some(json!(["vtc/directory", "vtc/groups", "vtc/rooms"])),
+        Some(json!([
+            "vtc/directory",
+            "vtc/groups",
+            "git-ns/view",
+            "git-ns/account/link-status",
+            "vtc/rooms"
+        ])),
     )
     .await;
     assert_eq!(

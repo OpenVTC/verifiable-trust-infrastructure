@@ -235,6 +235,11 @@ export type GitNsAccountList = Schemas["GitNsAccountList"];
 export type GitNsActivity = Schemas["GitNsActivity"];
 export type GitNsActivityItem = Schemas["GitNsActivityItem"];
 export type GitNsBreakGlassMark = Schemas["GitNsBreakGlassMark"];
+// The member's own view (`git-ns/view`), as the portal's Repos page reads it.
+export type GitNsViewNamespace = Schemas["GitNsViewV0_1GitNamespace"];
+export type GitNsRepoSummary = Schemas["GitNsViewV0_1RepoSummary"];
+export type GitNsRightRecord = Schemas["GitNsViewV0_1RightRecord"];
+export type GitNsForgeAccount = Schemas["GitNsViewV0_1ForgeAccount"];
 
 // ── Data rooms: the room-hosting administrator's reads ──────────────────
 //

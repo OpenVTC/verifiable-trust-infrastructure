@@ -717,6 +717,9 @@ const SIGNED_DOCUMENT_TYPES: &[&str] = &[
     "https://trusttasks.org/spec/git-ns/projection/show/0.1",
     "https://trusttasks.org/spec/git-ns/account/list/0.1",
     "https://trusttasks.org/spec/git-ns/activity/list/0.1",
+    // The member portal's Repositories page, signed by its sign-in key.
+    "https://trusttasks.org/spec/git-ns/view/0.4",
+    "https://trusttasks.org/spec/git-ns/account/link-status/0.1",
 ];
 
 /// Not a `Trust-Task` header, and not a document posted to `/trust-tasks`

@@ -1131,6 +1131,33 @@ do not prompt. Running a room as its owner, curating and direct-to-storage
 transfer from the browser come later
 ([`data-rooms-files.md`](../05-design-notes/data-rooms-files.md) §8.5).
 
+**Repositories** (`/members/#/repos`). What the member may do on the
+community's repositories: their own git rights, grouped by repository or
+namespace, with who gave each and any expiry; on the repositories they
+own or administer, what every other member holds there, with the
+granter's reason; every repository the community governs, with its
+owners; and the forge accounts linked to them. The page reads
+`git-ns/view/0.4` and `git-ns/account/link-status/0.1`, signed by the
+portal's sign-in key: a wallet sign-in offers `git-ns/view` and
+`git-ns/account/link-status` in its `signingScope` beside the directory
+and groups, and nothing else under `git-ns`. The view is the member's
+own, never the administrator's (a community administrator sees what the
+console shows in the console).
+
+**Linking or unlinking a forge account** is not signed by the portal key.
+It binds the account the forge then gives the member's roles to, so
+`auth/oob/grant/0.2` consumer item 6 excludes it from a delegated key,
+as it does every right change. The page asks the member's wallet instead
+(`window.vtaWallet.git.linkAccount` / `unlinkAccount`), which asks the
+member, signs `git-ns/account/link` or `git-ns/account/unlink` as their
+DID, and shows the forge's authorisation page and any device code in its
+own window; the page follows the link with `link-status` until it is
+`linked`, `expired` or `failed`. A link is offered only on a forge with a
+bridge-mode namespace, since the bridge is what gives the account its
+roles. A member whose wallet has no `git` channel is shown
+`cnm git link --forge <forge>`. Granting and revoking stay in `cnm git`
+and the console.
+
 **Routing.** The mount is fixed at `/members` and takes precedence
 over an operator website's own `/members` path. In subdomain mode it
 is served on the **API's** host, since its calls go to `/v1/member/*`

@@ -89,9 +89,18 @@ pub(crate) const URIS: &[&str] = &[
 /// the member (`auth/oob/prove/0.2` `signingScope`): the member directory, so
 /// the portal can read it and edit the member's own card, and the community's
 /// groups, so it can list, join and leave them, without asking the wallet for
-/// every document. Fixed for the surface, as the specification
-/// requires; the operator console offers none.
-pub(crate) const PORTAL_SIGNING_SCOPE: &[&str] = &["vtc/directory", "vtc/groups"];
+/// every document — and the member's own view of the community's repositories
+/// (`git-ns/view`) with where a forge-account link they began stands
+/// (`git-ns/account/link-status`), never another `git-ns` task: linking,
+/// unlinking and every right change take the member's own signature, through
+/// their wallet (`auth/oob/grant/0.2` consumer item 6). Fixed for the surface,
+/// as the specification requires; the operator console offers none.
+pub(crate) const PORTAL_SIGNING_SCOPE: &[&str] = &[
+    "vtc/directory",
+    "vtc/groups",
+    "git-ns/view",
+    "git-ns/account/link-status",
+];
 
 /// A declared error code: `auth/oob/<task>:<local>` for the codes one task
 /// declares, `auth/oob:<local>` for the family's shared ones (the published
