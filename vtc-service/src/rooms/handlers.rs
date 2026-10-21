@@ -357,6 +357,12 @@ pub(crate) async fn handle_create(
     // a typed payload, because re-deriving the signed bytes from a parsed payload is
     // only sound if that type round-trips losslessly — see `JoinAuthCtx::
     // verified_signer`.
+    let terms = match vti_rooms::wire::CreateRoomTerms::from_request(req) {
+        Ok(t) => t,
+        Err(reason) => {
+            return app_error_to_reject(&doc, &vti_common::error::AppError::Validation(reason));
+        }
+    };
     let authorized = match authz::authorize_create(&req.room_id, &req.owner_did, presenter) {
         Ok(a) => a,
         Err(e) => return app_error_to_reject(&doc, &e),
@@ -369,7 +375,9 @@ pub(crate) async fn handle_create(
     // asking a host for its disk, which is the host's to refuse; every operation
     // *within* the room stays authorized by the room's own credentials, and the
     // handlers below never consult the roster. See `super::policy`.
-    if let Err(e) = govern_creation(state, &authorized, req.visibility, req.retention_days).await {
+    if let Err(e) =
+        govern_creation(state, &authorized, terms.visibility, terms.retention_days).await
+    {
         return app_error_to_reject(&doc, &e);
     }
 
@@ -379,15 +387,15 @@ pub(crate) async fn handle_create(
         // what was just established — and taking it from here is what keeps them equal if
         // this ever grows a second way to be authorized.
         owner_did: authorized.owner_did().to_string(),
-        visibility: req.visibility,
+        visibility: terms.visibility,
         // The owner's choice, `chained` when unstated: joining a room means being able to
         // read it, and the alternative loses the room's contents at each membership change.
-        retention_policy: req.retention_policy.unwrap_or_default(),
+        retention_policy: terms.retention_policy,
         // What the caller asked for, or the default that draws no expectation.
-        anchor_cadence: req.anchor_cadence.unwrap_or_default(),
+        anchor_cadence: terms.anchor_cadence,
         epoch: 1,
         next_version: 1,
-        retention_days: req.retention_days.unwrap_or(DEFAULT_RETENTION_DAYS),
+        retention_days: terms.retention_days.unwrap_or(DEFAULT_RETENTION_DAYS),
         // A room is live from creation for one epoch lifetime; minting the next epoch
         // renews it. Nothing else moves this clock — see `vti_rooms::lifecycle`.
         epoch_expires_at: Some(now() + EPOCH_LIFETIME_DAYS_SECS),

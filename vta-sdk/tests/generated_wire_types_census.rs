@@ -248,7 +248,6 @@ const PREDATES_GENERATED: &[(&str, &str)] = &[
     ("vti-rooms/src/wire.rs", "ChainBody"),                   // rooms/epoch/chain/0.1
     ("vti-rooms/src/wire.rs", "ClaimOwnerBody"),              // rooms/owner/claim/0.1
     ("vti-rooms/src/wire.rs", "CommitsBody"),                 // rooms/epoch/commits/0.1
-    ("vti-rooms/src/wire.rs", "CreateRoomBody"),              // rooms/create/0.1
     ("vti-rooms/src/wire.rs", "CurateRecordBody"),            // rooms/records/curate/0.1
     ("vti-rooms/src/wire.rs", "GetRecordBody"),               // rooms/records/get/0.1
     ("vti-rooms/src/wire.rs", "ListRecordsBody"),             // rooms/records/list/0.1
@@ -259,7 +258,7 @@ const PREDATES_GENERATED: &[(&str, &str)] = &[
 ];
 
 /// The size of [`PREDATES_GENERATED`], asserted so the list cannot grow quietly.
-const PREDATES_GENERATED_COUNT: usize = 68;
+const PREDATES_GENERATED_COUNT: usize = 67;
 
 fn workspace_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))

@@ -270,30 +270,114 @@ pub struct CleartextContent {
     pub tags: Vec<String>,
 }
 
-/// `rooms/create/0.1` request.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct CreateRoomBody {
-    /// The room's own identifier, minted by its owner. This service does not assign one:
-    /// a room identified by something its host chose could not move to another host.
-    pub room_id: String,
+/// The `rooms/create/0.1` payload is the type `trust-tasks-rs` generates from the
+/// specification — never a copy here (the generated-wire-types census). A host reads
+/// what it keeps from it with [`CreateRoomTerms::from_request`].
+pub use trust_tasks_rs::specs::rooms::create::v0_1::Payload as CreateRoomBody;
+
+/// The terms a host records for a room it is asked to create, in this crate's own types.
+///
+/// The specification's enums and this crate's share their wire values, so each is read
+/// across by value; a value one side does not know is refused, never defaulted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CreateRoomTerms {
     pub visibility: Visibility,
-    pub owner_did: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// The owner's choice; [`crate::RetentionPolicy::Chained`] when unstated.
+    pub retention_policy: crate::RetentionPolicy,
+    /// [`crate::AnchorCadence::Manual`] when unstated, which draws no expectation.
+    pub anchor_cadence: crate::AnchorCadence,
+    /// The days asked for, if any; the host applies its own default otherwise.
     pub retention_days: Option<u32>,
-    /// Whether the room keeps its history readable across a membership change. Absent
-    /// means [`crate::RetentionPolicy::Chained`]. Fixed at creation: a host refuses an
-    /// epoch link for a `fromJoin` room.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub retention_policy: Option<crate::RetentionPolicy>,
-    /// What this room intends about anchoring. Absent reads as
-    /// [`crate::AnchorCadence::Manual`], which draws no expectation.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub anchor_cadence: Option<crate::AnchorCadence>,
-    /// Extension members (framework SPEC §4.5.1). Accepted because the schema declares
-    /// it; nothing here reads one.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub ext: Option<serde_json::Value>,
+}
+
+impl CreateRoomTerms {
+    /// Read the terms from a request, or say why they cannot be kept.
+    pub fn from_request(req: &CreateRoomBody) -> Result<Self, String> {
+        fn across<T: Serialize, U: serde::de::DeserializeOwned>(
+            value: &T,
+            what: &str,
+        ) -> Result<U, String> {
+            serde_json::to_value(value)
+                .and_then(serde_json::from_value)
+                .map_err(|e| format!("{what} is not one this host knows: {e}"))
+        }
+        Ok(Self {
+            visibility: across(&req.visibility, "visibility")?,
+            retention_policy: match &req.retention_policy {
+                Some(p) => across(p, "retentionPolicy")?,
+                None => crate::RetentionPolicy::default(),
+            },
+            anchor_cadence: match &req.anchor_cadence {
+                Some(c) => across(c, "anchorCadence")?,
+                None => crate::AnchorCadence::default(),
+            },
+            retention_days: match req.retention_days {
+                Some(days) => Some(u32::try_from(days.get()).map_err(|_| {
+                    format!("retentionDays {days} is more days than this host can hold a room")
+                })?),
+                None => None,
+            },
+        })
+    }
+}
+
+#[cfg(test)]
+mod create_terms_tests {
+    use super::*;
+
+    fn request(extra: serde_json::Value) -> CreateRoomBody {
+        let mut body = serde_json::json!({
+            "roomId": "did:webvh:QmRoom:rooms.example",
+            "ownerDid": "did:key:z6MkOwner",
+            "visibility": "attributed",
+        });
+        body.as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        serde_json::from_value(body).expect("a request the schema admits")
+    }
+
+    #[test]
+    fn unstated_terms_are_the_defaults() {
+        let t = CreateRoomTerms::from_request(&request(serde_json::json!({}))).unwrap();
+        assert_eq!(t.visibility, Visibility::Attributed);
+        assert_eq!(t.retention_policy, crate::RetentionPolicy::Chained);
+        assert_eq!(t.anchor_cadence, crate::AnchorCadence::default());
+        assert_eq!(t.retention_days, None);
+    }
+
+    #[test]
+    fn stated_terms_are_kept() {
+        let t = CreateRoomTerms::from_request(&request(serde_json::json!({
+            "visibility": "open",
+            "retentionPolicy": "fromJoin",
+            "anchorCadence": "renewal",
+            "retentionDays": 30,
+            "ext": { "org.example": {} },
+        })))
+        .unwrap();
+        assert_eq!(t.visibility, Visibility::Open);
+        assert_eq!(t.retention_policy, crate::RetentionPolicy::FromJoin);
+        assert_eq!(t.anchor_cadence, crate::AnchorCadence::Renewal);
+        assert_eq!(t.retention_days, Some(30));
+    }
+
+    #[test]
+    fn retention_beyond_what_a_host_holds_is_refused_not_truncated() {
+        let r = request(serde_json::json!({ "retentionDays": u64::from(u32::MAX) + 1 }));
+        assert!(CreateRoomTerms::from_request(&r).is_err());
+    }
+
+    #[test]
+    fn a_member_the_specification_does_not_declare_is_refused() {
+        let body = serde_json::json!({
+            "roomId": "did:webvh:QmRoom:rooms.example",
+            "ownerDid": "did:key:z6MkOwner",
+            "visibility": "attributed",
+            "retentionFor": 30,
+        });
+        assert!(serde_json::from_value::<CreateRoomBody>(body).is_err());
+    }
 }
 
 /// `rooms/create/0.1#response`.
@@ -793,12 +877,6 @@ pub struct MintEpochResponse {
 // and `u64`, exhaustive, no builders — exactly as the storage layer needs it.
 // The generated bindings remain the authority on the *schema*, which
 // `payload_flags_match_the_published_spec` below checks against.
-impl trust_tasks_rs::Payload for CreateRoomBody {
-    const TYPE_URI: &'static str = ROOMS_CREATE_TYPE;
-    const IS_PROOF_REQUIRED: bool = true;
-    const IS_RECIPIENT_REQUIRED: bool = true;
-    const IS_ISSUED_AT_REQUIRED: bool = true;
-}
 impl trust_tasks_rs::Payload for PutRecordBody {
     const TYPE_URI: &'static str = ROOMS_RECORDS_PUT_TYPE;
     const IS_PROOF_REQUIRED: bool = true;

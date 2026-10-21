@@ -33,7 +33,7 @@
 use serde_json::{Value, json};
 use trust_tasks_rs::validate::ValidatedPayload;
 use vti_rooms::wire::*;
-use vti_rooms::{Record, RecordStatus, Visibility, merkle};
+use vti_rooms::{Record, RecordStatus, merkle};
 
 /// Validate `value` against the schema published for `T`.
 fn check<T: ValidatedPayload>(what: &str, value: &Value) {
@@ -57,44 +57,8 @@ fn presentation() -> AuthorityPresentation {
     }
 }
 
-#[test]
-fn create_room_conforms() {
-    use trust_tasks_rs::specs::rooms::create::v0_1::Payload;
-
-    for visibility in [
-        Visibility::Open,
-        Visibility::Attributed,
-        Visibility::Private,
-    ] {
-        let body = CreateRoomBody {
-            room_id: "did:webvh:example.com:rooms:northwind".into(),
-            owner_did: "did:key:z6MkOwner".into(),
-            visibility,
-            retention_days: Some(90),
-            retention_policy: Some(vti_rooms::RetentionPolicy::FromJoin),
-            anchor_cadence: Some(vti_rooms::AnchorCadence::Renewal),
-            ext: None,
-        };
-        check::<Payload>(
-            &format!("CreateRoomBody ({visibility:?})"),
-            &serde_json::to_value(&body).expect("serialise"),
-        );
-    }
-
-    // `retentionDays` is optional, and "absent" must serialise as absent rather than
-    // `null` — a schema typing it `integer` rejects an explicit null.
-    let body = CreateRoomBody {
-        room_id: "did:webvh:example.com:rooms:northwind".into(),
-        owner_did: "did:key:z6MkOwner".into(),
-        visibility: Visibility::Open,
-        retention_days: None,
-        retention_policy: None,
-        anchor_cadence: Some(vti_rooms::AnchorCadence::Renewal),
-        ext: None,
-    };
-    let value = serde_json::to_value(&body).expect("serialise");
-    check::<Payload>("CreateRoomBody with no retention", &value);
-}
+// `rooms/create/0.1`'s payload is the generated type itself (`wire::CreateRoomBody`), so
+// there is no copy left to hold to the schema.
 
 #[test]
 fn put_record_conforms_on_both_tiers() {

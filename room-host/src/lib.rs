@@ -675,6 +675,10 @@ async fn create(state: &HostState, doc: &TrustTask<Value>, payload: Value) -> An
         Ok(p) => p,
         Err(e) => return from_app_error(doc, &e),
     };
+    let terms = match vti_rooms::wire::CreateRoomTerms::from_request(&req) {
+        Ok(t) => t,
+        Err(reason) => return reject(doc, RejectReason::MalformedRequest { reason }),
+    };
     let authorized = match authz::authorize_create(&req.room_id, &req.owner_did, &presenter) {
         Ok(a) => a,
         Err(e) => return from_app_error(doc, &e),
@@ -686,15 +690,15 @@ async fn create(state: &HostState, doc: &TrustTask<Value>, payload: Value) -> An
         // checked — and reading it from here is what keeps them equal if this ever grows a
         // second way to be authorized.
         owner_did: authorized.owner_did().to_string(),
-        visibility: req.visibility,
+        visibility: terms.visibility,
         // The owner's choice, `chained` when unstated: joining a room means being able to
         // read it, and the alternative loses the room's contents at each membership change.
-        retention_policy: req.retention_policy.unwrap_or_default(),
+        retention_policy: terms.retention_policy,
         // What the caller asked for, or the default that draws no expectation.
-        anchor_cadence: req.anchor_cadence.unwrap_or_default(),
+        anchor_cadence: terms.anchor_cadence,
         epoch: 1,
         next_version: 1,
-        retention_days: req.retention_days.unwrap_or(DEFAULT_RETENTION_DAYS),
+        retention_days: terms.retention_days.unwrap_or(DEFAULT_RETENTION_DAYS),
         // A room is live from creation for one epoch lifetime; minting the next epoch
         // renews it. Nothing else moves this clock — see `vti_rooms::lifecycle`.
         epoch_expires_at: Some(now() + EPOCH_LIFETIME_DAYS_SECS),
