@@ -6,6 +6,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import { COMMUNITY_ROOMS_LIST_TASK } from "@/lib/community-rooms-api";
 import {
+  GROUPS_BINDINGS_ADD_TASK,
   GROUPS_BINDINGS_LIST_TASK,
   GROUPS_LIST_TASK,
   GROUPS_MEMBERS_LIST_TASK,
@@ -14,6 +15,7 @@ import {
   GROUPS_SHOW_TASK,
   audienceWithin,
 } from "@/lib/groups";
+import { ROLES_LIST_TASK } from "@/lib/roles";
 import { Groups } from "@/plugins/groups";
 import {
   NAME_BOOK_ROUTES,
@@ -185,6 +187,73 @@ describe("a group's rooms", () => {
     expect(await screen.findByText(/read, write/)).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Bind room" })).toBeNull();
     expect(screen.queryByRole("button", { name: "End" })).toBeNull();
+  });
+});
+
+describe("what a group gives its members", () => {
+  const routes = (joinPolicy: string) => [
+    ...ROUTES,
+    taskRoute(GROUPS_SHOW_TASK, {
+      group: group({ joinPolicy, carriesAuthority: true }),
+      myMembership: "none",
+    }),
+    taskRoute(GROUPS_MEMBERS_LIST_TASK, { items: [] }),
+    taskRoute(GROUPS_REQUESTS_LIST_TASK, { items: [] }),
+    taskRoute(GROUPS_BINDINGS_LIST_TASK, {
+      items: [
+        {
+          bindingId: "gb_P2k8W5qYc6Vd1MsKAAAAAA",
+          binding: { kind: "grants", grants: [{ capability: "vtc.invitations.manage" }] },
+          state: "active",
+          createdAt: "2026-10-20T09:00:00Z",
+        },
+      ],
+    }),
+    taskRoute(ROLES_LIST_TASK, { roles: [] }),
+    taskRoute(GROUPS_BINDINGS_ADD_TASK, (p) => ({
+      binding: {
+        bindingId: "gb_Q3k8W5qYc6Vd1MsKAAAAAA",
+        binding: (p as { binding: unknown }).binding,
+        state: "active",
+        createdAt: "2026-10-21T09:00:00Z",
+      },
+    })),
+  ];
+
+  it("lists its capabilities and gives one the manager holds", async () => {
+    const requests = mockFetch(routes("closed"));
+    renderWithProviders(<Groups />, {
+      route: `/groups/${encodeURIComponent(GROUP_ID)}`,
+      path: "/groups/*",
+      whoami: whoamiWith(["vtc.groups.manage", "vtc.invitations.manage", "vtc.config.admin"]),
+    });
+    expect(await screen.findByText("vtc.invitations.manage", { selector: "span" })).toBeTruthy();
+    // Only what the manager holds is offered; what creates authority is marked.
+    expect(screen.queryByText("vtc.roles.assign")).toBeNull();
+    fireEvent.click(screen.getByRole("checkbox", { name: /vtc\.config\.admin/ }));
+    expect(screen.getByText(/another administrator approves it/)).toBeTruthy();
+    fireEvent.change(screen.getByLabelText("Why give it"), { target: { value: "ops rota" } });
+    fireEvent.click(screen.getByRole("button", { name: "Give" }));
+    await waitFor(() =>
+      expect(sentPayloads(requests, GROUPS_BINDINGS_ADD_TASK)).toEqual([
+        {
+          groupId: GROUP_ID,
+          binding: { kind: "grants", grants: [{ capability: "vtc.config.admin" }] },
+          reason: "ops rota",
+        },
+      ]),
+    );
+  });
+
+  it("offers nothing to give on a group that is not closed", async () => {
+    mockFetch(routes("request"));
+    renderWithProviders(<Groups />, {
+      route: `/groups/${encodeURIComponent(GROUP_ID)}`,
+      path: "/groups/*",
+      whoami: whoamiWith(["vtc.groups.manage", "vtc.invitations.manage"]),
+    });
+    expect(await screen.findByText(/Only a closed group can give authority/)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Give" })).toBeNull();
   });
 });
 

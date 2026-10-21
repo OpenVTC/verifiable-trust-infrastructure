@@ -312,6 +312,11 @@ async fn authority_bindings_add_refuses_what_its_specification_declares() {
     let (status, b) = fix.bind(&closed, grants(&["vtc.invitations.manage"])).await;
     assert_eq!(status, StatusCode::OK, "{b}");
     assert_eq!(b["payload"]["binding"]["state"], "active");
+    let (_, shown) = fix.as_admin("show", json!({ "groupId": closed })).await;
+    assert_eq!(
+        shown["payload"]["group"]["carriesAuthority"], true,
+        "{shown}"
+    );
 
     // Item 5 of members/add: a member whose role does not admit what the group
     // confers is refused, not given an inert grant.

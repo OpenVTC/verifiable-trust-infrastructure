@@ -646,8 +646,8 @@ pub async fn wire(state: &AppState, group: &Group, standing: &Standing) -> Resul
         "visibility": group.visibility.as_str(),
         "showMembers": group.show_members.as_str(),
         "issuesCredentials": group.issues_credentials,
-        // Bindings are not served yet, so no group carries authority.
-        "carriesAuthority": false,
+        // A `grants` or `role` binding, in any state (bindings/remove item 4).
+        "carriesAuthority": authority::carries_authority(state, &group.group_id).await?,
         "createdAt": group.created_at,
         "updatedAt": group.updated_at,
     });

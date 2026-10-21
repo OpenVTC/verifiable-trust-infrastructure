@@ -40,8 +40,10 @@ it.
 
 The console's **Groups** page (Membership) lists every group the administrator may see;
 a holder of `vtc.groups.manage` creates one there. A group's page shows its settings,
-its members by their directory name and picture, the requests to join it, its managers
-and deleting it — each part shown to the group's managers only, and to anyone else only
+its members by their directory name and picture, the requests to join it, its managers,
+the rooms it is bound to, what it gives its members (**Authority** — capabilities the
+manager holds, or a role's, on a closed group; a change that creates authority is sent
+for another administrator's approval and shows in the action list) and deleting it — each part shown to the group's managers only, and to anyone else only
 what the community answers them.
 
 The member portal's **Groups** page (`#/groups`) lists the groups a member belongs to

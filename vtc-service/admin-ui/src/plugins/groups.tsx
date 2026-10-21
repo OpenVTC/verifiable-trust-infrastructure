@@ -13,7 +13,7 @@
 import { useMemo, useState } from "react";
 import { Route, Routes, useNavigate, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { DoorOpen, Plus, Trash2, UserMinus, UserPlus } from "lucide-react";
+import { DoorOpen, KeyRound, Plus, Trash2, UserMinus, UserPlus } from "lucide-react";
 
 import { useConfirm } from "@/components/ConfirmDialog";
 import { DataTable } from "@/components/DataTable";
@@ -31,6 +31,7 @@ import {
   addGroupManager,
   addGroupMember,
   audienceWithin,
+  confersAuthority,
   createGroup,
   decideGroupRequest,
   deleteGroup,
@@ -46,6 +47,8 @@ import {
   type Audience,
   type JoinPolicy,
 } from "@/lib/groups";
+import { CAPABILITIES } from "@/lib/acl";
+import { listRoles } from "@/lib/roles";
 import { gestureFromConfirm } from "@/lib/signed-act";
 import { useToast } from "@/lib/toast";
 import { holds, useCapabilities } from "@/lib/viewer";
@@ -347,6 +350,7 @@ function GroupPage() {
           {manages && <GroupRequests group={group} />}
           {manages && <GroupManagers group={group} />}
           {manages && <GroupRooms group={group} />}
+          {manages && <GroupAuthority group={group} />}
           {manages && <DeleteGroup group={group} onDeleted={() => navigate("..")} />}
         </>
       )}
@@ -756,7 +760,7 @@ function GroupRooms({ group }: { group: Group }) {
     },
     onError: (err) => toast.pushFromError(err, "Not ended"),
   });
-  const items = bindings.data ?? [];
+  const items = (bindings.data ?? []).filter((b) => !confersAuthority(b.binding as { kind?: string }));
   return (
     <section className="card">
       <h3>
@@ -843,6 +847,190 @@ function GroupRooms({ group }: { group: Group }) {
           />
           <button type="submit" className="secondary" disabled={!ready || add.isPending}>
             Bind room
+          </button>
+        </form>
+      )}
+    </section>
+  );
+}
+
+/** What this group confers on its members (`grants` and `role` bindings,
+ *  VTI-DIR-100 – 105): written onto each member's access-control entry, inside
+ *  their role's ceiling. Binding something authority-conferring, and every later
+ *  change to who holds it, waits for another administrator's approval. */
+function GroupAuthority({ group }: { group: Group }) {
+  const qc = useQueryClient();
+  const toast = useToast();
+  const confirm = useConfirm();
+  const caps = useCapabilities();
+  const bindings = useQuery({
+    queryKey: ["groups", "bindings", group.groupId],
+    queryFn: () => listGroupBindings(group.groupId),
+  });
+  const roles = useQuery({ queryKey: ["roles", "list"], queryFn: () => listRoles(true) });
+  const [kind, setKind] = useState<"grants" | "role">("grants");
+  const [chosen, setChosen] = useState<string[]>([]);
+  const [role, setRole] = useState("");
+  const [reason, setReason] = useState("");
+  // A binder binds only what they hold themselves (VTI-ACL-071).
+  const bindable = CAPABILITIES.filter((c) => holds(caps, c.id));
+  const closed = group.joinPolicy === "closed";
+  const ready =
+    reason.trim() !== "" && (kind === "grants" ? chosen.length > 0 : role.trim() !== "");
+  const refresh = () => void qc.invalidateQueries({ queryKey: ["groups"] });
+  const add = useMutation({
+    mutationFn: () =>
+      addGroupBinding(
+        group.groupId,
+        kind === "grants"
+          ? { kind: "grants", grants: chosen.map((capability) => ({ capability })) }
+          : { kind: "role", role: role.trim() },
+        reason.trim(),
+        gestureFromConfirm(confirm),
+      ),
+    onSuccess: () => {
+      setChosen([]);
+      setRole("");
+      setReason("");
+      refresh();
+      toast.push("success", `Members of ${group.name} hold it now, where their role admits it.`);
+    },
+    onError: (err) => {
+      refresh();
+      toast.pushFromError(err, "Not bound");
+    },
+  });
+  const remove = useMutation({
+    mutationFn: (bindingId: string) =>
+      removeGroupBinding(group.groupId, bindingId, "Ended from the group's page.", gestureFromConfirm(confirm)),
+    onSuccess: () => {
+      refresh();
+      toast.push("success", "Ended: what it gave the group's members is taken away.");
+    },
+    onError: (err) => {
+      refresh();
+      toast.pushFromError(err, "Not ended");
+    },
+  });
+  const items = (bindings.data ?? []).filter((b) => confersAuthority(b.binding as { kind?: string }));
+  const conferring = (id: string) => CAPABILITIES.find((c) => c.id === id)?.conferring ?? false;
+  return (
+    <section className="card">
+      <h3>
+        <KeyRound size={16} aria-hidden="true" /> Authority
+      </h3>
+      <p className="muted">
+        What this group gives its members is written onto each member&rsquo;s access-control entry,
+        inside their administrative role, and taken away when they leave. A member whose role does
+        not admit it cannot be added. Giving authority that creates authority — and every later
+        change to who holds it through the group — waits for another administrator&rsquo;s approval.
+      </p>
+      {bindings.error && <p className="error">{(bindings.error as Error).message}</p>}
+      {items.length === 0 && bindings.isSuccess && <p className="muted">It gives its members nothing.</p>}
+      <ul className="group-managers">
+        {items.map((b) => {
+          const spec = b.binding as { kind: string; grants?: { capability: string; resource?: string }[]; role?: string };
+          return (
+            <li key={b.bindingId}>
+              <span>
+                {spec.kind === "role"
+                  ? `The ${spec.role} role's capabilities`
+                  : (spec.grants ?? [])
+                      .map((g) => (g.resource ? `${g.capability}@${g.resource}` : g.capability))
+                      .join(", ")}
+                {b.state !== "active" && <span className="pill">{b.state}</span>}
+              </span>
+              {b.state === "active" && (
+                <button
+                  type="button"
+                  className="secondary"
+                  disabled={remove.isPending}
+                  onClick={() => remove.mutate(b.bindingId)}
+                >
+                  End
+                </button>
+              )}
+            </li>
+          );
+        })}
+      </ul>
+      {!closed && (
+        <p className="muted">
+          Only a closed group can give authority: close it first, so that only its managers add
+          members.
+        </p>
+      )}
+      {closed && (
+        <form
+          className="stack"
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (ready) add.mutate();
+          }}
+        >
+          <fieldset className="inline-form">
+            <legend>Give its members</legend>
+            <label>
+              <input type="radio" name="authority-kind" checked={kind === "grants"} onChange={() => setKind("grants")} />{" "}
+              Capabilities
+            </label>
+            <label>
+              <input type="radio" name="authority-kind" checked={kind === "role"} onChange={() => setKind("role")} />{" "}
+              A role&rsquo;s capabilities
+            </label>
+          </fieldset>
+          {kind === "grants" && (
+            <fieldset className="stack">
+              <legend>Capabilities you hold</legend>
+              {bindable.length === 0 && <p className="muted">You hold no capability to give.</p>}
+              {bindable.map((c) => (
+                <label key={c.id}>
+                  <input
+                    type="checkbox"
+                    checked={chosen.includes(c.id)}
+                    onChange={(e) =>
+                      setChosen((cur) => (e.target.checked ? [...cur, c.id] : cur.filter((x) => x !== c.id)))
+                    }
+                  />{" "}
+                  <code>{c.id}</code> <span className="muted">— {c.gates}</span>
+                  {c.conferring && <span className="pill">needs approval</span>}
+                </label>
+              ))}
+            </fieldset>
+          )}
+          {kind === "role" &&
+            (roles.data ? (
+              <select aria-label="Role" value={role} onChange={(e) => setRole(e.target.value)}>
+                <option value="">Choose a role…</option>
+                {roles.data.map((r) => (
+                  <option key={r.name} value={r.name}>
+                    {r.name}
+                  </option>
+                ))}
+              </select>
+            ) : (
+              <input
+                aria-label="Role"
+                placeholder="A role's name, e.g. moderator"
+                value={role}
+                maxLength={64}
+                onChange={(e) => setRole(e.target.value)}
+              />
+            ))}
+          <input
+            aria-label="Why give it"
+            placeholder="Why, e.g. working group members may invite"
+            value={reason}
+            maxLength={1024}
+            onChange={(e) => setReason(e.target.value)}
+          />
+          {kind === "grants" && chosen.some(conferring) && (
+            <p className="muted">
+              This creates authority, so another administrator approves it before anyone holds it.
+            </p>
+          )}
+          <button type="submit" className="secondary" disabled={!ready || add.isPending}>
+            Give
           </button>
         </form>
       )}

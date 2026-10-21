@@ -171,7 +171,7 @@ export async function removeGroupManager(groupId: string, entryId: string): Prom
   return body.managers;
 }
 
-// ── Bindings (`vtc/groups/bindings/*`): room bindings only ─────────────────
+// ── Bindings (`vtc/groups/bindings/*`) ─────────────────────────────────────
 
 /** A room binding's terms, as `bindings/add` takes them. */
 export interface RoomBindingSpec {
@@ -182,6 +182,31 @@ export interface RoomBindingSpec {
   validFor: string;
 }
 
+/** A capability, optionally qualified — `acl/_shared/0.2` `CapabilityRef`. */
+export interface BindingCapability {
+  capability: string;
+  resource?: string;
+}
+
+/** A grant set the group confers on its members, inside each one's role
+ *  ceiling (VTI-DIR-100 – 102). */
+export interface GrantsBindingSpec {
+  kind: "grants";
+  grants: BindingCapability[];
+}
+
+/** A defined role's ceiling, conferred by reference — never the role itself. */
+export interface RoleBindingSpec {
+  kind: "role";
+  role: string;
+}
+
+export type BindingSpec = RoomBindingSpec | GrantsBindingSpec | RoleBindingSpec;
+
+/** Whether a binding makes its group carry authority. */
+export const confersAuthority = (spec: { kind?: string }): boolean =>
+  spec.kind === "grants" || spec.kind === "role";
+
 /** A group's bindings — to its managers only. */
 export async function listGroupBindings(groupId: string): Promise<GroupBinding[]> {
   const body = await postSignedRead<GroupBindingsListResponse>(GROUPS_BINDINGS_LIST_TASK, {
@@ -190,10 +215,12 @@ export async function listGroupBindings(groupId: string): Promise<GroupBinding[]
   return body.items;
 }
 
-/** Bind a group to a community room, after the requester's bound gesture. */
+/** Bind a group to a community room or to capabilities, after the requester's
+ *  bound gesture. Binding an authority-conferring capability is sent for
+ *  another administrator's approval: the call then throws a `ParkedAction`. */
 export async function addGroupBinding(
   groupId: string,
-  binding: RoomBindingSpec,
+  binding: BindingSpec,
   reason: string,
   confirmGesture: ConfirmGesture,
 ): Promise<GroupBinding> {
@@ -206,7 +233,8 @@ export async function addGroupBinding(
 }
 
 /** End a binding, after the requester's bound gesture: `removing` while what only it
- *  covered is withdrawn, `removed` once nothing was. */
+ *  covered is withdrawn, `removed` once nothing was. Ending one that confers
+ *  authority is a reduction of every member, and may throw a `ParkedAction`. */
 export async function removeGroupBinding(
   groupId: string,
   bindingId: string,
