@@ -18,8 +18,8 @@
 //! None has a REST route. A group the caller may not see answers `notFound`
 //! exactly as one that does not exist, on every task.
 //!
-//! Only static groups are served. A dynamic group's rule is checked, then the
-//! create is refused `kindNotServed`: nothing computes its membership yet.
+//! A dynamic group's members are computed from its rule (`groups::dynamic`):
+//! `members/{add,remove}` refuse it, `leave` opts out and `join` undoes that.
 
 use chrono::Utc;
 use serde_json::{Value, json};
@@ -107,7 +107,6 @@ macro_rules! codes {
 
 codes! {
     CREATE_ERR_RULE_INVALID = group_create::RULE_INVALID;
-    CREATE_ERR_KIND_NOT_SERVED = group_create::KIND_NOT_SERVED;
     CREATE_ERR_SETTINGS_INVALID = group_create::SETTINGS_INVALID;
     CREATE_ERR_POLICY_REFUSED = group_create::POLICY_REFUSED;
     CREATE_ERR_NO_KEY_HOLDER = group_create::NO_KEY_HOLDER;
@@ -123,11 +122,13 @@ codes! {
     ADD_ERR_NOT_FOUND = members_add::NOT_FOUND;
     ADD_ERR_ENTRY_NOT_FOUND = members_add::ENTRY_NOT_FOUND;
     ADD_ERR_ALREADY_MEMBER = members_add::ALREADY_MEMBER;
+    ADD_ERR_DYNAMIC_GROUP = members_add::DYNAMIC_GROUP;
     ADD_ERR_EXCEEDS_ROLE_CEILING = members_add::EXCEEDS_ROLE_CEILING;
     ADD_ERR_KEY_HOLDER_UNAVAILABLE = members_add::KEY_HOLDER_UNAVAILABLE;
     ADD_ERR_KEY_HOLDER_REFUSED = members_add::KEY_HOLDER_REFUSED;
     REMOVE_ERR_NOT_FOUND = members_remove::NOT_FOUND;
     REMOVE_ERR_NOT_IN_GROUP = members_remove::NOT_IN_GROUP;
+    REMOVE_ERR_DYNAMIC_GROUP = members_remove::DYNAMIC_GROUP;
     MEMBERS_LIST_ERR_NOT_FOUND = members_list::NOT_FOUND;
     MEMBERS_LIST_ERR_CURSOR_INVALID = members_list::CURSOR_INVALID;
     JOIN_ERR_NOT_FOUND = group_join::NOT_FOUND;
@@ -139,6 +140,7 @@ codes! {
     JOIN_ERR_KEY_HOLDER_REFUSED = group_join::KEY_HOLDER_REFUSED;
     LEAVE_ERR_NOT_FOUND = group_leave::NOT_FOUND;
     LEAVE_ERR_NOT_IN_GROUP = group_leave::NOT_IN_GROUP;
+    LEAVE_ERR_ALREADY_OPTED_OUT = group_leave::ALREADY_OPTED_OUT;
     REQUESTS_LIST_ERR_NOT_FOUND = requests_list::NOT_FOUND;
     REQUESTS_LIST_ERR_CURSOR_INVALID = requests_list::CURSOR_INVALID;
     DECIDE_ERR_NOT_FOUND = requests_decide::NOT_FOUND;
@@ -568,13 +570,7 @@ async fn handle_create(
             "showMembers is never wider than visibility.",
         );
     }
-    if dynamic {
-        return declared(
-            &doc,
-            CREATE_ERR_KIND_NOT_SERVED,
-            "This community serves only static groups.",
-        );
-    }
+    // A dynamic group stores `closed`: nobody joins it by their own act.
     let join_policy = p
         .get("joinPolicy")
         .and_then(Value::as_str)
@@ -649,6 +645,12 @@ async fn handle_create(
             .get("description")
             .and_then(Value::as_str)
             .map(str::to_string),
+        kind: if dynamic {
+            groups::GroupKind::Dynamic
+        } else {
+            groups::GroupKind::Static
+        },
+        rule: if dynamic { rule.cloned() } else { None },
         join_policy,
         visibility,
         show_members,
@@ -674,9 +676,13 @@ async fn handle_create(
     {
         return app_error_to_reject(&doc, &e);
     }
-    // Step 3: only now is the group stored.
+    // Step 3: only now is the group stored. A dynamic group's members are
+    // computed after (item 6).
     if let Err(e) = groups::put(state.directory.ks(), &group).await {
         return app_error_to_reject(&doc, &e);
+    }
+    if dynamic {
+        groups::dynamic::kick();
     }
     match groups::wire(state, &group, &who).await {
         Ok(g) => success_response(&doc, json!({ "group": g })),
@@ -705,12 +711,37 @@ async fn handle_update(
         Ok(g) => g,
         Err(reject) => return reject,
     };
-    // Item 2: a static group never takes a rule.
-    if p.get("rule").is_some() {
-        return declared(&doc, UPDATE_ERR_RULE_INVALID, "A static group has no rule.");
-    }
+    let dynamic = before.kind == groups::GroupKind::Dynamic;
     let mut next = before.clone();
     let mut changed = Vec::new();
+    // Item 2: the rule — a dynamic group's only, and verified facts only.
+    if let Some(rule) = p.get("rule") {
+        if !dynamic {
+            return declared(&doc, UPDATE_ERR_RULE_INVALID, "A static group has no rule.");
+        }
+        let schema = match crate::directory::fields::schema(state.directory.ks()).await {
+            Ok(s) => s,
+            Err(e) => return app_error_to_reject(&doc, &e),
+        };
+        if let Err(e) = groups::check_rule(rule, &schema) {
+            let mut details = json!({ "reason": e.reason.clone() });
+            if let Some(f) = &e.field {
+                details["field"] = json!(f);
+            }
+            return declared_with(&doc, UPDATE_ERR_RULE_INVALID, e.reason, details);
+        }
+        if next.rule.as_ref() != Some(rule) {
+            next.rule = Some(rule.clone());
+            changed.push("rule".to_string());
+        }
+    }
+    if dynamic && p.get("joinPolicy").is_some() {
+        return declared(
+            &doc,
+            UPDATE_ERR_SETTINGS_INVALID,
+            "A dynamic group has no join policy: its rule decides who is in it.",
+        );
+    }
     if let Some(n) = p.get("name").and_then(Value::as_str)
         && n != next.name
     {
@@ -832,6 +863,10 @@ async fn handle_update(
     // Item 4: a narrowing applies at once — every read decides from the record.
     if let Err(e) = groups::put(state.directory.ks(), &next).await {
         return app_error_to_reject(&doc, &e);
+    }
+    // Item 6: a changed rule recomputes the membership.
+    if next.rule != before.rule {
+        groups::dynamic::kick();
     }
     match groups::wire(state, &next, &who).await {
         Ok(g) => success_response(&doc, json!({ "group": g })),
@@ -1222,6 +1257,13 @@ async fn handle_members_add(
         Ok(g) => g,
         Err(reject) => return reject,
     };
+    if group.kind == groups::GroupKind::Dynamic {
+        return declared(
+            &doc,
+            ADD_ERR_DYNAMIC_GROUP,
+            "This group is dynamic: its rule decides who is in it.",
+        );
+    }
     // Item 2.
     let did = match active_entry(state, entry_id).await {
         Ok(Some(d)) => d,
@@ -1404,6 +1446,13 @@ async fn handle_members_remove(
         Ok(g) => g,
         Err(reject) => return reject,
     };
+    if group.kind == groups::GroupKind::Dynamic {
+        return declared(
+            &doc,
+            REMOVE_ERR_DYNAMIC_GROUP,
+            "This group is dynamic: its rule decides who is in it, and a member may opt out.",
+        );
+    }
     // VTI-DIR-104: removing a member from a group carrying authority is a
     // reduction of what it gave them, on the terms of any reduction.
     let reduced = match authority_removal_gate(state, &who, &group, entry_id, &doc).await {
@@ -1737,6 +1786,9 @@ async fn handle_join(
         Err(e) => return app_error_to_reject(&doc, &e),
     };
     who.entry_id = Some(entry_id.clone());
+    if group.kind == groups::GroupKind::Dynamic {
+        return join_dynamic(state, &doc, &who, &group, &entry_id).await;
+    }
     // Item 2.
     if group.join_policy == JoinPolicy::Closed {
         return declared(
@@ -1863,6 +1915,158 @@ async fn handle_join(
     )
 }
 
+/// `join/0.1` items 2 – 3 for a dynamic group: the only join is undoing an
+/// opt-out. Where the rule admits the caller now they are admitted as a
+/// recomputation would (`source: rule`, credential first); otherwise the
+/// opt-out is withdrawn and they become a member when the rule admits them.
+async fn join_dynamic(
+    state: &AppState,
+    doc: &TrustTask<Value>,
+    who: &Standing,
+    group: &Group,
+    entry_id: &str,
+) -> TrustTaskOutcome {
+    use groups::dynamic;
+    let ks = state.directory.ks();
+    if who.member_of.contains(&group.group_id) {
+        return declared(
+            doc,
+            JOIN_ERR_ALREADY_MEMBER,
+            "You already belong to this group.",
+        );
+    }
+    match dynamic::opted_out(ks, &group.group_id, entry_id).await {
+        Ok(true) => {}
+        Ok(false) => {
+            return declared(
+                doc,
+                JOIN_ERR_NOT_JOINABLE,
+                "This group is dynamic: its rule decides who is in it. You can only rejoin one \
+                 you opted out of.",
+            );
+        }
+        Err(e) => return app_error_to_reject(doc, &e),
+    }
+    let admitted = async {
+        let schema = crate::directory::fields::schema(ks).await?;
+        let subject = crate::directory::read::subject_by_did(state, &who.did).await?;
+        Ok::<bool, AppError>(subject.is_some_and(|s| {
+            s.active
+                && group
+                    .rule
+                    .as_ref()
+                    .is_some_and(|r| dynamic::admits(r, &s, &schema))
+        }))
+    }
+    .await;
+    let admitted = match admitted {
+        Ok(a) => a,
+        Err(e) => return app_error_to_reject(doc, &e),
+    };
+    let now = Utc::now();
+    // Remote first: the credential before the opt-out goes, so a VTA that does
+    // not answer leaves the member as they were.
+    if admitted && let Err(e) = dynamic::admit(state, group, &who.did, entry_id, now).await {
+        return holder_refusal(
+            doc,
+            JOIN_ERR_KEY_HOLDER_UNAVAILABLE,
+            None,
+            HolderError::Unavailable(e.to_string()),
+            None,
+        );
+    }
+    if let Err(e) = dynamic::withdraw_opt_out(ks, &group.group_id, entry_id).await {
+        return app_error_to_reject(doc, &e);
+    }
+    if let Err(e) =
+        audit_membership(state, &who.did, &group.group_id, entry_id, "joined", None).await
+    {
+        return app_error_to_reject(doc, &e);
+    }
+    groups::dynamic::kick();
+    if !admitted {
+        return success_response(
+            doc,
+            json!({
+                "groupId": group.group_id,
+                "outcome": "optOutWithdrawn",
+                "credentialId": null,
+            }),
+        );
+    }
+    let m = match groups::membership(ks, &group.group_id, entry_id).await {
+        Ok(Some(m)) => m,
+        Ok(None) => {
+            return app_error_to_reject(
+                doc,
+                &AppError::Internal("the admission was not recorded".into()),
+            );
+        }
+        Err(e) => return app_error_to_reject(doc, &e),
+    };
+    success_response(
+        doc,
+        json!({
+            "groupId": group.group_id,
+            "outcome": "joined",
+            "member": groups::member_wire(&m, who, None),
+            "credentialId": m.credential_id,
+        }),
+    )
+}
+
+/// `leave/0.1` item 3 for a dynamic group: record the opt-out, then end any
+/// membership. Allowed whether or not the rule admits the caller now, so a
+/// member may decline a group before it reaches them.
+async fn leave_dynamic(
+    state: &AppState,
+    doc: &TrustTask<Value>,
+    who: &Standing,
+    group: &Group,
+    entry_id: &str,
+) -> TrustTaskOutcome {
+    let ks = state.directory.ks();
+    match groups::dynamic::opted_out(ks, &group.group_id, entry_id).await {
+        Ok(true) => {
+            return declared(
+                doc,
+                LEAVE_ERR_ALREADY_OPTED_OUT,
+                "You have already opted out of this group.",
+            );
+        }
+        Ok(false) => {}
+        Err(e) => return app_error_to_reject(doc, &e),
+    }
+    // The opt-out first: a recomputation racing this never re-admits them.
+    if let Err(e) = groups::dynamic::opt_out(ks, &group.group_id, entry_id).await {
+        return app_error_to_reject(doc, &e);
+    }
+    let held = {
+        let _guard = crate::directory::WRITE_LOCK.lock().await;
+        match groups::membership(ks, &group.group_id, entry_id).await {
+            Ok(Some(m)) => {
+                if let Err(e) = groups::remove_membership(ks, &group.group_id, entry_id).await {
+                    return app_error_to_reject(doc, &e);
+                }
+                Some(m)
+            }
+            Ok(None) => None,
+            Err(e) => return app_error_to_reject(doc, &e),
+        }
+    };
+    if let Err(e) =
+        audit_membership(state, &who.did, &group.group_id, entry_id, "optedOut", None).await
+    {
+        return app_error_to_reject(doc, &e);
+    }
+    groups::bindings::kick();
+    let mut body = json!({ "groupId": group.group_id, "state": "optedOut" });
+    if let Some(u) = held.and_then(|m| m.credential_valid_until) {
+        body["credentialValidUntil"] = json!(u);
+    }
+    success_response(doc, body)
+}
+
 /// `leave/0.1` (items 1 – 4) for a static group: withdraw a pending request,
 /// else end the membership.
 async fn handle_leave(
@@ -1902,6 +2106,9 @@ async fn handle_leave(
         Err(e) => return app_error_to_reject(&doc, &e),
     };
     who.entry_id = Some(entry_id.clone());
+    if group.kind == groups::GroupKind::Dynamic {
+        return leave_dynamic(state, &doc, &who, &group, &entry_id).await;
+    }
     if let Ok(Some(mut r)) = groups::pending_request(ks, &group.group_id, &entry_id).await {
         r.state = "withdrawn".into();
         r.decided_at = Some(Utc::now());
@@ -2428,8 +2635,8 @@ async fn bindings_add_authority(
 ) -> TrustTaskOutcome {
     use crate::groups::authority::{self, AuthorityBinding};
     use crate::groups::bindings::{self, Binding};
-    // Item 3.
-    if group.join_policy != JoinPolicy::Closed {
+    // Item 3: a dynamic group never carries authority (VTI-DIR-103).
+    if group.kind == groups::GroupKind::Dynamic || group.join_policy != JoinPolicy::Closed {
         return declared(
             doc,
             BINDINGS_ADD_ERR_GROUP_NOT_ELIGIBLE,

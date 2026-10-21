@@ -27,12 +27,15 @@
 //! - `greq:<requestId>` — a request to join a `request` group;
 //! - `group-did:<path>` — the log of a group identity this community serves.
 //!
-//! Only static groups are served: a dynamic group's create is refused
-//! (`kindNotServed` once the specification declares it), never stored.
+//! - `gopt:<groupId>:<entryId>` — a member's opt-out of a dynamic group.
+//!
+//! A static group's members are added, join or ask; a dynamic group's are
+//! computed from its rule ([`dynamic`]).
 
 pub mod authority;
 pub mod bindings;
 pub mod credential;
+pub mod dynamic;
 pub mod identity;
 pub mod managers;
 pub mod policy;
@@ -76,6 +79,27 @@ impl Audience {
             Audience::Admins => "admins",
             Audience::GroupMembers => "groupMembers",
             Audience::Members => "members",
+        }
+    }
+}
+
+/// Whether a group's membership is explicit or computed (`GroupKind`), fixed
+/// for the group's life.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum GroupKind {
+    /// Added, joined, or granted on request.
+    #[default]
+    Static,
+    /// Computed from its rule over verified facts ([`dynamic`]).
+    Dynamic,
+}
+
+impl GroupKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            GroupKind::Static => "static",
+            GroupKind::Dynamic => "dynamic",
         }
     }
 }
@@ -136,6 +160,14 @@ pub struct Group {
     pub name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    /// Absent on a group stored before dynamic groups were served: static.
+    #[serde(default)]
+    pub kind: GroupKind,
+    /// A dynamic group's `DynamicRule`, as received and checked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rule: Option<Value>,
+    /// A static group's. A dynamic one stores `closed` — nobody joins it by
+    /// their own act — and answers none.
     pub join_policy: JoinPolicy,
     pub visibility: Audience,
     pub show_members: Audience,
@@ -291,6 +323,7 @@ pub async fn on_departure(ks: &KeyspaceHandle, entry_id: &str) -> Result<usize, 
             put_request(ks, &r).await?;
         }
     }
+    dynamic::forget_opt_outs(ks, None, Some(entry_id)).await?;
     Ok(memberships.len())
 }
 
@@ -385,6 +418,7 @@ pub async fn remove(ks: &KeyspaceHandle, group_id: &str) -> Result<usize, AppErr
     }
     ks.remove(group_key(group_id)).await?;
     renewal::forget(ks, group_id).await?;
+    dynamic::forget_opt_outs(ks, Some(group_id), None).await?;
     bindings::on_group_deleted(ks, group_id).await?;
     changed();
     Ok(members.len())
@@ -477,6 +511,8 @@ pub struct Standing {
     pub member_of: BTreeSet<String>,
     /// The groups they belong to, pending.
     pub pending_in: BTreeSet<String>,
+    /// The dynamic groups they opted out of.
+    pub opted_out: BTreeSet<String>,
     entry: Option<VtcAclEntry>,
 }
 
@@ -510,6 +546,7 @@ impl Standing {
         let entry_id = crate::directory::cards::entry_of(ks, did).await?;
         let mut member_of = BTreeSet::new();
         let mut pending_in = BTreeSet::new();
+        let mut opted_out = BTreeSet::new();
         if let Some(e) = &entry_id
             && active_member
         {
@@ -520,6 +557,7 @@ impl Standing {
                     pending_in.insert(m.group_id);
                 }
             }
+            opted_out = dynamic::opted_out_of(ks, e).await?;
         }
         Ok(Standing {
             did: did.to_string(),
@@ -530,6 +568,7 @@ impl Standing {
             manages,
             member_of,
             pending_in,
+            opted_out,
             entry,
         })
     }
@@ -582,6 +621,8 @@ impl Standing {
             "member"
         } else if self.pending_in.contains(group_id) {
             "pending"
+        } else if self.opted_out.contains(group_id) {
+            "optedOut"
         } else {
             "none"
         }
@@ -641,8 +682,7 @@ pub async fn wire(state: &AppState, group: &Group, standing: &Standing) -> Resul
         "groupId": group.group_id,
         "groupDid": group.group_did,
         "name": group.name,
-        "kind": "static",
-        "joinPolicy": group.join_policy.as_str(),
+        "kind": group.kind.as_str(),
         "visibility": group.visibility.as_str(),
         "showMembers": group.show_members.as_str(),
         "issuesCredentials": group.issues_credentials,
@@ -653,6 +693,10 @@ pub async fn wire(state: &AppState, group: &Group, standing: &Standing) -> Resul
     });
     if let Some(d) = &group.description {
         out["description"] = json!(d);
+    }
+    match (&group.kind, &group.rule) {
+        (GroupKind::Dynamic, Some(rule)) => out["rule"] = rule.clone(),
+        _ => out["joinPolicy"] = json!(group.join_policy.as_str()),
     }
     if let Some(by) = &group.created_by {
         out["createdBy"] = json!(by);

@@ -30,7 +30,6 @@ use crate::common::signed::{call, error_code, seed_role};
 use trust_tasks_rs::specs::vtc::groups as g;
 
 const CREATE_ERR_RULE_INVALID: &str = g::create::v0_1::error_codes::RULE_INVALID.code;
-const CREATE_ERR_KIND_NOT_SERVED: &str = g::create::v0_1::error_codes::KIND_NOT_SERVED.code;
 const CREATE_ERR_SETTINGS_INVALID: &str = g::create::v0_1::error_codes::SETTINGS_INVALID.code;
 const CREATE_ERR_POLICY_REFUSED: &str = g::create::v0_1::error_codes::POLICY_REFUSED.code;
 const CREATE_ERR_NO_KEY_HOLDER: &str = g::create::v0_1::error_codes::NO_KEY_HOLDER.code;
@@ -52,6 +51,11 @@ const ADD_ERR_KEY_HOLDER_REFUSED: &str =
     g::members::add::v0_1::error_codes::KEY_HOLDER_REFUSED.code;
 const REMOVE_ERR_NOT_FOUND: &str = g::members::remove::v0_1::error_codes::NOT_FOUND.code;
 const REMOVE_ERR_NOT_IN_GROUP: &str = g::members::remove::v0_1::error_codes::NOT_IN_GROUP.code;
+const ADD_ERR_DYNAMIC_GROUP: &str = g::members::add::v0_1::error_codes::DYNAMIC_GROUP.code;
+const REMOVE_ERR_DYNAMIC_GROUP: &str = g::members::remove::v0_1::error_codes::DYNAMIC_GROUP.code;
+const LEAVE_ERR_ALREADY_OPTED_OUT: &str = g::leave::v0_1::error_codes::ALREADY_OPTED_OUT.code;
+const BINDINGS_ADD_ERR_GROUP_NOT_ELIGIBLE: &str =
+    g::bindings::add::v0_1::error_codes::GROUP_NOT_ELIGIBLE.code;
 const MEMBERS_LIST_ERR_NOT_FOUND: &str = g::members::list::v0_1::error_codes::NOT_FOUND.code;
 const MEMBERS_LIST_ERR_CURSOR_INVALID: &str =
     g::members::list::v0_1::error_codes::CURSOR_INVALID.code;
@@ -493,14 +497,15 @@ async fn create_refuses_what_its_specification_declares() {
     let (_, b) = fix.as_admin("create", reads_card).await;
     assert_eq!(tt_error_code(&b), CREATE_ERR_RULE_INVALID, "{b}");
 
-    // A well-formed dynamic group: not served here.
-    let dynamic = json!({
-        "name": "Verified", "kind": "dynamic", "visibility": "members", "showMembers": "members",
+    // A dynamic group takes no join policy.
+    let with_policy = json!({
+        "name": "Verified", "kind": "dynamic", "joinPolicy": "open",
+        "visibility": "members", "showMembers": "members",
         "rule": { "all": [{ "fact": "personhood", "op": "equals", "value": true }] },
         "reason": "verified people",
     });
-    let (_, b) = fix.as_admin("create", dynamic).await;
-    assert_eq!(tt_error_code(&b), CREATE_ERR_KIND_NOT_SERVED, "{b}");
+    let (_, b) = fix.as_admin("create", with_policy).await;
+    assert_eq!(tt_error_code(&b), CREATE_ERR_SETTINGS_INVALID, "{b}");
 
     let (_, b) = fix
         .as_admin("create", static_group("B", "groupMembers", "members"))
@@ -1810,4 +1815,210 @@ async fn vti_dir_102_a_binding_provisions_only_what_its_binder_holds() {
         .unwrap();
     authority::provision(state, &moderator.did).await.unwrap();
     assert!(acl(&fix.vtc, &moderator).await.group_grants.is_empty());
+}
+
+// ─── dynamic groups (VTI-DIR-011, VTI-DIR-103) ──────────────────────────
+
+async fn recompute(fix: &Fixture, group_id: &str) -> vtc_service::groups::dynamic::Report {
+    let group = vtc_service::groups::get(fix.vtc.state.directory.ks(), group_id)
+        .await
+        .unwrap()
+        .unwrap();
+    vtc_service::groups::dynamic::recompute(&fix.vtc.state, &group, Utc::now())
+        .await
+        .unwrap()
+}
+
+/// A dynamic group's members are whoever its rule admits over verified facts,
+/// less those who opted out; nobody is added or removed by hand, and a member
+/// may opt out and back in.
+#[tokio::test]
+async fn dynamic_groups_refuse_what_their_specification_declares() {
+    let fix = fixture().await;
+    let (status, b) = fix
+        .as_admin(
+            "create",
+            json!({
+                "name": "Everyone", "kind": "dynamic", "visibility": "members",
+                "showMembers": "members",
+                "rule": { "all": [{ "fact": "role", "op": "equals", "value": "member" }] },
+                "reason": "every member",
+            }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{b}");
+    let group = &b["payload"]["group"];
+    assert_eq!(group["kind"], "dynamic");
+    assert!(group.get("joinPolicy").is_none(), "{group}");
+    assert_eq!(group["rule"]["all"][0]["fact"], "role");
+    let group_id = group["groupId"].as_str().unwrap().to_string();
+
+    // Computed after it is stored (create item 6).
+    let member_entry = entry_of(&fix.vtc, &fix.member).await;
+    let (other, other_entry) = fix.another_member().await;
+    let report = recompute(&fix, &group_id).await;
+    assert_eq!(report.admitted.len(), 2, "{report:?}");
+    let held =
+        vtc_service::groups::membership(fix.vtc.state.directory.ks(), &group_id, &member_entry)
+            .await
+            .unwrap()
+            .unwrap();
+    assert_eq!(held.source, "rule");
+    assert!(
+        held.credential_id.is_some(),
+        "credential first, as any admission"
+    );
+    assert!(
+        recompute(&fix, &group_id).await.admitted.is_empty(),
+        "idempotent"
+    );
+
+    // Nobody is added or removed by hand.
+    let (_, b) = fix
+        .as_admin(
+            "members/add",
+            json!({ "groupId": group_id, "entryId": other_entry }),
+        )
+        .await;
+    assert_eq!(tt_error_code(&b), ADD_ERR_DYNAMIC_GROUP, "{b}");
+    let (_, b) = fix
+        .as_admin(
+            "members/remove",
+            json!({ "groupId": group_id, "entryId": other_entry }),
+        )
+        .await;
+    assert_eq!(tt_error_code(&b), REMOVE_ERR_DYNAMIC_GROUP, "{b}");
+    // Never authority (VTI-DIR-103).
+    let (_, b) = fix
+        .as_admin(
+            "bindings/add",
+            json!({
+                "groupId": group_id,
+                "binding": { "kind": "grants", "grants": [{ "capability": "vtc.invitations.manage" }] },
+                "reason": "invite",
+            }),
+        )
+        .await;
+    assert_eq!(
+        tt_error_code(&b),
+        BINDINGS_ADD_ERR_GROUP_NOT_ELIGIBLE,
+        "{b}"
+    );
+
+    // Joining a dynamic group one has not opted out of is no join.
+    let (_, b) = fix.as_member("join", json!({ "groupId": group_id })).await;
+    assert_eq!(tt_error_code(&b), JOIN_ERR_ALREADY_MEMBER, "{b}");
+
+    // An opt-out the rule cannot override.
+    let (status, b) = fix.as_member("leave", json!({ "groupId": group_id })).await;
+    assert_eq!(status, StatusCode::OK, "{b}");
+    assert_eq!(b["payload"]["state"], "optedOut");
+    let (_, b) = fix.as_member("leave", json!({ "groupId": group_id })).await;
+    assert_eq!(tt_error_code(&b), LEAVE_ERR_ALREADY_OPTED_OUT, "{b}");
+    assert!(
+        recompute(&fix, &group_id).await.admitted.is_empty(),
+        "kept out"
+    );
+    let (_, mine) = fix.as_member("list", json!({ "mine": false })).await;
+    let item = mine["payload"]["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|i| i["group"]["groupId"] == group_id.as_str())
+        .cloned()
+        .unwrap();
+    assert_eq!(item["myMembership"], "optedOut", "{item}");
+
+    // Back in: the rule admits them, so they are a member again at once.
+    let (status, b) = fix.as_member("join", json!({ "groupId": group_id })).await;
+    assert_eq!(status, StatusCode::OK, "{b}");
+    assert_eq!(b["payload"]["outcome"], "joined", "{b}");
+
+    // A rule change recomputes: nobody is a moderator, so everyone goes.
+    let (status, b) = fix
+        .as_admin(
+            "update",
+            json!({
+                "groupId": group_id,
+                "rule": { "all": [{ "fact": "role", "op": "equals", "value": "moderator" }] },
+                "reason": "moderators only",
+            }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{b}");
+    assert_eq!(recompute(&fix, &group_id).await.ended.len(), 2);
+
+    // An opt-out undone while the rule admits nobody: withdrawn, not joined.
+    let (_, b) = call(
+        &fix.vtc,
+        &other,
+        &task("leave"),
+        json!({ "groupId": group_id }),
+    )
+    .await;
+    assert_eq!(b["payload"]["state"], "optedOut", "{b}");
+    let (status, b) = call(
+        &fix.vtc,
+        &other,
+        &task("join"),
+        json!({ "groupId": group_id }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{b}");
+    assert_eq!(b["payload"]["outcome"], "optOutWithdrawn", "{b}");
+    let (_, b) = call(
+        &fix.vtc,
+        &other,
+        &task("join"),
+        json!({ "groupId": group_id }),
+    )
+    .await;
+    assert_eq!(tt_error_code(&b), JOIN_ERR_NOT_JOINABLE, "{b}");
+
+    // A static group takes no rule; a dynamic one no join policy.
+    let (_, b) = fix
+        .as_admin(
+            "update",
+            json!({ "groupId": group_id, "joinPolicy": "open" }),
+        )
+        .await;
+    assert_eq!(tt_error_code(&b), UPDATE_ERR_SETTINGS_INVALID, "{b}");
+}
+
+/// A rule reads only verified facts, at evaluation as well: a field it named
+/// that is no longer administrator- or credential-sourced holds for nobody.
+#[tokio::test]
+async fn a_dynamic_rule_reads_only_verified_facts() {
+    use vtc_service::directory::model::{FieldDef, FieldSource, FieldState};
+    use vtc_service::groups::dynamic::admits;
+    let fix = fixture().await;
+    let subject = vtc_service::directory::read::subject_by_did(&fix.vtc.state, &fix.member.did)
+        .await
+        .unwrap()
+        .unwrap();
+    let mut schema: Vec<FieldDef> =
+        vtc_service::directory::fields::schema(fix.vtc.state.directory.ks())
+            .await
+            .unwrap();
+    let rule = json!({ "all": [{ "fact": "personhood", "op": "exists" }] });
+    assert!(!admits(&rule, &subject, &schema), "no personhood on file");
+    let rule = json!({ "all": [{ "fact": "joinedAt", "op": "after", "value": "2000-01-01" }] });
+    assert!(admits(&rule, &subject, &schema));
+    let mut s = subject.clone();
+    s.card.values.insert(
+        "chapter".into(),
+        json!({ "value": "Sydney", "issuer": "did:example:i" }),
+    );
+    let mut chapter = schema[0].clone();
+    chapter.key = "chapter".into();
+    chapter.source = FieldSource::Credential;
+    chapter.state = FieldState::Active;
+    schema.push(chapter);
+    let rule = json!({ "all": [{ "fact": "field", "field": "chapter", "op": "equals", "value": "Sydney" }] });
+    assert!(admits(&rule, &s, &schema));
+    schema.last_mut().unwrap().source = FieldSource::Member;
+    assert!(
+        !admits(&rule, &s, &schema),
+        "a member-sourced field never admits"
+    );
 }

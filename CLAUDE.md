@@ -1420,9 +1420,19 @@ new flow, update both this section and the relevant `docs/*.md`.
   community** through `keys/sign-document`, with a slot in the community's
   revocation list and an expiry. Served: `create`, `update`, `delete`, `list`,
   `show`, `members/{add,remove,list}`, `join`, `leave`, `requests/{list,decide}`
-  `managers/{add,remove}` for **static** groups (a dynamic one is checked, then
-  refused `kindNotServed`), and `bindings/{add,remove,list}` for **room**,
-  **grants** and **role** bindings.
+  `managers/{add,remove}` for **static** and **dynamic** groups, and
+  `bindings/{add,remove,list}` for **room**, **grants** and **role** bindings.
+- **Dynamic groups** (`groups::dynamic`, VTI-DIR-011/103): members are
+  whoever the rule admits over verified facts (role, `admin`/`credential`
+  fields — re-checked against the schema at every evaluation — personhood,
+  join date), less **opt-outs** (`gopt:<groupId>:<entryId>`, written by
+  `leave`, withdrawn by `join`, never overridden). The sweeper is the one
+  recompute owner (5-minute tick, kicked by `admin_events::notify` on
+  `Members`/`Directory` and by create/update/join): admits with source `rule`,
+  credential first, and ends rule-sourced memberships the rule no longer
+  admits. `members/add|remove` refuse `dynamicGroup`; a dynamic group stores
+  `closed`, answers no `joinPolicy`, and never carries authority
+  (`groupNotEligible`, and `authority::rows_for` skips it).
 - **Room bindings** (`groups::bindings`): a manager holding `vtc.rooms.manage`
   binds a community room, after the bound gesture `members/add` takes (never
   parked). The reconciler is the one owner of every effect: it offers each

@@ -32,9 +32,8 @@ Room bindings ([Room bindings](#room-bindings)) and grants and role bindings
 ([Groups that carry authority](#groups-that-carry-authority)) are served. The member portal signs these tasks with its sign-in key
 for the member (`signingScope` `vtc/groups`), as it does the directory's.
 
-Only **static** groups are served. A dynamic group's rule is checked — it may read only
-verified facts — and the create is then refused `kindNotServed`. Nothing is stored for
-it.
+Groups are **static** — members are added, join or ask — or **dynamic**: see
+[Dynamic groups](#dynamic-groups).
 
 ## In the console and the portal
 
@@ -256,6 +255,41 @@ to the group: every member of the group is offered admission to it with the bind
 
 A VTA that does not answer is retried with a capped, jittered backoff; the reconciler runs
 every minute and whenever a group's members or bindings change.
+
+## Dynamic groups
+
+A dynamic group (`"kind": "dynamic"`) has a **rule** instead of a join policy: its
+members are everyone the rule includes, computed by the community and kept up to date.
+
+```json
+{ "all": [
+  { "fact": "role", "op": "equals", "value": "member" },
+  { "fact": "field", "field": "org.example.chapter", "op": "oneOf", "values": ["Sydney"] }
+] }
+```
+
+- **Verified facts only** (VTI-DIR-011): the community role, a directory field an
+  administrator or a credential sets, whether personhood is on file, and the join date.
+  A rule never reads a field members write, so nobody joins a group by editing their
+  card. This is checked when the rule is written (`ruleInvalid`) and again whenever it
+  is evaluated: a field that stops being administrator- or credential-sourced includes
+  nobody.
+- **Recomputed** a few minutes apart, and whenever a role, a member record or a
+  directory value changes, a rule changes, or someone opts back in. A member the rule
+  includes is admitted (`source: rule`) with their group credential first, as any
+  admission; one it no longer includes leaves, and their credential stops renewing.
+- **Opting out.** `leave` records an opt-out that the rule never overrides — also before
+  the rule reaches the member — and `join` withdraws it: the member is back at once if
+  the rule includes them (`joined`), or whenever it does (`optOutWithdrawn`). Nothing
+  else joins a dynamic group, and nobody adds or removes members by hand
+  (`dynamicGroup`).
+- **Never authority** (VTI-DIR-103): a grants or role binding is refused
+  `groupNotEligible`. A room binding is fine — "everyone in the Sydney chapter" is what a
+  dynamic group is for.
+
+In the console, **New group → Members: By rule** builds the rule from these facts, and a
+dynamic group's Settings edit it. In the portal a member sees **Opt out of this group**,
+and **Opt back in** after.
 
 ## Groups that carry authority
 

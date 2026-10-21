@@ -20,6 +20,7 @@ import { DataTable } from "@/components/DataTable";
 import { DirectoryAvatar } from "@/components/DirectoryAvatar";
 import { EmptyState } from "@/components/EmptyState";
 import { DidHostingCard } from "@/plugins/DidHostingCard";
+import { type DynamicRule, RuleEditor, emptyRule, ruleReady, wireRule } from "@/plugins/GroupRule";
 import { PageHeader } from "@/components/PageHeader";
 import { COMMUNITY_ROOMS_LIST_KEY, ROOMS_MANAGE, fetchCommunityRooms } from "@/lib/community-rooms-api";
 import { listAllEntries } from "@/lib/directory";
@@ -62,6 +63,11 @@ function audienceLabel(a: string): string {
 
 function joinLabel(j: string | undefined): string {
   return JOIN_POLICIES.find((x) => x.id === j)?.label ?? j ?? "";
+}
+
+/** How a group's members come to be in it: its join policy, or its rule. */
+function membershipLabel(group: Group): string {
+  return group.kind === "dynamic" ? "By rule" : joinLabel(group.joinPolicy);
 }
 
 /** Each directory entry's name and picture, by entry, for naming members. */
@@ -174,7 +180,7 @@ function GroupsList() {
                 <strong>{group.name}</strong>
                 {group.description && <div className="muted">{group.description}</div>}
               </td>
-              <td>{joinLabel(group.joinPolicy)}</td>
+              <td>{membershipLabel(group)}</td>
               <td>{audienceLabel(group.visibility)}</td>
               <td>{group.memberCount ?? <span className="muted">—</span>}</td>
             </tr>
@@ -191,6 +197,8 @@ function CreateGroupForm({ onDone }: { onDone: () => void }) {
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [joinPolicy, setJoinPolicy] = useState<JoinPolicy>("request");
+  const [dynamic, setDynamic] = useState(false);
+  const [rule, setRule] = useState<DynamicRule>(emptyRule);
   const [visibility, setVisibility] = useState<Audience>("members");
   const [showMembers, setShowMembers] = useState<Audience>("groupMembers");
   const [issues, setIssues] = useState(true);
@@ -200,8 +208,7 @@ function CreateGroupForm({ onDone }: { onDone: () => void }) {
       createGroup({
         name: name.trim(),
         ...(description.trim() ? { description: description.trim() } : {}),
-        kind: "static",
-        joinPolicy,
+        ...(dynamic ? { kind: "dynamic", rule: wireRule(rule) } : { kind: "static", joinPolicy }),
         visibility,
         showMembers,
         issuesCredentials: issues,
@@ -214,7 +221,8 @@ function CreateGroupForm({ onDone }: { onDone: () => void }) {
     },
     onError: (err) => toast.pushFromError(err, "The group was not created"),
   });
-  const ok = name.trim() && reason.trim() && audienceWithin(showMembers, visibility);
+  const ok =
+    name.trim() && reason.trim() && audienceWithin(showMembers, visibility) && (!dynamic || ruleReady(rule));
   return (
     <section className="card">
       <h3>New group</h3>
@@ -238,15 +246,30 @@ function CreateGroupForm({ onDone }: { onDone: () => void }) {
           />
         </label>
         <label>
-          Joining
-          <select value={joinPolicy} onChange={(e) => setJoinPolicy(e.target.value as JoinPolicy)}>
-            {JOIN_POLICIES.map((j) => (
-              <option key={j.id} value={j.id}>
-                {j.label} — {j.help}
-              </option>
-            ))}
+          Members
+          <select
+            aria-label="Members"
+            value={dynamic ? "dynamic" : "static"}
+            onChange={(e) => setDynamic(e.target.value === "dynamic")}
+          >
+            <option value="static">Chosen — added, joined or asked for</option>
+            <option value="dynamic">By rule — whoever verified facts include, who may opt out</option>
           </select>
         </label>
+        {dynamic ? (
+          <RuleEditor value={rule} onChange={setRule} />
+        ) : (
+          <label>
+            Joining
+            <select value={joinPolicy} onChange={(e) => setJoinPolicy(e.target.value as JoinPolicy)}>
+              {JOIN_POLICIES.map((j) => (
+                <option key={j.id} value={j.id}>
+                  {j.label} — {j.help}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
         <AudienceSelects
           visibility={visibility}
           showMembers={showMembers}
@@ -346,11 +369,12 @@ function GroupPage() {
         <>
           <GroupSummary group={group} />
           {manages && <GroupSettings group={group} />}
-          <GroupMembers group={group} manages={manages} />
+          {/* A dynamic group's rule decides its members: nobody adds or removes one. */}
+          <GroupMembers group={group} manages={manages && group.kind !== "dynamic"} />
           {manages && <GroupRequests group={group} />}
           {manages && <GroupManagers group={group} />}
           {manages && <GroupRooms group={group} />}
-          {manages && <GroupAuthority group={group} />}
+          {manages && group.kind !== "dynamic" && <GroupAuthority group={group} />}
           {manages && <DeleteGroup group={group} onDeleted={() => navigate("..")} />}
         </>
       )}
@@ -370,7 +394,7 @@ function GroupSummary({ group }: { group: Group }) {
         )}
         <div>
           <dt>Joining</dt>
-          <dd>{joinLabel(group.joinPolicy)}</dd>
+          <dd>{membershipLabel(group)}</dd>
         </div>
         <div>
           <dt>Seen by</dt>
@@ -405,6 +429,10 @@ function GroupSettings({ group }: { group: Group }) {
   const [name, setName] = useState(group.name);
   const [description, setDescription] = useState(group.description ?? "");
   const [joinPolicy, setJoinPolicy] = useState<JoinPolicy>((group.joinPolicy ?? "closed") as JoinPolicy);
+  const dynamic = group.kind === "dynamic";
+  const [rule, setRule] = useState<DynamicRule>(
+    (group.rule as DynamicRule | undefined) ?? emptyRule(),
+  );
   const [visibility, setVisibility] = useState<Audience>(group.visibility as Audience);
   const [showMembers, setShowMembers] = useState<Audience>(group.showMembers as Audience);
   const save = useMutation({
@@ -413,7 +441,8 @@ function GroupSettings({ group }: { group: Group }) {
         groupId: group.groupId,
         name: name.trim(),
         ...(description.trim() ? { description: description.trim() } : {}),
-        joinPolicy,
+        // A dynamic group has a rule, never a join policy.
+        ...(dynamic ? { rule: wireRule(rule) } : { joinPolicy }),
         visibility,
         showMembers,
       } as never),
@@ -445,16 +474,20 @@ function GroupSettings({ group }: { group: Group }) {
             onChange={(e) => setDescription(e.target.value)}
           />
         </label>
-        <label>
-          Joining
-          <select value={joinPolicy} onChange={(e) => setJoinPolicy(e.target.value as JoinPolicy)}>
-            {JOIN_POLICIES.map((j) => (
-              <option key={j.id} value={j.id}>
-                {j.label}
-              </option>
-            ))}
-          </select>
-        </label>
+        {dynamic ? (
+          <RuleEditor value={rule} onChange={setRule} />
+        ) : (
+          <label>
+            Joining
+            <select value={joinPolicy} onChange={(e) => setJoinPolicy(e.target.value as JoinPolicy)}>
+              {JOIN_POLICIES.map((j) => (
+                <option key={j.id} value={j.id}>
+                  {j.label}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
         <AudienceSelects
           visibility={visibility}
           showMembers={showMembers}
@@ -462,7 +495,7 @@ function GroupSettings({ group }: { group: Group }) {
           onShowMembers={setShowMembers}
         />
         <div className="actions">
-          <button type="submit" disabled={!name.trim() || save.isPending}>
+          <button type="submit" disabled={!name.trim() || (dynamic && !ruleReady(rule)) || save.isPending}>
             {save.isPending ? "Saving…" : "Save"}
           </button>
         </div>

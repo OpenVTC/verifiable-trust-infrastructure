@@ -32,6 +32,8 @@ function standingLabel(m: string): string | null {
       return "Your membership is pending";
     case "requested":
       return "You've asked to join";
+    case "optedOut":
+      return "You opted out";
     default:
       return null;
   }
@@ -156,7 +158,9 @@ export function GroupPage({ groupId }: { groupId: string }) {
       setNote(
         a.outcome === "joined"
           ? "You're in. Your wallet receives the group's credential."
-          : "You've asked to join. A manager decides.",
+          : a.outcome === "optOutWithdrawn"
+            ? "You're no longer opted out. You'll be a member whenever the group's rule includes you."
+            : "You've asked to join. A manager decides.",
       );
       refresh();
     },
@@ -165,7 +169,13 @@ export function GroupPage({ groupId }: { groupId: string }) {
   const leave = useMutation({
     mutationFn: () => leaveGroup(groupId),
     onSuccess: (a) => {
-      setNote(a.state === "requestWithdrawn" ? "Your request is withdrawn." : "You've left the group.");
+      setNote(
+        a.state === "requestWithdrawn"
+          ? "Your request is withdrawn."
+          : a.state === "optedOut"
+            ? "You've opted out. The group's rule won't include you until you opt back in."
+            : "You've left the group.",
+      );
       refresh();
     },
     onError: (e) => setNote((e as Error).message),
@@ -182,7 +192,13 @@ export function GroupPage({ groupId }: { groupId: string }) {
             <p className="eyebrow">Group</p>
             <h1>{group.name}</h1>
             {group.description && <p className="lead">{group.description}</p>}
-            <p className="muted">{group.joinPolicy ? JOINING[group.joinPolicy] : null}</p>
+            <p className="muted">
+              {group.kind === "dynamic"
+                ? "Its members are whoever its rule includes. You can opt out."
+                : group.joinPolicy
+                  ? JOINING[group.joinPolicy]
+                  : null}
+            </p>
           </section>
           {note && (
             <p className="note" role="status">
@@ -190,7 +206,27 @@ export function GroupPage({ groupId }: { groupId: string }) {
             </p>
           )}
           <section className="card group-actions">
-            {mine === "member" || mine === "pending" ? (
+            {group.kind === "dynamic" ? (
+              mine === "optedOut" ? (
+                <button
+                  type="button"
+                  className="btn btn-primary"
+                  onClick={() => join.mutate()}
+                  disabled={join.isPending}
+                >
+                  <LogIn size={16} aria-hidden="true" /> Opt back in
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  className="btn btn-ghost"
+                  onClick={() => leave.mutate()}
+                  disabled={leave.isPending}
+                >
+                  <LogOut size={16} aria-hidden="true" /> Opt out of this group
+                </button>
+              )
+            ) : mine === "member" || mine === "pending" ? (
               <button
                 type="button"
                 className="btn btn-ghost"

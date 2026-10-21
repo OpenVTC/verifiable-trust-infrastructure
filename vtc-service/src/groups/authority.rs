@@ -207,7 +207,7 @@ pub(crate) async fn rows_for(
     group: &Group,
     now: chrono::DateTime<Utc>,
 ) -> Result<Vec<GroupGrant>, AppError> {
-    if group.join_policy != JoinPolicy::Closed {
+    if group.kind == super::GroupKind::Dynamic || group.join_policy != JoinPolicy::Closed {
         return Ok(Vec::new());
     }
     let mut out = Vec::new();

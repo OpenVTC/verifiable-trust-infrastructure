@@ -1600,6 +1600,9 @@ pub async fn run(
     // What each group's room bindings provide its members: offers, withdrawals and
     // renewals (`vtc/groups/bindings/*`). Always spawned: idle while no binding exists.
     crate::groups::bindings::spawn(state.clone(), shutdown_rx.clone());
+    // Each dynamic group's members, recomputed from its rule (`vtc/groups/create`
+    // item 6, `update` item 6). Always spawned: idle while no dynamic group exists.
+    crate::groups::dynamic::spawn(state.clone(), shutdown_rx.clone());
     // The profile of each room the community owns, written into the room by its VTA:
     // the one retry owner for a create or update that answered `roomProfile: pending`.
     crate::rooms::community_profile::spawn(state.clone(), shutdown_rx.clone());

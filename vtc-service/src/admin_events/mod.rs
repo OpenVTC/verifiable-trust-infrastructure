@@ -306,6 +306,12 @@ fn lock_history() -> std::sync::MutexGuard<'static, History> {
 /// non-blocking; safe to call from any storage seam, with or without
 /// subscribers.
 pub fn notify(topic: Topic) {
+    // The same seams feed the facts a dynamic group's rule reads — a role, a
+    // member record, an administrator's directory value — so a change wakes its
+    // recompute as well (`groups::dynamic`).
+    if matches!(topic, Topic::Members | Topic::Directory) {
+        crate::groups::dynamic::kick();
+    }
     let at = Utc::now();
     {
         let mut h = lock_history();

@@ -1252,10 +1252,22 @@ fn witnesses() -> Vec<Witness> {
             "create_refuses_what_its_specification_declares"
         ),
         witness!(
-            s::groups::create::v0_1::error_codes::KIND_NOT_SERVED,
-            crate::trust_tasks::group_tasks::CREATE_ERR_KIND_NOT_SERVED,
+            s::groups::members::add::v0_1::error_codes::DYNAMIC_GROUP,
+            crate::trust_tasks::group_tasks::ADD_ERR_DYNAMIC_GROUP,
             "groups.rs",
-            "create_refuses_what_its_specification_declares"
+            "dynamic_groups_refuse_what_their_specification_declares"
+        ),
+        witness!(
+            s::groups::members::remove::v0_1::error_codes::DYNAMIC_GROUP,
+            crate::trust_tasks::group_tasks::REMOVE_ERR_DYNAMIC_GROUP,
+            "groups.rs",
+            "dynamic_groups_refuse_what_their_specification_declares"
+        ),
+        witness!(
+            s::groups::leave::v0_1::error_codes::ALREADY_OPTED_OUT,
+            crate::trust_tasks::group_tasks::LEAVE_ERR_ALREADY_OPTED_OUT,
+            "groups.rs",
+            "dynamic_groups_refuse_what_their_specification_declares"
         ),
         witness!(
             s::groups::create::v0_1::error_codes::SETTINGS_INVALID,
@@ -2733,11 +2745,9 @@ fn unwitnessed() -> Vec<DeclaredErrorCode> {
         // Deleting a group asks the community's VTA nothing until bindings are
         // served: its authority is revoked in the community's own list.
         s::groups::delete::v0_1::error_codes::KEY_HOLDER_UNAVAILABLE,
-        // Only static groups are served, so a membership change never meets a
-        // dynamic group or an opt-out.
-        s::groups::members::add::v0_1::error_codes::DYNAMIC_GROUP,
-        s::groups::members::remove::v0_1::error_codes::DYNAMIC_GROUP,
-        s::groups::leave::v0_1::error_codes::ALREADY_OPTED_OUT,
+        // `kindNotServed` is for a community serving static groups only
+        // (create item 3). This one computes dynamic groups.
+        s::groups::create::v0_1::error_codes::KIND_NOT_SERVED,
         // `kindNotServed` is for a community serving room bindings only
         // (bindings/add item 7). This one serves every kind.
         s::groups::bindings::add::v0_1::error_codes::KIND_NOT_SERVED,

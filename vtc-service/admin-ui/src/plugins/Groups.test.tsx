@@ -7,6 +7,7 @@ import { describe, expect, it, vi } from "vitest";
 import { COMMUNITY_ROOMS_LIST_TASK } from "@/lib/community-rooms-api";
 import {
   GROUPS_BINDINGS_ADD_TASK,
+  GROUPS_CREATE_TASK,
   GROUPS_BINDINGS_LIST_TASK,
   GROUPS_LIST_TASK,
   GROUPS_MEMBERS_LIST_TASK,
@@ -76,6 +77,36 @@ describe("the Groups page", () => {
     expect(await screen.findByText("Identity WG")).toBeTruthy();
     expect(screen.getByText("By request")).toBeTruthy();
     expect(screen.getByRole("button", { name: /New group/ })).toBeTruthy();
+  });
+
+  it("creates a dynamic group from a rule, with no join policy", async () => {
+    const requests = mockFetch([
+      ...ROUTES,
+      taskRoute(GROUPS_LIST_TASK, { items: [] }),
+      taskRoute("https://trusttasks.org/spec/vtc/directory/fields/list/0.1", { fields: [] }),
+      taskRoute(GROUPS_CREATE_TASK, { group: group({ kind: "dynamic", name: "Members" }) }),
+    ]);
+    renderWithProviders(<Groups />, {
+      route: "/groups",
+      path: "/groups/*",
+      whoami: whoamiWith(["vtc.groups.manage"]),
+    });
+    fireEvent.click(await screen.findByRole("button", { name: /New group/ }));
+    fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Members" } });
+    fireEvent.change(screen.getByLabelText("Members"), { target: { value: "dynamic" } });
+    fireEvent.change(screen.getByLabelText("Value"), { target: { value: "member" } });
+    fireEvent.change(screen.getByLabelText("Why"), { target: { value: "everyone" } });
+    fireEvent.click(screen.getByRole("button", { name: "Create" }));
+    await waitFor(() =>
+      expect(sentPayloads(requests, GROUPS_CREATE_TASK)).toEqual([
+        expect.objectContaining({
+          name: "Members",
+          kind: "dynamic",
+          rule: { all: [{ fact: "role", op: "equals", value: "member" }] },
+        }),
+      ]),
+    );
+    expect(sentPayloads(requests, GROUPS_CREATE_TASK)[0]).not.toHaveProperty("joinPolicy");
   });
 
   it("offers no new group without vtc.groups.manage", async () => {
