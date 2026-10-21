@@ -2029,7 +2029,7 @@ pub struct MemberPortalKeyUsedData {
     pub member: String,
     /// The portal sign-in key that signed it (`K_b`, a `did:key`): the
     /// acting credential.
-    pub start_key: String,
+    pub start_key_did: String,
     /// The `id` of the `auth/oob/grant/0.2` that delegated to the key: the
     /// authority. Absent only for a delegation armed before it was recorded.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -4036,14 +4036,14 @@ mod tests {
     fn member_portal_key_used_round_trip() {
         let e = AuditEvent::MemberPortalKeyUsed(MemberPortalKeyUsedData {
             member: "did:webvh:x".into(),
-            start_key: "did:key:z6Mk".into(),
+            start_key_did: "did:key:z6Mk".into(),
             grant_id: Some("urn:uuid:g".into()),
             task_type: "https://trusttasks.org/spec/git-ns/view/0.4".into(),
             document_id: "urn:uuid:d".into(),
         });
         let v = wire_value(&e);
         assert_eq!(v["type"], "MemberPortalKeyUsed");
-        assert_eq!(v["data"]["startKey"], "did:key:z6Mk");
+        assert_eq!(v["data"]["startKeyDid"], "did:key:z6Mk");
         assert_eq!(v["data"]["grantId"], "urn:uuid:g");
         assert_eq!(e.variant_name(), "MemberPortalKeyUsed");
         round_trip(&e);

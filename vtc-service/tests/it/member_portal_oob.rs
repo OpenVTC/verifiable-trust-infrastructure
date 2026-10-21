@@ -2467,7 +2467,7 @@ async fn every_document_the_portal_key_signs_is_audited_with_its_grant() {
     );
     for d in &used {
         assert_eq!(d.member, member.did);
-        assert_eq!(d.start_key, b.key.did);
+        assert_eq!(d.start_key_did, b.key.did);
         assert_eq!(d.grant_id.as_deref(), Some(grant_id.as_str()));
         assert!(!d.document_id.is_empty());
     }

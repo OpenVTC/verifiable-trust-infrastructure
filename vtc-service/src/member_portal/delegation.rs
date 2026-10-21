@@ -129,7 +129,7 @@ pub async fn accept(
             Some(&d.member_did),
             AuditEvent::MemberPortalKeyUsed(MemberPortalKeyUsedData {
                 member: d.member_did.clone(),
-                start_key: signer.to_string(),
+                start_key_did: signer.to_string(),
                 grant_id: d.grant_id.clone(),
                 task_type: type_uri.to_string(),
                 document_id: document_id.to_string(),
