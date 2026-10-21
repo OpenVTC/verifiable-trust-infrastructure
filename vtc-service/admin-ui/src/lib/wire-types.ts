@@ -335,6 +335,10 @@ export type GroupShowResponse = Schemas["VtcGroupsShowV0_1Response"];
 export type GroupMembersListResponse = Schemas["VtcGroupsMembersListV0_1Response"];
 export type GroupRequestsListResponse = Schemas["VtcGroupsRequestsListV0_1Response"];
 export type GroupManagersResponse = Schemas["VtcGroupsManagersAddV0_1Response"];
+
+// ── Where identities are published (`vtc/config/did-hosting/list`) ──────
+export type DidHostingListResponse = Schemas["VtcConfigDidHostingListV0_1Response"];
+export type HostingServer = Schemas["VtcConfigDidHostingListV0_1HostingServer"];
 export type GroupBinding = Schemas["VtcGroupsBindingsListV0_1GroupBinding"];
 export type GroupBindingsListResponse = Schemas["VtcGroupsBindingsListV0_1Response"];
 export type GroupBindingsRemoveResponse = Schemas["VtcGroupsBindingsRemoveV0_1Response"];

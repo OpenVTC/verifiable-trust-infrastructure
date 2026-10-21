@@ -3161,6 +3161,27 @@ export interface components {
             /** @description The statement's `id`. */
             statementId: string;
         };
+        /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
+        VtcConfigDidHostingListV0_1Ext: {
+            [key: string]: unknown;
+        };
+        /** @description A did:webvh hosting server registered at the community's VTA, as that VTA reports it. Carries no credential. */
+        VtcConfigDidHostingListV0_1HostingServer: {
+            /** @description The server's own DID. */
+            did: string;
+            /** @description The server's id at the VTA: the value that names it in the community's configuration. */
+            id: string;
+            label?: string;
+        };
+        /** @description List the did:webvh hosting servers the community's VTA can publish its identities through. The outer document members are owned by the framework — SPEC §6.3. */
+        VtcConfigDidHostingListV0_1Payload: {
+            ext?: components["schemas"]["VtcConfigDidHostingListV0_1Ext"];
+        };
+        /** @description The success response to a vtc/config/did-hosting/list/0.1 request. Carried in a Trust Task document whose type is https://trusttasks.org/spec/vtc/config/did-hosting/list/0.1#response. */
+        VtcConfigDidHostingListV0_1Response: {
+            ext?: components["schemas"]["VtcConfigDidHostingListV0_1Ext"];
+            servers: components["schemas"]["VtcConfigDidHostingListV0_1HostingServer"][];
+        };
         /** @description A content-addressed image held in the community's blob store — an avatar or an `image` field. At most 256 KiB, images only, re-encoded by the community on upload (vtc/directory/images/upload: metadata stripped, dimensions capped) so its digest does not link the member across communities. A viewer reads the bytes with vtc/directory/images/get, which answers only where the same projection shows the value. `url` and `urlExpiresAt` MAY appear in a projection: a short-lived URL the community checks against the same projection, so a member-only image is never a public URL. A community that does not offer one leaves both out. */
         VtcDirectoryCardAssertV0_1CardBlobRef: {
             /**

@@ -89,6 +89,16 @@ const UNKNOWN_ENTRY: &str = "dir_UnknownUnknownUnknown";
 const SPEC: &str = "https://trusttasks.org/spec/vtc/groups";
 const MINT: &str = "https://trusttasks.org/spec/vta/webvh/dids/create/1.1";
 const SIGN_DOCUMENT: &str = "https://trusttasks.org/spec/keys/sign-document/0.1";
+const WEBVH_SERVERS_LIST: &str = "https://trusttasks.org/spec/vta/webvh/servers/list/1.0";
+const DID_HOSTING_LIST: &str = "https://trusttasks.org/spec/vtc/config/did-hosting/list/0.1";
+const DID_HOSTING_ERR_NO_KEY_HOLDER: &str =
+    trust_tasks_rs::specs::vtc::config::did_hosting::list::v0_1::error_codes::NO_KEY_HOLDER.code;
+const DID_HOSTING_ERR_KEY_HOLDER_UNAVAILABLE: &str =
+    trust_tasks_rs::specs::vtc::config::did_hosting::list::v0_1::error_codes::KEY_HOLDER_UNAVAILABLE
+        .code;
+const DID_HOSTING_ERR_KEY_HOLDER_REFUSED: &str =
+    trust_tasks_rs::specs::vtc::config::did_hosting::list::v0_1::error_codes::KEY_HOLDER_REFUSED
+        .code;
 const UNKNOWN_GROUP: &str = "grp_UnknownUnknownUnknown";
 
 fn task(name: &str) -> String {
@@ -216,6 +226,18 @@ impl VtaChannel for FakeVta {
                     "signerDid": payload["document"]["issuer"],
                 })
             }
+            WEBVH_SERVERS_LIST => json!({ "servers": [
+                {
+                    "id": "hosting-eu", "did": "did:webvh:QmHost:hosting.example.com",
+                    "label": "EU hosting",
+                    "createdAt": "2026-10-01T00:00:00Z", "updatedAt": "2026-10-01T00:00:00Z",
+                },
+                {
+                    // An id the community's configuration could not name: left out.
+                    "id": "has space", "did": "did:webvh:QmOther:other.example.com",
+                    "createdAt": "2026-10-01T00:00:00Z", "updatedAt": "2026-10-01T00:00:00Z",
+                },
+            ] }),
             other => panic!("the stand-in serves no {other}"),
         };
         Ok(reply(&format!("{type_uri}#response"), answer))
@@ -1493,4 +1515,46 @@ async fn the_runtime_hosting_choice_decides_where_a_groups_identity_is_published
     assert_eq!(status, StatusCode::OK, "{doc}");
     let mint = fix.vta.calls_of(MINT);
     assert_eq!(mint[1]["serverId"], "hosting-eu", "{}", mint[1]);
+}
+
+/// `vtc/config/did-hosting/list/0.1`: the hosting servers the community's VTA
+/// reports, each id, DID and label only, and one the configuration could not
+/// name left out.
+#[tokio::test]
+async fn did_hosting_list_answers_the_vtas_hosting_servers() {
+    let fix = fixture().await;
+    let (status, doc) = call(&fix.vtc, &fix.admin, DID_HOSTING_LIST, json!({})).await;
+    assert_eq!(status, StatusCode::OK, "{doc}");
+    assert_eq!(
+        doc["payload"]["servers"],
+        json!([{ "id": "hosting-eu", "did": "did:webvh:QmHost:hosting.example.com", "label": "EU hosting" }])
+    );
+    // A member who is no configuration administrator is refused.
+    let (_, refused) = call(&fix.vtc, &fix.member, DID_HOSTING_LIST, json!({})).await;
+    assert_eq!(tt_error_code(&refused), "permissionDenied", "{refused}");
+}
+
+#[tokio::test]
+async fn did_hosting_list_refuses_what_its_specification_declares() {
+    let fix = fixture().await;
+    fix.vta.script(WEBVH_SERVERS_LIST, Script::Silent);
+    let (_, doc) = call(&fix.vtc, &fix.admin, DID_HOSTING_LIST, json!({})).await;
+    assert_eq!(
+        tt_error_code(&doc),
+        DID_HOSTING_ERR_KEY_HOLDER_UNAVAILABLE,
+        "{doc}"
+    );
+
+    fix.vta
+        .script(WEBVH_SERVERS_LIST, Script::Refuse("permissionDenied"));
+    let (_, doc) = call(&fix.vtc, &fix.admin, DID_HOSTING_LIST, json!({})).await;
+    assert_eq!(
+        tt_error_code(&doc),
+        DID_HOSTING_ERR_KEY_HOLDER_REFUSED,
+        "{doc}"
+    );
+
+    let unlinked = fixture_with(Some(config()), false).await;
+    let (_, doc) = call(&unlinked.vtc, &unlinked.admin, DID_HOSTING_LIST, json!({})).await;
+    assert_eq!(tt_error_code(&doc), DID_HOSTING_ERR_NO_KEY_HOLDER, "{doc}");
 }

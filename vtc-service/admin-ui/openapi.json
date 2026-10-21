@@ -5472,6 +5472,68 @@
           }
         }
       },
+      "VtcConfigDidHostingListV0_1Ext": {
+        "type": "object",
+        "description": "Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework.",
+        "additionalProperties": true,
+        "minProperties": 1
+      },
+      "VtcConfigDidHostingListV0_1HostingServer": {
+        "type": "object",
+        "description": "A did:webvh hosting server registered at the community's VTA, as that VTA reports it. Carries no credential.",
+        "required": [
+          "id",
+          "did"
+        ],
+        "properties": {
+          "did": {
+            "type": "string",
+            "description": "The server's own DID.",
+            "maxLength": 2048,
+            "pattern": "^did:"
+          },
+          "id": {
+            "type": "string",
+            "description": "The server's id at the VTA: the value that names it in the community's configuration.",
+            "pattern": "^[A-Za-z0-9._:-]{1,128}$"
+          },
+          "label": {
+            "type": "string",
+            "maxLength": 256
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcConfigDidHostingListV0_1Payload": {
+        "type": "object",
+        "description": "List the did:webvh hosting servers the community's VTA can publish its identities through. The outer document members are owned by the framework — SPEC §6.3.",
+        "properties": {
+          "ext": {
+            "$ref": "#/components/schemas/VtcConfigDidHostingListV0_1Ext"
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcConfigDidHostingListV0_1Response": {
+        "type": "object",
+        "description": "The success response to a vtc/config/did-hosting/list/0.1 request. Carried in a Trust Task document whose type is https://trusttasks.org/spec/vtc/config/did-hosting/list/0.1#response.",
+        "required": [
+          "servers"
+        ],
+        "properties": {
+          "ext": {
+            "$ref": "#/components/schemas/VtcConfigDidHostingListV0_1Ext"
+          },
+          "servers": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/VtcConfigDidHostingListV0_1HostingServer"
+            },
+            "maxItems": 256
+          }
+        },
+        "additionalProperties": false
+      },
       "VtcDirectoryCardAssertV0_1CardBlobRef": {
         "type": "object",
         "description": "A content-addressed image held in the community's blob store — an avatar or an `image` field. At most 256 KiB, images only, re-encoded by the community on upload (vtc/directory/images/upload: metadata stripped, dimensions capped) so its digest does not link the member across communities. A viewer reads the bytes with vtc/directory/images/get, which answers only where the same projection shows the value. `url` and `urlExpiresAt` MAY appear in a projection: a short-lived URL the community checks against the same projection, so a member-only image is never a public URL. A community that does not offer one leaves both out.",

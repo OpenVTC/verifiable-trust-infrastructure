@@ -680,7 +680,9 @@ aws-smithy-types = ">=1.6.1, <1.9"
 # 0.32.6: vtc/rooms/offers/list/0.3 (renewals of the admissions a member holds),
 # rooms/keys/act/0.6 (completes it) and vtc/groups/bindings/add's
 # `kindNotServed` (trust-tasks-tf #843).
-trust-tasks-rs = { version = "0.32.6", default-features = false, features = [
+# 0.32.8: vtc/config/did-hosting/list/0.1 (trust-tasks-tf #849) — the VTA's
+# hosting servers the console offers for `dids.webvh_server`.
+trust-tasks-rs = { version = "0.32.8", default-features = false, features = [
   "validate",
   "all-specs",
 ] }

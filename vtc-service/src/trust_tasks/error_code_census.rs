@@ -1552,6 +1552,24 @@ fn witnesses() -> Vec<Witness> {
             "vtc_groups_bindings_list_refuses_what_its_specification_declares"
         ),
         witness!(
+            s::config::did_hosting::list::v0_1::error_codes::NO_KEY_HOLDER,
+            crate::trust_tasks::DID_HOSTING_ERR_NO_KEY_HOLDER,
+            "groups.rs",
+            "did_hosting_list_refuses_what_its_specification_declares"
+        ),
+        witness!(
+            s::config::did_hosting::list::v0_1::error_codes::KEY_HOLDER_UNAVAILABLE,
+            crate::trust_tasks::DID_HOSTING_ERR_KEY_HOLDER_UNAVAILABLE,
+            "groups.rs",
+            "did_hosting_list_refuses_what_its_specification_declares"
+        ),
+        witness!(
+            s::config::did_hosting::list::v0_1::error_codes::KEY_HOLDER_REFUSED,
+            crate::trust_tasks::DID_HOSTING_ERR_KEY_HOLDER_REFUSED,
+            "groups.rs",
+            "did_hosting_list_refuses_what_its_specification_declares"
+        ),
+        witness!(
             s::directory::notes::append::v0_1::error_codes::NOT_FOUND,
             crate::trust_tasks::directory_tasks::NOTES_APPEND_ERR_NOT_FOUND,
             "directory_notes.rs",

@@ -52,6 +52,7 @@ use trust_tasks_rs::specs::acl::revoke as acl_revoke;
 use trust_tasks_rs::specs::credential_exchange;
 use trust_tasks_rs::specs::did_management::did::register;
 use trust_tasks_rs::specs::git_ns::view as git_ns_view;
+use trust_tasks_rs::specs::vtc::config;
 use trust_tasks_rs::specs::vtc::directory;
 use trust_tasks_rs::specs::vtc::endorsement_types;
 use trust_tasks_rs::specs::vtc::groups;
@@ -406,6 +407,11 @@ spec_types! {
     GroupsManagersRemove01Payload(groups::managers::remove::v0_1::Payload);
     /// `vtc/groups/managers/remove/0.1#response` — the group's managers.
     GroupsManagersRemove01Response(groups::managers::remove::v0_1::Response);
+    /// `vtc/config/did-hosting/list/0.1` payload — nothing to filter by.
+    ConfigDidHostingList01Payload(config::did_hosting::list::v0_1::Payload);
+    /// `vtc/config/did-hosting/list/0.1#response` — the hosting servers the
+    /// community's VTA can publish its identities through.
+    ConfigDidHostingList01Response(config::did_hosting::list::v0_1::Response);
     /// `vtc/groups/bindings/add/0.1` payload — binding a group to a room.
     GroupsBindingsAdd01Payload(groups::bindings::add::v0_1::Payload);
     /// `vtc/groups/bindings/add/0.1#response` — the binding recorded.

@@ -1720,6 +1720,12 @@ fn table() -> Vec<Conformance> {
         ),
         // ─── config ──────────────────────────────────────────────────
         checked!(
+            s::config::did_hosting::list::v0_1::Payload,
+            s::config::did_hosting::list::v0_1::Response,
+            json!({}),
+            json!({ "servers": [{ "id": "hosting-eu", "did": "did:webvh:QmHost:hosting.example.com", "label": "EU hosting" }] })
+        ),
+        checked!(
             s::config::export::v0_1::Payload,
             s::config::export::v0_1::Response,
             json!({}),

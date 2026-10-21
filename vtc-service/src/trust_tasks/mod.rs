@@ -213,7 +213,8 @@ use trust_tasks_rs::specs::vtc::community::profile::update::v0_1 as community_pr
 use trust_tasks_rs::specs::vtc::join_requests::decide::v0_1 as join_decide;
 // Batch 3: the portable-configuration pair.
 use trust_tasks_rs::specs::vtc::config::{
-    export::v0_1 as config_export, import::v0_1 as config_import,
+    did_hosting::list::v0_1 as did_hosting_list, export::v0_1 as config_export,
+    import::v0_1 as config_import,
 };
 // Batch 4: the endorsement-type registry's two writes.
 use trust_tasks_rs::specs::vtc::endorsement_types::{
@@ -1472,6 +1473,9 @@ fn dispatch_typed<'a>(
             Box::pin(async move { handle_community_profile_update(state, ctx, doc).await })
         }
         CONFIG_EXPORT_TYPE => Box::pin(async move { handle_config_export(state, ctx, doc).await }),
+        DID_HOSTING_LIST_TYPE => {
+            Box::pin(async move { handle_did_hosting_list(state, ctx, doc).await })
+        }
         CONFIG_IMPORT_TYPE => Box::pin(async move { handle_config_import(state, ctx, doc).await }),
         ENDORSEMENT_TYPE_REGISTER_TYPE => {
             Box::pin(async move { handle_endorsement_type_register(state, ctx, doc).await })
@@ -2995,6 +2999,9 @@ pub(crate) const DISPATCHED_URIS: &[&str] = &[
     COMMUNITY_PROFILE_UPDATE_TYPE,
     // Batch 3: the portable-configuration pair, on the same terms.
     CONFIG_EXPORT_TYPE,
+    // Where the community's identities may be published: the hosting servers its
+    // VTA reports (`did_hosting`).
+    DID_HOSTING_LIST_TYPE,
     CONFIG_IMPORT_TYPE,
     // Batch 4: the endorsement-type writes, which have no REST route. `list`
     // declares no proof and stays on its bearer route.
@@ -3401,6 +3408,17 @@ pub(crate) const COMMUNITY_PROFILE_UPDATE_TYPE: &str =
 /// `vtc/config/export/0.1` — the community's portable configuration.
 pub(crate) const CONFIG_EXPORT_TYPE: &str =
     <config_export::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `vtc/config/did-hosting/list/0.1` — the hosting servers the community's VTA
+/// can publish its identities through.
+pub(crate) const DID_HOSTING_LIST_TYPE: &str =
+    <did_hosting_list::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+pub(crate) const DID_HOSTING_ERR_NO_KEY_HOLDER: &str =
+    did_hosting_list::error_codes::NO_KEY_HOLDER.code;
+pub(crate) const DID_HOSTING_ERR_KEY_HOLDER_UNAVAILABLE: &str =
+    did_hosting_list::error_codes::KEY_HOLDER_UNAVAILABLE.code;
+pub(crate) const DID_HOSTING_ERR_KEY_HOLDER_REFUSED: &str =
+    did_hosting_list::error_codes::KEY_HOLDER_REFUSED.code;
 
 /// `vtc/config/import/0.1` — preview or apply a portable configuration.
 pub(crate) const CONFIG_IMPORT_TYPE: &str =
@@ -5231,6 +5249,84 @@ async fn handle_config_export(
         Ok(response) => success_response(&doc, response),
         Err(e) => app_error_to_reject(&doc, &e),
     }
+}
+
+/// `vtc/config/did-hosting/list/0.1` — the `did:webvh` hosting servers the
+/// community's VTA reports (`vta/webvh/servers/list`), asked as the community
+/// over the link it keeps, for choosing `dids.webvh_server`
+/// ([`crate::did_hosting`]). `vtc.config.admin`. Each server's id, DID and
+/// label only, and one whose id the configuration could not name is left out
+/// (item 2).
+async fn handle_did_hosting_list(
+    state: &AppState,
+    ctx: &JoinAuthCtx,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    if let Err(reject) =
+        capable_signer(state, ctx, &doc, crate::acl::Capability::ConfigAdmin, None).await
+    {
+        return reject;
+    }
+    if let Err(reject) = parse_spec_payload::<did_hosting_list::Payload>(&doc) {
+        return reject;
+    }
+    let Some(holder) = state.community_rooms.key_holder() else {
+        return reject_with_code(
+            &doc,
+            extended_code(DID_HOSTING_ERR_NO_KEY_HOLDER),
+            "this community has no link to a VTA: its identities can only be served here",
+            None,
+        );
+    };
+    let answer = holder
+        .ask(
+            vta_sdk::trust_tasks::TASK_WEBVH_SERVERS_LIST_1_0,
+            serde_json::json!({}),
+            crate::rooms::community::SIGN_TIMEOUT,
+        )
+        .await;
+    let answer = match answer {
+        Ok(a) => a,
+        Err(crate::rooms::community::HolderError::Unavailable(why)) => {
+            return reject_with_code(
+                &doc,
+                extended_code(DID_HOSTING_ERR_KEY_HOLDER_UNAVAILABLE),
+                format!("the community's VTA did not answer: {why}"),
+                None,
+            );
+        }
+        Err(crate::rooms::community::HolderError::Refused { code, message }) => {
+            return reject_with_code(
+                &doc,
+                extended_code(DID_HOSTING_ERR_KEY_HOLDER_REFUSED),
+                format!("the community's VTA refused: {code} {message}"),
+                Some(crate::rooms::community::HolderError::refused_details(
+                    &code, &message,
+                )),
+            );
+        }
+    };
+    let servers: Vec<Value> = answer
+        .get("servers")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|s| {
+            let id = s.get("id")?.as_str()?;
+            crate::did_hosting::validate(&Value::String(id.to_string())).ok()?;
+            if id == crate::did_hosting::LOCAL {
+                return None;
+            }
+            let mut out = serde_json::json!({ "id": id, "did": s.get("did")?.as_str()? });
+            if let Some(label) = s.get("label").and_then(Value::as_str) {
+                out["label"] = Value::String(label.chars().take(256).collect());
+            }
+            Some(out)
+        })
+        .take(256)
+        .collect();
+    success_response(&doc, serde_json::json!({ "servers": servers }))
 }
 
 /// `vtc/config/import/0.1` — preview (`confirm: false`, the default) or apply

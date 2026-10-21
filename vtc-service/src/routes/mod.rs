@@ -201,6 +201,8 @@ use crate::server::AppState;
         vta_sdk::openapi::GroupsManagersAdd01Response,
         vta_sdk::openapi::GroupsManagersRemove01Payload,
         vta_sdk::openapi::GroupsManagersRemove01Response,
+        vta_sdk::openapi::ConfigDidHostingList01Payload,
+        vta_sdk::openapi::ConfigDidHostingList01Response,
         vta_sdk::openapi::GroupsBindingsAdd01Payload,
         vta_sdk::openapi::GroupsBindingsAdd01Response,
         vta_sdk::openapi::GroupsBindingsRemove01Payload,

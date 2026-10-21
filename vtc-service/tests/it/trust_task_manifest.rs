@@ -955,6 +955,9 @@ const SPINE_DOCUMENT_TYPES: &[&str] = &[
     "https://trusttasks.org/spec/vtc/groups/bindings/add/0.1",
     "https://trusttasks.org/spec/vtc/groups/bindings/remove/0.1",
     "https://trusttasks.org/spec/vtc/groups/bindings/list/0.1",
+    // The hosting servers the community's VTA reports, for choosing
+    // `dids.webvh_server` on the Groups page.
+    "https://trusttasks.org/spec/vtc/config/did-hosting/list/0.1",
     "https://trusttasks.org/spec/vtc/groups/members/add/0.1",
     "https://trusttasks.org/spec/vtc/groups/members/list/0.1",
     "https://trusttasks.org/spec/vtc/groups/members/remove/0.1",

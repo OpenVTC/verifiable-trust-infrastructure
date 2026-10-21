@@ -86,6 +86,9 @@ published*), with `config/patch`, or in a `vtc/config/import`.
 | a server id | published by the community's VTA on that `did:webvh` hosting server |
 | unset (the default) | as `[groups] webvh_server` (rooms: `[rooms.community] webvh_server`) says, and served here where that is absent |
 
+The page offers the hosting servers the community's VTA reports
+(`vtc/config/did-hosting/list/0.1`, which the community asks its VTA as itself, through the
+link it keeps); where it has no link, or the VTA does not answer, the server's id is typed.
 `[dids] webvh_server` in `config.toml`, and `VTC_DIDS_WEBVH_SERVER`, set the same key at
 their layers. A change applies to the next identity minted: one already minted stays
 where it was published, because its DID names its host. The change is audited like any
