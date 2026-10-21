@@ -2165,6 +2165,9 @@ pub(crate) async fn swap_key(
     successor.updated_at = Some(now);
     successor.updated_by = Some(current.to_string());
 
+    // VTI-VOT-022: the member's tickets follow them, before the rotation commits and with
+    // issuance held until it has.
+    let _tickets = state.elections.carry_tickets(current, new).await?;
     let _admin_set = crate::ceremony::lock_admin_set().await;
     let old_key = format!("acl:{current}");
     let Some(expected) = state.acl_ks.get_raw(old_key.as_bytes()).await? else {

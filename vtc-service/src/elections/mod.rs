@@ -77,8 +77,8 @@ pub struct Elections {
     link: Option<Arc<dyn link::BallotBoxChannel>>,
     #[cfg(feature = "voting")]
     registrar: tokio::sync::OnceCell<Arc<vti_voting::registrar::Registrar>>,
-    /// Ticket issuance for one election is one critical section (tickets/issue item 8).
-    #[cfg(feature = "voting")]
+    /// Ticket issuance for one election is one critical section (tickets/issue item 8), and a
+    /// rotation carrying a member's tickets to a new DID is inside it too.
     issue_lock: tokio::sync::Mutex<()>,
 }
 
@@ -99,7 +99,6 @@ impl Elections {
             link,
             #[cfg(feature = "voting")]
             registrar: tokio::sync::OnceCell::new(),
-            #[cfg(feature = "voting")]
             issue_lock: tokio::sync::Mutex::new(()),
         }
     }
@@ -112,5 +111,25 @@ impl Elections {
     /// The link to ballot boxes, when there is one.
     pub fn link(&self) -> Option<&Arc<dyn link::BallotBoxChannel>> {
         self.link.as_ref()
+    }
+
+    /// Before a rotation from `from` to `to` commits, carry every ticket `from` holds to `to`
+    /// (VTI-VOT-022: one ticket per party per election, whatever key the party signs with).
+    /// Without it a member could take a ticket, rotate, and take another under the new DID.
+    ///
+    /// Hold the returned guard until the rotation has committed or failed: no ticket is issued
+    /// to `from` in between. A rotation that then fails leaves `to` holding tickets it has no
+    /// standing to use, which costs nothing.
+    ///
+    /// # Errors
+    /// A store failure; the caller then does not rotate.
+    pub async fn carry_tickets(
+        &self,
+        from: &str,
+        to: &str,
+    ) -> Result<tokio::sync::MutexGuard<'_, ()>, crate::error::AppError> {
+        let guard = self.issue_lock.lock().await;
+        store::carry_tickets(&self.ks, from, to).await?;
+        Ok(guard)
     }
 }

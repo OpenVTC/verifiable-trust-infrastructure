@@ -410,6 +410,13 @@ pub(crate) async fn rotate_inner(
         .into());
     }
 
+    // 6a. The member's election tickets follow them (VTI-VOT-022), before anything moves and
+    //     with issuance held until the rotation is done.
+    let _tickets = state
+        .elections
+        .carry_tickets(&body.old_did, &body.new_did)
+        .await?;
+
     // 7. Move the ACL row. `KeyspaceHandle::swap` commits the
     // insert-new + remove-old pair as one write batch — one journal
     // record, so a crash replays both or neither. The previous

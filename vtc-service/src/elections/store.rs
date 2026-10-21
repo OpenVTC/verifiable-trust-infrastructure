@@ -231,6 +231,30 @@ pub async fn put_ticket(ks: &KeyspaceHandle, t: &TicketIssued) -> Result<bool, A
         .await
 }
 
+/// Copy every ticket `from` holds, in every election, to `to` — never over one `to` already
+/// holds. Idempotent: a rotation retried after a failure copies nothing twice.
+///
+/// # Errors
+/// A store failure, or a record that does not parse.
+pub async fn carry_tickets(ks: &KeyspaceHandle, from: &str, to: &str) -> Result<usize, AppError> {
+    let mut carried = 0;
+    for (_, v) in ks.prefix_iter_raw(TICKET_PREFIX).await? {
+        let t: TicketIssued = serde_json::from_slice(&v)
+            .map_err(|e| AppError::Internal(format!("a ticket record does not parse: {e}")))?;
+        if t.signer != from {
+            continue;
+        }
+        let moved = TicketIssued {
+            signer: to.to_string(),
+            ..t
+        };
+        if put_ticket(ks, &moved).await? {
+            carried += 1;
+        }
+    }
+    Ok(carried)
+}
+
 /// Every ticket of one election (to discard stored pre-credentials after voting closes).
 ///
 /// # Errors
@@ -301,6 +325,58 @@ mod tests {
             ..r
         };
         assert_eq!(cancelled.state(now + Duration::hours(49)), "cancelled");
+    }
+
+    /// VTI-VOT-022: a rotation carries the party's tickets to its new DID, so the new DID is
+    /// refused a second ticket; another party's tickets stay where they are, and carrying again
+    /// copies nothing twice.
+    #[tokio::test]
+    async fn vot_022_a_rotation_carries_the_tickets_to_the_new_did() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = vti_common::store::test_fixture::open_with_keyspaces(
+            &dir.path().join("db"),
+            &["elections"],
+        )
+        .unwrap();
+        let ks = store.keyspace("elections").unwrap();
+        let ticket = |election: &str, signer: &str| TicketIssued {
+            election_id: election.into(),
+            signer: signer.into(),
+            issued_at: Utc::now(),
+            doc_id: "urn:uuid:1".into(),
+            doc_digest: "z".into(),
+            pre_credential: None,
+        };
+        for t in [
+            ticket("agm", "did:key:A"),
+            ticket("budget", "did:key:A"),
+            ticket("agm", "did:key:C"),
+        ] {
+            assert!(put_ticket(&ks, &t).await.unwrap());
+        }
+        assert_eq!(
+            carry_tickets(&ks, "did:key:A", "did:key:B").await.unwrap(),
+            2
+        );
+        for election in ["agm", "budget"] {
+            let carried = super::ticket(&ks, election, "did:key:B").await.unwrap();
+            assert_eq!(carried.unwrap().signer, "did:key:B");
+            assert!(
+                !put_ticket(&ks, &ticket(election, "did:key:B"))
+                    .await
+                    .unwrap()
+            );
+        }
+        assert!(
+            super::ticket(&ks, "budget", "did:key:C")
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            carry_tickets(&ks, "did:key:A", "did:key:B").await.unwrap(),
+            0
+        );
     }
 
     #[test]
