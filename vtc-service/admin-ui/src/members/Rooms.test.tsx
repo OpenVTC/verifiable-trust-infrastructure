@@ -366,6 +366,49 @@ describe("data rooms in the portal", () => {
     await waitFor(() => expect(wallet.calls.find((c) => c.method === "putNote")?.args).toEqual({ hostDid: HOST, roomId: ROOM, title: "Pricing", body: "Hold." }));
   });
 
+  it("an opened record takes the add form's place beside the list, and Add or Close brings the form back", async () => {
+    const wallet = fakeWallet();
+    (window as { vtaWallet?: unknown }).vtaWallet = { rooms: wallet };
+    renderWith(<RoomPage hostDid={HOST} roomId={ROOM} />);
+    await screen.findByText("Add to this room");
+    fireEvent.click(await screen.findByRole("button", { name: /Term sheet/ }));
+    await screen.findByRole("button", { name: /Download/ });
+    expect(screen.queryByText("Add to this room")).toBeNull();
+    // Both share one pane, next to the list rather than below it.
+    const pane = document.querySelector(".room-pane")!;
+    expect(within(pane as HTMLElement).getByRole("heading", { name: "Term sheet" })).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: /^Add$/ }));
+    await screen.findByText("Add to this room");
+    fireEvent.click(screen.getByRole("button", { name: /Term sheet/ }));
+    fireEvent.click(await screen.findByRole("button", { name: "Close" }));
+    await screen.findByText("Add to this room");
+  });
+
+  it("names authors briefly — the member's own as you — and folds retracted records away", async () => {
+    const wallet = fakeWallet({
+      browse: vi.fn(async () => ({
+        records: [
+          { key: "k1", version: 4, updatedAt: "2026-10-16T00:00:00Z", author: MEMBER },
+          { key: "k2", version: 3, updatedAt: "2026-10-16T00:00:00Z", author: "did:webvh:QmBob:people.example:bob-vta" },
+          { key: "k3", version: 2, updatedAt: "2026-10-16T00:00:00Z", author: MEMBER, status: "retracted" },
+          { key: "k4", version: 1, updatedAt: "2026-10-16T00:00:00Z", author: MEMBER, status: "retracted" },
+        ],
+        complete: true,
+        verification: {},
+      })),
+    });
+    (window as { vtaWallet?: unknown }).vtaWallet = { rooms: wallet };
+    renderWith(<RoomPage hostDid={HOST} roomId={ROOM} />);
+    await screen.findByText(/v4 · .* · you$/);
+    expect(screen.getByText(/v3 · .* · bob-vta$/)).toBeTruthy();
+    const folded = screen.getByText("2 retracted records").closest("details")!;
+    expect(folded.open).toBe(false);
+    expect(within(folded).getAllByRole("listitem")).toHaveLength(2);
+    // The facts are one line, naming who the member is here.
+    expect(screen.getByLabelText("This room").textContent).toContain("Epoch 3");
+  });
+
   it("a room that does not open says why", async () => {
     const wallet = fakeWallet({ info: vi.fn(async () => { throw new Error("has not been given that room"); }) });
     (window as { vtaWallet?: unknown }).vtaWallet = { rooms: wallet };

@@ -8,9 +8,9 @@
 // file they add is confirmed there first. Design:
 // `docs/05-design-notes/data-rooms-files.md` §8.5.
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowLeft, Boxes, Download, Eye, FileText, FilePlus2, Gift, NotebookPen, RefreshCw, Share2 } from "lucide-react";
+import { ArrowLeft, Boxes, Download, Eye, FileText, FilePlus2, Gift, NotebookPen, Plus, RefreshCw, Share2, X } from "lucide-react";
 
 import { blobBytes, createLimiter, mayPreview, showBytes, worthAutoPreview, type Shown } from "./file-preview";
 import { InstallWallet } from "./InstallWallet";
@@ -28,6 +28,7 @@ import {
   type OfferAccepted,
   type PageOffer,
   type PageRoom,
+  type RecordSummary,
   type RoomInfo,
   type RoomRecord,
   type TransferProgress,
@@ -36,6 +37,38 @@ import {
 
 function shortDid(did: string): string {
   return did.length > 40 ? `${did.slice(0, 22)}…${did.slice(-10)}` : did;
+}
+
+/**
+ * Who wrote something, short enough for a list row: "you", a `did:webvh`'s last path
+ * segment (`…:glenn-vta` → `glenn-vta`), else the abbreviated DID. The full DID stays in
+ * the row's `title`.
+ */
+export function authorName(did: string, me?: string): string {
+  if (me && did === me) return "you";
+  if (did.startsWith("did:webvh:")) {
+    const last = did.slice(did.lastIndexOf(":") + 1);
+    if (last && !last.startsWith("Qm")) return decodeURIComponent(last);
+  }
+  return shortDid(did);
+}
+
+function when(iso: string): string {
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? iso : d.toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
+}
+
+/** Keep `--topbar-h` at the sticky top bar's height, so a sticky pane sits below it. */
+function useTopbarHeight() {
+  useEffect(() => {
+    const bar = document.querySelector<HTMLElement>(".topbar");
+    if (!bar || typeof ResizeObserver === "undefined") return;
+    const set = () => document.documentElement.style.setProperty("--topbar-h", `${bar.offsetHeight}px`);
+    set();
+    const ro = new ResizeObserver(set);
+    ro.observe(bar);
+    return () => ro.disconnect();
+  }, []);
 }
 
 function errorText(e: unknown): string {
@@ -400,13 +433,13 @@ function RoomRow({ room, me }: { room: PageRoom; me?: string }) {
 export function RoomPage({ hostDid, roomId }: { hostDid: string; roomId: string }) {
   const wallet = walletRooms();
   return (
-    <main className="home" id="main">
+    <main className="home home-wide" id="main">
       <p>
         <a href="#/rooms" className="back">
           <ArrowLeft size={14} aria-hidden="true" /> Data rooms
         </a>
       </p>
-      <section className="welcome">
+      <section className="welcome welcome-tight">
         <p className="eyebrow">Data room</p>
         {wallet ? (
           <RoomHeading wallet={wallet} hostDid={hostDid} roomId={roomId} />
@@ -444,7 +477,16 @@ function Room({ wallet, hostDid, roomId }: { wallet: WalletRooms; hostDid: strin
     queryKey: ["member-room-info", roomId],
     queryFn: () => wallet.info({ hostDid, roomId }),
   });
-  const [open, setOpen] = useState<string | null>(null);
+  const [open, setOpenKey] = useState<string | null>(null);
+  const pane = useRef<HTMLDivElement>(null);
+  useTopbarHeight();
+  // On one column the pane is above the list; bring it into view when a record opens.
+  const setOpen = (k: string | null) => {
+    setOpenKey(k);
+    if (k && typeof window.matchMedia === "function" && window.matchMedia("(max-width: 56rem)").matches) {
+      requestAnimationFrame(() => pane.current?.scrollIntoView({ block: "start", behavior: "smooth" }));
+    }
+  };
 
   if (info.isPending) return <p className="muted">Asking your wallet…</p>;
   if (info.isError) {
@@ -458,62 +500,63 @@ function Room({ wallet, hostDid, roomId }: { wallet: WalletRooms; hostDid: strin
       </div>
     );
   }
+  // The list on the left; on the right, sticky, what the member is working on — the record
+  // they opened, else the form to add one — so it is never below the fold.
   return (
-    <div className="grid room-grid">
+    <>
       <RoomFacts info={info.data} />
-      <Records wallet={wallet} hostDid={hostDid} roomId={roomId} open={open} setOpen={setOpen} />
-      {open ? (
-        <RecordView wallet={wallet} hostDid={hostDid} roomId={roomId} recordKey={open} />
-      ) : (
-        <AddToRoom wallet={wallet} hostDid={hostDid} info={info.data} />
-      )}
-    </div>
+      <div className={open ? "room-layout has-open" : "room-layout"}>
+        <Records
+          wallet={wallet}
+          hostDid={hostDid}
+          roomId={roomId}
+          me={info.data.member}
+          open={open}
+          setOpen={setOpen}
+        />
+        <div className="room-pane" ref={pane}>
+          {open ? (
+            <RecordView
+              wallet={wallet}
+              hostDid={hostDid}
+              roomId={roomId}
+              recordKey={open}
+              onClose={() => setOpen(null)}
+            />
+          ) : (
+            <AddToRoom wallet={wallet} hostDid={hostDid} info={info.data} />
+          )}
+        </div>
+      </div>
+    </>
   );
 }
 
 function Meter({ label, used, max }: { label: string; used: number; max?: number }) {
   return (
-    <div>
-      <dt>{label}</dt>
-      <dd>
-        {formatBytes(used)}
-        {max !== undefined ? ` of ${formatBytes(max)}` : ""}
-      </dd>
-    </div>
+    <span>
+      {label} <b>{formatBytes(used)}</b>
+      {max !== undefined ? ` of ${formatBytes(max)}` : ""}
+    </span>
   );
 }
 
+/** The room's facts as one line under its name — not a card's worth of space. */
 function RoomFacts({ info }: { info: RoomInfo }) {
   const mine = info.usage.member;
   return (
-    <section className="card" aria-labelledby="room-facts-heading">
-      <div className="card-head">
-        <Boxes size={18} aria-hidden="true" />
-        <h2 id="room-facts-heading">This room</h2>
-      </div>
-      <dl className="facts">
-        <div>
-          <dt>Tier</dt>
-          <dd className="cap">{info.visibility}</dd>
-        </div>
-        <div>
-          <dt>Epoch</dt>
-          <dd>{info.epoch}</dd>
-        </div>
-        <div>
-          <dt>You, here</dt>
-          <dd>
-            <code className="wrap">{info.member}</code>
-          </dd>
-        </div>
-        <Meter label="Room storage" used={info.usage.room.bytes} max={info.limits.room?.maxBytes} />
-        {mine && <Meter label="Your storage" used={mine.usage.bytes} max={mine.limits.maxBytes} />}
-      </dl>
+    <section className="room-facts" aria-label="This room">
+      <span className="tier cap">{info.visibility}</span>
+      <span>
+        Epoch <b>{info.epoch}</b>
+      </span>
+      <Meter label="Room" used={info.usage.room.bytes} max={info.limits.room?.maxBytes} />
+      {mine && <Meter label="Yours" used={mine.usage.bytes} max={mine.limits.maxBytes} />}
+      <span title={info.member}>
+        You are <b>{authorName(info.member)}</b>
+      </span>
       {info.visibility === "attributed" && (
-        <p className="muted small">
-          On an attributed room the community hosting it sees which member added what, and when — never what it
-          says.
-        </p>
+        <span className="room-facts-note">The community sees who added what, and when — never what it says.</span>
       )}
     </section>
   );
@@ -523,12 +566,15 @@ function Records({
   wallet,
   hostDid,
   roomId,
+  me,
   open,
   setOpen,
 }: {
   wallet: WalletRooms;
   hostDid: string;
   roomId: string;
+  /** The member this page acts as, so their own records read "you". */
+  me?: string;
   open: string | null;
   setOpen: (k: string | null) => void;
 }) {
@@ -542,9 +588,18 @@ function Records({
       <div className="card-head">
         <FileText size={18} aria-hidden="true" />
         <h2 id="records-heading">Records</h2>
+        {listing.data && (
+          <span className="muted small">{listing.data.records.filter((r) => r.status !== "retracted").length}</span>
+        )}
+        <span className="push" />
+        {open && (
+          <button type="button" className="btn btn-sm" onClick={() => setOpen(null)}>
+            <Plus size={14} aria-hidden="true" /> Add
+          </button>
+        )}
         <button
           type="button"
-          className="btn btn-ghost btn-sm push"
+          className="btn btn-ghost btn-sm"
           onClick={() => void listing.refetch()}
           aria-label="Refresh"
         >
@@ -566,42 +621,89 @@ function Records({
       ) : listing.data.records.length === 0 ? (
         <p className="empty">Nothing in this room yet.</p>
       ) : (
-        <ul className="record-list">
-          {[...listing.data.records]
-            .sort((a, b) => b.version - a.version)
-            .map((r, i) => (
-              <li key={r.key} className={open === r.key ? "selected" : undefined}>
-                <button type="button" className="record-link" onClick={() => setOpen(open === r.key ? null : r.key)}>
-                  <RecordTitle
-                    wallet={wallet}
-                    hostDid={hostDid}
-                    roomId={roomId}
-                    summary={r}
-                    autoOpen={i < AUTO_OPEN}
-                  />
-                </button>
-                <span className="muted small">
-                  v{r.version} · {new Date(r.updatedAt).toLocaleString()}
-                  {r.author ? ` · ${shortDid(r.author)}` : ""}
-                  {r.status && r.status !== "active" ? ` · ${r.status}` : ""}
-                </span>
-                {i < AUTO_OPEN && (
-                  <RecordThumbnail
-                    wallet={wallet}
-                    hostDid={hostDid}
-                    roomId={roomId}
-                    recordKey={r.key}
-                    onOpen={() => setOpen(r.key)}
-                  />
-                )}
-              </li>
-            ))}
-        </ul>
+        <RecordList
+          wallet={wallet}
+          hostDid={hostDid}
+          roomId={roomId}
+          me={me}
+          records={listing.data.records}
+          open={open}
+          setOpen={setOpen}
+        />
       )}
       {listing.data && !listing.data.complete && (
         <p className="muted small">The listing stopped at a page bound; older records are not shown.</p>
       )}
     </section>
+  );
+}
+
+/**
+ * The records, newest first, one compact row each. Retracted ones have nothing to open, so
+ * they are folded away under a count rather than taking a row each.
+ */
+function RecordList({
+  wallet,
+  hostDid,
+  roomId,
+  me,
+  records,
+  open,
+  setOpen,
+}: {
+  wallet: WalletRooms;
+  hostDid: string;
+  roomId: string;
+  me?: string;
+  records: readonly RecordSummary[];
+  open: string | null;
+  setOpen: (k: string | null) => void;
+}) {
+  const sorted = [...records].sort((a, b) => b.version - a.version);
+  const live = sorted.filter((r) => r.status !== "retracted");
+  const retracted = sorted.filter((r) => r.status === "retracted");
+  const row = (r: RecordSummary, i: number) => (
+    <li key={r.key} className={open === r.key ? "selected" : undefined}>
+      <button
+        type="button"
+        className="record-link"
+        aria-current={open === r.key ? "true" : undefined}
+        onClick={() => setOpen(open === r.key ? null : r.key)}
+      >
+        <RecordTitle wallet={wallet} hostDid={hostDid} roomId={roomId} summary={r} autoOpen={i < AUTO_OPEN} />
+      </button>
+      <span className="muted small record-meta" title={r.author}>
+        v{r.version} · {when(r.updatedAt)}
+        {r.author ? ` · ${authorName(r.author, me)}` : ""}
+        {r.status && r.status !== "active" && r.status !== "retracted" ? ` · ${r.status}` : ""}
+      </span>
+      {i < AUTO_OPEN && r.status !== "retracted" && (
+        <RecordThumbnail
+          wallet={wallet}
+          hostDid={hostDid}
+          roomId={roomId}
+          recordKey={r.key}
+          onOpen={() => setOpen(r.key)}
+        />
+      )}
+    </li>
+  );
+  return (
+    <>
+      {live.length > 0 ? (
+        <ul className="record-list">{live.map(row)}</ul>
+      ) : (
+        <p className="empty">Nothing in this room but retracted records.</p>
+      )}
+      {retracted.length > 0 && (
+        <details className="retracted">
+          <summary className="muted small">
+            {retracted.length} retracted {retracted.length === 1 ? "record" : "records"}
+          </summary>
+          <ul className="record-list">{retracted.map((r) => row(r, AUTO_OPEN))}</ul>
+        </details>
+      )}
+    </>
   );
 }
 
@@ -654,11 +756,13 @@ function RecordView({
   hostDid,
   roomId,
   recordKey,
+  onClose,
 }: {
   wallet: WalletRooms;
   hostDid: string;
   roomId: string;
   recordKey: string;
+  onClose: () => void;
 }) {
   const rec = useQuery({
     queryKey: ["member-room-record", roomId, recordKey],
@@ -668,8 +772,13 @@ function RecordView({
   return (
     <section className="card" aria-labelledby="record-heading">
       <div className="card-head">
-        <NotebookPen size={18} aria-hidden="true" />
-        <h2 id="record-heading">{rec.data?.title || rec.data?.file?.name || "Record"}</h2>
+        {rec.data?.file ? <FileText size={18} aria-hidden="true" /> : <NotebookPen size={18} aria-hidden="true" />}
+        <h2 id="record-heading" className="wrap">
+          {rec.data?.title || rec.data?.file?.name || "Record"}
+        </h2>
+        <button type="button" className="btn btn-ghost btn-sm push" onClick={onClose} aria-label="Close">
+          <X size={16} aria-hidden="true" />
+        </button>
       </div>
       {rec.isPending ? (
         <p className="muted">Opening…</p>
@@ -712,8 +821,9 @@ function RecordBody({
         {rec.author && (
           <div>
             <dt>By</dt>
-            <dd>
-              <code className="wrap">{rec.author}</code>
+            <dd title={rec.author}>
+              {authorName(rec.author)}
+              <code className="wrap muted small did-under">{rec.author}</code>
             </dd>
           </div>
         )}
@@ -1069,8 +1179,8 @@ function AddToRoom({ wallet, hostDid, info }: { wallet: WalletRooms; hostDid: st
       ) : (
         <>
           <p className="muted small">
-            Your wallet shows you what will be added, signed as <code className="wrap">{info.member}</code>, before
-            anything is sent.
+            Your wallet shows you what will be added, signed as <b title={info.member}>{authorName(info.member)}</b>,
+            before anything is sent.
           </p>
           <label className="field">
             <span>Title</span>
