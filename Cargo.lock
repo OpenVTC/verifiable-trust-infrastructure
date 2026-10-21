@@ -9121,6 +9121,7 @@ dependencies = [
  "trust-tasks-didcomm",
  "trust-tasks-https",
  "trust-tasks-rs",
+ "trust-tasks-tsp",
  "uuid",
  "vta-sdk",
  "vtc-client",

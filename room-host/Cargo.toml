@@ -78,6 +78,9 @@ affinidi-secrets-resolver = { workspace = true, optional = true }
 # `ENVELOPE_TYPE`, from the crate that defines the binding rather than a fourth
 # hand-written copy of the URI.
 trust-tasks-didcomm = { workspace = true, optional = true }
+# `TspHandler`: the TSP binding's own issuer-vs-sender comparison, beside
+# `DidcommHandler` above, rather than a hand-written one.
+trust-tasks-tsp = { workspace = true, optional = true }
 futures-util = { workspace = true, optional = true }
 
 
@@ -137,6 +140,7 @@ didcomm = [
     "dep:affinidi-messaging-core",
     "dep:affinidi-secrets-resolver",
     "dep:trust-tasks-didcomm",
+    "dep:trust-tasks-tsp",
     "dep:futures-util",
 
 ]
