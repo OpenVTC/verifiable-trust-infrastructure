@@ -240,10 +240,18 @@ pub(super) async fn handle_decision(
     // that *asks* for a decision and the side that *accepts* one disagreed about
     // who was in the set, so every approver added with `pnm approvals approvers
     // add` (which writes the declarative row) was denied `not_a_member`.
-    let members = match super::policy_gate::approver_set_members(state, &pending.approver_set).await
-    {
-        Ok(m) => m,
-        Err(e) => return app_error_to_reject(&doc, e),
+    //
+    // A request bound to one approver (a browser's sign-in approved on the
+    // member's phone, `oob_sign_in::remote_approval`) names that approver and
+    // no set: only its decision counts, whatever any policy set says.
+    let members = match &pending.bound_approver {
+        Some(bound) => vec![bound.clone()],
+        None => {
+            match super::policy_gate::approver_set_members(state, &pending.approver_set).await {
+                Ok(m) => m,
+                Err(e) => return app_error_to_reject(&doc, e),
+            }
+        }
     };
     if !members.iter().any(|m| m == &approver) {
         crate::audit::record_consent(
@@ -289,7 +297,14 @@ pub(super) async fn handle_decision(
         // Conditional on the pending still being there: if a concurrent
         // approval already minted its grant, this denial came too late and
         // must not be reported as having refused anything.
-        match consent::remove_pending_if_present(ks, &pending).await {
+        // A bound request is marked denied, so its requester's next poll
+        // reads "declined" instead of asking the approver again.
+        let removed = if pending.bound_approver.is_some() {
+            consent::deny_bound_pending(ks, &pending).await
+        } else {
+            consent::remove_pending_if_present(ks, &pending).await
+        };
+        match removed {
             Ok(true) => {}
             Ok(false) => return pending_vanished(state, &doc, &approver, &pending.type_uri).await,
             Err(e) => return app_error_to_reject(&doc, e),
@@ -514,6 +529,7 @@ mod tests {
                 guards: Default::default(),
                 subject_context: None,
                 requester_authorized: true,
+                bound_approver: None,
                 created_at: now,
                 expires_at: now + 900,
             },
@@ -688,6 +704,7 @@ mod tests {
             guards: Default::default(),
             subject_context: Some(OPENVTC.into()),
             requester_authorized: false,
+            bound_approver: None,
             created_at: 0,
             expires_at: u64::MAX,
         }

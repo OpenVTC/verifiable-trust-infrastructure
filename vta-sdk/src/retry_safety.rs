@@ -651,10 +651,13 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     // and re-fetching from the host yields the same rungs. A retry that arrives
     // after the first succeeded stores nothing and reports the same reach.
     (trust_tasks::TASK_ROOMS_KEYS_BACKFILL_0_1, RetrySafe),
-    // A read stores nothing and changes nothing at either end: the host serves
-    // the same record, and this agent opens it again. What a retry costs is one
-    // more disclosure of the presentation to the host, which is why it is safe
-    // rather than free.
+    // A read changes nothing at the host: it serves the same record, and this
+    // agent opens it again. What it may change here is the agent's own epoch
+    // state — before refusing, it applies relayed commits and keeps epoch links
+    // (trust-tasks-tf #848) — and both are idempotent by epoch, exactly as
+    // `rooms/keys/commit` and `rooms/keys/backfill` above, so a retry repeats
+    // nothing. What a retry costs is one more disclosure of the presentation to
+    // the host, which is why it is safe rather than free.
     // `Keyed`, and the reason is that "harmless duplicate" is not quite true
     // here. A second anchor supersedes the first and says the same thing, so it
     // converges on state — but each attempt appends a permanent witnessed log
@@ -692,6 +695,8 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     (trust_tasks::TASK_ROOMS_KEYS_ACT_0_4, RetrySafe),
     // 0.5 adds `vtc/rooms/memberships/list/0.1`, a read: still nothing stored.
     (trust_tasks::TASK_ROOMS_KEYS_ACT_0_5, RetrySafe),
+    // 0.6 adds `vtc/rooms/offers/list/0.3`, a listing: still nothing stored.
+    (trust_tasks::TASK_ROOMS_KEYS_ACT_0_6, RetrySafe),
     (trust_tasks::TASK_ROOMS_KEYS_LIST_0_1, RetrySafe),
     // 0.2 names each entry's member and can carry the member's own labels: still a read.
     (trust_tasks::TASK_ROOMS_KEYS_LIST_0_2, RetrySafe),

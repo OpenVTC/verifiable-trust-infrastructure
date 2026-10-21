@@ -203,6 +203,8 @@ impl ResourceGrant {
                 exact && cap == Capability::GitRepoManage
             }
             (Capability::GitCommitSign, _) => inside && cap == Capability::GitCommitSign,
+            // A group manager's appointment: that group, nothing else.
+            (Capability::GroupsManage, _) => exact && cap == Capability::GroupsManage,
             _ => false,
         }
     }

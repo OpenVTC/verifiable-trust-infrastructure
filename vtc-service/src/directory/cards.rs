@@ -140,6 +140,7 @@ pub async fn ensure(
             "a directory card was created for this member concurrently; read it again".into(),
         ));
     }
+    super::changed();
     Ok(card)
 }
 
@@ -156,6 +157,7 @@ async fn store_if_revision(
         return Ok(false);
     }
     ks.insert(card_key(&card.entry_id), card).await?;
+    super::changed();
     Ok(true)
 }
 
@@ -460,6 +462,73 @@ pub fn apply_assertion(
     })
 }
 
+/// Apply a member's presentation (`card/present` item 5): the verified value
+/// of each named field, or `None` to clear it. Visibility is never touched.
+/// The fields were checked (`present::selectors`) before the presentation was
+/// verified.
+pub fn apply_presented(
+    card: &Card,
+    values: &BTreeMap<String, Option<Value>>,
+    now: DateTime<Utc>,
+) -> Result<Applied, CardError> {
+    let mut next = card.clone();
+    let mut changed = Vec::new();
+    let mut widens = false;
+    for (key, value) in values {
+        match value {
+            None => {
+                next.values.remove(key);
+            }
+            Some(v) => {
+                if card.values.get(key) != Some(v) {
+                    widens = true;
+                }
+                next.values.insert(key.clone(), v.clone());
+            }
+        }
+        changed.push(key.clone());
+    }
+    check_size(&next)?;
+    next.revision = card.revision + 1;
+    next.updated_at = now;
+    Ok(Applied {
+        card: next,
+        changed,
+        widens,
+    })
+}
+
+/// Withdraw every verified value whose `validUntil` has passed
+/// (`card/present` item 7), from `card` as it is now. `None` when nothing
+/// lapsed.
+pub fn without_lapsed(card: &Card, schema: &[FieldDef], now: DateTime<Utc>) -> Option<Applied> {
+    let claim_fields: BTreeSet<&str> = schema
+        .iter()
+        .filter(|f| f.source == FieldSource::Credential)
+        .map(|f| f.key.as_str())
+        .collect();
+    let lapsed: Vec<String> = card
+        .values
+        .iter()
+        .filter(|(k, v)| claim_fields.contains(k.as_str()) && super::present::lapsed(v, now))
+        .map(|(k, _)| k.clone())
+        .collect();
+    if lapsed.is_empty() {
+        return None;
+    }
+    let mut next = card.clone();
+    for key in &lapsed {
+        next.values.remove(key);
+    }
+    next.revision = card.revision + 1;
+    next.updated_at = now;
+    Some(Applied {
+        card: next,
+        changed: lapsed,
+        widens: false,
+    })
+}
+
 fn check_size(card: &Card) -> Result<(), CardError> {
     let bytes = serde_json::to_vec(&card.values)
         .map(|v| v.len())
@@ -513,6 +582,7 @@ pub async fn rotate(ks: &KeyspaceHandle, old_did: &str, new_did: &str) -> Result
             "{new_did} already has a directory entry; the rotation cannot carry the card"
         )));
     }
+    super::changed();
     Ok(())
 }
 
@@ -553,6 +623,7 @@ pub async fn on_departure(ks: &KeyspaceHandle, did: &str, how: Departure) -> Res
         }
     }
     ks.apply_batch(batch).await?;
+    super::changed();
     Ok(())
 }
 
@@ -567,6 +638,7 @@ pub async fn purge_field(ks: &KeyspaceHandle, field: &str) -> Result<usize, AppE
         if had_value || had_choice {
             ks.insert(card_key(&card.entry_id), &card).await?;
             purged += usize::from(had_value);
+            super::changed();
         }
     }
     Ok(purged)

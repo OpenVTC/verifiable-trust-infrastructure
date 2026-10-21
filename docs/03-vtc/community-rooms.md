@@ -54,6 +54,9 @@ context = "vtc"                             # the VTA context the rooms' keys ar
 **Where a room's DID is published.** A room's DID must resolve before its credentials
 can be checked — the VTA verifies the community's own credentials as it stores them.
 
+- The runtime key `dids.webvh_server` overrides `webvh_server` for every identity
+  the community mints, rooms and groups alike, without a restart
+  ([groups](groups.md#where-group-identities-are-published-at-runtime)).
 - With `webvh_server`, the VTA publishes each room's log on that hosting server
   (registered at the VTA with `pnm webvh servers register`).
 - Without it, the room's DID is minted serverless at
@@ -405,7 +408,11 @@ The member, signed with **their own DID** (the persona named in the offer):
 1. `vtc/rooms/offers/list/0.1` — their offers, each with the three credentials. They
    store the membership and authority in their own VTA's vault
    (`pnm cred-vault receive`). At `0.2` each offer also carries the room's current
-   description; never its tags.
+   description; never its tags. At `0.3` the first page also carries `renewals`: for a
+   room they are in through a group's room binding
+   ([groups](groups.md#room-bindings)), a fresh membership and authority issued before the
+   ones they hold expire. They store each **in place of** the one it renews, never beside
+   it, and accept nothing. A renewal stays listed until what it renews expires.
 2. On a sealed room, their VTA mints a KeyPackage against the offer's invitation
    (`pnm rooms keys key-package --invitation …`).
 3. `vtc/rooms/offers/accept/0.1` with the KeyPackage (none on an `open` room). The VTC has
@@ -432,25 +439,36 @@ remove that member again if that is still wanted.
 ### From `pnm`
 
 The persona an offer names is held by the member's VTA, so `pnm` builds each request and
-has the VTA sign it as that persona with `rooms/keys/act/0.5` (0.4 or 0.3 for the offer
-types, against an older VTA) — no presentation inserted,
+has the VTA sign it as that persona with `rooms/keys/act/0.6` (0.5, 0.4 or 0.3, against an
+older VTA, for the types those complete) — no presentation inserted,
 and an acceptance completed only with a KeyPackage that VTA minted itself for that member
 and room (`keyPackageNotHeld` otherwise). The signed document goes to the VTC over its
 Trust Task HTTPS endpoint, unchanged.
 
-`list` asks for `vtc/rooms/offers/list/0.2`, signed with `rooms/keys/act/0.4` — the first
+`list` asks for `vtc/rooms/offers/list/0.3`, signed with `rooms/keys/act/0.6` — the first
 version whose table lists it — so each offer shows what its room is for, on an `about:` line
-under it (control characters replaced, as in the label). Members and communities upgrade on
-their own schedules: when the member's VTA does not serve act 0.4, or the VTC does not serve
-list 0.2 (`unsupportedType` / `unsupportedVersion` from either), `pnm` lists at 0.1 through
-act 0.3 instead, and the offers show no description. `accept` reads the offer the same way
-before it accepts (`vtc/rooms/offers/accept/0.1`, at act 0.4 or 0.3):
+under it (control characters replaced, as in the label), and each room you are in that the
+community has renewed shows as a `renewal` line with the command that collects it. Members
+and communities upgrade on their own schedules: when the member's VTA or the VTC does not
+serve 0.3 (`unsupportedType` / `unsupportedVersion` from either), `pnm` lists at 0.2 through
+act 0.4, and failing that at 0.1 through act 0.3; those listings carry no renewals, and 0.1's
+offers no description. `accept` reads the offer the same way before it accepts
+(`vtc/rooms/offers/accept/0.1`).
 
 ```bash
 pnm rooms offers list   --vtc https://vtc.example.com/v1 --vtc-did <vtc-did> --member <persona-did>
 pnm rooms offers accept --vtc https://vtc.example.com/v1 --vtc-did <vtc-did> --member <persona-did> \
     --room <room-did>
+pnm rooms offers renew  --vtc https://vtc.example.com/v1 --vtc-did <vtc-did> --member <persona-did> \
+    --room <room-did>
 ```
+
+`renew` collects a renewal: it finds the membership and authority the room issued you in
+your VTA's vault (`vault/credentials/query` by the room as issuer, then the one whose
+subject is you) and stores the renewed ones **under the same handles**, replacing them. More
+than one of either is refused with the command that removes the older: your VTA acts on the
+room with neither until one is left. Collecting a renewal twice, or after another surface
+did, is harmless.
 
 `accept` stores the offer's membership and authority credentials in the VTA's vault, has
 the VTA mint the KeyPackage against the offer's invitation on a sealed room, accepts, and
@@ -465,7 +483,7 @@ wallet, `pnm`, OpenVTC. None keeps its own record of which rooms the member acce
 reads the same two:
 
 - the **community's** — `vtc/rooms/memberships/list/0.1`, signed as the member (through
-  `rooms/keys/act/0.5`): every room the community offered them, `offered`, `admitted` or
+  `rooms/keys/act` at 0.5 or later): every room the community offered them, `offered`, `admitted` or
   `removed`, for as long as it keeps the record (an offer withdrawn before acceptance is
   not listed). `repeatAcceptUntil` says, on a sealed room, until when the Welcome is kept;
 - the **VTA's** — `rooms/keys/list`: which rooms' groups it holds, for which member.

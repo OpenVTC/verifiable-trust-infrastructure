@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import {
   COMMUNITY_KEY_PATTERN,
@@ -110,5 +110,28 @@ describe("the disclosure statement in words", () => {
     expect(durationWords("P2W")).toBe("14 days");
     expect(durationWords("P1D")).toBe("1 day");
     expect(durationWords("PT12H")).toBe("PT12H");
+  });
+});
+
+describe("the directory export", () => {
+  it("asks for the gesture on the first page and follows the cursor for the rest", async () => {
+    vi.resetModules();
+    const withStepUp = vi.fn(async () => ({ items: [{ uid: "a" }], nextCursor: "c1", exportedAt: "t" }));
+    const signed = vi.fn(async () => ({ items: [{ uid: "b" }], nextCursor: null, exportedAt: "t" }));
+    vi.doMock("./signed-act", async (orig) => ({
+      ...(await orig<typeof import("./signed-act")>()),
+      postSignedWithStepUp: withStepUp,
+    }));
+    vi.doMock("./api", async (orig) => ({
+      ...(await orig<typeof import("./api")>()),
+      postSignedTrustTask: signed,
+    }));
+    const { exportDirectory, EXPORT_TASK } = await import("./directory");
+    const cards = await exportDirectory("archive", async () => true);
+    expect(cards).toEqual([{ uid: "a" }, { uid: "b" }]);
+    expect(withStepUp).toHaveBeenCalledTimes(1);
+    expect(signed).toHaveBeenCalledWith(EXPORT_TASK, expect.objectContaining({ cursor: "c1", reason: "archive" }));
+    vi.doUnmock("./signed-act");
+    vi.doUnmock("./api");
   });
 });

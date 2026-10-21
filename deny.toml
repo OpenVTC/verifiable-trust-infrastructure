@@ -58,6 +58,28 @@ ignore = [
   extracts); drop with it.
   """ },
 
+  { id = "RUSTSEC-2026-0381", reason = """
+  webpki-roots 0.26.x: bundled roots trust distrusted emSign intermediates.
+  Patched only in >= 1.0.10; there is no fixed 0.26 release.
+
+  0.26.11 is a compatibility shim with no roots of its own: it re-exports
+  webpki-roots 1.x, which Cargo.lock pins at 1.0.10, the patched release. So
+  the roots any 0.26 user (tokio-tungstenite 0.30, under the messaging SDK,
+  the test mediator and vta-mobile-core) actually gets are the fixed ones; the
+  advisory matches on the shim's version number alone.
+
+  Drop when tokio-tungstenite depends on webpki-roots 1.x directly.
+  """ },
+
+  { id = "RUSTSEC-2026-0374", reason = """
+  basic-toml is unmaintained. Build-time only: askama_derive reads its
+  template configuration with it, under uniffi_bindgen, for vta-mobile-core's
+  UniFFI scaffolding. No runtime code, and it parses only askama's own
+  configuration in the build; "unmaintained" is the only flagged risk.
+
+  Drop when askama (through uniffi) moves off basic-toml.
+  """ },
+
   { id = "RUSTSEC-2023-0071", reason = """
   rsa 0.9 "Marvin Attack": decrypting or signing with an RSA *private* key
   leaks timing that can recover it. No patched 0.9 release exists.

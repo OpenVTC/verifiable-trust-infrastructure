@@ -1020,7 +1020,7 @@ async fn anyone_reads_what_the_directory_discloses_before_applying() {
         .expect("the name field is stated");
     assert_eq!(name["defaultVisibility"], "members");
     assert_eq!(statement["newCard"]["listing"], "listed");
-    assert_eq!(statement["adminNotes"], false);
+    assert_eq!(statement["adminNotes"], true, "notes/append is served");
     assert_eq!(statement["externalCards"], true);
     assert!(statement.get("groups").is_none());
     assert_eq!(

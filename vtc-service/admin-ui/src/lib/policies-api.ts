@@ -46,6 +46,7 @@ const PURPOSE_ORDER: Record<Purpose, true> = {
   registry: true,
   directory: true,
   directoryWrite: true,
+  groups: true,
   roleDefinitions: true,
   crossCommunityRoles: true,
   crossCommunityRelationships: true,

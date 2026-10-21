@@ -26,7 +26,7 @@ vi.mock("./api", async (orig) => ({
   memberFetch: vi.fn(async () => ({ did: "did:key:z6MkMember" })),
 }));
 
-import { MyCardPage } from "./Directory";
+import { DirectoryPage, EntryPage, MyCardPage } from "./Directory";
 
 const FIELDS = {
   fields: [
@@ -186,5 +186,65 @@ describe("publishing from the portal", () => {
     api.showCard.mockResolvedValue(card({ state: "awaitingSignature" }));
     renderCard();
     expect(await screen.findByRole("button", { name: "Sign again from your wallet" })).toBeTruthy();
+  });
+});
+
+describe("browsing and reading members", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    api.listFields.mockResolvedValue(FIELDS);
+  });
+
+  it("folds away members who show no name, and shows them on request", async () => {
+    api.listEntries.mockResolvedValue({
+      items: [
+        { entryId: "dir_aaaaaaaaaaaaaaaa", fields: { displayName: "Glenn Gore", role: "admin" } },
+        { entryId: "dir_bbbbbbbbbbbbbbbb", fields: { role: "member" } },
+        { entryId: "dir_cccccccccccccccc", fields: { role: "member" } },
+      ],
+    });
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={qc}>
+        <DirectoryPage />
+      </QueryClientProvider>,
+    );
+    expect(await screen.findByText("Glenn Gore")).toBeTruthy();
+    expect(screen.queryByText("A member")).toBeNull();
+    const fold = screen.getByRole("button", { name: /2 members haven't added a name yet/ });
+    fireEvent.click(fold);
+    expect(screen.getAllByText("A member")).toHaveLength(2);
+    expect(screen.getByRole("link", { name: "Portal" }).getAttribute("href")).toBe("#/");
+  });
+
+  it("draws a member's page: a false personhood is not shown, links are links, and it saves a contact", async () => {
+    api.showEntry.mockResolvedValue({
+      entry: {
+        entryId: "dir_aaaaaaaaaaaaaaaa",
+        fields: {
+          displayName: "Glenn Gore",
+          pronouns: "He/Him",
+          bio: "CEO",
+          links: ["https://affinidi.com"],
+          personhood: false,
+          role: "admin",
+          did: "did:example:glenn",
+        },
+      },
+    });
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={qc}>
+        <EntryPage entryId="dir_aaaaaaaaaaaaaaaa" />
+      </QueryClientProvider>,
+    );
+    expect(await screen.findByRole("heading", { name: "Glenn Gore" })).toBeTruthy();
+    expect(screen.queryByText(/Personhood/i)).toBeNull();
+    expect(screen.queryByText("Verified person")).toBeNull();
+    const link = screen.getByRole("link", { name: /affinidi\.com/ });
+    expect(link.getAttribute("href")).toBe("https://affinidi.com/");
+    expect(link.getAttribute("rel")).toContain("noopener");
+    expect(screen.getByRole("button", { name: /Save contact/ })).toBeTruthy();
+    expect(screen.getByRole("navigation", { name: "Breadcrumb" }).textContent).toContain("Directory");
   });
 });

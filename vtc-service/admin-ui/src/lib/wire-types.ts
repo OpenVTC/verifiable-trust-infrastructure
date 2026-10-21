@@ -319,3 +319,26 @@ export type DirectoryImagesUploadPayload = Schemas["VtcDirectoryImagesUploadV0_1
 export type DirectoryImagesUploadResponse = Schemas["VtcDirectoryImagesUploadV0_1Response"];
 export type DirectoryImagesGetPayload = Schemas["VtcDirectoryImagesGetV0_1Payload"];
 export type DirectoryImagesGetResponse = Schemas["VtcDirectoryImagesGetV0_1Response"];
+export type DirectoryAdminNote = Schemas["VtcDirectoryNotesAppendV0_1AdminNote"];
+export type DirectoryNotesListResponse = Schemas["VtcDirectoryNotesListV0_1Response"];
+export type DirectoryNotesExportResponse = Schemas["VtcDirectoryNotesExportV0_1Response"];
+export type DirectoryExportResponse = Schemas["VtcDirectoryExportV0_1Response"];
+
+// ── Community groups (`vtc/groups/*`) ────────────────────────────────────
+export type Group = Schemas["VtcGroupsListV0_1Group"];
+export type GroupMember = Schemas["VtcGroupsMembersAddV0_1GroupMember"];
+export type GroupJoinRequest = Schemas["VtcGroupsJoinV0_1GroupJoinRequest"];
+export type GroupCreatePayload = Schemas["VtcGroupsCreateV0_1Payload"];
+export type GroupUpdatePayload = Schemas["VtcGroupsUpdateV0_1Payload"];
+export type GroupListResponse = Schemas["VtcGroupsListV0_1Response"];
+export type GroupShowResponse = Schemas["VtcGroupsShowV0_1Response"];
+export type GroupMembersListResponse = Schemas["VtcGroupsMembersListV0_1Response"];
+export type GroupRequestsListResponse = Schemas["VtcGroupsRequestsListV0_1Response"];
+export type GroupManagersResponse = Schemas["VtcGroupsManagersAddV0_1Response"];
+
+// ── Where identities are published (`vtc/config/did-hosting/list`) ──────
+export type DidHostingListResponse = Schemas["VtcConfigDidHostingListV0_1Response"];
+export type HostingServer = Schemas["VtcConfigDidHostingListV0_1HostingServer"];
+export type GroupBinding = Schemas["VtcGroupsBindingsListV0_1GroupBinding"];
+export type GroupBindingsListResponse = Schemas["VtcGroupsBindingsListV0_1Response"];
+export type GroupBindingsRemoveResponse = Schemas["VtcGroupsBindingsRemoveV0_1Response"];

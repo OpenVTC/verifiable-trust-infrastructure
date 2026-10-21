@@ -63,10 +63,13 @@ pub enum VtaEvent {
         /// at startup. Always `None` when the VTA advertises no
         /// `#vta-rest` service.
         rest_url: Option<String>,
-        /// Mediator DID from the VTA DID doc that carried the round-trip:
-        /// the `#DIDCommMessaging` mediator when `protocol == DidComm`,
-        /// the `#tsp` mediator when `protocol == Tsp`. Always `Some` for
-        /// both; `None` on the REST path.
+        /// Mediator DID from the VTA DID doc: the one that carried the
+        /// round-trip — the `#DIDCommMessaging` mediator when
+        /// `protocol == DidComm`, the `#tsp` mediator when `protocol == Tsp`,
+        /// always `Some` for both. On the REST path nothing carried it, and
+        /// this is the advertised `#DIDCommMessaging` mediator, `None` only
+        /// when the document advertises none — a consumer saving an account
+        /// still needs it (OpenVTC #501).
         mediator_did: Option<String>,
         /// Unified reply — see [`VtaReply`] for the variants.
         reply: VtaReply,

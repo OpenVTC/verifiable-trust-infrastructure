@@ -2219,12 +2219,39 @@ pub async fn resolve_vta_endpoint_with_resolver_and_policy(
     did_resolver: &DIDCacheClient,
     policy: crate::http::EndpointPolicy,
 ) -> Result<VtaEndpoint, Box<dyn std::error::Error>> {
+    resolve_vta_endpoint_inner(vta_did, did_resolver, policy, OnUnresolved::GuessFromDid).await
+}
+
+/// What [`resolve_vta_endpoint_inner`] does when the DID itself does not
+/// resolve.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum OnUnresolved {
+    /// Guess a REST URL from the DID string — the session-connect behaviour,
+    /// for a `did:web` VTA reachable before its document is served.
+    GuessFromDid,
+    /// Fail, naming the resolution error. What a setup flow wants: a mistyped
+    /// DID otherwise surfaces much later as an unrelated "is this a VTA?"
+    /// against a guessed host (OpenVTC #501).
+    Refuse,
+}
+
+/// [`resolve_vta_endpoint_with_resolver_and_policy`] with the
+/// unresolved-DID behaviour chosen by the caller.
+pub(crate) async fn resolve_vta_endpoint_inner(
+    vta_did: &str,
+    did_resolver: &DIDCacheClient,
+    policy: crate::http::EndpointPolicy,
+    on_unresolved: OnUnresolved,
+) -> Result<VtaEndpoint, Box<dyn std::error::Error>> {
     use crate::protocol::matching::ServiceCapabilities;
 
     debug!(vta_did, "resolving VTA DID for transport selection");
 
     let resolved = match did_resolver.resolve(vta_did).await {
         Ok(r) => r,
+        Err(e) if on_unresolved == OnUnresolved::Refuse => {
+            return Err(format!("the DID does not resolve: {e}").into());
+        }
         Err(e) => {
             debug!(error = %e, "DID resolution failed, falling back to URL parsing");
             let url = url_from_did(vta_did)
@@ -3430,7 +3457,16 @@ impl TspSession {
     ///   for [`receive_next`](Self::receive_next), not discarded — a
     ///   `task-consent/request` must not be eaten by a request waiting on
     ///   something unrelated.
-    /// - **Finite.** Every wait is bounded by `timeout` (R1.2).
+    /// - **Finite.** Every wait is bounded by `timeout` (R1.2), plus at most one
+    ///   [`STRANDED_REPLY_GRACE`] after a reconnect.
+    /// - **A stranded reply is collected, not abandoned.** On a reply timeout
+    ///   the socket is reconnected once and the same waiter given
+    ///   [`STRANDED_REPLY_GRACE`] more. Raw-TSP sockets are flush-on-connect,
+    ///   so a reply the mediator stored but never pushed is delivered by the
+    ///   reconnect — nothing is resent. Before mediator 0.43.0 a slow store
+    ///   lost a race with the live notification and stranded the reply for
+    ///   days (affinidi-tdk-rs#957); for `provision/integration` that reply
+    ///   carried the only copy of a freshly minted admin key (OpenVTC #501).
     ///
     /// # Authentication
     ///
@@ -3475,14 +3511,71 @@ impl TspSession {
         sent?;
 
         let deadline = Instant::now() + timeout;
-        let outcome = self
-            .await_reply(&request_id, &mut rx, deadline)
-            .await
-            .map_err(|e| e.to_string());
+        let mut outcome = self.await_reply(&request_id, &mut rx, deadline).await;
+        if outcome
+            .as_ref()
+            .is_err_and(|e| e.starts_with(crate::error::TSP_REPLY_TIMEOUT_PREFIX))
+        {
+            // The waiter is still registered, so whatever the reconnect flushes
+            // is routed to it like any other frame.
+            match self.reconnect().await {
+                Ok(()) => {
+                    tracing::debug!(
+                        request_id,
+                        "TSP reply timed out; reconnected to collect a stranded reply"
+                    );
+                    let grace = Instant::now() + STRANDED_REPLY_GRACE;
+                    outcome = self.await_reply(&request_id, &mut rx, grace).await;
+                }
+                Err(e) => {
+                    tracing::debug!(request_id, error = %e, "TSP reconnect after a reply timeout failed");
+                }
+            }
+        }
         // Always deregister — a timed-out or failed request must not leave a
         // waiter behind for the pump to deliver into.
         self.demux.deregister(&request_id).await;
         Ok(outcome?)
+    }
+
+    /// Replace this session's websocket with a fresh one, which the mediator
+    /// flushes this client's stored inbox onto as it connects.
+    ///
+    /// The new socket is opened **before** the old one is closed, so a failed
+    /// reconnect leaves the session on the socket it had rather than shut
+    /// down. The mediator keeps one raw-TSP socket per DID and closes the older
+    /// one itself when the new one arrives.
+    ///
+    /// The socket lock is held across the connect, as [`pump_once`] holds it
+    /// across a read: it is this socket's own lock, not shared state. Releasing
+    /// it would be worse — the mediator closes the old socket the moment the
+    /// new one connects, and a request pumping the old one meanwhile would fail
+    /// with "closed by the mediator" instead of waiting. Every waiter stays
+    /// bounded by its own deadline (`await_reply` selects on it beside the
+    /// lock), and the connect itself is bounded by [`STRANDED_REPLY_GRACE`]
+    /// (R1.2).
+    ///
+    /// [`pump_once`]: Self::pump_once
+    async fn reconnect(&self) -> Result<(), String> {
+        let mut guard = self.ws.lock().await;
+        if guard.is_none() {
+            return Err("TSP session was shut down".to_string());
+        }
+        let fresh = tokio::time::timeout(
+            STRANDED_REPLY_GRACE,
+            self.identity
+                .hub
+                .atm()
+                .tsp()
+                .connect_websocket(&self.identity.profile),
+        )
+        .await
+        .map_err(|_| "timed out reconnecting the TSP websocket".to_string())?
+        .map_err(|e| e.to_string())?;
+        if let Some(old) = guard.replace(fresh) {
+            let _ = old.close().await;
+        }
+        Ok(())
     }
 
     /// Wait for `request_id`'s reply, taking a turn at pumping the socket
@@ -3683,6 +3776,13 @@ impl TspSession {
         }
     }
 }
+
+/// How long [`TspSession::request`] waits for a stranded reply after the
+/// reconnect that flushes it. The flush happens as the socket connects, so this
+/// only has to cover the frame's unpack and routing — plus a reply that was
+/// genuinely slow rather than stranded and lands during the window.
+#[cfg(feature = "tsp")]
+pub const STRANDED_REPLY_GRACE: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// How long one turn at the socket lasts before the holder must release it.
 ///

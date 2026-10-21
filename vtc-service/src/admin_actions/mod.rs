@@ -2412,7 +2412,19 @@ pub(crate) async fn decide(
                 warn!(action = %rec.id, error = %e, "a declined review's git grants could not be withdrawn now; the sweep will at the deadline");
             }
             if rec.act == Act::GrantsReview
+                && let Some(items) = group_review_items(&rec)
+                && let Err(e) = crate::groups::managers::withdraw_reviewed(
+                    state,
+                    rec.payload["granter"].as_str().unwrap_or_default(),
+                    &items,
+                )
+                .await
+            {
+                warn!(action = %rec.id, error = %e, "a declined review's group manager appointments could not be withdrawn now; the sweep will at the deadline");
+            }
+            if rec.act == Act::GrantsReview
                 && git_review_items(&rec).is_none()
+                && group_review_items(&rec).is_none()
                 && let Err(e) = crate::acl::delegation::withdraw_reviewed(
                     state,
                     rec.payload["granter"].as_str().unwrap_or_default(),
@@ -3717,14 +3729,47 @@ pub(crate) async fn raise_git_grants_review(
     subjects.dedup();
     let git = serde_json::to_value(items)
         .map_err(|e| AppError::Internal(format!("git grants review payload: {e}")))?;
-    raise_review_item(state, granter, &subjects, Some(git), deadline).await
+    raise_review_item(
+        state,
+        granter,
+        &subjects,
+        Some(("gitGrants", git)),
+        deadline,
+    )
+    .await
+}
+
+/// [`raise_grants_review`] for the **group manager appointments** a departed
+/// granter made (each a resource grant `vtc.groups.manage` qualified
+/// `group:<groupId>`, `vtc/groups/managers/add` item 5). The same item kind,
+/// approver set and outcome as a git grants review; the payload lists them under
+/// `groupGrants`.
+pub(crate) async fn raise_group_grants_review(
+    state: &AppState,
+    granter: &str,
+    items: &[crate::groups::managers::ReviewItem],
+    deadline: u64,
+) -> Result<Option<String>, AppError> {
+    let mut subjects: Vec<String> = items.iter().map(|i| i.subject.clone()).collect();
+    subjects.sort();
+    subjects.dedup();
+    let groups = serde_json::to_value(items)
+        .map_err(|e| AppError::Internal(format!("group grants review: {e}")))?;
+    raise_review_item(
+        state,
+        granter,
+        &subjects,
+        Some(("groupGrants", groups)),
+        deadline,
+    )
+    .await
 }
 
 async fn raise_review_item(
     state: &AppState,
     granter: &str,
     subjects: &[String],
-    git_grants: Option<Value>,
+    grants: Option<(&str, Value)>,
     deadline: u64,
 ) -> Result<Option<String>, AppError> {
     if subjects.is_empty() {
@@ -3761,8 +3806,8 @@ async fn raise_review_item(
         "subjects": subjects,
         "deadline": rfc3339(deadline),
     });
-    if let Some(git) = git_grants {
-        payload["gitGrants"] = git;
+    if let Some((key, grants)) = grants {
+        payload[key] = grants;
     }
     let type_uri = summary::GRANTS_REVIEW_URI;
     let digest = task_consent::payload_digest(type_uri, &payload)?;
@@ -3867,9 +3912,16 @@ async fn execute_grants_review(
     approvers.reverse();
     // Git rights (phase C3) are re-affirmed grant by grant; an item lists
     // either kind, never both.
-    let outcome = match git_review_items(rec) {
-        Some(items) => crate::git_ns::lifecycle::reaffirm(state, granter, &items, &approvers).await,
-        None => crate::acl::delegation::reaffirm(state, granter, &subjects, &approvers).await,
+    let outcome = match (git_review_items(rec), group_review_items(rec)) {
+        (Some(items), _) => {
+            crate::git_ns::lifecycle::reaffirm(state, granter, &items, &approvers).await
+        }
+        (None, Some(items)) => {
+            crate::groups::managers::reaffirm(state, granter, &items, &approvers).await
+        }
+        (None, None) => {
+            crate::acl::delegation::reaffirm(state, granter, &subjects, &approvers).await
+        }
     };
     match outcome {
         Ok(outcome) => {
@@ -3887,6 +3939,13 @@ async fn execute_grants_review(
         }
         Err(e) => (false, None, Some(e.to_string())),
     }
+}
+
+/// The group manager appointments a review item lists, when it is one for them.
+fn group_review_items(rec: &ActionRecord) -> Option<Vec<crate::groups::managers::ReviewItem>> {
+    rec.payload
+        .get("groupGrants")
+        .and_then(|v| serde_json::from_value(v.clone()).ok())
 }
 
 /// The git grants a review item lists, when it is one for git rights.

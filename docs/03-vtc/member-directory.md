@@ -32,6 +32,10 @@ Specification: *Community Directory and Groups* in the VTI specification
 | `vtc/directory/images/get/0.1` | anyone, through the projection | A picture's bytes, where the caller's projection of that entry shows it |
 | `vtc/directory/card/publish/0.1` | the member, as their membership DID | Publish their external card: their public values, signed by them (below) |
 | `vtc/directory/card/public/0.1` | anyone, signed or not | A published external card, exactly as its member signed it |
+| `vtc/directory/card/present/0.1` | the member, holding the credential | Fill `credential`-sourced fields from a presentation; the community keeps only the claims (below) |
+| `vtc/directory/notes/{append,list}/0.1` | `vtc.directory.notes` | Administrators' notes about a member (below) |
+| `vtc/directory/notes/export/0.1` | `vtc.directory.notes`, with a bound passkey | Every note about a member, to answer their request for the data held about them |
+| `vtc/directory/export/0.1` | `vtc.directory.admin`, with a bound passkey | Every active member's card as JSContact |
 | `vtc/join-requests/manifest/0.4` | anyone, unless join discovery is closed | The join criteria **and** the disclosure statement, as `directoryDisclosure`; 0.3 is still served without it |
 
 ## What applicants are told
@@ -70,6 +74,15 @@ field.
 
 ## In the member portal
 
+The portal's home page greets the member by name and shows **Your card**: their
+picture, what every member sees, and whether the card is published. **Directory**
+lists members by name with their picture (or their initials on a colour of their
+own), pronouns and a line of their About text; members who show no name are
+folded into one line rather than listed as blank cards. A member's page shows
+their About text, links (http and https only) and any other field the viewer may
+see, and **Save contact** downloads a vCard of exactly that, made in the browser.
+Every page has a breadcrumb back to the portal.
+
 Members use the directory from the portal: **Directory** (browse, search, one
 entry) and **Your card** (values, who sees each, listing, search and
 introductions). The pages sign with the browser's sign-in key, which the member
@@ -100,8 +113,82 @@ wallet shows every value before anything is signed. The portal also shows where
 a published card stands, and offers **Stop publishing**, which a delegated key
 may do because it narrows.
 
-Not yet served: groups (`vtc/groups/*`), introductions, administrators' notes,
-export and credential-sourced fields (`card/present`).
+Not yet served: introductions. Groups are their own family ([community groups](groups.md)). A member cannot yet
+present a credential from the portal: that waits on the wallet offering it.
+
+## Verified values (`card/present`)
+
+A field of type `claim` is `credential`-sourced: nobody types its value. Its
+definition names the claim it reads — `constraints.claim`, a `credentialType`
+the credential must carry, a `claimPath` (a JSON Pointer into
+`credentialSubject`, or into an SD-JWT's disclosed claims) and optionally the
+`issuers` it accepts. A member fills it by presenting a credential:
+
+- **The binding.** A Data Integrity presentation carries `nonce` equal to the
+  request's `id` and `domain` equal to the community's DID, signed by its
+  holder's proof; a proof that also states `challenge` or `domain` must state
+  the same. An SD-JWT's key-binding JWT carries them as `nonce` and `aud`
+  (trust-tasks-tf #831).
+- **The holder is the member.** A Data Integrity presentation's holder proof
+  must be the member's own DID, and a credential naming a subject must name
+  them. An SD-JWT's holder key is the member's DID itself (a `did:key`), or a
+  key the member's DID document lists for `authentication` that the
+  key-binding JWT names in its `kid`. A presentation another member obtained is
+  `presentationInvalid`, whatever else about it verifies.
+- **The credential.** Its issuer's proof, its validity window (either
+  spelling) and its status (`credentialStatus` or a token status list) must
+  all hold; a status that cannot be read is not in force.
+- **The issuer.** One the field lists; with no list, one the community trusts
+  — its own DID, an issuer its trust registry recognises, or one its swiyu
+  trust vouches for. Anything else is `issuerNotAccepted`.
+- **What is kept.** Each field stores `{ value, issuer, credentialType,
+  verifiedAt, validUntil }`. The presentation, the credential and every other
+  claim are dropped before the card is written, and refusals log their reason
+  rather than answer it. The member's visibility choices are left alone.
+- **Expiry.** A value whose `validUntil` has passed is shown to nobody at once,
+  and the directory's hourly pass withdraws it from the card (audited, by
+  `expiry`).
+
+`clear: true` withdraws a named field the presentation does not answer, instead
+of refusing with `claimMissing`. The portal and the console show a verified
+value with its credential type as the badge, and its issuer.
+
+## Administrators' notes
+
+Administrators who hold `vtc.directory.notes` keep notes about members
+(VTI-DIR-030 – 033). The capability is apart from `vtc.directory.admin`, so a
+community can let someone keep notes without changing what the directory
+discloses; `community-admin` holds both.
+
+- **Never on the card.** Notes are stored apart from cards and appear in no
+  directory read, whatever the `directory` policy says. A member never sees them.
+- **Never edited.** A correction or withdrawal is a later note that redacts the
+  earlier one. A redacted note's text is withheld from every read except the
+  export below.
+- **Released to the member only deliberately.** `notes/export` returns every
+  note about the member, redacted ones as written, to answer their request for
+  the data held about them. It takes the exporter's passkey bound to that one
+  export, and is audited at Critical.
+- **Audited by reference.** Every write and read is audited with the entry and
+  the note, never its text (`DirectoryNoteAccessed`, `DirectoryExported`).
+- **At departure** a purge erases them; a tombstone or historical record keeps
+  them for `[directory] retention_days`, after which the hourly directory pass
+  erases them.
+- The disclosure statement says the community keeps notes, by itself, now that
+  `notes/append` is served.
+
+In the console, a member's page shows an **Administrators' notes** card to
+holders of the capability: add a note (with an optional follow-up date),
+withdraw one, or export them for a data request.
+
+## Export
+
+`vtc/directory/export` returns every active member's card as JSContact, every
+field included (derived ones as vendor properties), a page at a time with
+cursors bound to the exporter. The first page takes the exporter's passkey bound
+to it and is audited at Critical with the number of cards; no note is ever in
+it. The console's **Directory → Entries** tab has **Export the directory**,
+which downloads the whole export as JSON.
 
 ## Pictures
 

@@ -62,14 +62,22 @@ pub const BATCH_EQUALS: u8 = b'e';
 pub const BATCH_PUT: u8 = b'i';
 pub const BATCH_DELETE: u8 = b'd';
 
+/// `[op][ks][prefix][after][limit][flags]` -> bounded KV-list response.
+pub const OP_SCAN: u8 = 0x0D;
+
 pub const CAP_TAKE: u32 = 1 << 0;
 pub const CAP_INSERT_IF_ABSENT: u32 = 1 << 1;
 pub const CAP_SWAP_IF_ABSENT: u32 = 1 << 2;
 pub const CAP_MOVE_IF_EQUAL: u32 = 1 << 3;
 pub const CAP_APPLY_BATCH: u32 = 1 << 4;
+pub const CAP_SCAN: u32 = 1 << 5;
 /// Everything this proxy serves.
-pub const CAPABILITIES: u32 =
-    CAP_TAKE | CAP_INSERT_IF_ABSENT | CAP_SWAP_IF_ABSENT | CAP_MOVE_IF_EQUAL | CAP_APPLY_BATCH;
+pub const CAPABILITIES: u32 = CAP_TAKE
+    | CAP_INSERT_IF_ABSENT
+    | CAP_SWAP_IF_ABSENT
+    | CAP_MOVE_IF_EQUAL
+    | CAP_APPLY_BATCH
+    | CAP_SCAN;
 
 /// OP_MOVE_IF_EQUAL outcomes (the enclave's `MoveOutcome`).
 pub const MOVE_MOVED: u8 = 0;
@@ -90,7 +98,7 @@ pub const STATUS_ERROR: u8 = 0x02;
 // ---------------------------------------------------------------------------
 
 /// Maximum message size (16 MB — generous for prefix scans with many results).
-const MAX_MESSAGE_SIZE: u32 = 16 * 1024 * 1024;
+pub(crate) const MAX_MESSAGE_SIZE: u32 = 16 * 1024 * 1024;
 
 /// Read a length-prefixed frame from the stream.
 pub async fn read_frame<R: AsyncReadExt + Unpin>(reader: &mut R) -> std::io::Result<Vec<u8>> {

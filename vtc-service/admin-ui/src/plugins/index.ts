@@ -32,6 +32,7 @@ import {
   Ticket,
   UserCog,
   Users,
+  UsersRound,
   Workflow,
 } from "lucide-react";
 
@@ -46,6 +47,7 @@ import { Dashboard } from "@/plugins/dashboard";
 import { DATA_ROOMS_CAPABILITIES, DataRooms } from "@/plugins/dataRooms";
 import { Directory } from "@/plugins/directory";
 import { Elections } from "@/plugins/elections";
+import { Groups } from "@/plugins/groups";
 import { Invitations } from "@/plugins/invitations";
 import { JoinRequests } from "@/plugins/joinRequests";
 import { Members } from "@/plugins/members";
@@ -140,6 +142,17 @@ export function registerBuiltinPlugins(): void {
     iconComponent: Vote,
     reactComponent: Elections,
     capabilities: ["vtc.elections.manage"],
+  });
+
+  // The community's groups: every administrator reads them; holders of
+  // vtc.groups.manage create them, and each group's managers run it.
+  registerPlugin({
+    id: "groups",
+    group: "membership",
+    label: "Groups",
+    path: "/groups",
+    iconComponent: UsersRound,
+    reactComponent: Groups,
   });
 
   registerPlugin({

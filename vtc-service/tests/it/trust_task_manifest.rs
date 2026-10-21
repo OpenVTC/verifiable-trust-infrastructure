@@ -758,6 +758,8 @@ const EMBEDDED_DOCUMENT_TYPES: &[&str] = &[
     "https://trusttasks.org/spec/vtc/admin/events/event/0.1",
     // …and at 0.2, on a stream opened at 0.2 (the `rooms` topic).
     "https://trusttasks.org/spec/vtc/admin/events/event/0.2",
+    // …and at 0.3, on a stream opened at 0.3 (`directory`, `groups`).
+    "https://trusttasks.org/spec/vtc/admin/events/event/0.3",
 ];
 
 /// Document types the console sends that the spine dispatches only in a build
@@ -853,6 +855,8 @@ const SPINE_DOCUMENT_TYPES: &[&str] = &[
     "https://trusttasks.org/spec/vtc/admin/events/subscribe/0.1",
     // At 0.2 (adds `rooms`) when `trust-task-discovery` lists it.
     "https://trusttasks.org/spec/vtc/admin/events/subscribe/0.2",
+    // At 0.3 (adds `directory` and `groups`) when discovery lists it.
+    "https://trusttasks.org/spec/vtc/admin/events/subscribe/0.3",
     // Custom administrative roles (`trust_tasks::role_tasks`): the Roles
     // page's reads, and the definitions it sends for approval.
     "https://trusttasks.org/spec/vtc/roles/list/0.1",
@@ -966,6 +970,31 @@ const SPINE_DOCUMENT_TYPES: &[&str] = &[
     // projection.
     "https://trusttasks.org/spec/vtc/directory/images/upload/0.1",
     "https://trusttasks.org/spec/vtc/directory/images/get/0.1",
+    // The console's member page (administrators' notes) and the directory export.
+    "https://trusttasks.org/spec/vtc/groups/create/0.1",
+    "https://trusttasks.org/spec/vtc/groups/delete/0.1",
+    "https://trusttasks.org/spec/vtc/groups/join/0.1",
+    "https://trusttasks.org/spec/vtc/groups/leave/0.1",
+    "https://trusttasks.org/spec/vtc/groups/list/0.1",
+    "https://trusttasks.org/spec/vtc/groups/managers/add/0.1",
+    "https://trusttasks.org/spec/vtc/groups/managers/remove/0.1",
+    "https://trusttasks.org/spec/vtc/groups/bindings/add/0.1",
+    "https://trusttasks.org/spec/vtc/groups/bindings/remove/0.1",
+    "https://trusttasks.org/spec/vtc/groups/bindings/list/0.1",
+    // The hosting servers the community's VTA reports, for choosing
+    // `dids.webvh_server` on the Groups page.
+    "https://trusttasks.org/spec/vtc/config/did-hosting/list/0.1",
+    "https://trusttasks.org/spec/vtc/groups/members/add/0.1",
+    "https://trusttasks.org/spec/vtc/groups/members/list/0.1",
+    "https://trusttasks.org/spec/vtc/groups/members/remove/0.1",
+    "https://trusttasks.org/spec/vtc/groups/requests/decide/0.1",
+    "https://trusttasks.org/spec/vtc/groups/requests/list/0.1",
+    "https://trusttasks.org/spec/vtc/groups/show/0.1",
+    "https://trusttasks.org/spec/vtc/groups/update/0.1",
+    "https://trusttasks.org/spec/vtc/directory/notes/append/0.1",
+    "https://trusttasks.org/spec/vtc/directory/notes/list/0.1",
+    "https://trusttasks.org/spec/vtc/directory/notes/export/0.1",
+    "https://trusttasks.org/spec/vtc/directory/export/0.1",
     "https://trusttasks.org/spec/vtc/community/join-discovery/show/0.1",
     "https://trusttasks.org/spec/vtc/community/join-discovery/update/0.1",
     "https://trusttasks.org/spec/vtc/schemas/accepts/list/0.2",

@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::ops::Bound;
 use std::time::Duration;
 
 use crate::config::{FjallTuning, StoreConfig};
@@ -46,6 +47,292 @@ where
 
 /// A key-value pair of raw bytes from a prefix scan.
 pub type RawKvPair = (Vec<u8>, Vec<u8>);
+
+/// A bounded, directional read over a key range — see
+/// [`KeyspaceHandle::scan_raw`].
+///
+/// Exists because the other read-many methods have no upper bound on what
+/// they return: `prefix_iter_raw` materialises every pair under its prefix,
+/// and over vsock that has to fit in one 16 MiB frame. A caller that wants
+/// the newest few rows, or one page of them, states that here instead of
+/// reading the whole keyspace and throwing most of it away.
+///
+/// Build one with [`ScanOpts::new`] or [`ScanOpts::newest_first`], then
+/// [`ScanOpts::after`]. It is `#[non_exhaustive]` on purpose: this is a
+/// published crate, a scan is obviously going to grow options,
+/// and adding a field to a struct an outside crate
+/// can build with a literal is a breaking change nobody remembers to mark.
+#[derive(Debug, Clone)]
+#[non_exhaustive]
+pub struct ScanOpts {
+    /// Only keys starting with these bytes. Empty means the whole keyspace.
+    pub prefix: Vec<u8>,
+    /// Resume point, **exclusive** and read in the scan's own direction:
+    /// ascending yields keys `> after`, descending yields keys `< after`.
+    /// A key outside `prefix` never widens the scan.
+    pub after: Option<Vec<u8>>,
+    /// Hard cap on returned pairs. Pick one that keeps a page well under
+    /// the vsock frame cap.
+    pub limit: usize,
+    /// Yield newest-first (descending key order) rather than ascending.
+    pub reverse: bool,
+}
+
+impl ScanOpts {
+    /// Ascending scan of at most `limit` pairs under `prefix`.
+    pub fn new(prefix: impl Into<Vec<u8>>, limit: usize) -> Self {
+        Self {
+            prefix: prefix.into(),
+            after: None,
+            limit,
+            reverse: false,
+        }
+    }
+
+    /// Descending (newest-first) scan of at most `limit` pairs under `prefix`.
+    pub fn newest_first(prefix: impl Into<Vec<u8>>, limit: usize) -> Self {
+        Self {
+            reverse: true,
+            ..Self::new(prefix, limit)
+        }
+    }
+
+    /// Resume strictly after `key` in the scan's direction.
+    #[must_use]
+    pub fn after(mut self, key: impl Into<Vec<u8>>) -> Self {
+        self.after = Some(key.into());
+        self
+    }
+}
+
+/// The key range a [`ScanOpts`] covers, as `(lower, upper)` bounds.
+///
+/// Shared by the local backend and the vsock fallback so they cannot
+/// disagree about what `after` means at a prefix edge. `after` only ever
+/// **tightens** the prefix's own range: a resume key outside the prefix is a
+/// caller mistake that must not turn into a read of neighbouring rows.
+///
+/// **Mirrored by `enclave_proxy::storage::scan_bounds`**, which computes the
+/// same range on the parent instance. The two live in separate cargo
+/// workspaces and cannot share code without coupling them, so they are
+/// pinned to the shared vectors in `scan_range_vectors.json` instead — a
+/// change here needs the same change there, and a new edge case needs a new
+/// vector.
+pub(crate) fn scan_bounds(opts: &ScanOpts) -> (Bound<Vec<u8>>, Bound<Vec<u8>>) {
+    let mut lower = if opts.prefix.is_empty() {
+        Bound::Unbounded
+    } else {
+        Bound::Included(opts.prefix.clone())
+    };
+    let mut upper = prefix_upper_bound(&opts.prefix);
+
+    if let Some(after) = &opts.after {
+        if opts.reverse {
+            let within = match &upper {
+                Bound::Excluded(end) => after < end,
+                _ => true,
+            };
+            if within {
+                upper = Bound::Excluded(after.clone());
+            }
+        } else if after.as_slice() >= opts.prefix.as_slice() {
+            lower = Bound::Excluded(after.clone());
+        }
+    }
+
+    (lower, upper)
+}
+
+/// The exclusive end of everything starting with `prefix`: the prefix with
+/// its last non-`0xFF` byte incremented. Unbounded when no such byte exists
+/// (an empty prefix, or an all-`0xFF` one), since nothing sorts past it.
+fn prefix_upper_bound(prefix: &[u8]) -> Bound<Vec<u8>> {
+    let mut end = prefix.to_vec();
+    while let Some(last) = end.pop() {
+        if last < u8::MAX {
+            end.push(last + 1);
+            return Bound::Excluded(end);
+        }
+    }
+    Bound::Unbounded
+}
+
+/// Apply a [`ScanOpts`] to pairs a backend could only hand over in bulk:
+/// restrict them to the scan's bounds, order them in its direction, and cut
+/// them to its limit.
+///
+/// Shared by the vsock fallback (a proxy without `OP_SCAN` can only return a
+/// whole prefix) and [`ScanPager`]'s buffered mode, so the two cannot
+/// disagree about what a page contains.
+pub(crate) fn apply_scan_locally(mut pairs: Vec<RawKvPair>, opts: &ScanOpts) -> Vec<RawKvPair> {
+    let bounds = scan_bounds(opts);
+    pairs.retain(|(key, _)| key_in_bounds(key, &bounds));
+    pairs.sort_unstable_by(|(left, _), (right, _)| left.cmp(right));
+    if opts.reverse {
+        pairs.reverse();
+    }
+    pairs.truncate(opts.limit);
+    pairs
+}
+
+/// Does `key` fall inside `bounds`? The in-memory counterpart to the range a
+/// backend would seek to.
+pub(crate) fn key_in_bounds(key: &[u8], bounds: &(Bound<Vec<u8>>, Bound<Vec<u8>>)) -> bool {
+    let (lower, upper) = bounds;
+    let above = match lower {
+        Bound::Included(bound) => key >= bound.as_slice(),
+        Bound::Excluded(bound) => key > bound.as_slice(),
+        Bound::Unbounded => true,
+    };
+    let below = match upper {
+        Bound::Included(bound) => key <= bound.as_slice(),
+        Bound::Excluded(bound) => key < bound.as_slice(),
+        Bound::Unbounded => true,
+    };
+    above && below
+}
+
+/// Prefix of the error a vsock response larger than one frame produces.
+///
+/// Lives here, outside the `vsock-store` gate, because the construction site
+/// (`vsock_pool`) and both matchers have to agree on it and the matchers are
+/// not all gated. Shared rather than written out three times: the first
+/// version of this compared against `AppError`'s *rendered* form, which
+/// carries a `"internal error: "` prefix the raw message does not, so neither
+/// matcher ever fired.
+pub(crate) const OVERSIZED_RESPONSE_PREFIX: &str = "vsock response too large:";
+
+/// Is this the "response did not fit one frame" error?
+///
+/// Matches the variant's payload, **not** `to_string()`: `AppError`'s
+/// `Display` prepends its own kind, so a rendered error never starts with the
+/// message it was built from.
+pub(crate) fn is_oversized_response(error: &AppError) -> bool {
+    matches!(error, AppError::Internal(message) if message.starts_with(OVERSIZED_RESPONSE_PREFIX))
+}
+
+/// The error an operator needs when a bulk read is the only option left and
+/// the result does not fit one vsock frame. Raised rather than retried: the
+/// request is deterministic, so a second attempt returns the same oversized
+/// response.
+pub(crate) fn map_oversized_bulk_read(error: AppError) -> AppError {
+    if is_oversized_response(&error) {
+        AppError::Internal(
+            "bounded vsock scan is unavailable and the legacy response exceeds 16 MiB; \
+             upgrade the enclave proxy"
+                .into(),
+        )
+    } else {
+        error
+    }
+}
+
+/// A resumable, bounded walk over a key range.
+///
+/// Exists because the cost of a page is not the same on every backend. A
+/// store that serves bounded scans natively answers each page in one
+/// proportionate read. One that does not — an enclave talking to a proxy
+/// from before `OP_SCAN` — can only return a whole prefix, so a caller that
+/// loops on [`KeyspaceHandle::scan_raw`] re-reads, re-transfers and
+/// re-decrypts the entire range *per page*: `ceil(rows / page)` times the
+/// work the walk actually needs.
+///
+/// The pager makes that choice once instead of per call. Natively it is one
+/// bounded read per page, exactly as a `scan_raw` loop would be. Otherwise it
+/// takes the range once and serves every remaining page from memory, which is
+/// what reading the whole prefix up front always cost.
+///
+/// Pages are yielded in [`ScanOpts`]'s direction, each at most
+/// [`ScanOpts::limit`] pairs, resuming strictly beyond the last key of the
+/// previous page. An empty page means the walk is over.
+pub struct ScanPager {
+    handle: KeyspaceHandle,
+    /// Prefix, direction and page size for the whole walk. `after` seeds the
+    /// first page and is superseded by `cursor` thereafter.
+    opts: ScanOpts,
+    /// Last key served, so the next page resumes strictly beyond it.
+    cursor: Option<Vec<u8>>,
+    /// The remainder of the range, read in one piece because the backend
+    /// could not bound the read itself. `None` while reads are native.
+    buffered: Option<std::vec::IntoIter<RawKvPair>>,
+    done: bool,
+}
+
+impl ScanPager {
+    fn new(handle: KeyspaceHandle, opts: ScanOpts) -> Self {
+        Self {
+            cursor: opts.after.clone(),
+            // A zero page size can never make progress, and the buffered path
+            // would spin on it: `take(0)` is empty forever without ever being
+            // short of the limit.
+            done: opts.limit == 0,
+            handle,
+            opts,
+            buffered: None,
+        }
+    }
+
+    /// The next page, or an empty `Vec` once the range is exhausted.
+    pub async fn next_page(&mut self) -> Result<Vec<RawKvPair>, AppError> {
+        if self.done {
+            return Ok(Vec::new());
+        }
+        if self.buffered.is_some() {
+            return Ok(self.take_buffered_page());
+        }
+
+        // Re-asked per page, not cached: a proxy swapped for an older build
+        // mid-walk would otherwise put every remaining page back on the
+        // per-page full read this type exists to avoid.
+        if self.handle.has_native_scan().await {
+            let mut opts = self.opts.clone();
+            opts.after = self.cursor.clone();
+            let page = self.handle.scan_raw(opts).await?;
+            // A short page means the range ended. Nothing may return fewer
+            // rows than asked for any *other* reason — a backend that capped
+            // a page for size would end this walk early and silently.
+            if page.len() < self.opts.limit {
+                self.done = true;
+            }
+            if let Some((key, _)) = page.last() {
+                self.cursor = Some(key.clone());
+            } else {
+                self.done = true;
+            }
+            return Ok(page);
+        }
+
+        self.buffer_remaining_range().await?;
+        Ok(self.take_buffered_page())
+    }
+
+    /// Read everything left in the range in one request and keep it, because
+    /// the backend cannot return less than all of it anyway.
+    async fn buffer_remaining_range(&mut self) -> Result<(), AppError> {
+        let pairs = self
+            .handle
+            .prefix_iter_raw(self.opts.prefix.clone())
+            .await
+            .map_err(map_oversized_bulk_read)?;
+        let mut remaining = self.opts.clone();
+        remaining.after = self.cursor.clone();
+        remaining.limit = usize::MAX;
+        self.buffered = Some(apply_scan_locally(pairs, &remaining).into_iter());
+        Ok(())
+    }
+
+    fn take_buffered_page(&mut self) -> Vec<RawKvPair> {
+        let buffered = self.buffered.as_mut().expect("buffer filled");
+        let page: Vec<RawKvPair> = buffered.by_ref().take(self.opts.limit).collect();
+        if page.len() < self.opts.limit {
+            self.done = true;
+        }
+        if let Some((key, _)) = page.last() {
+            self.cursor = Some(key.clone());
+        }
+        page
+    }
+}
 
 /// fjall's on-disk "this directory is a database root" marker
 /// (`fjall::file::VERSION_MARKER`, which the crate does not re-export).
@@ -400,6 +687,46 @@ impl KeyspaceHandle {
             KeyspaceHandle::Local(h) => h.range_from_raw(from).await,
             #[cfg(feature = "vsock-store")]
             KeyspaceHandle::Vsock(h) => h.range_from_raw(from).await,
+        }
+    }
+
+    /// Read at most [`ScanOpts::limit`] pairs under [`ScanOpts::prefix`], in
+    /// the requested direction, resuming after [`ScanOpts::after`].
+    ///
+    /// The bounded counterpart to [`Self::prefix_iter_raw`]: cost is a
+    /// function of `limit`, not of how much the keyspace holds. That is the
+    /// difference between working and not working over vsock, where the whole
+    /// result has to fit in one frame — reading the newest row of a 19 MB
+    /// audit log must not mean shipping 19 MB.
+    pub async fn scan_raw(&self, opts: ScanOpts) -> Result<Vec<RawKvPair>, AppError> {
+        match self {
+            KeyspaceHandle::Local(h) => h.scan_raw(opts).await,
+            #[cfg(feature = "vsock-store")]
+            KeyspaceHandle::Vsock(h) => h.scan_raw(opts).await,
+        }
+    }
+
+    /// Walk a key range one bounded page at a time.
+    ///
+    /// Prefer this to a loop over [`Self::scan_raw`] whenever the number of
+    /// pages is not known to be small: it costs the same on a backend that
+    /// bounds reads natively, and avoids re-reading the whole range per page
+    /// on one that cannot. See [`ScanPager`].
+    pub fn scan_pager(&self, opts: ScanOpts) -> ScanPager {
+        ScanPager::new(self.clone(), opts)
+    }
+
+    /// Whether this backend bounds [`Self::scan_raw`] itself.
+    ///
+    /// Local fjall always does — it seeks to the range. Over vsock it depends
+    /// on the proxy: one that predates `OP_SCAN` can only return a whole
+    /// prefix, which `scan_raw` then trims locally. Only [`ScanPager`] needs
+    /// to know, to pick its strategy.
+    async fn has_native_scan(&self) -> bool {
+        match self {
+            KeyspaceHandle::Local(_) => true,
+            #[cfg(feature = "vsock-store")]
+            KeyspaceHandle::Vsock(h) => h.has_native_scan().await,
         }
     }
 
@@ -1097,6 +1424,49 @@ impl LocalKeyspaceHandle {
         .await
     }
 
+    /// See [`KeyspaceHandle::scan_raw`]. fjall seeks to the range's bound and
+    /// its iterators are double-ended, so a reverse scan starts at the end of
+    /// the range rather than walking the keyspace to find it.
+    ///
+    /// Reads through [`read_snapshot`] like every other lock-free read here:
+    /// a plain `range` can observe a write batch half-applied, and a page of
+    /// audit rows torn across a batch is exactly the inconsistency a chain
+    /// verifier would report as tampering.
+    pub async fn scan_raw(&self, opts: ScanOpts) -> Result<Vec<RawKvPair>, AppError> {
+        let ks = self.keyspace.clone();
+        let db = self.db.clone();
+        #[cfg(feature = "encryption")]
+        let enc_key = self.encryption_key.clone();
+        #[cfg(feature = "encryption")]
+        let name = self.name.clone();
+        blocking_with_timeout(move || {
+            let mut results = Vec::with_capacity(opts.limit.min(1024));
+            if opts.limit == 0 {
+                return Ok(results);
+            }
+            let snapshot = read_snapshot(&db);
+            let iter = snapshot.range(&ks, scan_bounds(&opts));
+            let guards: Box<dyn Iterator<Item = _>> = if opts.reverse {
+                Box::new(iter.rev())
+            } else {
+                Box::new(iter)
+            };
+            for guard in guards.take(opts.limit) {
+                let (key, value) = guard.into_inner()?;
+                #[cfg(feature = "encryption")]
+                let value = {
+                    let k = enc_key.as_ref().map(|arc| &***arc);
+                    encryption::maybe_decrypt_bytes(k, &name, &key, &value)?
+                };
+                #[cfg(not(feature = "encryption"))]
+                let value = value.to_vec();
+                results.push((key.to_vec(), value));
+            }
+            Ok(results)
+        })
+        .await
+    }
+
     pub async fn approximate_len(&self) -> Result<usize, AppError> {
         let ks = self.keyspace.clone();
         blocking_with_timeout(move || Ok(ks.approximate_len())).await
@@ -1302,6 +1672,208 @@ impl LocalKeyspaceHandle {
         {
             let _ = store_key;
             Ok(plaintext)
+        }
+    }
+}
+
+#[cfg(test)]
+mod oversized_response_tests {
+    //! The oversized-response error has to be *recognised*, not just raised.
+    //!
+    //! Two behaviours hang off recognising it: the pool must refuse to retry a
+    //! deterministic oversized read, and a bulk-read fallback must turn it into
+    //! the upgrade instruction. The first version of both matchers compared
+    //! against `AppError::to_string()`, which carries `Display`'s own
+    //! `"internal error: "` prefix, so neither ever fired — a proxy without
+    //! bounded scan retried every oversized read and reported the raw error.
+    //! These build the error the way production does rather than hand-writing
+    //! its rendered form, which is the only way to catch that.
+
+    use super::*;
+
+    /// Exactly how `round_trip_within` raises it.
+    fn as_production_raises_it() -> AppError {
+        AppError::Internal(format!("{OVERSIZED_RESPONSE_PREFIX} 36869978 > 16777216"))
+    }
+
+    #[test]
+    fn the_rendered_error_does_not_start_with_its_own_message() {
+        // The trap itself: `Display` prepends the error kind, so matching on
+        // the rendered form against the raw message can never succeed.
+        let rendered = as_production_raises_it().to_string();
+        assert!(
+            !rendered.starts_with(OVERSIZED_RESPONSE_PREFIX),
+            "if this ever passes, matching on `to_string()` would be safe — it is not: {rendered}"
+        );
+        assert!(rendered.contains(OVERSIZED_RESPONSE_PREFIX));
+    }
+
+    #[test]
+    fn an_oversized_response_is_recognised() {
+        assert!(is_oversized_response(&as_production_raises_it()));
+    }
+
+    #[test]
+    fn other_errors_are_not_mistaken_for_it() {
+        for other in [
+            AppError::Internal("something else entirely".into()),
+            AppError::NotFound("row".into()),
+        ] {
+            assert!(!is_oversized_response(&other), "{other}");
+        }
+    }
+
+    #[test]
+    fn a_bulk_read_fallback_reports_the_upgrade_instruction() {
+        let mapped = map_oversized_bulk_read(as_production_raises_it()).to_string();
+        assert!(
+            mapped.contains("upgrade the enclave proxy"),
+            "an operator needs to be told what to do, got: {mapped}"
+        );
+        assert!(
+            !mapped.contains("36869978"),
+            "the raw frame size is not the operator's problem: {mapped}"
+        );
+    }
+
+    #[test]
+    fn an_unrelated_error_passes_through_the_mapping_unchanged() {
+        let untouched = map_oversized_bulk_read(AppError::NotFound("row".into()));
+        assert_eq!(untouched.to_string(), "not found: row");
+    }
+}
+
+#[cfg(test)]
+mod scan_range_vectors {
+    //! The shared bounded-scan conformance vectors, run through every real
+    //! path in this crate.
+    //!
+    //! See `scan_range_vectors.json` for what they are and why they exist.
+    //! The proxy runs the same file through its own `handle_scan`.
+
+    use super::*;
+
+    #[derive(serde::Deserialize)]
+    pub(crate) struct Case {
+        pub(crate) name: String,
+        #[serde(default)]
+        pub(crate) encoding: Option<String>,
+        pub(crate) keys: Vec<String>,
+        pub(crate) prefix: String,
+        pub(crate) after: Option<String>,
+        pub(crate) reverse: bool,
+        pub(crate) expect: Vec<String>,
+    }
+
+    #[derive(serde::Deserialize)]
+    struct Vectors {
+        cases: Vec<Case>,
+    }
+
+    /// Decode one field of a case, honouring its `encoding`.
+    pub(crate) fn bytes(value: &str, hex_encoded: bool) -> Vec<u8> {
+        if hex_encoded {
+            assert!(value.len().is_multiple_of(2), "hex field has odd length");
+            (0..value.len())
+                .step_by(2)
+                .map(|i| u8::from_str_radix(&value[i..i + 2], 16).expect("hex byte"))
+                .collect()
+        } else {
+            value.as_bytes().to_vec()
+        }
+    }
+
+    /// Render a key the way its case wrote it, so a failure reads as keys
+    /// rather than as byte arrays.
+    pub(crate) fn render(keys: &[Vec<u8>], hex_encoded: bool) -> Vec<String> {
+        keys.iter()
+            .map(|key| {
+                if hex_encoded {
+                    key.iter().map(|b| format!("{b:02x}")).collect()
+                } else {
+                    String::from_utf8_lossy(key).into_owned()
+                }
+            })
+            .collect()
+    }
+
+    pub(crate) fn load() -> Vec<Case> {
+        serde_json::from_str::<Vectors>(include_str!("scan_range_vectors.json"))
+            .expect("scan range vectors parse")
+            .cases
+    }
+
+    /// Every case, against both the local backend's real fjall range query
+    /// and the in-memory filter the vsock fallback uses. Asserting them
+    /// against the same table is what keeps "the proxy served this page" and
+    /// "we read the prefix and cut it ourselves" from meaning different
+    /// things.
+    #[tokio::test]
+    async fn local_and_in_memory_paths_both_match_the_shared_vectors() {
+        for case in load() {
+            let hex_encoded = case.encoding.as_deref() == Some("hex");
+            let opts = ScanOpts {
+                prefix: bytes(&case.prefix, hex_encoded),
+                after: case.after.as_deref().map(|a| bytes(a, hex_encoded)),
+                // The vectors describe the range, not a page: an unbounded
+                // limit keeps a truncation from masking a bounds error.
+                limit: usize::MAX,
+                reverse: case.reverse,
+            };
+            let expect: Vec<Vec<u8>> = case
+                .expect
+                .iter()
+                .map(|key| bytes(key, hex_encoded))
+                .collect();
+            let seeded: Vec<Vec<u8>> = case
+                .keys
+                .iter()
+                .map(|key| bytes(key, hex_encoded))
+                .collect();
+
+            let dir = tempfile::tempdir().expect("tempdir");
+            let store = Store::open(&StoreConfig {
+                data_dir: dir.path().to_path_buf(),
+            })
+            .expect("store");
+            let ks = store.keyspace("vectors").expect("keyspace");
+            for key in &seeded {
+                ks.insert_raw(key.clone(), b"v".to_vec())
+                    .await
+                    .expect("seed");
+            }
+
+            let scanned: Vec<Vec<u8>> = ks
+                .scan_raw(opts.clone())
+                .await
+                .expect("scan")
+                .into_iter()
+                .map(|(key, _)| key)
+                .collect();
+            assert_eq!(
+                render(&scanned, hex_encoded),
+                render(&expect, hex_encoded),
+                "local scan_raw disagrees: {}",
+                case.name
+            );
+
+            // The old-proxy path: hand it every row, unordered, and it must
+            // arrive at the same answer the range query did.
+            let bulk: Vec<RawKvPair> = seeded
+                .iter()
+                .rev()
+                .map(|key| (key.clone(), b"v".to_vec()))
+                .collect();
+            let filtered: Vec<Vec<u8>> = apply_scan_locally(bulk, &opts)
+                .into_iter()
+                .map(|(key, _)| key)
+                .collect();
+            assert_eq!(
+                render(&filtered, hex_encoded),
+                render(&expect, hex_encoded),
+                "apply_scan_locally disagrees: {}",
+                case.name
+            );
         }
     }
 }

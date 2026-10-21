@@ -6,8 +6,12 @@
 //!   retired; this erases what it held, an hour or so after the field's
 //!   `purgeAfter`, and records that it did. A field once purged is marked, so
 //!   a pass reads every card only for a field that is due;
+//! - withdrawing verified values whose credential's `validUntil` has passed
+//!   (`card/present` item 7), before the external cards are settled, so a
+//!   published card that showed one is withdrawn in the same pass;
 //! - erasing pictures no card and no live upload holds (`images/upload`
-//!   item 6);
+//!   item 6), and the kept notes of members who left, once the retention
+//!   period has passed;
 //! - withdrawing external cards whose public values moved on in a way no
 //!   write path saw — a `directory` policy change, a suspension — and
 //!   repairing any recognition record whose card pointer is not the card now
@@ -17,7 +21,7 @@ use std::time::Duration;
 
 use chrono::Utc;
 use tracing::{info, warn};
-use vti_common::audit::{AuditEvent, DirectoryFieldChangedData};
+use vti_common::audit::{AuditEvent, DirectoryCardChangedData, DirectoryFieldChangedData};
 use vti_common::error::AppError;
 
 use super::{cards, fields};
@@ -68,10 +72,49 @@ pub async fn purge_due(state: &AppState) -> Result<Vec<String>, AppError> {
 /// One pass over pictures and external cards. Returns the pictures erased,
 /// the cards withdrawn and the registry records queued for repair.
 pub async fn settle(state: &AppState) -> Result<(usize, usize, usize), AppError> {
-    let erased = super::images::collect(state.directory.ks(), Utc::now()).await?;
+    withdraw_lapsed(state).await?;
+    // Group manager appointments whose granter no longer stands behind them
+    // go to review, and are withdrawn at its deadline.
+    if let Err(e) = crate::groups::managers::sweep(state).await {
+        warn!(error = %e, "could not review group manager appointments; the next pass will");
+    }
+    let erased = super::images::collect(state.directory.ks(), Utc::now()).await?
+        + super::notes::sweep_departed(state.directory.ks(), Utc::now()).await?;
     let withdrawn = super::external::reconcile_all(state).await?;
     let repaired = repair_pointers(state).await?;
     Ok((erased, withdrawn, repaired))
+}
+
+/// Withdraw every verified value whose `validUntil` has passed. Returns the
+/// cards changed. Recorded before it is written, like any card write; a card
+/// changed meanwhile is read again next pass.
+pub async fn withdraw_lapsed(state: &AppState) -> Result<usize, AppError> {
+    let ks = state.directory.ks();
+    let schema = fields::schema(ks).await?;
+    let now = Utc::now();
+    let mut changed = 0;
+    for card in cards::all(ks).await? {
+        let Some(applied) = cards::without_lapsed(&card, &schema, now) else {
+            continue;
+        };
+        if let Some(w) = state.audit_writer.as_ref() {
+            w.write(
+                ACTOR,
+                None,
+                AuditEvent::DirectoryCardChanged(DirectoryCardChangedData {
+                    entry_id: card.entry_id.clone(),
+                    by: "expiry".into(),
+                    fields: applied.changed.clone(),
+                    revision: applied.card.revision,
+                }),
+            )
+            .await?;
+        }
+        if cards::commit(ks, &card, &applied).await? {
+            changed += 1;
+        }
+    }
+    Ok(changed)
 }
 
 /// Queue a re-publication of every recognition record whose card pointer

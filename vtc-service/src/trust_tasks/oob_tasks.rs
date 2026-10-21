@@ -87,10 +87,11 @@ pub(crate) const URIS: &[&str] = &[
 
 /// The task families a member-portal sign-in offers to let `K_b` sign for as
 /// the member (`auth/oob/prove/0.2` `signingScope`): the member directory, so
-/// the portal can read it and edit the member's own card without asking the
-/// wallet for every document. Fixed for the surface, as the specification
+/// the portal can read it and edit the member's own card, and the community's
+/// groups, so it can list, join and leave them, without asking the wallet for
+/// every document. Fixed for the surface, as the specification
 /// requires; the operator console offers none.
-pub(crate) const PORTAL_SIGNING_SCOPE: &[&str] = &["vtc/directory"];
+pub(crate) const PORTAL_SIGNING_SCOPE: &[&str] = &["vtc/directory", "vtc/groups"];
 
 /// A declared error code: `auth/oob/<task>:<local>` for the codes one task
 /// declares, `auth/oob:<local>` for the family's shared ones (the published

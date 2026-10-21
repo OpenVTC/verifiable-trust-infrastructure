@@ -696,6 +696,8 @@ mod tests {
             credential_status: None,
             task_context: None,
             issuer_authority_key_ids: Vec::new(),
+            types: Vec::new(),
+            valid_until: None,
         }
     }
 

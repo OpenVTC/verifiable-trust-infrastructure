@@ -165,7 +165,8 @@ pub(super) async fn act_subject(
 /// ([`room_act::OFFER_TYPES`]), which 0.1 and 0.2's schema refuses; 0.4 also
 /// `vtc/rooms/offers/list/0.2` ([`room_act::OFFER_TYPES_0_4`]), which 0.3's table refuses;
 /// 0.5 also `vtc/rooms/memberships/list/0.1` ([`room_act::COMMUNITY_TYPES`]), which 0.4's
-/// schema refuses.
+/// schema refuses; 0.6 also `vtc/rooms/offers/list/0.3` ([`room_act::COMMUNITY_TYPES_0_6`]),
+/// which 0.5's table refuses.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ActVersion {
     V0_1,
@@ -173,6 +174,7 @@ enum ActVersion {
     V0_3,
     V0_4,
     V0_5,
+    V0_6,
 }
 
 impl ActVersion {
@@ -183,6 +185,7 @@ impl ActVersion {
             Self::V0_3 => room_act::is_offer_type(type_uri),
             Self::V0_4 => room_act::is_offer_type_0_4(type_uri),
             Self::V0_5 => room_act::is_community_type(type_uri),
+            Self::V0_6 => room_act::is_community_type_0_6(type_uri),
         }
     }
 }
@@ -240,6 +243,17 @@ pub(super) async fn handle_act_v0_5(
     act_at(state, auth, doc, ActVersion::V0_5).await
 }
 
+/// `rooms/keys/act/0.6`: 0.5, with `vtc/rooms/offers/list/0.3` in the offer row beside `0.1`
+/// and `0.2` — the listing that also carries the renewals of the admissions a member holds,
+/// completed on the same terms (trust-tasks-tf #843).
+pub(super) async fn handle_act_v0_6(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    act_at(state, auth, doc, ActVersion::V0_6).await
+}
+
 /// `rooms/keys/act`, at any version. The request is checked against the asked version's
 /// schema — 0.1 and 0.2 share one, which refuses the offer types; 0.3's and 0.4's refuse
 /// `vtc/rooms/memberships/*` — and read through 0.5's generated type, whose schema differs
@@ -250,7 +264,7 @@ async fn act_at(
     doc: TrustTask<Value>,
     at: ActVersion,
 ) -> TrustTaskOutcome {
-    use trust_tasks_rs::specs::rooms::keys::act::v0_5 as spec;
+    use trust_tasks_rs::specs::rooms::keys::act::v0_6 as spec;
 
     if let Err(r) = super::helpers::require_capability(
         state,
@@ -277,7 +291,7 @@ async fn act_at(
         ActVersion::V0_4 => {
             parse_payload::<trust_tasks_rs::specs::rooms::keys::act::v0_4::Payload>(&doc).err()
         }
-        ActVersion::V0_5 => None,
+        ActVersion::V0_5 | ActVersion::V0_6 => None,
     };
     if let Some(resp) = narrower {
         return resp;
@@ -509,7 +523,11 @@ async fn act_at(
     let bare = room_act::bare_type(type_uri);
     let (resource, detail) = match at {
         ActVersion::V0_1 => (room_id.clone(), format!("type={bare}")),
-        ActVersion::V0_2 | ActVersion::V0_3 | ActVersion::V0_4 | ActVersion::V0_5 => (
+        ActVersion::V0_2
+        | ActVersion::V0_3
+        | ActVersion::V0_4
+        | ActVersion::V0_5
+        | ActVersion::V0_6 => (
             Some(principal.clone()),
             match &room_id {
                 Some(room) => format!("type={bare} roomId={room}"),
@@ -556,7 +574,11 @@ async fn act_at(
             trust_tasks_rs::specs::rooms::keys::act::v0_4::Response,
         >(response)
         .and_then(serde_json::to_value),
-        ActVersion::V0_5 => {
+        ActVersion::V0_5 => serde_json::from_value::<
+            trust_tasks_rs::specs::rooms::keys::act::v0_5::Response,
+        >(response)
+        .and_then(serde_json::to_value),
+        ActVersion::V0_6 => {
             serde_json::from_value::<spec::Response>(response).and_then(serde_json::to_value)
         }
     };
@@ -953,6 +975,8 @@ mod tests {
     const OFFERS_LIST_0_2: &str = "https://trusttasks.org/spec/vtc/rooms/offers/list/0.2";
     const MEMBERSHIPS_LIST: &str = "https://trusttasks.org/spec/vtc/rooms/memberships/list/0.1";
     const ACT_0_5: &str = vta_sdk::trust_tasks::TASK_ROOMS_KEYS_ACT_0_5;
+    const ACT_0_6: &str = vta_sdk::trust_tasks::TASK_ROOMS_KEYS_ACT_0_6;
+    const OFFERS_LIST_0_3: &str = "https://trusttasks.org/spec/vtc/rooms/offers/list/0.3";
     const OFFERS_ACCEPT: &str = "https://trusttasks.org/spec/vtc/rooms/offers/accept/0.1";
     const COMMUNITY: &str = "did:webvh:example.com:northwind-community";
     const SEAL: &str = vta_sdk::trust_tasks::TASK_ROOMS_KEYS_SEAL_0_2;
@@ -1146,6 +1170,17 @@ mod tests {
         )
     }
 
+    async fn act_v0_6(state: &AppState, auth: &AuthClaims, document: Value) -> Value {
+        body(
+            handle_act_v0_6(
+                state,
+                auth,
+                request(ACT_0_6, json!({ "document": document })),
+            )
+            .await,
+        )
+    }
+
     /// A reply to a community's offer, as a member's client builds one: addressed to the
     /// community, `issuer` the DID the offer names (when given).
     fn offer(type_uri: &str, issuer: Option<&str>, payload: Value) -> Value {
@@ -1282,6 +1317,60 @@ mod tests {
 
             let out = act_v0_5(&f.state, &alice_client(), offer(type_uri, None, payload)).await;
             assert_eq!(code(&out), "rooms/keys/act:principalAmbiguous", "{out}");
+        }
+    }
+
+    /// `rooms/keys/act/0.6`: every community type — 0.5's, and `offers/list/0.3` — is
+    /// completed as its named `issuer`, with nothing inserted, and the response is 0.6's.
+    /// `issuer` is still required, and never picked.
+    #[tokio::test]
+    async fn act_0_6_completes_every_community_type_as_its_issuer() {
+        let f = fixture(&["read"]).await;
+        let board = Party::new();
+        for (type_uri, payload) in [
+            (OFFERS_LIST, json!({})),
+            (OFFERS_LIST_0_2, json!({})),
+            (OFFERS_LIST_0_3, json!({ "limit": 10 })),
+            (MEMBERSHIPS_LIST, json!({ "limit": 10 })),
+            (OFFERS_ACCEPT, json!({ "roomId": board.did })),
+        ] {
+            let document = offer(type_uri, Some(&f.alice.did), payload.clone());
+            let out = act_v0_6(&f.state, &alice_client(), document.clone()).await;
+            assert_eq!(
+                out["payload"]["principal"], f.alice.did,
+                "{type_uri}: {out}"
+            );
+            let completed = &out["payload"]["document"];
+            assert_eq!(completed["issuer"], f.alice.did, "{out}");
+            assert_eq!(completed["payload"], payload, "nothing inserted: {out}");
+            assert_eq!(
+                completed["proof"]["proofPurpose"], "authentication",
+                "{out}"
+            );
+            serde_json::from_value::<trust_tasks_rs::specs::rooms::keys::act::v0_6::Response>(
+                out["payload"].clone(),
+            )
+            .expect("a 0.6 response");
+
+            let out = act_v0_6(&f.state, &alice_client(), offer(type_uri, None, payload)).await;
+            assert_eq!(code(&out), "rooms/keys/act:principalAmbiguous", "{out}");
+        }
+    }
+
+    /// 0.5 and below do not complete `offers/list/0.3`: 0.5's table is closed at
+    /// `offers/list` 0.1 and 0.2, so it is `typeNotActable` there, and refused below it.
+    #[tokio::test]
+    async fn act_0_5_and_below_do_not_complete_offers_list_0_3() {
+        let f = fixture(&["read"]).await;
+        let document = offer(OFFERS_LIST_0_3, Some(&f.alice.did), json!({}));
+        let out = act_v0_5(&f.state, &alice_client(), document.clone()).await;
+        assert_eq!(code(&out), "rooms/keys/act:typeNotActable", "{out}");
+        for out in [
+            act_v0_3(&f.state, &alice_client(), document.clone()).await,
+            act_v0_4(&f.state, &alice_client(), document).await,
+        ] {
+            assert!(out["payload"].get("principal").is_none(), "{out}");
+            assert!(!code(&out).is_empty(), "{out}");
         }
     }
 

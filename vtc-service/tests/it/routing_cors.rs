@@ -59,6 +59,8 @@ fn cfg_with(routing: RoutingConfig, cors: CorsConfig) -> AppConfig {
         witnesses: Default::default(),
         directory: Default::default(),
         voting: Default::default(),
+        groups: None,
+        dids: Default::default(),
         config_path: std::path::PathBuf::new(),
     }
 }

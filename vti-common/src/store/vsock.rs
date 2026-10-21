@@ -54,12 +54,15 @@ const BATCH_EQUALS: u8 = b'e';
 const BATCH_PUT: u8 = b'i';
 const BATCH_DELETE: u8 = b'd';
 
+// `[op][ks][prefix][after][limit][flags]` -> bounded KV-list response.
+const OP_SCAN: u8 = 0x0D;
+
 /// Requests that cannot modify a keyspace. Everything else is tracked as a
 /// write (`VsockKeyspaceHandle::send`).
 fn is_read_only(payload: &[u8]) -> bool {
     matches!(
         payload.first(),
-        Some(&(OP_GET | OP_PREFIX_ITER | OP_PREFIX_KEYS | OP_HELLO | OP_PERSIST))
+        Some(&(OP_GET | OP_PREFIX_ITER | OP_PREFIX_KEYS | OP_HELLO | OP_PERSIST | OP_SCAN))
     )
 }
 
@@ -68,6 +71,7 @@ const CAP_INSERT_IF_ABSENT: u32 = 1 << 1;
 const CAP_SWAP_IF_ABSENT: u32 = 1 << 2;
 const CAP_MOVE_IF_EQUAL: u32 = 1 << 3;
 const CAP_APPLY_BATCH: u32 = 1 << 4;
+const CAP_SCAN: u32 = 1 << 5;
 
 const MOVE_MOVED: u8 = 0;
 const MOVE_SOURCE_MISSING: u8 = 1;
@@ -104,6 +108,18 @@ fn decode_bytes(data: &[u8], offset: usize) -> Result<(&[u8], usize), String> {
 fn encode_keyspace(buf: &mut Vec<u8>, name: &str) {
     buf.extend_from_slice(&(name.len() as u16).to_be_bytes());
     buf.extend_from_slice(name.as_bytes());
+}
+
+fn build_scan_request(keyspace: &str, opts: &super::ScanOpts) -> Result<Vec<u8>, AppError> {
+    let limit = u32::try_from(opts.limit)
+        .map_err(|_| AppError::Internal("vsock scan limit exceeds u32".into()))?;
+    let mut payload = vec![OP_SCAN];
+    encode_keyspace(&mut payload, keyspace);
+    encode_bytes(&mut payload, &opts.prefix);
+    encode_bytes(&mut payload, opts.after.as_deref().unwrap_or_default());
+    payload.extend_from_slice(&limit.to_be_bytes());
+    payload.push(u8::from(opts.reverse));
+    Ok(payload)
 }
 
 // ---------------------------------------------------------------------------
@@ -210,6 +226,19 @@ impl Capabilities {
         if bits != 0 {
             *self.next_probe() = None;
         }
+    }
+
+    /// The proxy answered "unknown opcode" for one capability only: drop
+    /// just that bit (others may still work) and schedule a re-probe.
+    /// `true` if it had the bit before, mirroring [`Capabilities::downgrade`]
+    /// so callers can warn exactly once on the transition.
+    fn clear(&self, cap: u32) -> bool {
+        let previous = self.bits.fetch_and(!cap, Ordering::Relaxed);
+        let had_it = previous & cap != 0;
+        if had_it {
+            *self.next_probe() = Some(std::time::Instant::now() + self.reprobe_after);
+        }
+        had_it
     }
 }
 
@@ -442,14 +471,7 @@ impl VsockKeyspaceHandle {
         encode_bytes(&mut payload, &prefix);
         let resp = self.send(&payload).await?;
         let pairs = decode_kv_list(&resp)?;
-        // Decrypt values
-        pairs
-            .into_iter()
-            .map(|(k, v)| {
-                let v = self.maybe_decrypt(&k, &v)?;
-                Ok((k, v))
-            })
-            .collect()
+        self.maybe_decrypt_pairs(pairs)
     }
 
     /// See [`crate::store::KeyspaceHandle::range_from_raw`]. The vsock
@@ -477,6 +499,43 @@ impl VsockKeyspaceHandle {
         encode_bytes(&mut payload, &prefix);
         let resp = self.send(&payload).await?;
         decode_key_list(&resp)
+    }
+
+    pub async fn scan_raw(&self, opts: super::ScanOpts) -> Result<Vec<RawKvPair>, AppError> {
+        if opts.limit == 0 {
+            return Ok(Vec::new());
+        }
+
+        if self.has(CAP_SCAN).await {
+            let payload = build_scan_request(&self.keyspace, &opts)?;
+            let response = self.send(&payload).await?;
+            if is_unknown_opcode(&response) {
+                if self.caps.clear(CAP_SCAN) {
+                    warn!(
+                        "storage proxy no longer serves bounded scan; falling back to full-prefix scan"
+                    );
+                }
+            } else {
+                // The parent returned ciphertext, exactly as it stores it.
+                // The fallback below inherits decryption from
+                // `prefix_iter_raw`; this branch decodes the response itself,
+                // so it has to decrypt for itself too.
+                return self.maybe_decrypt_pairs(decode_kv_list(&response)?);
+            }
+        }
+
+        let pairs = self
+            .prefix_iter_raw(opts.prefix.clone())
+            .await
+            .map_err(super::map_oversized_bulk_read)?;
+        Ok(super::apply_scan_locally(pairs, &opts))
+    }
+
+    /// See [`crate::store::KeyspaceHandle::has_native_scan`]. A proxy without
+    /// `CAP_SCAN` forces [`Self::scan_raw`] to read the whole prefix and trim
+    /// it here, so a caller paging over one wants to know.
+    pub(super) async fn has_native_scan(&self) -> bool {
+        self.has(CAP_SCAN).await
     }
 
     pub async fn approximate_len(&self) -> Result<usize, AppError> {
@@ -975,6 +1034,26 @@ impl VsockKeyspaceHandle {
             Ok(ciphertext.to_vec())
         }
     }
+
+    /// [`Self::maybe_decrypt`] over every value in a key-value response from
+    /// the parent — a no-op on a handle with no encryption key, same as the
+    /// single-value form it delegates to.
+    ///
+    /// The parent holds ciphertext and returns it verbatim, so every read
+    /// that decodes a KV list has to come through here before handing pairs
+    /// to a caller — [`Self::prefix_iter_raw`] and [`Self::scan_raw`] alike.
+    /// A path that decodes the response itself and skips this returns
+    /// ciphertext that no caller can recognise: an audit chain-head lookup
+    /// finds no envelope and re-anchors a chain that was never broken.
+    fn maybe_decrypt_pairs(&self, pairs: Vec<RawKvPair>) -> Result<Vec<RawKvPair>, AppError> {
+        pairs
+            .into_iter()
+            .map(|(key, value)| {
+                let value = self.maybe_decrypt(&key, &value)?;
+                Ok((key, value))
+            })
+            .collect()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1365,6 +1444,14 @@ mod tests {
         assert_eq!(OP_PERSIST, 0x06);
         assert_eq!(OP_APPLY_BATCH, 0x0C);
         assert_eq!(CAP_APPLY_BATCH, 1 << 4);
+        // Scan took the next free byte and bit after apply-batch. The two
+        // landed in parallel, and a collision here would not be a compile
+        // error on either side — the proxy would simply dispatch one opcode
+        // to the other's handler.
+        assert_eq!(OP_SCAN, 0x0D);
+        assert_eq!(CAP_SCAN, 1 << 5);
+        assert_ne!(OP_SCAN, OP_APPLY_BATCH);
+        assert_ne!(CAP_SCAN, CAP_APPLY_BATCH);
         assert_eq!(
             [
                 BATCH_ABSENT,
@@ -1445,14 +1532,22 @@ mod atomicity_tests {
     type Rows = Arc<StdMutex<HashMap<(String, Vec<u8>), Vec<u8>>>>;
 
     const BOTH: [bool; 2] = [false, true];
-    const ALL_CAPS: u32 =
-        CAP_TAKE | CAP_INSERT_IF_ABSENT | CAP_SWAP_IF_ABSENT | CAP_MOVE_IF_EQUAL | CAP_APPLY_BATCH;
+    const ALL_CAPS: u32 = CAP_TAKE
+        | CAP_INSERT_IF_ABSENT
+        | CAP_SWAP_IF_ABSENT
+        | CAP_MOVE_IF_EQUAL
+        | CAP_APPLY_BATCH
+        | CAP_SCAN;
 
     #[derive(Clone)]
     struct FakeParent {
         rows: Rows,
         /// Serves the atomic opcodes (a current proxy) or not (an old one).
         atomic: Arc<AtomicBool>,
+        /// Serves OP_SCAN independently of `atomic`: bounded scan shipped
+        /// separately from the original four atomic ops, so a proxy can lose
+        /// (or never have had) scan support while still serving the rest.
+        scan: Arc<AtomicBool>,
         /// Requests served, HELLO included.
         requests: Arc<AtomicUsize>,
         /// Apply the next request with this opcode, then hang up without
@@ -1477,6 +1572,7 @@ mod atomicity_tests {
             Self {
                 rows: Rows::default(),
                 atomic: Arc::new(AtomicBool::new(atomic)),
+                scan: Arc::new(AtomicBool::new(atomic)),
                 requests: Arc::new(AtomicUsize::new(0)),
                 hang_up_after: Arc::default(),
                 refuse_hello: Arc::default(),
@@ -1622,6 +1718,14 @@ mod atomicity_tests {
             self.atomic.store(true, Ordering::SeqCst);
         }
 
+        /// Replace the proxy with one that still serves the original atomic
+        /// opcodes but has lost (or never gained) bounded scan — scan
+        /// shipped independently of the other four, so this is a distinct
+        /// knob from [`Self::downgrade`].
+        fn disable_scan(&self) {
+            self.scan.store(false, Ordering::SeqCst);
+        }
+
         fn hang_up_after(&self, op: u8) {
             *self.hang_up_after.lock().unwrap() = Some(op);
         }
@@ -1706,6 +1810,11 @@ mod atomicity_tests {
                 encode_bytes(&mut out, format!("unknown opcode: {op:#04x}").as_bytes());
                 return out;
             }
+            if op == OP_SCAN && !self.scan.load(Ordering::SeqCst) {
+                let mut out = vec![STATUS_ERROR];
+                encode_bytes(&mut out, format!("unknown opcode: {op:#04x}").as_bytes());
+                return out;
+            }
             if op == OP_HELLO && self.refuse_hello.load(Ordering::SeqCst) {
                 let mut out = vec![STATUS_ERROR];
                 encode_bytes(&mut out, b"internal: something broke");
@@ -1713,12 +1822,59 @@ mod atomicity_tests {
             }
             if op == OP_HELLO {
                 let mut out = vec![STATUS_OK];
-                out.extend_from_slice(&ALL_CAPS.to_be_bytes());
+                let caps = if self.scan.load(Ordering::SeqCst) {
+                    ALL_CAPS
+                } else {
+                    ALL_CAPS & !CAP_SCAN
+                };
+                out.extend_from_slice(&caps.to_be_bytes());
                 return out;
             }
 
             let ks_len = u16::from_be_bytes([req[1], req[2]]) as usize;
             let ks = String::from_utf8(req[3..3 + ks_len].to_vec()).unwrap();
+
+            if op == OP_SCAN {
+                // Not length-prefixed fields all the way down (limit/flags
+                // are raw bytes), so this one is parsed on its own rather
+                // than through the generic `fields` loop below.
+                let at = 3 + ks_len;
+                let (prefix, at) = decode_bytes(req, at).unwrap();
+                let prefix = prefix.to_vec();
+                let (after, at) = decode_bytes(req, at).unwrap();
+                let after = after.to_vec();
+                let limit =
+                    u32::from_be_bytes([req[at], req[at + 1], req[at + 2], req[at + 3]]) as usize;
+                let reverse = req[at + 4] != 0;
+
+                let rows = self.rows.lock().unwrap();
+                let mut pairs: Vec<_> = rows
+                    .iter()
+                    .filter(|((row_ks, key), _)| *row_ks == ks && key.starts_with(&prefix))
+                    .map(|((_, key), value)| (key.clone(), value.clone()))
+                    .collect();
+                pairs.sort_unstable_by(|(a, _), (b, _)| a.cmp(b));
+                if !after.is_empty() {
+                    if reverse {
+                        pairs.retain(|(k, _)| k.as_slice() < after.as_slice());
+                    } else {
+                        pairs.retain(|(k, _)| k.as_slice() > after.as_slice());
+                    }
+                }
+                if reverse {
+                    pairs.reverse();
+                }
+                pairs.truncate(limit);
+
+                let mut out = vec![STATUS_OK];
+                out.extend_from_slice(&(pairs.len() as u32).to_be_bytes());
+                for (key, value) in &pairs {
+                    encode_bytes(&mut out, key);
+                    encode_bytes(&mut out, value);
+                }
+                return out;
+            }
+
             let mut fields = Vec::new();
             let mut at = 3 + ks_len;
             while at < req.len() {
@@ -1741,6 +1897,22 @@ mod atomicity_tests {
                     Some(v) => value(v),
                     None => vec![STATUS_NOT_FOUND],
                 },
+                OP_PREFIX_ITER => {
+                    let prefix = &fields[0];
+                    let mut pairs: Vec<_> = rows
+                        .iter()
+                        .filter(|((row_ks, key), _)| *row_ks == ks && key.starts_with(prefix))
+                        .map(|((_, key), value)| (key.clone(), value.clone()))
+                        .collect();
+                    pairs.sort_unstable_by(|(a, _), (b, _)| a.cmp(b));
+                    let mut out = vec![STATUS_OK];
+                    out.extend_from_slice(&(pairs.len() as u32).to_be_bytes());
+                    for (key, value) in &pairs {
+                        encode_bytes(&mut out, key);
+                        encode_bytes(&mut out, value);
+                    }
+                    out
+                }
                 OP_INSERT => {
                     rows.insert(id(&fields[0]), fields[1].clone());
                     vec![STATUS_OK]
@@ -2236,6 +2408,346 @@ mod atomicity_tests {
         let before = parent.requests();
         assert!(h.insert_if_absent(b"claim".to_vec(), &1u32).await.unwrap());
         assert_eq!(parent.requests() - before, 2, "no atomic opcode attempted");
+    }
+
+    /// Bounded scan over the vsock fast path: ascending, descending, and
+    /// resuming after a cursor all come back from one `OP_SCAN` round trip.
+    #[tokio::test]
+    async fn scan_raw_uses_the_bounded_fast_path_when_advertised() {
+        let parent = FakeParent::new(true);
+        let h = parent.handle().await;
+        for (key, value) in [
+            (b"row/1".to_vec(), b"a".to_vec()),
+            (b"row/2".to_vec(), b"b".to_vec()),
+            (b"row/3".to_vec(), b"c".to_vec()),
+            (b"other/1".to_vec(), b"z".to_vec()),
+        ] {
+            h.insert_raw(key, value).await.unwrap();
+        }
+
+        let before = parent.requests();
+        let ascending = h
+            .scan_raw(super::super::ScanOpts::new(b"row/".to_vec(), 10))
+            .await
+            .unwrap();
+        assert_eq!(
+            ascending,
+            vec![
+                (b"row/1".to_vec(), b"a".to_vec()),
+                (b"row/2".to_vec(), b"b".to_vec()),
+                (b"row/3".to_vec(), b"c".to_vec()),
+            ]
+        );
+        assert_eq!(parent.requests() - before, 1, "one OP_SCAN round trip");
+
+        let descending = h
+            .scan_raw(super::super::ScanOpts::newest_first(b"row/".to_vec(), 2))
+            .await
+            .unwrap();
+        assert_eq!(
+            descending,
+            vec![
+                (b"row/3".to_vec(), b"c".to_vec()),
+                (b"row/2".to_vec(), b"b".to_vec()),
+            ]
+        );
+
+        let resumed = h
+            .scan_raw(super::super::ScanOpts::new(b"row/".to_vec(), 10).after(b"row/1".to_vec()))
+            .await
+            .unwrap();
+        assert_eq!(
+            resumed,
+            vec![
+                (b"row/2".to_vec(), b"b".to_vec()),
+                (b"row/3".to_vec(), b"c".to_vec()),
+            ]
+        );
+
+        assert_eq!(
+            h.scan_raw(super::super::ScanOpts::new(b"row/".to_vec(), 0))
+                .await
+                .unwrap(),
+            Vec::<(Vec<u8>, Vec<u8>)>::new(),
+            "limit 0 short-circuits before any request"
+        );
+    }
+
+    /// A proxy that loses (or never gained) bounded scan — independently of
+    /// the original four atomic opcodes — falls back to the legacy
+    /// full-prefix scan, clears only `CAP_SCAN`, and keeps serving the other
+    /// atomic opcodes over their own fast path. This is the asymmetry
+    /// between [`Capabilities::downgrade`] (all-or-nothing, pre-existing)
+    /// and [`Capabilities::clear`] (single-bit, added with scan).
+    #[tokio::test]
+    async fn scan_raw_falls_back_when_only_scan_is_unsupported() {
+        let parent = FakeParent::new(true);
+        let h = parent.handle().await;
+        assert_eq!(h.caps.bits.load(Ordering::SeqCst), ALL_CAPS);
+        h.insert_raw(b"row/1".to_vec(), b"a".to_vec())
+            .await
+            .unwrap();
+        h.insert_raw(b"row/2".to_vec(), b"b".to_vec())
+            .await
+            .unwrap();
+        parent.disable_scan();
+
+        let scanned = h
+            .scan_raw(super::super::ScanOpts::new(b"row/".to_vec(), 10))
+            .await
+            .unwrap();
+        assert_eq!(
+            scanned,
+            vec![
+                (b"row/1".to_vec(), b"a".to_vec()),
+                (b"row/2".to_vec(), b"b".to_vec()),
+            ],
+            "legacy prefix scan still finds the right rows"
+        );
+        assert_eq!(
+            h.caps.bits.load(Ordering::SeqCst),
+            ALL_CAPS & !CAP_SCAN,
+            "only the scan bit is cleared, unlike a full downgrade"
+        );
+
+        // The other atomic opcodes still take their fast path.
+        let before = parent.requests();
+        assert_eq!(
+            h.take_raw(b"row/1".to_vec()).await.unwrap(),
+            Some(b"a".to_vec())
+        );
+        assert_eq!(parent.requests() - before, 1, "one atomic round trip");
+    }
+
+    /// The shared bounded-scan vectors, against the fake parent.
+    ///
+    /// The fake parent is a *third* implementation of the range algebra, and
+    /// it is the one every other client-side scan test actually runs on — the
+    /// real proxy's `handle_scan` is never reached from this crate. So
+    /// without this, a fake parent that quietly disagreed with the real one
+    /// would make those tests prove something about nothing.
+    #[tokio::test]
+    async fn the_fake_parent_matches_the_shared_vectors() {
+        for case in super::super::scan_range_vectors::load() {
+            let hex_encoded = case.encoding.as_deref() == Some("hex");
+            let decode = |value: &str| super::super::scan_range_vectors::bytes(value, hex_encoded);
+
+            let parent = FakeParent::new(true);
+            let h = parent.handle().await;
+            for key in &case.keys {
+                h.insert_raw(decode(key), b"v".to_vec()).await.unwrap();
+            }
+
+            let scanned: Vec<Vec<u8>> = h
+                .scan_raw(super::super::ScanOpts {
+                    prefix: decode(&case.prefix),
+                    after: case.after.as_deref().map(decode),
+                    // The vectors describe the range, not a page. Capped at
+                    // `u32::MAX` rather than `usize::MAX` because this one
+                    // goes over the wire, where the limit is a u32.
+                    limit: u32::MAX as usize,
+                    reverse: case.reverse,
+                })
+                .await
+                .unwrap()
+                .into_iter()
+                .map(|(key, _)| key)
+                .collect();
+
+            let expect: Vec<Vec<u8>> = case.expect.iter().map(|key| decode(key)).collect();
+            assert_eq!(
+                super::super::scan_range_vectors::render(&scanned, hex_encoded),
+                super::super::scan_range_vectors::render(&expect, hex_encoded),
+                "fake parent disagrees: {}",
+                case.name
+            );
+        }
+    }
+
+    /// Seed `count` rows under `row/` and return the pairs in ascending order.
+    async fn seed_rows(h: &VsockKeyspaceHandle, count: usize) -> Vec<RawKvPair> {
+        let mut expected = Vec::new();
+        for index in 0..count {
+            let key = format!("row/{index:03}").into_bytes();
+            let value = format!("v{index}").into_bytes();
+            h.insert_raw(key.clone(), value.clone()).await.unwrap();
+            expected.push((key, value));
+        }
+        expected
+    }
+
+    /// Walk all 12 rows at `page_size` against a proxy that never advertised
+    /// `OP_SCAN`, returning `(pages, requests the walk cost)` and asserting
+    /// the rows came back whole and in order. A fresh parent each time, so
+    /// one walk's cached capability cannot flatter the next.
+    async fn walk_without_native_scan(page_size: usize) -> (usize, usize) {
+        let parent = FakeParent::new(true);
+        // Before `handle()`, so HELLO advertises the other four opcodes but
+        // not scan — an old proxy, rather than one downgraded later.
+        parent.disable_scan();
+        let h = parent.handle().await;
+        let expected = seed_rows(&h, 12).await;
+
+        let handle = super::super::KeyspaceHandle::Vsock(h.clone());
+        let before = parent.requests();
+        let mut pages = handle.scan_pager(super::super::ScanOpts::new(b"row/".to_vec(), page_size));
+        let mut walked = Vec::new();
+        let mut page_count = 0;
+        loop {
+            let page = pages.next_page().await.unwrap();
+            if page.is_empty() {
+                break;
+            }
+            assert!(page.len() <= page_size, "a page never exceeds the limit");
+            page_count += 1;
+            walked.extend(page);
+        }
+
+        assert_eq!(walked, expected, "a buffered walk is gapless and in order");
+        (page_count, parent.requests() - before)
+    }
+
+    /// Against a proxy without `OP_SCAN`, a paged walk reads the range
+    /// **once**, however many pages it is cut into.
+    ///
+    /// This is the regression the pager exists for, and the only way to see
+    /// it is to count the parent's requests: a `scan_raw` loop returns
+    /// exactly the same rows while asking the proxy for the entire prefix on
+    /// every page, so the cost of a walk scales with `rows / page_size`
+    /// instead of staying flat. Comparing two page sizes asserts the shape of
+    /// the cost, not a magic number.
+    #[tokio::test]
+    async fn a_paged_walk_reads_the_range_once_however_many_pages() {
+        let (few_pages, few_requests) = walk_without_native_scan(6).await;
+        let (many_pages, many_requests) = walk_without_native_scan(1).await;
+
+        assert_eq!(few_pages, 2, "12 rows at 6 per page");
+        assert_eq!(many_pages, 12, "12 rows at 1 per page");
+        assert_eq!(
+            few_requests, many_requests,
+            "six times the pages must not cost six times the reads"
+        );
+        assert_eq!(many_requests, 1, "one OP_PREFIX_ITER serves the whole walk");
+    }
+
+    /// The same walk against a current proxy stays on the bounded fast path:
+    /// one `OP_SCAN` per page, nothing buffered, nothing re-read.
+    #[tokio::test]
+    async fn a_paged_walk_is_one_bounded_request_per_page_natively() {
+        let parent = FakeParent::new(true);
+        let h = parent.handle().await;
+        let expected = seed_rows(&h, 10).await;
+
+        let handle = super::super::KeyspaceHandle::Vsock(h.clone());
+        let before = parent.requests();
+        let mut pages = handle.scan_pager(super::super::ScanOpts::new(b"row/".to_vec(), 3));
+        let mut walked = Vec::new();
+        loop {
+            let page = pages.next_page().await.unwrap();
+            if page.is_empty() {
+                break;
+            }
+            assert!(page.len() <= 3, "a page never exceeds the limit");
+            walked.extend(page);
+        }
+
+        assert_eq!(walked, expected);
+        // Pages of 3, 3, 3, 1 — the short last page ends the walk, so there is
+        // no extra empty-page round trip.
+        assert_eq!(parent.requests() - before, 4, "one OP_SCAN per page");
+    }
+
+    /// A proxy swapped for an older build **mid-walk** buffers the remainder
+    /// once, rather than putting every further page back on a full read.
+    ///
+    /// Discovering the downgrade costs one refused `OP_SCAN` and one wasted
+    /// bulk read — `scan_raw` answers that page from its own fallback before
+    /// the pager can see the capability has gone. That is a one-off on the
+    /// transition page; what matters is that it does not repeat per page.
+    #[tokio::test]
+    async fn a_downgrade_mid_walk_buffers_the_remainder_once() {
+        let parent = FakeParent::new(true);
+        let h = parent.handle().await;
+        let expected = seed_rows(&h, 12).await;
+
+        let handle = super::super::KeyspaceHandle::Vsock(h.clone());
+        let mut pages = handle.scan_pager(super::super::ScanOpts::new(b"row/".to_vec(), 2));
+        let mut walked = pages.next_page().await.unwrap();
+        assert_eq!(walked.len(), 2, "the first page is served natively");
+
+        parent.disable_scan();
+        let before = parent.requests();
+        loop {
+            let page = pages.next_page().await.unwrap();
+            if page.is_empty() {
+                break;
+            }
+            walked.extend(page);
+        }
+
+        assert_eq!(
+            walked, expected,
+            "the walk is gapless and duplicate-free across the downgrade"
+        );
+        // Five pages remain. A per-page fallback would be five bulk reads;
+        // the pager pays the refused OP_SCAN, the bulk read that answered the
+        // transition page, and one more to buffer the rest.
+        assert_eq!(
+            parent.requests() - before,
+            3,
+            "the remainder is read once, not once per remaining page"
+        );
+    }
+
+    /// A bounded scan of an encrypted keyspace returns plaintext — by the
+    /// native `OP_SCAN` path and by the legacy fallback alike, and the two
+    /// agree row for row.
+    ///
+    /// The fallback inherits decryption from `prefix_iter_raw`, so only the
+    /// native path can regress here, and it regresses silently: ciphertext
+    /// deserialises as nothing, so a chain-head lookup over an encrypted
+    /// audit keyspace finds no envelope and re-anchors at genesis — forking
+    /// a chain that was never broken, which is the one thing the chain
+    /// exists to make impossible.
+    #[cfg(feature = "encryption")]
+    #[tokio::test]
+    async fn an_encrypted_scan_returns_plaintext_by_either_path() {
+        let parent = FakeParent::new(true);
+        let h = parent.handle().await.with_encryption([9u8; 32]);
+        for (key, value) in [
+            (b"log:1".to_vec(), b"secret-one".to_vec()),
+            (b"log:2".to_vec(), b"secret-two".to_vec()),
+            (b"other:1".to_vec(), b"secret-elsewhere".to_vec()),
+        ] {
+            h.insert_raw(key, value).await.unwrap();
+        }
+        for row in parent.stored() {
+            assert!(
+                !row.windows(6).any(|w| w == b"secret"),
+                "plaintext reached the parent"
+            );
+        }
+
+        let expected = vec![
+            (b"log:2".to_vec(), b"secret-two".to_vec()),
+            (b"log:1".to_vec(), b"secret-one".to_vec()),
+        ];
+
+        let native = h
+            .scan_raw(super::super::ScanOpts::newest_first(b"log:".to_vec(), 10))
+            .await
+            .unwrap();
+        assert_eq!(native, expected, "the native OP_SCAN path must decrypt");
+
+        parent.disable_scan();
+        let fallback = h
+            .scan_raw(super::super::ScanOpts::newest_first(b"log:".to_vec(), 10))
+            .await
+            .unwrap();
+        assert_eq!(
+            fallback, expected,
+            "the legacy fallback must agree with the native path, row for row"
+        );
     }
 
     /// The parent stores, compares and moves ciphertext only.

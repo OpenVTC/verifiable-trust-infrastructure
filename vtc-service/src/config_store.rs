@@ -385,6 +385,16 @@ pub const REGISTRY: &[ConfigKeyDef] = &[
         sensitive: false,
         trust_semantics: true,
     },
+    // Where the identities this community mints are published
+    // (`crate::did_hosting`): a hosting server at its VTA, or `local`. Read
+    // live at every mint, so no restart; never moves one already minted.
+    ConfigKeyDef {
+        key: crate::did_hosting::DIDS_WEBVH_SERVER,
+        kind: ConfigKeyKind::String,
+        requires_restart: false,
+        sensitive: false,
+        trust_semantics: false,
+    },
 ];
 
 /// `acl.single_admin_mode` — single-administrator mode (VTI-APV-022). **Not**
@@ -540,6 +550,7 @@ fn toml_layer_value(key: &str, cfg: &AppConfig) -> Option<Value> {
                 .then(|| Value::Number(serde_json::Number::from(n)))
         }
         CONSENT_REQUEST_PUSH => cfg.acl.consent_request_push.then_some(Value::Bool(true)),
+        crate::did_hosting::DIDS_WEBVH_SERVER => cfg.dids.webvh_server.clone().map(Value::String),
         WITNESSES_TRUSTED => (!cfg.witnesses.is_empty())
             .then(|| serde_json::to_value(&cfg.witnesses.trusted).unwrap_or(Value::Null)),
         "auth.admin_idle_timeout" => {
@@ -578,6 +589,8 @@ fn default_layer_value(key: &str) -> Value {
         }
         CONSENT_REQUEST_PUSH => Value::Bool(false),
         WITNESSES_TRUSTED => Value::Array(Vec::new()),
+        // Unset: each kind's own `config.toml` setting decides.
+        crate::did_hosting::DIDS_WEBVH_SERVER => Value::Null,
         other => match action_key_default(other) {
             Some(n) => Value::Number(n.into()),
             None => Value::Null, // unreachable for registry keys
@@ -610,6 +623,9 @@ fn env_layer_value(key: &str) -> Option<Value> {
             .map(Value::Bool),
         // A list has no environment form; it is set in TOML or patched.
         WITNESSES_TRUSTED => None,
+        crate::did_hosting::DIDS_WEBVH_SERVER => std::env::var(crate::did_hosting::ENV)
+            .ok()
+            .map(Value::String),
         "auth.admin_idle_timeout" => std::env::var("VTC_AUTH_ADMIN_IDLE_TIMEOUT")
             .ok()
             .and_then(|s| s.parse::<u64>().ok())
@@ -745,6 +761,12 @@ fn set_app_config_field(cfg: &mut AppConfig, key: &str, value: &Value) {
                     error = %e,
                     "config override `{WITNESSES_TRUSTED}` is not a valid witness list — ignored"
                 ),
+            }
+        }
+        // The live reader (`did_hosting::live`) ignores a malformed row too.
+        crate::did_hosting::DIDS_WEBVH_SERVER => {
+            if crate::did_hosting::validate(value).is_ok() {
+                cfg.dids.webvh_server = value.as_str().map(str::to_string);
             }
         }
         "auth.admin_idle_timeout" => match value.as_u64() {

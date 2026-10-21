@@ -7,9 +7,9 @@
 // polls slow to `LIVE_POLL_MS`; the moment the stream is not live they are
 // back at `WAITING_POLL_MS`, and every topic is re-read at once.
 //
-// The version is read from `trust-task-discovery`: 0.2 (with `rooms`) when the
-// community lists it, else 0.1, whose topic set has no `rooms` — the rooms
-// pages then simply poll.
+// The version is read from `trust-task-discovery`: the newest the community
+// lists — 0.3 (with `directory` and `groups`), 0.2 (with `rooms`), else 0.1.
+// A page whose topic the version lacks simply polls.
 
 import { useEffect, useSyncExternalStore } from "react";
 import { useQueryClient, type QueryClient, type QueryKey } from "@tanstack/react-query";
@@ -57,6 +57,14 @@ export function keysFor(topic: Topic): QueryKey[] {
     // (`vtc/storage/configs/*`).
     case "rooms":
       return [["rooms"], ["room-usage"], ["storage"]];
+    // The directory pages, and the member list and member page, which show
+    // each member's directory card (`vtc/directory/*`).
+    case "directory":
+      return [["directory"]];
+    // The groups pages: the list, a group, its members and requests
+    // (`vtc/groups/*`).
+    case "groups":
+      return [["groups"]];
   }
 }
 
@@ -113,7 +121,7 @@ export function useLivePollMs(topic?: Topic): number {
   return live ? LIVE_POLL_MS : OFFLINE_POLL_MS;
 }
 
-/** The version to subscribe at: 0.2 when discovery lists it, else 0.1 — and
+/** The version to subscribe at: the newest discovery lists, else 0.1 — and
  * 0.1 when discovery cannot be read. */
 export async function chooseLiveVersion(): Promise<LiveVersion> {
   try {

@@ -359,6 +359,56 @@ fn base_disclosure() -> Value {
     .expect("the base schema gives a statement")
 }
 
+fn sample_binding() -> crate::groups::bindings::Binding {
+    crate::groups::bindings::Binding {
+        binding_id: "gb_P2k8W5qYc6Vd1MsKAAAAAA".into(),
+        group_id: "grp_W5k2N8xRb3Qz7TpLAAAAAA".into(),
+        binding: json!({ "kind": "room", "roomId": "did:key:z6MkRoom", "actions": ["read"], "validFor": "P30D" }),
+        state: "active".into(),
+        created_at: chrono::DateTime::parse_from_rfc3339("2026-10-20T09:00:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc),
+        created_by: "did:example:administrator".into(),
+        reason: "The working group's room.".into(),
+    }
+}
+
+/// A note as `directory::notes` stores it.
+fn admin_note() -> crate::directory::notes::Note {
+    crate::directory::notes::Note {
+        note_id: "note_Q2xhcmFRMmxoY21GUk1t".into(),
+        entry_id: DIRECTORY_ENTRY.into(),
+        author: "did:example:administrator".into(),
+        created_at: "2026-10-19T09:00:00Z".parse().unwrap(),
+        text: Some("Spoke at the June meetup.".into()),
+        follow_up: Some(chrono::NaiveDate::from_ymd_opt(2026, 11, 1).unwrap()),
+        redacts: None,
+        redacted_by: None,
+    }
+}
+
+/// A group as `groups::wire` answers it to one of its managers.
+fn group_wire() -> Value {
+    json!({
+        "groupId": "grp_W5k2N8xRb3Qz7TpLAAAAAA",
+        "groupDid": "did:webvh:QmScid:groups.example:grp",
+        "name": "Identity WG",
+        "description": "Where the community works on identity.",
+        "kind": "static",
+        "joinPolicy": "request",
+        "visibility": "members",
+        "showMembers": "groupMembers",
+        "issuesCredentials": true,
+        "carriesAuthority": false,
+        "createdAt": "2026-10-19T09:00:00Z",
+        "updatedAt": "2026-10-19T09:00:00Z",
+        "createdBy": DIRECTORY_ENTRY,
+        "memberCount": 0,
+        "managers": [],
+        "credentialAuthorityValidUntil": "2027-10-19T09:00:00Z",
+    })
+}
+
 /// A stored picture's reference, as `directory::images` answers it.
 fn stored_picture() -> Value {
     json!({ "sha256": "3a7bd3e2360a3d29eea436fcfb7e44c735d117c42d1c1835420b6b9942dd4f1b", "mediaType": "image/jpeg", "size": 18342 })
@@ -1090,6 +1140,23 @@ fn table() -> Vec<Conformance> {
                 "resumeToken": "e1.AAAAAAAAAAAAAAAA.BBBBBBBBBBBBBBBB",
             })
         ),
+        // 0.3: the same, plus `directory` and `groups`; its hints are
+        // `event/0.3` documents.
+        checked!(
+            s::admin::events::subscribe::v0_3::Payload,
+            s::admin::events::subscribe::v0_3::Response,
+            json!({
+                "topics": ["actions", "acknowledgements", "joinRequests", "members",
+                           "singleAdminMode", "config", "rooms", "directory", "groups"],
+                "since": "e1.AAAAAAAAAAAAAAAA.BBBBBBBBBBBBBBBB",
+            }),
+            json!({
+                "topics": ["actions", "members", "directory", "groups"],
+                "heartbeatSeconds": 25,
+                "resumed": false,
+                "resumeToken": "e1.AAAAAAAAAAAAAAAA.BBBBBBBBBBBBBBBB",
+            })
+        ),
         // ─── custom administrative roles ─────────────────────────────
         // Responses rendered by the handler's own renderers.
         checked!(
@@ -1398,6 +1465,23 @@ fn table() -> Vec<Conformance> {
                 "credentials": { "invitation": "{}", "membership": "{}", "authority": "{}" },
             }] })
         ),
+        // 0.3: the same offers, and on the first page the renewals of the
+        // admissions the member holds (`groups::bindings`).
+        checked!(
+            s::rooms::offers::list::v0_3::Payload,
+            s::rooms::offers::list::v0_3::Response,
+            json!({}),
+            json!({
+                "items": [],
+                "renewals": [{
+                    "roomId": "did:key:z6MkRoom", "host": "did:example:community",
+                    "label": "Board pack", "visibility": "attributed", "actions": ["read"],
+                    "validUntil": "2027-11-10T00:00:00Z", "renews": "2026-11-10T00:00:00Z",
+                    "issuedAt": "2026-10-20T09:00:00Z",
+                    "credentials": { "membership": "{}", "authority": "{}" },
+                }],
+            })
+        ),
         checked!(
             s::rooms::memberships::list::v0_1::Payload,
             s::rooms::memberships::list::v0_1::Response,
@@ -1635,6 +1719,12 @@ fn table() -> Vec<Conformance> {
             json!({ "profile": community_profile(), "fieldsChanged": ["name", "logoUrl"] })
         ),
         // ─── config ──────────────────────────────────────────────────
+        checked!(
+            s::config::did_hosting::list::v0_1::Payload,
+            s::config::did_hosting::list::v0_1::Response,
+            json!({}),
+            json!({ "servers": [{ "id": "hosting-eu", "did": "did:webvh:QmHost:hosting.example.com", "label": "EU hosting" }] })
+        ),
         checked!(
             s::config::export::v0_1::Payload,
             s::config::export::v0_1::Response,
@@ -2780,6 +2870,188 @@ fn table() -> Vec<Conformance> {
             s::directory::disclosure::v0_1::Response,
             json!({}),
             json!({ "communityDid": COMMUNITY_DID, "disclosure": base_disclosure() })
+        ),
+        checked!(
+            s::directory::card::present::v0_1::Payload,
+            s::directory::card::present::v0_1::Response,
+            json!({
+                "fields": ["org.example.registration"],
+                "presentation": "eyJhbGciOiJFZERTQSJ9.e30.c2ln~WyJzYWx0IiwicmVnIiwiUkVHLTEiXQ~eyJhbGciOiJFZERTQSIsInR5cCI6ImtiK2p3dCJ9.e30.c2ln",
+            }),
+            json!({
+                "verified": {
+                    "org.example.registration": {
+                        "value": "REG-48213",
+                        "issuer": "did:example:registry",
+                        "credentialType": "ProfessionalRegistration",
+                        "verifiedAt": "2026-10-19T09:00:01Z",
+                        "validUntil": "2027-06-30T00:00:00Z",
+                    }
+                },
+                "revision": 6,
+            })
+        ),
+        checked!(
+            s::groups::create::v0_1::Payload,
+            s::groups::create::v0_1::Response,
+            json!({
+                "name": "Identity WG",
+                "kind": "static",
+                "joinPolicy": "request",
+                "visibility": "members",
+                "showMembers": "groupMembers",
+                "reason": "the working group starts",
+            }),
+            json!({ "group": group_wire() })
+        ),
+        checked!(
+            s::groups::update::v0_1::Payload,
+            s::groups::update::v0_1::Response,
+            json!({ "groupId": "grp_W5k2N8xRb3Qz7TpLAAAAAA", "showMembers": "admins" }),
+            json!({ "group": group_wire() })
+        ),
+        checked!(
+            s::groups::delete::v0_1::Payload,
+            s::groups::delete::v0_1::Response,
+            json!({ "groupId": "grp_W5k2N8xRb3Qz7TpLAAAAAA", "reason": "wound up" }),
+            json!({
+                "groupId": "grp_W5k2N8xRb3Qz7TpLAAAAAA",
+                "state": "deleted",
+                "membersRemoved": 0,
+                "bindingsRemoved": 0,
+            })
+        ),
+        checked!(
+            s::groups::list::v0_1::Payload,
+            s::groups::list::v0_1::Response,
+            json!({ "joinable": true, "limit": 50 }),
+            json!({ "items": [{ "group": group_wire(), "myMembership": "none" }] })
+        ),
+        checked!(
+            s::groups::show::v0_1::Payload,
+            s::groups::show::v0_1::Response,
+            json!({ "groupId": "grp_W5k2N8xRb3Qz7TpLAAAAAA" }),
+            json!({ "group": group_wire(), "myMembership": "member" })
+        ),
+        checked!(
+            s::groups::members::add::v0_1::Payload,
+            s::groups::members::add::v0_1::Response,
+            json!({ "groupId": "grp_W5k2N8xRb3Qz7TpLAAAAAA", "entryId": DIRECTORY_ENTRY }),
+            json!({ "member": { "entryId": DIRECTORY_ENTRY, "source": "added", "since": "2026-10-19T09:00:00Z", "state": "active", "credentialId": "urn:uuid:5a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d", "credentialValidUntil": "2026-11-18T09:00:00Z" }, "credentialId": "urn:uuid:5a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d" })
+        ),
+        checked!(
+            s::groups::members::remove::v0_1::Payload,
+            s::groups::members::remove::v0_1::Response,
+            json!({ "groupId": "grp_W5k2N8xRb3Qz7TpLAAAAAA", "entryId": DIRECTORY_ENTRY }),
+            json!({ "groupId": "grp_W5k2N8xRb3Qz7TpLAAAAAA", "entryId": DIRECTORY_ENTRY, "state": "removed", "credentialValidUntil": "2026-11-18T09:00:00Z" })
+        ),
+        checked!(
+            s::groups::members::list::v0_1::Payload,
+            s::groups::members::list::v0_1::Response,
+            json!({ "groupId": "grp_W5k2N8xRb3Qz7TpLAAAAAA", "limit": 50 }),
+            json!({ "items": [{ "entryId": DIRECTORY_ENTRY, "source": "added", "since": "2026-10-19T09:00:00Z", "state": "active", "credentialId": "urn:uuid:5a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d", "credentialValidUntil": "2026-11-18T09:00:00Z" }] })
+        ),
+        checked!(
+            s::groups::join::v0_1::Payload,
+            s::groups::join::v0_1::Response,
+            json!({ "groupId": "grp_W5k2N8xRb3Qz7TpLAAAAAA", "message": "I work on identity." }),
+            json!({ "groupId": "grp_W5k2N8xRb3Qz7TpLAAAAAA", "outcome": "requested", "request": { "requestId": "greq_W5k2N8xRb3Qz7TpLAAAAAA", "groupId": "grp_W5k2N8xRb3Qz7TpLAAAAAA", "entryId": DIRECTORY_ENTRY, "message": "I work on identity.", "createdAt": "2026-10-19T09:00:00Z", "state": "pending" }, "credentialId": null })
+        ),
+        checked!(
+            s::groups::leave::v0_1::Payload,
+            s::groups::leave::v0_1::Response,
+            json!({ "groupId": "grp_W5k2N8xRb3Qz7TpLAAAAAA" }),
+            json!({ "groupId": "grp_W5k2N8xRb3Qz7TpLAAAAAA", "state": "left", "credentialValidUntil": "2026-11-18T09:00:00Z" })
+        ),
+        checked!(
+            s::groups::requests::list::v0_1::Payload,
+            s::groups::requests::list::v0_1::Response,
+            json!({ "groupId": "grp_W5k2N8xRb3Qz7TpLAAAAAA", "state": "pending" }),
+            json!({ "items": [{ "request": { "requestId": "greq_W5k2N8xRb3Qz7TpLAAAAAA", "groupId": "grp_W5k2N8xRb3Qz7TpLAAAAAA", "entryId": DIRECTORY_ENTRY, "message": "I work on identity.", "createdAt": "2026-10-19T09:00:00Z", "state": "pending" } }] })
+        ),
+        checked!(
+            s::groups::requests::decide::v0_1::Payload,
+            s::groups::requests::decide::v0_1::Response,
+            json!({ "requestId": "greq_W5k2N8xRb3Qz7TpLAAAAAA", "decision": "approve" }),
+            json!({ "request": { "requestId": "greq_W5k2N8xRb3Qz7TpLAAAAAA", "groupId": "grp_W5k2N8xRb3Qz7TpLAAAAAA", "entryId": DIRECTORY_ENTRY, "message": "I work on identity.", "createdAt": "2026-10-19T09:00:00Z", "state": "pending" }, "member": { "entryId": DIRECTORY_ENTRY, "source": "added", "since": "2026-10-19T09:00:00Z", "state": "active", "credentialId": "urn:uuid:5a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d", "credentialValidUntil": "2026-11-18T09:00:00Z" }, "credentialId": "urn:uuid:5a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d" })
+        ),
+        checked!(
+            s::groups::managers::add::v0_1::Payload,
+            s::groups::managers::add::v0_1::Response,
+            json!({ "groupId": "grp_W5k2N8xRb3Qz7TpLAAAAAA", "entryId": DIRECTORY_ENTRY, "reason": "she convenes it" }),
+            json!({ "groupId": "grp_W5k2N8xRb3Qz7TpLAAAAAA", "managers": [DIRECTORY_ENTRY] })
+        ),
+        checked!(
+            s::groups::managers::remove::v0_1::Payload,
+            s::groups::managers::remove::v0_1::Response,
+            json!({ "groupId": "grp_W5k2N8xRb3Qz7TpLAAAAAA", "entryId": DIRECTORY_ENTRY }),
+            json!({ "groupId": "grp_W5k2N8xRb3Qz7TpLAAAAAA", "managers": [] })
+        ),
+        // A group's room bindings (`groups::bindings`); the response is the
+        // stored binding's own `wire()`.
+        checked!(
+            s::groups::bindings::add::v0_1::Payload,
+            s::groups::bindings::add::v0_1::Response,
+            json!({
+                "groupId": "grp_W5k2N8xRb3Qz7TpLAAAAAA",
+                "binding": { "kind": "room", "roomId": "did:key:z6MkRoom", "actions": ["read"], "validFor": "P30D" },
+                "reason": "The working group's room.",
+            }),
+            json!({ "binding": sample_binding().wire() })
+        ),
+        checked!(
+            s::groups::bindings::list::v0_1::Payload,
+            s::groups::bindings::list::v0_1::Response,
+            json!({ "groupId": "grp_W5k2N8xRb3Qz7TpLAAAAAA" }),
+            json!({ "items": [sample_binding().wire()] })
+        ),
+        checked!(
+            s::groups::bindings::remove::v0_1::Payload,
+            s::groups::bindings::remove::v0_1::Response,
+            json!({
+                "groupId": "grp_W5k2N8xRb3Qz7TpLAAAAAA",
+                "bindingId": "gb_P2k8W5qYc6Vd1MsKAAAAAA",
+                "reason": "The room moved.",
+            }),
+            json!({ "bindingId": "gb_P2k8W5qYc6Vd1MsKAAAAAA", "state": "removing" })
+        ),
+        checked!(
+            s::directory::notes::append::v0_1::Payload,
+            s::directory::notes::append::v0_1::Response,
+            json!({ "entryId": DIRECTORY_ENTRY, "text": "Spoke at the June meetup.", "followUp": "2026-11-01" }),
+            json!({ "note": admin_note().wire() })
+        ),
+        checked!(
+            s::directory::notes::list::v0_1::Payload,
+            s::directory::notes::list::v0_1::Response,
+            json!({ "entryId": DIRECTORY_ENTRY, "limit": 20 }),
+            json!({ "items": [admin_note().wire()], "nextCursor": null })
+        ),
+        checked!(
+            s::directory::notes::export::v0_1::Payload,
+            s::directory::notes::export::v0_1::Response,
+            json!({ "entryId": DIRECTORY_ENTRY, "reason": "The member asked for the data held about them." }),
+            json!({
+                "entryId": DIRECTORY_ENTRY,
+                "notes": [admin_note().wire_whole()],
+                "exportedAt": "2026-10-19T09:00:00Z",
+            })
+        ),
+        checked!(
+            s::directory::export::v0_1::Payload,
+            s::directory::export::v0_1::Response,
+            json!({ "format": "jscontact", "reason": "Annual archive.", "limit": 200 }),
+            json!({
+                "items": [{
+                    "@type": "Card",
+                    "version": "1.0",
+                    "uid": format!("{}{DIRECTORY_ENTRY}", crate::directory::external::UID_PREFIX),
+                    "name": { "full": "Carol Example" },
+                    "role": "member",
+                }],
+                "nextCursor": null,
+                "exportedAt": "2026-10-19T09:00:00Z",
+            })
         ),
         checked!(
             s::directory::images::upload::v0_1::Payload,

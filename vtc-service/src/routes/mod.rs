@@ -173,6 +173,52 @@ use crate::server::AppState;
         vta_sdk::openapi::DirectoryCardPublish01Response,
         vta_sdk::openapi::DirectoryCardPublic01Payload,
         vta_sdk::openapi::DirectoryCardPublic01Response,
+        vta_sdk::openapi::GroupsCreate01Payload,
+        vta_sdk::openapi::GroupsCreate01Response,
+        vta_sdk::openapi::GroupsUpdate01Payload,
+        vta_sdk::openapi::GroupsUpdate01Response,
+        vta_sdk::openapi::GroupsDelete01Payload,
+        vta_sdk::openapi::GroupsDelete01Response,
+        vta_sdk::openapi::GroupsList01Payload,
+        vta_sdk::openapi::GroupsList01Response,
+        vta_sdk::openapi::GroupsShow01Payload,
+        vta_sdk::openapi::GroupsShow01Response,
+        vta_sdk::openapi::GroupsMembersAdd01Payload,
+        vta_sdk::openapi::GroupsMembersAdd01Response,
+        vta_sdk::openapi::GroupsMembersRemove01Payload,
+        vta_sdk::openapi::GroupsMembersRemove01Response,
+        vta_sdk::openapi::GroupsMembersList01Payload,
+        vta_sdk::openapi::GroupsMembersList01Response,
+        vta_sdk::openapi::GroupsJoin01Payload,
+        vta_sdk::openapi::GroupsJoin01Response,
+        vta_sdk::openapi::GroupsLeave01Payload,
+        vta_sdk::openapi::GroupsLeave01Response,
+        vta_sdk::openapi::GroupsRequestsList01Payload,
+        vta_sdk::openapi::GroupsRequestsList01Response,
+        vta_sdk::openapi::GroupsRequestsDecide01Payload,
+        vta_sdk::openapi::GroupsRequestsDecide01Response,
+        vta_sdk::openapi::GroupsManagersAdd01Payload,
+        vta_sdk::openapi::GroupsManagersAdd01Response,
+        vta_sdk::openapi::GroupsManagersRemove01Payload,
+        vta_sdk::openapi::GroupsManagersRemove01Response,
+        vta_sdk::openapi::ConfigDidHostingList01Payload,
+        vta_sdk::openapi::ConfigDidHostingList01Response,
+        vta_sdk::openapi::GroupsBindingsAdd01Payload,
+        vta_sdk::openapi::GroupsBindingsAdd01Response,
+        vta_sdk::openapi::GroupsBindingsRemove01Payload,
+        vta_sdk::openapi::GroupsBindingsRemove01Response,
+        vta_sdk::openapi::GroupsBindingsList01Payload,
+        vta_sdk::openapi::GroupsBindingsList01Response,
+        vta_sdk::openapi::DirectoryCardPresent01Payload,
+        vta_sdk::openapi::DirectoryCardPresent01Response,
+        vta_sdk::openapi::DirectoryNotesAppend01Payload,
+        vta_sdk::openapi::DirectoryNotesAppend01Response,
+        vta_sdk::openapi::DirectoryNotesList01Payload,
+        vta_sdk::openapi::DirectoryNotesList01Response,
+        vta_sdk::openapi::DirectoryNotesExport01Payload,
+        vta_sdk::openapi::DirectoryNotesExport01Response,
+        vta_sdk::openapi::DirectoryExport01Payload,
+        vta_sdk::openapi::DirectoryExport01Response,
         vta_sdk::openapi::RoomsCommunityMembersList01Payload,
         vta_sdk::openapi::RoomsCommunityMembersList01Response,
         // Where rooms' files are kept (`trust_tasks::storage_tasks`), signed
@@ -785,7 +831,16 @@ fn build_api_chain(
 
     // The member portal's session-gated routes (`MemberAuth`): off the
     // governor, like every other authenticated route — the session is the gate.
+    //
+    // And the sign-in pages' config, which needs no session but is no work to
+    // serve: public settings and the cached DID self-check. Every load of the
+    // member portal's and the console's sign-in page reads it before it makes a
+    // code. Behind the per-IP governor it shared one small bucket with the code
+    // request, the redeem polls and the wallet's own claim, prove and respond
+    // from the same address, so a few sign-ins or reloads in a minute left the
+    // next page load refused and the page fell back to a button.
     let api = api
+        .route("/member/sign-in/config", get(member_portal::sign_in_config))
         .route("/member/me", get(member_portal::me))
         .route("/member/passkeys", get(member_portal::list_passkeys))
         .route(
@@ -957,10 +1012,6 @@ fn build_unauth_routes(trust_xff_cidrs: &[IpNetwork]) -> OpenApiRouter<AppState>
             "/member/wallet/auth/refresh",
             post(member_portal::wallet_refresh),
         )
-        .route(
-            "/member/sign-in/config",
-            get(member_portal::sign_in_config),
-        )
         .route("/member/session", post(member_portal::session))
         .route("/member/auth/refresh", post(member_portal::cookie_refresh))
         .route("/member/sign-out", post(member_portal::sign_out))
@@ -1126,6 +1177,10 @@ fn assemble(routing: &RoutingConfig, api: Router<AppState>) -> Router<AppState> 
             "/room-dids/{id}/did.jsonl",
             get(crate::rooms::community::serve_room_did_log),
         )
+        .route(
+            "/group-dids/{id}/did.jsonl",
+            get(crate::groups::identity::serve_group_did_log),
+        )
         // API surface — existing TrustTaskRouter result nested at
         // the configured mount.
         .nest(&routing.api.mount, api);
@@ -1237,6 +1292,10 @@ pub fn assemble_with_website(
         .route(
             "/room-dids/{id}/did.jsonl",
             get(crate::rooms::community::serve_room_did_log),
+        )
+        .route(
+            "/group-dids/{id}/did.jsonl",
+            get(crate::groups::identity::serve_group_did_log),
         )
         .nest(&routing.api.mount, api);
     app = app.nest(&routing.admin_ui.mount, admin);

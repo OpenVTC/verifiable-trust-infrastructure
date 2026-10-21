@@ -76,6 +76,10 @@ pub const ROOM_PRESENTER_LIMITER: &str = "room-presenter";
 /// One presenter's file chunks in one room (`[rooms.rate_limits] transfer_*`).
 pub const ROOM_TRANSFER_LIMITER: &str = "room-transfer";
 
+/// The per-address ceiling on `auth/oob/*` sign-in documents, charged before
+/// anything in them is verified.
+pub const SIGN_IN_ADDRESS_LIMITER: &str = "sign-in-address";
+
 /// The JSON body of a rate-limit refusal.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, utoipa::ToSchema)]
 #[serde(rename_all = "camelCase")]

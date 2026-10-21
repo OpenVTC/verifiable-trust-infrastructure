@@ -274,6 +274,14 @@ template without explicit scope is **context → global → builtin**:
     same null-pruning slot and shape as `vtc-host`'s messaging transports.
     Omit it and the gateway advertises DIDComm alone, unchanged from before.
   - `vta-admin` — did:key admin DID for provision-integration admin rollover.
+  - `vtc-group` — a community group's own identity (`vtc/groups/create`). A
+    did:webvh with a signing key (`assertionMethod`, `authentication`) and a
+    key-agreement key, and **no service**: nothing delivers messages to a group
+    yet, and group messaging adds one by a DID update. It takes no name,
+    description or label, so resolving the DID says nothing about the group.
+    Requires `WEBVH_SERVER`; optional `WITNESSES`. The community's VTA mints and
+    holds it; the group's DID issues its members' membership credentials under
+    an authorization credential the community issues it.
   - `vtc-host` — Verifiable Trust Community (VTC) service identity. Mints
     the did:webvh under which a `vtc-service` binary operates and advertises
     its REST endpoint plus a placeholder URL for the BitstringStatusList

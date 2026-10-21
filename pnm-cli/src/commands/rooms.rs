@@ -271,6 +271,23 @@ pub(crate) async fn run(
                     )
                     .await
                 }
+                RoomOffersCommands::Renew {
+                    room_id,
+                    vtc,
+                    vtc_did,
+                    member,
+                } => {
+                    rooms::cmd_rooms_offers_renew(
+                        client,
+                        rooms::OfferTarget {
+                            vtc_url: &vtc,
+                            vtc_did: &vtc_did,
+                            member: &member,
+                        },
+                        &room_id,
+                    )
+                    .await
+                }
             };
         }
         // The room's profile: calls to this VTA alone, which reaches the host as the member.

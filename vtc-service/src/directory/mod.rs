@@ -21,6 +21,8 @@ pub mod external;
 pub mod fields;
 pub mod images;
 pub mod model;
+pub mod notes;
+pub mod present;
 pub mod project;
 pub mod read;
 pub mod sweep;
@@ -75,6 +77,13 @@ fn admit(
     }
     q.push_back(now);
     true
+}
+
+/// Tell open consoles the directory changed (the `directory` topic of
+/// `vtc/admin/events/subscribe/0.3`): every write a directory read would show
+/// passes here. A hint, carrying nothing.
+pub(crate) fn changed() {
+    crate::admin_events::notify(crate::admin_events::Topic::Directory);
 }
 
 impl Directory {

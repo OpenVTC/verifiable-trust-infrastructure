@@ -328,6 +328,7 @@ pub async fn commit_publication(
         .insert(cards::card_key(&next.entry_id), &next)?
         .insert(published_key(&next.entry_id), published)?;
     ks.apply_batch(batch).await?;
+    super::changed();
     Ok(Some(next))
 }
 
@@ -393,6 +394,7 @@ pub async fn withdraw(
             .remove(published_key(entry_id))
             .insert(cards::card_key(entry_id), &card)?;
         ks.apply_batch(batch).await?;
+        super::changed();
         (card.did, digest)
     };
     record(

@@ -178,7 +178,10 @@ impl HostMap {
     /// i.e. a path-mode surface in a mixed config, which can't be
     /// isolated).
     fn surface_allowed(&self, path: &str, req_host: &str) -> bool {
-        if INFRA_PATHS.contains(&path) || crate::rooms::community::is_room_did_log_path(path) {
+        if INFRA_PATHS.contains(&path)
+            || crate::rooms::community::is_room_did_log_path(path)
+            || crate::groups::identity::is_group_did_log_path(path)
+        {
             return true;
         }
         match self.target_surface(path, req_host) {

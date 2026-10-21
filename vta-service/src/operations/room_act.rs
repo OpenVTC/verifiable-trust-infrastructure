@@ -141,6 +141,26 @@ pub fn is_community_type(type_uri: &str) -> bool {
     COMMUNITY_TYPES.contains(&bare_type(type_uri))
 }
 
+/// The community types `rooms/keys/act/0.6` completes: 0.5's [`COMMUNITY_TYPES`], and
+/// `vtc/rooms/offers/list/0.3` in the offer types' row and on their terms (0.6 *What
+/// changed from 0.5*). 0.3 also returns the renewals of the admissions a member holds;
+/// its request is the same empty payload.
+pub const COMMUNITY_TYPES_0_6: &[&str] = &[
+    OFFERS_LIST_0_1,
+    OFFERS_LIST_0_2,
+    OFFERS_LIST_0_3,
+    OFFERS_ACCEPT_0_1,
+    MEMBERSHIPS_LIST_0_1,
+];
+
+const OFFERS_LIST_0_3: &str =
+    <trust_tasks_rs::specs::vtc::rooms::offers::list::v0_3::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// Whether `type_uri` is one of [`COMMUNITY_TYPES_0_6`].
+pub fn is_community_type_0_6(type_uri: &str) -> bool {
+    COMMUNITY_TYPES_0_6.contains(&bare_type(type_uri))
+}
+
 /// Whether `type_uri` is `vtc/rooms/offers/accept/0.1` — the one offer type that can carry
 /// key material, and so the one `rooms/keys/act/0.3` recipient item 10 checks.
 pub fn is_offer_accept(type_uri: &str) -> bool {
@@ -389,6 +409,28 @@ mod tests {
         assert!(!is_community_type(
             "https://trusttasks.org/spec/vtc/rooms/community/members/list/0.1"
         ));
+    }
+
+    /// `rooms/keys/act/0.6` widens 0.5's table by exactly `vtc/rooms/offers/list/0.3`, and
+    /// 0.5's closed table still refuses it.
+    #[test]
+    fn rooms_keys_act_0_6_adds_only_offers_list_0_3() {
+        for t in COMMUNITY_TYPES_0_6 {
+            assert!(is_community_type_0_6(t), "{t}");
+            assert_eq!(actable(t), None, "{t} is not in the 0.1/0.2 table");
+            assert!(
+                trust_tasks_rs::schema_index::schema_for(t).is_some(),
+                "{t} has no schema"
+            );
+        }
+        let added: Vec<_> = COMMUNITY_TYPES_0_6
+            .iter()
+            .filter(|t| !COMMUNITY_TYPES.contains(t))
+            .collect();
+        assert_eq!(added, [&OFFERS_LIST_0_3]);
+        assert!(is_community_type_0_6(&format!("{OFFERS_LIST_0_3}#request")));
+        assert!(!is_community_type(OFFERS_LIST_0_3));
+        assert!(!is_offer_type_0_4(OFFERS_LIST_0_3));
     }
 
     /// The deliberate absences: chunk uploads (bytes never pass through the key holder),

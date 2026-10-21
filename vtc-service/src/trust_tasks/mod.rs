@@ -160,6 +160,7 @@ pub(crate) mod community_room_tasks;
 // `query/0.1` lookup stays in `community_tasks`, answered through the same
 // projection). Its records are `crate::directory`'s.
 pub(crate) mod directory_tasks;
+pub(crate) mod group_tasks;
 pub(crate) mod role_tasks;
 pub(crate) mod room_admin_tasks;
 // The administrators' view of the OpenID4VP verifier identities (#1988).
@@ -218,7 +219,8 @@ use trust_tasks_rs::specs::vtc::community::profile::update::v0_1 as community_pr
 use trust_tasks_rs::specs::vtc::join_requests::decide::v0_1 as join_decide;
 // Batch 3: the portable-configuration pair.
 use trust_tasks_rs::specs::vtc::config::{
-    export::v0_1 as config_export, import::v0_1 as config_import,
+    did_hosting::list::v0_1 as did_hosting_list, export::v0_1 as config_export,
+    import::v0_1 as config_import,
 };
 // Batch 4: the endorsement-type registry's two writes.
 use trust_tasks_rs::specs::vtc::endorsement_types::{
@@ -1364,6 +1366,13 @@ fn dispatch_typed<'a>(
                 None => unreachable!("directory_tasks::URIS names {uri}, which it does not route"),
             }
         }),
+        uri if group_tasks::URIS.contains(&uri) => Box::pin(async move {
+            match Box::pin(group_tasks::dispatch(state, ctx, doc, uri)).await {
+                Some(outcome) => outcome,
+                // `URIS` is exactly what `dispatch` routes.
+                None => unreachable!("group_tasks::URIS names {uri}, which it does not route"),
+            }
+        }),
         uri if community_room_tasks::URIS.contains(&uri) => Box::pin(async move {
             match Box::pin(community_room_tasks::dispatch(state, ctx, doc, uri)).await {
                 Some(outcome) => outcome,
@@ -1478,6 +1487,9 @@ fn dispatch_typed<'a>(
             Box::pin(async move { handle_community_profile_update(state, ctx, doc).await })
         }
         CONFIG_EXPORT_TYPE => Box::pin(async move { handle_config_export(state, ctx, doc).await }),
+        DID_HOSTING_LIST_TYPE => {
+            Box::pin(async move { handle_did_hosting_list(state, ctx, doc).await })
+        }
         CONFIG_IMPORT_TYPE => Box::pin(async move { handle_config_import(state, ctx, doc).await }),
         ENDORSEMENT_TYPE_REGISTER_TYPE => {
             Box::pin(async move { handle_endorsement_type_register(state, ctx, doc).await })
@@ -1530,7 +1542,9 @@ fn dispatch_typed<'a>(
         | crate::acl::admin_consent::DECISION_V0_2_TYPE => {
             Box::pin(async move { action_tasks::handle_decision(state, ctx, doc).await })
         }
-        event_tasks::SUBSCRIBE_TYPE | event_tasks::SUBSCRIBE_V0_2_TYPE => {
+        event_tasks::SUBSCRIBE_TYPE
+        | event_tasks::SUBSCRIBE_V0_2_TYPE
+        | event_tasks::SUBSCRIBE_V0_3_TYPE => {
             Box::pin(async move { event_tasks::handle_subscribe(state, ctx, doc).await })
         }
         uri if action_tasks::URIS.contains(&uri) => Box::pin(async move {
@@ -2240,6 +2254,26 @@ mod spine_proof_tests {
         (
             directory_tasks::ENTRIES_SHOW_TYPE,
             "reads one entry projected for the signer; the handler authorizes from the signer's own standing, so an unsigned caller is refused regardless",
+        ),
+        (
+            group_tasks::LIST_TYPE,
+            "reads the groups the signer may see; the handler authorizes from the signer's own standing, so an unsigned caller is refused regardless",
+        ),
+        (
+            group_tasks::SHOW_TYPE,
+            "reads one group the signer may see; the handler authorizes from the signer's own standing, so an unsigned caller is refused regardless",
+        ),
+        (
+            group_tasks::MEMBERS_LIST_TYPE,
+            "reads a group's members as the signer may see them; the handler authorizes from the signer's own standing, so an unsigned caller is refused regardless",
+        ),
+        (
+            group_tasks::REQUESTS_LIST_TYPE,
+            "reads the join requests to groups the signer manages; the handler authorizes from the signer's own entry, so an unsigned caller is refused regardless",
+        ),
+        (
+            group_tasks::BINDINGS_LIST_TYPE,
+            "reads the bindings of a group the signer manages; the handler authorizes from the signer's own entry, so an unsigned caller is refused regardless",
         ),
         (
             community_tasks::ENDORSEMENT_TYPES_LIST_TYPE,
@@ -3006,6 +3040,9 @@ pub(crate) const DISPATCHED_URIS: &[&str] = &[
     COMMUNITY_PROFILE_UPDATE_TYPE,
     // Batch 3: the portable-configuration pair, on the same terms.
     CONFIG_EXPORT_TYPE,
+    // Where the community's identities may be published: the hosting servers its
+    // VTA reports (`did_hosting`).
+    DID_HOSTING_LIST_TYPE,
     CONFIG_IMPORT_TYPE,
     // Batch 4: the endorsement-type writes, which have no REST route. `list`
     // declares no proof and stays on its bearer route.
@@ -3063,10 +3100,12 @@ pub(crate) const DISPATCHED_URIS: &[&str] = &[
     action_tasks::ACKNOWLEDGE_V0_2_TYPE,
     // The console's live channel (hints only): its success opens an event
     // stream, which only the HTTPS door can carry — every other transport is
-    // answered `streamUnavailable`. 0.2 adds the `rooms` topic; 0.1 is still
-    // answered, at its own version.
+    // answered `streamUnavailable`. 0.2 adds the `rooms` topic and 0.3 the
+    // `directory` and `groups` topics; each older version is still answered,
+    // at its own version.
     event_tasks::SUBSCRIBE_TYPE,
     event_tasks::SUBSCRIBE_V0_2_TYPE,
+    event_tasks::SUBSCRIBE_V0_3_TYPE,
     // Members' step-up passkeys: the invite, its redemption, an
     // administrator's revocation for the member, and an administrator's
     // listing of them. No REST route serves them.
@@ -3125,6 +3164,8 @@ pub(crate) const DISPATCHED_URIS: &[&str] = &[
     community_room_tasks::MEMBERS_LIST_TYPE,
     community_room_tasks::OFFERS_LIST_TYPE,
     community_room_tasks::OFFERS_LIST_V0_2_TYPE,
+    // 0.3: also the renewals of the admissions the member holds.
+    community_room_tasks::OFFERS_LIST_V0_3_TYPE,
     community_room_tasks::OFFERS_ACCEPT_TYPE,
     community_room_tasks::MEMBERSHIPS_LIST_TYPE,
     // The OpenID4VP verifier identities, as a holder of `vtc.config.admin`
@@ -3241,6 +3282,32 @@ pub(crate) const DISPATCHED_URIS: &[&str] = &[
     directory_tasks::IMAGES_GET_TYPE,
     directory_tasks::CARD_PUBLISH_TYPE,
     directory_tasks::CARD_PUBLIC_TYPE,
+    // Administrators' notes about members, and the directory's export.
+    directory_tasks::NOTES_APPEND_TYPE,
+    directory_tasks::NOTES_LIST_TYPE,
+    directory_tasks::NOTES_EXPORT_TYPE,
+    directory_tasks::EXPORT_TYPE,
+    // The community's groups.
+    group_tasks::CREATE_TYPE,
+    group_tasks::UPDATE_TYPE,
+    group_tasks::DELETE_TYPE,
+    group_tasks::LIST_TYPE,
+    group_tasks::SHOW_TYPE,
+    group_tasks::MEMBERS_ADD_TYPE,
+    group_tasks::MEMBERS_REMOVE_TYPE,
+    group_tasks::MEMBERS_LIST_TYPE,
+    group_tasks::JOIN_TYPE,
+    group_tasks::LEAVE_TYPE,
+    group_tasks::REQUESTS_LIST_TYPE,
+    group_tasks::REQUESTS_DECIDE_TYPE,
+    group_tasks::MANAGERS_ADD_TYPE,
+    group_tasks::MANAGERS_REMOVE_TYPE,
+    // A group's room bindings: what its members are offered, and renewed.
+    group_tasks::BINDINGS_ADD_TYPE,
+    group_tasks::BINDINGS_REMOVE_TYPE,
+    group_tasks::BINDINGS_LIST_TYPE,
+    // Credential-sourced fields, filled from a presentation.
+    directory_tasks::CARD_PRESENT_TYPE,
     community_tasks::ENDORSEMENT_TYPES_LIST_TYPE,
     community_tasks::RECOGNITION_CHECK_TYPE,
     community_tasks::MEMBERS_LIST_TYPE,
@@ -3382,6 +3449,17 @@ pub(crate) const COMMUNITY_PROFILE_UPDATE_TYPE: &str =
 /// `vtc/config/export/0.1` — the community's portable configuration.
 pub(crate) const CONFIG_EXPORT_TYPE: &str =
     <config_export::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `vtc/config/did-hosting/list/0.1` — the hosting servers the community's VTA
+/// can publish its identities through.
+pub(crate) const DID_HOSTING_LIST_TYPE: &str =
+    <did_hosting_list::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+pub(crate) const DID_HOSTING_ERR_NO_KEY_HOLDER: &str =
+    did_hosting_list::error_codes::NO_KEY_HOLDER.code;
+pub(crate) const DID_HOSTING_ERR_KEY_HOLDER_UNAVAILABLE: &str =
+    did_hosting_list::error_codes::KEY_HOLDER_UNAVAILABLE.code;
+pub(crate) const DID_HOSTING_ERR_KEY_HOLDER_REFUSED: &str =
+    did_hosting_list::error_codes::KEY_HOLDER_REFUSED.code;
 
 /// `vtc/config/import/0.1` — preview or apply a portable configuration.
 pub(crate) const CONFIG_IMPORT_TYPE: &str =
@@ -5212,6 +5290,84 @@ async fn handle_config_export(
         Ok(response) => success_response(&doc, response),
         Err(e) => app_error_to_reject(&doc, &e),
     }
+}
+
+/// `vtc/config/did-hosting/list/0.1` — the `did:webvh` hosting servers the
+/// community's VTA reports (`vta/webvh/servers/list`), asked as the community
+/// over the link it keeps, for choosing `dids.webvh_server`
+/// ([`crate::did_hosting`]). `vtc.config.admin`. Each server's id, DID and
+/// label only, and one whose id the configuration could not name is left out
+/// (item 2).
+async fn handle_did_hosting_list(
+    state: &AppState,
+    ctx: &JoinAuthCtx,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    if let Err(reject) =
+        capable_signer(state, ctx, &doc, crate::acl::Capability::ConfigAdmin, None).await
+    {
+        return reject;
+    }
+    if let Err(reject) = parse_spec_payload::<did_hosting_list::Payload>(&doc) {
+        return reject;
+    }
+    let Some(holder) = state.community_rooms.key_holder() else {
+        return reject_with_code(
+            &doc,
+            extended_code(DID_HOSTING_ERR_NO_KEY_HOLDER),
+            "this community has no link to a VTA: its identities can only be served here",
+            None,
+        );
+    };
+    let answer = holder
+        .ask(
+            vta_sdk::trust_tasks::TASK_WEBVH_SERVERS_LIST_1_0,
+            serde_json::json!({}),
+            crate::rooms::community::SIGN_TIMEOUT,
+        )
+        .await;
+    let answer = match answer {
+        Ok(a) => a,
+        Err(crate::rooms::community::HolderError::Unavailable(why)) => {
+            return reject_with_code(
+                &doc,
+                extended_code(DID_HOSTING_ERR_KEY_HOLDER_UNAVAILABLE),
+                format!("the community's VTA did not answer: {why}"),
+                None,
+            );
+        }
+        Err(crate::rooms::community::HolderError::Refused { code, message }) => {
+            return reject_with_code(
+                &doc,
+                extended_code(DID_HOSTING_ERR_KEY_HOLDER_REFUSED),
+                format!("the community's VTA refused: {code} {message}"),
+                Some(crate::rooms::community::HolderError::refused_details(
+                    &code, &message,
+                )),
+            );
+        }
+    };
+    let servers: Vec<Value> = answer
+        .get("servers")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|s| {
+            let id = s.get("id")?.as_str()?;
+            crate::did_hosting::validate(&Value::String(id.to_string())).ok()?;
+            if id == crate::did_hosting::LOCAL {
+                return None;
+            }
+            let mut out = serde_json::json!({ "id": id, "did": s.get("did")?.as_str()? });
+            if let Some(label) = s.get("label").and_then(Value::as_str) {
+                out["label"] = Value::String(label.chars().take(256).collect());
+            }
+            Some(out)
+        })
+        .take(256)
+        .collect();
+    success_response(&doc, serde_json::json!({ "servers": servers }))
 }
 
 /// `vtc/config/import/0.1` — preview (`confirm: false`, the default) or apply

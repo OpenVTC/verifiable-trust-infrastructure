@@ -195,12 +195,49 @@ pub struct MemberRecord {
     /// The room epoch the member was admitted at.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub admitted_epoch: Option<u64>,
+    /// The latest renewal of this admission, kept for the member to collect
+    /// (`vtc/rooms/offers/list/0.3` `renewals`) until the credentials it renews
+    /// expire. Dropped when the member is removed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub renewal: Option<Renewal>,
+    /// What covers this admission: empty for an administrator's direct admission
+    /// (every record before group bindings); otherwise the group room bindings
+    /// (`gb_…`) that do, with [`MemberRecord::DIRECT`] first where an
+    /// administrator admitted the member too. A member leaving a group is
+    /// removed from the room only when no source is left
+    /// (`vtc/groups/bindings/add`, `groups::bindings`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sources: Vec<String>,
+}
+
+/// A renewal of an admission: the room's fresh membership and authority
+/// credentials, granting the same actions until a later expiry. No invitation:
+/// the member is already in the room.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct Renewal {
+    pub membership: String,
+    pub authority: String,
+    /// RFC 3339: when the renewed authority expires.
+    pub valid_until: String,
+    /// RFC 3339: when the authority it replaces expires; listed until then.
+    pub renews: String,
+    /// RFC 3339.
+    pub issued_at: String,
 }
 
 impl MemberRecord {
     pub const OFFERED: &'static str = "offered";
     pub const ADMITTED: &'static str = "admitted";
     pub const REMOVED: &'static str = "removed";
+    /// The source of an administrator's direct admission, where a binding covers
+    /// the member too.
+    pub const DIRECT: &'static str = "direct";
+
+    /// Whether an administrator admitted the member directly.
+    pub fn is_direct(&self) -> bool {
+        self.sources.is_empty() || self.sources.iter().any(|s| s == Self::DIRECT)
+    }
 
     /// The `RoomMember` of `vtc/_shared/0.1/community-room`.
     pub fn wire(&self) -> Value {
@@ -254,6 +291,9 @@ pub enum DepartureCause {
     Expired,
     /// Their ACL entry is suspended (an open cooling-off reduction of their authority).
     Suspended,
+    /// They are no longer in the group whose room binding admitted them, and nothing else
+    /// covers the admission (`vtc/groups/bindings/add`, [`crate::groups::bindings`]).
+    LeftGroup,
 }
 
 impl DepartureCause {
@@ -265,6 +305,7 @@ impl DepartureCause {
             Self::AclRemoved => "Their access-control entry at the community was removed.",
             Self::Expired => "Their access-control entry at the community expired.",
             Self::Suspended => "Their access-control entry at the community was suspended.",
+            Self::LeftGroup => "No longer in the group this room is bound to.",
         }
     }
 }
@@ -637,6 +678,38 @@ impl CommunityRooms {
         Ok(recorded)
     }
 
+    /// Record that `member`'s admission to `room_id` is owed a removal for `cause`,
+    /// unless one already is, and wake the worker that drives it ([`Self::record_departure`]
+    /// for one room).
+    pub async fn record_removal(
+        &self,
+        room_id: &str,
+        member: &str,
+        cause: DepartureCause,
+        now: chrono::DateTime<chrono::Utc>,
+    ) -> Result<bool, AppError> {
+        if self.pending_removal(room_id, member).await?.is_some() {
+            return Ok(false);
+        }
+        let at = now.to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+        let pending = PendingRemoval {
+            room_id: room_id.to_string(),
+            member: member.to_string(),
+            cause,
+            departed_at: at.clone(),
+            attempts: 0,
+            next_attempt_at: at,
+            last_attempt_at: None,
+            last_error: None,
+        };
+        self.ks
+            .insert(departure_key(room_id, member), &pending)
+            .await?;
+        crate::admin_events::notify(crate::admin_events::Topic::Rooms);
+        departure_hint();
+        Ok(true)
+    }
+
     pub async fn pending_removal(
         &self,
         room_id: &str,
@@ -784,6 +857,8 @@ mod tests {
             credentials: None,
             welcome: None,
             admitted_epoch: Some(2),
+            renewal: None,
+            sources: Vec::new(),
         };
         assert!(r.welcome_kept(now));
         r.admitted_at = Some((now - chrono::Duration::days(8)).to_rfc3339());
