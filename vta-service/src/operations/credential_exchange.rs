@@ -686,10 +686,10 @@ async fn present_single(
 /// Present an **ISO mdoc** as an OID4VP `vp_token` entry: base64url-no-pad CBOR
 /// of a `DeviceResponse`, **not** a W3C VP object like every other format here.
 ///
-/// The holder binding is a `DeviceAuth` COSE_Sign1 over the ISO 18013-7 session
+/// The holder binding is a `DeviceAuth` COSE_Sign1 over the OpenID4VP 1.0 session
 /// transcript, which is why this needs an [`Oid4vpSession`] the other formats
-/// have no use for: two of the transcript's four handover members (`client_id`,
-/// `response_uri`) exist only in an OID4VP exchange. A transcript built from
+/// have no use for: three of the handover's four members (`client_id`,
+/// `jwk_thumbprint`, `response_uri`) exist only in an OID4VP exchange. A transcript built from
 /// invented values would produce a signature no verifier can reconstruct — and,
 /// worse, one that *looks* like holder binding.
 #[allow(clippy::too_many_arguments)]
@@ -730,11 +730,20 @@ async fn present_mdoc(
         )));
     }
 
+    let jwk_thumbprint = session
+        .jwk_thumbprint
+        .as_deref()
+        .map(|t| {
+            URL_SAFE_NO_PAD.decode(t).map_err(|_| {
+                AppError::Validation("oid4vp_session.jwk_thumbprint is not base64url".into())
+            })
+        })
+        .transpose()?;
     let transcript = affinidi_mdoc::SessionTranscript::new_oid4vp(
         &session.client_id,
-        &session.response_uri,
         nonce,
-        &session.mdoc_generated_nonce,
+        jwk_thumbprint,
+        &session.response_uri,
     );
 
     let signer = Es256CoseSigner::from_bytes(device_private)
@@ -3098,6 +3107,59 @@ mod tests {
             "the same mdoc must match once a session is available — otherwise the \
              gate is just breaking mdoc support"
         );
+    }
+
+    /// `DeviceAuth` is signed over the OpenID4VP 1.0 handover — client_id, nonce,
+    /// the verifier's encryption-key thumbprint and response_uri — so it verifies
+    /// against exactly that transcript, and not against one without the
+    /// thumbprint (an unencrypted response's) or with another nonce.
+    #[tokio::test]
+    async fn an_mdoc_device_auth_binds_the_openid4vp_1_0_handover() {
+        use affinidi_mdoc::es256_cose::{Es256CoseSigner, Es256CoseVerifier};
+
+        let doc_type = "eu.europa.ec.eudi.pid.1";
+        let stored = stored_mdoc(doc_type);
+        let device_key = [7u8; 32];
+        let thumbprint = [9u8; 32];
+        let session = Oid4vpSession {
+            client_id: "x509_hash:verifier".into(),
+            response_uri: "https://verifier.example/response".into(),
+            jwk_thumbprint: Some(URL_SAFE_NO_PAD.encode(thumbprint)),
+        };
+        let token = present_mdoc(
+            &stored,
+            &[vec![
+                affinidi_mdoc::EIDAS_PID_NAMESPACE.to_string(),
+                "family_name".to_string(),
+            ]],
+            &device_key,
+            &session,
+            "nonce-1",
+        )
+        .await
+        .unwrap();
+        let bytes = URL_SAFE_NO_PAD.decode(token.as_str().unwrap()).unwrap();
+        let response = affinidi_mdoc::DeviceResponse::from_cbor_bytes(&bytes).unwrap();
+        let verifier = Es256CoseVerifier::from_bytes(
+            &Es256CoseSigner::from_bytes(&device_key)
+                .unwrap()
+                .public_key_bytes(),
+        )
+        .unwrap();
+        let transcript = |nonce: &str, jwk: Option<Vec<u8>>| {
+            affinidi_mdoc::SessionTranscript::new_oid4vp(
+                &session.client_id,
+                nonce,
+                jwk,
+                &session.response_uri,
+            )
+        };
+        let verifies = |t: affinidi_mdoc::SessionTranscript| {
+            response.verify_device_auth(&t, &verifier).unwrap_or(false)
+        };
+        assert!(verifies(transcript("nonce-1", Some(thumbprint.to_vec()))));
+        assert!(!verifies(transcript("nonce-1", None)));
+        assert!(!verifies(transcript("nonce-2", Some(thumbprint.to_vec()))));
     }
 
     /// DCQL addresses an mdoc claim as [namespace, elementIdentifier], not as a

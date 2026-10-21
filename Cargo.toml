@@ -122,7 +122,10 @@ uniffi = "0.32"
 # 0.36 (affinidi-tdk-rs #944).
 # 0.27 moves in lockstep with `trust-tasks-rs` 0.32 and `affinidi-messaging-sdk`
 # 0.37 (affinidi-tdk-rs #956).
-affinidi-tdk = "0.27"
+# 0.28 moves in lockstep with `trust-tasks-rs` 0.33 and `affinidi-messaging-sdk`
+# 0.38 (affinidi-tdk-rs #963); 0.29 re-exports `affinidi-mdoc` 0.4 (#961), so the
+# two move together (the coupling note on `coset` below).
+affinidi-tdk = "0.29"
 # Raw crypto primitives (ed25519↔x25519 conversion, did:key helpers). Pulled
 # directly so sealed-transfer can use `affinidi_crypto::did_key::*` without
 # going through the higher-level Secret wrapper in secrets-resolver.
@@ -171,7 +174,7 @@ affinidi-openid4vp = "0.1.4"
 # The JOSE core under openid4vp: ECDH-ES response decryption (`jwe`) for the
 # VTC's OpenID4VP verifier (#1988).
 affinidi-oid4vc-core = { version = "0.1.10", default-features = false }
-affinidi-mdoc = { version = "0.3", default-features = false, features = ["es256"] }
+affinidi-mdoc = { version = "0.4", default-features = false, features = ["es256"] }
 # Both already enter the graph through `affinidi-mdoc`; declared here because
 # the mdoc receive path names their types directly (`coset` for the COSE_Sign1
 # `alg` header, `time` for the `validityInfo` window) and depending on a
@@ -267,7 +270,7 @@ affinidi-messaging-core = "0.1"
 # `MediatorAcl` stays one type. It carries 0.34.1's fix.
 # 0.37.0 is the `trust-tasks-rs` 0.32 release (affinidi-tdk-rs #956), and carries
 # 0.36.3's token-refresh reconnect fix (#955).
-affinidi-messaging-sdk = { version = "0.37", default-features = false }
+affinidi-messaging-sdk = { version = "0.38", default-features = false }
 # Async `Stream` combinators (`StreamExt`, `BoxStream`) for draining the
 # delivery layer's `subscribe()` inbound. Matches the `= "0.3"` pin the
 # services already use directly.
@@ -697,12 +700,12 @@ aws-smithy-types = ">=1.6.1, <1.9"
 # `kindNotServed` (trust-tasks-tf #843).
 # 0.32.8: vtc/config/did-hosting/list/0.1 (trust-tasks-tf #849) — the VTA's
 # hosting servers the console offers for `dids.webvh_server`.
-trust-tasks-rs = { version = "0.32.10", default-features = false, features = [
+trust-tasks-rs = { version = "0.33.1", default-features = false, features = [
   "validate",
   "all-specs",
 ] }
-trust-tasks-capability-client = "0.32"
-trust-tasks-https = { version = "0.32", default-features = false, features = ["server", "client", "jwt"] }
+trust-tasks-capability-client = "0.33"
+trust-tasks-https = { version = "0.33", default-features = false, features = ["server", "client", "jwt"] }
 # The DIDComm binding. Carries `ENVELOPE_TYPE` — the one `type` every
 # Trust-Task DIDComm message must use, with the `TrustTask<P>` as its body —
 # and the `pack_trust_task`/`unpack_trust_task` pair that enforce it.
@@ -713,7 +716,7 @@ trust-tasks-https = { version = "0.32", default-features = false, features = ["s
 # A conformant peer rejects that, silently, because "not an envelope" is
 # indistinguishable from "not addressed to me". One constant, from the crate
 # that defines it.
-trust-tasks-didcomm = { version = "0.32", default-features = false }
+trust-tasks-didcomm = { version = "0.33", default-features = false }
 # The TSP binding. Carries `ENVELOPE_TYPE` — the payload wrapper every
 # Trust-Task TSP frame must use: `{"type": …, "document": …}`.
 #
@@ -732,8 +735,8 @@ trust-tasks-didcomm = { version = "0.32", default-features = false }
 # keys in that shape; it signs through `operations::keys::sign_payload`, where
 # the context gates live. Using the crate's sealing API needs a signer seam
 # upstream, of the shape `affinidi_data_integrity::Signer` already provides.
-trust-tasks-tsp = { version = "0.32", default-features = false }
-trust-tasks-proof = { version = "0.32", default-features = false, features = ["affinidi"] }
+trust-tasks-tsp = { version = "0.33", default-features = false }
+trust-tasks-proof = { version = "0.33", default-features = false, features = ["affinidi"] }
 
 # Axum extras (typed headers for Bearer auth)
 axum-extra = { version = "0.12", features = ["typed-header"] }

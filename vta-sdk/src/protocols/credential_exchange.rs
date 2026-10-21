@@ -102,9 +102,10 @@ pub struct QueryBody {
     /// OID4VP session context, required only to present an **ISO mdoc**.
     ///
     /// An mdoc's holder binding is a `DeviceAuth` signature over a
-    /// `SessionTranscript`, and ISO 18013-7 defines that transcript's handover
-    /// as `[clientId, responseUri, nonce, mdocGeneratedNonce]`. Two of those
-    /// four have no meaning in a Trust-Task exchange, so a verifier that wants
+    /// `SessionTranscript`, and OpenID4VP 1.0 (Appendix B.2.6.1) defines that
+    /// transcript's handover over `[client_id, nonce, jwk_thumbprint,
+    /// response_uri]`. Those beyond the nonce have no meaning in a Trust-Task
+    /// exchange, so a verifier that wants
     /// an mdoc has to supply them — they are the OID4VP session it is really
     /// running, which this envelope otherwise knows nothing about.
     ///
@@ -116,7 +117,8 @@ pub struct QueryBody {
     pub oid4vp_session: Option<Oid4vpSession>,
 }
 
-/// The OID4VP session an mdoc presentation is bound to (ISO 18013-7 §B.4.4).
+/// The OID4VP session an mdoc presentation is bound to (OpenID4VP 1.0,
+/// Appendix B.2.6.1 — the `OpenID4VPHandover`).
 ///
 /// Field names are OID4VP's own, like the rest of this envelope — deliberately
 /// not this workspace's camelCase convention, because a verifier copying values
@@ -127,10 +129,15 @@ pub struct Oid4vpSession {
     pub client_id: String,
     /// The verifier's OID4VP `response_uri`.
     pub response_uri: String,
-    /// The verifier-generated nonce ISO 18013-7 adds to the handover, distinct
-    /// from [`QueryBody::nonce`]: both appear in the transcript, and collapsing
-    /// them would silently weaken the binding.
-    pub mdoc_generated_nonce: String,
+    /// The JWK SHA-256 thumbprint (RFC 7638), base64url without padding, of the
+    /// key the verifier encrypts its response to (`direct_post.jwt`). Absent when
+    /// the response is not encrypted, which the handover encodes as CBOR `null`.
+    ///
+    /// This replaced ISO 18013-7's `mdoc_generated_nonce` when OpenID4VP 1.0
+    /// Final redefined the handover: a transcript over the old four members
+    /// verifies at no 1.0 verifier.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub jwk_thumbprint: Option<String>,
 }
 
 /// `present/0.1` — holder → verifier. The OID4VP `vp_token` carrying the
