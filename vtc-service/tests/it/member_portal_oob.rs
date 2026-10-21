@@ -2165,6 +2165,51 @@ async fn a_scoped_grant_lets_the_portal_key_sign_directory_documents_as_the_memb
     assert_eq!(code(&profile), "permissionDenied", "{}", profile.body);
 }
 
+/// A member browsing the portal's directory signs every read with `K_b`. Those
+/// are charged to the member's own signer bucket (a burst of 60), not the
+/// address's anonymous burst of 10 — which refused a member within a few clicks.
+#[tokio::test]
+async fn a_portal_key_browsing_the_directory_is_charged_to_its_member_not_the_anonymous_burst() {
+    let f = fixture().await;
+    let (b, _member, _rs, done) = sign_in_v0_2(&f, None).await;
+    assert_eq!(done.status, StatusCode::OK, "{}", done.body);
+
+    for i in 0..30 {
+        let shown = as_portal(&f, &b, &format!("{DIRECTORY}/card/show/0.1"), json!({})).await;
+        assert_ne!(
+            shown.status,
+            StatusCode::TOO_MANY_REQUESTS,
+            "read {i} was rate limited within the member's own burst: {}",
+            shown.body
+        );
+    }
+}
+
+/// Outside what the member delegated, the same key is a stranger: it pays the
+/// anonymous governor and is refused at its burst.
+#[tokio::test]
+async fn a_portal_key_outside_its_scope_still_pays_the_anonymous_burst() {
+    let f = fixture().await;
+    let (b, _member, _rs, done) = sign_in_v0_2(&f, None).await;
+    assert_eq!(done.status, StatusCode::OK, "{}", done.body);
+
+    let mut refused = false;
+    for _ in 0..30 {
+        let r = as_portal(
+            &f,
+            &b,
+            "https://trusttasks.org/spec/vtc/community/profile/show/0.1",
+            json!({}),
+        )
+        .await;
+        if r.status == StatusCode::TOO_MANY_REQUESTS {
+            refused = true;
+            break;
+        }
+    }
+    assert!(refused, "a key nobody delegated this to was never limited");
+}
+
 /// A delegated portal key stands in for its member at the size gate: a
 /// picture the portal uploads (`vtc/directory/images/upload`, declared up to
 /// 360 KiB) is measured against that task's limit, not the 64 KiB a stranger

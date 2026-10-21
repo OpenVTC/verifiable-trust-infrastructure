@@ -10,7 +10,7 @@
 //! | the document | charged, and when |
 //! |---|---|
 //! | unsigned, or signed by a DID the community holds no entry for | the per-address governor ([`UNAUTH_LIMITER`]), **before** anything is verified |
-//! | signed by a DID that holds a live ACL entry (or a console key delegated by one) | the signer's own bucket ([`SIGNER_LIMITER`]), **after** its proof verifies |
+//! | signed by a DID that holds a live ACL entry (or a console key delegated by one, or a member-portal sign-in key whose live delegation covers the type) | the signer's own bucket ([`SIGNER_LIMITER`]), **after** its proof verifies |
 //! | claiming such a signer but not verifying as it | the per-address governor as well, as soon as the claim fails |
 //!
 //! # Why a fresh DID buys nothing
@@ -508,11 +508,14 @@ impl Admission {
                 sign_in: true,
             });
         }
+        let type_uri = claim.type_uri.clone();
         let claimed = match claim.signer() {
-            Some(did) => known_principal(state, &did).await.map(|principal| Claimed {
-                signer: did,
-                principal,
-            }),
+            Some(did) => known_principal(state, &did, type_uri.as_deref())
+                .await
+                .map(|principal| Claimed {
+                    signer: did,
+                    principal,
+                }),
             None => None,
         };
         let admission = Self {
@@ -682,11 +685,19 @@ fn read_claim(body: &[u8]) -> Claim {
 }
 
 /// The principal `did`'s documents are charged to, when the community knows
-/// it: itself for a live ACL entry, or the administrator a live console-key
-/// delegation acts for, when that administrator's entry is live. Resolved as
-/// [`crate::trust_tasks`]'s `admin_signer` resolves a signer: its own row
-/// first. Any store error answers `None`, which is the strict budget.
-async fn known_principal(state: &AppState, did: &str) -> Option<String> {
+/// it: itself for a live ACL entry; the administrator a live console-key
+/// delegation acts for, when that administrator's entry is live; or the member
+/// a live member-portal sign-in key signs `type_uri` for
+/// ([`crate::member_portal::delegation`]), when that member's entry is live.
+/// Resolved as [`crate::trust_tasks`]'s `admin_signer` resolves a signer: its
+/// own row first. Any store error answers `None`, which is the strict budget.
+///
+/// The portal key is the case that matters for members: every directory and
+/// groups page signs with it, so held to the anonymous governor a member was
+/// refused within a few clicks. It is charged to its member's bucket only for
+/// a type its delegation covers, while the session that armed it lives — as
+/// the spine reads it — so a key outside that is still a stranger.
+async fn known_principal(state: &AppState, did: &str, type_uri: Option<&str>) -> Option<String> {
     let now = crate::auth::session::now_epoch();
     let live = |entry: Option<crate::acl::VtcAclEntry>| entry.is_some_and(|e| !e.is_expired(now));
     match crate::acl::get_acl_entry(&state.acl_ks, did).await {
@@ -694,13 +705,24 @@ async fn known_principal(state: &AppState, did: &str) -> Option<String> {
         Ok(None) => {}
         Err(_) => return None,
     }
-    let delegation = crate::acl::console_key::resolve_delegated_admin(&state.console_keys_ks, did)
-        .await
-        .ok()??;
-    let admin = crate::acl::get_acl_entry(&state.acl_ks, &delegation.admin_did)
+    if let Some(delegation) =
+        crate::acl::console_key::resolve_delegated_admin(&state.console_keys_ks, did)
+            .await
+            .ok()?
+    {
+        let admin = crate::acl::get_acl_entry(&state.acl_ks, &delegation.admin_did)
+            .await
+            .ok()?;
+        return live(admin).then_some(delegation.admin_did);
+    }
+    let member =
+        crate::member_portal::delegation::member_for(&state.member_sessions_ks, did, type_uri?)
+            .await
+            .ok()??;
+    let entry = crate::acl::get_acl_entry(&state.acl_ks, &member)
         .await
         .ok()?;
-    live(admin).then_some(delegation.admin_did)
+    live(entry).then_some(member)
 }
 
 #[cfg(test)]
