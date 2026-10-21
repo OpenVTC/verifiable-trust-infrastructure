@@ -1,0 +1,42 @@
+name: Prune superseded caches
+
+# Deletes main's build caches once a newer generation has replaced them, so the
+# repository's 25 GB cache allowance holds one generation rather than evicting
+# current caches to make room for the next. See
+# scripts/prune-superseded-caches.py for the measurements and what is deleted.
+#
+# After CI, not inside it: the caches are saved by each job's post step, so the
+# new generation exists only once the run has finished. A run that failed has
+# still saved what it built, so this runs whatever the conclusion.
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cache-prune
+  cancel-in-progress: false
+
+jobs:
+  prune:
+    name: Delete superseded main caches
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.event == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Delete caches a newer generation has superseded
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/prune-superseded-caches.py "${{ github.repository }}"

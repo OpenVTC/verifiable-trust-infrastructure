@@ -101,7 +101,9 @@ jobs:
     needs: [fmt, lockfile-self-pins, lockfile-resolves, deny, authz-context-types, affects]
     if: needs.affects.outputs.vta_tests != 'false'
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # ~13 minutes on a warm cache, 25-31 cold. At 30, a third of the runs on
+    # 2026-10-21 were cancelled (see the Feature combos budget note).
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -850,6 +852,12 @@ jobs:
       # answer honest when cargo-semver-checks rewords its output.
       - name: Semver build-failure classifier self-test
         run: python3 scripts/semver-build-failure.py --self-test
+      # Fifth tenant, the same reasoning again: `cache-prune.yml` deletes
+      # caches, and a wrong grouping would delete current ones. That is the
+      # failure it exists to prevent, so check the grouping on every PR rather
+      # than discovering it on main.
+      - name: Cache pruner self-test
+        run: python3 scripts/prune-superseded-caches.py --self-test
 
   lockfile-resolves:
     # The sibling of the job above, and the same misattribution failure it
@@ -952,8 +960,11 @@ jobs:
   # See the `affects` job for why the condition is spelled
   # `!cancelled() && !failure()` rather than left to the default.
   #
-  # 30 minutes each: a group is ~11 at most, so this is ~3x, the same
-  # tail-budgeting as above.
+  # 45 minutes each. The tail is a cold cache, not a slow test: a group is ~11
+  # minutes warm and took 22-30 cold on 2026-10-21, so the 30 minutes this was
+  # (~3x the warm time) cancelled the cold runs. 45 is ~1.5x the cold time.
+  # Cold runs should now be rare (cache-prune.yml), but a cold cache is still
+  # what the budget has to cover.
 
   features-vta-service-builds:
     # The narrowed vta-service builds: one `cargo check` or `clippy` per feature
@@ -964,7 +975,7 @@ jobs:
     needs: [clippy, affects]
     if: ${{ !cancelled() && !failure() && needs.affects.outputs.features_vta_service_builds != 'false' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -1019,7 +1030,7 @@ jobs:
     needs: [clippy, affects]
     if: ${{ !cancelled() && !failure() && needs.affects.outputs.features_vta_service_tests != 'false' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -1061,7 +1072,7 @@ jobs:
     needs: [clippy, affects]
     if: ${{ !cancelled() && !failure() && needs.affects.outputs.features_sdk_tee != 'false' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -1109,7 +1120,7 @@ jobs:
     needs: [clippy, affects]
     if: ${{ !cancelled() && !failure() && needs.affects.outputs.features_rooms != 'false' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -1167,7 +1178,7 @@ jobs:
     needs: [clippy, affects]
     if: ${{ !cancelled() && !failure() && needs.affects.outputs.features_mediator != 'false' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -1252,7 +1263,7 @@ jobs:
     # no crate at all — prose — which is exactly the scope of the step.
     if: ${{ !cancelled() && !failure() && (needs.affects.outputs.vta_tests != 'false' || needs.affects.outputs.vtc_tests != 'false') }}
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
