@@ -154,9 +154,7 @@ fn unwitnessed() -> Vec<DeclaredErrorCode> {
         s::persona::binding::set::v1_0::error_codes::NO_PERSONA_HERE,
         s::persona::binding::set::v1_0::error_codes::PROFILE_NOT_FOUND,
         s::persona::binding::set::v1_0::error_codes::VERSION_CONFLICT,
-        s::persona::contact::get::v1_0::error_codes::NOT_FOUND,
         s::persona::contact::get::v1_0::error_codes::REVISION_REAPED,
-        s::persona::contact::list::v1_0::error_codes::CURSOR_INVALID,
         s::persona::contact::put::v1_0::error_codes::DOCUMENT_TOO_LARGE,
         s::persona::disclosure::history::v1_0::error_codes::CURSOR_INVALID,
         s::persona::disclosure::present::v1_0::error_codes::PREVIEW_NOT_FOUND,
@@ -435,7 +433,7 @@ fn unwitnessed() -> Vec<DeclaredErrorCode> {
 /// The ceiling [`unwitnessed`]'s length may never exceed — a ratchet, not a
 /// count. Only *growing* the baseline past it needs an edit, which always
 /// wants a human decision.
-const UNWITNESSED_CEILING: usize = 373;
+const UNWITNESSED_CEILING: usize = 371;
 
 /// Every declared code in scope, keyed by code, with the URI declaring it.
 fn declared_in_scope() -> BTreeMap<&'static str, (&'static str, DeclaredErrorCode)> {

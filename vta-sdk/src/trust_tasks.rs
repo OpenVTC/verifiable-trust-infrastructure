@@ -1404,6 +1404,34 @@ pub const TASK_PERSONA_CONTACT_LIST_1_0: &str =
 pub const TASK_PERSONA_CONTACT_DELETE_1_0: &str =
     "https://trusttasks.org/spec/persona/contact/delete/1.0";
 
+/// `spec/persona/contact/put/1.1`
+pub const TASK_PERSONA_CONTACT_PUT_1_1: &str =
+    "https://trusttasks.org/spec/persona/contact/put/1.1";
+
+/// `spec/persona/contact/get/1.1`
+pub const TASK_PERSONA_CONTACT_GET_1_1: &str =
+    "https://trusttasks.org/spec/persona/contact/get/1.1";
+
+/// `spec/persona/contact/list/1.1`
+pub const TASK_PERSONA_CONTACT_LIST_1_1: &str =
+    "https://trusttasks.org/spec/persona/contact/list/1.1";
+
+/// `spec/persona/contact/lists/put/1.0`
+pub const TASK_PERSONA_CONTACT_LISTS_PUT_1_0: &str =
+    "https://trusttasks.org/spec/persona/contact/lists/put/1.0";
+
+/// `spec/persona/contact/lists/list/1.0`
+pub const TASK_PERSONA_CONTACT_LISTS_LIST_1_0: &str =
+    "https://trusttasks.org/spec/persona/contact/lists/list/1.0";
+
+/// `spec/persona/contact/lists/show/1.0`
+pub const TASK_PERSONA_CONTACT_LISTS_SHOW_1_0: &str =
+    "https://trusttasks.org/spec/persona/contact/lists/show/1.0";
+
+/// `spec/persona/contact/lists/delete/1.0`
+pub const TASK_PERSONA_CONTACT_LISTS_DELETE_1_0: &str =
+    "https://trusttasks.org/spec/persona/contact/lists/delete/1.0";
+
 /// `spec/persona/disclosure/preview/1.0`
 pub const TASK_PERSONA_DISCLOSURE_PREVIEW_1_0: &str =
     "https://trusttasks.org/spec/persona/disclosure/preview/1.0";
@@ -2923,6 +2951,13 @@ pub const ALL_URIS: &[&str] = &[
     TASK_PERSONA_CONTACT_GET_1_0,
     TASK_PERSONA_CONTACT_LIST_1_0,
     TASK_PERSONA_CONTACT_DELETE_1_0,
+    TASK_PERSONA_CONTACT_PUT_1_1,
+    TASK_PERSONA_CONTACT_GET_1_1,
+    TASK_PERSONA_CONTACT_LIST_1_1,
+    TASK_PERSONA_CONTACT_LISTS_PUT_1_0,
+    TASK_PERSONA_CONTACT_LISTS_LIST_1_0,
+    TASK_PERSONA_CONTACT_LISTS_SHOW_1_0,
+    TASK_PERSONA_CONTACT_LISTS_DELETE_1_0,
     TASK_PERSONA_DISCLOSURE_PREVIEW_1_0,
     TASK_PERSONA_DISCLOSURE_PRESENT_1_0,
     TASK_PERSONA_DISCLOSURE_HISTORY_1_0,

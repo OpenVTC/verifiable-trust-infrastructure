@@ -956,6 +956,34 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
         RetrySafety::RetrySafe,
     ),
     (
+        trust_tasks::TASK_PERSONA_CONTACT_PUT_1_1,
+        RetrySafety::Keyed,
+    ),
+    (
+        trust_tasks::TASK_PERSONA_CONTACT_GET_1_1,
+        RetrySafety::ReadOnly,
+    ),
+    (
+        trust_tasks::TASK_PERSONA_CONTACT_LIST_1_1,
+        RetrySafety::ReadOnly,
+    ),
+    (
+        trust_tasks::TASK_PERSONA_CONTACT_LISTS_PUT_1_0,
+        RetrySafety::Keyed,
+    ),
+    (
+        trust_tasks::TASK_PERSONA_CONTACT_LISTS_LIST_1_0,
+        RetrySafety::ReadOnly,
+    ),
+    (
+        trust_tasks::TASK_PERSONA_CONTACT_LISTS_SHOW_1_0,
+        RetrySafety::ReadOnly,
+    ),
+    (
+        trust_tasks::TASK_PERSONA_CONTACT_LISTS_DELETE_1_0,
+        RetrySafety::RetrySafe,
+    ),
+    (
         trust_tasks::TASK_PERSONA_DISCLOSURE_PREVIEW_1_0,
         RetrySafety::Keyed,
     ),

@@ -4340,3 +4340,347 @@ async fn a_world_answers_to_its_retired_name_in_that_names_words() {
     assert_eq!(payload_of(&body)["worlds"].as_array().unwrap().len(), 1);
     assert_eq!(payload_of(&body)["worlds"][0]["colour"], "moss");
 }
+
+// ─── Contacts 1.1: the holder's annotations, and their lists ─────────────
+
+const CONTACT_PUT_1_1: &str = "https://trusttasks.org/spec/persona/contact/put/1.1";
+const CONTACT_GET_1_1: &str = "https://trusttasks.org/spec/persona/contact/get/1.1";
+const CONTACT_LIST_1_1: &str = "https://trusttasks.org/spec/persona/contact/list/1.1";
+const LISTS_PUT: &str = "https://trusttasks.org/spec/persona/contact/lists/put/1.0";
+const LISTS_LIST: &str = "https://trusttasks.org/spec/persona/contact/lists/list/1.0";
+const LISTS_SHOW: &str = "https://trusttasks.org/spec/persona/contact/lists/show/1.0";
+const LISTS_DELETE: &str = "https://trusttasks.org/spec/persona/contact/lists/delete/1.0";
+const NO_SUCH_LIST: &str = "01J8ZZZZZZZZZZZZZZZZZZZZZZ";
+
+fn code(body: &Value) -> &str {
+    payload_of(body)["code"].as_str().unwrap_or_default()
+}
+
+/// put 1.1 items 6 – 8 and 12, get 1.1 and list 1.1: a star, a petname, a list
+/// and a directory link are the holder's, change no revision, are read back
+/// with any revision, filter a listing, and go with the contact.
+#[tokio::test]
+async fn a_contacts_annotations_are_the_holders_and_append_no_revision() {
+    let (router, ctx) = build_test_app().await;
+    let t = authed(&ctx, "annotations", "admin", &[CTX]).await;
+    let persona = "did:key:z6MkPersonaKnows";
+
+    // A list first; then a filing that stars, lists and links in one request.
+    let (status, body) = post(
+        &router,
+        &t,
+        LISTS_PUT,
+        json!({ "contextId": CTX, "name": "Mentors" }),
+    )
+    .await;
+    assert!(!refused(status, &body), "lists/put: {status} {body}");
+    assert_eq!(payload_of(&body)["created"], true);
+    let list_id = payload_of(&body)["list"]["listId"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let (status, body) = post(
+        &router,
+        &t,
+        CONTACT_PUT_1_1,
+        json!({
+            "contextId": CTX,
+            "subjectDid": "did:key:z6MkPeerSam",
+            "knownByPersona": persona,
+            "document": { "claims": [
+                { "type": "name.display", "value": "Sam Okafor", "valueType": "string" }
+            ]},
+            "starred": true,
+            "lists": [list_id],
+            "directoryRef": { "vtcDid": "did:web:climbing.example", "entryId": "dir_Sam" },
+        }),
+    )
+    .await;
+    assert!(!refused(status, &body), "contact/put 1.1: {status} {body}");
+    let p = payload_of(&body);
+    assert_eq!(p["rev"], 1);
+    assert_eq!(p["annotationsChanged"], true);
+    let contact_id = p["contactId"].as_str().unwrap().to_string();
+
+    // Annotating: a petname, as written — no revision, `rev` unmoved.
+    let (_, body) = post(
+        &router,
+        &t,
+        CONTACT_PUT_1_1,
+        json!({ "contextId": CTX, "contactId": contact_id, "petname": "sam (Ω climbing)" }),
+    )
+    .await;
+    assert_eq!(payload_of(&body)["rev"], 1, "{body}");
+    assert_eq!(payload_of(&body)["annotationsChanged"], true);
+    // The same again changes nothing (item 8).
+    let (_, body) = post(
+        &router,
+        &t,
+        CONTACT_PUT_1_1,
+        json!({ "contextId": CTX, "contactId": contact_id, "petname": "sam (Ω climbing)", "starred": true }),
+    )
+    .await;
+    assert_eq!(payload_of(&body)["annotationsChanged"], false, "{body}");
+
+    let (_, body) = post(
+        &router,
+        &t,
+        CONTACT_GET_1_1,
+        json!({ "contextId": CTX, "contactId": contact_id }),
+    )
+    .await;
+    let got = payload_of(&body);
+    assert_eq!(got["starred"], true, "{body}");
+    assert_eq!(
+        got["petname"], "sam (Ω climbing)",
+        "never folded or normalised"
+    );
+    assert_eq!(got["lists"], json!([list_id]));
+    assert_eq!(got["directoryRef"]["entryId"], "dir_Sam");
+
+    // list 1.1 filters by annotation and carries the contact's own name.
+    let (_, body) = post(
+        &router,
+        &t,
+        CONTACT_LIST_1_1,
+        json!({ "contextId": CTX, "starred": true, "directoryVtcDid": "did:web:climbing.example" }),
+    )
+    .await;
+    let items = payload_of(&body)["contacts"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    assert_eq!(items.len(), 1, "{body}");
+    assert_eq!(items[0]["displayName"], "Sam Okafor");
+    assert_eq!(items[0]["petname"], "sam (Ω climbing)");
+    assert!(items[0].get("notes").is_none());
+    let (_, body) = post(
+        &router,
+        &t,
+        CONTACT_LIST_1_1,
+        json!({ "contextId": CTX, "starred": false }),
+    )
+    .await;
+    assert_eq!(payload_of(&body)["contacts"], json!([]), "{body}");
+
+    // The list counts the contact; deleting it takes it off, revising nothing.
+    let (_, body) = post(
+        &router,
+        &t,
+        LISTS_SHOW,
+        json!({ "contextId": CTX, "listId": list_id }),
+    )
+    .await;
+    assert_eq!(payload_of(&body)["list"]["contactCount"], 1, "{body}");
+    let (_, body) = post(&router, &t, LISTS_LIST, json!({ "contextId": CTX })).await;
+    assert_eq!(payload_of(&body)["lists"][0]["name"], "Mentors", "{body}");
+    let (_, body) = post(
+        &router,
+        &t,
+        LISTS_DELETE,
+        json!({ "contextId": CTX, "listId": list_id }),
+    )
+    .await;
+    assert_eq!(payload_of(&body)["contactsUpdated"], 1, "{body}");
+    assert!(payload_of(&body).get("name").is_none(), "never echoed");
+    let (_, body) = post(
+        &router,
+        &t,
+        CONTACT_GET_1_1,
+        json!({ "contextId": CTX, "contactId": contact_id }),
+    )
+    .await;
+    assert!(payload_of(&body).get("lists").is_none(), "{body}");
+    assert_eq!(payload_of(&body)["rev"], 1);
+
+    // Item 12: deleting the contact discards its annotations.
+    let (_, body) = post(
+        &router,
+        &t,
+        CONTACT_DELETE,
+        json!({ "contextId": CTX, "contactId": contact_id }),
+    )
+    .await;
+    assert_eq!(payload_of(&body)["existed"], true, "{body}");
+    let (_, body) = post(
+        &router,
+        &t,
+        CONTACT_PUT_1_1,
+        json!({
+            "contextId": CTX,
+            "subjectDid": "did:key:z6MkPeerSam",
+            "knownByPersona": persona,
+            "document": { "claims": [] },
+        }),
+    )
+    .await;
+    let again = payload_of(&body)["contactId"].as_str().unwrap().to_string();
+    let (_, body) = post(
+        &router,
+        &t,
+        CONTACT_GET_1_1,
+        json!({ "contextId": CTX, "contactId": again }),
+    )
+    .await;
+    assert_eq!(payload_of(&body)["starred"], false, "{body}");
+    assert!(payload_of(&body).get("petname").is_none());
+}
+
+/// Every declared refusal of the 1.1 contact tasks and the lists family.
+#[tokio::test]
+async fn the_contact_annotation_tasks_refuse_what_they_declare() {
+    let (router, ctx) = build_test_app().await;
+    let t = authed(&ctx, "annotations-refusals", "admin", &[CTX]).await;
+
+    // put 1.1 item 6: a list this context does not hold changes nothing.
+    let (_, body) = post(
+        &router,
+        &t,
+        CONTACT_PUT_1_1,
+        json!({
+            "contextId": CTX,
+            "subjectDid": "did:key:z6MkPeerAda",
+            "knownByPersona": "did:key:z6MkPersonaKnows",
+            "document": { "claims": [] },
+            "lists": [NO_SUCH_LIST],
+        }),
+    )
+    .await;
+    assert_eq!(code(&body), "persona/contact/put:listUnknown", "{body}");
+    assert_eq!(
+        payload_of(&body)["details"]["listIds"],
+        json!([NO_SUCH_LIST])
+    );
+    let (_, body) = post(&router, &t, CONTACT_LIST_1_1, json!({ "contextId": CTX })).await;
+    assert_eq!(
+        payload_of(&body)["contacts"],
+        json!([]),
+        "nothing was filed: {body}"
+    );
+
+    let (_, body) = post(
+        &router,
+        &t,
+        CONTACT_PUT_1_1,
+        json!({ "contextId": CTX, "contactId": NO_SUCH_LIST, "starred": true }),
+    )
+    .await;
+    assert_eq!(code(&body), "persona/contact/put:notFound", "{body}");
+
+    let (_, body) = post(
+        &router,
+        &t,
+        CONTACT_GET_1_1,
+        json!({ "contextId": CTX, "contactId": NO_SUCH_LIST }),
+    )
+    .await;
+    assert_eq!(code(&body), "persona/contact/get:notFound", "{body}");
+
+    let (_, body) = post(
+        &router,
+        &t,
+        CONTACT_LIST_1_1,
+        json!({ "contextId": CTX, "listId": NO_SUCH_LIST }),
+    )
+    .await;
+    assert_eq!(code(&body), "persona/contact/list:listUnknown", "{body}");
+    let (_, body) = post(
+        &router,
+        &t,
+        CONTACT_LIST_1_1,
+        json!({ "contextId": CTX, "cursor": "c1.0000.3" }),
+    )
+    .await;
+    assert_eq!(code(&body), "persona/contact/list:cursorInvalid", "{body}");
+
+    // lists/put: a taken name, an unknown list.
+    post(
+        &router,
+        &t,
+        LISTS_PUT,
+        json!({ "contextId": CTX, "name": "Mentors" }),
+    )
+    .await;
+    let (_, body) = post(
+        &router,
+        &t,
+        LISTS_PUT,
+        json!({ "contextId": CTX, "name": "Mentors" }),
+    )
+    .await;
+    assert_eq!(code(&body), "persona/contact/lists/put:nameTaken", "{body}");
+    // Compared exactly: another case is another name.
+    let (status, body) = post(
+        &router,
+        &t,
+        LISTS_PUT,
+        json!({ "contextId": CTX, "name": "mentors" }),
+    )
+    .await;
+    assert!(!refused(status, &body), "{body}");
+    let (_, body) = post(
+        &router,
+        &t,
+        LISTS_PUT,
+        json!({ "contextId": CTX, "listId": NO_SUCH_LIST, "name": "Elsewhere" }),
+    )
+    .await;
+    assert_eq!(code(&body), "persona/contact/lists/put:notFound", "{body}");
+
+    let (_, body) = post(
+        &router,
+        &t,
+        LISTS_SHOW,
+        json!({ "contextId": CTX, "listId": NO_SUCH_LIST }),
+    )
+    .await;
+    assert_eq!(code(&body), "persona/contact/lists/show:notFound", "{body}");
+    let (_, body) = post(
+        &router,
+        &t,
+        LISTS_LIST,
+        json!({ "contextId": CTX, "cursor": "c1.0000.1" }),
+    )
+    .await;
+    assert_eq!(
+        code(&body),
+        "persona/contact/lists/list:cursorInvalid",
+        "{body}"
+    );
+    let (_, body) = post(
+        &router,
+        &t,
+        LISTS_DELETE,
+        json!({ "contextId": CTX, "listId": NO_SUCH_LIST }),
+    )
+    .await;
+    assert_eq!(payload_of(&body)["existed"], false, "{body}");
+
+    // tooManyLists, with its limit.
+    for i in 0..vta_persona::MAX_LISTS {
+        post(
+            &router,
+            &t,
+            LISTS_PUT,
+            json!({ "contextId": CTX, "name": format!("L{i}") }),
+        )
+        .await;
+    }
+    let (_, body) = post(
+        &router,
+        &t,
+        LISTS_PUT,
+        json!({ "contextId": CTX, "name": "One more" }),
+    )
+    .await;
+    assert_eq!(
+        code(&body),
+        "persona/contact/lists/put:tooManyLists",
+        "{body}"
+    );
+    assert_eq!(
+        payload_of(&body)["details"]["limit"],
+        vta_persona::MAX_LISTS
+    );
+}

@@ -108,6 +108,10 @@ pub struct Contact {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub notes: Option<String>,
     pub has_unreviewed_change: bool,
+    /// When the current revision was received. Absent on a contact filed
+    /// before it was recorded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub received_at: Option<String>,
 }
 
 /// Outcome of filing a disclosure.
@@ -152,7 +156,61 @@ impl PersonaStore {
         notes: Option<String>,
     ) -> Result<Filed, AppError> {
         let _guard = self.write_lock.lock().await;
+        self.file_contact_locked(
+            context_id,
+            subject_did,
+            known_by_persona,
+            document,
+            credential_refs,
+            notes,
+        )
+        .await
+    }
 
+    /// File a disclosure and apply the holder's annotation changes with it,
+    /// together or not at all (`persona/contact/put/1.1` item 6): a `lists`
+    /// naming a list this context does not hold refuses the whole request
+    /// before anything is written. Returns the filing and whether any
+    /// annotation changed.
+    pub async fn file_contact_annotated(
+        &self,
+        context_id: &str,
+        subject_did: &str,
+        known_by_persona: &str,
+        document: ContactDocument,
+        credential_refs: Vec<String>,
+        change: &crate::annotations::AnnotationChange,
+    ) -> Result<(Filed, bool), crate::annotations::AnnotateError> {
+        let _guard = self.write_lock.lock().await;
+        self.check_annotation_change(context_id, change).await?;
+        let filed = self
+            .file_contact_locked(
+                context_id,
+                subject_did,
+                known_by_persona,
+                document,
+                credential_refs,
+                None,
+            )
+            .await?;
+        let changed = if change.is_empty() {
+            false
+        } else {
+            self.apply_annotations_locked(context_id, &filed.contact_id, change)
+                .await?
+        };
+        Ok((filed, changed))
+    }
+
+    async fn file_contact_locked(
+        &self,
+        context_id: &str,
+        subject_did: &str,
+        known_by_persona: &str,
+        document: ContactDocument,
+        credential_refs: Vec<String>,
+        notes: Option<String>,
+    ) -> Result<Filed, AppError> {
         let existing = self
             .find_contact(context_id, subject_did, known_by_persona)
             .await?;
@@ -206,6 +264,7 @@ impl PersonaStore {
             // A change nobody has looked at yet is the whole reason to keep
             // revisions; a producer clears it when the holder has seen the diff.
             has_unreviewed_change: !created && !changed.is_empty(),
+            received_at: Some(now_rfc3339()),
         };
         self.ks
             .insert(storage::contact_key(context_id, &contact_id), &contact)
@@ -335,7 +394,7 @@ impl PersonaStore {
                 known_by_persona: c.known_by_persona,
                 rev: c.rev,
                 claim_count: c.document.claims.len(),
-                received_at: now_rfc3339(),
+                received_at: c.received_at.unwrap_or_else(now_rfc3339),
                 has_unreviewed_change: c.has_unreviewed_change,
             })
             .collect())
@@ -377,6 +436,10 @@ impl PersonaStore {
                 .remove(storage::contact_key(context_id, contact_id))
                 .await?;
         }
+        // Annotations are the holder's view of the relationship, never evidence
+        // of what the counterparty presented: they go with the contact, and no
+        // disclosure reference keeps them (put 1.1 item 12).
+        self.forget_annotations(context_id, contact_id).await?;
 
         let rows = self
             .ks

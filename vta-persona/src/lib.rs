@@ -37,6 +37,7 @@
 //! hash. Rung *selection* lives here; proof *derivation* stays in `vta-vault`,
 //! so there is one BBS implementation in the workspace rather than two.
 
+pub mod annotations;
 pub mod binding;
 pub mod claim_types;
 pub mod compose;
@@ -55,6 +56,10 @@ pub mod store;
 pub mod timeline;
 pub mod world;
 
+pub use annotations::{
+    AnnotateError, AnnotationChange, Change, ContactAnnotations, ContactList, DirectoryRef,
+    ListChange, ListError, ListView, MAX_LISTS,
+};
 pub use binding::{
     AttributeReach, BindingSummary, Bound, HeldByPin, MaterialisedClaim, PersonaHere,
     RefreshedBinding,

@@ -239,6 +239,8 @@ const PREFIX_SCOPES: &[(&str, Scope)] = &[
     ("pb:", Scope::Context),
     ("pc:", Scope::Context),
     ("pcr:", Scope::Context),
+    ("pca:", Scope::Context),
+    ("pcl:", Scope::Context),
     ("pd:", Scope::Context),
     ("plp:", Scope::Context),
     ("plb:", Scope::Context),

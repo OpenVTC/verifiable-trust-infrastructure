@@ -4727,6 +4727,7 @@ fn persona_witnesses() -> Vec<(&'static str, ReqParts, RespParts)> {
     const ATTR: &str = "01J8ZKAAAAAAAAAAAAAAAAAAAA";
     const PROFILE: &str = "01J8ZP1BBBBBBBBBBBBBBBBBBB";
     const CONTACT: &str = "01J8ZC7CCCCCCCCCCCCCCCCCCC";
+    const LIST_ID: &str = "01J8ZC7MMMMMMMMMMMMMMMMMMM";
     const PREVIEW: &str = "01J8ZV9DDDDDDDDDDDDDDDDDDD";
     const DISCLOSURE: &str = "01J8ZD3EEEEEEEEEEEEEEEEEEE";
     const CTX: &str = "ctx-fixture";
@@ -5236,6 +5237,112 @@ fn persona_witnesses() -> Vec<(&'static str, ReqParts, RespParts)> {
                 json!({ "contactId": CONTACT, "existed": true,
                         "revisionsRemoved": 1, "retainedForDisclosure": 1 }),
                 parses::<specs::persona::contact::delete::v1_0::Response>,
+            ),
+        ),
+        (
+            u::TASK_PERSONA_CONTACT_PUT_1_1,
+            (
+                // The annotating form: a star and a list, no revision.
+                json!({ "contextId": CTX, "contactId": CONTACT, "starred": true,
+                        "lists": [LIST_ID] }),
+                parses::<specs::persona::contact::put::v1_1::Payload>,
+                validates::<specs::persona::contact::put::v1_1::Payload>,
+            ),
+            (
+                json!({ "contactId": CONTACT, "rev": 2, "created": false,
+                        "annotationsChanged": true }),
+                parses::<specs::persona::contact::put::v1_1::Response>,
+            ),
+        ),
+        (
+            u::TASK_PERSONA_CONTACT_GET_1_1,
+            (
+                json!({ "contextId": CTX, "contactId": CONTACT }),
+                parses::<specs::persona::contact::get::v1_1::Payload>,
+                validates::<specs::persona::contact::get::v1_1::Payload>,
+            ),
+            (
+                json!({
+                    "contactId": CONTACT, "subjectDid": "did:peer:0zfixturecounterparty",
+                    "knownByPersona": PERSONA_DID, "rev": 2, "starred": true,
+                    "petname": "Sam from climbing", "lists": [LIST_ID],
+                    "directoryRef": { "vtcDid": "did:web:climbing.example", "entryId": "dir_abc" },
+                    "document": { "claims": [
+                        { "type": "name.display", "valueType": "string", "value": "Fixture Peer" }
+                    ]}
+                }),
+                parses::<specs::persona::contact::get::v1_1::Response>,
+            ),
+        ),
+        (
+            u::TASK_PERSONA_CONTACT_LIST_1_1,
+            (
+                json!({ "contextId": CTX, "starred": true }),
+                parses::<specs::persona::contact::list::v1_1::Payload>,
+                validates::<specs::persona::contact::list::v1_1::Payload>,
+            ),
+            (
+                json!({ "contacts": [{
+                    "contactId": CONTACT, "subjectDid": "did:peer:0zfixturecounterparty",
+                    "knownByPersona": PERSONA_DID, "rev": 2, "receivedAt": NOW,
+                    "displayName": "Fixture Peer", "claimCount": 1,
+                    "hasUnreviewedChange": false, "starred": true
+                }]}),
+                parses::<specs::persona::contact::list::v1_1::Response>,
+            ),
+        ),
+        (
+            u::TASK_PERSONA_CONTACT_LISTS_PUT_1_0,
+            (
+                json!({ "contextId": CTX, "name": "Mentors", "colour": "#1f8a70" }),
+                parses::<specs::persona::contact::lists::put::v1_0::Payload>,
+                validates::<specs::persona::contact::lists::put::v1_0::Payload>,
+            ),
+            (
+                json!({ "list": { "listId": LIST_ID, "name": "Mentors", "colour": "#1f8a70",
+                                  "order": 0, "contactCount": 0,
+                                  "createdAt": NOW, "updatedAt": NOW },
+                        "created": true, "changed": true }),
+                parses::<specs::persona::contact::lists::put::v1_0::Response>,
+            ),
+        ),
+        (
+            u::TASK_PERSONA_CONTACT_LISTS_LIST_1_0,
+            (
+                json!({ "contextId": CTX }),
+                parses::<specs::persona::contact::lists::list::v1_0::Payload>,
+                validates::<specs::persona::contact::lists::list::v1_0::Payload>,
+            ),
+            (
+                json!({ "lists": [{ "listId": LIST_ID, "name": "Mentors", "order": 0,
+                                    "contactCount": 1, "createdAt": NOW, "updatedAt": NOW }] }),
+                parses::<specs::persona::contact::lists::list::v1_0::Response>,
+            ),
+        ),
+        (
+            u::TASK_PERSONA_CONTACT_LISTS_SHOW_1_0,
+            (
+                json!({ "contextId": CTX, "listId": LIST_ID }),
+                parses::<specs::persona::contact::lists::show::v1_0::Payload>,
+                validates::<specs::persona::contact::lists::show::v1_0::Payload>,
+            ),
+            (
+                json!({ "list": { "listId": LIST_ID, "name": "Mentors", "order": 0,
+                                  "contactCount": 1, "createdAt": NOW, "updatedAt": NOW } }),
+                parses::<specs::persona::contact::lists::show::v1_0::Response>,
+            ),
+        ),
+        (
+            u::TASK_PERSONA_CONTACT_LISTS_DELETE_1_0,
+            (
+                json!({ "contextId": CTX, "listId": LIST_ID }),
+                parses::<specs::persona::contact::lists::delete::v1_0::Payload>,
+                validates::<specs::persona::contact::lists::delete::v1_0::Payload>,
+            ),
+            (
+                // Never the list's name or its contacts.
+                json!({ "listId": LIST_ID, "existed": true, "contactsUpdated": 1 }),
+                parses::<specs::persona::contact::lists::delete::v1_0::Response>,
             ),
         ),
         (

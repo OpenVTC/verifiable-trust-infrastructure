@@ -2956,6 +2956,21 @@ dispatch_table! {
         [ None Metadata false ],
     vta_sdk::trust_tasks::TASK_PERSONA_CONTACT_DELETE_1_0 => persona::handle_contact_delete
         [ Destructive None false ],
+    // 1.1: the holder's own annotations, and their lists. Never sent anywhere.
+    vta_sdk::trust_tasks::TASK_PERSONA_CONTACT_PUT_1_1 => persona::handle_contact_put_v1_1
+        [ Mutating None false ],
+    vta_sdk::trust_tasks::TASK_PERSONA_CONTACT_GET_1_1 => persona::handle_contact_get_v1_1
+        [ None Metadata false ],
+    vta_sdk::trust_tasks::TASK_PERSONA_CONTACT_LIST_1_1 => persona::handle_contact_list_v1_1
+        [ None Metadata false ],
+    vta_sdk::trust_tasks::TASK_PERSONA_CONTACT_LISTS_PUT_1_0 => persona::handle_contact_lists_put
+        [ Mutating None false ],
+    vta_sdk::trust_tasks::TASK_PERSONA_CONTACT_LISTS_LIST_1_0 => persona::handle_contact_lists_list
+        [ None Metadata false ],
+    vta_sdk::trust_tasks::TASK_PERSONA_CONTACT_LISTS_SHOW_1_0 => persona::handle_contact_lists_show
+        [ None Metadata false ],
+    vta_sdk::trust_tasks::TASK_PERSONA_CONTACT_LISTS_DELETE_1_0 => persona::handle_contact_lists_delete
+        [ Destructive None false ],
     // Holder-only: both span every context, which is the view a context-scoped
     // caller must not have.
     vta_sdk::trust_tasks::TASK_PERSONA_DISCLOSURE_HISTORY_1_0 => persona::handle_disclosure_history
