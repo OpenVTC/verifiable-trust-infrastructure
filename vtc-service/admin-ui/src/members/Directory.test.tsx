@@ -265,3 +265,79 @@ describe("browsing and reading members", () => {
     expect(edit.getAttribute("href")).toBe("#/card");
   });
 });
+
+describe("the member's own marks, from their wallet", () => {
+  const marksApi = () => ({
+    publishCard: vi.fn(),
+    marks: vi.fn(async () => ({
+      entries: { dir_bbbbbbbbbbbbbbbb: { starred: true, petname: "the route-setter", lists: ["L1"] } },
+      lists: [{ listId: "L1", name: "Mentors", order: 0, contactCount: 1 }],
+    })),
+    mark: vi.fn(async (p: { starred?: boolean }) => ({ starred: p.starred ?? true })),
+    putList: vi.fn(),
+    deleteList: vi.fn(),
+  });
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    const store = new Map<string, string>();
+    vi.stubGlobal("localStorage", {
+      getItem: (k: string) => store.get(k) ?? null,
+      setItem: (k: string, v: string) => void store.set(k, v),
+      removeItem: (k: string) => void store.delete(k),
+    });
+    api.listFields.mockResolvedValue(FIELDS);
+    api.listEntries.mockResolvedValue({
+      items: [
+        { entryId: "dir_aaaaaaaaaaaaaaaa", fields: { displayName: "Ada" } },
+        { entryId: "dir_bbbbbbbbbbbbbbbb", fields: { displayName: "Sam" } },
+      ],
+    });
+  });
+
+  it("asks nothing until the member turns them on; then stars first, petnames marked as theirs, lists as filters", async () => {
+    const wallet = marksApi();
+    (window as { vtaWallet?: unknown }).vtaWallet = { directory: wallet };
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={qc}>
+        <DirectoryPage />
+      </QueryClientProvider>,
+    );
+    expect(await screen.findByText("Ada")).toBeTruthy();
+    expect(wallet.marks).not.toHaveBeenCalled();
+    // The directory is asked the same thing either way.
+    expect(api.listEntries).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(screen.getByRole("button", { name: /Show my stars and lists/ }));
+    expect(await screen.findByText("Your name for them: the route-setter")).toBeTruthy();
+    expect(wallet.marks).toHaveBeenCalledWith({ hostDid: "did:webvh:QmHost:acme.example", member: "did:key:z6MkMember" });
+    const names = screen.getAllByText(/^(Ada|Sam)$/).map((n) => n.textContent);
+    expect(names).toEqual(["Sam", "Ada"]);
+    expect(api.listEntries).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(screen.getByRole("button", { name: "Mentors" }));
+    await waitFor(() => expect(screen.queryByText("Ada")).toBeNull());
+    expect(screen.getByText("Sam")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Unstar Sam" }));
+    await waitFor(() =>
+      expect(wallet.mark).toHaveBeenCalledWith(
+        expect.objectContaining({ entryId: "dir_bbbbbbbbbbbbbbbb", starred: false }),
+      ),
+    );
+    expect(localStorage.getItem("vtc-member-marks")).toBe("1");
+  });
+
+  it("offers no marks where the wallet keeps none", async () => {
+    (window as { vtaWallet?: unknown }).vtaWallet = { directory: { publishCard: vi.fn() } };
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={qc}>
+        <DirectoryPage />
+      </QueryClientProvider>,
+    );
+    expect(await screen.findByText("Ada")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /Show my stars and lists/ })).toBeNull();
+  });
+});

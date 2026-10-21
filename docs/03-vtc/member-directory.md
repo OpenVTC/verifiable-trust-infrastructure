@@ -116,6 +116,22 @@ may do because it narrows.
 Not yet served: introductions. Groups are their own family ([community groups](groups.md)). A member cannot yet
 present a credential from the portal: that waits on the wallet offering it.
 
+### Your stars, petnames and lists
+
+A member can star other members, give them a name of their own and put them on
+their own lists ("Mentors"). None of it is kept here: the member's wallet keeps it
+in their own VTA (`persona/contact/*/1.1`, [contacts](../02-vta/contacts.md)), so
+the community never learns who stars or lists whom. The directory pages ask the
+wallet for them (`window.vtaWallet.directory.marks`), read the directory exactly as
+they would without them, and apply them on the page — stars first, "Your name for
+them" beside a member's own name, lists as filters.
+
+The portal is this community's own code, so before it shows any, the wallet asks
+the member once whether this community's portal may show and change them; the
+member can withdraw that in the wallet. The portal never asks on its own: the
+member turns them on with **Show my stars and lists**. A member whose DID is not
+shown is starred by their directory entry (the put/1.1 linking form).
+
 ## Verified values (`card/present`)
 
 A field of type `claim` is `credential`-sourced: nobody types its value. Its

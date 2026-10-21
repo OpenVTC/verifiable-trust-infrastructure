@@ -733,3 +733,33 @@ body {
   display: block;
   font-size: 0.75rem;
 }
+
+/* The member's own star on an entry: theirs alone (wallet-marks.ts). */
+.directory-tile {
+  position: relative;
+  height: 100%;
+}
+.directory-tile .star-toggle {
+  position: absolute;
+  top: 0.6rem;
+  right: 0.6rem;
+}
+.star-toggle {
+  align-self: flex-start;
+  background: none;
+  border: none;
+  padding: 0.25rem;
+  color: var(--text-muted);
+  cursor: pointer;
+  border-radius: 999px;
+}
+.star-toggle:hover,
+.star-toggle:focus-visible {
+  color: var(--brand);
+}
+.star-toggle.star-on {
+  color: var(--brand);
+}
+.petname {
+  font-style: italic;
+}

@@ -17,7 +17,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { BookUser, Contact, Copy, ExternalLink, Globe, ImagePlus, Pencil, Search, Trash2 } from "lucide-react";
+import { BookUser, Contact, Copy, ExternalLink, Globe, ImagePlus, Pencil, Search, Star, Trash2 } from "lucide-react";
 
 import type {
   DirectoryCard,
@@ -51,6 +51,16 @@ import {
   vcardOf,
 } from "./member-card";
 import { memberFetch, vtcDid, type MemberMe } from "./api";
+import {
+  starredFirst,
+  useEnableMarks,
+  useMark,
+  useMarks,
+  useNewList,
+  walletMarks,
+  type EntryMark,
+  type Marks,
+} from "./wallet-marks";
 
 /** The wallet's directory channel (`window.vtaWallet.directory`), where the
  *  member's wallet offers one: it publishes the card after showing the member
@@ -133,7 +143,27 @@ function Pills({ fields, connected }: { fields: Record<string, unknown>; connect
 type ListedEntry = { entryId: string; fields: Record<string, unknown>; connected?: boolean };
 
 /** One member, as the grid shows them. */
-function MemberTile({ entry }: { entry: ListedEntry }) {
+/** The member's star on an entry, as a toggle. */
+function StarToggle({ entryId, mark, name }: { entryId: string; mark: EntryMark | undefined; name: string }) {
+  const set = useMark();
+  const on = mark?.starred ?? false;
+  return (
+    <button
+      type="button"
+      className={`star-toggle${on ? " star-on" : ""}`}
+      aria-pressed={on}
+      aria-label={on ? `Unstar ${name}` : `Star ${name}`}
+      title={on ? "Starred — only you see this" : "Star — only you see this"}
+      disabled={set.isPending}
+      onClick={() => set.mutate({ entryId, starred: !on })}
+    >
+      <Star size={16} aria-hidden="true" fill={on ? "currentColor" : "none"} />
+    </button>
+  );
+}
+
+function MemberTile({ entry, marks }: { entry: ListedEntry; marks?: Marks | null }) {
+  const mark = marks?.entries[entry.entryId];
   const name = nameOf(entry.fields);
   const nickname = text(entry.fields.nickname);
   const subtitle = [
@@ -142,18 +172,24 @@ function MemberTile({ entry }: { entry: ListedEntry }) {
   ]
     .filter(Boolean)
     .join(" · ");
+  // The star sits beside the link, never inside it.
   return (
+    <div className="directory-tile">
     <a className="card directory-entry" href={`#/directory/${encodeURIComponent(entry.entryId)}`}>
       <span className="directory-entry-head">
         <MemberAvatar entryId={entry.entryId} value={entry.fields.avatar} name={name} size={52} />
         <span className="directory-entry-names">
           <span className="directory-name">{name ?? "A member"}</span>
           {subtitle && <span className="muted directory-sub">{subtitle}</span>}
+          {/* Marked as the member's own, never passing for the member's name. */}
+          {mark?.petname && <span className="muted directory-sub petname">Your name for them: {mark.petname}</span>}
         </span>
       </span>
       {text(entry.fields.bio) && <span className="directory-bio">{text(entry.fields.bio)}</span>}
       <Pills fields={entry.fields} connected={entry.connected} />
     </a>
+      {marks && <StarToggle entryId={entry.entryId} mark={mark} name={name ?? "this member"} />}
+    </div>
   );
 }
 
@@ -166,7 +202,14 @@ export function DirectoryPage() {
     queryFn: () => listEntries({ ...(query ? { query } : {}), limit: 50 }),
     retry: false,
   });
-  const items = (list.data?.items ?? []) as ListedEntry[];
+  const marks = useMarks();
+  const enable = useEnableMarks();
+  const [onList, setOnList] = useState<string | null>(null);
+  const m = marks.data ?? null;
+  // Applied here, to what the directory answered: the community is asked the
+  // same thing whatever the member starred or listed.
+  const all = starredFirst((list.data?.items ?? []) as ListedEntry[], m);
+  const items = onList && m ? all.filter((e) => m.entries[e.entryId]?.lists?.includes(onList)) : all;
   // Members who show no name are folded away while browsing: a wall of "A
   // member" tells nobody anything. A search shows whatever matched.
   const named = query ? items : items.filter((e) => nameOf(e.fields) !== null);
@@ -181,6 +224,43 @@ export function DirectoryPage() {
         <p className="lead">
           Each member decides what you see here. <a href="#/card">Edit your own card</a>.
         </p>
+        {walletMarks() && !m && (
+          <p className="muted">
+            <button
+              type="button"
+              className="btn btn-ghost btn-sm"
+              disabled={enable.isPending}
+              onClick={() => enable.mutate()}
+            >
+              <Star size={14} aria-hidden="true" /> Show my stars and lists
+            </button>{" "}
+            Your wallet keeps them, not this community; it asks you once before showing them here.
+          </p>
+        )}
+        {enable.isError && <p className="muted">{(enable.error as Error).message}</p>}
+        {m && m.lists.length > 0 && (
+          <div className="pills" role="group" aria-label="My lists">
+            <button
+              type="button"
+              className={`pill${onList === null ? " pill-ok" : ""}`}
+              aria-pressed={onList === null}
+              onClick={() => setOnList(null)}
+            >
+              Everyone
+            </button>
+            {m.lists.map((l) => (
+              <button
+                key={l.listId}
+                type="button"
+                className={`pill${onList === l.listId ? " pill-ok" : ""}`}
+                aria-pressed={onList === l.listId}
+                onClick={() => setOnList(onList === l.listId ? null : l.listId)}
+              >
+                {l.name}
+              </button>
+            ))}
+          </div>
+        )}
       </section>
       <form
         className="search"
@@ -217,7 +297,7 @@ export function DirectoryPage() {
             <ul className="directory-grid">
               {named.map((e) => (
                 <li key={e.entryId}>
-                  <MemberTile entry={e} />
+                  <MemberTile entry={e} marks={m} />
                 </li>
               ))}
             </ul>
@@ -241,7 +321,7 @@ export function DirectoryPage() {
                 <ul className="directory-grid">
                   {nameless.map((e) => (
                     <li key={e.entryId}>
-                      <MemberTile entry={e} />
+                      <MemberTile entry={e} marks={m} />
                     </li>
                   ))}
                 </ul>
@@ -294,6 +374,7 @@ export function EntryPage({ entryId }: { entryId: string }) {
   // The member's own card, to know whether this entry is theirs.
   const mine = useQuery({ queryKey: ["directory", "card"], queryFn: showCard, retry: false });
   const own = mine.data?.card.entryId === entryId;
+  const marks = useMarks();
   const labels = useMemo(
     () => new Map((fields.data?.fields ?? []).map((f) => [f.key, f.label])),
     [fields.data],
@@ -339,6 +420,9 @@ export function EntryPage({ entryId }: { entryId: string }) {
               )}
             </div>
             <div className="profile-actions">
+              {marks.data && !own && (
+                <StarToggle entryId={entryId} mark={marks.data.entries[entryId]} name={name ?? "this member"} />
+              )}
               {own && (
                 <a className="btn btn-primary btn-sm" href="#/card">
                   <Pencil size={14} aria-hidden="true" /> Edit my card
@@ -353,6 +437,7 @@ export function EntryPage({ entryId }: { entryId: string }) {
               </button>
             </div>
           </header>
+          {marks.data && !own && <YourMarks entryId={entryId} marks={marks.data} />}
           {text(f.bio) && (
             <section className="profile-section">
               <h2>{labels.get("bio") ?? "About"}</h2>
@@ -419,6 +504,88 @@ type Introductions = DirectoryCard["introductions"];
 
 /** The fields a member edits here: active, written by them or derived but
  *  theirs to show (`did`), and of a type this page can edit. */
+/** The member's own petname and lists for one entry — kept by their wallet,
+ *  seen by nobody else, the entry's member included. */
+function YourMarks({ entryId, marks }: { entryId: string; marks: Marks }) {
+  const mark = marks.entries[entryId];
+  const set = useMark();
+  const newList = useNewList();
+  const [petname, setPetname] = useState(mark?.petname ?? "");
+  const [listName, setListName] = useState("");
+  useEffect(() => setPetname(mark?.petname ?? ""), [mark?.petname]);
+  const onLists = new Set(mark?.lists ?? []);
+  const toggle = (listId: string) => {
+    const next = new Set(onLists);
+    if (next.has(listId)) next.delete(listId);
+    else next.add(listId);
+    set.mutate({ entryId, lists: [...next] });
+  };
+  return (
+    <section className="profile-section">
+      <h2>Only you see this</h2>
+      <form
+        className="stack"
+        onSubmit={(e) => {
+          e.preventDefault();
+          const p = petname.trim();
+          if (p === (mark?.petname ?? "")) return;
+          set.mutate(p ? { entryId, petname: p } : { entryId, removePetname: true });
+        }}
+      >
+        <label>
+          Your name for them
+          <input value={petname} maxLength={128} onChange={(e) => setPetname(e.target.value)} />
+        </label>
+        <button type="submit" className="btn btn-ghost btn-sm" disabled={set.isPending}>
+          Save
+        </button>
+      </form>
+      <fieldset className="stack">
+        <legend>Your lists</legend>
+        {marks.lists.map((l) => (
+          <label key={l.listId}>
+            <input
+              type="checkbox"
+              checked={onLists.has(l.listId)}
+              disabled={set.isPending}
+              onChange={() => toggle(l.listId)}
+            />{" "}
+            {l.name}
+          </label>
+        ))}
+        <form
+          className="inline-form"
+          onSubmit={(e) => {
+            e.preventDefault();
+            const n = listName.trim();
+            if (!n) return;
+            newList.mutate(n, {
+              onSuccess: (l) => {
+                setListName("");
+                set.mutate({ entryId, lists: [...onLists, l.listId] });
+              },
+            });
+          }}
+        >
+          <input
+            aria-label="New list"
+            placeholder="New list, e.g. Mentors"
+            value={listName}
+            maxLength={64}
+            onChange={(e) => setListName(e.target.value)}
+          />
+          <button type="submit" className="btn btn-ghost btn-sm" disabled={newList.isPending}>
+            Add to a new list
+          </button>
+        </form>
+      </fieldset>
+      {(set.isError || newList.isError) && (
+        <p className="muted">{((set.error ?? newList.error) as Error).message}</p>
+      )}
+    </section>
+  );
+}
+
 function editable(f: DirectoryFieldDefinition): boolean {
   if (f.state !== "active") return false;
   if (f.source === "derived") return f.key === "did";
