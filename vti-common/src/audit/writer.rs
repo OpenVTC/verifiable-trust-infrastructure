@@ -43,95 +43,34 @@ const HEAD_RECOVERY_RETRY_BACKOFF: Duration = Duration::from_secs(60);
 
 /// Page size for the deep-scan fallback below — bounded per request so a
 /// single page still respects the vsock frame cap, same as `HEAD_LOOKBACK`.
+///
+/// The deep scan has a page size but no row cap. It walks until it finds an
+/// envelope or reaches the end of the prefix, because every answer short of
+/// the end is wrong: stopping and anchoring at genesis forks the chain if an
+/// envelope lies further back, and stopping and failing closed refuses every
+/// audit write to the prefix with nothing that could ever clear it (no write
+/// succeeds, so the next attempt walks the same rows). A legacy log larger
+/// than a fixed cap is ordinary — one row per audited operation over the
+/// retention window — so the cap would turn an upgrade into a lost audit
+/// trail. The walk's cost is bounded by the prefix and paid once: the
+/// envelope it lets the next write anchor is found by every later restart's
+/// `HEAD_LOOKBACK` read.
 const DEEP_SCAN_PAGE: usize = 500;
 
-/// Default ceiling on rows walked by the deep-scan fallback (across all
-/// pages, including the initial `HEAD_LOOKBACK` window) before giving up and
-/// failing closed. Generous on purpose: this path is only ever walked during
-/// the one-time legacy-to-chained migration window for a prefix that has
-/// never anchored a chain, and only once — the first envelope it writes
-/// anchors the chain for good, and every later restart's `HEAD_LOOKBACK` scan
-/// finds it without ever reaching this fallback again. Overridable (see
-/// `AuditWriter::with_deep_scan_row_cap`) so tests don't have to write tens
-/// of thousands of rows to exercise the genuinely-exhausted path.
-const DEFAULT_DEEP_SCAN_ROW_CAP: usize = 20_000;
-
-/// Counter incremented once per failed chain-head recovery, whatever the
-/// cause, carrying a `reason` label of `exhausted` (the deep scan walked its
-/// row cap without finding an envelope — the log may be corrupt) or `storage`
-/// (the scan itself failed — storage unreachable, a response too large for
-/// one frame, a value that would not decrypt).
+/// Counter incremented once per failed chain-head recovery.
 ///
-/// This is the signal an operator needs: by the time it fires, every audit
-/// write to that prefix is failing closed, and nothing else makes that
-/// visible from outside the log itself. Both causes count, because `storage`
-/// is the likelier of the two and counting only `exhausted` would leave the
-/// common case invisible.
+/// Recovery fails only when the scan itself fails — storage unreachable, a
+/// response too large for one frame, a value that would not decrypt — and by
+/// the time this fires every audit write to that prefix is failing closed.
+/// Nothing else makes that visible from outside the log itself.
 pub const AUDIT_CHAIN_RECOVERY_FAILURES: &str = "audit_chain_recovery_failures_total";
-
-/// Why [`AuditWriter::load_chain_head`] could not produce a head.
-///
-/// A plain `AppError` would collapse the two, and they call for opposite
-/// responses from an operator — fix the storage, or investigate the log — so
-/// the metric labels them apart rather than making anyone parse a message.
-enum HeadRecoveryError {
-    /// The scan never completed: storage is unreachable, refused the read, or
-    /// returned something undecryptable.
-    Storage(AppError),
-    /// The scan completed and found no envelope within its budget.
-    Exhausted { scanned: usize, cap: usize },
-}
-
-impl From<AppError> for HeadRecoveryError {
-    fn from(error: AppError) -> Self {
-        Self::Storage(error)
-    }
-}
-
-impl HeadRecoveryError {
-    /// Low-cardinality label value for [`AUDIT_CHAIN_RECOVERY_FAILURES`].
-    fn reason(&self) -> &'static str {
-        match self {
-            Self::Storage(_) => "storage",
-            Self::Exhausted { .. } => "exhausted",
-        }
-    }
-
-    /// The cause as a bare sentence, with no error-kind prefix of its own.
-    ///
-    /// Kept apart from [`Self::into_app_error`] because the refusals during
-    /// the backoff quote it inside *another* `AppError`, whose `Display`
-    /// supplies the prefix. Quoting a rendered error there printed
-    /// "internal error:" twice.
-    ///
-    /// A `Storage` cause is the inner error rendered whole, so it keeps the
-    /// kind that tells an operator which thing broke (`store error:` /
-    /// `io error:` / …). That is the inner error naming itself, not this one
-    /// repeating itself.
-    fn cause(&self) -> String {
-        match self {
-            Self::Storage(error) => error.to_string(),
-            Self::Exhausted { scanned, cap } => format!(
-                "could not recover audit chain head after scanning {scanned} non-envelope rows \
-                 (cap {cap}); the log may be corrupt or exceed the deep-scan cap"
-            ),
-        }
-    }
-
-    fn into_app_error(self) -> AppError {
-        match self {
-            Self::Storage(error) => error,
-            exhausted => AppError::Internal(exhausted.cause()),
-        }
-    }
-}
 
 #[derive(Clone)]
 enum ChainHeadState {
     Unknown,
     Known([u8; 32]),
-    /// Recovery failed at `since`; `cause` is the bare message, with no
-    /// error-kind prefix, so the refusals during the backoff can quote it.
+    /// Recovery failed at `since`; `cause` is the failure rendered whole
+    /// (`store error: …`), quoted by the refusals during the backoff.
     Failed {
         since: Instant,
         cause: String,
@@ -174,11 +113,6 @@ pub struct AuditWriter {
     /// Restricts chain-head recovery to the rows written by this writer.
     /// Empty keeps the default whole-keyspace behavior used by VTC.
     key_prefix: Vec<u8>,
-    /// Ceiling on rows walked by [`AuditWriter::load_chain_head`]'s deep-scan
-    /// fallback. See [`DEFAULT_DEEP_SCAN_ROW_CAP`] for why the production
-    /// default is generous and `AuditWriter::with_deep_scan_row_cap` for
-    /// why tests override it.
-    deep_scan_row_cap: usize,
     /// Page size for the deep-scan fallback. See [`DEEP_SCAN_PAGE`] for the
     /// production default and `AuditWriter::with_deep_scan_page` for why
     /// tests override it.
@@ -198,7 +132,6 @@ impl AuditWriter {
             key_store,
             storage_key: Arc::new(envelope_storage_key),
             key_prefix: Vec::new(),
-            deep_scan_row_cap: DEFAULT_DEEP_SCAN_ROW_CAP,
             deep_scan_page: DEEP_SCAN_PAGE,
             chain_head: Arc::new(Mutex::new(ChainHeadState::Unknown)),
         }
@@ -239,24 +172,11 @@ impl AuditWriter {
         self
     }
 
-    /// Override the deep-scan row cap used by [`Self::load_chain_head`].
-    ///
-    /// Test-only: production always wants [`DEFAULT_DEEP_SCAN_ROW_CAP`], but
-    /// a test proving the genuinely-exhausted fail-closed path would
-    /// otherwise have to write tens of thousands of rows to reach it.
-    #[cfg(test)]
-    #[must_use]
-    fn with_deep_scan_row_cap(mut self, cap: usize) -> Self {
-        self.deep_scan_row_cap = cap;
-        self
-    }
-
     /// Override the deep-scan page size used by [`Self::load_chain_head`].
     ///
-    /// Test-only, for the same reason as `Self::with_deep_scan_row_cap`: a
-    /// small page lets a test reach the row cap (or prove a page genuinely
-    /// shorter than it means "prefix exhausted") without writing hundreds of
-    /// rows per page.
+    /// Test-only: a small page lets a test walk many pages (or prove a page
+    /// shorter than requested means the prefix has ended) without writing
+    /// hundreds of rows per page.
     #[cfg(test)]
     #[must_use]
     fn with_deep_scan_page(mut self, page: usize) -> Self {
@@ -298,11 +218,11 @@ impl AuditWriter {
         // A deliberate exception to "no lock across an await": releasing it to
         // recover would let two writers recover and anchor concurrently, which
         // is the fork this lock exists to prevent. The cost is that a first
-        // write needing the deep scan can hold it for up to ~40 storage round
-        // trips (`DEFAULT_DEEP_SCAN_ROW_CAP` / `DEEP_SCAN_PAGE`), blocking
-        // every other audit write meanwhile. Bounded and once per process, and
-        // only during the legacy-to-chained migration window — the steady
-        // state is one bounded read, and thereafter a cache hit.
+        // write needing the deep scan holds it for one storage round trip per
+        // `DEEP_SCAN_PAGE` legacy rows, blocking every other audit write
+        // meanwhile. Once per process, and only during the legacy-to-chained
+        // migration window — the steady state is one bounded read, and
+        // thereafter a cache hit.
         let mut head = self.chain_head.lock().await;
         let current_state = head.clone();
         let prev_hash = match current_state {
@@ -347,20 +267,12 @@ impl AuditWriter {
                 *state = ChainHeadState::Known(hash);
                 Ok(hash)
             }
-            Err(failure) => {
-                // The one place a recovery failure is counted, so no cause can
-                // be missed and none double-counted: every path out of
+            Err(error) => {
+                // The one place a recovery failure is counted, so none can be
+                // missed and none double-counted: every path out of
                 // `load_chain_head` arrives here exactly once.
-                metrics::counter!(
-                    AUDIT_CHAIN_RECOVERY_FAILURES,
-                    "reason" => failure.reason(),
-                )
-                .increment(1);
-                // Taken before the error is built: the state keeps the bare
-                // cause, so a refusal during the backoff can quote it without
-                // the enclosing `AppError` printing a second kind prefix.
-                let cause = failure.cause();
-                let error = failure.into_app_error();
+                metrics::counter!(AUDIT_CHAIN_RECOVERY_FAILURES).increment(1);
+                let cause = error.to_string();
                 tracing::error!(
                     target: "audit.chain_recovery",
                     error = %error,
@@ -394,12 +306,14 @@ impl AuditWriter {
     /// back; wrongly reading it as "fail closed" bricks every future write to
     /// this prefix forever, because no write ever succeeds to clear the
     /// condition. So when the fast path is inconclusive, page further back
-    /// (still bounded per request, to respect the vsock frame cap) until
-    /// either an envelope turns up or the prefix is provably exhausted. This
-    /// deep scan only runs during that one-time migration window: once it
-    /// finds (or fails to find) a real answer, every subsequent restart's
-    /// fast path resolves the question again in O(`HEAD_LOOKBACK`).
-    async fn load_chain_head(&self) -> Result<[u8; 32], HeadRecoveryError> {
+    /// (bounded per request, to respect the vsock frame cap, but not in
+    /// total — see [`DEEP_SCAN_PAGE`]) until either an envelope turns up or
+    /// the prefix ends. This deep scan only runs during that one-time
+    /// migration window: the envelope the next write anchors is found by
+    /// every later restart's fast path in O(`HEAD_LOOKBACK`).
+    ///
+    /// The only failure is a failed read.
+    async fn load_chain_head(&self) -> Result<[u8; 32], AppError> {
         let pairs = self
             .audit_ks
             .scan_raw(ScanOpts::newest_first(
@@ -434,16 +348,14 @@ impl AuditWriter {
 
     /// Fallback for [`Self::load_chain_head`] when the fast-path window is
     /// entirely non-envelope rows but the prefix holds more rows below it.
-    /// Pages backward until an envelope is found, the prefix runs out, or
-    /// `deep_scan_row_cap` rows have been walked without an answer.
+    /// Pages backward until an envelope is found or the prefix runs out.
     async fn deep_scan_for_chain_head(
         &self,
         fast_path: Vec<RawKvPair>,
-    ) -> Result<[u8; 32], HeadRecoveryError> {
-        let mut scanned = fast_path.len();
+    ) -> Result<[u8; 32], AppError> {
         let mut cursor = fast_path.into_iter().next_back().map(|(key, _)| key);
 
-        while scanned < self.deep_scan_row_cap {
+        loop {
             let Some(after) = cursor.take() else {
                 // No resume key: the fast-path window was itself the whole
                 // prefix (shouldn't happen, since that implies
@@ -463,18 +375,12 @@ impl AuditWriter {
                 return Ok(hash);
             }
 
-            scanned += page.len();
             if page.len() < self.deep_scan_page {
                 // Fewer rows than requested: this was the prefix's last page.
                 return Ok(GENESIS_HASH);
             }
             cursor = page.into_iter().next_back().map(|(key, _)| key);
         }
-
-        Err(HeadRecoveryError::Exhausted {
-            scanned,
-            cap: self.deep_scan_row_cap,
-        })
     }
 
     /// Verify that `candidate_did` matches the actor recorded on
@@ -666,15 +572,15 @@ mod tests {
     }
 
     /// Run `body` with a metrics recorder installed on this thread, and
-    /// return every [`AUDIT_CHAIN_RECOVERY_FAILURES`] sample it emitted, as
-    /// `(reason label, count)`.
+    /// return the total [`AUDIT_CHAIN_RECOVERY_FAILURES`] count it emitted.
     ///
     /// Thread-local rather than a global recorder, so tests running in
     /// parallel cannot see each other's counters. The runtime is built inside
     /// the closure for the same reason: `with_local_recorder`'s guard is tied
     /// to this thread, and a current-thread runtime keeps the whole future on
     /// it.
-    fn recovery_failures_during<F>(body: F) -> Vec<(String, u64)>
+    #[cfg(feature = "encryption")]
+    fn recovery_failures_during<F>(body: F) -> u64
     where
         F: std::future::Future<Output = ()>,
     {
@@ -695,20 +601,11 @@ mod tests {
             .into_vec()
             .into_iter()
             .filter(|(key, _, _, _)| key.key().name() == AUDIT_CHAIN_RECOVERY_FAILURES)
-            .map(|(key, _, _, value)| {
-                let reason = key
-                    .key()
-                    .labels()
-                    .find(|label| label.key() == "reason")
-                    .map(|label| label.value().to_string())
-                    .unwrap_or_else(|| "<unlabelled>".into());
-                let count = match value {
-                    DebugValue::Counter(count) => count,
-                    other => panic!("{AUDIT_CHAIN_RECOVERY_FAILURES} is not a counter: {other:?}"),
-                };
-                (reason, count)
+            .map(|(_, _, _, value)| match value {
+                DebugValue::Counter(count) => count,
+                other => panic!("{AUDIT_CHAIN_RECOVERY_FAILURES} is not a counter: {other:?}"),
             })
-            .collect()
+            .sum()
     }
 
     /// Seed `count` non-envelope rows under `log:`, the shape a pre-chain VTA
@@ -732,69 +629,43 @@ mod tests {
         }
     }
 
-    /// A deep scan that walks its whole budget without finding an envelope is
-    /// counted once, as `exhausted`.
-    #[test]
-    fn an_exhausted_deep_scan_is_counted_once() {
-        let samples = recovery_failures_during(async {
-            let f = fixture();
-            f.key_store.ensure_initial(&[0x1a; 32]).await.unwrap();
-            seed_legacy_rows(&f.writer, 50).await;
-            f.writer
-                .with_key_prefix("log:")
-                .with_deep_scan_page(10)
-                .with_deep_scan_row_cap(45)
-                .write("did:key:z6Mk", None, sample_event())
-                .await
-                .expect_err("an exhausted deep scan must fail closed");
-        });
+    /// A writer whose recovery read storage refuses: rows written in the
+    /// clear, read back through a handle that insists on decrypting. The
+    /// scan reaches storage and is refused by it, which is the shape of the
+    /// real failures (an unreachable proxy, an oversized frame, a value that
+    /// will not decrypt).
+    #[cfg(feature = "encryption")]
+    async fn writer_whose_recovery_read_fails() -> (AuditWriter, tempfile::TempDir) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = Store::open(&StoreConfig {
+            data_dir: dir.path().to_path_buf(),
+        })
+        .expect("store");
+        let plain_ks = store.keyspace("audit").expect("audit ks");
+        let key_store = AuditKeyStore::new(store.keyspace("audit_key").expect("key ks"));
+        key_store.ensure_initial(&[0x1b; 32]).await.unwrap();
 
-        assert_eq!(samples, vec![("exhausted".to_string(), 1)]);
+        let seeding_writer = AuditWriter::new(plain_ks.clone(), key_store.clone());
+        seed_legacy_rows(&seeding_writer, 3).await;
+
+        let encrypted_ks = plain_ks.with_encryption([0x1c; 32]);
+        let writer = AuditWriter::new(encrypted_ks, key_store).with_key_prefix("log:");
+        (writer, dir)
     }
 
-    /// A recovery that fails because the *scan itself* failed is counted too,
-    /// as `storage`.
-    ///
-    /// This is the case the counter used to miss, and the likelier of the two
-    /// in production: an unreachable storage proxy, a response too large for
-    /// one frame, or a value that will not decrypt all land here, and all of
-    /// them leave every audit write to the prefix failing closed. Counting
-    /// only a corrupt log would have left the common cause invisible.
-    ///
-    /// The failure is induced by reading rows through an encrypted handle
-    /// that were written through a bare one: the scan reaches storage and is
-    /// refused by it, which is exactly the shape of the real thing.
+    /// A recovery that fails because the scan failed is counted once.
     #[cfg(feature = "encryption")]
     #[test]
     fn a_storage_failure_during_recovery_is_counted_once() {
-        let samples = recovery_failures_during(async {
-            let dir = tempfile::tempdir().expect("tempdir");
-            let store = Store::open(&StoreConfig {
-                data_dir: dir.path().to_path_buf(),
-            })
-            .expect("store");
-            let plain_ks = store.keyspace("audit").expect("audit ks");
-            let key_store = AuditKeyStore::new(store.keyspace("audit_key").expect("key ks"));
-            key_store.ensure_initial(&[0x1b; 32]).await.unwrap();
-
-            // Written in the clear...
-            let seeding_writer = AuditWriter::new(plain_ks.clone(), key_store.clone());
-            seed_legacy_rows(&seeding_writer, 3).await;
-
-            // ...read through a handle that insists on decrypting.
-            let encrypted_ks = plain_ks.with_encryption([0x1c; 32]);
-            let error = AuditWriter::new(encrypted_ks, key_store)
-                .with_key_prefix("log:")
+        let count = recovery_failures_during(async {
+            let (writer, _dir) = writer_whose_recovery_read_fails().await;
+            writer
                 .write("did:key:z6Mk", None, sample_event())
                 .await
                 .expect_err("a scan that storage refuses must fail closed");
-            assert!(
-                !error.to_string().contains("non-envelope rows"),
-                "a storage failure must not be reported as an exhausted scan: {error}"
-            );
         });
 
-        assert_eq!(samples, vec![("storage".to_string(), 1)]);
+        assert_eq!(count, 1);
     }
 
     /// Writes refused during the backoff window do not re-count the failure.
@@ -803,18 +674,11 @@ mod tests {
     /// not of audit writes refused: the backoff deliberately answers without
     /// touching storage, so counting there would turn one broken log into a
     /// rate that tracks traffic and tells an operator nothing about severity.
+    #[cfg(feature = "encryption")]
     #[test]
     fn writes_refused_during_the_backoff_do_not_re_count() {
-        let samples = recovery_failures_during(async {
-            let f = fixture();
-            f.key_store.ensure_initial(&[0x1d; 32]).await.unwrap();
-            seed_legacy_rows(&f.writer, 50).await;
-            let writer = f
-                .writer
-                .with_key_prefix("log:")
-                .with_deep_scan_page(10)
-                .with_deep_scan_row_cap(45);
-
+        let count = recovery_failures_during(async {
+            let (writer, _dir) = writer_whose_recovery_read_fails().await;
             for _ in 0..3 {
                 writer
                     .write("did:key:z6Mk", None, sample_event())
@@ -824,66 +688,42 @@ mod tests {
         });
 
         assert_eq!(
-            samples,
-            vec![("exhausted".to_string(), 1)],
+            count, 1,
             "three refused writes, one recovery attempt, one count"
         );
     }
 
+    /// A legacy log far longer than one deep-scan page, with no envelope
+    /// anywhere, is walked to its end and anchors at genesis — never refused.
+    /// A fixed cap here once turned an ordinary pre-chain log (one row per
+    /// audited operation over the retention window) into every audit write
+    /// failing closed, with nothing that could clear it.
     #[tokio::test]
-    async fn exhausted_head_lookback_refuses_to_reanchor() {
+    async fn a_legacy_log_spanning_many_deep_scan_pages_anchors_at_genesis() {
         let f = fixture();
         f.key_store.ensure_initial(&[0x0b; 32]).await.unwrap();
-        // One full fast-path window plus enough further-back rows to force a
-        // full-page deep scan all the way to the row cap: with a page size
-        // of 10 and a cap of 45, three full pages (30 rows) beyond the
-        // initial HEAD_LOOKBACK(20) reach scanned=50 > cap, without an
-        // envelope anywhere -- a genuine, not merely migration-window,
-        // exhaustion.
-        const TOTAL_ROWS: usize = 50;
-        for index in 0..TOTAL_ROWS {
-            f.writer
-                .audit_ks
-                .insert(
-                    format!("log:{index:020}:legacy"),
-                    &serde_json::json!({
-                        "id": format!("legacy-{index}"),
-                        "timestamp": 1_700_000_000u64 + index as u64,
-                        "action": "auth.challenge",
-                        "actor": "did:key:z6MkLegacy",
-                        "outcome": "success",
-                    }),
-                )
-                .await
-                .unwrap();
-        }
+        seed_legacy_rows(&f.writer, HEAD_LOOKBACK + 10 * 7 + 3).await;
 
-        let error = f
+        let env = f
             .writer
             .with_key_prefix("log:")
             .with_deep_scan_page(10)
-            .with_deep_scan_row_cap(45)
             .write("did:key:z6Mk", None, sample_event())
             .await
-            .expect_err("a genuinely exhausted deep scan must fail closed");
-        assert!(
-            error
-                .to_string()
-                .contains("could not recover audit chain head after scanning 50 non-envelope rows")
-        );
+            .expect("a long legacy log must anchor, not fail closed");
+
+        assert_eq!(env.prev_hash, GENESIS_HASH);
     }
 
-    /// The regression this fix targets: a keyspace with *more* non-envelope
-    /// rows than `HEAD_LOOKBACK`, but still well short of the deep-scan row
-    /// cap, and no envelope anywhere. The old bounded-only scan treated this
-    /// identically to the genuinely-exhausted case above and failed closed
-    /// forever; the fix must keep walking until it proves the prefix empty
-    /// of envelopes, then still anchor at genesis.
+    /// A keyspace with *more* non-envelope rows than `HEAD_LOOKBACK` and no
+    /// envelope anywhere: a lookback-only scan would have failed closed
+    /// forever. Recovery must keep walking until it proves the prefix empty
+    /// of envelopes, then anchor at genesis.
     #[tokio::test]
     async fn legacy_log_longer_than_head_lookback_without_envelope_still_anchors_at_genesis() {
         let f = fixture();
         f.key_store.ensure_initial(&[0x0e; 32]).await.unwrap();
-        // More than HEAD_LOOKBACK, but far short of any row cap.
+        // More than HEAD_LOOKBACK: the fast path alone cannot decide.
         let total_rows = HEAD_LOOKBACK + 10;
         for index in 0..total_rows {
             f.writer
@@ -967,32 +807,10 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "encryption")]
     #[tokio::test]
     async fn failed_head_recovery_is_cached_during_backoff() {
-        let f = fixture();
-        f.key_store.ensure_initial(&[0x0c; 32]).await.unwrap();
-        const TOTAL_ROWS: usize = 50;
-        for index in 0..TOTAL_ROWS {
-            f.writer
-                .audit_ks
-                .insert(
-                    format!("log:{index:020}:legacy"),
-                    &serde_json::json!({
-                        "id": format!("legacy-{index}"),
-                        "timestamp": 1_700_000_000u64 + index as u64,
-                        "action": "auth.challenge",
-                        "actor": "did:key:z6MkLegacy",
-                        "outcome": "success",
-                    }),
-                )
-                .await
-                .unwrap();
-        }
-        let writer = f
-            .writer
-            .with_key_prefix("log:")
-            .with_deep_scan_page(10)
-            .with_deep_scan_row_cap(45);
+        let (writer, _dir) = writer_whose_recovery_read_fails().await;
 
         let first = writer
             .write("did:key:z6Mk", None, sample_event())
@@ -1003,24 +821,11 @@ mod tests {
             .await
             .expect_err("backoff must keep failing without a storage retry");
 
-        assert_eq!(
-            first.to_string(),
-            "internal error: could not recover audit chain head after scanning 50 non-envelope \
-             rows (cap 45); the log may be corrupt or exceed the deep-scan cap"
-        );
-        // One "internal error:", not two. The refusal quotes the bare cause
-        // rather than a rendered error, so the enclosing `AppError` is the
-        // only thing naming the kind.
+        // The refusal quotes the original failure whole, so it keeps the kind
+        // that tells an operator which thing broke.
         assert_eq!(
             second.to_string(),
-            "internal error: audit chain head unavailable: could not recover audit chain head \
-             after scanning 50 non-envelope rows (cap 45); the log may be corrupt or exceed \
-             the deep-scan cap"
-        );
-        assert_eq!(
-            second.to_string().matches("internal error:").count(),
-            1,
-            "a cause quoted inside another error must not repeat the error kind"
+            format!("internal error: audit chain head unavailable: {first}")
         );
     }
 

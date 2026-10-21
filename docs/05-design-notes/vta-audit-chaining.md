@@ -104,27 +104,28 @@ sits just below the window. Failing closed would brick the prefix permanently,
 because no write can then succeed to clear the condition. So recovery pages
 further back — `DEEP_SCAN_PAGE` (500) rows per request, still one bounded read
 at a time — until an envelope turns up, or a short page proves the prefix holds
-nothing older. It gives up only after `DEFAULT_DEEP_SCAN_ROW_CAP` (20,000) rows
-walked without an answer, and only then fails closed. This deep scan belongs to
-the one-time legacy-to-chained migration window and runs at most once: the
-first envelope written anchors the chain for good, and every later restart
-resolves the question again in the fast path.
+nothing older. There is no cap on the rows walked in total: stopping early is
+one of the two wrong answers again, and a pre-chain log larger than any fixed
+cap is ordinary (one row per audited operation over the retention window), so a
+cap would turn an upgrade into every audit write failing closed. This deep scan
+belongs to the one-time legacy-to-chained migration window and runs at most
+once: the first envelope written anchors the chain for good, and every later
+restart resolves the question again in the fast path.
 
-A failed recovery is reported once at `ERROR` and counted once in
-`audit_chain_recovery_failures_total`, labelled `reason=exhausted` (the budget
-ran out — the log may be corrupt) or `reason=storage` (the scan itself failed —
-storage unreachable, a response too large for one frame, a value that would not
-decrypt). Both are counted: every audit write to that prefix is failing closed
-either way, and storage is the likelier cause of the two, so counting only a
-corrupt log would leave the common case invisible. For the next 60 seconds
+Recovery fails only when a read fails — storage unreachable, a response too
+large for one frame, a value that would not decrypt. A failed recovery is
+reported once at `ERROR` and counted once in
+`audit_chain_recovery_failures_total`; every audit write to that prefix is
+failing closed meanwhile, and nothing else makes that visible from outside the
+log. For the next 60 seconds
 writes are refused without touching storage or repeating the log; after it, one
 recovery is retried.
 
 **6 — TEE compatibility.** Scan joins the capability negotiation PR#2003 built
 for the atomic ops (`take` / `insert-if-absent` / `swap-if-absent` /
 `move-if-equal`): at connect the enclave sends one `OP_HELLO` and caches the
-bitmask the proxy returns (`CAP_SCAN`, bit 4, alongside the four atomic-op
-bits), so recovery's bounded reads add no extra round trip on a proxy that
+bitmask the proxy returns (`CAP_SCAN`, bit 5, alongside the atomic-op and
+batch bits), so recovery's bounded reads add no extra round trip on a proxy that
 serves them. An old proxy answers `OP_HELLO`'s probe itself with "unknown
 opcode" (read as "none", not an error), and recovery falls back to one legacy
 `prefix_iter_raw` request, filtered and bounded client-side to the same

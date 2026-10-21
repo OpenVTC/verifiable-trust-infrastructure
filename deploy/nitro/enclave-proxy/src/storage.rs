@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use fjall::{Database, Keyspace, KeyspaceCreateOptions, PersistMode};
+use fjall::{Database, Keyspace, KeyspaceCreateOptions, PersistMode, Readable};
 use tokio::sync::RwLock;
 use tokio_vsock::{VMADDR_CID_ANY, VsockAddr, VsockListener};
 use tracing::{debug, error, info, warn};
@@ -437,7 +437,12 @@ async fn handle_scan(state: &StorageState, data: &[u8]) -> Vec<u8> {
     let (lower, upper) = scan_bounds(&prefix, after.as_deref(), reverse);
     let mut pairs = Vec::with_capacity(limit.min(1024));
     let mut response_size = 5usize;
-    let iter = ks.range((lower, upper));
+    // Read at the last published sequence number, as the enclave's local
+    // backend does (`vti_common::store::read_snapshot`): a plain `range` can
+    // see a write batch half-applied, and a page torn across a batch is what a
+    // chain verifier reports as tampering.
+    let snapshot = state.db.snapshot();
+    let iter = snapshot.range(&ks, (lower, upper));
     let guards: Box<dyn Iterator<Item = _>> = if reverse {
         Box::new(iter.rev())
     } else {
