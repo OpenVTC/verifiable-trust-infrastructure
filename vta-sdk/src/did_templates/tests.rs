@@ -2526,3 +2526,92 @@ fn room_host_builtin_advertises_trust_task_https_not_vta_rest() {
     assert_eq!(rest.len(), 1, "{doc:#}");
     assert_eq!(rest[0]["type"], "TrustTaskHTTPS");
 }
+
+// ─── trust-registry built-in ─────────────────────────────────────────
+
+/// The four entries a trust registry's own runtime builder emits, in the
+/// shape it emits them. `{DID}` is the sentinel `didwebvh-rs` resolves after
+/// the SCID is known, as it is for every caller-supplied entry.
+fn trust_registry_entries() -> [(&'static str, Value); 4] {
+    [
+        (DIDCOMM_SERVICE_VAR, didcomm_service(MEDIATOR).unwrap()),
+        (
+            "SERVICE_REST",
+            json!({
+                "id": "{DID}#rest",
+                "type": "TRQPRest",
+                "serviceEndpoint": "https://registry.example.com",
+            }),
+        ),
+        (
+            TRUST_REGISTRY_SERVICE_VAR,
+            json!({
+                "id": "{DID}#trust-registry",
+                "type": TRUST_REGISTRY_SERVICE_TYPE,
+                "serviceEndpoint": {
+                    "uri": "https://registry.example.com",
+                    "profile": TRQP_PROFILE_URI,
+                },
+            }),
+        ),
+        (TSP_SERVICE_VAR, tsp_service(MEDIATOR).unwrap()),
+    ]
+}
+
+#[test]
+fn trust_registry_renders_every_transport_it_is_given() {
+    let tpl = load_embedded("trust-registry").unwrap();
+    assert_eq!(tpl.name, "trust-registry");
+    let mut vars = ambient_vars();
+    vars.insert_string("KA_KEY_MB", "z6LSKeyAgreement");
+    for (var, entry) in trust_registry_entries() {
+        vars.insert(var, entry);
+    }
+
+    let out = tpl.render(&vars).unwrap();
+
+    assert_eq!(out["authentication"][0], "did:webvh:abc:example.com#key-0");
+    assert_eq!(out["assertionMethod"][0], "did:webvh:abc:example.com#key-0");
+    assert_eq!(out["keyAgreement"][0], "did:webvh:abc:example.com#key-1");
+    let types: Vec<&str> = out["service"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["type"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        types,
+        [
+            "DIDCommMessaging",
+            "TRQPRest",
+            TRUST_REGISTRY_SERVICE_TYPE,
+            "TSPTransport"
+        ]
+    );
+    // An endpoint, not a referral: in the registry's own document the
+    // `TrustRegistry` uri is its TRQP URL.
+    assert_eq!(
+        out["service"][2]["serviceEndpoint"]["uri"],
+        "https://registry.example.com"
+    );
+}
+
+/// A registry advertises only what it serves, so each slot has to be
+/// omissible on its own: a REST-only registry has no mediator to name, and a
+/// DIDComm-only one has no public URL.
+#[test]
+fn trust_registry_prunes_every_transport_it_is_not_given() {
+    let tpl = load_embedded("trust-registry").unwrap();
+    for (kept, entry) in trust_registry_entries() {
+        let mut vars = ambient_vars();
+        vars.insert_string("KA_KEY_MB", "z6LSKeyAgreement");
+        let expected_type = entry["type"].clone();
+        vars.insert(kept, entry);
+
+        let out = tpl.render(&vars).unwrap();
+
+        let services = out["service"].as_array().unwrap();
+        assert_eq!(services.len(), 1, "only {kept} was supplied");
+        assert_eq!(services[0]["type"], expected_type);
+    }
+}

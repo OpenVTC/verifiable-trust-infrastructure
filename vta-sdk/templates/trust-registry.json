@@ -1,0 +1,51 @@
+{
+  "schemaVersion": 1,
+  "name": "trust-registry",
+  "kind": "trust-registry",
+  "description": "A Trust Registry (affinidi-trust-registry-rs) that holds no keys of its own: the VTA keeps its DID and keys in the context, and the registry pulls them at every boot with the admin credential this provisioning returns. Every service entry is an optional slot, because the registry advertises exactly the transports it serves (TRQP REST, DIDComm, TSP) and nothing else. The registry's setup builds the entries from its own runtime builder and passes them in, so the published document and the one the registry serves cannot disagree. A slot left out is pruned. SERVICE_DIDCOMM and SERVICE_TSP are the vta_sdk::did_templates::transports entries; SERVICE_REST is its `TRQPRest` entry and SERVICE_TRUST_REGISTRY its ToIP `TrustRegistry` entry (an endpoint, whose uri is the TRQP URL, not a referral). WEBVH_SERVER or URL is required at provision time so the VTA can publish the did:webvh log.",
+  "methods": ["webvh"],
+  "requiredVars": [],
+  "optionalVars": {
+    "SERVICE_DIDCOMM": null,
+    "SERVICE_REST": null,
+    "SERVICE_TRUST_REGISTRY": null,
+    "SERVICE_TSP": null,
+    "URL": null,
+    "WEBVH_SERVER": null,
+    "LABEL": null
+  },
+  "defaults": {
+    "preRotationCount": 2,
+    "portable": true
+  },
+  "document": {
+    "@context": [
+      "https://www.w3.org/ns/did/v1",
+      "https://www.w3.org/ns/cid/v1"
+    ],
+    "id": "{DID}",
+    "verificationMethod": [
+      {
+        "id": "{DID}#key-0",
+        "type": "Multikey",
+        "controller": "{DID}",
+        "publicKeyMultibase": "{SIGNING_KEY_MB}"
+      },
+      {
+        "id": "{DID}#key-1",
+        "type": "Multikey",
+        "controller": "{DID}",
+        "publicKeyMultibase": "{KA_KEY_MB}"
+      }
+    ],
+    "assertionMethod": ["{DID}#key-0"],
+    "authentication": ["{DID}#key-0"],
+    "keyAgreement": ["{DID}#key-1"],
+    "service": [
+      "{SERVICE_DIDCOMM}",
+      "{SERVICE_REST}",
+      "{SERVICE_TRUST_REGISTRY}",
+      "{SERVICE_TSP}"
+    ]
+  }
+}

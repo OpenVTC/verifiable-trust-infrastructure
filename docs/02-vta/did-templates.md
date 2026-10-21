@@ -14,7 +14,7 @@ consumer gets the new shape on the next create. No redeploy.
 
 - **Data, not code.** An operator can ship a new agent kind by dropping a JSON
   file, no recompile. The built-ins (`ai-agent`, `didcomm-mediator`,
-  `push-gateway`, `vta-admin`, `vtc-host`, `dtg-witness`, `ballot-box`, `did-host-http-didcomm`,
+  `push-gateway`, `trust-registry`, `vta-admin`, `vtc-host`, `dtg-witness`, `ballot-box`, `did-host-http-didcomm`,
   `did-host-http`, `did-host-didcomm`, `did-host-http-tsp`, `did-host-tsp`)
   are baseline shapes, not the only shapes.
 - **Method-agnostic.** Same format works for `did:webvh`, `did:web`, or

@@ -23,6 +23,7 @@ pub const BUILTIN_NAMES: &[&str] = &[
     "room",
     "room-host",
     "swiyu-verifier",
+    "trust-registry",
     "vta-admin",
     "vtc-group",
     "vtc-host",
@@ -35,6 +36,7 @@ const PUSH_GATEWAY: &str = include_str!("../../templates/push-gateway.json");
 const ROOM: &str = include_str!("../../templates/room.json");
 const ROOM_HOST: &str = include_str!("../../templates/room-host.json");
 const SWIYU_VERIFIER: &str = include_str!("../../templates/swiyu-verifier.json");
+const TRUST_REGISTRY: &str = include_str!("../../templates/trust-registry.json");
 const VTA_ADMIN: &str = include_str!("../../templates/vta-admin.json");
 const VTC_GROUP: &str = include_str!("../../templates/vtc-group.json");
 const VTC_HOST: &str = include_str!("../../templates/vtc-host.json");
@@ -59,6 +61,7 @@ pub fn load_embedded(name: &str) -> Result<DidTemplate, TemplateError> {
         "room" => ROOM,
         "room-host" => ROOM_HOST,
         "swiyu-verifier" => SWIYU_VERIFIER,
+        "trust-registry" => TRUST_REGISTRY,
         "vta-admin" => VTA_ADMIN,
         "vtc-group" => VTC_GROUP,
         "vtc-host" => VTC_HOST,
@@ -103,6 +106,7 @@ mod tests {
             ROOM,
             ROOM_HOST,
             SWIYU_VERIFIER,
+            TRUST_REGISTRY,
             VTA_ADMIN,
             VTC_GROUP,
             VTC_HOST,
