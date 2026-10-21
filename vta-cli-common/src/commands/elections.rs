@@ -238,6 +238,46 @@ async fn ballot_box_url(did: &str) -> CliResult<String> {
         })
 }
 
+/// The election key the trustees formed, from the ballot box's `voting/trustees/status` — a
+/// read of the board, unsigned, so it answers on a public board.
+async fn election_key(
+    url: &str,
+    ballot_box: &str,
+    community: &str,
+    election_id: &str,
+) -> CliResult<Value> {
+    let doc = json!({
+        "id": format!("urn:uuid:{}", uuid::Uuid::new_v4()),
+        "type": "https://trusttasks.org/spec/voting/trustees/status/0.1",
+        "recipient": ballot_box,
+        "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+        "payload": { "community": community, "electionId": election_id },
+    });
+    let resp = vta_sdk::http::foreign_fetch_client()
+        .post(format!("{}/trust-tasks", url.trim_end_matches('/')))
+        .header("content-type", "application/json")
+        .body(serde_json::to_string(&doc)?)
+        .send()
+        .await
+        .map_err(|e| format!("the ballot box did not answer the trustees' status ({e})"))?;
+    let answer: Value = resp.json().await?;
+    if let Some(code) = answer["payload"]["code"].as_str() {
+        return Err(format!(
+            "the ballot box would not show the trustees' status ({code}); on a private board \
+             only the community and its auditors read it"
+        )
+        .into());
+    }
+    match answer["payload"].get("electionKey") {
+        Some(k) => Ok(k.clone()),
+        None => Err(format!(
+            "the trustees have not formed the election key yet (phase {})",
+            answer["payload"]["phase"].as_str().unwrap_or("unknown")
+        )
+        .into()),
+    }
+}
+
 /// `pnm elections vote <id>`: read, take the ticket if not held, vote, keep the receipt.
 pub async fn cmd_vote(
     client: &VtaClient,
@@ -301,12 +341,27 @@ pub async fn cmd_vote(
         Err(e) => return Err(hint_member(e.to_string(), t.member)),
     }
 
-    // 3. The cast, built and signed in the VTA under a key made for it alone.
+    // 3. The cast, built and signed in the VTA under a key made for it alone — sealed or
+    //    encrypted under the trustees' election key where the manifest says so.
+    let ballot_box = manifest["ballotBox"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
+    let url = ballot_box_url(&ballot_box).await?;
     let mut vote = base.clone();
     vote["parameters"] = parameters;
     vote["manifest"] = manifest.clone();
     vote["ballot"] = ballot;
-    let cast = serde_json::to_value(client.pcs_vote(&serde_json::from_value(vote)?).await?)?;
+    let cast = if manifest["secrecy"] == "open" {
+        serde_json::to_value(client.pcs_vote(&serde_json::from_value(vote)?).await?)?
+    } else {
+        vote["electionKey"] = election_key(&url, &ballot_box, t.vtc_did, election_id).await?;
+        serde_json::to_value(
+            client
+                .pcs_vote_encrypted(&serde_json::from_value(vote)?)
+                .await?,
+        )?
+    };
     let cast_doc = &cast["castDocument"];
 
     // 4. To the ballot box, from this connection, after a pause.
@@ -320,8 +375,6 @@ pub async fn cmd_vote(
         }
         tokio::time::sleep(Duration::from_millis(ms)).await;
     }
-    let ballot_box = manifest["ballotBox"].as_str().unwrap_or_default();
-    let url = ballot_box_url(ballot_box).await?;
     let http = vta_sdk::http::foreign_fetch_client();
     let resp = http
         .post(format!("{}/trust-tasks", url.trim_end_matches('/')))

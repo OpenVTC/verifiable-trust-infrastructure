@@ -2296,6 +2296,7 @@ fn unwitnessed() -> Vec<DeclaredErrorCode> {
         s::website::upload::chunk::v0_1::error_codes::ALREADY_STORED,
         // Declared for a community that does not serve a level. This one certifies all
         // three (CONVENTIONS §9; trust-tasks-tf #847), so the code cannot occur here.
+        #[cfg(feature = "voting")]
         s::elections::create::v0_1::error_codes::UNSUPPORTED_SECRECY,
         // BASELINE-END
     ]
