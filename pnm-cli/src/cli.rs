@@ -1096,6 +1096,22 @@ pub(crate) enum RoomOffersCommands {
         #[arg(long)]
         key_package: Option<String>,
     },
+    /// Collect a renewal of a room you are in (`vtc/rooms/offers/list/0.3`): store its
+    /// membership and authority in your VTA in place of the ones they renew.
+    Renew {
+        /// The room's DID.
+        #[arg(long = "room")]
+        room_id: String,
+        /// Base URL of the community's Trust Task endpoint.
+        #[arg(long)]
+        vtc: String,
+        /// The community's DID.
+        #[arg(long)]
+        vtc_did: String,
+        /// The DID the community addressed its offers to: a persona your VTA holds.
+        #[arg(long)]
+        member: String,
+    },
 }
 
 /// `pnm rooms keys …` — your VTA as a room's key holder.

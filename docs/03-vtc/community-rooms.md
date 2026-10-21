@@ -445,19 +445,30 @@ and an acceptance completed only with a KeyPackage that VTA minted itself for th
 and room (`keyPackageNotHeld` otherwise). The signed document goes to the VTC over its
 Trust Task HTTPS endpoint, unchanged.
 
-`list` asks for `vtc/rooms/offers/list/0.2`, signed with `rooms/keys/act/0.4` — the first
+`list` asks for `vtc/rooms/offers/list/0.3`, signed with `rooms/keys/act/0.6` — the first
 version whose table lists it — so each offer shows what its room is for, on an `about:` line
-under it (control characters replaced, as in the label). Members and communities upgrade on
-their own schedules: when the member's VTA does not serve act 0.4, or the VTC does not serve
-list 0.2 (`unsupportedType` / `unsupportedVersion` from either), `pnm` lists at 0.1 through
-act 0.3 instead, and the offers show no description. `accept` reads the offer the same way
-before it accepts (`vtc/rooms/offers/accept/0.1`, at act 0.4 or 0.3):
+under it (control characters replaced, as in the label), and each room you are in that the
+community has renewed shows as a `renewal` line with the command that collects it. Members
+and communities upgrade on their own schedules: when the member's VTA or the VTC does not
+serve 0.3 (`unsupportedType` / `unsupportedVersion` from either), `pnm` lists at 0.2 through
+act 0.4, and failing that at 0.1 through act 0.3; those listings carry no renewals, and 0.1's
+offers no description. `accept` reads the offer the same way before it accepts
+(`vtc/rooms/offers/accept/0.1`).
 
 ```bash
 pnm rooms offers list   --vtc https://vtc.example.com/v1 --vtc-did <vtc-did> --member <persona-did>
 pnm rooms offers accept --vtc https://vtc.example.com/v1 --vtc-did <vtc-did> --member <persona-did> \
     --room <room-did>
+pnm rooms offers renew  --vtc https://vtc.example.com/v1 --vtc-did <vtc-did> --member <persona-did> \
+    --room <room-did>
 ```
+
+`renew` collects a renewal: it finds the membership and authority the room issued you in
+your VTA's vault (`vault/credentials/query` by the room as issuer, then the one whose
+subject is you) and stores the renewed ones **under the same handles**, replacing them. More
+than one of either is refused with the command that removes the older: your VTA acts on the
+room with neither until one is left. Collecting a renewal twice, or after another surface
+did, is harmless.
 
 `accept` stores the offer's membership and authority credentials in the VTA's vault, has
 the VTA mint the KeyPackage against the offer's invitation on a sealed room, accepts, and
