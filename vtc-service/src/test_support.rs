@@ -169,6 +169,9 @@ pub struct TestVtcBuilder {
     voting: crate::elections::VotingConfig,
     /// The ballot boxes elections are registered with.
     ballot_boxes: Option<Arc<dyn crate::elections::link::BallotBoxChannel>>,
+    /// Reach ballot boxes over this VTC's own messaging — the production
+    /// [`crate::elections::link::BallotBoxLink`] — rather than through `ballot_boxes`.
+    elections_over_messaging: bool,
 }
 
 impl Default for TestVtcBuilder {
@@ -199,6 +202,7 @@ impl Default for TestVtcBuilder {
             directory: crate::directory::model::Settings::default(),
             voting: Default::default(),
             ballot_boxes: None,
+            elections_over_messaging: false,
         }
     }
 }
@@ -224,6 +228,15 @@ impl TestVtcBuilder {
     ) -> Self {
         self.voting = voting;
         self.ballot_boxes = Some(link);
+        self
+    }
+
+    /// Set `[voting]`, and reach ballot boxes as the service does: over this VTC's own
+    /// messaging, signed as the community (VTI-VOT-005). Needs signers, a DID resolver and a
+    /// running DIDComm listener — what [`MockVtcTransport`] wires.
+    pub fn with_elections_over_messaging(mut self, voting: crate::elections::VotingConfig) -> Self {
+        self.voting = voting;
+        self.elections_over_messaging = true;
         self
     }
 
@@ -670,6 +683,21 @@ impl TestVtcBuilder {
             }),
         };
 
+        let pending_replies = crate::hooks::PendingReplies::new();
+        let ballot_boxes = if self.elections_over_messaging {
+            Some(Arc::new(crate::elections::link::BallotBoxLink {
+                peers: crate::outbound::PeerTasks {
+                    didcomm: didcomm_cell.clone(),
+                    signer: credential_signer.clone(),
+                    replies: pending_replies.clone(),
+                    resolver: did_resolver.clone(),
+                },
+            })
+                as Arc<dyn crate::elections::link::BallotBoxChannel>)
+        } else {
+            self.ballot_boxes
+        };
+
         let state = AppState {
             // Fixed key: a test never needs the counter to be unguessable, and
             // a deterministic one keeps a failure reproducible.
@@ -693,7 +721,7 @@ impl TestVtcBuilder {
             sync_cursor_ks,
             hooks_queue_ks,
             hooks_cursor_ks,
-            pending_replies: crate::hooks::PendingReplies::new(),
+            pending_replies,
             relationships_ks,
             relationships_by_did_ks,
             endorsement_types_ks,
@@ -726,7 +754,7 @@ impl TestVtcBuilder {
                 store
                     .keyspace(crate::store::keyspaces::ELECTIONS)
                     .expect("elections ks"),
-                self.ballot_boxes,
+                ballot_boxes,
             )),
             audit_ks,
             audit_key_ks,
@@ -2496,7 +2524,17 @@ mod transport_harness {
         /// messaging wired), and a connected applicant. Returns once everything
         /// is bound and the dispatch loop is running.
         pub async fn start() -> MockVtcTransport {
-            MockVtcTransport::start_inner(false).await
+            MockVtcTransport::start_inner(false, None).await
+        }
+
+        /// As [`start`](Self::start), with community elections on: `[voting]` as given, and
+        /// ballot boxes reached over this VTC's own messaging — the production link — so a
+        /// ballot box on the same mediator ([`register_local_did`](Self::register_local_did))
+        /// is registered, closed and read exactly as a deployed one is.
+        pub async fn start_with_elections(
+            voting: crate::elections::VotingConfig,
+        ) -> MockVtcTransport {
+            MockVtcTransport::start_inner(false, Some(voting)).await
         }
 
         /// As [`start`](Self::start), but the VTC's DID additionally advertises
@@ -2509,10 +2547,13 @@ mod transport_harness {
         /// [`TestJoinClient::send_tsp`] for the sending half.
         #[cfg(feature = "tsp")]
         pub async fn start_with_tsp() -> MockVtcTransport {
-            MockVtcTransport::start_inner(true).await
+            MockVtcTransport::start_inner(true, None).await
         }
 
-        async fn start_inner(advertise_tsp: bool) -> MockVtcTransport {
+        async fn start_inner(
+            advertise_tsp: bool,
+            voting: Option<crate::elections::VotingConfig>,
+        ) -> MockVtcTransport {
             // Transport identities. The applicant's is generated up front so it
             // can be registered LOCAL on the mediator (needed to open inbound).
             //
@@ -2577,7 +2618,11 @@ mod transport_harness {
             // (so credential delivery packs from a resolvable sender). The DID
             // resolver is required — `run_didcomm_service` resolves the VTC's
             // document to learn its verification-method ids.
-            let vtc = TestVtc::builder()
+            let mut builder = TestVtc::builder();
+            if let Some(voting) = voting {
+                builder = builder.with_elections_over_messaging(voting);
+            }
+            let vtc = builder
                 .vtc_did(vtc_did.clone())
                 .with_audit(true)
                 .with_signers(true)

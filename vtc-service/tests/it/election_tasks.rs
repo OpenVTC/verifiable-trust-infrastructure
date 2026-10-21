@@ -341,6 +341,11 @@ struct Ballot {
 }
 
 async fn read_election(tv: &TestVtc, reader: &Party, id: &str) -> Ballot {
+    read_election_of(tv, reader, id, TEST_VTC_DID).await
+}
+
+/// [`read_election`], for a community whose DID is `community`.
+async fn read_election_of(tv: &TestVtc, reader: &Party, id: &str, community: &str) -> Ballot {
     let (status, shown) = call(tv, reader, &uri("show"), json!({ "electionId": id })).await;
     assert_eq!(status, StatusCode::OK, "{shown}");
     let shown = payload(&shown);
@@ -348,9 +353,9 @@ async fn read_election(tv: &TestVtc, reader: &Party, id: &str) -> Ballot {
         vti_vetting_pcs::scheme::dec(shown["parameters"]["votingKey"].as_str().unwrap()).unwrap();
     let digest = shown["manifestDigest"].as_str().unwrap().to_string();
     Ballot {
-        params: VotingParams::new(TEST_VTC_DID, hvk).unwrap(),
+        params: VotingParams::new(community, hvk).unwrap(),
         election: Election::new(
-            TEST_VTC_DID,
+            community,
             ElectionId::new(id).unwrap(),
             digest_from_multibase(&digest).unwrap(),
         )
@@ -1134,4 +1139,175 @@ async fn a_sealed_election_is_created_decrypted_by_its_trustees_and_certified() 
         payload(&doc)["result"]["questions"][0]["choice"],
         json!({ "alice": 2, "bob": 0 })
     );
+}
+
+/// An open election end to end over a real mediator: the community's production link to a
+/// ballot box (TSP, then DIDComm, signed as the community — VTI-VOT-005), and a real voting
+/// service — the host session and dispatcher a deployed `vti-voting-service` runs — on the same
+/// mediator. Created and registered, a member takes a ticket and casts over the ballot box's
+/// HTTPS door, the community closes early, and certifies the board it reads back over the
+/// mediator. Nothing here is in-process between the community and the ballot box.
+#[tokio::test]
+async fn an_open_election_runs_against_a_real_ballot_box_over_a_mediator() {
+    use affinidi_did_resolver_cache_sdk::{DIDCacheClient, config::DIDCacheConfigBuilder};
+    use affinidi_tdk::dids::{
+        DID, KeyType, OneOrMany, PeerKeyRole, PeerService, PeerServiceEndpoint,
+        PeerServiceEndpointLong,
+    };
+    use http_body_util::BodyExt as _;
+    use tower::ServiceExt as _;
+    use vtc_service::test_support::MockVtcTransport;
+    use vti_voting_service::{
+        AppState as BoxState,
+        identity::Identity,
+        messaging::{BallotBoxResponder, IdentitySession, Shared, supervise},
+    };
+
+    let h = MockVtcTransport::start_with_elections(VotingConfig::default()).await;
+    let community = h.vtc_did().to_string();
+
+    // The ballot box: a did:peer at the shared mediator, served by the voting service's own
+    // host session and dispatcher.
+    let (box_did, box_secrets) = DID::generate_did_peer_with_services(
+        vec![
+            (PeerKeyRole::Verification, KeyType::Ed25519),
+            (PeerKeyRole::Encryption, KeyType::X25519),
+        ],
+        Some(vec![PeerService {
+            type_: "DIDCommMessaging".into(),
+            endpoint: PeerServiceEndpoint::Long(OneOrMany::One(PeerServiceEndpointLong {
+                uri: h.mediator_did().to_string(),
+                accept: vec![],
+                routing_keys: vec![],
+            })),
+            id: None,
+        }]),
+    )
+    .expect("mint the ballot box's did:peer");
+    h.register_local_did(&box_did).await;
+    let did_resolver = DIDCacheClient::new(DIDCacheConfigBuilder::default().build())
+        .await
+        .expect("a DID resolver");
+    let key = vta_sdk::trust_task_sign::HolderKey::new(
+        box_secrets[0].id.clone(),
+        box_secrets[0].get_private_keymultibase().unwrap(),
+    )
+    .unwrap();
+    let box_state = Arc::new(BoxState {
+        ballot_box: Mutex::new(BallotBox::new(&box_did)),
+        identity: Identity {
+            did: box_did.clone(),
+            key,
+        },
+        resolver: vti_common::auth::TrustTaskVmResolver::new(did_resolver.clone()),
+    });
+    let (stop, stopped) = tokio::sync::watch::channel(false);
+    let session = tokio::spawn(supervise(
+        IdentitySession::new(
+            BallotBoxResponder::new(box_state.clone()),
+            h.mediator_did().to_string(),
+            box_secrets,
+        ),
+        Arc::new(Shared {
+            did_resolver,
+            resolver_url: None,
+        }),
+        stopped,
+    ));
+
+    // The community trusts it.
+    h.vtc.state.config.write().await.voting = VotingConfig {
+        trusted_ballot_boxes: vec![TrustedBallotBox {
+            did: box_did.clone(),
+            operator: "E2E Ballots".into(),
+            same_operator: false,
+        }],
+    };
+    let tv = &h.vtc;
+    let chair = admin(tv).await;
+    let mut m = manifest("e2e", false);
+    m["community"] = json!(community);
+    m["ballotBox"] = json!(box_did);
+    m["board"]["auditors"] = json!([]);
+    m["votingOpens"] = json!(stamp(Utc::now() + Duration::seconds(4)));
+
+    // Registered over the mediator: until the ballot box's session is up, the create stays
+    // pending and the sweeper redelivers it.
+    let (status, doc) = create(tv, &chair, m).await;
+    assert_eq!(status, StatusCode::OK, "{doc}");
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(60);
+    loop {
+        let (_, shown) = call(tv, &chair, &uri("show"), json!({ "electionId": "e2e" })).await;
+        if payload(&shown)["state"] != "pendingRegistration" {
+            assert_ne!(payload(&shown)["state"], "failed", "{shown}");
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "never registered: {shown}"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        vtc_service::elections::sweeper::pass(&tv.state, Utc::now())
+            .await
+            .unwrap();
+    }
+
+    // A member takes a ticket from the community and casts at the ballot box's HTTPS door,
+    // from a key made for the cast.
+    let alice = member(tv).await;
+    let b = read_election_of(tv, &alice, "e2e", &community).await;
+    let (voter, ticket) = take_ticket(tv, &alice, &b).await;
+    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+    let cast = cast_for(&b, &voter, &ticket, "alice");
+    let one_time = Identity::from_seed(&[7; 32]).unwrap();
+    let mut cast_doc: trust_tasks_rs::TrustTask<Value> = serde_json::from_value(json!({
+        "id": format!("urn:uuid:{}", uuid::Uuid::new_v4()),
+        "type": "https://trusttasks.org/spec/voting/ballot/cast/0.1",
+        "issuer": one_time.did,
+        "recipient": box_did,
+        "issuedAt": stamp(Utc::now()),
+        "payload": { "community": community, "electionId": "e2e", "cast": cast },
+    }))
+    .unwrap();
+    vta_sdk::trust_task_sign::sign_in_place_with(&mut cast_doc, &one_time.key)
+        .await
+        .unwrap();
+    let res = vti_voting_service::router(box_state.clone())
+        .oneshot(
+            axum::http::Request::post("/trust-tasks")
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from(
+                    serde_json::to_vec(&cast_doc).unwrap(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = res.status();
+    let receipt: Value =
+        serde_json::from_slice(&res.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    assert_eq!(status, StatusCode::OK, "{receipt}");
+    assert_eq!(receipt["payload"]["outcome"], "counted");
+
+    // Closed early by the community, over the mediator, and certified from the board it reads
+    // back the same way.
+    let (status, doc) = call(tv, &chair, &uri("close"), json!({ "electionId": "e2e" })).await;
+    assert_eq!(status, StatusCode::OK, "{doc}");
+    let (status, doc) = call(
+        tv,
+        &chair,
+        &uri("certify"),
+        json!({ "electionId": "e2e", "auditAttestations": [] }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{doc}");
+    assert_eq!(payload(&doc)["result"]["ballotsCounted"], 1);
+    assert_eq!(
+        payload(&doc)["result"]["questions"][0]["choice"],
+        json!({ "alice": 1, "bob": 0 })
+    );
+
+    let _ = stop.send(true);
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(15), session).await;
+    h.shutdown().await;
 }

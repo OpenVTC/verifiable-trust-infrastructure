@@ -421,6 +421,10 @@ vtc-service = { path = ".", features = ["test-support", "transport-harness"] }
 # `tsp`: `tests/git_ns_vtc_client.rs` drives the git-ns calls over TSP too.
 vtc-client = { path = "../vtc-client", features = ["tsp"] }
 tempfile = "3"
+# The voting service itself (`publish = false`, so path-only and stripped from the published
+# package): `tests/it/election_tasks.rs` runs a real ballot box on the harness's mediator and
+# registers, reads and certifies through the community's production link to it.
+vti-voting-service = { path = "../vti-voting-service" }
 # Integration tests under `tests/` exercise the route stack via
 # `Router::oneshot` — same pattern as `vta-service/tests/api_integration.rs`.
 http-body-util = "0.1"
