@@ -134,6 +134,19 @@ refuse it. Given together with `co_admin_did` it is accepted with a warning:
 keep it only if that DID is another of your own identifiers. See
 [`admin-access.md`](admin-access.md) §2.1a.
 
+### Choosing the provisioning transport
+
+`provision_transport = "tsp" | "didcomm" | "rest"` forces the transport setup
+provisions over; the interactive wizard asks the same when the VTA advertises
+more than one. Omitted, the runner picks TSP > DIDComm > REST and moves on only
+when a transport fails to *connect*. Once the VTA has acted on the request a lost
+reply is final: the setup DID's one-time hand-off is spent, and the VTA holds an
+admin entry whose key was only in that reply. Re-grant the setup DID, delete that
+entry (`pnm acl list --context <context>` shows it), and force a transport the
+mediator delivers. The SDK reconnects once on a reply timeout to collect a reply
+the mediator stored but did not push, so this is the fallback, not the first
+line.
+
 **The VTC's ACL is still empty at this point.** `admin_did` cannot
 authenticate until the install URL is claimed or an ACL entry is added
 offline, and a headless deploy usually needs its own automation key as well.

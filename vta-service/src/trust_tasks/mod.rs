@@ -96,6 +96,7 @@ mod produced_census;
 mod provision_integration;
 pub(crate) mod received;
 mod room_act;
+mod room_catch_up;
 mod room_group;
 mod room_keys;
 mod room_label;
@@ -2475,6 +2476,10 @@ dispatch_table! {
         [ None None true ],
     vta_sdk::trust_tasks::TASK_KEYS_SIGN_CSR_0_1 => keys::handle_sign_csr
         [ None None true ],
+    // sideEffects none, discloses none, actsAsSubject — the proof is the
+    // signer DID's own assertion.
+    vta_sdk::trust_tasks::TASK_KEYS_SIGN_DOCUMENT_0_1 => keys::handle_sign_document
+        [ None None true ],
     vta_sdk::trust_tasks::TASK_KEYS_DERIVE_AND_SIGN_0_1 => keys::handle_derive_and_sign
         [ Mutating None true ],
     vta_sdk::trust_tasks::TASK_KEYS_DERIVE_AND_SIGN_DOCUMENT_0_1 => keys::handle_derive_and_sign_document
@@ -2747,6 +2752,10 @@ dispatch_table! {
         [ None Metadata true ],
     // 0.5: also `vtc/rooms/memberships/list/0.1`.
     vta_sdk::trust_tasks::TASK_ROOMS_KEYS_ACT_0_5 => room_act::handle_act_v0_5
+        [ None Metadata true ],
+    // 0.6: also `vtc/rooms/offers/list/0.3`, which carries the renewals of the admissions
+    // a member holds (trust-tasks-tf #843).
+    vta_sdk::trust_tasks::TASK_ROOMS_KEYS_ACT_0_6 => room_act::handle_act_v0_6
         [ None Metadata true ],
     vta_sdk::trust_tasks::TASK_ROOMS_KEYS_LIST_0_1 => room_group::handle_list
         [ None Metadata false ],

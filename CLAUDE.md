@@ -878,6 +878,15 @@ new flow, update both this section and the relevant `docs/*.md`.
   `sign-jws` / `sign-csr` **only**: `sign` is not accepted, because this VTA
   frames `keys/sign` payloads and the specs say such a custodian SHOULD NOT
   widen `sign` into either.
+- **Documents** (`keys/sign-document/0.1`: credentials, a member's external
+  directory card): an `eddsa-jcs-2022` proof made **only as the DID the
+  document names** (`issuer` / `controller`), with a key that DID's own document
+  lists under the requested purpose. That document is never taken from the
+  request — `did:key` / `did:peer` from the identifier, a `did:webvh` this VTA
+  minted from its own log (`persona::own_document`), else resolved. The VTA
+  builds the proof configuration and the 64 bytes of hash data
+  (`sign_formats`), signed as `ProtocolDefined`. Gated on `sign-document`
+  **only**; never sign a document that names no signer or already has a proof.
 - **Delegated identities**: `keys/derive-and-sign*` signs as a path without a
   key record. Super-admin only, confined to `m/26'/9'`, audited with a digest
   of what was signed.
@@ -1222,7 +1231,7 @@ new flow, update both this section and the relevant `docs/*.md`.
   the SDK, always available): `ai-agent`, `ai-agent-peer`,
   `did-host-didcomm`, `did-host-http`, `did-host-http-didcomm`,
   `did-host-http-tsp`, `did-host-tsp`, `didcomm-mediator`,
-  `dtg-witness`, `push-gateway`, `swiyu-verifier`, `vta-admin`, `vtc-host`. The `did-host-*` names encode
+  `dtg-witness`, `push-gateway`, `swiyu-verifier`, `vta-admin`, `vtc-group`, `vtc-host`. The `did-host-*` names encode
   the DID-document **shape** (`http` = WebVHHosting, `didcomm` =
   DIDCommMessaging, `tsp` = TSPTransport), so a deployment role maps onto
   a shape: control = `did-host-http-didcomm`, hosting daemon =
@@ -1345,15 +1354,26 @@ new flow, update both this section and the relevant `docs/*.md`.
 - **What**: The community's field schema (`fields/*`), each member's card
   (`card/{show,update,assert}`), and browse/search/show (`entries/*`, plus the
   older `query/0.1`), every read a **projection** for its caller; pictures
-  (`images/{upload,get}`) and external cards (`card/{publish,public}`). Groups,
-  introductions, notes, export and credential-sourced fields are later phases
-  (design §14).
+  (`images/{upload,get}`), external cards (`card/{publish,public}`),
+  administrators' notes (`notes/*`), the export, and credential-sourced fields
+  (`card/present`). Groups are their own family (*VTC community groups*);
+  introductions are a later phase (design §14).
 - **Invariants to preserve**: a value leaves only where the member's own
   visibility, the field's ceiling **and** the `directory` policy all admit the
   viewer — intersected, and the policy can only narrow (`directory::project`,
   VTI-DIR-020/021). Withheld means absent; nothing visible is the same
   `notFound` as no such entry (VTI-DIR-110). A viewer's stars, lists and notes
-  are never stored here (VTI-DIR-001). A picture is stored only as the
+  are never stored here (VTI-DIR-001). Administrators' notes
+  (`directory::notes`, `vtc.directory.notes`) are the opposite case: kept here,
+  never in a card or any projection, append-only (a redaction is a later note),
+  and released to their member only by `notes/export` behind a bound step-up at
+  Critical (VTI-DIR-030 – 033). A verified value (`directory::present`,
+  `card/present`) is written only from a presentation whose holder is the member
+  (their DID, or an SD-JWT key their DID lists and the key-binding `kid` names),
+  bound by the presentation's signed `nonce` = the request `id` and `domain` =
+  the community DID; only the named claims are kept, never the presentation, a
+  lapsed one is hidden by `Subject::from_records` and withdrawn by the sweeper,
+  and a refusal's reason is logged, never answered. A picture is stored only as the
   community's own re-encoding (`directory::images::reencode` — never a byte as
   sent, never metadata), goes only on its uploader's card, and is read only
   through the projection (`images/get`), never by digest alone. An external card
@@ -1388,6 +1408,66 @@ new flow, update both this section and the relevant `docs/*.md`.
   `consent`, `task-consent` or `confirm`.
 - **Docs**: `docs/03-vtc/member-directory.md`,
   `docs/05-design-notes/vtc-member-directory.md`.
+
+### VTC community groups (`vtc/groups/*`)
+- **What**: The community's groups, each with its own `did:webvh` that the
+  community's VTA mints from the `vtc-group` template and holds, and a community →
+  group DTG `AuthorityCredential` (`issue-membership`) the VTA signs **as the
+  community** through `keys/sign-document`, with a slot in the community's
+  revocation list and an expiry. Served: `create`, `update`, `delete`, `list`,
+  `show`, `members/{add,remove,list}`, `join`, `leave`, `requests/{list,decide}`
+  `managers/{add,remove}` for **static** groups (a dynamic one is checked, then
+  refused `kindNotServed`), and `bindings/{add,remove,list}` for **room**
+  bindings (grants/role bindings refused `kindNotServed`, nothing stored).
+- **Room bindings** (`groups::bindings`): a manager holding `vtc.rooms.manage`
+  binds a community room, after the bound gesture `members/add` takes (never
+  parked). The reconciler is the one owner of every effect: it offers each
+  active group member admission through the normal offer path (recorded only
+  after the VTA answered), keeps `MemberRecord::sources` (`gb_…` ids, plus
+  `direct` for an administrator's admission), owes a `LeftGroup` removal
+  through `rooms::departures` when no source is left — never removing a direct
+  admission — and renews bound admissions into `offers/list/0.3` `renewals`
+  (membership + authority, never an invitation; the renewed `validUntil` becomes
+  the admission's own).
+- **Where identities are published** (`did_hosting`): the runtime key
+  `dids.webvh_server` (`local` or a VTA hosting-server id; `config/patch`,
+  import, the Groups page) is read live at every group and community-room
+  mint and overrides each kind's `webvh_server`; unset, those apply. It never
+  moves an identity already minted, and is not consent-gated.
+- **Renewal** (`groups::renewal`, create item 5's MUST): a sweeper renews a
+  group's authority within `[groups] authority_renew_within_days` (default
+  `max(30, credential_valid_days)`, ≤ half the life) **in the slot it already
+  holds** (deletion's one bit revokes every authority it was issued), and each
+  active member's credential within a third of its life, offered with the
+  current authority. Remote first; the sweeper is the only retry owner
+  (`grenew:` schedules, capped backoff + jitter); no "renew now" task.
+- **Invariants to preserve**: the VTC holds no group key and never falls back to
+  one (`noKeyHolder`). Remote first: a group is stored only after its DID and its
+  authority exist; a served log is published before anything verifies against
+  the DID and withdrawn when a later step fails. Who manages a group is
+  `vtc.groups.manage` on the live ACL entry — unqualified for every group and
+  creating, or a resource grant `group:<groupId>` — never the group's record. A
+  group the caller may not see is `notFound` on every task, like one that does
+  not exist; `memberCount` only where `showMembers` admits the caller,
+  `managers`/`credentialAuthorityValidUntil` only to managers. A dynamic rule
+  reads only verified facts (role, `admin`/`credential` fields, personhood, join
+  date), never a `member`-sourced field. The group's DID document carries no name
+  or description. The `groups` policy only refuses. Audit by reference. A
+  member's group credential is a DTG `MembershipCredential` the VTA signs **as
+  the group** (`keys/sign-document`, the group's own key), issued and offered
+  **before** the membership is recorded, with no status list (expiry is the
+  revocation). The directory's `groups` audience counts only groups both belong
+  to whose member list the viewer may see (`groups::audience_groups`). Departure
+  ends every membership and withdraws pending requests (`groups::on_departure`,
+  before the card's own departure). Nobody decides their own request. A
+  manager's appointment is a resource grant written under the git-ns write lock
+  (so `acl/*` writes keep it); a granter who departs or no longer covers it
+  sends it to an `acl.grants.review` item (`groupGrants`), withdrawn on decline
+  or at the deadline (`groups::managers::sweep`).
+- **Code**: `vtc-service/src/groups/` (`mod`, `identity`, `policy`),
+  `vtc-service/src/trust_tasks/group_tasks.rs`,
+  `vtc-service/policies/default/groups.rego`, `vta-sdk/templates/vtc-group.json`.
+- **Docs**: `docs/03-vtc/groups.md`.
 
 ### VTC administrator action list (`vtc/admin/actions/*`)
 - **What**: Second-party consent at the VTC. An operation that needs other
@@ -1584,10 +1664,15 @@ new flow, update both this section and the relevant `docs/*.md`.
 ### VTC admin console live channel (`vtc/admin/events/*`)
 - **What**: An open admin console learns *when* to re-read — the action list,
   acknowledgements, join requests, members, single-administrator mode, the
-  configuration, and (0.2) the rooms pages — without polling every read on a
-  timer. One stream per console session; polling stays the fallback. Both
-  0.1 and 0.2 are served, each stream answered at its own version; the topic
-  set is closed per version (`rooms` only at 0.2, for `vtc.rooms.admin`).
+  configuration, (0.2) the rooms pages, and (0.3) the directory and groups
+  pages — without polling every read on a timer. One stream per console
+  session; polling stays the fallback. 0.1, 0.2 and 0.3 are served, each
+  stream answered at its own version; the topic set is closed per version
+  (`rooms` from 0.2, for `vtc.rooms.admin`; `directory` and `groups` from 0.3,
+  for `vtc.directory.{admin,notes}` and `vtc.groups.manage`). `groups` is
+  fingerprinted over the groups the recipient manages, so a manager qualified
+  to one group is never hinted about another; `directory` is coalesced to one
+  hint per ten seconds.
 - **Transport**: HTTPS binding 0.3 §2.1 **streamed responses** — the signed
   `vtc/admin/events/subscribe/0.1` document POSTed to the ordinary
   `/v1/trust-tasks` door with `Accept: text/event-stream, application/json;q=0.5`,
@@ -1616,9 +1701,10 @@ new flow, update both this section and the relevant `docs/*.md`.
   redelivery (a replay answers `204`); the bus is fed from storage seams
   (action save/delete, join-request store/delete, member store/delete, ACL
   store/delete, config override and profile writes, storage-config writes,
-  and `vti_rooms::observe`'s hook for room registration/renewal and holdings
-  or limit writes) and carries no row data; `rooms` is fingerprinted (rooms,
-  lifecycle state, 80/95/100 % bands, configs) so only rule-4 changes hint, and
+  `vti_rooms::observe`'s hook for room registration/renewal and holdings
+  or limit writes, and the directory's and groups' own writes) and carries
+  no row data; `rooms` is fingerprinted (rooms, lifecycle state,
+  80/95/100 % bands, configs) so only rule-4 changes hint, and
   a stream wakes itself at the next clock-driven lifecycle change;
   no lock across an await (R1.3); the console's live status is derived from
   bytes arriving, never latched (R6.2).

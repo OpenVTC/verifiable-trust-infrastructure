@@ -54,6 +54,7 @@ use trust_tasks_rs::specs::did_management::did::register;
 use trust_tasks_rs::specs::git_ns::view as git_ns_view;
 use trust_tasks_rs::specs::vtc::directory;
 use trust_tasks_rs::specs::vtc::endorsement_types;
+use trust_tasks_rs::specs::vtc::groups;
 use trust_tasks_rs::specs::vtc::invitations::deliver as invitation_deliver;
 use trust_tasks_rs::specs::vtc::join_requests::manifest;
 use trust_tasks_rs::specs::vtc::members::credentials as member_credentials;
@@ -349,6 +350,94 @@ spec_types! {
     DirectoryCardPublic01Payload(directory::card::public::v0_1::Payload);
     /// `vtc/directory/card/public/0.1#response` — the card exactly as its member signed it.
     DirectoryCardPublic01Response(directory::card::public::v0_1::Response);
+    /// `vtc/groups/create/0.1` payload — a new static group.
+    GroupsCreate01Payload(groups::create::v0_1::Payload);
+    /// `vtc/groups/create/0.1#response` — the group as stored.
+    GroupsCreate01Response(groups::create::v0_1::Response);
+    /// `vtc/groups/update/0.1` payload — a group's settings.
+    GroupsUpdate01Payload(groups::update::v0_1::Payload);
+    /// `vtc/groups/update/0.1#response` — the group as it now stands.
+    GroupsUpdate01Response(groups::update::v0_1::Response);
+    /// `vtc/groups/delete/0.1` payload — the group to delete, and why.
+    GroupsDelete01Payload(groups::delete::v0_1::Payload);
+    /// `vtc/groups/delete/0.1#response` — whether the group is gone.
+    GroupsDelete01Response(groups::delete::v0_1::Response);
+    /// `vtc/groups/list/0.1` payload — which groups to list.
+    GroupsList01Payload(groups::list::v0_1::Payload);
+    /// `vtc/groups/list/0.1#response` — the groups the caller may see.
+    GroupsList01Response(groups::list::v0_1::Response);
+    /// `vtc/groups/show/0.1` payload — one group.
+    GroupsShow01Payload(groups::show::v0_1::Payload);
+    /// `vtc/groups/show/0.1#response` — the group as the caller may see it.
+    GroupsShow01Response(groups::show::v0_1::Response);
+    /// `vtc/groups/members/add/0.1` payload — adding a member.
+    GroupsMembersAdd01Payload(groups::members::add::v0_1::Payload);
+    /// `vtc/groups/members/add/0.1#response` — the membership, and the credential offered.
+    GroupsMembersAdd01Response(groups::members::add::v0_1::Response);
+    /// `vtc/groups/members/remove/0.1` payload — removing a member.
+    GroupsMembersRemove01Payload(groups::members::remove::v0_1::Payload);
+    /// `vtc/groups/members/remove/0.1#response` — the membership ended.
+    GroupsMembersRemove01Response(groups::members::remove::v0_1::Response);
+    /// `vtc/groups/members/list/0.1` payload — one group's members.
+    GroupsMembersList01Payload(groups::members::list::v0_1::Payload);
+    /// `vtc/groups/members/list/0.1#response` — the members the caller may see.
+    GroupsMembersList01Response(groups::members::list::v0_1::Response);
+    /// `vtc/groups/join/0.1` payload — joining or asking to.
+    GroupsJoin01Payload(groups::join::v0_1::Payload);
+    /// `vtc/groups/join/0.1#response` — what came of it.
+    GroupsJoin01Response(groups::join::v0_1::Response);
+    /// `vtc/groups/leave/0.1` payload — leaving, or withdrawing a request.
+    GroupsLeave01Payload(groups::leave::v0_1::Payload);
+    /// `vtc/groups/leave/0.1#response` — what came of it.
+    GroupsLeave01Response(groups::leave::v0_1::Response);
+    /// `vtc/groups/requests/list/0.1` payload — requests to the caller's groups.
+    GroupsRequestsList01Payload(groups::requests::list::v0_1::Payload);
+    /// `vtc/groups/requests/list/0.1#response` — the requests.
+    GroupsRequestsList01Response(groups::requests::list::v0_1::Response);
+    /// `vtc/groups/requests/decide/0.1` payload — a decision on a request.
+    GroupsRequestsDecide01Payload(groups::requests::decide::v0_1::Payload);
+    /// `vtc/groups/requests/decide/0.1#response` — the request, and the membership it made.
+    GroupsRequestsDecide01Response(groups::requests::decide::v0_1::Response);
+    /// `vtc/groups/managers/add/0.1` payload — appointing a group's manager.
+    GroupsManagersAdd01Payload(groups::managers::add::v0_1::Payload);
+    /// `vtc/groups/managers/add/0.1#response` — the group's managers.
+    GroupsManagersAdd01Response(groups::managers::add::v0_1::Response);
+    /// `vtc/groups/managers/remove/0.1` payload — ending a manager's appointment.
+    GroupsManagersRemove01Payload(groups::managers::remove::v0_1::Payload);
+    /// `vtc/groups/managers/remove/0.1#response` — the group's managers.
+    GroupsManagersRemove01Response(groups::managers::remove::v0_1::Response);
+    /// `vtc/groups/bindings/add/0.1` payload — binding a group to a room.
+    GroupsBindingsAdd01Payload(groups::bindings::add::v0_1::Payload);
+    /// `vtc/groups/bindings/add/0.1#response` — the binding recorded.
+    GroupsBindingsAdd01Response(groups::bindings::add::v0_1::Response);
+    /// `vtc/groups/bindings/remove/0.1` payload — ending a binding, and why.
+    GroupsBindingsRemove01Payload(groups::bindings::remove::v0_1::Payload);
+    /// `vtc/groups/bindings/remove/0.1#response` — where its removal stands.
+    GroupsBindingsRemove01Response(groups::bindings::remove::v0_1::Response);
+    /// `vtc/groups/bindings/list/0.1` payload — one group's bindings.
+    GroupsBindingsList01Payload(groups::bindings::list::v0_1::Payload);
+    /// `vtc/groups/bindings/list/0.1#response` — the group's bindings.
+    GroupsBindingsList01Response(groups::bindings::list::v0_1::Response);
+    /// `vtc/directory/card/present/0.1` payload — the fields a presentation fills.
+    DirectoryCardPresent01Payload(directory::card::present::v0_1::Payload);
+    /// `vtc/directory/card/present/0.1#response` — each field's verified value.
+    DirectoryCardPresent01Response(directory::card::present::v0_1::Response);
+    /// `vtc/directory/notes/append/0.1` payload — a note about a member, or a redaction.
+    DirectoryNotesAppend01Payload(directory::notes::append::v0_1::Payload);
+    /// `vtc/directory/notes/append/0.1#response` — the note as stored.
+    DirectoryNotesAppend01Response(directory::notes::append::v0_1::Response);
+    /// `vtc/directory/notes/list/0.1` payload — one member's notes, a page at a time.
+    DirectoryNotesList01Payload(directory::notes::list::v0_1::Payload);
+    /// `vtc/directory/notes/list/0.1#response` — notes newest first, redacted text withheld.
+    DirectoryNotesList01Response(directory::notes::list::v0_1::Response);
+    /// `vtc/directory/notes/export/0.1` payload — one member's notes, and why.
+    DirectoryNotesExport01Payload(directory::notes::export::v0_1::Payload);
+    /// `vtc/directory/notes/export/0.1#response` — every note as written.
+    DirectoryNotesExport01Response(directory::notes::export::v0_1::Response);
+    /// `vtc/directory/export/0.1` payload — the whole directory, and why.
+    DirectoryExport01Payload(directory::export::v0_1::Payload);
+    /// `vtc/directory/export/0.1#response` — one page of JSContact cards.
+    DirectoryExport01Response(directory::export::v0_1::Response);
     /// `vtc/rooms/community/members/list/0.1` payload.
     RoomsCommunityMembersList01Payload(rooms_community::members::list::v0_1::Payload);
     /// `vtc/rooms/community/members/list/0.1#response` — one page of a room's
@@ -738,6 +827,44 @@ mod tests {
         check::<DirectoryCardPublish01Response>();
         check::<DirectoryCardPublic01Payload>();
         check::<DirectoryCardPublic01Response>();
+        check::<GroupsCreate01Payload>();
+        check::<GroupsCreate01Response>();
+        check::<GroupsUpdate01Payload>();
+        check::<GroupsUpdate01Response>();
+        check::<GroupsDelete01Payload>();
+        check::<GroupsDelete01Response>();
+        check::<GroupsList01Payload>();
+        check::<GroupsList01Response>();
+        check::<GroupsShow01Payload>();
+        check::<GroupsShow01Response>();
+        check::<GroupsMembersAdd01Payload>();
+        check::<GroupsMembersAdd01Response>();
+        check::<GroupsMembersRemove01Payload>();
+        check::<GroupsMembersRemove01Response>();
+        check::<GroupsMembersList01Payload>();
+        check::<GroupsMembersList01Response>();
+        check::<GroupsJoin01Payload>();
+        check::<GroupsJoin01Response>();
+        check::<GroupsLeave01Payload>();
+        check::<GroupsLeave01Response>();
+        check::<GroupsRequestsList01Payload>();
+        check::<GroupsRequestsList01Response>();
+        check::<GroupsRequestsDecide01Payload>();
+        check::<GroupsRequestsDecide01Response>();
+        check::<GroupsManagersAdd01Payload>();
+        check::<GroupsManagersAdd01Response>();
+        check::<GroupsManagersRemove01Payload>();
+        check::<GroupsManagersRemove01Response>();
+        check::<DirectoryCardPresent01Payload>();
+        check::<DirectoryCardPresent01Response>();
+        check::<DirectoryNotesAppend01Payload>();
+        check::<DirectoryNotesAppend01Response>();
+        check::<DirectoryNotesList01Payload>();
+        check::<DirectoryNotesList01Response>();
+        check::<DirectoryNotesExport01Payload>();
+        check::<DirectoryNotesExport01Response>();
+        check::<DirectoryExport01Payload>();
+        check::<DirectoryExport01Response>();
     }
 
     #[test]

@@ -965,6 +965,8 @@ async fn a_suspension_records_the_removals_owed_from_community_rooms() {
             credentials: None,
             welcome: None,
             admitted_epoch: Some(2),
+            renewal: None,
+            sources: Vec::new(),
         })
         .await
         .unwrap();

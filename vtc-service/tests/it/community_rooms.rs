@@ -3017,3 +3017,384 @@ async fn an_acceptance_after_an_earlier_removal_the_vta_gave_up_is_refused_and_r
     assert_eq!(accepted["payload"]["state"], "admitted", "{accepted}");
     assert_eq!(accepted["payload"]["epoch"], 2, "{accepted}");
 }
+
+// ─── a group's room bindings (`vtc/groups/bindings/*`) ──────────────────
+
+const BINDINGS_ADD: &str = "https://trusttasks.org/spec/vtc/groups/bindings/add/0.1";
+const BINDINGS_REMOVE: &str = "https://trusttasks.org/spec/vtc/groups/bindings/remove/0.1";
+const BINDINGS_LIST: &str = "https://trusttasks.org/spec/vtc/groups/bindings/list/0.1";
+const OFFERS_V0_3: &str = "https://trusttasks.org/spec/vtc/rooms/offers/list/0.3";
+const BINDINGS_ADD_ERR_NOT_FOUND: &str =
+    trust_tasks_rs::specs::vtc::groups::bindings::add::v0_1::error_codes::NOT_FOUND.code;
+const BINDINGS_ADD_ERR_KIND_NOT_SERVED: &str =
+    trust_tasks_rs::specs::vtc::groups::bindings::add::v0_1::error_codes::KIND_NOT_SERVED.code;
+const BINDINGS_ADD_ERR_ROOM_NOT_FOUND: &str =
+    trust_tasks_rs::specs::vtc::groups::bindings::add::v0_1::error_codes::ROOM_NOT_FOUND.code;
+const BINDINGS_ADD_ERR_BINDING_EXISTS: &str =
+    trust_tasks_rs::specs::vtc::groups::bindings::add::v0_1::error_codes::BINDING_EXISTS.code;
+const BINDINGS_ADD_ERR_TOO_MANY_BINDINGS: &str =
+    trust_tasks_rs::specs::vtc::groups::bindings::add::v0_1::error_codes::TOO_MANY_BINDINGS.code;
+const BINDINGS_REMOVE_ERR_NOT_FOUND: &str =
+    trust_tasks_rs::specs::vtc::groups::bindings::remove::v0_1::error_codes::NOT_FOUND.code;
+const BINDINGS_REMOVE_ERR_BINDING_NOT_FOUND: &str =
+    trust_tasks_rs::specs::vtc::groups::bindings::remove::v0_1::error_codes::BINDING_NOT_FOUND.code;
+const BINDINGS_LIST_ERR_NOT_FOUND: &str =
+    trust_tasks_rs::specs::vtc::groups::bindings::list::v0_1::error_codes::NOT_FOUND.code;
+
+/// A closed static group stored directly, with `members` in it.
+async fn a_group_with(fix: &Fixture, members: &[&Party]) -> String {
+    use vtc_service::groups;
+    let ks = fix.vtc.state.directory.ks();
+    let group_id = format!("grp_{}", &uuid::Uuid::new_v4().simple().to_string()[..22]);
+    let group: groups::Group = serde_json::from_value(json!({
+        "groupId": group_id,
+        "groupDid": format!("did:webvh:Qm{group_id}:groups.example"),
+        "signingKeyId": "key-1",
+        "name": "Board",
+        "joinPolicy": "closed",
+        "visibility": "members",
+        "showMembers": "members",
+        "issuesCredentials": false,
+        "createdAt": "2026-10-20T00:00:00Z",
+        "updatedAt": "2026-10-20T00:00:00Z",
+    }))
+    .unwrap();
+    groups::put(ks, &group).await.unwrap();
+    for m in members {
+        join_group(fix, &group_id, m).await;
+    }
+    group_id
+}
+
+async fn join_group(fix: &Fixture, group_id: &str, who: &Party) {
+    let ks = fix.vtc.state.directory.ks();
+    let card = vtc_service::directory::cards::ensure(
+        ks,
+        &who.did,
+        &fix.vtc.state.directory.settings(),
+        None,
+    )
+    .await
+    .unwrap();
+    vtc_service::groups::put_membership(
+        ks,
+        &vtc_service::groups::Membership {
+            group_id: group_id.to_string(),
+            entry_id: card.entry_id,
+            source: "added".into(),
+            since: Utc::now(),
+            state: "active".into(),
+            credential_id: None,
+            credential_valid_until: None,
+        },
+    )
+    .await
+    .unwrap();
+}
+
+fn room_binding(room: &str) -> Value {
+    json!({ "kind": "room", "roomId": room, "actions": ["read"], "validFor": "P30D" })
+}
+
+async fn bind(fix: &mut Fixture, group: &str, room: &str) -> Value {
+    let (status, reply) = admin_call(
+        fix,
+        BINDINGS_ADD,
+        json!({ "groupId": group, "binding": room_binding(room), "reason": "the board's room" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{reply}");
+    reply["payload"]["binding"].clone()
+}
+
+async fn reconcile(fix: &Fixture) -> vtc_service::groups::bindings::Report {
+    vtc_service::groups::bindings::reconcile(&fix.vtc.state, Utc::now())
+        .await
+        .unwrap()
+}
+
+/// A room binding offers every member of the group admission; they accept as from any
+/// offer; before their authority lapses the community renews it into
+/// `offers/list/0.3`'s `renewals`; and leaving the group owes their removal.
+#[tokio::test]
+async fn a_room_binding_admits_renews_and_withdraws_a_groups_members() {
+    let mut fix = fixture().await;
+    let room = create_room(&mut fix, "open").await;
+    let alice = member(&fix).await;
+    let group = a_group_with(&fix, &[&alice]).await;
+
+    let binding = bind(&mut fix, &group, &room).await;
+    assert_eq!(binding["state"], "active");
+    let id = binding["bindingId"].as_str().unwrap().to_string();
+
+    let report = reconcile(&fix).await;
+    assert_eq!(report.offered, vec![(room.clone(), alice.did.clone())]);
+    assert!(reconcile(&fix).await.offered.is_empty(), "offered once");
+
+    let offers = call_as(&fix, &alice, OFFERS_V0_3, json!({})).await;
+    assert_eq!(
+        offers["payload"]["items"][0]["roomId"],
+        room.as_str(),
+        "{offers}"
+    );
+    assert!(offers["payload"].get("renewals").is_none());
+    let accepted = call_as(&fix, &alice, ACCEPT, json!({ "roomId": room })).await;
+    assert_eq!(accepted["payload"]["state"], "admitted", "{accepted}");
+
+    // Due: within a third of 30 days of the expiry.
+    let rooms = &fix.vtc.state.community_rooms;
+    let mut record = rooms.member(&room, &alice.did).await.unwrap().unwrap();
+    assert_eq!(record.sources, vec![id.clone()]);
+    let old_until =
+        (Utc::now() + chrono::Duration::days(5)).to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+    record.valid_until = old_until.clone();
+    rooms.put_member(&record).await.unwrap();
+    fix.vta.clear_calls();
+    let report = reconcile(&fix).await;
+    assert_eq!(report.renewed, vec![(room.clone(), alice.did.clone())]);
+    assert_eq!(
+        fix.vta.types_called(),
+        vec![ISSUE_MEMBERSHIP.to_string(), ISSUE_AUTHORITY.to_string()],
+        "a renewal is a membership and an authority, never an invitation"
+    );
+    let offers = call_as(&fix, &alice, OFFERS_V0_3, json!({})).await;
+    let renewal = &offers["payload"]["renewals"][0];
+    assert_eq!(renewal["roomId"], room.as_str(), "{offers}");
+    assert_eq!(renewal["renews"], old_until.as_str());
+    assert!(renewal["credentials"]["authority"].is_string());
+    assert!(renewal["credentials"].get("invitation").is_none());
+    let record = rooms.member(&room, &alice.did).await.unwrap().unwrap();
+    assert_eq!(
+        record.valid_until,
+        renewal["validUntil"].as_str().unwrap(),
+        "the renewed expiry is the admission's own"
+    );
+    // 0.2 never shows a renewal.
+    let older = call_as(&fix, &alice, OFFERS_V0_2, json!({})).await;
+    assert!(older["payload"].get("renewals").is_none());
+
+    // Leaving the group: nothing else covers her, so her removal is owed.
+    vtc_service::groups::remove_membership(
+        fix.vtc.state.directory.ks(),
+        &group,
+        &vtc_service::directory::cards::entry_of(fix.vtc.state.directory.ks(), &alice.did)
+            .await
+            .unwrap()
+            .unwrap(),
+    )
+    .await
+    .unwrap();
+    let report = reconcile(&fix).await;
+    assert_eq!(report.withdrawn, vec![(room.clone(), alice.did.clone())]);
+    assert!(
+        rooms
+            .pending_removal(&room, &alice.did)
+            .await
+            .unwrap()
+            .is_some()
+    );
+}
+
+/// An administrator's direct admission is a source of its own: a binding that also
+/// covers the member never removes them when they leave the group.
+#[tokio::test]
+async fn a_direct_admission_outlives_the_binding_that_also_covered_it() {
+    let mut fix = fixture().await;
+    let room = create_room(&mut fix, "open").await;
+    let bob = member(&fix).await;
+    let added = add_member(&mut fix, &room, &bob.did, &in_a_year()).await;
+    assert_eq!(added["payload"]["member"]["state"], "offered", "{added}");
+    let group = a_group_with(&fix, &[&bob]).await;
+    let id = bind(&mut fix, &group, &room).await["bindingId"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let report = reconcile(&fix).await;
+    assert!(report.offered.is_empty());
+    assert_eq!(report.covered, vec![(room.clone(), bob.did.clone())]);
+    assert_eq!(
+        fix.vtc
+            .state
+            .community_rooms
+            .member(&room, &bob.did)
+            .await
+            .unwrap()
+            .unwrap()
+            .sources,
+        vec!["direct".to_string(), id.clone()]
+    );
+
+    // The binding goes: it named an admission, so it is removed through the reconciler.
+    let (status, removed) = admin_call(
+        &mut fix,
+        BINDINGS_REMOVE,
+        json!({ "groupId": group, "bindingId": id, "reason": "the board moved" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{removed}");
+    assert_eq!(removed["payload"]["state"], "removing");
+    let report = reconcile(&fix).await;
+    assert!(report.withdrawn.is_empty(), "the direct admission stands");
+    assert_eq!(report.deleted, vec![id]);
+    let record = fix
+        .vtc
+        .state
+        .community_rooms
+        .member(&room, &bob.did)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(record.sources.is_empty() && record.state == "offered");
+}
+
+#[tokio::test]
+async fn vtc_groups_bindings_add_refuses_what_its_specification_declares() {
+    let mut fix = fixture().await;
+    let room = create_room(&mut fix, "open").await;
+    let group = a_group_with(&fix, &[]).await;
+    let add = |group: &str, binding: Value| json!({ "groupId": group, "binding": binding, "reason": "why" });
+
+    let (_, doc) = admin_call(
+        &mut fix,
+        BINDINGS_ADD,
+        add("grp_NoSuchGroupNoSuchGrp", room_binding(&room)),
+    )
+    .await;
+    assert_eq!(
+        tt_error_code(&doc),
+        Some(BINDINGS_ADD_ERR_NOT_FOUND),
+        "{doc}"
+    );
+
+    let grants =
+        json!({ "kind": "grants", "grants": [{ "capability": "vtc.invitations.manage" }] });
+    let (_, doc) = admin_call(&mut fix, BINDINGS_ADD, add(&group, grants)).await;
+    assert_eq!(
+        tt_error_code(&doc),
+        Some(BINDINGS_ADD_ERR_KIND_NOT_SERVED),
+        "{doc}"
+    );
+    assert!(
+        vtc_service::groups::bindings::of_group(fix.vtc.state.directory.ks(), &group)
+            .await
+            .unwrap()
+            .is_empty(),
+        "nothing stored"
+    );
+
+    let (_, doc) = admin_call(
+        &mut fix,
+        BINDINGS_ADD,
+        add(
+            &group,
+            room_binding("did:webvh:QmNoSuchRoom:rooms.example:x"),
+        ),
+    )
+    .await;
+    assert_eq!(
+        tt_error_code(&doc),
+        Some(BINDINGS_ADD_ERR_ROOM_NOT_FOUND),
+        "{doc}"
+    );
+
+    bind(&mut fix, &group, &room).await;
+    let (_, doc) = admin_call(&mut fix, BINDINGS_ADD, add(&group, room_binding(&room))).await;
+    assert_eq!(
+        tt_error_code(&doc),
+        Some(BINDINGS_ADD_ERR_BINDING_EXISTS),
+        "{doc}"
+    );
+
+    let ks = fix.vtc.state.directory.ks();
+    for n in 1..vtc_service::groups::bindings::MAX_BINDINGS {
+        let mut spec = room_binding(&room);
+        spec["validFor"] = json!(format!("P{n}D"));
+        vtc_service::groups::bindings::put(
+            ks,
+            &vtc_service::groups::bindings::Binding {
+                binding_id: vtc_service::groups::bindings::new_binding_id(),
+                group_id: group.clone(),
+                binding: spec,
+                state: "active".into(),
+                created_at: Utc::now(),
+                created_by: fix.admin.did.clone(),
+                reason: "filler".into(),
+            },
+        )
+        .await
+        .unwrap();
+    }
+    let mut spec = room_binding(&room);
+    spec["validFor"] = json!("P999D");
+    let (_, doc) = admin_call(&mut fix, BINDINGS_ADD, add(&group, spec)).await;
+    assert_eq!(
+        tt_error_code(&doc),
+        Some(BINDINGS_ADD_ERR_TOO_MANY_BINDINGS),
+        "{doc}"
+    );
+}
+
+#[tokio::test]
+async fn vtc_groups_bindings_remove_refuses_what_its_specification_declares() {
+    let mut fix = fixture().await;
+    let group = a_group_with(&fix, &[]).await;
+    let (_, doc) = admin_call(
+        &mut fix,
+        BINDINGS_REMOVE,
+        json!({ "groupId": "grp_NoSuchGroupNoSuchGrp", "bindingId": "gb_NoSuchBindingNoSuchBi", "reason": "x" }),
+    )
+    .await;
+    assert_eq!(
+        tt_error_code(&doc),
+        Some(BINDINGS_REMOVE_ERR_NOT_FOUND),
+        "{doc}"
+    );
+    let (_, doc) = admin_call(
+        &mut fix,
+        BINDINGS_REMOVE,
+        json!({ "groupId": group, "bindingId": "gb_NoSuchBindingNoSuchBi", "reason": "x" }),
+    )
+    .await;
+    assert_eq!(
+        tt_error_code(&doc),
+        Some(BINDINGS_REMOVE_ERR_BINDING_NOT_FOUND),
+        "{doc}"
+    );
+
+    // One that covered nobody goes at once.
+    let room = create_room(&mut fix, "open").await;
+    let id = bind(&mut fix, &group, &room).await["bindingId"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (_, doc) = admin_call(
+        &mut fix,
+        BINDINGS_REMOVE,
+        json!({ "groupId": group, "bindingId": id, "reason": "x" }),
+    )
+    .await;
+    assert_eq!(doc["payload"]["state"], "removed", "{doc}");
+}
+
+#[tokio::test]
+async fn vtc_groups_bindings_list_refuses_what_its_specification_declares() {
+    let mut fix = fixture().await;
+    let room = create_room(&mut fix, "open").await;
+    let group = a_group_with(&fix, &[]).await;
+    bind(&mut fix, &group, &room).await;
+    let (_, listed) = admin_call(&mut fix, BINDINGS_LIST, json!({ "groupId": group })).await;
+    assert_eq!(
+        listed["payload"]["items"][0]["binding"]["roomId"],
+        room.as_str(),
+        "{listed}"
+    );
+
+    // A member who manages nothing: notFound, as for a group that does not exist.
+    let carol = member(&fix).await;
+    let doc = call_as(&fix, &carol, BINDINGS_LIST, json!({ "groupId": group })).await;
+    assert_eq!(
+        tt_error_code(&doc),
+        Some(BINDINGS_LIST_ERR_NOT_FOUND),
+        "{doc}"
+    );
+}

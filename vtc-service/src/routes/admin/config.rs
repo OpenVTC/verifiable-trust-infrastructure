@@ -396,6 +396,9 @@ async fn check_against_community(
     }
     // A community never witnesses (VTI-KEY-007): its own DID on its own list
     // would let it vouch for edges it is a party to.
+    if key == crate::did_hosting::DIDS_WEBVH_SERVER {
+        crate::did_hosting::validate(value)?;
+    }
     if key == crate::credentials::trusted_witnesses::WITNESSES_TRUSTED {
         let own = state.config.read().await.vtc_did.clone();
         crate::credentials::trusted_witnesses::parse_list(value, own.as_deref())?;

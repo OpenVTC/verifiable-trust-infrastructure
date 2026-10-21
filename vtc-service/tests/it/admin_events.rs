@@ -46,6 +46,8 @@ const SUBSCRIBE: &str = "https://trusttasks.org/spec/vtc/admin/events/subscribe/
 const EVENT: &str = "https://trusttasks.org/spec/vtc/admin/events/event/0.1";
 const SUBSCRIBE_V0_2: &str = "https://trusttasks.org/spec/vtc/admin/events/subscribe/0.2";
 const EVENT_V0_2: &str = "https://trusttasks.org/spec/vtc/admin/events/event/0.2";
+const SUBSCRIBE_V0_3: &str = "https://trusttasks.org/spec/vtc/admin/events/subscribe/0.3";
+const EVENT_V0_3: &str = "https://trusttasks.org/spec/vtc/admin/events/event/0.3";
 const STREAM_ACCEPT: &str = "text/event-stream, application/json;q=0.5";
 
 use vtc_service::admin_events::codes::{NOT_ADMINISTRATOR, STREAM_UNAVAILABLE, TOO_MANY_STREAMS};
@@ -304,7 +306,9 @@ async fn open_stream_at(
 /// A hint, held to everything its event version says one may carry — and
 /// nothing else. A stream's hints are of the version it was opened at.
 fn assert_hint_shape(hint: &Value, id: Option<&str>, request: &Value, subscriber: &str) {
-    let event = if request["type"] == SUBSCRIBE_V0_2 {
+    let event = if request["type"] == SUBSCRIBE_V0_3 {
+        EVENT_V0_3
+    } else if request["type"] == SUBSCRIBE_V0_2 {
         EVENT_V0_2
     } else {
         EVENT
@@ -948,4 +952,159 @@ async fn a_resumed_rooms_change_is_hinted_after_the_response() {
         .await
         .expect("the registration made while away is hinted");
     assert_hint_shape(&hint, id.as_deref(), &request, &admin.did);
+}
+
+// ─── 0.3: `directory` and `groups` ───────────────────────────────────────
+
+/// The next hint of `topic`, skipping any other topic's.
+async fn next_hint_of(
+    sse: &mut Sse,
+    topic: &str,
+    within: Duration,
+) -> Option<(Option<String>, Value)> {
+    let deadline = tokio::time::Instant::now() + within;
+    loop {
+        let left = deadline.saturating_duration_since(tokio::time::Instant::now());
+        let (id, hint) = sse.next_event(left).await?;
+        if hint["payload"]["topic"] == topic {
+            return Some((id, hint));
+        }
+    }
+}
+
+fn a_group(group_id: &str) -> vtc_service::groups::Group {
+    serde_json::from_value(json!({
+        "groupId": group_id,
+        "groupDid": format!("did:webvh:Qm{group_id}:groups.example"),
+        "signingKeyId": "key-1",
+        "name": "Working group",
+        "joinPolicy": "closed",
+        "visibility": "members",
+        "showMembers": "members",
+        "issuesCredentials": false,
+        "createdAt": "2026-10-20T00:00:00Z",
+        "updatedAt": "2026-10-20T00:00:00Z",
+    }))
+    .unwrap()
+}
+
+#[tokio::test]
+async fn directory_and_groups_are_countless_hints_at_0_3_naming_nothing() {
+    let vtc = vtc().await;
+    let admin = community_admin(&vtc).await;
+    let (request, mut sse, _, first) = open_stream_at(
+        &vtc,
+        SUBSCRIBE_V0_3,
+        &admin,
+        json!({ "topics": ["groups", "directory"] }),
+    )
+    .await;
+    assert_eq!(first["payload"]["topics"], json!(["directory", "groups"]));
+
+    let member = Party::new();
+    let card = vtc_service::directory::cards::ensure(
+        vtc.state.directory.ks(),
+        &member.did,
+        &vtc.state.directory.settings(),
+        None,
+    )
+    .await
+    .unwrap();
+    let (id, hint) = next_hint_of(&mut sse, "directory", Duration::from_secs(15))
+        .await
+        .expect("a card written is a directory hint");
+    assert_hint_shape(&hint, id.as_deref(), &request, &admin.did);
+    assert!(
+        !hint.to_string().contains(&card.entry_id),
+        "no entry is named"
+    );
+
+    vtc_service::groups::put(
+        vtc.state.directory.ks(),
+        &a_group("grp_AAAAAAAAAAAAAAAAAAAAAA"),
+    )
+    .await
+    .unwrap();
+    let (id, hint) = next_hint_of(&mut sse, "groups", Duration::from_secs(5))
+        .await
+        .expect("a group stored is a groups hint");
+    assert_hint_shape(&hint, id.as_deref(), &request, &admin.did);
+    assert!(!hint.to_string().contains("grp_"), "no group is named");
+}
+
+#[tokio::test]
+async fn a_0_2_subscribe_cannot_ask_for_directory_or_groups() {
+    let vtc = vtc().await;
+    let admin = community_admin(&vtc).await;
+    for topic in ["directory", "groups"] {
+        let (_, res) = subscribe_at(
+            &vtc,
+            SUBSCRIBE_V0_2,
+            &admin,
+            json!({ "topics": [topic] }),
+            Some(STREAM_ACCEPT),
+            None,
+        )
+        .await;
+        let (status, doc) = json_refusal(res).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{topic}");
+        assert_eq!(tt_error_code(&doc), Some("malformedRequest"), "{topic}");
+    }
+}
+
+/// A manager qualified to one group (`group:<id>`) is sent a hint only for a
+/// change to that group (subscribe 0.3 §Authorization), and an administrator
+/// holding neither directory capability is not sent `directory` at all.
+#[tokio::test]
+async fn a_manager_of_one_group_is_hinted_only_about_that_group() {
+    let vtc = vtc().await;
+    let ks = vtc.state.directory.ks();
+    let mine = "grp_MMMMMMMMMMMMMMMMMMMMMM";
+    let other = "grp_OOOOOOOOOOOOOOOOOOOOOO";
+    vtc_service::groups::put(ks, &a_group(mine)).await.unwrap();
+    vtc_service::groups::put(ks, &a_group(other)).await.unwrap();
+
+    let manager = Party::new();
+    let mut e = entry(
+        &manager.did,
+        AdminAuthority::for_role(AdminRole::Approver),
+        None,
+    );
+    e.resource_grants.push(
+        serde_json::from_value(json!({
+            "capability": "vtc.groups.manage",
+            "resource": format!("group:{mine}"),
+            "delegatedBy": "did:key:vtc-install",
+            "grantedAt": "2026-10-20T00:00:00Z",
+        }))
+        .unwrap(),
+    );
+    store_acl_entry(&vtc.state.acl_ks, &e).await.unwrap();
+
+    let (request, mut sse, _, first) = open_stream_at(
+        &vtc,
+        SUBSCRIBE_V0_3,
+        &manager,
+        json!({ "topics": ["groups", "directory", "actions"] }),
+    )
+    .await;
+    assert_eq!(first["payload"]["topics"], json!(["actions", "groups"]));
+
+    let mut changed = a_group(other);
+    changed.name = "Renamed".into();
+    vtc_service::groups::put(ks, &changed).await.unwrap();
+    assert!(
+        next_hint_of(&mut sse, "groups", Duration::from_secs(3))
+            .await
+            .is_none(),
+        "another group's change is no hint to a manager of one"
+    );
+
+    let mut changed = a_group(mine);
+    changed.name = "Renamed".into();
+    vtc_service::groups::put(ks, &changed).await.unwrap();
+    let (id, hint) = next_hint_of(&mut sse, "groups", Duration::from_secs(5))
+        .await
+        .expect("their own group's change is hinted");
+    assert_hint_shape(&hint, id.as_deref(), &request, &manager.did);
 }

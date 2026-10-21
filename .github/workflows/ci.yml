@@ -67,7 +67,7 @@ jobs:
   #           authorization-context types, `affects`: seconds to a minute
   #           each, little or no compile. Every tier-1 job `needs` all of them.
   #   tier 1  Clippy, Test (workspace), Test (VTC), Test (VTC, vetting-pcs),
-  #           Test (VTC admin UI), Mobile build (ios / android).
+  #           Test (VTC admin UI), Mobile build (ios-device / ios-simulator / android).
   #   tier 2  the Feature combos groups, Feature combos (all-features), Enclave
   #           build, Enclave proxy, MSRV. Each `needs` Clippy only, and runs
   #           unless it (or tier 0) FAILED.
@@ -355,7 +355,7 @@ jobs:
       # The version comes from the console's `.nvmrc`, the same file a
       # developer's `nvm use` reads, so CI and local agree on the node major.
       # `cache: npm` caches `~/.npm` keyed on the lockfile.
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: vtc-service/admin-ui/.nvmrc
           cache: npm
@@ -678,7 +678,7 @@ jobs:
         run: |
           rustup toolchain install stable --profile minimal --no-self-update
           rustup default stable
-      - uses: taiki-e/install-action@f7e5d7c961414b23f5b25b2da9294395d08513ad # v2.87.26
+      - uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 # v2.87.28
         with:
           tool: cargo-semver-checks
 
@@ -737,7 +737,7 @@ jobs:
         run: |
           rustup toolchain install stable --profile minimal --no-self-update
           rustup default stable
-      - uses: taiki-e/install-action@f7e5d7c961414b23f5b25b2da9294395d08513ad # v2.87.26
+      - uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 # v2.87.28
         with:
           tool: cargo-semver-checks
       - name: Check the proposed versions cover their API changes
@@ -1146,7 +1146,7 @@ jobs:
         run: |
           echo "version=$(awk '/^name = "wasm-bindgen"$/ { getline; gsub(/version = |"/, ""); print; exit }' Cargo.lock)" \
             >> "$GITHUB_OUTPUT"
-      - uses: taiki-e/install-action@f7e5d7c961414b23f5b25b2da9294395d08513ad # v2.87.26
+      - uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 # v2.87.28
         with:
           tool: wasm-bindgen@${{ steps.wasm-bindgen.outputs.version }}
       - name: vti-rooms-wasm artifact
@@ -1605,23 +1605,37 @@ jobs:
     # turn it took 36-49 minutes and finished last on every run that had it: on
     # main, ~50 minutes of a ~53-minute run whose other jobs were done by minute
     # 17. iOS needs Xcode, so it stays on macOS; Android needs only the NDK,
-    # which the Linux image ships too. Each leg generates the bindings from its
-    # own host build, so each stands alone.
+    # which the Linux image ships too. Only the Android leg generates the
+    # bindings: UniFFI reads them from metadata that does not depend on the
+    # host, and on the iOS leg the extra host build ran a job of three serial
+    # full builds (device 25 min, simulator 19, host 16) past its 60-minute
+    # limit (#2211, #2212).
+    #
+    # iOS is two legs, one per target. trust-tasks-rs alone takes 14-20 minutes
+    # per target on the 3-core, 7 GB macOS runner; both targets in one job ran
+    # past the limit serially, and in one cargo invocation (#2222) the two
+    # rustc processes on that crate never finished at all.
     #
     # Tier 1, not tier 2: as the critical path, waiting for Clippy added
     # Clippy's minutes to the whole run. It still waits for tier 0, so a
     # formatting slip or a stale lockfile does not start it.
-    name: Mobile build (${{ matrix.platform }})
+    name: Mobile build (${{ matrix.leg }})
     needs: [fmt, lockfile-self-pins, lockfile-resolves, deny, authz-context-types, affects]
     if: ${{ !cancelled() && !failure() && needs.affects.outputs.mobile != 'false' }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          - platform: ios
+          - leg: ios-device
+            platform: ios
             os: macos-latest
-            targets: aarch64-apple-ios,aarch64-apple-ios-sim
-          - platform: android
+            targets: aarch64-apple-ios
+          - leg: ios-simulator
+            platform: ios
+            os: macos-latest
+            targets: aarch64-apple-ios-sim
+          - leg: android
+            platform: android
             os: ubuntu-latest
             targets: aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android
     runs-on: ${{ matrix.os }}
@@ -1645,7 +1659,7 @@ jobs:
           rustup default stable
 
       - if: matrix.platform == 'android'
-        uses: taiki-e/install-action@f7e5d7c961414b23f5b25b2da9294395d08513ad # v2.87.26
+        uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 # v2.87.28
         with:
           tool: cargo-ndk
 
@@ -1675,6 +1689,7 @@ jobs:
       - name: Cross-compile and generate bindings
         env:
           PLATFORM: ${{ matrix.platform }}
+          TARGETS: ${{ matrix.targets }}
         run: |
           # The workspace builds dependencies at opt-level 2 in dev (#1931), so
           # tests spend less time running them. This job only checks that the
@@ -1687,4 +1702,8 @@ jobs:
           mkdir -p ~/.cargo
           printf '[profile.dev.package."*"]\nopt-level = 0\n' >> ~/.cargo/config.toml
           export ANDROID_NDK_HOME="${ANDROID_NDK_HOME:-$ANDROID_NDK_LATEST_HOME}"
+          if [ "$PLATFORM" = ios ]; then
+            export BINDINGS=0
+            export IOS_TARGETS="${TARGETS//,/ }"
+          fi
           ./vta-mobile-core/scripts/build-mobile.sh "$PLATFORM"

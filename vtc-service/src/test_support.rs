@@ -160,6 +160,7 @@ pub struct TestVtcBuilder {
     room_rate_limits: Option<crate::config::RoomRateLimitsConfig>,
     /// `[rooms.community]`.
     community_rooms: Option<crate::config::CommunityRoomsConfig>,
+    groups: Option<crate::config::GroupsConfig>,
     /// The community's VTA, as the key holder of the rooms it owns.
     community_key_holder: Option<Arc<dyn crate::rooms::vta_storage::VtaChannel>>,
     /// `[directory]`, as the directory runs with it.
@@ -189,6 +190,7 @@ impl Default for TestVtcBuilder {
             without_room_files: false,
             room_rate_limits: None,
             community_rooms: None,
+            groups: None,
             community_key_holder: None,
             directory: crate::directory::model::Settings::default(),
         }
@@ -211,6 +213,12 @@ impl TestVtcBuilder {
     /// Set `[rooms.community]`: the rooms this community owns are on.
     pub fn with_community_rooms(mut self, config: crate::config::CommunityRoomsConfig) -> Self {
         self.community_rooms = Some(config);
+        self
+    }
+
+    /// The community's groups (`[groups]`), turned on.
+    pub fn with_groups(mut self, config: crate::config::GroupsConfig) -> Self {
+        self.groups = Some(config);
         self
     }
 
@@ -543,6 +551,9 @@ impl TestVtcBuilder {
         }
         if let Some(limits) = &self.room_rate_limits {
             config.rooms.rate_limits = limits.clone();
+        }
+        if let Some(groups) = &self.groups {
+            config.groups = Some(groups.clone());
         }
         if let Some(community) = &self.community_rooms {
             config.rooms.community = Some(community.clone());

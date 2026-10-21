@@ -117,6 +117,7 @@ async fn task_subject(
         || bare == vta_sdk::trust_tasks::TASK_ROOMS_KEYS_ACT_0_3
         || bare == vta_sdk::trust_tasks::TASK_ROOMS_KEYS_ACT_0_4
         || bare == vta_sdk::trust_tasks::TASK_ROOMS_KEYS_ACT_0_5
+        || bare == vta_sdk::trust_tasks::TASK_ROOMS_KEYS_ACT_0_6
     {
         return super::room_act::act_subject(state, auth, payload).await;
     }
@@ -248,6 +249,19 @@ pub(crate) async fn approver_set_members(
         .await?
         .remove(set_name)
         .unwrap_or_default())
+}
+
+/// Every DID any approver set names — the operator's designation of the
+/// devices that approve, which a browser may name as its `remoteApprover`
+/// (`operations::device::uv_approver_eligible`).
+pub(crate) async fn all_named_approvers(
+    state: &AppState,
+) -> Result<std::collections::HashSet<String>, AppError> {
+    Ok(effective_approver_sets(state)
+        .await?
+        .into_values()
+        .flatten()
+        .collect())
 }
 
 /// Whether `did` is named by *any* approver set — the question the pre-auth
@@ -750,6 +764,7 @@ async fn mint_pending(
         guards: guards.clone(),
         subject_context: subject_context.clone(),
         requester_authorized,
+        bound_approver: None,
         created_at: now,
         expires_at: now + CONSENT_PENDING_TTL_SECS,
     };

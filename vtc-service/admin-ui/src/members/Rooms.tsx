@@ -21,6 +21,7 @@ import {
   adverseVerification,
   fileWontFit,
   formatBytes,
+  openFailure,
   roomName,
   shareRefusalHint,
   walletRooms,
@@ -135,9 +136,20 @@ function OfferList({ wallet, hostDid, member }: { wallet: WalletRooms; hostDid: 
       void qc.invalidateQueries({ queryKey: ["member-room-offers", hostDid] });
     },
   });
+  // The rooms already shared with this portal: the same query as the list below, so one
+  // wallet call answers both. A joined room that is here opens directly.
+  const shared = useQuery({
+    queryKey: ["member-rooms", hostDid],
+    queryFn: async () => (await wallet.list({ hostDid })).rooms,
+  });
+  const isShared = (roomId: string) => shared.data?.some((r) => r.roomId === roomId) ?? false;
+  // Sharing is the wallet letting this portal see the room; once it has, go to it.
   const share = useMutation({
     mutationFn: (roomId: string) => wallet.choose({ hostDid, suggest: roomId, ...(member ? { member } : {}) }),
-    onSuccess: (r) => qc.setQueryData(["member-rooms", hostDid], r.rooms),
+    onSuccess: (r, roomId) => {
+      qc.setQueryData(["member-rooms", hostDid], r.rooms);
+      if (r.rooms.some((room) => room.roomId === roomId)) window.location.hash = roomHref(roomId);
+    },
   });
 
   if (!supported || offers.isPending) return null;
@@ -155,6 +167,10 @@ function OfferList({ wallet, hostDid, member }: { wallet: WalletRooms; hostDid: 
   const waiting = actionableOffers(offers.data.offers);
   const settled = settledOffers(offers.data.offers);
   if (waiting.length === 0 && settled.length === 0 && !done && !offers.data.needsOrigin) return null;
+  // The acceptance just made, until the list shows it: then its own row says the same.
+  const doneListed =
+    done !== null &&
+    settled.some((o) => o.roomId === done.offer.roomId && o.member === done.offer.member && o.state === "joined");
 
   return (
     <section className="card" aria-labelledby="offers-heading">
@@ -226,18 +242,7 @@ function OfferList({ wallet, hostDid, member }: { wallet: WalletRooms; hostDid: 
                   an administrator to remove and re-admit you.
                 </span>
               )}
-              {o.state === "joined" && (
-                <div className="actions">
-                  <button
-                    type="button"
-                    className="btn"
-                    onClick={() => share.mutate(o.roomId)}
-                    disabled={share.isPending}
-                  >
-                    <Share2 size={14} aria-hidden="true" /> Open it here…
-                  </button>
-                </div>
-              )}
+              {o.state === "joined" && openHere(o.roomId)}
             </li>
           ))}
         </ul>
@@ -252,26 +257,43 @@ function OfferList({ wallet, hostDid, member }: { wallet: WalletRooms; hostDid: 
             {errorText(accept.error)}
           </p>
         ))}
-      {done && (
-        <div className="alert" role="status">
+      {done && !doneListed && (
+        <div className="alert alert-info" role="status">
           <p className="alert-title">
             {done.result.joined ? "Joined" : "Accepted"} {done.offer.label || shortDid(done.offer.roomId)}
           </p>
-          <p>To open it here, share it with this portal.</p>
-          <div className="actions">
-            <button
-              type="button"
-              className="btn"
-              onClick={() => share.mutate(done.offer.roomId)}
-              disabled={share.isPending}
-            >
-              <Share2 size={14} aria-hidden="true" /> {share.isPending ? "Waiting for your wallet…" : "Share it here…"}
-            </button>
-          </div>
+          {done.result.joined && openHere(done.offer.roomId)}
         </div>
+      )}
+      {share.isError && (
+        <p className="error" role="alert">
+          {errorText(share.error)}
+        </p>
       )}
     </section>
   );
+
+  /** Open a joined room here: directly once shared, else through the wallet's window first. */
+  function openHere(roomId: string) {
+    if (isShared(roomId)) {
+      return (
+        <div className="actions">
+          <a className="btn" href={roomHref(roomId)}>
+            Open
+          </a>
+        </div>
+      );
+    }
+    return (
+      <div className="actions">
+        <button type="button" className="btn" onClick={() => share.mutate(roomId)} disabled={share.isPending}>
+          <Share2 size={14} aria-hidden="true" />{" "}
+          {share.isPending && share.variables === roomId ? "Waiting for your wallet…" : "Open it here…"}
+        </button>
+        <span className="muted small">Your wallet asks before this portal can see the room.</span>
+      </div>
+    );
+  }
 }
 
 function RoomList({ wallet, hostDid, member }: { wallet: WalletRooms; hostDid: string; member?: string }) {
@@ -611,7 +633,14 @@ function RecordTitle({
   if (!sealed) return <span>{summary.title ?? "(retracted)"}</span>;
   if (!autoOpen && !rec.data) return <span className="muted">Sealed record — open it</span>;
   if (rec.isPending) return <span className="muted">Opening…</span>;
-  if (rec.isError) return <span className="error">Did not open</span>;
+  if (rec.isError) {
+    const why = openFailure(rec.error);
+    return (
+      <span className="error" title={why?.hint ?? errorText(rec.error)}>
+        {why?.label ?? "Did not open"}
+      </span>
+    );
+  }
   return (
     <span>
       {rec.data.file ? <FileText size={13} aria-hidden="true" /> : <NotebookPen size={13} aria-hidden="true" />}{" "}
@@ -645,14 +674,23 @@ function RecordView({
       {rec.isPending ? (
         <p className="muted">Opening…</p>
       ) : rec.isError ? (
-        <div className="alert" role="alert">
-          <p className="alert-title">This record did not open.</p>
-          <p>{errorText(rec.error)}</p>
-        </div>
+        <RecordRefused error={rec.error} />
       ) : (
         <RecordBody wallet={wallet} hostDid={hostDid} roomId={roomId} rec={rec.data} />
       )}
     </section>
+  );
+}
+
+/** Why a record did not open: in a member's words where the reason is known, the agent's beside it. */
+function RecordRefused({ error }: { error: unknown }) {
+  const why = openFailure(error);
+  return (
+    <div className={why ? "alert alert-info" : "alert"} role={why ? "status" : "alert"}>
+      <p className="alert-title">{why?.label ?? "This record did not open."}</p>
+      {why && <p>{why.hint}</p>}
+      <p className={why ? "muted small" : undefined}>{errorText(error)}</p>
+    </div>
   );
 }
 

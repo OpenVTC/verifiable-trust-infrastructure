@@ -200,6 +200,19 @@ fn hardware_key(seed: u8) -> (String, Secret) {
     (did, secret)
 }
 
+/// An Ed25519 UV key the browser plugin holds sealed under its PRF passkey.
+fn prf_sealed_key(seed: u8) -> (String, Secret) {
+    let probe = Secret::generate_ed25519(None, Some(&[seed; 32]));
+    let mb = probe.get_public_keymultibase().expect("multibase");
+    let did = format!("did:key:{mb}");
+    let secret = Secret::generate_ed25519(Some(&format!("{did}#{mb}")), Some(&[seed; 32]));
+    (did, secret)
+}
+
+fn prf_sealed_enrolment(did: &str) -> Value {
+    json!({ "kind": "prfSealedKey", "did": did, "hardwareBacked": false, "biometricGated": false })
+}
+
 fn hardware_enrolment(did: &str) -> Value {
     json!({ "kind": "hardwareKey", "did": did, "hardwareBacked": true, "biometricGated": true })
 }
@@ -483,6 +496,57 @@ async fn a_decision_for_another_grant_or_by_another_key_is_refused() {
     assert_refused(s, &b, "oobUvInvalid");
 
     // A refusal does not burn the grant id: the real approval still works.
+    let d = hardware_decision(&app, &uv, &g).await;
+    let (s, b) = sign(&app, &g, Some(d)).await;
+    assert_signed(s, &b, "assertionMethod");
+}
+
+#[tokio::test]
+async fn a_grant_approved_by_the_prf_sealed_uv_key_is_signed_once() {
+    let uv = prf_sealed_key(0x5a);
+    let app = app(Some(prf_sealed_enrolment(&uv.0))).await;
+    let g = grant(&app);
+    let d = hardware_decision(&app, &uv, &g).await;
+    let (s, b) = sign(&app, &g, Some(d)).await;
+    assert_signed(s, &b, "assertionMethod");
+
+    let d2 = hardware_decision(&app, &uv, &g).await;
+    let (s, b) = sign(&app, &g, Some(d2)).await;
+    assert_refused(s, &b, "oobGrantReplayed");
+}
+
+#[tokio::test]
+async fn a_prf_sealed_decision_must_be_by_that_key_and_carry_no_evidence() {
+    let uv = prf_sealed_key(0x5b);
+    let app = app(Some(prf_sealed_enrolment(&uv.0))).await;
+    let g = grant(&app);
+    let digest = grant_digest(&g).unwrap();
+
+    // Signed by the device's transport key, as a passkey decision is.
+    let (device, _) = did_for_seed(DEVICE_SEED);
+    let d = decision(&app, &device, &transport_secret(DEVICE_SEED), &digest, None).await;
+    let (s, b) = sign(&app, &g, Some(d)).await;
+    assert_refused(s, &b, "oobUvInvalid");
+
+    // Signed by another key.
+    let impostor = prf_sealed_key(0x5c);
+    let d = hardware_decision(&app, &impostor, &g).await;
+    let (s, b) = sign(&app, &g, Some(d)).await;
+    assert_refused(s, &b, "oobUvInvalid");
+
+    // Carrying evidence it does not take.
+    let d = decision(
+        &app,
+        &uv.0,
+        &uv.1,
+        &digest,
+        Some(json!({ "kind": "webauthn", "assertion": {} })),
+    )
+    .await;
+    let (s, b) = sign(&app, &g, Some(d)).await;
+    assert_refused(s, &b, "oobUvInvalid");
+
+    // None of those burnt the grant id.
     let d = hardware_decision(&app, &uv, &g).await;
     let (s, b) = sign(&app, &g, Some(d)).await;
     assert_signed(s, &b, "assertionMethod");
@@ -1042,4 +1106,715 @@ async fn a_device_enrolled_before_this_change_keeps_signing_in() {
         "dev-legacy",
         "the binding is the one it always had"
     );
+}
+
+// ─── vtaPin: a PIN the VTA checks, with a guess limit ───────────────────────
+//
+// For a browser with no PRF passkey. The browser enrols `K` (its PBKDF2 output)
+// as the verifier and approves a grant with a decision signed by its transport
+// key plus `pinProof = HMAC-SHA256(K, "org.openvtc.uv-pin/v1|" + D)`.
+
+const PIN_K: [u8; 32] = [0x4b; 32];
+const OTHER_K: [u8; 32] = [0x4c; 32];
+
+fn b64(bytes: &[u8]) -> String {
+    URL_SAFE_NO_PAD.encode(bytes)
+}
+
+fn hmac(k: &[u8; 32], message: &str) -> String {
+    use hmac::{Hmac, KeyInit, Mac};
+    let mut mac = <Hmac<sha2::Sha256> as KeyInit>::new_from_slice(k).unwrap();
+    mac.update(message.as_bytes());
+    b64(&mac.finalize().into_bytes())
+}
+
+fn pin_enrolment(k: &[u8; 32]) -> Value {
+    json!({
+        "kind": "vtaPin",
+        "salt": b64(&[0x5a; 16]),
+        "iterations": 600_000,
+        "verifier": b64(k),
+        "hardwareBacked": false,
+        "biometricGated": false,
+    })
+}
+
+/// The device's PIN approval of `grant`: a decision by its transport key, and
+/// the HMAC under `k` over the grant digest.
+async fn pin_consent(app: &App, grant: &Value, k: &[u8; 32]) -> Value {
+    let digest = grant_digest(grant).unwrap();
+    let (device, _) = did_for_seed(DEVICE_SEED);
+    let d = decision(app, &device, &transport_secret(DEVICE_SEED), &digest, None).await;
+    json!({
+        "decision": d,
+        "pinProof": hmac(k, &format!("org.openvtc.uv-pin/v1|{digest}")),
+    })
+}
+
+async fn sign_with_consent(app: &App, envelope: &Value, consent: Value) -> (StatusCode, Value) {
+    call(
+        app,
+        SIGN_TT,
+        json!({
+            "entryId": ENTRY,
+            "unsignedEnvelope": envelope,
+            "ext": { "org.openvtc.uv-consent": consent },
+        }),
+    )
+    .await
+}
+
+/// The first value under `key` anywhere in `v` — a refusal's `details` sit at
+/// a depth the binding decides.
+fn find<'a>(v: &'a Value, key: &str) -> Option<&'a Value> {
+    match v {
+        Value::Object(m) => m.get(key).or_else(|| m.values().find_map(|x| find(x, key))),
+        Value::Array(a) => a.iter().find_map(|x| find(x, key)),
+        _ => None,
+    }
+}
+
+fn now_secs() -> i64 {
+    chrono::Utc::now().timestamp()
+}
+
+/// Move the device's PIN lock into the past, as waiting it out would.
+async fn expire_pin_lock(app: &App) {
+    let key = format!("uv-pin:{}", did_for_seed(DEVICE_SEED).0);
+    let raw = app
+        .ctx
+        .acl_ks
+        .get_raw(key.clone())
+        .await
+        .unwrap()
+        .expect("a guard row");
+    let mut guard: Value = serde_json::from_slice(&raw).unwrap();
+    guard["lockedUntil"] = json!(now_secs() - 1);
+    app.ctx.acl_ks.insert(key, &guard).await.unwrap();
+}
+
+#[tokio::test]
+async fn a_grant_approved_with_the_vta_pin_is_signed_once() {
+    let app = app(Some(pin_enrolment(&PIN_K))).await;
+    let g = grant(&app);
+    let (s, b) = sign_with_consent(&app, &g, pin_consent(&app, &g, &PIN_K).await).await;
+    assert_signed(s, &b, "assertionMethod");
+
+    let (s, b) = sign_with_consent(&app, &g, pin_consent(&app, &g, &PIN_K).await).await;
+    assert_refused(s, &b, "oobGrantReplayed");
+}
+
+#[tokio::test]
+async fn a_pin_decision_must_be_the_devices_own_and_carry_a_proof() {
+    let app = app(Some(pin_enrolment(&PIN_K))).await;
+    let g = grant(&app);
+    let digest = grant_digest(&g).unwrap();
+
+    // No pinProof.
+    let mut c = pin_consent(&app, &g, &PIN_K).await;
+    c.as_object_mut().unwrap().remove("pinProof");
+    let (s, b) = sign_with_consent(&app, &g, c).await;
+    assert_refused(s, &b, "oobUvInvalid");
+
+    // A decision signed by another key.
+    let other = prf_sealed_key(0x5d);
+    let mut c = pin_consent(&app, &g, &PIN_K).await;
+    c["decision"] = decision(&app, &other.0, &other.1, &digest, None).await;
+    let (s, b) = sign_with_consent(&app, &g, c).await;
+    assert_refused(s, &b, "oobUvInvalid");
+
+    // A proof over another grant's digest is a wrong PIN, counted.
+    let mut c = pin_consent(&app, &g, &PIN_K).await;
+    c["pinProof"] = json!(hmac(&PIN_K, "org.openvtc.uv-pin/v1|zSomethingElse"));
+    let (s, b) = sign_with_consent(&app, &g, c).await;
+    assert_refused(s, &b, "oobUvPinWrong");
+
+    // None of those burnt the grant id.
+    let (s, b) = sign_with_consent(&app, &g, pin_consent(&app, &g, &PIN_K).await).await;
+    assert_signed(s, &b, "assertionMethod");
+}
+
+#[tokio::test]
+async fn a_wrong_pin_reports_attempts_remaining_and_a_right_one_resets_the_count() {
+    let app = app(Some(pin_enrolment(&PIN_K))).await;
+    for remaining in [4, 3] {
+        let g = grant(&app);
+        let (s, b) = sign_with_consent(&app, &g, pin_consent(&app, &g, &OTHER_K).await).await;
+        assert_refused(s, &b, "oobUvPinWrong");
+        assert_eq!(
+            find(&b, "attemptsRemaining"),
+            Some(&json!(remaining)),
+            "{b}"
+        );
+        assert!(find(&b, "lockedUntil").is_none(), "{b}");
+    }
+    let g = grant(&app);
+    let (s, b) = sign_with_consent(&app, &g, pin_consent(&app, &g, &PIN_K).await).await;
+    assert_signed(s, &b, "assertionMethod");
+
+    // The count started again.
+    let g = grant(&app);
+    let (s, b) = sign_with_consent(&app, &g, pin_consent(&app, &g, &OTHER_K).await).await;
+    assert_refused(s, &b, "oobUvPinWrong");
+    assert_eq!(find(&b, "attemptsRemaining"), Some(&json!(4)), "{b}");
+}
+
+#[tokio::test]
+async fn five_wrong_pins_lock_and_each_lock_after_one_expires_is_twice_as_long() {
+    let app = app(Some(pin_enrolment(&PIN_K))).await;
+    for _ in 0..4 {
+        let g = grant(&app);
+        let (s, b) = sign_with_consent(&app, &g, pin_consent(&app, &g, &OTHER_K).await).await;
+        assert_refused(s, &b, "oobUvPinWrong");
+    }
+    // The fifth locks for 15 minutes.
+    let g = grant(&app);
+    let before = now_secs();
+    let (s, b) = sign_with_consent(&app, &g, pin_consent(&app, &g, &OTHER_K).await).await;
+    assert_refused(s, &b, "oobUvPinWrong");
+    assert_eq!(find(&b, "attemptsRemaining"), Some(&json!(0)), "{b}");
+    let until = find(&b, "lockedUntil")
+        .and_then(Value::as_i64)
+        .expect("locked");
+    assert!((before + 900..=now_secs() + 900).contains(&until), "{b}");
+
+    // While locked even the right PIN is refused, unchecked.
+    let g = grant(&app);
+    let (s, b) = sign_with_consent(&app, &g, pin_consent(&app, &g, &PIN_K).await).await;
+    assert_refused(s, &b, "oobUvLocked");
+    assert_eq!(find(&b, "lockedUntil"), Some(&json!(until)), "{b}");
+
+    // Once it has expired, one wrong PIN locks again — for 30 minutes.
+    expire_pin_lock(&app).await;
+    let g = grant(&app);
+    let before = now_secs();
+    let (s, b) = sign_with_consent(&app, &g, pin_consent(&app, &g, &OTHER_K).await).await;
+    assert_refused(s, &b, "oobUvPinWrong");
+    let until = find(&b, "lockedUntil")
+        .and_then(Value::as_i64)
+        .expect("locked");
+    assert!((before + 1800..=now_secs() + 1800).contains(&until), "{b}");
+
+    // And then an hour.
+    expire_pin_lock(&app).await;
+    let g = grant(&app);
+    let before = now_secs();
+    let (s, b) = sign_with_consent(&app, &g, pin_consent(&app, &g, &OTHER_K).await).await;
+    assert_refused(s, &b, "oobUvPinWrong");
+    let until = find(&b, "lockedUntil")
+        .and_then(Value::as_i64)
+        .expect("locked");
+    assert!((before + 3600..=now_secs() + 3600).contains(&until), "{b}");
+
+    // The right PIN after the lock signs, and resets the doubling: the next
+    // wrong PIN has the full five attempts again.
+    expire_pin_lock(&app).await;
+    let g = grant(&app);
+    let (s, b) = sign_with_consent(&app, &g, pin_consent(&app, &g, &PIN_K).await).await;
+    assert_signed(s, &b, "assertionMethod");
+    let g = grant(&app);
+    let (s, b) = sign_with_consent(&app, &g, pin_consent(&app, &g, &OTHER_K).await).await;
+    assert_refused(s, &b, "oobUvPinWrong");
+    assert_eq!(find(&b, "attemptsRemaining"), Some(&json!(4)), "{b}");
+}
+
+#[tokio::test]
+async fn the_pin_verifier_never_leaves_the_vta() {
+    let app = app(None).await;
+    let verifier = b64(&PIN_K);
+
+    // Register (its response carries the binding).
+    let (s, register) = call(
+        &app,
+        REGISTER,
+        json!({
+            "consumerKind": { "kind": "companion", "formFactor": "browser" },
+            "displayName": "Chromium on Linux",
+            "ext": { "org.openvtc.uv-key": pin_enrolment(&PIN_K) },
+        }),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{register}");
+    let summary = find(&register, "uvKey").expect("summary").clone();
+    assert_eq!(summary["kind"], "vtaPin", "{summary}");
+    assert_eq!(summary["salt"], b64(&[0x5a; 16]), "{summary}");
+    assert_eq!(summary["iterations"], 600_000, "{summary}");
+    assert_eq!(summary["failedAttempts"], 0, "{summary}");
+    assert_eq!(summary["lockedUntil"], Value::Null, "{summary}");
+
+    // One wrong PIN, so the failure is audited.
+    let g = grant(&app);
+    let (s, b) = sign_with_consent(&app, &g, pin_consent(&app, &g, &OTHER_K).await).await;
+    assert_refused(s, &b, "oobUvPinWrong");
+
+    // The listing and the heartbeat show the count, never the verifier.
+    let (s, list) = call(&app, LIST, json!({})).await;
+    assert_eq!(s, StatusCode::OK, "{list}");
+    let listed = find(&list, "uvKey").expect("listed summary");
+    assert_eq!(listed["failedAttempts"], 1, "{listed}");
+    let (s, hb) = call(&app, HEARTBEAT, json!({})).await;
+    assert_eq!(s, StatusCode::OK, "{hb}");
+    let own = find(&hb, "org.openvtc.uv-key").expect("own summary");
+    assert_eq!(own["kind"], "vtaPin", "{hb}");
+    assert_eq!(own["failedAttempts"], 1, "{hb}");
+
+    let audit: String = app
+        .ctx
+        .state
+        .audit_ks
+        .prefix_iter_raw(Vec::new())
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|(_, v)| String::from_utf8_lossy(&v).into_owned())
+        .collect();
+    assert!(
+        audit.contains("device.uv-key.enrol"),
+        "the enrolment is audited"
+    );
+    assert!(
+        audit.contains("device.uv-pin.failed"),
+        "the failure is audited"
+    );
+    for (what, text) in [
+        ("register", register.to_string()),
+        ("list", list.to_string()),
+        ("heartbeat", hb.to_string()),
+        ("refusal", b.to_string()),
+        ("audit", audit),
+    ] {
+        assert!(!text.contains(&verifier), "{what} leaks the verifier");
+    }
+}
+
+#[tokio::test]
+async fn replacing_a_pin_needs_the_current_pin() {
+    let app = app(Some(pin_enrolment(&PIN_K))).await;
+    let uv = prf_sealed_key(0x5e);
+    let new_key = prf_sealed_enrolment(&uv.0);
+    let change = |k: &[u8; 32]| {
+        let canonical = serde_json_canonicalizer::to_string(&new_key).unwrap();
+        let digest = hex::encode(<sha2::Sha256 as sha2::Digest>::digest(canonical.as_bytes()));
+        hmac(k, &format!("org.openvtc.uv-pin/v1|change|{digest}"))
+    };
+
+    // No proof.
+    let (s, b) = call(
+        &app,
+        HEARTBEAT,
+        json!({ "ext": { "org.openvtc.uv-key": new_key } }),
+    )
+    .await;
+    assert!(s != StatusCode::OK || b.to_string().contains("uvKeyChangeProofRequired"));
+    assert!(b.to_string().contains("uvKeyChangeProofRequired"), "{b}");
+
+    // The wrong PIN: counted against the same limit.
+    let (s, b) = call(
+        &app,
+        HEARTBEAT,
+        json!({ "ext": {
+            "org.openvtc.uv-key": new_key,
+            "org.openvtc.uv-key-change": { "pinProof": change(&OTHER_K) },
+        } }),
+    )
+    .await;
+    assert!(s != StatusCode::OK || b.to_string().contains("device:uvPinWrong"));
+    assert!(b.to_string().contains("device:uvPinWrong"), "{b}");
+    assert_eq!(find(&b, "attemptsRemaining"), Some(&json!(4)), "{b}");
+    let g = grant(&app);
+    let (s, b) = sign_with_consent(&app, &g, pin_consent(&app, &g, &OTHER_K).await).await;
+    assert_refused(s, &b, "oobUvPinWrong");
+    assert_eq!(
+        find(&b, "attemptsRemaining"),
+        Some(&json!(3)),
+        "one limit: {b}"
+    );
+
+    // A proof for a different new key does not authorise this one.
+    let (_, b) = call(
+        &app,
+        HEARTBEAT,
+        json!({ "ext": {
+            "org.openvtc.uv-key": prf_sealed_enrolment(&prf_sealed_key(0x5f).0),
+            "org.openvtc.uv-key-change": { "pinProof": change(&PIN_K) },
+        } }),
+    )
+    .await;
+    assert!(b.to_string().contains("device:uvPinWrong"), "{b}");
+
+    // The PIN still approves: nothing was replaced.
+    let g = grant(&app);
+    let (s, b) = sign_with_consent(&app, &g, pin_consent(&app, &g, &PIN_K).await).await;
+    assert_signed(s, &b, "assertionMethod");
+
+    // The right PIN replaces it.
+    let (s, b) = call(
+        &app,
+        HEARTBEAT,
+        json!({ "ext": {
+            "org.openvtc.uv-key": new_key,
+            "org.openvtc.uv-key-change": { "pinProof": change(&PIN_K) },
+        } }),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{b}");
+    let g = grant(&app);
+    let (s, b) = sign_with_consent(&app, &g, pin_consent(&app, &g, &PIN_K).await).await;
+    assert_refused(s, &b, "oobUvInvalid");
+    let d = hardware_decision(&app, &uv, &g).await;
+    let (s, b) = sign(&app, &g, Some(d)).await;
+    assert_signed(s, &b, "assertionMethod");
+
+    // Replacing a key of another kind needs nothing extra, as before.
+    let (s, b) = call(
+        &app,
+        HEARTBEAT,
+        json!({ "ext": { "org.openvtc.uv-key": pin_enrolment(&OTHER_K) } }),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{b}");
+}
+
+#[tokio::test]
+async fn a_locked_pin_cannot_be_replaced() {
+    let app = app(Some(pin_enrolment(&PIN_K))).await;
+    for _ in 0..5 {
+        let g = grant(&app);
+        let _ = sign_with_consent(&app, &g, pin_consent(&app, &g, &OTHER_K).await).await;
+    }
+    let new_key = pin_enrolment(&OTHER_K);
+    let canonical = serde_json_canonicalizer::to_string(&new_key).unwrap();
+    let digest = hex::encode(<sha2::Sha256 as sha2::Digest>::digest(canonical.as_bytes()));
+    let (_, b) = call(
+        &app,
+        HEARTBEAT,
+        json!({ "ext": {
+            "org.openvtc.uv-key": new_key,
+            "org.openvtc.uv-key-change": {
+                "pinProof": hmac(&PIN_K, &format!("org.openvtc.uv-pin/v1|change|{digest}")),
+            },
+        } }),
+    )
+    .await;
+    assert!(b.to_string().contains("device:uvKeyLocked"), "{b}");
+    assert!(find(&b, "lockedUntil").is_some(), "{b}");
+}
+
+// ─── remoteApprover: approve on the phone ───────────────────────────────────
+//
+// The browser names the member's phone; the VTA pushes a VTA-signed
+// `task-consent/request` to it and answers `oobUvPending` until the phone's
+// `task-consent/decision/0.1` approves it.
+
+const DECISION_0_1: &str = "https://trusttasks.org/spec/task-consent/decision/0.1";
+
+fn remote_enrolment(approver: &str) -> Value {
+    json!({ "kind": "remoteApprover", "approver": approver,
+            "hardwareBacked": false, "biometricGated": false })
+}
+
+/// A member's browser (the `DEVICE_SEED` caller, registered as a browser
+/// companion with no UV key) and their phone, an ACL entry as `pnm acl create`
+/// writes one, named by the operator as the browser's step-up approver.
+async fn browser_and_phone() -> (App, Device) {
+    let app = app(None).await;
+    let (s, b) = call(
+        &app,
+        REGISTER,
+        json!({
+            "consumerKind": { "kind": "companion", "formFactor": "browser" },
+            "displayName": "Chromium on Linux",
+        }),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{b}");
+    let phone = device(&app, PHONE, None, "Phone", None).await;
+    let mut browser = acl_row(&app, &did_for_seed(DEVICE_SEED).0).await;
+    browser.step_up_approver = Some(phone.did());
+    vti_common::acl::store_acl_entry(&app.ctx.acl_ks, &browser)
+        .await
+        .unwrap();
+    (app, phone)
+}
+
+async fn enrol_remote(app: &App, approver: &str) -> (StatusCode, Value) {
+    call(
+        app,
+        HEARTBEAT,
+        json!({ "ext": { "org.openvtc.uv-key": remote_enrolment(approver) } }),
+    )
+    .await
+}
+
+/// The live request the VTA raised for the browser.
+async fn raised(app: &App) -> Vec<vti_common::task_consent::PendingTaskConsent> {
+    app.ctx
+        .state
+        .task_consent_ks
+        .prefix_iter_raw("pending:")
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|(_, v)| serde_json::from_slice(&v).unwrap())
+        .collect()
+}
+
+/// The phone's `task-consent/decision/0.1`, as Cierge sends it.
+async fn phone_decides(
+    app: &App,
+    by: &Device,
+    pending: &vti_common::task_consent::PendingTaskConsent,
+    answer: &str,
+) -> (StatusCode, Value) {
+    call_as(
+        app,
+        by,
+        DECISION_0_1,
+        json!({
+            "challenge": pending.challenge,
+            "payloadDigest": pending.wire_digest,
+            "decision": answer,
+        }),
+    )
+    .await
+}
+
+fn remote() -> Value {
+    json!({ "remote": true })
+}
+
+#[tokio::test]
+async fn a_remote_approver_must_be_a_phone_the_operator_named() {
+    let (app, phone) = browser_and_phone().await;
+
+    // Not itself.
+    let (_, b) = enrol_remote(&app, &did_for_seed(DEVICE_SEED).0).await;
+    assert!(b.to_string().contains("uvApproverNotPermitted"), "{b}");
+    // Not a DID the VTA does not know.
+    let (_, b) = enrol_remote(&app, &did_for_seed(0x99).0).await;
+    assert!(b.to_string().contains("uvApproverNotPermitted"), "{b}");
+    // Not a DID in the ACL that nobody designated (another browser).
+    let other = device(&app, BROWSER_B, Some("browser"), "Firefox", None).await;
+    let (_, b) = enrol_remote(&app, &other.did()).await;
+    assert!(b.to_string().contains("uvApproverNotPermitted"), "{b}");
+    // Not a malformed DID.
+    let (_, b) = enrol_remote(&app, "phone").await;
+    assert!(b.to_string().contains("uvKeyInvalid"), "{b}");
+    // Not an entry the browser created itself, even one it designated.
+    let minted = did_for_seed(0x9a).0;
+    let mut own = vti_common::acl::AclEntry::new(
+        &minted,
+        vti_common::acl::Role::Reader,
+        did_for_seed(DEVICE_SEED).0,
+    );
+    own.allowed_contexts = vec![CONTEXT.into()];
+    vti_common::acl::store_acl_entry(&app.ctx.acl_ks, &own)
+        .await
+        .unwrap();
+    let mut browser = acl_row(&app, &did_for_seed(DEVICE_SEED).0).await;
+    browser.step_up_approver = Some(minted.clone());
+    vti_common::acl::store_acl_entry(&app.ctx.acl_ks, &browser)
+        .await
+        .unwrap();
+    let (_, b) = enrol_remote(&app, &minted).await;
+    assert!(b.to_string().contains("uvApproverNotPermitted"), "{b}");
+    browser.step_up_approver = Some(phone.did());
+    vti_common::acl::store_acl_entry(&app.ctx.acl_ks, &browser)
+        .await
+        .unwrap();
+
+    // The picker lists the phone, and only the phone.
+    let (s, b) = call(
+        &app,
+        HEARTBEAT,
+        json!({ "ext": { "org.openvtc.uv-approvers": {} } }),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{b}");
+    let approvers = find(&b, "approvers")
+        .and_then(Value::as_array)
+        .expect("approvers");
+    assert_eq!(approvers.len(), 1, "{b}");
+    assert_eq!(approvers[0]["did"], phone.did(), "{b}");
+
+    // The phone enrols.
+    let (s, b) = enrol_remote(&app, &phone.did()).await;
+    assert_eq!(s, StatusCode::OK, "{b}");
+    let own = find(&b, "org.openvtc.uv-key").expect("summary");
+    assert_eq!(own["kind"], "remoteApprover", "{b}");
+    assert_eq!(own["approver"], phone.did(), "{b}");
+}
+
+#[tokio::test]
+async fn a_member_of_an_approver_set_may_be_named_too() {
+    let (app, _) = browser_and_phone().await;
+    let tablet = device(&app, 0x84, None, "Tablet", None).await;
+    let (_, b) = enrol_remote(&app, &tablet.did()).await;
+    assert!(b.to_string().contains("uvApproverNotPermitted"), "{b}");
+    vta_service::policy::seed_declarative_approvals(
+        &app.ctx.policy_ks,
+        &[],
+        &std::collections::HashMap::from([("phones".to_string(), vec![tablet.did()])]),
+        &chrono::Utc::now().to_rfc3339(),
+    )
+    .await
+    .unwrap();
+    let (s, b) = enrol_remote(&app, &tablet.did()).await;
+    assert_eq!(s, StatusCode::OK, "{b}");
+}
+
+#[tokio::test]
+async fn a_grant_approved_on_the_phone_is_signed_once() {
+    let (app, phone) = browser_and_phone().await;
+    let (s, b) = enrol_remote(&app, &phone.did()).await;
+    assert_eq!(s, StatusCode::OK, "{b}");
+    let g = grant(&app);
+
+    // The phone is asked once; polling re-reads the same request.
+    let (s, b) = sign_with_consent(&app, &g, remote()).await;
+    assert_refused(s, &b, "oobUvPending");
+    let code = find(&b, "matchCode")
+        .and_then(Value::as_str)
+        .expect("code")
+        .to_string();
+    let expires = find(&b, "expiresAt")
+        .and_then(Value::as_u64)
+        .expect("expiry");
+    let now = now_secs() as u64;
+    assert!(expires > now && expires <= now + 120, "{b}");
+    let (s, b) = sign_with_consent(&app, &g, remote()).await;
+    assert_refused(s, &b, "oobUvPending");
+    assert_eq!(find(&b, "matchCode"), Some(&json!(code)), "{b}");
+    let pending = raised(&app).await;
+    assert_eq!(pending.len(), 1, "one request, however often it is polled");
+    let p = &pending[0];
+    assert_eq!(p.bound_approver.as_deref(), Some(phone.did().as_str()));
+    assert_eq!(p.requester_did, did_for_seed(DEVICE_SEED).0);
+    assert_eq!(
+        vta_sdk::task_consent::match_code(&p.wire_digest).unwrap(),
+        code,
+        "the browser shows the code the phone shows"
+    );
+
+    // A decision without the phone, or a PIN decision, does not stand in.
+    let (s, b) = sign(&app, &g, None).await;
+    assert_refused(s, &b, "oobUvRequired");
+
+    // The phone approves; the browser's next poll signs.
+    let (s, b) = phone_decides(&app, &phone, p, "approve").await;
+    assert_eq!(s, StatusCode::OK, "{b}");
+    assert_eq!(find(&b, "status"), Some(&json!("granted")), "{b}");
+    let (s, b) = sign_with_consent(&app, &g, remote()).await;
+    assert_signed(s, &b, "assertionMethod");
+
+    // Single use: the same grant again is refused, and nothing is re-asked.
+    let (s, b) = sign_with_consent(&app, &g, remote()).await;
+    assert_refused(s, &b, "oobGrantReplayed");
+    assert!(raised(&app).await.is_empty());
+
+    // The signature is audited as the phone's approval.
+    let audit: String = app
+        .ctx
+        .state
+        .audit_ks
+        .prefix_iter_raw(Vec::new())
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|(_, v)| String::from_utf8_lossy(&v).into_owned())
+        .collect();
+    assert!(audit.contains("remoteApprover"), "kind is audited");
+    assert!(audit.contains(&phone.did()), "the approver is audited");
+}
+
+#[tokio::test]
+async fn a_declined_or_lapsed_remote_approval_is_refused() {
+    let (app, phone) = browser_and_phone().await;
+    enrol_remote(&app, &phone.did()).await;
+
+    let g = grant(&app);
+    let (s, b) = sign_with_consent(&app, &g, remote()).await;
+    assert_refused(s, &b, "oobUvPending");
+    let p = raised(&app).await.remove(0);
+    let (s, b) = phone_decides(&app, &phone, &p, "deny").await;
+    assert_eq!(s, StatusCode::OK, "{b}");
+    for _ in 0..2 {
+        let (s, b) = sign_with_consent(&app, &g, remote()).await;
+        assert_refused(s, &b, "oobUvDeclined");
+    }
+    assert!(raised(&app).await.is_empty(), "a decline does not re-ask");
+
+    // A request nobody answered lapses.
+    let g = grant(&app);
+    let (s, b) = sign_with_consent(&app, &g, remote()).await;
+    assert_refused(s, &b, "oobUvPending");
+    let mut p = raised(&app).await.remove(0);
+    p.expires_at = now_secs() as u64 - 1;
+    app.ctx
+        .state
+        .task_consent_ks
+        .insert(format!("pending:{}", p.digest), &p)
+        .await
+        .unwrap();
+    let (s, b) = sign_with_consent(&app, &g, remote()).await;
+    assert_refused(s, &b, "oobUvExpired");
+    let (s, b) = phone_decides(&app, &phone, &p, "approve").await;
+    assert!(b.to_string().contains("noPending"), "{s} {b}");
+    let (s, b) = sign_with_consent(&app, &g, remote()).await;
+    assert_refused(s, &b, "oobUvExpired");
+}
+
+#[tokio::test]
+async fn only_the_named_phone_approving_this_grant_counts() {
+    let (app, phone) = browser_and_phone().await;
+    enrol_remote(&app, &phone.did()).await;
+    let g1 = grant(&app);
+    let g2 = grant(&app);
+    let (s, b) = sign_with_consent(&app, &g1, remote()).await;
+    assert_refused(s, &b, "oobUvPending");
+    let (s, b) = sign_with_consent(&app, &g2, remote()).await;
+    assert_refused(s, &b, "oobUvPending");
+    let pending = raised(&app).await;
+    assert_eq!(pending.len(), 2);
+
+    // Another device in the ACL answers with the right challenge and digest:
+    // it is not the approver this request is bound to.
+    let intruder = device(&app, BROWSER_A, Some("browser"), "Other browser", None).await;
+    for p in &pending {
+        let (s, b) = phone_decides(&app, &intruder, p, "approve").await;
+        assert!(
+            s != StatusCode::OK && b.to_string().contains("not a member"),
+            "{s} {b}"
+        );
+    }
+    // The phone answers with a digest that names no request.
+    let mut wrong = pending[0].clone();
+    wrong.wire_digest = pending[0].digest.clone();
+    let (s, b) = phone_decides(&app, &phone, &wrong, "approve").await;
+    assert!(b.to_string().contains("noPending"), "{s} {b}");
+    // …or with the other request's challenge.
+    let mut crossed = pending[0].clone();
+    crossed.challenge = pending[1].challenge.clone();
+    let (s, b) = phone_decides(&app, &phone, &crossed, "approve").await;
+    assert!(s != StatusCode::OK, "{b}");
+    for g in [&g1, &g2] {
+        let (s, b) = sign_with_consent(&app, g, remote()).await;
+        assert_refused(s, &b, "oobUvPending");
+    }
+
+    // Approving one grant's request approves that grant and no other.
+    let digest_of = |g: &Value| grant_digest(g).unwrap();
+    let _ = digest_of;
+    let (s, b) = phone_decides(&app, &phone, &pending[0], "approve").await;
+    assert_eq!(s, StatusCode::OK, "{b}");
+    let mut signed = 0;
+    for g in [&g1, &g2] {
+        let (s, b) = sign_with_consent(&app, g, remote()).await;
+        if s == StatusCode::OK && b.to_string().contains("signedEnvelope") {
+            signed += 1;
+        } else {
+            assert_refused(s, &b, "oobUvPending");
+        }
+    }
+    assert_eq!(signed, 1, "exactly the approved grant is signed");
 }

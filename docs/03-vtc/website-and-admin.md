@@ -502,15 +502,16 @@ once and then dropped from the URL.
 ### Live updates, and polling as the fallback
 
 A signed-in console holds **one live channel** per session:
-`vtc/admin/events/subscribe` — at **0.2** when the VTC lists it in
-`trust-task-discovery`, else 0.1 — sent as a signed document to the ordinary
+`vtc/admin/events/subscribe` — at the newest version the VTC lists in
+`trust-task-discovery` (**0.3**, 0.2, else 0.1) — sent as a signed document to the ordinary
 `POST /v1/trust-tasks` with `Accept: text/event-stream, application/json;q=0.5`
 and answered as a **streamed response** (HTTPS binding 0.3 §2.1): `200
 text/event-stream`, whose first event is the signed `#response` and whose later
 events are `vtc/admin/events/event` **hints** of the same version. There is no
 other route — no `GET`, no WebSocket — and nothing about the door changes for
-any other task. The VTC serves both versions; 0.2 adds the `rooms` topic and
-nothing else, so a 0.1 console (or `cnm actions watch`) is unchanged.
+any other task. The VTC serves all three versions; 0.2 adds the `rooms` topic
+and 0.3 the `directory` and `groups` topics, and nothing else, so an older
+console (or `cnm actions watch`) is unchanged.
 
 **A hint is never data.** It names a topic, when it changed, and for the three
 badge topics the viewer's count:
@@ -524,6 +525,16 @@ badge topics the viewer's count:
 | `singleAdminMode` | the single-administrator banner | — | every administrator |
 | `config` | the configuration and profile screens | — | holders of `vtc.config.admin` |
 | `rooms` (0.2) | the Data rooms page (its Rooms, Usage, Storage and Community rooms tabs) and a room's page | — | holders of `vtc.rooms.admin` |
+| `directory` (0.3) | the Directory pages, and the member list and member page, which show each member's card | — | holders of `vtc.directory.admin` or `vtc.directory.notes` |
+| `groups` (0.3) | the Groups page and a group's page | — | holders of `vtc.groups.manage`; a manager of one group hears only about that group |
+
+`directory` is hinted when a field, a card or a value, an external card or an
+administrators' note is written or removed, at most once every ten seconds, so
+one member editing their card does not read as a rhythm. `groups` is hinted
+when a group, a membership, a join request or a manager's appointment changes —
+only for the groups the administrator may manage: the VTC digests each group
+they manage, with its members, requests and managers, and hints when that
+moves. Neither hint names an entry, a group or a member.
 
 `rooms` is hinted when a room is registered (or removed), when a room's
 lifecycle state changes — which happens with the clock, so the VTC wakes the
@@ -940,8 +951,9 @@ their own keyspace too, so one can never open a console session or
 answer a step-up.
 
 **Signing in with your wallet** (the default, first option). The page
-shows a sign-in code: a QR code that is also a link, so a wallet on the
-same device can be clicked instead of scanned. Its text is a **trigger
+shows a sign-in code as soon as it loads, with no click: a QR code that
+is also a link, so a wallet on the same device can be clicked instead of
+scanned. Its text is a **trigger
 link** (VTI spec §7a, flow `/vti/flow/sign-in/0.1`):
 
 ```
@@ -968,7 +980,11 @@ Trust Task document on `POST /v1/trust-tasks`:
    `assertionMethod` key. A claim starts a fresh 120 s decision window.
 3. The browser's long poll (`auth/oob/redeem`, 25 s, one open poll per
    request) now shows **"Your number is 47"** — only to the holder of
-   `K_b`.
+   `K_b`. The number's element carries `data-oob-request-id` and
+   `data-oob-match-number` (sign-in contract C11): when the person
+   clicked the code on this page, the browser plugin reads them and
+   fills the number in, so only a phone wallet asks for it to be typed.
+   The page posts nothing to the plugin and learns nothing back.
 4. The wallet sends `auth/oob/prove` carrying `auth/oob/identify`, signed
    by the member's DID for `authentication`, with the typed number. The
    VTC checks the DID against the ACL **before** resolving anything, then
@@ -994,7 +1010,12 @@ Trust Task document on `POST /v1/trust-tasks`:
    sign-in is bounded the same way.
 
 The page hides the code when the tab is hidden (the request keeps
-running). It is served with `Referrer-Policy: no-referrer`,
+running). An unclaimed code is replaced with a fresh one when its 120 s
+run out, but only while the tab is in view: a page left in a background
+tab makes no requests, and gets a new code when it comes back. A code
+that ends within 10 s of being made is shown as expired instead, so a
+skewed clock cannot make the page request code after code. A claimed
+code that expires is shown as expired: someone scanned it. It is served with `Referrer-Policy: no-referrer`,
 `Cache-Control: no-store` and a CSP with `frame-ancestors 'none'`, and
 every `auth/oob` response is `no-store`. Each step is audited as
 `MemberWalletSignIn` (city and country, never the address). The city and
@@ -1025,7 +1046,7 @@ then `cnm did-log install` if the VTC serves its own log; see
 (`{"status":"ok"}`, `{"status":"unknown"}`, or
 `{"status":"missing","missing":["SignInPortal"]}`): only the service types
 the public document lacks. When it is `missing`, the member portal's and
-the console's sign-in pages replace "Show sign-in code" with a short note
+the console's sign-in pages replace the sign-in code with a short note
 naming them, and the other options are unchanged. The check never blocks
 start-up, and a DID that does not resolve is `unknown`, not `missing`, so
 the page keeps offering wallet sign-in.

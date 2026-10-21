@@ -526,6 +526,14 @@ pub const TASK_KEYS_SIGN_JWS_0_1: &str =
 pub const TASK_KEYS_SIGN_CSR_0_1: &str =
     <crate::protocols::key_management::sign_csr::SignCsrPayload as trust_tasks_rs::Payload>::TYPE_URI;
 
+/// `keys/sign-document/0.1` — an `eddsa-jcs-2022` proof over a JSON document
+/// that names its signer, from a key the VTA holds, made only as the DID the
+/// document names.
+/// Payload: [`crate::protocols::key_management::sign_document::SignDocumentPayload`].
+/// Auth: write, plus the `sign-document` capability (`sign` is not accepted).
+pub const TASK_KEYS_SIGN_DOCUMENT_0_1: &str =
+    <crate::protocols::key_management::sign_document::SignDocumentPayload as trust_tasks_rs::Payload>::TYPE_URI;
+
 /// `spec/vta/keys/derive-and-sign/1.0` — derive a key at a BIP-32 path from the
 /// seed, sign a base64url payload, and return `{ public_key, signature }`
 /// WITHOUT persisting a key record (ephemeral signing oracle over the seed's
@@ -1093,6 +1101,12 @@ pub const TASK_ROOMS_KEYS_ACT_0_4: &str =
 /// `issuer` named, with no presentation. Auth: as 0.1.
 pub const TASK_ROOMS_KEYS_ACT_0_5: &str =
     <trust_tasks_rs::specs::rooms::keys::act::v0_5::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `spec/rooms/keys/act/0.6` — `act` 0.5, and `vtc/rooms/offers/list/0.3`: the offer listing
+/// that also carries the renewals of the admissions a member holds, completed on the offer
+/// types' terms. Auth: as 0.1.
+pub const TASK_ROOMS_KEYS_ACT_0_6: &str =
+    <trust_tasks_rs::specs::rooms::keys::act::v0_6::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
 /// `spec/rooms/keys/file-key/0.1` — one file's key, for the member's own client
 /// to seal or open that file itself, so file bytes never pass through the VTA.
@@ -2568,6 +2582,7 @@ pub const ALL_URIS: &[&str] = &[
     TASK_KEYS_SIGN_SSHSIG_0_1,
     TASK_KEYS_SIGN_JWS_0_1,
     TASK_KEYS_SIGN_CSR_0_1,
+    TASK_KEYS_SIGN_DOCUMENT_0_1,
     TASK_KEYS_DERIVE_AND_SIGN_0_1,
     TASK_KEYS_DERIVE_AND_SIGN_DOCUMENT_0_1,
     // Seeds slice
@@ -2747,6 +2762,7 @@ pub const ALL_URIS: &[&str] = &[
     TASK_ROOMS_KEYS_ACT_0_3,
     TASK_ROOMS_KEYS_ACT_0_4,
     TASK_ROOMS_KEYS_ACT_0_5,
+    TASK_ROOMS_KEYS_ACT_0_6,
     TASK_ROOMS_KEYS_FILE_KEY_0_1,
     TASK_ROOMS_KEYS_FILE_KEY_0_2,
     TASK_ROOMS_KEYS_LIST_0_1,

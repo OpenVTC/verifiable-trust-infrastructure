@@ -1001,6 +1001,49 @@ async fn sign_in_config_names_the_link_host_and_the_member_page_is_hardened() {
     }
 }
 
+/// Sign-in from one address is not held to the anonymous governor (a burst of
+/// 10): the page reads its config on every load, and one sign-in alone sends
+/// about ten `auth/oob/*` documents from the same address when the wallet is on
+/// the same device (`routing::trust_task_admission`, "Sign-in traffic").
+#[tokio::test]
+async fn sign_in_from_one_address_is_not_held_to_the_anonymous_governor() {
+    let f = fixture().await;
+    for n in 0..25 {
+        let mut req = Request::builder()
+            .uri("/v1/member/sign-in/config")
+            .body(Body::empty())
+            .unwrap();
+        req.extensions_mut()
+            .insert(axum::extract::ConnectInfo(SocketAddr::new(
+                "198.51.100.77".parse::<IpAddr>().unwrap(),
+                40_000,
+            )));
+        let res = f.vtc.router.clone().oneshot(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK, "config read {n}");
+    }
+
+    let b = Browser {
+        key: Party::new(),
+        ip: "198.51.100.78",
+    };
+    let id = start(&f, &b).await;
+    for n in 0..20 {
+        let r = redeem(&f, &b, &id).await;
+        assert_ne!(
+            r.status,
+            StatusCode::TOO_MANY_REQUESTS,
+            "redeem {n}: {}",
+            r.body
+        );
+        assert_eq!(
+            code(&r),
+            "auth/oob/redeem:pending",
+            "redeem {n}: {}",
+            r.body
+        );
+    }
+}
+
 // ── Operator console: the `admin` session audience ──────────────────────────
 //
 // The console's login page asks for an admin session by putting
@@ -2003,7 +2046,10 @@ async fn sign_in_v0_2(f: &Fixture, scope: Option<Value>) -> (Browser, Party, Rep
     assert_eq!(pr.status, StatusCode::OK, "{}", pr.body);
     assert_vtc_attested(f, &pr.body);
     assert_eq!(pr.body["type"], format!("{}#response", t2("prove")));
-    assert_eq!(pr.body["payload"]["signingScope"], json!(["vtc/directory"]));
+    assert_eq!(
+        pr.body["payload"]["signingScope"],
+        json!(["vtc/directory", "vtc/groups"])
+    );
     let digest = oob::context_digest(&pr.body).unwrap();
     let scope = scope.unwrap_or_else(|| pr.body["payload"]["signingScope"].clone());
     let grant = doc(
@@ -2117,11 +2163,80 @@ async fn a_scoped_grant_lets_the_portal_key_sign_directory_documents_as_the_memb
     assert_eq!(code(&profile), "permissionDenied", "{}", profile.body);
 }
 
+/// A delegated portal key stands in for its member at the size gate: a
+/// picture the portal uploads (`vtc/directory/images/upload`, declared up to
+/// 360 KiB) is measured against that task's limit, not the 64 KiB a stranger
+/// gets. Before this the portal could upload no photograph at all.
+#[tokio::test]
+async fn the_portal_key_uploads_a_picture_larger_than_the_default_document_limit() {
+    use base64::Engine as _;
+    let f = fixture().await;
+    let (b, _member, _, done) = sign_in_v0_2(&f, None).await;
+    assert_eq!(done.status, StatusCode::OK, "{}", done.body);
+
+    // Noise does not compress: about 190 KB of PNG, under the 256 KiB a
+    // picture may be.
+    let mut seed = 0x1234_5678u32;
+    let img = image::RgbaImage::from_fn(220, 220, |_, _| {
+        seed ^= seed << 13;
+        seed ^= seed >> 17;
+        seed ^= seed << 5;
+        image::Rgba(seed.to_le_bytes())
+    });
+    let mut png = Vec::new();
+    image::DynamicImage::ImageRgba8(img)
+        .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+        .unwrap();
+    assert!(
+        png.len() > 128 * 1024 && png.len() <= 262_144,
+        "{}",
+        png.len()
+    );
+    let payload = json!({
+        "mediaType": "image/png",
+        "data": base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&png),
+    });
+
+    let up = as_portal(
+        &f,
+        &b,
+        &format!("{DIRECTORY}/images/upload/0.1"),
+        payload.clone(),
+    )
+    .await;
+    assert_eq!(up.status, StatusCode::OK, "{}", up.body);
+    assert!(
+        up.body["payload"]["image"]["sha256"].is_string(),
+        "{}",
+        up.body
+    );
+
+    // The same document from a key nobody delegated anything to meets the
+    // default limit.
+    let stranger = Browser {
+        key: Party::new(),
+        ip: "198.51.100.9",
+    };
+    let refused = as_portal(
+        &f,
+        &stranger,
+        &format!("{DIRECTORY}/images/upload/0.1"),
+        payload,
+    )
+    .await;
+    assert_eq!(code(&refused), "malformedRequest", "{}", refused.body);
+    assert_eq!(refused.body["payload"]["details"]["maxBytes"], 65536);
+}
+
 /// Item 3: the grant's scope must be the one step 2 offered.
 #[tokio::test]
 async fn a_grant_widening_the_offered_scope_is_refused() {
     let f = fixture().await;
-    let (_, _, rs, _) = sign_in_v0_2(&f, Some(json!(["vtc/directory", "vtc/groups"]))).await;
+    let (_, _, rs, _) = sign_in_v0_2(
+        &f,
+        Some(json!(["vtc/directory", "vtc/groups", "vtc/rooms"])),
+    )
+    .await;
     assert_eq!(
         rs.body["payload"]["code"], "auth/oob/respond:contextMismatch",
         "{}",

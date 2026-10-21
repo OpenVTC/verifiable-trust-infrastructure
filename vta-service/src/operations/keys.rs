@@ -2376,6 +2376,200 @@ pub async fn sign_csr(
     Ok((pem, record.public_key))
 }
 
+/// What [`sign_document`] returns: the document with its proof, the proof on
+/// its own, and the DID it was signed as.
+#[derive(Debug, Clone)]
+pub struct SignedDocument {
+    pub document: serde_json::Value,
+    pub proof: serde_json::Value,
+    pub signer_did: String,
+}
+
+/// How far a `created` the producer names may be from this VTA's clock
+/// (`keys/sign-document` item 10).
+const DOCUMENT_CREATED_WINDOW: chrono::Duration = chrono::Duration::minutes(5);
+
+/// `keys/sign-document/0.1`: an `eddsa-jcs-2022` Data Integrity proof over a
+/// JSON document, from a key that never leaves the VTA, made **only as the DID
+/// the document names** in `issuer` or `controller`, and only for a
+/// relationship that DID's document grants the key.
+///
+/// The checks run in the specification's order — the document's own before the
+/// key is looked up, the key's DID document after — so no refusal says
+/// anything about a key the caller could not name. The signer DID's document
+/// is never taken from the request: a `did:key`'s is read from the identifier,
+/// a `did:peer`'s derived from it, a `did:webvh` this VTA minted read from its
+/// own log, and anything else resolved. The VTA builds the proof configuration and the hash
+/// data itself ([`super::sign_formats`]) and signs those 64 bytes as
+/// [`SigningDomain::ProtocolDefined`] through the same chokepoint as
+/// `keys/sign`, so scope, the context's signing policy and its daily quota
+/// apply. The audit row names the signer, the method, the purpose, the
+/// document's `id` and `type`, and the SHA-256 of the hash data — never the
+/// document.
+#[allow(clippy::too_many_arguments)]
+pub async fn sign_document(
+    keys_ks: &KeyspaceHandle,
+    imported_ks: &KeyspaceHandle,
+    internal_ks: &KeyspaceHandle,
+    contexts_ks: &KeyspaceHandle,
+    acl_ks: &KeyspaceHandle,
+    seed_store: &Arc<dyn SeedStore>,
+    audit: &vta_audit::SharedAuditSink,
+    stores: super::persona::PersonaStores<'_>,
+    resolver: Option<&affinidi_did_resolver_cache_sdk::DIDCacheClient>,
+    auth: &AuthClaims,
+    key_id: &str,
+    document: &serde_json::Value,
+    proof_purpose: Option<&str>,
+    created: Option<&str>,
+    challenge: Option<&str>,
+    domain: Option<&str>,
+    channel: &str,
+) -> Result<SignedDocument, ProtocolSignRefusal> {
+    use super::sign_formats::{
+        FormatRefusal, did_key_methods, document_proof_config, document_signer,
+        eddsa_jcs_2022_hash_data, signer_methods,
+    };
+    use base64::Engine as _;
+    use sha2::{Digest, Sha256};
+
+    // Items 1 – 2.
+    ensure_may_protocol_sign(
+        acl_ks,
+        auth,
+        "keys/sign-document",
+        Capability::SignDocument,
+        "sign-document",
+    )
+    .await?;
+    // Items 3 – 4: the document alone.
+    let signer = document_signer(document)?;
+    // Items 5 – 7: the key — in scope, active, and Ed25519 (the one key type
+    // `eddsa-jcs-2022` has).
+    let (record, _, _) = protocol_signing_key(keys_ks, auth, key_id).await?;
+    if record.key_type != KeyType::Ed25519 {
+        return Err(ProtocolSignRefusal::KeyTypeUnsupported(record.key_type));
+    }
+    let key = vta_sdk::did_key::decode_ed25519_public_key_multibase(&record.public_key)
+        .map_err(|e| AppError::Internal(format!("key {key_id}'s public key: {e}")))?;
+
+    // Item 8: the signer DID's own document, never one from the request.
+    let own = match did_key_methods(&signer) {
+        Some(m) => Some(m),
+        None => super::persona::own_document(stores, &signer)
+            .await?
+            .map(|doc| signer_methods(&signer, &doc)),
+    };
+    let methods = match own {
+        Some(m) => m,
+        None => {
+            let Some(resolver) = resolver else {
+                return Err(ProtocolSignRefusal::KeyNotActive(format!(
+                    "this VTA resolves no DID documents, so it cannot tell whether {key_id} is                      a verification method of {signer}"
+                )));
+            };
+            let resolved = resolver.resolve(&signer).await.map_err(|e| {
+                ProtocolSignRefusal::KeyNotActive(format!(
+                    "the document of {signer} could not be resolved: {e}"
+                ))
+            })?;
+            let doc = serde_json::to_value(&resolved.doc)
+                .map_err(|e| AppError::Internal(format!("resolved document: {e}")))?;
+            signer_methods(&signer, &doc)
+        }
+    };
+    let named_by = if document.get("issuer").is_some() {
+        "issuer"
+    } else {
+        "controller"
+    };
+    let keyed: Vec<_> = methods.into_iter().filter(|m| m.key == key).collect();
+    if keyed.is_empty() {
+        return Err(FormatRefusal::IssuerMismatch(named_by).into());
+    }
+    // Item 9: the first method the DID lists the key under for this purpose.
+    let purpose: &'static str = match proof_purpose.unwrap_or("assertionMethod") {
+        "assertionMethod" => "assertionMethod",
+        "authentication" => "authentication",
+        other => {
+            return Err(AppError::Validation(format!("proofPurpose {other} is not served")).into());
+        }
+    };
+    let Some(method) = keyed.iter().find(|m| m.purposes.contains(&purpose)) else {
+        return Err(FormatRefusal::PurposeNotAuthorized(purpose).into());
+    };
+
+    // Item 10: the key's signature dates the proof, so the producer cannot
+    // back- or forward-date it beyond the window.
+    let now = Utc::now();
+    let created = match created {
+        Some(c) => {
+            let at = chrono::DateTime::parse_from_rfc3339(c)
+                .map_err(|e| FormatRefusal::InvalidArgument(format!("created: {e}")))?;
+            if (at.with_timezone(&Utc) - now).abs() > DOCUMENT_CREATED_WINDOW {
+                return Err(FormatRefusal::InvalidArgument(format!(
+                    "created {c} is more than five minutes from this VTA's clock"
+                ))
+                .into());
+            }
+            c.to_string()
+        }
+        None => now.format("%Y-%m-%dT%H:%M:%SZ").to_string(),
+    };
+
+    // Item 11: the proof is built here, and these 64 bytes are all that is
+    // signed.
+    let config = document_proof_config(document, &method.id, purpose, &created, challenge, domain);
+    let hash_data = eddsa_jcs_2022_hash_data(document, &config).map_err(AppError::Internal)?;
+    let detail = format!(
+        "signer={signer} vm={} purpose={purpose} id={} type={} sha256={}",
+        method.id,
+        document
+            .get("id")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("-"),
+        document
+            .get("type")
+            .map(|t| t.to_string())
+            .unwrap_or_else(|| "-".into()),
+        hex::encode(Sha256::digest(hash_data))
+    );
+    let signed = sign_payload_recorded(
+        keys_ks,
+        imported_ks,
+        internal_ks,
+        contexts_ks,
+        acl_ks,
+        seed_store,
+        audit,
+        auth,
+        key_id,
+        &hash_data,
+        &SignAlgorithm::EdDSA,
+        SigningDomain::ProtocolDefined,
+        channel,
+        SignAuditRow {
+            action: "keys.sign-document",
+            detail: Some(&detail),
+        },
+    )
+    .await?;
+    let signature = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(&signed.signature)
+        .map_err(|e| AppError::Internal(format!("signature encoding: {e}")))?;
+
+    // Item 12.
+    let mut proof = config;
+    proof["proofValue"] = multibase::encode(multibase::Base::Base58Btc, signature).into();
+    let mut secured = document.clone();
+    secured["proof"] = proof.clone();
+    Ok(SignedDocument {
+        document: secured,
+        proof,
+        signer_did: signer,
+    })
+}
+
 /// Ephemeral derive-and-sign: derive an Ed25519 key at `derivation_path` from
 /// the VTA's seed, sign `payload`, and return `{ public_key, signature }`
 /// **without persisting a `KeyRecord`**.

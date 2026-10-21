@@ -53,12 +53,17 @@ if [ "$PROFILE" = "release" ]; then
   PROFILE_DIR="release"
 fi
 
-IOS_TARGETS=(aarch64-apple-ios aarch64-apple-ios-sim)
+# IOS_TARGETS (space-separated) narrows the iOS build; CI builds one target per
+# job.
+read -r -a IOS_TARGETS <<< "${IOS_TARGETS:-aarch64-apple-ios aarch64-apple-ios-sim}"
 # cargo-ndk ABI names (it maps these to the android triples + NDK toolchain).
 ANDROID_ABIS=(arm64-v8a armeabi-v7a x86_64)
 
 build_ios() {
   echo "── iOS (deployment target $IPHONEOS_DEPLOYMENT_TARGET, $PROFILE) ──"
+  # One target at a time, deliberately: built side by side in one cargo
+  # invocation, two rustc processes on trust-tasks-rs ran a 7 GB macOS runner
+  # past an hour on that crate alone (#2222).
   for target in "${IOS_TARGETS[@]}"; do
     echo "  • $target"
     cargo build --locked -p vta-mobile-core --lib --target "$target" $CARGO_PROFILE_FLAG
@@ -110,10 +115,21 @@ check_bindings() {
   echo "  bindings generated under $out/{kotlin,swift}"
 }
 
+# BINDINGS=0 skips the bindings step. The bindings come from UniFFI metadata
+# that does not depend on the host, so CI generates them on its Android leg
+# only; on the iOS leg the extra host build pushed it past its time limit.
+maybe_bindings() {
+  if [ "${BINDINGS:-1}" = "0" ]; then
+    echo "── UniFFI bindings skipped (BINDINGS=0) ──"
+  else
+    check_bindings
+  fi
+}
+
 case "$PLATFORMS" in
-  ios)     build_ios; check_bindings ;;
-  android) build_android; check_bindings ;;
-  all)     build_ios; build_android; check_bindings ;;
+  ios)     build_ios; maybe_bindings ;;
+  android) build_android; maybe_bindings ;;
+  all)     build_ios; build_android; maybe_bindings ;;
   *) echo "usage: $0 [ios|android|all]" >&2; exit 2 ;;
 esac
 

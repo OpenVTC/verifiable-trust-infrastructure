@@ -89,6 +89,34 @@ pub struct VerifiedPresentation {
     /// `trusted_authorities` entry of type `aki` is matched against. Empty for
     /// a DID issuer.
     pub issuer_authority_key_ids: Vec<String>,
+    /// Every `type` the credential carries — the SD-JWT `vct`, or a DI / bbs
+    /// VC's `type` array — so a check for one type is not limited to the
+    /// concrete one [`Self::vct`] names.
+    pub types: Vec<String>,
+    /// When the credential stops being valid, where it says (`exp`, or
+    /// `validUntil` / `expirationDate`). A top-level property, read before
+    /// [`Self::claims`] narrows to the subject.
+    pub valid_until: Option<DateTime<Utc>>,
+}
+
+/// Every `type` of a DI / bbs credential.
+fn credential_types(vc: &Value) -> Vec<String> {
+    match vc.get("type") {
+        Some(Value::Array(a)) => a
+            .iter()
+            .filter_map(Value::as_str)
+            .map(str::to_string)
+            .collect(),
+        Some(Value::String(t)) => vec![t.clone()],
+        _ => Vec::new(),
+    }
+}
+
+/// A DI / bbs credential's stated end, either spelling.
+fn w3c_valid_until(vc: &Value) -> Option<DateTime<Utc>> {
+    crate::credentials::ingress::validity_window(vc, "credential")
+        .ok()
+        .and_then(|w| w.valid_until)
 }
 
 /// Read a credential's top-level `taskContext`.
@@ -332,6 +360,12 @@ pub async fn verify_presentation_with_anchors(
         .map(str::to_string);
     let credential_status = extract_credential_status(&result.claims);
     let task_context = extract_task_context(&result.claims);
+    let types = vct.iter().cloned().collect();
+    let valid_until = result
+        .claims
+        .get("exp")
+        .and_then(Value::as_i64)
+        .and_then(|t| DateTime::<Utc>::from_timestamp(t, 0));
     Ok(VerifiedPresentation {
         issuer_did,
         holder_did,
@@ -343,6 +377,8 @@ pub async fn verify_presentation_with_anchors(
         credential_status,
         task_context,
         issuer_authority_key_ids,
+        types,
+        valid_until,
     })
 }
 
@@ -614,6 +650,8 @@ async fn verify_di_vp(
         .map_err(|e| AppError::Validation(format!("DI VC issuer proof did not verify: {e}")))?;
 
         check_w3c_temporal(vc, now)?;
+        // Also the VC 1.1 names, and a credential stating both refused.
+        crate::credentials::ingress::check_validity_window(vc, now, "DI VC")?;
 
         // The concrete type — for a DTG credential its subtype, not the
         // `DTGCredential` base type every one of them carries.
@@ -636,6 +674,8 @@ async fn verify_di_vp(
             credential_status,
             task_context,
             issuer_authority_key_ids: Vec::new(),
+            types: credential_types(vc),
+            valid_until: w3c_valid_until(vc),
         });
     }
     Ok(out)
@@ -846,5 +886,7 @@ async fn verify_bbs_presentation(
         credential_status,
         task_context,
         issuer_authority_key_ids: Vec::new(),
+        types: credential_types(vc),
+        valid_until: w3c_valid_until(vc),
     })
 }

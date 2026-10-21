@@ -58,9 +58,31 @@ pub async fn viewer(state: &AppState, did: &str) -> Result<Viewer, AppError> {
             .as_ref()
             .is_some_and(|e| e.can(Capability::MembersManage, None)),
         connected,
-        groups: BTreeSet::new(),
+        groups: viewer_groups(state, did).await?,
         public: false,
     })
+}
+
+/// The groups that count as `did`'s for the `groups` audience: those they
+/// belong to whose member list they may see (`crate::groups::audience_groups`).
+async fn viewer_groups(state: &AppState, did: &str) -> Result<BTreeSet<String>, AppError> {
+    let standing = crate::groups::Standing::read(state, did).await?;
+    if standing.member_of.is_empty() {
+        return Ok(BTreeSet::new());
+    }
+    let all = crate::groups::all(state.directory.ks()).await?;
+    Ok(crate::groups::audience_groups(&all, &standing))
+}
+
+/// `subject` with the groups they belong to, active, filled in.
+async fn with_groups(state: &AppState, mut subject: Subject) -> Result<Subject, AppError> {
+    subject.groups = crate::groups::groups_of(state.directory.ks(), &subject.card.entry_id)
+        .await?
+        .into_iter()
+        .filter(|m| m.state == "active")
+        .map(|m| m.group_id)
+        .collect();
+    Ok(subject)
 }
 
 /// Every member with a card, as a projection subject. A member who has none
@@ -84,7 +106,13 @@ pub async fn subjects(state: &AppState) -> Result<Vec<Subject>, AppError> {
                 cards::ensure(dir.ks(), &member.did, &settings, own.as_deref()).await?
             }
         };
-        out.push(Subject::from_records(card, entry.as_ref(), Some(&member)));
+        out.push(
+            with_groups(
+                state,
+                Subject::from_records(card, entry.as_ref(), Some(&member)),
+            )
+            .await?,
+        );
     }
     Ok(out)
 }
@@ -112,11 +140,13 @@ pub async fn subject_by_did(state: &AppState, did: &str) -> Result<Option<Subjec
             .await?
         }
     };
-    Ok(Some(Subject::from_records(
-        card,
-        entry.as_ref(),
-        Some(&member),
-    )))
+    Ok(Some(
+        with_groups(
+            state,
+            Subject::from_records(card, entry.as_ref(), Some(&member)),
+        )
+        .await?,
+    ))
 }
 
 /// One subject by entry identifier. `None` when the card or its member record
@@ -133,11 +163,13 @@ pub(crate) async fn subject_by_entry(
     if member.is_none() {
         return Ok(None);
     }
-    Ok(Some(Subject::from_records(
-        card,
-        entry.as_ref(),
-        member.as_ref(),
-    )))
+    Ok(Some(
+        with_groups(
+            state,
+            Subject::from_records(card, entry.as_ref(), member.as_ref()),
+        )
+        .await?,
+    ))
 }
 
 /// What a read needs once, whatever it projects.

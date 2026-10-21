@@ -315,6 +315,7 @@ pub async fn run_connection_test(
                     vta_did,
                     rest_url_str,
                     rest_url,
+                    mediator_did_opt,
                     setup_did,
                     setup_privkey_mb,
                     ask,
@@ -358,6 +359,7 @@ pub async fn run_connection_test(
                 vta_did,
                 rest_url_str,
                 rest_url,
+                mediator_did_opt,
                 setup_did,
                 setup_privkey_mb,
                 ask,
@@ -468,12 +470,19 @@ async fn dispatch_didcomm_leg(
 /// Run the REST leg and emit its terminal events. The counterpart to
 /// [`dispatch_didcomm_leg`], reused as the TSP leg's fallback when the VTA
 /// advertises REST but no DIDComm mediator.
+///
+/// `didcomm_mediator_did` is the `#DIDCommMessaging` mediator the document
+/// advertises, if any. Nothing on this leg rides it, but the consumer still
+/// needs it — a holder's personas publish it — so it travels on
+/// [`VtaEvent::Connected`] rather than being dropped because the round-trip
+/// went over HTTP (OpenVTC #501).
 #[allow(clippy::too_many_arguments)]
 async fn dispatch_rest_leg(
     intent: VtaIntent,
     vta_did: String,
     rest_url_str: String,
     rest_url: Option<String>,
+    didcomm_mediator_did: Option<String>,
     setup_did: String,
     setup_privkey_mb: String,
     ask: ProvisionAsk,
@@ -523,7 +532,7 @@ async fn dispatch_rest_leg(
             let _ = tx.send(VtaEvent::Connected {
                 protocol: Protocol::Rest,
                 rest_url,
-                mediator_did: None,
+                mediator_did: didcomm_mediator_did,
                 reply,
             });
         }

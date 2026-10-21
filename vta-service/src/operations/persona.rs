@@ -164,6 +164,36 @@ pub async fn persona_key_for(
     Ok(None)
 }
 
+/// The current DID document of `did` as this agent knows it **without the network**: a
+/// `did:peer`'s, derived from the identifier, or a `did:webvh` this agent minted, read from
+/// its own log. `None` for anything else. A custodian that holds a DID's key reads that
+/// DID's document from here before it resolves anything (`keys/sign-document`).
+pub async fn own_document(stores: PersonaStores<'_>, did: &str) -> Result<Option<Value>, AppError> {
+    if did.starts_with("did:peer:") {
+        use affinidi_did_resolver_traits::{PeerResolver, Resolver};
+        let Ok(parsed) = affinidi_did_common::DID::try_from(did) else {
+            return Ok(None);
+        };
+        let Some(Ok(document)) = PeerResolver.resolve(&parsed) else {
+            return Ok(None);
+        };
+        return serde_json::to_value(&document)
+            .map(Some)
+            .map_err(|e| AppError::Internal(format!("encode the document of {did}: {e}")));
+    }
+    #[cfg(feature = "webvh")]
+    if did.starts_with("did:webvh:") {
+        let Some(log) = crate::webvh_store::get_did_log(stores.webvh_ks, did).await? else {
+            return Ok(None);
+        };
+        return crate::operations::protocol::document::current_document_from_log(&log)
+            .map(Some)
+            .map_err(|e| AppError::Internal(format!("read the current document of {did}: {e}")));
+    }
+    let _ = stores;
+    Ok(None)
+}
+
 /// The `did:peer` arm of [`persona_key_for`]: the document is derived from the identifier —
 /// "pure computation", as the verifier's own `did:peer` path does — and each method of the
 /// relationship is matched against the caller's key records as a `did:key` is.

@@ -84,6 +84,7 @@ describe("the grouped sidebar", () => {
       "join-requests",
       "members",
       "directory",
+      "groups",
       "invitations",
       "vetting",
       "relationships",
@@ -143,9 +144,9 @@ describe("the grouped sidebar", () => {
     expect(labels).toContain("Overview");
     expect(labels).not.toContain("More");
     const membership = nav.sections.find((s) => s.id === "membership");
-    // The directory and Relationships are readable by every administrator, so
-    // the group stays, holding only those.
-    expect(ids(membership!.plugins)).toEqual(["directory", "relationships"]);
+    // The directory, Groups and Relationships are readable by every
+    // administrator, so the group stays, holding only those.
+    expect(ids(membership!.plugins)).toEqual(["directory", "groups", "relationships"]);
 
     expect(arrangeNav([]).sections).toEqual([]);
     const onlyCommunity = arrangeNav(getPlugins().filter((p) => p.id === "rooms"));

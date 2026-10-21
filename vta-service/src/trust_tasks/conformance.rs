@@ -1404,6 +1404,47 @@ fn table() -> Vec<(&'static str, Conformance)> {
             ),
         ),
         (
+            uris::TASK_KEYS_SIGN_DOCUMENT_0_1,
+            // The response as `operations::keys::sign_document` builds it: the
+            // proof configuration from `sign_formats`, its proofValue attached,
+            // on the document and on its own.
+            {
+                let document = serde_json::json!({
+                    "@context": ["https://www.w3.org/ns/credentials/v2"],
+                    "id": "urn:uuid:7c0e9a44-2b1d-4f6e-9a35-1d2c3b4a5e60",
+                    "type": ["VerifiableCredential"],
+                    "issuer": "did:example:community",
+                    "credentialSubject": { "id": "did:example:member" }
+                });
+                let mut proof = crate::operations::sign_formats::document_proof_config(
+                    &document,
+                    "did:example:community#key-1",
+                    "assertionMethod",
+                    "2026-10-18T09:00:01Z",
+                    None,
+                    None,
+                );
+                proof["proofValue"] = "z5e9cErCFXraDE8Cs3a46rSRaReyv68UtZz7JmzDUCcnCbFbEfXaUWW1RkAomKidanRrLDWhQqraAEq5XtuwK9zQo".into();
+                let mut secured = document.clone();
+                secured["proof"] = proof.clone();
+                checked!(
+                    specs::keys::sign_document::v0_1::Payload,
+                    specs::keys::sign_document::v0_1::Response,
+                    serde_json::json!({
+                        "keyId": "community-ed25519",
+                        "document": document,
+                        "created": "2026-10-18T09:00:01Z"
+                    }),
+                    serde_json::json!({
+                        "keyId": "community-ed25519",
+                        "signerDid": "did:example:community",
+                        "document": secured,
+                        "proof": proof
+                    })
+                )
+            },
+        ),
+        (
             uris::TASK_KEYS_SIGN_CSR_0_1,
             checked!(
                 specs::keys::sign_csr::v0_1::Payload,
@@ -3169,6 +3210,35 @@ fn table() -> Vec<(&'static str, Conformance)> {
                         "issuer": "did:webvh:example.com:people:alice",
                         "recipient": "did:webvh:example.com:northwind-community",
                         "issuedAt": "2026-01-01T00:10:00Z",
+                        "payload": {},
+                        "proof": { "type": "DataIntegrityProof" }
+                    }
+                })
+            ),
+        ),
+        (
+            uris::TASK_ROOMS_KEYS_ACT_0_6,
+            checked!(
+                specs::rooms::keys::act::v0_6::Payload,
+                specs::rooms::keys::act::v0_6::Response,
+                json!({
+                    "document": {
+                        "id": "urn:uuid:00000000-0000-4000-8000-0000000000a6",
+                        "type": "https://trusttasks.org/spec/vtc/rooms/offers/list/0.3#request",
+                        "issuer": "did:webvh:example.com:people:alice",
+                        "recipient": "did:webvh:example.com:northwind-community",
+                        "issuedAt": "2026-01-01T00:11:00Z",
+                        "payload": {}
+                    }
+                }),
+                json!({
+                    "principal": "did:webvh:example.com:people:alice",
+                    "document": {
+                        "id": "urn:uuid:00000000-0000-4000-8000-0000000000a6",
+                        "type": "https://trusttasks.org/spec/vtc/rooms/offers/list/0.3#request",
+                        "issuer": "did:webvh:example.com:people:alice",
+                        "recipient": "did:webvh:example.com:northwind-community",
+                        "issuedAt": "2026-01-01T00:11:00Z",
                         "payload": {},
                         "proof": { "type": "DataIntegrityProof" }
                     }

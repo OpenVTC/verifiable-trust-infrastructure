@@ -268,6 +268,35 @@ impl VtaClient {
         .await
     }
 
+    /// `keys/sign-document/0.1` — an `eddsa-jcs-2022` Data Integrity proof over
+    /// `document` from a key that never leaves the VTA, made as the DID the
+    /// document names in `issuer` or `controller`. `proof_purpose` is
+    /// `assertionMethod` when `None`.
+    ///
+    /// Use the returned `document` exactly as it is: the proof covers every
+    /// member sent. Needs the `sign-document` capability; `sign` does not
+    /// confer it.
+    pub async fn sign_document(
+        &self,
+        key_id: &str,
+        document: serde_json::Value,
+        proof_purpose: Option<&str>,
+    ) -> Result<crate::protocols::key_management::sign_document::SignDocumentResponse, VtaError>
+    {
+        use crate::protocols::key_management::sign_document::SignDocumentPayload;
+        let mut body = serde_json::json!({ "keyId": key_id, "document": document });
+        if let Some(purpose) = proof_purpose {
+            body["proofPurpose"] = purpose.into();
+        }
+        // Read back through the generated type, so a request the schema
+        // refuses is refused here; sent as built, so the document is carried
+        // whole.
+        serde_json::from_value::<SignDocumentPayload>(body.clone())
+            .map_err(|e| VtaError::Validation(format!("keys/sign-document request: {e}")))?;
+        self.rpc_tt(trust_tasks::TASK_KEYS_SIGN_DOCUMENT_0_1, body, 30)
+            .await
+    }
+
     /// `keys/sign-csr/0.1` — a PKCS#10 certificate signing request (PEM) for a
     /// key that never leaves the VTA, naming `subject` (in encoded order:
     /// element 0 is the first RDN, conventionally `C`) and, optionally,

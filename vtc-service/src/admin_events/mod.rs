@@ -4,10 +4,12 @@
 //!
 //! ## Versions
 //!
-//! Served at 0.1 and 0.2. The topic set is closed per version (subscribe 0.2
-//! *What 0.2 adds*): 0.2 adds `rooms`, so a console asks for it only at 0.2,
-//! and a stream answers — its `#response` and every hint after it — at the
-//! version it was opened with ([`Version`]). A 0.1 console is unchanged.
+//! Served at 0.1, 0.2 and 0.3. The topic set is closed per version (subscribe
+//! 0.2 *What 0.2 adds*, 0.3 *What 0.3 adds*): 0.2 adds `rooms` and 0.3 adds
+//! `directory` and `groups`, so a console asks for each only at the version
+//! that has it, and a stream answers — its `#response` and every hint after it
+//! — at the version it was opened with ([`Version`]). An older console is
+//! unchanged.
 //!
 //! ## What travels on it
 //!
@@ -34,7 +36,11 @@
 //!   nothing changed (see fingerprints below).
 //!   The rooms seams are a configuration's write (`rooms::storage_configs`)
 //!   and, inside `vti_rooms`, a room registered or renewed and a holdings or
-//!   limit write ([`notify_rooms`], through `vti_rooms::observe`).
+//!   limit write ([`notify_rooms`], through `vti_rooms::observe`). The
+//!   `directory` seams are the directory's own writes — a field, a card or a
+//!   value, an external card, a picture, a note — and the `groups` seams a
+//!   group, a membership or a join request stored or removed, and every ACL
+//!   write (a manager's appointment is a resource grant).
 //! - **Fingerprints.** "A change the caller's read would not show them
 //!   produces no hint" (subscribe 0.1 §Authorization). For `actions`,
 //!   `acknowledgements` and `joinRequests` each stream keeps a digest of what
@@ -44,6 +50,13 @@
 //!   95 / 100 percent band of each room's usage against its limits and of each
 //!   storage config's held bytes against its capacity, beside each config as
 //!   stored. Holdings move on every upload; only a band crossing hints.
+//!   `groups` is fingerprinted per recipient over the groups they may manage
+//!   — each group, its members, its requests and its managers — so a manager
+//!   qualified to one group is never hinted about another's change (subscribe
+//!   0.3 §Authorization). `directory` is not fingerprinted: its holders are
+//!   hinted about every change, coalesced to one hint in
+//!   [`DIRECTORY_HINT_INTERVAL`] so one member's edits do not read as a rhythm
+//!   (subscribe 0.3 §Correlation).
 //!   Lifecycle is computed from the clock, never written, so a stream holding
 //!   `rooms` also wakes at the next moment a room's state would change
 //!   (`vti_rooms::Room::next_lifecycle_change`).
@@ -92,8 +105,9 @@ use sha2::{Digest, Sha256};
 use tokio::sync::{broadcast, mpsc};
 use trust_tasks_rs::TrustTask;
 use trust_tasks_rs::specs::vtc::admin::events::{
-    event::v0_1 as event, event::v0_2 as event_v0_2, subscribe::v0_1 as subscribe,
-    subscribe::v0_2 as subscribe_v0_2,
+    event::v0_1 as event, event::v0_2 as event_v0_2, event::v0_3 as event_v0_3,
+    subscribe::v0_1 as subscribe, subscribe::v0_2 as subscribe_v0_2,
+    subscribe::v0_3 as subscribe_v0_3,
 };
 use vti_common::error::AppError;
 
@@ -101,7 +115,7 @@ use crate::server::AppState;
 
 /// The declared error codes of `vtc/admin/events/subscribe`, read off the
 /// generated specification — what the tests that witness each one compare
-/// against. 0.1 and 0.2 declare the same three, under the same codes.
+/// against. 0.1, 0.2 and 0.3 declare the same three, under the same codes.
 pub mod codes {
     use trust_tasks_rs::specs::vtc::admin::events::subscribe::v0_1::error_codes as e;
 
@@ -114,14 +128,16 @@ pub mod codes {
 
 /// The version a stream was opened at: its `#response` and its hints are
 /// documents of that version, and its topics are that version's.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum Version {
     V0_1,
     V0_2,
+    V0_3,
 }
 
 /// One kind of change a console can be told about — the shared `Topic` of
-/// `vtc/admin/events/_shared/0.2` (0.1's, plus `rooms`). The generated modules
+/// `vtc/admin/events/_shared/0.3` (0.1's, plus `rooms`, `directory` and
+/// `groups`). The generated modules
 /// each carry their own copy of that enum; this one is the service's, with a
 /// conversion to each through the wire name.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -135,10 +151,15 @@ pub enum Topic {
     /// Added in 0.2: the rooms this community hosts and where their files are
     /// kept.
     Rooms,
+    /// Added in 0.3: the member directory as administrators see it.
+    Directory,
+    /// Added in 0.3: the community's groups, their members, bindings and join
+    /// requests.
+    Groups,
 }
 
 impl Topic {
-    pub const ALL: [Topic; 7] = [
+    pub const ALL: [Topic; 9] = [
         Topic::Actions,
         Topic::Acknowledgements,
         Topic::JoinRequests,
@@ -146,6 +167,8 @@ impl Topic {
         Topic::SingleAdminMode,
         Topic::Config,
         Topic::Rooms,
+        Topic::Directory,
+        Topic::Groups,
     ];
 
     /// The name the shared schema gives it.
@@ -158,6 +181,8 @@ impl Topic {
             Topic::SingleAdminMode => "singleAdminMode",
             Topic::Config => "config",
             Topic::Rooms => "rooms",
+            Topic::Directory => "directory",
+            Topic::Groups => "groups",
         }
     }
 
@@ -167,13 +192,32 @@ impl Topic {
 
     /// Whether `version`'s closed topic set holds it.
     pub(crate) fn in_version(self, version: Version) -> bool {
-        version == Version::V0_2 || self != Topic::Rooms
+        version >= self.since()
+    }
+
+    /// The version that added it.
+    fn since(self) -> Version {
+        match self {
+            Topic::Rooms => Version::V0_2,
+            Topic::Directory | Topic::Groups => Version::V0_3,
+            _ => Version::V0_1,
+        }
     }
 
     /// The topics a stream keeps a digest of, hinting only when it moves: the
-    /// count topics, and `rooms` (event 0.2 producer rule 4).
+    /// count topics, `rooms` (event 0.2 producer rule 4), and `groups`, whose
+    /// digest is of the groups the recipient may manage.
     fn is_fingerprinted(self) -> bool {
-        self.is_count() || self == Topic::Rooms
+        self.is_count() || matches!(self, Topic::Rooms | Topic::Groups)
+    }
+
+    /// The least time between two hints of this topic (consumer rule 6's one
+    /// per second, and longer for `directory`).
+    fn min_hint_interval(self) -> Duration {
+        match self {
+            Topic::Directory => DIRECTORY_HINT_INTERVAL,
+            _ => MIN_HINT_INTERVAL,
+        }
     }
 
     /// The count topics: their hints carry the recipient's badge count, and
@@ -192,6 +236,10 @@ impl Topic {
     }
 
     pub(crate) fn from_subscribe_v0_2(t: &subscribe_v0_2::Topic) -> Option<Topic> {
+        Topic::from_wire(&t.to_string()).filter(|t| t.in_version(Version::V0_2))
+    }
+
+    pub(crate) fn from_subscribe_v0_3(t: &subscribe_v0_3::Topic) -> Option<Topic> {
         Topic::from_wire(&t.to_string())
     }
 }
@@ -308,6 +356,9 @@ pub(crate) fn notify_authority() {
         at: Utc::now(),
     });
     notify(Topic::Members);
+    // A group manager's appointment is a resource grant on their entry; the
+    // `groups` fingerprint drops what changed nothing a recipient manages.
+    notify(Topic::Groups);
     notify_actions();
 }
 
@@ -482,6 +533,9 @@ pub const STREAM_LIFETIME: Duration = Duration::from_secs(60 * 60);
 const GATHER: Duration = Duration::from_millis(150);
 /// No more than one hint per topic per second (consumer rule 6).
 const MIN_HINT_INTERVAL: Duration = Duration::from_secs(1);
+/// `directory` hints are coalesced harder, so that one member editing their
+/// card is not legible as a rhythm (subscribe 0.3 §Correlation's SHOULD).
+pub const DIRECTORY_HINT_INTERVAL: Duration = Duration::from_secs(10);
 /// A queued frame that cannot be handed to the connection within this long
 /// means the client has stopped reading; the stream ends.
 fn write_stall() -> Duration {
@@ -501,6 +555,8 @@ fn write_stall() -> Duration {
 /// | `joinRequests` | `vtc/join-requests/list` | any administrator |
 /// | `config` | `vtc/config/export` | `vtc.config.admin` |
 /// | `rooms` | `vtc/rooms/list`, `vtc/rooms/usage`, `vtc/storage/configs/list` | `vtc.rooms.admin` |
+/// | `directory` | the `vtc/directory/*` reads | `vtc.directory.admin` **or** `vtc.directory.notes` ([`readable`]) |
+/// | `groups` | the `vtc/groups/*` reads | `vtc.groups.manage`, unqualified **or** for any one group ([`readable`]) |
 ///
 /// The handlers of `vtc/members/list`, `vtc/join-requests/list` and
 /// `vtc/config/export` (`trust_tasks`) read their capability from here; the
@@ -511,12 +567,56 @@ pub(crate) fn read_capability(topic: Topic) -> Option<crate::acl::Capability> {
     match topic {
         Topic::Config => Some(crate::acl::Capability::ConfigAdmin),
         Topic::Rooms => Some(crate::acl::Capability::RoomsAdmin),
+        Topic::Directory => Some(crate::acl::Capability::DirectoryAdmin),
+        Topic::Groups => Some(crate::acl::Capability::GroupsManage),
         Topic::Actions
         | Topic::Acknowledgements
         | Topic::SingleAdminMode
         | Topic::Members
         | Topic::JoinRequests => None,
     }
+}
+
+/// Whether `entry` may read `topic` — [`read_capability`], widened where a
+/// topic's reads answer more than one holding: `directory` either holder of
+/// `vtc.directory.admin` or `vtc.directory.notes` (a hint names nothing, and
+/// the read shows each only what theirs lets it), and `groups` a manager of
+/// any one group as well as of every group.
+fn readable(topic: Topic, entry: &crate::acl::VtcAclEntry) -> bool {
+    use crate::acl::Capability;
+    match topic {
+        Topic::Directory => {
+            entry.can(Capability::DirectoryAdmin, None)
+                || entry.can(Capability::DirectoryNotes, None)
+        }
+        Topic::Groups => managed_groups(entry).is_none_or(|g| !g.is_empty()),
+        t => read_capability(t).is_none_or(|cap| entry.can(cap, None)),
+    }
+}
+
+/// The groups `entry` may manage: `None` for every group (the capability
+/// unqualified), else those it holds an appointment to.
+fn managed_groups(entry: &crate::acl::VtcAclEntry) -> Option<BTreeSet<String>> {
+    use crate::acl::{Capability, ResourceQualifier};
+    if entry.can(Capability::GroupsManage, None) {
+        return None;
+    }
+    Some(
+        entry
+            .resource_grants
+            .iter()
+            .filter_map(|g| match (&g.capability, &g.resource) {
+                (Capability::GroupsManage, ResourceQualifier::Group(id)) => Some(id.clone()),
+                _ => None,
+            })
+            .filter(|id| {
+                entry.can(
+                    Capability::GroupsManage,
+                    Some(&ResourceQualifier::Group(id.clone())),
+                )
+            })
+            .collect(),
+    )
 }
 
 /// A caller's standing, read now from the community's own records.
@@ -571,7 +671,7 @@ pub(crate) async fn standing(state: &AppState, signer: &str) -> Result<Option<St
     } else {
         Topic::ALL
             .into_iter()
-            .filter(|t| read_capability(*t).is_none_or(|cap| entry.can(cap, None)))
+            .filter(|t| readable(*t, &entry))
             .collect()
     };
     let entry_until = entry
@@ -617,6 +717,10 @@ async fn observe(
 ) -> Result<Observation, AppError> {
     let mut out = HashMap::new();
     let mut rooms_wake = None;
+    if topics.contains(&Topic::Groups) {
+        let digest = groups_fingerprint(state, &standing.principal).await?;
+        out.insert(Topic::Groups, Observed { count: 0, digest });
+    }
     if topics.contains(&Topic::Rooms) {
         let (digest, wake) = rooms_fingerprint(state).await?;
         out.insert(Topic::Rooms, Observed { count: 0, digest });
@@ -778,6 +882,60 @@ async fn rooms_fingerprint(
     }
     let wake = wake.and_then(|w| DateTime::<Utc>::from_timestamp(w as i64, 0));
     Ok((digest(&shape), wake))
+}
+
+/// What the `groups` topic hints about for `principal`: each group they may
+/// manage as the `vtc/groups/*` reads show it to a manager — the group, its
+/// members, its join requests and its managers. A change to a group they do
+/// not manage moves nothing here (subscribe 0.3 §Authorization).
+async fn groups_fingerprint(state: &AppState, principal: &str) -> Result<[u8; 32], AppError> {
+    let Some(entry) = crate::acl::get_acl_entry(&state.acl_ks, principal).await? else {
+        return Ok(digest(&()));
+    };
+    let managed = managed_groups(&entry);
+    let ks = state.directory.ks();
+    let mut groups = crate::groups::all(ks).await?;
+    groups.retain(|g| managed.as_ref().is_none_or(|m| m.contains(&g.group_id)));
+    groups.sort_by(|a, b| a.group_id.cmp(&b.group_id));
+    let requests = crate::groups::all_requests(ks).await?;
+    // Every group's appointed managers, from one pass over the ACL.
+    let now = Utc::now();
+    let mut managers: HashMap<String, BTreeSet<String>> = HashMap::new();
+    for e in crate::acl::list_acl_entries(&state.acl_ks).await? {
+        for g in &e.resource_grants {
+            if let (crate::acl::Capability::GroupsManage, crate::acl::ResourceQualifier::Group(id)) =
+                (&g.capability, &g.resource)
+                && g.is_live(now)
+            {
+                managers
+                    .entry(id.clone())
+                    .or_default()
+                    .insert(e.did.clone());
+            }
+        }
+    }
+    let mut shape: Vec<Value> = Vec::with_capacity(groups.len());
+    for g in &groups {
+        let mut members: Vec<Value> = crate::groups::members_of(ks, &g.group_id)
+            .await?
+            .iter()
+            .filter_map(|m| serde_json::to_value(m).ok())
+            .collect();
+        members.sort_by(|a, b| a["entryId"].as_str().cmp(&b["entryId"].as_str()));
+        let mut asked: Vec<Value> = requests
+            .iter()
+            .filter(|r| r.group_id == g.group_id)
+            .filter_map(|r| serde_json::to_value(r).ok())
+            .collect();
+        asked.sort_by(|a, b| a["requestId"].as_str().cmp(&b["requestId"].as_str()));
+        shape.push(serde_json::json!([
+            g,
+            members,
+            asked,
+            managers.get(&g.group_id)
+        ]));
+    }
+    Ok(digest(&shape))
 }
 
 fn digest<T: serde::Serialize>(v: &T) -> [u8; 32] {
@@ -1038,6 +1196,7 @@ fn subscribe_response(
     match version {
         Version::V0_1 => build!(subscribe),
         Version::V0_2 => build!(subscribe_v0_2),
+        Version::V0_3 => build!(subscribe_v0_3),
     }
 }
 
@@ -1073,6 +1232,7 @@ fn hint_document(
     match grant.version {
         Version::V0_1 => build!(event),
         Version::V0_2 => build!(event_v0_2),
+        Version::V0_3 => build!(event_v0_3),
     }
 }
 
@@ -1215,7 +1375,7 @@ impl Stream {
             .map(|t| {
                 self.last_sent
                     .get(t)
-                    .map_or(now, |s| (*s + MIN_HINT_INTERVAL).max(now))
+                    .map_or(now, |s| (*s + t.min_hint_interval()).max(now))
             })
             .min()
             .unwrap_or(now);
@@ -1338,7 +1498,7 @@ impl Stream {
             .filter(|t| {
                 self.last_sent
                     .get(*t)
-                    .is_none_or(|s| now.duration_since(*s) >= MIN_HINT_INTERVAL)
+                    .is_none_or(|s| now.duration_since(*s) >= t.min_hint_interval())
             })
             .copied()
             .collect();
@@ -1506,8 +1666,16 @@ mod tests {
     fn the_topic_set_is_closed_per_version() {
         for t in Topic::ALL {
             assert_eq!(Topic::from_wire(t.wire()), Some(t));
-            assert!(t.wire().parse::<subscribe_v0_2::Topic>().is_ok());
-            assert!(t.wire().parse::<event_v0_2::Topic>().is_ok());
+            assert!(t.wire().parse::<subscribe_v0_3::Topic>().is_ok());
+            assert!(t.wire().parse::<event_v0_3::Topic>().is_ok());
+            assert_eq!(
+                t.wire().parse::<subscribe_v0_2::Topic>().is_ok(),
+                t.in_version(Version::V0_2)
+            );
+            assert_eq!(
+                t.wire().parse::<event_v0_2::Topic>().is_ok(),
+                t.in_version(Version::V0_2)
+            );
             assert_eq!(
                 t.wire().parse::<subscribe::Topic>().is_ok(),
                 t.in_version(Version::V0_1)

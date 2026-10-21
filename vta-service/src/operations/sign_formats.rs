@@ -1,13 +1,15 @@
-//! The byte strings `keys/sign-jws/0.1` and `keys/sign-csr/0.1` sign, built
-//! here and nowhere else.
+//! The byte strings `keys/sign-jws/0.1`, `keys/sign-csr/0.1` and
+//! `keys/sign-document/0.1` sign, built here and nowhere else.
 //!
 //! Both tasks rest on one property: the VTA signs a structure it built itself,
 //! never bytes the caller chose. A JWS signing input is ASCII beginning `eyJ`;
 //! a `CertificationRequestInfo` is DER beginning `0x30`. Neither is a framed
 //! `keys/sign` payload or an SSHSIG statement, so a signature obtained through
-//! one task verifies as nothing the others produce. This module only builds and
-//! checks; the gates, the key and the audit row are the operations' (see
-//! [`super::keys::sign_jws`] and [`super::keys::sign_csr`]).
+//! one task verifies as nothing the others produce. `eddsa-jcs-2022` hash data
+//! is two SHA-256 digests, 64 bytes the cryptosuite defines as its own domain
+//! separation. This module only builds and checks; the gates, the key and the
+//! audit row are the operations' (see [`super::keys::sign_jws`],
+//! [`super::keys::sign_csr`] and [`super::keys::sign_document`]).
 
 use base64::Engine as _;
 use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
@@ -38,6 +40,15 @@ pub enum FormatRefusal {
         index: Option<usize>,
         reason: String,
     },
+    /// `keys/sign-document:proofPresent`.
+    ProofPresent,
+    /// `keys/sign-document:documentInvalid`, with its `reason`: `noSigner`,
+    /// `signerMalformed` or `notCanonicalizable`.
+    DocumentInvalid(&'static str),
+    /// `keys/sign-document:issuerMismatch`, naming `issuer` or `controller`.
+    IssuerMismatch(&'static str),
+    /// `keys/sign-document:purposeNotAuthorized`, naming the purpose.
+    PurposeNotAuthorized(&'static str),
 }
 
 // ── keys/sign-jws ───────────────────────────────────────────────────────
@@ -442,6 +453,219 @@ pub fn certification_request_pem(
     }
     pem.push_str("-----END CERTIFICATE REQUEST-----\n");
     Ok(pem)
+}
+
+// ── keys/sign-document ──────────────────────────────────────────────────
+
+/// A DID as `keys/sign-document` admits one: `did:<method>:<id>`, never a DID
+/// URL with a path, query or fragment.
+fn is_bare_did(s: &str) -> bool {
+    let mut parts = s.splitn(3, ':');
+    matches!(
+        (parts.next(), parts.next(), parts.next()),
+        (Some("did"), Some(method), Some(id))
+            if !method.is_empty()
+                && method.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
+                && !id.is_empty()
+    ) && !s.contains(['/', '?', '#'])
+}
+
+/// The DID a document names as its signer, after the checks that need nothing
+/// but the document (`keys/sign-document` items 3 and 4, and the issuer
+/// binding's rule that `issuer` and `controller` agree).
+pub fn document_signer(document: &Value) -> Result<String, FormatRefusal> {
+    let Some(obj) = document.as_object() else {
+        return Err(FormatRefusal::DocumentInvalid("noSigner"));
+    };
+    if obj.contains_key("proof") {
+        return Err(FormatRefusal::ProofPresent);
+    }
+    let issuer = match obj.get("issuer") {
+        None => None,
+        Some(Value::String(did)) => Some(did.as_str()),
+        Some(Value::Object(o)) => match o.get("id") {
+            Some(Value::String(did)) => Some(did.as_str()),
+            _ => return Err(FormatRefusal::DocumentInvalid("signerMalformed")),
+        },
+        Some(_) => return Err(FormatRefusal::DocumentInvalid("signerMalformed")),
+    };
+    let controller = match obj.get("controller") {
+        None => None,
+        Some(Value::String(did)) => Some(did.as_str()),
+        Some(Value::Array(items)) => match items.as_slice() {
+            [Value::String(did)] => Some(did.as_str()),
+            _ => return Err(FormatRefusal::DocumentInvalid("signerMalformed")),
+        },
+        Some(_) => return Err(FormatRefusal::DocumentInvalid("signerMalformed")),
+    };
+    let signer = match (issuer, controller) {
+        (None, None) => return Err(FormatRefusal::DocumentInvalid("noSigner")),
+        (Some(i), Some(c)) if i != c => return Err(FormatRefusal::IssuerMismatch("controller")),
+        (Some(did), _) | (None, Some(did)) => did,
+    };
+    if issuer.is_some_and(|d| !is_bare_did(d)) || controller.is_some_and(|d| !is_bare_did(d)) {
+        return Err(FormatRefusal::DocumentInvalid("signerMalformed"));
+    }
+    // RFC 8785 serialises every number as a double; one beyond 2^53 would be
+    // signed as a different value, and is refused rather than repaired.
+    if check_i_json(document).is_err() || jcs(document).is_err() {
+        return Err(FormatRefusal::DocumentInvalid("notCanonicalizable"));
+    }
+    Ok(signer.to_string())
+}
+
+/// One verification method of a signer DID: its identifier, its Ed25519 key,
+/// and the relationships its document lists it under.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SignerMethod {
+    pub id: String,
+    pub key: [u8; 32],
+    pub purposes: Vec<&'static str>,
+}
+
+/// The relationships a Data Integrity proof made here may be listed under.
+pub const DOCUMENT_PROOF_PURPOSES: [&str; 2] = ["assertionMethod", "authentication"];
+
+/// The Ed25519 key a verification method object publishes, if it publishes one.
+fn method_key(vm: &Map<String, Value>) -> Option<[u8; 32]> {
+    if let Some(mb) = vm.get("publicKeyMultibase").and_then(Value::as_str) {
+        return vta_sdk::did_key::decode_ed25519_public_key_multibase(mb).ok();
+    }
+    let jwk = vm.get("publicKeyJwk")?.as_object()?;
+    if jwk.get("kty")?.as_str()? != "OKP" || jwk.get("crv")?.as_str()? != "Ed25519" {
+        return None;
+    }
+    URL_SAFE_NO_PAD
+        .decode(jwk.get("x")?.as_str()?)
+        .ok()?
+        .try_into()
+        .ok()
+}
+
+/// The Ed25519 verification methods `did`'s document lists, in the order it
+/// lists them — in `verificationMethod` or embedded in a relationship — each
+/// with the signing relationships that name it. A relative identifier
+/// (`#key-1`) is read against `did`.
+pub fn signer_methods(did: &str, document: &Value) -> Vec<SignerMethod> {
+    let absolute = |id: &str| {
+        if id.starts_with('#') {
+            format!("{did}{id}")
+        } else {
+            id.to_string()
+        }
+    };
+    let mut methods: Vec<SignerMethod> = Vec::new();
+    let mut push = |vm: &Map<String, Value>| {
+        let (Some(id), Some(key)) = (vm.get("id").and_then(Value::as_str), method_key(vm)) else {
+            return;
+        };
+        let id = absolute(id);
+        if !methods.iter().any(|m| m.id == id) {
+            methods.push(SignerMethod {
+                id,
+                key,
+                purposes: vec![],
+            });
+        }
+    };
+    for vm in document
+        .get("verificationMethod")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_object)
+    {
+        push(vm);
+    }
+    for purpose in DOCUMENT_PROOF_PURPOSES {
+        for entry in document
+            .get(purpose)
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            if let Some(vm) = entry.as_object() {
+                push(vm);
+            }
+        }
+    }
+    for purpose in DOCUMENT_PROOF_PURPOSES {
+        for entry in document
+            .get(purpose)
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            let id = match entry {
+                Value::String(id) => absolute(id),
+                Value::Object(vm) => match vm.get("id").and_then(Value::as_str) {
+                    Some(id) => absolute(id),
+                    None => continue,
+                },
+                _ => continue,
+            };
+            if let Some(m) = methods.iter_mut().find(|m| m.id == id)
+                && !m.purposes.contains(&purpose)
+            {
+                m.purposes.push(purpose);
+            }
+        }
+    }
+    methods
+}
+
+/// The methods of a `did:key`, read from the identifier itself: one Ed25519
+/// key, listed under every signing relationship.
+pub fn did_key_methods(did: &str) -> Option<Vec<SignerMethod>> {
+    let mb = did.strip_prefix("did:key:")?;
+    let key = vta_sdk::did_key::decode_ed25519_public_key_multibase(mb).ok()?;
+    // An X25519 did:key decodes to 32 bytes too; only the Ed25519 codec signs.
+    let (_, raw) = multibase::decode(mb).ok()?;
+    if raw.get(..2) != Some(&[0xed, 0x01]) {
+        return None;
+    }
+    Some(vec![SignerMethod {
+        id: format!("{did}#{mb}"),
+        key,
+        purposes: DOCUMENT_PROOF_PURPOSES.to_vec(),
+    }])
+}
+
+/// The proof configuration `keys/sign-document` builds (*The proof* item 1),
+/// without `proofValue`.
+pub fn document_proof_config(
+    document: &Value,
+    verification_method: &str,
+    proof_purpose: &str,
+    created: &str,
+    challenge: Option<&str>,
+    domain: Option<&str>,
+) -> Value {
+    let mut config = Map::new();
+    if let Some(context) = document.get("@context") {
+        config.insert("@context".into(), context.clone());
+    }
+    config.insert("type".into(), "DataIntegrityProof".into());
+    config.insert("cryptosuite".into(), "eddsa-jcs-2022".into());
+    config.insert("created".into(), created.into());
+    config.insert("verificationMethod".into(), verification_method.into());
+    config.insert("proofPurpose".into(), proof_purpose.into());
+    if let Some(c) = challenge {
+        config.insert("challenge".into(), c.into());
+    }
+    if let Some(d) = domain {
+        config.insert("domain".into(), d.into());
+    }
+    Value::Object(config)
+}
+
+/// `eddsa-jcs-2022` hash data: `SHA-256(JCS(config)) || SHA-256(JCS(document))`.
+pub fn eddsa_jcs_2022_hash_data(document: &Value, config: &Value) -> Result<[u8; 64], String> {
+    use sha2::{Digest, Sha256};
+    let mut out = [0u8; 64];
+    out[..32].copy_from_slice(&Sha256::digest(jcs(config)?.as_bytes()));
+    out[32..].copy_from_slice(&Sha256::digest(jcs(document)?.as_bytes()));
+    Ok(out)
 }
 
 #[cfg(test)]

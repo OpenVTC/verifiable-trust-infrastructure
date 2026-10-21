@@ -297,6 +297,8 @@ async fn an_offline_removal_records_the_community_room_removals_owed() {
                 credentials: None,
                 welcome: None,
                 admitted_epoch: None,
+                renewal: None,
+                sources: Vec::new(),
             })
             .await
             .expect("put");

@@ -423,8 +423,10 @@ pub(crate) fn settle_large_document_charge(
 }
 
 /// Whether the claimed `issuer` of this large document has standing for its
-/// raised limit: it is known here ([`is_known_issuer`]), or the document is a
-/// room file's and the claim holds for that task.
+/// raised limit: it is known here ([`is_known_issuer`]), it is a member-portal
+/// key whose live delegation covers the document's type and whose member is
+/// known here, or the document is a room file's and the claim holds for that
+/// task.
 ///
 /// Room members hold no ACL entry here, by design: a room is authorized by the
 /// credentials the room issued. So for the two room-file tasks whose
@@ -441,6 +443,21 @@ pub(crate) fn settle_large_document_charge(
 /// doubles that address's next cost ([`settle_large_document_charge`]).
 async fn has_standing(state: &AppState, body: &[u8], issuer: &str) -> bool {
     if is_known_issuer(state, issuer).await {
+        return true;
+    }
+    // A member-portal sign-in key the member delegated this type's family to
+    // (`auth/oob/grant/0.2`) stands in for the member: the portal uploads a
+    // member's picture (`vtc/directory/images/upload`, up to 360 KiB) signed by
+    // it. Only while that delegation is live, and only for a type it covers.
+    if let Some(type_uri) = peek_type(body)
+        && let Ok(Some(member)) = crate::member_portal::delegation::member_for(
+            &state.member_sessions_ks,
+            issuer.split('#').next().unwrap_or(issuer),
+            &type_uri,
+        )
+        .await
+        && is_known_issuer(state, &member).await
+    {
         return true;
     }
     let files = &state.room_files;

@@ -191,7 +191,7 @@ vti-common = { path = "../vti-common", version = "0.48", features = [
 # ECMA-262 regular expressions: a directory field's `pattern` constraint is one
 # (`vtc/directory/_shared/0.1/field-definition`). Already in the graph through
 # trust-tasks-rs's schema validation, which reads `pattern` the same way.
-regress = "0.11"
+regress = "0.12"
 # Directory pictures (`vtc/directory/images/upload`): every image is decoded and
 # re-encoded, so no metadata and no byte the member sent is stored. Pure-Rust
 # decoders only, and only the formats a `CardBlobRef` admits that it can decode.

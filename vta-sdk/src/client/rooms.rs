@@ -329,32 +329,37 @@ impl VtaClient {
         })
     }
 
-    /// `rooms/keys/act/0.5` — have the VTA complete one of a member's requests to a
+    /// `rooms/keys/act/0.6` — have the VTA complete one of a member's requests to a
     /// community about the rooms it offers them ([`is_community_type`]) **as the member**,
     /// and get it back to send to the community unaltered. Build `document` with
     /// [`unsigned_community_request`].
     ///
-    /// A VTA that does not serve 0.5 is asked at the newest version that completes the
-    /// type, with the same document, and the answer read as 0.5's: 0.4 for the offer types
-    /// and `vtc/rooms/offers/list/0.2`, 0.3 for `vtc/rooms/offers/{list,accept}/0.1`. For a
-    /// type no version it serves completes — `vtc/rooms/memberships/list/0.1` below 0.5 —
-    /// it is [`VtaError::UnsupportedTaskType`].
+    /// A VTA that does not serve 0.6 is asked at the newest version that completes the
+    /// type, with the same document, and the answer read as 0.5's (0.6's request and
+    /// response schemas are 0.5's; only the table widens): 0.5 for every community type but
+    /// `vtc/rooms/offers/list/0.3`, 0.4 for the offer types and `vtc/rooms/offers/list/0.2`,
+    /// 0.3 for `vtc/rooms/offers/{list,accept}/0.1`. For a type no version it serves
+    /// completes — `vtc/rooms/offers/list/0.3` below 0.6, `vtc/rooms/memberships/list/0.1`
+    /// below 0.5 — it is [`VtaError::UnsupportedTaskType`].
     pub async fn room_act_community(
         &self,
         document: &trust_tasks_rs::specs::rooms::keys::act::v0_5::UnsignedRoomRequest,
     ) -> Result<trust_tasks_rs::specs::rooms::keys::act::v0_5::Response, VtaError> {
         let payload = json!({ "document": document });
         let type_uri = document.type_.as_str();
-        let mut versions = vec![trust_tasks::TASK_ROOMS_KEYS_ACT_0_5];
-        if is_offer_type(type_uri) {
-            versions.push(trust_tasks::TASK_ROOMS_KEYS_ACT_0_4);
-        }
-        if is_offer_type(type_uri) && !needs_act_0_4(type_uri) {
-            versions.push(trust_tasks::TASK_ROOMS_KEYS_ACT_0_3);
+        let mut versions = vec![trust_tasks::TASK_ROOMS_KEYS_ACT_0_6];
+        if !needs_act_0_6(type_uri) {
+            versions.push(trust_tasks::TASK_ROOMS_KEYS_ACT_0_5);
+            if is_offer_type(type_uri) {
+                versions.push(trust_tasks::TASK_ROOMS_KEYS_ACT_0_4);
+            }
+            if is_offer_type(type_uri) && !needs_act_0_4(type_uri) {
+                versions.push(trust_tasks::TASK_ROOMS_KEYS_ACT_0_3);
+            }
         }
         let mut versions = versions.into_iter().peekable();
         let value = loop {
-            let task = versions.next().expect("0.5 is always asked");
+            let task = versions.next().expect("0.6 is always asked");
             match self
                 .dispatch_trust_task(task, payload.clone(), ROOM_TT_TIMEOUT)
                 .await
@@ -1568,7 +1573,7 @@ pub fn unsigned_room_request(
 }
 
 /// Whether `type_uri` is an offer type `rooms/keys/act` completes at some version —
-/// `vtc/rooms/offers/list/{0.1,0.2}` or `vtc/rooms/offers/accept/0.1`, with or without
+/// `vtc/rooms/offers/list/{0.1,0.2,0.3}` or `vtc/rooms/offers/accept/0.1`, with or without
 /// `#request`.
 pub fn is_offer_type(type_uri: &str) -> bool {
     use trust_tasks_rs::Payload as _;
@@ -1576,7 +1581,16 @@ pub fn is_offer_type(type_uri: &str) -> bool {
     let bare = type_uri.strip_suffix("#request").unwrap_or(type_uri);
     bare == list::v0_1::Payload::TYPE_URI
         || bare == list::v0_2::Payload::TYPE_URI
+        || bare == list::v0_3::Payload::TYPE_URI
         || bare == accept::v0_1::Payload::TYPE_URI
+}
+
+/// Whether `type_uri` is one only `rooms/keys/act/0.6` (and later) completes —
+/// `vtc/rooms/offers/list/0.3`, which 0.5's closed table refuses `typeNotActable`.
+fn needs_act_0_6(type_uri: &str) -> bool {
+    use trust_tasks_rs::Payload as _;
+    let bare = type_uri.strip_suffix("#request").unwrap_or(type_uri);
+    bare == trust_tasks_rs::specs::vtc::rooms::offers::list::v0_3::Payload::TYPE_URI
 }
 
 /// Whether `type_uri` is one only `rooms/keys/act/0.4` (and later) completes —
@@ -1587,8 +1601,8 @@ fn needs_act_0_4(type_uri: &str) -> bool {
     bare == trust_tasks_rs::specs::vtc::rooms::offers::list::v0_2::Payload::TYPE_URI
 }
 
-/// Whether `type_uri` is one of the community types `rooms/keys/act/0.5` completes —
-/// `vtc/rooms/offers/list/{0.1,0.2}`, `vtc/rooms/offers/accept/0.1` and
+/// Whether `type_uri` is one of the community types `rooms/keys/act/0.6` completes —
+/// `vtc/rooms/offers/list/{0.1,0.2,0.3}`, `vtc/rooms/offers/accept/0.1` and
 /// `vtc/rooms/memberships/list/0.1`, with or without `#request`.
 pub fn is_community_type(type_uri: &str) -> bool {
     use trust_tasks_rs::Payload as _;
@@ -1719,12 +1733,13 @@ mod act_tests {
         );
     }
 
-    /// `rooms/keys/act/0.5`: the community types, and nothing else of the `vtc` family.
+    /// `rooms/keys/act/0.6`: the community types, and nothing else of the `vtc` family.
     #[test]
     fn a_community_request_is_one_of_the_community_types() {
         for t in [
             "https://trusttasks.org/spec/vtc/rooms/offers/list/0.1",
             "https://trusttasks.org/spec/vtc/rooms/offers/list/0.2",
+            "https://trusttasks.org/spec/vtc/rooms/offers/list/0.3",
             "https://trusttasks.org/spec/vtc/rooms/offers/accept/0.1",
             "https://trusttasks.org/spec/vtc/rooms/memberships/list/0.1",
         ] {

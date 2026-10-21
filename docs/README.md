@@ -134,6 +134,10 @@ How to operate, deploy, and integrate against a VTA.
   ceremony behind a `consent` rule: the wire, the timers, who may
   approve, and what the approver sees. Companion infographic:
   [task-consent-infographic.html](02-vta/task-consent-infographic.html).
+- **[Wallet sign-in UV keys](02-vta/wallet-sign-in-uv-keys.md)** — the
+  device keys that approve a wallet sign-in grant: hardware keys, PRF-sealed
+  keys, passkeys, a VTA-checked PIN with a guess limit, and approval on the
+  member's phone.
 - **[DID:WebVH update](02-vta/did-webvh-update.md)** — log-entry
   format, rotation, hosting.
 - **[Personal AI agents](02-vta/personal-ai-agents.md)** — provisioning

@@ -38,7 +38,9 @@ pub struct Viewer {
     pub members_manage: bool,
     /// The members this viewer holds an in-force edge with, by membership DID.
     pub connected: BTreeSet<String>,
-    /// The community groups the viewer is in. None exist before groups ship.
+    /// The community groups that count as the viewer's for the `groups`
+    /// audience: those they belong to whose member list they may see
+    /// (`crate::groups::audience_groups`).
     pub groups: BTreeSet<String>,
     /// The public: anyone, unidentified. Never a directory reader — only the
     /// viewer an external card is computed for ([`public_fields`]).
@@ -89,7 +91,15 @@ pub struct Subject {
 }
 
 impl Subject {
-    pub fn from_records(card: Card, entry: Option<&VtcAclEntry>, member: Option<&Member>) -> Self {
+    pub fn from_records(
+        mut card: Card,
+        entry: Option<&VtcAclEntry>,
+        member: Option<&Member>,
+    ) -> Self {
+        // A verified value whose credential lapsed is shown to nobody, even
+        // before the sweeper withdraws it (`card/present` item 7).
+        let at = Utc::now();
+        card.values.retain(|_, v| !super::present::lapsed(v, at));
         let now = vti_common::auth::session::now_epoch();
         let active = matches!(
             (entry, member),
@@ -245,6 +255,24 @@ pub fn project(
         connected,
         shared_groups,
     })
+}
+
+/// Every active field of `subject` that holds a value, stored or derived —
+/// what an administrator reads of an entry whole, and what
+/// `vtc/directory/export` carries. Never a note: notes are not fields.
+pub fn every_field(schema: &[FieldDef], subject: &Subject) -> Map<String, Value> {
+    let mut out = Map::new();
+    for f in schema.iter().filter(|f| f.state == FieldState::Active) {
+        let value = if f.source == FieldSource::Derived {
+            subject.derived(&f.key)
+        } else {
+            subject.card.values.get(&f.key).cloned()
+        };
+        if let Some(v) = value {
+            out.insert(f.key.clone(), v);
+        }
+    }
+    out
 }
 
 /// The subject's public values: what the public would be shown of their card —
