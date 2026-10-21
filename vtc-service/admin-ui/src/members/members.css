@@ -462,8 +462,12 @@ body {
 .profile-since {
   margin: 0;
 }
-.profile-save {
+.profile-actions {
   align-self: flex-start;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  justify-content: flex-end;
 }
 .profile-section {
   padding: 1rem 1.5rem;

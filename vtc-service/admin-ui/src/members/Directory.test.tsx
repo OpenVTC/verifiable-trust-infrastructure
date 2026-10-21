@@ -246,5 +246,22 @@ describe("browsing and reading members", () => {
     expect(link.getAttribute("rel")).toContain("noopener");
     expect(screen.getByRole("button", { name: /Save contact/ })).toBeTruthy();
     expect(screen.getByRole("navigation", { name: "Breadcrumb" }).textContent).toContain("Directory");
+    // Someone else's entry: nothing to edit.
+    expect(screen.queryByRole("link", { name: /Edit my card/ })).toBeNull();
+  });
+
+  it("offers the member an edit of their own card from their own entry", async () => {
+    api.showEntry.mockResolvedValue({
+      entry: { entryId: "dir_aaaaaaaaaaaaaaaa", fields: { displayName: "Glenn Gore" } },
+    });
+    api.showCard.mockResolvedValue({ card: { entryId: "dir_aaaaaaaaaaaaaaaa", values: {} } });
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={qc}>
+        <EntryPage entryId="dir_aaaaaaaaaaaaaaaa" />
+      </QueryClientProvider>,
+    );
+    const edit = await screen.findByRole("link", { name: /Edit my card/ });
+    expect(edit.getAttribute("href")).toBe("#/card");
   });
 });

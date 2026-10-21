@@ -17,7 +17,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { BookUser, Contact, Copy, ExternalLink, Globe, ImagePlus, Search, Trash2 } from "lucide-react";
+import { BookUser, Contact, Copy, ExternalLink, Globe, ImagePlus, Pencil, Search, Trash2 } from "lucide-react";
 
 import type {
   DirectoryCard,
@@ -291,6 +291,9 @@ export function EntryPage({ entryId }: { entryId: string }) {
     retry: false,
   });
   const fields = useQuery({ queryKey: ["directory", "fields"], queryFn: listFields, retry: false });
+  // The member's own card, to know whether this entry is theirs.
+  const mine = useQuery({ queryKey: ["directory", "card"], queryFn: showCard, retry: false });
+  const own = mine.data?.card.entryId === entryId;
   const labels = useMemo(
     () => new Map((fields.data?.fields ?? []).map((f) => [f.key, f.label])),
     [fields.data],
@@ -335,13 +338,20 @@ export function EntryPage({ entryId }: { entryId: string }) {
                 </p>
               )}
             </div>
-            <button
-              type="button"
-              className="btn btn-ghost btn-sm profile-save"
-              onClick={() => saveVcard(vcardOf(entryId, f, labels, community), name ?? "member")}
-            >
-              <Contact size={14} aria-hidden="true" /> Save contact
-            </button>
+            <div className="profile-actions">
+              {own && (
+                <a className="btn btn-primary btn-sm" href="#/card">
+                  <Pencil size={14} aria-hidden="true" /> Edit my card
+                </a>
+              )}
+              <button
+                type="button"
+                className="btn btn-ghost btn-sm"
+                onClick={() => saveVcard(vcardOf(entryId, f, labels, community), name ?? "member")}
+              >
+                <Contact size={14} aria-hidden="true" /> Save contact
+              </button>
+            </div>
           </header>
           {text(f.bio) && (
             <section className="profile-section">
@@ -726,6 +736,11 @@ export function MyCardPage() {
           You choose who sees each part of your card, up to the widest this community allows.
           Showing anything to anyone outside the community needs your wallet.
         </p>
+        {card.data?.card.entryId && (
+          <a className="btn btn-ghost btn-sm" href={`#/directory/${encodeURIComponent(card.data.card.entryId)}`}>
+            See your card as members do
+          </a>
+        )}
       </section>
       {missing.length > 0 && (
         <div className="alert" role="status">
