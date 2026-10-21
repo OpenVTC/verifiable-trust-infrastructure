@@ -265,10 +265,10 @@ impl VtaClient {
     /// reports. Send it as [`Self::pcs_vote`]'s.
     pub async fn pcs_vote_encrypted(
         &self,
-        req: &pcs::vote_encrypted::v0_1::Payload,
-    ) -> Result<pcs::vote_encrypted::v0_1::Response, VtaError> {
+        req: &pcs::vote_encrypted::v0_2::Payload,
+    ) -> Result<pcs::vote_encrypted::v0_2::Response, VtaError> {
         self.pcs_call(
-            trust_tasks::TASK_VTA_PCS_VOTE_ENCRYPTED_0_1,
+            trust_tasks::TASK_VTA_PCS_VOTE_ENCRYPTED_0_2,
             req,
             PCS_PROOF_TIMEOUT,
         )
@@ -291,10 +291,10 @@ impl VtaClient {
     /// `vta/pcs/trustee/deal/0.1` — the trustee's dealing, signed.
     pub async fn pcs_trustee_deal(
         &self,
-        req: &pcs::trustee::deal::v0_1::Payload,
-    ) -> Result<pcs::trustee::deal::v0_1::Response, VtaError> {
+        req: &pcs::trustee::deal::v0_2::Payload,
+    ) -> Result<pcs::trustee::deal::v0_2::Response, VtaError> {
         self.pcs_call(
-            trust_tasks::TASK_VTA_PCS_TRUSTEE_DEAL_0_1,
+            trust_tasks::TASK_VTA_PCS_TRUSTEE_DEAL_0_2,
             req,
             PCS_TT_TIMEOUT,
         )
@@ -305,10 +305,10 @@ impl VtaClient {
     /// key, keep the trustee's share of it.
     pub async fn pcs_trustee_keys(
         &self,
-        req: &pcs::trustee::keys::v0_1::Payload,
-    ) -> Result<pcs::trustee::keys::v0_1::Response, VtaError> {
+        req: &pcs::trustee::keys::v0_2::Payload,
+    ) -> Result<pcs::trustee::keys::v0_2::Response, VtaError> {
         self.pcs_call(
-            trust_tasks::TASK_VTA_PCS_TRUSTEE_KEYS_0_1,
+            trust_tasks::TASK_VTA_PCS_TRUSTEE_KEYS_0_2,
             req,
             PCS_TT_TIMEOUT,
         )
@@ -318,10 +318,10 @@ impl VtaClient {
     /// `vta/pcs/trustee/justify/0.1` — answer a complaint with the share that was dealt.
     pub async fn pcs_trustee_justify(
         &self,
-        req: &pcs::trustee::justify::v0_1::Payload,
-    ) -> Result<pcs::trustee::justify::v0_1::Response, VtaError> {
+        req: &pcs::trustee::justify::v0_2::Payload,
+    ) -> Result<pcs::trustee::justify::v0_2::Response, VtaError> {
         self.pcs_call(
-            trust_tasks::TASK_VTA_PCS_TRUSTEE_JUSTIFY_0_1,
+            trust_tasks::TASK_VTA_PCS_TRUSTEE_JUSTIFY_0_2,
             req,
             PCS_TT_TIMEOUT,
         )
@@ -331,10 +331,10 @@ impl VtaClient {
     /// `vta/pcs/trustee/decrypt/0.1` — the trustee's partial decryptions, signed.
     pub async fn pcs_trustee_decrypt(
         &self,
-        req: &pcs::trustee::decrypt::v0_1::Payload,
-    ) -> Result<pcs::trustee::decrypt::v0_1::Response, VtaError> {
+        req: &pcs::trustee::decrypt::v0_2::Payload,
+    ) -> Result<pcs::trustee::decrypt::v0_2::Response, VtaError> {
         self.pcs_call(
-            trust_tasks::TASK_VTA_PCS_TRUSTEE_DECRYPT_0_1,
+            trust_tasks::TASK_VTA_PCS_TRUSTEE_DECRYPT_0_2,
             req,
             PCS_PROOF_TIMEOUT,
         )

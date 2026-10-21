@@ -107,11 +107,14 @@ audit names the election, never a tag, a cast or a receipt (VTI-VOT-100). An MCP
 host confirms every `vote` (`vta-mcp`'s guard counts it destructive).
 
 In a **sealed** or **tallied-encrypted** election (VTI-VOT-060 – 064, conventions §9) step 4
-is `vta/pcs/vote-encrypted`, given the election key `vtc/elections/show` carries — the key the
-community formed itself from the trustees' signed steps on the board, never one the ballot box
-merely reports: the ballot is sealed to that key whole, or encrypted option
+is `vta/pcs/vote-encrypted/0.2`, given the ceremony `vtc/elections/show` carries — the
+trustees' signed steps, from which the VTA forms the election key itself (at least `threshold`
+qualified dealers and confirmations), never a key the ballot box or the community merely
+reports: the ballot is sealed to that key whole, or encrypted option
 by option with proofs that each is 0 or 1 and the question's count is one the manifest admits.
-The attestation is made over the encrypted form, and the cleartext ballot never leaves the VTA.
+The proofs, or the seal's associated data, bind the cast's tag, so a copy of the ballot under
+another ticket proves nothing (CONVENTIONS §9.3 – 9.4). The attestation is made over the
+encrypted form, and the cleartext ballot never leaves the VTA.
 `vta/pcs/vote` refuses such a manifest. The receipt is checked the same way.
 
 ## The trustee's round
@@ -120,16 +123,22 @@ A trustee of a sealed or tallied-encrypted election holds a transport key and a 
 election key; any `threshold` of the trustees decrypt the result after close, and fewer cannot.
 The VTA is the custodian of both, and signs each `voting/trustees/*` request as the trustee — a
 persona it holds, named in the manifest's `trustees.dids`. The client carries the documents to
-the ballot box (TSP or DIDComm; HTTPS where it has no session):
+the ballot box (TSP or DIDComm; HTTPS where it has no session).
+
+From step 2 on, every task is version 0.2 and takes `ceremony`: the trustees' signed steps, as
+`voting/trustees/status` lists them in `steps`. **The VTA acts on those alone, each proof
+verified against its trustee's DID** — never on a value the ballot box reports, because a box
+that could choose the transport keys, the complaints, the dealings or the decryption targets
+could collect the shares or decrypt a single voter's ballot (CONVENTIONS §9.6).
 
 | Step | VTA task | Then, to the ballot box |
 |---|---|---|
 | 1 | `vta/pcs/trustee/enrol` — the transport key, made on first use from a fresh path under the context's base | `voting/trustees/enrol` |
-| 2 | `vta/pcs/trustee/deal`, with every trustee's transport key — the polynomial's commitments and each trustee's share sealed to its transport key | `voting/trustees/deal` |
-| 3 | `vta/pcs/trustee/keys`, with every dealing — each share dealt to this trustee opened and checked; the dealers whose shares fail are the complaints | `voting/trustees/confirm` |
-| 4 | `vta/pcs/trustee/justify`, if complained of — the share dealt to the complainant, in the clear | `voting/trustees/justify` |
-| 5 | `vta/pcs/trustee/keys` again, with the formed `electionKey` — the trustee's share computed, checked against its published verification key, and kept | — |
-| 6 | after close, `vta/pcs/trustee/decrypt` with the targets `status` lists — one partial decryption per target, each with its proof. Refused before `closedAt` (VTI-VOT-063) | `voting/trustees/decrypt` |
+| 2 | `vta/pcs/trustee/deal` — the polynomial's commitments and each trustee's share sealed to the transport key in that trustee's signed enrolment. The VTA pins the set it dealt to; a later deal against other keys is `ceremonyChanged` | `voting/trustees/deal` |
+| 3 | `vta/pcs/trustee/keys` — each share dealt to this trustee in a signed dealing opened and checked; the dealers whose shares fail are the complaints | `voting/trustees/confirm` |
+| 4 | `vta/pcs/trustee/justify`, with the manifest, only for a complaint in the complainant's own signed confirm (else `noComplaint`) — the share dealt to the complainant, in the clear | `voting/trustees/justify` |
+| 5 | `vta/pcs/trustee/keys` again — the key formed from the steps, the trustee's share computed, checked against its verification key, and kept. A held share is never replaced (`keyMismatch`) | — |
+| 6 | after close, `vta/pcs/trustee/decrypt` with the `targets` and the community's signed `authorization` of them (`voting/trustees/authorize`, a `decryptionAuthorized` entry) — one partial decryption per target, each with its proof. Refused without a valid authorization (`authorizationInvalid`), and once per election (`alreadyDecrypted`) | `voting/trustees/decrypt` |
 
 Every step reads the ballot box first: `voting/election/show` for the manifest and
 `voting/trustees/status` for where the ceremony stands. A private board answers those only to
@@ -140,7 +149,15 @@ with `vta/pcs/trustee/read` — which signs those two reads of one election and 
 --context <ctx>` runs the whole round from the command line. It reads both, takes every step the
 ceremony needs of this trustee now, and carries each document to the ballot box's HTTPS door.
 Run it again at any time, or pass `--watch` to repeat every 30 seconds until the result is out.
-`pnm elections trustee status` shows where the ceremony stands.
+`pnm elections trustee status` shows where the ceremony stands. After close it waits for the
+community to authorize the decryption before it decrypts anything.
+
+**Why the community authorizes the targets.** The targets are what the trustees decrypt: the
+totals of a tallied election, or each sealed ballot. Only someone who has checked the board can
+say they are the right ones — every cast admitted before the close, each total the sum of the
+casts. The community does that check (it computes the targets from the board it verified) and
+signs their digest under the closing head. A trustee's VTA then decrypts that set and nothing
+else, so a ballot box cannot present one voter's ciphertext as a "total" and read the vote.
 
 The transport secret and the polynomial are re-derived from the trustee's path on every use,
 domain-separated, so a repeated `deal` is the same dealing and `justify` reveals exactly the
@@ -180,8 +197,9 @@ with it.
 
 ## Not yet
 
-- **Driving the trustee's round** from a CLI or the console. The tasks and the SDK methods
-  (`VtaClient::pcs_trustee_*`) are there; a client still has to carry each step.
+- **Driving the trustee's round from the console or a wallet.** `pnm elections trustee step`
+  drives it from the command line; other clients carry each step through
+  `VtaClient::pcs_trustee_*`.
 - **Withdrawal.** A vetter's withdrawal of one attestation (the tag and a proof of
   knowledge of its key) is an engine operation, and joins the family once the
   community-side task that accepts it is specified.

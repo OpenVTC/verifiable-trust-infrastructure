@@ -10,8 +10,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use trust_tasks_rs::specs::voting::{
     ballot::cast_encrypted::v0_1 as cast_encrypted,
     trustees::{
-        confirm::v0_1 as confirm, deal::v0_1 as deal, decrypt::v0_1 as decrypt,
-        enrol::v0_1 as enrol, justify::v0_1 as justify, status::v0_1 as status,
+        authorize::v0_1 as authorize, confirm::v0_1 as confirm, deal::v0_1 as deal,
+        decrypt::v0_1 as decrypt, enrol::v0_1 as enrol, justify::v0_1 as justify,
+        status::v0_1 as status,
     },
 };
 
@@ -20,8 +21,8 @@ use crate::{
     ceremony::{CeremonyError, Phase, Step},
     steps,
     trustees::{
-        EncryptedQuestion, Sealed, admitted_counts, open_with, question_ctx, tally as read_total,
-        total, verify_vote,
+        EncryptedQuestion, Sealed, admitted_counts, cast_ctx, open_with, question_ctx,
+        tally as read_total, total, verify_vote,
     },
     wire,
 };
@@ -114,6 +115,36 @@ impl ElectionRecord {
             .ok_or_else(|| Failure::task(not_now, "an open election has no trustees"))
     }
 
+    /// Append a trustee's step: its signed request as received (CONVENTIONS §9.6), kept for
+    /// `status` too.
+    fn append_step(&mut self, request: &Value) -> Result<(), Failure> {
+        self.append(&steps::entry(request))?;
+        self.steps.push(request.clone());
+        Ok(())
+    }
+
+    /// A close or a last partial whose result never reached the board — cut short by a crash —
+    /// finished now, as that step would have. Nothing when the election is not closed or already
+    /// has its result.
+    pub(super) fn resume(&mut self) -> Result<(), Failure> {
+        if self.state != State::Closed || self.result.is_some() {
+            return Ok(());
+        }
+        let at = self
+            .closing
+            .as_ref()
+            .and_then(|(_, at)| at.parse::<DateTime<Utc>>().ok())
+            .unwrap_or_else(Utc::now);
+        if self.ceremony.is_some() {
+            return self.finish_if_decrypted(at);
+        }
+        let result = self.tally_now(false, at)?;
+        self.append(&json!({ "kind": "result", "result": result }))?;
+        self.result = Some(result);
+        self.state = State::Tallied;
+        Ok(())
+    }
+
     /// Append the election key once a step has formed it.
     fn key_entry_if_formed(&mut self, was: Phase) -> Result<(), Failure> {
         let Some(c) = &self.ceremony else {
@@ -197,18 +228,30 @@ impl ElectionRecord {
         };
         let n = self.encrypted.len() as u64;
         let questions = if self.manifest.secrecy == register::SecrecyLevel::Sealed {
-            let sealed: BTreeMap<u64, Sealed> = self
+            // Each sealed form opens only under the tag it was cast under (CONVENTIONS §9.4).
+            let sealed: BTreeMap<u64, (Sealed, String)> = self
                 .encrypted
-                .values()
-                .filter_map(|(a, e)| match e {
-                    Encrypted::Sealed(s) => Some((a.leaf, (**s).clone())),
+                .iter()
+                .filter_map(|(tag, (a, e))| match e {
+                    Encrypted::Sealed(s) => Some((a.leaf, ((**s).clone(), tag.clone()))),
                     Encrypted::Tallied(_) => None,
                 })
                 .collect();
             let mut ballots = Vec::new();
             for (t, r_elem) in plaintexts {
                 let Target::Leaf(leaf) = t else { continue };
-                let opened = open_with(&r_elem, &sealed[&leaf], &self.ctx)
+                let Some((s, tag)) = sealed.get(&leaf) else {
+                    continue;
+                };
+                if let Some(said) = self.settled.get(&leaf) {
+                    if let Some(v) = said
+                        && let Ok(b) = serde_json::from_value::<cast::Ballot>(v.clone())
+                    {
+                        ballots.push(b);
+                    }
+                    continue;
+                }
+                let opened = open_with(&r_elem, s, &cast_ctx(&self.ctx, tag))
                     .ok()
                     .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
                     .and_then(|v| {
@@ -312,6 +355,10 @@ impl ElectionRecord {
                     .map_err(|e| fail("trusteeStep", e.to_string()))?;
                 step.apply(self.ceremony_or("notEnrolling")?)
                     .map_err(|e| fail("trusteeStep", e.to_string()))?;
+                self.steps.push(request.clone());
+            }
+            Some("decryptionAuthorized") => {
+                self.authorization = Some(entry["request"].clone());
             }
             Some(k) if steps::RETIRED_KINDS.contains(&k) => {
                 return Err(fail(k, "a retired entry kind".into()));
@@ -331,6 +378,9 @@ impl ElectionRecord {
             Some("encryptedCast") => {
                 let cast_value = &entry["cast"];
                 let (tag, ballot_digest, form) = self.read_encrypted(cast_value)?;
+                for a in ciphertext_keys(&form) {
+                    self.seen.insert(a, tag.clone());
+                }
                 let admitted = Admitted {
                     leaf,
                     ballot_digest,
@@ -354,7 +404,16 @@ impl ElectionRecord {
                         .map_err(|e| fail("partials", e.to_string()))?;
                 }
             }
-            Some("unsealed" | "spoiled") => {}
+            Some("unsealed") => {
+                self.settled.insert(
+                    entry["leafIndex"].as_u64().unwrap_or(u64::MAX),
+                    Some(entry["ballot"].clone()),
+                );
+            }
+            Some("spoiled") => {
+                self.settled
+                    .insert(entry["leafIndex"].as_u64().unwrap_or(u64::MAX), None);
+            }
             _ => return Ok(false),
         }
         Ok(true)
@@ -387,9 +446,25 @@ impl ElectionRecord {
         ))
     }
 
+    /// CONVENTIONS §9.5: a form whose ciphertexts are already on the board under another tag is
+    /// a copy of someone's ballot, not a vote.
+    fn refuse_copy(&self, form: &Encrypted, tag: &str) -> Result<(), Failure> {
+        if ciphertext_keys(form)
+            .iter()
+            .any(|a| self.seen.get(a).is_some_and(|t| t != tag))
+        {
+            return Err(Failure::task(
+                "ballotInvalid",
+                "its ciphertexts are already on the board in another cast",
+            ));
+        }
+        Ok(())
+    }
+
     /// CONVENTIONS §9.5: the election and manifest are this one's, the questions are the
-    /// manifest's in order, one ciphertext per option, and every proof verifies.
-    fn check_encrypted_ballot(&self, enc: &Value) -> Result<(), Failure> {
+    /// manifest's in order, one ciphertext per option, and every proof verifies under the cast's
+    /// `tag` (§9.3).
+    fn check_encrypted_ballot(&self, enc: &Value, tag: &str) -> Result<(), Failure> {
         let invalid = |why: String| Failure::task("ballotInvalid", why);
         if enc["electionId"].as_str() != Some(self.id())
             || rules::digest_from_multibase(enc["manifestDigest"].as_str().unwrap_or_default())
@@ -438,7 +513,7 @@ impl ElectionRecord {
                 &eq,
                 options.len(),
                 &counts,
-                &question_ctx(&self.ctx, qkey),
+                &question_ctx(&cast_ctx(&self.ctx, tag), qkey),
             )
             .map_err(|e| invalid(e.to_string()))?;
         }
@@ -484,13 +559,13 @@ impl BallotBox {
         now: DateTime<Utc>,
     ) -> Result<Value, Failure> {
         let payload = &request["payload"];
-        let _: enrol::Payload = parse(payload)?;
+        let _: enrol::Payload = parse_payload(payload)?;
         let (e, _) = self.trustee_election(signer, payload, "/transportKey/trustee", now)?;
         let tk = wire::transport_key(&payload["transportKey"]).map_err(|_| {
             Failure::task("transportKeyInvalid", "the transport key does not decode")
         })?;
         if e.ceremony_or("notEnrolling")?.enrol(tk)? == Step::Accepted {
-            e.append(&steps::entry(request))?;
+            e.append_step(request)?;
         }
         respond::<enrol::Response>(Self::trustee_answer(e, now))
     }
@@ -506,12 +581,12 @@ impl BallotBox {
         now: DateTime<Utc>,
     ) -> Result<Value, Failure> {
         let payload = &request["payload"];
-        let _: deal::Payload = parse(payload)?;
+        let _: deal::Payload = parse_payload(payload)?;
         let (e, _) = self.trustee_election(signer, payload, "/dealing/dealer", now)?;
         let d = wire::dealing(&payload["dealing"])
             .map_err(|err| Failure::task("dealingInvalid", err.to_string()))?;
         if e.ceremony_or("notDealing")?.deal(d)? == Step::Accepted {
-            e.append(&steps::entry(request))?;
+            e.append_step(request)?;
         }
         respond::<deal::Response>(Self::trustee_answer(e, now))
     }
@@ -527,7 +602,7 @@ impl BallotBox {
         now: DateTime<Utc>,
     ) -> Result<Value, Failure> {
         let payload = &request["payload"];
-        let _: confirm::Payload = parse(payload)?;
+        let _: confirm::Payload = parse_payload(payload)?;
         let (e, trustee) = self.trustee_election(signer, payload, "/trustee", now)?;
         let complaints: BTreeSet<u32> = payload["complaints"]
             .as_array()
@@ -535,7 +610,7 @@ impl BallotBox {
         let c = e.ceremony_or("notConfirming")?;
         let was = c.phase();
         if c.confirm(trustee, complaints)? == Step::Accepted {
-            e.append(&steps::entry(request))?;
+            e.append_step(request)?;
             e.key_entry_if_formed(was)?;
         }
         respond::<confirm::Response>(Self::trustee_answer(e, now))
@@ -552,7 +627,7 @@ impl BallotBox {
         now: DateTime<Utc>,
     ) -> Result<Value, Failure> {
         let payload = &request["payload"];
-        let _: justify::Payload = parse(payload)?;
+        let _: justify::Payload = parse_payload(payload)?;
         let (e, dealer) = self.trustee_election(signer, payload, "/dealer", now)?;
         let recipient = index(&payload["recipient"])?;
         let share =
@@ -561,7 +636,7 @@ impl BallotBox {
         let c = e.ceremony_or("notConfirming")?;
         let was = c.phase();
         if c.justify(dealer, recipient, share)? == Step::Accepted {
-            e.append(&steps::entry(request))?;
+            e.append_step(request)?;
             e.key_entry_if_formed(was)?;
         }
         respond::<justify::Response>(Self::trustee_answer(e, now))
@@ -578,7 +653,7 @@ impl BallotBox {
         now: DateTime<Utc>,
     ) -> Result<Value, Failure> {
         let payload = &request["payload"];
-        let _: decrypt::Payload = parse(payload)?;
+        let _: decrypt::Payload = parse_payload(payload)?;
         let (e, trustee) = self.trustee_election(signer, payload, "/trustee", now)?;
         let parts = payload["partials"]
             .as_array()
@@ -591,6 +666,12 @@ impl BallotBox {
             return Err(Failure::task(
                 "notDecrypting",
                 "voting has not closed, or the result is out",
+            ));
+        }
+        if e.authorization.is_none() {
+            return Err(Failure::task(
+                "notDecrypting",
+                "the community has not authorized the decryption",
             ));
         }
         let round = e
@@ -620,7 +701,7 @@ impl BallotBox {
         payload: &Value,
         now: DateTime<Utc>,
     ) -> Result<Value, Failure> {
-        let p: status::Payload = parse(payload)?;
+        let p: status::Payload = parse_payload(payload)?;
         let e = self.election(p.community.as_str(), p.election_id.as_str(), now)?;
         if !(e.readable_by(caller) || e.is_trustee(caller)) {
             return Err(Failure::unknown());
@@ -663,7 +744,80 @@ impl BallotBox {
         if let Some(k) = c.key() {
             answer["electionKey"] = wire::election_key_value(k);
         }
+        if !e.steps.is_empty() {
+            answer["steps"] = Value::Array(e.steps.clone());
+        }
+        if let Some(a) = &e.authorization {
+            answer["authorization"] = a.clone();
+        }
         respond::<status::Response>(answer)
+    }
+
+    /// `voting/trustees/authorize` (CONVENTIONS §9.7): the community pins the decryption targets
+    /// it computed from the closed board. Accepted only if this box's own targets are those, under
+    /// the board through its closing entry; appended as the request received.
+    ///
+    /// # Errors
+    /// `permissionDenied`, `electionUnknown`, `notClosed`, `targetsMismatch`, `alreadyAuthorized`.
+    pub fn trustees_authorize(
+        &mut self,
+        signer: &str,
+        request: &Value,
+        now: DateTime<Utc>,
+    ) -> Result<Value, Failure> {
+        let payload = &request["payload"];
+        let p: authorize::Payload = parse_payload(payload)?;
+        let e = self.election(p.community.as_str(), p.election_id.as_str(), now)?;
+        if signer != e.community {
+            return Err(Failure::denied());
+        }
+        let Some((closing_leaf, closed_at)) = e.closing.clone() else {
+            return Err(Failure::task("notClosed", "voting has not closed"));
+        };
+        let Some(d) = &e.decryption else {
+            return Err(Failure::task(
+                "notClosed",
+                "not an encrypted election, or its key never formed",
+            ));
+        };
+        if let Some(held) = &e.authorization {
+            if held["payload"] == *payload {
+                return respond::<authorize::Response>(Self::trustee_answer(e, now));
+            }
+            return Err(Failure::task(
+                "alreadyAuthorized",
+                "another set of targets is already authorized",
+            ));
+        }
+        let targets: Vec<Value> = d
+            .targets()
+            .iter()
+            .map(|(t, ct)| wire::target_value(t, ct))
+            .collect();
+        let size = closing_leaf + 1;
+        let root = e
+            .board
+            .root(usize::try_from(size).unwrap_or(usize::MAX))
+            .ok()
+            .map(|r| digest_multibase(&r));
+        let digest = crate::audit::targets_digest(&targets)
+            .map_err(|err| Failure::standard("internalError", err.to_string()))?;
+        let holds = payload["manifestDigest"].as_str()
+            == Some(digest_multibase(&e.digest).as_str())
+            && payload["head"]["treeSize"].as_u64() == Some(size)
+            && payload["head"]["rootHash"].as_str() == root.as_deref()
+            && payload["closedAt"].as_str() == Some(closed_at.as_str())
+            && payload["targetCount"].as_u64() == Some(targets.len() as u64)
+            && payload["targetsDigest"].as_str() == Some(digest.as_str());
+        if !holds {
+            return Err(Failure::task(
+                "targetsMismatch",
+                "these are not the targets this board gives under its closing head",
+            ));
+        }
+        e.append(&json!({ "kind": "decryptionAuthorized", "request": request }))?;
+        e.authorization = Some(request.clone());
+        respond::<authorize::Response>(Self::trustee_answer(e, now))
     }
 
     /// `voting/ballot/cast-encrypted` (VTI-VOT-040 – 045, 064). Admission is the open cast's,
@@ -676,7 +830,7 @@ impl BallotBox {
         payload: &Value,
         now: DateTime<Utc>,
     ) -> Result<Value, Failure> {
-        let p: cast_encrypted::Payload = parse(payload)?;
+        let p: cast_encrypted::Payload = parse_payload(payload)?;
         let e = self.election(p.community.as_str(), p.election_id.as_str(), now)?;
         let cast_value = &payload["cast"];
         let sealed_level = e.manifest.secrecy == register::SecrecyLevel::Sealed;
@@ -695,14 +849,15 @@ impl BallotBox {
                 "voting is not open, or the election key is not formed",
             ));
         }
-        if tallied_level {
-            e.check_encrypted_ballot(&cast_value["encrypted"])?;
-        }
         let cast_digest: [u8; 32] = Sha256::digest(jcs(cast_value)?).into();
         if let Some(a) = e.exact.get(&cast_digest).cloned() {
             return encrypted_receipt(e, &a, "alreadyCounted", now);
         }
         let (tag, ballot_digest, form) = e.read_encrypted(cast_value)?;
+        e.refuse_copy(&form, &tag)?;
+        if tallied_level {
+            e.check_encrypted_ballot(&cast_value["encrypted"], &tag)?;
+        }
         let held = e.encrypted.get(&tag).map(|(a, _)| a.clone());
         if e.manifest.revote != register::Revote::Replace
             && held
@@ -762,8 +917,23 @@ impl BallotBox {
             None => "counted",
         };
         e.exact.insert(cast_digest, admitted.clone());
+        for a in ciphertext_keys(&form) {
+            e.seen.insert(a, tag.clone());
+        }
         e.encrypted.insert(tag, (admitted.clone(), form));
         encrypted_receipt(e, &admitted, outcome, now)
+    }
+}
+
+/// The compressed `a` of every ciphertext in a form: a sealed form's `kem`, a tallied form's
+/// options. Fresh randomness makes each one unique to the cast that made it.
+pub(super) fn ciphertext_keys(form: &Encrypted) -> Vec<[u8; 32]> {
+    match form {
+        Encrypted::Sealed(s) => vec![s.kem.a.compress().to_bytes()],
+        Encrypted::Tallied(qs) => qs
+            .iter()
+            .flat_map(|q| q.options.iter().map(|o| o.0.a.compress().to_bytes()))
+            .collect(),
     }
 }
 

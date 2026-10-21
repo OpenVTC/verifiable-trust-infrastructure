@@ -85,8 +85,7 @@ pub fn one_of_value(p: &OneOf) -> Value {
 
 /// A `SealedPayload`.
 pub fn sealed(v: &Value) -> Result<Sealed> {
-    let (_, body) = multibase::decode(text(&v["body"], "body")?)
-        .map_err(|e| TrusteeError::Encoding(e.to_string()))?;
+    let body = crate::trustees::b58_decode(text(&v["body"], "body")?)?;
     Ok(Sealed {
         kem: ciphertext(&v["kem"])?,
         body,

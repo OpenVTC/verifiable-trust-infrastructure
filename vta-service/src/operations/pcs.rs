@@ -101,11 +101,20 @@ pub enum PcsError {
     /// `trustee` names a DID this engine holds no `authentication` key of that the caller may act as.
     TrusteeNotHeld(String),
     NotTrustee,
-    TransportKeysInvalid(String),
+    /// A step of the ceremony passed in is not its trustee's, or the ceremony is not where the
+    /// task needs it (CONVENTIONS §9.6).
+    CeremonyInvalid(String),
+    /// The transport keys are not those this trustee first dealt to.
+    CeremonyChanged,
+    /// No confirmation in the ceremony complains of this trustee for that recipient.
+    NoComplaint,
+    /// The community's decryption authorization does not hold (CONVENTIONS §9.7).
+    AuthorizationInvalid(String),
+    /// This trustee has already decrypted another authorized set of targets.
+    AlreadyDecrypted,
     KeyMismatch,
     NoDealing,
     KeyNotHeld,
-    NotClosed,
     App(AppError),
 }
 
@@ -173,13 +182,24 @@ impl std::fmt::Display for PcsError {
                  cannot act as that trustee"
             ),
             Self::NotTrustee => f.write_str("the manifest does not name this DID as a trustee"),
-            Self::TransportKeysInvalid(e) => write!(f, "the transport keys do not verify: {e}"),
+            Self::CeremonyInvalid(e) => write!(f, "the ceremony's signed steps do not hold: {e}"),
+            Self::CeremonyChanged => f.write_str(
+                "the transport keys are not the ones this trustee first dealt to",
+            ),
+            Self::NoComplaint => {
+                f.write_str("no confirmation in the ceremony complains of this trustee for that recipient")
+            }
+            Self::AuthorizationInvalid(e) => {
+                write!(f, "the community's decryption authorization does not hold: {e}")
+            }
+            Self::AlreadyDecrypted => {
+                f.write_str("this trustee has already decrypted another authorized set of targets")
+            }
             Self::KeyMismatch => f.write_str(
                 "the election key's verification key for this trustee is not the share computed here",
             ),
             Self::NoDealing => f.write_str("this engine has not dealt for this trustee and election"),
             Self::KeyNotHeld => f.write_str("this engine holds no key share for this trustee and election"),
-            Self::NotClosed => f.write_str("voting has not closed: nothing is decrypted before it does"),
             Self::App(e) => write!(f, "{e}"),
         }
     }

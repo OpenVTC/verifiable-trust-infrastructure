@@ -2546,28 +2546,28 @@ pub const TASK_VTA_PCS_VOTER_RECEIPT_0_1: &str =
 // documents to the ballot box; the client carries them.
 
 /// `vta/pcs/vote-encrypted/0.1` — a sealed or tallied-encrypted cast document.
-pub const TASK_VTA_PCS_VOTE_ENCRYPTED_0_1: &str =
-    <trust_tasks_rs::specs::vta::pcs::vote_encrypted::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+pub const TASK_VTA_PCS_VOTE_ENCRYPTED_0_2: &str =
+    <trust_tasks_rs::specs::vta::pcs::vote_encrypted::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
 /// `vta/pcs/trustee/enrol/0.1` — the trustee's transport key and its enrolment, signed as it.
 pub const TASK_VTA_PCS_TRUSTEE_ENROL_0_1: &str =
     <trust_tasks_rs::specs::vta::pcs::trustee::enrol::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
 /// `vta/pcs/trustee/deal/0.1` — the trustee's dealing, signed as it.
-pub const TASK_VTA_PCS_TRUSTEE_DEAL_0_1: &str =
-    <trust_tasks_rs::specs::vta::pcs::trustee::deal::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+pub const TASK_VTA_PCS_TRUSTEE_DEAL_0_2: &str =
+    <trust_tasks_rs::specs::vta::pcs::trustee::deal::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
 /// `vta/pcs/trustee/keys/0.1` — check the shares dealt, confirm, and keep the key share.
-pub const TASK_VTA_PCS_TRUSTEE_KEYS_0_1: &str =
-    <trust_tasks_rs::specs::vta::pcs::trustee::keys::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+pub const TASK_VTA_PCS_TRUSTEE_KEYS_0_2: &str =
+    <trust_tasks_rs::specs::vta::pcs::trustee::keys::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
 /// `vta/pcs/trustee/justify/0.1` — answer a complaint with the share that was dealt.
-pub const TASK_VTA_PCS_TRUSTEE_JUSTIFY_0_1: &str =
-    <trust_tasks_rs::specs::vta::pcs::trustee::justify::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+pub const TASK_VTA_PCS_TRUSTEE_JUSTIFY_0_2: &str =
+    <trust_tasks_rs::specs::vta::pcs::trustee::justify::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
 /// `vta/pcs/trustee/decrypt/0.1` — the trustee's partial decryptions, signed as it.
-pub const TASK_VTA_PCS_TRUSTEE_DECRYPT_0_1: &str =
-    <trust_tasks_rs::specs::vta::pcs::trustee::decrypt::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+pub const TASK_VTA_PCS_TRUSTEE_DECRYPT_0_2: &str =
+    <trust_tasks_rs::specs::vta::pcs::trustee::decrypt::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
 /// `vta/pcs/trustee/read/0.1` — `voting/trustees/status` or `voting/election/show`, signed as
 /// the trustee.
@@ -2910,12 +2910,12 @@ pub const ALL_URIS: &[&str] = &[
     TASK_VTA_PCS_VOTER_ACCEPT_0_1,
     TASK_VTA_PCS_VOTE_0_1,
     TASK_VTA_PCS_VOTER_RECEIPT_0_1,
-    TASK_VTA_PCS_VOTE_ENCRYPTED_0_1,
+    TASK_VTA_PCS_VOTE_ENCRYPTED_0_2,
     TASK_VTA_PCS_TRUSTEE_ENROL_0_1,
-    TASK_VTA_PCS_TRUSTEE_DEAL_0_1,
-    TASK_VTA_PCS_TRUSTEE_KEYS_0_1,
-    TASK_VTA_PCS_TRUSTEE_JUSTIFY_0_1,
-    TASK_VTA_PCS_TRUSTEE_DECRYPT_0_1,
+    TASK_VTA_PCS_TRUSTEE_DEAL_0_2,
+    TASK_VTA_PCS_TRUSTEE_KEYS_0_2,
+    TASK_VTA_PCS_TRUSTEE_JUSTIFY_0_2,
+    TASK_VTA_PCS_TRUSTEE_DECRYPT_0_2,
     TASK_VTA_PCS_TRUSTEE_READ_0_1,
     TASK_VTA_WITNESS_OPEN_0_2,
     TASK_VTA_WITNESS_PRESENT_0_2,

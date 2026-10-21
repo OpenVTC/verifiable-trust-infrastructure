@@ -131,15 +131,21 @@ each trustee's VTA holding its keys — see [the trustee's round](../02-vta/pcs-
 A trustee takes part with `pnm elections trustee step <election> --watch`, started once the
 election is registered and left running until the result is out.
 If no key has formed by `votingOpens`, the ceremony has failed: no cast is admitted, and the
-community cancels the election. Voters cast with `vta/pcs/vote-encrypted`; after close any
-`threshold` trustees decrypt, and the ballot box publishes the result — every sealed ballot
+community cancels the election. The key forms only from at least `threshold` qualified dealers
+and confirmations, so no single trustee can be left holding it. Voters cast with
+`vta/pcs/vote-encrypted`, their VTAs forming the key from the signed steps `vtc/elections/show`
+carries (`ceremony`). After close the community computes the decryption targets from the board
+it verified and signs them (`voting/trustees/authorize`, sent by the sweeper); any `threshold`
+trustees then decrypt that set and nothing else, and the ballot box publishes the result — every sealed ballot
 opened (or marked spoiled, uncounted, when it does not open to a valid ballot), or each
 option's total and nothing else. Every step of the ceremony is on the board as the trustee's own
 signed request (a `trusteeStep` entry, CONVENTIONS §9.6), and the community verifies each proof
 against the trustee's DID: a ballot box that dealt in a trustee's name, to hold the election key
 itself, would have to sign as that trustee. Certification re-runs all of it from the board: the
 ceremony, every step's signature, every cast's attestation over its encrypted form and a tallied ballot's proofs, every partial
-decryption, and the openings and totals they give.
+decryption, and the openings and totals they give — and the board's order (CONVENTIONS §3.9):
+nothing cast after the close, the authorization after the close and before any partial, one
+result, last, over the board before it (`orderInvalid` / `ceremonyInvalid` faults).
 
 ## Code
 

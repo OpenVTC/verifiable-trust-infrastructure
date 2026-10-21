@@ -115,6 +115,10 @@ struct InProcessBox {
     /// Seconds the box's clock runs ahead of the test's.
     ahead: AtomicI64,
     tamper: Mutex<Tamper>,
+    /// The community's signing key, where a test runs its community as a resolvable DID: a
+    /// decryption authorization is kept on the board as the community signed it (CONVENTIONS
+    /// §9.7), which the in-process channel otherwise never sees.
+    signer: Mutex<Option<Arc<vtc_service::credentials::LocalSigner>>>,
 }
 
 impl InProcessBox {
@@ -125,6 +129,7 @@ impl InProcessBox {
             refuse: AtomicBool::new(false),
             ahead: AtomicI64::new(0),
             tamper: Mutex::new(Tamper::None),
+            signer: Mutex::new(None),
         })
     }
 
@@ -155,7 +160,11 @@ impl InProcessBox {
         read["from"] = json!(0);
         read["limit"] = json!(1000);
         let all = bb
-            .board_read(Caller::Did(TEST_VTC_DID), &read, now)
+            .board_read(
+                Caller::Did(sel["community"].as_str().unwrap_or_default()),
+                &read,
+                now,
+            )
             .unwrap();
         let mut entries: Vec<Value> = all["entries"]
             .as_array()
@@ -218,11 +227,35 @@ impl BallotBoxChannel for InProcessBox {
         }
         // The community signs as itself; the ballot box authorizes on that alone.
         let signer = payload["community"].as_str().unwrap_or_default();
+        // An authorization goes on the board as the community signed it.
+        let authorization = if slug == "voting/trustees/authorize" {
+            let key = self
+                .signer
+                .lock()
+                .unwrap()
+                .clone()
+                .expect("a test authorizing a decryption sets the community's signer");
+            let mut doc = json!({
+                "id": format!("urn:uuid:{}", uuid::Uuid::new_v4()),
+                "type": type_uri,
+                "issuer": signer,
+                "recipient": BOX,
+                "issuedAt": stamp(Utc::now()),
+                "payload": payload,
+            });
+            key.sign_operational_doc(&mut doc).await.unwrap();
+            Some(doc)
+        } else {
+            None
+        };
         let now = self.now();
         let tamper = *self.tamper.lock().unwrap();
         let mut bb = self.bb.lock().unwrap();
         let out = match slug {
             "voting/election/register" => bb.register(signer, payload, now),
+            "voting/trustees/authorize" => {
+                bb.trustees_authorize(signer, authorization.as_ref().unwrap(), now)
+            }
             "voting/election/close" => bb.close(signer, payload, now),
             "voting/election/cancel" => bb.cancel(signer, payload, now),
             "voting/board/head" => bb
@@ -285,6 +318,35 @@ async fn community(bx: Arc<InProcessBox>) -> TestVtc {
         )
         .build()
         .await
+}
+
+/// A community whose DID is a `did:key` it signs with, so that what it signs — a decryption
+/// authorization on the board — verifies anywhere, certification included.
+async fn keyed_community(bx: Arc<InProcessBox>) -> (TestVtc, String) {
+    let p = Party::new();
+    let signer = Arc::new(vtc_service::credentials::LocalSigner::new(
+        p.did.clone(),
+        p.secret.clone(),
+    ));
+    *bx.signer.lock().unwrap() = Some(signer.clone());
+    let tv = TestVtc::builder()
+        .vtc_did(p.did.clone())
+        .with_signers(true)
+        .with_credential_signer(signer)
+        .with_audit(true)
+        .with_elections(
+            VotingConfig {
+                trusted_ballot_boxes: vec![TrustedBallotBox {
+                    did: BOX.into(),
+                    operator: "Independent Ballots Ltd".into(),
+                    same_operator: false,
+                }],
+            },
+            bx,
+        )
+        .build()
+        .await;
+    (tv, p.did)
 }
 
 fn stamp(t: DateTime<Utc>) -> String {
@@ -874,12 +936,18 @@ async fn trustee_request(from: &Party, task: &str, payload: Value) -> Value {
 }
 
 /// The key ceremony on `bx`'s board, at the box's own clock.
-async fn run_ceremony(bx: &InProcessBox, parties: Vec<Party>, ctx: &[u8], id: &str) -> Trustees {
+async fn run_ceremony(
+    bx: &InProcessBox,
+    community: &str,
+    parties: Vec<Party>,
+    ctx: &[u8],
+    id: &str,
+) -> Trustees {
     use vti_voting::trustees::{
         Dealing, Threshold, TransportSecret, TrusteeKey, deal, open_share, seal_share, verify_share,
     };
     let mut rng = vti_voting::rand::rngs::OsRng;
-    let sel = json!({ "community": TEST_VTC_DID, "electionId": id });
+    let sel = json!({ "community": community, "electionId": id });
     let with = |extra: Value| {
         let mut v = sel.clone();
         v.as_object_mut()
@@ -999,7 +1067,7 @@ async fn run_ceremony(bx: &InProcessBox, parties: Vec<Party>, ctx: &[u8], id: &s
 #[tokio::test]
 async fn a_sealed_election_is_created_decrypted_by_its_trustees_and_certified() {
     let bx = InProcessBox::new();
-    let tv = community(bx.clone()).await;
+    let (tv, cdid) = keyed_community(bx.clone()).await;
     let chair = admin(&tv).await;
 
     let parties: Vec<Party> = (0..3).map(|_| Party::new()).collect();
@@ -1007,6 +1075,7 @@ async fn a_sealed_election_is_created_decrypted_by_its_trustees_and_certified() 
 
     // The trustee rules are the community's to check too.
     let mut broken = manifest("sealed", false);
+    broken["community"] = json!(cdid);
     broken["secrecy"] = json!("sealed");
     broken["trustees"] = json!({ "dids": trustee_dids, "threshold": 4 });
     let (_, doc) = create(&tv, &chair, broken).await;
@@ -1016,20 +1085,21 @@ async fn a_sealed_election_is_created_decrypted_by_its_trustees_and_certified() 
     // trustees generate the key before its votingOpens.
     bx.ahead.store(-2 * 3600, Ordering::SeqCst);
     let mut m = manifest("sealed", false);
+    m["community"] = json!(cdid);
     m["secrecy"] = json!("sealed");
     m["trustees"] = json!({ "dids": trustee_dids, "threshold": 2 });
     m["board"]["visibility"] = json!("private");
     let (status, doc) = create(&tv, &chair, m.clone()).await;
     assert_eq!(status, StatusCode::OK, "{doc}");
     let (alice, bob) = (member(&tv).await, member(&tv).await);
-    let b = read_election(&tv, &alice, "sealed").await;
+    let b = read_election_of(&tv, &alice, "sealed", &cdid).await;
     let ctx = b.election.trustee_context();
-    let trustees = run_ceremony(&bx, parties, &ctx, "sealed").await;
+    let trustees = run_ceremony(&bx, &cdid, parties, &ctx, "sealed").await;
     assert_eq!(trustees.dids(), trustee_dids);
 
     // Voting: each member's agent seals the ballot to the election key and casts it.
     bx.ahead.store(0, Ordering::SeqCst);
-    let sel = json!({ "community": TEST_VTC_DID, "electionId": "sealed" });
+    let sel = json!({ "community": cdid, "electionId": "sealed" });
     // A voter cannot read the private board; the community reads the key and shows it.
     assert!(
         bx.bb
@@ -1065,11 +1135,15 @@ async fn a_sealed_election_is_created_decrypted_by_its_trustees_and_certified() 
             "electionId": "sealed", "manifestDigest": b.digest,
             "answers": [{ "question": "chair", "choice": [choice] }],
         });
+        let tag = voter
+            .tag_for(&b.params, &ticket, &mut vti_voting::rand::rngs::OsRng)
+            .unwrap();
         let form = vti_voting::voter::encrypted_form(
             &typed,
             &b.election,
             &ek,
             &ballot,
+            &tag,
             &mut vti_voting::rand::rngs::OsRng,
         )
         .unwrap();
@@ -1086,7 +1160,7 @@ async fn a_sealed_election_is_created_decrypted_by_its_trustees_and_certified() 
             .lock()
             .unwrap()
             .cast_encrypted(
-                &json!({ "community": TEST_VTC_DID, "electionId": "sealed", "cast": cast }),
+                &json!({ "community": cdid, "electionId": "sealed", "cast": cast }),
                 now,
             )
             .expect("the ballot box admits the sealed cast");
@@ -1097,6 +1171,30 @@ async fn a_sealed_election_is_created_decrypted_by_its_trustees_and_certified() 
     let certify = json!({ "electionId": "sealed", "auditAttestations": [] });
     let (_, doc) = call(&tv, &chair, &uri("certify"), certify.clone()).await;
     assert_eq!(tt_error_code(&doc), CERTIFY_ERR_NOT_TALLIED, "{doc}");
+    // No partial is taken until the community authorizes the decryption it computed itself
+    // from the closed board (CONVENTIONS §9.7) — which its sweeper does.
+    assert!(
+        bx.bb
+            .lock()
+            .unwrap()
+            .trustees_status(Caller::Did(&trustees.parties[0].did), &sel, bx.now())
+            .unwrap()
+            .get("authorization")
+            .is_none()
+    );
+    vtc_service::elections::sweeper::pass(&tv.state, Utc::now() + Duration::hours(2))
+        .await
+        .unwrap();
+    assert!(
+        bx.bb
+            .lock()
+            .unwrap()
+            .trustees_status(Caller::Did(&trustees.parties[0].did), &sel, bx.now())
+            .unwrap()
+            .get("authorization")
+            .is_some(),
+        "the community authorized the decryption"
+    );
     for j in [0usize, 2] {
         let now = bx.now();
         let did = trustees.parties[j].did.clone();

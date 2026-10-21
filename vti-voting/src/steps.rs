@@ -206,7 +206,8 @@ fn digest(request: &Value) -> Option<[u8; 32]> {
 }
 
 impl ProvenRequests {
-    /// Ask `verify` for the signer of every `trusteeStep` request among `entries`: the DID its
+    /// Ask `verify` for the signer of every `trusteeStep` request among `entries`, and of the
+    /// community's `decryptionAuthorized` request (CONVENTIONS §9.7): the DID its
     /// proof verifies as (framework SPEC §4.7), or `None`. A request it does not vouch for is
     /// [`StepError::Unproven`] when read.
     pub async fn prove<F, Fut>(entries: &[Value], mut verify: F) -> Self
@@ -215,7 +216,10 @@ impl ProvenRequests {
         Fut: Future<Output = Option<String>>,
     {
         let mut signers = HashMap::new();
-        for e in entries.iter().filter(|e| e["kind"] == KIND) {
+        for e in entries
+            .iter()
+            .filter(|e| e["kind"] == KIND || e["kind"] == "decryptionAuthorized")
+        {
             let request = &e["request"];
             if let (Some(d), Some(signer)) = (digest(request), verify(request.clone()).await) {
                 signers.insert(d, signer);
@@ -224,8 +228,50 @@ impl ProvenRequests {
         Self { signers }
     }
 
+    /// As [`Self::prove`], over bare requests — the ceremony as `voting/trustees/status`'s `steps`
+    /// or `vtc/elections/show`'s `ceremony` carry it.
+    pub async fn prove_requests<F, Fut>(requests: &[Value], verify: F) -> Self
+    where
+        F: FnMut(Value) -> Fut,
+        Fut: Future<Output = Option<String>>,
+    {
+        let entries: Vec<Value> = requests.iter().map(entry).collect();
+        Self::prove(&entries, verify).await
+    }
+
     /// The proven signer of `request`, if any.
     pub fn signer(&self, request: &Value) -> Option<&str> {
         self.signers.get(&digest(request)?).map(String::as_str)
     }
+}
+
+/// The ceremony `requests` establish — the trustees' steps in board order, each read as its
+/// trustee's ([`read`], the signer `proven` vouches for) and applied in turn — and, once
+/// `votingOpens` has come, its deadline (CONVENTIONS §9.6 item 5). What a trustee's or a voter's
+/// VTA acts on in place of anything a ballot box reports.
+///
+/// # Errors
+/// The first request that is not its trustee's step, or that the ceremony refuses, by position.
+pub fn replay(
+    requests: &[Value],
+    election: Election<'_>,
+    threshold: crate::trustees::Threshold,
+    ctx: Vec<u8>,
+    proven: &ProvenRequests,
+    deadline_passed: bool,
+) -> Result<Ceremony, String> {
+    let mut c = Ceremony::new(threshold, ctx);
+    for (i, r) in requests.iter().enumerate() {
+        let signer = proven
+            .signer(r)
+            .ok_or_else(|| format!("step {i}: {}", StepError::Unproven))?;
+        read(r, election, signer)
+            .map_err(|e| format!("step {i}: {e}"))?
+            .apply(&mut c)
+            .map_err(|e| format!("step {i}: {e}"))?;
+    }
+    if deadline_passed {
+        c.deadline();
+    }
+    Ok(c)
 }

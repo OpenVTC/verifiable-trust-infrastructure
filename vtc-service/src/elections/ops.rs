@@ -277,6 +277,8 @@ pub async fn create(
         final_checkpoint: false,
         certified: None,
         election_key: None,
+        ceremony: None,
+        decryption_authorized: false,
     };
     if !store::put_new(state.elections.ks(), &rec).await? {
         return Err(CreateError::ElectionExists);
@@ -665,9 +667,16 @@ pub async fn checkpoint(state: &AppState, election_id: &str, final_head: bool) {
         return;
     };
     let repeat = rec.checkpoints.last().is_some_and(|c| c["head"] == head);
-    if !repeat && rec.checkpoints.len() < 256 {
-        rec.checkpoints
-            .push(json!({ "head": head, "document": document }));
+    if !repeat {
+        // At most 256 kept; the final head always is, in place of the oldest after the first
+        // if need be — it is the one certification ends at.
+        if rec.checkpoints.len() >= 256 && final_head {
+            rec.checkpoints.remove(1);
+        }
+        if rec.checkpoints.len() < 256 {
+            rec.checkpoints
+                .push(json!({ "head": head, "document": document }));
+        }
     }
     rec.final_checkpoint |= final_head;
     if let Err(e) = store::put(ks, &rec).await {
@@ -703,13 +712,109 @@ pub async fn read_election_key(state: &AppState, election_id: &str) {
             return;
         }
     };
+    // The steps the key forms from, for voters' VTAs to form it themselves (show item 6).
+    let ceremony: Vec<Value> = entries
+        .iter()
+        .take_while(|e| e["kind"] != "electionKey")
+        .filter(|e| e["kind"] == vti_voting::steps::KIND)
+        .map(|e| e["request"].clone())
+        .collect();
     // Re-read: a close or a certify may have written meanwhile.
     let Ok(Some(mut rec)) = store::get(ks, election_id).await else {
         return;
     };
     rec.election_key = Some(key);
+    rec.ceremony = Some(Value::Array(ceremony));
     if let Err(e) = store::put(ks, &rec).await {
         tracing::warn!(election = election_id, error = %e, "could not keep the election key");
+    }
+}
+
+/// Authorize the decryption of a closed sealed or tallied-encrypted election (CONVENTIONS §9.7):
+/// read the board, check it through its closing entry as certification does, compute the targets
+/// here, and send their digest under the closing head. A trustee's VTA decrypts nothing else, so
+/// a ballot box cannot ask the trustees to open one voter's ballot. Best effort: the sweeper calls
+/// it again until the ballot box has accepted it.
+pub async fn authorize_decryption(state: &AppState, election_id: &str) {
+    let ks = state.elections.ks();
+    let Ok(Some(rec)) = store::get(ks, election_id).await else {
+        return;
+    };
+    if rec.decryption_authorized || rec.manifest.get("trustees").is_none() {
+        return;
+    }
+    let community = community_did(state).await;
+    let sel = json!({ "community": community, "electionId": election_id });
+    let Ok((_, entries)) = read_board(state, &rec.ballot_box, &sel).await else {
+        return;
+    };
+    let proven = prove_trustee_steps(state, &entries).await;
+    let Ok(reg) = registrar(state).await else {
+        return;
+    };
+    let closing = match vti_voting::audit::decryption(
+        &rec.manifest,
+        &reg.params(),
+        &entries,
+        &proven,
+    ) {
+        Ok(Some(c)) => c,
+        Ok(None) => return,
+        Err(why) => {
+            tracing::warn!(election = election_id, %why, "the closed board does not hold; decryption not authorized");
+            return;
+        }
+    };
+    let size = closing.index as usize + 1;
+    let mut board = vti_voting::board::Board::new();
+    for e in &entries[..size.min(entries.len())] {
+        let Ok(bytes) = serde_json_canonicalizer::to_vec(e) else {
+            return;
+        };
+        board.append(&bytes);
+    }
+    let Ok(root) = board.root(size) else {
+        return;
+    };
+    let values = closing.target_values();
+    let Ok(digest) = vti_voting::audit::targets_digest(&values) else {
+        return;
+    };
+    let payload = json!({
+        "community": community,
+        "electionId": election_id,
+        "manifestDigest": rec.manifest_digest,
+        // Fixed by the board alone, so a resend is the same request.
+        "head": { "electionId": election_id, "treeSize": size,
+                  "rootHash": rules::digest_multibase(&root), "issuedAt": closing.at },
+        "closedAt": closing.at,
+        "targetCount": values.len(),
+        "targetsDigest": digest,
+    });
+    match exchange(
+        state,
+        &rec.ballot_box,
+        "voting/trustees/authorize",
+        &payload,
+    )
+    .await
+    {
+        Ok(BoxAnswer::Success { .. }) => {}
+        Ok(BoxAnswer::Refused { code, message }) => {
+            tracing::warn!(election = election_id, %code, %message, "the ballot box refused the decryption authorization");
+            return;
+        }
+        Err(e) => {
+            tracing::warn!(election = election_id, error = %e, "could not authorize the decryption yet");
+            return;
+        }
+    }
+    let Ok(Some(mut rec)) = store::get(ks, election_id).await else {
+        return;
+    };
+    rec.decryption_authorized = true;
+    if let Err(e) = store::put(ks, &rec).await {
+        tracing::warn!(election = election_id, error = %e, "could not record the decryption authorization");
     }
 }
 
@@ -885,6 +990,12 @@ pub async fn certify(
         AuditFailure::ReplacementInvalid { index, .. } => CertifyError::BoardInconsistent(
             json!({ "fault": "replacementInvalid", "index": index }),
         ),
+        AuditFailure::OrderInvalid { index, .. } => {
+            CertifyError::BoardInconsistent(json!({ "fault": "orderInvalid", "index": index }))
+        }
+        AuditFailure::CeremonyInvalid { index, .. } => {
+            CertifyError::BoardInconsistent(json!({ "fault": "ceremonyInvalid", "index": index }))
+        }
         AuditFailure::CastInvalid { index, .. } => CertifyError::CastInvalid(index),
         AuditFailure::CountExceedsTickets { counted, issued } => {
             CertifyError::CountExceedsTickets { counted, issued }
@@ -962,6 +1073,20 @@ async fn exchange(
     task: &str,
     payload: &Value,
 ) -> Result<BoxAnswer, LinkError> {
+    // Every request to a ballot box goes to one this community still trusts (VTI-VOT-082): a box
+    // dropped from the list after an election was created is sent nothing more.
+    if state
+        .config
+        .read()
+        .await
+        .voting
+        .trusted(ballot_box)
+        .is_none()
+    {
+        return Err(LinkError::Unavailable(format!(
+            "{ballot_box} is no longer a ballot box this community trusts"
+        )));
+    }
     match state.elections.link() {
         Some(link) => {
             link.exchange(ballot_box, &format!("{SPEC}{task}/0.1"), payload)

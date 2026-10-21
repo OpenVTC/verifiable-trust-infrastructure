@@ -96,6 +96,14 @@ pub struct ElectionRecord {
     /// box reported it and checked against the dealings it reported with it (show item 6).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub election_key: Option<Value>,
+    /// With `election_key`: the trustees' signed steps it forms from, as received — what a
+    /// voter's VTA forms the key from itself (show item 6, CONVENTIONS §9.6).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ceremony: Option<Value>,
+    /// Whether the ballot box has accepted this community's decryption authorization
+    /// (CONVENTIONS §9.7).
+    #[serde(default)]
+    pub decryption_authorized: bool,
 }
 
 impl ElectionRecord {
@@ -309,6 +317,8 @@ mod tests {
             final_checkpoint: false,
             certified: None,
             election_key: None,
+            ceremony: None,
+            decryption_authorized: false,
         }
     }
 

@@ -114,9 +114,19 @@ async fn settle(
             if !closed && rec.election_key.is_none() && rec.manifest.get("trustees").is_some() {
                 ops::read_election_key(state, &rec.election_id).await;
             }
+            // Once voting has closed, the community authorizes exactly the decryption the board
+            // calls for (CONVENTIONS §9.7).
+            if closed && !rec.decryption_authorized && rec.manifest.get("trustees").is_some() {
+                ops::authorize_decryption(state, &rec.election_id).await;
+            }
             if now >= rec.voting_closes {
                 discard_pre_credentials(state, &rec.election_id).await?;
             }
+        }
+        // A pre-credential is discarded once voting is over, however it ended (tickets/issue
+        // item 10).
+        Standing::Tallied | Standing::Cancelled => {
+            discard_pre_credentials(state, &rec.election_id).await?;
         }
         _ => {}
     }

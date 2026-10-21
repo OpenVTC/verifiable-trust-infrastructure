@@ -71,6 +71,9 @@ pub enum AuditFailure {
     /// A trustee step on an encrypted board does not hold (CONVENTIONS §9.6 – 9.7).
     #[error("the trustee entry at index {index} does not hold: {reason}")]
     CeremonyInvalid { index: u64, reason: String },
+    /// The board is not the election's lifecycle in order (CONVENTIONS §3.9).
+    #[error("the entry at index {index} is out of the election's order: {reason}")]
+    OrderInvalid { index: u64, reason: String },
 }
 
 /// A board head: its size and root.
@@ -172,6 +175,10 @@ pub fn audit(e: Evidence<'_>) -> Result<Verified, AuditFailure> {
         }
     }
 
+    // The election's order (CONVENTIONS §3.9), and where its one result is.
+    let result_index = check_order(&manifest, e.entries)?;
+    let result_entry = Some(&e.entries[result_index]);
+
     // 3 – 4.
     let revote = if manifest.revote == Revote::Replace {
         BoxRevote::Replace
@@ -182,7 +189,7 @@ pub fn audit(e: Evidence<'_>) -> Result<Verified, AuditFailure> {
         let ctx = election.trustee_context();
         let verifier = BallotBox::new(e.params, election, revote, MemoryNullifiers::default())
             .map_err(|err| AuditFailure::Unreadable(err.to_string()))?;
-        let (n, questions, result_entry) = encrypted::recount(
+        let (n, questions) = encrypted::recount(
             &manifest,
             &digest,
             encrypted::Steps {
@@ -193,8 +200,9 @@ pub fn audit(e: Evidence<'_>) -> Result<Verified, AuditFailure> {
             &verifier,
             revote,
             e.entries,
+            &board,
         )?;
-        return finish(e, &board, &digest, n, questions, result_entry);
+        return finish(e, &board, &digest, n, questions, result_entry, result_index);
     }
     let verifier = BallotBox::new(e.params, election, revote, MemoryNullifiers::default())
         .map_err(|err| AuditFailure::Unreadable(err.to_string()))?;
@@ -202,7 +210,6 @@ pub fn audit(e: Evidence<'_>) -> Result<Verified, AuditFailure> {
     let mut counted: HashMap<String, (u64, cast::Ballot)> = HashMap::new();
     // A later cast under a counted tag, still owed its `replaced` entry.
     let mut owed: Option<(String, u64, u64)> = None;
-    let mut result_entry: Option<&Value> = None;
     for (i, entry) in e.entries.iter().enumerate() {
         let index = i as u64;
         match entry["kind"].as_str() {
@@ -236,7 +243,15 @@ pub fn audit(e: Evidence<'_>) -> Result<Verified, AuditFailure> {
                     Some(_) if revote == BoxRevote::Refuse => {
                         return Err(AuditFailure::TagRepeated { index });
                     }
-                    Some((earlier, _)) => {
+                    Some((earlier, held)) => {
+                        if canonical(&serde_json::to_value(held).unwrap_or_default())?
+                            == canonical(&entry["cast"]["ballot"])?
+                        {
+                            return Err(AuditFailure::ReplacementInvalid {
+                                index,
+                                reason: "a replacement must carry another ballot".into(),
+                            });
+                        }
                         owed = Some((tag.clone(), *earlier, index));
                         counted.insert(tag, (index, wire.ballot));
                     }
@@ -257,7 +272,6 @@ pub fn audit(e: Evidence<'_>) -> Result<Verified, AuditFailure> {
                     return Err(bad("it names other casts than the two under its tag"));
                 }
             }
-            Some("result") => result_entry = Some(entry),
             _ => {}
         }
     }
@@ -274,8 +288,145 @@ pub fn audit(e: Evidence<'_>) -> Result<Verified, AuditFailure> {
         .map_err(|err| AuditFailure::Unreadable(err.to_string()))?;
     let questions = serde_json::to_value(&questions)
         .map_err(|err| AuditFailure::Unreadable(err.to_string()))?;
-    finish(e, &board, &digest, n, questions, result_entry)
+    finish(e, &board, &digest, n, questions, result_entry, result_index)
 }
+
+/// CONVENTIONS §3.9: the board is the election's lifecycle in order. Returns the index of its one
+/// `result` entry.
+fn check_order(manifest: &Manifest, entries: &[Value]) -> Result<usize, AuditFailure> {
+    let at = |e: &Value| {
+        e["at"]
+            .as_str()
+            .and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok())
+            .map(|t| t.with_timezone(&chrono::Utc))
+    };
+    let mut opened = false;
+    let mut key = false;
+    let mut closing = false;
+    let mut authorized = false;
+    let mut result: Option<usize> = None;
+    for (i, e) in entries.iter().enumerate() {
+        let bad = |reason: &str| AuditFailure::OrderInvalid {
+            index: i as u64,
+            reason: reason.into(),
+        };
+        if result.is_some() {
+            return Err(bad("an entry after the result"));
+        }
+        match e["kind"].as_str() {
+            Some(crate::steps::KIND) if key => {
+                return Err(bad("a trustee step after the election key"));
+            }
+            Some("electionKey") => {
+                if key || opened {
+                    return Err(bad("the election key after voting opened, or twice"));
+                }
+                key = true;
+            }
+            Some("opened") => {
+                if opened || closing {
+                    return Err(bad("voting opened twice, or after it ended"));
+                }
+                if at(e).is_none_or(|t| t < manifest.voting_opens) {
+                    return Err(bad("voting opened before votingOpens"));
+                }
+                opened = true;
+            }
+            Some("cast" | "encryptedCast") => {
+                if !opened || closing {
+                    return Err(bad("a cast outside the voting window"));
+                }
+            }
+            Some(kind @ ("closed" | "closedEarly" | "cancelled")) => {
+                if closing {
+                    return Err(bad("the election ended twice"));
+                }
+                if kind == "closedEarly" && !manifest.allow_early_close {
+                    return Err(bad("closed early where the manifest allows no early close"));
+                }
+                if kind == "closed" && at(e).is_none_or(|t| t < manifest.voting_closes) {
+                    return Err(bad("closed before votingCloses"));
+                }
+                if kind != "cancelled" && !opened {
+                    return Err(bad("closed before it opened"));
+                }
+                closing = true;
+            }
+            Some("decryptionAuthorized") => {
+                if !closing || authorized {
+                    return Err(bad("a decryption authorized before the close, or twice"));
+                }
+                authorized = true;
+            }
+            Some("partials" | "unsealed" | "spoiled") => {
+                if !authorized {
+                    return Err(bad("a decryption the community did not authorize"));
+                }
+            }
+            Some("result") => {
+                if !closing {
+                    return Err(bad("a result before the close"));
+                }
+                result = Some(i);
+            }
+            _ => {}
+        }
+    }
+    result.ok_or_else(|| AuditFailure::ResultMismatch("the board records no result".into()))
+}
+
+/// The decryption a closed sealed or tallied-encrypted board calls for — the targets its counted
+/// casts give, and the closing entry — for the community to authorize (CONVENTIONS §9.7): every
+/// entry through the closing one held as certification holds it (the ceremony from its signed
+/// steps, every cast re-admitted). `None` while the board has not closed.
+///
+/// # Errors
+/// The first entry that does not hold.
+pub fn decryption(
+    manifest_value: &Value,
+    params: &VotingParams,
+    entries: &[Value],
+    proven: &ProvenRequests,
+) -> Result<Option<encrypted::Closing>, AuditFailure> {
+    let manifest: Manifest = serde_json::from_value(manifest_value.clone())
+        .map_err(|err| AuditFailure::Unreadable(format!("manifest: {err}")))?;
+    let digest = rules::manifest_digest(manifest_value)
+        .map_err(|err| AuditFailure::Unreadable(err.to_string()))?;
+    let election = Election::new(
+        params.community(),
+        ElectionId::new(manifest.election_id.as_str())
+            .map_err(|err| AuditFailure::Unreadable(err.to_string()))?,
+        digest,
+    )
+    .map_err(|err| AuditFailure::Unreadable(err.to_string()))?;
+    let revote = if manifest.revote == Revote::Replace {
+        BoxRevote::Replace
+    } else {
+        BoxRevote::Refuse
+    };
+    let mut board = Board::new();
+    for entry in entries {
+        board.append(&canonical(entry)?);
+    }
+    let ctx = election.trustee_context();
+    let verifier = BallotBox::new(params, election, revote, MemoryNullifiers::default())
+        .map_err(|err| AuditFailure::Unreadable(err.to_string()))?;
+    encrypted::closing(
+        &manifest,
+        &digest,
+        encrypted::Steps {
+            community: params.community(),
+            ctx,
+            proven,
+        },
+        &verifier,
+        revote,
+        entries,
+        &board,
+    )
+}
+
+pub use encrypted::{Closing, targets_digest};
 
 /// The election key a sealed or tallied-encrypted board's ceremony formed, once its `electionKey`
 /// entry is on the board: replayed from the trustees' steps alone, each the named trustee's
@@ -325,6 +476,7 @@ fn finish(
     n: u64,
     questions: Value,
     result_entry: Option<&Value>,
+    result_index: usize,
 ) -> Result<Verified, AuditFailure> {
     let digest = *digest;
     let published = e.result;
@@ -348,14 +500,11 @@ fn finish(
             "it names another manifest".into(),
         ));
     }
+    // The result's head is the board just before its `result` entry (CONVENTIONS §3.9 item 5).
     let at = HeadRef::from_wire(&published["head"])?;
-    if board
-        .root(usize::try_from(at.tree_size).unwrap_or(usize::MAX))
-        .ok()
-        != Some(at.root)
-    {
+    if at.tree_size != result_index as u64 || board.root(result_index).ok() != Some(at.root) {
         return Err(AuditFailure::ResultMismatch(
-            "its head is not a prefix of the board".into(),
+            "its head is not the board the result was published on".into(),
         ));
     }
     if let Some(entry) = result_entry
@@ -386,6 +535,10 @@ fn same_questions(a: &Value, b: &Value) -> bool {
             .map(|q| Some((q["question"].as_str()?.to_string(), q.clone())))
             .collect()
     };
+    let rows = |v: &Value| v.as_array().map_or(0, Vec::len);
+    if rows(a) != rows(b) {
+        return false;
+    }
     match (index(a), index(b)) {
         (Some(x), Some(y)) => x == y,
         _ => false,

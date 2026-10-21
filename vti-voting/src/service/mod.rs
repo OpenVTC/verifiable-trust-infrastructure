@@ -23,7 +23,7 @@
 //! journalled before its cast's entry; a token without an entry is never answered.
 
 use std::{
-    collections::HashMap,
+    collections::{BTreeMap, HashMap},
     sync::{Arc, Mutex},
 };
 
@@ -301,6 +301,18 @@ struct ElectionRecord {
     counted: HashMap<String, (Admitted, cast::Ballot)>,
     /// The counted encrypted cast under each tag, at the sealed and tallied-encrypted levels.
     encrypted: HashMap<String, (Admitted, Encrypted)>,
+    /// Every encrypted cast's ciphertexts on the board, by the compressed `a` of each, with the
+    /// tag it was cast under: a form copied into another cast is refused (CONVENTIONS §9.5).
+    seen: HashMap<[u8; 32], String>,
+    /// Every `trusteeStep` request on the board, in board order: what a trustee's VTA acts on.
+    steps: Vec<Value>,
+    /// The closing entry's leaf and `at`, once voting has closed.
+    closing: Option<(u64, String)>,
+    /// The community's `voting/trustees/authorize` request, once accepted (CONVENTIONS §9.7).
+    authorization: Option<Value>,
+    /// The `unsealed` / `spoiled` entries already on the board, by leaf: a decryption finished
+    /// after a restart appends none twice.
+    settled: BTreeMap<u64, Option<Value>>,
     /// `ctx` of the encrypted levels (CONVENTIONS §9.2).
     ctx: Vec<u8>,
     /// The trustees' key ceremony, at the encrypted levels.
@@ -328,6 +340,15 @@ impl std::fmt::Debug for BallotBox {
 
 fn parse<T: DeserializeOwned>(v: &Value) -> Result<T, Failure> {
     serde_json::from_value(v.clone()).map_err(|e| Failure::malformed(e.to_string()))
+}
+
+/// A task's payload as received: held to its specification's schema first — the bounds a
+/// generated type cannot state (`maxItems`, `maximum`, `maxLength`) included — then parsed.
+fn parse_payload<P: trust_tasks_rs::validate::ValidatedPayload + DeserializeOwned>(
+    v: &Value,
+) -> Result<P, Failure> {
+    P::validate_value(v).map_err(|e| Failure::malformed(e.to_string()))?;
+    parse(v)
 }
 
 /// Build a response through its generated type, so nothing leaves that the schema forbids.
@@ -427,6 +448,8 @@ impl ElectionRecord {
                 }
                 Some("closed" | "closedEarly") => {
                     self.state = State::Closed;
+                    self.closing =
+                        Some((leaf, entry["at"].as_str().unwrap_or_default().to_string()));
                     self.start_decryption();
                 }
                 Some("result") => {
@@ -478,7 +501,8 @@ impl ElectionRecord {
     /// Close at `at` and publish the result on the board — at the encrypted levels, once the
     /// trustees have decrypted it.
     fn close(&mut self, kind: &str, at: DateTime<Utc>) -> Result<(), Failure> {
-        self.append(&json!({ "kind": kind, "at": time(at) }))?;
+        let leaf = self.append(&json!({ "kind": kind, "at": time(at) }))?;
+        self.closing = Some((leaf, time(at)));
         if self.ceremony.is_some() {
             self.state = State::Closed;
             self.start_decryption();
@@ -543,6 +567,9 @@ impl BallotBox {
             };
             let mut record = bb.build_record(stored.manifest, stored.parameters)?;
             record.replay(r.entries, &r.receipts)?;
+            // A close, or a last partial, whose result never reached the board: finish it now,
+            // as the step that was cut short would have.
+            record.resume()?;
             let key = (record.community.clone(), record.id().to_string());
             bb.elections.insert(key, record);
         }
@@ -601,6 +628,11 @@ impl BallotBox {
             exact: HashMap::new(),
             counted: HashMap::new(),
             encrypted: HashMap::new(),
+            seen: HashMap::new(),
+            steps: Vec::new(),
+            closing: None,
+            authorization: None,
+            settled: BTreeMap::new(),
             ctx,
             ceremony,
             decryption: None,
@@ -638,7 +670,7 @@ impl BallotBox {
         payload: &Value,
         now: DateTime<Utc>,
     ) -> Result<Value, Failure> {
-        let p: register::Payload = parse(payload)?;
+        let p: register::Payload = parse_payload(payload)?;
         let community = p.community.as_str().to_string();
         if signer != community || p.manifest.community.as_str() != community {
             return Err(Failure::denied());
@@ -691,7 +723,7 @@ impl BallotBox {
         payload: &Value,
         now: DateTime<Utc>,
     ) -> Result<Value, Failure> {
-        let p: show::Payload = parse(payload)?;
+        let p: show::Payload = parse_payload(payload)?;
         let e = self.election(p.community.as_str(), p.election_id.as_str(), now)?;
         // A trustee reads the election it takes part in on any board: its tasks take the
         // manifest, and its decryption the time voting closed (CONVENTIONS §4, §9.6).
@@ -714,7 +746,7 @@ impl BallotBox {
         payload: &Value,
         now: DateTime<Utc>,
     ) -> Result<Value, Failure> {
-        let p: close::Payload = parse(payload)?;
+        let p: close::Payload = parse_payload(payload)?;
         if signer != p.community.as_str() {
             return Err(Failure::denied());
         }
@@ -742,7 +774,7 @@ impl BallotBox {
         payload: &Value,
         now: DateTime<Utc>,
     ) -> Result<Value, Failure> {
-        let p: cancel::Payload = parse(payload)?;
+        let p: cancel::Payload = parse_payload(payload)?;
         if signer != p.community.as_str() {
             return Err(Failure::denied());
         }
@@ -764,7 +796,7 @@ impl BallotBox {
     /// `electionUnknown`, `notOpen`, `manifestMismatch`, `ballotInvalid`, `classMismatch`,
     /// `alreadyVoted`, `castInvalid`.
     pub fn cast(&mut self, payload: &Value, now: DateTime<Utc>) -> Result<Value, Failure> {
-        let p: cast::Payload = parse(payload)?;
+        let p: cast::Payload = parse_payload(payload)?;
         let e = self.election(p.community.as_str(), p.election_id.as_str(), now)?;
         if e.ceremony.is_some() {
             return Err(Failure::malformed(
@@ -867,7 +899,7 @@ impl BallotBox {
         payload: &Value,
         now: DateTime<Utc>,
     ) -> Result<Value, Failure> {
-        let p: head::Payload = parse(payload)?;
+        let p: head::Payload = parse_payload(payload)?;
         let e = self.election(p.community.as_str(), p.election_id.as_str(), now)?;
         if !e.readable_by(caller) {
             return Err(Failure::unknown());
@@ -885,7 +917,7 @@ impl BallotBox {
         payload: &Value,
         now: DateTime<Utc>,
     ) -> Result<Value, Failure> {
-        let p: read::Payload = parse(payload)?;
+        let p: read::Payload = parse_payload(payload)?;
         let e = self.election(p.community.as_str(), p.election_id.as_str(), now)?;
         if !e.readable_by(caller) {
             return Err(Failure::unknown());
@@ -919,7 +951,7 @@ impl BallotBox {
         payload: &Value,
         now: DateTime<Utc>,
     ) -> Result<Value, Failure> {
-        let p: inclusion::Payload = parse(payload)?;
+        let p: inclusion::Payload = parse_payload(payload)?;
         let e = self.election(p.community.as_str(), p.election_id.as_str(), now)?;
         let by_receipt = p.receipt_token.as_ref().is_some_and(|t| {
             e.exact
@@ -952,7 +984,7 @@ impl BallotBox {
         payload: &Value,
         now: DateTime<Utc>,
     ) -> Result<Value, Failure> {
-        let p: consistency::Payload = parse(payload)?;
+        let p: consistency::Payload = parse_payload(payload)?;
         let e = self.election(p.community.as_str(), p.election_id.as_str(), now)?;
         if !e.readable_by(caller) {
             return Err(Failure::unknown());
@@ -979,7 +1011,7 @@ impl BallotBox {
         payload: &Value,
         now: DateTime<Utc>,
     ) -> Result<Value, Failure> {
-        let p: result::Payload = parse(payload)?;
+        let p: result::Payload = parse_payload(payload)?;
         let e = self.election(p.community.as_str(), p.election_id.as_str(), now)?;
         if !e.readable_by(caller) {
             return Err(Failure::unknown());

@@ -1005,13 +1005,13 @@ pub(super) async fn handle_voter_receipt(
     }
 }
 
-/// `vta/pcs/vote-encrypted/0.1`.
+/// `vta/pcs/vote-encrypted/0.2`: the key formed here from the trustees' signed steps.
 pub(super) async fn handle_vote_encrypted(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    use spec::vote_encrypted::v0_1 as t;
+    use spec::vote_encrypted::v0_2 as t;
     let (context, community) = match voter_preamble::<t::Payload>(state, auth, &doc).await {
         Ok(v) => v,
         Err(r) => return r,
@@ -1024,7 +1024,7 @@ pub(super) async fn handle_vote_encrypted(
         &community,
         &value_of(&doc, "parameters"),
         &manifest,
-        &value_of(&doc, "electionKey"),
+        &value_of(&doc, "ceremony"),
         &value_of(&doc, "ballot"),
         chrono::Utc::now(),
     )
@@ -1125,13 +1125,13 @@ pub(super) async fn handle_trustee_enrol(
     }
 }
 
-/// `vta/pcs/trustee/deal/0.1`.
+/// `vta/pcs/trustee/deal/0.2`.
 pub(super) async fn handle_trustee_deal(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    use spec::trustee::deal::v0_1 as t;
+    use spec::trustee::deal::v0_2 as t;
     let (context, community, trustee) =
         match trustee_preamble::<t::Payload>(state, auth, &doc).await {
             Ok(v) => v,
@@ -1145,7 +1145,8 @@ pub(super) async fn handle_trustee_deal(
         &community,
         &trustee,
         &value_of(&doc, "manifest"),
-        &value_of(&doc, "transportKeys"),
+        &value_of(&doc, "ceremony"),
+        chrono::Utc::now(),
     )
     .await
     {
@@ -1156,19 +1157,20 @@ pub(super) async fn handle_trustee_deal(
         Err(e) => refuse(&doc, e, |e| match e {
             PcsError::TrusteeNotHeld(_) => Some(t::error_codes::TRUSTEE_NOT_HELD),
             PcsError::NotEnrolled | PcsError::ElectionChanged => Some(t::error_codes::NOT_ENROLLED),
-            PcsError::TransportKeysInvalid(_) => Some(t::error_codes::TRANSPORT_KEYS_INVALID),
+            PcsError::CeremonyInvalid(_) => Some(t::error_codes::CEREMONY_INVALID),
+            PcsError::CeremonyChanged => Some(t::error_codes::CEREMONY_CHANGED),
             _ => None,
         }),
     }
 }
 
-/// `vta/pcs/trustee/keys/0.1`.
+/// `vta/pcs/trustee/keys/0.2`.
 pub(super) async fn handle_trustee_keys(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    use spec::trustee::keys::v0_1 as t;
+    use spec::trustee::keys::v0_2 as t;
     let (context, community, trustee) =
         match trustee_preamble::<t::Payload>(state, auth, &doc).await {
             Ok(v) => v,
@@ -1182,9 +1184,8 @@ pub(super) async fn handle_trustee_keys(
         &community,
         &trustee,
         &value_of(&doc, "manifest"),
-        &value_of(&doc, "dealings"),
-        doc.payload.get("justifications"),
-        doc.payload.get("electionKey"),
+        &value_of(&doc, "ceremony"),
+        chrono::Utc::now(),
     )
     .await
     {
@@ -1195,21 +1196,20 @@ pub(super) async fn handle_trustee_keys(
         Err(e) => refuse(&doc, e, |e| match e {
             PcsError::TrusteeNotHeld(_) => Some(t::error_codes::TRUSTEE_NOT_HELD),
             PcsError::NotEnrolled | PcsError::ElectionChanged => Some(t::error_codes::NOT_ENROLLED),
-            PcsError::KeyMismatch | PcsError::ElectionKeyInvalid(_) => {
-                Some(t::error_codes::KEY_MISMATCH)
-            }
+            PcsError::KeyMismatch => Some(t::error_codes::KEY_MISMATCH),
+            PcsError::CeremonyInvalid(_) => Some(t::error_codes::CEREMONY_INVALID),
             _ => None,
         }),
     }
 }
 
-/// `vta/pcs/trustee/justify/0.1`.
+/// `vta/pcs/trustee/justify/0.2`.
 pub(super) async fn handle_trustee_justify(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    use spec::trustee::justify::v0_1 as t;
+    use spec::trustee::justify::v0_2 as t;
     let (context, community, trustee) =
         match trustee_preamble::<t::Payload>(state, auth, &doc).await {
             Ok(v) => v,
@@ -1222,9 +1222,11 @@ pub(super) async fn handle_trustee_justify(
         auth,
         &context,
         &community,
-        str_of(&doc, "electionId"),
         &trustee,
+        &value_of(&doc, "manifest"),
+        &value_of(&doc, "ceremony"),
         recipient,
+        chrono::Utc::now(),
     )
     .await
     {
@@ -1243,6 +1245,8 @@ pub(super) async fn handle_trustee_justify(
         Err(e) => refuse(&doc, e, |e| match e {
             PcsError::TrusteeNotHeld(_) => Some(t::error_codes::TRUSTEE_NOT_HELD),
             PcsError::NoDealing | PcsError::NotEnrolled => Some(t::error_codes::NO_DEALING),
+            PcsError::CeremonyInvalid(_) => Some(t::error_codes::CEREMONY_INVALID),
+            PcsError::NoComplaint => Some(t::error_codes::NO_COMPLAINT),
             _ => None,
         }),
     }
@@ -1280,29 +1284,18 @@ pub(super) async fn handle_trustee_read(
     }
 }
 
-/// `vta/pcs/trustee/decrypt/0.1`.
+/// `vta/pcs/trustee/decrypt/0.2`: only the targets the community authorized, once.
 pub(super) async fn handle_trustee_decrypt(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    use spec::trustee::decrypt::v0_1 as t;
+    use spec::trustee::decrypt::v0_2 as t;
     let (context, community, trustee) =
         match trustee_preamble::<t::Payload>(state, auth, &doc).await {
             Ok(v) => v,
             Err(r) => return r,
         };
-    let Some(closed_at) = str_of(&doc, "closedAt")
-        .parse::<chrono::DateTime<chrono::Utc>>()
-        .ok()
-    else {
-        return reject_with(
-            &doc,
-            RejectReason::MalformedRequest {
-                reason: "closedAt".into(),
-            },
-        );
-    };
     match crate::operations::pcs_trustee::decrypt(
         state,
         auth,
@@ -1311,7 +1304,7 @@ pub(super) async fn handle_trustee_decrypt(
         str_of(&doc, "electionId"),
         &trustee,
         &value_of(&doc, "targets"),
-        closed_at,
+        &value_of(&doc, "authorization"),
         chrono::Utc::now(),
     )
     .await
@@ -1331,7 +1324,8 @@ pub(super) async fn handle_trustee_decrypt(
         Err(e) => refuse(&doc, e, |e| match e {
             PcsError::TrusteeNotHeld(_) => Some(t::error_codes::TRUSTEE_NOT_HELD),
             PcsError::KeyNotHeld => Some(t::error_codes::KEY_NOT_HELD),
-            PcsError::NotClosed => Some(t::error_codes::NOT_CLOSED),
+            PcsError::AuthorizationInvalid(_) => Some(t::error_codes::AUTHORIZATION_INVALID),
+            PcsError::AlreadyDecrypted => Some(t::error_codes::ALREADY_DECRYPTED),
             _ => None,
         }),
     }

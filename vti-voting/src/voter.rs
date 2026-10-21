@@ -162,6 +162,21 @@ impl Voter {
         })
     }
 
+    /// This voter's tag in `ticket`'s election (CONVENTIONS §3.6): the nullifier every cast under
+    /// the ticket carries, fixed by the key and the election alone. An encrypted form is bound to
+    /// it (CONVENTIONS §9.3, §9.4), so it is known before the form is built.
+    ///
+    /// # Errors
+    /// As [`Self::cast`].
+    pub fn tag_for<R: RngCore + CryptoRng>(
+        &self,
+        params: &VotingParams,
+        ticket: &Ticket,
+        rng: &mut R,
+    ) -> Result<String, VotingError> {
+        self.cast(params, ticket, b"vti/vote/tag", rng)?.tag()
+    }
+
     /// The wire `Cast` (conventions §3.6) for a ballot as JSON: the attestation is made over the
     /// ballot's RFC 8785 (JCS) bytes, and `tag` and `attestation` are the suite's canonical
     /// encodings, multibase.
@@ -252,7 +267,8 @@ pub enum EncryptedForm {
 }
 
 /// The encrypted form of `ballot` (already checked against the manifest,
-/// [`crate::rules::check_ballot`]) under the formed election key (CONVENTIONS §9.4 – 9.5).
+/// [`crate::rules::check_ballot`]) under the formed election key (CONVENTIONS §9.4 – 9.5), bound to
+/// the cast's `tag` ([`Voter::tag_for`]) so it is a vote only in that cast.
 ///
 /// # Errors
 /// [`VotingError::Serialization`] for a ballot that cannot be canonicalized, a level that is not
@@ -262,11 +278,12 @@ pub fn encrypted_form<R: RngCore + CryptoRng>(
     election: &Election,
     key: &crate::trustees::ElectionKey,
     ballot: &serde_json::Value,
+    tag: &str,
     rng: &mut R,
 ) -> Result<EncryptedForm, VotingError> {
     use trust_tasks_rs::specs::voting::election::register::v0_1::{Question, SecrecyLevel};
     let bad = |why: String| VotingError::Serialization(why);
-    let ctx = election.trustee_context();
+    let ctx = crate::trustees::cast_ctx(&election.trustee_context(), tag);
     match manifest.secrecy {
         SecrecyLevel::Sealed => {
             let bytes = serde_json_canonicalizer::to_vec(ballot).map_err(|e| bad(e.to_string()))?;

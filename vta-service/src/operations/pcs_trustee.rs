@@ -15,6 +15,11 @@
 //! - **Signed as the trustee persona, and nothing else.** Every answer is one `voting/trustees/*`
 //!   request this engine built, signed with the trustee's `authentication` key through the gated
 //!   oracle — never caller-supplied bytes.
+//! - **Acting on evidence only** (CONVENTIONS §9.6 – 9.7). The ceremony arrives as the trustees'
+//!   signed steps, each verified here; the transport keys dealt to are pinned at the first deal; a
+//!   share is revealed only to a complaint its complainant signed; a key share once held is never
+//!   replaced; and a decryption needs the community's signed authorization, once per election.
+//!   Nothing a ballot box merely reports is believed.
 //!
 //! | Key | Value |
 //! |---|---|
@@ -22,6 +27,8 @@
 //! | `secret:trustee:…` | the wrapped key share |
 
 use std::collections::BTreeSet;
+
+use vti_voting::{ceremony::Ceremony, steps};
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -34,8 +41,7 @@ use vti_voting::{
     rules,
     trustees::{
         Dealing, Share, Threshold, TransportKey, TransportSecret, TrusteeKey, deal, open_share,
-        partial_decrypt, scalar_from_text, scalar_text, seal_share, verify_dealing, verify_share,
-        verify_transport_key,
+        partial_decrypt, scalar_text, seal_share, verify_dealing, verify_share,
     },
     wire,
 };
@@ -80,6 +86,13 @@ pub struct TrusteeRecord {
     pub dealt: bool,
     pub key_held: bool,
     pub created_at: DateTime<Utc>,
+    /// A digest of the transport keys the first dealing was sealed to: no later dealing goes to
+    /// any others (deal/0.2 item 5).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dealt_to: Option<String>,
+    /// The `targetsDigest` of the one authorized set this trustee decrypted (decrypt/0.2 item 5).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decrypted: Option<String>,
 }
 
 /// The wrapped state: as secret as the key.
@@ -307,6 +320,8 @@ pub async fn enrol(
                 dealt: false,
                 key_held: false,
                 created_at: Utc::now(),
+                dealt_to: None,
+                decrypted: None,
             };
             let seed = member_seed(state, caller, context_id, &rec.path, seed_id).await?;
             let secret = transport_secret(&seed, index)?;
@@ -326,6 +341,52 @@ pub async fn enrol(
     Ok(json!({ "document": doc }))
 }
 
+/// The ceremony as its signed steps establish it (CONVENTIONS §9.6): every request verified
+/// here — its proof resolved and checked by this VTA, never taken as passed along — then replayed,
+/// with the deadline once `votingOpens` has come.
+async fn ceremony_from(
+    state: &AppState,
+    rec: &TrusteeRecord,
+    manifest: &register::Manifest,
+    requests: &Value,
+    now: DateTime<Utc>,
+) -> Result<Ceremony> {
+    let requests = requests
+        .as_array()
+        .ok_or_else(|| PcsError::CeremonyInvalid("not a list of steps".into()))?;
+    let resolver = state.trust_task_vm_resolver();
+    let resolver = &resolver;
+    let proven = steps::ProvenRequests::prove_requests(requests, |r| async move {
+        vti_common::auth::verify_trust_task_proof_value(&r, resolver)
+            .await
+            .ok()
+    })
+    .await;
+    let dids: Vec<&str> = manifest
+        .trustees
+        .as_ref()
+        .map(|t| t.dids.iter().map(|d| d.as_str()).collect())
+        .unwrap_or_default();
+    steps::replay(
+        requests,
+        steps::Election {
+            community: &rec.community,
+            election_id: &rec.election_id,
+            trustees: &dids,
+        },
+        threshold(rec)?,
+        election_ctx(rec)?,
+        &proven,
+        now >= manifest.voting_opens,
+    )
+    .map_err(PcsError::CeremonyInvalid)
+}
+
+fn manifest_of(rec: &TrusteeRecord, manifest_value: &Value) -> Result<register::Manifest> {
+    same_manifest(rec, manifest_value)?;
+    serde_json::from_value(manifest_value.clone()).map_err(|e| malformed(format!("manifest: {e}")))
+}
+
 /// This trustee's dealing, the same on every call: commitments, proof and every share sealed to
 /// its recipient's transport key.
 fn dealing_for(
@@ -342,7 +403,9 @@ fn dealing_for(
         let to = transport_keys
             .iter()
             .find(|k| k.trustee == s.recipient)
-            .ok_or_else(|| PcsError::TransportKeysInvalid(format!("no key for {}", s.recipient)))?;
+            .ok_or_else(|| {
+                PcsError::CeremonyInvalid(format!("no transport key for {}", s.recipient))
+            })?;
         sealed.insert(
             s.recipient,
             seal_share(s, to, &ctx, &mut rng).map_err(internal)?,
@@ -357,7 +420,8 @@ fn dealing_for(
     ))
 }
 
-/// `vta/pcs/trustee/deal`.
+/// `vta/pcs/trustee/deal/0.2`: the dealing, sealed to the transport keys the ceremony's signed
+/// enrolments establish — and only ever to those first dealt to.
 #[allow(clippy::too_many_arguments)]
 pub async fn deal_task(
     state: &AppState,
@@ -367,31 +431,21 @@ pub async fn deal_task(
     community: &str,
     trustee: &str,
     manifest_value: &Value,
-    transport_keys: &Value,
+    ceremony: &Value,
+    now: DateTime<Utc>,
 ) -> Result<Value> {
     let signer = signer(state, auth, trustee).await?;
     let election_id = manifest_value["electionId"].as_str().unwrap_or_default();
     let key = trustee_key(context_id, community, election_id, trustee);
     let _guard = write_lock().await;
     let mut rec = record(state, &key).await?;
-    same_manifest(&rec, manifest_value)?;
-    let th = threshold(&rec)?;
-    let ctx = election_ctx(&rec)?;
-    let tks = transport_keys
-        .as_array()
-        .ok_or_else(|| PcsError::TransportKeysInvalid("not a list".into()))?
-        .iter()
-        .map(|v| wire::transport_key(v).map_err(|e| PcsError::TransportKeysInvalid(e.to_string())))
-        .collect::<Result<Vec<_>>>()?;
-    let indices: BTreeSet<u32> = tks.iter().map(|k| k.trustee).collect();
-    if indices.len() != tks.len() || !indices.iter().copied().eq(1..=th.n) {
-        return Err(PcsError::TransportKeysInvalid(
-            "not one transport key per trustee".into(),
+    let manifest = manifest_of(&rec, manifest_value)?;
+    let c = ceremony_from(state, &rec, &manifest, ceremony, now).await?;
+    let tks: Vec<TransportKey> = c.transport_keys().copied().collect();
+    if tks.len() != rec.trustees as usize {
+        return Err(PcsError::CeremonyInvalid(
+            "not every trustee has enrolled".into(),
         ));
-    }
-    for k in &tks {
-        verify_transport_key(k, th, &ctx)
-            .map_err(|e| PcsError::TransportKeysInvalid(e.to_string()))?;
     }
     if tks
         .iter()
@@ -400,16 +454,25 @@ pub async fn deal_task(
         .as_ref()
         != Some(&rec.transport_key)
     {
-        return Err(PcsError::TransportKeysInvalid(
-            "this trustee's own transport key is not the one it published".into(),
+        return Err(PcsError::CeremonyInvalid(
+            "this trustee's transport key is not the one it published".into(),
         ));
+    }
+    let set: Vec<Value> = tks.iter().map(wire::transport_key_value).collect();
+    let set_digest = hex::encode(Sha256::digest(
+        serde_json_canonicalizer::to_vec(&set).map_err(internal)?,
+    ));
+    match &rec.dealt_to {
+        Some(d) if *d != set_digest => return Err(PcsError::CeremonyChanged),
+        Some(_) => {}
+        None => {
+            rec.dealt_to = Some(set_digest);
+            rec.dealt = true;
+            state.pcs_engine_ks.insert(key, &rec).await?;
+        }
     }
     let seed = member_seed(state, caller, context_id, &rec.path, rec.seed_id).await?;
     let (sd, _) = dealing_for(&rec, &seed, &tks)?;
-    if !rec.dealt {
-        rec.dealt = true;
-        state.pcs_engine_ks.insert(key, &rec).await?;
-    }
     let doc = document(
         &signer,
         &rec,
@@ -420,8 +483,8 @@ pub async fn deal_task(
     Ok(json!({ "document": doc }))
 }
 
-/// `vta/pcs/trustee/keys`: open and check the shares dealt to this trustee, and — given the
-/// formed election key — compute and keep this trustee's key share.
+/// `vta/pcs/trustee/keys/0.2`: open and check the shares dealt to this trustee, confirm, and — once
+/// the ceremony forms the key — compute and keep this trustee's key share, never replacing one held.
 #[allow(clippy::too_many_arguments)]
 pub async fn keys(
     state: &AppState,
@@ -431,27 +494,26 @@ pub async fn keys(
     community: &str,
     trustee: &str,
     manifest_value: &Value,
-    dealings: &Value,
-    justifications: Option<&Value>,
-    election_key: Option<&Value>,
+    ceremony: &Value,
+    now: DateTime<Utc>,
 ) -> Result<Value> {
     let signer = signer(state, auth, trustee).await?;
     let election_id = manifest_value["electionId"].as_str().unwrap_or_default();
     let key = trustee_key(context_id, community, election_id, trustee);
     let _guard = write_lock().await;
     let mut rec = record(state, &key).await?;
-    same_manifest(&rec, manifest_value)?;
+    let manifest = manifest_of(&rec, manifest_value)?;
+    let c = ceremony_from(state, &rec, &manifest, ceremony, now).await?;
     let th = threshold(&rec)?;
     let ctx = election_ctx(&rec)?;
+    let dealt: Vec<_> = c.dealings().cloned().collect();
+    if dealt.len() != th.n as usize {
+        return Err(PcsError::CeremonyInvalid(
+            "not every trustee has dealt".into(),
+        ));
+    }
     let seed = member_seed(state, caller, context_id, &rec.path, rec.seed_id).await?;
     let secret = transport_secret(&seed, rec.index)?;
-
-    let dealt = dealings
-        .as_array()
-        .ok_or_else(|| malformed("dealings"))?
-        .iter()
-        .map(|v| wire::dealing(v).map_err(|e| malformed(e.to_string())))
-        .collect::<Result<Vec<_>>>()?;
     let mut complaints = BTreeSet::new();
     let mut opened: Vec<Share> = Vec::new();
     for sd in &dealt {
@@ -469,7 +531,7 @@ pub async fn keys(
         }
     }
 
-    let Some(ek_value) = election_key else {
+    if !c.confirmed().any(|j| j == rec.index) {
         let doc = document(
             &signer,
             &rec,
@@ -478,31 +540,24 @@ pub async fn keys(
         )
         .await?;
         return Ok(json!({ "complaints": complaints, "keyHeld": rec.key_held, "document": doc }));
+    }
+    let Some(ek) = c.key().cloned() else {
+        return Ok(json!({ "complaints": complaints, "keyHeld": rec.key_held }));
     };
-
-    let ek = wire::election_key(ek_value, th)
-        .map_err(|e| PcsError::ElectionKeyInvalid(e.to_string()))?;
-    // A dealer's revealed share replaces the one that failed, once it checks.
-    for j in justifications
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-    {
-        let dealer = j["dealer"].as_u64().unwrap_or_default() as u32;
-        let value = scalar_from_text(j["share"].as_str().unwrap_or_default())
-            .map_err(|e| malformed(e.to_string()))?;
-        let Some(sd) = dealt.iter().find(|d| d.dealing.dealer == dealer) else {
+    // A share a dealer revealed on the board in answer to this trustee's complaint replaces the
+    // one that failed; the ceremony checked it against the commitments.
+    for k in c.complaints() {
+        if k.recipient != rec.index {
             continue;
-        };
-        let s = Share {
-            dealer,
-            recipient: rec.index,
-            value,
-        };
-        if verify_share(&sd.dealing, &s).is_ok() {
-            opened.retain(|o| o.dealer != dealer);
-            opened.push(s);
-            complaints.remove(&dealer);
+        }
+        if let Some(value) = k.justified {
+            opened.retain(|o| o.dealer != k.dealer);
+            opened.push(Share {
+                dealer: k.dealer,
+                recipient: rec.index,
+                value,
+            });
+            complaints.remove(&k.dealer);
         }
     }
     let qualified: Vec<Dealing> = dealt
@@ -517,6 +572,15 @@ pub async fn keys(
     let share = TrusteeKey::from_shares(rec.index, &mine, &qualified, &ek)
         .map_err(|_| PcsError::KeyMismatch)?;
     let text = multibase::encode(multibase::Base::Base58Btc, share.to_bytes());
+    if rec.key_held {
+        // Never replaced: a ceremony that forms another share for this trustee is refused.
+        let st: TrusteeState =
+            load_secret_json(state, &key, TRUSTEE_STATE_TYPE, rec.seed_id).await?;
+        if st.key_share.as_deref() != Some(text.as_str()) {
+            return Err(PcsError::KeyMismatch);
+        }
+        return Ok(json!({ "complaints": complaints, "keyHeld": true }));
+    }
     store_secret_json(
         state,
         &key,
@@ -527,14 +591,13 @@ pub async fn keys(
         },
     )
     .await?;
-    if !rec.key_held {
-        rec.key_held = true;
-        state.pcs_engine_ks.insert(key, &rec).await?;
-    }
+    rec.key_held = true;
+    state.pcs_engine_ks.insert(key, &rec).await?;
     Ok(json!({ "complaints": complaints, "keyHeld": true }))
 }
 
-/// `vta/pcs/trustee/justify`: the share this trustee dealt to `recipient`, in the clear.
+/// `vta/pcs/trustee/justify/0.2`: the share this trustee dealt to `recipient`, in the clear — only
+/// for a complaint that `recipient` itself signed (CONVENTIONS §9.6).
 #[allow(clippy::too_many_arguments)]
 pub async fn justify(
     state: &AppState,
@@ -542,20 +605,29 @@ pub async fn justify(
     auth: &crate::auth::AuthClaims,
     context_id: &str,
     community: &str,
-    election_id: &str,
     trustee: &str,
+    manifest_value: &Value,
+    ceremony: &Value,
     recipient: u32,
+    now: DateTime<Utc>,
 ) -> Result<Value> {
     let signer = signer(state, auth, trustee).await?;
+    let election_id = manifest_value["electionId"].as_str().unwrap_or_default();
     let key = trustee_key(context_id, community, election_id, trustee);
     let rec = record(state, &key).await?;
     if !rec.dealt {
         return Err(PcsError::NoDealing);
     }
-    let th = threshold(&rec)?;
-    if recipient == 0 || recipient > th.n || recipient == rec.index {
-        return Err(malformed("recipient is not another trustee"));
+    let manifest = manifest_of(&rec, manifest_value)?;
+    let c = ceremony_from(state, &rec, &manifest, ceremony, now).await?;
+    if !c
+        .complaints()
+        .iter()
+        .any(|k| k.dealer == rec.index && k.recipient == recipient)
+    {
+        return Err(PcsError::NoComplaint);
     }
+    let th = threshold(&rec)?;
     let seed = member_seed(state, caller, context_id, &rec.path, rec.seed_id).await?;
     // The polynomial alone, from the same randomness the dealing drew it with.
     let (_, shares) =
@@ -574,8 +646,57 @@ pub async fn justify(
     Ok(json!({ "document": doc }))
 }
 
-/// `vta/pcs/trustee/decrypt`: this trustee's partial decryption of every target, never before
-/// voting closes (VTI-VOT-063).
+/// The community's `voting/trustees/authorize` request (CONVENTIONS §9.7), checked here: its
+/// proof the community's, for this election and manifest, closed no later than now, pinning
+/// exactly `targets`. Returns the `targetsDigest` it pins.
+async fn authorized(
+    state: &AppState,
+    rec: &TrusteeRecord,
+    authorization: &Value,
+    targets: &Value,
+    now: DateTime<Utc>,
+) -> Result<String> {
+    let bad = |why: &str| PcsError::AuthorizationInvalid(why.to_string());
+    if authorization["type"].as_str() != Some(task_uri("authorize").as_str())
+        || authorization["issuer"].as_str() != Some(rec.community.as_str())
+    {
+        return Err(bad("not the community's voting/trustees/authorize"));
+    }
+    let signer = vti_common::auth::verify_trust_task_proof_value(
+        authorization,
+        &state.trust_task_vm_resolver(),
+    )
+    .await
+    .map_err(|e| bad(&format!("its proof does not verify: {e}")))?;
+    if signer != rec.community {
+        return Err(bad("its proof is not the community's"));
+    }
+    let p = &authorization["payload"];
+    if p["community"].as_str() != Some(rec.community.as_str())
+        || p["electionId"].as_str() != Some(rec.election_id.as_str())
+        || p["manifestDigest"].as_str() != Some(rec.manifest_digest.as_str())
+    {
+        return Err(bad("another election's"));
+    }
+    let closed_at: DateTime<Utc> = p["closedAt"]
+        .as_str()
+        .and_then(|t| t.parse().ok())
+        .ok_or_else(|| bad("closedAt"))?;
+    if closed_at > now {
+        return Err(bad("voting has not closed"));
+    }
+    let list = targets.as_array().ok_or_else(|| malformed("targets"))?;
+    let digest = vti_voting::audit::targets_digest(list).map_err(|e| malformed(e.to_string()))?;
+    if p["targetCount"].as_u64() != Some(list.len() as u64)
+        || p["targetsDigest"].as_str() != Some(digest.as_str())
+    {
+        return Err(bad("the targets are not the ones it pins"));
+    }
+    Ok(digest)
+}
+
+/// `vta/pcs/trustee/decrypt/0.2`: this trustee's partial decryption of exactly the targets the
+/// community authorized, once per election (VTI-VOT-063; CONVENTIONS §9.7).
 #[allow(clippy::too_many_arguments)]
 pub async fn decrypt(
     state: &AppState,
@@ -585,19 +706,26 @@ pub async fn decrypt(
     election_id: &str,
     trustee: &str,
     targets: &Value,
-    closed_at: DateTime<Utc>,
+    authorization: &Value,
     now: DateTime<Utc>,
 ) -> Result<Value> {
     let signer = signer(state, auth, trustee).await?;
     let key = trustee_key(context_id, community, election_id, trustee);
-    let rec = record(state, &key)
+    let _guard = write_lock().await;
+    let mut rec = record(state, &key)
         .await
         .map_err(|_| PcsError::KeyNotHeld)?;
     if !rec.key_held {
         return Err(PcsError::KeyNotHeld);
     }
-    if closed_at > now {
-        return Err(PcsError::NotClosed);
+    let digest = authorized(state, &rec, authorization, targets, now).await?;
+    match &rec.decrypted {
+        Some(d) if *d != digest => return Err(PcsError::AlreadyDecrypted),
+        Some(_) => {}
+        None => {
+            rec.decrypted = Some(digest);
+            state.pcs_engine_ks.insert(key.clone(), &rec).await?;
+        }
     }
     let st: TrusteeState = load_secret_json(state, &key, TRUSTEE_STATE_TYPE, rec.seed_id).await?;
     let text = Zeroizing::new(st.key_share.ok_or(PcsError::KeyNotHeld)?);

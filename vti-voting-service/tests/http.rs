@@ -429,3 +429,44 @@ async fn a_bare_request_type_is_served() {
     assert_ne!(answer["payload"]["code"], "unsupportedType", "{answer}");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+async fn sign(d: Value, s: &Identity) -> Value {
+    let mut typed: TrustTask<Value> = serde_json::from_value(d).unwrap();
+    vta_sdk::trust_task_sign::sign_in_place_with(&mut typed, &s.key)
+        .await
+        .unwrap();
+    serde_json::to_value(&typed).unwrap()
+}
+
+/// What a signed request carries before its proof is checked: a recipient (a captured document
+/// is no bearer token for another ballot box), `issuedAt` on a consequential task, and on a cast
+/// a `did:key` signer, so an anonymous sender cannot have the service fetch a DID of its choosing
+/// (VTI-VOT-003).
+#[tokio::test]
+async fn a_request_names_its_recipient_and_a_cast_its_did_key() {
+    let dir = std::env::temp_dir().join(format!("vti-voting-service-{}", Uuid::new_v4()));
+    let st = state(&dir);
+    let community = Identity::from_seed(&[11u8; 32]).unwrap();
+    let payload = json!({ "community": community.did, "electionId": "e1" });
+
+    let mut unaddressed = doc("election/close", &st.identity.did, None, payload.clone()).await;
+    unaddressed.as_object_mut().unwrap().remove("recipient");
+    unaddressed["issuer"] = json!(community.did);
+    let (status, answer) = send(&st, sign(unaddressed, &community).await).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{answer}");
+    assert_eq!(answer["payload"]["code"], "malformedRequest", "{answer}");
+
+    let mut undated = doc("election/close", &st.identity.did, None, payload.clone()).await;
+    undated.as_object_mut().unwrap().remove("issuedAt");
+    undated["issuer"] = json!(community.did);
+    let (status, answer) = send(&st, sign(undated, &community).await).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{answer}");
+    assert_eq!(answer["payload"]["code"], "malformedRequest", "{answer}");
+
+    let mut cast = doc("ballot/cast", &st.identity.did, Some(&community), payload).await;
+    cast["issuer"] = json!("did:webvh:QmSomewhere:attacker.example");
+    let (status, answer) = send(&st, cast).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "{answer}");
+    assert_eq!(answer["payload"]["code"], "proofInvalid", "{answer}");
+    let _ = std::fs::remove_dir_all(&dir);
+}

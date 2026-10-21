@@ -337,8 +337,15 @@ impl Ceremony {
         }
     }
 
-    /// Item 5: the key from the qualified dealers, or failed if none qualifies.
+    /// Item 5: the key from the qualified dealers, or failed unless at least `t` qualify and at
+    /// least `t` trustees confirmed. Fewer qualified dealers could all be corrupt — one trustee
+    /// complaining of every other dealer at the last moment would otherwise be left holding the
+    /// key alone — and fewer confirmations could leave fewer than `t` trustees able to decrypt.
     fn form(&mut self) {
+        if self.confirmed.len() < self.threshold.t as usize {
+            self.phase = Phase::Failed;
+            return;
+        }
         let q = self.qualified();
         let dealings: Vec<Dealing> = q.iter().map(|d| self.dealings[d].dealing.clone()).collect();
         match ElectionKey::from_dealings(&dealings, self.threshold, &self.ctx) {
@@ -656,6 +663,32 @@ mod tests {
         assert!(c.deadline());
         assert_eq!(c.phase(), Phase::Keyed);
         assert_eq!(c.key().unwrap().qualified, vec![2, 3]);
+    }
+
+    /// CONVENTIONS §9.6 item 5: the key needs `t` qualified dealers and `t` confirmations. One
+    /// trustee complaining of every other dealer at the last moment fails the ceremony instead of
+    /// leaving its own dealing — a key it alone would know — as the election key.
+    #[test]
+    fn vot_062_a_key_needs_t_qualified_dealers_and_t_confirmations() {
+        let mut rng = StdRng::seed_from_u64(23);
+        let th = Threshold::new(2, 3).unwrap();
+        let (mut c, mut trustees) = enrolled(&mut rng, th);
+        dealt(&mut rng, &mut c, None);
+        open_all(&c, &mut trustees);
+        c.confirm(1, BTreeSet::from([2, 3])).unwrap();
+        c.confirm(2, BTreeSet::new()).unwrap();
+        c.confirm(3, BTreeSet::new()).unwrap();
+        assert!(c.deadline());
+        assert_eq!(c.phase(), Phase::Failed, "only dealer 1 qualified");
+        assert!(c.key().is_none());
+
+        // Fewer than t confirmations at the deadline: failed too.
+        let (mut c, mut trustees) = enrolled(&mut rng, th);
+        dealt(&mut rng, &mut c, None);
+        open_all(&c, &mut trustees);
+        c.confirm(1, BTreeSet::new()).unwrap();
+        assert!(c.deadline());
+        assert_eq!(c.phase(), Phase::Failed);
     }
 
     #[test]

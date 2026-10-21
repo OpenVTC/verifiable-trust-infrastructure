@@ -65,6 +65,7 @@ enum Task {
     Justify,
     Decrypt,
     TrusteeStatus,
+    Authorize,
 }
 
 impl Task {
@@ -91,6 +92,7 @@ impl Task {
             "voting/trustees/justify" => Task::Justify,
             "voting/trustees/decrypt" => Task::Decrypt,
             "voting/trustees/status" => Task::TrusteeStatus,
+            "voting/trustees/authorize" => Task::Authorize,
             _ => return None,
         })
     }
@@ -114,6 +116,7 @@ impl Task {
             Task::Justify => "voting/trustees/justify",
             Task::Decrypt => "voting/trustees/decrypt",
             Task::TrusteeStatus => "voting/trustees/status",
+            Task::Authorize => "voting/trustees/authorize",
         }
     }
 
@@ -131,6 +134,7 @@ impl Task {
                 | Task::Confirm
                 | Task::Justify
                 | Task::Decrypt
+                | Task::Authorize
         )
     }
 }
@@ -249,6 +253,58 @@ pub async fn answer(state: &AppState, body: &[u8], transport_sender: Option<&str
         .await;
     }
 
+    // A signed request names its recipient (SPEC §4.8.2), and a consequential one when it was
+    // issued (each task's issuedAt requirement): a captured document is not a bearer token for
+    // ever, and not one for another ballot box.
+    if doc.proof.is_some() && doc.recipient.is_none() {
+        return refuse(
+            state,
+            &doc,
+            standard("malformedRequest"),
+            "a signed request names its recipient",
+        )
+        .await;
+    }
+    if task.needs_proof() {
+        match doc.issued_at {
+            None => {
+                return refuse(
+                    state,
+                    &doc,
+                    standard("malformedRequest"),
+                    "issuedAt is required",
+                )
+                .await;
+            }
+            Some(at) if at > now + chrono::Duration::minutes(5) => {
+                return refuse(
+                    state,
+                    &doc,
+                    standard("malformedRequest"),
+                    "issuedAt is in the future",
+                )
+                .await;
+            }
+            Some(_) => {}
+        }
+    }
+    // A cast is signed by a key made for it alone (VTI-VOT-003): a did:key, which resolves
+    // without fetching anything an anonymous sender chose.
+    if matches!(task, Task::Cast | Task::CastEncrypted)
+        && !doc
+            .issuer
+            .as_deref()
+            .is_some_and(|i| i.starts_with("did:key:"))
+    {
+        return refuse(
+            state,
+            &doc,
+            standard("proofInvalid"),
+            "a cast is signed by a did:key made for it",
+        )
+        .await;
+    }
+
     // The signer, proven by the document's own proof over the bytes as received, and required
     // to be the document's issuer (framework SPEC §4.7).
     let signer = if doc.proof.is_some() {
@@ -264,7 +320,15 @@ pub async fn answer(state: &AppState, body: &[u8], transport_sender: Option<&str
                 .await;
             }
             Err(e) => {
-                return refuse(state, &doc, standard("proofInvalid"), &e.to_string()).await;
+                // The resolver's own words stay in the log: they can name what it fetched.
+                tracing::debug!(error = %e, "a request proof did not verify");
+                return refuse(
+                    state,
+                    &doc,
+                    standard("proofInvalid"),
+                    "the proof does not verify",
+                )
+                .await;
             }
         }
     } else {
@@ -312,6 +376,8 @@ pub async fn answer(state: &AppState, body: &[u8], transport_sender: Option<&str
             Task::Justify => bb.trustees_justify(signer_did, &received, now),
             Task::Decrypt => bb.trustees_decrypt(signer_did, &received, now),
             Task::TrusteeStatus => bb.trustees_status(caller, p, now),
+            // The community's authorization goes on the board as received (CONVENTIONS §9.7).
+            Task::Authorize => bb.trustees_authorize(signer_did, &received, now),
         }
     };
 

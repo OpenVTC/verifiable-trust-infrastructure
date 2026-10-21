@@ -142,15 +142,13 @@ impl View {
             .any(|v| v.as_u64() == Some(self.index))
     }
 
-    /// The shares dealers revealed in answer to this trustee's complaints.
-    fn justifications(&self) -> Vec<Value> {
-        self.status["complaints"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter(|c| c["recipient"].as_u64() == Some(self.index) && c["justified"] == true)
-            .map(|c| json!({ "dealer": c["dealer"], "share": c["share"] }))
-            .collect()
+    /// The trustees' signed steps, as the ballot box received them: what the VTA acts on,
+    /// verifying each itself (CONVENTIONS §9.6).
+    fn steps(&self) -> Value {
+        self.status
+            .get("steps")
+            .cloned()
+            .unwrap_or_else(|| json!([]))
     }
 
     /// The trustees who complained of this trustee's dealing and have no answer yet.
@@ -222,7 +220,7 @@ async fn pass(
         }
         "enrolling" => out.waiting = Some("the other trustees to enrol".into()),
         "dealing" if !v.mine("dealings", "dealer") => {
-            req["transportKeys"] = v.status["transportKeys"].clone();
+            req["ceremony"] = v.steps();
             let r = client
                 .pcs_trustee_deal(&serde_json::from_value(req)?)
                 .await
@@ -237,6 +235,8 @@ async fn pass(
             // Answer every complaint against this trustee's dealing: the share in the clear.
             for recipient in v.unanswered() {
                 let mut j = base(t, election_id);
+                j["manifest"] = v.manifest.clone();
+                j["ceremony"] = v.steps();
                 j["recipient"] = json!(recipient);
                 let r = client
                     .pcs_trustee_justify(&serde_json::from_value(j)?)
@@ -248,8 +248,7 @@ async fn pass(
                 ));
             }
             if !v.confirmed() {
-                req["dealings"] = v.status["dealings"].clone();
-                req["justifications"] = json!(v.justifications());
+                req["ceremony"] = v.steps();
                 let r = serde_json::to_value(
                     client
                         .pcs_trustee_keys(&serde_json::from_value(req)?)
@@ -274,10 +273,9 @@ async fn pass(
         }
         "done" => out.finished = true,
         "keyed" | "decrypting" => {
-            // Keep the key share once the key has formed; the VTA answers a repeat at once.
-            req["dealings"] = v.status["dealings"].clone();
-            req["justifications"] = json!(v.justifications());
-            req["electionKey"] = v.status["electionKey"].clone();
+            // Keep the key share once the key has formed — the VTA forms it itself from the
+            // signed steps — and answers a repeat at once.
+            req["ceremony"] = v.steps();
             let r = serde_json::to_value(
                 client
                     .pcs_trustee_keys(&serde_json::from_value(req)?)
@@ -289,20 +287,15 @@ async fn pass(
             }
             match v.phase() {
                 "keyed" => out.waiting = Some("voting to close; then decrypt".into()),
+                "decrypting" if !v.decrypted() && v.status.get("authorization").is_none() => {
+                    out.waiting = Some("the community to authorize the decryption".into());
+                }
                 "decrypting" if !v.decrypted() => {
+                    // Exactly the targets the community's signed authorization pins; the VTA
+                    // checks both, and decrypts no other set (CONVENTIONS §9.7).
                     let mut d = base(t, election_id);
                     d["targets"] = v.status["targets"].clone();
-                    // A private board does not show this trustee when voting closed early; the
-                    // ballot box is decrypting, so it closed no later than now, and no later
-                    // than the manifest's votingCloses.
-                    let closes: chrono::DateTime<chrono::Utc> = v.manifest["votingCloses"]
-                        .as_str()
-                        .unwrap_or_default()
-                        .parse()
-                        .map_err(|e| format!("the manifest's votingCloses: {e}"))?;
-                    let closed = closes.min(chrono::Utc::now());
-                    d["closedAt"] =
-                        json!(closed.to_rfc3339_opts(chrono::SecondsFormat::Secs, true));
+                    d["authorization"] = v.status["authorization"].clone();
                     let r = client
                         .pcs_trustee_decrypt(&serde_json::from_value(d)?)
                         .await

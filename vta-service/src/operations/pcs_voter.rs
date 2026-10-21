@@ -591,7 +591,7 @@ pub async fn vote_encrypted(
     community: &str,
     published: &Value,
     manifest_value: &Value,
-    election_key: &Value,
+    ceremony: &Value,
     ballot_value: &Value,
     now: DateTime<Utc>,
 ) -> Result<Value> {
@@ -622,16 +622,6 @@ pub async fn vote_encrypted(
         u32::try_from(trustees.dids.len()).unwrap_or(0),
     )
     .map_err(|e| PcsError::ElectionKeyInvalid(e.to_string()))?;
-    let ek = vti_voting::wire::election_key(election_key, th)
-        .map_err(|e| PcsError::ElectionKeyInvalid(e.to_string()))?;
-    if ek.qualified.is_empty()
-        || ek.qualified.iter().any(|q| *q == 0 || *q > th.n)
-        || !ek.verification.keys().copied().eq(1..=th.n)
-    {
-        return Err(PcsError::ElectionKeyInvalid(
-            "its trustees are not the manifest's".into(),
-        ));
-    }
     let digest = rules::manifest_digest(manifest_value).map_err(rule)?;
     if rules::digest_multibase(&digest) != rec.manifest_digest {
         return Err(PcsError::ManifestMismatch);
@@ -645,12 +635,47 @@ pub async fn vote_encrypted(
         return Err(PcsError::NotFound);
     };
     let election = election_of(&rec)?;
+    // The key this VTA forms itself from the trustees' signed steps (CONVENTIONS §9.6): a key
+    // handed to it could be one a community or a client holds.
+    let requests = ceremony.as_array().ok_or_else(|| {
+        PcsError::ElectionKeyInvalid("the ceremony is not a list of steps".into())
+    })?;
+    let resolver = state.trust_task_vm_resolver();
+    let resolver = &resolver;
+    let proven = vti_voting::steps::ProvenRequests::prove_requests(requests, |r| async move {
+        vti_common::auth::verify_trust_task_proof_value(&r, resolver)
+            .await
+            .ok()
+    })
+    .await;
+    let dids: Vec<&str> = trustees.dids.iter().map(|d| d.as_str()).collect();
+    let c = vti_voting::steps::replay(
+        requests,
+        vti_voting::steps::Election {
+            community,
+            election_id: &election_id,
+            trustees: &dids,
+        },
+        th,
+        election.trustee_context(),
+        &proven,
+        now >= manifest.voting_opens,
+    )
+    .map_err(PcsError::ElectionKeyInvalid)?;
+    let ek = c
+        .key()
+        .cloned()
+        .ok_or_else(|| PcsError::ElectionKeyInvalid("the ceremony formed no key".into()))?;
     let ticket = Ticket::from_text(election.clone(), &ticket_text)
         .map_err(|e| PcsError::App(AppError::Internal(e.to_string())))?;
     let v = voter(state, caller, &rec, &params).await?;
     let mut rng = vti_voting::rand::rngs::OsRng;
-    let form = vti_voting::voter::encrypted_form(&manifest, &election, &ek, ballot_value, &mut rng)
-        .map_err(|e| PcsError::BallotInvalid(e.to_string()))?;
+    let tag = v
+        .tag_for(&params, &ticket, &mut rng)
+        .map_err(|e| PcsError::App(AppError::Internal(format!("tag: {e}"))))?;
+    let form =
+        vti_voting::voter::encrypted_form(&manifest, &election, &ek, ballot_value, &tag, &mut rng)
+            .map_err(|e| PcsError::BallotInvalid(e.to_string()))?;
     let cast = v
         .cast_encrypted_wire(&params, &ticket, &form, &mut rng)
         .map_err(|e| PcsError::App(AppError::Internal(format!("cast: {e}"))))?;

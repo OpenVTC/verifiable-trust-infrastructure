@@ -315,10 +315,10 @@ pub async fn cmd_vote(
     let cast = if manifest["secrecy"] == "open" {
         serde_json::to_value(client.pcs_vote(&serde_json::from_value(vote)?).await?)?
     } else {
-        // From the community, which reads it from the ballot box: a voter cannot read a
-        // private board (show item 6).
-        vote["electionKey"] = shown
-            .get("electionKey")
+        // The trustees' signed steps, from the community (show item 6): the VTA forms the key
+        // from them itself and encrypts under no other (CONVENTIONS §9.6).
+        vote["ceremony"] = shown
+            .get("ceremony")
             .cloned()
             .ok_or("the trustees have not formed the election key yet; vote once voting opens")?;
         serde_json::to_value(

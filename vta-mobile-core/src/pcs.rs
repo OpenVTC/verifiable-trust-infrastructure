@@ -134,7 +134,7 @@ pub fn build_pcs_task(
         PcsTask::Vote => signed::<pcs::vote::v0_1::Payload>(&env, p, s),
         PcsTask::VoterReceipt => signed::<pcs::voter::receipt::v0_1::Payload>(&env, p, s),
         PcsTask::VoterRead => signed::<pcs::voter::read::v0_1::Payload>(&env, p, s),
-        PcsTask::VoteEncrypted => signed::<pcs::vote_encrypted::v0_1::Payload>(&env, p, s),
+        PcsTask::VoteEncrypted => signed::<pcs::vote_encrypted::v0_2::Payload>(&env, p, s),
     }
 }
 
@@ -162,7 +162,7 @@ pub fn parse_pcs_response(task: PcsTask, json: String) -> Result<String, FfiErro
         PcsTask::Vote => response::<pcs::vote::v0_1::Response>(j),
         PcsTask::VoterReceipt => response::<pcs::voter::receipt::v0_1::Response>(j),
         PcsTask::VoterRead => response::<pcs::voter::read::v0_1::Response>(j),
-        PcsTask::VoteEncrypted => response::<pcs::vote_encrypted::v0_1::Response>(j),
+        PcsTask::VoteEncrypted => response::<pcs::vote_encrypted::v0_2::Response>(j),
     }
 }
 

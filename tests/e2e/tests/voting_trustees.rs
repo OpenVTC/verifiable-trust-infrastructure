@@ -254,7 +254,8 @@ async fn trustees_run_a_sealed_election_on_a_private_board_from_pnm() {
         serde_json::from_value(manifest.clone()).unwrap();
     let ballot = json!({ "electionId": ELECTION, "manifestDigest": digest_multibase(&digest),
                          "answers": [{ "question": "chair", "choice": ["ben"] }] });
-    let form = encrypted_form(&typed, &election, &ek, &ballot, &mut rng).unwrap();
+    let tag = voter.tag_for(&params, &ticket, &mut rng).unwrap();
+    let form = encrypted_form(&typed, &election, &ek, &ballot, &tag, &mut rng).unwrap();
     let cast = voter
         .cast_encrypted_wire(&params, &ticket, &form, &mut rng)
         .unwrap();
@@ -275,6 +276,66 @@ async fn trustees_run_a_sealed_election_on_a_private_board_from_pnm() {
     let (status, answer) = post(&url, &close).await;
     assert_eq!(status, 200, "{answer}");
     assert_eq!(status_now(Utc::now())["phase"], "decrypting");
+    // Until the community authorizes the decryption, a trustee's step decrypts nothing.
+    cmd_step(
+        &client,
+        target(&community.did, &box_did, &trustees[0]),
+        ELECTION,
+        false,
+    )
+    .await
+    .unwrap();
+    assert_eq!(status_now(Utc::now())["decrypted"], json!([]));
+    // The community reads the closed board, computes the targets itself and authorizes them
+    // (CONVENTIONS §9.7).
+    let entries: Vec<Value> = box_state
+        .ballot_box
+        .lock()
+        .unwrap()
+        .board_read(
+            Caller::Did(&community.did),
+            &json!({ "community": community.did, "electionId": ELECTION, "from": 0, "limit": 1000 }),
+            Utc::now(),
+        )
+        .unwrap()["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["entry"].clone())
+        .collect();
+    let resolver = vti_common::auth::TrustTaskVmResolver::did_key_only();
+    let resolver = &resolver;
+    let proven = vti_voting::steps::ProvenRequests::prove(&entries, |r| async move {
+        vti_common::auth::verify_trust_task_proof_value(&r, resolver)
+            .await
+            .ok()
+    })
+    .await;
+    let closing = vti_voting::audit::decryption(&manifest, &reg.params(), &entries, &proven)
+        .unwrap()
+        .expect("the board has closed");
+    let size = closing.index as usize + 1;
+    let mut board = vti_voting::board::Board::new();
+    for e in &entries[..size] {
+        board.append(&serde_json_canonicalizer::to_vec(e).unwrap());
+    }
+    let values = closing.target_values();
+    let authorize = signed(
+        "trustees/authorize",
+        &box_did,
+        &community,
+        json!({ "community": community.did, "electionId": ELECTION,
+                "manifestDigest": digest_multibase(&digest),
+                "head": { "electionId": ELECTION, "treeSize": size,
+                          "rootHash": digest_multibase(&board.root(size).unwrap()),
+                          "issuedAt": closing.at },
+                "closedAt": closing.at,
+                "targetCount": values.len(),
+                "targetsDigest": vti_voting::audit::targets_digest(&values).unwrap() }),
+    )
+    .await;
+    let (status, answer) = post(&url, &authorize).await;
+    assert_eq!(status, 200, "{answer}");
     for did in &trustees[..2] {
         cmd_step(
             &client,

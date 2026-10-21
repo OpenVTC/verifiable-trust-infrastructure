@@ -10,8 +10,8 @@ use serde_json::{Value, json};
 use trust_tasks_rs::specs::voting::{
     election::register::v0_1::Manifest,
     trustees::{
-        confirm::v0_1 as confirm, deal::v0_1 as deal_task, decrypt::v0_1 as decrypt,
-        enrol::v0_1 as enrol,
+        authorize::v0_1 as authorize, confirm::v0_1 as confirm, deal::v0_1 as deal_task,
+        decrypt::v0_1 as decrypt, enrol::v0_1 as enrol,
     },
 };
 use vti_voting::{
@@ -297,7 +297,24 @@ impl Run {
         let status = self.status(DURING);
         let ek = wire::election_key(&status["electionKey"], Threshold::new(2, 3).unwrap()).unwrap();
         let m: Manifest = serde_json::from_value(self.manifest.clone()).unwrap();
-        let form = encrypted_form(&m, &e, &ek, &ballot, &mut r).unwrap();
+        let tag = v.tag_for(&params, &ticket, &mut r).unwrap();
+        let form = encrypted_form(&m, &e, &ek, &ballot, &tag, &mut r).unwrap();
+        let cast = v
+            .cast_encrypted_wire(&params, &ticket, &form, &mut r)
+            .unwrap();
+        self.with(json!({ "cast": cast }))
+    }
+
+    /// Another ticket holder's cast of `form` — someone else's encrypted form, copied verbatim —
+    /// under its own ticket and tag.
+    fn recast(&mut self, seed: u64, form: EncryptedForm) -> Value {
+        let params = self.reg.params();
+        let mut r = StdRng::seed_from_u64(seed);
+        let v = Voter::generate(&params, &mut r).unwrap();
+        let e = self.election();
+        let (req, st) = v.ticket_request(&params, &e, &mut r).unwrap();
+        let pre = self.reg.issue_ticket(&e, v.id(), &req, &mut r).unwrap();
+        let ticket = v.accept_ticket(&params, &e, &pre, &st).unwrap();
         let cast = v
             .cast_encrypted_wire(&params, &ticket, &form, &mut r)
             .unwrap();
@@ -319,8 +336,45 @@ impl Run {
     }
 
     /// Trustee `j` (0-based) decrypts every target the board lists.
+    /// The community authorizes the decryption (CONVENTIONS §9.7): it reads the closed board,
+    /// computes the targets itself, and pins their digest under the board through the close.
+    fn authorize(&mut self) -> Value {
+        let entries = self.entries();
+        let params = self.reg.params();
+        let closing = vti_voting::audit::decryption(
+            &self.manifest,
+            &params,
+            &entries,
+            &proven(&entries, |_| false),
+        )
+        .unwrap()
+        .expect("the board has closed");
+        let size = closing.index as usize + 1;
+        let mut b = vti_voting::board::Board::new();
+        for e in &entries[..size] {
+            b.append(&serde_json_canonicalizer::to_vec(e).unwrap());
+        }
+        let values = closing.target_values();
+        let payload = self.with(json!({
+            "manifestDigest": digest_multibase(&self.digest),
+            "head": { "electionId": "board-2027", "treeSize": size,
+                      "rootHash": digest_multibase(&b.root(size).unwrap()),
+                      "issuedAt": AFTER },
+            "closedAt": closing.at,
+            "targetCount": values.len(),
+            "targetsDigest": vti_voting::audit::targets_digest(&values).unwrap(),
+        }));
+        let doc = request::<authorize::Payload>(COMMUNITY, payload);
+        self.bb
+            .trustees_authorize(COMMUNITY, &doc, t(AFTER))
+            .unwrap()
+    }
+
     fn decrypt(&mut self, j: usize) -> Value {
         let ctx = self.election().trustee_context();
+        if self.status(AFTER).get("authorization").is_none() {
+            self.authorize();
+        }
         let status = self.status(AFTER);
         assert_eq!(status["phase"], "decrypting");
         let key = self.trustees[j].key.clone().unwrap();
@@ -648,17 +702,17 @@ fn vot_062_casts_need_a_formed_key_and_the_elections_own_form() {
         "notEnrolling"
     );
 
-    // An encrypted form the election does not take is wrongLevel.
+    // A well-formed encrypted form the election does not take — a tallied one at a sealed
+    // election — is wrongLevel.
+    let mut tallied = Run::new("talliedEncrypted");
+    tallied.ceremony();
+    let wrong = tallied.cast(900, tallied.ballot(Some("ana"), &[]));
     let mut run = Run::new("sealed");
     run.ceremony();
-    let wrong = run.with(json!({ "cast": {
-        "encrypted": { "electionId": "board-2027", "manifestDigest": digest_multibase(&run.digest), "questions": [] },
-        "tag": "z11", "attestation": "z11" } }));
     assert_eq!(
         run.bb.cast_encrypted(&wrong, t(DURING)).unwrap_err().local,
         "wrongLevel"
     );
-    let _ = EncryptedForm::Sealed(Value::Null);
 }
 
 /// Every step of the ceremony is on the board as its trustee's own signed request (CONVENTIONS
@@ -760,4 +814,83 @@ fn vot_062_a_trustee_step_counts_only_as_its_trustees_signed_request() {
         ),
         Ok(None)
     );
+}
+
+/// A ballot copied into another cast is not a vote (CONVENTIONS §9.3 – 9.5): its ciphertexts are
+/// already on the board under another tag, and its proofs, or its seal, hold only under the tag it
+/// was made for. Without this a voter could re-cast a target's encrypted ballot verbatim and read
+/// the target's vote off the totals (Cortier–Smyth).
+#[test]
+fn vot_064_a_copied_ballot_is_not_a_vote() {
+    for (level, field) in [("talliedEncrypted", "encrypted"), ("sealed", "sealed")] {
+        let mut run = Run::new(level);
+        run.ceremony();
+        let victim = run.cast(600, run.ballot(Some("ana"), &["kiln"]));
+        run.bb.cast_encrypted(&victim, t(DURING)).unwrap();
+        let form = victim["cast"][field].clone();
+        let form = if field == "sealed" {
+            EncryptedForm::Sealed(form)
+        } else {
+            EncryptedForm::Encrypted(form)
+        };
+        let copied = run.recast(601, form);
+        assert_eq!(
+            run.bb.cast_encrypted(&copied, t(DURING)).unwrap_err().local,
+            "ballotInvalid",
+            "{level}"
+        );
+    }
+}
+
+/// A board is the election's lifecycle in order (CONVENTIONS §3.9): a cast moved after the close
+/// does not certify, however well every entry verifies on its own.
+#[test]
+fn vot_071_a_board_out_of_the_elections_order_does_not_certify() {
+    let mut run = Run::new("sealed");
+    run.ceremony();
+    let p = run.cast(700, run.ballot(Some("ben"), &[]));
+    run.bb.cast_encrypted(&p, t(DURING)).unwrap();
+    run.decrypt(0);
+    run.decrypt(1);
+    assert_eq!(run.certify(|_| {}), Ok(1));
+    let err = run
+        .certify(|entries| {
+            let cast = entries
+                .iter()
+                .position(|e| e["kind"] == "encryptedCast")
+                .unwrap();
+            let closed = entries.iter().position(|e| e["kind"] == "closed").unwrap();
+            let moved = entries.remove(cast);
+            entries.insert(closed, moved);
+        })
+        .unwrap_err();
+    assert!(matches!(err, AuditFailure::OrderInvalid { .. }), "{err:?}");
+}
+
+/// A ballot box that stopped between the last partial and the result finishes the decryption when
+/// it restarts, as the step cut short would have — never stuck closed without a result.
+#[test]
+fn vot_063_a_restart_finishes_a_decryption_cut_short() {
+    let mut run = Run::new("sealed");
+    run.ceremony();
+    let p = run.cast(800, run.ballot(Some("cai"), &["laser"]));
+    run.bb.cast_encrypted(&p, t(DURING)).unwrap();
+    run.decrypt(0);
+    run.decrypt(1);
+    let sel = run.sel();
+    let result = run.bb.result(Caller::Anonymous, &sel, t(AFTER)).unwrap();
+    let mut contents = run.journal.contents();
+    for r in &mut contents {
+        while let Some(last) = r.entries.last() {
+            let v: Value = serde_json::from_slice(last).unwrap();
+            if v["kind"] == "partials" {
+                break;
+            }
+            r.entries.pop();
+        }
+    }
+    let mut restored = BallotBox::restore(BOX, Arc::new(NoJournal), contents).unwrap();
+    let again = restored.result(Caller::Anonymous, &sel, t(AFTER)).unwrap();
+    assert_eq!(again["result"]["questions"], result["result"]["questions"]);
+    assert_eq!(again["result"]["ballotsCounted"], 1);
 }

@@ -673,9 +673,13 @@ fn sealed_manifest() -> Value {
 
 const TRUSTEE: &str = "did:key:z6MkTrusteeOne";
 
-fn election_key() -> Value {
-    json!({ "key": PCS_B58, "qualified": [1, 2, 3],
-        "verification": [{ "trustee": 1, "key": PCS_B58 }, { "trustee": 2, "key": PCS_B58 }, { "trustee": 3, "key": PCS_B58 }] })
+/// The trustees' signed steps as `voting/trustees/status` carries them: each request whole.
+fn ceremony() -> Value {
+    json!([trustee_document(
+        "enrol",
+        json!({ "community": PCS_COMMUNITY, "electionId": "agm-2027",
+        "transportKey": { "trustee": 1, "key": PCS_B58, "pok": sigma() } })
+    )["document"]])
 }
 
 fn sigma() -> Value {
@@ -2583,12 +2587,12 @@ fn table() -> Vec<(&'static str, Conformance)> {
         ),
         // ─── vta/pcs — the encrypted levels ─────────────────────
         (
-            uris::TASK_VTA_PCS_VOTE_ENCRYPTED_0_1,
+            uris::TASK_VTA_PCS_VOTE_ENCRYPTED_0_2,
             checked!(
-                specs::vta::pcs::vote_encrypted::v0_1::Payload,
-                specs::vta::pcs::vote_encrypted::v0_1::Response,
+                specs::vta::pcs::vote_encrypted::v0_2::Payload,
+                specs::vta::pcs::vote_encrypted::v0_2::Response,
                 json!({ "contextId": "personal", "community": PCS_COMMUNITY, "parameters": voting_params(),
-                    "manifest": sealed_manifest(), "electionKey": election_key(), "ballot": voting_ballot() }),
+                    "manifest": sealed_manifest(), "ceremony": ceremony(), "ballot": voting_ballot() }),
                 json!({ "tag": PCS_B58, "castDocument": {
                     "id": "urn:uuid:3f6b9d2e-81c4-4a7f-9e05-6d1c2b8a4f72",
                     "type": "https://trusttasks.org/spec/voting/ballot/cast-encrypted/0.1#request",
@@ -2612,48 +2616,43 @@ fn table() -> Vec<(&'static str, Conformance)> {
             ),
         ),
         (
-            uris::TASK_VTA_PCS_TRUSTEE_DEAL_0_1,
+            uris::TASK_VTA_PCS_TRUSTEE_DEAL_0_2,
             checked!(
-                specs::vta::pcs::trustee::deal::v0_1::Payload,
-                specs::vta::pcs::trustee::deal::v0_1::Response,
-                trustee_payload(json!({ "manifest": sealed_manifest(), "transportKeys": [
-                    { "trustee": 1, "key": PCS_B58, "pok": sigma() },
-                    { "trustee": 2, "key": PCS_B58, "pok": sigma() },
-                    { "trustee": 3, "key": PCS_B58, "pok": sigma() }] })),
+                specs::vta::pcs::trustee::deal::v0_2::Payload,
+                specs::vta::pcs::trustee::deal::v0_2::Response,
+                trustee_payload(json!({ "manifest": sealed_manifest(), "ceremony": ceremony() })),
                 trustee_document("deal", json!({ "community": PCS_COMMUNITY, "electionId": "agm-2027",
                     "dealing": { "dealer": 1, "commitments": [PCS_B58, PCS_B58], "pok": sigma(),
                         "shares": [{ "recipient": 1, "share": { "kem": ciphertext(), "body": PCS_B58 } }, { "recipient": 2, "share": { "kem": ciphertext(), "body": PCS_B58 } }] } }))
             ),
         ),
         (
-            uris::TASK_VTA_PCS_TRUSTEE_KEYS_0_1,
+            uris::TASK_VTA_PCS_TRUSTEE_KEYS_0_2,
             checked!(
-                specs::vta::pcs::trustee::keys::v0_1::Payload,
-                specs::vta::pcs::trustee::keys::v0_1::Response,
-                trustee_payload(json!({ "manifest": sealed_manifest(), "dealings": [
-                    { "dealer": 2, "commitments": [PCS_B58, PCS_B58], "pok": sigma(),
-                      "shares": [{ "recipient": 1, "share": { "kem": ciphertext(), "body": PCS_B58 } }, { "recipient": 2, "share": { "kem": ciphertext(), "body": PCS_B58 } }] }],
-                    "electionKey": election_key() })),
+                specs::vta::pcs::trustee::keys::v0_2::Payload,
+                specs::vta::pcs::trustee::keys::v0_2::Response,
+                trustee_payload(json!({ "manifest": sealed_manifest(), "ceremony": ceremony() })),
                 json!({ "complaints": [], "keyHeld": true })
             ),
         ),
         (
-            uris::TASK_VTA_PCS_TRUSTEE_JUSTIFY_0_1,
+            uris::TASK_VTA_PCS_TRUSTEE_JUSTIFY_0_2,
             checked!(
-                specs::vta::pcs::trustee::justify::v0_1::Payload,
-                specs::vta::pcs::trustee::justify::v0_1::Response,
-                trustee_payload(json!({ "recipient": 2 })),
+                specs::vta::pcs::trustee::justify::v0_2::Payload,
+                specs::vta::pcs::trustee::justify::v0_2::Response,
+                trustee_payload(json!({ "manifest": sealed_manifest(), "ceremony": ceremony(), "recipient": 2 })),
                 trustee_document("justify", json!({ "community": PCS_COMMUNITY, "electionId": "agm-2027",
                     "dealer": 1, "recipient": 2, "share": PCS_B58 }))
             ),
         ),
         (
-            uris::TASK_VTA_PCS_TRUSTEE_DECRYPT_0_1,
+            uris::TASK_VTA_PCS_TRUSTEE_DECRYPT_0_2,
             checked!(
-                specs::vta::pcs::trustee::decrypt::v0_1::Payload,
-                specs::vta::pcs::trustee::decrypt::v0_1::Response,
+                specs::vta::pcs::trustee::decrypt::v0_2::Payload,
+                specs::vta::pcs::trustee::decrypt::v0_2::Response,
                 trustee_payload(json!({ "targets": [{ "leafIndex": 7, "ciphertext": ciphertext() }],
-                    "closedAt": "2026-11-07T18:00:00Z" })),
+                    "authorization": trustee_document("authorize", json!({ "community": PCS_COMMUNITY,
+                        "electionId": "agm-2027", "targetsDigest": PCS_B58 }))["document"] })),
                 trustee_document("decrypt", json!({ "community": PCS_COMMUNITY, "electionId": "agm-2027",
                     "trustee": 1, "partials": [{ "target": { "leafIndex": 7, "ciphertext": ciphertext() },
                         "d": PCS_B58, "proof": sigma() }] }))

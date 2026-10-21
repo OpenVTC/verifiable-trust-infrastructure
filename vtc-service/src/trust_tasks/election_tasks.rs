@@ -165,6 +165,27 @@ async fn caller(
     }
 }
 
+/// The proven signer itself, and whether it manages elections — never an administrator a
+/// console key acts for. A ticket is the signer's one ticket (VTI-VOT-022; CONVENTIONS §4: the
+/// proven signer is eligible), so a console session cannot spend its administrator's.
+async fn own_signer(
+    state: &AppState,
+    ctx: &JoinAuthCtx,
+    doc: &TrustTask<Value>,
+) -> Result<(String, bool), TrustTaskOutcome> {
+    let signer = ctx
+        .verified_signer
+        .clone()
+        .ok_or_else(|| reject_with(doc, RejectReason::ProofRequired))?;
+    match get_acl_entry(&state.acl_ks, &signer).await {
+        Ok(entry) => {
+            let manager = entry.is_some_and(|e| e.can(Capability::ElectionsManage, None));
+            Ok((signer, manager))
+        }
+        Err(e) => Err(app_error_to_reject(doc, &e)),
+    }
+}
+
 fn unknown(doc: &TrustTask<Value>, code: &str) -> TrustTaskOutcome {
     reject_with_code(
         doc,
@@ -508,6 +529,9 @@ async fn handle_show(
     // Item 6.
     if let Some(k) = &rec.election_key {
         body["electionKey"] = k.clone();
+        if let Some(c) = &rec.ceremony {
+            body["ceremony"] = c.clone();
+        }
     }
     // Item 7.
     if let Some(c) = &rec.certified {
@@ -678,7 +702,7 @@ async fn handle_issue(
     ctx: &JoinAuthCtx,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    let (who, manager) = match caller(state, ctx, &doc).await {
+    let (who, manager) = match own_signer(state, ctx, &doc).await {
         Ok(c) => c,
         Err(reject) => return reject,
     };

@@ -150,6 +150,15 @@ fn read_receipts(path: &Path) -> std::io::Result<HashMap<u64, String>> {
         );
         at += 12 + len;
     }
+    // A torn final record goes, as a torn board entry does: left in place, every receipt
+    // appended after it would be read misaligned.
+    if at != bytes.len() {
+        tracing::warn!(path = %path.display(), "truncating a torn final receipt");
+        OpenOptions::new()
+            .write(true)
+            .open(path)?
+            .set_len(at as u64)?;
+    }
     Ok(out)
 }
 

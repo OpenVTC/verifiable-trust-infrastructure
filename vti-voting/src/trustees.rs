@@ -75,12 +75,28 @@ pub fn point_text(p: &Point) -> String {
     multibase::encode(multibase::Base::Base58Btc, p.compress().as_bytes())
 }
 
+/// Multibase text in base58btc — the one base CONVENTIONS §9.1 allows. Any other base would
+/// give one element several texts, and a cast several digests.
+///
+/// # Errors
+/// [`TrusteeError::Encoding`].
+pub fn b58_decode(text: &str) -> Result<Vec<u8>> {
+    let (base, bytes) =
+        multibase::decode(text).map_err(|e| TrusteeError::Encoding(e.to_string()))?;
+    if base != multibase::Base::Base58Btc {
+        return Err(TrusteeError::Encoding(
+            "an element is multibase base58btc".into(),
+        ));
+    }
+    Ok(bytes)
+}
+
 /// The point [`point_text`] wrote; never the identity, never a non-canonical encoding.
 ///
 /// # Errors
 /// [`TrusteeError::Encoding`].
 pub fn point_from_text(text: &str) -> Result<Point> {
-    let (_, bytes) = multibase::decode(text).map_err(|e| TrusteeError::Encoding(e.to_string()))?;
+    let bytes = b58_decode(text)?;
     let arr: [u8; 32] = bytes
         .try_into()
         .map_err(|_| TrusteeError::Encoding("a point is 32 bytes".into()))?;
@@ -105,7 +121,7 @@ pub fn scalar_text(s: &Scalar) -> String {
 /// # Errors
 /// [`TrusteeError::Encoding`].
 pub fn scalar_from_text(text: &str) -> Result<Scalar> {
-    let (_, bytes) = multibase::decode(text).map_err(|e| TrusteeError::Encoding(e.to_string()))?;
+    let bytes = b58_decode(text)?;
     let arr: [u8; 32] = bytes
         .try_into()
         .map_err(|_| TrusteeError::Encoding("a scalar is 32 bytes".into()))?;
@@ -341,8 +357,17 @@ fn dealer_ctx(ctx: &[u8], dealer: u32) -> Vec<u8> {
     v
 }
 
+/// `ctx` extended with `frame(tag)`: the context of one cast's encrypted form (CONVENTIONS §9.3,
+/// §9.4). A form's proofs hold, and a sealed form opens, only under the tag it is cast under, so
+/// a ballot copied into another cast is not a vote.
+pub fn cast_ctx(ctx: &[u8], tag: &str) -> Vec<u8> {
+    let mut v = ctx.to_vec();
+    crate::election::frame(&mut v, tag.as_bytes());
+    v
+}
+
 /// `ctx` extended with `frame(question)`: the context of a question's sum proof, and the base of
-/// its options' (CONVENTIONS §9.3).
+/// its options' (CONVENTIONS §9.3). Over [`cast_ctx`] for a cast's form.
 pub fn question_ctx(ctx: &[u8], question: &str) -> Vec<u8> {
     let mut v = ctx.to_vec();
     crate::election::frame(&mut v, question.as_bytes());
@@ -573,17 +598,18 @@ pub struct ElectionKey {
 }
 
 impl ElectionKey {
-    /// Combine the qualified dealers' dealings (CONVENTIONS §9.6 item 5): at least one, one per
-    /// dealer, each verified. Which dealers qualify — those with no unjustified complaint — is the
+    /// Combine the qualified dealers' dealings (CONVENTIONS §9.6 item 5): at least `t`, one per
+    /// dealer, each verified. With at most `t − 1` corrupt trustees, `t` dealers include an honest
+    /// one, so no coalition that cannot decrypt knows the key. Which dealers qualify — those with no unjustified complaint — is the
     /// ceremony's to decide; this takes exactly the dealings it is given.
     ///
     /// # Errors
     /// [`TrusteeError::DealingInvalid`] for none, a repeated or an invalid dealing.
     pub fn from_dealings(dealings: &[Dealing], th: Threshold, ctx: &[u8]) -> Result<Self> {
         let dealers: BTreeSet<u32> = dealings.iter().map(|d| d.dealer).collect();
-        if dealings.is_empty() || dealers.len() != dealings.len() {
+        if dealers.len() != dealings.len() || dealings.len() < th.t as usize {
             return Err(TrusteeError::DealingInvalid(
-                "at least one dealing, and one per dealer, is needed".into(),
+                "at least t dealings, and one per dealer, are needed".into(),
             ));
         }
         for d in dealings {

@@ -1,0 +1,66 @@
+# Community voting: threat model and the review of October 2026
+
+Community voting (VTI-VOT-001 – 100) spreads one election over four parties: the **community**
+(registrar: the roll, the tickets, certification), the **ballot box** (`vti-voting-service`:
+casts, the board, the result), the **trustees** (each a persona in its own VTA, holding a share
+of the election key) and the **voters** (each casting through their own VTA). This note records
+what each party is trusted with, the attacks an adversarial review of the first implementation
+found, and what is still open.
+
+Specifications: `voting/*` and `vta/pcs/{vote,vote-encrypted,trustee/*}` in the Trust Task
+registry, `voting/_shared/0.1/CONVENTIONS.md`. Operator guides: `docs/07-voting/README.md`,
+`docs/03-vtc/elections.md`, `docs/02-vta/pcs-engine.md`.
+
+## Who is trusted with what
+
+| Party | Trusted to | Never trusted to |
+|---|---|---|
+| Community | admit the roll; issue one ticket per party | learn how anyone voted; link a ticket to a cast |
+| Ballot box | stay available; keep what it accepted | report a key, a complaint, a dealing, a decryption target or a total that the signed board does not prove |
+| Trustees | fewer than `threshold` of them collude | — (a `threshold` coalition can decrypt anything; that is the definition) |
+| Voter's VTA | keep the member's keys and choices | — (it is the member's own agent) |
+
+The rule that follows: **every party acts on signed evidence, verified itself, never on another
+party's report of it.** The board is the evidence; the ballot box is only its keeper.
+
+## What the review found, and the fix
+
+| # | Attack | Fix |
+|---|---|---|
+| 1 | The box reports substitute transport keys; trustees seal shares to keys the box holds | trustees act on the signed enrolments in `steps`; deal pins the set (`ceremonyChanged`) |
+| 2 | The box invents complaints; trustees reveal shares in answer | justify needs the complainant's own signed confirm (`noComplaint`) |
+| 3 | The box replays a dealing to overwrite a key share | keys never replaces a held share (`keyMismatch`) |
+| 4 | The box lists one voter's ciphertext as a "total" and collects the partials | the community computes the targets from the board it verified and signs them (`voting/trustees/authorize`); a trustee decrypts only an authorized set, once |
+| 5 | One trustee complains of every other dealer late, and holds the key alone | the key forms only from ≥ `threshold` qualified dealers and confirmations (§9.6 item 5) |
+| 6 | The community or box hands one voter a key it holds | the voter's VTA forms the key from the signed steps (`vote-encrypted/0.2`) |
+| 7 | A voter re-casts a target's encrypted ballot under their own ticket and reads the vote off the totals (Cortier–Smyth) | proofs and the seal's AAD bind the cast's tag; the box and the audit refuse a ciphertext already on the board |
+| 8 | A board with casts after the close, or a result before it, certifies | §3.9 board order, checked at certification (`orderInvalid`, `ceremonyInvalid`) |
+| 9 | A rotated member gets a second ticket under the new DID | the rotation carries the tickets (VTI-VOT-022) |
+| 10 | A cast signed by a `did:webvh` makes the box fetch an attacker's URL | casts must be `did:key`; signed requests name `recipient`; consequential ones carry `issuedAt` |
+| 11 | A malformed payload reaches the state machine | the box validates every payload against its schema first |
+| 12 | A torn receipt record misaligns every later receipt | the journal truncates a torn tail, as it does for entries |
+| 13 | A box restarted between the last partial and the result never finishes | restore resumes the decryption |
+
+Items 1 – 8 changed the wire, as `vta/pcs/trustee/*/0.2`, `vta/pcs/vote-encrypted/0.2`,
+`voting/trustees/authorize/0.1` and CONVENTIONS §3.9 / §9.3 – 9.7. The 0.1 trustee and
+vote-encrypted tasks are retired: their whole design was acting on the box's report.
+
+## Still open
+
+None of these lets a single party change a result. Each one weakens privacy or availability, or
+leaves a cost unbounded:
+
+- **Timing between ticket and cast.** `pnm elections vote` takes the ticket and casts in one
+  run, so a community and a box comparing clocks can link the two. The fix is to separate the
+  steps, with a random delay between them.
+- **What the voter's VTA keeps.** It stores the member → leaf map in plaintext and never
+  discards tickets or receipts after the election.
+- **VTC restore.** Restoring a VTC backup can re-open ticket issuance for an election already
+  issued.
+- **Registrations at the box.** The box accepts a registration from any community, with no
+  allow-list and no quota.
+- **Locking.** One process-wide lock covers the whole box, and proof verification runs inside it.
+- **Checkpoints.** `checkpoint_due` reads the box's clock.
+- **Board reads.** `read_board` has no size cap.
+- **The ticket label** does not bind the manifest; that needs a specification change.
+- **The voter's VTA** does not cross-check the voting key with the box.

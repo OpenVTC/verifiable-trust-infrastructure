@@ -160,6 +160,7 @@ From there, [Community elections](../03-vtc/elections.md) is the community's gui
 | `voting/election/register`, `close`, `cancel` | TSP / DIDComm | the community the payload names, by proof (and by transport) |
 | `voting/ballot/cast`, `cast-encrypted` | HTTPS | nobody's identity: the cast's PCS attestation, under the community's registered voting key |
 | `voting/trustees/enrol`, `deal`, `confirm`, `justify`, `decrypt` | HTTPS (or TSP / DIDComm) | the trustee the manifest names at that index, by proof |
+| `voting/trustees/authorize` | TSP / DIDComm | the community, by proof, after close |
 | `voting/election/show`, `voting/trustees/status` | any | public board: anyone; private board: the community, its auditors and its trustees |
 | `voting/board/*`, `voting/result/show` | any | public board: anyone; private board: the community and its auditors (and a receipt holder, for one entry's inclusion) |
 
@@ -168,7 +169,24 @@ exist.
 
 Each trustee step goes on the board as the trustee's signed request, as received
 (`trusteeStep`). That lets anyone check who took it, and stops a ballot box dealing in a
-trustee's name to hold the election key itself.
+trustee's name to hold the election key itself. `voting/trustees/status` returns those steps
+(`steps`), and the trustees' VTAs act on them, never on the summary beside them.
+
+After close the community signs which ciphertexts are decrypted (`voting/trustees/authorize`); the
+service accepts that only if it computes the same targets, puts it on the board
+(`decryptionAuthorized`), and refuses partial decryptions before it.
+
+What the service refuses before reading a request:
+
+- a signed request without a `recipient`;
+- a consequential request (register, close, cancel, casts, trustee steps, authorize) without an
+  `issuedAt`, or one more than five minutes ahead;
+- a cast not signed by a `did:key` — a cast's key is made for it, and must resolve without the
+  service fetching anything the sender chose;
+- a payload that does not validate against its task's schema.
+
+And when it reads a cast: an encrypted form whose ciphertexts are already on the board under
+another tag (a copied ballot).
 
 ## A first poll
 
@@ -201,7 +219,9 @@ it:
 arrived from. It never sees a member DID: casts are signed by one-time keys, and their tags
 link nothing across elections.
 
-**What it keeps:** the registration, the board and the receipt tokens, durably. A community or
+**What it keeps:** the registration, the board and the receipt tokens, durably. A crash part way
+through writing a record loses only that record, whose answer was never sent; a restart finishes
+a decryption whose result it had not yet written. A community or
 an auditor holding a signed head holds the service to the board it showed them
 (`voting/board/consistency`). The community checkpoints heads while voting is open, and
 certification proves the final board extends every one.
