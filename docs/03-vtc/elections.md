@@ -17,7 +17,8 @@ ballot and never learns whose it is. Linking a voter to a ballot needs the two t
 
 1. Build with the `voting` feature (`cargo build -p vtc-service --features voting`). It brings
    the PCS (arkworks) stack, so it is off by default.
-2. Name the voting services this community trusts, in `config.toml`:
+2. Name the voting services this community trusts, in `config.toml`. Running one is
+   [the voting service](../07-voting/README.md)'s guide:
 
    ```toml
    [[voting.trusted_ballot_boxes]]
