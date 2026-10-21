@@ -30,6 +30,12 @@ affinidi-messaging-test-mediator = { version = "0.43", features = ["tsp"] }
 vta-service = { path = "../../vta-service", features = ["test-support", "transport-harness", "didcomm", "tsp", "webvh", "rest"] }
 vta-sdk = { path = "../../vta-sdk", features = ["client", "didcomm", "session", "tsp", "sealed-transfer", "provision-integration", "provision-client"] }
 vti-common = { path = "../../vti-common" }
+# Community voting: the voting service and its core, and the `pnm elections trustee` code,
+# for `voting_trustees` — a trustee's round run from the CLI against a real ballot box.
+vti-voting = { path = "../../vti-voting" }
+vti-voting-service = { path = "../../vti-voting-service" }
+vta-cli-common = { path = "../../vta-cli-common" }
+axum = { workspace = true }
 
 # `TrustTask<Value>` — the document type `vta_sdk::trust_task_sign` signs.
 trust-tasks-rs = { workspace = true }

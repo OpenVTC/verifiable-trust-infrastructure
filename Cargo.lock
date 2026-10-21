@@ -12329,6 +12329,7 @@ dependencies = [
  "affinidi-messaging-test-mediator",
  "affinidi-secrets-resolver",
  "affinidi-tdk",
+ "axum",
  "base64 0.23.1",
  "chrono",
  "ed25519-dalek 3.0.0",
@@ -12343,9 +12344,12 @@ dependencies = [
  "trust-tasks-rs",
  "url",
  "uuid",
+ "vta-cli-common",
  "vta-sdk",
  "vta-service",
  "vti-common",
+ "vti-voting",
+ "vti-voting-service",
 ]
 
 [[package]]
