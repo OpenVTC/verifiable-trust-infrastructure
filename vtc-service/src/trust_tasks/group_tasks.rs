@@ -391,10 +391,11 @@ async fn standing(
     doc: &TrustTask<Value>,
 ) -> Result<Standing, TrustTaskOutcome> {
     let delegated = match ctx.verified_signer.as_deref() {
-        Some(signer) => crate::member_portal::delegation::member_for(
-            &state.member_sessions_ks,
+        Some(signer) => crate::member_portal::delegation::accept(
+            state,
             signer,
             &doc.type_uri.to_string(),
+            &doc.id.to_string(),
         )
         .await
         .map_err(|e| app_error_to_reject(doc, &e))?,

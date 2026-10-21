@@ -242,6 +242,13 @@ pub enum AuditEvent {
     /// reads beside the other console sign-ins rather than the portal's.
     AdminWalletSignIn(MemberWalletSignInData),
 
+    /// A document a **member-portal sign-in key** signed was accepted as the
+    /// member's (`auth/oob/grant/0.2` consumer item 7): one row per document,
+    /// against the member, naming the key that acted and the grant that let it.
+    /// Written before the document's own effect, and the document is refused
+    /// when it cannot be — a delegated document is never unaudited.
+    MemberPortalKeyUsed(MemberPortalKeyUsedData),
+
     /// A step in the life of a **step-up approver** binding — a `did:key`
     /// bound to one subject as that subject's step-up factor (VTI-APV-015):
     /// an invite issued, voided after five wrong claim codes, an approver
@@ -1120,6 +1127,7 @@ impl AuditEvent {
             Self::MemberPasskeyChanged(..) => "MemberPasskeyChanged",
             Self::MemberWalletSignIn(..) => "MemberWalletSignIn",
             Self::AdminWalletSignIn(..) => "AdminWalletSignIn",
+            Self::MemberPortalKeyUsed(..) => "MemberPortalKeyUsed",
             Self::StepUpApproverChanged(..) => "StepUpApproverChanged",
             Self::OperationStepUpApproved(..) => "OperationStepUpApproved",
             Self::TaskConsentRecorded(..) => "TaskConsentRecorded",
@@ -2011,6 +2019,25 @@ pub struct MemberWalletSignInData {
     /// The signed grant, at `approved` and `declined` by the member.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub grant: Option<serde_json::Value>,
+}
+
+/// Payload for [`AuditEvent::MemberPortalKeyUsed`].
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct MemberPortalKeyUsedData {
+    /// The member the document was accepted as.
+    pub member: String,
+    /// The portal sign-in key that signed it (`K_b`, a `did:key`): the
+    /// acting credential.
+    pub start_key: String,
+    /// The `id` of the `auth/oob/grant/0.2` that delegated to the key: the
+    /// authority. Absent only for a delegation armed before it was recorded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grant_id: Option<String>,
+    /// The document's Type URI.
+    pub task_type: String,
+    /// The document's `id`.
+    pub document_id: String,
 }
 
 /// Payload for [`AuditEvent::MemberPasskeyChanged`].
@@ -4002,6 +4029,23 @@ mod tests {
         let v = wire_value(&e);
         assert_eq!(v["type"], "AdminWalletSignIn");
         assert_eq!(e.variant_name(), "AdminWalletSignIn");
+        round_trip(&e);
+    }
+
+    #[test]
+    fn member_portal_key_used_round_trip() {
+        let e = AuditEvent::MemberPortalKeyUsed(MemberPortalKeyUsedData {
+            member: "did:webvh:x".into(),
+            start_key: "did:key:z6Mk".into(),
+            grant_id: Some("urn:uuid:g".into()),
+            task_type: "https://trusttasks.org/spec/git-ns/view/0.4".into(),
+            document_id: "urn:uuid:d".into(),
+        });
+        let v = wire_value(&e);
+        assert_eq!(v["type"], "MemberPortalKeyUsed");
+        assert_eq!(v["data"]["startKey"], "did:key:z6Mk");
+        assert_eq!(v["data"]["grantId"], "urn:uuid:g");
+        assert_eq!(e.variant_name(), "MemberPortalKeyUsed");
         round_trip(&e);
     }
 

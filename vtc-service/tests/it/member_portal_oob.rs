@@ -2389,6 +2389,90 @@ async fn the_portal_key_reads_the_members_repos_and_never_changes_them() {
     assert_eq!(code(&gone), "permissionDenied", "{}", gone.body);
 }
 
+async fn audit_events(f: &Fixture) -> Vec<vti_common::audit::AuditEvent> {
+    f.vtc
+        .state
+        .audit_ks
+        .prefix_iter_raw(Vec::new())
+        .await
+        .unwrap()
+        .into_iter()
+        .filter_map(|(_, v)| serde_json::from_slice::<vti_common::audit::AuditEnvelope>(&v).ok())
+        .map(|env| env.event)
+        .collect()
+}
+
+/// Item 7: every document the portal key signs that is accepted as the
+/// member's is audited against the member, naming the key and the grant —
+/// once per document, whichever family it is (directory, groups, git-ns), and
+/// never for a document the key could not sign.
+#[tokio::test]
+async fn every_document_the_portal_key_signs_is_audited_with_its_grant() {
+    use vti_common::audit::AuditEvent;
+    let f = fixture().await;
+    let (b, member, _, done) = sign_in_v0_2(&f, None).await;
+    assert_eq!(done.status, StatusCode::OK, "{}", done.body);
+
+    let card = as_portal(&f, &b, &format!("{DIRECTORY}/card/show/0.1"), json!({})).await;
+    assert_eq!(card.status, StatusCode::OK, "{}", card.body);
+    let groups = as_portal(
+        &f,
+        &b,
+        "https://trusttasks.org/spec/vtc/groups/list/0.1",
+        json!({ "limit": 10 }),
+    )
+    .await;
+    assert_eq!(groups.status, StatusCode::OK, "{}", groups.body);
+    let view = as_portal(&f, &b, &format!("{GIT_NS}/view/0.4"), json!({})).await;
+    assert_eq!(view.status, StatusCode::OK, "{}", view.body);
+    // Outside the scope: the key is nobody, and nothing is accepted.
+    let refused = as_portal(
+        &f,
+        &b,
+        "https://trusttasks.org/spec/vtc/community/profile/show/0.1",
+        json!({}),
+    )
+    .await;
+    assert_eq!(code(&refused), "permissionDenied", "{}", refused.body);
+
+    let events = audit_events(&f).await;
+    let grant_id = events
+        .iter()
+        .find_map(|e| match e {
+            AuditEvent::MemberWalletSignIn(d) if d.stage == "approved" => d
+                .grant
+                .as_ref()
+                .and_then(|g| g["id"].as_str())
+                .map(str::to_string),
+            _ => None,
+        })
+        .expect("the approval is audited with its grant");
+    let used: Vec<_> = events
+        .into_iter()
+        .filter_map(|e| match e {
+            AuditEvent::MemberPortalKeyUsed(d) => Some(d),
+            _ => None,
+        })
+        .collect();
+    let mut types: Vec<&str> = used.iter().map(|d| d.task_type.as_str()).collect();
+    types.sort_unstable();
+    assert_eq!(
+        types,
+        [
+            "https://trusttasks.org/spec/git-ns/view/0.4",
+            "https://trusttasks.org/spec/vtc/directory/card/show/0.1",
+            "https://trusttasks.org/spec/vtc/groups/list/0.1",
+        ],
+        "one row per accepted document, none for the refused one"
+    );
+    for d in &used {
+        assert_eq!(d.member, member.did);
+        assert_eq!(d.start_key, b.key.did);
+        assert_eq!(d.grant_id.as_deref(), Some(grant_id.as_str()));
+        assert!(!d.document_id.is_empty());
+    }
+}
+
 /// Item 3: the grant's scope must be the one step 2 offered.
 #[tokio::test]
 async fn a_grant_widening_the_offered_scope_is_refused() {

@@ -282,10 +282,11 @@ async fn delegated(
     let Some(signer) = ctx.verified_signer.as_deref() else {
         return Ok(None);
     };
-    crate::member_portal::delegation::member_for(
-        &state.member_sessions_ks,
+    crate::member_portal::delegation::accept(
+        state,
         signer,
         &doc.type_uri.to_string(),
+        &doc.id.to_string(),
     )
     .await
     .map_err(|e| app_error_to_reject(doc, &e))

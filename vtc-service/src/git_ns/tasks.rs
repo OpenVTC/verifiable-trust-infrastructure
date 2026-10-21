@@ -294,14 +294,18 @@ async fn acting_as_unchecked(state: &AppState, signer: &str) -> Result<String, O
 /// through their wallet. The member's standing is read at execution time
 /// (item 5), and a cooling-off suspension refuses the read as it refuses a
 /// change.
-async fn reader_as(
+async fn reader_as<P>(
     state: &AppState,
     signer: &str,
-    type_uri: &str,
+    doc: &TrustTask<P>,
 ) -> Result<(String, bool), OpError> {
-    let delegated =
-        crate::member_portal::delegation::member_for(&state.member_sessions_ks, signer, type_uri)
-            .await?;
+    let delegated = crate::member_portal::delegation::accept(
+        state,
+        signer,
+        &doc.type_uri.to_string(),
+        &doc.id.to_string(),
+    )
+    .await?;
     let Some(member) = delegated else {
         return Ok((acting_as(state, signer).await?, false));
     };
@@ -590,7 +594,7 @@ pub(crate) async fn handle_view_v4(
         Err(r) => return r,
     };
     let r = async {
-        let (who, delegated) = reader_as(&ctx.state, &who, &doc.type_uri.to_string()).await?;
+        let (who, delegated) = reader_as(&ctx.state, &who, &doc).await?;
         let standing = ops::standing(&ctx.state, &who).await?;
         if !standing.member {
             return Err(OpError::PermissionDenied(
@@ -627,7 +631,7 @@ pub(crate) async fn handle_link_status(
         Ok(w) => w,
         Err(r) => return r,
     };
-    let r = match reader_as(&ctx.state, &who, &doc.type_uri.to_string()).await {
+    let r = match reader_as(&ctx.state, &who, &doc).await {
         Ok((who, _)) => ops::account_link_status(&ctx.state, &who, doc.payload.clone()).await,
         Err(e) => Err(e),
     };

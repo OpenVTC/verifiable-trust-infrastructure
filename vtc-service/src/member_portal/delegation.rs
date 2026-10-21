@@ -16,6 +16,12 @@
 //! 3. the task is not excluded (item 6): nothing under `auth`, `acl`,
 //!    `consent`, `task-consent` or `confirm`, whatever the scope says.
 //!
+//! Every document accepted this way is audited against the member before it
+//! takes effect, naming the key and the grant (item 7, [`accept`]); one that
+//! cannot be audited is refused. The prechecks that only ask whether a key
+//! stands for someone (the admission budget, the size gate) read
+//! [`member_for`] and audit nothing, because they accept nothing.
+//!
 //! The delegation confers no standing of its own: every caller here still
 //! reads the member's standing at execution time, and a task that needs the
 //! member's own `assertionMethod` key, or that publishes their data beyond the
@@ -23,6 +29,7 @@
 //! value to `public`).
 
 use serde::{Deserialize, Serialize};
+use vti_common::audit::{AuditEvent, MemberPortalKeyUsedData};
 use vti_common::auth::session::{SessionState, get_session, now_epoch};
 use vti_common::store::KeyspaceHandle;
 
@@ -44,6 +51,10 @@ pub struct Delegation {
     pub scope: Vec<String>,
     /// The grant's `notAfter`, epoch seconds.
     pub not_after: u64,
+    /// The grant's `id`: the authority each delegated document is audited
+    /// under. Absent only on a delegation armed before it was recorded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grant_id: Option<String>,
 }
 
 /// Families a delegated key never signs for (grant 0.2 consumer item 6 and
@@ -86,6 +97,54 @@ pub async fn member_for(
     signer: &str,
     type_uri: &str,
 ) -> Result<Option<String>, AppError> {
+    Ok(armed(ks, signer, type_uri).await?.map(|d| d.member_did))
+}
+
+/// Accept the document `document_id` of `type_uri` that `signer` signed as the
+/// member it is delegated by: [`member_for`], with the audit row item 7
+/// requires written first. `None` for a key that stands for nobody here.
+/// When the row cannot be written the document is refused: a delegated
+/// document is never unaudited.
+pub async fn accept(
+    state: &crate::server::AppState,
+    signer: &str,
+    type_uri: &str,
+    document_id: &str,
+) -> Result<Option<String>, AppError> {
+    let Some(d) = armed(&state.member_sessions_ks, signer, type_uri).await? else {
+        return Ok(None);
+    };
+    let writer = state
+        .audit_writer
+        .as_ref()
+        .ok_or_else(|| AppError::ServiceError {
+            status: axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            message: "audit writer not configured: a document the portal's sign-in key signed \
+                      is refused rather than accepted unaudited"
+                .into(),
+        })?;
+    writer
+        .write(
+            &d.member_did,
+            Some(&d.member_did),
+            AuditEvent::MemberPortalKeyUsed(MemberPortalKeyUsedData {
+                member: d.member_did.clone(),
+                start_key: signer.to_string(),
+                grant_id: d.grant_id.clone(),
+                task_type: type_uri.to_string(),
+                document_id: document_id.to_string(),
+            }),
+        )
+        .await?;
+    Ok(Some(d.member_did))
+}
+
+/// The live delegation `signer` holds for `type_uri`, if any.
+async fn armed(
+    ks: &KeyspaceHandle,
+    signer: &str,
+    type_uri: &str,
+) -> Result<Option<Delegation>, AppError> {
     let Some(d): Option<Delegation> = ks.get(key(signer)).await? else {
         return Ok(None);
     };
@@ -106,7 +165,7 @@ pub async fn member_for(
         }
         return Ok(None);
     }
-    Ok(covers(&d.scope, type_uri).then_some(d.member_did))
+    Ok(covers(&d.scope, type_uri).then_some(d))
 }
 
 #[cfg(test)]

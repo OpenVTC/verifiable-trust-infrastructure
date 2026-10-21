@@ -1591,6 +1591,12 @@ async fn redeem_member(
                     session_id: session_id.clone(),
                     scope,
                     not_after: session_end,
+                    grant_id: consumed
+                        .grant
+                        .as_ref()
+                        .and_then(|g| g.get("id"))
+                        .and_then(Value::as_str)
+                        .map(str::to_string),
                 };
                 if let Err(e) = crate::member_portal::delegation::record(
                     &state.member_sessions_ks,

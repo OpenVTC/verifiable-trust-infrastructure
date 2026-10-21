@@ -1023,6 +1023,17 @@ country come from a local GeoIP database the operator configures
 (`[geoip] database`, see [GeoIP: sign-in locations](geoip.md)); without
 one they are `unknown`.
 
+Every document the portal then signs with the browser's sign-in key and
+the community accepts as the member's — a directory read, a card edit, a
+group join, a repository view — is audited as `MemberPortalKeyUsed`
+against the member, naming the key (`startKey`), the grant that delegated
+to it (`grantId`, the `id` of the approved `auth/oob/grant/0.2`), the
+task type and the document's id (grant 0.2 consumer item 7). The row is
+written before the document takes effect, and a community without an
+audit writer refuses the document rather than accept it unaudited. The
+admission budget and the size limit also ask whether a key stands for a
+member, but they accept nothing and audit nothing.
+
 **Wallets find this portal in the community's DID document.** A wallet
 refuses a sign-in link unless the VTC's DID document lists a
 `SignInPortal` service whose origin is the portal's
