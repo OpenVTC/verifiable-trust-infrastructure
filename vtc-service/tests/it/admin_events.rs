@@ -771,6 +771,8 @@ fn hosted_room(epoch_expires_at: Option<u64>) -> vtc_service::rooms::Room {
         created_at: 0,
         updated_at: 0,
         mirror_of: None,
+        record_retention: None,
+        last_prune: None,
     }
 }
 

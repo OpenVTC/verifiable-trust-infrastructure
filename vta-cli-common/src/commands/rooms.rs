@@ -914,6 +914,302 @@ fn prune_outcome(r: &vtc_client::rooms::PruneResponse) -> String {
     )
 }
 
+/// `rooms records prune` — remove the records the room's record retention makes eligible
+/// (`rooms/records/prune/0.1`, trust-tasks-tf #868).
+///
+/// Needs `admin` and moves the way `prune` does: the VTA presents for this client and this
+/// client signs (`rooms/keys/act` completes neither task). The specification asks a surface
+/// to show a dry run first and not to offer a prune beside reversible controls, so this
+/// always asks the host what would go, prints it with what a prune does and does not do, and
+/// goes ahead only on `--yes` or a typed `y` at a terminal.
+#[allow(clippy::too_many_arguments)]
+pub async fn cmd_rooms_records_prune(
+    client: &VtaClient,
+    target: RoomTarget<'_>,
+    signer: RoomSigner<'_>,
+    kinds: Vec<String>,
+    reason: String,
+    dry_run: bool,
+    assume_yes: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let kinds = if kinds.is_empty() {
+        vec!["retracted".to_string(), "aged".to_string()]
+    } else {
+        kinds
+    };
+    if let Some(bad) = kinds.iter().find(|k| *k != "retracted" && *k != "aged") {
+        return Err(format!("--kind {bad}: a kind is `retracted` or `aged`").into());
+    }
+    let kinds: Vec<&str> = kinds.iter().map(String::as_str).collect();
+    let session = present(client, &target, "admin").await?;
+    let host = target.client();
+    let preview = host
+        .prune_records(&session, &kinds, &reason, true, signer.did, signer.key_multibase)
+        .await
+        .map_err(|e| records_prune_refused(e, &target))?;
+    let preview = serde_json::to_value(&preview)?;
+    eprintln!("{}", records_prune_preview(target.room_id, &preview));
+    if dry_run {
+        if crate::render::is_json_output() {
+            crate::render::print_json(&preview)?;
+        }
+        return Ok(());
+    }
+    if preview["removed"].as_u64() == Some(0) {
+        println!("Nothing is eligible now; nothing pruned.");
+        return Ok(());
+    }
+    match prune_guard(
+        assume_yes,
+        std::io::IsTerminal::is_terminal(&std::io::stdin()),
+    ) {
+        PruneGuard::Proceed => {}
+        PruneGuard::Refuse => {
+            return Err(format!(
+                "refusing to prune without confirmation: there is no terminal to ask. If you \
+                 mean it, run it again with --yes:\n\n  {}",
+                records_prune_command(&target, &kinds, &reason)
+            )
+            .into());
+        }
+        PruneGuard::Ask => {
+            if !super::contexts::confirm_destructive("Remove these records for good?")? {
+                println!("Not pruned.");
+                return Ok(());
+            }
+        }
+    }
+    // A fresh presentation: eligibility is decided again, at the moment of the prune.
+    let session = present(client, &target, "admin").await?;
+    let done = host
+        .prune_records(&session, &kinds, &reason, false, signer.did, signer.key_multibase)
+        .await
+        .map_err(|e| records_prune_refused(e, &target))?;
+    let done = serde_json::to_value(&done)?;
+    if crate::render::is_json_output() {
+        crate::render::print_json(&done)?;
+        return Ok(());
+    }
+    let removed = done["removed"].as_u64().unwrap_or(0);
+    match done.get("prune") {
+        Some(mark) => println!(
+            "Pruned room {}: {removed} record(s) removed at version {}. Members syncing from \
+             below it rebuild their copy.",
+            target.room_id, mark["version"]
+        ),
+        None => println!(
+            "Nothing was eligible by the time of the prune; nothing removed in room {}.",
+            target.room_id
+        ),
+    }
+    Ok(())
+}
+
+/// What a dry run says, and what a prune is — in the specification's terms: records go
+/// outright, tombstones included; nothing already read is recalled.
+fn records_prune_preview(room_id: &str, preview: &Value) -> String {
+    let removed = preview["removed"].as_u64().unwrap_or(0);
+    let blobs = preview["blobsReleased"].as_u64().unwrap_or(0);
+    let rule = &preview["recordRetention"];
+    let mut rule_text = Vec::new();
+    if let Some(d) = rule["tombstoneDays"].as_u64() {
+        rule_text.push(format!("tombstones kept {d} days"));
+    }
+    if let Some(d) = rule["recordDays"].as_u64() {
+        rule_text.push(format!("records kept {d} days unless pinned"));
+    }
+    format!(
+        "Room {room_id} keeps its records by this rule: {}.\n\
+         Under it, a prune now removes {removed} record(s){}.\n\n\
+         WARNING: a prune cannot be undone. Removed records go outright — tombstones \
+         included — for every member, and the room keeps only a count and a time. It removes \
+         them from this host, not from the world: what a member already read, exported or \
+         cached stays where it is, and a mirror is pruned separately.",
+        rule_text.join(", "),
+        if blobs > 0 {
+            format!(", releasing {blobs} file(s)")
+        } else {
+            String::new()
+        }
+    )
+}
+
+/// The corrected command, verbatim.
+fn records_prune_command(target: &RoomTarget<'_>, kinds: &[&str], reason: &str) -> String {
+    let host_did = target
+        .host_did
+        .map(|d| format!(" --host-did {d}"))
+        .unwrap_or_default();
+    let kinds: String = kinds.iter().map(|k| format!(" --kind {k}")).collect();
+    format!(
+        "pnm rooms records prune --room {} --host {}{host_did}{kinds} --reason {} --yes",
+        target.room_id,
+        target.host_url,
+        shell_word(reason)
+    )
+}
+
+/// A host's refusal of a records prune, with the fix where the code names one.
+fn records_prune_refused(e: vtc_client::VtcError, target: &RoomTarget<'_>) -> String {
+    let code = vtc_client::git_ns::task_error(&e).map(|(code, _)| code);
+    let host_did = target
+        .host_did
+        .map(|d| format!(" --host-did {d}"))
+        .unwrap_or_default();
+    match code.as_deref() {
+        Some(c) if c.ends_with("noRetention") => format!(
+            "{e}\n\nThe room states no record retention for what you asked, so nothing is \
+             eligible. Set one first, for example:\n\n  pnm rooms records retention set \
+             --room {} --host {}{host_did} --tombstone-days 30 --reason <why>",
+            target.room_id, target.host_url
+        ),
+        Some(c) if c.ends_with("roomNotLive") => format!(
+            "{e}\n\nThe room has lapsed and is read-only until its owner renews it."
+        ),
+        Some(c) if c.ends_with("permissionDenied") => format!(
+            "{e}\n\nPruning records needs `admin` in the room — not `curate`, which every \
+             writer holds. The room's owner grants it with `pnm rooms owner issue-authority \
+             --action admin --store`."
+        ),
+        _ => e.to_string(),
+    }
+}
+
+/// `rooms records retention show` — the record retention in force and the latest prune
+/// (`rooms/info/0.2`).
+pub async fn cmd_rooms_retention_show(
+    client: &VtaClient,
+    target: RoomTarget<'_>,
+    signer: RoomSigner<'_>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let info = read_info_v2(client, &target, &signer).await?;
+    if crate::render::is_json_output() {
+        crate::render::print_json(&serde_json::json!({
+            "recordRetention": info.get("recordRetention"),
+            "lastPrune": info.get("lastPrune"),
+        }))?;
+        return Ok(());
+    }
+    println!("{}", retention_lines(&info));
+    Ok(())
+}
+
+/// `rooms records retention set` — replace the record retention whole, on the condition
+/// that the one in force is the one this client just read (`expectedRetention`), so two
+/// administrators do not overwrite each other unseen.
+#[allow(clippy::too_many_arguments)]
+pub async fn cmd_rooms_retention_set(
+    client: &VtaClient,
+    target: RoomTarget<'_>,
+    signer: RoomSigner<'_>,
+    tombstone_days: Option<u32>,
+    record_days: Option<u32>,
+    clear: bool,
+    reason: String,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if !clear && tombstone_days.is_none() && record_days.is_none() {
+        return Err("name --tombstone-days, --record-days, or --clear: the retention is \
+                    replaced whole, so naming nothing would clear it by accident"
+            .into());
+    }
+    let info = read_info_v2(client, &target, &signer).await?;
+    let expected = info
+        .get("recordRetention")
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!({}));
+    let mut retention = serde_json::Map::new();
+    if let Some(d) = tombstone_days {
+        retention.insert("tombstoneDays".into(), serde_json::json!(d));
+    }
+    if let Some(d) = record_days {
+        retention.insert("recordDays".into(), serde_json::json!(d));
+    }
+    let session = present(client, &target, "admin").await?;
+    let set = target
+        .client()
+        .set_record_retention(
+            &session,
+            Value::Object(retention),
+            Some(expected),
+            &reason,
+            signer.did,
+            signer.key_multibase,
+        )
+        .await
+        .map_err(|e| {
+            let code = vtc_client::git_ns::task_error(&e).map(|(code, _)| code);
+            match code.as_deref() {
+                Some(c) if c.ends_with("retentionConflict") => format!(
+                    "{e}\n\nAnother administrator changed the retention since this command \
+                     read it. Read it again (`pnm rooms records retention show --room {} \
+                     --host {}`) and decide again.",
+                    target.room_id, target.host_url
+                ),
+                _ => e.to_string(),
+            }
+        })?;
+    let set = serde_json::to_value(&set)?;
+    if crate::render::is_json_output() {
+        crate::render::print_json(&set)?;
+        return Ok(());
+    }
+    println!(
+        "Room {} record retention: {} (was {}). Nothing is removed until somebody prunes.",
+        target.room_id,
+        retention_text(&set["recordRetention"]),
+        retention_text(&set["previous"])
+    );
+    Ok(())
+}
+
+/// `rooms/info/0.2` as JSON, read under `read`.
+async fn read_info_v2(
+    client: &VtaClient,
+    target: &RoomTarget<'_>,
+    signer: &RoomSigner<'_>,
+) -> Result<Value, Box<dyn std::error::Error>> {
+    let read = present(client, target, "read").await?;
+    let info = target
+        .client()
+        .room_info_v2(&read, signer.did, signer.key_multibase)
+        .await
+        .map_err(|e| format!("could not read the room (rooms/info/0.2): {e}"))?;
+    Ok(serde_json::to_value(&info)?)
+}
+
+/// A record retention in words; `{}` or absent is "none".
+fn retention_text(rule: &Value) -> String {
+    let mut parts = Vec::new();
+    if let Some(d) = rule.get("tombstoneDays").and_then(Value::as_u64) {
+        parts.push(format!("tombstones {d} days"));
+    }
+    if let Some(d) = rule.get("recordDays").and_then(Value::as_u64) {
+        parts.push(format!("records {d} days (pinned excepted)"));
+    }
+    if parts.is_empty() {
+        "none — no record is eligible by age".to_string()
+    } else {
+        parts.join(", ")
+    }
+}
+
+/// The retention and latest prune `rooms/info/0.2` reports, as lines.
+fn retention_lines(info: &Value) -> String {
+    let rule = info
+        .get("recordRetention")
+        .cloned()
+        .unwrap_or(Value::Null);
+    let mut out = format!("Record retention: {}", retention_text(&rule));
+    match info.get("lastPrune") {
+        Some(p) => out.push_str(&format!(
+            "\nLast prune: {} record(s) at {}, version {}",
+            p["removed"], p["at"].as_str().unwrap_or("?"), p["version"]
+        )),
+        None => out.push_str("\nLast prune: never"),
+    }
+    out
+}
+
 /// `rooms create` — register a room with a host.
 ///
 /// The only command here that needs no presentation: the room has issued

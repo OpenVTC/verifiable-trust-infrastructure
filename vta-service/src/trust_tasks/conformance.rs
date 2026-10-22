@@ -3265,6 +3265,40 @@ fn table() -> Vec<(&'static str, Conformance)> {
             ),
         ),
         (
+            uris::TASK_ROOMS_KEYS_BROWSE_0_2,
+            checked!(
+                specs::rooms::keys::browse::v0_2::Payload,
+                specs::rooms::keys::browse::v0_2::Response,
+                json!({
+                    "roomId": "did:webvh:example.com:rooms:northwind",
+                    "host": "did:webvh:example.com:northwind-community"
+                }),
+                // A pruned room: `headVersion` is the prune's, not the highest record's.
+                json!({
+                    "roomId": "did:webvh:example.com:rooms:northwind",
+                    "records": [{
+                        "key": "giXFLTGBdnnQJRoIsktuIg",
+                        "version": 412,
+                        "epoch": 7,
+                        "status": "active",
+                        "updatedAt": "2026-01-01T00:00:00Z"
+                    }],
+                    "complete": true,
+                    "lastPrune": { "version": 413, "at": "2026-10-01T00:00:05Z", "removed": 14 },
+                    "verification": {
+                        "priorRoots": "notChecked",
+                        "anchor": "ahead",
+                        "count": "agrees",
+                        "head": {
+                            "dataCommitment": "zQmbWqxBEKC3P8tqsKc98xmWNzrzDtRLMiMPL8wBuTGsMnR",
+                            "recordCount": 1,
+                            "headVersion": 413
+                        }
+                    }
+                })
+            ),
+        ),
+        (
             uris::TASK_ROOMS_KEYS_SEAL_0_1,
             checked!(
                 specs::rooms::keys::seal::v0_1::Payload,

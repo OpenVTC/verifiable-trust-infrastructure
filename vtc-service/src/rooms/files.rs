@@ -26,9 +26,13 @@ use trust_tasks_rs::specs::rooms::blobs::upload::{
 };
 use trust_tasks_rs::specs::rooms::info::v0_1 as rooms_info;
 use trust_tasks_rs::specs::rooms::records::{
-    get::v0_2 as get_v2, list::v0_2 as list_v2, put::v0_2 as put_v2, put::v0_3 as put_v3,
+    get::v0_2 as get_v2, list::v0_2 as list_v2, put::v0_2 as put_v2,
 };
 use trust_tasks_rs::specs::rooms::usage::v0_1 as rooms_usage;
+use trust_tasks_rs::specs::rooms::{
+    info::v0_2 as info_v2, records::list::v0_3 as list_v3, records::prune::v0_1 as records_prune,
+};
+use vti_rooms::record_tasks;
 use trust_tasks_rs::{RejectReason, TrustTask};
 use vti_common::error::AppError;
 use vti_common::store::Store;
@@ -431,7 +435,7 @@ pub(crate) async fn handle_put_record_v2(
 /// provenance and `validUntil` — stored and served exactly as received, never acted on
 /// (consumer item 11). A sealed write is 0.2's: those members travel inside the body.
 pub(crate) async fn handle_put_record_v3(
-    doc: TrustTask<put_v3::Payload>,
+    doc: TrustTask<Value>,
     ctx: RoomCtx,
 ) -> TrustTaskOutcome {
     let payload = match payload_json(&doc) {
@@ -478,7 +482,149 @@ pub(crate) async fn handle_list_records_v2(
         Ok(r) => r,
         Err(o) => return o,
     };
-    super::handlers::list_records(&doc, &ctx, req, true).await
+    super::handlers::list_records(&doc, &ctx, req, 2).await
+}
+
+/// `rooms/records/list/0.3`: the 0.2 listing, and the room's `lastPrune` on every page.
+pub(crate) async fn handle_list_records_v3(
+    doc: TrustTask<list_v3::Payload>,
+    ctx: RoomCtx,
+) -> TrustTaskOutcome {
+    let req: ListRecordsBody = match payload_json(&doc).and_then(|p| as_v0_1(&doc, p)) {
+        Ok(r) => r,
+        Err(o) => return o,
+    };
+    super::handlers::list_records(&doc, &ctx, req, 3).await
+}
+
+/// `rooms/create/0.2`: 0.1, and the room's record retention, recorded as given.
+pub(crate) async fn handle_create_v2(
+    doc: TrustTask<Value>,
+    ctx: RoomCtx,
+) -> TrustTaskOutcome {
+    let payload = match payload_json(&doc) {
+        Ok(p) => p,
+        Err(o) => return o,
+    };
+    let (retention, v0_1) = match record_tasks::create_v2_parts(&payload) {
+        Ok(parts) => parts,
+        Err(r) => return refused(&doc, r),
+    };
+    let req: vti_rooms::wire::CreateRoomBody = match serde_json::from_value(v0_1) {
+        Ok(r) => r,
+        Err(e) => {
+            return reject_with(
+                &doc,
+                RejectReason::MalformedRequest {
+                    reason: e.to_string(),
+                },
+            );
+        }
+    };
+    super::handlers::create_room(&doc, &ctx, &req, retention, true).await
+}
+
+/// `rooms/info/0.2`. Needs `read`: 0.1's answer, the record retention in force and the
+/// room's latest prune.
+pub(crate) async fn handle_info_v2(
+    doc: TrustTask<info_v2::Payload>,
+    ctx: RoomCtx,
+) -> TrustTaskOutcome {
+    let payload = match payload_json(&doc) {
+        Ok(p) => p,
+        Err(o) => return o,
+    };
+    let (room, authorized) = match authorize(&doc, &ctx, &payload, Action::Read).await {
+        Ok(r) => r,
+        Err(o) => return o,
+    };
+    render(
+        &doc,
+        record_tasks::info_v2(&ctx.state.room_files, &room, &authorized, &payload).await,
+    )
+}
+
+/// `rooms/records/prune/0.1`: remove what the room's record retention makes eligible.
+/// Needs `admin` — never `curate` or `write`.
+pub(crate) async fn handle_records_prune(
+    doc: TrustTask<records_prune::Payload>,
+    ctx: RoomCtx,
+) -> TrustTaskOutcome {
+    let payload = match payload_json(&doc) {
+        Ok(p) => p,
+        Err(o) => return o,
+    };
+    let (room, authorized) = match authorize(&doc, &ctx, &payload, Action::Admin).await {
+        Ok(r) => r,
+        Err(o) => return o,
+    };
+    let state = &ctx.state;
+    match record_tasks::prune(
+        &state.room_files,
+        &state.rooms_ks,
+        &state.room_records_ks,
+        &room,
+        &authorized,
+        &payload,
+        now(),
+    )
+    .await
+    {
+        Ok((body, audit)) => {
+            if let Some(audit) = audit {
+                super::handlers::audit_room_detail(
+                    state,
+                    &room,
+                    &authorized,
+                    vti_rooms::audit::RoomOperation::PruneRecords,
+                    &audit,
+                )
+                .await;
+            }
+            render(&doc, Ok(body))
+        }
+        Err(r) => refused(&doc, r),
+    }
+}
+
+/// `rooms/records/retention/set/0.1`: replace the room's record retention. Needs `admin`.
+pub(crate) async fn handle_retention_set(
+    doc: TrustTask<Value>,
+    ctx: RoomCtx,
+) -> TrustTaskOutcome {
+    let payload = match payload_json(&doc) {
+        Ok(p) => p,
+        Err(o) => return o,
+    };
+    let (room, authorized) = match authorize(&doc, &ctx, &payload, Action::Admin).await {
+        Ok(r) => r,
+        Err(o) => return o,
+    };
+    let state = &ctx.state;
+    match record_tasks::retention_set(
+        &state.room_files,
+        &state.rooms_ks,
+        &room,
+        &authorized,
+        &payload,
+        None,
+        now(),
+    )
+    .await
+    {
+        Ok((body, audit)) => {
+            super::handlers::audit_room_detail(
+                state,
+                &room,
+                &authorized,
+                vti_rooms::audit::RoomOperation::SetRecordRetention,
+                &audit,
+            )
+            .await;
+            render(&doc, Ok(body))
+        }
+        Err(r) => refused(&doc, r),
+    }
 }
 
 /// `rooms/blobs/upload/begin/0.1`. Needs `write`.

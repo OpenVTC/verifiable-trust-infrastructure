@@ -366,6 +366,8 @@ async fn a_mirror_accepts_the_list() {
     let f = RoomFixture::new(Visibility::Attributed).await;
     let mirror = Room {
         mirror_of: Some("https://primary.example".into()),
+        record_retention: None,
+        last_prune: None,
         ..f.room.clone()
     };
     let list = signed_list(

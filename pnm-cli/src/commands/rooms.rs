@@ -20,6 +20,7 @@ use vta_sdk::client::VtaClient;
 
 use crate::cli::{
     RoomCommands, RoomFileCommands, RoomKeysCommands, RoomOffersCommands, RoomOwnerCommands,
+    RoomRecordsCommands, RoomRetentionCommands,
     RoomProfileCommands,
 };
 
@@ -635,6 +636,74 @@ pub(crate) async fn run(
             )
             .await
         }
+        RoomCommands::Records { command } => match command {
+            RoomRecordsCommands::Prune {
+                room_id,
+                host,
+                host_did,
+                kinds,
+                reason,
+                dry_run,
+                yes,
+            } => {
+                rooms::cmd_rooms_records_prune(
+                    client,
+                    RoomTarget {
+                        host_url: &host,
+                        host_did: host_did.as_deref(),
+                        room_id: &room_id,
+                    },
+                    signer,
+                    kinds,
+                    reason,
+                    dry_run,
+                    yes,
+                )
+                .await
+            }
+            RoomRecordsCommands::Retention { command } => match command {
+                RoomRetentionCommands::Show {
+                    room_id,
+                    host,
+                    host_did,
+                } => {
+                    rooms::cmd_rooms_retention_show(
+                        client,
+                        RoomTarget {
+                            host_url: &host,
+                            host_did: host_did.as_deref(),
+                            room_id: &room_id,
+                        },
+                        signer,
+                    )
+                    .await
+                }
+                RoomRetentionCommands::Set {
+                    room_id,
+                    host,
+                    host_did,
+                    tombstone_days,
+                    record_days,
+                    clear,
+                    reason,
+                } => {
+                    rooms::cmd_rooms_retention_set(
+                        client,
+                        RoomTarget {
+                            host_url: &host,
+                            host_did: host_did.as_deref(),
+                            room_id: &room_id,
+                        },
+                        signer,
+                        tombstone_days,
+                        record_days,
+                        clear,
+                        reason,
+                    )
+                    .await
+                }
+            },
+        },
         RoomCommands::Keys { command } => match command {
             RoomKeysCommands::Commit {
                 room_id,

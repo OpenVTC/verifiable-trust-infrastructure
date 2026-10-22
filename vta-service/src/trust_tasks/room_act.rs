@@ -1822,6 +1822,8 @@ mod tests {
                 created_at: 0,
                 updated_at: 0,
                 mirror_of: None,
+                record_retention: None,
+                last_prune: None,
             },
         )
         .await
@@ -1969,6 +1971,8 @@ mod tests {
                 created_at: 0,
                 updated_at: 0,
                 mirror_of: None,
+                record_retention: None,
+                last_prune: None,
             },
         )
         .await

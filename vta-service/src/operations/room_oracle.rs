@@ -586,6 +586,8 @@ mod tests {
             created_at: 0,
             updated_at: 0,
             mirror_of: None,
+            record_retention: None,
+            last_prune: None,
         };
 
         // The presenter is the agent: the leaf was granted to it, and a VAC is not a bearer
@@ -664,6 +666,8 @@ mod tests {
             created_at: 0,
             updated_at: 0,
             mirror_of: None,
+            record_retention: None,
+            last_prune: None,
         };
 
         // The member holds strictly more authority than the agent, and still cannot use
@@ -825,6 +829,8 @@ mod tests {
             created_at: 0,
             updated_at: 0,
             mirror_of: None,
+            record_retention: None,
+            last_prune: None,
         }
     }
 

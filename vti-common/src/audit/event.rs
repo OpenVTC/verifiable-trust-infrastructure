@@ -933,6 +933,28 @@ pub enum AuditEvent {
     /// admitted or removed, an offer withdrawn. The owner's record, never the
     /// host's. Never carries a credential, a key, a Welcome or a KeyPackage.
     CommunityRoomChanged(CommunityRoomChangedData),
+
+    /// A room's records pruned under its record retention, or the retention
+    /// replaced (`rooms/records/prune`, `rooms/records/retention/set`): the
+    /// mark, the reason, the rule and the kinds asked. Counts and rules only —
+    /// never a removed record's key or anything it said.
+    RoomRetention(RoomRetentionData),
+}
+
+/// Payload for [`AuditEvent::RoomRetention`].
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RoomRetentionData {
+    /// The room's own identifier.
+    pub room_id: String,
+    /// `room.records.prune` or `room.records.retention.set`.
+    pub action: String,
+    /// The room's visibility, so a reader can tell an actorless entry from a missing one.
+    pub visibility: String,
+    /// What the specification asks a host to keep: for a prune the mark
+    /// (`prune`), `reason`, `recordRetention`, `kinds` and `blobsReleased`; for a
+    /// change, `previous`, `recordRetention` and `reason`.
+    pub detail: serde_json::Value,
 }
 
 /// Payload for [`AuditEvent::RoomStorageChanged`].
@@ -1238,6 +1260,7 @@ impl AuditEvent {
             Self::RoomStorageChanged(..) => "RoomStorageChanged",
             Self::RoomLimitsChanged(..) => "RoomLimitsChanged",
             Self::CommunityRoomChanged(..) => "CommunityRoomChanged",
+            Self::RoomRetention(..) => "RoomRetention",
         }
     }
 

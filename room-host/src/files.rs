@@ -18,6 +18,7 @@ use uuid::Uuid;
 use vti_rooms::Room;
 use vti_rooms::authz::{self, Action, AuthorizedAction};
 use vti_rooms::blob_tasks::{self, Refusal, TaskResult};
+use vti_rooms::record_tasks;
 use vti_rooms::blobs::BlobError;
 use vti_rooms::revocation_tasks;
 use vti_rooms::storage;
@@ -493,7 +494,141 @@ pub(crate) async fn list_v2(state: &HostState, doc: &TrustTask<Value>, payload: 
     if let Err(r) = blob_tasks::parse::<list_v2_spec::Payload>(&payload) {
         return refused(doc, r);
     }
-    super::list_versioned(state, doc, blob_tasks::as_v0_1(payload), true).await
+    super::list_versioned(state, doc, blob_tasks::as_v0_1(payload), 2).await
+}
+
+/// `rooms/records/list/0.3`: the 0.2 listing, and the room's `lastPrune` on every page.
+pub(crate) async fn list_v3(state: &HostState, doc: &TrustTask<Value>, payload: Value) -> Answer {
+    if let Err(r) = blob_tasks::parse::<
+        trust_tasks_rs::specs::rooms::records::list::v0_3::Payload,
+    >(&payload)
+    {
+        return refused(doc, r);
+    }
+    super::list_versioned(state, doc, blob_tasks::as_v0_1(payload), 3).await
+}
+
+/// A 0.2 listing with the room's `lastPrune` added, answered as 0.3.
+pub(crate) async fn list_v3_response(
+    snapshot: &vti_rooms::blobs::ReadSnapshot<'_>,
+    doc: &TrustTask<Value>,
+    room: &Room,
+    response: impl serde::Serialize,
+) -> Answer {
+    render(
+        doc,
+        record_tasks::list_v3_response(snapshot, room, response).await,
+    )
+}
+
+/// A 0.1 create response with its recorded retention, answered as 0.2.
+pub(crate) fn create_v2_response(
+    doc: &TrustTask<Value>,
+    response: impl serde::Serialize,
+    recorded: Option<&vti_rooms::record_retention::RecordRetention>,
+) -> Answer {
+    render(doc, record_tasks::create_v2_response(response, recorded))
+}
+
+/// `rooms/info/0.2`: 0.1's answer, the record retention in force and the latest prune.
+pub(crate) async fn info_v2(state: &HostState, doc: &TrustTask<Value>, payload: Value) -> Answer {
+    if let Err(r) = blob_tasks::parse::<trust_tasks_rs::specs::rooms::info::v0_2::Payload>(&payload)
+    {
+        return refused(doc, r);
+    }
+    let (room, _presenter, authorized) = match authorize(state, doc, &payload, Action::Read).await {
+        Ok(r) => r,
+        Err(a) => return a,
+    };
+    render(
+        doc,
+        record_tasks::info_v2(&state.files, &room, &authorized, &payload).await,
+    )
+}
+
+/// `rooms/records/prune/0.1`: remove what the room's record retention makes eligible.
+/// Needs `admin` — never `curate` or `write`.
+pub(crate) async fn records_prune(
+    state: &HostState,
+    doc: &TrustTask<Value>,
+    payload: Value,
+) -> Answer {
+    if let Err(r) = blob_tasks::parse::<
+        trust_tasks_rs::specs::rooms::records::prune::v0_1::Payload,
+    >(&payload)
+    {
+        return refused(doc, r);
+    }
+    let (room, _presenter, authorized) = match authorize(state, doc, &payload, Action::Admin).await
+    {
+        Ok(r) => r,
+        Err(a) => return a,
+    };
+    match record_tasks::prune(
+        &state.files,
+        &state.rooms,
+        &state.records,
+        &room,
+        &authorized,
+        &payload,
+        now(),
+    )
+    .await
+    {
+        Ok((body, audit)) => {
+            if let Some(audit) = audit {
+                super::audit_room_detail(
+                    &room,
+                    &authorized,
+                    vti_rooms::audit::RoomOperation::PruneRecords,
+                    &audit,
+                );
+            }
+            respond(doc, body)
+        }
+        Err(r) => refused(doc, r),
+    }
+}
+
+/// `rooms/records/retention/set/0.1`: replace the room's record retention. Needs `admin`.
+pub(crate) async fn retention_set(
+    state: &HostState,
+    doc: &TrustTask<Value>,
+    payload: Value,
+) -> Answer {
+    if let Err(r) = blob_tasks::parse::<
+        trust_tasks_rs::specs::rooms::records::retention::set::v0_1::Payload,
+    >(&payload)
+    {
+        return refused(doc, r);
+    }
+    let (room, _presenter, authorized) = match authorize(state, doc, &payload, Action::Admin).await
+    {
+        Ok(r) => r,
+        Err(a) => return a,
+    };
+    match record_tasks::retention_set(
+        &state.files,
+        &state.rooms,
+        &room,
+        &authorized,
+        &payload,
+        None,
+        now(),
+    )
+    .await
+    {
+        Ok((body, audit)) => {
+            super::audit_room_detail(
+                &room,
+                &authorized,
+                vti_rooms::audit::RoomOperation::SetRecordRetention,
+                &audit,
+            );
+            respond(doc, body)
+        }
+        Err(r) => refused(doc, r),
+    }
 }
 
 /// A 0.1 get response with `blobs` added, answered as 0.2.
@@ -2615,4 +2750,251 @@ mod tests {
             assert_ne!(status, StatusCode::OK, "{bad}: {out}");
         }
     }
+
+    // ─── record retention and prune (trust-tasks-tf #868) ─────────────────
+
+    const DAY: u64 = 24 * 60 * 60;
+
+    /// A room created with `rooms/create/0.2` and the retention it states, echoed back.
+    async fn retained_room(h: &Host, retention: Value) -> RoomFixture {
+        let f = RoomFixture::new(Visibility::Open).await;
+        let (status, body) = call(
+            &h.app,
+            vti_rooms::record_tasks::CREATE_V2_TYPE,
+            json!({ "roomId": f.room.room_id, "ownerDid": f.room.owner_did,
+                    "visibility": "open", "recordRetention": retention }),
+            &f.owner,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["recordRetention"], retention, "echoed as recorded");
+        f
+    }
+
+    /// Write a record straight to storage as of `age_days` ago, and curate it then too.
+    async fn aged(h: &Host, f: &RoomFixture, key: &str, age_days: u64, curation: Option<(&str, bool)>) {
+        let at = now() - age_days * DAY;
+        let record = vti_rooms::Record {
+            key: key.into(),
+            version: 0,
+            epoch: None,
+            status: vti_rooms::RecordStatus::Active,
+            pinned: false,
+            sealed: None,
+            nonce: None,
+            sealed_version: None,
+            cleartext: Some(json!({ "body": key })),
+            author: Some(f.owner.did.clone()),
+            updated_at: 0,
+        };
+        storage::put_record(&h.state.rooms, &h.state.records, &f.room.room_id, record, None, at)
+            .await
+            .unwrap();
+        if let Some((status, pinned)) = curation {
+            storage::curate_record(
+                &h.state.rooms,
+                &h.state.records,
+                &f.room.room_id,
+                key,
+                storage::Curation {
+                    status: serde_json::from_value(json!(status)).ok(),
+                    pinned: Some(pinned),
+                    expected_version: None,
+                },
+                at,
+            )
+            .await
+            .unwrap();
+        }
+    }
+
+    fn prune_req(f: &RoomFixture, kinds: &[&str], dry_run: bool) -> Value {
+        let mut p = json!({ "roomId": f.room.room_id, "presentation": f.as_owner(),
+                            "kinds": kinds, "reason": "quarterly run of the agreed retention" });
+        if dry_run {
+            p["dryRun"] = json!(true);
+        }
+        p
+    }
+
+    async fn listing(h: &Host, f: &RoomFixture, uri: &str) -> Value {
+        let (status, out) = call(
+            &h.app,
+            uri,
+            json!({ "roomId": f.room.room_id, "presentation": f.as_owner() }),
+            &f.owner,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{out}");
+        out
+    }
+
+    fn keys(listing: &Value) -> Vec<String> {
+        let mut k: Vec<String> = listing["records"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r["key"].as_str().unwrap().to_string())
+            .collect();
+        k.sort();
+        k
+    }
+
+    /// `rooms/records/prune/0.1` items 3–6: a dry run changes nothing; a prune removes exactly
+    /// what the retention makes eligible — an old tombstone and an old unpinned record — and
+    /// keeps a young tombstone, an old pinned record and a fresh one; it takes the next
+    /// version as its mark, which list 0.3, `headVersion` and info 0.2 all report, and which
+    /// list 0.2 leaves out. Audited as `room.records.prune`.
+    #[tokio::test]
+    async fn a_prune_removes_only_what_the_retention_makes_eligible() {
+        let h = host(eager());
+        let f = retained_room(&h, json!({ "tombstoneDays": 30, "recordDays": 365 })).await;
+        aged(&h, &f, "old-tomb", 40, Some(("retracted", false))).await;
+        aged(&h, &f, "young-tomb", 10, Some(("retracted", false))).await;
+        aged(&h, &f, "old-active", 400, None).await;
+        aged(&h, &f, "old-pinned", 400, Some(("active", true))).await;
+        aged(&h, &f, "fresh", 0, None).await;
+
+        let (status, dry) = call(&h.app, PRUNE, prune_req(&f, &["retracted", "aged"], true), &f.owner).await;
+        assert_eq!(status, StatusCode::OK, "{dry}");
+        assert_eq!(dry["removed"], 2, "{dry}");
+        assert_eq!(dry["dryRun"], true);
+        assert!(dry.get("prune").is_none(), "a dry run leaves no mark");
+        assert_eq!(keys(&listing(&h, &f, LIST_V3).await).len(), 5, "nothing removed");
+
+        let before = storage::get_room(&h.state.rooms, &f.room.room_id).await.unwrap();
+        let (status, done) = call(&h.app, PRUNE, prune_req(&f, &["retracted", "aged"], false), &f.owner).await;
+        assert_eq!(status, StatusCode::OK, "{done}");
+        assert_eq!(done["removed"], 2);
+        assert_eq!(done["recordRetention"], json!({ "tombstoneDays": 30, "recordDays": 365 }));
+        assert_eq!(done["prune"]["version"], before.next_version, "the next version");
+        assert_eq!(done["prune"]["removed"], 2);
+        assert!(done.get("dryRun").is_none());
+
+        let v3 = listing(&h, &f, LIST_V3).await;
+        assert_eq!(keys(&v3), ["fresh", "old-pinned", "young-tomb"]);
+        assert_eq!(v3["lastPrune"], done["prune"], "every page carries the mark");
+        assert_eq!(v3["headVersion"], done["prune"]["version"], "the prune moves the head");
+        assert!(listing(&h, &f, LIST_V2_TYPE).await.get("lastPrune").is_none(), "0.2 is unchanged");
+
+        let info = listing(&h, &f, INFO_V2).await;
+        assert_eq!(info["recordRetention"], json!({ "tombstoneDays": 30, "recordDays": 365 }));
+        assert_eq!(info["lastPrune"], done["prune"]);
+        assert!(listing(&h, &f, INFO_TYPE).await.get("lastPrune").is_none());
+
+        // A second prune finds nothing eligible: a success, no version, no new mark.
+        let (status, again) = call(&h.app, PRUNE, prune_req(&f, &["retracted", "aged"], false), &f.owner).await;
+        assert_eq!(status, StatusCode::OK, "{again}");
+        assert_eq!(again["removed"], 0);
+        assert!(again.get("prune").is_none());
+        let audited = crate::tests_audited();
+        assert!(audited.contains(&"room.records.prune"), "{audited:?}");
+    }
+
+    /// Item 3: a request none of whose kinds the retention states a rule for is
+    /// `noRetention` — with the retention in `details` — never `removed: 0`.
+    #[tokio::test]
+    async fn no_rule_for_the_kinds_asked_is_no_retention() {
+        let h = host(eager());
+        let f = room(&h).await;
+        aged(&h, &f, "ancient", 9_000, Some(("retracted", false))).await;
+        let (_, out) = call(&h.app, PRUNE, prune_req(&f, &["retracted", "aged"], false), &f.owner).await;
+        assert_eq!(out["code"], "rooms/records/prune:noRetention", "{out}");
+
+        let f = retained_room(&h, json!({ "tombstoneDays": 30 })).await;
+        let (_, out) = call(&h.app, PRUNE, prune_req(&f, &["aged"], false), &f.owner).await;
+        assert_eq!(out["code"], "rooms/records/prune:noRetention", "{out}");
+        assert_eq!(out["details"]["recordRetention"], json!({ "tombstoneDays": 30 }));
+    }
+
+    /// `admin` only: a `read` chain is the standard `permissionDenied`, for the prune and
+    /// for the retention it is decided under.
+    #[tokio::test]
+    async fn prune_and_retention_set_need_admin() {
+        let h = host(eager());
+        let f = retained_room(&h, json!({ "tombstoneDays": 30 })).await;
+        let mut req = prune_req(&f, &["retracted"], false);
+        req["presentation"] = serde_json::to_value(f.as_successor()).unwrap();
+        let (status, out) = call(&h.app, PRUNE, req, &f.successor).await;
+        assert_ne!(status, StatusCode::OK, "{out}");
+        let (status, out) = call(
+            &h.app,
+            RETENTION_SET,
+            json!({ "roomId": f.room.room_id, "presentation": f.as_successor(),
+                    "recordRetention": { "tombstoneDays": 1 }, "reason": "shorter" }),
+            &f.successor,
+        )
+        .await;
+        assert_ne!(status, StatusCode::OK, "{out}");
+    }
+
+    /// `rooms/records/retention/set/0.1`: replaced whole, the previous one returned, a stale
+    /// `expectedRetention` refused `retentionConflict` with the one in force, `{}` clears —
+    /// and nothing is removed by the change itself.
+    #[tokio::test]
+    async fn retention_set_replaces_whole_checks_its_precondition_and_removes_nothing() {
+        let h = host(eager());
+        let f = room(&h).await;
+        aged(&h, &f, "old", 400, None).await;
+        let set = |retention: Value, expected: Option<Value>| {
+            let mut p = json!({ "roomId": f.room.room_id, "presentation": f.as_owner(),
+                                "recordRetention": retention, "reason": "the agreed policy" });
+            if let Some(e) = expected {
+                p["expectedRetention"] = e;
+            }
+            p
+        };
+        let (status, out) = call(&h.app, RETENTION_SET, set(json!({ "recordDays": 365, "tombstoneDays": 30 }), Some(json!({}))), &f.owner).await;
+        assert_eq!(status, StatusCode::OK, "{out}");
+        assert_eq!(out["previous"], json!({}));
+        assert_eq!(out["recordRetention"], json!({ "tombstoneDays": 30, "recordDays": 365 }));
+        assert_eq!(keys(&listing(&h, &f, LIST_V3).await), ["old"], "a change removes nothing");
+
+        let (_, out) = call(&h.app, RETENTION_SET, set(json!({ "recordDays": 30 }), Some(json!({}))), &f.owner).await;
+        assert_eq!(out["code"], "rooms/records/retention/set:retentionConflict", "{out}");
+        assert_eq!(out["details"]["recordRetention"], json!({ "tombstoneDays": 30, "recordDays": 365 }));
+
+        // Whole: `tombstoneDays` left out is no longer stated.
+        let (status, out) = call(&h.app, RETENTION_SET, set(json!({ "recordDays": 30 }), None), &f.owner).await;
+        assert_eq!(status, StatusCode::OK, "{out}");
+        assert_eq!(listing(&h, &f, INFO_V2).await["recordRetention"], json!({ "recordDays": 30 }));
+        let (status, _) = call(&h.app, RETENTION_SET, set(json!({}), None), &f.owner).await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(listing(&h, &f, INFO_V2).await.get("recordRetention").is_none(), "cleared");
+    }
+
+    /// A pruned record's blob is released, exactly as a retraction releases it.
+    #[tokio::test]
+    async fn a_prune_releases_the_files_only_pruned_records_named() {
+        let h = host(eager());
+        let f = retained_room(&h, json!({ "recordDays": 1 })).await;
+        let b = blob(CHUNK + 10, 9);
+        let blob_ref = upload(&h, &f, &b).await;
+        let (status, out) = call(
+            &h.app,
+            PUT_V2_TYPE,
+            json!({ "roomId": f.room.room_id, "key": "with-file", "presentation": f.as_owner(),
+                    "cleartext": { "body": "x" }, "blobs": [blob_ref] }),
+            &f.owner,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{out}");
+        // Age it past the rule by rewriting its stored time.
+        let mut r = storage::get_record(&h.state.records, &f.room.room_id, "with-file").await.unwrap();
+        r.updated_at = now() - 3 * DAY;
+        h.state
+            .records
+            .insert(format!("{}{}:with-file", storage::RECORDS_PREFIX, f.room.room_id), &r)
+            .await
+            .unwrap();
+        let (status, done) = call(&h.app, PRUNE, prune_req(&f, &["aged"], false), &f.owner).await;
+        assert_eq!(status, StatusCode::OK, "{done}");
+        assert_eq!(done["removed"], 1);
+        assert_eq!(done["blobsReleased"], 1, "{done}");
+    }
+
+    const PRUNE: &str = vti_rooms::record_tasks::PRUNE_TYPE;
+    const RETENTION_SET: &str = vti_rooms::record_tasks::RETENTION_SET_TYPE;
+    const LIST_V3: &str = vti_rooms::record_tasks::LIST_V3_TYPE;
+    const INFO_V2: &str = vti_rooms::record_tasks::INFO_V2_TYPE;
 }

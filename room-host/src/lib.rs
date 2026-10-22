@@ -262,6 +262,29 @@ fn audit_room(
     );
 }
 
+/// [`audit_room`] for a retention act — a prune or a change to the rule — with what the
+/// specification asks a host to keep: the mark, the reason, the retention applied and the
+/// kinds asked, and never anything a removed record said (`rooms/records/prune/0.1` *The
+/// audit trail*). The requester is the tier's to disclose, as for every operation.
+fn audit_room_detail(
+    room: &Room,
+    authorized: &authz::AuthorizedAction,
+    operation: RoomOperation,
+    detail: &vti_rooms::record_tasks::RetentionAudit,
+) {
+    let entry = rooms_audit::for_operation(room.visibility, authorized, None);
+    #[cfg(test)]
+    AUDITED.with(|audited| audited.borrow_mut().push(operation.action_name()));
+    tracing::info!(
+        action = operation.action_name(),
+        room = %entry.room_id,
+        actor = %entry.actor.as_str(),
+        visibility = ?room.visibility,
+        detail = %detail.detail(),
+        "room operation"
+    );
+}
+
 // What `audit_room` recorded on this thread, so a test can assert on the trail without
 // capturing log output. A thread-local `tracing` subscriber is not reliable for that when
 // other tests share the process (`cargo test`): a callsite's cached interest can be settled
@@ -269,6 +292,13 @@ fn audit_room(
 #[cfg(test)]
 thread_local! {
     static AUDITED: std::cell::RefCell<Vec<&'static str>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// What `audit_room` and `audit_room_detail` recorded on this thread, for a test in any
+/// module of this crate.
+#[cfg(test)]
+pub(crate) fn tests_audited() -> Vec<&'static str> {
+    AUDITED.with(|audited| audited.borrow().clone())
 }
 
 fn now() -> u64 {
@@ -562,7 +592,14 @@ async fn dispatch_received(state: &Arc<HostState>, body: &[u8]) -> Answer {
 async fn route(state: &Arc<HostState>, doc: TrustTask<Value>) -> Answer {
     let payload = doc.payload.clone();
     match doc.type_uri.to_string().as_str() {
-        ROOMS_CREATE_TYPE => create(state, &doc, payload).await,
+        ROOMS_CREATE_TYPE => create(state, &doc, payload, false).await,
+        vti_rooms::record_tasks::CREATE_V2_TYPE => create(state, &doc, payload, true).await,
+        vti_rooms::record_tasks::INFO_V2_TYPE => files::info_v2(state, &doc, payload).await,
+        vti_rooms::record_tasks::LIST_V3_TYPE => files::list_v3(state, &doc, payload).await,
+        vti_rooms::record_tasks::PRUNE_TYPE => files::records_prune(state, &doc, payload).await,
+        vti_rooms::record_tasks::RETENTION_SET_TYPE => {
+            files::retention_set(state, &doc, payload).await
+        }
         ROOMS_RECORDS_PUT_TYPE => put(state, &doc, payload).await,
         ROOMS_RECORDS_GET_TYPE => get(state, &doc, payload).await,
         ROOMS_RECORDS_LIST_TYPE => list(state, &doc, payload).await,
@@ -625,6 +662,8 @@ fn is_consequential(type_uri: &str) -> bool {
             | files::USAGE_TYPE
             | files::GET_V2_TYPE
             | files::LIST_V2_TYPE
+            | vti_rooms::record_tasks::LIST_V3_TYPE
+            | vti_rooms::record_tasks::INFO_V2_TYPE
             | vti_rooms::revocation_tasks::GET_TYPE
     )
 }
@@ -667,7 +706,17 @@ fn retain_until(
     }
 }
 
-async fn create(state: &HostState, doc: &TrustTask<Value>, payload: Value) -> Answer {
+/// `rooms/create` 0.1, or 0.2 (`v2`), which also records the room's record retention.
+async fn create(state: &HostState, doc: &TrustTask<Value>, payload: Value, v2: bool) -> Answer {
+    // 0.2 is 0.1 and a `recordRetention`: checked as 0.2, then read as 0.1 for the rest.
+    let (record_retention, payload) = if v2 {
+        match vti_rooms::record_tasks::create_v2_parts(&payload) {
+            Ok(parts) => parts,
+            Err(r) => return files::record_refused(doc, r),
+        }
+    } else {
+        (None, payload)
+    };
     let req: CreateRoomBody = match serde_json::from_value(payload) {
         Ok(r) => r,
         Err(e) => {
@@ -717,19 +766,25 @@ async fn create(state: &HostState, doc: &TrustTask<Value>, payload: Value) -> An
         created_at: now(),
         updated_at: now(),
         mirror_of: None,
+        // As given (create 0.2): never shortened, and `{}` records none.
+        record_retention: record_retention.filter(|r| !r.is_empty() || r.ext.is_some()),
+        last_prune: None,
     };
     match storage::create_room(&state.rooms, &room).await {
-        Ok(()) => respond(
-            doc,
-            CreateRoomResponse {
+        Ok(()) => {
+            let response = CreateRoomResponse {
                 room_id: req.room_id,
                 epoch: 1,
                 // What was recorded, never what was asked: the two differ on a
                 // host that predates this member, and echoing the request would
                 // tell a caller their choice took effect when it did not.
                 anchor_cadence: Some(room.anchor_cadence),
-            },
-        ),
+            };
+            if !v2 {
+                return respond(doc, response);
+            }
+            files::create_v2_response(doc, response, room.record_retention.as_ref())
+        }
         Err(e) => from_app_error(doc, &e),
     }
 }
@@ -910,12 +965,10 @@ async fn get_versioned(
         Ok(a) => a,
         Err(e) => return from_app_error(doc, &e),
     };
-    // A 0.2 read names the blobs of the version it returns: the record and its
-    // references are read under the lock every record write holds.
-    let snapshot = match v2 {
-        true => Some(state.files.read_snapshot().await),
-        false => None,
-    };
+    // Read under the lock every record write holds — and every prune: a 0.2 read names the
+    // blobs of the version it returns, and every read's head must be one snapshot with its
+    // root, which a prune moves both of (`HeadVersion`).
+    let snapshot = state.files.read_snapshot().await;
     match storage::get_record(&state.records, &req.room_id, &req.key).await {
         Ok(record) => {
             audit_room(&room, &authorized, RoomOperation::GetRecord, Some(&req.key));
@@ -923,9 +976,9 @@ async fn get_versioned(
             // `respond(doc, record)` put the *storage* record on the wire.
             let (commitment, trace) = record_verification(state, &req.room_id, &req.key).await;
             let response = GetRecordResponse::of(&record, commitment.as_ref(), trace);
-            let Some(snapshot) = snapshot else {
+            if !v2 {
                 return respond(doc, response);
-            };
+            }
             files::get_v2_response(&snapshot, doc, &req.room_id, &req.key, response).await
         }
         Err(e) => from_app_error(doc, &e),
@@ -933,15 +986,16 @@ async fn get_versioned(
 }
 
 async fn list(state: &HostState, doc: &TrustTask<Value>, payload: Value) -> Answer {
-    list_versioned(state, doc, payload, false).await
+    list_versioned(state, doc, payload, 1).await
 }
 
-/// `rooms/records/list` 0.1, or 0.2 (`v2`), whose rows also name their blobs.
+/// `rooms/records/list` 0.1; 0.2, whose rows also name their blobs; or 0.3, whose every
+/// page also carries the room's `lastPrune`.
 async fn list_versioned(
     state: &HostState,
     doc: &TrustTask<Value>,
     payload: Value,
-    v2: bool,
+    minor: u8,
 ) -> Answer {
     let req: ListRecordsBody = match serde_json::from_value(payload) {
         Ok(r) => r,
@@ -979,10 +1033,9 @@ async fn list_versioned(
     // Paginated honestly: the page the caller asked for, and a cursor when more
     // remain. This used to `take(limit)` and drop the rest without a word, so a
     // short page and a complete room were indistinguishable.
-    let snapshot = match v2 {
-        true => Some(state.files.read_snapshot().await),
-        false => None,
-    };
+    // Under the record-write lock, which a prune also holds: the page, the head and the
+    // room's `lastPrune` are one snapshot.
+    let snapshot = state.files.read_snapshot().await;
     match storage::list_records_page(
         &state.records,
         &req.room_id,
@@ -1013,10 +1066,20 @@ async fn list_versioned(
                 record_count: head.as_ref().map(|h| h.record_count),
                 head_version: head.as_ref().map(|h| h.head_version),
             };
-            let Some(snapshot) = snapshot else {
-                return respond(doc, response);
-            };
-            files::list_v2_response(&snapshot, doc, &req.room_id, response).await
+            match minor {
+                1 => respond(doc, response),
+                2 => files::list_v2_response(&snapshot, doc, &req.room_id, response).await,
+                _ => {
+                    // The room as it stands under the lock: its `lastPrune` is the one the
+                    // page and head were taken with.
+                    match storage::get_room(&state.rooms, &req.room_id).await {
+                        Ok(now_room) => {
+                            files::list_v3_response(&snapshot, doc, &now_room, response).await
+                        }
+                        Err(e) => from_app_error(doc, &e),
+                    }
+                }
+            }
         }
         Err(e) => from_app_error(doc, &e),
     }
@@ -1041,7 +1104,7 @@ async fn record_verification(
     Option<vti_rooms::merkle::TreeHead>,
     Option<vti_rooms::merkle::InclusionProof>,
 ) {
-    match storage::tree_head_with_trace(&state.records, room_id, key).await {
+    match storage::room_tree_head_with_trace(&state.rooms, &state.records, room_id, key).await {
         Ok((head, trace)) => (Some(head), trace),
         Err(e) => {
             tracing::error!(
@@ -1069,7 +1132,7 @@ async fn record_verification(
 /// read that disagreed about the room's root would be this host equivocating
 /// with itself.
 async fn room_head(state: &HostState, room_id: &str) -> Option<vti_rooms::merkle::TreeHead> {
-    match storage::tree_head(&state.records, room_id).await {
+    match storage::room_tree_head(&state.rooms, &state.records, room_id).await {
         Ok(head) => Some(head),
         Err(e) => {
             tracing::error!(
@@ -1940,6 +2003,8 @@ mod tests {
             mirror_state.rooms(),
             &vti_rooms::Room {
                 mirror_of: Some(primary_url.clone()),
+                record_retention: None,
+                last_prune: None,
                 next_version: 1,
                 ..f.room.clone()
             },
@@ -2029,6 +2094,8 @@ mod tests {
             st.rooms(),
             &vti_rooms::Room {
                 mirror_of: Some("https://primary.example.org".into()),
+                record_retention: None,
+                last_prune: None,
                 ..f.room.clone()
             },
         )

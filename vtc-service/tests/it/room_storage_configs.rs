@@ -147,6 +147,8 @@ async fn hosted_room(fix: &Fixture) -> String {
         created_at: 0,
         updated_at: 0,
         mirror_of: None,
+        record_retention: None,
+        last_prune: None,
     };
     vti_rooms::storage::create_room(&fix.vtc.state.rooms_ks, &room)
         .await

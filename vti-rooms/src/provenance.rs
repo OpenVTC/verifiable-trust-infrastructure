@@ -102,6 +102,29 @@ pub fn check(object: &Map<String, Value>) -> Result<(), String> {
                 .map_err(|e| format!("`{member}` is not what the specification allows: {e}")),
         }
     }
+    // The schema itself first: the generated types do not carry every bound it states
+    // (`confidence` in [0, 1], `uniqueItems`). The members are checked inside the one
+    // payload that publishes them all, `rooms/records/put/0.3`'s open-room `cleartext`.
+    // One member per probe, so a refusal names the member it is about.
+    for member in MEMBERS {
+        let Some(v) = object.get(member) else {
+            continue;
+        };
+        let probe = serde_json::json!({
+            "roomId": "did:example:room",
+            "key": "k",
+            "presentation": { "membership": "m", "authority": ["a"] },
+            "cleartext": { "body": "", member: v },
+        });
+        if let Err(e) =
+            <spec::Payload as trust_tasks_rs::validate::ValidatedPayload>::validate_value(&probe)
+        {
+            return Err(format!(
+                "`{member}` is not what the specification allows: {}",
+                e.messages().join("; ")
+            ));
+        }
+    }
     one::<spec::RecordBasis>(object, "basis")?;
     one::<spec::RecordConfidence>(object, "confidence")?;
     one::<spec::RecordEvidenceList>(object, "evidence")?;

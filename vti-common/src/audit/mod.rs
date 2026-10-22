@@ -62,7 +62,7 @@ pub use event::{
     OperationStepUpApprovedData, OperationStepUpData, PersonhoodAssertedData,
     PersonhoodRevokedData, PolicyActivatedData, PolicyUploadedData, REDACTED_MARKER,
     RegistryRecordPolicyOverrideData, RegistryStatusChangedData, RegistrySyncOutcomeData,
-    RestartRequestedData, RoleChangedData, RoomLimitsChangedData, RoomOperationData,
+    RestartRequestedData, RoleChangedData, RoomLimitsChangedData, RoomOperationData, RoomRetentionData,
     RoomStorageChangedData, SchemaChangeData, SessionRevocationRefusedData, SessionRevokedData,
     SignedOutData, SingleAdminModeData, StatusListFlippedData, StepUpApproverData, StepUpEvidence,
     StepUpPasskeyData, TaskConsentData, VetterAutoGrantConfiguredData, VetterAutoGrantSweptData,

@@ -2439,6 +2439,17 @@ impl BlobHost {
         }
     }
 
+    /// Hold the lock every record write holds, for an operation over many records at once
+    /// — a prune (`rooms/records/prune`), or a change to the rule a prune reads. While it
+    /// is held no record is written and no read pairs a root with a head from another
+    /// moment.
+    pub async fn records_lock(&self) -> RecordsLock<'_> {
+        RecordsLock {
+            host: self,
+            _guard: self.lock.lock().await,
+        }
+    }
+
     async fn apply_refs(
         &self,
         room_id: &str,
@@ -2948,6 +2959,49 @@ pub struct RecordBlobs<'a> {
 pub struct ReadSnapshot<'a> {
     host: &'a BlobHost,
     _guard: tokio::sync::MutexGuard<'a, ()>,
+}
+
+/// The record-write lock, held across an operation over many records
+/// ([`BlobHost::records_lock`]).
+pub struct RecordsLock<'a> {
+    host: &'a BlobHost,
+    _guard: tokio::sync::MutexGuard<'a, ()>,
+}
+
+impl RecordsLock<'_> {
+    /// How many stored blobs the records `keys` name that **no other record names** — what
+    /// removing those records releases (`rooms/records/prune/0.1` `blobsReleased`). Reads
+    /// only, so a dry run asks this and changes nothing.
+    pub async fn released_by(&self, room_id: &str, keys: &[String]) -> Result<u64, AppError> {
+        let mut named: std::collections::BTreeMap<String, u64> = Default::default();
+        for key in keys {
+            for b in self.host.record_blobs(room_id, key).await? {
+                *named.entry(b).or_default() += 1;
+            }
+        }
+        let mut released = 0;
+        for (blob_ref, by_removed) in named {
+            if let Some(entry) = self.host.blob(room_id, &blob_ref).await?
+                && entry.refs <= by_removed
+            {
+                released += 1;
+            }
+        }
+        Ok(released)
+    }
+
+    /// Release every blob the records `keys` named, exactly as a retraction releases a
+    /// record's: a blob whose last reference goes is orphaned, and stops counting against
+    /// its room and member at once. Called once the records are gone.
+    pub async fn release(&self, room_id: &str, keys: &[String]) -> Result<(), AppError> {
+        for key in keys {
+            let previous = self.host.record_blobs(room_id, key).await?;
+            self.host
+                .apply_refs(room_id, key, &previous, &[], None)
+                .await?;
+        }
+        Ok(())
+    }
 }
 
 impl ReadSnapshot<'_> {

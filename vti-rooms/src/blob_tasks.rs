@@ -90,7 +90,7 @@ pub enum Refusal {
 /// A task's answer: a response body for its generated response type, or why not.
 pub type TaskResult = Result<Value, Refusal>;
 
-fn declared(
+pub(crate) fn declared(
     code: DeclaredErrorCode,
     message: impl Into<String>,
     details: Option<Value>,
@@ -109,7 +109,7 @@ pub fn parse<P: serde::de::DeserializeOwned>(payload: &Value) -> Result<P, Refus
 
 /// `body`, once it reads as the generated response type `R`: the check that what a host
 /// sends is the specification's response, not a near miss.
-fn checked<R: serde::de::DeserializeOwned>(body: Value) -> TaskResult {
+pub(crate) fn checked<R: serde::de::DeserializeOwned>(body: Value) -> TaskResult {
     match serde_json::from_value::<R>(body.clone()) {
         Ok(_) => Ok(body),
         Err(e) => Err(Refusal::Internal(format!(
@@ -561,6 +561,16 @@ pub async fn info(
     payload: &Value,
 ) -> TaskResult {
     parse::<rooms_info::Payload>(payload)?;
+    checked::<rooms_info::Response>(info_body(files, room, authorized).await?)
+}
+
+/// What `rooms/info` 0.1 answers, before its schema check: 0.2 adds to it
+/// ([`crate::record_tasks::info_v2`]).
+pub(crate) async fn info_body(
+    files: &BlobHost,
+    room: &Room,
+    authorized: &AuthorizedAction,
+) -> Result<Value, Refusal> {
     let limits = files.effective_limits(room).await.map_err(Refusal::App)?;
     let room_usage = files
         .room_usage(&room.room_id)
@@ -583,7 +593,7 @@ pub async fn info(
             .map_err(Refusal::App)?;
         usage["member"] = json!({ "usage": u, "limits": own.limits });
     }
-    checked::<rooms_info::Response>(json!({
+    Ok(json!({
         "roomId": room.room_id,
         "visibility": room.visibility,
         "retentionPolicy": room.retention_policy,
@@ -698,6 +708,11 @@ pub fn put_v2_blobs(payload: &Value) -> Result<Vec<String>, Refusal> {
 /// and a host that rewrote a member would be serving the writer something they did not write.
 pub fn put_v3_parts(payload: &Value) -> Result<(Vec<String>, Option<Value>), Refusal> {
     let req: put_v3::Payload = parse(payload)?;
+    // The bounds the generated type does not carry (`confidence` in [0, 1], a set of
+    // purposes), against the schema itself.
+    if let Some(cleartext) = payload.get("cleartext").and_then(Value::as_object) {
+        crate::provenance::check(cleartext).map_err(Refusal::Malformed)?;
+    }
     let blobs = req
         .blobs
         .unwrap_or_default()
@@ -829,6 +844,16 @@ pub async fn list_v2_response(
     room_id: &str,
     response: impl serde::Serialize,
 ) -> TaskResult {
+    checked::<list_v2::Response>(list_v2_body(snapshot, room_id, response).await?)
+}
+
+/// What `rooms/records/list` 0.2 answers, before its schema check: 0.3 adds to it
+/// ([`crate::record_tasks::list_v3_response`]).
+pub(crate) async fn list_v2_body(
+    snapshot: &ReadSnapshot<'_>,
+    room_id: &str,
+    response: impl serde::Serialize,
+) -> Result<Value, Refusal> {
     let mut body =
         serde_json::to_value(response).map_err(|e| Refusal::App(AppError::Serialization(e)))?;
     if let Some(rows) = body["records"].as_array_mut() {
@@ -845,7 +870,7 @@ pub async fn list_v2_response(
             }
         }
     }
-    checked::<list_v2::Response>(body)
+    Ok(body)
 }
 
 /// Whether a task is one of these, which a host routes here.

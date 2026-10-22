@@ -787,6 +787,8 @@ async fn handle_create(
         created_at: at,
         updated_at: at,
         mirror_of: None,
+        record_retention: None,
+        last_prune: None,
     };
     if let Err(e) = vti_rooms::storage::create_room(&state.rooms_ks, &room).await {
         return app_error_to_reject(&doc, &e);

@@ -226,6 +226,8 @@ async fn seed_room(host: &Host, room: &str, owner: &str, visibility: vti_rooms::
             created_at: 0,
             updated_at: 0,
             mirror_of: None,
+            record_retention: None,
+            last_prune: None,
         },
     )
     .await

@@ -1321,6 +1321,8 @@ async fn vtc_rooms_community_reads_answer_not_found() {
         created_at: 0,
         updated_at: 0,
         mirror_of: None,
+        record_retention: None,
+        last_prune: None,
     };
     vti_rooms::storage::create_room(&fix.vtc.state.rooms_ks, &hosted)
         .await
@@ -2217,6 +2219,8 @@ async fn vtc_rooms_community_update_answers_not_found_for_a_room_it_only_hosts()
         created_at: 0,
         updated_at: 0,
         mirror_of: None,
+        record_retention: None,
+        last_prune: None,
     };
     vti_rooms::storage::create_room(&fix.vtc.state.rooms_ks, &hosted)
         .await

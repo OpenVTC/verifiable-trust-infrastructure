@@ -146,6 +146,12 @@ pub enum RoomOperation {
     /// never a mint — a log that called it one would hide the one event that ends a span
     /// of the room's readable history.
     PruneEpoch,
+    /// `rooms/records/prune`: remove the records the room's record retention makes
+    /// eligible. Irreversible; the audit row keeps the mark, the reason and the rule, never
+    /// a removed record.
+    PruneRecords,
+    /// `rooms/records/retention/set`: replace the room's record retention.
+    SetRecordRetention,
     /// The owner hands the room to another member.
     TransferOwner,
     /// A nominated successor takes a dormant room.
@@ -166,6 +172,8 @@ impl RoomOperation {
             RoomOperation::CurateRecord => "room.records.curate",
             RoomOperation::MintEpoch => "room.epoch.mint",
             RoomOperation::PruneEpoch => "room.epoch.prune",
+            RoomOperation::PruneRecords => "room.records.prune",
+            RoomOperation::SetRecordRetention => "room.records.retention.set",
             RoomOperation::TransferOwner => "room.owner.transfer",
             RoomOperation::ClaimOwner => "room.owner.claim",
             RoomOperation::PutRevocations => "room.revocations.put",
@@ -189,6 +197,8 @@ impl RoomOperation {
             RoomOperation::CurateRecord => Action::Curate,
             RoomOperation::MintEpoch
             | RoomOperation::PruneEpoch
+            | RoomOperation::PruneRecords
+            | RoomOperation::SetRecordRetention
             | RoomOperation::TransferOwner
             | RoomOperation::PutRevocations
             | RoomOperation::GetRevocations => Action::Admin,
@@ -241,6 +251,8 @@ mod tests {
             created_at: 0,
             updated_at: 0,
             mirror_of: None,
+            record_retention: None,
+            last_prune: None,
         };
         let presentation = AuthorityPresentation {
             membership: "vmc".into(),
@@ -334,6 +346,8 @@ mod tests {
             RoomOperation::CurateRecord,
             RoomOperation::MintEpoch,
             RoomOperation::PruneEpoch,
+            RoomOperation::PruneRecords,
+            RoomOperation::SetRecordRetention,
             RoomOperation::TransferOwner,
             RoomOperation::ClaimOwner,
         ];

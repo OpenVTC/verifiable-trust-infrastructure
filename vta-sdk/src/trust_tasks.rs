@@ -1060,6 +1060,11 @@ pub const TASK_ROOMS_KEYS_READ_0_1: &str = "https://trusttasks.org/spec/rooms/ke
 /// and is why browsing and reading are two. Auth: `roomOpen` capability.
 pub const TASK_ROOMS_KEYS_BROWSE_0_1: &str = "https://trusttasks.org/spec/rooms/keys/browse/0.1";
 
+/// `spec/rooms/keys/browse/0.2` — 0.1, and the room's `lastPrune` passed through from the
+/// host's `rooms/records/list/0.3`, so a caller keeping its own copy of the room knows to
+/// rebuild it (trust-tasks-tf #868). Auth: `roomOpen` capability.
+pub const TASK_ROOMS_KEYS_BROWSE_0_2: &str = "https://trusttasks.org/spec/rooms/keys/browse/0.2";
+
 /// `spec/rooms/keys/seal/0.1` — seal one record body with the room's current
 /// epoch key. The mirror of `open`: plaintext in, ciphertext out, key stays put.
 /// Auth: `roomOpen` capability. It does not write — the caller takes the result
@@ -2848,6 +2853,7 @@ pub const ALL_URIS: &[&str] = &[
     TASK_ROOMS_KEYS_BACKFILL_0_1,
     TASK_ROOMS_KEYS_READ_0_1,
     TASK_ROOMS_KEYS_BROWSE_0_1,
+    TASK_ROOMS_KEYS_BROWSE_0_2,
     TASK_ROOMS_KEYS_SEAL_0_1,
     TASK_ROOMS_KEYS_SEAL_0_2,
     TASK_ROOMS_KEYS_ACT_0_1,

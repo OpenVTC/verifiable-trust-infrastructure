@@ -760,6 +760,8 @@ fn is_room_read(type_uri: &str) -> bool {
         rooms::blobs::get::v0_2::Payload::TYPE_URI,
         rooms::blobs::chunk::v0_1::Payload::TYPE_URI,
         rooms::info::v0_1::Payload::TYPE_URI,
+        rooms::info::v0_2::Payload::TYPE_URI,
+        rooms::records::list::v0_3::Payload::TYPE_URI,
     ]
     .contains(&type_uri)
 }

@@ -544,6 +544,8 @@ mod tests {
             created_at: 0,
             updated_at: 0,
             mirror_of: None,
+            record_retention: None,
+            last_prune: None,
         }
     }
 
@@ -814,6 +816,8 @@ mod signed {
                 created_at: 0,
                 updated_at: 0,
                 mirror_of: None,
+                record_retention: None,
+                last_prune: None,
             },
             owner_chain: vec![enc(&owner_vac)],
             owner_did,
@@ -1521,6 +1525,8 @@ pub mod test_support {
                     created_at: 0,
                     updated_at: 0,
                     mirror_of: None,
+                    record_retention: None,
+                    last_prune: None,
                 },
                 owner_chain: vec![enc(&owner_vac)],
                 agent_chain: vec![enc(&agent_vac), enc(&owner_vac)],

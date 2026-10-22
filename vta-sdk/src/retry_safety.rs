@@ -676,6 +676,8 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     // tries can differ — that is the room changing, not the task misbehaving,
     // and `headVersion` is what tells them apart.
     (trust_tasks::TASK_ROOMS_KEYS_BROWSE_0_1, RetrySafe),
+    // 0.2 passes the host's `lastPrune` through: still a read, stores nothing.
+    (trust_tasks::TASK_ROOMS_KEYS_BROWSE_0_2, RetrySafe),
     // Sealing is a pure function of the key and the bytes, and it stores nothing:
     // a lost reply costs the caller a round trip, never any state. Re-sealing the
     // same body yields a different nonce, which is correct and changes nothing.

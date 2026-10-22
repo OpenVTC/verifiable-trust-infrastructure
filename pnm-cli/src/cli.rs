@@ -726,6 +726,13 @@ pub(crate) enum RoomCommands {
         yes: bool,
     },
 
+    /// The room's records as a whole: how long it keeps them (its record
+    /// retention) and removing what that rule makes eligible. Both need `admin`.
+    Records {
+        #[command(subcommand)]
+        command: RoomRecordsCommands,
+    },
+
     /// Put a file in a room or fetch one, or seal and open one locally.
     ///
     /// Each file is sealed and opened here with that one file's key from your
@@ -1480,6 +1487,85 @@ pub(crate) enum RoomProfileCommands {
         host_did: String,
         #[arg(long)]
         member: Option<String>,
+    },
+}
+
+/// `pnm rooms records …` — the room's record retention, and pruning under it.
+#[derive(Subcommand)]
+pub(crate) enum RoomRecordsCommands {
+    /// Remove the records the room's record retention makes eligible: old
+    /// retracted tombstones, old records, or both. IRREVERSIBLE, for every
+    /// member — the room keeps only a mark that records went. Needs `admin`.
+    ///
+    /// Always asks the host first what would go (a dry run) and shows it; then
+    /// asks before removing anything. Without a terminal it refuses unless
+    /// `--yes` is given.
+    Prune {
+        #[arg(long = "room")]
+        room_id: String,
+        #[arg(long)]
+        host: String,
+        #[arg(long)]
+        host_did: Option<String>,
+        /// What to remove: `retracted` (tombstones older than the retention's
+        /// tombstone days), `aged` (records of any standing, pinned ones
+        /// excepted, older than its record days). Repeatable; both by default.
+        #[arg(long = "kind")]
+        kinds: Vec<String>,
+        /// Why, for the room's audit trail — the only account of intent a prune
+        /// leaves. Keep member identifiers and record content out of it.
+        #[arg(long)]
+        reason: String,
+        /// Only report what would be removed.
+        #[arg(long)]
+        dry_run: bool,
+        /// Prune without asking. Required when there is no terminal to ask.
+        #[arg(long, short = 'y')]
+        yes: bool,
+    },
+    /// The room's record retention: show it, or replace it.
+    Retention {
+        #[command(subcommand)]
+        command: RoomRetentionCommands,
+    },
+}
+
+/// `pnm rooms records retention …`.
+#[derive(Subcommand)]
+pub(crate) enum RoomRetentionCommands {
+    /// Show the record retention in force and the room's latest prune
+    /// (`rooms/info/0.2`). Needs `read`.
+    Show {
+        #[arg(long = "room")]
+        room_id: String,
+        #[arg(long)]
+        host: String,
+        #[arg(long)]
+        host_did: Option<String>,
+    },
+    /// Replace the record retention whole: members you leave out are no longer
+    /// stated. Nothing is removed until somebody prunes. Needs `admin`.
+    Set {
+        #[arg(long = "room")]
+        room_id: String,
+        #[arg(long)]
+        host: String,
+        #[arg(long)]
+        host_did: Option<String>,
+        /// Days a retracted record's tombstone is kept (1 to 36500).
+        #[arg(long)]
+        tombstone_days: Option<u32>,
+        /// Days a record is kept after it last changed, pinned ones excepted
+        /// (1 to 36500).
+        #[arg(long)]
+        record_days: Option<u32>,
+        /// Clear the retention: no record is eligible by age.
+        #[arg(long, conflicts_with_all = ["tombstone_days", "record_days"])]
+        clear: bool,
+        /// Why, for the room's audit trail. Keep member identifiers and record
+        /// content out of it.
+        #[arg(long)]
+        reason: String,
     },
 }
 

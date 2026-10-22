@@ -2762,6 +2762,9 @@ dispatch_table! {
     // of the room to the host it is shown to.
     vta_sdk::trust_tasks::TASK_ROOMS_KEYS_BROWSE_0_1 => room_group::handle_browse
         [ None Metadata true ],
+    // 0.2 adds the room's `lastPrune`, passed through from list 0.3 (trust-tasks-tf #868).
+    vta_sdk::trust_tasks::TASK_ROOMS_KEYS_BROWSE_0_2 => room_group::handle_browse_v0_2
+        [ None Metadata true ],
     vta_sdk::trust_tasks::TASK_ROOMS_KEYS_SEAL_0_1 => room_group::handle_seal
         [ None Metadata false ],
     // `actsAsSubject`: under `signAsPrincipal` it signs the record body as the member.

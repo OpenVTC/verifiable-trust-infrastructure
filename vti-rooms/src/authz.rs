@@ -636,6 +636,8 @@ mod tests {
             created_at: 0,
             updated_at: 0,
             mirror_of: None,
+            record_retention: None,
+            last_prune: None,
         }
     }
 
@@ -721,6 +723,8 @@ mod tests {
     async fn a_mirror_serves_reads_and_refuses_every_write() {
         let mirror = Room {
             mirror_of: Some("https://primary.example.org".into()),
+            record_retention: None,
+            last_prune: None,
             ..room(Visibility::Open)
         };
 
@@ -765,6 +769,8 @@ mod tests {
     async fn a_mirror_refuses_an_epoch_mint_even_though_a_lapsed_primary_would_not() {
         let lapsed_mirror = Room {
             mirror_of: Some("https://primary.example.org".into()),
+            record_retention: None,
+            last_prune: None,
             epoch_expires_at: Some(NOW - 1),
             ..room(Visibility::Open)
         };
