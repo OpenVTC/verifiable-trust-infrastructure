@@ -685,10 +685,12 @@ impl VtaError {
                  `delete-then-create` flow rather than `create`.",
             ),
             Self::Unavailable { .. } => Some(
-                "The VTA is temporarily busy — this is a wait, not a failure. If the \
-                 request carried an idempotency key, an earlier attempt on that key is \
-                 still running: retry with the same key and the original result will be \
-                 returned rather than the operation repeated.",
+                "The VTA is temporarily busy — this is a wait, not a failure: the request \
+                 did not run. Over DIDComm or TSP the VTA may be at its operation budget \
+                 (`[server] operation_rate_limit_*`); retry after the wait. If the request \
+                 carried an idempotency key, an earlier attempt on that key may still be \
+                 running: retry with the same key and the original result will be returned \
+                 rather than the operation repeated.",
             ),
             Self::RateLimited { limited_by, .. } => {
                 Some(crate::rate_limit::suggested_fix(*limited_by))

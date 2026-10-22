@@ -139,9 +139,13 @@ async fn an_unconfigured_vta_refuses_nothing() {
 /// or a replay.
 #[tokio::test]
 async fn a_refused_document_can_be_resent_once_the_budget_has_room() {
-    let (router, ctx) = app(Some(10)).await;
+    // One a second, not ten: at ten a token refills every 100 ms, and ten
+    // requests on a busy runner can take longer than that, letting the
+    // document through on its first send.
+    let (router, ctx) = app(Some(1)).await;
     for n in 0..10 {
-        sessions_list(&router, &ctx, n).await;
+        let (status, _, body) = sessions_list(&router, &ctx, n).await;
+        assert_eq!(status, StatusCode::OK, "request {n}: {body}");
     }
     let resent = document(100);
     let (status, _, _) = post(&router, &ctx, resent.clone()).await;
