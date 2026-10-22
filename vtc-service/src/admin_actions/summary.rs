@@ -114,7 +114,7 @@ pub const KIND_STORAGE_CONFIG_RETIRE: &str = "storage.config.retire";
 /// Pointing a room's new uploads at another config (`vtc/rooms/storage/assign/0.1`).
 pub const KIND_ROOM_STORAGE_ASSIGN: &str = "rooms.storage.assign";
 /// Moving a room's existing files onto its assigned config
-/// (`vtc/rooms/storage/migrate/0.1`).
+/// (`vtc/rooms/storage/migrate/0.1` and `/0.2`).
 pub const KIND_ROOM_STORAGE_MIGRATE: &str = "rooms.storage.migrate";
 
 /// The record type a break-glass review is raised under.
@@ -171,6 +171,7 @@ const STORAGE_UPDATE_V0_2: &str = crate::trust_tasks::storage_tasks::UPDATE_V0_2
 const STORAGE_CREDENTIAL_SET: &str = crate::trust_tasks::storage_tasks::CREDENTIALS_SET_TYPE;
 const ROOM_STORAGE_ASSIGN: &str = crate::trust_tasks::storage_tasks::ASSIGN_TYPE;
 const ROOM_STORAGE_MIGRATE: &str = crate::trust_tasks::storage_tasks::MIGRATE_TYPE;
+const ROOM_STORAGE_MIGRATE_V2: &str = crate::trust_tasks::storage_tasks::MIGRATE_V2_TYPE;
 const GROUPS_MEMBERS_ADD: &str = crate::trust_tasks::group_tasks::MEMBERS_ADD_TYPE;
 const GROUPS_MEMBERS_REMOVE: &str = crate::trust_tasks::group_tasks::MEMBERS_REMOVE_TYPE;
 const GROUPS_BINDINGS_ADD: &str = crate::trust_tasks::group_tasks::BINDINGS_ADD_TYPE;
@@ -217,6 +218,15 @@ const ROOM_STORAGE_MIGRATE_EFFECT: &str = "Room {roomId}'s existing files are co
                                            the old copies are deleted after the grace window. \
                                            On Walrus a deletion is a lapse, and ciphertext \
                                            stored there stays public.";
+const ROOM_STORAGE_MIGRATE_V2_EFFECT: &str = "Room {roomId}'s existing files are copied to the \
+                                              storage config it is assigned to now, checked \
+                                              against what their uploaders committed to, and \
+                                              switched; the old copies are deleted after the \
+                                              grace window. The move keeps that destination \
+                                              if the room is reassigned meanwhile, and the \
+                                              community retries and resumes it without asking \
+                                              again. On Walrus a deletion is a lapse, and \
+                                              ciphertext stored there stays public.";
 
 const fn f(name: &'static str, pointer: &'static str, format: &'static str) -> FieldDef {
     FieldDef {
@@ -832,6 +842,17 @@ pub const TEMPLATES: &[Template] = &[
         ],
     },
     Template {
+        kind: KIND_ROOM_STORAGE_MIGRATE,
+        type_uri: ROOM_STORAGE_MIGRATE_V2,
+        title: "Move room {roomId}'s files to its assigned storage",
+        effect: ROOM_STORAGE_MIGRATE_V2_EFFECT,
+        fields: &[
+            f("roomId", "/roomId", "text"),
+            f("maxBytesPerSecond", "/maxBytesPerSecond", "text"),
+            f("reason", "/reason", "text"),
+        ],
+    },
+    Template {
         kind: KIND_GRANTS_REVIEW,
         type_uri: GRANTS_REVIEW_URI,
         title: "Re-affirm or withdraw the grants {granter} made",
@@ -1173,6 +1194,11 @@ pub const PINNED: &[(&str, &str, &str)] = &[
         KIND_STORAGE_CREDENTIAL_SET,
         STORAGE_CREDENTIAL_SET,
         "zQmTzhrbBfZEaijm2CMzMvNzeYzPBA4RW1DBJRWPTwJc3XL",
+    ),
+    (
+        KIND_ROOM_STORAGE_MIGRATE,
+        ROOM_STORAGE_MIGRATE_V2,
+        "zQmR7m9q28aLudzaema3wPTgyt9VJnPAVoSykoCL14YiVAN",
     ),
 ];
 

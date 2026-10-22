@@ -1,5 +1,5 @@
 // One hosted room, as its host holds it (docs/05-design-notes/data-rooms-files.md
-// §8.1 "Room detail") — `vtc/rooms/get/0.1`, per-member usage and daily
+// §8.1 "Room detail") — `vtc/rooms/get/0.2`, per-member usage and daily
 // activity from `vtc/rooms/usage/0.1`, and limit overrides through
 // `vtc/rooms/limits/set/0.1`.
 //
@@ -58,8 +58,11 @@ import { LimitsForm } from "./LimitsForm";
 import { LifecyclePill, TIER_BLURB, communityRoomPath, configPath, type Tier } from "./shared";
 import { CommunityRoomBadge, MEMBER_NAMED_NOTE, useRoomNames, type RoomName } from "./useRoomNames";
 
-/** How often a room with a running migration is read again. */
+/** How often a room with a migration under way is read again. */
 const MIGRATION_POLL_MS = 3_000;
+/** How often a room whose migration waits — queued, or paused until the
+ *  community's own next attempt — is read again. */
+const MIGRATION_WAIT_POLL_MS = 30_000;
 
 export function RoomDetail() {
   // Already decoded by the router. Decoding again would turn a `did:web` port's
@@ -71,11 +74,16 @@ export function RoomDetail() {
     queryFn: () => fetchRoom(roomId),
     enabled: roomId !== "",
     // A migration's progress inside its state is not hinted on the live channel (only
-    // its start and end are), so a running one is read every few seconds.
-    refetchInterval: (q) =>
-      q.state.data?.storage.migration?.state === "running"
-        ? Math.min(pollMs, MIGRATION_POLL_MS)
-        : pollMs,
+    // its changes of state are), so a running one is read every few seconds, and one
+    // that waits — queued, or paused until the community tries again — now and then.
+    refetchInterval: (q) => {
+      const m = q.state.data?.storage.migration;
+      if (m?.state === "running") return Math.min(pollMs, MIGRATION_POLL_MS);
+      if (m?.state === "queued" || (m?.state === "paused" && m.nextAttemptAt)) {
+        return Math.min(pollMs, MIGRATION_WAIT_POLL_MS);
+      }
+      return pollMs;
+    },
   });
   // The label of a room the community owns, for a viewer who may read the
   // community's rooms; the DID otherwise. A refused or failed read of the
@@ -631,19 +639,30 @@ function Activity({ data }: { data: RoomGetResponse }) {
 type Migration = NonNullable<RoomGetResponse["storage"]["migration"]>;
 
 const MIGRATION_SAYS: Record<Migration["state"], string> = {
+  queued: "Waiting to move",
   running: "Moving",
-  paused: "Paused",
+  paused: "Paused moving",
   complete: "Moved",
-  failed: "Stopped",
+  failed: "Stopped moving",
+};
+
+/** Why a move is paused (`vtc/_shared/0.1/room-migration` `MigrationPauseCause`). */
+export const PAUSE_SAYS: Record<NonNullable<Migration["pausedCause"]>, string> = {
+  capacity: "The destination cannot hold the rest.",
+  source: "The storage the files are on kept failing to serve them.",
+  destination: "The destination kept refusing the files, or no longer takes them.",
+  credential: "The community could not get access to one of the storage locations.",
 };
 
 /**
  * Move the room's existing files onto the storage it is assigned to
- * (`vtc/rooms/storage/migrate/0.1`): each is copied, checked against what its
+ * (`vtc/rooms/storage/migrate/0.2`): each is copied, checked against what its
  * uploader committed to, and switched; the old copies are deleted after the
  * grace window. Readers notice nothing. Like an assignment it takes the
  * requester's passkey and is parked for another holder of the room-hosting
- * capability; resuming a paused move is not parked again.
+ * capability. Once approved the move is the community's: it keeps its
+ * destination if the room is reassigned, retries failures itself, and resuming
+ * a paused move is not parked again.
  */
 function MoveExistingFiles({
   roomId,
@@ -695,15 +714,18 @@ function MoveExistingFiles({
   });
   if (parkedOf(move.error)) return <ErrorOrParked title="Not moved" error={move.error} />;
 
-  const active = migration?.state === "running" || migration?.state === "paused";
+  const active =
+    migration?.state === "queued" ||
+    migration?.state === "running" ||
+    migration?.state === "paused";
   return (
     <>
       {migration && (
         <div className="rooms-migration">
           <p>
-            {MIGRATION_SAYS[migration.state]} existing files: {migration.doneFiles} of{" "}
-            {migration.totalFiles} files ({formatBytes(migration.doneBytes)} of{" "}
-            {formatBytes(migration.totalBytes)}).
+            {`${MIGRATION_SAYS[migration.state]} existing files to ${migration.toConfig}: ` +
+              `${migration.doneFiles} of ${migration.totalFiles} files ` +
+              `(${formatBytes(migration.doneBytes)} of ${formatBytes(migration.totalBytes)}).`}
             {migration.state === "running" && migration.totalBytes > 0 && (
               <progress
                 aria-label="Files moved"
@@ -712,12 +734,39 @@ function MoveExistingFiles({
               />
             )}
           </p>
+          {active && migration.toConfig !== current && (
+            <p className="muted">
+              The room has since been assigned to <code>{current}</code>. This move keeps
+              going to <code>{migration.toConfig}</code>, as approved; new uploads go to{" "}
+              <code>{current}</code>, and once this move finishes another can bring
+              everything there.
+            </p>
+          )}
+          {migration.state === "queued" && (
+            <p className="muted">
+              Another move to <code>{migration.toConfig}</code> is under way; this one starts
+              when it finishes. Nothing has been copied yet.
+            </p>
+          )}
+          {migration.state === "running" && migration.lastError && (
+            <p className="muted">
+              Retrying after a failure ({migration.lastError})
+              {migration.nextAttemptAt && <>, next at {formatIso(migration.nextAttemptAt)}</>}.
+            </p>
+          )}
           {migration.state === "paused" && (
             <p className="muted">
-              Halted after the storage refused or could not be reached several times in a
-              row. Files not yet moved keep working where they are.{" "}
+              {migration.pausedCause && PAUSE_SAYS[migration.pausedCause]}{" "}
+              {migration.lastError && <>Last error: {migration.lastError}. </>}
+              {migration.nextAttemptAt ? (
+                <>The community tries again by itself at {formatIso(migration.nextAttemptAt)}. </>
+              ) : (
+                <>It waits for someone to resume it. </>
+              )}
+              Files not yet moved keep working where they are. Resuming needs no new
+              approval.{" "}
               <button type="button" onClick={() => move.mutate(true)} disabled={move.isPending}>
-                Resume
+                Resume now
               </button>
             </p>
           )}

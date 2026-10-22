@@ -685,7 +685,9 @@ async fn vtc_rooms_storage_assign_refuses_with_its_declared_codes() {
 // ─── migrate ─────────────────────────────────────────────────────────────
 
 const MIGRATE: &str = "https://trusttasks.org/spec/vtc/rooms/storage/migrate/0.1";
+const MIGRATE_V2: &str = "https://trusttasks.org/spec/vtc/rooms/storage/migrate/0.2";
 const ROOM_GET: &str = "https://trusttasks.org/spec/vtc/rooms/get/0.1";
+const ROOM_GET_V2: &str = "https://trusttasks.org/spec/vtc/rooms/get/0.2";
 
 /// A file of `len` bytes uploaded to `room_id`, as a member's commit leaves it: on the
 /// config the room is assigned to now. Its blob reference.
@@ -868,27 +870,32 @@ async fn vtc_rooms_storage_migrate_refuses_with_its_declared_codes() {
     let room = hosted_room(&fix).await;
     upload_to(&fix, &room, 2_000, 3).await;
 
-    let reply = send(
-        &fix,
-        &a,
-        MIGRATE,
-        json!({ "roomId": "did:key:zNoSuchRoom", "reason": "x" }),
-    )
-    .await;
-    assert_eq!(
-        tt_error_code(&reply),
-        Some(MIGRATE_ROOM_NOT_FOUND),
-        "{reply}"
-    );
+    // Both versions declare the same codes, and are answered by one handler.
+    for uri in [MIGRATE, MIGRATE_V2] {
+        let reply = send(
+            &fix,
+            &a,
+            uri,
+            json!({ "roomId": "did:key:zNoSuchRoom", "reason": "x" }),
+        )
+        .await;
+        assert_eq!(
+            tt_error_code(&reply),
+            Some(MIGRATE_ROOM_NOT_FOUND),
+            "{uri}: {reply}"
+        );
+    }
 
     stored(&fix, "old", "draining").await;
     assign_directly(&fix, &room, "old").await;
-    let reply = send(&fix, &a, MIGRATE, json!({ "roomId": room, "reason": "x" })).await;
-    assert_eq!(
-        tt_error_code(&reply),
-        Some(MIGRATE_CONFIG_NOT_ACTIVE),
-        "{reply}"
-    );
+    for uri in [MIGRATE, MIGRATE_V2] {
+        let reply = send(&fix, &a, uri, json!({ "roomId": room, "reason": "x" })).await;
+        assert_eq!(
+            tt_error_code(&reply),
+            Some(MIGRATE_CONFIG_NOT_ACTIVE),
+            "{uri}: {reply}"
+        );
+    }
 
     // A config whose capacity cannot hold the 2 000 bytes to move.
     let r = root(&fix, "small");
@@ -911,15 +918,220 @@ async fn vtc_rooms_storage_migrate_refuses_with_its_declared_codes() {
             .unwrap();
     }
     assign_directly(&fix, &room, "small").await;
-    let reply = send(&fix, &a, MIGRATE, json!({ "roomId": room, "reason": "x" })).await;
-    assert_eq!(
-        tt_error_code(&reply),
-        Some(MIGRATE_CAPACITY_EXCEEDED),
+    for uri in [MIGRATE, MIGRATE_V2] {
+        let reply = send(&fix, &a, uri, json!({ "roomId": room, "reason": "x" })).await;
+        assert_eq!(
+            tt_error_code(&reply),
+            Some(MIGRATE_CAPACITY_EXCEEDED),
+            "{uri}: {reply}"
+        );
+        let details = &reply["payload"]["details"];
+        assert_eq!(details["capacityBytes"], 1_000, "{reply}");
+        assert_eq!(details["requestedBytes"], 2_000, "{reply}");
+    }
+}
+
+/// `migrate/0.2` items 5, 9 and 11, and `rooms/get/0.2` item 5: a migration approved
+/// once is the community's. Reassigned meanwhile, it keeps its target, which
+/// `rooms/get/0.2` names beside the new assignment; paused, it reports why; issued
+/// again, it is resumed at once — not parked for consent — keeping its target and
+/// reason, and the resumption is audited with its requester.
+#[tokio::test]
+async fn a_migration_at_0_2_keeps_its_target_and_resumes_without_consent() {
+    let mut fix = fixture().await;
+    let a = requester(&mut fix).await;
+    let b = seed(&fix, AdminAuthority::community_admin()).await;
+    let c = seed(&fix, AdminAuthority::community_admin()).await;
+    stored(&fix, "eu", "active").await;
+    stored(&fix, "us", "active").await;
+    let room = hosted_room(&fix).await;
+    upload_to(&fix, &room, 1_000, 41).await;
+    assign_directly(&fix, &room, "eu").await;
+
+    let (status, reply) = through(
+        &mut fix,
+        &a,
+        &[&b],
+        MIGRATE_V2,
+        json!({ "roomId": room, "reason": "to the EU" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{reply}");
+    assert!(
+        reply["type"].as_str().unwrap().starts_with(MIGRATE_V2),
         "{reply}"
     );
-    let details = &reply["payload"]["details"];
-    assert_eq!(details["capacityBytes"], 1_000, "{reply}");
-    assert_eq!(details["requestedBytes"], 2_000, "{reply}");
+    let id = reply["payload"]["migrationId"].clone();
+    assert_eq!(reply["payload"]["state"], "running", "{reply}");
+
+    // Reassigned while it is open: it keeps moving to `eu`.
+    assign_directly(&fix, &room, "us").await;
+    let got = send(&fix, &a, ROOM_GET_V2, json!({ "roomId": room })).await;
+    let storage = &got["payload"]["storage"];
+    assert_eq!(storage["configId"], "us", "{got}");
+    assert_eq!(storage["migration"]["toConfig"], "eu", "{got}");
+    assert_eq!(storage["migration"]["state"], "running", "{got}");
+    // 0.1 carries no `toConfig` in `rooms/get`.
+    let got = send(&fix, &a, ROOM_GET, json!({ "roomId": room })).await;
+    assert!(
+        got["payload"]["storage"]["migration"]
+            .get("toConfig")
+            .is_none(),
+        "{got}"
+    );
+
+    // Paused (as a restore pauses it): `rooms/get/0.2` and `migrate/0.2` say why.
+    vtc_service::rooms::migration::pause_after_restore(&fix.vtc.state).await;
+    let got = send(&fix, &a, ROOM_GET_V2, json!({ "roomId": room })).await;
+    let m = &got["payload"]["storage"]["migration"];
+    assert_eq!(m["state"], "paused", "{got}");
+    assert_eq!(m["pausedCause"], "destination", "{got}");
+    assert!(
+        m["lastError"].as_str().is_some_and(|e| !e.contains(&room)),
+        "{got}"
+    );
+    // Only re-issuing resumes one a restore paused.
+    assert!(m.get("nextAttemptAt").is_none(), "{got}");
+
+    // Issued again by another administrator, with another reason: the same migration,
+    // resumed at once, parking nothing.
+    let parked = actions_of_kind(&fix, "rooms.storage.migrate").await.len();
+    let again = send(
+        &fix,
+        &c,
+        MIGRATE_V2,
+        json!({ "roomId": room, "maxBytesPerSecond": 1_048_576, "reason": "go on" }),
+    )
+    .await;
+    let p = &again["payload"];
+    assert_eq!(p["migrationId"], id, "{again}");
+    assert_eq!(p["state"], "running", "{again}");
+    assert_eq!(p["toConfig"], "eu", "{again}");
+    assert!(p.get("pausedCause").is_none(), "{again}");
+    assert_eq!(
+        actions_of_kind(&fix, "rooms.storage.migrate").await.len(),
+        parked
+    );
+
+    vtc_service::rooms::migration::run(&fix.vtc.state, 1 << 40).await;
+    let got = send(&fix, &a, ROOM_GET_V2, json!({ "roomId": room })).await;
+    let m = &got["payload"]["storage"]["migration"];
+    assert_eq!(m["state"], "complete", "{got}");
+    assert_eq!(m["toConfig"], "eu");
+
+    let events = migration_events(&audit_rows(&fix).await);
+    let names: Vec<&str> = events.iter().filter_map(|e| e["event"].as_str()).collect();
+    assert_eq!(
+        names,
+        [
+            "migrationStarted",
+            "migrationPaused",
+            "migrationResumed",
+            "migrationCompleted"
+        ],
+        "{events:?}"
+    );
+    // The resumption keeps the reason it was approved for, and its approvers.
+    assert_eq!(events[2]["reason"], "to the EU");
+    assert_eq!(events[2]["approvers"], json!([b.did]));
+    assert_eq!(events[2]["configId"], "eu");
+}
+
+/// `migrate/0.2` item 13: one migration per target config at a time. A second, to the
+/// same config, is approved and `queued` (0.1 reports it `running`), copies nothing,
+/// and starts when the first is finished.
+#[tokio::test]
+async fn a_second_migration_to_one_config_is_queued() {
+    let mut fix = fixture().await;
+    let a = requester(&mut fix).await;
+    let b = seed(&fix, AdminAuthority::community_admin()).await;
+    stored(&fix, "eu", "active").await;
+    let first = hosted_room(&fix).await;
+    let second = hosted_room(&fix).await;
+    upload_to(&fix, &first, 1_000, 51).await;
+    upload_to(&fix, &second, 2_000, 52).await;
+    assign_directly(&fix, &first, "eu").await;
+    assign_directly(&fix, &second, "eu").await;
+
+    let (_, one) = through(
+        &mut fix,
+        &a,
+        &[&b],
+        MIGRATE_V2,
+        json!({ "roomId": first, "reason": "first" }),
+    )
+    .await;
+    assert_eq!(one["payload"]["state"], "running", "{one}");
+    let (_, two) = through(
+        &mut fix,
+        &a,
+        &[&b],
+        MIGRATE_V2,
+        json!({ "roomId": second, "reason": "second" }),
+    )
+    .await;
+    assert_eq!(two["payload"]["state"], "queued", "{two}");
+    assert_eq!(two["payload"]["doneFiles"], 0);
+    let old = send(
+        &fix,
+        &a,
+        MIGRATE,
+        json!({ "roomId": second, "reason": "x" }),
+    )
+    .await;
+    assert_eq!(
+        old["payload"]["state"], "running",
+        "0.1 knows no queue: {old}"
+    );
+
+    vtc_service::rooms::migration::run(&fix.vtc.state, 1 << 40).await;
+    for room in [&first, &second] {
+        let got = send(&fix, &a, ROOM_GET_V2, json!({ "roomId": room })).await;
+        assert_eq!(
+            got["payload"]["storage"]["migration"]["state"], "complete",
+            "{got}"
+        );
+    }
+}
+
+/// `migrate/0.2` items 10 and 11: a target that stops being `active` under a running
+/// migration is a failed attempt the community retries itself — the migration stays
+/// `running`, reporting the error and its next attempt — and pauses as `destination`
+/// only once its retries are spent. (A target retired for good leaves it paused and
+/// retrying at `nextAttemptAt`: the specification has no way out of that yet.)
+#[tokio::test]
+async fn a_target_no_longer_active_is_retried_by_the_community() {
+    let mut fix = fixture().await;
+    let a = requester(&mut fix).await;
+    let b = seed(&fix, AdminAuthority::community_admin()).await;
+    stored(&fix, "eu", "active").await;
+    let room = hosted_room(&fix).await;
+    upload_to(&fix, &room, 1_000, 61).await;
+    assign_directly(&fix, &room, "eu").await;
+    let (status, reply) = through(
+        &mut fix,
+        &a,
+        &[&b],
+        MIGRATE_V2,
+        json!({ "roomId": room, "reason": "to the EU" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{reply}");
+
+    // `eu` drains before the runner reaches the room.
+    stored(&fix, "eu", "draining").await;
+    vtc_service::rooms::migration::run(&fix.vtc.state, 1 << 40).await;
+    let got = send(&fix, &a, ROOM_GET_V2, json!({ "roomId": room })).await;
+    let m = &got["payload"]["storage"]["migration"];
+    assert_eq!(m["state"], "running", "{got}");
+    assert_eq!(m["lastError"], "put to eu: the config is draining", "{got}");
+    assert!(m["nextAttemptAt"].is_string(), "{got}");
+    assert!(m.get("pausedCause").is_none(), "{got}");
+    assert!(
+        migration_events(&audit_rows(&fix).await)
+            .iter()
+            .all(|e| e["event"] != "migrationPaused")
+    );
 }
 
 // ─── through the community's VTA ─────────────────────────────────────────

@@ -22,7 +22,7 @@ import type {
   RoomsUsageRow,
 } from "./wire-types";
 
-export const ROOMS_GET_TASK = "https://trusttasks.org/spec/vtc/rooms/get/0.1";
+export const ROOMS_GET_TASK = "https://trusttasks.org/spec/vtc/rooms/get/0.2";
 export const ROOMS_USAGE_TASK = "https://trusttasks.org/spec/vtc/rooms/usage/0.1";
 export const ROOMS_LIMITS_SET_TASK = "https://trusttasks.org/spec/vtc/rooms/limits/set/0.1";
 

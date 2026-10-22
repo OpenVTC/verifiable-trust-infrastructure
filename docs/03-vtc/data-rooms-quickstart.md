@@ -508,11 +508,13 @@ Creating the config asks VTA C once and probes the bucket through it;
 assignment, then run in the background):
 
 ```json
-// vtc/rooms/storage/migrate/0.1
+// vtc/rooms/storage/migrate/0.2
 {"roomId": "$ROOM", "reason": "…", "maxBytesPerSecond": 1048576}
 ```
 
-`vtc/rooms/get/0.1` reports its progress as `storage.migration`.
+`vtc/rooms/get/0.2` reports its progress as `storage.migration` — its destination,
+its state (`queued`, `running`, `paused`, `complete`, `failed`) and, when paused,
+why and when the community tries again by itself.
 
 ### 10.5 Upload and download
 

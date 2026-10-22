@@ -205,6 +205,8 @@ export const PINNED_TEMPLATE_DIGESTS: Readonly<Record<string, string>> = Object.
     "zQmbqMzuGGxuGv2dmp6qVDQnZTeGvJSYU93eg8JiaxdirAi",
   [pinKey("storage.credential.set", `${SPEC}/vtc/storage/credentials/set/0.2`)]:
     "zQmTzhrbBfZEaijm2CMzMvNzeYzPBA4RW1DBJRWPTwJc3XL",
+  [pinKey("rooms.storage.migrate", `${SPEC}/vtc/rooms/storage/migrate/0.2`)]:
+    "zQmR7m9q28aLudzaema3wPTgyt9VJnPAVoSykoCL14YiVAN",
 });
 
 function pinKey(kind: string, typeUri: string): string {

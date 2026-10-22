@@ -1,5 +1,6 @@
 //! Moving a room's existing files onto the storage config it is assigned to
-//! (`vtc/rooms/storage/migrate/0.1`, `docs/05-design-notes/data-rooms-files.md` §7.3).
+//! (`vtc/rooms/storage/migrate/0.2`, served beside 0.1;
+//! `docs/05-design-notes/data-rooms-files.md` §7.3).
 //!
 //! Reassigning a room sends its new uploads elsewhere and leaves its existing blobs
 //! where they are, each naming its own config. A migration moves those too, one blob
@@ -19,33 +20,63 @@
 //! No key is involved at any step: the ciphertext is identical on both sides. Readers
 //! notice nothing — a blob is named by its digest, and every read re-reads the entry.
 //!
+//! # The target is fixed at approval
+//!
+//! A migration's `to_config` is the room's assignment when it was approved, and it
+//! keeps moving blobs there if the room is reassigned meanwhile (`migrate/0.2` item 9):
+//! uploads begun after the reassignment go to the new assignment, and a later migration
+//! — once this one is `complete` or `failed` — moves them all.
+//!
+//! # Orphans
+//!
+//! An orphaned blob — no record names it, and it awaits deletion — is never planned and
+//! never counted (item 12). One orphaned (or collected) while the migration is open is
+//! dropped from it at once ([`BlobHost::drop_from_migration`]), whichever side of its
+//! switch it is on: before, its plan row and reservation go; after, the `mdone:` row
+//! the switch wrote takes it back out of `doneFiles` and `totalFiles`.
+//!
 //! # Capacity
 //!
 //! The bytes to move are **reserved** on the target config (and the host-wide
-//! counter) when the migration starts, so a migration cannot start that the target
-//! cannot hold. Each switch converts its blob's reservation into usage on the target;
-//! the old copy keeps counting against its own config, and the host's storage, until
-//! the collection pass actually deletes it (§6.1). A room's and a member's usage do
-//! not move: the file is the same file.
+//! counter) when the migration is approved, queued or not, so a migration cannot be
+//! approved that the target cannot hold (item 2). Each switch converts its blob's
+//! reservation into usage on the target; the old copy keeps counting against its own
+//! config, and the host's storage, until the collection pass actually deletes it
+//! (§6.1). A room's and a member's usage do not move: the file is the same file. A
+//! migration under way therefore never runs out of room, and `capacity` is not a cause
+//! this host pauses for.
+//!
+//! # Queueing
+//!
+//! One migration per target config runs at a time (item 13): one approved while
+//! another to the same config is `running` or `paused` — or already waiting for it —
+//! is `queued`, has copied nothing, and is started when those ahead of it are
+//! `complete` or `failed`, in the order they were approved
+//! ([`BlobHost::promote_queued`]). Per config rather than per community, so a target
+//! that stops taking writes holds up only the migrations that need it.
 //!
 //! # Crash-safety and resumption
 //!
 //! Everything a migration knows is in this host's blob index — the migration record
-//! (`migration:<room>`), one plan row per blob still to move (`mplan:<room>:<ref>`) and
-//! the old copies awaiting deletion (`moved:…`) — so a restart resumes it. The record
-//! names the blob in flight and, once it is stored, its copy, so a process that dies
-//! mid-copy re-verifies or redoes that one blob and never strands an object. The
-//! switch is one [`Batch`]: entry, old-copy row, counters, plan row and record land
-//! together or not at all.
+//! (`migration:<room>`), one plan row per blob still to move (`mplan:<room>:<ref>`),
+//! one row per blob it switched (`mdone:<room>:<ref>`) and the old copies awaiting
+//! deletion (`moved:…`) — so a restart resumes it. The record names the blob in flight
+//! and, once it is stored, its copy, so a process that dies mid-copy re-verifies or
+//! redoes that one blob and never strands an object. The switch is one [`Batch`]:
+//! entry, old-copy row, counters, plan row, done row and record land together or not
+//! at all.
 //!
 //! # One retry owner
 //!
-//! The host's migration runner is the only thing that retries a step. A failed copy
-//! (a store unreachable, a credential refused) is retried with capped exponential
-//! backoff and full jitter ([`MIGRATION_MAX_ATTEMPTS`]); after that the migration is
-//! `paused`, and resumes only when an administrator issues the task again. A copy that
-//! does not verify is not retried: the migration is `failed`, the blob stays where it
-//! is, and the rest of the reservation is given back.
+//! The host's migration runner is the only thing that retries a step (item 10). A
+//! failed copy, read, write or credential request is retried with capped exponential
+//! backoff and full jitter, [`MIGRATION_MAX_ATTEMPTS`] times in a row; only then is the
+//! migration `paused`, with its cause and last error, and the runner tries again by
+//! itself at `next_attempt_at` ([`BlobHost::resume_due`]) — the same cycle, for as long
+//! as it takes. Issuing the task again resumes a paused migration at once, as the same,
+//! already approved, migration. A copy that does not verify is not retried: the
+//! migration is `failed`, the blob stays where it is, and the rest of the reservation
+//! is given back.
 
 use std::time::Instant;
 
@@ -64,6 +95,11 @@ pub const MIGRATION_MAX_ATTEMPTS: u32 = 8;
 const BACKOFF_BASE_SECS: u64 = 10;
 const BACKOFF_CAP_SECS: u64 = 600;
 
+/// How long a migration paused after its retries waits before the runner tries it
+/// again by itself, plus up to [`PAUSED_RETRY_JITTER_SECS`].
+pub const PAUSED_RETRY_SECS: u64 = 1_800;
+const PAUSED_RETRY_JITTER_SECS: u64 = 300;
+
 fn migration_key(room_id: &str) -> String {
     format!("migration:{}", room_hash(room_id))
 }
@@ -72,6 +108,12 @@ fn plan_prefix(room_id: &str) -> String {
 }
 fn plan_key(room_id: &str, blob_ref: &str) -> String {
     format!("{}{blob_ref}", plan_prefix(room_id))
+}
+fn done_prefix(room_id: &str) -> String {
+    format!("mdone:{}:", room_hash(room_id))
+}
+fn done_key(room_id: &str, blob_ref: &str) -> String {
+    format!("{}{blob_ref}", done_prefix(room_id))
 }
 fn moved_prefix(room_id: &str, blob_ref: &str) -> String {
     format!("moved:{}:{blob_ref}:", room_hash(room_id))
@@ -85,9 +127,13 @@ fn moved_key(room_id: &str, blob_ref: &str, migration_id: &Uuid) -> String {
 #[serde(rename_all = "camelCase")]
 #[non_exhaustive]
 pub enum MigrationState {
-    /// Copying, or waiting its turn or its next attempt.
+    /// Approved, and waiting for the migration ahead of it to the same config to
+    /// finish. Nothing copied yet.
+    Queued,
+    /// Copying, or waiting out the backoff before its next attempt.
     Running,
-    /// Halted by a capacity or backend failure; resumed by issuing the task again.
+    /// Halted after its retries ran out, or by a restore; resumed by issuing the task
+    /// again, and by the runner itself at `next_attempt_at` when one is set.
     Paused,
     /// Every planned blob is on the target config, or was no longer the room's to move.
     Complete,
@@ -98,6 +144,7 @@ pub enum MigrationState {
 impl MigrationState {
     pub fn as_str(self) -> &'static str {
         match self {
+            Self::Queued => "queued",
             Self::Running => "running",
             Self::Paused => "paused",
             Self::Complete => "complete",
@@ -108,7 +155,34 @@ impl MigrationState {
     /// Whether a request for the room answers with this migration rather than
     /// starting another (`migrate` item 5).
     pub fn is_open(self) -> bool {
-        matches!(self, Self::Running | Self::Paused)
+        matches!(self, Self::Queued | Self::Running | Self::Paused)
+    }
+}
+
+/// Why a migration is `paused` (`vtc/_shared/0.1/room-migration` `MigrationPauseCause`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[non_exhaustive]
+pub enum PauseCause {
+    /// The target cannot hold the rest. Never set by this host, which reserves the
+    /// bytes at approval; here so a record naming it still reads.
+    Capacity,
+    /// A config the blobs are moved off kept failing to serve them.
+    Source,
+    /// The target kept refusing writes, or is no longer `active`.
+    Destination,
+    /// No usable store — no credential — could be had for one of the configs.
+    Credential,
+}
+
+impl PauseCause {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Capacity => "capacity",
+            Self::Source => "source",
+            Self::Destination => "destination",
+            Self::Credential => "credential",
+        }
     }
 }
 
@@ -160,10 +234,19 @@ pub struct Migration {
     /// No step before this time (seconds), while backing off.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub next_attempt_at: Option<u64>,
-    /// Why the last attempt failed, or why it paused or failed. Never a credential:
-    /// a store's error names an object, not how it was reached.
+    /// Why the last attempt failed, or why it paused or failed: the step, the config
+    /// and the store's error, scrubbed of what could be a credential or a presigned
+    /// URL and of the room's identifier and the blob's reference ([`scrub_error`]). A
+    /// `failed` migration's names the blob that did not verify; it is audited, never
+    /// answered.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_error: Option<String>,
+    /// Why it is `paused`; set exactly while it is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub paused_cause: Option<PauseCause>,
+    /// Its place in the order migrations were approved in, which a queue keeps.
+    #[serde(default)]
+    pub seq: u64,
     /// Bytes still reserved on the target config for blobs not yet switched.
     #[serde(default)]
     pub reserved_bytes: u64,
@@ -209,9 +292,11 @@ impl MigrationRequest {
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub enum MigrationStart {
-    /// A new migration: `running`, or `complete` at once when nothing was to move.
+    /// A new migration: `running`, `queued` behind another to the same config, or
+    /// `complete` at once when nothing was to move.
     Started(Migration),
-    /// One was already running; this is it.
+    /// One was already `queued` or `running`; this is it (its rate adopted from the
+    /// request, when the request names one).
     InProgress(Migration),
     /// One was paused; it is running again.
     Resumed(Migration),
@@ -282,13 +367,15 @@ enum CopyError {
     Mismatch(String),
     /// The copy is not on the target (restored from a backup, say): copy again.
     Missing,
-    /// Anything else: retried with backoff.
-    Transient(AppError),
+    /// Anything else: retried with backoff. Why, as the step, the config and the
+    /// store's error, and what a pause for it would be put down to.
+    Transient(PauseCause, String),
 }
 
 impl From<AppError> for CopyError {
+    /// This host's own staging failed.
     fn from(e: AppError) -> Self {
-        Self::Transient(e)
+        Self::Transient(PauseCause::Destination, format!("stage on this host: {e}"))
     }
 }
 
@@ -313,6 +400,12 @@ fn backoff_secs(attempts: u32) -> u64 {
     r.max(1)
 }
 
+/// When a migration paused after its retries is tried again by the runner itself.
+fn paused_retry_at(now: u64) -> u64 {
+    let jitter = (Uuid::new_v4().as_u128() % u128::from(PAUSED_RETRY_JITTER_SECS + 1)) as u64;
+    now + PAUSED_RETRY_SECS + jitter
+}
+
 /// Sleep until `bytes` have taken at least `bytes / rate` seconds since `started`.
 async fn throttle(started: Instant, bytes: u64, rate: u64) {
     let due = std::time::Duration::from_secs_f64(bytes as f64 / rate.max(1) as f64);
@@ -322,10 +415,17 @@ async fn throttle(started: Instant, bytes: u64, rate: u64) {
     }
 }
 
-/// A store's error, kept and audited without what could be a credential: a URL's query
-/// (where a presigned signature travels) and any long unbroken token. At most 500
-/// characters.
-fn scrub_error(error: &str) -> String {
+/// A store's error, kept, reported and audited without what could be a credential — a
+/// URL's query (where a presigned signature travels) and any long unbroken token — or
+/// any of `hidden` (the room's identifier, its prefix, a blob's reference). At most 500
+/// characters (`MigrationLastError`).
+fn scrub_error(error: &str, hidden: &[&str]) -> String {
+    let mut error = error.to_string();
+    let mut hidden: Vec<&str> = hidden.iter().copied().filter(|h| !h.is_empty()).collect();
+    hidden.sort_by_key(|h| std::cmp::Reverse(h.len()));
+    for h in hidden {
+        error = error.replace(h, "…");
+    }
     let mut out = String::with_capacity(error.len());
     for word in error.split_inclusive(char::is_whitespace) {
         let (body, tail) = match word.find(char::is_whitespace) {
@@ -343,14 +443,39 @@ fn scrub_error(error: &str) -> String {
         out.push_str(if tokenish { "…" } else { &body });
         out.push_str(tail);
     }
-    out.chars().take(500).collect()
+    let out: String = out.trim().chars().take(500).collect();
+    if out.is_empty() {
+        "failed".to_string()
+    } else {
+        out
+    }
 }
 
 fn digest_matches(expected: &str, data: &[u8]) -> bool {
     blob_store::sha256_from_digest_multibase(expected) == Some(Sha256::digest(data).into())
 }
 
+/// A store that could not be had for `config_id`: the community cannot reach it with
+/// any credential it holds now.
+fn unreachable_config(config_id: &str, e: &AppError) -> CopyError {
+    CopyError::Transient(
+        PauseCause::Credential,
+        format!("credential for {config_id}: {e}"),
+    )
+}
+
 impl Migration {
+    /// Running again from `paused`, as the same migration: its plan, its copy in
+    /// flight, its target and its reason are kept; its retries start over.
+    fn resume(&mut self, now: u64) {
+        self.state = MigrationState::Running;
+        self.paused_cause = None;
+        self.attempts = 0;
+        self.next_attempt_at = None;
+        self.last_error = None;
+        self.updated_at = now;
+    }
+
     /// The blob being moved now, if any.
     pub fn in_flight_blob(&self) -> Option<&str> {
         self.in_flight.as_ref().map(|f| f.blob_ref.as_str())
@@ -395,18 +520,125 @@ impl BlobHost {
             .into_iter()
             .filter_map(|(_, raw)| serde_json::from_slice(&raw).ok())
             .collect();
-        out.sort_by_key(|m| (m.started_at, m.migration_id));
+        out.sort_by_key(|m| (m.started_at, m.seq, m.migration_id));
         Ok(out)
     }
 
-    /// The migration this host should work on now: the oldest `running` one. One
-    /// runs at a time; the others wait their turn, reported `running`.
-    pub async fn next_migration(&self) -> Result<Option<Migration>, AppError> {
+    /// The migrations to work on now: every `running` one, oldest first. One per target
+    /// config, but for migrations a 0.1 host left running side by side.
+    pub async fn running_migrations(&self) -> Result<Vec<Migration>, AppError> {
         Ok(self
             .migrations()
             .await?
             .into_iter()
-            .find(|m| m.state == MigrationState::Running))
+            .filter(|m| m.state == MigrationState::Running)
+            .collect())
+    }
+
+    /// Start every `queued` migration whose target config has nothing `running` or
+    /// `paused` ahead of it, the first approved first (`migrate` item 13).
+    pub async fn promote_queued(&self) -> Result<Vec<Migration>, AppError> {
+        let _guard = self.lock.lock().await;
+        let all = self.migrations().await?;
+        let mut busy: std::collections::HashSet<String> = all
+            .iter()
+            .filter(|m| matches!(m.state, MigrationState::Running | MigrationState::Paused))
+            .map(|m| m.to_config.clone())
+            .collect();
+        let mut started = Vec::new();
+        for mut m in all {
+            if m.state != MigrationState::Queued || !busy.insert(m.to_config.clone()) {
+                continue;
+            }
+            m.state = MigrationState::Running;
+            m.updated_at = now_secs();
+            self.blobs.insert(migration_key(&m.room_id), &m).await?;
+            started.push(m);
+        }
+        if !started.is_empty() {
+            crate::observe::changed();
+        }
+        Ok(started)
+    }
+
+    /// Resume every `paused` migration whose `next_attempt_at` has come: the runner's
+    /// own retry after a pause (`migrate` item 10).
+    pub async fn resume_due(&self, now: u64) -> Result<Vec<Migration>, AppError> {
+        let _guard = self.lock.lock().await;
+        let mut resumed = Vec::new();
+        for mut m in self.migrations().await? {
+            if m.state != MigrationState::Paused || m.next_attempt_at.is_none_or(|at| at > now) {
+                continue;
+            }
+            m.resume(now);
+            self.blobs.insert(migration_key(&m.room_id), &m).await?;
+            resumed.push(m);
+        }
+        if !resumed.is_empty() {
+            crate::observe::changed();
+        }
+        Ok(resumed)
+    }
+
+    /// A step of `room_id`'s running migration failed before it began — its target is
+    /// no longer `active`, or has no usable credential, as the caller found: counted
+    /// as a failed attempt like any other, so it backs off and then pauses with
+    /// `cause` (`migrate` item 10).
+    pub async fn migration_step_failed(
+        &self,
+        room_id: &str,
+        migration_id: Uuid,
+        cause: PauseCause,
+        why: &str,
+    ) -> Result<MigrationStep, AppError> {
+        self.retry(migration_id, room_id, cause, why.to_string())
+            .await
+    }
+
+    /// Drop `blob_ref` from `room_id`'s open migration: it was orphaned or collected,
+    /// so it is neither moved nor counted (`migrate` item 12) — before its switch, its
+    /// plan row and reservation go; after, it leaves `doneFiles` as well as the totals.
+    /// The caller holds the host's lock, as every blob-entry write does.
+    pub(super) async fn drop_from_migration(
+        &self,
+        room_id: &str,
+        blob_ref: &str,
+    ) -> Result<(), AppError> {
+        let Some(mut m) = self.migration(room_id).await? else {
+            return Ok(());
+        };
+        if !m.state.is_open() {
+            return Ok(());
+        }
+        let mut batch = Batch::new();
+        if let Some(p) = self
+            .blobs
+            .get::<PlanItem>(plan_key(room_id, blob_ref))
+            .await?
+        {
+            batch.remove(plan_key(room_id, blob_ref));
+            self.unreserve(&mut batch, &m.to_config, p.size).await?;
+            m.reserved_bytes = m.reserved_bytes.saturating_sub(p.size);
+            m.total_files = m.total_files.saturating_sub(1);
+            m.total_bytes = m.total_bytes.saturating_sub(p.size);
+        } else if let Some(p) = self
+            .blobs
+            .get::<PlanItem>(done_key(room_id, blob_ref))
+            .await?
+        {
+            batch.remove(done_key(room_id, blob_ref));
+            m.done_files = m.done_files.saturating_sub(1);
+            m.done_bytes = m.done_bytes.saturating_sub(p.size);
+            m.total_files = m.total_files.saturating_sub(1);
+            m.total_bytes = m.total_bytes.saturating_sub(p.size);
+        } else {
+            return Ok(());
+        }
+        m.updated_at = now_secs();
+        batch.insert(migration_key(room_id), &m)?;
+        self.blobs.apply_batch(batch).await?;
+        crate::observe::changed();
+        Ok(())
     }
 
     /// The committed blobs of `room_id` on a config other than `to_config`, with
@@ -450,9 +682,12 @@ impl BlobHost {
     }
 
     /// Start moving `req.room_id`'s blobs to `req.to_config` — or, when the room
-    /// already has a migration `running` or `paused`, answer with that one, resuming
-    /// a paused one (`migrate` item 5). Its `to_config` is kept.
+    /// already has a migration `queued`, `running` or `paused`, answer with that one,
+    /// resuming a paused one at once (`migrate` item 5). Its `to_config` and `reason`
+    /// are kept; the request's `max_bytes_per_second`, when it names one, is adopted.
     ///
+    /// A new migration is `queued` when another to the same config is `running`,
+    /// `paused` or itself queued (item 13), and its bytes are reserved either way.
     /// Refuses, starting nothing, when the target's capacity — or the host's storage
     /// capacity, which holds both copies until the old one is collected — cannot hold
     /// the bytes to move (item 2). A room with nothing to move gets a migration that
@@ -461,22 +696,31 @@ impl BlobHost {
         let _guard = self.lock.lock().await;
         let now = now_secs();
         let key = migration_key(&req.room_id);
-        if let Some(mut existing) = self.migration(&req.room_id).await? {
-            match existing.state {
-                MigrationState::Running => return Ok(MigrationStart::InProgress(existing)),
-                MigrationState::Paused => {
-                    existing.state = MigrationState::Running;
-                    existing.attempts = 0;
-                    existing.next_attempt_at = None;
-                    existing.last_error = None;
-                    existing.updated_at = now;
-                    self.blobs.insert(key, &existing).await?;
-                    crate::observe::changed();
-                    return Ok(MigrationStart::Resumed(existing));
-                }
-                _ => {}
+        if let Some(mut existing) = self.migration(&req.room_id).await?
+            && existing.state.is_open()
+        {
+            let rate_changed = req.max_bytes_per_second.is_some()
+                && req.max_bytes_per_second != existing.max_bytes_per_second;
+            if rate_changed {
+                existing.max_bytes_per_second = req.max_bytes_per_second;
+                existing.updated_at = now;
             }
+            if existing.state == MigrationState::Paused {
+                existing.resume(now);
+                self.blobs.insert(key, &existing).await?;
+                crate::observe::changed();
+                return Ok(MigrationStart::Resumed(existing));
+            }
+            if rate_changed {
+                self.blobs.insert(key, &existing).await?;
+            }
+            return Ok(MigrationStart::InProgress(existing));
         }
+        let all = self.migrations().await?;
+        let behind = all
+            .iter()
+            .any(|o| o.room_id != req.room_id && o.to_config == req.to_config && o.state.is_open());
+        let seq = all.iter().map(|o| o.seq).max().unwrap_or(0) + 1;
 
         let items = self.plan_items(&req.room_id, &req.to_config).await?;
         let files = items.len() as u64;
@@ -516,6 +760,8 @@ impl BlobHost {
             from_configs,
             state: if files == 0 {
                 MigrationState::Complete
+            } else if behind {
+                MigrationState::Queued
             } else {
                 MigrationState::Running
             },
@@ -532,6 +778,8 @@ impl BlobHost {
             attempts: 0,
             next_attempt_at: None,
             last_error: None,
+            paused_cause: None,
+            seq,
             reserved_bytes: bytes,
             in_flight: None,
         };
@@ -557,6 +805,14 @@ impl BlobHost {
         for (blob_ref, size, _) in &items {
             batch.insert(plan_key(&req.room_id, blob_ref), &PlanItem { size: *size })?;
         }
+        // Nor are the blobs a previous one moved this one's to take back out.
+        for k in self
+            .blobs
+            .prefix_keys(done_prefix(&req.room_id).into_bytes())
+            .await?
+        {
+            batch.remove(k);
+        }
         if bytes > 0 {
             target.reserved_bytes += bytes;
             storage.reserved_bytes += bytes;
@@ -572,7 +828,10 @@ impl BlobHost {
     /// Pause every `running` migration, keeping what each has copied for when it is
     /// resumed. A restore calls this: the restored index names copies the target may
     /// no longer hold, and an administrator resumes once the stores are in place —
-    /// the blob in flight is then verified again before it is switched.
+    /// the blob in flight is then verified again before it is switched. The cause is
+    /// `destination` (what is on the target is in doubt), and the runner does not
+    /// resume it by itself: `next_attempt_at` stays unset. A `queued` one has copied
+    /// nothing, and stays queued.
     pub async fn pause_running_migrations(&self, why: &str) -> Result<Vec<Migration>, AppError> {
         let _guard = self.lock.lock().await;
         let mut paused = Vec::new();
@@ -581,6 +840,7 @@ impl BlobHost {
                 continue;
             }
             m.state = MigrationState::Paused;
+            m.paused_cause = Some(PauseCause::Destination);
             m.last_error = Some(why.to_string());
             m.next_attempt_at = None;
             m.updated_at = now_secs();
@@ -757,15 +1017,16 @@ impl BlobHost {
                             .retry(
                                 m.migration_id,
                                 room_id,
+                                PauseCause::Source,
                                 format!(
-                                    "blob `{}` is not on `{}`",
-                                    flight.blob_ref, flight.source_config
+                                    "get from {}: the object is not there",
+                                    flight.source_config
                                 ),
                             )
                             .await;
                     }
-                    Err(CopyError::Transient(e)) => {
-                        return self.retry(m.migration_id, room_id, e.to_string()).await;
+                    Err(CopyError::Transient(cause, why)) => {
+                        return self.retry(m.migration_id, room_id, cause, why).await;
                     }
                 },
             };
@@ -798,8 +1059,8 @@ impl BlobHost {
                 Err(CopyError::Mismatch(why)) => {
                     return self.fail(m.migration_id, room_id, why, Some(at)).await;
                 }
-                Err(CopyError::Transient(e)) => {
-                    return self.retry(m.migration_id, room_id, e.to_string()).await;
+                Err(CopyError::Transient(cause, why)) => {
+                    return self.retry(m.migration_id, room_id, cause, why).await;
                 }
             }
         };
@@ -842,8 +1103,16 @@ impl BlobHost {
         manifest: &Manifest,
         rate: u64,
     ) -> Result<BackendRef, CopyError> {
-        let source = self.stores.store_for(&f.source_config, &m.room_id).await?;
-        let target = self.stores.store_for(&m.to_config, &m.room_id).await?;
+        let source = self
+            .stores
+            .store_for(&f.source_config, &m.room_id)
+            .await
+            .map_err(|e| unreachable_config(&f.source_config, &e))?;
+        let target = self
+            .stores
+            .store_for(&m.to_config, &m.room_id)
+            .await
+            .map_err(|e| unreachable_config(&m.to_config, &e))?;
         tokio::fs::create_dir_all(&self.staging_dir)
             .await
             .map_err(AppError::Io)?;
@@ -854,10 +1123,19 @@ impl BlobHost {
             self.stage(source.as_ref(), f, manifest, rate, &staged)
                 .await?;
             // Same bytes, same content-derived key, another store.
-            let key = BlobKey::for_room(&m.room_id, &f.blob_ref).map_err(CopyError::Transient)?;
+            let put_failed = |e: AppError| {
+                CopyError::Transient(
+                    PauseCause::Destination,
+                    format!("put to {}: {e}", m.to_config),
+                )
+            };
+            let key = BlobKey::for_room(&m.room_id, &f.blob_ref).map_err(put_failed)?;
             self.reclaim_moved(&m.room_id, &f.blob_ref, &m.to_config)
                 .await?;
-            Ok(target.put(&key, &staged, manifest.size).await?)
+            target
+                .put(&key, &staged, manifest.size)
+                .await
+                .map_err(put_failed)
         }
         .await;
         let _ = tokio::fs::remove_file(&staged).await;
@@ -885,7 +1163,12 @@ impl BlobHost {
             let data = match source.get_range(&f.source, start, end).await {
                 Ok(d) => d,
                 Err(AppError::NotFound(_)) => return Err(CopyError::Missing),
-                Err(e) => return Err(CopyError::Transient(e)),
+                Err(e) => {
+                    return Err(CopyError::Transient(
+                        PauseCause::Source,
+                        format!("get from {}: {e}", f.source_config),
+                    ));
+                }
             };
             if !digest_matches(&manifest.chunk_digests[i as usize], &data) {
                 return Err(CopyError::Mismatch(format!(
@@ -916,7 +1199,11 @@ impl BlobHost {
         at: &BackendRef,
         manifest: &Manifest,
     ) -> Result<(), CopyError> {
-        let target = self.stores.store_for(&m.to_config, &m.room_id).await?;
+        let target = self
+            .stores
+            .store_for(&m.to_config, &m.room_id)
+            .await
+            .map_err(|e| unreachable_config(&m.to_config, &e))?;
         let mut whole = Sha256::new();
         for i in 0..manifest.chunk_count {
             let start = i * manifest.chunk_size;
@@ -924,7 +1211,12 @@ impl BlobHost {
             let data = match target.get_range(at, start, end).await {
                 Ok(d) => d,
                 Err(AppError::NotFound(_)) => return Err(CopyError::Missing),
-                Err(e) => return Err(CopyError::Transient(e)),
+                Err(e) => {
+                    return Err(CopyError::Transient(
+                        PauseCause::Destination,
+                        format!("read back from {}: {e}", m.to_config),
+                    ));
+                }
             };
             if !digest_matches(&manifest.chunk_digests[i as usize], &data) {
                 return Err(CopyError::Mismatch(format!(
@@ -1077,6 +1369,7 @@ impl BlobHost {
             batch.insert(k, &s)?;
         }
         batch.remove(plan_key(room_id, &f.blob_ref));
+        batch.insert(done_key(room_id, &f.blob_ref), &PlanItem { size: f.size })?;
         m.done_files += 1;
         m.done_bytes += f.size;
         m.reserved_bytes = m.reserved_bytes.saturating_sub(f.size);
@@ -1098,8 +1391,9 @@ impl BlobHost {
     }
 
     /// A planned blob that is no longer the room's to move — collected, orphaned or
-    /// rewritten — leaves the plan and the totals, and its reservation is given back.
-    /// Its copy, if one was made, is deleted.
+    /// rewritten — leaves the plan and the totals, and its reservation is given back,
+    /// unless [`Self::drop_from_migration`] already took it out. Its copy, if one was
+    /// made, is deleted.
     async fn skip(
         &self,
         migration_id: Uuid,
@@ -1117,11 +1411,18 @@ impl BlobHost {
                 return Ok(MigrationStep::Interrupted);
             }
             let mut batch = Batch::new();
-            batch.remove(plan_key(room_id, blob_ref));
-            self.unreserve(&mut batch, &m.to_config, size).await?;
-            m.total_files = m.total_files.saturating_sub(1);
-            m.total_bytes = m.total_bytes.saturating_sub(size);
-            m.reserved_bytes = m.reserved_bytes.saturating_sub(size);
+            if self
+                .blobs
+                .get_raw(plan_key(room_id, blob_ref))
+                .await?
+                .is_some()
+            {
+                batch.remove(plan_key(room_id, blob_ref));
+                self.unreserve(&mut batch, &m.to_config, size).await?;
+                m.total_files = m.total_files.saturating_sub(1);
+                m.total_bytes = m.total_bytes.saturating_sub(size);
+                m.reserved_bytes = m.reserved_bytes.saturating_sub(size);
+            }
             if m.in_flight.as_ref().is_some_and(|f| f.blob_ref == blob_ref) {
                 m.in_flight = None;
             }
@@ -1168,6 +1469,7 @@ impl BlobHost {
         let mut batch = Batch::new();
         self.unreserve(&mut batch, &m.to_config, m.reserved_bytes)
             .await?;
+        self.forget_done(&mut batch, room_id).await?;
         m.reserved_bytes = 0;
         m.state = MigrationState::Complete;
         m.in_flight = None;
@@ -1206,6 +1508,7 @@ impl BlobHost {
             }
             self.unreserve(&mut batch, &m.to_config, m.reserved_bytes)
                 .await?;
+            self.forget_done(&mut batch, room_id).await?;
             let in_flight = m.in_flight.take();
             m.reserved_bytes = 0;
             m.state = MigrationState::Failed;
@@ -1227,12 +1530,28 @@ impl BlobHost {
         Ok(MigrationStep::Failed(m))
     }
 
-    /// A copy failed for a reason that may pass: back off, or pause after
-    /// [`MIGRATION_MAX_ATTEMPTS`] in a row. What was copied is kept.
+    /// Add to `batch` forgetting which blobs the room's migration switched: it is no
+    /// longer open, so none of them can be dropped from it.
+    async fn forget_done(&self, batch: &mut Batch, room_id: &str) -> Result<(), AppError> {
+        for k in self
+            .blobs
+            .prefix_keys(done_prefix(room_id).into_bytes())
+            .await?
+        {
+            batch.remove(k);
+        }
+        Ok(())
+    }
+
+    /// A step failed for a reason that may pass: back off, or — after
+    /// [`MIGRATION_MAX_ATTEMPTS`] in a row — pause, put down to `cause`, until the
+    /// runner tries again by itself at `next_attempt_at` (`migrate` items 10, 11). What
+    /// was copied is kept.
     async fn retry(
         &self,
         migration_id: Uuid,
         room_id: &str,
+        cause: PauseCause,
         why: String,
     ) -> Result<MigrationStep, AppError> {
         let _guard = self.lock.lock().await;
@@ -1242,15 +1561,20 @@ impl BlobHost {
         if m.migration_id != migration_id || m.state != MigrationState::Running {
             return Ok(MigrationStep::Interrupted);
         }
+        let now = now_secs();
+        let prefix = blob_store::room_prefix(room_id);
+        let hash = room_hash(room_id);
+        let blob = m.in_flight_blob().unwrap_or_default().to_string();
         m.attempts += 1;
-        m.last_error = Some(scrub_error(&why));
-        m.updated_at = now_secs();
+        m.last_error = Some(scrub_error(&why, &[room_id, &prefix, &hash, &blob]));
+        m.updated_at = now;
         let paused = m.attempts >= MIGRATION_MAX_ATTEMPTS;
         if paused {
             m.state = MigrationState::Paused;
-            m.next_attempt_at = None;
+            m.paused_cause = Some(cause);
+            m.next_attempt_at = Some(paused_retry_at(now));
         } else {
-            m.next_attempt_at = Some(now_secs() + backoff_secs(m.attempts));
+            m.next_attempt_at = Some(now + backoff_secs(m.attempts));
         }
         self.blobs.insert(migration_key(room_id), &m).await?;
         crate::observe::changed();
@@ -1425,8 +1749,30 @@ mod tests {
         (bytes, Manifest::parse(&raw).unwrap())
     }
 
+    fn other_room(id: &str) -> Room {
+        Room {
+            room_id: id.into(),
+            ..room()
+        }
+    }
+
+    /// The record naming blob `seed` no longer does: the blob is orphaned.
+    async fn orphan(f: &Fixture, seed: u8) {
+        f.host
+            .prepare_record(&room(), Some(MEMBER), &format!("rec-{seed}"), &[])
+            .await
+            .unwrap()
+            .apply()
+            .await
+            .unwrap();
+    }
+
     async fn upload(f: &Fixture, len: usize, seed: u8) -> String {
-        let r = room();
+        upload_to(f, &room(), len, seed).await
+    }
+
+    async fn upload_to(f: &Fixture, r: &Room, len: usize, seed: u8) -> String {
+        let r = r.clone();
         let (bytes, manifest) = blob(len, seed);
         let digests = manifest.chunk_digests.clone();
         let begun = f
@@ -1773,7 +2119,309 @@ mod tests {
         };
         assert_eq!(m.state, MigrationState::Paused);
         assert_eq!(m.reserved_bytes, 1_000);
-        assert!(f.host.next_migration().await.unwrap().is_none());
+        // Item 11: why, what failed, and when it is tried again by the runner itself.
+        assert_eq!(m.paused_cause, Some(PauseCause::Credential));
+        assert!(
+            m.last_error
+                .as_deref()
+                .unwrap()
+                .starts_with("credential for c:")
+        );
+        let at = m.next_attempt_at.expect("the runner tries again by itself");
+        assert!(at >= now_secs() + PAUSED_RETRY_SECS - 5);
+        assert!(f.host.running_migrations().await.unwrap().is_empty());
+
+        // Not before its time; then resumed as the same migration, its retries anew.
+        assert!(f.host.resume_due(at - 1).await.unwrap().is_empty());
+        let resumed = f.host.resume_due(at).await.unwrap();
+        assert_eq!(resumed.len(), 1);
+        let r = &resumed[0];
+        assert_eq!(r.migration_id, m.migration_id);
+        assert_eq!(r.state, MigrationState::Running);
+        assert_eq!(
+            (r.attempts, r.paused_cause, r.next_attempt_at),
+            (0, None, None)
+        );
+    }
+
+    /// Item 10: a failure short of the cap leaves the migration `running`, waiting out a
+    /// backoff that reports its error and next attempt; it never pauses early.
+    #[tokio::test]
+    async fn a_failure_short_of_the_cap_backs_off_running() {
+        let f = fixture(HostLimits::default());
+        upload(&f, 1_000, 9).await;
+        start(&f, "c").await;
+        let out = f.host.migrate_step(&room().room_id, FAST).await.unwrap();
+        let MigrationStep::Retrying(m) = out else {
+            panic!("{out:?}");
+        };
+        assert_eq!(m.state, MigrationState::Running);
+        assert_eq!(m.paused_cause, None);
+        assert!(m.last_error.is_some());
+        assert!(m.next_attempt_at.unwrap() > now_secs());
+    }
+
+    /// The runner's own check of the target (no longer `active`) counts as a failed
+    /// attempt, paused as `destination` once the retries run out.
+    #[tokio::test]
+    async fn a_target_no_longer_active_pauses_as_destination_after_its_retries() {
+        let f = fixture(HostLimits::default());
+        upload(&f, 1_000, 10).await;
+        let MigrationStart::Started(m) = start(&f, "b").await else {
+            panic!();
+        };
+        let rid = room().room_id;
+        let mut last = None;
+        for _ in 0..MIGRATION_MAX_ATTEMPTS {
+            last = Some(
+                f.host
+                    .migration_step_failed(
+                        &rid,
+                        m.migration_id,
+                        PauseCause::Destination,
+                        "put to b: the config is draining",
+                    )
+                    .await
+                    .unwrap(),
+            );
+        }
+        let Some(MigrationStep::Paused(p)) = last else {
+            panic!("{last:?}");
+        };
+        assert_eq!(p.paused_cause, Some(PauseCause::Destination));
+        assert_eq!(
+            p.last_error.as_deref(),
+            Some("put to b: the config is draining")
+        );
+    }
+
+    /// Item 9: reassigned while it runs, the migration keeps moving to the config it was
+    /// approved for; new uploads go to the new assignment; a later migration moves
+    /// everything, what the first moved included.
+    #[tokio::test]
+    async fn a_reassignment_mid_move_keeps_the_target() {
+        let f = fixture(HostLimits::default());
+        let one = upload(&f, 1_000, 11).await;
+        let two = upload(&f, 2_000, 12).await;
+        reassign(&f, "b");
+        let MigrationStart::Started(m) = start(&f, "b").await else {
+            panic!();
+        };
+        // One blob moves, then the room is reassigned back to `a`.
+        assert!(matches!(
+            f.host.migrate_step(&room().room_id, FAST).await.unwrap(),
+            MigrationStep::Moved(_)
+        ));
+        reassign(&f, "a");
+        let fresh = upload(&f, 500, 13).await;
+        assert_eq!(
+            f.host
+                .blob(&room().room_id, &fresh)
+                .await
+                .unwrap()
+                .unwrap()
+                .config_id,
+            "a"
+        );
+        // Asked again, now that the room is on `a`: the same migration, still to `b`.
+        let MigrationStart::InProgress(again) = start(&f, "a").await else {
+            panic!();
+        };
+        assert_eq!(
+            (again.migration_id, again.to_config.as_str()),
+            (m.migration_id, "b")
+        );
+        let done = run(&f).await;
+        assert_eq!(done.state, MigrationState::Complete);
+        assert_eq!(done.to_config, "b");
+        assert_eq!((done.done_files, done.total_files), (2, 2));
+        for b in [&one, &two] {
+            assert_eq!(
+                f.host
+                    .blob(&room().room_id, b)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .config_id,
+                "b"
+            );
+        }
+        assert_eq!(
+            f.host
+                .blob(&room().room_id, &fresh)
+                .await
+                .unwrap()
+                .unwrap()
+                .config_id,
+            "a"
+        );
+
+        // Finished: a new migration moves the room's blobs to the config assigned now.
+        let MigrationStart::Started(next) = start(&f, "a").await else {
+            panic!();
+        };
+        assert_ne!(next.migration_id, m.migration_id);
+        assert_eq!((next.total_files, next.total_bytes), (2, 3_000));
+        assert_eq!(run(&f).await.state, MigrationState::Complete);
+        for b in [&one, &two, &fresh] {
+            assert_eq!(
+                f.host
+                    .blob(&room().room_id, b)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .config_id,
+                "a"
+            );
+        }
+    }
+
+    /// Item 12: an orphan is never planned or counted; one orphaned while the migration
+    /// is open leaves it at once — before its switch, from the totals and the
+    /// reservation; after, from the done counts too.
+    #[tokio::test]
+    async fn an_orphan_is_neither_moved_nor_counted() {
+        let f = fixture(HostLimits::default());
+        let already = upload(&f, 300, 14).await;
+        orphan(&f, 14).await;
+        let first = upload(&f, 1_000, 15).await;
+        let second = upload(&f, 2_000, 16).await;
+        let MigrationStart::Started(m) = start(&f, "b").await else {
+            panic!();
+        };
+        assert_eq!((m.total_files, m.total_bytes), (2, 3_000));
+
+        // Move whichever is planned first, then orphan each in turn.
+        let MigrationStep::Moved(after_one) =
+            f.host.migrate_step(&room().room_id, FAST).await.unwrap()
+        else {
+            panic!();
+        };
+        assert_eq!(after_one.done_files, 1);
+        let (moved, pending, moved_seed, pending_seed, moved_size, pending_size) = if f
+            .host
+            .blob(&room().room_id, &first)
+            .await
+            .unwrap()
+            .unwrap()
+            .config_id
+            == "b"
+        {
+            (&first, &second, 15, 16, 1_000, 2_000)
+        } else {
+            (&second, &first, 16, 15, 2_000, 1_000)
+        };
+        let _ = (moved, pending);
+
+        orphan(&f, pending_seed).await;
+        let m = f.host.migration(&room().room_id).await.unwrap().unwrap();
+        assert_eq!((m.total_files, m.total_bytes), (1, moved_size));
+        assert_eq!(m.reserved_bytes, 0);
+        assert_eq!(counter(&f, "usage:config:b").await.reserved_bytes, 0);
+        let _ = pending_size;
+
+        orphan(&f, moved_seed).await;
+        let m = f.host.migration(&room().room_id).await.unwrap().unwrap();
+        assert_eq!(
+            (m.total_files, m.total_bytes, m.done_files, m.done_bytes),
+            (0, 0, 0, 0)
+        );
+        assert_eq!(run(&f).await.state, MigrationState::Complete);
+        // The orphan from before was never touched.
+        assert_eq!(
+            f.host
+                .blob(&room().room_id, &already)
+                .await
+                .unwrap()
+                .unwrap()
+                .config_id,
+            "a"
+        );
+    }
+
+    /// Item 13: one migration per target config at a time; the others are `queued`,
+    /// copy nothing, are answered as they stand, and start in the order approved.
+    #[tokio::test]
+    async fn migrations_to_one_config_queue_in_order() {
+        let f = fixture(HostLimits::default());
+        let rooms = [
+            room(),
+            other_room("did:key:zRoom2"),
+            other_room("did:key:zRoom3"),
+        ];
+        for (i, r) in rooms.iter().enumerate() {
+            upload_to(&f, r, 1_000, 20 + i as u8).await;
+        }
+        let mut started = Vec::new();
+        for r in &rooms {
+            let MigrationStart::Started(m) = f
+                .host
+                .start_migration(MigrationRequest::new(
+                    &r.room_id,
+                    "b",
+                    "did:key:zAdmin",
+                    "move",
+                ))
+                .await
+                .unwrap()
+            else {
+                panic!();
+            };
+            started.push(m);
+        }
+        assert_eq!(started[0].state, MigrationState::Running);
+        assert_eq!(started[1].state, MigrationState::Queued);
+        assert_eq!(started[2].state, MigrationState::Queued);
+        // Every one's bytes are reserved at approval (item 2).
+        assert_eq!(counter(&f, "usage:config:b").await.reserved_bytes, 3_000);
+        // A queued one is not stepped, and is the answer to a second request; the rate
+        // it names is adopted.
+        assert!(matches!(
+            f.host.migrate_step(&rooms[1].room_id, FAST).await.unwrap(),
+            MigrationStep::Idle
+        ));
+        let mut again = MigrationRequest::new(&rooms[1].room_id, "a", "did:key:zOther", "other");
+        again.max_bytes_per_second = Some(100_000);
+        let MigrationStart::InProgress(q) = f.host.start_migration(again).await.unwrap() else {
+            panic!();
+        };
+        assert_eq!(q.state, MigrationState::Queued);
+        assert_eq!((q.to_config.as_str(), q.reason.as_str()), ("b", "move"));
+        assert_eq!(q.max_bytes_per_second, Some(100_000));
+        // Nothing starts while the first is open, paused included.
+        assert!(f.host.promote_queued().await.unwrap().is_empty());
+        f.host.pause_running_migrations("restored").await.unwrap();
+        assert!(f.host.promote_queued().await.unwrap().is_empty());
+        assert!(matches!(start(&f, "b").await, MigrationStart::Resumed(_)));
+        assert_eq!(run(&f).await.state, MigrationState::Complete);
+
+        // Then the next approved, and only it.
+        let next = f.host.promote_queued().await.unwrap();
+        assert_eq!(next.len(), 1);
+        assert_eq!(next[0].migration_id, started[1].migration_id);
+        assert!(f.host.promote_queued().await.unwrap().is_empty());
+        for _ in 0..10 {
+            f.host.migrate_step(&rooms[1].room_id, FAST).await.unwrap();
+        }
+        let next = f.host.promote_queued().await.unwrap();
+        assert_eq!(next[0].migration_id, started[2].migration_id);
+
+        // A migration to another config is not held up.
+        upload_to(&f, &other_room("did:key:zRoom4"), 100, 30).await;
+        let MigrationStart::Started(elsewhere) = f
+            .host
+            .start_migration(MigrationRequest::new(
+                "did:key:zRoom4",
+                "c",
+                "did:key:zAdmin",
+                "x",
+            ))
+            .await
+            .unwrap()
+        else {
+            panic!();
+        };
+        assert_eq!(elsewhere.state, MigrationState::Running);
     }
 
     /// Moved off `a`, then back onto it before the old copy was collected: the
@@ -1806,9 +2454,16 @@ mod tests {
     fn a_kept_error_loses_what_could_be_a_credential() {
         let s = scrub_error(
             "GET https://b.s3.amazonaws.com/rooms/x?X-Amz-Signature=abc&X-Amz-Credential=AKIA failed",
+            &[],
         );
         assert!(!s.contains("X-Amz"), "{s}");
         assert!(s.ends_with("failed"));
+        // Item 11: never the room's identifier, nor a blob's reference.
+        let s = scrub_error(
+            "put to eu: room:z6MkRoom/zQmBlob: 503 SlowDown",
+            &["room:z6MkRoom", "zQmBlob"],
+        );
+        assert_eq!(s, "put to eu: …/…: 503 SlowDown");
     }
 
     #[test]

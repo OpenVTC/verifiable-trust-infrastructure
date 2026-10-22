@@ -245,11 +245,13 @@ export type GitNsForgeAccount = Schemas["GitNsViewV0_1ForgeAccount"];
 //
 // The published `vtc/rooms/{get,usage,limits/set}` shapes, rendered from the
 // specification (`vta_sdk::openapi`). Signed documents only; no REST route.
-export type RoomGetResponse = Schemas["VtcRoomsGetV0_1Response"];
-export type RoomEffectiveLimits = Schemas["VtcRoomsGetV0_1EffectiveLimits"];
-export type RoomScopeLimits = Schemas["VtcRoomsGetV0_1ScopeLimits"];
-export type RoomUsageNow = Schemas["VtcRoomsGetV0_1Usage"];
-export type RoomLimitSource = Schemas["VtcRoomsGetV0_1LimitSource"];
+// `get` is read at 0.2, whose `storage.migration` names its target and says why a
+// move is queued or paused.
+export type RoomGetResponse = Schemas["VtcRoomsGetV0_2Response"];
+export type RoomEffectiveLimits = Schemas["VtcRoomsGetV0_2EffectiveLimits"];
+export type RoomScopeLimits = Schemas["VtcRoomsGetV0_2ScopeLimits"];
+export type RoomUsageNow = Schemas["VtcRoomsGetV0_2Usage"];
+export type RoomLimitSource = Schemas["VtcRoomsGetV0_2LimitSource"];
 export type RoomsUsagePayload = Schemas["VtcRoomsUsageV0_1Payload"];
 export type RoomsUsageResponse = Schemas["VtcRoomsUsageV0_1Response"];
 export type RoomsUsageRow = Schemas["VtcRoomsUsageV0_1UsageRow"];
@@ -277,7 +279,7 @@ export type StorageConfigProbeResponse = Schemas["VtcStorageConfigsProbeV0_1Resp
 export type StorageSettings = Schemas["VtcStorageConfigsCreateV0_2StorageSettings"];
 export type StorageAuth = Schemas["VtcStorageConfigsCreateV0_2StorageAuth"];
 export type RoomStorageAssignResponse = Schemas["VtcRoomsStorageAssignV0_1Response"];
-export type RoomStorageMigrateResponse = Schemas["VtcRoomsStorageMigrateV0_1Response"];
+export type RoomStorageMigrateResponse = Schemas["VtcRoomsStorageMigrateV0_2Response"];
 
 // ── Data rooms the community itself owns ────────────────────────────────
 //

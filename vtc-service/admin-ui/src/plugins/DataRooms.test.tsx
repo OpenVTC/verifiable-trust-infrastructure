@@ -23,7 +23,7 @@ vi.mock("@/lib/api", async (original) => ({
 
 const T = "https://trusttasks.org/spec";
 const ROOMS_LIST = `${T}/vtc/rooms/list/0.1`;
-const ROOMS_GET = `${T}/vtc/rooms/get/0.1`;
+const ROOMS_GET = `${T}/vtc/rooms/get/0.2`;
 const USAGE = `${T}/vtc/rooms/usage/0.1`;
 const STORAGE_LIST = `${T}/vtc/storage/configs/list/0.2`;
 

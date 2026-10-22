@@ -1004,7 +1004,7 @@ community's ACL or a session.
   is created. A holder of `vtc.rooms.admin` manages them with
   `vtc/storage/configs/{list,get,create,update,retire,probe}/0.1` (list, get,
   create and update also at 0.2), `vtc/storage/credentials/set/0.2`,
-  `vtc/rooms/storage/assign/0.1` and `vtc/rooms/storage/migrate/0.1`. Creating,
+  `vtc/rooms/storage/assign/0.1` and `vtc/rooms/storage/migrate/{0.1,0.2}`. Creating,
   changing and retiring a config, setting a sealed credential, and reassigning a
   room or moving its files, are **parked for the other holders' consent** in the
   administrator action list. This build stores to `local` configs, to `s3` configs
@@ -1026,8 +1026,8 @@ community's ACL or a session.
   budget as any other large document; a chunk arriving at `POST /v1/trust-tasks`
   is under the room budgets below instead (over DIDComm or TSP it still takes the
   large-document budget).
-- **Moving a room's files** (`vtc/rooms/storage/migrate/0.1`, §7.3 of the design
-  note). Reassigning a room leaves its existing files where they are; a
+- **Moving a room's files** (`vtc/rooms/storage/migrate/0.2`, and 0.1 for older
+  clients, §7.3 of the design note). Reassigning a room leaves its existing files where they are; a
   migration moves them onto the config the room is assigned to, one at a time:
   each is copied, read back from the new config and checked against every chunk
   digest and the whole-blob digest of its committed manifest, and only then
@@ -1036,20 +1036,39 @@ community's ACL or a session.
   its current location. The old copy keeps counting against its config — and
   keeps a `draining` config from retiring — until the collection pass deletes it
   after `orphan_grace_hours`. The bytes to move are reserved on the target when
-  the migration starts, so one the target's capacity cannot hold is refused
-  (`capacityExceeded`) before anything is copied. One migration runs at a time,
-  at most `migration_max_bytes_per_second` (a request's `maxBytesPerSecond` can
-  only lower it). A failed copy is retried with capped, jittered backoff and,
-  after eight in a row, the migration is `paused`; issuing the task again
-  resumes it without asking the approvers again, and a migration `running` or
-  `paused` is always the answer to a second request. A copy that does not
-  verify stops it `failed`, leaving that file where it was. Progress is
-  `vtc/rooms/get`'s `storage.migration`, and each start, resume, completion,
-  pause and failure is a `RoomStorageChanged` audit row naming the requester,
-  the approvers, the room, the configs and the reason. A restored backup brings
-  a running migration back `paused` — the bytes are never in a backup — and the
-  file in flight is verified again when it is resumed. Draining a config is
-  migrating every room assigned to it.
+  the migration is approved, so one the target's capacity cannot hold is refused
+  (`capacityExceeded`) before anything is copied. The destination is the room's
+  assignment **when the migration is approved**, and stays that if the room is
+  reassigned meanwhile: new uploads go to the new assignment, and once the first
+  migration is `complete` or `failed` a second can bring everything there. One
+  migration per destination config runs at a time; another to the same config is
+  `queued` (nothing copied, its bytes already reserved) and starts, in the order
+  approved, when the one ahead finishes. Each copies at most
+  `migration_max_bytes_per_second` (a request's `maxBytesPerSecond` can only lower
+  it). The community is the one retry owner: a failed copy, read, write or
+  credential request — or a destination that is no longer `active` — is retried
+  with capped, jittered backoff (the migration stays `running`, reporting
+  `lastError` and `nextAttemptAt`), and only after eight in a row is it `paused`,
+  reporting `pausedCause` (`source`, `destination` or `credential`), `lastError` and
+  the `nextAttemptAt` at which it tries again by itself (about half an hour later).
+  Nobody needs to re-issue the task to retry. Issuing it again for a room whose
+  migration is `queued`, `running` or `paused` answers with that migration —
+  resuming a paused one at once — without asking the approvers again, and changes
+  neither its destination nor its reason. A file orphaned (no record names it) is
+  never moved or counted, and one orphaned during the move leaves it, whether or
+  not it had been moved yet. A copy that does not verify stops it `failed`, leaving
+  that file where it was. Progress is `vtc/rooms/get/0.2`'s `storage.migration`,
+  which names the destination (it differs from `storage.configId` after a
+  reassignment); each start, resume, completion, pause and failure is a
+  `RoomStorageChanged` audit row naming the requester, the approvers, the room,
+  the configs and the reason (a resumption the community made itself is marked
+  `automatic`). A restored backup brings a running migration back `paused` (cause
+  `destination`, waiting for an administrator) — the bytes are never in a backup —
+  and the file in flight is verified again when it is resumed. Draining a config
+  is migrating every room assigned to it. **Known gap**: if the destination is
+  retired while a move to it is open, the move pauses as `destination` and keeps
+  retrying at its `nextAttemptAt`; nothing in the specification ends it yet, and
+  it holds up later moves to that config (not to others).
 - **Rate limits** (`[rooms.rate_limits]`). Room traffic is not held to the
   anonymous per-address governor the join and sign-in surface shares (a burst of
   10, then one request every 5 s), which a member reading a room or fetching a

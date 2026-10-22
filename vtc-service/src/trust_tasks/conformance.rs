@@ -589,6 +589,16 @@ fn sample_migration() -> vti_rooms::blobs::Migration {
     .expect("a migration record")
 }
 
+/// A migration paused after its retries, which the runner will try again by itself.
+fn sample_paused_migration() -> vti_rooms::blobs::Migration {
+    let mut m = serde_json::to_value(sample_migration()).expect("a migration record");
+    m["state"] = json!("paused");
+    m["pausedCause"] = json!("destination");
+    m["lastError"] = json!("put to eu: 503 SlowDown");
+    m["nextAttemptAt"] = json!(1_791_000_000u64);
+    serde_json::from_value(m).expect("a migration record")
+}
+
 /// A stored storage config as `crate::rooms::storage_configs` keeps it.
 fn sample_storage_config() -> serde_json::Value {
     json!({
@@ -1309,7 +1319,46 @@ fn table() -> Vec<Conformance> {
                 "storage": {
                     "configId": "local",
                     "earlierConfigs": [{ "configId": "old", "files": 1, "bytes": 10 }],
-                    "migration": crate::rooms::migration::progress_json(&sample_migration()),
+                    "migration": crate::rooms::migration::progress_json(
+                        &sample_migration(),
+                        crate::rooms::migration::Wire::V0_1,
+                    ),
+                },
+                "limits": {
+                    "limits": {
+                        "filesEnabled": true,
+                        "room": { "maxFiles": 10000, "maxFileBytes": 104857600, "maxBytes": 5368709120u64 },
+                        "member": { "maxFiles": 2000, "maxFileBytes": 104857600, "maxBytes": 1073741824 },
+                    },
+                    "roomSource": "override", "memberSource": "default",
+                    "hostCeilingBytes": 1073741824,
+                },
+                "usage": {
+                    "room": { "files": 3, "bytes": 1800, "reservedBytes": 0, "reservedFiles": 0 },
+                    "orphans": { "files": 1, "bytes": 5, "oldestOrphanedAt": "2026-10-10T10:00:00+00:00" },
+                },
+                "largestBlobs": [{ "size": 900, "configId": "local", "createdAt": "2026-10-10T10:00:00+00:00" }],
+                "membersWithUsage": 1,
+            })
+        ),
+        // 0.2: the migration names its target, and a paused one says why and when.
+        checked!(
+            s::rooms::get::v0_2::Payload,
+            s::rooms::get::v0_2::Response,
+            json!({ "roomId": "did:key:z6MkRoom" }),
+            json!({
+                "room": {
+                    "roomId": "did:key:z6MkRoom", "ownerDid": "did:key:zOwner",
+                    "visibility": "attributed", "retentionPolicy": "chained", "epoch": 1,
+                    "lifecycle": "live", "retentionDays": 30, "createdAt": 0, "updatedAt": 0,
+                },
+                "storage": {
+                    "configId": "local",
+                    "earlierConfigs": [{ "configId": "old", "files": 1, "bytes": 10 }],
+                    "migration": crate::rooms::migration::progress_json(
+                        &sample_paused_migration(),
+                        crate::rooms::migration::Wire::V0_2,
+                    ),
                 },
                 "limits": {
                     "limits": {
@@ -1706,7 +1755,23 @@ fn table() -> Vec<Conformance> {
                 "maxBytesPerSecond": 1_048_576,
                 "reason": "retiring local",
             }),
-            crate::rooms::migration::response_json(&sample_migration())
+            crate::rooms::migration::response_json(
+                &sample_migration(),
+                crate::rooms::migration::Wire::V0_1,
+            )
+        ),
+        checked!(
+            s::rooms::storage::migrate::v0_2::Payload,
+            s::rooms::storage::migrate::v0_2::Response,
+            json!({
+                "roomId": "did:key:z6MkRoom",
+                "maxBytesPerSecond": 1_048_576,
+                "reason": "retiring local",
+            }),
+            crate::rooms::migration::response_json(
+                &sample_paused_migration(),
+                crate::rooms::migration::Wire::V0_2,
+            )
         ),
         // ─── admin ───────────────────────────────────────────────────
         checked!(

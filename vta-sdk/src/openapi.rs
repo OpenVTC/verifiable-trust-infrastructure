@@ -223,6 +223,9 @@ spec_types! {
     /// `vtc/rooms/get/0.1#response` — one hosted room's host record, storage
     /// placement, limits and usage.
     RoomsGet01Response(rooms_get::v0_1::Response);
+    /// `vtc/rooms/get/0.2#response` — as 0.1, with the room's migration as
+    /// `vtc/rooms/storage/migrate/0.2` reports it (its target, `queued`, why paused).
+    RoomsGet02Response(rooms_get::v0_2::Response);
     /// `vtc/rooms/usage/0.1` payload — grouping, filter, sort and page.
     RoomsUsage01Payload(rooms_usage::v0_1::Payload);
     /// `vtc/rooms/usage/0.1#response` — one page of usage rows.
@@ -240,6 +243,11 @@ spec_types! {
     RoomsStorageMigrate01Payload(rooms_storage_migrate::v0_1::Payload);
     /// `vtc/rooms/storage/migrate/0.1#response` — the migration and its progress so far.
     RoomsStorageMigrate01Response(rooms_storage_migrate::v0_1::Response);
+    /// `vtc/rooms/storage/migrate/0.2` payload — 0.1's, unchanged.
+    RoomsStorageMigrate02Payload(rooms_storage_migrate::v0_2::Payload);
+    /// `vtc/rooms/storage/migrate/0.2#response` — the migration, its progress, and
+    /// why and until when it is paused or waiting.
+    RoomsStorageMigrate02Response(rooms_storage_migrate::v0_2::Response);
     /// `vtc/rooms/community/create/0.1` payload — a room the community itself
     /// owns: its label, tier, retention and the reason recorded with it.
     RoomsCommunityCreate01Payload(rooms_community::create::v0_1::Payload);

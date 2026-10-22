@@ -246,7 +246,9 @@ When adding a flow, add it here and a line to the root index.
 
 ### VTC room file migration (`vtc/rooms/storage/migrate`)
 - **What**: Moves a hosted room's existing blobs onto the storage config it is
-  assigned to (`data-rooms-files.md` §7.3): copy, read back and verify against
+  assigned to (`data-rooms-files.md` §7.3; 0.2 served beside 0.1, each answered
+  at its own version, one engine; `vtc/rooms/get/0.2` reports the migration through
+  `vtc/_shared/0.1/room-migration`): copy, read back and verify against
   every chunk digest and the whole-blob digest of the committed manifest, switch,
   and the old copy deleted by collection after the orphan grace window. No key.
   `vtc.rooms.admin`, parked as `Act::ChangeStorage`; VTC-only (`room-host` has
@@ -259,13 +261,30 @@ When adding a flow, add it here and a line to the root index.
   until collected, never less (§6.1). Before writing a copy, a pending `moved:` row
   of the same blob on the target is reclaimed under the lock, so collection never
   deletes what a switch is about to name. The runner (`rooms::migration`) is the
-  **one retry owner** (capped backoff + full jitter, then `paused`); re-issuing the
-  task resumes a paused migration **without** parking again, and a `running` or
-  `paused` one is always the answer. A copy that does not verify is `failed`, never
-  retried. One migration at a time per host; a reassigned room keeps the
-  migration's original target; orphaned blobs are skipped. A restore pauses a
-  running one (`pause_after_restore`), and the blob in flight is re-verified.
-  A kept or audited store error is scrubbed of URL queries and tokens.
+  **one retry owner** (migrate/0.2 item 10): capped backoff + full jitter, `paused`
+  only after `MIGRATION_MAX_ATTEMPTS` in a row (never earlier; `capacity` never,
+  since the bytes are reserved at approval), then it tries again by itself at
+  `nextAttemptAt` (`PAUSED_RETRY_SECS`, jittered, `resume_due`). Its pre-step check
+  of the target (not `active` → `destination`, no usable store → `credential`) is
+  a failed attempt like any other. A paused migration always carries `pausedCause`
+  and a `lastError` scrubbed of URL queries, tokens, the room id/prefix/hash and the
+  blob ref. Re-issuing the task — at either version — answers a `queued`, `running`
+  or `paused` migration with itself, resuming a paused one at once, **without**
+  parking, keeping its `toConfig` and `reason` (a request's rate is adopted), and
+  audits the resumption with its requester. A copy that does not verify is
+  `failed`, never retried. `toConfig` is fixed at approval and kept through a
+  reassignment (item 9). Orphans are never planned or counted; one orphaned or
+  collected while a migration is open is dropped at once by
+  `drop_from_migration` — plan row + reservation before its switch, `mdone:` row
+  (done and total counts) after — and `skip` adjusts only while the plan row
+  exists, so nothing is counted twice. **Queueing is per target config**
+  (item 13): a migration to a config with another `running`/`paused`/`queued` one
+  is `queued` (bytes reserved at approval, nothing copied) and `promote_queued`
+  starts it in approval order (`seq`) once those finish; 0.1 reports `queued` as
+  `running`. A restore pauses a running one (`pause_after_restore`, cause
+  `destination`, no `nextAttemptAt`), and the blob in flight is re-verified. A
+  target retired under a move leaves it paused and retrying forever — the
+  specification has no way out yet; don't invent one here.
 - **Code**: `vti-rooms/src/blobs/migrate.rs`, `vtc-service/src/rooms/migration.rs`,
   `vtc-service/src/trust_tasks/storage_tasks.rs` (`handle_migrate`),
   `admin-ui/src/plugins/rooms/RoomDetail.tsx` (`MoveExistingFiles`).

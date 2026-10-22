@@ -2121,6 +2121,10 @@ mod spine_proof_tests {
             "reads one room's storage, limits and usage; the handler authorizes vtc.rooms.admin from the signer's own entry, so an unsigned caller is refused regardless",
         ),
         (
+            room_admin_tasks::GET_V2_TYPE,
+            "reads one room's storage, limits, usage and migration; the handler authorizes vtc.rooms.admin from the signer's own entry, so an unsigned caller is refused regardless",
+        ),
+        (
             community_room_tasks::LIST_TYPE,
             "lists the rooms the community owns; the handler authorizes vtc.rooms.manage from the signer's own entry, so an unsigned caller is refused regardless",
         ),
@@ -3157,9 +3161,11 @@ pub(crate) const DISPATCHED_URIS: &[&str] = &[
     storage_tasks::CREATE_V0_2_TYPE,
     storage_tasks::UPDATE_V0_2_TYPE,
     storage_tasks::CREDENTIALS_SET_TYPE,
+    storage_tasks::MIGRATE_V2_TYPE,
     // What the rooms store and may store (`data-rooms-files.md` §6): reads and limit
     // overrides for a holder of `vtc.rooms.admin`, overrides audited. No REST route.
     room_admin_tasks::GET_TYPE,
+    room_admin_tasks::GET_V2_TYPE,
     room_admin_tasks::USAGE_TYPE,
     room_admin_tasks::LIMITS_SET_TYPE,
     // Rooms the community owns (`data-rooms-files.md` §8.4): an administrator's

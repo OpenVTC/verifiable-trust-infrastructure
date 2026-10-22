@@ -56,7 +56,7 @@ use crate::{Room, Visibility};
 mod migrate;
 pub use migrate::{
     MIGRATION_MAX_ATTEMPTS, MIN_MIGRATION_BYTES_PER_SECOND, Migration, MigrationPlan,
-    MigrationRequest, MigrationStart, MigrationState, MigrationStep,
+    MigrationRequest, MigrationStart, MigrationState, MigrationStep, PAUSED_RETRY_SECS, PauseCause,
 };
 mod usage;
 pub use usage::{
@@ -2500,6 +2500,9 @@ impl BlobHost {
                 // Members expect a delete to make room, so the room and member
                 // are credited now; the storage keeps counting until collected.
                 self.charge(&entry, false).await?;
+                // An orphan is neither moved nor counted by a migration
+                // (`vtc/rooms/storage/migrate/0.2` item 12).
+                self.drop_from_migration(room_id, blob_ref).await?;
             }
         }
         self.blobs.insert(key, &entry).await
@@ -2567,6 +2570,9 @@ impl BlobHost {
                 self.blobs.insert(usage_key, &storage).await?;
             }
             self.blobs.remove(key).await?;
+            // No longer the room's for a migration to move or count.
+            self.drop_from_migration(&entry.room_id, &entry.blob_ref)
+                .await?;
             // A storage config's holdings moved (`crate::observe`).
             crate::observe::changed();
             stats.collected += 1;

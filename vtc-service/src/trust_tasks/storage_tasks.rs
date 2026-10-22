@@ -1,7 +1,7 @@
 //! Where this community keeps its rooms' files — `vtc/storage/configs/{list,get,create,
 //! update,retire,probe}/0.1`, `vtc/storage/configs/{list,get,create,update}/0.2`,
 //! `vtc/storage/credentials/set/0.2`, `vtc/rooms/storage/assign/0.1` and
-//! `vtc/rooms/storage/migrate/0.1`
+//! `vtc/rooms/storage/migrate/{0.1,0.2}`
 //! (`docs/05-design-notes/data-rooms-files.md` §7; [`crate::rooms::storage_configs`]).
 //!
 //! The authority is `vtc.rooms.admin`, read from the signer's own entry at execution
@@ -16,8 +16,8 @@
 //!   re-run against the community as it is then. A request that would change nothing —
 //!   retiring a config already retiring, assigning a room to the config it is on — is
 //!   answered at once and parks nothing. So is a `migrate` for a room that already has a
-//!   migration `running` or `paused` (it answers with that one, resuming it) or has
-//!   nothing to move.
+//!   migration `queued`, `running` or `paused` (it answers with that one, resuming a
+//!   paused one: it is the same, already approved, migration) or has nothing to move.
 //!
 //! No member of any of these tasks carries a credential in the clear, and no answer
 //! returns one. `vtc/storage/credentials/set/0.2` carries one sealed to this community,
@@ -34,6 +34,7 @@ use std::collections::HashMap;
 use serde_json::{Value, json};
 use trust_tasks_rs::specs::vtc::rooms::storage::assign::v0_1 as assign;
 use trust_tasks_rs::specs::vtc::rooms::storage::migrate::v0_1 as migrate;
+use trust_tasks_rs::specs::vtc::rooms::storage::migrate::v0_2 as migrate_v2;
 use trust_tasks_rs::specs::vtc::storage::configs::{
     create::v0_1 as create, create::v0_2 as create2, get::v0_1 as get, get::v0_2 as get2,
     list::v0_1 as list, list::v0_2 as list2, probe::v0_1 as probe, retire::v0_1 as retire,
@@ -54,6 +55,7 @@ use super::helpers::{
 use super::{JoinAuthCtx, admin_signer, parse_spec_payload};
 use crate::acl::Capability;
 use crate::acl::admin_consent::Act;
+use crate::rooms::migration::Wire;
 use crate::rooms::storage_configs::{SettingsError, kind_of, mode_of, state_of};
 use crate::rooms::storage_credentials::SealedRefusal;
 use crate::routes::acl::conform;
@@ -72,6 +74,7 @@ pub(crate) const GET_V0_2_TYPE: &str = <get2::Payload as Payload>::TYPE_URI;
 pub(crate) const CREATE_V0_2_TYPE: &str = <create2::Payload as Payload>::TYPE_URI;
 pub(crate) const UPDATE_V0_2_TYPE: &str = <update2::Payload as Payload>::TYPE_URI;
 pub(crate) const CREDENTIALS_SET_TYPE: &str = <set::Payload as Payload>::TYPE_URI;
+pub(crate) const MIGRATE_V2_TYPE: &str = <migrate_v2::Payload as Payload>::TYPE_URI;
 
 /// Every URI this module routes.
 pub(crate) const URIS: &[&str] = &[
@@ -88,6 +91,7 @@ pub(crate) const URIS: &[&str] = &[
     PROBE_TYPE,
     ASSIGN_TYPE,
     MIGRATE_TYPE,
+    MIGRATE_V2_TYPE,
 ];
 
 /// At most this many room identifiers in a `get` (`vtc/storage/configs/get` item 2).
@@ -118,7 +122,8 @@ pub(super) async fn dispatch(
         RETIRE_TYPE => handle_retire(state, ctx, doc).await,
         PROBE_TYPE => handle_probe(state, ctx, doc).await,
         ASSIGN_TYPE => handle_assign(state, ctx, doc).await,
-        MIGRATE_TYPE => handle_migrate(state, ctx, doc).await,
+        MIGRATE_TYPE => handle_migrate(state, ctx, doc, Wire::V0_1).await,
+        MIGRATE_V2_TYPE => handle_migrate(state, ctx, doc, Wire::V0_2).await,
         _ => return None,
     })
 }
@@ -1523,28 +1528,68 @@ fn capacity_refusal(
     )
 }
 
-/// `vtc/rooms/storage/migrate/0.1`: move a room's existing blobs onto its assigned config
-/// (`data-rooms-files.md` §7.3). The work is the migration runner's
+/// The request as both versions state it: 0.2's request is 0.1's unchanged.
+struct MigrateAsk {
+    room_id: String,
+    reason: String,
+    max_bytes_per_second: Option<u64>,
+}
+
+fn parse_migrate(doc: &TrustTask<Value>, wire: Wire) -> Result<MigrateAsk, TrustTaskOutcome> {
+    let rate = |v: Option<i64>| v.map(|v| v.max(0) as u64);
+    Ok(match wire {
+        Wire::V0_1 => {
+            let p: migrate::Payload = parse_spec_payload(doc)?;
+            MigrateAsk {
+                room_id: p.room_id.as_str().to_string(),
+                reason: p.reason.as_str().to_string(),
+                max_bytes_per_second: rate(p.max_bytes_per_second),
+            }
+        }
+        Wire::V0_2 => {
+            let p: migrate_v2::Payload = parse_spec_payload(doc)?;
+            MigrateAsk {
+                room_id: p.room_id.as_str().to_string(),
+                reason: p.reason.as_str().to_string(),
+                max_bytes_per_second: rate(p.max_bytes_per_second),
+            }
+        }
+    })
+}
+
+/// The migration, as `wire`'s `#response`.
+fn migrate_answer(doc: &TrustTask<Value>, m: &Migration, wire: Wire) -> TrustTaskOutcome {
+    let body = crate::rooms::migration::response_json(m, wire);
+    match wire {
+        Wire::V0_1 => respond::<migrate::Response>(doc, body),
+        Wire::V0_2 => respond::<migrate_v2::Response>(doc, body),
+    }
+}
+
+/// `vtc/rooms/storage/migrate/0.1` and `/0.2`: move a room's existing blobs onto its
+/// assigned config (`data-rooms-files.md` §7.3). The work is the migration runner's
 /// ([`crate::rooms::migration`]); this answers with the migration and its progress so far.
+/// Both versions drive one engine and are answered each at its own version; 0.2 states
+/// what 0.1 left open (reassignment, retry ownership, resumption, orphans, pause
+/// reporting, queueing), and this host behaves the 0.2 way whichever is asked. The
+/// declared error codes are the same three at both versions.
 async fn handle_migrate(
     state: &AppState,
     ctx: &JoinAuthCtx,
     doc: TrustTask<Value>,
+    wire: Wire,
 ) -> TrustTaskOutcome {
     use migrate::error_codes as c;
     let actor = match rooms_admin(state, ctx, &doc).await {
         Ok(a) => a,
         Err(reject) => return reject,
     };
-    let checked: migrate::Payload = match parse_spec_payload(&doc) {
-        Ok(p) => p,
+    let ask = match parse_migrate(&doc, wire) {
+        Ok(a) => a,
         Err(reject) => return reject,
     };
-    let room_id = checked.room_id.as_str().to_string();
-    let reason = checked.reason.as_str().to_string();
-    let answer = |m: &Migration| {
-        respond::<migrate::Response>(&doc, crate::rooms::migration::response_json(m))
-    };
+    let room_id = ask.room_id;
+    let reason = ask.reason;
 
     match vti_rooms::storage::get_room(&state.rooms_ks, &room_id).await {
         Ok(_) => {}
@@ -1559,21 +1604,15 @@ async fn handle_migrate(
         Err(e) => return app_error_to_reject(&doc, &e),
     }
 
-    // Item 5: a migration running or paused is the answer — a paused one resumed — and
-    // nothing is parked again for it: its approvers agreed to it when it started.
+    // Item 5: a migration queued, running or paused is the answer — a paused one
+    // resumed at once — and nothing is parked again for it: its approvers agreed to it
+    // when it started. Its target and reason stand (item 9), whatever the room is
+    // assigned to now and whatever this request says; its rate may be the request's.
     match state.room_files.migration(&room_id).await {
-        Ok(Some(m)) if m.state == MigrationState::Running => return answer(&m),
-        Ok(Some(m)) if m.state == MigrationState::Paused => {
-            if let Err(reject) = check_target(state, &doc, &m.to_config).await {
-                return reject;
-            }
-            return start(
-                state,
-                &doc,
-                &actor.did,
-                MigrationRequest::new(room_id, m.to_config, &actor.did, reason),
-            )
-            .await;
+        Ok(Some(m)) if m.state.is_open() => {
+            let mut again = MigrationRequest::new(room_id, m.to_config, &actor.did, m.reason);
+            again.max_bytes_per_second = ask.max_bytes_per_second;
+            return start(state, &doc, &actor.did, again, wire).await;
         }
         Ok(_) => {}
         Err(e) => return app_error_to_reject(&doc, &e),
@@ -1605,7 +1644,7 @@ async fn handle_migrate(
     }
     let mut req = MigrationRequest::new(&room_id, &to_config, &actor.did, &reason);
     req.capacity_bytes = capacity;
-    req.max_bytes_per_second = checked.max_bytes_per_second.map(|v| v.max(0) as u64);
+    req.max_bytes_per_second = ask.max_bytes_per_second;
 
     // Item 7: nothing to move completes at once and changes nothing, so parks nothing.
     if plan.files > 0 {
@@ -1634,16 +1673,18 @@ async fn handle_migrate(
         };
         req.approvers = crate::admin_actions::executing_approvers(state).await;
     }
-    start(state, &doc, &actor.did, req).await
+    start(state, &doc, &actor.did, req, wire).await
 }
 
 /// Start, or resume, the migration `req` describes, audit what changed and wake the
-/// runner.
+/// runner. Under the host's lock a migration approved meanwhile for the same room is
+/// the answer instead (item 5).
 async fn start(
     state: &AppState,
     doc: &TrustTask<Value>,
     actor: &str,
     req: MigrationRequest,
+    wire: Wire,
 ) -> TrustTaskOutcome {
     let to_config = req.to_config.clone();
     let outcome = match state.room_files.start_migration(req).await {
@@ -1676,10 +1717,10 @@ async fn start(
             );
         }
     };
-    if m.state == MigrationState::Running {
+    if matches!(m.state, MigrationState::Running | MigrationState::Queued) {
         crate::rooms::migration::kick();
     }
-    respond::<migrate::Response>(doc, crate::rooms::migration::response_json(&m))
+    migrate_answer(doc, &m, wire)
 }
 
 #[cfg(test)]

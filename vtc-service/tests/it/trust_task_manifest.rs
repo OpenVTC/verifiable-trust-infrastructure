@@ -1013,8 +1013,9 @@ const SPINE_DOCUMENT_TYPES: &[&str] = &[
     "https://trusttasks.org/spec/vtc/vetting/revocations/list/0.1",
     "https://trusttasks.org/spec/vtc/join-requests/vetting/show/0.1",
     "https://trusttasks.org/spec/vtc/rooms/list/0.1",
-    // A room's detail page and Room usage (`trust_tasks::room_admin_tasks`).
-    "https://trusttasks.org/spec/vtc/rooms/get/0.1",
+    // A room's detail page and Room usage (`trust_tasks::room_admin_tasks`). The page
+    // reads at 0.2, whose migration names its target and says why it is paused.
+    "https://trusttasks.org/spec/vtc/rooms/get/0.2",
     "https://trusttasks.org/spec/vtc/rooms/usage/0.1",
     "https://trusttasks.org/spec/vtc/rooms/limits/set/0.1",
     // Storage, and a room's "other storage" (`trust_tasks::storage_tasks`).
@@ -1025,7 +1026,7 @@ const SPINE_DOCUMENT_TYPES: &[&str] = &[
     "https://trusttasks.org/spec/vtc/storage/configs/retire/0.1",
     "https://trusttasks.org/spec/vtc/storage/configs/probe/0.1",
     "https://trusttasks.org/spec/vtc/rooms/storage/assign/0.1",
-    "https://trusttasks.org/spec/vtc/rooms/storage/migrate/0.1",
+    "https://trusttasks.org/spec/vtc/rooms/storage/migrate/0.2",
     // Community rooms, the Community rooms tab (`trust_tasks::community_room_tasks`).
     // The console is baked into this binary, so it reads at 0.2 only — the shape with each
     // room's description, tags and who last changed them — and creates at 0.3 and updates

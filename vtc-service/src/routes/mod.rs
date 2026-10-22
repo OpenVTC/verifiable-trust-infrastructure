@@ -114,6 +114,7 @@ use crate::server::AppState;
         // The room-hosting administrator's reads and limit override
         // (`trust_tasks::room_admin_tasks`), signed documents only.
         vta_sdk::openapi::RoomsGet01Response,
+        vta_sdk::openapi::RoomsGet02Response,
         vta_sdk::openapi::RoomsUsage01Payload,
         vta_sdk::openapi::RoomsUsage01Response,
         vta_sdk::openapi::RoomsLimitsSet01Payload,
@@ -227,6 +228,8 @@ use crate::server::AppState;
         vta_sdk::openapi::RoomsStorageAssign01Response,
         vta_sdk::openapi::RoomsStorageMigrate01Payload,
         vta_sdk::openapi::RoomsStorageMigrate01Response,
+        vta_sdk::openapi::RoomsStorageMigrate02Payload,
+        vta_sdk::openapi::RoomsStorageMigrate02Response,
         vta_sdk::openapi::StorageConfigsList01Response,
         vta_sdk::openapi::StorageConfigsGet01Response,
         vta_sdk::openapi::StorageConfigsCreate01Payload,

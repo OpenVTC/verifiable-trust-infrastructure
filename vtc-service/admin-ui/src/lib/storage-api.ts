@@ -42,7 +42,7 @@ export const STORAGE_UPDATE_TASK = "https://trusttasks.org/spec/vtc/storage/conf
 export const STORAGE_RETIRE_TASK = "https://trusttasks.org/spec/vtc/storage/configs/retire/0.1";
 export const STORAGE_PROBE_TASK = "https://trusttasks.org/spec/vtc/storage/configs/probe/0.1";
 export const ROOM_STORAGE_ASSIGN_TASK = "https://trusttasks.org/spec/vtc/rooms/storage/assign/0.1";
-export const ROOM_STORAGE_MIGRATE_TASK = "https://trusttasks.org/spec/vtc/rooms/storage/migrate/0.1";
+export const ROOM_STORAGE_MIGRATE_TASK = "https://trusttasks.org/spec/vtc/rooms/storage/migrate/0.2";
 
 /** The most configs the spec returns per page. */
 const CONFIGS_PAGE = 100;
@@ -125,11 +125,12 @@ export const MIN_MIGRATION_BYTES_PER_SECOND = 65_536;
 
 /**
  * Move a room's existing files onto the storage it is assigned to
- * (`vtc/rooms/storage/migrate/0.1`): copied, checked against what their
+ * (`vtc/rooms/storage/migrate/0.2`): copied, checked against what their
  * uploaders committed to, switched, and the old copies deleted after the grace
  * window. Parked for approval like an assignment. Sent again for a room whose
- * migration is running or paused, it answers with that migration — resuming a
- * paused one — and parks nothing.
+ * migration is queued, running or paused, it answers with that migration —
+ * resuming a paused one at once, keeping its destination and reason — and parks
+ * nothing. The community retries failures itself; this is never needed to retry.
  */
 export function migrateRoomStorage(
   roomId: string,

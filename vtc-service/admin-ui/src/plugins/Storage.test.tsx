@@ -34,8 +34,8 @@ const CREATE = `${T}/vtc/storage/configs/create/0.2`;
 const RETIRE = `${T}/vtc/storage/configs/retire/0.1`;
 const PROBE = `${T}/vtc/storage/configs/probe/0.1`;
 const ASSIGN = `${T}/vtc/rooms/storage/assign/0.1`;
-const MIGRATE = `${T}/vtc/rooms/storage/migrate/0.1`;
-const ROOMS_GET = `${T}/vtc/rooms/get/0.1`;
+const MIGRATE = `${T}/vtc/rooms/storage/migrate/0.2`;
+const ROOMS_GET = `${T}/vtc/rooms/get/0.2`;
 const ROOMS_LIST = `${T}/vtc/rooms/list/0.1`;
 const USAGE = `${T}/vtc/rooms/usage/0.1`;
 
@@ -383,11 +383,15 @@ describe("a room's storage", () => {
   it("shows a paused move's progress and resumes it", async () => {
     const migration = {
       migrationId: "6f1c2b3a-4d5e-4f60-8172-93a4b5c6d7e8",
+      toConfig: "eu-s3",
       state: "paused",
       totalFiles: 3,
       totalBytes: 3000,
       doneFiles: 1,
       doneBytes: 1000,
+      pausedCause: "destination",
+      lastError: "put to eu-s3: 503 SlowDown",
+      nextAttemptAt: "2026-10-10T14:30:00Z",
     };
     const requests = mockFetch([
       ...NAME_BOOK_ROUTES,
@@ -402,12 +406,68 @@ describe("a room's storage", () => {
       }),
     ]);
     mount(`/rooms/r/${encodeURIComponent(ROOM_ID)}`);
-    expect(await screen.findByText(/Paused existing files: 1 of 3 files/)).toBeTruthy();
+    expect(
+      await screen.findByText(/Paused moving existing files to eu-s3: 1 of 3 files/),
+    ).toBeTruthy();
+    // Why, what failed, and that the community tries again by itself.
+    expect(screen.getByText(/The destination kept refusing the files/)).toBeTruthy();
+    expect(screen.getByText(/put to eu-s3: 503 SlowDown/)).toBeTruthy();
+    expect(screen.getByText(/tries again by itself/)).toBeTruthy();
     // No second move is offered while one is paused.
     expect(screen.queryByRole("button", { name: "Move existing files to eu-s3" })).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: "Resume" }));
+    fireEvent.click(screen.getByRole("button", { name: "Resume now" }));
     await waitFor(() => expect(sentPayloads(requests, MIGRATE)).toHaveLength(1));
     expect(sentPayloads(requests, MIGRATE)[0]).toMatchObject({ roomId: ROOM_ID });
+  });
+
+  const reassigned = {
+    ...roomGet,
+    storage: {
+      configId: "us-s3",
+      earlierConfigs: [{ configId: "local", files: 3, bytes: 3000 }],
+    },
+  };
+
+  it("says a reassigned room's move keeps its destination", async () => {
+    const migration = {
+      migrationId: "6f1c2b3a-4d5e-4f60-8172-93a4b5c6d7e8",
+      toConfig: "eu-s3",
+      state: "running",
+      totalFiles: 3,
+      totalBytes: 3000,
+      doneFiles: 1,
+      doneBytes: 1000,
+    };
+    mockFetch([
+      ...NAME_BOOK_ROUTES,
+      taskRoute(ROOMS_GET, { ...reassigned, storage: { ...reassigned.storage, migration } }),
+      taskRoute(USAGE, { asOf: "x", from: "2026-09-15", to: "2026-10-14", items: [] }),
+    ]);
+    mount(`/rooms/r/${encodeURIComponent(ROOM_ID)}`);
+    expect(await screen.findByText(/Moving existing files to eu-s3: 1 of 3 files/)).toBeTruthy();
+    expect(screen.getByText(/This move keeps\s+going to/)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Move existing files to us-s3" })).toBeNull();
+  });
+
+  it("shows a queued move as waiting its turn", async () => {
+    const migration = {
+      migrationId: "6f1c2b3a-4d5e-4f60-8172-93a4b5c6d7e8",
+      toConfig: "us-s3",
+      state: "queued",
+      totalFiles: 3,
+      totalBytes: 3000,
+      doneFiles: 0,
+      doneBytes: 0,
+    };
+    mockFetch([
+      ...NAME_BOOK_ROUTES,
+      taskRoute(ROOMS_GET, { ...reassigned, storage: { ...reassigned.storage, migration } }),
+      taskRoute(USAGE, { asOf: "x", from: "2026-09-15", to: "2026-10-14", items: [] }),
+    ]);
+    mount(`/rooms/r/${encodeURIComponent(ROOM_ID)}`);
+    expect(await screen.findByText(/Waiting to move existing files to us-s3/)).toBeTruthy();
+    expect(screen.getByText(/this one starts\s+when it finishes/)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Move existing files to us-s3" })).toBeNull();
   });
 });
 

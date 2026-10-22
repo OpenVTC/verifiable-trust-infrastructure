@@ -20,7 +20,7 @@ vi.mock("@/lib/api", async (original) => ({
 }));
 
 const LIST = "https://trusttasks.org/spec/vtc/rooms/list/0.1";
-const GET = "https://trusttasks.org/spec/vtc/rooms/get/0.1";
+const GET = "https://trusttasks.org/spec/vtc/rooms/get/0.2";
 const USAGE = "https://trusttasks.org/spec/vtc/rooms/usage/0.1";
 const LIMITS_SET = "https://trusttasks.org/spec/vtc/rooms/limits/set/0.1";
 

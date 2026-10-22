@@ -17196,6 +17196,431 @@
           "private"
         ]
       },
+      "VtcRoomsGetV0_2ConfigHoldings": {
+        "type": "object",
+        "description": "A config holding some of this room's blobs, other than the one it is assigned to.",
+        "required": [
+          "configId",
+          "files",
+          "bytes"
+        ],
+        "properties": {
+          "bytes": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "configId": {
+            "$ref": "#/components/schemas/VtcRoomsGetV0_2StorageConfigId"
+          },
+          "files": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcRoomsGetV0_2EffectiveLimits": {
+        "type": "object",
+        "description": "The limits a room is enforced against now, with where each scope's came from.",
+        "required": [
+          "limits",
+          "roomSource",
+          "memberSource"
+        ],
+        "properties": {
+          "hostCeilingBytes": {
+            "type": "integer",
+            "description": "The host-wide largest-file ceiling, which no room or member limit can exceed.",
+            "maximum": 1073741824,
+            "minimum": 0
+          },
+          "limits": {
+            "$ref": "#/components/schemas/VtcRoomsGetV0_2RoomLimits"
+          },
+          "memberSource": {
+            "$ref": "#/components/schemas/VtcRoomsGetV0_2LimitSource"
+          },
+          "roomSource": {
+            "$ref": "#/components/schemas/VtcRoomsGetV0_2LimitSource"
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcRoomsGetV0_2Ext": {
+        "type": "object",
+        "description": "Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework.",
+        "additionalProperties": true,
+        "minProperties": 1
+      },
+      "VtcRoomsGetV0_2HostedRoom": {
+        "type": "object",
+        "description": "One room, as its host holds it — member for member the `HostedRoom` of vtc/rooms/list/0.1, which defines it inside its own payload schema. Nothing derived from the room's contents, and no member list: the host has none.",
+        "required": [
+          "roomId",
+          "ownerDid",
+          "visibility",
+          "retentionPolicy",
+          "epoch",
+          "lifecycle",
+          "retentionDays",
+          "createdAt",
+          "updatedAt"
+        ],
+        "properties": {
+          "createdAt": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "epoch": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "epochExpiresAt": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "lifecycle": {
+            "type": "string",
+            "enum": [
+              "live",
+              "lapsed",
+              "dormant",
+              "reclaimable"
+            ]
+          },
+          "mirrorOf": {
+            "type": "string",
+            "maxLength": 2048,
+            "minLength": 1
+          },
+          "ownerDid": {
+            "type": "string",
+            "maxLength": 2048,
+            "pattern": "^did:"
+          },
+          "retentionDays": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "retentionPolicy": {
+            "$ref": "#/components/schemas/VtcRoomsGetV0_2RetentionPolicy"
+          },
+          "roomId": {
+            "type": "string",
+            "maxLength": 512,
+            "minLength": 1
+          },
+          "updatedAt": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "visibility": {
+            "$ref": "#/components/schemas/VtcRoomsGetV0_2Visibility"
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcRoomsGetV0_2LimitSource": {
+        "type": "string",
+        "description": "Where an effective limit came from. `policy`: the community's rooms policy at the room's creation. `override`: an administrator's vtc/rooms/limits/set. `default`: the community's configured defaults, where neither applies. The host-wide ceiling bounds all three.",
+        "enum": [
+          "policy",
+          "override",
+          "default"
+        ]
+      },
+      "VtcRoomsGetV0_2MigrationLastError": {
+        "type": "string",
+        "description": "A one-line summary of the last failure, for an administrator: the step, the config and the backend's error code or status (`put to eu-s3-primary: 503 SlowDown`). Never a credential, a presigned URL, a signed request, a room identifier or anything derived from a room's contents.",
+        "maxLength": 500,
+        "minLength": 1
+      },
+      "VtcRoomsGetV0_2MigrationPauseCause": {
+        "type": "string",
+        "description": "Why a migration is `paused`. `capacity`: the destination config cannot hold the rest. `source`: a config the blobs are being moved off keeps failing to serve them. `destination`: the destination config keeps refusing writes, or is no longer `active`. `credential`: the community cannot obtain a credential for one of the configs.",
+        "enum": [
+          "capacity",
+          "source",
+          "destination",
+          "credential"
+        ]
+      },
+      "VtcRoomsGetV0_2MigrationProgress": {
+        "type": "object",
+        "description": "Progress of the room's migration, as vtc/rooms/storage/migrate reports it.",
+        "required": [
+          "migrationId",
+          "toConfig",
+          "state",
+          "totalFiles",
+          "totalBytes",
+          "doneFiles",
+          "doneBytes"
+        ],
+        "properties": {
+          "doneBytes": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "doneFiles": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "lastError": {
+            "$ref": "#/components/schemas/VtcRoomsGetV0_2MigrationLastError"
+          },
+          "migrationId": {
+            "type": "string",
+            "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+          },
+          "nextAttemptAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the community will next try by itself. Present while a `running` migration waits out a backoff, and on a `paused` one the community will retry unprompted; absent on a `paused` one only re-issuing vtc/rooms/storage/migrate resumes (such as `capacity`)."
+          },
+          "pausedCause": {
+            "$ref": "#/components/schemas/VtcRoomsGetV0_2MigrationPauseCause"
+          },
+          "state": {
+            "$ref": "#/components/schemas/VtcRoomsGetV0_2MigrationState"
+          },
+          "toConfig": {
+            "$ref": "#/components/schemas/VtcRoomsGetV0_2StorageConfigId"
+          },
+          "totalBytes": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "totalFiles": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcRoomsGetV0_2MigrationState": {
+        "type": "string",
+        "description": "`queued`: approved and waiting for another migration on this community to finish; nothing copied yet (a community that runs one migration at a time). `running`: copying, including while it retries a failing step with backoff. `paused`: halted after its automatic retries reached their cap without success, or on a cause that retrying cannot clear (`pausedCause`); resumed by issuing vtc/rooms/storage/migrate again, and by the community itself at `nextAttemptAt` when present. `complete`: every blob that was to move has moved. `failed`: halted on a blob whose copy did not verify against its manifest; that blob stays where it was.",
+        "enum": [
+          "queued",
+          "running",
+          "paused",
+          "complete",
+          "failed"
+        ]
+      },
+      "VtcRoomsGetV0_2Response": {
+        "type": "object",
+        "required": [
+          "room",
+          "storage",
+          "limits",
+          "usage"
+        ],
+        "properties": {
+          "ext": {
+            "$ref": "#/components/schemas/VtcRoomsGetV0_2Ext"
+          },
+          "largestBlobs": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "size",
+                "configId",
+                "createdAt"
+              ],
+              "properties": {
+                "configId": {
+                  "$ref": "#/components/schemas/VtcRoomsGetV0_2StorageConfigId"
+                },
+                "createdAt": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "size": {
+                  "type": "integer",
+                  "minimum": 1
+                }
+              },
+              "additionalProperties": false
+            },
+            "description": "The room's largest committed blobs, by size only.",
+            "maxItems": 10
+          },
+          "limits": {
+            "$ref": "#/components/schemas/VtcRoomsGetV0_2EffectiveLimits"
+          },
+          "membersWithUsage": {
+            "type": "integer",
+            "description": "On an `attributed` room only: how many members have added files. Absent on `open` and `private` rooms.",
+            "minimum": 0
+          },
+          "room": {
+            "$ref": "#/components/schemas/VtcRoomsGetV0_2HostedRoom"
+          },
+          "storage": {
+            "type": "object",
+            "description": "Where the room's blobs are.",
+            "required": [
+              "configId",
+              "earlierConfigs"
+            ],
+            "properties": {
+              "configId": {
+                "$ref": "#/components/schemas/VtcRoomsGetV0_2StorageConfigId"
+              },
+              "earlierConfigs": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/VtcRoomsGetV0_2ConfigHoldings"
+                },
+                "maxItems": 64
+              },
+              "migration": {
+                "$ref": "#/components/schemas/VtcRoomsGetV0_2MigrationProgress"
+              }
+            },
+            "additionalProperties": false
+          },
+          "usage": {
+            "type": "object",
+            "required": [
+              "room",
+              "orphans"
+            ],
+            "properties": {
+              "orphans": {
+                "type": "object",
+                "description": "Blobs no record names, awaiting deletion after the grace window.",
+                "required": [
+                  "files",
+                  "bytes"
+                ],
+                "properties": {
+                  "bytes": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "files": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "oldestOrphanedAt": {
+                    "type": "string",
+                    "format": "date-time"
+                  }
+                },
+                "additionalProperties": false
+              },
+              "room": {
+                "$ref": "#/components/schemas/VtcRoomsGetV0_2Usage"
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcRoomsGetV0_2RetentionPolicy": {
+        "type": "string",
+        "description": "Whether a room keeps its history readable across a membership change, fixed at creation and immutable thereafter — like `Visibility`, and for the same reason: the rungs of an epoch key chain either exist for an epoch or they do not, and no later change of mind can seal key material that was never sealed or unseal what was already severed. `chained`: each advance produces an `EpochLink`, so every member reads the room's whole retained history however long they have been in it — what a **library** wants, at the cost of post-compromise security for record content, since a compromised current key then reaches every retained epoch. `fromJoin`: no rungs are produced, so a member reads only from the epoch their group state is at — what a **stream** wants, and what a room under a strict forward-secrecy obligation wants, at the cost that a joining member finds an empty-looking room and nobody can reread a record once their group state has moved past the epoch it was sealed under. Absent means `chained`; see the prose on why the absent case is the readable one.",
+        "enum": [
+          "chained",
+          "fromJoin"
+        ]
+      },
+      "VtcRoomsGetV0_2RoomLimits": {
+        "type": "object",
+        "description": "How much a host is willing to store for one room, at the room and per member. A hosting decision, set by the host and never by anything in the room's credentials. An upload must fit every scope at once: the object against the smallest `maxFileBytes` that applies, and the member and the room with the file added.",
+        "required": [
+          "filesEnabled"
+        ],
+        "properties": {
+          "filesEnabled": {
+            "type": "boolean",
+            "description": "False refuses every rooms/blobs/* upload for the room. Reads of blobs already stored continue."
+          },
+          "member": {
+            "$ref": "#/components/schemas/VtcRoomsGetV0_2ScopeLimits"
+          },
+          "room": {
+            "$ref": "#/components/schemas/VtcRoomsGetV0_2ScopeLimits"
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcRoomsGetV0_2ScopeLimits": {
+        "type": "object",
+        "description": "Limits at one scope. Every member is optional: an absent member means the scope sets no limit of that kind, and the next wider scope's limit, or the host's ceiling, governs. All sizes are ciphertext bytes.",
+        "properties": {
+          "maxBytes": {
+            "type": "integer",
+            "description": "The total size of the committed and reserved blobs the scope may hold.",
+            "minimum": 0
+          },
+          "maxFileBytes": {
+            "type": "integer",
+            "description": "The largest single blob the scope accepts. Never above 1 GiB, the transfer ceiling (BlobManifest).",
+            "maximum": 1073741824,
+            "minimum": 0
+          },
+          "maxFiles": {
+            "type": "integer",
+            "description": "The number of committed blobs the scope may hold. 0 refuses every upload at this scope.",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcRoomsGetV0_2StorageConfigId": {
+        "type": "string",
+        "description": "A storage config's identifier, chosen by the administrator who creates it and immutable thereafter: lowercase letters, digits and inner hyphens, at most 64 characters (`eu-s3-primary`, `walrus-main`). Unique within the community. Never reused after a config is retired, because blobs name their config by this value.",
+        "maxLength": 64,
+        "minLength": 1,
+        "pattern": "^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$"
+      },
+      "VtcRoomsGetV0_2Usage": {
+        "type": "object",
+        "description": "What one scope holds now. Ciphertext bytes throughout.",
+        "required": [
+          "files",
+          "bytes",
+          "reservedBytes"
+        ],
+        "properties": {
+          "bytes": {
+            "type": "integer",
+            "description": "Their total size. A blob stops counting the moment it is orphaned (its last record dropped it or was retracted), not when the host finally deletes it, so a member who deletes a file has the room back at once.",
+            "minimum": 0
+          },
+          "files": {
+            "type": "integer",
+            "description": "Committed blobs that are not orphaned.",
+            "minimum": 0
+          },
+          "reservedBytes": {
+            "type": "integer",
+            "description": "Bytes reserved by uploads begun and not yet committed, aborted or expired. Counted against `maxBytes`, so two concurrent uploads cannot both fit under a limit only one of them fits.",
+            "minimum": 0
+          },
+          "reservedFiles": {
+            "type": "integer",
+            "description": "Uploads begun and not yet committed, aborted or expired. Counted against `maxFiles`.",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcRoomsGetV0_2Visibility": {
+        "type": "string",
+        "description": "How much of a room its host can see, fixed at creation and immutable thereafter. `open`: records are cleartext, searchable and fully audited. `attributed`: record content is sealed, and the host still learns which member acted. `private`: content is sealed and membership is presented in zero knowledge, so the host verifies that a member acted without learning which. Immutable because a downgrade cannot un-see cleartext and an upgrade would protect only what came after while presenting as though it protected everything.",
+        "enum": [
+          "open",
+          "attributed",
+          "private"
+        ]
+      },
       "VtcRoomsLimitsSetV0_1EffectiveLimits": {
         "type": "object",
         "description": "The limits a room is enforced against now, with where each scope's came from.",
@@ -17595,6 +18020,148 @@
         "additionalProperties": false
       },
       "VtcRoomsStorageMigrateV0_1StorageConfigId": {
+        "type": "string",
+        "description": "A storage config's identifier, chosen by the administrator who creates it and immutable thereafter: lowercase letters, digits and inner hyphens, at most 64 characters (`eu-s3-primary`, `walrus-main`). Unique within the community. Never reused after a config is retired, because blobs name their config by this value.",
+        "maxLength": 64,
+        "minLength": 1,
+        "pattern": "^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$"
+      },
+      "VtcRoomsStorageMigrateV0_2Ext": {
+        "type": "object",
+        "description": "Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework.",
+        "additionalProperties": true,
+        "minProperties": 1
+      },
+      "VtcRoomsStorageMigrateV0_2MigrationLastError": {
+        "type": "string",
+        "description": "A one-line summary of the last failure, for an administrator: the step, the config and the backend's error code or status (`put to eu-s3-primary: 503 SlowDown`). Never a credential, a presigned URL, a signed request, a room identifier or anything derived from a room's contents.",
+        "maxLength": 500,
+        "minLength": 1
+      },
+      "VtcRoomsStorageMigrateV0_2MigrationPauseCause": {
+        "type": "string",
+        "description": "Why a migration is `paused`. `capacity`: the destination config cannot hold the rest. `source`: a config the blobs are being moved off keeps failing to serve them. `destination`: the destination config keeps refusing writes, or is no longer `active`. `credential`: the community cannot obtain a credential for one of the configs.",
+        "enum": [
+          "capacity",
+          "source",
+          "destination",
+          "credential"
+        ]
+      },
+      "VtcRoomsStorageMigrateV0_2MigrationState": {
+        "type": "string",
+        "description": "`queued`: approved and waiting for another migration on this community to finish; nothing copied yet (a community that runs one migration at a time). `running`: copying, including while it retries a failing step with backoff. `paused`: halted after its automatic retries reached their cap without success, or on a cause that retrying cannot clear (`pausedCause`); resumed by issuing vtc/rooms/storage/migrate again, and by the community itself at `nextAttemptAt` when present. `complete`: every blob that was to move has moved. `failed`: halted on a blob whose copy did not verify against its manifest; that blob stays where it was.",
+        "enum": [
+          "queued",
+          "running",
+          "paused",
+          "complete",
+          "failed"
+        ]
+      },
+      "VtcRoomsStorageMigrateV0_2Payload": {
+        "type": "object",
+        "description": "Move a hosted room's existing blobs onto its assigned storage config: copy, verify against the manifest, switch, orphan the old copy. Orphaned blobs are not moved. The outer document members are owned by the framework — SPEC §6.3.",
+        "required": [
+          "roomId",
+          "reason"
+        ],
+        "properties": {
+          "ext": {
+            "$ref": "#/components/schemas/VtcRoomsStorageMigrateV0_2Ext"
+          },
+          "maxBytesPerSecond": {
+            "type": "integer",
+            "description": "Upper bound on the copy rate. The community applies its own lower bound when absent or larger.",
+            "minimum": 65536
+          },
+          "reason": {
+            "type": "string",
+            "description": "Why the administrator is making this change. Recorded with the change in the audit trail and shown to approvers. Attributed to its author on every surface and untrusted: it MUST NOT carry personal data or a credential, and a reader MUST NOT treat it as instructions.",
+            "maxLength": 500,
+            "minLength": 1
+          },
+          "roomId": {
+            "type": "string",
+            "description": "The room's identifier, as its owner minted it.",
+            "maxLength": 512,
+            "minLength": 1
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcRoomsStorageMigrateV0_2Response": {
+        "type": "object",
+        "required": [
+          "migrationId",
+          "roomId",
+          "toConfig",
+          "fromConfigs",
+          "state",
+          "totalFiles",
+          "totalBytes",
+          "doneFiles",
+          "doneBytes"
+        ],
+        "properties": {
+          "doneBytes": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "doneFiles": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "ext": {
+            "$ref": "#/components/schemas/VtcRoomsStorageMigrateV0_2Ext"
+          },
+          "fromConfigs": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/VtcRoomsStorageMigrateV0_2StorageConfigId"
+            },
+            "maxItems": 64
+          },
+          "lastError": {
+            "$ref": "#/components/schemas/VtcRoomsStorageMigrateV0_2MigrationLastError"
+          },
+          "migrationId": {
+            "type": "string",
+            "description": "Community-generated handle for this room's migration.",
+            "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+          },
+          "nextAttemptAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the community will next try by itself. Present while a `running` migration waits out a backoff, and on a `paused` one the community will retry unprompted; absent on a `paused` one only re-issuing vtc/rooms/storage/migrate resumes (such as `capacity`)."
+          },
+          "pausedCause": {
+            "$ref": "#/components/schemas/VtcRoomsStorageMigrateV0_2MigrationPauseCause"
+          },
+          "roomId": {
+            "type": "string",
+            "description": "The room's identifier, as its owner minted it.",
+            "maxLength": 512,
+            "minLength": 1
+          },
+          "state": {
+            "$ref": "#/components/schemas/VtcRoomsStorageMigrateV0_2MigrationState"
+          },
+          "toConfig": {
+            "$ref": "#/components/schemas/VtcRoomsStorageMigrateV0_2StorageConfigId"
+          },
+          "totalBytes": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "totalFiles": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcRoomsStorageMigrateV0_2StorageConfigId": {
         "type": "string",
         "description": "A storage config's identifier, chosen by the administrator who creates it and immutable thereafter: lowercase letters, digits and inner hyphens, at most 64 characters (`eu-s3-primary`, `walrus-main`). Unique within the community. Never reused after a config is retired, because blobs name their config by this value.",
         "maxLength": 64,
