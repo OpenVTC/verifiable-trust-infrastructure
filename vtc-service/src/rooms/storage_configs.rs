@@ -56,6 +56,7 @@ use super::vta_storage::{AccountCheck, VtaStorage};
 /// specifications — what the tests that witness each one compare against.
 pub mod codes {
     use trust_tasks_rs::specs::vtc::rooms::storage::assign::v0_1 as assign;
+    use trust_tasks_rs::specs::vtc::rooms::storage::migrate::v0_1 as migrate;
     use trust_tasks_rs::specs::vtc::storage::configs::{
         create::v0_1 as create, get::v0_1 as get, list::v0_1 as list, probe::v0_1 as probe,
         retire::v0_1 as retire, update::v0_1 as update,
@@ -83,6 +84,9 @@ pub mod codes {
     pub const UPDATE_UNKNOWN_ACCOUNT: &str = update::error_codes::UNKNOWN_ACCOUNT.code;
     pub const PROBE_CREDENTIAL_REQUIRED: &str = probe::error_codes::CREDENTIAL_REQUIRED.code;
     pub const ASSIGN_CREDENTIAL_REQUIRED: &str = assign::error_codes::CREDENTIAL_REQUIRED.code;
+    pub const MIGRATE_ROOM_NOT_FOUND: &str = migrate::error_codes::ROOM_NOT_FOUND.code;
+    pub const MIGRATE_CONFIG_NOT_ACTIVE: &str = migrate::error_codes::CONFIG_NOT_ACTIVE.code;
+    pub const MIGRATE_CAPACITY_EXCEEDED: &str = migrate::error_codes::CAPACITY_EXCEEDED.code;
 
     // What rooms store and may store (`vtc/rooms/{get,usage,limits/set}`).
     use trust_tasks_rs::specs::vtc::rooms::{
@@ -530,7 +534,8 @@ impl RoomStorage {
         }))
     }
 
-    /// Move every `draining` config whose last blob is gone to `retired`.
+    /// Move every `draining` config whose last blob is gone to `retired` — including the
+    /// old copies a migration moved off it, which count until they are collected.
     pub async fn settle_draining(
         &self,
         holdings: &HashMap<String, ConfigHoldings>,

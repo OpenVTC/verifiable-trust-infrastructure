@@ -839,10 +839,14 @@ fn band(used: u64, limit: u64) -> u8 {
 ///   files);
 /// - every storage config as stored (`vtc/storage/configs/list`: created,
 ///   changed, a new state), and the band of its held bytes against its
-///   capacity.
+///   capacity;
+/// - each room's migration (`vtc/rooms/get`'s `storage.migration`) and its
+///   state — beyond what rule 4 names, because a console showing one needs to
+///   learn it ended; the hint still names nothing.
 ///
 /// Nothing finer: a room's or a config's holdings moving inside a band, a
-/// renewal of a live room or a new owner produce no hint.
+/// migration's progress inside its state, a renewal of a live room or a new
+/// owner produce no hint.
 async fn rooms_fingerprint(
     state: &AppState,
 ) -> Result<([u8; 32], Option<DateTime<Utc>>), AppError> {
@@ -885,6 +889,15 @@ async fn rooms_fingerprint(
             .as_u64()
             .map_or(0, |cap| band(held, cap));
         shape.push(serde_json::json!([config, config_band]));
+    }
+    // A room's migration starting, finishing, pausing or failing: what `vtc/rooms/get`
+    // reports as `storage.migration`'s state. Its progress inside a state is polled.
+    for m in files.migrations().await? {
+        shape.push(serde_json::json!([
+            m.room_id,
+            m.migration_id,
+            m.state.as_str()
+        ]));
     }
     let wake = wake.and_then(|w| DateTime::<Utc>::from_timestamp(w as i64, 0));
     Ok((digest(&shape), wake))

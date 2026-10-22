@@ -3139,6 +3139,7 @@ pub(crate) const DISPATCHED_URIS: &[&str] = &[
     storage_tasks::RETIRE_TYPE,
     storage_tasks::PROBE_TYPE,
     storage_tasks::ASSIGN_TYPE,
+    storage_tasks::MIGRATE_TYPE,
     // What the rooms store and may store (`data-rooms-files.md` §6): reads and limit
     // overrides for a holder of `vtc.rooms.admin`, overrides audited. No REST route.
     room_admin_tasks::GET_TYPE,

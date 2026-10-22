@@ -682,6 +682,246 @@ async fn vtc_rooms_storage_assign_refuses_with_its_declared_codes() {
     );
 }
 
+// ─── migrate ─────────────────────────────────────────────────────────────
+
+const MIGRATE: &str = "https://trusttasks.org/spec/vtc/rooms/storage/migrate/0.1";
+const ROOM_GET: &str = "https://trusttasks.org/spec/vtc/rooms/get/0.1";
+
+/// A file of `len` bytes uploaded to `room_id`, as a member's commit leaves it: on the
+/// config the room is assigned to now. Its blob reference.
+async fn upload_to(fix: &Fixture, room_id: &str, len: usize, seed: u8) -> String {
+    use sha2::{Digest, Sha256};
+    use vti_common::blob_store::sha256_digest_multibase;
+    const CHUNK: usize = 16_384;
+    let room = vti_rooms::storage::get_room(&fix.vtc.state.rooms_ks, room_id)
+        .await
+        .unwrap();
+    let bytes: Vec<u8> = (0..len).map(|i| (i as u8).wrapping_add(seed)).collect();
+    let digests: Vec<String> = bytes
+        .chunks(CHUNK)
+        .map(|c| sha256_digest_multibase(&Sha256::digest(c).into()))
+        .collect();
+    let manifest = vti_rooms::blobs::Manifest::parse(&json!({
+        "size": len,
+        "chunks": { "chunkSize": CHUNK, "chunkCount": digests.len(), "chunkDigests": digests },
+        "digest": sha256_digest_multibase(&Sha256::digest(&bytes).into()),
+    }))
+    .unwrap();
+    let files = &fix.vtc.state.room_files;
+    let member = "did:key:zMember";
+    let begun = files
+        .begin(&room, member, Some(member), manifest)
+        .await
+        .unwrap();
+    let id = begun.upload_id.to_string();
+    for (i, chunk) in bytes.chunks(CHUNK).enumerate() {
+        files
+            .put_chunk(member, &id, i as u64, &digests[i], chunk)
+            .await
+            .unwrap();
+    }
+    let blob_ref = files.commit(member, &id).await.unwrap().blob_ref;
+    files
+        .prepare_record(
+            &room,
+            Some(member),
+            &format!("rec-{seed}"),
+            std::slice::from_ref(&blob_ref),
+        )
+        .await
+        .unwrap()
+        .apply()
+        .await
+        .unwrap();
+    blob_ref
+}
+
+async fn assign_directly(fix: &Fixture, room_id: &str, config_id: &str) {
+    let _guard = fix.vtc.state.room_storage.lock().await;
+    fix.vtc
+        .state
+        .room_storage
+        .write_assignment(room_id, config_id, "did:key:zAdmin")
+        .await
+        .unwrap();
+}
+
+fn migration_events(rows: &[vti_common::audit::AuditEnvelope]) -> Vec<Value> {
+    rows.iter()
+        .map(|r| serde_json::to_value(&r.event).unwrap()["data"].clone())
+        .filter(|d| {
+            d["event"]
+                .as_str()
+                .is_some_and(|e| e.starts_with("migration"))
+        })
+        .collect()
+}
+
+/// A room's files move onto the config it was reassigned to, through the action list:
+/// parked for another holder of `vtc.rooms.admin`, started on the approval, run by the
+/// migration runner, reported by `vtc/rooms/get` and audited with the approvers.
+#[tokio::test]
+async fn a_rooms_files_move_through_the_action_list() {
+    let mut fix = fixture().await;
+    let a = requester(&mut fix).await;
+    let b = seed(&fix, AdminAuthority::community_admin()).await;
+    stored(&fix, "eu", "active").await;
+    let room = hosted_room(&fix).await;
+    let one = upload_to(&fix, &room, 40_000, 1).await;
+    upload_to(&fix, &room, 1_000, 2).await;
+    assign_directly(&fix, &room, "eu").await;
+
+    let (status, reply) = through(
+        &mut fix,
+        &a,
+        &[&b],
+        MIGRATE,
+        json!({ "roomId": room, "maxBytesPerSecond": 1_048_576, "reason": "retiring local" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{reply}");
+    let p = &reply["payload"];
+    assert_eq!(p["state"], "running", "{reply}");
+    assert_eq!(p["toConfig"], "eu");
+    assert_eq!(p["fromConfigs"], json!([SEED_CONFIG_ID]));
+    assert_eq!(
+        (p["totalFiles"].as_u64(), p["totalBytes"].as_u64()),
+        (Some(2), Some(41_000))
+    );
+    assert_eq!(
+        actions_of_kind(&fix, "rooms.storage.migrate").await.len(),
+        1
+    );
+
+    // Item 5: asked again while it runs, the answer is the same migration, parked for
+    // nobody.
+    let again = send(
+        &fix,
+        &a,
+        MIGRATE,
+        json!({ "roomId": room, "reason": "again" }),
+    )
+    .await;
+    assert_eq!(again["payload"]["migrationId"], p["migrationId"], "{again}");
+    assert_eq!(
+        actions_of_kind(&fix, "rooms.storage.migrate").await.len(),
+        1
+    );
+
+    vtc_service::rooms::migration::run(&fix.vtc.state, 1 << 40).await;
+
+    let got = send(&fix, &a, ROOM_GET, json!({ "roomId": room })).await;
+    let storage = &got["payload"]["storage"];
+    assert_eq!(storage["migration"]["state"], "complete", "{got}");
+    assert_eq!(storage["migration"]["doneFiles"], 2);
+    assert_eq!(storage["earlierConfigs"], json!([]), "{got}");
+    let entry = fix
+        .vtc
+        .state
+        .room_files
+        .blob(&room, &one)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(entry.config_id, "eu");
+
+    let events = migration_events(&audit_rows(&fix).await);
+    let names: Vec<&str> = events.iter().filter_map(|e| e["event"].as_str()).collect();
+    assert_eq!(
+        names,
+        ["migrationStarted", "migrationCompleted"],
+        "{events:?}"
+    );
+    assert_eq!(events[0]["approvers"], json!([b.did]));
+    assert_eq!(events[0]["roomId"], room);
+    assert_eq!(events[0]["previous"], json!([SEED_CONFIG_ID]));
+    assert_eq!(events[0]["reason"], "retiring local");
+}
+
+/// Item 7: a room with nothing to move completes at once, a success that parks nothing.
+#[tokio::test]
+async fn a_room_with_nothing_to_move_completes_without_consent() {
+    let fix = fixture().await;
+    let a = seed(&fix, AdminAuthority::community_admin()).await;
+    let room = hosted_room(&fix).await;
+    let reply = send(
+        &fix,
+        &a,
+        MIGRATE,
+        json!({ "roomId": room, "reason": "nothing here" }),
+    )
+    .await;
+    assert_eq!(reply["payload"]["state"], "complete", "{reply}");
+    assert_eq!(reply["payload"]["totalFiles"], 0);
+    assert!(
+        actions_of_kind(&fix, "rooms.storage.migrate")
+            .await
+            .is_empty()
+    );
+}
+
+/// `migrate`'s declared codes.
+#[tokio::test]
+async fn vtc_rooms_storage_migrate_refuses_with_its_declared_codes() {
+    let fix = fixture().await;
+    let a = seed(&fix, AdminAuthority::community_admin()).await;
+    let room = hosted_room(&fix).await;
+    upload_to(&fix, &room, 2_000, 3).await;
+
+    let reply = send(
+        &fix,
+        &a,
+        MIGRATE,
+        json!({ "roomId": "did:key:zNoSuchRoom", "reason": "x" }),
+    )
+    .await;
+    assert_eq!(
+        tt_error_code(&reply),
+        Some(MIGRATE_ROOM_NOT_FOUND),
+        "{reply}"
+    );
+
+    stored(&fix, "old", "draining").await;
+    assign_directly(&fix, &room, "old").await;
+    let reply = send(&fix, &a, MIGRATE, json!({ "roomId": room, "reason": "x" })).await;
+    assert_eq!(
+        tt_error_code(&reply),
+        Some(MIGRATE_CONFIG_NOT_ACTIVE),
+        "{reply}"
+    );
+
+    // A config whose capacity cannot hold the 2 000 bytes to move.
+    let r = root(&fix, "small");
+    std::fs::create_dir_all(&r).unwrap();
+    {
+        let _guard = fix.vtc.state.room_storage.lock().await;
+        fix.vtc
+            .state
+            .room_storage
+            .put_config(json!({
+                "id": "small",
+                "label": "small",
+                "settings": local(&r),
+                "state": "active",
+                "capacityBytes": 1_000,
+                "createdBy": "did:key:zAdmin",
+                "createdAt": chrono::Utc::now().to_rfc3339(),
+            }))
+            .await
+            .unwrap();
+    }
+    assign_directly(&fix, &room, "small").await;
+    let reply = send(&fix, &a, MIGRATE, json!({ "roomId": room, "reason": "x" })).await;
+    assert_eq!(
+        tt_error_code(&reply),
+        Some(MIGRATE_CAPACITY_EXCEEDED),
+        "{reply}"
+    );
+    let details = &reply["payload"]["details"];
+    assert_eq!(details["capacityBytes"], 1_000, "{reply}");
+    assert_eq!(details["requestedBytes"], 2_000, "{reply}");
+}
+
 // ─── through the community's VTA ─────────────────────────────────────────
 
 mod vta_account {

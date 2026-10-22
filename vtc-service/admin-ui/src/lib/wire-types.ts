@@ -259,7 +259,7 @@ export type RoomLimitTarget = Schemas["VtcRoomsLimitsSetV0_1LimitTarget"];
 
 // ── Storage configs: where rooms' files are kept ────────────────────────
 //
-// The published `vtc/storage/configs/*` and `vtc/rooms/storage/assign` shapes.
+// The published `vtc/storage/configs/*` and `vtc/rooms/storage/{assign,migrate}` shapes.
 // None carries a secret: a credential is never sent to or returned by them.
 export type StorageConfigItem = Schemas["VtcStorageConfigsListV0_1ConfigItem"];
 export type StorageConfigsListResponse = Schemas["VtcStorageConfigsListV0_1Response"];
@@ -276,6 +276,7 @@ export type StorageConfigProbeResponse = Schemas["VtcStorageConfigsProbeV0_1Resp
 export type StorageSettings = Schemas["VtcStorageConfigsCreateV0_1StorageSettings"];
 export type StorageAuth = Schemas["VtcStorageConfigsCreateV0_1StorageAuth"];
 export type RoomStorageAssignResponse = Schemas["VtcRoomsStorageAssignV0_1Response"];
+export type RoomStorageMigrateResponse = Schemas["VtcRoomsStorageMigrateV0_1Response"];
 
 // ── Data rooms the community itself owns ────────────────────────────────
 //

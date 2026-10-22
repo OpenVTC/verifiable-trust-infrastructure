@@ -37,7 +37,12 @@ import {
 } from "@/lib/rooms-api";
 import { parkedOf } from "@/lib/parked-action";
 import { gestureFromConfirm } from "@/lib/signed-act";
-import { assignRoomStorage, fetchStorageConfigs } from "@/lib/storage-api";
+import {
+  MIN_MIGRATION_BYTES_PER_SECOND,
+  assignRoomStorage,
+  fetchStorageConfigs,
+  migrateRoomStorage,
+} from "@/lib/storage-api";
 import { useToast } from "@/lib/toast";
 import type {
   RoomGetResponse,
@@ -53,6 +58,9 @@ import { LimitsForm } from "./LimitsForm";
 import { LifecyclePill, TIER_BLURB, communityRoomPath, configPath, type Tier } from "./shared";
 import { CommunityRoomBadge, MEMBER_NAMED_NOTE, useRoomNames, type RoomName } from "./useRoomNames";
 
+/** How often a room with a running migration is read again. */
+const MIGRATION_POLL_MS = 3_000;
+
 export function RoomDetail() {
   // Already decoded by the router. Decoding again would turn a `did:web` port's
   // `%3A` into `:` and ask for a different room.
@@ -62,7 +70,12 @@ export function RoomDetail() {
     queryKey: ["rooms", "get", roomId],
     queryFn: () => fetchRoom(roomId),
     enabled: roomId !== "",
-    refetchInterval: pollMs,
+    // A migration's progress inside its state is not hinted on the live channel (only
+    // its start and end are), so a running one is read every few seconds.
+    refetchInterval: (q) =>
+      q.state.data?.storage.migration?.state === "running"
+        ? Math.min(pollMs, MIGRATION_POLL_MS)
+        : pollMs,
   });
   // The label of a room the community owns, for a viewer who may read the
   // community's rooms; the DID otherwise. A refused or failed read of the
@@ -244,13 +257,13 @@ function Storage({ data }: { data: RoomGetResponse }) {
 
       <MoveStorage roomId={data.room.roomId} current={storage.configId} />
 
-      {storage.migration && (
-        <p className="muted">
-          Moving files: {storage.migration.state}, {storage.migration.doneFiles} of{" "}
-          {storage.migration.totalFiles} files ({formatBytes(storage.migration.doneBytes)} of{" "}
-          {formatBytes(storage.migration.totalBytes)}).
-        </p>
-      )}
+      <MoveExistingFiles
+        roomId={data.room.roomId}
+        current={storage.configId}
+        earlierFiles={storage.earlierConfigs.reduce((n, c) => n + c.files, 0)}
+        migration={storage.migration}
+      />
+
 
       {largestBlobs && largestBlobs.length > 0 && (
         <>
@@ -612,6 +625,167 @@ function Activity({ data }: { data: RoomGetResponse }) {
         </>
       )}
     </section>
+  );
+}
+
+type Migration = NonNullable<RoomGetResponse["storage"]["migration"]>;
+
+const MIGRATION_SAYS: Record<Migration["state"], string> = {
+  running: "Moving",
+  paused: "Paused",
+  complete: "Moved",
+  failed: "Stopped",
+};
+
+/**
+ * Move the room's existing files onto the storage it is assigned to
+ * (`vtc/rooms/storage/migrate/0.1`): each is copied, checked against what its
+ * uploader committed to, and switched; the old copies are deleted after the
+ * grace window. Readers notice nothing. Like an assignment it takes the
+ * requester's passkey and is parked for another holder of the room-hosting
+ * capability; resuming a paused move is not parked again.
+ */
+function MoveExistingFiles({
+  roomId,
+  current,
+  earlierFiles,
+  migration,
+}: {
+  roomId: string;
+  current: string;
+  earlierFiles: number;
+  migration?: Migration;
+}) {
+  const [open, setOpen] = useState(false);
+  const [reason, setReason] = useState("");
+  const [rate, setRate] = useState("");
+  const confirm = useConfirm();
+  const toast = useToast();
+  const queryClient = useQueryClient();
+  const configs = useQuery({
+    queryKey: ["storage", "list"],
+    queryFn: fetchStorageConfigs,
+    enabled: open,
+  });
+  const targetKind = (
+    configs.data?.find((c) => c.config.id === current)?.config.settings as
+      | { kind?: string }
+      | undefined
+  )?.kind;
+  const rateBytes = rate.trim() === "" ? undefined : Math.round(Number(rate) * 1024 * 1024);
+  const rateOk =
+    rateBytes === undefined ||
+    (Number.isFinite(rateBytes) && rateBytes >= MIN_MIGRATION_BYTES_PER_SECOND);
+  const move = useMutation({
+    mutationFn: (resume: boolean) =>
+      migrateRoomStorage(
+        roomId,
+        resume ? "Resume moving this room's files" : reason.trim(),
+        resume ? undefined : rateBytes,
+        gestureFromConfirm(confirm),
+      ),
+    onSuccess: (m) => {
+      toast.push(
+        "success",
+        m.state === "complete" ? "Nothing to move." : `Moving ${m.totalFiles} files to ${m.toConfig}.`,
+      );
+      void queryClient.invalidateQueries({ queryKey: ["rooms"] });
+      setOpen(false);
+    },
+  });
+  if (parkedOf(move.error)) return <ErrorOrParked title="Not moved" error={move.error} />;
+
+  const active = migration?.state === "running" || migration?.state === "paused";
+  return (
+    <>
+      {migration && (
+        <div className="rooms-migration">
+          <p>
+            {MIGRATION_SAYS[migration.state]} existing files: {migration.doneFiles} of{" "}
+            {migration.totalFiles} files ({formatBytes(migration.doneBytes)} of{" "}
+            {formatBytes(migration.totalBytes)}).
+            {migration.state === "running" && migration.totalBytes > 0 && (
+              <progress
+                aria-label="Files moved"
+                value={migration.doneBytes}
+                max={migration.totalBytes}
+              />
+            )}
+          </p>
+          {migration.state === "paused" && (
+            <p className="muted">
+              Halted after the storage refused or could not be reached several times in a
+              row. Files not yet moved keep working where they are.{" "}
+              <button type="button" onClick={() => move.mutate(true)} disabled={move.isPending}>
+                Resume
+              </button>
+            </p>
+          )}
+          {migration.state === "failed" && (
+            <p className="muted">
+              A copy did not match what its uploader committed to, so that file stays where it
+              is. The audit log names it.
+            </p>
+          )}
+        </div>
+      )}
+      {!active && earlierFiles > 0 && !open && (
+        <p>
+          <button type="button" className="link" onClick={() => setOpen(true)}>
+            Move existing files to {current}
+          </button>
+        </p>
+      )}
+      {open && (
+        <div className="rooms-edit">
+          <h3>Move existing files to {current}</h3>
+          <p className="muted">
+            {earlierFiles} {earlierFiles === 1 ? "file" : "files"} on earlier storage are copied
+            to <code>{current}</code>, checked against what their uploaders committed to, and
+            switched; the old copies are deleted after the grace window. No key is involved
+            and readers notice nothing. This needs your passkey, then another holder of the
+            room-hosting capability to approve it (unless this community runs with a single
+            administrator).
+          </p>
+          {targetKind === "walrus" && (
+            <p className="warning">
+              <code>{current}</code> is Walrus: the room's ciphertext becomes public and
+              permanent there. Ask the room's owner first.
+            </p>
+          )}
+          <label className="field">
+            <span className="field-label">Reason</span>
+            <textarea rows={2} value={reason} onChange={(e) => setReason(e.target.value)} />
+          </label>
+          <label className="field">
+            <span className="field-label">At most (MiB per second, optional)</span>
+            <input
+              type="number"
+              min={0.0625}
+              step="any"
+              value={rate}
+              onChange={(e) => setRate(e.target.value)}
+            />
+          </label>
+          {!rateOk && <p className="muted">At least 0.0625 MiB (64 KiB) per second.</p>}
+          <div className="rooms-form-actions">
+            <button
+              type="button"
+              onClick={() => move.mutate(false)}
+              disabled={
+                move.isPending || !rateOk || reason.trim() === "" || reason.trim().length > 500
+              }
+            >
+              Send for approval
+            </button>
+            <button type="button" className="secondary" onClick={() => setOpen(false)}>
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+      <ErrorOrParked title="Not moved" error={move.error} />
+    </>
   );
 }
 

@@ -1,5 +1,5 @@
 // Where this community keeps its rooms' files — `vtc/storage/configs/*/0.1` and
-// `vtc/rooms/storage/assign/0.1` (docs/05-design-notes/data-rooms-files.md §7).
+// `vtc/rooms/storage/{assign,migrate}/0.1` (docs/05-design-notes/data-rooms-files.md §7).
 //
 // A config is a named backend; every room is assigned to one, which receives
 // its new uploads, and every file remembers the config it was written to, so
@@ -16,6 +16,7 @@ import { postSignedRead, postSignedTrustTask } from "./api";
 import { postSignedWithStepUp, type ConfirmGesture } from "./signed-act";
 import type {
   RoomStorageAssignResponse,
+  RoomStorageMigrateResponse,
   StorageConfigCreatePayload,
   StorageConfigCreateResponse,
   StorageConfigGetResponse,
@@ -35,6 +36,7 @@ export const STORAGE_UPDATE_TASK = "https://trusttasks.org/spec/vtc/storage/conf
 export const STORAGE_RETIRE_TASK = "https://trusttasks.org/spec/vtc/storage/configs/retire/0.1";
 export const STORAGE_PROBE_TASK = "https://trusttasks.org/spec/vtc/storage/configs/probe/0.1";
 export const ROOM_STORAGE_ASSIGN_TASK = "https://trusttasks.org/spec/vtc/rooms/storage/assign/0.1";
+export const ROOM_STORAGE_MIGRATE_TASK = "https://trusttasks.org/spec/vtc/rooms/storage/migrate/0.1";
 
 /** The most configs the spec returns per page. */
 const CONFIGS_PAGE = 100;
@@ -108,6 +110,30 @@ export function assignRoomStorage(
   return postSignedWithStepUp(
     ROOM_STORAGE_ASSIGN_TASK,
     { roomId, configId, reason },
+    confirmGesture,
+  );
+}
+
+/** The slowest copy rate a migration may be asked for (64 KiB/s). */
+export const MIN_MIGRATION_BYTES_PER_SECOND = 65_536;
+
+/**
+ * Move a room's existing files onto the storage it is assigned to
+ * (`vtc/rooms/storage/migrate/0.1`): copied, checked against what their
+ * uploaders committed to, switched, and the old copies deleted after the grace
+ * window. Parked for approval like an assignment. Sent again for a room whose
+ * migration is running or paused, it answers with that migration — resuming a
+ * paused one — and parks nothing.
+ */
+export function migrateRoomStorage(
+  roomId: string,
+  reason: string,
+  maxBytesPerSecond: number | undefined,
+  confirmGesture: ConfirmGesture,
+): Promise<RoomStorageMigrateResponse> {
+  return postSignedWithStepUp(
+    ROOM_STORAGE_MIGRATE_TASK,
+    { roomId, reason, ...(maxBytesPerSecond !== undefined ? { maxBytesPerSecond } : {}) },
     confirmGesture,
   );
 }

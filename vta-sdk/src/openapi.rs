@@ -62,7 +62,8 @@ use trust_tasks_rs::specs::vtc::members::credentials as member_credentials;
 use trust_tasks_rs::specs::vtc::registry::{records, sync_jobs};
 use trust_tasks_rs::specs::vtc::rooms::{
     community as rooms_community, get as rooms_get, limits::set as rooms_limits_set,
-    storage::assign as rooms_storage_assign, usage as rooms_usage,
+    storage::assign as rooms_storage_assign, storage::migrate as rooms_storage_migrate,
+    usage as rooms_usage,
 };
 use trust_tasks_rs::specs::vtc::schemas::accepts;
 use trust_tasks_rs::specs::vtc::storage::configs as storage_configs;
@@ -234,6 +235,11 @@ spec_types! {
     RoomsStorageAssign01Payload(rooms_storage_assign::v0_1::Payload);
     /// `vtc/rooms/storage/assign/0.1#response`.
     RoomsStorageAssign01Response(rooms_storage_assign::v0_1::Response);
+    /// `vtc/rooms/storage/migrate/0.1` payload — move a room's existing files onto its
+    /// assigned config.
+    RoomsStorageMigrate01Payload(rooms_storage_migrate::v0_1::Payload);
+    /// `vtc/rooms/storage/migrate/0.1#response` — the migration and its progress so far.
+    RoomsStorageMigrate01Response(rooms_storage_migrate::v0_1::Response);
     /// `vtc/rooms/community/create/0.1` payload — a room the community itself
     /// owns: its label, tier, retention and the reason recorded with it.
     RoomsCommunityCreate01Payload(rooms_community::create::v0_1::Payload);

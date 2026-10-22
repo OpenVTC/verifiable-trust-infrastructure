@@ -53,6 +53,11 @@ use vti_common::store::KeyspaceHandle;
 use crate::revocation::Presented;
 use crate::{Room, Visibility};
 
+mod migrate;
+pub use migrate::{
+    MIGRATION_MAX_ATTEMPTS, MIN_MIGRATION_BYTES_PER_SECOND, Migration, MigrationPlan,
+    MigrationRequest, MigrationStart, MigrationState, MigrationStep,
+};
 mod usage;
 pub use usage::{
     Activity, DailyUsage, LimitTarget, MemberUsage, OverrideChange, OverrideError, RETENTION_DAYS,
@@ -919,7 +924,8 @@ pub struct ConfigHoldings {
     pub files: u64,
     /// Their total ciphertext bytes.
     pub bytes: u64,
-    /// Bytes of orphaned blobs waiting for collection.
+    /// Bytes waiting for collection: orphaned blobs, and the old copies of blobs a
+    /// migration moved off this config.
     pub pending_delete_bytes: u64,
 }
 
@@ -1073,6 +1079,13 @@ impl BlobHost {
             if entry.state == BlobState::Orphaned {
                 h.pending_delete_bytes += entry.size;
             }
+        }
+        // A moved blob's old copy is still on its config until collected.
+        for (config_id, (files, bytes)) in self.moved_holdings().await? {
+            let h = out.entry(config_id).or_default();
+            h.files += files;
+            h.bytes += bytes;
+            h.pending_delete_bytes += bytes;
         }
         Ok(out)
     }
@@ -2494,8 +2507,8 @@ impl BlobHost {
 
     // ─── collection ──────────────────────────────────────────────────────
 
-    /// One collection pass: delete orphaned and never-referenced blobs past the
-    /// grace window, give back the reservations of uploads that expired, and
+    /// One collection pass: delete orphaned and never-referenced blobs, and the
+    /// old copies of blobs a migration moved, past the grace window, give back the reservations of uploads that expired, and
     /// forget finished uploads and expired downloads.
     pub async fn sweep(&self) -> Result<SweepStats, AppError> {
         let mut stats = SweepStats::default();
@@ -2558,6 +2571,9 @@ impl BlobHost {
             crate::observe::changed();
             stats.collected += 1;
         }
+
+        // The old copies of blobs a migration moved (`migrate`).
+        stats.collected += self.sweep_moved(now, grace).await?;
 
         let uploads = self.blobs.prefix_iter_raw(b"upload:".to_vec()).await?;
         for (key, raw) in uploads {

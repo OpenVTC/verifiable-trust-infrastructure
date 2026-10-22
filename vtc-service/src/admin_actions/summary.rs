@@ -110,6 +110,9 @@ pub const KIND_STORAGE_CONFIG_UPDATE: &str = "storage.config.update";
 pub const KIND_STORAGE_CONFIG_RETIRE: &str = "storage.config.retire";
 /// Pointing a room's new uploads at another config (`vtc/rooms/storage/assign/0.1`).
 pub const KIND_ROOM_STORAGE_ASSIGN: &str = "rooms.storage.assign";
+/// Moving a room's existing files onto its assigned config
+/// (`vtc/rooms/storage/migrate/0.1`).
+pub const KIND_ROOM_STORAGE_MIGRATE: &str = "rooms.storage.migrate";
 
 /// The record type a break-glass review is raised under.
 pub const BREAK_GLASS_REVIEW_URI: &str = "urn:openvtc:vtc:git-ns:break-glass-review";
@@ -161,6 +164,7 @@ const STORAGE_CREATE: &str = crate::trust_tasks::storage_tasks::CREATE_TYPE;
 const STORAGE_UPDATE: &str = crate::trust_tasks::storage_tasks::UPDATE_TYPE;
 const STORAGE_RETIRE: &str = crate::trust_tasks::storage_tasks::RETIRE_TYPE;
 const ROOM_STORAGE_ASSIGN: &str = crate::trust_tasks::storage_tasks::ASSIGN_TYPE;
+const ROOM_STORAGE_MIGRATE: &str = crate::trust_tasks::storage_tasks::MIGRATE_TYPE;
 const GROUPS_MEMBERS_ADD: &str = crate::trust_tasks::group_tasks::MEMBERS_ADD_TYPE;
 const GROUPS_MEMBERS_REMOVE: &str = crate::trust_tasks::group_tasks::MEMBERS_REMOVE_TYPE;
 const GROUPS_BINDINGS_ADD: &str = crate::trust_tasks::group_tasks::BINDINGS_ADD_TYPE;
@@ -195,6 +199,12 @@ const STORAGE_RETIRE_EFFECT: &str = "The storage config {configId} takes no new 
                                      Files already on it stay readable until they are moved off.";
 const ROOM_STORAGE_ASSIGN_EFFECT: &str = "Room {roomId}'s new files are stored on {configId}. \
                                           Files it already holds stay where they are.";
+const ROOM_STORAGE_MIGRATE_EFFECT: &str = "Room {roomId}'s existing files are copied to the \
+                                           storage config it is assigned to, checked against \
+                                           what their uploaders committed to, and switched; \
+                                           the old copies are deleted after the grace window. \
+                                           On Walrus a deletion is a lapse, and ciphertext \
+                                           stored there stays public.";
 
 const fn f(name: &'static str, pointer: &'static str, format: &'static str) -> FieldDef {
     FieldDef {
@@ -758,6 +768,17 @@ pub const TEMPLATES: &[Template] = &[
         ],
     },
     Template {
+        kind: KIND_ROOM_STORAGE_MIGRATE,
+        type_uri: ROOM_STORAGE_MIGRATE,
+        title: "Move room {roomId}'s files to its assigned storage",
+        effect: ROOM_STORAGE_MIGRATE_EFFECT,
+        fields: &[
+            f("roomId", "/roomId", "text"),
+            f("maxBytesPerSecond", "/maxBytesPerSecond", "text"),
+            f("reason", "/reason", "text"),
+        ],
+    },
+    Template {
         kind: KIND_GRANTS_REVIEW,
         type_uri: GRANTS_REVIEW_URI,
         title: "Re-affirm or withdraw the grants {granter} made",
@@ -1079,6 +1100,11 @@ pub const PINNED: &[(&str, &str, &str)] = &[
         KIND_ROOM_STORAGE_ASSIGN,
         ROOM_STORAGE_ASSIGN,
         "zQmZWR9odGdRi5noLhZxgzSrNk3YRF5ZWH4JaNVBYMqMKja",
+    ),
+    (
+        KIND_ROOM_STORAGE_MIGRATE,
+        ROOM_STORAGE_MIGRATE,
+        "zQmZamMHumTwGimMGYsuEGBoxvuYmEozzpkSStPjrZHrShX",
     ),
 ];
 

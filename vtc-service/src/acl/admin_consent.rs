@@ -238,7 +238,7 @@ pub enum Act {
     DirectAdmission,
     /// A change to where the community keeps its rooms' files
     /// (`vtc/storage/configs/{create,update,retire}`,
-    /// `vtc/rooms/storage/assign`): parked for the other holders of
+    /// `vtc/rooms/storage/{assign,migrate}`): parked for the other holders of
     /// `vtc.rooms.admin` by those tasks' own definitions. Not conferring — it
     /// grants nobody anything — but it decides where members' files go and
     /// what reaches them. The subject is the config or the room; the consent is
@@ -465,6 +465,7 @@ impl Act {
                 crate::trust_tasks::storage_tasks::CREATE_TYPE => s::KIND_STORAGE_CONFIG_CREATE,
                 crate::trust_tasks::storage_tasks::RETIRE_TYPE => s::KIND_STORAGE_CONFIG_RETIRE,
                 crate::trust_tasks::storage_tasks::ASSIGN_TYPE => s::KIND_ROOM_STORAGE_ASSIGN,
+                crate::trust_tasks::storage_tasks::MIGRATE_TYPE => s::KIND_ROOM_STORAGE_MIGRATE,
                 _ => s::KIND_STORAGE_CONFIG_UPDATE,
             },
             Self::ChangeTrustedWitnesses => s::KIND_WITNESSES_CHANGE,

@@ -186,7 +186,7 @@ export const PINNED_TEMPLATE_DIGESTS: Readonly<Record<string, string>> = Object.
     "zQmbYVQV8iyGc9pCgXB3mD1s7dYXRYEBmHNyHcQnEkeaH6C",
   [pinKey(KIND_MEMBER_MAKE_MEMBERSHIP, MEMBERS_MAKE_MEMBERSHIP_URI)]:
     "zQmYUPeQMYvpEnuBu9RCX4BSvQ5Nmpz4t2sRxKpyQpg6FVB",
-  // Room storage (`vtc/storage/configs/*`, `vtc/rooms/storage/assign`).
+  // Room storage (`vtc/storage/configs/*`, `vtc/rooms/storage/{assign,migrate}`).
   [pinKey("storage.config.create", `${SPEC}/vtc/storage/configs/create/0.1`)]:
     "zQmbKUbMCxeKhULY9Ea5CL5SYQozDAE4ithNpnKx7jCQZAJ",
   [pinKey("storage.config.update", `${SPEC}/vtc/storage/configs/update/0.1`)]:
@@ -195,6 +195,8 @@ export const PINNED_TEMPLATE_DIGESTS: Readonly<Record<string, string>> = Object.
     "zQmW4jo3NSHqJGAeDeEPzJt1fUgdDAeAsur9ehhSCyA4bEh",
   [pinKey("rooms.storage.assign", `${SPEC}/vtc/rooms/storage/assign/0.1`)]:
     "zQmZWR9odGdRi5noLhZxgzSrNk3YRF5ZWH4JaNVBYMqMKja",
+  [pinKey("rooms.storage.migrate", `${SPEC}/vtc/rooms/storage/migrate/0.1`)]:
+    "zQmZamMHumTwGimMGYsuEGBoxvuYmEozzpkSStPjrZHrShX",
 });
 
 function pinKey(kind: string, typeUri: string): string {

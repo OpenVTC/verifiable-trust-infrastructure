@@ -586,6 +586,11 @@ pub struct RoomFilesConfig {
     /// Browsers need the bucket's CORS set for it (`docs/02-vta/data-rooms.md` §8.2).
     #[serde(default, skip_serializing_if = "is_default_direct")]
     pub direct_transfer: vti_rooms::blobs::DirectTransfer,
+    /// The fastest a migration (`vtc/rooms/storage/migrate`) copies a room's files, in
+    /// bytes per second. A request's `maxBytesPerSecond` can only lower it. Default
+    /// 8 MiB/s; never below 64 KiB/s.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub migration_max_bytes_per_second: Option<u64>,
 }
 
 fn is_default_direct(d: &vti_rooms::blobs::DirectTransfer) -> bool {
@@ -629,6 +634,7 @@ impl Default for RoomFilesConfig {
             orphan_grace_hours: default_orphan_grace_hours(),
             sweep_interval_secs: default_blob_sweep_interval_secs(),
             direct_transfer: Default::default(),
+            migration_max_bytes_per_second: None,
         }
     }
 }

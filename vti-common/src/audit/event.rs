@@ -918,9 +918,9 @@ pub enum AuditEvent {
     CapabilityModuleChanged(CapabilityModuleChangedData),
 
     /// A change to where a community keeps its rooms' files: a storage config
-    /// created, changed or retired (`vtc/storage/configs/*`), or a room pointed
-    /// at another config (`vtc/rooms/storage/assign`). Never carries a
-    /// credential.
+    /// created, changed or retired (`vtc/storage/configs/*`), a room pointed
+    /// at another config (`vtc/rooms/storage/assign`), or a room's files moved
+    /// onto it (`vtc/rooms/storage/migrate`). Never carries a credential.
     RoomStorageChanged(RoomStorageChangedData),
 
     /// A room's file limits overridden or an override cleared
@@ -939,15 +939,17 @@ pub enum AuditEvent {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct RoomStorageChangedData {
-    /// `configCreated`, `configUpdated`, `configRetired` or `roomAssigned`.
+    /// `configCreated`, `configUpdated`, `configRetired`, `roomAssigned`, or a
+    /// migration's `migrationStarted`, `migrationResumed`, `migrationCompleted`,
+    /// `migrationPaused` or `migrationFailed`.
     pub event: String,
     /// The config the change is to, or the room was assigned to.
     pub config_id: String,
-    /// The room, on `roomAssigned`.
+    /// The room, on `roomAssigned` and a migration's events.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub room_id: Option<String>,
-    /// What it was: the config before the change, or the room's previous
-    /// config. Absent on a create.
+    /// What it was: the config before the change, the room's previous
+    /// config, or the configs a migration moves files from. Absent on a create.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub previous: Option<serde_json::Value>,
     /// What it is now.

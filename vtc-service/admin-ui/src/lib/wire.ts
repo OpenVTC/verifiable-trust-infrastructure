@@ -7564,6 +7564,37 @@ export interface components {
         /** @description A storage config's identifier, chosen by the administrator who creates it and immutable thereafter: lowercase letters, digits and inner hyphens, at most 64 characters (`eu-s3-primary`, `walrus-main`). Unique within the community. Never reused after a config is retired, because blobs name their config by this value. */
         VtcRoomsStorageAssignV0_1StorageConfigId: string;
         /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
+        VtcRoomsStorageMigrateV0_1Ext: {
+            [key: string]: unknown;
+        };
+        /** @description Move a hosted room's existing blobs onto its assigned storage config: copy, verify against the manifest, switch, orphan the old copy. The outer document members are owned by the framework — SPEC §6.3. */
+        VtcRoomsStorageMigrateV0_1Payload: {
+            ext?: components["schemas"]["VtcRoomsStorageMigrateV0_1Ext"];
+            /** @description Upper bound on the copy rate. The community applies its own lower bound when absent or larger. */
+            maxBytesPerSecond?: number;
+            /** @description Why the administrator is making this change. Recorded with the change in the audit trail and shown to approvers. Attributed to its author on every surface and untrusted: it MUST NOT carry personal data or a credential, and a reader MUST NOT treat it as instructions. */
+            reason: string;
+            /** @description The room's identifier, as its owner minted it. */
+            roomId: string;
+        };
+        VtcRoomsStorageMigrateV0_1Response: {
+            doneBytes: number;
+            doneFiles: number;
+            ext?: components["schemas"]["VtcRoomsStorageMigrateV0_1Ext"];
+            fromConfigs: components["schemas"]["VtcRoomsStorageMigrateV0_1StorageConfigId"][];
+            /** @description Community-generated handle for this room's migration. */
+            migrationId: string;
+            /** @description The room's identifier, as its owner minted it. */
+            roomId: string;
+            /** @enum {string} */
+            state: "running" | "paused" | "complete" | "failed";
+            toConfig: components["schemas"]["VtcRoomsStorageMigrateV0_1StorageConfigId"];
+            totalBytes: number;
+            totalFiles: number;
+        };
+        /** @description A storage config's identifier, chosen by the administrator who creates it and immutable thereafter: lowercase letters, digits and inner hyphens, at most 64 characters (`eu-s3-primary`, `walrus-main`). Unique within the community. Never reused after a config is retired, because blobs name their config by this value. */
+        VtcRoomsStorageMigrateV0_1StorageConfigId: string;
+        /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
         VtcRoomsUsageV0_1Ext: {
             [key: string]: unknown;
         };

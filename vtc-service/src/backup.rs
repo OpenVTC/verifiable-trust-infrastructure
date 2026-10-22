@@ -388,6 +388,9 @@ pub async fn import_backup(
     if let Err(e) = state.room_storage.reload_stores().await {
         tracing::warn!(error = %e, "backup import: storage configs not reloaded; the restart reloads them");
     }
+    // A restored migration comes back paused: the bytes were never in the backup, so its
+    // copy in flight is verified again when an administrator resumes it.
+    crate::rooms::migration::pause_after_restore(state).await;
 
     // A backup taken before phase C3 carries its git rights in the old rights
     // store: move them onto the restored ACL entries now (`vtc-admin-roles.md`

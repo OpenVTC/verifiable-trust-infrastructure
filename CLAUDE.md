@@ -1354,6 +1354,33 @@ new flow, update both this section and the relevant `docs/*.md`.
   `cnm-cli/src/rooms.rs` (`cnm rooms …`).
 - **Docs**: `docs/03-vtc/community-rooms.md`.
 
+### VTC room file migration (`vtc/rooms/storage/migrate`)
+- **What**: Moves a hosted room's existing blobs onto the storage config it is
+  assigned to (`data-rooms-files.md` §7.3): copy, read back and verify against
+  every chunk digest and the whole-blob digest of the committed manifest, switch,
+  and the old copy deleted by collection after the orphan grace window. No key.
+  `vtc.rooms.admin`, parked as `Act::ChangeStorage`; VTC-only (`room-host` has
+  one config).
+- **Invariants to preserve**: the switch is **one `Batch`** in `room_blobs` (entry,
+  `moved:` row for the old copy, counters, plan row, record), applied only while
+  the entry is byte-for-byte what it was when the copy began — never a sequence of
+  writes. The target's bytes are reserved at start and converted per switch; the
+  old copy counts against its config (so a `draining` config does not retire)
+  until collected, never less (§6.1). Before writing a copy, a pending `moved:` row
+  of the same blob on the target is reclaimed under the lock, so collection never
+  deletes what a switch is about to name. The runner (`rooms::migration`) is the
+  **one retry owner** (capped backoff + full jitter, then `paused`); re-issuing the
+  task resumes a paused migration **without** parking again, and a `running` or
+  `paused` one is always the answer. A copy that does not verify is `failed`, never
+  retried. One migration at a time per host; a reassigned room keeps the
+  migration's original target; orphaned blobs are skipped. A restore pauses a
+  running one (`pause_after_restore`), and the blob in flight is re-verified.
+  A kept or audited store error is scrubbed of URL queries and tokens.
+- **Code**: `vti-rooms/src/blobs/migrate.rs`, `vtc-service/src/rooms/migration.rs`,
+  `vtc-service/src/trust_tasks/storage_tasks.rs` (`handle_migrate`),
+  `admin-ui/src/plugins/rooms/RoomDetail.tsx` (`MoveExistingFiles`).
+- **Docs**: `docs/02-vta/data-rooms.md` (*Moving a room's files*).
+
 ### VTC member directory (`vtc/directory/*`)
 - **What**: The community's field schema (`fields/*`), each member's card
   (`card/{show,update,assert}`), and browse/search/show (`entries/*`, plus the

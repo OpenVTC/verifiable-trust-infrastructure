@@ -1,5 +1,6 @@
 //! Where this community keeps its rooms' files — `vtc/storage/configs/{list,get,create,
-//! update,retire,probe}/0.1` and `vtc/rooms/storage/assign/0.1`
+//! update,retire,probe}/0.1`, `vtc/rooms/storage/assign/0.1` and
+//! `vtc/rooms/storage/migrate/0.1`
 //! (`docs/05-design-notes/data-rooms-files.md` §7; [`crate::rooms::storage_configs`]).
 //!
 //! The authority is `vtc.rooms.admin`, read from the signer's own entry at execution
@@ -7,13 +8,15 @@
 //! required or accepted, and nothing here needs or could use a room key.
 //!
 //! - **Reads** (`list`, `get`) and the **probe** answer a holder of `vtc.rooms.admin`.
-//! - **Changes** (`create`, `update`, `retire`, `assign`) decide where members' files go
+//! - **Changes** (`create`, `update`, `retire`, `assign`, `migrate`) decide where members' files go
 //!   and what reaches them, so each is parked for the other holders' consent after the
 //!   requester's operation-bound step-up ([`super::acl_tasks::settle_consent_gate`],
 //!   [`Act::ChangeStorage`]) and executes itself on the N-th approval, every check
 //!   re-run against the community as it is then. A request that would change nothing —
 //!   retiring a config already retiring, assigning a room to the config it is on — is
-//!   answered at once and parks nothing.
+//!   answered at once and parks nothing. So is a `migrate` for a room that already has a
+//!   migration `running` or `paused` (it answers with that one, resuming it) or has
+//!   nothing to move.
 //!
 //! No member of any of these tasks carries a credential, and no answer returns one.
 
@@ -21,6 +24,7 @@ use std::collections::HashMap;
 
 use serde_json::{Value, json};
 use trust_tasks_rs::specs::vtc::rooms::storage::assign::v0_1 as assign;
+use trust_tasks_rs::specs::vtc::rooms::storage::migrate::v0_1 as migrate;
 use trust_tasks_rs::specs::vtc::storage::configs::{
     create::v0_1 as create, get::v0_1 as get, list::v0_1 as list, probe::v0_1 as probe,
     retire::v0_1 as retire, update::v0_1 as update,
@@ -29,7 +33,9 @@ use trust_tasks_rs::{Payload, RejectReason, TrustTask};
 use vti_common::audit::{AuditEvent, RoomStorageChangedData};
 use vti_common::auth::extractor::AuthClaims;
 use vti_common::blob_store::{BlobKey, PROBE_PREFIX};
-use vti_rooms::blobs::ConfigHoldings;
+use vti_rooms::blobs::{
+    ConfigHoldings, Migration, MigrationRequest, MigrationStart, MigrationState,
+};
 
 use super::helpers::{
     TrustTaskOutcome, app_error_to_reject, extended_code, reject_with, reject_with_code,
@@ -48,6 +54,7 @@ pub(crate) const UPDATE_TYPE: &str = <update::Payload as Payload>::TYPE_URI;
 pub(crate) const RETIRE_TYPE: &str = <retire::Payload as Payload>::TYPE_URI;
 pub(crate) const PROBE_TYPE: &str = <probe::Payload as Payload>::TYPE_URI;
 pub(crate) const ASSIGN_TYPE: &str = <assign::Payload as Payload>::TYPE_URI;
+pub(crate) const MIGRATE_TYPE: &str = <migrate::Payload as Payload>::TYPE_URI;
 
 /// Every URI this module routes.
 pub(crate) const URIS: &[&str] = &[
@@ -58,6 +65,7 @@ pub(crate) const URIS: &[&str] = &[
     RETIRE_TYPE,
     PROBE_TYPE,
     ASSIGN_TYPE,
+    MIGRATE_TYPE,
 ];
 
 /// At most this many room identifiers in a `get` (`vtc/storage/configs/get` item 2).
@@ -83,6 +91,7 @@ pub(super) async fn dispatch(
         RETIRE_TYPE => handle_retire(state, ctx, doc).await,
         PROBE_TYPE => handle_probe(state, ctx, doc).await,
         ASSIGN_TYPE => handle_assign(state, ctx, doc).await,
+        MIGRATE_TYPE => handle_migrate(state, ctx, doc).await,
         _ => return None,
     })
 }
@@ -168,7 +177,7 @@ async fn holdings(
 
 /// Record a storage change in the audit trail. A failure is logged, not returned: the
 /// change has already been written.
-async fn audit(state: &AppState, actor: &str, data: RoomStorageChangedData) {
+pub(crate) async fn audit(state: &AppState, actor: &str, data: RoomStorageChangedData) {
     let Some(writer) = state.audit_writer.as_ref() else {
         return;
     };
@@ -1078,6 +1087,232 @@ async fn handle_assign(
         .await;
     }
     respond::<assign::Response>(&doc, answer(&previous, elsewhere(state).await))
+}
+
+// ─── migrate ─────────────────────────────────────────────────────────────
+
+/// Why the room's files cannot be moved to `config_id` now (`migrate` item 1), if they
+/// cannot.
+async fn check_target(
+    state: &AppState,
+    doc: &TrustTask<Value>,
+    config_id: &str,
+) -> Result<Option<u64>, TrustTaskOutcome> {
+    use migrate::error_codes as c;
+    let config = match state.room_storage.config(config_id).await {
+        Ok(c) => c,
+        Err(e) => return Err(app_error_to_reject(doc, &e)),
+    };
+    let Some(config) = config else {
+        return Err(refuse(
+            doc,
+            c::CONFIG_NOT_ACTIVE.code,
+            "this room is assigned to no storage config; assign it to an active one first",
+            None,
+        ));
+    };
+    if state_of(&config) != "active" {
+        return Err(refuse(
+            doc,
+            c::CONFIG_NOT_ACTIVE.code,
+            format!(
+                "`{config_id}` is {} and takes no files; assign the room to an active config \
+                 first",
+                state_of(&config)
+            ),
+            None,
+        ));
+    }
+    if !state.room_storage.usable(&config) {
+        return Err(refuse(
+            doc,
+            c::CONFIG_NOT_ACTIVE.code,
+            format!("`{config_id}` has no usable credential, so it cannot receive the files"),
+            None,
+        ));
+    }
+    Ok(config["capacityBytes"].as_u64())
+}
+
+fn capacity_refusal(
+    doc: &TrustTask<Value>,
+    config_id: &str,
+    capacity: u64,
+    used: u64,
+    requested: u64,
+) -> TrustTaskOutcome {
+    refuse(
+        doc,
+        migrate::error_codes::CAPACITY_EXCEEDED.code,
+        format!(
+            "`{config_id}` cannot hold the {requested} bytes to move: {used} of its {capacity} \
+             bytes are in use"
+        ),
+        Some(json!({
+            "capacityBytes": capacity,
+            "usedBytes": used,
+            "requestedBytes": requested,
+        })),
+    )
+}
+
+/// `vtc/rooms/storage/migrate/0.1`: move a room's existing blobs onto its assigned config
+/// (`data-rooms-files.md` §7.3). The work is the migration runner's
+/// ([`crate::rooms::migration`]); this answers with the migration and its progress so far.
+async fn handle_migrate(
+    state: &AppState,
+    ctx: &JoinAuthCtx,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    use migrate::error_codes as c;
+    let actor = match rooms_admin(state, ctx, &doc).await {
+        Ok(a) => a,
+        Err(reject) => return reject,
+    };
+    let checked: migrate::Payload = match parse_spec_payload(&doc) {
+        Ok(p) => p,
+        Err(reject) => return reject,
+    };
+    let room_id = checked.room_id.as_str().to_string();
+    let reason = checked.reason.as_str().to_string();
+    let answer = |m: &Migration| {
+        respond::<migrate::Response>(&doc, crate::rooms::migration::response_json(m))
+    };
+
+    match vti_rooms::storage::get_room(&state.rooms_ks, &room_id).await {
+        Ok(_) => {}
+        Err(vti_common::error::AppError::NotFound(_)) => {
+            return refuse(
+                &doc,
+                c::ROOM_NOT_FOUND.code,
+                "this community hosts no such room",
+                None,
+            );
+        }
+        Err(e) => return app_error_to_reject(&doc, &e),
+    }
+
+    // Item 5: a migration running or paused is the answer — a paused one resumed — and
+    // nothing is parked again for it: its approvers agreed to it when it started.
+    match state.room_files.migration(&room_id).await {
+        Ok(Some(m)) if m.state == MigrationState::Running => return answer(&m),
+        Ok(Some(m)) if m.state == MigrationState::Paused => {
+            if let Err(reject) = check_target(state, &doc, &m.to_config).await {
+                return reject;
+            }
+            return start(
+                state,
+                &doc,
+                &actor.did,
+                MigrationRequest::new(room_id, m.to_config, &actor.did, reason),
+            )
+            .await;
+        }
+        Ok(_) => {}
+        Err(e) => return app_error_to_reject(&doc, &e),
+    }
+
+    let to_config = match super::room_admin_tasks::assigned_config(state, &room_id).await {
+        Ok(c) => c,
+        Err(e) => return app_error_to_reject(&doc, &e),
+    };
+    let capacity = match check_target(state, &doc, &to_config).await {
+        Ok(c) => c,
+        Err(reject) => return reject,
+    };
+    let plan = match state.room_files.plan_migration(&room_id, &to_config).await {
+        Ok(p) => p,
+        Err(e) => return app_error_to_reject(&doc, &e),
+    };
+    // Item 2, before anything is parked or copied.
+    if let Some(cap) = capacity
+        && plan.bytes > 0
+    {
+        let used = match state.room_files.config_used_bytes(&to_config).await {
+            Ok(u) => u,
+            Err(e) => return app_error_to_reject(&doc, &e),
+        };
+        if used + plan.bytes > cap {
+            return capacity_refusal(&doc, &to_config, cap, used, plan.bytes);
+        }
+    }
+    let mut req = MigrationRequest::new(&room_id, &to_config, &actor.did, &reason);
+    req.capacity_bytes = capacity;
+    req.max_bytes_per_second = checked.max_bytes_per_second.map(|v| v.max(0) as u64);
+
+    // Item 7: nothing to move completes at once and changes nothing, so parks nothing.
+    if plan.files > 0 {
+        let summary = format!("Move room {room_id}'s files to {to_config}");
+        if let Err(reject) = super::acl_tasks::settle_consent_gate(
+            state,
+            &actor,
+            &doc,
+            Act::ChangeStorage,
+            &room_id,
+            &summary,
+            &summary,
+        )
+        .await
+        {
+            return reject;
+        }
+        // Executing: every check again, against the community as it is now.
+        req.to_config = match super::room_admin_tasks::assigned_config(state, &room_id).await {
+            Ok(c) => c,
+            Err(e) => return app_error_to_reject(&doc, &e),
+        };
+        req.capacity_bytes = match check_target(state, &doc, &req.to_config).await {
+            Ok(c) => c,
+            Err(reject) => return reject,
+        };
+        req.approvers = crate::admin_actions::executing_approvers(state).await;
+    }
+    start(state, &doc, &actor.did, req).await
+}
+
+/// Start, or resume, the migration `req` describes, audit what changed and wake the
+/// runner.
+async fn start(
+    state: &AppState,
+    doc: &TrustTask<Value>,
+    actor: &str,
+    req: MigrationRequest,
+) -> TrustTaskOutcome {
+    let to_config = req.to_config.clone();
+    let outcome = match state.room_files.start_migration(req).await {
+        Ok(o) => o,
+        Err(e) => return app_error_to_reject(doc, &e),
+    };
+    let m = match outcome {
+        MigrationStart::Started(m) => {
+            crate::rooms::migration::audit_migration(state, &m, "migrationStarted", actor).await;
+            if m.state == MigrationState::Complete {
+                crate::rooms::migration::audit_migration(state, &m, "migrationCompleted", actor)
+                    .await;
+            }
+            m
+        }
+        MigrationStart::Resumed(m) => {
+            crate::rooms::migration::audit_migration(state, &m, "migrationResumed", actor).await;
+            m
+        }
+        MigrationStart::InProgress(m) => m,
+        MigrationStart::CapacityExceeded {
+            capacity,
+            used,
+            requested,
+        } => return capacity_refusal(doc, &to_config, capacity, used, requested),
+        _ => {
+            return app_error_to_reject(
+                doc,
+                &vti_common::error::AppError::Internal("unexpected migration outcome".into()),
+            );
+        }
+    };
+    if m.state == MigrationState::Running {
+        crate::rooms::migration::kick();
+    }
+    respond::<migrate::Response>(doc, crate::rooms::migration::response_json(&m))
 }
 
 #[cfg(test)]

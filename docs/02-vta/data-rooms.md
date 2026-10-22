@@ -982,6 +982,8 @@ community's ACL or a session.
   # sweep_interval_secs = 600
   # direct_transfer = "not_private"        # 0.2 reads straight from storage:
   #                                        # "off" | "not_private" | "all"
+  # migration_max_bytes_per_second = 8388608  # the fastest a migration copies;
+  #                                        # a request can only lower it
   [rooms.files.room]                       # per room; defaults: 10 000 files,
   # max_files = 10000                      #   100 MiB a file, 5 GiB in all
   # max_bytes = 5368709120
@@ -1000,10 +1002,10 @@ community's ACL or a session.
   reassigning a room strands nothing. On first start the VTC seeds one, `local`,
   at `blob_dir`, as the default; every room is assigned to the default when it
   is created. A holder of `vtc.rooms.admin` manages them with
-  `vtc/storage/configs/{list,get,create,update,retire,probe}/0.1` and
-  `vtc/rooms/storage/assign/0.1`. Creating, changing and retiring a config, and
-  reassigning a room, are **parked for the other holders' consent** in the
-  administrator action list. This build stores to `local` configs and to `s3`
+  `vtc/storage/configs/{list,get,create,update,retire,probe}/0.1`,
+  `vtc/rooms/storage/assign/0.1` and `vtc/rooms/storage/migrate/0.1`. Creating,
+  changing and retiring a config, and reassigning a room or moving its files, are
+  **parked for the other holders' consent** in the administrator action list. This build stores to `local` configs and to `s3`
   configs through the community's VTA (below); `ambient` and `sealed` auth,
   `gcs` and `walrus` follow. A local config's root must lie
   strictly beneath one of `local_storage_bases` once symbolic links are
@@ -1020,6 +1022,30 @@ community's ACL or a session.
   budget as any other large document; a chunk arriving at `POST /v1/trust-tasks`
   is under the room budgets below instead (over DIDComm or TSP it still takes the
   large-document budget).
+- **Moving a room's files** (`vtc/rooms/storage/migrate/0.1`, §7.3 of the design
+  note). Reassigning a room leaves its existing files where they are; a
+  migration moves them onto the config the room is assigned to, one at a time:
+  each is copied, read back from the new config and checked against every chunk
+  digest and the whole-blob digest of its committed manifest, and only then
+  switched, in one atomic write with its bookkeeping. No key is involved, and
+  readers notice nothing: a file is named by its digest, and every read finds
+  its current location. The old copy keeps counting against its config — and
+  keeps a `draining` config from retiring — until the collection pass deletes it
+  after `orphan_grace_hours`. The bytes to move are reserved on the target when
+  the migration starts, so one the target's capacity cannot hold is refused
+  (`capacityExceeded`) before anything is copied. One migration runs at a time,
+  at most `migration_max_bytes_per_second` (a request's `maxBytesPerSecond` can
+  only lower it). A failed copy is retried with capped, jittered backoff and,
+  after eight in a row, the migration is `paused`; issuing the task again
+  resumes it without asking the approvers again, and a migration `running` or
+  `paused` is always the answer to a second request. A copy that does not
+  verify stops it `failed`, leaving that file where it was. Progress is
+  `vtc/rooms/get`'s `storage.migration`, and each start, resume, completion,
+  pause and failure is a `RoomStorageChanged` audit row naming the requester,
+  the approvers, the room, the configs and the reason. A restored backup brings
+  a running migration back `paused` — the bytes are never in a backup — and the
+  file in flight is verified again when it is resumed. Draining a config is
+  migrating every room assigned to it.
 - **Rate limits** (`[rooms.rate_limits]`). Room traffic is not held to the
   anonymous per-address governor the join and sign-in surface shares (a burst of
   10, then one request every 5 s), which a member reading a room or fetching a
@@ -1179,7 +1205,8 @@ community's ACL or a session.
     (`/admin/rooms/storage/<configId>`) probes it, changes its label, capacity
     or default, and retires it; **New storage** creates a `local` or an `s3`
     (VTA account) config. A room's page sends its new uploads to another
-    config. Every one of those changes takes the requester's passkey and is
+    config and moves the files it still holds on earlier storage (**Move existing
+    files**, with its progress, and **Resume** when paused). Every one of those changes takes the requester's passkey and is
     parked for another holder of `vtc.rooms.admin`, as above.
 
   The pages that were separate before — `/admin/storage`, `/admin/storage/<id>`

@@ -1620,6 +1620,20 @@ pub async fn run(
         ),
         shutdown_rx.clone(),
     );
+    // Room files moved onto the config their room is assigned to
+    // (`vtc/rooms/storage/migrate`): the one retry owner of every migration. Idle while
+    // none is running.
+    crate::rooms::migration::spawn(
+        state.clone(),
+        boot_cfg
+            .rooms
+            .files
+            .as_ref()
+            .and_then(|f| f.migration_max_bytes_per_second)
+            .unwrap_or(crate::rooms::migration::DEFAULT_MAX_BYTES_PER_SECOND)
+            .max(vti_rooms::blobs::MIN_MIGRATION_BYTES_PER_SECOND),
+        shutdown_rx.clone(),
+    );
     crate::join::retention::RetentionSweeper::spawn(
         state.join_requests_ks.clone(),
         state.sync_queue_ks.clone(),

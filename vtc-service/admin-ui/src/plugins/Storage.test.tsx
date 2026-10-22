@@ -34,6 +34,7 @@ const CREATE = `${T}/vtc/storage/configs/create/0.1`;
 const RETIRE = `${T}/vtc/storage/configs/retire/0.1`;
 const PROBE = `${T}/vtc/storage/configs/probe/0.1`;
 const ASSIGN = `${T}/vtc/rooms/storage/assign/0.1`;
+const MIGRATE = `${T}/vtc/rooms/storage/migrate/0.1`;
 const ROOMS_GET = `${T}/vtc/rooms/get/0.1`;
 const ROOMS_LIST = `${T}/vtc/rooms/list/0.1`;
 const USAGE = `${T}/vtc/rooms/usage/0.1`;
@@ -288,6 +289,65 @@ describe("a room's storage", () => {
     expect(sentPayloads(requests, ASSIGN)).toEqual([
       { roomId: ROOM_ID, configId: "eu-s3", reason: "bigger bucket" },
     ]);
+  });
+
+  const onEarlier = {
+    ...roomGet,
+    storage: {
+      configId: "eu-s3",
+      earlierConfigs: [{ configId: "local", files: 3, bytes: 3000 }],
+    },
+  };
+
+  it("moves the existing files for approval, with a reason and a rate", async () => {
+    const requests = mockFetch([
+      ...NAME_BOOK_ROUTES,
+      taskRoute(ROOMS_GET, onEarlier),
+      taskRoute(USAGE, { asOf: "x", from: "2026-09-15", to: "2026-10-14", items: [] }),
+      taskRoute(LIST, { items }),
+      parked(MIGRATE),
+    ]);
+    mount(`/rooms/r/${encodeURIComponent(ROOM_ID)}`);
+    fireEvent.click(await screen.findByRole("button", { name: "Move existing files to eu-s3" }));
+    fireEvent.change(screen.getByLabelText("Reason"), { target: { value: "retiring local" } });
+    fireEvent.change(screen.getByLabelText("At most (MiB per second, optional)"), {
+      target: { value: "2" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Send for approval" }));
+    expect(await screen.findByText("Sent for approval")).toBeTruthy();
+    expect(sentPayloads(requests, MIGRATE)).toEqual([
+      { roomId: ROOM_ID, reason: "retiring local", maxBytesPerSecond: 2 * 1024 * 1024 },
+    ]);
+  });
+
+  it("shows a paused move's progress and resumes it", async () => {
+    const migration = {
+      migrationId: "6f1c2b3a-4d5e-4f60-8172-93a4b5c6d7e8",
+      state: "paused",
+      totalFiles: 3,
+      totalBytes: 3000,
+      doneFiles: 1,
+      doneBytes: 1000,
+    };
+    const requests = mockFetch([
+      ...NAME_BOOK_ROUTES,
+      taskRoute(ROOMS_GET, { ...onEarlier, storage: { ...onEarlier.storage, migration } }),
+      taskRoute(USAGE, { asOf: "x", from: "2026-09-15", to: "2026-10-14", items: [] }),
+      taskRoute(MIGRATE, {
+        ...migration,
+        state: "running",
+        roomId: ROOM_ID,
+        toConfig: "eu-s3",
+        fromConfigs: ["local"],
+      }),
+    ]);
+    mount(`/rooms/r/${encodeURIComponent(ROOM_ID)}`);
+    expect(await screen.findByText(/Paused existing files: 1 of 3 files/)).toBeTruthy();
+    // No second move is offered while one is paused.
+    expect(screen.queryByRole("button", { name: "Move existing files to eu-s3" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Resume" }));
+    await waitFor(() => expect(sentPayloads(requests, MIGRATE)).toHaveLength(1));
+    expect(sentPayloads(requests, MIGRATE)[0]).toMatchObject({ roomId: ROOM_ID });
   });
 });
 

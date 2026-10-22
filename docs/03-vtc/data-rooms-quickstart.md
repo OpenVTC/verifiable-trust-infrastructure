@@ -503,7 +503,16 @@ There is no CLI for either side of that yet.
 
 Creating the config asks VTA C once and probes the bucket through it;
 `vtc/storage/configs/get/0.1` (`{"configId": "localstack"}`) then shows
-`"lastProbeOk": true`. Files already in the room stay where they were written.
+`"lastProbeOk": true`. Files already in the room stay where they were written;
+**Move existing files** on the room's page moves them too (parked like the
+assignment, then run in the background):
+
+```json
+// vtc/rooms/storage/migrate/0.1
+{"roomId": "$ROOM", "reason": "…", "maxBytesPerSecond": 1048576}
+```
+
+`vtc/rooms/get/0.1` reports its progress as `storage.migration`.
 
 ### 10.5 Upload and download
 

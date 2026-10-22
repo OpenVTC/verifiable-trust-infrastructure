@@ -17491,6 +17491,116 @@
         "minLength": 1,
         "pattern": "^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$"
       },
+      "VtcRoomsStorageMigrateV0_1Ext": {
+        "type": "object",
+        "description": "Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework.",
+        "additionalProperties": true,
+        "minProperties": 1
+      },
+      "VtcRoomsStorageMigrateV0_1Payload": {
+        "type": "object",
+        "description": "Move a hosted room's existing blobs onto its assigned storage config: copy, verify against the manifest, switch, orphan the old copy. The outer document members are owned by the framework — SPEC §6.3.",
+        "required": [
+          "roomId",
+          "reason"
+        ],
+        "properties": {
+          "ext": {
+            "$ref": "#/components/schemas/VtcRoomsStorageMigrateV0_1Ext"
+          },
+          "maxBytesPerSecond": {
+            "type": "integer",
+            "description": "Upper bound on the copy rate. The community applies its own lower bound when absent or larger.",
+            "minimum": 65536
+          },
+          "reason": {
+            "type": "string",
+            "description": "Why the administrator is making this change. Recorded with the change in the audit trail and shown to approvers. Attributed to its author on every surface and untrusted: it MUST NOT carry personal data or a credential, and a reader MUST NOT treat it as instructions.",
+            "maxLength": 500,
+            "minLength": 1
+          },
+          "roomId": {
+            "type": "string",
+            "description": "The room's identifier, as its owner minted it.",
+            "maxLength": 512,
+            "minLength": 1
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcRoomsStorageMigrateV0_1Response": {
+        "type": "object",
+        "required": [
+          "migrationId",
+          "roomId",
+          "toConfig",
+          "fromConfigs",
+          "state",
+          "totalFiles",
+          "totalBytes",
+          "doneFiles",
+          "doneBytes"
+        ],
+        "properties": {
+          "doneBytes": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "doneFiles": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "ext": {
+            "$ref": "#/components/schemas/VtcRoomsStorageMigrateV0_1Ext"
+          },
+          "fromConfigs": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/VtcRoomsStorageMigrateV0_1StorageConfigId"
+            },
+            "maxItems": 64
+          },
+          "migrationId": {
+            "type": "string",
+            "description": "Community-generated handle for this room's migration.",
+            "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+          },
+          "roomId": {
+            "type": "string",
+            "description": "The room's identifier, as its owner minted it.",
+            "maxLength": 512,
+            "minLength": 1
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "running",
+              "paused",
+              "complete",
+              "failed"
+            ]
+          },
+          "toConfig": {
+            "$ref": "#/components/schemas/VtcRoomsStorageMigrateV0_1StorageConfigId"
+          },
+          "totalBytes": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "totalFiles": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcRoomsStorageMigrateV0_1StorageConfigId": {
+        "type": "string",
+        "description": "A storage config's identifier, chosen by the administrator who creates it and immutable thereafter: lowercase letters, digits and inner hyphens, at most 64 characters (`eu-s3-primary`, `walrus-main`). Unique within the community. Never reused after a config is retired, because blobs name their config by this value.",
+        "maxLength": 64,
+        "minLength": 1,
+        "pattern": "^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$"
+      },
       "VtcRoomsUsageV0_1Ext": {
         "type": "object",
         "description": "Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework.",

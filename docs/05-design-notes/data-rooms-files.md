@@ -654,7 +654,14 @@ with what each kind means for the room in one line each:
   4. delete from the old config through GC.
 
   It is resumable, rate-limited, reported as progress on the console and
-  audited. On Walrus, the "delete" is a lapse (§5.4).
+  audited. On Walrus, the "delete" is a lapse (§5.4). As built: the old copy
+  is a `moved:` row the collection pass deletes after the orphan grace window,
+  counted against its config (and keeping a `draining` config from retiring)
+  until then; the bytes to move are reserved on the target at start; the switch
+  is one atomic batch, made only while the blob's entry is exactly as it was
+  when the copy began; orphaned blobs are left to collection; one migration
+  runs at a time per host; a room reassigned mid-migration keeps the
+  migration's original target.
 - **Draining a config** is migrating every room assigned to it, then `retired`.
 
 ### 7.4 Credentials: the VTC holds none
@@ -1264,7 +1271,7 @@ on their own merit:
 | P7b | Extension: the file engine acting as the persona (`act`, `seal/0.2`, `blobs/*/0.2`), then the page channel — `window.vtaWallet.rooms`, the `SignInPortal` allow-list, per-room grants, a confirmation per write (§8.5) | M | P7 |
 | P8 | Member portal Rooms (§8.2, §8.5), members first; owners follow on the same channel | XL | P5, P7b, member portal merged |
 | P9 | Console: room detail, Storage, Usage, Settings (§8.1); `room_usage_daily` history and CSV | L | P4, P5 |
-| P10 | Room storage reassignment and migration (§7.3) | M | P5 |
+| P10 | Room storage reassignment and migration (§7.3). **Landed**: `vtc/rooms/storage/migrate/0.1` on the VTC, run by one migration runner (`vtc_service::rooms::migration`) over `vti_rooms::blobs::migrate` — copy, read back and verify, an atomic switch, the old copy collected after the grace window and counted until then; the target's bytes reserved at start; backoff then `paused`; a restored migration comes back `paused`. The console's room page moves a room's files and resumes a paused move. `room-host` has one config and no migration | M | P5 |
 | P11 | Walrus backend: upload relay, transactions signed by the VTA's `sui-signer` (E4), epoch extension in the sweeper | L | P3, P4, P5, E4 |
 | P12 | Direct-to-store presigned transfer (§5.2), if measurements ask for it | M | P5 |
 | P13 | Community-owned rooms (§8.4): the community's VTA as key holder over `vta_link`, the offers keyspace, `vtc.rooms.manage`, the console's create / members pages, and the member's offers in the portal and the extension. **First part landed**: `vtc/rooms/community/*` and `vtc/rooms/offers/*` served (`[rooms.community]`, the `community_rooms` keyspace, `vtc.rooms.manage`, serverless room identities served at `/room-dids/<id>/did.jsonl`), `cnm rooms …` for administrators ([`community-rooms.md`](../03-vtc/community-rooms.md)), and the console's **Data rooms → Community rooms** tab (create, list, a room's members: offer, withdraw, remove). A member who leaves the community is removed from every room it owns (`members/add` item 6: recorded durably at the departure in `community_rooms`, driven by `vtc_service::rooms::departures` with backoff, surfaced in `ext["org.openvtc"].departureRemovals`). `pnm rooms offers` is the member's client; the VTC renews the community's own authority over each room before it lapses (`rooms::community_renewal`); the offers in the portal and the extension and a live-channel topic for the owner's record follow | L | P0, P8 for the portal half |

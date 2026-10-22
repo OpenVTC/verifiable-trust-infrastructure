@@ -569,6 +569,26 @@ fn sample_community_room_v2() -> serde_json::Value {
     room
 }
 
+/// A room's migration as `vti_rooms::blobs` records it.
+fn sample_migration() -> vti_rooms::blobs::Migration {
+    serde_json::from_value(json!({
+        "migrationId": "6f1c2b3a-4d5e-4f60-8172-93a4b5c6d7e8",
+        "roomId": "did:key:z6MkRoom",
+        "toConfig": "eu",
+        "fromConfigs": ["local"],
+        "state": "running",
+        "totalFiles": 12,
+        "totalBytes": 48234496,
+        "doneFiles": 3,
+        "doneBytes": 1024,
+        "requestedBy": "did:key:zAdmin",
+        "reason": "retiring local",
+        "startedAt": 0,
+        "updatedAt": 0,
+    }))
+    .expect("a migration record")
+}
+
 /// A stored storage config as `crate::rooms::storage_configs` keeps it.
 fn sample_storage_config() -> serde_json::Value {
     json!({
@@ -1246,6 +1266,7 @@ fn table() -> Vec<Conformance> {
                 "storage": {
                     "configId": "local",
                     "earlierConfigs": [{ "configId": "old", "files": 1, "bytes": 10 }],
+                    "migration": crate::rooms::migration::progress_json(&sample_migration()),
                 },
                 "limits": {
                     "limits": {
@@ -1572,6 +1593,16 @@ fn table() -> Vec<Conformance> {
                 "previousConfigId": "local",
                 "blobsOnEarlierConfigs": 2,
             })
+        ),
+        checked!(
+            s::rooms::storage::migrate::v0_1::Payload,
+            s::rooms::storage::migrate::v0_1::Response,
+            json!({
+                "roomId": "did:key:z6MkRoom",
+                "maxBytesPerSecond": 1_048_576,
+                "reason": "retiring local",
+            }),
+            crate::rooms::migration::response_json(&sample_migration())
         ),
         // ─── admin ───────────────────────────────────────────────────
         checked!(

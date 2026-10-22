@@ -225,6 +225,8 @@ use crate::server::AppState;
         // documents only.
         vta_sdk::openapi::RoomsStorageAssign01Payload,
         vta_sdk::openapi::RoomsStorageAssign01Response,
+        vta_sdk::openapi::RoomsStorageMigrate01Payload,
+        vta_sdk::openapi::RoomsStorageMigrate01Response,
         vta_sdk::openapi::StorageConfigsList01Response,
         vta_sdk::openapi::StorageConfigsGet01Response,
         vta_sdk::openapi::StorageConfigsCreate01Payload,

@@ -114,7 +114,7 @@ async fn hosted(
 }
 
 /// The config a room's new uploads go to: its assignment, else the default.
-async fn assigned_config(state: &AppState, room_id: &str) -> Result<String, AppError> {
+pub(super) async fn assigned_config(state: &AppState, room_id: &str) -> Result<String, AppError> {
     Ok(match state.room_storage.assignment(room_id).await? {
         Some(a) => a.config_id,
         None => state.room_storage.default_id().await?.unwrap_or_default(),
@@ -180,9 +180,15 @@ async fn get_body(
         orphans["oldestOrphanedAt"] = json!(at);
     }
 
+    let mut storage = json!({ "configId": config_id, "earlierConfigs": earlier });
+    // The room's migration, as `vtc/rooms/storage/migrate` reports it: the last one, in
+    // whatever state, so a console sees one finish or fail as well as run.
+    if let Some(m) = files.migration(room_id).await.map_err(fail)? {
+        storage["migration"] = crate::rooms::migration::progress_json(&m);
+    }
     let mut body = json!({
         "room": host_record,
-        "storage": { "configId": config_id, "earlierConfigs": earlier },
+        "storage": storage,
         "limits": effective_json(&limits),
         "usage": { "room": room_usage, "orphans": orphans },
         "largestBlobs": largest,

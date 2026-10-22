@@ -480,6 +480,24 @@ fn witnesses() -> Vec<Witness> {
             "vtc_rooms_storage_assign_refuses_with_its_declared_codes"
         ),
         witness!(
+            s::rooms::storage::migrate::v0_1::error_codes::ROOM_NOT_FOUND,
+            crate::rooms::storage_configs::codes::MIGRATE_ROOM_NOT_FOUND,
+            "room_storage_configs.rs",
+            "vtc_rooms_storage_migrate_refuses_with_its_declared_codes"
+        ),
+        witness!(
+            s::rooms::storage::migrate::v0_1::error_codes::CONFIG_NOT_ACTIVE,
+            crate::rooms::storage_configs::codes::MIGRATE_CONFIG_NOT_ACTIVE,
+            "room_storage_configs.rs",
+            "vtc_rooms_storage_migrate_refuses_with_its_declared_codes"
+        ),
+        witness!(
+            s::rooms::storage::migrate::v0_1::error_codes::CAPACITY_EXCEEDED,
+            crate::rooms::storage_configs::codes::MIGRATE_CAPACITY_EXCEEDED,
+            "room_storage_configs.rs",
+            "vtc_rooms_storage_migrate_refuses_with_its_declared_codes"
+        ),
+        witness!(
             s::storage::configs::create::v0_1::error_codes::UNKNOWN_ACCOUNT,
             crate::rooms::storage_configs::codes::CREATE_UNKNOWN_ACCOUNT,
             "room_storage_configs.rs",
