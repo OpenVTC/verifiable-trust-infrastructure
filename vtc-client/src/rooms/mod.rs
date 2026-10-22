@@ -49,11 +49,11 @@ pub use vti_rooms::Visibility;
 pub use vti_rooms::authz::MAX_CHAIN_DEPTH;
 pub use vti_rooms::wire::{
     AuthorityPresentation, ChainResponse, CleartextContent, CommitsResponse, CurateRecordResponse,
-    EpochLink, ListRecordsResponse, MintEpochResponse, OwnerResponse, PutRecordResponse,
-    ROOMS_CREATE_TYPE, ROOMS_EPOCH_CHAIN_TYPE, ROOMS_EPOCH_COMMITS_TYPE, ROOMS_EPOCH_MINT_TYPE,
-    ROOMS_OWNER_CLAIM_TYPE, ROOMS_OWNER_TRANSFER_TYPE, ROOMS_RECORDS_CURATE_TYPE,
-    ROOMS_RECORDS_GET_TYPE, ROOMS_RECORDS_LIST_TYPE, ROOMS_RECORDS_PUT_TYPE, RelayedCommit,
-    SealedContent,
+    EpochLink, ListRecordsResponse, MintEpochResponse, OwnerResponse, PruneResponse,
+    PutRecordResponse, ROOMS_CREATE_TYPE, ROOMS_EPOCH_CHAIN_TYPE, ROOMS_EPOCH_COMMITS_TYPE,
+    ROOMS_EPOCH_MINT_TYPE, ROOMS_EPOCH_PRUNE_TYPE, ROOMS_OWNER_CLAIM_TYPE,
+    ROOMS_OWNER_TRANSFER_TYPE, ROOMS_RECORDS_CURATE_TYPE, ROOMS_RECORDS_GET_TYPE,
+    ROOMS_RECORDS_LIST_TYPE, ROOMS_RECORDS_PUT_TYPE, RelayedCommit, SealedContent,
 };
 
 /// A caller's standing in one room.
@@ -341,6 +341,43 @@ impl VtcClient {
         serde_json::from_value(value).map_err(|e| VtcError::Http {
             status: 200,
             body: format!("mint response is not a MintEpochResponse: {e}"),
+        })
+    }
+
+    /// Drop the room's epoch key chain below `before_epoch` (`rooms/epoch/prune/0.1`).
+    ///
+    /// **Irreversible, for every member.** The host erases the rungs below that epoch, so
+    /// nobody who has not already derived those epochs' keys — a member restarting, on a
+    /// new device, or joining later — can ever open what was sealed under them again. The
+    /// records stay; the ability to open them goes. A member's key holder that already
+    /// walked the chain keeps what it derived: a prune reaches the host, not the members.
+    ///
+    /// Gated on `admin` at the host. `before_epoch` must be below the room's current
+    /// epoch (`notAhead` otherwise). `pruned: 0` in the answer is a success — the chain
+    /// already went back no further — and `earliestRung` is how far back it now reaches,
+    /// which is not necessarily `before_epoch`.
+    ///
+    /// Never retried here: it is not a read, and a second prune arriving after the room
+    /// advanced names a different span than the first.
+    pub async fn prune_epoch(
+        &self,
+        session: &RoomSession,
+        before_epoch: u32,
+        reason: Option<&str>,
+        signer_did: &str,
+        private_key_multibase: &str,
+    ) -> Result<PruneResponse, VtcError> {
+        let value = self
+            .room_task(
+                ROOMS_EPOCH_PRUNE_TYPE,
+                prune_payload(session, before_epoch, reason),
+                signer_did,
+                private_key_multibase,
+            )
+            .await?;
+        serde_json::from_value(value).map_err(|e| VtcError::Http {
+            status: 200,
+            body: format!("prune response is not a PruneResponse: {e}"),
         })
     }
 
@@ -691,6 +728,24 @@ const MAX_READ_RETRY_AFTER: std::time::Duration = std::time::Duration::from_secs
 ///
 /// `rooms/blobs/get` is here although it opens a download: repeating it opens a second,
 /// which expires unused, and a refused attempt opened nothing.
+/// The `rooms/epoch/prune/0.1` payload: room, floor, the session's presentation, and the
+/// reason when one is given (the only record of intent a prune leaves).
+fn prune_payload(
+    session: &RoomSession,
+    before_epoch: u32,
+    reason: Option<&str>,
+) -> serde_json::Value {
+    let mut payload = serde_json::json!({
+        "roomId": session.room_id,
+        "beforeEpoch": before_epoch,
+        "presentation": session.presentation,
+    });
+    if let Some(r) = reason {
+        payload["reason"] = serde_json::json!(r);
+    }
+    payload
+}
+
 fn is_room_read(type_uri: &str) -> bool {
     use trust_tasks_rs::Payload as _;
     use trust_tasks_rs::specs::rooms;
@@ -738,12 +793,36 @@ mod tests {
             ROOMS_CREATE_TYPE,
             ROOMS_RECORDS_PUT_TYPE,
             ROOMS_EPOCH_MINT_TYPE,
+            ROOMS_EPOCH_PRUNE_TYPE,
             ROOMS_RECORDS_CURATE_TYPE,
             rooms::blobs::upload::chunk::v0_1::Payload::TYPE_URI,
             rooms::blobs::upload::commit::v0_1::Payload::TYPE_URI,
         ] {
             assert!(!is_room_read(write), "{write} is a write");
         }
+    }
+
+    /// The prune payload is exactly what the published schema reads: the generated
+    /// type parses it, with the floor, the reason and the presentation intact.
+    #[test]
+    fn a_prune_payload_is_the_generated_wire_type() {
+        use trust_tasks_rs::specs::rooms::epoch::prune::v0_1 as prune;
+        let session = RoomSession::new("did:key:zRoom", "vmc", vec!["vac".into()]).unwrap();
+
+        let with = prune_payload(&session, 5, Some("retention window"));
+        let parsed: prune::Payload = serde_json::from_value(with.clone()).expect("schema-valid");
+        assert_eq!(parsed.before_epoch, 5);
+        assert_eq!(parsed.room_id, "did:key:zRoom");
+        assert_eq!(parsed.presentation.membership, "vmc");
+        assert_eq!(parsed.presentation.authority, vec!["vac".to_string()]);
+        assert_eq!(with["reason"], "retention window");
+
+        let without = prune_payload(&session, 2, None);
+        assert!(
+            without.get("reason").is_none(),
+            "absent, not null: {without}"
+        );
+        serde_json::from_value::<prune::Payload>(without).expect("reason is optional");
     }
 
     #[test]

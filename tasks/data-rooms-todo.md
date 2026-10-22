@@ -120,8 +120,12 @@ gossip channel rooms deliberately lack nor durable state in an agent.
   is CPU exhaustion parsing hostile YAML — the only YAML it sees is our own
   OpenAPI spec. The real cost is that a standing "1 high" trains everyone to
   ignore the alert list.
-- `[ ]` **X4.4** (S) A **prune verb** over `prune_epoch_links_before`. Nothing
-  needs it yet; it is written down so its absence is a decision.
+- `[x]` **X4.4** (S) A **prune verb** over `prune_epoch_links_before`.
+  `rooms/epoch/prune/0.1` is served by both hosts (audited `room.epoch.prune`,
+  declared `notAhead`) and sent by `pnm rooms prune` (`vtc_client`
+  `prune_epoch`), which warns and asks first. It erases the **host's** rungs
+  only: members' VTAs keep the keys they already derived. Reaching them needs a
+  specification change, drafted separately.
 - `[!]` **X4.5** (XL) The `private` tier's **ZK profile**. Blocked on a working
   group decision — the cred-spec puts ZK protocols out of scope, and
   `SubjectBindingVerifier` is the seam with no implementation behind it.

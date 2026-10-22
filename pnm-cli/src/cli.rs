@@ -667,6 +667,38 @@ pub(crate) enum RoomCommands {
         reason: Option<String>,
     },
 
+    /// Drop the room's epoch key chain below an epoch (`rooms/epoch/prune`).
+    /// Needs `admin`. IRREVERSIBLE, for every member.
+    ///
+    /// The host erases the chain's rungs below `--before-epoch`, so history
+    /// sealed under those epochs can never be opened again by anyone who has
+    /// not already derived its keys — a member who restarts, moves device or
+    /// joins later. The records stay; the ability to open them goes. Members'
+    /// VTAs that already walked the chain keep what they derived: today a prune
+    /// reaches the host only.
+    ///
+    /// Prints what becomes unreadable and asks before sending; without a
+    /// terminal it refuses unless `--yes` is given.
+    Prune {
+        #[arg(long = "room")]
+        room_id: String,
+        #[arg(long)]
+        host: String,
+        #[arg(long)]
+        host_did: Option<String>,
+        /// Drop every rung below this epoch. Must be below the room's current
+        /// epoch: pruning at it would drop the whole chain.
+        #[arg(long)]
+        before_epoch: u32,
+        /// Why, for the room's audit trail — the only record of intent a prune
+        /// leaves. Keep member identifiers and record content out of it.
+        #[arg(long)]
+        reason: String,
+        /// Prune without asking. Required when there is no terminal to ask.
+        #[arg(long, short = 'y')]
+        yes: bool,
+    },
+
     /// Put a file in a room or fetch one, or seal and open one locally.
     ///
     /// Each file is sealed and opened here with that one file's key from your
@@ -5655,5 +5687,63 @@ mod acl_update_hint_tests {
             .is_err(),
             "`--did` is not a flag of `acl update`; a hint spelling it that way is wrong"
         );
+    }
+}
+
+#[cfg(test)]
+mod rooms_prune_flag_tests {
+    use super::*;
+
+    /// The command `pnm rooms prune` prints as the fix for `notAhead` or a missing
+    /// confirmation parses as written.
+    #[test]
+    fn rooms_prune_accepts_the_command_its_hints_print() {
+        assert!(
+            Cli::try_parse_from([
+                "pnm",
+                "rooms",
+                "prune",
+                "--room",
+                "did:webvh:Qm:example.com:rooms:northwind",
+                "--host",
+                "https://host.example",
+                "--host-did",
+                "did:web:host.example",
+                "--before-epoch",
+                "6",
+                "--reason",
+                "retention window",
+                "--yes",
+            ])
+            .is_ok()
+        );
+    }
+
+    /// A prune leaves no record of intent but its reason, so the CLI asks for one.
+    #[test]
+    fn rooms_prune_requires_a_reason_and_a_floor() {
+        for missing in ["--reason", "--before-epoch"] {
+            let mut args = vec![
+                "pnm",
+                "rooms",
+                "prune",
+                "--room",
+                "did:example:room",
+                "--host",
+                "https://host.example",
+                "--before-epoch",
+                "2",
+                "--reason",
+                "why",
+            ];
+            let at = args.iter().position(|a| *a == missing).unwrap();
+            args.drain(at..at + 2);
+            let err = Cli::try_parse_from(&args).err().unwrap();
+            assert_eq!(
+                err.kind(),
+                clap::error::ErrorKind::MissingRequiredArgument,
+                "{missing}"
+            );
+        }
     }
 }

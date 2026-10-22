@@ -83,7 +83,7 @@ knowing which half you are standing on saves an afternoon.
 | VTA custody: `rooms/keys/{key-package,welcome,commit,open,seal,chain,backfill,list}` | **Work.** A member's VTA holds the group, seals and opens records for their agents, and can fetch a room's epoch chain from the host itself |
 | The presentation oracle: `rooms/keys/present` | **Works.** Attenuates the member's own VAC for an agent |
 | Succession: nomination, transfer, claim | **Work**, including the "renewing defeats a pending claim" property |
-| **A CLI** | **`pnm rooms {list,get,put,curate,renew,file}`** — the member's surface, driven through the oracle so the CLI holds no room credentials and no group key; `put` seals on `attributed` and `private` (§9). **`pnm rooms owner {register,invite,issue-membership,issue-authority,group-create,group-add,group-remove,group-renew,revoke}`** — the owner's, run by the owner's VTA. **`pnm rooms keys {key-package,welcome,commit,list}`** — the joiner's key holder. A sealed room can be run end to end from the CLI (§5, §6) |
+| **A CLI** | **`pnm rooms {list,get,put,curate,renew,prune,file}`** — the member's surface, driven through the oracle so the CLI holds no room credentials and no group key; `put` seals on `attributed` and `private` (§9). **`pnm rooms owner {register,invite,issue-membership,issue-authority,group-create,group-add,group-remove,group-renew,revoke}`** — the owner's, run by the owner's VTA. **`pnm rooms keys {key-package,welcome,commit,list}`** — the joiner's key holder. A sealed room can be run end to end from the CLI (§5, §6) |
 | **Credential issuance** | **Works, on the owner's own VTA.** `rooms/owner/{invite,issue-membership,issue-authority}` mint the VIC, VMC and VAC in the *room's* name, signing through the gated key oracle so the room's key never materialises (§5.3). `pnm rooms owner {invite,issue-membership,issue-authority}` drive them, over `VtaClient::room_owner_*` |
 | **The owner's MLS half** | **Works, in the owner's VTA.** `rooms/owner/group/create` founds the group with the owner as its only member; `rooms/owner/group/add` admits a member's KeyPackage, advances the room's epoch at its host first, and returns the Welcome to deliver; `rooms/owner/group/remove` (0.3, and 0.2) withdraws the member's credentials at the host and then drops their leaf, host first; `rooms/owner/revoke` withdraws credentials alone, signed as the room; `rooms/owner/group/renew` renews a sealed room with a commit that changes no membership, host first. `pnm rooms owner group-create` / `group-add` / `group-remove` / `group-renew` drive them (§5.4, §6, §10.1) |
 | **A browser as a member** | **Works.** `vti-rooms-wasm` compiles the member half — group custody, sealing, opening, the epoch chain — to WebAssembly; `room-host --allow-origin` is what lets a page reach a host at all. No key ever crosses into JavaScript |
@@ -91,7 +91,7 @@ knowing which half you are standing on saves an afternoon.
 | **Read mirrors** (T3) | **`room-host --mirror-config`** — a host serves a read-only copy fed by `sinceVersion` pulls and refuses every write, naming the primary. A mirror pulls **as a member**, presenting a room-issued `read` chain |
 | **Reading across a membership change** | **Works, including for a member who has just joined.** Records are sealed per epoch, and the *epoch key chain* carries a member back across every advance. The owner hands each rung to the host on `rooms/epoch/mint`; a joiner fetches the chain with `rooms/epoch/chain` and reads everything the room retains. Rungs are ciphertext — the key that opens one is a storage key no host holds |
 | **An agent reading history through its VTA** | **Works.** `rooms/keys/open` resolves from the chain the VTA holds, which it accrues from every commit it applies — and a member who *joined* fills the rest with `rooms/keys/chain/0.1`, handing their own VTA the rungs they fetched from the host. The response says how far back it can now read, which is the only number worth having: a rung extends reach only if every rung above it is present too |
-| **Cryptographic deletion** | **Primitive only.** `prune_epoch_links_before` severs the chain below an epoch, which makes everything older unopenable by anyone — genuinely, not as a promise to erase bytes. No verb reaches it; it needs a spec first |
+| **Cryptographic deletion** | **At the host only.** `rooms/epoch/prune/0.1` (`admin`) erases the epoch key chain below an epoch at a host, so history sealed under those epochs can no longer be derived by anyone who has not already derived it — a member restarting, on a new device, or joining later. Both hosts serve it (audited `room.epoch.prune`, `notAhead` for a floor at the current epoch); `pnm rooms prune` sends it, warns, and asks first (§10.4). **It does not reach members:** a member's VTA that already walked the chain keeps the keys it derived, so today a prune is not a deletion of anything a member already holds. Reaching members' key holders needs a specification change, being drafted separately |
 | **Witnessed renewal anchoring** | **Blocked on a decision**, not on effort: §9 says a renewal anchors the epoch authenticator and version watermark in the room's witnessed log, but not *where in the log entry*. See [`epoch anchoring`](../05-design-notes/data-rooms-epoch-anchoring.md) |
 
 ---
@@ -1297,6 +1297,7 @@ pnm rooms put   decision/pricing-2026 "Agreed not to reprice." --room <room-did>
                 --host https://rooms.example.org --title "Pricing holds" --expected-version 0
 pnm rooms curate decision/pricing-2026 --status deprecated --room <room-did> --host …
 pnm rooms renew 3 --room <room-did> --host …          # mint the next epoch (needs `admin`; open rooms only, §10.1)
+pnm rooms prune --room <room-did> --host … --before-epoch 3 --reason "…"   # IRREVERSIBLE (needs `admin`, §10.4)
 
 # Files, on `attributed` and `private` rooms.
 pnm rooms file put ./term-sheet.pdf --room <room-did> --host … --title "Term sheet v3"
@@ -1377,7 +1378,10 @@ chunk upload, and a delegate (§7) is refused. A `rooms/epoch/mint` for a room
 your VTA holds group state for is refused (`sealedRoomMint`): a sealed room's
 epoch advances only with a group commit, which only the owner's key holder
 makes (`rooms/owner/group/renew`). An `open` room still mints through `act`. `renew` and the file transfers
-still present for the CLI itself (`rooms/keys/present`) for now.
+still present for the CLI itself (`rooms/keys/present`) for now, and so does `prune`
+— permanently, not for now: every version of `act` leaves `rooms/epoch/prune` out on
+purpose, because ending a span of the room's readable history "warrants a task of its
+own that states its consequences" (§10.4).
 
 **On a sealed room, every record is signed by your persona.** `pnm rooms put`
 reads the room's tier (`rooms/info`) and, on `attributed` or `private`, builds
@@ -1692,6 +1696,49 @@ set — that is a decision, not a default. A member who restores a VTA without
 their room groups has lost every sealed room they belong to, with no way to
 recover but a fresh invitation from every owner.
 
+### 10.4 Pruning the epoch key chain
+
+A room that keeps its history (`chained`) can later decide that part of it
+should stop being readable. That is `rooms/epoch/prune/0.1`: the host erases the
+epoch key chain's rungs **below** an epoch, `admin` only — not `curate`, which
+every writer holds.
+
+```sh
+pnm rooms prune --room <room-did> --host <host-url> --host-did <host-did> \
+                --before-epoch 5 --reason "retention: past the agreed window"
+```
+
+What it does, and what it does not:
+
+- **The rungs go, not the records.** The host still holds and serves every
+  record. What is gone is the ability to *derive* the keys they were sealed
+  under — for a member who restarts, moves device or joins later, whatever
+  authority they hold.
+- **It does not reach members.** A member's VTA that already walked the chain
+  keeps the keys it derived, and anything already read stays read. Today a
+  prune erases the host's copy only; it is closer to losing a key than to
+  shredding a document. Making it reach members' key holders needs a
+  specification change, which is being drafted separately.
+- **It cannot be undone.** No party keeps a copy that brings the rungs back.
+
+`pnm rooms prune` reads the room first (its epoch and retention policy), prints
+what becomes unreadable, and asks before sending; without a terminal it refuses
+unless `--yes` is given. `--reason` is required — it is the only record of
+intent a prune leaves, and it goes to the host's audit log, so keep member
+identifiers and record content out of it. A floor at or above the current epoch
+is refused (`notAhead`) before anything is sent. The answer's `earliestRung` is
+how far back the chain now reaches, which is not necessarily the floor you asked
+for (a chain can already have a gap), and `pruned: 0` is a success.
+
+It goes the way `renew` does: your VTA presents for the CLI
+(`rooms/keys/present`) and the CLI signs, so the host records the CLI's DID
+rather than your persona. It cannot go through `rooms/keys/act`, whose every
+version leaves `rooms/epoch/prune` out on purpose. Both hosts audit it as
+`room.epoch.prune`.
+
+Mind the timing: a prune straight after a membership change tells the host why
+the change happened.
+
 ---
 
 ## 11. When something is refused
@@ -1716,6 +1763,8 @@ recover but a fresh invitation from every owner.
 | `invitation … has already been used` | Single use. Issue a fresh one |
 | a room "is live" / "not claimable" | The owner renewed. The claim is correctly dead |
 | `pnm rooms renew`: *"room … is `attributed`/`private`: its epoch advances only with a commit of its group"* | A sealed room renews from the owner's VTA: `pnm rooms owner group-renew --room … --host-did …` (§10.1) |
+| `rooms/epoch/prune:notAhead` (`details.epoch`) | `--before-epoch` is at or above the room's current epoch, which would drop the whole chain. Use a floor below it; `pnm rooms prune` prints the highest that works (§10.4) |
+| `pnm rooms prune`: *"refusing to prune without confirmation"* | No terminal to ask. Read the warning, then run the printed command with `--yes` (§10.4) |
 | `rooms/owner/group/renew:noGroup` | This VTA holds no group for the room — an `open` room renews with `pnm rooms renew`; a sealed one from the VTA holding its owner's group |
 | `rooms/owner/group/renew:noAuthority` | No `admin` grant in the vault naming a persona you act as (§5.3) |
 | `rooms/owner/group/{add,remove,renew}:epochConflict` (`hostEpoch`) | Another admin advanced the room. Catch up (`pnm rooms keys commit --host …`) and retry |

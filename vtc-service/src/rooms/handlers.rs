@@ -929,15 +929,9 @@ pub(crate) async fn handle_epoch_prune(
     // "keep from here" and would drop every rung, leaving a member who restarts
     // unable to derive anything below the epoch they are handed next — a
     // plausible typo with a consequence nobody would choose.
-    if req.before_epoch >= room.epoch {
-        return app_error_to_reject(
-            &doc,
-            &vti_common::error::AppError::Validation(format!(
-                "`beforeEpoch` {} is at or above the current epoch {} of `{}`; pruning there \
-                 would drop the whole chain, not shorten it",
-                req.before_epoch, room.epoch, req.room_id
-            )),
-        );
+    // The declared `notAhead`, with the room's current epoch in `details.epoch`.
+    if let Some(refusal) = vti_rooms::blob_tasks::prune_floor_refused(&room, req.before_epoch) {
+        return super::files::refused(&doc, refusal);
     }
 
     let (pruned, earliest_rung) = match storage::prune_chain(
@@ -951,7 +945,7 @@ pub(crate) async fn handle_epoch_prune(
         Err(e) => return app_error_to_reject(&doc, &e),
     };
 
-    audit_room(state, &room, &authorized, RoomOperation::MintEpoch, None).await;
+    audit_room(state, &room, &authorized, RoomOperation::PruneEpoch, None).await;
     success_response(
         &doc,
         PruneResponse {
@@ -2275,6 +2269,92 @@ mod tests {
             .map(|(_, v)| String::from_utf8_lossy(&v).into_owned())
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    /// `rooms/epoch/prune/0.1`: `admin` only, `notAhead` at the current epoch, and a prune
+    /// that runs is audited as `room.epoch.prune` — never as the mint it was logged as.
+    #[tokio::test]
+    async fn a_prune_needs_admin_and_is_audited_as_a_prune() {
+        let tv = crate::test_support::TestVtc::builder()
+            .with_audit(true)
+            .build()
+            .await;
+        let state = &tv.state;
+        let f = RoomFixture::new(Visibility::Open).await;
+        create(state, &f).await;
+
+        let out = handle_mint_epoch(
+            state,
+            doc(
+                state,
+                vti_rooms::wire::ROOMS_EPOCH_MINT_TYPE,
+                json!({
+                    "roomId": f.room.room_id,
+                    "epoch": f.room.epoch + 1,
+                    "presentation": f.as_owner(),
+                }),
+                &f.owner.did,
+                &f.owner.secret_multibase,
+            )
+            .await,
+        )
+        .await;
+        assert!(out.status.is_success(), "{}", payload_of(&out));
+        let current = payload_of(&out)["epoch"].as_u64().unwrap();
+        let mints_before = audit_rows(state).await.matches("room.epoch.mint").count();
+
+        let prune = |presentation: vti_rooms::wire::AuthorityPresentation,
+                     before: u64,
+                     who: &'static str| {
+            let f = &f;
+            async move {
+                let (did, key) = if who == "agent" {
+                    (&f.agent.did, &f.agent.secret_multibase)
+                } else {
+                    (&f.owner.did, &f.owner.secret_multibase)
+                };
+                let d = doc(
+                    state,
+                    vti_rooms::wire::ROOMS_EPOCH_PRUNE_TYPE,
+                    json!({
+                        "roomId": f.room.room_id,
+                        "beforeEpoch": before,
+                        "presentation": presentation,
+                        "reason": "retention window",
+                    }),
+                    did,
+                    key,
+                )
+                .await;
+                let presenter = spine_presenter(state, &d).await;
+                super::dispatch(state, d, &presenter).await
+            }
+        };
+
+        // `read` is not enough.
+        let out = prune(f.as_agent(), current - 1, "agent").await;
+        assert!(!out.status.is_success(), "an agent may not prune");
+        assert!(!audit_rows(state).await.contains("room.epoch.prune"));
+
+        // The current epoch is not a floor.
+        let out = prune(f.as_owner(), current, "owner").await;
+        assert!(!out.status.is_success());
+        let body: Value = serde_json::from_slice(&out.body).unwrap();
+        assert_eq!(
+            body["payload"]["code"], "rooms/epoch/prune:notAhead",
+            "{body}"
+        );
+        assert_eq!(body["payload"]["details"]["epoch"].as_u64(), Some(current));
+
+        let out = prune(f.as_owner(), current - 1, "owner").await;
+        assert!(out.status.is_success(), "{}", payload_of(&out));
+        let rows = audit_rows(state).await;
+        assert!(rows.contains("room.epoch.prune"), "{rows}");
+        assert_eq!(
+            rows.matches("room.epoch.mint").count(),
+            mints_before,
+            "a prune is not a mint: {rows}"
+        );
     }
 
     /// The grant separation, end to end. The fixture's agent chain confers `read` alone,

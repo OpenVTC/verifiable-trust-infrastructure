@@ -21,8 +21,9 @@
 //! nowhere. File transfer works the same way (`rooms/blobs/*/0.2`): the begin, the record,
 //! the read and — in direct mode — the commit are completed as the persona, and a proxied
 //! upload's chunks are signed by a single-use upload key minted for that upload. `renew`
-//! still presents for this client ([`VtaClient::room_present`]) and signs with its own
-//! key; it moves separately.
+//! and `prune` still present for this client ([`VtaClient::room_present`]) and sign with
+//! its own key; `renew` moves separately, and `prune` cannot move to `rooms/keys/act`,
+//! whose every version leaves `rooms/epoch/prune` out on purpose.
 //!
 //! The credentials the presentation is derived from, and the group key that
 //! opens a record, stay inside the VTA. This CLI holds neither at any point,
@@ -552,6 +553,202 @@ fn refuse_sealed_renew(visibility: &str, target: &RoomTarget<'_>) -> Result<(), 
         room = target.room_id,
         host_did = target.host_did.unwrap_or("<the host's DID>"),
     ))
+}
+
+/// `rooms prune` — drop the room's epoch key chain below an epoch (`rooms/epoch/prune/0.1`).
+///
+/// Needs `admin`, and moves the way `renew` does: the VTA presents for this client
+/// (`rooms/keys/present`) and this client signs. Not through `rooms/keys/act`, whose every
+/// version leaves the prune out on purpose — destroying a room's ability to read its past
+/// "warrants a task of its own that states its consequences" rather than riding a
+/// signature asked for one operation at a time.
+///
+/// The specification asks a surface offering this to show what becomes unreadable and not
+/// to offer it as an incidental control, so this reads the room first (its current epoch
+/// and retention policy, under `read`), prints [`prune_warning`], and goes ahead only on
+/// `--yes` or a typed `y` at a terminal. Without a terminal and without `--yes` it refuses:
+/// a pipe is not consent.
+pub async fn cmd_rooms_prune(
+    client: &VtaClient,
+    target: RoomTarget<'_>,
+    signer: RoomSigner<'_>,
+    before_epoch: u32,
+    reason: String,
+    assume_yes: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let read = present(client, &target, "read").await?;
+    let info = target
+        .client()
+        .room_info(&read, signer.did, signer.key_multibase)
+        .await
+        .map_err(|e| format!("could not read the room's epoch (rooms/info): {e}"))?;
+    let current = u32::try_from(info.epoch.get()).unwrap_or(u32::MAX);
+    if before_epoch >= current {
+        return Err(not_ahead_message(&target, before_epoch, current).into());
+    }
+    let policy = info.retention_policy.as_ref().map(wire_str);
+
+    eprintln!(
+        "{}",
+        prune_warning(target.room_id, before_epoch, current, policy.as_deref())
+    );
+    match prune_guard(
+        assume_yes,
+        std::io::IsTerminal::is_terminal(&std::io::stdin()),
+    ) {
+        PruneGuard::Proceed => {}
+        PruneGuard::Refuse => {
+            return Err(format!(
+                "refusing to prune without confirmation: there is no terminal to ask. If you \
+                 mean it, run it again with --yes:\n\n  {}",
+                prune_command(&target, before_epoch, &reason)
+            )
+            .into());
+        }
+        PruneGuard::Ask => {
+            if !super::contexts::confirm_destructive("Prune the chain?")? {
+                println!("Not pruned.");
+                return Ok(());
+            }
+        }
+    }
+
+    let session = present(client, &target, "admin").await?;
+    let pruned = target
+        .client()
+        .prune_epoch(
+            &session,
+            before_epoch,
+            Some(&reason),
+            signer.did,
+            signer.key_multibase,
+        )
+        .await
+        .map_err(|e| prune_refused(e, &target, before_epoch, current))?;
+    println!("{}", prune_outcome(&pruned));
+    Ok(())
+}
+
+/// What `prune` does about confirmation: `--yes` always proceeds; without it a terminal is
+/// asked and anything else is refused.
+#[derive(Debug, PartialEq, Eq)]
+enum PruneGuard {
+    Proceed,
+    Ask,
+    Refuse,
+}
+
+fn prune_guard(assume_yes: bool, interactive: bool) -> PruneGuard {
+    match (assume_yes, interactive) {
+        (true, _) => PruneGuard::Proceed,
+        (false, true) => PruneGuard::Ask,
+        (false, false) => PruneGuard::Refuse,
+    }
+}
+
+/// The irreversibility warning (rooms/epoch/prune/0.1 *Consent/purpose*: show what will
+/// become unreadable), in the specification's own terms — the rungs go, not the records.
+fn prune_warning(room_id: &str, before_epoch: u32, current: u32, policy: Option<&str>) -> String {
+    let span = if before_epoch <= 1 {
+        "no epoch: the room starts at 1, so there is nothing below it".to_string()
+    } else if before_epoch == 2 {
+        "epoch 1".to_string()
+    } else {
+        format!("epochs 1 to {}", before_epoch - 1)
+    };
+    let policy_line = match policy {
+        Some("fromJoin") => {
+            "\n  This room's retention policy is `fromJoin`: it keeps no chain, so there may be \
+             nothing to drop."
+        }
+        _ => "",
+    };
+    format!(
+        "WARNING: this cannot be undone.\n\n\
+         Pruning room {room_id} (now at epoch {current}) below epoch {before_epoch} makes \
+         {span} unreadable for good:\n\
+         \n  - The host erases the epoch key chain below epoch {before_epoch}. Nobody keeps a \
+         copy that can bring it back.\n\
+         \n  - The records stay, and the host still serves them. What goes is the ability to \
+         derive the keys they were sealed under: a member who restarts, moves to a new \
+         device, or joins later can never open them again, whatever authority they hold.\n\
+         \n  - It is not a deletion and not a recall. A member whose VTA already walked the \
+         chain keeps the keys it derived, and anything already read stays read. Today a \
+         prune reaches this host only, never members' VTAs.{policy_line}\n\
+         \n  Pruning straight after a membership change tells the host why the change \
+         happened; wait if that matters."
+    )
+}
+
+/// `notAhead`, said before anything is sent, with the floor that would work.
+fn not_ahead_message(target: &RoomTarget<'_>, before_epoch: u32, current: u32) -> String {
+    let mut msg = format!(
+        "--before-epoch {before_epoch} is at or above room {}'s current epoch {current}: \
+         pruning there would drop the whole chain, not shorten it.",
+        target.room_id
+    );
+    if current > 1 {
+        msg.push_str(&format!(
+            " The highest floor that keeps the current epoch readable is {}:\n\n  {}",
+            current - 1,
+            prune_command(target, current - 1, "<why>")
+        ));
+    }
+    msg
+}
+
+/// The corrected command, verbatim, for an operator to run.
+fn prune_command(target: &RoomTarget<'_>, before_epoch: u32, reason: &str) -> String {
+    let host_did = target
+        .host_did
+        .map(|d| format!(" --host-did {d}"))
+        .unwrap_or_default();
+    format!(
+        "pnm rooms prune --room {} --host {}{host_did} --before-epoch {before_epoch} \
+         --reason {} --yes",
+        target.room_id,
+        target.host_url,
+        shell_word(reason)
+    )
+}
+
+/// A host's refusal, with the fix where the code names one.
+fn prune_refused(
+    e: vtc_client::VtcError,
+    target: &RoomTarget<'_>,
+    before_epoch: u32,
+    current: u32,
+) -> String {
+    let code = vtc_client::git_ns::task_error(&e).map(|(code, _)| code);
+    match code.as_deref() {
+        Some(c) if c.ends_with("notAhead") => {
+            // The room advanced between the read and the prune.
+            format!(
+                "{e}\n\n{}",
+                not_ahead_message(target, before_epoch, current)
+            )
+        }
+        Some(c) if c.ends_with("permissionDenied") => format!(
+            "{e}\n\nPruning needs `admin` in the room — not `curate`, which every writer holds. \
+             The room's owner grants it with `pnm rooms owner issue-authority --action admin \
+             --store`."
+        ),
+        _ => e.to_string(),
+    }
+}
+
+/// The host's answer, read the way the specification says to: `pruned: 0` is a success,
+/// and `earliestRung` is how far back the chain reaches, not the floor asked for.
+fn prune_outcome(r: &vtc_client::rooms::PruneResponse) -> String {
+    let dropped = match r.pruned {
+        0 => "nothing to drop — the chain already reached back no further".to_string(),
+        1 => "1 rung dropped".to_string(),
+        n => format!("{n} rungs dropped"),
+    };
+    format!(
+        "Pruned room {}: {dropped}. Its chain now reaches back to epoch {}.",
+        r.room_id, r.earliest_rung
+    )
 }
 
 /// `rooms create` — register a room with a host.
@@ -2641,6 +2838,95 @@ pub async fn cmd_rooms_memberships(
 mod tests {
     use super::*;
     use serde_json::json;
+
+    fn prune_target() -> RoomTarget<'static> {
+        RoomTarget {
+            host_url: "https://host.example",
+            host_did: Some("did:web:host.example"),
+            room_id: "did:webvh:Qm:example.com:rooms:northwind",
+        }
+    }
+
+    /// rooms/epoch/prune/0.1 *Consent/purpose*: `--yes` always proceeds; without it a
+    /// terminal is asked and a pipe is refused — never pruned unasked.
+    #[test]
+    fn a_prune_without_yes_asks_a_terminal_and_refuses_a_pipe() {
+        assert_eq!(prune_guard(true, false), PruneGuard::Proceed);
+        assert_eq!(prune_guard(true, true), PruneGuard::Proceed);
+        assert_eq!(prune_guard(false, true), PruneGuard::Ask);
+        assert_eq!(prune_guard(false, false), PruneGuard::Refuse);
+    }
+
+    /// The warning says what becomes unreadable, that it cannot be undone, that the
+    /// records stay, and that members' VTAs keep what they already derived.
+    #[test]
+    fn the_prune_warning_names_what_becomes_unreadable() {
+        let w = prune_warning("did:example:room", 5, 7, Some("chained"));
+        assert!(w.contains("cannot be undone"), "{w}");
+        assert!(w.contains("epochs 1 to 4"), "{w}");
+        assert!(w.contains("now at epoch 7"), "{w}");
+        assert!(w.contains("The records stay"), "{w}");
+        assert!(w.contains("members' VTAs"), "{w}");
+        assert!(!w.contains("fromJoin"), "{w}");
+
+        assert!(prune_warning("r", 2, 3, None).contains("unreadable for good"));
+        assert!(prune_warning("r", 2, 3, None).contains("epoch 1 "));
+        assert!(prune_warning("r", 3, 4, Some("fromJoin")).contains("keeps no chain"));
+    }
+
+    /// `notAhead`, refused locally with the highest floor that works, as a command.
+    #[test]
+    fn a_floor_at_the_current_epoch_suggests_the_one_below() {
+        let t = prune_target();
+        let msg = not_ahead_message(&t, 7, 7);
+        assert!(msg.contains("current epoch 7"), "{msg}");
+        assert!(
+            msg.contains(
+                "pnm rooms prune --room did:webvh:Qm:example.com:rooms:northwind \
+                 --host https://host.example --host-did did:web:host.example \
+                 --before-epoch 6 --reason '<why>' --yes"
+            ),
+            "{msg}"
+        );
+        // At epoch 1 there is no floor below to suggest.
+        assert!(!not_ahead_message(&t, 1, 1).contains("pnm rooms prune"));
+    }
+
+    /// The host's declared codes are answered with the fix, not the bare error.
+    #[test]
+    fn a_hosts_prune_refusal_is_explained() {
+        let t = prune_target();
+        let refusal = |code: &str| vtc_client::VtcError::Http {
+            status: 400,
+            body: json!({
+                "type": "https://trusttasks.org/spec/trust-task-error/0.1",
+                "payload": { "code": code, "message": "no" },
+            })
+            .to_string(),
+        };
+        let msg = prune_refused(refusal("rooms/epoch/prune:notAhead"), &t, 7, 7);
+        assert!(msg.contains("--before-epoch 6"), "{msg}");
+        let msg = prune_refused(refusal("permissionDenied"), &t, 3, 7);
+        assert!(msg.contains("needs `admin`"), "{msg}");
+        assert!(msg.contains("issue-authority --action admin"), "{msg}");
+        let msg = prune_refused(refusal("rooms/epoch/prune:chainTooDeep"), &t, 3, 7);
+        assert!(!msg.contains("needs `admin`"), "{msg}");
+    }
+
+    /// `pruned: 0` is a success, and the reach printed is `earliestRung`, not the floor.
+    #[test]
+    fn a_prune_outcome_reports_reach_not_the_request() {
+        let r = |pruned, earliest_rung| vtc_client::rooms::PruneResponse {
+            room_id: "did:example:room".into(),
+            pruned,
+            earliest_rung,
+        };
+        let none = prune_outcome(&r(0, 3));
+        assert!(none.contains("nothing to drop"), "{none}");
+        assert!(none.contains("reaches back to epoch 3"), "{none}");
+        assert!(prune_outcome(&r(1, 5)).contains("1 rung dropped"));
+        assert!(prune_outcome(&r(4, 5)).contains("4 rungs dropped"));
+    }
 
     fn rejected(code: &str, details: Value) -> VtaError {
         VtaError::Rejected {

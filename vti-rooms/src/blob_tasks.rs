@@ -740,6 +740,28 @@ pub fn record_epoch_refused(room: &Room, sealed_epoch: Option<u32>) -> Option<Re
     })
 }
 
+/// `rooms/epoch/prune/0.1`'s floor: a `beforeEpoch` at or above the room's current epoch
+/// is refused with the declared `notAhead`, `details.epoch` naming the current one.
+///
+/// Pruning to the current epoch would drop every rung, leaving a member who restarts unable
+/// to derive anything below the epoch they are handed next — a plausible typo
+/// (`beforeEpoch: currentEpoch` reads like "keep from here") with a consequence nobody would
+/// choose, so the specification refuses it, and declares a code so a client can say which
+/// floor would work without reading this message.
+pub fn prune_floor_refused(room: &Room, before_epoch: u32) -> Option<Refusal> {
+    (before_epoch >= room.epoch).then(|| {
+        declared(
+            trust_tasks_rs::specs::rooms::epoch::prune::v0_1::error_codes::NOT_AHEAD,
+            format!(
+                "`beforeEpoch` {before_epoch} is at or above the current epoch {} of `{}`; \
+                 pruning there would drop the whole chain, not shorten it",
+                room.epoch, room.room_id
+            ),
+            Some(json!({ "epoch": room.epoch })),
+        )
+    })
+}
+
 /// A 0.1 get response with `blobs` added, as `rooms/records/get/0.2` answers.
 ///
 /// `blobs` is exactly what the stored version names: absent when it names none, which

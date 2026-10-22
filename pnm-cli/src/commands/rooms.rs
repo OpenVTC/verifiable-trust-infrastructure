@@ -589,6 +589,28 @@ pub(crate) async fn run(
             )
             .await
         }
+        RoomCommands::Prune {
+            room_id,
+            host,
+            host_did,
+            before_epoch,
+            reason,
+            yes,
+        } => {
+            rooms::cmd_rooms_prune(
+                client,
+                RoomTarget {
+                    host_url: &host,
+                    host_did: host_did.as_deref(),
+                    room_id: &room_id,
+                },
+                signer,
+                before_epoch,
+                reason,
+                yes,
+            )
+            .await
+        }
         RoomCommands::Keys { command } => match command {
             RoomKeysCommands::Commit {
                 room_id,

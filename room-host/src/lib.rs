@@ -1267,19 +1267,13 @@ async fn epoch_prune(state: &HostState, doc: &TrustTask<Value>, payload: Value) 
         Ok(a) => a,
         Err(e) => return from_app_error(doc, &e),
     };
-    if req.before_epoch >= room.epoch {
-        return from_app_error(
-            doc,
-            &AppError::Validation(format!(
-                "`beforeEpoch` {} is at or above the current epoch {} of `{}`; pruning there \
-                 would drop the whole chain, not shorten it",
-                req.before_epoch, room.epoch, req.room_id
-            )),
-        );
+    // The declared `notAhead`, with the room's current epoch in `details.epoch`.
+    if let Some(refusal) = vti_rooms::blob_tasks::prune_floor_refused(&room, req.before_epoch) {
+        return files::record_refused(doc, refusal);
     }
     match storage::prune_chain(&state.epoch_links, &req.room_id, req.before_epoch).await {
         Ok((pruned, earliest_rung)) => {
-            audit_room(&room, &authorized, RoomOperation::MintEpoch, None);
+            audit_room(&room, &authorized, RoomOperation::PruneEpoch, None);
             respond(
                 doc,
                 PruneResponse {
@@ -2834,6 +2828,138 @@ mod tests {
         storage::create_room(&st.rooms, &room)
             .await
             .expect("register the room");
+    }
+
+    /// A `MakeWriter` over a shared buffer, so a test can read what the host logged.
+    #[derive(Clone, Default)]
+    struct Captured(Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl std::io::Write for Captured {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for Captured {
+        type Writer = Captured;
+        fn make_writer(&'a self) -> Self::Writer {
+            self.clone()
+        }
+    }
+
+    impl Captured {
+        fn take(&self) -> String {
+            String::from_utf8(std::mem::take(&mut *self.0.lock().unwrap())).unwrap()
+        }
+    }
+
+    /// `rooms/epoch/prune/0.1`: `admin` only (a `read` chain is `permissionDenied`), a floor
+    /// at or above the current epoch is refused (`notAhead`), and a prune that runs is
+    /// audited as `room.epoch.prune` — never as the mint it used to be logged as.
+    #[tokio::test]
+    async fn a_prune_needs_admin_and_is_audited_as_a_prune() {
+        let logs = Captured::default();
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(logs.clone())
+            .with_ansi(false)
+            .finish();
+        // The test runtime is current-thread, so the host's handlers run on this thread
+        // and log through this subscriber.
+        let _guard = tracing::subscriber::set_default(subscriber);
+
+        let (_d, st) = state();
+        let app = router(st);
+        let f = RoomFixture::new(Visibility::Open).await;
+        register(&app, &f).await;
+
+        // Advance once, so there is an epoch below the current one to prune to.
+        let (status, minted) = call(
+            &app,
+            ROOMS_EPOCH_MINT_TYPE,
+            serde_json::json!({
+                "roomId": f.room.room_id,
+                "epoch": f.room.epoch + 1,
+                "presentation": f.as_owner(),
+            }),
+            &f.owner,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{minted}");
+        let current = minted["epoch"].as_u64().unwrap();
+        logs.take();
+
+        // The agent's chain confers `read` only: refused, and nothing audited.
+        let (status, body) = call(
+            &app,
+            ROOMS_EPOCH_PRUNE_TYPE,
+            serde_json::json!({
+                "roomId": f.room.room_id,
+                "beforeEpoch": current - 1,
+                "presentation": f.as_agent(),
+                "reason": "not mine to decide",
+            }),
+            &f.agent,
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+        assert!(
+            !logs.take().contains("room.epoch.prune"),
+            "a refused prune must not be audited as one"
+        );
+
+        // The owner, at the current epoch: the whole chain would go, so it is refused.
+        let (status, body) = call(
+            &app,
+            ROOMS_EPOCH_PRUNE_TYPE,
+            serde_json::json!({
+                "roomId": f.room.room_id,
+                "beforeEpoch": current,
+                "presentation": f.as_owner(),
+            }),
+            &f.owner,
+        )
+        .await;
+        assert_ne!(
+            status,
+            StatusCode::OK,
+            "pruning to the current epoch: {body}"
+        );
+        assert_eq!(body["code"], "rooms/epoch/prune:notAhead", "{body}");
+        assert_eq!(body["details"]["epoch"].as_u64(), Some(current), "{body}");
+
+        // The owner, below it: performed, and audited as what it was.
+        logs.take();
+        let (status, body) = call(
+            &app,
+            ROOMS_EPOCH_PRUNE_TYPE,
+            serde_json::json!({
+                "roomId": f.room.room_id,
+                "beforeEpoch": current - 1,
+                "presentation": f.as_owner(),
+                "reason": "retention: past the agreed window",
+            }),
+            &f.owner,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["roomId"], f.room.room_id);
+        assert!(
+            body["pruned"].is_u64() && body["earliestRung"].is_u64(),
+            "{body}"
+        );
+        let logged = logs.take();
+        assert!(
+            logged.contains("room.epoch.prune"),
+            "the prune must be audited as a prune: {logged}"
+        );
+        assert!(
+            !logged.contains("room.epoch.mint"),
+            "a prune is not a mint: {logged}"
+        );
     }
 
     /// A room that does not chain refuses a rung, rather than storing one it said it would
