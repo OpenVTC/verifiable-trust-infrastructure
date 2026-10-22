@@ -74,6 +74,27 @@ function walletDirectory(): WalletDirectory | null {
   return w?.directory && typeof w.directory.publishCard === "function" ? w.directory : null;
 }
 
+/** The wallet's credential presentation (`directory.presentCredential`): it
+ *  finds a credential the member holds that answers the fields, shows the
+ *  member what it discloses and to whom, and sends the community a
+ *  presentation bound to that one request (`vtc/directory/card/present`). The
+ *  page never sees the credential or the presentation, only what the
+ *  community verified. */
+interface WalletPresent {
+  presentCredential(p: {
+    hostDid: string;
+    member?: string;
+    fields: string[];
+  }): Promise<{ verified: Record<string, unknown>; revision: number }>;
+}
+
+function walletPresent(): WalletPresent | null {
+  const w = (window as { vtaWallet?: { directory?: Partial<WalletPresent> } }).vtaWallet;
+  return w?.directory && typeof w.directory.presentCredential === "function"
+    ? (w.directory as WalletPresent)
+    : null;
+}
+
 type Audience = DirectoryFieldDefinition["ceiling"];
 
 const AUDIENCES: readonly { id: Audience; label: string }[] = [
@@ -589,7 +610,9 @@ function YourMarks({ entryId, marks }: { entryId: string; marks: Marks }) {
 function editable(f: DirectoryFieldDefinition): boolean {
   if (f.state !== "active") return false;
   if (f.source === "derived") return f.key === "did";
-  return f.type !== "claim";
+  // A claim the member verifies with a credential is theirs to show or hide;
+  // its value only a presentation writes.
+  return f.type !== "claim" || f.source === "credential";
 }
 
 /** Choose, send and remove one picture field. */
@@ -758,6 +781,22 @@ export function MyCardPage() {
     onSuccess: (r) => {
       void qc.invalidateQueries({ queryKey: ["directory", "card"] });
       setSaved(r.state === "published" ? "Your card is published." : null);
+    },
+  });
+  const presenter = walletPresent();
+  const present = useMutation({
+    mutationFn: async (field: string) => {
+      if (!presenter) throw new Error("Your wallet does not present credentials here.");
+      const [hostDid, me] = await Promise.all([
+        vtcDid(),
+        memberFetch<MemberMe>("/v1/member/me").catch(() => null),
+      ]);
+      return presenter.presentCredential({ hostDid, ...(me?.did ? { member: me.did } : {}), fields: [field] });
+    },
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["directory", "card"] });
+      void qc.invalidateQueries({ queryKey: ["directory", "entries"] });
+      setSaved("Verified from your credential.");
     },
   });
 
@@ -1009,6 +1048,27 @@ export function MyCardPage() {
                 ) : (
                   <span className="muted">(not set)</span>
                 )}
+              </p>
+            )}
+            {f.source === "credential" && presenter && (
+              <p>
+                <button
+                  type="button"
+                  className="btn"
+                  onClick={() => present.mutate(f.key)}
+                  disabled={present.isPending}
+                >
+                  {present.isPending && present.variables === f.key
+                    ? "Waiting for your wallet…"
+                    : verifiedOf(card.data.card.values?.[f.key])
+                      ? "Present again"
+                      : "Verify with a credential"}
+                </button>
+              </p>
+            )}
+            {f.source === "credential" && present.error instanceof Error && present.variables === f.key && (
+              <p className="alert" role="alert">
+                {present.error.message}
               </p>
             )}
             <label>

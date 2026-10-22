@@ -189,6 +189,54 @@ describe("publishing from the portal", () => {
   });
 });
 
+describe("verifying a field with a credential", () => {
+  const EMPLOYER = {
+    key: "org.example.employer", label: "Employer", type: "claim", source: "credential", base: false,
+    required: false, ceiling: "members", defaultVisibility: "members", searchable: false,
+    facet: false, order: 40, state: "active",
+    constraints: { claim: { credentialType: "EmploymentCredential", claimPath: "/employer" } },
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    api.listFields.mockResolvedValue({ fields: [...FIELDS.fields, EMPLOYER] });
+    api.showCard.mockResolvedValue(card(null));
+    delete (window as { vtaWallet?: unknown }).vtaWallet;
+  });
+
+  it("offers nothing when the wallet does not present credentials", async () => {
+    (window as { vtaWallet?: unknown }).vtaWallet = { directory: { publishCard: vi.fn() } };
+    renderCard();
+    await screen.findByText(/filled when you present a credential/i);
+    expect(screen.queryByRole("button", { name: "Verify with a credential" })).toBeNull();
+  });
+
+  it("asks the wallet to present for that one field, and re-reads the card", async () => {
+    const presentCredential = vi.fn(async () => ({ verified: {}, revision: 8 }));
+    (window as { vtaWallet?: unknown }).vtaWallet = { directory: { presentCredential } };
+    renderCard();
+    fireEvent.click(await screen.findByRole("button", { name: "Verify with a credential" }));
+    await waitFor(() => expect(presentCredential).toHaveBeenCalled());
+    expect(presentCredential).toHaveBeenCalledWith({
+      hostDid: "did:webvh:QmHost:acme.example",
+      member: "did:key:z6MkMember",
+      fields: ["org.example.employer"],
+    });
+    expect(await screen.findByText("Verified from your credential.")).toBeTruthy();
+    expect(api.showCard.mock.calls.length).toBeGreaterThan(1);
+  });
+
+  it("shows the wallet's sentence beside the field it refused", async () => {
+    const presentCredential = vi.fn(async () => {
+      throw new Error("Your wallet holds no EmploymentCredential.");
+    });
+    (window as { vtaWallet?: unknown }).vtaWallet = { directory: { presentCredential } };
+    renderCard();
+    fireEvent.click(await screen.findByRole("button", { name: "Verify with a credential" }));
+    expect((await screen.findByRole("alert")).textContent).toBe("Your wallet holds no EmploymentCredential.");
+  });
+});
+
 describe("browsing and reading members", () => {
   beforeEach(() => {
     vi.clearAllMocks();

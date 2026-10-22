@@ -113,8 +113,17 @@ wallet shows every value before anything is signed. The portal also shows where
 a published card stands, and offers **Stop publishing**, which a delegated key
 may do because it narrows.
 
-Not yet served: introductions. Groups are their own family ([community groups](groups.md)). A member cannot yet
-present a credential from the portal: that waits on the wallet offering it.
+A field filled from a credential appears on the card with its visibility, which
+the member chooses like any other, and — where the wallet offers
+`window.vtaWallet.directory.presentCredential` — **Verify with a credential**
+(**Present again** once verified). The wallet finds a credential it holds that
+answers the field, shows the member the claims it would disclose and to whom,
+has their agent make a presentation bound to that one `card/present` document
+(`vault/credentials/present/0.1`: its `nonce` the document's `id`, its audience
+this community's DID), and sends it signed by the member. The page sees neither
+the credential nor the presentation, only what the community verified.
+
+Not yet served: introductions. Groups are their own family ([community groups](groups.md)).
 
 ### Your stars, petnames and lists
 
