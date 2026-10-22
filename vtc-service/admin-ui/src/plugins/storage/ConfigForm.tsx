@@ -1,12 +1,20 @@
 // A new storage config, or a change to one (`vtc/storage/configs/{create,update}`).
 //
-// Two kinds are served by this build: `local` (a directory beneath one of the
-// host's `local_storage_bases`) and `s3` through an external account at the
-// community's VTA. The form asks for nothing secret: an S3 config names the
-// account by its context and identifier, and the VTA keeps the key. `ambient`
-// and `sealed` authentication, `gcs` and `walrus` are not offered until the VTC
-// serves them — a form that collected a credential the community then refused
-// would be worse than one that does not ask.
+// Three kinds are served: `local` (a directory beneath one of the host's
+// `local_storage_bases`), `s3` and `gcs`. An object store authenticates one of three
+// ways (`vtc/storage/configs/create/0.2`):
+//
+// - `vta-account` (S3, recommended): an external account at the community's VTA,
+//   named by its context and identifier; the VTA keeps the key.
+// - `ambient`: this machine's own cloud identity — on S3 optionally assuming a
+//   named role (`roleArn`) — downscoped to one room for at most 15 minutes.
+// - `sealed` (discouraged): a long-lived credential the community keeps, set
+//   afterwards with `cnm storage credentials set`. Labelled, wherever it is shown, as
+//   no protection against whoever operates the community's machine.
+//
+// `ambient` and `sealed` are the host operator's to permit; a community whose host
+// does not answers `authNotAllowed`. The form asks for nothing secret, ever.
+// `walrus` is not offered until the VTC serves it.
 //
 // Both writes take an operation-bound step-up and are parked for the other
 // holders of `vtc.rooms.admin`; the caller shows the parked notice.
@@ -18,22 +26,43 @@ import { exactBytes, formatBytes, parseBytes } from "@/lib/rooms-api";
 import {
   BUCKET_PATTERN,
   CONFIG_ID_PATTERN,
+  GCS_BUCKET_PATTERN,
   KIND_MEANS,
   PREFIX_PATTERN,
   REGION_PATTERN,
+  ROLE_ARN_PATTERN,
+  SEALED_WARNING,
 } from "@/lib/storage-api";
 import type {
+  StorageAuth,
   StorageConfigCreatePayload,
   StorageConfigRecord,
   StorageConfigUpdatePayload,
+  StorageSettings,
 } from "@/lib/wire-types";
 
 const REASON_MAX = 500;
 const LABEL_MAX = 128;
+const MODE_LABEL: Record<Mode, string> = {
+  "vta-account": "Through the community's VTA (recommended)",
+  ambient: "This machine's own cloud identity",
+  sealed: "A stored credential (discouraged)",
+};
+
+const MODE_MEANS: Record<Mode, string> = {
+  "vta-account":
+    "The VTA keeps the key in an external account and signs one request per file, for five minutes. Create the account on the VTA and bind it to this community first (pnm external …).",
+  ambient:
+    "An instance role or workload identity, scoped by the community to one room for at most 15 minutes. Only where this community's host permits it.",
+  sealed:
+    "A long-lived key the community keeps, encrypted, and uses to mint room-scoped credentials where the store can. Only where this community's host permits it.",
+};
+
 /** An account's context and identifier at the VTA (`ExternalAccountId`). */
 const ACCOUNT_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/;
 
-type Kind = "local" | "s3";
+type Kind = "local" | "s3" | "gcs";
+type Mode = "vta-account" | "ambient" | "sealed";
 
 /** Every field as typed, so a half-filled form survives switching kind. */
 interface Draft {
@@ -46,6 +75,8 @@ interface Draft {
   endpoint: string;
   prefix: string;
   pathStyle: boolean;
+  mode: Mode;
+  roleArn: string;
   context: string;
   account: string;
   capacity: string;
@@ -63,12 +94,19 @@ const EMPTY: Draft = {
   endpoint: "",
   prefix: "",
   pathStyle: false,
+  mode: "vta-account",
+  roleArn: "",
   context: "",
   account: "",
   capacity: "",
   isDefault: false,
   reason: "",
 };
+
+/** The modes a kind takes: Google Cloud Storage has no VTA account model. */
+export function modesFor(kind: Kind): Mode[] {
+  return kind === "gcs" ? ["ambient", "sealed"] : kind === "s3" ? ["vta-account", "ambient", "sealed"] : [];
+}
 
 /** What is wrong with each field, `null` where nothing is. Exported for tests. */
 export function draftErrors(d: Draft, editing: boolean): Partial<Record<keyof Draft, string>> {
@@ -88,11 +126,25 @@ export function draftErrors(d: Draft, editing: boolean): Partial<Record<keyof Dr
     if (d.endpoint !== "" && !/^https:\/\/\S+$/.test(d.endpoint)) {
       e.endpoint = "HTTPS only. Leave empty for AWS S3.";
     }
+    if (d.mode === "ambient" && d.endpoint !== "") {
+      e.endpoint = "The machine's own identity reaches AWS S3 only. Use a VTA account or a sealed key for another store.";
+    }
+  }
+  if (!editing && (d.kind === "s3" || d.kind === "gcs")) {
+    if (d.kind === "gcs" && !GCS_BUCKET_PATTERN.test(d.bucket)) e.bucket = "A Cloud Storage bucket name: lowercase letters, digits, '.', '_' and '-'.";
     if (d.prefix !== "" && !PREFIX_PATTERN.test(d.prefix)) {
       e.prefix = "Lowercase segments, each ending in '/': rooms-data/ or vtc/prod/.";
     }
+  }
+  if (d.kind !== "local" && !modesFor(d.kind).includes(d.mode)) {
+    e.mode = "Choose how the community authenticates to this store.";
+  }
+  if (d.kind !== "local" && d.mode === "vta-account") {
     if (!ACCOUNT_PATTERN.test(d.context)) e.context = "The VTA context that owns the account.";
     if (!ACCOUNT_PATTERN.test(d.account)) e.account = "The account's identifier at the VTA.";
+  }
+  if (d.kind === "s3" && d.mode === "ambient" && d.roleArn !== "" && !ROLE_ARN_PATTERN.test(d.roleArn)) {
+    e.roleArn = "An IAM role ARN: arn:aws:iam::123456789012:role/name. Empty to use the host's.";
   }
   if (parseBytes(d.capacity) === null) e.capacity = "A size such as 500 GB, or empty for none.";
   const reason = d.reason.trim();
@@ -102,27 +154,44 @@ export function draftErrors(d: Draft, editing: boolean): Partial<Record<keyof Dr
   return e;
 }
 
+/** The `auth` a draft names, absent for `local`. */
+export function authOf(d: Draft): StorageAuth | undefined {
+  if (d.kind === "local") return undefined;
+  switch (d.mode) {
+    case "vta-account":
+      return { mode: "vta-account", context: d.context, account: d.account };
+    case "ambient":
+      return d.kind === "s3" && d.roleArn !== "" ? { mode: "ambient", roleArn: d.roleArn } : { mode: "ambient" };
+    case "sealed":
+      return { mode: "sealed" };
+  }
+}
+
+function settingsOf(d: Draft): StorageSettings {
+  if (d.kind === "local") return { kind: "local", root: d.root };
+  if (d.kind === "gcs") {
+    return { kind: "gcs", bucket: d.bucket, ...(d.prefix ? { prefix: d.prefix } : {}) };
+  }
+  return {
+    kind: "s3",
+    bucket: d.bucket,
+    region: d.region,
+    ...(d.endpoint ? { endpoint: d.endpoint } : {}),
+    ...(d.prefix ? { prefix: d.prefix } : {}),
+    ...(d.pathStyle ? { pathStyle: true } : {}),
+  };
+}
+
 /** The create payload a valid draft makes. */
 export function createPayload(d: Draft): StorageConfigCreatePayload {
   const capacity = parseBytes(d.capacity);
+  const auth = authOf(d);
   return {
     id: d.id,
     label: d.label.trim(),
     reason: d.reason.trim(),
-    settings:
-      d.kind === "local"
-        ? { kind: "local", root: d.root }
-        : {
-            kind: "s3",
-            bucket: d.bucket,
-            region: d.region,
-            ...(d.endpoint ? { endpoint: d.endpoint } : {}),
-            ...(d.prefix ? { prefix: d.prefix } : {}),
-            ...(d.pathStyle ? { pathStyle: true } : {}),
-          },
-    ...(d.kind === "s3"
-      ? { auth: { mode: "vta-account" as const, context: d.context, account: d.account } }
-      : {}),
+    settings: settingsOf(d),
+    ...(auth ? { auth } : {}),
     ...(typeof capacity === "number" ? { capacityBytes: capacity } : {}),
     ...(d.isDefault ? { isDefault: true } : {}),
   };
@@ -136,10 +205,15 @@ export function createPayload(d: Draft): StorageConfigCreatePayload {
 export function updatePayload(d: Draft, current: StorageConfigRecord): StorageConfigUpdatePayload {
   const capacity = parseBytes(d.capacity);
   const label = d.label.trim();
+  // How it authenticates may change — the way off a mode the host withdrew
+  // (`update/0.2` item 8). Sent only when it differs.
+  const auth = authOf(d);
+  const authChanged = auth !== undefined && JSON.stringify(auth) !== JSON.stringify(current.auth ?? null);
   return {
     configId: current.id,
     reason: d.reason.trim(),
     ...(label !== current.label ? { label } : {}),
+    ...(authChanged ? { auth } : {}),
     ...(typeof capacity === "number" && capacity !== current.capacityBytes
       ? { capacityBytes: capacity }
       : {}),
@@ -149,11 +223,16 @@ export function updatePayload(d: Draft, current: StorageConfigRecord): StorageCo
 
 function draftOf(current: StorageConfigRecord | undefined): Draft {
   if (!current) return EMPTY;
+  const auth = current.auth;
   return {
     ...EMPTY,
     id: current.id,
     label: current.label,
-    kind: current.settings.kind === "local" ? "local" : "s3",
+    kind: current.settings.kind === "local" ? "local" : current.settings.kind === "gcs" ? "gcs" : "s3",
+    mode: auth?.mode ?? "vta-account",
+    roleArn: auth?.mode === "ambient" ? (auth.roleArn ?? "") : "",
+    context: auth?.mode === "vta-account" ? auth.context : "",
+    account: auth?.mode === "vta-account" ? auth.account : "",
     capacity: current.capacityBytes !== undefined ? exactBytes(current.capacityBytes) : "",
     isDefault: current.isDefault ?? false,
   };
@@ -193,10 +272,17 @@ export function ConfigForm({
       {!editing && (
         <fieldset className="storage-kind">
           <legend className="field-label">Kind</legend>
-          {(["s3", "local"] as const).map((k) => (
+          {(["s3", "gcs", "local"] as const).map((k) => (
             <label key={k}>
-              <input type="radio" name="kind" checked={d.kind === k} onChange={() => set("kind", k)} />{" "}
-              {k === "s3" ? "S3-compatible, through the community's VTA" : "A directory on this host"}
+              <input
+                type="radio"
+                name="kind"
+                checked={d.kind === k}
+                onChange={() =>
+                  setD((x) => ({ ...x, kind: k, mode: modesFor(k).includes(x.mode) ? x.mode : (modesFor(k)[0] ?? x.mode) }))
+                }
+              />{" "}
+              {k === "s3" ? "S3-compatible" : k === "gcs" ? "Google Cloud Storage" : "A directory on this host"}
               <div className="muted rooms-sub">{KIND_MEANS[k]}</div>
             </label>
           ))}
@@ -224,38 +310,82 @@ export function ConfigForm({
         </Field>
       )}
 
-      {!editing && d.kind === "s3" && (
+      {d.kind !== "local" && (
+        <fieldset className="storage-kind">
+          <legend className="field-label">How the community authenticates</legend>
+          {modesFor(d.kind).map((m) => (
+            <label key={m}>
+              <input type="radio" name="mode" checked={d.mode === m} onChange={() => set("mode", m)} />{" "}
+              {MODE_LABEL[m]}
+              <div className="muted rooms-sub">{MODE_MEANS[m]}</div>
+            </label>
+          ))}
+          {err("mode") && <p className="field-error">{err("mode")}</p>}
+        </fieldset>
+      )}
+
+      {d.kind !== "local" && d.mode === "sealed" && (
+        <p className="storage-warning" role="note">
+          {SEALED_WARNING} Set the credential after this is approved, from a terminal:
+          it is sealed there to this community and never typed into this console.
+        </p>
+      )}
+
+      {d.kind !== "local" && (
+        <div className="storage-fields">
+          {d.mode === "vta-account" && (
+            <>
+              <Field label="VTA context" error={err("context")}>
+                <input value={d.context} onChange={(e) => set("context", e.target.value)} autoComplete="off" />
+              </Field>
+              <Field label="VTA account" error={err("account")}>
+                <input value={d.account} onChange={(e) => set("account", e.target.value)} autoComplete="off" />
+              </Field>
+            </>
+          )}
+          {d.kind === "s3" && d.mode === "ambient" && (
+            <Field
+              label="Role to assume"
+              hint="Optional. The IAM role this machine's identity assumes for each room; empty for the one the host names."
+              error={err("roleArn")}
+            >
+              <input
+                value={d.roleArn}
+                onChange={(e) => set("roleArn", e.target.value)}
+                placeholder="arn:aws:iam::123456789012:role/rooms-writer"
+                autoComplete="off"
+              />
+            </Field>
+          )}
+        </div>
+      )}
+
+      {!editing && d.kind !== "local" && (
         <>
-          <p className="muted">
-            The community holds no storage credential. Its VTA keeps the key in an
-            external account and signs one request per file, for five minutes. Create
-            the account on the VTA and bind it to this community first
-            (<code>pnm external …</code>); the VTC checks it when this is applied.
-          </p>
           <div className="storage-fields">
-            <Field label="VTA context" error={err("context")}>
-              <input value={d.context} onChange={(e) => set("context", e.target.value)} autoComplete="off" />
-            </Field>
-            <Field label="VTA account" error={err("account")}>
-              <input value={d.account} onChange={(e) => set("account", e.target.value)} autoComplete="off" />
-            </Field>
             <Field label="Bucket" error={err("bucket")}>
               <input value={d.bucket} onChange={(e) => set("bucket", e.target.value)} autoComplete="off" />
             </Field>
-            <Field label="Region" hint="auto for R2" error={err("region")}>
-              <input value={d.region} onChange={(e) => set("region", e.target.value)} autoComplete="off" />
-            </Field>
-            <Field label="Endpoint" hint="For R2, B2 or MinIO. Empty for AWS." error={err("endpoint")}>
-              <input value={d.endpoint} onChange={(e) => set("endpoint", e.target.value)} placeholder="https://…" autoComplete="off" />
-            </Field>
+            {d.kind === "s3" && (
+              <>
+                <Field label="Region" hint="auto for R2" error={err("region")}>
+                  <input value={d.region} onChange={(e) => set("region", e.target.value)} autoComplete="off" />
+                </Field>
+                <Field label="Endpoint" hint="For R2, B2 or MinIO. Empty for AWS." error={err("endpoint")}>
+                  <input value={d.endpoint} onChange={(e) => set("endpoint", e.target.value)} placeholder="https://…" autoComplete="off" />
+                </Field>
+              </>
+            )}
             <Field label="Prefix" hint="Optional, ending in /" error={err("prefix")}>
               <input value={d.prefix} onChange={(e) => set("prefix", e.target.value)} autoComplete="off" />
             </Field>
           </div>
-          <label className="storage-check">
-            <input type="checkbox" checked={d.pathStyle} onChange={(e) => set("pathStyle", e.target.checked)} /> Path-style
-            addressing (MinIO usually needs it)
-          </label>
+          {d.kind === "s3" && (
+            <label className="storage-check">
+              <input type="checkbox" checked={d.pathStyle} onChange={(e) => set("pathStyle", e.target.checked)} /> Path-style
+              addressing (MinIO usually needs it)
+            </label>
+          )}
         </>
       )}
 

@@ -467,6 +467,18 @@ spec_types! {
     StorageConfigsUpdate01Payload(storage_configs::update::v0_1::Payload);
     /// `vtc/storage/configs/update/0.1#response`.
     StorageConfigsUpdate01Response(storage_configs::update::v0_1::Response);
+    /// `vtc/storage/configs/list/0.2#response` — with `roleArn` and `notAllowed`.
+    StorageConfigsList02Response(storage_configs::list::v0_2::Response);
+    /// `vtc/storage/configs/get/0.2#response` — one config, its facts and rooms.
+    StorageConfigsGet02Response(storage_configs::get::v0_2::Response);
+    /// `vtc/storage/configs/create/0.2` payload. Carries no secret.
+    StorageConfigsCreate02Payload(storage_configs::create::v0_2::Payload);
+    /// `vtc/storage/configs/create/0.2#response`.
+    StorageConfigsCreate02Response(storage_configs::create::v0_2::Response);
+    /// `vtc/storage/configs/update/0.2` payload.
+    StorageConfigsUpdate02Payload(storage_configs::update::v0_2::Payload);
+    /// `vtc/storage/configs/update/0.2#response`.
+    StorageConfigsUpdate02Response(storage_configs::update::v0_2::Response);
     /// `vtc/storage/configs/retire/0.1#response`.
     StorageConfigsRetire01Response(storage_configs::retire::v0_1::Response);
     /// `vtc/storage/configs/probe/0.1#response` — each step of a canary round trip.

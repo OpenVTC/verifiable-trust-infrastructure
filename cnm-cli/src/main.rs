@@ -15,6 +15,7 @@ mod onboard;
 mod pnm_profile;
 mod rooms;
 mod setup;
+mod storage;
 mod vetting;
 mod vtc;
 
@@ -299,6 +300,13 @@ enum Commands {
     Rooms {
         #[command(subcommand)]
         command: rooms::RoomsCommands,
+    },
+
+    /// Where the community keeps its rooms' files: its storage configs, and a `sealed`
+    /// config's credential, sealed here to the community (`vtc/storage/*`).
+    Storage {
+        #[command(subcommand)]
+        command: storage::StorageCommands,
     },
 
     /// The community's own DID log, when the community self-hosts it: install a
@@ -1070,6 +1078,7 @@ fn requires_auth(cmd: &Commands) -> bool {
             | Commands::Vetting { .. }
             | Commands::Git { .. }
             | Commands::Rooms { .. }
+            | Commands::Storage { .. }
             | Commands::Elections { .. }
             | Commands::Consent { .. }
             | Commands::Actions { .. }
@@ -1707,6 +1716,14 @@ async fn main() {
         Commands::Rooms { command } => {
             match community_vtc(&cli.community, &cli.vtc_did, &url_override, &cnm_config).await {
                 Ok((key, target)) => rooms::run(command, &key, &target, cli.transport.into()).await,
+                Err(e) => Err(e),
+            }
+        }
+        Commands::Storage { command } => {
+            match community_vtc(&cli.community, &cli.vtc_did, &url_override, &cnm_config).await {
+                Ok((key, target)) => {
+                    storage::run(command, &key, &target, cli.transport.into()).await
+                }
                 Err(e) => Err(e),
             }
         }

@@ -192,7 +192,33 @@ vti-common = { path = "../vti-common", version = "0.48", features = [
   # Room files in S3 through presigned requests the community's VTA issues
   # (`rooms::vta_storage`): no storage credential is held here.
   "blob-presigned",
+  # Room files in Google Cloud Storage (`rooms::storage_auth::gcs`), through
+  # `object_store` with a room-scoped token per room.
+  "blob-gcs",
 ] }
+# Ambient and sealed storage authentication (`rooms::storage_auth`,
+# `vtc/storage/configs/create/0.2` "Room-scoped credentials"). An `s3` config on
+# the host's own identity assumes a role through STS with a session policy naming
+# one room's prefix; a sealed AWS key mints a federation token the same way. Every
+# object request is then a SigV4 presigned request made here with that scoped
+# credential. `default-features = false` for the reason `vta-tee` gives: the SDKs'
+# default `rustls` feature pulls the legacy rustls 0.21 stack.
+aws-config = { version = "1", default-features = false, features = ["behavior-version-latest", "default-https-client", "rt-tokio"] }
+aws-sdk-sts = { version = "1", default-features = false, features = ["default-https-client", "rt-tokio"] }
+aws-sigv4 = { version = "1", default-features = false, features = ["sign-http", "http1"] }
+aws-credential-types = "1"
+aws-smithy-runtime-api = { version = "1", features = ["client"] }
+# Not called from this crate — a resolver bound, explained in the workspace
+# manifest (`aws-config` above pulls `aws-smithy-json` 0.63).
+aws-smithy-types.workspace = true
+# Ambient Google identity (`rooms::storage_auth::gcs`): application default
+# credentials, and impersonation with a 900-second lifetime where the operator
+# names a service account. The Credential Access Boundary exchange itself is one
+# documented STS call, made here.
+google-cloud-auth = "1"
+# The same `object_store` `vti-common`'s `blob-gcs` store wraps: named here for its
+# credential hook, which hands each room's store its own downscoped token.
+object_store = { version = "0.14", default-features = false, features = ["gcp"] }
 # ECMA-262 regular expressions: a directory field's `pattern` constraint is one
 # (`vtc/directory/_shared/0.1/field-definition`). Already in the graph through
 # trust-tasks-rs's schema validation, which reads `pattern` the same way.

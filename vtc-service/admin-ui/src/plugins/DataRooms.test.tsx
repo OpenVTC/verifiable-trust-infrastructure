@@ -25,7 +25,7 @@ const T = "https://trusttasks.org/spec";
 const ROOMS_LIST = `${T}/vtc/rooms/list/0.1`;
 const ROOMS_GET = `${T}/vtc/rooms/get/0.1`;
 const USAGE = `${T}/vtc/rooms/usage/0.1`;
-const STORAGE_LIST = `${T}/vtc/storage/configs/list/0.1`;
+const STORAGE_LIST = `${T}/vtc/storage/configs/list/0.2`;
 
 /** A did:web with a port: its `%3A` must survive every redirect. */
 const ROOM_ID = "did:web:rooms.example.com%3A8443:board";

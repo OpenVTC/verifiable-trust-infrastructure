@@ -4,12 +4,15 @@
 //
 // A list of configs with §7.6's facts, one page per config (its rooms, capacity
 // against use, health, credential state, a probe, and Retire), and a form for a
-// new one. Configs whose credential is `required` — a restore carries none — are
-// listed first, because until someone acts they store nothing.
+// new one. Configs whose credential is `required` — a restore carries none — or
+// `notAllowed` — a mode the host no longer permits — are listed first, because
+// until someone acts they store nothing.
 //
-// Nothing here shows or accepts a credential. An S3 config names an external
-// account at the community's VTA; the VTA holds the key and signs one request
-// per file. Every change is parked for another holder of `vtc.rooms.admin`
+// Nothing here shows or accepts a credential. An S3 config through a VTA account
+// names an external account at the community's VTA, which holds the key. A `sealed`
+// config is labelled, wherever it is shown, as no protection against whoever operates
+// the machine (`vtc/storage/configs/get/0.2` item 5), and its credential is set from
+// a terminal (`cnm storage credentials set`), sealed there to the community. Every change is parked for another holder of `vtc.rooms.admin`
 // (§7.4), so the screen says "sent for approval", never "saved", when it is.
 
 import { useState } from "react";
@@ -30,8 +33,11 @@ import { formatBytes, fullness, thresholdOf } from "@/lib/rooms-api";
 import { gestureFromConfirm } from "@/lib/signed-act";
 import {
   KIND_MEANS,
+  SEALED_WARNING,
   createStorageConfig,
+  credentialSetCommand,
   describeCredential,
+  needsAttention,
   fetchStorageConfig,
   fetchStorageConfigs,
   probeStorageConfig,
@@ -106,8 +112,8 @@ export function StorageList() {
     refetchInterval: pollMs,
   });
   const items = q.data ?? [];
-  const needCredential = items.filter((i) => i.facts.credential.status === "required");
-  const others = items.filter((i) => i.facts.credential.status !== "required");
+  const needCredential = items.filter((i) => needsAttention(i.facts.credential));
+  const others = items.filter((i) => !needsAttention(i.facts.credential));
 
   return (
     <>
@@ -137,9 +143,10 @@ export function StorageList() {
         <section className="card storage-attention">
           <h2>Needs a credential</h2>
           <p>
-            These cannot store anything until a credential is provided — usually after a
-            restore, which carries none. Rooms assigned to them refuse new uploads; files
-            already stored elsewhere are unaffected.
+            These cannot store anything until someone acts: a credential to provide —
+            usually after a restore, which carries none — or a way of authenticating this
+            community's host no longer permits, to change. Rooms assigned to them refuse
+            new uploads; files already stored elsewhere are unaffected.
           </p>
           <ConfigsTable items={needCredential} />
         </section>
@@ -344,8 +351,43 @@ export function ConfigDetail() {
               )}
             </>
           )}
+          {s.kind === "gcs" && (
+            <>
+              <dt>Bucket</dt>
+              <dd>
+                <code>{s.bucket}</code>
+                {s.prefix && (
+                  <>
+                    {" "}under <code>{s.prefix}</code>
+                  </>
+                )}
+              </dd>
+            </>
+          )}
+          {config.auth?.mode === "ambient" && config.auth.roleArn && (
+            <>
+              <dt>Role</dt>
+              <dd>
+                <code>{config.auth.roleArn}</code>
+                <div className="muted rooms-sub">Assumed by this machine's identity for each room, for at most 15 minutes.</div>
+              </dd>
+            </>
+          )}
           <dt>Credential</dt>
-          <dd>{describeCredential(facts.credential)}</dd>
+          <dd>
+            {describeCredential(facts.credential)}
+            {config.auth?.mode === "sealed" && (
+              <>
+                <p className="storage-warning" role="note">
+                  {SEALED_WARNING}
+                </p>
+                <div className="muted rooms-sub">
+                  {facts.credential.status === "sealed" ? "Replace it" : "Set it"} from a terminal, where it is
+                  sealed to this community: <code>{credentialSetCommand(config.id)}</code>
+                </div>
+              </>
+            )}
+          </dd>
           <dt>Held</dt>
           <dd>
             <Used config={config} facts={facts} /> · {facts.files} files
@@ -363,7 +405,7 @@ export function ConfigDetail() {
         {config.state === "active" && !editing && !parkedOf(update.error) && (
           <p>
             <button type="button" className="secondary" onClick={() => setEditing(true)}>
-              Change label, capacity or default
+              Change label, authentication, capacity or default
             </button>
           </p>
         )}

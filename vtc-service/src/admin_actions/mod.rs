@@ -462,6 +462,9 @@ impl ActionRecord {
     }
 }
 
+/// What a closed credential-set action's sealed block is replaced with.
+pub(crate) const SEALED_DISCARDED: &str = "discarded";
+
 fn action_key(id: &str) -> String {
     format!("{ACTION_PREFIX}{id}")
 }
@@ -485,6 +488,29 @@ async fn load(state: &AppState, id: &str) -> Result<Option<ActionRecord>, AppErr
 /// suspended a moment too long, which [`reconcile_suspensions`] lifts at the
 /// next start or sweep — never an open cooling-off whose subject still acts.
 async fn save(state: &AppState, rec: &ActionRecord) -> Result<(), AppError> {
+    // A parked `vtc/storage/credentials/set` holds a sealed credential, which is
+    // discarded once the action closes, whichever way it closes
+    // (`vtc/storage/credentials/set/0.2`, Retention). Its digest, config and reason
+    // stay as the record of what was decided.
+    let discarded;
+    let rec = if !rec.status.is_open()
+        && rec.type_uri == crate::trust_tasks::storage_tasks::CREDENTIALS_SET_TYPE
+        && rec
+            .payload
+            .get("sealed")
+            .is_some_and(|s| s != SEALED_DISCARDED)
+    {
+        let mut r = rec.clone();
+        r.payload["sealed"] = Value::String(SEALED_DISCARDED.into());
+        // The signed document it was submitted as carries the same block.
+        if r.submitted_doc["payload"].get("sealed").is_some() {
+            r.submitted_doc["payload"]["sealed"] = Value::String(SEALED_DISCARDED.into());
+        }
+        discarded = r;
+        &discarded
+    } else {
+        rec
+    };
     let suspends = suspends(rec);
     if suspends {
         crate::acl::storage::put_suspension(&state.acl_ks, &rec.subject, &suspension_of(rec))

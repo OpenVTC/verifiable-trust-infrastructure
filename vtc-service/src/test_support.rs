@@ -105,6 +105,13 @@ const JWT_SEED: [u8; 32] = [0x42u8; 32];
 /// VMC/VAC/install material, JWT seed signs access tokens.
 const SIGNER_SEED: [u8; 32] = [0xC5u8; 32];
 
+/// The X25519 key a test community opens what is sealed to it with: the derivation of
+/// its signer's Ed25519 seed, as `vtc/storage/credentials/set` seals to (`with_signers`).
+pub fn test_community_x25519_public() -> [u8; 32] {
+    let secret = vta_sdk::sealed_transfer::ed25519_seed_to_x25519_secret(&SIGNER_SEED);
+    x25519_dalek::PublicKey::from(&x25519_dalek::StaticSecret::from(*secret)).to_bytes()
+}
+
 /// Pin jsonwebtoken's default `CryptoProvider` to `aws_lc` once per
 /// process. The workspace compiles `jsonwebtoken` with only the
 /// `aws_lc_rs` backend; when `cargo test` unifies features across crates
@@ -129,6 +136,7 @@ pub struct TestVtcBuilder {
     with_audit: bool,
     with_signers: bool,
     with_did_resolver: bool,
+    storage_auth: crate::config::StorageAuthHostConfig,
     credential_signer: Option<Arc<LocalSigner>>,
     install_signer: Option<Arc<InstallTokenSigner>>,
     public_url: Option<String>,
@@ -181,6 +189,7 @@ impl Default for TestVtcBuilder {
             with_audit: false,
             with_signers: false,
             with_did_resolver: false,
+            storage_auth: Default::default(),
             credential_signer: None,
             install_signer: None,
             public_url: None,
@@ -294,6 +303,12 @@ impl TestVtcBuilder {
     /// VTC's signing bundle from a VTA.
     pub fn with_signers(mut self, on: bool) -> Self {
         self.with_signers = on;
+        self
+    }
+
+    /// `[rooms.files.auth]`: which storage authentication modes the host permits.
+    pub fn with_storage_auth(mut self, auth: crate::config::StorageAuthHostConfig) -> Self {
+        self.storage_auth = auth;
         self
     }
 
@@ -493,6 +508,7 @@ impl TestVtcBuilder {
         let files_config = crate::config::RoomFilesConfig {
             enabled: true,
             max_file_bytes: self.room_file_ceiling,
+            auth: self.storage_auth.clone(),
             ..Default::default()
         };
         let room_storage = crate::rooms::files::open_room_storage(
@@ -631,6 +647,22 @@ impl TestVtcBuilder {
         }
         if let Some(sig) = self.install_signer.clone() {
             install_signer = Some(sig);
+        }
+        // Sealed storage credentials, as `server::run` attaches them: opened with the
+        // signer's key, encrypted under a fixed test storage key.
+        if let Some(seed) = credential_signer.as_ref().and_then(|s| s.ed25519_seed()) {
+            room_storage
+                .set_sealed_credentials(Arc::new(
+                    crate::rooms::storage_credentials::SealedCredentials::new(
+                        store
+                            .keyspace(crate::store::keyspaces::STORAGE_CREDENTIALS)
+                            .expect("storage_credentials ks"),
+                        [0x5Au8; 32],
+                        &seed,
+                    ),
+                ))
+                .await
+                .expect("sealed credentials");
         }
 
         let webauthn = match &self.public_url {

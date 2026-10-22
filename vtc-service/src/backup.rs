@@ -384,6 +384,24 @@ pub async fn import_backup(
         .await?;
     state.config_ks.persist().await?;
 
+    // A restore never carries a sealed storage credential: every one held is destroyed,
+    // and a restored `sealed` config reports `required` until an administrator sets it
+    // again (`vtc/storage/credentials/set/0.2` item 7). Before the reload, so no store
+    // is built over a credential that was set for the community as it was.
+    if let Some(sealed) = state.room_storage.sealed_credentials() {
+        match sealed.clear().await {
+            Ok(0) => {}
+            Ok(n) => tracing::warn!(
+                cleared = n,
+                "backup import: sealed storage credentials destroyed; set each again"
+            ),
+            Err(e) => {
+                return Err(TaskError::App(AppError::Internal(format!(
+                    "backup import: the sealed storage credentials could not be destroyed: {e}"
+                ))));
+            }
+        }
+    }
     // The restored configs, not the ones this process opened with.
     if let Err(e) = state.room_storage.reload_stores().await {
         tracing::warn!(error = %e, "backup import: storage configs not reloaded; the restart reloads them");

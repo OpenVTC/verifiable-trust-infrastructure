@@ -101,6 +101,15 @@ impl LocalSigner {
         self.secrets.len()
     }
 
+    /// The primary key's 32-byte Ed25519 seed, for the community's own derivations
+    /// (opening what is sealed to its DID, `crate::rooms::storage_credentials`). `None`
+    /// when the primary key is not Ed25519.
+    pub(crate) fn ed25519_seed(&self) -> Option<zeroize::Zeroizing<[u8; 32]>> {
+        let bytes = self.primary().get_private_bytes();
+        let seed: [u8; 32] = bytes.get(..32)?.try_into().ok()?;
+        (bytes.len() == 32).then(|| zeroize::Zeroizing::new(seed))
+    }
+
     /// The primary signing key.
     fn primary(&self) -> &Secret {
         // Non-empty by construction: every constructor pushes at least one.

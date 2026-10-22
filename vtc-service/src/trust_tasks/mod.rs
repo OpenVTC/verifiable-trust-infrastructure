@@ -2105,6 +2105,14 @@ mod spine_proof_tests {
             "reads one storage config; the handler authorizes vtc.rooms.admin from the signer's own entry, so an unsigned caller is refused regardless",
         ),
         (
+            storage_tasks::LIST_V0_2_TYPE,
+            "reads the storage configs at 0.2; the handler authorizes vtc.rooms.admin from the signer's own entry, so an unsigned caller is refused regardless",
+        ),
+        (
+            storage_tasks::GET_V0_2_TYPE,
+            "reads one storage config at 0.2; the handler authorizes vtc.rooms.admin from the signer's own entry, so an unsigned caller is refused regardless",
+        ),
+        (
             storage_tasks::PROBE_TYPE,
             "probes one storage config; the handler authorizes vtc.rooms.admin from the signer's own entry, so an unsigned caller is refused regardless",
         ),
@@ -3142,6 +3150,13 @@ pub(crate) const DISPATCHED_URIS: &[&str] = &[
     storage_tasks::PROBE_TYPE,
     storage_tasks::ASSIGN_TYPE,
     storage_tasks::MIGRATE_TYPE,
+    // 0.2 (trust-tasks-tf #866): `roleArn` on ambient auth, `notAllowed`, host gating,
+    // and the sealed credential itself. Each version answered at its own.
+    storage_tasks::LIST_V0_2_TYPE,
+    storage_tasks::GET_V0_2_TYPE,
+    storage_tasks::CREATE_V0_2_TYPE,
+    storage_tasks::UPDATE_V0_2_TYPE,
+    storage_tasks::CREDENTIALS_SET_TYPE,
     // What the rooms store and may store (`data-rooms-files.md` §6): reads and limit
     // overrides for a holder of `vtc.rooms.admin`, overrides audited. No REST route.
     room_admin_tasks::GET_TYPE,

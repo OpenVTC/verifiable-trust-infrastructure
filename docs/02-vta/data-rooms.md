@@ -1002,12 +1002,16 @@ community's ACL or a session.
   reassigning a room strands nothing. On first start the VTC seeds one, `local`,
   at `blob_dir`, as the default; every room is assigned to the default when it
   is created. A holder of `vtc.rooms.admin` manages them with
-  `vtc/storage/configs/{list,get,create,update,retire,probe}/0.1`,
+  `vtc/storage/configs/{list,get,create,update,retire,probe}/0.1` (list, get,
+  create and update also at 0.2), `vtc/storage/credentials/set/0.2`,
   `vtc/rooms/storage/assign/0.1` and `vtc/rooms/storage/migrate/0.1`. Creating,
-  changing and retiring a config, and reassigning a room or moving its files, are
-  **parked for the other holders' consent** in the administrator action list. This build stores to `local` configs and to `s3`
-  configs through the community's VTA (below); `ambient` and `sealed` auth,
-  `gcs` and `walrus` follow. A local config's root must lie
+  changing and retiring a config, setting a sealed credential, and reassigning a
+  room or moving its files, are **parked for the other holders' consent** in the
+  administrator action list. This build stores to `local` configs, to `s3` configs
+  through the community's VTA (below), and to `s3` and `gcs` configs on `ambient`
+  or `sealed` authentication where the host's `[rooms.files.auth]` permits them —
+  each through a credential the community scopes to one room for at most 15
+  minutes (`docs/03-vtc/room-storage.md`); `walrus` follows. A local config's root must lie
   strictly beneath one of `local_storage_bases` once symbolic links are
   resolved, and never overlaps another config's: an administrator cannot point
   the service at the rest of the machine, and one config's collection never

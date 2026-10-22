@@ -18,6 +18,7 @@ pub mod external;
 pub mod hpke;
 pub mod nonce;
 pub mod request;
+pub mod storage;
 pub mod template_bootstrap;
 pub mod verify;
 
@@ -32,6 +33,7 @@ pub use external::{ExternalCredentialPayload, ExternalSecretPayload, PresignedEn
 pub use hpke::{HpkeSealed, generate_keypair, open as hpke_open, seal as hpke_seal};
 pub use nonce::{InMemoryNonceStore, NonceStore};
 pub use request::BootstrapRequest;
+pub use storage::StorageCredentialPayload;
 pub use template_bootstrap::{
     AdminRotationPayload, DidKeyMaterial, DidKeyMaterialV2, KeyPair, SlotKeyPair,
     TemplateBootstrapConfig, TemplateBootstrapPayload, TemplateBootstrapPayloadV2, TemplateOutput,

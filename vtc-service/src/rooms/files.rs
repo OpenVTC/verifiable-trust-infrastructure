@@ -92,14 +92,18 @@ pub async fn open_room_storage(
     } else {
         config.local_storage_bases.clone()
     };
-    RoomStorage::open(
+    let storage = RoomStorage::open(
         store.keyspace(keyspaces::STORAGE_CONFIGS)?,
         &store.keyspace(keyspaces::ROOMS)?,
         Some(seed_root),
         bases,
         community_did,
     )
-    .await
+    .await?;
+    // Which modes beyond `vta-account` this host permits (`[rooms.files.auth]`; absent,
+    // neither `ambient` nor `sealed`).
+    storage.set_host_auth((&config.auth).into()).await?;
+    Ok(storage)
 }
 
 /// `path` as an absolute directory: unchanged when it already is one, and otherwise

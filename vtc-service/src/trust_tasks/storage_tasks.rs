@@ -1,5 +1,6 @@
 //! Where this community keeps its rooms' files — `vtc/storage/configs/{list,get,create,
-//! update,retire,probe}/0.1`, `vtc/rooms/storage/assign/0.1` and
+//! update,retire,probe}/0.1`, `vtc/storage/configs/{list,get,create,update}/0.2`,
+//! `vtc/storage/credentials/set/0.2`, `vtc/rooms/storage/assign/0.1` and
 //! `vtc/rooms/storage/migrate/0.1`
 //! (`docs/05-design-notes/data-rooms-files.md` §7; [`crate::rooms::storage_configs`]).
 //!
@@ -18,7 +19,15 @@
 //!   migration `running` or `paused` (it answers with that one, resuming it) or has
 //!   nothing to move.
 //!
-//! No member of any of these tasks carries a credential, and no answer returns one.
+//! No member of any of these tasks carries a credential in the clear, and no answer
+//! returns one. `vtc/storage/credentials/set/0.2` carries one sealed to this community,
+//! which only [`crate::rooms::storage_credentials`] opens.
+//!
+//! **Versions.** Each version is answered at its own version. 0.2 (trust-tasks-tf #866)
+//! adds `roleArn` on `ambient`, the `notAllowed` credential status, and
+//! `authNotAllowed`'s `details.reason`; a 0.1 reader is answered in 0.1's shape — a
+//! config's `roleArn` left out, and `notAllowed` reported as `required`, its nearest
+//! 0.1 status (neither is usable).
 
 use std::collections::HashMap;
 
@@ -26,9 +35,11 @@ use serde_json::{Value, json};
 use trust_tasks_rs::specs::vtc::rooms::storage::assign::v0_1 as assign;
 use trust_tasks_rs::specs::vtc::rooms::storage::migrate::v0_1 as migrate;
 use trust_tasks_rs::specs::vtc::storage::configs::{
-    create::v0_1 as create, get::v0_1 as get, list::v0_1 as list, probe::v0_1 as probe,
-    retire::v0_1 as retire, update::v0_1 as update,
+    create::v0_1 as create, create::v0_2 as create2, get::v0_1 as get, get::v0_2 as get2,
+    list::v0_1 as list, list::v0_2 as list2, probe::v0_1 as probe, retire::v0_1 as retire,
+    update::v0_1 as update, update::v0_2 as update2,
 };
+use trust_tasks_rs::specs::vtc::storage::credentials::set::v0_2 as set;
 use trust_tasks_rs::{Payload, RejectReason, TrustTask};
 use vti_common::audit::{AuditEvent, RoomStorageChangedData};
 use vti_common::auth::extractor::AuthClaims;
@@ -43,7 +54,8 @@ use super::helpers::{
 use super::{JoinAuthCtx, admin_signer, parse_spec_payload};
 use crate::acl::Capability;
 use crate::acl::admin_consent::Act;
-use crate::rooms::storage_configs::{SettingsError, kind_of, state_of};
+use crate::rooms::storage_configs::{SettingsError, kind_of, mode_of, state_of};
+use crate::rooms::storage_credentials::SealedRefusal;
 use crate::routes::acl::conform;
 use crate::server::AppState;
 
@@ -55,6 +67,11 @@ pub(crate) const RETIRE_TYPE: &str = <retire::Payload as Payload>::TYPE_URI;
 pub(crate) const PROBE_TYPE: &str = <probe::Payload as Payload>::TYPE_URI;
 pub(crate) const ASSIGN_TYPE: &str = <assign::Payload as Payload>::TYPE_URI;
 pub(crate) const MIGRATE_TYPE: &str = <migrate::Payload as Payload>::TYPE_URI;
+pub(crate) const LIST_V0_2_TYPE: &str = <list2::Payload as Payload>::TYPE_URI;
+pub(crate) const GET_V0_2_TYPE: &str = <get2::Payload as Payload>::TYPE_URI;
+pub(crate) const CREATE_V0_2_TYPE: &str = <create2::Payload as Payload>::TYPE_URI;
+pub(crate) const UPDATE_V0_2_TYPE: &str = <update2::Payload as Payload>::TYPE_URI;
+pub(crate) const CREDENTIALS_SET_TYPE: &str = <set::Payload as Payload>::TYPE_URI;
 
 /// Every URI this module routes.
 pub(crate) const URIS: &[&str] = &[
@@ -62,6 +79,11 @@ pub(crate) const URIS: &[&str] = &[
     GET_TYPE,
     CREATE_TYPE,
     UPDATE_TYPE,
+    LIST_V0_2_TYPE,
+    GET_V0_2_TYPE,
+    CREATE_V0_2_TYPE,
+    UPDATE_V0_2_TYPE,
+    CREDENTIALS_SET_TYPE,
     RETIRE_TYPE,
     PROBE_TYPE,
     ASSIGN_TYPE,
@@ -84,16 +106,48 @@ pub(super) async fn dispatch(
     type_uri: &str,
 ) -> Option<TrustTaskOutcome> {
     Some(match type_uri {
-        LIST_TYPE => handle_list(state, ctx, doc).await,
-        GET_TYPE => handle_get(state, ctx, doc).await,
-        CREATE_TYPE => handle_create(state, ctx, doc).await,
-        UPDATE_TYPE => handle_update(state, ctx, doc).await,
+        LIST_TYPE => handle_list(state, ctx, doc, V::One).await,
+        GET_TYPE => handle_get(state, ctx, doc, V::One).await,
+        CREATE_TYPE => handle_create(state, ctx, doc, V::One).await,
+        UPDATE_TYPE => handle_update(state, ctx, doc, V::One).await,
+        LIST_V0_2_TYPE => handle_list(state, ctx, doc, V::Two).await,
+        GET_V0_2_TYPE => handle_get(state, ctx, doc, V::Two).await,
+        CREATE_V0_2_TYPE => handle_create(state, ctx, doc, V::Two).await,
+        UPDATE_V0_2_TYPE => handle_update(state, ctx, doc, V::Two).await,
+        CREDENTIALS_SET_TYPE => handle_credentials_set(state, ctx, doc).await,
         RETIRE_TYPE => handle_retire(state, ctx, doc).await,
         PROBE_TYPE => handle_probe(state, ctx, doc).await,
         ASSIGN_TYPE => handle_assign(state, ctx, doc).await,
         MIGRATE_TYPE => handle_migrate(state, ctx, doc).await,
         _ => return None,
     })
+}
+
+/// The version of a `vtc/storage/configs/*` task being answered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum V {
+    One,
+    Two,
+}
+
+/// A stored config, as a 0.1 reader may be shown it: 0.1's `ambient` is closed, so
+/// `roleArn` is left out.
+fn config_at(v: V, mut config: Value) -> Value {
+    if v == V::One
+        && let Some(auth) = config.get_mut("auth").and_then(Value::as_object_mut)
+    {
+        auth.remove("roleArn");
+    }
+    config
+}
+
+/// A config's facts at `v`: 0.1 has no `notAllowed`, so a mode the host no longer
+/// permits reads as `required` — not usable, in the nearest words 0.1 has.
+fn facts_at(v: V, mut facts: Value) -> Value {
+    if v == V::One && facts["credential"]["status"] == "notAllowed" {
+        facts["credential"] = json!({ "status": "required" });
+    }
+    facts
 }
 
 pub(super) fn refuse(
@@ -137,9 +191,11 @@ pub(super) async fn rooms_admin(
     Ok(actor)
 }
 
-/// A refusal of proposed settings, under the codes `task` declares.
+/// A refusal of proposed settings, under the codes `task` declares. At 0.2,
+/// `authNotAllowed` names its reason in `details`; 0.1 declares no details for it.
 fn settings_refusal(
     doc: &TrustTask<Value>,
+    v: V,
     invalid: &str,
     auth_not_allowed: &str,
     unknown_account: &str,
@@ -152,7 +208,12 @@ fn settings_refusal(
             format!("{member} {reason}"),
             Some(json!({ "member": member, "problem": truncate(&reason, 500) })),
         ),
-        SettingsError::AuthNotAllowed(reason) => refuse(doc, auth_not_allowed, reason, None),
+        SettingsError::AuthNotAllowed(why, reason) => refuse(
+            doc,
+            auth_not_allowed,
+            reason,
+            (v == V::Two).then(|| json!({ "reason": why.as_str() })),
+        ),
         SettingsError::UnknownAccount(reason) => refuse(doc, unknown_account, reason, None),
     }
 }
@@ -196,19 +257,48 @@ fn now_rfc3339() -> String {
 
 // ─── reads ───────────────────────────────────────────────────────────────
 
-/// `vtc/storage/configs/list/0.1` — every config, `retired` ones included, with its
-/// facts computed now.
+/// The list request's members, read through the version's generated type.
+struct ListAsk {
+    cursor: Option<String>,
+    limit: Option<u64>,
+    state: Option<String>,
+    kind: Option<String>,
+}
+
+/// `vtc/storage/configs/list/{0.1,0.2}` — every config, `retired` ones included, with
+/// its facts computed now.
 async fn handle_list(
     state: &AppState,
     ctx: &JoinAuthCtx,
     doc: TrustTask<Value>,
+    v: V,
 ) -> TrustTaskOutcome {
     if let Err(reject) = rooms_admin(state, ctx, &doc).await {
         return reject;
     }
-    let checked: list::Payload = match parse_spec_payload(&doc) {
-        Ok(p) => p,
-        Err(reject) => return reject,
+    let checked = match v {
+        V::One => match parse_spec_payload::<list::Payload>(&doc) {
+            Ok(p) => ListAsk {
+                cursor: p.cursor.map(|c| c.to_string()),
+                limit: p.limit.map(|l| l.get()),
+                state: p.state.map(|s| s.to_string()),
+                kind: p.kind.map(|k| k.to_string()),
+            },
+            Err(reject) => return reject,
+        },
+        V::Two => match parse_spec_payload::<list2::Payload>(&doc) {
+            Ok(p) => ListAsk {
+                cursor: p.cursor.map(|c| c.to_string()),
+                limit: p.limit.map(|l| l.get()),
+                state: p.state.map(|s| s.to_string()),
+                kind: p.kind.map(|k| k.to_string()),
+            },
+            Err(reject) => return reject,
+        },
+    };
+    let invalid_cursor = match v {
+        V::One => list::error_codes::INVALID_CURSOR.code,
+        V::Two => list2::error_codes::INVALID_CURSOR.code,
     };
     let after = match checked.cursor.as_deref() {
         None => None,
@@ -217,19 +307,16 @@ async fn handle_list(
             _ => {
                 return refuse(
                     &doc,
-                    list::error_codes::INVALID_CURSOR.code,
+                    invalid_cursor,
                     "that cursor was not issued by this community",
                     None,
                 );
             }
         },
     };
-    let limit = checked
-        .limit
-        .map(|l| l.get() as usize)
-        .unwrap_or(DEFAULT_PAGE);
-    let want_state = checked.state.map(|s| s.to_string());
-    let want_kind = checked.kind.map(|k| k.to_string());
+    let limit = checked.limit.map(|l| l as usize).unwrap_or(DEFAULT_PAGE);
+    let want_state = checked.state;
+    let want_kind = checked.kind;
 
     let configs = match state.room_storage.configs().await {
         Ok(c) => c,
@@ -265,7 +352,7 @@ async fn handle_list(
             Ok(f) => f,
             Err(e) => return app_error_to_reject(&doc, &e),
         };
-        items.push(json!({ "config": config, "facts": facts }));
+        items.push(json!({ "config": config_at(v, config), "facts": facts_at(v, facts) }));
     }
     let mut body = json!({ "items": items });
     if more && let Some(last) = body["items"].as_array().and_then(|i| i.last()) {
@@ -274,32 +361,37 @@ async fn handle_list(
             last["config"]["id"].as_str().unwrap_or_default()
         ));
     }
-    respond::<list::Response>(&doc, body)
+    match v {
+        V::One => respond::<list::Response>(&doc, body),
+        V::Two => respond::<list2::Response>(&doc, body),
+    }
 }
 
-/// `vtc/storage/configs/get/0.1` — one config, its facts and the rooms on it.
+/// `vtc/storage/configs/get/{0.1,0.2}` — one config, its facts and the rooms on it.
 async fn handle_get(
     state: &AppState,
     ctx: &JoinAuthCtx,
     doc: TrustTask<Value>,
+    v: V,
 ) -> TrustTaskOutcome {
     if let Err(reject) = rooms_admin(state, ctx, &doc).await {
         return reject;
     }
-    let checked: get::Payload = match parse_spec_payload(&doc) {
-        Ok(p) => p,
-        Err(reject) => return reject,
+    let (id, not_found) = match v {
+        V::One => match parse_spec_payload::<get::Payload>(&doc) {
+            Ok(p) => (p.config_id.to_string(), get::error_codes::NOT_FOUND.code),
+            Err(reject) => return reject,
+        },
+        V::Two => match parse_spec_payload::<get2::Payload>(&doc) {
+            Ok(p) => (p.config_id.to_string(), get2::error_codes::NOT_FOUND.code),
+            Err(reject) => return reject,
+        },
     };
-    let id = checked.config_id.as_str();
+    let id = id.as_str();
     let config = match state.room_storage.config(id).await {
         Ok(Some(c)) => c,
         Ok(None) => {
-            return refuse(
-                &doc,
-                get::error_codes::NOT_FOUND.code,
-                format!("no storage config `{id}`"),
-                None,
-            );
+            return refuse(&doc, not_found, format!("no storage config `{id}`"), None);
         }
         Err(e) => return app_error_to_reject(&doc, &e),
     };
@@ -319,38 +411,68 @@ async fn handle_get(
         Ok(r) => r,
         Err(e) => return app_error_to_reject(&doc, &e),
     };
-    respond::<get::Response>(
-        &doc,
-        json!({
-            "config": config,
-            "facts": facts,
-            "assignedRoomsTruncated": rooms.len() > ASSIGNED_ROOMS_SHOWN,
-            "assignedRooms": rooms.into_iter().take(ASSIGNED_ROOMS_SHOWN).collect::<Vec<_>>(),
-        }),
-    )
+    let body = json!({
+        "config": config_at(v, config),
+        "facts": facts_at(v, facts),
+        "assignedRoomsTruncated": rooms.len() > ASSIGNED_ROOMS_SHOWN,
+        "assignedRooms": rooms.into_iter().take(ASSIGNED_ROOMS_SHOWN).collect::<Vec<_>>(),
+    });
+    match v {
+        V::One => respond::<get::Response>(&doc, body),
+        V::Two => respond::<get2::Response>(&doc, body),
+    }
 }
 
 // ─── create ──────────────────────────────────────────────────────────────
 
-/// `vtc/storage/configs/create/0.1`.
+/// The create request's members, read through the version's generated type.
+struct CreateAsk {
+    id: String,
+    label: String,
+    capacity_bytes: Option<u64>,
+    is_default: Option<bool>,
+    reason: String,
+}
+
+/// `vtc/storage/configs/create/{0.1,0.2}`.
 async fn handle_create(
     state: &AppState,
     ctx: &JoinAuthCtx,
     doc: TrustTask<Value>,
+    v: V,
 ) -> TrustTaskOutcome {
     let actor = match rooms_admin(state, ctx, &doc).await {
         Ok(a) => a,
         Err(reject) => return reject,
     };
-    let checked: create::Payload = match parse_spec_payload(&doc) {
-        Ok(p) => p,
-        Err(reject) => return reject,
+    let checked = match v {
+        V::One => match parse_spec_payload::<create::Payload>(&doc) {
+            Ok(p) => CreateAsk {
+                id: p.id.to_string(),
+                label: p.label.to_string(),
+                capacity_bytes: p.capacity_bytes,
+                is_default: p.is_default,
+                reason: p.reason.to_string(),
+            },
+            Err(reject) => return reject,
+        },
+        V::Two => match parse_spec_payload::<create2::Payload>(&doc) {
+            Ok(p) => CreateAsk {
+                id: p.id.to_string(),
+                label: p.label.to_string(),
+                capacity_bytes: p.capacity_bytes,
+                is_default: p.is_default,
+                reason: p.reason.to_string(),
+            },
+            Err(reject) => return reject,
+        },
     };
-    let id = checked.id.as_str().to_string();
+    let id = checked.id.clone();
     let settings = doc.payload["settings"].clone();
     let auth = doc.payload.get("auth").cloned();
 
-    if let Some(reject) = create_refusal(state, &doc, &id, &settings, auth.as_ref(), false).await {
+    if let Some(reject) = create_refusal(state, &doc, v, &id, &settings, auth.as_ref(), false).await
+    {
         return reject;
     }
 
@@ -370,12 +492,13 @@ async fn handle_create(
 
     let _guard = state.room_storage.lock().await;
     // Every check again, against the community as it is now, and the root prepared.
-    if let Some(reject) = create_refusal(state, &doc, &id, &settings, auth.as_ref(), true).await {
+    if let Some(reject) = create_refusal(state, &doc, v, &id, &settings, auth.as_ref(), true).await
+    {
         return reject;
     }
     let mut record = json!({
         "id": id,
-        "label": checked.label.as_str(),
+        "label": checked.label,
         "settings": settings,
         "state": "active",
         "createdBy": actor.did,
@@ -405,13 +528,20 @@ async fn handle_create(
             previous: None,
             current: record.clone(),
             approvers: crate::admin_actions::executing_approvers(state).await,
-            reason: checked.reason.as_str().to_string(),
+            reason: checked.reason.clone(),
         },
     )
     .await;
-    // Item 8: probe it once it exists, and record the result as its health.
-    let _ = run_probe(state, &id).await;
-    respond::<create::Response>(&doc, json!({ "config": record }))
+    // Item 8: probe it once it exists, and record the result as its health. A `sealed`
+    // config has no credential yet, and nothing to probe with.
+    if state.room_storage.usable(&record) {
+        let _ = run_probe(state, &id).await;
+    }
+    let body = json!({ "config": config_at(v, record) });
+    match v {
+        V::One => respond::<create::Response>(&doc, body),
+        V::Two => respond::<create2::Response>(&doc, body),
+    }
 }
 
 /// Why a create cannot run now, if it cannot. With `prepare`, a `local` root that passes
@@ -419,17 +549,31 @@ async fn handle_create(
 async fn create_refusal(
     state: &AppState,
     doc: &TrustTask<Value>,
+    v: V,
     id: &str,
     settings: &Value,
     auth: Option<&Value>,
     prepare: bool,
 ) -> Option<TrustTaskOutcome> {
-    use create::error_codes as c;
+    let (exists, invalid, not_allowed, unknown) = match v {
+        V::One => (
+            create::error_codes::EXISTS.code,
+            create::error_codes::INVALID_SETTINGS.code,
+            create::error_codes::AUTH_NOT_ALLOWED.code,
+            create::error_codes::UNKNOWN_ACCOUNT.code,
+        ),
+        V::Two => (
+            create2::error_codes::EXISTS.code,
+            create2::error_codes::INVALID_SETTINGS.code,
+            create2::error_codes::AUTH_NOT_ALLOWED.code,
+            create2::error_codes::UNKNOWN_ACCOUNT.code,
+        ),
+    };
     match state.room_storage.config(id).await {
         Ok(Some(_)) => {
             return Some(refuse(
                 doc,
-                c::EXISTS.code,
+                exists,
                 format!("the storage config identifier `{id}` is, or was, in use"),
                 None,
             ));
@@ -442,34 +586,70 @@ async fn create_refusal(
         .validate(settings, auth, None, prepare)
         .await
     {
-        return Some(settings_refusal(
-            doc,
-            c::INVALID_SETTINGS.code,
-            c::AUTH_NOT_ALLOWED.code,
-            c::UNKNOWN_ACCOUNT.code,
-            e,
-        ));
+        return Some(settings_refusal(doc, v, invalid, not_allowed, unknown, e));
     }
     None
 }
 
 // ─── update ──────────────────────────────────────────────────────────────
 
+/// The codes an update refuses with, at its version.
+struct UpdateCodes {
+    not_found: &'static str,
+    kind_immutable: &'static str,
+    location_immutable: &'static str,
+    invalid: &'static str,
+    not_allowed: &'static str,
+    unknown: &'static str,
+    not_active: &'static str,
+}
+
+impl UpdateCodes {
+    fn at(v: V) -> Self {
+        match v {
+            V::One => {
+                use update::error_codes as c;
+                Self {
+                    not_found: c::NOT_FOUND.code,
+                    kind_immutable: c::KIND_IMMUTABLE.code,
+                    location_immutable: c::LOCATION_IMMUTABLE.code,
+                    invalid: c::INVALID_SETTINGS.code,
+                    not_allowed: c::AUTH_NOT_ALLOWED.code,
+                    unknown: c::UNKNOWN_ACCOUNT.code,
+                    not_active: c::NOT_ACTIVE.code,
+                }
+            }
+            V::Two => {
+                use update2::error_codes as c;
+                Self {
+                    not_found: c::NOT_FOUND.code,
+                    kind_immutable: c::KIND_IMMUTABLE.code,
+                    location_immutable: c::LOCATION_IMMUTABLE.code,
+                    invalid: c::INVALID_SETTINGS.code,
+                    not_allowed: c::AUTH_NOT_ALLOWED.code,
+                    unknown: c::UNKNOWN_ACCOUNT.code,
+                    not_active: c::NOT_ACTIVE.code,
+                }
+            }
+        }
+    }
+}
+
 /// What an update would store, or why it cannot.
 async fn plan_update(
     state: &AppState,
     doc: &TrustTask<Value>,
-    checked: &update::Payload,
+    v: V,
+    id: &str,
     prepare: bool,
 ) -> Result<(Value, Value), TrustTaskOutcome> {
-    use update::error_codes as c;
-    let id = checked.config_id.as_str();
+    let c = UpdateCodes::at(v);
     let current = match state.room_storage.config(id).await {
         Ok(Some(c)) => c,
         Ok(None) => {
             return Err(refuse(
                 doc,
-                c::NOT_FOUND.code,
+                c.not_found,
                 format!("no storage config `{id}`"),
                 None,
             ));
@@ -485,7 +665,7 @@ async fn plan_update(
     {
         return Err(refuse(
             doc,
-            c::KIND_IMMUTABLE.code,
+            c.kind_immutable,
             format!(
                 "`{id}` stores to `{}`; a config's kind never changes — create another config",
                 kind_of(&current["settings"])
@@ -499,7 +679,7 @@ async fn plan_update(
     if state_of(&current) != "active" && beyond_label {
         return Err(refuse(
             doc,
-            c::NOT_ACTIVE.code,
+            c.not_active,
             format!(
                 "`{id}` is {}; only its label can change",
                 state_of(&current)
@@ -526,7 +706,7 @@ async fn plan_update(
             if held.get(id).is_some_and(|h| h.files > 0) {
                 return Err(refuse(
                     doc,
-                    c::LOCATION_IMMUTABLE.code,
+                    c.location_immutable,
                     format!(
                         "blobs on `{id}` are found by {}; it cannot move while it holds any — \
                          create a config at the new location and migrate the rooms",
@@ -549,9 +729,10 @@ async fn plan_update(
         {
             return Err(settings_refusal(
                 doc,
-                c::INVALID_SETTINGS.code,
-                c::AUTH_NOT_ALLOWED.code,
-                c::UNKNOWN_ACCOUNT.code,
+                v,
+                c.invalid,
+                c.not_allowed,
+                c.unknown,
                 e,
             ));
         }
@@ -576,22 +757,28 @@ async fn plan_update(
     Ok((current, next))
 }
 
-/// `vtc/storage/configs/update/0.1`.
+/// `vtc/storage/configs/update/{0.1,0.2}`.
 async fn handle_update(
     state: &AppState,
     ctx: &JoinAuthCtx,
     doc: TrustTask<Value>,
+    v: V,
 ) -> TrustTaskOutcome {
     let actor = match rooms_admin(state, ctx, &doc).await {
         Ok(a) => a,
         Err(reject) => return reject,
     };
-    let checked: update::Payload = match parse_spec_payload(&doc) {
-        Ok(p) => p,
-        Err(reject) => return reject,
+    let (id, reason) = match v {
+        V::One => match parse_spec_payload::<update::Payload>(&doc) {
+            Ok(p) => (p.config_id.to_string(), p.reason.to_string()),
+            Err(reject) => return reject,
+        },
+        V::Two => match parse_spec_payload::<update2::Payload>(&doc) {
+            Ok(p) => (p.config_id.to_string(), p.reason.to_string()),
+            Err(reject) => return reject,
+        },
     };
-    let id = checked.config_id.as_str().to_string();
-    if let Err(reject) = plan_update(state, &doc, &checked, false).await {
+    if let Err(reject) = plan_update(state, &doc, v, &id, false).await {
         return reject;
     }
     if let Err(reject) = super::acl_tasks::settle_consent_gate(
@@ -609,7 +796,7 @@ async fn handle_update(
     }
 
     let guard = state.room_storage.lock().await;
-    let (previous, mut next) = match plan_update(state, &doc, &checked, true).await {
+    let (previous, mut next) = match plan_update(state, &doc, v, &id, true).await {
         Ok(p) => p,
         Err(reject) => return reject,
     };
@@ -630,11 +817,191 @@ async fn handle_update(
             previous: Some(previous),
             current: next.clone(),
             approvers: crate::admin_actions::executing_approvers(state).await,
-            reason: checked.reason.as_str().to_string(),
+            reason,
         },
     )
     .await;
-    respond::<update::Response>(&doc, json!({ "config": next }))
+    let body = json!({ "config": config_at(v, next) });
+    match v {
+        V::One => respond::<update::Response>(&doc, body),
+        V::Two => respond::<update2::Response>(&doc, body),
+    }
+}
+
+// ─── credentials ─────────────────────────────────────────────────────────
+
+/// Why a credential cannot be set on `id` now, before anything is opened (item 1):
+/// the host does not permit `sealed`, no such config, or one not on `sealed`.
+async fn credential_refusal(
+    state: &AppState,
+    doc: &TrustTask<Value>,
+    id: &str,
+) -> Result<Value, TrustTaskOutcome> {
+    use set::error_codes as c;
+    if !state.room_storage.host_auth().sealed {
+        return Err(refuse(
+            doc,
+            c::AUTH_NOT_ALLOWED.code,
+            "this community's host does not permit `sealed` authentication; move the config \
+             to a permitted mode with vtc/storage/configs/update",
+            None,
+        ));
+    }
+    let config = match state.room_storage.config(id).await {
+        Ok(Some(c)) => c,
+        Ok(None) => {
+            return Err(refuse(
+                doc,
+                c::NOT_FOUND.code,
+                format!("no storage config `{id}`"),
+                None,
+            ));
+        }
+        Err(e) => return Err(app_error_to_reject(doc, &e)),
+    };
+    if mode_of(&config) != Some("sealed") {
+        return Err(refuse(
+            doc,
+            c::NOT_SEALED_MODE.code,
+            format!(
+                "`{id}` does not use `sealed` authentication; a VTA account's credential is \
+                 the VTA's, and an ambient config has none"
+            ),
+            None,
+        ));
+    }
+    Ok(config)
+}
+
+/// Open the request's sealed block as `config`'s credential (item 2), refusing under
+/// the declared codes. The refusal never quotes the cleartext.
+fn open_sealed(
+    state: &AppState,
+    doc: &TrustTask<Value>,
+    config: &Value,
+    checked: &set::Payload,
+) -> Result<crate::rooms::storage_credentials::OpenedCredential, TrustTaskOutcome> {
+    use set::error_codes as c;
+    let Some(sealed) = state.room_storage.sealed_credentials() else {
+        return Err(app_error_to_reject(
+            doc,
+            &vti_common::error::AppError::ServiceError {
+                status: axum::http::StatusCode::SERVICE_UNAVAILABLE,
+                message: "this community cannot keep a sealed credential: its signing key is \
+                          not loaded"
+                    .into(),
+            },
+        ));
+    };
+    sealed
+        .open(
+            checked.config_id.as_str(),
+            kind_of(&config["settings"]),
+            checked.sealed.as_str(),
+            checked.digest_multibase.as_str(),
+        )
+        .map_err(|e| match e {
+            SealedRefusal::CannotOpen(why) => refuse(doc, c::CANNOT_OPEN.code, why, None),
+            SealedRefusal::Invalid(why) => refuse(doc, c::INVALID_CREDENTIAL.code, why, None),
+        })
+}
+
+/// `vtc/storage/credentials/set/0.2`: a `sealed` config's long-lived credential, sealed
+/// to this community in the administrator's client. Parked for the other holders'
+/// consent like every storage change; on execution every check runs again, the
+/// credential replaces (destroys) any before it, the config is probed with it, and the
+/// audit trail records its fingerprint — never the credential.
+async fn handle_credentials_set(
+    state: &AppState,
+    ctx: &JoinAuthCtx,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    let actor = match rooms_admin(state, ctx, &doc).await {
+        Ok(a) => a,
+        Err(reject) => return reject,
+    };
+    let checked: set::Payload = match parse_spec_payload(&doc) {
+        Ok(p) => p,
+        Err(reject) => return reject,
+    };
+    let id = checked.config_id.to_string();
+    let config = match credential_refusal(state, &doc, &id).await {
+        Ok(c) => c,
+        Err(reject) => return reject,
+    };
+    if let Err(reject) = open_sealed(state, &doc, &config, &checked) {
+        return reject;
+    }
+
+    if let Err(reject) = super::acl_tasks::settle_consent_gate(
+        state,
+        &actor,
+        &doc,
+        Act::ChangeStorage,
+        &id,
+        &format!("Set the storage credential of {id}"),
+        &format!("Set the storage credential of {id}"),
+    )
+    .await
+    {
+        return reject;
+    }
+
+    let guard = state.room_storage.lock().await;
+    let config = match credential_refusal(state, &doc, &id).await {
+        Ok(c) => c,
+        Err(reject) => return reject,
+    };
+    let opened = match open_sealed(state, &doc, &config, &checked) {
+        Ok(o) => o,
+        Err(reject) => return reject,
+    };
+    let Some(sealed) = state.room_storage.sealed_credentials() else {
+        return app_error_to_reject(
+            &doc,
+            &vti_common::error::AppError::Internal("sealed credentials went away".into()),
+        );
+    };
+    let previous = sealed.get(&id).await.ok().flatten().map(|c| c.fingerprint);
+    let stored = match sealed.put(&id, opened).await {
+        Ok(s) => s,
+        Err(e) => return app_error_to_reject(&doc, &e),
+    };
+    // A fresh backend over the new credential; every room-scoped credential minted from
+    // the old one goes with the old backend.
+    if let Err(e) = state.room_storage.put_config(config.clone()).await {
+        return app_error_to_reject(&doc, &e);
+    }
+    drop(guard);
+
+    audit(
+        state,
+        &actor.did,
+        RoomStorageChangedData {
+            event: "credentialSet".into(),
+            config_id: id.clone(),
+            room_id: None,
+            previous: previous.map(|f| json!({ "fingerprint": f })),
+            current: json!({ "fingerprint": stored.fingerprint, "setAt": stored.set_at }),
+            approvers: crate::admin_actions::executing_approvers(state).await,
+            reason: checked.reason.to_string(),
+        },
+    )
+    .await;
+    // Item 6: probe with the new credential, and say how it went.
+    let probe_ok = run_probe(state, &id)
+        .await
+        .ok()
+        .and_then(|p| p["ok"].as_bool());
+    let credential_state = match state.room_storage.credential_state(&config).await {
+        Ok(c) => c,
+        Err(e) => return app_error_to_reject(&doc, &e),
+    };
+    let mut body = json!({ "configId": id, "credentialState": credential_state });
+    if let Some(ok) = probe_ok {
+        body["probeOk"] = json!(ok);
+    }
+    respond::<set::Response>(&doc, body)
 }
 
 // ─── retire ──────────────────────────────────────────────────────────────

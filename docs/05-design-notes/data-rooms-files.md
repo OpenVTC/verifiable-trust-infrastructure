@@ -710,20 +710,36 @@ stolen credential is useless off that network.
 - The console shows both queues in one list.
 
 **Ambient identity** (`auth: ambient`) is allowed where the VTC runs on the
-target cloud, with the VTC applying the same per-room downscoping itself
-(`AssumeRole` with a session policy; a Credential Access Boundary). It is weaker
-in one respect worth stating: issuance is not audited or rate-limited by the
-VTA, and anything on the host that can reach the instance metadata endpoint can
-use the role.
+target cloud, with the VTC applying the same per-room downscoping itself. It is
+weaker in one respect worth stating: issuance is not audited or rate-limited by
+the VTA, and anything on the host that can reach the instance metadata endpoint
+can use the role. So whether it exists at all is the **host operator's** choice,
+not the administrators' (`vtc/storage/configs/create/0.2` item 9):
+`[rooms.files.auth] ambient = true`. Absent, a create or update naming it is
+refused `authNotAllowed` (`details.reason: disabledByHost`), and a config already
+on it reports its credential `notAllowed` and stores nothing until an update moves
+it to a permitted mode (`update/0.2` item 8).
 
 **Fallback, discouraged: `sealed`.** For a VTC with no runtime link to a VTA
-(`vta-external-accounts.md` needs one), an access key can be stored on the VTC:
-- **Set**: sealed in the administrator's browser with `sealed_transfer` to the
-  VTC, sent as `vtc/storage/credentials/set/0.1`.
-- **Store**: re-encrypted at rest under a key derived from the VTC's own secret.
-- **Never returned**: shown only as a fingerprint.
-- **Excluded from backup**: a VTC backup carries the VTC's key bundle.
-- **Re-entered after a restore.**
+(`vta-external-accounts.md` needs one), a long-lived credential can be stored on
+the VTC, again only where the host permits it (`[rooms.files.auth] sealed = true`):
+- **Set**: sealed in the administrator's client with `sealed_transfer` to the
+  VTC's DID (the X25519 derivation of its Ed25519 key), as a
+  `SealedStorageCredential` naming its config, sent as
+  `vtc/storage/credentials/set/0.2` — today from `cnm storage credentials set`;
+  the console shows that command rather than taking the credential in a page.
+- **Checked as received**: against the specification's schema, its `kind` against
+  the config's and its `configId` against the request's (a block sealed for one
+  config cannot be replayed into another).
+- **Store**: encrypted at rest under the VTC's storage key, in its own keyspace
+  (`storage_credentials`).
+- **Never returned**: shown only as a fingerprint, HMAC-SHA-256 under a key
+  derived from the VTC's secret. Never logged or audited; the audit row carries
+  the fingerprint.
+- **Excluded from backup**, and destroyed when a backup is imported: a restored
+  `sealed` config reports `required` until it is set again.
+- **Destroyed** when replaced, and when the config's `auth` leaves `sealed`. The
+  parked action that carried the sealed block drops it when the action closes.
 
 It protects against every administrator, through every surface the VTC offers.
 It does **not** protect against whoever operates the machine, who can
@@ -731,6 +747,28 @@ reconstruct the key, because the process must be able to use it, and the VTC
 has no TEE. The console marks a `sealed` config with that sentence. A deployment
 where administrators and operators are the same people should treat this mode
 as unavailable.
+
+**Room-scoped credentials** (`create/0.2`, the section of that name), as
+`vtc-service/src/rooms/storage_auth/` implements them for `ambient` and `sealed`:
+
+| Backend and mode | How a room's credential is made | Signed by |
+|---|---|---|
+| `s3`, `ambient` | STS `AssumeRole` of the config's `roleArn` (else `[rooms.files.auth] aws_role_arn`, else the ambient identity's own role), `DurationSeconds` 900, an inline session policy written by a JSON encoder | SigV4 presigned requests made in the VTC |
+| `s3`, `sealed`, AWS | STS `GetFederationToken` with the same policy, signed by the stored key | the same |
+| `s3`, `sealed`, R2 / B2 / MinIO (or a temporary pair) | none: the key presigns single objects under the room's prefix, ≤ 15 min | the same |
+| `gcs`, `ambient` | the machine's token (application default credentials; impersonating `[rooms.files.auth] gcs_service_account` with a 900 s lifetime when named) exchanged at Google's STS under a Credential Access Boundary | the downscoped bearer token |
+| `gcs`, `sealed` | a token minted from the service-account key at Google's own token endpoint (never the key file's `token_uri`), exchanged the same way | the same |
+
+Each credential covers one (config, scope, access): a scope is one room's prefix,
+or the probe's `probe/`, never the bucket; an access is read, write (with the two
+multipart actions on S3) or delete, so a download never holds a write. The session
+policy and the access boundary name only object actions and predefined object
+roles. Every credential is dropped 15 minutes after it was obtained whatever the
+provider granted, kept in memory only, and dropped with the config's backend when
+the config changes. When one cannot be had the operation fails; the unscoped
+authority is never used in its place, and a probe says which step failed.
+`aws:SourceIp` is added when the host names its egress
+(`[rooms.files.auth] aws_source_ip`).
 
 **Least privilege at the backend**, which `external/accounts/setup` generates
 and the probe checks:
@@ -746,9 +784,10 @@ For every config: kind, label, health (the last `BlobStore::health` probe and
 the last successful put, get and delete), rooms assigned, files, bytes,
 capacity, pending deletions, and credential state:
 - `vta-account eu-s3-primary · active · 14 rooms holding credentials`;
-- `ambient`;
+- `ambient` (with the room credentials it holds now);
 - `sealed · fingerprint ab12…`, with the operator warning;
-- `credential required`.
+- `credential required`;
+- `notAllowed`: a mode the host no longer permits.
 
 For a VTA account it links to the account's page, with its model, probe
 history, bindings and generated cloud-side setup. On Walrus it also shows the

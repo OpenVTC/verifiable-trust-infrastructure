@@ -1,11 +1,17 @@
-// Where this community keeps its rooms' files — `vtc/storage/configs/*/0.1` and
+// Where this community keeps its rooms' files — `vtc/storage/configs/{list,get,
+// create,update}/0.2`, `vtc/storage/configs/{retire,probe}/0.1` and
 // `vtc/rooms/storage/{assign,migrate}/0.1` (docs/05-design-notes/data-rooms-files.md §7).
 //
 // A config is a named backend; every room is assigned to one, which receives
 // its new uploads, and every file remembers the config it was written to, so
 // moving a room strands nothing. None of these tasks sends or returns a
-// credential: an S3 config names an external account at the community's VTA,
-// which issues one presigned request per object and holds the authority itself.
+// credential. An S3 config through a VTA account names an external account at the
+// community's VTA, which issues one presigned request per object and holds the
+// authority itself. `ambient` (the machine's own cloud identity, S3 optionally
+// assuming a named role) and `sealed` (a credential the community keeps) are its
+// host operator's to permit; with either, the community mints a credential scoped to
+// one room for at most 15 minutes. A sealed credential is never typed into this
+// console: it is sealed to the community in `cnm` (`cnm storage credentials set`).
 //
 // Reads and the probe answer a holder of `vtc.rooms.admin`. Creating, changing
 // and retiring a config, and moving a room, decide where members' files go, so
@@ -29,10 +35,10 @@ import type {
   StorageCredentialState,
 } from "./wire-types";
 
-export const STORAGE_LIST_TASK = "https://trusttasks.org/spec/vtc/storage/configs/list/0.1";
-export const STORAGE_GET_TASK = "https://trusttasks.org/spec/vtc/storage/configs/get/0.1";
-export const STORAGE_CREATE_TASK = "https://trusttasks.org/spec/vtc/storage/configs/create/0.1";
-export const STORAGE_UPDATE_TASK = "https://trusttasks.org/spec/vtc/storage/configs/update/0.1";
+export const STORAGE_LIST_TASK = "https://trusttasks.org/spec/vtc/storage/configs/list/0.2";
+export const STORAGE_GET_TASK = "https://trusttasks.org/spec/vtc/storage/configs/get/0.2";
+export const STORAGE_CREATE_TASK = "https://trusttasks.org/spec/vtc/storage/configs/create/0.2";
+export const STORAGE_UPDATE_TASK = "https://trusttasks.org/spec/vtc/storage/configs/update/0.2";
 export const STORAGE_RETIRE_TASK = "https://trusttasks.org/spec/vtc/storage/configs/retire/0.1";
 export const STORAGE_PROBE_TASK = "https://trusttasks.org/spec/vtc/storage/configs/probe/0.1";
 export const ROOM_STORAGE_ASSIGN_TASK = "https://trusttasks.org/spec/vtc/rooms/storage/assign/0.1";
@@ -149,6 +155,25 @@ export const KIND_MEANS: Record<string, string> = {
 };
 
 /**
+ * What a `sealed` config is labelled with wherever it is shown
+ * (`vtc/storage/configs/create/0.2` item 9, `get/0.2` item 5).
+ */
+export const SEALED_WARNING =
+  "A stored credential protects against every administrator, but not against whoever operates the machine this community runs on: they can recover it.";
+
+/** The command that seals a `sealed` config's credential to the community and sets it.
+ *  The console never takes the credential itself. */
+export function credentialSetCommand(configId: string): string {
+  return `cnm storage credentials set --config ${configId} --file <credential.json> --reason "…"`;
+}
+
+/** Whether a config stores nothing until someone acts: no credential yet, or a mode
+ *  the host no longer permits. */
+export function needsAttention(c: StorageCredentialState): boolean {
+  return c.status === "required" || c.status === "notAllowed";
+}
+
+/**
  * How the config authenticates, never with a credential (§7.6):
  * `vta-account community/eu-s3 · 14 rooms holding credentials`, `ambient`,
  * `sealed · fingerprint …`, `credential required`, or — for `local` — none.
@@ -163,12 +188,19 @@ export function describeCredential(c: StorageCredentialState): string {
           : "";
       return `VTA account ${name}${rooms}`;
     }
-    case "ambient":
-      return "this machine's cloud identity";
+    case "ambient": {
+      const rooms =
+        c.roomsHoldingCredentials !== undefined ? ` · ${c.roomsHoldingCredentials} holding room credentials` : "";
+      return `this machine's cloud identity${rooms}`;
+    }
     case "sealed":
-      return c.fingerprint ? `stored credential · ${c.fingerprint.slice(0, 12)}…` : "stored credential";
+      return c.fingerprint
+        ? `stored credential · ${c.fingerprint.slice(0, 12)}… — recoverable by this machine's operator`
+        : "stored credential — recoverable by this machine's operator";
     case "required":
       return "credential required";
+    case "notAllowed":
+      return "a mode this community's host no longer permits — change how it authenticates";
     case "none":
       return "none needed";
     default:
@@ -180,6 +212,10 @@ export function describeCredential(c: StorageCredentialState): string {
 export const CONFIG_ID_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/;
 /** S3 bucket naming, as the spec checks it. */
 export const BUCKET_PATTERN = /^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$/;
+/** GCS bucket naming, as the spec checks it. */
+export const GCS_BUCKET_PATTERN = /^[a-z0-9][a-z0-9._-]{1,220}[a-z0-9]$/;
+/** An AWS IAM role ARN, in any partition (`AwsRoleArn`). */
+export const ROLE_ARN_PATTERN = /^arn:aws(-[a-z]+)*:iam::[0-9]{12}:role\/[A-Za-z0-9+=,.@_/-]{1,512}$/;
 /** An object-key prefix ending in `/` (`ObjectPrefix`). Through a VTA account the
  *  VTA's scope accepts lowercase segments only, so the form asks for those. */
 export const PREFIX_PATTERN = /^(?:[a-z0-9][a-z0-9._-]*\/)+$/;

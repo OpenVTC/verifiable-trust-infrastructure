@@ -103,6 +103,7 @@ mod removal;
 mod removal_notice_didcomm;
 mod renewal;
 mod room_rate_limits;
+mod room_storage_auth;
 mod room_storage_configs;
 mod room_usage_reports;
 mod rotation;

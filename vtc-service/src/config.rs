@@ -591,6 +591,81 @@ pub struct RoomFilesConfig {
     /// 8 MiB/s; never below 64 KiB/s.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub migration_max_bytes_per_second: Option<u64>,
+    /// Which storage authentication modes this host permits beyond `vta-account`
+    /// (`[rooms.files.auth]`, `vtc/storage/configs/create/0.2` item 9). Absent, neither
+    /// `ambient` nor `sealed` is offered: both put backend authority on this machine,
+    /// so whether they exist at all is the host operator's choice, never the
+    /// administrators'.
+    #[serde(default, skip_serializing_if = "StorageAuthHostConfig::is_default")]
+    pub auth: StorageAuthHostConfig,
+}
+
+/// `[rooms.files.auth]`: the storage authentication modes this host permits and how
+/// its ambient identity is used (`vtc/storage/configs/create/0.2` items 9–10,
+/// "Room-scoped credentials"). Every member is optional and off by default, so a
+/// configuration written before these modes existed starts unchanged.
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub struct StorageAuthHostConfig {
+    /// Permit `ambient`: configs that use this machine's own cloud identity (an
+    /// instance role, workload identity), always downscoped to one room's prefix for
+    /// at most 15 minutes. Default `false`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub ambient: bool,
+    /// Permit `sealed`: a long-lived storage credential set with
+    /// `vtc/storage/credentials/set` and kept here, encrypted at rest. It protects the
+    /// credential from every administrator, never from whoever operates this machine.
+    /// Default `false`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub sealed: bool,
+    /// The IAM role an `ambient` `s3` config assumes when it names no `roleArn`.
+    /// Absent, the ambient identity's own role.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub aws_role_arn: Option<String>,
+    /// This host's stable egress address, added to every AWS session policy as an
+    /// `aws:SourceIp` condition (an IP address or CIDR block).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub aws_source_ip: Option<String>,
+    /// The Google service account an `ambient` `gcs` config's source token is minted
+    /// for, through IAM Credentials `generateAccessToken` with a 900-second lifetime.
+    /// Absent, the ambient identity's own token is used, and stops being used 15
+    /// minutes after it was obtained whatever lifetime Google gave it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gcs_service_account: Option<String>,
+}
+
+impl StorageAuthHostConfig {
+    fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+
+    /// Refuse a value that could not be used as written: a role ARN that is not one,
+    /// a source address that does not parse, a service account that is not an email.
+    pub fn validate(&self) -> Result<(), AppError> {
+        if let Some(arn) = &self.aws_role_arn
+            && !crate::rooms::storage_auth::aws::is_role_arn(arn)
+        {
+            return Err(AppError::Config(format!(
+                "[rooms.files.auth] aws_role_arn `{arn}` is not an IAM role ARN \
+                 (arn:aws:iam::<account>:role/<name>)"
+            )));
+        }
+        if let Some(ip) = &self.aws_source_ip
+            && ip.parse::<ipnetwork::IpNetwork>().is_err()
+        {
+            return Err(AppError::Config(format!(
+                "[rooms.files.auth] aws_source_ip `{ip}` is not an IP address or CIDR block"
+            )));
+        }
+        if let Some(sa) = &self.gcs_service_account
+            && !crate::rooms::storage_auth::gcs::is_service_account(sa)
+        {
+            return Err(AppError::Config(format!(
+                "[rooms.files.auth] gcs_service_account `{sa}` is not a service account email"
+            )));
+        }
+        Ok(())
+    }
 }
 
 fn is_default_direct(d: &vti_rooms::blobs::DirectTransfer) -> bool {
@@ -635,6 +710,7 @@ impl Default for RoomFilesConfig {
             sweep_interval_secs: default_blob_sweep_interval_secs(),
             direct_transfer: Default::default(),
             migration_max_bytes_per_second: None,
+            auth: StorageAuthHostConfig::default(),
         }
     }
 }
@@ -2152,6 +2228,9 @@ impl AppConfig {
         validate_cors(&self.cors)?;
         self.admin_ui.validate()?;
         self.witnesses.validate(self.vtc_did.as_deref())?;
+        if let Some(files) = &self.rooms.files {
+            files.auth.validate()?;
+        }
         Ok(())
     }
 

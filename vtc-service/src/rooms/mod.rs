@@ -17,7 +17,9 @@ pub mod files;
 pub mod handlers;
 pub mod migration;
 pub mod policy;
+pub mod storage_auth;
 pub mod storage_configs;
+pub mod storage_credentials;
 pub mod vta_access;
 pub mod vta_storage;
 

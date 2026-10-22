@@ -926,6 +926,23 @@ pub async fn run(
         ballot_box_link,
     ));
 
+    // Sealed storage credentials (`rooms::storage_credentials`): opened with the
+    // community's own key, kept encrypted under the storage key. Without either there
+    // is nowhere safe to keep one, and a `sealed` config reports its credential
+    // `required`.
+    if let (Some(signer), Some(key)) = (credential_signer.as_ref(), storage_key)
+        && let Some(seed) = signer.ed25519_seed()
+    {
+        let sealed = crate::rooms::storage_credentials::SealedCredentials::new(
+            store.keyspace(keyspaces::STORAGE_CREDENTIALS)?,
+            key,
+            &seed,
+        );
+        room_storage
+            .set_sealed_credentials(Arc::new(sealed))
+            .await?;
+    }
+
     // Room files through the community's VTA (`rooms::vta_storage`): the
     // presigned requests come sealed to this community's key-agreement key.
     if let (Some(link), Some(vtc_did), Some(secrets)) =

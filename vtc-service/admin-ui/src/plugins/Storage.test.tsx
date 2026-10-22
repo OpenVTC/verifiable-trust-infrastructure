@@ -28,9 +28,9 @@ vi.mock("@/lib/signed-act", async (original) => ({
 }));
 
 const T = "https://trusttasks.org/spec";
-const LIST = `${T}/vtc/storage/configs/list/0.1`;
-const GET = `${T}/vtc/storage/configs/get/0.1`;
-const CREATE = `${T}/vtc/storage/configs/create/0.1`;
+const LIST = `${T}/vtc/storage/configs/list/0.2`;
+const GET = `${T}/vtc/storage/configs/get/0.2`;
+const CREATE = `${T}/vtc/storage/configs/create/0.2`;
 const RETIRE = `${T}/vtc/storage/configs/retire/0.1`;
 const PROBE = `${T}/vtc/storage/configs/probe/0.1`;
 const ASSIGN = `${T}/vtc/rooms/storage/assign/0.1`;
@@ -114,6 +114,8 @@ const draft = (over: Record<string, unknown> = {}) => ({
   endpoint: "",
   prefix: "",
   pathStyle: false,
+  mode: "vta-account" as "vta-account" | "ambient" | "sealed",
+  roleArn: "",
   context: "community",
   account: "eu-s3",
   capacity: "",
@@ -158,6 +160,37 @@ describe("the config form's rules", () => {
     expect(draftErrors(draft({ kind: "local", root: "relative/dir" }), false).root).toBeTruthy();
   });
 
+  it("builds ambient and sealed configs, for S3 and Cloud Storage, with no secret", () => {
+    const role = "arn:aws:iam::123456789012:role/rooms-writer";
+    const ambient = draft({ mode: "ambient", roleArn: role, context: "", account: "" });
+    expect(draftErrors(ambient, false)).toEqual({});
+    expect(createPayload(ambient).auth).toEqual({ mode: "ambient", roleArn: role });
+    expect(createPayload(draft({ mode: "ambient", roleArn: "" })).auth).toEqual({ mode: "ambient" });
+    expect(draftErrors(draft({ mode: "ambient", roleArn: "not-an-arn" }), false).roleArn).toBeTruthy();
+    // The machine's own identity reaches AWS only.
+    expect(draftErrors(draft({ mode: "ambient", endpoint: "https://r2.example" }), false).endpoint).toBeTruthy();
+
+    const gcs = draft({ kind: "gcs", mode: "sealed", bucket: "rooms_eu", region: "", context: "", account: "" });
+    expect(draftErrors(gcs, false)).toEqual({});
+    expect(createPayload(gcs)).toMatchObject({
+      settings: { kind: "gcs", bucket: "rooms_eu" },
+      auth: { mode: "sealed" },
+    });
+    // Cloud Storage has no VTA account model.
+    expect(draftErrors(draft({ kind: "gcs", mode: "vta-account" }), false).mode).toBeTruthy();
+    expect(JSON.stringify(createPayload(gcs))).not.toMatch(/secret|private/i);
+  });
+
+  it("moves a config off a mode the host withdrew", () => {
+    const ambientConfig: StorageConfigRecord = { ...s3, auth: { mode: "ambient" } };
+    const d = draft({ mode: "vta-account", context: "community", account: "eu-s3", reason: "host withdrew ambient" });
+    expect(updatePayload(d, ambientConfig)).toEqual({
+      configId: "eu-s3",
+      reason: "host withdrew ambient",
+      auth: { mode: "vta-account", context: "community", account: "eu-s3" },
+    });
+  });
+
   it("sends only what changed, and never clears the default", () => {
     const d = draft({ label: "EU — S3", capacity: "2 MB", isDefault: false, reason: "grow" });
     expect(updatePayload(d, s3)).toEqual({
@@ -170,6 +203,33 @@ describe("the config form's rules", () => {
 });
 
 describe("Storage list", () => {
+  it("lists a config whose mode the host withdrew among those needing attention", async () => {
+    const withdrawn = {
+      config: { ...s3, id: "eu-amb", auth: { mode: "ambient" as const } },
+      facts: facts({ credential: { status: "notAllowed" } }),
+    };
+    mockFetch([...NAME_BOOK_ROUTES, taskRoute(LIST, { items: [items[0], withdrawn] })]);
+    mount("/rooms/storage");
+    const attention = (await screen.findByText("Needs a credential")).closest("section")!;
+    expect(within(attention).getByText("eu-amb")).toBeTruthy();
+    expect(within(attention).getByText(/a mode this community.s host no longer permits/)).toBeTruthy();
+  });
+
+  it("labels a sealed config as no protection against the machine's operator", async () => {
+    const sealed = {
+      config: { ...s3, id: "r2-archive", auth: { mode: "sealed" as const } },
+      facts: facts({
+        credential: { status: "sealed", fingerprint: "zQmT5NvUtoM5nWFfrQdVrFtvGfKFmG7AHE8P34isapyhCxX", setAt: "2026-10-10T10:30:00Z" },
+      }),
+      assignedRooms: [],
+      assignedRoomsTruncated: false,
+    };
+    mockFetch([...NAME_BOOK_ROUTES, taskRoute(GET, sealed)]);
+    mount("/rooms/storage/r2-archive");
+    expect(await screen.findByText(/whoever operates the machine/)).toBeTruthy();
+    expect(screen.getByText(/cnm storage credentials set --config r2-archive/)).toBeTruthy();
+  });
+
   it("lists configs needing a credential first, and never a credential", async () => {
     mockFetch([...NAME_BOOK_ROUTES, taskRoute(LIST, { items })]);
     mount("/rooms/storage");

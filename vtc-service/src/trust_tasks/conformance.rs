@@ -612,8 +612,33 @@ fn sample_storage_facts() -> serde_json::Value {
         "files": 3,
         "bytes": 1024,
         "pendingDeleteBytes": 0,
-        "credential": crate::rooms::storage_configs::credential_state(&sample_storage_config()),
+        "credential": { "status": "none" },
         "health": { "lastProbeAt": "2026-10-12T10:00:00Z", "lastProbeOk": true },
+    })
+}
+
+/// An `ambient` `s3` config at 0.2, assuming a named role.
+fn sample_storage_config_v2() -> serde_json::Value {
+    json!({
+        "id": "eu-s3-instance",
+        "label": "EU — S3 (instance role)",
+        "settings": { "kind": "s3", "region": "eu-west-1", "bucket": "northwind-rooms-eu" },
+        "auth": { "mode": "ambient", "roleArn": "arn:aws:iam::123456789012:role/northwind-rooms-writer" },
+        "state": "active",
+        "createdBy": "did:key:z6MkAdmin",
+        "createdAt": "2026-10-12T09:00:00Z",
+    })
+}
+
+/// Its facts at 0.2: a mode the host no longer permits reads `notAllowed`.
+fn sample_storage_facts_v2() -> serde_json::Value {
+    json!({
+        "rooms": 0,
+        "files": 0,
+        "bytes": 0,
+        "pendingDeleteBytes": 0,
+        "credential": { "status": "notAllowed" },
+        "health": {},
     })
 }
 
@@ -1579,6 +1604,67 @@ fn table() -> Vec<Conformance> {
             s::storage::configs::update::v0_1::Response,
             json!({ "configId": "local", "label": "Main disk", "reason": "renamed" }),
             json!({ "config": sample_storage_config() })
+        ),
+        // 0.2 (trust-tasks-tf #866): `roleArn`, `notAllowed`, sealed credentials.
+        checked!(
+            s::storage::configs::list::v0_2::Payload,
+            s::storage::configs::list::v0_2::Response,
+            json!({ "kind": "s3", "limit": 10 }),
+            json!({
+                "items": [{ "config": sample_storage_config_v2(), "facts": sample_storage_facts_v2() }],
+            })
+        ),
+        checked!(
+            s::storage::configs::get::v0_2::Payload,
+            s::storage::configs::get::v0_2::Response,
+            json!({ "configId": "eu-s3-instance" }),
+            json!({
+                "config": sample_storage_config_v2(),
+                "facts": {
+                    "rooms": 2, "files": 5, "bytes": 4096, "pendingDeleteBytes": 0,
+                    "credential": { "status": "ambient", "roomsHoldingCredentials": 1 },
+                    "health": {},
+                },
+                "assignedRooms": ["did:key:z6MkRoom"],
+                "assignedRoomsTruncated": false,
+            })
+        ),
+        checked!(
+            s::storage::configs::create::v0_2::Payload,
+            s::storage::configs::create::v0_2::Response,
+            json!({
+                "id": "eu-s3-instance",
+                "label": "EU — S3 (instance role)",
+                "settings": { "kind": "s3", "region": "eu-west-1", "bucket": "northwind-rooms-eu" },
+                "auth": { "mode": "ambient", "roleArn": "arn:aws:iam::123456789012:role/northwind-rooms-writer" },
+                "reason": "the community runs in the bucket's account",
+            }),
+            json!({ "config": sample_storage_config_v2() })
+        ),
+        checked!(
+            s::storage::configs::update::v0_2::Payload,
+            s::storage::configs::update::v0_2::Response,
+            json!({ "configId": "eu-s3-instance", "auth": { "mode": "sealed" }, "reason": "x" }),
+            json!({ "config": sample_storage_config_v2() })
+        ),
+        checked!(
+            s::storage::credentials::set::v0_2::Payload,
+            s::storage::credentials::set::v0_2::Response,
+            json!({
+                "configId": "r2-archive",
+                "sealed": format!("-----BEGIN VTA SEALED BUNDLE-----\n{}\n-----END VTA SEALED BUNDLE-----", "A".repeat(64)),
+                "digestMultibase": "zQmRq2ZwqJ3vWJrK1v8R8oPqWXhD4nVb1JmT9pV6uYh3aBc",
+                "reason": "evaluation only",
+            }),
+            json!({
+                "configId": "r2-archive",
+                "credentialState": {
+                    "status": "sealed",
+                    "fingerprint": "zQmT5NvUtoM5nWFfrQdVrFtvGfKFmG7AHE8P34isapyhCxX",
+                    "setAt": "2026-10-10T10:30:00Z",
+                },
+                "probeOk": true,
+            })
         ),
         checked!(
             s::storage::configs::retire::v0_1::Payload,

@@ -21,7 +21,7 @@ config-session = ["vta-sdk/config-session"]
 azure-secrets = ["vta-sdk/azure-secrets"]
 
 [dependencies]
-vta-sdk = { path = "../vta-sdk", version = "0.72", features = ["session", "crypto-provider", "acl-setup"] }
+vta-sdk = { path = "../vta-sdk", version = "0.72", features = ["session", "crypto-provider", "acl-setup", "sealed-transfer"] }
 # `agent-names` powers the global `--resolve-agent-names` flag; without it
 # the flag parses but can never resolve anything.
 vta-cli-common = { path = "../vta-cli-common", version = "0.45", features = [
@@ -41,6 +41,8 @@ trust-tasks-rs = { workspace = true }
 # certifications and cleartext-signed link statements.
 pgp = { workspace = true }
 chrono = { workspace = true }
+# A fresh identifier for each sealed storage credential (`storage.rs`).
+uuid = { workspace = true }
 # `cnm git link`: the authorisation URL is parsed before it is printed.
 url = { workspace = true }
 ratatui = { workspace = true }

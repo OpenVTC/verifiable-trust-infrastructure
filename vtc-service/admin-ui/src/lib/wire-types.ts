@@ -260,21 +260,22 @@ export type RoomLimitTarget = Schemas["VtcRoomsLimitsSetV0_1LimitTarget"];
 // ── Storage configs: where rooms' files are kept ────────────────────────
 //
 // The published `vtc/storage/configs/*` and `vtc/rooms/storage/{assign,migrate}` shapes.
-// None carries a secret: a credential is never sent to or returned by them.
-export type StorageConfigItem = Schemas["VtcStorageConfigsListV0_1ConfigItem"];
-export type StorageConfigsListResponse = Schemas["VtcStorageConfigsListV0_1Response"];
-export type StorageConfigRecord = Schemas["VtcStorageConfigsListV0_1StorageConfig"];
-export type StorageConfigFacts = Schemas["VtcStorageConfigsListV0_1StorageConfigFacts"];
-export type StorageCredentialState = Schemas["VtcStorageConfigsListV0_1CredentialState"];
-export type StorageConfigGetResponse = Schemas["VtcStorageConfigsGetV0_1Response"];
-export type StorageConfigCreatePayload = Schemas["VtcStorageConfigsCreateV0_1Payload"];
-export type StorageConfigCreateResponse = Schemas["VtcStorageConfigsCreateV0_1Response"];
-export type StorageConfigUpdatePayload = Schemas["VtcStorageConfigsUpdateV0_1Payload"];
-export type StorageConfigUpdateResponse = Schemas["VtcStorageConfigsUpdateV0_1Response"];
+// None carries a secret: a credential is never sent to or returned by them. The
+// console speaks `list`, `get`, `create` and `update` at 0.2 (`roleArn`, `notAllowed`).
+export type StorageConfigItem = Schemas["VtcStorageConfigsListV0_2ConfigItem"];
+export type StorageConfigsListResponse = Schemas["VtcStorageConfigsListV0_2Response"];
+export type StorageConfigRecord = Schemas["VtcStorageConfigsListV0_2StorageConfig"];
+export type StorageConfigFacts = Schemas["VtcStorageConfigsListV0_2StorageConfigFacts"];
+export type StorageCredentialState = Schemas["VtcStorageConfigsListV0_2CredentialState"];
+export type StorageConfigGetResponse = Schemas["VtcStorageConfigsGetV0_2Response"];
+export type StorageConfigCreatePayload = Schemas["VtcStorageConfigsCreateV0_2Payload"];
+export type StorageConfigCreateResponse = Schemas["VtcStorageConfigsCreateV0_2Response"];
+export type StorageConfigUpdatePayload = Schemas["VtcStorageConfigsUpdateV0_2Payload"];
+export type StorageConfigUpdateResponse = Schemas["VtcStorageConfigsUpdateV0_2Response"];
 export type StorageConfigRetireResponse = Schemas["VtcStorageConfigsRetireV0_1Response"];
 export type StorageConfigProbeResponse = Schemas["VtcStorageConfigsProbeV0_1Response"];
-export type StorageSettings = Schemas["VtcStorageConfigsCreateV0_1StorageSettings"];
-export type StorageAuth = Schemas["VtcStorageConfigsCreateV0_1StorageAuth"];
+export type StorageSettings = Schemas["VtcStorageConfigsCreateV0_2StorageSettings"];
+export type StorageAuth = Schemas["VtcStorageConfigsCreateV0_2StorageAuth"];
 export type RoomStorageAssignResponse = Schemas["VtcRoomsStorageAssignV0_1Response"];
 export type RoomStorageMigrateResponse = Schemas["VtcRoomsStorageMigrateV0_1Response"];
 

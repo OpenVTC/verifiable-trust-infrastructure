@@ -1168,10 +1168,10 @@ mod vta_account {
         );
     }
 
-    /// `ambient` and `sealed` are not served yet: refused naming the member, never
-    /// stored and left unusable.
+    /// `ambient` and `sealed` are the host's to permit (`[rooms.files.auth]`, off by
+    /// default): refused, never stored and left unusable.
     #[tokio::test]
-    async fn auth_other_than_a_vta_account_is_refused_for_now() {
+    async fn ambient_auth_is_refused_where_the_host_does_not_permit_it() {
         let mut fix = fixture().await;
         link(&fix).await;
         let a = requester(&mut fix).await;
@@ -1188,13 +1188,59 @@ mod vta_account {
             }),
         )
         .await;
+        // 0.1 declares no details for `authNotAllowed`; 0.2 names the reason.
         assert_eq!(
             tt_error_code(&reply),
-            Some(CREATE_INVALID_SETTINGS),
+            Some(CREATE_AUTH_NOT_ALLOWED),
             "{reply}"
         );
+    }
+
+    #[tokio::test]
+    async fn vtc_storage_configs_create_v0_2_refuses_an_account_the_vta_does_not_know() {
+        let mut fix = fixture().await;
+        link(&fix).await;
+        let a = requester(&mut fix).await;
+        let reply = send(
+            &fix,
+            &a,
+            "https://trusttasks.org/spec/vtc/storage/configs/create/0.2",
+            json!({
+                "id": "eu-r2",
+                "label": "EU R2",
+                "settings": s3(),
+                "auth": through_vta("somebody-elses"),
+                "reason": "x",
+            }),
+        )
+        .await;
         assert_eq!(
-            reply["payload"]["details"]["member"], "auth.mode",
+            tt_error_code(&reply),
+            Some(CREATE_V0_2_UNKNOWN_ACCOUNT),
+            "{reply}"
+        );
+    }
+
+    #[tokio::test]
+    async fn vtc_storage_configs_update_v0_2_refuses_an_account_the_vta_does_not_know() {
+        let mut fix = fixture().await;
+        link(&fix).await;
+        stored_s3(&fix, "eu-r2").await;
+        let a = requester(&mut fix).await;
+        let reply = send(
+            &fix,
+            &a,
+            "https://trusttasks.org/spec/vtc/storage/configs/update/0.2",
+            json!({
+                "configId": "eu-r2",
+                "auth": through_vta("somebody-elses"),
+                "reason": "x",
+            }),
+        )
+        .await;
+        assert_eq!(
+            tt_error_code(&reply),
+            Some(UPDATE_V0_2_UNKNOWN_ACCOUNT),
             "{reply}"
         );
     }

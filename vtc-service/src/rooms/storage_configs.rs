@@ -8,7 +8,8 @@
 //! reads, and keeps its identifier from ever naming another backend.
 //!
 //! What this module holds, in the `storage_configs` keyspace (backed up — nothing here
-//! is a secret):
+//! is a secret; a `sealed` config's credential is in `storage_credentials`, encrypted and
+//! never backed up, [`super::storage_credentials`]):
 //!
 //! - `config:<id>` — the config, as the generated `StorageConfig` of
 //!   `vtc/storage/configs/*`, parsed through it before every write;
@@ -31,9 +32,16 @@
 //! - `s3` with `auth: vta-account`: every object operation is one presigned request
 //!   the community's VTA issues for that object alone, under the room's prefix
 //!   ([`super::vta_storage`]). The community holds no storage credential.
+//! - `s3` and `gcs` with `auth: ambient` or `sealed`, where the host permits the mode
+//!   (`[rooms.files.auth]`): every operation through a credential scoped to one room's
+//!   prefix for at most 15 minutes, minted here ([`super::storage_auth`]). A store is
+//!   built per (config, room) — [`BlobStores::store_for`] — and the probe's under
+//!   `probe/`, so no credential ever reaches the bucket as a whole.
 //!
-//! `ambient` and `sealed` auth, `gcs` and `walrus` follow; until they do, a config
-//! using them is refused at creation rather than stored and left unusable.
+//! `walrus` follows; until it does, a config using it is refused at creation rather
+//! than stored and left unusable. A config whose mode the host no longer permits is
+//! kept, reports its credential `notAllowed`, and stores nothing until its `auth` is
+//! changed (`vtc/storage/configs/get/0.2` item 4, `update/0.2` item 8).
 
 use std::collections::HashMap;
 use std::path::{Component, Path, PathBuf};
@@ -43,13 +51,15 @@ use axum::http::StatusCode;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
-use trust_tasks_rs::specs::vtc::storage::configs::create::v0_1 as wire;
+use trust_tasks_rs::specs::vtc::storage::configs::create::v0_2 as wire;
 use vti_common::blob_store::BlobStore;
 use vti_common::blob_store::local::LocalDirStore;
 use vti_common::error::AppError;
 use vti_common::store::KeyspaceHandle;
 use vti_rooms::blobs::{BlobStores, ConfigHoldings, UploadTarget};
 
+use super::storage_auth::{HostAuth, Scope, aws, gcs};
+use super::storage_credentials::SealedCredentials;
 use super::vta_storage::{AccountCheck, VtaStorage};
 
 /// The declared error codes of the storage tasks, read off the generated
@@ -87,6 +97,30 @@ pub mod codes {
     pub const MIGRATE_ROOM_NOT_FOUND: &str = migrate::error_codes::ROOM_NOT_FOUND.code;
     pub const MIGRATE_CONFIG_NOT_ACTIVE: &str = migrate::error_codes::CONFIG_NOT_ACTIVE.code;
     pub const MIGRATE_CAPACITY_EXCEEDED: &str = migrate::error_codes::CAPACITY_EXCEEDED.code;
+
+    // 0.2 (trust-tasks-tf #866): ambient and sealed authentication.
+    use trust_tasks_rs::specs::vtc::storage::configs::{
+        create::v0_2 as create2, get::v0_2 as get2, list::v0_2 as list2, update::v0_2 as update2,
+    };
+    use trust_tasks_rs::specs::vtc::storage::credentials::set::v0_2 as set2;
+    pub const LIST_V0_2_INVALID_CURSOR: &str = list2::error_codes::INVALID_CURSOR.code;
+    pub const GET_V0_2_NOT_FOUND: &str = get2::error_codes::NOT_FOUND.code;
+    pub const CREATE_V0_2_EXISTS: &str = create2::error_codes::EXISTS.code;
+    pub const CREATE_V0_2_INVALID_SETTINGS: &str = create2::error_codes::INVALID_SETTINGS.code;
+    pub const CREATE_V0_2_AUTH_NOT_ALLOWED: &str = create2::error_codes::AUTH_NOT_ALLOWED.code;
+    pub const CREATE_V0_2_UNKNOWN_ACCOUNT: &str = create2::error_codes::UNKNOWN_ACCOUNT.code;
+    pub const UPDATE_V0_2_NOT_FOUND: &str = update2::error_codes::NOT_FOUND.code;
+    pub const UPDATE_V0_2_KIND_IMMUTABLE: &str = update2::error_codes::KIND_IMMUTABLE.code;
+    pub const UPDATE_V0_2_LOCATION_IMMUTABLE: &str = update2::error_codes::LOCATION_IMMUTABLE.code;
+    pub const UPDATE_V0_2_INVALID_SETTINGS: &str = update2::error_codes::INVALID_SETTINGS.code;
+    pub const UPDATE_V0_2_AUTH_NOT_ALLOWED: &str = update2::error_codes::AUTH_NOT_ALLOWED.code;
+    pub const UPDATE_V0_2_NOT_ACTIVE: &str = update2::error_codes::NOT_ACTIVE.code;
+    pub const UPDATE_V0_2_UNKNOWN_ACCOUNT: &str = update2::error_codes::UNKNOWN_ACCOUNT.code;
+    pub const SET_NOT_FOUND: &str = set2::error_codes::NOT_FOUND.code;
+    pub const SET_NOT_SEALED_MODE: &str = set2::error_codes::NOT_SEALED_MODE.code;
+    pub const SET_CANNOT_OPEN: &str = set2::error_codes::CANNOT_OPEN.code;
+    pub const SET_INVALID_CREDENTIAL: &str = set2::error_codes::INVALID_CREDENTIAL.code;
+    pub const SET_AUTH_NOT_ALLOWED: &str = set2::error_codes::AUTH_NOT_ALLOWED.code;
 
     // What rooms store and may store (`vtc/rooms/{get,usage,limits/set}`).
     use trust_tasks_rs::specs::vtc::rooms::{
@@ -132,13 +166,34 @@ pub struct Assignment {
     pub assigned_by: String,
 }
 
+/// Why `auth` is not accepted (`authNotAllowed`'s `details.reason` at 0.2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AuthRefusal {
+    /// Present on a `local` config, absent on any other, or `ambient` on `walrus`.
+    DoesNotFitKind,
+    /// `roleArn` on a kind other than `s3`.
+    RoleArnNotApplicable,
+    /// `ambient` or `sealed` on a host whose configuration does not permit it.
+    DisabledByHost,
+}
+
+impl AuthRefusal {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::DoesNotFitKind => "doesNotFitKind",
+            Self::RoleArnNotApplicable => "roleArnNotApplicable",
+            Self::DisabledByHost => "disabledByHost",
+        }
+    }
+}
+
 /// Why proposed settings were refused.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SettingsError {
     /// `invalidSettings`, naming the member.
     Invalid { member: String, reason: String },
-    /// `authNotAllowed`.
-    AuthNotAllowed(String),
+    /// `authNotAllowed`, and why.
+    AuthNotAllowed(AuthRefusal, String),
     /// `unknownAccount`: the VTA says the community may use no such account.
     UnknownAccount(String),
 }
@@ -153,23 +208,39 @@ pub fn state_of(record: &Value) -> &str {
     record.get("state").and_then(Value::as_str).unwrap_or("")
 }
 
-/// What a config's credential is, never the credential: the `CredentialState` of
-/// `vtc/_shared/0.1/room-storage`.
-pub fn credential_state(record: &Value) -> Value {
-    match record
+/// A config's `auth.mode`, if it has `auth`.
+pub fn mode_of(record: &Value) -> Option<&str> {
+    record
         .get("auth")
         .and_then(|a| a.get("mode"))
         .and_then(Value::as_str)
-    {
-        None => json!({ "status": "none" }),
-        Some("vta-account") => json!({
-            "status": "vta-account",
-            "context": record["auth"]["context"],
-            "account": record["auth"]["account"],
-        }),
-        Some("ambient") => json!({ "status": "ambient" }),
-        // No sealed credential is held by this build.
-        Some(_) => json!({ "status": "required" }),
+}
+
+/// What a config's backend is on this host now: one store for every room, or a
+/// backend that builds a store per scope with credentials scoped to it.
+#[derive(Clone)]
+enum Backend {
+    /// `local`, and `s3` through a VTA account (whose VTA scopes each request).
+    Shared(Arc<dyn BlobStore>),
+    S3(Arc<aws::S3Backend>),
+    Gcs(Arc<gcs::GcsBackend>),
+}
+
+impl Backend {
+    fn for_scope(&self, scope: Scope) -> Result<Arc<dyn BlobStore>, AppError> {
+        match self {
+            Self::Shared(s) => Ok(s.clone()),
+            Self::S3(b) => b.store(scope),
+            Self::Gcs(b) => b.store(scope),
+        }
+    }
+
+    fn rooms_holding(&self) -> Option<usize> {
+        match self {
+            Self::Shared(_) => None,
+            Self::S3(b) => Some(b.rooms_holding()),
+            Self::Gcs(b) => Some(b.rooms_holding()),
+        }
     }
 }
 
@@ -230,8 +301,12 @@ pub struct RoomStorage {
     community_did: String,
     /// Where a `local` root may be placed, canonicalized.
     local_bases: Vec<PathBuf>,
-    /// One store per config that has one.
-    stores: RwLock<HashMap<String, Arc<dyn BlobStore>>>,
+    /// One backend per config that has one.
+    stores: RwLock<HashMap<String, Backend>>,
+    /// What this host's operator permits (`[rooms.files.auth]`).
+    host: RwLock<HostAuth>,
+    /// Sealed credentials, once the community's key is loaded.
+    sealed: RwLock<Option<Arc<SealedCredentials>>>,
     /// The community's link to its VTA, once messaging is up: what a
     /// `vta-account` config's store asks for credentials.
     vta: RwLock<Option<Arc<VtaStorage>>>,
@@ -275,6 +350,8 @@ impl RoomStorage {
             community_did: community_did.unwrap_or_default().to_string(),
             local_bases: bases,
             stores: RwLock::new(HashMap::new()),
+            host: RwLock::new(HostAuth::default()),
+            sealed: RwLock::new(None),
             vta: RwLock::new(None),
             write_lock: tokio::sync::Mutex::new(()),
         });
@@ -304,7 +381,7 @@ impl RoomStorage {
 
         for record in this.configs().await? {
             let id = record["id"].as_str().unwrap_or_default().to_string();
-            match this.build_store(&record) {
+            match this.build_backend(&record).await {
                 Ok(Some(store)) => {
                     this.stores.write().expect("stores lock").insert(id, store);
                 }
@@ -353,6 +430,32 @@ impl RoomStorage {
         self.reload_stores().await
     }
 
+    /// What this host permits, from `[rooms.files.auth]`; the stores are rebuilt.
+    pub async fn set_host_auth(&self, host: HostAuth) -> Result<(), AppError> {
+        *self.host.write().expect("host lock") = host;
+        self.reload_stores().await
+    }
+
+    /// The host's permission now.
+    pub fn host_auth(&self) -> HostAuth {
+        self.host.read().expect("host lock").clone()
+    }
+
+    /// Attach the sealed credential store, and build the stores of the configs that use
+    /// it.
+    pub async fn set_sealed_credentials(
+        &self,
+        sealed: Arc<SealedCredentials>,
+    ) -> Result<(), AppError> {
+        *self.sealed.write().expect("sealed lock") = Some(sealed);
+        self.reload_stores().await
+    }
+
+    /// The sealed credential store, when the community has one.
+    pub fn sealed_credentials(&self) -> Option<Arc<SealedCredentials>> {
+        self.sealed.read().expect("sealed lock").clone()
+    }
+
     fn vta_storage(&self) -> Option<Arc<VtaStorage>> {
         self.vta.read().expect("vta lock").clone()
     }
@@ -362,7 +465,7 @@ impl RoomStorage {
     pub async fn reload_stores(&self) -> Result<(), AppError> {
         let mut fresh = HashMap::new();
         for record in self.configs().await? {
-            if let Ok(Some(store)) = self.build_store(&record) {
+            if let Ok(Some(store)) = self.build_backend(&record).await {
                 fresh.insert(record["id"].as_str().unwrap_or_default().to_string(), store);
             }
         }
@@ -405,6 +508,17 @@ impl RoomStorage {
     pub async fn put_config(&self, record: Value) -> Result<(), AppError> {
         checked(&record)?;
         let id = record["id"].as_str().unwrap_or_default().to_string();
+        // `auth` leaving `sealed` destroys the stored credential
+        // (`vtc/storage/configs/update/0.2` item 5).
+        if mode_of(&record) != Some("sealed")
+            && let Some(sealed) = self.sealed_credentials()
+            && self
+                .config(&id)
+                .await?
+                .is_some_and(|prev| mode_of(&prev) == Some("sealed"))
+        {
+            sealed.remove(&id).await?;
+        }
         if record["isDefault"].as_bool() == Some(true) {
             for mut other in self.configs().await? {
                 if other["id"].as_str() != Some(&id) && other["isDefault"].as_bool() == Some(true) {
@@ -416,7 +530,12 @@ impl RoomStorage {
                 }
             }
         }
-        let store = self.build_store(&record).map_err(AppError::Validation)?;
+        // A fresh backend: every room-scoped credential held for the old one is dropped
+        // with it (`update/0.2` item 5).
+        let store = self
+            .build_backend(&record)
+            .await
+            .map_err(AppError::Validation)?;
         self.ks.insert(config_key(&id), &record).await?;
         // A config created, changed or moved to another state: a hint for the
         // console's rooms pages, never the record (`crate::admin_events`).
@@ -433,17 +552,66 @@ impl RoomStorage {
         Ok(())
     }
 
-    /// The store a config writes to, if it has one now.
-    pub fn store(&self, id: &str) -> Option<Arc<dyn BlobStore>> {
+    fn backend(&self, id: &str) -> Option<Backend> {
         self.stores.read().expect("stores lock").get(id).cloned()
     }
 
-    /// Whether a config can authenticate to its backend now.
+    /// The store the probe writes with: scoped to `probe/`, never to a room or the
+    /// bucket.
+    pub fn store(&self, id: &str) -> Option<Arc<dyn BlobStore>> {
+        self.backend(id)?.for_scope(Scope::Probe).ok()
+    }
+
+    /// The store for one room of a config: a credential scoped to that room's prefix.
+    pub fn room_store(&self, id: &str, room_id: &str) -> Option<Arc<dyn BlobStore>> {
+        self.backend(id)?.for_scope(Scope::room(room_id)).ok()
+    }
+
+    /// Whether a config can authenticate to its backend now: its mode is permitted
+    /// here, and it has a store (a `sealed` one only with its credential set).
     pub fn usable(&self, record: &Value) -> bool {
-        credential_state(record)["status"] != "required"
+        mode_of(record).is_none_or(|m| self.host_auth().permits(m))
             && record["id"]
                 .as_str()
-                .is_some_and(|id| self.store(id).is_some())
+                .is_some_and(|id| self.backend(id).is_some())
+    }
+
+    /// What a config's credential is, never the credential: the `CredentialState` of
+    /// `vtc/_shared/0.2/room-storage`. A mode the host does not permit is `notAllowed`,
+    /// never usable (`get/0.2` item 4).
+    pub async fn credential_state(&self, record: &Value) -> Result<Value, AppError> {
+        let id = record["id"].as_str().unwrap_or_default();
+        let holding = self.backend(id).and_then(|b| b.rooms_holding());
+        let mut state = match mode_of(record) {
+            None => return Ok(json!({ "status": "none" })),
+            Some("vta-account") => {
+                return Ok(json!({
+                    "status": "vta-account",
+                    "context": record["auth"]["context"],
+                    "account": record["auth"]["account"],
+                }));
+            }
+            Some(m) if !self.host_auth().permits(m) => {
+                return Ok(json!({ "status": "notAllowed" }));
+            }
+            Some("ambient") => json!({ "status": "ambient" }),
+            Some("sealed") => match self.sealed_credentials() {
+                Some(sealed) => match sealed.get(id).await? {
+                    Some(c) => json!({
+                        "status": "sealed",
+                        "fingerprint": c.fingerprint,
+                        "setAt": c.set_at,
+                    }),
+                    None => return Ok(json!({ "status": "required" })),
+                },
+                None => return Ok(json!({ "status": "required" })),
+            },
+            Some(_) => return Ok(json!({ "status": "required" })),
+        };
+        if let Some(n) = holding {
+            state["roomsHoldingCredentials"] = json!(n);
+        }
+        Ok(state)
     }
 
     pub async fn assignment(&self, room_id: &str) -> Result<Option<Assignment>, AppError> {
@@ -529,7 +697,7 @@ impl RoomStorage {
             "files": holdings.files,
             "bytes": holdings.bytes,
             "pendingDeleteBytes": holdings.pending_delete_bytes,
-            "credential": credential_state(record),
+            "credential": self.credential_state(record).await?,
             "health": self.health(id).await?,
         }))
     }
@@ -567,21 +735,79 @@ impl RoomStorage {
         exclude: Option<&str>,
         prepare: bool,
     ) -> Result<(), SettingsError> {
-        match kind_of(settings) {
+        let kind = kind_of(settings);
+        // Item 3, then item 9: whether `auth` fits the kind, then whether this host
+        // permits its mode at all.
+        let mode = auth.and_then(|a| a["mode"].as_str());
+        if kind == "local" && auth.is_some() {
+            return Err(SettingsError::AuthNotAllowed(
+                AuthRefusal::DoesNotFitKind,
+                "a `local` config writes to this host's own disk and takes no `auth`".into(),
+            ));
+        }
+        if kind != "local" && auth.is_none() {
+            return Err(SettingsError::AuthNotAllowed(
+                AuthRefusal::DoesNotFitKind,
+                format!("a `{kind}` config needs `auth`"),
+            ));
+        }
+        if kind == "walrus" && mode == Some("ambient") {
+            return Err(SettingsError::AuthNotAllowed(
+                AuthRefusal::DoesNotFitKind,
+                "Walrus storage is paid for by a signer, which no ambient cloud identity provides"
+                    .into(),
+            ));
+        }
+        if kind != "s3" && auth.is_some_and(|a| a.get("roleArn").is_some()) {
+            return Err(SettingsError::AuthNotAllowed(
+                AuthRefusal::RoleArnNotApplicable,
+                "`roleArn` names an AWS role, and applies to an `s3` config only".into(),
+            ));
+        }
+        if let Some(m) = mode
+            && !self.host_auth().permits(m)
+        {
+            return Err(SettingsError::AuthNotAllowed(
+                AuthRefusal::DisabledByHost,
+                format!(
+                    "this community's host does not permit `{m}` authentication \
+                     ([rooms.files.auth] {m})"
+                ),
+            ));
+        }
+        match kind {
             "local" => self.validate_local(settings, auth, exclude, prepare).await,
             "s3" => self.validate_s3(settings, auth).await,
+            "gcs" => self.validate_gcs(auth),
             kind => Err(SettingsError::Invalid {
                 member: "settings.kind".into(),
                 reason: format!(
-                    "this community does not store files to `{kind}` yet; `local` and `s3` are \
-                     served"
+                    "this community does not store files to `{kind}` yet; `local`, `s3` and \
+                     `gcs` are served"
                 ),
             }),
         }
     }
 
-    /// An `s3` config: through a VTA account, the one mode served. Asks the VTA
-    /// whether the community may use the account here (item 5).
+    /// A `gcs` config: `ambient` or `sealed`, each through a downscoped token per room.
+    /// Google Cloud Storage has no VTA account model yet.
+    fn validate_gcs(&self, auth: Option<&Value>) -> Result<(), SettingsError> {
+        match auth.and_then(|a| a["mode"].as_str()) {
+            None => Err(SettingsError::AuthNotAllowed(
+                AuthRefusal::DoesNotFitKind,
+                "a `gcs` config needs `auth`".into(),
+            )),
+            Some("ambient") | Some("sealed") => Ok(()),
+            Some(mode) => Err(SettingsError::Invalid {
+                member: "auth.mode".into(),
+                reason: format!("`{mode}` is not served for `gcs` yet; use `ambient` or `sealed`"),
+            }),
+        }
+    }
+
+    /// An `s3` config. Through a VTA account, asks the VTA whether the community may
+    /// use the account here (item 5); on `ambient` or `sealed`, checks what the
+    /// community will sign requests for itself.
     async fn validate_s3(
         &self,
         settings: &Value,
@@ -589,22 +815,21 @@ impl RoomStorage {
     ) -> Result<(), SettingsError> {
         let Some(auth) = auth else {
             return Err(SettingsError::AuthNotAllowed(
-                "an `s3` config needs `auth`: the community holds no storage credential of its \
-                 own"
-                .into(),
+                AuthRefusal::DoesNotFitKind,
+                "an `s3` config needs `auth`".into(),
             ));
         };
         let mode = auth["mode"].as_str().unwrap_or_default();
+        let prefix = settings["prefix"].as_str().unwrap_or_default();
+        if mode == "ambient" || mode == "sealed" {
+            return validate_s3_self_signed(settings, auth, mode);
+        }
         if mode != "vta-account" {
             return Err(SettingsError::Invalid {
                 member: "auth.mode".into(),
-                reason: format!(
-                    "`{mode}` is not served yet; use `vta-account`, an external account at the \
-                     community's VTA"
-                ),
+                reason: format!("`{mode}` is not a storage authentication mode"),
             });
         }
-        let prefix = settings["prefix"].as_str().unwrap_or_default();
         if !prefix.is_empty() && !provider_prefix(prefix) {
             return Err(SettingsError::Invalid {
                 member: "settings.prefix".into(),
@@ -653,6 +878,7 @@ impl RoomStorage {
     ) -> Result<(), SettingsError> {
         if auth.is_some() {
             return Err(SettingsError::AuthNotAllowed(
+                AuthRefusal::DoesNotFitKind,
                 "a `local` config writes to this host's own disk and takes no `auth`".into(),
             ));
         }
@@ -728,19 +954,25 @@ fn checked(record: &Value) -> Result<(), AppError> {
 }
 
 impl RoomStorage {
-    /// The store a config writes to: `Ok(None)` for a config that has none on this
-    /// host now (a kind this build does not serve, or a VTA account with no link to
-    /// the VTA yet).
-    fn build_store(&self, record: &Value) -> Result<Option<Arc<dyn BlobStore>>, String> {
+    /// The backend a config writes to: `Ok(None)` for a config that has none on this
+    /// host now (a kind this build does not serve, a VTA account with no link to the
+    /// VTA yet, a mode the host does not permit, a `sealed` config with no credential).
+    async fn build_backend(&self, record: &Value) -> Result<Option<Backend>, String> {
         let settings = &record["settings"];
-        match kind_of(settings) {
-            "local" => {
+        let id = record["id"].as_str().unwrap_or_default();
+        let mode = mode_of(record);
+        let host = self.host_auth();
+        if mode.is_some_and(|m| !host.permits(m)) {
+            return Ok(None);
+        }
+        match (kind_of(settings), mode) {
+            ("local", _) => {
                 let root = settings["root"]
                     .as_str()
                     .ok_or("a local config has no root")?;
-                Ok(Some(Arc::new(LocalDirStore::new(root))))
+                Ok(Some(Backend::Shared(Arc::new(LocalDirStore::new(root)))))
             }
-            "s3" if record["auth"]["mode"] == "vta-account" => {
+            ("s3", Some("vta-account")) => {
                 let Some(link) = self.vta_storage() else {
                     return Ok(None);
                 };
@@ -761,11 +993,153 @@ impl RoomStorage {
                     settings["prefix"].as_str(),
                 )
                 .map_err(|e| e.to_string())?;
-                Ok(Some(Arc::new(store)))
+                Ok(Some(Backend::Shared(Arc::new(store))))
+            }
+            ("s3", Some("ambient")) => {
+                let target = aws::S3Target::from_settings(id, settings)?;
+                let role = record["auth"]["roleArn"]
+                    .as_str()
+                    .map(str::to_string)
+                    .or(host.aws_role_arn.clone());
+                let issuer = Arc::new(aws::AssumeRoleIssuer::new(&target.region, role));
+                Ok(Some(Backend::S3(Arc::new(aws::S3Backend::new(
+                    target,
+                    aws::S3Authority::Scoped(issuer),
+                    host.aws_source_ip.clone(),
+                    &self.community_did,
+                )))))
+            }
+            ("s3", Some("sealed")) => {
+                let Some(cred) = self.sealed_cleartext(id).await? else {
+                    return Ok(None);
+                };
+                let target = aws::S3Target::from_settings(id, settings)?;
+                let key = aws_credential_types::Credentials::new(
+                    cred["accessKeyId"].as_str().ok_or("no accessKeyId")?,
+                    cred["secretAccessKey"]
+                        .as_str()
+                        .ok_or("no secretAccessKey")?,
+                    cred["sessionToken"].as_str().map(str::to_string),
+                    None,
+                    "vtc-sealed",
+                );
+                // On AWS a long-lived key federates a scoped session; a store with no
+                // STS, or a temporary pair STS will not federate, only presigns.
+                let authority = if target.endpoint.is_none() && cred.get("sessionToken").is_none() {
+                    aws::S3Authority::Scoped(Arc::new(aws::FederationIssuer::new(
+                        &target.region,
+                        key,
+                    )))
+                } else {
+                    aws::S3Authority::PresignOnly(key)
+                };
+                Ok(Some(Backend::S3(Arc::new(aws::S3Backend::new(
+                    target,
+                    authority,
+                    host.aws_source_ip.clone(),
+                    &self.community_did,
+                )))))
+            }
+            ("gcs", Some("ambient")) => {
+                let target = gcs::GcsTarget::from_settings(id, settings)?;
+                Ok(Some(Backend::Gcs(Arc::new(gcs::GcsBackend::new(
+                    target,
+                    Arc::new(gcs::AmbientSource::new(host.gcs_service_account.clone())),
+                    vta_sdk::http::foreign_fetch_client(),
+                )))))
+            }
+            ("gcs", Some("sealed")) => {
+                let Some(cred) = self.sealed_cleartext(id).await? else {
+                    return Ok(None);
+                };
+                let target = gcs::GcsTarget::from_settings(id, settings)?;
+                let key = &cred["serviceAccountKey"];
+                let source = gcs::ServiceAccountSource::new(
+                    key["client_email"].as_str().ok_or("no client_email")?,
+                    key["private_key_id"].as_str().ok_or("no private_key_id")?,
+                    key["private_key"].as_str().ok_or("no private_key")?,
+                    vta_sdk::http::foreign_fetch_client(),
+                );
+                Ok(Some(Backend::Gcs(Arc::new(gcs::GcsBackend::new(
+                    target,
+                    Arc::new(source),
+                    vta_sdk::http::foreign_fetch_client(),
+                )))))
             }
             _ => Ok(None),
         }
     }
+
+    /// A `sealed` config's credential as stored, when it has one.
+    async fn sealed_cleartext(&self, id: &str) -> Result<Option<Value>, String> {
+        let Some(sealed) = self.sealed_credentials() else {
+            return Ok(None);
+        };
+        Ok(sealed
+            .get(id)
+            .await
+            .map_err(|e| e.to_string())?
+            .map(|c| c.cleartext))
+    }
+
+    /// Install a backend built outside, for tests (a stand-in STS, a loopback store).
+    #[cfg(feature = "test-support")]
+    pub fn install_s3_backend_for_test(&self, id: &str, backend: Arc<aws::S3Backend>) {
+        self.stores
+            .write()
+            .expect("stores lock")
+            .insert(id.to_string(), Backend::S3(backend));
+    }
+}
+
+/// An `s3` config the community signs for itself (`ambient`, `sealed`): its prefix
+/// must be one a presigned URL carries unescaped, an `endpoint` must be one this host
+/// may reach, and `ambient` authenticates to AWS S3 alone.
+fn validate_s3_self_signed(
+    settings: &Value,
+    auth: &Value,
+    mode: &str,
+) -> Result<(), SettingsError> {
+    let prefix = settings["prefix"].as_str().unwrap_or_default();
+    if !prefix.is_empty()
+        && !prefix
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "._-/".contains(c))
+    {
+        return Err(SettingsError::Invalid {
+            member: "settings.prefix".into(),
+            reason: "a prefix this community signs requests under is letters, digits, '.', \
+                     '_', '-' and '/'"
+                .into(),
+        });
+    }
+    if let Some(endpoint) = settings["endpoint"].as_str() {
+        if mode == "ambient" {
+            return Err(SettingsError::Invalid {
+                member: "settings.endpoint".into(),
+                reason: "ambient authentication assumes an AWS role, so it reaches AWS S3 \
+                         only; a store elsewhere needs `sealed` or a VTA account"
+                    .into(),
+            });
+        }
+        vta_sdk::http::guard_foreign_url(
+            endpoint,
+            vta_sdk::http::EndpointPolicy::process_default(),
+        )
+        .map_err(|e| SettingsError::Invalid {
+            member: "settings.endpoint".into(),
+            reason: format!("is not one this community will reach: {e}"),
+        })?;
+    }
+    if let Some(arn) = auth["roleArn"].as_str()
+        && !aws::is_role_arn(arn)
+    {
+        return Err(SettingsError::Invalid {
+            member: "auth.roleArn".into(),
+            reason: "is not an IAM role ARN".into(),
+        });
+    }
+    Ok(())
 }
 
 /// Whether `prefix` is what a VTA account's scope accepts (`ProviderObjectPrefix`):
@@ -832,9 +1206,9 @@ impl BlobStores for RoomStorage {
     async fn store_for(
         &self,
         config_id: &str,
-        _room_id: &str,
+        room_id: &str,
     ) -> Result<Arc<dyn BlobStore>, AppError> {
-        self.store(config_id).ok_or_else(|| {
+        self.room_store(config_id, room_id).ok_or_else(|| {
             unavailable(format!(
                 "storage config `{config_id}` has no usable store on this host now"
             ))
@@ -863,20 +1237,43 @@ mod tests {
         assert!(!overlaps(Path::new("/a/b"), Path::new("/a/c")));
     }
 
-    #[test]
-    fn credential_state_never_carries_a_secret() {
-        assert_eq!(credential_state(&json!({}))["status"], "none");
+    #[tokio::test]
+    async fn credential_state_never_carries_a_secret_and_says_not_allowed() {
+        let dir = tempfile::tempdir().unwrap();
+        let reg = registry(dir.path()).await;
+        let state = |r: Value| {
+            let reg = reg.clone();
+            async move { reg.credential_state(&r).await.unwrap() }
+        };
+        assert_eq!(state(json!({})).await["status"], "none");
+        // Off by default: the host has not permitted either.
         assert_eq!(
-            credential_state(&json!({"auth": {"mode": "ambient"}}))["status"],
+            state(json!({"auth": {"mode": "ambient"}})).await["status"],
+            "notAllowed"
+        );
+        assert_eq!(
+            state(json!({"auth": {"mode": "sealed"}})).await["status"],
+            "notAllowed"
+        );
+        reg.set_host_auth(HostAuth {
+            ambient: true,
+            sealed: true,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+        assert_eq!(
+            state(json!({"auth": {"mode": "ambient"}})).await["status"],
             "ambient"
         );
         assert_eq!(
-            credential_state(&json!({"auth": {"mode": "sealed"}}))["status"],
+            state(json!({"auth": {"mode": "sealed"}})).await["status"],
             "required"
         );
-        let vta = credential_state(
-            &json!({"auth": {"mode": "vta-account", "context": "community", "account": "eu"}}),
-        );
+        let vta = state(
+            json!({"auth": {"mode": "vta-account", "context": "community", "account": "eu"}}),
+        )
+        .await;
         assert_eq!(
             vta,
             json!({"status": "vta-account", "context": "community", "account": "eu"})
@@ -969,7 +1366,10 @@ mod tests {
                 true
             )
             .await,
-            Err(SettingsError::AuthNotAllowed(_))
+            Err(SettingsError::AuthNotAllowed(
+                AuthRefusal::DoesNotFitKind,
+                _
+            ))
         ));
         assert!(matches!(
             reg.validate(
@@ -979,7 +1379,10 @@ mod tests {
                 true
             )
             .await,
-            Err(SettingsError::AuthNotAllowed(_))
+            Err(SettingsError::AuthNotAllowed(
+                AuthRefusal::DoesNotFitKind,
+                _
+            ))
         ));
         // Through a VTA account, but this host has no link to its VTA.
         assert!(matches!(
@@ -993,10 +1396,113 @@ mod tests {
             Err(SettingsError::Invalid { member, .. }) if member == "auth"
         ));
         assert!(matches!(
-            reg.validate(&json!({"kind": "gcs", "bucket": "abc"}), None, None, true)
+            reg.validate(&json!({"kind": "walrus"}), Some(&json!({"mode": "vta-account", "context": "c", "account": "a"})), None, true)
                 .await,
             Err(SettingsError::Invalid { member, .. }) if member == "settings.kind"
         ));
+    }
+
+    /// Item 3 and item 9, in that order: `auth` must fit the kind, and the host must
+    /// permit its mode.
+    #[tokio::test]
+    async fn ambient_and_sealed_are_the_hosts_to_permit() {
+        let dir = tempfile::tempdir().unwrap();
+        let reg = registry(dir.path()).await;
+        let s3 = json!({"kind": "s3", "region": "eu-west-1", "bucket": "northwind-rooms"});
+        let gcs = json!({"kind": "gcs", "bucket": "northwind-rooms"});
+        let ambient = json!({"mode": "ambient"});
+        let role = json!({"mode": "ambient", "roleArn": "arn:aws:iam::123456789012:role/r"});
+        for (settings, auth) in [
+            (&s3, &ambient),
+            (&gcs, &ambient),
+            (&s3, &json!({"mode": "sealed"})),
+        ] {
+            assert!(matches!(
+                reg.validate(settings, Some(auth), None, false).await,
+                Err(SettingsError::AuthNotAllowed(
+                    AuthRefusal::DisabledByHost,
+                    _
+                ))
+            ));
+        }
+        assert!(matches!(
+            reg.validate(&gcs, Some(&role), None, false).await,
+            Err(SettingsError::AuthNotAllowed(
+                AuthRefusal::RoleArnNotApplicable,
+                _
+            ))
+        ));
+        assert!(matches!(
+            reg.validate(&json!({"kind": "walrus"}), Some(&ambient), None, false)
+                .await,
+            Err(SettingsError::AuthNotAllowed(
+                AuthRefusal::DoesNotFitKind,
+                _
+            ))
+        ));
+        reg.set_host_auth(HostAuth {
+            ambient: true,
+            sealed: true,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+        reg.validate(&s3, Some(&role), None, false).await.unwrap();
+        reg.validate(&gcs, Some(&ambient), None, false)
+            .await
+            .unwrap();
+        reg.validate(&gcs, Some(&json!({"mode": "sealed"})), None, false)
+            .await
+            .unwrap();
+        // Ambient is an AWS identity: no other store.
+        let r2 = json!({"kind": "s3", "region": "auto", "bucket": "abc", "endpoint": "https://x.r2.cloudflarestorage.com"});
+        assert!(matches!(
+            reg.validate(&r2, Some(&ambient), None, false).await,
+            Err(SettingsError::Invalid { member, .. }) if member == "settings.endpoint"
+        ));
+        reg.validate(&r2, Some(&json!({"mode": "sealed"})), None, false)
+            .await
+            .unwrap();
+    }
+
+    /// An ambient config gets a store per room — and the probe one under `probe/` —
+    /// never a shared one.
+    #[tokio::test]
+    async fn an_ambient_config_has_a_store_per_room() {
+        let dir = tempfile::tempdir().unwrap();
+        let reg = registry(dir.path()).await;
+        reg.set_host_auth(HostAuth {
+            ambient: true,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+        let record = json!({
+            "id": "eu-amb",
+            "label": "EU",
+            "settings": {"kind": "s3", "region": "eu-west-1", "bucket": "northwind-rooms"},
+            "auth": {"mode": "ambient", "roleArn": "arn:aws:iam::123456789012:role/r"},
+            "state": "active",
+            "createdBy": "did:key:zAdmin",
+            "createdAt": chrono::Utc::now().to_rfc3339(),
+        });
+        reg.put_config(record.clone()).await.unwrap();
+        assert!(reg.usable(&record));
+        let a = reg.room_store("eu-amb", "did:key:zA").unwrap();
+        let b = reg.room_store("eu-amb", "did:key:zB").unwrap();
+        assert!(!Arc::ptr_eq(&a, &b));
+        assert!(Arc::ptr_eq(
+            &a,
+            &reg.room_store("eu-amb", "did:key:zA").unwrap()
+        ));
+        // The host withdraws permission: the config stays, stores nothing, says so.
+        reg.set_host_auth(HostAuth::default()).await.unwrap();
+        assert!(!reg.usable(&record));
+        assert!(reg.room_store("eu-amb", "did:key:zA").is_none());
+        assert_eq!(
+            reg.credential_state(&record).await.unwrap()["status"],
+            "notAllowed"
+        );
     }
 
     #[test]

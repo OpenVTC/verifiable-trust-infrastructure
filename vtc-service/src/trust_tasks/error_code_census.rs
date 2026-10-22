@@ -497,6 +497,39 @@ fn witnesses() -> Vec<Witness> {
             "room_storage_configs.rs",
             "vtc_rooms_storage_migrate_refuses_with_its_declared_codes"
         ),
+        // `vtc/storage/credentials/set/0.2` (trust-tasks-tf #866). The configs tasks'
+        // codes are the same at 0.2 as at 0.1 (a code names its task, not its version),
+        // witnessed above; `room_storage_auth.rs` drives them at 0.2 as well.
+        witness!(
+            s::storage::credentials::set::v0_2::error_codes::NOT_FOUND,
+            crate::rooms::storage_configs::codes::SET_NOT_FOUND,
+            "room_storage_auth.rs",
+            "vtc_storage_credentials_set_refuses_with_its_declared_codes"
+        ),
+        witness!(
+            s::storage::credentials::set::v0_2::error_codes::NOT_SEALED_MODE,
+            crate::rooms::storage_configs::codes::SET_NOT_SEALED_MODE,
+            "room_storage_auth.rs",
+            "vtc_storage_credentials_set_refuses_with_its_declared_codes"
+        ),
+        witness!(
+            s::storage::credentials::set::v0_2::error_codes::CANNOT_OPEN,
+            crate::rooms::storage_configs::codes::SET_CANNOT_OPEN,
+            "room_storage_auth.rs",
+            "vtc_storage_credentials_set_refuses_with_its_declared_codes"
+        ),
+        witness!(
+            s::storage::credentials::set::v0_2::error_codes::INVALID_CREDENTIAL,
+            crate::rooms::storage_configs::codes::SET_INVALID_CREDENTIAL,
+            "room_storage_auth.rs",
+            "vtc_storage_credentials_set_refuses_with_its_declared_codes"
+        ),
+        witness!(
+            s::storage::credentials::set::v0_2::error_codes::AUTH_NOT_ALLOWED,
+            crate::rooms::storage_configs::codes::SET_AUTH_NOT_ALLOWED,
+            "room_storage_auth.rs",
+            "vtc_storage_credentials_set_refuses_with_its_declared_codes"
+        ),
         witness!(
             s::storage::configs::create::v0_1::error_codes::UNKNOWN_ACCOUNT,
             crate::rooms::storage_configs::codes::CREATE_UNKNOWN_ACCOUNT,

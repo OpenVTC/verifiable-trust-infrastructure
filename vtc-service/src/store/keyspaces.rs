@@ -83,6 +83,12 @@ pub use vti_rooms::blobs::ROOM_BLOBS_KEYSPACE as ROOM_BLOBS;
 /// **Backed up**: nothing in it is a secret, and the blob index names its configs.
 pub const STORAGE_CONFIGS: &str = "storage_configs";
 
+/// `sealed` storage configs' credentials (`crate::rooms::storage_credentials`), one per
+/// config, encrypted at rest under the storage key. **Never backed up**
+/// (`vtc/storage/credentials/set/0.2` item 3), and cleared when a backup is imported,
+/// so a restored config reports its credential `required` until it is set again (item 7).
+pub const STORAGE_CREDENTIALS: &str = "storage_credentials";
+
 /// The rooms this community **owns** (`crate::rooms::community`): one row per room
 /// (its label, the signing key the community's VTA holds for it, who created it), one per
 /// member admitted or offered admission, with the offer's credentials and, for a while
@@ -285,6 +291,7 @@ pub const ALL: &[&str] = &[
     ROOM_BLOBS,
     ROOM_BLOB_TRANSFERS,
     STORAGE_CONFIGS,
+    STORAGE_CREDENTIALS,
     COMMUNITY_ROOMS,
     DIRECTORY,
     ELECTIONS,
@@ -484,6 +491,9 @@ pub const EXCLUDED_FROM_BACKUP: &[&str] = &[
     // A mirror of the registry, like `registry_records`: rebuilt by the next
     // reconciliation against the restored `git_ns`.
     GIT_NS_PROJECTION,
+    // Sealed storage credentials: a long-lived secret no export may carry. A restored
+    // `sealed` config asks for its credential again.
+    STORAGE_CREDENTIALS,
 ];
 
 #[cfg(test)]
@@ -500,11 +510,11 @@ mod tests {
         // keyspaces (`VETTING_PCS_SPENT`, `VETTING_PCS_ISSUE`) from the
         // `zkp-pcs` development branch, plus the two room-file keyspaces
         // `AppState::room_files` holds (`ROOM_BLOBS`, `ROOM_BLOB_TRANSFERS`), plus the
-        // one `AppState::room_storage` holds (`STORAGE_CONFIGS`), plus the one
+        // two `AppState::room_storage` holds (`STORAGE_CONFIGS`, `STORAGE_CREDENTIALS`), plus the one
         // `AppState::community_rooms` holds (`COMMUNITY_ROOMS`), plus the one
         // `AppState::directory` holds (`DIRECTORY`), plus the one
         // `AppState::elections` holds (`ELECTIONS`).
-        assert_eq!(ALL.len(), 55, "ALL must list every AppState keyspace");
+        assert_eq!(ALL.len(), 56, "ALL must list every AppState keyspace");
     }
 
     /// The backup census (P3.9): every keyspace is either backed up or

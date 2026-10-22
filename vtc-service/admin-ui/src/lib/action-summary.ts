@@ -197,6 +197,14 @@ export const PINNED_TEMPLATE_DIGESTS: Readonly<Record<string, string>> = Object.
     "zQmZWR9odGdRi5noLhZxgzSrNk3YRF5ZWH4JaNVBYMqMKja",
   [pinKey("rooms.storage.migrate", `${SPEC}/vtc/rooms/storage/migrate/0.1`)]:
     "zQmZamMHumTwGimMGYsuEGBoxvuYmEozzpkSStPjrZHrShX",
+  // 0.2 (ambient and sealed auth), and setting a sealed credential: approvers see
+  // the config and the sealed block's digest, never the credential.
+  [pinKey("storage.config.create", `${SPEC}/vtc/storage/configs/create/0.2`)]:
+    "zQmSJcki3MwXF8HBUbPpwZScUm4HuzqomYhA825hYGLbmyN",
+  [pinKey("storage.config.update", `${SPEC}/vtc/storage/configs/update/0.2`)]:
+    "zQmbqMzuGGxuGv2dmp6qVDQnZTeGvJSYU93eg8JiaxdirAi",
+  [pinKey("storage.credential.set", `${SPEC}/vtc/storage/credentials/set/0.2`)]:
+    "zQmTzhrbBfZEaijm2CMzMvNzeYzPBA4RW1DBJRWPTwJc3XL",
 });
 
 function pinKey(kind: string, typeUri: string): string {

@@ -144,6 +144,14 @@
   background: var(--warning-soft);
 }
 
+/* A `sealed` config's label (`vtc/storage/configs/create/0.2` item 9): no
+   protection against whoever operates the community's machine. */
+.storage-warning {
+  border-left: 3px solid var(--warning);
+  background: var(--warning-soft);
+  padding: 0.5rem 0.75rem;
+}
+
 /* Community rooms (`plugins/rooms/Community*.tsx`): the create form's tier and
    a member's actions, each a group of choices with a line under it. */
 .community-choices {

@@ -106,6 +106,9 @@ pub const KIND_MEMBER_MAKE_MEMBERSHIP: &str = "member.makeMembership";
 pub const KIND_STORAGE_CONFIG_CREATE: &str = "storage.config.create";
 /// Changing a storage config (`vtc/storage/configs/update/0.1`).
 pub const KIND_STORAGE_CONFIG_UPDATE: &str = "storage.config.update";
+/// Setting a `sealed` storage config's credential (`vtc/storage/credentials/set/0.2`).
+/// Approvers see the config and the sealed block's digest, never the credential.
+pub const KIND_STORAGE_CREDENTIAL_SET: &str = "storage.credential.set";
 /// Retiring a storage config (`vtc/storage/configs/retire/0.1`).
 pub const KIND_STORAGE_CONFIG_RETIRE: &str = "storage.config.retire";
 /// Pointing a room's new uploads at another config (`vtc/rooms/storage/assign/0.1`).
@@ -163,6 +166,9 @@ const MEMBERS_MAKE_MEMBERSHIP: &str = crate::trust_tasks::admission_tasks::MAKE_
 const STORAGE_CREATE: &str = crate::trust_tasks::storage_tasks::CREATE_TYPE;
 const STORAGE_UPDATE: &str = crate::trust_tasks::storage_tasks::UPDATE_TYPE;
 const STORAGE_RETIRE: &str = crate::trust_tasks::storage_tasks::RETIRE_TYPE;
+const STORAGE_CREATE_V0_2: &str = crate::trust_tasks::storage_tasks::CREATE_V0_2_TYPE;
+const STORAGE_UPDATE_V0_2: &str = crate::trust_tasks::storage_tasks::UPDATE_V0_2_TYPE;
+const STORAGE_CREDENTIAL_SET: &str = crate::trust_tasks::storage_tasks::CREDENTIALS_SET_TYPE;
 const ROOM_STORAGE_ASSIGN: &str = crate::trust_tasks::storage_tasks::ASSIGN_TYPE;
 const ROOM_STORAGE_MIGRATE: &str = crate::trust_tasks::storage_tasks::MIGRATE_TYPE;
 const GROUPS_MEMBERS_ADD: &str = crate::trust_tasks::group_tasks::MEMBERS_ADD_TYPE;
@@ -195,6 +201,12 @@ const STORAGE_CREATE_EFFECT: &str = "A new place this community can keep its mem
                                      it, or at once if it becomes the default.";
 const STORAGE_UPDATE_EFFECT: &str = "The storage config {configId} changes. Rooms assigned to it \
                                      store their new files under the new settings.";
+const STORAGE_CREDENTIAL_SET_EFFECT: &str = "The storage config {configId} stores with a \
+                                             long-lived credential this community keeps: the \
+                                             one sealed in the block whose digest is {digest}, \
+                                             replacing any before it. No administrator can read \
+                                             it back; whoever operates the machine the community \
+                                             runs on can.";
 const STORAGE_RETIRE_EFFECT: &str = "The storage config {configId} takes no new rooms or uploads. \
                                      Files already on it stay readable until they are moved off.";
 const ROOM_STORAGE_ASSIGN_EFFECT: &str = "Room {roomId}'s new files are stored on {configId}. \
@@ -747,6 +759,47 @@ pub const TEMPLATES: &[Template] = &[
         ],
     },
     Template {
+        kind: KIND_STORAGE_CONFIG_CREATE,
+        type_uri: STORAGE_CREATE_V0_2,
+        title: "Add the storage config {id}",
+        effect: STORAGE_CREATE_EFFECT,
+        fields: &[
+            f("id", "/id", "text"),
+            f("label", "/label", "text"),
+            f("settings", "/settings", "text"),
+            f("auth", "/auth", "text"),
+            f("capacityBytes", "/capacityBytes", "text"),
+            f("isDefault", "/isDefault", "text"),
+            f("reason", "/reason", "text"),
+        ],
+    },
+    Template {
+        kind: KIND_STORAGE_CONFIG_UPDATE,
+        type_uri: STORAGE_UPDATE_V0_2,
+        title: "Change the storage config {configId}",
+        effect: STORAGE_UPDATE_EFFECT,
+        fields: &[
+            f("configId", "/configId", "text"),
+            f("label", "/label", "text"),
+            f("settings", "/settings", "text"),
+            f("auth", "/auth", "text"),
+            f("capacityBytes", "/capacityBytes", "text"),
+            f("isDefault", "/isDefault", "text"),
+            f("reason", "/reason", "text"),
+        ],
+    },
+    Template {
+        kind: KIND_STORAGE_CREDENTIAL_SET,
+        type_uri: STORAGE_CREDENTIAL_SET,
+        title: "Set the sealed credential of the storage config {configId}",
+        effect: STORAGE_CREDENTIAL_SET_EFFECT,
+        fields: &[
+            f("configId", "/configId", "text"),
+            f("digest", "/digestMultibase", "text"),
+            f("reason", "/reason", "text"),
+        ],
+    },
+    Template {
         kind: KIND_STORAGE_CONFIG_RETIRE,
         type_uri: STORAGE_RETIRE,
         title: "Retire the storage config {configId}",
@@ -1105,6 +1158,21 @@ pub const PINNED: &[(&str, &str, &str)] = &[
         KIND_ROOM_STORAGE_MIGRATE,
         ROOM_STORAGE_MIGRATE,
         "zQmZamMHumTwGimMGYsuEGBoxvuYmEozzpkSStPjrZHrShX",
+    ),
+    (
+        KIND_STORAGE_CONFIG_CREATE,
+        STORAGE_CREATE_V0_2,
+        "zQmSJcki3MwXF8HBUbPpwZScUm4HuzqomYhA825hYGLbmyN",
+    ),
+    (
+        KIND_STORAGE_CONFIG_UPDATE,
+        STORAGE_UPDATE_V0_2,
+        "zQmbqMzuGGxuGv2dmp6qVDQnZTeGvJSYU93eg8JiaxdirAi",
+    ),
+    (
+        KIND_STORAGE_CREDENTIAL_SET,
+        STORAGE_CREDENTIAL_SET,
+        "zQmTzhrbBfZEaijm2CMzMvNzeYzPBA4RW1DBJRWPTwJc3XL",
     ),
 ];
 
