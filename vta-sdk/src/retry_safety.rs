@@ -617,6 +617,11 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     // Keying it would buy a dedup record against a duplicate that costs
     // nothing, at the price of failing a retry the caller legitimately needs.
     (trust_tasks::TASK_ROOMS_KEYS_PRESENT_0_2, RetrySafe),
+    // Signs and records the disclosure, like `rooms/keys/present`: a retry makes a
+    // second presentation of the same claims for the same audience and nonce,
+    // which the verifier accepts at most once, and a second record of a
+    // disclosure that happened. Nothing a duplicate confers is new.
+    (trust_tasks::TASK_VAULT_CREDENTIALS_PRESENT_0_1, RetrySafe),
     // Reads group state and returns plaintext. Nothing is written, and a second
     // execution is indistinguishable from one.
     (trust_tasks::TASK_ROOMS_KEYS_OPEN_0_1, ReadOnly),

@@ -700,7 +700,9 @@ aws-smithy-types = ">=1.6.1, <1.9"
 # `kindNotServed` (trust-tasks-tf #843).
 # 0.32.8: vtc/config/did-hosting/list/0.1 (trust-tasks-tf #849) — the VTA's
 # hosting servers the console offers for `dids.webvh_server`.
-trust-tasks-rs = { version = "0.33.1", default-features = false, features = [
+# 0.33.2: vault/credentials/present/0.1 and the `credentialPresent` capability
+# (trust-tasks-tf #871).
+trust-tasks-rs = { version = "0.33.2", default-features = false, features = [
   "validate",
   "all-specs",
 ] }

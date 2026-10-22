@@ -891,6 +891,12 @@ pub const TASK_VAULT_CREDENTIALS_QUERY_0_1: &str =
 pub const TASK_VAULT_CREDENTIALS_GET_0_1: &str =
     "https://trusttasks.org/spec/vault/credentials/get/0.1";
 
+/// `spec/vault/credentials/present/0.1` — present one stored credential to a
+/// verifier the caller names, bound to its nonce, disclosing only the named
+/// claims (requires `CredentialPresent`).
+pub const TASK_VAULT_CREDENTIALS_PRESENT_0_1: &str =
+    "https://trusttasks.org/spec/vault/credentials/present/0.1";
+
 // Credential archival lifecycle (openvtc extension). Mirrors the
 // password-vault lifecycle above but gated on `CredentialWrite` (not
 // `VaultWrite`) — removing a holder's credentials is a higher-trust action
@@ -2827,6 +2833,7 @@ pub const ALL_URIS: &[&str] = &[
     TASK_VTA_CREDENTIALS_ISSUE_0_2,
     TASK_VTA_CREDENTIALS_REVOKE_0_1,
     TASK_VTA_CREDENTIALS_LIST_0_1,
+    TASK_VAULT_CREDENTIALS_PRESENT_0_1,
     // Agent-memory slice (spec/vta/memory/*)
     TASK_VTA_MEMORY_PUT_0_1,
     TASK_VTA_MEMORY_LIST_0_1,

@@ -2568,6 +2568,10 @@ dispatch_table! {
         [ None Metadata false ],
     vta_sdk::trust_tasks::TASK_VAULT_CREDENTIALS_GET_0_1 => cred_vault::handle_get
         [ None Metadata false ],
+    // Signs as the credential's subject and records the disclosure (the
+    // specification's `mutating` / `secret` / acts-as-subject).
+    vta_sdk::trust_tasks::TASK_VAULT_CREDENTIALS_PRESENT_0_1 => cred_vault::handle_present
+        [ Mutating Secret true ],
     // Credential archival lifecycle (openvtc extension; CredentialWrite-gated).
     vta_sdk::trust_tasks::TASK_VAULT_CREDENTIALS_ARCHIVE_0_1 => cred_vault::handle_archive
         [ Mutating None false ],
@@ -4583,14 +4587,15 @@ mod record_retention {
     }
 
     /// With no `expiresAt` the retention is the window itself, unchanged by
-    /// the cap.
+    /// the cap: since trust-tasks-rs 0.33.2 `record_expiry` already includes
+    /// the skew allowance the document is accepted inside.
     #[test]
     fn without_an_expiry_the_window_is_the_retention() {
         let now = now();
         assert_eq!(
             retain_until(&doc(now, None), now).expect("a bounded policy always yields one"),
-            now + TimeDelta::minutes(10),
-            "`issuedAt + max_age`, and the cap adds only the skew allowance"
+            now + TimeDelta::minutes(10) + trust_tasks_rs::DEFAULT_SKEW,
+            "`issuedAt + max_age + skew`, the bound acceptance runs to"
         );
     }
 }

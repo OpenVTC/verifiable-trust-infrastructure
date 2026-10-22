@@ -357,6 +357,19 @@ pub enum Capability {
     /// Last on purpose: a variant inserted before another shifts its implicit
     /// discriminant, which is a breaking change to a published enum.
     PcsTrustee,
+    /// Presenting a held credential to a verifier the caller names —
+    /// `vault/credentials/present/0.1`: the VTA builds a presentation of a
+    /// credential it holds, bound to one audience and nonce, disclosing only
+    /// the named claims, and signs it as the credential's subject.
+    ///
+    /// Registered upstream as `credentialPresent`. Not [`Capability::Sign`] and
+    /// not conferred by it, for the reason given on [`Capability::RoomPresent`];
+    /// not [`Capability::VaultRead`] either, because reading a credential is not
+    /// disclosing it to a third party under its subject's signature. A
+    /// presentation is the principal's word, so it is derived only by the roles
+    /// that act as the principal — [`Role::Admin`] and [`Role::Initiator`] —
+    /// and never by [`Role::Application`], as for [`Capability::WitnessRequest`].
+    CredentialPresent,
 }
 
 /// Capabilities that no role derives, and that an entry therefore holds only
@@ -498,6 +511,7 @@ pub fn derived_capabilities_for_role(role: &Role) -> Vec<Capability> {
             Capability::PcsVoter,
             Capability::PcsTrustee,
             Capability::WitnessRequest,
+            Capability::CredentialPresent,
         ],
         Role::Initiator => vec![
             Capability::VaultRead,
@@ -523,6 +537,7 @@ pub fn derived_capabilities_for_role(role: &Role) -> Vec<Capability> {
             Capability::PcsVoter,
             Capability::PcsTrustee,
             Capability::WitnessRequest,
+            Capability::CredentialPresent,
         ],
         // `application` is the role a memory agent runs as — `vta-agent-memory`
         // grants exactly it, deliberately, so the memory service is not the
@@ -2034,6 +2049,22 @@ mod tests {
         assert!(!role_has_capability(&Role::Monitor, cap));
         assert!(!is_additive(cap));
         assert_eq!(serde_json::to_value(cap).unwrap(), "witness-request");
+    }
+
+    /// `credential-present` is the principal's: derived by the roles that act as the
+    /// principal, never by `application` or `reader`, never implied by `sign` or
+    /// `vault-read` (`vault/credentials/present/0.1`, *Authorization*), and spelled as
+    /// `device/_shared` 0.2 registers it.
+    #[test]
+    fn credential_present_is_the_principals_and_neither_sign_nor_vault_read() {
+        let cap = Capability::CredentialPresent;
+        assert!(role_has_capability(&Role::Admin, cap));
+        assert!(role_has_capability(&Role::Initiator, cap));
+        assert!(!role_has_capability(&Role::Application, cap));
+        assert!(!role_has_capability(&Role::Reader, cap));
+        assert!(!role_has_capability(&Role::Monitor, cap));
+        assert!(!is_additive(cap));
+        assert_eq!(serde_json::to_value(cap).unwrap(), "credential-present");
     }
 
     #[test]

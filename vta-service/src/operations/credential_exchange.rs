@@ -1395,6 +1395,275 @@ fn render_path(path: Vec<ClaimPathSegment>) -> Vec<String> {
         .collect()
 }
 
+// ─── vault/credentials/present ───────────────────────────────────────────────
+
+/// Why `vault/credentials/present/0.1` refused — one variant per code the task
+/// declares, plus the agent's own failures.
+#[derive(Debug)]
+#[non_exhaustive]
+pub enum PresentToError {
+    /// No credential under the id this caller may present, or no key of its
+    /// subject this caller may use — indistinguishably (*Custody scope*).
+    NotFound,
+    /// Revoked, suspended, outside its validity period, archived or deleted.
+    NotPresentable,
+    /// A format this agent cannot present to a named verifier.
+    FormatUnsupported,
+    /// Claims the request names that the credential does not carry.
+    ClaimNotHeld(Vec<String>),
+    /// The credential cannot disclose less than all its claims, and these were
+    /// left out of the request.
+    WouldOverDisclose(Vec<String>),
+    /// Anything else.
+    App(AppError),
+}
+
+impl From<AppError> for PresentToError {
+    fn from(e: AppError) -> Self {
+        Self::App(e)
+    }
+}
+
+/// A presentation made for a named verifier, and the claims it discloses.
+#[derive(Debug)]
+pub struct PresentedTo {
+    /// A compact SD-JWT (string) or a Data Integrity VP (object).
+    pub presentation: Value,
+    /// Every subject claim the presentation discloses.
+    pub disclosed: Vec<String>,
+}
+
+/// What a stored credential can disclose.
+struct SubjectClaims {
+    /// Claims a presentation can withhold.
+    selective: BTreeSet<String>,
+    /// Claims every presentation of it discloses.
+    always: BTreeSet<String>,
+}
+
+/// JWT and SD-JWT-VC members that are not claims about the subject.
+const SD_JWT_REGISTERED: &[&str] = &[
+    "_sd",
+    "_sd_alg",
+    "iss",
+    "sub",
+    "aud",
+    "iat",
+    "nbf",
+    "exp",
+    "jti",
+    "cnf",
+    "vct",
+    "vct#integrity",
+    "status",
+];
+
+fn subject_claims(stored: &StoredCredential) -> Result<SubjectClaims, AppError> {
+    match stored.format {
+        CredentialFormat::SdJwtVc => {
+            let compact = std::str::from_utf8(&stored.body).map_err(|e| {
+                AppError::Validation(format!("credential `{}` is not UTF-8: {e}", stored.id))
+            })?;
+            let hasher = affinidi_sd_jwt::hasher::Sha256Hasher;
+            let sd = affinidi_sd_jwt::SdJwt::parse(compact, &hasher).map_err(|e| {
+                AppError::Validation(format!("credential `{}` is not SD-JWT-VC: {e}", stored.id))
+            })?;
+            let payload = sd.payload().map_err(|e| {
+                AppError::Validation(format!("credential `{}` payload: {e}", stored.id))
+            })?;
+            let selective = sd
+                .disclosures
+                .iter()
+                .filter_map(|d| d.claim_name.clone())
+                .collect();
+            let always = payload
+                .as_object()
+                .map(|o| {
+                    o.keys()
+                        .filter(|k| !SD_JWT_REGISTERED.contains(&k.as_str()))
+                        .cloned()
+                        .collect()
+                })
+                .unwrap_or_default();
+            Ok(SubjectClaims { selective, always })
+        }
+        CredentialFormat::EddsaJcs2022 => {
+            let vc: Value = serde_json::from_slice(&stored.body).map_err(|e| {
+                AppError::Validation(format!("credential `{}` is not JSON: {e}", stored.id))
+            })?;
+            let always = vc
+                .get("credentialSubject")
+                .and_then(Value::as_object)
+                .map(|o| o.keys().filter(|k| *k != "id").cloned().collect())
+                .unwrap_or_default();
+            Ok(SubjectClaims {
+                selective: BTreeSet::new(),
+                always,
+            })
+        }
+        _ => Err(AppError::Validation(format!(
+            "credential `{}` is not presentable to a named verifier",
+            stored.id
+        ))),
+    }
+}
+
+/// Whether `stored` may be presented at `now`, before anything is recorded: its
+/// lifecycle, its stored status and its validity period. A status list is
+/// re-read later, by the presentation gate itself.
+fn presentable_now(stored: &StoredCredential, now: DateTime<Utc>) -> bool {
+    let within = |bound: Option<&str>, before: bool| {
+        bound.is_none_or(|t| {
+            t.parse::<DateTime<Utc>>()
+                .is_ok_and(|t| if before { now >= t } else { now < t })
+        })
+    };
+    stored.is_active()
+        && stored.status == vta_vault::model::CredentialStatus::Valid
+        && within(stored.valid_from.as_deref(), true)
+        && within(stored.valid_until.as_deref(), false)
+}
+
+/// `vault/credentials/present/0.1`: present one held credential to `audience`,
+/// bound to `nonce`, disclosing only `claims`, signed as the credential's
+/// subject.
+///
+/// The conformance items in order: custody (1), presentability (2), claims held
+/// (3), no over-disclosure (4), then the disclosure is recorded — a consent
+/// record signed by the subject, naming the credential, the audience and the
+/// claims — before the presentation is built (6), which binds `audience` and
+/// `nonce` (5).
+#[allow(clippy::too_many_arguments)]
+pub async fn present_to_audience(
+    state: &crate::server::AppState,
+    auth: &AuthClaims,
+    credential_id: &str,
+    audience: &str,
+    nonce: &str,
+    claims: &[String],
+    purpose: Option<&str>,
+    now: DateTime<Utc>,
+) -> Result<PresentedTo, PresentToError> {
+    let stored = vault::storage::get(&state.vault_ks, credential_id)
+        .await?
+        .filter(|c| {
+            c.is_active()
+                && vault::query::caller_may_access_custody(
+                    &auth.act_scope(),
+                    c.context_id.as_deref(),
+                )
+        })
+        .ok_or(PresentToError::NotFound)?;
+    if !matches!(
+        stored.format,
+        CredentialFormat::SdJwtVc | CredentialFormat::EddsaJcs2022
+    ) {
+        return Err(PresentToError::FormatUnsupported);
+    }
+    if !presentable_now(&stored, now) {
+        return Err(PresentToError::NotPresentable);
+    }
+    let subject = stored.subject_did.clone().ok_or(PresentToError::NotFound)?;
+
+    let held = subject_claims(&stored)?;
+    let missing: Vec<String> = claims
+        .iter()
+        .filter(|c| !held.selective.contains(*c) && !held.always.contains(*c))
+        .cloned()
+        .collect();
+    if !missing.is_empty() {
+        return Err(PresentToError::ClaimNotHeld(missing));
+    }
+    // A claim every presentation carries is disclosed whether or not it was
+    // named; where those are claims the request left out, presenting would
+    // disclose more than it asked (item 4).
+    let undisclosed: Vec<String> = held
+        .always
+        .iter()
+        .filter(|c| !claims.contains(c))
+        .cloned()
+        .collect();
+    if !undisclosed.is_empty() {
+        return Err(PresentToError::WouldOverDisclose(undisclosed));
+    }
+
+    // The holder key, in a context this caller acts in; anything short of that
+    // is the same `notFound` as an unknown credential.
+    let keys = if subject.starts_with("did:key:") {
+        resolve_holder_keys(
+            &state.keys_ks,
+            &state.contexts_ks,
+            &state.seed_store,
+            &state.audit_sink,
+            auth,
+            &subject,
+        )
+        .await
+    } else {
+        crate::operations::holder_keys::resolve_persona_holder_keys(
+            crate::operations::persona::PersonaStores::from_state(state),
+            &state.contexts_ks,
+            &state.seed_store,
+            &state.audit_sink,
+            auth,
+            &subject,
+        )
+        .await
+    }
+    .map_err(|e| match e {
+        AppError::NotFound(_) | AppError::Forbidden(_) | AppError::Validation(_) => {
+            PresentToError::NotFound
+        }
+        other => PresentToError::App(other),
+    })?;
+
+    // Item 6: the record of the disclosure, before the presentation exists.
+    let consent = consent::create(
+        &state.vault_ks,
+        &ConsentGrant {
+            holder: vta_vault::consent::HolderIdentity::Subject(&subject),
+            credential_id,
+            verifier_did: audience,
+            purpose: purpose.unwrap_or("vault/credentials/present"),
+            claims: claims.to_vec(),
+            valid_until: now + chrono::Duration::minutes(5),
+        },
+        &keys.consent_secret,
+    )
+    .await?;
+
+    let presentation = present_single(
+        &state.vault_ks,
+        &stored,
+        &consent.identifier,
+        &keys.signer,
+        &keys.consent_secret,
+        nonce,
+        audience,
+        now.timestamp() as u64,
+        state.status_list_resolver.as_deref(),
+        now,
+    )
+    .await
+    .map_err(|e| match e {
+        // The status list, re-read now, says it is no longer usable.
+        AppError::Forbidden(_) => PresentToError::NotPresentable,
+        other => PresentToError::App(other),
+    })?;
+
+    let mut disclosed: BTreeSet<String> = held.always;
+    disclosed.extend(
+        claims
+            .iter()
+            .filter(|c| held.selective.contains(*c))
+            .cloned(),
+    );
+    Ok(PresentedTo {
+        presentation,
+        disclosed: disclosed.into_iter().collect(),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

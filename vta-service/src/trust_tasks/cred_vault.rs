@@ -462,6 +462,98 @@ pub(super) async fn handle_get(
     }
 }
 
+/// Handler for `spec/vault/credentials/present/0.1`. Auth: `CredentialPresent`,
+/// plus custody of the credential and its subject's key (checked in
+/// [`present_to_audience`]).
+///
+/// [`present_to_audience`]: crate::operations::credential_exchange::present_to_audience
+pub(super) async fn handle_present(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    use crate::operations::credential_exchange::{PresentToError, present_to_audience};
+    use trust_tasks_rs::specs::vault::credentials::present::v0_1 as spec;
+    use trust_tasks_rs::specs::vault::credentials::present::v0_1::error_codes as code;
+
+    if let Err(r) = require_cap(state, auth, &doc, Capability::CredentialPresent, "present").await {
+        return r;
+    }
+    let req: spec::Payload = match parse_payload(&doc) {
+        Ok(r) => r,
+        Err(resp) => return resp,
+    };
+    let claims: Vec<String> = req.claims.iter().map(|c| c.to_string()).collect();
+    let refuse = |c: trust_tasks_rs::DeclaredErrorCode, message: &str, details: Option<Value>| {
+        super::helpers::reject_with_code(
+            &doc,
+            trust_tasks_rs::TrustTaskCode::Extended {
+                slug: c.namespace().to_string(),
+                local: c.local().to_string(),
+            },
+            message,
+            details,
+        )
+    };
+    match present_to_audience(
+        state,
+        auth,
+        &req.id,
+        &req.audience,
+        &req.nonce,
+        &claims,
+        req.purpose.as_deref().map(|p| p.as_str()),
+        Utc::now(),
+    )
+    .await
+    {
+        Ok(presented) => {
+            let response = serde_json::json!({
+                "presentation": presented.presentation,
+                "disclosed": presented.disclosed,
+            });
+            match serde_json::from_value::<spec::Response>(response) {
+                Ok(r) => success_response(&doc, r),
+                Err(e) => reject_with(
+                    &doc,
+                    RejectReason::InternalError {
+                        reason: format!("presentation does not fit the response: {e}"),
+                    },
+                ),
+            }
+        }
+        Err(PresentToError::NotFound) => refuse(
+            code::NOT_FOUND,
+            "no credential under this id that you may present, or no key of its subject \
+             that you may use",
+            None,
+        ),
+        Err(PresentToError::NotPresentable) => refuse(
+            code::NOT_PRESENTABLE,
+            "the credential is revoked, suspended, outside its validity period, archived or \
+             deleted",
+            None,
+        ),
+        Err(PresentToError::FormatUnsupported) => refuse(
+            code::FORMAT_UNSUPPORTED,
+            "this agent presents SD-JWT-VC and Data Integrity credentials to a named verifier",
+            None,
+        ),
+        Err(PresentToError::ClaimNotHeld(missing)) => refuse(
+            code::CLAIM_NOT_HELD,
+            "the credential does not carry every claim named",
+            Some(serde_json::json!({ "claims": missing })),
+        ),
+        Err(PresentToError::WouldOverDisclose(undisclosed)) => refuse(
+            code::WOULD_OVER_DISCLOSE,
+            "every presentation of this credential discloses claims the request does not name; \
+             name them too, or present another credential",
+            Some(serde_json::json!({ "undisclosed": undisclosed })),
+        ),
+        Err(PresentToError::App(e)) => app_error_to_reject(&doc, e),
+    }
+}
+
 /// Shared request body for the credential archival lifecycle verbs
 /// (`archive` / `unarchive` / `delete` / `restore` / `purge`). `reason` is
 /// lifted into the audit row's `detail` by the dispatch spine; `force` is
@@ -1081,5 +1173,288 @@ mod receive_body_wire_tests {
             stored,
             "the wire format tag and the stored format tag must be the same token"
         );
+    }
+}
+
+/// `vault/credentials/present/0.1`, through the handler.
+#[cfg(test)]
+mod present_tests {
+    use super::*;
+    use crate::test_support::{
+        admin_claims_for_context, build_signing_test_app_state, seed_held_credential,
+        seed_holder_key, super_admin_claims,
+    };
+    use serde_json::json;
+
+    const AUDIENCE: &str = "did:example:community";
+    const NONCE: &str = "urn:uuid:7d1e0c4a-5b2f-4c3d-8e9f-00000000001b";
+
+    fn present_doc(id: &str, claims: &[&str]) -> TrustTask<Value> {
+        let uri: trust_tasks_rs::TypeUri = vta_sdk::trust_tasks::TASK_VAULT_CREDENTIALS_PRESENT_0_1
+            .parse()
+            .expect("present uri");
+        TrustTask::new(
+            "urn:uuid:test-present",
+            uri,
+            json!({ "id": id, "audience": AUDIENCE, "nonce": NONCE, "claims": claims }),
+        )
+    }
+
+    fn body(out: &TrustTaskOutcome) -> Value {
+        serde_json::from_slice(&out.body).expect("a JSON document")
+    }
+
+    fn code(out: &TrustTaskOutcome) -> String {
+        body(out)["payload"]["code"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string()
+    }
+
+    /// A held SD-JWT-VC for a holder key this VTA derives, outside any context.
+    async fn held_sd_jwt(state: &AppState) -> String {
+        let subject = seed_holder_key(state, "m/44'/0'/9'/0'/7'", None).await;
+        seed_held_credential(
+            &state.vault_ks,
+            "https://example.org/employment",
+            "employer",
+            &subject,
+        )
+        .await
+    }
+
+    /// Items 4 and 5: only the named claim is disclosed, and the key-binding JWT
+    /// carries the audience and nonce the caller named.
+    #[tokio::test]
+    async fn an_sd_jwt_is_presented_to_the_named_audience_disclosing_only_the_named_claim() {
+        let (state, _dir) = build_signing_test_app_state().await;
+        let id = held_sd_jwt(&state).await;
+
+        let out = handle_present(
+            &state,
+            &super_admin_claims(),
+            present_doc(&id, &["employer"]),
+        )
+        .await;
+        let doc = body(&out);
+        assert_eq!(out.status, axum::http::StatusCode::OK, "{doc}");
+        assert_eq!(doc["payload"]["disclosed"], json!(["employer"]));
+        let compact = doc["payload"]["presentation"]
+            .as_str()
+            .expect("a compact SD-JWT");
+        let parsed =
+            affinidi_sd_jwt::SdJwt::parse(compact, &affinidi_sd_jwt::hasher::Sha256Hasher).unwrap();
+        assert_eq!(parsed.disclosures.len(), 1);
+        assert_eq!(
+            parsed.disclosures[0].claim_name.as_deref(),
+            Some("employer")
+        );
+        let kb = parsed.kb_jwt.as_ref().expect("a key-binding JWT");
+        let payload = kb.split('.').nth(1).expect("a JWT payload");
+        let payload: Value =
+            serde_json::from_slice(&URL_SAFE_NO_PAD.decode(payload).unwrap()).unwrap();
+        assert_eq!(payload["aud"], AUDIENCE);
+        assert_eq!(payload["nonce"], NONCE);
+    }
+
+    /// Item 3.
+    #[tokio::test]
+    async fn a_claim_the_credential_does_not_carry_is_claim_not_held() {
+        let (state, _dir) = build_signing_test_app_state().await;
+        let id = held_sd_jwt(&state).await;
+
+        let out = handle_present(
+            &state,
+            &super_admin_claims(),
+            present_doc(&id, &["employer", "salary"]),
+        )
+        .await;
+        assert_eq!(code(&out), "vault/credentials/present:claimNotHeld");
+        assert_eq!(
+            body(&out)["payload"]["details"]["claims"],
+            json!(["salary"])
+        );
+    }
+
+    /// Item 4: a Data Integrity credential discloses every subject claim, so a
+    /// request naming fewer is refused, and names what it left out.
+    #[tokio::test]
+    async fn a_data_integrity_credential_is_refused_unless_every_claim_is_named() {
+        use crate::vault::model::{CredentialFormat, CredentialStatus, StoredCredential};
+        let (state, _dir) = build_signing_test_app_state().await;
+        let subject = seed_holder_key(&state, "m/44'/0'/9'/0'/8'", None).await;
+        let vc = json!({
+            "@context": ["https://www.w3.org/ns/credentials/v2"],
+            "type": ["VerifiableCredential", "EmploymentCredential"],
+            "issuer": "did:web:issuer.example",
+            "credentialSubject": { "id": subject, "employer": "Acme", "salary": 1 },
+        });
+        let cred = StoredCredential {
+            id: "di-employment".into(),
+            format: CredentialFormat::EddsaJcs2022,
+            types: vec!["EmploymentCredential".into()],
+            schema_id: None,
+            community_did: None,
+            context_id: None,
+            subject_did: Some(subject.clone()),
+            issuer_did: Some("did:web:issuer.example".into()),
+            purpose: None,
+            status: CredentialStatus::Valid,
+            valid_from: None,
+            valid_until: None,
+            received_at: "2026-01-01T00:00:00Z".into(),
+            source: None,
+            tags: Default::default(),
+            body: serde_json::to_vec(&vc).unwrap(),
+            lifecycle: VaultStatus::Active,
+            archived_at: None,
+            deleted_at: None,
+            grace_until: None,
+        };
+        storage::put(&state.vault_ks, &cred).await.unwrap();
+
+        let out = handle_present(
+            &state,
+            &super_admin_claims(),
+            present_doc("di-employment", &["employer"]),
+        )
+        .await;
+        assert_eq!(code(&out), "vault/credentials/present:wouldOverDisclose");
+        assert_eq!(
+            body(&out)["payload"]["details"]["undisclosed"],
+            json!(["salary"])
+        );
+
+        // Named in full, it is presented as a VP bound to the audience and nonce.
+        let out = handle_present(
+            &state,
+            &super_admin_claims(),
+            present_doc("di-employment", &["employer", "salary"]),
+        )
+        .await;
+        let doc = body(&out);
+        assert_eq!(out.status, axum::http::StatusCode::OK, "{doc}");
+        let vp = &doc["payload"]["presentation"];
+        assert_eq!(vp["holder"], subject);
+        assert_eq!(vp["domain"], AUDIENCE);
+        assert_eq!(vp["nonce"], NONCE);
+        assert!(vp.get("proof").is_some());
+    }
+
+    /// Item 1 and *Custody scope*: a caller who may not use the subject's key gets
+    /// the answer an unknown id gets.
+    #[tokio::test]
+    async fn a_holder_key_outside_the_callers_scope_reads_as_not_found() {
+        let (state, _dir) = build_signing_test_app_state().await;
+        let id = held_sd_jwt(&state).await;
+        let scoped = admin_claims_for_context("elsewhere");
+
+        let out = handle_present(&state, &scoped, present_doc(&id, &["employer"])).await;
+        let unknown = handle_present(
+            &state,
+            &scoped,
+            present_doc("no-such-credential", &["employer"]),
+        )
+        .await;
+        assert_eq!(code(&out), "vault/credentials/present:notFound");
+        assert_eq!(code(&unknown), "vault/credentials/present:notFound");
+        assert_eq!(
+            body(&out)["payload"]["message"],
+            body(&unknown)["payload"]["message"]
+        );
+    }
+
+    /// A stored credential with `format`, `valid_until` and `lifecycle` as given.
+    async fn store_raw(
+        state: &AppState,
+        id: &str,
+        format: crate::vault::model::CredentialFormat,
+        valid_until: Option<&str>,
+    ) {
+        use crate::vault::model::{CredentialStatus, StoredCredential};
+        let subject = seed_holder_key(state, "m/44'/0'/9'/0'/9'", None).await;
+        let vc = json!({
+            "@context": ["https://www.w3.org/ns/credentials/v2"],
+            "type": ["VerifiableCredential"],
+            "issuer": "did:web:issuer.example",
+            "credentialSubject": { "id": subject, "employer": "Acme" },
+        });
+        let cred = StoredCredential {
+            id: id.into(),
+            format,
+            types: vec!["VerifiableCredential".into()],
+            schema_id: None,
+            community_did: None,
+            context_id: None,
+            subject_did: Some(subject),
+            issuer_did: Some("did:web:issuer.example".into()),
+            purpose: None,
+            status: CredentialStatus::Valid,
+            valid_from: None,
+            valid_until: valid_until.map(str::to_string),
+            received_at: "2026-01-01T00:00:00Z".into(),
+            source: None,
+            tags: Default::default(),
+            body: serde_json::to_vec(&vc).unwrap(),
+            lifecycle: VaultStatus::Active,
+            archived_at: None,
+            deleted_at: None,
+            grace_until: None,
+        };
+        storage::put(&state.vault_ks, &cred).await.unwrap();
+    }
+
+    /// Item 2: a credential past its validity period is not presented, and
+    /// nothing is recorded for it.
+    #[tokio::test]
+    async fn an_expired_credential_is_not_presentable() {
+        use crate::vault::model::CredentialFormat;
+        let (state, _dir) = build_signing_test_app_state().await;
+        store_raw(
+            &state,
+            "expired",
+            CredentialFormat::EddsaJcs2022,
+            Some("2020-01-01T00:00:00Z"),
+        )
+        .await;
+
+        let out = handle_present(
+            &state,
+            &super_admin_claims(),
+            present_doc("expired", &["employer"]),
+        )
+        .await;
+        assert_eq!(code(&out), "vault/credentials/present:notPresentable");
+    }
+
+    /// A format this agent presents only inside an OpenID4VP exchange.
+    #[tokio::test]
+    async fn an_mdoc_is_format_unsupported() {
+        use crate::vault::model::CredentialFormat;
+        let (state, _dir) = build_signing_test_app_state().await;
+        store_raw(&state, "an-mdoc", CredentialFormat::MsoMdoc, None).await;
+
+        let out = handle_present(
+            &state,
+            &super_admin_claims(),
+            present_doc("an-mdoc", &["employer"]),
+        )
+        .await;
+        assert_eq!(code(&out), "vault/credentials/present:formatUnsupported");
+    }
+
+    /// `credential-present` is not `sign`: a role that signs anything but does not
+    /// act as the principal may not present.
+    #[tokio::test]
+    async fn an_application_may_not_present() {
+        let (state, _dir) = build_signing_test_app_state().await;
+        let id = held_sd_jwt(&state).await;
+        let app = AuthClaims {
+            role: crate::acl::Role::Application,
+            ..super_admin_claims()
+        };
+
+        let out = handle_present(&state, &app, present_doc(&id, &["employer"])).await;
+        assert_eq!(code(&out), "permissionDenied");
     }
 }

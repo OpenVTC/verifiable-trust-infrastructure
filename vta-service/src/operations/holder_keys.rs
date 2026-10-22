@@ -128,6 +128,75 @@ pub async fn resolve_holder_keys(
             ))
         })?;
 
+    keys_for_record(
+        keys_ks,
+        contexts_ks,
+        seed_store,
+        audit,
+        auth,
+        &record,
+        key_id,
+    )
+    .await
+}
+
+/// The holder keys for a persona subject — a `did:webvh` or `did:peer` this VTA
+/// holds a key of — under the key its document lists for `authentication`, so a
+/// presentation's holder proof names a method a verifier will find there.
+///
+/// `NotFound` for a DID this agent does not hold **and** for one held in a
+/// context the caller cannot act in, indistinguishably
+/// ([`crate::operations::persona::persona_key_for`]). A `did:key` subject takes
+/// [`resolve_holder_keys`].
+pub async fn resolve_persona_holder_keys(
+    stores: crate::operations::persona::PersonaStores<'_>,
+    contexts_ks: &KeyspaceHandle,
+    seed_store: &Arc<dyn SeedStore>,
+    audit: &vta_audit::SharedAuditSink,
+    auth: &AuthClaims,
+    subject_did: &str,
+) -> Result<HolderKeys, AppError> {
+    let not_held = || {
+        AppError::NotFound(format!(
+            "holder key for `{subject_did}` is not managed by this VTA"
+        ))
+    };
+    let key = crate::operations::persona::persona_key_for(
+        stores,
+        auth,
+        subject_did,
+        crate::operations::persona::Relationship::Authentication,
+    )
+    .await?
+    .ok_or_else(not_held)?;
+    let record: KeyRecord = stores
+        .keys_ks
+        .get(crate::keys::store_key(&key.key_id))
+        .await?
+        .ok_or_else(not_held)?;
+    keys_for_record(
+        stores.keys_ks,
+        contexts_ks,
+        seed_store,
+        audit,
+        auth,
+        &record,
+        key.verification_method,
+    )
+    .await
+}
+
+/// Derive the holder keys from a held key record, gated by the caller's ACL for
+/// the record's context. `kid` is the verification method a proof names.
+async fn keys_for_record(
+    keys_ks: &KeyspaceHandle,
+    contexts_ks: &KeyspaceHandle,
+    seed_store: &Arc<dyn SeedStore>,
+    audit: &vta_audit::SharedAuditSink,
+    auth: &AuthClaims,
+    record: &KeyRecord,
+    key_id: String,
+) -> Result<HolderKeys, AppError> {
     if !matches!(record.key_type, KeyType::Ed25519 | KeyType::P256) {
         return Err(AppError::Validation(format!(
             "holder key `{key_id}` is {:?}; a holder key is Ed25519 or P-256",
@@ -159,7 +228,7 @@ pub async fn resolve_holder_keys(
         &**seed_store,
         audit,
         &auth.did,
-        &record,
+        record,
         "holder-keys",
     )
     .await?;

@@ -121,6 +121,9 @@ const SLUG_OVERRIDES: &[(&str, Risk)] = &[
     // session's own witness issued, and discloses nothing.
     ("vta/witness/open", Risk::Sensitive),
     ("vta/witness/present", Risk::Sensitive),
+    // A held credential presented to a verifier the caller names, signed as its
+    // subject: a disclosure to a third party, so approved per call.
+    ("vault/credentials/present", Risk::Sensitive),
     ("vta/witness/accept", Risk::Mutating),
     // Key authority, exercised.
     ("keys/sign", Risk::Sensitive),

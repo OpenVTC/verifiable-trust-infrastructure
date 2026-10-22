@@ -346,6 +346,26 @@ impl VtaClient {
         .await
     }
 
+    /// `vault/credentials/present/0.1` — have the VTA present one held
+    /// credential to a verifier the caller names, bound to `payload.audience`
+    /// and `payload.nonce`, disclosing only `payload.claims`, signed as the
+    /// credential's subject. Requires `CredentialPresent`.
+    ///
+    /// The caller carries the returned `presentation` to the verifier unchanged.
+    pub async fn cred_vault_present(
+        &self,
+        payload: &trust_tasks_rs::specs::vault::credentials::present::v0_1::Payload,
+    ) -> Result<trust_tasks_rs::specs::vault::credentials::present::v0_1::Response, VtaError> {
+        let body = serde_json::to_value(payload)
+            .map_err(|e| VtaError::Validation(format!("present payload: {e}")))?;
+        self.rpc_tt(
+            trust_tasks::TASK_VAULT_CREDENTIALS_PRESENT_0_1,
+            body,
+            VAULT_TT_TIMEOUT,
+        )
+        .await
+    }
+
     /// `vault/credentials/archive/0.1` — soft-disable a held credential
     /// (hidden from query, refused for presentation, restorable). Requires
     /// `CredentialWrite`.

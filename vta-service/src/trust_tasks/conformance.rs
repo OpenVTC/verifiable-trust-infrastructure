@@ -2158,6 +2158,24 @@ fn table() -> Vec<(&'static str, Conformance)> {
             ),
         ),
         (
+            uris::TASK_VAULT_CREDENTIALS_PRESENT_0_1,
+            checked!(
+                specs::vault::credentials::present::v0_1::Payload,
+                specs::vault::credentials::present::v0_1::Response,
+                json!({
+                    "id": "cred-1",
+                    "audience": "did:example:community",
+                    "nonce": "urn:uuid:7d1e0c4a-5b2f-4c3d-8e9f-00000000001b",
+                    "claims": ["employer"],
+                    "purpose": "A verified employer on my directory card",
+                }),
+                json!({
+                    "presentation": "eyJhbGciOiJFZERTQSJ9.e30.c2ln~WyJzIiwiZW1wbG95ZXIiLCJBY21lIl0~eyJhbGciOiJFZERTQSJ9.e30.c2ln",
+                    "disclosed": ["employer"],
+                })
+            ),
+        ),
+        (
             uris::TASK_VAULT_CREDENTIALS_ARCHIVE_0_1,
             checked!(
                 specs::vault::credentials::archive::v0_1::Payload,
