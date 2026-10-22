@@ -30,9 +30,11 @@ storage, and signed enclave images.
 > **Only the tenant-scoped fields are overlay-settable** — `tee.kms.key_arn`
 > (validated against the baked `tee.allowed_kms_accounts`; region is derived from
 > the ARN), `tee.kms.vta_did_template`, `messaging.mediator_did`/
-> `mediator_url`, `public_url`, `vta_name`, and the KMS-sealed anchor fields.
+> `mediator_url`, `public_url`, `vta_name`, the KMS-sealed anchor fields, and
+> the operation budgets (`server.operation_rate_limit_*`, sized for the
+> instance; see `docs/02-vta/rate-limiting.md`).
 > Everything else — `tee.mode`, every `allow_*` break-glass flag, `admin_did`,
-> `resolver_url`, `server.*`, `store.*`, `policy.*`, **and a bare `vta_did`** — is
+> `resolver_url`, the rest of `server.*`, `store.*`, `policy.*`, **and a bare `vta_did`** — is
 > baked or provisioned in-enclave and **structurally cannot** be carried by the
 > overlay type. (The VTA's own identity is *provisioned* from
 > `vta_did_template` — the enclave derives the keys and signs the `did:webvh`

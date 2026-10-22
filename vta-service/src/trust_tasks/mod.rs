@@ -82,6 +82,7 @@ mod management;
 mod memory;
 mod messaging;
 mod metrics;
+pub mod operation_budget;
 #[cfg(all(feature = "webvh", feature = "didcomm"))]
 mod passkey_vms;
 mod pcs;
@@ -492,7 +493,23 @@ pub async fn dispatch_trust_task(
     // anonymous. The route sits behind the unauthenticated limiter for exactly
     // the requests this lets through anonymously (`rate_limit::apply_trust_tasks`).
     let auth = match auth {
-        Some(auth) => auth,
+        Some(auth) => {
+            // Charged once the caller is authenticated and before any work, to
+            // its own share and the appliance budget (VTI-TRN-029,
+            // `operation_budget`). Anonymous public tasks are not charged: the
+            // per-IP limiter in front of this route bounds them.
+            let type_uri = ceremony::peek_type_uri(&body).unwrap_or_default();
+            if let Err(refused) = state
+                .operation_budget
+                .charge(operation_budget::Caller::Client(&auth.did), &type_uri)
+            {
+                return Ok(crate::routes::rate_limit::too_many_requests(
+                    refused.scope.name(),
+                    refused.retry_after_secs(),
+                ));
+            }
+            auth
+        }
         None => {
             let type_uri = ceremony::peek_type_uri(&body);
             match type_uri.as_deref() {
@@ -1121,21 +1138,38 @@ pub(crate) async fn accept_from_proven_sender(
                     ?reason,
                     "trust-task document is not bound to its sender by a proof — refused"
                 );
-                return sign_response(state, reject_trust_task(body, reason)).await;
+                return refuse_without_standing(state, body, reason).await;
             }
-            match crate::messaging::auth::auth_for_trust_task_envelope(state, sender_vid, body)
-                .await
-            {
-                Ok(auth) => dispatch_trust_task_core(state, &auth, body, confidentiality).await,
+            use crate::messaging::auth::Standing;
+            use operation_budget::Caller;
+            match crate::messaging::auth::resolve_trust_task_sender(state, sender_vid, body).await {
+                // Charged once the sender is proven and resolved, before any work
+                // (VTI-TRN-029, `operation_budget`): a client with an ACL entry to
+                // its own share and the appliance budget, a sender without
+                // standing to the unauthenticated budget, so a stranger cannot
+                // spend what clients need.
+                Ok((auth, standing)) => {
+                    let caller = match standing {
+                        Standing::Acl => Caller::Client(&auth.did),
+                        Standing::ZeroAuthority => Caller::Unauthenticated,
+                    };
+                    match state
+                        .operation_budget
+                        .charge(caller, &ceremony::peek_type_uri(body).unwrap_or_default())
+                    {
+                        Ok(()) => {
+                            dispatch_trust_task_core(state, &auth, body, confidentiality).await
+                        }
+                        Err(refused) => over_budget(state, body, refused).await,
+                    }
+                }
                 Err(e) => {
-                    sign_response(
+                    refuse_without_standing(
                         state,
-                        reject_trust_task(
-                            body,
-                            trust_tasks_rs::RejectReason::PermissionDenied {
-                                reason: e.to_string(),
-                            },
-                        ),
+                        body,
+                        trust_tasks_rs::RejectReason::PermissionDenied {
+                            reason: e.to_string(),
+                        },
                     )
                     .await
                 }
@@ -1143,6 +1177,69 @@ pub(crate) async fn accept_from_proven_sender(
         }
     }
 }
+
+/// Refuse a DIDComm or TSP document from a sender without standing — unbound to
+/// its sender, unsigned, or from a sender the ACL does not know — charging the
+/// signed refusal to the unauthenticated budget (VTI-TRN-029). Past that
+/// budget the document is dropped with no reply: answering would make a flood
+/// of refusable documents cost a signature each, which is the work the budget
+/// bounds. Below it the refusal is answered as before, so a misconfigured peer
+/// still learns why.
+#[cfg(any(feature = "didcomm", feature = "tsp"))]
+pub(crate) async fn refuse_without_standing(
+    state: &AppState,
+    body: &[u8],
+    reason: trust_tasks_rs::RejectReason,
+) -> TrustTaskOutcome {
+    let type_uri = ceremony::peek_type_uri(body).unwrap_or_default();
+    if state
+        .operation_budget
+        .charge(operation_budget::Caller::Unauthenticated, &type_uri)
+        .is_err()
+    {
+        return TrustTaskOutcome {
+            status: axum::http::StatusCode::NO_CONTENT,
+            body: Vec::new(),
+            restart: false,
+        };
+    }
+    sign_response(state, reject_trust_task(body, reason)).await
+}
+
+/// The answer to a document an operation budget refused, over DIDComm or TSP:
+/// a signed, retryable `unavailable` naming when to come back. The document was
+/// not executed and its `id` not recorded (VTI-OPS-026), so resending it is a
+/// retry. (REST answers the VTA's 429 instead, in `dispatch_trust_task`.)
+///
+/// Past the unauthenticated budget there is no reply, for the reason
+/// [`refuse_without_standing`] gives: a signed answer to each would let
+/// strangers spend a signature per message once their budget is gone.
+#[cfg(any(feature = "didcomm", feature = "tsp"))]
+pub(crate) async fn over_budget(
+    state: &AppState,
+    body: &[u8],
+    refused: operation_budget::Refused,
+) -> TrustTaskOutcome {
+    if refused.scope == operation_budget::Scope::Unauthenticated {
+        return TrustTaskOutcome {
+            status: axum::http::StatusCode::NO_CONTENT,
+            body: Vec::new(),
+            restart: false,
+        };
+    }
+    let retry_after = chrono::Duration::from_std(refused.retry_after)
+        .ok()
+        .and_then(|d| chrono::Utc::now().checked_add_signed(d));
+    sign_response(
+        state,
+        reject_trust_task(
+            body,
+            trust_tasks_rs::RejectReason::Unavailable { retry_after },
+        ),
+    )
+    .await
+}
+
 /// The DID `doc`'s own Data Integrity proof verifies as, when that DID is also
 /// its in-band `issuer` (fragment ignored); `None` otherwise. What a reply
 /// waiter checks against the peer its request went to.
@@ -1265,6 +1362,25 @@ pub(crate) async fn dispatch_trust_task_core(
         state.restart_gate.request();
     }
     outcome
+}
+
+/// [`dispatch_auth_family`] for a DIDComm or TSP peer, charged first to the
+/// unauthenticated budget (VTI-TRN-029, `operation_budget`). A peer logging in
+/// has no standing yet, and these transports have no per-IP limiter to bound
+/// it; REST does, so its login steps call [`dispatch_auth_family`] directly.
+#[cfg(any(feature = "didcomm", feature = "tsp"))]
+pub(crate) async fn dispatch_auth_family_from_peer(
+    state: &AppState,
+    body: &[u8],
+) -> TrustTaskOutcome {
+    let type_uri = ceremony::peek_type_uri(body).unwrap_or_default();
+    match state
+        .operation_budget
+        .charge(operation_budget::Caller::Unauthenticated, &type_uri)
+    {
+        Ok(()) => dispatch_auth_family(state, body).await,
+        Err(refused) => over_budget(state, body, refused).await,
+    }
 }
 
 /// The pre-session auth family's own tiny "core", parallel to
@@ -6636,6 +6752,110 @@ mod didcomm_sender_binding {
             outcome.body.is_empty(),
             "{}",
             String::from_utf8_lossy(&outcome.body)
+        );
+    }
+
+    fn public_task(issuer: &str, vta_did: &str) -> Vec<u8> {
+        serde_json::to_vec(&serde_json::json!({
+            "id": format!("urn:uuid:{}", uuid::Uuid::new_v4()),
+            "type": vta_sdk::trust_tasks::TASK_ATTESTATION_STATUS_0_1,
+            "issuer": issuer,
+            "recipient": vta_did,
+            "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+            "payload": {},
+        }))
+        .unwrap()
+    }
+
+    fn assert_unavailable(reply: &Value) {
+        assert_eq!(code(reply), Some("unavailable"), "{reply}");
+        assert_eq!(
+            reply.pointer("/payload/retryable"),
+            Some(&Value::Bool(true))
+        );
+        assert!(
+            reply.pointer("/payload/retryAfter").is_some(),
+            "a refusal names when to come back: {reply}"
+        );
+    }
+
+    /// VTI-TRN-029 over DIDComm / TSP: a client with an ACL entry is bounded by
+    /// the operation budget, and a sender without standing by the separate
+    /// unauthenticated budget, which never spends the clients'. A client's
+    /// refusal is a retryable `unavailable`, sent before the task runs.
+    #[tokio::test]
+    async fn clients_and_strangers_are_bounded_separately() {
+        let (mut state, _dir, victim, attacker, vta_did) = setup().await;
+        let mut server = vta_config::ServerConfig::default();
+        server.operation_rate_limit_per_sec = Some(1);
+        server.operation_rate_limit_unauthenticated_per_sec = Some(1);
+        state.operation_budget =
+            std::sync::Arc::new(operation_budget::OperationBudget::from_config(&server));
+
+        // A stranger's refusals are charged to the unauthenticated budget: its
+        // burst (raised to the heaviest weight, 10) is answered, then dropped
+        // with no reply, so a flood does not cost a signature per message.
+        for i in 0..10 {
+            let body = document(&attacker.did, Some(&attacker), &vta_did).await;
+            let reply = over_didcomm(&state, &attacker.did, &body).await;
+            assert_eq!(
+                code(&reply),
+                Some("permissionDenied"),
+                "refusal {i}: {reply}"
+            );
+        }
+        let body = document(&attacker.did, Some(&attacker), &vta_did).await;
+        assert_eq!(
+            over_didcomm(&state, &attacker.did, &body).await,
+            Value::Null
+        );
+        // The budget is shared by everything without standing: a public task
+        // is dropped too.
+        assert_eq!(
+            over_didcomm(&state, &attacker.did, &public_task(&attacker.did, &vta_did)).await,
+            Value::Null
+        );
+        // None of that spent the client's budget.
+        for i in 0..10 {
+            let body = document(&victim.did, Some(&victim), &vta_did).await;
+            let reply = over_didcomm(&state, &victim.did, &body).await;
+            assert_ne!(code(&reply), Some("unavailable"), "request {i}: {reply}");
+        }
+        let body = document(&victim.did, Some(&victim), &vta_did).await;
+        assert_unavailable(&over_didcomm(&state, &victim.did, &body).await);
+    }
+
+    /// The login steps reach a DIDComm / TSP peer with no standing yet, and
+    /// these transports have no per-IP limiter: they draw on the
+    /// unauthenticated budget (VTI-TRN-029).
+    #[tokio::test]
+    async fn login_steps_from_a_peer_draw_on_the_unauthenticated_budget() {
+        let (mut state, _dir, victim, _attacker, vta_did) = setup().await;
+        let mut server = vta_config::ServerConfig::default();
+        server.operation_rate_limit_unauthenticated_per_sec = Some(1);
+        state.operation_budget =
+            std::sync::Arc::new(operation_budget::OperationBudget::from_config(&server));
+        let challenge = || {
+            serde_json::to_vec(&serde_json::json!({
+                "id": format!("urn:uuid:{}", uuid::Uuid::new_v4()),
+                "type": vta_sdk::trust_tasks::TASK_AUTH_CHALLENGE_0_1,
+                "issuer": victim.did,
+                "recipient": vta_did,
+                "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+                "payload": { "subject": victim.did },
+            }))
+            .unwrap()
+        };
+        for i in 0..10 {
+            let out = dispatch_auth_family_from_peer(&state, &challenge()).await;
+            let reply: Value = serde_json::from_slice(&out.body).unwrap_or(Value::Null);
+            assert_ne!(code(&reply), Some("unavailable"), "challenge {i}: {reply}");
+        }
+        let out = dispatch_auth_family_from_peer(&state, &challenge()).await;
+        assert!(
+            out.body.is_empty(),
+            "past the unauthenticated budget there is no reply: {}",
+            String::from_utf8_lossy(&out.body)
         );
     }
 

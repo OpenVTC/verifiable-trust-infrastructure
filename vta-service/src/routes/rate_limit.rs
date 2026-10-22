@@ -20,9 +20,10 @@
 //! steps of a login draw on separate buckets for the reason given on
 //! [`apply_trust_tasks`].
 //!
-//! Authenticated (JWT-gated) routes are not rate-limited — the token is the
+//! Authenticated (JWT-gated) requests are not limited per IP — the token is the
 //! gate — and neither is DIDComm / TSP traffic, which never reaches this
-//! router.
+//! router. What bounds their Trust Tasks is the operation budgets
+//! (`trust_tasks::operation_budget`), charged on every transport.
 //!
 //! ## Units
 //!
@@ -55,8 +56,11 @@
 //! - `x-rate-limit-source: vta` — so a client can tell the VTA's own limiter
 //!   from a mediator's, a DID host's, or a reverse proxy's 429. **Clients rely
 //!   on this header name and value; do not rename either.**
-//! - `x-rate-limit-scope: <auth|auth-authenticate|auth-refresh|did-log|backup-blob>`
-//!   — which limiter tripped.
+//! - `x-rate-limit-scope: <auth|auth-authenticate|auth-refresh|did-log|backup-blob|operations|operations-subject>`
+//!   — which limiter tripped. `operations` and `operations-subject` are the
+//!   appliance and per-client operation budgets on authenticated Trust Tasks
+//!   (`trust_tasks::operation_budget`), which share this contract but not this
+//!   module's per-IP buckets.
 //! - `retry-after: <seconds>` (and the legacy `x-ratelimit-after`, same value).
 //! - an `application/json` body, with no configuration values or other
 //!   internal detail:
@@ -530,25 +534,26 @@ async fn refusal(state: &LimiterState, ip: Option<IpAddr>) -> Option<Response<Bo
     let buckets = state.buckets_for(quota);
     let not_until = buckets.limiter.check_key(&ip).err()?;
     let wait = not_until.wait_time_from(DefaultClock::default().now());
-    Some(too_many_requests(state.limiter, ceil_secs(wait)))
+    Some(too_many_requests(state.limiter.name(), ceil_secs(wait)))
 }
 
 /// Whole seconds, rounded up: a client honouring `retry-after` must never be
 /// told to come back before a token is actually available.
-fn ceil_secs(d: Duration) -> u64 {
+pub(crate) fn ceil_secs(d: Duration) -> u64 {
     d.as_secs() + u64::from(d.subsec_nanos() > 0)
 }
 
-/// The VTA's 429: see the module docs for the contract. `retry_after_secs` is
+/// The VTA's 429: see the module docs for the contract. `scope` is the
+/// limiter's name — a [`Limiter::name`], or an operation budget's
+/// (`trust_tasks::operation_budget::Scope::name`). `retry_after_secs` is
 /// clamped to ≥1 so a client never busy-loops on `retry-after: 0`.
-pub(crate) fn too_many_requests(limiter: Limiter, retry_after_secs: u64) -> Response<Body> {
+pub(crate) fn too_many_requests(scope: &str, retry_after_secs: u64) -> Response<Body> {
     let retry_after = retry_after_secs.max(1);
     let body = serde_json::json!({
         "error": "rate_limited",
-        "limiter": limiter.name(),
+        "limiter": scope,
         "message": format!(
-            "Too Many Requests: rejected by the VTA's `{}` rate limiter. Retry after {retry_after} s.",
-            limiter.name()
+            "Too Many Requests: rejected by the VTA's `{scope}` rate limiter. Retry after {retry_after} s."
         ),
         "retryAfterSecs": retry_after,
     })
@@ -562,7 +567,7 @@ pub(crate) fn too_many_requests(limiter: Limiter, retry_after_secs: u64) -> Resp
             HeaderValue::from(retry_after),
         )
         .header(RATE_LIMIT_SOURCE_HEADER, RATE_LIMIT_SOURCE_VTA)
-        .header(RATE_LIMIT_SCOPE_HEADER, limiter.name())
+        .header(RATE_LIMIT_SCOPE_HEADER, scope)
         .body(Body::from(body))
         .expect("static header names and numeric values always build")
 }

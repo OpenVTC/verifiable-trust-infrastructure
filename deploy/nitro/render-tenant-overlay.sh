@@ -26,10 +26,19 @@
 #     [--anchor-table-name vta-rollback-anchor-acme] \
 #     [--anchor-writer-credential-ciphertext <base64>] \
 #     [--bootstrap-claim-did did:key:z6Mk...] \
+#     [--operation-rate-limit-per-sec 110] \
+#     [--operation-rate-limit-burst 220] \
+#     [--operation-rate-limit-per-subject-per-sec 30] \
+#     [--operation-rate-limit-unauthenticated-per-sec 20] \
 #     > tenant-overlay.json
 #
 # --bootstrap-claim-did is the public DID from `pnm bootstrap claim-did create`;
 # only its holder can claim first-boot admin. Without it no claim is accepted.
+#
+# --operation-rate-limit-* are the operation budgets (appliance, per client,
+# DIDComm/TSP senders without standing), sized for the instance it runs on
+# (docs/02-vta/rate-limiting.md). Without them the VTA serves every request it
+# is sent, and overload ends in a restart.
 # =============================================================================
 set -euo pipefail
 
@@ -42,6 +51,10 @@ PUBLIC_URL=""
 ANCHOR_TABLE_NAME=""
 ANCHOR_WRITER_CIPHERTEXT=""
 BOOTSTRAP_CLAIM_DID=""
+OPERATION_RATE=""
+OPERATION_BURST=""
+OPERATION_PER_SUBJECT=""
+OPERATION_UNAUTHENTICATED=""
 
 die() { echo "ERROR: $*" >&2; exit 1; }
 
@@ -56,7 +69,11 @@ while [ $# -gt 0 ]; do
         --anchor-table-name)                    ANCHOR_TABLE_NAME="$2"; shift 2 ;;
         --anchor-writer-credential-ciphertext)  ANCHOR_WRITER_CIPHERTEXT="$2"; shift 2 ;;
         --bootstrap-claim-did)                  BOOTSTRAP_CLAIM_DID="$2"; shift 2 ;;
-        --help|-h)  sed -n '2,32p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        --operation-rate-limit-per-sec)         OPERATION_RATE="$2"; shift 2 ;;
+        --operation-rate-limit-burst)           OPERATION_BURST="$2"; shift 2 ;;
+        --operation-rate-limit-per-subject-per-sec)      OPERATION_PER_SUBJECT="$2"; shift 2 ;;
+        --operation-rate-limit-unauthenticated-per-sec)  OPERATION_UNAUTHENTICATED="$2"; shift 2 ;;
+        --help|-h)  sed -n '2,41p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *)          die "unknown argument: $1 (see --help)" ;;
     esac
 done
@@ -83,6 +100,16 @@ case "$BOOTSTRAP_CLAIM_DID" in
     *) die "--bootstrap-claim-did is not an Ed25519 did:key (did:key:z6Mk...): $BOOTSTRAP_CLAIM_DID" ;;
 esac
 
+# Positive integers only; the enclave re-validates the range (1-100000) at boot.
+for v in "$OPERATION_RATE" "$OPERATION_BURST" "$OPERATION_PER_SUBJECT" "$OPERATION_UNAUTHENTICATED"; do
+    case "$v" in
+        "") : ;;
+        *[!0-9]*|0*) die "operation rate limits are positive integers without leading zeros: $v" ;;
+    esac
+done
+[ -n "$OPERATION_RATE" ] || [ -z "$OPERATION_BURST" ] \
+    || die "--operation-rate-limit-burst needs --operation-rate-limit-per-sec"
+
 # Build the envelope with jq so every value is correctly JSON-escaped. Optional
 # fields are dropped (not emitted as null/empty) so the overlay stays minimal.
 jq -n \
@@ -95,8 +122,13 @@ jq -n \
     --arg anchor_table_name "$ANCHOR_TABLE_NAME" \
     --arg anchor_writer_credential_ciphertext "$ANCHOR_WRITER_CIPHERTEXT" \
     --arg bootstrap_claim_did "$BOOTSTRAP_CLAIM_DID" \
+    --arg operation_rate "$OPERATION_RATE" \
+    --arg operation_burst "$OPERATION_BURST" \
+    --arg operation_per_subject "$OPERATION_PER_SUBJECT" \
+    --arg operation_unauthenticated "$OPERATION_UNAUTHENTICATED" \
     '
     def put($k; $v): if $v == "" then . else . + {($k): $v} end;
+    def putn($k; $v): if $v == "" then . else . + {($k): ($v | tonumber)} end;
 
     {
       version: 1,
@@ -115,6 +147,13 @@ jq -n \
               { mediator_did: $mediator_did }
               | put("mediator_url"; $mediator_url)
           ) } end)
+        | ({}
+              | putn("operation_rate_limit_per_sec"; $operation_rate)
+              | putn("operation_rate_limit_burst"; $operation_burst)
+              | putn("operation_rate_limit_per_subject_per_sec"; $operation_per_subject)
+              | putn("operation_rate_limit_unauthenticated_per_sec"; $operation_unauthenticated)
+          ) as $server
+        | (if $server == {} then . else . + { server: $server } end)
       ),
       integrity: null
     }

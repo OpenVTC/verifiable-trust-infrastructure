@@ -432,6 +432,15 @@ These are load-bearing — know they exist before adjusting nearby code.
   seconds per token, not a rate**: a *bigger* number is a *tighter* limit, and
   "5 rps" wherever it appears is wrong. Every VTA 429 carries
   `x-rate-limit-source: vta` — a client contract, don't rename it.
+- **Operation budgets** (VTI-TRN-029, `trust_tasks::operation_budget`): Trust
+  Task work is bounded per appliance, per client DID and, separately, for
+  DIDComm / TSP senders without standing — charged after authentication and
+  before the task runs, on every transport (the passkey-VM REST routes are
+  not Trust Tasks and are not charged). Never charge a caller before it
+  is proven, and never charge a sender without standing to the clients'
+  budget: either lets a stranger spend what clients need. A refusal leaves the
+  document unrecorded, so a resend is a retry. The keys are config + tenant
+  overlay only, never `config/patch` (a TEE restart would drop the patch).
 - **Request body cap**: 1 MB globally (`MAX_BODY_SIZE`). Matters in TEE
   where memory is tight.
 - **Audience isolation** between VTA and VTC JWTs. Cross-audience tokens

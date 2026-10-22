@@ -263,6 +263,11 @@ pub struct AppState {
     pub external_secrets_ks: KeyspaceHandle,
     /// Per-binding issuance rate for `external/credentials/issue`.
     pub external_rate: Arc<vta_external::rate::BindingRateLimiter>,
+    /// The operation budgets Trust Tasks are charged against on every
+    /// transport — appliance, per client, unauthenticated
+    /// (`trust_tasks::operation_budget`, VTI-TRN-029). Built from `[server]`
+    /// with the state, so a soft restart picks up a change.
+    pub operation_budget: Arc<crate::trust_tasks::operation_budget::OperationBudget>,
     /// The hidden-vetting PCS engine (`vta/pcs/*`): vetter and applicant
     /// engines, their secret state wrapped under the seed-derived KEK.
     pub pcs_engine_ks: KeyspaceHandle,
@@ -714,6 +719,9 @@ pub async fn build_app_state(
         external_accounts_ks,
         external_secrets_ks,
         external_rate: Arc::new(vta_external::rate::BindingRateLimiter::new()),
+        operation_budget: Arc::new(
+            crate::trust_tasks::operation_budget::OperationBudget::from_config(&config.server),
+        ),
         pcs_engine_ks,
         witness_sessions_ks,
         room_groups_ks,

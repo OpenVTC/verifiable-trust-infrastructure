@@ -1,6 +1,8 @@
 # Rate limiting
 
-A VTA rate-limits its **unauthenticated** REST endpoints per client IP. This
+A VTA rate-limits its **unauthenticated** REST endpoints per client IP, and can
+bound its Trust Task work with operation budgets: per appliance, per client,
+and for DIDComm / TSP senders without standing. This
 page covers what is limited, how the limits are keyed and counted, how to set
 them in `config.toml` or at setup, how to change them on a running VTA, and how
 to tell a VTA 429 from one produced by something else in the path.
@@ -52,14 +54,87 @@ The public log responses also carry `Cache-Control: public, max-age=60` and a
 strong `ETag`, and answer `If-None-Match` with `304 Not Modified`, so a resolver
 or proxy that revalidates spends a cheap request rather than a full transfer.
 
-**Not limited:**
+**Not limited per IP:**
 
 - Authenticated (JWT-gated) REST routes, including `POST /trust-tasks`. The
-  token is the gate, and operator traffic against the management plane should
-  not be throttled.
+  token is the gate. What bounds them is the operation budgets (below), when
+  set.
 - DIDComm and TSP traffic. It reaches the VTA through its mediator session, not
-  through the REST router. The mediator applies its own limits (below).
-- `/health`, `/auth/portal` and `/openapi.json`.
+  through the REST router. The mediator applies its own limits (below), and the
+  operation budgets cover it when set.
+- `/health`, `/auth/portal` and `/openapi.json`, which nothing limits.
+
+## Operation budgets: Trust Task work, per appliance and per client
+
+Unset (the default), a VTA serves every Trust Task it is sent. Offered more
+than it can serve, it stops answering in time: on a TEE appliance the load
+balancer returns 502s, health checks fail, and after five minutes the runtime
+watchdog restarts the enclave. Three budgets bound that work instead, so work
+past them is refused before it runs and the rest is served at normal latency.
+They implement VTI-TRN-029: a node bounds what any one subject can consume, and
+bounds unauthenticated peers separately.
+
+| Budget (`x-rate-limit-scope`) | Charged to | Key |
+|---|---|---|
+| appliance (`operations`) | every client with standing, together | `operation_rate_limit_per_sec`, `operation_rate_limit_burst` |
+| per client (`operations-subject`) | each client with standing, by its DID | `operation_rate_limit_per_subject_per_sec` |
+| unauthenticated | every DIDComm / TSP sender without standing, together | `operation_rate_limit_unauthenticated_per_sec` |
+
+- **Who has standing.** A REST request with a valid bearer, or a DIDComm / TSP
+  sender with an ACL entry. It is charged to its own share first and then to
+  the appliance budget, so one busy client is refused before it spends what the
+  others share, and the appliance budget still bounds many clients together.
+- **Who has none.** A DIDComm / TSP sender without an ACL entry: the login
+  steps, public tasks, credential-exchange counterparties, approvers. It is
+  charged to the unauthenticated budget only, so strangers never spend the
+  clients' budget. Anonymous REST requests are not charged here: the per-IP
+  limiters above already bound them, and DIDComm and TSP have no equivalent.
+- **Charged after authentication**, before the task runs, on every transport.
+  The passkey-VM enrolment routes (`/did/verification-methods/passkey…`) are
+  not Trust Tasks and are not charged.
+- **The unauthenticated budget is shared.** One sender can use it up and delay
+  everyone else without standing — approvers, counterparties, logins over
+  DIDComm and TSP — until it refills. Past it a document gets no reply, so a
+  flood cannot make the VTA sign a refusal per message; the sender's client
+  times out and retries. Refusals to senders without standing (an unsigned
+  document, an unknown sender) are charged to it too.
+- **A client's share is spent first.** When the appliance budget then refuses,
+  the client's share is still spent, so a client retrying against a saturated
+  appliance can next be refused for its own share.
+- **Weighted by cost.** A task is charged what it costs relative to a sign,
+  measured on TEE appliances: a vault release 2, a DID create or delete
+  (`vta/webvh/dids/create`, `vta/webvh/dids/delete`) 10, every other task 1.
+  The weights are fixed in code (`trust_tasks::operation_budget`) and change
+  with a release; the budgets follow the hardware. A task not listed costs 1,
+  measured or not.
+- **Refusals.** REST answers `429` with `x-rate-limit-source: vta`,
+  `x-rate-limit-scope: operations` or `operations-subject` and `Retry-After`,
+  and the usual JSON body with the same `limiter`. DIDComm and TSP answer with a
+  signed `unavailable` error carrying `retryAfter` (the SDK's retryable
+  `VtaError::Unavailable`). A refused task did not run and its `id` was not
+  recorded, so resending the same document is a retry.
+- **Observability.** Each refusal increments
+  `vta_operation_budget_refused_total{scope}`; the VTA logs at most one warning
+  a minute per budget while it is refusing.
+
+All values are operations per second, 1 or more; unset means unbounded. The
+appliance burst defaults to one second's worth; every burst is at least 10, the
+heaviest weight, so any task can be served on an idle appliance.
+
+Unlike the per-IP keys, these are a **rate** (higher is looser), and they are
+**not** runtime `config/patch` keys: a patch on a TEE VTA does not survive an
+enclave restart. Set them in `config.toml`; a fleet TEE VTA receives them in
+its tenant overlay's `server` block, which the parent sends on every boot
+(`deploy/nitro/render-tenant-overlay.sh --operation-rate-limit-per-sec …`).
+
+**Sizing.** Load-test the instance you deploy on and set the appliance budget to about
+70% of the rate at which its slowest common operation is still healthy (every
+request served, p95 within your target), counted in signs: a budget of 100 on
+an appliance that signs 140 a second healthily. Where one operation dominates
+and costs more than its weight says on that hardware, size from that
+operation instead. Set the per-client share from how many clients should be
+able to work at once, and the unauthenticated budget from how many logins a
+second you expect over DIDComm and TSP.
 
 ## Keying: one bucket per client IP
 
@@ -179,7 +254,7 @@ cannot be switched off from configuration.
 
 ## Setting limits in `config.toml` and at setup
 
-The four keys live in `[server]`. Omit any of them to take the default.
+The keys live in `[server]`. Omit any of them to take the default.
 
 ```toml
 [server]
@@ -197,6 +272,14 @@ rate_limit_burst = 10
 # did-log limiter: seconds per token, bucket size
 did_log_rate_limit_interval_secs = 1
 did_log_rate_limit_burst = 60
+
+# operation budgets: appliance, per client, and DIDComm/TSP senders without
+# standing; operations per second (a rate, unlike the intervals above).
+# Unset = unbounded.
+# operation_rate_limit_per_sec = 110
+# operation_rate_limit_burst = 220
+# operation_rate_limit_per_subject_per_sec = 30
+# operation_rate_limit_unauthenticated_per_sec = 20
 ```
 
 The same `[server]` table is accepted by `vta setup --from <file>` (see
@@ -246,7 +329,7 @@ header that the others do not:
 
 | Source | How to recognise it | Limits | Where to change them |
 |---|---|---|---|
-| **This VTA** | `x-rate-limit-source: vta`, plus `x-rate-limit-scope: auth` / `auth-authenticate` / `auth-refresh` / `did-log` / `backup-blob`, `Retry-After`, and a JSON body `{"error":"rate_limited","limiter":"…","message":"…","retryAfterSecs":N}` | as configured above | `[server]` keys / `pnm config update` |
+| **This VTA** | `x-rate-limit-source: vta`, plus `x-rate-limit-scope: auth` / `auth-authenticate` / `auth-refresh` / `did-log` / `backup-blob` / `operations` / `operations-subject`, `Retry-After`, and a JSON body `{"error":"rate_limited","limiter":"…","message":"…","retryAfterSecs":N}` | as configured above | `[server]` keys / `pnm config update` |
 | **Mediator** (TDK `affinidi-messaging-mediator`) | no `x-rate-limit-source`; appears on the mediator's own host (websocket / inbound HTTP), not the VTA's | per IP: `limits.rate_limit_per_ip` requests per second (default 100), `limits.rate_limit_burst` (default 50); optional per authenticated DID: `limits.did_rate_limit_per_second` (default 0 = off) / `did_rate_limit_burst` | the mediator's `mediator.toml` (`LIMIT_*` env vars) |
 | **did-hosting-control** | no `x-rate-limit-source`; on the DID host's `/api/auth/challenge` | 30 requests per 60 s per IP (fixed window) | the did-hosting service |
 | **A reverse proxy / CDN / API gateway** | no `x-rate-limit-source`; usually a proxy-branded body or `Server` header | whatever the proxy enforces | the proxy |
@@ -260,6 +343,8 @@ see VTA `auth` 429s at once, suspect the proxy trap above.
 ## See also
 
 - `vta-service/src/routes/rate_limit.rs` — the limiters and the 429 contract.
+- `vta-service/src/trust_tasks/operation_budget.rs` — the operation budgets and
+  their weights.
 - `vta-service/src/operations/config.rs` — the runtime configuration registry.
 - [Mediator connection](mediator-connection.md) — the readiness gate that
   fetches the VTA's own log.

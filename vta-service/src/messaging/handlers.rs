@@ -73,7 +73,7 @@ pub async fn handle_trust_task(
     {
         let response = crate::trust_tasks::transport::with_binding(
             "didcomm",
-            crate::trust_tasks::dispatch_auth_family(&app_state, &body),
+            crate::trust_tasks::dispatch_auth_family_from_peer(&app_state, &body),
         )
         .await;
         if response.body.is_empty() {
@@ -124,14 +124,12 @@ pub async fn handle_trust_task(
             .await
         }
         Err(e) => {
-            crate::trust_tasks::sign_response(
+            crate::trust_tasks::refuse_without_standing(
                 &app_state,
-                crate::trust_tasks::reject_trust_task(
-                    &body,
-                    trust_tasks_rs::RejectReason::PermissionDenied {
-                        reason: e.to_string(),
-                    },
-                ),
+                &body,
+                trust_tasks_rs::RejectReason::PermissionDenied {
+                    reason: e.to_string(),
+                },
             )
             .await
         }

@@ -532,6 +532,7 @@ fn rate_limit_message(
 ) -> (String, Vec<String>) {
     use vta_sdk::rate_limit::{self as rl, RateLimitSource};
 
+    let scope = limiter;
     let limiter = limiter.map(|l| format!(" ({l})")).unwrap_or_default();
     let headline = format!(
         "Rate limited by {}{limiter} — the request was refused, not failed.",
@@ -554,6 +555,38 @@ fn rate_limit_message(
     }
 
     match limited_by {
+        // This client's own share of the operation budget: the fix is on the
+        // client's side, not a per-IP knob.
+        RateLimitSource::Vta if scope == Some(rl::OPERATIONS_SUBJECT_LIMITER) => {
+            hints.push(
+                "This client has used its own share of the VTA's operation budget; other \
+                 clients are not affected. Retry after the wait, or spread the work out."
+                    .to_string(),
+            );
+            hints.push(format!(
+                "The share is `[server] {}` (operations per second, per client DID); on a TEE \
+                 VTA it comes from the tenant overlay's `server` block. See {}.",
+                rl::VTA_OPERATION_PER_SUBJECT_KEY,
+                rl::VTA_DOCS,
+            ));
+        }
+        // The per-appliance budget, not a per-IP limiter: the per-IP knobs
+        // would not help, and the operator should know the whole VTA is busy.
+        RateLimitSource::Vta if scope == Some(rl::OPERATIONS_LIMITER) => {
+            hints.push(
+                "The VTA is at its operation budget: the whole appliance is at capacity, not \
+                 only this client. Retry after the wait."
+                    .to_string(),
+            );
+            hints.push(format!(
+                "The budget is `[server] {}` / `{}` (operations per second), sized for the \
+                 instance; on a TEE VTA it comes from the tenant overlay's `server` block. \
+                 Raise it only with a larger instance. See {}.",
+                rl::VTA_OPERATION_RATE_KEY,
+                rl::VTA_OPERATION_BURST_KEY,
+                rl::VTA_DOCS,
+            ));
+        }
         RateLimitSource::Vta => {
             hints.push(format!(
                 "To loosen it, in the VTA's `[server]` config: `{}` / `{}` for the auth and \
@@ -808,6 +841,48 @@ mod rate_limit_render_tests {
         ] {
             assert!(all.contains(needle), "missing {needle:?} in:\n{all}");
         }
+    }
+
+    #[test]
+    fn an_operation_budget_refusal_names_the_budget_not_the_per_ip_knobs() {
+        let (headline, hints) = rate_limit_message(
+            RateLimitSource::Vta,
+            Some(now() + chrono::Duration::seconds(1)),
+            Some("operations"),
+            None,
+            now(),
+            "pnm",
+        );
+        assert!(headline.contains("(operations)"), "{headline}");
+        let all = hints.join("\n");
+        assert!(
+            all.contains("`[server] operation_rate_limit_per_sec`"),
+            "{all}"
+        );
+        assert!(all.contains("tenant overlay"), "{all}");
+        assert!(
+            !all.contains("config update"),
+            "the budget is not runtime-patchable, so no `config update` hint:\n{all}"
+        );
+    }
+
+    #[test]
+    fn a_per_client_refusal_names_the_clients_share() {
+        let (_, hints) = rate_limit_message(
+            RateLimitSource::Vta,
+            None,
+            Some("operations-subject"),
+            None,
+            now(),
+            "pnm",
+        );
+        let all = hints.join("\n");
+        assert!(all.contains("its own share"), "{all}");
+        assert!(
+            all.contains("`[server] operation_rate_limit_per_subject_per_sec`"),
+            "{all}"
+        );
+        assert!(!all.contains("config update"), "{all}");
     }
 
     #[test]

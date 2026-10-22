@@ -50,6 +50,10 @@ pub struct TenantConfigOverlay {
     /// grants nothing itself.
     #[serde(default)]
     pub bootstrap_claim_did: Option<String>,
+    /// The per-appliance operation budget, sized for the instance the parent
+    /// runs the enclave on. See [`TenantServerOverlay`].
+    #[serde(default)]
+    pub server: Option<TenantServerOverlay>,
 }
 
 /// The tenant-scoped subset of `[tee.kms]` an operator may deliver at runtime.
@@ -103,6 +107,38 @@ pub struct TenantMessagingOverlay {
     pub setup_acl: Option<bool>,
 }
 
+/// The tenant-scoped subset of `[server]` an operator may deliver at runtime:
+/// the operation budgets (appliance, per client, unauthenticated), and nothing
+/// else.
+///
+/// It belongs here because its right value follows the instance size, which
+/// the parent chooses and the image does not know, and because the overlay is
+/// delivered on every boot, so the budget survives an enclave restart. It
+/// confers nothing on the parent: a budget of 1 starves the VTA, which a parent
+/// that carries every packet can do anyway, and no budget is the behaviour
+/// without the field. `host`, `port`, the per-IP limiters and above all
+/// `trust_xff_cidrs` (which would let the parent choose whose address a request
+/// is charged to) stay baked. Allowlist rationale: `tenant-config-allowlist.md`
+/// §3.3.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[non_exhaustive]
+pub struct TenantServerOverlay {
+    #[serde(default)]
+    pub operation_rate_limit_per_sec: Option<u32>,
+    #[serde(default)]
+    pub operation_rate_limit_burst: Option<u32>,
+    #[serde(default)]
+    pub operation_rate_limit_per_subject_per_sec: Option<u32>,
+    #[serde(default)]
+    pub operation_rate_limit_unauthenticated_per_sec: Option<u32>,
+}
+
+/// Largest operation budget, per second or as a burst, the overlay accepts.
+/// Well above what any appliance serves; past it a value is a typo, and one
+/// that would quietly turn the budget off.
+pub const MAX_OPERATION_RATE_LIMIT: u32 = 100_000;
+
 /// Failure applying a [`TenantConfigOverlay`] to a baked base config.
 ///
 /// Every variant is fail-closed: an overlay that trips any of these must abort
@@ -139,6 +175,10 @@ pub enum TenantOverlayError {
     MessagingMediatorDidRequired,
     /// The overlay's `bootstrap_claim_did` is not an Ed25519 `did:key`.
     MalformedBootstrapClaimDid(String),
+    /// An operation budget in the overlay's `server` block is 0 or above
+    /// [`MAX_OPERATION_RATE_LIMIT`]. Zero is refused rather than read as "no
+    /// budget": omitting the field already says that.
+    InvalidOperationRateLimit { field: &'static str, value: u32 },
 }
 
 impl std::fmt::Display for TenantOverlayError {
@@ -185,6 +225,11 @@ impl std::fmt::Display for TenantOverlayError {
             Self::MalformedBootstrapClaimDid(did) => write!(
                 f,
                 "tenant overlay bootstrap_claim_did is not an Ed25519 did:key: {did}"
+            ),
+            Self::InvalidOperationRateLimit { field, value } => write!(
+                f,
+                "tenant overlay server.{field} = {value} is out of range \
+                 (1..={MAX_OPERATION_RATE_LIMIT}); omit it for no budget"
             ),
         }
     }
@@ -321,6 +366,53 @@ pub fn apply_tenant_overlay(
         base.tee.bootstrap_claim_did = Some(did);
     }
 
+    if let Some(server) = overlay.server {
+        let checked = |field: &'static str, v: Option<u32>| match v {
+            Some(value) if value == 0 || value > MAX_OPERATION_RATE_LIMIT => {
+                Err(TenantOverlayError::InvalidOperationRateLimit { field, value })
+            }
+            v => Ok(v),
+        };
+        // Every value is checked before any is written, so a refused overlay
+        // leaves the base as it was.
+        let values = [
+            (
+                "operation_rate_limit_per_sec",
+                server.operation_rate_limit_per_sec,
+            ),
+            (
+                "operation_rate_limit_burst",
+                server.operation_rate_limit_burst,
+            ),
+            (
+                "operation_rate_limit_per_subject_per_sec",
+                server.operation_rate_limit_per_subject_per_sec,
+            ),
+            (
+                "operation_rate_limit_unauthenticated_per_sec",
+                server.operation_rate_limit_unauthenticated_per_sec,
+            ),
+        ]
+        .map(|(field, v)| checked(field, v));
+        let [per_sec, burst, per_subject, unauthenticated] = values;
+        let (per_sec, burst, per_subject, unauthenticated) =
+            (per_sec?, burst?, per_subject?, unauthenticated?);
+        let s = &mut base.server;
+        for (field, value) in [
+            (&mut s.operation_rate_limit_per_sec, per_sec),
+            (&mut s.operation_rate_limit_burst, burst),
+            (&mut s.operation_rate_limit_per_subject_per_sec, per_subject),
+            (
+                &mut s.operation_rate_limit_unauthenticated_per_sec,
+                unauthenticated,
+            ),
+        ] {
+            if value.is_some() {
+                *field = value;
+            }
+        }
+    }
+
     if let Some(m) = overlay.messaging {
         match base.messaging.as_mut() {
             Some(msg) => {
@@ -406,6 +498,12 @@ mod tests {
             // the enclave provisions from `vta_did_template`, so `vta_did` is not
             // an overlay field and must be rejected structurally.
             r#"{"vta_did":"did:webvh:scid:acme.example.com:vta"}"#,
+            // `server` carries the operation budget only: the parent must not
+            // choose whose address a request is charged to, or where the VTA
+            // listens, or loosen the per-IP limiters.
+            r#"{"server":{"trust_xff_cidrs":["0.0.0.0/0"]}}"#,
+            r#"{"server":{"port":1}}"#,
+            r#"{"server":{"rate_limit_burst":10000}}"#,
         ];
         for p in poison {
             assert!(
@@ -424,12 +522,15 @@ mod tests {
                              "anchor_table_name":"vta-rollback-anchor-acme",
                              "anchor_writer_credential_ciphertext":"base64=="}},
                  "messaging":{{"mediator_did":"did:webvh:scid:mediator","mediator_url":"wss://m"}},
-                 "bootstrap_claim_did":"{CLAIM_DID}"}}"#
+                 "bootstrap_claim_did":"{CLAIM_DID}",
+                 "server":{{"operation_rate_limit_per_sec":110,"operation_rate_limit_burst":220}}}}"#
         );
         let parsed: TenantConfigOverlay =
             serde_json::from_str(&ok).expect("well-formed overlay must parse");
         assert_eq!(parsed.vta_name.as_deref(), Some("acme"));
         assert_eq!(parsed.bootstrap_claim_did.as_deref(), Some(CLAIM_DID));
+        let server = parsed.server.expect("server present");
+        assert_eq!(server.operation_rate_limit_per_sec, Some(110));
         let kms = parsed.tee_kms.expect("tee_kms present");
         assert_eq!(kms.key_arn, GOOD_ARN);
     }
@@ -493,6 +594,55 @@ mod tests {
     }
 
     // -- apply onto a baked base (tee-only).
+
+    #[cfg(feature = "tee")]
+    #[test]
+    fn apply_overlay_sets_the_operation_budget() {
+        let mut base: crate::AppConfig = toml::from_str("").expect("empty config parses");
+        let overlay: TenantConfigOverlay = serde_json::from_str(
+            r#"{"server":{"operation_rate_limit_per_sec":80,
+                    "operation_rate_limit_per_subject_per_sec":20,
+                    "operation_rate_limit_unauthenticated_per_sec":10}}"#,
+        )
+        .unwrap();
+        apply_tenant_overlay(&mut base, overlay).expect("apply succeeds");
+        assert_eq!(base.server.operation_rate_limit_per_sec, Some(80));
+        assert_eq!(base.server.operation_rate_limit_burst, None);
+        assert_eq!(
+            base.server.operation_rate_limit_per_subject_per_sec,
+            Some(20)
+        );
+        assert_eq!(
+            base.server.operation_rate_limit_unauthenticated_per_sec,
+            Some(10)
+        );
+    }
+
+    #[cfg(feature = "tee")]
+    #[test]
+    fn apply_overlay_refuses_a_zero_or_huge_operation_budget() {
+        for (json, field, value) in [
+            (
+                r#"{"server":{"operation_rate_limit_per_sec":0}}"#,
+                "operation_rate_limit_per_sec",
+                0,
+            ),
+            (
+                r#"{"server":{"operation_rate_limit_per_sec":80,"operation_rate_limit_burst":100001}}"#,
+                "operation_rate_limit_burst",
+                100_001,
+            ),
+        ] {
+            let mut base: crate::AppConfig = toml::from_str("").expect("empty config parses");
+            let overlay: TenantConfigOverlay = serde_json::from_str(json).unwrap();
+            assert_eq!(
+                apply_tenant_overlay(&mut base, overlay),
+                Err(TenantOverlayError::InvalidOperationRateLimit { field, value }),
+                "{json}"
+            );
+            assert_eq!(base.server.operation_rate_limit_per_sec, None, "{json}");
+        }
+    }
 
     #[cfg(feature = "tee")]
     #[test]

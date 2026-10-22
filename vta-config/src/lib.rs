@@ -524,6 +524,45 @@ pub struct ServerConfig {
     /// starts. Default: 60. Zero is clamped to 1.
     #[serde(default = "default_did_log_rate_limit_burst")]
     pub did_log_rate_limit_burst: u32,
+    /// Per-appliance budget for **authenticated** Trust Tasks, in
+    /// **operations per second** (unlike the per-IP intervals above, this one
+    /// is a rate). Absent (the default) means no budget: every authenticated
+    /// Trust Task is served, as before.
+    ///
+    /// One token bucket for the whole VTA, shared by REST, DIDComm and TSP, so
+    /// the sum of every client's work is bounded; each client's share is
+    /// `operation_rate_limit_per_subject_per_sec` (VTI-TRN-029). A task is
+    /// charged its weight (`trust_tasks::operation_budget`): most cost 1, a
+    /// vault release 2, a DID create or delete 10. Work past the budget is
+    /// refused before it runs — `429` with `x-rate-limit-source: vta` over
+    /// REST, a retryable `unavailable` over DIDComm and TSP — so an overloaded
+    /// appliance sheds load instead of failing health checks and restarting.
+    ///
+    /// Not a runtime `config/patch` key: a TEE VTA would lose a patch on its
+    /// next restart. Set it in the config, or in the tenant overlay's `server`
+    /// block, which the parent delivers on every boot. Must be at least 1.
+    #[serde(default)]
+    pub operation_rate_limit_per_sec: Option<u32>,
+    /// Burst for `operation_rate_limit_per_sec`: how many operations' worth can
+    /// arrive back-to-back before the rate applies. Absent means one second's
+    /// worth. Raised to the heaviest task's weight if lower, so every task can
+    /// be served on an idle appliance. Ignored without a rate.
+    #[serde(default)]
+    pub operation_rate_limit_burst: Option<u32>,
+    /// Per-client share of the operation budget, in operations per second:
+    /// how much one client with standing (a session, or an ACL entry) may use,
+    /// keyed by its DID, so it cannot take what the others need (VTI-TRN-029).
+    /// Charged before the appliance budget. Absent means no per-client bound.
+    /// The burst is one second's worth, never below 10. Must be at least 1.
+    #[serde(default)]
+    pub operation_rate_limit_per_subject_per_sec: Option<u32>,
+    /// Budget for DIDComm / TSP senders without standing — the login steps,
+    /// public tasks, credential-exchange counterparties, approvers — in
+    /// operations per second, all together and apart from the clients' budget,
+    /// so strangers cannot spend it (VTI-TRN-029). Anonymous REST requests are
+    /// bounded per IP instead. Absent means unbounded. Must be at least 1.
+    #[serde(default)]
+    pub operation_rate_limit_unauthenticated_per_sec: Option<u32>,
     /// Retired: `trust_xff`. Present only to **refuse** a config that still
     /// declares it — replaced by `trust_xff_cidrs`, an explicit trusted-proxy
     /// CIDR allowlist. Absent (the only accepted state) deserializes to `()`
@@ -597,6 +636,10 @@ impl Default for ServerConfig {
             rate_limit_burst: default_rate_limit_burst(),
             did_log_rate_limit_interval_secs: default_did_log_rate_limit_interval_secs(),
             did_log_rate_limit_burst: default_did_log_rate_limit_burst(),
+            operation_rate_limit_per_sec: None,
+            operation_rate_limit_burst: None,
+            operation_rate_limit_per_subject_per_sec: None,
+            operation_rate_limit_unauthenticated_per_sec: None,
             trust_xff: (),
         }
     }
@@ -1473,6 +1516,33 @@ impl AppConfig {
         }
         errors.extend(self.did_cache.validation_errors());
         errors.extend(self.witness.validation_errors());
+        // An operation budget of 0 would read as "no budget" — the bound
+        // failing open (VTI-TRN-029). Omitting the key already says that.
+        for (key, value) in [
+            (
+                "operation_rate_limit_per_sec",
+                self.server.operation_rate_limit_per_sec,
+            ),
+            (
+                "operation_rate_limit_burst",
+                self.server.operation_rate_limit_burst,
+            ),
+            (
+                "operation_rate_limit_per_subject_per_sec",
+                self.server.operation_rate_limit_per_subject_per_sec,
+            ),
+            (
+                "operation_rate_limit_unauthenticated_per_sec",
+                self.server.operation_rate_limit_unauthenticated_per_sec,
+            ),
+        ] {
+            if value == Some(0) {
+                errors.push(format!(
+                    "[server] {key} = 0 — remove the key for no budget, or set 1 or more \
+                     (operations per second)"
+                ));
+            }
+        }
         // retention_days = 0 would silently disable audit retention; the
         // sweeper assumes a positive window. (Mirrors the setup-time rule.)
         if self.audit.retention_days == 0 {
@@ -1617,6 +1687,25 @@ mod validate_tests {
     fn trust_xff_cidrs_still_parses() {
         let config = cfg("[server]\ntrust_xff_cidrs = [\"127.0.0.1/32\"]\n");
         assert_eq!(config.server.trust_xff_cidrs.len(), 1);
+    }
+
+    /// A zero budget would read as "no budget", failing open (VTI-TRN-029).
+    #[test]
+    fn a_zero_operation_budget_is_rejected() {
+        for key in [
+            "operation_rate_limit_per_sec",
+            "operation_rate_limit_burst",
+            "operation_rate_limit_per_subject_per_sec",
+            "operation_rate_limit_unauthenticated_per_sec",
+        ] {
+            let err = cfg(&format!("[server]\n{key} = 0\n"))
+                .validate()
+                .expect_err("a zero budget must be rejected");
+            assert!(format!("{err:?}").contains(key), "{err:?}");
+        }
+        cfg("[server]\noperation_rate_limit_per_sec = 1\n")
+            .validate()
+            .expect("a budget of 1 is accepted");
     }
 
     #[test]

@@ -1033,6 +1033,14 @@ pub struct TestAppOptions {
     /// `DIDCommMessaging` / `TSPTransport` — a `did:key` cannot carry a service
     /// block, so it can never tell a client which transports the VTA speaks.
     pub vta_transport: Option<VtaTransportIdentity>,
+
+    /// `[server] operation_rate_limit_per_sec` for the app: the per-appliance
+    /// operation budget. `None` (the default) leaves it unlimited.
+    pub operation_rate_limit_per_sec: Option<u32>,
+
+    /// `[server] operation_rate_limit_per_subject_per_sec`: each client's
+    /// share. `None` (the default) leaves it unlimited.
+    pub operation_rate_limit_per_subject_per_sec: Option<u32>,
 }
 
 /// A mediator-backed transport identity for the mock VTA
@@ -1342,6 +1350,9 @@ pub async fn build_test_app_with(opts: TestAppOptions) -> (axum::Router, TestApp
     ))
     .expect("parse config");
     config.config_path = dir.path().join("config.toml");
+    config.server.operation_rate_limit_per_sec = opts.operation_rate_limit_per_sec;
+    config.server.operation_rate_limit_per_subject_per_sec =
+        opts.operation_rate_limit_per_subject_per_sec;
 
     let (restart_tx, _rx) = watch::channel(false);
 
@@ -1467,6 +1478,11 @@ pub async fn build_test_app_with(opts: TestAppOptions) -> (axum::Router, TestApp
         external_accounts_ks: store.keyspace(crate::keyspaces::EXTERNAL_ACCOUNTS).unwrap(),
         external_secrets_ks: store.keyspace(crate::keyspaces::EXTERNAL_SECRETS).unwrap(),
         external_rate: std::sync::Arc::new(vta_external::rate::BindingRateLimiter::new()),
+        operation_budget: std::sync::Arc::new(
+            crate::trust_tasks::operation_budget::OperationBudget::from_config(
+                &config.read().await.server,
+            ),
+        ),
         pcs_engine_ks: store.keyspace(crate::keyspaces::PCS_ENGINE).unwrap(),
         witness_sessions_ks: store.keyspace(crate::keyspaces::WITNESS_SESSIONS).unwrap(),
         room_groups_ks: store.keyspace(crate::keyspaces::ROOM_GROUPS).unwrap(),
@@ -2251,6 +2267,8 @@ impl MockVta {
             webvh_servers: vec![(Self::WEBVH_SERVER_ID.to_string(), server_did)],
             atm: None,
             vta_transport: None,
+            operation_rate_limit_per_sec: None,
+            operation_rate_limit_per_subject_per_sec: None,
         };
         let mut mock = Self::serve(build_test_app_with(opts).await).await;
         mock.webvh_host = Some(host);

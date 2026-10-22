@@ -109,7 +109,7 @@ pub(crate) async fn dispatch_one_with_restart(
     {
         crate::trust_tasks::transport::with_binding(
             "tsp",
-            crate::trust_tasks::dispatch_auth_family(app_state, payload),
+            crate::trust_tasks::dispatch_auth_family_from_peer(app_state, payload),
         )
         .await
     } else {
