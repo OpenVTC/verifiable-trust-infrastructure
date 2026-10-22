@@ -30,6 +30,7 @@ use trust_tasks_rs::specs::rooms::info::v0_1 as rooms_info;
 use trust_tasks_rs::specs::rooms::records::get::v0_2 as get_v2;
 use trust_tasks_rs::specs::rooms::records::list::v0_2 as list_v2;
 use trust_tasks_rs::specs::rooms::records::put::v0_2 as put_v2;
+use trust_tasks_rs::specs::rooms::records::put::v0_3 as put_v3;
 use trust_tasks_rs::specs::rooms::usage::v0_1 as rooms_usage;
 use vti_common::error::AppError;
 
@@ -48,7 +49,8 @@ pub use crate::wire::{
     ROOMS_BLOBS_UPLOAD_CHUNK_TYPE as UPLOAD_CHUNK_TYPE,
     ROOMS_BLOBS_UPLOAD_COMMIT_TYPE as UPLOAD_COMMIT_TYPE, ROOMS_INFO_TYPE as INFO_TYPE,
     ROOMS_RECORDS_GET_V2_TYPE as GET_V2_TYPE, ROOMS_RECORDS_LIST_V2_TYPE as LIST_V2_TYPE,
-    ROOMS_RECORDS_PUT_V2_TYPE as PUT_V2_TYPE, ROOMS_USAGE_TYPE as USAGE_TYPE,
+    ROOMS_RECORDS_PUT_V2_TYPE as PUT_V2_TYPE, ROOMS_RECORDS_PUT_V3_TYPE as PUT_V3_TYPE,
+    ROOMS_USAGE_TYPE as USAGE_TYPE,
 };
 pub use crate::wire::{
     ROOMS_BLOBS_GET_V2_TYPE as BLOB_GET_V2_TYPE,
@@ -684,6 +686,43 @@ pub fn put_v2_blobs(payload: &Value) -> Result<Vec<String>, Refusal> {
         .iter()
         .map(|b| b.as_str().to_string())
         .collect())
+}
+
+/// What a `rooms/records/put/0.3` carries beyond the 0.1 body, after checking the payload
+/// is that task's: the `blobs` it names, and on an `open` room its `cleartext` **exactly as
+/// received** — provenance and `validUntil` included (consumer item 11: stored and served as
+/// received, never acted on).
+///
+/// The cleartext is read from the JSON, never from the generated type: some generated
+/// constructors normalise what they parse (a `validUntil` comes back in another spelling),
+/// and a host that rewrote a member would be serving the writer something they did not write.
+pub fn put_v3_parts(payload: &Value) -> Result<(Vec<String>, Option<Value>), Refusal> {
+    let req: put_v3::Payload = parse(payload)?;
+    let blobs = req
+        .blobs
+        .unwrap_or_default()
+        .iter()
+        .map(|b| b.as_str().to_string())
+        .collect();
+    Ok((blobs, payload.get("cleartext").cloned()))
+}
+
+/// The members `rooms/records/put/0.3` adds to an `open` room's `cleartext` — a record's
+/// provenance and its expiry (`rooms/_shared/0.1` `SealedRecordBody`, *Provenance*).
+pub const PROVENANCE_MEMBERS: [&str; 5] =
+    ["basis", "confidence", "evidence", "validFor", "validUntil"];
+
+/// A 0.3 put read as the 0.1 body: [`as_v0_1`], and the provenance members taken out of
+/// `cleartext`, which the 0.1 body does not take. The host stores the cleartext
+/// [`put_v3_parts`] returned, not this one.
+pub fn put_v3_as_v0_1(payload: Value) -> Value {
+    let mut payload = as_v0_1(payload);
+    if let Some(cleartext) = payload.get_mut("cleartext").and_then(Value::as_object_mut) {
+        for member in PROVENANCE_MEMBERS {
+            cleartext.remove(member);
+        }
+    }
+    payload
 }
 
 /// The members a 0.1 request shares with its 0.2 successor: everything but `blobs` and

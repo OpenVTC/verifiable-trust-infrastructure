@@ -39,13 +39,29 @@ const BODY_MEMBERS: &[&str] = &[
     "body",
     "tags",
     "file",
+    "basis",
+    "confidence",
+    "evidence",
+    "validFor",
+    "validUntil",
     "roomProfile",
     "proof",
 ];
 
 /// The members a profile record must **not** carry: it is how the room describes itself,
 /// not one of its records (`RoomProfileStatement` item 1).
-const RECORD_MEMBERS: &[&str] = &["title", "description", "body", "tags", "file"];
+const RECORD_MEMBERS: &[&str] = &[
+    "title",
+    "description",
+    "body",
+    "tags",
+    "file",
+    "basis",
+    "confidence",
+    "evidence",
+    "validFor",
+    "validUntil",
+];
 
 /// The members a `RoomProfileStatement` may carry.
 const STATEMENT_MEMBERS: &[&str] = &["profile", "issuedAt", "authority", "padding", "ext"];

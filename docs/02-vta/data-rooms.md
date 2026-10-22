@@ -1371,6 +1371,36 @@ refused by their own VTA (`actionNotHeld`) rather than by the host; one who
 may act as several members of the room names the one they mean (`issuer`), or
 is asked to (`principalAmbiguous`).
 
+**What kind of claim a record is, and when it lapses.** A record can say
+whether it is the author's own statement, something observed, something checked
+against evidence, or an inference — and what it cites, what it may be used for,
+and when its author stops standing behind it (`basis`, `confidence`, `evidence`,
+`validFor`, `validUntil`; `rooms/_shared/0.1` `SealedRecordBody`,
+trust-tasks-tf #865):
+
+```bash
+pnm rooms put notes/q3 "Customer is price-sensitive." --room <room-did> --host … \
+    --basis inferred --confidence 0.6 --cite-record meetings/2026-10-08@3 \
+    --purpose https://w3id.org/dpv#ServicePersonalisation --use-note "renewal only" \
+    --valid-until 2026-12-31T23:59:59Z
+```
+
+On a sealed room they travel **inside the signed body**: the host never sees
+them, and a reader attributes them to the author exactly as it does the body.
+`pnm rooms put` writes `declared` when no `--basis` is given (what the operator
+typed is their own statement); `--basis unstated` leaves it out. `pnm rooms get`
+shows the basis beside the author and marks a record past its `validUntil` as
+**expired**. They are display and weighting only, **never authority**: nothing
+grants a permission because of them, `verified` never stands in for checking
+what `evidence` names, and nothing `evidence` names is ever fetched. Expiry
+hides, it never deletes — the record stays until a curator retracts it or a
+prune removes it (§10.5). On an `open` room the same members ride
+`rooms/records/put/0.3`'s cleartext, unsigned, stored and served exactly as
+received; both hosts serve 0.3 beside 0.2 and 0.1. `pnm` does not write 0.3 yet:
+`rooms/keys/act` (0.1–0.6) completes `put` only at 0.1 and 0.2, so it refuses
+provenance flags on an `open` room rather than signing as itself. A client with
+its own presentation uses `VtcClient::put_cleartext_record_v3`.
+
 **A request that names no room names its member.** A download chunk
 (`rooms/blobs/chunk/0.1`) and a direct upload's commit or abort
 (`rooms/blobs/upload/{commit,abort}/0.2`) carry no `roomId`, so the client sets
@@ -1836,7 +1866,8 @@ and `vtc-service`:
 | URI | Action required |
 |---|---|
 | `rooms/create/0.1` | no chain — the signer must be the `ownerDid` (§8.4) |
-| `rooms/records/put/0.1` | `write` |
+| `rooms/records/put/0.1`, `0.2` | `write` |
+| `rooms/records/put/0.3` | `write` — an `open` room's cleartext may carry provenance and `validUntil`, stored as received and never acted on |
 | `rooms/records/get/0.1` | `read` |
 | `rooms/records/list/0.1` | `read` |
 | `rooms/records/curate/0.1` | `curate` |

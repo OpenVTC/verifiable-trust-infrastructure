@@ -51,6 +51,7 @@ use vtc_client::rooms::body::{
     RecordLocation, SealedRecordBody, VerifiedRecordBody, verify_record_body,
 };
 use vtc_client::rooms::{CleartextContent, RoomSession, SealedContent, Visibility};
+pub use vtc_client::rooms::body::RecordBasis;
 
 /// Everything a room command needs to reach both parties.
 ///
@@ -288,10 +289,11 @@ pub async fn cmd_rooms_list(
         // On a sealed tier there is no title to show — that is the tier working,
         // not a gap, so say so rather than printing an empty column.
         let title = r
-            .get("cleartext")
-            .and_then(|c| c.get("title"))
+            .get("title")
+            .or_else(|| r.get("cleartext").and_then(|c| c.get("title")))
             .and_then(Value::as_str)
-            .unwrap_or("(sealed)");
+            .map(inert)
+            .unwrap_or_else(|| "(sealed)".to_string());
         println!("  {key}  v{version}  {status:<10} {title}");
     }
     Ok(())
@@ -359,6 +361,12 @@ pub async fn cmd_rooms_get(
                 "{}",
                 inert(cleartext.get("body").and_then(Value::as_str).unwrap_or(""))
             );
+            // On this tier provenance is the writer's word as the host stored it, unsigned.
+            if let Some(obj) = cleartext.as_object()
+                && vti_rooms::provenance::carries_any(obj)
+            {
+                println!("\n{} (unsigned on an open room)", provenance_line(obj));
+            }
         }
         return Ok(());
     }
@@ -394,6 +402,9 @@ pub async fn cmd_rooms_get(
         );
     }
     println!("\nWritten by {} at version {version}.", body.author);
+    if let Ok(Value::Object(obj)) = serde_json::to_value(body) {
+        println!("{}", provenance_line(&obj));
+    }
     Ok(())
 }
 
@@ -410,10 +421,14 @@ pub async fn cmd_rooms_put(
     title: Option<String>,
     body: String,
     expected_version: Option<u64>,
+    provenance: RecordProvenance,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let (sealed_tier, member) = room_tier(client, &target).await?;
 
     if !sealed_tier {
+        if provenance.is_stated() {
+            return Err(open_tier_provenance_refused(&target).into());
+        }
         let mut payload = serde_json::json!({
             "roomId": target.room_id,
             "key": key,
@@ -444,9 +459,157 @@ pub async fn cmd_rooms_put(
     );
     content.title = title;
     content.body = Some(body);
+    provenance.apply(&mut content)?;
     let version = write_sealed(client, &target, content, expected_version).await?;
     println!("Wrote {key} at version {version}, sealed and signed by {member}");
     Ok(())
+}
+
+/// A record's provenance and expiry as `rooms put` takes them (`rooms/_shared/0.1`
+/// `SealedRecordBody`, *Provenance* and *Expiry*; trust-tasks-tf #865).
+///
+/// Display and weighting for whoever reads the record, never authority. `basis` `None`
+/// leaves it unstated; `pnm` passes `declared` when the operator names none, which is what
+/// the specification asks of a client relaying what its member typed.
+#[derive(Debug, Clone, Default)]
+pub struct RecordProvenance {
+    /// What kind of claim the record is.
+    pub basis: Option<vtc_client::rooms::body::RecordBasis>,
+    /// Whether `basis` was named by the operator rather than defaulted.
+    pub basis_named: bool,
+    /// The author's own estimate, 0 to 1.
+    pub confidence: Option<f64>,
+    /// Records of this room cited in support: `KEY`, or `KEY@VERSION` to pin what it said then.
+    pub cite_records: Vec<String>,
+    /// Credentials cited in support, by `id` — never fetched.
+    pub cite_credentials: Vec<String>,
+    /// Purposes the record may be used for, each an absolute IRI.
+    pub purposes: Vec<String>,
+    /// The permitted use in words.
+    pub use_note: Option<String>,
+    /// When the author stops standing behind the record, RFC 3339.
+    pub valid_until: Option<String>,
+}
+
+impl RecordProvenance {
+    /// Whether the operator stated anything — a defaulted `basis` is not a statement.
+    pub fn is_stated(&self) -> bool {
+        self.basis_named
+            || self.confidence.is_some()
+            || !self.cite_records.is_empty()
+            || !self.cite_credentials.is_empty()
+            || !self.purposes.is_empty()
+            || self.use_note.is_some()
+            || self.valid_until.is_some()
+    }
+
+    /// Put these members on `body`, checked against the specification's types before the
+    /// VTA is asked to sign anything.
+    pub fn apply(&self, body: &mut SealedRecordBody) -> Result<(), String> {
+        body.basis = self.basis;
+        body.confidence = self.confidence.map(|c| serde_json::json!(c));
+        let mut evidence = Vec::new();
+        for cite in &self.cite_records {
+            let (key, version) = match cite.rsplit_once('@') {
+                Some((k, v)) => (
+                    k,
+                    Some(v.parse::<u64>().map_err(|_| {
+                        format!("--cite-record {cite}: the version after `@` is not a number")
+                    })?),
+                ),
+                None => (cite.as_str(), None),
+            };
+            let mut e = serde_json::json!({ "kind": "record", "key": key });
+            if let Some(v) = version {
+                e["version"] = serde_json::json!(v);
+            }
+            evidence.push(e);
+        }
+        for id in &self.cite_credentials {
+            evidence.push(serde_json::json!({ "kind": "credential", "credentialId": id }));
+        }
+        body.evidence = (!evidence.is_empty()).then_some(Value::Array(evidence));
+        let mut valid_for = serde_json::Map::new();
+        if !self.purposes.is_empty() {
+            valid_for.insert("purposes".into(), serde_json::json!(self.purposes));
+        }
+        if let Some(note) = &self.use_note {
+            valid_for.insert("note".into(), serde_json::json!(note));
+        }
+        body.valid_for = (!valid_for.is_empty()).then_some(Value::Object(valid_for));
+        body.valid_until = self.valid_until.clone();
+        if let Ok(Value::Object(obj)) = serde_json::to_value(&*body) {
+            vti_rooms::provenance::check(&obj)?;
+        }
+        Ok(())
+    }
+}
+
+/// Why `rooms put` will not state provenance on an `open` room, and what to do instead.
+///
+/// An open room carries provenance in `rooms/records/put/0.3`'s cleartext, and this client
+/// writes as the member through `rooms/keys/act`, whose table (0.1 to 0.6) completes put only
+/// at 0.1 and 0.2. Writing 0.3 any other way would record this client's key as the author.
+fn open_tier_provenance_refused(target: &RoomTarget<'_>) -> String {
+    format!(
+        "room {} is `open`: a record's provenance there rides `rooms/records/put/0.3`, which \
+         `rooms/keys/act` does not complete yet, so pnm cannot write it as your persona. Write \
+         it without --basis, --confidence, --cite-record, --cite-credential, --purpose, \
+         --use-note and --valid-until, or in a sealed (`attributed` or `private`) room, where \
+         they travel inside the signed body.",
+        target.room_id
+    )
+}
+
+/// What a record says about the kind of claim it is, and whether it has lapsed — shown
+/// beside its author (`SealedRecordBody`, *Provenance*: a reader shows `basis`, or says none
+/// was stated). Never authority.
+fn provenance_line(obj: &serde_json::Map<String, Value>) -> String {
+    let mut line = match obj.get("basis").and_then(Value::as_str) {
+        Some(b) => format!("Basis: {}", inert(b)),
+        None => "Basis: not stated".to_string(),
+    };
+    if let Some(c) = obj.get("confidence").and_then(Value::as_f64) {
+        line.push_str(&format!(" (author's confidence {c})"));
+    }
+    if obj.get("basis").and_then(Value::as_str) == Some("verified")
+        && !obj.contains_key("evidence")
+    {
+        line.push_str(" — names no evidence, so the claim to have checked is unsupported");
+    }
+    if let Some(n) = obj.get("evidence").and_then(Value::as_array).map(Vec::len) {
+        line.push_str(&format!("; cites {n} item(s), not fetched"));
+    }
+    if let Some(use_for) = obj.get("validFor") {
+        let purposes = use_for
+            .get("purposes")
+            .and_then(Value::as_array)
+            .map(|p| {
+                p.iter()
+                    .filter_map(Value::as_str)
+                    .map(inert)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            })
+            .unwrap_or_default();
+        let note = use_for
+            .get("note")
+            .and_then(Value::as_str)
+            .map(|n| format!(" \"{}\"", inert(n)))
+            .unwrap_or_default();
+        line.push_str(&format!("\nFor use: {purposes}{note}"));
+    }
+    if let Some(until) = obj.get("validUntil").and_then(Value::as_str) {
+        if vti_rooms::provenance::is_expired(obj, chrono::Utc::now()) {
+            line.push_str(&format!(
+                "\nEXPIRED: its author stopped standing behind it at {}.",
+                inert(until)
+            ));
+        } else {
+            line.push_str(&format!("\nValid until {}.", inert(until)));
+        }
+    }
+    line
 }
 
 /// `rooms curate` — change a record's standing.

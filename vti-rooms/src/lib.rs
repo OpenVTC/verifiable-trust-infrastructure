@@ -113,6 +113,10 @@ pub mod observe;
 /// A room's own profile — where it is stored (`profile_key(E)`), how it is padded and the
 /// window its `issuedAt` must fall in (`rooms/_shared/0.1` `RoomProfileStatement`).
 pub mod profile;
+/// A record's provenance and expiry — what kind of claim it is, what it cites, what it may
+/// be used for, and when it lapses (trust-tasks-tf #865). Display and weighting, never
+/// authority; expiry is a reader's rule.
+pub mod provenance;
 /// The epoch key chain that keeps a room readable across a membership change.
 #[cfg(feature = "mls")]
 pub mod retention;

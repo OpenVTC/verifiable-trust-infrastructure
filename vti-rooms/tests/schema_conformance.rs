@@ -937,6 +937,10 @@ fn every_dispatched_uri_is_the_published_one() {
             <rooms::records::put::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI,
         ),
         (
+            ROOMS_RECORDS_PUT_V3_TYPE,
+            <rooms::records::put::v0_3::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+        ),
+        (
             ROOMS_RECORDS_GET_V2_TYPE,
             <rooms::records::get::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI,
         ),

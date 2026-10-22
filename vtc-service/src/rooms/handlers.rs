@@ -152,6 +152,7 @@ pub(crate) fn dispatcher() -> AsyncDispatcher<RoomCtx, TrustTaskOutcome> {
         .on_async(handle_transfer_owner)
         .on_async(handle_claim_owner)
         .on_async(super::files::handle_put_record_v2)
+        .on_async(super::files::handle_put_record_v3)
         .on_async(super::files::handle_get_record_v2)
         .on_async(super::files::handle_list_records_v2)
         .on_async(super::files::handle_upload_begin)
@@ -432,18 +433,22 @@ pub(crate) async fn handle_put_record(
     ctx: RoomCtx,
 ) -> TrustTaskOutcome {
     let req = doc.payload.clone();
-    put_record(&doc, &ctx, req, Vec::new()).await
+    put_record(&doc, &ctx, req, Vec::new(), None).await
 }
 
-/// Write a record: `rooms/records/put` 0.1 (no `blobs`) or 0.2.
+/// Write a record: `rooms/records/put` 0.1 (no `blobs`), 0.2, or 0.3.
 ///
 /// A 0.1 write names no blobs, so rewriting a record that carried a file under 0.1
 /// releases it: the new version does not name it, which is what 0.2 says a release is.
+///
+/// `cleartext_as_received` is a 0.3 write's `cleartext`, provenance and expiry included,
+/// stored in place of the 0.1 body's exactly as the writer sent it (0.3 consumer item 11).
 pub(super) async fn put_record<P>(
     doc: &TrustTask<P>,
     ctx: &RoomCtx,
     req: PutRecordBody,
     blobs: Vec<String>,
+    cleartext_as_received: Option<Value>,
 ) -> TrustTaskOutcome {
     let state = &ctx.state;
 
@@ -511,10 +516,11 @@ pub(super) async fn put_record<P>(
         sealed: req.sealed.as_ref().map(|s| s.ciphertext.clone()),
         nonce: req.sealed.as_ref().map(|s| s.nonce.clone()),
         sealed_version: None,
-        cleartext: req
-            .cleartext
-            .as_ref()
-            .map(|c| serde_json::to_value(c).unwrap_or(Value::Null)),
+        cleartext: req.cleartext.as_ref().map(|c| {
+            cleartext_as_received
+                .clone()
+                .unwrap_or_else(|| serde_json::to_value(c).unwrap_or(Value::Null))
+        }),
         author,
         updated_at: 0,
     };
@@ -3103,5 +3109,60 @@ mod tests {
             "{}",
             payload_of(&out)
         );
+    }
+
+    /// `rooms/records/put/0.3` consumer item 11, as room-host holds it: an open room's
+    /// provenance and expiry are stored and served back exactly as received, a passed
+    /// `validUntil` is not acted on, and 0.2 still refuses those members in its closed
+    /// `cleartext`.
+    #[tokio::test]
+    async fn put_0_3_provenance_is_stored_and_served_as_received() {
+        let tv = build_test_vtc().await;
+        let state = &tv.state;
+        let f = RoomFixture::new(Visibility::Open).await;
+        assert!(create(state, &f).await.status.is_success());
+
+        let cleartext = json!({
+            "body": "Pushed back twice on list price.",
+            "basis": "inferred",
+            "confidence": 0.6,
+            "evidence": [{ "kind": "credential", "credentialId": "urn:uuid:1" }],
+            "validFor": { "note": "renewal negotiation only" },
+            "validUntil": "2020-01-01T00:00:00+00:00"
+        });
+        let out = send(
+            state,
+            vti_rooms::wire::ROOMS_RECORDS_PUT_V3_TYPE,
+            json!({ "roomId": f.room.room_id, "key": "note", "presentation": f.as_owner(),
+                    "cleartext": cleartext }),
+            &f,
+        )
+        .await;
+        assert!(out.status.is_success(), "put 0.3: {}", payload_of(&out));
+
+        let out = send(
+            state,
+            vti_rooms::wire::ROOMS_RECORDS_GET_TYPE,
+            json!({ "roomId": f.room.room_id, "key": "note", "presentation": f.as_owner() }),
+            &f,
+        )
+        .await;
+        let got = payload_of(&out);
+        let served = if got["cleartext"].is_null() {
+            got["record"]["cleartext"].clone()
+        } else {
+            got["cleartext"].clone()
+        };
+        assert_eq!(served, cleartext, "{got}");
+
+        let out = send(
+            state,
+            vti_rooms::wire::ROOMS_RECORDS_PUT_V2_TYPE,
+            json!({ "roomId": f.room.room_id, "key": "note2", "presentation": f.as_owner(),
+                    "cleartext": { "body": "x", "basis": "declared" } }),
+            &f,
+        )
+        .await;
+        assert!(!out.status.is_success(), "0.2 must refuse provenance");
     }
 }

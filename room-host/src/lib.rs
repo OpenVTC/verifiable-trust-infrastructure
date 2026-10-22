@@ -576,6 +576,7 @@ async fn route(state: &Arc<HostState>, doc: TrustTask<Value>) -> Answer {
         vti_rooms::revocation_tasks::PUT_TYPE => files::revocations_put(state, &doc, payload).await,
         vti_rooms::revocation_tasks::GET_TYPE => files::revocations_get(state, &doc, payload).await,
         files::PUT_V2_TYPE => files::put_v2(state, &doc, payload).await,
+        files::PUT_V3_TYPE => files::put_v3(state, &doc, payload).await,
         files::GET_V2_TYPE => files::get_v2(state, &doc, payload).await,
         files::LIST_V2_TYPE => files::list_v2(state, &doc, payload).await,
         files::UPLOAD_BEGIN_TYPE => files::begin(state, &doc, payload).await,
@@ -734,19 +735,24 @@ async fn create(state: &HostState, doc: &TrustTask<Value>, payload: Value) -> An
 }
 
 async fn put(state: &HostState, doc: &TrustTask<Value>, payload: Value) -> Answer {
-    put_with_blobs(state, doc, payload, None).await
+    put_with_blobs(state, doc, payload, None, None).await
 }
 
-/// Write a record: `rooms/records/put` 0.1 (`blobs: None`) or 0.2.
+/// Write a record: `rooms/records/put` 0.1 (`blobs: None`), 0.2, or 0.3.
 ///
 /// A 0.1 write names no blobs, so rewriting a record that carried a file under
 /// 0.1 releases it — the new version does not name it, which is what 0.2 says a
 /// release is.
+///
+/// `cleartext_as_received` is a 0.3 write's `cleartext`, provenance and expiry included,
+/// which is stored in place of the 0.1 body's — exactly as the writer sent it (0.3 consumer
+/// item 11). The 0.1 body still decides the shape checks.
 async fn put_with_blobs(
     state: &HostState,
     doc: &TrustTask<Value>,
     payload: Value,
     blobs: Option<Vec<String>>,
+    cleartext_as_received: Option<Value>,
 ) -> Answer {
     let req: PutRecordBody = match serde_json::from_value(payload) {
         Ok(r) => r,
@@ -809,10 +815,11 @@ async fn put_with_blobs(
         sealed: req.sealed.as_ref().map(|s| s.ciphertext.clone()),
         nonce: req.sealed.as_ref().map(|s| s.nonce.clone()),
         sealed_version: None,
-        cleartext: req
-            .cleartext
-            .as_ref()
-            .map(|c| serde_json::to_value(c).unwrap_or(Value::Null)),
+        cleartext: req.cleartext.as_ref().map(|c| {
+            cleartext_as_received
+                .clone()
+                .unwrap_or_else(|| serde_json::to_value(c).unwrap_or(Value::Null))
+        }),
         // The verified subject where the tier discloses an actor — who the chain says is
         // acting, not the room's owner. On a private room authorship lives inside the
         // sealed body, and the storage layer refuses it here.

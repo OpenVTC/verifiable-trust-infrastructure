@@ -27,7 +27,7 @@ use super::{Answer, HostState, from_app_error, now, reject, respond};
 
 pub(crate) use vti_rooms::blob_tasks::{
     BLOB_GET_TYPE, BLOB_GET_V2_TYPE, DOWNLOAD_CHUNK_TYPE, GET_V2_TYPE, INFO_TYPE, LIST_V2_TYPE,
-    PUT_V2_TYPE, UPLOAD_ABORT_TYPE, UPLOAD_ABORT_V2_TYPE, UPLOAD_BEGIN_TYPE, UPLOAD_BEGIN_V2_TYPE,
+    PUT_V2_TYPE, PUT_V3_TYPE, UPLOAD_ABORT_TYPE, UPLOAD_ABORT_V2_TYPE, UPLOAD_BEGIN_TYPE, UPLOAD_BEGIN_V2_TYPE,
     UPLOAD_CHUNK_TYPE, UPLOAD_CHUNK_V2_TYPE, UPLOAD_COMMIT_TYPE, UPLOAD_COMMIT_V2_TYPE, USAGE_TYPE,
 };
 
@@ -454,7 +454,29 @@ pub(crate) async fn put_v2(
         Ok(b) => b,
         Err(r) => return refused(doc, r),
     };
-    super::put_with_blobs(state, doc, blob_tasks::as_v0_1(payload), Some(blobs)).await
+    super::put_with_blobs(state, doc, blob_tasks::as_v0_1(payload), Some(blobs), None).await
+}
+
+/// `rooms/records/put/0.3`: 0.2, and an `open` room's `cleartext` may carry the record's
+/// provenance and `validUntil` — stored and served exactly as received, never acted on
+/// (consumer item 11). A sealed write is 0.2's: those members travel inside the body.
+pub(crate) async fn put_v3(
+    state: &Arc<HostState>,
+    doc: &TrustTask<Value>,
+    payload: Value,
+) -> Answer {
+    let (blobs, cleartext) = match blob_tasks::put_v3_parts(&payload) {
+        Ok(parts) => parts,
+        Err(r) => return refused(doc, r),
+    };
+    super::put_with_blobs(
+        state,
+        doc,
+        blob_tasks::put_v3_as_v0_1(payload),
+        Some(blobs),
+        cleartext,
+    )
+    .await
 }
 
 /// `rooms/records/get/0.2`: the 0.1 read, whose answer also names the
@@ -2494,5 +2516,103 @@ mod tests {
         // The room's info says what tier this is, which is how a client decides to seal.
         let info = client.room_info(&session, did, secret).await.expect("info");
         assert_eq!(serde_json::to_value(info.visibility).unwrap(), "attributed");
+    }
+
+    // ─── rooms/records/put/0.3 (trust-tasks-tf #865) ─────────────────────
+
+    /// 0.3 consumer item 11: an open room's provenance and expiry are stored and served back
+    /// exactly as received — the `validUntil` spelling included — and the host does not act
+    /// on an expiry that has passed.
+    #[tokio::test]
+    async fn put_0_3_provenance_round_trips_as_received_and_expiry_is_not_acted_on() {
+        let h = host(eager());
+        let f = room(&h).await;
+        let cleartext = json!({
+            "title": "Customer is price-sensitive",
+            "body": "Pushed back twice on list price.",
+            "basis": "inferred",
+            "confidence": 0.6,
+            "evidence": [{ "kind": "record", "key": "meetings/2026-10-08", "version": 3 }],
+            "validFor": {
+                "purposes": ["https://w3id.org/dpv#ServicePersonalisation"],
+                "note": "renewal negotiation only"
+            },
+            // Already past, and in a spelling a typed round trip would rewrite.
+            "validUntil": "2020-01-01T00:00:00+00:00"
+        });
+        let (status, out) = call(
+            &h.app,
+            PUT_V3_TYPE,
+            json!({ "roomId": f.room.room_id, "key": "note", "presentation": f.as_owner(),
+                    "cleartext": cleartext }),
+            &f.owner,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{out}");
+        assert_eq!(out["key"], "note");
+
+        let (status, got) = call(
+            &h.app,
+            vti_rooms::wire::ROOMS_RECORDS_GET_TYPE,
+            json!({ "roomId": f.room.room_id, "key": "note", "presentation": f.as_owner() }),
+            &f.owner,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{got}");
+        let served = if got["cleartext"].is_null() {
+            got["record"]["cleartext"].clone()
+        } else {
+            got["cleartext"].clone()
+        };
+        assert_eq!(served, cleartext, "served exactly as received: {got}");
+    }
+
+    /// 0.2's `cleartext` is closed, so a 0.2 write carrying provenance is refused rather
+    /// than stored without it — the reason 0.3 is a new version — and 0.2 is still served.
+    #[tokio::test]
+    async fn put_0_2_still_refuses_provenance_and_is_still_served() {
+        let h = host(eager());
+        let f = room(&h).await;
+        let (status, out) = call(
+            &h.app,
+            PUT_V2_TYPE,
+            json!({ "roomId": f.room.room_id, "key": "note", "presentation": f.as_owner(),
+                    "cleartext": { "body": "x", "basis": "declared" } }),
+            &f.owner,
+        )
+        .await;
+        assert_ne!(status, StatusCode::OK, "{out}");
+        let (status, out) = call(
+            &h.app,
+            PUT_V2_TYPE,
+            json!({ "roomId": f.room.room_id, "key": "note", "presentation": f.as_owner(),
+                    "cleartext": { "body": "x" } }),
+            &f.owner,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{out}");
+    }
+
+    /// A provenance member the specification refuses is refused at 0.3.
+    #[tokio::test]
+    async fn put_0_3_refuses_provenance_the_schema_refuses() {
+        let h = host(eager());
+        let f = room(&h).await;
+        for bad in [
+            json!({ "body": "x", "basis": "rumoured" }),
+            json!({ "body": "x", "confidence": 2 }),
+            json!({ "body": "x", "evidence": [] }),
+            json!({ "body": "x", "validUntil": "soon" }),
+        ] {
+            let (status, out) = call(
+                &h.app,
+                PUT_V3_TYPE,
+                json!({ "roomId": f.room.room_id, "key": "k", "presentation": f.as_owner(),
+                        "cleartext": bad }),
+                &f.owner,
+            )
+            .await;
+            assert_ne!(status, StatusCode::OK, "{bad}: {out}");
+        }
     }
 }

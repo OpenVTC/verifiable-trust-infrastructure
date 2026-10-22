@@ -620,6 +620,33 @@ pub(crate) enum RoomCommands {
         /// to be at version `n`. A mismatch reports the version you lost to.
         #[arg(long)]
         expected_version: Option<u64>,
+        /// What kind of claim the record is: `declared` (your own statement — the
+        /// default on a sealed room), `observed`, `verified` (name the evidence),
+        /// `inferred`, or `unstated`. Signed inside the body; for readers to show
+        /// and weigh, never authority.
+        #[arg(long)]
+        basis: Option<String>,
+        /// Your own estimate, 0 to 1, that the record is right.
+        #[arg(long)]
+        confidence: Option<f64>,
+        /// Cite a record of this room in support: `KEY`, or `KEY@VERSION` to cite
+        /// what it said then. Repeatable. Never fetched by a reader.
+        #[arg(long = "cite-record")]
+        cite_records: Vec<String>,
+        /// Cite a credential in support, by its `id`. Repeatable. Never fetched.
+        #[arg(long = "cite-credential")]
+        cite_credentials: Vec<String>,
+        /// A purpose the record may be used for, as an absolute IRI (for example
+        /// `https://w3id.org/dpv#ServicePersonalisation`). Repeatable.
+        #[arg(long = "purpose")]
+        purposes: Vec<String>,
+        /// The permitted use in words, such as "renewal negotiation only".
+        #[arg(long)]
+        use_note: Option<String>,
+        /// When you stop standing behind the record as current (RFC 3339).
+        /// Readers hide it after that; it is not deleted.
+        #[arg(long)]
+        valid_until: Option<String>,
     },
 
     /// Change a record's standing. Needs `curate`, which `write` does not imply.

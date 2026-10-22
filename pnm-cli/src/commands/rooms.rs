@@ -529,7 +529,21 @@ pub(crate) async fn run(
             host_did,
             title,
             expected_version,
+            basis,
+            confidence,
+            cite_records,
+            cite_credentials,
+            purposes,
+            use_note,
+            valid_until,
         } => {
+            // `declared` unless named: what the operator typed is their own statement, which
+            // is what a client relaying its member's words writes (`SealedRecordBody`).
+            let (basis, basis_named) = match basis.as_deref() {
+                None => (Some(rooms::RecordBasis::Declared), false),
+                Some("unstated") => (None, true),
+                Some(b) => (Some(b.parse::<rooms::RecordBasis>()?), true),
+            };
             rooms::cmd_rooms_put(
                 client,
                 RoomTarget {
@@ -541,6 +555,16 @@ pub(crate) async fn run(
                 title,
                 body,
                 expected_version,
+                rooms::RecordProvenance {
+                    basis,
+                    basis_named,
+                    confidence,
+                    cite_records,
+                    cite_credentials,
+                    purposes,
+                    use_note,
+                    valid_until,
+                },
             )
             .await
         }

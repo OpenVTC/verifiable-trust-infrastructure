@@ -64,6 +64,11 @@ pub const ROOMS_EPOCH_COMMITS_TYPE: &str = "https://trusttasks.org/spec/rooms/ep
 /// `rooms/records/put/0.2`: a record that may name blobs.
 pub const ROOMS_RECORDS_PUT_V2_TYPE: &str =
     <trust_tasks_rs::specs::rooms::records::put::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+/// `rooms/records/put/0.3`: an `open` room's cleartext may say what kind of claim the
+/// record is and when it lapses — `basis`, `confidence`, `evidence`, `validFor` and
+/// `validUntil`, stored and served as received and never acted on (trust-tasks-tf #865).
+pub const ROOMS_RECORDS_PUT_V3_TYPE: &str =
+    <trust_tasks_rs::specs::rooms::records::put::v0_3::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 /// `rooms/records/get/0.2`: a read that names the record's blobs.
 pub const ROOMS_RECORDS_GET_V2_TYPE: &str =
     <trust_tasks_rs::specs::rooms::records::get::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
@@ -134,6 +139,8 @@ pub const ROOMS_DISPATCHED_URIS: &[&str] = &[
     ROOMS_RECORDS_PUT_V2_TYPE,
     ROOMS_RECORDS_GET_V2_TYPE,
     ROOMS_RECORDS_LIST_V2_TYPE,
+    // Record provenance and expiry on the open tier (trust-tasks-tf #865).
+    ROOMS_RECORDS_PUT_V3_TYPE,
     ROOMS_BLOBS_UPLOAD_BEGIN_TYPE,
     ROOMS_BLOBS_UPLOAD_CHUNK_TYPE,
     ROOMS_BLOBS_UPLOAD_COMMIT_TYPE,

@@ -26,7 +26,7 @@ use trust_tasks_rs::specs::rooms::blobs::upload::{
 };
 use trust_tasks_rs::specs::rooms::info::v0_1 as rooms_info;
 use trust_tasks_rs::specs::rooms::records::{
-    get::v0_2 as get_v2, list::v0_2 as list_v2, put::v0_2 as put_v2,
+    get::v0_2 as get_v2, list::v0_2 as list_v2, put::v0_2 as put_v2, put::v0_3 as put_v3,
 };
 use trust_tasks_rs::specs::rooms::usage::v0_1 as rooms_usage;
 use trust_tasks_rs::{RejectReason, TrustTask};
@@ -424,7 +424,37 @@ pub(crate) async fn handle_put_record_v2(
         Ok(r) => r,
         Err(o) => return o,
     };
-    super::handlers::put_record(&doc, &ctx, req, blobs).await
+    super::handlers::put_record(&doc, &ctx, req, blobs, None).await
+}
+
+/// `rooms/records/put/0.3`: 0.2, and an `open` room's `cleartext` may carry the record's
+/// provenance and `validUntil` — stored and served exactly as received, never acted on
+/// (consumer item 11). A sealed write is 0.2's: those members travel inside the body.
+pub(crate) async fn handle_put_record_v3(
+    doc: TrustTask<put_v3::Payload>,
+    ctx: RoomCtx,
+) -> TrustTaskOutcome {
+    let payload = match payload_json(&doc) {
+        Ok(p) => p,
+        Err(o) => return o,
+    };
+    let (blobs, cleartext) = match blob_tasks::put_v3_parts(&payload) {
+        Ok(parts) => parts,
+        Err(r) => return refused(&doc, r),
+    };
+    let req: PutRecordBody =
+        match serde_json::from_value(blob_tasks::put_v3_as_v0_1(payload)).map_err(|e| {
+            reject_with(
+                &doc,
+                RejectReason::MalformedRequest {
+                    reason: e.to_string(),
+                },
+            )
+        }) {
+            Ok(r) => r,
+            Err(o) => return o,
+        };
+    super::handlers::put_record(&doc, &ctx, req, blobs, cleartext).await
 }
 
 /// `rooms/records/get/0.2`: the 0.1 read, whose answer also names the record's blobs.
