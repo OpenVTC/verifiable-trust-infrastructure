@@ -140,6 +140,7 @@ pub(super) async fn handle_issue_in_context(
             claims: &req.claims,
             credential_type: req.credential_type.as_deref(),
             validity_seconds: req.validity_seconds,
+            additional_contexts: &req.additional_contexts,
             expected_verification_method: req.expected_verification_method.as_deref(),
         },
         TRANSPORT_TRUST_TASK,
@@ -904,6 +905,44 @@ mod tests {
         assert!(
             !out.status.is_success(),
             "a caller-supplied keyId must be refused rather than ignored"
+        );
+    }
+
+    /// A credential whose type defines its own terms needs the context that
+    /// declares them. The issuer knows which one; the VTA carries it without
+    /// resolving or interpreting it.
+    #[tokio::test]
+    async fn additional_contexts_are_carried_after_the_base_context() {
+        let (state, _dir) = build_signing_test_app_state().await;
+        context_ready_to_issue(&state, CTX).await;
+        const AGENT_CTX: &str = "https://example.test/AgentIdentityCredentialV1.jsonld";
+
+        let out = handle_issue_in_context(
+            &state,
+            &context_scoped(CTX),
+            issue_in_context_doc(json!({
+                "contextId": CTX,
+                "holder": "did:key:zHolderInContext",
+                "claims": { "role": "agent" },
+                "credentialType": "AgentIdentityCredential",
+                "validitySeconds": 3600u64,
+                // The base context is repeated deliberately: echoing it would
+                // make the credential non-conformant rather than more correct.
+                "additionalContexts": ["https://www.w3.org/ns/credentials/v2", AGENT_CTX],
+            })),
+        )
+        .await;
+        assert!(out.status.is_success(), "{}", body_of(&out));
+
+        let credential = response_payload(&out)["credential"].clone();
+        assert_eq!(
+            credential["@context"],
+            json!(["https://www.w3.org/ns/credentials/v2", AGENT_CTX]),
+            "the base context must come first and must not be duplicated"
+        );
+        assert_eq!(
+            credential["type"],
+            json!(["VerifiableCredential", "AgentIdentityCredential"])
         );
     }
 

@@ -125,6 +125,14 @@ pub struct IssueInContextBody {
     pub credential_type: Option<String>,
     /// Validity window length in seconds from issuance.
     pub validity_seconds: u64,
+    /// Extra JSON-LD context URLs, appended after the VC Data Model 2.0 base.
+    ///
+    /// A credential whose type defines its own terms needs the context that
+    /// declares them, and the issuer — not the VTA — is what knows which one.
+    /// Not resolved or interpreted here; they travel with the credential for
+    /// its verifier.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub additional_contexts: Vec<String>,
     /// The verification method the caller **expects** to sign this credential.
     ///
     /// An assertion, not a selector: it never chooses a key. When it disagrees
@@ -150,6 +158,7 @@ impl IssueInContextBody {
             claims,
             validity_seconds,
             credential_type: None,
+            additional_contexts: Vec::new(),
             expected_verification_method: None,
             ext: None,
         }

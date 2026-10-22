@@ -184,6 +184,13 @@ pub struct IssueInContextParams<'a> {
     pub claims: &'a Value,
     pub credential_type: Option<&'a str>,
     pub validity_seconds: u64,
+    /// Extra JSON-LD context URLs appended after the VC Data Model 2.0 base.
+    ///
+    /// A credential whose type defines its own terms needs the context that
+    /// declares them, and the issuer — not the VTA — is what knows which one.
+    /// The VTA does not resolve or interpret them; they travel with the
+    /// credential for its verifier.
+    pub additional_contexts: &'a [String],
     /// The verification method the caller asserts will sign. Never selects a
     /// key — a disagreement is refused.
     pub expected_verification_method: Option<&'a str>,
@@ -264,8 +271,17 @@ pub async fn issue_in_context(
         types.push(Value::String(ct.to_string()));
     }
 
+    let mut contexts = vec![Value::String(VC_V2_CONTEXT.to_string())];
+    for context in params.additional_contexts {
+        // The base context is already first; a caller repeating it would make
+        // the credential non-conformant rather than more correct.
+        if context != VC_V2_CONTEXT {
+            contexts.push(Value::String(context.clone()));
+        }
+    }
+
     let mut vc = json!({
-        "@context": [VC_V2_CONTEXT],
+        "@context": contexts,
         "id": id,
         "type": types,
         "issuer": signer.issuer_did,
