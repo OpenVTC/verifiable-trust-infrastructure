@@ -42,4 +42,12 @@ pub struct CreateContextResultBody {
         alias = "issuer_key_id"
     )]
     pub issuer_key_id: Option<String>,
+    /// Keys designated to produce Data-Integrity proofs as this context's DID,
+    /// by `proofPurpose`.
+    #[serde(
+        default,
+        skip_serializing_if = "std::collections::BTreeMap::is_empty",
+        alias = "proof_key_ids"
+    )]
+    pub proof_key_ids: std::collections::BTreeMap<String, String>,
 }

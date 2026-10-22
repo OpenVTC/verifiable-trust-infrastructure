@@ -89,6 +89,7 @@ mod policy;
 mod policy_gate;
 #[cfg(test)]
 mod produced_census;
+mod proofs;
 #[cfg(feature = "webvh")]
 mod provision_integration;
 pub(crate) mod received;
@@ -315,6 +316,12 @@ const UNSPECCED_DISPATCHED_URIS: &[&str] = &[
     //   resolves. Not a member on the published `contexts/update/1.0`, whose
     //   schema forbids additional properties. Spec both upstream together.
     "https://trusttasks.org/spec/vta/contexts/set-issuer-key/0.1",
+    // ─ vta/proofs/attach/0.1 — a server-built Data-Integrity proof signed by a
+    //   persisted context key. `keys/derive-and-sign-document` is published but
+    //   is super-admin and signs with an ephemeral derived key, so its
+    //   verification method resolves to nothing. Spec upstream alongside the
+    //   two entries above.
+    "https://trusttasks.org/spec/vta/proofs/attach/0.1",
 ];
 
 /// A dispatched handler's future, on the heap. See `dispatch_typed`.
@@ -2546,6 +2553,11 @@ dispatch_table! {
     // other context mutation.
     vta_sdk::trust_tasks::TASK_CONTEXTS_SET_ISSUER_KEY_0_1 => contexts::handle_set_issuer_key
         [ Mutating None false ],
+    // Server-built DI proofs. `None` side-effect: nothing durable is written
+    // beyond the audit row — the proof goes back to the caller and the VTA
+    // keeps no copy, the same shape as `keys/derive-and-sign-document`.
+    vta_sdk::trust_tasks::TASK_PROOFS_ATTACH_0_1 => proofs::handle_attach
+        [ None None false ],
     // ─── Agent-memory slice (spec/vta/memory/*) ──────────────────
     // Per-context key/value store; gated on context access (require_context),
     // NOT operator step-up.
@@ -4896,6 +4908,77 @@ mod response_coverage {
             doc["payload"]["verificationMethod"],
             format!("did:key:{public_key}#{public_key}"),
             "the resolved verification method must be echoed: {doc}"
+        );
+    }
+
+    /// `proofs/attach/0.1` over the spine, driven by a caller holding only the
+    /// target context — the authority this task exists to be reachable by.
+    #[tokio::test]
+    async fn proofs_attach_over_the_spine() {
+        let (state, _dir) = build_signing_test_app_state().await;
+        const CTX: &str = "cov-attach-proof";
+        a_context(&state, CTX).await;
+
+        let key = ok(
+            &state,
+            t::TASK_KEYS_CREATE_0_1,
+            json!({ "keyType": "ed25519", "contextId": CTX }),
+        )
+        .await;
+        let created = &key["key"];
+        let key_id = created["keyId"].as_str().expect("key id").to_owned();
+        let public_key = created["publicKey"]
+            .as_str()
+            .expect("public key")
+            .to_owned();
+        ok(
+            &state,
+            t::TASK_CONTEXTS_UPDATE_1_0,
+            json!({ "id": CTX, "did": format!("did:key:{public_key}") }),
+        )
+        .await;
+        ok(
+            &state,
+            t::TASK_CONTEXTS_SET_ISSUER_KEY_0_1,
+            json!({ "id": CTX, "keyId": key_id, "proofPurpose": "authentication" }),
+        )
+        .await;
+
+        let vta_did = state.config.read().await.vta_did.clone().expect("vta_did");
+        let body = signed_body(
+            t::TASK_PROOFS_ATTACH_0_1,
+            &vta_did,
+            json!({
+                "contextId": CTX,
+                "document": {
+                    "@context": ["https://www.w3.org/ns/credentials/v2"],
+                    "type": ["VerifiablePresentation"],
+                    "holder": "did:key:zSpineHolder",
+                },
+                "proofPurpose": "authentication",
+            }),
+        );
+        let outcome = super::dispatch_trust_task_core(
+            &state,
+            &crate::test_support::admin_claims_for_context(CTX),
+            &body,
+            transport::TransportConfidentiality::HopByHop,
+        )
+        .await;
+        let doc: Value = serde_json::from_slice(&outcome.body).expect("a response document");
+        assert_eq!(
+            doc["type"],
+            format!("{}#response", t::TASK_PROOFS_ATTACH_0_1),
+            "a context-scoped caller must get a success response: {doc}"
+        );
+        assert_eq!(
+            doc["payload"]["document"]["proof"]["verificationMethod"],
+            format!("did:key:{public_key}#{public_key}"),
+            "the proof must be signed by the context's designated key: {doc}"
+        );
+        assert_eq!(
+            doc["payload"]["document"]["proof"]["proofPurpose"],
+            "authentication"
         );
     }
 

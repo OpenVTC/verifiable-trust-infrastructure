@@ -18,28 +18,26 @@
 //! mirroring `vault::consent::sign_with` and
 //! `provision_integration::credential::issue_vta_authorization_credential`.
 
-use affinidi_data_integrity::{
-    DataIntegrityProof, SignOptions, crypto_suites::CryptoSuite, prepare_sign_input,
-};
+use affinidi_data_integrity::{DataIntegrityProof, SignOptions, crypto_suites::CryptoSuite};
 use affinidi_secrets_resolver::secrets::Secret;
-use base64::Engine;
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tracing::info;
 
 use crate::auth::AuthClaims;
-use crate::contexts::get_context;
 use crate::error::AppError;
+use crate::operations::context_signing;
 use crate::operations::internal_authority::InternalAuthority;
 use crate::server::AppState;
 use crate::store::KeyspaceHandle;
 use vta_sdk::did_key::decode_private_key_multibase;
-use vta_sdk::keys::KeyRecord;
 use vta_sdk::protocols::credentials_issuance::{
     IssuedCredentialStatus, IssuedCredentialSummary, ListCredentialsBody, ListCredentialsResponse,
 };
-use vta_sdk::protocols::key_management::sign::{SignAlgorithm, SigningDomain};
+
+/// The audit action `issue_in_context` records refusals under.
+const ISSUE_IN_CONTEXT_ACTION: &str = "credentials.issue-in-context";
 
 /// VC Data Model 2.0 base context — every issued VC carries this.
 const VC_V2_CONTEXT: &str = "https://www.w3.org/ns/credentials/v2";
@@ -239,89 +237,20 @@ pub async fn issue_in_context(
     }
 
     let context_id = params.context_id;
-
-    // Reachability first, so a caller outside the context is told that — and is
-    // told it before the context's existence, its DID, or its key designation
-    // leak through a more specific error.
-    if auth.require_context(context_id).is_err() {
-        return Err(refuse(
-            state,
-            auth,
-            channel,
+    let signer = context_signing::resolve_signer(
+        state,
+        auth,
+        channel,
+        context_signing::SignerRequest {
             context_id,
-            format!("caller is not authorized in context `{context_id}`"),
-        )
-        .await);
-    }
-
-    let context = get_context(&state.contexts_ks, context_id)
-        .await?
-        .ok_or_else(|| AppError::NotFound(format!("context `{context_id}` not found")))?;
-
-    let issuer_did = context.did.as_deref().ok_or_else(|| {
-        AppError::Validation(format!(
-            "context `{context_id}` has no DID, so it cannot be the issuer of a credential"
-        ))
-    })?;
-
-    // Fail closed. Falling back to the VTA's own key would mint a credential
-    // attributed to the VTA while the caller asked for one attributed to the
-    // context — a silently wrong issuer is worse than a refusal.
-    let issuer_key_id = context.issuer_key_id.as_deref().ok_or_else(|| {
-        AppError::Validation(format!(
-            "context `{context_id}` has no designated issuer key: set `issuerKeyId` on the \
-             context before issuing"
-        ))
-    })?;
-
-    // Read the record directly rather than through `operations::keys::get_key`,
-    // which refuses internal keys outright because it is an export surface.
-    // Nothing is exported here.
-    let key: KeyRecord = state
-        .keys_ks
-        .get(crate::keys::store_key(issuer_key_id))
-        .await?
-        .ok_or_else(|| {
-            AppError::NotFound(format!(
-                "context `{context_id}` designates issuer key `{issuer_key_id}`, which does \
-                 not exist"
-            ))
-        })?;
-
-    // The separation that makes the designation safe to follow: a key outside
-    // the context is one this caller may have no authority over at all, and the
-    // VTA's own `#key-0` has no context, so this is what puts it out of reach.
-    if key.context_id.as_deref() != Some(context_id) {
-        return Err(refuse(
-            state,
-            auth,
-            channel,
-            context_id,
-            format!(
-                "issuer key `{issuer_key_id}` does not belong to context `{context_id}`; \
-                 refusing to sign"
-            ),
-        )
-        .await);
-    }
-
-    let verification_method = format!("{issuer_did}#{}", key.public_key);
-
-    if let Some(expected) = params.expected_verification_method
-        && expected != verification_method
-    {
-        return Err(refuse(
-            state,
-            auth,
-            channel,
-            context_id,
-            format!(
-                "expectedVerificationMethod `{expected}` does not match the verification \
-                 method this context resolves to; refusing to sign with a different key"
-            ),
-        )
-        .await);
-    }
+            // The issuer designation, not a proof-purpose one: a credential's
+            // `issuer` is a single DID with a single assertion key.
+            proof_purpose: None,
+            expected_verification_method: params.expected_verification_method,
+            action: ISSUE_IN_CONTEXT_ACTION,
+        },
+    )
+    .await?;
 
     let now = Utc::now();
     let expires = now + Duration::seconds(params.validity_seconds as i64);
@@ -339,61 +268,22 @@ pub async fn issue_in_context(
         "@context": [VC_V2_CONTEXT],
         "id": id,
         "type": types,
-        "issuer": issuer_did,
+        "issuer": signer.issuer_did,
         "validFrom": rfc3339(now),
         "validUntil": rfc3339(expires),
         "credentialSubject": Value::Object(subject),
     });
 
-    // `created` must be the seconds-precision form the cryptosuite hashes;
-    // re-rendering it differently after signing would break verification.
-    let created = now.to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
-    let proof_config = DataIntegrityProof::new(
-        CryptoSuite::EddsaJcs2022,
-        verification_method.clone(),
-        "assertionMethod".to_string(),
-        None,
-        Some(created),
-        None,
-    );
-
-    let signing_input = prepare_sign_input(&vc, &proof_config, CryptoSuite::EddsaJcs2022)
-        .map_err(|e| AppError::Internal(format!("prepare credential signing input: {e}")))?;
-
-    // The signing oracle owns the authorization on the key itself, so the
-    // context check above is defence in depth rather than the only gate.
-    let signed = crate::operations::keys::sign_payload(
-        &state.keys_ks,
-        &state.imported_ks,
-        &state.internal_ks,
-        &state.contexts_ks,
-        &state.acl_ks,
-        &state.seed_store,
-        &state.audit_sink,
+    let proof = context_signing::sign_data_integrity_proof(
+        state,
         auth,
-        issuer_key_id,
-        &signing_input,
-        &SignAlgorithm::EdDSA,
-        // These bytes are a data-integrity proof input the VTA built itself.
-        // Framing them again under the opaque domain would produce a signature
-        // no Data Integrity verifier accepts.
-        SigningDomain::ProtocolDefined,
         channel,
+        &vc,
+        &signer,
+        "assertionMethod",
     )
     .await?;
-
-    let signature = base64::engine::general_purpose::URL_SAFE_NO_PAD
-        .decode(&signed.signature)
-        .map_err(|e| AppError::Internal(format!("decode credential signature: {e}")))?;
-
-    let mut proof = proof_config;
-    proof.proof_value = Some(multibase::encode(multibase::Base::Base58Btc, &signature));
-
-    vc.as_object_mut().expect("vc is an object").insert(
-        "proof".to_string(),
-        serde_json::to_value(&proof)
-            .map_err(|e| AppError::Internal(format!("serialize issued-credential proof: {e}")))?,
-    );
+    context_signing::attach_proof(&mut vc, &proof)?;
 
     let record = IssuedCredentialRecord {
         id: id.clone(),
@@ -411,51 +301,14 @@ pub async fn issue_in_context(
         channel,
         context_id,
         credential_id = %id,
-        verification_method = %verification_method,
+        verification_method = %signer.verification_method,
         "credential issued in context"
     );
 
     Ok(IssuedInContext {
         record,
-        verification_method,
+        verification_method: signer.verification_method,
     })
-}
-
-/// Audit a context-issuance refusal and render it as the error to return.
-///
-/// Every refusal on this path goes through here: a refusal that is not recorded
-/// is indistinguishable from a request that was never made, and this task is
-/// reachable without instance authority, so the attempts are exactly the ones
-/// worth seeing.
-async fn refuse(
-    state: &AppState,
-    auth: &AuthClaims,
-    channel: &str,
-    context_id: &str,
-    reason: String,
-) -> AppError {
-    tracing::warn!(
-        audit = true,
-        security_alert = true,
-        did = %auth.did,
-        role = %auth.role,
-        channel,
-        context_id,
-        reason = %reason,
-        "credentials.issue-in-context refused",
-    );
-    crate::audit::record_with_detail_best_effort(
-        &state.audit_sink,
-        "credentials.issue-in-context",
-        &auth.did,
-        Some(&reason),
-        "denied",
-        Some(channel),
-        Some(context_id),
-        None,
-    )
-    .await;
-    AppError::Forbidden(reason)
 }
 
 /// Revoke a previously-issued credential by id.

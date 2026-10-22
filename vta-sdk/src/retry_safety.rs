@@ -164,6 +164,9 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     // Designating the same key twice converges on the same record: the second
     // write sets the field to the value it already holds.
     (trust_tasks::TASK_CONTEXTS_SET_ISSUER_KEY_0_1, RetrySafe),
+    // Returns a proof to the caller and keeps no copy: nothing durable beyond
+    // the audit row, so a retry costs a second signature and nothing else.
+    (trust_tasks::TASK_PROOFS_ATTACH_0_1, ReadOnly),
     (trust_tasks::TASK_CONTEXTS_UPDATE_DID_1_0, RetrySafe),
     // Clearing is a set-to-absent: repeating it leaves the same state.
     (trust_tasks::TASK_CONTEXTS_UPDATE_DID_1_1, RetrySafe),

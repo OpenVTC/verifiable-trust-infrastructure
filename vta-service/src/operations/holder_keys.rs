@@ -211,6 +211,7 @@ mod tests {
                     updated_at: Utc::now(),
                     context_policy: None,
                     issuer_key_id: None,
+                    proof_key_ids: Default::default(),
                 },
             )
             .await

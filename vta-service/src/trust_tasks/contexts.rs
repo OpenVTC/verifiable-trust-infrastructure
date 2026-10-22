@@ -285,6 +285,7 @@ pub(super) async fn handle_set_issuer_key(
         auth,
         &req.id,
         req.key_id,
+        req.proof_purpose.as_deref(),
         TRANSPORT_TRUST_TASK,
     )
     .await

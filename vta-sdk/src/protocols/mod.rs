@@ -34,8 +34,9 @@ pub mod persona;
 /// Runtime Policy Decision Point management (`policy/*`) — where the
 /// declarative approvals model is read and written.
 pub mod policy_management;
-pub mod protocol_management;
 #[cfg(feature = "provision-integration")]
+pub mod proofs;
+pub mod protocol_management;
 pub mod provision_integration_management;
 pub mod seed_management;
 pub mod vault_management;

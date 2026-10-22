@@ -56,4 +56,22 @@ pub struct ContextRecord {
         alias = "issuer_key_id"
     )]
     pub issuer_key_id: Option<String>,
+    /// Keys designated to produce Data-Integrity proofs as this context's DID,
+    /// by `proofPurpose`.
+    ///
+    /// Separate from [`issuer_key_id`](Self::issuer_key_id) because a DID
+    /// document declares a *different* verification method per purpose: the key
+    /// that issues credentials (`assertionMethod`) is not the key that proves
+    /// presentation holdership (`authentication`), and conflating them would
+    /// publish one key under two meanings.
+    ///
+    /// `assertionMethod` falls back to `issuer_key_id` when unset here — that
+    /// *is* the context's assertion key, and requiring it to be named twice
+    /// would let the two disagree.
+    #[serde(
+        default,
+        skip_serializing_if = "std::collections::BTreeMap::is_empty",
+        alias = "proof_key_ids"
+    )]
+    pub proof_key_ids: std::collections::BTreeMap<String, String>,
 }

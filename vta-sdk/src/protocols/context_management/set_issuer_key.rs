@@ -16,10 +16,10 @@ use super::create::CreateContextResultBody;
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[non_exhaustive]
 pub struct SetContextIssuerKeyBody {
-    /// The context whose issuer key is being designated.
+    /// The context whose key is being designated.
     pub id: String,
     /// The key to designate, or `None` to clear the designation (after which
-    /// the context can no longer issue).
+    /// the context can no longer issue or prove for that purpose).
     ///
     /// The key must live in `id`'s context: the designation is what lets a
     /// context-scoped caller issue *without* naming a key, so one pointing
@@ -27,12 +27,34 @@ pub struct SetContextIssuerKeyBody {
     /// reach.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub key_id: Option<String>,
+    /// Which designation this sets.
+    ///
+    /// Omitted, it sets the context's **credential issuer** key. Given a
+    /// `proofPurpose` (`authentication`, `assertionMethod`), it sets the key
+    /// that produces Data-Integrity proofs for that purpose — a DID document
+    /// declares a different verification method per purpose, so these are
+    /// genuinely different keys rather than one key described twice.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proof_purpose: Option<String>,
 }
 
 impl SetContextIssuerKeyBody {
-    /// Designate `key_id` as `id`'s issuer key.
+    /// Designate `key_id` as `id`'s credential issuer key.
     pub fn new(id: String, key_id: Option<String>) -> Self {
-        Self { id, key_id }
+        Self {
+            id,
+            key_id,
+            proof_purpose: None,
+        }
+    }
+
+    /// Designate `key_id` as `id`'s proof key for `proof_purpose`.
+    pub fn for_proof_purpose(id: String, key_id: Option<String>, proof_purpose: String) -> Self {
+        Self {
+            id,
+            key_id,
+            proof_purpose: Some(proof_purpose),
+        }
     }
 }
 
