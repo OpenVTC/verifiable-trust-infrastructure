@@ -119,7 +119,13 @@ pub async fn run_discard(
     require_os_keyring()?;
     let store = crate::auth::store();
     if !store.has_session(&claim_keyring_key(id)) {
-        return Err(not_found(id));
+        // Older pnm stored the key under the slug, where its DID cannot find it.
+        let hint = if claim_did.is_some() {
+            ". If it was created with `claim-did create --slug <slug>`, pass that --slug instead"
+        } else {
+            ""
+        };
+        return Err(format!("{}{hint}", not_found(id)).into());
     }
     discard(&store, id);
     eprintln!(
@@ -163,9 +169,14 @@ fn select(
         }
         return load(store, slug);
     };
-    [did, slug]
-        .into_iter()
-        .find_map(|id| load(store, id).ok().filter(|key| key.did == did))
+    // A key stored under the DID is the one: a failure to load it (a DID and
+    // key that drifted apart) is reported, never masked as a missing key.
+    if store.has_session(&claim_keyring_key(did)) {
+        return load(store, did);
+    }
+    load(store, slug)
+        .ok()
+        .filter(|key| key.did == did)
         .ok_or_else(|| not_found(did))
 }
 
@@ -305,6 +316,23 @@ mod tests {
         let key = super::select(&store, Some(&did), "any-slug").unwrap();
         assert_eq!(key.did, did);
         assert_eq!(key.discard_arg(), format!("--claim-did {did}"));
+    }
+
+    /// A key stored under its DID that no longer matches it is refused as
+    /// such, not reported as missing.
+    #[test]
+    fn drifted_claim_key_is_refused_not_masked() {
+        let store = store();
+        let did = super::create(&store, None).unwrap();
+        let (_, other_key) = vta_cli_common::local_keygen::generate_unbound_admin_did_key();
+        store
+            .store_pending_vta_binding(&super::claim_keyring_key(&did), &did, &other_key)
+            .unwrap();
+        let err = super::select(&store, Some(&did), "any-slug")
+            .err()
+            .unwrap()
+            .to_string();
+        assert!(err.contains("does not match its stored DID"), "{err}");
     }
 
     #[test]
