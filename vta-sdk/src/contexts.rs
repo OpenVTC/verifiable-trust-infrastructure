@@ -36,4 +36,24 @@ pub struct ContextRecord {
         alias = "context_policy"
     )]
     pub context_policy: Option<crate::context_policy::ContextPolicy>,
+    /// Key id, within this context, designated to sign credentials issued
+    /// **as this context's DID**.
+    ///
+    /// Separate from "any key in the context": a context may hold many keys for
+    /// many purposes, but a credential's `issuer` must be the DID whose
+    /// verification method produced the proof, so exactly one of them is the
+    /// issuing key. Naming it here is what lets a context-scoped caller issue
+    /// without ever choosing a key — the caller states intent, the VTA resolves
+    /// mechanism.
+    ///
+    /// Absent means this context cannot issue credentials, and
+    /// `credentials/issue-in-context` **fails closed** rather than falling back
+    /// to the VTA's own key, which would attribute the credential to the VTA
+    /// instead of the context.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        alias = "issuer_key_id"
+    )]
+    pub issuer_key_id: Option<String>,
 }

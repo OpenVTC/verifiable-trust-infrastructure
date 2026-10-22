@@ -3227,6 +3227,7 @@ mod tests {
                     signable_keys: Some(["allowed-key".to_string()].into_iter().collect()),
                     ..ContextPolicy::unrestricted()
                 }),
+                issuer_key_id: None,
             },
         )
         .await
@@ -3579,6 +3580,7 @@ mod tests {
                 created_at: now,
                 updated_at: now,
                 context_policy: Some(ContextPolicy::unrestricted()),
+                issuer_key_id: None,
             },
         )
         .await
@@ -3741,6 +3743,7 @@ mod tests {
                     created_at: now,
                     updated_at: now,
                     context_policy: Some(ContextPolicy::unrestricted()),
+                    issuer_key_id: None,
                 },
             )
             .await

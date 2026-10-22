@@ -210,6 +210,7 @@ mod tests {
                     created_at: Utc::now(),
                     updated_at: Utc::now(),
                     context_policy: None,
+                    issuer_key_id: None,
                 },
             )
             .await

@@ -100,6 +100,84 @@ pub struct IssueCredentialResponse {
     pub issued_at: Option<String>,
 }
 
+/// `spec/vta/credentials/issue-in-context/0.1` request body.
+///
+/// Carries **no key id**. A credential's `issuer` must be the DID whose
+/// verification method produced the proof, so for a given context exactly one
+/// key is valid — the caller would have no choice to make, and offering one
+/// would mean a caller could name a key the context does not own. The VTA
+/// resolves it from the context's designation instead.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[non_exhaustive]
+pub struct IssueInContextBody {
+    /// The context to issue as. The credential's `issuer` is this context's
+    /// DID, and the signing key is this context's designated issuer key.
+    pub context_id: String,
+    /// The holder DID the credential is issued to (`credentialSubject.id`).
+    pub holder: String,
+    /// The credential claims merged into `credentialSubject` (must be a
+    /// non-empty JSON object).
+    pub claims: Value,
+    /// Optional extra credential type appended to
+    /// `["VerifiableCredential", …]`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credential_type: Option<String>,
+    /// Validity window length in seconds from issuance.
+    pub validity_seconds: u64,
+    /// The verification method the caller **expects** to sign this credential.
+    ///
+    /// An assertion, not a selector: it never chooses a key. When it disagrees
+    /// with the one the context resolves to, issuance is refused rather than
+    /// signed with the other key — so a caller that pinned a verification
+    /// method into its own verification logic finds out at issuance instead of
+    /// handing out credentials its verifier will reject. Omitted, issuance
+    /// proceeds with the resolved key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_verification_method: Option<String>,
+    /// Ecosystem-defined extension members (SPEC §4.5.1). Not interpreted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ext: Option<Value>,
+}
+
+impl IssueInContextBody {
+    /// Build a body from the members the schema requires. The type is
+    /// `#[non_exhaustive]`; set the optional members on the returned value.
+    pub fn new(context_id: String, holder: String, claims: Value, validity_seconds: u64) -> Self {
+        Self {
+            context_id,
+            holder,
+            claims,
+            validity_seconds,
+            credential_type: None,
+            expected_verification_method: None,
+            ext: None,
+        }
+    }
+}
+
+/// `spec/vta/credentials/issue-in-context/0.1` response body.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IssueInContextResponse {
+    /// The issued credential's id (also the store key).
+    pub credential_id: String,
+    /// The full signed W3C Verifiable Credential (with its Data-Integrity
+    /// proof).
+    pub credential: Value,
+    /// The verification method that actually signed, echoed back.
+    ///
+    /// Returned because the caller did not choose it: without this the caller
+    /// would have to parse the proof back out of the credential to learn which
+    /// key it got, and a rotation would be invisible until something failed to
+    /// verify.
+    pub verification_method: String,
+    /// RFC 3339 mint time (`validFrom`).
+    pub issued_at: String,
+    /// RFC 3339 expiry (`validUntil`).
+    pub expires_at: String,
+}
+
 /// `spec/vta/credentials/revoke/0.1` request body.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
