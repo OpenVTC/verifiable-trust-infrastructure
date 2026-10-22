@@ -132,6 +132,28 @@ jobs:
           rustup toolchain install stable --profile minimal --no-self-update
           rustup default stable
 
+      # The same room the PR job gives its semver check, for the same reason:
+      # `cargo publish` verify-builds each new crate's whole dependency tree
+      # from scratch, and the first publish of `vti-voting` (2026-10-22) killed
+      # the runner three pushes running, ~5 minutes into that build, with "The
+      # runner has received a shutdown signal" — the out-of-memory signature the
+      # PR job's note below describes. The release is half-shipped until it
+      # publishes: `vta-service` and `vtc-service` depend on it. Measured cold
+      # (a RUSTC_WRAPPER recording each rustc's peak RSS): `trust-tasks-rs`
+      # 0.33 peaks at 9.75 GB and 10.39 GB in the two rustc invocations that
+      # build it, everything else under 1.1 GB. Two of those at once do not fit
+      # in the runner's 16 GB + 4 GB swap.
+      - name: Give the publish verify build room to run
+        run: |
+          set -euo pipefail
+          sudo swapoff /mnt/swapfile || true
+          sudo rm -f /mnt/swapfile
+          sudo fallocate -l 12G /mnt/swapfile
+          sudo chmod 600 /mnt/swapfile
+          sudo mkswap /mnt/swapfile
+          sudo swapon /mnt/swapfile
+          free -h
+
       # Checked before the Trusted Publishing exchange below, so a malformed
       # `package` fails the run before a registry token exists. The value is
       # read from the environment, never spliced into the script, and `[[ =~ ]]`
