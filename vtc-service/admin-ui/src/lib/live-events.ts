@@ -1,8 +1,9 @@
 // The console's live channel: one `vtc/admin/events/subscribe` stream per
 // session, read over the HTTPS binding's streamed response (0.3 §2.1).
 //
-// At the newest version the community lists in `trust-task-discovery` — 0.3
-// (adds `directory` and `groups`), 0.2 (adds `rooms`), else 0.1. The topic
+// At the newest version the community lists in `trust-task-discovery` — 0.4
+// (adds `communityRooms`), 0.3 (adds `directory` and `groups`), 0.2 (adds
+// `rooms`), else 0.1. The topic
 // set is closed per version: a subscription never asks for a topic its
 // version lacks, and a stream's `#response` and hints are documents of the
 // version it was opened at (`LiveVersion`).
@@ -34,12 +35,14 @@ export const SUBSCRIBE_TASK_V0_2 = "https://trusttasks.org/spec/vtc/admin/events
 export const EVENT_TASK_V0_2 = "https://trusttasks.org/spec/vtc/admin/events/event/0.2";
 export const SUBSCRIBE_TASK_V0_3 = "https://trusttasks.org/spec/vtc/admin/events/subscribe/0.3";
 export const EVENT_TASK_V0_3 = "https://trusttasks.org/spec/vtc/admin/events/event/0.3";
+export const SUBSCRIBE_TASK_V0_4 = "https://trusttasks.org/spec/vtc/admin/events/subscribe/0.4";
+export const EVENT_TASK_V0_4 = "https://trusttasks.org/spec/vtc/admin/events/event/0.4";
 
 /** What the binding asks for: a stream, or JSON from a server that cannot. */
 export const STREAM_ACCEPT = "text/event-stream, application/json;q=0.5";
 
-/** The shared `Topic` of `vtc/admin/events/_shared/0.3` (0.1's, plus `rooms`,
- * `directory` and `groups`). */
+/** The shared `Topic` of `vtc/admin/events/_shared/0.4` (0.1's, plus `rooms`,
+ * `directory`, `groups` and `communityRooms`). */
 export type Topic =
   | "actions"
   | "acknowledgements"
@@ -49,7 +52,8 @@ export type Topic =
   | "config"
   | "rooms"
   | "directory"
-  | "groups";
+  | "groups"
+  | "communityRooms";
 
 /** Every topic the console renders — one subscription for all of them. */
 export const ALL_TOPICS: readonly Topic[] = [
@@ -62,10 +66,13 @@ export const ALL_TOPICS: readonly Topic[] = [
   "rooms",
   "directory",
   "groups",
+  "communityRooms",
 ];
 
 /** The topics 0.3 adds. */
 const V0_3_TOPICS: readonly Topic[] = ["directory", "groups"];
+/** The topic 0.4 adds. */
+const V0_4_TOPICS: readonly Topic[] = ["communityRooms"];
 
 /** One version of the channel: the task it subscribes with, the hints it
  * accepts, and its closed topic set. */
@@ -78,25 +85,36 @@ export interface LiveVersion {
 export const LIVE_V0_1: LiveVersion = {
   subscribe: SUBSCRIBE_TASK,
   event: EVENT_TASK,
-  topics: ALL_TOPICS.filter((t) => t !== "rooms" && !V0_3_TOPICS.includes(t)),
+  topics: ALL_TOPICS.filter(
+    (t) => t !== "rooms" && !V0_3_TOPICS.includes(t) && !V0_4_TOPICS.includes(t),
+  ),
 };
 
 /** 0.2 adds `rooms`: the rooms this community hosts and where their files are kept. */
 export const LIVE_V0_2: LiveVersion = {
   subscribe: SUBSCRIBE_TASK_V0_2,
   event: EVENT_TASK_V0_2,
-  topics: ALL_TOPICS.filter((t) => !V0_3_TOPICS.includes(t)),
+  topics: ALL_TOPICS.filter((t) => !V0_3_TOPICS.includes(t) && !V0_4_TOPICS.includes(t)),
 };
 
 /** 0.3 adds `directory` and `groups`: the member directory and the community's groups. */
 export const LIVE_V0_3: LiveVersion = {
   subscribe: SUBSCRIBE_TASK_V0_3,
   event: EVENT_TASK_V0_3,
+  topics: ALL_TOPICS.filter((t) => !V0_4_TOPICS.includes(t)),
+};
+
+/** 0.4 adds `communityRooms`: the rooms the community itself owns, as their
+ * owner sees them — for holders of `vtc.rooms.manage`. */
+export const LIVE_V0_4: LiveVersion = {
+  subscribe: SUBSCRIBE_TASK_V0_4,
+  event: EVENT_TASK_V0_4,
   topics: ALL_TOPICS,
 };
 
 /** The version to subscribe at, from what `trust-task-discovery` lists. */
 export function liveVersionFor(served: readonly unknown[]): LiveVersion {
+  if (served.includes(SUBSCRIBE_TASK_V0_4)) return LIVE_V0_4;
   if (served.includes(SUBSCRIBE_TASK_V0_3)) return LIVE_V0_3;
   return served.includes(SUBSCRIBE_TASK_V0_2) ? LIVE_V0_2 : LIVE_V0_1;
 }

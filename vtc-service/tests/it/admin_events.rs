@@ -20,7 +20,12 @@
 //! - 0.2 (`rooms`): served beside 0.1, each answered at its own version; the
 //!   topic is effective only for a holder of `vtc.rooms.admin`, is refused in
 //!   a 0.1 subscribe, follows a room registered, a storage config written and
-//!   a room's lifecycle moving with the clock, and never names a room.
+//!   a room's lifecycle moving with the clock, and never names a room;
+//! - 0.3 (`directory`, `groups`) and 0.4 (`communityRooms`): each only at its
+//!   version; `communityRooms` is effective only for a holder of
+//!   `vtc.rooms.manage` (`vtc.rooms.admin` alone does not qualify), follows the
+//!   owner's record of a community room, and is fingerprinted so a `rooms`
+//!   seam that moves nothing the owner sees is no hint.
 
 use std::time::Duration;
 
@@ -48,6 +53,8 @@ const SUBSCRIBE_V0_2: &str = "https://trusttasks.org/spec/vtc/admin/events/subsc
 const EVENT_V0_2: &str = "https://trusttasks.org/spec/vtc/admin/events/event/0.2";
 const SUBSCRIBE_V0_3: &str = "https://trusttasks.org/spec/vtc/admin/events/subscribe/0.3";
 const EVENT_V0_3: &str = "https://trusttasks.org/spec/vtc/admin/events/event/0.3";
+const SUBSCRIBE_V0_4: &str = "https://trusttasks.org/spec/vtc/admin/events/subscribe/0.4";
+const EVENT_V0_4: &str = "https://trusttasks.org/spec/vtc/admin/events/event/0.4";
 const STREAM_ACCEPT: &str = "text/event-stream, application/json;q=0.5";
 
 use vtc_service::admin_events::codes::{NOT_ADMINISTRATOR, STREAM_UNAVAILABLE, TOO_MANY_STREAMS};
@@ -307,7 +314,9 @@ async fn open_stream_at(
 /// A hint, held to everything its event version says one may carry — and
 /// nothing else. A stream's hints are of the version it was opened at.
 fn assert_hint_shape(hint: &Value, id: Option<&str>, request: &Value, subscriber: &str) {
-    let event = if request["type"] == SUBSCRIBE_V0_3 {
+    let event = if request["type"] == SUBSCRIBE_V0_4 {
+        EVENT_V0_4
+    } else if request["type"] == SUBSCRIBE_V0_3 {
         EVENT_V0_3
     } else if request["type"] == SUBSCRIBE_V0_2 {
         EVENT_V0_2
@@ -1108,4 +1117,246 @@ async fn a_manager_of_one_group_is_hinted_only_about_that_group() {
         .await
         .expect("their own group's change is hinted");
     assert_hint_shape(&hint, id.as_deref(), &request, &manager.did);
+}
+
+// ─── 0.4: `communityRooms` ───────────────────────────────────────────────
+
+fn owned_room(room_id: &str) -> vtc_service::rooms::community::OwnedRoom {
+    vtc_service::rooms::community::OwnedRoom {
+        room_id: room_id.to_string(),
+        label: "Book club".into(),
+        visibility: "attributed".into(),
+        signing_key_id: "key-1".into(),
+        created_by: "did:key:zCreator".into(),
+        created_at: "2026-10-22T00:00:00Z".into(),
+        owner_authority_valid_until: "2027-10-22T00:00:00Z".into(),
+        did_path: None,
+        description: None,
+        tags: Vec::new(),
+        details_updated_at: None,
+        details_updated_by: None,
+    }
+}
+
+/// An administrator whose authority is `community-admin` narrowed to `caps`.
+async fn holding(vtc: &TestVtc, caps: &[vtc_service::acl::Capability]) -> Party {
+    use vtc_service::acl::{CapRef, CapabilityGrant, CapabilityScope};
+    let party = Party::new();
+    let mut admin = AdminAuthority::for_role(AdminRole::CommunityAdmin);
+    admin.capabilities = CapabilityScope::Listed {
+        grants: caps
+            .iter()
+            .map(|c| CapabilityGrant::from(CapRef::all(*c)))
+            .collect(),
+    };
+    store_acl_entry(&vtc.state.acl_ks, &entry(&party.did, admin, None))
+        .await
+        .unwrap();
+    party
+}
+
+/// Event 0.4 producer rules 8 and 9: the owner's record of a community room
+/// changing — a room created, its details, a member's admission, a removal
+/// owed — is a countless `communityRooms` hint at 0.4 that names no room and
+/// no member.
+#[tokio::test]
+async fn a_community_room_change_is_a_countless_hint_at_0_4_naming_nothing() {
+    let vtc = vtc().await;
+    let admin = community_admin(&vtc).await;
+    let (request, mut sse, _, first) = open_stream_at(
+        &vtc,
+        SUBSCRIBE_V0_4,
+        &admin,
+        json!({ "topics": ["communityRooms", "actions"] }),
+    )
+    .await;
+    assert_eq!(
+        first["payload"]["topics"],
+        json!(["actions", "communityRooms"])
+    );
+
+    let owner = &vtc.state.community_rooms;
+    let room_id = format!(
+        "did:webvh:QmRoom{}:rooms.example",
+        uuid::Uuid::new_v4().simple()
+    );
+    let member = Party::new();
+    let names_nothing = |hint: &Value| {
+        let text = hint.to_string();
+        assert!(!text.contains(&room_id), "no room is named: {hint}");
+        assert!(!text.contains(&member.did), "no member is named: {hint}");
+        assert!(!text.contains("Book club"), "no detail is carried: {hint}");
+    };
+
+    owner.put_room(&owned_room(&room_id)).await.unwrap();
+    let (id, hint) = next_hint_of(&mut sse, "communityRooms", Duration::from_secs(5))
+        .await
+        .expect("a room created is a communityRooms hint");
+    assert_hint_shape(&hint, id.as_deref(), &request, &admin.did);
+    names_nothing(&hint);
+
+    let mut renamed = owned_room(&room_id);
+    renamed.label = "Reading circle".into();
+    renamed.tags = vec!["books".into()];
+    owner.put_room_details(&renamed).await.unwrap();
+    let (id, hint) = next_hint_of(&mut sse, "communityRooms", Duration::from_secs(5))
+        .await
+        .expect("a room's details changed is hinted");
+    assert_hint_shape(&hint, id.as_deref(), &request, &admin.did);
+    names_nothing(&hint);
+
+    owner
+        .put_member(&vtc_service::rooms::community::MemberRecord {
+            room_id: room_id.clone(),
+            member: member.did.clone(),
+            actions: vec!["read".into()],
+            valid_until: "2027-01-01T00:00:00Z".into(),
+            state: "offered".into(),
+            offered_at: "2026-10-22T00:00:00Z".into(),
+            admitted_at: None,
+            removed_at: None,
+            credentials: None,
+            welcome: None,
+            admitted_epoch: None,
+            renewal: None,
+            sources: Vec::new(),
+        })
+        .await
+        .unwrap();
+    let (id, hint) = next_hint_of(&mut sse, "communityRooms", Duration::from_secs(5))
+        .await
+        .expect("an admission offered is hinted");
+    assert_hint_shape(&hint, id.as_deref(), &request, &admin.did);
+    names_nothing(&hint);
+
+    owner
+        .record_removal(
+            &room_id,
+            &member.did,
+            vtc_service::rooms::community::DepartureCause::Left,
+            chrono::Utc::now(),
+        )
+        .await
+        .unwrap();
+    let (id, hint) = next_hint_of(&mut sse, "communityRooms", Duration::from_secs(5))
+        .await
+        .expect("a removal owed is hinted");
+    assert_hint_shape(&hint, id.as_deref(), &request, &admin.did);
+    names_nothing(&hint);
+}
+
+/// The fingerprint: a `rooms` seam that moves nothing the owner's reads show
+/// (a holdings write, a room the community does not own) and a write no read
+/// shows (a served identity log) are no `communityRooms` hint.
+#[tokio::test]
+async fn community_rooms_ignores_what_the_owners_reads_do_not_show() {
+    let vtc = vtc().await;
+    let admin = community_admin(&vtc).await;
+    let owner = &vtc.state.community_rooms;
+    let room_id = format!(
+        "did:webvh:QmRoom{}:rooms.example",
+        uuid::Uuid::new_v4().simple()
+    );
+    owner.put_room(&owned_room(&room_id)).await.unwrap();
+
+    let (_, mut sse, _, _) = open_stream_at(
+        &vtc,
+        SUBSCRIBE_V0_4,
+        &admin,
+        json!({ "topics": ["communityRooms"] }),
+    )
+    .await;
+
+    // A rooms seam, as a holdings or limit write calls it.
+    vtc_service::admin_events::notify_rooms();
+    // A room hosted here that the community does not own.
+    vtc_service::rooms::storage::create_room(&vtc.state.rooms_ks, &hosted_room(None))
+        .await
+        .unwrap();
+    // A served room-identity log: no read shows it.
+    owner.put_did_log("abcdef", &room_id, "{}").await.unwrap();
+    assert!(
+        next_hint_of(&mut sse, "communityRooms", Duration::from_secs(3))
+            .await
+            .is_none(),
+        "nothing the owner's reads show moved"
+    );
+
+    // …and the same stream still hints a change they do show.
+    let mut renamed = owned_room(&room_id);
+    renamed.description = Some("Monthly".into());
+    owner.put_room_details(&renamed).await.unwrap();
+    assert!(
+        next_hint_of(&mut sse, "communityRooms", Duration::from_secs(5))
+            .await
+            .is_some(),
+        "a description changed is hinted"
+    );
+}
+
+/// Subscribe 0.4 §Authorization: holders of `vtc.rooms.manage`; holding
+/// `vtc.rooms.admin` alone does not qualify, and an administrator with
+/// neither is not sent the topic at all.
+#[tokio::test]
+async fn community_rooms_is_effective_only_for_a_rooms_manager() {
+    use vtc_service::acl::Capability;
+    let vtc = vtc().await;
+
+    let host_admin = holding(&vtc, &[Capability::RoomsAdmin]).await;
+    let (_, _sse, _, first) = open_stream_at(
+        &vtc,
+        SUBSCRIBE_V0_4,
+        &host_admin,
+        json!({ "topics": ["communityRooms", "rooms", "actions"] }),
+    )
+    .await;
+    assert_eq!(first["payload"]["topics"], json!(["actions", "rooms"]));
+
+    let manager = holding(&vtc, &[Capability::RoomsManage]).await;
+    let (_, _sse, _, first) = open_stream_at(
+        &vtc,
+        SUBSCRIBE_V0_4,
+        &manager,
+        json!({ "topics": ["communityRooms", "rooms", "actions"] }),
+    )
+    .await;
+    assert_eq!(
+        first["payload"]["topics"],
+        json!(["actions", "communityRooms"])
+    );
+
+    // Nothing to read at all: refused, opening no stream.
+    let moderator = with_role(&vtc, Some(AdminRole::Moderator), None).await;
+    let (_, res) = subscribe_at(
+        &vtc,
+        SUBSCRIBE_V0_4,
+        &moderator,
+        json!({ "topics": ["communityRooms"] }),
+        Some(STREAM_ACCEPT),
+        None,
+    )
+    .await;
+    let (status, doc) = json_refusal(res).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(tt_error_code(&doc), Some("permissionDenied"));
+}
+
+/// The topic set is closed per version: a 0.3 subscribe cannot ask for
+/// `communityRooms`, which only 0.4 has.
+#[tokio::test]
+async fn a_0_3_subscribe_cannot_ask_for_community_rooms() {
+    let vtc = vtc().await;
+    let admin = community_admin(&vtc).await;
+    let (_, res) = subscribe_at(
+        &vtc,
+        SUBSCRIBE_V0_3,
+        &admin,
+        json!({ "topics": ["communityRooms"] }),
+        Some(STREAM_ACCEPT),
+        None,
+    )
+    .await;
+    let (status, doc) = json_refusal(res).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(tt_error_code(&doc), Some("malformedRequest"));
 }

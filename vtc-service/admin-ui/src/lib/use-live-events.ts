@@ -8,7 +8,8 @@
 // back at `WAITING_POLL_MS`, and every topic is re-read at once.
 //
 // The version is read from `trust-task-discovery`: the newest the community
-// lists — 0.3 (with `directory` and `groups`), 0.2 (with `rooms`), else 0.1.
+// lists — 0.4 (with `communityRooms`), 0.3 (with `directory` and `groups`),
+// 0.2 (with `rooms`), else 0.1.
 // A page whose topic the version lacks simply polls.
 
 import { useEffect, useSyncExternalStore } from "react";
@@ -65,6 +66,11 @@ export function keysFor(topic: Topic): QueryKey[] {
     // (`vtc/groups/*`).
     case "groups":
       return [["groups"]];
+    // The community rooms pages: the owner's list, a room and its members
+    // (`vtc/rooms/community/{list,get}`, `members/list`), and the room names
+    // other pages read from that list.
+    case "communityRooms":
+      return [["rooms", "community"]];
   }
 }
 

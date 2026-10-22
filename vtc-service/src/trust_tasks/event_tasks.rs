@@ -1,10 +1,12 @@
-//! `vtc/admin/events/subscribe/0.1`, `/0.2` and `/0.3` — an administrator's
-//! console opens its live channel of hints (`crate::admin_events`).
+//! `vtc/admin/events/subscribe/0.1`, `/0.2`, `/0.3` and `/0.4` — an
+//! administrator's console opens its live channel of hints
+//! (`crate::admin_events`).
 //!
-//! All three versions are served, each answered at its own version: 0.2 adds
-//! the `rooms` topic and 0.3 the `directory` and `groups` topics, and nothing
-//! else, so an older console keeps working unchanged (subscribe 0.2 *What 0.2
-//! adds*, 0.3 *What 0.3 adds*).
+//! All four versions are served, each answered at its own version: 0.2 adds
+//! the `rooms` topic, 0.3 the `directory` and `groups` topics and 0.4 the
+//! `communityRooms` topic, and nothing else, so an older console keeps working
+//! unchanged (subscribe 0.2 *What 0.2 adds*, 0.3 *What 0.3 adds*, 0.4 *What 0.4
+//! adds*).
 //!
 //! The task's success response opens a stream, which only the HTTPS door can
 //! carry (binding 0.3 §2.1). This handler decides everything a refusal could
@@ -40,6 +42,7 @@ use serde_json::Value;
 use trust_tasks_rs::specs::vtc::admin::events::subscribe::v0_1 as subscribe;
 use trust_tasks_rs::specs::vtc::admin::events::subscribe::v0_2 as subscribe_v0_2;
 use trust_tasks_rs::specs::vtc::admin::events::subscribe::v0_3 as subscribe_v0_3;
+use trust_tasks_rs::specs::vtc::admin::events::subscribe::v0_4 as subscribe_v0_4;
 use trust_tasks_rs::{ErrorPayload, Payload, RejectReason, TrustTask};
 
 use super::helpers::{
@@ -53,11 +56,16 @@ use crate::server::AppState;
 pub(crate) const SUBSCRIBE_TYPE: &str = <subscribe::Payload as Payload>::TYPE_URI;
 pub(crate) const SUBSCRIBE_V0_2_TYPE: &str = <subscribe_v0_2::Payload as Payload>::TYPE_URI;
 pub(crate) const SUBSCRIBE_V0_3_TYPE: &str = <subscribe_v0_3::Payload as Payload>::TYPE_URI;
+pub(crate) const SUBSCRIBE_V0_4_TYPE: &str = <subscribe_v0_4::Payload as Payload>::TYPE_URI;
 /// Responses the duplicate-execution record keeps no body for: answering a
 /// replayed subscribe with its old `#response` and no stream behind it would
 /// break subscribe consumer rule 3 (every version).
-pub(crate) const UNRECORDED_RESPONSES: &[&str] =
-    &[SUBSCRIBE_TYPE, SUBSCRIBE_V0_2_TYPE, SUBSCRIBE_V0_3_TYPE];
+pub(crate) const UNRECORDED_RESPONSES: &[&str] = &[
+    SUBSCRIBE_TYPE,
+    SUBSCRIBE_V0_2_TYPE,
+    SUBSCRIBE_V0_3_TYPE,
+    SUBSCRIBE_V0_4_TYPE,
+];
 
 /// The subscribe acceptance window: four minutes of age plus the spine's
 /// 60 seconds of skew — five minutes in all (consumer rule 2).
@@ -79,7 +87,21 @@ pub(super) async fn handle_subscribe(
     // topic in a 0.1 subscribe is refused — then one shape for both.
     let type_uri = doc.type_uri.to_string();
     let (version, requested, since): (Version, BTreeSet<Topic>, Option<String>) =
-        if type_uri == SUBSCRIBE_V0_3_TYPE {
+        if type_uri == SUBSCRIBE_V0_4_TYPE {
+            let payload: subscribe_v0_4::Payload = match parse_spec_payload(&doc) {
+                Ok(p) => p,
+                Err(reject) => return reject,
+            };
+            (
+                Version::V0_4,
+                payload
+                    .topics
+                    .iter()
+                    .filter_map(Topic::from_subscribe_v0_4)
+                    .collect(),
+                payload.since.as_ref().map(|t| t.as_str().to_string()),
+            )
+        } else if type_uri == SUBSCRIBE_V0_3_TYPE {
             let payload: subscribe_v0_3::Payload = match parse_spec_payload(&doc) {
                 Ok(p) => p,
                 Err(reject) => return reject,

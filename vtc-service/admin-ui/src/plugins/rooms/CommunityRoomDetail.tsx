@@ -61,7 +61,7 @@ import { formatIso } from "@/lib/format";
 import { useNameBook } from "@/lib/names";
 import { gestureFromConfirm } from "@/lib/signed-act";
 import { useToast } from "@/lib/toast";
-import { OFFLINE_POLL_MS } from "@/lib/use-live-events";
+import { useLivePollMs } from "@/lib/use-live-events";
 import { useCan } from "@/lib/viewer";
 import type {
   CommunityRoom,
@@ -94,11 +94,13 @@ const DEFAULT_VALID_DAYS = 90;
 export function CommunityRoomDetail() {
   // Already decoded by the router; decoding again could change the identifier.
   const { roomId = "" } = useParams();
+  const pollMs = useLivePollMs("communityRooms");
   const q = useQuery({
     queryKey: [...COMMUNITY_ROOMS_KEY, "get", roomId],
     queryFn: () => fetchCommunityRoom(roomId),
     enabled: roomId !== "",
-    refetchInterval: OFFLINE_POLL_MS,
+    // Slow while the stream carries `communityRooms`, whose hint re-reads it.
+    refetchInterval: pollMs,
   });
   const trail = [{ label: "Community rooms", to: COMMUNITY_PATH }, { label: q.data?.room.label ?? "Room" }];
 
@@ -356,10 +358,11 @@ function Members({ room }: { room: CommunityRoom }) {
     outcome: null,
     error: null,
   });
+  const pollMs = useLivePollMs("communityRooms");
   const q = useQuery({
     queryKey: [...COMMUNITY_ROOMS_KEY, "members", roomId, filter],
     queryFn: () => fetchCommunityRoomMembers(roomId, filter === "all" ? undefined : filter),
-    refetchInterval: OFFLINE_POLL_MS,
+    refetchInterval: pollMs,
   });
   const items = q.data?.items ?? [];
   const departures = q.data?.departures ?? [];

@@ -1203,7 +1203,8 @@ async fn handle_get(
 ///
 /// The details are the community's own record as the room's owner: written beside the
 /// room in [`crate::rooms::community`], never to its host record, its records or its VTA
-/// (item 8), and with no live hint — the `rooms` topic covers the host's view.
+/// (item 8). Its live hint is the `communityRooms` topic's (`vtc/admin/events/0.4`), not
+/// `rooms`', which covers the host's view.
 async fn handle_update(
     state: &AppState,
     ctx: &JoinAuthCtx,

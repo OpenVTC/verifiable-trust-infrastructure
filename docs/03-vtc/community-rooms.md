@@ -152,8 +152,10 @@ administrators renaming at once, the later wins, and both are in the audit trail
 
 A member offered a place sees the room's **current** label and description in
 `vtc/rooms/offers/list/0.2` — a rename reaches an open offer. Once they have accepted, no
-member-side read shows a later rename yet. The live channel's `rooms` topic is the host's,
-so a change produces no hint there; other consoles see it on their next poll.
+member-side read shows a later rename yet. Other open consoles are told through the live
+channel's `communityRooms` topic (`vtc/admin/events` 0.4, to holders of
+`vtc.rooms.manage`) and re-read; the `rooms` topic is the host's, so a rename produces no
+hint there.
 
 All three are written by an administrator and shown to others: they must not carry
 personal data or credentials, and every reader — console, `cnm`, a wallet, an agent —
@@ -237,11 +239,14 @@ this VTC's DID and contexts, each with a copy button
 itself looks wrong — a rooms context outside the context holding its DID, or no
 `vta_context` — the list says so above the rooms.
 
-The pages re-read after every change made from them and poll once a minute. A create
-also reaches other open consoles through the live channel's `rooms` topic, which hints
-when a room is registered; that topic goes to holders of `vtc.rooms.admin` and does not
-cover the owner's record (offers, admissions, removals), so for those the minute's poll
-is what another administrator's console waits for.
+The pages re-read after every change made from them, and other open consoles re-read when
+the live channel's `communityRooms` topic (`vtc/admin/events` 0.4) says the owner's record
+moved: a room created or its details changed, an admission offered, withdrawn, accepted or
+renewed, a removal owed, retried or settled, the profile write's state, the authority
+renewal's. The topic goes to holders of `vtc.rooms.manage` and names no room or member;
+the console re-reads the list, the room and its members to learn which. The pages poll
+once a minute without it (a VTC before 0.4), and every five minutes while the stream
+carries it.
 
 ## Run a room — `cnm rooms`
 
@@ -561,7 +566,3 @@ already created can also mean the community's own authority over it has lapsed
 - **Offers in the member portal without the wallet**: the portal's *Offers from this
   community* card (label, the room's description, tier, actions, dates) reads and accepts
   through the member's wallet only; without it, a member uses `pnm rooms offers` (above).
-- **Live updates for the owner's record**: `vtc/admin/events` 0.2's `rooms` topic is the
-  host's (`vtc.rooms.admin`, rooms registered, lifecycle, usage bands). An offer,
-  admission or removal is in no topic, so the console's Community rooms pages poll for
-  it; a topic for `vtc.rooms.manage` holders is a specification change.

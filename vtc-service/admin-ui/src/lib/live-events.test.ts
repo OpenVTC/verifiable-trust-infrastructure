@@ -13,11 +13,14 @@ import {
   LIVE_V0_1,
   LIVE_V0_2,
   LIVE_V0_3,
+  LIVE_V0_4,
   LiveEvents,
   liveVersionFor,
   SUBSCRIBE_TASK_V0_2,
   SUBSCRIBE_TASK_V0_3,
   EVENT_TASK_V0_3,
+  SUBSCRIBE_TASK_V0_4,
+  EVENT_TASK_V0_4,
   SseParser,
   STREAM_ACCEPT,
   SUBSCRIBE_TASK,
@@ -369,10 +372,11 @@ describe("0.3 and the directory and groups topics", () => {
     expect(liveVersionFor([SUBSCRIBE_TASK_V0_2])).toBe(LIVE_V0_2);
   });
 
-  it("asks for directory and groups only at 0.3", () => {
+  it("asks for directory and groups only from 0.3", () => {
     expect(LIVE_V0_1.topics).not.toContain("directory");
     expect(LIVE_V0_2.topics).not.toContain("groups");
-    expect(LIVE_V0_3.topics).toEqual(ALL_TOPICS);
+    expect(LIVE_V0_3.topics).toContain("directory");
+    expect(LIVE_V0_3.topics).toContain("groups");
   });
 
   it("hands on 0.3 groups and directory hints", async () => {
@@ -380,7 +384,8 @@ describe("0.3 and the directory and groups topics", () => {
     const h = harness([() => streamResponse(s.stream)], LIVE_V0_3);
     h.client.start();
     await settle();
-    expect(h.signed[0]).toEqual({ topics: [...ALL_TOPICS] });
+    expect(h.signed[0]).toEqual({ topics: [...LIVE_V0_3.topics] });
+    expect(h.signed[0]!.topics).not.toContain("communityRooms");
     s.push(
       sse(
         response(
@@ -399,6 +404,45 @@ describe("0.3 and the directory and groups topics", () => {
       ["groups", undefined],
       ["directory", undefined],
     ]);
+    h.client.stop();
+  });
+});
+
+describe("0.4 and the communityRooms topic", () => {
+  it("subscribes at 0.4 when discovery lists it", () => {
+    expect(
+      liveVersionFor([SUBSCRIBE_TASK_V0_4, SUBSCRIBE_TASK_V0_3, SUBSCRIBE_TASK_V0_2, SUBSCRIBE_TASK]),
+    ).toBe(LIVE_V0_4);
+    expect(liveVersionFor([SUBSCRIBE_TASK_V0_3, SUBSCRIBE_TASK])).toBe(LIVE_V0_3);
+  });
+
+  it("asks for communityRooms only at 0.4", () => {
+    for (const v of [LIVE_V0_1, LIVE_V0_2, LIVE_V0_3]) {
+      expect(v.topics).not.toContain("communityRooms");
+    }
+    expect(LIVE_V0_4.topics).toEqual(ALL_TOPICS);
+  });
+
+  it("hands on a 0.4 communityRooms hint, which carries no count", async () => {
+    const s = controlledStream();
+    const h = harness([() => streamResponse(s.stream)], LIVE_V0_4);
+    h.client.start();
+    await settle();
+    expect(h.signed[0]).toEqual({ topics: [...ALL_TOPICS] });
+    s.push(
+      sse(
+        response(
+          { topics: ["actions", "communityRooms"] },
+          { type: `${SUBSCRIBE_TASK_V0_4}#response` },
+        ),
+        "tok0",
+      ),
+    );
+    await settle();
+    expect(h.client.effectiveTopics).toEqual(["actions", "communityRooms"]);
+    s.push(sse(hint("communityRooms", "tok1", undefined, { type: EVENT_TASK_V0_4 }), "tok1"));
+    await settle();
+    expect(h.hints).toEqual([["communityRooms", undefined]]);
     h.client.stop();
   });
 });
@@ -423,6 +467,8 @@ describe("hint to query keys", () => {
     expect(has("rooms", ["rooms"])).toBe(true);
     expect(has("rooms", ["room-usage"])).toBe(true);
     expect(has("rooms", ["storage"])).toBe(true);
+    // The owner's pages: the community rooms list, a room and its members.
+    expect(has("communityRooms", ["rooms", "community"])).toBe(true);
   });
 
   it("invalidates each key once", () => {

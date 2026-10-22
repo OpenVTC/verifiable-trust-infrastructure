@@ -503,15 +503,15 @@ once and then dropped from the URL.
 
 A signed-in console holds **one live channel** per session:
 `vtc/admin/events/subscribe` — at the newest version the VTC lists in
-`trust-task-discovery` (**0.3**, 0.2, else 0.1) — sent as a signed document to the ordinary
+`trust-task-discovery` (**0.4**, 0.3, 0.2, else 0.1) — sent as a signed document to the ordinary
 `POST /v1/trust-tasks` with `Accept: text/event-stream, application/json;q=0.5`
 and answered as a **streamed response** (HTTPS binding 0.3 §2.1): `200
 text/event-stream`, whose first event is the signed `#response` and whose later
 events are `vtc/admin/events/event` **hints** of the same version. There is no
 other route — no `GET`, no WebSocket — and nothing about the door changes for
-any other task. The VTC serves all three versions; 0.2 adds the `rooms` topic
-and 0.3 the `directory` and `groups` topics, and nothing else, so an older
-console (or `cnm actions watch`) is unchanged.
+any other task. The VTC serves all four versions; 0.2 adds the `rooms` topic,
+0.3 the `directory` and `groups` topics and 0.4 the `communityRooms` topic, and
+nothing else, so an older console (or `cnm actions watch`) is unchanged.
 
 **A hint is never data.** It names a topic, when it changed, and for the three
 badge topics the viewer's count:
@@ -527,6 +527,7 @@ badge topics the viewer's count:
 | `rooms` (0.2) | the Data rooms page (its Rooms, Usage, Storage and Community rooms tabs) and a room's page | — | holders of `vtc.rooms.admin` |
 | `directory` (0.3) | the Directory pages, and the member list and member page, which show each member's card | — | holders of `vtc.directory.admin` or `vtc.directory.notes` |
 | `groups` (0.3) | the Groups page and a group's page | — | holders of `vtc.groups.manage`; a manager of one group hears only about that group |
+| `communityRooms` (0.4) | the Community rooms tab, a community room's page and its members | — | holders of `vtc.rooms.manage` (`vtc.rooms.admin` alone does not qualify) |
 
 `directory` is hinted when a field, a card or a value, an external card or an
 administrators' note is written or removed, at most once every ten seconds, so
@@ -545,13 +546,26 @@ created, changed or changes state. Holdings moving inside a band, or a live
 room renewing, send nothing: the VTC digests exactly those facts, as the rooms
 reads report them, and hints only when the digest moves. The pages also poll
 (60 s, 5 min while the stream carries `rooms`), so a 0.1 VTC or an
-administrator without the topic still sees changes. The Community rooms tab
-(rooms the community owns, [`community-rooms.md`](community-rooms.md)) polls at
-60 s regardless: the topic hints when a community room is created, but not when
-one is offered to, accepted by or removed from a member, nor when its label,
-description or tags change (`vtc/rooms/community/update` — the owner's record,
-not the host's view the topic covers), and it goes only to holders of
-`vtc.rooms.admin`, not of `vtc.rooms.manage`.
+administrator without the topic still sees changes.
+
+`communityRooms` is the rooms the community itself **owns**
+([`community-rooms.md`](community-rooms.md)), as their owner sees them — a
+separate topic from `rooms` because it is a separate authority over a separate
+view: `rooms` is the host's (storage, limits, lifecycle) for
+`vtc.rooms.admin`, `communityRooms` the owner's (details and who is admitted)
+for `vtc.rooms.manage`. It is hinted when anything
+`vtc/rooms/community/list`, `get` or `members/list` would show changes: a
+community room created, or its label, description or tags changed; an
+admission offered, withdrawn, accepted or renewed; a removal owed (including
+one owed because a member left the community), retried, settled or failed;
+the room's profile write going `pending` or `written`; and the renewal of the
+community's own authority over the room. The VTC digests what those reads show
+and hints only when the digest moves, so a host-side change the owner's reads
+do not show — holdings moving on an upload — sends nothing; one they do show,
+such as the embedded room's lifecycle, does. The hint names no room, member,
+DID, offer or credential. The Community rooms pages poll at 60 s, and at 5 min
+while the stream carries `communityRooms`; before 0.4 they poll at 60 s
+whatever the stream carries.
 
 The console reacts to a hint only by invalidating the react-query keys of that
 topic's own signed read, so authorization stays on every read: a hint can

@@ -177,7 +177,13 @@ pub async fn record(
 }
 
 async fn put_record(rooms: &CommunityRooms, rec: &ProfileRecord) -> Result<(), AppError> {
-    rooms.keyspace().insert(record_key(&rec.room_id), rec).await
+    rooms
+        .keyspace()
+        .insert(record_key(&rec.room_id), rec)
+        .await?;
+    // The owner's reads show this record's state (`communityRooms`).
+    super::community::changed();
+    Ok(())
 }
 
 /// `ext["org.openvtc"].roomProfile` for one room's `get`.

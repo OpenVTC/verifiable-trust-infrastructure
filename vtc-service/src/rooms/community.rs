@@ -461,6 +461,14 @@ pub struct CommunityRooms {
 /// Wakes the departure worker: a departure was recorded.
 static DEPARTURES: tokio::sync::Notify = tokio::sync::Notify::const_new();
 
+/// Tell open consoles that what the owner's reads show of the community's rooms changed
+/// (the `communityRooms` topic of `vtc/admin/events/subscribe/0.4`). Called after the
+/// record lands, from every write to this keyspace those reads show. A hint, carrying
+/// nothing: no room, member or record is named (event 0.4 producer rule 9).
+pub(crate) fn changed() {
+    crate::admin_events::notify(crate::admin_events::Topic::CommunityRooms);
+}
+
 /// Tell the departure worker there is work.
 pub fn departure_hint() {
     DEPARTURES.notify_one();
@@ -556,14 +564,17 @@ impl CommunityRooms {
         self.ks.insert(room_key(&room.room_id), room).await?;
         // A hint only: an open console re-reads what it shows (`admin_events`).
         crate::admin_events::notify(crate::admin_events::Topic::Rooms);
+        changed();
         Ok(())
     }
 
-    /// Store a change to a room's details only. No live hint: the `rooms` topic covers the
-    /// host's view, which carries no room's details (`vtc/rooms/community/update/0.1`
-    /// *Live updates*).
+    /// Store a change to a room's details only. The `rooms` topic covers the host's view,
+    /// which carries no room's details, so this is the `communityRooms` topic's alone
+    /// (`vtc/rooms/community/update/0.2` *Live updates*).
     pub async fn put_room_details(&self, room: &OwnedRoom) -> Result<(), AppError> {
-        self.ks.insert(room_key(&room.room_id), room).await
+        self.ks.insert(room_key(&room.room_id), room).await?;
+        changed();
+        Ok(())
     }
 
     /// Every room the community owns, by identifier.
@@ -593,6 +604,7 @@ impl CommunityRooms {
             .insert(holder_key(&record.member, &record.room_id), &true)
             .await?;
         crate::admin_events::notify(crate::admin_events::Topic::Rooms);
+        changed();
         Ok(())
     }
 
@@ -673,6 +685,7 @@ impl CommunityRooms {
                 "a departing member's community-room admissions are queued for removal"
             );
             crate::admin_events::notify(crate::admin_events::Topic::Rooms);
+            changed();
             departure_hint();
         }
         Ok(recorded)
@@ -706,6 +719,7 @@ impl CommunityRooms {
             .insert(departure_key(room_id, member), &pending)
             .await?;
         crate::admin_events::notify(crate::admin_events::Topic::Rooms);
+        changed();
         departure_hint();
         Ok(true)
     }
@@ -718,14 +732,19 @@ impl CommunityRooms {
         self.ks.get(departure_key(room_id, member)).await
     }
 
+    /// Store a removal owed — retried, or failed and waiting out its backoff.
     pub async fn put_pending_removal(&self, p: &PendingRemoval) -> Result<(), AppError> {
         self.ks
             .insert(departure_key(&p.room_id, &p.member), p)
-            .await
+            .await?;
+        changed();
+        Ok(())
     }
 
     pub async fn drop_pending_removal(&self, room_id: &str, member: &str) -> Result<(), AppError> {
-        self.ks.remove(departure_key(room_id, member)).await
+        self.ks.remove(departure_key(room_id, member)).await?;
+        changed();
+        Ok(())
     }
 
     /// Every removal owed on departure, by room then member.
@@ -763,6 +782,7 @@ impl CommunityRooms {
         batch.remove(departure_key(&record.room_id, &record.member));
         self.ks.apply_batch(batch).await?;
         crate::admin_events::notify(crate::admin_events::Topic::Rooms);
+        changed();
         Ok(())
     }
 

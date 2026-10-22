@@ -14,12 +14,14 @@
 // `ext["org.openvtc"].communityRooms` — shown here rather than discovered as a
 // refused create.
 //
-// **Re-reading.** A create registers a room, which the live channel's `rooms`
-// topic hints about (to `vtc.rooms.admin` holders), and every query here sits
-// under the `["rooms"]` key that hint invalidates. Who was offered or admitted
-// is the owner's record, which no topic carries, so these pages also poll at
-// the ordinary pace whether or not the stream is live, and re-read after every
-// change made from them.
+// **Re-reading.** The owner's record — the rooms, their details, who was
+// offered or admitted, removals owed, the profile write and the authority
+// renewal — is the live channel's `communityRooms` topic (events 0.4, to
+// holders of `vtc.rooms.manage`), and every query here sits under the
+// `["rooms", "community"]` key its hint invalidates. They poll slowly while
+// the stream carries that topic and at the ordinary pace otherwise (an older
+// community, or a stream without it), and re-read after every change made from
+// them. A `rooms` hint invalidates them too: they sit under `["rooms"]`.
 
 import { useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
@@ -48,15 +50,15 @@ import { formatIso, shorten } from "@/lib/format";
 import { gestureFromConfirm } from "@/lib/signed-act";
 import { fetchStorageConfigs } from "@/lib/storage-api";
 import { useToast } from "@/lib/toast";
-import { OFFLINE_POLL_MS } from "@/lib/use-live-events";
+import { useLivePollMs } from "@/lib/use-live-events";
 import { useCan } from "@/lib/viewer";
 import type { CommunityRoom, CommunityRoomCreatePayload } from "@/lib/wire-types";
 
 import { RefusalCard, VtaFixCommands } from "./CommunityRefusal";
 import { LifecyclePill, TIER_BLURB, communityRoomPath } from "./shared";
 
-/** The query key of the owner's list. Under `["rooms"]`, which a live `rooms`
- *  hint invalidates. */
+/** The query key of the owner's reads, which a live `communityRooms` hint
+ *  invalidates. Under `["rooms"]`, which a live `rooms` hint invalidates. */
 export const COMMUNITY_ROOMS_KEY = ["rooms", "community"] as const;
 
 /** The page header's primary action on this tab. */
@@ -460,11 +462,12 @@ function NewCommunityRoom({ onDone }: { onDone: () => void }) {
 export function CommunityRoomsList() {
   const [params, setParams] = useSearchParams();
   const creating = params.get("create") === "1";
+  const pollMs = useLivePollMs("communityRooms");
   const q = useQuery({
     queryKey: COMMUNITY_ROOMS_LIST_KEY,
     queryFn: fetchCommunityRooms,
-    // No live topic carries the owner's record; see the header.
-    refetchInterval: OFFLINE_POLL_MS,
+    // Slow while the stream carries `communityRooms`; see the header.
+    refetchInterval: pollMs,
   });
   const off = q.data?.setting.enabled === false;
   const all = q.data?.rooms ?? [];

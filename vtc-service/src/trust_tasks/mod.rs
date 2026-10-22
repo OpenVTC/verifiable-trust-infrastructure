@@ -1544,7 +1544,8 @@ fn dispatch_typed<'a>(
         }
         event_tasks::SUBSCRIBE_TYPE
         | event_tasks::SUBSCRIBE_V0_2_TYPE
-        | event_tasks::SUBSCRIBE_V0_3_TYPE => {
+        | event_tasks::SUBSCRIBE_V0_3_TYPE
+        | event_tasks::SUBSCRIBE_V0_4_TYPE => {
             Box::pin(async move { event_tasks::handle_subscribe(state, ctx, doc).await })
         }
         uri if action_tasks::URIS.contains(&uri) => Box::pin(async move {
@@ -3100,12 +3101,13 @@ pub(crate) const DISPATCHED_URIS: &[&str] = &[
     action_tasks::ACKNOWLEDGE_V0_2_TYPE,
     // The console's live channel (hints only): its success opens an event
     // stream, which only the HTTPS door can carry — every other transport is
-    // answered `streamUnavailable`. 0.2 adds the `rooms` topic and 0.3 the
-    // `directory` and `groups` topics; each older version is still answered,
-    // at its own version.
+    // answered `streamUnavailable`. 0.2 adds the `rooms` topic, 0.3 the
+    // `directory` and `groups` topics and 0.4 the `communityRooms` topic; each
+    // older version is still answered, at its own version.
     event_tasks::SUBSCRIBE_TYPE,
     event_tasks::SUBSCRIBE_V0_2_TYPE,
     event_tasks::SUBSCRIBE_V0_3_TYPE,
+    event_tasks::SUBSCRIBE_V0_4_TYPE,
     // Members' step-up passkeys: the invite, its redemption, an
     // administrator's revocation for the member, and an administrator's
     // listing of them. No REST route serves them.

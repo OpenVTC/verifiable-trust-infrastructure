@@ -68,7 +68,7 @@ fn now_secs() -> u64 {
         .unwrap_or(0)
 }
 
-fn hosted(r: vti_rooms::Room, now: u64) -> HostedRoom {
+pub(crate) fn hosted(r: vti_rooms::Room, now: u64) -> HostedRoom {
     HostedRoom {
         lifecycle: r.lifecycle(now).as_str().to_string(),
         room_id: r.room_id,

@@ -41,7 +41,8 @@ const UNKNOWN: RoomName = { kind: "unknown" };
 /** A lookup from room DID to what can be said about its name. */
 export function useRoomNames(): (roomId: string) => RoomName {
   const manager = useCan("vtc.rooms.manage", "*");
-  const pollMs = useLivePollMs("rooms");
+  // The owner's list: the `communityRooms` topic's read (a room's label).
+  const pollMs = useLivePollMs("communityRooms");
   const q = useQuery({
     queryKey: [...COMMUNITY_ROOMS_KEY, "list"],
     queryFn: fetchCommunityRooms,

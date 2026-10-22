@@ -189,7 +189,13 @@ pub async fn record(
 }
 
 async fn put_record(rooms: &CommunityRooms, rec: &RenewalRecord) -> Result<(), AppError> {
-    rooms.keyspace().insert(record_key(&rec.room_id), rec).await
+    rooms
+        .keyspace()
+        .insert(record_key(&rec.room_id), rec)
+        .await?;
+    // The owner's reads show this record's state (`communityRooms`).
+    super::community::changed();
+    Ok(())
 }
 
 /// At create: the handles the VTA stored the community's two credentials under, so a
