@@ -286,6 +286,7 @@ pub(super) async fn handle_set_issuer_key(
     match operations::contexts::set_context_issuer_key(
         &state.contexts_ks,
         &state.keys_ks,
+        &state.acl_ks,
         auth,
         &req.id,
         req.key_id,
@@ -331,6 +332,7 @@ pub(super) async fn handle_update_did(
         };
     match operations::contexts::update_context_did(
         &state.contexts_ks,
+        &state.acl_ks,
         auth,
         &id,
         did,

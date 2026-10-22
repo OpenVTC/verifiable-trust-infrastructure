@@ -156,6 +156,7 @@ mod tests {
         crate::operations::contexts::set_context_issuer_key(
             &state.contexts_ks,
             &state.keys_ks,
+            &state.acl_ks,
             &super_admin_claims(),
             context,
             Some(key_id),
@@ -371,6 +372,7 @@ mod tests {
         crate::operations::contexts::set_context_issuer_key(
             &state.contexts_ks,
             &state.keys_ks,
+            &state.acl_ks,
             &super_admin_claims(),
             CTX,
             Some(issuer_key_id),

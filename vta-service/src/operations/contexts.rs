@@ -319,13 +319,21 @@ pub fn resolve_proof_key<'a>(
 pub async fn set_context_issuer_key(
     contexts_ks: &KeyspaceHandle,
     keys_ks: &KeyspaceHandle,
+    acl_ks: &KeyspaceHandle,
     auth: &AuthClaims,
     id: &str,
     key_id: Option<String>,
     proof_purpose: Option<&str>,
     channel: &str,
 ) -> Result<CreateContextResultBody, ContextError> {
-    auth.require_super_admin()?;
+    // Provisioning may fill a designation that is unset; changing an
+    // established one stays super-admin. The super-admin gate is checked
+    // first, so an administrator is never held to the write-once bound.
+    let provisioning =
+        auth.require_super_admin().is_err() && may_configure_unset(acl_ks, auth, id).await;
+    if !provisioning {
+        auth.require_super_admin()?;
+    }
 
     if let Some(purpose) = proof_purpose
         && !ALLOWED_PROOF_PURPOSES.contains(&purpose)
@@ -336,6 +344,26 @@ pub async fn set_context_issuer_key(
     }
 
     let mut record = reach_context(contexts_ks, auth, id).await?;
+
+    // The write-once bound for a provisioning caller: it may name a key for a
+    // purpose that has none, never re-point one already designated.
+    if provisioning {
+        let already = match proof_purpose {
+            Some(purpose) => record.proof_key_ids.contains_key(purpose),
+            None => record.issuer_key_id.is_some(),
+        };
+        if already {
+            return Err(ContextError::Other(AppError::Forbidden(format!(
+                "context `{id}` already designates a signing key for this purpose; changing it \
+                 is an administrator's act, not a provisioning one"
+            ))));
+        }
+        if key_id.is_none() {
+            return Err(ContextError::Other(AppError::Forbidden(format!(
+                "clearing a signing-key designation on context `{id}` is an administrator's act"
+            ))));
+        }
+    }
 
     if let Some(ref key_id) = key_id {
         let key: vta_sdk::keys::KeyRecord = keys_ks
@@ -373,17 +401,75 @@ pub async fn set_context_issuer_key(
     Ok(to_result_body(&record))
 }
 
+/// Whether `auth` may configure `record`'s **unset** signing fields without
+/// being an admin of it.
+///
+/// The provisioning case: an automated caller holding
+/// [`Capability::ContextCreate`](vti_common::acl::Capability::ContextCreate)
+/// creates a context and must then make it usable — give it a DID, name its
+/// issuer key. Both are one-time acts at the context's birth.
+///
+/// **Write-once, deliberately.** The caller may fill a blank field; it may never
+/// change an established one. Re-pointing a context's identity or its signing
+/// key is how an automated process would quietly become something else, and it
+/// is rare enough to be an operator's act. The alternative considered — making
+/// the creator an *admin* of what it created — was rejected: a context admin can
+/// write ACL entries scoped to that context, so the authority would accumulate
+/// one context at a time for as long as the process ran.
+///
+/// Returning `false` is not a refusal; it means the ordinary admin gate decides.
+///
+/// Callers must check their own admin gate **first** and only consult this when
+/// it fails. An administrator is not provisioning — applying the write-once
+/// bound to one would stop it re-pointing a DID, which is exactly the act the
+/// bound exists to reserve *for* administrators.
+async fn may_configure_unset(acl_ks: &KeyspaceHandle, auth: &AuthClaims, context_id: &str) -> bool {
+    // Reaching the context is required as well as the capability, so this can
+    // never touch a subtree the caller was not granted.
+    if auth.require_context(context_id).is_err() {
+        return false;
+    }
+    ensure_may_create_context(acl_ks, auth).await.is_ok()
+}
+
 /// Update the DID for a context. Requires Admin role with access to the context
 /// (context-scoped admins can update DIDs on their own contexts).
+///
+/// A caller holding `context-create` may instead set the DID **while it is
+/// unset**, which is what lets it finish provisioning a context it just
+/// created. See [`may_configure_unset`].
 pub async fn update_context_did(
     contexts_ks: &KeyspaceHandle,
+    acl_ks: &KeyspaceHandle,
     auth: &AuthClaims,
     id: &str,
     did: Option<String>,
     channel: &str,
 ) -> Result<CreateContextResultBody, ContextError> {
-    auth.require_admin()?;
+    // The admin gate first: an administrator takes the ordinary path with no
+    // write-once bound. Only a caller it refuses may be provisioning.
+    let provisioning = auth.require_admin().is_err() && may_configure_unset(acl_ks, auth, id).await;
+    if !provisioning {
+        auth.require_admin()?;
+    }
     let mut record = reach_context(contexts_ks, auth, id).await?;
+
+    // The write-once bound. Checked against the record just read, and the
+    // store write below is what settles a race: two concurrent provisions both
+    // see `None`, both write, and the loser's value is overwritten rather than
+    // compounded — the field still ends up set exactly once, to one of the two
+    // DIDs the same caller asked for.
+    if provisioning && record.did.is_some() {
+        return Err(ContextError::Other(AppError::Forbidden(format!(
+            "context `{id}` already has a DID; changing it is an administrator's act, not a \
+             provisioning one"
+        ))));
+    }
+    if provisioning && did.is_none() {
+        return Err(ContextError::Other(AppError::Forbidden(format!(
+            "clearing the DID on context `{id}` is an administrator's act"
+        ))));
+    }
 
     // `None` clears (`update-did/1.1`, `did: null`). Clearing a context that
     // has no DID is not an error — the requested state already holds. The DID
@@ -1131,12 +1217,13 @@ mod tests {
     /// record comes back without one, and a second clear is not an error.
     #[tokio::test]
     async fn clearing_a_context_did_removes_it_and_is_idempotent() {
-        let (_d, _s, ks) = fresh_contexts();
+        let (_d, _s, ks, acl) = fresh_contexts_and_acl();
         create_context(&ks, &super_admin(), "acme", "Acme".into(), None, None, "t")
             .await
             .unwrap();
         let set = update_context_did(
             &ks,
+            &acl,
             &admin_of("acme"),
             "acme",
             Some("did:web:a.example".into()),
@@ -1146,7 +1233,7 @@ mod tests {
         .expect("assign");
         assert_eq!(set.did.as_deref(), Some("did:web:a.example"));
 
-        let cleared = update_context_did(&ks, &admin_of("acme"), "acme", None, "t")
+        let cleared = update_context_did(&ks, &acl, &admin_of("acme"), "acme", None, "t")
             .await
             .expect("clear");
         assert_eq!(cleared.did, None);
@@ -1159,7 +1246,7 @@ mod tests {
             "the clear was not stored"
         );
 
-        let again = update_context_did(&ks, &admin_of("acme"), "acme", None, "t")
+        let again = update_context_did(&ks, &acl, &admin_of("acme"), "acme", None, "t")
             .await
             .expect("clearing a context with no DID is not an error");
         assert_eq!(again.did, None);
@@ -1912,5 +1999,214 @@ mod tests {
         ensure_may_create_context(&acl_ks, &admin_of("gw"))
             .await
             .expect("an admin passes the gate as it always did");
+    }
+
+    // ─── Write-once provisioning ─────────────────────────────────────────
+    //
+    // The property: a provisioner may make a context it created *usable*, and
+    // may never reconfigure one. Filling a blank field is provisioning;
+    // changing an established one is an administrator's act.
+
+    /// A provisioner sets the DID and the issuer key on a fresh context, then
+    /// is refused when it tries to change either.
+    #[tokio::test]
+    async fn a_provisioner_configures_a_fresh_context_once_and_no_more() {
+        let (_d, _s, ks, acl_ks) = fresh_contexts_and_acl();
+        create_context(&ks, &super_admin(), "gw", "Gateway".into(), None, None, "t")
+            .await
+            .unwrap();
+        let caller = provisioner(&acl_ks, "did:key:zProvisioner", "gw").await;
+        create_context(
+            &ks,
+            &caller,
+            "agent-1",
+            "Agent 1".into(),
+            None,
+            Some("gw".to_string()),
+            "t",
+        )
+        .await
+        .expect("provision the context");
+
+        // Fill the DID while unset — allowed.
+        let set = update_context_did(
+            &ks,
+            &acl_ks,
+            &caller,
+            "gw/agent-1",
+            Some("did:key:zAgentOne".into()),
+            "t",
+        )
+        .await
+        .expect("a provisioner may name a context that has no DID");
+        assert_eq!(set.did.as_deref(), Some("did:key:zAgentOne"));
+
+        // Change it — refused.
+        let err = match update_context_did(
+            &ks,
+            &acl_ks,
+            &caller,
+            "gw/agent-1",
+            Some("did:key:zSomethingElse".into()),
+            "t",
+        )
+        .await
+        {
+            Ok(r) => panic!("re-pointing an established DID must be refused: {r:?}"),
+            Err(e) => format!("{e:?}"),
+        };
+        assert!(err.contains("administrator"), "{err}");
+
+        // Clearing it — also refused: that is a reconfiguration, not a birth.
+        let cleared = update_context_did(&ks, &acl_ks, &caller, "gw/agent-1", None, "t").await;
+        assert!(cleared.is_err(), "a provisioner must not clear a DID");
+    }
+
+    /// The same rule for the issuer-key designation.
+    #[tokio::test]
+    async fn a_provisioner_designates_an_issuer_key_once_and_no_more() {
+        let (_d, _s, ks, acl_ks) = fresh_contexts_and_acl();
+        create_context(&ks, &super_admin(), "gw", "Gateway".into(), None, None, "t")
+            .await
+            .unwrap();
+        let caller = provisioner(&acl_ks, "did:key:zProvisioner", "gw").await;
+        create_context(
+            &ks,
+            &caller,
+            "agent-1",
+            "Agent 1".into(),
+            None,
+            Some("gw".to_string()),
+            "t",
+        )
+        .await
+        .unwrap();
+
+        // The designation is checked for residency, so the key must be real
+        // and live in the context it is designated for.
+        let keys_ks = _s.keyspace(crate::keyspaces::KEYS).unwrap();
+        seed_key(&keys_ks, "agent-1-key", Some("gw/agent-1")).await;
+
+        set_context_issuer_key(
+            &ks,
+            &keys_ks,
+            &acl_ks,
+            &caller,
+            "gw/agent-1",
+            Some("agent-1-key".to_string()),
+            None,
+            "t",
+        )
+        .await
+        .expect("a provisioner may designate a key for a context that has none");
+
+        seed_key(&keys_ks, "agent-1-other", Some("gw/agent-1")).await;
+        let err = match set_context_issuer_key(
+            &ks,
+            &keys_ks,
+            &acl_ks,
+            &caller,
+            "gw/agent-1",
+            Some("agent-1-other".to_string()),
+            None,
+            "t",
+        )
+        .await
+        {
+            Ok(r) => panic!("re-pointing an established designation must be refused: {r:?}"),
+            Err(e) => format!("{e:?}"),
+        };
+        assert!(err.contains("administrator"), "{err}");
+    }
+
+    /// Write-once does not widen reach: a provisioner still cannot configure a
+    /// context outside its own subtree, blank or not.
+    #[tokio::test]
+    async fn a_provisioner_cannot_configure_a_context_it_does_not_reach() {
+        let (_d, _s, ks, acl_ks) = fresh_contexts_and_acl();
+        create_context(&ks, &super_admin(), "gw", "Gateway".into(), None, None, "t")
+            .await
+            .unwrap();
+        create_context(
+            &ks,
+            &super_admin(),
+            "other",
+            "Other".into(),
+            None,
+            None,
+            "t",
+        )
+        .await
+        .unwrap();
+        let caller = provisioner(&acl_ks, "did:key:zProvisioner", "gw").await;
+
+        let outcome = update_context_did(
+            &ks,
+            &acl_ks,
+            &caller,
+            "other",
+            Some("did:key:zNotYours".into()),
+            "t",
+        )
+        .await;
+        assert!(
+            outcome.is_err(),
+            "a context outside the granted subtree must stay out of reach"
+        );
+    }
+
+    /// A super-admin is unaffected: it may still re-point an established DID,
+    /// which is the whole reason the provisioning path is narrow.
+    #[tokio::test]
+    async fn an_administrator_may_still_reconfigure_an_established_context() {
+        let (_d, _s, ks, acl_ks) = fresh_contexts_and_acl();
+        create_context(&ks, &super_admin(), "gw", "Gateway".into(), None, None, "t")
+            .await
+            .unwrap();
+        update_context_did(
+            &ks,
+            &acl_ks,
+            &super_admin(),
+            "gw",
+            Some("did:key:zFirst".into()),
+            "t",
+        )
+        .await
+        .unwrap();
+        let changed = update_context_did(
+            &ks,
+            &acl_ks,
+            &super_admin(),
+            "gw",
+            Some("did:key:zSecond".into()),
+            "t",
+        )
+        .await
+        .expect("an administrator may re-point a DID");
+        assert_eq!(changed.did.as_deref(), Some("did:key:zSecond"));
+    }
+
+    /// Store a minimal key record so a designation has something real to point
+    /// at — `set_context_issuer_key` checks the key exists and lives in the
+    /// context.
+    async fn seed_key(keys_ks: &KeyspaceHandle, key_id: &str, context_id: Option<&str>) {
+        let record = vta_sdk::keys::KeyRecord {
+            key_id: key_id.to_string(),
+            derivation_path: "m/26'/2'/1'/0".to_string(),
+            key_type: vta_sdk::keys::KeyType::Ed25519,
+            status: vta_sdk::keys::KeyStatus::Active,
+            public_key: "z6MkTestPublicKey".to_string(),
+            label: None,
+            context_id: context_id.map(str::to_string),
+            seed_id: None,
+            exportable: Some(false),
+            origin: vta_sdk::keys::KeyOrigin::Derived,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        };
+        keys_ks
+            .insert(crate::keys::store_key(key_id), &record)
+            .await
+            .expect("seed the key record");
     }
 }
