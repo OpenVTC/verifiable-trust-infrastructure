@@ -1065,6 +1065,68 @@ impl VtaClient {
         parse_response(value, "rooms/keys/backfill")
     }
 
+    /// `rooms/keys/backfill/0.2` — [`Self::room_backfill`], fetched with
+    /// `rooms/epoch/chain/0.2`: the VTA applies the room's **epoch floor** the host serves
+    /// before answering — it forgets every rung and key below it and never stores them
+    /// again — and reports the floor it now holds (`epochFloor`). `earliestReadableEpoch`
+    /// equal to it is the room's whole remaining history: the rest was pruned, by a
+    /// decision, rather than withheld (trust-tasks-tf #869).
+    pub async fn room_backfill_v0_2(
+        &self,
+        room_id: &str,
+        host_did: &str,
+        from_epoch: Option<std::num::NonZeroU64>,
+    ) -> Result<trust_tasks_rs::specs::rooms::keys::backfill::v0_2::Response, VtaError> {
+        use trust_tasks_rs::specs::rooms::keys::backfill::v0_2::Payload;
+        let payload = Payload::builder()
+            .room_id(room_id)
+            .host(host_did)
+            .from_epoch(from_epoch);
+        let payload = Payload::try_from(payload)
+            .map_err(|e| VtaError::Validation(format!("rooms/keys/backfill request: {e}")))?;
+        let value = self
+            .dispatch_trust_task(
+                trust_tasks::TASK_ROOMS_KEYS_BACKFILL_0_2,
+                serde_json::to_value(payload)?,
+                ROOM_TT_TIMEOUT,
+            )
+            .await?;
+        parse_response(value, "rooms/keys/backfill")
+    }
+
+    /// `rooms/keys/chain/0.2` — hand this VTA rungs fetched from the room's host, and the
+    /// room's epoch floor exactly as the host served it with them (`epoch_floor`; relaying
+    /// it is a MUST when the host served one). With no `links` it relays the floor alone —
+    /// how a member who has just learnt a higher floor tells a key holder that never reads
+    /// the chain itself. The VTA forgets what it holds below the floor before answering.
+    pub async fn room_chain_v0_2(
+        &self,
+        room_id: &str,
+        links: &[serde_json::Value],
+        epoch_floor: Option<u32>,
+    ) -> Result<trust_tasks_rs::specs::rooms::keys::chain::v0_2::Response, VtaError> {
+        let mut payload = json!({ "roomId": room_id });
+        if !links.is_empty() {
+            payload["links"] = json!(links);
+        }
+        if let Some(floor) = epoch_floor {
+            payload["epochFloor"] = json!(floor);
+        }
+        if links.is_empty() && epoch_floor.is_none() {
+            return Err(VtaError::Validation(
+                "rooms/keys/chain/0.2 carries rungs, a floor, or both".into(),
+            ));
+        }
+        let value = self
+            .dispatch_trust_task(
+                trust_tasks::TASK_ROOMS_KEYS_CHAIN_0_2,
+                payload,
+                ROOM_TT_TIMEOUT,
+            )
+            .await?;
+        parse_response(value, "rooms/keys/chain")
+    }
+
     /// `rooms/keys/list/0.1` — the rooms this VTA holds a group for, each with the
     /// room epoch it is at and how far back it can read.
     ///

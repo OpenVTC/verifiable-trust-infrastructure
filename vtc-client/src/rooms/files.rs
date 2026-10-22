@@ -25,11 +25,11 @@ use trust_tasks_rs::specs::rooms::blobs::upload::{
 };
 use trust_tasks_rs::specs::rooms::info::v0_1 as room_info;
 use trust_tasks_rs::specs::rooms::info::v0_2 as room_info_v2;
-use trust_tasks_rs::specs::rooms::records::prune::v0_1 as records_prune;
-use trust_tasks_rs::specs::rooms::records::retention::set::v0_1 as retention_set;
 use trust_tasks_rs::specs::rooms::records::get::v0_2 as get_v2;
+use trust_tasks_rs::specs::rooms::records::prune::v0_1 as records_prune;
 use trust_tasks_rs::specs::rooms::records::put::v0_2 as put_v2;
 use trust_tasks_rs::specs::rooms::records::put::v0_3 as put_v3;
+use trust_tasks_rs::specs::rooms::records::retention::set::v0_1 as retention_set;
 
 use super::{RoomSession, SealedContent};
 use crate::{VtcClient, VtcError};

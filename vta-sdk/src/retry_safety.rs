@@ -654,10 +654,15 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     // redelivery stores nothing and reports the same reachability. A lost reply
     // costs the caller the answer, never the state.
     (trust_tasks::TASK_ROOMS_KEYS_CHAIN_0_1, RetrySafe),
+    // 0.2 adds the floor, which only rises: applying it twice discards nothing more and
+    // reports the same floor.
+    (trust_tasks::TASK_ROOMS_KEYS_CHAIN_0_2, RetrySafe),
     // Idempotent by epoch on both halves: a rung already held is never replaced,
     // and re-fetching from the host yields the same rungs. A retry that arrives
     // after the first succeeded stores nothing and reports the same reach.
     (trust_tasks::TASK_ROOMS_KEYS_BACKFILL_0_1, RetrySafe),
+    // 0.2: and the floor the host serves, which only rises — idempotent as the rungs are.
+    (trust_tasks::TASK_ROOMS_KEYS_BACKFILL_0_2, RetrySafe),
     // A read changes nothing at the host: it serves the same record, and this
     // agent opens it again. What it may change here is the agent's own epoch
     // state — before refusing, it applies relayed commits and keeps epoch links

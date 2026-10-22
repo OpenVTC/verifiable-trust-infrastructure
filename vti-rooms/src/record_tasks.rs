@@ -318,7 +318,10 @@ pub fn create_v2_parts(payload: &Value) -> Result<(Option<RecordRetention>, Valu
 
 /// A `rooms/create/0.1` response body with what 0.2 echoes: the record retention the host
 /// recorded, absent when none was.
-pub fn create_v2_response(response: impl serde::Serialize, recorded: Option<&RecordRetention>) -> TaskResult {
+pub fn create_v2_response(
+    response: impl serde::Serialize,
+    recorded: Option<&RecordRetention>,
+) -> TaskResult {
     let mut body =
         serde_json::to_value(response).map_err(|e| Refusal::App(AppError::Serialization(e)))?;
     if let Some(r) = recorded {
@@ -337,7 +340,10 @@ pub async fn info_v2(
 ) -> TaskResult {
     parse::<info_v2::Payload>(payload)?;
     let mut body = crate::blob_tasks::info_body(files, room, authorized).await?;
-    if let Some(r) = room.record_retention.as_ref().filter(|r| !r.is_empty() || r.ext.is_some())
+    if let Some(r) = room
+        .record_retention
+        .as_ref()
+        .filter(|r| !r.is_empty() || r.ext.is_some())
     {
         body["recordRetention"] = r.to_wire();
     }
@@ -359,6 +365,28 @@ pub async fn list_v3_response(
         body["lastPrune"] = mark.to_wire();
     }
     checked::<list_v3::Response>(body)
+}
+
+/// A `rooms/epoch/chain/0.1` response answered as 0.2: the same rungs (a host serves none at
+/// or below the floor at either version), and the room's `epochFloor` on every response once
+/// its chain has been pruned — whatever `fromEpoch` and `limit` named, `links` empty too
+/// (trust-tasks-tf #869).
+pub fn epoch_chain_v2_response(response: impl serde::Serialize, room: &Room) -> TaskResult {
+    let mut body =
+        serde_json::to_value(response).map_err(|e| Refusal::App(AppError::Serialization(e)))?;
+    if let Some(floor) = room.epoch_floor {
+        body["epochFloor"] = json!(floor);
+    }
+    checked::<trust_tasks_rs::specs::rooms::epoch::chain::v0_2::Response>(body)
+}
+
+/// A `rooms/epoch/prune/0.1` response answered as 0.2: and the room's epoch floor after the
+/// prune, which 0.2 requires.
+pub fn epoch_prune_v2_response(response: impl serde::Serialize, floor: u32) -> TaskResult {
+    let mut body =
+        serde_json::to_value(response).map_err(|e| Refusal::App(AppError::Serialization(e)))?;
+    body["epochFloor"] = json!(floor);
+    checked::<trust_tasks_rs::specs::rooms::epoch::prune::v0_2::Response>(body)
 }
 
 /// Whether a task is one of these, which a host routes here.

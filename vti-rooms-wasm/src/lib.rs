@@ -98,6 +98,14 @@ struct MemberSnapshot {
     /// Ascending. Ciphertext — a party holding no epoch key learns nothing from them.
     #[serde(default)]
     links: Vec<EpochLink>,
+    /// The room's epoch floor this member has learnt (`EpochFloor`), `0` for none. Kept in
+    /// the snapshot so a restore never derives below it again.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    epoch_floor: u32,
+}
+
+fn is_zero(n: &u32) -> bool {
+    *n == 0
 }
 
 fn err(e: impl std::fmt::Display) -> String {
@@ -293,6 +301,8 @@ impl RoomMember {
         let snap: MemberSnapshot = serde_json::from_str(snapshot).map_err(err)?;
         let group = RoomGroup::restore(&snap.group).map_err(err)?;
         let mut inner = SealedRoom::new(snap.room_id, group);
+        // The floor before the links: a snapshot never brings back a rung below it.
+        inner.apply_epoch_floor(snap.epoch_floor);
         inner.add_links(snap.links);
         Ok(RoomMember { inner })
     }
@@ -312,6 +322,7 @@ impl RoomMember {
             room_id: self.inner.room_id().to_string(),
             group: self.inner.group().snapshot().map_err(err)?,
             links: self.inner.links(),
+            epoch_floor: self.inner.epoch_floor(),
         })
         .map_err(err)
     }
@@ -368,6 +379,20 @@ impl RoomMember {
         let links: Vec<EpochLink> = serde_json::from_str(links).map_err(err)?;
         self.inner.add_links(links);
         Ok(())
+    }
+
+    /// Apply the room's epoch floor, as a host's `rooms/epoch/chain` 0.2 serves it
+    /// (`EpochFloor`; trust-tasks-tf #869): forget every rung at or below it and every key
+    /// below it, never take them back from any source, and refuse to open below it. Only
+    /// rises; returns whether it did. Take a fresh [`RoomMember::snapshot`] afterwards, so
+    /// the floor survives a restore.
+    pub fn apply_epoch_floor(&mut self, floor: u32) -> bool {
+        self.inner.apply_epoch_floor(floor)
+    }
+
+    /// The epoch floor this member holds, `0` when it has learnt none.
+    pub fn epoch_floor(&self) -> u32 {
+        self.inner.epoch_floor()
     }
 
     /// Seal a record for writing. Returns `{ ciphertext, nonce, epoch }` as JSON.
@@ -453,6 +478,18 @@ impl RoomMember {
     #[wasm_bindgen(js_name = applyCommit)]
     pub fn apply_commit_js(&mut self, commit: &[u8]) -> Result<String, JsError> {
         self.apply_commit(commit).map_err(js)
+    }
+
+    /// See [`RoomMember::apply_epoch_floor`].
+    #[wasm_bindgen(js_name = applyEpochFloor)]
+    pub fn apply_epoch_floor_js(&mut self, floor: u32) -> bool {
+        self.apply_epoch_floor(floor)
+    }
+
+    /// See [`RoomMember::epoch_floor`].
+    #[wasm_bindgen(getter, js_name = epochFloor)]
+    pub fn epoch_floor_js(&self) -> u32 {
+        self.epoch_floor()
     }
 
     /// See [`RoomMember::add_links`].

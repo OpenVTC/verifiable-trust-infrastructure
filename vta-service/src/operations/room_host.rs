@@ -139,7 +139,11 @@ pub fn read_reply_typed(doc: &Value, expected: &str, host: &str) -> Result<Value
 /// hand it more material.
 const MUTATING_ROOM_TASKS: &[&str] = &[
     vti_rooms::wire::ROOMS_RECORDS_PUT_TYPE,
+    vti_rooms::wire::ROOMS_RECORDS_PUT_V2_TYPE,
+    vti_rooms::wire::ROOMS_RECORDS_PUT_V3_TYPE,
     vti_rooms::wire::ROOMS_RECORDS_CURATE_TYPE,
+    vti_rooms::wire::ROOMS_RECORDS_PRUNE_TYPE,
+    vti_rooms::wire::ROOMS_RECORDS_RETENTION_SET_TYPE,
     vti_rooms::wire::ROOMS_EPOCH_MINT_TYPE,
     vti_rooms::wire::ROOMS_OWNER_TRANSFER_TYPE,
 ];

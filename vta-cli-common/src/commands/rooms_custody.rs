@@ -636,14 +636,41 @@ pub async fn cmd_rooms_keys_backfill(
 ) -> CmdResult {
     let mut from: Option<std::num::NonZeroU64> = None;
     let mut fetched = 0u64;
+    // `rooms/keys/backfill/0.2` learns and applies the room's epoch floor; a VTA that
+    // predates it is asked at 0.1.
+    let mut v2 = true;
+    let mut floor: Option<u64> = None;
     let reach = loop {
-        let resp = client.room_backfill(room_id, host_did, from).await?;
-        let reach = resp.earliest_readable_epoch.get();
-        let served = resp.fetched.unwrap_or(0);
+        let (reach, served) = if v2 {
+            match client.room_backfill_v0_2(room_id, host_did, from).await {
+                Ok(resp) => {
+                    floor = resp.epoch_floor.map(|f| f.0.get()).or(floor);
+                    (
+                        resp.earliest_readable_epoch.get(),
+                        resp.fetched.unwrap_or(0),
+                    )
+                }
+                Err(e) if e.to_string().contains("unsupported") => {
+                    v2 = false;
+                    continue;
+                }
+                Err(e) => return Err(e.into()),
+            }
+        } else {
+            let resp = client.room_backfill(room_id, host_did, from).await?;
+            (
+                resp.earliest_readable_epoch.get(),
+                resp.fetched.unwrap_or(0),
+            )
+        };
         fetched += served;
-        // Stop at the whole history, when the host serves nothing more, or when a pass
-        // moved nothing — a gap in the chain the host cannot fill.
-        if reach <= 1 || served == 0 || from.is_some_and(|f| f.get() == reach) {
+        // Stop at the whole history, at the room's floor, when the host serves nothing
+        // more, or when a pass moved nothing — a gap in the chain the host cannot fill.
+        if reach <= 1
+            || floor.is_some_and(|f| reach <= f)
+            || served == 0
+            || from.is_some_and(|f| f.get() == reach)
+        {
             break reach;
         }
         from = std::num::NonZeroU64::new(reach);
@@ -651,7 +678,14 @@ pub async fn cmd_rooms_keys_backfill(
     println!(
         "{room_id}: fetched {fetched} link(s); this VTA now reads back to room epoch {reach}."
     );
-    if reach > 1 {
+    if let Some(f) = floor
+        && reach <= f
+    {
+        println!(
+            "  The room's history before epoch {f} was pruned by its owner (its epoch floor): \
+             nothing below it is kept here, and nothing will bring it back."
+        );
+    } else if reach > 1 {
         println!(
             "  Records sealed before epoch {reach} will not open here: the host holds no links \
              below it, or the room's history was deliberately severed there."

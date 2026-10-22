@@ -113,6 +113,10 @@ pub mod observe;
 /// A room's own profile — where it is stored (`profile_key(E)`), how it is padded and the
 /// window its `issuedAt` must fall in (`rooms/_shared/0.1` `RoomProfileStatement`).
 pub mod profile;
+/// A record's provenance and expiry — what kind of claim it is, what it cites, what it may
+/// be used for, and when it lapses (trust-tasks-tf #865). Display and weighting, never
+/// authority; expiry is a reader's rule.
+pub mod provenance;
 /// A room's record retention, what it makes eligible, and the mark a prune leaves
 /// (trust-tasks-tf #868).
 pub mod record_retention;
@@ -120,10 +124,6 @@ pub mod record_retention;
 /// `rooms/create` 0.2, `rooms/info` 0.2 and `rooms/records/list` 0.3 add, behind `host`.
 #[cfg(feature = "host")]
 pub mod record_tasks;
-/// A record's provenance and expiry — what kind of claim it is, what it cites, what it may
-/// be used for, and when it lapses (trust-tasks-tf #865). Display and weighting, never
-/// authority; expiry is a reader's rule.
-pub mod provenance;
 /// The epoch key chain that keeps a room readable across a membership change.
 #[cfg(feature = "mls")]
 pub mod retention;
@@ -366,6 +366,15 @@ pub struct Room {
     /// `headVersion` so a root before a prune and a root after it are never labelled alike.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_prune: Option<record_retention::RecordPrune>,
+
+    /// The room's **epoch floor** (`rooms/_shared/0.1` `EpochFloor`; trust-tasks-tf #869):
+    /// the earliest epoch whose key the room still lets anybody derive. Raised by every
+    /// `rooms/epoch/prune` (to `beforeEpoch − 1`, never lowered), served by
+    /// `rooms/epoch/chain` 0.2 so members' key holders forget what they hold below it, and
+    /// the reason this host never stores or serves a rung at or below it. `None` — every
+    /// room never pruned — is no floor.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub epoch_floor: Option<u32>,
 
     /// Unix-epoch seconds.
     pub created_at: u64,

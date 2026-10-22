@@ -311,6 +311,7 @@ async fn seed_room_owned_by(
         mirror_of: None,
         record_retention: None,
         last_prune: None,
+        epoch_floor: None,
     };
     vti_rooms::storage::create_room(&fix.vtc.state.rooms_ks, &room)
         .await

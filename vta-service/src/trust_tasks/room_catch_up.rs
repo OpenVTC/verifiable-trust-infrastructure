@@ -22,7 +22,7 @@ use crate::operations::room_groups::{self, OpenError};
 use crate::server::AppState;
 use vti_common::auth::AuthClaims;
 
-use super::room_group::{PresentingMember, send_as_member};
+use super::room_group::{PresentingMember, not_served, send_as_member, send_as_member_typed};
 
 /// The most pages one repair asks for. A host serving a page that moves nothing is
 /// stopped by the progress check; this bounds a host that keeps moving one step at a time.
@@ -173,17 +173,53 @@ async fn extend_chain(
     // would move nothing and read as a gap.
     for _ in 0..MAX_PAGES {
         let payload = serde_json::json!({ "roomId": room_id, "fromEpoch": reach });
-        let reply = send_as_member(
+        // `rooms/epoch/chain/0.2` carries the room's epoch floor, which a key holder catching
+        // up SHOULD learn (`EpochFloor`); 0.1 only for a host that does not serve 0.2.
+        let reply = match send_as_member_typed(
             state,
             auth,
             member,
             resolver,
             host,
-            vti_rooms::wire::ROOMS_EPOCH_CHAIN_TYPE,
-            payload,
+            vti_rooms::wire::ROOMS_EPOCH_CHAIN_V2_TYPE,
+            payload.clone(),
         )
         .await
-        .map_err(|e| format!("fetching the room's epoch links: {e}"))?;
+        {
+            Err(e) if not_served(&e) => {
+                send_as_member_typed(
+                    state,
+                    auth,
+                    member,
+                    resolver,
+                    host,
+                    vti_rooms::wire::ROOMS_EPOCH_CHAIN_TYPE,
+                    payload,
+                )
+                .await
+            }
+            other => other,
+        }
+        .map_err(|e| format!("fetching the room's epoch links: {}", e.into_app_error()))?;
+        // The floor before the rungs: nothing at or below it is kept, and a repair never
+        // restores what lies below it (`rooms/keys/read/0.1`).
+        let floor = match reply.get("epochFloor").and_then(serde_json::Value::as_u64) {
+            Some(f) => room_groups::apply_epoch_floor(
+                &state.room_groups_ks,
+                &member.member,
+                u32::try_from(f).unwrap_or(u32::MAX),
+                super::room_group::now(),
+            )
+            .await
+            .map_err(|e| e.to_string())?,
+            None => 0,
+        };
+        if target < floor {
+            return Err(format!(
+                "room epoch {target} is below the room's epoch floor {floor}: the room has \
+                 forgotten it"
+            ));
+        }
         let links: Vec<vti_rooms::wire::EpochLink> = serde_json::from_value(
             reply.get("links").cloned().unwrap_or_default(),
         )

@@ -562,6 +562,43 @@ pub(super) async fn handle_chain(
     auth: &AuthClaims,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
+    chain_at(state, auth, doc, false).await
+}
+
+/// `rooms/keys/chain/0.2`: 0.1, and the room's epoch floor relayed with the rungs — or
+/// alone — which this key holder applies before answering (`EpochFloor`; trust-tasks-tf
+/// #869): it discards what it holds below the floor, never stores a rung at or below it,
+/// and reports the floor it now holds.
+pub(super) async fn handle_chain_v0_2(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    chain_at(state, auth, doc, true).await
+}
+
+/// The rungs a `rooms/keys/chain` request carries, as this crate's type. Converted rather
+/// than clamped: an epoch outside `u32` is a malformed rung.
+fn chain_links(payload: &Value) -> Result<Vec<vti_rooms::wire::EpochLink>, String> {
+    let Some(links) = payload.get("links") else {
+        return Ok(Vec::new());
+    };
+    serde_json::from_value::<Vec<vti_rooms::wire::EpochLink>>(links.clone())
+        .map_err(|_| "an epoch link names an epoch outside the representable range".to_string())
+}
+
+/// `rooms/keys/chain`, at either version.
+///
+/// 0.2's request is read against its **schema**, not through the generated type: the
+/// generated `Payload` is an untagged enum of "links" or "epochFloor" that, with
+/// `deny_unknown_fields`, cannot hold the request the specification requires most often —
+/// rungs **and** the floor they came with.
+async fn chain_at(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+    v2: bool,
+) -> TrustTaskOutcome {
     if let Err(r) = super::helpers::require_capability(
         state,
         auth,
@@ -574,34 +611,39 @@ pub(super) async fn handle_chain(
         return r;
     }
 
-    let req: trust_tasks_rs::specs::rooms::keys::chain::v0_1::Payload = match parse_payload(&doc) {
-        Ok(r) => r,
-        Err(resp) => return resp,
+    let (room_id, relayed_floor) = if v2 {
+        use trust_tasks_rs::validate::ValidatedPayload as _;
+        if let Err(e) =
+            trust_tasks_rs::specs::rooms::keys::chain::v0_2::Payload::validate_value(&doc.payload)
+        {
+            return super::helpers::malformed_request_response(format!(
+                "payload refused by its schema: {}",
+                e.messages().join("; ")
+            ));
+        }
+        (
+            doc.payload["roomId"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string(),
+            doc.payload
+                .get("epochFloor")
+                .and_then(Value::as_u64)
+                .map(|f| u32::try_from(f).unwrap_or(u32::MAX)),
+        )
+    } else {
+        match parse_payload::<trust_tasks_rs::specs::rooms::keys::chain::v0_1::Payload>(&doc) {
+            Ok(r) => (r.room_id.to_string(), None),
+            Err(resp) => return resp,
+        }
     };
-
     // Converted rather than clamped: an epoch outside `u32` is a malformed rung, and
     // saturating it to `u32::MAX` would store one under an epoch nobody will ever ask for —
     // a delivery that reports success and extends nothing.
-    let links: Result<Vec<vti_rooms::wire::EpochLink>, _> = req
-        .links
-        .iter()
-        .map(|l| {
-            u32::try_from(l.epoch).map(|epoch| vti_rooms::wire::EpochLink {
-                epoch,
-                wrapped: l.wrapped.clone(),
-                nonce: l.nonce.clone(),
-            })
-        })
-        .collect();
-    let links = match links {
+    let links = match chain_links(&doc.payload) {
         Ok(l) => l,
-        Err(_) => {
-            return app_error_to_reject(
-                &doc,
-                vti_common::error::AppError::Validation(
-                    "an epoch link names an epoch outside the representable range".into(),
-                ),
-            );
+        Err(reason) => {
+            return app_error_to_reject(&doc, vti_common::error::AppError::Validation(reason));
         }
     };
 
@@ -609,26 +651,46 @@ pub(super) async fn handle_chain(
         Ok(n) => n,
         Err(resp) => return resp,
     };
-    let member =
-        match room_member::require_acting_as(state, auth, &req.room_id, named.as_deref()).await {
-            Ok(m) => m,
-            Err(e) => return app_error_to_reject(&doc, e),
-        };
+    let member = match room_member::require_acting_as(state, auth, &room_id, named.as_deref()).await
+    {
+        Ok(m) => m,
+        Err(e) => return app_error_to_reject(&doc, e),
+    };
+    // The floor first (item 2: before answering, and before any rung is stored), and at 0.1
+    // too: a 0.1 delivery is exactly how a rung the room has forgotten would come back.
+    // With no group, `store_links` refuses as before: never keep a floor for a room this key
+    // holder holds nothing for.
+    if let Some(floor) = relayed_floor
+        && room_groups::load(&state.room_groups_ks, &member)
+            .await
+            .ok()
+            .flatten()
+            .is_some()
+        && let Err(e) =
+            room_groups::apply_epoch_floor(&state.room_groups_ks, &member, floor, now()).await
+    {
+        return app_error_to_reject(&doc, e);
+    }
     let (earliest, stored) =
         match room_groups::store_links(&state.room_groups_ks, &member, links, now()).await {
             Ok(r) => r,
             Err(e) => return app_error_to_reject(&doc, e),
         };
 
-    record(state, "rooms.keys.chain", auth, &req.room_id).await;
-    success_response(
-        &doc,
-        serde_json::json!({
-            "roomId": req.room_id,
-            "earliestReadableEpoch": earliest,
-            "stored": stored,
-        }),
-    )
+    record(state, "rooms.keys.chain", auth, &room_id).await;
+    let mut body = serde_json::json!({
+        "roomId": room_id,
+        "earliestReadableEpoch": earliest,
+        "stored": stored,
+    });
+    if v2 {
+        match room_groups::epoch_floor(&state.room_groups_ks, &member).await {
+            Ok(0) => {}
+            Ok(held) => body["epochFloor"] = serde_json::json!(held),
+            Err(e) => return app_error_to_reject(&doc, e),
+        }
+    }
+    success_response(&doc, body)
 }
 
 /// Everything the gated signer needs, gathered from the running service.
@@ -670,6 +732,28 @@ pub(super) async fn handle_backfill(
     auth: &AuthClaims,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
+    backfill_at(state, auth, doc, false).await
+}
+
+/// `rooms/keys/backfill/0.2`: 0.1, fetched with `rooms/epoch/chain/0.2` where the host
+/// serves it, and the floor that carries applied before answering and reported
+/// (`EpochFloor`; trust-tasks-tf #869). At 0.1 the floor is applied all the same — keeping
+/// a rung the room forgot is never right — and only not reported.
+pub(super) async fn handle_backfill_v0_2(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    backfill_at(state, auth, doc, true).await
+}
+
+/// `rooms/keys/backfill`, at either version.
+async fn backfill_at(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+    v2: bool,
+) -> TrustTaskOutcome {
     if let Err(r) = super::helpers::require_capability(
         state,
         auth,
@@ -682,10 +766,27 @@ pub(super) async fn handle_backfill(
         return r;
     }
 
-    let req: trust_tasks_rs::specs::rooms::keys::backfill::v0_1::Payload = match parse_payload(&doc)
-    {
-        Ok(r) => r,
-        Err(resp) => return resp,
+    let req: trust_tasks_rs::specs::rooms::keys::backfill::v0_1::Payload = if v2 {
+        // 0.2's request is 0.1's; parsed as 0.2 to hold it to its own schema, then read as
+        // 0.1's members.
+        match parse_payload::<trust_tasks_rs::specs::rooms::keys::backfill::v0_2::Payload>(&doc)
+            .and_then(|_| {
+                let mut v0_1 = doc.payload.clone();
+                if let Some(o) = v0_1.as_object_mut() {
+                    o.remove("ext");
+                }
+                serde_json::from_value(v0_1).map_err(|e| {
+                    super::helpers::malformed_request_response(format!("payload parse: {e}"))
+                })
+            }) {
+            Ok(r) => r,
+            Err(resp) => return resp,
+        }
+    } else {
+        match parse_payload(&doc) {
+            Ok(r) => r,
+            Err(resp) => return resp,
+        }
     };
 
     let resolver = match outbound_resolver(state, &doc) {
@@ -712,25 +813,46 @@ pub(super) async fn handle_backfill(
         Err(e) => return app_error_to_reject(&doc, e),
     };
 
+    // Item 5: never ask for rungs below the floor already held — they would be discarded.
+    let held_floor = room_groups::epoch_floor(&state.room_groups_ks, &member.member)
+        .await
+        .unwrap_or(0);
     let mut payload = serde_json::json!({ "roomId": req.room_id });
     if let Some(from) = req.from_epoch {
-        payload["fromEpoch"] = serde_json::json!(u64::from(from));
+        payload["fromEpoch"] = serde_json::json!(u64::from(from).max(u64::from(held_floor) + 1));
     }
     if let Some(limit) = req.limit {
         payload["limit"] = serde_json::json!(u64::from(limit));
     }
 
-    let reply = match send_as_member_typed(
+    // Item 1: fetch with `rooms/epoch/chain/0.2` — the version carrying the floor — and fall
+    // back to 0.1 only for a host that does not serve it.
+    let fetched_v2 = send_as_member_typed(
         state,
         auth,
         &member,
         &resolver,
         &req.host,
-        vti_rooms::wire::ROOMS_EPOCH_CHAIN_TYPE,
-        payload,
+        vti_rooms::wire::ROOMS_EPOCH_CHAIN_V2_TYPE,
+        payload.clone(),
     )
-    .await
-    {
+    .await;
+    let fetched = match fetched_v2 {
+        Err(e) if not_served(&e) => {
+            send_as_member_typed(
+                state,
+                auth,
+                &member,
+                &resolver,
+                &req.host,
+                vti_rooms::wire::ROOMS_EPOCH_CHAIN_TYPE,
+                payload,
+            )
+            .await
+        }
+        other => other,
+    };
+    let reply = match fetched {
         Ok(v) => v,
         Err(e) => {
             use trust_tasks_rs::specs::rooms::keys::backfill::v0_1::error_codes as codes;
@@ -744,6 +866,19 @@ pub(super) async fn handle_backfill(
         }
     };
     let member = member.member;
+
+    // Item 2: a floor the host served, applied before anything is stored or answered.
+    if let Some(floor) = reply.get("epochFloor").and_then(Value::as_u64)
+        && let Err(e) = room_groups::apply_epoch_floor(
+            &state.room_groups_ks,
+            &member,
+            u32::try_from(floor).unwrap_or(u32::MAX),
+            now(),
+        )
+        .await
+    {
+        return app_error_to_reject(&doc, e);
+    }
 
     let links: Vec<vti_rooms::wire::EpochLink> =
         match serde_json::from_value(reply.get("links").cloned().unwrap_or(Value::Array(vec![]))) {
@@ -771,15 +906,20 @@ pub(super) async fn handle_backfill(
         };
 
     record(state, "rooms.keys.backfill", auth, &req.room_id).await;
-    success_response(
-        &doc,
-        serde_json::json!({
-            "roomId": req.room_id,
-            "earliestReadableEpoch": earliest,
-            "fetched": fetched,
-            "stored": stored,
-        }),
-    )
+    let mut body = serde_json::json!({
+        "roomId": req.room_id,
+        "earliestReadableEpoch": earliest,
+        "fetched": fetched,
+        "stored": stored,
+    });
+    if v2 {
+        match room_groups::epoch_floor(&state.room_groups_ks, &member).await {
+            Ok(0) => {}
+            Ok(held) => body["epochFloor"] = serde_json::json!(held),
+            Err(e) => return app_error_to_reject(&doc, e),
+        }
+    }
+    success_response(&doc, body)
 }
 
 /// The member a presentation-bearing task acts as, and the presentation it carries.
@@ -1402,7 +1542,7 @@ struct BrowseRequest {
 
 /// Whether a host's refusal says it does not serve the task asked — the signal to fall
 /// back from `rooms/records/list/0.3` to `0.1` for a host that predates it.
-fn not_served(e: &MemberSendError) -> bool {
+pub(super) fn not_served(e: &MemberSendError) -> bool {
     matches!(
         e,
         MemberSendError::Host(crate::operations::room_host::RoomTaskError::Refused { code, .. })
@@ -1435,25 +1575,25 @@ async fn browse_at(
     }
 
     let parsed = if v2 {
-        parse_payload::<trust_tasks_rs::specs::rooms::keys::browse::v0_2::Payload>(&doc).map(
-            |r| BrowseRequest {
+        parse_payload::<trust_tasks_rs::specs::rooms::keys::browse::v0_2::Payload>(&doc).map(|r| {
+            BrowseRequest {
                 room_id: r.room_id.to_string(),
                 host: r.host.to_string(),
                 prefix: r.prefix.map(|p| p.to_string()),
                 since_version: r.since_version,
-                limit: r.limit.map(|l| u64::from(l)),
-            },
-        )
+                limit: r.limit.map(u64::from),
+            }
+        })
     } else {
-        parse_payload::<trust_tasks_rs::specs::rooms::keys::browse::v0_1::Payload>(&doc).map(
-            |r| BrowseRequest {
+        parse_payload::<trust_tasks_rs::specs::rooms::keys::browse::v0_1::Payload>(&doc).map(|r| {
+            BrowseRequest {
                 room_id: r.room_id.to_string(),
                 host: r.host.to_string(),
                 prefix: r.prefix.map(|p| p.to_string()),
                 since_version: r.since_version,
-                limit: r.limit.map(|l| u64::from(l)),
-            },
-        )
+                limit: r.limit.map(u64::from),
+            }
+        })
     };
     let mut req = match parsed {
         Ok(r) => r,

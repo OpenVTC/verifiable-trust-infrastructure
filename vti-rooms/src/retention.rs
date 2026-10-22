@@ -175,6 +175,8 @@ pub struct EpochKeyChain {
     anchor_epoch: u32,
     links: BTreeMap<u32, EpochLink>,
     resolved: BTreeMap<u32, StorageKey>,
+    /// The room's epoch floor, once learnt ([`Self::apply_floor`]); `0` for none.
+    floor: u32,
 }
 
 impl EpochKeyChain {
@@ -189,7 +191,33 @@ impl EpochKeyChain {
             anchor_epoch: 0,
             links: BTreeMap::new(),
             resolved: BTreeMap::new(),
+            floor: 0,
         }
+    }
+
+    /// Apply the room's **epoch floor** `floor` (`rooms/_shared/0.1` `EpochFloor`;
+    /// trust-tasks-tf #869): the earliest epoch whose key the room still lets anybody derive.
+    ///
+    /// Discards every rung numbered `floor` or below — rung `floor` would yield epoch
+    /// `floor - 1` — and every key resolved for an epoch below `floor`, including keys walked
+    /// out in passing; from then on refuses to store such a rung ([`Self::add_links`]) or to
+    /// derive such a key ([`Self::key_for`] answers `EpochUnreachable`, never below the
+    /// floor). **Monotonic**: a lower floor than the one held changes nothing.
+    ///
+    /// Returns whether the floor rose.
+    pub fn apply_floor(&mut self, floor: u32) -> bool {
+        if floor <= self.floor {
+            return false;
+        }
+        self.floor = floor;
+        self.links.retain(|epoch, _| *epoch > floor);
+        self.resolved.retain(|epoch, _| *epoch >= floor);
+        true
+    }
+
+    /// The epoch floor this chain holds, `0` when it has learnt none.
+    pub fn floor(&self) -> u32 {
+        self.floor
     }
 
     /// Set the epoch this chain resolves *from*, and the key for it.
@@ -206,6 +234,10 @@ impl EpochKeyChain {
     /// and the chain is walked on demand rather than on insert.
     pub fn add_links(&mut self, links: impl IntoIterator<Item = EpochLink>) {
         for link in links {
+            // A rung at or below the floor is forgotten, from whatever source it comes.
+            if link.epoch <= self.floor {
+                continue;
+            }
             self.links.insert(link.epoch, link);
         }
     }
@@ -227,7 +259,7 @@ impl EpochKeyChain {
     /// The earliest epoch this chain can reach.
     pub fn earliest_reachable(&mut self) -> u32 {
         let mut epoch = self.anchor_epoch;
-        while epoch > 1 && self.key_for(epoch - 1).is_ok() {
+        while epoch > 1 && epoch > self.floor && self.key_for(epoch - 1).is_ok() {
             epoch -= 1;
         }
         epoch
@@ -239,6 +271,14 @@ impl EpochKeyChain {
     /// different thing from a record that does not open, and says so: the record is intact
     /// and the key to it has been severed or was never delivered.
     pub fn key_for(&mut self, epoch: u32) -> Result<StorageKey, RoomKeyError> {
+        // Below the floor is answered as a chain that does not reach, whatever is still
+        // held — and nothing is derived there (`EpochFloor` item 3).
+        if epoch < self.floor {
+            return Err(RoomKeyError::EpochUnreachable {
+                sealed: epoch,
+                earliest: self.floor.max(1),
+            });
+        }
         if let Some(key) = self.resolved.get(&epoch) {
             return Ok(*key);
         }
@@ -272,6 +312,8 @@ impl EpochKeyChain {
                 })?;
             let previous = open_link(&self.room_id, link, &key)?;
             cursor -= 1;
+            // `epoch >= floor` here and the walk stops at `epoch`, so nothing below the
+            // floor is ever derived in passing.
             self.resolved.insert(cursor, previous);
         }
 
@@ -395,6 +437,56 @@ mod tests {
             "a severed epoch must be unreachable, and say so as unreachable"
         );
         assert_eq!(chain.earliest_reachable(), 2);
+    }
+
+    /// trust-tasks-tf #869, `EpochFloor`: a floor `F` discards rungs numbered `F` and below
+    /// and every key below `F` — including keys already walked out — refuses to derive
+    /// there (`EpochUnreachable` with an earliest epoch at or above `F`), never stores such
+    /// a rung again from any source, and only rises.
+    #[test]
+    fn a_floor_forgets_below_itself_and_never_takes_it_back() {
+        let keys: Vec<StorageKey> = (1..=5).map(key).collect();
+        let links: Vec<EpochLink> = (2..=5)
+            .map(|e| {
+                seal_link(ROOM, e, &keys[(e - 1) as usize], &keys[(e - 2) as usize]).expect("seal")
+            })
+            .collect();
+        let mut chain = EpochKeyChain::new(ROOM);
+        chain.reanchor(5, keys[4]);
+        chain.add_links(links.clone());
+        // Walk everything first, so keys below the floor are memoised.
+        assert_eq!(chain.key_for(1).expect("walks back"), keys[0]);
+
+        // A prune with `beforeEpoch: 4` → floor 3: rungs 2 and 3 go, rung 4 yields epoch 3.
+        assert!(chain.apply_floor(3));
+        assert_eq!(chain.floor(), 3);
+        assert_eq!(
+            chain.links().iter().map(|l| l.epoch).collect::<Vec<_>>(),
+            [4, 5]
+        );
+        assert_eq!(chain.key_for(3).expect("the floor itself reads"), keys[2]);
+        for below in [1, 2] {
+            assert!(
+                matches!(
+                    chain.key_for(below),
+                    Err(RoomKeyError::EpochUnreachable { earliest, .. }) if earliest >= 3
+                ),
+                "epoch {below} is below the floor, whatever was memoised"
+            );
+        }
+        assert_eq!(chain.earliest_reachable(), 3);
+
+        // A host that has not been pruned serves the rungs back: they are not stored.
+        chain.add_links(links);
+        assert_eq!(
+            chain.links().iter().map(|l| l.epoch).collect::<Vec<_>>(),
+            [4, 5]
+        );
+        assert!(chain.key_for(2).is_err());
+
+        // Monotonic: a lower floor learnt later changes nothing.
+        assert!(!chain.apply_floor(2));
+        assert_eq!(chain.floor(), 3);
     }
 
     /// Behind is not the same as severed, and the error must not say it is.

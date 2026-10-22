@@ -176,6 +176,68 @@ pub async fn prune_chain(
     Ok((dropped, earliest))
 }
 
+/// [`prune_chain`], and the room's **epoch floor** raised to the higher of the floor it held
+/// and `before_epoch − 1` (`rooms/epoch/prune/0.2`, *The floor, and the off-by-one*) —
+/// raised even when no rung is dropped (a gap, a `fromJoin` room), and never lowered.
+/// Every version of the prune raises it: the floor is a property of the room, not of the
+/// request that moved it. Returns `(pruned, earliest_rung, epoch_floor)`.
+///
+/// The floor is written **before** the rungs go, so a prune interrupted between the two
+/// leaves a room that already refuses to serve what it is about to erase.
+pub async fn prune_chain_to_floor(
+    rooms: &KeyspaceHandle,
+    links: &KeyspaceHandle,
+    room_id: &str,
+    before_epoch: u32,
+    now: u64,
+) -> Result<(usize, u32, u32), AppError> {
+    let mut room = get_room(rooms, room_id).await?;
+    let floor = room
+        .epoch_floor
+        .unwrap_or(0)
+        .max(before_epoch.saturating_sub(1))
+        .max(1);
+    room.epoch_floor = Some(floor);
+    room.updated_at = now;
+    rooms.insert(room_key(room_id), &room).await?;
+    let (pruned, earliest) = prune_chain(links, room_id, before_epoch).await?;
+    Ok((pruned, earliest, floor))
+}
+
+/// The rungs a host may serve for `room`: every one it holds numbered **above** the room's
+/// epoch floor (`EpochFloor`: a host never serves a rung at or below it), ascending.
+pub async fn servable_epoch_links(
+    links: &KeyspaceHandle,
+    room: &Room,
+) -> Result<Vec<EpochLink>, AppError> {
+    let floor = room.epoch_floor.unwrap_or(0);
+    Ok(list_epoch_links(links, &room.room_id)
+        .await?
+        .into_iter()
+        .filter(|l| l.epoch > floor)
+        .collect())
+}
+
+/// Store a rung for `room`, refusing one numbered at or below the room's epoch floor
+/// (`EpochFloor`: a host never stores or accepts such a rung) as well as everything
+/// [`put_epoch_link`] refuses.
+pub async fn put_epoch_link_above_floor(
+    links: &KeyspaceHandle,
+    room: &Room,
+    link: &EpochLink,
+) -> Result<(), AppError> {
+    if let Some(floor) = room.epoch_floor
+        && link.epoch <= floor
+    {
+        return Err(AppError::Validation(format!(
+            "room `{}` has forgotten its history below epoch {floor}; it accepts no rung at \
+             or below it",
+            room.room_id
+        )));
+    }
+    put_epoch_link(links, &room.room_id, link).await
+}
+
 /// Prefix for the commits a host relays.
 const COMMITS_PREFIX: &str = "room-commit:";
 
@@ -1068,6 +1130,7 @@ mod tests {
             mirror_of: None,
             record_retention: None,
             last_prune: None,
+            epoch_floor: None,
         }
     }
 
@@ -1993,6 +2056,7 @@ mod tests {
             mirror_of: Some("https://primary.example.org".into()),
             record_retention: None,
             last_prune: None,
+            epoch_floor: None,
             ..room(id, visibility)
         }
     }

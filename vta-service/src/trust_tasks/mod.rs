@@ -2743,10 +2743,15 @@ dispatch_table! {
         [ None Secret false ],
     vta_sdk::trust_tasks::TASK_ROOMS_KEYS_CHAIN_0_1 => room_group::handle_chain
         [ Mutating None false ],
+    // 0.2: and the room's epoch floor, applied — this VTA forgets what it holds below it.
+    vta_sdk::trust_tasks::TASK_ROOMS_KEYS_CHAIN_0_2 => room_group::handle_chain_v0_2
+        [ Mutating None false ],
     // `actsAsSubject`, unlike every other `rooms/keys/*`: this one presents the
     // principal's credentials to a third party as them. The response discloses
     // only how far back the agent can now read.
     vta_sdk::trust_tasks::TASK_ROOMS_KEYS_BACKFILL_0_1 => room_group::handle_backfill
+        [ Mutating Metadata true ],
+    vta_sdk::trust_tasks::TASK_ROOMS_KEYS_BACKFILL_0_2 => room_group::handle_backfill_v0_2
         [ Mutating Metadata true ],
     // Returns a record's plaintext — on a sealed tier, material the room
     // withholds from its own host — after presenting the principal's

@@ -3149,6 +3149,43 @@ fn table() -> Vec<(&'static str, Conformance)> {
             ),
         ),
         (
+            uris::TASK_ROOMS_KEYS_CHAIN_0_2,
+            checked!(
+                specs::rooms::keys::chain::v0_2::Payload,
+                specs::rooms::keys::chain::v0_2::Response,
+                // A floor relayed on its own — the spec's own example.
+                json!({
+                    "roomId": "did:webvh:example.com:rooms:northwind",
+                    "epochFloor": 3
+                }),
+                json!({
+                    "roomId": "did:webvh:example.com:rooms:northwind",
+                    "earliestReadableEpoch": 3,
+                    "stored": 0,
+                    "epochFloor": 3
+                })
+            ),
+        ),
+        (
+            uris::TASK_ROOMS_KEYS_BACKFILL_0_2,
+            checked!(
+                specs::rooms::keys::backfill::v0_2::Payload,
+                specs::rooms::keys::backfill::v0_2::Response,
+                json!({
+                    "roomId": "did:webvh:example.com:rooms:northwind",
+                    "host": "did:webvh:example.com:northwind-community"
+                }),
+                // The history below epoch 3 was pruned, not withheld.
+                json!({
+                    "roomId": "did:webvh:example.com:rooms:northwind",
+                    "earliestReadableEpoch": 3,
+                    "fetched": 3,
+                    "stored": 0,
+                    "epochFloor": 3
+                })
+            ),
+        ),
+        (
             uris::TASK_ROOMS_KEYS_BACKFILL_0_1,
             checked!(
                 specs::rooms::keys::backfill::v0_1::Payload,

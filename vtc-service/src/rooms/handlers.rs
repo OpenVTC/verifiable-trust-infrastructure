@@ -179,6 +179,8 @@ pub(crate) fn dispatcher() -> AsyncDispatcher<RoomCtx, TrustTaskOutcome> {
         .on_async(super::files::handle_info_v2)
         .on_async(super::files::handle_list_records_v3)
         .on_async(super::files::handle_records_prune)
+        .on_async(super::files::handle_epoch_chain_v2)
+        .on_async(super::files::handle_epoch_prune_v2)
         .on_async(super::files::handle_get_record_v2)
         .on_async(super::files::handle_list_records_v2)
         .on_async(super::files::handle_upload_begin)
@@ -477,6 +479,7 @@ pub(super) async fn create_room<P>(
         // As given (create 0.2): never shortened, and `{}` records none.
         record_retention: record_retention.filter(|r| !r.is_empty() || r.ext.is_some()),
         last_prune: None,
+        epoch_floor: None,
     };
 
     if let Err(e) = storage::create_room(&state.rooms_ks, &room).await {
@@ -949,7 +952,8 @@ pub(crate) async fn handle_mint_epoch(
             // safe and a second, different rung impossible.
             if let Some(link) = &req.link
                 && let Err(e) =
-                    storage::put_epoch_link(&state.room_epoch_links_ks, &req.room_id, link).await
+                    storage::put_epoch_link_above_floor(&state.room_epoch_links_ks, &updated, link)
+                        .await
             {
                 return app_error_to_reject(&doc, &e);
             }
@@ -988,13 +992,25 @@ pub(crate) async fn handle_epoch_prune(
     doc: TrustTask<PruneBody>,
     ctx: RoomCtx,
 ) -> TrustTaskOutcome {
+    let req = doc.payload.clone();
+    epoch_prune(&doc, &ctx, &req, false).await
+}
+
+/// Prune the chain: `rooms/epoch/prune` 0.1, or 0.2 (`v2`), which returns the room's epoch
+/// floor. Both raise it to `beforeEpoch − 1` (trust-tasks-tf #869): the floor is the room's,
+/// not the request's.
+pub(super) async fn epoch_prune<P>(
+    doc: &TrustTask<P>,
+    ctx: &RoomCtx,
+    req: &PruneBody,
+    v2: bool,
+) -> TrustTaskOutcome {
     let state = &ctx.state;
     let presenter = ctx.presenter.as_str();
-    let req = &doc.payload;
 
     let room = match storage::get_room(&state.rooms_ks, &req.room_id).await {
         Ok(r) => r,
-        Err(e) => return app_error_to_reject(&doc, &e),
+        Err(e) => return app_error_to_reject(doc, &e),
     };
     let (presenter, verifier) = presenter_and_verifier(state, presenter);
     // `admin`, not `curate`: pruning makes no statement about any record, and
@@ -1012,7 +1028,7 @@ pub(crate) async fn handle_epoch_prune(
     .await
     {
         Ok(a) => a,
-        Err(e) => return app_error_to_reject(&doc, &e),
+        Err(e) => return app_error_to_reject(doc, &e),
     };
     if let Err(o) = charged(&room.room_id, &presenter, RoomTraffic::Operation) {
         return o;
@@ -1024,28 +1040,34 @@ pub(crate) async fn handle_epoch_prune(
     // plausible typo with a consequence nobody would choose.
     // The declared `notAhead`, with the room's current epoch in `details.epoch`.
     if let Some(refusal) = vti_rooms::blob_tasks::prune_floor_refused(&room, req.before_epoch) {
-        return super::files::refused(&doc, refusal);
+        return super::files::refused(doc, refusal);
     }
 
-    let (pruned, earliest_rung) = match storage::prune_chain(
+    let (pruned, earliest_rung, floor) = match storage::prune_chain_to_floor(
+        &state.rooms_ks,
         &state.room_epoch_links_ks,
         &req.room_id,
         req.before_epoch,
+        now(),
     )
     .await
     {
         Ok(r) => r,
-        Err(e) => return app_error_to_reject(&doc, &e),
+        Err(e) => return app_error_to_reject(doc, &e),
     };
 
     audit_room(state, &room, &authorized, RoomOperation::PruneEpoch, None).await;
-    success_response(
-        &doc,
-        PruneResponse {
-            room_id: req.room_id.clone(),
-            pruned: pruned as u32,
-            earliest_rung,
-        },
+    let response = PruneResponse {
+        room_id: req.room_id.clone(),
+        pruned: pruned as u32,
+        earliest_rung,
+    };
+    if !v2 {
+        return success_response(doc, response);
+    }
+    super::files::render(
+        doc,
+        vti_rooms::record_tasks::epoch_prune_v2_response(response, floor),
     )
 }
 
@@ -1132,13 +1154,24 @@ pub(crate) async fn handle_epoch_chain(
     doc: TrustTask<ChainBody>,
     ctx: RoomCtx,
 ) -> TrustTaskOutcome {
+    let req = doc.payload.clone();
+    epoch_chain(&doc, &ctx, &req, false).await
+}
+
+/// Serve the chain: `rooms/epoch/chain` 0.1, or 0.2 (`v2`), which carries the room's epoch
+/// floor. Neither serves a rung at or below it (trust-tasks-tf #869).
+pub(super) async fn epoch_chain<P>(
+    doc: &TrustTask<P>,
+    ctx: &RoomCtx,
+    req: &ChainBody,
+    v2: bool,
+) -> TrustTaskOutcome {
     let state = &ctx.state;
     let presenter = ctx.presenter.as_str();
-    let req = &doc.payload;
 
     let room = match storage::get_room(&state.rooms_ks, &req.room_id).await {
         Ok(r) => r,
-        Err(e) => return app_error_to_reject(&doc, &e),
+        Err(e) => return app_error_to_reject(doc, &e),
     };
     let (presenter, verifier) = presenter_and_verifier(state, presenter);
     let authorized = match authz::authorize(
@@ -1153,16 +1186,15 @@ pub(crate) async fn handle_epoch_chain(
     .await
     {
         Ok(a) => a,
-        Err(e) => return app_error_to_reject(&doc, &e),
+        Err(e) => return app_error_to_reject(doc, &e),
     };
     if let Err(o) = charged(&room.room_id, &presenter, RoomTraffic::Operation) {
         return o;
     }
 
-    let mut links = match storage::list_epoch_links(&state.room_epoch_links_ks, &req.room_id).await
-    {
+    let mut links = match storage::servable_epoch_links(&state.room_epoch_links_ks, &room).await {
         Ok(l) => l,
-        Err(e) => return app_error_to_reject(&doc, &e),
+        Err(e) => return app_error_to_reject(doc, &e),
     };
 
     // Highest epoch first: the chain is walked downwards, so a member reads it in the order
@@ -1176,12 +1208,16 @@ pub(crate) async fn handle_epoch_chain(
     }
 
     audit_room(state, &room, &authorized, RoomOperation::ListRecords, None).await;
-    success_response(
-        &doc,
-        ChainResponse {
-            room_id: req.room_id.clone(),
-            links,
-        },
+    let response = ChainResponse {
+        room_id: req.room_id.clone(),
+        links,
+    };
+    if !v2 {
+        return success_response(doc, response);
+    }
+    super::files::render(
+        doc,
+        vti_rooms::record_tasks::epoch_chain_v2_response(response, &room),
     )
 }
 
@@ -3264,6 +3300,8 @@ mod tests {
         let state = &tv.state;
         let f = RoomFixture::new(Visibility::Open).await;
         let retention = json!({ "tombstoneDays": 30, "recordDays": 365 });
+        // The community's own policy and member row, as `create` sets them up.
+        seed_creator(state, &f).await;
         let out = send(
             state,
             vti_rooms::wire::ROOMS_CREATE_V2_TYPE,
@@ -3293,9 +3331,16 @@ mod tests {
                     author: None,
                     updated_at: 0,
                 };
-                storage::put_record(&state.rooms_ks, &state.room_records_ks, &room_id, record, None, at)
-                    .await
-                    .unwrap();
+                storage::put_record(
+                    &state.rooms_ks,
+                    &state.room_records_ks,
+                    &room_id,
+                    record,
+                    None,
+                    at,
+                )
+                .await
+                .unwrap();
                 if retract {
                     storage::curate_record(
                         &state.rooms_ks,
@@ -3323,15 +3368,33 @@ mod tests {
                     "kinds": ["retracted", "aged"], "reason": "the agreed retention",
                     "dryRun": dry })
         };
-        let out = send(state, vti_rooms::wire::ROOMS_RECORDS_PRUNE_TYPE, prune(true), &f).await;
+        let out = send(
+            state,
+            vti_rooms::wire::ROOMS_RECORDS_PRUNE_TYPE,
+            prune(true),
+            &f,
+        )
+        .await;
         assert_eq!(payload_of(&out)["removed"], 2, "{}", payload_of(&out));
-        let out = send(state, vti_rooms::wire::ROOMS_RECORDS_PRUNE_TYPE, prune(false), &f).await;
+        let out = send(
+            state,
+            vti_rooms::wire::ROOMS_RECORDS_PRUNE_TYPE,
+            prune(false),
+            &f,
+        )
+        .await;
         let done = payload_of(&out);
         assert_eq!(done["removed"], 2, "{done}");
         let mark = done["prune"].clone();
 
         let read = json!({ "roomId": f.room.room_id, "presentation": f.as_owner() });
-        let out = send(state, vti_rooms::wire::ROOMS_RECORDS_LIST_V3_TYPE, read.clone(), &f).await;
+        let out = send(
+            state,
+            vti_rooms::wire::ROOMS_RECORDS_LIST_V3_TYPE,
+            read.clone(),
+            &f,
+        )
+        .await;
         let listing = payload_of(&out);
         assert_eq!(listing["records"].as_array().unwrap().len(), 2, "{listing}");
         assert_eq!(listing["lastPrune"], mark);
@@ -3355,6 +3418,67 @@ mod tests {
             "rooms/records/retention/set:retentionConflict",
             "{}",
             payload_of(&out)
+        );
+    }
+
+    /// `rooms/epoch/prune/0.2` and `rooms/epoch/chain/0.2` on the VTC's host, as on
+    /// room-host (trust-tasks-tf #869): the floor is kept, returned and served, and no rung
+    /// at or below it is served at either version.
+    #[tokio::test]
+    async fn the_epoch_floor_is_kept_and_served_as_on_room_host() {
+        let tv = build_test_vtc().await;
+        let state = &tv.state;
+        let f = RoomFixture::new(Visibility::Open).await;
+        assert!(create(state, &f).await.status.is_success());
+        for epoch in 2..=4u32 {
+            let out = send(
+                state,
+                vti_rooms::wire::ROOMS_EPOCH_MINT_TYPE,
+                json!({ "roomId": f.room.room_id, "epoch": epoch, "presentation": f.as_owner(),
+                        "link": { "epoch": epoch, "wrapped": format!("d3JhcHBlZA{epoch}"),
+                                  "nonce": "bm9uY2U" } }),
+                &f,
+            )
+            .await;
+            assert!(
+                out.status.is_success(),
+                "mint {epoch}: {}",
+                payload_of(&out)
+            );
+        }
+        let out = send(
+            state,
+            vti_rooms::wire::ROOMS_EPOCH_PRUNE_V2_TYPE,
+            json!({ "roomId": f.room.room_id, "beforeEpoch": 3, "presentation": f.as_owner(),
+                    "reason": "the agreed window" }),
+            &f,
+        )
+        .await;
+        let pruned = payload_of(&out);
+        assert_eq!(pruned["epochFloor"], 2, "{pruned}");
+        assert_eq!(pruned["earliestRung"], 3);
+
+        let read = json!({ "roomId": f.room.room_id, "presentation": f.as_owner() });
+        let out = send(
+            state,
+            vti_rooms::wire::ROOMS_EPOCH_CHAIN_V2_TYPE,
+            read.clone(),
+            &f,
+        )
+        .await;
+        let chain = payload_of(&out);
+        assert_eq!(chain["epochFloor"], 2, "{chain}");
+        let epochs: Vec<u64> = chain["links"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|l| l["epoch"].as_u64().unwrap())
+            .collect();
+        assert_eq!(epochs, [4, 3]);
+        let out = send(state, vti_rooms::wire::ROOMS_EPOCH_CHAIN_TYPE, read, &f).await;
+        assert!(
+            payload_of(&out).get("epochFloor").is_none(),
+            "0.1 is unchanged"
         );
     }
 }

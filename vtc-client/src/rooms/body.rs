@@ -420,10 +420,7 @@ mod tests {
         // What the schema refuses is refused before anything is signed.
         let mut bad = SealedRecordBody::new(at("k1", 3), &did);
         bad.confidence = Some(serde_json::json!(1.5));
-        assert!(matches!(
-            bad.sign(&key).await,
-            Err(BodyError::Malformed(_))
-        ));
+        assert!(matches!(bad.sign(&key).await, Err(BodyError::Malformed(_))));
     }
 
     #[tokio::test]

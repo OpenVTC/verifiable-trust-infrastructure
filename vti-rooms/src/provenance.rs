@@ -226,7 +226,10 @@ mod tests {
             (json!({ "confidence": 1.5 }), "confidence"),
             (json!({ "confidence": -0.1 }), "confidence"),
             (json!({ "evidence": [] }), "evidence"),
-            (json!({ "evidence": [{ "kind": "url", "href": "x" }] }), "evidence"),
+            (
+                json!({ "evidence": [{ "kind": "url", "href": "x" }] }),
+                "evidence",
+            ),
             (json!({ "validFor": {} }), "validFor"),
             (
                 json!({ "validFor": { "purposes": ["a:b", "a:b"] } }),

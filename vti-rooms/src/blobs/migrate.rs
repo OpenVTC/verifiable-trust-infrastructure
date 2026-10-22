@@ -1733,6 +1733,7 @@ mod tests {
             mirror_of: None,
             record_retention: None,
             last_prune: None,
+            epoch_floor: None,
         }
     }
 

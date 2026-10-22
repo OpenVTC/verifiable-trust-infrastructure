@@ -110,6 +110,7 @@ impl RecordRetention {
 /// What a prune removes (`rooms/records/prune/0.1` `kinds`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
+#[non_exhaustive]
 pub enum PruneKind {
     /// Retracted records' tombstones older than `tombstoneDays`.
     Retracted,
@@ -215,14 +216,29 @@ mod tests {
     fn a_tombstone_is_eligible_only_once_older_than_its_days() {
         let r = retention(Some(30), None);
         let k = [PruneKind::Retracted];
-        assert!(!is_eligible(&record(RecordStatus::Retracted, false, 30), &r, &k, NOW));
+        assert!(!is_eligible(
+            &record(RecordStatus::Retracted, false, 30),
+            &r,
+            &k,
+            NOW
+        ));
         let mut just_over = record(RecordStatus::Retracted, false, 30);
         just_over.updated_at -= 1;
         assert!(is_eligible(&just_over, &r, &k, NOW));
         // Active records are never tombstones.
-        assert!(!is_eligible(&record(RecordStatus::Active, false, 99), &r, &k, NOW));
+        assert!(!is_eligible(
+            &record(RecordStatus::Active, false, 99),
+            &r,
+            &k,
+            NOW
+        ));
         // A pinned tombstone still goes as a tombstone.
-        assert!(is_eligible(&record(RecordStatus::Retracted, true, 31), &r, &k, NOW));
+        assert!(is_eligible(
+            &record(RecordStatus::Retracted, true, 31),
+            &r,
+            &k,
+            NOW
+        ));
     }
 
     /// `aged` takes any standing but never a pinned record.
@@ -250,7 +266,12 @@ mod tests {
         for k in [[PruneKind::Retracted], [PruneKind::Aged]] {
             assert!(!is_eligible(&old, &none, &k, NOW));
         }
-        assert!(!is_eligible(&old, &retention(Some(1), None), &[PruneKind::Aged], NOW));
+        assert!(!is_eligible(
+            &old,
+            &retention(Some(1), None),
+            &[PruneKind::Aged],
+            NOW
+        ));
         // A retracted record past `recordDays` is eligible as `aged`, never as `retracted`
         // when no `tombstoneDays` is stated.
         assert!(!is_eligible(
@@ -269,13 +290,19 @@ mod tests {
 
     #[test]
     fn the_wire_form_is_the_schemas() {
-        let r = RecordRetention::from_wire(&json!({ "tombstoneDays": 30, "recordDays": 730 }))
-            .unwrap();
-        assert_eq!(r.to_wire(), json!({ "tombstoneDays": 30, "recordDays": 730 }));
+        let r =
+            RecordRetention::from_wire(&json!({ "tombstoneDays": 30, "recordDays": 730 })).unwrap();
+        assert_eq!(
+            r.to_wire(),
+            json!({ "tombstoneDays": 30, "recordDays": 730 })
+        );
         assert!(RecordRetention::from_wire(&json!({ "tombstoneDays": 0 })).is_err());
         assert!(RecordRetention::from_wire(&json!({ "recordDays": 36_501 })).is_err());
         assert!(RecordRetention::from_wire(&json!({ "days": 3 })).is_err());
-        assert!(RecordRetention::same_as(None, Some(&RecordRetention::default())));
+        assert!(RecordRetention::same_as(
+            None,
+            Some(&RecordRetention::default())
+        ));
         let mark = RecordPrune {
             version: 413,
             at: 0,

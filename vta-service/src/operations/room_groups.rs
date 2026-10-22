@@ -111,6 +111,12 @@ const ROOTS: &str = "room-roots";
 /// removal read as a commit somebody had not delivered — whose remedy, applying commits,
 /// can never work.
 const REMOVED: &str = "room-removed";
+/// The room's epoch floor as this member's key holder last learnt it, per member:
+/// `room-epoch-floor/<roomId>/<persona>` (`rooms/_shared/0.1` `EpochFloor`; trust-tasks-tf
+/// #869). Kept apart from the group row so it outlives whatever the group row is rewritten
+/// to, and kept for as long as anything is held for the room (item 4): it is what stops a
+/// rung or key below it being stored or derived again.
+const EPOCH_FLOOR: &str = "room-epoch-floor";
 /// The last admission this owner applied, per owner: `room-admitted/<roomId>/<persona>`.
 ///
 /// `rooms/owner/group/add/0.2` item 8: kept so that a caller who lost the answer and sends
@@ -639,6 +645,11 @@ pub async fn file_key(
             .file_key_for_seal(file_id)
             .map_err(|e| FileKeyError::App(AppError::Internal(e.to_string())));
     };
+    room.apply_epoch_floor(
+        epoch_floor(groups, member)
+            .await
+            .map_err(FileKeyError::App)?,
+    );
     room.add_links(record.links);
     match room.file_key_for_open(file_id, epoch) {
         Ok(key) => Ok((key, epoch)),
@@ -694,6 +705,7 @@ pub async fn profile_location(
             .profile_key_for_seal()
             .map_err(|e| AppError::Internal(e.to_string())),
         Some(epoch) => {
+            room.apply_epoch_floor(epoch_floor(groups, member).await?);
             room.add_links(record.links);
             room.profile_key_for_open(epoch)
                 .map(|key| (key, epoch))
@@ -717,6 +729,7 @@ pub async fn profile_locations(
     let group = RoomGroup::restore(&record.snapshot)
         .map_err(|e| AppError::Internal(format!("restore the group: {e}")))?;
     let mut room = SealedRoom::new(room_id, group);
+    room.apply_epoch_floor(epoch_floor(groups, member).await?);
     room.add_links(record.links);
     let current = room.room_epoch();
     let earliest = room
@@ -786,6 +799,7 @@ pub async fn held_room(groups: &KeyspaceHandle, member: &Member) -> Result<HeldR
     let group = RoomGroup::restore(&record.snapshot)
         .map_err(|e| AppError::Internal(format!("restore the group for `{room_id}`: {e}")))?;
     let mut room = SealedRoom::new(room_id, group);
+    room.apply_epoch_floor(epoch_floor(groups, member).await?);
     room.add_links(record.links);
 
     let epoch = room.room_epoch();
@@ -841,10 +855,17 @@ pub async fn store_links(
         .await?
         .ok_or_else(|| no_group(member))?;
 
-    let mut links = record.links;
+    // A rung at or below the floor is forgotten, whoever sends it — a member relaying a
+    // mirror that has not been pruned — and is neither kept nor counted, nor refused.
+    let floor = epoch_floor(groups, member).await?;
+    let mut links: Vec<EpochLink> = record
+        .links
+        .into_iter()
+        .filter(|l| l.epoch > floor)
+        .collect();
     let mut stored = 0;
     for link in incoming {
-        if !links.iter().any(|held| held.epoch == link.epoch) {
+        if link.epoch > floor && !links.iter().any(|held| held.epoch == link.epoch) {
             links.push(link);
             stored += 1;
         }
@@ -854,6 +875,7 @@ pub async fn store_links(
     let group = RoomGroup::restore(&record.snapshot)
         .map_err(|e| AppError::Internal(format!("restore the group: {e}")))?;
     let mut room = SealedRoom::new(room_id, group);
+    room.apply_epoch_floor(floor);
     room.add_links(links.clone());
     let earliest = room
         .earliest_readable_epoch()
@@ -1032,6 +1054,7 @@ pub async fn open_record_at(
     // the error says which — an unreachable epoch is history that was severed or never
     // delivered, not a record that failed to decrypt.
     let mut room = SealedRoom::new(room_id, group);
+    room.apply_epoch_floor(epoch_floor(groups, member).await?);
     room.add_links(record.links);
     let sealed = vti_rooms::wire::SealedContent {
         ciphertext: ciphertext.to_string(),
@@ -1062,6 +1085,62 @@ pub async fn open_record_at(
         }
     }
     Err(refuse(first))
+}
+
+/// The room's epoch floor this key holder holds for `member`, `0` when it has learnt none.
+pub async fn epoch_floor(groups: &KeyspaceHandle, member: &Member) -> Result<u32, AppError> {
+    let floor: Option<u32> = groups.get(member.key(EPOCH_FLOOR)).await.map_err(|e| {
+        AppError::Internal(format!(
+            "read the epoch floor for `{}`: {e}",
+            member.room_id()
+        ))
+    })?;
+    Ok(floor.unwrap_or(0))
+}
+
+/// Apply a room's epoch floor learnt from any source — a host's `rooms/epoch/chain/0.2`,
+/// the principal's `rooms/keys/chain/0.2`, a backfill — as `EpochFloor` requires, and
+/// return the floor now held.
+///
+/// On a floor above the one held, **before returning**: keeps the higher floor (it never
+/// falls), and rewrites the group row without every rung numbered at or below it. This key
+/// holder keeps no derived storage, file or profile key between requests — each is walked
+/// out of the chain on use — so the rungs are what there is to discard; from now on
+/// [`store_links`] never stores one at or below the floor and every open, file key and
+/// profile location refuses below it (`beyondChain`, an earliest epoch at or above the
+/// floor), whatever it still holds. A lower or equal floor changes nothing.
+pub async fn apply_epoch_floor(
+    groups: &KeyspaceHandle,
+    member: &Member,
+    floor: u32,
+    now: u64,
+) -> Result<u32, AppError> {
+    let held = epoch_floor(groups, member).await?;
+    if floor <= held {
+        return Ok(held);
+    }
+    // The floor first: a process that dies before the rungs go still refuses below it, and
+    // the next application finds the same floor and discards them.
+    groups
+        .insert(member.key(EPOCH_FLOOR), &floor)
+        .await
+        .map_err(|e| {
+            AppError::Internal(format!(
+                "keep the epoch floor for `{}`: {e}",
+                member.room_id()
+            ))
+        })?;
+    if let Some(record) = load(groups, member).await? {
+        let group = RoomGroup::restore(&record.snapshot)
+            .map_err(|e| AppError::Internal(format!("restore the group: {e}")))?;
+        let kept: Vec<EpochLink> = record
+            .links
+            .into_iter()
+            .filter(|l| l.epoch > floor)
+            .collect();
+        store(groups, member, &group, kept, now).await?;
+    }
+    Ok(floor)
 }
 
 /// The first room epoch `member` cannot open because a commit removed them, if one did.
@@ -1396,6 +1475,11 @@ pub async fn prepare_add(
         return Err(PrepareAddError::AlreadyMember);
     }
     let mut room = SealedRoom::new(room_id, group);
+    room.apply_epoch_floor(
+        epoch_floor(groups, owner)
+            .await
+            .map_err(PrepareAddError::App)?,
+    );
     room.add_links(record.links);
 
     let (change, link) = room
@@ -1482,6 +1566,11 @@ pub async fn prepare_remove(
     })?;
     let leaf = group.leaf_of(member).ok_or(PrepareRemoveError::NotMember)?;
     let mut room = SealedRoom::new(room_id, group);
+    room.apply_epoch_floor(
+        epoch_floor(groups, owner)
+            .await
+            .map_err(PrepareRemoveError::App)?,
+    );
     room.add_links(record.links);
 
     // Item 2: the commit and the link that seals the outgoing epoch's key under the
@@ -1531,6 +1620,7 @@ pub async fn prepare_renew(
     let group = RoomGroup::restore(&record.snapshot)
         .map_err(|e| AppError::Internal(format!("restore the group: {e}")))?;
     let mut room = SealedRoom::new(owner.room_id(), group);
+    room.apply_epoch_floor(epoch_floor(groups, owner).await?);
     room.add_links(record.links);
 
     // Item 2 (and item 7): an update of the committer's own leaf, carrying no proposal
@@ -2911,5 +3001,99 @@ mod removal_tests {
             .unwrap(),
             b"before"
         );
+    }
+}
+
+#[cfg(test)]
+mod epoch_floor_tests {
+    //! `rooms/_shared/0.1` `EpochFloor` at a member's key holder (trust-tasks-tf #869): on
+    //! learning a floor it discards every rung at or below it, refuses to derive below it,
+    //! never stores such a rung again, and keeps the floor — which only rises.
+    use super::*;
+    use vti_common::config::StoreConfig;
+    use vti_common::store::Store;
+
+    const ROOM: &str = "did:webvh:example.com:rooms:northwind";
+
+    fn member() -> Member {
+        Member::new(ROOM, "did:key:zAlice").unwrap()
+    }
+
+    /// A room this VTA holds at epoch 4, with every rung back to 1.
+    async fn held() -> (tempfile::TempDir, KeyspaceHandle, Vec<EpochLink>) {
+        let dir = tempfile::tempdir().unwrap();
+        let store_ = Store::open(&StoreConfig {
+            data_dir: dir.path().to_path_buf(),
+        })
+        .unwrap();
+        let ks = store_.keyspace(crate::keyspaces::ROOM_GROUPS).unwrap();
+        let mut room = SealedRoom::new(ROOM, RoomGroup::create("did:key:zAlice").unwrap());
+        for joiner in ["did:key:zBob", "did:key:zCarol", "did:key:zDave"] {
+            let (_s, kp) = IdentitySnapshot::mint(joiner).unwrap();
+            room.add_member(&kp).unwrap();
+        }
+        assert_eq!(room.room_epoch(), 4);
+        let links = room.links();
+        store(&ks, &member(), room.group(), links.clone(), 0)
+            .await
+            .unwrap();
+        (dir, ks, links)
+    }
+
+    #[tokio::test]
+    async fn a_learnt_floor_forgets_below_itself_and_keeps_out_what_comes_back() {
+        let (_d, ks, links) = held().await;
+        let id = [7u8; 32];
+        assert!(
+            file_key(&ks, &member(), &id, Some(1)).await.is_ok(),
+            "before the floor"
+        );
+        assert_eq!(
+            held_room(&ks, &member())
+                .await
+                .unwrap()
+                .earliest_readable_epoch,
+            1
+        );
+
+        // A prune with `beforeEpoch: 4` → floor 3.
+        assert_eq!(apply_epoch_floor(&ks, &member(), 3, 1).await.unwrap(), 3);
+        let rungs: Vec<u32> = load(&ks, &member())
+            .await
+            .unwrap()
+            .unwrap()
+            .links
+            .iter()
+            .map(|l| l.epoch)
+            .collect();
+        assert_eq!(rungs, [4], "rungs numbered 3 and below are discarded");
+        for below in [1, 2] {
+            assert!(
+                matches!(
+                    file_key(&ks, &member(), &id, Some(below)).await,
+                    Err(FileKeyError::BeyondChain { earliest, .. }) if earliest >= 3
+                ),
+                "epoch {below} is below the floor"
+            );
+        }
+        assert!(
+            file_key(&ks, &member(), &id, Some(3)).await.is_ok(),
+            "the floor reads"
+        );
+        assert_eq!(
+            held_room(&ks, &member())
+                .await
+                .unwrap()
+                .earliest_readable_epoch,
+            3
+        );
+
+        // A mirror that was not pruned serves the rungs back: none is kept or counted.
+        let (earliest, stored) = store_links(&ks, &member(), links, 2).await.unwrap();
+        assert_eq!((earliest, stored), (3, 0));
+
+        // Monotonic, and kept.
+        assert_eq!(apply_epoch_floor(&ks, &member(), 2, 3).await.unwrap(), 3);
+        assert_eq!(epoch_floor(&ks, &member()).await.unwrap(), 3);
     }
 }

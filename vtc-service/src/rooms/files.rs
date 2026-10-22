@@ -30,15 +30,16 @@ use trust_tasks_rs::specs::rooms::records::{
 };
 use trust_tasks_rs::specs::rooms::usage::v0_1 as rooms_usage;
 use trust_tasks_rs::specs::rooms::{
+    epoch::chain::v0_2 as epoch_chain_v2, epoch::prune::v0_2 as epoch_prune_v2,
     info::v0_2 as info_v2, records::list::v0_3 as list_v3, records::prune::v0_1 as records_prune,
 };
-use vti_rooms::record_tasks;
 use trust_tasks_rs::{RejectReason, TrustTask};
 use vti_common::error::AppError;
 use vti_common::store::Store;
 use vti_rooms::authz::{self, Action, AuthorizedAction};
 use vti_rooms::blob_tasks::{self, Refusal, TaskResult};
 use vti_rooms::blobs::{BlobHost, UploadCaller};
+use vti_rooms::record_tasks;
 use vti_rooms::wire::{AuthorityPresentation, GetRecordBody, ListRecordsBody, PutRecordBody};
 use vti_rooms::{Room, storage};
 
@@ -434,10 +435,7 @@ pub(crate) async fn handle_put_record_v2(
 /// `rooms/records/put/0.3`: 0.2, and an `open` room's `cleartext` may carry the record's
 /// provenance and `validUntil` — stored and served exactly as received, never acted on
 /// (consumer item 11). A sealed write is 0.2's: those members travel inside the body.
-pub(crate) async fn handle_put_record_v3(
-    doc: TrustTask<Value>,
-    ctx: RoomCtx,
-) -> TrustTaskOutcome {
+pub(crate) async fn handle_put_record_v3(doc: TrustTask<Value>, ctx: RoomCtx) -> TrustTaskOutcome {
     let payload = match payload_json(&doc) {
         Ok(p) => p,
         Err(o) => return o,
@@ -446,8 +444,8 @@ pub(crate) async fn handle_put_record_v3(
         Ok(parts) => parts,
         Err(r) => return refused(&doc, r),
     };
-    let req: PutRecordBody =
-        match serde_json::from_value(blob_tasks::put_v3_as_v0_1(payload)).map_err(|e| {
+    let req: PutRecordBody = match serde_json::from_value(blob_tasks::put_v3_as_v0_1(payload))
+        .map_err(|e| {
             reject_with(
                 &doc,
                 RejectReason::MalformedRequest {
@@ -455,9 +453,9 @@ pub(crate) async fn handle_put_record_v3(
                 },
             )
         }) {
-            Ok(r) => r,
-            Err(o) => return o,
-        };
+        Ok(r) => r,
+        Err(o) => return o,
+    };
     super::handlers::put_record(&doc, &ctx, req, blobs, cleartext).await
 }
 
@@ -498,10 +496,7 @@ pub(crate) async fn handle_list_records_v3(
 }
 
 /// `rooms/create/0.2`: 0.1, and the room's record retention, recorded as given.
-pub(crate) async fn handle_create_v2(
-    doc: TrustTask<Value>,
-    ctx: RoomCtx,
-) -> TrustTaskOutcome {
+pub(crate) async fn handle_create_v2(doc: TrustTask<Value>, ctx: RoomCtx) -> TrustTaskOutcome {
     let payload = match payload_json(&doc) {
         Ok(p) => p,
         Err(o) => return o,
@@ -522,6 +517,30 @@ pub(crate) async fn handle_create_v2(
         }
     };
     super::handlers::create_room(&doc, &ctx, &req, retention, true).await
+}
+
+/// `rooms/epoch/chain/0.2`: the 0.1 chain, and the room's epoch floor on every response.
+pub(crate) async fn handle_epoch_chain_v2(
+    doc: TrustTask<epoch_chain_v2::Payload>,
+    ctx: RoomCtx,
+) -> TrustTaskOutcome {
+    let req: vti_rooms::wire::ChainBody = match payload_json(&doc).and_then(|p| as_v0_1(&doc, p)) {
+        Ok(r) => r,
+        Err(o) => return o,
+    };
+    super::handlers::epoch_chain(&doc, &ctx, &req, true).await
+}
+
+/// `rooms/epoch/prune/0.2`: the 0.1 prune, and the room's epoch floor it leaves.
+pub(crate) async fn handle_epoch_prune_v2(
+    doc: TrustTask<epoch_prune_v2::Payload>,
+    ctx: RoomCtx,
+) -> TrustTaskOutcome {
+    let req: vti_rooms::wire::PruneBody = match payload_json(&doc).and_then(|p| as_v0_1(&doc, p)) {
+        Ok(r) => r,
+        Err(o) => return o,
+    };
+    super::handlers::epoch_prune(&doc, &ctx, &req, true).await
 }
 
 /// `rooms/info/0.2`. Needs `read`: 0.1's answer, the record retention in force and the
@@ -588,10 +607,7 @@ pub(crate) async fn handle_records_prune(
 }
 
 /// `rooms/records/retention/set/0.1`: replace the room's record retention. Needs `admin`.
-pub(crate) async fn handle_retention_set(
-    doc: TrustTask<Value>,
-    ctx: RoomCtx,
-) -> TrustTaskOutcome {
+pub(crate) async fn handle_retention_set(doc: TrustTask<Value>, ctx: RoomCtx) -> TrustTaskOutcome {
     let payload = match payload_json(&doc) {
         Ok(p) => p,
         Err(o) => return o,

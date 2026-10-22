@@ -186,6 +186,7 @@ pub const RELAYS_ONWARD: &[&str] = &[
     trust_tasks::TASK_ROOMS_OWNER_GROUP_RENEW_0_1,
     trust_tasks::TASK_ROOMS_OWNER_GROUP_RENEW_0_2,
     trust_tasks::TASK_ROOMS_KEYS_BACKFILL_0_1,
+    trust_tasks::TASK_ROOMS_KEYS_BACKFILL_0_2,
     trust_tasks::TASK_ROOMS_KEYS_READ_0_1,
     trust_tasks::TASK_ROOMS_KEYS_BROWSE_0_1,
     trust_tasks::TASK_ROOMS_KEYS_BROWSE_0_2,

@@ -1824,6 +1824,7 @@ mod tests {
                 mirror_of: None,
                 record_retention: None,
                 last_prune: None,
+                epoch_floor: None,
             },
         )
         .await
@@ -1973,6 +1974,7 @@ mod tests {
                 mirror_of: None,
                 record_retention: None,
                 last_prune: None,
+                epoch_floor: None,
             },
         )
         .await
@@ -2492,7 +2494,9 @@ mod tests {
                             record[k] = v.clone();
                         }
                         record
-                    } else if task == vti_rooms::wire::ROOMS_RECORDS_LIST_TYPE {
+                    } else if task == vti_rooms::wire::ROOMS_RECORDS_LIST_TYPE
+                        || task == vti_rooms::wire::ROOMS_RECORDS_LIST_V3_TYPE
+                    {
                         json!({ "records": [] })
                     } else {
                         json!({ "roomId": room_id, "links": [] })

@@ -941,6 +941,14 @@ fn every_dispatched_uri_is_the_published_one() {
             <rooms::records::put::v0_3::Payload as trust_tasks_rs::Payload>::TYPE_URI,
         ),
         (
+            ROOMS_EPOCH_CHAIN_V2_TYPE,
+            <rooms::epoch::chain::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+        ),
+        (
+            ROOMS_EPOCH_PRUNE_V2_TYPE,
+            <rooms::epoch::prune::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+        ),
+        (
             ROOMS_CREATE_V2_TYPE,
             <rooms::create::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI,
         ),

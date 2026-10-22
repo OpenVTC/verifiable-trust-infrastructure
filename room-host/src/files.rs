@@ -18,8 +18,8 @@ use uuid::Uuid;
 use vti_rooms::Room;
 use vti_rooms::authz::{self, Action, AuthorizedAction};
 use vti_rooms::blob_tasks::{self, Refusal, TaskResult};
-use vti_rooms::record_tasks;
 use vti_rooms::blobs::BlobError;
+use vti_rooms::record_tasks;
 use vti_rooms::revocation_tasks;
 use vti_rooms::storage;
 use vti_rooms::wire::AuthorityPresentation;
@@ -28,8 +28,9 @@ use super::{Answer, HostState, from_app_error, now, reject, respond};
 
 pub(crate) use vti_rooms::blob_tasks::{
     BLOB_GET_TYPE, BLOB_GET_V2_TYPE, DOWNLOAD_CHUNK_TYPE, GET_V2_TYPE, INFO_TYPE, LIST_V2_TYPE,
-    PUT_V2_TYPE, PUT_V3_TYPE, UPLOAD_ABORT_TYPE, UPLOAD_ABORT_V2_TYPE, UPLOAD_BEGIN_TYPE, UPLOAD_BEGIN_V2_TYPE,
-    UPLOAD_CHUNK_TYPE, UPLOAD_CHUNK_V2_TYPE, UPLOAD_COMMIT_TYPE, UPLOAD_COMMIT_V2_TYPE, USAGE_TYPE,
+    PUT_V2_TYPE, PUT_V3_TYPE, UPLOAD_ABORT_TYPE, UPLOAD_ABORT_V2_TYPE, UPLOAD_BEGIN_TYPE,
+    UPLOAD_BEGIN_V2_TYPE, UPLOAD_CHUNK_TYPE, UPLOAD_CHUNK_V2_TYPE, UPLOAD_COMMIT_TYPE,
+    UPLOAD_COMMIT_V2_TYPE, USAGE_TYPE,
 };
 
 /// Refuse with a code the task's specification declares.
@@ -499,9 +500,8 @@ pub(crate) async fn list_v2(state: &HostState, doc: &TrustTask<Value>, payload: 
 
 /// `rooms/records/list/0.3`: the 0.2 listing, and the room's `lastPrune` on every page.
 pub(crate) async fn list_v3(state: &HostState, doc: &TrustTask<Value>, payload: Value) -> Answer {
-    if let Err(r) = blob_tasks::parse::<
-        trust_tasks_rs::specs::rooms::records::list::v0_3::Payload,
-    >(&payload)
+    if let Err(r) =
+        blob_tasks::parse::<trust_tasks_rs::specs::rooms::records::list::v0_3::Payload>(&payload)
     {
         return refused(doc, r);
     }
@@ -553,9 +553,8 @@ pub(crate) async fn records_prune(
     doc: &TrustTask<Value>,
     payload: Value,
 ) -> Answer {
-    if let Err(r) = blob_tasks::parse::<
-        trust_tasks_rs::specs::rooms::records::prune::v0_1::Payload,
-    >(&payload)
+    if let Err(r) =
+        blob_tasks::parse::<trust_tasks_rs::specs::rooms::records::prune::v0_1::Payload>(&payload)
     {
         return refused(doc, r);
     }
@@ -662,6 +661,21 @@ pub(crate) async fn list_v2_response(
 /// declared codes.
 pub(crate) fn record_blobs_refused(doc: &TrustTask<Value>, e: BlobError) -> Answer {
     refused(doc, blob_tasks::record_blobs_refused(e))
+}
+
+/// A shared task's answer, as this host's reply.
+pub(crate) fn record_refused_or(doc: &TrustTask<Value>, result: TaskResult) -> Answer {
+    render(doc, result)
+}
+
+/// Check `payload` against its version's generated type `P`, and return it as the 0.1
+/// body the shared handler reads (`ext` removed) — or the refusal.
+pub(crate) fn checked_v0_1<P: serde::de::DeserializeOwned>(
+    doc: &TrustTask<Value>,
+    payload: Value,
+) -> Result<Value, Answer> {
+    blob_tasks::parse::<P>(&payload).map_err(|r| refused(doc, r))?;
+    Ok(blob_tasks::as_v0_1(payload))
 }
 
 /// Render a `rooms/records/put` refusal the shared tasks produced.
@@ -2772,7 +2786,13 @@ mod tests {
     }
 
     /// Write a record straight to storage as of `age_days` ago, and curate it then too.
-    async fn aged(h: &Host, f: &RoomFixture, key: &str, age_days: u64, curation: Option<(&str, bool)>) {
+    async fn aged(
+        h: &Host,
+        f: &RoomFixture,
+        key: &str,
+        age_days: u64,
+        curation: Option<(&str, bool)>,
+    ) {
         let at = now() - age_days * DAY;
         let record = vti_rooms::Record {
             key: key.into(),
@@ -2787,9 +2807,16 @@ mod tests {
             author: Some(f.owner.did.clone()),
             updated_at: 0,
         };
-        storage::put_record(&h.state.rooms, &h.state.records, &f.room.room_id, record, None, at)
-            .await
-            .unwrap();
+        storage::put_record(
+            &h.state.rooms,
+            &h.state.records,
+            &f.room.room_id,
+            record,
+            None,
+            at,
+        )
+        .await
+        .unwrap();
         if let Some((status, pinned)) = curation {
             storage::curate_record(
                 &h.state.rooms,
@@ -2855,35 +2882,80 @@ mod tests {
         aged(&h, &f, "old-pinned", 400, Some(("active", true))).await;
         aged(&h, &f, "fresh", 0, None).await;
 
-        let (status, dry) = call(&h.app, PRUNE, prune_req(&f, &["retracted", "aged"], true), &f.owner).await;
+        let (status, dry) = call(
+            &h.app,
+            PRUNE,
+            prune_req(&f, &["retracted", "aged"], true),
+            &f.owner,
+        )
+        .await;
         assert_eq!(status, StatusCode::OK, "{dry}");
         assert_eq!(dry["removed"], 2, "{dry}");
         assert_eq!(dry["dryRun"], true);
         assert!(dry.get("prune").is_none(), "a dry run leaves no mark");
-        assert_eq!(keys(&listing(&h, &f, LIST_V3).await).len(), 5, "nothing removed");
+        assert_eq!(
+            keys(&listing(&h, &f, LIST_V3).await).len(),
+            5,
+            "nothing removed"
+        );
 
-        let before = storage::get_room(&h.state.rooms, &f.room.room_id).await.unwrap();
-        let (status, done) = call(&h.app, PRUNE, prune_req(&f, &["retracted", "aged"], false), &f.owner).await;
+        let before = storage::get_room(&h.state.rooms, &f.room.room_id)
+            .await
+            .unwrap();
+        let (status, done) = call(
+            &h.app,
+            PRUNE,
+            prune_req(&f, &["retracted", "aged"], false),
+            &f.owner,
+        )
+        .await;
         assert_eq!(status, StatusCode::OK, "{done}");
         assert_eq!(done["removed"], 2);
-        assert_eq!(done["recordRetention"], json!({ "tombstoneDays": 30, "recordDays": 365 }));
-        assert_eq!(done["prune"]["version"], before.next_version, "the next version");
+        assert_eq!(
+            done["recordRetention"],
+            json!({ "tombstoneDays": 30, "recordDays": 365 })
+        );
+        assert_eq!(
+            done["prune"]["version"], before.next_version,
+            "the next version"
+        );
         assert_eq!(done["prune"]["removed"], 2);
         assert!(done.get("dryRun").is_none());
 
         let v3 = listing(&h, &f, LIST_V3).await;
         assert_eq!(keys(&v3), ["fresh", "old-pinned", "young-tomb"]);
-        assert_eq!(v3["lastPrune"], done["prune"], "every page carries the mark");
-        assert_eq!(v3["headVersion"], done["prune"]["version"], "the prune moves the head");
-        assert!(listing(&h, &f, LIST_V2_TYPE).await.get("lastPrune").is_none(), "0.2 is unchanged");
+        assert_eq!(
+            v3["lastPrune"], done["prune"],
+            "every page carries the mark"
+        );
+        assert_eq!(
+            v3["headVersion"], done["prune"]["version"],
+            "the prune moves the head"
+        );
+        assert!(
+            listing(&h, &f, LIST_V2_TYPE)
+                .await
+                .get("lastPrune")
+                .is_none(),
+            "0.2 is unchanged"
+        );
 
         let info = listing(&h, &f, INFO_V2).await;
-        assert_eq!(info["recordRetention"], json!({ "tombstoneDays": 30, "recordDays": 365 }));
+        assert_eq!(
+            info["recordRetention"],
+            json!({ "tombstoneDays": 30, "recordDays": 365 })
+        );
         assert_eq!(info["lastPrune"], done["prune"]);
         assert!(listing(&h, &f, INFO_TYPE).await.get("lastPrune").is_none());
 
         // A second prune finds nothing eligible: a success, no version, no new mark.
-        let (status, again) = call(&h.app, PRUNE, prune_req(&f, &["retracted", "aged"], false), &f.owner).await;
+        let (status, again) = call(
+            &h.app,
+            PRUNE,
+            prune_req(&f, &["retracted", "aged"], false),
+            &f.owner,
+        )
+        .await;
         assert_eq!(status, StatusCode::OK, "{again}");
         assert_eq!(again["removed"], 0);
         assert!(again.get("prune").is_none());
@@ -2898,13 +2970,22 @@ mod tests {
         let h = host(eager());
         let f = room(&h).await;
         aged(&h, &f, "ancient", 9_000, Some(("retracted", false))).await;
-        let (_, out) = call(&h.app, PRUNE, prune_req(&f, &["retracted", "aged"], false), &f.owner).await;
+        let (_, out) = call(
+            &h.app,
+            PRUNE,
+            prune_req(&f, &["retracted", "aged"], false),
+            &f.owner,
+        )
+        .await;
         assert_eq!(out["code"], "rooms/records/prune:noRetention", "{out}");
 
         let f = retained_room(&h, json!({ "tombstoneDays": 30 })).await;
         let (_, out) = call(&h.app, PRUNE, prune_req(&f, &["aged"], false), &f.owner).await;
         assert_eq!(out["code"], "rooms/records/prune:noRetention", "{out}");
-        assert_eq!(out["details"]["recordRetention"], json!({ "tombstoneDays": 30 }));
+        assert_eq!(
+            out["details"]["recordRetention"],
+            json!({ "tombstoneDays": 30 })
+        );
     }
 
     /// `admin` only: a `read` chain is the standard `permissionDenied`, for the prune and
@@ -2944,23 +3025,66 @@ mod tests {
             }
             p
         };
-        let (status, out) = call(&h.app, RETENTION_SET, set(json!({ "recordDays": 365, "tombstoneDays": 30 }), Some(json!({}))), &f.owner).await;
+        let (status, out) = call(
+            &h.app,
+            RETENTION_SET,
+            set(
+                json!({ "recordDays": 365, "tombstoneDays": 30 }),
+                Some(json!({})),
+            ),
+            &f.owner,
+        )
+        .await;
         assert_eq!(status, StatusCode::OK, "{out}");
         assert_eq!(out["previous"], json!({}));
-        assert_eq!(out["recordRetention"], json!({ "tombstoneDays": 30, "recordDays": 365 }));
-        assert_eq!(keys(&listing(&h, &f, LIST_V3).await), ["old"], "a change removes nothing");
+        assert_eq!(
+            out["recordRetention"],
+            json!({ "tombstoneDays": 30, "recordDays": 365 })
+        );
+        assert_eq!(
+            keys(&listing(&h, &f, LIST_V3).await),
+            ["old"],
+            "a change removes nothing"
+        );
 
-        let (_, out) = call(&h.app, RETENTION_SET, set(json!({ "recordDays": 30 }), Some(json!({}))), &f.owner).await;
-        assert_eq!(out["code"], "rooms/records/retention/set:retentionConflict", "{out}");
-        assert_eq!(out["details"]["recordRetention"], json!({ "tombstoneDays": 30, "recordDays": 365 }));
+        let (_, out) = call(
+            &h.app,
+            RETENTION_SET,
+            set(json!({ "recordDays": 30 }), Some(json!({}))),
+            &f.owner,
+        )
+        .await;
+        assert_eq!(
+            out["code"], "rooms/records/retention/set:retentionConflict",
+            "{out}"
+        );
+        assert_eq!(
+            out["details"]["recordRetention"],
+            json!({ "tombstoneDays": 30, "recordDays": 365 })
+        );
 
         // Whole: `tombstoneDays` left out is no longer stated.
-        let (status, out) = call(&h.app, RETENTION_SET, set(json!({ "recordDays": 30 }), None), &f.owner).await;
+        let (status, out) = call(
+            &h.app,
+            RETENTION_SET,
+            set(json!({ "recordDays": 30 }), None),
+            &f.owner,
+        )
+        .await;
         assert_eq!(status, StatusCode::OK, "{out}");
-        assert_eq!(listing(&h, &f, INFO_V2).await["recordRetention"], json!({ "recordDays": 30 }));
+        assert_eq!(
+            listing(&h, &f, INFO_V2).await["recordRetention"],
+            json!({ "recordDays": 30 })
+        );
         let (status, _) = call(&h.app, RETENTION_SET, set(json!({}), None), &f.owner).await;
         assert_eq!(status, StatusCode::OK);
-        assert!(listing(&h, &f, INFO_V2).await.get("recordRetention").is_none(), "cleared");
+        assert!(
+            listing(&h, &f, INFO_V2)
+                .await
+                .get("recordRetention")
+                .is_none(),
+            "cleared"
+        );
     }
 
     /// A pruned record's blob is released, exactly as a retraction releases it.
@@ -2980,11 +3104,16 @@ mod tests {
         .await;
         assert_eq!(status, StatusCode::OK, "{out}");
         // Age it past the rule by rewriting its stored time.
-        let mut r = storage::get_record(&h.state.records, &f.room.room_id, "with-file").await.unwrap();
+        let mut r = storage::get_record(&h.state.records, &f.room.room_id, "with-file")
+            .await
+            .unwrap();
         r.updated_at = now() - 3 * DAY;
         h.state
             .records
-            .insert(format!("{}{}:with-file", storage::RECORDS_PREFIX, f.room.room_id), &r)
+            .insert(
+                format!("{}{}:with-file", storage::RECORDS_PREFIX, f.room.room_id),
+                &r,
+            )
             .await
             .unwrap();
         let (status, done) = call(&h.app, PRUNE, prune_req(&f, &["aged"], false), &f.owner).await;

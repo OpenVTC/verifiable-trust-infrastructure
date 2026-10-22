@@ -69,6 +69,13 @@ pub const ROOMS_RECORDS_PUT_V2_TYPE: &str =
 /// `validUntil`, stored and served as received and never acted on (trust-tasks-tf #865).
 pub const ROOMS_RECORDS_PUT_V3_TYPE: &str =
     <trust_tasks_rs::specs::rooms::records::put::v0_3::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+/// `rooms/epoch/chain/0.2`: every response carries the room's epoch floor once it has been
+/// pruned, and no rung at or below it (trust-tasks-tf #869).
+pub const ROOMS_EPOCH_CHAIN_V2_TYPE: &str =
+    <trust_tasks_rs::specs::rooms::epoch::chain::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+/// `rooms/epoch/prune/0.2`: the host keeps the room's epoch floor and returns it.
+pub const ROOMS_EPOCH_PRUNE_V2_TYPE: &str =
+    <trust_tasks_rs::specs::rooms::epoch::prune::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 /// `rooms/create/0.2`: a room states its record retention at creation (trust-tasks-tf #868).
 pub const ROOMS_CREATE_V2_TYPE: &str =
     <trust_tasks_rs::specs::rooms::create::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
@@ -163,6 +170,9 @@ pub const ROOMS_DISPATCHED_URIS: &[&str] = &[
     ROOMS_RECORDS_LIST_V3_TYPE,
     ROOMS_RECORDS_PRUNE_TYPE,
     ROOMS_RECORDS_RETENTION_SET_TYPE,
+    // The epoch floor (trust-tasks-tf #869).
+    ROOMS_EPOCH_CHAIN_V2_TYPE,
+    ROOMS_EPOCH_PRUNE_V2_TYPE,
     ROOMS_BLOBS_UPLOAD_BEGIN_TYPE,
     ROOMS_BLOBS_UPLOAD_CHUNK_TYPE,
     ROOMS_BLOBS_UPLOAD_COMMIT_TYPE,

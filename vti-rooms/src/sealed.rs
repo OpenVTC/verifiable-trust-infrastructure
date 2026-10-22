@@ -107,6 +107,18 @@ impl SealedRoom {
         self.chain.links()
     }
 
+    /// Apply the room's epoch floor ([`EpochKeyChain::apply_floor`]): forget every rung
+    /// numbered at or below it and every key below it, and never derive there again.
+    /// Monotonic; returns whether the floor rose.
+    pub fn apply_epoch_floor(&mut self, floor: u32) -> bool {
+        self.chain.apply_floor(floor)
+    }
+
+    /// The epoch floor this room's chain holds, `0` when none has been learnt.
+    pub fn epoch_floor(&self) -> u32 {
+        self.chain.floor()
+    }
+
     /// The earliest epoch this room can currently open.
     ///
     /// Worth surfacing to a member: on a chained room it should be 1, and anything else

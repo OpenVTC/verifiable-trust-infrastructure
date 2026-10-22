@@ -20,8 +20,7 @@ use vta_sdk::client::VtaClient;
 
 use crate::cli::{
     RoomCommands, RoomFileCommands, RoomKeysCommands, RoomOffersCommands, RoomOwnerCommands,
-    RoomRecordsCommands, RoomRetentionCommands,
-    RoomProfileCommands,
+    RoomProfileCommands, RoomRecordsCommands, RoomRetentionCommands,
 };
 
 /// The operator's DID and key, from the session this CLI authenticates with.

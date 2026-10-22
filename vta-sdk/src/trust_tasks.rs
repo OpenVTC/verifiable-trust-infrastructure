@@ -1026,6 +1026,11 @@ pub const TASK_ROOMS_KEYS_COMMIT_0_1: &str = "https://trusttasks.org/spec/rooms/
 /// through; this covers the history it did not.
 pub const TASK_ROOMS_KEYS_CHAIN_0_1: &str = "https://trusttasks.org/spec/rooms/keys/chain/0.1";
 
+/// `spec/rooms/keys/chain/0.2` — 0.1, and the room's epoch floor relayed with the rungs (or
+/// alone): this VTA discards what it holds below it and never stores it again
+/// (trust-tasks-tf #869). Auth: `roomOpen` capability.
+pub const TASK_ROOMS_KEYS_CHAIN_0_2: &str = "https://trusttasks.org/spec/rooms/keys/chain/0.2";
+
 /// `spec/rooms/keys/backfill/0.1` — fetch the room's epoch key chain from its host
 /// and keep it, so history written before the principal joined becomes readable.
 ///
@@ -1035,6 +1040,11 @@ pub const TASK_ROOMS_KEYS_CHAIN_0_1: &str = "https://trusttasks.org/spec/rooms/k
 /// exists.
 pub const TASK_ROOMS_KEYS_BACKFILL_0_1: &str =
     "https://trusttasks.org/spec/rooms/keys/backfill/0.1";
+
+/// `spec/rooms/keys/backfill/0.2` — 0.1, fetched with `rooms/epoch/chain/0.2`, the floor it
+/// carries applied before answering and reported (trust-tasks-tf #869).
+pub const TASK_ROOMS_KEYS_BACKFILL_0_2: &str =
+    "https://trusttasks.org/spec/rooms/keys/backfill/0.2";
 
 /// `spec/rooms/owner/anchor/0.1` — write the room's current state into the
 /// room's own witnessed log.
@@ -2850,7 +2860,9 @@ pub const ALL_URIS: &[&str] = &[
     TASK_ROOMS_KEYS_WELCOME_0_1,
     TASK_ROOMS_KEYS_COMMIT_0_1,
     TASK_ROOMS_KEYS_CHAIN_0_1,
+    TASK_ROOMS_KEYS_CHAIN_0_2,
     TASK_ROOMS_KEYS_BACKFILL_0_1,
+    TASK_ROOMS_KEYS_BACKFILL_0_2,
     TASK_ROOMS_KEYS_READ_0_1,
     TASK_ROOMS_KEYS_BROWSE_0_1,
     TASK_ROOMS_KEYS_BROWSE_0_2,

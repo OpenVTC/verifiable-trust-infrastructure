@@ -91,7 +91,7 @@ knowing which half you are standing on saves an afternoon.
 | **Read mirrors** (T3) | **`room-host --mirror-config`** — a host serves a read-only copy fed by `sinceVersion` pulls and refuses every write, naming the primary. A mirror pulls **as a member**, presenting a room-issued `read` chain |
 | **Reading across a membership change** | **Works, including for a member who has just joined.** Records are sealed per epoch, and the *epoch key chain* carries a member back across every advance. The owner hands each rung to the host on `rooms/epoch/mint`; a joiner fetches the chain with `rooms/epoch/chain` and reads everything the room retains. Rungs are ciphertext — the key that opens one is a storage key no host holds |
 | **An agent reading history through its VTA** | **Works.** `rooms/keys/open` resolves from the chain the VTA holds, which it accrues from every commit it applies — and a member who *joined* fills the rest with `rooms/keys/chain/0.1`, handing their own VTA the rungs they fetched from the host. The response says how far back it can now read, which is the only number worth having: a rung extends reach only if every rung above it is present too |
-| **Cryptographic deletion** | **At the host only.** `rooms/epoch/prune/0.1` (`admin`) erases the epoch key chain below an epoch at a host, so history sealed under those epochs can no longer be derived by anyone who has not already derived it — a member restarting, on a new device, or joining later. Both hosts serve it (audited `room.epoch.prune`, `notAhead` for a floor at the current epoch); `pnm rooms prune` sends it, warns, and asks first (§10.4). **It does not reach members:** a member's VTA that already walked the chain keeps the keys it derived, so today a prune is not a deletion of anything a member already holds. Reaching members' key holders needs a specification change, being drafted separately |
+| **Cryptographic deletion** | **At the host, and at members' key holders as far as they conform.** `rooms/epoch/prune` (`admin`, 0.1 and 0.2) erases the epoch key chain below an epoch at a host, and the host keeps the room's **epoch floor** (`beforeEpoch − 1`), which `rooms/epoch/chain/0.2` serves. A member's VTA that learns it — `rooms/keys/backfill/0.2`, `rooms/keys/chain/0.2`, a read's catch-up — discards every rung at or below it, refuses to derive below it (`beyondChain`), and never stores such a rung again from any source (trust-tasks-tf #869). Both hosts serve it (audited `room.epoch.prune`, `notAhead` for a floor at the current epoch); `pnm rooms prune` sends 0.2, warns, and asks first (§10.4). Nothing already read is recalled |
 | **Record retention and pruning records** | **Work, on both hosts.** A room states how long it keeps tombstones and records (`rooms/create/0.2`, `rooms/records/retention/set/0.1`, served by `rooms/info/0.2`), and an administrator removes what that makes eligible (`rooms/records/prune/0.1`), leaving a `lastPrune` mark that `rooms/records/list/0.3` and `rooms/keys/browse/0.2` carry. `pnm rooms records {prune,retention}` (§10.5) |
 | **Record provenance and expiry** | **Work.** `basis`, `confidence`, `evidence`, `validFor`, `validUntil` inside a sealed body, or in an open room's cleartext at `rooms/records/put/0.3`; readers hide an expired record by default (§9) |
 | **Witnessed renewal anchoring** | **Blocked on a decision**, not on effort: §9 says a renewal anchors the epoch authenticator and version watermark in the room's witnessed log, but not *where in the log entry*. See [`epoch anchoring`](../05-design-notes/data-rooms-epoch-anchoring.md) |
@@ -1798,11 +1798,21 @@ What it does, and what it does not:
   record. What is gone is the ability to *derive* the keys they were sealed
   under — for a member who restarts, moves device or joins later, whatever
   authority they hold.
-- **It does not reach members.** A member's VTA that already walked the chain
-  keeps the keys it derived, and anything already read stays read. Today a
-  prune erases the host's copy only; it is closer to losing a key than to
-  shredding a document. Making it reach members' key holders needs a
-  specification change, which is being drafted separately.
+- **It reaches members, as far as they conform** (`rooms/epoch/prune/0.2`,
+  trust-tasks-tf #869). The host keeps the room's **epoch floor** — `beforeEpoch
+  − 1`: rung `N` survives and still yields epoch `N − 1`, so `--before-epoch 5`
+  leaves epoch 4 readable and makes epochs 1 to 3 unreadable — raises it at every
+  prune (0.1 included), never lowers it, and serves it on every
+  `rooms/epoch/chain/0.2` response, never serving a rung at or below it. A
+  member's VTA that learns it (backfill, a relayed `rooms/keys/chain/0.2`, a
+  read's catch-up) forgets every rung it holds at or below the floor, refuses to
+  derive below it (`beyondChain` with an earliest epoch at or above it), and never
+  takes such a rung back — not from a mirror that was not pruned, not from its
+  principal. It keeps the floor in its own row, for as long as it holds the room.
+  It is not a recall: anything already read, decrypted or exported stays, and a
+  key holder that does not conform keeps what it held. A browser member
+  (`vti-rooms-wasm`) applies it with `applyEpochFloor` and keeps it in its
+  snapshot.
 - **It cannot be undone.** No party keeps a copy that brings the rungs back.
 
 `pnm rooms prune` reads the room first (its epoch and retention policy), prints
@@ -1937,7 +1947,9 @@ and `vtc-service`:
 | `rooms/records/retention/set/0.1` | `admin` — replaces the record retention (§10.5) |
 | `rooms/records/curate/0.1` | `curate` |
 | `rooms/epoch/mint/0.1` | `admin` |
-| `rooms/epoch/chain/0.1` | `read` — reading the room and reading what was written before you joined are the same act |
+| `rooms/epoch/chain/0.1` | `read` — reading the room and reading what was written before you joined are the same act; no rung at or below the epoch floor |
+| `rooms/epoch/chain/0.2` | `read` — and the room's `epochFloor` on every response once pruned |
+| `rooms/epoch/prune/0.1`, `0.2` | `admin` — both raise the epoch floor; 0.2 returns it (§10.4) |
 | `rooms/owner/transfer/0.1` | `admin` |
 | `rooms/owner/claim/0.1` | nomination + membership + dormancy |
 
@@ -1957,8 +1969,10 @@ and `vtc-service`:
 | `rooms/keys/list/0.1`, `0.2` | `roomOpen` capability; at 0.2 a delegate is listed nothing, and `personal` only with `includePersonal` |
 | `rooms/keys/label/0.1` | `roomOpen` capability + acting as `member`; refused to a delegate |
 | `rooms/keys/browse/0.1`, `0.2` | `roomOpen` capability; 0.2 passes the host's `lastPrune` through |
-| `rooms/keys/chain/0.1` | `roomOpen` capability |
+| `rooms/keys/chain/0.1` | `roomOpen` capability; a rung at or below the floor held is not kept |
+| `rooms/keys/chain/0.2` | `roomOpen` capability; applies a relayed `epochFloor` (alone or with rungs) and reports the floor held |
 | `rooms/keys/backfill/0.1` | `roomOpen` capability |
+| `rooms/keys/backfill/0.2` | `roomOpen` capability; fetches with `rooms/epoch/chain/0.2`, applies and reports the floor |
 | `rooms/keys/present/0.2` | `roomPresent` capability + acting in the persona's context |
 
 **Owner tasks** (`https://trusttasks.org/spec/rooms/owner/…`), served by

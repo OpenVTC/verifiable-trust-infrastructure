@@ -327,6 +327,7 @@ mod tests {
             mirror_of: None,
             record_retention: None,
             last_prune: None,
+            epoch_floor: None,
         };
         let verifier = crate::DtgChainVerifier::without_zk(Box::new(DidKeyResolver));
 

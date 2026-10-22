@@ -893,3 +893,35 @@ When adding a flow, add it here and a line to the root index.
   `room-host`), `vta_sdk::client::rooms` (`room_profile_*`),
   `pnm rooms profile {show,set,clear}`.
 - **Docs**: `docs/02-vta/data-rooms.md` (*The room's own name*).
+
+### Room records: provenance, retention and prune, the epoch floor
+- **What**: a record says what kind of claim it is and when it lapses (`basis`,
+  `confidence`, `evidence`, `validFor`, `validUntil` — inside the signed sealed body, or
+  an open room's cleartext at `rooms/records/put/0.3`; trust-tasks-tf #865); a room
+  states how long it keeps its records and an `admin` prunes what that makes eligible
+  (`rooms/records/{prune,retention/set}`, `rooms/create/0.2`, `rooms/info/0.2`,
+  `rooms/records/list/0.3`, `rooms/keys/browse/0.2`; #868); an epoch prune leaves an
+  epoch floor that members' key holders apply (`rooms/epoch/{prune,chain}/0.2`,
+  `rooms/keys/{chain,backfill}/0.2`; #869).
+- **Invariants to preserve**: provenance is display and weighting, **never authority**,
+  checked against the schema and kept as received; expiry is a reader's rule and no
+  host acts on it. Both hosts run the same host-neutral code (`vti_rooms::record_tasks`):
+  eligibility is decided from the retention in force and nothing else (absent or `{}`
+  is nothing eligible; `noRetention` rather than `removed: 0`), a prune is `admin` only,
+  takes the next version as its `lastPrune` mark (written before records go), keeps no
+  removed record's key or content, and `headVersion` is the higher of the highest record
+  and the mark — so every listing and read takes its head under the record-write lock a
+  prune holds (`BlobHost::records_lock` / `read_snapshot`). The epoch floor is
+  `beforeEpoch − 1`, raised by every prune version, never lowered; a host never stores or
+  serves a rung at or below it. A member's VTA keeps the floor in its own
+  `room-epoch-floor` row, discards rungs at or below it before answering, applies it in
+  every chain walk (`SealedRoom::apply_epoch_floor`), and never takes such a rung back.
+  Hosts never prune on their own.
+- **Code**: `vti-rooms/src/{provenance,record_retention,record_tasks}.rs`,
+  `vti-rooms/src/{storage,retention,sealed}.rs`, `room-host/src/{lib,files}.rs`,
+  `vtc-service/src/rooms/{handlers,files}.rs`,
+  `vta-service/src/operations/room_groups.rs` (`apply_epoch_floor`),
+  `vta-service/src/trust_tasks/{room_group,room_catch_up}.rs`,
+  `vtc_client::rooms` (`prune_records`, `set_record_retention`, `prune_epoch_v2`, …),
+  `pnm rooms records {prune,retention}`, `pnm rooms prune`.
+- **Docs**: `docs/02-vta/data-rooms.md` (§9, §10.4, §10.5).

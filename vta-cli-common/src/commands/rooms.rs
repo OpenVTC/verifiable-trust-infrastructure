@@ -47,11 +47,11 @@
 use serde_json::Value;
 use vta_sdk::prelude::*;
 use vtc_client::VtcClient;
+pub use vtc_client::rooms::body::RecordBasis;
 use vtc_client::rooms::body::{
     RecordLocation, SealedRecordBody, VerifiedRecordBody, verify_record_body,
 };
 use vtc_client::rooms::{CleartextContent, RoomSession, SealedContent, Visibility};
-pub use vtc_client::rooms::body::RecordBasis;
 
 /// Everything a room command needs to reach both parties.
 ///
@@ -572,8 +572,7 @@ fn provenance_line(obj: &serde_json::Map<String, Value>) -> String {
     if let Some(c) = obj.get("confidence").and_then(Value::as_f64) {
         line.push_str(&format!(" (author's confidence {c})"));
     }
-    if obj.get("basis").and_then(Value::as_str) == Some("verified")
-        && !obj.contains_key("evidence")
+    if obj.get("basis").and_then(Value::as_str) == Some("verified") && !obj.contains_key("evidence")
     {
         line.push_str(" — names no evidence, so the claim to have checked is unsupported");
     }
@@ -776,10 +775,13 @@ pub async fn cmd_rooms_prune(
         }
     }
 
+    // 0.2 first: the host keeps the room's epoch floor and says so, and members' key
+    // holders forget what they hold below it. A host that predates it is asked at 0.1 —
+    // which raises no floor anybody hears of.
     let session = present(client, &target, "admin").await?;
-    let pruned = target
-        .client()
-        .prune_epoch(
+    let host = target.client();
+    match host
+        .prune_epoch_v2(
             &session,
             before_epoch,
             Some(&reason),
@@ -787,9 +789,47 @@ pub async fn cmd_rooms_prune(
             signer.key_multibase,
         )
         .await
-        .map_err(|e| prune_refused(e, &target, before_epoch, current))?;
-    println!("{}", prune_outcome(&pruned));
-    Ok(())
+    {
+        Ok(pruned) => {
+            let floor = pruned.epoch_floor.0.get();
+            let v0_1 = vtc_client::rooms::PruneResponse {
+                room_id: pruned.room_id.to_string(),
+                pruned: u32::try_from(pruned.pruned).unwrap_or(u32::MAX),
+                earliest_rung: u32::try_from(pruned.earliest_rung.get()).unwrap_or(u32::MAX),
+            };
+            println!(
+                "{} The room's epoch floor is now {floor}: members' VTAs that learn it forget \
+                 what they hold below it.",
+                prune_outcome(&v0_1)
+            );
+            Ok(())
+        }
+        Err(e)
+            if vtc_client::git_ns::task_error(&e).is_some_and(|(code, _)| {
+                code.ends_with("unsupportedType") || code.ends_with("unsupportedVersion")
+            }) =>
+        {
+            // A fresh presentation: the first document's id is spent.
+            let session = present(client, &target, "admin").await?;
+            let pruned = host
+                .prune_epoch(
+                    &session,
+                    before_epoch,
+                    Some(&reason),
+                    signer.did,
+                    signer.key_multibase,
+                )
+                .await
+                .map_err(|e| prune_refused(e, &target, before_epoch, current))?;
+            println!(
+                "{} This host predates rooms/epoch/prune 0.2: it keeps no epoch floor, so \
+                 members' VTAs are not told to forget what they hold below it.",
+                prune_outcome(&pruned)
+            );
+            Ok(())
+        }
+        Err(e) => Err(prune_refused(e, &target, before_epoch, current).into()),
+    }
 }
 
 /// What `prune` does about confirmation: `--yes` always proceeds; without it a terminal is
@@ -812,12 +852,17 @@ fn prune_guard(assume_yes: bool, interactive: bool) -> PruneGuard {
 /// The irreversibility warning (rooms/epoch/prune/0.1 *Consent/purpose*: show what will
 /// become unreadable), in the specification's own terms — the rungs go, not the records.
 fn prune_warning(room_id: &str, before_epoch: u32, current: u32, policy: Option<&str>) -> String {
-    let span = if before_epoch <= 1 {
-        "no epoch: the room starts at 1, so there is nothing below it".to_string()
-    } else if before_epoch == 2 {
+    // The off-by-one `rooms/epoch/prune/0.2` states: rung `N = beforeEpoch` survives and
+    // still yields epoch `N − 1`, so the floor is `N − 1` and what becomes unreadable is
+    // everything *below* it.
+    let floor = before_epoch.saturating_sub(1).max(1);
+    let span = if floor <= 1 {
+        "no epoch: rung 2 survives and still yields epoch 1, so nothing becomes unreadable"
+            .to_string()
+    } else if floor == 2 {
         "epoch 1".to_string()
     } else {
-        format!("epochs 1 to {}", before_epoch - 1)
+        format!("epochs 1 to {}", floor - 1)
     };
     let policy_line = match policy {
         Some("fromJoin") => {
@@ -835,9 +880,11 @@ fn prune_warning(room_id: &str, before_epoch: u32, current: u32, policy: Option<
          \n  - The records stay, and the host still serves them. What goes is the ability to \
          derive the keys they were sealed under: a member who restarts, moves to a new \
          device, or joins later can never open them again, whatever authority they hold.\n\
-         \n  - It is not a deletion and not a recall. A member whose VTA already walked the \
-         chain keeps the keys it derived, and anything already read stays read. Today a \
-         prune reaches this host only, never members' VTAs.{policy_line}\n\
+         \n  - It reaches members, as far as they conform: the host keeps the room's epoch \
+         floor ({floor}), and members' VTAs that learn it forget the rungs and keys they \
+         hold below it and never take them back. It is not a recall: anything already \
+         read, decrypted or exported stays where it is, and a VTA that does not conform \
+         keeps what it held.{policy_line}\n\
          \n  Pruning straight after a membership change tells the host why the change \
          happened; wait if that matters."
     )
@@ -944,7 +991,14 @@ pub async fn cmd_rooms_records_prune(
     let session = present(client, &target, "admin").await?;
     let host = target.client();
     let preview = host
-        .prune_records(&session, &kinds, &reason, true, signer.did, signer.key_multibase)
+        .prune_records(
+            &session,
+            &kinds,
+            &reason,
+            true,
+            signer.did,
+            signer.key_multibase,
+        )
         .await
         .map_err(|e| records_prune_refused(e, &target))?;
     let preview = serde_json::to_value(&preview)?;
@@ -982,7 +1036,14 @@ pub async fn cmd_rooms_records_prune(
     // A fresh presentation: eligibility is decided again, at the moment of the prune.
     let session = present(client, &target, "admin").await?;
     let done = host
-        .prune_records(&session, &kinds, &reason, false, signer.did, signer.key_multibase)
+        .prune_records(
+            &session,
+            &kinds,
+            &reason,
+            false,
+            signer.did,
+            signer.key_multibase,
+        )
         .await
         .map_err(|e| records_prune_refused(e, &target))?;
     let done = serde_json::to_value(&done)?;
@@ -1063,9 +1124,9 @@ fn records_prune_refused(e: vtc_client::VtcError, target: &RoomTarget<'_>) -> St
              --room {} --host {}{host_did} --tombstone-days 30 --reason <why>",
             target.room_id, target.host_url
         ),
-        Some(c) if c.ends_with("roomNotLive") => format!(
-            "{e}\n\nThe room has lapsed and is read-only until its owner renews it."
-        ),
+        Some(c) if c.ends_with("roomNotLive") => {
+            format!("{e}\n\nThe room has lapsed and is read-only until its owner renews it.")
+        }
         Some(c) if c.ends_with("permissionDenied") => format!(
             "{e}\n\nPruning records needs `admin` in the room — not `curate`, which every \
              writer holds. The room's owner grants it with `pnm rooms owner issue-authority \
@@ -1108,9 +1169,11 @@ pub async fn cmd_rooms_retention_set(
     reason: String,
 ) -> Result<(), Box<dyn std::error::Error>> {
     if !clear && tombstone_days.is_none() && record_days.is_none() {
-        return Err("name --tombstone-days, --record-days, or --clear: the retention is \
+        return Err(
+            "name --tombstone-days, --record-days, or --clear: the retention is \
                     replaced whole, so naming nothing would clear it by accident"
-            .into());
+                .into(),
+        );
     }
     let info = read_info_v2(client, &target, &signer).await?;
     let expected = info
@@ -1195,15 +1258,14 @@ fn retention_text(rule: &Value) -> String {
 
 /// The retention and latest prune `rooms/info/0.2` reports, as lines.
 fn retention_lines(info: &Value) -> String {
-    let rule = info
-        .get("recordRetention")
-        .cloned()
-        .unwrap_or(Value::Null);
+    let rule = info.get("recordRetention").cloned().unwrap_or(Value::Null);
     let mut out = format!("Record retention: {}", retention_text(&rule));
     match info.get("lastPrune") {
         Some(p) => out.push_str(&format!(
             "\nLast prune: {} record(s) at {}, version {}",
-            p["removed"], p["at"].as_str().unwrap_or("?"), p["version"]
+            p["removed"],
+            p["at"].as_str().unwrap_or("?"),
+            p["version"]
         )),
         None => out.push_str("\nLast prune: never"),
     }
@@ -3320,16 +3382,20 @@ mod tests {
     /// records stay, and that members' VTAs keep what they already derived.
     #[test]
     fn the_prune_warning_names_what_becomes_unreadable() {
+        // `beforeEpoch: 5` → floor 4: rung 5 still yields epoch 4, so epochs 1 to 3 go
+        // (`rooms/epoch/prune/0.2`, *The floor, and the off-by-one*).
         let w = prune_warning("did:example:room", 5, 7, Some("chained"));
         assert!(w.contains("cannot be undone"), "{w}");
-        assert!(w.contains("epochs 1 to 4"), "{w}");
+        assert!(w.contains("epochs 1 to 3"), "{w}");
+        assert!(w.contains("epoch floor (4)"), "{w}");
         assert!(w.contains("now at epoch 7"), "{w}");
         assert!(w.contains("The records stay"), "{w}");
         assert!(w.contains("members' VTAs"), "{w}");
         assert!(!w.contains("fromJoin"), "{w}");
 
-        assert!(prune_warning("r", 2, 3, None).contains("unreadable for good"));
-        assert!(prune_warning("r", 2, 3, None).contains("epoch 1 "));
+        assert!(prune_warning("r", 3, 4, None).contains("unreadable for good"));
+        assert!(prune_warning("r", 3, 4, None).contains("epoch 1 "));
+        assert!(prune_warning("r", 2, 3, None).contains("nothing becomes unreadable"));
         assert!(prune_warning("r", 3, 4, Some("fromJoin")).contains("keeps no chain"));
     }
 

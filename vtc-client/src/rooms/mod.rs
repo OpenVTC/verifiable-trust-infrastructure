@@ -50,10 +50,11 @@ pub use vti_rooms::authz::MAX_CHAIN_DEPTH;
 pub use vti_rooms::wire::{
     AuthorityPresentation, ChainResponse, CleartextContent, CommitsResponse, CurateRecordResponse,
     EpochLink, ListRecordsResponse, MintEpochResponse, OwnerResponse, PruneResponse,
-    PutRecordResponse, ROOMS_CREATE_TYPE, ROOMS_EPOCH_CHAIN_TYPE, ROOMS_EPOCH_COMMITS_TYPE,
-    ROOMS_EPOCH_MINT_TYPE, ROOMS_EPOCH_PRUNE_TYPE, ROOMS_OWNER_CLAIM_TYPE,
-    ROOMS_OWNER_TRANSFER_TYPE, ROOMS_RECORDS_CURATE_TYPE, ROOMS_RECORDS_GET_TYPE,
-    ROOMS_RECORDS_LIST_TYPE, ROOMS_RECORDS_PUT_TYPE, RelayedCommit, SealedContent,
+    PutRecordResponse, ROOMS_CREATE_TYPE, ROOMS_EPOCH_CHAIN_TYPE, ROOMS_EPOCH_CHAIN_V2_TYPE,
+    ROOMS_EPOCH_COMMITS_TYPE, ROOMS_EPOCH_MINT_TYPE, ROOMS_EPOCH_PRUNE_TYPE,
+    ROOMS_EPOCH_PRUNE_V2_TYPE, ROOMS_OWNER_CLAIM_TYPE, ROOMS_OWNER_TRANSFER_TYPE,
+    ROOMS_RECORDS_CURATE_TYPE, ROOMS_RECORDS_GET_TYPE, ROOMS_RECORDS_LIST_TYPE,
+    ROOMS_RECORDS_PUT_TYPE, RelayedCommit, SealedContent,
 };
 
 /// A caller's standing in one room.
@@ -349,8 +350,9 @@ impl VtcClient {
     /// **Irreversible, for every member.** The host erases the rungs below that epoch, so
     /// nobody who has not already derived those epochs' keys — a member restarting, on a
     /// new device, or joining later — can ever open what was sealed under them again. The
-    /// records stay; the ability to open them goes. A member's key holder that already
-    /// walked the chain keeps what it derived: a prune reaches the host, not the members.
+    /// records stay; the ability to open them goes. A host serving 0.2 raises the room's
+    /// epoch floor for this prune too, but this answer does not report it — prefer
+    /// [`Self::prune_epoch_v2`], which does.
     ///
     /// Gated on `admin` at the host. `before_epoch` must be below the room's current
     /// epoch (`notAhead` otherwise). `pruned: 0` in the answer is a success — the chain
@@ -378,6 +380,71 @@ impl VtcClient {
         serde_json::from_value(value).map_err(|e| VtcError::Http {
             status: 200,
             body: format!("prune response is not a PruneResponse: {e}"),
+        })
+    }
+
+    /// `rooms/epoch/prune/0.2`: [`Self::prune_epoch`], and the room's **epoch floor** the
+    /// host now keeps — `beforeEpoch − 1`, or higher if it already held one — returned as
+    /// `epochFloor`. The host serves the floor from then on (`rooms/epoch/chain/0.2`), and
+    /// every member's key holder that learns it forgets what it holds below it: the prune
+    /// reaches members, as far as they conform. What anybody already read is not recalled.
+    ///
+    /// Never retried here, as 0.1.
+    pub async fn prune_epoch_v2(
+        &self,
+        session: &RoomSession,
+        before_epoch: u32,
+        reason: Option<&str>,
+        signer_did: &str,
+        private_key_multibase: &str,
+    ) -> Result<trust_tasks_rs::specs::rooms::epoch::prune::v0_2::Response, VtcError> {
+        let value = self
+            .room_task(
+                crate::rooms::ROOMS_EPOCH_PRUNE_V2_TYPE,
+                prune_payload(session, before_epoch, reason),
+                signer_did,
+                private_key_multibase,
+            )
+            .await?;
+        serde_json::from_value(value).map_err(|e| VtcError::Http {
+            status: 200,
+            body: format!("prune response is not a rooms/epoch/prune/0.2 response: {e}"),
+        })
+    }
+
+    /// `rooms/epoch/chain/0.2`: [`Self::epoch_chain`], and the room's epoch floor once its
+    /// chain has been pruned (`epochFloor`). A caller keeping rungs or keys applies it —
+    /// discards what it holds below it — and one relaying rungs to a key holder relays the
+    /// floor with them (`rooms/keys/chain/0.2`).
+    pub async fn epoch_chain_v2(
+        &self,
+        session: &RoomSession,
+        from_epoch: Option<u32>,
+        limit: Option<u32>,
+        signer_did: &str,
+        private_key_multibase: &str,
+    ) -> Result<trust_tasks_rs::specs::rooms::epoch::chain::v0_2::Response, VtcError> {
+        let mut payload = serde_json::json!({
+            "roomId": session.room_id,
+            "presentation": session.presentation,
+        });
+        if let Some(f) = from_epoch {
+            payload["fromEpoch"] = serde_json::json!(f);
+        }
+        if let Some(l) = limit {
+            payload["limit"] = serde_json::json!(l);
+        }
+        let value = self
+            .room_task(
+                crate::rooms::ROOMS_EPOCH_CHAIN_V2_TYPE,
+                payload,
+                signer_did,
+                private_key_multibase,
+            )
+            .await?;
+        serde_json::from_value(value).map_err(|e| VtcError::Http {
+            status: 200,
+            body: format!("chain response is not a rooms/epoch/chain/0.2 response: {e}"),
         })
     }
 
@@ -753,6 +820,7 @@ fn is_room_read(type_uri: &str) -> bool {
         ROOMS_RECORDS_GET_TYPE,
         ROOMS_RECORDS_LIST_TYPE,
         ROOMS_EPOCH_CHAIN_TYPE,
+        ROOMS_EPOCH_CHAIN_V2_TYPE,
         ROOMS_EPOCH_COMMITS_TYPE,
         rooms::records::get::v0_2::Payload::TYPE_URI,
         rooms::records::list::v0_2::Payload::TYPE_URI,

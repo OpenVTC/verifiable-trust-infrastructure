@@ -605,8 +605,24 @@ async fn route(state: &Arc<HostState>, doc: TrustTask<Value>) -> Answer {
         ROOMS_RECORDS_LIST_TYPE => list(state, &doc, payload).await,
         ROOMS_RECORDS_CURATE_TYPE => curate(state, &doc, payload).await,
         ROOMS_EPOCH_MINT_TYPE => mint(state, &doc, payload).await,
-        ROOMS_EPOCH_CHAIN_TYPE => epoch_chain(state, &doc, payload).await,
-        ROOMS_EPOCH_PRUNE_TYPE => epoch_prune(state, &doc, payload).await,
+        ROOMS_EPOCH_CHAIN_TYPE => epoch_chain(state, &doc, payload, false).await,
+        ROOMS_EPOCH_PRUNE_TYPE => epoch_prune(state, &doc, payload, false).await,
+        vti_rooms::wire::ROOMS_EPOCH_CHAIN_V2_TYPE => {
+            match files::checked_v0_1::<trust_tasks_rs::specs::rooms::epoch::chain::v0_2::Payload>(
+                &doc, payload,
+            ) {
+                Ok(p) => epoch_chain(state, &doc, p, true).await,
+                Err(a) => a,
+            }
+        }
+        vti_rooms::wire::ROOMS_EPOCH_PRUNE_V2_TYPE => {
+            match files::checked_v0_1::<trust_tasks_rs::specs::rooms::epoch::prune::v0_2::Payload>(
+                &doc, payload,
+            ) {
+                Ok(p) => epoch_prune(state, &doc, p, true).await,
+                Err(a) => a,
+            }
+        }
         ROOMS_EPOCH_COMMITS_TYPE => epoch_commits(state, &doc, payload).await,
         ROOMS_OWNER_TRANSFER_TYPE => transfer_owner(state, &doc, payload).await,
         ROOMS_OWNER_CLAIM_TYPE => claim_owner(state, &doc, payload).await,
@@ -654,6 +670,7 @@ fn is_consequential(type_uri: &str) -> bool {
         ROOMS_RECORDS_GET_TYPE
             | ROOMS_RECORDS_LIST_TYPE
             | ROOMS_EPOCH_CHAIN_TYPE
+            | vti_rooms::wire::ROOMS_EPOCH_CHAIN_V2_TYPE
             | ROOMS_EPOCH_COMMITS_TYPE
             | files::BLOB_GET_TYPE
             | files::BLOB_GET_V2_TYPE
@@ -769,6 +786,7 @@ async fn create(state: &HostState, doc: &TrustTask<Value>, payload: Value, v2: b
         // As given (create 0.2): never shortened, and `{}` records none.
         record_retention: record_retention.filter(|r| !r.is_empty() || r.ext.is_some()),
         last_prune: None,
+        epoch_floor: None,
     };
     match storage::create_room(&state.rooms, &room).await {
         Ok(()) => {
@@ -1145,13 +1163,21 @@ async fn room_head(state: &HostState, room_id: &str) -> Option<vti_rooms::merkle
     }
 }
 
-/// `rooms/epoch/chain/0.1` — serve the room's epoch key chain.
+/// `rooms/epoch/chain` 0.1, or 0.2 (`v2`) — serve the room's epoch key chain.
+///
+/// At either version no rung at or below the room's epoch floor is served; 0.2 also carries
+/// the floor itself on every response once the chain has been pruned (trust-tasks-tf #869).
 ///
 /// Gated on `read`: reading the room and reading what was written before you joined are the
 /// same act. What leaves is ciphertext — the key that opens a rung is a storage key this
 /// host never holds — so a party with the whole chain and no epoch key learns only how many
 /// epochs the room has had, which its epoch number already told them.
-async fn epoch_chain(state: &HostState, doc: &TrustTask<Value>, payload: Value) -> Answer {
+async fn epoch_chain(
+    state: &HostState,
+    doc: &TrustTask<Value>,
+    payload: Value,
+    v2: bool,
+) -> Answer {
     let req: ChainBody = match serde_json::from_value(payload) {
         Ok(r) => r,
         Err(e) => {
@@ -1186,7 +1212,7 @@ async fn epoch_chain(state: &HostState, doc: &TrustTask<Value>, payload: Value) 
         Err(e) => return from_app_error(doc, &e),
     };
 
-    let mut links = match storage::list_epoch_links(&state.epoch_links, &req.room_id).await {
+    let mut links = match storage::servable_epoch_links(&state.epoch_links, &room).await {
         Ok(l) => l,
         Err(e) => return from_app_error(doc, &e),
     };
@@ -1201,12 +1227,16 @@ async fn epoch_chain(state: &HostState, doc: &TrustTask<Value>, payload: Value) 
     }
 
     audit_room(&room, &authorized, RoomOperation::ListRecords, None);
-    respond(
+    let response = ChainResponse {
+        room_id: req.room_id,
+        links,
+    };
+    if !v2 {
+        return respond(doc, response);
+    }
+    files::record_refused_or(
         doc,
-        ChainResponse {
-            room_id: req.room_id,
-            links,
-        },
+        vti_rooms::record_tasks::epoch_chain_v2_response(response, &room),
     )
 }
 
@@ -1281,7 +1311,7 @@ async fn mint(state: &HostState, doc: &TrustTask<Value>, payload: Value) -> Answ
             // After the advance, so a rejected advance leaves no orphan rung.
             if let Some(link) = &req.link
                 && let Err(e) =
-                    storage::put_epoch_link(&state.epoch_links, &req.room_id, link).await
+                    storage::put_epoch_link_above_floor(&state.epoch_links, &updated, link).await
             {
                 return from_app_error(doc, &e);
             }
@@ -1307,12 +1337,19 @@ async fn mint(state: &HostState, doc: &TrustTask<Value>, payload: Value) -> Answ
     }
 }
 
-/// `rooms/epoch/prune/0.1` — drop the chain below an epoch.
+/// `rooms/epoch/prune` 0.1, or 0.2 (`v2`) — drop the chain below an epoch, and raise the
+/// room's epoch floor to `beforeEpoch − 1` at either version (trust-tasks-tf #869); 0.2
+/// returns it.
 ///
 /// The **rungs** go, not the records. A pruned room still holds every record and
 /// this host still serves them; what is gone is the ability to derive the keys
 /// they were sealed under, for anyone who has not already derived them.
-async fn epoch_prune(state: &HostState, doc: &TrustTask<Value>, payload: Value) -> Answer {
+async fn epoch_prune(
+    state: &HostState,
+    doc: &TrustTask<Value>,
+    payload: Value,
+    v2: bool,
+) -> Answer {
     let req: PruneBody = match serde_json::from_value(payload) {
         Ok(r) => r,
         Err(e) => {
@@ -1352,16 +1389,28 @@ async fn epoch_prune(state: &HostState, doc: &TrustTask<Value>, payload: Value) 
     if let Some(refusal) = vti_rooms::blob_tasks::prune_floor_refused(&room, req.before_epoch) {
         return files::record_refused(doc, refusal);
     }
-    match storage::prune_chain(&state.epoch_links, &req.room_id, req.before_epoch).await {
-        Ok((pruned, earliest_rung)) => {
+    match storage::prune_chain_to_floor(
+        &state.rooms,
+        &state.epoch_links,
+        &req.room_id,
+        req.before_epoch,
+        now(),
+    )
+    .await
+    {
+        Ok((pruned, earliest_rung, floor)) => {
             audit_room(&room, &authorized, RoomOperation::PruneEpoch, None);
-            respond(
+            let response = PruneResponse {
+                room_id: req.room_id,
+                pruned: pruned as u32,
+                earliest_rung,
+            };
+            if !v2 {
+                return respond(doc, response);
+            }
+            files::record_refused_or(
                 doc,
-                PruneResponse {
-                    room_id: req.room_id,
-                    pruned: pruned as u32,
-                    earliest_rung,
-                },
+                vti_rooms::record_tasks::epoch_prune_v2_response(response, floor),
             )
         }
         Err(e) => from_app_error(doc, &e),
@@ -2005,6 +2054,7 @@ mod tests {
                 mirror_of: Some(primary_url.clone()),
                 record_retention: None,
                 last_prune: None,
+                epoch_floor: None,
                 next_version: 1,
                 ..f.room.clone()
             },
@@ -2096,6 +2146,7 @@ mod tests {
                 mirror_of: Some("https://primary.example.org".into()),
                 record_retention: None,
                 last_prune: None,
+                epoch_floor: None,
                 ..f.room.clone()
             },
         )
@@ -3016,6 +3067,120 @@ mod tests {
             !logged.contains(&"room.epoch.mint"),
             "a prune is not a mint: {logged:?}"
         );
+    }
+
+    /// `rooms/epoch/prune/0.2` and `rooms/epoch/chain/0.2` (trust-tasks-tf #869): the host
+    /// keeps the room's epoch floor — `beforeEpoch − 1`, raised by either version, never
+    /// lowered — returns it, serves it on every chain response (an empty one included),
+    /// and never serves a rung at or below it, at 0.1 either.
+    #[tokio::test]
+    async fn the_host_keeps_the_epoch_floor_and_never_serves_below_it() {
+        let (_d, st) = state();
+        let app = router(st.clone());
+        let f = RoomFixture::new(Visibility::Open).await;
+        register(&app, &f).await;
+        for epoch in 2..=5u32 {
+            let (status, out) = call(
+                &app,
+                ROOMS_EPOCH_MINT_TYPE,
+                serde_json::json!({
+                    "roomId": f.room.room_id, "epoch": epoch, "presentation": f.as_owner(),
+                    "link": { "epoch": epoch, "wrapped": format!("d3JhcHBlZA{epoch}"), "nonce": "bm9uY2U" },
+                }),
+                &f.owner,
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{out}");
+        }
+        let prune = |version: &str, before: u32| {
+            (
+                format!("https://trusttasks.org/spec/rooms/epoch/prune/{version}"),
+                serde_json::json!({
+                    "roomId": f.room.room_id, "beforeEpoch": before,
+                    "presentation": f.as_owner(), "reason": "the agreed window",
+                }),
+            )
+        };
+        // The table's middle row: `beforeEpoch: 4` drops rungs 2 and 3, rung 4 still
+        // yields epoch 3, so the floor is 3.
+        let (uri, p) = prune("0.2", 4);
+        let (status, out) = call(&app, &uri, p, &f.owner).await;
+        assert_eq!(status, StatusCode::OK, "{out}");
+        assert_eq!(out["pruned"], 2, "{out}");
+        assert_eq!(out["earliestRung"], 4);
+        assert_eq!(out["epochFloor"], 3);
+
+        let chain = |version: &str, from: Option<u32>| {
+            let mut p =
+                serde_json::json!({ "roomId": f.room.room_id, "presentation": f.as_owner() });
+            if let Some(e) = from {
+                p["fromEpoch"] = serde_json::json!(e);
+            }
+            (
+                format!("https://trusttasks.org/spec/rooms/epoch/chain/{version}"),
+                p,
+            )
+        };
+        let epochs = |v: &Value| -> Vec<u64> {
+            v["links"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|l| l["epoch"].as_u64().unwrap())
+                .collect()
+        };
+        let (uri, p) = chain("0.2", None);
+        let (_, out) = call(&app, &uri, p, &f.owner).await;
+        assert_eq!(epochs(&out), [5, 4], "{out}");
+        assert_eq!(out["epochFloor"], 3);
+        // A request for nothing above the floor still learns the floor.
+        let (uri, p) = chain("0.2", Some(3));
+        let (_, out) = call(&app, &uri, p, &f.owner).await;
+        assert!(epochs(&out).is_empty(), "{out}");
+        assert_eq!(out["epochFloor"], 3);
+        let (uri, p) = chain("0.1", None);
+        let (_, out) = call(&app, &uri, p, &f.owner).await;
+        assert_eq!(epochs(&out), [5, 4]);
+        assert!(out.get("epochFloor").is_none(), "0.1 is unchanged: {out}");
+
+        // Monotonic: a lower prune changes nothing; 0.1 raises it as 0.2 does.
+        let (uri, p) = prune("0.2", 2);
+        let (_, out) = call(&app, &uri, p, &f.owner).await;
+        assert_eq!(out["epochFloor"], 3, "{out}");
+        // A rung above the floor is still taken, at the next mint.
+        let (status, out) = call(
+            &app,
+            ROOMS_EPOCH_MINT_TYPE,
+            serde_json::json!({
+                "roomId": f.room.room_id, "epoch": 6, "presentation": f.as_owner(),
+                "link": { "epoch": 6, "wrapped": "d3JhcHBlZA6", "nonce": "bm9uY2U" },
+            }),
+            &f.owner,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{out}");
+        let (uri, p) = prune("0.1", 5);
+        let (status, out) = call(&app, &uri, p, &f.owner).await;
+        assert_eq!(status, StatusCode::OK, "{out}");
+        let room = storage::get_room(&st.rooms, &f.room.room_id).await.unwrap();
+        assert_eq!(
+            room.epoch_floor,
+            Some(4),
+            "a 0.1 prune raises the floor too"
+        );
+
+        // And a rung at or below the floor is never stored again.
+        let refused = storage::put_epoch_link_above_floor(
+            &st.epoch_links,
+            &room,
+            &vti_rooms::wire::EpochLink {
+                epoch: 4,
+                wrapped: "x".into(),
+                nonce: "y".into(),
+            },
+        )
+        .await;
+        assert!(refused.is_err());
     }
 
     /// A room that does not chain refuses a rung, rather than storing one it said it would

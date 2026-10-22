@@ -638,6 +638,7 @@ mod tests {
             mirror_of: None,
             record_retention: None,
             last_prune: None,
+            epoch_floor: None,
         }
     }
 
@@ -725,6 +726,7 @@ mod tests {
             mirror_of: Some("https://primary.example.org".into()),
             record_retention: None,
             last_prune: None,
+            epoch_floor: None,
             ..room(Visibility::Open)
         };
 
@@ -771,6 +773,7 @@ mod tests {
             mirror_of: Some("https://primary.example.org".into()),
             record_retention: None,
             last_prune: None,
+            epoch_floor: None,
             epoch_expires_at: Some(NOW - 1),
             ..room(Visibility::Open)
         };

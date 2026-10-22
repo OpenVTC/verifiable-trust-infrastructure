@@ -368,6 +368,7 @@ async fn a_mirror_accepts_the_list() {
         mirror_of: Some("https://primary.example".into()),
         record_retention: None,
         last_prune: None,
+        epoch_floor: None,
         ..f.room.clone()
     };
     let list = signed_list(
