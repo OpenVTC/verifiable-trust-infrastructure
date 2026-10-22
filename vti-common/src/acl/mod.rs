@@ -263,6 +263,41 @@ pub enum Capability {
     /// often. Derived by the roles that already hold [`Capability::Sign`],
     /// because the binding, not the role, is what bounds the grant.
     ExternalAuthUse,
+    /// Creating a **sub-context** — `vta/contexts/create/1.0` with a `parent`.
+    ///
+    /// Necessary and not sufficient: the caller must also reach the parent
+    /// (`require_context`), so a holder can only create beneath contexts it
+    /// already administers, and **top-level** creation stays super-admin-only.
+    /// The power this confers is therefore "branch under what I already have",
+    /// not "create anywhere".
+    ///
+    /// # Why this is not just `Role::Admin`
+    ///
+    /// Creating a sub-context already works for an admin of the parent, and
+    /// that remains true — this takes nothing away. What it adds is a way to
+    /// confer *only* that, because the alternative was making the caller an
+    /// admin of the context, which confers strictly more: re-pointing its keys,
+    /// rewriting its ACL, and administering everything already in it.
+    ///
+    /// The caller that needs this is an automated one. An agent gateway
+    /// provisions a context per managed agent, continuously, and cannot be
+    /// given super-admin or even context-admin for it — it is internet-facing,
+    /// and the whole point of its least-privilege grant is that a compromise
+    /// cannot rewrite the agent. Before this, provisioning therefore required a
+    /// separate always-on service holding super-admin: a new deployment unit
+    /// whose only purpose was to hold the most dangerous credential in the
+    /// system. This is the smaller answer to the same need.
+    ///
+    /// # Why additive
+    ///
+    /// Like [`Capability::PersonaHolder`] it is in [`ADDITIVE_CAPABILITIES`]:
+    /// no role derives it, so it is held only where an operator granted it by
+    /// name. It has to be, because the callers that need it are deliberately
+    /// *not* admins — an entry's capability list only ever narrows its role's
+    /// set, so a capability that must reach a non-admin cannot be role-derived.
+    /// Granting it is super-admin-only (`validate_additive_capability_grant`),
+    /// which is the same one-time consent step pairing already is.
+    ContextCreate,
 }
 
 /// Capabilities that no role derives, and that an entry therefore holds only
@@ -272,7 +307,8 @@ pub enum Capability {
 /// "a role is an upper bound on its entries", so each has to be argued for
 /// individually and be visible in one place to a reviewer asking what can exceed
 /// a role.
-pub const ADDITIVE_CAPABILITIES: &[Capability] = &[Capability::PersonaHolder];
+pub const ADDITIVE_CAPABILITIES: &[Capability] =
+    &[Capability::PersonaHolder, Capability::ContextCreate];
 
 /// Whether `cap` is granted on its own rather than derived from a role.
 #[must_use]
@@ -644,12 +680,18 @@ pub fn key_scope_for(allowed_keys: Option<&BTreeSet<String>>) -> KeyScope {
 /// `None` is always allowed.
 /// Refuse an attempt to confer an additive capability by a caller who may not.
 ///
-/// [`Capability::PersonaHolder`] is super-admin-only to grant, and that check is
+/// Every additive capability is super-admin-only to grant, and that check is
 /// the whole of what stands between the boundary and a context-scoped
-/// administrator. Without it the escalation is one command long: an admin of one
-/// context creates an ACL entry — for a DID they control, or for their own —
-/// naming `persona-holder`, and reads the holder's entire cross-context identity
-/// through a credential that was never supposed to reach above its context.
+/// administrator.
+///
+/// For [`Capability::PersonaHolder`] the escalation is one command long: an
+/// admin of one context creates an ACL entry — for a DID they control, or for
+/// their own — naming `persona-holder`, and reads the holder's entire
+/// cross-context identity through a credential that was never supposed to reach
+/// above its context. For [`Capability::ContextCreate`] it is the same shape:
+/// an admin could otherwise mint provisioning authority for a DID it controls,
+/// turning a grant over one context into the ability to grow a subtree under it
+/// without anyone consenting again.
 ///
 /// [`capabilities_beyond_role`] cannot catch this. Additive capabilities are
 /// excluded there by construction, because no role carries them; the question

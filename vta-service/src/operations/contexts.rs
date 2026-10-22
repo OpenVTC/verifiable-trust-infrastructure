@@ -59,6 +59,56 @@ fn to_result_body(r: &ContextRecord) -> CreateContextResultBody {
 ///
 /// The sub-context's BIP-32 base nests under the parent's, and the path depth is
 /// bounded by [`vti_common::context_path::child_path`].
+/// The create gate: the caller must be an admin **or** hold
+/// [`Capability::ContextCreate`](vti_common::acl::Capability::ContextCreate).
+///
+/// Necessary and not sufficient on its own — [`create_context`] then applies
+/// the finer rule: super-admin for a top-level context, reach-the-parent for a
+/// sub-context. So a capability holder can only branch under what it already
+/// administers, which is what lets an automated provisioner exist without being
+/// an admin of the context it provisions into.
+///
+/// Lives here rather than in the handler because the create surface is
+/// reachable over more than one transport, and a gate written per transport is
+/// a gate that eventually differs between them.
+///
+/// A failed ACL read refuses rather than falling through to the role check: not
+/// being able to confirm a capability is not the same as the caller not having
+/// one, and the safe reading of "I cannot tell" is no.
+pub async fn ensure_may_create_context(
+    acl_ks: &KeyspaceHandle,
+    auth: &AuthClaims,
+) -> Result<(), AppError> {
+    use vti_common::acl::Capability;
+
+    let entry = vti_common::acl::get_acl_entry(acl_ks, &auth.did)
+        .await
+        .map_err(|e| {
+            tracing::error!(
+                error = %e, did = %auth.did,
+                "could not read the ACL entry for a context-create capability check; refusing"
+            );
+            AppError::Forbidden(format!(
+                "contexts/create denied: could not confirm that {} carries the context-create \
+                 capability",
+                auth.did
+            ))
+        })?;
+
+    let has_capability = match entry {
+        Some(ref entry) => vti_common::acl::entry_has_capability(entry, Capability::ContextCreate),
+        None => vti_common::acl::role_has_capability(&auth.role, Capability::ContextCreate),
+    };
+    if has_capability {
+        return Ok(());
+    }
+
+    // Report the role failure when both fail: naming a capability the caller
+    // does not hold tells it what to ask for, and the role gate is the one
+    // every other caller meets.
+    auth.require_admin()
+}
+
 pub async fn create_context(
     contexts_ks: &KeyspaceHandle,
     auth: &AuthClaims,
@@ -1693,5 +1743,174 @@ mod tests {
         assert_eq!(err.to_string(), absent.to_string());
 
         assert!(get_context(&ks.contexts, "other").await.unwrap().is_some());
+    }
+
+    // ─── `context-create` capability ─────────────────────────────────────
+    //
+    // The power under test: an automated provisioner can branch under a
+    // context it already reaches, without being an admin of it.
+
+    /// One store, both keyspaces: opening the same directory twice is a
+    /// `Store(Locked)`.
+    fn fresh_contexts_and_acl() -> (tempfile::TempDir, Store, KeyspaceHandle, KeyspaceHandle) {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&StoreConfig {
+            data_dir: dir.path().to_path_buf(),
+        })
+        .unwrap();
+        let contexts = store.keyspace(crate::keyspaces::CONTEXTS).unwrap();
+        let acl = store.keyspace(crate::keyspaces::ACL).unwrap();
+        (dir, store, contexts, acl)
+    }
+
+    /// A non-admin scoped to one context, carrying only `context-create` —
+    /// exactly the grant an agent gateway is paired with.
+    async fn provisioner(acl_ks: &KeyspaceHandle, did: &str, context: &str) -> AuthClaims {
+        let entry = vti_common::acl::AclEntry {
+            did: did.to_string(),
+            role: Role::Initiator,
+            label: None,
+            allowed_contexts: vec![context.to_string()],
+            created_at: 0,
+            created_by: "test".to_string(),
+            expires_at: None,
+            kind: Default::default(),
+            capabilities: vec![vti_common::acl::Capability::ContextCreate],
+            device: None,
+            version: 1,
+            step_up_approver: None,
+            step_up_require: None,
+            approve_scope: Default::default(),
+            allowed_keys: None,
+            handoff: None,
+        };
+        vti_common::acl::store_acl_entry(acl_ks, &entry)
+            .await
+            .expect("store the provisioner entry");
+        AuthClaims {
+            did: did.to_string(),
+            role: Role::Initiator,
+            allowed_contexts: vec![context.to_string()],
+            ..Default::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn a_capability_holder_may_create_a_sub_context_without_being_an_admin() {
+        let (_d, _s, ks, acl_ks) = fresh_contexts_and_acl();
+
+        create_context(&ks, &super_admin(), "gw", "Gateway".into(), None, None, "t")
+            .await
+            .expect("super-admin seeds the top-level context");
+
+        let caller = provisioner(&acl_ks, "did:key:zProvisioner", "gw").await;
+        ensure_may_create_context(&acl_ks, &caller)
+            .await
+            .expect("the capability satisfies the create gate without an admin role");
+
+        let created = create_context(
+            &ks,
+            &caller,
+            "agent-1",
+            "Agent 1".into(),
+            None,
+            Some("gw".to_string()),
+            "t",
+        )
+        .await
+        .expect("a sub-context under a reachable parent");
+        assert_eq!(created.id, "gw/agent-1");
+    }
+
+    /// The bound that makes the capability safe: it confers "branch under what
+    /// I already reach", never "create anywhere".
+    #[tokio::test]
+    async fn the_capability_cannot_create_a_top_level_context() {
+        let (_d, _s, ks, acl_ks) = fresh_contexts_and_acl();
+
+        let caller = provisioner(&acl_ks, "did:key:zProvisioner", "gw").await;
+        ensure_may_create_context(&acl_ks, &caller)
+            .await
+            .expect("the gate passes; the finer rule is enforced below it");
+
+        let err = match create_context(&ks, &caller, "rogue", "Rogue".into(), None, None, "t").await
+        {
+            Ok(created) => {
+                panic!("a top-level context must still require super-admin: {created:?}")
+            }
+            Err(e) => e,
+        };
+        assert!(
+            format!("{err:?}").contains("super") || matches!(err, ContextError::Other(_)),
+            "{err:?}"
+        );
+    }
+
+    /// Reaching the parent is required as well as the capability, so the
+    /// capability cannot be used to grow somebody else's subtree.
+    #[tokio::test]
+    async fn the_capability_cannot_reach_another_contexts_subtree() {
+        let (_d, _s, ks, acl_ks) = fresh_contexts_and_acl();
+
+        create_context(&ks, &super_admin(), "gw", "Gateway".into(), None, None, "t")
+            .await
+            .unwrap();
+        create_context(
+            &ks,
+            &super_admin(),
+            "other",
+            "Other".into(),
+            None,
+            None,
+            "t",
+        )
+        .await
+        .unwrap();
+
+        let caller = provisioner(&acl_ks, "did:key:zProvisioner", "gw").await;
+        let err = match create_context(
+            &ks,
+            &caller,
+            "agent-1",
+            "Agent 1".into(),
+            None,
+            Some("other".to_string()),
+            "t",
+        )
+        .await
+        {
+            Ok(created) => {
+                panic!("a parent the caller does not reach must be refused: {created:?}")
+            }
+            Err(e) => e,
+        };
+        assert!(matches!(err, ContextError::ParentUnreachable), "{err:?}");
+    }
+
+    /// Without the capability a non-admin is refused by the role gate, which is
+    /// the behaviour every caller had before the capability existed.
+    #[tokio::test]
+    async fn a_non_admin_without_the_capability_is_still_refused() {
+        let (_d, _s, _ks, acl_ks) = fresh_contexts_and_acl();
+        let caller = AuthClaims {
+            did: "did:key:zPlain".to_string(),
+            role: Role::Initiator,
+            allowed_contexts: vec!["gw".to_string()],
+            ..Default::default()
+        };
+        assert!(
+            ensure_may_create_context(&acl_ks, &caller).await.is_err(),
+            "a non-admin with no capability must not pass the create gate"
+        );
+    }
+
+    /// An admin keeps working through the role, with no entry and no capability
+    /// — the capability adds a path, it does not replace one.
+    #[tokio::test]
+    async fn an_admin_still_passes_the_gate_without_the_capability() {
+        let (_d, _s, _ks, acl_ks) = fresh_contexts_and_acl();
+        ensure_may_create_context(&acl_ks, &admin_of("gw"))
+            .await
+            .expect("an admin passes the gate as it always did");
     }
 }

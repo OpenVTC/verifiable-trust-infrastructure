@@ -118,9 +118,13 @@ pub(super) async fn handle_create(
     auth: &AuthClaims,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    // Admin role required; `create_context` enforces the finer gate (super-admin
-    // for a top-level context, admin-of-parent for a sub-context).
-    if let Err(e) = auth.require_admin() {
+    // Admin role, **or** the narrow context-create capability. `create_context`
+    // enforces the finer gate either way: super-admin for a top-level context,
+    // reach-the-parent for a sub-context. So a capability holder can branch
+    // under what it already administers and nothing more — which is what lets
+    // an automated provisioner exist without being an admin of the context it
+    // provisions into.
+    if let Err(e) = operations::contexts::ensure_may_create_context(&state.acl_ks, auth).await {
         return app_error_to_reject(&doc, e);
     }
     let req: CreateContextBody = match parse_payload(&doc) {
