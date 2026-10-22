@@ -250,6 +250,8 @@ fn audit_room(
     record_key: Option<&str>,
 ) {
     let entry = rooms_audit::for_operation(room.visibility, authorized, record_key);
+    #[cfg(test)]
+    AUDITED.with(|audited| audited.borrow_mut().push(operation.action_name()));
     tracing::info!(
         action = operation.action_name(),
         room = %entry.room_id,
@@ -258,6 +260,15 @@ fn audit_room(
         visibility = ?room.visibility,
         "room operation"
     );
+}
+
+// What `audit_room` recorded on this thread, so a test can assert on the trail without
+// capturing log output. A thread-local `tracing` subscriber is not reliable for that when
+// other tests share the process (`cargo test`): a callsite's cached interest can be settled
+// by another thread before the subscriber exists, and the event is then never delivered.
+#[cfg(test)]
+thread_local! {
+    static AUDITED: std::cell::RefCell<Vec<&'static str>> = const { std::cell::RefCell::new(Vec::new()) };
 }
 
 fn now() -> u64 {
@@ -2830,31 +2841,9 @@ mod tests {
             .expect("register the room");
     }
 
-    /// A `MakeWriter` over a shared buffer, so a test can read what the host logged.
-    #[derive(Clone, Default)]
-    struct Captured(Arc<std::sync::Mutex<Vec<u8>>>);
-
-    impl std::io::Write for Captured {
-        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-            self.0.lock().unwrap().extend_from_slice(buf);
-            Ok(buf.len())
-        }
-        fn flush(&mut self) -> std::io::Result<()> {
-            Ok(())
-        }
-    }
-
-    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for Captured {
-        type Writer = Captured;
-        fn make_writer(&'a self) -> Self::Writer {
-            self.clone()
-        }
-    }
-
-    impl Captured {
-        fn take(&self) -> String {
-            String::from_utf8(std::mem::take(&mut *self.0.lock().unwrap())).unwrap()
-        }
+    /// Take what `audit_room` recorded on this thread since the last call.
+    fn take_audited() -> Vec<&'static str> {
+        AUDITED.with(|audited| std::mem::take(&mut *audited.borrow_mut()))
     }
 
     /// `rooms/epoch/prune/0.1`: `admin` only (a `read` chain is `permissionDenied`), a floor
@@ -2862,15 +2851,8 @@ mod tests {
     /// audited as `room.epoch.prune` — never as the mint it used to be logged as.
     #[tokio::test]
     async fn a_prune_needs_admin_and_is_audited_as_a_prune() {
-        let logs = Captured::default();
-        let subscriber = tracing_subscriber::fmt()
-            .with_writer(logs.clone())
-            .with_ansi(false)
-            .finish();
         // The test runtime is current-thread, so the host's handlers run on this thread
-        // and log through this subscriber.
-        let _guard = tracing::subscriber::set_default(subscriber);
-
+        // and record to this thread's trail.
         let (_d, st) = state();
         let app = router(st);
         let f = RoomFixture::new(Visibility::Open).await;
@@ -2890,7 +2872,7 @@ mod tests {
         .await;
         assert_eq!(status, StatusCode::OK, "{minted}");
         let current = minted["epoch"].as_u64().unwrap();
-        logs.take();
+        take_audited();
 
         // The agent's chain confers `read` only: refused, and nothing audited.
         let (status, body) = call(
@@ -2907,7 +2889,7 @@ mod tests {
         .await;
         assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
         assert!(
-            !logs.take().contains("room.epoch.prune"),
+            !take_audited().contains(&"room.epoch.prune"),
             "a refused prune must not be audited as one"
         );
 
@@ -2932,7 +2914,7 @@ mod tests {
         assert_eq!(body["details"]["epoch"].as_u64(), Some(current), "{body}");
 
         // The owner, below it: performed, and audited as what it was.
-        logs.take();
+        take_audited();
         let (status, body) = call(
             &app,
             ROOMS_EPOCH_PRUNE_TYPE,
@@ -2951,14 +2933,14 @@ mod tests {
             body["pruned"].is_u64() && body["earliestRung"].is_u64(),
             "{body}"
         );
-        let logged = logs.take();
+        let logged = take_audited();
         assert!(
-            logged.contains("room.epoch.prune"),
-            "the prune must be audited as a prune: {logged}"
+            logged.contains(&"room.epoch.prune"),
+            "the prune must be audited as a prune: {logged:?}"
         );
         assert!(
-            !logged.contains("room.epoch.mint"),
-            "a prune is not a mint: {logged}"
+            !logged.contains(&"room.epoch.mint"),
+            "a prune is not a mint: {logged:?}"
         );
     }
 
