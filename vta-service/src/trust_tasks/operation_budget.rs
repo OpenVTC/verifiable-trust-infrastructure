@@ -2,13 +2,19 @@
 //! bound the resources any one subject can consume, and MUST bound those
 //! available to unauthenticated peers separately").
 //!
-//! Three token buckets, each unset (unbounded) unless configured in `[server]`:
+//! Three token buckets, configured in `[server]`:
 //!
-//! | Bucket | Charged to | Key |
-//! |---|---|---|
-//! | appliance | every client with standing, together | `operation_rate_limit_per_sec` |
-//! | per subject | each client with standing, by its DID | `operation_rate_limit_per_subject_per_sec` |
-//! | unauthenticated | every DIDComm / TSP sender without standing, together | `operation_rate_limit_unauthenticated_per_sec` |
+//! | Bucket | Charged to | Key | Absent |
+//! |---|---|---|---|
+//! | appliance | every client with standing, together | `operation_rate_limit_per_sec` | unbounded |
+//! | per subject | each client with standing, by its DID | `operation_rate_limit_per_subject_per_sec` | 100 a second |
+//! | unauthenticated | every DIDComm / TSP sender without standing, together | `operation_rate_limit_unauthenticated_per_sec` | 50 a second |
+//!
+//! The two VTI-TRN-029 requires are always on: a VTA nobody sized still bounds
+//! each client and its strangers, with defaults generous enough that only a
+//! runaway client or a flood meets them. The appliance budget is what keeps an
+//! instance below the load at which it stops answering, and its right value is
+//! a property of the hardware, so it is the operator's to set.
 //!
 //! A client has standing when it authenticated with a session (REST bearer) or
 //! has an ACL entry (a proven DIDComm / TSP sender). It is charged to its own
@@ -54,11 +60,15 @@
 //! resending the same document is a retry.
 
 use std::num::NonZeroU32;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use governor::clock::{Clock, DefaultClock};
-use governor::{DefaultDirectRateLimiter, DefaultKeyedRateLimiter, Quota, RateLimiter};
+use governor::clock::Clock;
+use governor::middleware::NoOpMiddleware;
+use governor::state::keyed::DefaultKeyedStateStore;
+use governor::state::{InMemoryState, NotKeyed};
+use governor::{Quota, RateLimiter};
 use metrics::counter;
 use vta_config::ServerConfig;
 #[allow(deprecated)] // `vault/release/0.1` is still served, so still charged.
@@ -83,6 +93,50 @@ const SWEEP_EVERY: u64 = 4096;
 /// The metric label of the unauthenticated budget. Never a 429 scope: REST
 /// callers without standing are bounded per IP instead.
 const UNAUTHENTICATED_SCOPE: &str = "operations-unauthenticated";
+
+/// The clock the budgets read: the monotonic clock, or one a test moves by
+/// hand, so a test of a budget never depends on how fast it runs.
+#[derive(Clone, Debug, Default)]
+pub struct BudgetClock(Option<Arc<ManualTime>>);
+
+#[derive(Debug)]
+struct ManualTime {
+    start: Instant,
+    elapsed_nanos: AtomicU64,
+}
+
+impl BudgetClock {
+    /// A clock that stands still until [`Self::advance`] moves it.
+    pub fn manual() -> Self {
+        Self(Some(Arc::new(ManualTime {
+            start: Instant::now(),
+            elapsed_nanos: AtomicU64::new(0),
+        })))
+    }
+
+    /// Move a [`Self::manual`] clock forward. The monotonic clock is not moved.
+    pub fn advance(&self, by: Duration) {
+        if let Some(t) = &self.0 {
+            let nanos = u64::try_from(by.as_nanos()).unwrap_or(u64::MAX);
+            t.elapsed_nanos.fetch_add(nanos, Ordering::Relaxed);
+        }
+    }
+}
+
+impl Clock for BudgetClock {
+    type Instant = Instant;
+
+    fn now(&self) -> Instant {
+        match &self.0 {
+            None => Instant::now(),
+            Some(t) => t.start + Duration::from_nanos(t.elapsed_nanos.load(Ordering::Relaxed)),
+        }
+    }
+}
+
+type DirectLimiter = RateLimiter<NotKeyed, InMemoryState, BudgetClock, NoOpMiddleware<Instant>>;
+type KeyedLimiter =
+    RateLimiter<String, DefaultKeyedStateStore<String>, BudgetClock, NoOpMiddleware<Instant>>;
 
 /// What a task costs against a budget, in signs. A task not listed costs one,
 /// measured or not: tasks that publish a DID log entry other than create and
@@ -154,17 +208,15 @@ fn quota(per_sec: Option<u32>, burst: Option<u32>) -> Option<Quota> {
 
 /// What charging one bucket returned, as a refusal naming `scope`.
 fn refusal(
-    checked: Result<
-        Result<(), governor::NotUntil<<DefaultClock as Clock>::Instant>>,
-        governor::InsufficientCapacity,
-    >,
+    checked: Result<Result<(), governor::NotUntil<Instant>>, governor::InsufficientCapacity>,
+    clock: &BudgetClock,
     scope: Scope,
 ) -> Result<(), Refused> {
     match checked {
         Ok(Ok(())) => Ok(()),
         Ok(Err(not_until)) => Err(Refused {
             scope,
-            retry_after: not_until.wait_time_from(DefaultClock::default().now()),
+            retry_after: not_until.wait_time_from(clock.now()),
         }),
         // Unreachable while every burst is at least MAX_WEIGHT; refused with a
         // one-second hint rather than admitted, should a weight outgrow it.
@@ -209,11 +261,11 @@ impl Warning {
 /// The budgets in force for this generation of the service. Read from
 /// `[server]` when the state is built, so a change takes a restart, and a TEE
 /// VTA gets them from its tenant overlay on every boot.
-#[derive(Default)]
 pub struct OperationBudget {
-    appliance: Option<DefaultDirectRateLimiter>,
-    per_subject: Option<DefaultKeyedRateLimiter<String>>,
-    unauthenticated: Option<DefaultDirectRateLimiter>,
+    clock: BudgetClock,
+    appliance: Option<DirectLimiter>,
+    per_subject: KeyedLimiter,
+    unauthenticated: DirectLimiter,
     subject_charges: AtomicU64,
     appliance_warning: Warning,
     subject_warning: Warning,
@@ -221,27 +273,49 @@ pub struct OperationBudget {
 }
 
 impl OperationBudget {
-    /// The budgets `[server]` configures; each absent rate is unbounded.
+    /// The budgets `[server]` configures, on the monotonic clock. An absent
+    /// appliance rate is unbounded; the per-client and unauthenticated ones
+    /// take their defaults.
     pub fn from_config(server: &ServerConfig) -> Self {
-        let appliance = quota(
-            server.operation_rate_limit_per_sec,
-            server.operation_rate_limit_burst,
+        Self::with_clock(server, BudgetClock::default())
+    }
+
+    /// [`Self::from_config`] on `clock`: a test passes a
+    /// [`BudgetClock::manual`] one.
+    pub fn with_clock(server: &ServerConfig, clock: BudgetClock) -> Self {
+        let per_subject_per_sec = server.operation_per_subject_per_sec();
+        let unauthenticated_per_sec = server.operation_unauthenticated_per_sec();
+        // A zero is refused at load; should one get here, it is bounded as
+        // tightly as a rate can be rather than read as no bound.
+        let bounded = |per_sec: u32| {
+            quota(Some(per_sec.max(1)), None).expect("a rate of at least 1 has a quota")
+        };
+        tracing::info!(
+            appliance_per_sec = server.operation_rate_limit_per_sec,
+            per_subject_per_sec,
+            unauthenticated_per_sec,
+            "operation budgets in force for Trust Tasks"
         );
-        let per_subject = quota(server.operation_rate_limit_per_subject_per_sec, None);
-        let unauthenticated = quota(server.operation_rate_limit_unauthenticated_per_sec, None);
-        if appliance.is_some() || per_subject.is_some() || unauthenticated.is_some() {
-            tracing::info!(
-                appliance_per_sec = server.operation_rate_limit_per_sec,
-                per_subject_per_sec = server.operation_rate_limit_per_subject_per_sec,
-                unauthenticated_per_sec = server.operation_rate_limit_unauthenticated_per_sec,
-                "operation budgets in force for Trust Tasks"
-            );
-        }
         Self {
-            appliance: appliance.map(RateLimiter::direct),
-            per_subject: per_subject.map(RateLimiter::keyed),
-            unauthenticated: unauthenticated.map(RateLimiter::direct),
-            ..Self::default()
+            appliance: quota(
+                server.operation_rate_limit_per_sec,
+                server.operation_rate_limit_burst,
+            )
+            .map(|q| RateLimiter::direct_with_clock(q, clock.clone())),
+            per_subject: RateLimiter::new(
+                bounded(per_subject_per_sec),
+                DefaultKeyedStateStore::default(),
+                clock.clone(),
+            ),
+            unauthenticated: RateLimiter::direct_with_clock(
+                bounded(unauthenticated_per_sec),
+                clock.clone(),
+            ),
+            clock,
+            subject_charges: AtomicU64::default(),
+            appliance_warning: Warning::default(),
+            subject_warning: Warning::default(),
+            unauthenticated_warning: Warning::default(),
         }
     }
 
@@ -257,12 +331,20 @@ impl OperationBudget {
     pub(crate) fn charge(&self, caller: Caller<'_>, type_uri: &str) -> Result<(), Refused> {
         let cost = NonZeroU32::new(weight(type_uri)).expect("every weight is at least 1");
         let result = match caller {
-            Caller::Client(did) => self
-                .charge_subject(did, cost)
-                .and_then(|()| charge_direct(&self.appliance, cost, Scope::Appliance)),
-            Caller::Unauthenticated => {
-                charge_direct(&self.unauthenticated, cost, Scope::Unauthenticated)
+            Caller::Client(did) => {
+                self.charge_subject(did, cost)
+                    .and_then(|()| match &self.appliance {
+                        None => Ok(()),
+                        Some(limiter) => {
+                            refusal(limiter.check_n(cost), &self.clock, Scope::Appliance)
+                        }
+                    })
             }
+            Caller::Unauthenticated => refusal(
+                self.unauthenticated.check_n(cost),
+                &self.clock,
+                Scope::Unauthenticated,
+            ),
         };
         if let Err(refused) = result {
             counter!("vta_operation_budget_refused_total", "scope" => refused.scope.name())
@@ -278,27 +360,19 @@ impl OperationBudget {
     }
 
     fn charge_subject(&self, did: &str, cost: NonZeroU32) -> Result<(), Refused> {
-        let Some(limiter) = &self.per_subject else {
-            return Ok(());
-        };
+        let limiter = &self.per_subject;
         if self.subject_charges.fetch_add(1, Ordering::Relaxed) % SWEEP_EVERY == SWEEP_EVERY - 1 {
             limiter.retain_recent();
             limiter.shrink_to_fit();
         }
-        refusal(limiter.check_key_n(&did.to_string(), cost), Scope::Subject)
+        refusal(
+            limiter.check_key_n(&did.to_string(), cost),
+            &self.clock,
+            Scope::Subject,
+        )
     }
 }
 
-fn charge_direct(
-    limiter: &Option<DefaultDirectRateLimiter>,
-    cost: NonZeroU32,
-    scope: Scope,
-) -> Result<(), Refused> {
-    match limiter {
-        None => Ok(()),
-        Some(limiter) => refusal(limiter.check_n(cost), scope),
-    }
-}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -318,19 +392,60 @@ mod tests {
     fn budget(per_sec: u32, burst: Option<u32>) -> OperationBudget {
         let mut s = server(Some(per_sec), None, None);
         s.operation_rate_limit_burst = burst;
-        OperationBudget::from_config(&s)
+        frozen(&s)
+    }
+
+    /// The budgets on a clock that stands still, so no token refills while a
+    /// test runs, however slowly.
+    fn frozen(s: &ServerConfig) -> OperationBudget {
+        OperationBudget::with_clock(s, BudgetClock::manual())
+    }
+
+    /// VTI-TRN-029 is a MUST: a VTA nobody sized still bounds each client and
+    /// its strangers, at the defaults, and leaves the appliance unbounded.
+    #[test]
+    fn an_unsized_vta_still_bounds_each_client_and_strangers() {
+        let b = frozen(&ServerConfig::default());
+        let per_subject = vta_config::DEFAULT_OPERATION_RATE_LIMIT_PER_SUBJECT_PER_SEC;
+        for i in 0..per_subject {
+            assert_eq!(b.charge(ALICE, TASK_KEYS_SIGN_0_1), Ok(()), "alice {i}");
+        }
+        let refused = b.charge(ALICE, TASK_KEYS_SIGN_0_1).unwrap_err();
+        assert_eq!(refused.scope, Scope::Subject);
+        // No appliance budget: another client still has its whole share.
+        for i in 0..per_subject {
+            assert_eq!(b.charge(BOB, TASK_KEYS_SIGN_0_1), Ok(()), "bob {i}");
+        }
+
+        let unauthenticated = vta_config::DEFAULT_OPERATION_RATE_LIMIT_UNAUTHENTICATED_PER_SEC;
+        for i in 0..unauthenticated {
+            assert_eq!(
+                b.charge(Caller::Unauthenticated, TASK_KEYS_SIGN_0_1),
+                Ok(()),
+                "stranger {i}"
+            );
+        }
+        let refused = b
+            .charge(Caller::Unauthenticated, TASK_KEYS_SIGN_0_1)
+            .unwrap_err();
+        assert_eq!(refused.scope, Scope::Unauthenticated);
     }
 
     #[test]
-    fn no_rate_configured_admits_everything() {
-        let b = OperationBudget::from_config(&ServerConfig::default());
-        for _ in 0..10_000 {
-            assert_eq!(b.charge(ALICE, TASK_WEBVH_DIDS_CREATE_1_1), Ok(()));
-            assert_eq!(
-                b.charge(Caller::Unauthenticated, TASK_KEYS_SIGN_0_1),
-                Ok(())
-            );
+    fn a_refused_budget_has_room_again_once_its_wait_has_passed() {
+        let clock = BudgetClock::manual();
+        let b = OperationBudget::with_clock(&server(Some(1), None, None), clock.clone());
+        for _ in 0..10 {
+            b.charge(ALICE, TASK_KEYS_SIGN_0_1).unwrap();
         }
+        let refused = b.charge(ALICE, TASK_KEYS_SIGN_0_1).unwrap_err();
+        assert_eq!(refused.retry_after, Duration::from_secs(1));
+        clock.advance(refused.retry_after);
+        assert_eq!(b.charge(ALICE, TASK_KEYS_SIGN_0_1), Ok(()));
+        assert!(
+            b.charge(ALICE, TASK_KEYS_SIGN_0_1).is_err(),
+            "one token, not two"
+        );
     }
 
     #[test]
@@ -403,7 +518,7 @@ mod tests {
     /// VTI-TRN-029, first clause: one subject cannot take what the others need.
     #[test]
     fn one_client_cannot_take_another_clients_share() {
-        let b = OperationBudget::from_config(&server(Some(100), Some(10), None));
+        let b = frozen(&server(Some(100), Some(10), None));
         for _ in 0..10 {
             b.charge(ALICE, TASK_KEYS_SIGN_0_1).unwrap();
         }
@@ -417,7 +532,7 @@ mod tests {
     /// A client refused for its own share does not spend the appliance budget.
     #[test]
     fn a_subjects_refused_excess_leaves_the_appliance_budget_alone() {
-        let b = OperationBudget::from_config(&server(Some(20), Some(10), None));
+        let b = frozen(&server(Some(20), Some(10), None));
         for _ in 0..50 {
             let _ = b.charge(ALICE, TASK_KEYS_SIGN_0_1);
         }
@@ -430,7 +545,7 @@ mod tests {
     /// separately, and never spend the clients' budget.
     #[test]
     fn unauthenticated_peers_have_their_own_bound() {
-        let b = OperationBudget::from_config(&server(Some(10), None, Some(10)));
+        let b = frozen(&server(Some(10), None, Some(10)));
         for _ in 0..10 {
             b.charge(Caller::Unauthenticated, TASK_KEYS_SIGN_0_1)
                 .unwrap();

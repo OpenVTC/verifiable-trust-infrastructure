@@ -66,19 +66,26 @@ or proxy that revalidates spends a cheap request rather than a full transfer.
 
 ## Operation budgets: Trust Task work, per appliance and per client
 
-Unset (the default), a VTA serves every Trust Task it is sent. Offered more
-than it can serve, it stops answering in time: on a TEE appliance the load
-balancer returns 502s, health checks fail, and after five minutes the runtime
-watchdog restarts the enclave. Three budgets bound that work instead, so work
-past them is refused before it runs and the rest is served at normal latency.
-They implement VTI-TRN-029: a node bounds what any one subject can consume, and
-bounds unauthenticated peers separately.
+A VTA offered more Trust Task work than it can serve stops answering in time:
+on a TEE appliance the load balancer returns 502s, health checks fail, and after
+five minutes the runtime watchdog restarts the enclave. Three budgets bound that
+work instead, so work past them is refused before it runs and the rest is served
+at normal latency. They implement VTI-TRN-029: a node bounds what any one
+subject can consume, and bounds unauthenticated peers separately.
 
-| Budget (`x-rate-limit-scope`) | Charged to | Key |
-|---|---|---|
-| appliance (`operations`) | every client with standing, together | `operation_rate_limit_per_sec`, `operation_rate_limit_burst` |
-| per client (`operations-subject`) | each client with standing, by its DID | `operation_rate_limit_per_subject_per_sec` |
-| unauthenticated | every DIDComm / TSP sender without standing, together | `operation_rate_limit_unauthenticated_per_sec` |
+| Budget (`x-rate-limit-scope`) | Charged to | Key | Unset |
+|---|---|---|---|
+| appliance (`operations`) | every client with standing, together | `operation_rate_limit_per_sec`, `operation_rate_limit_burst` | unbounded |
+| per client (`operations-subject`) | each client with standing, by its DID | `operation_rate_limit_per_subject_per_sec` | 100 a second |
+| unauthenticated | every DIDComm / TSP sender without standing, together | `operation_rate_limit_unauthenticated_per_sec` | 50 a second |
+
+The per-client and unauthenticated budgets are **always on**: VTI-TRN-029 is a
+MUST, so there is no setting that turns them off, and a VTA nobody sized still
+bounds each client and its strangers. Their defaults are generous — they stop a
+runaway client or a flood, not ordinary heavy use; raise one with a higher
+value. The appliance budget is what keeps an instance below the load at which
+it stops answering, and its right value depends on the hardware, so it is unset
+until an operator sizes it (below).
 
 - **Who has standing.** A REST request with a valid bearer, or a DIDComm / TSP
   sender with an ACL entry. It is charged to its own share first and then to
@@ -117,7 +124,8 @@ bounds unauthenticated peers separately.
   `vta_operation_budget_refused_total{scope}`; the VTA logs at most one warning
   a minute per budget while it is refusing.
 
-All values are operations per second, 1 or more; unset means unbounded. The
+All values are operations per second, 1 or more; unset takes the default in the
+table above. The
 appliance burst defaults to one second's worth; every burst is at least 10, the
 heaviest weight, so any task can be served on an idle appliance.
 
@@ -275,7 +283,7 @@ did_log_rate_limit_burst = 60
 
 # operation budgets: appliance, per client, and DIDComm/TSP senders without
 # standing; operations per second (a rate, unlike the intervals above).
-# Unset = unbounded.
+# Unset: no appliance budget, 100/s per client, 50/s without standing.
 # operation_rate_limit_per_sec = 110
 # operation_rate_limit_burst = 220
 # operation_rate_limit_per_subject_per_sec = 30

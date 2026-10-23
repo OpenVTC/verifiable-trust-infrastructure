@@ -6803,7 +6803,10 @@ mod didcomm_sender_binding {
         server.operation_rate_limit_per_sec = Some(1);
         server.operation_rate_limit_unauthenticated_per_sec = Some(1);
         state.operation_budget =
-            std::sync::Arc::new(operation_budget::OperationBudget::from_config(&server));
+            std::sync::Arc::new(operation_budget::OperationBudget::with_clock(
+                &server,
+                operation_budget::BudgetClock::manual(),
+            ));
 
         // A stranger's refusals are charged to the unauthenticated budget: its
         // burst (raised to the heaviest weight, 10) is answered, then dropped
@@ -6847,7 +6850,10 @@ mod didcomm_sender_binding {
         let mut server = vta_config::ServerConfig::default();
         server.operation_rate_limit_unauthenticated_per_sec = Some(1);
         state.operation_budget =
-            std::sync::Arc::new(operation_budget::OperationBudget::from_config(&server));
+            std::sync::Arc::new(operation_budget::OperationBudget::with_clock(
+                &server,
+                operation_budget::BudgetClock::manual(),
+            ));
         let challenge = || {
             serde_json::to_vec(&serde_json::json!({
                 "id": format!("urn:uuid:{}", uuid::Uuid::new_v4()),

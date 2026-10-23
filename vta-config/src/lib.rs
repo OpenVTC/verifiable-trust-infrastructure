@@ -526,8 +526,10 @@ pub struct ServerConfig {
     pub did_log_rate_limit_burst: u32,
     /// Per-appliance budget for **authenticated** Trust Tasks, in
     /// **operations per second** (unlike the per-IP intervals above, this one
-    /// is a rate). Absent (the default) means no budget: every authenticated
-    /// Trust Task is served, as before.
+    /// is a rate). Absent (the default) means no appliance budget: the work is
+    /// bounded only by each client's share and the unauthenticated budget,
+    /// whose right sum depends on the hardware, so sizing it is the
+    /// operator's.
     ///
     /// One token bucket for the whole VTA, shared by REST, DIDComm and TSP, so
     /// the sum of every client's work is bounded; each client's share is
@@ -552,15 +554,22 @@ pub struct ServerConfig {
     /// Per-client share of the operation budget, in operations per second:
     /// how much one client with standing (a session, or an ACL entry) may use,
     /// keyed by its DID, so it cannot take what the others need (VTI-TRN-029).
-    /// Charged before the appliance budget. Absent means no per-client bound.
-    /// The burst is one second's worth, never below 10. Must be at least 1.
+    /// Charged before the appliance budget. Absent means
+    /// [`DEFAULT_OPERATION_RATE_LIMIT_PER_SUBJECT_PER_SEC`]: VTI-TRN-029 is a
+    /// MUST, so there is no unbounded setting, and a VTA that is never sized
+    /// still bounds each client (read it through
+    /// [`ServerConfig::operation_per_subject_per_sec`]). The burst is one
+    /// second's worth, never below 10. Must be at least 1.
     #[serde(default)]
     pub operation_rate_limit_per_subject_per_sec: Option<u32>,
     /// Budget for DIDComm / TSP senders without standing — the login steps,
     /// public tasks, credential-exchange counterparties, approvers — in
     /// operations per second, all together and apart from the clients' budget,
     /// so strangers cannot spend it (VTI-TRN-029). Anonymous REST requests are
-    /// bounded per IP instead. Absent means unbounded. Must be at least 1.
+    /// bounded per IP instead. Absent means
+    /// [`DEFAULT_OPERATION_RATE_LIMIT_UNAUTHENTICATED_PER_SEC`], for the reason
+    /// the per-client share gives (read it through
+    /// [`ServerConfig::operation_unauthenticated_per_sec`]). Must be at least 1.
     #[serde(default)]
     pub operation_rate_limit_unauthenticated_per_sec: Option<u32>,
     /// Retired: `trust_xff`. Present only to **refuse** a config that still
@@ -622,6 +631,34 @@ fn default_server_config() -> ServerConfig {
 fn default_store_config() -> StoreConfig {
     StoreConfig {
         data_dir: PathBuf::from("data/vta"),
+    }
+}
+
+/// The per-client operation budget a VTA applies when
+/// `[server] operation_rate_limit_per_subject_per_sec` is absent (VTI-TRN-029).
+/// Generous on purpose: it stops one runaway client, not ordinary heavy use; an
+/// operator sizing an appliance sets a tighter one.
+pub const DEFAULT_OPERATION_RATE_LIMIT_PER_SUBJECT_PER_SEC: u32 = 100;
+
+/// The budget for DIDComm / TSP senders without standing when
+/// `[server] operation_rate_limit_unauthenticated_per_sec` is absent
+/// (VTI-TRN-029). Room for logins, approvers and public tasks, not a flood.
+pub const DEFAULT_OPERATION_RATE_LIMIT_UNAUTHENTICATED_PER_SEC: u32 = 50;
+
+impl ServerConfig {
+    /// Each client's share of the operation budget, in operations per second:
+    /// the configured value, or the default. Never unbounded (VTI-TRN-029).
+    pub fn operation_per_subject_per_sec(&self) -> u32 {
+        self.operation_rate_limit_per_subject_per_sec
+            .unwrap_or(DEFAULT_OPERATION_RATE_LIMIT_PER_SUBJECT_PER_SEC)
+    }
+
+    /// The budget for DIDComm / TSP senders without standing, in operations
+    /// per second: the configured value, or the default. Never unbounded
+    /// (VTI-TRN-029).
+    pub fn operation_unauthenticated_per_sec(&self) -> u32 {
+        self.operation_rate_limit_unauthenticated_per_sec
+            .unwrap_or(DEFAULT_OPERATION_RATE_LIMIT_UNAUTHENTICATED_PER_SEC)
     }
 }
 
@@ -1516,8 +1553,8 @@ impl AppConfig {
         }
         errors.extend(self.did_cache.validation_errors());
         errors.extend(self.witness.validation_errors());
-        // An operation budget of 0 would read as "no budget" — the bound
-        // failing open (VTI-TRN-029). Omitting the key already says that.
+        // An operation budget of 0 would starve the VTA or, read as "no
+        // budget", fail open (VTI-TRN-029). Omitting the key takes the default.
         for (key, value) in [
             (
                 "operation_rate_limit_per_sec",
@@ -1538,7 +1575,7 @@ impl AppConfig {
         ] {
             if value == Some(0) {
                 errors.push(format!(
-                    "[server] {key} = 0 — remove the key for no budget, or set 1 or more \
+                    "[server] {key} = 0 — remove the key for the default, or set 1 or more \
                      (operations per second)"
                 ));
             }
@@ -1689,7 +1726,8 @@ mod validate_tests {
         assert_eq!(config.server.trust_xff_cidrs.len(), 1);
     }
 
-    /// A zero budget would read as "no budget", failing open (VTI-TRN-029).
+    /// A zero budget would starve the VTA or, read as "no budget", fail open
+    /// (VTI-TRN-029).
     #[test]
     fn a_zero_operation_budget_is_rejected() {
         for key in [
@@ -1706,6 +1744,26 @@ mod validate_tests {
         cfg("[server]\noperation_rate_limit_per_sec = 1\n")
             .validate()
             .expect("a budget of 1 is accepted");
+    }
+
+    /// VTI-TRN-029 is a MUST: an absent per-client or unauthenticated budget
+    /// takes the default, never "unbounded"; an absent appliance budget is off.
+    #[test]
+    fn absent_operation_budgets_take_the_defaults() {
+        let config = cfg("");
+        assert_eq!(
+            config.server.operation_per_subject_per_sec(),
+            DEFAULT_OPERATION_RATE_LIMIT_PER_SUBJECT_PER_SEC
+        );
+        assert_eq!(
+            config.server.operation_unauthenticated_per_sec(),
+            DEFAULT_OPERATION_RATE_LIMIT_UNAUTHENTICATED_PER_SEC
+        );
+        assert_eq!(config.server.operation_rate_limit_per_sec, None);
+        let config = cfg("[server]\noperation_rate_limit_per_subject_per_sec = 7\n\
+             operation_rate_limit_unauthenticated_per_sec = 3\n");
+        assert_eq!(config.server.operation_per_subject_per_sec(), 7);
+        assert_eq!(config.server.operation_unauthenticated_per_sec(), 3);
     }
 
     #[test]

@@ -1039,8 +1039,14 @@ pub struct TestAppOptions {
     pub operation_rate_limit_per_sec: Option<u32>,
 
     /// `[server] operation_rate_limit_per_subject_per_sec`: each client's
-    /// share. `None` (the default) leaves it unlimited.
+    /// share. `None` (the default) takes the VTA's default share.
     pub operation_rate_limit_per_subject_per_sec: Option<u32>,
+
+    /// The clock the operation budgets read. `None` (the default) is the
+    /// monotonic clock; a test of a budget passes
+    /// [`BudgetClock::manual`](crate::trust_tasks::operation_budget::BudgetClock::manual),
+    /// so no token refills while it runs and it moves time itself.
+    pub operation_budget_clock: Option<crate::trust_tasks::operation_budget::BudgetClock>,
 }
 
 /// A mediator-backed transport identity for the mock VTA
@@ -1479,8 +1485,9 @@ pub async fn build_test_app_with(opts: TestAppOptions) -> (axum::Router, TestApp
         external_secrets_ks: store.keyspace(crate::keyspaces::EXTERNAL_SECRETS).unwrap(),
         external_rate: std::sync::Arc::new(vta_external::rate::BindingRateLimiter::new()),
         operation_budget: std::sync::Arc::new(
-            crate::trust_tasks::operation_budget::OperationBudget::from_config(
+            crate::trust_tasks::operation_budget::OperationBudget::with_clock(
                 &config.read().await.server,
+                opts.operation_budget_clock.clone().unwrap_or_default(),
             ),
         ),
         pcs_engine_ks: store.keyspace(crate::keyspaces::PCS_ENGINE).unwrap(),
@@ -2269,6 +2276,7 @@ impl MockVta {
             vta_transport: None,
             operation_rate_limit_per_sec: None,
             operation_rate_limit_per_subject_per_sec: None,
+            operation_budget_clock: None,
         };
         let mut mock = Self::serve(build_test_app_with(opts).await).await;
         mock.webvh_host = Some(host);
