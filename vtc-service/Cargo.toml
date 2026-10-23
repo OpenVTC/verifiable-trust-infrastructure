@@ -172,7 +172,7 @@ path = "tests/it/main.rs"
 [dependencies]
 # Hidden-vetter admission (ZKP), development branch `zkp-pcs`: off by default.
 vti-vetting-pcs = { path = "../vti-vetting-pcs", version = "0.6", optional = true }
-vti-voting = { path = "../vti-voting", version = "0.1", optional = true }
+vti-voting = { path = "../vti-voting", version = "0.2", optional = true }
 predicate-credential-system = { version = "0.1", optional = true }
 vti-rooms = { path = "../vti-rooms", version = "0.20" }
 vti-rooms-dtg = { path = "../vti-rooms-dtg", version = "0.22" }
@@ -230,7 +230,7 @@ image = { version = "0.25", default-features = false, features = ["png", "jpeg",
 # Shared secret-store backend implementations (the VTC's `create_secret_store`
 # factory + `*SecretStore` names are a thin facade over these). Per-backend
 # features are activated by this crate's matching features above.
-vti-secrets = { path = "../vti-secrets", version = "0.21" }
+vti-secrets = { path = "../vti-secrets", version = "0.22" }
 vta-sdk = { path = "../vta-sdk", version = "0.73", features = [
   "didcomm",
   "session",
