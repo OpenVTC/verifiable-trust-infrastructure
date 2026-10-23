@@ -2213,8 +2213,14 @@ impl VsockRestListener {
     /// channel instead of panicking the thread.
     fn adopt(listener: vsock::VsockListener) -> std::io::Result<Self> {
         listener.set_nonblocking(true)?;
+        // SAFETY: `VsockListener` owns its socket — the descriptor is open from
+        // `bind`/`try_clone` until the listener drops, and `as_raw_fd` always
+        // returns that one descriptor. Moving it in makes the `AsyncFd` its sole
+        // owner for as long as it is registered.
+        let inner = unsafe { tokio::io::unix::AsyncFd::register(listener) }
+            .map_err(|e| e.into_parts().1)?;
         Ok(Self {
-            inner: tokio::io::unix::AsyncFd::new(listener)?,
+            inner,
             backoff: AcceptBackoff::default(),
         })
     }
