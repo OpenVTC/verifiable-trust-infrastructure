@@ -270,14 +270,15 @@ pub(super) async fn handle_update(
 }
 
 /// Handler for `spec/vta/contexts/set-issuer-key/0.1`.
+///
+/// The gate lives in the operation, not here: super-admin **or** a provisioner
+/// filling a designation that is unset. Pre-gating on super-admin would make
+/// the provisioning path unreachable through this surface.
 pub(super) async fn handle_set_issuer_key(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    if let Err(e) = auth.require_super_admin() {
-        return app_error_to_reject(&doc, e);
-    }
     let req: vta_sdk::protocols::context_management::set_issuer_key::SetContextIssuerKeyBody =
         match parse_payload(&doc) {
             Ok(r) => r,
@@ -300,7 +301,7 @@ pub(super) async fn handle_set_issuer_key(
     }
 }
 
-/// Handler for `spec/vta/contexts/update-did/1.0` and `/1.1`. Admin only.
+/// Handler for `spec/vta/contexts/update-did/1.0` and `/1.1`.
 ///
 /// One handler, two payload types: 1.1 differs only in that `did` may be
 /// `null` (clear it) and must otherwise be a DID. 1.0 keeps parsing into
@@ -308,14 +309,14 @@ pub(super) async fn handle_set_issuer_key(
 /// holds the pattern. The member is REQUIRED in both — serde would read a
 /// missing `Option` as `None`, i.e. as a clear, but the dispatch spine has
 /// already refused a document without it against the 1.1 schema.
+///
+/// The gate lives in the operation, not here: admin **or** a provisioner
+/// naming a context that has no DID yet.
 pub(super) async fn handle_update_did(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    if let Err(e) = auth.require_admin() {
-        return app_error_to_reject(&doc, e);
-    }
     let (id, did) =
         if doc.type_uri.to_string() == vta_sdk::trust_tasks::TASK_CONTEXTS_UPDATE_DID_1_1 {
             let req: UpdateDidPayload = match parse_payload(&doc) {
