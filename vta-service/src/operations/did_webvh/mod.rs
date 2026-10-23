@@ -132,8 +132,10 @@ pub struct WebvhDeps<'a> {
     /// What lets the outbound seam choose TSP when talking to a webvh host.
     ///
     /// `None` is a real answer, not a gap: a CLI, a setup wizard or a DIDComm
-    /// handler holds no mediator socket of its own, and the seam correctly
-    /// falls to DIDComm there. It is carried on the dep bundle rather than
+    /// handler holds no TSP socket of its own. A DIDComm handler still has the
+    /// live bridge, so the seam falls to DIDComm there; the offline CLI and the
+    /// wizards have a signing-only bridge and no mediator session, so there the
+    /// seam is left with REST. It is carried on the dep bundle rather than
     /// rebuilt further down because `AppState` is the only thing that can
     /// produce one, and the webvh ops layer deliberately does not take an
     /// `AppState`.

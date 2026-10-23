@@ -673,9 +673,12 @@ impl<'a> Outbound<'a> {
     ///
     /// For a caller whose own dependencies were threaded to it — today that is
     /// the webvh layer, whose `WebvhHostClient` carries a [`TspSender`] down
-    /// from its `WebvhDeps`. Passing `tsp: None` is a real answer, not a shortcut: a
-    /// CLI or a setup wizard holds no mediator socket, and the seam correctly
-    /// falls to DIDComm there.
+    /// from its `WebvhDeps`. Passing `tsp: None` is a real answer, not a shortcut.
+    /// What it leaves depends on the bridge beside it: a DIDComm handler holds
+    /// the live bridge and the seam falls to DIDComm there; an offline CLI or a
+    /// setup wizard holds a signing-only bridge, no mediator session at all, so
+    /// there the seam is left with REST, and a host that advertises no HTTPS
+    /// endpoint is out of its reach (`webvh_cli` tells the operator so).
     ///
     /// This replaced a `didcomm_or_rest` constructor that hardcoded `None` and
     /// so silently removed TSP from selection for every webvh call. The name is
