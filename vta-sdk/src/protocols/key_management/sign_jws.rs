@@ -25,13 +25,25 @@ use super::sign::SignAlgorithm;
 
 /// The JOSE `typ` values this task will sign. Anything else is refused, so the
 /// task can never be pointed at producing a credential or other non-JWT
-/// artifact. Spelled exactly as the relevant RFCs register them.
+/// artifact. The OAuth/OIDC entries are spelled exactly as the relevant RFCs
+/// register them.
+///
+/// `gateway-issuer-attestation+jwt` is **not** IANA-registered — it is an
+/// application type belonging to the Agent Gateway, which uses it to tell a
+/// peer gateway which issuer DID stands behind a connection. It is listed for
+/// the same reason the registered ones are: it names a JWT profile, so
+/// permitting it widens nothing structurally. The alternative was the gateway
+/// signing that artifact with a locally held key, which is the custody this
+/// task exists to remove. Adding an application type here is only safe while
+/// it is a JWT profile — anything that would be read as a credential proof or
+/// a task envelope must stay off this list however convenient.
 pub const JWS_ALLOWED_TYPS: &[&str] = &[
     "JWT",
     "at+jwt",
     "oauth-id-jag+jwt",
     "dpop+jwt",
     "logout+jwt",
+    "gateway-issuer-attestation+jwt",
 ];
 
 /// Body of a `keys/sign-jws/0.1` request.
