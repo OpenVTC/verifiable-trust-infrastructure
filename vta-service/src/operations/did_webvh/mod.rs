@@ -39,10 +39,11 @@ pub use servers::{
     register_webvh_server, remove_webvh_server, retire_orphan_slot,
 };
 pub use update::{
-    AgentNameVerb, RotateDidWebvhKeysOptions, StagedRotationRecovery, UpdateDidWebvhError,
+    AgentNameVerb, Commit, RotateDidWebvhKeysOptions, StagedRotationRecovery, UpdateDidWebvhError,
     UpdateDidWebvhOptions, UpdateDidWebvhResult, UpdatePlan, agent_name_op, check_agent_name,
     list_agent_names, plan_did_webvh_update, recover_staged_rotations, resolve_webvh_did,
     rotate_did_webvh_keys, state_from_jsonl_pub, update_did_webvh,
+    update_did_webvh_reporting_commit,
 };
 
 use std::sync::Arc;
@@ -133,8 +134,10 @@ pub struct WebvhDeps<'a> {
     /// What lets the outbound seam choose TSP when talking to a webvh host.
     ///
     /// `None` is a real answer, not a gap: a CLI, a setup wizard or a DIDComm
-    /// handler holds no mediator socket of its own, and the seam correctly
-    /// falls to DIDComm there. It is carried on the dep bundle rather than
+    /// handler holds no TSP socket of its own. A DIDComm handler still has the
+    /// live bridge, so the seam falls to DIDComm there; the offline CLI and the
+    /// wizards have a signing-only bridge and no mediator session, so there the
+    /// seam is left with REST. It is carried on the dep bundle rather than
     /// rebuilt further down because `AppState` is the only thing that can
     /// produce one, and the webvh ops layer deliberately does not take an
     /// `AppState`.

@@ -384,7 +384,33 @@ vtc status        # on the VTC host: "Transports" compares document and build
 
 The same three steps publish any other change to the community's
 document after mint, such as a `TrustRegistry` referral added or
-changed, or a key rotated. That includes the two entries wallet sign-in
+changed, or a key rotated. For the referral the entry is:
+
+```json
+{
+  "id": "<community-did>#trust-registry",
+  "type": "TrustRegistry",
+  "serviceEndpoint": {
+    "uri": "<registry-did>",
+    "profile": "https://trustoverip.org/profiles/trqp/v2"
+  }
+}
+```
+
+`serviceEndpoint.uri` is the registry's DID. The referral is what other
+parties use to find the registry; the VTC's own connection to it is the
+separate `[registry] did` setting in its `config.toml`
+([trust registry](trust-registry.md)), which the edit does not touch.
+
+Make the edit with `pnm` against the running VTA. The offline
+`vta did-mgmt dids edit` on the VTA host builds the same entry, but it
+holds no mediator session, so it can publish only to a DID host whose
+document advertises `TrustTaskHTTPS` or `WebVHHosting` at an `https://`
+origin. Against a host that advertises TSP or DIDComm alone it stops
+with `no transport in common`, and the entry stays pending in the VTA's
+store until the running VTA's next edit of that DID publishes it.
+
+Two more entries go the same way, the ones wallet sign-in
 needs, `TrustTaskHTTPS` (`<public_url>/v1`) and `SignInPortal`
 (`<public_url>/members/`): a running VTC that finds either missing from its
 published document logs a warning with the exact entries to add, and its
