@@ -72,8 +72,16 @@ Turning a mode off later keeps the configs that use it: each reports its credent
 
 ## Setting a sealed credential
 
-The credential is never typed into the console. From a terminal holding an
-administrator's `cnm` profile:
+On the config's page in the console, **Set the credential** (or **Replace the
+credential**) takes an S3 access-key pair, or the service-account key file exactly as
+Google issued it, and a reason. The browser seals it to the community's DID before
+anything is sent: HPKE to the X25519 derivation of the Ed25519 key (`#key-0`) in the
+DID document this community serves at `/.well-known/did.jsonl`. The page forgets the
+key the moment it is sealed. If the browser cannot seal — the community does not
+serve its own DID document, or no console key is enrolled — the page says so and
+shows the terminal command instead.
+
+From a terminal holding an administrator's `cnm` profile:
 
 ```sh
 # s3: {"accessKeyId": "…", "secretAccessKey": "…"[, "sessionToken": "…"]}
@@ -81,10 +89,12 @@ administrator's `cnm` profile:
 cnm storage credentials set --config r2-archive --file ./r2-key.json --reason "evaluation"
 ```
 
-`cnm` reads the config, seals the credential to the community's DID (the X25519
-derivation of the Ed25519 key its DID document lists), and sends
-`vtc/storage/credentials/set/0.2` after your passkey gesture; another administrator
-approves it like any storage change. The community opens it, checks it is a
+`cnm` reads the config, resolves the community's DID and seals the credential the
+same way.
+
+Either way, `vtc/storage/credentials/set/0.2` is sent after your passkey gesture
+carrying only the sealed block and its digest, and another administrator approves it
+like any storage change; approvers see the digest, never the credential. The community opens it, checks it is a
 credential for that config and kind, stores it encrypted, probes the config with it
 and shows it from then on only as a fingerprint. Setting another replaces — destroys —
 the one before.

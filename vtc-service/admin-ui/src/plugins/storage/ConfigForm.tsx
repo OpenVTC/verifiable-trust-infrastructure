@@ -9,11 +9,12 @@
 // - `ambient`: this machine's own cloud identity — on S3 optionally assuming a
 //   named role (`roleArn`) — downscoped to one room for at most 15 minutes.
 // - `sealed` (discouraged): a long-lived credential the community keeps, set
-//   afterwards with `cnm storage credentials set`. Labelled, wherever it is shown, as
+//   afterwards on the config's page (sealed in the browser, `SetCredential.tsx`) or
+//   with `cnm storage credentials set`. Labelled, wherever it is shown, as
 //   no protection against whoever operates the community's machine.
 //
 // `ambient` and `sealed` are the host operator's to permit; a community whose host
-// does not answers `authNotAllowed`. The form asks for nothing secret, ever.
+// does not answers `authNotAllowed`. This form asks for nothing secret, ever.
 // `walrus` is not offered until the VTC serves it.
 //
 // Both writes take an operation-bound step-up and are parked for the other
@@ -326,8 +327,8 @@ export function ConfigForm({
 
       {d.kind !== "local" && d.mode === "sealed" && (
         <p className="storage-warning" role="note">
-          {SEALED_WARNING} Set the credential after this is approved, from a terminal:
-          it is sealed there to this community and never typed into this console.
+          {SEALED_WARNING} Set the credential on this storage's page once this is approved:
+          it is sealed in the browser to this community before it is sent.
         </p>
       )}
 

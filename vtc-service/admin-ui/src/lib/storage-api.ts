@@ -10,15 +10,19 @@
 // authority itself. `ambient` (the machine's own cloud identity, S3 optionally
 // assuming a named role) and `sealed` (a credential the community keeps) are its
 // host operator's to permit; with either, the community mints a credential scoped to
-// one room for at most 15 minutes. A sealed credential is never typed into this
-// console: it is sealed to the community in `cnm` (`cnm storage credentials set`).
+// one room for at most 15 minutes. A sealed credential is set with
+// `vtc/storage/credentials/set/0.2`, sealed in this browser to the community before it
+// is sent (`sealed-transfer.ts`) — or, where this browser cannot, in `cnm` (`cnm
+// storage credentials set`). Nothing here keeps it.
 //
 // Reads and the probe answer a holder of `vtc.rooms.admin`. Creating, changing
 // and retiring a config, and moving a room, decide where members' files go, so
 // each needs the requester's operation-bound step-up and is then parked for the
 // other holders' consent (`postSignedWithStepUp` → a `ParkedAction`, a success).
 
-import { postSignedRead, postSignedTrustTask } from "./api";
+import { postSignedRead, postSignedTrustTask, SigningUnavailableError, vtcDid } from "./api";
+import { loadConsoleKey } from "./console-key";
+import { communitySealingKey, sealStorageCredential, type SealedBlock } from "./sealed-transfer";
 import { postSignedWithStepUp, type ConfirmGesture } from "./signed-act";
 import type {
   RoomStorageAssignResponse,
@@ -33,6 +37,9 @@ import type {
   StorageConfigUpdatePayload,
   StorageConfigUpdateResponse,
   StorageCredentialState,
+  StorageCredentialsSetPayload,
+  StorageCredentialsSetResponse,
+  SealedStorageCredential,
 } from "./wire-types";
 
 export const STORAGE_LIST_TASK = "https://trusttasks.org/spec/vtc/storage/configs/list/0.2";
@@ -43,6 +50,7 @@ export const STORAGE_RETIRE_TASK = "https://trusttasks.org/spec/vtc/storage/conf
 export const STORAGE_PROBE_TASK = "https://trusttasks.org/spec/vtc/storage/configs/probe/0.1";
 export const ROOM_STORAGE_ASSIGN_TASK = "https://trusttasks.org/spec/vtc/rooms/storage/assign/0.1";
 export const ROOM_STORAGE_MIGRATE_TASK = "https://trusttasks.org/spec/vtc/rooms/storage/migrate/0.2";
+export const STORAGE_CREDENTIALS_SET_TASK = "https://trusttasks.org/spec/vtc/storage/credentials/set/0.2";
 
 /** The most configs the spec returns per page. */
 const CONFIGS_PAGE = 100;
@@ -120,6 +128,31 @@ export function assignRoomStorage(
   );
 }
 
+/**
+ * Seal a `sealed` config's credential to this community, here, before anything is
+ * sent: HPKE to the X25519 form of the community DID's key, produced by this
+ * browser's console key. The cleartext goes no further than this call, so seal
+ * before handing the result to anything that keeps its input (a mutation does).
+ */
+export async function sealCredentialForCommunity(credential: SealedStorageCredential): Promise<SealedBlock> {
+  const key = await loadConsoleKey();
+  if (!key) throw new SigningUnavailableError("no-key");
+  const recipient = await communitySealingKey(await vtcDid());
+  return sealStorageCredential(recipient, key.consoleDid, credential);
+}
+
+/**
+ * Store a sealed block as a config's credential (`vtc/storage/credentials/set/0.2`),
+ * replacing any before it. Parked for approval like any storage change; approvers
+ * see the config and the block's digest, never the credential.
+ */
+export function setStorageCredential(
+  payload: StorageCredentialsSetPayload,
+  confirmGesture: ConfirmGesture,
+): Promise<StorageCredentialsSetResponse> {
+  return postSignedWithStepUp(STORAGE_CREDENTIALS_SET_TASK, payload, confirmGesture);
+}
+
 /** The slowest copy rate a migration may be asked for (64 KiB/s). */
 export const MIN_MIGRATION_BYTES_PER_SECOND = 65_536;
 
@@ -162,8 +195,8 @@ export const KIND_MEANS: Record<string, string> = {
 export const SEALED_WARNING =
   "A stored credential protects against every administrator, but not against whoever operates the machine this community runs on: they can recover it.";
 
-/** The command that seals a `sealed` config's credential to the community and sets it.
- *  The console never takes the credential itself. */
+/** The command that seals a `sealed` config's credential to the community and sets it
+ *  from a terminal: the way when this browser cannot seal it itself. */
 export function credentialSetCommand(configId: string): string {
   return `cnm storage credentials set --config ${configId} --file <credential.json> --reason "…"`;
 }

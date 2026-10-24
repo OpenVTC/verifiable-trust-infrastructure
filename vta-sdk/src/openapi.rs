@@ -67,6 +67,7 @@ use trust_tasks_rs::specs::vtc::rooms::{
 };
 use trust_tasks_rs::specs::vtc::schemas::accepts;
 use trust_tasks_rs::specs::vtc::storage::configs as storage_configs;
+use trust_tasks_rs::specs::vtc::storage::credentials::set as storage_credentials_set;
 
 /// Transparent wrappers documenting generated types, one per line.
 macro_rules! spec_types {
@@ -491,6 +492,16 @@ spec_types! {
     StorageConfigsRetire01Response(storage_configs::retire::v0_1::Response);
     /// `vtc/storage/configs/probe/0.1#response` — each step of a canary round trip.
     StorageConfigsProbe01Response(storage_configs::probe::v0_1::Response);
+    /// `vtc/storage/credentials/set/0.2` payload — a `sealed` config's credential, sealed
+    /// to the community in the administrator's own client. Never carries it in the clear.
+    StorageCredentialsSet02Payload(storage_credentials_set::v0_2::Payload);
+    /// `vtc/storage/credentials/set/0.2#response` — the config's credential state, by
+    /// fingerprint, and the probe's outcome.
+    StorageCredentialsSet02Response(storage_credentials_set::v0_2::Response);
+    /// `vtc/storage/credentials/set/0.2`'s `SealedCredentialCleartext` — what a producer
+    /// seals inside the block. Never a payload member, never sent unsealed.
+    StorageCredentialsSet02Cleartext(storage_credentials_set::v0_2::SealedCredentialCleartext)
+        in storage_credentials_set::v0_2::Payload as "SealedCredentialCleartext";
     /// `git-ns/view/0.1#response` — namespaces, repositories and recorded git
     /// rights. Also the body of a VTC's `GET /v1/git-ns/view`, the
     /// administrator's complete view.

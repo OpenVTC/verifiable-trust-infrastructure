@@ -280,6 +280,12 @@ export type StorageSettings = Schemas["VtcStorageConfigsCreateV0_2StorageSetting
 export type StorageAuth = Schemas["VtcStorageConfigsCreateV0_2StorageAuth"];
 export type RoomStorageAssignResponse = Schemas["VtcRoomsStorageAssignV0_1Response"];
 export type RoomStorageMigrateResponse = Schemas["VtcRoomsStorageMigrateV0_2Response"];
+// `vtc/storage/credentials/set/0.2`: a `sealed` config's credential, sealed in this
+// browser to the community (`lib/sealed-transfer.ts`). The cleartext type is what is
+// sealed; it is never a payload member and never leaves the page unsealed.
+export type StorageCredentialsSetPayload = Schemas["VtcStorageCredentialsSetV0_2Payload"];
+export type StorageCredentialsSetResponse = Schemas["VtcStorageCredentialsSetV0_2Response"];
+export type SealedStorageCredential = Schemas["VtcStorageCredentialsSetV0_2SealedCredentialCleartext"];
 
 // ── Data rooms the community itself owns ────────────────────────────────
 //

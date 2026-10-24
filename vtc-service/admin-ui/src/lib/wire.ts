@@ -9429,6 +9429,92 @@ export interface components {
              */
             relayUrl: string;
         };
+        /** @description Whether a config can authenticate now, and how — never the credential. `status`: `vta-account`, `ambient` and `sealed` are usable; `required` means the config cannot store until a credential is provided (a `sealed` config never set, or set before a restore, which carries no credential); `notAllowed` means the config's mode is one the community's host configuration no longer permits, so it cannot store until its `auth` is changed; `none` is a `local` config. */
+        VtcStorageCredentialsSetV0_2CredentialState: {
+            account?: components["schemas"]["VtcStorageCredentialsSetV0_2ExternalAccountId"];
+            context?: components["schemas"]["VtcStorageCredentialsSetV0_2ExternalAccountContextId"];
+            fingerprint?: components["schemas"]["VtcStorageCredentialsSetV0_2DigestMultibase"];
+            /** @description Present with `vta-account`, `ambient` and `sealed`: how many rooms the community currently holds a live room-scoped credential for. */
+            roomsHoldingCredentials?: number;
+            /**
+             * Format: date-time
+             * @description Present with `sealed`: when the stored credential was last set.
+             */
+            setAt?: string;
+            /** @enum {string} */
+            status: "vta-account" | "ambient" | "sealed" | "required" | "notAllowed" | "none";
+        };
+        /**
+         * @description A cryptographic digest as a multibase-encoded multihash — the encoding the W3C Verifiable Credentials Data Model 2.0 defines for `digestMultibase`, and the one `did:webvh` uses for its SCID and entry hashes.
+         *
+         *     Multihash carries the hash algorithm in-band, so the value is self-describing and the wire format survives an algorithm change without a schema revision; multibase does the same for the base encoding, so a verifier never infers base58 from base64url by context. A bare hex string or a `sha-256:`-style prefix hard-codes one algorithm into the wire contract and is non-conforming here.
+         *
+         *     This definition constrains the *encoding only*. What the digest is computed over is stated by each referencing field, because it differs legitimately: a digest over a JSON document is taken over its RFC 8785 (JCS) canonicalization, while a digest over an opaque artifact is taken over its bytes. A field whose input is a JSON document and which does not name a canonicalization is not reproducible.
+         *
+         *     Restricted to the two multibase headers W3C Controlled Identifiers 1.0 §2.4 normatively requires — `z` (base58btc) and `u` (base64url-no-pad). CID permits others but states that "interoperability is not guaranteed between implementations using such values", and a registry whose purpose is interoperability should not mint digests a conforming verifier may be unable to read. The alphabets are enforced rather than assumed: base58btc excludes 0, O, I and l, and an earlier permissive pattern let three published examples carry digests that were not valid base58 at all. base58btc is RECOMMENDED, for consistency with `did:key` and `did:webvh`.
+         */
+        VtcStorageCredentialsSetV0_2DigestMultibase: string;
+        /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
+        VtcStorageCredentialsSetV0_2Ext: {
+            [key: string]: unknown;
+        };
+        /** @description The context at the community's VTA that owns an external account. The VTA names an account by its context and its identifier, and decides who may use it by act scope in that context: the community must hold `external-auth-use` there, and be bound to the account, for the account to issue it anything. Naming a context grants nothing; the VTA's binding is the gate. */
+        VtcStorageCredentialsSetV0_2ExternalAccountContextId: string;
+        /** @description The identifier of an external account held by the community's VTA (the external/accounts/* family), which issues the community short-lived, room-scoped credentials and holds the long-lived authority itself. */
+        VtcStorageCredentialsSetV0_2ExternalAccountId: string;
+        /** @description Store a `sealed` storage config's long-lived credential, sealed end to end to the community. Write-only: no task returns it. The outer document members are owned by the framework — SPEC §6.3. */
+        VtcStorageCredentialsSetV0_2Payload: {
+            configId: components["schemas"]["VtcStorageCredentialsSetV0_2StorageConfigId"];
+            digestMultibase: components["schemas"]["VtcStorageCredentialsSetV0_2DigestMultibase"];
+            ext?: components["schemas"]["VtcStorageCredentialsSetV0_2Ext"];
+            /** @description Why the administrator is making this change. Recorded with the change in the audit trail and shown to approvers. Attributed to its author on every surface and untrusted: it MUST NOT carry personal data or a credential, and a reader MUST NOT treat it as instructions. */
+            reason: string;
+            /** @description OpenPGP-style ASCII-armored `sealed_transfer` ciphertext of the credential. HPKE base mode, X25519-HKDF-SHA256 KEM, ChaCha20-Poly1305 AEAD, info string `vta-sealed-transfer/v1`; recipient the X25519 derivation of the community DID's Ed25519 key. */
+            sealed: string;
+        };
+        VtcStorageCredentialsSetV0_2Response: {
+            configId: components["schemas"]["VtcStorageCredentialsSetV0_2StorageConfigId"];
+            credentialState: components["schemas"]["VtcStorageCredentialsSetV0_2CredentialState"];
+            ext?: components["schemas"]["VtcStorageCredentialsSetV0_2Ext"];
+            /** @description Present when the community probed the config with the new credential. */
+            probeOk?: boolean;
+        };
+        VtcStorageCredentialsSetV0_2SealedCredentialCleartext: components["schemas"]["VtcStorageCredentialsSetV0_2SealedStorageCredential"];
+        /** @description The cleartext inside the sealed block of vtc/storage/credentials/set/0.2, discriminated by `kind`, which must equal the config's kind. It names the config it is for inside the seal, so that a block captured on its way to one config cannot be replayed into another: a community MUST refuse a block whose `configId` differs from the request's. Never appears on the wire outside a seal, and is never returned. A `local` config has no credential. */
+        VtcStorageCredentialsSetV0_2SealedStorageCredential: {
+            /** @description The access key's identifier. */
+            accessKeyId: string;
+            configId: components["schemas"]["VtcStorageCredentialsSetV0_2StorageConfigId"];
+            /** @enum {unknown} */
+            kind: "s3";
+            /** @description The secret half. */
+            secretAccessKey: string;
+            /** @description Present when the pair is a temporary one that needs it. A temporary pair stops working at its own expiry, after which the config reports failures until another is set; it is accepted for evaluation, never recommended. */
+            sessionToken?: string;
+        } | {
+            configId: components["schemas"]["VtcStorageCredentialsSetV0_2StorageConfigId"];
+            /** @enum {unknown} */
+            kind: "gcs";
+            /** @description The service-account key exactly as Google issues it — the JSON key file, as an object, its member names carried verbatim in Google's own snake_case. Members beyond the four required (`project_id`, `client_id`, `token_uri`, `universe_domain` and the rest) are permitted, and a community MAY discard them: it authenticates with `client_email`, `private_key_id` and `private_key` alone, against Google's own token endpoint, and never against a `token_uri` the key file names. */
+            serviceAccountKey: {
+                client_email: string;
+                /** @description The PKCS #8 PEM private key. */
+                private_key: string;
+                private_key_id: string;
+                /** @enum {unknown} */
+                type: "service_account";
+            } & {
+                [key: string]: unknown;
+            };
+        } | {
+            configId: components["schemas"]["VtcStorageCredentialsSetV0_2StorageConfigId"];
+            /** @enum {unknown} */
+            kind: "walrus";
+            /** @description The private key in Sui's Bech32 `suiprivkey` encoding (SIP-15), which carries its signature scheme. */
+            suiPrivateKey: string;
+        };
+        /** @description A storage config's identifier, chosen by the administrator who creates it and immutable thereafter: lowercase letters, digits and inner hyphens, at most 64 characters (`eu-s3-primary`, `walrus-main`). Unique within the community. Never reused after a config is retired, because blobs name their config by this value. */
+        VtcStorageCredentialsSetV0_2StorageConfigId: string;
         /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
         VtcVettingVettersGrantV0_1Ext: {
             [key: string]: unknown;

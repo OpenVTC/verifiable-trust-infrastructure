@@ -8,11 +8,13 @@
 // `notAllowed` — a mode the host no longer permits — are listed first, because
 // until someone acts they store nothing.
 //
-// Nothing here shows or accepts a credential. An S3 config through a VTA account
+// Nothing here shows a credential, and none is accepted but sealed. An S3 config through a VTA account
 // names an external account at the community's VTA, which holds the key. A `sealed`
 // config is labelled, wherever it is shown, as no protection against whoever operates
-// the machine (`vtc/storage/configs/get/0.2` item 5), and its credential is set from
-// a terminal (`cnm storage credentials set`), sealed there to the community. Every change is parked for another holder of `vtc.rooms.admin`
+// the machine (`vtc/storage/configs/get/0.2` item 5), and its credential is set on its
+// page — sealed in this browser to the community before it is sent
+// (`storage/SetCredential.tsx`) — or from a terminal (`cnm storage credentials set`).
+// Every change is parked for another holder of `vtc.rooms.admin`
 // (§7.4), so the screen says "sent for approval", never "saved", when it is.
 
 import { useState } from "react";
@@ -35,7 +37,6 @@ import {
   KIND_MEANS,
   SEALED_WARNING,
   createStorageConfig,
-  credentialSetCommand,
   describeCredential,
   needsAttention,
   fetchStorageConfig,
@@ -55,6 +56,7 @@ import type {
 
 import { ROOMS_PATH, STORAGE_PATH, configPath, roomPath } from "./rooms/shared";
 import { ConfigForm } from "./storage/ConfigForm";
+import { SetCredential } from "./storage/SetCredential";
 
 function StatePill({ state }: { state: string }) {
   const tone = state === "active" ? "success" : state === "draining" ? "warning" : "";
@@ -381,10 +383,13 @@ export function ConfigDetail() {
                 <p className="storage-warning" role="note">
                   {SEALED_WARNING}
                 </p>
-                <div className="muted rooms-sub">
-                  {facts.credential.status === "sealed" ? "Replace it" : "Set it"} from a terminal, where it is
-                  sealed to this community: <code>{credentialSetCommand(config.id)}</code>
-                </div>
+                {config.state === "active" && s.kind !== "local" && (
+                  <SetCredential
+                    configId={config.id}
+                    kind={s.kind}
+                    isSet={facts.credential.status === "sealed"}
+                  />
+                )}
               </>
             )}
           </dd>

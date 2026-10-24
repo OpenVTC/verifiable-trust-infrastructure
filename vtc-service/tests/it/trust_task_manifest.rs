@@ -1025,6 +1025,7 @@ const SPINE_DOCUMENT_TYPES: &[&str] = &[
     "https://trusttasks.org/spec/vtc/storage/configs/update/0.2",
     "https://trusttasks.org/spec/vtc/storage/configs/retire/0.1",
     "https://trusttasks.org/spec/vtc/storage/configs/probe/0.1",
+    "https://trusttasks.org/spec/vtc/storage/credentials/set/0.2",
     "https://trusttasks.org/spec/vtc/rooms/storage/assign/0.1",
     "https://trusttasks.org/spec/vtc/rooms/storage/migrate/0.2",
     // Community rooms, the Community rooms tab (`trust_tasks::community_room_tasks`).

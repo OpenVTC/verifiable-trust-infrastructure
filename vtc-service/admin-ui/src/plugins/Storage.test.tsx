@@ -4,6 +4,11 @@ import { describe, expect, it, vi } from "vitest";
 import { NEXT_STEP_TYPE } from "@/lib/parked-action";
 import { DataRooms } from "@/plugins/dataRooms";
 import { createPayload, draftErrors, updatePayload } from "@/plugins/storage/ConfigForm";
+import {
+  credentialOf,
+  draftErrors as credentialErrors,
+  readServiceAccountKey,
+} from "@/plugins/storage/SetCredential";
 import type { StorageConfigRecord } from "@/lib/wire-types";
 import {
   NAME_BOOK_ROUTES,
@@ -21,10 +26,30 @@ vi.mock("@/lib/api", async (original) => ({
   ...(await original<typeof import("@/lib/api")>()),
   postSignedRead: (await import("@/test/signed-read")).unsignedRead,
   postSignedTrustTask: (await import("@/test/signed-read")).unsignedTask,
+  vtcDid: async () => "did:webvh:QmScid:community.example",
 }));
 vi.mock("@/lib/signed-act", async (original) => ({
   ...(await original<typeof import("@/lib/signed-act")>()),
   postSignedWithStepUp: (await import("@/test/signed-read")).unsignedTask,
+}));
+// Sealing runs for real; only where the community's key and this browser's console
+// key come from is stubbed (resolution is `sealed-transfer.test.ts`'s).
+const sealingKey = vi.hoisted(() => ({ fail: false }));
+vi.mock("@/lib/sealed-transfer", async (original) => {
+  const real = await original<typeof import("@/lib/sealed-transfer")>();
+  return {
+    ...real,
+    communitySealingKey: async () => {
+      if (sealingKey.fail) {
+        throw new real.SealingUnavailableError("this community does not serve its own DID document here (HTTP 404)");
+      }
+      return new Uint8Array(32).fill(9);
+    },
+  };
+});
+vi.mock("@/lib/console-key", async (original) => ({
+  ...(await original<typeof import("@/lib/console-key")>()),
+  loadConsoleKey: async () => ({ consoleDid: "did:key:z6MkConsole" }),
 }));
 
 const T = "https://trusttasks.org/spec";
@@ -37,6 +62,7 @@ const ASSIGN = `${T}/vtc/rooms/storage/assign/0.1`;
 const MIGRATE = `${T}/vtc/rooms/storage/migrate/0.2`;
 const ROOMS_GET = `${T}/vtc/rooms/get/0.2`;
 const ROOMS_LIST = `${T}/vtc/rooms/list/0.1`;
+const CREDENTIALS_SET = `${T}/vtc/storage/credentials/set/0.2`;
 const USAGE = `${T}/vtc/rooms/usage/0.1`;
 
 const ROOM_ID = "did:web:rooms.example.com:board";
@@ -508,5 +534,102 @@ describe("the rooms' defaults", () => {
     mount("/rooms");
     await screen.findByText("Room files are off");
     await waitFor(() => expect(screen.queryByText("Defaults")).toBeNull());
+  });
+});
+
+describe("Setting a sealed config's credential", () => {
+  const sealedConfig = { ...s3, id: "r2-archive", auth: { mode: "sealed" as const } };
+  const routes = (credential: Record<string, unknown> = { status: "required" }) => [
+    ...NAME_BOOK_ROUTES,
+    taskRoute(GET, {
+      config: sealedConfig,
+      facts: facts({ credential }),
+      assignedRooms: [],
+      assignedRoomsTruncated: false,
+    }),
+    parked(CREDENTIALS_SET),
+  ];
+  const SECRET = "example-secret-not-a-real-one";
+
+  it("seals the key in this browser and sends only the sealed block for approval", async () => {
+    sealingKey.fail = false;
+    const requests = mockFetch(routes());
+    mount("/rooms/storage/r2-archive");
+    fireEvent.click(await screen.findByRole("button", { name: "Set the credential" }));
+    fireEvent.change(screen.getByLabelText(/^Access key ID/), { target: { value: "EXAMPLEKEYID0001" } });
+    fireEvent.change(screen.getByLabelText(/^Secret access key/), { target: { value: SECRET } });
+    fireEvent.change(screen.getByLabelText(/^Reason/), { target: { value: "R2 cannot federate" } });
+    fireEvent.click(screen.getByRole("button", { name: "Seal and send for approval" }));
+
+    expect(await screen.findByText("Sent for approval")).toBeTruthy();
+    const [sent] = sentPayloads(requests, CREDENTIALS_SET) as Record<string, string>[];
+    expect(Object.keys(sent!).sort()).toEqual(["configId", "digestMultibase", "reason", "sealed"]);
+    expect(sent!.configId).toBe("r2-archive");
+    expect(sent!.reason).toBe("R2 cannot federate");
+    expect(sent!.sealed).toMatch(/^-----BEGIN VTA SEALED BUNDLE-----\nVersion: 1\n/);
+    expect(sent!.digestMultibase).toMatch(/^zQm/);
+    // Neither half of the key went anywhere in the clear.
+    const everything = JSON.stringify(requests);
+    expect(everything).not.toContain(SECRET);
+    expect(everything).not.toContain("EXAMPLEKEYID0001");
+  });
+
+  it("says when this browser cannot seal, and points at the terminal", async () => {
+    sealingKey.fail = true;
+    const requests = mockFetch(routes({ status: "sealed", fingerprint: "zQmT5Nv", setAt: "2026-10-10T10:30:00Z" }));
+    mount("/rooms/storage/r2-archive");
+    fireEvent.click(await screen.findByRole("button", { name: "Replace the credential" }));
+    fireEvent.change(screen.getByLabelText(/^Access key ID/), { target: { value: "EXAMPLEKEYID0001" } });
+    fireEvent.change(screen.getByLabelText(/^Secret access key/), { target: { value: SECRET } });
+    fireEvent.change(screen.getByLabelText(/^Reason/), { target: { value: "rotate" } });
+    fireEvent.click(screen.getByRole("button", { name: "Seal and send for approval" }));
+
+    const card = (await screen.findByText("Not sealed")).closest("section")!;
+    expect(within(card).getByText(/does not serve its own DID document/)).toBeTruthy();
+    expect(within(card).getByText(/cnm storage credentials set --config r2-archive/)).toBeTruthy();
+    expect(sentPayloads(requests, CREDENTIALS_SET)).toEqual([]);
+    sealingKey.fail = false;
+  });
+
+  it("checks a key before sealing it", () => {
+    const empty = {
+      accessKeyId: "",
+      secretAccessKey: "",
+      sessionToken: "",
+      suiPrivateKey: "",
+      serviceAccountKey: null,
+      keyFileError: null,
+      reason: "",
+    };
+    expect(Object.keys(credentialErrors("s3", empty)).sort()).toEqual(["accessKeyId", "reason", "secretAccessKey"]);
+    expect(credentialErrors("s3", { ...empty, accessKeyId: "AK ID", secretAccessKey: "s", reason: "r" })).toHaveProperty(
+      "accessKeyId",
+    );
+    expect(Object.keys(credentialErrors("gcs", { ...empty, reason: "r" }))).toEqual(["serviceAccountKey"]);
+    expect(credentialErrors("walrus", { ...empty, suiPrivateKey: "not-a-key", reason: "r" })).toHaveProperty(
+      "suiPrivateKey",
+    );
+    // An absent session token is left out, not sent empty.
+    expect(credentialOf("s3", "r2", { ...empty, accessKeyId: "AK", secretAccessKey: "s" })).toEqual({
+      kind: "s3",
+      configId: "r2",
+      accessKeyId: "AK",
+      secretAccessKey: "s",
+    });
+  });
+
+  it("reads a Google key file, refusing what is not one", () => {
+    const key = {
+      type: "service_account",
+      project_id: "p",
+      client_email: "rooms@p.iam.gserviceaccount.com",
+      private_key_id: "abc123",
+      private_key: "-----BEGIN PRIVATE KEY-----\nMIIE\n-----END PRIVATE KEY-----\n",
+    };
+    expect(readServiceAccountKey(JSON.stringify(key))).toEqual(key);
+    expect(readServiceAccountKey("not json")).toMatch(/not JSON/);
+    expect(readServiceAccountKey(JSON.stringify({ ...key, type: "authorized_user" }))).toMatch(/not a service-account/);
+    expect(readServiceAccountKey(JSON.stringify({ ...key, private_key_id: undefined }))).toMatch(/private_key_id/);
+    expect(readServiceAccountKey(JSON.stringify({ ...key, private_key: "ssh-rsa AAAA" }))).toMatch(/PKCS #8/);
   });
 });

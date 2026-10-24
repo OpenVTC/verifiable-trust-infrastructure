@@ -302,6 +302,60 @@ mod tests {
         })
     }
 
+    /// What the console seals in the browser (`admin-ui/src/lib/sealed-transfer.ts`)
+    /// opens here. The shared vectors are blocks it sealed to this module's community
+    /// key — one of them two chunks long — and `sealed-transfer.test.ts` reproduces
+    /// them byte for byte, so a drift on either side fails one of the two.
+    #[tokio::test]
+    async fn blocks_the_console_seals_in_the_browser_open_here() {
+        const VECTORS: &str = include_str!("../../admin-ui/src/lib/sealed-transfer.vectors.json");
+        let v: Value = serde_json::from_str(VECTORS).expect("sealed-transfer.vectors.json parses");
+
+        // The key the console seals to is this community's, by both routes.
+        let published = vta_sdk::did_key::decode_ed25519_public_key_multibase(
+            v["communityPublicKeyMultibase"].as_str().unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            published,
+            ed25519_dalek::SigningKey::from_bytes(&SEED)
+                .verifying_key()
+                .to_bytes()
+        );
+        assert_eq!(
+            v["communityX25519Hex"].as_str().unwrap(),
+            hex::encode(community_x25519_pub())
+        );
+
+        let dir = tempfile::tempdir().unwrap();
+        let creds = store(dir.path()).await;
+        let cases = v["cases"].as_array().unwrap();
+        assert!(cases.len() >= 3);
+        for case in cases {
+            let name = case["name"].as_str().unwrap();
+            let opened = creds
+                .open(
+                    case["configId"].as_str().unwrap(),
+                    case["kind"].as_str().unwrap(),
+                    case["sealed"].as_str().unwrap(),
+                    case["digestMultibase"].as_str().unwrap(),
+                )
+                .unwrap_or_else(|e| panic!("{name}: {e:?}"));
+            assert_eq!(opened.cleartext, case["cleartext"], "{name}");
+        }
+        // Pinned to its config inside the seal: a block cannot be replayed into another.
+        let first = &cases[0];
+        assert!(matches!(
+            creds.open(
+                "another-config",
+                first["kind"].as_str().unwrap(),
+                first["sealed"].as_str().unwrap(),
+                first["digestMultibase"].as_str().unwrap(),
+            ),
+            Err(SealedRefusal::Invalid(_))
+        ));
+    }
+
     /// Sealed in a client, opened here, stored encrypted, reported by fingerprint.
     #[tokio::test]
     async fn a_sealed_credential_round_trips_and_is_kept_encrypted() {
