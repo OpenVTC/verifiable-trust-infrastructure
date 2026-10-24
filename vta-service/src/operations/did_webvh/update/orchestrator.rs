@@ -109,7 +109,7 @@ pub async fn update_did_webvh(
 /// (handle installs, the record, the publish) can fail with the new entry
 /// already the DID's local head.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum Commit {
+pub enum Commit {
     /// Nothing was written: the DID's log is as it was.
     NotCommitted,
     /// The new log entry is the DID's local head, whatever failed after it.
@@ -131,6 +131,24 @@ pub(super) type OnCommit = Box<
             Box<dyn std::future::Future<Output = Result<(), UpdateDidWebvhError>> + Send>,
         > + Send,
 >;
+
+/// [`update_did_webvh`], reporting on failure whether the new entry was
+/// committed.
+///
+/// For a caller that tells an operator what a failed update left behind. A
+/// `Publish` error alone does not say: the reconcile step re-publishes an
+/// unconfirmed head *before* the commit point, so the same variant arrives
+/// both when nothing new was written and when the new entry is the local head.
+pub async fn update_did_webvh_reporting_commit(
+    deps: &super::super::WebvhDeps<'_>,
+    auth: &AuthClaims,
+    scid: &str,
+    opts: UpdateDidWebvhOptions,
+    vta_did: Option<&str>,
+    channel: &str,
+) -> Result<UpdateDidWebvhResult, (UpdateDidWebvhError, Commit)> {
+    update_did_webvh_tracked(deps, auth, scid, opts, vta_did, channel, None).await
+}
 
 /// [`update_did_webvh`], reporting on failure whether the new entry was
 /// committed. A caller that staged state for the update (rotate-keys' key

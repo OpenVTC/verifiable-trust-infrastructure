@@ -44,8 +44,8 @@ mod validate;
 pub use errors::UpdateDidWebvhError;
 pub use options::{RotateDidWebvhKeysOptions, UpdateDidWebvhOptions, UpdateDidWebvhResult};
 pub use orchestrator::{
-    AgentNameVerb, agent_name_op, check_agent_name, list_agent_names, plan_did_webvh_update,
-    update_did_webvh,
+    AgentNameVerb, Commit, agent_name_op, check_agent_name, list_agent_names,
+    plan_did_webvh_update, update_did_webvh, update_did_webvh_reporting_commit,
 };
 pub use plan::UpdatePlan;
 pub use rotate::{StagedRotationRecovery, recover_staged_rotations, rotate_did_webvh_keys};

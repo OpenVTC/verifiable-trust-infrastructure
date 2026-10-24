@@ -286,7 +286,8 @@ pub async fn run_create_did(
         did_resolver: &did_resolver,
         didcomm_bridge: &signing_bridge,
         acl_ks: None,
-        // Offline: no mediator socket to lend, so the seam cannot choose
+        // Offline: no mediator session to lend, so the seam cannot choose
+        // TSP or DIDComm and is left with REST.
         #[cfg(feature = "tsp")]
         tsp: None,
     };
@@ -452,7 +453,8 @@ pub async fn run_delete_did(
         seed_store: &*seed_store,
         did_resolver: &did_resolver,
         didcomm_bridge: &signing_bridge,
-        // Offline: no mediator socket to lend, so the seam cannot choose
+        // Offline: no mediator session to lend, so the seam cannot choose
+        // TSP or DIDComm and is left with REST.
         #[cfg(feature = "tsp")]
         tsp: None,
     };
@@ -687,7 +689,8 @@ pub async fn run_edit_did(
         seed_store: &*seed_store,
         did_resolver: &did_resolver,
         didcomm_bridge: &didcomm_bridge,
-        // Offline: no mediator socket to lend, so the seam cannot choose
+        // Offline: no mediator session to lend, so the seam cannot choose
+        // TSP or DIDComm and is left with REST.
         #[cfg(feature = "tsp")]
         tsp: None,
     };
@@ -722,7 +725,7 @@ pub async fn run_edit_did(
 
     confirm_publish(&body_for_confirm, no_confirm)?;
 
-    let result = match crate::operations::did_webvh::update_did_webvh(
+    let result = match crate::operations::did_webvh::update_did_webvh_reporting_commit(
         &deps,
         &auth,
         &scid,
@@ -733,16 +736,18 @@ pub async fn run_edit_did(
     .await
     {
         Ok(result) => result,
-        // The orchestrator commits the new entry to the store before it
-        // publishes, and the running VTA re-publishes an unconfirmed head
-        // before its next update of the DID. Keep that commit, and say what
-        // the operator can do about the publish from here, which offline is
-        // less than it looks: this process holds no mediator session.
-        Err(operations::did_webvh::UpdateDidWebvhError::Publish(publish_error)) => {
+        // A publish can fail on either side of the commit point: re-publishing
+        // an unconfirmed head comes before it, publishing the new entry after.
+        // The running VTA re-publishes an unconfirmed head before its next
+        // update of the DID, so a committed entry is kept, as the success path
+        // keeps it. Say which happened and what the operator can do about the
+        // publish from here, which offline is less than it looks: this process
+        // holds no mediator session.
+        Err((operations::did_webvh::UpdateDidWebvhError::Publish(publish_error), commit)) => {
             cs.persist().await?;
-            return Err(offline_publish_failure(&plan.did, &publish_error).into());
+            return Err(offline_publish_failure(&plan.did, &publish_error, commit).into());
         }
-        Err(e) => return Err(e.into()),
+        Err((e, _)) => return Err(e.into()),
     };
     cs.persist().await?;
 
@@ -769,13 +774,24 @@ const NO_TRANSPORT_MARKER: &str = "no transport in common";
 /// `TSPTransport` / `DIDCommMessaging` is reached by the running VTA alone.
 /// The operator's real intent maps to `pnm did-mgmt dids edit`, so that is
 /// printed verbatim.
-fn offline_publish_failure(did: &str, publish_error: &str) -> String {
-    let mut text = format!(
-        "publish error: {publish_error}\n\n\
-         The new log entry is written to this VTA's store, but the hosting server has not \
-         received it. The running VTA publishes a pending entry before its next update of \
-         this DID."
-    );
+fn offline_publish_failure(
+    did: &str,
+    publish_error: &str,
+    commit: operations::did_webvh::Commit,
+) -> String {
+    let mut text = format!("publish error: {publish_error}\n\n");
+    text.push_str(match commit {
+        operations::did_webvh::Commit::Committed => {
+            "The new log entry is written to this VTA's store, but the hosting server has not \
+             received it. The running VTA publishes a pending entry before its next update of \
+             this DID."
+        }
+        operations::did_webvh::Commit::NotCommitted => {
+            "Nothing new is written. This DID already has a log entry the hosting server has \
+             not received, and an update publishes that one before it builds another. The \
+             running VTA publishes it before its next update of this DID."
+        }
+    });
     if publish_error.contains(NO_TRANSPORT_MARKER) {
         text.push_str(
             "\n\nThis offline command holds no mediator session, so it reaches a hosting \
@@ -835,7 +851,8 @@ pub async fn run_register_did(
         seed_store: &*seed_store,
         did_resolver: &did_resolver,
         didcomm_bridge: &didcomm_bridge,
-        // Offline: no mediator socket to lend, so the seam cannot choose
+        // Offline: no mediator session to lend, so the seam cannot choose
+        // TSP or DIDComm and is left with REST.
         #[cfg(feature = "tsp")]
         tsp: None,
     };
@@ -891,6 +908,7 @@ mod tests {
             "did:webvh:QmVtc:dids.example:vtc",
             "publish_did: no transport in common with `did:webvh:QmHost:dids.example`: \
              it advertises [tsp, didcomm] and this agent can initiate [rest]",
+            operations::did_webvh::Commit::Committed,
         );
         assert!(text.starts_with("publish error: publish_did: no transport in common"));
         assert!(text.contains("holds no mediator session"));
@@ -905,9 +923,26 @@ mod tests {
         let text = offline_publish_failure(
             "did:webvh:QmVtc:dids.example:vtc",
             "publish_did: connection refused",
+            operations::did_webvh::Commit::Committed,
         );
         assert!(!text.contains("holds no mediator session"));
         assert!(text.contains("written to this VTA's store"));
+        assert!(text.contains("pnm did-mgmt dids edit --did did:webvh:QmVtc:dids.example:vtc"));
+    }
+
+    /// The second offline attempt: the first left an unconfirmed head, and
+    /// re-publishing it fails before the commit point, so nothing new exists.
+    #[test]
+    fn a_failed_reconcile_does_not_claim_a_new_entry() {
+        let text = offline_publish_failure(
+            "did:webvh:QmVtc:dids.example:vtc",
+            "reconcile publish_did: no transport in common with `did:webvh:QmHost:dids.example`: \
+             it advertises [tsp, didcomm] and this agent can initiate [rest]",
+            operations::did_webvh::Commit::NotCommitted,
+        );
+        assert!(!text.contains("written to this VTA's store"));
+        assert!(text.contains("Nothing new is written"));
+        assert!(text.contains("holds no mediator session"));
         assert!(text.contains("pnm did-mgmt dids edit --did did:webvh:QmVtc:dids.example:vtc"));
     }
 }
