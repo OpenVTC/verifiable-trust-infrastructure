@@ -71,6 +71,24 @@ ignore = [
   Drop when tokio-tungstenite depends on webpki-roots 1.x directly.
   """ },
 
+  { id = "RUSTSEC-2026-0387", reason = """
+  crypto-bigint: secret-dependent branches in operations meant to be
+  constant-time. Patched only in >= 0.7.6; there is no fixed 0.5 release.
+
+  Cargo.lock pins the 0.7 line at 0.7.6, and that line is what the
+  workspace's own P-256 / secp256k1 keys run on (p256 / k256 0.14). The
+  residue is 0.5.5, reached only through elliptic-curve 0.13: OpenMLS's
+  provider (vti-rooms, whose ciphersuite is X25519 / Ed25519), rPGP (cnm's
+  web-of-trust reader, verify-only), and bls12_381_plus under affinidi-bbs,
+  which uses it for byte encoding and wide scalar reduction while doing its
+  field arithmetic itself. The findings the advisory names — `UintRef`
+  equality, `BoxedMontyForm::invert` and the `ctutils` masks — are 0.7 APIs
+  that 0.5 does not have.
+
+  This ignore matches by ID, so it would also hide a 0.7 regression: keep
+  Cargo.lock at >= 0.7.6. Drop when elliptic-curve 0.13 leaves the graph.
+  """ },
+
   { id = "RUSTSEC-2026-0374", reason = """
   basic-toml is unmaintained. Build-time only: askama_derive reads its
   template configuration with it, under uniffi_bindgen, for vta-mobile-core's
