@@ -42,6 +42,7 @@ party's report of it.** The board is the evidence; the ballot box is only its ke
 | 13 | A box restarted between the last partial and the result never finishes | restore resumes the decryption |
 | 14 | `pnm elections vote` took the ticket and cast in one run, so the community and the box could pair them by their clocks | `pnm elections ticket` is its own step; `vote` with no ticket held takes one and stops unless given `--now` |
 | 15 | The voter's VTA kept the member-signed ticket request beside the casts' leaf hashes, readable without the seed, and never discarded either | the member's documents go once the ticket is held; leaf hashes and receipts are wrapped; the sweeper discards the ticket at the close and the rest 30 days later |
+| 16 | Restoring a VTC backup forgets the tickets issued after it, so their holders take a second and vote twice | a restore closes issuance for good on every election whose registration had opened and whose voting had not closed; the remedy is to cancel and create it again |
 
 Items 1 – 8 changed the wire, as `vta/pcs/trustee/*/0.2`, `vta/pcs/vote-encrypted/0.2`,
 `voting/trustees/authorize/0.1` and CONVENTIONS §3.9 / §9.3 – 9.7. The 0.1 trustee and
@@ -52,8 +53,6 @@ vote-encrypted tasks are retired: their whole design was acting on the box's rep
 None of these lets a single party change a result. Each one weakens privacy or availability, or
 leaves a cost unbounded:
 
-- **VTC restore.** Restoring a VTC backup can re-open ticket issuance for an election already
-  issued.
 - **Registrations at the box.** The box accepts a registration from any community, with no
   allow-list and no quota.
 - **Locking.** One process-wide lock covers the whole box, and proof verification runs inside it.

@@ -76,6 +76,11 @@ pub struct ElectionRecord {
     /// A close sent and not yet answered: no ticket is issued meanwhile (close item 4).
     #[serde(default)]
     pub close_in_flight: bool,
+    /// When a restore found this election able to issue tickets. A ticket issued after the
+    /// backup was taken is not in it, so its holder could take a second one (VTI-VOT-022): no
+    /// ticket is issued after a restore, ever. Never cleared.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub issuance_closed_by_restore: Option<DateTime<Utc>>,
     #[serde(default)]
     pub tickets_issued: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -310,6 +315,7 @@ mod tests {
             action_id: None,
             issuance_stopped: false,
             close_in_flight: false,
+            issuance_closed_by_restore: None,
             tickets_issued: 0,
             delivery: None,
             refusal: None,

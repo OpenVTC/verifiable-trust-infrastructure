@@ -682,6 +682,62 @@ async fn a_ticket_is_refused_for_each_rule_it_breaks() {
     assert_eq!(tt_error_code(&doc), ISSUE_ERR_NOT_ELIGIBLE, "{doc}");
 }
 
+/// VTI-VOT-022 across a restore: a ticket issued after the backup is not in it, so its holder
+/// would be issued a second. A restored election that could have issued in that gap issues no
+/// more; one whose registration has not opened issued nothing and is left as it was.
+#[tokio::test]
+async fn a_restore_closes_ticket_issuance_on_an_election_that_was_issuing() {
+    use vtc_service::backup::{export_backup, import_backup};
+    use vtc_service::keys::seed_store::PlaintextSecretStore;
+    const PW: &str = "election-restore-password";
+
+    let tv = community(InProcessBox::new()).await;
+    tv.state.config.write().await.config_path = tv.data_dir().join("config.toml");
+    let secrets = PlaintextSecretStore::new(tv.data_dir());
+    let chair = admin(&tv).await;
+    let (alice, bob) = (member(&tv).await, member(&tv).await);
+    let (status, doc) = create(&tv, &chair, manifest("agm", false)).await;
+    assert_eq!(status, StatusCode::OK, "{doc}");
+    let mut later = manifest("later", false);
+    let now = Utc::now();
+    later["registrationOpens"] = json!(stamp(now + Duration::days(1)));
+    later["votingOpens"] = json!(stamp(now + Duration::days(2)));
+    later["votingCloses"] = json!(stamp(now + Duration::days(3)));
+    let (status, doc) = create(&tv, &chair, later).await;
+    assert_eq!(status, StatusCode::OK, "{doc}");
+
+    let b = read_election(&tv, &alice, "agm").await;
+    take_ticket(&tv, &alice, &b).await;
+    let backup = export_backup(&tv.state, &secrets, PW, false).await.unwrap();
+    // Issued after the backup: the restore forgets it.
+    take_ticket(&tv, &bob, &b).await;
+
+    let result = import_backup(&tv.state, &secrets, &backup, PW, true)
+        .await
+        .unwrap();
+    assert_eq!(result.status, "imported");
+
+    // Bob would otherwise get a second ticket; nobody gets one now.
+    let voter = Voter::generate(&b.params, &mut vti_voting::rand::rngs::OsRng).unwrap();
+    for who in [&bob, &alice] {
+        let (body, _) = ask(&b, &voter, "voter/agm");
+        let (_, doc) = call(&tv, who, &uri("tickets/issue"), body).await;
+        assert_eq!(tt_error_code(&doc), ISSUE_ERR_NOT_OPEN, "{doc}");
+    }
+
+    let ks = tv.state.elections.ks();
+    let agm = vtc_service::elections::store::get(ks, "agm")
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(agm.issuance_closed_by_restore.is_some());
+    let later = vtc_service::elections::store::get(ks, "later")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(later.issuance_closed_by_restore, None);
+}
+
 #[tokio::test]
 async fn close_and_cancel_are_refused_for_each_rule_they_break() {
     let bx = InProcessBox::new();

@@ -266,6 +266,7 @@ pub async fn create(
         action_id,
         issuance_stopped: false,
         close_in_flight: false,
+        issuance_closed_by_restore: None,
         tickets_issued: 0,
         delivery: Some(Delivery {
             attempts: 0,
@@ -452,10 +453,11 @@ pub async fn issue_ticket(
     if !may_see(state, &rec, ask.signer, ask.manager).await? {
         return Err(IssueError::ElectionUnknown);
     }
-    // Item 3 (VTI-VOT-024).
+    // Item 3 (VTI-VOT-024); and never after a restore (VTI-VOT-022).
     let open = rec.standing == Standing::Registered
         && !rec.issuance_stopped
         && !rec.close_in_flight
+        && rec.issuance_closed_by_restore.is_none()
         && now >= rec.registration_opens
         && now < rec.voting_closes;
     if !open {

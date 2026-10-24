@@ -113,6 +113,39 @@ impl Elections {
         self.link.as_ref()
     }
 
+    /// After a restore, close ticket issuance for good on every election that could have issued
+    /// a ticket since the backup was taken: one whose registration has opened and whose voting
+    /// has not closed. The ticket records of that gap are not in the backup, so their holders
+    /// would be issued a second ticket and could cast twice (VTI-VOT-022). An election whose
+    /// registration has not opened issued nothing in the gap and stays as it was. Runs whether or
+    /// not this build serves elections: a later one that does must not issue either. Returns the
+    /// elections closed.
+    ///
+    /// # Errors
+    /// A store failure; the elections closed before it stay closed.
+    pub async fn close_issuance_after_restore(
+        &self,
+        now: chrono::DateTime<chrono::Utc>,
+    ) -> Result<Vec<String>, crate::error::AppError> {
+        let _guard = self.issue_lock.lock().await;
+        let mut closed = Vec::new();
+        for mut rec in store::all(&self.ks).await? {
+            let issuing = matches!(
+                rec.standing,
+                store::Standing::PendingRegistration | store::Standing::Registered
+            ) && !rec.issuance_stopped
+                && rec.issuance_closed_by_restore.is_none()
+                && now >= rec.registration_opens
+                && now < rec.voting_closes;
+            if issuing {
+                rec.issuance_closed_by_restore = Some(now);
+                store::put(&self.ks, &rec).await?;
+                closed.push(rec.election_id);
+            }
+        }
+        Ok(closed)
+    }
+
     /// Before a rotation from `from` to `to` commits, carry every ticket `from` holds to `to`
     /// (VTI-VOT-022: one ticket per party per election, whatever key the party signs with).
     /// Without it a member could take a ticket, rotate, and take another under the new DID.
