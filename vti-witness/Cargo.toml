@@ -33,17 +33,17 @@ k8s-secrets = ["vti-secrets/k8s-secrets"]
 # window the VTA and VTC answer with — `seed_store::SeedStore`, and (`tsp`)
 # `host_session`, the mediator session and its supervisor, which routes a TSP
 # reply to a peer on another mediator (`tsp_route`).
-vti-common = { path = "../vti-common", version = "0.48", features = ["host-session"] }
+vti-common = { path = "../vti-common", version = "0.49", features = ["host-session"] }
 # The `[secrets]` table and `create_seed_store`: the witness keeps its key
 # material behind the same backends the VTA and VTC use, never in its config.
-vti-secrets = { path = "../vti-secrets", version = "0.21" }
+vti-secrets = { path = "../vti-secrets", version = "0.22" }
 # `provision-client`: the two-phase, VTA-provisioned setup (`run_phase1_init`,
 # `run_connection_test`, `ProvisionAsk::witness`). `tsp`: the TSP leg of that
 # setup against a VTA that advertises TSP, and the binding envelope. `didcomm`:
 # `did_key::secrets_from_bundle`. `proof-verify` arrives with `client` (through
 # `provision-client`): `trust_task_proof` verifies an inbound document's proof,
 # `trust_task_sign` signs every reply.
-vta-sdk = { path = "../vta-sdk", version = "0.72", features = [
+vta-sdk = { path = "../vta-sdk", version = "0.73", features = [
   "didcomm",
   "provision-client",
   "tsp",

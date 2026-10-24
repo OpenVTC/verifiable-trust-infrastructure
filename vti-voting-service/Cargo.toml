@@ -19,19 +19,19 @@ path = "src/main.rs"
 [dependencies]
 vti-voting = { path = "../vti-voting" }
 # `host_session`: the service identity's mediator session, TSP and DIDComm on it.
-vti-common = { path = "../vti-common", version = "0.48", features = ["host-session"] }
+vti-common = { path = "../vti-common", version = "0.49", features = ["host-session"] }
 async-trait = "0.1"
 # As vti-witness: `provision-client` for the VTA-provisioned identity
 # (`run_phase1_init`, the `ballot-box` template), `tsp` for the binding
 # envelope, `didcomm` for `did_key::secrets_from_bundle`, and (through
 # `provision-client`) `trust_task_sign` and the proof verifier.
-vta-sdk = { path = "../vta-sdk", version = "0.72", features = [
+vta-sdk = { path = "../vta-sdk", version = "0.73", features = [
   "didcomm",
   "provision-client",
   "tsp",
   "crypto-provider",
 ] }
-vti-secrets = { path = "../vti-secrets", version = "0.21" }
+vti-secrets = { path = "../vti-secrets", version = "0.22" }
 trust-tasks-rs = { workspace = true }
 affinidi-did-resolver-cache-sdk = { workspace = true }
 axum = { workspace = true }
