@@ -202,8 +202,10 @@ it:
    cnm elections create poll.json
    cnm elections show <id>        # expect "registered"
    ```
-3. Members vote:
+3. Members take a ticket, then vote in a later run (a cast straight after its ticket can be
+   paired with it by time; `--now` does both at once anyway):
    ```sh
+   pnm elections ticket <id> --vtc … --vtc-did … --member … --context …
    pnm elections vote <id> --answer <question>=<option> \
        --vtc … --vtc-did … --member … --context …
    ```

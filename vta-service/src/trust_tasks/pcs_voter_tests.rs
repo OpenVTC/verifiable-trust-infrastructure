@@ -454,6 +454,161 @@ async fn the_ticket_request_is_signed_as_the_member_and_kept() {
     assert_eq!(again["ticketDocument"], first["ticketDocument"]);
 }
 
+/// Every row of the engine's keyspace the seed does not wrap, as text.
+async fn unwrapped_rows(state: &AppState) -> Vec<String> {
+    state
+        .pcs_engine_ks
+        .prefix_iter_raw("")
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|(k, _)| !k.starts_with(b"secret:"))
+        .map(|(k, v)| {
+            format!(
+                "{} {}",
+                String::from_utf8_lossy(&k),
+                String::from_utf8_lossy(&v)
+            )
+        })
+        .collect()
+}
+
+/// CONVENTIONS §5 item 3, §6 item 4: once the ticket is held nothing in the clear names the
+/// member beside the cast, the ticket goes when voting closes, and the casts and receipts the
+/// retention later.
+#[tokio::test]
+async fn the_vta_keeps_no_clear_pairing_and_discards_after_the_election() {
+    let (state, _dir) = build_signing_test_app_state().await;
+    crate::contexts::create_context(&state.contexts_ks, "member", "member")
+        .await
+        .unwrap();
+    let auth = claims("did:key:z6MkVoter", Role::Admin, "member");
+    let persona = crate::operations::persona::test_fixture::did_key_persona(
+        &state.keys_ks,
+        &state.internal_ks,
+        &state.contexts_ks,
+        &state.acl_ks,
+        &state.seed_store,
+        &state.audit_sink,
+        "member",
+        "membership-key",
+    )
+    .await;
+    let mut rng = StdRng::seed_from_u64(0xB8);
+    let reg = Registrar::generate(COMMUNITY, &mut rng).unwrap();
+    let params = json!({ "suite": "ps-ddh-bls12381", "votingKey": reg.public_text().unwrap() });
+    let (box_did, box_signer) = box_key(10);
+    let m = manifest("agm-2029", &box_did, true, "open");
+    let digest = manifest_digest(&m).unwrap();
+    let registered = ok(&handle_voter_register(
+        &state,
+        &auth,
+        doc(
+            uris::TASK_VTA_PCS_VOTER_REGISTER_0_1,
+            json!({ "contextId": "member", "community": COMMUNITY, "parameters": params,
+                    "manifest": m, "member": persona.did }),
+        ),
+    )
+    .await);
+    assert!(
+        unwrapped_rows(&state)
+            .await
+            .iter()
+            .any(|r| r.contains(&persona.did)),
+        "kept for a resend until the ticket is held"
+    );
+
+    let election = Election::new(COMMUNITY, ElectionId::new("agm-2029").unwrap(), digest).unwrap();
+    let id =
+        vti_vetting_pcs::scheme::point_from_text(registered["request"]["id"].as_str().unwrap())
+            .unwrap();
+    let request = serde_json::from_value(registered["request"]["request"].clone()).unwrap();
+    let pre = vti_vetting_pcs::scheme::enc(
+        &reg.issue_ticket(&election, &id, &request, &mut rng)
+            .unwrap(),
+    )
+    .unwrap();
+    ok(&handle_voter_accept(&state, &auth, accept_doc("agm-2029", &params, &pre)).await);
+    let voted = ok(&handle_vote(&state, &auth, vote_doc(&params, &m, ballot(&m, "no"))).await);
+
+    let mut bb = BallotBox::new(&box_did);
+    let now = chrono::Utc::now();
+    bb.register(
+        COMMUNITY,
+        &json!({ "community": COMMUNITY, "manifest": m,
+                 "manifestDigest": digest_multibase(&digest), "parameters": params }),
+        now,
+    )
+    .unwrap();
+    let receipt_payload = bb.cast(&voted["castDocument"]["payload"], now).unwrap();
+    let receipt = signed(
+        "https://trusttasks.org/spec/voting/ballot/cast/0.1#response",
+        &box_did,
+        &box_signer,
+        receipt_payload.clone(),
+    )
+    .await;
+    let keep = || {
+        doc(
+            uris::TASK_VTA_PCS_VOTER_RECEIPT_0_1,
+            json!({ "contextId": "member", "community": COMMUNITY,
+                    "electionId": "agm-2029", "receipt": receipt }),
+        )
+    };
+    assert_eq!(
+        ok(&handle_voter_receipt(&state, &auth, keep()).await)["status"],
+        "kept"
+    );
+
+    // Neither the member nor anything naming the cast is readable without the seed.
+    let entry_hash = receipt_payload["entryHash"].as_str().unwrap();
+    let tag = voted["tag"].as_str().unwrap();
+    for row in unwrapped_rows(&state).await {
+        assert!(
+            !row.contains(&persona.did),
+            "the member, in the clear: {row}"
+        );
+        assert!(
+            !row.contains(entry_hash),
+            "the cast's leaf, in the clear: {row}"
+        );
+        assert!(!row.contains(tag), "the cast's tag, in the clear: {row}");
+    }
+
+    let wrapped = |prefix: &'static str| {
+        let ks = state.pcs_engine_ks.clone();
+        async move { ks.prefix_iter_raw(prefix).await.unwrap().len() }
+    };
+    let closes: chrono::DateTime<chrono::Utc> =
+        m["votingCloses"].as_str().unwrap().parse().unwrap();
+    let sweep = |at| crate::operations::pcs_voter::sweep(&state.pcs_engine_ks, at);
+
+    // Before voting closes nothing goes.
+    assert_eq!(sweep(now).await.unwrap(), 0);
+    assert_eq!(wrapped("secret:voter:").await, 1);
+
+    // Once it closes the ticket goes; the receipt is still recognised.
+    assert_eq!(sweep(closes).await.unwrap(), 0);
+    assert_eq!(wrapped("secret:voter:").await, 0);
+    assert_eq!(wrapped("secret:voter-casts:").await, 1);
+    assert_eq!(
+        ok(&handle_voter_receipt(&state, &auth, keep()).await)["status"],
+        "kept"
+    );
+
+    // The retention later, everything.
+    let gone = closes + crate::operations::pcs_voter::RECEIPT_RETENTION;
+    assert_eq!(sweep(gone).await.unwrap(), 1);
+    assert_eq!(wrapped("secret:voter-casts:").await, 0);
+    assert_eq!(wrapped("voter:").await, 0);
+    assert!(
+        !handle_voter_receipt(&state, &auth, keep())
+            .await
+            .status
+            .is_success()
+    );
+}
+
 /// `vta/pcs/voter/read`: one of the two election reads, signed as the member — and nothing else.
 #[tokio::test]
 async fn an_election_read_is_signed_as_the_member() {

@@ -35,10 +35,15 @@ pub(crate) async fn run(
             election_id,
             target: t,
         } => elections::cmd_show(client, target(&t), &election_id).await,
+        ElectionCommands::Ticket {
+            election_id,
+            target: t,
+        } => elections::cmd_ticket(client, target(&t), &election_id).await,
         ElectionCommands::Vote {
             election_id,
             answers,
             ballot,
+            now,
             no_delay,
             target: t,
         } => {
@@ -48,6 +53,7 @@ pub(crate) async fn run(
                 &election_id,
                 &answers,
                 ballot.as_ref(),
+                now,
                 no_delay,
             )
             .await

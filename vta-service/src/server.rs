@@ -1224,6 +1224,7 @@ pub async fn run(
             apply_encryption(store.keyspace(crate::keyspaces::WITNESS_SESSIONS)?);
         let storage_room_groups_ks =
             apply_encryption(store.keyspace(crate::keyspaces::ROOM_GROUPS)?);
+        let storage_pcs_engine_ks = apply_encryption(store.keyspace(crate::keyspaces::PCS_ENGINE)?);
         let storage_app_state_ks = apply_encryption(store.keyspace(crate::keyspaces::APP_STATE)?);
         let storage_app_state_retention_days = config.app_state.tombstone_retention_days;
         let storage_backup_bundles_ks = backup_bundles_ks.clone();
@@ -1705,6 +1706,7 @@ pub async fn run(
                     storage_vault_ks,
                     storage_witness_sessions_ks,
                     storage_room_groups_ks,
+                    storage_pcs_engine_ks,
                     storage_app_state_ks,
                     storage_app_state_locks,
                     storage_app_state_retention_days,
@@ -1891,6 +1893,7 @@ fn run_storage_thread(
     vault_ks: KeyspaceHandle,
     witness_sessions_ks: KeyspaceHandle,
     room_groups_ks: KeyspaceHandle,
+    pcs_engine_ks: KeyspaceHandle,
     app_state_ks: KeyspaceHandle,
     app_state_locks: crate::operations::app_state::NamespaceLocks,
     app_state_retention_days: u32,
@@ -2064,6 +2067,19 @@ fn run_storage_thread(
                             Ok(n) if n > 0 => debug!(removed = n, "retained admission sweeper"),
                             Ok(_) => {}
                             Err(e) => warn!("retained admission sweeper error: {e}"),
+                        }
+                        // Discard each voter's ticket once its election's voting
+                        // closes, and the rest of its record the retention later
+                        // (`voting/_shared/0.1` CONVENTIONS §5 item 3).
+                        match crate::operations::pcs_voter::sweep(
+                            &pcs_engine_ks,
+                            chrono::Utc::now(),
+                        )
+                        .await
+                        {
+                            Ok(n) if n > 0 => debug!(removed = n, "voter record sweeper"),
+                            Ok(_) => {}
+                            Err(e) => warn!("voter record sweeper error: {e}"),
                         }
                         // Reap application-state tombstones past their retention
                         // window. This is what makes the window real rather than

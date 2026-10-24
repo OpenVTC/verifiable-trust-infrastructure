@@ -106,6 +106,17 @@ member's voting history. The cast never carries the member's DID (VTI-VOT-003), 
 audit names the election, never a tag, a cast or a receipt (VTI-VOT-100). An MCP
 host confirms every `vote` (`vta-mcp`'s guard counts it destructive).
 
+Steps 0 – 3 and 4 – 6 belong in separate runs, apart in time (CONVENTIONS §6 item 3): the
+community knows when it issued the ticket and the ballot box when the cast arrived. `pnm
+elections ticket` takes the ticket alone; `pnm elections vote` with no ticket held takes one
+and stops unless given `--now`.
+
+What the VTA keeps never pairs the member with a cast without the seed: the documents signed
+as the member go once the ticket is held, and the casts' leaf hashes and receipts are wrapped
+like the ticket. The storage sweeper discards the ticket when voting closes, and the record,
+casts and receipts 30 days later (`pcs_voter::RECEIPT_RETENTION`), with the voter key's path;
+CONVENTIONS §5 item 3.
+
 In a **sealed** or **tallied-encrypted** election (VTI-VOT-060 – 064, conventions §9) step 4
 is `vta/pcs/vote-encrypted/0.2`, given the ceremony `vtc/elections/show` carries — the
 trustees' signed steps, from which the VTA forms the election key itself (at least `threshold`

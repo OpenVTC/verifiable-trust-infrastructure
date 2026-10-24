@@ -40,6 +40,8 @@ party's report of it.** The board is the evidence; the ballot box is only its ke
 | 11 | A malformed payload reaches the state machine | the box validates every payload against its schema first |
 | 12 | A torn receipt record misaligns every later receipt | the journal truncates a torn tail, as it does for entries |
 | 13 | A box restarted between the last partial and the result never finishes | restore resumes the decryption |
+| 14 | `pnm elections vote` took the ticket and cast in one run, so the community and the box could pair them by their clocks | `pnm elections ticket` is its own step; `vote` with no ticket held takes one and stops unless given `--now` |
+| 15 | The voter's VTA kept the member-signed ticket request beside the casts' leaf hashes, readable without the seed, and never discarded either | the member's documents go once the ticket is held; leaf hashes and receipts are wrapped; the sweeper discards the ticket at the close and the rest 30 days later |
 
 Items 1 – 8 changed the wire, as `vta/pcs/trustee/*/0.2`, `vta/pcs/vote-encrypted/0.2`,
 `voting/trustees/authorize/0.1` and CONVENTIONS §3.9 / §9.3 – 9.7. The 0.1 trustee and
@@ -50,11 +52,6 @@ vote-encrypted tasks are retired: their whole design was acting on the box's rep
 None of these lets a single party change a result. Each one weakens privacy or availability, or
 leaves a cost unbounded:
 
-- **Timing between ticket and cast.** `pnm elections vote` takes the ticket and casts in one
-  run, so a community and a box comparing clocks can link the two. The fix is to separate the
-  steps, with a random delay between them.
-- **What the voter's VTA keeps.** It stores the member → leaf map in plaintext and never
-  discards tickets or receipts after the election.
 - **VTC restore.** Restoring a VTC backup can re-open ticket issuance for an election already
   issued.
 - **Registrations at the box.** The box accepts a registration from any community, with no

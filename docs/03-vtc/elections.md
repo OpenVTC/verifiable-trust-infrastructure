@@ -62,8 +62,14 @@ A member, with their membership persona held by their VTA:
 ```sh
 pnm elections show agm-2027 --vtc https://vtc.example.com/v1 --vtc-did <community DID> \
     --member <your membership DID> --context <the persona's context>
+pnm elections ticket agm-2027 --vtc … --vtc-did … --member … --context …
+# later — after voting opens, and not straight after the ticket
 pnm elections vote agm-2027 --answer chair=alice --vtc … --vtc-did … --member … --context …
 ```
+
+Taking the ticket and voting are separate runs: the community knows when it issued a ticket and
+the ballot box when a cast arrived, so a cast sent straight after its ticket can be paired by
+time. `vote` with no ticket held takes one and stops; `--now` casts in the same run anyway.
 
 The VTA signs the community's reads and the ticket request as the member
 (`vta/pcs/voter/read`, `vta/pcs/voter/register` with `member`), unblinds the ticket, and

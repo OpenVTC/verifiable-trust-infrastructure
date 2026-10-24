@@ -9,6 +9,11 @@
 //! alone (`vta/pcs/vote`), and this client posts it to the ballot box itself, from its own
 //! connection, after a pause, so the ballot box never sees the member and the community never
 //! sees the ballot (VTI-VOT-001 – 004). The receipt goes back to the VTA (`voter/receipt`).
+//!
+//! Taking the ticket and casting are separate runs (CONVENTIONS §6 item 3): the community knows
+//! when it issued a member's ticket and the ballot box when a cast arrived, so a cast sent
+//! straight after its ticket can be paired by the two clocks. `vote` with no ticket held takes
+//! one and stops, unless told `--now`.
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -238,13 +243,81 @@ pub(crate) async fn ballot_box_url(did: &str) -> CliResult<String> {
         })
 }
 
-/// `pnm elections vote <id>`: read, take the ticket if not held, vote, keep the receipt.
+/// Take the member's ticket for the election `shown` describes, unless the VTA already holds
+/// one. True when this call took it.
+async fn take_ticket(client: &VtaClient, t: &VoteTarget<'_>, shown: &Value) -> CliResult<bool> {
+    let election_id = &shown["manifest"]["electionId"];
+    let mut reg = json!({ "contextId": t.context, "community": t.vtc_did, "member": t.member });
+    reg["parameters"] = shown["parameters"].clone();
+    reg["manifest"] = shown["manifest"].clone();
+    let registered = match client
+        .pcs_voter_register(&serde_json::from_value(reg)?)
+        .await
+    {
+        Ok(registered) => serde_json::to_value(&registered)?,
+        Err(e) if e.to_string().contains("ticketHeld") => return Ok(false),
+        Err(e) => return Err(hint_member(e.to_string(), t.member)),
+    };
+    if registered["manifestDigest"] != shown["manifestDigest"] {
+        return Err(
+            "your VTA computed another manifest digest than the community shows; not taking a \
+             ticket"
+                .into(),
+        );
+    }
+    let issued = community(t)
+        .send_signed_document(&registered["ticketDocument"])
+        .await
+        .map_err(|e| format!("{}: {e}", t.vtc_did))?;
+    let accept = json!({
+        "contextId": t.context, "community": t.vtc_did, "electionId": election_id,
+        "parameters": shown["parameters"], "response": issued,
+    });
+    client
+        .pcs_voter_accept(&serde_json::from_value(accept)?)
+        .await?;
+    Ok(true)
+}
+
+/// What a member is told after taking a ticket in a run that does not cast.
+fn print_ticket_taken(election_id: &str) {
+    println!("{GREEN}ticket taken{RESET} — the community signed it blind");
+    println!(
+        "{DIM}vote later with `pnm elections vote {election_id} …`: a cast sent now could be paired \
+         with your ticket by when each arrived{RESET}"
+    );
+}
+
+/// `pnm elections ticket <id>`: take the ticket, and nothing else — ahead of voting, so the cast
+/// that follows is not timed to it.
+pub async fn cmd_ticket(client: &VtaClient, t: VoteTarget<'_>, election_id: &str) -> CliResult {
+    let shown = read(client, &t, "show", json!({ "electionId": election_id })).await?;
+    if !is_json_output() {
+        print_disclosure(&shown);
+    }
+    let taken = take_ticket(client, &t, &shown).await?;
+    if is_json_output() {
+        return Ok(print_json(
+            &json!({ "electionId": election_id, "ticketHeld": true, "taken": taken }),
+        )?);
+    }
+    if taken {
+        print_ticket_taken(election_id);
+    } else {
+        println!("{DIM}your VTA already holds a ticket for {election_id}{RESET}");
+    }
+    Ok(())
+}
+
+/// `pnm elections vote <id>`: read, vote with the ticket the VTA holds, keep the receipt. With no
+/// ticket held, take one and stop — or, with `now`, cast in the same run.
 pub async fn cmd_vote(
     client: &VtaClient,
     t: VoteTarget<'_>,
     election_id: &str,
     answers: &[String],
     ballot_file: Option<&PathBuf>,
+    now: bool,
     no_delay: bool,
 ) -> CliResult {
     // 1. The election as the community shows the member.
@@ -263,43 +336,25 @@ pub async fn cmd_vote(
         None => ballot_from_answers(&manifest, &digest, answers)?,
     };
 
-    // 2. The ticket, unless the VTA already holds it.
-    let base = json!({ "contextId": t.context, "community": t.vtc_did });
-    let mut reg = base.clone();
-    reg["parameters"] = parameters.clone();
-    reg["manifest"] = manifest.clone();
-    reg["member"] = json!(t.member);
-    match client
-        .pcs_voter_register(&serde_json::from_value(reg)?)
-        .await
-    {
-        Ok(registered) => {
-            let registered = serde_json::to_value(&registered)?;
-            if registered["manifestDigest"] != digest.as_str() {
-                return Err(
-                    "your VTA computed another manifest digest than the community shows; \
-                            not voting"
-                        .into(),
-                );
+    // 2. The ticket, unless the VTA already holds it — and then no cast in this run.
+    if take_ticket(client, &t, &shown).await? {
+        if !now {
+            if is_json_output() {
+                return Ok(print_json(
+                    &json!({ "electionId": election_id, "ticketHeld": true, "voted": false }),
+                )?);
             }
-            let issued = community(&t)
-                .send_signed_document(&registered["ticketDocument"])
-                .await
-                .map_err(|e| format!("{}: {e}", t.vtc_did))?;
-            let mut accept = base.clone();
-            accept["electionId"] = json!(election_id);
-            accept["parameters"] = parameters.clone();
-            accept["response"] = issued;
-            client
-                .pcs_voter_accept(&serde_json::from_value(accept)?)
-                .await?;
-            if !is_json_output() {
-                println!("{GREEN}ticket taken{RESET} — the community signed it blind");
-            }
+            print_ticket_taken(election_id);
+            return Ok(());
         }
-        Err(e) if e.to_string().contains("ticketHeld") => {}
-        Err(e) => return Err(hint_member(e.to_string(), t.member)),
+        if !is_json_output() {
+            println!(
+                "{GREEN}ticket taken{RESET} — {YELLOW}casting in the same run: the community and \
+                 the ballot box could pair the two by time{RESET}"
+            );
+        }
     }
+    let base = json!({ "contextId": t.context, "community": t.vtc_did });
 
     // 3. The cast, built and signed in the VTA under a key made for it alone — sealed or
     //    encrypted under the trustees' election key where the manifest says so.

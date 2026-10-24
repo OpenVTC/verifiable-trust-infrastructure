@@ -14,13 +14,18 @@
 //! - **Receipts are checked, not trusted.** A receipt counts only if the ballot box signed it
 //!   and it names a cast this engine built (by its board leaf hash), and an inclusion proof is
 //!   checked against a head the community kept (VTI-VOT-053).
+//! - **Nothing pairs the member with the cast in the clear.** The documents signed as the member
+//!   are dropped once the ticket is held; what names a cast (its board leaf hash, its receipt) is
+//!   wrapped like the ticket. Once voting closes the ticket is discarded, and
+//!   [`RECEIPT_RETENTION`] later everything else ([`sweep`]; CONVENTIONS §5 item 3).
 //!
 //! Records (`pcs_engine` keyspace, beside the vetter and applicant records):
 //!
 //! | Key | Value |
 //! |---|---|
 //! | `voter:<digest(context, community, election)>` | [`VoterRecord`] — public |
-//! | `secret:voter:…` | the wrapped [`VoterState`]: blinding state, ticket, receipts |
+//! | `secret:voter:…` | the wrapped [`VoterState`]: blinding state, ticket |
+//! | `secret:voter-casts:…` | the wrapped [`VoterCasts`]: the casts' leaf hashes, receipts |
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -47,6 +52,7 @@ use crate::error::AppError;
 use crate::server::AppState;
 
 const VOTER_STATE_TYPE: &str = "pcs-voter-state";
+const VOTER_CASTS_TYPE: &str = "pcs-voter-casts";
 const SUITE: &str = "ps-ddh-bls12381";
 const CAST_TYPE: &str = "https://trusttasks.org/spec/voting/ballot/cast/0.1#request";
 const CAST_ENCRYPTED_TYPE: &str =
@@ -55,6 +61,10 @@ const RECEIPT_TYPE: &str = "https://trusttasks.org/spec/voting/ballot/cast/0.1#r
 const ENCRYPTED_RECEIPT_TYPE: &str =
     "https://trusttasks.org/spec/voting/ballot/cast-encrypted/0.1#response";
 const HEAD_TYPE: &str = "https://trusttasks.org/spec/voting/board/head/0.1#response";
+
+/// How long after voting closes a voter's casts and receipts are kept, so the member can still
+/// check their cast against the board the result is counted from. Then the record goes.
+pub const RECEIPT_RETENTION: chrono::TimeDelta = chrono::TimeDelta::days(30);
 
 /// A voter engine's public record: one per (context, community, election).
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -75,22 +85,19 @@ pub struct VoterRecord {
     /// The voter's PCS identifier — public (the registrar sees it in the request).
     pub id: String,
     /// The ticket request as sent: answered again unchanged until the ticket is held, so the
-    /// community's replayed answer can still be unblinded.
+    /// community's replayed answer can still be unblinded. Null once it is.
     pub request: Value,
     /// The `vtc/elections/tickets/issue` document signed as each member this request was asked
     /// for, kept so a repeat returns it unchanged and the community answers a resend with its
-    /// first answer.
+    /// first answer — and dropped once the ticket is held, so no record in the clear names the
+    /// member beside an election they cast in.
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub ticket_documents: std::collections::BTreeMap<String, Value>,
     pub ticket_held: bool,
-    /// The board leaf hash of every cast this engine built, multibase — how a receipt is
-    /// recognised as this voter's without recomputing the tag.
-    #[serde(default)]
-    pub cast_leaves: Vec<String>,
     pub created_at: DateTime<Utc>,
 }
 
-/// The wrapped state: as secret as the key.
+/// The wrapped state: as secret as the key. Discarded once voting closes.
 #[derive(Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 struct VoterState {
@@ -100,9 +107,6 @@ struct VoterState {
     /// The ticket, multibase.
     #[serde(default)]
     ticket: Option<String>,
-    /// Receipts as received, kept whole: each carries a bearer token for a private board.
-    #[serde(default)]
-    receipts: Vec<Value>,
 }
 
 /// Written by hand: a derived `Debug` would print the ticket.
@@ -111,6 +115,29 @@ impl std::fmt::Debug for VoterState {
         f.debug_struct("VoterState")
             .field("blinding", &self.blinding.as_ref().map(|_| "<redacted>"))
             .field("ticket", &self.ticket.as_ref().map(|_| "<redacted>"))
+            .finish()
+    }
+}
+
+/// What names this voter's casts, wrapped: kept apart from the ticket so it can outlive it by
+/// [`RECEIPT_RETENTION`].
+#[derive(Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct VoterCasts {
+    /// The board leaf hash of every cast this engine built, multibase — how a receipt is
+    /// recognised as this voter's without recomputing the tag.
+    #[serde(default)]
+    leaves: Vec<String>,
+    /// Receipts as received, kept whole: each carries a bearer token for a private board.
+    #[serde(default)]
+    receipts: Vec<Value>,
+}
+
+/// Written by hand: a derived `Debug` would print the receipts' bearer tokens.
+impl std::fmt::Debug for VoterCasts {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("VoterCasts")
+            .field("leaves", &self.leaves.len())
             .field("receipts", &self.receipts.len())
             .finish()
     }
@@ -123,6 +150,19 @@ fn voter_key(context_id: &str, community: &str, election_id: &str) -> String {
         h.update(f.as_bytes());
     }
     format!("voter:{}", hex::encode(h.finalize()))
+}
+
+/// The key [`VoterCasts`] is wrapped under, beside the record at `voter_key`.
+fn casts_key(voter_key: &str) -> String {
+    format!("voter-casts:{}", voter_key.trim_start_matches("voter:"))
+}
+
+/// The wrapped [`VoterCasts`], empty before the first cast.
+async fn load_casts(state: &AppState, key: &str, seed_id: u32) -> Result<VoterCasts> {
+    match load_secret_json(state, &casts_key(key), VOTER_CASTS_TYPE, seed_id).await {
+        Err(PcsError::App(AppError::NotFound(_))) => Ok(VoterCasts::default()),
+        other => other,
+    }
 }
 
 fn malformed(why: impl Into<String>) -> PcsError {
@@ -432,7 +472,6 @@ pub async fn register(
         request: request.clone(),
         ticket_held: false,
         ticket_documents: Default::default(),
-        cast_leaves: Vec::new(),
         created_at: Utc::now(),
     };
     store_secret_json(
@@ -507,6 +546,8 @@ pub async fn accept(
     st.blinding = None;
     store_secret_json(state, &key, VOTER_STATE_TYPE, rec.seed_id, &st).await?;
     rec.ticket_held = true;
+    rec.ticket_documents.clear();
+    rec.request = Value::Null;
     state.pcs_engine_ks.insert(key, &rec).await?;
     Ok(json!({ "electionId": election_id, "ticketHeld": true }))
 }
@@ -533,7 +574,7 @@ pub async fn vote(
     let key = voter_key(context_id, community, &election_id);
 
     let _guard = write_lock().await;
-    let mut rec = record(state, &key).await?.ok_or(PcsError::NotFound)?;
+    let rec = record(state, &key).await?.ok_or(PcsError::NotFound)?;
     if rec.voting_key != voting_key {
         return Err(PcsError::ParametersInvalid(
             "another voting key than registered".into(),
@@ -565,18 +606,33 @@ pub async fn vote(
         .map_err(|e| PcsError::App(AppError::Internal(format!("cast: {e}"))))?;
 
     let document = sign_as_one_time_key(&rec, CAST_TYPE, &cast, now).await?;
-    remember_leaf(&mut rec, "cast", &cast)?;
-    state.pcs_engine_ks.insert(key, &rec).await?;
+    remember_leaf(state, &rec, &key, "cast", &cast).await?;
     Ok(json!({ "castDocument": document, "tag": cast["tag"] }))
 }
 
-/// Record the board leaf hash of a cast this engine built, so its receipt is recognised.
-fn remember_leaf(rec: &mut VoterRecord, kind: &str, cast: &Value) -> Result<()> {
+/// Record the board leaf hash of a cast this engine built, wrapped, so its receipt is
+/// recognised.
+async fn remember_leaf(
+    state: &AppState,
+    rec: &VoterRecord,
+    key: &str,
+    kind: &str,
+    cast: &Value,
+) -> Result<()> {
     let entry_jcs = serde_json_canonicalizer::to_vec(&json!({ "kind": kind, "cast": cast }))
         .map_err(|e| AppError::Internal(e.to_string()))?;
-    rec.cast_leaves
+    let mut casts = load_casts(state, key, rec.seed_id).await?;
+    casts
+        .leaves
         .push(rules::digest_multibase(&board::leaf_hash(&entry_jcs)));
-    Ok(())
+    store_secret_json(
+        state,
+        &casts_key(key),
+        VOTER_CASTS_TYPE,
+        rec.seed_id,
+        &casts,
+    )
+    .await
 }
 
 /// `vta/pcs/vote-encrypted`: `vta/pcs/vote` for the sealed and tallied-encrypted levels — the
@@ -604,7 +660,7 @@ pub async fn vote_encrypted(
     let key = voter_key(context_id, community, &election_id);
 
     let _guard = write_lock().await;
-    let mut rec = record(state, &key).await?.ok_or(PcsError::NotFound)?;
+    let rec = record(state, &key).await?.ok_or(PcsError::NotFound)?;
     if rec.voting_key != voting_key {
         return Err(PcsError::ParametersInvalid(
             "another voting key than registered".into(),
@@ -680,8 +736,7 @@ pub async fn vote_encrypted(
         .cast_encrypted_wire(&params, &ticket, &form, &mut rng)
         .map_err(|e| PcsError::App(AppError::Internal(format!("cast: {e}"))))?;
     let document = sign_as_one_time_key(&rec, CAST_ENCRYPTED_TYPE, &cast, now).await?;
-    remember_leaf(&mut rec, "encryptedCast", &cast)?;
-    state.pcs_engine_ks.insert(key, &rec).await?;
+    remember_leaf(state, &rec, &key, "encryptedCast", &cast).await?;
     Ok(json!({ "castDocument": document, "tag": cast["tag"] }))
 }
 
@@ -776,20 +831,26 @@ pub async fn receipt(
         .as_str()
         .unwrap_or_default()
         .to_string();
-    if !rec.cast_leaves.contains(&entry_hash) {
-        return Err(PcsError::ReceiptInvalid(
-            "names no cast this engine built".into(),
-        ));
-    }
     let leaf_index = payload["leafIndex"].as_u64().unwrap_or_default();
 
     {
         let _guard = write_lock().await;
-        let mut st: VoterState =
-            load_secret_json(state, &key, VOTER_STATE_TYPE, rec.seed_id).await?;
-        if !st.receipts.contains(receipt) {
-            st.receipts.push(receipt.clone());
-            store_secret_json(state, &key, VOTER_STATE_TYPE, rec.seed_id, &st).await?;
+        let mut casts = load_casts(state, &key, rec.seed_id).await?;
+        if !casts.leaves.contains(&entry_hash) {
+            return Err(PcsError::ReceiptInvalid(
+                "names no cast this engine built".into(),
+            ));
+        }
+        if !casts.receipts.contains(receipt) {
+            casts.receipts.push(receipt.clone());
+            store_secret_json(
+                state,
+                &casts_key(&key),
+                VOTER_CASTS_TYPE,
+                rec.seed_id,
+                &casts,
+            )
+            .await?;
         }
     }
 
@@ -840,4 +901,34 @@ pub async fn receipt(
         "status": if included { "included" } else { "notIncluded" },
         "leafIndex": leaf_index,
     }))
+}
+
+/// Discard what a voter engine keeps once it is of no more use (CONVENTIONS §5 item 3): the
+/// ticket and its blinding state once voting closes — no ballot box admits a cast after — and the
+/// record, its casts and receipts [`RECEIPT_RETENTION`] later. The voter key goes with the
+/// record: it was never stored, and nothing names its path any more. Returns how many records
+/// were removed whole.
+///
+/// Deleting needs no seed, so the storage thread runs this. Nothing is audited: a row naming the
+/// election would be the pairing VTI-VOT-100 forbids.
+pub async fn sweep(ks: &vti_common::store::KeyspaceHandle, now: DateTime<Utc>) -> Result<usize> {
+    let _guard = write_lock().await;
+    let mut removed = 0;
+    for (key, value) in ks.prefix_iter_raw("voter:").await? {
+        let key = String::from_utf8_lossy(&key).into_owned();
+        // A row this build cannot read is left for an operator, never guessed at.
+        let Ok(rec) = serde_json::from_slice::<VoterRecord>(&value) else {
+            continue;
+        };
+        if now < rec.voting_closes {
+            continue;
+        }
+        vta_keys::imported::delete_secret(ks, &key).await?;
+        if now >= rec.voting_closes + RECEIPT_RETENTION {
+            vta_keys::imported::delete_secret(ks, &casts_key(&key)).await?;
+            ks.remove(key).await?;
+            removed += 1;
+        }
+    }
+    Ok(removed)
 }

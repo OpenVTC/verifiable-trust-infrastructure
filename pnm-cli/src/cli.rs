@@ -449,9 +449,19 @@ pub(crate) enum ElectionCommands {
         #[command(flatten)]
         target: ElectionTarget,
     },
-    /// Take your ticket if you have not, then vote.
+    /// Take your ticket for an election, and nothing else.
     ///
-    /// A later vote replaces an earlier one where the election allows it. Run the same
+    /// Take it early — before voting opens, or well before you vote — so the cast that
+    /// follows cannot be paired with it by when each arrived.
+    Ticket {
+        election_id: String,
+        #[command(flatten)]
+        target: ElectionTarget,
+    },
+    /// Vote with the ticket your VTA holds.
+    ///
+    /// With no ticket held this takes one and stops: run it again later to vote, or pass
+    /// `--now`. A later vote replaces an earlier one where the election allows it. Run the same
     /// command again if the ballot box did not answer.
     Vote {
         election_id: String,
@@ -463,6 +473,10 @@ pub(crate) enum ElectionCommands {
         /// cannot express.
         #[arg(long, conflicts_with = "answers")]
         ballot: Option<std::path::PathBuf>,
+        /// Cast in the same run that takes the ticket. The community and the ballot box could
+        /// then pair your ticket with your ballot by time.
+        #[arg(long)]
+        now: bool,
         /// Send the cast at once rather than after a random pause of up to 20 seconds.
         #[arg(long)]
         no_delay: bool,
