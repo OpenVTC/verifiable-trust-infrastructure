@@ -796,6 +796,8 @@ mod pre_rotation_e2e_tests {
                 template_context: None,
                 template_vars: Default::default(),
                 is_vta_identity: false,
+                did_method: None,
+                scid_also_known_as: None,
             },
             "test",
         )

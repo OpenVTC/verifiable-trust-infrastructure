@@ -214,6 +214,8 @@ pub async fn run_create_did(
     services_json: Option<String>,
     pre_rotation: Option<u32>,
     print_mnemonic: bool,
+    did_method: Option<vta_sdk::did_scid::DidMethod>,
+    scid_also_known_as: Option<bool>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let config = AppConfig::load(config_path.clone())?;
     let cs = CliStore::open(&config).await?;
@@ -262,6 +264,8 @@ pub async fn run_create_did(
         // `pnm did-webvh create` is a runtime integration-DID CLI; it
         // never mints the VTA's own identity (setup wizard does that).
         is_vta_identity: false,
+        did_method,
+        scid_also_known_as,
     };
 
     let did_resolver = vta_sdk::resolver::shared_did_resolver_from_env().await?;
@@ -300,6 +304,16 @@ pub async fn run_create_did(
         eprintln!("  Server:     {}", server_id);
     }
     eprintln!("  SCID:       {}", result.scid);
+    if let Some(ref webvh_did) = result.webvh_did
+        && *webvh_did != result.did
+    {
+        eprintln!("  Log:        {webvh_did}");
+    }
+    if result.scid_also_known_as == Some(true)
+        && let Some(ref url) = result.scid_did_url
+    {
+        eprintln!("  did:scid:   {url}");
+    }
     if let Some(ref mnemonic) = result.mnemonic {
         if print_mnemonic {
             eprintln!("  Mnemonic:   {mnemonic}");

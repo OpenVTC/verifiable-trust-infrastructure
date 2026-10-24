@@ -50,6 +50,12 @@ const VECTORS: [string, string][] = [
   ["did:key:z6MkfrQjWzPQrTuVwXyZaBcDeFgHiJkLmNoPqRsTuVwXyZ4rT", "did:key:z6MkfrQjWz…XyZ4rT"],
   ["did:key:z6MkfrQjWz", "did:key:z6MkfrQjWz"],
   ["did:webvh:QmXkAbCdEfGhIjKlMnOpQrSt", "did:webvh:QmXkAbCdEf…OpQrSt"],
+  [
+    "did:scid:vh:1:QmXkAbCdEfGhIjKlMnOp?src=webvh.storm.ws/glenn-vta",
+    "did:scid:vh:1:QmXkAbCdEf…?src=…storm.ws/glenn-vta",
+  ],
+  ["did:scid:vh:1:QmXkAbCdEfGhIjKlMnOp", "did:scid:vh:1:QmXkAbCdEf…"],
+  ["did:scid:vh:1:Qm123?src=example.com", "did:scid:vh:1:Qm123?src=example.com"],
 ];
 
 describe("shortenDid", () => {

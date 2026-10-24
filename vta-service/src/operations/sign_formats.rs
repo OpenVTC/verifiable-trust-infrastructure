@@ -611,7 +611,44 @@ pub fn signer_methods(did: &str, document: &Value) -> Vec<SignerMethod> {
             }
         }
     }
+    // A did:scid signer named with its `src` names its methods the same way:
+    // the document lists them under the bare DID, and a producer writes the
+    // issuer and the proof's method in one form (VTI-KEY-163).
+    if vta_sdk::did_scid::src(did).is_some() {
+        let bare = format!("{}#", vta_sdk::did_scid::strip_src(did));
+        for m in &mut methods {
+            if let Some(fragment) = m.id.strip_prefix(&bare) {
+                m.id = format!("{did}#{fragment}");
+            }
+        }
+    }
     methods
+}
+
+#[cfg(test)]
+mod scid_signer_tests {
+    use super::*;
+    use serde_json::json;
+
+    /// VTI-KEY-163: the method is named in the issuer's form.
+    #[test]
+    fn a_did_scid_signer_with_src_names_its_methods_with_it() {
+        let bare = "did:scid:vh:1:QmScid";
+        let url = "did:scid:vh:1:QmScid?src=example.com/g";
+        let doc = json!({
+            "id": bare,
+            "verificationMethod": [{ "id": format!("{bare}#key-0"), "type": "Multikey",
+                "controller": bare,
+                "publicKeyMultibase": "z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK" }],
+            "assertionMethod": [format!("{bare}#key-0")],
+        });
+        let methods = signer_methods(url, &doc);
+        assert_eq!(methods.len(), 1);
+        assert_eq!(methods[0].id, format!("{url}#key-0"));
+        assert_eq!(methods[0].purposes, vec!["assertionMethod"]);
+        // Bare in, bare out.
+        assert_eq!(signer_methods(bare, &doc)[0].id, format!("{bare}#key-0"));
+    }
 }
 
 /// The methods of a `did:key`, read from the identifier itself: one Ed25519

@@ -297,6 +297,35 @@ pub fn shorten_did_keep(did: &str, keep: usize) -> String {
     if !did.starts_with("did:") {
         return did.to_string();
     }
+    // `did:scid:vh:1:<scid>[?src=<host>[/<path>]]`: the SCID abbreviated like a
+    // did:webvh's, and the `src` host like its host, the path kept.
+    if let Some(rest) = did.strip_prefix("did:scid:vh:1:") {
+        let (scid, src) = match rest.split_once("?src=") {
+            Some((scid, src)) => (scid, Some(src)),
+            None => (rest, None),
+        };
+        let mut out = String::from("did:scid:vh:1:");
+        if char_len(scid) > keep + 1 {
+            out.push_str(&take_chars(scid, keep));
+            out.push('…');
+        } else {
+            out.push_str(scid);
+        }
+        if let Some(src) = src {
+            let (host, path) = match src.split_once('/') {
+                Some((h, p)) => (h, Some(p)),
+                None => (src, None),
+            };
+            out.push_str("?src=");
+            out.push_str(&shorten_host(host));
+            if let Some(path) = path {
+                out.push('/');
+                out.push_str(path);
+            }
+        }
+        return out;
+    }
+
     let parts: Vec<&str> = did.split(':').collect();
     let method = parts.get(1).copied().unwrap_or_default();
 
@@ -410,6 +439,20 @@ mod tests {
         (
             "did:webvh:QmXkAbCdEfGhIjKlMnOpQrSt",
             "did:webvh:QmXkAbCdEf…OpQrSt",
+        ),
+        // did:scid:vh:1 — the SCID like a webvh's, the `src` host like its
+        // host, the path kept; a short one, and a bare one, as they are.
+        (
+            "did:scid:vh:1:QmXkAbCdEfGhIjKlMnOp?src=webvh.storm.ws/glenn-vta",
+            "did:scid:vh:1:QmXkAbCdEf…?src=…storm.ws/glenn-vta",
+        ),
+        (
+            "did:scid:vh:1:QmXkAbCdEfGhIjKlMnOp",
+            "did:scid:vh:1:QmXkAbCdEf…",
+        ),
+        (
+            "did:scid:vh:1:Qm123?src=example.com",
+            "did:scid:vh:1:Qm123?src=example.com",
         ),
     ];
 

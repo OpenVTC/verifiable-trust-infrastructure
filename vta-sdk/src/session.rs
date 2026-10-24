@@ -2441,7 +2441,8 @@ pub async fn resolve_vta_url(vta_did: &str) -> Result<String, Box<dyn std::error
     )
 }
 
-/// Extract the base URL from a `did:web:` or `did:webvh:` DID string.
+/// Extract the base URL from a `did:web:` or `did:webvh:` DID string, or from
+/// the `src` of a `did:scid:vh:1` DID URL (a bare did:scid names no host).
 fn url_from_did(did: &str) -> Option<String> {
     let domain = if let Some(rest) = did.strip_prefix("did:web:") {
         // did:web:domain.com or did:web:domain.com%3A8100
@@ -2449,6 +2450,9 @@ fn url_from_did(did: &str) -> Option<String> {
     } else if let Some(rest) = did.strip_prefix("did:webvh:") {
         // did:webvh:SCID:domain.com or did:webvh:SCID:domain.com%3A8100
         rest.split(':').nth(1)
+    } else if did.starts_with(crate::did_scid::SCID_VH_PREFIX) {
+        // did:scid:vh:1:SCID?src=domain.com/path or ?src=domain.com%3A8100
+        crate::did_scid::src(did)?.split('/').next()
     } else {
         None
     }?;
@@ -4148,6 +4152,15 @@ mod tests {
     #[test]
     fn test_url_from_did_key_returns_none() {
         assert_eq!(url_from_did("did:key:z6MkTest"), None);
+        assert_eq!(
+            url_from_did("did:scid:vh:1:QmSCID123?src=vta.example.com/vta").as_deref(),
+            Some("https://vta.example.com")
+        );
+        assert_eq!(
+            url_from_did("did:scid:vh:1:QmSCID123?src=localhost%3A8100").as_deref(),
+            Some("https://localhost:8100")
+        );
+        assert_eq!(url_from_did("did:scid:vh:1:QmSCID123"), None);
     }
 
     fn test_store() -> SessionStore {

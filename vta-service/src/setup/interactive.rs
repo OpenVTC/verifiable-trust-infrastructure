@@ -989,6 +989,37 @@ fn create_vta_did(p: &dyn Prompter) -> Result<VtaDidInput, DynErr> {
     }
 }
 
+/// How this VTA presents the DIDs it creates, its own included (VTI-VTA-034,
+/// VTI-VTA-035). Asked only when the wizard mints a did:webvh log; otherwise
+/// the defaults apply — did:webvh, with the did:scid alias listed.
+fn prompt_did_presentation(
+    p: &dyn Prompter,
+    vta_did: &VtaDidInput,
+) -> Result<crate::config::DidsConfig, DynErr> {
+    let mut dids = crate::config::DidsConfig::default();
+    if !matches!(vta_did, VtaDidInput::CreateWebvh { .. }) {
+        return Ok(dids);
+    }
+    eprintln!();
+    eprintln!(
+        "  \x1b[2mA did:webvh log can be presented as its did:scid:vh:1 DID, which the same\n  \
+         log verifies but which does not name its host, so it survives a move.\x1b[0m"
+    );
+    let options = [
+        "did:webvh (recommended; what every existing peer expects)",
+        "did:scid (portable identity, located by ?src=)",
+    ];
+    if p.select("Present this VTA's DIDs as", &options, 0)? == 1 {
+        dids.default_did_method = vta_sdk::did_scid::DidMethod::Scid;
+    } else {
+        dids.scid_also_known_as = p.confirm(
+            "List the did:scid alias in alsoKnownAs, so peers can also use that form?",
+            true,
+        )?;
+    }
+    Ok(dids)
+}
+
 /// Prompt for a webvh hosting URL, returning the raw string the engine parses.
 /// Re-prompts (via the validator) until the URL parses as an `http(s)://` URL.
 ///
@@ -1306,6 +1337,7 @@ async fn gather_inputs(
 
     // 13. VTA DID.
     let vta_did = create_vta_did(p)?;
+    let dids = prompt_did_presentation(p, &vta_did)?;
 
     Ok(Some(WizardInputs {
         config_path,
@@ -1320,6 +1352,7 @@ async fn gather_inputs(
             webauthn,
             tsp: enable_tsp,
         },
+        dids,
         server: {
             // `ServerConfig` is `#[non_exhaustive]`: start from its defaults
             // (the rate limits among them) and set what the wizard asked.
@@ -1760,12 +1793,15 @@ mod tests {
             text("did:key:z6MkKa#key-1"),           // ka key id
             Answer::Bool(true), // portable (existing-keys still prompts — no pre-signed log)
             text("2"),          // pre-rotation count
+            Answer::Index(0),   // present the VTA's DIDs as did:webvh
+            Answer::Bool(true), // ...listing the did:scid alias
         ];
         let p = ScriptedPrompter::new(answers);
         let gathered = gather_inputs(&p, None)
             .await
             .expect("gather should succeed")
             .expect("gather should not cancel");
+        assert_eq!(gathered.dids, crate::config::DidsConfig::default());
 
         match gathered.vta_did {
             VtaDidInput::CreateWebvh {

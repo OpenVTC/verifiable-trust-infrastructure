@@ -2310,6 +2310,14 @@ pub(crate) enum WebvhCommands {
         /// `KEY=VALUE` — supply a template variable. Repeatable.
         #[arg(long = "var", value_parser = parse_key_value)]
         vars: Vec<(String, String)>,
+        /// Present the DID as its did:webvh (`webvh`) or its did:scid:vh:1 DID
+        /// (`scid`). Default: the VTA's `[dids] default_did_method`.
+        #[arg(long, value_name = "webvh|scid")]
+        did_method: Option<vta_sdk::did_scid::DidMethod>,
+        /// List the did:scid alias in alsoKnownAs (`true`/`false`). Default: the
+        /// VTA's `[dids] scid_also_known_as`.
+        #[arg(long, value_name = "BOOL")]
+        scid_also_known_as: Option<bool>,
     },
     /// Edit an existing WebVH DID document.
     ///
@@ -2681,6 +2689,14 @@ pub(crate) enum DidMgmtDidCommands {
         /// `KEY=VALUE` — supply a template variable. Repeatable.
         #[arg(long = "var", value_parser = parse_key_value)]
         vars: Vec<(String, String)>,
+        /// Present the DID as its did:webvh (`webvh`) or its did:scid:vh:1 DID
+        /// (`scid`). Default: the VTA's `[dids] default_did_method`.
+        #[arg(long, value_name = "webvh|scid")]
+        did_method: Option<vta_sdk::did_scid::DidMethod>,
+        /// List the did:scid alias in alsoKnownAs (`true`/`false`). Default: the
+        /// VTA's `[dids] scid_also_known_as`.
+        #[arg(long, value_name = "BOOL")]
+        scid_also_known_as: Option<bool>,
     },
     /// Edit an existing DID document.
     ///
@@ -2873,6 +2889,8 @@ impl From<DidMgmtCommands> for WebvhCommands {
                     template,
                     template_context,
                     vars,
+                    did_method,
+                    scid_also_known_as,
                 } => WebvhCommands::CreateDid {
                     context,
                     server,
@@ -2892,6 +2910,8 @@ impl From<DidMgmtCommands> for WebvhCommands {
                     template,
                     template_context,
                     vars,
+                    did_method,
+                    scid_also_known_as,
                 },
                 DidMgmtDidCommands::Edit {
                     did,

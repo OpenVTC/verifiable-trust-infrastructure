@@ -357,6 +357,7 @@ pub async fn provision_integration(
     // ACL default → system default). Removed from the map for the same
     // reason as `WEBVH_PATH` — transport metadata, not document content.
     let webvh_domain = webvh::take_webvh_domain(&mut template_vars)?;
+    let (did_method, scid_also_known_as) = webvh::take_did_presentation(&mut template_vars)?;
 
     // Decide whether the minted DID should become the context's primary
     // DID. First-integration wins: when the context has no DID yet, bind
@@ -547,6 +548,8 @@ pub async fn provision_integration(
                     // provision-integration always creates an integration DID,
                     // never the VTA's own identity.
                     is_vta_identity: false,
+                    did_method,
+                    scid_also_known_as,
                 },
                 "provision-integration",
             )
@@ -555,8 +558,15 @@ pub async fn provision_integration(
             let did_document = create_result.did_document.clone().ok_or_else(|| {
                 AppError::Internal("create_did_webvh did not return did_document".into())
             })?;
+            // The integration is handed its DID to present: a did:scid with the
+            // `src` a recipient needs (VTI-KEY-163); its keys are under the
+            // bare DID, which `select_secret_kid` publishes them as.
+            let integration_did = match (&create_result.did_method, &create_result.scid_did_url) {
+                (Some(vta_sdk::did_scid::DidMethod::Scid), Some(url)) => url.clone(),
+                _ => create_result.did.clone(),
+            };
             (
-                create_result.did.clone(),
+                integration_did,
                 create_result.signing_key_id.clone(),
                 create_result.ka_key_id.clone(),
                 create_result.additional_key_ids.clone(),
@@ -651,6 +661,16 @@ pub async fn provision_integration(
                 ))
             })?;
 
+        // A did:scid integration's document lists its keys under the bare
+        // did:scid DID (VTI-KEY-161), so the bundle names them there; the
+        // records (and `get_key_secret` below) keep the log's method ids.
+        let presented_kid = |kid: &str| {
+            vta_sdk::did_scid::presented_reference(&integration_did, kid)
+                .unwrap_or_else(|| kid.to_string())
+        };
+        let signing_kid = presented_kid(&signing_kid);
+        let ka_kid = presented_kid(&ka_kid);
+
         // Signing keys beyond the primary, when the template declared extra
         // slots. Read back the same way as the pair — through `get_key_secret`,
         // so an extra key crosses exactly the authorization surface the other
@@ -678,7 +698,7 @@ pub async fn provision_integration(
                 // multicodec. The record is where the truth about a key's
                 // algorithm lives.
                 key_type: resp.key_type.clone(),
-                key_id: key_id.clone(),
+                key_id: presented_kid(key_id),
                 public_key_multibase: resp.public_key_multibase.clone(),
                 private_key_multibase: resp.private_key_multibase.clone(),
             });
@@ -1447,7 +1467,14 @@ async fn provision_did_peer(
     // A did:peer is self-contained: there is nothing to host, so webvh
     // vars are meaningless here. Reject them rather than silently drop —
     // their presence means the operator picked the wrong template.
-    for forbidden in ["WEBVH_SERVER", "URL", "WEBVH_PATH", "WEBVH_DOMAIN"] {
+    for forbidden in [
+        "WEBVH_SERVER",
+        "URL",
+        "WEBVH_PATH",
+        "WEBVH_DOMAIN",
+        "DID_METHOD",
+        "SCID_ALSO_KNOWN_AS",
+    ] {
         if template_vars.get(forbidden).is_some_and(|v| !v.is_null()) {
             return Err(AppError::Validation(format!(
                 "did:peer agent template does not accept '{forbidden}' — a did:peer is \

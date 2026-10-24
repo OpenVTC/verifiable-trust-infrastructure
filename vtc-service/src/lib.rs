@@ -62,6 +62,7 @@ pub mod rooms;
 pub mod routes;
 pub mod routing;
 pub mod schemas;
+pub mod scid_sources;
 pub mod secure_file;
 pub mod server;
 pub mod setup;

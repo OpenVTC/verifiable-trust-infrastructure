@@ -907,6 +907,41 @@ pub struct CreateDidWebvhRequest {
     pub template_vars: std::collections::HashMap<String, serde_json::Value>,
 }
 
+/// The `vta/webvh/dids/create/1.2` members of a create: how the new log is
+/// presented, and whether it lists its did:scid alias (VTI-VTA-036). Both
+/// `None` → the VTA's `[dids]`.
+///
+/// Separate from [`CreateDidWebvhRequest`] so that struct, which callers build
+/// as a literal, stays as it is. Pass both to
+/// `VtaClient::create_did_webvh_presented`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct DidPresentation {
+    pub did_method: Option<crate::did_scid::DidMethod>,
+    pub scid_also_known_as: Option<bool>,
+}
+
+impl DidPresentation {
+    /// Present the new log as `method`.
+    #[must_use]
+    pub fn did_method(mut self, method: crate::did_scid::DidMethod) -> Self {
+        self.did_method = Some(method);
+        self
+    }
+
+    /// List, or do not list, the did:scid alias in `alsoKnownAs`.
+    #[must_use]
+    pub fn scid_also_known_as(mut self, listed: bool) -> Self {
+        self.scid_also_known_as = Some(listed);
+        self
+    }
+
+    /// Whether either member is stated, which takes a create to 1.2.
+    pub fn is_stated(&self) -> bool {
+        self.did_method.is_some() || self.scid_also_known_as.is_some()
+    }
+}
+
 /// Request for `VtaClient::change_acl_role`.
 ///
 /// `from_role` is the compare-and-swap: the role the caller believes the

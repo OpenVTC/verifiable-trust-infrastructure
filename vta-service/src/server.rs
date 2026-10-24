@@ -658,6 +658,17 @@ pub async fn build_app_state(
     )
     .await;
 
+    // The did:scid identities this VTA authorises resolve by their bare DID,
+    // and refuse a log older than one verified before, from the first request
+    // after a restart (VTI-KEY-162).
+    if let Some(resolver) = auth.did_resolver.as_ref() {
+        match vti_common::scid_floors::seed(&acl_ks, resolver).await {
+            Ok(0) => {}
+            Ok(n) => info!(seeded = n, "did:scid floors seeded from the store"),
+            Err(e) => warn!(error = %e, "did:scid floors not seeded"),
+        }
+    }
+
     // Telemetry sink: reuse the run-path's live sink when injected, else a
     // fresh ring buffer for non-axum front-ends.
     let telemetry: vti_common::telemetry::SharedTelemetrySink = parts
@@ -1298,6 +1309,13 @@ pub async fn run(
                     Err(e) => warn!(error = %e, "key custody scan failed"),
                 }
             });
+        }
+
+        // The did:scid version floors of every ACL subject, persisted as the
+        // resolver learns them so a restart does not reset what it refuses
+        // (VTI-KEY-162).
+        if let Some(resolver) = app_state.did_resolver.clone() {
+            crate::scid_floors::spawn(app_state.acl_ks.clone(), resolver, shutdown_rx.clone());
         }
 
         // A room's revocation list that a registration left `pending` at its host is
@@ -2195,8 +2213,14 @@ impl VsockRestListener {
     /// channel instead of panicking the thread.
     fn adopt(listener: vsock::VsockListener) -> std::io::Result<Self> {
         listener.set_nonblocking(true)?;
+        // SAFETY: `VsockListener` owns its socket — the descriptor is open from
+        // `bind`/`try_clone` until the listener drops, and `as_raw_fd` always
+        // returns that one descriptor. Moving it in makes the `AsyncFd` its sole
+        // owner for as long as it is registered.
+        let inner = unsafe { tokio::io::unix::AsyncFd::register(listener) }
+            .map_err(|e| e.into_parts().1)?;
         Ok(Self {
-            inner: tokio::io::unix::AsyncFd::new(listener)?,
+            inner,
             backoff: AcceptBackoff::default(),
         })
     }
@@ -2685,8 +2709,16 @@ async fn init_auth(
         }
     };
 
+    // The DID the VTA's key records are named under: its own, or — for a VTA
+    // presented as its did:scid — the did:webvh log that verifies it. Records
+    // keep the log's method ids; the secrets below are registered under the
+    // identity's own (VTI-KEY-161).
+    let key_record_did = key_record_did_for(&vta_did, webvh_ks).await;
+
     // Look up VTA key paths from stored key records
-    let (signing_path, ka_path, vta_seed_id) = match find_vta_key_paths(&vta_did, keys_ks).await {
+    let (signing_path, ka_path, vta_seed_id) = match find_vta_key_paths(&key_record_did, keys_ks)
+        .await
+    {
         Ok(paths) => paths,
         Err(e) => {
             warn!(
@@ -2820,19 +2852,19 @@ async fn init_auth(
 
         // Load stored key records for validation
         let stored_signing: Option<KeyRecord> = keys_ks
-            .get(crate::keys::store_key(&format!("{vta_did}#key-0")))
+            .get(crate::keys::store_key(&format!("{key_record_did}#key-0")))
             .await
             .ok()
             .flatten();
         let stored_ka: Option<KeyRecord> = keys_ks
-            .get(crate::keys::store_key(&format!("{vta_did}#key-1")))
+            .get(crate::keys::store_key(&format!("{key_record_did}#key-1")))
             .await
             .ok()
             .flatten();
 
         // Derive and insert VTA signing secret (Ed25519)
         match root.derive_ed25519(&signing_path) {
-            Ok(mut signing_secret) => {
+            Ok(signing_secret) => {
                 if let Some(ref record) = stored_signing {
                     match signing_secret.get_public_keymultibase() {
                         Ok(runtime_pub) if runtime_pub != record.public_key => {
@@ -2852,15 +2884,18 @@ async fn init_auth(
                         Err(e) => warn!("could not extract signing public key for validation: {e}"),
                     }
                 }
-                signing_secret.id = format!("{vta_did}#key-0");
-                secrets_resolver.insert(signing_secret).await;
+                for id in self_secret_ids(&vta_did, "key-0") {
+                    let mut secret = signing_secret.clone();
+                    secret.id = id;
+                    secrets_resolver.insert(secret).await;
+                }
             }
             Err(e) => warn!("failed to derive VTA signing key: {e}"),
         }
 
         // Derive and insert VTA key-agreement secret (X25519)
         match root.derive_x25519(&ka_path) {
-            Ok(mut ka_secret) => {
+            Ok(ka_secret) => {
                 if let Some(ref record) = stored_ka {
                     match ka_secret.get_public_keymultibase() {
                         Ok(runtime_pub) if runtime_pub != record.public_key => {
@@ -2881,8 +2916,11 @@ async fn init_auth(
                         Err(e) => warn!("could not extract KA public key for validation: {e}"),
                     }
                 }
-                ka_secret.id = format!("{vta_did}#key-1");
-                secrets_resolver.insert(ka_secret).await;
+                for id in self_secret_ids(&vta_did, "key-1") {
+                    let mut secret = ka_secret.clone();
+                    secret.id = id;
+                    secrets_resolver.insert(secret).await;
+                }
             }
             Err(e) => warn!("failed to derive VTA key-agreement key: {e}"),
         }
@@ -3015,18 +3053,44 @@ pub(crate) async fn preload_self_did_document(
 
     #[cfg(feature = "webvh")]
     {
+        let Some(webvh_ks) = webvh_ks else {
+            if vta_sdk::did_scid::is_durable(vta_did) {
+                warn!(
+                    did = %vta_did,
+                    "webvh keyspace not available; self DID preload skipped"
+                );
+            }
+            return;
+        };
+        // Every did:scid identity this VTA holds resolves here by its bare DID
+        // after a restart: its own document and its source, from the local log
+        // (VTI-KEY-161, VTI-KEY-162). A serverless one is reachable no other way.
+        match crate::webvh_store::list_scid_identities(webvh_ks).await {
+            Ok(identities) => {
+                for identity in identities {
+                    if let Ok(Some(log)) =
+                        crate::webvh_store::get_did_log(webvh_ks, &identity.webvh_did).await
+                    {
+                        crate::operations::did_webvh::refresh_resolver_doc_from_log(
+                            did_resolver,
+                            &identity.webvh_did,
+                            &log,
+                            "boot",
+                        )
+                        .await;
+                    }
+                    did_resolver.scid_sources().add_source(&identity.did_url());
+                }
+            }
+            Err(e) => warn!(error = %e, "failed to list did:scid identities for resolver preload"),
+        }
+        if vta_sdk::did_scid::is_scid(vta_did) {
+            // Preloaded above, under its bare DID.
+            return;
+        }
         if !vta_did.starts_with("did:webvh:") {
             return;
         }
-
-        let Some(webvh_ks) = webvh_ks else {
-            warn!(
-                did = %vta_did,
-                "webvh keyspace not available; self DID preload skipped"
-            );
-            return;
-        };
-
         let Some(did_log) = (match crate::webvh_store::get_did_log(webvh_ks, vta_did).await {
             Ok(log) => log,
             Err(e) => {
@@ -3058,6 +3122,35 @@ pub(crate) async fn preload_self_did_document(
 
         did_resolver.add_did_document(vta_did, doc).await;
         info!(did = %vta_did, "preloaded VTA DID into resolver cache from local did.jsonl");
+    }
+}
+
+/// The DID the VTA's own key records are named under: the VTA DID itself, or
+/// for a did:scid VTA DID, the did:webvh log recorded for it. Falls back to the
+/// VTA DID, whose lookup then fails with the usual "run setup first".
+async fn key_record_did_for(vta_did: &str, webvh_ks: Option<&KeyspaceHandle>) -> String {
+    #[cfg(feature = "webvh")]
+    if vta_sdk::did_scid::is_scid(vta_did)
+        && let Some(ks) = webvh_ks
+        && let Ok(Some(log_did)) = crate::webvh_store::log_did_for(ks, vta_did).await
+    {
+        return log_did;
+    }
+    let _ = webvh_ks;
+    vta_did.to_string()
+}
+
+/// The ids the VTA registers one of its own secrets under: the method id in its
+/// document — under the bare DID, for a did:scid (VTI-KEY-161) — and, where the
+/// configured DID carries a `src`, the same id with it, which is how this VTA
+/// names the key when it signs as that DID URL (VTI-KEY-163).
+fn self_secret_ids(vta_did: &str, fragment: &str) -> Vec<String> {
+    let bare = format!("{}#{fragment}", vta_sdk::did_scid::strip_src(vta_did));
+    let presented = format!("{vta_did}#{fragment}");
+    if presented == bare {
+        vec![bare]
+    } else {
+        vec![bare, presented]
     }
 }
 

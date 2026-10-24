@@ -23,6 +23,7 @@
 //! | `webvh/dids/list/1.0`               | any authed  |
 //! | `webvh/dids/create/1.0`             | `key-mint`  |
 //! | `webvh/dids/create/1.1`             | `key-mint`  |
+//! | `webvh/dids/create/1.2`             | `key-mint`  |
 //! | `webvh/dids/get/1.0`                | any authed  |
 //! | `webvh/dids/get-log/1.0`            | any authed  |
 //! | `webvh/dids/delete/1.0`             | admin       |
@@ -65,7 +66,8 @@ use crate::operations::did_webvh::{
 use crate::server::AppState;
 
 use super::helpers::{
-    TRANSPORT_TRUST_TASK, app_error_to_reject, parse_payload, reject_with, success_response,
+    TRANSPORT_TRUST_TASK, app_error_to_reject, parse_payload, reject_declared, reject_with,
+    success_response,
 };
 
 // ─── Server CRUD ────────────────────────────────────────────────────────
@@ -88,6 +90,28 @@ fn reject_malformed_did(doc: &TrustTask<Value>, did: &str) -> Option<TrustTaskOu
     vti_common::identifier::validate_did("did", did)
         .err()
         .map(|e| app_error_to_reject(doc, e))
+}
+
+/// The did:webvh DID of the log a `webvh/dids` request names. The family takes
+/// either form of a log this VTA created (`vta/webvh/dids/create/1.2`): its
+/// did:webvh DID, or its did:scid DID, with or without `src`, which names the
+/// same log (VTI-KEY-160). A did:scid this VTA holds no log for is not found.
+async fn log_did_of(
+    state: &AppState,
+    doc: &TrustTask<Value>,
+    did: &str,
+) -> Result<String, TrustTaskOutcome> {
+    if let Some(reject) = reject_malformed_did(doc, did) {
+        return Err(reject);
+    }
+    match vta_webvh::webvh_store::log_did_for(&state.webvh_ks, did).await {
+        Ok(Some(log_did)) => Ok(log_did),
+        Ok(None) => Err(app_error_to_reject(
+            doc,
+            AppError::NotFound(format!("no did:webvh log here is known as {did}")),
+        )),
+        Err(e) => Err(app_error_to_reject(doc, e)),
+    }
 }
 
 /// `webvh/servers/list/1.0` — list registered webvh hosts.
@@ -201,15 +225,29 @@ pub(super) async fn handle_dids_list(
     }
 }
 
-/// `webvh/dids/create/1.1` — mint a new DID, the response stating `serverless`
-/// (Keyring VTI-20). The `key-mint` capability, in the target context (Keyring
-/// VTI-23; gated in `create_did_webvh`).
+/// `webvh/dids/create/1.2` — mint a new DID, presented as its did:webvh or
+/// its did:scid:vh:1 DID, the response stating the form applied, the log and its
+/// did:scid DID URL (VTI-KEY-165, VTI-KEY-166, VTI-VTA-036). The `key-mint`
+/// capability, in the target context (Keyring VTI-23; gated in
+/// `create_did_webvh`).
 pub(super) async fn handle_dids_create(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    create_dids(state, auth, doc, true).await
+    create_dids(state, auth, doc, CreateVersion::V1_2).await
+}
+
+/// `webvh/dids/create/1.1` — [`handle_dids_create`] answered in 1.1's shape:
+/// `serverless` stated (Keyring VTI-20), and none of 1.2's members, which 1.1's
+/// schema refuses in both directions. `[dids]` still applies, as to a 1.2
+/// request naming neither member.
+pub(super) async fn handle_dids_create_1_1(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    create_dids(state, auth, doc, CreateVersion::V1_1).await
 }
 
 /// `webvh/dids/create/1.0` — [`handle_dids_create`] answered in 1.0's shape.
@@ -220,19 +258,39 @@ pub(super) async fn handle_dids_create_1_0(
     auth: &AuthClaims,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    create_dids(state, auth, doc, false).await
+    create_dids(state, auth, doc, CreateVersion::V1_0).await
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CreateVersion {
+    V1_0,
+    V1_1,
+    V1_2,
 }
 
 async fn create_dids(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
-    states_serverless: bool,
+    version: CreateVersion,
 ) -> TrustTaskOutcome {
     let body: CreateDidWebvhBody = match parse_payload(&doc) {
         Ok(r) => r,
         Err(resp) => return resp,
     };
+    // 1.0 and 1.1 refuse members they do not define; the hand-written body
+    // reads 1.2's, so refuse them here rather than act on them.
+    if version != CreateVersion::V1_2
+        && (body.did_method.is_some() || body.scid_also_known_as.is_some())
+    {
+        return reject_with(
+            &doc,
+            RejectReason::MalformedRequest {
+                reason: "didMethod and scidAlsoKnownAs are vta/webvh/dids/create/1.2 members"
+                    .into(),
+            },
+        );
+    }
     let config = state.config.read().await;
     let did_resolver = match state.did_resolver.as_ref() {
         Some(r) => r,
@@ -247,11 +305,24 @@ async fn create_dids(
     let deps =
         operations::did_webvh::CreateDidWebvhDeps::from_app_state(state, &config, did_resolver);
     match operations::did_webvh::create_did_webvh(&deps, auth, params, TRANSPORT_TRUST_TASK).await {
-        Ok(mut body) => {
-            if !states_serverless {
+        Ok(body) => match version {
+            CreateVersion::V1_2 => success_response(&doc, body),
+            CreateVersion::V1_1 => success_response(&doc, body.without_1_2_members()),
+            CreateVersion::V1_0 => {
+                let mut body = body.without_1_2_members();
                 body.serverless = None;
+                success_response(&doc, body)
             }
-            success_response(&doc, body)
+        },
+        Err(e)
+            if version == CreateVersion::V1_2
+                && operations::did_webvh::presentation::is_scid_alias_required(&e) =>
+        {
+            reject_declared(
+                &doc,
+                trust_tasks_rs::specs::vta::webvh::dids::create::v1_2::error_codes::SCID_ALIAS_REQUIRED,
+                e.to_string(),
+            )
         }
         Err(e) => app_error_to_reject(&doc, e),
     }
@@ -273,13 +344,14 @@ pub(super) async fn handle_dids_get(
         Ok(r) => r,
         Err(resp) => return resp,
     };
-    if let Some(reject) = reject_malformed_did(&doc, &req.did) {
-        return reject;
-    }
+    let log_did = match log_did_of(state, &doc, &req.did).await {
+        Ok(did) => did,
+        Err(reject) => return reject,
+    };
     match operations::did_webvh::get_did_webvh(
         &state.webvh_ks,
         auth,
-        &req.did,
+        &log_did,
         TRANSPORT_TRUST_TASK,
         req.include_log,
     )
@@ -301,9 +373,10 @@ pub(super) async fn handle_dids_delete(
         Ok(r) => r,
         Err(resp) => return resp,
     };
-    if let Some(reject) = reject_malformed_did(&doc, &req.did) {
-        return reject;
-    }
+    let log_did = match log_did_of(state, &doc, &req.did).await {
+        Ok(did) => did,
+        Err(reject) => return reject,
+    };
     let did_resolver = match state.did_resolver.as_ref() {
         Some(r) => r,
         None => {
@@ -318,7 +391,7 @@ pub(super) async fn handle_dids_delete(
     match operations::did_webvh::delete_did_webvh(
         &deps,
         auth,
-        &req.did,
+        &log_did,
         vta_did.as_deref(),
         TRANSPORT_TRUST_TASK,
     )
@@ -353,9 +426,10 @@ pub(super) async fn handle_dids_update(
         Err(resp) => return resp,
     };
     let UpdateDidWithDid { did, body } = req;
-    if let Some(reject) = reject_malformed_did(&doc, &did) {
-        return reject;
-    }
+    let did = match log_did_of(state, &doc, &did).await {
+        Ok(did) => did,
+        Err(reject) => return reject,
+    };
     let options = match update_body_to_options(body) {
         Ok(o) => o,
         Err(resp) => return reject_with(&doc, resp),
@@ -411,9 +485,10 @@ pub(super) async fn handle_agent_name_list(
         Ok(r) => r,
         Err(resp) => return resp,
     };
-    if let Some(reject) = reject_malformed_did(&doc, &req.did) {
-        return reject;
-    }
+    let log_did = match log_did_of(state, &doc, &req.did).await {
+        Ok(did) => did,
+        Err(reject) => return reject,
+    };
     let did_resolver = match state.did_resolver.as_ref() {
         Some(r) => r,
         None => {
@@ -425,7 +500,7 @@ pub(super) async fn handle_agent_name_list(
     };
     let vta_did = state.config.read().await.vta_did.clone();
     let deps = operations::did_webvh::WebvhDeps::from_app_state(state, did_resolver);
-    match operations::did_webvh::list_agent_names(&deps, auth, &req.did, vta_did.as_deref()).await {
+    match operations::did_webvh::list_agent_names(&deps, auth, &log_did, vta_did.as_deref()).await {
         Ok((did, names)) => success_response(
             &doc,
             AgentNameListResultBody {
@@ -457,9 +532,10 @@ pub(super) async fn handle_agent_name_check(
         Ok(r) => r,
         Err(resp) => return resp,
     };
-    if let Some(reject) = reject_malformed_did(&doc, &req.did) {
-        return reject;
-    }
+    let log_did = match log_did_of(state, &doc, &req.did).await {
+        Ok(did) => did,
+        Err(reject) => return reject,
+    };
     let did_resolver = match state.did_resolver.as_ref() {
         Some(r) => r,
         None => {
@@ -474,7 +550,7 @@ pub(super) async fn handle_agent_name_check(
     match operations::did_webvh::check_agent_name(
         &deps,
         auth,
-        &req.did,
+        &log_did,
         &req.name,
         vta_did.as_deref(),
     )
@@ -548,9 +624,10 @@ async fn handle_agent_name(
         Ok(r) => r,
         Err(resp) => return resp,
     };
-    if let Some(reject) = reject_malformed_did(&doc, &req.did) {
-        return reject;
-    }
+    let log_did = match log_did_of(state, &doc, &req.did).await {
+        Ok(did) => did,
+        Err(reject) => return reject,
+    };
     let did_resolver = match state.did_resolver.as_ref() {
         Some(r) => r,
         None => {
@@ -565,7 +642,7 @@ async fn handle_agent_name(
     match operations::did_webvh::agent_name_op(
         &deps,
         auth,
-        &req.did,
+        &log_did,
         &req.name,
         verb,
         vta_did.as_deref(),
@@ -576,7 +653,7 @@ async fn handle_agent_name(
         Ok(_) => success_response(
             &doc,
             AgentNameResultBody {
-                did: req.did,
+                did: log_did,
                 name: req.name,
                 // Whether the name resolves now — `remove` reports `false`
                 // like `disable`; the caller knows which verb it sent.
@@ -599,9 +676,10 @@ pub(super) async fn handle_dids_rotate_keys(
         Ok(r) => r,
         Err(resp) => return resp,
     };
-    if let Some(reject) = reject_malformed_did(&doc, &req.did) {
-        return reject;
-    }
+    let log_did = match log_did_of(state, &doc, &req.did).await {
+        Ok(did) => did,
+        Err(reject) => return reject,
+    };
     let did_resolver = match state.did_resolver.as_ref() {
         Some(r) => r,
         None => {
@@ -620,7 +698,7 @@ pub(super) async fn handle_dids_rotate_keys(
     match operations::did_webvh::rotate_did_webvh_keys(
         &deps,
         auth,
-        &req.did,
+        &log_did,
         options,
         vta_did.as_deref(),
         state.secrets_resolver.as_deref(),
@@ -654,15 +732,16 @@ pub(super) async fn handle_dids_realign_keys(
         Ok(r) => r,
         Err(resp) => return resp,
     };
-    if let Some(reject) = reject_malformed_did(&doc, &req.did) {
-        return reject;
-    }
+    let log_did = match log_did_of(state, &doc, &req.did).await {
+        Ok(did) => did,
+        Err(reject) => return reject,
+    };
     match operations::did_webvh::realign_did_key_records(
         &state.keys_ks,
         &state.webvh_ks,
         &state.audit_sink,
         auth,
-        &req.did,
+        &log_did,
         req.dry_run,
         TRANSPORT_TRUST_TASK,
     )
@@ -687,9 +766,10 @@ pub(super) async fn handle_dids_register_with_server(
         Ok(r) => r,
         Err(resp) => return resp,
     };
-    if let Some(reject) = reject_malformed_did(&doc, &req.did) {
-        return reject;
-    }
+    let log_did = match log_did_of(state, &doc, &req.did).await {
+        Ok(did) => did,
+        Err(reject) => return reject,
+    };
     let did_resolver = match state.did_resolver.as_ref() {
         Some(r) => r,
         None => {
@@ -705,7 +785,7 @@ pub(super) async fn handle_dids_register_with_server(
         &deps,
         auth,
         RegisterDidWithServerParams {
-            did: req.did,
+            did: log_did,
             server_id: req.server_id,
             force: req.force,
             domain: req.domain.clone(),

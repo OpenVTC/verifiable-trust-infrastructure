@@ -148,6 +148,16 @@ pub(crate) struct VtcWizardInputs {
     #[serde(default)]
     pub provision_transport: Option<ProvisionTransport>,
 
+    /// How the community's DID, and those it mints later, are presented:
+    /// `"webvh"` or `"scid"` (VTI-VTC-004). Omit for the VTA's `[dids]`.
+    #[serde(default)]
+    pub did_method: Option<vta_sdk::did_scid::DidMethod>,
+
+    /// Whether the community's logs list their did:scid alias. Omit for the
+    /// VTA's `[dids]`.
+    #[serde(default)]
+    pub scid_also_known_as: Option<bool>,
+
     /// Where the VTC's `did:webvh` is published. All fields optional; an
     /// empty `[webvh]` table (or omitting it) reproduces the serverless
     /// default — the VTC self-hosts its `did.jsonl` at `base_url` with a
@@ -241,6 +251,8 @@ pub(crate) fn parse_from_toml(
             )?,
             single_admin_mode: inputs.single_admin_mode || single_admin,
             provision_transport: inputs.provision_transport,
+            did_method: inputs.did_method,
+            scid_also_known_as: inputs.scid_also_known_as,
         },
         webvh: inputs.webvh,
         secrets: inputs.secrets,

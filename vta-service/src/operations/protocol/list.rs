@@ -90,6 +90,11 @@ pub async fn list_services(
     let vta_did = cfg_view
         .vta_did
         .ok_or(ListServicesError::VtaDidNotConfigured)?;
+    // A did:scid VTA DID's services are its log's (VTI-KEY-161).
+    let vta_did = match webvh_store::log_did_for(webvh_ks, &vta_did).await? {
+        Some(log_did) => log_did,
+        None => vta_did,
+    };
 
     // For non-webvh DIDs (e.g. did:key), there is no on-chain DID document
     // to inspect. Report service state from config only.

@@ -463,17 +463,22 @@ struct Setup {
     publish: Publish,
     mediator_did: String,
     authority_days: u32,
+    /// How the room's identity is presented, as the community states it to its
+    /// VTA (VTI-VTC-004).
+    presentation: crate::did_hosting::Presentation,
 }
 
 async fn setup(state: &AppState) -> Result<Setup, String> {
-    let hosting = {
+    let (hosting, presentation) = {
         let config = state.config.read().await.clone();
-        crate::did_hosting::live(
-            &config,
-            &crate::config_store::ConfigStore::new(state.config_ks.clone()),
-        )
-        .await
-        .map_err(|e| format!("where room identities are published could not be read: {e}"))?
+        let db = crate::config_store::ConfigStore::new(state.config_ks.clone());
+        let hosting = crate::did_hosting::live(&config, &db)
+            .await
+            .map_err(|e| format!("where room identities are published could not be read: {e}"))?;
+        let presentation = crate::did_hosting::live_presentation(&config, &db)
+            .await
+            .map_err(|e| format!("how room identities are presented could not be read: {e}"))?;
+        (hosting, presentation)
     };
     let config = state.config.read().await;
     let Some(community) = config.rooms.community.clone() else {
@@ -527,6 +532,7 @@ async fn setup(state: &AppState) -> Result<Setup, String> {
         publish,
         mediator_did,
         authority_days: community.authority_valid_days(),
+        presentation,
     })
 }
 
@@ -922,19 +928,15 @@ async fn mint_and_equip(
         }
         (Publish::Served { .. }, None) => unreachable!("a served identity always has a path"),
     }
+    let create_uri = crate::did_hosting::with_presentation(&mut mint, setup.presentation);
     let mint = typed::<vta_sdk::protocols::did_management::create::CreateDidWebvhBody>(mint)
         .map_err(local)?;
-    let minted = ask(
-        holder,
-        vta_sdk::trust_tasks::TASK_WEBVH_DIDS_CREATE_1_1,
-        mint,
-        SIGN_TIMEOUT,
-    )
-    .await
-    .map_err(|e| CreateFailure::Holder(e, None))?;
+    let minted = ask(holder, create_uri, mint, SIGN_TIMEOUT)
+        .await
+        .map_err(|e| CreateFailure::Holder(e, None))?;
     let minted: vta_sdk::protocols::did_management::create::CreateDidWebvhResultBody =
         read("webvh/dids/create", minted).map_err(|e| CreateFailure::Holder(e, None))?;
-    let room_id = minted.did.clone();
+    let room_id = crate::did_hosting::presented_did(&minted);
     let signing_key_id = minted.signing_key_id.clone();
 
     // Served here: published before anything asks the VTA to verify what the room
@@ -951,7 +953,7 @@ async fn mint_and_equip(
         };
         state
             .community_rooms
-            .put_did_log(path, &room_id, log)
+            .put_did_log(path, minted.log_did(), log)
             .await
             .map_err(local)?;
     }

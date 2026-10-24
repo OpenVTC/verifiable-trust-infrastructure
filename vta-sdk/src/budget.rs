@@ -148,6 +148,7 @@ pub const RELAYS_ONWARD: &[&str] = &[
     // share its path and were latent behind the same arithmetic.
     trust_tasks::TASK_WEBVH_DIDS_CREATE_1_0,
     trust_tasks::TASK_WEBVH_DIDS_CREATE_1_1,
+    trust_tasks::TASK_WEBVH_DIDS_CREATE_1_2,
     trust_tasks::TASK_WEBVH_DIDS_DELETE_1_0,
     trust_tasks::TASK_WEBVH_DIDS_UPDATE_1_0,
     trust_tasks::TASK_WEBVH_DIDS_ROTATE_KEYS_1_0,

@@ -395,6 +395,22 @@ pub const REGISTRY: &[ConfigKeyDef] = &[
         sensitive: false,
         trust_semantics: false,
     },
+    // How those identities are presented, as the community states it to its
+    // VTA (VTI-VTC-004). Unset: the VTA's own `[dids]`. Read live at every mint.
+    ConfigKeyDef {
+        key: crate::did_hosting::DIDS_DEFAULT_DID_METHOD,
+        kind: ConfigKeyKind::StringEnum(&["webvh", "scid"]),
+        requires_restart: false,
+        sensitive: false,
+        trust_semantics: false,
+    },
+    ConfigKeyDef {
+        key: crate::did_hosting::DIDS_SCID_ALSO_KNOWN_AS,
+        kind: ConfigKeyKind::Bool,
+        requires_restart: false,
+        sensitive: false,
+        trust_semantics: false,
+    },
 ];
 
 /// `acl.single_admin_mode` — single-administrator mode (VTI-APV-022). **Not**
@@ -551,6 +567,11 @@ fn toml_layer_value(key: &str, cfg: &AppConfig) -> Option<Value> {
         }
         CONSENT_REQUEST_PUSH => cfg.acl.consent_request_push.then_some(Value::Bool(true)),
         crate::did_hosting::DIDS_WEBVH_SERVER => cfg.dids.webvh_server.clone().map(Value::String),
+        crate::did_hosting::DIDS_DEFAULT_DID_METHOD => cfg
+            .dids
+            .default_did_method
+            .map(|m| Value::String(m.as_str().to_string())),
+        crate::did_hosting::DIDS_SCID_ALSO_KNOWN_AS => cfg.dids.scid_also_known_as.map(Value::Bool),
         WITNESSES_TRUSTED => (!cfg.witnesses.is_empty())
             .then(|| serde_json::to_value(&cfg.witnesses.trusted).unwrap_or(Value::Null)),
         "auth.admin_idle_timeout" => {
@@ -591,6 +612,9 @@ fn default_layer_value(key: &str) -> Value {
         WITNESSES_TRUSTED => Value::Array(Vec::new()),
         // Unset: each kind's own `config.toml` setting decides.
         crate::did_hosting::DIDS_WEBVH_SERVER => Value::Null,
+        // Unset: the VTA's own `[dids]` decides.
+        crate::did_hosting::DIDS_DEFAULT_DID_METHOD => Value::Null,
+        crate::did_hosting::DIDS_SCID_ALSO_KNOWN_AS => Value::Null,
         other => match action_key_default(other) {
             Some(n) => Value::Number(n.into()),
             None => Value::Null, // unreachable for registry keys
@@ -626,6 +650,17 @@ fn env_layer_value(key: &str) -> Option<Value> {
         crate::did_hosting::DIDS_WEBVH_SERVER => std::env::var(crate::did_hosting::ENV)
             .ok()
             .map(Value::String),
+        crate::did_hosting::DIDS_DEFAULT_DID_METHOD => {
+            std::env::var(crate::did_hosting::ENV_DID_METHOD)
+                .ok()
+                .map(Value::String)
+        }
+        crate::did_hosting::DIDS_SCID_ALSO_KNOWN_AS => {
+            std::env::var(crate::did_hosting::ENV_SCID_ALSO_KNOWN_AS)
+                .ok()
+                .and_then(|s| s.parse::<bool>().ok())
+                .map(Value::Bool)
+        }
         "auth.admin_idle_timeout" => std::env::var("VTC_AUTH_ADMIN_IDLE_TIMEOUT")
             .ok()
             .and_then(|s| s.parse::<u64>().ok())
@@ -767,6 +802,16 @@ fn set_app_config_field(cfg: &mut AppConfig, key: &str, value: &Value) {
         crate::did_hosting::DIDS_WEBVH_SERVER => {
             if crate::did_hosting::validate(value).is_ok() {
                 cfg.dids.webvh_server = value.as_str().map(str::to_string);
+            }
+        }
+        crate::did_hosting::DIDS_DEFAULT_DID_METHOD => {
+            if let Ok(method) = crate::did_hosting::validate_did_method(value) {
+                cfg.dids.default_did_method = Some(method);
+            }
+        }
+        crate::did_hosting::DIDS_SCID_ALSO_KNOWN_AS => {
+            if let Some(b) = value.as_bool() {
+                cfg.dids.scid_also_known_as = Some(b);
             }
         }
         "auth.admin_idle_timeout" => match value.as_u64() {

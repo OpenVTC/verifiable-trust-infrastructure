@@ -31,6 +31,9 @@ const ROOT_SLOT: &str = ".well-known";
 /// to the port separator. `None` for anything with a path — such a DID is
 /// published by a DID host, not by this community.
 fn root_host(did: &str) -> Option<String> {
+    // A did:scid DID resolves at the log its `src` names (VTI-KEY-160).
+    let log_did = vta_sdk::did_scid::webvh_did(did);
+    let did = log_did.as_deref().unwrap_or(did);
     let rest = did.strip_prefix("did:webvh:")?;
     let mut parts = rest.split(':');
     let _scid = parts.next().filter(|s| !s.is_empty())?;

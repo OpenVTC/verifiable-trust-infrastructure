@@ -153,11 +153,14 @@ pub async fn resolve_vta_keyagreement(
         let x_pub = ed25519_pub_to_x25519_pub(&ed_pub)?;
         let kid = did_key_agreement_kid(vta_did)?;
         Ok((kid, x_pub))
-    } else if vta_did.starts_with("did:webvh:") {
+    } else if crate::did_scid::is_durable(vta_did) {
+        // did:webvh, or a did:scid:vh:1 verified by a did:webvh log: the same
+        // resolver resolves both, the did:scid to its own document (VTI-KEY-161).
         resolve_webvh_keyagreement(vta_did).await
     } else {
         Err(format!(
-            "unsupported VTA DID method (lightweight path supports did:key and did:webvh only): {vta_did}"
+            "unsupported VTA DID method (lightweight path supports did:key, did:webvh and \
+             did:scid:vh:1 only): {vta_did}"
         )
         .into())
     }
@@ -258,8 +261,10 @@ fn resolve_vm_reference(
         .ok_or("DID document missing `verificationMethod` while resolving reference")?;
     vms.iter()
         .find(|vm| {
-            vm.get("id").and_then(|i| i.as_str()) == Some(target_id.as_str())
-                || vm.get("id").and_then(|i| i.as_str()) == Some(reference)
+            vm.get("id").and_then(|i| i.as_str()).is_some_and(|id| {
+                crate::did_scid::same_reference(id, &target_id)
+                    || crate::did_scid::same_reference(id, reference)
+            })
         })
         .cloned()
         .ok_or_else(|| {

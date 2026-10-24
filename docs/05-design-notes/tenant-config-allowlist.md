@@ -278,8 +278,8 @@ instance size, which the parent chooses and the image does not know, and the
 overlay is delivered on every boot, so the budgets survive an enclave restart
 (a runtime `config/patch` would not). It confers nothing on the parent: a budget
 of 1 starves the VTA, which a parent that carries every packet can do anyway,
-and no budget is the behaviour without the field. Zero is refused rather than
-read as "no budget". `trust_xff_cidrs` in particular stays baked: it would let
+and without the field the baked value, or the default, applies. Zero is refused
+rather than read as "no budget". `trust_xff_cidrs` in particular stays baked: it would let
 the parent choose whose address a request is charged to.
 
 ### 3.4 Envelope wire shape

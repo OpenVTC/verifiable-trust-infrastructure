@@ -212,6 +212,7 @@ pub async fn maybe_generate_vta_did(
         derived.signing_secret.clone(),
         did_document,
         parameters,
+        config.dids.scid_also_known_as,
     )
     .await?;
 
@@ -451,12 +452,15 @@ async fn build_genesis_create_config(
     authorization_key: Secret,
     did_document: serde_json::Value,
     parameters: WebVHParameters,
+    also_known_as_scid: bool,
 ) -> Result<CreateDIDConfig, AppError> {
     CreateDIDConfig::builder()
         .address(url)
         .authorization_key(authorization_key)
         .did_document(did_document)
         .parameters(parameters)
+        // VTI-KEY-166, VTI-VTA-035: the did:scid alias, per `[dids]`.
+        .also_known_as_scid(also_known_as_scid)
         // Genesis: no previous entry to clamp against.
         .version_time(next_version_time(None).await)
         .build()
@@ -547,10 +551,15 @@ mod tests {
     async fn genesis_version_time_is_stamped_and_not_future() {
         let (signing, document, parameters) = genesis_inputs();
 
-        let config =
-            build_genesis_create_config("https://example.com/vta", signing, document, parameters)
-                .await
-                .expect("genesis config builds");
+        let config = build_genesis_create_config(
+            "https://example.com/vta",
+            signing,
+            document,
+            parameters,
+            false,
+        )
+        .await
+        .expect("genesis config builds");
 
         let stamped = config
             .version_time
@@ -591,10 +600,15 @@ mod tests {
     async fn first_update_after_genesis_is_strictly_later() {
         let (signing, document, parameters) = genesis_inputs();
 
-        let config =
-            build_genesis_create_config("https://example.com/vta", signing, document, parameters)
-                .await
-                .expect("genesis config builds");
+        let config = build_genesis_create_config(
+            "https://example.com/vta",
+            signing,
+            document,
+            parameters,
+            false,
+        )
+        .await
+        .expect("genesis config builds");
         let genesis_time = create_did(config)
             .await
             .expect("genesis entry is created")
@@ -630,6 +644,9 @@ mod tests {
             signing.clone(),
             document,
             parameters,
+            // With the alias the default config lists: genesis then a real
+            // update must still verify.
+            true,
         )
         .await
         .expect("genesis config builds");

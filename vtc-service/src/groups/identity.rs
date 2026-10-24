@@ -48,19 +48,24 @@ pub struct Setup {
     pub context: String,
     pub publish: Publish,
     pub authority_days: u32,
+    /// How the group's identity is presented, as the community states it to
+    /// its VTA (VTI-VTC-004).
+    pub presentation: crate::did_hosting::Presentation,
 }
 
 /// What to configure when the community cannot hold a group's keys: the
 /// message of a `noKeyHolder`.
 pub async fn setup(state: &AppState) -> Result<Setup, String> {
-    let hosting = {
+    let (hosting, presentation) = {
         let config = state.config.read().await.clone();
-        crate::did_hosting::live(
-            &config,
-            &crate::config_store::ConfigStore::new(state.config_ks.clone()),
-        )
-        .await
-        .map_err(|e| format!("where group identities are published could not be read: {e}"))?
+        let db = crate::config_store::ConfigStore::new(state.config_ks.clone());
+        let hosting = crate::did_hosting::live(&config, &db)
+            .await
+            .map_err(|e| format!("where group identities are published could not be read: {e}"))?;
+        let presentation = crate::did_hosting::live_presentation(&config, &db)
+            .await
+            .map_err(|e| format!("how group identities are presented could not be read: {e}"))?;
+        (hosting, presentation)
     };
     let config = state.config.read().await;
     let Some(groups) = config.groups.clone() else {
@@ -116,6 +121,7 @@ pub async fn setup(state: &AppState) -> Result<Setup, String> {
         context,
         publish,
         authority_days: groups.authority_valid_days(),
+        presentation,
     })
 }
 
@@ -180,6 +186,7 @@ pub async fn mint(
         }
         (Publish::Served { .. }, None) => unreachable!("a served identity always has a path"),
     }
+    let create_uri = crate::did_hosting::with_presentation(&mut request, setup.presentation);
     let request: vta_sdk::protocols::did_management::create::CreateDidWebvhBody =
         serde_json::from_value(request)
             .map_err(|e| Failure::Local(AppError::Internal(format!("webvh/dids/create: {e}"))))?;
@@ -187,16 +194,12 @@ pub async fn mint(
         .map_err(|e| Failure::Local(AppError::Internal(format!("webvh/dids/create: {e}"))))?;
     let answer = setup
         .holder
-        .ask(
-            vta_sdk::trust_tasks::TASK_WEBVH_DIDS_CREATE_1_1,
-            request,
-            SIGN_TIMEOUT,
-        )
+        .ask(create_uri, request, SIGN_TIMEOUT)
         .await
         .map_err(|e| Failure::Holder(e, None))?;
     let minted: vta_sdk::protocols::did_management::create::CreateDidWebvhResultBody =
         read("webvh/dids/create", answer).map_err(|e| Failure::Holder(e, None))?;
-    let group_did = minted.did.clone();
+    let group_did = crate::did_hosting::presented_did(&minted);
 
     if let Some(path) = &did_path {
         let Some(log) = minted.log_entry.as_deref() else {
@@ -209,7 +212,7 @@ pub async fn mint(
                 Some(group_did),
             ));
         };
-        put_did_log(state, path, &group_did, log)
+        put_did_log(state, path, minted.log_did(), log)
             .await
             .map_err(Failure::Local)?;
     }

@@ -142,7 +142,7 @@ fn lists_vm(doc: &affinidi_did_common::Document, vm: &str) -> bool {
         .unwrap_or_default();
     doc.verification_method
         .iter()
-        .any(|m| m.id.as_str() == vm || m.id.as_str() == relative)
+        .any(|m| crate::did_scid::same_reference(m.id.as_str(), vm) || m.id.as_str() == relative)
 }
 
 /// Resolve `did` for a proof naming `vm`, re-resolving once — fresh — when the

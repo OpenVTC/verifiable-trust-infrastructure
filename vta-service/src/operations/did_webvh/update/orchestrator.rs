@@ -1787,6 +1787,22 @@ mod concurrency_precondition {
 mod agent_name_host_contract {
     use super::edit_agent_name;
 
+    /// VTI-KEY-164/166: claiming and dropping an agent name never touches the
+    /// did:scid alias that links the log's two names.
+    #[test]
+    fn agent_name_edits_keep_the_scid_alias() {
+        let alias = "did:scid:vh:1:QmScid?src=webvh.storm.ws/alice";
+        let mut doc = serde_json::json!({ "id": "did:webvh:QmScid:webvh.storm.ws:alice",
+                                          "alsoKnownAs": [alias] });
+        edit_agent_name(&mut doc, DOMAIN, "alice", true);
+        assert_eq!(
+            claims(&doc),
+            vec![alias.to_string(), format!("https://{DOMAIN}/@alice")]
+        );
+        edit_agent_name(&mut doc, DOMAIN, "alice", false);
+        assert_eq!(claims(&doc), vec![alias.to_string()]);
+    }
+
     const DOMAIN: &str = "webvh.storm.ws";
 
     /// Pull the `alsoKnownAs` entries out of a document, as the host would.

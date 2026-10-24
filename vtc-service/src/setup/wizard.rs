@@ -238,6 +238,8 @@ pub(crate) async fn apply(plan: WizardPlan) -> Result<SetupOutcome, AppError> {
     // VTI-APV-022: written only when chosen (`skip_serializing_if`), so a
     // config.toml that does not mention it is a community without it.
     app_config.acl.single_admin_mode = inputs.single_admin_mode;
+    app_config.dids.default_did_method = inputs.did_method;
+    app_config.dids.scid_also_known_as = inputs.scid_also_known_as;
     // Where the VTC's DID lives at its VTA: what its entry there must cover for the VTA
     // to act as the community (`rooms::vta_access`).
     app_config.vta_context = Some(inputs.context.clone());
@@ -477,6 +479,13 @@ pub(crate) struct WizardInputs {
     /// up front is the way round a mediator that drops replies (OpenVTC #501).
     /// Not persisted: it only decides how setup reaches the VTA.
     pub(crate) provision_transport: Option<ProvisionTransport>,
+    /// How the community's own DID, and those it mints later, are presented:
+    /// `webvh` or `scid` (VTI-VTC-004). `None` → the VTA's `[dids]`. Sent with
+    /// the `vtc-host` provisioning and written to `[dids]`.
+    pub(crate) did_method: Option<vta_sdk::did_scid::DidMethod>,
+    /// Whether the community's logs list their did:scid alias. `None` → the
+    /// VTA's `[dids]`.
+    pub(crate) scid_also_known_as: Option<bool>,
 }
 
 /// The transport `vtc setup` provisions over, when the operator forces one.
@@ -780,6 +789,9 @@ fn prompt_inputs(single_admin: bool) -> Result<WizardInputs, AppError> {
         // step 2) — there is nothing to advertise before then.
         transports: Vec::new(),
         provision_transport: None,
+        // The VTA's `[dids]` decides; `vtc setup --from` can state them.
+        did_method: None,
+        scid_also_known_as: None,
     })
 }
 
@@ -1648,6 +1660,18 @@ async fn run_provision_quietly(
             vars.insert(var.to_string(), entry);
         }
     }
+    // How the community's DID is presented (VTI-VTC-004, VTI-VTA-036): the
+    // VTA's provisioning takes it as template vars, and its `[dids]` decides
+    // what is not stated.
+    if let Some(method) = inputs.did_method {
+        vars.insert(
+            "DID_METHOD".to_string(),
+            JsonValue::String(method.as_str().to_string()),
+        );
+    }
+    if let Some(alias) = inputs.scid_also_known_as {
+        vars.insert("SCID_ALSO_KNOWN_AS".to_string(), JsonValue::Bool(alias));
+    }
     let ask = ProvisionAsk::for_template("vtc-host", vars, inputs.context.clone())
         .with_label("vtc-host integration");
 
@@ -2092,6 +2116,9 @@ fn default_data_dir_for(config_path: &std::path::Path) -> PathBuf {
 /// derivation, so the two must stay in lockstep. Not an SCID — the
 /// SCID is the first label, and nothing here needs it.
 fn did_log_label_or_err(did: &str) -> Result<String, AppError> {
+    // A did:scid VTC DID: the label of the log its `src` names (VTI-KEY-160).
+    let log_did = vta_sdk::did_scid::webvh_did(did);
+    let did = log_did.as_deref().unwrap_or(did);
     did.strip_prefix("did:webvh:")
         .and_then(|suffix| suffix.split(':').next_back())
         .map(str::to_string)
@@ -2254,6 +2281,8 @@ mod tests {
             co_admin_did: co.map(String::from),
             single_admin_mode: single,
             provision_transport: None,
+            did_method: None,
+            scid_also_known_as: None,
         };
         assert!(single_admin_warning(&inputs(true, None)).is_none());
         assert!(single_admin_warning(&inputs(false, Some("did:key:z6MkCo"))).is_none());

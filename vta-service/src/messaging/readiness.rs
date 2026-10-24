@@ -50,7 +50,7 @@ use vta_config::{MediatorReadinessConfig, ReadinessTimeoutPolicy};
 /// recognise) is not gated — `did:key` and friends resolve straight from the
 /// identifier, and an unrecognised method must not have DIDComm withheld from
 /// it on the strength of a probe we can't reason about.
-const NETWORK_RESOLVED_METHODS: &[&str] = &["did:webvh:", "did:web:"];
+const NETWORK_RESOLVED_METHODS: &[&str] = &["did:webvh:", "did:web:", "did:scid:vh:1:"];
 
 /// What the caller should do after the gate runs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -103,6 +103,11 @@ pub fn needs_network_probe(vta_did: &str) -> bool {
 /// non-`webvh` method, an unparseable DID, or a build without the `webvh`
 /// feature).
 pub fn self_did_endpoint_hint(vta_did: &str) -> Option<String> {
+    // A did:scid VTA DID is published where its `src` says (VTI-KEY-160).
+    #[cfg(feature = "webvh")]
+    let log_did = vta_sdk::did_scid::webvh_did(vta_did);
+    #[cfg(feature = "webvh")]
+    let vta_did = log_did.as_deref().unwrap_or(vta_did);
     #[cfg(feature = "webvh")]
     if vta_did.starts_with("did:webvh:") {
         return match didwebvh_rs::url::WebVHURL::parse_did_url(vta_did) {

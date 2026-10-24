@@ -677,8 +677,11 @@ pub fn print_redeploy_hint(serverless: bool, did: &str) {
 /// The HTTPS URL a `did:webvh` DID's log is resolved from (did:webvh v1.0,
 /// DID-to-HTTPS transformation): `did:webvh:<scid>:<host>[:<path>…]` becomes
 /// `https://<host>/<path…>/did.jsonl`, or `/.well-known/did.jsonl` with no
-/// path. `%3A` in the host is a port separator. `None` for anything else.
+/// path. `%3A` in the host is a port separator. A `did:scid:vh:1` DID URL is
+/// the log its `src` names (VTI-KEY-160). `None` for anything else.
 fn webvh_log_url(did: &str) -> Option<String> {
+    let log_did = vta_sdk::did_scid::webvh_did(did);
+    let did = log_did.as_deref().unwrap_or(did);
     let rest = did.strip_prefix("did:webvh:")?;
     let mut parts = rest.split(':');
     let _scid = parts.next().filter(|s| !s.is_empty())?;

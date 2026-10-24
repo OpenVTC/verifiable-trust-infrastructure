@@ -264,12 +264,20 @@ fn relationship(doc: &Document, purpose: ProofPurpose) -> &[VerificationRelation
 /// The verification method `vm` names in `doc`, provided `doc` is `did`'s
 /// document, the relationship `purpose` names lists the method, and the
 /// method's controller is `did`.
+///
+/// A did:scid `did` and `vm` may carry the `src` locator; they are matched by
+/// DID and fragment without it, since the identity's document lists its keys
+/// under the bare DID (VTI-KEY-161, VTI-KEY-163). Nothing else is loosened.
 pub fn authorised_method(
     doc: &Document,
     did: &str,
     vm: &str,
     purpose: ProofPurpose,
 ) -> Result<VerificationMethod, DataIntegrityError> {
+    let did = crate::did_scid::strip_src(did);
+    let did = did.as_ref();
+    let vm = crate::did_scid::strip_src(vm);
+    let vm = vm.as_ref();
     if doc.id.as_str() != did {
         return Err(DataIntegrityError::Resolver(
             "the resolved DID document's id is not the verificationMethod's DID".to_string(),
@@ -345,6 +353,39 @@ mod tests {
 
     fn vm() -> String {
         format!("{DID}#key-1")
+    }
+
+    /// VTI-KEY-161/163: a did:scid signer may name its key with the `src`
+    /// locator; its document lists the key under the bare DID. Another SCID's
+    /// document is still not this DID's.
+    #[test]
+    fn a_did_scid_key_named_with_its_src_is_its_own() {
+        let bare = "did:scid:vh:1:QmScid";
+        let kid = format!("{bare}#key-0");
+        let d = doc(
+            json!({ "id": bare, "verificationMethod": [method(&kid, bare)],
+                             "assertionMethod": [kid] }),
+        );
+        for (signer, vm) in [
+            (bare.to_string(), kid.clone()),
+            (
+                format!("{bare}?src=example.com"),
+                format!("{bare}?src=example.com#key-0"),
+            ),
+        ] {
+            authorised_method(&d, &signer, &vm, ProofPurpose::AssertionMethod)
+                .unwrap_or_else(|e| panic!("{vm}: {e}"));
+        }
+        let other = "did:scid:vh:1:QmOther?src=example.com";
+        assert!(
+            authorised_method(
+                &d,
+                other,
+                &format!("{other}#key-0"),
+                ProofPurpose::AssertionMethod
+            )
+            .is_err()
+        );
     }
 
     #[test]

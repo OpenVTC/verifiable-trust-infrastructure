@@ -122,20 +122,36 @@ impl From<crate::client::GetKeySecretResponse> for SecretEntry {
 /// the recipient kid published in its own DID document and failed every
 /// unpack with `No local secret matches any JWE recipient`.
 ///
+/// For a bundle whose DID is a `did:scid:vh:1` identity, rules 1 and 2 also
+/// accept an id under the `did:webvh` log carrying the same SCID — the VTA
+/// names key records by the log's own method ids — and publish it under the
+/// did:scid DID instead (`did:webvh:<scid>:host#key-1` becomes
+/// `did:scid:vh:1:<scid>#key-1`), because that is where the identity's
+/// resolved document lists the key (VTI-KEY-161, VTI-KEY-163). A `src` on the
+/// bundle DID is ignored: kids are under the bare DID.
+///
 /// Shared between the online SDK path (`VtaClient::fetch_did_secrets_bundle`)
 /// and the offline VTA-service path
 /// (`vta_service::operations::export::build_did_secrets_bundle`) so the
 /// two cannot drift.
 pub fn select_secret_kid(did: &str, record_key_id: &str, label: Option<&str>) -> Option<String> {
+    let did = crate::did_scid::strip_src(did);
     let vm_prefix = format!("{did}#");
-    if record_key_id.starts_with(&vm_prefix) {
-        return Some(record_key_id.to_string());
+    let as_kid = |id: &str| {
+        if id.starts_with(&vm_prefix) {
+            Some(id.to_string())
+        } else {
+            crate::did_scid::presented_reference(&did, id)
+        }
+    };
+    if let Some(kid) = as_kid(record_key_id) {
+        return Some(kid);
     }
     if let Some(label) = label
-        && label.starts_with(&vm_prefix)
         && !label.chars().any(char::is_whitespace)
+        && let Some(kid) = as_kid(label)
     {
-        return Some(label.to_string());
+        return Some(kid);
     }
     None
 }
@@ -186,6 +202,46 @@ mod tests {
         let decoded: DidSecretsBundle = serde_json::from_str(&json).unwrap();
         assert_eq!(decoded.did, "did:example:123");
         assert!(decoded.secrets.is_empty());
+    }
+
+    /// VTI-KEY-161/163: a did:scid identity's secrets are published under the
+    /// did:scid DID, from records named by its did:webvh log's method ids.
+    #[test]
+    fn scid_identity_publishes_webvh_records_under_the_scid_did() {
+        let scid = "did:scid:vh:1:QmScid";
+        assert_eq!(
+            select_secret_kid(scid, "did:webvh:QmScid:example.com#key-1", None).as_deref(),
+            Some("did:scid:vh:1:QmScid#key-1")
+        );
+        assert_eq!(
+            select_secret_kid(
+                "did:scid:vh:1:QmScid?src=example.com",
+                "did:scid:vh:1:QmScid#key-0",
+                None
+            )
+            .as_deref(),
+            Some("did:scid:vh:1:QmScid#key-0")
+        );
+        assert_eq!(
+            select_secret_kid(scid, "m/26'/1", Some("did:webvh:QmScid:example.com#key-2"))
+                .as_deref(),
+            Some("did:scid:vh:1:QmScid#key-2")
+        );
+        // Another log's key is excluded.
+        assert_eq!(
+            select_secret_kid(scid, "did:webvh:QmOther:example.com#key-1", None),
+            None
+        );
+        // A did:webvh bundle is unchanged: no did:scid kid.
+        assert_eq!(
+            select_secret_kid(
+                "did:webvh:QmScid:example.com",
+                "did:webvh:QmScid:example.com#key-1",
+                None
+            )
+            .as_deref(),
+            Some("did:webvh:QmScid:example.com#key-1")
+        );
     }
 
     // `select_secret_kid` lives in this module; its regression tests live

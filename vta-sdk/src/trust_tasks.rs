@@ -1904,6 +1904,14 @@ pub const TASK_WEBVH_DIDS_CREATE_1_0: &str =
 pub const TASK_WEBVH_DIDS_CREATE_1_1: &str =
     "https://trusttasks.org/spec/vta/webvh/dids/create/1.1";
 
+/// `spec/vta/webvh/dids/create/1.2` — [`TASK_WEBVH_DIDS_CREATE_1_1`] whose
+/// request may name `didMethod` and `scidAlsoKnownAs`, and whose response states
+/// the form applied, the log's `webvhDid` and its `scidDidUrl` (VTI-KEY-165,
+/// VTI-KEY-166, VTI-VTA-036). Same authorization. What
+/// [`crate::client::VtaClient::create_did_webvh`] sends.
+pub const TASK_WEBVH_DIDS_CREATE_1_2: &str =
+    "https://trusttasks.org/spec/vta/webvh/dids/create/1.2";
+
 /// `spec/vta/webvh/dids/get/1.0` — fetch the local record (context,
 /// server, key handles) for a DID this VTA knows, and optionally the
 /// raw `did.jsonl` alongside it (`includeLog`). Payload:
@@ -2786,6 +2794,7 @@ pub const ALL_URIS: &[&str] = &[
     TASK_WEBVH_DIDS_LIST_1_0,
     TASK_WEBVH_DIDS_CREATE_1_0,
     TASK_WEBVH_DIDS_CREATE_1_1,
+    TASK_WEBVH_DIDS_CREATE_1_2,
     TASK_WEBVH_DIDS_GET_1_0,
     TASK_WEBVH_DIDS_DELETE_1_0,
     TASK_WEBVH_DIDS_UPDATE_1_0,

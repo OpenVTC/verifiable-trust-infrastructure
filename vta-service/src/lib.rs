@@ -80,6 +80,9 @@ pub use vta_policy as policy;
 #[cfg(feature = "rest")]
 pub mod restore;
 pub mod routes;
+/// Durable did:scid version floors for the identities this VTA authorises
+/// (VTI-KEY-162).
+pub mod scid_floors;
 pub use vta_support::seal;
 pub use vta_support::sealed_nonce_store;
 pub mod server;

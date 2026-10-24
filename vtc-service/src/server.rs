@@ -687,6 +687,16 @@ pub async fn run(
     )
     .await?;
 
+    // The did:scid identities verified here before resolve by their bare DID
+    // again, from the sources recorded when they were (VTI-KEY-162).
+    if let Some(resolver) = did_resolver.as_ref() {
+        match crate::scid_sources::seed(&members_ks, resolver).await {
+            Ok(0) => {}
+            Ok(n) => info!(seeded = n, "did:scid sources seeded from the store"),
+            Err(e) => warn!(error = %e, "did:scid sources not seeded"),
+        }
+    }
+
     // P0.7: `install` (ephemeral install-token signing key) and `passkey`
     // (WebAuthn state) also hold secrets in the clear. `init_auth` already
     // migrated + wrapped `audit_key`; do the same for these two here, where
@@ -1598,6 +1608,17 @@ pub async fn run(
     // is settled from the effect it recorded.
     // (Suspensions were reconciled above, before the git-ns projector.)
     crate::admin_actions::spawn_sweeper(state.clone(), shutdown_rx.clone());
+    // The did:scid version floors of the community's members and administrators,
+    // persisted as the resolver learns them so a restart does not reset what it
+    // refuses (VTI-KEY-162).
+    if let Some(resolver) = state.did_resolver.clone() {
+        crate::scid_sources::spawn(
+            state.members_ks.clone(),
+            state.acl_ks.clone(),
+            resolver,
+            shutdown_rx.clone(),
+        );
+    }
     // Members who left the community leave the rooms it owns (`members/add` item 6): the
     // one owner of those removals, resuming at start whatever a restart interrupted.
     crate::rooms::departures::spawn(state.clone(), shutdown_rx.clone());

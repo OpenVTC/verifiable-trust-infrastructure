@@ -139,6 +139,9 @@ fn is_safe_label(s: &str) -> bool {
 /// serverless `did:webvh:<scid>:<host>` that's the host. Returns
 /// `None` for a non-webvh DID or a label that isn't filesystem-safe.
 pub(crate) fn did_log_label(did: &str) -> Option<String> {
+    // A did:scid VTC DID is served as the log its `src` names (VTI-KEY-160).
+    let log_did = vta_sdk::did_scid::webvh_did(did);
+    let did = log_did.as_deref().unwrap_or(did);
     let suffix = did.strip_prefix("did:webvh:")?;
     let label = suffix.split(':').next_back()?;
     if is_safe_label(label) {
@@ -194,6 +197,11 @@ mod tests {
     #[test]
     fn did_log_label_returns_none_for_non_webvh() {
         assert!(did_log_label("did:key:z6Mk…").is_none());
+        assert_eq!(
+            did_log_label("did:scid:vh:1:abc123?src=vtc.example.com").as_deref(),
+            Some("vtc.example.com")
+        );
+        assert!(did_log_label("did:scid:vh:1:abc123").is_none());
         assert!(did_log_label("not a did").is_none());
     }
 

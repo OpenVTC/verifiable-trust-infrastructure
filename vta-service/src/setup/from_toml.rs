@@ -99,6 +99,13 @@ pub struct WizardInputs {
     )]
     pub services: ServicesConfig,
 
+    /// How the DIDs this VTA creates are presented (`[dids]`), its own included:
+    /// `default_did_method = "scid"` presents the VTA DID minted here as its
+    /// `did:scid:vh:1` DID (VTI-VTA-034). Defaults to `did:webvh`, with the
+    /// did:scid alias listed (VTI-VTA-035).
+    #[serde(default)]
+    pub dids: crate::config::DidsConfig,
+
     /// HTTP server bind. Defaults to `0.0.0.0:8100`.
     #[serde(default)]
     pub server: ServerConfig,
@@ -993,6 +1000,9 @@ pub async fn apply_inputs(
         secrets_config.clone(),
         inputs.config_path.clone(),
     );
+    // `[dids]` decides how the DIDs minted below are presented, the VTA's own
+    // among them (VTI-VTA-034).
+    wizard_config.dids = inputs.dids.clone();
     let wizard_seed_store: Arc<dyn SeedStore> =
         Arc::from(create_seed_store(&wizard_config).map_err(|e| format!("{e}"))?);
 
@@ -1080,6 +1090,11 @@ pub async fn apply_inputs(
                 /* template */ Some("didcomm-mediator".into()),
                 effective_vars,
                 /* is_vta_identity */ false,
+                // The mediator is its own service and presents its own DID;
+                // whether it can be addressed as a did:scid is the mediator's
+                // to support, so it stays did:webvh (with the alias, per
+                // `[dids]`).
+                Some(vta_sdk::did_scid::DidMethod::Webvh),
                 AdvancedWebvhOptions::default(),
                 ui,
                 &keys_ks,
@@ -1182,6 +1197,7 @@ pub async fn apply_inputs(
                 /* template */ None,
                 HashMap::new(),
                 /* is_vta_identity */ true,
+                /* did_method: `[dids]` */ None,
                 advanced,
                 ui,
                 &keys_ks,
@@ -1235,6 +1251,7 @@ pub async fn apply_inputs(
         },
         fjall: Default::default(),
         services: inputs.services.clone(),
+        dids: inputs.dids.clone(),
         messaging: messaging.clone(),
         mediator_readiness: Default::default(),
         auth: {
@@ -1823,6 +1840,7 @@ fn scratch_config_for_seed_store(
         store: StoreConfig { data_dir },
         fjall: Default::default(),
         services: ServicesConfig::default(),
+        dids: Default::default(),
         messaging: None,
         mediator_readiness: Default::default(),
         auth: AuthConfig::default(),
@@ -1943,6 +1961,7 @@ async fn create_simple_webvh_did(
     template: Option<String>,
     template_vars: HashMap<String, serde_json::Value>,
     is_vta_identity: bool,
+    did_method: Option<vta_sdk::did_scid::DidMethod>,
     advanced: AdvancedWebvhOptions,
     ui: &dyn SetupUi,
     keys_ks: &KeyspaceHandle,
@@ -1997,6 +2016,8 @@ async fn create_simple_webvh_did(
         template_context: None,
         template_vars,
         is_vta_identity,
+        did_method,
+        scid_also_known_as: None,
     };
 
     let deps = operations::did_webvh::CreateDidWebvhDeps {
@@ -2019,8 +2040,19 @@ async fn create_simple_webvh_did(
         .await
         .map_err(|e| format!("{e}"))?;
 
-    let final_did = result.did.clone();
+    // A DID presented as its did:scid is given out — as `vta_did`, as a
+    // mediator DID — with the `src` a recipient needs to resolve it
+    // (VTI-KEY-163); its identity is the bare DID before `?src=`.
+    let final_did = match (&result.did_method, &result.scid_did_url) {
+        (Some(vta_sdk::did_scid::DidMethod::Scid), Some(url)) => url.clone(),
+        _ => result.did.clone(),
+    };
     eprintln!("  Created DID: {final_did}");
+    if let Some(ref webvh_did) = result.webvh_did
+        && *webvh_did != final_did
+    {
+        eprintln!("  Log:         {webvh_did}");
+    }
 
     // Persist the did.jsonl so operators can re-publish or audit later. The UI
     // picks the destination: `--from` (SilentUi) writes the canonical in-store
@@ -2370,6 +2402,7 @@ mod tests {
             public_url: None,
             data_dir: root.join("data"),
             data_dir_exists: ExistingDataDirPolicy::default(),
+            dids: Default::default(),
             services: ServicesConfig {
                 rest: false,
                 didcomm: false,

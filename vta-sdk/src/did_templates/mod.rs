@@ -216,6 +216,10 @@ pub struct DidTemplate {
     /// mint the DID non-portable whatever the caller asked, because a profile
     /// that requires it (the Swiss Profile Anchor) cannot rely on every caller
     /// remembering. A template cannot force the other direction.
+    ///
+    /// So is `"scidAlsoKnownAs": false`: a profile that forbids `alsoKnownAs`
+    /// keeps the did:scid alias off its log whatever the VTA's `[dids]` says,
+    /// and the VTA refuses to present such a DID as its did:scid (VTI-KEY-166).
     #[serde(default)]
     pub defaults: serde_json::Map<String, Value>,
 

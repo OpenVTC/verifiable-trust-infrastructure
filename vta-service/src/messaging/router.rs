@@ -361,10 +361,22 @@ mod envelope_only_carriage {
 
     #[tokio::test]
     async fn every_dispatched_uri_is_served_in_the_envelope_and_refused_typed_as_itself() {
-        let (app_state, _dir) = crate::test_support::build_signing_test_app_state().await;
-        let vta_state = Arc::new(VtaState::from(&app_state));
+        let (mut app_state, _dir) = crate::test_support::build_signing_test_app_state().await;
         let uris = crate::trust_tasks::dispatched_uris();
         assert!(!uris.is_empty(), "the dispatcher serves nothing?");
+        // A stranger sending every verb outruns the default unauthenticated
+        // budget, past which a document gets no reply; the carriage, not the
+        // budget, is under test. Room for every verb at the heaviest weight.
+        let mut server = vta_config::ServerConfig::default();
+        server.operation_rate_limit_unauthenticated_per_sec =
+            Some(u32::try_from(uris.len() * 10).expect("a few hundred verbs"));
+        app_state.operation_budget = Arc::new(
+            crate::trust_tasks::operation_budget::OperationBudget::with_clock(
+                &server,
+                crate::trust_tasks::operation_budget::BudgetClock::manual(),
+            ),
+        );
+        let vta_state = Arc::new(VtaState::from(&app_state));
         let mut typed_arm: Vec<&str> = Vec::new();
 
         for uri in uris {

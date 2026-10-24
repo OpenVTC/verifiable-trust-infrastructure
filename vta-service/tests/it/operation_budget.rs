@@ -2,7 +2,10 @@
 //! past `[server] operation_rate_limit_per_sec`, or past one client's
 //! `operation_rate_limit_per_subject_per_sec`, are refused with
 //! the VTA's 429 before they run, with the same header contract as the per-IP
-//! limiters, and an unconfigured VTA refuses nothing.
+//! limiters, and a VTA nobody sized still bounds each client at the default.
+//!
+//! Every budget here runs on a manual clock, so no token refills while a test
+//! runs, however slowly the runner goes.
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -11,6 +14,7 @@ use serde_json::{Value, json};
 use tower::ServiceExt;
 
 use vta_service::test_support::{TestAppContext, TestAppOptions, build_test_app_with};
+use vta_service::trust_tasks::operation_budget::BudgetClock;
 use vti_common::auth::session::{Session, SessionState, now_epoch, store_session};
 
 const CALLER_SEED: u8 = 0x91;
@@ -41,7 +45,15 @@ async fn app(operation_rate_limit_per_sec: Option<u32>) -> (axum::Router, TestAp
 }
 
 async fn app_with(opts: TestAppOptions) -> (axum::Router, TestAppContext) {
-    let (router, ctx) = build_test_app_with(opts).await;
+    app_on(opts, BudgetClock::manual()).await
+}
+
+async fn app_on(opts: TestAppOptions, clock: BudgetClock) -> (axum::Router, TestAppContext) {
+    let (router, ctx) = build_test_app_with(TestAppOptions {
+        operation_budget_clock: Some(clock),
+        ..opts
+    })
+    .await;
     let session = Session {
         session_id: "sess-budget".into(),
         did: vta_service::test_support::did_for_seed(CALLER_SEED).0,
@@ -125,13 +137,19 @@ async fn work_past_the_budget_is_refused_with_the_vtas_429() {
     assert_eq!(body["limiter"], "operations", "{body}");
 }
 
+/// VTI-TRN-029 is a MUST, so a VTA with no budget configured still bounds each
+/// client, at the default share; nothing below it is refused.
 #[tokio::test]
-async fn an_unconfigured_vta_refuses_nothing() {
+async fn an_unsized_vta_bounds_each_client_at_the_default_share() {
     let (router, ctx) = app(None).await;
-    for n in 0..30 {
+    let share = vta_config::DEFAULT_OPERATION_RATE_LIMIT_PER_SUBJECT_PER_SEC as usize;
+    for n in 0..share {
         let (status, _, body) = sessions_list(&router, &ctx, n).await;
         assert_eq!(status, StatusCode::OK, "request {n}: {body}");
     }
+    let (status, headers, body) = sessions_list(&router, &ctx, share).await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS, "{body}");
+    assert_eq!(headers["x-rate-limit-scope"], "operations-subject");
 }
 
 /// A refused request has not run, and its `id` was not recorded: once the
@@ -139,10 +157,15 @@ async fn an_unconfigured_vta_refuses_nothing() {
 /// or a replay.
 #[tokio::test]
 async fn a_refused_document_can_be_resent_once_the_budget_has_room() {
-    // One a second, not ten: at ten a token refills every 100 ms, and ten
-    // requests on a busy runner can take longer than that, letting the
-    // document through on its first send.
-    let (router, ctx) = app(Some(1)).await;
+    let clock = BudgetClock::manual();
+    let (router, ctx) = app_on(
+        TestAppOptions {
+            operation_rate_limit_per_sec: Some(1),
+            ..Default::default()
+        },
+        clock.clone(),
+    )
+    .await;
     for n in 0..10 {
         let (status, _, body) = sessions_list(&router, &ctx, n).await;
         assert_eq!(status, StatusCode::OK, "request {n}: {body}");
@@ -150,7 +173,7 @@ async fn a_refused_document_can_be_resent_once_the_budget_has_room() {
     let resent = document(100);
     let (status, _, _) = post(&router, &ctx, resent.clone()).await;
     assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
-    tokio::time::sleep(std::time::Duration::from_millis(1_100)).await;
+    clock.advance(std::time::Duration::from_secs(1));
     let (status, _, body) = post(&router, &ctx, resent).await;
     assert_eq!(status, StatusCode::OK, "{body}");
 }

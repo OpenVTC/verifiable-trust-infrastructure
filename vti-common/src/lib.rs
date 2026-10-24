@@ -29,6 +29,7 @@ pub mod pagination;
 pub mod rate_limit;
 #[cfg(feature = "tsp")]
 pub mod relationship_store;
+pub mod scid_floors;
 pub mod secure_file;
 pub mod seed_store;
 /// Per-sender arrival ordering for a concurrent inbound loop: a TSP

@@ -161,6 +161,30 @@ pub async fn persona_key_for(
         return webvh_persona_key(stores.keys_ks, stores.webvh_ks, auth, did, relationship).await;
     }
 
+    // A did:scid persona's keys are its log's, named under the did:scid as the
+    // caller named it: bare, or with its `src`, so issuer and method agree in
+    // form (VTI-KEY-161, VTI-KEY-163).
+    #[cfg(feature = "webvh")]
+    if vta_sdk::did_scid::is_scid(did) {
+        let Some(log_did) = crate::webvh_store::log_did_for(stores.webvh_ks, did).await? else {
+            return Ok(None);
+        };
+        let key = webvh_persona_key(
+            stores.keys_ks,
+            stores.webvh_ks,
+            auth,
+            &log_did,
+            relationship,
+        )
+        .await?;
+        return Ok(key.and_then(|mut key| {
+            let (_, fragment) = key.verification_method.split_once('#')?;
+            vta_sdk::did_scid::presented_reference(did, &key.verification_method)?;
+            key.verification_method = format!("{did}#{fragment}");
+            Some(key)
+        }));
+    }
+
     Ok(None)
 }
 
@@ -189,6 +213,22 @@ pub async fn own_document(stores: PersonaStores<'_>, did: &str) -> Result<Option
         return crate::operations::protocol::document::current_document_from_log(&log)
             .map(Some)
             .map_err(|e| AppError::Internal(format!("read the current document of {did}: {e}")));
+    }
+    // A did:scid this agent holds the log of: the identity's own document
+    // (VTI-KEY-161), derived from that log.
+    #[cfg(feature = "webvh")]
+    if vta_sdk::did_scid::is_scid(did) {
+        let Some(log_did) = crate::webvh_store::log_did_for(stores.webvh_ks, did).await? else {
+            return Ok(None);
+        };
+        let Some(log) = crate::webvh_store::get_did_log(stores.webvh_ks, &log_did).await? else {
+            return Ok(None);
+        };
+        let webvh = crate::operations::protocol::document::current_document_from_log(&log)
+            .map_err(|e| AppError::Internal(format!("read the current document of {did}: {e}")))?;
+        return didwebvh_rs::did_web::to_scid_did_document(&webvh)
+            .map(Some)
+            .map_err(|e| AppError::Internal(format!("express {did} as its did:scid: {e}")));
     }
     let _ = stores;
     Ok(None)

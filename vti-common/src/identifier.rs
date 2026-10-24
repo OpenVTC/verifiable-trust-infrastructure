@@ -37,6 +37,13 @@ pub const MAX_DID_LEN: usize = 1024;
 /// control characters, whitespace, NUL, `/`, and non-ASCII, any of
 /// which would let a caller inject into logs or traverse adjacent
 /// store-keyspace prefixes when the value lands as a key.
+///
+/// One shape more is accepted: a `did:scid` DID URL whose only query is the
+/// `src` locator (`did:scid:vh:1:<scid>?src=example.com/alice`, VTI-KEY-160).
+/// `src` names a host and path, so it may carry `/`; the DID before it is held
+/// to the class above, and nothing else may follow `?`. A caller that keys a
+/// store by the DID keys it by [`vta_sdk::did_scid::identity`], which has no
+/// `src`.
 pub fn validate_did(label: &str, value: &str) -> Result<(), AppError> {
     if value.is_empty() {
         return Err(AppError::Validation(format!("{label} must not be empty")));
@@ -52,12 +59,28 @@ pub fn validate_did(label: &str, value: &str) -> Result<(), AppError> {
             "{label} is not a DID (must start with 'did:')"
         )));
     }
-    for (i, ch) in value.chars().enumerate() {
+    let (did, src) = match vta_sdk::did_scid::src(value) {
+        Some(src) => (&value[..value.len() - src.len() - "?src=".len()], Some(src)),
+        None => (value, None),
+    };
+    for (i, ch) in did.chars().enumerate() {
         let ok = ch.is_ascii_alphanumeric() || matches!(ch, '.' | '-' | '_' | ':' | '%');
         if !ok {
             return Err(AppError::Validation(format!(
                 "{label} contains an invalid character {ch:?} at position {i}"
             )));
+        }
+    }
+    if let Some(src) = src {
+        let offset = did.len() + "?src=".len();
+        for (i, ch) in src.chars().enumerate() {
+            let ok = ch.is_ascii_alphanumeric() || matches!(ch, '.' | '-' | '_' | ':' | '%' | '/');
+            if !ok {
+                return Err(AppError::Validation(format!(
+                    "{label} contains an invalid character {ch:?} at position {}",
+                    offset + i
+                )));
+            }
         }
     }
     Ok(())
@@ -139,8 +162,28 @@ mod tests {
             "did:webvh:QmSCID:example.com",
             "did:web:example.com:user:alice",
             "did:peer:2.Ez6LS",
+            "did:scid:vh:1:QmSCID",
+            "did:scid:vh:1:QmSCID?src=example.com/alice",
+            "did:scid:vh:1:QmSCID?src=localhost%3A8000",
         ] {
             validate_did("did", ok).unwrap_or_else(|e| panic!("{ok:?} rejected: {e:?}"));
+        }
+    }
+
+    /// The `src` locator is the only query a DID may carry here, and only on a
+    /// did:scid (VTI-KEY-160).
+    #[test]
+    fn validate_did_admits_only_a_scid_src_query() {
+        for bad in [
+            "did:webvh:Qm:example.com?src=a",
+            "did:scid:vh:1:Qm?versionId=1",
+            "did:scid:vh:1:Qm?src=a&x=1",
+            "did:scid:vh:1:Qm?src=a#key-1",
+            "did:scid:vh:1:Q/m?src=a",
+            "did:scid:vh:1:Qm?src=a b",
+            "did:scid:vh:1:Qm?src=",
+        ] {
+            validate_did("did", bad).expect_err(&format!("{bad:?} must be rejected"));
         }
     }
 

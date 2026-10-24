@@ -58,6 +58,7 @@ pub fn test_app_config(data_dir: PathBuf) -> AppConfig {
         messaging: None,
         mediator_readiness: Default::default(),
         services: Default::default(),
+        dids: Default::default(),
         auth: Default::default(),
         audit: Default::default(),
         vault: Default::default(),

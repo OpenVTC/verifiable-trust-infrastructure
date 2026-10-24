@@ -1247,3 +1247,298 @@ async fn create_did_webvh_context_scoped_template_shadows_global() {
     let doc = &body["didDocument"];
     assert_eq!(doc["service"][0]["type"], "Custom");
 }
+
+// ── vta/webvh/dids/create/1.2: the did:scid identity (VTI-KEY-160..166) ──
+
+/// The `alsoKnownAs` of the first entry in a serverless create's `logEntry`.
+#[cfg(feature = "webvh")]
+fn log_aliases(body: &Value) -> Vec<String> {
+    let entry: Value = serde_json::from_str(body["logEntry"].as_str().expect("logEntry")).unwrap();
+    entry["state"]["alsoKnownAs"]
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .filter_map(|v| v.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+#[cfg(feature = "webvh")]
+fn serverless(context: &str, host: &str) -> Value {
+    json!({
+        "contextId": context,
+        "url": format!("https://{host}/.well-known/did/did.jsonl"),
+    })
+}
+
+/// VTI-VTA-036 defaults: did:webvh, with the did:scid alias listed (VTI-KEY-166).
+/// The same defaults reach a 1.1 caller, whose answer keeps 1.1's shape.
+#[cfg(feature = "webvh")]
+#[tokio::test]
+async fn vti_vta_036_create_1_2_defaults_to_webvh_with_the_scid_alias() {
+    use trust_tasks_rs::specs::vta::webvh::dids::create::{v1_1, v1_2};
+
+    let (app, ctx) = TestApp::new().await;
+    let admin = setup_context(&app, &ctx, "scid-defaults").await;
+
+    let (status, body) = app
+        .task(
+            &ctx,
+            &admin,
+            vta_sdk::trust_tasks::TASK_WEBVH_DIDS_CREATE_1_2,
+            serverless("scid-defaults", "one.example.com"),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    serde_json::from_value::<v1_2::Response>(body.clone())
+        .unwrap_or_else(|e| panic!("a valid create/1.2 response: {e}: {body}"));
+    let did = body["did"].as_str().unwrap();
+    assert!(did.starts_with("did:webvh:"), "{body}");
+    assert_eq!(body["didMethod"], "webvh", "{body}");
+    assert_eq!(body["scidAlsoKnownAs"], true, "{body}");
+    assert_eq!(body["webvhDid"], did, "{body}");
+    let (_, url) = vta_sdk::did_scid::scid_forms(did).unwrap();
+    assert_eq!(body["scidDidUrl"], url.as_str(), "{body}");
+    assert!(log_aliases(&body).contains(&url), "{body}");
+
+    let (status, body) = app
+        .task(
+            &ctx,
+            &admin,
+            vta_sdk::trust_tasks::TASK_WEBVH_DIDS_CREATE_1_1,
+            serverless("scid-defaults", "two.example.com"),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    serde_json::from_value::<v1_1::Response>(body.clone())
+        .unwrap_or_else(|e| panic!("a valid create/1.1 response: {e}: {body}"));
+    let did = body["did"].as_str().unwrap();
+    assert!(did.starts_with("did:webvh:"), "{body}");
+    let (_, url) = vta_sdk::did_scid::scid_forms(did).unwrap();
+    assert!(
+        log_aliases(&body).contains(&url),
+        "the alias default reaches 1.1: {body}"
+    );
+}
+
+/// VTI-KEY-165: `didMethod: scid` presents the identity as the bare did:scid.
+/// The context records it with its `src` (VTI-KEY-163), and the rest of the
+/// family takes it in place of the did:webvh.
+#[cfg(feature = "webvh")]
+#[tokio::test]
+async fn vti_key_165_create_1_2_presents_the_did_scid_identity() {
+    let (app, ctx) = TestApp::new().await;
+    let admin = setup_context(&app, &ctx, "scid-native").await;
+    let mut payload = serverless("scid-native", "native.example.com");
+    payload["didMethod"] = json!("scid");
+
+    let (status, body) = app
+        .task(
+            &ctx,
+            &admin,
+            vta_sdk::trust_tasks::TASK_WEBVH_DIDS_CREATE_1_2,
+            payload,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let did = body["did"].as_str().unwrap().to_string();
+    let webvh = body["webvhDid"].as_str().unwrap().to_string();
+    let url = body["scidDidUrl"].as_str().unwrap().to_string();
+    assert_eq!(body["didMethod"], "scid", "{body}");
+    assert_eq!(body["scidAlsoKnownAs"], true, "{body}");
+    assert_eq!(
+        Some((did.clone(), url.clone())),
+        vta_sdk::did_scid::scid_forms(&webvh)
+    );
+    assert!(log_aliases(&body).contains(&url), "{body}");
+
+    let context = vta_service::contexts::get_context(&ctx.inner.contexts_ks, "scid-native")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(context.did.as_deref(), Some(url.as_str()));
+
+    for name in [did.as_str(), url.as_str(), webvh.as_str()] {
+        let (status, got) = app
+            .task(
+                &ctx,
+                &admin,
+                vta_sdk::trust_tasks::TASK_WEBVH_DIDS_GET_1_0,
+                json!({ "did": name }),
+            )
+            .await;
+        assert_eq!(status, StatusCode::OK, "get by {name}: {got}");
+        assert_eq!(got["record"]["did"], webvh.as_str(), "{got}");
+    }
+
+    let (status, got) = app
+        .task(
+            &ctx,
+            &admin,
+            vta_sdk::trust_tasks::TASK_WEBVH_DIDS_GET_1_0,
+            json!({ "did": "did:scid:vh:1:QmNotHeldHere" }),
+        )
+        .await;
+    assert_ne!(status, StatusCode::OK, "{got}");
+    assert_eq!(got["details"]["reason"], "not_found", "{got}");
+}
+
+/// VTI-VTA-034 and VTI-VTA-036: `[dids]` applies where the request says
+/// nothing — to 1.1 as to 1.2 — and the request wins over it.
+#[cfg(feature = "webvh")]
+#[tokio::test]
+async fn vti_vta_036_config_applies_and_the_request_wins() {
+    use trust_tasks_rs::specs::vta::webvh::dids::create::v1_1;
+
+    let (app, ctx) = TestApp::new().await;
+    let admin = setup_context(&app, &ctx, "scid-config").await;
+    {
+        let mut config = ctx.inner.config.write().await;
+        config.dids.default_did_method = vta_sdk::did_scid::DidMethod::Scid;
+        config.dids.scid_also_known_as = false;
+    }
+
+    let (status, body) = app
+        .task(
+            &ctx,
+            &admin,
+            vta_sdk::trust_tasks::TASK_WEBVH_DIDS_CREATE_1_2,
+            serverless("scid-config", "a.example.com"),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["didMethod"], "scid", "{body}");
+    assert!(
+        vta_sdk::did_scid::is_scid(body["did"].as_str().unwrap()),
+        "{body}"
+    );
+    // A did:scid lists its alias whatever `scid_also_known_as` says.
+    assert_eq!(body["scidAlsoKnownAs"], true, "{body}");
+
+    let mut payload = serverless("scid-config", "b.example.com");
+    payload["didMethod"] = json!("webvh");
+    let (status, body) = app
+        .task(
+            &ctx,
+            &admin,
+            vta_sdk::trust_tasks::TASK_WEBVH_DIDS_CREATE_1_2,
+            payload,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["didMethod"], "webvh", "{body}");
+    assert_eq!(
+        body["scidAlsoKnownAs"], false,
+        "the configured alias applies: {body}"
+    );
+    assert!(log_aliases(&body).is_empty(), "{body}");
+
+    let (status, body) = app
+        .task(
+            &ctx,
+            &admin,
+            vta_sdk::trust_tasks::TASK_WEBVH_DIDS_CREATE_1_1,
+            serverless("scid-config", "c.example.com"),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(
+        vta_sdk::did_scid::is_scid(body["did"].as_str().unwrap()),
+        "{body}"
+    );
+    serde_json::from_value::<v1_1::Response>(body.clone())
+        .unwrap_or_else(|e| panic!("still a valid create/1.1 response: {e}: {body}"));
+}
+
+/// VTI-KEY-166: a did:scid identity always lists its alias, so a request that
+/// refuses it, or a template that forbids alsoKnownAs, is `scidAliasRequired`.
+/// The same template leaves the alias off a did:webvh rather than refuse it.
+#[cfg(feature = "webvh")]
+#[tokio::test]
+async fn vti_key_166_scid_alias_required() {
+    let (app, ctx) = TestApp::new().await;
+    let admin = setup_context(&app, &ctx, "scid-alias").await;
+
+    let mut payload = serverless("scid-alias", "a.example.com");
+    payload["didMethod"] = json!("scid");
+    payload["scidAlsoKnownAs"] = json!(false);
+    let (status, body) = app
+        .task(
+            &ctx,
+            &admin,
+            vta_sdk::trust_tasks::TASK_WEBVH_DIDS_CREATE_1_2,
+            payload,
+        )
+        .await;
+    assert_ne!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        body["code"], "vta/webvh/dids/create:scidAliasRequired",
+        "{body}"
+    );
+
+    let mut template = sample_template("no-aka");
+    template["defaults"] = json!({ "scidAlsoKnownAs": false });
+    let (status, body) = app
+        .task(
+            &ctx,
+            &admin,
+            vta_sdk::trust_tasks::TASK_DID_TEMPLATES_CREATE_2_0,
+            create_req(None, template),
+        )
+        .await;
+    assert!(status.is_success(), "{body}");
+
+    let templated = |host: &str| {
+        let mut p = serverless("scid-alias", host);
+        p["template"] = json!("no-aka");
+        p["templateVars"] = json!({ "URL": format!("https://{host}") });
+        p
+    };
+
+    let mut payload = templated("b.example.com");
+    payload["didMethod"] = json!("scid");
+    let (status, body) = app
+        .task(
+            &ctx,
+            &admin,
+            vta_sdk::trust_tasks::TASK_WEBVH_DIDS_CREATE_1_2,
+            payload,
+        )
+        .await;
+    assert_ne!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        body["code"], "vta/webvh/dids/create:scidAliasRequired",
+        "{body}"
+    );
+
+    let (status, body) = app
+        .task(
+            &ctx,
+            &admin,
+            vta_sdk::trust_tasks::TASK_WEBVH_DIDS_CREATE_1_2,
+            templated("c.example.com"),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["scidAlsoKnownAs"], false, "{body}");
+    assert!(log_aliases(&body).is_empty(), "{body}");
+}
+
+/// 1.0 and 1.1 refuse 1.2's request members rather than act on them.
+#[cfg(feature = "webvh")]
+#[tokio::test]
+async fn create_1_1_refuses_the_1_2_members() {
+    let (app, ctx) = TestApp::new().await;
+    let admin = setup_context(&app, &ctx, "scid-strict").await;
+    for uri in [
+        vta_sdk::trust_tasks::TASK_WEBVH_DIDS_CREATE_1_0,
+        vta_sdk::trust_tasks::TASK_WEBVH_DIDS_CREATE_1_1,
+    ] {
+        let mut payload = serverless("scid-strict", "a.example.com");
+        payload["didMethod"] = json!("scid");
+        let (status, body) = app.task(&ctx, &admin, uri, payload).await;
+        assert_ne!(status, StatusCode::OK, "{uri}: {body}");
+        assert_eq!(body["code"], "malformedRequest", "{uri}: {body}");
+    }
+}

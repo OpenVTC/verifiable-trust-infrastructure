@@ -659,9 +659,10 @@ impl SelfResolution {
     }
 }
 
-/// Only methods resolved over the network are gated.
+/// Only methods resolved over the network are gated: did:web, did:webvh, and a
+/// did:scid:vh:1, whose log is a did:webvh log.
 fn needs_network_probe(did: &str) -> bool {
-    did.starts_with("did:webvh:") || did.starts_with("did:web:")
+    vta_sdk::did_scid::is_network_resolved(did)
 }
 
 async fn resolves_now(did: &str, resolver_url: Option<&str>) -> bool {

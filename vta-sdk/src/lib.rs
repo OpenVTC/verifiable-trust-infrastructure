@@ -122,6 +122,7 @@ pub mod did_key;
 /// the module docs.
 #[cfg(feature = "proof-verify")]
 pub mod did_refresh;
+pub mod did_scid;
 pub mod did_secrets;
 pub mod did_templates;
 /// Compact-JWS verification over a resolved key — EdDSA, ES256, ES256K.

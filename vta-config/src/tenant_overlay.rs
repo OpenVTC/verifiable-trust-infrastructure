@@ -115,8 +115,8 @@ pub struct TenantMessagingOverlay {
 /// the parent chooses and the image does not know, and because the overlay is
 /// delivered on every boot, so the budget survives an enclave restart. It
 /// confers nothing on the parent: a budget of 1 starves the VTA, which a parent
-/// that carries every packet can do anyway, and no budget is the behaviour
-/// without the field. `host`, `port`, the per-IP limiters and above all
+/// that carries every packet can do anyway, and without the field the baked
+/// value, or the default, applies. `host`, `port`, the per-IP limiters and above all
 /// `trust_xff_cidrs` (which would let the parent choose whose address a request
 /// is charged to) stay baked. Allowlist rationale: `tenant-config-allowlist.md`
 /// §3.3.
@@ -177,7 +177,7 @@ pub enum TenantOverlayError {
     MalformedBootstrapClaimDid(String),
     /// An operation budget in the overlay's `server` block is 0 or above
     /// [`MAX_OPERATION_RATE_LIMIT`]. Zero is refused rather than read as "no
-    /// budget": omitting the field already says that.
+    /// budget": omitting the field keeps the baked value, or the default.
     InvalidOperationRateLimit { field: &'static str, value: u32 },
 }
 
@@ -229,7 +229,7 @@ impl std::fmt::Display for TenantOverlayError {
             Self::InvalidOperationRateLimit { field, value } => write!(
                 f,
                 "tenant overlay server.{field} = {value} is out of range \
-                 (1..={MAX_OPERATION_RATE_LIMIT}); omit it for no budget"
+                 (1..={MAX_OPERATION_RATE_LIMIT}); omit it to keep the baked value"
             ),
         }
     }

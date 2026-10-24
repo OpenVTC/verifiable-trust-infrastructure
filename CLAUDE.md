@@ -434,10 +434,11 @@ These are load-bearing — know they exist before adjusting nearby code.
   `x-rate-limit-source: vta` — a client contract, don't rename it.
 - **Operation budgets** (VTI-TRN-029, `trust_tasks::operation_budget`): Trust
   Task work is bounded per appliance, per client DID and, separately, for
-  DIDComm / TSP senders without standing — charged after authentication and
-  before the task runs, on every transport (the passkey-VM REST routes are
-  not Trust Tasks and are not charged). Never charge a caller before it
-  is proven, and never charge a sender without standing to the clients'
+  DIDComm / TSP senders without standing — the last two always on, at a
+  default when unset, because the requirement is a MUST: never add a setting
+  that turns them off. Charged after authentication and before the task
+  runs, on every transport (the passkey-VM REST routes are not Trust Tasks
+  and are not charged). Never charge a caller before it is proven, and never charge a sender without standing to the clients'
   budget: either lets a stranger spend what clients need. A refusal leaves the
   document unrecorded, so a resend is a retry. The keys are config + tenant
   overlay only, never `config/patch` (a TEE restart would drop the patch).

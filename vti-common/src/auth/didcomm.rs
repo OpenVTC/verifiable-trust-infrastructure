@@ -208,7 +208,7 @@ pub fn verify_authcrypt_header(raw_jwe: &str) -> Result<String, AuthcryptError> 
 }
 
 /// Bind an unpacked envelope's sender, returning the cryptographically-bound
-/// sender DID (with any `#fragment` stripped).
+/// sender DID (with any `#fragment`, and a did:scid `src` locator, stripped).
 ///
 /// `raw_jwe` is the envelope exactly as received and handed to `atm.unpack`;
 /// `(message, metadata)` is what that call returned. Requires, in order:
@@ -244,21 +244,19 @@ pub fn bind_authcrypt_sender(
             metadata: kid.to_string(),
         });
     }
-    let key_did = base_did(&skid);
+    // By identity: a did:scid sender's `from` and `skid` may each carry the
+    // `src` locator or not (VTI-KEY-163), and the sender is the bare DID either
+    // way — which is what authorization then sees (VTI-KEY-160).
+    let key_did = vta_sdk::did_scid::identity(&skid);
 
-    match message.from.as_deref().map(base_did) {
-        Some(from_did) if from_did == key_did => Ok(key_did.to_string()),
+    match message.from.as_deref().map(vta_sdk::did_scid::identity) {
+        Some(from_did) if from_did == key_did => Ok(key_did),
         Some(from_did) => Err(AuthcryptError::Mismatch {
-            claimed: from_did.to_string(),
-            authenticated: key_did.to_string(),
+            claimed: from_did,
+            authenticated: key_did,
         }),
         None => Err(AuthcryptError::NoFrom),
     }
-}
-
-/// Strip a `#fragment` from a DID / kid, returning the base DID.
-fn base_did(did: &str) -> &str {
-    did.split_once('#').map(|(base, _)| base).unwrap_or(did)
 }
 
 #[cfg(test)]
@@ -427,6 +425,37 @@ mod tests {
             msg.contains("z6MkAdminVictim") && msg.contains("z6MkAttacker"),
             "got: {msg}"
         );
+    }
+
+    /// VTI-KEY-160/163: a did:scid sender binds by DID, whichever of `from` and
+    /// `skid` carries the `src` locator, and is the bare DID to authorization.
+    /// Another SCID is still a mismatch.
+    #[test]
+    fn binds_a_did_scid_sender_by_identity() {
+        const SCID_KID: &str = "did:scid:vh:1:QmScid?src=example.com#key-1";
+        for from in [
+            "did:scid:vh:1:QmScid?src=example.com",
+            "did:scid:vh:1:QmScid",
+            "did:scid:vh:1:QmScid?src=elsewhere.example",
+        ] {
+            assert_eq!(
+                bind_authcrypt_sender(
+                    &good_jwe(SCID_KID),
+                    &msg(Some(from)),
+                    &meta(true, true, Some(SCID_KID)),
+                ),
+                Ok("did:scid:vh:1:QmScid".to_string()),
+                "{from}"
+            );
+        }
+        assert!(matches!(
+            bind_authcrypt_sender(
+                &good_jwe(SCID_KID),
+                &msg(Some("did:scid:vh:1:QmOther?src=example.com")),
+                &meta(true, true, Some(SCID_KID)),
+            ),
+            Err(AuthcryptError::Mismatch { .. })
+        ));
     }
 
     #[test]

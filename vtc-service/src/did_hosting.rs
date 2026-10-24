@@ -32,7 +32,18 @@ pub const LOCAL: &str = "local";
 pub const ENV: &str = "VTC_DIDS_WEBVH_SERVER";
 const MAX_LEN: usize = 128;
 
-/// `[dids]` in `config.toml`: the file layer of [`DIDS_WEBVH_SERVER`].
+/// The runtime key for how the identities this community mints are presented:
+/// `webvh` or `scid` (VTI-VTC-004).
+pub const DIDS_DEFAULT_DID_METHOD: &str = "dids.default_did_method";
+/// The runtime key for whether a new log lists its did:scid alias
+/// (VTI-VTC-004, VTI-KEY-166).
+pub const DIDS_SCID_ALSO_KNOWN_AS: &str = "dids.scid_also_known_as";
+/// The environment variables that override them.
+pub const ENV_DID_METHOD: &str = "VTC_DIDS_DEFAULT_DID_METHOD";
+pub const ENV_SCID_ALSO_KNOWN_AS: &str = "VTC_DIDS_SCID_ALSO_KNOWN_AS";
+
+/// `[dids]` in `config.toml`: the file layer of [`DIDS_WEBVH_SERVER`],
+/// [`DIDS_DEFAULT_DID_METHOD`] and [`DIDS_SCID_ALSO_KNOWN_AS`].
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct DidsConfig {
@@ -40,11 +51,93 @@ pub struct DidsConfig {
     /// id there, or `"local"`. Absent: each kind's own setting.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub webvh_server: Option<String>,
+    /// How the community's identities are presented: `webvh` or `scid`.
+    /// Absent: the VTA's `[dids]` decides (VTI-VTC-004, VTI-VTA-036).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_did_method: Option<vta_sdk::did_scid::DidMethod>,
+    /// Whether a new log lists its did:scid alias. Absent: the VTA's `[dids]`
+    /// decides.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scid_also_known_as: Option<bool>,
 }
 
 impl DidsConfig {
     pub fn is_empty(&self) -> bool {
         self.webvh_server.is_none()
+            && self.default_did_method.is_none()
+            && self.scid_also_known_as.is_none()
+    }
+}
+
+/// A value [`DIDS_DEFAULT_DID_METHOD`] may hold: `webvh` or `scid`.
+pub fn validate_did_method(value: &Value) -> Result<vta_sdk::did_scid::DidMethod, AppError> {
+    value
+        .as_str()
+        .ok_or_else(|| "not a string".to_string())
+        .and_then(|s| s.parse())
+        .map_err(|e| AppError::Validation(format!("{DIDS_DEFAULT_DID_METHOD}: {e}")))
+}
+
+/// What the community states, in its create requests to its VTA, about how a
+/// new identity is presented (VTI-VTC-004): the environment, then the stored
+/// override, then `[dids]`. `None` for a member none of them states — the VTA's
+/// own `[dids]` then applies (VTI-VTA-036). A malformed value in any layer is
+/// ignored, never acted on.
+pub async fn live_presentation(
+    cfg: &AppConfig,
+    db: &ConfigStore,
+) -> Result<(Option<vta_sdk::did_scid::DidMethod>, Option<bool>), AppError> {
+    let method = match std::env::var(ENV_DID_METHOD).ok() {
+        Some(v) => Some(Value::String(v)),
+        None => db.get(DIDS_DEFAULT_DID_METHOD).await?,
+    }
+    .and_then(|v| validate_did_method(&v).ok())
+    .or(cfg.dids.default_did_method);
+    let alias = match std::env::var(ENV_SCID_ALSO_KNOWN_AS).ok() {
+        Some(v) => v.parse::<bool>().ok(),
+        None => db
+            .get(DIDS_SCID_ALSO_KNOWN_AS)
+            .await?
+            .and_then(|v| v.as_bool()),
+    }
+    .or(cfg.dids.scid_also_known_as);
+    Ok((method, alias))
+}
+
+/// What the community states about a new identity's presentation, as the
+/// layers say — see [`live_presentation`].
+pub type Presentation = (Option<vta_sdk::did_scid::DidMethod>, Option<bool>);
+
+/// The identity a minted DID is given out as: the did:webvh DID, or for one
+/// presented as its did:scid, the did:scid DID URL with the `src` a recipient
+/// needs to resolve it (VTI-KEY-163).
+pub fn presented_did(
+    minted: &vta_sdk::protocols::did_management::create::CreateDidWebvhResultBody,
+) -> String {
+    match (&minted.did_method, &minted.scid_did_url) {
+        (Some(vta_sdk::did_scid::DidMethod::Scid), Some(url)) => url.clone(),
+        _ => minted.did.clone(),
+    }
+}
+
+/// Add what the community states to a `vta/webvh/dids/create` payload, and the
+/// type URI to send it as: 1.2 when it states anything, so a community that
+/// states nothing sends exactly what it did before.
+pub fn with_presentation(
+    payload: &mut Value,
+    presentation: (Option<vta_sdk::did_scid::DidMethod>, Option<bool>),
+) -> &'static str {
+    let (method, alias) = presentation;
+    if let Some(method) = method {
+        payload["didMethod"] = Value::String(method.as_str().to_string());
+    }
+    if let Some(alias) = alias {
+        payload["scidAlsoKnownAs"] = Value::Bool(alias);
+    }
+    if method.is_some() || alias.is_some() {
+        vta_sdk::trust_tasks::TASK_WEBVH_DIDS_CREATE_1_2
+    } else {
+        vta_sdk::trust_tasks::TASK_WEBVH_DIDS_CREATE_1_1
     }
 }
 
@@ -118,6 +211,29 @@ mod tests {
             server_for(Some("other"), Some("hosting")),
             Some("other".into())
         );
+    }
+
+    #[test]
+    fn a_stated_presentation_takes_the_create_to_1_2() {
+        let mut payload = json!({ "contextId": "c" });
+        assert_eq!(
+            with_presentation(&mut payload, (None, None)),
+            vta_sdk::trust_tasks::TASK_WEBVH_DIDS_CREATE_1_1
+        );
+        assert_eq!(payload, json!({ "contextId": "c" }));
+        assert_eq!(
+            with_presentation(
+                &mut payload,
+                (Some(vta_sdk::did_scid::DidMethod::Scid), Some(true))
+            ),
+            vta_sdk::trust_tasks::TASK_WEBVH_DIDS_CREATE_1_2
+        );
+        assert_eq!(
+            payload,
+            json!({ "contextId": "c", "didMethod": "scid", "scidAlsoKnownAs": true })
+        );
+        assert!(validate_did_method(&json!("webvh")).is_ok());
+        assert!(validate_did_method(&json!("key")).is_err());
     }
 
     #[test]

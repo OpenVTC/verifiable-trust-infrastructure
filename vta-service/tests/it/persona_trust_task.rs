@@ -27,7 +27,10 @@ use multibase::Base;
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
-use vta_service::test_support::{TestAppContext, build_provisionable_test_app, build_test_app};
+use vta_service::test_support::{
+    TestAppContext, TestAppOptions, build_provisionable_test_app, build_test_app,
+    build_test_app_with,
+};
 use vti_common::auth::session::{Session, SessionState, now_epoch, store_session};
 
 // URIs as literals, so a constant rename in the SDK surfaces here too.
@@ -4617,7 +4620,13 @@ async fn a_directory_member_is_starred_without_their_did() {
 /// Every declared refusal of the 1.1 contact tasks and the lists family.
 #[tokio::test]
 async fn the_contact_annotation_tasks_refuse_what_they_declare() {
-    let (router, ctx) = build_test_app().await;
+    // Filling the list cap takes one client past the default operation share
+    // in well under a second; the cap, not the budget, is under test.
+    let (router, ctx) = build_test_app_with(TestAppOptions {
+        operation_rate_limit_per_subject_per_sec: Some(100_000),
+        ..Default::default()
+    })
+    .await;
     let t = authed(&ctx, "annotations-refusals", "admin", &[CTX]).await;
 
     // put 1.1 item 6: a list this context does not hold changes nothing.

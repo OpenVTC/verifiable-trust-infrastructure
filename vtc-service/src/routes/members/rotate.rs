@@ -301,15 +301,16 @@ pub struct FinishResponse {
 pub(crate) async fn rotate_inner(
     state: &AppState,
     caller_did: &str,
-    body: FinishBody,
+    mut body: FinishBody,
 ) -> Result<FinishResponse, TaskError> {
     let audit_writer = state
         .audit_writer
         .as_ref()
         .ok_or_else(|| AppError::Internal("audit_writer not initialised".into()))?;
 
-    // 1. Authenticated session must match `oldDid`.
-    if caller_did != body.old_did {
+    // 1. Authenticated session must match `oldDid` — by identity, so a
+    //    did:scid member that signed in with its `src` matches (VTI-KEY-160).
+    if !vta_sdk::did_scid::same_reference(caller_did, &body.old_did) {
         return Err(AppError::Forbidden(format!(
             "authenticated DID ({caller_did}) does not match oldDid ({})",
             body.old_did
@@ -382,7 +383,9 @@ pub(crate) async fn rotate_inner(
     match method {
         "did:key" => verify_did_key_signature(&body.new_did, &payload, &body.new_signature)
             .map_err(|e| signature_invalid(format!("newSignature failed: {e}")))?,
-        "did:webvh" => {
+        // A did:scid:vh:1 is verified like the did:webvh log it resolves
+        // through, by its own document (VTI-KEY-161).
+        "did:webvh" | "did:scid" => {
             let resolver = state.did_resolver.as_ref().ok_or_else(|| {
                 AppError::Internal(
                     "DID resolver not configured — did:webvh rotation requires it".into(),
@@ -399,6 +402,11 @@ pub(crate) async fn rotate_inner(
             .into());
         }
     }
+    // The member is recorded under the identity it presented: a did:scid's DID,
+    // without the `src` its signature was resolved through (VTI-KEY-164,
+    // VTI-VTC-004).
+    body.new_did = vta_sdk::did_scid::identity(&body.new_did);
+    body.old_did = vta_sdk::did_scid::identity(&body.old_did);
 
     // 6. Refuse if the new DID already has an ACL row (would
     //    collide).
@@ -535,16 +543,19 @@ pub(crate) async fn rotate_inner(
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// Wire-form DID method prefix — `did:key` or `did:webvh`. Used
-/// by the rotation endpoint's method-detection step.
+/// Wire-form DID method prefix — `did:key`, `did:webvh` or `did:scid` (a
+/// `did:scid:vh:1`, VTI-KEY-001). Used by the rotation endpoint's
+/// method-detection step.
 fn method_of(did: &str) -> Result<&'static str, AppError> {
     if did.starts_with("did:key:") {
         Ok("did:key")
     } else if did.starts_with("did:webvh:") {
         Ok("did:webvh")
+    } else if did.starts_with(vta_sdk::did_scid::SCID_VH_PREFIX) {
+        Ok("did:scid")
     } else {
         Err(AppError::Validation(format!(
-            "DID '{did}' is not did:key or did:webvh"
+            "DID '{did}' is not did:key, did:webvh or did:scid:vh:1"
         )))
     }
 }
@@ -710,6 +721,16 @@ mod tests {
     #[test]
     fn method_of_recognises_did_webvh() {
         assert_eq!(method_of("did:webvh:example.com:abc").unwrap(), "did:webvh");
+    }
+
+    #[test]
+    fn method_of_recognises_did_scid() {
+        assert_eq!(method_of("did:scid:vh:1:QmScid").unwrap(), "did:scid");
+        assert_eq!(
+            method_of("did:scid:vh:1:QmScid?src=example.com").unwrap(),
+            "did:scid"
+        );
+        assert!(method_of("did:scid:ke:1:QmScid?src=example.com").is_err());
     }
 
     #[test]

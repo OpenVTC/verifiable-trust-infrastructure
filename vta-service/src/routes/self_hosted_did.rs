@@ -140,6 +140,15 @@ async fn serve_canonical(state: &AppState, headers: &HeaderMap, request_path: &s
 /// 404.
 async fn configured_canonical_path(state: &AppState) -> Option<(String, String)> {
     let vta_did = state.config.read().await.vta_did.clone()?;
+    // A did:scid VTA DID self-hosts its log at the log's own path (VTI-KEY-161).
+    let vta_did = if vta_sdk::did_scid::is_scid(&vta_did) {
+        crate::webvh_store::log_did_for(&state.webvh_ks, &vta_did)
+            .await
+            .ok()
+            .flatten()?
+    } else {
+        vta_did
+    };
     if !vta_did.starts_with("did:webvh:") {
         return None;
     }

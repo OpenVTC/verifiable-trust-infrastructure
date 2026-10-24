@@ -37,8 +37,9 @@
 #
 # --operation-rate-limit-* are the operation budgets (appliance, per client,
 # DIDComm/TSP senders without standing), sized for the instance it runs on
-# (docs/02-vta/rate-limiting.md). Without them the VTA serves every request it
-# is sent, and overload ends in a restart.
+# (docs/02-vta/rate-limiting.md). Without them each client and the strangers
+# are bounded at generous defaults, but the appliance is not, and overload ends
+# in a restart.
 # =============================================================================
 set -euo pipefail
 

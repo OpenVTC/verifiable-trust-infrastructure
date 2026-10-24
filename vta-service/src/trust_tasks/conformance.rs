@@ -6115,6 +6115,23 @@ fn webvh_and_context_witnesses() -> Vec<(&'static str, ReqParts, RespParts)> {
             ),
         ),
         (
+            uris::TASK_WEBVH_DIDS_CREATE_1_2,
+            (
+                json!({ "contextId": "personal", "didMethod": "scid", "scidAlsoKnownAs": true }),
+                parses::<wv::dids::create::v1_2::Payload>,
+                validates::<wv::dids::create::v1_2::Payload>,
+            ),
+            (
+                json!({ "did": "did:scid:vh:1:QmScid", "contextId": "personal",
+                  "serverless": true, "scid": "QmScid", "portable": true,
+                  "signingKeyId": "k-sign", "kaKeyId": "k-ka", "preRotationKeyCount": 2,
+                  "createdAt": "2026-08-19T09:00:00Z", "logEntry": "{}",
+                  "didMethod": "scid", "scidAlsoKnownAs": true, "webvhDid": did,
+                  "scidDidUrl": "did:scid:vh:1:QmScid?src=example.com" }),
+                parses::<wv::dids::create::v1_2::Response>,
+            ),
+        ),
+        (
             uris::TASK_WEBVH_DIDS_DELETE_1_0,
             (
                 json!({ "did": did }),

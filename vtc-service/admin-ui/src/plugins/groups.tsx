@@ -20,6 +20,7 @@ import { DataTable } from "@/components/DataTable";
 import { DirectoryAvatar } from "@/components/DirectoryAvatar";
 import { EmptyState } from "@/components/EmptyState";
 import { DidHostingCard } from "@/plugins/DidHostingCard";
+import { DidPresentationCard } from "@/plugins/DidPresentationCard";
 import { type DynamicRule, RuleEditor, emptyRule, ruleReady, wireRule } from "@/plugins/GroupRule";
 import { PageHeader } from "@/components/PageHeader";
 import { COMMUNITY_ROOMS_LIST_KEY, ROOMS_MANAGE, fetchCommunityRooms } from "@/lib/community-rooms-api";
@@ -145,6 +146,7 @@ function GroupsList() {
       </p>
       {creating && <CreateGroupForm onDone={() => setCreating(false)} />}
       {holds(caps, "vtc.config.admin") && <DidHostingCard />}
+      {holds(caps, "vtc.config.admin") && <DidPresentationCard />}
       {list.error && (
         <section className="card error">
           <h3>Failed to read the groups</h3>
