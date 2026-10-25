@@ -2123,6 +2123,7 @@ fn table() -> Vec<(&'static str, Conformance)> {
                     issuer_did: Some("did:web:issuer.example".into()),
                     purpose: Some(CredentialPurpose::Membership),
                     status: Some(CredentialStatus::Valid),
+                    subject_did: Some("did:web:member.example".into()),
                     include_archived: true,
                     include_deleted: true,
                 }),

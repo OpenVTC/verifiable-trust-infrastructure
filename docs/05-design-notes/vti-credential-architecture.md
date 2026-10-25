@@ -574,7 +574,10 @@ The plugin is the consent + key + legibility surface:
    management-by-id; archived / soft-deleted credentials remain refused at
    `get`/present, and a revoked/expired row stays excluded regardless
    (invariant 5). This is a scoped relaxation of the post-filter, never a
-   cross-boundary list of the wallet.
+   cross-boundary list of the wallet. `subjectDid` (narrow to the credentials
+   presented as one of the holder's identities, so a wallet offers only those a
+   verifier requiring that holder will accept) is the same kind of modifier: it
+   narrows an anchored scan and never satisfies the requirement alone.
 2. **Consent before disclosure.** The VTA never presents a credential
    without explicit, purpose-bound holder consent.
 3. **Claim minimisation.** Presentations disclose only the DCQL-requested

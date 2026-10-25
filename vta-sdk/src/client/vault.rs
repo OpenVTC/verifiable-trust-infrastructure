@@ -326,6 +326,8 @@ impl VtaClient {
     /// returned; each descriptor then carries `lifecycle`
     /// (`active` | `archived` | `deleted`) alongside the existing validity
     /// `status`, plus `archivedAt` / `deletedAt` / `graceUntil` as applicable.
+    /// `subjectDid` narrows to credentials presented as that identity; it does
+    /// not count as a filter on its own.
     pub async fn cred_vault_query(&self, filter: Value) -> Result<Value, VtaError> {
         self.dispatch_trust_task(
             trust_tasks::TASK_VAULT_CREDENTIALS_QUERY_0_1,

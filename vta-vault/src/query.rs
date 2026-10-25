@@ -192,6 +192,14 @@ pub struct CredentialQuery {
     /// Match credentials with this validity status.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub status: Option<CredentialStatus>,
+    /// Narrow to credentials whose subject is this DID — the identity
+    /// `vault/credentials/present` presents them as. Like the modifiers it does
+    /// not count toward the ≥1-filter requirement: a holder with one identity
+    /// holds every credential under it, so `{ subjectDid }` alone is the whole
+    /// vault. Not indexed; applied with the other post-filters. A credential
+    /// with no recorded subject never matches.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subject_did: Option<String>,
     /// Opt-in: also return **archived** credentials (default `false`). This is
     /// a *modifier*, not a filter — it does not count toward the ≥1-filter
     /// requirement, so `{ includeArchived: true }` alone is still refused as
@@ -342,6 +350,11 @@ pub async fn search(
         if !caller_may_access_custody(caller, cred.context_id.as_deref()) {
             continue;
         }
+        if let Some(subject) = &query.subject_did
+            && cred.subject_did.as_deref() != Some(subject.as_str())
+        {
+            continue;
+        }
         // The anchor already matched via the index; re-check the remaining
         // constraints in memory. AND semantics: any miss drops the record.
         let all_match = constraints[1..]
@@ -463,6 +476,45 @@ mod tests {
         assert_eq!(d.status, CredentialStatus::Unknown);
         assert_eq!(d.valid_from.as_deref(), Some("2026-01-01T00:00:00Z"));
         assert_eq!(d.valid_until.as_deref(), Some("2027-01-01T00:00:00Z"));
+    }
+
+    #[tokio::test]
+    async fn subject_did_narrows_to_one_identitys_credentials() {
+        let (_dir, _store, vault) = fresh_vault();
+        put(&vault, &sample("alice")).await.unwrap();
+        let mut bound_elsewhere = sample("alice-key");
+        bound_elsewhere.subject_did = Some("did:key:zAliceHolderKey".into());
+        put(&vault, &bound_elsewhere).await.unwrap();
+        let mut unbound = sample("no-subject");
+        unbound.subject_did = None;
+        put(&vault, &unbound).await.unwrap();
+
+        let q = CredentialQuery {
+            issuer_did: Some("did:web:issuer.example".into()),
+            subject_did: Some("did:key:zAlice".into()),
+            ..Default::default()
+        };
+        let ids: Vec<_> = search(&vault, &q, &ActScope::All)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|d| d.id)
+            .collect();
+        assert_eq!(ids, vec!["alice".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn subject_did_alone_is_refused_as_an_enumeration() {
+        let (_dir, _store, vault) = fresh_vault();
+        put(&vault, &sample("alice")).await.unwrap();
+        let q = CredentialQuery {
+            subject_did: Some("did:key:zAlice".into()),
+            ..Default::default()
+        };
+        assert!(matches!(
+            search(&vault, &q, &ActScope::All).await,
+            Err(AppError::Validation(_))
+        ));
     }
 
     #[tokio::test]
