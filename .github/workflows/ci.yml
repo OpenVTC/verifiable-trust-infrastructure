@@ -725,7 +725,11 @@ jobs:
     # 90, not 45: semver-checks over every bumped crate. A Release PR that moves
     # vta-sdk and vti-common to breaking versions bumps most of the workspace, and
     # hit 45 on #1856.
-    timeout-minutes: 90
+    #
+    # 180, not 90: the Release PR for #2282 (every crate on TSP 1.0) hit 90.
+    # With the build and test jobs skipped on a Release PR (ci-affects.sh) this
+    # is the one long job left on it.
+    timeout-minutes: 180
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

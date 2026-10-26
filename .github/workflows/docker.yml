@@ -44,6 +44,9 @@ permissions:
 jobs:
   image:
     name: Docker image (${{ matrix.name }})
+    # Not on the Release PR: it changes only versions and changelogs, and its
+    # merge is a push to main, which builds both images.
+    if: ${{ !startsWith(github.head_ref, 'release-plz-') }}
     runs-on: ubuntu-latest
     # A cold release build of the workspace runs ~15 min for the non-TEE image;
     # the enclave build pulls the whole AWS SDK / TEE stack on top. The cap is
