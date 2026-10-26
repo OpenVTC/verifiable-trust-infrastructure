@@ -2,7 +2,7 @@
 //!
 //! One row in the `community` keyspace at [`REQUESTED_ATTRIBUTES_STORAGE_KEY`],
 //! beside the branding, published as `requestedAttributes` on
-//! `join-requests/manifest/0.2` and answered as `attributes` on
+//! `join-requests/manifest/0.4` and answered as `attributes` on
 //! `join-requests/submit/0.2`. The shape is the manifest's own generated item,
 //! so what an admin stores is exactly what an applicant is shown.
 //!
@@ -24,7 +24,7 @@
 use std::collections::BTreeSet;
 
 use serde_json::Value;
-use vta_sdk::protocols::join_requests::manifest::v0_2::ResponseRequestedAttributesItem as RequestedAttribute;
+use vta_sdk::protocols::join_requests::manifest::v0_4::ResponseRequestedAttributesItem as RequestedAttribute;
 use vti_common::error::AppError;
 use vti_common::store::KeyspaceHandle;
 

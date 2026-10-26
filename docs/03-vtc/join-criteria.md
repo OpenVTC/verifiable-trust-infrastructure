@@ -20,7 +20,7 @@ Which criteria a community publishes is its administrators' decision. Nothing
 in the specification or the service assumes one: open admission, admission
 only after review, admission only by invitation, and any combination are all
 expressed the same way. Specification:
-[`vtc/join-requests/manifest/0.3`](https://github.com/trustoverip/dtgwg-trust-tasks-tf/blob/main/specs/vtc/join-requests/manifest/0.3/spec.md),
+[`vtc/join-requests/manifest/0.4`](https://github.com/trustoverip/dtgwg-trust-tasks-tf/blob/main/specs/vtc/join-requests/manifest/0.4/spec.md),
 [`vtc/join-requests/submit/0.3`](https://github.com/trustoverip/dtgwg-trust-tasks-tf/blob/main/specs/vtc/join-requests/submit/0.3/spec.md)
 and
 [`vtc/schemas/accepts/register/0.2`](https://github.com/trustoverip/dtgwg-trust-tasks-tf/blob/main/specs/vtc/schemas/accepts/register/0.2/spec.md).

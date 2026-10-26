@@ -150,7 +150,7 @@ impl From<SubmitRefusal> for AppError {
             ),
             SubmitRefusal::CriterionUnknown(digest) => AppError::Validation(format!(
                 "criterion {digest} names no join criterion this community publishes; read \
-                 vtc/join-requests/manifest/0.3 again and resubmit under a current one"
+                 vtc/join-requests/manifest/0.4 again and resubmit under a current one"
             )),
             SubmitRefusal::Challenge(r) => r.into(),
             SubmitRefusal::Other(e) => e,

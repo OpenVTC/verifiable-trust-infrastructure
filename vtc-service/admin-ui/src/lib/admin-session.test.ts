@@ -38,7 +38,7 @@ import { AdminSessionSigningError, TASK_ADMIN_SESSION, openAdminSession } from "
 const SUBJECT = "did:webvh:QmScid:community.example:alice";
 const KEY_DID = "did:key:z6MkBrowserSessionKey";
 const PAYLOAD = { accessToken: "t", ext: { "org.openvtc": { sessionKey: KEY_DID } } };
-const SESSION = { sessionId: "sess-1", expiresAt: 1_800_000_000 };
+const SESSION = { sessionId: "sess-1", expiresAt: "2027-01-15T08:00:00Z" };
 
 afterEach(() => {
   vi.mocked(addressedDocument).mockReset();

@@ -13,7 +13,7 @@
 //! drift apart on what "two distinct vetters" means.
 //!
 //! The requirements are the published [`VettingRequirements`] of
-//! `vtc/join-requests/manifest/0.2`, and statements are counted in its
+//! `vtc/join-requests/manifest/0.4`, and statements are counted in its
 //! vocabulary.
 
 use std::collections::{BTreeMap, BTreeSet};

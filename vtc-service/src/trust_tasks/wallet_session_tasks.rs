@@ -83,7 +83,7 @@ fn start_refusal(doc: &TrustTask<Value>, refusal: StartRefusal) -> TrustTaskOutc
         StartRefusal::CriterionNotFound => (
             start::error_codes::CRITERION_NOT_FOUND.code,
             "no criterion this community publishes, or still honours, has that \
-             requirementsDigest; read vtc/join-requests/manifest/0.3 again"
+             requirementsDigest; read vtc/join-requests/manifest/0.4 again"
                 .to_string(),
         ),
         StartRefusal::NoWalletPresentation => (

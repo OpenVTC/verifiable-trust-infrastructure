@@ -8,7 +8,7 @@
 //! | `vtc/community/profile/show/0.1` | any entry |
 //! | `vtc/ceremonies/list/0.1` | any entry |
 //! | `vtc/directory/query/0.1` | any entry, as the viewer the directory policy projects for |
-//! | `vtc/endorsement-types/list/0.1` | `Admin` |
+//! | `vtc/endorsement-types/list/0.2` | `Admin` |
 //! | `vtc/recognition/check/0.1` | `Admin` |
 //! | `vtc/members/{list,removed,show,solicit-vmc}/0.1` | `Admin` |
 //! | `vtc/join-requests/{list,show}/0.1` | `Admin` |
@@ -35,16 +35,16 @@ use serde_json::Value;
 use trust_tasks_rs::specs::vtc::ceremonies::list::v0_1 as ceremonies_list;
 use trust_tasks_rs::specs::vtc::community::profile::show::v0_1 as profile_show;
 use trust_tasks_rs::specs::vtc::directory::query::v0_1 as directory_query;
-use trust_tasks_rs::specs::vtc::endorsement_types::list::v0_1 as endorsement_types_list;
+use trust_tasks_rs::specs::vtc::endorsement_types::list::v0_2 as endorsement_types_list;
 use trust_tasks_rs::specs::vtc::invitations::{
     deliver::v0_1 as invitation_deliver, issue::v0_1 as invitation_issue,
     list::v0_1 as invitation_list, revoke::v0_1 as invitation_revoke,
 };
 use trust_tasks_rs::specs::vtc::join_requests::{
-    list::v0_1 as join_requests_list, show::v0_1 as join_requests_show,
+    list::v0_2 as join_requests_list, show::v0_1 as join_requests_show,
 };
 use trust_tasks_rs::specs::vtc::members::{
-    list::v0_1 as members_list, removed::v0_1 as members_removed, show::v0_1 as members_show,
+    list::v0_2 as members_list, removed::v0_1 as members_removed, show::v0_1 as members_show,
     solicit_vmc::v0_1 as members_solicit_vmc,
 };
 use trust_tasks_rs::specs::vtc::recognition::check::v0_1 as recognition_check;

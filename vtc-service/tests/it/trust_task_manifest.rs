@@ -339,9 +339,9 @@ const AWAITING_CANONICAL_FOLD: &[(&str, &str)] = &[
     // Its recorded blocker ("the cookie side-effect moves to a binding/ext")
     // assumed the endpoint had to survive. It did not: it ran the same
     // `authenticate_and_mint` as `POST /v1/auth/` and only appended the
-    // `Set-Cookie` pair, which `spec/vtc/auth/admin-session/0.1` already mints
+    // `Set-Cookie` pair, which `spec/vtc/auth/admin-session/0.2` already mints
     // from an access token the caller holds. Login is
-    // `spec/auth/authenticate/0.1` then `spec/vtc/auth/admin-session/0.1` —
+    // `spec/auth/authenticate/0.1` then `spec/vtc/auth/admin-session/0.2` —
     // the path the admin SPA already used. Nothing called `admin-login`.
     //
     // `config/legacy/manage/1.0` is GONE — `GET, PATCH /v1/config` deleted.
@@ -832,7 +832,7 @@ const SPINE_DOCUMENT_TYPES: &[&str] = &[
     "https://trusttasks.org/spec/auth/passkey/enroll/finish/0.2",
     "https://trusttasks.org/spec/auth/passkey/revoke/start/0.1",
     "https://trusttasks.org/spec/auth/passkey/revoke/finish/0.1",
-    "https://trusttasks.org/spec/vtc/auth/admin-session/0.1",
+    "https://trusttasks.org/spec/vtc/auth/admin-session/0.2",
     // Session introspection, signed by the browser key a sign-in bound to the
     // session (`trust_tasks::whoami_tasks`, `admin-ui/src/lib/api.ts`).
     "https://trusttasks.org/spec/auth/whoami/0.1",
@@ -912,7 +912,7 @@ const SPINE_DOCUMENT_TYPES: &[&str] = &[
     "https://trusttasks.org/spec/vtc/endorsement-types/register/0.1",
     "https://trusttasks.org/spec/vtc/endorsement-types/delete/0.1",
     "https://trusttasks.org/spec/vtc/vetting/vetters/list/0.1",
-    "https://trusttasks.org/spec/vtc/join-requests/manifest/0.3",
+    "https://trusttasks.org/spec/vtc/join-requests/manifest/0.4",
     // The administrator's operational verbs (`trust_tasks::admin_tasks`).
     "https://trusttasks.org/spec/vtc/registry/diagnostics/0.1",
     "https://trusttasks.org/spec/vtc/registry/sync-jobs/list/0.1",
@@ -931,13 +931,13 @@ const SPINE_DOCUMENT_TYPES: &[&str] = &[
     // The administrator's community verbs (`trust_tasks::community_tasks`).
     "https://trusttasks.org/spec/vtc/community/profile/show/0.1",
     "https://trusttasks.org/spec/vtc/ceremonies/list/0.1",
-    "https://trusttasks.org/spec/vtc/endorsement-types/list/0.1",
+    "https://trusttasks.org/spec/vtc/endorsement-types/list/0.2",
     "https://trusttasks.org/spec/vtc/recognition/check/0.1",
-    "https://trusttasks.org/spec/vtc/members/list/0.1",
+    "https://trusttasks.org/spec/vtc/members/list/0.2",
     "https://trusttasks.org/spec/vtc/members/removed/0.1",
     "https://trusttasks.org/spec/vtc/members/show/0.1",
     "https://trusttasks.org/spec/vtc/members/solicit-vmc/0.1",
-    "https://trusttasks.org/spec/vtc/join-requests/list/0.1",
+    "https://trusttasks.org/spec/vtc/join-requests/list/0.2",
     "https://trusttasks.org/spec/vtc/join-requests/show/0.1",
     "https://trusttasks.org/spec/vtc/relationships/graph/0.2",
     "https://trusttasks.org/spec/vtc/invitations/issue/0.1",
@@ -1047,7 +1047,7 @@ const SPINE_DOCUMENT_TYPES: &[&str] = &[
     // bearer REST routes had no caller once the spine dispatched them
     // (tt-tf#689) — `member_tasks`'s endorsement handlers, and `mod.rs`'s
     // `handle_vetter_resend_v0_2`.
-    "https://trusttasks.org/spec/vtc/endorsements/list/0.1",
+    "https://trusttasks.org/spec/vtc/endorsements/list/0.2",
     "https://trusttasks.org/spec/vtc/endorsements/revoke/0.1",
     "https://trusttasks.org/spec/vtc/vetting/vetters/resend/0.2",
     // First-admin onboarding (`trust_tasks::install_tasks`): the dedicated,

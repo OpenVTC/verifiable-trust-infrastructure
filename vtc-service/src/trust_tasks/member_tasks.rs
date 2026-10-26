@@ -62,7 +62,7 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 use trust_tasks_rs::specs::vtc::endorsements::{
-    issue::v0_1 as end_issue, list::v0_1 as end_list, revoke::v0_1 as end_revoke,
+    issue::v0_1 as end_issue, list::v0_2 as end_list, revoke::v0_1 as end_revoke,
     show::v0_1 as end_show,
 };
 use trust_tasks_rs::specs::vtc::members::{
@@ -111,7 +111,7 @@ pub(crate) const RELATIONSHIPS_REVOKE_0_2_TYPE: &str =
 /// `vtc/endorsements/issue/0.1`.
 pub(crate) const ENDORSEMENTS_ISSUE_TYPE: &str =
     <end_issue::Payload as trust_tasks_rs::Payload>::TYPE_URI;
-/// `vtc/endorsements/list/0.1`.
+/// `vtc/endorsements/list/0.2`.
 pub(crate) const ENDORSEMENTS_LIST_TYPE: &str =
     <end_list::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 /// `vtc/endorsements/show/0.1`.
@@ -762,7 +762,7 @@ async fn handle_endorsements_issue(
     }
 }
 
-/// `vtc/endorsements/list/0.1` — endorsements, filtered and paged.
+/// `vtc/endorsements/list/0.2` — endorsements, filtered and paged.
 ///
 /// The filters are applied, as the specification's Conformance requires; the
 /// bearer route takes none, so it lists everything.

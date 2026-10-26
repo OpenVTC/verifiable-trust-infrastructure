@@ -594,7 +594,7 @@ pub enum AuditEvent {
     VetterProfileDeleted(VetterProfileDeletedData),
 
     /// A vetter grant credential was delivered again
-    /// (`vtc/vetting/vetters/resend/0.1`, or the admin resend route).
+    /// (`vtc/vetting/vetters/resend/0.2`, or the admin resend route).
     VetterGrantResent(VetterGrantResentData),
 
     /// An admin changed the automatic vetter-grant configuration
@@ -606,7 +606,7 @@ pub enum AuditEvent {
     VetterAutoGrantSwept(VetterAutoGrantSweptData),
 
     /// An admin changed the community's branding (`PUT /v1/community/branding`),
-    /// which `join-requests/manifest/0.2` publishes.
+    /// which `join-requests/manifest/0.4` publishes.
     CommunityBrandingUpdated(CommunityBrandingUpdatedData),
 
     /// An admin replaced or removed the community's theme — the stylesheet the
@@ -677,7 +677,7 @@ pub enum AuditEvent {
 
     /// An admin changed what the community asks an applicant to tell it about
     /// themselves (`PUT /v1/community/requested-attributes`), which
-    /// `join-requests/manifest/0.2` publishes as `requestedAttributes`.
+    /// `join-requests/manifest/0.4` publishes as `requestedAttributes`.
     CommunityRequestedAttributesUpdated(CommunityRequestedAttributesUpdatedData),
 
     /// An operator registered a new custom endorsement type

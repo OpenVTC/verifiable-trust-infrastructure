@@ -35,7 +35,7 @@ use vta_cli_common::render::{
     BOLD, DIM, GREEN, RESET, YELLOW, bin_name, is_full_display, is_json_output, print_full_entry,
     print_full_list_title, print_json, print_widget,
 };
-use vtc_client::join_requests::manifest::v0_2::{
+use vtc_client::join_requests::manifest::v0_4::{
     CommunityBranding, CommunityBrandingAccentColor, CommunityBrandingDisplayName,
 };
 use vtc_client::vetting::vetters::grant::v0_1 as grant_wire;
@@ -73,14 +73,14 @@ pub enum VettingCommands {
     },
 
     /// How the community presents itself to an applicant's client
-    /// (`join-requests/manifest/0.2` branding).
+    /// (`join-requests/manifest/0.4` branding).
     Branding {
         #[command(subcommand)]
         command: BrandingCommands,
     },
 
     /// What the community asks an applicant to tell it about themselves
-    /// (`join-requests/manifest/0.2` `requestedAttributes`). Answers are the
+    /// (`join-requests/manifest/0.4` `requestedAttributes`). Answers are the
     /// applicant's own statement, never verified; ask for a credential in a
     /// criterion when you need one that is.
     Ask {
@@ -246,7 +246,7 @@ async fn cmd_ask_set(
 ) -> CliResult {
     let list = requested_from_flags(&require, &optional, &purpose)?;
     let requested = serde_json::from_value::<
-        Vec<vtc_client::join_requests::manifest::v0_2::ResponseRequestedAttributesItem>,
+        Vec<vtc_client::join_requests::manifest::v0_4::ResponseRequestedAttributesItem>,
     >(serde_json::Value::Array(list))
     .map_err(|e| {
         format!(
@@ -265,7 +265,7 @@ A type is a claim-type token such as `name.display` or `x:handle`; a purpose    
 }
 
 fn print_asked(
-    asked: &[vtc_client::join_requests::manifest::v0_2::ResponseRequestedAttributesItem],
+    asked: &[vtc_client::join_requests::manifest::v0_4::ResponseRequestedAttributesItem],
 ) -> CliResult {
     if is_json_output() {
         println!("{}", serde_json::to_string_pretty(asked)?);

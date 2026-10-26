@@ -132,7 +132,7 @@ pub async fn list_members_paginated(
 /// One page of the members `keep` admits, the filter applied **before**
 /// paging: the cursor walks the filtered set, so a page is never empty while
 /// a matching row lies further on, and `totalEstimate` is the exact number of
-/// members the filter admits (`vtc/members/list/0.1`).
+/// members the filter admits (`vtc/members/list/0.2`).
 ///
 /// Exact rather than estimated because it is free here: the page is already
 /// cut from the whole keyspace held in memory (see `vti_common::pagination`,

@@ -116,7 +116,7 @@ pub async fn post(vtc: &TestVtc, doc: &Value) -> (StatusCode, Value) {
 
 /// As [`post`], also returning the `Set-Cookie` values the reply carries — for
 /// the tasks that set the console's cookie session on the HTTPS door
-/// (`vtc/auth/admin-session/0.1`).
+/// (`vtc/auth/admin-session/0.2`).
 pub async fn post_for_cookies(vtc: &TestVtc, doc: &Value) -> (StatusCode, Vec<String>, Value) {
     let mut req = Request::builder()
         .method("POST")

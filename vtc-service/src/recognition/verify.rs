@@ -411,7 +411,7 @@ fn subject_id(vc: &VerifiableCredential, label: &str) -> Result<String, Recognit
 /// The bearer and the foreign role a community role VAC confers.
 ///
 /// The role credential is a DTG Verifiable Authority Credential (vtc/auth/
-/// recognise/0.2): `credentialSubject.authority` is `{ scope: <foreign
+/// recognise/0.3): `credentialSubject.authority` is `{ scope: <foreign
 /// community DID>, actions: ["role:<name>", …] }`. The foreign role is the
 /// `<name>` of its first `role:` action. It must be the community conferring
 /// authority in itself — `authority.scope` is the issuer — and issued directly,

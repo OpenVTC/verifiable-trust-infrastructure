@@ -928,7 +928,7 @@ const SCHEMA_TYPE: &str = "https://schemas.example.com/membership/v1";
 
 /// The branding the store holds, round-tripped through the stored type.
 fn branding() -> Value {
-    let b: vta_sdk::protocols::join_requests::manifest::v0_2::CommunityBranding =
+    let b: vta_sdk::protocols::join_requests::manifest::v0_4::CommunityBranding =
         serde_json::from_value(json!({
             "displayName": "Example Community",
             "accentColor": "#1a2b3c",
@@ -940,7 +940,7 @@ fn branding() -> Value {
 
 /// The requested attributes the store holds, round-tripped through the type.
 fn requested_attributes() -> Value {
-    let r: Vec<vta_sdk::protocols::join_requests::manifest::v0_2::ResponseRequestedAttributesItem> =
+    let r: Vec<vta_sdk::protocols::join_requests::manifest::v0_4::ResponseRequestedAttributesItem> =
         serde_json::from_value(json!([
             { "type": "name.display", "required": true, "purpose": "To greet you" },
             { "type": "address.country", "required": false },
@@ -1826,25 +1826,25 @@ fn table() -> Vec<Conformance> {
         ),
         // ─── auth ────────────────────────────────────────────────────
         checked!(
-            s::auth::admin_session::v0_1::Payload,
-            s::auth::admin_session::v0_1::Response,
+            s::auth::admin_session::v0_2::Payload,
+            s::auth::admin_session::v0_2::Response,
             json!({ "accessToken": "eyJhbGciOiJFZERTQSJ9.e30.sig" }),
             // `AdminSessionResponse` — the handler returned 204 and nothing
             // else until #1059. The cookies remain; the body is what makes
             // the route usable by anything that is not a browser.
-            json!({ "sessionId": REQUEST_ID, "expiresAt": 1_787_500_800_u64 })
+            json!({ "sessionId": REQUEST_ID, "expiresAt": TS })
         ),
         checked!(
-            s::auth::recognise::challenge::v0_1::Payload,
-            s::auth::recognise::challenge::v0_1::Response,
+            s::auth::recognise::challenge::v0_2::Payload,
+            s::auth::recognise::challenge::v0_2::Response,
             json!({}),
-            // `RecogniseChallengeResponse` — routes/recognise.rs:92.
-            // `expiresAt` is unix seconds, which is what the spec types.
-            json!({ "nonce": "b7c1e0a94f2d4e8ab5c36f01d9e27a3c", "expiresAt": 1_787_654_400_u64 })
+            // `RecogniseChallengeResponse` — routes/recognise.rs. `expiresAt`
+            // is an RFC 3339 date-time from 0.2 (0.1 typed it Unix seconds).
+            json!({ "nonce": "b7c1e0a94f2d4e8ab5c36f01d9e27a3c", "expiresAt": TS })
         ),
         checked!(
-            s::auth::recognise::v0_2::Payload,
-            s::auth::recognise::v0_2::Response,
+            s::auth::recognise::v0_3::Payload,
+            s::auth::recognise::v0_3::Response,
             // `RecogniseRequest` — routes/recognise.rs:82.
             json!({ "presentation": { "type": ["VerifiablePresentation"], "nonce": "b7c1e0" } }),
             // `RecogniseResponse` — routes/recognise.rs:102.
@@ -1852,7 +1852,7 @@ fn table() -> Vec<Conformance> {
                 "sessionId": "xc-6f2b1a7c-9d3e-4c58-b0a1-2e7d4f6a8b9c",
                 "data": {
                     "accessToken": "eyJhbGciOiJFZERTQSJ9.e30.sig",
-                    "accessExpiresAt": 1_787_655_300_u64,
+                    "accessExpiresAt": TS,
                     "foreignIssuerDid": "did:web:peer.example",
                     "mappedRole": "member",
                 },
@@ -2092,8 +2092,8 @@ fn table() -> Vec<Conformance> {
             json!({ "endorsementType": endorsement_type() })
         ),
         checked!(
-            s::endorsement_types::list::v0_1::Payload,
-            s::endorsement_types::list::v0_1::Response,
+            s::endorsement_types::list::v0_2::Payload,
+            s::endorsement_types::list::v0_2::Response,
             json!({ "cursor": "eyJsYXN0S2V5Ijoi", "limit": 50 }),
             paginated(json!([endorsement_type()]))
         ),
@@ -2128,8 +2128,8 @@ fn table() -> Vec<Conformance> {
             .expect("IssueResponse serialises")
         ),
         checked!(
-            s::endorsements::list::v0_1::Payload,
-            s::endorsements::list::v0_1::Response,
+            s::endorsements::list::v0_2::Payload,
+            s::endorsements::list::v0_2::Response,
             json!({ "subjectDid": DID, "typeUri": "https://skills.example.com/v1/rust",
                     "includeRevoked": true, "cursor": "eyJsYXN0S2V5Ijoi", "limit": 50 }),
             paginated(json!([endorsement()]))
@@ -2269,8 +2269,8 @@ fn table() -> Vec<Conformance> {
         ),
         // ─── join-requests ───────────────────────────────────────────
         checked!(
-            s::join_requests::list::v0_1::Payload,
-            s::join_requests::list::v0_1::Response,
+            s::join_requests::list::v0_2::Payload,
+            s::join_requests::list::v0_2::Response,
             json!({ "status": "pending", "cursor": "eyJsYXN0S2V5Ijoi", "limit": 25 }),
             paginated(json!([join_request()]))
         ),
@@ -2449,8 +2449,8 @@ fn table() -> Vec<Conformance> {
             json!({ "did": DID, "disposition": "purge", "removed": true })
         ),
         checked!(
-            s::members::list::v0_1::Payload,
-            s::members::list::v0_1::Response,
+            s::members::list::v0_2::Payload,
+            s::members::list::v0_2::Response,
             json!({ "role": "member", "cursor": "eyJsYXN0S2V5Ijoi", "limit": 50 }),
             paginated(json!([member_response()]))
         ),
@@ -2988,18 +2988,20 @@ fn table() -> Vec<Conformance> {
                 "complete": true,
             })
         ),
-        // ─── join manifest 0.3 and peer identity vetting ─────────────
+        // ─── join manifest 0.4 and peer identity vetting ─────────────
         //
         // Every one of these handlers speaks the generated types. The
         // responses are built the way the handlers build them — through the
         // generated builders, or the manifest read itself — so a response the
         // service could not produce cannot stand in for one it does.
         checked!(
-            s::join_requests::manifest::v0_3::Payload,
-            s::join_requests::manifest::v0_3::Response,
+            s::join_requests::manifest::v0_4::Payload,
+            s::join_requests::manifest::v0_4::Response,
             json!({}),
             to_v(
-                crate::routes::join_requests::manifest::response_v0_3(
+                // With the directory's disclosure statement the way
+                // `directory::disclosure` generates it from the base schema.
+                crate::routes::join_requests::manifest::response(
                     COMMUNITY_DID.into(),
                     vec![crate::schemas::accepts::AcceptsCriterion {
                         id: "kernel-developer".into(),
@@ -3041,29 +3043,9 @@ fn table() -> Vec<Conformance> {
                         }))
                         .expect("requested attribute"),
                     ],
-                )
-                .expect("the manifest projects the criterion"),
-            )
-        ),
-        // 0.4: the same answer, with the directory's disclosure statement the
-        // way `directory::disclosure` generates it from the base schema.
-        checked!(
-            s::join_requests::manifest::v0_4::Payload,
-            s::join_requests::manifest::v0_4::Response,
-            json!({}),
-            to_v(
-                crate::routes::join_requests::manifest::response_v0_4(
-                    COMMUNITY_DID.into(),
-                    vec![crate::schemas::accepts::AcceptsCriterion::new(
-                        "open",
-                        crate::schemas::accepts::Admission::Automatic,
-                        DID,
-                    )],
-                    None,
-                    Vec::new(),
                     base_disclosure(),
                 )
-                .expect("the manifest carries the statement"),
+                .expect("the manifest projects the criterion"),
             )
         ),
         checked!(
@@ -3407,23 +3389,10 @@ fn table() -> Vec<Conformance> {
             )
         ),
         checked!(
-            s::vetting::vetters::resend::v0_1::Payload,
-            s::vetting::vetters::resend::v0_1::Response,
-            json!({}),
-            to_v(
-                s::vetting::vetters::resend::v0_1::Response::try_from(
-                    s::vetting::vetters::resend::v0_1::Response::builder()
-                        .credential_id(format!("urn:uuid:{REQUEST_ID}"))
-                        .valid_until(TS.parse::<DateTime<chrono::Utc>>().unwrap()),
-                )
-                .expect("resend response")
-            )
-        ),
-        checked!(
             s::vetting::vetters::resend::v0_2::Payload,
             s::vetting::vetters::resend::v0_2::Response,
             // The administrator's route: `memberDid` names whose grant to
-            // resend, instead of the sender's own (`0.1`'s empty payload).
+            // resend, instead of the sender's own (an empty payload).
             json!({ "memberDid": OTHER_DID }),
             to_v(
                 s::vetting::vetters::resend::v0_2::Response::try_from(

@@ -301,7 +301,7 @@ fn tt_error_code(doc: &serde_json::Value) -> &str {
     doc["payload"]["code"].as_str().unwrap_or_default()
 }
 
-/// `vtc/auth/admin-session/0.1` declares `invalidToken`, and this is the
+/// `vtc/auth/admin-session/0.2` declares `invalidToken`, and this is the
 /// refusal it names: a token that does not decode — wrong signature, wrong
 /// audience, or expired — is answered with the code rather than prose alone,
 /// so a console can tell "sign in again" from "something else broke".
@@ -326,7 +326,7 @@ async fn the_admin_session_task_answers_with_the_invalid_token_code_its_spec_dec
         let doc = crate::common::signed::signed_to(
             &signer,
             "did:key:z6MkTestVTC",
-            "https://trusttasks.org/spec/vtc/auth/admin-session/0.1",
+            "https://trusttasks.org/spec/vtc/auth/admin-session/0.2",
             serde_json::json!({ "accessToken": token }),
         )
         .await;

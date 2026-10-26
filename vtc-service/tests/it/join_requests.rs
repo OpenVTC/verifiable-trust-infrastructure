@@ -37,11 +37,11 @@ const SUBMIT_TASK: &str = "https://trusttasks.org/spec/vtc/join-requests/submit/
 // `accept` is retired — the join close-the-loop is `members/vmc` with a
 // `requestId` (one credential-delivery path).
 const VMC_TASK: &str = "https://trusttasks.org/spec/vtc/members/vmc/0.1";
-const MANIFEST_TASK: &str = "https://trusttasks.org/spec/vtc/join-requests/manifest/0.3";
+const MANIFEST_TASK: &str = "https://trusttasks.org/spec/vtc/join-requests/manifest/0.4";
 const STATUS_TASK: &str = "https://trusttasks.org/spec/vtc/join-requests/status/0.1";
 // The admin verbs remain header-gated REST routes (unchanged) — flat URIs.
 // The admin GET list shares the submit mount, so it gates on the flat submit URI.
-const LIST_TASK: &str = "https://trusttasks.org/spec/vtc/join-requests/list/0.1";
+const LIST_TASK: &str = "https://trusttasks.org/spec/vtc/join-requests/list/0.2";
 const SHOW_TASK: &str = "https://trusttasks.org/spec/vtc/join-requests/show/0.1";
 const DECIDE_TASK: &str = "https://trusttasks.org/spec/vtc/join-requests/decide/0.1";
 // The vetting admin reads and the community branding + requested-attributes
@@ -2809,8 +2809,7 @@ async fn withdrawal_doc(seed: [u8; 32], statement: &Value) -> Value {
 use vta_sdk::protocols::join_requests::JOIN_REQUEST_MANIFEST_TYPE;
 use vta_sdk::protocols::vetting::{
     VETTING_VETTER_LIST_TYPE, VETTING_VETTER_PROFILE_ERR_NOT_ELIGIBLE, VETTING_VETTER_PROFILE_TYPE,
-    VETTING_VETTER_RESEND_0_2_TYPE, VETTING_VETTER_RESEND_ERR_NOT_GRANTED,
-    VETTING_VETTER_RESEND_TYPE,
+    VETTING_VETTER_RESEND_ERR_NOT_GRANTED, VETTING_VETTER_RESEND_TYPE,
 };
 
 /// An admin verb that is a signed document only (the vetting admin reads and
@@ -3141,11 +3140,10 @@ async fn a_vetter_asks_for_the_grant_credential_again() {
     )
     .await;
     let (status, body) = post_tt(&fix.router, doc).await;
-    assert_eq!(
-        status,
-        StatusCode::BAD_REQUEST,
-        "a resend names nobody: {body}"
-    );
+    // Naming another member is the administrator's route; a vetter who is not
+    // one is refused (`vtc/vetting/vetters/resend/0.2`, Conformance item 2).
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    assert_eq!(tt_error_code(&body), "permissionDenied");
 
     // An administrator, naming the vetter in `memberDid`, answers the same
     // way (`vtc/vetting/vetters/resend/0.2` — what replaced the admin-only
@@ -3153,7 +3151,7 @@ async fn a_vetter_asks_for_the_grant_credential_again() {
     let (status, doc) = crate::common::signed::call(
         &fix._vtc,
         &fix.signer,
-        VETTING_VETTER_RESEND_0_2_TYPE,
+        VETTING_VETTER_RESEND_TYPE,
         json!({ "memberDid": carol }),
     )
     .await;
@@ -3161,7 +3159,7 @@ async fn a_vetter_asks_for_the_grant_credential_again() {
     let (status, doc) = crate::common::signed::call(
         &fix._vtc,
         &fix.signer,
-        VETTING_VETTER_RESEND_0_2_TYPE,
+        VETTING_VETTER_RESEND_TYPE,
         json!({ "memberDid": erin }),
     )
     .await;

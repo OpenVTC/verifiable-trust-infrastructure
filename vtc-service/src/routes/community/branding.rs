@@ -1,5 +1,5 @@
 //! How the community presents itself to an applicant's client, published as
-//! `branding` on `join-requests/manifest/0.2`.
+//! `branding` on `join-requests/manifest/0.4`.
 //!
 //! Signed documents only (`vtc/community/branding/{show,update}/0.1`,
 //! `trust_tasks::surface_tasks`) — the admin-only bearer REST mounts this
@@ -22,7 +22,7 @@ pub(crate) async fn update_branding(
     state: &AppState,
     actor: &str,
     body: &serde_json::Value,
-) -> Result<vta_sdk::protocols::join_requests::manifest::v0_2::CommunityBranding, AppError> {
+) -> Result<vta_sdk::protocols::join_requests::manifest::v0_4::CommunityBranding, AppError> {
     let body = read_branding(body).map_err(|e| AppError::Validation(e.to_string()))?;
     // Fail closed, as the profile route does: a change that cannot be audited
     // is not made.

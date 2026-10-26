@@ -774,7 +774,7 @@ const SHOW_ERR_NOT_FOUND: &str = end_spec::show::v0_1::error_codes::NOT_FOUND.co
 const REVOKE_ERR_NOT_FOUND: &str = end_spec::revoke::v0_1::error_codes::NOT_FOUND.code;
 const REVOKE_ERR_ALREADY_REVOKED: &str = end_spec::revoke::v0_1::error_codes::ALREADY_REVOKED.code;
 
-const LIST_TASK: &str = "https://trusttasks.org/spec/vtc/endorsements/list/0.1";
+const LIST_TASK: &str = "https://trusttasks.org/spec/vtc/endorsements/list/0.2";
 
 /// The extended error code carried by a REST error body (`{"error", "code"}`).
 fn rest_error_code(body: &Value) -> &str {

@@ -14,7 +14,7 @@
 // (`vta_sdk::protocols::vetting::CheckShape`):
 //
 //   - `validateRequirements` is the `VettingRequirements` definition of
-//     `vtc/join-requests/manifest/0.2`, plus its rule that every `minByMethod`
+//     `vtc/join-requests/manifest/0.4`, plus its rule that every `minByMethod`
 //     method is accepted.
 //   - `validateBranding` is that manifest's `CommunityBranding` definition.
 //   - `buildListBody` is `vtc/vetting/vetters/list/0.1`'s payload, plus its

@@ -141,7 +141,7 @@ mapped_role := "monitor"
     let resp = mint_recognised_session(&fix.state, v).await.expect("mint");
     let resp = body_value(resp).await;
     let now_secs = chrono::Utc::now().timestamp() as u64;
-    let ttl = resp.data.access_expires_at - now_secs;
+    let ttl = resp.data.access_expires_at.timestamp() as u64 - now_secs;
     assert!(
         (260..=305).contains(&ttl),
         "TTL ({ttl}s) should be ~300s (clamped to 5-min credential window)"
@@ -165,7 +165,7 @@ mapped_role := "monitor"
     let resp = mint_recognised_session(&fix.state, v).await.expect("mint");
     let resp = body_value(resp).await;
     let now_secs = chrono::Utc::now().timestamp() as u64;
-    let ttl = resp.data.access_expires_at - now_secs;
+    let ttl = resp.data.access_expires_at.timestamp() as u64 - now_secs;
     assert!(
         (880..=905).contains(&ttl),
         "TTL ({ttl}s) should be ~900s (default access_token_expiry)"
@@ -295,8 +295,8 @@ mod holder_binding {
     use vtc_service::test_support::TestVtc;
 
     const VTC_DID: &str = "did:key:z6MkTestVTC";
-    const RECOGNISE_TASK: &str = "https://trusttasks.org/spec/vtc/auth/recognise/0.2";
-    const CHALLENGE_TASK: &str = "https://trusttasks.org/spec/vtc/auth/recognise/challenge/0.1";
+    const RECOGNISE_TASK: &str = "https://trusttasks.org/spec/vtc/auth/recognise/0.3";
+    const CHALLENGE_TASK: &str = "https://trusttasks.org/spec/vtc/auth/recognise/challenge/0.2";
 
     async fn test_vtc() -> TestVtc {
         // `with_did_resolver` so the route's VP holder/issuer `did:key`
@@ -412,7 +412,7 @@ mod holder_binding {
     }
 
     /// Post `payload` as an unsigned `type_uri` document — neither
-    /// `auth/recognise/challenge/0.1` nor `auth/recognise/0.2` requires a
+    /// `auth/recognise/challenge/0.2` nor `auth/recognise/0.3` requires a
     /// proof on the outer document; the holder-signed VP inside `recognise`'s
     /// payload is the authority — to the shared document endpoint
     /// (`trust_tasks::recognise_tasks`).
@@ -592,7 +592,7 @@ async fn code_of(err: vtc_service::error::TaskError) -> serde_json::Value {
     serde_json::from_slice(&bytes).expect("json error body")
 }
 
-/// `vtc/auth/recognise/0.2` declares `roleNotMapped` and `credentialInvalid`,
+/// `vtc/auth/recognise/0.3` declares `roleNotMapped` and `credentialInvalid`,
 /// and both are now on the wire rather than only in the prose.
 ///
 /// The two are different things to a client: `roleNotMapped` says this

@@ -460,8 +460,8 @@ and **Service health** gives one row each to the daemon, the VTA, the mediator,
 the trust registry, this browser's signing key, the build and hidden-vetting
 support. The transport advertisement and the community's identifiers follow.
 
-Each count is **one read**. `vtc/members/list/0.1` and
-`vtc/join-requests/list/0.1` apply their filter (role, status) before paging,
+Each count is **one read**. `vtc/members/list/0.2` and
+`vtc/join-requests/list/0.2` apply their filter (role, status) before paging,
 so the cursor walks only matching rows and a page is never empty while a match
 lies further on, and they fill `totalEstimate` with the exact number of
 matches. Exact is cheap at a community's size: the page is already cut from
@@ -795,7 +795,7 @@ The SIOPv2 path is two calls, both on canonical Trust Tasks:
 1. `POST /v1/auth/` (`spec/auth/authenticate/0.1`) — the DIDComm-packed or
    SIOP challenge response, returning `{ session, tokens }` with a bearer
    access token.
-2. `spec/vtc/auth/admin-session/0.1`, a signed document on
+2. `spec/vtc/auth/admin-session/0.2`, a signed document on
    `POST /v1/trust-tasks` — post that access token back; the daemon validates
    it (signature, VTC audience, expiry), checks the document is **signed by
    the token's subject** (or by a console key that subject enrolled), and

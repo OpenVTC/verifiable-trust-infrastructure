@@ -1,5 +1,5 @@
 //! Naming vetters (`vtc/vetting/vetters/grant/0.1`) and delivering a grant
-//! again (`vtc/vetting/vetters/resend/0.1`).
+//! again (`vtc/vetting/vetters/resend/0.2`).
 //!
 //! OpenVTC vetting design §10. A vetter is a member the community has issued a
 //! **vetter role credential**: a DTG Verifiable Authority Credential, issued by
@@ -44,7 +44,7 @@ use uuid::Uuid;
 
 use vta_sdk::protocols::members::AUTHORITY_CREDENTIAL_TYPE;
 use vta_sdk::protocols::vetting::vetters::{
-    grant::v0_1 as grant_wire, resend::v0_1 as resend_wire,
+    grant::v0_1 as grant_wire, resend::v0_2 as resend_wire,
 };
 use vta_sdk::protocols::vetting::{
     CheckShape, DEFAULT_VETTER_GRANT_VALIDITY_SECONDS, GrantOrigin, VETTER_ROLE, VetterGrantRow,
@@ -301,7 +301,7 @@ pub async fn grant(
 /// slow or unreachable mediator must not hold up every other grant, revocation
 /// and profile write. The record is what counts statements, so a member whose
 /// wallet missed the credential is still a vetter, and can ask for it again
-/// (`vtc/vetting/vetters/resend/0.1`).
+/// (`vtc/vetting/vetters/resend/0.2`).
 pub(crate) async fn deliver_grant(state: &AppState, member_did: &str, credential: &JsonValue) {
     match into_typed(credential.clone(), "vetter role VAC") {
         Ok(typed) => {
@@ -467,7 +467,7 @@ pub(crate) async fn grant_locked(
 }
 
 /// Deliver `member_did`'s live vetter grant credential again, on behalf of
-/// `actor_did` — the member themselves over `vtc/vetting/vetters/resend/0.1`,
+/// `actor_did` — the member themselves over `vtc/vetting/vetters/resend/0.2`,
 /// or an admin.
 ///
 /// "Delivered" means the credential was handed to the messaging layer for the

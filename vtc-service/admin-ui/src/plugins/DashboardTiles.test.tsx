@@ -8,8 +8,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { WhoamiResponse } from "@/lib/api";
 import { renderWithProviders } from "@/test/render";
 
-const JOINS = "https://trusttasks.org/spec/vtc/join-requests/list/0.1";
-const MEMBERS = "https://trusttasks.org/spec/vtc/members/list/0.1";
+const JOINS = "https://trusttasks.org/spec/vtc/join-requests/list/0.2";
+const MEMBERS = "https://trusttasks.org/spec/vtc/members/list/0.2";
 
 const reads = vi.hoisted(() => ({
   calls: [] as [string, Record<string, unknown>][],

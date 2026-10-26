@@ -32,7 +32,7 @@
 //! 2. **CSRF double-submit cookie** — the request must carry a
 //!    `csrf` cookie value that matches the `X-CSRF-Token` request
 //!    header. The cookie is set by the cookie-session mints
-//!    (`vtc/auth/admin-session/0.1` on `/v1/trust-tasks`,
+//!    (`vtc/auth/admin-session/0.2` on `/v1/trust-tasks`,
 //!    `/v1/auth/passkey-login/finish`); an
 //!    attacker can't read it across origins to echo it in the header.
 //!

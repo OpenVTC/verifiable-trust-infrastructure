@@ -58,7 +58,7 @@ fn tt_error_code(payload: &Value) -> &str {
 }
 
 const RP_ORIGIN: &str = "https://vtc.example.com";
-const LIST_TASK: &str = "https://trusttasks.org/spec/vtc/members/list/0.1";
+const LIST_TASK: &str = "https://trusttasks.org/spec/vtc/members/list/0.2";
 const REMOVED_TASK: &str = "https://trusttasks.org/spec/vtc/members/removed/0.1";
 const PURGE_TASK: &str = "https://trusttasks.org/spec/vtc/members/purge/0.1";
 const SHOW_TASK: &str = "https://trusttasks.org/spec/vtc/members/show/0.1";

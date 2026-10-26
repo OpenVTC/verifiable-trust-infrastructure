@@ -99,7 +99,7 @@ pub struct Endorsement {
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub auto_granted: bool,
     /// The signed credential, kept so it can be delivered again
-    /// (`vtc/vetting/vetters/resend/0.1`). Recorded for vetter grants and for
+    /// (`vtc/vetting/vetters/resend/0.2`). Recorded for vetter grants and for
     /// the community's own `vetted/1` statement; absent on other endorsements
     /// and on rows written before it was kept.
     #[serde(default, skip_serializing_if = "Option::is_none")]

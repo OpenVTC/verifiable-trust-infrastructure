@@ -115,11 +115,11 @@ pub mod rooms;
 /// (`vtc-service/src/trust_tasks`) in a single read, rather than scattered as
 /// string literals down the file.
 pub mod task {
-    pub const MEMBERS_LIST: &str = "https://trusttasks.org/spec/vtc/members/list/0.1";
+    pub const MEMBERS_LIST: &str = "https://trusttasks.org/spec/vtc/members/list/0.2";
     pub const MEMBERS_UPDATE: &str = "https://trusttasks.org/spec/vtc/members/update/0.1";
     pub const MEMBERS_ADMIN_REMOVE: &str =
         "https://trusttasks.org/spec/vtc/members/admin-remove/0.1";
-    pub const JOIN_REQUESTS_LIST: &str = "https://trusttasks.org/spec/vtc/join-requests/list/0.1";
+    pub const JOIN_REQUESTS_LIST: &str = "https://trusttasks.org/spec/vtc/join-requests/list/0.2";
     pub const JOIN_REQUESTS_DECIDE: &str =
         "https://trusttasks.org/spec/vtc/join-requests/decide/0.1";
     pub const POLICY_LIST: &str = "https://trusttasks.org/spec/policy/list/0.2";
@@ -749,7 +749,7 @@ struct AutoGrantShowResponse {
 /// `vtc/community/branding/{show,update}/0.1`'s response payload shape.
 #[derive(Deserialize)]
 struct BrandingResponse {
-    branding: join_requests::manifest::v0_2::CommunityBranding,
+    branding: join_requests::manifest::v0_4::CommunityBranding,
 }
 
 /// `vtc/community/requested-attributes/{show,update}/0.1`'s response payload
@@ -757,7 +757,7 @@ struct BrandingResponse {
 #[derive(Deserialize)]
 struct RequestedAttributesResponse {
     #[serde(rename = "requestedAttributes")]
-    requested_attributes: Vec<join_requests::manifest::v0_2::ResponseRequestedAttributesItem>,
+    requested_attributes: Vec<join_requests::manifest::v0_4::ResponseRequestedAttributesItem>,
 }
 
 /// A client bound to one VTC: its API base, and a session or the operator's
@@ -1157,7 +1157,7 @@ impl VtcClient {
     }
 
     /// List every community member, optionally filtered by `role`, following the
-    /// cursor to completion (`vtc/members/list/0.1`). Administrator. This is
+    /// cursor to completion (`vtc/members/list/0.2`). Administrator. This is
     /// the fleet roster when the community's members are managed VTAs.
     pub async fn list_members(&self, role: Option<&str>) -> Result<Vec<MemberRecord>, VtcError> {
         let mut payload = serde_json::json!({});
@@ -1170,7 +1170,7 @@ impl VtcClient {
 
     /// List join requests (the admin work queue), optionally filtered by
     /// `status` (e.g. `"pending"`), following the cursor to completion
-    /// (`vtc/join-requests/list/0.1`). Administrator. For a fleet, these are
+    /// (`vtc/join-requests/list/0.2`). Administrator. For a fleet, these are
     /// VTAs awaiting enrollment.
     pub async fn list_join_requests(
         &self,
@@ -1986,7 +1986,7 @@ impl VtcClient {
     /// (`vtc/community/branding/show/0.1`) — the join manifest 0.2 `branding`.
     pub async fn branding(
         &self,
-    ) -> Result<join_requests::manifest::v0_2::CommunityBranding, VtcError> {
+    ) -> Result<join_requests::manifest::v0_4::CommunityBranding, VtcError> {
         let reply = self
             .document(
                 task::COMMUNITY_BRANDING_SHOW,
@@ -2003,8 +2003,8 @@ impl VtcClient {
     /// is cleared.
     pub async fn set_branding(
         &self,
-        branding: &join_requests::manifest::v0_2::CommunityBranding,
-    ) -> Result<join_requests::manifest::v0_2::CommunityBranding, VtcError> {
+        branding: &join_requests::manifest::v0_4::CommunityBranding,
+    ) -> Result<join_requests::manifest::v0_4::CommunityBranding, VtcError> {
         let reply = self
             .document(
                 task::COMMUNITY_BRANDING_UPDATE,
@@ -2021,7 +2021,7 @@ impl VtcClient {
     /// `requestedAttributes`.
     pub async fn requested_attributes(
         &self,
-    ) -> Result<Vec<join_requests::manifest::v0_2::ResponseRequestedAttributesItem>, VtcError> {
+    ) -> Result<Vec<join_requests::manifest::v0_4::ResponseRequestedAttributesItem>, VtcError> {
         let reply = self
             .document(
                 task::COMMUNITY_REQUESTED_ATTRIBUTES_SHOW,
@@ -2039,8 +2039,8 @@ impl VtcClient {
     /// for nothing.
     pub async fn set_requested_attributes(
         &self,
-        requested: &[join_requests::manifest::v0_2::ResponseRequestedAttributesItem],
-    ) -> Result<Vec<join_requests::manifest::v0_2::ResponseRequestedAttributesItem>, VtcError> {
+        requested: &[join_requests::manifest::v0_4::ResponseRequestedAttributesItem],
+    ) -> Result<Vec<join_requests::manifest::v0_4::ResponseRequestedAttributesItem>, VtcError> {
         let reply = self
             .document(
                 task::COMMUNITY_REQUESTED_ATTRIBUTES_UPDATE,

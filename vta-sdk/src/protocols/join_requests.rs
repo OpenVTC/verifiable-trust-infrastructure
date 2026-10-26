@@ -89,7 +89,7 @@ pub struct JoinRequestSubmitReceiptBody {
 pub struct JoinRequestSubmitBody {
     pub vp: JsonValue,
     /// The `requirementsDigest` of the criterion this submission is made
-    /// under, as `vtc/join-requests/manifest/0.3` published it. Absent: the
+    /// under, as `vtc/join-requests/manifest/0.4` published it. Absent: the
     /// community decides it under the first criterion, in the order it
     /// publishes them, that the submission meets.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -144,12 +144,11 @@ pub struct JoinRequestAttribute {
 /// specification. [`manifest::v0_4`] is the version a VTC serves first: each
 /// criterion states its `admission` and the requirements it has, in the order
 /// the community decides by, with a `requirementsDigest`, and the response
-/// carries the community's directory disclosure statement. [`manifest::v0_3`]
-/// is the same without the statement, and still served. Its `Payload` and
+/// carries the community's directory disclosure statement. Its `Payload` and
 /// `Response` are the manifest's wire types; nothing in this crate restates
 /// them.
 ///
-/// `manifest::v0_2::CommunityBranding` is also the body of the VTC's admin
+/// `manifest::v0_4::CommunityBranding` is also the body of the VTC's admin
 /// `GET`/`PUT /v1/community/branding`: what an admin stores is exactly what the
 /// manifest publishes.
 pub use trust_tasks_rs::specs::vtc::join_requests::manifest;
@@ -405,11 +404,6 @@ pub const JOIN_REQUEST_MANIFEST_TYPE: &str =
 /// [`manifest::v0_4::Response`].
 pub const JOIN_REQUEST_MANIFEST_RESPONSE_TYPE: &str =
     <manifest::v0_4::Response as trust_tasks_rs::Payload>::TYPE_URI;
-
-/// `vtc/join-requests/manifest/0.3`: the same answer without
-/// `directoryDisclosure`, still served to clients that ask for it.
-pub const JOIN_REQUEST_MANIFEST_V0_3_TYPE: &str =
-    <manifest::v0_3::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
 // ---------------------------------------------------------------------------
 // Status — applicant poll (join-requests/status/1.0)

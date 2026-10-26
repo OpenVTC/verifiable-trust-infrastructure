@@ -30,7 +30,7 @@
 // VTA wallet (additive — passkey is unchanged): the browser wallet extension
 // runs a SIOPv2 login against the VTC's header-exempt `/v1/wallet` surface
 // and returns a bearer token; we exchange it for the same cookie session with
-// the signed `vtc/auth/admin-session/0.1` (`lib/admin-session.ts`), signed as
+// the signed `vtc/auth/admin-session/0.2` (`lib/admin-session.ts`), signed as
 // the identity that signed in. A second option proxies the SIOP through the VTA
 // for a `did-self-issued` vault entry. Both end by invalidating the `whoami`
 // probe so the shell re-renders into the authenticated tree.

@@ -707,7 +707,7 @@ transitional, not declared exceptions. Seven moved — six below, and
   `userVerificationFailed`, `lastCredential`) are emitted where the routes
   answered bare HTTP statuses. The console's *My passkeys* page signs all five
   (`admin-ui/src/lib/my-passkeys-api.ts`).
-- **`vtc/auth/admin-session/0.1`** (`trust_tasks::admin_session_tasks`). The
+- **`vtc/auth/admin-session/0.2`** (`trust_tasks::admin_session_tasks`). The
   bridge from a SIOPv2 wallet sign-in's access token to the console's cookie
   session. It sets cookies, so it is served only on the HTTPS door, through the
   same `HttpContext` `auth/oob/redeem` uses. The proof adds the one thing the
@@ -742,7 +742,7 @@ signed document answered for that key.
 |---|---|
 | Wallet sign-in by trigger link (`auth/oob/*`, audience `admin`) | already: `redeem` binds the `K_b` that signed the request. The console now keeps `K_b` after the sign-in instead of dropping it. |
 | Passkey login (`auth/passkey/login/finish/0.2`) | `ext["org.openvtc"].sessionKey`, an Ed25519 `did:key`, refused before the ceremony is spent if malformed. Whoever submits the finish receives the session's cookies anyway, so binding the key they hold confers nothing the cookies do not. |
-| SIOPv2 wallet (`vtc/auth/admin-session/0.1`) | `ext["org.openvtc"].sessionKey` inside the signed document, so the signer's proof covers it — the footing `authenticate/0.2`'s `sessionKey` has. A session already bound to a **different** key is rebound only on the subject's own signature, never a console key's. |
+| SIOPv2 wallet (`vtc/auth/admin-session/0.2`) | `ext["org.openvtc"].sessionKey` inside the signed document, so the signer's proof covers it — the footing `authenticate/0.2`'s `sessionKey` has. A session already bound to a **different** key is rebound only on the subject's own signature, never a console key's. |
 | `auth/authenticate/0.2` (`cnm`, SDK clients) | unchanged: its `sessionKey`. |
 | Install claim | **nothing to bind** — `vtc/install/claim/*` and `vtc/admin/bootstrap` mint no console session; the founder then signs in by one of the paths above. |
 

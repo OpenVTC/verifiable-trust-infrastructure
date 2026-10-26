@@ -31,7 +31,7 @@ import {
 } from "@/plugins/vetting/JoinRequestVetting";
 
 const TRUST_TASK_LIST =
-  "https://trusttasks.org/spec/vtc/join-requests/list/0.1";
+  "https://trusttasks.org/spec/vtc/join-requests/list/0.2";
 const TRUST_TASK_SHOW =
   "https://trusttasks.org/spec/vtc/join-requests/show/0.1";
 const TRUST_TASK_DECIDE =

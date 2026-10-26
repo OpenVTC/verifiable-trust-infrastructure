@@ -1,5 +1,5 @@
 // Community branding — the name, accent colour and logo an applicant's client
-// shows for this community (`join-requests/manifest/0.2`'s `branding`).
+// shows for this community (`join-requests/manifest/0.4`'s `branding`).
 //
 // Rendered on the Community profile page. Presentation only: clients identify
 // the community by its DID. The preview sketches the result without fetching

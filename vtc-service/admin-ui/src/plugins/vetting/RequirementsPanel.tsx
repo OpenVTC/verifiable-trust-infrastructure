@@ -8,7 +8,7 @@
 //
 // It reads both surfaces, because they answer different questions. The criteria
 // (`vtc/schemas/accepts/list/0.2`) are the records being edited. The manifest
-// (`vtc/join-requests/manifest/0.3`) is what applicants receive, and it alone
+// (`vtc/join-requests/manifest/0.4`) is what applicants receive, and it alone
 // carries two things: each criterion's `requirementsDigest` — the value an
 // applicant cites, so a change made here is visible to them rather than silent
 // — and the order the community decides by, which is the order shown here.

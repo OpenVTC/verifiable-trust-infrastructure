@@ -7,7 +7,7 @@
 //
 // Two flows, both ending in a server-issued bearer token that the caller
 // exchanges for the admin cookie session with the signed
-// `vtc/auth/admin-session/0.1` (`lib/admin-session.ts`):
+// `vtc/auth/admin-session/0.2` (`lib/admin-session.ts`):
 //
 //  - `loginWithWallet()` — the holder self-issues a SIOPv2 id_token; the
 //    extension runs the `/auth/challenge` → `/auth/` round-trip internally.

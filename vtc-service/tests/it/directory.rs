@@ -980,7 +980,6 @@ async fn a_member_without_a_live_entry_leaves_the_directory() {
 // ─── the disclosure statement (VTI-DIR-130) ─────────────────────────────────
 
 const MANIFEST_0_4: &str = "https://trusttasks.org/spec/vtc/join-requests/manifest/0.4";
-const MANIFEST_0_3: &str = "https://trusttasks.org/spec/vtc/join-requests/manifest/0.3";
 
 /// An unsigned document of `type_uri`, as a prospective applicant who has not
 /// identified themselves sends it.
@@ -1064,21 +1063,13 @@ async fn the_statement_follows_the_configuration_at_once() {
 }
 
 #[tokio::test]
-async fn the_join_manifest_carries_the_same_statement_from_0_4() {
+async fn the_join_manifest_carries_the_same_statement() {
     let fix = build_fixture().await;
     let statement = read_anonymously(&fix, &task("disclosure")).await.1["disclosure"].clone();
 
     let (status, manifest) = read_anonymously(&fix, MANIFEST_0_4).await;
     assert_eq!(status, StatusCode::OK, "{manifest}");
     assert_eq!(manifest["directoryDisclosure"], statement);
-
-    let (status, older) = read_anonymously(&fix, MANIFEST_0_3).await;
-    assert_eq!(status, StatusCode::OK, "{older}");
-    assert!(
-        older.get("directoryDisclosure").is_none(),
-        "0.3 has no member for the statement"
-    );
-    assert_eq!(older["criteria"], manifest["criteria"]);
 }
 
 /// A community that answers its join criteria only to callers it can identify
@@ -1110,11 +1101,7 @@ async fn the_statement_is_as_public_as_the_join_criteria() {
 #[tokio::test]
 async fn the_requests_carry_nothing() {
     let fix = build_fixture().await;
-    for uri in [
-        task("disclosure"),
-        MANIFEST_0_4.to_string(),
-        MANIFEST_0_3.to_string(),
-    ] {
+    for uri in [task("disclosure"), MANIFEST_0_4.to_string()] {
         let (status, doc) = post(
             &fix.vtc,
             &anonymous(&uri, json!({ "fields": ["displayName"] })),

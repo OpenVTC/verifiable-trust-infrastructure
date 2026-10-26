@@ -1,4 +1,4 @@
-// The bearer → cookie bridge, `vtc/auth/admin-session/0.1`, for the SIOPv2
+// The bearer → cookie bridge, `vtc/auth/admin-session/0.2`, for the SIOPv2
 // wallet sign-ins on the login page ("Using an older wallet?").
 //
 // Those sign-ins end with an access token in hand, and the console runs on the
@@ -34,13 +34,13 @@ import {
 } from "./console-key";
 import { isWalletSigningAvailable, signWithWallet } from "./wallet";
 
-export const TASK_ADMIN_SESSION = "https://trusttasks.org/spec/vtc/auth/admin-session/0.1";
+export const TASK_ADMIN_SESSION = "https://trusttasks.org/spec/vtc/auth/admin-session/0.2";
 
-/** `vtc/auth/admin-session/0.1`'s response. */
+/** `vtc/auth/admin-session/0.2`'s response. */
 export interface AdminSessionResponse {
   sessionId: string;
-  /** Unix seconds — the access token's own expiry. */
-  expiresAt: number;
+  /** The access token's own expiry, as an RFC 3339 date-time. */
+  expiresAt: string;
 }
 
 /** Neither the wallet nor this browser can sign the exchange. */

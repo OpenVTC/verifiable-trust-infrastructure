@@ -10,7 +10,7 @@ import { MemoryRouter } from "react-router-dom";
 import type { WhoamiResponse } from "@/lib/api";
 
 const ME = "did:key:z6MkAdmin";
-const JOINS = "https://trusttasks.org/spec/vtc/join-requests/list/0.1";
+const JOINS = "https://trusttasks.org/spec/vtc/join-requests/list/0.2";
 
 const reads = vi.hoisted(() => ({
   /** Pending requests per page; each page but the last carries a cursor. */

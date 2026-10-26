@@ -305,10 +305,9 @@ use crate::server::AppState;
         join_requests::read::JoinRequestVettingStatement,
         // The join criteria, as the console registers and lists them
         // (`vtc/schemas/accepts/{register,list}/0.2`) and as applicants read
-        // them (`vtc/join-requests/manifest/0.3`).
+        // them (`vtc/join-requests/manifest/0.4`).
         vta_sdk::openapi::AcceptsRegister02Payload,
         vta_sdk::openapi::AcceptsList02Response,
-        vta_sdk::openapi::JoinManifest03Response,
         vta_sdk::openapi::JoinManifest04Response,
         rooms::HostedRoom,
         // The custom-endorsement reads/revoke the console signs
@@ -322,9 +321,8 @@ use crate::server::AppState;
         // The admin resend-on-behalf the console signs
         // (`vtc/vetting/vetters/resend/0.2`) — its admin-only bearer REST
         // route had no caller once the spine dispatched it (tt-tf#689) and
-        // was removed. `0.1`'s response shape covers `0.2`'s too: neither
-        // adds a member.
-        vta_sdk::openapi::VetterResend01Response,
+        // was removed.
+        vta_sdk::openapi::VetterResend02Response,
         // The website admin verbs the console signs
         // (`vtc/website/{files/list,files/delete,generations/list,rollback}/0.1`,
         // `trust_tasks::website_tasks`) — every bearer REST route for these had
@@ -573,7 +571,7 @@ fn build_api_chain(
     // Trust Tasks are declared there. (`accept` is gone — retired upstream,
     // folded into `members/vmc` + `requestId`.) The admin GET list shares the
     // `/join-requests` path with the governed POST but carries its own
-    // `join-requests/list/0.1` task (axum merges same-path method routers
+    // `join-requests/list/0.2` task (axum merges same-path method routers
     // per method).
     // Policies (Phase 2 M2.3). Three distinct Trust Tasks for the
     // three POST endpoints — upload, activate, test — so SIEM
@@ -672,7 +670,7 @@ fn build_api_chain(
         // Community branding (`vtc/community/branding/{show,update}/0.1`) and
         // what the community asks an applicant to tell it about themselves
         // (`vtc/community/requested-attributes/{show,update}/0.1`), both
-        // published on `join-requests/manifest/0.2`, are signed documents
+        // published on `join-requests/manifest/0.4`, are signed documents
         // only now (`trust_tasks::surface_tasks`) — their admin-only bearer
         // REST mounts had no caller left once `vtc-client` and the admin
         // console signed them instead.
@@ -719,7 +717,7 @@ fn build_api_chain(
         // ceremony decision pipeline).
         // Ceremony registry — the admin-UI renders its flow + simulator
         // from these manifests (purpose / fields / facts template).
-        // Members (Phase 1 M1.4–M1.6). The roster (`vtc/members/list/0.1`) is a
+        // Members (Phase 1 M1.4–M1.6). The roster (`vtc/members/list/0.2`) is a
         // signed document only.
         // Departed (tombstoned/historical) members. The literal `/removed`
         // must precede the `/{did}` catchall so axum's path-trie doesn't route
@@ -792,7 +790,7 @@ fn build_api_chain(
         // design §10) is a signed document only, withdrawn through
         // endorsements/revoke.
         // The vetter registry's admin surface. Resend
-        // (`vtc/vetting/vetters/resend/{0.1,0.2}`) is a signed document only:
+        // (`vtc/vetting/vetters/resend/0.2`) is a signed document only:
         // `0.1` enforces the task a vetter sends for themselves, `0.2` adds
         // the `memberDid` an administrator names to resend on a vetter's
         // behalf (tt-tf#689) — what let the admin-only REST resend route
@@ -815,12 +813,12 @@ fn build_api_chain(
     // A member's update and removal (`vtc/members/{update,admin-remove}/0.1`)
     // are signed documents only.
     // Join requests (Phase 1 M1.7–M1.10). The admin queue
-    // (`vtc/join-requests/list/0.1`) and its decision
+    // (`vtc/join-requests/list/0.2`) and its decision
     // (`vtc/join-requests/decide/0.1`) are signed documents only.
     // The vetting facts a request was decided on — admin REST with no Trust
     // Task of its own.
     // The join manifest has no route: the console reads it as the signed
-    // `vtc/join-requests/manifest/0.2` document applicants send.
+    // `vtc/join-requests/manifest/0.4` document applicants send.
     // (Manifest discovery moved to the single `POST /v1/trust-tasks`
     // document endpoint — `join-requests/manifest/1.0` is now a Trust
     // Task verb, no longer a bespoke GET.)
@@ -903,7 +901,7 @@ fn build_api_chain(
 fn build_unauth_routes(trust_xff_cidrs: &[IpNetwork]) -> OpenApiRouter<AppState> {
     // Canonical cross-cutting auth tasks from trusttasks-tf.
     //
-    // Bearer→cookie bridge: `vtc/auth/admin-session/0.1`, now a signed
+    // Bearer→cookie bridge: `vtc/auth/admin-session/0.2`, now a signed
     // document only (`trust_tasks::admin_session_tasks`, #1641). The fused
     // `/v1/auth/admin-login` that authenticated and set cookies in one call
     // was removed in #710, since it re-implemented `POST /v1/auth/` to add a
@@ -1046,7 +1044,7 @@ fn build_unauth_routes(trust_xff_cidrs: &[IpNetwork]) -> OpenApiRouter<AppState>
         // `[oid4vp] max_response_bytes`, not this chain's cap.
         .routes(routes!(oid4vp::request_object))
         .routes(routes!(oid4vp::response))
-        // The bearer → cookie bridge (`vtc/auth/admin-session/0.1`) has no
+        // The bearer → cookie bridge (`vtc/auth/admin-session/0.2`) has no
         // route: its specification declares `proof` REQUIRED, so it is served
         // only as a signed document on `POST /v1/trust-tasks`
         // (`trust_tasks::admin_session_tasks`), signed by the access token's

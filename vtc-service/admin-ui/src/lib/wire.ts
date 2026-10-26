@@ -387,7 +387,7 @@ export interface components {
             options: Record<string, never>;
         };
         /**
-         * @description `vtc/auth/admin-session/0.1` — exchange a bearer access token for the
+         * @description `vtc/auth/admin-session/0.2` — exchange a bearer access token for the
          *     admin SPA's cookie session.
          *
          *     The VTA-wallet login path returns a bearer token in the response body
@@ -415,17 +415,18 @@ export interface components {
          *     the token's subject (or a console key that subject enrolled) and sets the
          *     cookies [`admin_session_cookies`] returns. Its bearer route is gone (#1641).
          *
-         *     `{ sessionId, expiresAt }` — the shape `vtc/auth/admin-session/0.1`
+         *     `{ sessionId, expiresAt }` — the shape `vtc/auth/admin-session/0.2`
          *     publishes, and which the route did not return until #1059's witness put
-         *     the handler beside its own schema.
+         *     the handler beside its own schema. 0.2 sends `expiresAt` as an RFC 3339
+         *     date-time, where 0.1 sent Unix seconds.
          */
         AdminSessionResponse: {
             /**
-             * Format: int64
-             * @description Unix seconds, from the token's own expiry — the same value the
-             *     cookies' `Max-Age` is derived from, so the two cannot disagree.
+             * Format: date-time
+             * @description The token's own expiry — the same instant the cookies' `Max-Age` is
+             *     derived from, so the two cannot disagree. RFC 3339 on the wire.
              */
-            expiresAt: number;
+            expiresAt: string;
             sessionId: string;
         };
         /**
@@ -2194,6 +2195,11 @@ export interface components {
          *     requested page of items, the opaque cursor for the next page
          *     (`None` when the caller has reached the end), and an optional
          *     total-count estimate.
+         *
+         *     A `None` cursor is **left out**, never sent as `null`: the Trust Task
+         *     list specifications' one pagination shape says `nextCursor` is "absent on
+         *     the last page — never `null`" (e.g. `vtc/members/list/0.2`), and the older
+         *     versions typed it nullable-but-optional, so absence satisfies both.
          */
         Paginated_EndorsementRow: {
             items: {
@@ -2228,6 +2234,11 @@ export interface components {
          *     requested page of items, the opaque cursor for the next page
          *     (`None` when the caller has reached the end), and an optional
          *     total-count estimate.
+         *
+         *     A `None` cursor is **left out**, never sent as `null`: the Trust Task
+         *     list specifications' one pagination shape says `nextCursor` is "absent on
+         *     the last page — never `null`" (e.g. `vtc/members/list/0.2`), and the older
+         *     versions typed it nullable-but-optional, so absence satisfies both.
          */
         Paginated_EndorsementType: {
             items: {
@@ -2257,6 +2268,11 @@ export interface components {
          *     requested page of items, the opaque cursor for the next page
          *     (`None` when the caller has reached the end), and an optional
          *     total-count estimate.
+         *
+         *     A `None` cursor is **left out**, never sent as `null`: the Trust Task
+         *     list specifications' one pagination shape says `nextCursor` is "absent on
+         *     the last page — never `null`" (e.g. `vtc/members/list/0.2`), and the older
+         *     versions typed it nullable-but-optional, so absence satisfies both.
          */
         Paginated_JoinRequest: {
             items: {
@@ -2321,6 +2337,11 @@ export interface components {
          *     requested page of items, the opaque cursor for the next page
          *     (`None` when the caller has reached the end), and an optional
          *     total-count estimate.
+         *
+         *     A `None` cursor is **left out**, never sent as `null`: the Trust Task
+         *     list specifications' one pagination shape says `nextCursor` is "absent on
+         *     the last page — never `null`" (e.g. `vtc/members/list/0.2`), and the older
+         *     versions typed it nullable-but-optional, so absence satisfies both.
          */
         Paginated_MemberResponse: {
             items: {
@@ -5903,154 +5924,6 @@ export interface components {
             id: string;
             /** @description Present exactly when `channel` is `offer`: an OID4VCI Credential Offer object, carried verbatim, whose pre-authorized code redeems only for the invited DID. Its members are OID4VCI's and are deliberately not re-specified here. */
             offer?: Record<string, never>;
-        };
-        /**
-         * @description The vocabulary token naming what a value IS — `name.legal`, `phone.mobile`, `address.postal`, `person.birthDate`. Dotted, most-general segment first, so that a consumer with no knowledge of the specific token can still group by its prefix.
-         *
-         *     The token is the maintainer's own; no external vocabulary is primary. External vocabularies (vCard/jCard, OIDC standard claims, schema.org) are mappings applied at PRESENTATION by a renderer, not at rest, so that a query written in any of them can be matched without the store having to live inside any one of them.
-         *
-         *     The `x:` prefix is an open extension namespace and is not decoration. The closest prior art — Windows CardSpace's self-issued card — supported exactly fifteen predefined claim types with no extensibility, and that is the specific way it failed the requirement a holder actually has. An `x:` attribute stores, composes, binds and discloses exactly like a known one; it renders generically and matches only an explicit query.
-         */
-        VtcJoinRequestsManifestV0_3ClaimType: string;
-        /** @description OPTIONAL. How the community asks to be shown to a prospective applicant: a name, an accent colour and a logo. Presentation only, self-asserted and unverified — `communityDid` identifies the community, never `branding`. Not part of any criterion, so not covered by a `requirementsDigest`. Every member is optional. */
-        VtcJoinRequestsManifestV0_3CommunityBranding: {
-            /** @description An sRGB colour as `#rrggbb`, compared case-insensitively. A community SHOULD write it in lower case. */
-            accentColor?: string;
-            /** @description The community's name as it asks to be shown. */
-            displayName?: string;
-            ext?: components["schemas"]["VtcJoinRequestsManifestV0_3Ext"];
-            /**
-             * Format: uri
-             * @description An https URL of the community's logo. Fetched by the client, so an untrusted image from wherever it points.
-             */
-            logoUrl?: string;
-        };
-        VtcJoinRequestsManifestV0_3Criterion: {
-            /**
-             * @description How the community decides a submission that meets this criterion. `automatic`: it admits the applicant without a person deciding. `review`: it refers the submission to an administrator, who decides.
-             * @enum {string}
-             */
-            admission: "automatic" | "review";
-            /**
-             * @description Whose credentials meet `presentationDefinition`: `community` (this community's own), `recognised` (this community's, or a community it recognises), or `any` (any issuer whose credential verifies). Present exactly when `presentationDefinition` is.
-             * @enum {string}
-             */
-            credentialIssuers?: "any" | "community" | "recognised";
-            /** @description Plain-language summary of the criterion, authored by the community and shown to prospective applicants. Informative: where it and `vetting` disagree, `vetting` governs. */
-            description?: string;
-            id: string;
-            /** @description True: the criterion is met only by a submission carrying a valid, unconsumed invitation this community issued to the applicant. */
-            invitationRequired?: boolean;
-            /** @description The credentials an applicant must present for this criterion (opaque here). Absent: the criterion requires no credential. */
-            presentationDefinition?: Record<string, never>;
-            requirementsDigest: components["schemas"]["VtcJoinRequestsManifestV0_3DigestMultibase"];
-            vetting?: components["schemas"]["VtcJoinRequestsManifestV0_3VettingRequirements"];
-        };
-        /**
-         * @description A cryptographic digest as a multibase-encoded multihash — the encoding the W3C Verifiable Credentials Data Model 2.0 defines for `digestMultibase`, and the one `did:webvh` uses for its SCID and entry hashes.
-         *
-         *     Multihash carries the hash algorithm in-band, so the value is self-describing and the wire format survives an algorithm change without a schema revision; multibase does the same for the base encoding, so a verifier never infers base58 from base64url by context. A bare hex string or a `sha-256:`-style prefix hard-codes one algorithm into the wire contract and is non-conforming here.
-         *
-         *     This definition constrains the *encoding only*. What the digest is computed over is stated by each referencing field, because it differs legitimately: a digest over a JSON document is taken over its RFC 8785 (JCS) canonicalization, while a digest over an opaque artifact is taken over its bytes. A field whose input is a JSON document and which does not name a canonicalization is not reproducible.
-         *
-         *     Restricted to the two multibase headers W3C Controlled Identifiers 1.0 §2.4 normatively requires — `z` (base58btc) and `u` (base64url-no-pad). CID permits others but states that "interoperability is not guaranteed between implementations using such values", and a registry whose purpose is interoperability should not mint digests a conforming verifier may be unable to read. The alphabets are enforced rather than assumed: base58btc excludes 0, O, I and l, and an earlier permissive pattern let three published examples carry digests that were not valid base58 at all. base58btc is RECOMMENDED, for consistency with `did:key` and `did:webvh`.
-         */
-        VtcJoinRequestsManifestV0_3DigestMultibase: string;
-        /** @description An ISO 8601 duration in weeks, days, hours, minutes and seconds only (e.g. `P120D`, `P2W`, `P1DT12H`, `PT15M`). Years and months are refused: their length depends on the calendar, and an age limit that means different things on different days is not a limit. */
-        VtcJoinRequestsManifestV0_3Duration: string;
-        /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
-        VtcJoinRequestsManifestV0_3Ext: {
-            [key: string]: unknown;
-        };
-        /**
-         * @description Names the `ext` namespaces a consumer MUST understand or refuse, per SPEC.md §4.5.1.
-         *
-         *     Every entry MUST be an immediate key of the sibling `ext` object at the same level; an entry naming an absent namespace is non-conforming and the consumer rejects the document with `malformedRequest`. A consumer that does not recognize a namespace named here MUST NOT process the document as though the namespace were absent, and rejects it with `unsupportedExtension` — the exception to the rule that unrecognized namespaces are ignored.
-         *
-         *     A producer marks a namespace only where the document's meaning depends on it. Marking one that merely carries a hint or an annotation turns every consumer that has not implemented it into a failure where it would otherwise have interoperated. JSON Schema cannot check either of those rules: that an entry names a present namespace is checkable only against the sibling `ext`, and whether a namespace is load-bearing is not a schema question at all. Both are consumer-side checks.
-         */
-        VtcJoinRequestsManifestV0_3ExtCritical: string[];
-        VtcJoinRequestsManifestV0_3Response: {
-            branding?: components["schemas"]["VtcJoinRequestsManifestV0_3CommunityBranding"];
-            communityDid: string;
-            criteria: components["schemas"]["VtcJoinRequestsManifestV0_3Criterion"][];
-            ext?: components["schemas"]["VtcJoinRequestsManifestV0_3Ext"];
-            /** @description What the community asks an applicant to tell it about themselves, as claim types — never values. Answered in persona terms: the applicant's agent discloses those attributes from the face the applicant chooses, and they arrive on vtc/join-requests/submit as `attributes`. SELF-ASSERTED: a community MUST NOT describe an answer as verified, and MUST NOT make a decision that assumes it is. Outside every criterion, so no `requirementsDigest` covers it. Absent when the community asks nothing. */
-            requestedAttributes?: {
-                /** @description Why the community asks, in words shown to the applicant before they disclose. */
-                purpose?: string;
-                /** @description False for an attribute the applicant may decline. A submission missing a required one is refused with vtc/join-requests/submit:attributesMissing. */
-                required?: boolean;
-                /** @description A claim-type token from the persona claim-type registry (persona/_shared/0.1/CLAIM-TYPES.md) — `name.display`, `address.country` — or an `x:` extension token. */
-                type: string;
-            }[];
-        };
-        /** @description A class of documentation, named in lowerCamelCase. Open rather than enumerated, because what documentation a vetter accepts is each vetter's own choice. Well-known values: `passport`, `nationalId`, `driverLicence`, and `none` — the vetter will attest without a document, which is the `priorAcquaintance` case. Only the class ever travels — never a document number, an image, an issuing authority or an expiry date. `none` states a policy (what a vetter accepts); a record of what was relied on expresses 'no document' as an empty list instead. */
-        VtcJoinRequestsManifestV0_3VettingDocumentation: string;
-        /**
-         * @description How the vetter established that the person they checked is the person controlling the applicant's DID. `inPerson` — both people were physically together. `video` — a live, two-way video call. `priorAcquaintance` — the vetter has known or worked with this person over a period, and attests from that knowledge rather than from a document. A method is a description of what happened, not an assurance level: which methods count, and how many of each, is community policy.
-         * @enum {string}
-         */
-        VtcJoinRequestsManifestV0_3VettingMethod: "inPerson" | "video" | "priorAcquaintance";
-        /**
-         * @description The vetter's own declaration of how they relate to the applicant. Declared, not verified: it exists so community policy can cap how much evidence comes from people close to the applicant, and a false declaration is the vetter's attributable act.
-         * @enum {string}
-         */
-        VtcJoinRequestsManifestV0_3VettingRelationship: "none" | "communityColleague" | "sameEmployer" | "family" | "otherPersonal";
-        /** @description What identity-vetting evidence a criterion needs, beyond what a presentation-definition can express: distinct eligible vetters, per-method floors, independence caps. Every number is the community's own policy. This schema supplies no defaults — an absent optional member means the community imposes no constraint of that kind, never that some protocol value applies. Deliberately open: a consumer MUST ignore members it does not recognise, so a community publishing a newer shape does not make an older client unable to read the rest. Durations: `maxStatementAge` — a statement older than this at decision time does not count (absent: no limit beyond the statement's own validity); `decisionSla` — how long after submission the community undertakes to decide, including on a referred application; `requirementsGrace` — how long an application started under an earlier `requirementsDigest` is still evaluated under that version. */
-        VtcJoinRequestsManifestV0_3VettingRequirements: {
-            /** @description Documentation a statement must have relied on in order to count. Absent — the expected case — means each vetter decides what documentation they accept, including none for prior acquaintance, and the community counts what they attest. */
-            acceptedDocumentClasses?: components["schemas"]["VtcJoinRequestsManifestV0_3VettingDocumentation"][];
-            /** @description Methods whose statements count at all. */
-            acceptedMethods: components["schemas"]["VtcJoinRequestsManifestV0_3VettingMethod"][];
-            decisionSla?: components["schemas"]["VtcJoinRequestsManifestV0_3Duration"];
-            /** @description How a vetter's eligibility is established. */
-            eligibleVetters: {
-                /** @description The role a statement's issuer must hold, matched as the action `role:<role>` in a Verifiable Authority Credential (`AuthorityCredential`) the community issued to that issuer, whose `authority.scope` is the community's DID (see `vtc/vetting/vetters/grant/0.1`). A statement counts only if its issuer holds such a credential. */
-                role: string;
-            };
-            ext?: components["schemas"]["VtcJoinRequestsManifestV0_3Ext"];
-            extCritical?: components["schemas"]["VtcJoinRequestsManifestV0_3ExtCritical"];
-            /**
-             * Format: uri
-             * @description Where the community's vetting governance — including the attestation text vetters sign — is published.
-             */
-            governanceFrameworkUrl?: string;
-            /** @description Caps on how much evidence may come from people close to the applicant. Absent: no caps. */
-            independence?: {
-                /** @description The most counted statements that may come from vetters declaring each relationship — e.g. `{ "family": 0 }`. */
-                maxByDeclaredRelationship?: {
-                    [key: string]: number;
-                };
-                /** @description When true, every counted statement must carry the same identity commitment — all vetters verified the same claimed identity. Absent: false. */
-                requireConsistentIdentityCommitment?: boolean;
-            };
-            /**
-             * @description Whether an invitation credential must accompany the statements at submission (`required`), may (`optional`), or plays no part (`none`). Absent: the presentation-definition alone governs.
-             * @enum {string}
-             */
-            invitation?: "required" | "optional" | "none";
-            maxStatementAge?: components["schemas"]["VtcJoinRequestsManifestV0_3Duration"];
-            /** @description Per-method floors within `minStatements` — e.g. `{ "inPerson": 1 }`. Every method named MUST also be in `acceptedMethods`. Absent: no method floor. */
-            minByMethod?: {
-                [key: string]: number;
-            };
-            /** @description How many counted statements are needed, counting each vetter once however many DIDs they hold. */
-            minStatements: number;
-            /** @description Claim types an applicant MAY add to the card and a vetter MAY verify. They never affect whether a statement counts. */
-            optionalClaims?: components["schemas"]["VtcJoinRequestsManifestV0_3ClaimType"][];
-            /** @description Claim types the applicant's Vetting Card must carry, which the identity commitment is computed over, and which a counted statement must list as verified. Absent: none. */
-            requiredClaims?: components["schemas"]["VtcJoinRequestsManifestV0_3ClaimType"][];
-            requirementsGrace?: components["schemas"]["VtcJoinRequestsManifestV0_3Duration"];
-            /**
-             * Format: uri
-             * @description The predicate IRI a counted vetting statement carries in `credentialSubject.predicate` — `https://registry.trustoverip.org/dtg/vsc/vetted/1`, the DTG VSC registry's identity-vetting predicate, or a predicate in a namespace the community controls — registered as one the community accepts via vtc/endorsement-types/register. A statement under any other predicate does not count.
-             */
-            statementType: string;
-            /** @description Version of this requirements object's shape. `0.1` for the members defined here. */
-            version: string;
-        } & {
-            [key: string]: unknown;
         };
         /**
          * @description Who may see a directory field, ordered from narrowest to widest. `admins`: holders of `vtc.directory.admin` (and, for derived fields, `vtc.members.manage`). `groups`: members who share at least one community group with the subject (narrowed to the groups the subject names in `groupAudience`, where it names any). `connections`: members holding an attributed, in-force verified relationship with the subject at the community. `members`: every active member. `public`: anyone, and what the member's signed public card carries outside the community.
@@ -9698,11 +9571,11 @@ export interface components {
          */
         VtcVettingVettersProfileV0_1VettingMethod: "inPerson" | "video" | "priorAcquaintance";
         /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
-        VtcVettingVettersResendV0_1Ext: {
+        VtcVettingVettersResendV0_2Ext: {
             [key: string]: unknown;
         };
         /** @description The credential the community delivered again. */
-        VtcVettingVettersResendV0_1Response: {
+        VtcVettingVettersResendV0_2Response: {
             /** @description The `id` of the vetter role credential delivered — the same `credentialId` vtc/vetting/vetters/grant returned. */
             credentialId: string;
             /**

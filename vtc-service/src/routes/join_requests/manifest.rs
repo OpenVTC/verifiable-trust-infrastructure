@@ -1,19 +1,19 @@
-//! Pre-submit discovery — the join manifest (`vtc/join-requests/manifest/0.4`,
-//! and 0.3 for clients that have not moved) — plus the shared reads the Trust
-//! Task dispatcher and the DIDComm handler call into.
+//! Pre-submit discovery — the join manifest (`vtc/join-requests/manifest/0.4`)
+//! — plus the shared reads the Trust Task dispatcher and the DIDComm handler
+//! call into.
 //!
 //! Returns the community's join criteria, in the order it decides by, plus this
 //! VTC's DID, its branding and what it asks applicants to tell it, so a
 //! prospective applicant can assemble a submission before opening a thread. A
 //! stateless, unauthenticated public read: no thread, no challenge, no audit.
 //!
-//! 0.4 also carries `directoryDisclosure`, what the member directory would
+//! It also carries `directoryDisclosure`, what the member directory would
 //! disclose about the applicant and to whom (VTI-DIR-130), so it is read
-//! before applying ([`crate::directory::disclosure`]). 0.3 is otherwise the
-//! same answer without it.
+//! before applying ([`crate::directory::disclosure`]). 0.3, the same answer
+//! without it, is no longer served.
 //!
-//! The answer is the generated `Response` of the version asked for; this
-//! module only projects stored criteria onto it.
+//! The answer is the generated 0.4 `Response`; this module only projects
+//! stored criteria onto it.
 //!
 //! Each criterion is one way in: its `admission` (`automatic` or `review`) and
 //! the requirements it states, or none — so open admission, admission only after
@@ -24,7 +24,7 @@
 
 use serde_json::{Map, Value, json};
 
-use vta_sdk::protocols::join_requests::manifest::{v0_2, v0_3, v0_4};
+use vta_sdk::protocols::join_requests::manifest::v0_4;
 use vta_sdk::protocols::vetting::{CheckShape, read_branding};
 use vta_sdk::vetting::requirements::{REQUIREMENTS_DIGEST_MEMBER, requirements_digest};
 use vti_common::error::AppError;
@@ -44,81 +44,33 @@ async fn community_did(state: &AppState) -> Result<String, AppError> {
         .ok_or_else(|| AppError::Internal("VTC DID not configured".into()))
 }
 
-/// The `vtc/join-requests/manifest` versions this VTC answers.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ManifestVersion {
-    /// Without the directory's disclosure statement.
-    V0_3,
-    /// With it.
-    V0_4,
-}
-
-/// The community's `vtc/join-requests/manifest` answer at `version`. Branding
-/// only when the community has set some.
+/// The community's `vtc/join-requests/manifest/0.4` answer. Branding only
+/// when the community has set some.
 ///
 /// # Errors
 ///
-/// At 0.4, [`AppError::Internal`] when the disclosure statement cannot be
-/// generated: a manifest that left it out would let an applicant apply without
-/// being shown what the directory discloses, which VTI-DIR-130 exists to stop.
-pub async fn manifest(state: &AppState, version: ManifestVersion) -> Result<Value, AppError> {
+/// [`AppError::Internal`] when the disclosure statement cannot be generated: a
+/// manifest that left it out would let an applicant apply without being shown
+/// what the directory discloses, which VTI-DIR-130 exists to stop.
+pub async fn manifest(state: &AppState) -> Result<Value, AppError> {
     let branding = Some(branding::load_branding(&state.community_ks).await?)
         .filter(|b| !branding::is_empty(b));
     let did = community_did(state).await?;
     let stored = published_criteria(&state.schemas_ks).await?;
     let requested =
         crate::community::requested_attributes::load_requested(&state.community_ks).await?;
-    match version {
-        ManifestVersion::V0_3 => response_v0_3(did, stored, branding, requested),
-        ManifestVersion::V0_4 => response_v0_4(
-            did,
-            stored,
-            branding,
-            requested,
-            crate::directory::disclosure::statement(&state.directory).await?,
-        ),
-    }
-}
-
-/// The 0.3 answer over `stored` criteria — already in decision order — and
-/// `branding`.
-pub fn response_v0_3(
-    community_did: String,
-    stored: Vec<AcceptsCriterion>,
-    branding: Option<v0_2::CommunityBranding>,
-    requested_attributes: Vec<v0_2::ResponseRequestedAttributesItem>,
-) -> Result<Value, AppError> {
     response(
-        ManifestVersion::V0_3,
-        community_did,
+        did,
         stored,
         branding,
-        requested_attributes,
-        None,
+        requested,
+        crate::directory::disclosure::statement(&state.directory).await?,
     )
 }
 
-/// The 0.4 answer: the 0.3 answer and the directory's `disclosure` statement
-/// ([`crate::directory::disclosure::statement`]).
-pub fn response_v0_4(
-    community_did: String,
-    stored: Vec<AcceptsCriterion>,
-    branding: Option<v0_2::CommunityBranding>,
-    requested_attributes: Vec<v0_2::ResponseRequestedAttributesItem>,
-    disclosure: Value,
-) -> Result<Value, AppError> {
-    response(
-        ManifestVersion::V0_4,
-        community_did,
-        stored,
-        branding,
-        requested_attributes,
-        Some(disclosure),
-    )
-}
-
-/// The answer at `version` over `stored` criteria — already in decision order —
-/// `branding`, and at 0.4 the directory's `disclosure` statement.
+/// The answer over `stored` criteria — already in decision order —
+/// `branding`, the requested attributes and the directory's `disclosure`
+/// statement ([`crate::directory::disclosure::statement`]).
 ///
 /// Branding the manifest cannot carry — a `logoUrl` that is not an absolute
 /// https URI among it — is left out, and the manifest is served without it.
@@ -127,13 +79,12 @@ pub fn response_v0_4(
 /// refuses such a value first ([`crate::community::branding::store_branding`]),
 /// so only a row written before that check can reach here; a warning names the
 /// members at fault, never their values, which may be hostile.
-fn response(
-    version: ManifestVersion,
+pub fn response(
     community_did: String,
     stored: Vec<AcceptsCriterion>,
-    branding: Option<v0_2::CommunityBranding>,
-    requested_attributes: Vec<v0_2::ResponseRequestedAttributesItem>,
-    disclosure: Option<Value>,
+    branding: Option<v0_4::CommunityBranding>,
+    requested_attributes: Vec<v0_4::ResponseRequestedAttributesItem>,
+    disclosure: Value,
 ) -> Result<Value, AppError> {
     let branding = branding.filter(|branding| {
         if branding.check_shape().is_ok() {
@@ -155,8 +106,6 @@ fn response(
 
     // Built typed so the whole response is validated against the generated
     // schema, then serialised and the criteria put back as they were digested.
-    // Branding and the requested attributes share one schema across manifest
-    // versions, so they cross by value.
     let mut typed = json!({
         "communityDid": community_did,
         "criteria": served.iter().map(|s| s.json.clone()).collect::<Vec<_>>(),
@@ -172,23 +121,12 @@ fn response(
             encode(&requested_attributes, "requested attributes")?,
         );
     }
-    let mut out = match version {
-        ManifestVersion::V0_3 => {
-            let response: v0_3::Response = serde_json::from_value(typed)
-                .map_err(|e| AppError::Internal(format!("manifest 0.3: {e}")))?;
-            encode(&response, "manifest 0.3")?
-        }
-        ManifestVersion::V0_4 => {
-            // The statement crosses as the value it was digested as; the
-            // generated type checks it, and its own `statementDigest` names it.
-            if let Some(disclosure) = &disclosure {
-                map.insert("directoryDisclosure".into(), disclosure.clone());
-            }
-            let response: v0_4::Response = serde_json::from_value(typed)
-                .map_err(|e| AppError::Internal(format!("manifest 0.4: {e}")))?;
-            encode(&response, "manifest 0.4")?
-        }
-    };
+    // The statement crosses as the value it was digested as; the generated
+    // type checks it, and its own `statementDigest` names it.
+    map.insert("directoryDisclosure".into(), disclosure.clone());
+    let response: v0_4::Response = serde_json::from_value(typed)
+        .map_err(|e| AppError::Internal(format!("manifest 0.4: {e}")))?;
+    let mut out = encode(&response, "manifest 0.4")?;
 
     // Only the criteria and the statement can differ, and only by members the
     // generated types do not carry — so this swap is what makes the served
@@ -198,9 +136,7 @@ fn response(
             "criteria".to_string(),
             Value::Array(served.into_iter().map(|s| s.json).collect()),
         );
-        if let Some(disclosure) = disclosure {
-            map.insert("directoryDisclosure".to_string(), disclosure);
-        }
+        map.insert("directoryDisclosure".to_string(), disclosure);
     }
     Ok(out)
 }
@@ -212,7 +148,7 @@ fn encode(value: &impl serde::Serialize, what: &str) -> Result<Value, AppError> 
 /// The top-level members of `branding` that fail the manifest's
 /// `CommunityBranding` definition on their own. Names only: a value is what an
 /// admin typed, and a log is no place to repeat a hostile one.
-fn invalid_branding_members(branding: &v0_2::CommunityBranding) -> Vec<String> {
+fn invalid_branding_members(branding: &v0_4::CommunityBranding) -> Vec<String> {
     let Ok(Value::Object(members)) = serde_json::to_value(branding) else {
         return Vec::new();
     };
@@ -251,14 +187,14 @@ pub struct ServedCriterion {
     /// The criterion as stored.
     pub stored: AcceptsCriterion,
     /// The generated type, `requirementsDigest` set.
-    pub criterion: v0_3::Criterion,
+    pub criterion: v0_4::Criterion,
     /// The criterion as served — `vetting.ext` included, `requirementsDigest` set.
     pub json: Value,
     /// Its `requirementsDigest`.
     pub digest: String,
 }
 
-/// Project a stored criterion onto `vtc/join-requests/manifest/0.3`, with its
+/// Project a stored criterion onto `vtc/join-requests/manifest/0.4`, with its
 /// `requirementsDigest`.
 ///
 /// The digest is computed over the criterion exactly as it is delivered, minus
@@ -317,7 +253,7 @@ pub fn manifest_criterion(stored: AcceptsCriterion) -> Result<ServedCriterion, A
             Value::String(digest.clone()),
         );
     }
-    let criterion: v0_3::Criterion =
+    let criterion: v0_4::Criterion =
         serde_json::from_value(delivered.clone()).map_err(|e| refused("criterion", e))?;
     Ok(ServedCriterion {
         stored,
@@ -459,11 +395,12 @@ mod tests {
     fn the_manifest_lists_criteria_in_the_order_given() {
         let first = AcceptsCriterion::new("zeta", Admission::Automatic, "did:key:zAdmin");
         let second = AcceptsCriterion::new("alpha", Admission::Review, "did:key:zAdmin");
-        let answer = response_v0_3(
+        let answer = response(
             "did:web:vtc.example".into(),
             vec![first, second],
             None,
             vec![],
+            disclosure(),
         )
         .unwrap();
         let ids: Vec<_> = answer["criteria"]
@@ -478,7 +415,14 @@ mod tests {
     /// No criteria is a manifest, and it means "not accepting applications".
     #[test]
     fn a_community_with_no_criteria_publishes_an_empty_list() {
-        let answer = response_v0_3("did:web:vtc.example".into(), vec![], None, vec![]).unwrap();
+        let answer = response(
+            "did:web:vtc.example".into(),
+            vec![],
+            None,
+            vec![],
+            disclosure(),
+        )
+        .unwrap();
         assert_eq!(answer["criteria"], json!([]));
     }
 
@@ -641,18 +585,31 @@ mod tests {
         ));
     }
 
-    fn branding(logo: &str) -> v0_2::CommunityBranding {
+    /// The directory's disclosure statement over the base schema, as
+    /// `directory::disclosure` generates it.
+    fn disclosure() -> Value {
+        let settings = crate::directory::model::Settings::default();
+        crate::directory::disclosure::build(
+            &crate::directory::fields::base_fields(),
+            settings.default_listing,
+            crate::directory::disclosure::Served::this_build(&settings),
+        )
+        .expect("the base schema gives a statement")
+    }
+
+    fn branding(logo: &str) -> v0_4::CommunityBranding {
         serde_json::from_value(json!({ "displayName": "Kernel", "logoUrl": logo })).unwrap()
     }
 
     #[test]
     fn branding_the_manifest_cannot_carry_is_omitted_and_the_manifest_still_served() {
         let answer = |logo: &str| {
-            response_v0_3(
+            response(
                 "did:web:vtc.example".into(),
                 vec![stored(None)],
                 Some(branding(logo)),
                 Vec::new(),
+                disclosure(),
             )
             .expect("branding must never fail the manifest an applicant joins by")
         };

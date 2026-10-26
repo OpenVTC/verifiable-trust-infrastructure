@@ -10,8 +10,8 @@
 //! → 200 OK
 //! {
 //!   "items":          [...],
-//!   "nextCursor":     "<opaque>" | null,
-//!   "total_estimate": <u64 | null>
+//!   "nextCursor":     "<opaque>",   // absent on the last page, never null
+//!   "totalEstimate":  <u64>          // absent when unknown
 //! }
 //! ```
 //!
@@ -125,11 +125,17 @@ impl PaginationParams {
 /// requested page of items, the opaque cursor for the next page
 /// (`None` when the caller has reached the end), and an optional
 /// total-count estimate.
+///
+/// A `None` cursor is **left out**, never sent as `null`: the Trust Task
+/// list specifications' one pagination shape says `nextCursor` is "absent on
+/// the last page — never `null`" (e.g. `vtc/members/list/0.2`), and the older
+/// versions typed it nullable-but-optional, so absence satisfies both.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct Paginated<T> {
     pub items: Vec<T>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub next_cursor: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub total_estimate: Option<u64>,

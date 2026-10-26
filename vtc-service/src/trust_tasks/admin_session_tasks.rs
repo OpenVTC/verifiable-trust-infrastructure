@@ -1,4 +1,4 @@
-//! `vtc/auth/admin-session/0.1` on the signed-document spine: the admin
+//! `vtc/auth/admin-session/0.2` on the signed-document spine: the admin
 //! console's bearer → cookie bridge, for a sign-in that ends with an access
 //! token in hand (the VTA wallet's SIOP login).
 //!
@@ -31,7 +31,7 @@
 //! does); every other transport is refused `permissionDenied`.
 
 use serde_json::Value;
-use trust_tasks_rs::specs::vtc::auth::admin_session::v0_1 as admin_session;
+use trust_tasks_rs::specs::vtc::auth::admin_session::v0_2 as admin_session;
 use trust_tasks_rs::{Payload, StandardCode, TrustTask, TrustTaskCode};
 
 use super::helpers::{

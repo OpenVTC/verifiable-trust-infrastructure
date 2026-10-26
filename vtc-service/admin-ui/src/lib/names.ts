@@ -129,7 +129,7 @@ interface NamedMember {
   label: string | null;
 }
 
-const MEMBERS_TASK = "https://trusttasks.org/spec/vtc/members/list/0.1";
+const MEMBERS_TASK = "https://trusttasks.org/spec/vtc/members/list/0.2";
 
 /**
  * The console-wide `NameBook`.

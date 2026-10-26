@@ -30,7 +30,7 @@
 //!   one who presents it as identity evidence. Delivery is best effort: the
 //!   statement is already issued and recorded (its signed document kept on the
 //!   row), so a failure is logged and does not fail the issue.
-//! - `vtc/endorsements/list/0.1` — paginated list. Auth: Admin OR Issuer.
+//! - `vtc/endorsements/list/0.2` — paginated list. Auth: Admin OR Issuer.
 //! - `vtc/endorsements/show/0.1` — one endorsement by id.
 //! - `vtc/endorsements/revoke/0.1` — revoke. Auth: Admin OR the original
 //!   issuer. Flips the status-list bit + emits both `CustomEndorsementRevoked`
@@ -621,7 +621,7 @@ async fn deliver_to_subject(state: &AppState, subject_did: &str, credential: &Js
 
 // ─── List ────────────────────────────────────────────────
 
-/// The filters `vtc/endorsements/list/0.1` defines. The default matches every
+/// The filters `vtc/endorsements/list/0.2` defines. The default matches every
 /// row, live and revoked — the task's own default, and all the bearer route
 /// has ever returned.
 #[derive(Debug, Clone, Default)]
@@ -646,7 +646,7 @@ impl ListFilter {
 }
 
 /// One page of endorsements matching `filter` — the operation behind the
-/// `vtc/endorsements/list/0.1` Trust Task. Signed document only: its bearer
+/// `vtc/endorsements/list/0.2` Trust Task. Signed document only: its bearer
 /// REST route had no caller once the spine dispatched it (tt-tf#689) and was
 /// removed. The door has already established that the caller is an admin or
 /// issuer.

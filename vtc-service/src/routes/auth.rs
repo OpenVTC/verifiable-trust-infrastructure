@@ -410,7 +410,7 @@ async fn authenticate_trust_task(
     Ok(Some(resp))
 }
 
-// ---------- vtc/auth/admin-session/0.1 ----------
+// ---------- vtc/auth/admin-session/0.2 ----------
 
 /// The `ext` member the console puts the refresh token under.
 const EXT_NAMESPACE: &str = "org.openvtc";
@@ -423,7 +423,7 @@ const EXT_NAMESPACE: &str = "org.openvtc";
 /// omits it still gets a working cookie session; it simply cannot renew,
 /// which is the behaviour every caller had before.
 ///
-/// `spec/vtc/auth/admin-session/0.1` types its payload as `{accessToken,
+/// `spec/vtc/auth/admin-session/0.2` types its payload as `{accessToken,
 /// ext}`, so a top-level `refreshToken` would be refused by the schema; `ext`
 /// is the schema's own escape hatch.
 pub(crate) fn refresh_token_from_ext(ext: Option<&JsonValue>) -> Option<String> {
@@ -434,7 +434,7 @@ pub(crate) fn refresh_token_from_ext(ext: Option<&JsonValue>) -> Option<String> 
         .map(str::to_string)
 }
 
-/// `vtc/auth/admin-session/0.1` — exchange a bearer access token for the
+/// `vtc/auth/admin-session/0.2` — exchange a bearer access token for the
 /// admin SPA's cookie session.
 ///
 /// The VTA-wallet login path returns a bearer token in the response body
@@ -462,22 +462,23 @@ pub(crate) fn refresh_token_from_ext(ext: Option<&JsonValue>) -> Option<String> 
 /// the token's subject (or a console key that subject enrolled) and sets the
 /// cookies [`admin_session_cookies`] returns. Its bearer route is gone (#1641).
 ///
-/// `{ sessionId, expiresAt }` — the shape `vtc/auth/admin-session/0.1`
+/// `{ sessionId, expiresAt }` — the shape `vtc/auth/admin-session/0.2`
 /// publishes, and which the route did not return until #1059's witness put
-/// the handler beside its own schema.
+/// the handler beside its own schema. 0.2 sends `expiresAt` as an RFC 3339
+/// date-time, where 0.1 sent Unix seconds.
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct AdminSessionResponse {
     pub session_id: String,
-    /// Unix seconds, from the token's own expiry — the same value the
-    /// cookies' `Max-Age` is derived from, so the two cannot disagree.
-    pub expires_at: u64,
+    /// The token's own expiry — the same instant the cookies' `Max-Age` is
+    /// derived from, so the two cannot disagree. RFC 3339 on the wire.
+    pub expires_at: DateTime<Utc>,
 }
 
 /// `vtc/auth/admin_session:invalidToken` — the mirrored access token did not
 /// verify (signature, this VTC's audience, or expiry).
 pub const ADMIN_SESSION_ERR_INVALID_TOKEN: &str =
-    trust_tasks_rs::specs::vtc::auth::admin_session::v0_1::error_codes::INVALID_TOKEN.code;
+    trust_tasks_rs::specs::vtc::auth::admin_session::v0_2::error_codes::INVALID_TOKEN.code;
 
 /// The access token's claims, verified: signature, this VTC's audience
 /// (audience isolation — a foreign-audience token is refused here exactly as
@@ -545,10 +546,10 @@ pub(crate) async fn admin_session_cookies(
     (
         AdminSessionResponse {
             session_id: claims.session_id.clone(),
-            // Unix seconds, as the schema types it — the same value the
-            // cookies' `Max-Age` is derived from, so the body and the headers
-            // cannot disagree about when this session ends.
-            expires_at: claims.exp,
+            // The same instant the cookies' `Max-Age` is derived from, so the
+            // body and the headers cannot disagree about when this session
+            // ends.
+            expires_at: epoch_to_datetime(claims.exp),
         },
         cookies,
     )

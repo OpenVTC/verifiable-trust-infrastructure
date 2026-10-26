@@ -84,7 +84,7 @@ REST convenience.
    present.
 
 A deposit still undelivered after 24 hours is abandoned. A vetter can ask for
-its grant credential again with `vtc/vetting/vetters/resend/0.1`
+its grant credential again with `vtc/vetting/vetters/resend/0.2`
 ([`vetting.md`](vetting.md) §3). There is no equivalent resend for the
 membership credential and role endorsement yet, so a client should store them
 as soon as they arrive.

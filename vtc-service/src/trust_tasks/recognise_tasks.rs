@@ -1,5 +1,5 @@
 //! Cross-community recognition on the signed-document spine:
-//! `vtc/auth/recognise/challenge/0.1` and `vtc/auth/recognise/0.2`.
+//! `vtc/auth/recognise/challenge/0.2` and `vtc/auth/recognise/0.3`.
 //!
 //! Both are pre-session in the same sense the auth family is (see
 //! [`super::auth_tasks`]): the caller is a foreign community's member, who
@@ -10,7 +10,7 @@
 
 use serde_json::Value;
 use trust_tasks_rs::specs::vtc::auth::recognise::{
-    challenge::v0_1 as recognise_challenge, v0_2 as recognise,
+    challenge::v0_2 as recognise_challenge, v0_3 as recognise,
 };
 use trust_tasks_rs::{Payload, TrustTask};
 

@@ -278,14 +278,14 @@ async fn wallet_login_rejects_nonce_not_matching_challenge() {
     assert_eq!(status, StatusCode::UNAUTHORIZED);
 }
 
-// ─── Phase 3: bearer → cookie bridge (`vtc/auth/admin-session/0.1`) ───
+// ─── Phase 3: bearer → cookie bridge (`vtc/auth/admin-session/0.2`) ───
 //
 // A signed document on `POST /v1/trust-tasks` since #1641's last batch: the
 // specification declares `proof` REQUIRED, and the proof's signer must be the
 // access token's subject (or a console key it enrolled). The bearer route
 // `POST /v1/auth/admin-session` is gone.
 
-const ADMIN_SESSION_TASK: &str = "https://trusttasks.org/spec/vtc/auth/admin-session/0.1";
+const ADMIN_SESSION_TASK: &str = "https://trusttasks.org/spec/vtc/auth/admin-session/0.2";
 const WHOAMI_TASK: &str = "https://trusttasks.org/spec/auth/whoami/0.1";
 
 /// Run a full wallet login and return the minted bearer access token.
@@ -320,7 +320,7 @@ fn holder_party(seed: u8) -> vti_rooms_dtg::test_support::Party {
     }
 }
 
-/// Send `vtc/auth/admin-session/0.1` for `access_token`, signed by `signer`.
+/// Send `vtc/auth/admin-session/0.2` for `access_token`, signed by `signer`.
 async fn admin_session_signed_by(
     fix: &Fixture,
     signer: &vti_rooms_dtg::test_support::Party,

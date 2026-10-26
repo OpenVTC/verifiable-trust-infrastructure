@@ -2,7 +2,7 @@
 id: https://trusttasks.org/openvtc/vtc/join-requests/list/1.0
 title: VTC Join Requests — List
 status: retired
-supersededBy: https://trusttasks.org/spec/vtc/join-requests/list/0.1
+supersededBy: https://trusttasks.org/spec/vtc/join-requests/list/0.2
 version: "1.0"
 authors:
   - did:webvh:openvtc.org

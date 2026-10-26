@@ -468,7 +468,7 @@ async fn a_pending_join_request_is_hinted_with_the_lists_own_count() {
     let (_, page) = crate::common::signed::call(
         &vtc,
         &admin,
-        "https://trusttasks.org/spec/vtc/join-requests/list/0.1",
+        "https://trusttasks.org/spec/vtc/join-requests/list/0.2",
         json!({ "status": "pending", "limit": 1 }),
     )
     .await;

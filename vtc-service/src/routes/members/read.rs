@@ -130,7 +130,7 @@ pub struct ListMembersQuery {
     pub limit: Option<usize>,
 }
 
-/// The paginated member list, `vtc/members/list/0.1`: the signed document the
+/// The paginated member list, `vtc/members/list/0.2`: the signed document the
 /// spine serves (`trust_tasks::community_tasks`).
 pub(crate) async fn list_members_inner(
     state: &AppState,

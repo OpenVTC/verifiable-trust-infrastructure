@@ -367,7 +367,7 @@ pub async fn list_join_requests_paginated(
 /// paging: the cursor walks the filtered set, so a page of pending requests
 /// is never empty while a pending request lies further on, and
 /// `totalEstimate` is the exact number the filter admits
-/// (`vtc/join-requests/list/0.1`). Exact because it is free here — the page
+/// (`vtc/join-requests/list/0.2`). Exact because it is free here — the page
 /// is cut from the keyspace already held in memory. A row that does not
 /// decode is skipped and logged, never fatal.
 pub async fn list_join_requests_filtered(

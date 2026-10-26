@@ -48,15 +48,15 @@ const TASK_VETTER_LIST =
   "https://trusttasks.org/spec/vtc/vetting/vetters/list/0.1";
 const TASK_ENDORSEMENT_REVOKE =
   "https://trusttasks.org/spec/vtc/endorsements/revoke/0.1";
-const TASK_MEMBERS_LIST = "https://trusttasks.org/spec/vtc/members/list/0.1";
+const TASK_MEMBERS_LIST = "https://trusttasks.org/spec/vtc/members/list/0.2";
 const TASK_ENDORSEMENT_TYPE_REGISTER =
   "https://trusttasks.org/spec/vtc/endorsement-types/register/0.1";
 const TASK_ENDORSEMENT_TYPE_LIST =
-  "https://trusttasks.org/spec/vtc/endorsement-types/list/0.1";
+  "https://trusttasks.org/spec/vtc/endorsement-types/list/0.2";
 const TASK_ENDORSEMENT_TYPE_DELETE =
   "https://trusttasks.org/spec/vtc/endorsement-types/delete/0.1";
 const TASK_JOIN_REQUESTS_LIST =
-  "https://trusttasks.org/spec/vtc/join-requests/list/0.1";
+  "https://trusttasks.org/spec/vtc/join-requests/list/0.2";
 const TASK_GRANTS_LIST = "https://trusttasks.org/spec/vtc/vetting/vetters/grants/list/0.1";
 const TASK_AUTO_GRANT_SHOW = "https://trusttasks.org/spec/vtc/vetting/auto-grant/show/0.1";
 const TASK_AUTO_GRANT_UPDATE = "https://trusttasks.org/spec/vtc/vetting/auto-grant/update/0.1";
@@ -96,8 +96,8 @@ async function allItems<T>(task: string, pageSize: number = PAGE_SIZE_100): Prom
   }
   return out;
 }
-export const TASK_MANIFEST_V0_3 =
-  "https://trusttasks.org/spec/vtc/join-requests/manifest/0.3";
+export const TASK_MANIFEST =
+  "https://trusttasks.org/spec/vtc/join-requests/manifest/0.4";
 
 /** Query keys. Everything under `["vetting"]` is refreshed after a change. */
 export const vettingKeys = {
@@ -228,13 +228,13 @@ export async function fetchPendingWithVetting(): Promise<PendingWithVetting> {
 export type { JoinManifest, ManifestCriterion };
 
 /**
- * `join-requests/manifest/0.3` as applicants receive it — each criterion with
+ * `join-requests/manifest/0.4` as applicants receive it — each criterion with
  * its admission, its requirements and its `requirementsDigest`, in the order
  * the community decides by — read as the same signed document an applicant
  * sends. The shape is the manifest specification's own.
  */
 export const fetchManifest = (): Promise<JoinManifest> =>
-  postSignedRead<JoinManifest>(TASK_MANIFEST_V0_3, {});
+  postSignedRead<JoinManifest>(TASK_MANIFEST, {});
 
 // ── Admission criteria ──────────────────────────────────────────────────
 //

@@ -5,7 +5,7 @@
 //!   dispatched as a Trust Task document for an admin on DIDComm or TSP; both
 //!   go through [`crate::vetting::vetters::grant`]. A grant is withdrawn with
 //!   `DELETE /v1/credentials/endorsements/{endorsementId}`.
-//! - Resend (`vtc/vetting/vetters/resend/{0.1,0.2}`) is a signed document
+//! - Resend (`vtc/vetting/vetters/resend/0.2`) is a signed document
 //!   only: `0.1` for a vetter's own grant, `0.2` adding the `memberDid` an
 //!   administrator names to resend on a vetter's behalf. The admin-only REST
 //!   route had no caller once the spine dispatched `0.2` (tt-tf#689) and was

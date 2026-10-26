@@ -40,7 +40,7 @@
 //! [`admin_signer`]. Every later batch followed, and the last (#1641) moved
 //! an administrator's own passkeys (`auth/passkey/{list,enroll,revoke}`,
 //! [`admin_passkey_tasks`]) and the console's bearer → cookie bridge
-//! (`vtc/auth/admin-session/0.1`, [`admin_session_tasks`]) and session
+//! (`vtc/auth/admin-session/0.2`, [`admin_session_tasks`]) and session
 //! introspection (`auth/whoami/0.1`, [`whoami_tasks`], answered for the key a
 //! sign-in bound to the session). No task whose specification declares
 //! `proof` REQUIRED is served on a bearer route any more
@@ -104,7 +104,7 @@ pub(crate) mod signing_key_tasks;
 // `enroll/{start,finish}/0.2`, `revoke/{start,finish}/0.1` (#1641, which
 // removed their `/v1/admin/passkeys/*` bearer routes).
 pub(crate) mod admin_passkey_tasks;
-// The console's bearer → cookie bridge, `vtc/auth/admin-session/0.1` (#1641,
+// The console's bearer → cookie bridge, `vtc/auth/admin-session/0.2` (#1641,
 // which removed `POST /v1/auth/admin-session`). HTTPS only: it sets cookies.
 pub(crate) mod admin_session_tasks;
 // `auth/whoami/0.1`, answered for the key bound to a session at sign-in (or a
@@ -123,7 +123,7 @@ pub(crate) mod oob_tasks;
 // First-admin onboarding: `vtc/install/claim/{start,finish}/0.2`,
 // `vtc/admin/bootstrap/0.1`. Pre-session, like `auth_tasks`.
 mod install_tasks;
-// Cross-community recognition: `vtc/auth/recognise/{challenge/0.1,0.2}`.
+// Cross-community recognition: `vtc/auth/recognise/{challenge/0.2,0.3}`.
 // Pre-session, like `auth_tasks`.
 mod recognise_tasks;
 
@@ -262,7 +262,6 @@ use vta_sdk::protocols::vetting::{
 };
 
 use crate::join::{JoinSubmitOutcome, JoinTransport};
-use crate::routes::join_requests::manifest::ManifestVersion;
 use crate::server::AppState;
 
 pub(crate) use helpers::TrustTaskOutcome;
@@ -1124,10 +1123,7 @@ fn dispatch_typed<'a>(
             Box::pin(async move { handle_submit(state, ctx, doc).await })
         }
         jr::JOIN_REQUEST_MANIFEST_TYPE => {
-            Box::pin(async move { handle_manifest(state, ctx, doc, ManifestVersion::V0_4).await })
-        }
-        jr::JOIN_REQUEST_MANIFEST_V0_3_TYPE => {
-            Box::pin(async move { handle_manifest(state, ctx, doc, ManifestVersion::V0_3).await })
+            Box::pin(async move { handle_manifest(state, ctx, doc).await })
         }
         jr::JOIN_REQUEST_STATUS_TYPE => {
             Box::pin(async move { handle_status(state, ctx, doc).await })
@@ -1173,9 +1169,6 @@ fn dispatch_typed<'a>(
         }
         vetting_wire::VETTING_VETTER_RESEND_TYPE => {
             Box::pin(async move { handle_vetter_resend(state, ctx, doc).await })
-        }
-        vetting_wire::VETTING_VETTER_RESEND_0_2_TYPE => {
-            Box::pin(async move { handle_vetter_resend_v0_2(state, ctx, doc).await })
         }
         // Hidden vetting's community half (development branch `zkp-pcs`). Four exchanges: a
         // vetter enrolling, a vetter drawing its drip, a vetter asking to vet at an event, an
@@ -2074,10 +2067,6 @@ mod spine_proof_tests {
             "a public read of the community's join criteria; names no identity to authorize",
         ),
         (
-            jr::JOIN_REQUEST_MANIFEST_V0_3_TYPE,
-            "the same public read, without the directory's disclosure statement",
-        ),
-        (
             directory_tasks::DISCLOSURE_TYPE,
             "a public read of what the directory discloses, answered to whoever the join manifest is",
         ),
@@ -2968,8 +2957,6 @@ pub(crate) const DISPATCHED_URIS: &[&str] = &[
     // 0.4: every criterion states its admission, in the order the community
     // decides by, and the directory's disclosure statement rides beside them.
     jr::JOIN_REQUEST_MANIFEST_TYPE,
-    // 0.3: the same, without the statement, for clients not yet on 0.4.
-    jr::JOIN_REQUEST_MANIFEST_V0_3_TYPE,
     jr::JOIN_REQUEST_STATUS_TYPE,
     // The applicant closing their own request. Paired with `status` above: the
     // poll is how they learn the community asked for more, and this is how
@@ -3004,7 +2991,6 @@ pub(crate) const DISPATCHED_URIS: &[&str] = &[
     vetting_wire::VETTING_VETTER_LIST_TYPE,
     vetting_wire::VETTING_VETTER_SHOW_TYPE,
     vetting_wire::VETTING_VETTER_RESEND_TYPE,
-    vetting_wire::VETTING_VETTER_RESEND_0_2_TYPE,
     // Hidden vetting: enrolment, the drip, event mode, and the applicant's challenge.
     #[cfg(feature = "vetting-pcs")]
     crate::vetting::pcs_tasks::PCS_ROOT_TYPE,
@@ -4233,54 +4219,11 @@ async fn handle_vetter_show(
     }
 }
 
-/// `vtc/vetting/vetters/resend/0.1` — a vetter asks for their grant credential
-/// again. Always the sender's own grant.
-async fn handle_vetter_resend(
-    state: &AppState,
-    ctx: &JoinAuthCtx,
-    doc: TrustTask<Value>,
-) -> TrustTaskOutcome {
-    use trust_tasks_rs::{StandardCode, TrustTaskCode};
-
-    let vetter_did = match resolve_holder(state, ctx, &doc).await {
-        Ok(did) => did,
-        Err(reject) => return reject,
-    };
-    if let Err(reject) = parse_checked_payload::<vetting_wire::vetters::resend::v0_1::Payload>(&doc)
-    {
-        return reject;
-    }
-    match crate::vetting::vetters::resend(state, &vetter_did, &vetter_did).await {
-        Ok(response) => success_response(&doc, response),
-        // `notGranted` is a `NotFound` underneath, and its local part is not
-        // `notFound`, so #1602's client-side rule does not recover it — the
-        // marker is the only thing that does.
-        Err(AppError::NotFound(reason)) => reject_with_code_because(
-            &doc,
-            extended_code(vetting_wire::VETTING_VETTER_RESEND_ERR_NOT_GRANTED),
-            reason,
-            None,
-            reasons::NOT_FOUND,
-        ),
-        Err(AppError::ServiceError { status, message })
-            if status == axum::http::StatusCode::SERVICE_UNAVAILABLE =>
-        {
-            reject_with_code(
-                &doc,
-                TrustTaskCode::Standard(StandardCode::Unavailable),
-                message,
-                None,
-            )
-        }
-        Err(e) => app_error_to_reject(&doc, &e),
-    }
-}
-
 /// `vtc/vetting/vetters/resend/0.2` — a vetter asks for their grant credential
 /// again, or an administrator asks on a named vetter's behalf.
 ///
-/// Absent `memberDid`, this is exactly `handle_vetter_resend`'s `0.1` behaviour:
-/// the sender identified by the document's own proof (`resolve_holder`),
+/// Absent `memberDid`, this is `0.1`'s behaviour, which it replaces: the
+/// sender identified by the document's own proof (`resolve_holder`),
 /// resending their own grant. Present, [`admin_signer`] establishes the
 /// sender holds the community-administrator capability — refusing with
 /// `permissionDenied` otherwise, per the specification's Conformance item 2 —
@@ -4289,7 +4232,7 @@ async fn handle_vetter_resend(
 /// way the actor recorded on the `VetterGrantResent` audit entry is the
 /// sender, never the subject, so an administrator's resend is attributable to
 /// the administrator who asked for it.
-async fn handle_vetter_resend_v0_2(
+async fn handle_vetter_resend(
     state: &AppState,
     ctx: &JoinAuthCtx,
     doc: TrustTask<Value>,
@@ -4327,8 +4270,7 @@ async fn handle_vetter_resend_v0_2(
     match crate::vetting::vetters::resend(state, &actor_did, &subject_did).await {
         // `notGranted` is a `NotFound` underneath, and its local part is not
         // `notFound`, so #1602's client-side rule does not recover it — the
-        // marker is the only thing that does. `0.1` and `0.2` declare the
-        // identical code text, so `0.1`'s constant witnesses both.
+        // marker is the only thing that does.
         Err(AppError::NotFound(reason)) => reject_with_code_because(
             &doc,
             extended_code(vetting_wire::VETTING_VETTER_RESEND_ERR_NOT_GRANTED),
@@ -4364,8 +4306,8 @@ fn caller_is_identified(ctx: &JoinAuthCtx) -> bool {
     ctx.verified_signer.is_some() || ctx.sender_did.is_some()
 }
 
-/// The join manifest (`vtc/join-requests/manifest/0.4`, and 0.3 without the
-/// directory's disclosure statement).
+/// The join manifest (`vtc/join-requests/manifest/0.4`), with the directory's
+/// disclosure statement.
 ///
 /// Public unless the community has turned public discovery off — see
 /// [`discovery_refusal`].
@@ -4373,20 +4315,15 @@ async fn handle_manifest(
     state: &AppState,
     ctx: &JoinAuthCtx,
     doc: TrustTask<Value>,
-    version: ManifestVersion,
 ) -> TrustTaskOutcome {
-    use vta_sdk::protocols::join_requests::manifest::{v0_3, v0_4};
-    let payload = match version {
-        ManifestVersion::V0_3 => parse_spec_payload::<v0_3::Payload>(&doc).map(drop),
-        ManifestVersion::V0_4 => parse_spec_payload::<v0_4::Payload>(&doc).map(drop),
-    };
-    if let Err(reject) = payload {
+    use vta_sdk::protocols::join_requests::manifest::v0_4;
+    if let Err(reject) = parse_spec_payload::<v0_4::Payload>(&doc) {
         return reject;
     }
     if let Some(refusal) = discovery_refusal(state, ctx, &doc).await {
         return refusal;
     }
-    crate::routes::join_requests::manifest::manifest(state, version)
+    crate::routes::join_requests::manifest::manifest(state)
         .await
         .map(|r| success_response(&doc, r))
         .unwrap_or_else(|e| app_error_to_reject(&doc, &e))

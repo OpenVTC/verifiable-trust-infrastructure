@@ -13,7 +13,7 @@ vi.mock("@/lib/api", async (original) => ({
   postSignedTrustTask: (await import("@/test/signed-read")).unsignedTask,
 }));
 
-const MANIFEST_TASK = "https://trusttasks.org/spec/vtc/join-requests/manifest/0.3";
+const MANIFEST_TASK = "https://trusttasks.org/spec/vtc/join-requests/manifest/0.4";
 
 const STATEMENT_TYPE =
   "https://registry.trustoverip.org/dtg/vsc/vetted/1";
@@ -70,7 +70,7 @@ function routes(extra: MockRoute[] = []): MockRoute[] {
         { id: "legacy", admission: "automatic", requirementsDigest: "zQmLegacyDigest" },
       ],
     }),
-    taskRoute("https://trusttasks.org/spec/vtc/endorsement-types/list/0.1", {
+    taskRoute("https://trusttasks.org/spec/vtc/endorsement-types/list/0.2", {
         items: [
           {
             typeUri: STATEMENT_TYPE,

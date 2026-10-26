@@ -4,7 +4,7 @@
 //!
 //! Where the **Issues** registry ([`super::SchemaEntry`]) names the types the
 //! community *mints*, an **Accepts criterion** is one way into the community
-//! (`vtc/schemas/accepts/register/0.2`, `vtc/join-requests/manifest/0.3`): an
+//! (`vtc/schemas/accepts/register/0.2`, `vtc/join-requests/manifest/0.4`): an
 //! `admission` mode, and the requirements it states — any of a DCQL query over
 //! the registry with the issuers whose credentials count, peer-vetting
 //! requirements, and an invitation — or none. Which criteria a community has,
@@ -23,7 +23,7 @@
 //!
 //! The manifest lists criteria **in the order the community decides by**: a
 //! submission naming no criterion is decided under the first it meets
-//! (`vtc/join-requests/manifest/0.3` item 3). That order is registration order
+//! (`vtc/join-requests/manifest/0.4` item 3). That order is registration order
 //! — [`AcceptsCriterion::position`], assigned when an id is first registered and
 //! kept when it is replaced — so an administrator reorders by deleting a
 //! criterion and registering it again. `vtc/schemas/accepts/list/0.2` pages in
@@ -153,7 +153,7 @@ pub struct AcceptsCriterion {
     /// The register task additionally requires its `statementType` to be a
     /// registered endorsement type.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schema(value_type = Option<vta_sdk::openapi::JoinManifest02VettingRequirements>)]
+    #[schema(value_type = Option<vta_sdk::openapi::JoinManifest04VettingRequirements>)]
     pub vetting: Option<VettingRequirements>,
     /// Hidden-vetter admission (ZKP, development branch `zkp-pcs`): the published
     /// parameters an applicant proves against, and this VTC checks — `hvk`, `tvk`

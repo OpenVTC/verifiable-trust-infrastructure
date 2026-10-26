@@ -162,7 +162,7 @@ pub async fn list_endorsements(
 /// The filter runs **before** pagination, so a page is `limit` matching rows
 /// and `nextCursor` continues through matching rows — filtering a page after
 /// it was cut would return short pages and could end the walk early.
-/// `vtc/endorsements/list/0.1` names the filters (`subjectDid`, `typeUri`,
+/// `vtc/endorsements/list/0.2` names the filters (`subjectDid`, `typeUri`,
 /// `includeRevoked`) and requires the consumer to apply them.
 pub async fn list_endorsements_matching(
     ks: &KeyspaceHandle,

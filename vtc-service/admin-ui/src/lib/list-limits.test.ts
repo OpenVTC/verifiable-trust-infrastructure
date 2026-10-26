@@ -39,11 +39,11 @@ const FILES: Record<string, string> = Object.fromEntries(
 
 const T = "https://trusttasks.org/spec";
 const ACTIONS = `${T}/vtc/admin/actions/list/0.2`;
-const JOINS = `${T}/vtc/join-requests/list/0.1`;
-const MEMBERS = `${T}/vtc/members/list/0.1`;
+const JOINS = `${T}/vtc/join-requests/list/0.2`;
+const MEMBERS = `${T}/vtc/members/list/0.2`;
 const REGISTRY_RECORDS = `${T}/vtc/registry/records/list/0.1`;
-const ENDORSEMENTS = `${T}/vtc/endorsements/list/0.1`;
-const ENDORSEMENT_TYPES = `${T}/vtc/endorsement-types/list/0.1`;
+const ENDORSEMENTS = `${T}/vtc/endorsements/list/0.2`;
+const ENDORSEMENT_TYPES = `${T}/vtc/endorsement-types/list/0.2`;
 const ROOMS = `${T}/vtc/rooms/list/0.1`;
 const ROOMS_USAGE = `${T}/vtc/rooms/usage/0.1`;
 const COMMUNITY_ROOMS = `${T}/vtc/rooms/community/list/0.2`;

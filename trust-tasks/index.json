@@ -31,7 +31,7 @@
       "status": "retired",
       "path": "auth/admin-login/1.0",
       "rest": "POST /v1/auth/admin-login",
-      "supersededBy": "https://trusttasks.org/spec/vtc/auth/admin-session/0.1"
+      "supersededBy": "https://trusttasks.org/spec/vtc/auth/admin-session/0.2"
     },
     {
       "id": "https://trusttasks.org/openvtc/vtc/auth/legacy/sessions/manage/1.0",
@@ -185,7 +185,7 @@
       "status": "retired",
       "path": "members/list/1.0",
       "rest": "GET /v1/members",
-      "supersededBy": "https://trusttasks.org/spec/vtc/members/list/0.1"
+      "supersededBy": "https://trusttasks.org/spec/vtc/members/list/0.2"
     },
     {
       "id": "https://trusttasks.org/openvtc/vtc/members/show/1.0",
@@ -221,7 +221,7 @@
       "status": "retired",
       "path": "join-requests/list/1.0",
       "rest": "GET /v1/join-requests",
-      "supersededBy": "https://trusttasks.org/spec/vtc/join-requests/list/0.1"
+      "supersededBy": "https://trusttasks.org/spec/vtc/join-requests/list/0.2"
     },
     {
       "id": "https://trusttasks.org/openvtc/vtc/join-requests/show/1.0",
@@ -351,7 +351,7 @@
       "status": "retired",
       "path": "auth/recognise/1.0",
       "rest": "POST /v1/auth/recognise",
-      "supersededBy": "https://trusttasks.org/spec/vtc/auth/recognise/0.2"
+      "supersededBy": "https://trusttasks.org/spec/vtc/auth/recognise/0.3"
     },
     {
       "id": "https://trusttasks.org/openvtc/vtc/members/personhood/challenge/1.0",
@@ -407,7 +407,7 @@
       "status": "retired",
       "path": "endorsement-types/list/1.0",
       "rest": "GET /v1/endorsement-types",
-      "supersededBy": "https://trusttasks.org/spec/vtc/endorsement-types/list/0.1"
+      "supersededBy": "https://trusttasks.org/spec/vtc/endorsement-types/list/0.2"
     },
     {
       "id": "https://trusttasks.org/openvtc/vtc/endorsement-types/delete/1.0",
@@ -428,7 +428,7 @@
       "status": "retired",
       "path": "credentials/endorsements/list/1.0",
       "rest": "GET /v1/credentials/endorsements",
-      "supersededBy": "https://trusttasks.org/spec/vtc/endorsements/list/0.1"
+      "supersededBy": "https://trusttasks.org/spec/vtc/endorsements/list/0.2"
     },
     {
       "id": "https://trusttasks.org/openvtc/vtc/credentials/endorsements/show/1.0",

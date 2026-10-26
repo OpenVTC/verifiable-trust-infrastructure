@@ -645,7 +645,7 @@ fn witnesses() -> Vec<Witness> {
             "only_a_member_holding_a_live_grant_may_publish_a_profile"
         ),
         witness!(
-            s::vetting::vetters::resend::v0_1::error_codes::NOT_GRANTED,
+            s::vetting::vetters::resend::v0_2::error_codes::NOT_GRANTED,
             vet::VETTING_VETTER_RESEND_ERR_NOT_GRANTED,
             "join_requests.rs",
             "a_vetter_asks_for_the_grant_credential_again"
@@ -1765,7 +1765,7 @@ fn witnesses() -> Vec<Witness> {
             "issue_rejects_unregistered_type"
         ),
         witness!(
-            s::endorsements::list::v0_1::error_codes::INVALID_CURSOR,
+            s::endorsements::list::v0_2::error_codes::INVALID_CURSOR,
             crate::routes::endorsements::LIST_ERR_INVALID_CURSOR,
             "endorsements.rs",
             "a_forged_cursor_is_the_declared_invalid_cursor"
@@ -1852,19 +1852,19 @@ fn witnesses() -> Vec<Witness> {
             "the_update_task_answers_with_the_admin_role_forbidden_code_its_spec_declares"
         ),
         witness!(
-            s::auth::admin_session::v0_1::error_codes::INVALID_TOKEN,
+            s::auth::admin_session::v0_2::error_codes::INVALID_TOKEN,
             crate::routes::auth::ADMIN_SESSION_ERR_INVALID_TOKEN,
             "cookie_session.rs",
             "the_admin_session_task_answers_with_the_invalid_token_code_its_spec_declares"
         ),
         witness!(
-            s::auth::recognise::v0_2::error_codes::ROLE_NOT_MAPPED,
+            s::auth::recognise::v0_3::error_codes::ROLE_NOT_MAPPED,
             crate::routes::recognise::RECOGNISE_ERR_ROLE_NOT_MAPPED,
             "recognise.rs",
             "the_recognise_task_answers_with_the_codes_its_spec_declares"
         ),
         witness!(
-            s::auth::recognise::v0_2::error_codes::CREDENTIAL_INVALID,
+            s::auth::recognise::v0_3::error_codes::CREDENTIAL_INVALID,
             crate::routes::recognise::RECOGNISE_ERR_CREDENTIAL_INVALID,
             "recognise.rs",
             "the_recognise_task_answers_with_the_codes_its_spec_declares"
@@ -2769,12 +2769,12 @@ fn unwitnessed() -> Vec<DeclaredErrorCode> {
         // — it cannot know which route was refused, so it cannot name a
         // route-scoped code. Emitting this one means giving the limiter route
         // context first.
-        s::auth::recognise::challenge::v0_1::error_codes::RATE_LIMITED,
+        s::auth::recognise::challenge::v0_2::error_codes::RATE_LIMITED,
         // `issuerNotRecognised` comes from the trust registry answering "no".
         // Every fixture here wires `registry_client: None`, so the route stops
         // at the registry pre-flight and the gate never runs. Witnessing it
         // means building a registry stub.
-        s::auth::recognise::v0_2::error_codes::ISSUER_NOT_RECOGNISED,
+        s::auth::recognise::v0_3::error_codes::ISSUER_NOT_RECOGNISED,
         s::join_requests::submit::v0_3::error_codes::POLICY_UNSATISFIED,
         s::vetting::revoke_statement::v0_1::error_codes::DIGEST_MISMATCH,
         s::vetting::revoke_statement::v0_1::error_codes::ISSUER_MISMATCH,

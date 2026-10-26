@@ -1097,7 +1097,7 @@ async fn saving_a_criterion_keeps_its_hidden_vetting_until_it_stops_asking_for_v
     use crate::common::signed::{admin, post, signed};
     use vti_rooms_dtg::test_support::Party;
     const ACCEPTS_REGISTER: &str = "https://trusttasks.org/spec/vtc/schemas/accepts/register/0.2";
-    const MANIFEST: &str = "https://trusttasks.org/spec/vtc/join-requests/manifest/0.3";
+    const MANIFEST: &str = "https://trusttasks.org/spec/vtc/join-requests/manifest/0.4";
     let tv = TestVtc::builder()
         .with_signers(true)
         .with_audit(true)

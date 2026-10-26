@@ -11,7 +11,7 @@ Design: OpenVTC `docs/design/vetting-process.md`.
 **Wire types.** Every vetting Trust Task payload and response — `vetting/request`,
 `vetting/session` (with the Vetting Card), `vetting/decline`,
 `vtc/vetting/revoke-statement`, `vtc/vetting/vetters/{grant,profile,list,resend}`
-and `vtc/join-requests/manifest/0.3` (with `VettingRequirements` and
+and `vtc/join-requests/manifest/0.4` (with `VettingRequirements` and
 `CommunityBranding`) — is the type generated from its published specification
 in dtgwg-trust-tasks-tf, shipped in `trust-tasks-rs` and re-exported from
 `vta_sdk::protocols::vetting` (the manifest from
@@ -131,7 +131,7 @@ What documentation a vetter accepts is **the vetter's decision**. Set
 `acceptedDocumentClasses` only if the community needs a floor; a
 `priorAcquaintance` statement with no documentation is exempt from it.
 
-Applicants read the requirements from `vtc/join-requests/manifest/0.3`, which
+Applicants read the requirements from `vtc/join-requests/manifest/0.4`, which
 carries each criterion's `admission`, its `vetting` and its
 `requirementsDigest`, in the order the community decides by.
 
@@ -226,14 +226,13 @@ Either way the vetter's profile is deleted.
 `manual` for an admin's grant and `auto` for one the sweep issued (below).
 
 A vetter whose wallet lost the credential asks for it again with
-`vtc/vetting/vetters/resend/0.1` (payload `{}`); an admin can do the same with
-`POST /v1/vetting/vetters/{memberDid}/resend` (no signed admin form yet, and no
-`cnm` command). The community delivers the same
+`vtc/vetting/vetters/resend/0.2` (payload `{}`); an admin can do the same by
+naming the vetter in `memberDid`. The community delivers the same
 credential over `credential-exchange/issue` — nothing new is issued — and
 answers `{ "credentialId": "…", "validUntil": "…" }`. A sender with no live
-grant is refused with `vtc/vetting/vetters/resend:notGranted` (404 over admin
-REST); a delivery that cannot be handed to the transport with `unavailable`
-(503). A resend is audited as `VetterGrantResent`.
+grant is refused with `vtc/vetting/vetters/resend:notGranted`; a delivery
+that cannot be handed to the transport with `unavailable` (503). A resend is
+audited as `VetterGrantResent`.
 
 ### 4. Let applicants find vetters
 
@@ -358,7 +357,7 @@ client to show it; `GET` reads it back:
 
 Every member is optional; `displayName` is 1–128 characters, `accentColor`
 `#rrggbb` (stored in lower case), `logoUrl` an https URL of at most 2048
-characters. `join-requests/manifest/0.2` carries it as `branding` when any is
+characters. `join-requests/manifest/0.4` carries it as `branding` when any is
 set. It is presentation only — `communityDid` identifies the community. Changes
 are audited as `CommunityBrandingUpdated`.
 
@@ -487,7 +486,7 @@ key revoked later does not revoke the grant — revoke it with
   `vtc/endorsement-types/{register,delete}/0.1`) — saying under each which
   criteria require it, and leaving Remove disabled while any do — and reads
   each criterion's `requirementsDigest` from the signed
-  `vtc/join-requests/manifest/0.3` document applicants send, so a change is
+  `vtc/join-requests/manifest/0.4` document applicants send, so a change is
   visible as applicants will see it. Every requirement is checked in the
   browser against the same rules the daemon applies before it can be saved, and
   the page says in sentences what applicants will be told.

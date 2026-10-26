@@ -277,7 +277,7 @@ pub struct ListQuery {
     pub limit: Option<usize>,
 }
 
-/// `vtc/endorsement-types/list/0.1`. A signed document served by the spine
+/// `vtc/endorsement-types/list/0.2`. A signed document served by the spine
 /// (`trust_tasks::community_tasks`).
 pub(crate) async fn list(
     state: &AppState,

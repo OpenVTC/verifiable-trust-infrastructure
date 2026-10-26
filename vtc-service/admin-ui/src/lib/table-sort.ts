@@ -1,6 +1,6 @@
 // Search and sort for the Members list.
 //
-// The list is read whole (every page of `vtc/members/list/0.1`) and searched
+// The list is read whole (every page of `vtc/members/list/0.2`) and searched
 // and sorted here, in the browser: the listing's only server-side filter is an
 // exact role, and an operator looking for someone types a fragment of a name,
 // a DID's handle or a forge login.

@@ -122,7 +122,7 @@ export async function daemonErrorMessage(
 
 function csrfTokenFromCookie(): string | null {
   // The CSRF cookie is set by login (`/v1/auth/passkey-login/finish`
-  // or the signed `vtc/auth/admin-session/0.1`). HttpOnly is **not** set on this
+  // or the signed `vtc/auth/admin-session/0.2`). HttpOnly is **not** set on this
   // cookie precisely so JS can read it.
   const match = document.cookie.match(/(?:^|;\s*)csrf=([^;]+)/);
   return match?.[1] ?? null;

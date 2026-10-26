@@ -164,15 +164,13 @@ spec_types! {
     VetterShow01Payload(vetters::show::v0_1::Payload);
     /// `vtc/vetting/vetters/show/0.1#response`.
     VetterShow01Response(vetters::show::v0_1::Response);
-    /// `vtc/vetting/vetters/resend/0.1#response`.
-    VetterResend01Response(vetters::resend::v0_1::Response);
+    /// `vtc/vetting/vetters/resend/0.2#response`.
+    VetterResend02Response(vetters::resend::v0_2::Response);
     /// `vtc/endorsement-types/delete/0.1#response`.
     EndorsementTypeDelete01Response(endorsement_types::delete::v0_1::Response);
     /// `vtc/vetting/vetters/profile/0.1`'s `VettingMethod`.
     VetterProfile01VettingMethod(vetters::profile::v0_1::VettingMethod)
         in vetters::profile::v0_1::Payload as "VettingMethod";
-    /// `vtc/join-requests/manifest/0.3#response`.
-    JoinManifest03Response(manifest::v0_3::Response);
     /// `vtc/join-requests/manifest/0.4#response` — the criteria, and the
     /// directory's disclosure statement.
     JoinManifest04Response(manifest::v0_4::Response);
@@ -181,18 +179,18 @@ spec_types! {
     AcceptsRegister02Payload(accepts::register::v0_2::Payload);
     /// `vtc/schemas/accepts/list/0.2#response` — the criteria as stored.
     AcceptsList02Response(accepts::list::v0_2::Response);
-    /// `vtc/join-requests/manifest/0.2`'s `VettingRequirements`.
-    JoinManifest02VettingRequirements(manifest::v0_2::VettingRequirements)
-        in manifest::v0_2::Response as "VettingRequirements";
-    /// `vtc/join-requests/manifest/0.2`'s `CommunityBranding` — also the body of a
+    /// `vtc/join-requests/manifest/0.4`'s `VettingRequirements`.
+    JoinManifest04VettingRequirements(manifest::v0_4::VettingRequirements)
+        in manifest::v0_4::Response as "VettingRequirements";
+    /// `vtc/join-requests/manifest/0.4`'s `CommunityBranding` — also the body of a
     /// VTC's `GET`/`PUT /v1/community/branding`.
-    JoinManifest02CommunityBranding(manifest::v0_2::CommunityBranding)
-        in manifest::v0_2::Response as "CommunityBranding";
-    /// One entry of `vtc/join-requests/manifest/0.2`'s `requestedAttributes` —
+    JoinManifest04CommunityBranding(manifest::v0_4::CommunityBranding)
+        in manifest::v0_4::Response as "CommunityBranding";
+    /// One entry of `vtc/join-requests/manifest/0.4`'s `requestedAttributes` —
     /// also the item of a VTC's `GET`/`PUT /v1/community/requested-attributes`.
     /// Declared inline in the specification, so rendered from its pointer.
-    JoinManifest02RequestedAttribute(manifest::v0_2::ResponseRequestedAttributesItem)
-        in manifest::v0_2::Response
+    JoinManifest04RequestedAttribute(manifest::v0_4::ResponseRequestedAttributesItem)
+        in manifest::v0_4::Response
         as "RequestedAttribute@/$defs/Response/properties/requestedAttributes/items";
     /// `vtc/registry/sync-jobs/list/0.1` payload.
     RegistrySyncJobsList01Payload(sync_jobs::list::v0_1::Payload);
@@ -593,8 +591,8 @@ fn rendered<C: trust_tasks_rs::Payload>(definition: Option<&str>) -> Rendered {
     }
 }
 
-/// `https://trusttasks.org/spec/vtc/join-requests/manifest/0.2#response` →
-/// `VtcJoinRequestsManifestV0_2`.
+/// `https://trusttasks.org/spec/vtc/join-requests/manifest/0.4#response` →
+/// `VtcJoinRequestsManifestV0_4`.
 fn component_prefix(type_uri: &str) -> String {
     let path = type_uri.split('#').next().unwrap_or(type_uri);
     let path = path.split_once("/spec/").map_or(path, |(_, p)| p);
@@ -778,8 +776,8 @@ mod tests {
     #[test]
     fn components_are_named_for_their_specification() {
         assert_eq!(
-            component_prefix("https://trusttasks.org/spec/vtc/join-requests/manifest/0.2#response"),
-            "VtcJoinRequestsManifestV0_2"
+            component_prefix("https://trusttasks.org/spec/vtc/join-requests/manifest/0.4#response"),
+            "VtcJoinRequestsManifestV0_4"
         );
         assert_eq!(
             VetterList01Response::name(),
@@ -790,8 +788,8 @@ mod tests {
             "VtcVettingVettersGrantV0_1Payload"
         );
         assert_eq!(
-            JoinManifest02VettingRequirements::name(),
-            "VtcJoinRequestsManifestV0_2VettingRequirements"
+            JoinManifest04VettingRequirements::name(),
+            "VtcJoinRequestsManifestV0_4VettingRequirements"
         );
     }
 
@@ -822,16 +820,15 @@ mod tests {
         check::<VetterList01Response>();
         check::<VetterShow01Payload>();
         check::<VetterShow01Response>();
-        check::<VetterResend01Response>();
+        check::<VetterResend02Response>();
         check::<EndorsementTypeDelete01Response>();
         check::<VetterProfile01VettingMethod>();
-        check::<JoinManifest03Response>();
         check::<JoinManifest04Response>();
         check::<AcceptsRegister02Payload>();
         check::<AcceptsList02Response>();
-        check::<JoinManifest02VettingRequirements>();
-        check::<JoinManifest02CommunityBranding>();
-        check::<JoinManifest02RequestedAttribute>();
+        check::<JoinManifest04VettingRequirements>();
+        check::<JoinManifest04CommunityBranding>();
+        check::<JoinManifest04RequestedAttribute>();
         check::<RegistrySyncJobsList01Payload>();
         check::<RegistrySyncJobsList01Response>();
         check::<RegistrySyncJobsRetry01Payload>();

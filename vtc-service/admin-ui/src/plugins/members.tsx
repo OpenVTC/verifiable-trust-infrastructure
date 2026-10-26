@@ -1,6 +1,6 @@
 // Members plugin — list + detail (read-only).
 //
-// The list reads every page of `vtc/members/list/0.1` and searches, filters
+// The list reads every page of `vtc/members/list/0.2` and searches, filters
 // and sorts it in the browser (`members/list.ts`); the detail view reads
 // `vtc/members/show/0.1`.
 //
@@ -68,7 +68,7 @@ import { adminRemoveMember } from "@/lib/member-removal";
 import { gestureFromConfirm, type ConfirmGesture } from "@/lib/signed-act";
 
 const TRUST_TASK_LIST =
-  "https://trusttasks.org/spec/vtc/members/list/0.1";
+  "https://trusttasks.org/spec/vtc/members/list/0.2";
 const TRUST_TASK_SHOW =
   "https://trusttasks.org/spec/vtc/members/show/0.1";
 // Promotion is a **role transition**, so it goes to the task defined for role
@@ -91,7 +91,7 @@ const TRUST_TASK_REQUEST_VMC =
 const TRUST_TASK_VETTER_GRANT =
   "https://trusttasks.org/spec/vtc/vetting/vetters/grant/0.1";
 const TRUST_TASK_ENDORSEMENT_LIST =
-  "https://trusttasks.org/spec/vtc/endorsements/list/0.1";
+  "https://trusttasks.org/spec/vtc/endorsements/list/0.2";
 const TRUST_TASK_ENDORSEMENT_REVOKE =
   "https://trusttasks.org/spec/vtc/endorsements/revoke/0.1";
 // A vetter grant's row in the endorsement list: its `typeUri` is the VAC
