@@ -2967,7 +2967,7 @@ async fn a_name_change_is_answerable_end_to_end() {
     .await;
     assert!(!refused(status, &body), "attribute/put: {status} {body}");
     let put = payload_of(&body).clone();
-    serde_json::from_value::<trust_tasks_rs::specs::persona::attribute::put::v1_0::Response>(
+    serde_json::from_value::<trust_tasks_rs::specs::persona::attribute::put::v1_1::Response>(
         put.clone(),
     )
     .unwrap_or_else(|e| panic!("does not match the published schema: {e}\n{put:#}"));
@@ -3322,7 +3322,7 @@ async fn a_face_composed_in_a_context_stays_there_until_promoted() {
     .await;
     assert!(!refused(status, &body), "compose: {status} {body}");
     let out = payload_of(&body).clone();
-    serde_json::from_value::<compose::v1_0::Response>(out.clone())
+    serde_json::from_value::<compose::v1_1::Response>(out.clone())
         .unwrap_or_else(|e| panic!("does not match the published schema: {e}\n{out:#}"));
     assert_eq!(out["scope"], "local");
     assert!(out.get("pooled").is_none(), "{out}");
@@ -3399,7 +3399,7 @@ async fn a_face_composed_in_a_context_stays_there_until_promoted() {
     .await;
     assert!(!refused(status, &body), "promote: {status} {body}");
     let out = payload_of(&body).clone();
-    serde_json::from_value::<promote::v1_0::Response>(out.clone())
+    serde_json::from_value::<promote::v1_1::Response>(out.clone())
         .unwrap_or_else(|e| panic!("does not match the published schema: {e}\n{out:#}"));
     assert_eq!(out["profileId"], face.as_str());
     assert_eq!(out["reboundPersonaDids"], json!([persona]));
