@@ -28,10 +28,10 @@ tenant-overlay = ["dep:tokio-vsock"]
 
 [dependencies]
 vti-common = { path = "../vti-common", version = "0.49", features = ["encryption", "openapi"] }
-vta-keyspaces = { path = "../vta-keyspaces", version = "0.21" }
+vta-keyspaces = { path = "../vta-keyspaces", version = "0.22" }
 vta-config = { path = "../vta-config", version = "0.26", features = ["tee"] }
 vta-keys = { path = "../vta-keys", version = "0.26" }
-vta-support = { path = "../vta-support", version = "0.22" }
+vta-support = { path = "../vta-support", version = "0.23" }
 aes-gcm = { workspace = true }
 utoipa = { workspace = true }
 rand = { workspace = true }

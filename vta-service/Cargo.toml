@@ -165,11 +165,11 @@ vti-common = { path = "../vti-common", version = "0.49", features = ["encryption
 # Seed-store backends + `create_seed_store` factory + `SecretsConfig` (lifted
 # from this crate into a shared crate so external integrations can reuse them).
 # Per-backend features are activated by this crate's matching features below.
-vti-secrets = { path = "../vti-secrets", version = "0.21" }
-vta-keyspaces = { path = "../vta-keyspaces", version = "0.21" }
+vti-secrets = { path = "../vti-secrets", version = "0.22" }
+vta-keyspaces = { path = "../vta-keyspaces", version = "0.22" }
 # Structured audit logging (the `audit!` macro + audit-keyspace helpers),
 # extracted and re-exported as `crate::audit`.
-vta-audit = { path = "../vta-audit", version = "0.20" }
+vta-audit = { path = "../vta-audit", version = "0.21" }
 # VTA configuration types (AppConfig + sub-configs), extracted and re-exported
 # as `crate::config`. `vta-config/tee` is always on: it only adds the
 # `AppConfig.tee` field and its types, and a sibling crate (vta-tee) turns it
@@ -178,7 +178,7 @@ vta-audit = { path = "../vta-audit", version = "0.20" }
 vta-config = { path = "../vta-config", version = "0.26", features = ["tee"] }
 # Shared mid-layer services (contexts, seal, sealed_nonce_store), re-exported
 # as crate::{contexts,seal,sealed_nonce_store}.
-vta-support = { path = "../vta-support", version = "0.22" }
+vta-support = { path = "../vta-support", version = "0.23" }
 # Key management (seed store, BIP-32 derivation, wrapping), extracted and
 # re-exported as `crate::keys`. Backend features chain to `vta-keys/*`.
 vta-keys = { path = "../vta-keys", version = "0.26" }
@@ -196,7 +196,7 @@ vta-external = { path = "../vta-external", version = "0.9" }
 vti-vetting-pcs = { path = "../vti-vetting-pcs", version = "0.6" }
 # The voter role of the PCS engine (`vta/pcs/voter/*`, `vta/pcs/vote`): tickets,
 # casts and the receipt checks, over the same PCS instance.
-vti-voting = { path = "../vti-voting", version = "0.1" }
+vti-voting = { path = "../vti-voting", version = "0.2" }
 # The PCS crate itself, for the multibase codec of the blinding state an
 # enrolment in flight is stored as. Pinned with `vti-vetting-pcs`.
 predicate-credential-system = { version = "0.1", features = ["serde"] }
@@ -215,7 +215,7 @@ vti-rooms = { path = "../vti-rooms", version = "0.20", default-features = false,
 vti-rooms-dtg = { path = "../vti-rooms-dtg", version = "0.22" }
 # Background TTL sweepers (acl/consent/vault), extracted and re-exported as
 # crate::{acl_sweeper,consent_sweeper,vault_sweeper}.
-vta-sweepers = { path = "../vta-sweepers", version = "0.20" }
+vta-sweepers = { path = "../vta-sweepers", version = "0.21" }
 # Backup/restore subsystem (export/import ops + backup-bundle store/sweeper),
 # extracted and re-exported as crate::operations::backup +
 # crate::{backup_bundle_store,backup_bundle_sweeper}. Feature edges: this
@@ -226,7 +226,7 @@ vta-backup = { path = "../vta-backup", version = "0.25" }
 vta-tee = { path = "../vta-tee", version = "0.25", optional = true }
 # Policy subsystem (regorus engine, default bundle, consent model), extracted
 # and re-exported as crate::policy.
-vta-policy = { path = "../vta-policy", version = "0.20" }
+vta-policy = { path = "../vta-policy", version = "0.21" }
 # The local did:webvh store, extracted to its own crate and re-exported as
 # crate::webvh_store behind this crate's `webvh` feature.
 vta-webvh = { path = "../vta-webvh", version = "0.22", optional = true }

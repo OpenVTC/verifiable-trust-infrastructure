@@ -31,7 +31,7 @@ vta-sdk = { path = "../vta-sdk", version = "0.73", features = [
   "tsp",
   "crypto-provider",
 ] }
-vti-secrets = { path = "../vti-secrets", version = "0.21" }
+vti-secrets = { path = "../vti-secrets", version = "0.22" }
 trust-tasks-rs = { workspace = true }
 affinidi-did-resolver-cache-sdk = { workspace = true }
 axum = { workspace = true }
