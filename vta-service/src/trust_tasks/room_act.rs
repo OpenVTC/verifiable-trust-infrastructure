@@ -2593,11 +2593,11 @@ mod tests {
             "{browse}"
         );
         let backfill = body(
-            super::super::room_group::handle_backfill(
+            super::super::room_group::handle_backfill_v0_2(
                 &f.state,
                 &client,
                 request(
-                    vta_sdk::trust_tasks::TASK_ROOMS_KEYS_BACKFILL_0_1,
+                    vta_sdk::trust_tasks::TASK_ROOMS_KEYS_BACKFILL_0_2,
                     json!({ "roomId": f.room.did, "host": host.did }),
                 ),
             )
@@ -2712,11 +2712,11 @@ mod tests {
     /// `keys backfill` as alice's client asks it, against `host`.
     async fn backfill_as_alice(f: &Fx, host: &str) -> Value {
         body(
-            super::super::room_group::handle_backfill(
+            super::super::room_group::handle_backfill_v0_2(
                 &f.state,
                 &alice_client(),
                 request(
-                    vta_sdk::trust_tasks::TASK_ROOMS_KEYS_BACKFILL_0_1,
+                    vta_sdk::trust_tasks::TASK_ROOMS_KEYS_BACKFILL_0_2,
                     json!({ "roomId": f.room.did, "host": host }),
                 ),
             )

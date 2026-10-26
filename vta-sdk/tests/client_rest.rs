@@ -2307,7 +2307,7 @@ async fn a_single_operation_too_large_is_not_asked_again() {
     assert_eq!(*asked.lock().unwrap(), [(1, false)]);
 }
 
-// ── rooms/keys/{file-key,act} 0.2, falling back to 0.1 ──────────────
+// ── rooms/keys/act 0.2, falling back to 0.1 ─────────────────────────
 
 /// Matches a request whose document `type` is `uri` (with or without a fragment).
 fn task_type(uri: &'static str) -> impl Fn(&wiremock::Request) -> bool {
@@ -2351,30 +2351,6 @@ async fn mount_only_0_1(
         .mount_as_scoped(server)
         .await;
     (refused, answered)
-}
-
-/// `rooms/keys/file-key/0.2` first; a VTA that does not serve it is asked at 0.1, whose
-/// answer reads as 0.2's.
-#[tokio::test]
-async fn room_file_key_falls_back_to_0_1() {
-    let server = MockServer::start().await;
-    let _m = mount_only_0_1(
-        &server,
-        "https://trusttasks.org/spec/rooms/keys/file-key/0.2",
-        "https://trusttasks.org/spec/rooms/keys/file-key/0.1",
-        json!({ "key": "qPm3rH0xU1d5wR6x0yTq8ZbV7k2nC4aE9fG1hJ3kL5M", "epoch": 4 }),
-    )
-    .await;
-    let c = client(&server).await;
-    let resp = c
-        .room_file_key(
-            "did:webvh:example.com:rooms:northwind",
-            "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
-            Some(4),
-        )
-        .await
-        .expect("answered at 0.1");
-    assert_eq!(resp.epoch.get(), 4);
 }
 
 /// A VTA refusing `uri` `unsupportedType`, exactly `times` times.
@@ -2438,83 +2414,54 @@ async fn room_act_falls_back_to_0_1() {
     assert_eq!(resp.principal.as_str(), member);
 }
 
-/// `rooms/owner/group/add/0.3` first, then 0.2; a VTA that serves neither is asked at
-/// 0.1, the same request, and its answer read as 0.2's.
+/// The owner's group tasks go at their current version only: a VTA that does not serve it
+/// is reported as such, never asked at a superseded version.
 #[tokio::test]
-async fn room_group_add_falls_back_to_0_1() {
+async fn room_group_tasks_never_fall_back_to_a_superseded_version() {
     let server = MockServer::start().await;
     let room = "did:webvh:example.com:rooms:northwind";
     let member = "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK";
-    let _v3 = mount_unsupported(
+    let _add = mount_unsupported(
         &server,
         "https://trusttasks.org/spec/rooms/owner/group/add/0.3",
         1,
     )
     .await;
-    let _m = mount_only_0_1(
-        &server,
-        "https://trusttasks.org/spec/rooms/owner/group/add/0.2",
-        "https://trusttasks.org/spec/rooms/owner/group/add/0.1",
-        json!({ "roomId": room, "member": member, "epoch": 2, "welcome": "AAEAAgADAAQ" }),
-    )
-    .await;
-    let c = client(&server).await;
-    let resp = c
-        .room_group_add(room, "did:key:zHost", member, "AAEAAgADAAQ", None)
-        .await
-        .expect("answered at 0.1");
-    assert_eq!(resp.epoch, 2);
-}
-
-/// A VTA serving 0.2 but not 0.3 answers at 0.2, and 0.1 is never asked.
-#[tokio::test]
-async fn room_group_add_falls_back_to_0_2() {
-    let server = MockServer::start().await;
-    let room = "did:webvh:example.com:rooms:northwind";
-    let member = "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK";
-    let _v1 = mount_unsupported(
-        &server,
-        "https://trusttasks.org/spec/rooms/owner/group/add/0.1",
-        0,
-    )
-    .await;
-    let _m = mount_only_0_1(
-        &server,
-        "https://trusttasks.org/spec/rooms/owner/group/add/0.3",
-        "https://trusttasks.org/spec/rooms/owner/group/add/0.2",
-        json!({ "roomId": room, "member": member, "epoch": 3, "welcome": "AAEAAgADAAQ" }),
-    )
-    .await;
-    let c = client(&server).await;
-    let resp = c
-        .room_group_add(room, "did:key:zHost", member, "AAEAAgADAAQ", None)
-        .await
-        .expect("answered at 0.2");
-    assert_eq!(resp.epoch, 3);
-}
-
-/// `rooms/owner/group/renew/0.2` first; a VTA that does not serve it is asked at 0.1.
-#[tokio::test]
-async fn room_group_renew_falls_back_to_0_1() {
-    let server = MockServer::start().await;
-    let room = "did:webvh:example.com:rooms:northwind";
-    let _m = mount_only_0_1(
+    let _renew = mount_unsupported(
         &server,
         "https://trusttasks.org/spec/rooms/owner/group/renew/0.2",
-        "https://trusttasks.org/spec/rooms/owner/group/renew/0.1",
-        json!({ "roomId": room, "epoch": 5 }),
+        1,
+    )
+    .await;
+    let _remove = mount_unsupported(
+        &server,
+        "https://trusttasks.org/spec/rooms/owner/group/remove/0.3",
+        1,
     )
     .await;
     let c = client(&server).await;
-    let resp = c
+    let add = c
+        .room_group_add(room, "did:key:zHost", member, "AAEAAgADAAQ", None)
+        .await
+        .map(|_| ());
+    let renew = c
         .room_group_renew(room, "did:key:zHost", None)
         .await
-        .expect("answered at 0.1");
-    assert_eq!(resp.epoch, 5);
+        .map(|_| ());
+    let remove = c
+        .room_group_remove_v0_3(room, "did:key:zHost", member, "room-key", &[], None, None)
+        .await
+        .map(|_| ());
+    for (task, r) in [("add", add), ("renew", renew), ("remove", remove)] {
+        assert!(
+            matches!(r, Err(VtaError::UnsupportedTaskType { .. })),
+            "{task}: {r:?}"
+        );
+    }
 }
 
-/// An `earlierRemovalRefused` at the new version is the VTA's answer: it reaches the
-/// caller typed, with its `details`, and the older version is never asked.
+/// An `earlierRemovalRefused` is the VTA's answer: it reaches the caller typed, with its
+/// `details`.
 #[tokio::test]
 async fn an_earlier_removal_refused_is_final_and_never_falls_back() {
     let server = MockServer::start().await;
@@ -2551,18 +2498,6 @@ async fn an_earlier_removal_refused_is_final_and_never_falls_back() {
         .expect(1)
         .mount_as_scoped(&server)
         .await;
-    let _a2 = mount_unsupported(
-        &server,
-        "https://trusttasks.org/spec/rooms/owner/group/add/0.2",
-        0,
-    )
-    .await;
-    let _r1 = mount_unsupported(
-        &server,
-        "https://trusttasks.org/spec/rooms/owner/group/renew/0.1",
-        0,
-    )
-    .await;
     let c = client(&server).await;
     for (task, err) in [
         (
@@ -2621,33 +2556,6 @@ async fn room_owner_register_falls_back_to_0_1() {
         .expect("answered at 0.1");
     assert_eq!(resp.epoch.get(), 1);
     assert!(resp.revocation.is_none());
-}
-
-/// `rooms/owner/group/remove/0.3` first; a VTA that does not serve it is asked at 0.2, the
-/// same request, and its answer read as 0.3's.
-#[tokio::test]
-async fn room_group_remove_v0_3_falls_back_to_0_2() {
-    let server = MockServer::start().await;
-    let room = "did:webvh:example.com:rooms:northwind";
-    let member = "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK";
-    let _m = mount_only_0_1(
-        &server,
-        "https://trusttasks.org/spec/rooms/owner/group/remove/0.3",
-        "https://trusttasks.org/spec/rooms/owner/group/remove/0.2",
-        json!({
-            "roomId": room, "member": member,
-            "revocation": { "sequence": 2,
-                "digest": "zQmbWqxBEKC3P8tqsKc98xmWNzrzDtRLMiMPL8wBuTGsMnR" },
-            "revokedAt": "2026-10-16T09:29:58Z", "epoch": 4,
-        }),
-    )
-    .await;
-    let c = client(&server).await;
-    let resp = c
-        .room_group_remove_v0_3(room, "did:key:zHost", member, "room-key", &[], None, None)
-        .await
-        .expect("answered at 0.2");
-    assert_eq!(resp.epoch, 4);
 }
 
 /// A reply to a community's offer is completed at `rooms/keys/act/0.4` or 0.3, or not at
@@ -2734,33 +2642,7 @@ async fn room_act_for_offers_list_0_2_goes_at_0_4_only() {
     assert!(matches!(err, VtaError::UnsupportedTaskType { .. }), "{err}");
 }
 
-// ── rooms/keys/list 0.2, falling back to 0.1 ─────────────────────────
-
-/// `rooms/keys/list/0.2` first; a VTA that does not serve it is asked at 0.1, whose entries
-/// read as 0.2's with each member taken from the `ext` it puts beside them.
-#[tokio::test]
-async fn room_list_falls_back_to_0_1_and_reads_its_members() {
-    let server = MockServer::start().await;
-    let _m = mount_only_0_1(
-        &server,
-        "https://trusttasks.org/spec/rooms/keys/list/0.2",
-        "https://trusttasks.org/spec/rooms/keys/list/0.1",
-        json!({
-            "rooms": [{
-                "roomId": "did:webvh:example.com:rooms:northwind",
-                "epoch": 4,
-                "earliestReadableEpoch": 1
-            }],
-            "ext": { "org.openvtc.rooms": { "held": [{ "member": "did:key:zAlice" }] } }
-        }),
-    )
-    .await;
-    let c = client(&server).await;
-    let resp = c.room_list(true).await.expect("answered at 0.1");
-    assert_eq!(resp.rooms.len(), 1);
-    assert_eq!(resp.rooms[0].member.as_str(), "did:key:zAlice");
-    assert!(resp.rooms[0].personal.is_none());
-}
+// ── rooms/keys/list 0.2 ──────────────────────────────────────────────
 
 /// `include_personal` is the request's `includePersonal`, and only when asked.
 #[tokio::test]

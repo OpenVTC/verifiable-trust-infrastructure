@@ -620,7 +620,7 @@ When adding a flow, add it here and a line to the root index.
   payload **as received** (a generated-type round trip rewrites its timestamps). The VTA
   keeps the list with the room key (`room_groups`, `room-revocations/<roomId>`), signs one
   list per sequence under `room_revocation::signing_lock`, through the gated oracle, and
-  delivers it before answering `rooms/owner/register`. `group/remove/0.2` withdraws
+  delivers it before answering `rooms/owner/register`. `group/remove/0.3` withdraws
   first, then advances; a private room is never withdrawn per member.
   `register/0.2` answers success once the host took the registration, with
   `revocation.status` `inForce` only when the host answered with the list's head; a

@@ -289,7 +289,7 @@ cnm rooms members remove <room DID> --member <DID> --reason "left the board"
   the member — it signs the room's next revocation list as the room (one `subject`
   entry) and delivers it to this community, the room's host (`rooms/owner/revoke`). On
   an `attributed` room it does that first and then removes their leaf and advances the
-  room (`rooms/owner/group/remove/0.3`, or 0.2 on a VTA that does not serve it). From
+  room (`rooms/owner/group/remove/0.3`). From
   the answer's `revokedAt` the host refuses
   every credential the room issued them — and anything they delegated to an agent — on
   every task; the answer carries the list's head (`revocation`). An open offer is
@@ -427,11 +427,9 @@ The member, signed with **their own DID** (the persona named in the offer):
 A repeated accept with the same KeyPackage gets the same Welcome for seven days. When the
 community's VTA does not answer, the answer is `admissionPending` and nothing is recorded;
 retrying the identical request is safe. If the VTA did admit the member and only its answer
-was lost, the retry reaches the VTA again, and a VTA serving `rooms/owner/group/add/0.2`
-answers it with the Welcome it kept (until its next advance of the room or 24 hours);
-against a VTA that serves only 0.1 that retry is `alreadyAccepted`. The VTC asks
-`group/add/0.3` first, then 0.2, then 0.1, each for a VTA that does not serve the one
-before.
+was lost, the retry reaches the VTA again, and `rooms/owner/group/add/0.3` answers it
+with the Welcome it kept (until its next advance of the room or 24 hours); after that the
+retry is `alreadyAccepted`.
 
 If the VTA was still settling an earlier removal from the room and had to give it up (the
 host — this community — refused that removal's revocation list when the VTA delivered it

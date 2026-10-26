@@ -39,10 +39,7 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 use trust_tasks_rs::specs::rooms::owner::{
-    group::{
-        add::v0_1 as owner_add_v0_1, add::v0_2 as owner_add_v0_2, add::v0_3 as owner_add,
-        create::v0_1 as owner_group_create,
-    },
+    group::{add::v0_3 as owner_add, create::v0_1 as owner_group_create},
     invite::v0_1 as owner_invite,
     issue_authority::v0_2 as owner_authority,
     issue_membership::v0_1 as owner_membership,
@@ -132,13 +129,6 @@ const OWNER_GROUP_CREATE: &str = <owner_group_create::Payload as Payload>::TYPE_
 /// `rooms/owner/group/add/0.3`: an earlier removal the VTA settles first is reported as
 /// `earlierRemovalRefused`, never as a refusal of this admission (trust-tasks-tf #824).
 const OWNER_GROUP_ADD: &str = <owner_add::Payload as Payload>::TYPE_URI;
-/// For a VTA that does not serve 0.3: same request, same response, and an earlier removal
-/// reported as `hostRefused` with the earlier `member` in its `details`.
-const OWNER_GROUP_ADD_V0_2: &str = <owner_add_v0_2::Payload as Payload>::TYPE_URI;
-/// For a VTA that does not serve `rooms/owner/group/add/0.2` either: same request, same
-/// response, but a repeated admission is refused `alreadyMember` rather than answered (0.2
-/// item 8).
-const OWNER_GROUP_ADD_V0_1: &str = <owner_add_v0_1::Payload as Payload>::TYPE_URI;
 const OWNER_INVITE: &str = <owner_invite::Payload as Payload>::TYPE_URI;
 const OWNER_MEMBERSHIP: &str = <owner_membership::Payload as Payload>::TYPE_URI;
 const OWNER_AUTHORITY: &str = <owner_authority::Payload as Payload>::TYPE_URI;
@@ -2182,23 +2172,9 @@ async fn handle_offers_accept(
             Ok(r) => r,
             Err(e) => return app_error_to_reject(&doc, &e),
         };
-        // 0.3 first, then 0.2, whose answer to a repeat of an admission whose reply was
-        // lost is its Welcome (item 8). A VTA that does not serve a version never routed the
-        // ask, so asking again at the one before — which takes the same request — is not a
-        // second admission.
-        let mut versions = [OWNER_GROUP_ADD, OWNER_GROUP_ADD_V0_2, OWNER_GROUP_ADD_V0_1].iter();
-        let asked = loop {
-            let Some(uri) = versions.next() else {
-                unreachable!("at least one version is asked");
-            };
-            let answer = ask(&holder, uri, request.clone(), ADVANCE_TIMEOUT).await;
-            let unserved = matches!(&answer, Err(HolderError::Refused { code, .. })
-                if matches!(code.as_str(), "unsupportedType" | "unsupportedVersion"));
-            if !unserved || versions.len() == 0 {
-                break answer;
-            }
-        };
-        match asked {
+        // A repeat of an admission whose reply was lost is answered with its Welcome
+        // (item 8).
+        match ask(&holder, OWNER_GROUP_ADD, request, ADVANCE_TIMEOUT).await {
             Ok(answer) => match read::<owner_add::Response>("rooms/owner/group/add", answer) {
                 Ok(r) => {
                     let epoch = u64::try_from(r.epoch).unwrap_or(1);
@@ -2230,8 +2206,7 @@ async fn handle_offers_accept(
             // The member already has a leaf, and the VTA cannot answer this as a repeat:
             // another KeyPackage, an admission whose Welcome the VTA no longer keeps (it
             // keeps it until its next advance of the room or 24 hours —
-            // `rooms/owner/group/add/0.2` item 8), or a VTA serving only 0.1, which keeps
-            // none. They are in the group with no Welcome anyone can give them: that is
+            // `rooms/owner/group/add/0.3` item 8). They are in the group with no Welcome anyone can give them: that is
             // `alreadyAccepted`, and the record says admitted so a removal can find them.
             Err(HolderError::Refused { code, .. })
                 if code == owner_add::error_codes::ALREADY_MEMBER.code =>

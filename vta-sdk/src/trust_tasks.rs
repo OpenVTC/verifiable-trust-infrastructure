@@ -989,26 +989,19 @@ pub const TASK_VTA_MEMORY_LIST_0_1: &str = "https://trusttasks.org/spec/vta/memo
 /// Auth: `roomPresent` capability, plus context access for the principal's key.
 pub const TASK_ROOMS_KEYS_PRESENT_0_2: &str = "https://trusttasks.org/spec/rooms/keys/present/0.2";
 
-/// `spec/rooms/keys/open/0.1` — an agent sends a sealed record and gets its
-/// plaintext. The key never crosses. Auth: `roomOpen` capability.
-pub const TASK_ROOMS_KEYS_OPEN_0_1: &str = "https://trusttasks.org/spec/rooms/keys/open/0.1";
-
-/// `spec/rooms/keys/open/0.2` — `open` 0.1, with `unknownEpoch` declaring its
-/// `details`: `reason` is `notDelivered` (catch up and retry), `beyondChain`
-/// (the retained chain does not reach the epoch) or `removed` (never retry).
+/// `spec/rooms/keys/open/0.2` — an agent sends a sealed record and gets its
+/// plaintext; the key never crosses. `unknownEpoch` declares its `details`:
+/// `reason` is `notDelivered` (catch up and retry), `beyondChain` (the retained
+/// chain does not reach the epoch) or `removed` (never retry).
 /// Auth: `roomOpen` capability.
 pub const TASK_ROOMS_KEYS_OPEN_0_2: &str =
     <trust_tasks_rs::specs::rooms::keys::open::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
-/// `spec/rooms/keys/key-package/0.1` — mint an MLS KeyPackage so a room's
-/// owner has something to add. Auth: a valid invitation for that room.
-pub const TASK_ROOMS_KEYS_KEY_PACKAGE_0_1: &str =
-    "https://trusttasks.org/spec/rooms/keys/key-package/0.1";
-
-/// `spec/rooms/keys/key-package/0.2` — `key-package` 0.1, but the KeyPackage already held
-/// for the same room, member and invitation is returned (`alreadyMinted: true`) while it
-/// is outstanding, so any surface can finish an acceptance another began. Auth: as 0.1;
-/// the invitation is required.
+/// `spec/rooms/keys/key-package/0.2` — mint an MLS KeyPackage so a room's owner has
+/// something to add; the KeyPackage already held for the same room, member and
+/// invitation is returned (`alreadyMinted: true`) while it is outstanding, so any
+/// surface can finish an acceptance another began. Auth: a valid invitation for that
+/// room, required.
 pub const TASK_ROOMS_KEYS_KEY_PACKAGE_0_2: &str =
     <trust_tasks_rs::specs::rooms::keys::key_package::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
@@ -1020,29 +1013,17 @@ pub const TASK_ROOMS_KEYS_WELCOME_0_1: &str = "https://trusttasks.org/spec/rooms
 /// this VTA advances one epoch. Auth: the group itself.
 pub const TASK_ROOMS_KEYS_COMMIT_0_1: &str = "https://trusttasks.org/spec/rooms/keys/commit/0.1";
 
-/// `spec/rooms/keys/chain/0.1` — the principal hands this VTA the room's epoch
-/// key chain, so it can open records sealed before they joined. Auth: `roomOpen`
-/// capability. The rungs it accrues from `commit` cover the memberships it lived
-/// through; this covers the history it did not.
-pub const TASK_ROOMS_KEYS_CHAIN_0_1: &str = "https://trusttasks.org/spec/rooms/keys/chain/0.1";
-
-/// `spec/rooms/keys/chain/0.2` — 0.1, and the room's epoch floor relayed with the rungs (or
-/// alone): this VTA discards what it holds below it and never stores it again
-/// (trust-tasks-tf #869). Auth: `roomOpen` capability.
+/// `spec/rooms/keys/chain/0.2` — the principal hands this VTA the room's epoch key
+/// chain, so it can open records sealed before they joined, and the room's epoch floor
+/// relayed with the rungs (or alone): this VTA discards what it holds below it and never
+/// stores it again (trust-tasks-tf #869). Auth: `roomOpen` capability.
 pub const TASK_ROOMS_KEYS_CHAIN_0_2: &str = "https://trusttasks.org/spec/rooms/keys/chain/0.2";
 
-/// `spec/rooms/keys/backfill/0.1` — fetch the room's epoch key chain from its host
-/// and keep it, so history written before the principal joined becomes readable.
-///
-/// The agent-side counterpart to [`TASK_ROOMS_EPOCH_CHAIN_0_1`]-at-a-host: it
-/// mints the presentation, makes the call, and stores what comes back. A surface
-/// that reaches only its own agent cannot do the middle hop, which is why this
-/// exists.
-pub const TASK_ROOMS_KEYS_BACKFILL_0_1: &str =
-    "https://trusttasks.org/spec/rooms/keys/backfill/0.1";
-
-/// `spec/rooms/keys/backfill/0.2` — 0.1, fetched with `rooms/epoch/chain/0.2`, the floor it
-/// carries applied before answering and reported (trust-tasks-tf #869).
+/// `spec/rooms/keys/backfill/0.2` — fetch the room's epoch key chain from its host
+/// (`rooms/epoch/chain/0.2`) and keep it, so history written before the principal joined
+/// becomes readable; the floor it carries is applied before answering and reported
+/// (trust-tasks-tf #869). A surface that reaches only its own agent cannot make the
+/// middle hop itself, which is why this exists.
 pub const TASK_ROOMS_KEYS_BACKFILL_0_2: &str =
     "https://trusttasks.org/spec/rooms/keys/backfill/0.2";
 
@@ -1075,13 +1056,8 @@ pub const TASK_ROOMS_KEYS_BROWSE_0_1: &str = "https://trusttasks.org/spec/rooms/
 /// rebuild it (trust-tasks-tf #868). Auth: `roomOpen` capability.
 pub const TASK_ROOMS_KEYS_BROWSE_0_2: &str = "https://trusttasks.org/spec/rooms/keys/browse/0.2";
 
-/// `spec/rooms/keys/seal/0.1` — seal one record body with the room's current
-/// epoch key. The mirror of `open`: plaintext in, ciphertext out, key stays put.
-/// Auth: `roomOpen` capability. It does not write — the caller takes the result
-/// to a host and presents its own authority there.
-pub const TASK_ROOMS_KEYS_SEAL_0_1: &str = "https://trusttasks.org/spec/rooms/keys/seal/0.1";
-
-/// `spec/rooms/keys/seal/0.2` — `seal` 0.1, plus `signAsPrincipal`: the VTA signs the
+/// `spec/rooms/keys/seal/0.2` — seal one record body with the room's current epoch key;
+/// it does not write. With `signAsPrincipal` the VTA signs the
 /// record body as its `author` (a member the caller acts as) before sealing it, so the
 /// record is attributed to the member rather than to the client that wrote it. Auth:
 /// `roomOpen` capability; `signAsPrincipal` is refused to a delegate.
@@ -1129,27 +1105,18 @@ pub const TASK_ROOMS_KEYS_ACT_0_5: &str =
 pub const TASK_ROOMS_KEYS_ACT_0_6: &str =
     <trust_tasks_rs::specs::rooms::keys::act::v0_6::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
-/// `spec/rooms/keys/file-key/0.1` — one file's key, for the member's own client
-/// to seal or open that file itself, so file bytes never pass through the VTA.
-/// Unlike `open`, a key crosses — one bound to the room, the epoch and the file,
-/// which opens that file and nothing else. Auth: `roomOpen` capability.
-pub const TASK_ROOMS_KEYS_FILE_KEY_0_1: &str =
-    "https://trusttasks.org/spec/rooms/keys/file-key/0.1";
-
-/// `spec/rooms/keys/file-key/0.2` — `file-key` 0.1, with a third `unknownEpoch`
-/// reason: `removed` (with `removedAtEpoch`), for a file sealed at or after the
-/// member's removal, which no commit will make derivable. Auth: as 0.1.
+/// `spec/rooms/keys/file-key/0.2` — one file's key, for the member's own client to
+/// seal or open that file itself, so file bytes never pass through the VTA. A third
+/// `unknownEpoch` reason, `removed` (with `removedAtEpoch`), marks a file sealed at or
+/// after the member's removal, which no commit will make derivable. Auth: `roomOpen`
+/// capability.
 pub const TASK_ROOMS_KEYS_FILE_KEY_0_2: &str =
     <trust_tasks_rs::specs::rooms::keys::file_key::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
-/// `spec/rooms/keys/list/0.1` — which rooms this VTA can open, and how far back
-/// each reads. Auth: `roomOpen` capability. Key custody, never membership: a
-/// room whose Welcome never arrived is absent even where a good VMC is held.
-pub const TASK_ROOMS_KEYS_LIST_0_1: &str = "https://trusttasks.org/spec/rooms/keys/list/0.1";
-
-/// `spec/rooms/keys/list/0.2` — `list` 0.1, one entry per room **and member** (each
-/// names its `member`), for the members the caller may act as; `includePersonal`
-/// adds each entry's personal label (`rooms/keys/label/0.1`). Auth: as 0.1.
+/// `spec/rooms/keys/list/0.2` — which rooms this VTA can open, and how far back each
+/// reads: one entry per room **and member** (each names its `member`), for the members
+/// the caller may act as; `includePersonal` adds each entry's personal label
+/// (`rooms/keys/label/0.1`). Auth: `roomOpen` capability.
 pub const TASK_ROOMS_KEYS_LIST_0_2: &str =
     <trust_tasks_rs::specs::rooms::keys::list::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
@@ -1218,29 +1185,19 @@ pub const TASK_ROOMS_OWNER_ISSUE_AUTHORITY_0_2: &str =
 pub const TASK_ROOMS_OWNER_GROUP_CREATE_0_1: &str =
     "https://trusttasks.org/spec/rooms/owner/group/create/0.1";
 
-/// `spec/rooms/owner/group/add/0.1` — admit a member's KeyPackage to a room's group:
+/// `spec/rooms/owner/group/add/0.3` — admit a member's KeyPackage to a room's group:
 /// advance the room's epoch at its host first, then this agent's group, and return the
-/// Welcome for the caller to deliver with `rooms/keys/welcome`.
-/// Auth: `credentialWrite` capability, plus the caller's `admin` authority credential for
-/// the room in this agent's vault.
-pub const TASK_ROOMS_OWNER_GROUP_ADD_0_1: &str =
-    "https://trusttasks.org/spec/rooms/owner/group/add/0.1";
-
-/// `spec/rooms/owner/group/add/0.2` — `add` 0.1, and a request that repeats the admission
-/// the agent last applied for the room (same `member`, a KeyPackage with the same
-/// `KeyPackageRef`, within 24 hours and before the agent's next advance of the room) is
-/// answered with that admission's epoch and Welcome instead of `alreadyMember` (item 8).
-/// Auth: as 0.1.
-pub const TASK_ROOMS_OWNER_GROUP_ADD_0_2: &str =
-    <trust_tasks_rs::specs::rooms::owner::group::add::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
-
-/// `spec/rooms/owner/group/add/0.3` — 0.2, and a pending removal it settles first is
+/// Welcome for the caller to deliver with `rooms/keys/welcome`. A request that repeats the
+/// admission the agent last applied for the room (same `member`, same `KeyPackageRef`,
+/// within 24 hours and before the next advance) is answered with that admission's Welcome
+/// (item 8). A pending removal it settles first is
 /// settled by `rooms/owner/group/remove/0.3` item 8 and reported as this task's own: refused
 /// `earlierRemovalRefused` (`{member, code, listKept}`) when settling discards it, or
 /// `hostUnreachable` at `stage: revocation` when its list goes unanswered — none of this
 /// request's own work done either way. `hostRefused` means only that the host declined this
 /// request's own advance (`{code, reason}`).
-/// Auth: as 0.1.
+/// Auth: `credentialWrite` capability, plus the caller's `admin` authority credential for
+/// the room in this agent's vault.
 pub const TASK_ROOMS_OWNER_GROUP_ADD_0_3: &str =
     <trust_tasks_rs::specs::rooms::owner::group::add::v0_3::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
@@ -1252,19 +1209,14 @@ pub const TASK_ROOMS_OWNER_GROUP_ADD_0_3: &str =
 pub const TASK_ROOMS_OWNER_GROUP_REMOVE_0_1: &str =
     "https://trusttasks.org/spec/rooms/owner/group/remove/0.1";
 
-/// `spec/rooms/owner/group/remove/0.2` — 0.1, withdrawing first: the agent signs the
-/// room's next revocation list (a `subject` entry for the member), delivers it to the host
-/// and only then advances the room, so the host refuses the member's credentials at once.
-/// Refuses a `private` room (`privateRoom`), where 0.1 remains the removal.
+/// `spec/rooms/owner/group/remove/0.3` — withdraw first: the agent signs the room's next
+/// revocation list (a `subject` entry for the member), delivers it to the host and only
+/// then advances the room, so the host refuses the member's credentials at once. A pending
+/// removal whose list the host refuses when it is delivered again is settled by what the
+/// refusal shows; the request at which it settled is refused `earlierRemovalRefused`
+/// (`{member, code, listKept}`) and does none of its own work. Refuses a `private` room
+/// (`privateRoom`), where 0.1 remains the removal.
 /// Auth: as 0.1, plus control of the room's signing key (`signingKeyId`).
-pub const TASK_ROOMS_OWNER_GROUP_REMOVE_0_2: &str =
-    <trust_tasks_rs::specs::rooms::owner::group::remove::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
-
-/// `spec/rooms/owner/group/remove/0.3` — 0.2, and a pending removal whose list the host
-/// refuses when it is delivered again is settled by what the refusal shows; the request at
-/// which it settled is refused `earlierRemovalRefused` (`{member, code, listKept}`) and does
-/// none of its own work.
-/// Auth: as 0.2.
 pub const TASK_ROOMS_OWNER_GROUP_REMOVE_0_3: &str =
     <trust_tasks_rs::specs::rooms::owner::group::remove::v0_3::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
@@ -1276,20 +1228,15 @@ pub const TASK_ROOMS_OWNER_GROUP_REMOVE_0_3: &str =
 pub const TASK_ROOMS_OWNER_REVOKE_0_1: &str =
     <trust_tasks_rs::specs::rooms::owner::revoke::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
-/// `spec/rooms/owner/group/renew/0.1` — renew a sealed room: advance its group with a
+/// `spec/rooms/owner/group/renew/0.2` — renew a sealed room: advance its group with a
 /// commit that adds and removes nobody, and the room's epoch at its host with that commit
 /// (host first, then this agent's group). The only correct renewal of an `attributed` or
-/// `private` room; an `open` room renews with `rooms/epoch/mint` directly.
+/// `private` room; an `open` room renews with `rooms/epoch/mint` directly. A pending
+/// removal it settles first is reported as this task's own, as `rooms/owner/group/add/0.3`
+/// reports it (`earlierRemovalRefused`; `hostUnreachable` at a `stage`; `hostRefused` for
+/// this request's own advance only).
 /// Auth: `credentialWrite` capability, plus the caller's `admin` authority credential for
 /// the room in this agent's vault.
-pub const TASK_ROOMS_OWNER_GROUP_RENEW_0_1: &str =
-    "https://trusttasks.org/spec/rooms/owner/group/renew/0.1";
-
-/// `spec/rooms/owner/group/renew/0.2` — 0.1, and a pending removal it settles first is
-/// reported as this task's own, as `rooms/owner/group/add/0.3` reports it
-/// (`earlierRemovalRefused`; `hostUnreachable` at a `stage`; `hostRefused` for this
-/// request's own advance only).
-/// Auth: as 0.1.
 pub const TASK_ROOMS_OWNER_GROUP_RENEW_0_2: &str =
     <trust_tasks_rs::specs::rooms::owner::group::renew::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
@@ -2862,20 +2809,15 @@ pub const ALL_URIS: &[&str] = &[
     TASK_VTA_MEMORY_PUT_0_1,
     TASK_VTA_MEMORY_LIST_0_1,
     TASK_ROOMS_KEYS_PRESENT_0_2,
-    TASK_ROOMS_KEYS_OPEN_0_1,
     TASK_ROOMS_KEYS_OPEN_0_2,
-    TASK_ROOMS_KEYS_KEY_PACKAGE_0_1,
     TASK_ROOMS_KEYS_KEY_PACKAGE_0_2,
     TASK_ROOMS_KEYS_WELCOME_0_1,
     TASK_ROOMS_KEYS_COMMIT_0_1,
-    TASK_ROOMS_KEYS_CHAIN_0_1,
     TASK_ROOMS_KEYS_CHAIN_0_2,
-    TASK_ROOMS_KEYS_BACKFILL_0_1,
     TASK_ROOMS_KEYS_BACKFILL_0_2,
     TASK_ROOMS_KEYS_READ_0_1,
     TASK_ROOMS_KEYS_BROWSE_0_1,
     TASK_ROOMS_KEYS_BROWSE_0_2,
-    TASK_ROOMS_KEYS_SEAL_0_1,
     TASK_ROOMS_KEYS_SEAL_0_2,
     TASK_ROOMS_KEYS_ACT_0_1,
     TASK_ROOMS_KEYS_ACT_0_2,
@@ -2883,9 +2825,7 @@ pub const ALL_URIS: &[&str] = &[
     TASK_ROOMS_KEYS_ACT_0_4,
     TASK_ROOMS_KEYS_ACT_0_5,
     TASK_ROOMS_KEYS_ACT_0_6,
-    TASK_ROOMS_KEYS_FILE_KEY_0_1,
     TASK_ROOMS_KEYS_FILE_KEY_0_2,
-    TASK_ROOMS_KEYS_LIST_0_1,
     TASK_ROOMS_KEYS_LIST_0_2,
     TASK_ROOMS_KEYS_LABEL_0_1,
     TASK_ROOMS_KEYS_PROFILE_READ_0_1,
@@ -2897,14 +2837,10 @@ pub const ALL_URIS: &[&str] = &[
     TASK_ROOMS_OWNER_ISSUE_MEMBERSHIP_0_1,
     TASK_ROOMS_OWNER_ISSUE_AUTHORITY_0_2,
     TASK_ROOMS_OWNER_GROUP_CREATE_0_1,
-    TASK_ROOMS_OWNER_GROUP_ADD_0_1,
-    TASK_ROOMS_OWNER_GROUP_ADD_0_2,
     TASK_ROOMS_OWNER_GROUP_ADD_0_3,
     TASK_ROOMS_OWNER_GROUP_REMOVE_0_1,
-    TASK_ROOMS_OWNER_GROUP_REMOVE_0_2,
     TASK_ROOMS_OWNER_GROUP_REMOVE_0_3,
     TASK_ROOMS_OWNER_REVOKE_0_1,
-    TASK_ROOMS_OWNER_GROUP_RENEW_0_1,
     TASK_ROOMS_OWNER_GROUP_RENEW_0_2,
     TASK_VTA_MEMORY_DELETE_0_1,
     // External accounts (`external/*`)

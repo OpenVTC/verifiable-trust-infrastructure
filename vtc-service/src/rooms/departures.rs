@@ -11,7 +11,7 @@
 //! completion, exactly as an administrator's `members/remove/0.2` does ([`remove_member`],
 //! trust-tasks-tf #804): on `open` and `attributed` rooms the member's credentials — an open
 //! offer's too — are withdrawn at the host (`rooms/owner/revoke`, or
-//! `rooms/owner/group/remove/0.3` — 0.2 on an older VTA — which also advances an `attributed`
+//! `rooms/owner/group/remove/0.3`, which also advances an `attributed`
 //! room past them); on a
 //! `private` room they leave the group (`group/remove/0.1`) and an open offer is withdrawn
 //! here. All of it **before** the removal is recorded (R2.1). The removal and the dropping of the owed row are one batch.
@@ -45,7 +45,6 @@ use chrono::{DateTime, Utc};
 use serde_json::{Value, json};
 use trust_tasks_rs::Payload;
 use trust_tasks_rs::specs::rooms::owner::group::remove::v0_1 as owner_remove;
-use trust_tasks_rs::specs::rooms::owner::group::remove::v0_2 as owner_remove_v0_2;
 use trust_tasks_rs::specs::rooms::owner::group::remove::v0_3 as owner_remove_v0_3;
 use trust_tasks_rs::specs::rooms::owner::revoke::v0_1 as owner_revoke;
 use vti_common::audit::{AuditEvent, CommunityRoomChangedData};
@@ -80,7 +79,6 @@ pub const REMOVAL_NOTICE: &str = "Removal ends access to what is written from no
      honours it until it expires, though on a sealed room it opens nothing written after this.";
 
 const OWNER_GROUP_REMOVE: &str = <owner_remove::Payload as Payload>::TYPE_URI;
-const OWNER_GROUP_REMOVE_V0_2: &str = <owner_remove_v0_2::Payload as Payload>::TYPE_URI;
 const OWNER_GROUP_REMOVE_V0_3: &str = <owner_remove_v0_3::Payload as Payload>::TYPE_URI;
 const OWNER_REVOKE: &str = <owner_revoke::Payload as Payload>::TYPE_URI;
 
@@ -163,8 +161,7 @@ pub async fn remove_member(
     }
     if room.visibility != "open" && !offered {
         // 0.3, so an earlier removal the VTA was still settling is never discarded inside
-        // this one (item 8); 0.2 on a VTA that does not serve 0.3, whose request and
-        // response are the same. Every code 0.2 declares, 0.3 declares under the same string.
+        // this one (item 8).
         let req = request::<owner_remove_v0_3::Payload>(json!({
             "roomId": room_id,
             "host": host,
@@ -172,17 +169,10 @@ pub async fn remove_member(
             "signingKeyId": room.signing_key_id,
             "reason": reason,
         }))?;
-        let mut asked = holder
-            .ask(OWNER_GROUP_REMOVE_V0_3, req.clone(), ADVANCE_TIMEOUT)
-            .await;
-        if matches!(&asked, Err(HolderError::Refused { code, .. })
-            if code == "unsupportedType" || code == "unsupportedVersion")
+        match holder
+            .ask(OWNER_GROUP_REMOVE_V0_3, req, ADVANCE_TIMEOUT)
+            .await
         {
-            asked = holder
-                .ask(OWNER_GROUP_REMOVE_V0_2, req, ADVANCE_TIMEOUT)
-                .await;
-        }
-        match asked {
             Ok(answer) => {
                 let r: owner_remove_v0_3::Response = shape("rooms/owner/group/remove", &answer)?;
                 return Ok(Removed {

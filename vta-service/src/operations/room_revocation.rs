@@ -1,5 +1,5 @@
 //! A room's revocation list, as its key holder keeps it (`rooms/owner/revoke/0.1`,
-//! `rooms/owner/group/remove/0.2`, trust-tasks-tf #804).
+//! `rooms/owner/group/remove/0.3`, trust-tasks-tf #804).
 //!
 //! The list is the **room's** statement — signed with the room's key, cumulative, numbered —
 //! and this agent is where it is made: it holds the room's key, so only it can sign the
@@ -182,7 +182,7 @@ pub async fn keep(groups: &KeyspaceHandle, list: &RevocationList) -> Result<(), 
 }
 
 /// Undo [`keep`] of `signed`, restoring `previous` — only while `signed` is still the list
-/// held, so a later list built on it is never lost. `rooms/owner/group/remove/0.2` item 6:
+/// held, so a later list built on it is never lost. `rooms/owner/group/remove/0.3` item 6:
 /// a list no host accepted is discarded with the removal it was for. Called under
 /// [`signing_lock`].
 pub async fn discard_unaccepted(

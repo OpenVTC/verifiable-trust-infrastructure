@@ -701,7 +701,7 @@ pub async fn cmd_rooms_renew(
 
 /// `pnm rooms renew` is an open room's renewal only. A sealed room (`attributed` or
 /// `private`) renews through the owner's key holder, which advances the group with a commit
-/// and the host with it (`rooms/owner/group/renew/0.1`); a bare mint would brick the room
+/// and the host with it (`rooms/owner/group/renew/0.2`); a bare mint would brick the room
 /// for writing while looking like success.
 fn refuse_sealed_renew(visibility: &str, target: &RoomTarget<'_>) -> Result<(), String> {
     if visibility == "open" {
@@ -1681,9 +1681,7 @@ impl Sealed {
 /// The epoch cases have opposite remedies, so they are told apart by reason —
 /// `notDelivered` (catch up), `beyondChain` (backfill) and `removed` (no commit will
 /// help: `rooms/keys/{open,file-key}/0.2` say a caller MUST NOT retry after catching up)
-/// — never by the message. The text checks are for a VTA that predates the reasons, and
-/// for one that serves only `rooms/keys/file-key/0.1`, which declares no `removed`: such a
-/// VTA answers a removed member's file `notDelivered` and says the removal in its message.
+/// — never by the message. The text checks are only for a refusal that carries no reason.
 fn epoch_refusal_hint(e: &VtaError, target: &RoomTarget<'_>, code: &str, sealed: Sealed) -> String {
     let noun = sealed.noun();
     let text = e.to_string();
@@ -1691,11 +1689,7 @@ fn epoch_refusal_hint(e: &VtaError, target: &RoomTarget<'_>, code: &str, sealed:
         .then(|| e.rejection_details())
         .flatten()
         .and_then(|d| d.get("reason"))
-        .and_then(Value::as_str)
-        .map(|r| match r {
-            "notDelivered" if text.contains("was removed from room") => "removed",
-            r => r,
-        });
+        .and_then(Value::as_str);
     let backfill = || {
         format!(
             "The {noun} is older than any key this VTA holds — it was written before you \
@@ -2250,8 +2244,8 @@ pub async fn cmd_rooms_owner_group_create(
 /// not that refusal.
 ///
 /// It is `rooms/owner/group/{add,renew,remove}:earlierRemovalRefused` at `add/0.3`,
-/// `renew/0.2` and `remove/0.3`, and at the earlier versions of add and renew the task's own
-/// `hostRefused` carrying the same `details` (`member`, `code`, `listKept`) —
+/// `renew/0.2` and `remove/0.3`, and at `remove/0.1` (a `private` room's removal) the
+/// task's own `hostRefused` carrying the same `details` (`member`, `code`, `listKept`) —
 /// `rooms/owner/group/remove/0.3` item 8.2. The earlier removal did not take effect, and
 /// nothing of `this` was done: the fix is to run the command again, then remove the
 /// earlier member again if that is still wanted.
@@ -2295,8 +2289,7 @@ fn earlier_removal_refused(
 
 /// `rooms owner group-remove` — remove a member from a room.
 ///
-/// With `signing_key_id`, `rooms/owner/group/remove/0.3` (0.2 on a VTA that does not serve
-/// it): the room's key withdraws the member's credentials at the host first, and then the
+/// With `signing_key_id`, `rooms/owner/group/remove/0.3`: the room's key withdraws the member's credentials at the host first, and then the
 /// room advances — the removal takes effect at the host at once. On a `private` room, where
 /// the host cannot be told whom to refuse, it refuses and this falls back to 0.1, which the
 /// specification keeps as that tier's removal. Without `signing_key_id`, 0.1: the group
@@ -2482,8 +2475,7 @@ pub async fn cmd_rooms_owner_revoke(
     Ok(())
 }
 
-/// `rooms owner group-renew` — renew a sealed room (`rooms/owner/group/renew/0.2`, or 0.1
-/// against an older VTA): advance its group with a commit that changes no membership, and
+/// `rooms owner group-renew` — renew a sealed room (`rooms/owner/group/renew/0.2`): advance its group with a commit that changes no membership, and
 /// the room at its host with that commit. An earlier removal the VTA was settling, refused
 /// at the host, is explained as `group-remove` explains it: nothing of the renewal was done.
 pub async fn cmd_rooms_owner_group_renew(
@@ -2522,7 +2514,7 @@ pub async fn cmd_rooms_owner_group_renew(
 }
 
 /// `rooms owner group-add` — admit a member from their KeyPackage
-/// (`rooms/owner/group/add/0.3`, or 0.2 / 0.1 against an older VTA) and write the Welcome
+/// (`rooms/owner/group/add/0.3`) and write the Welcome
 /// to `out` for delivery. An earlier removal the VTA was settling, refused at the host, is
 /// explained as `group-remove` explains it: nothing of the admission was done.
 pub async fn cmd_rooms_owner_group_add(
@@ -3206,31 +3198,20 @@ async fn holds_group(
 
 /// The KeyPackage for an acceptance: the one the VTA already holds for this room, member
 /// and invitation — which another surface may already have sent — or a new one
-/// (`rooms/keys/key-package/0.2`). A VTA without 0.2 mints a new one at 0.1, which
-/// replaces any it held: an acceptance another surface began cannot then be finished here.
+/// (`rooms/keys/key-package/0.2`).
 async fn offered_key_package(
     client: &VtaClient,
     room: &str,
     invitation: &str,
 ) -> Result<String, Box<dyn std::error::Error>> {
-    match client.room_key_package_v0_2(room, invitation).await {
-        Ok(kp) => {
-            if kp.already_minted {
-                eprintln!(
-                    "Your VTA already held a KeyPackage for this offer — another surface may \
-                     have begun this acceptance; finishing it."
-                );
-            }
-            Ok(kp.key_package.to_string())
-        }
-        Err(VtaError::UnsupportedTaskType { .. }) => {
-            let minted = client
-                .idempotent(|| client.room_key_package(room, invitation))
-                .await?;
-            Ok(minted.key_package.to_string())
-        }
-        Err(e) => Err(e.into()),
+    let kp = client.room_key_package(room, invitation).await?;
+    if kp.already_minted {
+        eprintln!(
+            "Your VTA already held a KeyPackage for this offer — another surface may \
+             have begun this acceptance; finishing it."
+        );
     }
+    Ok(kp.key_package.to_string())
 }
 
 /// `vtc/rooms/memberships/list/0.1`, signed as the member: the community's whole record of
@@ -3826,21 +3807,6 @@ mod tests {
             "{text}"
         );
         assert!(text.contains("Files sealed since then"), "{text}");
-        assert!(!text.contains("keys commit"), "{text}");
-
-        // A VTA serving only file-key 0.1 has no `removed` to send: it answers
-        // `notDelivered` and says the removal in its message. The operator is still not
-        // sent to catch up.
-        let old_vta = file_key_rejected(
-            "notDelivered",
-            "the file is sealed under epoch 4, and this member was removed from room `r`'s \
-             group at epoch 3: no commit will make its key derivable here",
-        );
-        let text = file_key_refusal_hint(&old_vta, &vtc_target());
-        assert!(
-            text.contains("You were removed from this room's group"),
-            "{text}"
-        );
         assert!(!text.contains("keys commit"), "{text}");
 
         // Only behind: catch up.

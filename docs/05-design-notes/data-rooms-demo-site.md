@@ -209,7 +209,7 @@ enough to keep rather than delete.*
 A room's DID document names a mediator and nothing else
 (`vta-sdk/templates/room.json`), so resolving a room DID does not yield a host.
 That is **by design**, and the specification says so in as many words. From
-`rooms/keys/backfill/0.1`:
+`rooms/keys/backfill/0.2`:
 
 > The host to fetch from, as a DID. **Named by the caller because nothing maps a
 > room to its host**: a room is portable — re-point it and it has moved — so a

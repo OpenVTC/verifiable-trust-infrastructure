@@ -3081,18 +3081,6 @@ fn table() -> Vec<(&'static str, Conformance)> {
         // the expiry on a minted package (which is what bounds retained key
         // material).
         (
-            uris::TASK_ROOMS_KEYS_KEY_PACKAGE_0_1,
-            checked!(
-                specs::rooms::keys::key_package::v0_1::Payload,
-                specs::rooms::keys::key_package::v0_1::Response,
-                json!({
-                    "roomId": "did:webvh:example.com:rooms:northwind",
-                    "invitation": "eyJpZCI6InVybjp1dWlkOnZpYy0xIn0"
-                }),
-                json!({ "keyPackage": "AAECAwQFBgcICQ", "expiresAt": TS })
-            ),
-        ),
-        (
             uris::TASK_ROOMS_KEYS_KEY_PACKAGE_0_2,
             checked!(
                 specs::rooms::keys::key_package::v0_2::Payload,
@@ -3131,25 +3119,6 @@ fn table() -> Vec<(&'static str, Conformance)> {
             ),
         ),
         (
-            uris::TASK_ROOMS_KEYS_CHAIN_0_1,
-            checked!(
-                specs::rooms::keys::chain::v0_1::Payload,
-                specs::rooms::keys::chain::v0_1::Response,
-                json!({
-                    "roomId": "did:webvh:example.com:rooms:northwind",
-                    "links": [
-                        { "epoch": 3, "wrapped": "Tf6yNb2VhZx5pRoS7wCl9Q", "nonce": "d2Bv0So4As3uXxT2" },
-                        { "epoch": 2, "wrapped": "Wq8zMd4XjBy7rTqU9yEn1Q", "nonce": "e3Cw1Tp5Bt4vYyU3" }
-                    ]
-                }),
-                json!({
-                    "roomId": "did:webvh:example.com:rooms:northwind",
-                    "earliestReadableEpoch": 1,
-                    "stored": 2
-                })
-            ),
-        ),
-        (
             uris::TASK_ROOMS_KEYS_CHAIN_0_2,
             checked!(
                 specs::rooms::keys::chain::v0_2::Payload,
@@ -3183,27 +3152,6 @@ fn table() -> Vec<(&'static str, Conformance)> {
                     "fetched": 3,
                     "stored": 0,
                     "epochFloor": 3
-                })
-            ),
-        ),
-        (
-            uris::TASK_ROOMS_KEYS_BACKFILL_0_1,
-            checked!(
-                specs::rooms::keys::backfill::v0_1::Payload,
-                specs::rooms::keys::backfill::v0_1::Response,
-                json!({
-                    "roomId": "did:webvh:example.com:rooms:northwind",
-                    "host": "did:webvh:example.com:northwind-community",
-                    "fromEpoch": 6
-                }),
-                // All three numbers, because the response's whole point is that
-                // they come apart: two rungs arrived, both were new, and the
-                // reach moved to the room's first epoch.
-                json!({
-                    "roomId": "did:webvh:example.com:rooms:northwind",
-                    "earliestReadableEpoch": 1,
-                    "fetched": 2,
-                    "stored": 2
                 })
             ),
         ),
@@ -3332,26 +3280,6 @@ fn table() -> Vec<(&'static str, Conformance)> {
                             "recordCount": 1,
                             "headVersion": 413
                         }
-                    }
-                })
-            ),
-        ),
-        (
-            uris::TASK_ROOMS_KEYS_SEAL_0_1,
-            checked!(
-                specs::rooms::keys::seal::v0_1::Payload,
-                specs::rooms::keys::seal::v0_1::Response,
-                json!({
-                    "roomId": "did:webvh:example.com:rooms:northwind",
-                    "key": "giXFLTGBdnnQJRoIsktuIg",
-                    "version": 1,
-                    "plaintext": "IyBOb3J0aHdpbmQ"
-                }),
-                json!({
-                    "sealed": {
-                        "ciphertext": "3QhV1sVvR0m5xAqZ7Aw2mQnR4vBk8QLp3wXc9TgYw",
-                        "nonce": "b0Zt8Qm2Yq1sVvR0",
-                        "epoch": 4
                     }
                 })
             ),
@@ -3566,23 +3494,6 @@ fn table() -> Vec<(&'static str, Conformance)> {
             ),
         ),
         (
-            uris::TASK_ROOMS_KEYS_LIST_0_1,
-            checked!(
-                specs::rooms::keys::list::v0_1::Payload,
-                specs::rooms::keys::list::v0_1::Response,
-                json!({}),
-                json!({
-                    "rooms": [
-                        {
-                            "roomId": "did:webvh:example.com:rooms:northwind",
-                            "epoch": 4,
-                            "earliestReadableEpoch": 1
-                        }
-                    ]
-                })
-            ),
-        ),
-        (
             uris::TASK_ROOMS_KEYS_LIST_0_2,
             checked!(
                 specs::rooms::keys::list::v0_2::Payload,
@@ -3750,36 +3661,6 @@ fn table() -> Vec<(&'static str, Conformance)> {
             ),
         ),
         (
-            uris::TASK_ROOMS_OWNER_GROUP_ADD_0_1,
-            checked!(
-                specs::rooms::owner::group::add::v0_1::Payload,
-                specs::rooms::owner::group::add::v0_1::Response,
-                json!({ "roomId": "did:webvh:example.com:rooms:northwind",
-                    "host": "did:webvh:example.com:northwind-community",
-                    "member": "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
-                    "keyPackage": "AAEAAgADAAQ" }),
-                // The Welcome comes back to the caller, never through the host.
-                json!({ "roomId": "did:webvh:example.com:rooms:northwind",
-                    "member": "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
-                    "epoch": 2, "welcome": "AAEAAgADAAQ" })
-            ),
-        ),
-        (
-            uris::TASK_ROOMS_OWNER_GROUP_ADD_0_2,
-            checked!(
-                specs::rooms::owner::group::add::v0_2::Payload,
-                specs::rooms::owner::group::add::v0_2::Response,
-                json!({ "roomId": "did:webvh:example.com:rooms:northwind",
-                    "host": "did:webvh:example.com:northwind-community",
-                    "member": "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
-                    "keyPackage": "AAEAAgADAAQ" }),
-                // A repeat (item 8) answers with the same members as the first admission.
-                json!({ "roomId": "did:webvh:example.com:rooms:northwind",
-                    "member": "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
-                    "epoch": 2, "welcome": "AAEAAgADAAQ", "ratchetTree": "AAEAAgADAAQ" })
-            ),
-        ),
-        (
             uris::TASK_ROOMS_OWNER_GROUP_ADD_0_3,
             checked!(
                 specs::rooms::owner::group::add::v0_3::Payload,
@@ -3806,27 +3687,6 @@ fn table() -> Vec<(&'static str, Conformance)> {
                 json!({ "roomId": "did:webvh:example.com:rooms:northwind",
                     "member": "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
                     "epoch": 4 })
-            ),
-        ),
-        (
-            uris::TASK_ROOMS_OWNER_GROUP_REMOVE_0_2,
-            checked!(
-                specs::rooms::owner::group::remove::v0_2::Payload,
-                specs::rooms::owner::group::remove::v0_2::Response,
-                json!({ "roomId": "did:webvh:example.com:rooms:northwind",
-                    "host": "did:webvh:example.com:northwind-community",
-                    "mirrors": ["did:webvh:mirror.example.com:northwind"],
-                    "member": "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
-                    "signingKeyId": "room-northwind-signing",
-                    "reason": "Left the deal team" }),
-                // The withdrawal in force at the host, then the epoch sealed without them.
-                json!({ "roomId": "did:webvh:example.com:rooms:northwind",
-                    "member": "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
-                    "revocation": { "sequence": 3,
-                        "digest": "zQmbWqxBEKC3P8tqsKc98xmWNzrzDtRLMiMPL8wBuTGsMnR" },
-                    "revokedAt": "2026-10-16T09:29:58Z",
-                    "epoch": 4,
-                    "mirrorsPending": ["did:webvh:mirror.example.com:northwind"] })
             ),
         ),
         (
@@ -3876,17 +3736,6 @@ fn table() -> Vec<(&'static str, Conformance)> {
             ),
         ),
         (
-            uris::TASK_ROOMS_OWNER_GROUP_RENEW_0_1,
-            checked!(
-                specs::rooms::owner::group::renew::v0_1::Payload,
-                specs::rooms::owner::group::renew::v0_1::Response,
-                json!({ "roomId": "did:webvh:example.com:rooms:northwind",
-                    "host": "did:webvh:example.com:northwind-community",
-                    "reason": "Quarterly renewal" }),
-                json!({ "roomId": "did:webvh:example.com:rooms:northwind", "epoch": 5 })
-            ),
-        ),
-        (
             uris::TASK_ROOMS_OWNER_GROUP_RENEW_0_2,
             checked!(
                 specs::rooms::owner::group::renew::v0_2::Payload,
@@ -3930,24 +3779,6 @@ fn table() -> Vec<(&'static str, Conformance)> {
             ),
         ),
         (
-            uris::TASK_ROOMS_KEYS_OPEN_0_1,
-            checked!(
-                specs::rooms::keys::open::v0_1::Payload,
-                specs::rooms::keys::open::v0_1::Response,
-                json!({
-                    "roomId": "did:webvh:example.com:rooms:northwind",
-                    "key": "giXFLTGBdnnQJRoIsktuIg",
-                    "version": 1,
-                    "sealed": {
-                        "ciphertext": "1ep1PJuf8-yNmTndwcuMxA",
-                        "nonce": "AAAAAAAAAAAAAAAA",
-                        "epoch": 1
-                    }
-                }),
-                json!({ "plaintext": "YSBkZWNpc2lvbg" })
-            ),
-        ),
-        (
             uris::TASK_ROOMS_KEYS_OPEN_0_2,
             checked!(
                 specs::rooms::keys::open::v0_2::Payload,
@@ -3963,23 +3794,6 @@ fn table() -> Vec<(&'static str, Conformance)> {
                     }
                 }),
                 json!({ "plaintext": "YSBkZWNpc2lvbg" })
-            ),
-        ),
-        (
-            uris::TASK_ROOMS_KEYS_FILE_KEY_0_1,
-            checked!(
-                specs::rooms::keys::file_key::v0_1::Payload,
-                specs::rooms::keys::file_key::v0_1::Response,
-                json!({
-                    "roomId": "did:webvh:example.com:rooms:northwind",
-                    "fileId": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
-                    "purpose": "open",
-                    "epoch": 5
-                }),
-                json!({
-                    "key": "qPm3rH0xU1d5wR6x0yTq8ZbV7k2nC4aE9fG1hJ3kL5M",
-                    "epoch": 5
-                })
             ),
         ),
         (

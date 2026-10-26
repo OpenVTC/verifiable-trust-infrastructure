@@ -44,16 +44,11 @@ use super::helpers::{
     TRANSPORT_TRUST_TASK, TrustTaskOutcome, app_error_to_reject, parse_payload, success_response,
 };
 
-/// How long an unused KeyPackage's private half is retained.
-///
-/// Bounded because the private half *is* retained key material: a caller that minted and
-/// never joined has left a key behind, and one that minted repeatedly has left a pile.
-const KEY_PACKAGE_LIFETIME_SECS: u64 = 7 * 24 * 60 * 60;
-
 /// How long a KeyPackage `rooms/keys/key-package/0.2` minted is held.
 ///
-/// Longer than 0.1's because 0.2's KeyPackage is the one an acceptance begun on one
-/// surface is finished with on another, and the community keeps the Welcome for it for
+/// Bounded because the private half *is* retained key material: a caller that minted and
+/// never joined has left a key behind. Fourteen days because the KeyPackage is the one an
+/// acceptance begun on one surface is finished with on another, and the community keeps the Welcome for it for
 /// seven days **from the admission**, which comes after the mint. Held seven days from
 /// the mint, the KeyPackage would expire first and an acceptance the community still
 /// offers to finish could not be (key-package 0.2 *The private half is retained*: a
@@ -67,16 +62,8 @@ const KEY_PACKAGE_V0_2_LIFETIME_SECS: u64 = 14 * 24 * 60 * 60;
 // Requests come from the generated bindings; only the responses are written
 // here, and only because a handler returns a struct rather than a `Value`.
 
-/// `rooms/keys/key-package/0.1#response`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct KeyPackageResponse {
-    pub key_package: String,
-    pub expires_at: String,
-}
-
-/// `rooms/keys/key-package/0.2#response`: 0.1's, with `expiresAt` required and
-/// `alreadyMinted` saying whether this is the KeyPackage already held.
+/// `rooms/keys/key-package/0.2#response`: `alreadyMinted` says whether this is the
+/// KeyPackage already held.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct KeyPackageResponseV0_2 {
@@ -101,65 +88,16 @@ pub struct CommitResponse {
 
 // ─── Handlers ────────────────────────────────────────────────────────────
 
-/// `rooms/keys/key-package/0.1`.
-pub(super) async fn handle_key_package(
-    state: &AppState,
-    auth: &AuthClaims,
-    doc: TrustTask<Value>,
-) -> TrustTaskOutcome {
-    let req: trust_tasks_rs::specs::rooms::keys::key_package::v0_1::Payload =
-        match parse_payload(&doc) {
-            Ok(r) => r,
-            Err(resp) => return resp,
-        };
-
-    // Minting retains a private key against a Welcome that may never come, so it is not
-    // free and is not offered unconditionally.
-    //
-    // The leaf the KeyPackage carries identifies the persona the invitation names — the
-    // member's identity in the room — never the client that asked for it.
-    let invitation =
-        match require_invitation(state, req.invitation.as_deref(), &req.room_id, auth).await {
-            Ok(i) => i,
-            Err(e) => return app_error_to_reject(&doc, e),
-        };
-
-    // Kept under that persona: another persona on this VTA invited to the same room mints
-    // its own, and neither overwrites the other's private half.
-    let member = match room_member::member_as(state, auth, &req.room_id, invitation.subject()).await
-    {
-        Ok(m) => m,
-        Err(e) => return app_error_to_reject(&doc, e),
-    };
-    let minted = match room_groups::mint_key_package(
-        &state.room_groups_ks,
-        &member,
-        KEY_PACKAGE_LIFETIME_SECS,
-        now(),
-    )
-    .await
-    {
-        Ok(m) => m,
-        Err(e) => return app_error_to_reject(&doc, e),
-    };
-
-    record(state, "rooms.keys.key-package", auth, &req.room_id).await;
-    success_response(
-        &doc,
-        KeyPackageResponse {
-            key_package: minted.key_package,
-            expires_at: rfc3339(minted.expires_at),
-        },
-    )
-}
-
 /// `rooms/keys/key-package/0.2`: the KeyPackage already held for this room, member and
 /// invitation while it is outstanding (recipient item 3), else a new one (item 4).
 ///
 /// What lets a member finish, from any surface, an acceptance another began: the second
 /// surface is given the KeyPackage the community already admitted, and the community
-/// answers its acceptance with the Welcome it kept. Under 0.1 the second surface's mint
-/// replaced the first's private half — the one that Welcome is sealed to.
+/// answers its acceptance with the Welcome it kept, rather than a second mint replacing
+/// the first's private half — the one that Welcome is sealed to.
+///
+/// The leaf the KeyPackage carries identifies the persona the invitation names — the
+/// member's identity in the room — never the client that asked for it.
 pub(super) async fn handle_key_package_v0_2(
     state: &AppState,
     auth: &AuthClaims,
@@ -368,146 +306,6 @@ pub(super) async fn handle_commit(
     success_response(&doc, CommitResponse { epoch })
 }
 
-/// `rooms/keys/seal/0.1`.
-///
-/// The mirror of [`handle_open`], and gated on the same capability for the same reason:
-/// `RoomOpen` governs a principal's room records, and sealing one is acting on them.
-///
-/// Note what this returns and what it does not. It hands back ciphertext; it does not store
-/// anything and does not reach the room's host. A caller that wanted the record written must
-/// present its own authority there, which is the separation that keeps this VTA out of the
-/// decision about what a room contains.
-pub(super) async fn handle_seal(
-    state: &AppState,
-    auth: &AuthClaims,
-    doc: TrustTask<Value>,
-) -> TrustTaskOutcome {
-    if let Err(r) = super::helpers::require_capability(
-        state,
-        auth,
-        &doc,
-        Capability::RoomOpen,
-        "sealing a room record",
-    )
-    .await
-    {
-        return r;
-    }
-
-    let req: trust_tasks_rs::specs::rooms::keys::seal::v0_1::Payload = match parse_payload(&doc) {
-        Ok(r) => r,
-        Err(resp) => return resp,
-    };
-
-    let plaintext = match base64::Engine::decode(
-        &base64::engine::general_purpose::URL_SAFE_NO_PAD,
-        &req.plaintext,
-    ) {
-        Ok(b) => b,
-        Err(e) => {
-            return app_error_to_reject(
-                &doc,
-                vti_common::error::AppError::Validation(format!("plaintext is not base64url: {e}")),
-            );
-        }
-    };
-
-    let named = match named_member(&doc) {
-        Ok(n) => n,
-        Err(resp) => return resp,
-    };
-    let member =
-        match room_member::require_acting_as(state, auth, &req.room_id, named.as_deref()).await {
-            Ok(m) => m,
-            Err(e) => return app_error_to_reject(&doc, e),
-        };
-    let sealed = match room_groups::seal_record(
-        &state.room_groups_ks,
-        &member,
-        &req.key,
-        req.version,
-        &plaintext,
-    )
-    .await
-    {
-        Ok(s) => s,
-        Err(e) => return app_error_to_reject(&doc, e),
-    };
-
-    record(state, "rooms.keys.seal", auth, &req.room_id).await;
-    success_response(
-        &doc,
-        serde_json::json!({
-            "sealed": {
-                "ciphertext": sealed.ciphertext,
-                "nonce": sealed.nonce,
-                "epoch": sealed.epoch,
-            }
-        }),
-    )
-}
-
-/// `rooms/keys/list/0.1`.
-///
-/// Which rooms this VTA can open, and how far back each reads.
-///
-/// Gated on `RoomOpen` because that is the capability the answer is *about*: an agent that
-/// may not open a principal's rooms has no business enumerating them, and the list is the
-/// principal's room membership as key custody sees it — more than any single room operation
-/// discloses.
-pub(super) async fn handle_list(
-    state: &AppState,
-    auth: &AuthClaims,
-    doc: TrustTask<Value>,
-) -> TrustTaskOutcome {
-    if let Err(r) = super::helpers::require_capability(
-        state,
-        auth,
-        &doc,
-        Capability::RoomOpen,
-        "listing the rooms this VTA holds keys for",
-    )
-    .await
-    {
-        return r;
-    }
-
-    // The caller's personas only. A room another context's persona holds is not one this
-    // caller can open, and listing it would tell them who else this VTA serves.
-    let members = match room_member::held_by_caller(state, auth).await {
-        Ok(m) => m,
-        Err(e) => return app_error_to_reject(&doc, e),
-    };
-    let mut rooms = Vec::with_capacity(members.len());
-    for m in &members {
-        match room_groups::held_room(&state.room_groups_ks, m).await {
-            Ok(r) => rooms.push((r, held_by(state, auth, m).await)),
-            Err(e) => return app_error_to_reject(&doc, e),
-        }
-    }
-    rooms.sort_by(|(a, pa), (b, pb)| {
-        a.room_id
-            .cmp(&b.room_id)
-            .then_with(|| pa["member"].as_str().cmp(&pb["member"].as_str()))
-    });
-    let (rooms, held): (Vec<_>, Vec<_>) = rooms.into_iter().unzip();
-
-    record(state, "rooms.keys.list", auth, "").await;
-    // One entry per (room, member): a caller who may act as two members of one room — an
-    // administrator whose VTA also holds the community's own place in it — gets the room
-    // twice. The specification's entry has no member of its own and forbids extra ones, so
-    // whose each entry is rides in `ext`, index for index (`held[i]` is `rooms[i]`'s).
-    // Without it the two entries are indistinguishable, and a client cannot name the member
-    // its next request acts as ([`room_member::MEMBER_EXT`]).
-    success_response(
-        &doc,
-        serde_json::json!({
-            "rooms": rooms,
-            "ext": { room_member::MEMBER_EXT: { "held": held } },
-        }),
-    )
-}
-
 /// What `rooms/keys/list` says about whose an entry is: the member (persona DID), the
 /// trust context its key lives in, and the actions the room's grant to it confers — so a
 /// client can tell the community's own place in a room (one that administers it) from a
@@ -542,41 +340,6 @@ fn named_member(doc: &TrustTask<Value>) -> Result<Option<String>, TrustTaskOutco
     room_member::named_member(&doc.payload).map_err(super::helpers::malformed_request_response)
 }
 
-/// `rooms/keys/chain/0.1`.
-///
-/// The principal hands this VTA the room's epoch key chain, so it can open records sealed
-/// before the principal joined.
-///
-/// # Gated on `RoomOpen`, and that is the whole of the authorization
-///
-/// The specification's entitlement is *being this key holder's own principal* — not a
-/// credential the room issued. Fetching these rungs from a host took a room-issued `read`
-/// chain; handing them on takes none, because this VTA is not being asked to believe
-/// anything about the room. It is being handed material it will verify by trying to use it.
-///
-/// `RoomOpen` is the right capability because it is the one that governs *reading a room's
-/// records*, and this extends how far back that reaches. Gating it on anything wider would
-/// grant more than the task needs; on `Sign`, as the oracle's own docs argue, strictly more.
-pub(super) async fn handle_chain(
-    state: &AppState,
-    auth: &AuthClaims,
-    doc: TrustTask<Value>,
-) -> TrustTaskOutcome {
-    chain_at(state, auth, doc, false).await
-}
-
-/// `rooms/keys/chain/0.2`: 0.1, and the room's epoch floor relayed with the rungs — or
-/// alone — which this key holder applies before answering (`EpochFloor`; trust-tasks-tf
-/// #869): it discards what it holds below the floor, never stores a rung at or below it,
-/// and reports the floor it now holds.
-pub(super) async fn handle_chain_v0_2(
-    state: &AppState,
-    auth: &AuthClaims,
-    doc: TrustTask<Value>,
-) -> TrustTaskOutcome {
-    chain_at(state, auth, doc, true).await
-}
-
 /// The rungs a `rooms/keys/chain` request carries, as this crate's type. Converted rather
 /// than clamped: an epoch outside `u32` is a malformed rung.
 fn chain_links(payload: &Value) -> Result<Vec<vti_rooms::wire::EpochLink>, String> {
@@ -587,17 +350,31 @@ fn chain_links(payload: &Value) -> Result<Vec<vti_rooms::wire::EpochLink>, Strin
         .map_err(|_| "an epoch link names an epoch outside the representable range".to_string())
 }
 
-/// `rooms/keys/chain`, at either version.
+/// `rooms/keys/chain/0.2`.
 ///
-/// 0.2's request is read against its **schema**, not through the generated type: the
+/// The principal hands this VTA the room's epoch key chain, so it can open records sealed
+/// before the principal joined, and the room's epoch floor relayed with the rungs — or
+/// alone — which this key holder applies before answering (`EpochFloor`; trust-tasks-tf
+/// #869): it discards what it holds below the floor, never stores a rung at or below it,
+/// and reports the floor it now holds.
+///
+/// # Gated on `RoomOpen`, and that is the whole of the authorization
+///
+/// The specification's entitlement is *being this key holder's own principal* — not a
+/// credential the room issued. Fetching these rungs from a host took a room-issued `read`
+/// chain; handing them on takes none, because this VTA is not being asked to believe
+/// anything about the room. It is being handed material it will verify by trying to use it.
+/// `RoomOpen` governs *reading a room's records*, and this extends how far back that
+/// reaches; anything wider (`Sign`) would grant more than the task needs.
+///
+/// The request is read against its **schema**, not through the generated type: the
 /// generated `Payload` is an untagged enum of "links" or "epochFloor" that, with
 /// `deny_unknown_fields`, cannot hold the request the specification requires most often —
 /// rungs **and** the floor they came with.
-async fn chain_at(
+pub(super) async fn handle_chain_v0_2(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
-    v2: bool,
 ) -> TrustTaskOutcome {
     if let Err(r) = super::helpers::require_capability(
         state,
@@ -611,32 +388,24 @@ async fn chain_at(
         return r;
     }
 
-    let (room_id, relayed_floor) = if v2 {
-        use trust_tasks_rs::validate::ValidatedPayload as _;
-        if let Err(e) =
-            trust_tasks_rs::specs::rooms::keys::chain::v0_2::Payload::validate_value(&doc.payload)
-        {
-            return super::helpers::malformed_request_response(format!(
-                "payload refused by its schema: {}",
-                e.messages().join("; ")
-            ));
-        }
-        (
-            doc.payload["roomId"]
-                .as_str()
-                .unwrap_or_default()
-                .to_string(),
-            doc.payload
-                .get("epochFloor")
-                .and_then(Value::as_u64)
-                .map(|f| u32::try_from(f).unwrap_or(u32::MAX)),
-        )
-    } else {
-        match parse_payload::<trust_tasks_rs::specs::rooms::keys::chain::v0_1::Payload>(&doc) {
-            Ok(r) => (r.room_id.to_string(), None),
-            Err(resp) => return resp,
-        }
-    };
+    use trust_tasks_rs::validate::ValidatedPayload as _;
+    if let Err(e) =
+        trust_tasks_rs::specs::rooms::keys::chain::v0_2::Payload::validate_value(&doc.payload)
+    {
+        return super::helpers::malformed_request_response(format!(
+            "payload refused by its schema: {}",
+            e.messages().join("; ")
+        ));
+    }
+    let room_id = doc.payload["roomId"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
+    let relayed_floor = doc
+        .payload
+        .get("epochFloor")
+        .and_then(Value::as_u64)
+        .map(|f| u32::try_from(f).unwrap_or(u32::MAX));
     // Converted rather than clamped: an epoch outside `u32` is a malformed rung, and
     // saturating it to `u32::MAX` would store one under an epoch nobody will ever ask for —
     // a delivery that reports success and extends nothing.
@@ -656,9 +425,8 @@ async fn chain_at(
         Ok(m) => m,
         Err(e) => return app_error_to_reject(&doc, e),
     };
-    // The floor first (item 2: before answering, and before any rung is stored), and at 0.1
-    // too: a 0.1 delivery is exactly how a rung the room has forgotten would come back.
-    // With no group, `store_links` refuses as before: never keep a floor for a room this key
+    // The floor first (item 2: before answering, and before any rung is stored). With no
+    // group, `store_links` refuses as before: never keep a floor for a room this key
     // holder holds nothing for.
     if let Some(floor) = relayed_floor
         && room_groups::load(&state.room_groups_ks, &member)
@@ -683,12 +451,10 @@ async fn chain_at(
         "earliestReadableEpoch": earliest,
         "stored": stored,
     });
-    if v2 {
-        match room_groups::epoch_floor(&state.room_groups_ks, &member).await {
-            Ok(0) => {}
-            Ok(held) => body["epochFloor"] = serde_json::json!(held),
-            Err(e) => return app_error_to_reject(&doc, e),
-        }
+    match room_groups::epoch_floor(&state.room_groups_ks, &member).await {
+        Ok(0) => {}
+        Ok(held) => body["epochFloor"] = serde_json::json!(held),
+        Err(e) => return app_error_to_reject(&doc, e),
     }
     success_response(&doc, body)
 }
@@ -713,46 +479,27 @@ pub(super) fn signing_context<'a>(
     }
 }
 
-/// `rooms/keys/backfill/0.1` — fetch the chain from the host and keep it.
+/// `rooms/keys/backfill/0.2` — fetch the chain from the host and keep it.
 ///
 /// Three hops folded into one, performed by the party that can perform all three:
 /// mint a presentation, ask the host for the rungs, store what comes back. The
 /// member could do the first and third and not the second — a browser reaches its
 /// own agent and no third party — which is the whole reason this task exists.
 ///
-/// **This VTA acts as its principal** (`rooms/keys/backfill/0.1`, *What the recipient
+/// **This VTA acts as its principal** (`rooms/keys/backfill/0.2`, *What the recipient
 /// presents, and to whom*): the `read` grant is the principal persona's own, narrowed
 /// to `read` and granted to the persona, and the `rooms/epoch/chain` document is
 /// issued and signed by the persona ([`send_as_member`]). This VTA's own DID never
 /// reaches the host — it used to be the leaf's subject, the document's issuer and its
 /// signer, which named an identity no room admitted and, for a context-scoped caller,
 /// failed outright: the caller may not sign with the VTA's `#key-0`.
-pub(super) async fn handle_backfill(
-    state: &AppState,
-    auth: &AuthClaims,
-    doc: TrustTask<Value>,
-) -> TrustTaskOutcome {
-    backfill_at(state, auth, doc, false).await
-}
-
-/// `rooms/keys/backfill/0.2`: 0.1, fetched with `rooms/epoch/chain/0.2` where the host
-/// serves it, and the floor that carries applied before answering and reported
-/// (`EpochFloor`; trust-tasks-tf #869). At 0.1 the floor is applied all the same — keeping
-/// a rung the room forgot is never right — and only not reported.
+///
+/// Fetched with `rooms/epoch/chain/0.2`, and the floor that carries applied before
+/// answering and reported (`EpochFloor`; trust-tasks-tf #869).
 pub(super) async fn handle_backfill_v0_2(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
-) -> TrustTaskOutcome {
-    backfill_at(state, auth, doc, true).await
-}
-
-/// `rooms/keys/backfill`, at either version.
-async fn backfill_at(
-    state: &AppState,
-    auth: &AuthClaims,
-    doc: TrustTask<Value>,
-    v2: bool,
 ) -> TrustTaskOutcome {
     if let Err(r) = super::helpers::require_capability(
         state,
@@ -766,27 +513,10 @@ async fn backfill_at(
         return r;
     }
 
-    let req: trust_tasks_rs::specs::rooms::keys::backfill::v0_1::Payload = if v2 {
-        // 0.2's request is 0.1's; parsed as 0.2 to hold it to its own schema, then read as
-        // 0.1's members.
-        match parse_payload::<trust_tasks_rs::specs::rooms::keys::backfill::v0_2::Payload>(&doc)
-            .and_then(|_| {
-                let mut v0_1 = doc.payload.clone();
-                if let Some(o) = v0_1.as_object_mut() {
-                    o.remove("ext");
-                }
-                serde_json::from_value(v0_1).map_err(|e| {
-                    super::helpers::malformed_request_response(format!("payload parse: {e}"))
-                })
-            }) {
-            Ok(r) => r,
-            Err(resp) => return resp,
-        }
-    } else {
-        match parse_payload(&doc) {
-            Ok(r) => r,
-            Err(resp) => return resp,
-        }
+    let req: trust_tasks_rs::specs::rooms::keys::backfill::v0_2::Payload = match parse_payload(&doc)
+    {
+        Ok(r) => r,
+        Err(resp) => return resp,
     };
 
     let resolver = match outbound_resolver(state, &doc) {
@@ -803,7 +533,7 @@ async fn backfill_at(
     // usable only by a party that can sign as the principal: a host of the
     // caller's choosing receives something it cannot act with. What it does gain
     // is sight of the principal's credentials, which is a disclosure rather than
-    // an escalation — see `rooms/keys/backfill/0.1`.
+    // an escalation — see `rooms/keys/backfill/0.2`.
     let named = match named_member(&doc) {
         Ok(n) => n,
         Err(resp) => return resp,
@@ -825,37 +555,21 @@ async fn backfill_at(
         payload["limit"] = serde_json::json!(u64::from(limit));
     }
 
-    // Item 1: fetch with `rooms/epoch/chain/0.2` — the version carrying the floor — and fall
-    // back to 0.1 only for a host that does not serve it.
-    let fetched_v2 = send_as_member_typed(
+    // Item 1: fetch with `rooms/epoch/chain/0.2` — the version carrying the floor.
+    let fetched = send_as_member_typed(
         state,
         auth,
         &member,
         &resolver,
         &req.host,
         vti_rooms::wire::ROOMS_EPOCH_CHAIN_V2_TYPE,
-        payload.clone(),
+        payload,
     )
     .await;
-    let fetched = match fetched_v2 {
-        Err(e) if not_served(&e) => {
-            send_as_member_typed(
-                state,
-                auth,
-                &member,
-                &resolver,
-                &req.host,
-                vti_rooms::wire::ROOMS_EPOCH_CHAIN_TYPE,
-                payload,
-            )
-            .await
-        }
-        other => other,
-    };
     let reply = match fetched {
         Ok(v) => v,
         Err(e) => {
-            use trust_tasks_rs::specs::rooms::keys::backfill::v0_1::error_codes as codes;
+            use trust_tasks_rs::specs::rooms::keys::backfill::v0_2::error_codes as codes;
             return host_failure(
                 &doc,
                 e,
@@ -912,12 +626,10 @@ async fn backfill_at(
         "fetched": fetched,
         "stored": stored,
     });
-    if v2 {
-        match room_groups::epoch_floor(&state.room_groups_ks, &member).await {
-            Ok(0) => {}
-            Ok(held) => body["epochFloor"] = serde_json::json!(held),
-            Err(e) => return app_error_to_reject(&doc, e),
-        }
+    match room_groups::epoch_floor(&state.room_groups_ks, &member).await {
+        Ok(0) => {}
+        Ok(held) => body["epochFloor"] = serde_json::json!(held),
+        Err(e) => return app_error_to_reject(&doc, e),
     }
     success_response(&doc, body)
 }
@@ -1779,51 +1491,13 @@ async fn browse_at(
     success_response(&doc, body)
 }
 
-/// Which version of a `rooms/keys/{open,file-key}` request is being answered. The
-/// request and response are the same at both; what differs is what `unknownEpoch` may
-/// say (`rooms/keys/{open,file-key}/0.2` *What changed from 0.1*).
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum EpochVersion {
-    V0_1,
-    V0_2,
-}
-
-/// `rooms/keys/open/0.1`.
-pub(super) async fn handle_open(
-    state: &AppState,
-    auth: &AuthClaims,
-    doc: TrustTask<Value>,
-) -> TrustTaskOutcome {
-    open_at(state, auth, doc, EpochVersion::V0_1).await
-}
-
-/// `rooms/keys/open/0.2`: 0.1, with `unknownEpoch`'s `details` declared — including
-/// `beyondChain` for an older epoch the retained chain does not reach, which 0.1 answered
-/// as a bare failure.
+/// `rooms/keys/open/0.2`: decrypt one sealed record; the key never crosses.
+/// `unknownEpoch`'s `details` say why a record did not open — `notDelivered`, `removed`
+/// or `beyondChain` for an older epoch the retained chain does not reach.
 pub(super) async fn handle_open_v0_2(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
-) -> TrustTaskOutcome {
-    open_at(state, auth, doc, EpochVersion::V0_2).await
-}
-
-/// The request members `open` reads — the same at 0.1 and 0.2, each parsed through its
-/// own version's generated type.
-struct OpenRequest {
-    room_id: String,
-    key: String,
-    version: u64,
-    ciphertext: String,
-    nonce: String,
-    epoch: u64,
-}
-
-async fn open_at(
-    state: &AppState,
-    auth: &AuthClaims,
-    doc: TrustTask<Value>,
-    at: EpochVersion,
 ) -> TrustTaskOutcome {
     if let Err(r) = super::helpers::require_capability(
         state,
@@ -1837,44 +1511,22 @@ async fn open_at(
         return r;
     }
 
-    let parsed = match at {
-        EpochVersion::V0_1 => parse_payload::<
-            trust_tasks_rs::specs::rooms::keys::open::v0_1::Payload,
-        >(&doc)
-        .map(|r| OpenRequest {
-            room_id: r.room_id.to_string(),
-            key: r.key.to_string(),
-            version: u64::from(r.version),
-            ciphertext: r.sealed.ciphertext.to_string(),
-            nonce: r.sealed.nonce.to_string(),
-            epoch: u64::from(r.sealed.epoch),
-        }),
-        EpochVersion::V0_2 => parse_payload::<
-            trust_tasks_rs::specs::rooms::keys::open::v0_2::Payload,
-        >(&doc)
-        .map(|r| OpenRequest {
-            room_id: r.room_id.to_string(),
-            key: r.key.to_string(),
-            version: u64::from(r.version),
-            ciphertext: r.sealed.ciphertext.to_string(),
-            nonce: r.sealed.nonce.to_string(),
-            epoch: u64::from(r.sealed.epoch),
-        }),
-    };
-    let req = match parsed {
+    let req: trust_tasks_rs::specs::rooms::keys::open::v0_2::Payload = match parse_payload(&doc) {
         Ok(r) => r,
         Err(resp) => return resp,
     };
+    let room_id = req.room_id.to_string();
+    let version = u64::from(req.version);
 
     let named = match named_member(&doc) {
         Ok(n) => n,
         Err(resp) => return resp,
     };
-    let member =
-        match room_member::require_acting_as(state, auth, &req.room_id, named.as_deref()).await {
-            Ok(m) => m,
-            Err(e) => return app_error_to_reject(&doc, e),
-        };
+    let member = match room_member::require_acting_as(state, auth, &room_id, named.as_deref()).await
+    {
+        Ok(m) => m,
+        Err(e) => return app_error_to_reject(&doc, e),
+    };
     // `version` is where the caller believes the body was sealed: `sealed.version` from the
     // host where it served one, else the record's own. A record curated by a host that
     // predates `sealed.version` opens at neither, so earlier versions are searched — and the
@@ -1883,27 +1535,27 @@ async fn open_at(
     let (plaintext, opened_at) = match room_groups::open_record_at(
         &state.room_groups_ks,
         &member,
-        &req.key,
-        req.version,
-        &req.ciphertext,
-        &req.nonce,
-        u32::try_from(req.epoch).unwrap_or(u32::MAX),
+        req.key.as_str(),
+        version,
+        req.sealed.ciphertext.as_str(),
+        req.sealed.nonce.as_str(),
+        u32::try_from(u64::from(req.sealed.epoch)).unwrap_or(u32::MAX),
         room_groups::Search::Earlier,
     )
     .await
     {
         Ok(opened) => opened,
-        Err(e) => return open_refused(&doc, e, at),
+        Err(e) => return open_refused(&doc, e),
     };
 
-    record(state, "rooms.keys.open", auth, &req.room_id).await;
+    record(state, "rooms.keys.open", auth, &room_id).await;
     let mut payload = serde_json::json!({
         "plaintext": base64::Engine::encode(
             &base64::engine::general_purpose::URL_SAFE_NO_PAD,
             &plaintext,
         )
     });
-    if opened_at != req.version {
+    if opened_at != version {
         payload["ext"] = serde_json::json!({
             room_member::MEMBER_EXT: { "sealedAt": opened_at },
         });
@@ -1911,26 +1563,7 @@ async fn open_at(
     success_response(&doc, payload)
 }
 
-/// `rooms/keys/file-key/0.1`.
-pub(super) async fn handle_file_key(
-    state: &AppState,
-    auth: &AuthClaims,
-    doc: TrustTask<Value>,
-) -> TrustTaskOutcome {
-    file_key_at(state, auth, doc, EpochVersion::V0_1).await
-}
-
-/// `rooms/keys/file-key/0.2`: 0.1, with `unknownEpoch` reason `removed` for a file sealed
-/// at or after the member's removal.
-pub(super) async fn handle_file_key_v0_2(
-    state: &AppState,
-    auth: &AuthClaims,
-    doc: TrustTask<Value>,
-) -> TrustTaskOutcome {
-    file_key_at(state, auth, doc, EpochVersion::V0_2).await
-}
-
-/// `rooms/keys/file-key`, at either version.
+/// `rooms/keys/file-key/0.2`.
 ///
 /// The one `rooms/keys/*` task that releases a key. `open` keeps the key and returns
 /// plaintext; a file can be a gigabyte, and its bytes must not pass through this VTA, so
@@ -1939,16 +1572,12 @@ pub(super) async fn handle_file_key_v0_2(
 /// leaves, so no sibling can be derived from it.
 ///
 /// Gated on `RoomOpen` for both purposes, as `seal` and `open` are: a sealing key opens the
-/// file it seals.
-///
-/// The request is parsed through 0.2's generated type at both versions: 0.2's request
-/// schema is 0.1's unchanged, and the error codes' strings are the slug's, not the
-/// version's.
-async fn file_key_at(
+/// file it seals. A file sealed at or after the member's removal is `unknownEpoch` reason
+/// `removed`.
+pub(super) async fn handle_file_key_v0_2(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
-    at: EpochVersion,
 ) -> TrustTaskOutcome {
     use trust_tasks_rs::specs::rooms::keys::file_key::v0_2 as spec;
 
@@ -2056,21 +1685,14 @@ async fn file_key_at(
                     Some(serde_json::json!({ "reason": "notDelivered", "heldEpoch": held })),
                 );
             }
-            // 0.2 oracle item 4: `removed`, with `removedAtEpoch`, takes precedence over
+            // Oracle item 4: `removed`, with `removedAtEpoch`, takes precedence over
             // `notDelivered` — an oracle that knows of the removal MUST NOT tell the
-            // caller to catch up. 0.1's closed `detailsSchema` has only `notDelivered`
-            // and `beyondChain`, and an epoch later than any the oracle holds is
-            // `notDelivered` by that item's own definition; there the message says what
-            // the reason cannot, and `heldEpoch` is left out because no epoch this VTA
-            // could reach would open the file.
+            // caller to catch up.
             Err(room_groups::FileKeyError::Removed { epoch, removed_at }) => {
-                let details = match at {
-                    EpochVersion::V0_2 => serde_json::json!({
-                        "reason": "removed",
-                        "removedAtEpoch": removed_at,
-                    }),
-                    EpochVersion::V0_1 => serde_json::json!({ "reason": "notDelivered" }),
-                };
+                let details = serde_json::json!({
+                    "reason": "removed",
+                    "removedAtEpoch": removed_at,
+                });
                 return super::helpers::reject_with_code(
                     &doc,
                     declared(spec::error_codes::UNKNOWN_EPOCH),
@@ -2165,14 +1787,7 @@ fn read_cannot_open(
 /// `rooms/keys/open/0.2` declares them: `notDelivered` (catch up with the commits),
 /// `removed` (nothing will — this member was removed) and `beyondChain` (the retained
 /// chain does not reach back). A client tells them apart by reason, never by message.
-///
-/// At 0.1, which declares no `details` for `unknownEpoch`, the first two are sent as they
-/// always were, and an unreachable older epoch stays the bare validation failure it was.
-fn open_refused(
-    doc: &TrustTask<Value>,
-    e: room_groups::OpenError,
-    at: EpochVersion,
-) -> TrustTaskOutcome {
+fn open_refused(doc: &TrustTask<Value>, e: room_groups::OpenError) -> TrustTaskOutcome {
     use trust_tasks_rs::specs::rooms::keys::open::v0_2::error_codes::UNKNOWN_EPOCH;
     let message = e.to_string();
     match e {
@@ -2188,17 +1803,12 @@ fn open_refused(
             message,
             Some(serde_json::json!({ "reason": "removed", "removedAtEpoch": removed_at })),
         ),
-        room_groups::OpenError::BeyondChain { earliest, .. } if at == EpochVersion::V0_2 => {
-            super::helpers::reject_with_code(
-                doc,
-                declared(UNKNOWN_EPOCH),
-                message,
-                Some(serde_json::json!({ "reason": "beyondChain", "earliestEpoch": earliest })),
-            )
-        }
-        room_groups::OpenError::BeyondChain { .. } => {
-            app_error_to_reject(doc, vti_common::error::AppError::Validation(message))
-        }
+        room_groups::OpenError::BeyondChain { earliest, .. } => super::helpers::reject_with_code(
+            doc,
+            declared(UNKNOWN_EPOCH),
+            message,
+            Some(serde_json::json!({ "reason": "beyondChain", "earliestEpoch": earliest })),
+        ),
         room_groups::OpenError::App(e) => app_error_to_reject(doc, e),
     }
 }
@@ -2401,7 +2011,7 @@ mod verification_tests {
 
 /// `rooms/keys/file-key` and `rooms/keys/open` refusals, as a caller receives them: the
 /// declared code, and `details` that validate against the `detailsSchema` the
-/// specification declares — 0.1's for 0.1, 0.2's for 0.2.
+/// specification declares.
 #[cfg(test)]
 mod file_key_refusal_tests {
     use super::*;
@@ -2413,7 +2023,7 @@ mod file_key_refusal_tests {
     const FILE_ID: &str = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8";
 
     fn request(payload: Value) -> TrustTask<Value> {
-        request_at(vta_sdk::trust_tasks::TASK_ROOMS_KEYS_FILE_KEY_0_1, payload)
+        request_at(vta_sdk::trust_tasks::TASK_ROOMS_KEYS_FILE_KEY_0_2, payload)
     }
 
     fn request_at(uri: &str, payload: Value) -> TrustTask<Value> {
@@ -2445,22 +2055,10 @@ mod file_key_refusal_tests {
 
     async fn ask(state: &AppState, payload: Value) -> Value {
         let auth = crate::test_support::super_admin_claims();
-        body(handle_file_key(state, &auth, request(payload)).await)
+        body(handle_file_key_v0_2(state, &auth, request(payload)).await)
     }
 
-    async fn ask_v0_2(state: &AppState, payload: Value) -> Value {
-        let auth = crate::test_support::super_admin_claims();
-        body(
-            handle_file_key_v0_2(
-                state,
-                &auth,
-                request_at(vta_sdk::trust_tasks::TASK_ROOMS_KEYS_FILE_KEY_0_2, payload),
-            )
-            .await,
-        )
-    }
-
-    async fn open_at_version(state: &AppState, uri: &str, epoch: u32) -> Value {
+    async fn open_at_epoch(state: &AppState, epoch: u32) -> Value {
         let auth = crate::test_support::super_admin_claims();
         let payload = serde_json::json!({
             "roomId": ROOM,
@@ -2468,21 +2066,15 @@ mod file_key_refusal_tests {
             "version": 1,
             "sealed": { "ciphertext": "AAAAAAAAAAAAAAAAAAAAAA", "nonce": "AAAAAAAAAAAAAAAA", "epoch": epoch },
         });
-        let doc = request_at(uri, payload);
-        let out = if uri == vta_sdk::trust_tasks::TASK_ROOMS_KEYS_OPEN_0_2 {
-            handle_open_v0_2(state, &auth, doc).await
-        } else {
-            handle_open(state, &auth, doc).await
-        };
-        body(out)
+        let doc = request_at(vta_sdk::trust_tasks::TASK_ROOMS_KEYS_OPEN_0_2, payload);
+        body(handle_open_v0_2(state, &auth, doc).await)
     }
 
     /// `rooms/keys/file-key/0.2` oracle item 4: a file sealed at or after the member's
     /// removal is `removed`, with `removedAtEpoch` — never `notDelivered`, whose remedy
-    /// (catch up) cannot work. 0.1, whose closed schema has no `removed`, still answers
-    /// `notDelivered` with the removal in its message.
+    /// (catch up) cannot work.
     #[tokio::test]
-    async fn file_key_0_2_says_removed_where_0_1_could_only_say_not_delivered() {
+    async fn file_key_says_removed_never_not_delivered_after_a_removal() {
         let (state, _dir) = crate::test_support::build_signing_test_app_state().await;
         let member = hold_room_at_epoch_2(&state).await;
         room_groups::record_removal_for_test(&state.room_groups_ks, &member, 3)
@@ -2491,7 +2083,7 @@ mod file_key_refusal_tests {
         let open =
             serde_json::json!({ "roomId": ROOM, "fileId": FILE_ID, "purpose": "open", "epoch": 3 });
 
-        let doc = ask_v0_2(&state, open.clone()).await;
+        let doc = ask(&state, open).await;
         assert_eq!(
             doc["payload"]["code"], "rooms/keys/file-key:unknownEpoch",
             "{doc}"
@@ -2502,15 +2094,6 @@ mod file_key_refusal_tests {
         trust_tasks_rs::specs::rooms::keys::file_key::v0_2::error_codes::UNKNOWN_EPOCH
             .check_details(details)
             .unwrap_or_else(|e| panic!("0.2 detailsSchema: {e}: {details}"));
-
-        let doc = ask(&state, open).await;
-        assert_unknown_epoch(&doc, "notDelivered");
-        assert!(
-            doc["payload"]["message"]
-                .as_str()
-                .is_some_and(|m| m.contains("was removed")),
-            "{doc}"
-        );
     }
 
     /// An epoch before the removal is not `removed`: the removal says nothing about it.
@@ -2521,13 +2104,13 @@ mod file_key_refusal_tests {
         room_groups::record_removal_for_test(&state.room_groups_ks, &member, 5)
             .await
             .unwrap();
-        let doc = ask_v0_2(
+        let doc = ask(
             &state,
             serde_json::json!({ "roomId": ROOM, "fileId": FILE_ID, "purpose": "open", "epoch": 4 }),
         )
         .await;
         assert_eq!(doc["payload"]["details"]["reason"], "notDelivered", "{doc}");
-        let doc = ask_v0_2(
+        let doc = ask(
             &state,
             serde_json::json!({ "roomId": ROOM, "fileId": FILE_ID, "purpose": "open", "epoch": 1 }),
         )
@@ -2539,14 +2122,13 @@ mod file_key_refusal_tests {
     }
 
     /// `rooms/keys/open/0.2`: an older epoch the retained chain does not reach is
-    /// `unknownEpoch` reason `beyondChain`, with `earliestEpoch` — where 0.1 answered a
-    /// bare failure, which it still does.
+    /// `unknownEpoch` reason `beyondChain`, with `earliestEpoch`.
     #[tokio::test]
     async fn open_0_2_says_beyond_chain_for_an_epoch_the_chain_does_not_reach() {
         let (state, _dir) = crate::test_support::build_signing_test_app_state().await;
         hold_room_at_epoch_2(&state).await;
 
-        let doc = open_at_version(&state, vta_sdk::trust_tasks::TASK_ROOMS_KEYS_OPEN_0_2, 1).await;
+        let doc = open_at_epoch(&state, 1).await;
         assert_eq!(
             doc["payload"]["code"], "rooms/keys/open:unknownEpoch",
             "{doc}"
@@ -2557,12 +2139,6 @@ mod file_key_refusal_tests {
         trust_tasks_rs::specs::rooms::keys::open::v0_2::error_codes::UNKNOWN_EPOCH
             .check_details(details)
             .unwrap_or_else(|e| panic!("0.2 detailsSchema: {e}: {details}"));
-
-        let doc = open_at_version(&state, vta_sdk::trust_tasks::TASK_ROOMS_KEYS_OPEN_0_1, 1).await;
-        assert_ne!(
-            doc["payload"]["code"], "rooms/keys/open:unknownEpoch",
-            "{doc}"
-        );
     }
 
     /// `rooms/keys/open/0.2`: `notDelivered` and `removed` carry the declared details.
@@ -2580,13 +2156,13 @@ mod file_key_refusal_tests {
                 .check_details(&doc["payload"]["details"])
                 .unwrap_or_else(|e| panic!("0.2 detailsSchema: {e}: {doc}"));
         };
-        let doc = open_at_version(&state, vta_sdk::trust_tasks::TASK_ROOMS_KEYS_OPEN_0_2, 4).await;
+        let doc = open_at_epoch(&state, 4).await;
         check(&doc, "notDelivered");
 
         room_groups::record_removal_for_test(&state.room_groups_ks, &member, 3)
             .await
             .unwrap();
-        let doc = open_at_version(&state, vta_sdk::trust_tasks::TASK_ROOMS_KEYS_OPEN_0_2, 4).await;
+        let doc = open_at_epoch(&state, 4).await;
         check(&doc, "removed");
         assert_eq!(doc["payload"]["details"]["removedAtEpoch"], 3, "{doc}");
     }
@@ -2600,7 +2176,7 @@ mod file_key_refusal_tests {
         assert_eq!(details["reason"], reason, "{doc}");
         // Checked against the schema the specification declares, carried by the
         // generated code, rather than a copy of it kept here.
-        trust_tasks_rs::specs::rooms::keys::file_key::v0_1::error_codes::UNKNOWN_EPOCH
+        trust_tasks_rs::specs::rooms::keys::file_key::v0_2::error_codes::UNKNOWN_EPOCH
             .check_details(details)
             .unwrap_or_else(|e| {
                 panic!("details must match the declared detailsSchema: {e}: {details}")
@@ -2656,7 +2232,7 @@ mod file_key_refusal_tests {
             serde_json::json!({ "roomId": ROOM, "fileId": FILE_ID, "purpose": "seal" }),
         )
         .await;
-        let response: trust_tasks_rs::specs::rooms::keys::file_key::v0_1::Response =
+        let response: trust_tasks_rs::specs::rooms::keys::file_key::v0_2::Response =
             serde_json::from_value(doc["payload"].clone()).expect("a typed response");
         assert_eq!(response.epoch.get(), 2);
     }
@@ -2761,11 +2337,11 @@ mod persona_invitation_tests {
 
     async fn key_package(state: &AppState, auth: &AuthClaims, room: &str, vic: &str) -> Value {
         body(
-            handle_key_package(
+            handle_key_package_v0_2(
                 state,
                 auth,
                 request(
-                    vta_sdk::trust_tasks::TASK_ROOMS_KEYS_KEY_PACKAGE_0_1,
+                    vta_sdk::trust_tasks::TASK_ROOMS_KEYS_KEY_PACKAGE_0_2,
                     serde_json::json!({ "roomId": room, "invitation": vic }),
                 ),
             )
@@ -3103,11 +2679,11 @@ mod per_member_tests {
     ) -> (room_groups::PendingAdvance, Value) {
         let vic = invitation(room, persona).await;
         let minted = body(
-            handle_key_package(
+            handle_key_package_v0_2(
                 state,
                 caller,
                 request(
-                    vta_sdk::trust_tasks::TASK_ROOMS_KEYS_KEY_PACKAGE_0_1,
+                    vta_sdk::trust_tasks::TASK_ROOMS_KEYS_KEY_PACKAGE_0_2,
                     serde_json::json!({ "roomId": room.did, "invitation": vic }),
                 ),
             )
@@ -3141,11 +2717,11 @@ mod per_member_tests {
 
     async fn open(state: &AppState, caller: &AuthClaims, room: &str, rec: &SealedContent) -> Value {
         body(
-            handle_open(
+            handle_open_v0_2(
                 state,
                 caller,
                 request(
-                    vta_sdk::trust_tasks::TASK_ROOMS_KEYS_OPEN_0_1,
+                    vta_sdk::trust_tasks::TASK_ROOMS_KEYS_OPEN_0_2,
                     serde_json::json!({
                         "roomId": room, "key": "notes/1", "version": 1,
                         "sealed": {
@@ -3160,11 +2736,11 @@ mod per_member_tests {
 
     async fn seal(state: &AppState, caller: &AuthClaims, room: &str, text: &str) -> Value {
         body(
-            handle_seal(
+            crate::trust_tasks::room_act::handle_seal_v0_2(
                 state,
                 caller,
                 request(
-                    vta_sdk::trust_tasks::TASK_ROOMS_KEYS_SEAL_0_1,
+                    vta_sdk::trust_tasks::TASK_ROOMS_KEYS_SEAL_0_2,
                     serde_json::json!({
                         "roomId": room, "key": "notes/1", "version": 1,
                         "plaintext": B64.encode(text),
@@ -3199,11 +2775,11 @@ mod per_member_tests {
 
     async fn list(state: &AppState, caller: &AuthClaims) -> Value {
         body(
-            handle_list(
+            crate::trust_tasks::room_label::handle_list_v0_2(
                 state,
                 caller,
                 request(
-                    vta_sdk::trust_tasks::TASK_ROOMS_KEYS_LIST_0_1,
+                    vta_sdk::trust_tasks::TASK_ROOMS_KEYS_LIST_0_2,
                     serde_json::json!({}),
                 ),
             )
@@ -3382,8 +2958,8 @@ mod per_member_tests {
     }
 
     /// Item 6: a different invitation for the same room and member — after a removal and
-    /// re-admission — is given a different KeyPackage; and a KeyPackage 0.1 minted, which
-    /// records no invitation, is never returned by 0.2. Item 7: requests arriving together
+    /// re-admission — is given a different KeyPackage; and one minted with no invitation
+    /// recorded is never returned. Item 7: requests arriving together
     /// are given the same one.
     #[tokio::test]
     async fn only_the_same_invitation_is_given_the_held_key_package() {
@@ -3391,26 +2967,22 @@ mod per_member_tests {
         let room = Party::new();
         let caller = alice_caller();
 
-        let legacy = body(
-            handle_key_package(
-                &state,
-                &caller,
-                request(
-                    vta_sdk::trust_tasks::TASK_ROOMS_KEYS_KEY_PACKAGE_0_1,
-                    serde_json::json!({
-                        "roomId": room.did,
-                        "invitation": invitation(&room, &alice.did).await,
-                    }),
-                ),
-            )
-            .await,
-        );
+        // A KeyPackage minted with no invitation recorded — as `key-package/0.1` minted
+        // them, and as a VTA upgraded from one may still hold.
+        let legacy = room_groups::mint_key_package(
+            &state.room_groups_ks,
+            &Member::new(&room.did, &alice.did).unwrap(),
+            3600,
+            now(),
+        )
+        .await
+        .unwrap();
         let first_vic = invitation(&room, &alice.did).await;
         let first = key_package_v0_2(&state, &caller, &room.did, &first_vic).await;
         assert_eq!(first["payload"]["alreadyMinted"], false, "{first}");
         assert_ne!(
-            first["payload"]["keyPackage"],
-            legacy["payload"]["keyPackage"]
+            first["payload"]["keyPackage"].as_str(),
+            Some(legacy.key_package.as_str())
         );
 
         let second_vic = invitation(&room, &alice.did).await;
@@ -3475,7 +3047,7 @@ mod per_member_tests {
     /// A Welcome sealed to a KeyPackage past its expiry is refused `welcomeInvalid`, as
     /// `rooms/keys/act/0.3`'s `holds_key_package` already treats that package as not held —
     /// and the expired private half is discarded rather than used
-    /// (`rooms/keys/key-package/0.1` *Retention*). Nothing is joined, and the invitation is
+    /// (`rooms/keys/key-package/0.2` *The private half is retained*). Nothing is joined, and the invitation is
     /// not spent, so a fresh package can still be added under it.
     #[tokio::test]
     async fn a_welcome_to_an_expired_key_package_is_refused_and_the_package_discarded() {
@@ -3676,11 +3248,11 @@ mod per_member_tests {
         member: &str,
     ) -> Value {
         body(
-            handle_open(
+            handle_open_v0_2(
                 state,
                 caller,
                 request(
-                    vta_sdk::trust_tasks::TASK_ROOMS_KEYS_OPEN_0_1,
+                    vta_sdk::trust_tasks::TASK_ROOMS_KEYS_OPEN_0_2,
                     serde_json::json!({
                         "roomId": room, "key": "notes/1", "version": 1,
                         "sealed": {

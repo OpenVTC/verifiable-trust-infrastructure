@@ -625,20 +625,11 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     (trust_tasks::TASK_VAULT_CREDENTIALS_PRESENT_0_1, RetrySafe),
     // Reads group state and returns plaintext. Nothing is written, and a second
     // execution is indistinguishable from one.
-    (trust_tasks::TASK_ROOMS_KEYS_OPEN_0_1, ReadOnly),
-    // 0.2 declares `unknownEpoch`'s details; the operation is 0.1's.
     (trust_tasks::TASK_ROOMS_KEYS_OPEN_0_2, ReadOnly),
     // A pure derivation: the same request yields the same key, and nothing is
     // stored but the audit line.
-    (trust_tasks::TASK_ROOMS_KEYS_FILE_KEY_0_1, ReadOnly),
-    // 0.2 adds the `removed` reason to a refusal; the derivation is 0.1's.
     (trust_tasks::TASK_ROOMS_KEYS_FILE_KEY_0_2, ReadOnly),
-    // Minting retains a private key. A retry after a lost reply mints a SECOND
-    // one and leaves a second private half behind for a Welcome that will
-    // consume at most one — a duplicate that costs real key material, which is
-    // exactly the case a key exists for.
-    (trust_tasks::TASK_ROOMS_KEYS_KEY_PACKAGE_0_1, Keyed),
-    // 0.2 converges: a repeat for the same room, member and invitation returns the
+    // Converges: a repeat for the same room, member and invitation returns the
     // KeyPackage the first one minted (recipient item 3), and leaves nothing behind.
     (trust_tasks::TASK_ROOMS_KEYS_KEY_PACKAGE_0_2, RetrySafe),
     // Joining is once. A retry after a lost reply finds the group already
@@ -653,16 +644,13 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     (trust_tasks::TASK_ROOMS_KEYS_COMMIT_0_1, RetrySafe),
     // Rungs are identified by epoch and one already held is never replaced, so a
     // redelivery stores nothing and reports the same reachability. A lost reply
-    // costs the caller the answer, never the state.
-    (trust_tasks::TASK_ROOMS_KEYS_CHAIN_0_1, RetrySafe),
-    // 0.2 adds the floor, which only rises: applying it twice discards nothing more and
-    // reports the same floor.
+    // costs the caller the answer, never the state. The floor only rises: applying it
+    // twice discards nothing more and reports the same floor.
     (trust_tasks::TASK_ROOMS_KEYS_CHAIN_0_2, RetrySafe),
     // Idempotent by epoch on both halves: a rung already held is never replaced,
     // and re-fetching from the host yields the same rungs. A retry that arrives
-    // after the first succeeded stores nothing and reports the same reach.
-    (trust_tasks::TASK_ROOMS_KEYS_BACKFILL_0_1, RetrySafe),
-    // 0.2: and the floor the host serves, which only rises — idempotent as the rungs are.
+    // after the first succeeded stores nothing and reports the same reach. The floor the
+    // host serves only rises — idempotent as the rungs are.
     (trust_tasks::TASK_ROOMS_KEYS_BACKFILL_0_2, RetrySafe),
     // A read changes nothing at the host: it serves the same record, and this
     // agent opens it again. What it may change here is the agent's own epoch
@@ -686,11 +674,10 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     (trust_tasks::TASK_ROOMS_KEYS_BROWSE_0_2, RetrySafe),
     // Sealing is a pure function of the key and the bytes, and it stores nothing:
     // a lost reply costs the caller a round trip, never any state. Re-sealing the
-    // same body yields a different nonce, which is correct and changes nothing.
-    (trust_tasks::TASK_ROOMS_KEYS_SEAL_0_1, RetrySafe),
-    // 0.2 is 0.1 with an optional signature over the body. The signature is a pure
-    // function of the body and the key, and nothing is stored: a retry signs and seals
-    // again, under a fresh nonce, and leaves this VTA's state as it was.
+    // same body yields a different nonce, which is correct and changes nothing. The
+    // optional signature over the body (`signAsPrincipal`) is a pure function of the
+    // body and the key too: a retry signs and seals again and leaves this VTA's state as
+    // it was.
     (trust_tasks::TASK_ROOMS_KEYS_SEAL_0_2, RetrySafe),
     // `sideEffects: none` — the VTA completes, signs and returns one document and keeps
     // neither it nor the presentation. A retry mints a second short-lived leaf and a second
@@ -712,8 +699,7 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     (trust_tasks::TASK_ROOMS_KEYS_ACT_0_5, RetrySafe),
     // 0.6 adds `vtc/rooms/offers/list/0.3`, a listing: still nothing stored.
     (trust_tasks::TASK_ROOMS_KEYS_ACT_0_6, RetrySafe),
-    (trust_tasks::TASK_ROOMS_KEYS_LIST_0_1, RetrySafe),
-    // 0.2 names each entry's member and can carry the member's own labels: still a read.
+    // A read: names each entry's member and can carry the member's own labels.
     (trust_tasks::TASK_ROOMS_KEYS_LIST_0_2, RetrySafe),
     // Idempotent by specification (`rooms/keys/label/0.1` *Retry safety*): each detail is
     // replaced, not appended, so a repeat leaves the label as the first left it and answers
@@ -762,14 +748,11 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     // then never join without a removal and a fresh admission. Replaying the
     // cached response is exactly what that caller needs. Not `KeyedSecret`:
     // the Welcome is sealed to the newcomer's KeyPackage and opens nothing for
-    // anyone else, including whoever holds the cached copy.
-    (trust_tasks::TASK_ROOMS_OWNER_GROUP_ADD_0_1, Keyed),
-    // Still `Keyed` at 0.2, though 0.2 answers a repeat with the kept Welcome (item 8):
-    // the agent keeps it only until its next advance of the room or 24 hours, so a key
-    // still covers a retry later than that, and a cached answer is the same answer.
-    (trust_tasks::TASK_ROOMS_OWNER_GROUP_ADD_0_2, Keyed),
-    // `Keyed`, like 0.2. An `earlierRemovalRefused` refusal did nothing of the request, so
-    // its repeat under a new key is a new request, as the code's meaning says.
+    // anyone else, including whoever holds the cached copy. A repeat is answered with
+    // the kept Welcome (item 8), but only until the agent's next advance of the room or
+    // 24 hours, so a key still covers a retry later than that. An `earlierRemovalRefused`
+    // refusal did nothing of the request, so its repeat under a new key is a new request,
+    // as the code's meaning says.
     (trust_tasks::TASK_ROOMS_OWNER_GROUP_ADD_0_3, Keyed),
     // `Keyed`, like add. A second execution after a lost reply is refused
     // `notMember` — the removal happened, but the caller is told the member was
@@ -779,11 +762,9 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     (trust_tasks::TASK_ROOMS_OWNER_GROUP_REMOVE_0_1, Keyed),
     // `Keyed`, like 0.1. A second execution after a lost reply signs nothing new (the
     // member has no leaf: `notMember`), and reads as though the wrong member was named;
-    // the first answer — the list in force and the epoch — is what happened.
-    (trust_tasks::TASK_ROOMS_OWNER_GROUP_REMOVE_0_2, Keyed),
-    // `Keyed`, like 0.2: the same second execution, and the same first answer worth
-    // replaying. An `earlierRemovalRefused` refusal changed nothing of the request, so its
-    // repeat under a new key is a new request, as the code's meaning says.
+    // the first answer — the list in force and the epoch — is what happened. An
+    // `earlierRemovalRefused` refusal changed nothing of the request, so its repeat under
+    // a new key is a new request, as the code's meaning says.
     (trust_tasks::TASK_ROOMS_OWNER_GROUP_REMOVE_0_3, Keyed),
     // `Keyed`. With withdrawals, a second execution signs a second list carrying the same
     // withdrawals again at a later `revokedAt` — harmless to a host, but a list that grows
@@ -795,10 +776,8 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     // refused — it renews again, advancing the room a second epoch the caller
     // asked for once, and every member's key holder then has two commits to
     // apply instead of one. Replaying the first answer reports the one renewal
-    // that happened. Nothing in the answer is secret.
-    (trust_tasks::TASK_ROOMS_OWNER_GROUP_RENEW_0_1, Keyed),
-    // `Keyed`, like 0.1, for the same second renewal; an `earlierRemovalRefused` refusal
-    // did nothing of the request, as at add 0.3.
+    // that happened. Nothing in the answer is secret. An `earlierRemovalRefused` refusal
+    // did nothing of the request, as at add.
     (trust_tasks::TASK_ROOMS_OWNER_GROUP_RENEW_0_2, Keyed),
     (trust_tasks::TASK_VTA_MEMORY_DELETE_0_1, RetrySafe),
     // ── Application state ───────────────────────────────────────────────

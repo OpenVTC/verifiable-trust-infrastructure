@@ -90,7 +90,7 @@ knowing which half you are standing on saves an afternoon.
 | **Governance (`rooms.rego`)** | **On a VTC.** A community decides who may create a room on it, in Rego, with the shipped default hosting `open`/`attributed` for its own members. A standalone `room-host` has no policy engine — T1's governance is its owner (§8.4) |
 | **Read mirrors** (T3) | **`room-host --mirror-config`** — a host serves a read-only copy fed by `sinceVersion` pulls and refuses every write, naming the primary. A mirror pulls **as a member**, presenting a room-issued `read` chain |
 | **Reading across a membership change** | **Works, including for a member who has just joined.** Records are sealed per epoch, and the *epoch key chain* carries a member back across every advance. The owner hands each rung to the host on `rooms/epoch/mint`; a joiner fetches the chain with `rooms/epoch/chain` and reads everything the room retains. Rungs are ciphertext — the key that opens one is a storage key no host holds |
-| **An agent reading history through its VTA** | **Works.** `rooms/keys/open` resolves from the chain the VTA holds, which it accrues from every commit it applies — and a member who *joined* fills the rest with `rooms/keys/chain/0.1`, handing their own VTA the rungs they fetched from the host. The response says how far back it can now read, which is the only number worth having: a rung extends reach only if every rung above it is present too |
+| **An agent reading history through its VTA** | **Works.** `rooms/keys/open` resolves from the chain the VTA holds, which it accrues from every commit it applies — and a member who *joined* fills the rest with `rooms/keys/chain/0.2`, handing their own VTA the rungs they fetched from the host. The response says how far back it can now read, which is the only number worth having: a rung extends reach only if every rung above it is present too |
 | **Cryptographic deletion** | **At the host, and at members' key holders as far as they conform.** `rooms/epoch/prune` (`admin`, 0.1 and 0.2) erases the epoch key chain below an epoch at a host, and the host keeps the room's **epoch floor** (`beforeEpoch − 1`), which `rooms/epoch/chain/0.2` serves. A member's VTA that learns it — `rooms/keys/backfill/0.2`, `rooms/keys/chain/0.2`, a read's catch-up — discards every rung at or below it, refuses to derive below it (`beyondChain`), and never stores such a rung again from any source (trust-tasks-tf #869). Both hosts serve it (audited `room.epoch.prune`, `notAhead` for a floor at the current epoch); `pnm rooms prune` sends 0.2, warns, and asks first (§10.4). Nothing already read is recalled |
 | **Record retention and pruning records** | **Work, on both hosts.** A room states how long it keeps tombstones and records (`rooms/create/0.2`, `rooms/records/retention/set/0.1`, served by `rooms/info/0.2`), and an administrator removes what that makes eligible (`rooms/records/prune/0.1`), leaving a `lastPrune` mark that `rooms/records/list/0.3` and `rooms/keys/browse/0.2` carry. `pnm rooms records {prune,retention}` (§10.5) |
 | **Record provenance and expiry** | **Work.** `basis`, `confidence`, `evidence`, `validFor`, `validUntil` inside a sealed body, or in an open room's cleartext at `rooms/records/put/0.3`; readers hide an expired record by default (§9) |
@@ -553,18 +553,18 @@ Step by step:
        --subject <joiner's persona DID> --valid-for 7d --out ./invite.json
    ```
 
-2. **The joiner's VTA mints a KeyPackage** (`rooms/keys/key-package/0.1`,
+2. **The joiner's VTA mints a KeyPackage** (`rooms/keys/key-package/0.2`,
    invitation required) whose leaf identifies the persona the invitation names.
    Whoever delivers the invitation must act in that persona's context; who they
    are does not otherwise matter, and their DID is not the member's. Minting retains a private key against a Welcome that
-   may never come, which is why it is not offered unconditionally; unused
-   packages expire after 7 days. The joiner sends `kp.b64` to the owner:
+   may never come, which is why it is not offered unconditionally; asked again for
+   the same room, member and invitation it returns the KeyPackage it already holds,
+   and unused packages expire after 14 days. The joiner sends `kp.b64` to the owner:
 
    ```bash
    pnm rooms keys key-package --room <room-did> --invitation ./invite.json --out ./kp.b64
    ```
-3. **The owner's VTA admits the leaf** (`rooms/owner/group/add/0.3`, falling
-   back to `0.2` and then `0.1` against a VTA that predates it):
+3. **The owner's VTA admits the leaf** (`rooms/owner/group/add/0.3`):
 
    ```bash
    pnm rooms owner group-add --room <room-did> --host-did <host-did> \
@@ -696,8 +696,7 @@ serve it.
 
 ### Remove a member
 
-Removal is two acts, and at `rooms/owner/group/remove/0.3` (0.2 on an older
-VTA; `pnm` asks at 0.3 and falls back) the owner's VTA does
+Removal is two acts, and at `rooms/owner/group/remove/0.3` the owner's VTA does
 both, **withdrawing first** (trust-tasks-tf #804):
 
 1. **Withdraw their credentials at the host.** A host authorizes from the
@@ -1670,8 +1669,8 @@ host can see, which is exactly the correlation the tiers exist to deny.
   ```
 
 - **A sealed room** (`attributed`, `private`) renews from the **owner's VTA**
-  (`rooms/owner/group/renew/0.2`, or 0.1 against an older VTA; the two differ only
-  in how an earlier removal settled first is reported, as for `group-add` 0.3).
+  (`rooms/owner/group/renew/0.2`; an earlier removal settled first is reported as
+  for `group-add` 0.3).
   Its epoch is the MLS group's epoch plus one,
   so the host's epoch may only advance together with the group — carried to the
   host as the mint's commit. The VTA builds a commit that adds and removes
@@ -1958,20 +1957,17 @@ and `vtc-service`:
 
 | URI | Authorized by |
 |---|---|
-| `rooms/keys/key-package/0.1` | an invitation naming a persona the caller may act as |
+| `rooms/keys/key-package/0.2` | an invitation naming a persona the caller may act as |
 | `rooms/keys/welcome/0.1` | that invitation, consumed |
 | `rooms/keys/commit/0.1` | the MLS group itself |
-| `rooms/keys/open/0.1`, `0.2` | `roomOpen` capability |
-| `rooms/keys/file-key/0.1`, `0.2` | `roomOpen` capability |
-| `rooms/keys/seal/0.1` | `roomOpen` capability |
+| `rooms/keys/open/0.2` | `roomOpen` capability |
+| `rooms/keys/file-key/0.2` | `roomOpen` capability |
 | `rooms/keys/seal/0.2` | `roomOpen` capability; `signAsPrincipal` refused to a delegate |
 | `rooms/keys/act/0.1` – `0.6` | `roomPresent` capability; refused to a delegate |
-| `rooms/keys/list/0.1`, `0.2` | `roomOpen` capability; at 0.2 a delegate is listed nothing, and `personal` only with `includePersonal` |
+| `rooms/keys/list/0.2` | `roomOpen` capability; a delegate is listed nothing, and `personal` only with `includePersonal` |
 | `rooms/keys/label/0.1` | `roomOpen` capability + acting as `member`; refused to a delegate |
 | `rooms/keys/browse/0.1`, `0.2` | `roomOpen` capability; 0.2 passes the host's `lastPrune` through |
-| `rooms/keys/chain/0.1` | `roomOpen` capability; a rung at or below the floor held is not kept |
 | `rooms/keys/chain/0.2` | `roomOpen` capability; applies a relayed `epochFloor` (alone or with rungs) and reports the floor held |
-| `rooms/keys/backfill/0.1` | `roomOpen` capability |
 | `rooms/keys/backfill/0.2` | `roomOpen` capability; fetches with `rooms/epoch/chain/0.2`, applies and reports the floor |
 | `rooms/keys/present/0.2` | `roomPresent` capability + acting in the persona's context |
 

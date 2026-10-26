@@ -69,9 +69,7 @@ impl VtaClient {
         .await
     }
 
-    /// `rooms/keys/open/0.2` — decrypt one sealed record. A VTA that does not serve
-    /// 0.2 (`unsupportedType` / `unsupportedVersion`) is asked at 0.1, which takes the
-    /// same payload and answers the same way.
+    /// `rooms/keys/open/0.2` — decrypt one sealed record.
     ///
     /// `version` and the sealed triple must be exactly what the host returned:
     /// the record's AEAD is bound to `roomId | key | version | epoch`, so a
@@ -103,10 +101,10 @@ impl VtaClient {
                 "epoch": epoch,
             },
         });
-        self.dispatch_at_or_before(
+        self.dispatch_trust_task(
             trust_tasks::TASK_ROOMS_KEYS_OPEN_0_2,
-            trust_tasks::TASK_ROOMS_KEYS_OPEN_0_1,
             payload,
+            ROOM_TT_TIMEOUT,
         )
         .await
     }
@@ -136,32 +134,7 @@ impl VtaClient {
         }
     }
 
-    /// Send `payload` at each of `versions` in turn, newest first, moving on only while the
-    /// VTA does not serve the one asked (`unsupportedType` / `unsupportedVersion`, typed as
-    /// [`VtaError::UnsupportedTaskType`]); any other answer, success or refusal, is final.
-    ///
-    /// As [`Self::dispatch_at_or_before`], for versions whose payloads are identical: a
-    /// version the VTA never routed was never executed, so the next ask is not a retry.
-    async fn dispatch_newest_served(
-        &self,
-        versions: &[&str],
-        payload: Value,
-        timeout: u64,
-    ) -> Result<Value, VtaError> {
-        let (last, newer) = versions.split_last().expect("at least one version to ask");
-        for uri in newer {
-            match self
-                .dispatch_trust_task(uri, payload.clone(), timeout)
-                .await
-            {
-                Err(VtaError::UnsupportedTaskType { .. }) => continue,
-                other => return other,
-            }
-        }
-        self.dispatch_trust_task(last, payload, timeout).await
-    }
-
-    /// `rooms/keys/seal/0.1` — seal one record body under the room's current
+    /// `rooms/keys/seal/0.2` — seal one record body under the room's current
     /// epoch, ready for `rooms/records/put`.
     ///
     /// `plaintext` is the body to seal: on a sealed tier, a `SealedRecordBody`
@@ -178,7 +151,7 @@ impl VtaClient {
         key: &str,
         version: u64,
         plaintext: &[u8],
-    ) -> Result<trust_tasks_rs::specs::rooms::keys::seal::v0_1::Response, VtaError> {
+    ) -> Result<trust_tasks_rs::specs::rooms::keys::seal::v0_2::Response, VtaError> {
         let payload = json!({
             "roomId": room_id,
             "key": key,
@@ -190,14 +163,14 @@ impl VtaClient {
         });
         let value = self
             .dispatch_trust_task(
-                trust_tasks::TASK_ROOMS_KEYS_SEAL_0_1,
+                trust_tasks::TASK_ROOMS_KEYS_SEAL_0_2,
                 payload,
                 ROOM_TT_TIMEOUT,
             )
             .await?;
         serde_json::from_value(value).map_err(|e| {
             VtaError::Protocol(format!(
-                "rooms/keys/seal response does not match its schema: {e}"
+                "rooms/keys/seal/0.2 response does not match its schema: {e}"
             ))
         })
     }
@@ -377,13 +350,10 @@ impl VtaClient {
     }
 
     /// `rooms/keys/file-key/0.2` — one file's key, so the caller seals or opens
-    /// that file itself and its bytes never pass through the VTA. A VTA that does not
-    /// serve 0.2 (`unsupportedType` / `unsupportedVersion`) is asked at 0.1, whose
-    /// request and response are 0.2's.
+    /// that file itself and its bytes never pass through the VTA.
     ///
     /// An `unknownEpoch` refusal says why in `details.reason`, as
-    /// [`VtaClient::room_open`]'s does; after `removed` the caller does not retry. A 0.1
-    /// VTA says `notDelivered` for a removed member's file too.
+    /// [`VtaClient::room_open`]'s does; after `removed` the caller does not retry.
     ///
     /// `open_epoch` is `None` to seal (the VTA derives under the room's current
     /// epoch and says which) and the file manifest's `epoch` to open.
@@ -406,10 +376,10 @@ impl VtaClient {
             payload["epoch"] = json!(epoch);
         }
         let value = self
-            .dispatch_at_or_before(
+            .dispatch_trust_task(
                 trust_tasks::TASK_ROOMS_KEYS_FILE_KEY_0_2,
-                trust_tasks::TASK_ROOMS_KEYS_FILE_KEY_0_1,
                 payload,
+                ROOM_TT_TIMEOUT,
             )
             .await?;
         serde_json::from_value(value).map_err(|e| {
@@ -453,25 +423,21 @@ impl VtaClient {
     }
 
     /// `rooms/owner/group/add/0.3` — admit `member` to a room's group from the KeyPackage
-    /// their key holder minted (base64url). A VTA that does not serve 0.3
-    /// (`unsupportedType` / `unsupportedVersion`) is asked at 0.2, and one that does not
-    /// serve 0.2 at 0.1: all three take the same request and give the same response, which
-    /// is why 0.2's response type is returned whichever answered.
+    /// their key holder minted (base64url).
     ///
     /// An earlier removal the VTA was still settling, whose revocation list the host refused
-    /// when it was delivered again, is refused at 0.3 as
+    /// when it was delivered again, is refused as
     /// `rooms/owner/group/add:earlierRemovalRefused` (`details`: the earlier `member`, the
-    /// host's `code`, `listKept`) — at 0.2 and 0.1 as `hostRefused` carrying the same
-    /// `details`. Nothing of this admission was done, and repeating it proceeds.
-    /// `hostUnreachable` at 0.3 says which step went unanswered (`details.stage`:
+    /// host's `code`, `listKept`). Nothing of this admission was done, and repeating it
+    /// proceeds. `hostUnreachable` says which step went unanswered (`details.stage`:
     /// `revocation` — that earlier removal's list — or `advance`).
     ///
     /// The VTA advances the room's epoch at `host_did` first, and only then its own group.
     /// The reply carries the **Welcome** (and, where the group needs it, the ratchet tree):
     /// deliver both to the member's key holder with `rooms/keys/welcome`, never through the
-    /// host. At 0.2 the VTA answers the identical request again with the same Welcome
-    /// (item 8) — but only until its next advance of the room or 24 hours, and a 0.1 VTA
-    /// never does — so still call this inside [`VtaClient::idempotent`]: the task is
+    /// host. The VTA answers the identical request again with the same Welcome (item 8) —
+    /// but only until its next advance of the room or 24 hours — so still call this inside
+    /// [`VtaClient::idempotent`]: the task is
     /// `Keyed`, and a retry carrying the same key gets the first answer back instead of an
     /// `alreadyMember` refusal and a lost Welcome.
     pub async fn room_group_add(
@@ -481,7 +447,7 @@ impl VtaClient {
         member: &str,
         key_package: &str,
         reason: Option<&str>,
-    ) -> Result<trust_tasks_rs::specs::rooms::owner::group::add::v0_2::Response, VtaError> {
+    ) -> Result<trust_tasks_rs::specs::rooms::owner::group::add::v0_3::Response, VtaError> {
         let mut payload = json!({
             "roomId": room_id,
             "host": host_did,
@@ -494,15 +460,9 @@ impl VtaClient {
         // Two host round trips at most (an earlier admission settled, then the advance),
         // each over whatever transport the host speaks.
         let timeout = ROOM_TT_TIMEOUT * 4;
-        // A VTA that does not serve a version never routed that ask, so asking again at
-        // the one before is not a retry of an admission.
         let value = self
-            .dispatch_newest_served(
-                &[
-                    trust_tasks::TASK_ROOMS_OWNER_GROUP_ADD_0_3,
-                    trust_tasks::TASK_ROOMS_OWNER_GROUP_ADD_0_2,
-                    trust_tasks::TASK_ROOMS_OWNER_GROUP_ADD_0_1,
-                ],
+            .dispatch_trust_task(
+                trust_tasks::TASK_ROOMS_OWNER_GROUP_ADD_0_3,
                 payload,
                 timeout,
             )
@@ -520,8 +480,9 @@ impl VtaClient {
     /// The VTA advances the room's epoch at `host_did` first, and only then its own group.
     /// It recalls nothing the member already read, and on a `chained` room they keep the
     /// epochs they were in; their credentials are untouched at the host. On an `open` or
-    /// `attributed` room prefer [`Self::room_group_remove_v0_2`], which withdraws them
-    /// first; 0.1 is the removal for a `private` room. Call this inside [`VtaClient::idempotent`]: the task is `Keyed`, and a
+    /// `attributed` room use [`Self::room_group_remove_v0_3`], which withdraws them
+    /// first; 0.1 is the removal for a `private` room, which 0.3 refuses (`privateRoom`)
+    /// and the specification still sends here. Call this inside [`VtaClient::idempotent`]: the task is `Keyed`, and a
     /// retry after a lost reply gets the first answer back instead of a `notMember`
     /// refusal that reads as though the wrong member had been named.
     pub async fn room_group_remove(
@@ -554,7 +515,7 @@ impl VtaClient {
         })
     }
 
-    /// `rooms/owner/group/remove/0.2` — remove `member` from a room **and withdraw their
+    /// `rooms/owner/group/remove/0.3` — remove `member` from a room **and withdraw their
     /// credentials at its host at once**: the VTA signs the room's next revocation list
     /// with `signing_key_id` (one `subject` entry for `member`), delivers it to `host_did`
     /// and to each of `mirrors`, and only then removes their leaf and advances the room.
@@ -567,56 +528,12 @@ impl VtaClient {
     /// [`Self::room_owner_revoke`] if the room needs that too. Deliberately no silent
     /// fall back to 0.1 on any other refusal: 0.1 withdraws nothing at the host.
     ///
-    /// Call inside [`VtaClient::idempotent`]: the task is `Keyed`.
-    #[allow(clippy::too_many_arguments)]
-    pub async fn room_group_remove_v0_2(
-        &self,
-        room_id: &str,
-        host_did: &str,
-        member: &str,
-        signing_key_id: &str,
-        mirrors: &[String],
-        until: Option<chrono::DateTime<chrono::Utc>>,
-        reason: Option<&str>,
-    ) -> Result<trust_tasks_rs::specs::rooms::owner::group::remove::v0_2::Response, VtaError> {
-        let mut payload = json!({
-            "roomId": room_id,
-            "host": host_did,
-            "member": member,
-            "signingKeyId": signing_key_id,
-        });
-        if !mirrors.is_empty() {
-            payload["mirrors"] = json!(mirrors);
-        }
-        if let Some(u) = until {
-            payload["until"] = json!(u.to_rfc3339_opts(chrono::SecondsFormat::Secs, true));
-        }
-        if let Some(r) = reason {
-            payload["reason"] = json!(r);
-        }
-        let value = self
-            .dispatch_trust_task(
-                trust_tasks::TASK_ROOMS_OWNER_GROUP_REMOVE_0_2,
-                payload,
-                // An earlier advance settled, the list delivered, the advance, the mirrors.
-                ROOM_TT_TIMEOUT * 6,
-            )
-            .await?;
-        serde_json::from_value(value).map_err(|e| {
-            VtaError::Protocol(format!(
-                "rooms/owner/group/remove response does not match its schema: {e}"
-            ))
-        })
-    }
-
-    /// `rooms/owner/group/remove/0.3` — [`Self::room_group_remove_v0_2`], and a removal
-    /// left pending by an earlier request is settled safely: when the host refuses its
-    /// list on redelivery, this request is refused
+    /// A removal left pending by an earlier request is settled safely: when the host
+    /// refuses its list on redelivery, this request is refused
     /// `rooms/owner/group/remove:earlierRemovalRefused` (`details`: `member`, the host's
     /// `code`, `listKept`), does nothing of its own, and can simply be repeated — the
     /// earlier removal is no longer pending and did not take effect, so remove that member
-    /// again if that is still wanted. A VTA that does not serve 0.3 (`unsupportedType` /
-    /// `unsupportedVersion`) is asked at 0.2, whose request and response are 0.3's.
+    /// again if that is still wanted.
     ///
     /// Call inside [`VtaClient::idempotent`]: the task is `Keyed`.
     #[allow(clippy::too_many_arguments)]
@@ -647,26 +564,13 @@ impl VtaClient {
         }
         // An earlier advance settled, the list delivered, the advance, the mirrors.
         let timeout = ROOM_TT_TIMEOUT * 6;
-        // A VTA that does not serve 0.3 never routed the first ask, so asking again at 0.2
-        // is not a second removal.
-        let value = match self
+        let value = self
             .dispatch_trust_task(
                 trust_tasks::TASK_ROOMS_OWNER_GROUP_REMOVE_0_3,
-                payload.clone(),
+                payload,
                 timeout,
             )
-            .await
-        {
-            Err(VtaError::UnsupportedTaskType { .. }) => {
-                self.dispatch_trust_task(
-                    trust_tasks::TASK_ROOMS_OWNER_GROUP_REMOVE_0_2,
-                    payload,
-                    timeout,
-                )
-                .await?
-            }
-            other => other?,
-        };
+            .await?;
         serde_json::from_value(value).map_err(|e| {
             VtaError::Protocol(format!(
                 "rooms/owner/group/remove response does not match its schema: {e}"
@@ -718,14 +622,11 @@ impl VtaClient {
     }
 
     /// `rooms/owner/group/renew/0.2` — renew a sealed room: advance its group with a
-    /// commit that adds and removes nobody, and the room's epoch at `host_did` with it. A
-    /// VTA that does not serve 0.2 (`unsupportedType` / `unsupportedVersion`) is asked at
-    /// 0.1, which takes the same request and gives the same response — 0.1's type, returned
-    /// whichever answered.
+    /// commit that adds and removes nobody, and the room's epoch at `host_did` with it.
     ///
     /// An earlier removal the VTA was still settling is reported as at
-    /// [`Self::room_group_add`]: `rooms/owner/group/renew:earlierRemovalRefused` at 0.2,
-    /// `hostRefused` with the same `details` at 0.1, and nothing of this renewal done.
+    /// [`Self::room_group_add`]: `rooms/owner/group/renew:earlierRemovalRefused`, and
+    /// nothing of this renewal done.
     ///
     /// The only correct renewal of an `attributed` or `private` room — a bare
     /// `rooms/epoch/mint` moves the host without the group and leaves every member unable
@@ -738,7 +639,7 @@ impl VtaClient {
         room_id: &str,
         host_did: &str,
         reason: Option<&str>,
-    ) -> Result<trust_tasks_rs::specs::rooms::owner::group::renew::v0_1::Response, VtaError> {
+    ) -> Result<trust_tasks_rs::specs::rooms::owner::group::renew::v0_2::Response, VtaError> {
         let mut payload = json!({
             "roomId": room_id,
             "host": host_did,
@@ -747,11 +648,8 @@ impl VtaClient {
             payload["reason"] = json!(r);
         }
         let value = self
-            .dispatch_newest_served(
-                &[
-                    trust_tasks::TASK_ROOMS_OWNER_GROUP_RENEW_0_2,
-                    trust_tasks::TASK_ROOMS_OWNER_GROUP_RENEW_0_1,
-                ],
+            .dispatch_trust_task(
+                trust_tasks::TASK_ROOMS_OWNER_GROUP_RENEW_0_2,
                 payload,
                 // As for add: an earlier advance settled, then this one.
                 ROOM_TT_TIMEOUT * 4,
@@ -915,35 +813,6 @@ impl VtaClient {
 
     // ── The joiner's key-holder tasks (`rooms/keys/{key-package,welcome,commit,list}`) ──
 
-    /// `rooms/keys/key-package/0.1` — mint an MLS KeyPackage for a room this
-    /// caller has been invited to, for the owner to admit with
-    /// `rooms/owner/group/add`.
-    ///
-    /// `invitation` is the VIC as the room issued it (JSON or base64url); it must
-    /// name the caller. The private half stays in this VTA, for seven days. The
-    /// answer is the only copy of the package, so call this inside
-    /// [`VtaClient::idempotent`] (the task is `Keyed`).
-    pub async fn room_key_package(
-        &self,
-        room_id: &str,
-        invitation: &str,
-    ) -> Result<trust_tasks_rs::specs::rooms::keys::key_package::v0_1::Response, VtaError> {
-        use trust_tasks_rs::specs::rooms::keys::key_package::v0_1::Payload;
-        let payload = Payload::builder()
-            .room_id(room_id)
-            .invitation(Some(invitation.to_string()));
-        let payload = Payload::try_from(payload)
-            .map_err(|e| VtaError::Validation(format!("rooms/keys/key-package request: {e}")))?;
-        let value = self
-            .dispatch_trust_task(
-                trust_tasks::TASK_ROOMS_KEYS_KEY_PACKAGE_0_1,
-                serde_json::to_value(payload)?,
-                ROOM_TT_TIMEOUT,
-            )
-            .await?;
-        parse_response(value, "rooms/keys/key-package")
-    }
-
     /// `rooms/keys/key-package/0.2` — the KeyPackage this VTA already holds for the member
     /// the invitation names, in this room and against this invitation, while it is
     /// outstanding (`alreadyMinted: true`), or a new one.
@@ -951,10 +820,11 @@ impl VtaClient {
     /// This is what lets any surface finish an acceptance another began: asked again, the
     /// VTA returns the KeyPackage the community may already have admitted, and the community
     /// answers that acceptance with the Welcome it kept. Converges, so it needs no
-    /// idempotency key. A VTA that does not serve 0.2 answers
-    /// [`VtaError::UnsupportedTaskType`]; [`VtaClient::room_key_package`] is 0.1, which mints
-    /// a new KeyPackage every time and replaces the one held.
-    pub async fn room_key_package_v0_2(
+    /// idempotency key.
+    ///
+    /// `invitation` is the VIC as the room issued it (JSON or base64url); it must name a
+    /// member the caller may act as. The private half stays in this VTA.
+    pub async fn room_key_package(
         &self,
         room_id: &str,
         invitation: &str,
@@ -1036,42 +906,19 @@ impl VtaClient {
         parse_response(value, "rooms/keys/commit")
     }
 
-    /// `rooms/keys/backfill/0.1` — have this VTA fetch the room's epoch key chain from its
+    /// `rooms/keys/backfill/0.2` — have this VTA fetch the room's epoch key chain from its
     /// host and keep it, so records sealed before it joined open.
     ///
-    /// The VTA makes the call to the host (named by DID), so the client needs no channel
-    /// to it. `from_epoch` asks for rungs at or below that epoch; a long history is walked
-    /// by calling again below what the last answer reached.
-    pub async fn room_backfill(
-        &self,
-        room_id: &str,
-        host_did: &str,
-        from_epoch: Option<std::num::NonZeroU64>,
-    ) -> Result<trust_tasks_rs::specs::rooms::keys::backfill::v0_1::Response, VtaError> {
-        use trust_tasks_rs::specs::rooms::keys::backfill::v0_1::Payload;
-        let payload = Payload::builder()
-            .room_id(room_id)
-            .host(host_did)
-            .from_epoch(from_epoch);
-        let payload = Payload::try_from(payload)
-            .map_err(|e| VtaError::Validation(format!("rooms/keys/backfill request: {e}")))?;
-        let value = self
-            .dispatch_trust_task(
-                trust_tasks::TASK_ROOMS_KEYS_BACKFILL_0_1,
-                serde_json::to_value(payload)?,
-                ROOM_TT_TIMEOUT,
-            )
-            .await?;
-        parse_response(value, "rooms/keys/backfill")
-    }
-
-    /// `rooms/keys/backfill/0.2` — [`Self::room_backfill`], fetched with
-    /// `rooms/epoch/chain/0.2`: the VTA applies the room's **epoch floor** the host serves
+    /// The VTA makes the call to the host (named by DID, `rooms/epoch/chain/0.2`), so the
+    /// client needs no channel to it. `from_epoch` asks for rungs at or below that epoch; a
+    /// long history is walked by calling again below what the last answer reached.
+    ///
+    /// The VTA applies the room's **epoch floor** the host serves
     /// before answering — it forgets every rung and key below it and never stores them
     /// again — and reports the floor it now holds (`epochFloor`). `earliestReadableEpoch`
     /// equal to it is the room's whole remaining history: the rest was pruned, by a
     /// decision, rather than withheld (trust-tasks-tf #869).
-    pub async fn room_backfill_v0_2(
+    pub async fn room_backfill(
         &self,
         room_id: &str,
         host_did: &str,
@@ -1127,24 +974,6 @@ impl VtaClient {
         parse_response(value, "rooms/keys/chain")
     }
 
-    /// `rooms/keys/list/0.1` — the rooms this VTA holds a group for, each with the
-    /// room epoch it is at and how far back it can read.
-    ///
-    /// Key custody, never membership: a room whose Welcome never arrived is absent
-    /// even where a good membership credential is held.
-    pub async fn room_keys_list(
-        &self,
-    ) -> Result<trust_tasks_rs::specs::rooms::keys::list::v0_1::Response, VtaError> {
-        let value = self
-            .dispatch_trust_task(
-                trust_tasks::TASK_ROOMS_KEYS_LIST_0_1,
-                json!({}),
-                ROOM_TT_TIMEOUT,
-            )
-            .await?;
-        parse_response(value, "rooms/keys/list")
-    }
-
     /// `rooms/keys/list/0.2` — the rooms this VTA holds a group for, one entry per room
     /// **and member** (each names its `member`), for the members this caller may act as;
     /// with `include_personal`, each entry carries the member's own label
@@ -1154,11 +983,8 @@ impl VtaClient {
     /// page, a community, a room's host. A label is the member's alone, and a client that
     /// never asked for it cannot leak it (`rooms/keys/list/0.2` consumer items 2–3).
     ///
-    /// A VTA that does not serve 0.2 (`unsupportedType` / `unsupportedVersion`) is asked
-    /// at 0.1, whose answer is read as 0.2's: each entry's member from the
-    /// `ext["org.openvtc.rooms"].held` that VTA puts beside it, and no labels (0.1 has
-    /// none). A 0.1 answer that names no member for an entry cannot be read as 0.2, and
-    /// returns [`VtaError::UnsupportedTaskType`]; call [`VtaClient::room_keys_list`] then.
+    /// Key custody, never membership: a room whose Welcome never arrived is absent even
+    /// where a good membership credential is held.
     pub async fn room_list(
         &self,
         include_personal: bool,
@@ -1170,27 +996,14 @@ impl VtaClient {
         }
         let payload: Payload = serde_json::from_value(payload)
             .map_err(|e| VtaError::Validation(format!("rooms/keys/list request: {e}")))?;
-        match self
+        let value = self
             .dispatch_trust_task(
                 trust_tasks::TASK_ROOMS_KEYS_LIST_0_2,
                 serde_json::to_value(payload)?,
                 ROOM_TT_TIMEOUT,
             )
-            .await
-        {
-            Ok(value) => parse_response(value, "rooms/keys/list"),
-            Err(VtaError::UnsupportedTaskType { .. }) => {
-                let value = self
-                    .dispatch_trust_task(
-                        trust_tasks::TASK_ROOMS_KEYS_LIST_0_1,
-                        json!({}),
-                        ROOM_TT_TIMEOUT,
-                    )
-                    .await?;
-                list_0_1_as_0_2(value)
-            }
-            Err(e) => Err(e),
-        }
+            .await?;
+        parse_response(value, "rooms/keys/list")
     }
 
     /// `rooms/keys/label/0.1` — set, change or remove the member's own private name,
@@ -1398,35 +1211,6 @@ pub fn room_label_payload(
             .map_err(|e| VtaError::Validation(format!("rooms/keys/label request: {e}")))?;
     }
     Ok(payload)
-}
-
-/// A `rooms/keys/list/0.1` answer read as 0.2's: each entry's member from the
-/// `ext["org.openvtc.rooms"].held` beside it (index for index), and no labels.
-fn list_0_1_as_0_2(
-    mut value: Value,
-) -> Result<trust_tasks_rs::specs::rooms::keys::list::v0_2::Response, VtaError> {
-    let held = value
-        .pointer("/ext/org.openvtc.rooms/held")
-        .and_then(Value::as_array)
-        .cloned()
-        .unwrap_or_default();
-    let unreadable = || VtaError::UnsupportedTaskType {
-        type_uri: trust_tasks::TASK_ROOMS_KEYS_LIST_0_2.to_string(),
-        served_versions: vec!["0.1".to_string()],
-    };
-    let rooms = value
-        .get_mut("rooms")
-        .and_then(Value::as_array_mut)
-        .ok_or_else(|| VtaError::Protocol("rooms/keys/list response has no `rooms`".into()))?;
-    for (i, room) in rooms.iter_mut().enumerate() {
-        let member = held
-            .get(i)
-            .and_then(|h| h.get("member"))
-            .cloned()
-            .ok_or_else(unreadable)?;
-        room["member"] = member;
-    }
-    parse_response(value, "rooms/keys/list")
 }
 
 /// One room action a VAC confers — the generated `rooms/owner/issue-authority/0.2`
@@ -1943,33 +1727,6 @@ mod label_tests {
                 }
             )
             .is_err()
-        );
-    }
-
-    #[test]
-    fn a_0_1_list_reads_as_0_2_with_its_members() {
-        let read = list_0_1_as_0_2(json!({
-            "rooms": [
-                { "roomId": "did:web:a", "epoch": 3, "earliestReadableEpoch": 1 },
-                { "roomId": "did:web:a", "epoch": 3, "earliestReadableEpoch": 3 },
-            ],
-            "ext": { "org.openvtc.rooms": { "held": [
-                { "member": "did:key:zAlice", "context": "alice" },
-                { "member": "did:key:zOrg" },
-            ] } },
-        }))
-        .unwrap();
-        assert_eq!(read.rooms[0].member.as_str(), "did:key:zAlice");
-        assert_eq!(read.rooms[1].member.as_str(), "did:key:zOrg");
-        assert!(read.rooms.iter().all(|r| r.personal.is_none()));
-
-        // An older 0.1 that names no member cannot be read as 0.2.
-        let older = list_0_1_as_0_2(json!({
-            "rooms": [{ "roomId": "did:web:a", "epoch": 3, "earliestReadableEpoch": 1 }],
-        }));
-        assert!(
-            matches!(older, Err(VtaError::UnsupportedTaskType { .. })),
-            "{older:?}"
         );
     }
 }

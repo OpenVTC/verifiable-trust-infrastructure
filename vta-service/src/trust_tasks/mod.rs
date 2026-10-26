@@ -2835,8 +2835,6 @@ dispatch_table! {
     // Group custody: how a group reaches this VTA, and what it does with one.
     // Three inbound (a room's owner reaching us) and one outbound-facing; only
     // `open` is capability-gated, because only it is our own principal asking.
-    vta_sdk::trust_tasks::TASK_ROOMS_KEYS_KEY_PACKAGE_0_1 => room_group::handle_key_package
-        [ Mutating None false ],
     // 0.2: the outstanding KeyPackage for the same room, member and invitation is
     // returned rather than replaced, so any surface can finish an acceptance.
     vta_sdk::trust_tasks::TASK_ROOMS_KEYS_KEY_PACKAGE_0_2 => room_group::handle_key_package_v0_2
@@ -2845,29 +2843,21 @@ dispatch_table! {
         [ Mutating None false ],
     vta_sdk::trust_tasks::TASK_ROOMS_KEYS_COMMIT_0_1 => room_group::handle_commit
         [ Mutating None false ],
-    vta_sdk::trust_tasks::TASK_ROOMS_KEYS_OPEN_0_1 => room_group::handle_open
-        [ None Metadata false ],
     // 0.2: `unknownEpoch` says why — `notDelivered`, `beyondChain` or `removed`.
     vta_sdk::trust_tasks::TASK_ROOMS_KEYS_OPEN_0_2 => room_group::handle_open_v0_2
         [ None Metadata false ],
     // Releases one file's key — `None Secret false`: a pure derivation that
     // stores nothing, returning key material for one file and nothing else.
-    vta_sdk::trust_tasks::TASK_ROOMS_KEYS_FILE_KEY_0_1 => room_group::handle_file_key
-        [ None Secret false ],
     // 0.2: a removed member's file is `unknownEpoch` reason `removed`, never
     // `notDelivered`.
     vta_sdk::trust_tasks::TASK_ROOMS_KEYS_FILE_KEY_0_2 => room_group::handle_file_key_v0_2
         [ None Secret false ],
-    vta_sdk::trust_tasks::TASK_ROOMS_KEYS_CHAIN_0_1 => room_group::handle_chain
-        [ Mutating None false ],
     // 0.2: and the room's epoch floor, applied — this VTA forgets what it holds below it.
     vta_sdk::trust_tasks::TASK_ROOMS_KEYS_CHAIN_0_2 => room_group::handle_chain_v0_2
         [ Mutating None false ],
     // `actsAsSubject`, unlike every other `rooms/keys/*`: this one presents the
     // principal's credentials to a third party as them. The response discloses
     // only how far back the agent can now read.
-    vta_sdk::trust_tasks::TASK_ROOMS_KEYS_BACKFILL_0_1 => room_group::handle_backfill
-        [ Mutating Metadata true ],
     vta_sdk::trust_tasks::TASK_ROOMS_KEYS_BACKFILL_0_2 => room_group::handle_backfill_v0_2
         [ Mutating Metadata true ],
     // Returns a record's plaintext — on a sealed tier, material the room
@@ -2887,8 +2877,6 @@ dispatch_table! {
     // 0.2 adds the room's `lastPrune`, passed through from list 0.3 (trust-tasks-tf #868).
     vta_sdk::trust_tasks::TASK_ROOMS_KEYS_BROWSE_0_2 => room_group::handle_browse_v0_2
         [ None Metadata true ],
-    vta_sdk::trust_tasks::TASK_ROOMS_KEYS_SEAL_0_1 => room_group::handle_seal
-        [ None Metadata false ],
     // `actsAsSubject`: under `signAsPrincipal` it signs the record body as the member.
     vta_sdk::trust_tasks::TASK_ROOMS_KEYS_SEAL_0_2 => room_act::handle_seal_v0_2
         [ None Metadata true ],
@@ -2914,8 +2902,6 @@ dispatch_table! {
     // a member holds (trust-tasks-tf #843).
     vta_sdk::trust_tasks::TASK_ROOMS_KEYS_ACT_0_6 => room_act::handle_act_v0_6
         [ None Metadata true ],
-    vta_sdk::trust_tasks::TASK_ROOMS_KEYS_LIST_0_1 => room_group::handle_list
-        [ None Metadata false ],
     // 0.2: each entry names its member; `includePersonal` adds the member's own label.
     vta_sdk::trust_tasks::TASK_ROOMS_KEYS_LIST_0_2 => room_label::handle_list_v0_2
         [ None Metadata false ],
@@ -2951,11 +2937,7 @@ dispatch_table! {
         [ Mutating Metadata false ],
     // `actsAsSubject`, like register: it advances the room at its host in the
     // principal's name, presenting their `admin` authority.
-    vta_sdk::trust_tasks::TASK_ROOMS_OWNER_GROUP_ADD_0_1 => room_owner_group::handle_add
-        [ Mutating Metadata true ],
     // 0.2: a repeated admission is answered with its kept Welcome (item 8).
-    vta_sdk::trust_tasks::TASK_ROOMS_OWNER_GROUP_ADD_0_2 => room_owner_group::handle_add_v0_2
-        [ Mutating Metadata true ],
     // 0.3: an earlier removal it settles is reported as its own `earlierRemovalRefused`,
     // `hostUnreachable` carries its `stage` (trust-tasks-tf #824).
     vta_sdk::trust_tasks::TASK_ROOMS_OWNER_GROUP_ADD_0_3 => room_owner_group::handle_add_v0_3
@@ -2965,8 +2947,6 @@ dispatch_table! {
         [ Mutating Metadata true ],
     // 0.2: the member's credentials are withdrawn at the host first, then the room
     // advances (trust-tasks-tf #804). Same host, same authority, and the room's key.
-    vta_sdk::trust_tasks::TASK_ROOMS_OWNER_GROUP_REMOVE_0_2 => room_owner_group::handle_remove_v0_2
-        [ Mutating Metadata true ],
     // 0.3: a pending removal whose redelivered list the host refuses is settled by what the
     // refusal shows, and the request refused `earlierRemovalRefused` (trust-tasks-tf #821).
     vta_sdk::trust_tasks::TASK_ROOMS_OWNER_GROUP_REMOVE_0_3 => room_owner_group::handle_remove_v0_3
@@ -2976,8 +2956,6 @@ dispatch_table! {
     vta_sdk::trust_tasks::TASK_ROOMS_OWNER_REVOKE_0_1 => room_owner_revoke::handle_revoke
         [ Mutating Metadata true ],
     // And renewal: same host, same authority, no membership change.
-    vta_sdk::trust_tasks::TASK_ROOMS_OWNER_GROUP_RENEW_0_1 => room_owner_group::handle_renew
-        [ Mutating Metadata true ],
     // 0.2: settles an earlier removal as add 0.3 does (trust-tasks-tf #824).
     vta_sdk::trust_tasks::TASK_ROOMS_OWNER_GROUP_RENEW_0_2 => room_owner_group::handle_renew_v0_2
         [ Mutating Metadata true ],

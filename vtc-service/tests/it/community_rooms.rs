@@ -54,10 +54,7 @@ const MEMBERSHIPS: &str = "https://trusttasks.org/spec/vtc/rooms/memberships/lis
 const MINT: &str = "https://trusttasks.org/spec/vta/webvh/dids/create/1.1";
 const GROUP_CREATE: &str = "https://trusttasks.org/spec/rooms/owner/group/create/0.1";
 const GROUP_ADD: &str = "https://trusttasks.org/spec/rooms/owner/group/add/0.3";
-const GROUP_ADD_V0_2: &str = "https://trusttasks.org/spec/rooms/owner/group/add/0.2";
-const GROUP_ADD_V0_1: &str = "https://trusttasks.org/spec/rooms/owner/group/add/0.1";
 const GROUP_REMOVE: &str = "https://trusttasks.org/spec/rooms/owner/group/remove/0.1";
-const GROUP_REMOVE_V0_2: &str = "https://trusttasks.org/spec/rooms/owner/group/remove/0.2";
 const GROUP_REMOVE_V0_3: &str = "https://trusttasks.org/spec/rooms/owner/group/remove/0.3";
 const OWNER_REVOKE: &str = "https://trusttasks.org/spec/rooms/owner/revoke/0.1";
 const REMOVE_V0_2: &str = "https://trusttasks.org/spec/vtc/rooms/community/members/remove/0.2";
@@ -101,15 +98,8 @@ struct VtaState {
     /// Answer a serverless mint with this log.
     serverless_log: Option<String>,
     /// The last admission applied per room — member, KeyPackage, epoch, Welcome — as
-    /// `rooms/owner/group/add/0.2` item 8 keeps it until the room's next advance.
+    /// `rooms/owner/group/add/0.3` item 8 keeps it until the room's next advance.
     admitted: HashMap<String, (String, String, u64, String)>,
-    /// A VTA that predates `rooms/owner/group/add/0.2`: it refuses it, and 0.3,
-    /// `unsupportedType`.
-    add_0_1_only: bool,
-    /// A VTA that predates `rooms/owner/group/add/0.3`: it refuses it `unsupportedType`.
-    add_0_2_only: bool,
-    /// A VTA that predates `rooms/owner/group/remove/0.3`: it refuses it `unsupportedType`.
-    remove_0_2_only: bool,
     /// Each room's profile as the stand-in holds it — what `rooms/keys/profile/write`
     /// last wrote, or what a test set as a curator's edit in the room.
     profiles: HashMap<String, Value>,
@@ -283,10 +273,7 @@ impl FakeVta {
                     }],
                 }))
             }
-            GROUP_REMOVE_V0_2 | GROUP_REMOVE_V0_3 => {
-                if type_uri == GROUP_REMOVE_V0_3 && self.0.lock().unwrap().remove_0_2_only {
-                    return Err(("unsupportedType", format!("{type_uri} is not served here")));
-                }
+            GROUP_REMOVE_V0_3 => {
                 let room = p["roomId"].as_str().unwrap().to_string();
                 let member = p["member"].as_str().unwrap().to_string();
                 if !self.group(&room).is_some_and(|(m, _)| m.contains(&member)) {
@@ -379,19 +366,11 @@ impl FakeVta {
                 "types": ["VerifiableCredential"],
                 "status": "valid",
             })),
-            GROUP_ADD | GROUP_ADD_V0_2 | GROUP_ADD_V0_1 => {
+            GROUP_ADD => {
                 let room = p["roomId"].as_str().unwrap().to_string();
                 let member = p["member"].as_str().unwrap().to_string();
                 let key_package = p["keyPackage"].as_str().unwrap_or_default().to_string();
                 let mut st = self.0.lock().unwrap();
-                let unserved = match type_uri {
-                    GROUP_ADD => st.add_0_1_only || st.add_0_2_only,
-                    GROUP_ADD_V0_2 => st.add_0_1_only,
-                    _ => false,
-                };
-                if unserved {
-                    return Err(("unsupportedType", format!("{type_uri} is not served here")));
-                }
                 if key_package == "bm90LWEta2V5LXBhY2thZ2U" {
                     return Err((
                         "rooms/owner/group/add:keyPackageInvalid",
@@ -401,11 +380,9 @@ impl FakeVta {
                 let kept = st.admitted.get(&room).cloned();
                 let group = st.groups.get_mut(&room).expect("a group");
                 if group.0.contains(&member) {
-                    // 0.2 item 8: the identical request is answered with the kept Welcome.
+                    // Item 8: the identical request is answered with the kept Welcome.
                     return match kept {
-                        Some((m, kp, epoch, welcome))
-                            if type_uri != GROUP_ADD_V0_1 && m == member && kp == key_package =>
-                        {
+                        Some((m, kp, epoch, welcome)) if m == member && kp == key_package => {
                             Ok(json!({
                                 "roomId": room, "member": member, "epoch": epoch,
                                 "welcome": welcome,
@@ -1005,7 +982,7 @@ async fn every_surface_reads_one_record_of_a_members_rooms() {
     assert_eq!(theirs["payload"]["items"], json!([]), "{theirs}");
 }
 
-/// `rooms/owner/group/add/0.2` item 8, end to end: the VTA admitted the member and its
+/// `rooms/owner/group/add/0.3` item 8, end to end: the VTA admitted the member and its
 /// answer was lost, so the acceptance is `admissionPending` and nothing is recorded here.
 /// The member's identical retry reaches the VTA again, which answers with the Welcome it
 /// kept — the room does not advance a second time — and the acceptance completes.
@@ -1050,61 +1027,6 @@ async fn an_acceptance_whose_vta_answer_was_lost_gets_the_welcome_on_retry() {
     );
     let offers = call_as(&fix, &alice, OFFERS, json!({})).await;
     assert_eq!(offers["payload"]["items"][0]["state"], "accepted");
-}
-
-/// A VTA that predates `rooms/owner/group/add/0.2` is asked at 0.3, then 0.2, then 0.1 —
-/// the same request —
-/// and admits as before. Against it a lost answer is still `alreadyAccepted`: 0.1 keeps no
-/// Welcome to answer a repeat with.
-#[tokio::test]
-async fn an_acceptance_falls_back_to_group_add_0_1() {
-    let mut fix = fixture().await;
-    let room = create_room(&mut fix, "attributed").await;
-    fix.vta.0.lock().unwrap().add_0_1_only = true;
-    let alice = member(&fix).await;
-    add_member(&mut fix, &room, &alice.did, &in_a_year()).await;
-
-    fix.vta.clear_calls();
-    let accepted = call_as(
-        &fix,
-        &alice,
-        ACCEPT,
-        json!({ "roomId": room, "keyPackage": "S1A" }),
-    )
-    .await;
-    assert_eq!(accepted["payload"]["epoch"], 2, "{accepted}");
-    assert_eq!(
-        fix.vta.types_called(),
-        vec![GROUP_ADD, GROUP_ADD_V0_2, GROUP_ADD_V0_1]
-    );
-
-    let bob = member(&fix).await;
-    add_member(&mut fix, &room, &bob.did, &in_a_year()).await;
-    fix.vta.script(GROUP_ADD_V0_1, Script::ServeThenSilent);
-    let lost = call_as(
-        &fix,
-        &bob,
-        ACCEPT,
-        json!({ "roomId": room, "keyPackage": "S1B" }),
-    )
-    .await;
-    assert_eq!(
-        tt_error_code(&lost),
-        Some(ACCEPT_ADMISSION_PENDING),
-        "{lost}"
-    );
-    let again = call_as(
-        &fix,
-        &bob,
-        ACCEPT,
-        json!({ "roomId": room, "keyPackage": "S1B" }),
-    )
-    .await;
-    assert_eq!(
-        tt_error_code(&again),
-        Some(ACCEPT_ALREADY_ACCEPTED),
-        "{again}"
-    );
 }
 
 /// A room identity minted serverless is served here, at the path the VTA minted it for.
@@ -1630,7 +1552,7 @@ async fn owed(fix: &Fixture) -> Vec<(String, String, DepartureCause)> {
 /// the departure itself — before the VTA is asked anything. The worker removes them as an
 /// administrator's `members/remove/0.2` does (trust-tasks-tf #804): the open room's
 /// admission and the offer are withdrawn at the host (`rooms/owner/revoke`), and the sealed
-/// room's withdrawn and advanced past them (`rooms/owner/group/remove/0.2`), each at the
+/// room's withdrawn and advanced past them (`rooms/owner/group/remove/0.3`), each at the
 /// VTA before it is recorded; each is audited as the community's own act, naming the
 /// departure. Rejoining re-adds nothing.
 #[tokio::test]
@@ -2889,27 +2811,6 @@ async fn joined_on_attributed_room(fix: &mut Fixture) -> (String, Party) {
     (room, alice)
 }
 
-/// A community's VTA that does not serve `rooms/owner/group/remove/0.3` is asked at 0.2,
-/// the same request, and the removal completes as before.
-#[tokio::test]
-async fn removal_falls_back_to_group_remove_0_2_on_an_older_vta() {
-    let mut fix = fixture().await;
-    let (room, alice) = joined_on_attributed_room(&mut fix).await;
-    fix.vta.0.lock().unwrap().remove_0_2_only = true;
-    let (_, removed) = admin_call(
-        &mut fix,
-        REMOVE_V0_2,
-        json!({ "roomId": room, "member": alice.did, "reason": "left the board" }),
-    )
-    .await;
-    assert_eq!(removed["payload"]["epoch"], 3, "{removed}");
-    assert_eq!(
-        fix.vta.types_called(),
-        vec![GROUP_REMOVE_V0_3, GROUP_REMOVE_V0_2]
-    );
-    assert_eq!(state_in(&fix, &room, &alice.did).await, "removed");
-}
-
 /// `rooms/owner/group/remove/0.3` item 8.2: the VTA gave up an earlier removal it was
 /// settling and did nothing of this one. The administrator is told so — and what to do —
 /// nothing is recorded, and repeating the removal proceeds.
@@ -2951,27 +2852,6 @@ async fn an_earlier_removal_the_vta_gave_up_is_surfaced_and_nothing_is_recorded(
     .await;
     assert_eq!(removed["payload"]["epoch"], 3, "{removed}");
     assert_eq!(state_in(&fix, &room, &alice.did).await, "removed");
-}
-
-/// A community's VTA that does not serve `rooms/owner/group/add/0.3` is asked at 0.2, the
-/// same request; the acceptance completes and 0.1 is never asked.
-#[tokio::test]
-async fn an_acceptance_falls_back_to_group_add_0_2() {
-    let mut fix = fixture().await;
-    let room = create_room(&mut fix, "attributed").await;
-    fix.vta.0.lock().unwrap().add_0_2_only = true;
-    let alice = member(&fix).await;
-    add_member(&mut fix, &room, &alice.did, &in_a_year()).await;
-    fix.vta.clear_calls();
-    let accepted = call_as(
-        &fix,
-        &alice,
-        ACCEPT,
-        json!({ "roomId": room, "keyPackage": "S1A" }),
-    )
-    .await;
-    assert_eq!(accepted["payload"]["epoch"], 2, "{accepted}");
-    assert_eq!(fix.vta.types_called(), vec![GROUP_ADD, GROUP_ADD_V0_2]);
 }
 
 /// `rooms/owner/group/add/0.3` item 6.1: the VTA gave up an earlier removal from the room

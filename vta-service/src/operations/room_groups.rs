@@ -119,7 +119,7 @@ const REMOVED: &str = "room-removed";
 const EPOCH_FLOOR: &str = "room-epoch-floor";
 /// The last admission this owner applied, per owner: `room-admitted/<roomId>/<persona>`.
 ///
-/// `rooms/owner/group/add/0.2` item 8: kept so that a caller who lost the answer and sends
+/// `rooms/owner/group/add/0.3` item 8: kept so that a caller who lost the answer and sends
 /// the identical request again gets the Welcome it needs, rather than `alreadyMember`. Short
 /// on purpose — until this owner builds its next advance of the room, or
 /// [`ADMISSION_RETENTION_SECS`] after it was applied, whichever is first — because the
@@ -148,11 +148,11 @@ const ADMITTED: &str = "room-admitted";
 /// or audited (item 10).
 const LABEL: &str = "room-label";
 
-/// How long a retained admission is kept at most — `rooms/owner/group/add/0.2` item 8's
+/// How long a retained admission is kept at most — `rooms/owner/group/add/0.3` item 8's
 /// 24 hours.
 pub const ADMISSION_RETENTION_SECS: u64 = 24 * 60 * 60;
 
-/// The [`ADMITTED`] row: `rooms/owner/group/add/0.2` item 8's retained admission.
+/// The [`ADMITTED`] row: `rooms/owner/group/add/0.3` item 8's retained admission.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RetainedAdmission {
@@ -415,7 +415,7 @@ pub enum JoinError {
     /// This member already holds group state for the room — `alreadyJoined`.
     AlreadyJoined,
     /// The KeyPackage the Welcome is sealed to expired before it arrived. Its private half
-    /// has been discarded (`rooms/keys/key-package/0.1` *Retention*: it **MUST** be
+    /// has been discarded (`rooms/keys/key-package/0.2` *The private half is retained*: it **MUST** be
     /// discarded at expiry), so the Welcome can never process — `welcomeInvalid`.
     KeyPackageExpired,
     App(AppError),
@@ -615,7 +615,7 @@ pub enum FileKeyError {
     Removed { epoch: u32, removed_at: u32 },
 }
 
-/// One file's key — `rooms/keys/file-key/0.1` and `0.2`.
+/// One file's key — `rooms/keys/file-key/0.2`.
 ///
 /// `open_epoch` is `None` to seal (the current epoch, which is returned) and the file's
 /// epoch to open, walked out of the retained chain exactly as [`open_record`] walks it.
@@ -1324,8 +1324,8 @@ impl AdvanceKind {
 }
 
 /// An epoch advance the host has not yet confirmed — items 3 to 6 of
-/// `rooms/owner/group/add/0.1`, `rooms/owner/group/remove/0.1` and
-/// `rooms/owner/group/renew/0.1`.
+/// `rooms/owner/group/add/0.3`, `rooms/owner/group/remove/0.1` and `0.3`, and
+/// `rooms/owner/group/renew/0.2`.
 ///
 /// # Why the whole advanced group, and not just the commit
 ///
@@ -1369,14 +1369,14 @@ pub struct PendingAdvance {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub welcome: Option<String>,
     /// The admitted KeyPackage's `KeyPackageRef`, base64url. An admission's only — what
-    /// the admission is remembered by once applied (`rooms/owner/group/add/0.2` item 8). An
+    /// the admission is remembered by once applied (`rooms/owner/group/add/0.3` item 8). An
     /// admission retained before the field existed has none, and is applied without being
     /// retained: a repeat of it is `alreadyMember`, as it was.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub key_package_ref: Option<String>,
     /// Unix seconds it was built.
     pub created_at: u64,
-    /// A removal at `rooms/owner/group/remove/0.2`: the revocation list withdrawing the
+    /// A removal at `rooms/owner/group/remove/0.3`: the revocation list withdrawing the
     /// member, signed and kept before anything was sent (item 5), and delivered to the host
     /// **before** the advance (item 6). Absent on every other advance, and on a removal at
     /// 0.1.
@@ -1384,7 +1384,7 @@ pub struct PendingAdvance {
     pub revocation: Option<PendingRevocation>,
 }
 
-/// The withdrawal half of a pending removal (`rooms/owner/group/remove/0.2`).
+/// The withdrawal half of a pending removal (`rooms/owner/group/remove/0.3`).
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PendingRevocation {
@@ -1447,7 +1447,7 @@ async fn retain(
             .unwrap_or_else(|| pending.clone());
         return Err(taken(&found));
     }
-    // `rooms/owner/group/add/0.2` item 8: the last admission is kept until the owner builds
+    // `rooms/owner/group/add/0.3` item 8: the last admission is kept until the owner builds
     // its next advance of the room. This is that moment — a request after it is no longer a
     // retry of anything (the advance may itself remove the member).
     discard_retained_admission(groups, owner).await
@@ -1496,7 +1496,7 @@ pub async fn prepare_add(
     let welcome = change.welcome.ok_or_else(|| {
         PrepareAddError::App(AppError::Internal("an add produced no Welcome".into()))
     })?;
-    // What the admission is remembered by once applied (`rooms/owner/group/add/0.2` item 8).
+    // What the admission is remembered by once applied (`rooms/owner/group/add/0.3` item 8).
     // The add above already validated the KeyPackage, so this cannot fail on its bytes.
     let key_package_ref = vti_rooms::mls::key_package_ref(key_package)
         .map_err(|e| PrepareAddError::KeyPackageInvalid(e.to_string()))?;
@@ -1604,7 +1604,7 @@ pub async fn prepare_remove(
 
 /// Build the renewal of `owner`'s group — a commit that adds and removes nobody, updating
 /// the owner's own leaf — and retain it, durably, as a [`PendingAdvance`] **before**
-/// anything is sent to a host (`rooms/owner/group/renew/0.1` items 2 and 3). The live
+/// anything is sent to a host (`rooms/owner/group/renew/0.2` items 2 and 3). The live
 /// group is unchanged: the commit and the link are made on a copy, which is what is kept.
 ///
 /// `None` when this agent holds no group for the room (item 1, `noGroup`).
@@ -1686,7 +1686,7 @@ pub async fn promote_pending_advance(
     discard_pending_advance(groups, owner).await
 }
 
-/// An applied admission becomes the room's retained admission (`rooms/owner/group/add/0.2`
+/// An applied admission becomes the room's retained admission (`rooms/owner/group/add/0.3`
 /// items 6 and 8). A removal or renewal retains nothing — and was preceded, when it was
 /// built, by the discard of whatever was retained.
 async fn retain_admission(
@@ -1717,7 +1717,7 @@ async fn retain_admission(
 }
 
 /// The admission `owner` last applied in the room, while it is still kept
-/// (`rooms/owner/group/add/0.2` item 8). One kept past its 24 hours is discarded here, so
+/// (`rooms/owner/group/add/0.3` item 8). One kept past its 24 hours is discarded here, so
 /// it is never served late even before the sweep reaches it.
 pub async fn retained_admission(
     groups: &KeyspaceHandle,
@@ -1748,7 +1748,7 @@ async fn discard_retained_admission(
         .map_err(|e| AppError::Internal(format!("discard the retained admission: {e}")))
 }
 
-/// Discard every retained admission past its 24 hours (`rooms/owner/group/add/0.2` item 8,
+/// Discard every retained admission past its 24 hours (`rooms/owner/group/add/0.3` item 8,
 /// "and MUST discard it then"), for the storage thread's sweep. [`retained_admission`]
 /// already refuses to serve one late; this is what removes the Welcome from disk when
 /// nobody asks again. Returns how many were discarded.

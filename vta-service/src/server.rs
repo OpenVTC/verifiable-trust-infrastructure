@@ -2055,7 +2055,7 @@ fn run_storage_thread(
                             Err(e) => warn!("witness session sweeper error: {e}"),
                         }
                         // Discard every retained admission past its 24 hours
-                        // (`rooms/owner/group/add/0.2` item 8). Reads already refuse
+                        // (`rooms/owner/group/add/0.3` item 8). Reads already refuse
                         // to serve one late; this takes its Welcome off the disk
                         // when nobody asks again.
                         match crate::operations::room_groups::sweep_retained_admissions(

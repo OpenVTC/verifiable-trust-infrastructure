@@ -319,7 +319,7 @@ async fn sealed_room() -> Sealed {
 }
 
 /// Admit a member holding `actions` with their own VTA, through the owner's
-/// `rooms/owner/group/add/0.2` at the real host; the member joins from the Welcome.
+/// `rooms/owner/group/add/0.3` at the real host; the member joins from the Welcome.
 async fn admit(s: &Sealed, actions: &[&str]) -> Vta {
     admit_at(s, MEMBER_KEY_PATH, actions).await
 }
@@ -336,11 +336,11 @@ async fn admit_at(s: &Sealed, key_path: &str, actions: &[&str]) -> Vta {
     .await
     .unwrap();
     let out = body(
-        super::super::room_owner_group::handle_add_v0_2(
+        super::super::room_owner_group::handle_add_v0_3(
             &s.owner.state,
             &admin(),
             request(
-                vta_sdk::trust_tasks::TASK_ROOMS_OWNER_GROUP_ADD_0_2,
+                vta_sdk::trust_tasks::TASK_ROOMS_OWNER_GROUP_ADD_0_3,
                 json!({
                     "roomId": s.room.did, "host": s.host.did, "member": m.persona,
                     "keyPackage": kp.key_package,
@@ -503,11 +503,13 @@ async fn an_advance_re_writes_the_profile_under_the_new_epoch() {
     let s = sealed_room().await;
     let renew = |s: &Sealed| {
         let doc = request(
-            vta_sdk::trust_tasks::TASK_ROOMS_OWNER_GROUP_RENEW_0_1,
+            vta_sdk::trust_tasks::TASK_ROOMS_OWNER_GROUP_RENEW_0_2,
             json!({ "roomId": s.room.did, "host": s.host.did }),
         );
         let state = s.owner.state.clone();
-        async move { body(super::super::room_owner_group::handle_renew(&state, &admin(), doc).await) }
+        async move {
+            body(super::super::room_owner_group::handle_renew_v0_2(&state, &admin(), doc).await)
+        }
     };
 
     // No profile: the advance writes none on the room's behalf (item 4).
@@ -1076,11 +1078,11 @@ async fn record_read_and_backfill_name_the_host_failure() {
         let s = &s;
         async move {
             body(
-                super::super::room_group::handle_backfill(
+                super::super::room_group::handle_backfill_v0_2(
                     &s.owner.state,
                     &admin(),
                     request(
-                        vta_sdk::trust_tasks::TASK_ROOMS_KEYS_BACKFILL_0_1,
+                        vta_sdk::trust_tasks::TASK_ROOMS_KEYS_BACKFILL_0_2,
                         json!({ "roomId": s.room.did, "host": host }),
                     ),
                 )

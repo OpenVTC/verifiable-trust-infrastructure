@@ -14,7 +14,7 @@ Twenty-two room tasks and **not one is a join request**. A VTC has
 `join-requests/*`; a room has nothing.
 
 That is not an oversight so much as a consequence. Admission is **push-shaped**:
-the owner calls [`rooms/keys/key-package`](https://trusttasks.org/spec/rooms/keys/key-package/0.1)
+the owner calls [`rooms/keys/key-package`](https://trusttasks.org/spec/rooms/keys/key-package/0.2)
 *on the member's VTA*, then `keys/welcome`, then issues the membership and
 authority credentials. Every step assumes the joiner is an agent with an address
 the owner can reach.

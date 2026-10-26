@@ -424,25 +424,22 @@ pub async fn cmd_rooms_keys_key_package(
         return Err(format!("{} already exists; refusing to overwrite it", out.display()).into());
     }
     let invitation = read_text(invitation_src, "invitation")?;
-    // Keyed: the answer is the only copy of the package, and its private half is
-    // already retained against it.
+    // `rooms/keys/key-package/0.2` converges: asked again for the same room, member and
+    // invitation, the VTA returns the KeyPackage it already holds (`alreadyMinted`).
     let resp = client
-        .idempotent(|| client.room_key_package(room_id, &invitation))
+        .room_key_package(room_id, &invitation)
         .await
         .map_err(invitation_hint)?;
-    write_new(out, format!("{}\n", resp.key_package).as_bytes())?;
-    let expiry = resp
-        .expires_at
-        .map(|t| {
-            format!(
-                ", unused until {}",
-                crate::duration::format_local_datetime(t)
-            )
-        })
-        .unwrap_or_default();
+    write_new(out, format!("{}\n", resp.key_package.as_str()).as_bytes())?;
+    let verb = if resp.already_minted {
+        "Wrote the KeyPackage this VTA already holds"
+    } else {
+        "Minted a KeyPackage"
+    };
     println!(
-        "Minted a KeyPackage for {room_id}: wrote {}{expiry}.",
-        out.display()
+        "{verb} for {room_id}: wrote {}, unused until {}.",
+        out.display(),
+        crate::duration::format_local_datetime(resp.expires_at)
     );
     println!(
         "  Next: send it to the room's owner for `pnm rooms owner group-add --key-package {}`, \
@@ -612,10 +609,10 @@ pub async fn cmd_rooms_keys_commit_from_host(
 
 /// The room epoch this VTA's group is at, from `rooms/keys/list`.
 async fn held_epoch(client: &VtaClient, room_id: &str) -> Result<u64, Box<dyn std::error::Error>> {
-    let list = client.room_keys_list().await?;
+    let list = client.room_list(false).await?;
     list.rooms
         .iter()
-        .find(|r| r.room_id == room_id)
+        .find(|r| r.room_id.as_str() == room_id)
         .map(|r| r.epoch.get())
         .ok_or_else(|| {
             format!(
@@ -636,33 +633,15 @@ pub async fn cmd_rooms_keys_backfill(
 ) -> CmdResult {
     let mut from: Option<std::num::NonZeroU64> = None;
     let mut fetched = 0u64;
-    // `rooms/keys/backfill/0.2` learns and applies the room's epoch floor; a VTA that
-    // predates it is asked at 0.1.
-    let mut v2 = true;
+    // `rooms/keys/backfill/0.2` learns and applies the room's epoch floor.
     let mut floor: Option<u64> = None;
     let reach = loop {
-        let (reach, served) = if v2 {
-            match client.room_backfill_v0_2(room_id, host_did, from).await {
-                Ok(resp) => {
-                    floor = resp.epoch_floor.map(|f| f.0.get()).or(floor);
-                    (
-                        resp.earliest_readable_epoch.get(),
-                        resp.fetched.unwrap_or(0),
-                    )
-                }
-                Err(e) if e.to_string().contains("unsupported") => {
-                    v2 = false;
-                    continue;
-                }
-                Err(e) => return Err(e.into()),
-            }
-        } else {
-            let resp = client.room_backfill(room_id, host_did, from).await?;
-            (
-                resp.earliest_readable_epoch.get(),
-                resp.fetched.unwrap_or(0),
-            )
-        };
+        let resp = client.room_backfill(room_id, host_did, from).await?;
+        floor = resp.epoch_floor.map(|f| f.0.get()).or(floor);
+        let (reach, served) = (
+            resp.earliest_readable_epoch.get(),
+            resp.fetched.unwrap_or(0),
+        );
         fetched += served;
         // Stop at the whole history, at the room's floor, when the host serves nothing
         // more, or when a pass moved nothing — a gap in the chain the host cannot fill.
@@ -697,8 +676,7 @@ pub async fn cmd_rooms_keys_backfill(
 /// `rooms keys list` — the rooms this VTA holds a group for, as which member, and the
 /// member's own name for each (`rooms/keys/list/0.2` with `includePersonal`).
 ///
-/// The labels are the operator's own and go only to this terminal. A VTA that does not
-/// serve 0.2 is listed as 0.1 answers, with no labels.
+/// The labels are the operator's own and go only to this terminal.
 pub async fn cmd_rooms_keys_list(client: &VtaClient) -> CmdResult {
     cmd_rooms_keys_list_named(client, None).await
 }
@@ -706,13 +684,7 @@ pub async fn cmd_rooms_keys_list(client: &VtaClient) -> CmdResult {
 /// `rooms keys list --host-did` — [`cmd_rooms_keys_list`], with each room's own name read
 /// from that host (`rooms/keys/profile/read`), as the member each entry is held as.
 pub async fn cmd_rooms_keys_list_named(client: &VtaClient, host_did: Option<&str>) -> CmdResult {
-    let list = match client.room_list(true).await {
-        Ok(list) => list,
-        Err(vta_sdk::error::VtaError::UnsupportedTaskType { .. }) => {
-            return cmd_rooms_keys_list_0_1(client).await;
-        }
-        Err(e) => return Err(e.into()),
-    };
+    let list = client.room_list(true).await?;
     if crate::render::is_json_output() {
         crate::render::print_json(&list.rooms)?;
         return Ok(());
@@ -777,38 +749,6 @@ pub async fn cmd_rooms_keys_list_named(client: &VtaClient, host_did: Option<&str
     }
     if host_did.is_none() {
         println!("\nAdd --host-did <host> to show the name each room gives itself.");
-    }
-    Ok(())
-}
-
-/// `rooms keys list` against a VTA that serves only `rooms/keys/list/0.1`.
-async fn cmd_rooms_keys_list_0_1(client: &VtaClient) -> CmdResult {
-    let list = client.room_keys_list().await?;
-    if crate::render::is_json_output() {
-        crate::render::print_json(&list.rooms)?;
-        return Ok(());
-    }
-    if list.rooms.is_empty() {
-        println!("This VTA holds no room's group.");
-        return Ok(());
-    }
-    // Whose each entry is rides in `ext["org.openvtc.rooms"].held`, index for index: a VTA
-    // holding two members of one room (the community's own place and an administrator's
-    // own membership) lists the room twice, and only this tells the two apart.
-    let held = held_ext(&list.ext);
-    println!("{} room(s):", list.rooms.len());
-    for (i, r) in list.rooms.iter().enumerate() {
-        println!(
-            "  {}  epoch {}  reads back to epoch {}",
-            r.room_id, r.epoch, r.earliest_readable_epoch
-        );
-        if let Some(member) = held.get(i).and_then(|h| h["member"].as_str()) {
-            let context = held[i]["context"]
-                .as_str()
-                .map(|c| format!(" (context {c})"))
-                .unwrap_or_default();
-            println!("    as {member}{context}");
-        }
     }
     Ok(())
 }

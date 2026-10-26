@@ -10,7 +10,6 @@ const ROOM: &str = "did:webvh:example.com:rooms:northwind";
 const OTHER_ROOM: &str = "did:webvh:example.com:rooms:bookclub";
 const LABEL: &str = vta_sdk::trust_tasks::TASK_ROOMS_KEYS_LABEL_0_1;
 const LIST_0_2: &str = vta_sdk::trust_tasks::TASK_ROOMS_KEYS_LIST_0_2;
-const LIST_0_1: &str = vta_sdk::trust_tasks::TASK_ROOMS_KEYS_LIST_0_1;
 
 /// A detail's text no log, audit row or other task's output may ever carry.
 const SECRET_NAME: &str = "Northwind tender — Dana's pricing room";
@@ -150,20 +149,6 @@ async fn a_label_is_named_and_listed_back_only_when_asked() {
         );
         assert_eq!(entry(&listed, ROOM, &f.alice.did)["epoch"], 1);
     }
-    // 0.1 has no personal member at all.
-    let v01 = body(
-        crate::trust_tasks::room_group::handle_list(
-            &f.state,
-            &alice_caller(),
-            request(LIST_0_1, json!({})),
-        )
-        .await,
-    );
-    assert!(!v01.to_string().contains(SECRET_NAME), "{v01}");
-    assert_eq!(
-        v01["payload"]["ext"]["org.openvtc.rooms"]["held"][0]["member"], f.alice.did,
-        "0.1 keeps #2161's ext: {v01}"
-    );
 }
 
 /// List 0.2 recipient item 1: one entry per room and member the caller may act as, each
@@ -577,11 +562,11 @@ async fn a_label_never_reaches_what_the_vta_seals_or_opens() {
     .await;
     let named = json!({ "org.openvtc.rooms": { "member": f.alice.did } });
     let sealed = body(
-        crate::trust_tasks::room_group::handle_seal(
+        crate::trust_tasks::room_act::handle_seal_v0_2(
             &f.state,
             &alice_caller(),
             request(
-                vta_sdk::trust_tasks::TASK_ROOMS_KEYS_SEAL_0_1,
+                vta_sdk::trust_tasks::TASK_ROOMS_KEYS_SEAL_0_2,
                 json!({
                     "roomId": ROOM, "key": "notes/1", "version": 1,
                     "plaintext": "aGVsbG8", "ext": named,
@@ -593,11 +578,11 @@ async fn a_label_never_reaches_what_the_vta_seals_or_opens() {
     assert!(sealed["payload"]["sealed"].is_object(), "{sealed}");
     assert!(!sealed.to_string().contains(SECRET_NAME), "{sealed}");
     let opened = body(
-        crate::trust_tasks::room_group::handle_open(
+        crate::trust_tasks::room_group::handle_open_v0_2(
             &f.state,
             &alice_caller(),
             request(
-                vta_sdk::trust_tasks::TASK_ROOMS_KEYS_OPEN_0_1,
+                vta_sdk::trust_tasks::TASK_ROOMS_KEYS_OPEN_0_2,
                 json!({
                     "roomId": ROOM, "key": "notes/1", "version": 1,
                     "sealed": sealed["payload"]["sealed"], "ext": named,

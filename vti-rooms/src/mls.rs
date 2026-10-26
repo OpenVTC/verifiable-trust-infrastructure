@@ -964,7 +964,7 @@ impl RoomGroup {
 ///
 /// **The only identity of a KeyPackage worth comparing.** Equal references mean
 /// byte-identical KeyPackages, and so the same init key — which is why
-/// `rooms/owner/group/add/0.2` recognises a repeated admission by it, and
+/// `rooms/owner/group/add/0.3` recognises a repeated admission by it, and
 /// `rooms/keys/act/0.3` a KeyPackage its key holder minted. The leaf credential is not
 /// such an identity: it is signed by the leaf's own key, so anybody can make one naming
 /// anybody.

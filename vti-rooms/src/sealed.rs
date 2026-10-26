@@ -177,7 +177,7 @@ impl SealedRoom {
     /// Renew the room — advance its epoch with a commit that changes no membership — keeping
     /// the chain intact.
     ///
-    /// `rooms/owner/group/renew/0.1` item 2: the committer updates its own leaf
+    /// `rooms/owner/group/renew/0.2` item 2: the committer updates its own leaf
     /// ([`RoomGroup::self_update`]), and the outgoing epoch's storage key is sealed under the
     /// incoming one, so every member who applies the commit still reads everything sealed
     /// before it. Nobody joins and nobody leaves; the Welcome is always `None`.
