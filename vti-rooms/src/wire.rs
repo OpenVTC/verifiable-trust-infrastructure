@@ -38,17 +38,16 @@ use serde::{Deserialize, Serialize};
 
 use crate::{Record, RecordStatus, Visibility};
 
-/// `rooms/create/0.1`.
-pub const ROOMS_CREATE_TYPE: &str = "https://trusttasks.org/spec/rooms/create/0.1";
-/// `rooms/records/put/0.1`.
+/// `rooms/records/put/0.1`. Still served, with 0.2, only because `rooms/keys/act` 0.6 —
+/// the newest a member's VTA completes — completes no later version; a direct writer
+/// sends 0.3 ([`ROOMS_RECORDS_PUT_V3_TYPE`]). Goes with act 0.7.
 pub const ROOMS_RECORDS_PUT_TYPE: &str = "https://trusttasks.org/spec/rooms/records/put/0.1";
-/// `rooms/records/get/0.1`.
-pub const ROOMS_RECORDS_GET_TYPE: &str = "https://trusttasks.org/spec/rooms/records/get/0.1";
 /// `rooms/records/list/0.1`.
 pub const ROOMS_RECORDS_LIST_TYPE: &str = "https://trusttasks.org/spec/rooms/records/list/0.1";
 /// `rooms/epoch/mint/0.1`.
 pub const ROOMS_EPOCH_MINT_TYPE: &str = "https://trusttasks.org/spec/rooms/epoch/mint/0.1";
-/// `rooms/epoch/chain/0.1`.
+/// `rooms/epoch/chain/0.1`. Still served only because `rooms/keys/act` 0.6 completes no
+/// later version; a direct reader sends 0.2 ([`ROOMS_EPOCH_CHAIN_V2_TYPE`]). Goes with act 0.7.
 pub const ROOMS_EPOCH_CHAIN_TYPE: &str = "https://trusttasks.org/spec/rooms/epoch/chain/0.1";
 /// `rooms/owner/transfer/0.1`.
 pub const ROOMS_OWNER_TRANSFER_TYPE: &str = "https://trusttasks.org/spec/rooms/owner/transfer/0.1";
@@ -56,8 +55,6 @@ pub const ROOMS_OWNER_TRANSFER_TYPE: &str = "https://trusttasks.org/spec/rooms/o
 pub const ROOMS_OWNER_CLAIM_TYPE: &str = "https://trusttasks.org/spec/rooms/owner/claim/0.1";
 /// `rooms/records/curate/0.1`.
 pub const ROOMS_RECORDS_CURATE_TYPE: &str = "https://trusttasks.org/spec/rooms/records/curate/0.1";
-/// `rooms/epoch/prune/0.1`.
-pub const ROOMS_EPOCH_PRUNE_TYPE: &str = "https://trusttasks.org/spec/rooms/epoch/prune/0.1";
 /// `rooms/epoch/commits/0.1`.
 pub const ROOMS_EPOCH_COMMITS_TYPE: &str = "https://trusttasks.org/spec/rooms/epoch/commits/0.1";
 
@@ -98,21 +95,6 @@ pub const ROOMS_RECORDS_GET_V2_TYPE: &str =
 /// `rooms/records/list/0.2`: a listing whose rows name their blobs.
 pub const ROOMS_RECORDS_LIST_V2_TYPE: &str =
     <trust_tasks_rs::specs::rooms::records::list::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
-/// `rooms/blobs/upload/begin/0.1`.
-pub const ROOMS_BLOBS_UPLOAD_BEGIN_TYPE: &str =
-    <trust_tasks_rs::specs::rooms::blobs::upload::begin::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
-/// `rooms/blobs/upload/chunk/0.1`.
-pub const ROOMS_BLOBS_UPLOAD_CHUNK_TYPE: &str =
-    <trust_tasks_rs::specs::rooms::blobs::upload::chunk::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
-/// `rooms/blobs/upload/commit/0.1`.
-pub const ROOMS_BLOBS_UPLOAD_COMMIT_TYPE: &str =
-    <trust_tasks_rs::specs::rooms::blobs::upload::commit::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
-/// `rooms/blobs/upload/abort/0.1`.
-pub const ROOMS_BLOBS_UPLOAD_ABORT_TYPE: &str =
-    <trust_tasks_rs::specs::rooms::blobs::upload::abort::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
-/// `rooms/blobs/get/0.1`.
-pub const ROOMS_BLOBS_GET_TYPE: &str =
-    <trust_tasks_rs::specs::rooms::blobs::get::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 /// `rooms/blobs/chunk/0.1`.
 pub const ROOMS_BLOBS_CHUNK_TYPE: &str =
     <trust_tasks_rs::specs::rooms::blobs::chunk::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
@@ -147,16 +129,13 @@ pub const ROOMS_REVOCATIONS_GET_TYPE: &str =
 
 /// Every `rooms/*` URI this service dispatches.
 pub const ROOMS_DISPATCHED_URIS: &[&str] = &[
-    ROOMS_CREATE_TYPE,
     ROOMS_RECORDS_PUT_TYPE,
-    ROOMS_RECORDS_GET_TYPE,
     ROOMS_RECORDS_LIST_TYPE,
     ROOMS_EPOCH_MINT_TYPE,
     ROOMS_EPOCH_CHAIN_TYPE,
     ROOMS_RECORDS_CURATE_TYPE,
     ROOMS_OWNER_TRANSFER_TYPE,
     ROOMS_OWNER_CLAIM_TYPE,
-    ROOMS_EPOCH_PRUNE_TYPE,
     ROOMS_EPOCH_COMMITS_TYPE,
     // Room files (data-rooms-files.md §5).
     ROOMS_RECORDS_PUT_V2_TYPE,
@@ -173,11 +152,6 @@ pub const ROOMS_DISPATCHED_URIS: &[&str] = &[
     // The epoch floor (trust-tasks-tf #869).
     ROOMS_EPOCH_CHAIN_V2_TYPE,
     ROOMS_EPOCH_PRUNE_V2_TYPE,
-    ROOMS_BLOBS_UPLOAD_BEGIN_TYPE,
-    ROOMS_BLOBS_UPLOAD_CHUNK_TYPE,
-    ROOMS_BLOBS_UPLOAD_COMMIT_TYPE,
-    ROOMS_BLOBS_UPLOAD_ABORT_TYPE,
-    ROOMS_BLOBS_GET_TYPE,
     ROOMS_BLOBS_CHUNK_TYPE,
     ROOMS_INFO_TYPE,
     ROOMS_USAGE_TYPE,
@@ -309,10 +283,10 @@ pub struct CleartextContent {
     pub tags: Vec<String>,
 }
 
-/// The `rooms/create/0.1` payload is the type `trust-tasks-rs` generates from the
+/// The `rooms/create/0.2` payload is the type `trust-tasks-rs` generates from the
 /// specification — never a copy here (the generated-wire-types census). A host reads
 /// what it keeps from it with [`CreateRoomTerms::from_request`].
-pub use trust_tasks_rs::specs::rooms::create::v0_1::Payload as CreateRoomBody;
+pub use trust_tasks_rs::specs::rooms::create::v0_2::Payload as CreateRoomBody;
 
 /// The terms a host records for a room it is asked to create, in this crate's own types.
 ///
@@ -419,7 +393,8 @@ mod create_terms_tests {
     }
 }
 
-/// `rooms/create/0.1#response`.
+/// `rooms/create/0.2#response`, without the `recordRetention` echo a host adds
+/// ([`crate::record_tasks::create_v2_response`]).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CreateRoomResponse {
@@ -456,7 +431,7 @@ pub struct PutRecordResponse {
     pub epoch: Option<u32>,
 }
 
-/// `rooms/records/get/0.1` request.
+/// The `rooms/records/get/0.2` request, without `ext`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct GetRecordBody {
@@ -532,7 +507,8 @@ pub struct CommittedRecord {
     pub cleartext: Option<serde_json::Value>,
 }
 
-/// `rooms/records/get/0.1#response`.
+/// `rooms/records/get/0.2#response`, without the `blobs` a host adds
+/// ([`crate::blob_tasks::get_v2_response`]).
 ///
 /// # Why this type exists, having not existed
 ///
@@ -808,7 +784,7 @@ pub struct ChainResponse {
     pub links: Vec<EpochLink>,
 }
 
-/// `rooms/epoch/prune/0.1` request.
+/// The `rooms/epoch/prune/0.2` request, without `ext`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PruneBody {
@@ -824,7 +800,8 @@ pub struct PruneBody {
     pub reason: Option<String>,
 }
 
-/// `rooms/epoch/prune/0.1#response`.
+/// `rooms/epoch/prune/0.2#response`, without the `epochFloor` a host adds
+/// ([`crate::record_tasks::epoch_prune_v2_response`]).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PruneResponse {
@@ -922,12 +899,6 @@ impl trust_tasks_rs::Payload for PutRecordBody {
     const IS_RECIPIENT_REQUIRED: bool = true;
     const IS_ISSUED_AT_REQUIRED: bool = true;
 }
-impl trust_tasks_rs::Payload for GetRecordBody {
-    const TYPE_URI: &'static str = ROOMS_RECORDS_GET_TYPE;
-    const IS_PROOF_REQUIRED: bool = true;
-    const IS_RECIPIENT_REQUIRED: bool = true;
-    const IS_ISSUED_AT_REQUIRED: bool = true;
-}
 impl trust_tasks_rs::Payload for ListRecordsBody {
     const TYPE_URI: &'static str = ROOMS_RECORDS_LIST_TYPE;
     const IS_PROOF_REQUIRED: bool = true;
@@ -964,12 +935,6 @@ impl trust_tasks_rs::Payload for ChainBody {
     const IS_RECIPIENT_REQUIRED: bool = true;
     const IS_ISSUED_AT_REQUIRED: bool = true;
 }
-impl trust_tasks_rs::Payload for PruneBody {
-    const TYPE_URI: &'static str = ROOMS_EPOCH_PRUNE_TYPE;
-    const IS_PROOF_REQUIRED: bool = true;
-    const IS_RECIPIENT_REQUIRED: bool = true;
-    const IS_ISSUED_AT_REQUIRED: bool = true;
-}
 impl trust_tasks_rs::Payload for CommitsBody {
     const TYPE_URI: &'static str = ROOMS_EPOCH_COMMITS_TYPE;
     const IS_PROOF_REQUIRED: bool = true;
@@ -992,16 +957,14 @@ mod payload_impl_tests {
         fn check<P: Payload>(expected: &str) {
             assert_eq!(P::TYPE_URI, expected);
         }
-        check::<CreateRoomBody>(ROOMS_CREATE_TYPE);
+        check::<CreateRoomBody>(ROOMS_CREATE_V2_TYPE);
         check::<PutRecordBody>(ROOMS_RECORDS_PUT_TYPE);
-        check::<GetRecordBody>(ROOMS_RECORDS_GET_TYPE);
         check::<ListRecordsBody>(ROOMS_RECORDS_LIST_TYPE);
         check::<CurateRecordBody>(ROOMS_RECORDS_CURATE_TYPE);
         check::<TransferOwnerBody>(ROOMS_OWNER_TRANSFER_TYPE);
         check::<ClaimOwnerBody>(ROOMS_OWNER_CLAIM_TYPE);
         check::<MintEpochBody>(ROOMS_EPOCH_MINT_TYPE);
         check::<ChainBody>(ROOMS_EPOCH_CHAIN_TYPE);
-        check::<PruneBody>(ROOMS_EPOCH_PRUNE_TYPE);
         check::<CommitsBody>(ROOMS_EPOCH_COMMITS_TYPE);
     }
 
@@ -1049,16 +1012,14 @@ mod payload_impl_tests {
                  task whose spec requires a proof."
             );
         }
-        check::<CreateRoomBody>(ROOMS_CREATE_TYPE);
+        check::<CreateRoomBody>(ROOMS_CREATE_V2_TYPE);
         check::<PutRecordBody>(ROOMS_RECORDS_PUT_TYPE);
-        check::<GetRecordBody>(ROOMS_RECORDS_GET_TYPE);
         check::<ListRecordsBody>(ROOMS_RECORDS_LIST_TYPE);
         check::<CurateRecordBody>(ROOMS_RECORDS_CURATE_TYPE);
         check::<TransferOwnerBody>(ROOMS_OWNER_TRANSFER_TYPE);
         check::<ClaimOwnerBody>(ROOMS_OWNER_CLAIM_TYPE);
         check::<MintEpochBody>(ROOMS_EPOCH_MINT_TYPE);
         check::<ChainBody>(ROOMS_EPOCH_CHAIN_TYPE);
-        check::<PruneBody>(ROOMS_EPOCH_PRUNE_TYPE);
         check::<CommitsBody>(ROOMS_EPOCH_COMMITS_TYPE);
     }
 }

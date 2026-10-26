@@ -549,8 +549,8 @@ async fn register_at(
         &owner_key.key_id,
         &owner_did,
         &owner_key.verification_method,
-        vti_rooms::wire::ROOMS_CREATE_TYPE,
-        &format!("{}#response", vti_rooms::wire::ROOMS_CREATE_TYPE),
+        vti_rooms::wire::ROOMS_CREATE_V2_TYPE,
+        &format!("{}#response", vti_rooms::wire::ROOMS_CREATE_V2_TYPE),
         payload,
     )
     .await

@@ -498,7 +498,7 @@ async fn act_three(client: &VtcClient) -> anyhow::Result<()> {
     // over material it cannot read, to a member who can.
     let carol_session = session(&f, false);
     let fetched = client
-        .epoch_chain(
+        .epoch_chain_v2(
             &carol_session,
             None,
             None,
@@ -506,6 +506,9 @@ async fn act_three(client: &VtcClient) -> anyhow::Result<()> {
             &f.owner.secret_multibase,
         )
         .await?;
+    // The rungs as the crate that opens them reads them.
+    let fetched: vtc_client::rooms::ChainResponse =
+        serde_json::from_value(serde_json::to_value(fetched)?)?;
     note(&format!(
         "the host served {} rung(s), highest epoch first: {:?}",
         fetched.links.len(),

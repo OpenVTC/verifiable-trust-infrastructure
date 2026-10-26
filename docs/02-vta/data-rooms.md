@@ -322,7 +322,7 @@ client.create_room(
 ).await?;
 ```
 
-Over the wire that is one `rooms/create/0.1` document
+Over the wire that is one `rooms/create/0.2` document
 (`vta_sdk::trust_task_sign::build_signed` builds and signs it) posted to
 `/trust-tasks`. **The caller brings the `roomId`** — a room identified by
 something its host chose could not move to another host without changing
@@ -1255,7 +1255,7 @@ community's ACL or a session.
 - **What a policy can see**: the creator (their DID, whether they hold a member
   row, and their role) and the room's identifier, visibility and owner. It
   deliberately does *not* carry the design's `didControlledBy` /
-  `contentStoredAt` hosting axes — the published `rooms/create/0.1` schema has
+  `contentStoredAt` hosting axes — the published `rooms/create/0.2` schema has
   no member for either, so no host can know them.
 
 Members of a T2 room do not need to be members of the community. Community
@@ -1315,7 +1315,7 @@ T4 runs the same binary as T1; what differs is the door — a VRC-linked peer
 rather than an invitation you originated — and that nobody governs creation but
 the owner.
 
-**What creation checks, stated once for all four.** `rooms/create/0.1` is the
+**What creation checks, stated once for all four.** `rooms/create/0.2` is the
 one verb no chain can authorize: at the moment it runs the room has issued
 nothing. So the check is the request's own proof — **the signer must be the
 party they name as owner** — and the room is written from that, not from the
@@ -1583,8 +1583,8 @@ use to whoever hosts it. Depth is capped at `MAX_CHAIN_DEPTH` (8).
 
 | Verb | Task URI | Needs |
 |---|---|---|
-| Write | `rooms/records/put/0.1` | `write` |
-| Read | `rooms/records/get/0.1` | `read` |
+| Write | `rooms/records/put/0.3` | `write` |
+| Read | `rooms/records/get/0.2` | `read` |
 | List | `rooms/records/list/0.1` | `read` |
 | Curate | `rooms/records/curate/0.1` | `curate` |
 | Mint an epoch | `rooms/epoch/mint/0.1` | `admin` |
@@ -1783,7 +1783,7 @@ recover but a fresh invitation from every owner.
 ### 10.4 Pruning the epoch key chain
 
 A room that keeps its history (`chained`) can later decide that part of it
-should stop being readable. That is `rooms/epoch/prune/0.1`: the host erases the
+should stop being readable. That is `rooms/epoch/prune/0.2`: the host erases the
 epoch key chain's rungs **below** an epoch, `admin` only — not `curate`, which
 every writer holds.
 
@@ -1857,7 +1857,7 @@ pnm rooms records prune --room <room-did> --host <host-url> \
   the moment of the prune — by the age a host can see, `updatedAt` (a curation
   restarts it), never a record's own sealed `validUntil`.
 - **No rule, nothing eligible.** A room that states none — every room created
-  before this, and `rooms/create/0.1` — never has a record eligible by age. A
+  before this, and one created without one — never has a record eligible by age. A
   prune asking for a kind the room has no rule for is refused `noRetention`.
 - **Set it at creation or change it later.** `rooms/create/0.2` records it as
   given and echoes it; `rooms/records/retention/set/0.1` replaces it whole (`{}`
@@ -1935,21 +1935,20 @@ and `vtc-service`:
 
 | URI | Action required |
 |---|---|
-| `rooms/create/0.1` | no chain — the signer must be the `ownerDid` (§8.4) |
-| `rooms/records/put/0.1`, `0.2` | `write` |
+| `rooms/records/put/0.1`, `0.2` | `write` — served only for `rooms/keys/act` ≤ 0.6, which completes no later version; a direct writer sends 0.3 |
 | `rooms/records/put/0.3` | `write` — an `open` room's cleartext may carry provenance and `validUntil`, stored as received and never acted on |
-| `rooms/records/get/0.1` | `read` |
+| `rooms/records/get/0.2` | `read` — and the record's `blobs` |
 | `rooms/records/list/0.1`, `0.2` | `read` |
 | `rooms/records/list/0.3` | `read` — every page carries the room's `lastPrune` |
-| `rooms/create/0.2` | as 0.1, and records the room's `recordRetention` as given |
+| `rooms/create/0.2` | no chain — the signer must be the `ownerDid` (§8.4); records the room's `recordRetention` as given |
 | `rooms/info/0.1`, `0.2` | `read` — 0.2 adds `recordRetention` and `lastPrune` |
 | `rooms/records/prune/0.1` | `admin` — removes what the record retention makes eligible (§10.5) |
 | `rooms/records/retention/set/0.1` | `admin` — replaces the record retention (§10.5) |
 | `rooms/records/curate/0.1` | `curate` |
 | `rooms/epoch/mint/0.1` | `admin` |
-| `rooms/epoch/chain/0.1` | `read` — reading the room and reading what was written before you joined are the same act; no rung at or below the epoch floor |
+| `rooms/epoch/chain/0.1` | `read` — reading the room and reading what was written before you joined are the same act; no rung at or below the epoch floor. Served only for `rooms/keys/act` ≤ 0.6; a direct reader sends 0.2 |
 | `rooms/epoch/chain/0.2` | `read` — and the room's `epochFloor` on every response once pruned |
-| `rooms/epoch/prune/0.1`, `0.2` | `admin` — both raise the epoch floor; 0.2 returns it (§10.4) |
+| `rooms/epoch/prune/0.2` | `admin` — raises the epoch floor and returns it (§10.4) |
 | `rooms/owner/transfer/0.1` | `admin` |
 | `rooms/owner/claim/0.1` | nomination + membership + dormancy |
 

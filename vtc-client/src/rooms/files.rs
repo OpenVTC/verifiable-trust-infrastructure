@@ -1,5 +1,5 @@
 //! Moving a room file's ciphertext: `rooms/blobs/upload/*`, `rooms/blobs/{get,chunk}` and
-//! the record put that names a blob (`rooms/records/put/0.2`).
+//! the record put that names a blob (`rooms/records/put/0.3`).
 //!
 //! What goes over these calls is ciphertext and its manifest, never a key and never a file
 //! name: a file is sealed before [`VtcClient::begin_upload`] and opened after
@@ -13,12 +13,7 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 use trust_tasks_rs::Payload as _;
 use trust_tasks_rs::specs::rooms::blobs::chunk::v0_1 as download_chunk;
-use trust_tasks_rs::specs::rooms::blobs::get::v0_1 as blob_get;
 use trust_tasks_rs::specs::rooms::blobs::get::v0_2 as blob_get_v2;
-use trust_tasks_rs::specs::rooms::blobs::upload::{
-    abort::v0_1 as upload_abort, begin::v0_1 as upload_begin, chunk::v0_1 as upload_chunk,
-    commit::v0_1 as upload_commit,
-};
 use trust_tasks_rs::specs::rooms::blobs::upload::{
     abort::v0_2 as upload_abort_v2, begin::v0_2 as upload_begin_v2, chunk::v0_2 as upload_chunk_v2,
     commit::v0_2 as upload_commit_v2,
@@ -27,28 +22,24 @@ use trust_tasks_rs::specs::rooms::info::v0_1 as room_info;
 use trust_tasks_rs::specs::rooms::info::v0_2 as room_info_v2;
 use trust_tasks_rs::specs::rooms::records::get::v0_2 as get_v2;
 use trust_tasks_rs::specs::rooms::records::prune::v0_1 as records_prune;
-use trust_tasks_rs::specs::rooms::records::put::v0_2 as put_v2;
 use trust_tasks_rs::specs::rooms::records::put::v0_3 as put_v3;
 use trust_tasks_rs::specs::rooms::records::retention::set::v0_1 as retention_set;
 
 use super::{RoomSession, SealedContent};
 use crate::{VtcClient, VtcError};
 
-pub use blob_get::Response as BlobGetResponse;
 pub use blob_get_v2::Response as BlobGetV2Response;
 pub use blob_get_v2::TransferTarget as ReadTarget;
 pub use download_chunk::Response as DownloadChunkResponse;
 pub use get_v2::Response as GetRecordV2Response;
-pub use put_v2::Response as PutRecordV2Response;
 pub use put_v3::Response as PutRecordV3Response;
 pub use records_prune::Response as PruneRecordsResponse;
 pub use retention_set::Response as RetentionSetResponse;
 pub use room_info::Response as RoomInfoResponse;
 pub use room_info_v2::Response as RoomInfoV2Response;
-pub use upload_begin::Response as BeginUploadResponse;
 pub use upload_begin_v2::{Response as BeginUploadV2Response, TransferTarget as WriteTarget};
-pub use upload_chunk::Response as UploadChunkResponse;
-pub use upload_commit::Response as CommitUploadResponse;
+pub use upload_chunk_v2::Response as UploadChunkResponse;
+pub use upload_commit_v2::Response as CommitUploadResponse;
 
 /// Build a payload through its generated type: the schema's checks run here.
 fn payload<P: DeserializeOwned + Serialize>(
@@ -186,107 +177,6 @@ fn b64url(bytes: &[u8]) -> String {
 }
 
 impl VtcClient {
-    /// `rooms/blobs/upload/begin/0.1`: offer a blob's manifest to the room.
-    ///
-    /// `manifest` is the ciphertext manifest (`vti_rooms::files::BlobManifest`); its digest
-    /// is the `blobRef` the blob will have. The answer lists the chunks the host still needs,
-    /// so a resumed upload sends only those, and says when the blob is already committed.
-    pub async fn begin_upload<M: Serialize>(
-        &self,
-        session: &RoomSession,
-        manifest: &M,
-        signer_did: &str,
-        private_key_multibase: &str,
-    ) -> Result<BeginUploadResponse, VtcError> {
-        let p = payload::<upload_begin::Payload>(serde_json::json!({
-            "roomId": session.room_id,
-            "manifest": manifest,
-            "presentation": session.presentation,
-        }))?;
-        let uri = upload_begin::Payload::TYPE_URI;
-        let v = self
-            .room_task(uri, p, signer_did, private_key_multibase)
-            .await?;
-        response(uri, v)
-    }
-
-    /// `rooms/blobs/upload/chunk/0.1`: one sealed chunk, which the host checks against the
-    /// manifest before storing.
-    pub async fn upload_chunk(
-        &self,
-        upload_id: &str,
-        index: u64,
-        chunk: &[u8],
-        signer_did: &str,
-        private_key_multibase: &str,
-    ) -> Result<UploadChunkResponse, VtcError> {
-        let p = payload::<upload_chunk::Payload>(serde_json::json!({
-            "uploadId": upload_id,
-            "index": index,
-            "data": b64url(chunk),
-            "digestMultibase": vti_rooms::files::digest_multibase(chunk),
-        }))?;
-        let uri = upload_chunk::Payload::TYPE_URI;
-        let v = self
-            .room_task(uri, p, signer_did, private_key_multibase)
-            .await?;
-        response(uri, v)
-    }
-
-    /// `rooms/blobs/upload/commit/0.1`: finish an upload whose every chunk is held.
-    pub async fn commit_upload(
-        &self,
-        upload_id: &str,
-        signer_did: &str,
-        private_key_multibase: &str,
-    ) -> Result<CommitUploadResponse, VtcError> {
-        let p = payload::<upload_commit::Payload>(serde_json::json!({ "uploadId": upload_id }))?;
-        let uri = upload_commit::Payload::TYPE_URI;
-        let v = self
-            .room_task(uri, p, signer_did, private_key_multibase)
-            .await?;
-        response(uri, v)
-    }
-
-    /// `rooms/blobs/upload/abort/0.1`: give up an upload, releasing what it reserved.
-    pub async fn abort_upload(
-        &self,
-        upload_id: &str,
-        signer_did: &str,
-        private_key_multibase: &str,
-    ) -> Result<bool, VtcError> {
-        let p = payload::<upload_abort::Payload>(serde_json::json!({ "uploadId": upload_id }))?;
-        let uri = upload_abort::Payload::TYPE_URI;
-        let v = self
-            .room_task(uri, p, signer_did, private_key_multibase)
-            .await?;
-        let r: upload_abort::Response = response(uri, v)?;
-        Ok(r.aborted)
-    }
-
-    /// `rooms/blobs/get/0.1`: start a download, returning the manifest committed at upload.
-    ///
-    /// The manifest comes from the host. A reader checks it against the `blobRef` and the
-    /// author's `FileManifest` before trusting a chunk, which `vti_rooms::files` does.
-    pub async fn get_blob(
-        &self,
-        session: &RoomSession,
-        blob_ref: &str,
-        signer_did: &str,
-        private_key_multibase: &str,
-    ) -> Result<BlobGetResponse, VtcError> {
-        let p = payload::<blob_get::Payload>(serde_json::json!({
-            "roomId": session.room_id,
-            "blobRef": blob_ref,
-            "presentation": session.presentation,
-        }))?;
-        let uri = blob_get::Payload::TYPE_URI;
-        let v = self
-            .room_task(uri, p, signer_did, private_key_multibase)
-            .await?;
-        response(uri, v)
-    }
-
     /// `rooms/blobs/chunk/0.1`: one chunk of a started download, decoded.
     ///
     /// The bytes are returned unchecked against the manifest; the caller checks each against
@@ -478,7 +368,7 @@ impl VtcClient {
         response(uri, v)
     }
 
-    /// `rooms/records/put/0.2`: write a sealed record that names its blobs.
+    /// `rooms/records/put/0.3`: write a sealed record that names its blobs.
     ///
     /// Each blob must be committed in this room first, and the record's sealed body must
     /// describe it; the host can check the first and never the second.
@@ -492,7 +382,7 @@ impl VtcClient {
         expected_version: Option<u64>,
         signer_did: &str,
         private_key_multibase: &str,
-    ) -> Result<PutRecordV2Response, VtcError> {
+    ) -> Result<PutRecordV3Response, VtcError> {
         let mut value = serde_json::json!({
             "roomId": session.room_id,
             "key": key,
@@ -505,8 +395,8 @@ impl VtcClient {
         if let Some(v) = expected_version {
             value["expectedVersion"] = serde_json::json!(v);
         }
-        let p = payload::<put_v2::Payload>(value)?;
-        let uri = put_v2::Payload::TYPE_URI;
+        let p = payload::<put_v3::Payload>(value)?;
+        let uri = put_v3::Payload::TYPE_URI;
         let v = self
             .room_task(uri, p, signer_did, private_key_multibase)
             .await?;

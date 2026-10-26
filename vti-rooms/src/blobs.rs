@@ -1237,7 +1237,9 @@ impl BlobHost {
 
     // ─── upload ──────────────────────────────────────────────────────────
 
-    /// `rooms/blobs/upload/begin/0.1`: check the upload against every limit,
+    /// An upload whose every step its opener signs — the shape `rooms/blobs/upload/*` had
+    /// at 0.1, which no host dispatches now (they serve [`Self::begin_v2`]); kept as the
+    /// storage layer's own entry point. Check the upload against every limit,
     /// reserve, and open a staging slot — or answer the open slot this opener
     /// already has for this manifest in this room.
     ///
@@ -1814,7 +1816,7 @@ impl BlobHost {
         })
     }
 
-    /// `rooms/blobs/upload/chunk/0.1`, from the party that began the upload.
+    /// A chunk from the party that began the upload ([`Self::begin`]).
     pub async fn put_chunk(
         &self,
         opener: &str,
@@ -1868,7 +1870,7 @@ impl BlobHost {
         }
     }
 
-    /// `rooms/blobs/upload/commit/0.1`, from the party that began the upload.
+    /// Commit, from the party that began the upload ([`Self::begin`]).
     pub async fn commit(&self, opener: &str, upload_id: &str) -> Result<Committed, BlobError> {
         self.commit_as(UploadCaller::V1(opener), upload_id).await
     }
@@ -2079,7 +2081,8 @@ impl BlobHost {
         })
     }
 
-    /// `rooms/blobs/upload/abort/0.1`. `Ok(true)` when this call aborted it,
+    /// Abort, from the party that began the upload ([`Self::begin`]). `Ok(true)` when this
+    /// call aborted it,
     /// `Ok(false)` when it already was.
     pub async fn abort(&self, opener: &str, upload_id: &str) -> Result<bool, BlobError> {
         self.abort_as(UploadCaller::V1(opener), upload_id).await

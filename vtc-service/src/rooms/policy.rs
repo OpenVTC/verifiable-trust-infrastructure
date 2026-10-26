@@ -17,7 +17,7 @@
 //!
 //! The design sketches an input contract carrying `didControlledBy` and
 //! `contentStoredAt` — which of the two hosting axes the creator is asking for.
-//! **The published `rooms/create/0.1` schema carries neither**, so a host cannot
+//! **The published `rooms/create/0.2` schema carries neither**, so a host cannot
 //! know them and this input does not pretend to: it offers the creator (with
 //! their community standing), and the room's identifier, visibility and owner.
 //! Inventing the missing members locally would put this service's rooms out of

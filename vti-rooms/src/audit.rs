@@ -378,7 +378,7 @@ mod tests {
         );
     }
 
-    /// A prune is `admin` (rooms/epoch/prune/0.1 *Authorization*: not `curate`, which every
+    /// A prune is `admin` (rooms/epoch/prune/0.2 *Authorization*: not `curate`, which every
     /// writer holds) and is logged as a prune — never as the mint it sits beside.
     #[test]
     fn a_prune_is_admin_and_named_as_a_prune() {

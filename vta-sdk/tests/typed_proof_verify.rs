@@ -58,7 +58,7 @@ async fn a_proof_signed_as_value_verifies_against_the_typed_document() {
     // Sign the document the way a client does: over the whole thing, as `Value`.
     let mut signed: TrustTask<Value> = TrustTask::new(
         "urn:uuid:11111111-1111-4111-8111-111111111111".to_string(),
-        "https://trusttasks.org/spec/rooms/create/0.1"
+        "https://trusttasks.org/spec/rooms/create/0.2"
             .parse()
             .expect("a valid type URI"),
         json!({ "roomId": "room-1", "ownerDid": did, "epoch": 1 }),
@@ -99,7 +99,7 @@ async fn a_tampered_typed_document_is_refused() {
 
     let mut signed: TrustTask<Value> = TrustTask::new(
         "urn:uuid:22222222-2222-4222-8222-222222222222".to_string(),
-        "https://trusttasks.org/spec/rooms/create/0.1"
+        "https://trusttasks.org/spec/rooms/create/0.2"
             .parse()
             .expect("a valid type URI"),
         json!({ "roomId": "room-1", "ownerDid": did, "epoch": 1 }),
@@ -143,7 +143,7 @@ async fn a_payload_field_the_type_does_not_know_breaks_typed_verification() {
 
     let mut signed: TrustTask<Value> = TrustTask::new(
         "urn:uuid:33333333-3333-4333-8333-333333333333".to_string(),
-        "https://trusttasks.org/spec/rooms/create/0.1"
+        "https://trusttasks.org/spec/rooms/create/0.2"
             .parse()
             .expect("a valid type URI"),
         // `note` is not a field of `RoomCreate`.

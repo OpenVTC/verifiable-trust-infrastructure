@@ -255,11 +255,11 @@ moves a site in chunked Trust Tasks over `vti_common::backup_transfer`.
 
 | Task | Needs | Does |
 |---|---|---|
-| `rooms/blobs/upload/begin/0.1` | `write` chain | Takes the ciphertext manifest. Checks it against every applicable limit (§6.1) and reserves against them. Opens an upload bundle owned by the presenter. Returns `{ uploadId, missing }` |
-| `rooms/blobs/upload/chunk/0.1` | the open bundle | `{ uploadId, index, bytes }`. Idempotent; checked against the manifest digest |
-| `rooms/blobs/upload/commit/0.1` | the open bundle | Verifies the whole digest, hands the blob to the `BlobStore` and returns `{ blobRef }` |
-| `rooms/blobs/upload/abort/0.1` | the open bundle | Discards it |
-| `rooms/blobs/get/0.1` | `read` chain | `{ roomId, blobRef }` → the manifest and a short-lived `downloadId` |
+| `rooms/blobs/upload/begin/0.2` | `write` chain | Takes the ciphertext manifest and the modes the producer accepts — a single-use `uploadKey` (proxied), a part plan (direct), or both. Checks it against every applicable limit (§6.1) and reserves against them. Opens an upload bundle owned by the presenter. Returns `{ uploadId, mode, missing }`, and in direct mode the part targets |
+| `rooms/blobs/upload/chunk/0.2` | the open bundle's upload key | `{ uploadId, index, bytes }`. Idempotent; checked against the manifest digest |
+| `rooms/blobs/upload/commit/0.2` | the upload key (proxied) or the owner (direct) | Verifies the whole digest, hands the blob to the `BlobStore` and returns `{ blobRef }` |
+| `rooms/blobs/upload/abort/0.2` | the upload key (proxied) or the owner (direct) | Discards it |
+| `rooms/blobs/get/0.2` | `read` chain | `{ roomId, blobRef, direct? }` → the manifest and a short-lived `downloadId` (proxied) or storage `target` (direct) |
 | `rooms/blobs/chunk/0.1` | the `downloadId` | `{ downloadId, index }` → `{ bytes }` |
 
 - **Resume** is `begin` with the same manifest. The host answers with the

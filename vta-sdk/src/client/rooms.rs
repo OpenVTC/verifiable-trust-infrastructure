@@ -1713,7 +1713,7 @@ mod act_tests {
     #[test]
     fn an_unsigned_room_request_names_no_one_but_the_host() {
         let doc = unsigned_room_request(
-            "https://trusttasks.org/spec/rooms/records/get/0.1",
+            "https://trusttasks.org/spec/rooms/records/get/0.2",
             "did:key:zHost",
             None,
             json!({ "roomId": "did:key:zRoom", "key": "k" }),
@@ -1726,7 +1726,7 @@ mod act_tests {
         assert!(v["id"].as_str().unwrap().starts_with("urn:uuid:"));
 
         let named = unsigned_room_request(
-            "https://trusttasks.org/spec/rooms/records/get/0.1",
+            "https://trusttasks.org/spec/rooms/records/get/0.2",
             "did:key:zHost",
             Some("did:webvh:example.com:people:alice"),
             json!({ "roomId": "did:key:zRoom", "key": "k" }),

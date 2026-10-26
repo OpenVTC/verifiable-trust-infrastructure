@@ -739,7 +739,7 @@ async fn an_open_community_room_from_creation_to_use_to_removal() {
     let read = call_as(
         &fix,
         &alice,
-        vti_rooms::wire::ROOMS_RECORDS_GET_TYPE,
+        vti_rooms::wire::ROOMS_RECORDS_GET_V2_TYPE,
         json!({ "roomId": room, "key": "minutes", "presentation": presentation }),
     )
     .await;

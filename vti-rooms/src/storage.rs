@@ -339,7 +339,7 @@ pub async fn create_room(rooms: &KeyspaceHandle, room: &Room) -> Result<(), AppE
 
 /// How long a minted epoch is good for, in seconds.
 ///
-/// Not yet a per-room parameter: `rooms/create/0.1` has no member for it, and inventing one
+/// Not yet a per-room parameter: `rooms/create/0.2` has no member for it, and inventing one
 /// locally would put this implementation's rooms out of conformance with the published
 /// schema. A room that wants a different lifetime is a spec change first.
 fn epoch_lifetime_seconds() -> u64 {

@@ -249,10 +249,10 @@ const PREDATES_GENERATED: &[(&str, &str)] = &[
     ("vti-rooms/src/wire.rs", "ClaimOwnerBody"),              // rooms/owner/claim/0.1
     ("vti-rooms/src/wire.rs", "CommitsBody"),                 // rooms/epoch/commits/0.1
     ("vti-rooms/src/wire.rs", "CurateRecordBody"),            // rooms/records/curate/0.1
-    ("vti-rooms/src/wire.rs", "GetRecordBody"),               // rooms/records/get/0.1
+    ("vti-rooms/src/wire.rs", "GetRecordBody"),               // rooms/records/get/0.2
     ("vti-rooms/src/wire.rs", "ListRecordsBody"),             // rooms/records/list/0.1
     ("vti-rooms/src/wire.rs", "MintEpochBody"),               // rooms/epoch/mint/0.1
-    ("vti-rooms/src/wire.rs", "PruneBody"),                   // rooms/epoch/prune/0.1
+    ("vti-rooms/src/wire.rs", "PruneBody"),                   // rooms/epoch/prune/0.2
     ("vti-rooms/src/wire.rs", "PutRecordBody"),               // rooms/records/put/0.1
     ("vti-rooms/src/wire.rs", "TransferOwnerBody"),           // rooms/owner/transfer/0.1
 ];

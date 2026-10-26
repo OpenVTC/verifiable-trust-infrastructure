@@ -15,7 +15,7 @@
 # The input carries the creator (with their community standing) and the room's
 # identifier, visibility and owner, and whether the community itself is to own it. It deliberately does NOT carry the hosting
 # axes the design sketches (`didControlledBy` / `contentStoredAt`): the
-# published `rooms/create/0.1` schema has no member for either, so no host can
+# published `rooms/create/0.2` schema has no member for either, so no host can
 # know them, and inventing them locally would put this service's rooms out of
 # conformance with the schema every other host reads.
 

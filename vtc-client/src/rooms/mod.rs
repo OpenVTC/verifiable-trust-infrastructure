@@ -50,11 +50,10 @@ pub use vti_rooms::authz::MAX_CHAIN_DEPTH;
 pub use vti_rooms::wire::{
     AuthorityPresentation, ChainResponse, CleartextContent, CommitsResponse, CurateRecordResponse,
     EpochLink, ListRecordsResponse, MintEpochResponse, OwnerResponse, PruneResponse,
-    PutRecordResponse, ROOMS_CREATE_TYPE, ROOMS_EPOCH_CHAIN_TYPE, ROOMS_EPOCH_CHAIN_V2_TYPE,
-    ROOMS_EPOCH_COMMITS_TYPE, ROOMS_EPOCH_MINT_TYPE, ROOMS_EPOCH_PRUNE_TYPE,
-    ROOMS_EPOCH_PRUNE_V2_TYPE, ROOMS_OWNER_CLAIM_TYPE, ROOMS_OWNER_TRANSFER_TYPE,
-    ROOMS_RECORDS_CURATE_TYPE, ROOMS_RECORDS_GET_TYPE, ROOMS_RECORDS_LIST_TYPE,
-    ROOMS_RECORDS_PUT_TYPE, RelayedCommit, SealedContent,
+    PutRecordResponse, ROOMS_CREATE_V2_TYPE, ROOMS_EPOCH_CHAIN_V2_TYPE, ROOMS_EPOCH_COMMITS_TYPE,
+    ROOMS_EPOCH_MINT_TYPE, ROOMS_EPOCH_PRUNE_V2_TYPE, ROOMS_OWNER_CLAIM_TYPE,
+    ROOMS_OWNER_TRANSFER_TYPE, ROOMS_RECORDS_CURATE_TYPE, ROOMS_RECORDS_GET_V2_TYPE,
+    ROOMS_RECORDS_LIST_TYPE, ROOMS_RECORDS_PUT_V3_TYPE, RelayedCommit, SealedContent,
 };
 
 /// A caller's standing in one room.
@@ -125,7 +124,7 @@ impl RoomSession {
 }
 
 impl VtcClient {
-    /// Register a room with this host.
+    /// Register a room with this host (`rooms/create/0.2`).
     ///
     /// The caller brings `room_id`: a room identified by something its host chose could not
     /// move to another host without changing identity.
@@ -145,7 +144,7 @@ impl VtcClient {
             "retentionDays": retention_days,
         });
         self.room_task(
-            ROOMS_CREATE_TYPE,
+            ROOMS_CREATE_V2_TYPE,
             payload,
             signer_did,
             private_key_multibase,
@@ -191,7 +190,7 @@ impl VtcClient {
         }
         let value = self
             .room_task(
-                ROOMS_RECORDS_PUT_TYPE,
+                ROOMS_RECORDS_PUT_V3_TYPE,
                 payload,
                 signer_did,
                 private_key_multibase,
@@ -221,7 +220,7 @@ impl VtcClient {
             "presentation": session.presentation,
         });
         self.room_task(
-            ROOMS_RECORDS_GET_TYPE,
+            ROOMS_RECORDS_GET_V2_TYPE,
             payload,
             signer_did,
             private_key_multibase,
@@ -345,14 +344,18 @@ impl VtcClient {
         })
     }
 
-    /// Drop the room's epoch key chain below `before_epoch` (`rooms/epoch/prune/0.1`).
+    /// Drop the room's epoch key chain below `before_epoch` (`rooms/epoch/prune/0.2`).
     ///
     /// **Irreversible, for every member.** The host erases the rungs below that epoch, so
     /// nobody who has not already derived those epochs' keys — a member restarting, on a
     /// new device, or joining later — can ever open what was sealed under them again. The
-    /// records stay; the ability to open them goes. A host serving 0.2 raises the room's
-    /// epoch floor for this prune too, but this answer does not report it — prefer
-    /// [`Self::prune_epoch_v2`], which does.
+    /// records stay; the ability to open them goes.
+    ///
+    /// The host also keeps the room's **epoch floor** — `beforeEpoch − 1`, or higher if it
+    /// already held one — and returns it as `epochFloor`. It serves the floor from then on
+    /// (`rooms/epoch/chain/0.2`), and every member's key holder that learns it forgets what
+    /// it holds below it: the prune reaches members, as far as they conform. What anybody
+    /// already read is not recalled.
     ///
     /// Gated on `admin` at the host. `before_epoch` must be below the room's current
     /// epoch (`notAhead` otherwise). `pruned: 0` in the answer is a success — the chain
@@ -361,35 +364,6 @@ impl VtcClient {
     ///
     /// Never retried here: it is not a read, and a second prune arriving after the room
     /// advanced names a different span than the first.
-    pub async fn prune_epoch(
-        &self,
-        session: &RoomSession,
-        before_epoch: u32,
-        reason: Option<&str>,
-        signer_did: &str,
-        private_key_multibase: &str,
-    ) -> Result<PruneResponse, VtcError> {
-        let value = self
-            .room_task(
-                ROOMS_EPOCH_PRUNE_TYPE,
-                prune_payload(session, before_epoch, reason),
-                signer_did,
-                private_key_multibase,
-            )
-            .await?;
-        serde_json::from_value(value).map_err(|e| VtcError::Http {
-            status: 200,
-            body: format!("prune response is not a PruneResponse: {e}"),
-        })
-    }
-
-    /// `rooms/epoch/prune/0.2`: [`Self::prune_epoch`], and the room's **epoch floor** the
-    /// host now keeps — `beforeEpoch − 1`, or higher if it already held one — returned as
-    /// `epochFloor`. The host serves the floor from then on (`rooms/epoch/chain/0.2`), and
-    /// every member's key holder that learns it forgets what it holds below it: the prune
-    /// reaches members, as far as they conform. What anybody already read is not recalled.
-    ///
-    /// Never retried here, as 0.1.
     pub async fn prune_epoch_v2(
         &self,
         session: &RoomSession,
@@ -400,7 +374,7 @@ impl VtcClient {
     ) -> Result<trust_tasks_rs::specs::rooms::epoch::prune::v0_2::Response, VtcError> {
         let value = self
             .room_task(
-                crate::rooms::ROOMS_EPOCH_PRUNE_V2_TYPE,
+                ROOMS_EPOCH_PRUNE_V2_TYPE,
                 prune_payload(session, before_epoch, reason),
                 signer_did,
                 private_key_multibase,
@@ -412,10 +386,23 @@ impl VtcClient {
         })
     }
 
-    /// `rooms/epoch/chain/0.2`: [`Self::epoch_chain`], and the room's epoch floor once its
-    /// chain has been pruned (`epochFloor`). A caller keeping rungs or keys applies it —
-    /// discards what it holds below it — and one relaying rungs to a key holder relays the
-    /// floor with them (`rooms/keys/chain/0.2`).
+    /// Fetch the room's epoch key chain, highest epoch first (`rooms/epoch/chain/0.2`).
+    ///
+    /// What a member calls after joining, or after restoring their group state, so that
+    /// records sealed before then still open. Feed the result to
+    /// `SealedRoom::add_links`.
+    ///
+    /// Gated on `read` at the host: reading the room and reading the parts written earlier
+    /// are the same act. The rungs are ciphertext — a caller holding no epoch key learns
+    /// nothing from them but how many epochs the room has had.
+    ///
+    /// `from_epoch` returns only rungs at or below that epoch, which is how a member who
+    /// already holds the top of the chain asks for the rest.
+    ///
+    /// Once the room's chain has been pruned the answer carries its epoch floor
+    /// (`epochFloor`). A caller keeping rungs or keys applies it — discards what it holds
+    /// below it — and one relaying rungs to a key holder relays the floor with them
+    /// (`rooms/keys/chain/0.2`).
     pub async fn epoch_chain_v2(
         &self,
         session: &RoomSession,
@@ -436,7 +423,7 @@ impl VtcClient {
         }
         let value = self
             .room_task(
-                crate::rooms::ROOMS_EPOCH_CHAIN_V2_TYPE,
+                ROOMS_EPOCH_CHAIN_V2_TYPE,
                 payload,
                 signer_did,
                 private_key_multibase,
@@ -445,50 +432,6 @@ impl VtcClient {
         serde_json::from_value(value).map_err(|e| VtcError::Http {
             status: 200,
             body: format!("chain response is not a rooms/epoch/chain/0.2 response: {e}"),
-        })
-    }
-
-    /// Fetch the room's epoch key chain, highest epoch first.
-    ///
-    /// What a member calls after joining, or after restoring their group state, so that
-    /// records sealed before then still open. Feed the result to
-    /// `SealedRoom::add_links`.
-    ///
-    /// Gated on `read` at the host: reading the room and reading the parts written earlier
-    /// are the same act. The rungs are ciphertext — a caller holding no epoch key learns
-    /// nothing from them but how many epochs the room has had.
-    ///
-    /// `from_epoch` returns only rungs at or below that epoch, which is how a member who
-    /// already holds the top of the chain asks for the rest.
-    pub async fn epoch_chain(
-        &self,
-        session: &RoomSession,
-        from_epoch: Option<u32>,
-        limit: Option<u32>,
-        signer_did: &str,
-        private_key_multibase: &str,
-    ) -> Result<ChainResponse, VtcError> {
-        let mut payload = serde_json::json!({
-            "roomId": session.room_id,
-            "presentation": session.presentation,
-        });
-        if let Some(f) = from_epoch {
-            payload["fromEpoch"] = serde_json::json!(f);
-        }
-        if let Some(l) = limit {
-            payload["limit"] = serde_json::json!(l);
-        }
-        let value = self
-            .room_task(
-                ROOMS_EPOCH_CHAIN_TYPE,
-                payload,
-                signer_did,
-                private_key_multibase,
-            )
-            .await?;
-        serde_json::from_value(value).map_err(|e| VtcError::Http {
-            status: 200,
-            body: format!("chain response is not a ChainResponse: {e}"),
         })
     }
 
@@ -795,7 +738,7 @@ const MAX_READ_RETRY_AFTER: std::time::Duration = std::time::Duration::from_secs
 ///
 /// `rooms/blobs/get` is here although it opens a download: repeating it opens a second,
 /// which expires unused, and a refused attempt opened nothing.
-/// The `rooms/epoch/prune/0.1` payload: room, floor, the session's presentation, and the
+/// The `rooms/epoch/prune/0.2` payload: room, floor, the session's presentation, and the
 /// reason when one is given (the only record of intent a prune leaves).
 fn prune_payload(
     session: &RoomSession,
@@ -817,14 +760,11 @@ fn is_room_read(type_uri: &str) -> bool {
     use trust_tasks_rs::Payload as _;
     use trust_tasks_rs::specs::rooms;
     [
-        ROOMS_RECORDS_GET_TYPE,
+        ROOMS_RECORDS_GET_V2_TYPE,
         ROOMS_RECORDS_LIST_TYPE,
-        ROOMS_EPOCH_CHAIN_TYPE,
         ROOMS_EPOCH_CHAIN_V2_TYPE,
         ROOMS_EPOCH_COMMITS_TYPE,
-        rooms::records::get::v0_2::Payload::TYPE_URI,
         rooms::records::list::v0_2::Payload::TYPE_URI,
-        rooms::blobs::get::v0_1::Payload::TYPE_URI,
         rooms::blobs::get::v0_2::Payload::TYPE_URI,
         rooms::blobs::chunk::v0_1::Payload::TYPE_URI,
         rooms::info::v0_1::Payload::TYPE_URI,
@@ -857,16 +797,16 @@ mod tests {
     fn only_room_reads_are_retried() {
         use trust_tasks_rs::Payload as _;
         use trust_tasks_rs::specs::rooms;
-        assert!(is_room_read(ROOMS_RECORDS_GET_TYPE));
+        assert!(is_room_read(ROOMS_RECORDS_GET_V2_TYPE));
         assert!(is_room_read(rooms::blobs::chunk::v0_1::Payload::TYPE_URI));
         for write in [
-            ROOMS_CREATE_TYPE,
-            ROOMS_RECORDS_PUT_TYPE,
+            ROOMS_CREATE_V2_TYPE,
+            ROOMS_RECORDS_PUT_V3_TYPE,
             ROOMS_EPOCH_MINT_TYPE,
-            ROOMS_EPOCH_PRUNE_TYPE,
+            ROOMS_EPOCH_PRUNE_V2_TYPE,
             ROOMS_RECORDS_CURATE_TYPE,
-            rooms::blobs::upload::chunk::v0_1::Payload::TYPE_URI,
-            rooms::blobs::upload::commit::v0_1::Payload::TYPE_URI,
+            rooms::blobs::upload::chunk::v0_2::Payload::TYPE_URI,
+            rooms::blobs::upload::commit::v0_2::Payload::TYPE_URI,
         ] {
             assert!(!is_room_read(write), "{write} is a write");
         }
@@ -876,7 +816,7 @@ mod tests {
     /// type parses it, with the floor, the reason and the presentation intact.
     #[test]
     fn a_prune_payload_is_the_generated_wire_type() {
-        use trust_tasks_rs::specs::rooms::epoch::prune::v0_1 as prune;
+        use trust_tasks_rs::specs::rooms::epoch::prune::v0_2 as prune;
         let session = RoomSession::new("did:key:zRoom", "vmc", vec!["vac".into()]).unwrap();
 
         let with = prune_payload(&session, 5, Some("retention window"));

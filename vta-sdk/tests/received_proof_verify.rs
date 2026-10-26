@@ -74,7 +74,7 @@ fn sign_received(
 fn javascript_document(issuer: &str) -> Value {
     json!({
         "id": "urn:uuid:45454545-4545-4545-8545-454545454545",
-        "type": "https://trusttasks.org/spec/rooms/create/0.1",
+        "type": "https://trusttasks.org/spec/rooms/create/0.2",
         "issuer": issuer,
         "recipient": "did:key:z6MkVta",
         "issuedAt": "2026-09-25T12:37:33.000Z",

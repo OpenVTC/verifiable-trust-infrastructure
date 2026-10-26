@@ -316,7 +316,7 @@ pub fn create_v2_parts(payload: &Value) -> Result<(Option<RecordRetention>, Valu
     Ok((retention, v0_1))
 }
 
-/// A `rooms/create/0.1` response body with what 0.2 echoes: the record retention the host
+/// The 0.1 members of a `rooms/create` response, with what 0.2 echoes: the record retention the host
 /// recorded, absent when none was.
 pub fn create_v2_response(
     response: impl serde::Serialize,
@@ -380,7 +380,7 @@ pub fn epoch_chain_v2_response(response: impl serde::Serialize, room: &Room) -> 
     checked::<trust_tasks_rs::specs::rooms::epoch::chain::v0_2::Response>(body)
 }
 
-/// A `rooms/epoch/prune/0.1` response answered as 0.2: and the room's epoch floor after the
+/// The 0.1 members of a `rooms/epoch/prune` response, answered as 0.2: and the room's epoch floor after the
 /// prune, which 0.2 requires.
 pub fn epoch_prune_v2_response(response: impl serde::Serialize, floor: u32) -> TaskResult {
     let mut body =

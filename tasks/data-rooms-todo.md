@@ -121,7 +121,7 @@ gossip channel rooms deliberately lack nor durable state in an agent.
   OpenAPI spec. The real cost is that a standing "1 high" trains everyone to
   ignore the alert list.
 - `[x]` **X4.4** (S) A **prune verb** over `prune_epoch_links_before`.
-  `rooms/epoch/prune/0.1` is served by both hosts (audited `room.epoch.prune`,
+  `rooms/epoch/prune/0.2` is served by both hosts (audited `room.epoch.prune`,
   declared `notAhead`) and sent by `pnm rooms prune` (`vtc_client`
   `prune_epoch`), which warns and asks first. It erases the **host's** rungs
   only: members' VTAs keep the keys they already derived. Reaching them needs a

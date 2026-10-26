@@ -500,7 +500,7 @@ mod tests {
 
         let room = "did:webvh:QmRoom:rooms.example:northwind";
         let document = build_room_task(
-            vti_rooms::wire::ROOMS_CREATE_TYPE,
+            vti_rooms::wire::ROOMS_CREATE_V2_TYPE,
             "did:webvh:QmHost:community.example",
             &owner.did,
             serde_json::json!({ "roomId": room, "visibility": "attributed", "ownerDid": owner.did }),
@@ -656,7 +656,7 @@ mod tests {
     #[test]
     fn a_reply_answering_a_different_task_is_a_contract_break() {
         let reply =
-            serde_json::json!({ "type": "https://trusttasks.org/spec/rooms/create/0.1#response" });
+            serde_json::json!({ "type": "https://trusttasks.org/spec/rooms/create/0.2#response" });
         let err = read_reply(
             &reply,
             "https://trusttasks.org/spec/rooms/epoch/chain/0.1#response",
@@ -711,7 +711,7 @@ mod write_gate_tests {
             "the refusal must name what was observed and what still works: {said}"
         );
 
-        refuse_if_caught(&ks, &member(), vti_rooms::wire::ROOMS_RECORDS_GET_TYPE)
+        refuse_if_caught(&ks, &member(), vti_rooms::wire::ROOMS_RECORDS_GET_V2_TYPE)
             .await
             .expect("reads are served");
         refuse_if_caught(&ks, &member(), vti_rooms::wire::ROOMS_RECORDS_LIST_TYPE)

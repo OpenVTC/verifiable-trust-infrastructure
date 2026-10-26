@@ -342,7 +342,7 @@ pub async fn cmd_rooms_get(
     let (_, record) = act_and_send(
         client,
         &target,
-        vti_rooms::wire::ROOMS_RECORDS_GET_TYPE,
+        vti_rooms::wire::ROOMS_RECORDS_GET_V2_TYPE,
         serde_json::json!({ "roomId": target.room_id, "key": key }),
     )
     .await?;
@@ -717,7 +717,7 @@ fn refuse_sealed_renew(visibility: &str, target: &RoomTarget<'_>) -> Result<(), 
     ))
 }
 
-/// `rooms prune` — drop the room's epoch key chain below an epoch (`rooms/epoch/prune/0.1`).
+/// `rooms prune` — drop the room's epoch key chain below an epoch (`rooms/epoch/prune/0.2`).
 ///
 /// Needs `admin`, and moves the way `renew` does: the VTA presents for this client
 /// (`rooms/keys/present`) and this client signs. Not through `rooms/keys/act`, whose every
@@ -775,12 +775,11 @@ pub async fn cmd_rooms_prune(
         }
     }
 
-    // 0.2 first: the host keeps the room's epoch floor and says so, and members' key
-    // holders forget what they hold below it. A host that predates it is asked at 0.1 —
-    // which raises no floor anybody hears of.
+    // `rooms/epoch/prune/0.2`: the host keeps the room's epoch floor and says so, and
+    // members' key holders forget what they hold below it.
     let session = present(client, &target, "admin").await?;
-    let host = target.client();
-    match host
+    let pruned = target
+        .client()
         .prune_epoch_v2(
             &session,
             before_epoch,
@@ -789,47 +788,19 @@ pub async fn cmd_rooms_prune(
             signer.key_multibase,
         )
         .await
-    {
-        Ok(pruned) => {
-            let floor = pruned.epoch_floor.0.get();
-            let v0_1 = vtc_client::rooms::PruneResponse {
-                room_id: pruned.room_id.to_string(),
-                pruned: u32::try_from(pruned.pruned).unwrap_or(u32::MAX),
-                earliest_rung: u32::try_from(pruned.earliest_rung.get()).unwrap_or(u32::MAX),
-            };
-            println!(
-                "{} The room's epoch floor is now {floor}: members' VTAs that learn it forget \
-                 what they hold below it.",
-                prune_outcome(&v0_1)
-            );
-            Ok(())
-        }
-        Err(e)
-            if vtc_client::git_ns::task_error(&e).is_some_and(|(code, _)| {
-                code.ends_with("unsupportedType") || code.ends_with("unsupportedVersion")
-            }) =>
-        {
-            // A fresh presentation: the first document's id is spent.
-            let session = present(client, &target, "admin").await?;
-            let pruned = host
-                .prune_epoch(
-                    &session,
-                    before_epoch,
-                    Some(&reason),
-                    signer.did,
-                    signer.key_multibase,
-                )
-                .await
-                .map_err(|e| prune_refused(e, &target, before_epoch, current))?;
-            println!(
-                "{} This host predates rooms/epoch/prune 0.2: it keeps no epoch floor, so \
-                 members' VTAs are not told to forget what they hold below it.",
-                prune_outcome(&pruned)
-            );
-            Ok(())
-        }
-        Err(e) => Err(prune_refused(e, &target, before_epoch, current).into()),
-    }
+        .map_err(|e| prune_refused(e, &target, before_epoch, current))?;
+    let floor = pruned.epoch_floor.0.get();
+    let outcome = vtc_client::rooms::PruneResponse {
+        room_id: pruned.room_id.to_string(),
+        pruned: u32::try_from(pruned.pruned).unwrap_or(u32::MAX),
+        earliest_rung: u32::try_from(pruned.earliest_rung.get()).unwrap_or(u32::MAX),
+    };
+    println!(
+        "{} The room's epoch floor is now {floor}: members' VTAs that learn it forget \
+         what they hold below it.",
+        prune_outcome(&outcome)
+    );
+    Ok(())
 }
 
 /// What `prune` does about confirmation: `--yes` always proceeds; without it a terminal is
@@ -849,7 +820,7 @@ fn prune_guard(assume_yes: bool, interactive: bool) -> PruneGuard {
     }
 }
 
-/// The irreversibility warning (rooms/epoch/prune/0.1 *Consent/purpose*: show what will
+/// The irreversibility warning (rooms/epoch/prune/0.2 *Consent/purpose*: show what will
 /// become unreadable), in the specification's own terms — the rungs go, not the records.
 fn prune_warning(room_id: &str, before_epoch: u32, current: u32, policy: Option<&str>) -> String {
     // The off-by-one `rooms/epoch/prune/0.2` states: rung `N = beforeEpoch` survives and
@@ -3368,7 +3339,7 @@ mod tests {
         }
     }
 
-    /// rooms/epoch/prune/0.1 *Consent/purpose*: `--yes` always proceeds; without it a
+    /// rooms/epoch/prune/0.2 *Consent/purpose*: `--yes` always proceeds; without it a
     /// terminal is asked and a pipe is refused — never pruned unasked.
     #[test]
     fn a_prune_without_yes_asks_a_terminal_and_refuses_a_pipe() {

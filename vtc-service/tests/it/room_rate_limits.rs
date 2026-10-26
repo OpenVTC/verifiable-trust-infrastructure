@@ -26,7 +26,7 @@ use crate::common::signed::signed;
 
 const INFO: &str = "https://trusttasks.org/spec/rooms/info/0.1";
 const LIST: &str = "https://trusttasks.org/spec/rooms/records/list/0.1";
-const BLOB_GET: &str = "https://trusttasks.org/spec/rooms/blobs/get/0.1";
+const BLOB_GET: &str = "https://trusttasks.org/spec/rooms/blobs/get/0.2";
 const BLOB_CHUNK: &str = "https://trusttasks.org/spec/rooms/blobs/chunk/0.1";
 
 const CHUNK: usize = 16_384;
@@ -280,18 +280,30 @@ async fn an_upload_of_more_large_chunks_than_the_large_document_budget_lands() {
         "digest": sha256_digest_multibase(&Sha256::digest(&bytes).into()),
     }))
     .unwrap();
+    // Proxied, as a member's client uploads: the owner begins, naming a key generated for
+    // this upload alone, and that key sends every chunk (`rooms/blobs/upload/begin/0.2`).
     let owner = f.owner.did.as_str();
+    let upload_key = Party::new();
     let begun = vtc
         .state
         .room_files
-        .begin(&f.room, owner, Some(owner), manifest)
+        .begin_v2(
+            &f.room,
+            owner,
+            Some(owner),
+            manifest,
+            vti_rooms::blobs::UploadOffer {
+                upload_key_did: Some(upload_key.did.clone()),
+                direct_parts: None,
+            },
+        )
         .await
         .unwrap();
     let upload_id = begun.upload_id.to_string();
     for (i, c) in bytes.chunks(BIG).enumerate() {
         let doc = signed(
-            &f.owner,
-            "https://trusttasks.org/spec/rooms/blobs/upload/chunk/0.1",
+            &upload_key,
+            "https://trusttasks.org/spec/rooms/blobs/upload/chunk/0.2",
             json!({
                 "uploadId": upload_id,
                 "index": i,
@@ -309,7 +321,10 @@ async fn an_upload_of_more_large_chunks_than_the_large_document_budget_lands() {
     }
     vtc.state
         .room_files
-        .commit(owner, &upload_id)
+        .commit_as(
+            vti_rooms::blobs::UploadCaller::V2(&upload_key.did),
+            &upload_id,
+        )
         .await
         .expect("every chunk arrived");
 }

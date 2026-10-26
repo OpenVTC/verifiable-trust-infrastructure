@@ -16,15 +16,10 @@ use base64::Engine as _;
 use serde_json::{Value, json};
 use trust_tasks_rs::DeclaredErrorCode;
 use trust_tasks_rs::specs::rooms::blobs::chunk::v0_1 as download_chunk_spec;
-use trust_tasks_rs::specs::rooms::blobs::get::v0_1 as blob_get;
 use trust_tasks_rs::specs::rooms::blobs::get::v0_2 as blob_get_v2;
-use trust_tasks_rs::specs::rooms::blobs::upload::abort::v0_1 as upload_abort;
 use trust_tasks_rs::specs::rooms::blobs::upload::abort::v0_2 as upload_abort_v2;
-use trust_tasks_rs::specs::rooms::blobs::upload::begin::v0_1 as upload_begin;
 use trust_tasks_rs::specs::rooms::blobs::upload::begin::v0_2 as upload_begin_v2;
-use trust_tasks_rs::specs::rooms::blobs::upload::chunk::v0_1 as upload_chunk_spec;
 use trust_tasks_rs::specs::rooms::blobs::upload::chunk::v0_2 as upload_chunk_v2;
-use trust_tasks_rs::specs::rooms::blobs::upload::commit::v0_1 as upload_commit;
 use trust_tasks_rs::specs::rooms::blobs::upload::commit::v0_2 as upload_commit_v2;
 use trust_tasks_rs::specs::rooms::info::v0_1 as rooms_info;
 use trust_tasks_rs::specs::rooms::records::get::v0_2 as get_v2;
@@ -43,11 +38,7 @@ use crate::{Room, Visibility};
 
 /// The URIs these tasks are dispatched under, from [`crate::wire`].
 pub use crate::wire::{
-    ROOMS_BLOBS_CHUNK_TYPE as DOWNLOAD_CHUNK_TYPE, ROOMS_BLOBS_GET_TYPE as BLOB_GET_TYPE,
-    ROOMS_BLOBS_UPLOAD_ABORT_TYPE as UPLOAD_ABORT_TYPE,
-    ROOMS_BLOBS_UPLOAD_BEGIN_TYPE as UPLOAD_BEGIN_TYPE,
-    ROOMS_BLOBS_UPLOAD_CHUNK_TYPE as UPLOAD_CHUNK_TYPE,
-    ROOMS_BLOBS_UPLOAD_COMMIT_TYPE as UPLOAD_COMMIT_TYPE, ROOMS_INFO_TYPE as INFO_TYPE,
+    ROOMS_BLOBS_CHUNK_TYPE as DOWNLOAD_CHUNK_TYPE, ROOMS_INFO_TYPE as INFO_TYPE,
     ROOMS_RECORDS_GET_V2_TYPE as GET_V2_TYPE, ROOMS_RECORDS_LIST_V2_TYPE as LIST_V2_TYPE,
     ROOMS_RECORDS_PUT_V2_TYPE as PUT_V2_TYPE, ROOMS_RECORDS_PUT_V3_TYPE as PUT_V3_TYPE,
     ROOMS_USAGE_TYPE as USAGE_TYPE,
@@ -125,167 +116,6 @@ fn general(e: BlobError) -> Refusal {
         BlobError::App(AppError::ResourceExhausted(reason)) => Refusal::TaskFailed(reason),
         BlobError::App(e) => Refusal::App(e),
         other => Refusal::Internal(other.to_string()),
-    }
-}
-
-/// `rooms/blobs/upload/begin/0.1`, once the chain has been verified for `write`.
-pub async fn begin(
-    files: &BlobHost,
-    room: &Room,
-    presenter: &str,
-    authorized: &AuthorizedAction,
-    payload: &Value,
-) -> TaskResult {
-    use upload_begin::error_codes as codes;
-    parse::<upload_begin::Payload>(payload)?;
-    let manifest = Manifest::parse(&payload["manifest"])
-        .map_err(|e| declared(codes::INVALID_MANIFEST, e.to_string(), None))?;
-    match files
-        .begin_presented(
-            room,
-            presenter,
-            authorized.member(),
-            authorized.presented(),
-            manifest,
-            None,
-        )
-        .await
-    {
-        Ok(b) => {
-            let mut body = json!({
-                "uploadId": b.upload_id.to_string(),
-                "missing": b.missing,
-                "expiresAt": b.expires_at,
-            });
-            if b.already_committed {
-                body["alreadyCommitted"] = json!(true);
-            }
-            checked::<upload_begin::Response>(body)
-        }
-        Err(e @ BlobError::TooManyUploads { max_open }) => Err(declared(
-            codes::TOO_MANY_UPLOADS,
-            e.to_string(),
-            Some(json!({ "maxOpen": max_open })),
-        )),
-        Err(BlobError::FilesDisabled) => Err(declared(
-            codes::FILES_DISABLED,
-            BlobError::FilesDisabled.to_string(),
-            None,
-        )),
-        Err(BlobError::InvalidManifest(why)) => Err(declared(codes::INVALID_MANIFEST, why, None)),
-        Err(BlobError::LimitExceeded(l)) => Err(declared(
-            codes::LIMIT_EXCEEDED,
-            BlobError::LimitExceeded(l.clone()).to_string(),
-            Some(l.details()),
-        )),
-        Err(e) => Err(general(e)),
-    }
-}
-
-/// `rooms/blobs/upload/chunk/0.1`, from the authenticated `presenter`.
-pub async fn upload_chunk(files: &BlobHost, presenter: &str, payload: &Value) -> TaskResult {
-    use upload_chunk_spec::error_codes as codes;
-    let req: upload_chunk_spec::Payload = parse(payload)?;
-    let data = base64::engine::general_purpose::URL_SAFE_NO_PAD
-        .decode(req.data.as_str())
-        .map_err(|e| Refusal::Malformed(format!("`data` is not base64url: {e}")))?;
-    let index = (*req.index).max(0) as u64;
-    match files
-        .put_chunk(
-            presenter,
-            req.upload_id.as_str(),
-            index,
-            req.digest_multibase.as_str(),
-            &data,
-        )
-        .await
-    {
-        Ok(o) => checked::<upload_chunk_spec::Response>(json!({
-            "uploadId": req.upload_id.as_str(),
-            "index": index,
-            "stored": o.stored,
-            "remainingCount": o.remaining_count,
-            "expiresAt": o.expires_at,
-        })),
-        Err(BlobError::NotFound) => Err(declared(
-            codes::NOT_FOUND,
-            "no open upload with that id",
-            None,
-        )),
-        Err(e @ BlobError::ChunkOutOfRange { .. }) => {
-            Err(declared(codes::CHUNK_OUT_OF_RANGE, e.to_string(), None))
-        }
-        Err(BlobError::ChunkMismatch(why)) => Err(declared(codes::CHUNK_MISMATCH, why, None)),
-        Err(e) => Err(general(e)),
-    }
-}
-
-/// `rooms/blobs/upload/commit/0.1`, from the authenticated `presenter`.
-pub async fn commit(files: &BlobHost, presenter: &str, payload: &Value) -> TaskResult {
-    use upload_commit::error_codes as codes;
-    let req: upload_commit::Payload = parse(payload)?;
-    match files.commit(presenter, req.upload_id.as_str()).await {
-        Ok(c) => {
-            checked::<upload_commit::Response>(json!({ "blobRef": c.blob_ref, "size": c.size }))
-        }
-        Err(BlobError::NotFound) => Err(declared(codes::NOT_FOUND, "no upload with that id", None)),
-        Err(BlobError::Incomplete { remaining_count }) => Err(declared(
-            codes::INCOMPLETE,
-            format!("{remaining_count} chunk(s) have not been sent"),
-            Some(json!({ "remainingCount": remaining_count })),
-        )),
-        Err(e @ BlobError::DigestMismatch) => {
-            Err(declared(codes::DIGEST_MISMATCH, e.to_string(), None))
-        }
-        Err(e) => Err(general(e)),
-    }
-}
-
-/// `rooms/blobs/upload/abort/0.1`, from the authenticated `presenter`.
-pub async fn abort(files: &BlobHost, presenter: &str, payload: &Value) -> TaskResult {
-    use upload_abort::error_codes as codes;
-    let req: upload_abort::Payload = parse(payload)?;
-    match files.abort(presenter, req.upload_id.as_str()).await {
-        Ok(aborted) => checked::<upload_abort::Response>(
-            json!({ "uploadId": req.upload_id.as_str(), "aborted": aborted }),
-        ),
-        Err(BlobError::NotFound) => Err(declared(codes::NOT_FOUND, "no upload with that id", None)),
-        Err(e) => Err(general(e)),
-    }
-}
-
-/// `rooms/blobs/get/0.1`, once the chain has been verified for `read`. The download
-/// counts under the member `authorized` descends from.
-pub async fn get(
-    files: &BlobHost,
-    room: &Room,
-    presenter: &str,
-    authorized: &AuthorizedAction,
-    payload: &Value,
-) -> TaskResult {
-    use blob_get::error_codes as codes;
-    let req: blob_get::Payload = parse(payload)?;
-    match files
-        .open_download_presented(
-            room,
-            presenter,
-            authorized.member(),
-            Some(authorized.presented()),
-            req.blob_ref.as_str(),
-        )
-        .await
-    {
-        Ok(d) => checked::<blob_get::Response>(json!({
-            "manifest": d.manifest,
-            "downloadId": d.download_id.to_string(),
-            "expiresAt": d.expires_at,
-        })),
-        Err(BlobError::NotFound) => Err(declared(
-            codes::NOT_FOUND,
-            "no blob with that BlobRef is committed in this room",
-            None,
-        )),
-        Err(e) => Err(general(e)),
     }
 }
 
@@ -794,7 +624,7 @@ pub fn record_epoch_refused(room: &Room, sealed_epoch: Option<u32>) -> Option<Re
     })
 }
 
-/// `rooms/epoch/prune/0.1`'s floor: a `beforeEpoch` at or above the room's current epoch
+/// `rooms/epoch/prune/0.2`'s floor: a `beforeEpoch` at or above the room's current epoch
 /// is refused with the declared `notAhead`, `details.epoch` naming the current one.
 ///
 /// Pruning to the current epoch would drop every rung, leaving a member who restarts unable
@@ -805,7 +635,7 @@ pub fn record_epoch_refused(room: &Room, sealed_epoch: Option<u32>) -> Option<Re
 pub fn prune_floor_refused(room: &Room, before_epoch: u32) -> Option<Refusal> {
     (before_epoch >= room.epoch).then(|| {
         declared(
-            trust_tasks_rs::specs::rooms::epoch::prune::v0_1::error_codes::NOT_AHEAD,
+            trust_tasks_rs::specs::rooms::epoch::prune::v0_2::error_codes::NOT_AHEAD,
             format!(
                 "`beforeEpoch` {before_epoch} is at or above the current epoch {} of `{}`; \
                  pruning there would drop the whole chain, not shorten it",
@@ -876,11 +706,6 @@ pub(crate) async fn list_v2_body(
 /// Whether a task is one of these, which a host routes here.
 pub fn is_file_task(type_uri: &str) -> bool {
     [
-        UPLOAD_BEGIN_TYPE,
-        UPLOAD_CHUNK_TYPE,
-        UPLOAD_COMMIT_TYPE,
-        UPLOAD_ABORT_TYPE,
-        BLOB_GET_TYPE,
         DOWNLOAD_CHUNK_TYPE,
         INFO_TYPE,
         USAGE_TYPE,

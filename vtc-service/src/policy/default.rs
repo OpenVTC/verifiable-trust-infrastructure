@@ -2126,7 +2126,7 @@ else := {"effect": "allow", "with": {"fields": ["did", "role"]}} if {
 # The input carries the creator (with their community standing) and the room's
 # identifier, visibility and owner. It deliberately does NOT carry the hosting
 # axes the design sketches (`didControlledBy` / `contentStoredAt`): the
-# published `rooms/create/0.1` schema has no member for either, so no host can
+# published `rooms/create/0.2` schema has no member for either, so no host can
 # know them, and inventing them locally would put this service's rooms out of
 # conformance with the schema every other host reads.
 

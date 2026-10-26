@@ -280,7 +280,7 @@ impl<'a> Speaker<'a> {
     ) -> Result<Option<vti_rooms::wire::GetRecordResponse>, ProfileError> {
         match self
             .send(
-                vti_rooms::wire::ROOMS_RECORDS_GET_TYPE,
+                vti_rooms::wire::ROOMS_RECORDS_GET_V2_TYPE,
                 serde_json::json!({ "roomId": self.room_id(), "key": key }),
                 "read",
             )

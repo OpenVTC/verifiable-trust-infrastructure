@@ -1295,7 +1295,7 @@ pub(super) async fn handle_read(
         &presenting,
         &resolver,
         &req.host,
-        vti_rooms::wire::ROOMS_RECORDS_GET_TYPE,
+        vti_rooms::wire::ROOMS_RECORDS_GET_V2_TYPE,
         serde_json::json!({ "roomId": req.room_id, "key": req.key }),
     )
     .await

@@ -2135,7 +2135,7 @@ mod tests {
                                 "roomId": room_id, "visibility": h.visibility,
                                 "retentionPolicy": "chained", "epoch": h.epoch,
                             }))
-                        } else if task == vti_rooms::wire::ROOMS_CREATE_TYPE {
+                        } else if task == vti_rooms::wire::ROOMS_CREATE_V2_TYPE {
                             match h.create_mode {
                                 Mode::Refuse => Err(("rooms/create:alreadyExists", "held already")),
                                 Mode::Unreachable | Mode::AcceptThenLose => {
@@ -4369,7 +4369,7 @@ mod tests {
         assert_eq!(
             host_log(&o),
             vec![
-                vti_rooms::wire::ROOMS_CREATE_TYPE.to_string(),
+                vti_rooms::wire::ROOMS_CREATE_V2_TYPE.to_string(),
                 vti_rooms::wire::ROOMS_REVOCATIONS_PUT_TYPE.to_string(),
             ]
         );

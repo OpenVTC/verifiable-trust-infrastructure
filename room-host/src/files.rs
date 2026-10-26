@@ -27,9 +27,8 @@ use vti_rooms::wire::AuthorityPresentation;
 use super::{Answer, HostState, from_app_error, now, reject, respond};
 
 pub(crate) use vti_rooms::blob_tasks::{
-    BLOB_GET_TYPE, BLOB_GET_V2_TYPE, DOWNLOAD_CHUNK_TYPE, GET_V2_TYPE, INFO_TYPE, LIST_V2_TYPE,
-    PUT_V2_TYPE, PUT_V3_TYPE, UPLOAD_ABORT_TYPE, UPLOAD_ABORT_V2_TYPE, UPLOAD_BEGIN_TYPE,
-    UPLOAD_BEGIN_V2_TYPE, UPLOAD_CHUNK_TYPE, UPLOAD_CHUNK_V2_TYPE, UPLOAD_COMMIT_TYPE,
+    BLOB_GET_V2_TYPE, DOWNLOAD_CHUNK_TYPE, GET_V2_TYPE, INFO_TYPE, LIST_V2_TYPE, PUT_V2_TYPE,
+    PUT_V3_TYPE, UPLOAD_ABORT_V2_TYPE, UPLOAD_BEGIN_V2_TYPE, UPLOAD_CHUNK_V2_TYPE,
     UPLOAD_COMMIT_V2_TYPE, USAGE_TYPE,
 };
 
@@ -221,85 +220,6 @@ async fn presenter(state: &HostState, doc: &TrustTask<Value>) -> Result<String, 
         .map_err(|e| from_app_error(doc, &e))
 }
 
-pub(crate) async fn begin(state: &HostState, doc: &TrustTask<Value>, payload: Value) -> Answer {
-    // The payload is checked before the chain, so a malformed request costs no
-    // verification.
-    if let Err(r) = blob_tasks::parse::<
-        trust_tasks_rs::specs::rooms::blobs::upload::begin::v0_1::Payload,
-    >(&payload)
-    {
-        return refused(doc, r);
-    }
-    let (room, presenter, authorized) = match authorize(state, doc, &payload, Action::Write).await {
-        Ok(r) => r,
-        Err(a) => return a,
-    };
-    render(
-        doc,
-        blob_tasks::begin(&state.files, &room, &presenter, &authorized, &payload).await,
-    )
-}
-
-pub(crate) async fn upload_chunk(
-    state: &HostState,
-    doc: &TrustTask<Value>,
-    payload: Value,
-) -> Answer {
-    match presenter(state, doc).await {
-        Ok(p) => {
-            // Held to the room's revocation list: this step presents nothing, so the
-            // credentials that opened the transfer stand for it (*Enforcement* item 3).
-            let _gate = match held_step(state, doc, &payload).await {
-                Ok(g) => g,
-                Err(a) => return a,
-            };
-            render(
-                doc,
-                blob_tasks::upload_chunk(&state.files, &p, &payload).await,
-            )
-        }
-        Err(a) => a,
-    }
-}
-
-pub(crate) async fn commit(state: &HostState, doc: &TrustTask<Value>, payload: Value) -> Answer {
-    match presenter(state, doc).await {
-        Ok(p) => {
-            // The step that commits an upload begun before a list was accepted is refused
-            // if the list withdraws what began it (*Enforcement* item 3).
-            let _gate = match held_step(state, doc, &payload).await {
-                Ok(g) => g,
-                Err(a) => return a,
-            };
-            render(doc, blob_tasks::commit(&state.files, &p, &payload).await)
-        }
-        Err(a) => a,
-    }
-}
-
-pub(crate) async fn abort(state: &HostState, doc: &TrustTask<Value>, payload: Value) -> Answer {
-    match presenter(state, doc).await {
-        Ok(p) => render(doc, blob_tasks::abort(&state.files, &p, &payload).await),
-        Err(a) => a,
-    }
-}
-
-pub(crate) async fn get(state: &HostState, doc: &TrustTask<Value>, payload: Value) -> Answer {
-    if let Err(r) =
-        blob_tasks::parse::<trust_tasks_rs::specs::rooms::blobs::get::v0_1::Payload>(&payload)
-    {
-        return refused(doc, r);
-    }
-    let (room, presenter, authorized) = match authorize(state, doc, &payload, Action::Read).await {
-        Ok(r) => r,
-        Err(a) => return a,
-    };
-    render(
-        doc,
-        blob_tasks::get(&state.files, &room, &presenter, &authorized, &payload).await,
-    )
-}
-
 pub(crate) async fn download_chunk(
     state: &HostState,
     doc: &TrustTask<Value>,
@@ -487,7 +407,7 @@ pub(crate) async fn get_v2(state: &HostState, doc: &TrustTask<Value>, payload: V
     if let Err(r) = blob_tasks::parse::<get_v2_spec::Payload>(&payload) {
         return refused(doc, r);
     }
-    super::get_versioned(state, doc, blob_tasks::as_v0_1(payload), true).await
+    super::get_versioned(state, doc, blob_tasks::as_v0_1(payload)).await
 }
 
 /// `rooms/records/list/0.2`: the 0.1 listing, each row naming its blobs.
@@ -774,7 +694,7 @@ mod tests {
         let f = RoomFixture::new(Visibility::Open).await;
         let (status, body) = call(
             &h.app,
-            vti_rooms::wire::ROOMS_CREATE_TYPE,
+            vti_rooms::wire::ROOMS_CREATE_V2_TYPE,
             json!({ "roomId": f.room.room_id, "ownerDid": f.room.owner_did, "visibility": "open" }),
             &f.owner,
         )
@@ -822,32 +742,37 @@ mod tests {
         })
     }
 
-    async fn begin(h: &Host, f: &RoomFixture, b: &Blob) -> (StatusCode, Value) {
-        call(
+    /// Begin a proxied upload (`rooms/blobs/upload/begin/0.2`), naming a key generated for
+    /// it alone: the answer, and the key that sends its chunks, commit and abort.
+    async fn begin(h: &Host, f: &RoomFixture, b: &Blob) -> (StatusCode, Value, Party) {
+        let key = Party::new();
+        let (status, out) = call(
             &h.app,
-            UPLOAD_BEGIN_TYPE,
-            json!({ "roomId": f.room.room_id, "presentation": f.as_owner(), "manifest": b.manifest }),
+            UPLOAD_BEGIN_V2_TYPE,
+            json!({ "roomId": f.room.room_id, "presentation": f.as_owner(), "manifest": b.manifest,
+                    "uploadKey": key.did }),
             &f.owner,
         )
-        .await
+        .await;
+        (status, out, key)
     }
 
     /// Begin, send every chunk, commit. Returns the BlobRef.
     async fn upload(h: &Host, f: &RoomFixture, b: &Blob) -> String {
-        let (status, begun) = begin(h, f, b).await;
+        let (status, begun, key) = begin(h, f, b).await;
         assert_eq!(status, StatusCode::OK, "{begun}");
         let id = begun["uploadId"].as_str().unwrap().to_string();
         for i in begun["missing"].as_array().unwrap() {
             let i = i.as_u64().unwrap() as usize;
             let (status, out) =
-                call(&h.app, UPLOAD_CHUNK_TYPE, chunk_doc(&id, b, i), &f.owner).await;
+                call(&h.app, UPLOAD_CHUNK_V2_TYPE, chunk_doc(&id, b, i), &key).await;
             assert_eq!(status, StatusCode::OK, "{out}");
         }
         let (status, out) = call(
             &h.app,
-            UPLOAD_COMMIT_TYPE,
+            UPLOAD_COMMIT_V2_TYPE,
             json!({ "uploadId": id }),
-            &f.owner,
+            &key,
         )
         .await;
         assert_eq!(status, StatusCode::OK, "{out}");
@@ -935,10 +860,10 @@ mod tests {
         let h = host(eager());
         let f = room(&h).await;
         let b = blob(CHUNK + 10, 3);
-        let (status, begun) = begin(&h, &f, &b).await;
+        let (status, begun, key) = begin(&h, &f, &b).await;
         assert_eq!(status, StatusCode::OK, "{begun}");
         let id = begun["uploadId"].as_str().unwrap().to_string();
-        let (status, out) = call(&h.app, UPLOAD_CHUNK_TYPE, chunk_doc(&id, &b, 0), &f.owner).await;
+        let (status, out) = call(&h.app, UPLOAD_CHUNK_V2_TYPE, chunk_doc(&id, &b, 0), &key).await;
         assert_eq!(status, StatusCode::OK, "{out}");
 
         let list = f
@@ -947,14 +872,14 @@ mod tests {
         let (status, out) = deliver(&h, &f, list).await;
         assert_eq!(status, StatusCode::OK, "{out}");
 
-        let (status, out) = call(&h.app, UPLOAD_CHUNK_TYPE, chunk_doc(&id, &b, 1), &f.owner).await;
+        let (status, out) = call(&h.app, UPLOAD_CHUNK_V2_TYPE, chunk_doc(&id, &b, 1), &key).await;
         assert_eq!(status, StatusCode::FORBIDDEN, "{out}");
         assert_eq!(out["code"], "permissionDenied");
         let (status, out) = call(
             &h.app,
-            UPLOAD_COMMIT_TYPE,
+            UPLOAD_COMMIT_V2_TYPE,
             json!({ "uploadId": id }),
-            &f.owner,
+            &key,
         )
         .await;
         assert_eq!(status, StatusCode::FORBIDDEN, "{out}");
@@ -1018,8 +943,8 @@ mod tests {
     }
 
     /// A proxied 0.2 upload: the member begins, naming a single-use key; only that key
-    /// sends the chunks and commits. The member signing as itself is `notFound`, a 0.1
-    /// document never reaches the upload, and the blob is the member's — the upload key
+    /// sends the chunks and commits. The member signing as itself is `notFound`, and the
+    /// blob is the member's — the upload key
     /// is charged, recorded and reported nowhere (begin/0.2 items 14–15).
     #[tokio::test]
     async fn a_proxied_upload_is_sent_by_its_upload_key_and_charged_to_the_member() {
@@ -1039,7 +964,7 @@ mod tests {
         assert!(begun.get("targets").is_none());
         let id = begun["uploadId"].as_str().unwrap().to_string();
 
-        // The owner does not send the transfer it named a key for, in either version.
+        // The owner does not send the transfer it named a key for.
         let (_, out) = call(
             &h.app,
             UPLOAD_CHUNK_V2_TYPE,
@@ -1047,11 +972,6 @@ mod tests {
             &f.owner,
         )
         .await;
-        assert_eq!(code(&out), "rooms/blobs/upload/chunk:notFound");
-        let (_, out) = call(&h.app, UPLOAD_CHUNK_TYPE, chunk_doc(&id, &b, 0), &f.owner).await;
-        assert_eq!(code(&out), "rooms/blobs/upload/chunk:notFound");
-        // Nor does the key send a 0.1 document.
-        let (_, out) = call(&h.app, UPLOAD_CHUNK_TYPE, chunk_doc(&id, &b, 0), &key).await;
         assert_eq!(code(&out), "rooms/blobs/upload/chunk:notFound");
 
         for i in 0..2 {
@@ -1776,13 +1696,13 @@ mod tests {
         let f = room(&h).await;
         let b = blob(3 * CHUNK + 100, 1);
 
-        let (_, begun) = begin(&h, &f, &b).await;
+        let (_, begun, key) = begin(&h, &f, &b).await;
         let id = begun["uploadId"].as_str().unwrap().to_string();
         assert_eq!(begun["missing"], json!([0, 1, 2, 3]));
-        call(&h.app, UPLOAD_CHUNK_TYPE, chunk_doc(&id, &b, 0), &f.owner).await;
+        call(&h.app, UPLOAD_CHUNK_V2_TYPE, chunk_doc(&id, &b, 0), &key).await;
 
         // Resumed: the same slot, only what is left, and no second reservation.
-        let (_, again) = begin(&h, &f, &b).await;
+        let (_, again, key) = begin(&h, &f, &b).await;
         assert_eq!(again["uploadId"], json!(id));
         assert_eq!(again["missing"], json!([1, 2, 3]));
         assert_eq!(
@@ -1791,28 +1711,28 @@ mod tests {
         );
 
         // An identical re-send is a success that stores nothing.
-        let (status, out) = call(&h.app, UPLOAD_CHUNK_TYPE, chunk_doc(&id, &b, 0), &f.owner).await;
+        let (status, out) = call(&h.app, UPLOAD_CHUNK_V2_TYPE, chunk_doc(&id, &b, 0), &key).await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(out["stored"], json!(false));
 
         // Not committable until complete.
         let (_, out) = call(
             &h.app,
-            UPLOAD_COMMIT_TYPE,
+            UPLOAD_COMMIT_V2_TYPE,
             json!({ "uploadId": id }),
-            &f.owner,
+            &key,
         )
         .await;
         assert_eq!(code(&out), "rooms/blobs/upload/commit:incomplete");
         assert_eq!(out["details"]["remainingCount"], json!(3));
         for i in 1..4 {
-            call(&h.app, UPLOAD_CHUNK_TYPE, chunk_doc(&id, &b, i), &f.owner).await;
+            call(&h.app, UPLOAD_CHUNK_V2_TYPE, chunk_doc(&id, &b, i), &key).await;
         }
         let (status, out) = call(
             &h.app,
-            UPLOAD_COMMIT_TYPE,
+            UPLOAD_COMMIT_V2_TYPE,
             json!({ "uploadId": id }),
-            &f.owner,
+            &key,
         )
         .await;
         assert_eq!(status, StatusCode::OK, "{out}");
@@ -1826,9 +1746,9 @@ mod tests {
         // A repeated commit answers the same, charging nothing twice.
         let (_, again) = call(
             &h.app,
-            UPLOAD_COMMIT_TYPE,
+            UPLOAD_COMMIT_V2_TYPE,
             json!({ "uploadId": id }),
-            &f.owner,
+            &key,
         )
         .await;
         assert_eq!(again, out);
@@ -1845,7 +1765,7 @@ mod tests {
         // Downloaded, byte for byte.
         let (status, got) = call(
             &h.app,
-            BLOB_GET_TYPE,
+            BLOB_GET_V2_TYPE,
             json!({ "roomId": f.room.room_id, "presentation": f.as_owner(), "blobRef": b.blob_ref }),
             &f.owner,
         )
@@ -1912,7 +1832,7 @@ mod tests {
         assert_eq!(stats.collected, 1);
         let (_, got) = call(
             &h.app,
-            BLOB_GET_TYPE,
+            BLOB_GET_V2_TYPE,
             json!({ "roomId": f.room.room_id, "presentation": f.as_owner(), "blobRef": b.blob_ref }),
             &f.owner,
         )
@@ -1966,7 +1886,7 @@ mod tests {
         let f = room(&h).await;
         let b = blob(CHUNK + 1, 3);
         upload(&h, &f, &b).await;
-        let (status, begun) = begin(&h, &f, &b).await;
+        let (status, begun, _key) = begin(&h, &f, &b).await;
         assert_eq!(status, StatusCode::OK, "{begun}");
         assert_eq!(begun["alreadyCommitted"], json!(true));
         assert_eq!(begun["missing"], json!([]));
@@ -1993,7 +1913,7 @@ mod tests {
         });
         let f = room(&h).await;
         upload(&h, &f, &blob(CHUNK, 4)).await;
-        let (_, out) = begin(&h, &f, &blob(CHUNK, 5)).await;
+        let (_, out, _key) = begin(&h, &f, &blob(CHUNK, 5)).await;
         assert_eq!(code(&out), "rooms/blobs/upload/begin:limitExceeded");
         assert_eq!(
             out["details"],
@@ -2009,7 +1929,7 @@ mod tests {
             ..Default::default()
         });
         let f = room(&h).await;
-        let (_, out) = begin(&h, &f, &blob(CHUNK * 2 + 1, 6)).await;
+        let (_, out, _key) = begin(&h, &f, &blob(CHUNK * 2 + 1, 6)).await;
         assert_eq!(out["details"]["scope"], json!("room"));
         assert_eq!(out["details"]["measure"], json!("maxBytes"));
 
@@ -2019,7 +1939,7 @@ mod tests {
             ..Default::default()
         });
         let f = room(&h).await;
-        let (_, out) = begin(&h, &f, &blob(CHUNK + 1, 7)).await;
+        let (_, out, _key) = begin(&h, &f, &blob(CHUNK + 1, 7)).await;
         assert_eq!(out["details"]["scope"], json!("host"));
         assert_eq!(out["details"]["measure"], json!("maxFileBytes"));
 
@@ -2029,7 +1949,7 @@ mod tests {
             ..Default::default()
         });
         let f = room(&h).await;
-        let (_, out) = begin(&h, &f, &blob(CHUNK + 1, 8)).await;
+        let (_, out, _key) = begin(&h, &f, &blob(CHUNK + 1, 8)).await;
         assert_eq!(out["details"]["scope"], json!("storage"));
 
         // Files off.
@@ -2038,7 +1958,7 @@ mod tests {
             ..Default::default()
         });
         let f = room(&h).await;
-        let (_, out) = begin(&h, &f, &blob(CHUNK, 9)).await;
+        let (_, out, _key) = begin(&h, &f, &blob(CHUNK, 9)).await;
         assert_eq!(code(&out), "rooms/blobs/upload/begin:filesDisabled");
     }
 
@@ -2055,7 +1975,7 @@ mod tests {
         });
         let f = room(&h).await;
         let (a, b) = (blob(CHUNK * 2, 10), blob(CHUNK * 2, 11));
-        let ((sa, _), (sb, _)) = tokio::join!(begin(&h, &f, &a), begin(&h, &f, &b));
+        let ((sa, _, _), (sb, _, _)) = tokio::join!(begin(&h, &f, &a), begin(&h, &f, &b));
         let oks = [sa, sb].iter().filter(|s| **s == StatusCode::OK).count();
         assert_eq!(oks, 1, "exactly one reservation fits");
         assert_eq!(
@@ -2072,12 +1992,12 @@ mod tests {
         let h = host(HostLimits::default());
         let f = room(&h).await;
         let b = blob(CHUNK * 2, 12);
-        let (_, begun) = begin(&h, &f, &b).await;
+        let (_, begun, key) = begin(&h, &f, &b).await;
         let id = begun["uploadId"].as_str().unwrap().to_string();
 
         let (_, out) = call(
             &h.app,
-            UPLOAD_CHUNK_TYPE,
+            UPLOAD_CHUNK_V2_TYPE,
             chunk_doc(&id, &b, 0),
             &f.successor,
         )
@@ -2085,7 +2005,7 @@ mod tests {
         assert_eq!(code(&out), "rooms/blobs/upload/chunk:notFound");
         let (_, out) = call(
             &h.app,
-            UPLOAD_COMMIT_TYPE,
+            UPLOAD_COMMIT_V2_TYPE,
             json!({ "uploadId": id }),
             &f.successor,
         )
@@ -2093,7 +2013,7 @@ mod tests {
         assert_eq!(code(&out), "rooms/blobs/upload/commit:notFound");
         let (_, out) = call(
             &h.app,
-            UPLOAD_ABORT_TYPE,
+            UPLOAD_ABORT_V2_TYPE,
             json!({ "uploadId": id }),
             &f.successor,
         )
@@ -2103,8 +2023,9 @@ mod tests {
         // The successor holds `read` only, so it cannot begin at all.
         let (_, out) = call(
             &h.app,
-            UPLOAD_BEGIN_TYPE,
-            json!({ "roomId": f.room.room_id, "presentation": f.as_successor(), "manifest": b.manifest }),
+            UPLOAD_BEGIN_V2_TYPE,
+            json!({ "roomId": f.room.room_id, "presentation": f.as_successor(), "manifest": b.manifest,
+                    "uploadKey": Party::new().did }),
             &f.successor,
         )
         .await;
@@ -2115,18 +2036,18 @@ mod tests {
         );
 
         for i in 0..2 {
-            call(&h.app, UPLOAD_CHUNK_TYPE, chunk_doc(&id, &b, i), &f.owner).await;
+            call(&h.app, UPLOAD_CHUNK_V2_TYPE, chunk_doc(&id, &b, i), &key).await;
         }
         call(
             &h.app,
-            UPLOAD_COMMIT_TYPE,
+            UPLOAD_COMMIT_V2_TYPE,
             json!({ "uploadId": id }),
-            &f.owner,
+            &key,
         )
         .await;
         let (_, got) = call(
             &h.app,
-            BLOB_GET_TYPE,
+            BLOB_GET_V2_TYPE,
             json!({ "roomId": f.room.room_id, "presentation": f.as_owner(), "blobRef": b.blob_ref }),
             &f.owner,
         )
@@ -2146,16 +2067,16 @@ mod tests {
         let h = host(HostLimits::default());
         let f = room(&h).await;
         let b = blob(CHUNK * 2, 13);
-        let (_, begun) = begin(&h, &f, &b).await;
+        let (_, begun, key) = begin(&h, &f, &b).await;
         let id = begun["uploadId"].as_str().unwrap();
         let mut doc = chunk_doc(id, &b, 0);
         doc["data"] =
             json!(base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(vec![0u8; CHUNK]));
-        let (_, out) = call(&h.app, UPLOAD_CHUNK_TYPE, doc, &f.owner).await;
+        let (_, out) = call(&h.app, UPLOAD_CHUNK_V2_TYPE, doc, &key).await;
         assert_eq!(code(&out), "rooms/blobs/upload/chunk:chunkMismatch");
         let mut doc = chunk_doc(id, &b, 0);
         doc["index"] = json!(5);
-        let (_, out) = call(&h.app, UPLOAD_CHUNK_TYPE, doc, &f.owner).await;
+        let (_, out) = call(&h.app, UPLOAD_CHUNK_V2_TYPE, doc, &key).await;
         assert_eq!(code(&out), "rooms/blobs/upload/chunk:chunkOutOfRange");
     }
 
@@ -2166,16 +2087,16 @@ mod tests {
         let f = room(&h).await;
         let mut b = blob(CHUNK * 2, 14);
         b.manifest["digest"] = json!(sha256_digest_multibase(&[0u8; 32]));
-        let (_, begun) = begin(&h, &f, &b).await;
+        let (_, begun, key) = begin(&h, &f, &b).await;
         let id = begun["uploadId"].as_str().unwrap().to_string();
         for i in 0..2 {
-            call(&h.app, UPLOAD_CHUNK_TYPE, chunk_doc(&id, &b, i), &f.owner).await;
+            call(&h.app, UPLOAD_CHUNK_V2_TYPE, chunk_doc(&id, &b, i), &key).await;
         }
         let (_, out) = call(
             &h.app,
-            UPLOAD_COMMIT_TYPE,
+            UPLOAD_COMMIT_V2_TYPE,
             json!({ "uploadId": id }),
-            &f.owner,
+            &key,
         )
         .await;
         assert_eq!(code(&out), "rooms/blobs/upload/commit:digestMismatch");
@@ -2190,29 +2111,29 @@ mod tests {
         let h = host(HostLimits::default());
         let f = room(&h).await;
         let b = blob(CHUNK, 15);
-        let (_, begun) = begin(&h, &f, &b).await;
+        let (_, begun, key) = begin(&h, &f, &b).await;
         let id = begun["uploadId"].as_str().unwrap();
         let (_, out) = call(
             &h.app,
-            UPLOAD_ABORT_TYPE,
+            UPLOAD_ABORT_V2_TYPE,
             json!({ "uploadId": id }),
-            &f.owner,
+            &key,
         )
         .await;
         assert_eq!(out["aborted"], json!(true));
         let (_, out) = call(
             &h.app,
-            UPLOAD_ABORT_TYPE,
+            UPLOAD_ABORT_V2_TYPE,
             json!({ "uploadId": id }),
-            &f.owner,
+            &key,
         )
         .await;
         assert_eq!(out["aborted"], json!(false));
         let (_, out) = call(
             &h.app,
-            UPLOAD_COMMIT_TYPE,
+            UPLOAD_COMMIT_V2_TYPE,
             json!({ "uploadId": id }),
-            &f.owner,
+            &key,
         )
         .await;
         assert_eq!(code(&out), "rooms/blobs/upload/commit:notFound");
@@ -2235,7 +2156,7 @@ mod tests {
         assert_eq!(code(&out), "rooms/records/put:blobNotFound");
         let (_, out) = call(
             &h.app,
-            BLOB_GET_TYPE,
+            BLOB_GET_V2_TYPE,
             json!({ "roomId": other.room.room_id, "presentation": other.as_owner(), "blobRef": b.blob_ref }),
             &other.owner,
         )
@@ -2261,7 +2182,7 @@ mod tests {
         let (a, other) = (room(&h).await, room(&h).await);
         let b = blob(CHUNK, 20);
         upload(&h, &a, &b).await;
-        let (_, begun) = begin(&h, &other, &b).await;
+        let (_, begun, _key) = begin(&h, &other, &b).await;
         assert!(begun.get("alreadyCommitted").is_none(), "{begun}");
         assert_eq!(begun["missing"], json!([0]));
     }
@@ -2271,10 +2192,10 @@ mod tests {
         let h = host(HostLimits::default());
         let f = room(&h).await;
         for seed in 0..3 {
-            let (status, out) = begin(&h, &f, &blob(CHUNK, 30 + seed)).await;
+            let (status, out, _key) = begin(&h, &f, &blob(CHUNK, 30 + seed)).await;
             assert_eq!(status, StatusCode::OK, "{out}");
         }
-        let (_, out) = begin(&h, &f, &blob(CHUNK, 40)).await;
+        let (_, out, _key) = begin(&h, &f, &blob(CHUNK, 40)).await;
         assert_eq!(code(&out), "rooms/blobs/upload/begin:tooManyUploads");
         assert_eq!(out["retryable"], json!(true));
         assert_eq!(out["details"]["maxOpen"], json!(3));
@@ -2296,7 +2217,7 @@ mod tests {
             ..Default::default()
         });
         let f = room(&h).await;
-        let (_, out) = begin(&h, &f, &blob(CHUNK * 5, 41)).await;
+        let (_, out, _key) = begin(&h, &f, &blob(CHUNK * 5, 41)).await;
         assert_eq!(out["details"]["scope"], json!("room"));
         assert_eq!(out["details"]["limit"], json!(CHUNK));
     }
@@ -2369,15 +2290,6 @@ mod tests {
         let row = |k: &str| rows.iter().find(|r| r["key"] == json!(k)).unwrap().clone();
         assert_eq!(row("with-file")["blobs"], json!([r]));
         assert!(row("without").get("blobs").is_none());
-
-        let (_, old) = call(
-            &h.app,
-            vti_rooms::wire::ROOMS_RECORDS_GET_TYPE,
-            json!({ "roomId": f.room.room_id, "key": "with-file", "presentation": f.as_owner() }),
-            &f.owner,
-        )
-        .await;
-        assert!(old.get("blobs").is_none(), "0.1 has no such member: {old}");
     }
 
     /// A document larger than its specification bounds is refused before it
@@ -2388,18 +2300,19 @@ mod tests {
         let f = room(&h).await;
         let (_, out) = call(
             &h.app,
-            UPLOAD_BEGIN_TYPE,
+            UPLOAD_BEGIN_V2_TYPE,
             json!({
                 "roomId": f.room.room_id,
                 "presentation": f.as_owner(),
                 "manifest": blob(CHUNK, 70).manifest,
-                "padding": "x".repeat(340_000),
+                "uploadKey": Party::new().did,
+                "padding": "x".repeat(400_000),
             }),
             &f.owner,
         )
         .await;
         assert_eq!(code(&out), "malformedRequest");
-        assert!(out["message"].as_str().unwrap().contains("327680"), "{out}");
+        assert!(out["message"].as_str().unwrap().contains("393216"), "{out}");
     }
 
     /// A 0.2 read never pairs one version's record with another's `blobs`:
@@ -2495,7 +2408,7 @@ mod tests {
         let f = RoomFixture::new(Visibility::Attributed).await;
         let (status, body) = call(
             &h.app,
-            vti_rooms::wire::ROOMS_CREATE_TYPE,
+            vti_rooms::wire::ROOMS_CREATE_V2_TYPE,
             json!({ "roomId": f.room.room_id, "ownerDid": f.room.owner_did, "visibility": "attributed" }),
             &f.owner,
         )
@@ -2533,9 +2446,18 @@ mod tests {
         )
         .unwrap();
 
-        // Upload.
+        // Upload, proxied: the member begins, naming a key generated for this upload alone,
+        // and that key sends the chunks and commits (begin/0.2 producer item 3).
+        let upload_key = Party::new();
         let begun = client
-            .begin_upload(&session, &sealed.blob, did, secret)
+            .begin_upload_v2::<_, Value>(
+                &session,
+                &sealed.blob,
+                Some(&upload_key.did),
+                None,
+                did,
+                secret,
+            )
             .await
             .expect("begin");
         assert_eq!(
@@ -2548,12 +2470,18 @@ mod tests {
         for index in &begun.missing {
             let i = index.0 as usize;
             client
-                .upload_chunk(upload_id, i as u64, &sealed.chunks[i], did, secret)
+                .upload_chunk_v2(
+                    upload_id,
+                    i as u64,
+                    &sealed.chunks[i],
+                    &upload_key.did,
+                    &upload_key.secret_multibase,
+                )
                 .await
                 .expect("chunk");
         }
         let committed = client
-            .commit_upload(upload_id, did, secret)
+            .commit_upload_v2(upload_id, &upload_key.did, &upload_key.secret_multibase)
             .await
             .expect("commit");
         let blob_ref = serde_json::to_value(&committed.blob_ref)
@@ -2639,7 +2567,7 @@ mod tests {
 
         // Download, check, open.
         let started = client
-            .get_blob(&session, &file.blob_ref, did, secret)
+            .get_blob_v2(&session, &file.blob_ref, false, did, secret)
             .await
             .expect("get blob");
         let blob: BlobManifest =
@@ -2702,7 +2630,7 @@ mod tests {
 
         let (status, got) = call(
             &h.app,
-            vti_rooms::wire::ROOMS_RECORDS_GET_TYPE,
+            vti_rooms::wire::ROOMS_RECORDS_GET_V2_TYPE,
             json!({ "roomId": f.room.room_id, "key": "note", "presentation": f.as_owner() }),
             &f.owner,
         )

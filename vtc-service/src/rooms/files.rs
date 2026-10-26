@@ -14,12 +14,7 @@ use std::sync::Arc;
 
 use serde_json::Value;
 use trust_tasks_rs::specs::rooms::blobs::chunk::v0_1 as download_chunk;
-use trust_tasks_rs::specs::rooms::blobs::get::v0_1 as blob_get;
 use trust_tasks_rs::specs::rooms::blobs::get::v0_2 as blob_get_v2;
-use trust_tasks_rs::specs::rooms::blobs::upload::{
-    abort::v0_1 as upload_abort, begin::v0_1 as upload_begin, chunk::v0_1 as upload_chunk,
-    commit::v0_1 as upload_commit,
-};
 use trust_tasks_rs::specs::rooms::blobs::upload::{
     abort::v0_2 as upload_abort_v2, begin::v0_2 as upload_begin_v2, chunk::v0_2 as upload_chunk_v2,
     commit::v0_2 as upload_commit_v2,
@@ -468,7 +463,7 @@ pub(crate) async fn handle_get_record_v2(
         Ok(r) => r,
         Err(o) => return o,
     };
-    super::handlers::get_record(&doc, &ctx, req, true).await
+    super::handlers::get_record(&doc, &ctx, req).await
 }
 
 /// `rooms/records/list/0.2`: the 0.1 listing, each row naming its blobs.
@@ -516,7 +511,7 @@ pub(crate) async fn handle_create_v2(doc: TrustTask<Value>, ctx: RoomCtx) -> Tru
             );
         }
     };
-    super::handlers::create_room(&doc, &ctx, &req, retention, true).await
+    super::handlers::create_room(&doc, &ctx, &req, retention).await
 }
 
 /// `rooms/epoch/chain/0.2`: the 0.1 chain, and the room's epoch floor on every response.
@@ -540,7 +535,7 @@ pub(crate) async fn handle_epoch_prune_v2(
         Ok(r) => r,
         Err(o) => return o,
     };
-    super::handlers::epoch_prune(&doc, &ctx, &req, true).await
+    super::handlers::epoch_prune(&doc, &ctx, &req).await
 }
 
 /// `rooms/info/0.2`. Needs `read`: 0.1's answer, the record retention in force and the
@@ -641,124 +636,6 @@ pub(crate) async fn handle_retention_set(doc: TrustTask<Value>, ctx: RoomCtx) ->
         }
         Err(r) => refused(&doc, r),
     }
-}
-
-/// `rooms/blobs/upload/begin/0.1`. Needs `write`.
-pub(crate) async fn handle_upload_begin(
-    doc: TrustTask<upload_begin::Payload>,
-    ctx: RoomCtx,
-) -> TrustTaskOutcome {
-    let payload = match payload_json(&doc) {
-        Ok(p) => p,
-        Err(o) => return o,
-    };
-    let (room, authorized) = match authorize(&doc, &ctx, &payload, Action::Write).await {
-        Ok(r) => r,
-        Err(o) => return o,
-    };
-    render(
-        &doc,
-        blob_tasks::begin(
-            &ctx.state.room_files,
-            &room,
-            &ctx.presenter,
-            &authorized,
-            &payload,
-        )
-        .await,
-    )
-}
-
-/// `rooms/blobs/upload/chunk/0.1`. Authorized by owning the upload.
-pub(crate) async fn handle_upload_chunk(
-    doc: TrustTask<upload_chunk::Payload>,
-    ctx: RoomCtx,
-) -> TrustTaskOutcome {
-    let p = match payload_json(&doc) {
-        Ok(p) => p,
-        Err(o) => return o,
-    };
-    if let Err(o) = charge_transfer(&ctx, &p, "uploadId", RoomTraffic::Transfer).await {
-        return o;
-    }
-    // This step presents nothing: the credentials that opened the transfer stand for it,
-    // held to the room's revocation list (`rooms/revocations/put`, *Enforcement* item 3).
-    let _gate = match held_step(&doc, &ctx, &p).await {
-        Ok(g) => g,
-        Err(o) => return o,
-    };
-    render(
-        &doc,
-        blob_tasks::upload_chunk(&ctx.state.room_files, &ctx.presenter, &p).await,
-    )
-}
-
-/// `rooms/blobs/upload/commit/0.1`. Authorized by owning the upload.
-pub(crate) async fn handle_upload_commit(
-    doc: TrustTask<upload_commit::Payload>,
-    ctx: RoomCtx,
-) -> TrustTaskOutcome {
-    let p = match payload_json(&doc) {
-        Ok(p) => p,
-        Err(o) => return o,
-    };
-    if let Err(o) = charge_transfer(&ctx, &p, "uploadId", RoomTraffic::Operation).await {
-        return o;
-    }
-    // This step presents nothing: the credentials that opened the transfer stand for it,
-    // held to the room's revocation list (`rooms/revocations/put`, *Enforcement* item 3).
-    let _gate = match held_step(&doc, &ctx, &p).await {
-        Ok(g) => g,
-        Err(o) => return o,
-    };
-    render(
-        &doc,
-        blob_tasks::commit(&ctx.state.room_files, &ctx.presenter, &p).await,
-    )
-}
-
-/// `rooms/blobs/upload/abort/0.1`. Authorized by owning the upload.
-pub(crate) async fn handle_upload_abort(
-    doc: TrustTask<upload_abort::Payload>,
-    ctx: RoomCtx,
-) -> TrustTaskOutcome {
-    let p = match payload_json(&doc) {
-        Ok(p) => p,
-        Err(o) => return o,
-    };
-    if let Err(o) = charge_transfer(&ctx, &p, "uploadId", RoomTraffic::Operation).await {
-        return o;
-    }
-    render(
-        &doc,
-        blob_tasks::abort(&ctx.state.room_files, &ctx.presenter, &p).await,
-    )
-}
-
-/// `rooms/blobs/get/0.1`. Needs `read`.
-pub(crate) async fn handle_blob_get(
-    doc: TrustTask<blob_get::Payload>,
-    ctx: RoomCtx,
-) -> TrustTaskOutcome {
-    let payload = match payload_json(&doc) {
-        Ok(p) => p,
-        Err(o) => return o,
-    };
-    let (room, authorized) = match authorize(&doc, &ctx, &payload, Action::Read).await {
-        Ok(r) => r,
-        Err(o) => return o,
-    };
-    render(
-        &doc,
-        blob_tasks::get(
-            &ctx.state.room_files,
-            &room,
-            &ctx.presenter,
-            &authorized,
-            &payload,
-        )
-        .await,
-    )
 }
 
 /// `rooms/blobs/chunk/0.1`. Authorized by owning the download.

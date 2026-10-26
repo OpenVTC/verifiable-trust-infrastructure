@@ -1521,7 +1521,7 @@ mod tests {
             &f.state,
             &alice_client(),
             unsigned(
-                vti_rooms::wire::ROOMS_RECORDS_GET_TYPE,
+                vti_rooms::wire::ROOMS_RECORDS_GET_V2_TYPE,
                 "did:key:zHost",
                 json!({ "roomId": f.room.did, "key": KEY }),
             ),
@@ -1628,7 +1628,7 @@ mod tests {
             &f.state,
             &alice_client(),
             unsigned(
-                vti_rooms::wire::ROOMS_RECORDS_GET_TYPE,
+                vti_rooms::wire::ROOMS_RECORDS_GET_V2_TYPE,
                 "did:key:zHost",
                 json!({ "roomId": f.room.did, "key": KEY }),
             ),
@@ -1739,7 +1739,7 @@ mod tests {
         let f = fixture(&["read"]).await;
         let get = || {
             unsigned(
-                vti_rooms::wire::ROOMS_RECORDS_GET_TYPE,
+                vti_rooms::wire::ROOMS_RECORDS_GET_V2_TYPE,
                 "did:key:zHost",
                 json!({ "roomId": f.room.did, "key": KEY }),
             )
@@ -2163,7 +2163,7 @@ mod tests {
             &f.state,
             &alice_client(),
             unsigned(
-                vti_rooms::wire::ROOMS_EPOCH_PRUNE_TYPE,
+                vti_rooms::wire::ROOMS_EPOCH_PRUNE_V2_TYPE,
                 "did:key:zHost",
                 json!({ "roomId": f.room.did, "beforeEpoch": 2 }),
             ),
@@ -2172,7 +2172,7 @@ mod tests {
         assert_eq!(code(&out), "rooms/keys/act:typeNotActable", "{out}");
         assert_eq!(
             out["payload"]["details"]["type"],
-            vti_rooms::wire::ROOMS_EPOCH_PRUNE_TYPE
+            vti_rooms::wire::ROOMS_EPOCH_PRUNE_V2_TYPE
         );
     }
 
@@ -2213,7 +2213,7 @@ mod tests {
         let f = fixture(&["read"]).await;
         let get = |room: &str| {
             unsigned(
-                vti_rooms::wire::ROOMS_RECORDS_GET_TYPE,
+                vti_rooms::wire::ROOMS_RECORDS_GET_V2_TYPE,
                 "did:key:zHost",
                 json!({ "roomId": room, "key": KEY }),
             )
@@ -2237,7 +2237,7 @@ mod tests {
         };
         let get = |issuer: Option<&str>| {
             let mut d = unsigned(
-                vti_rooms::wire::ROOMS_RECORDS_GET_TYPE,
+                vti_rooms::wire::ROOMS_RECORDS_GET_V2_TYPE,
                 "did:key:zHost",
                 json!({ "roomId": f.room.did, "key": KEY }),
             );
@@ -2293,7 +2293,7 @@ mod tests {
             &f.state,
             &alice_client(),
             unsigned(
-                vti_rooms::wire::ROOMS_RECORDS_GET_TYPE,
+                vti_rooms::wire::ROOMS_RECORDS_GET_V2_TYPE,
                 "did:key:zHost",
                 json!({ "roomId": f.room.did, "key": KEY }),
             ),
@@ -2339,7 +2339,7 @@ mod tests {
             &f.state,
             &auth,
             unsigned(
-                vti_rooms::wire::ROOMS_RECORDS_GET_TYPE,
+                vti_rooms::wire::ROOMS_RECORDS_GET_V2_TYPE,
                 "did:key:zHost",
                 json!({ "roomId": f.room.did, "key": KEY }),
             ),
@@ -2365,7 +2365,7 @@ mod tests {
     async fn act_refuses_a_stale_or_pre_presented_document() {
         let f = fixture(&["read"]).await;
         let mut stale = unsigned(
-            vti_rooms::wire::ROOMS_RECORDS_GET_TYPE,
+            vti_rooms::wire::ROOMS_RECORDS_GET_V2_TYPE,
             "did:key:zHost",
             json!({ "roomId": f.room.did, "key": KEY }),
         );
@@ -2375,7 +2375,7 @@ mod tests {
             "malformedRequest"
         );
         let presented = unsigned(
-            vti_rooms::wire::ROOMS_RECORDS_GET_TYPE,
+            vti_rooms::wire::ROOMS_RECORDS_GET_V2_TYPE,
             "did:key:zHost",
             json!({ "roomId": f.room.did, "key": KEY, "presentation": {} }),
         );
@@ -2485,7 +2485,7 @@ mod tests {
                     log.lock().unwrap().push(req.clone());
                     let task = req["type"].as_str().unwrap_or_default().to_string();
                     let room_id = req["payload"]["roomId"].clone();
-                    let payload = if task == vti_rooms::wire::ROOMS_RECORDS_GET_TYPE {
+                    let payload = if task == vti_rooms::wire::ROOMS_RECORDS_GET_V2_TYPE {
                         let mut record = json!({
                             "key": req["payload"]["key"], "version": 1, "status": "active",
                             "updatedAt": "2026-01-01T00:00:00Z",
