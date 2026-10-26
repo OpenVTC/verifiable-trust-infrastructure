@@ -38,7 +38,7 @@ p256 = "0.14"                                   # SEC1 point decompression ONLY 
                                                 # verifying). aws-lc-rs requires uncompressed
                                                 # points; Multikey carries compressed. Already
                                                 # in the workspace dep tree transitively.
-serde_json_canonicalizer = "0.3"                # RFC 8785 (author: Anders Rundgren).
+serde_json_canonicalizer = "0.4"                # RFC 8785 (author: Anders Rundgren).
 unsigned-varint = "0.8"                         # multicodec varint prefix decode.
 
 [dev-dependencies]

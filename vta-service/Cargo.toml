@@ -363,7 +363,7 @@ regorus = { workspace = true }
 # RFC 8785 JCS canonicalization — deterministic `Value` → bytes for the
 # task-consent payload digest (an approver signs over the exact payload).
 # Same crate vti-webauthn uses for document binding.
-serde_json_canonicalizer = "0.3"
+serde_json_canonicalizer = "0.4"
 # Constant-time byte equality. Used by `backup_bundle_store` to
 # verify backup-bundle bearer tokens against their stored
 # `SHA-256(token)` hash without leaking byte-position via timing.
