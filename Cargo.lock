@@ -3502,7 +3502,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c54e03a951783e8b327515db3f2a2fd0e3bed362a96b066f341ce66ed49b4ead"
 dependencies = [
  "data-encoding",
- "syn 3.0.9",
+ "syn 1.0.109",
 ]
 
 [[package]]
@@ -12516,7 +12516,7 @@ name = "vti-voting"
 version = "0.2.0"
 dependencies = [
  "ark-serialize",
- "chacha20poly1305 0.10.1",
+ "chacha20poly1305 0.11.0",
  "chrono",
  "curve25519-dalek 5.0.0",
  "multibase",

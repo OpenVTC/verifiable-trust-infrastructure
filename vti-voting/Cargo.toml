@@ -39,7 +39,7 @@ trust-tasks-rs.workspace = true
 # bytes, never from its `rand_core`, so the PCS stack's rand 0.8 stays independent of it.
 curve25519-dalek = { version = "5", default-features = false, features = ["alloc", "precomputed-tables", "zeroize"] }
 # The sealed level's data encapsulation.
-chacha20poly1305 = "0.10"
+chacha20poly1305 = "0.11"
 
 [dev-dependencies]
 rand = { version = "0.8", features = ["std", "std_rng"] }
