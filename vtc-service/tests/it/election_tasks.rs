@@ -1347,14 +1347,18 @@ async fn an_open_election_runs_against_a_real_ballot_box_over_a_mediator() {
         box_secrets[0].get_private_keymultibase().unwrap(),
     )
     .unwrap();
-    let box_state = Arc::new(BoxState {
-        ballot_box: Mutex::new(BallotBox::new(&box_did)),
-        identity: Identity {
+    let box_state = Arc::new(BoxState::new(
+        BallotBox::new(&box_did),
+        Identity {
             did: box_did.clone(),
             key,
         },
-        resolver: vti_common::auth::TrustTaskVmResolver::new(did_resolver.clone()),
-    });
+        vti_common::auth::TrustTaskVmResolver::new(did_resolver.clone()),
+        vti_voting_service::config::CommunitiesConfig {
+            allowed: vec![community.clone()],
+            ..Default::default()
+        },
+    ));
     let (stop, stopped) = tokio::sync::watch::channel(false);
     let session = tokio::spawn(supervise(
         IdentitySession::new(

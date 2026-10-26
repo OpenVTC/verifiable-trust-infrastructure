@@ -1,6 +1,6 @@
 //! The service over HTTP: signed requests in, signed answers out, a restart from the journal.
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use axum::{
     body::Body,
@@ -20,18 +20,121 @@ use vti_voting::{
     service::BallotBox,
     voter::Voter,
 };
-use vti_voting_service::{AppState, identity::Identity, journal::FileJournal, router};
+use vti_voting_service::{
+    AppState, config::CommunitiesConfig, identity::Identity, journal::FileJournal, router,
+};
 
 fn state(dir: &std::path::Path) -> Arc<AppState> {
+    state_serving(dir, CommunitiesConfig::any())
+}
+
+fn state_serving(dir: &std::path::Path, communities: CommunitiesConfig) -> Arc<AppState> {
     let identity = Identity::load_or_mint(dir).unwrap();
     let journal = Arc::new(FileJournal::open(&dir.join("journal")).unwrap());
     let restored = journal.load().unwrap();
     let bb = BallotBox::restore(&identity.did, journal, restored).unwrap();
-    Arc::new(AppState {
-        ballot_box: Mutex::new(bb),
+    Arc::new(AppState::new(
+        bb,
         identity,
-        resolver: vti_common::auth::TrustTaskVmResolver::did_key_only(),
+        vti_common::auth::TrustTaskVmResolver::did_key_only(),
+        communities,
+    ))
+}
+
+/// A registration of `community`'s election `id` on the box `service_did`.
+fn registration(community: &Identity, service_did: &str, id: &str) -> Value {
+    let reg = Registrar::generate(&community.did, &mut StdRng::seed_from_u64(1)).unwrap();
+    let now = Utc::now();
+    let t = |d: chrono::DateTime<Utc>| d.to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+    let manifest = json!({
+        "electionId": id,
+        "community": community.did,
+        "questions": [{ "key": "chair", "type": "choice",
+            "options": [{ "key": "ana" }, { "key": "bo" }],
+            "minSelections": 1, "maxSelections": 1, "optional": false }],
+        "secrecy": "open",
+        "roll": { "rule": "members" },
+        "registrationOpens": t(now - Duration::days(2)),
+        "votingOpens": t(now - Duration::hours(1)),
+        "votingCloses": t(now + Duration::days(1)),
+        "revote": "replace",
+        "board": { "visibility": "public", "auditors": [] },
+        "ballotBox": service_did,
+        "binding": false,
+        "allowEarlyClose": false,
+        "resultsBeforeClose": false,
+        "textReleaseThreshold": 10
+    });
+    let digest = manifest_digest(&manifest).unwrap();
+    json!({
+        "community": community.did,
+        "manifest": manifest,
+        "manifestDigest": digest_multibase(&digest),
+        "parameters": { "suite": "ps-ddh-bls12381", "votingKey": reg.public_text().unwrap() },
     })
+}
+
+/// A box registers the elections of the communities it serves, and no more of each at once
+/// than its quota: a box anyone can register with is a store anyone can fill.
+#[tokio::test]
+async fn only_a_served_community_registers_and_within_its_quota() {
+    let dir = std::env::temp_dir().join(format!("vti-voting-service-{}", Uuid::new_v4()));
+    let community = Identity::from_seed(&[0x31; 32]).unwrap();
+    let svc = state_serving(
+        &dir,
+        CommunitiesConfig {
+            allowed: vec![community.did.clone()],
+            max_unfinished: 1,
+            ..Default::default()
+        },
+    );
+    let box_did = svc.identity.did.clone();
+
+    // A community the box does not serve, registering its own election.
+    let stranger = Identity::from_seed(&[0x32; 32]).unwrap();
+    let (status, answer) = send(
+        &svc,
+        doc(
+            "election/register",
+            &box_did,
+            Some(&stranger),
+            registration(&stranger, &box_did, "agm"),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{answer}");
+    assert_eq!(answer["payload"]["code"], "permissionDenied");
+
+    // The community it serves: one election, and a repeat of it, but not a second.
+    let first = registration(&community, &box_did, "agm");
+    for _ in 0..2 {
+        let (status, answer) = send(
+            &svc,
+            doc(
+                "election/register",
+                &box_did,
+                Some(&community),
+                first.clone(),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{answer}");
+    }
+    let (status, answer) = send(
+        &svc,
+        doc(
+            "election/register",
+            &box_did,
+            Some(&community),
+            registration(&community, &box_did, "egm"),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{answer}");
+    assert_eq!(answer["payload"]["code"], "unavailable");
 }
 
 async fn send(state: &Arc<AppState>, doc: Value) -> (StatusCode, Value) {

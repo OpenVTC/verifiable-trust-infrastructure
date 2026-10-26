@@ -11,7 +11,14 @@
 //! [identity]                          # written by `vti-voting-service setup`
 //! did = "did:webvh:…"
 //! mediator_did = "did:webvh:…"
+//!
+//! [communities]                       # whose elections this box registers
+//! allowed = ["did:webvh:…"]           # or `allow_any = true` for an open ballot box
+//! max_unfinished = 20                 # per community: elections not yet tallied or cancelled
 //! ```
+//!
+//! With no `[communities]` the box registers no election: which communities it serves is the
+//! operator's decision, never a default.
 //!
 //! With no `[identity]` the service runs as a `did:key` minted into `data_dir`, over HTTPS only:
 //! enough for a test, and nothing a community could reach over TSP or DIDComm.
@@ -43,6 +50,60 @@ pub struct VotingConfig {
     /// The provisioned identity, reached over TSP and DIDComm at its mediator.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub identity: Option<ServiceIdentity>,
+    /// Whose elections this box registers, and how many each may hold open.
+    #[serde(default)]
+    pub communities: CommunitiesConfig,
+}
+
+/// Whose elections the box registers. Every registration is otherwise refused: a box anyone can
+/// register with is a store anyone can fill.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CommunitiesConfig {
+    /// The communities, by DID, whose elections this box registers.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub allowed: Vec<String>,
+    /// Register any community's elections: an open ballot box. Never with `allowed`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub allow_any: bool,
+    /// The most elections one community may hold here that are neither tallied nor cancelled.
+    /// A registration past it is `unavailable`, and succeeds once one finishes.
+    #[serde(default = "default_max_unfinished")]
+    pub max_unfinished: usize,
+}
+
+/// A community's unfinished elections unless configured.
+pub const DEFAULT_MAX_UNFINISHED: usize = 20;
+
+fn default_max_unfinished() -> usize {
+    DEFAULT_MAX_UNFINISHED
+}
+
+impl Default for CommunitiesConfig {
+    fn default() -> Self {
+        Self {
+            allowed: Vec::new(),
+            allow_any: false,
+            max_unfinished: DEFAULT_MAX_UNFINISHED,
+        }
+    }
+}
+
+impl CommunitiesConfig {
+    /// An open ballot box: any community's elections, with the default quota.
+    #[must_use]
+    pub fn any() -> Self {
+        Self {
+            allow_any: true,
+            ..Self::default()
+        }
+    }
+
+    /// Whether this box registers `community`'s elections.
+    #[must_use]
+    pub fn admits(&self, community: &str) -> bool {
+        self.allow_any || self.allowed.iter().any(|c| c == community)
+    }
 }
 
 /// The identity a VTA provisioned from the `ballot-box` template.
@@ -128,6 +189,21 @@ impl VotingConfig {
                 errors.push("identity.mediator_did is the identity itself, not a mediator".into());
             }
         }
+        let c = &self.communities;
+        if c.allow_any && !c.allowed.is_empty() {
+            errors.push(
+                "communities: allow_any registers every community; drop it or the allowed list"
+                    .into(),
+            );
+        }
+        for did in &c.allowed {
+            if !did.starts_with("did:") {
+                errors.push(format!("communities.allowed: {did:?} is not a DID"));
+            }
+        }
+        if c.max_unfinished == 0 {
+            errors.push("communities.max_unfinished of 0 registers nothing".into());
+        }
         if errors.is_empty() {
             Ok(())
         } else {
@@ -172,6 +248,24 @@ mod tests {
             again.identity.unwrap().did,
             "did:webvh:QmBBX:votes.example.net:b1"
         );
+    }
+
+    #[test]
+    fn with_no_communities_section_the_box_registers_nobody() {
+        let config = VotingConfig::from_toml_str("data_dir = \"d\"\n").unwrap();
+        assert!(!config.communities.admits("did:webvh:QmC:c.example.org"));
+        assert_eq!(config.communities.max_unfinished, DEFAULT_MAX_UNFINISHED);
+        let config = VotingConfig::from_toml_str(
+            "data_dir = \"d\"\n[communities]\nallowed = [\"did:webvh:QmC:c.example.org\"]\n",
+        )
+        .unwrap();
+        assert!(config.communities.admits("did:webvh:QmC:c.example.org"));
+        assert!(!config.communities.admits("did:webvh:QmD:d.example.org"));
+        let err = VotingConfig::from_toml_str(
+            "data_dir = \"d\"\n[communities]\nallow_any = true\nallowed = [\"did:webvh:QmC:c\"]\n",
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("allow_any"), "{err}");
     }
 
     #[test]

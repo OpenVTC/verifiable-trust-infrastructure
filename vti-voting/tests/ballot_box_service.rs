@@ -239,6 +239,72 @@ fn vot_040_a_tampered_cast_is_refused() {
     assert_eq!(s.bb.cast(&p, now).unwrap_err().local, "ballotInvalid");
 }
 
+/// VTI-VOT-045 without the lock: the costly checks run on a [`CastCheck`] apart from the box,
+/// and what they prove admits that one cast — never another sent with it.
+#[test]
+fn a_cast_checked_apart_from_the_box_is_admitted_and_nothing_else_is() {
+    let mut s = setup("public", "replace", false);
+    let now = t("2026-11-04T00:00:00Z");
+    let (v, ticket) = s.voter(10);
+    let first = s.cast_payload(&v, &ticket, &s.ballot("yes", None), 11);
+
+    let verified =
+        s.bb.cast_check(&first, now)
+            .unwrap()
+            .expect("a new cast needs its checks")
+            .run()
+            .unwrap();
+    let receipt = s.bb.cast_verified(&first, &verified, now).unwrap();
+    assert_eq!(receipt["outcome"], "counted");
+    // A resend needs no costly check: the box answers it with the first receipt.
+    assert!(s.bb.cast_check(&first, now).unwrap().is_none());
+    assert_eq!(
+        s.bb.cast_verified(&first, &verified, now).unwrap()["receiptToken"],
+        receipt["receiptToken"]
+    );
+
+    // What proved one cast does not admit a tampered one: the box checks it in full.
+    let mut tampered = s.cast_payload(&v, &ticket, &s.ballot("yes", None), 12);
+    tampered["cast"]["ballot"]["answers"][0]["choice"] = json!(["no"]);
+    assert_eq!(
+        s.bb.cast_verified(&tampered, &verified, now)
+            .unwrap_err()
+            .local,
+        "castInvalid"
+    );
+    // And a tampered cast's own check fails apart from the box as it would inside.
+    let check = s.bb.cast_check(&tampered, now).unwrap().unwrap();
+    assert_eq!(check.run().unwrap_err().local, "castInvalid");
+
+    // A refusal the cheap checks find needs no costly one.
+    let mut early = setup("public", "replace", false);
+    assert_eq!(
+        early
+            .bb
+            .cast_check(&first, t("2026-11-02T00:00:00Z"))
+            .unwrap_err()
+            .local,
+        "notOpen"
+    );
+}
+
+/// What a registration quota counts: elections registered here and not yet finished.
+#[test]
+fn the_box_counts_a_communitys_unfinished_elections() {
+    let mut s = setup("public", "replace", false);
+    assert!(s.bb.holds(COMMUNITY, "agm-2027"));
+    assert!(!s.bb.holds(COMMUNITY, "another"));
+    assert_eq!(s.bb.unfinished(COMMUNITY), 1);
+    assert_eq!(s.bb.unfinished("did:webvh:QmOther:other.example.org"), 0);
+    s.bb.cancel(
+        COMMUNITY,
+        &json!({ "community": COMMUNITY, "electionId": "agm-2027", "reason": "test" }),
+        t("2026-11-04T00:00:00Z"),
+    )
+    .unwrap();
+    assert_eq!(s.bb.unfinished(COMMUNITY), 0);
+}
+
 #[test]
 fn vot_050_receipts_prove_inclusion_and_heads_stay_consistent() {
     let mut s = setup("public", "replace", false);

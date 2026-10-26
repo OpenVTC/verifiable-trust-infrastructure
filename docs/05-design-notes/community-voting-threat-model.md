@@ -43,6 +43,9 @@ party's report of it.** The board is the evidence; the ballot box is only its ke
 | 14 | `pnm elections vote` took the ticket and cast in one run, so the community and the box could pair them by their clocks | `pnm elections ticket` is its own step; `vote` with no ticket held takes one and stops unless given `--now` |
 | 15 | The voter's VTA kept the member-signed ticket request beside the casts' leaf hashes, readable without the seed, and never discarded either | the member's documents go once the ticket is held; leaf hashes and receipts are wrapped; the sweeper discards the ticket at the close and the rest 30 days later |
 | 16 | Restoring a VTC backup forgets the tickets issued after it, so their holders take a second and vote twice | a restore closes issuance for good on every election whose registration had opened and whose voting had not closed; the remedy is to cancel and create it again |
+| 17 | Any DID registers elections at a box until its store is full | `[communities] allowed` (none without it) and a quota of unfinished elections per community (`unavailable` past it) |
+| 18 | A flood of casts holds the box's one lock through every pairing check, stalling every other community | a cast's costly checks run on bounded blocking threads without the lock; what they prove admits that one cast only |
+| 19 | One `voting/board/read` of a board of large entries is an unbounded answer | a page carries at most 256 KiB of entries (at least one), fewer than `limit` |
 
 Items 1 – 8 changed the wire, as `vta/pcs/trustee/*/0.2`, `vta/pcs/vote-encrypted/0.2`,
 `voting/trustees/authorize/0.1` and CONVENTIONS §3.9 / §9.3 – 9.7. The 0.1 trustee and
@@ -53,10 +56,8 @@ vote-encrypted tasks are retired: their whole design was acting on the box's rep
 None of these lets a single party change a result. Each one weakens privacy or availability, or
 leaves a cost unbounded:
 
-- **Registrations at the box.** The box accepts a registration from any community, with no
-  allow-list and no quota.
-- **Locking.** One process-wide lock covers the whole box, and proof verification runs inside it.
 - **Checkpoints.** `checkpoint_due` reads the box's clock.
-- **Board reads.** `read_board` has no size cap.
+- **The cast door's rate.** The service does not rate-limit the anonymous HTTPS door itself;
+  the guide puts that on the reverse proxy in front of it.
 - **The ticket label** does not bind the manifest; that needs a specification change.
 - **The voter's VTA** does not cross-check the voting key with the box.

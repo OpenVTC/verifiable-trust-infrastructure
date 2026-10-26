@@ -1,7 +1,7 @@
 //! `vti-voting-service run`: serve the ballot box until the process is told to stop — over TSP
 //! and DIDComm through the identity's mediator session, and over HTTPS for sessionless casts.
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 
 use affinidi_did_resolver_cache_sdk::DIDCacheClient;
@@ -75,11 +75,18 @@ pub async fn run(config: VotingConfig) -> anyhow::Result<()> {
     let ballot_box = BallotBox::restore(&identity.did, journal, restored)
         .map_err(|f| anyhow::anyhow!("restoring the journal: {} ({})", f.reason, f.local))?;
 
-    let state = Arc::new(AppState {
-        ballot_box: Mutex::new(ballot_box),
+    if !config.communities.allow_any && config.communities.allowed.is_empty() {
+        warn!(
+            "no [communities] configured: every registration is refused. Name the communities \
+             this box serves in [communities] allowed"
+        );
+    }
+    let state = Arc::new(AppState::new(
+        ballot_box,
         identity,
-        resolver: vti_common::auth::TrustTaskVmResolver::new(did_resolver.clone()),
-    });
+        vti_common::auth::TrustTaskVmResolver::new(did_resolver.clone()),
+        config.communities.clone(),
+    ));
 
     let (stop, stopped) = watch::channel(false);
     let session = session_keys.map(|(mediator_did, secrets)| {

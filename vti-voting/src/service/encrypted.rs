@@ -461,29 +461,141 @@ impl ElectionRecord {
         Ok(())
     }
 
-    /// CONVENTIONS §9.5: the election and manifest are this one's, the questions are the
-    /// manifest's in order, one ciphertext per option, and every proof verifies under the cast's
-    /// `tag` (§9.3).
-    fn check_encrypted_ballot(&self, enc: &Value, tag: &str) -> Result<(), Failure> {
-        let invalid = |why: String| Failure::task("ballotInvalid", why);
-        if enc["electionId"].as_str() != Some(self.id())
-            || rules::digest_from_multibase(enc["manifestDigest"].as_str().unwrap_or_default())
-                != Some(self.digest)
-        {
-            return Err(invalid("another election's ballot".into()));
-        }
+    /// What [`TalliedCheck::run`] needs of this election to check `enc`, cast under `tag`.
+    fn tallied_check(&self, enc: &Value, tag: &str) -> Result<TalliedCheck, Failure> {
         let key = self
             .ceremony
             .as_ref()
             .and_then(|c| c.key())
             .ok_or_else(|| Failure::task("notOpen", "the election key is not formed"))?;
+        Ok(TalliedCheck {
+            key: key.clone(),
+            election_id: self.id().to_string(),
+            digest: self.digest,
+            questions: self.manifest.questions.clone(),
+            ctx: cast_ctx(&self.ctx, tag),
+            enc: enc.clone(),
+        })
+    }
+
+    /// Every check of an encrypted cast but the costly ones, cheapest first (VTI-VOT-045).
+    fn encrypted_cast(&self, cast_value: &Value) -> Result<EncryptedCast, Failure> {
+        let sealed_level = self.manifest.secrecy == register::SecrecyLevel::Sealed;
+        let tallied_level = self.manifest.secrecy == register::SecrecyLevel::TalliedEncrypted;
+        if !((sealed_level && cast_value.get("sealed").is_some())
+            || (tallied_level && cast_value.get("encrypted").is_some()))
+        {
+            return Err(Failure::task(
+                "wrongLevel",
+                "not this election's form of cast",
+            ));
+        }
+        if self.state != State::Voting || self.ceremony.as_ref().and_then(|c| c.key()).is_none() {
+            return Err(Failure::task(
+                "notOpen",
+                "voting is not open, or the election key is not formed",
+            ));
+        }
+        let cast_digest: [u8; 32] = Sha256::digest(jcs(cast_value)?).into();
+        if let Some(a) = self.exact.get(&cast_digest) {
+            return Ok(EncryptedCast::Resend(a.clone()));
+        }
+        let (tag, ballot_digest, form) = self.read_encrypted(cast_value)?;
+        self.refuse_copy(&form, &tag)?;
+        let tallied = if tallied_level {
+            Some(self.tallied_check(&cast_value["encrypted"], &tag)?)
+        } else {
+            None
+        };
+        let held = self.encrypted.get(&tag).map(|(a, _)| a.clone());
+        if self.manifest.revote != register::Revote::Replace
+            && held
+                .as_ref()
+                .is_some_and(|a| a.ballot_digest != ballot_digest)
+        {
+            return Err(Failure::task(
+                "alreadyVoted",
+                "a different ballot is counted",
+            ));
+        }
+        let bound = jcs(cast_value.get("sealed").unwrap_or(&cast_value["encrypted"]))?;
+        let attestation =
+            vti_vetting_pcs::scheme::dec(cast_value["attestation"].as_str().unwrap_or_default())
+                .map_err(|_| Failure::task("castInvalid", "the attestation cannot be decoded"))?;
+        let attestation = Cast { attestation };
+        if attestation
+            .tag()
+            .map_err(|err| Failure::malformed(err.to_string()))?
+            != tag
+        {
+            return Err(Failure::task(
+                "castInvalid",
+                "tag differs from the attestation's",
+            ));
+        }
+        Ok(EncryptedCast::New {
+            cast_digest,
+            ballot_digest,
+            tag,
+            form,
+            held,
+            check: Box::new(CastCheck {
+                election: self.key(),
+                cast_digest,
+                verifier: Arc::clone(&self.verifier),
+                attestation,
+                bound,
+                open: false,
+                tallied,
+            }),
+        })
+    }
+}
+
+/// What the cheap checks of an encrypted cast found.
+enum EncryptedCast {
+    /// The same cast is on the board: its first receipt.
+    Resend(Admitted),
+    New {
+        cast_digest: [u8; 32],
+        ballot_digest: [u8; 32],
+        tag: String,
+        form: Encrypted,
+        held: Option<Admitted>,
+        check: Box<CastCheck>,
+    },
+}
+
+/// A tallied-encrypted ballot's proofs, checked without the ballot box (CONVENTIONS §9.5): the
+/// election and manifest are this one's, the questions are the manifest's in order, one
+/// ciphertext per option, and every proof verifies under the cast's `tag` (§9.3).
+pub(super) struct TalliedCheck {
+    key: crate::trustees::ElectionKey,
+    election_id: String,
+    digest: [u8; 32],
+    questions: Vec<register::Question>,
+    /// The cast's context: the election's, bound to its tag.
+    ctx: Vec<u8>,
+    enc: Value,
+}
+
+impl TalliedCheck {
+    pub(super) fn run(&self) -> Result<(), Failure> {
+        let invalid = |why: String| Failure::task("ballotInvalid", why);
+        let enc = &self.enc;
+        if enc["electionId"].as_str() != Some(self.election_id.as_str())
+            || rules::digest_from_multibase(enc["manifestDigest"].as_str().unwrap_or_default())
+                != Some(self.digest)
+        {
+            return Err(invalid("another election's ballot".into()));
+        }
         let given = enc["questions"].as_array().map_or(&[][..], Vec::as_slice);
-        if given.len() != self.manifest.questions.len() {
+        if given.len() != self.questions.len() {
             return Err(invalid(
                 "not one encrypted question per manifest question".into(),
             ));
         }
-        for (q, v) in self.manifest.questions.iter().zip(given) {
+        for (q, v) in self.questions.iter().zip(given) {
             let register::Question::Choice {
                 min_selections,
                 max_selections,
@@ -509,11 +621,11 @@ impl ElectionRecord {
             )
             .map_err(|e| invalid(e.to_string()))?;
             verify_vote(
-                key,
+                &self.key,
                 &eq,
                 options.len(),
                 &counts,
-                &question_ctx(&cast_ctx(&self.ctx, tag), qkey),
+                &question_ctx(&self.ctx, qkey),
             )
             .map_err(|e| invalid(e.to_string()))?;
         }
@@ -821,7 +933,8 @@ impl BallotBox {
     }
 
     /// `voting/ballot/cast-encrypted` (VTI-VOT-040 – 045, 064). Admission is the open cast's,
-    /// with the attestation over the encrypted form's JCS bytes.
+    /// with the attestation over the encrypted form's JCS bytes. Runs the costly checks in
+    /// place, as [`Self::cast`] does.
     ///
     /// # Errors
     /// `electionUnknown`, `wrongLevel`, `notOpen`, `ballotInvalid`, `alreadyVoted`, `castInvalid`.
@@ -830,63 +943,65 @@ impl BallotBox {
         payload: &Value,
         now: DateTime<Utc>,
     ) -> Result<Value, Failure> {
+        self.cast_encrypted_with(payload, None, now)
+    }
+
+    /// The cheap half of [`Self::cast_encrypted`], as [`Self::cast_check`] is of
+    /// [`Self::cast`]: the costly half is the ballot's proofs and the attestation's pairing.
+    ///
+    /// # Errors
+    /// As [`Self::cast_encrypted`], but for the costly checks' `ballotInvalid` and
+    /// `castInvalid`.
+    pub fn cast_encrypted_check(
+        &mut self,
+        payload: &Value,
+        now: DateTime<Utc>,
+    ) -> Result<Option<CastCheck>, Failure> {
+        let p: cast_encrypted::Payload = parse_payload(payload)?;
+        let e = self.election(p.community.as_str(), p.election_id.as_str(), now)?;
+        Ok(match e.encrypted_cast(&payload["cast"])? {
+            EncryptedCast::Resend(_) => None,
+            EncryptedCast::New { check, .. } => Some(*check),
+        })
+    }
+
+    /// [`Self::cast_encrypted`] for a cast [`CastCheck::run`] proved.
+    ///
+    /// # Errors
+    /// As [`Self::cast_encrypted`].
+    pub fn cast_encrypted_verified(
+        &mut self,
+        payload: &Value,
+        verified: &VerifiedCast,
+        now: DateTime<Utc>,
+    ) -> Result<Value, Failure> {
+        self.cast_encrypted_with(payload, Some(verified), now)
+    }
+
+    fn cast_encrypted_with(
+        &mut self,
+        payload: &Value,
+        verified: Option<&VerifiedCast>,
+        now: DateTime<Utc>,
+    ) -> Result<Value, Failure> {
         let p: cast_encrypted::Payload = parse_payload(payload)?;
         let e = self.election(p.community.as_str(), p.election_id.as_str(), now)?;
         let cast_value = &payload["cast"];
-        let sealed_level = e.manifest.secrecy == register::SecrecyLevel::Sealed;
-        let tallied_level = e.manifest.secrecy == register::SecrecyLevel::TalliedEncrypted;
-        if !((sealed_level && cast_value.get("sealed").is_some())
-            || (tallied_level && cast_value.get("encrypted").is_some()))
-        {
-            return Err(Failure::task(
-                "wrongLevel",
-                "not this election's form of cast",
-            ));
+        let (cast_digest, ballot_digest, tag, form, held, check) =
+            match e.encrypted_cast(cast_value)? {
+                EncryptedCast::Resend(a) => return encrypted_receipt(e, &a, "alreadyCounted", now),
+                EncryptedCast::New {
+                    cast_digest,
+                    ballot_digest,
+                    tag,
+                    form,
+                    held,
+                    check,
+                } => (cast_digest, ballot_digest, tag, form, held, check),
+            };
+        if !verified.is_some_and(|v| v.covers(&e.key(), &cast_digest)) {
+            (*check).run()?;
         }
-        if e.state != State::Voting || e.ceremony.as_ref().and_then(|c| c.key()).is_none() {
-            return Err(Failure::task(
-                "notOpen",
-                "voting is not open, or the election key is not formed",
-            ));
-        }
-        let cast_digest: [u8; 32] = Sha256::digest(jcs(cast_value)?).into();
-        if let Some(a) = e.exact.get(&cast_digest).cloned() {
-            return encrypted_receipt(e, &a, "alreadyCounted", now);
-        }
-        let (tag, ballot_digest, form) = e.read_encrypted(cast_value)?;
-        e.refuse_copy(&form, &tag)?;
-        if tallied_level {
-            e.check_encrypted_ballot(&cast_value["encrypted"], &tag)?;
-        }
-        let held = e.encrypted.get(&tag).map(|(a, _)| a.clone());
-        if e.manifest.revote != register::Revote::Replace
-            && held
-                .as_ref()
-                .is_some_and(|a| a.ballot_digest != ballot_digest)
-        {
-            return Err(Failure::task(
-                "alreadyVoted",
-                "a different ballot is counted",
-            ));
-        }
-        let bound = jcs(cast_value.get("sealed").unwrap_or(&cast_value["encrypted"]))?;
-        let attestation =
-            vti_vetting_pcs::scheme::dec(cast_value["attestation"].as_str().unwrap_or_default())
-                .map_err(|_| Failure::task("castInvalid", "the attestation cannot be decoded"))?;
-        let parsed = Cast { attestation };
-        if parsed
-            .tag()
-            .map_err(|err| Failure::malformed(err.to_string()))?
-            != tag
-        {
-            return Err(Failure::task(
-                "castInvalid",
-                "tag differs from the attestation's",
-            ));
-        }
-        e.verifier
-            .verify(&parsed, &bound)
-            .map_err(|err| Failure::task("castInvalid", err.to_string()))?;
         if let Some(a) = held.as_ref().filter(|a| a.ballot_digest == ballot_digest) {
             return encrypted_receipt(e, a, "alreadyCounted", now);
         }

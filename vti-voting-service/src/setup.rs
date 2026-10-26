@@ -294,6 +294,7 @@ pub async fn run_from_file(path: &Path) -> anyhow::Result<()> {
             did: did.clone(),
             mediator_did: inputs.mediator_did.clone(),
         }),
+        communities: Default::default(),
     };
     config.validate()?;
     if let Some(parent) = inputs
@@ -322,6 +323,11 @@ pub async fn run_from_file(path: &Path) -> anyhow::Result<()> {
         "The setup DID {} keeps its grant until --admin-expires; remove it sooner with \
          `pnm acl delete --did {}`.",
         setup_key.did, setup_key.did
+    );
+    println!(
+        "It registers no community's elections until you name them in {}:\n  [communities]\n  \
+         allowed = [\"<community DID>\"]",
+        inputs.config_path.display()
     );
     println!(
         "Start the service: vti-voting-service run --config {}",

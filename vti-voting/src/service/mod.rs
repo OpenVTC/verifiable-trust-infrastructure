@@ -284,6 +284,87 @@ impl std::fmt::Debug for Admitted {
     }
 }
 
+/// A cast's costly checks — the attestation's pairing and, for a tallied-encrypted ballot, its
+/// proofs — taken out of the ballot box, so a service holding it behind a lock runs them without
+/// the lock (VTI-VOT-045). Made by [`BallotBox::cast_check`] or
+/// [`BallotBox::cast_encrypted_check`]; only [`CastCheck::run`] turns one into a
+/// [`VerifiedCast`].
+pub struct CastCheck {
+    election: (String, String),
+    cast_digest: [u8; 32],
+    verifier: Arc<Verifier<MemoryNullifiers>>,
+    attestation: Cast,
+    /// The bytes the attestation binds: the ballot's JCS form, or the encrypted form's.
+    bound: Vec<u8>,
+    /// Open casts tell a ticket of another election apart (`classMismatch`); encrypted ones
+    /// answer `castInvalid` for every attestation failure.
+    open: bool,
+    tallied: Option<encrypted::TalliedCheck>,
+}
+
+impl std::fmt::Debug for CastCheck {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CastCheck")
+            .field("election", &self.election)
+            .finish_non_exhaustive()
+    }
+}
+
+impl CastCheck {
+    /// Run the costly checks. Needs nothing of the ballot box.
+    ///
+    /// # Errors
+    /// `ballotInvalid` for a tallied-encrypted ballot whose proofs fail; `classMismatch` or
+    /// `castInvalid` for an attestation that does not verify.
+    pub fn run(self) -> Result<VerifiedCast, Failure> {
+        if let Some(t) = &self.tallied {
+            t.run()?;
+        }
+        let open = self.open;
+        self.verifier
+            .verify(&self.attestation, &self.bound)
+            .map_err(|err| match err {
+                crate::VotingError::WrongClass if open => {
+                    Failure::task("classMismatch", err.to_string())
+                }
+                _ => Failure::task("castInvalid", err.to_string()),
+            })?;
+        Ok(VerifiedCast {
+            election: self.election,
+            cast_digest: self.cast_digest,
+        })
+    }
+}
+
+/// A cast whose costly checks passed: what [`BallotBox::cast_verified`] and
+/// [`BallotBox::cast_encrypted_verified`] admit without running them again. It names the cast
+/// by its digest, so it admits that cast and no other.
+#[derive(Debug, Clone)]
+pub struct VerifiedCast {
+    election: (String, String),
+    cast_digest: [u8; 32],
+}
+
+impl VerifiedCast {
+    fn covers(&self, election: &(String, String), cast_digest: &[u8; 32]) -> bool {
+        &self.election == election && &self.cast_digest == cast_digest
+    }
+}
+
+/// What the cheap checks of an open cast found.
+enum OpenCast {
+    /// The same cast is on the board: its first receipt (VTI-VOT-042).
+    Resend(Admitted),
+    New {
+        cast_digest: [u8; 32],
+        ballot_digest: [u8; 32],
+        ballot_jcs: Vec<u8>,
+        tag: String,
+        held: Option<Admitted>,
+        attestation: Box<Cast>,
+    },
+}
+
 struct ElectionRecord {
     community: String,
     journal: Arc<dyn Journal>,
@@ -291,7 +372,8 @@ struct ElectionRecord {
     manifest_value: Value,
     digest: [u8; 32],
     parameters: Value,
-    verifier: Verifier<MemoryNullifiers>,
+    /// Shared, so a cast's pairing check runs on it without the ballot box ([`CastCheck`]).
+    verifier: Arc<Verifier<MemoryNullifiers>>,
     state: State,
     board: Board,
     entries: Vec<Vec<u8>>,
@@ -320,6 +402,27 @@ struct ElectionRecord {
     /// The decryption round, once an encrypted election has closed with its key formed.
     decryption: Option<Decryption<Target>>,
     result: Option<Value>,
+}
+
+/// The most entry bytes one `voting/board/read` page carries, unless its one entry is larger: a
+/// board of large entries (encrypted casts, trustees' steps) is read in more pages, never one
+/// unbounded answer.
+pub const READ_PAGE_BYTES: usize = 256 * 1024;
+
+/// Where a page from `from` ends: at `last`, or before the entry that would take it past
+/// `budget` bytes — fewer entries than `limit`, which read item 4 allows — but never before one.
+fn page_end(entries: &[Vec<u8>], from: u64, last: u64, budget: usize) -> u64 {
+    let mut bytes = 0usize;
+    let mut end = from;
+    while end < last {
+        let len = entries[end as usize].len();
+        if end > from && bytes + len > budget {
+            break;
+        }
+        bytes += len;
+        end += 1;
+    }
+    end
 }
 
 /// The ballot box: its own DID, its journal and the elections it holds.
@@ -383,6 +486,68 @@ fn same(a: &str, b: &str) -> bool {
 impl ElectionRecord {
     fn id(&self) -> &str {
         self.manifest.election_id.as_str()
+    }
+
+    /// The key it is held under.
+    fn key(&self) -> (String, String) {
+        (self.community.clone(), self.id().to_string())
+    }
+
+    /// Every check of an open cast but the pairing, cheapest first (VTI-VOT-045): state, then
+    /// form, then the tag and the revote rule.
+    fn open_cast(&self, p: &cast::Payload, payload: &Value) -> Result<OpenCast, Failure> {
+        if self.ceremony.is_some() {
+            return Err(Failure::malformed(
+                "a sealed or tallied-encrypted election is cast with voting/ballot/cast-encrypted",
+            ));
+        }
+        if self.state != State::Voting {
+            return Err(Failure::task("notOpen", "voting is not open"));
+        }
+        rules::check_ballot(&self.manifest, &self.digest, &p.cast.ballot)?;
+        let cast_value = &payload["cast"];
+        let cast_digest: [u8; 32] = Sha256::digest(jcs(cast_value)?).into();
+        let ballot_jcs = jcs(&cast_value["ballot"])?;
+        let ballot_digest: [u8; 32] = Sha256::digest(&ballot_jcs).into();
+        let tag = p.cast.tag.as_str().to_string();
+
+        // A resend of a cast already on the board: its first receipt, unverified again
+        // (VTI-VOT-042). Replaying an old cast never undoes a revote.
+        if let Some(a) = self.exact.get(&cast_digest) {
+            return Ok(OpenCast::Resend(a.clone()));
+        }
+        let held = self.counted.get(&tag).map(|(a, _)| a.clone());
+        if self.manifest.revote != register::Revote::Replace
+            && held
+                .as_ref()
+                .is_some_and(|a| a.ballot_digest != ballot_digest)
+        {
+            return Err(Failure::task(
+                "alreadyVoted",
+                "a different ballot is counted",
+            ));
+        }
+        let attestation = vti_vetting_pcs::scheme::dec(p.cast.attestation.as_str())
+            .map_err(|_| Failure::task("castInvalid", "the attestation cannot be decoded"))?;
+        let attestation = Cast { attestation };
+        if attestation
+            .tag()
+            .map_err(|e| Failure::malformed(e.to_string()))?
+            != tag
+        {
+            return Err(Failure::task(
+                "castInvalid",
+                "tag differs from the attestation's",
+            ));
+        }
+        Ok(OpenCast::New {
+            cast_digest,
+            ballot_digest,
+            ballot_jcs,
+            tag,
+            held,
+            attestation: Box::new(attestation),
+        })
     }
 
     fn head(&self, size: usize, now: DateTime<Utc>) -> Value {
@@ -621,7 +786,7 @@ impl BallotBox {
             manifest_value,
             digest,
             parameters,
-            verifier,
+            verifier: Arc::new(verifier),
             state: State::Registered,
             board: Board::new(),
             entries: Vec::new(),
@@ -642,6 +807,25 @@ impl BallotBox {
 
     pub fn did(&self) -> &str {
         &self.did
+    }
+
+    /// Whether `community`'s election `election_id` is registered here.
+    #[must_use]
+    pub fn holds(&self, community: &str, election_id: &str) -> bool {
+        self.elections
+            .contains_key(&(community.to_string(), election_id.to_string()))
+    }
+
+    /// How many of `community`'s elections are neither tallied nor cancelled: the work a
+    /// registration quota bounds.
+    #[must_use]
+    pub fn unfinished(&self, community: &str) -> usize {
+        self.elections
+            .iter()
+            .filter(|((c, _), e)| {
+                c == community && !matches!(e.state, State::Tallied | State::Cancelled)
+            })
+            .count()
     }
 
     fn election(
@@ -791,70 +975,106 @@ impl BallotBox {
     }
 
     /// `voting/ballot/cast` (VTI-VOT-040 – 045). The signer is a one-time key and plays no part.
+    /// Runs the costly checks in place: a service holding the ballot box behind a lock runs them
+    /// without it, through [`Self::cast_check`] and [`Self::cast_verified`].
     ///
     /// # Errors
     /// `electionUnknown`, `notOpen`, `manifestMismatch`, `ballotInvalid`, `classMismatch`,
     /// `alreadyVoted`, `castInvalid`.
     pub fn cast(&mut self, payload: &Value, now: DateTime<Utc>) -> Result<Value, Failure> {
+        self.cast_with(payload, None, now)
+    }
+
+    /// The cheap half of [`Self::cast`]: every check but the attestation's pairing, and what
+    /// that one needs to run without the ballot box ([`CastCheck::run`]). `None` when the cast
+    /// needs no costly check — a resend of one on the board — and [`Self::cast`] answers it.
+    ///
+    /// # Errors
+    /// As [`Self::cast`], but for the pairing's `classMismatch` and `castInvalid`.
+    pub fn cast_check(
+        &mut self,
+        payload: &Value,
+        now: DateTime<Utc>,
+    ) -> Result<Option<CastCheck>, Failure> {
         let p: cast::Payload = parse_payload(payload)?;
         let e = self.election(p.community.as_str(), p.election_id.as_str(), now)?;
-        if e.ceremony.is_some() {
-            return Err(Failure::malformed(
-                "a sealed or tallied-encrypted election is cast with voting/ballot/cast-encrypted",
-            ));
-        }
-        // Cheapest first (VTI-VOT-045): state, then form, then class and tag, then the pairing.
-        if e.state != State::Voting {
-            return Err(Failure::task("notOpen", "voting is not open"));
-        }
-        rules::check_ballot(&e.manifest, &e.digest, &p.cast.ballot)?;
-        let cast_value = &payload["cast"];
-        let cast_jcs = jcs(cast_value)?;
-        let cast_digest: [u8; 32] = Sha256::digest(&cast_jcs).into();
-        let ballot_jcs = jcs(&cast_value["ballot"])?;
-        let ballot_digest: [u8; 32] = Sha256::digest(&ballot_jcs).into();
-        let tag = p.cast.tag.as_str().to_string();
+        Ok(match e.open_cast(&p, payload)? {
+            OpenCast::Resend(_) => None,
+            OpenCast::New {
+                cast_digest,
+                ballot_jcs,
+                attestation,
+                ..
+            } => Some(CastCheck {
+                election: e.key(),
+                cast_digest,
+                verifier: Arc::clone(&e.verifier),
+                attestation: *attestation,
+                bound: ballot_jcs,
+                open: true,
+                tallied: None,
+            }),
+        })
+    }
 
-        // A resend of a cast already on the board: its first receipt, unverified again
-        // (VTI-VOT-042). Replaying an old cast never undoes a revote.
-        if let Some(a) = e.exact.get(&cast_digest).cloned() {
-            return receipt(e, &a, "alreadyCounted", now);
-        }
-        let held = e.counted.get(&tag).map(|(a, _)| a.clone());
-        if e.manifest.revote != register::Revote::Replace
-            && held
-                .as_ref()
-                .is_some_and(|a| a.ballot_digest != ballot_digest)
-        {
-            return Err(Failure::task(
-                "alreadyVoted",
-                "a different ballot is counted",
-            ));
-        }
+    /// [`Self::cast`] for a cast [`CastCheck::run`] proved: every cheap check again, against
+    /// the ballot box as it is now, and the costly ones not again.
+    ///
+    /// # Errors
+    /// As [`Self::cast`].
+    pub fn cast_verified(
+        &mut self,
+        payload: &Value,
+        verified: &VerifiedCast,
+        now: DateTime<Utc>,
+    ) -> Result<Value, Failure> {
+        self.cast_with(payload, Some(verified), now)
+    }
 
-        let attestation = vti_vetting_pcs::scheme::dec(p.cast.attestation.as_str())
-            .map_err(|_| Failure::task("castInvalid", "the attestation cannot be decoded"))?;
-        let parsed = Cast { attestation };
-        if parsed
-            .tag()
-            .map_err(|e| Failure::malformed(e.to_string()))?
-            != tag
-        {
-            return Err(Failure::task(
-                "castInvalid",
-                "tag differs from the attestation's",
-            ));
+    fn cast_with(
+        &mut self,
+        payload: &Value,
+        verified: Option<&VerifiedCast>,
+        now: DateTime<Utc>,
+    ) -> Result<Value, Failure> {
+        let p: cast::Payload = parse_payload(payload)?;
+        let e = self.election(p.community.as_str(), p.election_id.as_str(), now)?;
+        let (cast_digest, ballot_digest, ballot_jcs, tag, held, attestation) =
+            match e.open_cast(&p, payload)? {
+                OpenCast::Resend(a) => return receipt(e, &a, "alreadyCounted", now),
+                OpenCast::New {
+                    cast_digest,
+                    ballot_digest,
+                    ballot_jcs,
+                    tag,
+                    held,
+                    attestation,
+                } => (
+                    cast_digest,
+                    ballot_digest,
+                    ballot_jcs,
+                    tag,
+                    held,
+                    attestation,
+                ),
+            };
+        if !verified.is_some_and(|v| v.covers(&e.key(), &cast_digest)) {
+            CastCheck {
+                election: e.key(),
+                cast_digest,
+                verifier: Arc::clone(&e.verifier),
+                attestation: *attestation,
+                bound: ballot_jcs,
+                open: true,
+                tallied: None,
+            }
+            .run()?;
         }
-        e.verifier
-            .verify(&parsed, &ballot_jcs)
-            .map_err(|err| match err {
-                crate::VotingError::WrongClass => Failure::task("classMismatch", err.to_string()),
-                _ => Failure::task("castInvalid", err.to_string()),
-            })?;
 
         if let Some(a) = held.as_ref().filter(|a| a.ballot_digest == ballot_digest) {
             return receipt(e, a, "alreadyCounted", now);
         }
+        let cast_value = &payload["cast"];
         let mut token = [0u8; 32];
         rand::rngs::OsRng.fill_bytes(&mut token);
         let receipt_token = multibase::encode(multibase::Base::Base58Btc, token);
@@ -926,7 +1146,8 @@ impl BallotBox {
         if size > e.board.len() as u64 || p.from > size {
             return Err(Failure::task("outOfRange", "beyond the board"));
         }
-        let end = size.min(p.from.saturating_add(p.limit.get()));
+        let last = size.min(p.from.saturating_add(p.limit.get()));
+        let end = page_end(&e.entries, p.from, last, READ_PAGE_BYTES);
         let entries = (p.from..end)
             .map(|i| {
                 let entry: Value = serde_json::from_slice(&e.entries[i as usize])
@@ -1045,4 +1266,22 @@ fn receipt(
         "head": e.head(e.board.len(), now),
         "receiptToken": a.receipt_token,
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::page_end;
+
+    #[test]
+    fn a_page_stops_at_its_byte_budget_but_never_before_one_entry() {
+        let entries = vec![vec![0u8; 40], vec![0u8; 40], vec![0u8; 40], vec![0u8; 200]];
+        // Two fit in 100 bytes; a third would not.
+        assert_eq!(page_end(&entries, 0, 4, 100), 2);
+        // The count still bounds it.
+        assert_eq!(page_end(&entries, 0, 1, 100), 1);
+        // One entry larger than the budget is still a page of one.
+        assert_eq!(page_end(&entries, 3, 4, 100), 4);
+        // From the end: an empty page.
+        assert_eq!(page_end(&entries, 4, 4, 100), 4);
+    }
 }

@@ -10,16 +10,42 @@ use chrono::Utc;
 use serde_json::Value;
 use trust_tasks_rs::{ErrorPayload, TrustTask, TrustTaskCode};
 use uuid::Uuid;
-use vti_voting::service::{BallotBox, Caller, Failure};
+use vti_voting::service::{BallotBox, Caller, Failure, VerifiedCast};
 
+use crate::config::CommunitiesConfig;
 use crate::identity::Identity;
 
 const SPEC: &str = "https://trusttasks.org/spec/";
 
 pub struct AppState {
+    /// Held only for what reads or changes it: a cast's costly checks run without it.
     pub ballot_box: Mutex<BallotBox>,
     pub identity: Identity,
     pub resolver: vti_common::auth::TrustTaskVmResolver,
+    /// Whose elections are registered, and how many each may hold open.
+    pub communities: CommunitiesConfig,
+    /// One permit per cast being checked: the checks run on blocking threads, never more at
+    /// once than the machine has cores.
+    pub cast_checks: tokio::sync::Semaphore,
+}
+
+impl AppState {
+    #[must_use]
+    pub fn new(
+        ballot_box: BallotBox,
+        identity: Identity,
+        resolver: vti_common::auth::TrustTaskVmResolver,
+        communities: CommunitiesConfig,
+    ) -> Self {
+        let cores = std::thread::available_parallelism().map_or(1, std::num::NonZero::get);
+        Self {
+            ballot_box: Mutex::new(ballot_box),
+            identity,
+            resolver,
+            communities,
+            cast_checks: tokio::sync::Semaphore::new(cores),
+        }
+    }
 }
 
 impl std::fmt::Debug for AppState {
@@ -344,30 +370,47 @@ pub async fn answer(state: &AppState, body: &[u8], transport_sender: Option<&str
         .await;
     }
 
+    // A cast's costly checks — the pairing, a tallied ballot's proofs — run without the ballot
+    // box, so one sender's casts never hold up every other community's tasks (VTI-VOT-045).
+    let verified = match task {
+        Task::Cast | Task::CastEncrypted => {
+            match check_cast(state, task, &doc.payload, now).await {
+                Ok(v) => v,
+                Err(f) => return refuse_failure(state, &doc, task, f).await,
+            }
+        }
+        _ => None,
+    };
+
     // The ballot box is synchronous: hold its lock for the call and never across an await.
     let outcome = 'locked: {
         let Ok(mut bb) = state.ballot_box.lock() else {
-            break 'locked Err(Failure {
-                local: "internalError",
-                standard: true,
-                reason: "ballot box unavailable".into(),
-            });
+            break 'locked Err(box_unavailable());
         };
         let caller = signer.as_deref().map_or(Caller::Anonymous, Caller::Did);
         let signer_did = signer.as_deref().unwrap_or_default();
         let p = &doc.payload;
         match task {
-            Task::Register => bb.register(signer_did, p, now),
+            Task::Register => match registration_refused(state, &bb, signer_did, p) {
+                Some(f) => Err(f),
+                None => bb.register(signer_did, p, now),
+            },
             Task::Show => bb.show(caller, p, now),
             Task::Close => bb.close(signer_did, p, now),
             Task::Cancel => bb.cancel(signer_did, p, now),
-            Task::Cast => bb.cast(p, now),
+            Task::Cast => match &verified {
+                Some(v) => bb.cast_verified(p, v, now),
+                None => bb.cast(p, now),
+            },
             Task::Head => bb.board_head(caller, p, now),
             Task::Read => bb.board_read(caller, p, now),
             Task::Inclusion => bb.board_inclusion(caller, p, now),
             Task::Consistency => bb.board_consistency(caller, p, now),
             Task::Result => bb.result(caller, p, now),
-            Task::CastEncrypted => bb.cast_encrypted(p, now),
+            Task::CastEncrypted => match &verified {
+                Some(v) => bb.cast_encrypted_verified(p, v, now),
+                None => bb.cast_encrypted(p, now),
+            },
             // A trustee's step goes on the board as the request received, proof included
             // (CONVENTIONS §9.6).
             Task::Enrol => bb.trustees_enrol(signer_did, &received, now),
@@ -387,20 +430,95 @@ pub async fn answer(state: &AppState, body: &[u8], transport_sender: Option<&str
             let value = serde_json::to_value(&response).unwrap_or(Value::Null);
             signed(state, StatusCode::OK, value).await
         }
-        Err(Failure {
-            local,
-            standard: is_standard,
-            reason,
-            ..
-        }) => {
-            let code = if is_standard {
-                standard(local)
-            } else {
-                TrustTaskCode::new_extended(task.slug(), local)
-                    .unwrap_or_else(|_| standard("taskFailed"))
-            };
-            tracing::info!(task = task.slug(), code = %code, %reason, "refused");
-            refuse(state, &doc, code, &reason).await
-        }
+        Err(f) => refuse_failure(state, &doc, task, f).await,
     }
+}
+
+/// Answer a refusal the ballot box reported, under `task`'s own code where it is not standard.
+async fn refuse_failure(
+    state: &AppState,
+    doc: &TrustTask<Value>,
+    task: Task,
+    Failure {
+        local,
+        standard: is_standard,
+        reason,
+        ..
+    }: Failure,
+) -> Answer {
+    let code = if is_standard {
+        standard(local)
+    } else {
+        TrustTaskCode::new_extended(task.slug(), local).unwrap_or_else(|_| standard("taskFailed"))
+    };
+    tracing::info!(task = task.slug(), code = %code, %reason, "refused");
+    refuse(state, doc, code, &reason).await
+}
+
+fn box_unavailable() -> Failure {
+    Failure {
+        local: "internalError",
+        standard: true,
+        reason: "ballot box unavailable".into(),
+    }
+}
+
+/// A cast's cheap checks under the lock, then its costly ones on a blocking thread without it.
+/// `None` when the cast needs none (a resend), and the ballot box answers it as it is.
+async fn check_cast(
+    state: &AppState,
+    task: Task,
+    payload: &Value,
+    now: chrono::DateTime<Utc>,
+) -> Result<Option<VerifiedCast>, Failure> {
+    let check = {
+        let mut bb = state.ballot_box.lock().map_err(|_| box_unavailable())?;
+        if task == Task::Cast {
+            bb.cast_check(payload, now)?
+        } else {
+            bb.cast_encrypted_check(payload, now)?
+        }
+    };
+    let Some(check) = check else {
+        return Ok(None);
+    };
+    let _permit = state
+        .cast_checks
+        .acquire()
+        .await
+        .map_err(|_| box_unavailable())?;
+    tokio::task::spawn_blocking(move || check.run())
+        .await
+        .map_err(|_| box_unavailable())?
+        .map(Some)
+}
+
+/// Why a registration is refused before the ballot box looks at it: a community this box does
+/// not serve (`permissionDenied`), or one already holding its quota of unfinished elections
+/// (`unavailable`: it succeeds once one finishes). A repeat of a registration already held is
+/// never refused here — it answers as it did.
+fn registration_refused(
+    state: &AppState,
+    bb: &BallotBox,
+    signer: &str,
+    payload: &Value,
+) -> Option<Failure> {
+    if !state.communities.admits(signer) {
+        return Some(Failure {
+            local: "permissionDenied",
+            standard: true,
+            reason: "this ballot box does not register this community's elections".into(),
+        });
+    }
+    let election_id = payload["manifest"]["electionId"]
+        .as_str()
+        .unwrap_or_default();
+    if !bb.holds(signer, election_id) && bb.unfinished(signer) >= state.communities.max_unfinished {
+        return Some(Failure {
+            local: "unavailable",
+            standard: true,
+            reason: "this community holds as many unfinished elections here as it may".into(),
+        });
+    }
+    None
 }

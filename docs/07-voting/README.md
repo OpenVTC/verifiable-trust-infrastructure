@@ -101,6 +101,11 @@ backend = "keyring"
 [identity]
 did          = "did:webvh:Qm…:ballots.example.net"
 mediator_did = "did:webvh:Qm…:mediator.example"
+
+[communities]                     # added by you: setup leaves it out
+allowed        = ["did:webvh:Qm…:vtc.example.org"]
+# allow_any    = true             # an open box: any community's elections (never with allowed)
+# max_unfinished = 20             # default
 ```
 
 | Key | Meaning |
@@ -111,6 +116,7 @@ mediator_did = "did:webvh:Qm…:mediator.example"
 | `resolver_url` | Optional DID resolver sidecar. |
 | `[secrets]` | The identity's keys, with the same backends as the VTA and VTC. |
 | `[identity]` | The provisioned DID and its mediator. Without it the service runs as a test `did:key` over HTTPS only, which no community can reach. |
+| `[communities]` | Whose elections it registers: the community DIDs in `allowed`, or any with `allow_any = true`. **Without it, none**: a box anyone can register with is a store anyone can fill. `max_unfinished` bounds each community's elections not yet tallied or cancelled; a registration past it is answered `unavailable`, and the VTC delivers it again until one finishes. |
 
 Every key is checked: an unknown one is a load error, never a silently ignored setting.
 
@@ -134,8 +140,9 @@ service itself does neither.
 
 ## Letting a community use it
 
-The community's operator adds the ballot box to the VTC's `config.toml`, and restarts it.
-This is host configuration, never a Trust Task (VTI-VOT-082):
+The box's operator adds the community's DID to `[communities] allowed` and restarts the
+service. The community's operator adds the ballot box to the VTC's `config.toml`, and restarts
+it. Both are host configuration, never a Trust Task (VTI-VOT-082):
 
 ```toml
 [[voting.trusted_ballot_boxes]]
@@ -187,6 +194,13 @@ What the service refuses before reading a request:
 
 And when it reads a cast: an encrypted form whose ciphertexts are already on the board under
 another tag (a copied ballot).
+
+**Limits.** A registration from a community not in `[communities]` is `permissionDenied`, and
+one past `max_unfinished` is `unavailable`. A cast's costly checks — the attestation's pairing
+and a tallied ballot's proofs — run on blocking threads, at most one per core, without the lock
+over the boxes, so a flood of casts never holds up another community's registration, read or
+trustee step. A `voting/board/read` page carries at most 256 KiB of entries (always at least
+one), fewer than `limit` where entries are large; `next` says where to continue.
 
 ## A first poll
 

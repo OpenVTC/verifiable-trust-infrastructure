@@ -23,7 +23,7 @@
 //! `did:peer` naming it as `TrustTaskHTTPS` — so the client finds the door the way it would in
 //! a deployment, from the ballot box's DID document.
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use affinidi_tdk::dids::{
     DID, KeyType, OneOrMany, PeerKeyRole, PeerService, PeerServiceEndpoint, PeerServiceEndpointLong,
@@ -129,9 +129,9 @@ async fn trustees_run_a_sealed_election_on_a_private_board_from_pnm() {
         }]),
     )
     .unwrap();
-    let box_state = Arc::new(AppState {
-        ballot_box: Mutex::new(BallotBox::new(&box_did)),
-        identity: Identity {
+    let box_state = Arc::new(AppState::new(
+        BallotBox::new(&box_did),
+        Identity {
             did: box_did.clone(),
             key: vta_sdk::trust_task_sign::HolderKey::new(
                 box_secrets[0].id.clone(),
@@ -139,8 +139,9 @@ async fn trustees_run_a_sealed_election_on_a_private_board_from_pnm() {
             )
             .unwrap(),
         },
-        resolver: vti_common::auth::TrustTaskVmResolver::did_key_only(),
-    });
+        vti_common::auth::TrustTaskVmResolver::did_key_only(),
+        vti_voting_service::config::CommunitiesConfig::any(),
+    ));
     let server = tokio::spawn(axum::serve(listener, router(box_state.clone())).into_future());
 
     // The community registers a sealed election on a private board, voting a little ahead so
