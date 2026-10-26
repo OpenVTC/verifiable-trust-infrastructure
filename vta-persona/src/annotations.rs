@@ -1,6 +1,6 @@
 //! The holder's **annotations** on a contact — a star, a petname, the holder's
 //! own lists, a directory link — and the lists themselves
-//! (`persona/contact/put/1.1`, `persona/contact/lists/*`).
+//! (`persona/contact/put/1.2`, `persona/contact/lists/*`).
 //!
 //! What the holder keeps *about* a contact, as distinct from what the contact
 //! disclosed, and so kept apart from it: annotations are **contact-level, not

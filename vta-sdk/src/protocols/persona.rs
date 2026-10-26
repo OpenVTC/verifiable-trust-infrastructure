@@ -261,7 +261,7 @@ pub struct LocalProfileEntry {
 // The pool — agent-scoped. `persona/attribute/*`
 // ---------------------------------------------------------------------------
 
-/// `spec/persona/attribute/put/1.0` — create or update one pool attribute.
+/// `spec/persona/attribute/put/1.1` — create or update one pool attribute.
 ///
 /// Omit [`attribute_id`](Self::attribute_id) to create. Supplying one makes a
 /// create idempotent; supplying one that already exists is an update, and the
@@ -367,7 +367,7 @@ pub struct PersonaAttributeDeleteBody {
 // Profiles — agent-scoped. `persona/profile/*`
 // ---------------------------------------------------------------------------
 
-/// `spec/persona/profile/put/1.0` — create or update an agent-scoped profile.
+/// `spec/persona/profile/put/1.1` — create or update an agent-scoped profile.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PersonaProfilePutBody {
@@ -381,7 +381,7 @@ pub struct PersonaProfilePutBody {
     pub credential_refs: Vec<String>,
     /// Where the face may be worn. Omit to keep its current reach.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub reach: Option<trust_tasks_rs::specs::persona::profile::put::v1_0::FaceReach>,
+    pub reach: Option<trust_tasks_rs::specs::persona::profile::put::v1_1::FaceReach>,
     /// Address an existing profile, or make a create idempotent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub profile_id: Option<String>,
@@ -592,7 +592,7 @@ pub struct LocalInlineValue {
     pub label: Option<String>,
 }
 
-/// `spec/persona/contact/put/1.0` — record what a peer disclosed.
+/// `spec/persona/contact/put/1.2` — record what a peer disclosed.
 ///
 /// A new revision rather than an overwrite: the previous one is retained while
 /// anything still references it, so "what did they tell me in March" survives
@@ -621,7 +621,7 @@ pub struct PersonaContactPutBody {
     pub ext: Option<Value>,
 }
 
-/// `spec/persona/contact/get/1.0` — read one contact.
+/// `spec/persona/contact/get/1.1` — read one contact.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PersonaContactGetBody {
@@ -641,7 +641,7 @@ pub struct PersonaContactGetBody {
     pub ext: Option<Value>,
 }
 
-/// `spec/persona/contact/list/1.0` — enumerate contacts in one context.
+/// `spec/persona/contact/list/1.1` — enumerate contacts in one context.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PersonaContactListBody {
@@ -820,7 +820,7 @@ pub struct PersonaRenderersListBody {
 // Context-local profiles and bindings. `persona/local/*`
 // ---------------------------------------------------------------------------
 
-/// `spec/persona/local/profile/put/1.0` — a profile that lives inside one
+/// `spec/persona/local/profile/put/1.1` — a profile that lives inside one
 /// context.
 ///
 /// For an identity the holder keeps *only* here, with no pool attribute behind

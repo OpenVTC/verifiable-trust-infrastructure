@@ -4,17 +4,17 @@ A VTA keeps its principal's **contacts**: what a peer disclosed, filed per
 relationship (`persona/contact/*`). It also keeps what the principal thinks of
 them — a **star**, a **petname**, the principal's own **lists**, and a link to the
 community **directory entry** a contact was met through. These are the
-*annotations* of `persona/contact/put/1.1`, and the lists are
-`persona/contact/lists/*/1.0`.
+*annotations* of `persona/contact/put/1.2`, and the lists are
+`persona/contact/lists/*` (`put/1.1`, the rest `1.0`).
 
 ## What is where
 
 | Task | What it does |
 |---|---|
-| `persona/contact/put/1.1` | File a disclosure (as 1.0), and/or change annotations. Naming `contactId` and no document only annotates: no revision is appended, `rev` does not move |
+| `persona/contact/put/1.2` | File a disclosure, and/or change annotations. Naming `contactId` and no document only annotates: no revision is appended, `rev` does not move |
 | `persona/contact/get/1.1` | A contact with its current annotations, with any revision |
 | `persona/contact/list/1.1` | Summaries — `starred` always, `petname`, `lists`, `directoryRef`, the contact's own `displayName` — filtered by persona, `changedSince`, `starred`, `listId` or `directoryVtcDid`, paged by a cursor bound to the filters |
-| `persona/contact/lists/{put,list,show,delete}/1.0` | The principal's lists ("Mentors"): a name unique in the context, an optional colour, an order; deleting one takes it off every contact in the same write |
+| `persona/contact/lists/put/1.1`, `persona/contact/lists/{list,show,delete}/1.0` | The principal's lists ("Mentors"): a name unique in the context, an optional colour, an order; deleting one takes it off every contact in the same write |
 
 Every task is context-scoped. A list holds contacts known by any persona in its
 context, and from any number of communities, but never one of another context.

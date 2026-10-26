@@ -129,7 +129,7 @@ Not yet served: introductions. Groups are their own family ([community groups](g
 
 A member can star other members, give them a name of their own and put them on
 their own lists ("Mentors"). None of it is kept here: the member's wallet keeps it
-in their own VTA (`persona/contact/*/1.1`, [contacts](../02-vta/contacts.md)), so
+in their own VTA (`persona/contact/*`, [contacts](../02-vta/contacts.md)), so
 the community never learns who stars or lists whom. The directory pages ask the
 wallet for them (`window.vtaWallet.directory.marks`), read the directory exactly as
 they would without them, and apply them on the page — stars first, "Your name for

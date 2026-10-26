@@ -105,17 +105,17 @@ mod published_types {
     /// `SHOULD` in the spec would otherwise reach production as an accepted
     /// unsigned write.
     const _: () = {
-        use trust_tasks_rs::specs::persona::attribute::put::v1_0::Payload;
+        use trust_tasks_rs::specs::persona::attribute::put::v1_1::Payload;
         assert!(<Payload as trust_tasks_rs::Payload>::IS_PROOF_REQUIRED);
         assert!(<Payload as trust_tasks_rs::Payload>::IS_ISSUED_AT_REQUIRED);
     };
 
     #[test]
     fn persona_family_is_published_and_addressable() {
-        use trust_tasks_rs::specs::persona::attribute::put::v1_0 as put;
+        use trust_tasks_rs::specs::persona::attribute::put::v1_1 as put;
         assert_eq!(
             <put::Payload as trust_tasks_rs::Payload>::TYPE_URI,
-            "https://trusttasks.org/spec/persona/attribute/put/1.0"
+            "https://trusttasks.org/spec/persona/attribute/put/1.1"
         );
     }
 
@@ -142,7 +142,7 @@ mod published_types {
     fn our_value_types_match_the_published_enum() {
         // The store validates values against these; a variant added upstream
         // without a matching arm here would silently reject a legal value.
-        use trust_tasks_rs::specs::persona::attribute::put::v1_0 as put;
+        use trust_tasks_rs::specs::persona::attribute::put::v1_1 as put;
         for (ours, theirs) in [
             (crate::ValueType::String, put::ValueType::String),
             (crate::ValueType::Number, put::ValueType::Number),

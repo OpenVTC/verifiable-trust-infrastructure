@@ -6,7 +6,7 @@
 // portal reads the directory exactly as it would without them and applies
 // them on the page — stars sorted first, petnames beside names, lists as
 // filters — so nothing the community sees changes with them
-// (`persona/contact/put/1.1`, Correlation).
+// (`persona/contact/put/1.2`, Correlation).
 //
 // The wallet asks the member once per community before it hands this page
 // any. So the page never asks on its own: the member turns them on here, and

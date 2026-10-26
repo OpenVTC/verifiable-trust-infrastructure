@@ -4839,7 +4839,7 @@ fn persona_witnesses() -> Vec<(&'static str, ReqParts, RespParts)> {
 
     vec![
         (
-            u::TASK_PERSONA_ATTRIBUTE_PUT_1_0,
+            u::TASK_PERSONA_ATTRIBUTE_PUT_1_1,
             (
                 json!({
                     "type": "name.display",
@@ -4847,18 +4847,18 @@ fn persona_witnesses() -> Vec<(&'static str, ReqParts, RespParts)> {
                     "value": "Fixture Name",
                     "provenance": self_asserted,
                 }),
-                parses::<specs::persona::attribute::put::v1_0::Payload>,
-                validates::<specs::persona::attribute::put::v1_0::Payload>,
+                parses::<specs::persona::attribute::put::v1_1::Payload>,
+                validates::<specs::persona::attribute::put::v1_1::Payload>,
             ),
             (
                 json!({
-                    "attributeId": ATTR, "version": 1, "created": true, "updatedAt": NOW,
+                    "attributeId": ATTR, "version": 1, "wasCreated": true, "updatedAt": NOW,
                     // A count, never identifiers: returning them on a write
                     // would disclose the holder's other compositions to
                     // whatever tool made it.
                     "correlation": { "severity": "none", "sharedWithProfileCount": 0 }
                 }),
-                parses::<specs::persona::attribute::put::v1_0::Response>,
+                parses::<specs::persona::attribute::put::v1_1::Response>,
             ),
         ),
         (
@@ -4906,26 +4906,26 @@ fn persona_witnesses() -> Vec<(&'static str, ReqParts, RespParts)> {
             ),
         ),
         (
-            u::TASK_PERSONA_ATTRIBUTE_PROMOTE_1_0,
+            u::TASK_PERSONA_ATTRIBUTE_PROMOTE_1_1,
             (
                 json!({
                     "contextId": CTX, "profileId": PROFILE,
                     "entries": [1], "expectedVersion": 4
                 }),
-                parses::<specs::persona::attribute::promote::v1_0::Payload>,
-                validates::<specs::persona::attribute::promote::v1_0::Payload>,
+                parses::<specs::persona::attribute::promote::v1_1::Payload>,
+                validates::<specs::persona::attribute::promote::v1_1::Payload>,
             ),
             (
                 json!({
                     "profileId": PROFILE, "version": 5,
-                    "promoted": [{ "entry": 1, "attributeId": ATTR, "created": true }],
+                    "promoted": [{ "entry": 1, "attributeId": ATTR, "wasCreated": true }],
                     "reboundPersonaDids": [PERSONA_DID]
                 }),
-                parses::<specs::persona::attribute::promote::v1_0::Response>,
+                parses::<specs::persona::attribute::promote::v1_1::Response>,
             ),
         ),
         (
-            u::TASK_PERSONA_PROFILE_COMPOSE_1_0,
+            u::TASK_PERSONA_PROFILE_COMPOSE_1_1,
             (
                 // One claim of each form, so the witness exercises the
                 // untagged discrimination between a typed and a held claim.
@@ -4942,17 +4942,17 @@ fn persona_witnesses() -> Vec<(&'static str, ReqParts, RespParts)> {
                     "personaDid": PERSONA_DID,
                     "label": "Fixture at the co-op"
                 }),
-                parses::<specs::persona::profile::compose::v1_0::Payload>,
-                validates::<specs::persona::profile::compose::v1_0::Payload>,
+                parses::<specs::persona::profile::compose::v1_1::Payload>,
+                validates::<specs::persona::profile::compose::v1_1::Payload>,
             ),
             (
                 json!({
                     "profileId": PROFILE, "scope": "pool", "version": 3,
-                    "pooled": [{ "attributeId": ATTR, "created": false }],
+                    "pooled": [{ "attributeId": ATTR, "wasCreated": false }],
                     "binding": { "personaDid": PERSONA_DID, "version": 4, "alsoBoundPersonaCount": 0 },
                     "correlation": { "severity": "high", "sharedAttributeCount": 1 }
                 }),
-                parses::<specs::persona::profile::compose::v1_0::Response>,
+                parses::<specs::persona::profile::compose::v1_1::Response>,
             ),
         ),
         (
@@ -5024,7 +5024,7 @@ fn persona_witnesses() -> Vec<(&'static str, ReqParts, RespParts)> {
             ),
         ),
         (
-            u::TASK_PERSONA_PROFILE_PUT_1_0,
+            u::TASK_PERSONA_PROFILE_PUT_1_1,
             (
                 // One entry of each referencing form the pool supports, so the
                 // witness exercises the untagged discrimination that was once
@@ -5037,12 +5037,12 @@ fn persona_witnesses() -> Vec<(&'static str, ReqParts, RespParts)> {
                         { "ref": ATTR, "override": { "value": "Fixture Override" } }
                     ]
                 }),
-                parses::<specs::persona::profile::put::v1_0::Payload>,
-                validates::<specs::persona::profile::put::v1_0::Payload>,
+                parses::<specs::persona::profile::put::v1_1::Payload>,
+                validates::<specs::persona::profile::put::v1_1::Payload>,
             ),
             (
-                json!({ "profileId": PROFILE, "version": 2, "created": true, "updatedAt": NOW }),
-                parses::<specs::persona::profile::put::v1_0::Response>,
+                json!({ "profileId": PROFILE, "version": 2, "wasCreated": true, "updatedAt": NOW }),
+                parses::<specs::persona::profile::put::v1_1::Response>,
             ),
         ),
         (
@@ -5078,7 +5078,7 @@ fn persona_witnesses() -> Vec<(&'static str, ReqParts, RespParts)> {
         // rather than assumed identical: the rename is exactly the kind of
         // change that looks like nothing and reaches the wire.
         (
-            u::TASK_PERSONA_WORLD_PUT_1_0,
+            u::TASK_PERSONA_WORLD_PUT_1_1,
             (
                 json!({
                     "name": "Work",
@@ -5088,12 +5088,12 @@ fn persona_witnesses() -> Vec<(&'static str, ReqParts, RespParts)> {
                     "attributeIds": [ATTR],
                     "expectedVersion": 0
                 }),
-                parses::<specs::persona::world::put::v1_0::Payload>,
-                validates::<specs::persona::world::put::v1_0::Payload>,
+                parses::<specs::persona::world::put::v1_1::Payload>,
+                validates::<specs::persona::world::put::v1_1::Payload>,
             ),
             (
-                json!({ "worldId": FACET, "version": 2, "created": true, "updatedAt": NOW }),
-                parses::<specs::persona::world::put::v1_0::Response>,
+                json!({ "worldId": FACET, "version": 2, "wasCreated": true, "updatedAt": NOW }),
+                parses::<specs::persona::world::put::v1_1::Response>,
             ),
         ),
         (
@@ -5267,62 +5267,6 @@ fn persona_witnesses() -> Vec<(&'static str, ReqParts, RespParts)> {
             ),
         ),
         (
-            u::TASK_PERSONA_CONTACT_PUT_1_0,
-            (
-                json!({
-                    "contextId": CTX,
-                    "subjectDid": "did:peer:0zfixturecounterparty",
-                    "knownByPersona": PERSONA_DID,
-                    "document": { "claims": [
-                        { "type": "name.display", "valueType": "string", "value": "Fixture Peer" }
-                    ]}
-                }),
-                parses::<specs::persona::contact::put::v1_0::Payload>,
-                validates::<specs::persona::contact::put::v1_0::Payload>,
-            ),
-            (
-                // Claim TYPES, not values. A producer needing the old value
-                // reads the prior revision, which is an explicit act.
-                json!({ "contactId": CONTACT, "rev": 2, "created": false,
-                        "changedClaims": ["name.display"] }),
-                parses::<specs::persona::contact::put::v1_0::Response>,
-            ),
-        ),
-        (
-            u::TASK_PERSONA_CONTACT_GET_1_0,
-            (
-                json!({ "contextId": CTX, "contactId": CONTACT }),
-                parses::<specs::persona::contact::get::v1_0::Payload>,
-                validates::<specs::persona::contact::get::v1_0::Payload>,
-            ),
-            (
-                json!({
-                    "contactId": CONTACT, "subjectDid": "did:peer:0zfixturecounterparty",
-                    "knownByPersona": PERSONA_DID, "rev": 2,
-                    "document": { "claims": [
-                        { "type": "name.display", "valueType": "string", "value": "Fixture Peer" }
-                    ]}
-                }),
-                parses::<specs::persona::contact::get::v1_0::Response>,
-            ),
-        ),
-        (
-            u::TASK_PERSONA_CONTACT_LIST_1_0,
-            (
-                json!({ "contextId": CTX }),
-                parses::<specs::persona::contact::list::v1_0::Payload>,
-                validates::<specs::persona::contact::list::v1_0::Payload>,
-            ),
-            (
-                json!({ "contacts": [{
-                    "contactId": CONTACT, "subjectDid": "did:peer:0zfixturecounterparty",
-                    "knownByPersona": PERSONA_DID, "rev": 2, "receivedAt": NOW,
-                    "claimCount": 1, "hasUnreviewedChange": true
-                }]}),
-                parses::<specs::persona::contact::list::v1_0::Response>,
-            ),
-        ),
-        (
             u::TASK_PERSONA_CONTACT_DELETE_1_0,
             (
                 json!({ "contextId": CTX, "contactId": CONTACT }),
@@ -5338,18 +5282,18 @@ fn persona_witnesses() -> Vec<(&'static str, ReqParts, RespParts)> {
             ),
         ),
         (
-            u::TASK_PERSONA_CONTACT_PUT_1_1,
+            u::TASK_PERSONA_CONTACT_PUT_1_2,
             (
                 // The annotating form: a star and a list, no revision.
                 json!({ "contextId": CTX, "contactId": CONTACT, "starred": true,
                         "lists": [LIST_ID] }),
-                parses::<specs::persona::contact::put::v1_1::Payload>,
-                validates::<specs::persona::contact::put::v1_1::Payload>,
+                parses::<specs::persona::contact::put::v1_2::Payload>,
+                validates::<specs::persona::contact::put::v1_2::Payload>,
             ),
             (
-                json!({ "contactId": CONTACT, "rev": 2, "created": false,
+                json!({ "contactId": CONTACT, "rev": 2, "wasCreated": false,
                         "annotationsChanged": true }),
-                parses::<specs::persona::contact::put::v1_1::Response>,
+                parses::<specs::persona::contact::put::v1_2::Response>,
             ),
         ),
         (
@@ -5390,18 +5334,18 @@ fn persona_witnesses() -> Vec<(&'static str, ReqParts, RespParts)> {
             ),
         ),
         (
-            u::TASK_PERSONA_CONTACT_LISTS_PUT_1_0,
+            u::TASK_PERSONA_CONTACT_LISTS_PUT_1_1,
             (
                 json!({ "contextId": CTX, "name": "Mentors", "colour": "#1f8a70" }),
-                parses::<specs::persona::contact::lists::put::v1_0::Payload>,
-                validates::<specs::persona::contact::lists::put::v1_0::Payload>,
+                parses::<specs::persona::contact::lists::put::v1_1::Payload>,
+                validates::<specs::persona::contact::lists::put::v1_1::Payload>,
             ),
             (
                 json!({ "list": { "listId": LIST_ID, "name": "Mentors", "colour": "#1f8a70",
                                   "order": 0, "contactCount": 0,
                                   "createdAt": NOW, "updatedAt": NOW },
-                        "created": true, "changed": true }),
-                parses::<specs::persona::contact::lists::put::v1_0::Response>,
+                        "wasCreated": true, "changed": true }),
+                parses::<specs::persona::contact::lists::put::v1_1::Response>,
             ),
         ),
         (
@@ -5608,19 +5552,19 @@ fn persona_witnesses() -> Vec<(&'static str, ReqParts, RespParts)> {
             ),
         ),
         (
-            u::TASK_PERSONA_LOCAL_PROFILE_PUT_1_0,
+            u::TASK_PERSONA_LOCAL_PROFILE_PUT_1_1,
             (
                 // Inline only. A reference is unrepresentable here rather than
                 // rejected, which is what keeps the local surface pool-free.
                 json!({ "contextId": CTX, "name": "Throwaway", "entries": [
                     { "inline": { "type": "x:handle", "valueType": "string", "value": "fixture" } }
                 ]}),
-                parses::<specs::persona::local::profile::put::v1_0::Payload>,
-                validates::<specs::persona::local::profile::put::v1_0::Payload>,
+                parses::<specs::persona::local::profile::put::v1_1::Payload>,
+                validates::<specs::persona::local::profile::put::v1_1::Payload>,
             ),
             (
-                json!({ "profileId": PROFILE, "version": 4, "created": true }),
-                parses::<specs::persona::local::profile::put::v1_0::Response>,
+                json!({ "profileId": PROFILE, "version": 4, "wasCreated": true }),
+                parses::<specs::persona::local::profile::put::v1_1::Response>,
             ),
         ),
         (

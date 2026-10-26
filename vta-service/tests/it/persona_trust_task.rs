@@ -34,22 +34,22 @@ use vta_service::test_support::{
 use vti_common::auth::session::{Session, SessionState, now_epoch, store_session};
 
 // URIs as literals, so a constant rename in the SDK surfaces here too.
-const ATTR_PUT: &str = "https://trusttasks.org/spec/persona/attribute/put/1.0";
+const ATTR_PUT: &str = "https://trusttasks.org/spec/persona/attribute/put/1.1";
 const ATTR_LIST: &str = "https://trusttasks.org/spec/persona/attribute/list/1.0";
 const ATTR_GET: &str = "https://trusttasks.org/spec/persona/attribute/get/1.0";
-const WORLD_PUT: &str = "https://trusttasks.org/spec/persona/world/put/1.0";
+const WORLD_PUT: &str = "https://trusttasks.org/spec/persona/world/put/1.1";
 const WORLD_LIST: &str = "https://trusttasks.org/spec/persona/world/list/1.0";
 const FACET_PUT: &str = "https://trusttasks.org/spec/persona/facet/put/1.0";
 const FACET_LIST: &str = "https://trusttasks.org/spec/persona/facet/list/1.0";
 const ATTR_DELETE: &str = "https://trusttasks.org/spec/persona/attribute/delete/1.0";
 const ATTR_PURGE_VERSION: &str = "https://trusttasks.org/spec/persona/attribute/purge-version/1.0";
-const ATTR_PROMOTE: &str = "https://trusttasks.org/spec/persona/attribute/promote/1.0";
-const PROFILE_COMPOSE: &str = "https://trusttasks.org/spec/persona/profile/compose/1.0";
+const ATTR_PROMOTE: &str = "https://trusttasks.org/spec/persona/attribute/promote/1.1";
+const PROFILE_COMPOSE: &str = "https://trusttasks.org/spec/persona/profile/compose/1.1";
 const PROFILE_RETIRE: &str = "https://trusttasks.org/spec/persona/profile/retire/1.0";
 const PROFILE_REINSTATE: &str = "https://trusttasks.org/spec/persona/profile/reinstate/1.0";
 const PROFILE_USAGE: &str = "https://trusttasks.org/spec/persona/profile/usage/1.0";
 const PROFILE_TIMELINE: &str = "https://trusttasks.org/spec/persona/profile/timeline/1.0";
-const PROFILE_PUT: &str = "https://trusttasks.org/spec/persona/profile/put/1.0";
+const PROFILE_PUT: &str = "https://trusttasks.org/spec/persona/profile/put/1.1";
 const PROFILE_GET: &str = "https://trusttasks.org/spec/persona/profile/get/1.0";
 const PROFILE_LIST: &str = "https://trusttasks.org/spec/persona/profile/list/1.0";
 const PROFILE_DELETE: &str = "https://trusttasks.org/spec/persona/profile/delete/1.0";
@@ -62,14 +62,14 @@ const CLAIM_TYPES: &str = "https://trusttasks.org/spec/persona/claim-types/list/
 const DISCLOSURE_HISTORY: &str = "https://trusttasks.org/spec/persona/disclosure/history/1.0";
 const PREVIEW: &str = "https://trusttasks.org/spec/persona/disclosure/preview/1.0";
 const PRESENT: &str = "https://trusttasks.org/spec/persona/disclosure/present/1.0";
-const LOCAL_PROFILE_PUT: &str = "https://trusttasks.org/spec/persona/local/profile/put/1.0";
+const LOCAL_PROFILE_PUT: &str = "https://trusttasks.org/spec/persona/local/profile/put/1.1";
 const LOCAL_PROFILE_GET: &str = "https://trusttasks.org/spec/persona/local/profile/get/1.0";
 const LOCAL_PROFILE_LIST: &str = "https://trusttasks.org/spec/persona/local/profile/list/1.0";
 const LOCAL_PROFILE_DELETE: &str = "https://trusttasks.org/spec/persona/local/profile/delete/1.0";
 const LOCAL_BINDING_SET: &str = "https://trusttasks.org/spec/persona/local/binding/set/1.0";
-const CONTACT_PUT: &str = "https://trusttasks.org/spec/persona/contact/put/1.0";
-const CONTACT_GET: &str = "https://trusttasks.org/spec/persona/contact/get/1.0";
-const CONTACT_LIST: &str = "https://trusttasks.org/spec/persona/contact/list/1.0";
+const CONTACT_PUT: &str = "https://trusttasks.org/spec/persona/contact/put/1.2";
+const CONTACT_GET: &str = "https://trusttasks.org/spec/persona/contact/get/1.1";
+const CONTACT_LIST: &str = "https://trusttasks.org/spec/persona/contact/list/1.1";
 const CONTACT_DELETE: &str = "https://trusttasks.org/spec/persona/contact/delete/1.0";
 
 const CTX: &str = "ctx-persona-e2e";
@@ -3462,7 +3462,7 @@ async fn a_face_composed_in_a_context_stays_there_until_promoted() {
     assert_eq!(out["scope"], "pool");
     assert_eq!(
         out["pooled"],
-        json!([{ "attributeId": email, "created": false }])
+        json!([{ "attributeId": email, "wasCreated": false }])
     );
     assert_eq!(out["correlation"]["severity"], "high", "{out}");
 }
@@ -4346,10 +4346,7 @@ async fn a_world_answers_to_its_retired_name_in_that_names_words() {
 
 // ─── Contacts 1.1: the holder's annotations, and their lists ─────────────
 
-const CONTACT_PUT_1_1: &str = "https://trusttasks.org/spec/persona/contact/put/1.1";
-const CONTACT_GET_1_1: &str = "https://trusttasks.org/spec/persona/contact/get/1.1";
-const CONTACT_LIST_1_1: &str = "https://trusttasks.org/spec/persona/contact/list/1.1";
-const LISTS_PUT: &str = "https://trusttasks.org/spec/persona/contact/lists/put/1.0";
+const LISTS_PUT: &str = "https://trusttasks.org/spec/persona/contact/lists/put/1.1";
 const LISTS_LIST: &str = "https://trusttasks.org/spec/persona/contact/lists/list/1.0";
 const LISTS_SHOW: &str = "https://trusttasks.org/spec/persona/contact/lists/show/1.0";
 const LISTS_DELETE: &str = "https://trusttasks.org/spec/persona/contact/lists/delete/1.0";
@@ -4377,7 +4374,7 @@ async fn a_contacts_annotations_are_the_holders_and_append_no_revision() {
     )
     .await;
     assert!(!refused(status, &body), "lists/put: {status} {body}");
-    assert_eq!(payload_of(&body)["created"], true);
+    assert_eq!(payload_of(&body)["wasCreated"], true);
     let list_id = payload_of(&body)["list"]["listId"]
         .as_str()
         .unwrap()
@@ -4386,7 +4383,7 @@ async fn a_contacts_annotations_are_the_holders_and_append_no_revision() {
     let (status, body) = post(
         &router,
         &t,
-        CONTACT_PUT_1_1,
+        CONTACT_PUT,
         json!({
             "contextId": CTX,
             "subjectDid": "did:key:z6MkPeerSam",
@@ -4410,7 +4407,7 @@ async fn a_contacts_annotations_are_the_holders_and_append_no_revision() {
     let (_, body) = post(
         &router,
         &t,
-        CONTACT_PUT_1_1,
+        CONTACT_PUT,
         json!({ "contextId": CTX, "contactId": contact_id, "petname": "sam (Ω climbing)" }),
     )
     .await;
@@ -4420,7 +4417,7 @@ async fn a_contacts_annotations_are_the_holders_and_append_no_revision() {
     let (_, body) = post(
         &router,
         &t,
-        CONTACT_PUT_1_1,
+        CONTACT_PUT,
         json!({ "contextId": CTX, "contactId": contact_id, "petname": "sam (Ω climbing)", "starred": true }),
     )
     .await;
@@ -4429,7 +4426,7 @@ async fn a_contacts_annotations_are_the_holders_and_append_no_revision() {
     let (_, body) = post(
         &router,
         &t,
-        CONTACT_GET_1_1,
+        CONTACT_GET,
         json!({ "contextId": CTX, "contactId": contact_id }),
     )
     .await;
@@ -4446,7 +4443,7 @@ async fn a_contacts_annotations_are_the_holders_and_append_no_revision() {
     let (_, body) = post(
         &router,
         &t,
-        CONTACT_LIST_1_1,
+        CONTACT_LIST,
         json!({ "contextId": CTX, "starred": true, "directoryVtcDid": "did:web:climbing.example" }),
     )
     .await;
@@ -4461,7 +4458,7 @@ async fn a_contacts_annotations_are_the_holders_and_append_no_revision() {
     let (_, body) = post(
         &router,
         &t,
-        CONTACT_LIST_1_1,
+        CONTACT_LIST,
         json!({ "contextId": CTX, "starred": false }),
     )
     .await;
@@ -4490,7 +4487,7 @@ async fn a_contacts_annotations_are_the_holders_and_append_no_revision() {
     let (_, body) = post(
         &router,
         &t,
-        CONTACT_GET_1_1,
+        CONTACT_GET,
         json!({ "contextId": CTX, "contactId": contact_id }),
     )
     .await;
@@ -4509,7 +4506,7 @@ async fn a_contacts_annotations_are_the_holders_and_append_no_revision() {
     let (_, body) = post(
         &router,
         &t,
-        CONTACT_PUT_1_1,
+        CONTACT_PUT,
         json!({
             "contextId": CTX,
             "subjectDid": "did:key:z6MkPeerSam",
@@ -4522,7 +4519,7 @@ async fn a_contacts_annotations_are_the_holders_and_append_no_revision() {
     let (_, body) = post(
         &router,
         &t,
-        CONTACT_GET_1_1,
+        CONTACT_GET,
         json!({ "contextId": CTX, "contactId": again }),
     )
     .await;
@@ -4543,13 +4540,13 @@ async fn a_directory_member_is_starred_without_their_did() {
     let (status, body) = post(
         &router,
         &t,
-        CONTACT_PUT_1_1,
+        CONTACT_PUT,
         json!({ "contextId": CTX, "knownByPersona": persona, "directoryRef": entry, "starred": true }),
     )
     .await;
     assert!(!refused(status, &body), "link: {status} {body}");
     let p = payload_of(&body);
-    assert_eq!(p["created"], true);
+    assert_eq!(p["wasCreated"], true);
     assert_eq!(p["rev"], 1);
     let linked = p["contactId"].as_str().unwrap().to_string();
 
@@ -4557,19 +4554,19 @@ async fn a_directory_member_is_starred_without_their_did() {
     let (_, body) = post(
         &router,
         &t,
-        CONTACT_PUT_1_1,
+        CONTACT_PUT,
         json!({ "contextId": CTX, "knownByPersona": persona, "directoryRef": entry,
                 "petname": "the route-setter" }),
     )
     .await;
     assert_eq!(payload_of(&body)["contactId"], linked.as_str(), "{body}");
-    assert_eq!(payload_of(&body)["created"], false);
+    assert_eq!(payload_of(&body)["wasCreated"], false);
     assert_eq!(payload_of(&body)["rev"], 1);
 
     let (_, body) = post(
         &router,
         &t,
-        CONTACT_GET_1_1,
+        CONTACT_GET,
         json!({ "contextId": CTX, "contactId": linked }),
     )
     .await;
@@ -4581,7 +4578,7 @@ async fn a_directory_member_is_starred_without_their_did() {
     let (_, body) = post(
         &router,
         &t,
-        CONTACT_LIST_1_1,
+        CONTACT_LIST,
         json!({ "contextId": CTX, "directoryVtcDid": "did:web:climbing.example" }),
     )
     .await;
@@ -4591,21 +4588,11 @@ async fn a_directory_member_is_starred_without_their_did() {
         "{body}"
     );
 
-    // A 1.0 reader cannot omit a DID, so it is not shown the linked contact.
-    let (_, body) = post(
-        &router,
-        &t,
-        CONTACT_GET,
-        json!({ "contextId": CTX, "contactId": linked }),
-    )
-    .await;
-    assert_eq!(code(&body), "persona/contact/get:notFound", "{body}");
-
     // A filing naming a DID with the same link is a contact of its own.
     let (_, body) = post(
         &router,
         &t,
-        CONTACT_PUT_1_1,
+        CONTACT_PUT,
         json!({ "contextId": CTX, "subjectDid": "did:key:z6MkRouteSetter", "knownByPersona": persona,
                 "document": { "claims": [] }, "directoryRef": entry }),
     )
@@ -4633,7 +4620,7 @@ async fn the_contact_annotation_tasks_refuse_what_they_declare() {
     let (_, body) = post(
         &router,
         &t,
-        CONTACT_PUT_1_1,
+        CONTACT_PUT,
         json!({
             "contextId": CTX,
             "subjectDid": "did:key:z6MkPeerAda",
@@ -4648,7 +4635,7 @@ async fn the_contact_annotation_tasks_refuse_what_they_declare() {
         payload_of(&body)["details"]["listIds"],
         json!([NO_SUCH_LIST])
     );
-    let (_, body) = post(&router, &t, CONTACT_LIST_1_1, json!({ "contextId": CTX })).await;
+    let (_, body) = post(&router, &t, CONTACT_LIST, json!({ "contextId": CTX })).await;
     assert_eq!(
         payload_of(&body)["contacts"],
         json!([]),
@@ -4658,7 +4645,7 @@ async fn the_contact_annotation_tasks_refuse_what_they_declare() {
     let (_, body) = post(
         &router,
         &t,
-        CONTACT_PUT_1_1,
+        CONTACT_PUT,
         json!({ "contextId": CTX, "contactId": NO_SUCH_LIST, "starred": true }),
     )
     .await;
@@ -4667,7 +4654,7 @@ async fn the_contact_annotation_tasks_refuse_what_they_declare() {
     let (_, body) = post(
         &router,
         &t,
-        CONTACT_GET_1_1,
+        CONTACT_GET,
         json!({ "contextId": CTX, "contactId": NO_SUCH_LIST }),
     )
     .await;
@@ -4676,7 +4663,7 @@ async fn the_contact_annotation_tasks_refuse_what_they_declare() {
     let (_, body) = post(
         &router,
         &t,
-        CONTACT_LIST_1_1,
+        CONTACT_LIST,
         json!({ "contextId": CTX, "listId": NO_SUCH_LIST }),
     )
     .await;
@@ -4684,7 +4671,7 @@ async fn the_contact_annotation_tasks_refuse_what_they_declare() {
     let (_, body) = post(
         &router,
         &t,
-        CONTACT_LIST_1_1,
+        CONTACT_LIST,
         json!({ "contextId": CTX, "cursor": "c1.0000.3" }),
     )
     .await;

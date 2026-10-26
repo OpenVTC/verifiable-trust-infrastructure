@@ -3,7 +3,7 @@
 //! # Two vocabularies, and which one goes where
 //!
 //! Commands and flags keep the spec's words, because that is what they address:
-//! `persona profile put --profile-id` names `persona/profile/put/1.0`, and a
+//! `persona profile put --profile-id` names `persona/profile/put/1.1`, and a
 //! command that did not would be a second name for a task, drifting from the
 //! URI it sends and from every script already written against it.
 //!
@@ -43,7 +43,7 @@ use trust_tasks_rs::specs::persona::world::delete::v1_0::{
     Ulid as WorldDeleteUlid,
 };
 use trust_tasks_rs::specs::persona::world::list::v1_0::Payload as WorldListPayload;
-use trust_tasks_rs::specs::persona::world::put::v1_0::{
+use trust_tasks_rs::specs::persona::world::put::v1_1::{
     ExpectedVersion as WorldPutExpectedVersion, Payload as WorldPutPayload,
     PayloadIcon as WorldPutIcon, PayloadName as WorldPutName, Ulid as WorldUlid, WorldColour,
 };
@@ -225,7 +225,7 @@ pub async fn cmd_profile_put(
     name: String,
     entries: Vec<ProfileEntry>,
     credential_refs: Vec<String>,
-    reach: Option<trust_tasks_rs::specs::persona::profile::put::v1_0::FaceReach>,
+    reach: Option<trust_tasks_rs::specs::persona::profile::put::v1_1::FaceReach>,
     profile_id: Option<String>,
     expected_version: Option<u64>,
 ) -> CmdResult {
@@ -269,12 +269,12 @@ pub async fn cmd_profile_compose(
     }
     // Read into the generated payload here, so a malformed claim is reported
     // against the published shape before anything is sent.
-    let payload: trust_tasks_rs::specs::persona::profile::compose::v1_0::Payload =
+    let payload: trust_tasks_rs::specs::persona::profile::compose::v1_1::Payload =
         serde_json::from_value(body).map_err(|e| format!("not a valid compose: {e}"))?;
     let out = client.persona_profile_compose(&payload).await?;
     let result = serde_json::to_value(&out)?;
     if !is_json_output() {
-        let reused = out.pooled.iter().filter(|p| !p.created).count();
+        let reused = out.pooled.iter().filter(|p| !p.was_created).count();
         match out.scope.to_string().as_str() {
             "local" => println!(
                 "{DIM}Kept in this context: nothing you typed is reusable elsewhere. `persona \

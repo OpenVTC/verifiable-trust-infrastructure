@@ -3008,7 +3008,7 @@ dispatch_table! {
     // census pins it. `attribute/put` is Mutating and `delete` Destructive;
     // both reads disclose Metadata because they return the holder's own data
     // to the holder.
-    vta_sdk::trust_tasks::TASK_PERSONA_ATTRIBUTE_PUT_1_0 => persona::handle_attribute_put
+    vta_sdk::trust_tasks::TASK_PERSONA_ATTRIBUTE_PUT_1_1 => persona::handle_attribute_put
         [ Mutating Metadata false ],
     vta_sdk::trust_tasks::TASK_PERSONA_ATTRIBUTE_LIST_1_0 => persona::handle_attribute_list
         [ None Metadata false ],
@@ -3019,10 +3019,10 @@ dispatch_table! {
         [ Destructive None false ],
     // Moves a local face into the pool: creates attributes, replaces the face,
     // rebinds. Identifiers and positions only on the wire.
-    vta_sdk::trust_tasks::TASK_PERSONA_ATTRIBUTE_PROMOTE_1_0 => persona::handle_attribute_promote
+    vta_sdk::trust_tasks::TASK_PERSONA_ATTRIBUTE_PROMOTE_1_1 => persona::handle_attribute_promote
         [ Mutating None false ],
     // Values arrive in new claims; the response is identifiers and counts.
-    vta_sdk::trust_tasks::TASK_PERSONA_PROFILE_COMPOSE_1_0 => persona::handle_profile_compose
+    vta_sdk::trust_tasks::TASK_PERSONA_PROFILE_COMPOSE_1_1 => persona::handle_profile_compose
         [ Mutating None false ],
     // Clears every binding to a face and marks it retired; reversible, and
     // nothing is removed. Identifiers only.
@@ -3035,7 +3035,7 @@ dispatch_table! {
         [ None Metadata false ],
     vta_sdk::trust_tasks::TASK_PERSONA_PROFILE_TIMELINE_1_0 => persona::handle_profile_timeline
         [ None Metadata false ],
-    vta_sdk::trust_tasks::TASK_PERSONA_PROFILE_PUT_1_0 => persona::handle_profile_put
+    vta_sdk::trust_tasks::TASK_PERSONA_PROFILE_PUT_1_1 => persona::handle_profile_put
         [ Mutating None false ],
     vta_sdk::trust_tasks::TASK_PERSONA_PROFILE_GET_1_0 => persona::handle_profile_get
         [ None Metadata false ],
@@ -3045,7 +3045,7 @@ dispatch_table! {
     // it writes a record of its own, and `delete` Destructive for the same
     // reason — neither reaches a profile or an attribute, which is the property
     // `deleting_a_world_deletes_nothing_it_named` pins in vta-persona.
-    vta_sdk::trust_tasks::TASK_PERSONA_WORLD_PUT_1_0 => persona::handle_world_put
+    vta_sdk::trust_tasks::TASK_PERSONA_WORLD_PUT_1_1 => persona::handle_world_put
         [ Mutating None false ],
     vta_sdk::trust_tasks::TASK_PERSONA_WORLD_LIST_1_0 => persona::handle_world_list
         [ None Metadata false ],
@@ -3079,22 +3079,16 @@ dispatch_table! {
     vta_sdk::trust_tasks::TASK_PERSONA_BINDING_LIST_1_0 => persona::handle_binding_list
         [ None Metadata false ],
     // Contacts are a third party's disclosed data held for the holder.
-    vta_sdk::trust_tasks::TASK_PERSONA_CONTACT_PUT_1_0 => persona::handle_contact_put
+    // With the holder's own annotations, and their lists. Never sent anywhere.
+    vta_sdk::trust_tasks::TASK_PERSONA_CONTACT_PUT_1_2 => persona::handle_contact_put
         [ Mutating None false ],
-    vta_sdk::trust_tasks::TASK_PERSONA_CONTACT_GET_1_0 => persona::handle_contact_get
+    vta_sdk::trust_tasks::TASK_PERSONA_CONTACT_GET_1_1 => persona::handle_contact_get
         [ None Metadata false ],
-    vta_sdk::trust_tasks::TASK_PERSONA_CONTACT_LIST_1_0 => persona::handle_contact_list
+    vta_sdk::trust_tasks::TASK_PERSONA_CONTACT_LIST_1_1 => persona::handle_contact_list
         [ None Metadata false ],
     vta_sdk::trust_tasks::TASK_PERSONA_CONTACT_DELETE_1_0 => persona::handle_contact_delete
         [ Destructive None false ],
-    // 1.1: the holder's own annotations, and their lists. Never sent anywhere.
-    vta_sdk::trust_tasks::TASK_PERSONA_CONTACT_PUT_1_1 => persona::handle_contact_put_v1_1
-        [ Mutating None false ],
-    vta_sdk::trust_tasks::TASK_PERSONA_CONTACT_GET_1_1 => persona::handle_contact_get_v1_1
-        [ None Metadata false ],
-    vta_sdk::trust_tasks::TASK_PERSONA_CONTACT_LIST_1_1 => persona::handle_contact_list_v1_1
-        [ None Metadata false ],
-    vta_sdk::trust_tasks::TASK_PERSONA_CONTACT_LISTS_PUT_1_0 => persona::handle_contact_lists_put
+    vta_sdk::trust_tasks::TASK_PERSONA_CONTACT_LISTS_PUT_1_1 => persona::handle_contact_lists_put
         [ Mutating None false ],
     vta_sdk::trust_tasks::TASK_PERSONA_CONTACT_LISTS_LIST_1_0 => persona::handle_contact_lists_list
         [ None Metadata false ],
@@ -3129,7 +3123,7 @@ dispatch_table! {
         [ None None false ],
     // The context-local surface. Context-callable because authoring below the
     // boundary is safe; the rule exists to stop reading across it.
-    vta_sdk::trust_tasks::TASK_PERSONA_LOCAL_PROFILE_PUT_1_0 => persona::handle_local_profile_put
+    vta_sdk::trust_tasks::TASK_PERSONA_LOCAL_PROFILE_PUT_1_1 => persona::handle_local_profile_put
         [ Mutating Metadata false ],
     vta_sdk::trust_tasks::TASK_PERSONA_LOCAL_PROFILE_GET_1_0 => persona::handle_local_profile_get
         [ None Metadata false ],

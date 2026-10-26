@@ -1306,9 +1306,9 @@ pub const TASK_VTA_MEMORY_DELETE_0_1: &str = "https://trusttasks.org/spec/vta/me
 // from inside a context — see `vta-service`'s `trust_tasks::persona` for the
 // classification and the census test that pins it.
 
-/// `spec/persona/attribute/put/1.0`
-pub const TASK_PERSONA_ATTRIBUTE_PUT_1_0: &str =
-    "https://trusttasks.org/spec/persona/attribute/put/1.0";
+/// `spec/persona/attribute/put/1.1`
+pub const TASK_PERSONA_ATTRIBUTE_PUT_1_1: &str =
+    "https://trusttasks.org/spec/persona/attribute/put/1.1";
 
 /// `spec/persona/attribute/get/1.0`
 pub const TASK_PERSONA_ATTRIBUTE_GET_1_0: &str =
@@ -1326,13 +1326,13 @@ pub const TASK_PERSONA_ATTRIBUTE_DELETE_1_0: &str =
 pub const TASK_PERSONA_ATTRIBUTE_PURGE_VERSION_1_0: &str =
     "https://trusttasks.org/spec/persona/attribute/purge-version/1.0";
 
-/// `spec/persona/attribute/promote/1.0`
-pub const TASK_PERSONA_ATTRIBUTE_PROMOTE_1_0: &str =
-    "https://trusttasks.org/spec/persona/attribute/promote/1.0";
+/// `spec/persona/attribute/promote/1.1`
+pub const TASK_PERSONA_ATTRIBUTE_PROMOTE_1_1: &str =
+    "https://trusttasks.org/spec/persona/attribute/promote/1.1";
 
-/// `spec/persona/profile/compose/1.0`
-pub const TASK_PERSONA_PROFILE_COMPOSE_1_0: &str =
-    "https://trusttasks.org/spec/persona/profile/compose/1.0";
+/// `spec/persona/profile/compose/1.1`
+pub const TASK_PERSONA_PROFILE_COMPOSE_1_1: &str =
+    "https://trusttasks.org/spec/persona/profile/compose/1.1";
 
 /// `spec/persona/profile/retire/1.0`
 pub const TASK_PERSONA_PROFILE_RETIRE_1_0: &str =
@@ -1350,9 +1350,9 @@ pub const TASK_PERSONA_PROFILE_USAGE_1_0: &str =
 pub const TASK_PERSONA_PROFILE_TIMELINE_1_0: &str =
     "https://trusttasks.org/spec/persona/profile/timeline/1.0";
 
-/// `spec/persona/profile/put/1.0`
-pub const TASK_PERSONA_PROFILE_PUT_1_0: &str =
-    "https://trusttasks.org/spec/persona/profile/put/1.0";
+/// `spec/persona/profile/put/1.1`
+pub const TASK_PERSONA_PROFILE_PUT_1_1: &str =
+    "https://trusttasks.org/spec/persona/profile/put/1.1";
 
 /// `spec/persona/profile/get/1.0`
 pub const TASK_PERSONA_PROFILE_GET_1_0: &str =
@@ -1366,8 +1366,8 @@ pub const TASK_PERSONA_PROFILE_LIST_1_0: &str =
 pub const TASK_PERSONA_PROFILE_DELETE_1_0: &str =
     "https://trusttasks.org/spec/persona/profile/delete/1.0";
 
-/// `spec/persona/world/put/1.0`
-pub const TASK_PERSONA_WORLD_PUT_1_0: &str = "https://trusttasks.org/spec/persona/world/put/1.0";
+/// `spec/persona/world/put/1.1`
+pub const TASK_PERSONA_WORLD_PUT_1_1: &str = "https://trusttasks.org/spec/persona/world/put/1.1";
 
 /// `spec/persona/world/list/1.0`
 pub const TASK_PERSONA_WORLD_LIST_1_0: &str = "https://trusttasks.org/spec/persona/world/list/1.0";
@@ -1385,7 +1385,7 @@ pub const TASK_PERSONA_WORLD_DELETE_1_0: &str =
 // refused, and they go when the window closes.
 
 /// `spec/persona/facet/put/1.0` — retired, superseded by
-/// [`TASK_PERSONA_WORLD_PUT_1_0`].
+/// [`TASK_PERSONA_WORLD_PUT_1_1`].
 pub const TASK_PERSONA_FACET_PUT_1_0: &str = "https://trusttasks.org/spec/persona/facet/put/1.0";
 
 /// `spec/persona/facet/list/1.0` — retired, superseded by
@@ -1409,25 +1409,13 @@ pub const TASK_PERSONA_BINDING_GET_1_0: &str =
 pub const TASK_PERSONA_BINDING_LIST_1_0: &str =
     "https://trusttasks.org/spec/persona/binding/list/1.0";
 
-/// `spec/persona/contact/put/1.0`
-pub const TASK_PERSONA_CONTACT_PUT_1_0: &str =
-    "https://trusttasks.org/spec/persona/contact/put/1.0";
-
-/// `spec/persona/contact/get/1.0`
-pub const TASK_PERSONA_CONTACT_GET_1_0: &str =
-    "https://trusttasks.org/spec/persona/contact/get/1.0";
-
-/// `spec/persona/contact/list/1.0`
-pub const TASK_PERSONA_CONTACT_LIST_1_0: &str =
-    "https://trusttasks.org/spec/persona/contact/list/1.0";
-
 /// `spec/persona/contact/delete/1.0`
 pub const TASK_PERSONA_CONTACT_DELETE_1_0: &str =
     "https://trusttasks.org/spec/persona/contact/delete/1.0";
 
-/// `spec/persona/contact/put/1.1`
-pub const TASK_PERSONA_CONTACT_PUT_1_1: &str =
-    "https://trusttasks.org/spec/persona/contact/put/1.1";
+/// `spec/persona/contact/put/1.2`
+pub const TASK_PERSONA_CONTACT_PUT_1_2: &str =
+    "https://trusttasks.org/spec/persona/contact/put/1.2";
 
 /// `spec/persona/contact/get/1.1`
 pub const TASK_PERSONA_CONTACT_GET_1_1: &str =
@@ -1437,9 +1425,9 @@ pub const TASK_PERSONA_CONTACT_GET_1_1: &str =
 pub const TASK_PERSONA_CONTACT_LIST_1_1: &str =
     "https://trusttasks.org/spec/persona/contact/list/1.1";
 
-/// `spec/persona/contact/lists/put/1.0`
-pub const TASK_PERSONA_CONTACT_LISTS_PUT_1_0: &str =
-    "https://trusttasks.org/spec/persona/contact/lists/put/1.0";
+/// `spec/persona/contact/lists/put/1.1`
+pub const TASK_PERSONA_CONTACT_LISTS_PUT_1_1: &str =
+    "https://trusttasks.org/spec/persona/contact/lists/put/1.1";
 
 /// `spec/persona/contact/lists/list/1.0`
 pub const TASK_PERSONA_CONTACT_LISTS_LIST_1_0: &str =
@@ -1486,9 +1474,9 @@ pub const TASK_PERSONA_CLAIM_TYPES_LIST_1_0: &str =
 pub const TASK_PERSONA_RENDERERS_LIST_1_0: &str =
     "https://trusttasks.org/spec/persona/renderers/list/1.0";
 
-/// `spec/persona/local/profile/put/1.0`
-pub const TASK_PERSONA_LOCAL_PROFILE_PUT_1_0: &str =
-    "https://trusttasks.org/spec/persona/local/profile/put/1.0";
+/// `spec/persona/local/profile/put/1.1`
+pub const TASK_PERSONA_LOCAL_PROFILE_PUT_1_1: &str =
+    "https://trusttasks.org/spec/persona/local/profile/put/1.1";
 
 /// `spec/persona/local/profile/get/1.0`
 pub const TASK_PERSONA_LOCAL_PROFILE_GET_1_0: &str =
@@ -2963,38 +2951,35 @@ pub const ALL_URIS: &[&str] = &[
     TASK_VTA_APP_STATE_GET_MANY_1_0,
     TASK_VTA_APP_STATE_PUT_MANY_1_0,
     // Persona slice — the holder's own identity.
-    TASK_PERSONA_ATTRIBUTE_PUT_1_0,
+    TASK_PERSONA_ATTRIBUTE_PUT_1_1,
     TASK_PERSONA_ATTRIBUTE_GET_1_0,
     TASK_PERSONA_ATTRIBUTE_LIST_1_0,
     TASK_PERSONA_ATTRIBUTE_DELETE_1_0,
     TASK_PERSONA_ATTRIBUTE_PURGE_VERSION_1_0,
-    TASK_PERSONA_ATTRIBUTE_PROMOTE_1_0,
-    TASK_PERSONA_PROFILE_COMPOSE_1_0,
+    TASK_PERSONA_ATTRIBUTE_PROMOTE_1_1,
+    TASK_PERSONA_PROFILE_COMPOSE_1_1,
     TASK_PERSONA_PROFILE_RETIRE_1_0,
     TASK_PERSONA_PROFILE_REINSTATE_1_0,
     TASK_PERSONA_PROFILE_USAGE_1_0,
     TASK_PERSONA_PROFILE_TIMELINE_1_0,
-    TASK_PERSONA_PROFILE_PUT_1_0,
+    TASK_PERSONA_PROFILE_PUT_1_1,
     TASK_PERSONA_PROFILE_GET_1_0,
     TASK_PERSONA_PROFILE_LIST_1_0,
     TASK_PERSONA_PROFILE_DELETE_1_0,
     TASK_PERSONA_FACET_PUT_1_0,
     TASK_PERSONA_FACET_LIST_1_0,
     TASK_PERSONA_FACET_DELETE_1_0,
-    TASK_PERSONA_WORLD_PUT_1_0,
+    TASK_PERSONA_WORLD_PUT_1_1,
     TASK_PERSONA_WORLD_LIST_1_0,
     TASK_PERSONA_WORLD_DELETE_1_0,
     TASK_PERSONA_BINDING_SET_1_0,
     TASK_PERSONA_BINDING_GET_1_0,
     TASK_PERSONA_BINDING_LIST_1_0,
-    TASK_PERSONA_CONTACT_PUT_1_0,
-    TASK_PERSONA_CONTACT_GET_1_0,
-    TASK_PERSONA_CONTACT_LIST_1_0,
     TASK_PERSONA_CONTACT_DELETE_1_0,
-    TASK_PERSONA_CONTACT_PUT_1_1,
+    TASK_PERSONA_CONTACT_PUT_1_2,
     TASK_PERSONA_CONTACT_GET_1_1,
     TASK_PERSONA_CONTACT_LIST_1_1,
-    TASK_PERSONA_CONTACT_LISTS_PUT_1_0,
+    TASK_PERSONA_CONTACT_LISTS_PUT_1_1,
     TASK_PERSONA_CONTACT_LISTS_LIST_1_0,
     TASK_PERSONA_CONTACT_LISTS_SHOW_1_0,
     TASK_PERSONA_CONTACT_LISTS_DELETE_1_0,
@@ -3005,7 +2990,7 @@ pub const ALL_URIS: &[&str] = &[
     TASK_PERSONA_CORRELATION_ANALYZE_1_1,
     TASK_PERSONA_RENDERERS_LIST_1_0,
     TASK_PERSONA_CLAIM_TYPES_LIST_1_0,
-    TASK_PERSONA_LOCAL_PROFILE_PUT_1_0,
+    TASK_PERSONA_LOCAL_PROFILE_PUT_1_1,
     TASK_PERSONA_LOCAL_PROFILE_GET_1_0,
     TASK_PERSONA_LOCAL_PROFILE_LIST_1_0,
     TASK_PERSONA_LOCAL_PROFILE_DELETE_1_0,

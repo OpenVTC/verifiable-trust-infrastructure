@@ -853,7 +853,7 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     // record of it — the one task in this family where a lost reply must never
     // be retried blind.
     (
-        trust_tasks::TASK_PERSONA_ATTRIBUTE_PUT_1_0,
+        trust_tasks::TASK_PERSONA_ATTRIBUTE_PUT_1_1,
         RetrySafety::Keyed,
     ),
     (
@@ -880,7 +880,7 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     // failure to a caller whose first attempt succeeded. Keyed, so the replay
     // returns the first response.
     (
-        trust_tasks::TASK_PERSONA_ATTRIBUTE_PROMOTE_1_0,
+        trust_tasks::TASK_PERSONA_ATTRIBUTE_PROMOTE_1_1,
         RetrySafety::Keyed,
     ),
     // Both converge: a repeat retire takes no version and clears whatever is
@@ -903,11 +903,11 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     ),
     // Each execution makes a new face with a new id.
     (
-        trust_tasks::TASK_PERSONA_PROFILE_COMPOSE_1_0,
+        trust_tasks::TASK_PERSONA_PROFILE_COMPOSE_1_1,
         RetrySafety::Keyed,
     ),
     (
-        trust_tasks::TASK_PERSONA_PROFILE_PUT_1_0,
+        trust_tasks::TASK_PERSONA_PROFILE_PUT_1_1,
         RetrySafety::Keyed,
     ),
     (
@@ -924,7 +924,7 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     ),
     // The world tasks and the `facet` spellings they supersede classify alike:
     // they are the same operation under two names for one release.
-    (trust_tasks::TASK_PERSONA_WORLD_PUT_1_0, RetrySafety::Keyed),
+    (trust_tasks::TASK_PERSONA_WORLD_PUT_1_1, RetrySafety::Keyed),
     (
         trust_tasks::TASK_PERSONA_WORLD_LIST_1_0,
         RetrySafety::ReadOnly,
@@ -955,23 +955,11 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
         RetrySafety::ReadOnly,
     ),
     (
-        trust_tasks::TASK_PERSONA_CONTACT_PUT_1_0,
-        RetrySafety::Keyed,
-    ),
-    (
-        trust_tasks::TASK_PERSONA_CONTACT_GET_1_0,
-        RetrySafety::ReadOnly,
-    ),
-    (
-        trust_tasks::TASK_PERSONA_CONTACT_LIST_1_0,
-        RetrySafety::ReadOnly,
-    ),
-    (
         trust_tasks::TASK_PERSONA_CONTACT_DELETE_1_0,
         RetrySafety::RetrySafe,
     ),
     (
-        trust_tasks::TASK_PERSONA_CONTACT_PUT_1_1,
+        trust_tasks::TASK_PERSONA_CONTACT_PUT_1_2,
         RetrySafety::Keyed,
     ),
     (
@@ -983,7 +971,7 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
         RetrySafety::ReadOnly,
     ),
     (
-        trust_tasks::TASK_PERSONA_CONTACT_LISTS_PUT_1_0,
+        trust_tasks::TASK_PERSONA_CONTACT_LISTS_PUT_1_1,
         RetrySafety::Keyed,
     ),
     (
@@ -1029,7 +1017,7 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
         RetrySafety::ReadOnly,
     ),
     (
-        trust_tasks::TASK_PERSONA_LOCAL_PROFILE_PUT_1_0,
+        trust_tasks::TASK_PERSONA_LOCAL_PROFILE_PUT_1_1,
         RetrySafety::Keyed,
     ),
     (

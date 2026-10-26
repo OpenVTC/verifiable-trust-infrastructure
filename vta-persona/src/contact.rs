@@ -168,7 +168,7 @@ impl PersonaStore {
     }
 
     /// File a disclosure and apply the holder's annotation changes with it,
-    /// together or not at all (`persona/contact/put/1.1` item 6): a `lists`
+    /// together or not at all (`persona/contact/put/1.2` item 6): a `lists`
     /// naming a list this context does not hold refuses the whole request
     /// before anything is written. Returns the filing and whether any
     /// annotation changed.

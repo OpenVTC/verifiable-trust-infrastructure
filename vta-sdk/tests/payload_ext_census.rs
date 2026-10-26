@@ -80,7 +80,7 @@ const NO_EXT_BY_DESIGN: &[(&str, &str)] = &[
     ),
     (
         "OverrideValue",
-        "The `override` member of a `persona/profile/put/1.0` profile entry, \
+        "The `override` member of a `persona/profile/put/1.1` profile entry, \
          not a payload root. The published schema closes the object with \
          `additionalProperties: false` and declares only `value` and `label`; \
          the generated `ProfileEntryVariant2Override` in `trust-tasks-rs` \
@@ -90,8 +90,8 @@ const NO_EXT_BY_DESIGN: &[(&str, &str)] = &[
     ),
     (
         "InlineValue",
-        "The `inline` member of a profile entry — `persona/profile/put/1.0` \
-         and `persona/local/profile/put/1.0` both nest it, and both close it \
+        "The `inline` member of a profile entry — `persona/profile/put/1.1` \
+         and `persona/local/profile/put/1.1` both nest it, and both close it \
          with `additionalProperties: false` and no `ext` slot. A member of a \
          payload rather than a payload, exactly as \
          `IssuedCredentialSummary` above.",
@@ -107,7 +107,7 @@ const NO_EXT_BY_DESIGN: &[(&str, &str)] = &[
     ),
     (
         "LocalProfileEntry",
-        "One item of `persona/local/profile/put/1.0`'s `entries` array. The \
+        "One item of `persona/local/profile/put/1.1`'s `entries` array. The \
          schema closes it to the single `inline` member — that closure is \
          load-bearing rather than incidental, because it is what makes a \
          context-local profile structurally unable to name a pool attribute. \
