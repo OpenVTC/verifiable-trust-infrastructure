@@ -2,6 +2,352 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.49.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-common-v0.48.0...vti-common-v0.49.0) — 2026-10-26
+
+
+### Added
+
+- **vta**: Did:scid:vh:1 identities, create/1.2, and VTA/VTC presentation config ([#2257](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2257))
+
+* feat(vta-sdk): did:scid:vh:1 identity rules and did:scid secret kids (VTI-KEY-160 to VTI-KEY-164)
+
+- **rooms**: Record provenance, record retention and prune, and the epoch floor ([#2272](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2272))
+
+* feat(rooms)!: a record says what kind of claim it is and when it lapses — rooms/records/put 0.3 and provenance in the sealed body
+
+- **vta**: Vault/credentials/present — present a held credential to a verifier the client names ([#2265](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2265))
+
+Serves vault/credentials/present/0.1 (trust-tasks-tf #871): the VTA
+  presents a credential from its principal's vault to the audience the
+  client names, bound to the client's nonce, as the persona the
+  credential is held by. A Data Integrity credential is wrapped in a VP
+  signed by the holder; an SD-JWT-VC is presented with a kb-jwt naming
+  the audience and nonce, disclosing only the requested claims. A request
+  that would disclose more than it names is refused wouldOverDisclose
+  unless the client allows it.
+
+  Gated on the new credentialPresent capability, classified in
+  retry_safety, audited at the dispatch spine, and guarded in vta-mcp
+  like the other vault writes. Bumps trust-tasks-rs to 0.33.2, whose
+  record_expiry now includes the skew allowance; the retention test
+  expects that bound.
+
+- **vtc**: Move a room's files to another storage config (rooms/storage/migrate) ([#2261](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2261))
+
+Serves vtc/rooms/storage/migrate/0.1 (data-rooms-files.md §7.3, phase P10):
+  a holder of vtc.rooms.admin moves a hosted room's existing blobs onto the
+  storage config it is assigned to. Each blob is copied, read back from the
+  target and checked against every chunk digest and the whole-blob digest of its
+  committed manifest, and only then switched; the old copy is deleted by the
+  collection pass after the orphan grace window. No key is involved and readers
+  notice nothing.
+
+  The engine is vti_rooms::blobs::migrate, shared host code over the blob index:
+
+  - the switch is one atomic store batch (entry, the old copy's `moved:` row,
+    counters, plan row, migration record), applied only while the blob's entry
+    is byte-for-byte what it was when the copy began; a blob orphaned,
+    collected or rewritten meanwhile is skipped and its copy discarded;
+  - the bytes to move are reserved on the target (and the host's storage) at
+    start, so capacityExceeded is answered before anything is copied; each
+    switch converts its reservation, and the old copy keeps counting against
+    its config until it is actually deleted (§6.1), so a draining config does
+    not retire early (ConfigHoldings counts pending old copies);
+  - a pending old copy of the same blob on the target is reclaimed under the
+    lock before the copy is written, so collection never deletes what a switch
+    is about to name;
+  - progress is persisted (record, plan rows, blob in flight and its copy), so
+    a restart resumes; tests stop a step after choosing, copying and verifying
+    and check the blob stays readable and the end state is exact.
+
+  vtc-service runs one migration at a time (rooms::migration), the one retry
+  owner: capped exponential backoff with full jitter on a failed copy, then
+  `paused` after eight in a row. Re-issuing the task resumes a paused migration
+  without parking again, and a running or paused one is always the answer
+  (item 5). A copy that does not verify is `failed` (item 3). A new migration is
+  parked as Act::ChangeStorage (kind rooms.storage.migrate, template pinned in
+  the server and the console); single-administrator mode waives it as for
+  assign. A room with nothing to move completes at once and parks nothing
+  (item 7). Each start, resume, completion, pause and failure is a
+  RoomStorageChanged audit row with the requester, approvers, room, configs and
+  reason (item 8). A store error kept or audited is scrubbed of URL queries and
+  long tokens.
+
+  vtc/rooms/get reports storage.migration; the rooms live-channel fingerprint
+  includes each migration's state, and the console polls a running one. A
+  restored backup brings a running migration back paused; the blob in flight is
+  verified again on resume. New optional config: [rooms.files]
+  migration_max_bytes_per_second (default 8 MiB/s), which a request's
+  maxBytesPerSecond can only lower.
+
+- **voting**: Community voting — polls, surveys and elections with blind tickets, a separate ballot box and trustee-encrypted levels (VTI-VOT-001 – 100) ([#2239](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2239))
+
+* feat(voting): vti-voting, PCS voting tickets, casts and the ballot box
+
+  Phase 0 of community voting (design: community voting, draft VTI-VOT-*):
+  the cryptographic core on the Predicate Credential System, no wire types
+  until the voting/* Trust Task family is specified.
+
+  - registrar: the community's voting helper key, under its own deployment
+    label (`<community>#voting-pcs`) and key-derivation info, so it is never
+    the vetting key. Issues tickets blind under `voter/<election>`,
+    sequentially under one lock.
+  - voter: a fresh key per election, the blinded ticket request, the cast:
+    `attest_in_context` for a hash-to-curve election point, with the
+    community, election, manifest digest and ballot bytes bound into the
+    context (VOT-012).
+  - ballot_box: verifies on the published `hvk` alone (VOT-007); the tag is
+    the per-election nullifier, recorded once under the revote rule
+    (VOT-002) through an atomic NullifierStore.
+
+  Measured (examples/scale.rs, 500 voters, release, M5 Max): issuance
+  2.0 ms (~500/s per VTC), cast 3.2 ms, admit 3.0 ms (~330/s per core),
+  recount 0.21 ms per ballot on 18 threads (~1 min for 300,000); a cast's
+  attestation is 248 bytes compressed.
+
+  publish = false until its first published consumer.
+
+- **vtc**: Group grants — capabilities a group provisions onto its members' entries (VTI-DIR-100 – 102) ([#2236](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2236))
+
+The first half of grant and role bindings (P5): the access-control model and
+  its one writer. `vtc/groups/bindings/add` still refuses a grants or role
+  binding `kindNotServed`; the tasks that take the consent such a binding needs
+  (VTI-DIR-104) follow, so nothing here can be reached from the wire yet.
+
+  - `VtcAclEntry.groupGrants` (`acl::group_grant`): one row per capability and
+    binding, naming the group as its source and the binding's delegator
+    (VTI-ACL-072). Two groups conferring a capability make two rows, so it goes
+    only when its last source does (VTI-DIR-101).
+  - `VtcAclEntry::can` reads the rows beside the role. A row counts only inside
+    the ceiling of the member's administrative role, and only while the entry may
+    act — at every read, so narrowing the role inerts it at once (VTI-DIR-102,
+    VTI-DIR-105). Rows confer nothing to approve (VTI-ACL-040).
+  - `VtcAclEntry::conferring` counts the rows, and `newly_conferred` /
+    `lost_conferring` read it: a role change that brings a group's grant into
+    force is a conferral the role change's own consent sees (VTI-APV-018).
+  - `groups::authority::provision` makes one entry's rows what its groups say:
+    every capability of an active grants or role binding of a closed group the
+    subject is a member of, that the binding's delegator holds **other than
+    through a group** — a group cannot manufacture a capability nobody behind it
+    held, or keep alive one its binder gave themselves through it. Under the
+    git-namespace write lock; the binding reconciler runs it for every affected
+    entry each pass. A suspended member keeps their rows.
+  - `acl/*` writes keep the rows as stored, as they keep resource grants; the
+    entry's `ext["org.openvtc"].groupGrants` shows each with its group and
+    whether it is in effect. A key rotation re-points rows and bindings.
+  - `AuditEvent::GroupGrantsChanged` records each change by reference: group,
+    binding, member entry, capabilities.
+
+- **vta**: VtaPin and remoteApprover UV keys for wallet sign-in ([#2228](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2228))
+
+Browser wallets without a PRF passkey could not approve auth/oob/grant.
+  Two new UV key kinds:
+
+  - vtaPin: the browser enrols K = PBKDF2(PIN) as verifier; a grant is
+    approved by a transport-key decision plus HMAC-SHA256(K,
+    "org.openvtc.uv-pin/v1|" + D), checked in constant time against a
+    persisted, CAS-updated guess limit (5 wrong -> 15 min lock, doubling
+    to 24 h, reset on success). Refusals oobUvPinWrong (attemptsRemaining)
+    and oobUvLocked (lockedUntil). Replacing a PIN on heartbeat requires
+    ext org.openvtc.uv-key-change.pinProof. The verifier is never returned,
+    audited or logged (PinVerifier redacts Debug).
+  - remoteApprover: the grant is approved on the member's phone. The VTA
+    raises a task-consent request bound to the enrolled approver and the
+    grant digest (PendingTaskConsent::bound_approver), pushes the signed
+    task-consent/request/0.1, and answers oobUvPending (matchCode,
+    expiresAt) until the phone's task-consent/decision/0.1 approves;
+    oobUvDeclined / oobUvExpired otherwise. The approver must be
+    designated by the operator (the device's stepUpApprover or an
+    approver-set member), not created by the device. Candidates are
+    listed via heartbeat ext org.openvtc.uv-approvers.
+
+- **vtc**: Community group membership — vtc/groups/members/{add,remove,list}, join, leave, requests/{list,decide}, and each member's group credential ([#2216](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2216))
+
+Membership for static groups (design §9), built on the group lifecycle.
+
+  - members/add and members/remove are for the group's managers; members/list
+    is for whoever the group shows its members to.
+  - join and leave are for an active member, for themselves: `open` joins where
+    the `groups` policy allows, and `request` records a request. requests/list
+    and requests/decide are for managers, and nobody decides their own request.
+    An approval re-checks that the requester is still an active member and the
+    group still takes requests.
+  - Where the group issues credentials, admitting a member first has the
+    community's VTA sign, as the group's DID through `keys/sign-document`, a DTG
+    `MembershipCredential` to the member's membership DID. It is offered with
+    the group's authority credential on the credential-exchange path, and only
+    then is the membership recorded. A VTA that does not answer or refuses
+    records nothing. There is no status list per group (VTI-CRD-014): expiry is
+    the revocation.
+  - members/list projects each member's fields exactly as
+    `vtc/directory/entries/show` does for the caller. Pending members go only to
+    managers, and `credentialValidUntil` only to the member and managers. A
+    request's note goes to managers only, and a declined requester never sees
+    the reason. Every list cursor is bound to its caller and filters.
+  - The directory's `groups` audience now counts the groups both belong to
+    whose member list the viewer may see, so a group hiding its members never
+    reveals them through somebody's card. Groups now fill `Viewer.groups` and
+    `Subject.groups`.
+  - Departure ends every membership and withdraws pending requests, before the
+    card's own departure. Deleting a group withdraws its pending requests.
+  - The member portal's sign-in key may sign `vtc/groups` as the member
+    (`signingScope`).
+  - New `GroupMembershipChanged` audit event, by reference only.
+
+  Four more declared codes are baselined until dynamic groups or authority
+  bindings exist, raising the error-code census ceiling from 11 to 15:
+  `members/add:dynamicGroup`, `members/add:exceedsRoleCeiling`,
+  `members/remove:dynamicGroup` and `leave:alreadyOptedOut`.
+
+- **vtc**: Community groups — vtc/groups/{create,update,delete,list,show}/0.1, each group with its own VTA-held identity ([#2215](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2215))
+
+* build: trust-tasks-rs 0.32.3, which carries the vtc/groups/* family (trust-tasks-tf #831, #833)
+
+- **vtc**: Administrators' notes and the directory export — vtc/directory/notes/{append,list,export}, vtc/directory/export (VTI-DIR-030 – 033) ([#2203](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2203))
+
+Administrators can keep notes about a member and export the directory, as the
+  member-directory design's P4 sets out.
+
+  Notes (`directory::notes`) are kept apart from cards and never reach a card or
+  any projection (VTI-DIR-030). They are append-only: a redaction is a later note
+  naming the one it withdraws, and a redacted note's text is withheld from every
+  later read (VTI-DIR-031). A new capability, `vtc.directory.notes`, sits in the
+  community-admin ceiling only. Each append, list and export is audited
+  (`DirectoryNoteAccessed`) before it answers, by reference and never by text. A
+  departed member's notes are purged with their card under `Disposition::Purge`,
+  and otherwise kept for the retention period and then erased by the directory
+  sweeper.
+
+  `notes/export` gives a member's notes back to them whole. It takes an
+  operation-bound step-up and is audited `Critical` (`DirectoryExported`,
+  VTI-DIR-032). `vtc/directory/export` (`vtc.directory.admin`) pages every entry
+  as JSContact, using the external card's fixed mapping over every field. The
+  step-up is taken on the first page, the cursor is bound to the caller, and the
+  export is audited once, `Critical`, with its count (VTI-DIR-033).
+
+  The console gains a notes card on the member page and an export on the
+  directory's Entries tab. Disclosure now states `adminNotes: true`.
+
+- **vta**: Keys/sign-document — a Data Integrity proof made only as the DID a document names ([#2200](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2200))
+
+The VTA now serves keys/sign-document/0.1: an eddsa-jcs-2022 proof over a JSON document from a key that never leaves the VTA. It is what lets a member whose key their agent holds sign their external directory card (vtc/directory/card/publish, whose card names the membership DID as `issuer` for exactly this), and it is how a producer issues a credential as a DID without holding its key.
+
+  The checks run in the specification's order:
+  1. The `sign-document` capability. `sign` is not accepted in its place, because this VTA frames keys/sign payloads and a `sign` grant was never given with an issuer binding.
+  2. The document's own checks: `proofPresent`; `documentInvalid` for `noSigner`, `signerMalformed` or `notCanonicalizable` (integers beyond 2^53 are refused, not rounded).
+  3. The key: in scope, active, Ed25519.
+  4. The issuer binding. The key must be a verification method of the DID the document names in `issuer` or `controller` (`issuerMismatch`), listed under the requested purpose (`purposeNotAuthorized`).
+  5. `created` within five minutes of the VTA's clock.
+
+  The signer DID's document is never taken from the request. A did:key's is read from the identifier, a did:peer's derived from it (`persona::own_document`), a did:webvh this VTA minted read from its own log, and anything else resolved.
+
+  The VTA builds the proof configuration and the 64 bytes of hash data itself (`sign_formats`), with the document's @context, and `challenge` and `domain` when they are given. It signs those bytes as ProtocolDefined through the same chokepoint as keys/sign, so scope, signing policy and quota apply. The audit row names signer, method, purpose, the document's id and type, and the SHA-256 of the hash data, never the document.
+
+- **vtc**: Directory pictures and external cards — images/upload, images/get, card/publish, card/public (VTI-DIR-046, VTI-DIR-120) ([#2199](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2199))
+
+Members can now put a picture on their directory card, and publish their card beyond the community as a card they signed themselves (trust-tasks-tf #826, #827, #830).
+
+  Pictures (`directory::images`):
+  - `images/upload` stores the community's own encoding, never the bytes it was sent. It decodes the picture, applies its orientation, scales it to at most 512 px and encodes it afresh, so no metadata block survives and the digest links nothing across communities (VTI-DIR-051).
+  - It reads PNG, JPEG and WebP through the `image` crate, pure Rust, with decode limits. A picture that claims more pixels than are decoded is `tooLarge` (tf #829).
+  - An upload belongs to its writer: a member's entry, or the directory's administrators. `card/update` and `card/assert` accept only a picture the writer uploaded, or the one the field already holds, so a digest seen on another card never puts that picture on yours.
+  - An upload no card takes up within 24 hours is erased, and so is a picture no card holds any longer.
+  - `images/get` projects the entry for its caller exactly as `entries/show` does. A caller the directory does not answer is the public, answered only a picture on a published external card. Every refusal is the same `notFound`.
+
+  External cards (`directory::external`):
+  - `card/publish` accepts a JSContact card only when it is exactly the member's public values in the fixed mapping and names their membership DID as `issuer`. It must be signed by that DID for `assertionMethod`. A delegated portal key never publishes, and the member needs registry-publication consent.
+  - The card is stored exactly as received and served by `card/public` to anyone, signed or not.
+  - `cardDigest` covers the card with its proof. `dtg_credentials::digest_multibase_json` strips the proof, so it is not used here.
+  - The recognition record carries `context.directoryCard` (purpose, entry, digest, `readWith`). The syncer reads the card at dispatch time, and the audit tail queues a re-publication on every publication and withdrawal.
+  - A card is never served stale. Every serving path reconciles it against the member's current public values first; a changed value withdraws it to `awaitingSignature`. Card writes, field changes and the hourly directory pass reconcile too, so a policy change or a suspension is caught, and the pass re-queues a recognition record whose pointer is wrong.
+  - Withdrawal stops serving and erases at once, then removes the pointer. It happens when the member turns `external` off, when they withdraw registry consent (`members/update`), and before anything else at departure (VTI-DIR-120).
+  - `[directory] external_cards` (default true) lets an operator turn publication off. The disclosure statement reads it together with the dispatch table.
+  - The default `directory` policy gains a route for the one public question, what an external card may carry. A shipped default without that route is replaced at boot while it is still the workspace's own row.
+
+  Member portal:
+  - Members choose a picture on Your card; the portal scales it down in the browser before sending.
+  - Other members' pictures are shown only once their bytes match the digest the card names.
+  - The portal shows where an external card stands and offers Stop publishing.
+  - Fixed: saving Your card used to send `external: false` unconditionally. It would have withdrawn a published card on every save; it now sends the card's own value.
+
+- Growth types in published crates are #[non_exhaustive] ([#2196](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2196))
+
+A new variant on a public enum, or a new field on a public struct a consumer
+  can build with a literal, is a breaking change in a published crate. It kept
+  happening on types that were always going to grow (#1231, #1234, #1244, #1247,
+  #1250); #1262 fixed it for Capability and AuditEvent only.
+
+  This marks the rest once. 143 enums are marked: every error and refusal enum
+  (VtaError, AppError, ...) and the growth vocabularies (kinds, statuses,
+  reasons, codes, transports, SealedPayloadV1). 32 structs are marked: config
+  and response bags that no caller builds with a literal. Adding the attribute
+  is itself breaking, once. After it, additions to these types are minor
+  changes.
+
+  Left exhaustive on purpose, and pinned that way by the census:
+  VerifiedAssertion, AssertionProof, ActScope, ApproveScope, ContextDirection,
+  SigningDomain, TokenStatus and Role. For each of these, every arm must be
+  considered, and a downstream wildcard would be the bug.
+
+  Every downstream match in the workspace gets a `_ =>` arm that takes the most
+  restrictive or most generic reading: an internal error, a hidden or refused
+  entry, a stale attribute. None is unreachable!().
+
+  vta-sdk/tests/non_exhaustive_census.rs fails on a public enum in a published
+  library crate whose name ends in Error, Refusal, Violation, Kind, Event,
+  Status, Capability, Reason or Code and that is not #[non_exhaustive], unless
+  it is listed as deliberately exhaustive with a reason. It also fails when a
+  listed enum gains the attribute or disappears.
+
+
+
+### Fixed
+
+- **vtc**: Audit every document the portal's sign-in key signs as the member, naming the key and the grant ([#2249](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2249))
+
+* fix(vtc): audit every document the portal's sign-in key signs as the member, naming the key and the grant
+
+  `auth/oob/grant/0.2` consumer item 7: the VTC MUST audit every document
+  accepted under a portal sign-in delegation against the member, naming the
+  starter key as the acting credential and the grant `id` as the authority.
+  Nothing did — the directory, groups and git-ns paths resolved the member
+  through `delegation::member_for` and wrote no row, and the delegation did
+  not keep the grant's id.
+
+  - The delegation records the grant's `id` at `redeem` (`Delegation.grant_id`).
+  - `delegation::accept` resolves the member and writes
+    `AuditEvent::MemberPortalKeyUsed` (`member`, `startKey`, `grantId`,
+    `taskType`, `documentId`) before the document takes effect. Without an
+    audit writer, or when the row cannot be written, the document is refused
+    — a delegated document is never unaudited.
+  - The three acceptance sites — the directory and groups tasks and git-ns's
+    `reader_as` — call `accept`. The admission budget and the size gate keep
+    `member_for`: they only ask whether a key stands for a member and accept
+    nothing, so they audit nothing.
+
+  `AuditEvent` is `#[non_exhaustive]`, so the new variant is additive.
+
+- **audit**: Bounded chain-head recovery and paged audit readers ([#2229](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2229))
+
+* fix(audit): bounded chain-head recovery and paged audit readers
+
+  Chain-head recovery read the whole audit keyspace to find one row, which
+  cannot work over vsock where the result must fit a single 16 MiB frame.
+  Recovery now scans the newest rows under the writer's own prefix, falling
+  back to a bounded deep scan only while a legacy log is being migrated, and
+  failing closed rather than silently re-anchoring.
+
+  Adds `ScanOpts` / `KeyspaceHandle::scan_raw` (a bounded, directional read
+  with an exclusive resume key) across both backends, and `OP_SCAN` on the
+  enclave proxy with the usual capability negotiation. `ScanPager` decides its
+  strategy once per walk, so a proxy that cannot bound a read is asked for the
+  range once rather than once per page.
+
+  Audit verification and listing walk through the pager instead of
+  materialising the keyspace.
+
+
+
 ## [0.48.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-common-v0.47.0...vti-common-v0.48.0) — 2026-10-18
 
 

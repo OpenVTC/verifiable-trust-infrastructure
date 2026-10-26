@@ -2,6 +2,65 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.25.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-tee-v0.24.0...vta-tee-v0.25.0) — 2026-10-26
+
+
+### Added
+
+- **vta**: Did:scid:vh:1 identities, create/1.2, and VTA/VTC presentation config ([#2257](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2257))
+
+* feat(vta-sdk): did:scid:vh:1 identity rules and did:scid secret kids (VTI-KEY-160 to VTI-KEY-164)
+
+- **pnm**: Select the TEE claim key by its DID, not by slug ([#2207](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2207))
+
+* feat(pnm): select the TEE claim key by its DID, not by slug
+
+  The claim DID is minted before the VTA exists, so no slug can be known then.
+  `claim-did create` stores the key under its DID and `bootstrap connect
+  --claim-did` selects it; `--slug` only names the VTA locally (default: the
+  VTA DID's tail). A malformed or unknown claim DID is refused before any
+  network call, and the not-found error no longer suggests minting a new claim
+  DID, which the VTA would not accept.
+
+  Older command lines keep working: without `--claim-did`, connect uses the key
+  stored under the slug, as earlier pnm did; with it, a slug-keyed key is used
+  only if it holds that DID. `claim-did create/show/discard --slug` stay as
+  hidden flags.
+
+  A VTA whose enclave predates vta-service 0.63 cannot parse the v2 claim and
+  answers 422; connect now says so and names the workaround.
+
+- Growth types in published crates are #[non_exhaustive] ([#2196](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2196))
+
+A new variant on a public enum, or a new field on a public struct a consumer
+  can build with a literal, is a breaking change in a published crate. It kept
+  happening on types that were always going to grow (#1231, #1234, #1244, #1247,
+  #1250); #1262 fixed it for Capability and AuditEvent only.
+
+  This marks the rest once. 143 enums are marked: every error and refusal enum
+  (VtaError, AppError, ...) and the growth vocabularies (kinds, statuses,
+  reasons, codes, transports, SealedPayloadV1). 32 structs are marked: config
+  and response bags that no caller builds with a literal. Adding the attribute
+  is itself breaking, once. After it, additions to these types are minor
+  changes.
+
+  Left exhaustive on purpose, and pinned that way by the census:
+  VerifiedAssertion, AssertionProof, ActScope, ApproveScope, ContextDirection,
+  SigningDomain, TokenStatus and Role. For each of these, every arm must be
+  considered, and a downstream wildcard would be the bug.
+
+  Every downstream match in the workspace gets a `_ =>` arm that takes the most
+  restrictive or most generic reading: an internal error, a hidden or refused
+  entry, a stale attribute. None is unreachable!().
+
+  vta-sdk/tests/non_exhaustive_census.rs fails on a public enum in a published
+  library crate whose name ends in Error, Refusal, Violation, Kind, Event,
+  Status, Capability, Reason or Code and that is not #[non_exhaustive], unless
+  it is listed as deliberately exhaustive with a reason. It also fails when a
+  listed enum gains the attribute or disappears.
+
+
+
 ## [0.24.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-tee-v0.22.0...vta-tee-v0.24.0) — 2026-10-18
 
 

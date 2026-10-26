@@ -2,6 +2,227 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.46.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-cli-common-v0.45.0...vta-cli-common-v0.46.0) — 2026-10-26
+
+
+### Added
+
+- **vta**: The voter engine keeps no clear member-to-cast pairing, and pnm takes the ticket in its own run ([#2278](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2278))
+
+Two privacy gaps from the community-voting threat model (CONVENTIONS §5 item 3, §6 items 3–4):
+
+  - The VTA's voter record kept the member-signed ticket request beside every cast's board leaf
+    hash, readable without the seed, and never discarded either. The member's documents and the
+    blinded request now go once the ticket is held; leaf hashes and receipts are wrapped under the
+    seed in their own secret (`voter-casts:`). The storage sweeper discards the ticket when voting
+    closes and the record, casts and receipts `RECEIPT_RETENTION` (30 days) later, with the voter
+    key's path. Nothing is audited: a row naming the election would be the pairing VTI-VOT-100
+    forbids.
+  - `pnm elections vote` took the ticket and cast in one run, so the community and the ballot box
+    could pair them by their clocks. `pnm elections ticket` is now its own step; `vote` with no
+    ticket held takes one and stops unless given `--now`.
+
+- **vta**: Did:scid:vh:1 identities, create/1.2, and VTA/VTC presentation config ([#2257](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2257))
+
+* feat(vta-sdk): did:scid:vh:1 identity rules and did:scid secret kids (VTI-KEY-160 to VTI-KEY-164)
+
+- **vta**: Operation budgets for Trust Task work (VTI-TRN-029) ([#2264](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2264))
+
+* feat(vta)!: operation budgets for Trust Task work (VTI-TRN-029)
+
+  A VTA offered more Trust Task work than it can serve stops answering in
+  time; on a TEE appliance health checks then fail and the watchdog restarts
+  the enclave. Three budgets now bound that work, each unset by default:
+
+  - operation_rate_limit_per_sec (+ _burst): the whole appliance, shared by
+    REST, DIDComm and TSP.
+  - operation_rate_limit_per_subject_per_sec: each client with standing, by
+    its DID, charged before the appliance budget.
+  - operation_rate_limit_unauthenticated_per_sec: DIDComm / TSP senders
+    without an ACL entry (login steps, public tasks, counterparties,
+    approvers, refusals), apart from the clients' budget. Past it there is no
+    reply, so a flood cannot cost a signature per message.
+
+  A task is charged its weight in signs (vault release 2, DID create and
+  delete 10, others 1), after authentication and before it runs. REST
+  answers 429 with x-rate-limit-source: vta and scope operations or
+  operations-subject; DIDComm and TSP a signed, retryable unavailable with
+  retryAfter. A refused document is not recorded (VTI-OPS-026), so a resend
+  is a retry.
+
+  The keys are config and tenant-overlay only, never config/patch, so a TEE
+  enclave restart keeps them. A zero is refused at load. pnm and cnm explain
+  operations and operations-subject refusals.
+
+- **rooms**: Record provenance, record retention and prune, and the epoch floor ([#2272](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2272))
+
+* feat(rooms)!: a record says what kind of claim it is and when it lapses — rooms/records/put 0.3 and provenance in the sealed body
+
+- **rooms**: Pnm rooms prune sends rooms/epoch/prune, and both hosts audit it as a prune ([#2260](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2260))
+
+* feat(rooms)!: pnm rooms prune sends rooms/epoch/prune, and both hosts audit it as a prune
+
+  `rooms/epoch/prune/0.1` was served by both hosts but no client sent it.
+  `pnm rooms prune --room --host --before-epoch --reason [--yes]` now does, the
+  way `pnm rooms renew` sends a mint: the VTA presents `admin` for the CLI
+  (`rooms/keys/present/0.2`) and the CLI signs. It cannot go through
+  `rooms/keys/act`: every act version (0.1-0.6) excludes rooms/epoch/prune on
+  purpose ("warrants a task of its own that states its consequences").
+
+  - vtc-client: `VtcClient::prune_epoch` (payload checked against the
+    generated `rooms::epoch::prune::v0_1::Payload`); never retried.
+  - vta-cli-common: `cmd_rooms_prune` reads the room first (rooms/info),
+    refuses a floor at/above the current epoch locally with the highest floor
+    that works, prints the irreversibility warning the spec's Consent/purpose
+    section asks for (what becomes unreadable; records stay; members' VTAs keep
+    what they derived), and proceeds only on `--yes` or a `y` at a terminal —
+    a pipe without `--yes` is refused with the command to run.
+  - Hosts: a prune was audited as `RoomOperation::MintEpoch`
+    (`room.epoch.mint`) in room-host and vtc-service. New
+    `RoomOperation::PruneEpoch` (`room.epoch.prune`, admin). Hosts also now
+    answer the spec's declared `rooms/epoch/prune:notAhead` with
+    `details.epoch` (vti_rooms::blob_tasks::prune_floor_refused) instead of a
+    generic validation error.
+  - Docs: data-rooms.md (§2 status, §9, new §10.4, §11 refusals), X4.4 done.
+    Prune erases the host's rungs only; members' VTAs keep their copies.
+
+- **voting**: Pnm elections trustee, vta/pcs/trustee/read, end-to-end tests over a mediator, and the voting service guide ([#2248](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2248))
+
+* feat(voting): pnm elections trustee {status,step} — a trustee runs its round from the command line; vta/pcs/trustee/read (trust-tasks-tf #855)
+
+  Nothing drove a trustee's part in a sealed or tallied-encrypted election: the VTA served every
+  step, but no client carried them, and on a private board a trustee's client could not even read
+  the election — the trustee tasks take its manifest, and the reads are answered only to a party
+  signing as a trustee, whose key the VTA holds.
+
+  - vta/pcs/trustee/read: the VTA signs voting/trustees/status or voting/election/show as the
+    trustee, addressed to the ballot box, and nothing else. pcsTrustee; RetrySafe; not audited
+    (it keeps nothing), as voter/read is not.
+  - The ballot box answers voting/election/show to every trustee the manifest names on any board.
+  - pnm elections trustee step <id> [--watch]: reads both, then takes every step the ceremony needs
+    of this trustee now — enrol, deal, confirm (with any justifications), answer complaints against
+    its dealing, keep its key share, decrypt after close — carrying each signed document to the
+    ballot box's HTTPS door. Idempotent; --watch repeats every 30 s until the result is out.
+    `status` shows where the ceremony stands.
+  - Temporary [patch.crates-io] onto #855's branch until it is released.
+
+- **voting**: Community voting — polls, surveys and elections with blind tickets, a separate ballot box and trustee-encrypted levels (VTI-VOT-001 – 100) ([#2239](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2239))
+
+* feat(voting): vti-voting, PCS voting tickets, casts and the ballot box
+
+  Phase 0 of community voting (design: community voting, draft VTI-VOT-*):
+  the cryptographic core on the Predicate Credential System, no wire types
+  until the voting/* Trust Task family is specified.
+
+  - registrar: the community's voting helper key, under its own deployment
+    label (`<community>#voting-pcs`) and key-derivation info, so it is never
+    the vetting key. Issues tickets blind under `voter/<election>`,
+    sequentially under one lock.
+  - voter: a fresh key per election, the blinded ticket request, the cast:
+    `attest_in_context` for a hash-to-curve election point, with the
+    community, election, manifest digest and ballot bytes bound into the
+    context (VOT-012).
+  - ballot_box: verifies on the published `hvk` alone (VOT-007); the tag is
+    the per-election nullifier, recorded once under the revote rule
+    (VOT-002) through an atomic NullifierStore.
+
+  Measured (examples/scale.rs, 500 voters, release, M5 Max): issuance
+  2.0 ms (~500/s per VTC), cast 3.2 ms, admit 3.0 ms (~330/s per core),
+  recount 0.21 ms per ballot on 18 threads (~1 min for 300,000); a cast's
+  attestation is 248 bytes compressed.
+
+  publish = false until its first published consumer.
+
+- **pnm**: Collect a room's renewal — pnm rooms offers renew, and renewals listed from vtc/rooms/offers/list/0.3 ([#2234](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2234))
+
+A community renews the room admissions a group's binding gave its members, and
+  lists the renewals in `vtc/rooms/offers/list/0.3` (trust-tasks-tf #843). Until a
+  surface collects one, the member's admission lapses at its old expiry. `pnm` is
+  now such a surface.
+
+  - `pnm rooms offers list` asks for 0.3, completed with `rooms/keys/act/0.6`, and
+    prints each renewal with the command that collects it. A VTA or VTC that does
+    not serve 0.3 is read at 0.2 (act 0.4), then 0.1 (act 0.3), as before; those
+    carry no renewals.
+  - `pnm rooms offers renew --room …` stores the renewal's membership and authority
+    in the member's VTA in place of the ones they renew (list 0.3 surface items
+    1–3). Each existing entry is found with `vault/credentials/query` by the room
+    as issuer, then the one whose subject is the member, and the renewal is
+    received under that handle. A key holder holding two authorities from one room
+    acts with neither, so more than one candidate is refused with the fix. Storing
+    a renewal again is harmless, so any surface may collect it first.
+
+- **vta**: Rooms/keys/act/0.6 — completes vtc/rooms/offers/list/0.3, so a member collects the renewals of the rooms they hold ([#2226](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2226))
+
+* build: trust-tasks-rs 0.32.6, which carries vtc/rooms/offers/list/0.3 and rooms/keys/act/0.6 (trust-tasks-tf #843)
+
+- **rooms**: Rooms/owner/group/add 0.3 and renew 0.2 settle a pending removal like remove 0.3 (trust-tasks-tf #824) ([#2197](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2197))
+- Growth types in published crates are #[non_exhaustive] ([#2196](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2196))
+
+A new variant on a public enum, or a new field on a public struct a consumer
+  can build with a literal, is a breaking change in a published crate. It kept
+  happening on types that were always going to grow (#1231, #1234, #1244, #1247,
+  #1250); #1262 fixed it for Capability and AuditEvent only.
+
+  This marks the rest once. 143 enums are marked: every error and refusal enum
+  (VtaError, AppError, ...) and the growth vocabularies (kinds, statuses,
+  reasons, codes, transports, SealedPayloadV1). 32 structs are marked: config
+  and response bags that no caller builds with a literal. Adding the attribute
+  is itself breaking, once. After it, additions to these types are minor
+  changes.
+
+  Left exhaustive on purpose, and pinned that way by the census:
+  VerifiedAssertion, AssertionProof, ActScope, ApproveScope, ContextDirection,
+  SigningDomain, TokenStatus and Role. For each of these, every arm must be
+  considered, and a downstream wildcard would be the bug.
+
+  Every downstream match in the workspace gets a `_ =>` arm that takes the most
+  restrictive or most generic reading: an internal error, a hidden or refused
+  entry, a stale attribute. None is unreachable!().
+
+  vta-sdk/tests/non_exhaustive_census.rs fails on a public enum in a published
+  library crate whose name ends in Error, Refusal, Violation, Kind, Event,
+  Status, Capability, Reason or Code and that is not #[non_exhaustive], unless
+  it is listed as deliberately exhaustive with a reason. It also fails when a
+  listed enum gains the attribute or disappears.
+
+
+
+### Fixed
+
+- **voting**: Trustees and voters act only on signed steps, the community authorizes decryption, the key needs t dealers, ballots bind their tag ([#2254](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2254))
+
+* chore(deps)!: trust-tasks-rs 0.33, affinidi-messaging-sdk 0.38, affinidi-tdk 0.29 and the mediator 0.44 crates; an mdoc presentation binds the OpenID4VP 1.0 handover
+
+  The release train behind trust-tasks-rs 0.33 (affinidi-tdk-rs #963, affinidi-messaging-mediator
+  #25). These versions move together because the messaging SDK's public API carries
+  `trust_tasks_rs` types, so the workspace takes them in one step:
+  - trust-tasks-rs 0.33.1, which carries the voting hardening specifications of trust-tasks-tf
+    #860;
+  - the trust-tasks-* transport crates at 0.33;
+  - affinidi-messaging-sdk 0.38;
+  - affinidi-tdk 0.29;
+  - affinidi-messaging-mediator-{admin,tui} and affinidi-messaging-test-mediator 0.44.
+
+  affinidi-tdk 0.29 re-exports affinidi-mdoc 0.4 (affinidi-tdk-rs #961), which implements
+  OpenID4VP 1.0 Final's mdoc handover (Appendix B.2.6.1): `[client_id, nonce, jwk_thumbprint,
+  response_uri]`. That replaces ISO 18013-7's `mdocGeneratedNonce`. A DeviceAuth signed over the
+  old handover verifies at no 1.0 verifier, so the holder's `Oid4vpSession` changes shape:
+
+  - **Breaking (vta-sdk):** `mdoc_generated_nonce` is removed. In its place is an optional
+    `jwk_thumbprint`, the base64url SHA-256 thumbprint (RFC 7638) of the key the verifier
+    encrypts its `direct_post.jwt` response to. It is absent for an unencrypted response, which
+    the handover encodes as CBOR `null`. The field has no specification of its own and nothing in
+    the workspace sent it.
+  - A new test checks that the DeviceAuth verifies against exactly that transcript, and against
+    none without the thumbprint or with another nonce.
+
+  The test mediator 0.44 still asks for affinidi-tdk 0.28, so dev builds hold that copy beside
+  0.29. Both share one messaging SDK and one trust-tasks-rs, and nothing passes a type between
+  them.
+
+
+
 ## [0.45.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-cli-common-v0.44.0...vta-cli-common-v0.45.0) — 2026-10-18
 
 

@@ -2,6 +2,57 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.24.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-vault-v0.23.0...vta-vault-v0.24.0) — 2026-10-26
+
+
+### Added
+
+- **vta-vault**: Narrow a vault query to one subject with subjectDid (vault/credentials/query/0.1) ([#2284](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2284))
+
+vault/credentials/query/0.1 gained a `subjectDid` request member
+  (dtgwg-trust-tasks-tf #884, in trust-tasks-rs 0.34): it narrows the other
+  constraints to credentials whose subject — the DID a presentation of the
+  credential is made as — is that DID. The VTA now honours it, matching the
+  stored `subject_did` (Data Integrity `credentialSubject.id`, SD-JWT `sub`).
+
+  It narrows only. On its own it is no filter, so a query naming nothing
+  but `subjectDid` is still refused as an enumeration.
+
+  This lets a wallet offer a VTC member-directory verification only the
+  credentials bound to the member's DID, which is the only holder the
+  VTC accepts.
+
+- Growth types in published crates are #[non_exhaustive] ([#2196](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2196))
+
+A new variant on a public enum, or a new field on a public struct a consumer
+  can build with a literal, is a breaking change in a published crate. It kept
+  happening on types that were always going to grow (#1231, #1234, #1244, #1247,
+  #1250); #1262 fixed it for Capability and AuditEvent only.
+
+  This marks the rest once. 143 enums are marked: every error and refusal enum
+  (VtaError, AppError, ...) and the growth vocabularies (kinds, statuses,
+  reasons, codes, transports, SealedPayloadV1). 32 structs are marked: config
+  and response bags that no caller builds with a literal. Adding the attribute
+  is itself breaking, once. After it, additions to these types are minor
+  changes.
+
+  Left exhaustive on purpose, and pinned that way by the census:
+  VerifiedAssertion, AssertionProof, ActScope, ApproveScope, ContextDirection,
+  SigningDomain, TokenStatus and Role. For each of these, every arm must be
+  considered, and a downstream wildcard would be the bug.
+
+  Every downstream match in the workspace gets a `_ =>` arm that takes the most
+  restrictive or most generic reading: an internal error, a hidden or refused
+  entry, a stale attribute. None is unreachable!().
+
+  vta-sdk/tests/non_exhaustive_census.rs fails on a public enum in a published
+  library crate whose name ends in Error, Refusal, Violation, Kind, Event,
+  Status, Capability, Reason or Code and that is not #[non_exhaustive], unless
+  it is listed as deliberately exhaustive with a reason. It also fails when a
+  listed enum gains the attribute or disappears.
+
+
+
 ## [0.23.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-vault-v0.22.0...vta-vault-v0.23.0) — 2026-10-18
 
 

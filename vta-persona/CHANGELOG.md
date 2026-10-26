@@ -2,6 +2,73 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.26.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-persona-v0.25.0...vta-persona-v0.26.0) — 2026-10-26
+
+
+### Added
+
+- **vta**: Star a directory member whose DID you have not been shown — persona/contact/put/1.1 linking form ([#2255](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2255))
+- **vta**: A contact's star, petname, lists and directory link — persona/contact/*/1.1 and persona/contact/lists/*/1.0 ([#2245](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2245))
+
+The VTA side of the member directory's personal layer (P3): what a member
+  keeps *about* other people — a star, a petname, their own lists, a link to the
+  community directory entry a contact was met through — lives in their own VTA,
+  never at a community, so no operator holds the graph of who watches whom.
+
+  - `persona/contact/put/1.1`: a filing may carry annotation changes, applied
+    with it or not at all; the annotating form (`contactId`, no document) changes
+    them without appending a revision or moving `rev`. Each annotation given
+    replaces, each `removeX` removes, `lists` replaces the set; a list the
+    context does not hold is `listUnknown` and changes nothing; an unchanged
+    request answers `annotationsChanged: false` and writes nothing. Petnames and
+    notes are kept exactly as written.
+  - `persona/contact/get/1.1`: the current annotations with any revision, `lists`
+    naming only lists that still exist.
+  - `persona/contact/list/1.1`: `starred` always, `petname`, `lists`,
+    `directoryRef` and the contact's own `displayName` (never the DID or the
+    petname); filters `knownByPersona`, `changedSince`, `starred`, `listId`
+    (`listUnknown`), `directoryVtcDid`; a stable order and a cursor bound to the
+    filters (`cursorInvalid`).
+  - `persona/contact/lists/{put,list,show,delete}/1.0`: names unique in the
+    context, compared exactly (`nameTaken`), at most 256 (`tooManyLists` with
+    its limit); listed by order then name with contact counts; deleting one takes
+    it off every contact in one batch, revising none, echoing nothing.
+  - Storage (`vta_persona::annotations`): annotations beside the contact
+    (`pca:`), lists `pcl:`, both context-scoped and in the persona keyspace (so
+    backed up); deleting a contact discards its annotations. No petname, note or
+    list name reaches a log or the audit trail.
+
+- Growth types in published crates are #[non_exhaustive] ([#2196](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2196))
+
+A new variant on a public enum, or a new field on a public struct a consumer
+  can build with a literal, is a breaking change in a published crate. It kept
+  happening on types that were always going to grow (#1231, #1234, #1244, #1247,
+  #1250); #1262 fixed it for Capability and AuditEvent only.
+
+  This marks the rest once. 143 enums are marked: every error and refusal enum
+  (VtaError, AppError, ...) and the growth vocabularies (kinds, statuses,
+  reasons, codes, transports, SealedPayloadV1). 32 structs are marked: config
+  and response bags that no caller builds with a literal. Adding the attribute
+  is itself breaking, once. After it, additions to these types are minor
+  changes.
+
+  Left exhaustive on purpose, and pinned that way by the census:
+  VerifiedAssertion, AssertionProof, ActScope, ApproveScope, ContextDirection,
+  SigningDomain, TokenStatus and Role. For each of these, every arm must be
+  considered, and a downstream wildcard would be the bug.
+
+  Every downstream match in the workspace gets a `_ =>` arm that takes the most
+  restrictive or most generic reading: an internal error, a hidden or refused
+  entry, a stale attribute. None is unreachable!().
+
+  vta-sdk/tests/non_exhaustive_census.rs fails on a public enum in a published
+  library crate whose name ends in Error, Refusal, Violation, Kind, Event,
+  Status, Capability, Reason or Code and that is not #[non_exhaustive], unless
+  it is listed as deliberately exhaustive with a reason. It also fails when a
+  listed enum gains the attribute or disappears.
+
+
+
 ## [0.25.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-persona-v0.24.0...vta-persona-v0.25.0) — 2026-10-18
 
 

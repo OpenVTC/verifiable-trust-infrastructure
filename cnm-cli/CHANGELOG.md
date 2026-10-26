@@ -2,6 +2,89 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.38.1](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/cnm-cli-v0.38.0...cnm-cli-v0.38.1) — 2026-10-26
+
+
+### Added
+
+- **vtc**: Ambient and sealed storage auth, GCS, and vtc/storage/* 0.2 ([#2271](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2271))
+
+Implements trustoverip/dtgwg-trust-tasks-tf#866 on the VTC.
+
+  - Serves vtc/storage/configs/{list,get,create,update}/0.2 beside 0.1, each
+    version answered at its own (a 0.1 reader is shown a config without its
+    `roleArn`, and `notAllowed` as `required`), and
+    vtc/storage/credentials/set/0.2.
+  - `ambient` and `sealed` authentication for `s3` and `gcs`, gated by the host
+    operator (`[rooms.files.auth]`, absent = off; create/0.2 item 9). A refusal
+    is `authNotAllowed` with `details.reason` (doesNotFitKind,
+    roleArnNotApplicable, disabledByHost); a config whose mode the host
+    withdrew reports `notAllowed` and can be moved off it (update/0.2 item 8).
+  - Room-scoped credentials (create/0.2, "Room-scoped credentials"): one per
+    (config, room or probe scope, read/write/delete), never the bucket, at most
+    15 minutes, memory only, never used unscoped. S3 ambient: STS AssumeRole of
+    `roleArn` (else the host's role, else the identity's own) with a session
+    policy written by a JSON encoder, optional `aws:SourceIp`; sealed AWS keys:
+    GetFederationToken; R2/B2/MinIO keys presign single objects. Requests are
+    SigV4-presigned here (aws-sigv4) and go through the existing PresignedBlobs.
+    GCS (new backend, object_store): ADC or an operator-named service account
+    impersonated for 900 s, or a sealed service-account key minted at Google's
+    own token endpoint, exchanged at Google STS under a Credential Access
+    Boundary whose condition a CEL builder quotes.
+  - Sealed credentials (credentials/set/0.2): opened with the community's key
+    (new additive `SealedPayloadV1::StorageCredential` in vta-sdk), checked as
+    received against `SealedStorageCredential`, kind and configId, stored
+    encrypted in a new `storage_credentials` keyspace excluded from backup and
+    cleared on import, reported by an HMAC fingerprint, never returned, logged
+    or audited, destroyed when replaced or when `auth` leaves `sealed`; the
+    parked action drops the sealed block when it closes.
+  - Console: storage forms speak 0.2 (S3/GCS, VTA account/ambient/sealed,
+    roleArn, moving auth), sealed configs labelled as no protection against the
+    machine's operator. `cnm storage {list,get,credentials set}` seals the
+    credential to the community's DID.
+  - Docs: docs/03-vtc/room-storage.md, data-rooms-files.md §7.4.
+
+- **voting**: Community voting — polls, surveys and elections with blind tickets, a separate ballot box and trustee-encrypted levels (VTI-VOT-001 – 100) ([#2239](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2239))
+
+* feat(voting): vti-voting, PCS voting tickets, casts and the ballot box
+
+  Phase 0 of community voting (design: community voting, draft VTI-VOT-*):
+  the cryptographic core on the Predicate Credential System, no wire types
+  until the voting/* Trust Task family is specified.
+
+  - registrar: the community's voting helper key, under its own deployment
+    label (`<community>#voting-pcs`) and key-derivation info, so it is never
+    the vetting key. Issues tickets blind under `voter/<election>`,
+    sequentially under one lock.
+  - voter: a fresh key per election, the blinded ticket request, the cast:
+    `attest_in_context` for a hash-to-curve election point, with the
+    community, election, manifest digest and ballot bytes bound into the
+    context (VOT-012).
+  - ballot_box: verifies on the published `hvk` alone (VOT-007); the tag is
+    the per-election nullifier, recorded once under the revote rule
+    (VOT-002) through an atomic NullifierStore.
+
+  Measured (examples/scale.rs, 500 voters, release, M5 Max): issuance
+  2.0 ms (~500/s per VTC), cast 3.2 ms, admit 3.0 ms (~330/s per core),
+  recount 0.21 ms per ballot on 18 threads (~1 min for 300,000); a cast's
+  attestation is 248 bytes compressed.
+
+  publish = false until its first published consumer.
+
+
+
+### Fixed
+
+- **cnm**: Build the step-up and enrol links on the console's origin, not the API base ([#2267](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2267))
+
+`cnm git` printed the operation-bound step-up link (and the step-up passkey enrolment link) by appending `/admin/step-up` to the profile's VTC base. That base is the `VTCRest` endpoint the DID document advertises, which carries the API mount: `https://vtc.example/v1`. The console is a sibling mount on the same host, so the link landed on `/v1/admin/step-up`, which a VTC serving a community website answers with its home page, and an operator following the printed link saw no step-up form.
+
+  `console_url` now keeps the base's origin and sets the path to `/admin/<page>`, dropping the API mount, any query and any fragment. A base that does not parse as a URL falls back to the old appending behaviour. Both `step_up_url` and `enrol_url` go through it; a test pins that a `/v1` base yields `https://vtc.example/admin/step-up#request=…`.
+
+  Seen on a single-administrator community while recording `git.repo.own` under the VTI-APV-022 waiver: the printed link showed the website, and the console's step-up page at `/admin/step-up` with the same fragment worked.
+
+
+
 ## [0.38.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/cnm-cli-v0.37.0...cnm-cli-v0.38.0) — 2026-10-18
 
 
