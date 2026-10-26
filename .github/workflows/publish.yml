@@ -236,7 +236,7 @@ jobs:
         # moving major tag, so `@v0` resolves to nothing and the job fails at
         # "Set up job" before running a step. (actions/checkout@v6 works
         # because that repo does publish v6 — the convention is not universal.)
-        uses: release-plz/action@f393a7b38aca9d9b4c58447b291dbac963901df6 # v0.5.141
+        uses: release-plz/action@6caa8d34f74d82b0dc76a18edd1cc3d6801c9baf # v0.5.143
         with:
           command: release
         env:
@@ -256,7 +256,7 @@ jobs:
         id: release2
         if: inputs.package == '' && steps.release1.outcome == 'failure'
         continue-on-error: true
-        uses: release-plz/action@f393a7b38aca9d9b4c58447b291dbac963901df6 # v0.5.141
+        uses: release-plz/action@6caa8d34f74d82b0dc76a18edd1cc3d6801c9baf # v0.5.143
         with:
           command: release
         env:
@@ -275,7 +275,7 @@ jobs:
       - name: Run release-plz (attempt 3)
         id: release3
         if: inputs.package == '' && steps.release2.outcome == 'failure'
-        uses: release-plz/action@f393a7b38aca9d9b4c58447b291dbac963901df6 # v0.5.141
+        uses: release-plz/action@6caa8d34f74d82b0dc76a18edd1cc3d6801c9baf # v0.5.143
         with:
           command: release
         env:
@@ -464,7 +464,7 @@ jobs:
       # guessing from commit messages — which is the failure this exists to
       # prevent, and it is only a warning, so nothing goes red.
       - name: Install cargo-semver-checks
-        uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 # v2.87.28
+        uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2.87.29
         with:
           tool: cargo-semver-checks
 
@@ -579,7 +579,7 @@ jobs:
         # moving major tag, so `@v0` resolves to nothing and the job fails at
         # "Set up job" before running a step. (actions/checkout@v6 works
         # because that repo does publish v6 — the convention is not universal.)
-        uses: release-plz/action@f393a7b38aca9d9b4c58447b291dbac963901df6 # v0.5.141
+        uses: release-plz/action@6caa8d34f74d82b0dc76a18edd1cc3d6801c9baf # v0.5.143
         with:
           command: release-pr
         env:
