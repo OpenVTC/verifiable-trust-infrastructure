@@ -275,6 +275,7 @@ pub async fn create(
         }),
         refusal: None,
         checkpoints: Vec::new(),
+        checkpoint_asked_at: None,
         final_checkpoint: false,
         certified: None,
         election_key: None,
@@ -658,6 +659,7 @@ pub async fn checkpoint(state: &AppState, election_id: &str, final_head: bool) {
         return;
     };
     let payload = json!({ "community": community_did(state).await, "electionId": election_id });
+    let asked = Utc::now();
     let Ok(BoxAnswer::Success { payload, document }) =
         exchange(state, &rec.ballot_box, "voting/board/head", &payload).await
     else {
@@ -668,6 +670,8 @@ pub async fn checkpoint(state: &AppState, election_id: &str, final_head: bool) {
     let Ok(Some(mut rec)) = store::get(ks, election_id).await else {
         return;
     };
+    // Paced by this clock: a box that dates its heads ahead cannot put the next one off.
+    rec.checkpoint_asked_at = Some(asked);
     let repeat = rec.checkpoints.last().is_some_and(|c| c["head"] == head);
     if !repeat {
         // At most 256 kept; the final head always is, in place of the oldest after the first

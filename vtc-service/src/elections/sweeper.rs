@@ -133,13 +133,13 @@ async fn settle(
     Ok(())
 }
 
-/// Whether the last head kept is older than [`CHECKPOINT_EVERY`] (or there is none).
+/// Whether the community last had a head answered [`CHECKPOINT_EVERY`] ago or more (or never),
+/// by its own clock. Never by a head's `issuedAt`: that is the ballot box's clock, and a box
+/// that dated its heads ahead would put every later checkpoint off, leaving it free to show
+/// different boards in between.
 fn checkpoint_due(rec: &store::ElectionRecord, now: DateTime<Utc>) -> bool {
-    rec.checkpoints
-        .last()
-        .and_then(|c| c["head"]["issuedAt"].as_str())
-        .and_then(|t| DateTime::parse_from_rfc3339(t).ok())
-        .is_none_or(|at| now - at.with_timezone(&Utc) >= CHECKPOINT_EVERY)
+    rec.checkpoint_asked_at
+        .is_none_or(|at| now - at >= CHECKPOINT_EVERY || now < at)
 }
 
 async fn discard_pre_credentials(state: &AppState, election_id: &str) -> Result<(), AppError> {
@@ -172,5 +172,26 @@ async fn audit(state: &AppState, election_id: &str, change: &str, answer: String
     });
     if let Err(e) = writer.write(&community, None, event).await {
         warn!(election = election_id, error = %e, "could not audit a registration's answer");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_checkpoint_is_paced_by_the_communitys_clock_not_the_boxs() {
+        let now = Utc::now();
+        let mut rec = store::test_record(now);
+        // A head the box dated a year ahead puts nothing off.
+        rec.checkpoints.push(serde_json::json!({
+            "head": { "issuedAt": (now + chrono::Duration::days(365)).to_rfc3339() }
+        }));
+        assert!(checkpoint_due(&rec, now));
+        rec.checkpoint_asked_at = Some(now);
+        assert!(!checkpoint_due(&rec, now + chrono::Duration::hours(1)));
+        assert!(checkpoint_due(&rec, now + CHECKPOINT_EVERY));
+        // Its own clock set back: due again, rather than never.
+        assert!(checkpoint_due(&rec, now - chrono::Duration::hours(1)));
     }
 }

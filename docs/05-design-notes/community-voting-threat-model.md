@@ -46,6 +46,7 @@ party's report of it.** The board is the evidence; the ballot box is only its ke
 | 17 | Any DID registers elections at a box until its store is full | `[communities] allowed` (none without it) and a quota of unfinished elections per community (`unavailable` past it) |
 | 18 | A flood of casts holds the box's one lock through every pairing check, stalling every other community | a cast's costly checks run on bounded blocking threads without the lock; what they prove admits that one cast only |
 | 19 | One `voting/board/read` of a board of large entries is an unbounded answer | a page carries at most 256 KiB of entries (at least one), fewer than `limit` |
+| 20 | A box dates its heads ahead, and the community, pacing checkpoints by a head's `issuedAt`, stops taking them — leaving the box free to show different boards in between | checkpoints are paced by when the community last had a head answered, by its own clock |
 
 Items 1 – 8 changed the wire, as `vta/pcs/trustee/*/0.2`, `vta/pcs/vote-encrypted/0.2`,
 `voting/trustees/authorize/0.1` and CONVENTIONS §3.9 / §9.3 – 9.7. The 0.1 trustee and
@@ -56,8 +57,22 @@ vote-encrypted tasks are retired: their whole design was acting on the box's rep
 None of these lets a single party change a result. Each one weakens privacy or availability, or
 leaves a cost unbounded:
 
-- **Checkpoints.** `checkpoint_due` reads the box's clock.
 - **The cast door's rate.** The service does not rate-limit the anonymous HTTPS door itself;
   the guide puts that on the reverse proxy in front of it.
-- **The ticket label** does not bind the manifest; that needs a specification change.
-- **The voter's VTA** does not cross-check the voting key with the box.
+
+## Considered, and left as they are
+
+- **The ticket's class names the election, not its manifest** (`voter/<electionId>`). The cast
+  binds the manifest anyway: the point a cast attests for, and the context its attestation is
+  made under, both hash the manifest digest, so a ticket counts once per manifest. Using one
+  ticket under two manifests needs the community to register the same election identifier
+  twice, at two boxes, with different manifests — two elections it runs itself, each counted
+  apart. A community that wants a voter to count twice can issue a second ticket; the label
+  changes nothing about that.
+- **The voter's VTA takes the voting key from the community, unchecked against the box.** A
+  ticket under any key but the one the box registered is refused at the cast (`castInvalid`):
+  the member sees the refusal, nothing links them to it, and a community that wants to keep a
+  member from voting can already refuse the ticket. Checking would need `voting/election/show`
+  to carry the parameters, and a private board answers no voter anyway. Where the community's
+  operator also runs the box, the box could admit casts under a second key; that is the
+  `sameOperator` disclosure every member is shown before taking a ticket (VTI-VOT-090).

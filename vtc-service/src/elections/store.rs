@@ -91,6 +91,10 @@ pub struct ElectionRecord {
     /// box signed it.
     #[serde(default)]
     pub checkpoints: Vec<Value>,
+    /// When the community last asked for a head, by its own clock: what checkpoints are paced
+    /// by, never a time the ballot box wrote into a head.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checkpoint_asked_at: Option<DateTime<Utc>>,
     /// Whether the head as it stood at close is among them.
     #[serde(default)]
     pub final_checkpoint: bool,
@@ -294,12 +298,18 @@ pub async fn replace_ticket(ks: &KeyspaceHandle, t: &TicketIssued) -> Result<(),
     ks.insert(ticket_key(&t.election_id, &t.signer), t).await
 }
 
+/// A registered election opening tomorrow, for tests.
+#[cfg(all(test, feature = "voting"))]
+pub(crate) fn test_record(now: DateTime<Utc>) -> ElectionRecord {
+    tests::record(now)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use chrono::Duration;
 
-    fn record(now: DateTime<Utc>) -> ElectionRecord {
+    pub(super) fn record(now: DateTime<Utc>) -> ElectionRecord {
         ElectionRecord {
             election_id: "agm".into(),
             manifest: Value::Null,
@@ -320,6 +330,7 @@ mod tests {
             delivery: None,
             refusal: None,
             checkpoints: Vec::new(),
+            checkpoint_asked_at: None,
             final_checkpoint: false,
             certified: None,
             election_key: None,
