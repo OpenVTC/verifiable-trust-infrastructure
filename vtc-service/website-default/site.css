@@ -927,29 +927,44 @@ code {
   color: var(--text);
 }
 
-/* A phone cannot scan its own screen: there, say how to use the DID on
- * this device instead of asking to scan it. */
-.pass-caption-touch {
+/* The code and its caption. Open everywhere; on a phone it starts folded
+ * (site.js), since a phone cannot scan its own screen. The summary is the
+ * only way to unfold it, so it shows only where the fold can be closed. */
+.pass-fold > summary {
   display: none;
-  font-weight: 400;
+  cursor: pointer;
+  text-align: center;
   font-size: 0.85rem;
   color: var(--text-muted);
 }
 
-/* The same DID as a link, for the wallet on this phone. `.btn` sets a
- * display, so `[hidden]` alone would not hide it. */
-.pass-open {
+.pass-fold-body {
+  display: flex;
+  flex-direction: column;
+  gap: 1.1rem;
+}
+
+.pass-fold[open] > summary {
+  margin-bottom: 1.1rem;
+}
+
+/* The same DID as a link, for the wallet on this device. site.js unhides it
+ * only on a touch device; `.btn` sets a display, so `[hidden]` alone would
+ * not hide it. */
+.pass-open[hidden] {
   display: none;
 }
 
-@media (hover: none) and (pointer: coarse) {
-  .pass-caption-touch {
-    display: block;
-    margin-top: 0.25rem;
-  }
+.pass-open-note {
+  margin: -0.5rem 0 0;
+  text-align: center;
+  font-size: 0.85rem;
+  color: var(--text-muted);
+}
 
-  .pass-open:not([hidden]) {
-    display: flex;
+@media (hover: none) and (pointer: coarse) {
+  .pass-fold > summary {
+    display: list-item;
   }
 
   .hero-hint {

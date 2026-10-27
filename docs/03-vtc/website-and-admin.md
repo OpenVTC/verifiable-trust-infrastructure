@@ -306,14 +306,20 @@ community profile is initialised. An operator site under
 `website.root_dir` can show the same code with
 `<img src="/v1/community/did-qr.svg" alt="QR code of the community DID">`.
 
-A phone cannot scan its own screen, so on a touch device the page also
-shows **Join in Keyring**: a link to the same bare DID
+A phone cannot scan its own screen, so on a device with a touch screen
+the page also shows **Join in Keyring**: a link to the same bare DID
 (`<a href="did:webvh:…">`). The phone hands the tap to the app that
 registers the `did` scheme, and Keyring routes it exactly as it routes a
-scan, into joining the community. It is labelled *Join* so a member
-does not take it for sign-in, and the caption points members to
-**Member sign-in**. The page sets the link only for a value of the
-form `did:<method>:…`. Without such an app installed, the
+scan, into joining the community. It is labeled *Join* so a member
+does not take it for sign-in, and the note under it points members to
+**Member sign-in**. The page sets the link only for a value of the form
+`did:<method>:…`, and shows it as soon as the profile names the DID,
+even if the code fails to load. A touch screen is any
+coarse pointer (`any-pointer: coarse`), so an iPad with a keyboard or
+trackpad counts, as does an iPad presenting itself as a Mac
+(`maxTouchPoints`). Where touch is the only input (a phone, or a tablet
+on its own), the link comes first and the code starts folded behind
+"Show the code for another device". Without such an app installed, the
 tap does nothing (Android) or reports an invalid address (iOS), so the
 Copy button stays beside it. An operator site can offer the same link
 with the DID from `public-profile`'s `communityDid`.
