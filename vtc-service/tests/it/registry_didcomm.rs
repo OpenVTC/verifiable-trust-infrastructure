@@ -87,6 +87,9 @@ async fn serve_once(
 
 const RECORD_PUT: &str = "https://trusttasks.org/spec/registry/record/put/0.1";
 const RECORD_QUERY: &str = "https://trusttasks.org/spec/registry/record/query/0.1";
+/// The lowerCamelCase versions membership records are written and read with.
+const RECORD_PUT_0_3: &str = "https://trusttasks.org/spec/registry/record/put/0.3";
+const RECORD_QUERY_0_3: &str = "https://trusttasks.org/spec/registry/record/query/0.3";
 
 /// The `#response` to `request_type`, carrying `payload`. Unsigned and
 /// unaddressed: [`serve_once`] makes it the registry's.
@@ -124,8 +127,8 @@ async fn a_member_record_reaches_the_registry_and_the_reply_completes_the_write(
     let (result, request) = tokio::join!(
         client.publish_member(&record),
         serve_once(&registry, mock.vtc_did(), |_| response(
-            RECORD_PUT,
-            json!({ "ok": true, "created": true }),
+            RECORD_PUT_0_3,
+            json!({ "ok": true, "wasCreated": true }),
         )),
     );
 
@@ -134,10 +137,7 @@ async fn a_member_record_reaches_the_registry_and_the_reply_completes_the_write(
     // The document the registry actually received. `record/put` is a write, so
     // the registry requires a proof and the four-part key must be the tuple a
     // recognition query later looks up.
-    assert_eq!(
-        request["type"],
-        "https://trusttasks.org/spec/registry/record/put/0.1"
-    );
+    assert_eq!(request["type"], RECORD_PUT_0_3);
     assert_eq!(request["issuer"], mock.vtc_did());
     assert_eq!(request["recipient"], registry.did());
     assert!(
@@ -146,11 +146,22 @@ async fn a_member_record_reaches_the_registry_and_the_reply_completes_the_write(
          {request}",
     );
     let stored = &request["payload"]["record"];
-    assert_eq!(stored["entity_id"], "did:key:zMemberOne");
-    assert_eq!(stored["authority_id"], mock.vtc_did());
+    assert_eq!(stored["entityId"], "did:key:zMemberOne");
+    assert_eq!(stored["authorityId"], mock.vtc_did());
     assert_eq!(stored["action"], RECOGNISE_ACTION);
     assert_eq!(stored["resource"], TRUST_GRAPH_RESOURCE);
+    assert_eq!(stored["recordType"], "recognition");
     assert_eq!(stored["recognized"], true);
+    // The membership period is the record's validity window, so the registry
+    // answers recognition for the period the member belongs. An active member
+    // has no end.
+    assert_eq!(stored["validFrom"], record.active_from.to_rfc3339());
+    assert!(stored.get("validUntil").is_none(), "{stored}");
+    // The dates also stay in the context for this release, for 0.1 readers.
+    assert_eq!(
+        stored["context"]["activeFrom"],
+        record.active_from.to_rfc3339()
+    );
 
     // What the diagnostics surface will report. It has to describe the call
     // that just happened, not the configuration that implies it: the whole
@@ -235,6 +246,58 @@ async fn a_failed_selection_is_visible_on_the_transport_snapshot() {
         "got {error}",
     );
 
+    mock.shutdown().await;
+}
+
+/// A registry that predates `registry/record/put/0.3` answers
+/// `unsupportedVersion`. The write is resent as 0.1, which still carries the
+/// membership dates in its context, and the next write goes straight to 0.1.
+#[tokio::test]
+async fn a_registry_without_put_0_3_gets_the_0_1_record() {
+    init_tracing();
+    let mock = MockVtcTransport::start().await;
+    let registry = mock.connect_registry_peer().await;
+    let client = client_for(&mock, registry.did());
+
+    let record = RegistryRecord::fresh_active("did:key:zMemberFour");
+    let serve_both = async {
+        let first = serve_once(&registry, mock.vtc_did(), |_| {
+            rejection("unsupportedVersion")
+        })
+        .await;
+        let second = serve_once(&registry, mock.vtc_did(), |_| {
+            response(RECORD_PUT, json!({ "ok": true, "created": true }))
+        })
+        .await;
+        (first, second)
+    };
+    let (result, (first, second)) = tokio::join!(client.publish_member(&record), serve_both);
+    result.expect("the 0.1 write completes");
+    assert_eq!(first["type"], RECORD_PUT_0_3);
+    assert_eq!(second["type"], RECORD_PUT);
+    let stored = &second["payload"]["record"];
+    assert_eq!(stored["entity_id"], "did:key:zMemberFour");
+    assert!(
+        stored.get("validFrom").is_none(),
+        "0.1 has no window: {stored}"
+    );
+    assert_eq!(
+        stored["context"]["activeFrom"],
+        record.active_from.to_rfc3339()
+    );
+
+    // Remembered: the next write is sent as 0.1 without trying 0.3 first.
+    let (result, third) = tokio::join!(
+        client.publish_member(&record),
+        serve_once(&registry, mock.vtc_did(), |_| response(
+            RECORD_PUT,
+            json!({ "ok": true, "created": false }),
+        )),
+    );
+    result.expect("the second write completes");
+    assert_eq!(third["type"], RECORD_PUT);
+
+    registry.shutdown().await;
     mock.shutdown().await;
 }
 
@@ -336,18 +399,21 @@ async fn a_member_record_round_trips_through_query() {
     let (result, request) = tokio::join!(
         client.read_member("did:key:zMemberThree"),
         serve_once(&registry, mock.vtc_did(), |req| {
-            let entity = req["payload"]["entity_id"].as_str().unwrap_or_default();
+            assert_eq!(req["type"], RECORD_QUERY_0_3);
+            let entity = req["payload"]["entityId"].as_str().unwrap_or_default();
             response(
-                RECORD_QUERY,
+                RECORD_QUERY_0_3,
                 json!({
                     "records": [{
-                        "entity_id": entity,
-                        "authority_id": req["payload"]["authority_id"],
+                        "entityId": entity,
+                        "authorityId": req["payload"]["authorityId"],
                         "action": RECOGNISE_ACTION,
                         "resource": TRUST_GRAPH_RESOURCE,
-                        "record_type": "recognition",
+                        "recordType": "recognition",
                         "recognized": true,
-                        "context": { "status": "active", "activeFrom": "2026-08-01T00:00:00Z" },
+                        "validFrom": "2026-08-01T00:00:00Z",
+                        "validUntil": "2027-08-01T00:00:00Z",
+                        "context": { "status": "active" },
                     }],
                 }),
             )
@@ -359,6 +425,12 @@ async fn a_member_record_round_trips_through_query() {
         .expect("the registry returned a record for this member");
     assert_eq!(found.member_did, "did:key:zMemberThree");
     assert_eq!(found.status, RegistryStatus::Active);
+    // The dates come from the record's validity window.
+    assert_eq!(found.active_from.to_rfc3339(), "2026-08-01T00:00:00+00:00");
+    assert_eq!(
+        found.active_to.map(|t| t.to_rfc3339()).as_deref(),
+        Some("2027-08-01T00:00:00+00:00")
+    );
     // Not a fully-keyed fetch: all four parts make it an exact lookup that
     // errors on a miss, and "this member has no record" is a normal answer.
     assert!(

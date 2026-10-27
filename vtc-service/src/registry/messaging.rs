@@ -17,9 +17,16 @@
 //!   that can go false again — this one could not).
 //!
 //! This client closes all three. It speaks the registry's Trust Tasks —
-//! `registry/record/{put,delete,query}/0.1` and `registry/recognition/0.1` —
-//! over the transport both parties advertise, and derives liveness from a real
+//! `registry/record/{put,delete,query}` and `registry/recognition` — over the
+//! transport both parties advertise, and derives liveness from a real
 //! round-trip rather than from a URL being up.
+//!
+//! Membership records are written with `registry/record/put/0.3` and read with
+//! `registry/record/query/0.3`, the lowerCamelCase versions whose records carry
+//! a validity window (`validFrom` / `validUntil`). A registry that predates
+//! them answers `unsupportedVersion`, and is then sent the 0.1 versions (see
+//! [`MessagingRegistryClient::round_trip_versioned`]). The other tasks are
+//! still sent at 0.1.
 //!
 //! ## Transport selection
 //!
@@ -61,6 +68,7 @@
 //! published binding. We therefore emit the envelope and accept **either**
 //! shape inbound.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
@@ -90,6 +98,9 @@ const RECORD_PUT: &str = "https://trusttasks.org/spec/registry/record/put/0.1";
 const RECORD_DELETE: &str = "https://trusttasks.org/spec/registry/record/delete/0.1";
 const RECORD_QUERY: &str = "https://trusttasks.org/spec/registry/record/query/0.1";
 const RECOGNITION: &str = "https://trusttasks.org/spec/registry/recognition/0.1";
+/// The lowerCamelCase versions, whose records carry a validity window.
+const RECORD_PUT_0_3: &str = "https://trusttasks.org/spec/registry/record/put/0.3";
+const RECORD_QUERY_0_3: &str = "https://trusttasks.org/spec/registry/record/query/0.3";
 /// `governance/capability/{enable,disable}/0.1`, read off the generated types.
 const CAPABILITY_ENABLE: &str = <trust_tasks_rs::specs::governance::capability::enable::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 const CAPABILITY_DISABLE: &str = <trust_tasks_rs::specs::governance::capability::disable::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
@@ -138,6 +149,10 @@ pub struct MessagingRegistryClient {
     /// when it is not ours (VTI-56, `vti_common::tsp_route`). Same lock
     /// discipline as `transport`.
     tsp_mediator: RwLock<Option<String>>,
+    /// Set once the registry has answered a lowerCamelCase `registry/*` task
+    /// with `unsupportedVersion`: it predates them, and later calls go
+    /// straight to 0.1 instead of paying the extra round trip every time.
+    pre_0_3_registry: AtomicBool,
 }
 
 impl std::fmt::Debug for MessagingRegistryClient {
@@ -176,6 +191,7 @@ impl MessagingRegistryClient {
             http,
             transport,
             tsp_mediator: RwLock::new(None),
+            pre_0_3_registry: AtomicBool::new(false),
         }
     }
 
@@ -495,6 +511,41 @@ impl MessagingRegistryClient {
     /// The four parts must match [`UpstreamRegistryClient::recognise`]'s query
     /// tuple exactly, or we publish records nobody looks up — a silent,
     /// green-status failure. Both sides read the same constants.
+    /// Send the lowerCamelCase version of a task, or the 0.1 version to a
+    /// registry that predates it. Returns the reply and whether it answered
+    /// the new version.
+    ///
+    /// Only `unsupportedVersion` (the registry knows the task but not this
+    /// version: SPEC §8.3's signal to downgrade) moves to 0.1. Any other answer,
+    /// rejection included, is the registry's answer to what was asked. The
+    /// downgrade is remembered for this client.
+    ///
+    /// Downgrading a membership write loses nothing while `trust_record` also
+    /// carries the dates in `context`, which a 0.1 record keeps. Removing that
+    /// copy means removing this fallback for writes too, or a 0.1 registry
+    /// would silently get records without their end date.
+    async fn round_trip_versioned(
+        &self,
+        new: (&str, Value),
+        old: (&str, Value),
+        protocol: Protocol,
+    ) -> Result<(TrustTask<Value>, bool), RegistryError> {
+        if !self.pre_0_3_registry.load(Ordering::Relaxed) {
+            let reply = self.round_trip(new.0, new.1, protocol).await?;
+            if !is_unsupported_version(&reply) {
+                return Ok((reply, true));
+            }
+            self.pre_0_3_registry.store(true, Ordering::Relaxed);
+            tracing::warn!(
+                registry = %self.registry_did,
+                task = new.0,
+                "the trust registry does not answer the lowerCamelCase registry/* tasks; using \
+                 0.1, where a membership record's dates travel in its context only"
+            );
+        }
+        Ok((self.round_trip(old.0, old.1, protocol).await?, false))
+    }
+
     fn record_key(&self, member_did: &str) -> Result<(String, String), RegistryError> {
         Ok((member_did.to_string(), self.authority()?.to_string()))
     }
@@ -532,6 +583,13 @@ fn classify_no_match(
 /// Wrap a document in the `trust-tasks-tsp` binding envelope.
 fn tsp_envelope(doc: &TrustTask<Value>) -> Result<Vec<u8>, RegistryError> {
     crate::outbound::seal_trust_task_tsp(doc).map_err(|e| RegistryError::Transient(e.to_string()))
+}
+
+/// Whether `reply` is a registry saying it knows this task but not this
+/// version of it.
+fn is_unsupported_version(reply: &TrustTask<Value>) -> bool {
+    reply.type_uri.slug() == "trust-task-error"
+        && reply.payload.get("code").and_then(Value::as_str) == Some("unsupportedVersion")
 }
 
 /// Classify a reply document into "the task succeeded" or a typed failure.
@@ -626,13 +684,12 @@ fn classify_capability_toggle(
     classify(reply, slug)
 }
 
-/// Build the TRQP record for a member as this community asserts it.
+/// The membership `context` a record carries, in either version.
 ///
-/// The spec's `TrustRecord` carries no validity window, so the membership
-/// status and its dates ride in `context` — the record's own opaque governance
-/// object. `recognized` is the machine-readable half: an active member is
-/// recognised, a departed one is not, which is what a TRQP verifier reads.
-fn trust_record(authority_did: &str, record: &RegistryRecord) -> Value {
+/// `activeFrom` / `activeTo` duplicate the 0.3 record's `validFrom` /
+/// `validUntil`. They stay for one release, so that readers of 0.1 records and
+/// registries that predate 0.3 still see the dates.
+fn membership_context(record: &RegistryRecord) -> Value {
     let recognised = matches!(record.status, RegistryStatus::Active);
     let mut context = json!({
         "status": if recognised { "active" } else { "departed" },
@@ -646,34 +703,79 @@ fn trust_record(authority_did: &str, record: &RegistryRecord) -> Value {
     if let (true, Some(card)) = (recognised, &record.directory_card) {
         context["directoryCard"] = card.wire();
     }
+    context
+}
+
+/// Build the 0.1 TRQP record for a member as this community asserts it.
+///
+/// The 0.1 `TrustRecord` carries no validity window, so the membership dates
+/// ride in `context` only. `recognized` is the machine-readable half: an
+/// active member is recognised, a departed one is not, which is what a TRQP
+/// verifier reads.
+fn trust_record(authority_did: &str, record: &RegistryRecord) -> Value {
     json!({
         "entity_id": record.member_did,
         "authority_id": authority_did,
         "action": RECOGNISE_ACTION,
         "resource": TRUST_GRAPH_RESOURCE,
         "record_type": "recognition",
-        "recognized": recognised,
-        "context": context,
+        "recognized": matches!(record.status, RegistryStatus::Active),
+        "context": membership_context(record),
     })
 }
 
-/// Rebuild a [`RegistryRecord`] from a TRQP record returned by the registry.
+/// Build the 0.3 record: lowerCamelCase, with the membership dates as the
+/// record's validity window, so the registry answers recognition for the
+/// period the member actually belongs.
+///
+/// `validUntil` is sent only when it is after `validFrom`. The registry
+/// refuses an empty or inverted window, and that refusal would park the sync
+/// job; such a record is a departed member's, which already answers
+/// `recognized: false`.
+fn trust_record_v0_3(authority_did: &str, record: &RegistryRecord) -> Value {
+    let mut out = json!({
+        "entityId": record.member_did,
+        "authorityId": authority_did,
+        "action": RECOGNISE_ACTION,
+        "resource": TRUST_GRAPH_RESOURCE,
+        "recordType": "recognition",
+        "recognized": matches!(record.status, RegistryStatus::Active),
+        "context": membership_context(record),
+        "validFrom": record.active_from.to_rfc3339(),
+    });
+    if let Some(active_to) = record.active_to.filter(|to| *to > record.active_from) {
+        out["validUntil"] = json!(active_to.to_rfc3339());
+    }
+    out
+}
+
+/// Rebuild a [`RegistryRecord`] from a TRQP record returned by the registry,
+/// in either spelling (0.3 lowerCamelCase or 0.1 snake_case).
+///
+/// The dates come from the record's validity window when it has one, and
+/// otherwise from the `activeFrom` / `activeTo` its context carries (a 0.1
+/// record, or one written before the window existed).
 ///
 /// Absence is read restrictively (R3.3): a record whose `recognized` is missing
 /// is not treated as an active member.
 fn registry_record_from(value: &Value) -> Option<RegistryRecord> {
-    let member_did = value.get("entity_id")?.as_str()?.to_string();
+    let member_did = value
+        .get("entityId")
+        .or_else(|| value.get("entity_id"))?
+        .as_str()?
+        .to_string();
     let recognised = value
         .get("recognized")
         .and_then(Value::as_bool)
         .unwrap_or(false);
     let context = value.get("context");
-    let parse_time = |key: &str| {
-        context
-            .and_then(|c| c.get(key))
-            .and_then(Value::as_str)
+    let parse = |v: Option<&Value>| {
+        v.and_then(Value::as_str)
             .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
             .map(|t| t.with_timezone(&chrono::Utc))
+    };
+    let window_or_context = |window: &str, ctx: &str| {
+        parse(value.get(window)).or_else(|| parse(context.and_then(|c| c.get(ctx))))
     };
     let now = chrono::Utc::now();
     Some(RegistryRecord {
@@ -683,8 +785,8 @@ fn registry_record_from(value: &Value) -> Option<RegistryRecord> {
         } else {
             RegistryStatus::Departed
         },
-        active_from: parse_time("activeFrom").unwrap_or(now),
-        active_to: parse_time("activeTo"),
+        active_from: window_or_context("validFrom", "activeFrom").unwrap_or(now),
+        active_to: window_or_context("validUntil", "activeTo"),
         last_synced_at: now,
         directory_card: context.and_then(|c| c.get("directoryCard")).and_then(|d| {
             Some(super::model::DirectoryCardPointer {
@@ -702,8 +804,19 @@ impl TrustRegistryClient for MessagingRegistryClient {
         match self.select().await? {
             Protocol::Rest => self.rest()?.publish_member(record).await,
             protocol => {
-                let payload = json!({ "record": trust_record(&authority, record) });
-                let reply = self.round_trip(RECORD_PUT, payload, protocol).await?;
+                let (reply, _) = self
+                    .round_trip_versioned(
+                        (
+                            RECORD_PUT_0_3,
+                            json!({ "record": trust_record_v0_3(&authority, record) }),
+                        ),
+                        (
+                            RECORD_PUT,
+                            json!({ "record": trust_record(&authority, record) }),
+                        ),
+                        protocol,
+                    )
+                    .await?;
                 classify(&reply, "registry/record/put")
             }
         }
@@ -746,13 +859,29 @@ impl TrustRegistryClient for MessagingRegistryClient {
                 // missing member is a normal answer, not a failure. Three
                 // filters keep it an enumeration — empty list on a miss — and
                 // we match `resource` here.
-                let payload = json!({
-                    "entity_id": entity_id,
-                    "authority_id": authority_id,
-                    "action": RECOGNISE_ACTION,
-                    "limit": 50,
-                });
-                let reply = self.round_trip(RECORD_QUERY, payload, protocol).await?;
+                let (reply, _) = self
+                    .round_trip_versioned(
+                        (
+                            RECORD_QUERY_0_3,
+                            json!({
+                                "entityId": entity_id,
+                                "authorityId": authority_id,
+                                "action": RECOGNISE_ACTION,
+                                "limit": 50,
+                            }),
+                        ),
+                        (
+                            RECORD_QUERY,
+                            json!({
+                                "entity_id": entity_id,
+                                "authority_id": authority_id,
+                                "action": RECOGNISE_ACTION,
+                                "limit": 50,
+                            }),
+                        ),
+                        protocol,
+                    )
+                    .await?;
                 classify(&reply, "registry/record/query")?;
                 let found = reply
                     .payload
@@ -785,15 +914,27 @@ impl TrustRegistryClient for MessagingRegistryClient {
                 const PAGE: u32 = 200;
 
                 for page in 0..MAX_PAGES {
-                    let mut payload = json!({
+                    let mut new = json!({
+                        "authorityId": authority,
+                        "action": RECOGNISE_ACTION,
+                        "limit": PAGE,
+                    });
+                    let mut old = json!({
                         "authority_id": authority,
                         "action": RECOGNISE_ACTION,
                         "limit": PAGE,
                     });
                     if let Some(c) = &cursor {
-                        payload["cursor"] = json!(c);
+                        new["cursor"] = json!(c);
+                        old["cursor"] = json!(c);
                     }
-                    let reply = self.round_trip(RECORD_QUERY, payload, protocol).await?;
+                    let (reply, _) = self
+                        .round_trip_versioned(
+                            (RECORD_QUERY_0_3, new),
+                            (RECORD_QUERY, old),
+                            protocol,
+                        )
+                        .await?;
                     classify(&reply, "registry/record/query")?;
 
                     out.extend(
@@ -1367,6 +1508,68 @@ mod tests {
         assert_eq!(back.member_did, record.member_did);
         assert_eq!(back.status, RegistryStatus::Active);
         assert_eq!(back.active_from.timestamp(), record.active_from.timestamp());
+    }
+
+    #[test]
+    fn the_0_3_record_carries_the_membership_period_as_its_window() {
+        let from = Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap();
+        let to = Utc.with_ymd_and_hms(2026, 8, 1, 0, 0, 0).unwrap();
+        let departed = RegistryRecord::departed("did:key:zGone", from, Some(to));
+        let value = trust_record_v0_3("did:webvh:vtc", &departed);
+        assert_eq!(value["entityId"], "did:key:zGone");
+        assert_eq!(value["authorityId"], "did:webvh:vtc");
+        assert_eq!(value["recordType"], "recognition");
+        assert_eq!(value["recognized"], false);
+        assert_eq!(value["validFrom"], "2026-01-01T00:00:00+00:00");
+        assert_eq!(value["validUntil"], "2026-08-01T00:00:00+00:00");
+        // Kept in the context too, for 0.1 readers, for this release.
+        assert_eq!(value["context"]["activeTo"], "2026-08-01T00:00:00+00:00");
+        assert!(
+            value.get("entity_id").is_none(),
+            "0.3 is lowerCamelCase: {value}"
+        );
+    }
+
+    /// The registry refuses an empty or inverted window, which would park the
+    /// sync job. Such a record is a departed member's, already not recognised,
+    /// so the end is left off instead.
+    #[test]
+    fn an_end_not_after_the_start_is_not_sent_as_valid_until() {
+        let at = Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap();
+        for to in [at, at - chrono::Duration::days(1)] {
+            let record = RegistryRecord::departed("did:key:zOdd", at, Some(to));
+            let value = trust_record_v0_3("did:webvh:vtc", &record);
+            assert!(value.get("validUntil").is_none(), "{value}");
+            assert_eq!(value["recognized"], false);
+        }
+    }
+
+    #[test]
+    fn a_0_3_record_reads_back_with_its_window() {
+        let record = RegistryRecord::departed(
+            "did:key:zMember",
+            Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap(),
+            Some(Utc.with_ymd_and_hms(2026, 8, 1, 0, 0, 0).unwrap()),
+        );
+        let back = registry_record_from(&trust_record_v0_3("did:webvh:vtc", &record)).unwrap();
+        assert_eq!(back.member_did, "did:key:zMember");
+        assert_eq!(back.status, RegistryStatus::Departed);
+        assert_eq!(back.active_from, record.active_from);
+        assert_eq!(back.active_to, record.active_to);
+    }
+
+    /// The window is the record's own statement of the period; the context copy
+    /// is only for 0.1 readers, so the window wins when both are present.
+    #[test]
+    fn the_window_wins_over_the_context_dates() {
+        let parsed = registry_record_from(&json!({
+            "entityId": "did:key:zMember",
+            "recognized": true,
+            "validFrom": "2026-02-01T00:00:00Z",
+            "context": { "activeFrom": "2025-01-01T00:00:00Z" },
+        }))
+        .unwrap();
+        assert_eq!(parsed.active_from.to_rfc3339(), "2026-02-01T00:00:00+00:00");
     }
 
     /// A client with no messaging, no resolver and no REST arm — enough to
