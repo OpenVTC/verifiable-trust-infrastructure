@@ -11611,7 +11611,7 @@ dependencies = [
 
 [[package]]
 name = "vta-audit"
-version = "0.21.1"
+version = "0.22.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -11630,7 +11630,7 @@ dependencies = [
 
 [[package]]
 name = "vta-backup"
-version = "0.25.1"
+version = "0.26.0"
 dependencies = [
  "aes-gcm 0.11.1",
  "argon2 0.6.0",
@@ -11690,7 +11690,7 @@ dependencies = [
 
 [[package]]
 name = "vta-config"
-version = "0.26.1"
+version = "0.27.0"
 dependencies = [
  "affinidi-crypto",
  "ipnetwork",
@@ -11725,7 +11725,7 @@ dependencies = [
 
 [[package]]
 name = "vta-external"
-version = "0.9.1"
+version = "0.10.0"
 dependencies = [
  "async-trait",
  "base64 0.23.1",
@@ -11751,7 +11751,7 @@ dependencies = [
 
 [[package]]
 name = "vta-keys"
-version = "0.26.1"
+version = "0.27.0"
 dependencies = [
  "aes-gcm 0.11.1",
  "affinidi-crypto",
@@ -11862,7 +11862,7 @@ dependencies = [
 
 [[package]]
 name = "vta-policy"
-version = "0.21.1"
+version = "0.22.0"
 dependencies = [
  "hex",
  "regorus",
@@ -12074,7 +12074,7 @@ dependencies = [
 
 [[package]]
 name = "vta-support"
-version = "0.23.1"
+version = "0.24.0"
 dependencies = [
  "aes-gcm 0.11.1",
  "base64 0.23.1",
@@ -12099,7 +12099,7 @@ dependencies = [
 
 [[package]]
 name = "vta-sweepers"
-version = "0.21.1"
+version = "0.22.0"
 dependencies = [
  "chrono",
  "serde_json",
@@ -12115,7 +12115,7 @@ dependencies = [
 
 [[package]]
 name = "vta-tee"
-version = "0.25.1"
+version = "0.26.0"
 dependencies = [
  "aes 0.9.3",
  "aes-gcm 0.11.1",
@@ -12151,7 +12151,7 @@ dependencies = [
 
 [[package]]
 name = "vta-vault"
-version = "0.24.1"
+version = "0.25.0"
 dependencies = [
  "affinidi-bbs",
  "affinidi-crypto",
@@ -12185,7 +12185,7 @@ dependencies = [
 
 [[package]]
 name = "vta-webvh"
-version = "0.22.1"
+version = "0.23.0"
 dependencies = [
  "chrono",
  "serde",
@@ -12456,7 +12456,7 @@ dependencies = [
 
 [[package]]
 name = "vti-rooms-dtg"
-version = "0.22.1"
+version = "0.23.0"
 dependencies = [
  "affinidi-data-integrity",
  "affinidi-secrets-resolver",
@@ -12501,7 +12501,7 @@ dependencies = [
 
 [[package]]
 name = "vti-secrets"
-version = "0.22.1"
+version = "0.23.0"
 dependencies = [
  "aes-gcm 0.11.1",
  "argon2 0.6.0",
@@ -12537,7 +12537,7 @@ dependencies = [
 
 [[package]]
 name = "vti-vetting-pcs"
-version = "0.6.1"
+version = "0.7.0"
 dependencies = [
  "ark-bls12-381",
  "ark-ec",
@@ -12610,7 +12610,7 @@ dependencies = [
 
 [[package]]
 name = "vti-webauthn"
-version = "0.2.3"
+version = "0.3.0"
 dependencies = [
  "async-trait",
  "aws-lc-rs",

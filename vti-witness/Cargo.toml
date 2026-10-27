@@ -36,7 +36,7 @@ k8s-secrets = ["vti-secrets/k8s-secrets"]
 vti-common = { path = "../vti-common", version = "0.50", features = ["host-session"] }
 # The `[secrets]` table and `create_seed_store`: the witness keeps its key
 # material behind the same backends the VTA and VTC use, never in its config.
-vti-secrets = { path = "../vti-secrets", version = "0.22" }
+vti-secrets = { path = "../vti-secrets", version = "0.23" }
 # `provision-client`: the two-phase, VTA-provisioned setup (`run_phase1_init`,
 # `run_connection_test`, `ProvisionAsk::witness`). `tsp`: the TSP leg of that
 # setup against a VTA that advertises TSP, and the binding envelope. `didcomm`:

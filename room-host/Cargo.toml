@@ -67,7 +67,7 @@ affinidi-messaging-core = { workspace = true, optional = true }
 # host's identity is a private key; it belongs behind the same `[secrets]`
 # config and the same backends the VTA and VTC take, not in a file this crate
 # invented. See `didcomm::HostIdentity`.
-vti-secrets = { path = "../vti-secrets", version = "0.22", optional = true }
+vti-secrets = { path = "../vti-secrets", version = "0.23", optional = true }
 # The session store behind `onboarding` — which backend is an operator's choice,
 # exactly as `[secrets]` is.
 vta-sdk = { path = "../vta-sdk", version = "0.74", optional = true }

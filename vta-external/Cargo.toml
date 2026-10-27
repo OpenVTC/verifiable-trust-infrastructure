@@ -2,7 +2,7 @@
 name = "vta-external"
 description = "VTA external accounts — the VTA as the key authority for cloud and third-party accounts: account store, auth-model drivers, downscoped credential issuance"
 readme = "README.md"
-version = "0.9.1"
+version = "0.10.0"
 edition.workspace = true
 # Published, because `vta-service` is — and a crate cannot go to crates.io
 # without its whole dependency closure there too. Not published for its own
@@ -16,7 +16,7 @@ repository.workspace = true
 
 [dependencies]
 vta-keyspaces = { path = "../vta-keyspaces", version = "0.23" }
-vta-keys = { path = "../vta-keys", version = "0.26" }
+vta-keys = { path = "../vta-keys", version = "0.27" }
 vti-common = { path = "../vti-common", version = "0.50" }
 vta-sdk = { path = "../vta-sdk", version = "0.74", features = ["client"] }
 # The generated `external/credentials/issue/0.2` types: a presign batch is read

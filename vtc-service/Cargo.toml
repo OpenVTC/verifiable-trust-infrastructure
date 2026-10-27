@@ -171,11 +171,11 @@ path = "tests/it/main.rs"
 
 [dependencies]
 # Hidden-vetter admission (ZKP), development branch `zkp-pcs`: off by default.
-vti-vetting-pcs = { path = "../vti-vetting-pcs", version = "0.6", optional = true }
+vti-vetting-pcs = { path = "../vti-vetting-pcs", version = "0.7", optional = true }
 vti-voting = { path = "../vti-voting", version = "0.3", optional = true }
 predicate-credential-system = { version = "0.1", optional = true }
 vti-rooms = { path = "../vti-rooms", version = "0.21" }
-vti-rooms-dtg = { path = "../vti-rooms-dtg", version = "0.22" }
+vti-rooms-dtg = { path = "../vti-rooms-dtg", version = "0.23" }
 vti-common = { path = "../vti-common", version = "0.50", features = [
   "passkey",
   # `setup` gates the shared dialoguer-driven secrets-prompt helper
@@ -230,7 +230,7 @@ image = { version = "0.25", default-features = false, features = ["png", "jpeg",
 # Shared secret-store backend implementations (the VTC's `create_secret_store`
 # factory + `*SecretStore` names are a thin facade over these). Per-backend
 # features are activated by this crate's matching features above.
-vti-secrets = { path = "../vti-secrets", version = "0.22" }
+vti-secrets = { path = "../vti-secrets", version = "0.23" }
 vta-sdk = { path = "../vta-sdk", version = "0.74", features = [
   "didcomm",
   "session",
@@ -433,7 +433,7 @@ trust-tasks-rs = { workspace = true }
 # through `vta_sdk::jws`.
 k256 = { version = "0.14", features = ["ecdsa"] }# Signed room fixtures. Cargo unifies this feature with the normal dependency
 # above, so the fixtures reach tests without shipping in the service binary.
-vti-rooms-dtg = { path = "../vti-rooms-dtg", version = "0.22", features = ["test-support"] }
+vti-rooms-dtg = { path = "../vti-rooms-dtg", version = "0.23", features = ["test-support"] }
 # Self-dep with `test-support` enabled so integration tests under
 # `tests/` can import `vtc_service::test_support` (`TestVtc`, `MockVtc`).
 vtc-service = { path = ".", features = ["test-support", "transport-harness"] }
