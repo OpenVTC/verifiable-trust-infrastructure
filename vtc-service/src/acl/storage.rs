@@ -30,7 +30,7 @@ use vti_common::audit::AuditKey;
 use vti_common::auth::session::now_epoch;
 use vti_common::error::AppError;
 use vti_common::pagination::{Cursor, Paginated, paginate};
-use vti_common::store::KeyspaceHandle;
+use vti_common::store::{Batch, KeyspaceHandle};
 
 use super::entry::{Suspension, VtcAclEntry, decode, iter};
 
@@ -249,16 +249,26 @@ async fn apply_suspensions(
 }
 
 /// Store (create or overwrite) an ACL entry.
+///
+/// The entry and its holder-index row are one store batch, so a crash can no
+/// longer leave an entry holding resource grants that the holder index does
+/// not name (the boot-time rebuild was the only thing that healed it).
 pub async fn store_acl_entry(ks: &KeyspaceHandle, entry: &VtcAclEntry) -> Result<(), AppError> {
-    ks.insert(acl_key(&entry.did), entry).await?;
+    let mut batch = Batch::new();
+    batch.insert(acl_key(&entry.did), entry)?;
     if !entry.resource_grants.is_empty() {
-        super::resource_grant::index_holder(ks, &entry.did, true).await?;
+        batch.insert_raw(super::resource_grant::holder_key(&entry.did), b"1".to_vec());
     }
+    ks.apply_batch(batch).await?;
     // Authority moved: open console streams re-check their callers' readable
     // topics before their next byte (`crate::admin_events`).
     crate::admin_events::notify_authority();
     Ok(())
 }
+
+/// How many times [`delete_acl_entry`] re-reads the rows it changes after
+/// another writer changed one between its read and its conditional write.
+const DELETE_ATTEMPTS: usize = 64;
 
 /// Delete an ACL entry by DID. Idempotent — `Ok(())` whether the
 /// row existed or not.
@@ -267,17 +277,53 @@ pub async fn store_acl_entry(ks: &KeyspaceHandle, entry: &VtcAclEntry) -> Result
 /// without a live entry (**VTI-ACL-037**) — and are kept aside for the
 /// git-namespace lifecycle, which records each revocation and orphans what the
 /// subject owned alone ([`super::resource_grant::keep_departed`]).
+///
+/// The removal, the kept grants and the holder index are one conditional store
+/// batch, applied only while the entry (and any grants already kept) are still
+/// what was read. Written separately, a crash between them lost the departed
+/// grants or left them kept for an entry still in place, and a concurrent
+/// rewrite of the entry could have its grants dropped unrecorded.
 pub async fn delete_acl_entry(ks: &KeyspaceHandle, did: &str) -> Result<(), AppError> {
-    if let Some(bytes) = ks.get_raw(acl_key(did).as_bytes()).await?
-        && let Ok(entry) = decode(&bytes)
-        && !entry.resource_grants.is_empty()
-    {
-        super::resource_grant::keep_departed(ks, did, &entry.resource_grants).await?;
+    let key = acl_key(did);
+    let departed_key = super::resource_grant::departed_key(did);
+    for _ in 0..DELETE_ATTEMPTS {
+        let mut batch = Batch::new();
+        match ks.get_raw(key.as_bytes()).await? {
+            Some(bytes) => {
+                let grants = decode(&bytes)
+                    .map(|e| e.resource_grants)
+                    .unwrap_or_default();
+                batch.require_unchanged(key.clone(), bytes);
+                if !grants.is_empty() {
+                    let kept_raw = ks.get_raw(departed_key.as_bytes()).await?;
+                    let mut kept: Vec<super::resource_grant::ResourceGrant> = match &kept_raw {
+                        Some(raw) => serde_json::from_slice(raw)?,
+                        None => Vec::new(),
+                    };
+                    match kept_raw {
+                        Some(raw) => batch.require_unchanged(departed_key.clone(), raw),
+                        None => batch.require_absent(departed_key.clone()),
+                    };
+                    kept.extend(grants);
+                    batch.insert(departed_key.clone(), &kept)?;
+                }
+                batch.remove(key.clone());
+            }
+            // Nothing to remove but a stale index row — and only while no entry
+            // has appeared, or this would strip a fresh entry's index.
+            None => {
+                batch.require_absent(key.clone());
+            }
+        }
+        batch.remove(super::resource_grant::holder_key(did));
+        if ks.apply_batch(batch).await?.is_applied() {
+            crate::admin_events::notify_authority();
+            return Ok(());
+        }
     }
-    ks.remove(acl_key(did)).await?;
-    super::resource_grant::index_holder(ks, did, false).await?;
-    crate::admin_events::notify_authority();
-    Ok(())
+    Err(AppError::Conflict(format!(
+        "ACL entry for {did} kept changing while it was being deleted"
+    )))
 }
 
 /// Return every ACL entry in the keyspace. Unbounded — intended
@@ -351,6 +397,7 @@ mod tests {
             updated_by: None,
             expires_at: None,
             resource_grants: Vec::new(),
+            group_grants: Vec::new(),
             label_set_by_subject: false,
             suspension: None,
         }
@@ -377,6 +424,113 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
+    }
+
+    fn entry_with_grant(did: &str) -> VtcAclEntry {
+        let (capability, grade) =
+            crate::acl::resource_grant::capability_for(crate::git_ns::model::Right::NsAdmin);
+        let mut e = entry(did, VtcRole::Member);
+        e.resource_grants = vec![crate::acl::resource_grant::ResourceGrant {
+            capability,
+            resource: "git-ns:github.com/acme".parse().unwrap(),
+            grade,
+            delegated_by: "did:key:zG".into(),
+            granted_at: chrono::Utc::now(),
+            expires_at: None,
+            reason: None,
+            subject_was_member: true,
+            granter_was_member: true,
+            break_glass: None,
+            review: None,
+            single_admin: None,
+        }];
+        e
+    }
+
+    /// An entry and its holder index (and, on removal, its kept grants) are
+    /// one journal record, so a crash cannot split them.
+    #[tokio::test]
+    async fn an_entry_and_its_index_commit_as_one_journal_record() {
+        let (ks, _dir) = temp_ks().await;
+        let seq = || ks.journal_seqno().unwrap();
+        let before = seq();
+        store_acl_entry(&ks, &entry_with_grant("did:key:zJ"))
+            .await
+            .unwrap();
+        assert_eq!(seq() - before, 1, "store_acl_entry");
+        let before = seq();
+        delete_acl_entry(&ks, "did:key:zJ").await.unwrap();
+        assert_eq!(seq() - before, 1, "delete_acl_entry");
+    }
+
+    /// Deletes racing on one entry keep its resource grants for the git
+    /// lifecycle exactly once. Read-then-append let each delete that read the
+    /// entry append its grants again (or overwrite another's append).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+    async fn racing_deletes_keep_departed_grants_exactly_once() {
+        let (ks, _dir) = temp_ks().await;
+        for round in 0..40 {
+            let did = format!("did:key:zDeparting{round}");
+            store_acl_entry(&ks, &entry_with_grant(&did)).await.unwrap();
+            let barrier = std::sync::Arc::new(tokio::sync::Barrier::new(8));
+            let mut tasks = Vec::new();
+            for _ in 0..8 {
+                let (ks, barrier, did) = (ks.clone(), barrier.clone(), did.clone());
+                tasks.push(tokio::spawn(async move {
+                    barrier.wait().await;
+                    delete_acl_entry(&ks, &did).await.unwrap();
+                }));
+            }
+            for t in tasks {
+                t.await.unwrap();
+            }
+            let kept: usize = crate::acl::resource_grant::departed(&ks)
+                .await
+                .unwrap()
+                .into_iter()
+                .filter(|(d, _)| *d == did)
+                .map(|(_, g)| g.len())
+                .sum();
+            assert_eq!(kept, 1, "one deleted entry's grant kept {kept} times");
+        }
+    }
+
+    /// Stores and deletes racing on one entry leave the holder index naming
+    /// it exactly when it holds resource grants.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+    async fn the_holder_index_tracks_the_entry_under_races() {
+        let (ks, _dir) = temp_ks().await;
+        for round in 0..40 {
+            let did = format!("did:key:zIndexed{round}");
+            let barrier = std::sync::Arc::new(tokio::sync::Barrier::new(8));
+            let mut tasks = Vec::new();
+            for i in 0..8 {
+                let (ks, barrier, did) = (ks.clone(), barrier.clone(), did.clone());
+                tasks.push(tokio::spawn(async move {
+                    barrier.wait().await;
+                    if i % 2 == 0 {
+                        store_acl_entry(&ks, &entry_with_grant(&did)).await.unwrap();
+                    } else {
+                        delete_acl_entry(&ks, &did).await.unwrap();
+                    }
+                }));
+            }
+            for t in tasks {
+                t.await.unwrap();
+            }
+            let held = get_acl_entry(&ks, &did)
+                .await
+                .unwrap()
+                .is_some_and(|e| !e.resource_grants.is_empty());
+            let indexed = crate::acl::resource_grant::indexed_holders(&ks)
+                .await
+                .unwrap()
+                .contains(&did);
+            assert_eq!(
+                held, indexed,
+                "entry holds grants: {held}, indexed: {indexed}"
+            );
+        }
     }
 
     #[tokio::test]

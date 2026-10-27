@@ -78,6 +78,7 @@ fn default_true() -> bool {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(rename_all = "camelCase")]
+#[non_exhaustive]
 pub struct Quotas {
     /// operation-class -> maximum invocations per day.
     #[serde(alias = "per_day")]

@@ -184,7 +184,7 @@ use vti_common::vault::VaultStatus;
 use super::dispatched_uris;
 
 /// The sweep's scope: dispatched ∩ published. Derived, never hand-listed.
-fn resolved_uris() -> BTreeSet<&'static str> {
+pub(super) fn resolved_uris() -> BTreeSet<&'static str> {
     dispatched_uris()
         .into_iter()
         .filter(|u| trust_tasks_rs::schema_index::schema_for(u).is_some())
@@ -575,6 +575,162 @@ fn external_record() -> vta_external::model::AccountRecord {
         created_at: dt(),
         updated_at: dt(),
     }
+}
+
+// ─── vta/pcs fixtures ────────────────────────────────────────────────────
+
+const PCS_COMMUNITY: &str = "did:webvh:QmCommunity:vtc.example.org";
+/// A multibase base58btc placeholder (no `0`, `O`, `I` or `l`).
+const PCS_B58: &str = "z3ZeMb8yW1fRq2Rr5b6tHn7Kx9Lp2Vd";
+/// An `idBinding`: lowercase hex of a SHA-256.
+const PCS_BINDING: &str = "4f9b2c7e1a0d3e8f6b5c4a39281706f5e4d3c2b1a09f8e7d6c5b4a3928170615";
+
+fn pcs_params() -> Value {
+    json!({
+        "suite": "ps-ddh-bls12381", "helperKey": PCS_B58, "tokenKey": PCS_B58,
+        "vetterLabels": ["vetter/2026-10"], "tokenLabels": ["token/2026-10"],
+        "dripPerTick": 3, "tickLength": "P3D", "events": [],
+    })
+}
+
+/// Statement metadata; `with_token` adds the members the engine fills from the token it spends.
+fn pcs_meta(with_token: bool) -> Value {
+    let mut m = json!({
+        "community": PCS_COMMUNITY, "requirementsDigest": PCS_B58, "method": "inPerson",
+        "claimsVerified": ["name.legal"], "livenessConfirmed": true, "declaredRelationship": "none",
+        "identityCommitment": PCS_B58, "cardDigestMultibase": PCS_B58,
+        "validFrom": "2026-10-12", "validUntil": "2027-01-10",
+    });
+    if with_token {
+        m["tokenLabel"] = json!("token/2026-10");
+        m["tokenSerial"] = json!(PCS_B58);
+    }
+    m
+}
+
+fn pcs_token() -> Value {
+    json!({ "label": "token/2026-10", "serial": PCS_B58, "shown": PCS_B58 })
+}
+
+fn pcs_attestation() -> Value {
+    json!({ "suite": "ps-ddh-bls12381", "attestation": PCS_B58, "meta": pcs_meta(true), "token": pcs_token() })
+}
+
+fn pcs_application() -> Value {
+    json!({
+        "applicationId": "app-1", "contextId": "personal", "community": PCS_COMMUNITY,
+        "joinDid": SUBJECT, "suite": "ps-ddh-bls12381", "id": PCS_B58,
+        "attestations": [pcs_meta(true)], "createdAt": TS,
+    })
+}
+
+fn pcs_vetter() -> Value {
+    json!({
+        "contextId": "personal", "community": PCS_COMMUNITY, "memberDid": SUBJECT,
+        "suite": "ps-ddh-bls12381", "id": PCS_B58, "enrolledLabels": ["vetter/2026-10"],
+        "pendingLabels": [], "tokensFree": 3, "tokensHeld": 3,
+        "drawsInFlight": [{ "label": "token/2026-10", "tick": 4 }], "attested": 1,
+    })
+}
+
+// ─── vta/pcs voter fixtures ──────────────────────────────────────────────
+
+const VOTING_BOX: &str = "did:webvh:QmVote:vote.example.net";
+/// A SHA-256 multihash, multibase base58btc.
+const VOTING_DIGEST: &str = "zQmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG";
+
+fn voting_params() -> Value {
+    json!({ "suite": "ps-ddh-bls12381", "votingKey": PCS_B58 })
+}
+
+fn voting_manifest() -> Value {
+    json!({
+        "electionId": "agm-2027", "community": PCS_COMMUNITY,
+        "questions": [{ "key": "budget", "type": "choice",
+            "options": [{ "key": "yes" }, { "key": "no" }],
+            "minSelections": 1, "maxSelections": 1, "optional": false }],
+        "secrecy": "open", "roll": { "rule": "members" },
+        "registrationOpens": "2026-11-01T00:00:00Z", "votingOpens": "2026-11-03T00:00:00Z",
+        "votingCloses": "2026-11-07T18:00:00Z", "revote": "replace",
+        "board": { "visibility": "public", "auditors": [] }, "ballotBox": VOTING_BOX,
+        "binding": false, "allowEarlyClose": false, "resultsBeforeClose": false,
+        "textReleaseThreshold": 10,
+    })
+}
+
+fn voting_ballot() -> Value {
+    json!({ "electionId": "agm-2027", "manifestDigest": VOTING_DIGEST,
+        "answers": [{ "question": "budget", "choice": ["yes"] }] })
+}
+
+/// A sealed election's manifest: the trustees, and the trustee document a VTA signs as one.
+fn sealed_manifest() -> Value {
+    let mut m = voting_manifest();
+    m["secrecy"] = json!("sealed");
+    m["trustees"] = json!({ "dids": [TRUSTEE, "did:key:z6MkTrusteeTwo", "did:key:z6MkTrusteeThree"], "threshold": 2 });
+    m
+}
+
+const TRUSTEE: &str = "did:key:z6MkTrusteeOne";
+
+/// The trustees' signed steps as `voting/trustees/status` carries them: each request whole.
+fn ceremony() -> Value {
+    json!([trustee_document(
+        "enrol",
+        json!({ "community": PCS_COMMUNITY, "electionId": "agm-2027",
+        "transportKey": { "trustee": 1, "key": PCS_B58, "pok": sigma() } })
+    )["document"]])
+}
+
+fn sigma() -> Value {
+    json!({ "c": PCS_B58, "z": PCS_B58 })
+}
+
+fn ciphertext() -> Value {
+    json!({ "a": PCS_B58, "b": PCS_B58 })
+}
+
+/// A `voting/trustees/<task>` request signed as the trustee, as the VTA answers with it.
+fn trustee_document(task: &str, payload: Value) -> Value {
+    json!({ "document": {
+        "id": "urn:uuid:3f6b9d2e-81c4-4a7f-9e05-6d1c2b8a4f71",
+        "type": format!("https://trusttasks.org/spec/voting/trustees/{task}/0.1"),
+        "issuer": TRUSTEE, "recipient": VOTING_BOX, "issuedAt": TS, "expiresAt": TS,
+        "payload": payload,
+        "proof": { "type": "DataIntegrityProof", "cryptosuite": "eddsa-jcs-2022",
+            "verificationMethod": format!("{TRUSTEE}#z6MkTrusteeOne"),
+            "proofPurpose": "authentication", "created": TS, "proofValue": PCS_B58 } } })
+}
+
+fn trustee_payload(extra: Value) -> Value {
+    let mut p = json!({ "contextId": "trustees", "community": PCS_COMMUNITY, "electionId": "agm-2027",
+        "trustee": TRUSTEE });
+    p.as_object_mut()
+        .unwrap()
+        .extend(extra.as_object().unwrap().clone());
+    p
+}
+
+// ─── vta/witness fixtures ────────────────────────────────────────────────
+
+const WITNESS_DID: &str = "did:webvh:QmWitness:witness.example.org:a";
+
+/// A carried document: opaque to the schema, checked by the VTA against its session record.
+fn witness_session_doc() -> Value {
+    json!({
+        "id": "urn:uuid:session", "type": "https://trusttasks.org/spec/witness/session/0.2",
+        "issuer": SUBJECT, "recipient": WITNESS_DID, "issuedAt": TS,
+        "threadId": "urn:uuid:session", "parentThreadId": "urn:uuid:thread",
+        "payload": { "parties": [SUBJECT, "did:key:z6MkCounterparty"] },
+    })
+}
+
+fn witness_answer() -> Value {
+    json!({
+        "id": "urn:uuid:answer", "type": "https://trusttasks.org/spec/witness/session/0.2#response",
+        "issuer": WITNESS_DID, "recipient": SUBJECT, "threadId": "urn:uuid:session",
+        "payload": { "challenge": "00112233445566778899aabbccddeeff", "domain": WITNESS_DID },
+    })
 }
 
 /// The account as the slice renders it: `AccountRecord::to_wire`, with the
@@ -1305,6 +1461,90 @@ fn table() -> Vec<(&'static str, Conformance)> {
             ),
         ),
         (
+            uris::TASK_KEYS_SIGN_JWS_0_1,
+            // The specification's own example, whose JWS verifies.
+            checked!(
+                specs::keys::sign_jws::v0_1::Payload,
+                specs::keys::sign_jws::v0_1::Response,
+                serde_json::json!({
+                    "keyId": "verifier-p256",
+                    "header": {
+                        "typ": "oauth-authz-req+jwt",
+                        "kid": "did:example:community-verifier#key-1"
+                    },
+                    "payload": { "aud": "https://self-issued.me/v2", "nonce": "q8vTt3yN5mQ0aW2f" }
+                }),
+                serde_json::json!({
+                    "keyId": "verifier-p256",
+                    "alg": "ES256",
+                    "jws": "eyJhbGciOiJFUzI1NiJ9.eyJub25jZSI6InE4dlR0M3lONW1RMGFXMmYifQ.9w2it71b0W3qKXW-vPPTvwCxJo7tGZgH5Fqn9oSFJMgaaYKlt3GS1GQAbXKfOYl51eZ3a8FJzoRwXctc4oiUvg"
+                })
+            ),
+        ),
+        (
+            uris::TASK_KEYS_SIGN_DOCUMENT_0_1,
+            // The response as `operations::keys::sign_document` builds it: the
+            // proof configuration from `sign_formats`, its proofValue attached,
+            // on the document and on its own.
+            {
+                let document = serde_json::json!({
+                    "@context": ["https://www.w3.org/ns/credentials/v2"],
+                    "id": "urn:uuid:7c0e9a44-2b1d-4f6e-9a35-1d2c3b4a5e60",
+                    "type": ["VerifiableCredential"],
+                    "issuer": "did:example:community",
+                    "credentialSubject": { "id": "did:example:member" }
+                });
+                let mut proof = crate::operations::sign_formats::document_proof_config(
+                    &document,
+                    "did:example:community#key-1",
+                    "assertionMethod",
+                    "2026-10-18T09:00:01Z",
+                    None,
+                    None,
+                );
+                proof["proofValue"] = "z5e9cErCFXraDE8Cs3a46rSRaReyv68UtZz7JmzDUCcnCbFbEfXaUWW1RkAomKidanRrLDWhQqraAEq5XtuwK9zQo".into();
+                let mut secured = document.clone();
+                secured["proof"] = proof.clone();
+                checked!(
+                    specs::keys::sign_document::v0_1::Payload,
+                    specs::keys::sign_document::v0_1::Response,
+                    serde_json::json!({
+                        "keyId": "community-ed25519",
+                        "document": document,
+                        "created": "2026-10-18T09:00:01Z"
+                    }),
+                    serde_json::json!({
+                        "keyId": "community-ed25519",
+                        "signerDid": "did:example:community",
+                        "document": secured,
+                        "proof": proof
+                    })
+                )
+            },
+        ),
+        (
+            uris::TASK_KEYS_SIGN_CSR_0_1,
+            checked!(
+                specs::keys::sign_csr::v0_1::Payload,
+                specs::keys::sign_csr::v0_1::Response,
+                serde_json::json!({
+                    "keyId": "eudi-access-p256",
+                    "subject": [
+                        { "type": "C", "value": "DE" },
+                        { "type": "O", "value": "Example Community e.V." },
+                        { "type": "organizationIdentifier", "value": "LEIXG-5299000EXAMPLE000001" },
+                        { "type": "CN", "value": "Example Community Verifier" }
+                    ],
+                    "subjectAltNames": { "dns": ["verifier.community.example"] }
+                }),
+                serde_json::json!({
+                    "keyId": "eudi-access-p256",
+                    "csr": "-----BEGIN CERTIFICATE REQUEST-----\nMIIBAA==\n-----END CERTIFICATE REQUEST-----\n",
+                    "publicKey": "zDnaeTZCJom8WYgWfqp7ubMUwHK9ayrv31SSBJACRDDFiazq7"
+                })
+            ),
+        ),
+        (
             uris::TASK_KEYS_DERIVE_AND_SIGN_0_1,
             checked!(
                 specs::keys::derive_and_sign::v0_1::Payload,
@@ -1883,6 +2123,7 @@ fn table() -> Vec<(&'static str, Conformance)> {
                     issuer_did: Some("did:web:issuer.example".into()),
                     purpose: Some(CredentialPurpose::Membership),
                     status: Some(CredentialStatus::Valid),
+                    subject_did: Some("did:web:member.example".into()),
                     include_archived: true,
                     include_deleted: true,
                 }),
@@ -1914,6 +2155,24 @@ fn table() -> Vec<(&'static str, Conformance)> {
                         "@context": ["https://www.w3.org/ns/credentials/v2"],
                         "type": ["VerifiableCredential"],
                     }),
+                })
+            ),
+        ),
+        (
+            uris::TASK_VAULT_CREDENTIALS_PRESENT_0_1,
+            checked!(
+                specs::vault::credentials::present::v0_1::Payload,
+                specs::vault::credentials::present::v0_1::Response,
+                json!({
+                    "id": "cred-1",
+                    "audience": "did:example:community",
+                    "nonce": "urn:uuid:7d1e0c4a-5b2f-4c3d-8e9f-00000000001b",
+                    "claims": ["employer"],
+                    "purpose": "A verified employer on my directory card",
+                }),
+                json!({
+                    "presentation": "eyJhbGciOiJFZERTQSJ9.e30.c2ln~WyJzIiwiZW1wbG95ZXIiLCJBY21lIl0~eyJhbGciOiJFZERTQSJ9.e30.c2ln",
+                    "disclosed": ["employer"],
                 })
             ),
         ),
@@ -2141,6 +2400,347 @@ fn table() -> Vec<(&'static str, Conformance)> {
                 specs::external::credentials::issue::v0_1::Response,
                 json!({ "context": "community", "account": "r2-main", "scope": { "prefix": "rooms/3f9a/", "actions": ["get"], "objectKey": "blob" }, "ttlSeconds": 600 }),
                 json!({ "sealedCredential": SEALED_ARMOR, "expiresAt": TS, "scope": { "prefix": "rooms/3f9a/", "actions": ["get"], "objectKey": "blob" } })
+            ),
+        ),
+        (
+            uris::TASK_EXTERNAL_CREDENTIALS_ISSUE_0_2,
+            checked!(
+                specs::external::credentials::issue::v0_2::Payload,
+                specs::external::credentials::issue::v0_2::Response,
+                json!({ "context": "community", "account": "r2-main", "presign": { "prefix": "rooms/3f9a/", "objectKey": "blob", "requests": [{ "operation": "create-multipart" }] }, "ttlSeconds": 300 }),
+                json!({ "sealedCredential": SEALED_ARMOR, "expiresAt": TS, "presign": { "prefix": "rooms/3f9a/", "objectKey": "blob", "requests": [{ "operation": "create-multipart" }] } })
+            ),
+        ),
+        (
+            uris::TASK_EXTERNAL_CREDENTIALS_ISSUE_0_3,
+            checked!(
+                specs::external::credentials::issue::v0_3::Payload,
+                specs::external::credentials::issue::v0_3::Response,
+                json!({ "context": "community", "account": "r2-main", "presign": { "prefix": "rooms/3f9a/", "objectKey": "blob", "requests": [{ "operation": "create-multipart" }] }, "ttlSeconds": 300 }),
+                json!({ "sealedCredential": SEALED_ARMOR, "expiresAt": TS, "presign": { "prefix": "rooms/3f9a/", "objectKey": "blob", "requests": [{ "operation": "create-multipart" }] } })
+            ),
+        ),
+        // ─── vta/pcs — the hidden-vetting engine ─────────────────
+        (
+            uris::TASK_VTA_PCS_APPLICATIONS_CREATE_0_1,
+            checked!(
+                specs::vta::pcs::applications::create::v0_1::Payload,
+                specs::vta::pcs::applications::create::v0_1::Response,
+                json!({ "contextId": "personal", "community": PCS_COMMUNITY, "joinDid": SUBJECT, "parameters": pcs_params() }),
+                json!({ "application": pcs_application() })
+            ),
+        ),
+        (
+            uris::TASK_VTA_PCS_APPLICATIONS_SHOW_0_1,
+            checked!(
+                specs::vta::pcs::applications::show::v0_1::Payload,
+                specs::vta::pcs::applications::show::v0_1::Response,
+                json!({ "applicationId": "app-1" }),
+                json!({ "application": pcs_application() })
+            ),
+        ),
+        (
+            uris::TASK_VTA_PCS_APPLICATIONS_DELETE_0_1,
+            checked!(
+                specs::vta::pcs::applications::delete::v0_1::Payload,
+                specs::vta::pcs::applications::delete::v0_1::Response,
+                json!({ "applicationId": "app-1" }),
+                json!({ "applicationId": "app-1", "deleted": true })
+            ),
+        ),
+        (
+            uris::TASK_VTA_PCS_VERIFY_ATTESTATION_0_1,
+            checked!(
+                specs::vta::pcs::verify_attestation::v0_1::Payload,
+                specs::vta::pcs::verify_attestation::v0_1::Response,
+                json!({ "applicationId": "app-1", "parameters": pcs_params(), "attestation": pcs_attestation() }),
+                json!({ "application": pcs_application(), "accepted": pcs_meta(true) })
+            ),
+        ),
+        (
+            uris::TASK_VTA_PCS_PROVE_0_1,
+            checked!(
+                specs::vta::pcs::prove::v0_1::Payload,
+                specs::vta::pcs::prove::v0_1::Response,
+                json!({ "applicationId": "app-1", "parameters": pcs_params(), "requirementsDigest": PCS_B58, "challenge": "c-1" }),
+                json!({ "hiddenVetting": {
+                    "suite": "ps-ddh-bls12381", "id": PCS_B58, "joinDid": SUBJECT,
+                    "idBinding": PCS_BINDING, "challenge": "c-1",
+                    "statements": [{ "meta": pcs_meta(true), "token": pcs_token() }],
+                    "proof": PCS_B58,
+                } })
+            ),
+        ),
+        (
+            uris::TASK_VTA_PCS_ROOT_REQUEST_0_1,
+            checked!(
+                specs::vta::pcs::root_request::v0_1::Payload,
+                specs::vta::pcs::root_request::v0_1::Response,
+                json!({ "contextId": "personal", "community": PCS_COMMUNITY, "memberDid": SUBJECT, "parameters": pcs_params(), "label": "vetter/2026-10" }),
+                json!({ "request": { "label": "vetter/2026-10", "id": PCS_B58, "request": { "encoding": PCS_B58, "t0": PCS_B58, "proof": PCS_B58 } } })
+            ),
+        ),
+        (
+            uris::TASK_VTA_PCS_ROOT_ACCEPT_0_1,
+            checked!(
+                specs::vta::pcs::root_accept::v0_1::Payload,
+                specs::vta::pcs::root_accept::v0_1::Response,
+                json!({ "contextId": "personal", "community": PCS_COMMUNITY, "parameters": pcs_params(), "response": { "label": "vetter/2026-10", "preCredential": PCS_B58 } }),
+                json!({ "vetter": pcs_vetter() })
+            ),
+        ),
+        (
+            uris::TASK_VTA_PCS_TOKENS_REQUEST_0_1,
+            checked!(
+                specs::vta::pcs::tokens::request::v0_1::Payload,
+                specs::vta::pcs::tokens::request::v0_1::Response,
+                json!({ "contextId": "personal", "community": PCS_COMMUNITY, "parameters": pcs_params(), "label": "token/2026-10", "tick": 4, "count": 3 }),
+                json!({ "request": { "label": "token/2026-10", "tick": 4, "requests": [{ "commitment": PCS_B58, "openingProof": PCS_B58 }] } })
+            ),
+        ),
+        (
+            uris::TASK_VTA_PCS_TOKENS_ACCEPT_0_1,
+            checked!(
+                specs::vta::pcs::tokens::accept::v0_1::Payload,
+                specs::vta::pcs::tokens::accept::v0_1::Response,
+                json!({ "contextId": "personal", "community": PCS_COMMUNITY, "parameters": pcs_params(), "response": { "label": "token/2026-10", "tick": 4, "preCredentials": [PCS_B58] } }),
+                json!({ "received": 1, "vetter": pcs_vetter() })
+            ),
+        ),
+        (
+            uris::TASK_VTA_PCS_TOKENS_ABANDON_0_1,
+            checked!(
+                specs::vta::pcs::tokens::abandon::v0_1::Payload,
+                specs::vta::pcs::tokens::abandon::v0_1::Response,
+                json!({ "contextId": "personal", "community": PCS_COMMUNITY, "draw": { "label": "token/2026-10", "tick": 4 } }),
+                json!({ "vetter": pcs_vetter() })
+            ),
+        ),
+        (
+            uris::TASK_VTA_PCS_ATTEST_0_1,
+            checked!(
+                specs::vta::pcs::attest::v0_1::Payload,
+                specs::vta::pcs::attest::v0_1::Response,
+                json!({ "contextId": "personal", "community": PCS_COMMUNITY, "parameters": pcs_params(), "applicantId": PCS_B58, "meta": pcs_meta(false) }),
+                json!({ "attestation": pcs_attestation() })
+            ),
+        ),
+        (
+            uris::TASK_VTA_PCS_VETTER_SHOW_0_1,
+            checked!(
+                specs::vta::pcs::vetter::show::v0_1::Payload,
+                specs::vta::pcs::vetter::show::v0_1::Response,
+                json!({ "contextId": "personal", "community": PCS_COMMUNITY }),
+                json!({ "vetter": pcs_vetter() })
+            ),
+        ),
+        // ─── vta/pcs voter role ──────────────────────────────────
+        (
+            uris::TASK_VTA_PCS_VOTER_REGISTER_0_1,
+            checked!(
+                specs::vta::pcs::voter::register::v0_1::Payload,
+                specs::vta::pcs::voter::register::v0_1::Response,
+                json!({ "contextId": "personal", "community": PCS_COMMUNITY, "parameters": voting_params(), "manifest": voting_manifest() }),
+                json!({ "electionId": "agm-2027", "manifestDigest": VOTING_DIGEST,
+                    "request": { "label": "voter/agm-2027", "id": PCS_B58, "request": { "encoding": PCS_B58, "t0": PCS_B58, "proof": PCS_B58 } } })
+            ),
+        ),
+        (
+            uris::TASK_VTA_PCS_VOTER_READ_0_1,
+            checked!(
+                specs::vta::pcs::voter::read::v0_1::Payload,
+                specs::vta::pcs::voter::read::v0_1::Response,
+                json!({ "contextId": "personal", "community": PCS_COMMUNITY,
+                    "member": "did:key:z6MkpVoteCastKey2222222222222222222222222222222",
+                    "read": "show", "payload": { "electionId": "agm-2027" } }),
+                json!({ "document": {
+                    "id": "urn:uuid:3f6b9d2e-81c4-4a7f-9e05-6d1c2b8a4f71",
+                    "type": "https://trusttasks.org/spec/vtc/elections/show/0.1",
+                    "issuer": "did:key:z6MkpVoteCastKey2222222222222222222222222222222",
+                    "recipient": PCS_COMMUNITY, "issuedAt": TS,
+                    "payload": { "electionId": "agm-2027" },
+                    "proof": { "type": "DataIntegrityProof", "cryptosuite": "eddsa-jcs-2022",
+                        "verificationMethod": "did:key:z6MkpVoteCastKey2222222222222222222222222222222#z6MkpVoteCastKey2222222222222222222222222222222",
+                        "proofPurpose": "authentication", "created": TS, "proofValue": PCS_B58 } } })
+            ),
+        ),
+        (
+            uris::TASK_VTA_PCS_VOTER_ACCEPT_0_1,
+            checked!(
+                specs::vta::pcs::voter::accept::v0_1::Payload,
+                specs::vta::pcs::voter::accept::v0_1::Response,
+                json!({ "contextId": "personal", "community": PCS_COMMUNITY, "electionId": "agm-2027", "parameters": voting_params(),
+                    "response": { "electionId": "agm-2027", "label": "voter/agm-2027", "preCredential": PCS_B58 } }),
+                json!({ "electionId": "agm-2027", "ticketHeld": true })
+            ),
+        ),
+        (
+            uris::TASK_VTA_PCS_VOTE_0_1,
+            checked!(
+                specs::vta::pcs::vote::v0_1::Payload,
+                specs::vta::pcs::vote::v0_1::Response,
+                json!({ "contextId": "personal", "community": PCS_COMMUNITY, "parameters": voting_params(), "manifest": voting_manifest(), "ballot": voting_ballot() }),
+                json!({ "tag": PCS_B58, "castDocument": {
+                    "id": "urn:uuid:3f6b9d2e-81c4-4a7f-9e05-6d1c2b8a4f70",
+                    "type": "https://trusttasks.org/spec/voting/ballot/cast/0.1#request",
+                    "issuer": "did:key:z6MkpVoteCastKey2222222222222222222222222222222",
+                    "recipient": VOTING_BOX, "issuedAt": TS, "expiresAt": "2026-11-07T18:00:00Z",
+                    "payload": { "community": PCS_COMMUNITY, "electionId": "agm-2027",
+                        "cast": { "ballot": voting_ballot(), "tag": PCS_B58, "attestation": PCS_B58 } },
+                    "proof": { "type": "DataIntegrityProof", "cryptosuite": "eddsa-jcs-2022",
+                        "verificationMethod": "did:key:z6MkpVoteCastKey2222222222222222222222222222222#z6MkpVoteCastKey2222222222222222222222222222222",
+                        "proofPurpose": "assertionMethod", "created": TS, "proofValue": PCS_B58 } } })
+            ),
+        ),
+        (
+            uris::TASK_VTA_PCS_VOTER_RECEIPT_0_1,
+            checked!(
+                specs::vta::pcs::voter::receipt::v0_1::Payload,
+                specs::vta::pcs::voter::receipt::v0_1::Response,
+                json!({ "contextId": "personal", "community": PCS_COMMUNITY, "electionId": "agm-2027",
+                    "receipt": { "type": "https://trusttasks.org/spec/voting/ballot/cast/0.1#response", "issuer": VOTING_BOX },
+                    "checkpoint": { "type": "https://trusttasks.org/spec/voting/board/head/0.1#response", "issuer": VOTING_BOX },
+                    "inclusion": { "leafIndex": 41, "treeSize": 213, "entryHash": VOTING_DIGEST, "path": [VOTING_DIGEST] } }),
+                json!({ "electionId": "agm-2027", "status": "included", "leafIndex": 41 })
+            ),
+        ),
+        // ─── vta/pcs — the encrypted levels ─────────────────────
+        (
+            uris::TASK_VTA_PCS_VOTE_ENCRYPTED_0_2,
+            checked!(
+                specs::vta::pcs::vote_encrypted::v0_2::Payload,
+                specs::vta::pcs::vote_encrypted::v0_2::Response,
+                json!({ "contextId": "personal", "community": PCS_COMMUNITY, "parameters": voting_params(),
+                    "manifest": sealed_manifest(), "ceremony": ceremony(), "ballot": voting_ballot() }),
+                json!({ "tag": PCS_B58, "castDocument": {
+                    "id": "urn:uuid:3f6b9d2e-81c4-4a7f-9e05-6d1c2b8a4f72",
+                    "type": "https://trusttasks.org/spec/voting/ballot/cast-encrypted/0.1#request",
+                    "issuer": "did:key:z6MkpVoteCastKey2222222222222222222222222222222",
+                    "recipient": VOTING_BOX, "issuedAt": TS, "expiresAt": "2026-11-07T18:00:00Z",
+                    "payload": { "community": PCS_COMMUNITY, "electionId": "agm-2027",
+                        "cast": { "sealed": { "kem": ciphertext(), "body": PCS_B58 }, "tag": PCS_B58, "attestation": PCS_B58 } },
+                    "proof": { "type": "DataIntegrityProof", "cryptosuite": "eddsa-jcs-2022",
+                        "verificationMethod": "did:key:z6MkpVoteCastKey2222222222222222222222222222222#z6MkpVoteCastKey2222222222222222222222222222222",
+                        "proofPurpose": "assertionMethod", "created": TS, "proofValue": PCS_B58 } } })
+            ),
+        ),
+        (
+            uris::TASK_VTA_PCS_TRUSTEE_ENROL_0_1,
+            checked!(
+                specs::vta::pcs::trustee::enrol::v0_1::Payload,
+                specs::vta::pcs::trustee::enrol::v0_1::Response,
+                trustee_payload(json!({ "manifest": sealed_manifest() })),
+                trustee_document("enrol", json!({ "community": PCS_COMMUNITY, "electionId": "agm-2027",
+                    "transportKey": { "trustee": 1, "key": PCS_B58, "pok": sigma() } }))
+            ),
+        ),
+        (
+            uris::TASK_VTA_PCS_TRUSTEE_DEAL_0_2,
+            checked!(
+                specs::vta::pcs::trustee::deal::v0_2::Payload,
+                specs::vta::pcs::trustee::deal::v0_2::Response,
+                trustee_payload(json!({ "manifest": sealed_manifest(), "ceremony": ceremony() })),
+                trustee_document("deal", json!({ "community": PCS_COMMUNITY, "electionId": "agm-2027",
+                    "dealing": { "dealer": 1, "commitments": [PCS_B58, PCS_B58], "pok": sigma(),
+                        "shares": [{ "recipient": 1, "share": { "kem": ciphertext(), "body": PCS_B58 } }, { "recipient": 2, "share": { "kem": ciphertext(), "body": PCS_B58 } }] } }))
+            ),
+        ),
+        (
+            uris::TASK_VTA_PCS_TRUSTEE_KEYS_0_2,
+            checked!(
+                specs::vta::pcs::trustee::keys::v0_2::Payload,
+                specs::vta::pcs::trustee::keys::v0_2::Response,
+                trustee_payload(json!({ "manifest": sealed_manifest(), "ceremony": ceremony() })),
+                json!({ "complaints": [], "keyHeld": true })
+            ),
+        ),
+        (
+            uris::TASK_VTA_PCS_TRUSTEE_JUSTIFY_0_2,
+            checked!(
+                specs::vta::pcs::trustee::justify::v0_2::Payload,
+                specs::vta::pcs::trustee::justify::v0_2::Response,
+                trustee_payload(json!({ "manifest": sealed_manifest(), "ceremony": ceremony(), "recipient": 2 })),
+                trustee_document("justify", json!({ "community": PCS_COMMUNITY, "electionId": "agm-2027",
+                    "dealer": 1, "recipient": 2, "share": PCS_B58 }))
+            ),
+        ),
+        (
+            uris::TASK_VTA_PCS_TRUSTEE_DECRYPT_0_2,
+            checked!(
+                specs::vta::pcs::trustee::decrypt::v0_2::Payload,
+                specs::vta::pcs::trustee::decrypt::v0_2::Response,
+                trustee_payload(json!({ "targets": [{ "leafIndex": 7, "ciphertext": ciphertext() }],
+                    "authorization": trustee_document("authorize", json!({ "community": PCS_COMMUNITY,
+                        "electionId": "agm-2027", "targetsDigest": PCS_B58 }))["document"] })),
+                trustee_document("decrypt", json!({ "community": PCS_COMMUNITY, "electionId": "agm-2027",
+                    "trustee": 1, "partials": [{ "target": { "leafIndex": 7, "ciphertext": ciphertext() },
+                        "d": PCS_B58, "proof": sigma() }] }))
+            ),
+        ),
+        (
+            uris::TASK_VTA_PCS_TRUSTEE_READ_0_1,
+            checked!(
+                specs::vta::pcs::trustee::read::v0_1::Payload,
+                specs::vta::pcs::trustee::read::v0_1::Response,
+                trustee_payload(json!({ "ballotBox": VOTING_BOX, "read": "status" })),
+                trustee_document("status", json!({ "community": PCS_COMMUNITY, "electionId": "agm-2027" }))
+            ),
+        ),
+        // ─── vta/witness — the witnessed party ───────────────────
+        (
+            uris::TASK_VTA_WITNESS_OPEN_0_2,
+            checked!(
+                specs::vta::witness::open::v0_2::Payload,
+                specs::vta::witness::open::v0_2::Response,
+                json!({
+                    "witness": WITNESS_DID, "relationshipDid": SUBJECT,
+                    "counterpartyDid": "did:key:z6MkCounterparty",
+                    "relationshipThreadId": "urn:uuid:thread", "relationshipCredentialId": "vrc-1",
+                    "membership": { "credentialId": "vmc-1", "memberDid": "did:key:z6MkMember" },
+                    "storeAs": "vwc-1",
+                }),
+                json!({ "sessionId": "urn:uuid:session", "document": witness_session_doc(), "expiresAt": TS })
+            ),
+        ),
+        (
+            uris::TASK_VTA_WITNESS_PRESENT_0_2,
+            checked!(
+                specs::vta::witness::present::v0_2::Payload,
+                specs::vta::witness::present::v0_2::Response,
+                json!({ "sessionId": "urn:uuid:session", "response": witness_answer() }),
+                json!({ "sessionId": "urn:uuid:session", "document": witness_session_doc() })
+            ),
+        ),
+        (
+            uris::TASK_VTA_WITNESS_ACCEPT_0_2,
+            checked!(
+                specs::vta::witness::accept::v0_2::Payload,
+                specs::vta::witness::accept::v0_2::Response,
+                json!({ "sessionId": "urn:uuid:session", "response": witness_answer() }),
+                json!({
+                    "sessionId": "urn:uuid:session", "credentialId": "vwc-1", "witness": WITNESS_DID,
+                    "vwcDigestMultibase": "zQmbWqxBEKC3P8tqsKc98xmWNzrzDtRLMiMPL8wBuTGsMnR",
+                    "evidence": { "session": witness_session_doc(), "outcome": witness_answer() },
+                })
+            ),
+        ),
+        (
+            uris::TASK_VTA_WITNESS_LIST_0_1,
+            checked!(
+                specs::vta::witness::list::v0_1::Payload,
+                specs::vta::witness::list::v0_1::Response,
+                json!({ "relationshipDid": SUBJECT, "pageSize": 20 }),
+                json!({
+                    "witnessings": [{
+                        "credentialId": "vwc-1", "witness": WITNESS_DID,
+                        "relationshipDid": SUBJECT,
+                        "vwcDigestMultibase": "zQmbWqxBEKC3P8tqsKc98xmWNzrzDtRLMiMPL8wBuTGsMnR",
+                        "acceptedAt": TS,
+                        "evidence": { "session": witness_session_doc(), "outcome": witness_answer() },
+                    }],
+                    "truncated": true,
+                    "cursor": "w1.opaque",
+                })
             ),
         ),
         // ─── vta/memory ──────────────────────────────────────────
@@ -2481,15 +3081,15 @@ fn table() -> Vec<(&'static str, Conformance)> {
         // the expiry on a minted package (which is what bounds retained key
         // material).
         (
-            uris::TASK_ROOMS_KEYS_KEY_PACKAGE_0_1,
+            uris::TASK_ROOMS_KEYS_KEY_PACKAGE_0_2,
             checked!(
-                specs::rooms::keys::key_package::v0_1::Payload,
-                specs::rooms::keys::key_package::v0_1::Response,
+                specs::rooms::keys::key_package::v0_2::Payload,
+                specs::rooms::keys::key_package::v0_2::Response,
                 json!({
                     "roomId": "did:webvh:example.com:rooms:northwind",
                     "invitation": "eyJpZCI6InVybjp1dWlkOnZpYy0xIn0"
                 }),
-                json!({ "keyPackage": "AAECAwQFBgcICQ", "expiresAt": TS })
+                json!({ "keyPackage": "AAECAwQFBgcICQ", "expiresAt": TS, "alreadyMinted": true })
             ),
         ),
         (
@@ -2519,42 +3119,39 @@ fn table() -> Vec<(&'static str, Conformance)> {
             ),
         ),
         (
-            uris::TASK_ROOMS_KEYS_CHAIN_0_1,
+            uris::TASK_ROOMS_KEYS_CHAIN_0_2,
             checked!(
-                specs::rooms::keys::chain::v0_1::Payload,
-                specs::rooms::keys::chain::v0_1::Response,
+                specs::rooms::keys::chain::v0_2::Payload,
+                specs::rooms::keys::chain::v0_2::Response,
+                // A floor relayed on its own — the spec's own example.
                 json!({
                     "roomId": "did:webvh:example.com:rooms:northwind",
-                    "links": [
-                        { "epoch": 3, "wrapped": "Tf6yNb2VhZx5pRoS7wCl9Q", "nonce": "d2Bv0So4As3uXxT2" },
-                        { "epoch": 2, "wrapped": "Wq8zMd4XjBy7rTqU9yEn1Q", "nonce": "e3Cw1Tp5Bt4vYyU3" }
-                    ]
+                    "epochFloor": 3
                 }),
                 json!({
                     "roomId": "did:webvh:example.com:rooms:northwind",
-                    "earliestReadableEpoch": 1,
-                    "stored": 2
+                    "earliestReadableEpoch": 3,
+                    "stored": 0,
+                    "epochFloor": 3
                 })
             ),
         ),
         (
-            uris::TASK_ROOMS_KEYS_BACKFILL_0_1,
+            uris::TASK_ROOMS_KEYS_BACKFILL_0_2,
             checked!(
-                specs::rooms::keys::backfill::v0_1::Payload,
-                specs::rooms::keys::backfill::v0_1::Response,
+                specs::rooms::keys::backfill::v0_2::Payload,
+                specs::rooms::keys::backfill::v0_2::Response,
                 json!({
                     "roomId": "did:webvh:example.com:rooms:northwind",
-                    "host": "did:webvh:example.com:northwind-community",
-                    "fromEpoch": 6
+                    "host": "did:webvh:example.com:northwind-community"
                 }),
-                // All three numbers, because the response's whole point is that
-                // they come apart: two rungs arrived, both were new, and the
-                // reach moved to the room's first epoch.
+                // The history below epoch 3 was pruned, not withheld.
                 json!({
                     "roomId": "did:webvh:example.com:rooms:northwind",
-                    "earliestReadableEpoch": 1,
-                    "fetched": 2,
-                    "stored": 2
+                    "earliestReadableEpoch": 3,
+                    "fetched": 3,
+                    "stored": 0,
+                    "epochFloor": 3
                 })
             ),
         ),
@@ -2654,15 +3251,50 @@ fn table() -> Vec<(&'static str, Conformance)> {
             ),
         ),
         (
-            uris::TASK_ROOMS_KEYS_SEAL_0_1,
+            uris::TASK_ROOMS_KEYS_BROWSE_0_2,
             checked!(
-                specs::rooms::keys::seal::v0_1::Payload,
-                specs::rooms::keys::seal::v0_1::Response,
+                specs::rooms::keys::browse::v0_2::Payload,
+                specs::rooms::keys::browse::v0_2::Response,
+                json!({
+                    "roomId": "did:webvh:example.com:rooms:northwind",
+                    "host": "did:webvh:example.com:northwind-community"
+                }),
+                // A pruned room: `headVersion` is the prune's, not the highest record's.
+                json!({
+                    "roomId": "did:webvh:example.com:rooms:northwind",
+                    "records": [{
+                        "key": "giXFLTGBdnnQJRoIsktuIg",
+                        "version": 412,
+                        "epoch": 7,
+                        "status": "active",
+                        "updatedAt": "2026-01-01T00:00:00Z"
+                    }],
+                    "complete": true,
+                    "lastPrune": { "version": 413, "at": "2026-10-01T00:00:05Z", "removed": 14 },
+                    "verification": {
+                        "priorRoots": "notChecked",
+                        "anchor": "ahead",
+                        "count": "agrees",
+                        "head": {
+                            "dataCommitment": "zQmbWqxBEKC3P8tqsKc98xmWNzrzDtRLMiMPL8wBuTGsMnR",
+                            "recordCount": 1,
+                            "headVersion": 413
+                        }
+                    }
+                })
+            ),
+        ),
+        (
+            uris::TASK_ROOMS_KEYS_SEAL_0_2,
+            checked!(
+                specs::rooms::keys::seal::v0_2::Payload,
+                specs::rooms::keys::seal::v0_2::Response,
                 json!({
                     "roomId": "did:webvh:example.com:rooms:northwind",
                     "key": "giXFLTGBdnnQJRoIsktuIg",
                     "version": 1,
-                    "plaintext": "IyBOb3J0aHdpbmQ"
+                    "plaintext": "eyJyb29tSWQiOiJkaWQ6d2Vidmg6ZXhhbXBsZS5jb206cm9vbXM6bm9ydGh3aW5kIn0",
+                    "signAsPrincipal": true
                 }),
                 json!({
                     "sealed": {
@@ -2674,19 +3306,287 @@ fn table() -> Vec<(&'static str, Conformance)> {
             ),
         ),
         (
-            uris::TASK_ROOMS_KEYS_LIST_0_1,
+            uris::TASK_ROOMS_KEYS_ACT_0_1,
             checked!(
-                specs::rooms::keys::list::v0_1::Payload,
-                specs::rooms::keys::list::v0_1::Response,
-                json!({}),
+                specs::rooms::keys::act::v0_1::Payload,
+                specs::rooms::keys::act::v0_1::Response,
+                json!({
+                    "document": {
+                        "id": "urn:uuid:00000000-0000-4000-8000-0000000000a1",
+                        "type": "https://trusttasks.org/spec/rooms/records/put/0.2",
+                        "recipient": "did:webvh:example.com:northwind-community",
+                        "issuedAt": "2026-01-01T00:00:00Z",
+                        "payload": {
+                            "roomId": "did:webvh:example.com:rooms:northwind",
+                            "key": "giXFLTGBdnnQJRoIsktuIg",
+                            "expectedVersion": 0
+                        }
+                    }
+                }),
+                json!({
+                    "principal": "did:webvh:example.com:people:alice",
+                    "expiresAt": "2026-01-01T01:00:01Z",
+                    "document": {
+                        "id": "urn:uuid:00000000-0000-4000-8000-0000000000a1",
+                        "type": "https://trusttasks.org/spec/rooms/records/put/0.2",
+                        "issuer": "did:webvh:example.com:people:alice",
+                        "recipient": "did:webvh:example.com:northwind-community",
+                        "issuedAt": "2026-01-01T00:00:00Z",
+                        "payload": { "roomId": "did:webvh:example.com:rooms:northwind" },
+                        "proof": { "type": "DataIntegrityProof" }
+                    }
+                })
+            ),
+        ),
+        (
+            uris::TASK_ROOMS_KEYS_ACT_0_2,
+            checked!(
+                specs::rooms::keys::act::v0_2::Payload,
+                specs::rooms::keys::act::v0_2::Response,
+                json!({
+                    "document": {
+                        "id": "urn:uuid:00000000-0000-4000-8000-0000000000a1",
+                        "type": "https://trusttasks.org/spec/rooms/records/put/0.2",
+                        "recipient": "did:webvh:example.com:northwind-community",
+                        "issuedAt": "2026-01-01T00:00:00Z",
+                        "payload": {
+                            "roomId": "did:webvh:example.com:rooms:northwind",
+                            "key": "giXFLTGBdnnQJRoIsktuIg",
+                            "expectedVersion": 0
+                        }
+                    }
+                }),
+                json!({
+                    "principal": "did:webvh:example.com:people:alice",
+                    "expiresAt": "2026-01-01T01:00:01Z",
+                    "document": {
+                        "id": "urn:uuid:00000000-0000-4000-8000-0000000000a1",
+                        "type": "https://trusttasks.org/spec/rooms/records/put/0.2",
+                        "issuer": "did:webvh:example.com:people:alice",
+                        "recipient": "did:webvh:example.com:northwind-community",
+                        "issuedAt": "2026-01-01T00:00:00Z",
+                        "payload": { "roomId": "did:webvh:example.com:rooms:northwind" },
+                        "proof": { "type": "DataIntegrityProof" }
+                    }
+                })
+            ),
+        ),
+        (
+            uris::TASK_ROOMS_KEYS_ACT_0_3,
+            checked!(
+                specs::rooms::keys::act::v0_3::Payload,
+                specs::rooms::keys::act::v0_3::Response,
+                json!({
+                    "document": {
+                        "id": "urn:uuid:00000000-0000-4000-8000-0000000000a3",
+                        "type": "https://trusttasks.org/spec/vtc/rooms/offers/accept/0.1#request",
+                        "issuer": "did:webvh:example.com:people:alice",
+                        "recipient": "did:webvh:example.com:northwind-community",
+                        "issuedAt": "2026-01-01T00:10:00Z",
+                        "payload": {
+                            "roomId": "did:webvh:example.com:rooms:board",
+                            "keyPackage": "AAEAAgADAAQ"
+                        }
+                    }
+                }),
+                json!({
+                    "principal": "did:webvh:example.com:people:alice",
+                    "document": {
+                        "id": "urn:uuid:00000000-0000-4000-8000-0000000000a3",
+                        "type": "https://trusttasks.org/spec/vtc/rooms/offers/accept/0.1#request",
+                        "issuer": "did:webvh:example.com:people:alice",
+                        "recipient": "did:webvh:example.com:northwind-community",
+                        "issuedAt": "2026-01-01T00:10:00Z",
+                        "payload": {
+                            "roomId": "did:webvh:example.com:rooms:board",
+                            "keyPackage": "AAEAAgADAAQ"
+                        },
+                        "proof": { "type": "DataIntegrityProof" }
+                    }
+                })
+            ),
+        ),
+        (
+            uris::TASK_ROOMS_KEYS_ACT_0_4,
+            checked!(
+                specs::rooms::keys::act::v0_4::Payload,
+                specs::rooms::keys::act::v0_4::Response,
+                json!({
+                    "document": {
+                        "id": "urn:uuid:00000000-0000-4000-8000-0000000000a4",
+                        "type": "https://trusttasks.org/spec/vtc/rooms/offers/list/0.2#request",
+                        "issuer": "did:webvh:example.com:people:alice",
+                        "recipient": "did:webvh:example.com:northwind-community",
+                        "issuedAt": "2026-01-01T00:09:00Z",
+                        "payload": {}
+                    }
+                }),
+                json!({
+                    "principal": "did:webvh:example.com:people:alice",
+                    "document": {
+                        "id": "urn:uuid:00000000-0000-4000-8000-0000000000a4",
+                        "type": "https://trusttasks.org/spec/vtc/rooms/offers/list/0.2#request",
+                        "issuer": "did:webvh:example.com:people:alice",
+                        "recipient": "did:webvh:example.com:northwind-community",
+                        "issuedAt": "2026-01-01T00:09:00Z",
+                        "payload": {},
+                        "proof": { "type": "DataIntegrityProof" }
+                    }
+                })
+            ),
+        ),
+        (
+            uris::TASK_ROOMS_KEYS_ACT_0_5,
+            checked!(
+                specs::rooms::keys::act::v0_5::Payload,
+                specs::rooms::keys::act::v0_5::Response,
+                json!({
+                    "document": {
+                        "id": "urn:uuid:00000000-0000-4000-8000-0000000000a5",
+                        "type": "https://trusttasks.org/spec/vtc/rooms/memberships/list/0.1#request",
+                        "issuer": "did:webvh:example.com:people:alice",
+                        "recipient": "did:webvh:example.com:northwind-community",
+                        "issuedAt": "2026-01-01T00:10:00Z",
+                        "payload": {}
+                    }
+                }),
+                json!({
+                    "principal": "did:webvh:example.com:people:alice",
+                    "document": {
+                        "id": "urn:uuid:00000000-0000-4000-8000-0000000000a5",
+                        "type": "https://trusttasks.org/spec/vtc/rooms/memberships/list/0.1#request",
+                        "issuer": "did:webvh:example.com:people:alice",
+                        "recipient": "did:webvh:example.com:northwind-community",
+                        "issuedAt": "2026-01-01T00:10:00Z",
+                        "payload": {},
+                        "proof": { "type": "DataIntegrityProof" }
+                    }
+                })
+            ),
+        ),
+        (
+            uris::TASK_ROOMS_KEYS_ACT_0_6,
+            checked!(
+                specs::rooms::keys::act::v0_6::Payload,
+                specs::rooms::keys::act::v0_6::Response,
+                json!({
+                    "document": {
+                        "id": "urn:uuid:00000000-0000-4000-8000-0000000000a6",
+                        "type": "https://trusttasks.org/spec/vtc/rooms/offers/list/0.3#request",
+                        "issuer": "did:webvh:example.com:people:alice",
+                        "recipient": "did:webvh:example.com:northwind-community",
+                        "issuedAt": "2026-01-01T00:11:00Z",
+                        "payload": {}
+                    }
+                }),
+                json!({
+                    "principal": "did:webvh:example.com:people:alice",
+                    "document": {
+                        "id": "urn:uuid:00000000-0000-4000-8000-0000000000a6",
+                        "type": "https://trusttasks.org/spec/vtc/rooms/offers/list/0.3#request",
+                        "issuer": "did:webvh:example.com:people:alice",
+                        "recipient": "did:webvh:example.com:northwind-community",
+                        "issuedAt": "2026-01-01T00:11:00Z",
+                        "payload": {},
+                        "proof": { "type": "DataIntegrityProof" }
+                    }
+                })
+            ),
+        ),
+        (
+            uris::TASK_ROOMS_KEYS_LIST_0_2,
+            checked!(
+                specs::rooms::keys::list::v0_2::Payload,
+                specs::rooms::keys::list::v0_2::Response,
+                json!({ "includePersonal": true }),
                 json!({
                     "rooms": [
                         {
                             "roomId": "did:webvh:example.com:rooms:northwind",
+                            "member": "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
                             "epoch": 4,
-                            "earliestReadableEpoch": 1
+                            "earliestReadableEpoch": 1,
+                            "personal": {
+                                "label": "Northwind tender",
+                                "tags": ["work", "bids"],
+                                "updatedAt": "2026-01-01T00:00:00Z"
+                            }
                         }
                     ]
+                })
+            ),
+        ),
+        (
+            uris::TASK_ROOMS_KEYS_LABEL_0_1,
+            checked!(
+                specs::rooms::keys::label::v0_1::Payload,
+                specs::rooms::keys::label::v0_1::Response,
+                json!({
+                    "roomId": "did:webvh:example.com:rooms:northwind",
+                    "member": "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
+                    "label": "Northwind tender",
+                    "removeNotes": true
+                }),
+                json!({
+                    "roomId": "did:webvh:example.com:rooms:northwind",
+                    "member": "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
+                    "personal": {
+                        "label": "Northwind tender",
+                        "updatedAt": "2026-01-01T00:00:00Z"
+                    },
+                    "changed": true
+                })
+            ),
+        ),
+        (
+            uris::TASK_ROOMS_KEYS_PROFILE_READ_0_1,
+            checked!(
+                specs::rooms::keys::profile::read::v0_1::Payload,
+                specs::rooms::keys::profile::read::v0_1::Response,
+                json!({
+                    "roomId": "did:webvh:example.com:rooms:board",
+                    "host": "did:webvh:example.com:community"
+                }),
+                // Found one epoch down, below a rename by a member holding only `write`
+                // — what `resolve` answers when somebody tried.
+                json!({
+                    "roomId": "did:webvh:example.com:rooms:board",
+                    "status": "found",
+                    "profile": { "name": "Board pack — 2027", "tags": ["board"], "emoji": "📋" },
+                    "author": "did:example:community",
+                    "issuedAt": "2026-10-15T09:30:02Z",
+                    "epoch": 4,
+                    "version": 87,
+                    "stale": true,
+                    "searched": { "fromEpoch": 5, "toEpoch": 4 },
+                    "rejected": [
+                        { "epoch": 5, "version": 93, "reason": "noAuthority", "author": "did:example:mallory" }
+                    ],
+                    "verification": { "trace": "verified", "priorRoots": "agree", "anchor": "notChecked" }
+                })
+            ),
+        ),
+        (
+            uris::TASK_ROOMS_KEYS_PROFILE_WRITE_0_1,
+            checked!(
+                specs::rooms::keys::profile::write::v0_1::Payload,
+                specs::rooms::keys::profile::write::v0_1::Response,
+                json!({
+                    "roomId": "did:webvh:example.com:rooms:northwind",
+                    "host": "did:webvh:example.com:community",
+                    "profile": {
+                        "name": "Northwind renewal",
+                        "description": "Everything for the 2027 Northwind contract renewal.",
+                        "tags": ["deal", "renewal"],
+                        "emoji": "🤝"
+                    }
+                }),
+                json!({
+                    "roomId": "did:webvh:example.com:rooms:northwind",
+                    "outcome": "written",
+                    "key": "Qm4c8XkR2pVt7sLw0aJbYg",
+                    "version": 214,
+                    "epoch": 6
                 })
             ),
         ),
@@ -2726,6 +3626,127 @@ fn table() -> Vec<(&'static str, Conformance)> {
             ),
         ),
         (
+            uris::TASK_ROOMS_OWNER_REGISTER_0_2,
+            checked!(
+                specs::rooms::owner::register::v0_2::Payload,
+                specs::rooms::owner::register::v0_2::Response,
+                json!({
+                    "roomId": "did:webvh:example.com:rooms:northwind",
+                    "host": "did:webvh:example.org:rooms-mirror",
+                    "visibility": "attributed"
+                }),
+                // Registered, and the list not yet in force there: the host serves the room
+                // without its withdrawals, and the agent goes on delivering it.
+                json!({
+                    "roomId": "did:webvh:example.com:rooms:northwind",
+                    "host": "did:webvh:example.org:rooms-mirror",
+                    "epoch": 4,
+                    "revocation": {
+                        "head": { "sequence": 2,
+                            "digest": "zQmbWqxBEKC3P8tqsKc98xmWNzrzDtRLMiMPL8wBuTGsMnR" },
+                        "status": "refused",
+                        "code": "rooms/revocations/put:notAppendOnly"
+                    }
+                })
+            ),
+        ),
+        (
+            uris::TASK_ROOMS_OWNER_GROUP_CREATE_0_1,
+            checked!(
+                specs::rooms::owner::group::create::v0_1::Payload,
+                specs::rooms::owner::group::create::v0_1::Response,
+                json!({ "roomId": "did:webvh:example.com:rooms:northwind",
+                    "signingKeyId": "room-northwind-signing" }),
+                json!({ "roomId": "did:webvh:example.com:rooms:northwind", "epoch": 1 })
+            ),
+        ),
+        (
+            uris::TASK_ROOMS_OWNER_GROUP_ADD_0_3,
+            checked!(
+                specs::rooms::owner::group::add::v0_3::Payload,
+                specs::rooms::owner::group::add::v0_3::Response,
+                json!({ "roomId": "did:webvh:example.com:rooms:northwind",
+                    "host": "did:webvh:example.com:northwind-community",
+                    "member": "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
+                    "keyPackage": "AAEAAgADAAQ" }),
+                // The response is 0.2's; what 0.3 adds is how an earlier removal is refused.
+                json!({ "roomId": "did:webvh:example.com:rooms:northwind",
+                    "member": "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
+                    "epoch": 2, "welcome": "AAEAAgADAAQ", "ratchetTree": "AAEAAgADAAQ" })
+            ),
+        ),
+        (
+            uris::TASK_ROOMS_OWNER_GROUP_REMOVE_0_1,
+            checked!(
+                specs::rooms::owner::group::remove::v0_1::Payload,
+                specs::rooms::owner::group::remove::v0_1::Response,
+                json!({ "roomId": "did:webvh:example.com:rooms:northwind",
+                    "host": "did:webvh:example.com:northwind-community",
+                    "member": "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
+                    "reason": "Left the deal team" }),
+                json!({ "roomId": "did:webvh:example.com:rooms:northwind",
+                    "member": "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
+                    "epoch": 4 })
+            ),
+        ),
+        (
+            uris::TASK_ROOMS_OWNER_GROUP_REMOVE_0_3,
+            checked!(
+                specs::rooms::owner::group::remove::v0_3::Payload,
+                specs::rooms::owner::group::remove::v0_3::Response,
+                json!({ "roomId": "did:webvh:example.com:rooms:northwind",
+                    "host": "did:webvh:example.com:northwind-community",
+                    "member": "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
+                    "signingKeyId": "room-northwind-signing",
+                    "until": "2027-01-01T00:00:00Z",
+                    "reason": "Left the deal team" }),
+                json!({ "roomId": "did:webvh:example.com:rooms:northwind",
+                    "member": "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
+                    "revocation": { "sequence": 2,
+                        "digest": "zQmbWqxBEKC3P8tqsKc98xmWNzrzDtRLMiMPL8wBuTGsMnR" },
+                    "revokedAt": "2026-10-16T09:29:58Z",
+                    "epoch": 4 })
+            ),
+        ),
+        (
+            uris::TASK_ROOMS_OWNER_REVOKE_0_1,
+            checked!(
+                specs::rooms::owner::revoke::v0_1::Payload,
+                specs::rooms::owner::revoke::v0_1::Response,
+                json!({ "roomId": "did:webvh:example.com:rooms:northwind",
+                    "signingKeyId": "room-northwind-signing",
+                    "hosts": ["did:webvh:example.com:northwind-community"],
+                    "withdraw": [{ "kind": "subject",
+                        "subject": "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK" }],
+                    "reason": "Left the deal team" }),
+                json!({ "roomId": "did:webvh:example.com:rooms:northwind",
+                    "list": { "roomId": "did:webvh:example.com:rooms:northwind",
+                        "sequence": 1, "issuedAt": "2026-10-16T09:29:58Z",
+                        "entries": [{ "kind": "subject",
+                            "subject": "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
+                            "revokedAt": "2026-10-16T09:29:58Z" }],
+                        "proof": { "type": "DataIntegrityProof" } },
+                    "head": { "sequence": 1,
+                        "digest": "zQmbWqxBEKC3P8tqsKc98xmWNzrzDtRLMiMPL8wBuTGsMnR" },
+                    "deliveries": [{ "host": "did:webvh:example.com:northwind-community",
+                        "outcome": "accepted",
+                        "head": { "sequence": 1,
+                            "digest": "zQmbWqxBEKC3P8tqsKc98xmWNzrzDtRLMiMPL8wBuTGsMnR" },
+                        "inForceAt": "2026-10-16T09:30:00Z" }] })
+            ),
+        ),
+        (
+            uris::TASK_ROOMS_OWNER_GROUP_RENEW_0_2,
+            checked!(
+                specs::rooms::owner::group::renew::v0_2::Payload,
+                specs::rooms::owner::group::renew::v0_2::Response,
+                json!({ "roomId": "did:webvh:example.com:rooms:northwind",
+                    "host": "did:webvh:example.com:northwind-community",
+                    "reason": "Quarterly renewal" }),
+                json!({ "roomId": "did:webvh:example.com:rooms:northwind", "epoch": 5 })
+            ),
+        ),
+        (
             uris::TASK_ROOMS_OWNER_ISSUE_MEMBERSHIP_0_1,
             checked!(
                 specs::rooms::owner::issue_membership::v0_1::Payload,
@@ -2758,10 +3779,10 @@ fn table() -> Vec<(&'static str, Conformance)> {
             ),
         ),
         (
-            uris::TASK_ROOMS_KEYS_OPEN_0_1,
+            uris::TASK_ROOMS_KEYS_OPEN_0_2,
             checked!(
-                specs::rooms::keys::open::v0_1::Payload,
-                specs::rooms::keys::open::v0_1::Response,
+                specs::rooms::keys::open::v0_2::Payload,
+                specs::rooms::keys::open::v0_2::Response,
                 json!({
                     "roomId": "did:webvh:example.com:rooms:northwind",
                     "key": "giXFLTGBdnnQJRoIsktuIg",
@@ -2776,10 +3797,10 @@ fn table() -> Vec<(&'static str, Conformance)> {
             ),
         ),
         (
-            uris::TASK_ROOMS_KEYS_FILE_KEY_0_1,
+            uris::TASK_ROOMS_KEYS_FILE_KEY_0_2,
             checked!(
-                specs::rooms::keys::file_key::v0_1::Payload,
-                specs::rooms::keys::file_key::v0_1::Response,
+                specs::rooms::keys::file_key::v0_2::Payload,
+                specs::rooms::keys::file_key::v0_2::Response,
                 json!({
                     "roomId": "did:webvh:example.com:rooms:northwind",
                     "fileId": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
@@ -3618,6 +4639,7 @@ fn persona_witnesses() -> Vec<(&'static str, ReqParts, RespParts)> {
     const ATTR: &str = "01J8ZKAAAAAAAAAAAAAAAAAAAA";
     const PROFILE: &str = "01J8ZP1BBBBBBBBBBBBBBBBBBB";
     const CONTACT: &str = "01J8ZC7CCCCCCCCCCCCCCCCCCC";
+    const LIST_ID: &str = "01J8ZC7MMMMMMMMMMMMMMMMMMM";
     const PREVIEW: &str = "01J8ZV9DDDDDDDDDDDDDDDDDDD";
     const DISCLOSURE: &str = "01J8ZD3EEEEEEEEEEEEEEEEEEE";
     const CTX: &str = "ctx-fixture";
@@ -3631,7 +4653,7 @@ fn persona_witnesses() -> Vec<(&'static str, ReqParts, RespParts)> {
 
     vec![
         (
-            u::TASK_PERSONA_ATTRIBUTE_PUT_1_0,
+            u::TASK_PERSONA_ATTRIBUTE_PUT_1_1,
             (
                 json!({
                     "type": "name.display",
@@ -3639,18 +4661,18 @@ fn persona_witnesses() -> Vec<(&'static str, ReqParts, RespParts)> {
                     "value": "Fixture Name",
                     "provenance": self_asserted,
                 }),
-                parses::<specs::persona::attribute::put::v1_0::Payload>,
-                validates::<specs::persona::attribute::put::v1_0::Payload>,
+                parses::<specs::persona::attribute::put::v1_1::Payload>,
+                validates::<specs::persona::attribute::put::v1_1::Payload>,
             ),
             (
                 json!({
-                    "attributeId": ATTR, "version": 1, "created": true, "updatedAt": NOW,
+                    "attributeId": ATTR, "version": 1, "wasCreated": true, "updatedAt": NOW,
                     // A count, never identifiers: returning them on a write
                     // would disclose the holder's other compositions to
                     // whatever tool made it.
                     "correlation": { "severity": "none", "sharedWithProfileCount": 0 }
                 }),
-                parses::<specs::persona::attribute::put::v1_0::Response>,
+                parses::<specs::persona::attribute::put::v1_1::Response>,
             ),
         ),
         (
@@ -3698,26 +4720,26 @@ fn persona_witnesses() -> Vec<(&'static str, ReqParts, RespParts)> {
             ),
         ),
         (
-            u::TASK_PERSONA_ATTRIBUTE_PROMOTE_1_0,
+            u::TASK_PERSONA_ATTRIBUTE_PROMOTE_1_1,
             (
                 json!({
                     "contextId": CTX, "profileId": PROFILE,
                     "entries": [1], "expectedVersion": 4
                 }),
-                parses::<specs::persona::attribute::promote::v1_0::Payload>,
-                validates::<specs::persona::attribute::promote::v1_0::Payload>,
+                parses::<specs::persona::attribute::promote::v1_1::Payload>,
+                validates::<specs::persona::attribute::promote::v1_1::Payload>,
             ),
             (
                 json!({
                     "profileId": PROFILE, "version": 5,
-                    "promoted": [{ "entry": 1, "attributeId": ATTR, "created": true }],
+                    "promoted": [{ "entry": 1, "attributeId": ATTR, "wasCreated": true }],
                     "reboundPersonaDids": [PERSONA_DID]
                 }),
-                parses::<specs::persona::attribute::promote::v1_0::Response>,
+                parses::<specs::persona::attribute::promote::v1_1::Response>,
             ),
         ),
         (
-            u::TASK_PERSONA_PROFILE_COMPOSE_1_0,
+            u::TASK_PERSONA_PROFILE_COMPOSE_1_1,
             (
                 // One claim of each form, so the witness exercises the
                 // untagged discrimination between a typed and a held claim.
@@ -3734,17 +4756,17 @@ fn persona_witnesses() -> Vec<(&'static str, ReqParts, RespParts)> {
                     "personaDid": PERSONA_DID,
                     "label": "Fixture at the co-op"
                 }),
-                parses::<specs::persona::profile::compose::v1_0::Payload>,
-                validates::<specs::persona::profile::compose::v1_0::Payload>,
+                parses::<specs::persona::profile::compose::v1_1::Payload>,
+                validates::<specs::persona::profile::compose::v1_1::Payload>,
             ),
             (
                 json!({
                     "profileId": PROFILE, "scope": "pool", "version": 3,
-                    "pooled": [{ "attributeId": ATTR, "created": false }],
+                    "pooled": [{ "attributeId": ATTR, "wasCreated": false }],
                     "binding": { "personaDid": PERSONA_DID, "version": 4, "alsoBoundPersonaCount": 0 },
                     "correlation": { "severity": "high", "sharedAttributeCount": 1 }
                 }),
-                parses::<specs::persona::profile::compose::v1_0::Response>,
+                parses::<specs::persona::profile::compose::v1_1::Response>,
             ),
         ),
         (
@@ -3816,7 +4838,7 @@ fn persona_witnesses() -> Vec<(&'static str, ReqParts, RespParts)> {
             ),
         ),
         (
-            u::TASK_PERSONA_PROFILE_PUT_1_0,
+            u::TASK_PERSONA_PROFILE_PUT_1_1,
             (
                 // One entry of each referencing form the pool supports, so the
                 // witness exercises the untagged discrimination that was once
@@ -3829,12 +4851,12 @@ fn persona_witnesses() -> Vec<(&'static str, ReqParts, RespParts)> {
                         { "ref": ATTR, "override": { "value": "Fixture Override" } }
                     ]
                 }),
-                parses::<specs::persona::profile::put::v1_0::Payload>,
-                validates::<specs::persona::profile::put::v1_0::Payload>,
+                parses::<specs::persona::profile::put::v1_1::Payload>,
+                validates::<specs::persona::profile::put::v1_1::Payload>,
             ),
             (
-                json!({ "profileId": PROFILE, "version": 2, "created": true, "updatedAt": NOW }),
-                parses::<specs::persona::profile::put::v1_0::Response>,
+                json!({ "profileId": PROFILE, "version": 2, "wasCreated": true, "updatedAt": NOW }),
+                parses::<specs::persona::profile::put::v1_1::Response>,
             ),
         ),
         (
@@ -3870,7 +4892,7 @@ fn persona_witnesses() -> Vec<(&'static str, ReqParts, RespParts)> {
         // rather than assumed identical: the rename is exactly the kind of
         // change that looks like nothing and reaches the wire.
         (
-            u::TASK_PERSONA_WORLD_PUT_1_0,
+            u::TASK_PERSONA_WORLD_PUT_1_1,
             (
                 json!({
                     "name": "Work",
@@ -3880,12 +4902,12 @@ fn persona_witnesses() -> Vec<(&'static str, ReqParts, RespParts)> {
                     "attributeIds": [ATTR],
                     "expectedVersion": 0
                 }),
-                parses::<specs::persona::world::put::v1_0::Payload>,
-                validates::<specs::persona::world::put::v1_0::Payload>,
+                parses::<specs::persona::world::put::v1_1::Payload>,
+                validates::<specs::persona::world::put::v1_1::Payload>,
             ),
             (
-                json!({ "worldId": FACET, "version": 2, "created": true, "updatedAt": NOW }),
-                parses::<specs::persona::world::put::v1_0::Response>,
+                json!({ "worldId": FACET, "version": 2, "wasCreated": true, "updatedAt": NOW }),
+                parses::<specs::persona::world::put::v1_1::Response>,
             ),
         ),
         (
@@ -4059,62 +5081,6 @@ fn persona_witnesses() -> Vec<(&'static str, ReqParts, RespParts)> {
             ),
         ),
         (
-            u::TASK_PERSONA_CONTACT_PUT_1_0,
-            (
-                json!({
-                    "contextId": CTX,
-                    "subjectDid": "did:peer:0zfixturecounterparty",
-                    "knownByPersona": PERSONA_DID,
-                    "document": { "claims": [
-                        { "type": "name.display", "valueType": "string", "value": "Fixture Peer" }
-                    ]}
-                }),
-                parses::<specs::persona::contact::put::v1_0::Payload>,
-                validates::<specs::persona::contact::put::v1_0::Payload>,
-            ),
-            (
-                // Claim TYPES, not values. A producer needing the old value
-                // reads the prior revision, which is an explicit act.
-                json!({ "contactId": CONTACT, "rev": 2, "created": false,
-                        "changedClaims": ["name.display"] }),
-                parses::<specs::persona::contact::put::v1_0::Response>,
-            ),
-        ),
-        (
-            u::TASK_PERSONA_CONTACT_GET_1_0,
-            (
-                json!({ "contextId": CTX, "contactId": CONTACT }),
-                parses::<specs::persona::contact::get::v1_0::Payload>,
-                validates::<specs::persona::contact::get::v1_0::Payload>,
-            ),
-            (
-                json!({
-                    "contactId": CONTACT, "subjectDid": "did:peer:0zfixturecounterparty",
-                    "knownByPersona": PERSONA_DID, "rev": 2,
-                    "document": { "claims": [
-                        { "type": "name.display", "valueType": "string", "value": "Fixture Peer" }
-                    ]}
-                }),
-                parses::<specs::persona::contact::get::v1_0::Response>,
-            ),
-        ),
-        (
-            u::TASK_PERSONA_CONTACT_LIST_1_0,
-            (
-                json!({ "contextId": CTX }),
-                parses::<specs::persona::contact::list::v1_0::Payload>,
-                validates::<specs::persona::contact::list::v1_0::Payload>,
-            ),
-            (
-                json!({ "contacts": [{
-                    "contactId": CONTACT, "subjectDid": "did:peer:0zfixturecounterparty",
-                    "knownByPersona": PERSONA_DID, "rev": 2, "receivedAt": NOW,
-                    "claimCount": 1, "hasUnreviewedChange": true
-                }]}),
-                parses::<specs::persona::contact::list::v1_0::Response>,
-            ),
-        ),
-        (
             u::TASK_PERSONA_CONTACT_DELETE_1_0,
             (
                 json!({ "contextId": CTX, "contactId": CONTACT }),
@@ -4127,6 +5093,112 @@ fn persona_witnesses() -> Vec<(&'static str, ReqParts, RespParts)> {
                 json!({ "contactId": CONTACT, "existed": true,
                         "revisionsRemoved": 1, "retainedForDisclosure": 1 }),
                 parses::<specs::persona::contact::delete::v1_0::Response>,
+            ),
+        ),
+        (
+            u::TASK_PERSONA_CONTACT_PUT_1_2,
+            (
+                // The annotating form: a star and a list, no revision.
+                json!({ "contextId": CTX, "contactId": CONTACT, "starred": true,
+                        "lists": [LIST_ID] }),
+                parses::<specs::persona::contact::put::v1_2::Payload>,
+                validates::<specs::persona::contact::put::v1_2::Payload>,
+            ),
+            (
+                json!({ "contactId": CONTACT, "rev": 2, "wasCreated": false,
+                        "annotationsChanged": true }),
+                parses::<specs::persona::contact::put::v1_2::Response>,
+            ),
+        ),
+        (
+            u::TASK_PERSONA_CONTACT_GET_1_1,
+            (
+                json!({ "contextId": CTX, "contactId": CONTACT }),
+                parses::<specs::persona::contact::get::v1_1::Payload>,
+                validates::<specs::persona::contact::get::v1_1::Payload>,
+            ),
+            (
+                json!({
+                    "contactId": CONTACT, "subjectDid": "did:peer:0zfixturecounterparty",
+                    "knownByPersona": PERSONA_DID, "rev": 2, "starred": true,
+                    "petname": "Sam from climbing", "lists": [LIST_ID],
+                    "directoryRef": { "vtcDid": "did:web:climbing.example", "entryId": "dir_abc" },
+                    "document": { "claims": [
+                        { "type": "name.display", "valueType": "string", "value": "Fixture Peer" }
+                    ]}
+                }),
+                parses::<specs::persona::contact::get::v1_1::Response>,
+            ),
+        ),
+        (
+            u::TASK_PERSONA_CONTACT_LIST_1_1,
+            (
+                json!({ "contextId": CTX, "starred": true }),
+                parses::<specs::persona::contact::list::v1_1::Payload>,
+                validates::<specs::persona::contact::list::v1_1::Payload>,
+            ),
+            (
+                json!({ "contacts": [{
+                    "contactId": CONTACT, "subjectDid": "did:peer:0zfixturecounterparty",
+                    "knownByPersona": PERSONA_DID, "rev": 2, "receivedAt": NOW,
+                    "displayName": "Fixture Peer", "claimCount": 1,
+                    "hasUnreviewedChange": false, "starred": true
+                }]}),
+                parses::<specs::persona::contact::list::v1_1::Response>,
+            ),
+        ),
+        (
+            u::TASK_PERSONA_CONTACT_LISTS_PUT_1_1,
+            (
+                json!({ "contextId": CTX, "name": "Mentors", "colour": "#1f8a70" }),
+                parses::<specs::persona::contact::lists::put::v1_1::Payload>,
+                validates::<specs::persona::contact::lists::put::v1_1::Payload>,
+            ),
+            (
+                json!({ "list": { "listId": LIST_ID, "name": "Mentors", "colour": "#1f8a70",
+                                  "order": 0, "contactCount": 0,
+                                  "createdAt": NOW, "updatedAt": NOW },
+                        "wasCreated": true, "changed": true }),
+                parses::<specs::persona::contact::lists::put::v1_1::Response>,
+            ),
+        ),
+        (
+            u::TASK_PERSONA_CONTACT_LISTS_LIST_1_0,
+            (
+                json!({ "contextId": CTX }),
+                parses::<specs::persona::contact::lists::list::v1_0::Payload>,
+                validates::<specs::persona::contact::lists::list::v1_0::Payload>,
+            ),
+            (
+                json!({ "lists": [{ "listId": LIST_ID, "name": "Mentors", "order": 0,
+                                    "contactCount": 1, "createdAt": NOW, "updatedAt": NOW }] }),
+                parses::<specs::persona::contact::lists::list::v1_0::Response>,
+            ),
+        ),
+        (
+            u::TASK_PERSONA_CONTACT_LISTS_SHOW_1_0,
+            (
+                json!({ "contextId": CTX, "listId": LIST_ID }),
+                parses::<specs::persona::contact::lists::show::v1_0::Payload>,
+                validates::<specs::persona::contact::lists::show::v1_0::Payload>,
+            ),
+            (
+                json!({ "list": { "listId": LIST_ID, "name": "Mentors", "order": 0,
+                                  "contactCount": 1, "createdAt": NOW, "updatedAt": NOW } }),
+                parses::<specs::persona::contact::lists::show::v1_0::Response>,
+            ),
+        ),
+        (
+            u::TASK_PERSONA_CONTACT_LISTS_DELETE_1_0,
+            (
+                json!({ "contextId": CTX, "listId": LIST_ID }),
+                parses::<specs::persona::contact::lists::delete::v1_0::Payload>,
+                validates::<specs::persona::contact::lists::delete::v1_0::Payload>,
+            ),
+            (
+                // Never the list's name or its contacts.
+                json!({ "listId": LIST_ID, "existed": true, "contactsUpdated": 1 }),
+                parses::<specs::persona::contact::lists::delete::v1_0::Response>,
             ),
         ),
         (
@@ -4294,19 +5366,19 @@ fn persona_witnesses() -> Vec<(&'static str, ReqParts, RespParts)> {
             ),
         ),
         (
-            u::TASK_PERSONA_LOCAL_PROFILE_PUT_1_0,
+            u::TASK_PERSONA_LOCAL_PROFILE_PUT_1_1,
             (
                 // Inline only. A reference is unrepresentable here rather than
                 // rejected, which is what keeps the local surface pool-free.
                 json!({ "contextId": CTX, "name": "Throwaway", "entries": [
                     { "inline": { "type": "x:handle", "valueType": "string", "value": "fixture" } }
                 ]}),
-                parses::<specs::persona::local::profile::put::v1_0::Payload>,
-                validates::<specs::persona::local::profile::put::v1_0::Payload>,
+                parses::<specs::persona::local::profile::put::v1_1::Payload>,
+                validates::<specs::persona::local::profile::put::v1_1::Payload>,
             ),
             (
-                json!({ "profileId": PROFILE, "version": 4, "created": true }),
-                parses::<specs::persona::local::profile::put::v1_0::Response>,
+                json!({ "profileId": PROFILE, "version": 4, "wasCreated": true }),
+                parses::<specs::persona::local::profile::put::v1_1::Response>,
             ),
         ),
         (
@@ -4799,6 +5871,23 @@ fn webvh_and_context_witnesses() -> Vec<(&'static str, ReqParts, RespParts)> {
                   "preRotationKeyCount": 2, "createdAt": "2026-08-19T09:00:00Z",
                   "logEntry": "{}" }),
                 parses::<wv::dids::create::v1_1::Response>,
+            ),
+        ),
+        (
+            uris::TASK_WEBVH_DIDS_CREATE_1_2,
+            (
+                json!({ "contextId": "personal", "didMethod": "scid", "scidAlsoKnownAs": true }),
+                parses::<wv::dids::create::v1_2::Payload>,
+                validates::<wv::dids::create::v1_2::Payload>,
+            ),
+            (
+                json!({ "did": "did:scid:vh:1:QmScid", "contextId": "personal",
+                  "serverless": true, "scid": "QmScid", "portable": true,
+                  "signingKeyId": "k-sign", "kaKeyId": "k-ka", "preRotationKeyCount": 2,
+                  "createdAt": "2026-08-19T09:00:00Z", "logEntry": "{}",
+                  "didMethod": "scid", "scidAlsoKnownAs": true, "webvhDid": did,
+                  "scidDidUrl": "did:scid:vh:1:QmScid?src=example.com" }),
+                parses::<wv::dids::create::v1_2::Response>,
             ),
         ),
         (

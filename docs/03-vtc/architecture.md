@@ -91,7 +91,7 @@ sealed-transfer, and protocol types shared with the VTA.
 | `endorsements/` | Custom endorsement issuance + revocation + storage. |
 | `install/` | Install token signer + state machine (one-shot WebAuthn ceremony). |
 | `join/` | Join request lifecycle + retention. |
-| `keys/` | Secret-store integration (keyring / AWS / GCP / Azure / inline / plaintext). |
+| `keys/` | Secret-store integration (keyring / AWS / GCP / Azure / Vault / Kubernetes / inline / encrypted file / plaintext). |
 | `members/` | Member row + relationships + personhood lifecycle + DID rotation. |
 | `messaging.rs` | DIDComm thread + ATM wiring. |
 | `policy/` | `regorus`-backed engine, policy-id storage, default policies, evaluation helpers. |

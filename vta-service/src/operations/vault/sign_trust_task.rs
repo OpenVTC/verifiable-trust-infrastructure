@@ -37,6 +37,7 @@ pub struct SignedEnvelope {
 /// `vault/sign-trust-task/0.1` reject reason (conformance-ordered:
 /// `not_signable` → `envelope_invalid` → `envelope_already_proofed` →
 /// `envelope_issuer_mismatch` → `envelope_expired`).
+#[non_exhaustive]
 pub enum SignTrustTaskError {
     /// Entry kind carries no DID-based signing identity.
     NotSignable { kind: &'static str },

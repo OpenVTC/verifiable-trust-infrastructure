@@ -19,7 +19,7 @@ autobins = false
 
 [dev-dependencies]
 # Embedded mediator fixture from affinidi-tdk-rs.
-affinidi-messaging-test-mediator = { version = "0.20", features = ["tsp"] }
+affinidi-messaging-test-mediator = { version = "0.46", features = ["tsp"] }
 
 # VTA: enable the `test-support` feature so we can stand up complete VTA
 # state (in-memory keyspaces, default `AppConfig`, bootstrap helpers)
@@ -30,6 +30,13 @@ affinidi-messaging-test-mediator = { version = "0.20", features = ["tsp"] }
 vta-service = { path = "../../vta-service", features = ["test-support", "transport-harness", "didcomm", "tsp", "webvh", "rest"] }
 vta-sdk = { path = "../../vta-sdk", features = ["client", "didcomm", "session", "tsp", "sealed-transfer", "provision-integration", "provision-client"] }
 vti-common = { path = "../../vti-common" }
+# Community voting: the voting service and its core, and the `pnm elections trustee` code,
+# for `voting_trustees` — a trustee's round run from the CLI against a real ballot box.
+vti-voting = { path = "../../vti-voting" }
+vti-voting-service = { path = "../../vti-voting-service" }
+vta-cli-common = { path = "../../vta-cli-common" }
+axum = { workspace = true }
+serde_json_canonicalizer = { workspace = true }
 
 # `TrustTask<Value>` — the document type `vta_sdk::trust_task_sign` signs.
 trust-tasks-rs = { workspace = true }

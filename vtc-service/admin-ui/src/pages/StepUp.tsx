@@ -36,6 +36,7 @@ import {
   runStepUpCeremony,
 } from "@/lib/bound-step-up";
 import { useViewerDid } from "@/lib/viewer";
+import { Protected } from "@/components/Protected";
 
 function message(err: unknown): string {
   if (err && typeof err === "object" && "message" in err) {
@@ -45,7 +46,7 @@ function message(err: unknown): string {
   return String(err);
 }
 
-export function StepUpPage() {
+function StepUpPageSurface() {
   const { hash } = useLocation();
   const request = useMemo(() => decodeStepUpRequest(hash), [hash]);
   const viewer = useViewerDid();
@@ -218,5 +219,14 @@ export function StepUpPage() {
         )}
       </section>
     </section>
+  );
+}
+
+/** StepUpPage, out of the community theme's reach (`vtc/community/theme/show/0.1`, client item 2). */
+export function StepUpPage() {
+  return (
+    <Protected ground="page">
+      <StepUpPageSurface />
+    </Protected>
   );
 }

@@ -91,6 +91,40 @@ impl VtaClient {
         Ok(wrapped.entry)
     }
 
+    /// Exercise the caller's hand-off marker (VTI-ACL-054 – VTI-ACL-057): write
+    /// `successor_did` as the caller's one successor and remove the caller's
+    /// own entry, atomically. `acl/grant/0.1` with
+    /// [`HANDOFF_ROLLOVER_EXT_MEMBER`](acl_management::create::HANDOFF_ROLLOVER_EXT_MEMBER).
+    ///
+    /// The successor's expiry is the one the granter recorded with the marker,
+    /// not the caller's — the point of a hand-off — and `role` / `scopes` may
+    /// not exceed the caller's. The caller must already hold the successor's
+    /// private key: unlike `provision/integration`'s admin rollover, nothing is
+    /// minted for it (VTI-CLT-002).
+    pub async fn roll_over_handoff(
+        &self,
+        successor_did: &str,
+        role: &str,
+        scopes: Vec<String>,
+        label: Option<String>,
+    ) -> Result<AclEntryResponse, VtaError> {
+        let mut entry = acl_management::entry::AclEntry::new(
+            successor_did.to_string(),
+            role.to_string(),
+            scopes,
+        );
+        entry.label = label;
+        let body = acl_management::create::CreateAclBody::handoff_rollover(entry);
+        let wrapped: AclEntryEnvelope = self
+            .rpc_tt(
+                crate::trust_tasks::TASK_ACL_GRANT_0_1,
+                serde_json::to_value(&body)?,
+                30,
+            )
+            .await?;
+        Ok(wrapped.entry)
+    }
+
     pub async fn update_acl(
         &self,
         did: &str,

@@ -79,26 +79,38 @@ multihash over the witnessed relationship credential's JCS canonical form with
 its top-level `proof` removed (DTG Credentials §Digest Encoding), and its
 `credentialSubject.id` must be the **issuer** of that credential (the profile's
 subject–object rule). Before policy runs, the VTC refuses any statement under a
-predicate the community does not accept (the fail-closed accept list), then
-recomputes the digest against every relationship credential it holds —
-comparing decoded digest bytes, never encoded strings — and writes its verdict
-onto each `witnessed/1` entry in `input.vp_claims.credentials` as
-`witness_binding`:
+predicate the community does not accept (the fail-closed accept list). Then,
+for each `witnessed/1` entry, in this order, it checks that the issuer is a
+witness this community [trusts](trusted-witnesses.md), that the outcome
+evidence of the witnessing session travelled with the presentation and pairs
+with the VWC, and recomputes the digest against every relationship credential
+it holds — comparing decoded digest bytes, never encoded strings. It writes the
+verdict onto the entry in `input.vp_claims.credentials` as `witness_binding`:
 
 | `witness_binding.state` | Meaning |
 |---|---|
+| `untrustedWitness` | The issuer is not on the community's list of trusted witnesses. Nothing else is checked. The list is empty by default, so this is every VWC until the community names a witness. |
+| `noOutcomeEvidence` | No outcome evidence for the session the VWC cites travelled with it, so it is not evidence that the witnessing completed (VTI-CMP-023). |
+| `outcomeInvalid` | Outcome evidence for that session travelled with it but does not pair with it. |
 | `bound` | The digest names an edge this community holds, issued by the statement's subject; `relationship_id` says which. |
 | `subjectMismatch` | The digest names an edge held here, but someone other than the statement's subject issued it. Never evidence; `relationship_id` names the edge. |
 | `unresolved` | A well-formed digest naming no edge held here. Not forgery — the edge may live on another community. |
 | `absent` | The VWC carries no digest, so it witnesses nothing in particular. |
 | `malformed` | The digest is not a `sha2-256` multihash. |
 
-The verdict is the VTC's, not the presenter's: a `witness_binding`
-member inside a presented credential never reaches the policy.
+Every state after the first three implies the first three checks passed. The
+verdict is the VTC's, not the presenter's: a `witness_binding` member inside a
+presented credential never reaches the policy, and no policy can accept a VWC
+the VTC refused as `untrustedWitness`, `noOutcomeEvidence` or `outcomeInvalid`.
+
+The outcome evidence travels in the `vtc/members/personhood/assert/0.2`
+payload's own `outcomeEvidence`: an array of `{ "session", "outcome" }` objects,
+one per VWC the member wants counted — the `evidence` that
+`vta/witness/accept/0.2` returns. See [Trusted witnesses](trusted-witnesses.md).
 
 The **default policy accepts only `bound`**. A community that trusts
 witnesses of edges held elsewhere can accept `unresolved` in its own
-`personhood.rego`:
+`personhood.rego` — still only from a trusted witness whose session completed:
 
 ```rego
 allow if {
@@ -118,6 +130,17 @@ check as the retired plain `IdentityVerificationCredential` rather than as its
 (`policy::default::upgrade_stale_personhood_default`, decided by evaluating
 the stored policy, not by its bytes). A personhood
 policy an operator uploaded is never replaced.
+
+Replacing or activating the personhood policy (`policy/upsert`,
+`policy/activate` for purpose `personhood`) decides who this community
+recognises as a person, so it takes the requester's gesture and the approval
+of the other holders of `vtc.policy.admin @ policy:personhood` (kind
+`policy.recognition.change`, **VTI-APV-023**), as an authority policy does
+(VTI-VTC-022) — see [admin-access.md](admin-access.md) §3.2. In
+single-administrator mode the bound gesture stands in, audited at `Critical`.
+The capability itself is not authority-conferring: recognising a person grants
+no power in the community, so granting `vtc.policy.admin @ policy:personhood`
+is an ordinary grant. What is held for consent is each change it makes.
 
 ### The community's own identity check
 

@@ -82,6 +82,8 @@ async fn run_didcomm(
             setup_acl,
             force,
             handshake_timeout,
+            wait_secs,
+            no_wait,
         } => {
             services::cmd_services_didcomm_enable(
                 client,
@@ -89,6 +91,8 @@ async fn run_didcomm(
                 setup_acl,
                 force,
                 handshake_timeout,
+                wait_secs,
+                no_wait,
             )
             .await
         }

@@ -61,13 +61,10 @@ pub const STATEMENT_CREDENTIAL_TYPE: &str = "StatementCredential";
 /// withdraw it — a takedown — but never grant it. Re-stating the current value
 /// is a no-op, not a refusal.
 ///
-/// A literal, like `join_requests::JOIN_REQUEST_SUBMIT_ERR_REQUEST_ALREADY_OPEN`:
-/// `vtc/members/update/0.1` declares no code for it, so it is minted under the
-/// task's own namespace (Trust Tasks SPEC §8.5). A client that does not
-/// recognise it treats it as `taskFailed`. The VTC's error-code census lists it
-/// as consumer-minted and fails the day the specification declares it.
+/// Declared by `vtc/members/update/0.1` since trust-tasks-tf #789, so this is
+/// the generated code.
 pub const MEMBER_UPDATE_ERR_CONSENT_GRANT_FORBIDDEN: &str =
-    "vtc/members/update:consentGrantForbidden";
+    trust_tasks_rs::specs::vtc::members::update::v0_1::error_codes::CONSENT_GRANT_FORBIDDEN.code;
 
 /// VTC → member: request that the member issue and send their reciprocal VMC.
 pub const MEMBER_REQUEST_VMC_TYPE: &str = "https://trusttasks.org/spec/vtc/members/request-vmc/0.1";
@@ -100,6 +97,7 @@ pub const MEMBER_REMOVAL_NOTICE_TYPE: &str =
 /// removal policy, a super-administrator's purge deliberately skipped it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[non_exhaustive]
 pub enum RemovalCode {
     /// Policy-governed removal by an administrator.
     AdminRemoved,

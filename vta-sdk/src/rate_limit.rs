@@ -159,6 +159,19 @@ macro_rules! mediator_keys {
     };
 }
 
+/// The `limiter` a VTA names when its per-appliance operation budget refused an
+/// authenticated request: the whole appliance is at capacity, not one client.
+pub const OPERATIONS_LIMITER: &str = "operations";
+/// The `limiter` a VTA names when one client used its own share of the
+/// operation budget: that client is busy, not the appliance.
+pub const OPERATIONS_SUBJECT_LIMITER: &str = "operations-subject";
+/// VTA `[server]` key: the per-client share of the operation budget.
+pub const VTA_OPERATION_PER_SUBJECT_KEY: &str = "operation_rate_limit_per_subject_per_sec";
+/// VTA `[server]` key: the per-appliance operation budget, in operations per
+/// second. Not runtime-patchable; on a TEE VTA it comes from the tenant overlay.
+pub const VTA_OPERATION_RATE_KEY: &str = "operation_rate_limit_per_sec";
+/// VTA `[server]` key: the burst for [`VTA_OPERATION_RATE_KEY`].
+pub const VTA_OPERATION_BURST_KEY: &str = "operation_rate_limit_burst";
 /// VTA `[server]` key: seconds per token for the auth / bootstrap limiter.
 pub const VTA_INTERVAL_KEY: &str = vta_interval_key!();
 /// VTA `[server]` key: burst for the auth / bootstrap limiter.

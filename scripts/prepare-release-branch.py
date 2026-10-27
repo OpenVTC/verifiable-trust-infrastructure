@@ -21,7 +21,7 @@ A release branch only ever takes patches, so the rule is simple enough to own:
     Eucalyptus were cut with): VTI-Fig-RC-0 -> VTI-Fig-RC-1 (rc),
     VTI-Fig-RC-N -> VTI-Fig (ga), VTI-Fig -> VTI-Fig-R1 -> VTI-Fig-R2 (patch).
 
-Unpublished crates (vtc-service, vta-enclave …) keep their versions: what
+Unpublished crates (vta-enclave, vti-witness …) keep their versions: what
 identifies them in a named release is the release tag.
 
 Run on a checkout of `release/<name>`; `.github/workflows/release-branch.yml`

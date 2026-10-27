@@ -1,0 +1,169 @@
+{
+  "$comment": [
+    "Conformance vectors for the bounded-scan range algebra.",
+    "",
+    "The same ScanOpts is evaluated on both sides of the vsock boundary: a",
+    "current proxy computes the range itself (enclave-proxy's scan_bounds),",
+    "while against an older one the enclave reads the whole prefix and",
+    "computes it locally (vti_common::store::scan_bounds). A caller must get",
+    "the same rows either way, so the two implementations -- which live in",
+    "separate cargo workspaces and cannot share code without coupling them --",
+    "are pinned to this one table instead.",
+    "",
+    "Every consumer runs these through its *real* path, not a reimplementation:",
+    "  - vti-common  LocalKeyspaceHandle::scan_raw  (fjall range query)",
+    "  - vti-common  apply_scan_locally             (in-memory, old-proxy path)",
+    "  - vti-common  the vsock fake parent          (what the client tests run on)",
+    "  - enclave-proxy  handle_scan                 (fjall range on the parent)",
+    "",
+    "Add a case here before fixing a bounds bug anywhere, so the fix is",
+    "proven in every implementation rather than the one that reported it.",
+    "",
+    "Case fields: `keys` are seeded in the keyspace; `expect` is the exact",
+    "ordered result of scanning with `prefix`/`after`/`reverse` and no limit.",
+    "`encoding` is \"utf8\" (default) or \"hex\", the latter for keys that are",
+    "not valid UTF-8."
+  ],
+  "cases": [
+    {
+      "name": "a prefix scan excludes neighbours on both sides",
+      "keys": ["lof:zz", "log:00", "log:01", "log:02", "prune:watermark"],
+      "prefix": "log:",
+      "after": null,
+      "reverse": false,
+      "expect": ["log:00", "log:01", "log:02"]
+    },
+    {
+      "name": "reverse yields the same rows newest first",
+      "keys": ["lof:zz", "log:00", "log:01", "log:02", "prune:watermark"],
+      "prefix": "log:",
+      "after": null,
+      "reverse": true,
+      "expect": ["log:02", "log:01", "log:00"]
+    },
+    {
+      "name": "ascending after is exclusive",
+      "keys": ["log:00", "log:01", "log:02", "log:03"],
+      "prefix": "log:",
+      "after": "log:01",
+      "reverse": false,
+      "expect": ["log:02", "log:03"]
+    },
+    {
+      "name": "descending after is exclusive and walks older",
+      "keys": ["log:00", "log:01", "log:02", "log:03"],
+      "prefix": "log:",
+      "after": "log:02",
+      "reverse": true,
+      "expect": ["log:01", "log:00"]
+    },
+    {
+      "name": "an after equal to the first key yields the rest",
+      "keys": ["log:00", "log:01", "log:02"],
+      "prefix": "log:",
+      "after": "log:00",
+      "reverse": false,
+      "expect": ["log:01", "log:02"]
+    },
+    {
+      "name": "an after equal to the prefix itself keeps every row",
+      "keys": ["log:00", "log:01"],
+      "prefix": "log:",
+      "after": "log:",
+      "reverse": false,
+      "expect": ["log:00", "log:01"]
+    },
+    {
+      "name": "an ascending after below the prefix does not widen the scan",
+      "keys": ["aaa", "log:00", "log:01", "prune:watermark"],
+      "prefix": "log:",
+      "after": "aaa",
+      "reverse": false,
+      "expect": ["log:00", "log:01"]
+    },
+    {
+      "name": "a descending after above the prefix does not widen the scan",
+      "keys": ["aaa", "log:00", "log:01", "prune:watermark"],
+      "prefix": "log:",
+      "after": "zzz",
+      "reverse": true,
+      "expect": ["log:01", "log:00"]
+    },
+    {
+      "name": "an ascending after past the prefix end yields nothing",
+      "keys": ["log:00", "log:01", "prune:watermark"],
+      "prefix": "log:",
+      "after": "zzz",
+      "reverse": false,
+      "expect": []
+    },
+    {
+      "name": "a descending after below the prefix start yields nothing",
+      "keys": ["aaa", "log:00", "log:01"],
+      "prefix": "log:",
+      "after": "aaa",
+      "reverse": true,
+      "expect": []
+    },
+    {
+      "name": "an empty prefix covers the whole keyspace ascending",
+      "keys": ["aaa", "log:00", "prune:watermark"],
+      "prefix": "",
+      "after": null,
+      "reverse": false,
+      "expect": ["aaa", "log:00", "prune:watermark"]
+    },
+    {
+      "name": "an empty prefix with an after still resumes exclusively",
+      "keys": ["aaa", "log:00", "prune:watermark"],
+      "prefix": "",
+      "after": "aaa",
+      "reverse": false,
+      "expect": ["log:00", "prune:watermark"]
+    },
+    {
+      "name": "a prefix with no rows yields nothing",
+      "keys": ["log:00", "log:01"],
+      "prefix": "nothing:",
+      "after": null,
+      "reverse": false,
+      "expect": []
+    },
+    {
+      "name": "a prefix that is a prefix of another prefix does not leak into it",
+      "keys": ["log:00", "log:extra", "logger:00"],
+      "prefix": "log:",
+      "after": null,
+      "reverse": false,
+      "expect": ["log:00", "log:extra"]
+    },
+    {
+      "$comment": "0xFF has no incrementable byte, so the prefix has no upper bound to compute and the scan must simply run to the end of the keyspace.",
+      "name": "an all-0xFF prefix has no upper bound",
+      "encoding": "hex",
+      "keys": ["01", "ff00", "ff01", "ffff"],
+      "prefix": "ff",
+      "after": null,
+      "reverse": false,
+      "expect": ["ff00", "ff01", "ffff"]
+    },
+    {
+      "$comment": "The byte before the boundary must stay out and the boundary itself must come in, which is where an off-by-one in the upper bound shows up.",
+      "name": "a prefix ending in 0xFF increments the byte before it",
+      "encoding": "hex",
+      "keys": ["61fe", "61ff00", "61ff01", "6200"],
+      "prefix": "61ff",
+      "after": null,
+      "reverse": false,
+      "expect": ["61ff00", "61ff01"]
+    },
+    {
+      "name": "a reverse scan over a single row returns it",
+      "keys": ["log:only"],
+      "prefix": "log:",
+      "after": null,
+      "reverse": true,
+      "expect": ["log:only"]
+    }
+  ]
+}

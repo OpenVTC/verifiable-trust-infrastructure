@@ -30,6 +30,17 @@ pub struct IssueRequest<'a> {
     pub now: DateTime<Utc>,
 }
 
+/// What a presign-batch issuance (`external/credentials/issue/0.2`, `presign`)
+/// asks of a driver. The binding and batch checks have already passed.
+pub struct BatchIssueRequest<'a> {
+    pub account: &'a AccountRecord,
+    /// The account's secret, unwrapped for this call only.
+    pub secret: Option<&'a str>,
+    pub batch: &'a crate::batch::PresignBatch,
+    pub ttl_seconds: u32,
+    pub now: DateTime<Utc>,
+}
+
 /// An issued credential, before sealing. The payload carries the provider's
 /// request id, when there is one.
 pub struct Issued {
@@ -56,6 +67,7 @@ impl SettingsError {
 
 /// Why a driver could not issue. Each maps onto a family error code.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum DriverError {
     /// `external:providerSetupRequired` — the account cannot be used until its
     /// provider-side setup (or its secret) is done.
@@ -106,6 +118,22 @@ pub trait ExternalAuthDriver: Send + Sync {
     /// Build one credential.
     async fn issue(&self, req: IssueRequest<'_>) -> Result<Issued, DriverError>;
 
+    /// Whether this model takes `presign` rather than `scope` in
+    /// `external/credentials/issue/0.2` (item 4).
+    fn takes_presign(&self) -> bool {
+        false
+    }
+
+    /// Presign every operation of a batch (`issue/0.2`, `presign`). Only a model
+    /// that [`takes_presign`](Self::takes_presign) is asked.
+    async fn issue_batch(&self, req: BatchIssueRequest<'_>) -> Result<Issued, DriverError> {
+        let _ = req;
+        Err(DriverError::Internal(format!(
+            "the {} model does not presign batches",
+            self.model()
+        )))
+    }
+
     /// Exercise the account end to end; `AccountProbeReport` JSON. `complete`
     /// is true only when the canary steps ran.
     async fn probe(
@@ -130,8 +158,23 @@ pub fn driver_for(model: &str) -> Option<&'static dyn ExternalAuthDriver> {
 pub const SUPPORTED_MODELS: &[&str] = &["s3-static-presign"];
 
 /// One process-wide client for probes: the SSRF-hardened foreign-fetch
-/// profile, since a provider endpoint is administrator-supplied.
+/// profile (no redirects, no proxy, vetted DNS answers), since a provider
+/// endpoint is administrator-supplied — under the process's endpoint policy,
+/// so a store on a private network or loopback (MinIO on a LAN, LocalStack) is
+/// reachable only when the operator set `VTA_ALLOW_PRIVATE_ENDPOINTS`, the same
+/// switch that lets this VTA resolve a DID on such a host. Public-only otherwise.
 pub fn probe_client() -> &'static reqwest::Client {
-    static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
-    CLIENT.get_or_init(vta_sdk::http::foreign_fetch_client)
+    probe_client_for(vta_sdk::http::EndpointPolicy::process_default())
+}
+
+/// [`probe_client`] under an explicit endpoint policy.
+pub fn probe_client_for(policy: vta_sdk::http::EndpointPolicy) -> &'static reqwest::Client {
+    static PUBLIC: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+    static PRIVATE: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+    let cell = if policy.allow_private {
+        &PRIVATE
+    } else {
+        &PUBLIC
+    };
+    cell.get_or_init(|| vta_sdk::http::foreign_fetch_client_for(policy))
 }

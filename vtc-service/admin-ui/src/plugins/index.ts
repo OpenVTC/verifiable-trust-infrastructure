@@ -13,7 +13,9 @@
 
 import {
   BadgeCheck,
+  BookUser,
   ClipboardList,
+  Vote,
   DoorOpen,
   FolderGit2,
   Inbox,
@@ -22,6 +24,7 @@ import {
   ListChecks,
   Network,
   PenLine,
+  ScanLine,
   Share2,
   ShieldCheck,
   Smartphone,
@@ -29,6 +32,7 @@ import {
   Ticket,
   UserCog,
   Users,
+  UsersRound,
   Workflow,
 } from "lucide-react";
 
@@ -40,6 +44,10 @@ import { Audit } from "@/plugins/audit";
 import { Ceremonies } from "@/plugins/ceremonies";
 import { ConsoleKeys } from "@/plugins/consoleKeys";
 import { Dashboard } from "@/plugins/dashboard";
+import { DATA_ROOMS_CAPABILITIES, DataRooms } from "@/plugins/dataRooms";
+import { Directory } from "@/plugins/directory";
+import { Elections } from "@/plugins/elections";
+import { Groups } from "@/plugins/groups";
 import { Invitations } from "@/plugins/invitations";
 import { JoinRequests } from "@/plugins/joinRequests";
 import { Members } from "@/plugins/members";
@@ -49,9 +57,9 @@ import { Recognition } from "@/plugins/recognition";
 import { Relationships } from "@/plugins/relationshipsGraph";
 import { Repos } from "@/plugins/repos";
 import { Roles } from "@/plugins/roles";
-import { Rooms } from "@/plugins/rooms";
 import { Sessions } from "@/plugins/sessions";
 import { Vetting } from "@/plugins/vetting";
+import { WalletVerifier } from "@/plugins/walletVerifier";
 
 export function registerBuiltinPlugins(): void {
   // ── Overview ──
@@ -73,6 +81,8 @@ export function registerBuiltinPlugins(): void {
     path: "/actions",
     iconComponent: ListChecks,
     reactComponent: Actions,
+    // A deciding page: out of the community theme's reach.
+    protected: true,
   });
 
   registerPlugin({
@@ -93,6 +103,8 @@ export function registerBuiltinPlugins(): void {
     path: "/join-requests",
     iconComponent: Inbox,
     reactComponent: JoinRequests,
+    // A deciding page: out of the community theme's reach.
+    protected: true,
     capabilities: ["vtc.join.decide"],
   });
 
@@ -103,7 +115,44 @@ export function registerBuiltinPlugins(): void {
     path: "/members",
     iconComponent: Users,
     reactComponent: Members,
+    // A deciding page: out of the community theme's reach.
+    protected: true,
     capabilities: ["vtc.members.manage"],
+  });
+
+  // The member directory: its fields, and every member's entry as an
+  // administrator reads it. Any administrator reads; holders of
+  // vtc.directory.admin change the schema and assert values.
+  registerPlugin({
+    id: "directory",
+    group: "membership",
+    label: "Directory",
+    path: "/directory",
+    iconComponent: BookUser,
+    reactComponent: Directory,
+  });
+
+  // The community's polls, surveys and elections (docs/03-vtc/elections.md):
+  // create, close, cancel and certify them. Members vote through their own VTA.
+  registerPlugin({
+    id: "elections",
+    group: "governance",
+    label: "Elections",
+    path: "/elections",
+    iconComponent: Vote,
+    reactComponent: Elections,
+    capabilities: ["vtc.elections.manage"],
+  });
+
+  // The community's groups: every administrator reads them; holders of
+  // vtc.groups.manage create them, and each group's managers run it.
+  registerPlugin({
+    id: "groups",
+    group: "membership",
+    label: "Groups",
+    path: "/groups",
+    iconComponent: UsersRound,
+    reactComponent: Groups,
   });
 
   registerPlugin({
@@ -199,12 +248,27 @@ export function registerBuiltinPlugins(): void {
   });
 
   registerPlugin({
+    id: "wallet-verifier",
+    group: "community",
+    label: "Wallet verifier",
+    path: "/wallet-verifier",
+    iconComponent: ScanLine,
+    reactComponent: WalletVerifier,
+    capabilities: ["vtc.config.admin"],
+  });
+
+  // One entry for data rooms: Rooms, Usage and Storage are tabs of it
+  // (`plugins/dataRooms.tsx`), each gated on its own capability. The entry is
+  // shown to a holder of any of them, so a tab for another authority adds its
+  // capability to the entry by being listed there.
+  registerPlugin({
     id: "rooms",
     group: "community",
     label: "Data rooms",
     path: "/rooms",
     iconComponent: DoorOpen,
-    reactComponent: Rooms,
+    reactComponent: DataRooms,
+    capabilities: DATA_ROOMS_CAPABILITIES,
   });
 
   registerPlugin({
@@ -214,6 +278,8 @@ export function registerBuiltinPlugins(): void {
     path: "/repos",
     iconComponent: FolderGit2,
     reactComponent: Repos,
+    // A deciding page: out of the community theme's reach.
+    protected: true,
     // Git-namespace rights are capabilities on the ACL entry (phase C3): the
     // page is for whoever administers a namespace or manages a repository —
     // at any qualifier — and a community administrator, whose `git.ns.admin`

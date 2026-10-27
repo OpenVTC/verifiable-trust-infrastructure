@@ -218,6 +218,7 @@ pub(super) enum TspLegKind {
 /// attached a TSP leg reports TSP: its DIDComm session stays open only as the
 /// mediator's one socket per DID, on which TSP receive arrives.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum SurfaceTransport {
     /// REST/HTTPS with a bearer token.
     Rest,
@@ -414,14 +415,22 @@ mod keys;
 // census lives downstream rather than in this crate's own tests.
 mod app_state;
 mod external;
+pub use external::presign_split_at;
 #[cfg(feature = "sealed-transfer")]
 pub use external::{open_external_credential, seal_external_secret};
 #[cfg(feature = "test-loopback")]
 pub mod loopback;
 mod memory;
+mod pcs;
 mod persona;
 mod policy;
 mod rooms;
+mod witness;
+pub use rooms::{
+    RoomAction, RoomLabelEdit, RoomRegistration, RoomRetentionPolicy, RoomVisibility,
+    is_community_type, is_offer_type, room_label_payload, unsigned_community_request,
+    unsigned_room_request,
+};
 mod secrets;
 mod vault;
 mod vta_management;
@@ -1359,6 +1368,35 @@ impl VtaClient {
             #[cfg(feature = "tsp")]
             Transport::Tsp { vta_did, .. } => Some(vta_did),
         }
+    }
+
+    /// Open a reusable trust-ping session to `mediator_did`, paired with the VTA
+    /// DID to probe, with this client's own mediator account provisioned.
+    ///
+    /// A VTA's `--setup-acl` opens the *VTA's* account. The pong travels back
+    /// forwarded, which a mediator that refuses forwarded delivery by default
+    /// drops until this client's own account accepts it — the same step
+    /// `pnm health` takes before its forwarded ping. Returned rather than
+    /// pinged here so a caller polling for readiness pays the session setup
+    /// once instead of out of every probe window.
+    #[cfg(feature = "session")]
+    pub async fn open_vta_ping_session(
+        &self,
+        mediator_did: &str,
+        client_name: &str,
+    ) -> Result<(crate::session::TrustPingSession, String), Box<dyn std::error::Error>> {
+        let identity = self
+            .identity
+            .as_ref()
+            .ok_or("client has no identity for trust-ping")?;
+        let session = crate::session::TrustPingSession::new(
+            &identity.client_did,
+            &identity.private_key_multibase,
+            mediator_did,
+        )
+        .await?;
+        session.provision_client_acl(client_name).await;
+        Ok((session, identity.vta_did.clone()))
     }
 
     /// Human-readable identifier for the VTA this client talks to — the
@@ -2534,6 +2572,14 @@ impl VtaClient {
                         body: message.to_string(),
                     });
                 }
+                r::NO_MATCHING_PROTOCOL => {
+                    if let Some(e) = payload
+                        .get("details")
+                        .and_then(VtaError::no_matching_protocol_from)
+                    {
+                        return Some(e);
+                    }
+                }
                 _ => {}
             }
         }
@@ -2631,9 +2677,11 @@ impl VtaClient {
             return Some(VtaError::Unavailable { retry_after });
         }
 
-        Some(VtaError::Protocol(format!(
-            "trust task failed [{code}]: {message}"
-        )))
+        Some(VtaError::Rejected {
+            code: code.to_string(),
+            message: message.to_string(),
+            details: payload.get("details").cloned(),
+        })
     }
 
     /// Seal a cleartext `VaultSecret` JSON for `vault/upsert`'s `sealedSecret`
@@ -3125,23 +3173,26 @@ mod tests {
         });
         assert!(matches!(
             VtaClient::trust_task_error(&payload),
-            Some(VtaError::Protocol(_))
+            Some(VtaError::Rejected { code, .. }) if code == "vta/contexts/create:parentNotFound"
         ));
     }
 
-    /// Every other failure keeps its existing shape — the new variant must not
-    /// swallow unrelated rejections that merely carry a `details` object.
+    /// Every other failure stays a plain rejection — the consent variant must
+    /// not swallow unrelated rejections that merely carry a `details` object,
+    /// and that object reaches the caller as sent.
     #[test]
-    fn a_non_consent_failure_is_still_a_protocol_error() {
+    fn a_non_consent_failure_is_a_plain_rejection() {
         let payload = serde_json::json!({
             "code": "malformedRequest",
             "message": "payload does not conform",
             "details": { "reason": "schema:invalid" }
         });
-        assert!(matches!(
-            VtaClient::trust_task_error(&payload),
-            Some(VtaError::Protocol(_))
-        ));
+        let err = VtaClient::trust_task_error(&payload).expect("an error");
+        assert_eq!(err.rejection_code(), Some("malformedRequest"));
+        assert_eq!(
+            err.rejection_details(),
+            Some(&serde_json::json!({ "reason": "schema:invalid" }))
+        );
     }
 
     // ── outcome typing across the Trust-Task boundary ───────────────
@@ -3223,19 +3274,97 @@ mod tests {
         }
     }
 
+    /// A VTA that shares no transport with a peer it had to reach says so as
+    /// `taskFailed` + `no_matching_protocol`, and that comes back as the typed
+    /// variant — both sets intact — rather than `malformedRequest`, which told
+    /// the caller its own document was wrong.
+    #[test]
+    fn no_matching_protocol_arrives_typed_with_both_sets() {
+        use crate::protocol::matching::Protocol;
+        let payload = serde_json::json!({
+            "code": "taskFailed",
+            "message": "no transport in common with `did:webvh:vtc`",
+            "details": {
+                "reason": "no_matching_protocol",
+                "counterpartyDid": "did:webvh:vtc",
+                "ours": ["rest"],
+                "theirs": ["didcomm", "carrier-pigeon"]
+            }
+        });
+        match VtaClient::trust_task_error(&payload) {
+            Some(VtaError::NoMatchingProtocol {
+                counterparty_did,
+                ours,
+                theirs,
+            }) => {
+                assert_eq!(counterparty_did, "did:webvh:vtc");
+                assert_eq!(ours, vec![Protocol::Rest]);
+                // An unknown name is skipped, not fatal.
+                assert_eq!(theirs, vec![Protocol::Didcomm]);
+            }
+            other => panic!("expected NoMatchingProtocol, got {other:?}"),
+        }
+    }
+
+    /// The REST arm of the same refusal: a 502 whose body names it.
+    #[test]
+    fn no_matching_protocol_over_rest_is_typed_too() {
+        let body = serde_json::json!({
+            "error": "no_matching_protocol",
+            "message": "no transport in common",
+            "counterpartyDid": "did:webvh:vtc",
+            "ours": ["rest"],
+            "theirs": ["tsp"],
+        })
+        .to_string();
+        assert!(matches!(
+            VtaError::from_http(reqwest::StatusCode::BAD_GATEWAY, body),
+            VtaError::NoMatchingProtocol { .. }
+        ));
+        // A 502 that is not this one stays a server error.
+        assert!(matches!(
+            VtaError::from_http(reqwest::StatusCode::BAD_GATEWAY, "{\"error\":\"x\"}".into()),
+            VtaError::Server { status: 502, .. }
+        ));
+    }
+
     /// A `taskFailed` carrying no `details` is a genuine failure and must stay
     /// one. That is also the shape an older VTA emits, so this fallback is what
     /// keeps a new client from misreading every pre-upgrade failure as typed.
     #[test]
-    fn an_undiscriminated_task_failure_is_still_a_protocol_error() {
+    fn an_undiscriminated_task_failure_is_a_plain_rejection() {
         let payload = serde_json::json!({
             "code": "taskFailed",
             "message": "task failed: the mediator refused the handshake",
         });
-        assert!(matches!(
-            VtaClient::trust_task_error(&payload),
-            Some(VtaError::Protocol(_))
-        ));
+        let err = VtaClient::trust_task_error(&payload).expect("an error");
+        assert!(
+            matches!(&err, VtaError::Rejected { code, details: None, .. } if code == "taskFailed"),
+            "{err:?}"
+        );
+    }
+
+    /// #1952: a task's declared error keeps its code and `details` as data —
+    /// `persona/profile/delete:bound` names the personas wearing the face,
+    /// which a client needs before it offers to take the face off them.
+    #[test]
+    fn a_declared_rejection_keeps_its_code_and_details() {
+        let payload = serde_json::json!({
+            "code": "persona/profile/delete:bound",
+            "message": "2 persona(s) are bound to this profile",
+            "details": { "personaDids": ["did:key:z6MkA", "did:key:z6MkB"] }
+        });
+        let err = VtaClient::trust_task_error(&payload).expect("an error");
+        assert_eq!(err.rejection_code(), Some("persona/profile/delete:bound"));
+        assert_eq!(
+            err.rejection_details().and_then(|d| d.get("personaDids")),
+            Some(&serde_json::json!(["did:key:z6MkA", "did:key:z6MkB"]))
+        );
+        // The rendering callers and logs already rely on does not change.
+        assert_eq!(
+            err.to_string(),
+            "trust task failed [persona/profile/delete:bound]: 2 persona(s) are bound to this profile"
+        );
     }
 
     // ── unsupportedType / unsupportedVersion ────────────────────────

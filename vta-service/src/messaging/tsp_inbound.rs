@@ -50,7 +50,22 @@ use vta_sdk::tsp_binding::{open_envelope, wrap_envelope};
 /// not a drop — the sender VID is cryptographically proven, so there is no
 /// enumeration exposure, and a conformant Trust-Task client only understands
 /// binding envelopes (identical to the DIDComm path).
+pub(crate) struct DispatchOutcome {
+    pub body: Vec<u8>,
+    pub restart: bool,
+}
+
 pub async fn dispatch_one(app_state: &AppState, payload: &[u8], sender_vid: &str) -> Vec<u8> {
+    dispatch_one_with_restart(app_state, payload, sender_vid)
+        .await
+        .body
+}
+
+pub(crate) async fn dispatch_one_with_restart(
+    app_state: &AppState,
+    payload: &[u8],
+    sender_vid: &str,
+) -> DispatchOutcome {
     // Learn-from-inbound: this frame is proof `sender_vid` is reachable over TSP
     // right now (the VID is cryptographically proven by TSP unpack), so record it
     // — device-push then prefers TSP over DIDComm for this DID while the record
@@ -75,7 +90,10 @@ pub async fn dispatch_one(app_state: &AppState, payload: &[u8], sender_vid: &str
                 crate::trust_tasks::malformed_request_response(reason),
             )
             .await;
-            return wrap_envelope(&refusal.body);
+            return DispatchOutcome {
+                body: wrap_envelope(&refusal.body),
+                restart: refusal.restart,
+            };
         }
     };
     let payload = document.as_slice();
@@ -91,7 +109,7 @@ pub async fn dispatch_one(app_state: &AppState, payload: &[u8], sender_vid: &str
     {
         crate::trust_tasks::transport::with_binding(
             "tsp",
-            crate::trust_tasks::dispatch_auth_family(app_state, payload),
+            crate::trust_tasks::dispatch_auth_family_from_peer(app_state, payload),
         )
         .await
     } else {
@@ -123,12 +141,18 @@ pub async fn dispatch_one(app_state: &AppState, payload: &[u8], sender_vid: &str
     // malformed frame in place of silence. Only reachable since responses and
     // errors became outcomes that answer nothing.
     if outcome.body.is_empty() {
-        return Vec::new();
+        return DispatchOutcome {
+            body: Vec::new(),
+            restart: outcome.restart,
+        };
     }
     // Sealed back in the same envelope it arrived in. A reply that dropped the
     // wrapper would make this binding asymmetric — conformant one way and not
     // the other — which is harder to notice than being wrong in both.
-    wrap_envelope(&outcome.body)
+    DispatchOutcome {
+        body: wrap_envelope(&outcome.body),
+        restart: outcome.restart,
+    }
 }
 
 // The delivery-layer inbound loop (`super::service::handle_tsp`) unpacks the

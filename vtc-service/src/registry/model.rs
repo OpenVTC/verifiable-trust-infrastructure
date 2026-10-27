@@ -39,6 +39,39 @@ pub struct RegistryRecord {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub active_to: Option<DateTime<Utc>>,
     pub last_synced_at: DateTime<Utc>,
+    /// Where to read the member's external card, while one is published
+    /// (`vtc/directory/card/publish`, *The registry pointer*). Carries no
+    /// profile value.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub directory_card: Option<DirectoryCardPointer>,
+}
+
+/// `context.directoryCard` on a recognition record: the entry and the digest of
+/// the card a reader asks the community for with `vtc/directory/card/public`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DirectoryCardPointer {
+    pub entry_id: String,
+    pub card_digest: String,
+}
+
+impl DirectoryCardPointer {
+    /// The pointer's `purpose`, stated in the published entry (VTI-REG-004
+    /// item 1).
+    pub const PURPOSE: &'static str =
+        "A member's own directory card, published at their request so that anyone may find it.";
+
+    /// The task a reader sends `entryId` and `cardDigest` to.
+    pub const READ_WITH: &'static str = "https://trusttasks.org/spec/vtc/directory/card/public/0.1";
+
+    pub fn wire(&self) -> serde_json::Value {
+        serde_json::json!({
+            "purpose": Self::PURPOSE,
+            "entryId": self.entry_id,
+            "cardDigest": self.card_digest,
+            "readWith": Self::READ_WITH,
+        })
+    }
 }
 
 impl RegistryRecord {
@@ -52,6 +85,7 @@ impl RegistryRecord {
             active_from: now,
             active_to: None,
             last_synced_at: now,
+            directory_card: None,
         }
     }
 
@@ -70,6 +104,7 @@ impl RegistryRecord {
             active_from,
             active_to,
             last_synced_at: Utc::now(),
+            directory_card: None,
         }
     }
 

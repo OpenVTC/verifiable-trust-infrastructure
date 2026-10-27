@@ -24,6 +24,7 @@ use coset::{CborSerializable, CoseSign1};
 /// imply anything about authenticity — only that the bytes are not a
 /// well-formed attestation document.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum NitroParseError {
     /// The outer COSE_Sign1 envelope failed to decode.
     #[error("COSE_Sign1 decode failed: {0}")]

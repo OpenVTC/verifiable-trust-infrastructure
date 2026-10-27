@@ -53,6 +53,14 @@ pub use vti_rooms::ROOM_RECORDS_KEYSPACE as ROOM_RECORDS;
 /// Restoring the records without it hands the members a room they can see the shape of and
 /// cannot read.
 pub use vti_rooms::ROOM_EPOCH_LINKS_KEYSPACE as ROOM_EPOCH_LINKS;
+
+/// Each hosted room's revocation list at `room_revocations:<roomId>`: the latest list the
+/// room signed and an administrator delivered (`rooms/revocations/put`), with when this
+/// host began enforcing it.
+///
+/// **Backed up.** It is the room's state, not this host's: a restore without it would
+/// honour again every credential the room withdrew, until somebody re-delivered the list.
+pub use vti_rooms::ROOM_REVOCATIONS_KEYSPACE as ROOM_REVOCATIONS;
 /// The VTC's OpenID4VP verifier identities (`crate::oid4vp`): one record per
 /// identity, each holding the private P-256 key its request objects are
 /// signed with. Encrypted at rest under the storage key, like `install` and
@@ -69,6 +77,49 @@ pub const OID4VP_SESSIONS: &str = "oid4vp_sessions";
 /// community still knows its files and their charges. The bytes are not in it, and are
 /// not in a VTC backup: they live in the blob store.
 pub use vti_rooms::blobs::ROOM_BLOBS_KEYSPACE as ROOM_BLOBS;
+
+/// Storage configs (`crate::rooms::storage_configs`): the backends room files are
+/// stored to, which config each room's new uploads go to, and each config's last probe.
+/// **Backed up**: nothing in it is a secret, and the blob index names its configs.
+pub const STORAGE_CONFIGS: &str = "storage_configs";
+
+/// `sealed` storage configs' credentials (`crate::rooms::storage_credentials`), one per
+/// config, encrypted at rest under the storage key. **Never backed up**
+/// (`vtc/storage/credentials/set/0.2` item 3), and cleared when a backup is imported,
+/// so a restored config reports its credential `required` until it is set again (item 7).
+pub const STORAGE_CREDENTIALS: &str = "storage_credentials";
+
+/// The rooms this community **owns** (`crate::rooms::community`): one row per room
+/// (its label, the signing key the community's VTA holds for it, who created it), one per
+/// member admitted or offered admission, with the offer's credentials and, for a while
+/// after acceptance, the Welcome a repeated accept is answered with, the `did.jsonl`
+/// of each room whose identity this community publishes itself, and one row per removal
+/// owed to a member who left the community (`crate::rooms::departures`).
+///
+/// The owner's record, **never read on the host path**: a community room's records are
+/// authorized by credential chains exactly as a member's room's are (invariant I5).
+/// **Backed up**: a restored community that forgot whom it admitted could not remove
+/// them, one that forgot a removal owed on a departure would leave the departed member in
+/// the room, and a room whose log it no longer served would stop resolving.
+pub const COMMUNITY_ROOMS: &str = "community_rooms";
+
+/// The member directory (`crate::directory`): the community's field schema
+/// (`field:<key>`), every member's card (`card:<entryId>`), and the index from a
+/// member's DID to their entry (`entry:<did>`).
+///
+/// **Backed up**: it is the community's social state. A restore without it would
+/// give every member a new entry identifier, which every reference to an entry —
+/// a link a member shared, a group membership — would then miss.
+pub const DIRECTORY: &str = "directory";
+
+/// Community elections (`crate::elections`): one record per election (its manifest
+/// as registered, where it stands with its ballot box, the board heads kept, the
+/// certification) and one per ticket issued (who took it — never the ticket).
+///
+/// **Backed up**: a restored community that forgot whom it issued tickets to would
+/// issue a second one to the same member (VTI-VOT-022), and certification holds the
+/// board to the number issued (VTI-VOT-072).
+pub const ELECTIONS: &str = "elections";
 
 /// Uploads and downloads in flight. Hours long at most, so **not backed up**: a restored
 /// host starts with none, and a client resumes from `begin`.
@@ -236,8 +287,14 @@ pub const ALL: &[&str] = &[
     ROOMS,
     ROOM_RECORDS,
     ROOM_EPOCH_LINKS,
+    ROOM_REVOCATIONS,
     ROOM_BLOBS,
     ROOM_BLOB_TRANSFERS,
+    STORAGE_CONFIGS,
+    STORAGE_CREDENTIALS,
+    COMMUNITY_ROOMS,
+    DIRECTORY,
+    ELECTIONS,
     AUDIT,
     AUDIT_KEY,
     AUDIT_CHECKPOINT,
@@ -290,7 +347,21 @@ pub const BACKED_UP: &[&str] = &[
     ROOMS,
     ROOM_RECORDS,
     ROOM_EPOCH_LINKS,
+    // A room's withdrawals: restored without them, every credential the room took
+    // back would be honoured again.
+    ROOM_REVOCATIONS,
     ROOM_BLOBS,
+    // Which backend each room's files are on. The blob index names configs, so a
+    // restore without them would hold blobs it could not find.
+    STORAGE_CONFIGS,
+    // The owner's record of the rooms this community owns, whom it admitted to
+    // them, the removals owed on members' departures, and the logs of the room
+    // identities it publishes.
+    COMMUNITY_ROOMS,
+    // The directory's schema and every member's card.
+    DIRECTORY,
+    // Who took a ticket, the manifests, the checkpoints and certifications.
+    ELECTIONS,
     AUDIT,
     AUDIT_KEY,
     // Required, not optional: restoring the audit log without its
@@ -420,6 +491,9 @@ pub const EXCLUDED_FROM_BACKUP: &[&str] = &[
     // A mirror of the registry, like `registry_records`: rebuilt by the next
     // reconciliation against the restored `git_ns`.
     GIT_NS_PROJECTION,
+    // Sealed storage credentials: a long-lived secret no export may carry. A restored
+    // `sealed` config asks for its credential again.
+    STORAGE_CREDENTIALS,
 ];
 
 #[cfg(test)]
@@ -431,12 +505,16 @@ mod tests {
     /// keyspace is added to one without the other, this trips.
     #[test]
     fn all_matches_app_state_keyspace_count() {
-        // 43 top-level `*_ks` fields (the member portal's two among them) plus
+        // 44 top-level `*_ks` fields (the member portal's two among them) plus
         // the three `AppState::git_ns` carries, plus the 2 hidden-vetting
         // keyspaces (`VETTING_PCS_SPENT`, `VETTING_PCS_ISSUE`) from the
         // `zkp-pcs` development branch, plus the two room-file keyspaces
-        // `AppState::room_files` holds (`ROOM_BLOBS`, `ROOM_BLOB_TRANSFERS`).
-        assert_eq!(ALL.len(), 50, "ALL must list every AppState keyspace");
+        // `AppState::room_files` holds (`ROOM_BLOBS`, `ROOM_BLOB_TRANSFERS`), plus the
+        // two `AppState::room_storage` holds (`STORAGE_CONFIGS`, `STORAGE_CREDENTIALS`), plus the one
+        // `AppState::community_rooms` holds (`COMMUNITY_ROOMS`), plus the one
+        // `AppState::directory` holds (`DIRECTORY`), plus the one
+        // `AppState::elections` holds (`ELECTIONS`).
+        assert_eq!(ALL.len(), 56, "ALL must list every AppState keyspace");
     }
 
     /// The backup census (P3.9): every keyspace is either backed up or

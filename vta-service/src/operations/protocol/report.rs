@@ -56,6 +56,7 @@ pub struct MediatorReport {
 }
 
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum ReportError {
     #[error("auth: {0}")]
     Auth(String),

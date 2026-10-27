@@ -25,7 +25,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 
 use vti_common::config::StoreConfig;
-use vti_common::store::{KeyspaceHandle, Store};
+use vti_common::store::{KeyspaceHandle, ScanOpts, Store};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 struct Sample {
@@ -156,6 +156,254 @@ async fn prefix_keys_returns_keys_only() {
         .collect();
     keys.sort();
     assert_eq!(keys, vec!["k1", "k2"]);
+}
+
+// ── Bounded scans ─────────────────────────────────────────────────────
+
+/// Seed `log:00`..`log:04` plus neighbours on either side of the prefix.
+async fn seeded_scan_handle() -> (KeyspaceHandle, tempfile::TempDir) {
+    let (ks, dir) = local_handle();
+    for i in 0..5 {
+        ks.insert_raw(format!("log:{i:02}"), format!("v{i}").into_bytes())
+            .await
+            .unwrap();
+    }
+    // `lof:` sorts before `log:`, `prune:watermark` after it — the audit
+    // keyspace's own layout, and what a prefix-scoped scan must exclude.
+    ks.insert_raw("lof:zz", b"before".to_vec()).await.unwrap();
+    ks.insert_raw("prune:watermark", b"after".to_vec())
+        .await
+        .unwrap();
+    (ks, dir)
+}
+
+fn keys_of(pairs: &[(Vec<u8>, Vec<u8>)]) -> Vec<String> {
+    pairs
+        .iter()
+        .map(|(k, _)| String::from_utf8_lossy(k).into_owned())
+        .collect()
+}
+
+#[tokio::test]
+async fn scan_ascending_honours_limit_and_order() {
+    let (ks, _dir) = seeded_scan_handle().await;
+    let pairs = ks.scan_raw(ScanOpts::new("log:", 2)).await.unwrap();
+    assert_eq!(keys_of(&pairs), vec!["log:00", "log:01"]);
+    assert_eq!(pairs[0].1, b"v0");
+}
+
+#[tokio::test]
+async fn scan_descending_returns_newest_first() {
+    let (ks, _dir) = seeded_scan_handle().await;
+    let pairs = ks
+        .scan_raw(ScanOpts::newest_first("log:", 2))
+        .await
+        .unwrap();
+    assert_eq!(keys_of(&pairs), vec!["log:04", "log:03"]);
+}
+
+#[tokio::test]
+async fn scan_stays_inside_its_prefix() {
+    let (ks, _dir) = seeded_scan_handle().await;
+    // The row a chain-head lookup must never mistake for the newest entry.
+    let pairs = ks
+        .scan_raw(ScanOpts::newest_first("log:", 100))
+        .await
+        .unwrap();
+    assert_eq!(
+        keys_of(&pairs),
+        vec!["log:04", "log:03", "log:02", "log:01", "log:00"],
+        "neither the row before the prefix nor the one after it belongs to the scan"
+    );
+}
+
+#[tokio::test]
+async fn scan_after_is_exclusive_in_each_direction() {
+    let (ks, _dir) = seeded_scan_handle().await;
+    let up = ks
+        .scan_raw(ScanOpts::new("log:", 2).after("log:01"))
+        .await
+        .unwrap();
+    assert_eq!(keys_of(&up), vec!["log:02", "log:03"]);
+
+    let down = ks
+        .scan_raw(ScanOpts::newest_first("log:", 2).after("log:03"))
+        .await
+        .unwrap();
+    assert_eq!(keys_of(&down), vec!["log:02", "log:01"]);
+}
+
+#[tokio::test]
+async fn scan_after_outside_the_prefix_does_not_widen_it() {
+    let (ks, _dir) = seeded_scan_handle().await;
+    // A resume key before the prefix must not drag in `lof:zz`...
+    let up = ks
+        .scan_raw(ScanOpts::new("log:", 100).after("aaa"))
+        .await
+        .unwrap();
+    assert_eq!(up.len(), 5, "got {:?}", keys_of(&up));
+
+    // ...nor one past the prefix drag in `prune:watermark`.
+    let down = ks
+        .scan_raw(ScanOpts::newest_first("log:", 100).after("zzz"))
+        .await
+        .unwrap();
+    assert_eq!(keys_of(&down)[0], "log:04");
+    assert_eq!(down.len(), 5);
+}
+
+#[tokio::test]
+async fn scan_pages_cover_the_range_exactly_once() {
+    let (ks, _dir) = seeded_scan_handle().await;
+    let mut seen = Vec::new();
+    let mut cursor: Option<String> = None;
+    loop {
+        let mut opts = ScanOpts::new("log:", 2);
+        if let Some(c) = &cursor {
+            opts = opts.after(c.clone());
+        }
+        let page = ks.scan_raw(opts).await.unwrap();
+        if page.is_empty() {
+            break;
+        }
+        cursor = Some(String::from_utf8_lossy(&page[page.len() - 1].0).into_owned());
+        seen.extend(keys_of(&page));
+    }
+    assert_eq!(
+        seen,
+        vec!["log:00", "log:01", "log:02", "log:03", "log:04"],
+        "paging must be gapless and duplicate-free"
+    );
+}
+
+#[tokio::test]
+async fn scan_limit_zero_reads_nothing() {
+    let (ks, _dir) = seeded_scan_handle().await;
+    assert!(
+        ks.scan_raw(ScanOpts::new("log:", 0))
+            .await
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn scan_empty_prefix_covers_the_whole_keyspace() {
+    let (ks, _dir) = seeded_scan_handle().await;
+    let pairs = ks.scan_raw(ScanOpts::newest_first("", 1)).await.unwrap();
+    assert_eq!(keys_of(&pairs), vec!["prune:watermark"]);
+}
+
+#[tokio::test]
+async fn scan_handles_an_all_ff_prefix() {
+    // There is no key that sorts past 0xFF.., so the prefix has no
+    // incrementable byte and the upper bound must be left unbounded.
+    let (ks, _dir) = local_handle();
+    ks.insert_raw(vec![0xffu8, 0x01], b"a".to_vec())
+        .await
+        .unwrap();
+    ks.insert_raw(vec![0x01u8], b"b".to_vec()).await.unwrap();
+    let pairs = ks.scan_raw(ScanOpts::new(vec![0xffu8], 10)).await.unwrap();
+    assert_eq!(pairs.len(), 1);
+    assert_eq!(pairs[0].0, vec![0xff, 0x01]);
+}
+
+#[tokio::test]
+async fn scan_no_match_returns_empty() {
+    let (ks, _dir) = seeded_scan_handle().await;
+    assert!(
+        ks.scan_raw(ScanOpts::new("nothing:", 10))
+            .await
+            .unwrap()
+            .is_empty()
+    );
+}
+
+// ── Paged scans ───────────────────────────────────────────────────────
+
+/// Walk every page a pager yields, flattening to keys.
+async fn drain_pager(pager: &mut vti_common::store::ScanPager) -> Vec<String> {
+    let mut seen = Vec::new();
+    loop {
+        let page = pager.next_page().await.unwrap();
+        if page.is_empty() {
+            break;
+        }
+        seen.extend(keys_of(&page));
+    }
+    seen
+}
+
+#[tokio::test]
+async fn pager_covers_the_range_exactly_once_ascending() {
+    let (ks, _dir) = seeded_scan_handle().await;
+    let mut pager = ks.scan_pager(ScanOpts::new("log:", 2));
+    assert_eq!(
+        drain_pager(&mut pager).await,
+        vec!["log:00", "log:01", "log:02", "log:03", "log:04"],
+        "paging must be gapless and duplicate-free"
+    );
+}
+
+#[tokio::test]
+async fn pager_covers_the_range_exactly_once_descending() {
+    let (ks, _dir) = seeded_scan_handle().await;
+    let mut pager = ks.scan_pager(ScanOpts::newest_first("log:", 2));
+    assert_eq!(
+        drain_pager(&mut pager).await,
+        vec!["log:04", "log:03", "log:02", "log:01", "log:00"],
+    );
+}
+
+#[tokio::test]
+async fn pager_stays_inside_its_prefix() {
+    let (ks, _dir) = seeded_scan_handle().await;
+    // `lof:zz` sorts before the prefix and `prune:watermark` after it; a walk
+    // that pages past the end must not pick either up.
+    let mut pager = ks.scan_pager(ScanOpts::new("log:", 2));
+    let seen = drain_pager(&mut pager).await;
+    assert_eq!(seen.len(), 5, "got {seen:?}");
+    assert!(seen.iter().all(|k| k.starts_with("log:")));
+}
+
+#[tokio::test]
+async fn pager_resumes_from_the_opts_cursor() {
+    let (ks, _dir) = seeded_scan_handle().await;
+    let mut pager = ks.scan_pager(ScanOpts::new("log:", 2).after("log:01"));
+    assert_eq!(
+        drain_pager(&mut pager).await,
+        vec!["log:02", "log:03", "log:04"],
+        "the first page starts strictly beyond the seeded cursor"
+    );
+}
+
+#[tokio::test]
+async fn pager_with_a_page_larger_than_the_range_ends_after_one_page() {
+    let (ks, _dir) = seeded_scan_handle().await;
+    let mut pager = ks.scan_pager(ScanOpts::new("log:", 100));
+    assert_eq!(pager.next_page().await.unwrap().len(), 5);
+    assert!(
+        pager.next_page().await.unwrap().is_empty(),
+        "a short page ends the walk"
+    );
+}
+
+#[tokio::test]
+async fn pager_over_an_empty_range_yields_nothing() {
+    let (ks, _dir) = seeded_scan_handle().await;
+    let mut pager = ks.scan_pager(ScanOpts::new("nothing:", 2));
+    assert!(pager.next_page().await.unwrap().is_empty());
+}
+
+/// A zero page size can never make progress. It must terminate rather than
+/// spin: `take(0)` yields an empty page forever without ever being *short*
+/// of the limit, which is how the walk normally detects its end.
+#[tokio::test]
+async fn pager_with_a_zero_page_size_terminates() {
+    let (ks, _dir) = seeded_scan_handle().await;
+    let mut pager = ks.scan_pager(ScanOpts::new("log:", 0));
+    assert!(pager.next_page().await.unwrap().is_empty());
+    assert!(pager.next_page().await.unwrap().is_empty());
 }
 
 // ── Large values and binary-safe keys ─────────────────────────────────

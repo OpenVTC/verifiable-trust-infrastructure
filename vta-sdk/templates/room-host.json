@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "name": "room-host",
   "kind": "room-host",
-  "description": "A service that stores data-room records. Provisioned as an ordinary integration so that a person can host their own rooms on infrastructure they control (topology T1 of the data-rooms design) without that surface living inside the VTA — the process guarding the master seed must not also terminate presentations from arbitrary DIDs. A room-host holds ciphertext and verifies presentations; it holds no member list and no room keys, so its ACL entry should be scoped to exactly the oracle verbs it needs and nothing wider. Advertises REST for the rooms/* task surface and DIDComm so a room's own DID can route through the same mediator.",
+  "description": "A service that stores data-room records. Provisioned as an ordinary integration so that a person can host their own rooms on infrastructure they control (topology T1 of the data-rooms design) without that surface living inside the VTA — the process guarding the master seed must not also terminate presentations from arbitrary DIDs. A room-host holds ciphertext and verifies presentations; it holds no member list and no room keys, so it holds no authority over them. Enrolled with a VTA, it serves as its context's DID and fetches that DID's keys at startup, so its ACL entry is an admin role scoped to that one context (key-export, VTI-VTA-003) — never unscoped. Advertises its rooms/* Trust Task surface as TrustTaskHTTPS (the HTTPS binding's service type: `<URL>/trust-tasks`; a room host is not a VTA, so not VTARest) and DIDComm so a room's own DID can route through the same mediator.",
   "methods": ["webvh"],
   "requiredVars": ["WEBVH_SERVER", "URL", "MEDIATOR_DID"],
   "optionalVars": {
@@ -50,7 +50,7 @@
       },
       {
         "id": "{DID}#rest",
-        "type": "VTARest",
+        "type": "TrustTaskHTTPS",
         "serviceEndpoint": "{URL}"
       }
     ]

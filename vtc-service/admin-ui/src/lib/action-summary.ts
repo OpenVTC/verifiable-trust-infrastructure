@@ -83,6 +83,17 @@ export const MEMBERS_MAKE_MEMBERSHIP_URI = `${SPEC}/vtc/members/make-membership/
  * new kind (or a changed template) needs an entry in both places.
  */
 export const PINNED_TEMPLATE_DIGESTS: Readonly<Record<string, string>> = Object.freeze({
+  // A group carrying authority (VTI-DIR-104).
+  [pinKey("acl.grant.authority", `${SPEC}/vtc/groups/members/add/0.1`)]:
+    "zQmZr8mXvAph3Sxdxbv9ge82svqswrBn9xunstWKDsSD1tG",
+  [pinKey("acl.grant.authority", `${SPEC}/vtc/groups/bindings/add/0.1`)]:
+    "zQmXa9sTSnLan8LEf7QyEzavkt5doEHVz6jZ9c34Yg8bKi9",
+  [pinKey("acl.reduce.authority", `${SPEC}/vtc/groups/members/remove/0.1`)]:
+    "zQmQVW9TAVk3kGCAiCwc7vvyhKCXYJobPYRxxfD9nphPMfi",
+  [pinKey("acl.reduce.authority", `${SPEC}/vtc/groups/bindings/remove/0.1`)]:
+    "zQmPdSegnSr9GKnqAyFoiBrBQV4pHHHea4sQ9oKeyu1FsSq",
+  [pinKey("acl.reduce.authority", `${SPEC}/vtc/groups/delete/0.1`)]:
+    "zQmemh2M3haEy21mKWDKRoaswuSUeD6oSRyjUKGwUSENWZz",
   [pinKey("acl.grant.authority", `${SPEC}/acl/grant/0.2`)]:
     "zQmNiciJtH7xnKdQUxEwp44mpbCrVt8tfBrt1XKg7VfAc71",
   [pinKey("acl.grant.authority", `${SPEC}/acl/update/0.2`)]:
@@ -117,6 +128,32 @@ export const PINNED_TEMPLATE_DIGESTS: Readonly<Record<string, string>> = Object.
     "zQmeGT7ztnicC5RScp86U5Yjq1s3vhtzZof8yYy6sWi9cYP",
   [pinKey("config.threshold.lower", `${SPEC}/vtc/config/import/0.1`)]:
     "zQmQ6yxgM1HYuJkY4RvQDYiB7NyfsFeAeYzcPnh6d5rrrPc",
+  // Any change to the trusted-witness list (VTI-CMP-090).
+  [pinKey("config.witnesses.change", `${SPEC}/config/patch/0.1`)]:
+    "zQmYGMiMk9SpEJwJ7g4EpxKCourBJVRP6PnmHMzYccbQugH",
+  [pinKey("config.witnesses.change", `${SPEC}/vtc/config/import/0.1`)]:
+    "zQmathdofD8yrXDQ2AuSfsWwjjKdx9RdPkAnC2r7qdU79hc",
+  // Creating a binding election (VTI-VOT-081).
+  [pinKey("election.binding.create", `${SPEC}/vtc/elections/create/0.1`)]:
+    "zQmRruPSiJx9JHEBJCdQiH1qXMTdqf2Dy6yL1WmUJqTU8mX",
+  // Widening a member-directory field (VTI-DIR-024).
+  [pinKey("directory.field.widen", `${SPEC}/vtc/directory/fields/update/0.1`)]:
+    "zQmafxMMkTfH4kb9QgoUQEJtUs4tuZFvqM8nxhjEawj6vYZ",
+  // Replacing or activating the personhood policy (VTI-APV-023).
+  [pinKey("policy.recognition.change", `${SPEC}/policy/upsert/0.2`)]:
+    "zQmT4hA8bE6Z1G2PDPPTvzH9ZTGrKdnyS3UBhhEXZkeDLhm",
+  [pinKey("policy.recognition.change", `${SPEC}/policy/activate/0.1`)]:
+    "zQmSdYoQSJ79w1Di8LMr3QJKcjLt47c2DdH2F9gbfoLF6hv",
+  // Publishing or withdrawing hidden vetting on a join criterion (VTI-APV-023).
+  [pinKey("join.criteria.hiddenVetting", `${SPEC}/vtc/vetting/hidden/publish/0.1`)]:
+    "zQmfB8sMNE5otp8D7uYDLeBuWhHfLHQUe3BPCVrwqNWyRDi",
+  [pinKey("join.criteria.hiddenVetting", `${SPEC}/vtc/vetting/hidden/withdraw/0.1`)]:
+    "zQmcN7gkKudstTLhhf5kKTrS6eoxNyS5hBkjSGzoK8nYcKL",
+  // Registering, replacing or removing a join criterion (VTI-APV-023).
+  [pinKey("join.criteria.change", `${SPEC}/vtc/schemas/accepts/register/0.2`)]:
+    "zQmbgGnKd4rpcj5dPZsKGTrL48wFiL5jGnyyUe9o3JcP5mr",
+  [pinKey("join.criteria.change", `${SPEC}/vtc/schemas/accepts/delete/0.1`)]:
+    "zQmaKTFtV3fF3hBkeWwduWohd35nePzqcEvBP95HLa3e7Pu",
   [pinKey("policy.authority.change", `${SPEC}/policy/upsert/0.2`)]:
     "zQma1zFb7cvRpSH7erp14W83wYZW5vP7cke1yLwcwQZdEie",
   [pinKey("policy.authority.change", `${SPEC}/policy/activate/0.1`)]:
@@ -149,6 +186,27 @@ export const PINNED_TEMPLATE_DIGESTS: Readonly<Record<string, string>> = Object.
     "zQmbYVQV8iyGc9pCgXB3mD1s7dYXRYEBmHNyHcQnEkeaH6C",
   [pinKey(KIND_MEMBER_MAKE_MEMBERSHIP, MEMBERS_MAKE_MEMBERSHIP_URI)]:
     "zQmYUPeQMYvpEnuBu9RCX4BSvQ5Nmpz4t2sRxKpyQpg6FVB",
+  // Room storage (`vtc/storage/configs/*`, `vtc/rooms/storage/{assign,migrate}`).
+  [pinKey("storage.config.create", `${SPEC}/vtc/storage/configs/create/0.1`)]:
+    "zQmbKUbMCxeKhULY9Ea5CL5SYQozDAE4ithNpnKx7jCQZAJ",
+  [pinKey("storage.config.update", `${SPEC}/vtc/storage/configs/update/0.1`)]:
+    "zQmUr4boR7Uk2yrYFGFggoTMbcK33AVKA8DbZUKct3bbGqN",
+  [pinKey("storage.config.retire", `${SPEC}/vtc/storage/configs/retire/0.1`)]:
+    "zQmW4jo3NSHqJGAeDeEPzJt1fUgdDAeAsur9ehhSCyA4bEh",
+  [pinKey("rooms.storage.assign", `${SPEC}/vtc/rooms/storage/assign/0.1`)]:
+    "zQmZWR9odGdRi5noLhZxgzSrNk3YRF5ZWH4JaNVBYMqMKja",
+  [pinKey("rooms.storage.migrate", `${SPEC}/vtc/rooms/storage/migrate/0.1`)]:
+    "zQmZamMHumTwGimMGYsuEGBoxvuYmEozzpkSStPjrZHrShX",
+  // 0.2 (ambient and sealed auth), and setting a sealed credential: approvers see
+  // the config and the sealed block's digest, never the credential.
+  [pinKey("storage.config.create", `${SPEC}/vtc/storage/configs/create/0.2`)]:
+    "zQmSJcki3MwXF8HBUbPpwZScUm4HuzqomYhA825hYGLbmyN",
+  [pinKey("storage.config.update", `${SPEC}/vtc/storage/configs/update/0.2`)]:
+    "zQmbqMzuGGxuGv2dmp6qVDQnZTeGvJSYU93eg8JiaxdirAi",
+  [pinKey("storage.credential.set", `${SPEC}/vtc/storage/credentials/set/0.2`)]:
+    "zQmTzhrbBfZEaijm2CMzMvNzeYzPBA4RW1DBJRWPTwJc3XL",
+  [pinKey("rooms.storage.migrate", `${SPEC}/vtc/rooms/storage/migrate/0.2`)]:
+    "zQmR7m9q28aLudzaema3wPTgyt9VJnPAVoSykoCL14YiVAN",
 });
 
 function pinKey(kind: string, typeUri: string): string {

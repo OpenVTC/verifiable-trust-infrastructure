@@ -99,6 +99,39 @@ impl GateReject {
     }
 }
 
+/// The identifier a task acts on, for the policy input and the approver's prompt.
+///
+/// The payload probe ([`crate::policy::input::subject_of`]) unless this VTA knows the
+/// task's `subjectPath` says otherwise. `rooms/keys/act/0.2` names the member
+/// (`/document/issuer`), and where `issuer` is absent the member its recipient item 2
+/// resolves — a policy MUST be evaluated against that member, never against a request
+/// read as having no subject (act 0.2 *The subject*).
+async fn task_subject(
+    state: &AppState,
+    auth: &AuthClaims,
+    type_uri: &str,
+    payload: &Value,
+) -> Option<String> {
+    let bare = type_uri.split('#').next().unwrap_or(type_uri);
+    if bare == vta_sdk::trust_tasks::TASK_ROOMS_KEYS_ACT_0_2
+        || bare == vta_sdk::trust_tasks::TASK_ROOMS_KEYS_ACT_0_3
+        || bare == vta_sdk::trust_tasks::TASK_ROOMS_KEYS_ACT_0_4
+        || bare == vta_sdk::trust_tasks::TASK_ROOMS_KEYS_ACT_0_5
+        || bare == vta_sdk::trust_tasks::TASK_ROOMS_KEYS_ACT_0_6
+    {
+        return super::room_act::act_subject(state, auth, payload).await;
+    }
+    // `rooms/keys/label/0.1`'s `subjectPath` is `/member`: the member whose label it is,
+    // never the room, and never a detail of the label.
+    if bare == vta_sdk::trust_tasks::TASK_ROOMS_KEYS_LABEL_0_1 {
+        return payload
+            .get("member")
+            .and_then(Value::as_str)
+            .map(str::to_string);
+    }
+    crate::policy::input::subject_of(payload)
+}
+
 /// The gate proper: one decision, no transport.
 async fn decide(
     state: &AppState,
@@ -121,8 +154,9 @@ async fn decide(
     }
 
     let class = super::class_for(type_uri);
-    let input =
+    let mut input =
         policy::build_policy_input(type_uri, payload, &auth.did, &auth.acr, &auth.amr, class);
+    input.request.subject = task_subject(state, auth, type_uri, payload).await;
 
     let policies = match policy::load_active_for_context(&state.policy_ks, &input.context_id).await
     {
@@ -215,6 +249,19 @@ pub(crate) async fn approver_set_members(
         .await?
         .remove(set_name)
         .unwrap_or_default())
+}
+
+/// Every DID any approver set names — the operator's designation of the
+/// devices that approve, which a browser may name as its `remoteApprover`
+/// (`operations::device::uv_approver_eligible`).
+pub(crate) async fn all_named_approvers(
+    state: &AppState,
+) -> Result<std::collections::HashSet<String>, AppError> {
+    Ok(effective_approver_sets(state)
+        .await?
+        .into_values()
+        .flatten()
+        .collect())
 }
 
 /// Whether `did` is named by *any* approver set — the question the pre-auth
@@ -530,7 +577,7 @@ async fn consent_gate(
     };
 
     let class = super::class_for(type_uri).unwrap_or_else(crate::policy::TaskClass::floor);
-    let subject = crate::policy::input::subject_of(payload);
+    let subject = task_subject(state, auth, type_uri, payload).await;
     // The page that proposed this, when one did. Stamped into `payload.ext` by the
     // enrolled device from the origin its browser attested — so the approver is
     // told *which site* is asking, and told it by the only party in the chain with
@@ -717,6 +764,7 @@ async fn mint_pending(
         guards: guards.clone(),
         subject_context: subject_context.clone(),
         requester_authorized,
+        bound_approver: None,
         created_at: now,
         expires_at: now + CONSENT_PENDING_TTL_SECS,
     };
@@ -847,6 +895,97 @@ mod tests {
     // A task URI no rule names by default, so each test's own policy module is
     // the only thing deciding it.
     const UNGATED_URI: &str = "https://trusttasks.org/spec/vta/memory/list/0.1";
+
+    /// `rooms/keys/act/0.2` *The subject*: the policy sees the member at
+    /// `/document/issuer`, not a payload-field guess (which finds nothing in an act
+    /// payload). A policy allowing exactly that member lets the request through, and the
+    /// same request naming another member is refused.
+    #[tokio::test]
+    async fn act_0_2_is_gated_on_the_member_as_its_subject() {
+        const ACT: &str = vta_sdk::trust_tasks::TASK_ROOMS_KEYS_ACT_0_2;
+        const MEMBER: &str = "did:webvh:example.com:people:alice";
+        let (state, _dir) = crate::test_support::build_signing_test_app_state().await;
+        let auth = crate::test_support::super_admin_claims();
+        state.config.write().await.policy.enforcement = true;
+        let only_alice = format!(
+            "package vta.policy\nimport rego.v1\n\
+             decision := {{\"decision\": \"allow\"}} if input.request.subject == \"{MEMBER}\"\n\
+             decision := {{\"decision\": \"deny\", \"explanation\": \"not alice\"}} if input.request.subject != \"{MEMBER}\""
+        );
+        crate::policy::storage::store_policy(&state.policy_ks, &module("alice", 0, &only_alice))
+            .await
+            .unwrap();
+        let act = |issuer: &str| -> TrustTask<Value> {
+            let mut d = doc(ACT);
+            d.payload = serde_json::json!({
+                "document": {
+                    "id": "urn:uuid:00000000-0000-4000-8000-0000000000a1",
+                    "type": "https://trusttasks.org/spec/rooms/blobs/upload/commit/0.2",
+                    "issuer": issuer,
+                    "recipient": "did:key:zHost",
+                    "issuedAt": "2026-01-01T00:00:00Z",
+                    "payload": { "uploadId": "u" }
+                }
+            });
+            d
+        };
+        assert!(
+            policy_gate(&state, &auth, ACT, &act(MEMBER), &mut Vec::new())
+                .await
+                .is_none(),
+            "the member named at subjectPath is the policy's subject"
+        );
+        assert!(
+            policy_gate(&state, &auth, ACT, &act("did:example:bob"), &mut Vec::new())
+                .await
+                .is_some()
+        );
+    }
+
+    /// `rooms/keys/label/0.1`'s `subjectPath` is `/member`: a policy sees the member whose
+    /// label it is — never the room, and never the label's own text.
+    #[tokio::test]
+    async fn label_is_gated_on_the_member_as_its_subject() {
+        const LABEL: &str = vta_sdk::trust_tasks::TASK_ROOMS_KEYS_LABEL_0_1;
+        const MEMBER: &str = "did:webvh:example.com:people:alice";
+        let (state, _dir) = crate::test_support::build_signing_test_app_state().await;
+        let auth = crate::test_support::super_admin_claims();
+        state.config.write().await.policy.enforcement = true;
+        let only_alice = format!(
+            "package vta.policy\nimport rego.v1\n\
+             decision := {{\"decision\": \"allow\"}} if input.request.subject == \"{MEMBER}\"\n\
+             decision := {{\"decision\": \"deny\", \"explanation\": \"not alice\"}} if input.request.subject != \"{MEMBER}\""
+        );
+        crate::policy::storage::store_policy(&state.policy_ks, &module("alice", 0, &only_alice))
+            .await
+            .unwrap();
+        let label = |member: &str| -> TrustTask<Value> {
+            let mut d = doc(LABEL);
+            d.payload = serde_json::json!({
+                "roomId": "did:webvh:example.com:rooms:northwind",
+                "member": member,
+                "label": "did:example:bob",
+            });
+            d
+        };
+        assert!(
+            policy_gate(&state, &auth, LABEL, &label(MEMBER), &mut Vec::new())
+                .await
+                .is_none(),
+            "the member at subjectPath is the policy's subject"
+        );
+        assert!(
+            policy_gate(
+                &state,
+                &auth,
+                LABEL,
+                &label("did:example:bob"),
+                &mut Vec::new()
+            )
+            .await
+            .is_some()
+        );
+    }
 
     #[tokio::test]
     async fn gate_inert_when_disabled_enforces_when_enabled() {

@@ -66,6 +66,7 @@ pub fn build_challenge_doc(
 /// Deliberately narrow: transport errors belong to the caller, which owns the
 /// HTTP client and its error type.
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum AuthDiError {
     /// A payload field failed the spec type's own validation (e.g. an empty
     /// challenge or refresh token) — caught here rather than by the server.

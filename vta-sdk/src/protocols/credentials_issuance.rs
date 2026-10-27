@@ -246,6 +246,7 @@ pub struct RevokeCredentialResponse {
 /// is written.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
+#[non_exhaustive]
 pub enum IssuedCredentialStatus {
     /// Neither revoked nor past its expiry.
     Active,

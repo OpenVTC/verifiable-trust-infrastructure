@@ -227,8 +227,9 @@ fn build_api_router(trust_xff_cidrs: &[IpNetwork], quotas: QuotaSource) -> OpenA
     // is itself a gate, and legitimate operator traffic against the
     // management plane shouldn't be rate-limited.
     let unauth = OpenApiRouter::new()
-        // Sealed-transfer bootstrap (token or attestation gated inside)
-        .routes(routes!(bootstrap::request))
+        // TEE first-boot claim (claim-DID signed, attested acknowledgement;
+        // GET names the DID a claim must sign)
+        .routes(routes!(bootstrap::request, bootstrap::claim_info))
         // Passkey login (DID-VM-resolved WebAuthn assertions).
         // Trust-task URIs: vta/auth/passkey-login-{start,finish}/1.0.
         // Unauthenticated — the user has no session before
@@ -327,8 +328,7 @@ fn build_api_router(trust_xff_cidrs: &[IpNetwork], quotas: QuotaSource) -> OpenA
         "/trust-tasks",
         post(crate::trust_tasks::dispatch_trust_task),
     );
-    let trust_tasks =
-        rate_limit::apply_anonymous(trust_tasks, Limiter::Auth, trust_xff_cidrs, &quotas);
+    let trust_tasks = rate_limit::apply_trust_tasks(trust_tasks, trust_xff_cidrs, &quotas);
 
     let router = OpenApiRouter::with_openapi(ApiDoc::openapi())
         .merge(unauth)
@@ -587,6 +587,11 @@ mod cors_tests {
         ),
         (
             "GET",
+            "/bootstrap/request",
+            "the DID a Mode B claim signs, for a claimant that knows only the VTA's URL",
+        ),
+        (
+            "GET",
             "/backup/blob/{bundle_id}",
             "a raw sealed-bootstrap blob transfer, not representable as a Trust Task document",
         ),
@@ -726,12 +731,13 @@ mod cors_tests {
     /// per request and clamps the same way; `rate_limit::tests` covers it.)
     #[test]
     fn zero_rate_limit_config_is_clamped_not_panicked() {
-        let server = crate::config::ServerConfig {
-            rate_limit_interval_secs: 0,
-            rate_limit_burst: 0,
-            did_log_rate_limit_interval_secs: 0,
-            did_log_rate_limit_burst: 0,
-            ..Default::default()
+        let server = {
+            let mut c = crate::config::ServerConfig::default();
+            c.rate_limit_interval_secs = 0;
+            c.rate_limit_burst = 0;
+            c.did_log_rate_limit_interval_secs = 0;
+            c.did_log_rate_limit_burst = 0;
+            c
         };
         let limits = QuotaSource::Fixed(RateLimits::from_server_config(&server));
         let _ = build_api_router(&[], limits.clone());

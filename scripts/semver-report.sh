@@ -87,6 +87,10 @@ esac
 # is published (for OpenVTC's `MockVta` harness — see RELEASING.md). Nothing
 # consumes their APIs directly, here or outside.
 #
+# `vtc-service` is here for the same reason by a different route: it is
+# published as a binary (`cargo install vtc-service`), and nothing consumes its
+# library API.
+#
 # `vta-service` is deliberately NOT here: it has a real consumer (openvtc-core
 # dev-depends on it for MockVta), so a silent break there reaches somebody.
 # Which is why the truncation mattered — `vta-service` sorts after `vti-rooms`
@@ -105,6 +109,7 @@ EXCLUDED=(
   vta-vault
   vta-webvh
   vti-webauthn
+  vtc-service
 )
 
 # The sparse-index path for a crate name, per the registry layout.

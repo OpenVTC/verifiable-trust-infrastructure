@@ -99,6 +99,13 @@ pub struct WizardInputs {
     )]
     pub services: ServicesConfig,
 
+    /// How the DIDs this VTA creates are presented (`[dids]`), its own included:
+    /// `default_did_method = "scid"` presents the VTA DID minted here as its
+    /// `did:scid:vh:1` DID (VTI-VTA-034). Defaults to `did:webvh`, with the
+    /// did:scid alias listed (VTI-VTA-035).
+    #[serde(default)]
+    pub dids: crate::config::DidsConfig,
+
     /// HTTP server bind. Defaults to `0.0.0.0:8100`.
     #[serde(default)]
     pub server: ServerConfig,
@@ -413,6 +420,26 @@ pub enum SecretsBackendInput {
     },
     /// Plaintext file under `data_dir`. **Not recommended** — for dev only.
     Plaintext,
+    /// AEAD-encrypted file (`<data_dir>/seed.enc` unless `path` is set),
+    /// keyed by an explicit key-encryption key source — the secure local
+    /// option for a host with no OS keyring. Same shape as the generated
+    /// `[secrets.encrypted_file]` table:
+    ///
+    /// ```toml
+    /// [secrets]
+    /// backend = "encrypted_file"
+    /// kek = { source = "passphrase", file = "/etc/vta/seed-passphrase" }
+    /// ```
+    ///
+    /// The KEK must be readable when `vta setup` runs, because setup writes
+    /// the seed.
+    EncryptedFile {
+        /// Envelope location. Defaults to `<data_dir>/seed.enc`.
+        #[serde(default)]
+        path: Option<PathBuf>,
+        /// Key-encryption key source.
+        kek: vti_secrets::KekSource,
+    },
 }
 
 /// Written by hand so the Vault token never reaches a log: a derived `Debug` would print it.
@@ -493,6 +520,11 @@ impl std::fmt::Debug for SecretsBackendInput {
                 .field("secret_key", secret_key)
                 .finish(),
             Self::Plaintext => f.write_str("Plaintext"),
+            Self::EncryptedFile { path, kek } => f
+                .debug_struct("EncryptedFile")
+                .field("path", path)
+                .field("kek", kek)
+                .finish(),
         }
     }
 }
@@ -968,6 +1000,9 @@ pub async fn apply_inputs(
         secrets_config.clone(),
         inputs.config_path.clone(),
     );
+    // `[dids]` decides how the DIDs minted below are presented, the VTA's own
+    // among them (VTI-VTA-034).
+    wizard_config.dids = inputs.dids.clone();
     let wizard_seed_store: Arc<dyn SeedStore> =
         Arc::from(create_seed_store(&wizard_config).map_err(|e| format!("{e}"))?);
 
@@ -1055,6 +1090,11 @@ pub async fn apply_inputs(
                 /* template */ Some("didcomm-mediator".into()),
                 effective_vars,
                 /* is_vta_identity */ false,
+                // The mediator is its own service and presents its own DID;
+                // whether it can be addressed as a did:scid is the mediator's
+                // to support, so it stays did:webvh (with the alias, per
+                // `[dids]`).
+                Some(vta_sdk::did_scid::DidMethod::Webvh),
                 AdvancedWebvhOptions::default(),
                 ui,
                 &keys_ks,
@@ -1157,6 +1197,7 @@ pub async fn apply_inputs(
                 /* template */ None,
                 HashMap::new(),
                 /* is_vta_identity */ true,
+                /* did_method: `[dids]` */ None,
                 advanced,
                 ui,
                 &keys_ks,
@@ -1210,15 +1251,18 @@ pub async fn apply_inputs(
         },
         fjall: Default::default(),
         services: inputs.services.clone(),
+        dids: inputs.dids.clone(),
         messaging: messaging.clone(),
         mediator_readiness: Default::default(),
-        auth: AuthConfig {
-            jwt_signing_key,
-            ..AuthConfig::default()
+        auth: {
+            let mut c = AuthConfig::default();
+            c.jwt_signing_key = jwt_signing_key;
+            c
         },
         audit: inputs.audit.clone(),
         vault: Default::default(),
         app_state: Default::default(),
+        witness: Default::default(),
         policy: Default::default(),
         secrets: secrets_config,
         tee: Default::default(),
@@ -1567,6 +1611,7 @@ fn backend_selector(input: &SecretsBackendInput) -> SecretBackend {
         SecretsBackendInput::Vault { .. } => SecretBackend::Vault,
         SecretsBackendInput::Kubernetes { .. } => SecretBackend::Kubernetes,
         SecretsBackendInput::Plaintext => SecretBackend::Plaintext,
+        SecretsBackendInput::EncryptedFile { .. } => SecretBackend::EncryptedFile,
     }
 }
 
@@ -1767,6 +1812,13 @@ fn secrets_config_from_input(
             c.allow_plaintext = true;
             c
         }
+        SecretsBackendInput::EncryptedFile { path, kek } => {
+            let mut encrypted = vti_secrets::EncryptedFileConfig::new(kek.clone());
+            encrypted.path = path.clone();
+            let mut c = SecretsConfig::default();
+            c.encrypted_file = Some(encrypted);
+            c
+        }
     };
     config.backend = Some(selector);
     Ok(config)
@@ -1788,12 +1840,14 @@ fn scratch_config_for_seed_store(
         store: StoreConfig { data_dir },
         fjall: Default::default(),
         services: ServicesConfig::default(),
+        dids: Default::default(),
         messaging: None,
         mediator_readiness: Default::default(),
         auth: AuthConfig::default(),
         audit: Default::default(),
         vault: Default::default(),
         app_state: Default::default(),
+        witness: Default::default(),
         policy: Default::default(),
         secrets,
         tee: Default::default(),
@@ -1907,6 +1961,7 @@ async fn create_simple_webvh_did(
     template: Option<String>,
     template_vars: HashMap<String, serde_json::Value>,
     is_vta_identity: bool,
+    did_method: Option<vta_sdk::did_scid::DidMethod>,
     advanced: AdvancedWebvhOptions,
     ui: &dyn SetupUi,
     keys_ks: &KeyspaceHandle,
@@ -1961,6 +2016,8 @@ async fn create_simple_webvh_did(
         template_context: None,
         template_vars,
         is_vta_identity,
+        did_method,
+        scid_also_known_as: None,
     };
 
     let deps = operations::did_webvh::CreateDidWebvhDeps {
@@ -1983,8 +2040,19 @@ async fn create_simple_webvh_did(
         .await
         .map_err(|e| format!("{e}"))?;
 
-    let final_did = result.did.clone();
+    // A DID presented as its did:scid is given out — as `vta_did`, as a
+    // mediator DID — with the `src` a recipient needs to resolve it
+    // (VTI-KEY-163); its identity is the bare DID before `?src=`.
+    let final_did = match (&result.did_method, &result.scid_did_url) {
+        (Some(vta_sdk::did_scid::DidMethod::Scid), Some(url)) => url.clone(),
+        _ => result.did.clone(),
+    };
     eprintln!("  Created DID: {final_did}");
+    if let Some(ref webvh_did) = result.webvh_did
+        && *webvh_did != final_did
+    {
+        eprintln!("  Log:         {webvh_did}");
+    }
 
     // Persist the did.jsonl so operators can re-publish or audit later. The UI
     // picks the destination: `--from` (SilentUi) writes the canonical in-store
@@ -2243,6 +2311,39 @@ mod tests {
     }
 
     #[test]
+    fn encrypted_file_input_parses_and_lands_in_its_own_table() {
+        let raw = r#"
+            config_path = "/tmp/vta-test/config.toml"
+            data_dir    = "/tmp/vta-test/data"
+
+            [secrets]
+            backend = "encrypted_file"
+            path = "/var/lib/vta/seed.enc"
+            kek = { source = "passphrase", file = "/etc/vta/seed-passphrase" }
+        "#;
+        let inputs = parse(raw).expect("encrypted_file inputs should parse");
+        let secrets = secrets_config_from_input(&inputs.secrets).expect("converts");
+        assert_eq!(secrets.backend, Some(SecretBackend::EncryptedFile));
+        assert!(!secrets.allow_plaintext);
+        let toml_out = toml::to_string(&secrets).expect("serializes");
+        assert!(
+            toml_out.contains("backend = \"encrypted_file\"")
+                && toml_out.contains("[encrypted_file")
+                && toml_out.contains("/etc/vta/seed-passphrase"),
+            "generated config must carry the table, got:\n{toml_out}"
+        );
+        let back: SecretsConfig = toml::from_str(&toml_out).expect("re-parses");
+        assert_eq!(back.encrypted_file, secrets.encrypted_file);
+
+        // An inline passphrase is not a field.
+        let inline = raw.replace(
+            r#"kek = { source = "passphrase", file = "/etc/vta/seed-passphrase" }"#,
+            r#"kek = { source = "passphrase", passphrase = "hunter2" }"#,
+        );
+        assert!(parse(&inline).is_err());
+    }
+
+    #[test]
     fn every_wizard_backend_choice_states_its_selector() {
         // No wizard choice may lean on implicit resolution — that is how
         // plaintext silently became keyring.
@@ -2255,6 +2356,15 @@ mod tests {
                 SecretBackend::Keyring,
             ),
             (SecretsBackendInput::Plaintext, SecretBackend::Plaintext),
+            (
+                SecretsBackendInput::EncryptedFile {
+                    path: None,
+                    kek: vti_secrets::KekSource::SystemdCreds {
+                        credential: "vta-kek".into(),
+                    },
+                },
+                SecretBackend::EncryptedFile,
+            ),
         ];
         for (input, expected) in cases {
             let secrets = secrets_config_from_input(&input).expect("converts");
@@ -2292,6 +2402,7 @@ mod tests {
             public_url: None,
             data_dir: root.join("data"),
             data_dir_exists: ExistingDataDirPolicy::default(),
+            dids: Default::default(),
             services: ServicesConfig {
                 rest: false,
                 didcomm: false,

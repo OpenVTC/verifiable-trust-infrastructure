@@ -1,0 +1,24 @@
+/* Sunset — warm coral and amber, soft rounded corners. */
+:root {
+  --brand-50: #fff1ec;
+  --brand-100: #ffe0d4;
+  --brand-200: #ffbfa8;
+  --brand-300: #fd9873;
+  --brand-400: #f47347;
+  --brand-500: #dc552a;
+  --brand-600: #b8431f;
+  --brand-700: #93351a;
+  --accent-violet: #e0a526;
+  --bg: light-dark(#fffaf6, #120c09);
+  --bg-elev: light-dark(#ffffff, #1b1310);
+  --bg-subtle: light-dark(#fbf1ea, #241a15);
+  --bg-hover: light-dark(#f7e9df, #2b1f19);
+  --border: light-dark(#f0e1d6, #33251e);
+  --border-strong: light-dark(#e3cebf, #44322a);
+  --text: light-dark(#23150f, #faf0ea);
+  --text-muted: light-dark(#66524a, #bba69c);
+  --text-faint: light-dark(#8e7a71, #85726a);
+  --radius-md: 12px;
+  --radius-lg: 18px;
+  --radius-xl: 26px;
+}

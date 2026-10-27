@@ -89,7 +89,7 @@ pub struct JoinRequestSubmitReceiptBody {
 pub struct JoinRequestSubmitBody {
     pub vp: JsonValue,
     /// The `requirementsDigest` of the criterion this submission is made
-    /// under, as `vtc/join-requests/manifest/0.3` published it. Absent: the
+    /// under, as `vtc/join-requests/manifest/0.4` published it. Absent: the
     /// community decides it under the first criterion, in the order it
     /// publishes them, that the submission meets.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -141,13 +141,14 @@ pub struct JoinRequestAttribute {
 // ---------------------------------------------------------------------------
 
 /// The published `vtc/join-requests/manifest` types, generated from the
-/// specification. [`manifest::v0_3`] is the version a VTC serves: each
+/// specification. [`manifest::v0_4`] is the version a VTC serves first: each
 /// criterion states its `admission` and the requirements it has, in the order
-/// the community decides by, with a `requirementsDigest`. Its `Payload` and
+/// the community decides by, with a `requirementsDigest`, and the response
+/// carries the community's directory disclosure statement. Its `Payload` and
 /// `Response` are the manifest's wire types; nothing in this crate restates
 /// them.
 ///
-/// `manifest::v0_2::CommunityBranding` is also the body of the VTC's admin
+/// `manifest::v0_4::CommunityBranding` is also the body of the VTC's admin
 /// `GET`/`PUT /v1/community/branding`: what an admin stores is exactly what the
 /// manifest publishes.
 pub use trust_tasks_rs::specs::vtc::join_requests::manifest;
@@ -297,53 +298,56 @@ pub const JOIN_REQUEST_SUBMIT_ERR_REQUEST_ALREADY_OPEN: &str =
 // explanation is not, and only one of them (`challengeMismatch`) points at a
 // client bug rather than at timing.
 //
-// Consumer-minted under the slug of the request being processed (SPEC §8.5):
-// neither `vtc/join-requests/submit` nor `vtc/join-requests/supplement`
-// declares a code for a challenge yet. A client that does not recognise one
-// falls back to `taskFailed` by the same rule, and `details.reason` carries the
-// generic marker ([`super::trust_task_reject_reasons`]) so it still recovers a
-// typed error. The submission's challenge is spent whichever code is sent.
+// Declared by `vtc/join-requests/submit/0.3` and `vtc/join-requests/supplement/0.1`
+// since trust-tasks-tf #790, so each constant is the generated code, not a literal.
+// `details.reason` still carries the generic marker
+// ([`super::trust_task_reject_reasons`]) for a client that does not know the code.
+// The submission's challenge is spent whichever code is sent.
 
 /// `vtc/join-requests/submit:challengeNotIssued` — the community holds no
 /// challenge for this applicant: none was asked for, or the one asked for
 /// expired and has since been cleared. `details.reason` is `not_found`.
 pub const JOIN_REQUEST_SUBMIT_ERR_CHALLENGE_NOT_ISSUED: &str =
-    "vtc/join-requests/submit:challengeNotIssued";
+    trust_tasks_rs::specs::vtc::join_requests::submit::v0_3::error_codes::CHALLENGE_NOT_ISSUED.code;
 
 /// `vtc/join-requests/submit:challengeAlreadyUsed` — the challenge was spent
 /// by an earlier submission; each is accepted once. `details.reason` is
 /// `gone`.
 pub const JOIN_REQUEST_SUBMIT_ERR_CHALLENGE_ALREADY_USED: &str =
-    "vtc/join-requests/submit:challengeAlreadyUsed";
+    trust_tasks_rs::specs::vtc::join_requests::submit::v0_3::error_codes::CHALLENGE_ALREADY_USED
+        .code;
 
 /// `vtc/join-requests/submit:challengeExpired` — the challenge's window
 /// (`expiresAt` on the `pcs-challenge` response) had passed. `details` carries
 /// `expiredAt` (RFC 3339); `details.reason` is `gone`.
 pub const JOIN_REQUEST_SUBMIT_ERR_CHALLENGE_EXPIRED: &str =
-    "vtc/join-requests/submit:challengeExpired";
+    trust_tasks_rs::specs::vtc::join_requests::submit::v0_3::error_codes::CHALLENGE_EXPIRED.code;
 
 /// `vtc/join-requests/submit:challengeMismatch` — the proof is bound to a
 /// challenge other than the one the community holds for this applicant:
 /// usually an older one, replaced when a newer challenge was asked for.
 /// `details.reason` is `conflict`.
 pub const JOIN_REQUEST_SUBMIT_ERR_CHALLENGE_MISMATCH: &str =
-    "vtc/join-requests/submit:challengeMismatch";
+    trust_tasks_rs::specs::vtc::join_requests::submit::v0_3::error_codes::CHALLENGE_MISMATCH.code;
 
 /// [`JOIN_REQUEST_SUBMIT_ERR_CHALLENGE_NOT_ISSUED`], answering a supplement.
 pub const JOIN_REQUEST_SUPPLEMENT_ERR_CHALLENGE_NOT_ISSUED: &str =
-    "vtc/join-requests/supplement:challengeNotIssued";
+    trust_tasks_rs::specs::vtc::join_requests::supplement::v0_1::error_codes::CHALLENGE_NOT_ISSUED
+        .code;
 
 /// [`JOIN_REQUEST_SUBMIT_ERR_CHALLENGE_ALREADY_USED`], answering a supplement.
 pub const JOIN_REQUEST_SUPPLEMENT_ERR_CHALLENGE_ALREADY_USED: &str =
-    "vtc/join-requests/supplement:challengeAlreadyUsed";
+    trust_tasks_rs::specs::vtc::join_requests::supplement::v0_1::error_codes::CHALLENGE_ALREADY_USED.code;
 
 /// [`JOIN_REQUEST_SUBMIT_ERR_CHALLENGE_EXPIRED`], answering a supplement.
 pub const JOIN_REQUEST_SUPPLEMENT_ERR_CHALLENGE_EXPIRED: &str =
-    "vtc/join-requests/supplement:challengeExpired";
+    trust_tasks_rs::specs::vtc::join_requests::supplement::v0_1::error_codes::CHALLENGE_EXPIRED
+        .code;
 
 /// [`JOIN_REQUEST_SUBMIT_ERR_CHALLENGE_MISMATCH`], answering a supplement.
 pub const JOIN_REQUEST_SUPPLEMENT_ERR_CHALLENGE_MISMATCH: &str =
-    "vtc/join-requests/supplement:challengeMismatch";
+    trust_tasks_rs::specs::vtc::join_requests::supplement::v0_1::error_codes::CHALLENGE_MISMATCH
+        .code;
 
 /// `vtc/join-requests/submit:attributesMissing` — a required requested
 /// attribute was not answered. `details.types` names them.
@@ -390,15 +394,16 @@ pub const JOIN_REQUEST_WITHDRAW_ERR_ALREADY_DECIDED: &str =
     withdraw::v0_1::error_codes::ALREADY_DECIDED.code;
 
 /// Trust Task `type` for a join-request manifest request
-/// (`vtc/join-requests/manifest/0.3`): discover the community's join criteria.
-/// Public read; empty payload.
+/// (`vtc/join-requests/manifest/0.4`): discover the community's join criteria
+/// and what its member directory would disclose about a member
+/// (`directoryDisclosure`). Public read; empty payload.
 pub const JOIN_REQUEST_MANIFEST_TYPE: &str =
-    <manifest::v0_3::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+    <manifest::v0_4::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
 /// `#response` variant of [`JOIN_REQUEST_MANIFEST_TYPE`] — carries a
-/// [`manifest::v0_3::Response`].
+/// [`manifest::v0_4::Response`].
 pub const JOIN_REQUEST_MANIFEST_RESPONSE_TYPE: &str =
-    <manifest::v0_3::Response as trust_tasks_rs::Payload>::TYPE_URI;
+    <manifest::v0_4::Response as trust_tasks_rs::Payload>::TYPE_URI;
 
 // ---------------------------------------------------------------------------
 // Status — applicant poll (join-requests/status/1.0)

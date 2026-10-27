@@ -30,6 +30,7 @@ use vta_sdk::sealed_transfer::template_bootstrap::{DidKeyMaterial, KeyPair};
 
 /// Errors from the shared did:peer construction / secret-mapping helpers.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum DidPeerError {
     #[error("failed to generate did:peer: {0}")]
     Generate(String),

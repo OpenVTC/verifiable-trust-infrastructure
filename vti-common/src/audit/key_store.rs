@@ -72,6 +72,7 @@ impl std::fmt::Display for KeyId {
 /// Why an [`AuditKey`] was rotated. Recorded on the **successor** key
 /// so an investigator can tell why a particular epoch ended.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub enum RotationReason {
     /// Initial key derived from the master seed via HKDF. Always
     /// present as the first row.

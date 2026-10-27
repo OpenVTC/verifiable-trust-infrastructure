@@ -30,6 +30,7 @@ pub trait TelemetrySink: Send + Sync {
 pub type SharedTelemetrySink = Arc<dyn TelemetrySink>;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct TelemetryEvent {
     pub at: DateTime<Utc>,
     pub kind: TelemetryKind,
@@ -78,6 +79,7 @@ impl TelemetryEvent {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum TelemetryKind {
     DidcommInbound,
     DidcommResponseDropped,
@@ -178,6 +180,7 @@ impl TelemetryFilter {
 }
 
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum TelemetryError {
     #[error("telemetry sink backend failed: {0}")]
     Backend(String),

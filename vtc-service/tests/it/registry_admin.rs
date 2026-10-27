@@ -21,6 +21,7 @@ use vtc_service::test_support::TestVtc;
 
 const LIST: &str = "https://trusttasks.org/spec/vtc/registry/sync-jobs/list/0.1";
 const RETRY: &str = "https://trusttasks.org/spec/vtc/registry/sync-jobs/retry/0.1";
+const RETRY_0_2: &str = "https://trusttasks.org/spec/vtc/registry/sync-jobs/retry/0.2";
 const DISCARD: &str = "https://trusttasks.org/spec/vtc/registry/sync-jobs/discard/0.1";
 
 /// `task` signed by an unrestricted administrator: the reply's status and
@@ -245,8 +246,153 @@ async fn discard_refuses_a_live_job() {
 async fn the_surface_requires_an_admin() {
     let vtc = TestVtc::builder().build().await;
     let member = party_with_role(&vtc, VtcRole::Member, &[]).await;
-    for (task, payload) in [(LIST, json!({})), (RETRY, json!({ "allFailed": true }))] {
+    for (task, payload) in [
+        (LIST, json!({})),
+        (RETRY, json!({ "allFailed": true })),
+        (RETRY_0_2, json!({ "allWaiting": true })),
+    ] {
         let (_, doc) = call(&vtc, &member, task, payload).await;
         assert_eq!(error_code(&doc), Some("permissionDenied"), "{doc}");
     }
+}
+
+/// A pending job waiting out its retry backoff.
+fn backing_off(did: &str) -> SyncJob {
+    let mut job = SyncJob::fresh(SyncJobKind::PublishMember, did);
+    job.record_failure("registry timed out");
+    job.next_attempt_at = chrono::Utc::now() + chrono::Duration::minutes(40);
+    job
+}
+
+/// 0.2's `allWaiting`: every backing-off job becomes due now with its attempt
+/// budget reset, reported `from: pending`. A failed job and an in-flight one
+/// are not "waiting" and are left alone.
+#[tokio::test]
+async fn retry_0_2_all_waiting_brings_backing_off_jobs_forward() {
+    let vtc = TestVtc::builder().build().await;
+
+    let waiting = backing_off("did:key:z6MkWaiting");
+    let failed_job = failed(SyncJobKind::PublishMember, "did:key:z6MkFailed");
+    let mut in_flight = SyncJob::fresh(SyncJobKind::PublishMember, "did:key:z6MkInFlight");
+    in_flight.state = SyncJobState::InFlight;
+    for job in [&waiting, &failed_job, &in_flight] {
+        store_sync_job(&vtc.state.sync_queue_ks, job).await.unwrap();
+    }
+
+    let (status, v) = send(&vtc, RETRY_0_2, json!({ "allWaiting": true })).await;
+    assert_eq!(status, StatusCode::OK, "{v}");
+    assert_eq!(
+        v["requeued"],
+        json!([{
+            "jobId": waiting.id.to_string(),
+            "memberDid": "did:key:z6MkWaiting",
+            "from": "pending",
+        }]),
+        "{v}"
+    );
+    assert_eq!(v["skipped"], json!([]), "{v}");
+
+    let back = get_sync_job(&vtc.state.sync_queue_ks, waiting.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(back.state, SyncJobState::Pending);
+    assert_eq!(back.attempts, 0, "the budget resets");
+    assert!(
+        back.is_dispatchable(chrono::Utc::now()),
+        "due on the next pass"
+    );
+
+    let failed_back = get_sync_job(&vtc.state.sync_queue_ks, failed_job.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        failed_back.state,
+        SyncJobState::Failed,
+        "allWaiting is not allFailed"
+    );
+}
+
+/// An RTBF-batched job is held: no member of 0.2 releases it, and the answer
+/// says why rather than leaving it out.
+#[tokio::test]
+async fn retry_0_2_never_releases_a_held_job() {
+    let vtc = TestVtc::builder().build().await;
+
+    let mut held = SyncJob::fresh(SyncJobKind::DeleteMember, "did:key:z6MkForgotten");
+    held.rtbf_batched = true;
+    held.next_attempt_at = chrono::Utc::now() + chrono::Duration::hours(20);
+    store_sync_job(&vtc.state.sync_queue_ks, &held)
+        .await
+        .unwrap();
+
+    for payload in [
+        json!({ "allWaiting": true }),
+        json!({ "jobId": held.id.to_string() }),
+    ] {
+        let (status, v) = send(&vtc, RETRY_0_2, payload).await;
+        assert_eq!(status, StatusCode::OK, "{v}");
+        assert_eq!(v["requeued"], json!([]), "{v}");
+        assert_eq!(
+            v["skipped"],
+            json!([{ "jobId": held.id.to_string(), "reason": "held" }]),
+            "{v}"
+        );
+    }
+
+    let back = get_sync_job(&vtc.state.sync_queue_ks, held.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(back.next_attempt_at, held.next_attempt_at, "still held");
+}
+
+/// By `jobId`, 0.2 takes a pending job and a failed one alike, says which each
+/// was, and reports an in-flight or unknown job instead of failing.
+#[tokio::test]
+async fn retry_0_2_by_job_id_names_where_each_job_came_from() {
+    let vtc = TestVtc::builder().build().await;
+
+    let waiting = backing_off("did:key:z6MkWaiting");
+    let failed_job = failed(SyncJobKind::PublishMember, "did:key:z6MkFailed");
+    let mut in_flight = SyncJob::fresh(SyncJobKind::PublishMember, "did:key:z6MkInFlight");
+    in_flight.state = SyncJobState::InFlight;
+    for job in [&waiting, &failed_job, &in_flight] {
+        store_sync_job(&vtc.state.sync_queue_ks, job).await.unwrap();
+    }
+
+    let (_, v) = send(&vtc, RETRY_0_2, json!({ "jobId": waiting.id.to_string() })).await;
+    assert_eq!(v["requeued"][0]["from"], "pending", "{v}");
+    let (_, v) = send(
+        &vtc,
+        RETRY_0_2,
+        json!({ "jobId": failed_job.id.to_string() }),
+    )
+    .await;
+    assert_eq!(v["requeued"][0]["from"], "failed", "{v}");
+    let (_, v) = send(
+        &vtc,
+        RETRY_0_2,
+        json!({ "jobId": in_flight.id.to_string() }),
+    )
+    .await;
+    assert_eq!(v["skipped"][0]["reason"], "inFlight", "{v}");
+    let unknown = "0d5b5c1e-3f0a-4a5e-9c1d-2b3a4c5d6e7f";
+    let (_, v) = send(&vtc, RETRY_0_2, json!({ "jobId": unknown })).await;
+    assert_eq!(v["skipped"][0]["reason"], "notFound", "{v}");
+}
+
+/// Two targets at once is ambiguous, so the schema refuses it before the
+/// handler sees it.
+#[tokio::test]
+async fn retry_0_2_refuses_two_targets() {
+    let vtc = TestVtc::builder().build().await;
+    let (_, v) = send(
+        &vtc,
+        RETRY_0_2,
+        json!({ "allFailed": true, "allWaiting": true }),
+    )
+    .await;
+    assert_eq!(v["code"], "malformedRequest", "{v}");
 }

@@ -7,11 +7,15 @@ mod backup;
 mod config;
 mod consent;
 mod did_log;
+mod elections;
 mod git;
 mod member;
+mod members;
 mod onboard;
 mod pnm_profile;
+mod rooms;
 mod setup;
+mod storage;
 mod vetting;
 mod vtc;
 
@@ -255,6 +259,14 @@ enum Commands {
         command: member::MemberCommands,
     },
 
+    /// Admit a DID directly, without a join request: `admit` (Add a member)
+    /// and `make-membership` (an entry with no member record). Decided by the
+    /// community's admission policy. (`member` is your own membership.)
+    Members {
+        #[command(subcommand)]
+        command: members::MembersCommands,
+    },
+
     /// Answer the community's consent requests: making or widening an
     /// unrestricted administrator needs another one's approval.
     Consent {
@@ -274,6 +286,27 @@ enum Commands {
     Git {
         #[command(subcommand)]
         command: git::GitCommands,
+    },
+
+    /// The community's polls, surveys and elections: create them from a manifest, list,
+    /// show, close, cancel, and certify a result (`vtc/elections/*`).
+    Elections {
+        #[command(subcommand)]
+        command: elections::ElectionsCommands,
+    },
+
+    /// Data rooms the community itself owns: create them, offer members admission,
+    /// remove members (`vtc/rooms/community/*`). The community's VTA holds their keys.
+    Rooms {
+        #[command(subcommand)]
+        command: rooms::RoomsCommands,
+    },
+
+    /// Where the community keeps its rooms' files: its storage configs, and a `sealed`
+    /// config's credential, sealed here to the community (`vtc/storage/*`).
+    Storage {
+        #[command(subcommand)]
+        command: storage::StorageCommands,
     },
 
     /// The community's own DID log, when the community self-hosts it: install a
@@ -1044,10 +1077,14 @@ fn requires_auth(cmd: &Commands) -> bool {
             | Commands::DidLog { .. }
             | Commands::Vetting { .. }
             | Commands::Git { .. }
+            | Commands::Rooms { .. }
+            | Commands::Storage { .. }
+            | Commands::Elections { .. }
             | Commands::Consent { .. }
             | Commands::Actions { .. }
             | Commands::Access { .. }
             | Commands::Member { .. }
+            | Commands::Members { .. }
             | Commands::Audit { .. }
             | Commands::Backup { .. }
     )
@@ -1676,6 +1713,28 @@ async fn main() {
                 Err(e) => Err(e),
             }
         }
+        Commands::Rooms { command } => {
+            match community_vtc(&cli.community, &cli.vtc_did, &url_override, &cnm_config).await {
+                Ok((key, target)) => rooms::run(command, &key, &target, cli.transport.into()).await,
+                Err(e) => Err(e),
+            }
+        }
+        Commands::Storage { command } => {
+            match community_vtc(&cli.community, &cli.vtc_did, &url_override, &cnm_config).await {
+                Ok((key, target)) => {
+                    storage::run(command, &key, &target, cli.transport.into()).await
+                }
+                Err(e) => Err(e),
+            }
+        }
+        Commands::Elections { command } => {
+            match community_vtc(&cli.community, &cli.vtc_did, &url_override, &cnm_config).await {
+                Ok((key, target)) => {
+                    elections::run(command, &key, &target, cli.transport.into()).await
+                }
+                Err(e) => Err(e),
+            }
+        }
         Commands::Consent { command } => {
             match community_vtc(&cli.community, &cli.vtc_did, &url_override, &cnm_config).await {
                 Ok((key, target)) => {
@@ -1704,6 +1763,14 @@ async fn main() {
             match community_vtc(&cli.community, &cli.vtc_did, &url_override, &cnm_config).await {
                 Ok((key, target)) => {
                     member::run(command, &key, &target, cli.transport.into()).await
+                }
+                Err(e) => Err(e),
+            }
+        }
+        Commands::Members { command } => {
+            match community_vtc(&cli.community, &cli.vtc_did, &url_override, &cnm_config).await {
+                Ok((key, target)) => {
+                    members::run(command, &key, &target, cli.transport.into()).await
                 }
                 Err(e) => Err(e),
             }

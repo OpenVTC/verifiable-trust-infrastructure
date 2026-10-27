@@ -1,6 +1,7 @@
 // The writes a second party now guards — removing an administrator from the
 // community (VTI-APV-019), changing a policy that decides authority
-// (VTI-VTC-022), lowering the consent threshold (VTI-APV-020). Each goes
+// (VTI-VTC-022), lowering the consent threshold (VTI-APV-020), changing a join
+// criterion or the personhood policy (VTI-APV-023). Each goes
 // through the same step-up path the grant and promotion do: a refusal carrying
 // `details.stepUpRequest` asks the operator, records the gesture and re-sends
 // the identical document. One that needs other administrators' approval is
@@ -17,6 +18,8 @@ import type { SignedTrustTaskDocument } from "./console-key";
 import { MEMBERS_ADMIN_REMOVE_TASK, adminRemoveMember } from "./member-removal";
 import { activatePolicy, uploadPolicy } from "./policies-api";
 import { ParkedAction } from "./signed-act";
+import { deleteCriterion, saveCriterion } from "@/plugins/vetting/api";
+import { publishHiddenVetting, withdrawHiddenVetting } from "./hidden-vetting";
 
 vi.mock("./api", async (original) => ({
   ...(await original<typeof import("./api")>()),
@@ -151,5 +154,60 @@ describe("config/patch lowering the consent threshold (VTI-APV-020)", () => {
     gestureThen("ok", { applied: [], pendingRestart: [], rejected: [] });
     const got = await saveConfig({ [KEY]: 1 }, async () => true);
     expect(got.rejected).toEqual([]);
+  });
+});
+
+describe("join criteria and the personhood policy (VTI-APV-023)", () => {
+  it("asks for the gesture saving a criterion, then surfaces the parked action", async () => {
+    gestureThen("parked");
+    const confirm = vi.fn(async () => true);
+    await expect(
+      saveCriterion({ id: "open-door", admission: "review" }, confirm),
+    ).rejects.toBeInstanceOf(ParkedAction);
+    expectGestureMade(confirm);
+  });
+
+  it("re-saves an unchanged criterion without asking", async () => {
+    vi.mocked(postSignedTrustTask).mockResolvedValueOnce({
+      criterion: { id: "open-door", admission: "review" },
+    });
+    const confirm = vi.fn();
+    const got = await saveCriterion({ id: "open-door", admission: "review" }, confirm);
+    expect(got.id).toBe("open-door");
+    expect(confirm).not.toHaveBeenCalled();
+  });
+
+  it("asks for the gesture removing a criterion", async () => {
+    gestureThen("parked");
+    const confirm = vi.fn(async () => true);
+    await expect(deleteCriterion("open-door", confirm)).rejects.toBeInstanceOf(ParkedAction);
+    expectGestureMade(confirm);
+  });
+
+  it("asks for the gesture publishing hidden vetting on a criterion", async () => {
+    gestureThen("parked");
+    const confirm = vi.fn(async () => true);
+    await expect(
+      publishHiddenVetting({ criterionId: "vetted-member" }, confirm),
+    ).rejects.toBeInstanceOf(ParkedAction);
+    expectGestureMade(confirm);
+  });
+
+  it("asks for the gesture withdrawing hidden vetting", async () => {
+    gestureThen("parked");
+    const confirm = vi.fn(async () => true);
+    await expect(withdrawHiddenVetting("vetted-member", confirm)).rejects.toBeInstanceOf(
+      ParkedAction,
+    );
+    expectGestureMade(confirm);
+  });
+
+  it("asks for the gesture uploading a personhood policy", async () => {
+    gestureThen("parked");
+    const confirm = vi.fn(async () => true);
+    await expect(
+      uploadPolicy({ purpose: "personhood", regoSource: "package vtc.personhood" }, confirm),
+    ).rejects.toBeInstanceOf(ParkedAction);
+    expectGestureMade(confirm);
   });
 });

@@ -57,6 +57,11 @@ pub mod passkey_login;
 /// `docs/02-vta/passkey-verification-methods.md`.
 #[cfg(feature = "webvh")]
 pub mod passkey_vms;
+pub mod pcs;
+pub mod pcs_trustee;
+pub mod pcs_voter;
+/// Personas: the DIDs this agent holds for a person, and the key it signs with as each.
+pub mod persona;
 pub mod policy;
 /// Generic template-driven integration bootstrap. See
 /// `docs/02-vta/provision-integration.md`. Feature-gated on `webvh`
@@ -70,15 +75,29 @@ pub mod proofs;
 #[cfg(feature = "webvh")]
 pub mod protocol;
 pub mod provision_integration;
+pub mod room_act;
 pub mod room_anchor;
 pub mod room_groups;
 pub mod room_host;
 pub mod room_invitation;
 pub mod room_issuance;
+pub mod room_member;
 pub mod room_oracle;
+/// A room's own profile (`rooms/keys/profile/{read,write}`): the statement a member holding
+/// `curate` or `admin` signs, and every check a reader applies before showing one.
+pub mod room_profile;
+pub mod room_revocation;
 pub mod seeds;
+/// The byte strings `keys/sign-jws` and `keys/sign-csr` sign: a JWS signing
+/// input and a PKCS#10 `CertificationRequestInfo`, built here and nowhere else.
+pub mod sign_formats;
 pub mod step_up_approval;
+/// The guess limit behind a `vtaPin` user-verification key.
+pub mod uv_pin;
 pub mod vault;
+/// The VTA as its principal's witnessed party (`vta/witness/*`): it builds and signs every
+/// document of a `witness/session` as the relationship DID, and the client carries them.
+pub mod witness;
 
 /// Shared keyspace handles passed to operations that need multiple keyspaces.
 /// The struct itself lives in `vta-keyspaces` (a pure field bundle with no

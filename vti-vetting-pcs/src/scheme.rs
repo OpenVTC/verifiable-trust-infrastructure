@@ -102,3 +102,34 @@ pub fn point_from_text(text: &str) -> Result<G1, ProtoError> {
 pub fn scalar_text(s: &Fr) -> Result<String, ProtoError> {
     Ok(to_multibase(&to_bytes(s)?))
 }
+
+/// A deterministic stream for deriving a member's PCS key pair from a 32-byte seed.
+///
+/// The VTA derives the seed from the context's derivation base (VTI-KEY-030) and feeds this to
+/// the scheme's own key generation, so the same seed always yields the same `usk` and `id`,
+/// restarts included. ChaCha20, as [`crate::issuer`] uses for the community's keys: the stream
+/// is fixed by the seed on any build.
+#[must_use]
+pub fn seeded_rng(seed: &[u8; 32]) -> rand_chacha::ChaCha20Rng {
+    use rand::SeedableRng;
+    rand_chacha::ChaCha20Rng::from_seed(*seed)
+}
+
+/// A member's PCS key pair for `community`, derived from `seed` — the same pair
+/// [`crate::vetter::VetterEngine::enrol_from_seed`] and
+/// [`crate::applicant::ApplicantEngine::from_seed`] make, since the scheme instance is a function
+/// of the community alone ([`deployment_label`]).
+///
+/// What a VTA calls to rebuild a stored engine's key on every use, so the key itself is never
+/// stored (design §13 C7).
+///
+/// # Errors
+/// [`ProtoError::Pcs`] if the scheme instance cannot be set up or the key cannot be generated.
+pub fn member_key_from_seed(
+    community: &str,
+    seed: &[u8; 32],
+) -> Result<(G1, predicate_credential_system::pcs::UserSecretKey<E>), ProtoError> {
+    use predicate_credential_system::pcs::{PredicateCredentialSystem, SetupParams};
+    let open = Open::setup(SetupParams::new(deployment_label(community)))?;
+    Ok(open.user_keygen(&mut seeded_rng(seed))?)
+}

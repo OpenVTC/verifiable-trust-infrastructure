@@ -2,7 +2,7 @@
 name = "vti-secrets"
 description = "Pluggable secret-store backends + integration onboarding flow for Verifiable Trust Infrastructure"
 readme = "README.md"
-version = "0.15.0"
+version = "0.22.0"
 edition.workspace = true
 publish.workspace = true
 authors.workspace = true
@@ -43,11 +43,17 @@ onboarding = [
   "dep:vta-sdk",
   "dep:ed25519-dalek",
   "dep:multibase",
-  "dep:rand",
 ]
+# TPM 2.0 key-encryption key for the `encrypted_file` backend
+# (`kek = { source = "tpm" }`). Linux only, and off by default: `tss-esapi`
+# links the native tss2 libraries (`libtss2-esys`, `libtss2-tctildr`,
+# `libtss2-mu`), which a build host must have installed. On any other target,
+# or without this feature, a `tpm` KEK source is refused when the store is
+# built.
+tpm = ["dep:tss-esapi"]
 
 [dependencies]
-vti-common = { path = "../vti-common", version = "0.42" }
+vti-common = { path = "../vti-common", version = "0.49" }
 serde = { workspace = true }
 hex = { workspace = true }
 tracing = { workspace = true }
@@ -56,12 +62,22 @@ tokio = { workspace = true }
 zeroize = { version = "1" }
 
 # Onboarding feature: the SDK session/auth state machine + local did:key mint.
-vta-sdk = { path = "../vta-sdk", version = "0.66", features = [
+vta-sdk = { path = "../vta-sdk", version = "0.73", features = [
   "session",
 ], optional = true }
 ed25519-dalek = { workspace = true, optional = true }
 multibase = { workspace = true, optional = true }
-rand = { workspace = true, optional = true }
+# Salts and nonces for the `encrypted_file` backend; also the onboarding
+# feature's did:key mint.
+rand = { workspace = true }
+
+# `encrypted_file` backend: the same AEAD and password KDF `vta-backup` uses
+# (AES-256-GCM, Argon2id), plus HKDF-SHA256 to derive the file key from a
+# systemd-creds or TPM key-encryption key.
+aes-gcm = { workspace = true }
+argon2 = "0.6.0"
+hkdf = { workspace = true }
+sha2 = { workspace = true }
 
 # AWS Secrets Manager backend (aws-secrets feature).
 #
@@ -107,6 +123,10 @@ vaultrs = { version = "0.8", optional = true }
 kube = { workspace = true, optional = true }
 k8s-openapi = { workspace = true, optional = true }
 keyring-core = { workspace = true, optional = true }
+
+# TPM 2.0 sealing for the `encrypted_file` backend (tpm feature). Linux only.
+[target.'cfg(target_os = "linux")'.dependencies]
+tss-esapi = { version = "7.7.0", default-features = false, optional = true }
 
 [dev-dependencies]
 tempfile = "3"

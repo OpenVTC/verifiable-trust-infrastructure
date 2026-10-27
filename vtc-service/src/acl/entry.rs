@@ -76,6 +76,12 @@ pub struct VtcAclEntry {
         skip_serializing_if = "Vec::is_empty"
     )]
     pub resource_grants: Vec<super::resource_grant::ResourceGrant>,
+    /// Capabilities a group provisions onto this entry, each naming the group
+    /// as its source (**VTI-DIR-100 – 102**, [`super::group_grant`]). Written
+    /// only by [`crate::groups::authority`]; an `acl/*` write keeps them as
+    /// stored. Absent and empty are the same.
+    #[serde(default, rename = "groupGrants", skip_serializing_if = "Vec::is_empty")]
+    pub group_grants: Vec<super::group_grant::GroupGrant>,
     /// Whether the subject set `label` itself (**VTI-ACL-052** item 2). The
     /// label confers no authority (VTI-ACL-001), so a subject may change it on
     /// its own entry; what it can do is mislead, so wherever the label is
@@ -158,6 +164,7 @@ impl VtcAclEntry {
             updated_by: None,
             expires_at: None,
             resource_grants: Vec::new(),
+            group_grants: Vec::new(),
             label_set_by_subject: false,
             suspension: None,
         }
@@ -176,7 +183,32 @@ impl VtcAclEntry {
     pub fn can(&self, cap: Capability, resource: Option<&ResourceQualifier>) -> bool {
         self.suspension.is_none()
             && !self.is_expired(vti_common::auth::session::now_epoch())
-            && (self.admin.can(cap, resource) || self.resource_grant_confers(cap, resource))
+            && (self.admin.can(cap, resource)
+                || self.resource_grant_confers(cap, resource)
+                || self.group_grant_confers(cap, resource))
+    }
+
+    /// Whether one of this entry's group grants, in effect, confers `cap` at
+    /// `resource` ([`super::group_grant`]). Expiry of the entry itself is the
+    /// caller's.
+    fn group_grant_confers(&self, cap: Capability, resource: Option<&ResourceQualifier>) -> bool {
+        let wanted = CapRef::new(cap, resource.cloned());
+        super::group_grant::effective(&self.admin, &self.group_grants)
+            .iter()
+            .any(|h| h.covers(&wanted))
+    }
+
+    /// The authority-conferring capabilities this entry holds: its role's and
+    /// its groups' (VTI-APV-018 counts both, VTI-DIR-104). Resource grants are
+    /// delegations of their own, gated where they are written.
+    pub fn conferring(&self) -> Vec<CapRef> {
+        let mut out = self.admin.conferring();
+        out.extend(
+            super::group_grant::effective(&self.admin, &self.group_grants)
+                .into_iter()
+                .filter(CapRef::is_authority_conferring),
+        );
+        out
     }
 
     /// Whether one of this entry's live resource grants confers `cap` at
@@ -206,6 +238,9 @@ impl VtcAclEntry {
         self.suspension.is_none()
             && !self.is_expired(vti_common::auth::session::now_epoch())
             && (self.admin.can_any(cap)
+                || super::group_grant::effective(&self.admin, &self.group_grants)
+                    .iter()
+                    .any(|h| h.capability == cap)
                 || self
                     .resource_grants
                     .iter()
@@ -261,6 +296,11 @@ impl VtcAclEntry {
             Vec::new()
         };
         let now = chrono::Utc::now();
+        out.extend(
+            super::group_grant::effective(&self.admin, &self.group_grants)
+                .iter()
+                .map(CapRef::display),
+        );
         out.extend(
             self.resource_grants
                 .iter()
@@ -437,6 +477,7 @@ mod tests {
             updated_by: None,
             expires_at,
             resource_grants: Vec::new(),
+            group_grants: Vec::new(),
             label_set_by_subject: false,
             suspension: None,
         }

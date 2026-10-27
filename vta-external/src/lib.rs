@@ -34,6 +34,7 @@
 //!    binding's ceiling, and each issuance's own scope.
 //! 5. Changing an account needs other administrators (the approvals defaults).
 
+pub mod batch;
 pub mod driver;
 pub mod fingerprint;
 pub mod model;

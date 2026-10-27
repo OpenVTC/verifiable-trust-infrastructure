@@ -48,6 +48,7 @@ const POST_TIMEOUT_SECS: u64 = 15;
 /// canonical `vault/proxy-login/0.1` error codes at the handler
 /// boundary.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum PasswordPostError {
     /// `loginConfig.login_url` is malformed or unsupported (e.g.
     /// `http://` against a non-loopback host).

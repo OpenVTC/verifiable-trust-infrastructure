@@ -1,23 +1,34 @@
-//! Hidden-vetter admission (ZKP): the VTC's half.
+//! Hidden-vetter admission (ZKP) on the Predicate Credential System (PCS): both halves.
 //!
-//! The applicant proves, in zero knowledge, that `k` distinct vetters of this community vetted
-//! them. This crate verifies that proof and turns it into the `StatementFacts` the VTC already
-//! counts, with each vetter's tag where the vetter's DID used to be — so `requirements::evaluate`
-//! and `join.rego` are untouched.
+//! The applicant proves, in zero knowledge, that `k` distinct vetters of a community vetted
+//! them, and the community learns nothing about which vetters did. In the scheme's own terms the
+//! community is the *helper*; every vetter and every applicant holds a PCS secret key, `usk`.
 //!
-//! Design: `docs/design/vetting-hidden-vetters-pcs.md` on the openvtc `zkp-pcs` branch, §13
-//! corrections applied. `vetter`/`applicant` engines are not here: they belong to the member
-//! side (the VTA), and live on the openvtc branch.
+//! - **The community's half** — [`issuer`] (class credentials, the token drip) and [`verifier`]
+//!   (the proof, turned into the `StatementFacts` the VTC already counts, with each vetter's tag
+//!   where the vetter's DID used to be, so `requirements::evaluate` and `join.rego` are
+//!   untouched). `vtc-service` runs it.
+//! - **The member's half** — the [`vetter`] and [`applicant`] engines and their storable
+//!   [`snapshot`]s. A VTA runs them as its principal's PCS engine (design §13 C7, the `vta/pcs/*`
+//!   Trust Tasks), so the client carrying the messages never holds a `usk`.
 //!
-//! Development branch.
+//! [`vtc`] (feature `harness`) is an in-process community built from the community's half, for
+//! driving the member's half end to end in tests without a running VTC.
+//!
+//! Design: `design-docs/vetting-hidden-vetters-pcs.md`, §13 corrections applied.
 
+pub mod applicant;
 pub mod community;
 pub mod error;
 pub mod issuer;
 pub mod meta;
 pub mod scheme;
+pub mod snapshot;
 pub mod token;
 pub mod verifier;
+pub mod vetter;
+#[cfg(any(test, feature = "harness"))]
+pub mod vtc;
 pub mod wire;
 
 pub use error::ProtoError;

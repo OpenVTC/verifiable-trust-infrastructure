@@ -23,7 +23,9 @@ import { type FormEvent, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 
+import { useConfirm } from "@/components/ConfirmDialog";
 import { Switch } from "@/components/Switch";
+import { gestureFromConfirm, parkedOf } from "@/lib/signed-act";
 import { useToast } from "@/lib/toast";
 import {
   admissionSentence,
@@ -68,8 +70,18 @@ export function CriterionEditor({
   const isNew = criterion === null;
   const [draft, setDraft] = useState<CriterionDraft>(() => criterionDraft(criterion));
 
+  // A change to a criterion takes a passkey gesture and the other surface
+  // administrators' approval (VTI-APV-023): the VTC parks it as an
+  // administrator action, which the toast shows as a success.
+  const confirmGesture = gestureFromConfirm(useConfirm());
+
   const save = useMutation({
-    mutationFn: saveCriterion,
+    mutationFn: (body: ReturnType<typeof criterionBody>) => saveCriterion(body, confirmGesture),
+    onError: (err) => {
+      if (!parkedOf(err)) return;
+      toast.pushFromError(err);
+      onDone();
+    },
     onSuccess: (stored) => {
       void queryClient.invalidateQueries({ queryKey: vettingKeys.criteria });
       void queryClient.invalidateQueries({ queryKey: vettingKeys.manifest });
@@ -279,7 +291,7 @@ export function CriterionEditor({
         </div>
       )}
 
-      {save.error && (
+      {save.error && !parkedOf(save.error) && (
         <div className="finding error" role="alert">
           <strong>Could not save the criterion</strong>
           <p>{errorMessage(save.error)}</p>

@@ -2,13 +2,34 @@
 name = "vtc-service"
 description = "Service for Verifiable Trust Communities"
 readme = "README.md"
-version = "0.11.58"
+version = "0.13.0"
 edition.workspace = true
-# Internal to this workspace — consumed through path dependencies only, never
-# from crates.io. It was published by inheritance from `[workspace.package]`
-# rather than by decision; the audit in #938 found no external consumer. See
-# RELEASING.md ("What gets published").
-publish = false
+# Published, so an operator can install the VTC with `cargo install
+# vtc-service` (the `vtc` binary), the way `pnm-cli` and `cnm-cli` are installed.
+# #938 unpublished it because no crate depended on it, which is still true: it
+# has no library consumer, and is published as a binary. Hence no semver check
+# in `release-plz.toml` and `scripts/semver-report.sh`. See RELEASING.md ("What
+# gets published").
+#
+# The package carries the two web bundles pre-built, not the npm project that
+# builds them: `scripts/build-vtc-web-bundles.sh` writes `admin-ui/dist` and
+# `admin-ui/dist-members` (gitignored, so only `include` brings them in) and
+# publish.yml runs it before release-plz. build.rs, finding no
+# `admin-ui/package.json`, bakes those instead of running npm. Keep `include` to
+# what the build reads: every `include_dir!` / `include_str!` outside tests is
+# under `src/`, `policies/`, `website-default/` or the two bundles.
+include = [
+  "/Cargo.toml",
+  "/README.md",
+  # release-plz writes it with the first release.
+  "/CHANGELOG.md",
+  "/build.rs",
+  "/src/**",
+  "/policies/**",
+  "/website-default/**",
+  "/admin-ui/dist/**",
+  "/admin-ui/dist-members/**",
+]
 authors.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -28,6 +49,10 @@ default = ["setup", "keyring", "website", "admin-ui", "tsp"]
 # `bls12_381_plus` arrives with `affinidi-bbs` behind the `bbs` feature — but it
 # does add the arkworks stack.
 vetting-pcs = ["dep:vti-vetting-pcs", "dep:predicate-credential-system"]
+# Community elections (`vtc/elections/*`): the registrar's PCS key, ticket issuance and
+# certification, on `vti-voting`. Off by default for the reason `vetting-pcs` is: the
+# arkworks stack. The records and the action-list kind are built without it.
+voting = ["vetting-pcs", "dep:vti-voting"]
 # Trust Spanning Protocol transport. **Receive-side, and ON by default.**
 #
 # On by default because a DID document is a contract and this one is routinely
@@ -127,6 +152,11 @@ k8s-secrets = ["vti-secrets/k8s-secrets"]
 # setup wizard has no Vault picker, so operators configure it via the
 # `[secrets]` table (`vault_addr`, …) or `setup --from <toml>`.
 vault-secrets = ["vti-secrets/vault-secrets"]
+# TPM 2.0 key-encryption key for the `encrypted-file` secrets backend
+# (`[secrets.encrypted_file] kek = { source = "tpm" }`). Linux only; needs the
+# native tss2 libraries at build time. The passphrase and systemd-creds KEK
+# sources need no feature.
+tpm = ["vti-secrets/tpm"]
 
 [[bin]]
 name = "vtc"
@@ -141,11 +171,12 @@ path = "tests/it/main.rs"
 
 [dependencies]
 # Hidden-vetter admission (ZKP), development branch `zkp-pcs`: off by default.
-vti-vetting-pcs = { path = "../vti-vetting-pcs", optional = true }
+vti-vetting-pcs = { path = "../vti-vetting-pcs", version = "0.6", optional = true }
+vti-voting = { path = "../vti-voting", version = "0.2", optional = true }
 predicate-credential-system = { version = "0.1", optional = true }
-vti-rooms = { path = "../vti-rooms", version = "0.13" }
-vti-rooms-dtg = { path = "../vti-rooms-dtg" }
-vti-common = { path = "../vti-common", version = "0.42", features = [
+vti-rooms = { path = "../vti-rooms", version = "0.20" }
+vti-rooms-dtg = { path = "../vti-rooms-dtg", version = "0.22" }
+vti-common = { path = "../vti-common", version = "0.49", features = [
   "passkey",
   # `setup` gates the shared dialoguer-driven secrets-prompt helper
   # the wizard calls into.
@@ -158,12 +189,49 @@ vti-common = { path = "../vti-common", version = "0.42", features = [
   # the OpenAPI-aware Trust-Task route helpers (`task_routes`/`task_layer`).
   "openapi",
   "rate-limit",
+  # Room files in S3 through presigned requests the community's VTA issues
+  # (`rooms::vta_storage`): no storage credential is held here.
+  "blob-presigned",
+  # Room files in Google Cloud Storage (`rooms::storage_auth::gcs`), through
+  # `object_store` with a room-scoped token per room.
+  "blob-gcs",
 ] }
+# Ambient and sealed storage authentication (`rooms::storage_auth`,
+# `vtc/storage/configs/create/0.2` "Room-scoped credentials"). An `s3` config on
+# the host's own identity assumes a role through STS with a session policy naming
+# one room's prefix; a sealed AWS key mints a federation token the same way. Every
+# object request is then a SigV4 presigned request made here with that scoped
+# credential. `default-features = false` for the reason `vta-tee` gives: the SDKs'
+# default `rustls` feature pulls the legacy rustls 0.21 stack.
+aws-config = { version = "1", default-features = false, features = ["behavior-version-latest", "default-https-client", "rt-tokio"] }
+aws-sdk-sts = { version = "1", default-features = false, features = ["default-https-client", "rt-tokio"] }
+aws-sigv4 = { version = "1", default-features = false, features = ["sign-http", "http1"] }
+aws-credential-types = "1"
+aws-smithy-runtime-api = { version = "1", features = ["client"] }
+# Not called from this crate — a resolver bound, explained in the workspace
+# manifest (`aws-config` above pulls `aws-smithy-json` 0.63).
+aws-smithy-types.workspace = true
+# Ambient Google identity (`rooms::storage_auth::gcs`): application default
+# credentials, and impersonation with a 900-second lifetime where the operator
+# names a service account. The Credential Access Boundary exchange itself is one
+# documented STS call, made here.
+google-cloud-auth = "1"
+# The same `object_store` `vti-common`'s `blob-gcs` store wraps: named here for its
+# credential hook, which hands each room's store its own downscoped token.
+object_store = { version = "0.14", default-features = false, features = ["gcp"] }
+# ECMA-262 regular expressions: a directory field's `pattern` constraint is one
+# (`vtc/directory/_shared/0.1/field-definition`). Already in the graph through
+# trust-tasks-rs's schema validation, which reads `pattern` the same way.
+regress = "0.12"
+# Directory pictures (`vtc/directory/images/upload`): every image is decoded and
+# re-encoded, so no metadata and no byte the member sent is stored. Pure-Rust
+# decoders only, and only the formats a `CardBlobRef` admits that it can decode.
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
 # Shared secret-store backend implementations (the VTC's `create_secret_store`
 # factory + `*SecretStore` names are a thin facade over these). Per-backend
 # features are activated by this crate's matching features above.
-vti-secrets = { path = "../vti-secrets", version = "0.15" }
-vta-sdk = { path = "../vta-sdk", version = "0.66", features = [
+vti-secrets = { path = "../vti-secrets", version = "0.22" }
+vta-sdk = { path = "../vta-sdk", version = "0.73", features = [
   "didcomm",
   "session",
   "config-session",
@@ -181,6 +249,9 @@ vta-sdk = { path = "../vta-sdk", version = "0.66", features = [
   "vetting",
   # Lets `main()` install the rustls aws-lc-rs CryptoProvider at startup.
   "crypto-provider",
+  # Credential issuers known by an X.509 chain to a configured anchor (EUDI
+  # PID and Rulebook credentials, `[oid4vp] x509_trust_anchors`, #1988).
+  "x509-issuers",
 ] }
 affinidi-tdk = { workspace = true }
 # D1 delivery layer (P1a cut-over): `MessagingService` (subscribe/send) over a
@@ -219,6 +290,11 @@ jsonschema = { workspace = true }
 affinidi-openid4vp = { workspace = true, features = ["direct-post-jwt"] }
 # The response-decryption key and its `enc` allow-list, named directly.
 affinidi-oid4vc-core = { workspace = true, features = ["jwe"] }
+# An EUDI verifier's access certificate: the CSR `vtc oid4vp csr` writes (no
+# crypto backend — the identity's own key signs it) and the chain
+# `vtc oid4vp certificate` checks (`crate::oid4vp::x509`).
+rcgen = { version = "0.14", default-features = false, features = ["pem"] }
+x509-parser = { workspace = true }
 # OID4VCI — the issuer side of credential-exchange (offer/request/issue);
 # the body the `credential-exchange/*` Trust Tasks carry (Phase 3 §6).
 affinidi-openid4vci = { workspace = true }
@@ -255,7 +331,7 @@ affinidi-messaging-didcomm = "0.15.9"
 # mediator-side twin of the client-side failure this crate's TSP work is about.
 # Always on (not conditioned on this crate's `tsp`): the harness is test-only,
 # and a mediator that can route TSP is harmless to the DIDComm suite.
-affinidi-messaging-test-mediator = { version = "0.20", optional = true, features = [
+affinidi-messaging-test-mediator = { version = "0.46", optional = true, features = [
     "tsp",
 ] }
 tokio-util = { workspace = true, features = ["rt"] }
@@ -355,10 +431,9 @@ qrcode = { version = "0.14", default-features = false, features = ["svg"] }
 trust-tasks-rs = { workspace = true }
 # Signs ES256K holder signatures in tests; the service only verifies them,
 # through `vta_sdk::jws`.
-k256 = { version = "0.14", features = ["ecdsa"] }
-# Signed room fixtures. Cargo unifies this feature with the normal dependency
+k256 = { version = "0.14", features = ["ecdsa"] }# Signed room fixtures. Cargo unifies this feature with the normal dependency
 # above, so the fixtures reach tests without shipping in the service binary.
-vti-rooms-dtg = { path = "../vti-rooms-dtg", features = ["test-support"] }
+vti-rooms-dtg = { path = "../vti-rooms-dtg", version = "0.22", features = ["test-support"] }
 # Self-dep with `test-support` enabled so integration tests under
 # `tests/` can import `vtc_service::test_support` (`TestVtc`, `MockVtc`).
 vtc-service = { path = ".", features = ["test-support", "transport-harness"] }
@@ -372,6 +447,10 @@ vtc-service = { path = ".", features = ["test-support", "transport-harness"] }
 # `tsp`: `tests/git_ns_vtc_client.rs` drives the git-ns calls over TSP too.
 vtc-client = { path = "../vtc-client", features = ["tsp"] }
 tempfile = "3"
+# The voting service itself (`publish = false`, so path-only and stripped from the published
+# package): `tests/it/election_tasks.rs` runs a real ballot box on the harness's mediator and
+# registers, reads and certifies through the community's production link to it.
+vti-voting-service = { path = "../vti-voting-service" }
 # Integration tests under `tests/` exercise the route stack via
 # `Router::oneshot` — same pattern as `vta-service/tests/api_integration.rs`.
 http-body-util = "0.1"

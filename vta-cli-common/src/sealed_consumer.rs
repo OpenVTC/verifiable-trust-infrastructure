@@ -412,6 +412,9 @@ pub fn extract_admin_credential(
              CredentialBundle"
                 .into(),
         ),
+        // `SealedPayloadV1` is `#[non_exhaustive]`: only the two variants above
+        // carry an admin credential.
+        _ => Err("this sealed payload is not an admin credential bundle".into()),
     }
 }
 

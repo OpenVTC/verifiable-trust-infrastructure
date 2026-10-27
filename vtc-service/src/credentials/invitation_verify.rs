@@ -126,6 +126,25 @@ pub async fn mark_consumed(
         .await
 }
 
+/// Undo this caller's own [`mark_consumed`] — for an admission that claimed
+/// the invitation and then failed, so the invitee can redeem it again.
+///
+/// Removes the row only while it is still exactly `record` (the claim this
+/// caller wrote), so it can never free a consumption somebody else recorded.
+/// Returns whether it removed anything.
+pub async fn release_consumed(
+    ks: &vti_common::store::KeyspaceHandle,
+    vic_id: &str,
+    record: &ConsumedInvitation,
+) -> Result<bool, AppError> {
+    let key = vic_id.as_bytes().to_vec();
+    let mut batch = vti_common::store::Batch::new();
+    batch
+        .require_unchanged(key.clone(), serde_json::to_vec(record)?)
+        .remove(key);
+    Ok(ks.apply_batch(batch).await?.is_applied())
+}
+
 /// Inspect a VP's `verifiableCredential` for a *structural* defect that means
 /// "a credential was attempted but the envelope is malformed", as distinct from
 /// "no credential presented". Returns a reason string when the field is present

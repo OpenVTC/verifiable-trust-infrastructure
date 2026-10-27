@@ -10,13 +10,20 @@
 //!    presentation granted to itself is not thereby an agent that may sign *anything at all*
 //!    with its principal's key. Gating an oracle on the generic signing oracle would grant
 //!    strictly more than the task needs, which is the opposite of what an oracle is for.
-//! 2. **Context**, inside `resolve_holder_keys` — the caller must be permitted to act in the
-//!    context that owns the principal's key. That is the privilege boundary a context exists
-//!    to draw, and it is enforced where the key is resolved rather than re-derived here.
+//! 2. **Persona**, inside [`room_oracle::principal`] — the credentials presented are those the
+//!    room issued to a persona the caller may act as (a DID this VTA holds for the person, in
+//!    a context the caller acts in), and the leaf is signed as that persona. That is the
+//!    privilege boundary a context exists to draw, and it is enforced where the persona is
+//!    resolved rather than re-derived here.
 //! 3. **Attenuation**, inside the credential library — a caller cannot obtain more than the
 //!    principal holds, because `attenuate` refuses to widen.
 //!
-//! # The presenter is the caller, always
+//! # The presenter is the caller, always — and the member is not
+//!
+//! Two identities, kept apart. The **member** is the persona the room's credentials name;
+//! nothing here makes the caller one. The **presenter** is the agent the leaf is granted to,
+//! as the specification's *Presenter binding* requires: an attenuated delegate of the member,
+//! for one action and four hours, never a member of the room.
 //!
 //! The minted leaf grants to the DID the *transport* authenticated, never to one named in
 //! the payload. A caller cannot ask for a presentation made out to somebody else, which is

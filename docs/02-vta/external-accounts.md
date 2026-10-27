@@ -44,13 +44,57 @@ pnm external secret-set r2-rooms --context community
 pnm external probe r2-rooms --context community
 ```
 
+**A store on a private network or loopback** (MinIO on a LAN, LocalStack) is
+refused by default: `create`/`update` answer `external:invalidSettings`
+(`details.member: "endpoint"`) for a private or loopback IP literal or a local
+name, and the probe's resolver refuses a name that resolves to one, so the probe
+stops at `sign` and the account stays `providerSetupRequired`. Set
+`VTA_ALLOW_PRIVATE_ENDPOINTS=1` in the VTA's environment — the same switch that
+lets it resolve a DID on such a host — to admit them. Link-local and
+cloud-metadata targets are refused either way, and the probe never follows a
+redirect. The endpoint must be `https://` in both modes.
+
 The consumer (here the VTC) holds `external-auth-use` in the context — every
-role that holds `sign` derives it — and calls `external/credentials/issue/0.1`.
+role that holds `sign` derives it — and calls `external/credentials/issue`
+(0.1, or 0.3 for a batch).
 The credential comes back sealed to its own key-agreement key (the X25519
 derivation of a `did:key`, otherwise the first X25519 `keyAgreement` method of
 its DID document — with neither, the VTA refuses with `noKeyAgreement` before
 signing anything), inside a signed response. The consumer verifies that
 response's proof before opening the bundle: it is what anchors it.
+
+For an `s3-static-presign` account, `external/credentials/issue/0.3` takes a
+**presign batch** instead of a scope: up to 64 operations on one object (and at
+most one multipart upload of it) — `put`, `get`, `head`, `delete`,
+`create-multipart`, `upload-part`, `list-parts`, `complete-multipart`,
+`abort-multipart` — each presigned exactly as the specification's table says,
+with a write bound to its `Content-Length` and `x-amz-checksum-sha256`. The
+binding's ceiling is unchanged: multipart writes and `list-parts` need `put`,
+`head` needs `get`, `abort-multipart` needs `delete`. The batch counts once
+against the rate, and comes back sealed as one `PresignedRequestSet`.
+
+**A batch whose sealed answer would not fit is refused, never trimmed.** The
+response bounds `sealedCredential` at 256 KiB, and a sealed presigned request
+is about 2.9 KiB with a short object key — but far more with a long one: at the
+longest key and upload id the schema allows (1024 characters each) only 10 fit.
+So for a batch the VTA resolves the caller's key-agreement key (`noKeyAgreement`
+first), presigns and seals — none of which contacts the provider — and refuses a
+set over the bound with `external/credentials/issue:responseTooLarge`, its
+`details.maxOperations` naming how many of the batch's operations, in order,
+fit. The count is computed from the longest armor the set could seal to, so a
+part of that size always fits. Only then does the issuance count against the
+rate: a request refused at any check, `responseTooLarge` included, costs
+nothing, and a refused set is dropped unreturned and never logged. The caller
+splits — to `maxOperations`, else in half — and asks again for each part
+(consumer item 5); the SDK's `VtaClient::external_credentials_issue_presign`
+and the VTC do this.
+
+`pnm external issue <account> --context <id> --presign @batch.json` sends one
+from the CLI, printed still sealed (an array of answers when it had to split).
+`0.1` and `0.2` are served beside it. `0.2` keeps its own behaviour for a VTC
+on an older build: up to 128 operations, the rate counted before the answer is
+sized, and an oversized answer refused as `invalidBatch` — `responseTooLarge`
+is not one of 0.2's codes, and no standard code says it.
 
 A caller with no binding on the account — or naming an account that does not
 exist — gets `external:notFound`, the same answer either way. Only a bound

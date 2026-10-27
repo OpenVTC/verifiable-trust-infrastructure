@@ -14,6 +14,10 @@ export default mergeConfig(
       environment: "jsdom",
       include: ["src/**/*.test.{ts,tsx}"],
       setupFiles: ["src/test/setup.ts"],
+      // Vitest turns every stylesheet into an empty module unless told
+      // otherwise, `?raw` imports included. The built-in themes are read as
+      // text and checked against the theme profile, so they must arrive whole.
+      css: { include: [/src\/styles\/themes\//] },
     },
   }),
 );

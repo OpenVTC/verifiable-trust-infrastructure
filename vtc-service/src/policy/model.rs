@@ -109,11 +109,13 @@ pub const POLICY_SOURCE_MAX_BYTES: usize = 64 * 1024;
 /// split into five groups:
 /// - **Membership lifecycle**: [`Self::Join`], [`Self::Removal`],
 ///   [`Self::Personhood`].
-/// - **Discoverability**: [`Self::Registry`], [`Self::Directory`].
+/// - **Discoverability**: [`Self::Registry`], [`Self::Directory`],
+///   [`Self::DirectoryWrite`].
 /// - **Authorization**: [`Self::RoleDefinitions`], [`Self::RoleChange`],
 ///   [`Self::CrossCommunityRoles`],
 ///   [`Self::CrossCommunityRelationships`], [`Self::Relationships`].
 /// - **Hosting**: [`Self::Rooms`].
+/// - **Organising**: [`Self::Groups`].
 /// - **Vetting**: [`Self::VetterEligibility`].
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "camelCase")]
@@ -161,6 +163,20 @@ pub enum PolicyPurpose {
     /// `refer` parks it in the action list for the other holders of
     /// `vtc.members.manage`, `deny` refuses it. Wire form `admission`.
     Admission,
+    /// What a directory card may hold (`vtc.directory_write`): evaluated over a
+    /// member's `vtc/directory/card/update` and an administrator's
+    /// `card/assert`, after the host's own checks. It may refuse a value — a
+    /// nickname already taken, a link to a domain the community does not allow
+    /// — and nothing else: it never widens a visibility, and a change that only
+    /// narrows never reaches it. Wire form `directoryWrite`.
+    DirectoryWrite,
+    /// The community's groups (`vtc.groups`, the `vtc/groups/*` Trust Tasks):
+    /// evaluated after the host's own checks, over a group's creation and a
+    /// member joining or asking to. It may
+    /// refuse, and nothing else: the host's checks — who manages a group, who
+    /// is an active member — are never its to relax. Not authority: a group
+    /// confers authority only through a binding, whose consent is its own.
+    Groups,
 }
 
 impl PolicyPurpose {
@@ -168,7 +184,7 @@ impl PolicyPurpose {
     /// boot-time default-policy loader (M2.5) so missing rows can
     /// be filled from the bundled defaults without listing each
     /// purpose explicitly at the call site.
-    pub const ALL: [PolicyPurpose; 14] = [
+    pub const ALL: [PolicyPurpose; 16] = [
         PolicyPurpose::Join,
         PolicyPurpose::Removal,
         PolicyPurpose::Personhood,
@@ -183,6 +199,8 @@ impl PolicyPurpose {
         PolicyPurpose::VetterEligibility,
         PolicyPurpose::GitNamespace,
         PolicyPurpose::Admission,
+        PolicyPurpose::DirectoryWrite,
+        PolicyPurpose::Groups,
     ];
 
     /// Whether this purpose decides **authority** — who becomes, stays or stops
@@ -207,6 +225,27 @@ impl PolicyPurpose {
         )
     }
 
+    /// Whether this purpose decides **who this community recognises as a
+    /// person** — the personhood policy. Not authority: recognition confers no
+    /// power in the community, so holding `vtc.policy.admin @
+    /// policy:personhood` is not authority-conferring
+    /// ([`crate::acl::Capability::is_authority_conferring`] reads
+    /// [`Self::decides_authority`] alone). But changing it alters the
+    /// community's trust semantics (VTI-CMP-090), so it is held for another
+    /// administrator's consent all the same (**VTI-APV-023**).
+    #[must_use]
+    pub fn decides_recognition(self) -> bool {
+        matches!(self, PolicyPurpose::Personhood)
+    }
+
+    /// Whether replacing or activating this purpose's policy is held for
+    /// another administrator's consent: it decides authority (**VTI-VTC-022**)
+    /// or recognition (**VTI-APV-023**).
+    #[must_use]
+    pub fn requires_consent(self) -> bool {
+        self.decides_authority() || self.decides_recognition()
+    }
+
     /// Lowercase camelCase wire form of this purpose. Stable wire
     /// (operators script around it); matches the serde
     /// representation.
@@ -226,6 +265,8 @@ impl PolicyPurpose {
             PolicyPurpose::VetterEligibility => "vetterEligibility",
             PolicyPurpose::GitNamespace => "gitNamespace",
             PolicyPurpose::Admission => "admission",
+            PolicyPurpose::DirectoryWrite => "directoryWrite",
+            PolicyPurpose::Groups => "groups",
         }
     }
 
@@ -263,6 +304,12 @@ impl PolicyPurpose {
             // policy in any other package answers nothing, which refuses every
             // direct admission.
             PolicyPurpose::Admission => Some("vtc.admission"),
+            // Probed by a fixed package: a policy in any other package answers
+            // nothing, which refuses every card write that widens.
+            PolicyPurpose::DirectoryWrite => Some("vtc.directory_write"),
+            // Probed by a fixed package: a policy in any other package answers
+            // nothing, which refuses every group creation and every join.
+            PolicyPurpose::Groups => Some("vtc.groups"),
             _ => None,
         }
     }
@@ -325,6 +372,8 @@ mod tests {
             (PolicyPurpose::VetterEligibility, json!("vetterEligibility")),
             (PolicyPurpose::GitNamespace, json!("gitNamespace")),
             (PolicyPurpose::Admission, json!("admission")),
+            (PolicyPurpose::DirectoryWrite, json!("directoryWrite")),
+            (PolicyPurpose::Groups, json!("groups")),
         ];
         for (purpose, wire) in cases {
             assert_eq!(serde_json::to_value(purpose).unwrap(), wire);
@@ -365,7 +414,7 @@ mod tests {
         // the bundled default would silently never load. Drive the
         // count + exhaustiveness assertion off the same constant
         // so a missed entry surfaces at test time.
-        assert_eq!(PolicyPurpose::ALL.len(), 14);
+        assert_eq!(PolicyPurpose::ALL.len(), 16);
         for purpose in PolicyPurpose::ALL {
             // Compiles iff the match is total — `as_str` exhaustively
             // matches every variant; this exists so the assertion

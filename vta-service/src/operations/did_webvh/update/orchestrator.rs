@@ -109,7 +109,7 @@ pub async fn update_did_webvh(
 /// (handle installs, the record, the publish) can fail with the new entry
 /// already the DID's local head.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum Commit {
+pub enum Commit {
     /// Nothing was written: the DID's log is as it was.
     NotCommitted,
     /// The new log entry is the DID's local head, whatever failed after it.
@@ -131,6 +131,24 @@ pub(super) type OnCommit = Box<
             Box<dyn std::future::Future<Output = Result<(), UpdateDidWebvhError>> + Send>,
         > + Send,
 >;
+
+/// [`update_did_webvh`], reporting on failure whether the new entry was
+/// committed.
+///
+/// For a caller that tells an operator what a failed update left behind. A
+/// `Publish` error alone does not say: the reconcile step re-publishes an
+/// unconfirmed head *before* the commit point, so the same variant arrives
+/// both when nothing new was written and when the new entry is the local head.
+pub async fn update_did_webvh_reporting_commit(
+    deps: &super::super::WebvhDeps<'_>,
+    auth: &AuthClaims,
+    scid: &str,
+    opts: UpdateDidWebvhOptions,
+    vta_did: Option<&str>,
+    channel: &str,
+) -> Result<UpdateDidWebvhResult, (UpdateDidWebvhError, Commit)> {
+    update_did_webvh_tracked(deps, auth, scid, opts, vta_did, channel, None).await
+}
 
 /// [`update_did_webvh`], reporting on failure whether the new entry was
 /// committed. A caller that staged state for the update (rotate-keys' key
@@ -1768,6 +1786,22 @@ mod concurrency_precondition {
 #[cfg(test)]
 mod agent_name_host_contract {
     use super::edit_agent_name;
+
+    /// VTI-KEY-164/166: claiming and dropping an agent name never touches the
+    /// did:scid alias that links the log's two names.
+    #[test]
+    fn agent_name_edits_keep_the_scid_alias() {
+        let alias = "did:scid:vh:1:QmScid?src=webvh.storm.ws/alice";
+        let mut doc = serde_json::json!({ "id": "did:webvh:QmScid:webvh.storm.ws:alice",
+                                          "alsoKnownAs": [alias] });
+        edit_agent_name(&mut doc, DOMAIN, "alice", true);
+        assert_eq!(
+            claims(&doc),
+            vec![alias.to_string(), format!("https://{DOMAIN}/@alice")]
+        );
+        edit_agent_name(&mut doc, DOMAIN, "alice", false);
+        assert_eq!(claims(&doc), vec![alias.to_string()]);
+    }
 
     const DOMAIN: &str = "webvh.storm.ws";
 

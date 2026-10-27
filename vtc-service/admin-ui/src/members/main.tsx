@@ -8,8 +8,12 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
+import { ThemePreviewBar } from "@/components/ThemePreviewBar";
+import { applyStoredCommunityTheme } from "@/lib/community-theme";
 import { applyStoredTheme } from "@/lib/theme";
+import { isThemePreview, startThemePreview } from "@/lib/theme-preview";
 import { Portal } from "./Portal";
+import { previewView, setPreviewView } from "./preview";
 // The same self-hosted IBM Plex faces and shared tokens as the console and the
 // home page, then the community sign-in sheet, then the portal's own rules.
 import "@fontsource/ibm-plex-sans/400.css";
@@ -25,6 +29,26 @@ import "./members.css";
 // The colour theme chosen here, on the home page or in the console (one shared
 // key, `lib/theme.ts`), before first paint.
 applyStoredTheme();
+// A theme-preview tab draws the editor's candidate, answers the portal's own
+// routes from a sample member and sends no write (`./preview`).
+startThemePreview();
+// Anywhere else, the community's stored theme, sign-in page included.
+if (!isThemePreview()) void applyStoredCommunityTheme();
+
+/** The preview bar's switch between the portal's two faces. */
+function PreviewViewSwitch() {
+  const view = previewView();
+  return (
+    <>
+      <button type="button" aria-pressed={view === "home"} onClick={() => setPreviewView("home")}>
+        Signed in
+      </button>
+      <button type="button" aria-pressed={view === "sign-in"} onClick={() => setPreviewView("sign-in")}>
+        Sign-in page
+      </button>
+    </>
+  );
+}
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -38,6 +62,7 @@ if (!root) throw new Error("member portal: #root missing");
 createRoot(root).render(
   <StrictMode>
     <QueryClientProvider client={queryClient}>
+      {isThemePreview() && <ThemePreviewBar controls={<PreviewViewSwitch />} />}
       <Portal />
     </QueryClientProvider>
   </StrictMode>,

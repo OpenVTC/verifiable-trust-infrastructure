@@ -114,6 +114,18 @@ then re-enrol a passkey for browser SPA access. Members' step-up passkeys
 member who needs one to enrol again (Members → the member → *Step-up
 passkeys*).
 
+### Elections stop issuing tickets
+
+A restore closes ticket issuance, for good, on every election that could have
+issued a ticket since the backup was taken: its registration has opened and its
+voting has not closed. The tickets issued in that gap are not in the backup, so
+their holders would otherwise be issued a second ticket and could vote twice
+(VTI-VOT-022). Tickets already taken still vote. A member who took none before
+the backup cannot take one now: to hold the vote for everyone, cancel the
+election and create it again. Each closed election is audited
+(`ElectionChanged`, change `issuanceClosedByRestore`) and logged. An election
+whose registration had not yet opened is left as it was.
+
 ### Interrupted imports
 
 The import stamps a sentinel before it starts clearing and removes it only on

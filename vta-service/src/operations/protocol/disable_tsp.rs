@@ -50,6 +50,7 @@ pub struct DisableTspResult {
 }
 
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum DisableTspError {
     #[error("TSP is not currently enabled — nothing to disable.")]
     ServiceNotPresent,

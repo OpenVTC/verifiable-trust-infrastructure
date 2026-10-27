@@ -43,6 +43,7 @@ pub struct VerifiedAttestation {
 }
 
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum AttestationVerifyError {
     #[error("expected an Attested proof, got {0}")]
     WrongProofVariant(&'static str),
@@ -421,6 +422,7 @@ struct KmsProbe {
 /// [`authenticate_config_attestation`] call. Every variant is fail-closed — a
 /// report that trips any check must NOT be trusted.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum ConfigAttestationVerifyError {
     /// The `evidence` field was not valid base64.
     #[error("evidence base64 decode: {0}")]

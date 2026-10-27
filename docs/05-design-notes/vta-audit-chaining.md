@@ -1,6 +1,6 @@
 # VTA audit chaining and actor hashing
 
-**Status:** plan. No code yet — the middle of it cannot be landed alone.
+**Status:** implemented, with bounded TEE storage recovery and paged readers.
 Nothing in it changes what an operator sees; an earlier revision said otherwise
 and was wrong, which the section on the operator surface records.
 
@@ -12,23 +12,19 @@ recorded against this workspace in the specification's divergence register
 
 ## Where we are
 
-The VTC satisfies both requirements. The VTA satisfies neither. The machinery
-that would close the gap is in `vti-common`, which the VTA already depends on:
+The VTC and the chained VTA audit sink use the same stored-envelope machinery.
+The VTA keeps the older flat rows readable while new rows are chained:
 
 | Module | What it provides |
 |---|---|
 | `vti_common::audit::envelope` | the stored envelope with `prev_hash` / `entry_hash` / `schema_version`, `GENESIS_HASH`, and `verify_chain` |
-| `vti_common::audit::writer` | `AuditWriter` — a process-wide chain head guarded by an async mutex, so read-head → stamp → insert → update-head is atomic; HMAC-hashes actor and target under the active audit key |
-| `vti_common::audit::key_store` | `AuditKeyStore::ensure_initial(master_seed)`, key history, and `verify_actor` — "does this DID match this hash?" |
+| `vti_common::audit::writer` | `AuditWriter` — a process-wide chain head guarded by an async mutex, so read-head → stamp → insert → update-head is atomic; the head is `Unknown` / `Known` / `Failed`, so a recovery that fails is reported and backed off rather than retried per write (stage 5); HMAC-hashes actor and target under the active audit key |
+| `vti_common::audit::key_store` | `AuditKeyStore` initial random key, key history, rotation, and `verify_actor` — "does this DID match this hash?" |
 | `vti_common::audit::checkpoint` | anchors a point in the chain so verification survives retention |
 
-The VTA's own sink is deliberately none of this. `vta-audit/src/sink.rs` says
-so: the log "cannot prove it", the canonical envelope "already names the
-members that would change that … and says why this maintainer omits them", and
-the module adds "the seam" rather than the scheme (#1031). That was a defensible
-call when the alternative was inventing a scheme. It is not one now: the scheme
-exists, another node type in this workspace runs it, and the specification
-requires it.
+`vta-audit/src/sink.rs` now writes chained envelopes through `AuditWriter`.
+The VTA's `log:` prefix keeps pre-chain and chained rows in the same ordered
+keyspace, while `prune:watermark` remains outside that prefix.
 
 ## The trap
 
@@ -41,30 +37,121 @@ for first:
 - `vti_common::audit::envelope::AuditEnvelope` — the **stored** form, with the
   hashes.
 
-Stage 2 below is a change to the second. The first stays the wire form, and
-what it carries is the subject of the decision in stage 3.
+The stored form is used for chaining and verification; the wire form remains
+the operator-facing representation.
 
 ## Stages
 
-**1 — Provision.** Add an `audit_key` keyspace to the VTA, construct
-`AuditKeyStore`, and call `ensure_initial(master_seed)` on boot. Mirrors
-`vtc-service/src/server.rs`. Inert on its own: nothing reads the key yet.
+**1 — Provision.** The VTA creates an `audit_key` keyspace and establishes a
+random initial audit key lazily when the chained sink opens. Key history is
+retained for actor verification and rotation.
 
-**2 — Write.** `KeyspaceAuditSink` writes through `AuditWriter` instead of
-inserting a flat row. **This cannot land alone.** The storage key becomes
-`<rfc3339-timestamp>:<event_id>` and the value becomes an envelope, so the
-existing list query stops finding rows it can parse. Stage 2 and stage 3 are
-one change.
+**2 — Write.** `ChainedKeyspaceAuditSink` writes through `AuditWriter`. VTA
+envelopes use `log:<seconds>:<nanos>:<uuid>` keys; pre-chain rows use
+`log:<seconds>:<uuid>`. The shared `log:` prefix preserves both formats for
+recovery and reads.
 
 **3 — Read.** `audit/list` and `cleanup_expired_logs` read both forms. The
-shared code already carries the legacy path: a `schema_version` 1 row with no
-hashes chains from `GENESIS_HASH`, and the verifier counts it as
-`skipped_legacy` rather than reporting a break. Existing rows therefore stay
-readable and the chain starts from the first new envelope.
+wire reader accepts flat legacy rows and stored envelopes; verification counts
+legacy rows before the chain opens and reports non-envelope rows after it as
+findings. Existing rows therefore remain readable and the chain starts from
+the first new envelope.
 
-**4 — Verify.** Expose `verify_chain` — a Trust Task and a `pnm audit verify`
-subcommand, matching the VTC's `/v1/audit/verify` and `cnm audit verify`.
-Chaining that nobody can check is not tamper-evidence; it is a hash column.
+Listing pages newest-first and stops as soon as it holds a full page **plus**
+one further match, so `truncated` means "more *matching* entries remain" and
+never "more rows remain" — a cursor whose next page turns out empty reads as
+results being withheld. The cost of that guarantee is accepted, not overlooked:
+a filter the log cannot satisfy `limit + 1` times is answered by reading every
+remaining row, because "there is nothing further" is a claim about everything
+the call does not return. It applies to successful queries too — a filter
+matching three rows returns three entries and still scans to the end to
+establish the rest of that answer — and it is worst for the most selective
+filters. An unfiltered list exits after one page.
+
+A row budget would bound the work but would have to report `truncated: true`
+at its cut-off without knowing whether anything further matches, which is the
+behaviour the ordering above exists to prevent. The two cannot both be had, so
+the scan stays unbounded and the guarantee stays strict; revisit the pair
+together or not at all. Each *page*, by contrast, is bounded on every backend:
+both readers walk through `KeyspaceHandle::scan_pager`, which reads the range
+once per walk rather than once per page on a proxy with no native bounded scan.
+
+**4 — Verify.** `audit/verify/0.1` and the CLI verification path stream the
+ordered log through `KeyspaceHandle::scan_pager` into `ChainVerifier`. They
+still verify the complete retained log; paging only bounds each storage read.
+
+**5 — Chain-head recovery.** On the first write after a restart, `AuditWriter`
+re-reads the head of its chain from storage. The read is bounded because in a
+TEE the whole result has to cross vsock in one frame: reading the newest row of
+a 19 MB log must not mean shipping 19 MB.
+
+The fast path is a reverse scan of the newest `HEAD_LOOKBACK` (20) rows under
+the writer's own key prefix — `log:` on a VTA, which is what keeps
+`prune:watermark` from being read as the newest audit row; the VTC keeps the
+empty default. The newest row that deserializes as an envelope is the head, and
+deserialization rather than the key is the test, because the key format belongs
+to the caller. That window is all a prefix which has ever anchored a chain
+needs: the anchoring envelope is permanent, so it sits inside every later
+restart's window.
+
+Fewer rows than the window, none an envelope, means there is nothing older to
+find — the prefix is empty or entirely pre-chain, and the first chained write
+anchors at `GENESIS_HASH`.
+
+A *full* window of non-envelope rows is the ambiguous case, and both obvious
+answers are wrong. Anchoring at genesis would fork the chain if an envelope
+sits just below the window. Failing closed would brick the prefix permanently,
+because no write can then succeed to clear the condition. So recovery pages
+further back — `DEEP_SCAN_PAGE` (500) rows per request, still one bounded read
+at a time — until an envelope turns up, or a short page proves the prefix holds
+nothing older. There is no cap on the rows walked in total: stopping early is
+one of the two wrong answers again, and a pre-chain log larger than any fixed
+cap is ordinary (one row per audited operation over the retention window), so a
+cap would turn an upgrade into every audit write failing closed. This deep scan
+belongs to the one-time legacy-to-chained migration window and runs at most
+once: the first envelope written anchors the chain for good, and every later
+restart resolves the question again in the fast path.
+
+Recovery fails only when a read fails — storage unreachable, a response too
+large for one frame, a value that would not decrypt. A failed recovery is
+reported once at `ERROR` and counted once in
+`audit_chain_recovery_failures_total`; every audit write to that prefix is
+failing closed meanwhile, and nothing else makes that visible from outside the
+log. For the next 60 seconds
+writes are refused without touching storage or repeating the log; after it, one
+recovery is retried.
+
+**6 — TEE compatibility.** Scan joins the capability negotiation PR#2003 built
+for the atomic ops (`take` / `insert-if-absent` / `swap-if-absent` /
+`move-if-equal`): at connect the enclave sends one `OP_HELLO` and caches the
+bitmask the proxy returns (`CAP_SCAN`, bit 5, alongside the atomic-op and
+batch bits), so recovery's bounded reads add no extra round trip on a proxy that
+serves them. An old proxy answers `OP_HELLO`'s probe itself with "unknown
+opcode" (read as "none", not an error), and recovery falls back to one legacy
+`prefix_iter_raw` request, filtered and bounded client-side to the same
+`ScanOpts`; if that unbounded response exceeds 16 MiB, it is not retried and
+the caller gets a proxy-upgrade error instead. A proxy downgraded mid-session
+is caught the same way the atomic ops catch it — an "unknown opcode" on a call
+the enclave believed was supported clears the cached bit and schedules a
+re-probe 60 seconds out — so a brief swap back to an older build costs one
+fallback read, not a restart.
+
+That fallback is per *request*, which is fine for recovery (one or two reads)
+and wrong for anything paging: a reader looping on `scan_raw` would ask an old
+proxy for the whole prefix again on every page, so a walk of `n` pages would
+transfer and decrypt the range `n` times. The paged readers therefore go
+through `KeyspaceHandle::scan_pager`, which decides once per walk — one bounded
+read per page where the proxy serves them, otherwise one bulk read whose
+remainder is served from memory. It re-checks per page, so a proxy downgraded
+mid-walk buffers the rest rather than reverting to a full read each time.
+
+Both sides compute the same range, and they are separate implementations in
+separate cargo workspaces — the enclave's `vti_common::store::scan_bounds` and
+the parent's `enclave_proxy::storage::scan_bounds`. A caller must get the same
+rows whichever serves the scan, so the two are pinned to one table of
+conformance vectors (`vti-common/src/store/scan_range_vectors.json`), which
+each side runs through its own production path. A change to either needs the
+same change to the other, and a new edge case needs a new vector.
 
 ## What happens to the operator surface: nothing
 
@@ -97,11 +184,10 @@ there.
 
 ## Where the audit key comes from
 
-Stage 1 says "derive the audit key from the master seed on boot, mirroring
-`vtc-service/src/server.rs`". A VTA can do that — the server holds the seed
-store and already reaches it during boot — but it is worth asking whether it
-should, because the seed is not the only source available and it is not
-obviously the best one.
+The VTA establishes its audit key with `ensure_initial_random` when the
+chained sink opens. It stores the key and its history in `audit_key`, which is
+included in the VTA backup set. The VTC uses its own key-source path; the
+shared writer does not require the VTA key to be seed-derived.
 
 **A randomly generated key is the better default here.** The key's whole job is
 to be a stable HMAC handle for actor and target identifiers: it needs to exist
@@ -129,8 +215,10 @@ difference rather than an inconsistency, and the reasoning above applies to a
 VTC equally; moving it is a separate change, and its rotation machinery is the
 path if the working group wants to.
 
-**What this needs:** an `ensure_initial_random` beside `ensure_initial_with_info`
-on the key store, and `audit_key` in the VTA's backed-up keyspaces.
+The random-key choice is deliberate: the audit key is a stable, rotatable HMAC
+handle, not a derivation input. Losing both the key store and its backup still
+loses the ability to recompute actor hashes, so preserving `audit_key` remains
+part of the VTA backup requirement.
 
 ## The first entry
 
@@ -166,11 +254,13 @@ the tail of a hash chain leaves the remainder unverifiable — the first
 surviving row's `prev_hash` points at something that is gone, which is
 indistinguishable from tampering.
 
-The VTC solved this with `audit_checkpoint.rs`: an anchor that lets
-verification start from a known-good point rather than from genesis. Stage 3
-adopts it, or retention quietly converts a tamper-evident log into a broken
-one — and the first person to run `verify` after a retention sweep gets a
-failure that means nothing.
+The VTA retention sweep records `prune:watermark` in the `audit` keyspace. It
+contains the hash of the newest chained row removed and the cumulative number
+of pruned entries. `audit/verify` resumes `ChainVerifier` from that watermark,
+so an honest retention sweep does not look like tampering. The watermark is
+stored alongside the log and is therefore not an external trust anchor: an
+attacker who can rewrite the store can rewrite it too. It is specifically a
+retention continuity marker, not protection against a compromised store.
 
-This is the part of the work most likely to be skipped, because it only breaks
-after the retention period has elapsed once.
+The watermark is outside the `log:` prefix so the retention sweep does not
+delete it and chain-head recovery does not mistake it for an audit envelope.

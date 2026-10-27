@@ -64,7 +64,6 @@ use vta_sdk::vetting::status::{StatusCheck, check_credential_status};
 use vtc_service::acl::{VtcAclEntry, VtcRole, store_acl_entry};
 use vtc_service::test_support::{MockVtcTransport, TestJoinClient, TestVtc};
 
-const ACCEPTS_REGISTER_TASK: &str = "https://trusttasks.org/spec/vtc/schemas/accepts/register/0.2";
 const JOIN_VETTING_SHOW_TASK: &str =
     "https://trusttasks.org/spec/vtc/join-requests/vetting/show/0.1";
 const AUTO_GRANT_UPDATE_TASK: &str =
@@ -139,28 +138,29 @@ async fn a_community_vets_applicants_through_members_it_names_vetters() {
 
     // …and the criterion says how many a join needs. Every number is the
     // community's policy.
-    let (status, body) = c
-        .admin_document(
-            ACCEPTS_REGISTER_TASK,
-            json!({
-                "id": "kernel-developer",
-                "description": "Two vetters, at least one in person",
-                "admission": "automatic",
-                "vetting": {
-                    "version": "0.1",
-                    "statementType": VETTED_PREDICATE,
-                    "minStatements": 2,
-                    "minByMethod": { "inPerson": 1 },
-                    "acceptedMethods": ["inPerson", "video"],
-                    "requiredClaims": ["name.legal"],
-                    "maxStatementAge": "P120D",
-                    "eligibleVetters": { "role": "vetter" },
-                    "independence": { "requireConsistentIdentityCommitment": true }
-                }
-            }),
-        )
-        .await;
-    assert_eq!(status, StatusCode::OK, "vetting criterion: {body}");
+    // (Stored directly: registering it through `vtc/schemas/accepts/register`
+    // takes a second administrator's consent, VTI-APV-023, and this community
+    // has one administrator.)
+    crate::common::signed::seed_criterion(
+        &c._vtc,
+        json!({
+            "id": "kernel-developer",
+            "description": "Two vetters, at least one in person",
+            "admission": "automatic",
+            "vetting": {
+                "version": "0.1",
+                "statementType": VETTED_PREDICATE,
+                "minStatements": 2,
+                "minByMethod": { "inPerson": 1 },
+                "acceptedMethods": ["inPerson", "video"],
+                "requiredClaims": ["name.legal"],
+                "maxStatementAge": "P120D",
+                "eligibleVetters": { "role": "vetter" },
+                "independence": { "requireConsistentIdentityCommitment": true }
+            }
+        }),
+    )
+    .await;
 
     // -----------------------------------------------------------------------
     // 2. The community names its vetters.
@@ -548,6 +548,7 @@ async fn a_resend_delivers_the_live_grant_credential_again() {
             updated_by: None,
             expires_at: None,
             resource_grants: Vec::new(),
+            group_grants: Vec::new(),
             label_set_by_subject: false,
             suspension: None,
         },
@@ -610,6 +611,111 @@ async fn a_resend_delivers_the_live_grant_credential_again() {
         StatusCode::UNPROCESSABLE_ENTITY,
         "resend after revoke: {body}"
     );
+
+    vetter.shutdown().await;
+    mock.shutdown().await;
+}
+
+/// A grant issued before the community's `public_url` changed names a status
+/// list URL the VTC no longer serves. Replaying it byte for byte gave the
+/// vetter a credential whose status no holder can check, so openvtc refused
+/// every resend. The resend re-signs it under the served URL instead — same
+/// id, slot and validity window — and keeps that one from then on.
+#[tokio::test]
+async fn a_resend_reissues_a_grant_that_names_a_retired_status_list_url() {
+    let mock = MockVtcTransport::start().await;
+    let vetter = mock.connect_registry_peer().await;
+    let vetter_did = vetter.did().to_string();
+    let state = &mock.vtc.state;
+    let purpose = affinidi_status_list::StatusPurpose::Revocation;
+    let old_url = format!("https://old.vtc.test/v1/status-lists/{purpose}");
+    let new_url = format!("https://vtc.test/v1/status-lists/{purpose}");
+    vtc_service::status_list::ensure_initial(&state.status_lists_ks, purpose, old_url.clone())
+        .await
+        .expect("status list");
+    seed_member_row(&mock.vtc, &vetter_did, 60).await;
+    store_acl_entry(
+        &mock.vtc.state.acl_ks,
+        &VtcAclEntry {
+            did: did_key(ADMIN_SEED).0,
+            role: VtcRole::Admin,
+            label: Some("signing admin".into()),
+            admin: VtcRole::Admin.implied_authority(),
+            delegated_by: None,
+            created_at: vtc_service::auth::session::now_epoch(),
+            created_by: "did:key:vtc-install".into(),
+            updated_at: None,
+            updated_by: None,
+            expires_at: None,
+            resource_grants: Vec::new(),
+            group_grants: Vec::new(),
+            label_set_by_subject: false,
+            suspension: None,
+        },
+    )
+    .await
+    .unwrap();
+    let router = &mock.vtc.router;
+
+    let (status, grant) = admin_document(
+        router,
+        mock.vtc_did(),
+        ADMIN_SEED,
+        GRANT_TASK,
+        json!({ "memberDid": vetter_did }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "grant: {grant}");
+    let delivered = next_issued_credential(&vetter).await;
+    assert_eq!(
+        delivered["credentialStatus"]["statusListCredential"],
+        old_url.as_str()
+    );
+
+    // The community moves: boot re-points the list at the new URL (#2087).
+    vtc_service::status_list::ensure_initial(&state.status_lists_ks, purpose, new_url.clone())
+        .await
+        .expect("re-point the status list");
+
+    let (status, resent) = admin_document(
+        router,
+        mock.vtc_did(),
+        ADMIN_SEED,
+        RESEND_0_2_TASK,
+        json!({ "memberDid": vetter_did }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "resend: {resent}");
+    assert_eq!(resent["credentialId"], grant["credentialId"]);
+    assert_eq!(resent["validUntil"], grant["validUntil"]);
+    let reissued = next_issued_credential(&vetter).await;
+    assert_eq!(
+        reissued["credentialStatus"]["statusListCredential"],
+        new_url.as_str(),
+        "re-signed under the served list URL"
+    );
+    for member in ["id", "validFrom", "validUntil", "credentialSubject"] {
+        assert_eq!(reissued[member], delivered[member], "{member} is kept");
+    }
+    assert_eq!(
+        reissued["credentialStatus"]["statusListIndex"],
+        delivered["credentialStatus"]["statusListIndex"],
+        "the same revocation slot"
+    );
+    assert_ne!(reissued["proof"], delivered["proof"], "signed again");
+
+    // The re-issued credential is what the grant keeps now: a further resend
+    // delivers it unchanged rather than signing again.
+    let (status, _) = admin_document(
+        router,
+        mock.vtc_did(),
+        ADMIN_SEED,
+        RESEND_0_2_TASK,
+        json!({ "memberDid": vetter_did }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(next_issued_credential(&vetter).await, reissued);
 
     vetter.shutdown().await;
     mock.shutdown().await;
@@ -706,6 +812,7 @@ async fn kernel_community() -> Community {
             updated_by: None,
             expires_at: None,
             resource_grants: Vec::new(),
+            group_grants: Vec::new(),
             label_set_by_subject: false,
             suspension: None,
         },
@@ -1025,6 +1132,7 @@ async fn seed_member_row(vtc: &TestVtc, did: &str, days_ago: i64) {
             updated_by: None,
             expires_at: None,
             resource_grants: Vec::new(),
+            group_grants: Vec::new(),
             label_set_by_subject: false,
             suspension: None,
         },

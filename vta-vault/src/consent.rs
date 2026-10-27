@@ -46,7 +46,6 @@
 //! - [`withdraw`] appends a re-signed `dpv:ConsentWithdrawn` status event;
 //!   the record stays for audit but no longer authorizes disclosure.
 
-use affinidi_crypto::did_key as did_key_helpers;
 use affinidi_data_integrity::{
     DataIntegrityProof, SignOptions, VerifyOptions, crypto_suites::CryptoSuite,
 };
@@ -229,7 +228,7 @@ impl ConsentRecord {
             holder_key,
             SignOptions::new()
                 .with_proof_purpose("assertionMethod")
-                .with_cryptosuite(CryptoSuite::EddsaJcs2022),
+                .with_cryptosuite(holder_suite(holder_key)?),
         )
         .await
         .map_err(|e| AppError::Internal(format!("sign consent record: {e}")))?;
@@ -240,20 +239,15 @@ impl ConsentRecord {
 
     /// Verify the holder Data Integrity proof — the non-repudiation anchor.
     ///
-    /// Checks: the proof is `eddsa-jcs-2022`; its `verificationMethod` lives
-    /// under the `dpv:hasDataSubject` (holder) DID — so a proof by some other
-    /// key cannot be smuggled in behind a forged `hasDataSubject`; and the
-    /// signature verifies over the record with `proof` stripped.
+    /// Checks: the proof's suite is the one the holder's key type takes
+    /// (`eddsa-jcs-2022` for an Ed25519 `did:key`, `ecdsa-jcs-2019` for a
+    /// P-256 one, [`holder_suite`]); its `verificationMethod` lives under the
+    /// `dpv:hasDataSubject` (holder) DID — so a proof by some other key cannot
+    /// be smuggled in behind a forged `hasDataSubject`; and the signature
+    /// verifies over the record with `proof` stripped.
     pub fn verify_proof(&self) -> Result<(), AppError> {
         let proof: DataIntegrityProof = serde_json::from_value(self.proof.clone())
             .map_err(|e| AppError::Validation(format!("parse consent proof: {e}")))?;
-
-        if !matches!(proof.cryptosuite, CryptoSuite::EddsaJcs2022) {
-            return Err(AppError::Validation(format!(
-                "unsupported consent cryptosuite {:?} (expected eddsa-jcs-2022)",
-                proof.cryptosuite
-            )));
-        }
 
         // The proof's verificationMethod DID must be the holder DID. Without
         // this, a valid proof by an unrelated key would verify against a
@@ -272,14 +266,49 @@ impl ConsentRecord {
             )));
         }
 
-        let holder_pub = did_key_helpers::did_key_to_ed25519_pub(&self.data_subject)
+        // The suite is fixed by the holder's key, never by the proof: a proof
+        // naming another suite is refused, so it cannot choose how its own
+        // signature is checked.
+        let holder_key = vta_sdk::jws::JwsKey::from_did_key(&self.data_subject)
             .map_err(|e| AppError::Validation(format!("consent dataSubject not a did:key: {e}")))?;
+        let (expected, holder_pub): (CryptoSuite, Vec<u8>) = match holder_key {
+            vta_sdk::jws::JwsKey::Ed25519(public) => (CryptoSuite::EddsaJcs2022, public.to_vec()),
+            vta_sdk::jws::JwsKey::P256(public) => (CryptoSuite::EcdsaJcs2019, public),
+            // secp256k1 has no Data Integrity suite.
+            _ => {
+                return Err(AppError::Validation(
+                    "a consent holder is an Ed25519 or P-256 did:key".into(),
+                ));
+            }
+        };
+        if proof.cryptosuite != expected {
+            return Err(AppError::Validation(format!(
+                "unsupported consent cryptosuite {:?} for this holder (expected {expected:?})",
+                proof.cryptosuite
+            )));
+        }
 
         let signing_doc = self.signing_doc()?;
         proof
             .verify_with_public_key(&signing_doc, &holder_pub, VerifyOptions::new())
             .map_err(|e| AppError::Validation(format!("consent proof verification failed: {e}")))?;
         Ok(())
+    }
+}
+
+/// The Data Integrity suite a holder key signs under: `eddsa-jcs-2022` for an
+/// Ed25519 key, `ecdsa-jcs-2019` for a P-256 one (an mdoc device key, or a
+/// P-256 SD-JWT-VC holder). Anything else has no suite here and is refused —
+/// before this choice existed, a P-256 key was asked to sign `eddsa-jcs-2022`
+/// and every mdoc consent receipt failed to sign.
+pub fn holder_suite(holder_key: &Secret) -> Result<CryptoSuite, AppError> {
+    use affinidi_secrets_resolver::secrets::KeyType;
+    match holder_key.get_key_type() {
+        KeyType::Ed25519 => Ok(CryptoSuite::EddsaJcs2022),
+        KeyType::P256 => Ok(CryptoSuite::EcdsaJcs2019),
+        other => Err(AppError::Validation(format!(
+            "a {other:?} holder key has no Data Integrity suite for a consent record or presentation"
+        ))),
     }
 }
 
@@ -551,6 +580,7 @@ fn rfc3339(dt: DateTime<Utc>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use affinidi_crypto::did_key as did_key_helpers;
     use chrono::Duration;
     use vti_common::config::StoreConfig;
     use vti_common::store::Store;
@@ -584,6 +614,62 @@ mod tests {
         let mut secret = Secret::generate_ed25519(Some(&vm), Some(&seed));
         secret.id = vm;
         (did, secret)
+    }
+
+    /// A P-256 holder `did:key` (`zDn…`) + its signing `Secret` — an mdoc
+    /// device key, or the holder of a P-256-bound SD-JWT-VC (#1988).
+    fn p256_holder_identity(seed: [u8; 32]) -> (String, Secret) {
+        let probe = Secret::generate_p256(None, Some(&seed)).expect("P-256 secret");
+        let did = format!(
+            "did:key:{}",
+            probe.get_public_keymultibase().expect("P-256 multibase")
+        );
+        let vm = format!("{did}#{}", did.strip_prefix("did:key:").unwrap());
+        let secret = Secret::generate_p256(Some(&vm), Some(&seed)).expect("P-256 secret");
+        (did, secret)
+    }
+
+    /// A P-256 holder's consent record signs under `ecdsa-jcs-2019` and
+    /// verifies. Before the suite followed the key, `create` asked a P-256 key
+    /// to sign `eddsa-jcs-2022` and failed — every mdoc presentation with it.
+    #[tokio::test]
+    async fn a_p256_holder_signs_and_verifies_under_ecdsa_jcs_2019() {
+        let (_dir, _store, vault) = fresh_vault();
+        let (holder, key) = p256_holder_identity([7u8; 32]);
+        assert!(holder.starts_with("did:key:zDn"), "{holder}");
+        let g = grant(
+            &holder,
+            "did:web:acme-verifier.example",
+            vec!["givenName".into()],
+            Utc::now() + Duration::hours(1),
+        );
+        let rec = create(&vault, &g, &key)
+            .await
+            .expect("a P-256 holder signs");
+        let proof: DataIntegrityProof = serde_json::from_value(rec.proof.clone()).unwrap();
+        assert_eq!(proof.cryptosuite, CryptoSuite::EcdsaJcs2019);
+        rec.verify_proof()
+            .expect("the ecdsa-jcs-2019 proof verifies");
+        assert!(get(&vault, &rec.identifier).await.unwrap().is_some());
+    }
+
+    /// The suite is fixed by the holder's key, never by the proof: a P-256
+    /// holder's record carrying an `eddsa-jcs-2022` proof is refused before any
+    /// signature is checked.
+    #[tokio::test]
+    async fn a_proof_in_the_wrong_suite_for_the_holder_is_refused() {
+        let (_dir, _store, vault) = fresh_vault();
+        let (holder, key) = p256_holder_identity([8u8; 32]);
+        let g = grant(
+            &holder,
+            "did:web:acme-verifier.example",
+            vec!["givenName".into()],
+            Utc::now() + Duration::hours(1),
+        );
+        let mut rec = create(&vault, &g, &key).await.unwrap();
+        rec.proof["cryptosuite"] = serde_json::json!("eddsa-jcs-2022");
+        let err = rec.verify_proof().expect_err("wrong suite for the key");
+        assert!(err.to_string().contains("cryptosuite"), "{err}");
     }
 
     fn grant<'a>(

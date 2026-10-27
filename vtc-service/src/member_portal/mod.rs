@@ -33,6 +33,7 @@
 pub mod active;
 pub mod backend;
 pub mod cookies;
+pub mod delegation;
 pub mod extractor;
 pub mod oob;
 

@@ -161,6 +161,9 @@ pub struct AppState {
     /// Open and recently closed OpenID4VP wallet sessions
     /// (`crate::oid4vp::session`). Encrypted at rest.
     pub oid4vp_sessions_ks: KeyspaceHandle,
+    /// Certificates trusted to certify credential issuers known by an X.509
+    /// chain (`[oid4vp] x509_trust_anchors`). Empty: none is trusted.
+    pub x509_trust_anchors: Arc<vta_sdk::x509_issuer::X509TrustAnchors>,
     /// Which members were recently seen sending here over TSP, recorded from
     /// the proven sender of each inbound TSP frame. A member whose DID
     /// document advertises no transport (a `did:key` wallet) is pushed to over
@@ -191,9 +194,25 @@ pub struct AppState {
     pub room_records_ks: KeyspaceHandle,
     /// The rooms' epoch key chains. Wrapped key material this service cannot read.
     pub room_epoch_links_ks: KeyspaceHandle,
+    /// Each hosted room's revocation list (`rooms/revocations/put`), consulted by every
+    /// room authorization.
+    pub room_revocations_ks: KeyspaceHandle,
     /// Room files: the blob index, transfers in flight, limits and the blob store
     /// (`[rooms.files]`). Ciphertext only: this service never holds a file key.
     pub room_files: Arc<vti_rooms::blobs::BlobHost>,
+    /// Where room files are stored: storage configs and room assignments
+    /// (`docs/05-design-notes/data-rooms-files.md` §7). The resolver `room_files` writes,
+    /// reads and collects through.
+    pub room_storage: Arc<crate::rooms::storage_configs::RoomStorage>,
+    /// The rooms this community owns (`crate::rooms::community`): the owner's record,
+    /// in its own keyspace, and the community's VTA that holds the rooms' keys.
+    pub community_rooms: Arc<crate::rooms::community::CommunityRooms>,
+    /// The member directory (`crate::directory`): its schema and every
+    /// member's card, in its own keyspace.
+    pub directory: Arc<crate::directory::Directory>,
+    /// Community elections (`crate::elections`): the registrar's records, and its
+    /// link to ballot boxes over this VTC's messaging.
+    pub elections: Arc<crate::elections::Elections>,
     pub audit_ks: KeyspaceHandle,
     pub audit_key_ks: KeyspaceHandle,
     /// Signed audit checkpoints (#708). Read by `GET /v1/audit/verify`,
@@ -537,10 +556,19 @@ pub async fn run(
     let rooms_ks = store.keyspace(keyspaces::ROOMS)?;
     let room_records_ks = store.keyspace(keyspaces::ROOM_RECORDS)?;
     let room_epoch_links_ks = store.keyspace(keyspaces::ROOM_EPOCH_LINKS)?;
+    let room_revocations_ks = store.keyspace(keyspaces::ROOM_REVOCATIONS)?;
+    let room_storage = crate::rooms::files::open_room_storage(
+        &store,
+        &config.store.data_dir,
+        config.rooms.files.as_ref(),
+        config.vtc_did.as_deref(),
+    )
+    .await?;
     let room_files = Arc::new(crate::rooms::files::open_blob_host(
         &store,
         &config.store.data_dir,
-        &config.rooms.files,
+        config.rooms.files.as_ref(),
+        room_storage.clone(),
     )?);
     let audit_ks = store.keyspace(keyspaces::AUDIT)?;
     let audit_key_ks = store.keyspace(keyspaces::AUDIT_KEY)?;
@@ -593,8 +621,27 @@ pub async fn run(
         warn!("failed to upgrade the superseded personhood default: {e}");
     }
 
+    // The rooms default an earlier binary installed refuses every room the
+    // community itself would own (`vtc/rooms/community/create`): its owner is
+    // no member. Replaced only while it is still the workspace's own row.
+    if let Err(e) =
+        crate::policy::default::upgrade_stale_rooms_default(&policies_ks, &active_policies_ks).await
+    {
+        warn!("failed to upgrade the superseded rooms default: {e}");
+    }
+    // The directory default an earlier binary installed answers members with a
+    // field list, which the card model reads as a narrowing to two fields.
+    // Replaced only while it is still the workspace's own row.
+    if let Err(e) =
+        crate::policy::default::upgrade_stale_directory_default(&policies_ks, &active_policies_ks)
+            .await
+    {
+        warn!("failed to upgrade the superseded directory default: {e}");
+    }
+
     // M2.10 + M2.11: provision the two BitstringStatusLists.
-    // Idempotent — only seeds decoys when the row is brand new.
+    // Idempotent — only seeds decoys when the row is brand new; an
+    // existing row is re-pointed if `public_url` has since changed.
     // Skipped when `public_url` is unset (pre-setup deployment) —
     // the status-list `list_credential_id` is baked into every
     // VMC's `credentialStatus.statusListCredential`, so we can't
@@ -640,6 +687,16 @@ pub async fn run(
     )
     .await?;
 
+    // The did:scid identities verified here before resolve by their bare DID
+    // again, from the sources recorded when they were (VTI-KEY-162).
+    if let Some(resolver) = did_resolver.as_ref() {
+        match crate::scid_sources::seed(&members_ks, resolver).await {
+            Ok(0) => {}
+            Ok(n) => info!(seeded = n, "did:scid sources seeded from the store"),
+            Err(e) => warn!(error = %e, "did:scid sources not seeded"),
+        }
+    }
+
     // P0.7: `install` (ephemeral install-token signing key) and `passkey`
     // (WebAuthn state) also hold secrets in the clear. `init_auth` already
     // migrated + wrapped `audit_key`; do the same for these two here, where
@@ -663,7 +720,13 @@ pub async fn run(
         Some(key) => oid4vp_keys_ks.with_encryption(key),
         None => oid4vp_keys_ks,
     };
-    let oid4vp_signers = Arc::new(crate::oid4vp::load_signers(&oid4vp_keys_ks).await?);
+    // An identity whose key the VTA keeps signs over the link to the VTA,
+    // which can be built only once messaging and the credential signer exist —
+    // below. The signers hold the cell it lands in.
+    let vta_link_cell = crate::oid4vp::VtaLinkCell::default();
+    let oid4vp_signers =
+        Arc::new(crate::oid4vp::load_signers(&oid4vp_keys_ks, &vta_link_cell).await?);
+    let vta_held_identities = crate::oid4vp::needs_vta_link(&oid4vp_keys_ks).await?;
     // A session holds the ephemeral key a wallet's response is encrypted to
     // and, once answered, the presented claims. New, so nothing plaintext to
     // migrate.
@@ -676,6 +739,10 @@ pub async fn run(
             identities = ?oid4vp_signers.keys().collect::<Vec<_>>(),
             "OpenID4VP verifier identities loaded"
         );
+    }
+    let x509_trust_anchors = Arc::new(load_x509_trust_anchors(&config.oid4vp.x509_trust_anchors)?);
+    if let Some(swiyu) = &config.oid4vp.swiyu_trust {
+        swiyu.check().map_err(AppError::Config)?;
     }
     let (install_ks, passkey_ks, audit_key_ks) = match storage_key {
         Some(key) => {
@@ -796,6 +863,105 @@ pub async fn run(
             },
         };
 
+    // The link to the VTA (`vta_link`), over this VTC's messaging socket: the
+    // verifier identities whose key it keeps sign through it, and `vta-account`
+    // room storage asks it for presigned requests. Built when this VTC names
+    // its VTA and can sign and resolve.
+    let vta_link = match (
+        config.vta_did.clone(),
+        credential_signer.clone(),
+        did_resolver.clone(),
+    ) {
+        (Some(vta_did), Some(signer), Some(resolver)) => {
+            Some(Arc::new(crate::vta_link::VtaLink::new(
+                vta_did,
+                didcomm_cell.clone(),
+                signer,
+                pending_replies.clone(),
+                resolver,
+            )))
+        }
+        _ => None,
+    };
+
+    // One that cannot be built stops the boot when a verifier identity needs
+    // it: those identities would answer every wallet with nothing, and the
+    // reason belongs in front of the operator.
+    if !vta_held_identities.is_empty() {
+        let Some(link) = vta_link.clone() else {
+            return Err(AppError::Config(format!(
+                "verifier identities {vta_held_identities:?} keep their key in the VTA, which \
+                 needs vta_did, the VTC's signing key and a DID resolver; set them, or remove \
+                 the identities with `vtc oid4vp remove`"
+            )));
+        };
+        info!(vta_did = link.vta_did(), identities = ?vta_held_identities, "verifier identities sign through the VTA");
+        let _ = vta_link_cell.set(link as Arc<dyn crate::oid4vp::VtaJwsSigner>);
+    }
+
+    // The rooms this community owns (`rooms::community`): its VTA holds their
+    // keys, reached over the same link. Without one, a create is refused
+    // `noKeyHolder`.
+    let community_rooms = crate::rooms::community::CommunityRooms::new(
+        store.keyspace(keyspaces::COMMUNITY_ROOMS)?,
+        vta_link
+            .clone()
+            .map(|l| l as Arc<dyn crate::rooms::vta_storage::VtaChannel>),
+    );
+
+    // The member directory (`crate::directory`). Its settings are the
+    // operator's `[directory]`; one it cannot use stops the boot rather than
+    // run wider than written.
+    let directory = Arc::new(crate::directory::Directory::new(
+        store.keyspace(keyspaces::DIRECTORY)?,
+        config.directory.settings().map_err(AppError::Config)?,
+    ));
+
+    // Community elections: ballot boxes are reached over this VTC's messaging, as
+    // this community (VTI-VOT-005), so the link needs its signing key and a resolver.
+    let ballot_box_link = match (credential_signer.clone(), did_resolver.clone()) {
+        (Some(signer), Some(resolver)) => Some(Arc::new(crate::elections::link::BallotBoxLink {
+            peers: crate::outbound::PeerTasks {
+                didcomm: didcomm_cell.clone(),
+                signer: Some(signer),
+                replies: pending_replies.clone(),
+                resolver: Some(resolver),
+            },
+        })
+            as Arc<dyn crate::elections::link::BallotBoxChannel>),
+        _ => None,
+    };
+    let elections = Arc::new(crate::elections::Elections::new(
+        store.keyspace(keyspaces::ELECTIONS)?,
+        ballot_box_link,
+    ));
+
+    // Sealed storage credentials (`rooms::storage_credentials`): opened with the
+    // community's own key, kept encrypted under the storage key. Without either there
+    // is nowhere safe to keep one, and a `sealed` config reports its credential
+    // `required`.
+    if let (Some(signer), Some(key)) = (credential_signer.as_ref(), storage_key)
+        && let Some(seed) = signer.ed25519_seed()
+    {
+        let sealed = crate::rooms::storage_credentials::SealedCredentials::new(
+            store.keyspace(keyspaces::STORAGE_CREDENTIALS)?,
+            key,
+            &seed,
+        );
+        room_storage
+            .set_sealed_credentials(Arc::new(sealed))
+            .await?;
+    }
+
+    // Room files through the community's VTA (`rooms::vta_storage`): the
+    // presigned requests come sealed to this community's key-agreement key.
+    if let (Some(link), Some(vtc_did), Some(secrets)) =
+        (vta_link, config.vtc_did.clone(), secrets_resolver.clone())
+    {
+        let storage = crate::rooms::vta_storage::VtaStorage::new(link, vtc_did, secrets);
+        room_storage.set_vta_storage(Arc::new(storage)).await?;
+    }
+
     // Bind TCP listener on the main thread for early port validation
     let addr = format!("{}:{}", config.server.host, config.server.port);
     let std_listener = std::net::TcpListener::bind(&addr).map_err(AppError::Io)?;
@@ -908,6 +1074,7 @@ pub async fn run(
         oid4vp_keys_ks,
         oid4vp_signers,
         oid4vp_sessions_ks,
+        x509_trust_anchors,
         tsp_reach: Arc::new(vti_common::tsp_reach::TspReachability::new()),
         geoip,
         backup_bundles_ks,
@@ -916,7 +1083,12 @@ pub async fn run(
         rooms_ks,
         room_records_ks,
         room_epoch_links_ks,
+        room_revocations_ks,
         room_files,
+        room_storage,
+        community_rooms,
+        directory,
+        elections,
         audit_ks,
         audit_key_ks,
         audit_checkpoint_ks: audit_checkpoint_ks.clone(),
@@ -970,8 +1142,8 @@ pub async fn run(
     // a PasskeyUser but no AdminEntry gets the AdminEntry synthesised
     // from the PasskeyUser's credentials. Covers daemons where
     // `vtc admin invite` ran before `claim_finish` started writing
-    // the AdminEntry — without this, `GET /v1/admin/passkeys` 404s
-    // permanently because list reads AdminEntry, not PasskeyUser.
+    // the AdminEntry — without this, `auth/passkey/list` came back empty
+    // (a 404 on the old bearer route) because it reads AdminEntry, not PasskeyUser.
     if let Err(e) = heal_missing_admin_entries(&state).await {
         warn!(error = %e, "admin-entry heal scan failed");
     }
@@ -1225,6 +1397,7 @@ pub async fn run(
         let policies_ks = state.policies_ks.clone();
         let active_policies_ks = state.active_policies_ks.clone();
         let members_ks = state.members_ks.clone();
+        let directory_ks = state.directory.ks().clone();
         let registry_health = state.registry_health.clone();
         let audit_writer = state.audit_writer.clone();
         let mut supervisor_shutdown = shutdown_rx.clone();
@@ -1246,7 +1419,8 @@ pub async fn run(
                     audit_writer.clone(),
                     actor_did.clone(),
                 )
-                .with_rtbf_batch_window_hours(rtbf_batch_window_hours);
+                .with_rtbf_batch_window_hours(rtbf_batch_window_hours)
+                .with_directory(directory_ks.clone());
                 let run_shutdown = supervisor_shutdown.clone();
                 health.mark_running();
                 let child = tokio::spawn(async move { syncer.run(run_shutdown).await });
@@ -1434,12 +1608,68 @@ pub async fn run(
     // is settled from the effect it recorded.
     // (Suspensions were reconciled above, before the git-ns projector.)
     crate::admin_actions::spawn_sweeper(state.clone(), shutdown_rx.clone());
+    // The did:scid version floors of the community's members and administrators,
+    // persisted as the resolver learns them so a restart does not reset what it
+    // refuses (VTI-KEY-162).
+    if let Some(resolver) = state.did_resolver.clone() {
+        crate::scid_sources::spawn(
+            state.members_ks.clone(),
+            state.acl_ks.clone(),
+            resolver,
+            shutdown_rx.clone(),
+        );
+    }
+    // Members who left the community leave the rooms it owns (`members/add` item 6): the
+    // one owner of those removals, resuming at start whatever a restart interrupted.
+    crate::rooms::departures::spawn(state.clone(), shutdown_rx.clone());
+    // A retired directory field's values, erased once its retention period
+    // has passed (`crate::directory::sweep`).
+    crate::directory::sweep::spawn(state.clone(), shutdown_rx.clone());
     // A refreshed GeoIP database is picked up without a restart.
     state.geoip.spawn_reloader(shutdown_rx.clone());
+    // The community's own authority over each room it owns, renewed at its VTA before it
+    // lapses. Always spawned: it reads `[rooms.community]` on every pass and does nothing
+    // while community rooms are off or there is no VTA link.
+    crate::rooms::community_renewal::spawn(state.clone(), shutdown_rx.clone());
+    // Each group's authority credential and its members' group credentials,
+    // renewed at the community's VTA before they lapse (`vtc/groups/create`
+    // item 5). Always spawned: it does nothing while `[groups]` is off.
+    crate::groups::renewal::spawn(state.clone(), shutdown_rx.clone());
+    // What each group's room bindings provide its members: offers, withdrawals and
+    // renewals (`vtc/groups/bindings/*`). Always spawned: idle while no binding exists.
+    crate::groups::bindings::spawn(state.clone(), shutdown_rx.clone());
+    // Each dynamic group's members, recomputed from its rule (`vtc/groups/create`
+    // item 6, `update` item 6). Always spawned: idle while no dynamic group exists.
+    crate::groups::dynamic::spawn(state.clone(), shutdown_rx.clone());
+    // The profile of each room the community owns, written into the room by its VTA:
+    // the one retry owner for a create or update that answered `roomProfile: pending`.
+    crate::rooms::community_profile::spawn(state.clone(), shutdown_rx.clone());
+    // Community elections: the one retry owner for a registration the ballot box has
+    // not answered, the board checkpoints, and discarding pre-credentials after close.
+    #[cfg(feature = "voting")]
+    crate::elections::sweeper::spawn(state.clone(), shutdown_rx.clone());
     // Room files deleted, orphaned past their grace, or abandoned mid-transfer.
     crate::rooms::files::spawn_sweeper(
         state.room_files.clone(),
-        boot_cfg.rooms.files.sweep_interval_secs,
+        state.room_storage.clone(),
+        boot_cfg.rooms.files.as_ref().map_or_else(
+            || crate::config::RoomFilesConfig::default().sweep_interval_secs,
+            |f| f.sweep_interval_secs,
+        ),
+        shutdown_rx.clone(),
+    );
+    // Room files moved onto the config their room is assigned to
+    // (`vtc/rooms/storage/migrate`): the one retry owner of every migration. Idle while
+    // none is running.
+    crate::rooms::migration::spawn(
+        state.clone(),
+        boot_cfg
+            .rooms
+            .files
+            .as_ref()
+            .and_then(|f| f.migration_max_bytes_per_second)
+            .unwrap_or(crate::rooms::migration::DEFAULT_MAX_BYTES_PER_SECOND)
+            .max(vti_rooms::blobs::MIN_MIGRATION_BYTES_PER_SECOND),
         shutdown_rx.clone(),
     );
     crate::join::retention::RetentionSweeper::spawn(
@@ -2898,4 +3128,29 @@ mod p0_9_init_auth_tests {
         )
         .await;
     }
+}
+
+/// Read the X.509 trust anchors `[oid4vp] x509_trust_anchors` names, refusing
+/// the boot on any file that does not load: an anchor file that silently
+/// loaded nothing would refuse every credential it was configured to admit.
+pub fn load_x509_trust_anchors(
+    paths: &[std::path::PathBuf],
+) -> Result<vta_sdk::x509_issuer::X509TrustAnchors, AppError> {
+    let mut anchors = vta_sdk::x509_issuer::X509TrustAnchors::new();
+    for path in paths {
+        let pem = std::fs::read(path).map_err(|e| {
+            AppError::Config(format!(
+                "[oid4vp] x509_trust_anchors: read {}: {e}",
+                path.display()
+            ))
+        })?;
+        let added = anchors.add_pem(&pem).map_err(|e| {
+            AppError::Config(format!(
+                "[oid4vp] x509_trust_anchors: {}: {e}",
+                path.display()
+            ))
+        })?;
+        info!(file = %path.display(), certificates = added, "X.509 issuer trust anchors loaded");
+    }
+    Ok(anchors)
 }

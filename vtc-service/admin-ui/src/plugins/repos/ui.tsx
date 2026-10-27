@@ -35,6 +35,7 @@ import {
   type GitNsSelfGrantWaived,
   type Tone,
 } from "./model";
+import { activeElementOf } from "@/components/Protected";
 
 /** Where the plugin is mounted (`src/plugins/index.ts`). */
 export const REPOS_PATH = "/repos";
@@ -321,7 +322,11 @@ export function useModal(
   closeRef.current = onClose;
 
   useEffect(() => {
-    const opener = document.activeElement as HTMLElement | null;
+    // The page is drawn in a shadow tree (a protected plugin), where
+    // `document.activeElement` is the host rather than the opener.
+    const opener = (
+      surfaceRef.current ? activeElementOf(surfaceRef.current) : document.activeElement
+    ) as HTMLElement | null;
     surfaceRef.current
       ?.querySelector<HTMLElement>("select, input, textarea, button")
       ?.focus();
@@ -338,10 +343,11 @@ export function useModal(
       if (!tabbable || tabbable.length === 0) return;
       const first = tabbable[0]!;
       const last = tabbable[tabbable.length - 1]!;
-      if (e.shiftKey && document.activeElement === first) {
+      const active = activeElementOf(first);
+      if (e.shiftKey && active === first) {
         e.preventDefault();
         last.focus();
-      } else if (!e.shiftKey && document.activeElement === last) {
+      } else if (!e.shiftKey && active === last) {
         e.preventDefault();
         first.focus();
       }

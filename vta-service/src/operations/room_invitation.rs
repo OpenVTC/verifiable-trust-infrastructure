@@ -15,8 +15,12 @@
 //!    the sender had lying around.
 //! 2. The **issuer is the room**. An invitation to a different room is not an invitation to
 //!    this one, however valid.
-//! 3. The **subject is us**. An invitation issued to somebody else is not transferable, and
-//!    accepting one would let a third party place a member into a room they were invited to.
+//! 3. The **subject is us**: a persona this agent holds that the caller may act as
+//!    ([`crate::operations::persona`]). The subject is the member's identity in the room —
+//!    their MLS leaf carries it and their credentials name it — so it is never the interface
+//!    client that happens to be calling. An invitation issued to somebody else is not
+//!    transferable, and accepting one would let a third party place a member into a room
+//!    they were invited to.
 //! 4. The proof's key **belongs to the issuer**. A proof that verifies only means *somebody*
 //!    signed it, which is equally true of a forgery; this is what makes that somebody the
 //!    room.
@@ -60,7 +64,12 @@ impl VerifiedInvitation {
     }
 }
 
-/// Verify an invitation for `room_id` naming `expected_subject`.
+/// Verify an invitation for `room_id` whose subject `is_ours` accepts.
+///
+/// `is_ours` answers whether the named subject is a party this agent holds and the caller
+/// may act as — in service, a persona ([`crate::operations::persona::persona_signing_key`]).
+/// It is asked after the cheap structural checks and before the signature, and a `false`
+/// reads the same whether the subject is unknown here or held for somebody else.
 ///
 /// `keys` resolves the issuer's verification method. Failing to resolve is a refusal, never
 /// a pass: a VTA that treated an unresolvable issuer as "probably fine" would have stopped
@@ -68,7 +77,7 @@ impl VerifiedInvitation {
 pub async fn verify(
     encoded: &str,
     room_id: &str,
-    expected_subject: &str,
+    is_ours: impl AsyncFnOnce(&str) -> Result<bool, AppError>,
     keys: &dyn VerificationKeys,
 ) -> Result<VerifiedInvitation, AppError> {
     let credential: DTGCredential = decode(encoded)?;
@@ -85,9 +94,11 @@ pub async fn verify(
             credential.issuer()
         )));
     }
-    if credential.subject() != expected_subject {
+    if !is_ours(credential.subject()).await? {
         return Err(AppError::Validation(format!(
-            "the invitation names `{}`, not this member; an invitation is not transferable",
+            "the invitation names `{}`, which is not a persona you may act as here; an \
+             invitation is not transferable, and the member it names is the DID this agent \
+             holds for them, never the client asking",
             credential.subject()
         )));
     }
@@ -245,6 +256,11 @@ mod tests {
         }
     }
 
+    /// The subject check, as a fixed DID: what a persona resolver answers for one persona.
+    fn is(me: &str) -> impl AsyncFnOnce(&str) -> Result<bool, AppError> + '_ {
+        async move |subject: &str| Ok(subject == me)
+    }
+
     /// A `did:key` and the secret behind it.
     fn a_party(seed: u8) -> (String, affinidi_secrets_resolver::secrets::Secret) {
         let sk = ed25519_dalek::SigningKey::from_bytes(&[seed; 32]);
@@ -255,7 +271,7 @@ mod tests {
             "did:key:{}",
             multibase::encode(multibase::Base::Base58Btc, &mc)
         );
-        let secret = affinidi_secrets_resolver::secrets::Secret::from_str(
+        let secret = affinidi_secrets_resolver::secrets::Secret::from_jwk_value(
             &format!("{did}#{}", did.trim_start_matches("did:key:")),
             &serde_json::json!({
                 "crv": "Ed25519",
@@ -337,7 +353,7 @@ mod tests {
             Some(now - chrono::Duration::hours(1)),
         )
         .await;
-        let err = verify(&expired, &room, me, &DidKeyOnly)
+        let err = verify(&expired, &room, is(me), &DidKeyOnly)
             .await
             .expect_err("an invitation that has run out must not still admit");
         assert!(format!("{err}").contains("expired"), "{err}");
@@ -351,7 +367,7 @@ mod tests {
             Some(now + chrono::Duration::hours(2)),
         )
         .await;
-        let err = verify(&premature, &room, me, &DidKeyOnly)
+        let err = verify(&premature, &room, is(me), &DidKeyOnly)
             .await
             .expect_err("nor one that has not started");
         assert!(format!("{err}").contains("not valid yet"), "{err}");
@@ -368,7 +384,7 @@ mod tests {
             None,
         )
         .await;
-        verify(&forever, &room, me, &DidKeyOnly)
+        verify(&forever, &room, is(me), &DidKeyOnly)
             .await
             .expect("an open-ended invitation is the issuer's call, not this gate's");
     }
@@ -378,7 +394,7 @@ mod tests {
         let (room, room_secret) = a_party(0x41);
         let vic = an_invitation(&room, &room_secret, "did:key:zMember", "urn:uuid:i-1").await;
 
-        let verified = verify(&vic, &room, "did:key:zMember", &DidKeyOnly)
+        let verified = verify(&vic, &room, is("did:key:zMember"), &DidKeyOnly)
             .await
             .expect("a genuine invitation must verify");
         assert_eq!(verified.credential_id(), "urn:uuid:i-1");
@@ -401,7 +417,7 @@ mod tests {
         let forged =
             an_invitation(&room, &attacker_secret, "did:key:zMember", "urn:uuid:i-2").await;
 
-        let err = verify(&forged, &room, "did:key:zMember", &DidKeyOnly)
+        let err = verify(&forged, &room, is("did:key:zMember"), &DidKeyOnly)
             .await
             .expect_err("a forged invitation must be refused");
         assert!(
@@ -422,7 +438,7 @@ mod tests {
         )
         .await;
 
-        let err = verify(&vic, &room, "did:key:zMember", &DidKeyOnly)
+        let err = verify(&vic, &room, is("did:key:zMember"), &DidKeyOnly)
             .await
             .expect_err("an invitation to another room is not one to this one");
         assert!(format!("{err}").contains("issued by"), "{err}");
@@ -433,7 +449,7 @@ mod tests {
         let (room, room_secret) = a_party(0x46);
         let vic = an_invitation(&room, &room_secret, "did:key:zSomeoneElse", "urn:uuid:i-4").await;
 
-        let err = verify(&vic, &room, "did:key:zMember", &DidKeyOnly)
+        let err = verify(&vic, &room, is("did:key:zMember"), &DidKeyOnly)
             .await
             .expect_err("an invitation is not transferable");
         assert!(format!("{err}").contains("not transferable"), "{err}");

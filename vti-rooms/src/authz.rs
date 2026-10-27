@@ -41,7 +41,9 @@
 //! verification, which is linear in chain length and runs on every operation.
 
 use vti_common::error::AppError;
+use vti_common::store::KeyspaceHandle;
 
+use crate::revocation::{self, Presented, RevocationList, gate};
 use crate::wire::AuthorityPresentation;
 use crate::{Room, Visibility};
 
@@ -111,6 +113,13 @@ pub struct VerifiedChain {
     /// usage to a member charges it here, so a member cannot multiply an allowance by
     /// minting agents.
     pub member: Option<String>,
+    /// Every credential the presentation carried — the membership credential (where the
+    /// tier discloses it) and each authority link — as far as a revocation list needs to
+    /// match them (`rooms/revocations/put`, *Matching*).
+    ///
+    /// A verifier that reports nothing here cannot be held to a list: [`authorize`] then
+    /// refuses a disclosing tier's presentation whenever the room's list withdraws anything.
+    pub presented: Presented,
 }
 
 /// Cryptographic verification of a presentation.
@@ -156,6 +165,25 @@ pub trait ChainVerifier: Send + Sync {
         action: Action,
         presenter: &str,
     ) -> Result<VerifiedChain, AppError>;
+
+    /// Verify that `document` (a `RevocationList`, with its `proof`) is the room's own
+    /// statement: its proof verifies with a key `room`'s DID document lists for
+    /// `assertionMethod`, and names a verification method under the room's DID
+    /// (`rooms/revocations/put` item 2; `AuthorityPresentation`, *every credential is its
+    /// issuer's attestation*).
+    ///
+    /// Refuses by default, so a verifier that has not implemented it accepts no list —
+    /// and a host with none holds nothing it could be wrong about.
+    async fn verify_room_signature(
+        &self,
+        room: &Room,
+        _document: &serde_json::Value,
+    ) -> Result<(), AppError> {
+        Err(AppError::Validation(format!(
+            "this host cannot verify room `{}`'s signature on a revocation list",
+            room.room_id
+        )))
+    }
 }
 
 /// The verifier a host has before it configures one.
@@ -193,6 +221,19 @@ pub struct AuthorizedAction {
     action: Action,
     room_id: String,
     verified: VerifiedChain,
+    /// The list this was authorized against, for credentials a task presents beside the
+    /// chain (a succession nomination).
+    held: Option<RevocationList>,
+    /// The room's gate, held until this value is dropped — which a handler does once what
+    /// it authorized has committed (`rooms/revocations/put`, *Enforcement* item 3).
+    _gate: Gate,
+}
+
+/// The room gate an authorization holds.
+#[derive(Debug)]
+pub(crate) enum Gate {
+    Shared(#[allow(dead_code)] gate::Shared),
+    Exclusive(#[allow(dead_code)] gate::Exclusive),
 }
 
 impl AuthorizedAction {
@@ -220,6 +261,30 @@ impl AuthorizedAction {
     pub fn member(&self) -> Option<&str> {
         self.verified.member.as_deref()
     }
+    /// The credentials the presentation carried, as a transfer step that presents nothing
+    /// is later held to ([`revocation::Presented`]).
+    pub fn presented(&self) -> &Presented {
+        &self.verified.presented
+    }
+    /// Refuse unless `credential` — presented beside the chain, such as a succession
+    /// nomination — is withdrawn by none of the list this was authorized against. The same
+    /// opaque refusal as any withdrawn presentation.
+    pub fn also_unrevoked(&self, credential: &revocation::CredentialFacts) -> Result<(), AppError> {
+        match &self.held {
+            Some(list) if list.revokes(credential) => Err(withdrawn(&self.room_id)),
+            _ => Ok(()),
+        }
+    }
+}
+
+/// The refusal for a presentation a held list withdraws: the framework's standard
+/// `permissionDenied`, and nothing that says *why* — a distinct answer would tell whoever
+/// holds a captured credential that its withdrawal was noticed, and a removed party which
+/// host has caught up (`rooms/revocations/put`, *Opaque refusals*).
+pub(crate) fn withdrawn(room_id: &str) -> AppError {
+    AppError::Forbidden(format!(
+        "the presentation does not authorize this operation on room `{room_id}`"
+    ))
 }
 
 /// Proof that [`authorize_create`] ran and allowed a room to be registered.
@@ -321,6 +386,11 @@ fn did_of(did: &str) -> &str {
 /// the dispatch layer maps to the framework's `permission_denied` — the reason text
 /// distinguishes the cases for an operator reading logs, without telling a caller which
 /// part of their chain to adjust.
+///
+/// `revocations` is the host's [`crate::ROOM_REVOCATIONS_KEYSPACE`]: a presentation the
+/// room's held list withdraws is refused, and the room's gate is held — inside the returned
+/// [`AuthorizedAction`] — until the caller drops it, so a list accepted meanwhile waits for
+/// this operation to commit (`rooms/revocations/put`, *Enforcement*).
 pub async fn authorize(
     room: &Room,
     presentation: &AuthorityPresentation,
@@ -328,7 +398,95 @@ pub async fn authorize(
     presenter: &str,
     now: u64,
     verifier: &dyn ChainVerifier,
+    revocations: &KeyspaceHandle,
 ) -> Result<AuthorizedAction, AppError> {
+    let shared = gate::read(&room.room_id).await;
+    let held = held_list(revocations, &room.room_id).await?;
+    let verified = check(
+        room,
+        presentation,
+        action,
+        presenter,
+        now,
+        verifier,
+        held.as_ref(),
+        true,
+    )
+    .await?;
+    Ok(AuthorizedAction {
+        action,
+        room_id: room.room_id.clone(),
+        verified,
+        held,
+        _gate: Gate::Shared(shared),
+    })
+}
+
+/// The list this host holds for `room_id`, read for an authorization. A stored list that
+/// no longer reads is a corrupt store, and authorization fails closed on it.
+pub(crate) async fn held_list(
+    revocations: &KeyspaceHandle,
+    room_id: &str,
+) -> Result<Option<RevocationList>, AppError> {
+    match revocation::held(revocations, room_id).await? {
+        None => Ok(None),
+        Some(h) => h.parsed(room_id).map(Some).map_err(|e| {
+            tracing::error!(room = %room_id, error = %e, "the held revocation list does not read");
+            AppError::Internal(format!(
+                "this host's revocation list for room `{room_id}` does not read"
+            ))
+        }),
+    }
+}
+
+/// Authorize the delivery or reading of a room's revocation list
+/// (`rooms/revocations/{put,get}`): `admin`, verified against the list **already held**
+/// (put item 1), under the gate the caller holds.
+///
+/// Unlike [`authorize`], a read mirror is not refused: a list binds every host that serves
+/// the room, and `rooms/owner/revoke` delivers to mirrors too. Holding a list is not a
+/// write to anything a primary owns.
+pub(crate) async fn authorize_list_admin(
+    room: &Room,
+    presentation: &AuthorityPresentation,
+    presenter: &str,
+    now: u64,
+    verifier: &dyn ChainVerifier,
+    held: Option<RevocationList>,
+    gate: Gate,
+) -> Result<AuthorizedAction, AppError> {
+    let verified = check(
+        room,
+        presentation,
+        Action::Admin,
+        presenter,
+        now,
+        verifier,
+        held.as_ref(),
+        false,
+    )
+    .await?;
+    Ok(AuthorizedAction {
+        action: Action::Admin,
+        room_id: room.room_id.clone(),
+        verified,
+        held,
+        _gate: gate,
+    })
+}
+
+/// Every check [`authorize`] makes, against `held`.
+#[allow(clippy::too_many_arguments)]
+async fn check(
+    room: &Room,
+    presentation: &AuthorityPresentation,
+    action: Action,
+    presenter: &str,
+    now: u64,
+    verifier: &dyn ChainVerifier,
+    held: Option<&RevocationList>,
+    mirror_gate: bool,
+) -> Result<VerifiedChain, AppError> {
     // Depth first: it is the cheapest check and the one that bounds the cost of every
     // check after it — verification is linear in chain length and runs on every operation.
     if presentation.authority.is_empty() {
@@ -396,6 +554,7 @@ pub async fn authorize(
     // would fork the lifecycle clock its primary owns — the room would be live
     // on the copy and lapsed at home.
     if let Some(primary) = &room.mirror_of
+        && mirror_gate
         && action != Action::Read
     {
         return Err(AppError::Forbidden(format!(
@@ -443,16 +602,25 @@ pub async fn authorize(
         )));
     }
 
-    Ok(AuthorizedAction {
-        action,
-        room_id: room.room_id.clone(),
-        verified,
-    })
+    // The room's withdrawals, on every link and the membership credential: a chain from
+    // which any link is withdrawn confers nothing (`rooms/revocations/put`, *Enforcement*
+    // item 1). Checked last because only a verified chain says which credentials these are.
+    if let Some(list) = held {
+        let at = chrono::DateTime::from_timestamp(now as i64, 0).unwrap_or_else(chrono::Utc::now);
+        if list.withdraws(room.visibility, &verified.presented, at) {
+            tracing::info!(room = %room.room_id, "a presentation the room's revocation list withdraws was refused");
+            return Err(withdrawn(&room.room_id));
+        }
+    }
+
+    Ok(verified)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use crate::revocation::test_keyspace as revs;
 
     fn room(visibility: Visibility) -> Room {
         Room {
@@ -468,6 +636,9 @@ mod tests {
             created_at: 0,
             updated_at: 0,
             mirror_of: None,
+            record_retention: None,
+            last_prune: None,
+            epoch_floor: None,
         }
     }
 
@@ -553,6 +724,9 @@ mod tests {
     async fn a_mirror_serves_reads_and_refuses_every_write() {
         let mirror = Room {
             mirror_of: Some("https://primary.example.org".into()),
+            record_retention: None,
+            last_prune: None,
+            epoch_floor: None,
             ..room(Visibility::Open)
         };
 
@@ -563,6 +737,7 @@ mod tests {
             PRESENTER,
             NOW,
             &Vouches::for_all(),
+            revs(),
         )
         .await
         .expect("a read is what a mirror is for");
@@ -575,6 +750,7 @@ mod tests {
                 PRESENTER,
                 NOW,
                 &Vouches::for_all(),
+                revs(),
             )
             .await
             .expect_err("a mirror performs no writes");
@@ -595,6 +771,9 @@ mod tests {
     async fn a_mirror_refuses_an_epoch_mint_even_though_a_lapsed_primary_would_not() {
         let lapsed_mirror = Room {
             mirror_of: Some("https://primary.example.org".into()),
+            record_retention: None,
+            last_prune: None,
+            epoch_floor: None,
             epoch_expires_at: Some(NOW - 1),
             ..room(Visibility::Open)
         };
@@ -605,6 +784,7 @@ mod tests {
             PRESENTER,
             NOW,
             &Vouches::for_all(),
+            revs(),
         )
         .await
         .expect_err("renewal happens at the primary");
@@ -648,6 +828,7 @@ mod tests {
                 subject: presenter.to_string(),
                 actions: self.0.clone(),
                 member: Some(presenter.to_string()),
+                presented: Default::default(),
             })
         }
     }
@@ -668,6 +849,7 @@ mod tests {
                 subject: "did:key:zSomeoneElse".into(),
                 actions: vec!["read".into()],
                 member: Some("did:key:zSomeoneElse".into()),
+                presented: Default::default(),
             })
         }
     }
@@ -681,6 +863,7 @@ mod tests {
             PRESENTER,
             NOW,
             &Vouches::for_all(),
+            revs(),
         )
         .await
         .expect("should authorize");
@@ -704,6 +887,7 @@ mod tests {
             PRESENTER,
             NOW,
             &Vouches::read_only(),
+            revs(),
         )
         .await
         .unwrap_err();
@@ -719,6 +903,7 @@ mod tests {
             PRESENTER,
             NOW,
             &Vouches::read_only(),
+            revs(),
         )
         .await
         .expect("but it reads");
@@ -734,6 +919,7 @@ mod tests {
             PRESENTER,
             NOW,
             &Vouches(vec!["read".into(), "write".into(), "curate".into()]),
+            revs(),
         )
         .await
         .unwrap_err();
@@ -753,6 +939,7 @@ mod tests {
             PRESENTER,
             NOW,
             &Vouches::for_all(),
+            revs(),
         )
         .await
         .unwrap_err();
@@ -768,6 +955,7 @@ mod tests {
             PRESENTER,
             NOW,
             &Vouches::for_all(),
+            revs(),
         )
         .await
         .unwrap_err();
@@ -803,7 +991,8 @@ mod tests {
                     Action::Read,
                     PRESENTER,
                     NOW,
-                    &Panics
+                    &Panics,
+                    revs()
                 )
                 .await
                 .is_err()
@@ -821,6 +1010,7 @@ mod tests {
             PRESENTER,
             NOW,
             &Vouches::for_all(),
+            revs(),
         )
         .await
         .unwrap_err();
@@ -843,6 +1033,7 @@ mod tests {
                 PRESENTER,
                 NOW,
                 &RefusesEverything,
+                revs(),
             )
             .await
             .unwrap_err();
@@ -864,6 +1055,7 @@ mod tests {
             "   ",
             NOW,
             &Vouches::for_all(),
+            revs(),
         )
         .await
         .unwrap_err();
@@ -883,6 +1075,7 @@ mod tests {
             PRESENTER,
             NOW,
             &VouchesForSomeoneElse,
+            revs(),
         )
         .await
         .unwrap_err();
@@ -903,6 +1096,7 @@ mod tests {
             PRESENTER,
             NOW,
             &Vouches::for_all(),
+            revs(),
         )
         .await
         .unwrap_err();
@@ -925,6 +1119,7 @@ mod tests {
             PRESENTER,
             NOW,
             &Vouches::for_all(),
+            revs(),
         )
         .await
         .unwrap_err();
@@ -942,6 +1137,7 @@ mod tests {
             PRESENTER,
             NOW,
             &Vouches::for_all(),
+            revs(),
         )
         .await
         .expect("a lapse hides nothing — reads keep working");
@@ -971,6 +1167,7 @@ mod tests {
                 PRESENTER,
                 NOW,
                 &Vouches::for_all(),
+                revs(),
             )
             .await
             .unwrap_or_else(|e| panic!("a {state} room must still accept a renewal: {e}"));
@@ -982,6 +1179,7 @@ mod tests {
                 PRESENTER,
                 NOW,
                 &Vouches::for_all(),
+                revs(),
             )
             .await
             .unwrap_err();
@@ -1004,6 +1202,7 @@ mod tests {
             PRESENTER,
             NOW,
             &Vouches::for_all(),
+            revs(),
         )
         .await
         .unwrap_err();

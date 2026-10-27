@@ -1,0 +1,60 @@
+{
+  "schemaVersion": 1,
+  "name": "ballot-box",
+  "kind": "ballot-box",
+  "description": "A ballot-box identity for vti-voting-service, the host service that holds community elections' ballot boxes and boards (VTI-VOT-001 – 100). Public by design and never a community's own: communities name it as `ballotBox` in their manifests, and its signature on a receipt or a board head is the evidence voters and auditors hold, so it is its own did:webvh and never its operator VTA's (VTI-KEY-007). Declares an Ed25519 key (#key-0) that is both authentication (it answers Trust Tasks) and assertionMethod (it signs receipts and heads), and an X25519 key-agreement key (#key-1). Reachable over TSP and DIDComm through the mediator named by MEDIATOR_DID — both services name the same mediator, TSP first (canonical order) — which is how a community registers, closes and cancels its elections and how communities and auditors read boards. Also advertises `TrustTaskHTTPS` at HTTPS_URL, because a cast MUST be accepted over a binding whose sender holds no persistent identifier and no session (VTI-VOT-004): a voter casts from a key made for that cast alone, which has no mediator session to receive its receipt on, and opening one would give the mediator an account, a relationship record, and the voter's address and timing. A client POSTs to `<HTTPS_URL>/trust-tasks` (HTTPS binding 0.2 §6). URL or WEBVH_SERVER is still required at provision time so the VTA knows where to publish the did:webvh log.",
+  "methods": ["webvh"],
+  "requiredVars": ["MEDIATOR_DID", "HTTPS_URL"],
+  "optionalVars": {
+    "ACCEPT": ["didcomm/v2"],
+    "URL": null,
+    "WEBVH_SERVER": null
+  },
+  "defaults": {
+    "preRotationCount": 2,
+    "portable": true
+  },
+  "document": {
+    "@context": [
+      "https://www.w3.org/ns/did/v1",
+      "https://www.w3.org/ns/cid/v1"
+    ],
+    "id": "{DID}",
+    "verificationMethod": [
+      {
+        "id": "{DID}#key-0",
+        "type": "Multikey",
+        "controller": "{DID}",
+        "publicKeyMultibase": "{SIGNING_KEY_MB}"
+      },
+      {
+        "id": "{DID}#key-1",
+        "type": "Multikey",
+        "controller": "{DID}",
+        "publicKeyMultibase": "{KA_KEY_MB}"
+      }
+    ],
+    "authentication": ["{DID}#key-0"],
+    "assertionMethod": ["{DID}#key-0"],
+    "keyAgreement": ["{DID}#key-1"],
+    "service": [
+      {
+        "id": "{DID}#tsp",
+        "type": "TSPTransport",
+        "serviceEndpoint": "{MEDIATOR_DID}"
+      },
+      {
+        "id": "{DID}#didcomm",
+        "type": "DIDCommMessaging",
+        "serviceEndpoint": [
+          { "accept": "{ACCEPT}", "uri": "{MEDIATOR_DID}" }
+        ]
+      },
+      {
+        "id": "{DID}#trust-tasks",
+        "type": "TrustTaskHTTPS",
+        "serviceEndpoint": "{HTTPS_URL}"
+      }
+    ]
+  }
+}

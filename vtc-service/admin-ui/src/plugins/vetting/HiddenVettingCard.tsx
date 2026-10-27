@@ -38,6 +38,7 @@ import {
   type StoredHiddenVetting,
   withdrawHiddenVetting,
 } from "@/lib/hidden-vetting";
+import { gestureFromConfirm, parkedOf } from "@/lib/signed-act";
 import { useToast } from "@/lib/toast";
 import { useViewerDid } from "@/lib/viewer";
 
@@ -100,9 +101,18 @@ export function HiddenVettingCard({
     void queryClient.invalidateQueries({ queryKey: hiddenVettingKeys.show(criterionId) });
   };
 
+  // Turning hidden vetting on, changing it or turning it off takes a passkey
+  // gesture and the other vetting managers' approval (VTI-APV-023); a parked
+  // change is a success, shown as one.
+  const confirmGesture = gestureFromConfirm(confirm);
+  const onParked = (err: unknown) => {
+    if (parkedOf(err)) toast.pushFromError(err);
+  };
+
   const publish = useMutation({
     mutationFn: (input: { body: PublishHiddenInput; done: string }) =>
-      publishHiddenVetting(input.body),
+      publishHiddenVetting(input.body, confirmGesture),
+    onError: onParked,
     onSuccess: (_res, input) => {
       refresh();
       setDrip(null);
@@ -111,7 +121,8 @@ export function HiddenVettingCard({
     },
   });
   const withdraw = useMutation({
-    mutationFn: withdrawHiddenVetting,
+    mutationFn: (id: string) => withdrawHiddenVetting(id, confirmGesture),
+    onError: onParked,
     onSuccess: () => {
       refresh();
       toast.push(
@@ -243,7 +254,8 @@ export function HiddenVettingCard({
     );
   };
 
-  const error = publish.error ?? withdraw.error ?? show.error;
+  const failed = (e: unknown) => (e && !parkedOf(e) ? e : null);
+  const error = failed(publish.error) ?? failed(withdraw.error) ?? show.error;
 
   return (
     <div className="vet-fieldset" aria-label="Hidden vetting">

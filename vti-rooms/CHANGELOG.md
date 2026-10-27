@@ -2,6 +2,583 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.20.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-rooms-v0.19.0...vti-rooms-v0.20.0) — 2026-10-26
+
+
+### Added
+
+- **rooms**: Record provenance, record retention and prune, and the epoch floor ([#2272](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2272))
+
+* feat(rooms)!: a record says what kind of claim it is and when it lapses — rooms/records/put 0.3 and provenance in the sealed body
+
+- **vtc**: Rooms/storage/migrate 0.2 and rooms/get 0.2 — fixed target, one retry owner, resume without consent, orphans, pause reporting, queueing ([#2273](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2273))
+
+Serves vtc/rooms/storage/migrate/0.2 and vtc/rooms/get/0.2 (trust-tasks-tf
+  engine and behave the 0.2 way. The migration is reported through
+  vtc/_shared/0.1/room-migration.
+
+- **vtc**: Move a room's files to another storage config (rooms/storage/migrate) ([#2261](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2261))
+
+Serves vtc/rooms/storage/migrate/0.1 (data-rooms-files.md §7.3, phase P10):
+  a holder of vtc.rooms.admin moves a hosted room's existing blobs onto the
+  storage config it is assigned to. Each blob is copied, read back from the
+  target and checked against every chunk digest and the whole-blob digest of its
+  committed manifest, and only then switched; the old copy is deleted by the
+  collection pass after the orphan grace window. No key is involved and readers
+  notice nothing.
+
+  The engine is vti_rooms::blobs::migrate, shared host code over the blob index:
+
+  - the switch is one atomic store batch (entry, the old copy's `moved:` row,
+    counters, plan row, migration record), applied only while the blob's entry
+    is byte-for-byte what it was when the copy began; a blob orphaned,
+    collected or rewritten meanwhile is skipped and its copy discarded;
+  - the bytes to move are reserved on the target (and the host's storage) at
+    start, so capacityExceeded is answered before anything is copied; each
+    switch converts its reservation, and the old copy keeps counting against
+    its config until it is actually deleted (§6.1), so a draining config does
+    not retire early (ConfigHoldings counts pending old copies);
+  - a pending old copy of the same blob on the target is reclaimed under the
+    lock before the copy is written, so collection never deletes what a switch
+    is about to name;
+  - progress is persisted (record, plan rows, blob in flight and its copy), so
+    a restart resumes; tests stop a step after choosing, copying and verifying
+    and check the blob stays readable and the end state is exact.
+
+  vtc-service runs one migration at a time (rooms::migration), the one retry
+  owner: capped exponential backoff with full jitter on a failed copy, then
+  `paused` after eight in a row. Re-issuing the task resumes a paused migration
+  without parking again, and a running or paused one is always the answer
+  (item 5). A copy that does not verify is `failed` (item 3). A new migration is
+  parked as Act::ChangeStorage (kind rooms.storage.migrate, template pinned in
+  the server and the console); single-administrator mode waives it as for
+  assign. A room with nothing to move completes at once and parks nothing
+  (item 7). Each start, resume, completion, pause and failure is a
+  RoomStorageChanged audit row with the requester, approvers, room, configs and
+  reason (item 8). A store error kept or audited is scrubbed of URL queries and
+  long tokens.
+
+  vtc/rooms/get reports storage.migration; the rooms live-channel fingerprint
+  includes each migration's state, and the console polls a running one. A
+  restored backup brings a running migration back paused; the blob in flight is
+  verified again on resume. New optional config: [rooms.files]
+  migration_max_bytes_per_second (default 8 MiB/s), which a request's
+  maxBytesPerSecond can only lower.
+
+- **rooms**: Pnm rooms prune sends rooms/epoch/prune, and both hosts audit it as a prune ([#2260](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2260))
+
+* feat(rooms)!: pnm rooms prune sends rooms/epoch/prune, and both hosts audit it as a prune
+
+  `rooms/epoch/prune/0.1` was served by both hosts but no client sent it.
+  `pnm rooms prune --room --host --before-epoch --reason [--yes]` now does, the
+  way `pnm rooms renew` sends a mint: the VTA presents `admin` for the CLI
+  (`rooms/keys/present/0.2`) and the CLI signs. It cannot go through
+  `rooms/keys/act`: every act version (0.1-0.6) excludes rooms/epoch/prune on
+  purpose ("warrants a task of its own that states its consequences").
+
+  - vtc-client: `VtcClient::prune_epoch` (payload checked against the
+    generated `rooms::epoch::prune::v0_1::Payload`); never retried.
+  - vta-cli-common: `cmd_rooms_prune` reads the room first (rooms/info),
+    refuses a floor at/above the current epoch locally with the highest floor
+    that works, prints the irreversibility warning the spec's Consent/purpose
+    section asks for (what becomes unreadable; records stay; members' VTAs keep
+    what they derived), and proceeds only on `--yes` or a `y` at a terminal —
+    a pipe without `--yes` is refused with the command to run.
+  - Hosts: a prune was audited as `RoomOperation::MintEpoch`
+    (`room.epoch.mint`) in room-host and vtc-service. New
+    `RoomOperation::PruneEpoch` (`room.epoch.prune`, admin). Hosts also now
+    answer the spec's declared `rooms/epoch/prune:notAhead` with
+    `details.epoch` (vti_rooms::blob_tasks::prune_floor_refused) instead of a
+    generic validation error.
+  - Docs: data-rooms.md (§2 status, §9, new §10.4, §11 refusals), X4.4 done.
+    Prune erases the host's rungs only; members' VTAs keep their copies.
+
+- Growth types in published crates are #[non_exhaustive] ([#2196](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2196))
+
+A new variant on a public enum, or a new field on a public struct a consumer
+  can build with a literal, is a breaking change in a published crate. It kept
+  happening on types that were always going to grow (#1231, #1234, #1244, #1247,
+  #1250); #1262 fixed it for Capability and AuditEvent only.
+
+  This marks the rest once. 143 enums are marked: every error and refusal enum
+  (VtaError, AppError, ...) and the growth vocabularies (kinds, statuses,
+  reasons, codes, transports, SealedPayloadV1). 32 structs are marked: config
+  and response bags that no caller builds with a literal. Adding the attribute
+  is itself breaking, once. After it, additions to these types are minor
+  changes.
+
+  Left exhaustive on purpose, and pinned that way by the census:
+  VerifiedAssertion, AssertionProof, ActScope, ApproveScope, ContextDirection,
+  SigningDomain, TokenStatus and Role. For each of these, every arm must be
+  considered, and a downstream wildcard would be the bug.
+
+  Every downstream match in the workspace gets a `_ =>` arm that takes the most
+  restrictive or most generic reading: an internal error, a hidden or refused
+  entry, a stale attribute. None is unreachable!().
+
+  vta-sdk/tests/non_exhaustive_census.rs fails on a public enum in a published
+  library crate whose name ends in Error, Refusal, Violation, Kind, Event,
+  Status, Capability, Reason or Code and that is not #[non_exhaustive], unless
+  it is listed as deliberately exhaustive with a reason. It also fails when a
+  listed enum gains the attribute or disappears.
+
+
+
+### Changed
+
+- **rooms**: Rooms/create's payload is the generated type, not a hand-written copy ([#2253](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2253))
+
+
+### Fixed
+
+- **rooms**: A room host's DID advertises TrustTaskHTTPS, and rooms/create accepts retentionPolicy ([#2247](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2247))
+
+Found setting up a room from the wallet's console, which stopped at step 2 for
+  a host minted from the room-host template.
+
+  - The room-host template published its rooms/* surface as VTARest. A room host
+    is not a VTA; the HTTPS binding's service type is TrustTaskHTTPS, which is
+    what every Trust Task client — the wallet's console included — looks for, so
+    the console found no endpoint and refused to continue. The VTA's own sender
+    reads either; this makes the template say the right thing. Hosts minted from
+    the old template need their DID updated.
+  - rooms/create/0.1 declares retentionPolicy (and ext), and rooms/owner/register
+    0.2 forwards retentionPolicy, but both hosts parsed rooms/create into a
+    hand-written type with deny_unknown_fields that had neither — so any room
+    registered with a retention policy was refused as malformed, and the policy
+    was hard-coded to chained. CreateRoomBody gains both members and room-host
+    and the VTC store the owner's choice (chained when absent); a fromJoin room
+    then refuses epoch links, as it already would.
+  - data-rooms §8.1: --listen is opt-in and when it is needed, enrolment and the
+    scoped admin grant room-host prints, the TrustTaskHTTPS endpoint, and that a
+    private room is not served yet.
+
+
+
+## [0.19.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-rooms-v0.18.0...vti-rooms-v0.19.0) — 2026-10-18
+
+
+### Fixed
+
+- **rooms**: Record a sealed body's version when it is stored, never guess it at curation ([#2187](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2187))
+
+#2185 recorded the sealed-at version at a record's first curation, taking the
+  record's version then as the one its body was sealed at. That holds only if the
+  record had never been curated — and a record stored by a host that predates
+  `sealed_version` may already have been, with nothing recorded. Restoring such a
+  record (archived by the old host) stamped the archived version as sealed-at; the
+  VTA then opened it only there, and it opened for nobody, with the host now
+  asserting the wrong answer instead of saying nothing.
+
+  The spec already says when to record it: "A host MUST record the version a body
+  was sealed at when it stores it" (rooms `_shared/0.1` `SealedRecord.version`).
+  `put_record` now does, and `curate_record` leaves it alone, so an older record's
+  stays unknown and is served without `sealed.version`, which is what tells readers
+  to search earlier versions. `committed()` serves it only where it differs from the
+  record's own version, so an uncurated record's wire form and commitment are
+  unchanged.
+
+
+
+## [0.18.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-rooms-v0.17.0...vti-rooms-v0.18.0) — 2026-10-18
+
+
+### Added
+
+- **rooms**: Rooms/revocations/{put,get} — a host refuses what the room withdrew, at once ([#2173](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2173))
+
+A room had no way to take back a grant before it expired: a host authorizes from
+  credentials the room issued and keeps no roster, so a removed member's VMC and
+  VAC chain stayed good at the host until `validUntil`. trust-tasks-tf #804 adds
+  the room's revocation list — signed by the room, cumulative, numbered — which an
+  administrator delivers to each host serving the room. This is the host half.
+
+- **rooms**: A room's own profile — rooms/keys/profile/{read,write}, sealed inside the room ([#2171](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2171))
+
+Implements trustoverip/dtgwg-trust-tasks-tf#807 on the key holder's side. A
+  room's name, description, tags and emoji (RoomProfile) now live inside the
+  room: one record per epoch at profile_key(E) — HKDF-SHA256 over the epoch's
+  storage key, info "openvtc/room/profile/v1" || roomId || u64be(E), 16 bytes,
+  base64url — sealed like any record, so the host stores one more opaque record
+  and cannot tell which one names the room. An open room's is the record at
+  `room-profile`, its signed body in cleartext.body.
+
+  VTA (vta-service):
+  - rooms/keys/profile/read/0.1: walks from the current epoch down (bound 32),
+    fetching each location as the member under their own `read` grant,
+    verifying the host's reply as rooms/keys/read does, and takes the newest
+    profile it accepts (`found`, `stale` below the current epoch), stops at a
+    retraction (`cleared`), or answers `absent`, with `searched`.
+  - Readers decide who may name the room
+    (operations::room_profile::check_statement): the SealedRecordBody rules
+    (1)-(4) — no unknown member, the author's assertionMethod proof, signed for
+    the location read, the host-recorded author on attributed — plus
+    RoomProfileStatement items 1-4: a profile and nothing a record carries,
+    sealed under the epoch that located it, issuedAt within
+    [updatedAt − 1h, updatedAt + 5m], and an authority chain conferring
+    `curate` or `admin` on the author at the room's scope, every link valid at
+    issuedAt (vti_rooms_dtg::profile::verify_profile_authority). Anything that
+    fails is ignored and reported in `rejected` with its reason and author; a
+    rename by a member holding only `write` is `noAuthority` and the room keeps
+    the profile before it. This VTA holds no RevocationList, so item 5 never
+    applies (revocation is not retroactive).
+  - rooms/keys/profile/write/0.1: refuses `noAuthority` before contacting the
+    host without `write` and `curate`/`admin` (`curate` to clear); signs the
+    statement as the principal (assertionMethod, through the gated oracle) with
+    the room-issued chain inside, pads the signed body to a 1 KiB multiple,
+    seals it under the current epoch and puts it as the member under a `write`
+    grant; re-seals for the version the host assigned, then `contended`.
+    `clear` retracts the current location with a `curate` grant, storing a
+    profile there first when it holds none. Delegates are refused.
+  - The epoch-advance re-write: rooms/owner/group/{add,remove,renew} read the
+    profile before the advance and write it again under the new epoch as the
+    owner once the host accepts — never failing, delaying or undoing the
+    advance (tried a few times, then logged), never for `absent`/`cleared`,
+    never retracting the earlier one (add 0.1 and 0.2, remove, renew; the
+    speaker is HostCall::profile_speaker, so a later version reuses it).
+  - rooms/keys/read does not open a profile location (answers
+    ext["org.openvtc.rooms"].roomProfile) and rooms/keys/browse leaves profile
+    records out, counting against everything the host listed.
+  - Both tasks dispatched ([None Secret true] / [Mutating Metadata true]),
+    classified RetrySafe in vta_sdk::retry_safety, counted in budget, guarded in
+    vta-mcp, with conformance entries.
+
+
+
+### Fixed
+
+- **rooms**: A curated sealed record opens again — keep the version its body was sealed at ([#2185](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2185))
+
+* fix(rooms): a curated sealed record opens again — keep the version its body was sealed at
+
+  Archiving, restoring or pinning a record on an `attributed` or `private` room
+  left it unreadable to every member ("record did not open: it was sealed under
+  a different key, epoch, or location"). `curate_record` keeps the body unless it
+  retracts but moves the record to a new version, as rooms/records/curate/0.1
+  requires; the body is bound — by the AEAD (`sealed.rs`, `room|key|version|epoch`)
+  and by its author's signed location (`SealedRecordBody`) — to the version it was
+  sealed at, and nothing remembered that version. Every reader opened at the new
+  one. No test curated a sealed record and read it back.
+
+  Rooms `_shared/0.1` `SealedRecord` gains `version` (dtgwg-trust-tasks-tf):
+
+  Host (vti-rooms, both room-host and vtc-service):
+  - `Record::sealed_version` keeps the version a kept body was sealed at, set at
+    the first curation of a sealed body and never moved by a later one; a new
+    body (`put_record`) or a retraction clears it. Stored rows without it load
+    unchanged (`serde(default)`).
+  - Served as `sealed.version` only where it differs from the record's own, so
+    no record changes shape until a curation needs it; part of `sealed`, so the
+    committed leaf covers it. Mirrors copy it (`Record::from_wire`).
+  - `SealedContent::sealed_at` refuses a `sealed.version` above the record's.
+
+  Agent (vta-service):
+  - `room_groups::open_record_at` opens at a given version and, with
+    `Search::Earlier`, searches earlier ones newest first — never later — and
+    names the version that opened. For records curated by a host predating
+    `sealed.version`: the AEAD makes a wrong guess fail rather than mislead.
+  - rooms/keys/read and the profile reader open at `sealed.version` (searching
+    where the host gave none) and check the profile's location there.
+    rooms/keys/open searches from the version the caller passed. Both say where
+    the body opened in `ext["org.openvtc.rooms"].sealedAt` when it is not the
+    version asked, because the caller verifies the author's signature there.
+
+  CLI (vta-cli-common): `open_and_verify` opens at the sealed-at version and
+  verifies where the VTA says it opened (refusing a later one). `pnm rooms file
+  get` parses the host's reply with a generated type that gains `version` with
+  the next trust-tasks-rs; until then the VTA's search covers it.
+
+
+
+## [0.17.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-rooms-v0.16.0...vti-rooms-v0.17.0) — 2026-10-16
+
+
+### Added
+
+- **rooms**: Rooms/owner/group/add 0.2 — a repeated admission is answered with its Welcome ([#2146](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2146))
+
+* feat(rooms)!: rooms/owner/group/add 0.2 — a repeated admission is answered with its Welcome
+
+  Serve `rooms/owner/group/add/0.2` (trust-tasks-tf #795) beside 0.1, and
+  raise the trust-tasks-rs floor to 0.31.11, which carries it.
+
+  Under 0.1 a caller that lost an admission's answer and sent the identical
+  request again was refused `alreadyMember`: the member had a leaf and no
+  Welcome anyone could give them. 0.2 item 8:
+
+  - The owner's VTA keeps the last admission it applied for a room —
+    member, the KeyPackage's KeyPackageRef (RFC 9420 §5.2), epoch and
+    Welcome — in `room_groups` (`room-admitted/<room>/<persona>`, beside the
+    pending advance that already holds the same Welcome, under the same
+    storage encryption and backup membership). It is discarded when the
+    owner builds its next advance of the room, after 24 hours (checked on
+    read, and swept by the storage thread), and with the member's group.
+  - A request naming the same room, a string-equal member and a KeyPackage
+    with the same KeyPackageRef is answered — after item 1 and the
+    authorization checks — with that epoch and Welcome: the host is not
+    contacted, the group not changed, no new Welcome built. Anything else
+    for a member with a leaf stays `alreadyMember`.
+  - Item 6 hands over to item 8: a pending admission settled by the
+    identical request becomes the retained one and answers it.
+  - 0.1 is unchanged.
+
+- **vtc**: The `rooms` topic on the admin console's live channel (vtc/admin/events 0.2) ([#2136](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2136))
+
+Serve `vtc/admin/events/subscribe/0.2` beside 0.1 (trust-tasks-tf #767, in
+  trust-tasks-rs 0.31.2+). The topic set is closed per version: 0.2 adds `rooms`
+  and nothing else, a 0.1 subscribe that names it is refused by its schema, and
+  every stream answers — its `#response` and every hint — at the version it was
+  opened with, so 0.1 consoles and `cnm actions watch` are unchanged.
+
+  `rooms` is effective for holders of `vtc.rooms.admin` (subscribe 0.2
+  §Authorization; `admin_events::read_capability`), who are answered on
+  `vtc/rooms/list`, `vtc/rooms/usage` and `vtc/storage/configs/list`. It is a
+  countless hint, sent per event 0.2 producer rule 4 when a room is registered or
+  removed, a room's lifecycle state changes, a room's usage or a storage config's
+  held bytes crosses 80/95/100 % of its limit or capacity in either direction, or
+  a storage config is created, changed or changes state. The stream fingerprints
+  exactly those facts, read as the rooms reads report them, so holdings moving
+  inside a band or a live room renewing send nothing. Lifecycle is computed from
+  the clock and never written, so a stream holding `rooms` also wakes itself at
+  the next transition (`vti_rooms::Room::next_lifecycle_change`).
+
+
+
+## [0.16.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-rooms-v0.15.0...vti-rooms-v0.16.0) — 2026-10-15
+
+
+### Added
+
+- **rooms**: Direct uploads — rooms/blobs 0.2 straight to storage, presigned by the VTA (trust-tasks-tf #775) ([#2121](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2121))
+
+* build(deps): trust-tasks-rs 0.31.5 floor — external/credentials/issue 0.2 (trust-tasks-tf #775)
+
+- **vta**: Rooms/owner/group/renew renews a sealed room; pnm rooms renew refuses a sealed room ([#2112](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2112))
+
+Implements trustoverip/dtgwg-trust-tasks-tf#773.
+
+  A sealed room's (`attributed` / `private`) epoch is its MLS group's epoch plus
+  one, so a bare `rooms/epoch/mint` moves the host and no member: every write is
+  then refused as sealed under a superseded epoch, and the owner's next
+  group/{add,remove} fails epochConflict. Until now a sealed room with a stable
+  membership had no correct way to renew, and one way to brick itself that
+  looked like a renewal.
+
+  The VTA now serves `rooms/owner/group/renew/0.1`, the third advance beside add
+  and remove, on the same remote-first machinery:
+
+  - Item 1: `noGroup` (an open room renews with rooms/epoch/mint), `noAuthority`
+    before anything is settled or built.
+  - Items 2, 3, 7: `vti_rooms::sealed::SealedRoom::renew` builds a self-update
+    commit (no proposal adding or removing anyone) and the epoch link on a copy;
+    `room_groups::prepare_renew` retains it durably as the room's one pending
+    advance, of the new kind `AdvanceKind::Renewal`, before anything is sent.
+  - Items 4, 5: `rooms/epoch/mint` (epoch, link, commit, the owner persona's
+    `admin` presentation, reason), signed as the owner persona; applied on
+    acceptance, discarded on refusal (`hostRefused`, or `epochConflict` with
+    `details.hostEpoch` on `nonSequential`), kept on an unknown outcome
+    (`hostUnreachable`).
+  - Item 6: any pending advance — admission, removal or renewal — is settled
+    through `rooms/info` before another is built.
+
+- **rooms**: Rooms/blobs 0.2 — the single-use upload key, and reads straight from storage (trust-tasks-tf #771) ([#2108](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2108))
+
+* build(deps): trust-tasks-rs 0.31.4 floor — rooms/blobs 0.2 and rooms/keys/act (trust-tasks-tf #771)
+
+- **rooms**: Backfill from the CLI, and say plainly when a member was removed ([#2097](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2097))
+
+Found in a live run of a two-VTA room on a VTC:
+
+  - A member who had just joined could not read anything written before they
+    joined from the CLI: the VTA's rooms/keys/backfill fetches the history from
+    the host, but nothing called it. New `pnm rooms keys backfill --room
+    --host-did` (VtaClient::room_backfill) walks the chain down until the whole
+    retained history reads or the host has no more.
+  - `pnm rooms get` told every member who could not open a record to ask for the
+    latest commit, including one whose record was older than their group. It now
+    names the remedy for each case: backfill for an older record, `keys commit
+    --host` for a newer one.
+  - A removed member applying their own removal got GroupStateError
+    (UseAfterEviction) from the key export. vti-rooms now detects the eviction
+    when the commit merges and returns RoomKeyError::Removed ("this commit
+    removed this holder from the group…"), and the CLI says what it means.
+  - Wording: "an authority credential"; group-create's next step no longer tells
+    an owner to issue credentials they already issued.
+
+- **vtc**: Console Storage page, moving a room's storage, and the rooms' defaults ([#2081](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2081))
+
+P9 part 3b (docs/05-design-notes/data-rooms-files.md §7, §8.1).
+
+  - Storage (/storage, vtc.rooms.admin): every storage config with what it
+    holds against its capacity, its credential state (never a credential) and
+    its health; configs whose credential is `required` — as after a restore —
+    are listed first. A config's own page probes it (optionally writing,
+    reading back and deleting a canary) and shows each step, changes its
+    label, capacity or default, and retires it. "New storage" creates a
+    `local` config or an `s3` config through an external account at the
+    community's VTA, named by its context and identifier: the form asks for
+    nothing secret. Kinds and auth modes this build does not serve (ambient,
+    sealed, gcs, walrus) are not offered.
+  - A room's page gains "Send new uploads to other storage"
+    (vtc/rooms/storage/assign/0.1). Its existing files stay where they are.
+  - Create, update, retire and assign take the requester's operation-bound
+    step-up and are parked for another holder of vtc.rooms.admin (§7.4); the
+    screens say "Sent for approval" and link the action, never "Saved".
+    Retiring the default or a config with rooms is not offered, as the VTC
+    refuses both.
+  - Data rooms gains a Defaults card (the design's Settings ▸ Rooms; the
+    console has no Settings area): each room's and each member's limits, the
+    host-wide largest file, capacity and how long a deleted file is kept,
+    read-only, with the configuration sections that change them.
+
+  To carry those defaults, vtc/rooms/list's ext["org.openvtc"].roomFiles now
+  holds, when files are on, `defaults.{room,member}` (each byte measure capped
+  at the host ceiling, as reported limits are), `maxFileBytes`,
+  `orphanGraceHours` and `storageCapacityBytes` when set. Files off still
+  answers `{ enabled: false }` and nothing else. vti-rooms gains a read-only
+  BlobHost::host_limits() accessor.
+
+  The storage response shapes are rendered from the specification
+  (vta_sdk::openapi wrappers → admin-ui/openapi.json → wire.ts). Census
+  updates: the list-limit census and its Rust counterpart gain
+  vtc/storage/configs/list (100), the sidebar census gains Storage, and the
+  console document-type manifest gains the seven storage tasks.
+
+- **vtc**: Room usage, room detail and limit overrides — vtc/rooms/{get,usage,limits/set} and rooms/usage ([#2077](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2077))
+
+P9 part 2 (docs/05-design-notes/data-rooms-files.md §6.2–6.3, §8.1): the host
+  tasks the console's room detail and Usage pages read, over the history and
+  overrides #2073 put in vti-rooms.
+
+  vtc/rooms/get (vtc.rooms.admin): one room's host record, assigned config and
+  every earlier config still holding its blobs, effective limits with each scope's
+  source and the host ceiling, usage and orphans, the ten largest blobs by size
+  only, and on rooms that are not private a count of members with files — never
+  their DIDs (item 5).
+
+  vtc/rooms/usage (vtc.rooms.admin): rows grouped by room, member, storage config
+  or day, filtered by room, member, config and an inclusive date range (default
+  the last 30 days; invalidRange past 400 days, inverted, or before the oldest
+  kept day), sorted, and paged by a cursor bound to its query (invalidCursor
+  otherwise). Member figures only on rooms that are not private
+  (memberUsageUnavailable when one is named). Activity by config is attributed to
+  each room's current assignment.
+
+  vtc/rooms/limits/set (vtc.rooms.admin): an override for the room, its members by
+  default, or one member; refuses aboveCeiling, memberLimitsUnavailable and
+  invalidCombination as declared, answers the effective limits, the target scope's
+  usage and overLimit, and is audited (new RoomLimitsChanged event: room, target,
+  previous, current, reason). Not parked, as the specification says: an allowance
+  is reversible and loses nothing.
+
+  rooms/usage (the room owner's read, an admin chain) on both hosts, through
+  vti_rooms::blob_tasks::usage: one entry per member holding storage or an
+  override, paged; notAvailable on a private room.
+
+  vtc/rooms/list moves to vtc.rooms.admin, as §6.2 says it should: a community can
+  hand room hosting to someone who is not a full administrator.
+
+  Both censuses carry the new tasks: conformance witnesses for the three, and
+  error-code witnesses for every code they declare.
+
+- **rooms**: Daily usage history, member index and limit overrides for room files ([#2073](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2073))
+
+The host-side data the console's room detail and Usage pages read
+  (docs/05-design-notes/data-rooms-files.md §6.2–6.3, phase P9), in vti-rooms so
+  a community and a standalone room host count the same way.
+
+
+
+### Fixed
+
+- **pnm**: Rooms and setup messages say what happened and print the fix ([#2126](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2126))
+
+Three operator-facing messages from a live run.
+
+  A sealed-room write at a superseded epoch (after `pnm rooms owner
+  group-renew`, before the member applied the commit) printed a raw HTTP 400
+  body. The VTC and room-host now refuse it with the declared
+  `rooms/records/put:epochMismatch` (vti_rooms::blob_tasks::record_epoch_refused,
+  checked before the store, which keeps its own check as the backstop), and
+  pnm matches that code to say the room moved on and print
+  `pnm rooms keys commit --room <room> --host <url> [--host-did <did>]` with
+  the real values.
+
+  A member removed from a sealed room was told "a commit has not been
+  delivered" when reading a newer record. The VTA now records the removal
+  (`room-removed/<room>/<persona>`) when it applies the commit that removed
+  its member, clears it on a fresh join, and `rooms/keys/open` answers the
+  declared `unknownEpoch` with `details.reason` `removed` or `notDelivered`
+  (as `rooms/keys/file-key` already does). `pnm rooms get` tells a removed
+  member so, without suggesting `keys commit`; a member who is only behind
+  gets the catch-up command with the real values.
+
+  `pnm setup continue` always ended with the `vta import-did` advice. It now
+  authenticates as the phase-1 identity (which is also the cold start's
+  rotation) and prints the advice only when the VTA refused it or could not
+  be reached; on success it reports the rotated DID, which is also what the
+  non-interactive JSON line now carries as `admin_did`.
+
+- **vtc**: Admit room traffic on what it proves, not the anonymous per-IP governor ([#2102](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2102))
+
+Every `rooms/*` Trust Task reaches the VTC on the unauthenticated chain and
+  was charged to the per-IP `unauth` governor: a burst of 10, then one request
+  every 5 s, shared by everyone behind one address. Two members on one machine
+  were refused within seconds, and `pnm rooms file get` of a 300 KB file 429'd
+  every time. Upload chunks fared worse: above 64 KiB they also took the
+  large-document budget, five a minute per address and sixty across the node.
+
+  A `rooms/*` document (the closed set the rooms dispatcher serves) now leaves
+  the anonymous governor and is charged, in `routing::trust_task_admission`:
+
+  - before anything is verified, to its address's room ceiling
+    (`room-address`, default burst 400 then one every 10 ms). A document that
+    never verifies, or that its room never authorizes, costs that ceiling 25
+    more, so an unverifiable flood from one address is held to about four a
+    second once its burst is spent;
+  - once the room has authorized it and before the work, to the presenter's
+    budget in that room (`room-presenter`, burst 120, one every 100 ms), or for
+    an upload/download chunk, once the presenter is shown to hold the transfer
+    (`BlobHost::transfer_room`), to the transfer budget (`room-transfer`, burst
+    200, one every 20 ms: a 100 MB file at 256 KiB chunks waits ~4 s past the
+    burst). Keys are a hash of (room, presenter) under a per-process secret, and
+    are charged only after the room's chain verifies, so two members behind one
+    NAT have independent budgets and nobody drains a member's by naming them.
+
+  An upload chunk charged to the room ceiling over HTTPS skips the
+  large-document budget (`size::check_for_known_issuer_with`); over DIDComm/TSP
+  it keeps it. Every refusal keeps the 429 contract (x-rate-limit-source: vtc,
+  Retry-After, JSON body naming the limiter); the three limiter names join the
+  table in `routing::rate_limit`.
+
+  The budgets are an optional `[rooms.rate_limits]` section (address_*,
+  presenter_*, transfer_* as `_burst` and `_interval_ms`); absent, the defaults
+  above. Documented in docs/02-vta/data-rooms.md §8.2 and
+  docs/03-vtc/website-and-admin.md.
+
+  vtc-client's room calls now wait out a Retry-After of up to 30 s and retry
+  (up to 5 attempts, re-signed each time) for reads only: records get/list,
+  info, epoch chain/commits, blobs get and download chunks. Writes are never
+  retried.
+
+  vti-rooms gains `BlobHost::transfer_room` (additive).
+
+
+
+## [0.15.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-rooms-v0.14.0...vti-rooms-v0.15.0) — 2026-10-13
+
+
+### Added
+
+- **vtc**: Storage configs — where a community keeps its rooms' files, changed only with consent ([#2052](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2052))
+
+Phase P4 (first part) of docs/05-design-notes/data-rooms-files.md §7.
+
+
+
+## [0.14.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-rooms-v0.13.0...vti-rooms-v0.14.0) — 2026-10-12
+
+
 ## [0.13.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-rooms-v0.12.0...vti-rooms-v0.13.0) — 2026-10-11
 
 

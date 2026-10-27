@@ -511,8 +511,9 @@ fn candidate_from_stored(
             // stored one is always presentable in that respect.
             (Value::Object(claims), None, true)
         }
-        // Unreachable: `dcql_format` returned `Some` only for the arms above.
-        CredentialFormat::Zkp | CredentialFormat::Other(_) => {
+        // Unreachable: `dcql_format` returned `Some` only for the arms above
+        // (`CredentialFormat` is `#[non_exhaustive]`).
+        _ => {
             return Ok(None);
         }
     };
@@ -685,10 +686,10 @@ async fn present_single(
 /// Present an **ISO mdoc** as an OID4VP `vp_token` entry: base64url-no-pad CBOR
 /// of a `DeviceResponse`, **not** a W3C VP object like every other format here.
 ///
-/// The holder binding is a `DeviceAuth` COSE_Sign1 over the ISO 18013-7 session
+/// The holder binding is a `DeviceAuth` COSE_Sign1 over the OpenID4VP 1.0 session
 /// transcript, which is why this needs an [`Oid4vpSession`] the other formats
-/// have no use for: two of the transcript's four handover members (`client_id`,
-/// `response_uri`) exist only in an OID4VP exchange. A transcript built from
+/// have no use for: three of the handover's four members (`client_id`,
+/// `jwk_thumbprint`, `response_uri`) exist only in an OID4VP exchange. A transcript built from
 /// invented values would produce a signature no verifier can reconstruct — and,
 /// worse, one that *looks* like holder binding.
 #[allow(clippy::too_many_arguments)]
@@ -729,11 +730,20 @@ async fn present_mdoc(
         )));
     }
 
+    let jwk_thumbprint = session
+        .jwk_thumbprint
+        .as_deref()
+        .map(|t| {
+            URL_SAFE_NO_PAD.decode(t).map_err(|_| {
+                AppError::Validation("oid4vp_session.jwk_thumbprint is not base64url".into())
+            })
+        })
+        .transpose()?;
     let transcript = affinidi_mdoc::SessionTranscript::new_oid4vp(
         &session.client_id,
-        &session.response_uri,
         nonce,
-        &session.mdoc_generated_nonce,
+        jwk_thumbprint,
+        &session.response_uri,
     );
 
     let signer = Es256CoseSigner::from_bytes(device_private)
@@ -1111,6 +1121,7 @@ pub mod pending {
     /// Where a deferred presentation stands.
     #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
     #[serde(rename_all = "snake_case")]
+    #[non_exhaustive]
     pub enum PendingStatus {
         /// Awaiting the holder's out-of-band approval.
         Pending,
@@ -1367,7 +1378,9 @@ fn dcql_format(format: &CredentialFormat) -> Option<&'static str> {
         CredentialFormat::SdJwtVc => Some("dc+sd-jwt"),
         CredentialFormat::EddsaJcs2022 => Some("ldp_vc"),
         CredentialFormat::MsoMdoc => Some("mso_mdoc"),
-        CredentialFormat::Bbs2023 | CredentialFormat::Zkp | CredentialFormat::Other(_) => None,
+        // `CredentialFormat` is `#[non_exhaustive]`: a format not mapped here
+        // does not match, as above.
+        _ => None,
     }
 }
 
@@ -1380,6 +1393,275 @@ fn render_path(path: Vec<ClaimPathSegment>) -> Vec<String> {
             ClaimPathSegment::Wildcard => "[*]".to_string(),
         })
         .collect()
+}
+
+// ─── vault/credentials/present ───────────────────────────────────────────────
+
+/// Why `vault/credentials/present/0.1` refused — one variant per code the task
+/// declares, plus the agent's own failures.
+#[derive(Debug)]
+#[non_exhaustive]
+pub enum PresentToError {
+    /// No credential under the id this caller may present, or no key of its
+    /// subject this caller may use — indistinguishably (*Custody scope*).
+    NotFound,
+    /// Revoked, suspended, outside its validity period, archived or deleted.
+    NotPresentable,
+    /// A format this agent cannot present to a named verifier.
+    FormatUnsupported,
+    /// Claims the request names that the credential does not carry.
+    ClaimNotHeld(Vec<String>),
+    /// The credential cannot disclose less than all its claims, and these were
+    /// left out of the request.
+    WouldOverDisclose(Vec<String>),
+    /// Anything else.
+    App(AppError),
+}
+
+impl From<AppError> for PresentToError {
+    fn from(e: AppError) -> Self {
+        Self::App(e)
+    }
+}
+
+/// A presentation made for a named verifier, and the claims it discloses.
+#[derive(Debug)]
+pub struct PresentedTo {
+    /// A compact SD-JWT (string) or a Data Integrity VP (object).
+    pub presentation: Value,
+    /// Every subject claim the presentation discloses.
+    pub disclosed: Vec<String>,
+}
+
+/// What a stored credential can disclose.
+struct SubjectClaims {
+    /// Claims a presentation can withhold.
+    selective: BTreeSet<String>,
+    /// Claims every presentation of it discloses.
+    always: BTreeSet<String>,
+}
+
+/// JWT and SD-JWT-VC members that are not claims about the subject.
+const SD_JWT_REGISTERED: &[&str] = &[
+    "_sd",
+    "_sd_alg",
+    "iss",
+    "sub",
+    "aud",
+    "iat",
+    "nbf",
+    "exp",
+    "jti",
+    "cnf",
+    "vct",
+    "vct#integrity",
+    "status",
+];
+
+fn subject_claims(stored: &StoredCredential) -> Result<SubjectClaims, AppError> {
+    match stored.format {
+        CredentialFormat::SdJwtVc => {
+            let compact = std::str::from_utf8(&stored.body).map_err(|e| {
+                AppError::Validation(format!("credential `{}` is not UTF-8: {e}", stored.id))
+            })?;
+            let hasher = affinidi_sd_jwt::hasher::Sha256Hasher;
+            let sd = affinidi_sd_jwt::SdJwt::parse(compact, &hasher).map_err(|e| {
+                AppError::Validation(format!("credential `{}` is not SD-JWT-VC: {e}", stored.id))
+            })?;
+            let payload = sd.payload().map_err(|e| {
+                AppError::Validation(format!("credential `{}` payload: {e}", stored.id))
+            })?;
+            let selective = sd
+                .disclosures
+                .iter()
+                .filter_map(|d| d.claim_name.clone())
+                .collect();
+            let always = payload
+                .as_object()
+                .map(|o| {
+                    o.keys()
+                        .filter(|k| !SD_JWT_REGISTERED.contains(&k.as_str()))
+                        .cloned()
+                        .collect()
+                })
+                .unwrap_or_default();
+            Ok(SubjectClaims { selective, always })
+        }
+        CredentialFormat::EddsaJcs2022 => {
+            let vc: Value = serde_json::from_slice(&stored.body).map_err(|e| {
+                AppError::Validation(format!("credential `{}` is not JSON: {e}", stored.id))
+            })?;
+            let always = vc
+                .get("credentialSubject")
+                .and_then(Value::as_object)
+                .map(|o| o.keys().filter(|k| *k != "id").cloned().collect())
+                .unwrap_or_default();
+            Ok(SubjectClaims {
+                selective: BTreeSet::new(),
+                always,
+            })
+        }
+        _ => Err(AppError::Validation(format!(
+            "credential `{}` is not presentable to a named verifier",
+            stored.id
+        ))),
+    }
+}
+
+/// Whether `stored` may be presented at `now`, before anything is recorded: its
+/// lifecycle, its stored status and its validity period. A status list is
+/// re-read later, by the presentation gate itself.
+fn presentable_now(stored: &StoredCredential, now: DateTime<Utc>) -> bool {
+    let within = |bound: Option<&str>, before: bool| {
+        bound.is_none_or(|t| {
+            t.parse::<DateTime<Utc>>()
+                .is_ok_and(|t| if before { now >= t } else { now < t })
+        })
+    };
+    stored.is_active()
+        && stored.status == vta_vault::model::CredentialStatus::Valid
+        && within(stored.valid_from.as_deref(), true)
+        && within(stored.valid_until.as_deref(), false)
+}
+
+/// `vault/credentials/present/0.1`: present one held credential to `audience`,
+/// bound to `nonce`, disclosing only `claims`, signed as the credential's
+/// subject.
+///
+/// The conformance items in order: custody (1), presentability (2), claims held
+/// (3), no over-disclosure (4), then the disclosure is recorded — a consent
+/// record signed by the subject, naming the credential, the audience and the
+/// claims — before the presentation is built (6), which binds `audience` and
+/// `nonce` (5).
+#[allow(clippy::too_many_arguments)]
+pub async fn present_to_audience(
+    state: &crate::server::AppState,
+    auth: &AuthClaims,
+    credential_id: &str,
+    audience: &str,
+    nonce: &str,
+    claims: &[String],
+    purpose: Option<&str>,
+    now: DateTime<Utc>,
+) -> Result<PresentedTo, PresentToError> {
+    let stored = vault::storage::get(&state.vault_ks, credential_id)
+        .await?
+        .filter(|c| {
+            c.is_active()
+                && vault::query::caller_may_access_custody(
+                    &auth.act_scope(),
+                    c.context_id.as_deref(),
+                )
+        })
+        .ok_or(PresentToError::NotFound)?;
+    if !matches!(
+        stored.format,
+        CredentialFormat::SdJwtVc | CredentialFormat::EddsaJcs2022
+    ) {
+        return Err(PresentToError::FormatUnsupported);
+    }
+    if !presentable_now(&stored, now) {
+        return Err(PresentToError::NotPresentable);
+    }
+    let subject = stored.subject_did.clone().ok_or(PresentToError::NotFound)?;
+
+    let held = subject_claims(&stored)?;
+    let missing: Vec<String> = claims
+        .iter()
+        .filter(|c| !held.selective.contains(*c) && !held.always.contains(*c))
+        .cloned()
+        .collect();
+    if !missing.is_empty() {
+        return Err(PresentToError::ClaimNotHeld(missing));
+    }
+    // A claim every presentation carries is disclosed whether or not it was
+    // named; where those are claims the request left out, presenting would
+    // disclose more than it asked (item 4).
+    let undisclosed: Vec<String> = held
+        .always
+        .iter()
+        .filter(|c| !claims.contains(c))
+        .cloned()
+        .collect();
+    if !undisclosed.is_empty() {
+        return Err(PresentToError::WouldOverDisclose(undisclosed));
+    }
+
+    // The holder key, in a context this caller acts in; anything short of that
+    // is the same `notFound` as an unknown credential.
+    let keys = if subject.starts_with("did:key:") {
+        resolve_holder_keys(
+            &state.keys_ks,
+            &state.contexts_ks,
+            &state.seed_store,
+            &state.audit_sink,
+            auth,
+            &subject,
+        )
+        .await
+    } else {
+        crate::operations::holder_keys::resolve_persona_holder_keys(
+            crate::operations::persona::PersonaStores::from_state(state),
+            &state.contexts_ks,
+            &state.seed_store,
+            &state.audit_sink,
+            auth,
+            &subject,
+        )
+        .await
+    }
+    .map_err(|e| match e {
+        AppError::NotFound(_) | AppError::Forbidden(_) | AppError::Validation(_) => {
+            PresentToError::NotFound
+        }
+        other => PresentToError::App(other),
+    })?;
+
+    // Item 6: the record of the disclosure, before the presentation exists.
+    let consent = consent::create(
+        &state.vault_ks,
+        &ConsentGrant {
+            holder: vta_vault::consent::HolderIdentity::Subject(&subject),
+            credential_id,
+            verifier_did: audience,
+            purpose: purpose.unwrap_or("vault/credentials/present"),
+            claims: claims.to_vec(),
+            valid_until: now + chrono::Duration::minutes(5),
+        },
+        &keys.consent_secret,
+    )
+    .await?;
+
+    let presentation = present_single(
+        &state.vault_ks,
+        &stored,
+        &consent.identifier,
+        &keys.signer,
+        &keys.consent_secret,
+        nonce,
+        audience,
+        now.timestamp() as u64,
+        state.status_list_resolver.as_deref(),
+        now,
+    )
+    .await
+    .map_err(|e| match e {
+        // The status list, re-read now, says it is no longer usable.
+        AppError::Forbidden(_) => PresentToError::NotPresentable,
+        other => PresentToError::App(other),
+    })?;
+
+    let mut disclosed: BTreeSet<String> = held.always;
+    disclosed.extend(
+        claims
+            .iter()
+            .filter(|c| held.selective.contains(*c))
+            .cloned(),
+    );
+    Ok(PresentedTo {
+        presentation,
+        disclosed: disclosed.into_iter().collect(),
+    })
 }
 
 #[cfg(test)]
@@ -3098,6 +3380,59 @@ mod tests {
             "the same mdoc must match once a session is available — otherwise the \
              gate is just breaking mdoc support"
         );
+    }
+
+    /// `DeviceAuth` is signed over the OpenID4VP 1.0 handover — client_id, nonce,
+    /// the verifier's encryption-key thumbprint and response_uri — so it verifies
+    /// against exactly that transcript, and not against one without the
+    /// thumbprint (an unencrypted response's) or with another nonce.
+    #[tokio::test]
+    async fn an_mdoc_device_auth_binds_the_openid4vp_1_0_handover() {
+        use affinidi_mdoc::es256_cose::{Es256CoseSigner, Es256CoseVerifier};
+
+        let doc_type = "eu.europa.ec.eudi.pid.1";
+        let stored = stored_mdoc(doc_type);
+        let device_key = [7u8; 32];
+        let thumbprint = [9u8; 32];
+        let session = Oid4vpSession {
+            client_id: "x509_hash:verifier".into(),
+            response_uri: "https://verifier.example/response".into(),
+            jwk_thumbprint: Some(URL_SAFE_NO_PAD.encode(thumbprint)),
+        };
+        let token = present_mdoc(
+            &stored,
+            &[vec![
+                affinidi_mdoc::EIDAS_PID_NAMESPACE.to_string(),
+                "family_name".to_string(),
+            ]],
+            &device_key,
+            &session,
+            "nonce-1",
+        )
+        .await
+        .unwrap();
+        let bytes = URL_SAFE_NO_PAD.decode(token.as_str().unwrap()).unwrap();
+        let response = affinidi_mdoc::DeviceResponse::from_cbor_bytes(&bytes).unwrap();
+        let verifier = Es256CoseVerifier::from_bytes(
+            &Es256CoseSigner::from_bytes(&device_key)
+                .unwrap()
+                .public_key_bytes(),
+        )
+        .unwrap();
+        let transcript = |nonce: &str, jwk: Option<Vec<u8>>| {
+            affinidi_mdoc::SessionTranscript::new_oid4vp(
+                &session.client_id,
+                nonce,
+                jwk,
+                &session.response_uri,
+            )
+        };
+        let verifies = |t: affinidi_mdoc::SessionTranscript| {
+            response.verify_device_auth(&t, &verifier).unwrap_or(false)
+        };
+        assert!(verifies(transcript("nonce-1", Some(thumbprint.to_vec()))));
+        assert!(!verifies(transcript("nonce-1", None)));
+        assert!(!verifies(transcript("nonce-2", Some(thumbprint.to_vec()))));
     }
 
     /// DCQL addresses an mdoc claim as [namespace, elementIdentifier], not as a

@@ -58,6 +58,10 @@ export function shorten(value: string, head = 8, tail = 4): string {
  *   "did:webvh:Qm123:example.com"           -> "did:webvh:Qm123:example.com"
  *   "did:key:z6MkfrQjWzPQrTuVwXyZaBcDeFgHiJkLmNoPqRsTuVwXyZ4rT"
  *                                       -> "did:key:z6MkfrQjWz…XyZ4rT"
+ *   "did:scid:vh:1:QmXkAbCdEfGhIjKlMnOp?src=webvh.storm.ws/glenn-vta"
+ *                       -> "did:scid:vh:1:QmXkAbCdEf…?src=…storm.ws/glenn-vta"
+ *   "did:scid:vh:1:QmXkAbCdEfGhIjKlMnOp"   -> "did:scid:vh:1:QmXkAbCdEf…"
+ *   "did:scid:vh:1:Qm123?src=example.com"  -> "did:scid:vh:1:Qm123?src=example.com"
  *   "did:key:z6MkfrQjWz"                       -> "did:key:z6MkfrQjWz"
  *   "did:webvh:QmXkAbCdEfGhIjKlMnOpQrSt" -> "did:webvh:QmXkAbCdEf…OpQrSt"
  */
@@ -76,6 +80,21 @@ function shortenHost(host: string): string {
 
 function shortenDidKeep(did: string, keep: number): string {
   if (!did.startsWith("did:")) return did;
+  // did:scid:vh:1:<scid>[?src=<host>[/<path>]] — the SCID abbreviated like a
+  // did:webvh's, and the `src` host like its host, the path kept.
+  if (did.startsWith("did:scid:vh:1:")) {
+    const rest = did.slice("did:scid:vh:1:".length);
+    const at = rest.indexOf("?src=");
+    const scid = at < 0 ? rest : rest.slice(0, at);
+    let out = "did:scid:vh:1:" + (scid.length > keep + 1 ? `${scid.slice(0, keep)}…` : scid);
+    if (at >= 0) {
+      const src = rest.slice(at + "?src=".length);
+      const slash = src.indexOf("/");
+      const host = slash < 0 ? src : src.slice(0, slash);
+      out += `?src=${shortenHost(host)}${slash < 0 ? "" : src.slice(slash)}`;
+    }
+    return out;
+  }
   const parts = did.split(":");
   if ((parts[1] === "webvh" || parts[1] === "web") && parts.length > 3) {
     const scid = parts[2] ?? "";

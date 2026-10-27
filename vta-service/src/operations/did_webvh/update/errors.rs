@@ -13,6 +13,7 @@ use crate::error::AppError;
 /// `Rejected`, a transition webvh refuses — map to 400; concurrency conflicts
 /// map to 409; everything else is 500.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum UpdateDidWebvhError {
     /// SCID not found, or the DID exists but is owned by a different
     /// context than the caller has admin rights for. Both cases collapse

@@ -52,10 +52,33 @@ pub async fn auth_for_trust_task_envelope(
     sender_did: &str,
     body: &[u8],
 ) -> Result<AuthClaims, AppError> {
+    resolve_trust_task_sender(state, sender_did, body)
+        .await
+        .map(|(claims, _)| claims)
+}
+
+/// Where a sender's claims came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Standing {
+    /// An ACL entry: the sender is one of this VTA's clients.
+    Acl,
+    /// No ACL entry: a public task, a credential-exchange counterparty or a
+    /// ceremony, dispatched on a claim that reaches nothing. Such a sender is
+    /// not charged to the operation budget, or a stranger could spend the
+    /// budget this VTA's clients need.
+    ZeroAuthority,
+}
+
+/// [`auth_for_trust_task_envelope`], also saying where the claims came from.
+pub(crate) async fn resolve_trust_task_sender(
+    state: &crate::server::AppState,
+    sender_did: &str,
+    body: &[u8],
+) -> Result<(AuthClaims, Standing), AppError> {
     use crate::trust_tasks::ceremony;
 
     let denial = match auth_from_did(sender_did, &state.acl_ks, &state.sessions_ks).await {
-        Ok(auth) => return Ok(auth),
+        Ok(auth) => return Ok((auth, Standing::Acl)),
         // Only an authorization denial is eligible. A store or session failure
         // is an infrastructure fault, and quietly downgrading it to a
         // zero-authority dispatch would hide it behind a task that then fails
@@ -75,9 +98,10 @@ pub async fn auth_for_trust_task_envelope(
         // A public task (`vta_sdk::trust_tasks::PUBLIC_URIS`): anyone may ask,
         // so a sender the ACL does not know gets the same zero-authority claim
         // an anonymous HTTPS caller does.
-        Some(uri) if crate::trust_tasks::is_public_task(uri) => {
-            Ok(ceremony::ceremony_claims(sender_did))
-        }
+        Some(uri) if crate::trust_tasks::is_public_task(uri) => Ok((
+            ceremony::ceremony_claims(sender_did),
+            Standing::ZeroAuthority,
+        )),
         Some(uri) if crate::trust_tasks::credential_exchange::is_counterparty_task(uri) => {
             tracing::debug!(
                 sender = %sender_did,
@@ -86,7 +110,10 @@ pub async fn auth_for_trust_task_envelope(
                 "credential-exchange step from a counterparty with no ACL standing — \
                  dispatching on a zero-authority claim"
             );
-            Ok(ceremony::ceremony_claims(sender_did))
+            Ok((
+                ceremony::ceremony_claims(sender_did),
+                Standing::ZeroAuthority,
+            ))
         }
         Some(uri)
             if ceremony::is_ceremony_task(uri)
@@ -99,7 +126,10 @@ pub async fn auth_for_trust_task_envelope(
                 "ceremony task from a sender with no ACL standing — dispatching on a \
                  zero-authority claim; the document's own proof is the authority"
             );
-            Ok(ceremony::ceremony_claims(sender_did))
+            Ok((
+                ceremony::ceremony_claims(sender_did),
+                Standing::ZeroAuthority,
+            ))
         }
         // Named so the operator can tell a refused task from one that never
         // arrived. Without this the reply is a `permissionDenied` envelope the

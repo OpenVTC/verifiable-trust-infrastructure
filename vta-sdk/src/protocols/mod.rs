@@ -131,6 +131,17 @@ pub mod trust_task_reject_reasons {
     ///
     /// [`VtaError::Server`]: crate::error::VtaError::Server
     pub const UPSTREAM_UNAVAILABLE: &str = "upstream_unavailable";
+    /// A peer the VTA had to reach shares no transport the VTA can use for
+    /// the document it was sending. `details` also carries `counterpartyDid`,
+    /// `ours` and `theirs` (lowercase protocol names, preference order).
+    /// Recovers [`VtaError::NoMatchingProtocol`].
+    ///
+    /// The framework has no transport code (SPEC §8.3), and the peer is not
+    /// unavailable — it answers on a transport this side cannot start — so it
+    /// is `taskFailed`, not retryable, discriminated here.
+    ///
+    /// [`VtaError::NoMatchingProtocol`]: crate::error::VtaError::NoMatchingProtocol
+    pub const NO_MATCHING_PROTOCOL: &str = "no_matching_protocol";
 }
 
 /// Machine-readable `details` members the VTA puts on an

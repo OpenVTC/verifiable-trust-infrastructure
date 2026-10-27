@@ -2,7 +2,7 @@
 name = "vti-common"
 description = "Shared server-side infrastructure for VTA and VTC services"
 readme = "README.md"
-version = "0.42.0"
+version = "0.49.0"
 edition.workspace = true
 publish.workspace = true
 authors.workspace = true
@@ -25,6 +25,9 @@ tsp = [
   "affinidi-tdk/tsp",
   "vta-sdk/tsp",
 ]
+# `host_session`: a host service's identity reached over TSP and DIDComm
+# through its own mediator session (the witness, the ballot box).
+host-session = ["tsp", "dep:trust-tasks-didcomm"]
 # Exposes `AuthClaims::unsafe_local_cli_super_admin` — a synthesizer that
 # produces a super-admin claim without any wire-level verification. Only
 # for the local/dev `vta` binary's CLI, where the trust boundary is the
@@ -67,6 +70,10 @@ blob-s3 = ["dep:object_store", "object_store/aws"]
 # Room file storage on Google Cloud Storage, natively (not its S3
 # interoperability mode, which needs static HMAC keys).
 blob-gcs = ["dep:object_store", "object_store/gcp"]
+# Room file storage through presigned requests only (`blob_store::presigned`):
+# the store holds no credential, and asks a `Presigner` (a community's VTA
+# external account) for one request per operation.
+blob-presigned = ["reqwest/stream", "dep:quick-xml"]
 
 [dependencies]
 # vta-sdk for the canonical auth wire shapes
@@ -79,7 +86,7 @@ blob-gcs = ["dep:object_store", "object_store/gcp"]
 # `default-features = false` skips the optional client transports
 # (didcomm, sealed-transfer, etc.); we only consume the type
 # definitions in the default feature set.
-vta-sdk = { path = "../vta-sdk", version = "0.66", default-features = false, features = [
+vta-sdk = { path = "../vta-sdk", version = "0.73", default-features = false, features = [
   # The Trust-Task proof verifier lives there now; this crate re-exports it.
   "proof-verify",
 ] }
@@ -99,6 +106,8 @@ reqwest = { workspace = true }
 affinidi-messaging-sdk = { workspace = true, optional = true, features = [
   "tsp",
 ] }
+# `host_session`: the DIDComm binding envelope's type.
+trust-tasks-didcomm = { workspace = true, optional = true }
 axum = { workspace = true }
 axum-extra = { workspace = true }
 chrono = { workspace = true }
@@ -127,6 +136,10 @@ hex = { workspace = true }
 # `MAX_BODY_BYTES`) so it can hash inputs + cache outputs.
 http-body-util = "0.1"
 bytes = "1"
+# `audit::writer::AUDIT_CHAIN_RECOVERY_FAILURES` — same pattern and version as
+# `vta_audit::AUDIT_WRITE_FAILURES`, so the two counters compose on one
+# dashboard without a version mismatch between exporters.
+metrics = "0.24"
 
 # Secrets resolver (for error type)
 affinidi-tdk = { workspace = true }
@@ -173,8 +186,15 @@ ipnetwork = { workspace = true, optional = true }
 # takes a custom credential provider, which is where VTA-issued, room-scoped
 # credentials plug in later (data-rooms-files.md §7.4).
 object_store = { version = "0.14", default-features = false, optional = true }
+# S3's XML answers to the multipart and listing requests a direct upload's
+# verification reads (`blob_store::presigned`). Already in the graph through
+# `object_store`.
+quick-xml = { version = "0.42", features = ["serialize"], optional = true }
 
 [dev-dependencies]
+# `blob_store::presigned` also compiles for this crate's own tests without the
+# `blob-presigned` feature, and reads S3's XML answers.
+quick-xml = { version = "0.42", features = ["serialize"] }
 # Parses the config fixtures in the VaultConfig tests.
 toml = { workspace = true }
 tempfile = "3"
@@ -185,6 +205,13 @@ tempfile = "3"
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
 bytes = "1"
+# `blob_store::presigned` streams a staged file as a request body; its tests
+# run without the `blob-presigned` feature, so they ask for the same here.
+reqwest = { workspace = true, features = ["stream"] }
+# Captures `metrics` counters in-process so the audit chain-recovery tests can
+# assert what was emitted. Matches the `metrics 0.24` the crate records
+# through; no exporter is involved.
+metrics-util = { version = "0.20", features = ["debugging"] }
 
 [target.'cfg(unix)'.dev-dependencies]
 # `umask` in the secure_file tests, to prove a secret file is 0600 regardless

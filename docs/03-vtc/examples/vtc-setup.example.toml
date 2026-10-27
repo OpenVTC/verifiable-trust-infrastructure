@@ -78,6 +78,14 @@ context = "default"   # the VTA context this community provisions under
 # Default false.
 # single_admin_mode = true
 
+# How setup reaches the VTA: "tsp", "didcomm" or "rest". Omit for the
+# automatic TSP > DIDComm > REST, which moves on only when a transport fails to
+# connect. A reply lost after the VTA acted on the request is final — the setup
+# DID's one-time hand-off is spent, and the VTA keeps an admin entry nobody
+# holds the key to — so force a transport here to avoid a mediator known to
+# drop replies. One the VTA does not advertise is ignored. Not persisted.
+# provision_transport = "rest"
+
 # ── DID hosting (optional) ──────────────────────────────────────────────
 # Omit the whole [webvh] table for the serverless default: the VTC
 # self-hosts its did.jsonl at base_url with a server-assigned path.
@@ -125,7 +133,7 @@ context = "default"   # the VTA context this community provisions under
 # `backend` selects the store explicitly (recommended for declarative /
 # K8s deploys). When set it wins outright and setup validates that its
 # required field(s) below are present. Accepts:
-#   keyring | vault | k8s | aws | gcp | azure | config | plaintext
+#   keyring | vault | k8s | aws | gcp | azure | config | encrypted-file | plaintext
 # Omit `backend` to keep the legacy "whichever field is set wins"
 # resolution. TEE-KMS is intentionally not a VTC backend.
 backend = "keyring"
@@ -172,6 +180,14 @@ keyring_service = "vtc"
 # Inline config-secret (backend = "config", dev/test): setup writes the
 # hex key bundle into this file's [secrets] secret. Read-only at runtime.
 # backend = "config"
+
+# AES-256-GCM encrypted file (backend = "encrypted-file") — the secure local
+# option for a host with no OS keyring. Default <data_dir>/secret.enc. The
+# key-encryption key comes from a file, a systemd credential or the TPM, never
+# from this file or an environment variable. Must be readable while setup runs.
+# backend = "encrypted-file"
+# [secrets.encrypted_file]
+# kek = { source = "systemd_creds", credential = "vtc-secret-kek" }
 
 # Plaintext file (backend = "plaintext", NOT secure — dev/test only): the
 # bundle is written to <data_dir>/secret.plaintext.

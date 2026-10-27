@@ -235,6 +235,102 @@ impl VtaClient {
         .await
     }
 
+    /// `keys/sign-jws/0.1` — a compact JWS over the JSON object `payload`,
+    /// with the protected `header` members given (never `alg`, `crit`, `b64`,
+    /// `jwk`, `jku` or `x5u`), made by a key that never leaves the VTA.
+    ///
+    /// The VTA sets `alg` from the key and serialises header and payload
+    /// itself (RFC 8785), so use the returned `jws` as it is — and verify it
+    /// against the key's public half before relying on it.
+    ///
+    /// Needs the `sign-jws` capability; `sign` does not confer it.
+    pub async fn sign_jws(
+        &self,
+        key_id: &str,
+        header: serde_json::Map<String, serde_json::Value>,
+        payload: serde_json::Map<String, serde_json::Value>,
+    ) -> Result<crate::protocols::key_management::sign_jws::SignJwsResponse, VtaError> {
+        use crate::protocols::key_management::sign_jws::SignJwsPayload;
+        let mut body = serde_json::json!({ "keyId": key_id, "payload": payload });
+        if !header.is_empty() {
+            body["header"] = serde_json::Value::Object(header);
+        }
+        // Read back through the generated type, so a request the schema
+        // refuses is refused here rather than by the VTA.
+        let payload: SignJwsPayload = serde_json::from_value(body)
+            .map_err(|e| VtaError::Validation(format!("keys/sign-jws request: {e}")))?;
+        self.rpc_tt(
+            trust_tasks::TASK_KEYS_SIGN_JWS_0_1,
+            serde_json::to_value(payload)
+                .map_err(|e| VtaError::Protocol(format!("encode keys/sign-jws: {e}")))?,
+            30,
+        )
+        .await
+    }
+
+    /// `keys/sign-document/0.1` — an `eddsa-jcs-2022` Data Integrity proof over
+    /// `document` from a key that never leaves the VTA, made as the DID the
+    /// document names in `issuer` or `controller`. `proof_purpose` is
+    /// `assertionMethod` when `None`.
+    ///
+    /// Use the returned `document` exactly as it is: the proof covers every
+    /// member sent. Needs the `sign-document` capability; `sign` does not
+    /// confer it.
+    pub async fn sign_document(
+        &self,
+        key_id: &str,
+        document: serde_json::Value,
+        proof_purpose: Option<&str>,
+    ) -> Result<crate::protocols::key_management::sign_document::SignDocumentResponse, VtaError>
+    {
+        use crate::protocols::key_management::sign_document::SignDocumentPayload;
+        let mut body = serde_json::json!({ "keyId": key_id, "document": document });
+        if let Some(purpose) = proof_purpose {
+            body["proofPurpose"] = purpose.into();
+        }
+        // Read back through the generated type, so a request the schema
+        // refuses is refused here; sent as built, so the document is carried
+        // whole.
+        serde_json::from_value::<SignDocumentPayload>(body.clone())
+            .map_err(|e| VtaError::Validation(format!("keys/sign-document request: {e}")))?;
+        self.rpc_tt(trust_tasks::TASK_KEYS_SIGN_DOCUMENT_0_1, body, 30)
+            .await
+    }
+
+    /// `keys/sign-csr/0.1` — a PKCS#10 certificate signing request (PEM) for a
+    /// key that never leaves the VTA, naming `subject` (in encoded order:
+    /// element 0 is the first RDN, conventionally `C`) and, optionally,
+    /// subject alternative names.
+    ///
+    /// The VTA builds the request from these and the key's own public key.
+    /// Check that `publicKey` in the answer is the key you meant to certify
+    /// before submitting the request to a CA.
+    ///
+    /// Needs the `sign-csr` capability; `sign` does not confer it.
+    pub async fn sign_csr(
+        &self,
+        key_id: &str,
+        subject: Vec<crate::protocols::key_management::sign_csr::SignCsrRdnAttribute>,
+        subject_alt_names: Option<
+            crate::protocols::key_management::sign_csr::SignCsrSubjectAltNames,
+        >,
+    ) -> Result<crate::protocols::key_management::sign_csr::SignCsrResponse, VtaError> {
+        use crate::protocols::key_management::sign_csr::SignCsrPayload;
+        let payload = SignCsrPayload::builder()
+            .key_id(key_id)
+            .subject(subject)
+            .subject_alt_names(subject_alt_names);
+        let payload = SignCsrPayload::try_from(payload)
+            .map_err(|e| VtaError::Validation(format!("keys/sign-csr request: {e}")))?;
+        self.rpc_tt(
+            trust_tasks::TASK_KEYS_SIGN_CSR_0_1,
+            serde_json::to_value(payload)
+                .map_err(|e| VtaError::Protocol(format!("encode keys/sign-csr: {e}")))?,
+            30,
+        )
+        .await
+    }
+
     /// Ephemerally derive a key at `derivation_path` and sign `payload` —
     /// **without persisting a key record**. Super-admin only, and the path must
     /// lie inside `m/26'/9'` (the VTA's delegated-identity subtree). Returns the

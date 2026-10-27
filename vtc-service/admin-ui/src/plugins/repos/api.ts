@@ -44,7 +44,7 @@ import type {
 import type { GitNsBreakGlassItem, GitNsBreakGlassList, GitNsSelfGrantWaived } from "./model";
 import { breakGlassState, selfGrantWaivedOf } from "./model";
 
-const TASK_MEMBERS_LIST = "https://trusttasks.org/spec/vtc/members/list/0.1";
+const TASK_MEMBERS_LIST = "https://trusttasks.org/spec/vtc/members/list/0.2";
 
 // trust-tasks-rs 0.23.4 generates the Rust side of the first three
 // (`git_ns::admin_reads`, trustoverip/dtgwg-trust-tasks-tf#659), and 0.24.7

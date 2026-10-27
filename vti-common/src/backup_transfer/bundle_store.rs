@@ -35,6 +35,7 @@ const TOKEN_RAW_LEN: usize = 32;
 /// hold both directions without separate prefixes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum BundleKind {
     Export,
     Import,
@@ -136,7 +137,7 @@ impl BundleToken {
     }
 }
 
-fn bundle_key(id: &Uuid) -> String {
+pub(super) fn bundle_key(id: &Uuid) -> String {
     format!("bundle:{id}")
 }
 

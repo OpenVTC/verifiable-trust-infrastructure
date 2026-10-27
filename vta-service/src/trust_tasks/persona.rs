@@ -97,7 +97,7 @@ pub enum Reach {
 /// become reachable from inside one.
 pub const REACH: &[(&str, Reach)] = &[
     // ── Agent-scoped: the holder's own, above every context ───────────────
-    (uris::TASK_PERSONA_ATTRIBUTE_PUT_1_0, Reach::Holder),
+    (uris::TASK_PERSONA_ATTRIBUTE_PUT_1_1, Reach::Holder),
     (uris::TASK_PERSONA_ATTRIBUTE_GET_1_0, Reach::Holder),
     (uris::TASK_PERSONA_ATTRIBUTE_LIST_1_0, Reach::Holder),
     (uris::TASK_PERSONA_ATTRIBUTE_DELETE_1_0, Reach::Holder),
@@ -107,11 +107,11 @@ pub const REACH: &[(&str, Reach)] = &[
     ),
     // Widens a context's value into the pool; a context that could trigger it
     // could spread what it was told into everything the holder composes later.
-    (uris::TASK_PERSONA_ATTRIBUTE_PROMOTE_1_0, Reach::Holder),
+    (uris::TASK_PERSONA_ATTRIBUTE_PROMOTE_1_1, Reach::Holder),
     // Can reach the pool (a `share: pool` or held claim) and can bind — even a
     // compose whose every claim is local. The context-callable way to make a
     // local face is `local/profile/put`, which cannot reach the pool at all.
-    (uris::TASK_PERSONA_PROFILE_COMPOSE_1_0, Reach::Holder),
+    (uris::TASK_PERSONA_PROFILE_COMPOSE_1_1, Reach::Holder),
     // Take a face off every context, or make one wearable again — the holder's
     // decision about their own identity, including for a context-local face.
     (uris::TASK_PERSONA_PROFILE_RETIRE_1_0, Reach::Holder),
@@ -120,7 +120,7 @@ pub const REACH: &[(&str, Reach)] = &[
     // are one face, across every context.
     (uris::TASK_PERSONA_PROFILE_USAGE_1_0, Reach::Holder),
     (uris::TASK_PERSONA_PROFILE_TIMELINE_1_0, Reach::Holder),
-    (uris::TASK_PERSONA_PROFILE_PUT_1_0, Reach::Holder),
+    (uris::TASK_PERSONA_PROFILE_PUT_1_1, Reach::Holder),
     (uris::TASK_PERSONA_PROFILE_GET_1_0, Reach::Holder),
     (uris::TASK_PERSONA_PROFILE_LIST_1_0, Reach::Holder),
     (uris::TASK_PERSONA_PROFILE_DELETE_1_0, Reach::Holder),
@@ -129,7 +129,7 @@ pub const REACH: &[(&str, Reach)] = &[
     // assembled by anyone else, written down by the only person entitled to
     // write it. A context-scoped caller reading one would learn how the holder
     // arranges every *other* context.
-    (uris::TASK_PERSONA_WORLD_PUT_1_0, Reach::Holder),
+    (uris::TASK_PERSONA_WORLD_PUT_1_1, Reach::Holder),
     (uris::TASK_PERSONA_WORLD_LIST_1_0, Reach::Holder),
     (uris::TASK_PERSONA_WORLD_DELETE_1_0, Reach::Holder),
     // The retired `persona/facet/*` spellings, same reach as the tasks that
@@ -153,10 +153,14 @@ pub const REACH: &[(&str, Reach)] = &[
     // count. Never contents.
     (uris::TASK_PERSONA_BINDING_GET_1_0, Reach::Context),
     (uris::TASK_PERSONA_BINDING_LIST_1_0, Reach::Context),
-    (uris::TASK_PERSONA_CONTACT_PUT_1_0, Reach::Context),
-    (uris::TASK_PERSONA_CONTACT_GET_1_0, Reach::Context),
-    (uris::TASK_PERSONA_CONTACT_LIST_1_0, Reach::Context),
     (uris::TASK_PERSONA_CONTACT_DELETE_1_0, Reach::Context),
+    (uris::TASK_PERSONA_CONTACT_PUT_1_2, Reach::Context),
+    (uris::TASK_PERSONA_CONTACT_GET_1_1, Reach::Context),
+    (uris::TASK_PERSONA_CONTACT_LIST_1_1, Reach::Context),
+    (uris::TASK_PERSONA_CONTACT_LISTS_PUT_1_1, Reach::Context),
+    (uris::TASK_PERSONA_CONTACT_LISTS_LIST_1_0, Reach::Context),
+    (uris::TASK_PERSONA_CONTACT_LISTS_SHOW_1_0, Reach::Context),
+    (uris::TASK_PERSONA_CONTACT_LISTS_DELETE_1_0, Reach::Context),
     // The only path by which claim values reach an application — after a
     // human-visible summary. Being inside a context confers no privilege over
     // identity data: an application is a verifier, taking the same path as a
@@ -167,7 +171,7 @@ pub const REACH: &[(&str, Reach)] = &[
     (uris::TASK_PERSONA_RENDERERS_LIST_1_0, Reach::Any),
     (uris::TASK_PERSONA_CLAIM_TYPES_LIST_1_0, Reach::Any),
     // Authoring below the boundary is safe; the rule stops reading across it.
-    (uris::TASK_PERSONA_LOCAL_PROFILE_PUT_1_0, Reach::Context),
+    (uris::TASK_PERSONA_LOCAL_PROFILE_PUT_1_1, Reach::Context),
     (uris::TASK_PERSONA_LOCAL_PROFILE_GET_1_0, Reach::Context),
     (uris::TASK_PERSONA_LOCAL_PROFILE_LIST_1_0, Reach::Context),
     (uris::TASK_PERSONA_LOCAL_PROFILE_DELETE_1_0, Reach::Context),
@@ -362,6 +366,9 @@ impl vta_persona::CredentialSource for VaultCredentials {
             VaultStatus::Deleted => return Ok(Derived::Stale(StaleReason::Deleted)),
             VaultStatus::Archived => return Ok(Derived::Stale(StaleReason::Archived)),
             VaultStatus::Active => {}
+            // `VaultStatus` is `#[non_exhaustive]`: anything but Active is not a
+            // source to derive from.
+            _ => return Ok(Derived::Stale(StaleReason::Archived)),
         }
         match cred.status {
             crate::vault::CredentialStatus::Revoked => {
@@ -374,6 +381,9 @@ impl vta_persona::CredentialSource for VaultCredentials {
             // status list is read; treating it as withdrawn would make every
             // credential-backed attribute stale on arrival.
             crate::vault::CredentialStatus::Valid | crate::vault::CredentialStatus::Unknown => {}
+            // `CredentialStatus` is `#[non_exhaustive]`: a status not known to
+            // leave the credential usable is read as withdrawn.
+            _ => return Ok(Derived::Stale(StaleReason::Revoked)),
         }
         let now = chrono::Utc::now();
         let parse = |t: &Option<String>| {
@@ -571,11 +581,11 @@ pub(super) async fn handle_attribute_put(
     auth: &AuthClaims,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    let req: spec::attribute::put::v1_0::Payload = match parse_payload(&doc) {
+    let req: spec::attribute::put::v1_1::Payload = match parse_payload(&doc) {
         Ok(r) => r,
         Err(resp) => return resp,
     };
-    if let Err(e) = authorize(state, auth, uris::TASK_PERSONA_ATTRIBUTE_PUT_1_0, None).await {
+    if let Err(e) = authorize(state, auth, uris::TASK_PERSONA_ATTRIBUTE_PUT_1_1, None).await {
         return reject(&doc, e);
     }
 
@@ -789,7 +799,7 @@ pub(super) async fn handle_attribute_put(
     let mut body = serde_json::json!({
         "attributeId": attribute_id,
         "version": written.version,
-        "created": written.created,
+        "wasCreated": written.created,
         "updatedAt": chrono::Utc::now().to_rfc3339(),
         "correlation": {
             "severity": if shared > 0 { "high" } else { "none" },
@@ -1129,11 +1139,11 @@ pub(super) async fn handle_profile_put(
     auth: &AuthClaims,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    let req: spec::profile::put::v1_0::Payload = match parse_payload(&doc) {
+    let req: spec::profile::put::v1_1::Payload = match parse_payload(&doc) {
         Ok(r) => r,
         Err(resp) => return resp,
     };
-    if let Err(e) = authorize(state, auth, uris::TASK_PERSONA_PROFILE_PUT_1_0, None).await {
+    if let Err(e) = authorize(state, auth, uris::TASK_PERSONA_PROFILE_PUT_1_1, None).await {
         return reject(&doc, e);
     }
 
@@ -1274,7 +1284,7 @@ pub(super) async fn handle_profile_put(
         json!({
             "profileId": profile_id,
             "version": written.version,
-            "created": written.created,
+            "wasCreated": written.created,
             "updatedAt": chrono::Utc::now().to_rfc3339(),
         }),
     )
@@ -1288,15 +1298,15 @@ pub(super) async fn handle_profile_compose(
     auth: &AuthClaims,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    let req: spec::profile::compose::v1_0::Payload = match parse_payload(&doc) {
+    let req: spec::profile::compose::v1_1::Payload = match parse_payload(&doc) {
         Ok(r) => r,
         Err(resp) => return resp,
     };
-    if let Err(e) = authorize(state, auth, uris::TASK_PERSONA_PROFILE_COMPOSE_1_0, None).await {
+    if let Err(e) = authorize(state, auth, uris::TASK_PERSONA_PROFILE_COMPOSE_1_1, None).await {
         return reject(&doc, e);
     }
 
-    use spec::profile::compose::v1_0 as wire;
+    use spec::profile::compose::v1_1 as wire;
     let mut claims = Vec::with_capacity(req.claims.len());
     for claim in &req.claims {
         claims.push(match claim {
@@ -1467,7 +1477,7 @@ pub(super) async fn handle_profile_compose(
         body["pooled"] = composed
             .pooled
             .iter()
-            .map(|p| json!({ "attributeId": p.attribute_id, "created": p.created }))
+            .map(|p| json!({ "attributeId": p.attribute_id, "wasCreated": p.created }))
             .collect();
     }
     if let Some(b) = &composed.binding {
@@ -1487,11 +1497,11 @@ pub(super) async fn handle_attribute_promote(
     auth: &AuthClaims,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    let req: spec::attribute::promote::v1_0::Payload = match parse_payload(&doc) {
+    let req: spec::attribute::promote::v1_1::Payload = match parse_payload(&doc) {
         Ok(r) => r,
         Err(resp) => return resp,
     };
-    if let Err(e) = authorize(state, auth, uris::TASK_PERSONA_ATTRIBUTE_PROMOTE_1_0, None).await {
+    if let Err(e) = authorize(state, auth, uris::TASK_PERSONA_ATTRIBUTE_PROMOTE_1_1, None).await {
         return reject(&doc, e);
     }
 
@@ -1578,7 +1588,7 @@ pub(super) async fn handle_attribute_promote(
         "promoted": promoted
             .promoted
             .iter()
-            .map(|p| json!({ "entry": p.entry, "attributeId": p.attribute_id, "created": p.created }))
+            .map(|p| json!({ "entry": p.entry, "attributeId": p.attribute_id, "wasCreated": p.created }))
             .collect::<Vec<_>>(),
     });
     if !promoted.rebound_persona_dids.is_empty() {
@@ -2230,188 +2240,6 @@ pub(super) async fn handle_binding_list(
 
 // ─── Contacts ────────────────────────────────────────────────────────────
 
-pub(super) async fn handle_contact_put(
-    state: &AppState,
-    auth: &AuthClaims,
-    doc: TrustTask<Value>,
-) -> TrustTaskOutcome {
-    let req: spec::contact::put::v1_0::Payload = match parse_payload(&doc) {
-        Ok(r) => r,
-        Err(resp) => return resp,
-    };
-    let ctx = req.context_id.to_string();
-    if let Err(e) = authorize(state, auth, uris::TASK_PERSONA_CONTACT_PUT_1_0, Some(&ctx)).await {
-        return reject(&doc, e);
-    }
-
-    let document = match serde_json::to_value(&req.document)
-        .ok()
-        .and_then(|v| serde_json::from_value(v).ok())
-    {
-        Some(d) => d,
-        None => {
-            return reject(
-                &doc,
-                AppError::Validation("unrecognised contact document".into()),
-            );
-        }
-    };
-
-    let filed = match store(state)
-        .file_contact(
-            &ctx,
-            &req.subject_did.to_string(),
-            &req.known_by_persona.to_string(),
-            document,
-            req.credential_refs.iter().map(|c| c.to_string()).collect(),
-            req.notes.as_ref().map(|n| n.to_string()),
-        )
-        .await
-    {
-        Ok(f) => f,
-        Err(e) => return reject(&doc, e),
-    };
-
-    audit_persona(
-        state,
-        "persona.contact.put",
-        auth,
-        Some(&filed.contact_id),
-        Some(&ctx),
-        None,
-    )
-    .await;
-    success_response(
-        &doc,
-        json!({
-            "contactId": filed.contact_id,
-            "rev": filed.rev,
-            "created": filed.created,
-            // Types, not values. A producer needing the old value reads the
-            // prior revision, which is an explicit act.
-            "changedClaims": filed.changed_claims,
-        }),
-    )
-}
-
-pub(super) async fn handle_contact_get(
-    state: &AppState,
-    auth: &AuthClaims,
-    doc: TrustTask<Value>,
-) -> TrustTaskOutcome {
-    let req: spec::contact::get::v1_0::Payload = match parse_payload(&doc) {
-        Ok(r) => r,
-        Err(resp) => return resp,
-    };
-    let ctx = req.context_id.to_string();
-    if let Err(e) = authorize(state, auth, uris::TASK_PERSONA_CONTACT_GET_1_0, Some(&ctx)).await {
-        return reject(&doc, e);
-    }
-    let id = req.contact_id.to_string();
-    let s = store(state);
-
-    let Some(contact) = (match s.get_contact(&ctx, &id).await {
-        Ok(c) => c,
-        Err(e) => return reject(&doc, e),
-    }) else {
-        return reject(&doc, AppError::NotFound(format!("contact {id}")));
-    };
-
-    // A named revision resolves through the store, which distinguishes reaped
-    // (Gone) from never-existed (NotFound) — a caller comparing against history
-    // must be able to tell those apart.
-    let document = match req.rev {
-        None => serde_json::to_value(&contact.document).unwrap_or(Value::Null),
-        Some(rev) => match s.get_contact_revision(&ctx, &id, rev.get()).await {
-            Ok(r) => serde_json::to_value(&r.document).unwrap_or(Value::Null),
-            Err(e) => return reject(&doc, e),
-        },
-    };
-
-    let history = if req.include_history {
-        match s.contact_history(&ctx, &id).await {
-            // Metadata without documents: a timeline is cheap and the documents
-            // behind it are not.
-            Ok(h) => Some(
-                h.iter()
-                    .map(|(rev, at, cited)| json!({ "rev": rev, "receivedAt": at, "cited": cited }))
-                    .collect::<Vec<_>>(),
-            ),
-            Err(e) => return reject(&doc, e),
-        }
-    } else {
-        None
-    };
-
-    audit_persona(
-        state,
-        "persona.contact.get",
-        auth,
-        Some(&id),
-        Some(&ctx),
-        None,
-    )
-    .await;
-    let mut body = json!({
-        "contactId": contact.contact_id,
-        "subjectDid": contact.subject_did,
-        "knownByPersona": contact.known_by_persona,
-        "rev": req.rev.map_or(contact.rev, std::num::NonZeroU64::get),
-        "document": document,
-        "credentialRefs": contact.credential_refs,
-    });
-    // The holder's private annotation is optional, and an unset optional must be
-    // absent rather than null — see `put_opt`. Naming it inside `json!` emitted
-    // `"notes": null` and failed the response schema.
-    put_opt(&mut body, "notes", contact.notes.clone());
-    if let Some(h) = history {
-        body["history"] = json!(h);
-    }
-    success_response(&doc, body)
-}
-
-pub(super) async fn handle_contact_list(
-    state: &AppState,
-    auth: &AuthClaims,
-    doc: TrustTask<Value>,
-) -> TrustTaskOutcome {
-    let req: spec::contact::list::v1_0::Payload = match parse_payload(&doc) {
-        Ok(r) => r,
-        Err(resp) => return resp,
-    };
-    let ctx = req.context_id.to_string();
-    if let Err(e) = authorize(state, auth, uris::TASK_PERSONA_CONTACT_LIST_1_0, Some(&ctx)).await {
-        return reject(&doc, e);
-    }
-
-    let persona = req.known_by_persona.as_ref().map(|p| p.to_string());
-    let sums = match store(state)
-        .list_contact_summaries(&ctx, persona.as_deref())
-        .await
-    {
-        Ok(s) => s,
-        Err(e) => return reject(&doc, e),
-    };
-
-    audit_persona(state, "persona.contact.list", auth, None, Some(&ctx), None).await;
-    success_response(
-        &doc,
-        json!({
-            // Summaries carry no claim values: finding one contact does not
-            // require disclosing the details of every contact.
-            "contacts": sums.iter().map(|s| json!({
-                "contactId": s.contact_id,
-                "subjectDid": s.subject_did,
-                "knownByPersona": s.known_by_persona,
-                "rev": s.rev,
-                "claimCount": s.claim_count,
-                "receivedAt": s.received_at,
-                "hasUnreviewedChange": s.has_unreviewed_change,
-            })).collect::<Vec<_>>()
-        }),
-    )
-}
-
 pub(super) async fn handle_contact_delete(
     state: &AppState,
     auth: &AuthClaims,
@@ -2776,7 +2604,7 @@ pub(super) async fn handle_local_profile_put(
     auth: &AuthClaims,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    let req: spec::local::profile::put::v1_0::Payload = match parse_payload(&doc) {
+    let req: spec::local::profile::put::v1_1::Payload = match parse_payload(&doc) {
         Ok(r) => r,
         Err(resp) => return resp,
     };
@@ -2784,7 +2612,7 @@ pub(super) async fn handle_local_profile_put(
     if let Err(e) = authorize(
         state,
         auth,
-        uris::TASK_PERSONA_LOCAL_PROFILE_PUT_1_0,
+        uris::TASK_PERSONA_LOCAL_PROFILE_PUT_1_1,
         Some(&ctx),
     )
     .await
@@ -2933,11 +2761,11 @@ pub(super) async fn handle_local_profile_put(
     // rather than softened: a coarser signal is still an oracle, only a slower
     // one. The holder still learns it — the audit row above records it, and
     // `persona/correlation/analyze` answers it properly. Conditional by the
-    // specification as well as here (`persona/local/profile/put/1.0`).
+    // specification as well as here (`persona/local/profile/put/1.1`).
     let mut body = json!({
         "profileId": profile_id,
         "version": written.version,
-        "created": written.created,
+        "wasCreated": written.created,
     });
     if is_holder(state, auth).await {
         body["correlation"] = json!({
@@ -3404,11 +3232,11 @@ pub(super) async fn handle_world_put(
     auth: &AuthClaims,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    let req: spec::world::put::v1_0::Payload = match parse_payload(&doc) {
+    let req: spec::world::put::v1_1::Payload = match parse_payload(&doc) {
         Ok(r) => r,
         Err(resp) => return resp,
     };
-    if let Err(e) = authorize(state, auth, uris::TASK_PERSONA_WORLD_PUT_1_0, None).await {
+    if let Err(e) = authorize(state, auth, uris::TASK_PERSONA_WORLD_PUT_1_1, None).await {
         return reject(&doc, e);
     }
 
@@ -3477,7 +3305,7 @@ pub(super) async fn handle_world_put(
         json!({
             "worldId": world_id,
             "version": written.version,
-            "created": written.created,
+            "wasCreated": written.created,
             "updatedAt": chrono::Utc::now().to_rfc3339(),
         }),
     )
@@ -3717,8 +3545,8 @@ pub(super) async fn handle_facet_delete(
 /// Unreachable from the wire today — serde rejects an unknown string before the
 /// payload parses — but reachable the moment `trust-tasks-rs` is bumped to a
 /// version declaring a ninth colour, which is exactly when it should be loud.
-fn colour_of(c: &spec::world::put::v1_0::WorldColour) -> Option<vta_persona::WorldColour> {
-    use spec::world::put::v1_0::WorldColour as W;
+fn colour_of(c: &spec::world::put::v1_1::WorldColour) -> Option<vta_persona::WorldColour> {
+    use spec::world::put::v1_1::WorldColour as W;
     use vta_persona::WorldColour as S;
     Some(match c {
         W::Slate => S::Slate,
@@ -3731,6 +3559,700 @@ fn colour_of(c: &spec::world::put::v1_0::WorldColour) -> Option<vta_persona::Wor
         W::Plum => S::Plum,
         _ => return None,
     })
+}
+
+// ─── Contacts: the holder's annotations, and their lists ─────────────────
+
+/// A refusal with one of the task's own declared codes.
+fn declared(
+    doc: &TrustTask<Value>,
+    local: &str,
+    message: String,
+    details: Option<Value>,
+) -> TrustTaskOutcome {
+    let mut payload = ErrorPayload::new(ext(&slug_from_doc(doc), local)).with_message(message);
+    if let Some(d) = details {
+        payload = payload.with_details(d);
+    }
+    error_response(doc.reject_with(format!("urn:uuid:{}", uuid::Uuid::new_v4()), payload))
+}
+
+/// The annotation changes a `contact/put/1.2` payload names (item 6): each
+/// given replaces, each `removeX` removes, each absent is unchanged.
+fn annotation_change(p: &Value) -> vta_persona::AnnotationChange {
+    use vta_persona::Change;
+    fn change<T>(
+        p: &Value,
+        key: &str,
+        remove: &str,
+        read: impl Fn(&Value) -> Option<T>,
+    ) -> Change<T> {
+        if p.get(remove).and_then(Value::as_bool) == Some(true) {
+            Change::Remove
+        } else {
+            match p.get(key).and_then(&read) {
+                Some(v) => Change::Set(v),
+                None => Change::Keep,
+            }
+        }
+    }
+    let text = |v: &Value| v.as_str().map(str::to_string);
+    vta_persona::AnnotationChange {
+        starred: p.get("starred").and_then(Value::as_bool),
+        petname: change(p, "petname", "removePetname", text),
+        lists: change(p, "lists", "removeLists", |v| {
+            v.as_array().map(|a| {
+                a.iter()
+                    .filter_map(|i| i.as_str().map(str::to_string))
+                    .collect()
+            })
+        }),
+        directory_ref: change(p, "directoryRef", "removeDirectoryRef", |v| {
+            serde_json::from_value::<vta_persona::DirectoryRef>(v.clone()).ok()
+        }),
+        notes: change(p, "notes", "removeNotes", text),
+    }
+}
+
+fn annotate_refusal(doc: &TrustTask<Value>, e: vta_persona::AnnotateError) -> TrustTaskOutcome {
+    use vta_persona::AnnotateError;
+    match e {
+        AnnotateError::NotFound => reject(doc, AppError::NotFound("contact".into())),
+        AnnotateError::ListUnknown(ids) => declared(
+            doc,
+            "listUnknown",
+            "a list named in `lists` is not one of this context's; nothing was changed. Create it \
+             with persona/contact/lists/put first"
+                .into(),
+            Some(json!({ "listIds": ids.into_iter().take(64).collect::<Vec<_>>() })),
+        ),
+        AnnotateError::Store(e) => reject(doc, e),
+        other => reject(doc, AppError::Internal(format!("{other:?}"))),
+    }
+}
+
+/// The annotation members of a contact as get and list answer them: `starred`
+/// always; `lists` only lists this context still holds.
+fn put_annotations(
+    body: &mut Value,
+    a: &vta_persona::ContactAnnotations,
+    held: &std::collections::BTreeSet<String>,
+) {
+    body["starred"] = json!(a.starred);
+    put_opt(body, "petname", a.petname.clone());
+    let lists: Vec<&String> = a.lists.iter().filter(|l| held.contains(*l)).collect();
+    if !lists.is_empty() {
+        body["lists"] = json!(lists);
+    }
+    put_opt(body, "directoryRef", a.directory_ref.clone());
+}
+
+async fn held_lists(
+    state: &AppState,
+    ctx: &str,
+) -> Result<std::collections::BTreeSet<String>, AppError> {
+    Ok(store(state)
+        .contact_lists(ctx)
+        .await?
+        .into_iter()
+        .map(|v| v.list.list_id)
+        .collect())
+}
+
+pub(super) async fn handle_contact_put(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    let req: spec::contact::put::v1_2::Payload = match parse_payload(&doc) {
+        Ok(r) => r,
+        Err(resp) => return resp,
+    };
+    let ctx = req.context_id.to_string();
+    if let Err(e) = authorize(state, auth, uris::TASK_PERSONA_CONTACT_PUT_1_2, Some(&ctx)).await {
+        return reject(&doc, e);
+    }
+    let change = annotation_change(&doc.payload);
+    let s = store(state);
+
+    // The annotating form: no revision, no `rev` movement (item 7).
+    if let Some(contact_id) = req.contact_id.as_ref().map(|c| c.to_string()) {
+        let changed = match s.annotate_contact(&ctx, &contact_id, &change).await {
+            Ok(c) => c,
+            Err(e) => return annotate_refusal(&doc, e),
+        };
+        let rev = match s.get_contact(&ctx, &contact_id).await {
+            Ok(Some(c)) => c.rev,
+            Ok(None) => return reject(&doc, AppError::NotFound("contact".into())),
+            Err(e) => return reject(&doc, e),
+        };
+        audit_persona(
+            state,
+            "persona.contact.annotate",
+            auth,
+            Some(&contact_id),
+            Some(&ctx),
+            None,
+        )
+        .await;
+        return success_response(
+            &doc,
+            json!({
+                "contactId": contact_id,
+                "rev": rev,
+                "wasCreated": false,
+                "annotationsChanged": changed,
+            }),
+        );
+    }
+
+    // The linking form (item 4): a directory member whose DID the holder was
+    // not shown.
+    if req.subject_did.is_none()
+        && let (Some(persona), Some(dref)) = (
+            &req.known_by_persona,
+            doc.payload
+                .get("directoryRef")
+                .and_then(|v| serde_json::from_value::<vta_persona::DirectoryRef>(v.clone()).ok()),
+        )
+    {
+        let (contact_id, rev, created, changed) = match s
+            .link_contact(&ctx, &dref, &persona.to_string(), &change)
+            .await
+        {
+            Ok(r) => r,
+            Err(e) => return annotate_refusal(&doc, e),
+        };
+        audit_persona(
+            state,
+            "persona.contact.link",
+            auth,
+            Some(&contact_id),
+            Some(&ctx),
+            None,
+        )
+        .await;
+        return success_response(
+            &doc,
+            json!({
+                "contactId": contact_id,
+                "rev": rev,
+                "wasCreated": created,
+                "annotationsChanged": changed,
+            }),
+        );
+    }
+
+    // The filing form.
+    let (Some(subject), Some(persona), Some(document)) =
+        (&req.subject_did, &req.known_by_persona, &req.document)
+    else {
+        return reject(
+            &doc,
+            AppError::Validation("a filing names subjectDid, knownByPersona and document".into()),
+        );
+    };
+    let document = match serde_json::to_value(document)
+        .ok()
+        .and_then(|v| serde_json::from_value(v).ok())
+    {
+        Some(d) => d,
+        None => {
+            return reject(
+                &doc,
+                AppError::Validation("unrecognised contact document".into()),
+            );
+        }
+    };
+    let (filed, changed) = match s
+        .file_contact_annotated(
+            &ctx,
+            &subject.to_string(),
+            &persona.to_string(),
+            document,
+            req.credential_refs.iter().map(|c| c.to_string()).collect(),
+            &change,
+        )
+        .await
+    {
+        Ok(f) => f,
+        Err(e) => return annotate_refusal(&doc, e),
+    };
+    audit_persona(
+        state,
+        "persona.contact.put",
+        auth,
+        Some(&filed.contact_id),
+        Some(&ctx),
+        None,
+    )
+    .await;
+    success_response(
+        &doc,
+        json!({
+            "contactId": filed.contact_id,
+            "rev": filed.rev,
+            "wasCreated": filed.created,
+            "annotationsChanged": changed,
+            "changedClaims": filed.changed_claims,
+        }),
+    )
+}
+
+pub(super) async fn handle_contact_get(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    let req: spec::contact::get::v1_1::Payload = match parse_payload(&doc) {
+        Ok(r) => r,
+        Err(resp) => return resp,
+    };
+    let ctx = req.context_id.to_string();
+    if let Err(e) = authorize(state, auth, uris::TASK_PERSONA_CONTACT_GET_1_1, Some(&ctx)).await {
+        return reject(&doc, e);
+    }
+    let id = req.contact_id.to_string();
+    let s = store(state);
+    let Some(contact) = (match s.get_contact(&ctx, &id).await {
+        Ok(c) => c,
+        Err(e) => return reject(&doc, e),
+    }) else {
+        return reject(&doc, AppError::NotFound(format!("contact {id}")));
+    };
+    let document = match req.rev {
+        None => serde_json::to_value(&contact.document).unwrap_or(Value::Null),
+        Some(rev) => match s.get_contact_revision(&ctx, &id, rev.get()).await {
+            Ok(r) => serde_json::to_value(&r.document).unwrap_or(Value::Null),
+            Err(e) => return reject(&doc, e),
+        },
+    };
+    let history = if req.include_history {
+        match s.contact_history(&ctx, &id).await {
+            Ok(h) => Some(
+                h.iter()
+                    .map(|(rev, at, cited)| json!({ "rev": rev, "receivedAt": at, "cited": cited }))
+                    .collect::<Vec<_>>(),
+            ),
+            Err(e) => return reject(&doc, e),
+        }
+    } else {
+        None
+    };
+    // The current annotations, with any revision.
+    let (annotations, held) = match (
+        s.contact_annotations(&ctx, &id).await,
+        held_lists(state, &ctx).await,
+    ) {
+        (Ok(a), Ok(h)) => (a, h),
+        (Err(e), _) | (_, Err(e)) => return reject(&doc, e),
+    };
+    audit_persona(
+        state,
+        "persona.contact.get",
+        auth,
+        Some(&id),
+        Some(&ctx),
+        None,
+    )
+    .await;
+    let mut body = json!({
+        "contactId": contact.contact_id,
+        "knownByPersona": contact.known_by_persona,
+        "rev": req.rev.map_or(contact.rev, std::num::NonZeroU64::get),
+        "document": document,
+        "credentialRefs": contact.credential_refs,
+    });
+    // A linked contact has none (put 1.2 linking form).
+    if !contact.subject_did.is_empty() {
+        body["subjectDid"] = json!(contact.subject_did);
+    }
+    put_annotations(&mut body, &annotations, &held);
+    put_opt(&mut body, "notes", contact.notes.clone());
+    if let Some(h) = history {
+        body["history"] = json!(h);
+    }
+    success_response(&doc, body)
+}
+
+/// A listing cursor bound to the filters it was minted for: `c1.<digest>.<offset>`.
+fn list_cursor(filters: &Value, offset: usize) -> String {
+    format!("c1.{}.{offset}", filter_digest(filters))
+}
+
+fn filter_digest(filters: &Value) -> String {
+    use sha2::{Digest, Sha256};
+    let bytes = serde_json::to_vec(filters).unwrap_or_default();
+    hex::encode(&Sha256::digest(bytes)[..8])
+}
+
+/// The offset a cursor resumes at, or `None` for one these filters were not
+/// given.
+fn open_cursor(cursor: &str, filters: &Value) -> Option<usize> {
+    let mut parts = cursor.splitn(3, '.');
+    match (parts.next(), parts.next(), parts.next()) {
+        (Some("c1"), Some(d), Some(o)) if d == filter_digest(filters) => o.parse().ok(),
+        _ => None,
+    }
+}
+
+pub(super) async fn handle_contact_list(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    let req: spec::contact::list::v1_1::Payload = match parse_payload(&doc) {
+        Ok(r) => r,
+        Err(resp) => return resp,
+    };
+    let ctx = req.context_id.to_string();
+    if let Err(e) = authorize(state, auth, uris::TASK_PERSONA_CONTACT_LIST_1_1, Some(&ctx)).await {
+        return reject(&doc, e);
+    }
+    let p = &doc.payload;
+    let persona = p.get("knownByPersona").and_then(Value::as_str);
+    let since = p
+        .get("changedSince")
+        .and_then(Value::as_str)
+        .and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok());
+    let starred = p.get("starred").and_then(Value::as_bool);
+    let list_id = p.get("listId").and_then(Value::as_str);
+    let vtc = p.get("directoryVtcDid").and_then(Value::as_str);
+    let limit = p
+        .get("limit")
+        .and_then(Value::as_u64)
+        .map_or(100, |l| l.clamp(1, 500) as usize);
+    let filters = json!({
+        "c": ctx, "p": persona, "s": p.get("changedSince"), "st": starred, "l": list_id, "v": vtc,
+    });
+    let start = match p.get("cursor").and_then(Value::as_str) {
+        None => 0,
+        Some(c) => match open_cursor(c, &filters) {
+            Some(o) => o,
+            None => {
+                return declared(
+                    &doc,
+                    "cursorInvalid",
+                    "the cursor was not issued for these filters".into(),
+                    None,
+                );
+            }
+        },
+    };
+    let s = store(state);
+    let held = match held_lists(state, &ctx).await {
+        Ok(h) => h,
+        Err(e) => return reject(&doc, e),
+    };
+    if let Some(l) = list_id
+        && !held.contains(l)
+    {
+        return declared(
+            &doc,
+            "listUnknown",
+            "no list in this context has that id".into(),
+            None,
+        );
+    }
+    let (contacts, annotations) = match (
+        s.list_contacts(&ctx, persona).await,
+        s.context_annotations(&ctx).await,
+    ) {
+        (Ok(c), Ok(a)) => (c, a),
+        (Err(e), _) | (_, Err(e)) => return reject(&doc, e),
+    };
+    let none = vta_persona::ContactAnnotations::default();
+    let mut matching: Vec<(&vta_persona::Contact, &vta_persona::ContactAnnotations)> = contacts
+        .iter()
+        .map(|c| (c, annotations.get(&c.contact_id).unwrap_or(&none)))
+        .filter(|(c, a)| {
+            // A contact filed before its receipt was recorded may have changed.
+            since.is_none_or(|t| {
+                c.received_at
+                    .as_deref()
+                    .and_then(|r| chrono::DateTime::parse_from_rfc3339(r).ok())
+                    .is_none_or(|r| r > t)
+            }) && starred.is_none_or(|st| a.starred == st)
+                && list_id.is_none_or(|l| a.lists.iter().any(|x| x == l))
+                && vtc.is_none_or(|v| a.directory_ref.as_ref().is_some_and(|d| d.vtc_did == v))
+        })
+        .collect();
+    // Stable across the pages of one enumeration.
+    matching.sort_by(|a, b| a.0.contact_id.cmp(&b.0.contact_id));
+    let page: Vec<Value> = matching
+        .iter()
+        .skip(start)
+        .take(limit)
+        .map(|(c, a)| {
+            let mut v = json!({
+                "contactId": c.contact_id,
+                "knownByPersona": c.known_by_persona,
+                "rev": c.rev,
+                "claimCount": c.document.claims.len(),
+                "receivedAt": c.received_at.clone().unwrap_or_else(|| chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true)),
+                "hasUnreviewedChange": c.has_unreviewed_change,
+            });
+            if !c.subject_did.is_empty() {
+                v["subjectDid"] = json!(c.subject_did);
+            }
+            // The contact's own disclosed name — never the DID or the petname.
+            if let Some(name) = c
+                .document
+                .claims
+                .iter()
+                .find(|cl| cl.r#type == "name.display")
+                .and_then(|cl| cl.value.as_str())
+            {
+                v["displayName"] = json!(name.chars().take(256).collect::<String>());
+            }
+            put_annotations(&mut v, a, &held);
+            v
+        })
+        .collect();
+    let next = start + page.len();
+    audit_persona(state, "persona.contact.list", auth, None, Some(&ctx), None).await;
+    let mut body = json!({ "contacts": page });
+    if next < matching.len() {
+        body["nextCursor"] = json!(list_cursor(&filters, next));
+    }
+    success_response(&doc, body)
+}
+
+fn list_wire(v: &vta_persona::ListView) -> Value {
+    let mut out = json!({
+        "listId": v.list.list_id,
+        "name": v.list.name,
+        "order": v.list.order,
+        "contactCount": v.contact_count,
+        "createdAt": v.list.created_at,
+        "updatedAt": v.list.updated_at,
+    });
+    put_opt(&mut out, "colour", v.list.colour.clone());
+    out
+}
+
+pub(super) async fn handle_contact_lists_put(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    use vta_persona::{Change, ListError};
+    let req: spec::contact::lists::put::v1_1::Payload = match parse_payload(&doc) {
+        Ok(r) => r,
+        Err(resp) => return resp,
+    };
+    let ctx = req.context_id.to_string();
+    if let Err(e) = authorize(
+        state,
+        auth,
+        uris::TASK_PERSONA_CONTACT_LISTS_PUT_1_1,
+        Some(&ctx),
+    )
+    .await
+    {
+        return reject(&doc, e);
+    }
+    let p = &doc.payload;
+    let change = vta_persona::ListChange {
+        name: p.get("name").and_then(Value::as_str).map(str::to_string),
+        colour: if p.get("removeColour").and_then(Value::as_bool) == Some(true) {
+            Change::Remove
+        } else {
+            match p.get("colour").and_then(Value::as_str) {
+                Some(c) => Change::Set(c.to_string()),
+                None => Change::Keep,
+            }
+        },
+        order: p
+            .get("order")
+            .and_then(Value::as_u64)
+            .and_then(|o| u32::try_from(o).ok()),
+    };
+    let list_id = p.get("listId").and_then(Value::as_str);
+    let (view, created, changed) = match store(state).put_contact_list(&ctx, list_id, change).await
+    {
+        Ok(r) => r,
+        Err(ListError::NotFound) => return reject(&doc, AppError::NotFound("list".into())),
+        Err(ListError::NameTaken) => {
+            return declared(
+                &doc,
+                "nameTaken",
+                "another list in this context has that name".into(),
+                None,
+            );
+        }
+        Err(ListError::TooManyLists(limit)) => {
+            return declared(
+                &doc,
+                "tooManyLists",
+                format!("this context already holds {limit} lists"),
+                Some(json!({ "limit": limit })),
+            );
+        }
+        Err(ListError::Store(e)) => return reject(&doc, e),
+        Err(other) => return reject(&doc, AppError::Internal(format!("{other:?}"))),
+    };
+    // Never the list's name (lists/put item 7).
+    audit_persona(
+        state,
+        "persona.contact.lists.put",
+        auth,
+        Some(&view.list.list_id),
+        Some(&ctx),
+        None,
+    )
+    .await;
+    success_response(
+        &doc,
+        json!({ "list": list_wire(&view), "wasCreated": created, "changed": changed }),
+    )
+}
+
+pub(super) async fn handle_contact_lists_list(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    let req: spec::contact::lists::list::v1_0::Payload = match parse_payload(&doc) {
+        Ok(r) => r,
+        Err(resp) => return resp,
+    };
+    let ctx = req.context_id.to_string();
+    if let Err(e) = authorize(
+        state,
+        auth,
+        uris::TASK_PERSONA_CONTACT_LISTS_LIST_1_0,
+        Some(&ctx),
+    )
+    .await
+    {
+        return reject(&doc, e);
+    }
+    let p = &doc.payload;
+    let limit = p
+        .get("limit")
+        .and_then(Value::as_u64)
+        .map_or(100, |l| l.clamp(1, 500) as usize);
+    let filters = json!({ "c": ctx, "lists": true });
+    let start = match p.get("cursor").and_then(Value::as_str) {
+        None => 0,
+        Some(c) => match open_cursor(c, &filters) {
+            Some(o) => o,
+            None => {
+                return declared(
+                    &doc,
+                    "cursorInvalid",
+                    "the cursor was not issued here".into(),
+                    None,
+                );
+            }
+        },
+    };
+    let lists = match store(state).contact_lists(&ctx).await {
+        Ok(l) => l,
+        Err(e) => return reject(&doc, e),
+    };
+    let page: Vec<Value> = lists
+        .iter()
+        .skip(start)
+        .take(limit)
+        .map(list_wire)
+        .collect();
+    let next = start + page.len();
+    audit_persona(
+        state,
+        "persona.contact.lists.list",
+        auth,
+        None,
+        Some(&ctx),
+        None,
+    )
+    .await;
+    let mut body = json!({ "lists": page });
+    if next < lists.len() {
+        body["nextCursor"] = json!(list_cursor(&filters, next));
+    }
+    success_response(&doc, body)
+}
+
+pub(super) async fn handle_contact_lists_show(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    let req: spec::contact::lists::show::v1_0::Payload = match parse_payload(&doc) {
+        Ok(r) => r,
+        Err(resp) => return resp,
+    };
+    let ctx = req.context_id.to_string();
+    if let Err(e) = authorize(
+        state,
+        auth,
+        uris::TASK_PERSONA_CONTACT_LISTS_SHOW_1_0,
+        Some(&ctx),
+    )
+    .await
+    {
+        return reject(&doc, e);
+    }
+    let id = req.list_id.to_string();
+    match store(state).contact_list(&ctx, &id).await {
+        Ok(Some(v)) => {
+            audit_persona(
+                state,
+                "persona.contact.lists.show",
+                auth,
+                Some(&id),
+                Some(&ctx),
+                None,
+            )
+            .await;
+            success_response(&doc, json!({ "list": list_wire(&v) }))
+        }
+        Ok(None) => reject(&doc, AppError::NotFound("list".into())),
+        Err(e) => reject(&doc, e),
+    }
+}
+
+pub(super) async fn handle_contact_lists_delete(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    let req: spec::contact::lists::delete::v1_0::Payload = match parse_payload(&doc) {
+        Ok(r) => r,
+        Err(resp) => return resp,
+    };
+    let ctx = req.context_id.to_string();
+    if let Err(e) = authorize(
+        state,
+        auth,
+        uris::TASK_PERSONA_CONTACT_LISTS_DELETE_1_0,
+        Some(&ctx),
+    )
+    .await
+    {
+        return reject(&doc, e);
+    }
+    let id = req.list_id.to_string();
+    let (existed, updated) = match store(state).delete_contact_list(&ctx, &id).await {
+        Ok(r) => r,
+        Err(e) => return reject(&doc, e),
+    };
+    audit_persona(
+        state,
+        "persona.contact.lists.delete",
+        auth,
+        Some(&id),
+        Some(&ctx),
+        None,
+    )
+    .await;
+    // Never the list's name or its contacts (lists/delete item 4).
+    success_response(
+        &doc,
+        json!({ "listId": id, "existed": existed, "contactsUpdated": updated }),
+    )
 }
 
 #[cfg(test)]

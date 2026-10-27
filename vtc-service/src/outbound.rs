@@ -113,6 +113,169 @@ pub(crate) async fn send_trust_task_didcomm(
     Ok(())
 }
 
+/// A peer reached by DID over messaging, one signed Trust Task at a time: the
+/// transport chosen from its DID document, the document signed by this VTC, and
+/// its correlated reply awaited.
+///
+/// This is the selection the module header names as the next step, for the
+/// callers that address a peer only by DID and need nothing else of it: the git
+/// bridge and the community's VTA. The trust-registry client keeps its own,
+/// which also records what each selection saw for its diagnostics page and has
+/// a REST arm.
+///
+/// A reply is released to the waiter only when the peer's own proof on it
+/// verifies (`PendingReplies::complete_verified`), so what comes back here was
+/// signed by the DID it was sent to. A send returning `Ok` means accepted
+/// locally (R1.1); the call is complete when that reply arrives. No reply in the
+/// window is [`PeerError::Transient`]: the caller owns any retry.
+#[derive(Clone)]
+pub(crate) struct PeerTasks {
+    pub(crate) didcomm: std::sync::Arc<tokio::sync::OnceCell<std::sync::Arc<VtcMessaging>>>,
+    pub(crate) signer: Option<std::sync::Arc<crate::credentials::LocalSigner>>,
+    pub(crate) replies: crate::hooks::PendingReplies,
+    pub(crate) resolver: Option<affinidi_did_resolver_cache_sdk::DIDCacheClient>,
+}
+
+/// Why a [`PeerTasks::exchange`] produced no reply.
+#[derive(Debug, Clone)]
+pub enum PeerError {
+    /// Worth another attempt: messaging not up, no reply in the window, a send
+    /// that failed below the Trust Task layer.
+    Transient(String),
+    /// No transport in common with the peer. Not retried: it changes only when
+    /// one side advertises another.
+    NoMatchingProtocol(String),
+}
+
+impl std::fmt::Display for PeerError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Transient(m) | Self::NoMatchingProtocol(m) => f.write_str(m),
+        }
+    }
+}
+
+impl PeerTasks {
+    /// Which transport reaches `peer_did`: the highest-preference one both of us
+    /// advertise, matched on service type. Over messaging only; a peer that
+    /// speaks only REST has nothing in common with this client, which is said
+    /// rather than guessed around.
+    pub(crate) async fn select(
+        &self,
+        peer_did: &str,
+    ) -> Result<vta_sdk::protocol::matching::ProtocolMatch, PeerError> {
+        use vta_sdk::protocol::matching::{ServiceCapabilities, select_protocol};
+        let resolver = self.resolver.as_ref().ok_or_else(|| {
+            PeerError::Transient(
+                "no DID resolver configured — cannot read the peer's advertised transports".into(),
+            )
+        })?;
+        let resolved = resolver
+            .resolve(peer_did)
+            .await
+            .map_err(|e| PeerError::Transient(format!("could not resolve {peer_did}: {e}")))?;
+        let doc = serde_json::to_value(&resolved.doc)
+            .map_err(|e| PeerError::Transient(format!("unreadable DID document: {e}")))?;
+        let theirs = ServiceCapabilities::from_did_document(&doc);
+        let up = self.didcomm.get().is_some();
+        let ours = ServiceCapabilities {
+            tsp: (up && cfg!(feature = "tsp")).then(|| peer_did.to_string()),
+            didcomm: up.then(|| peer_did.to_string()),
+            rest: None,
+        };
+        if ours.advertised().is_empty() {
+            return Err(PeerError::Transient(
+                "VTC messaging is not running yet".into(),
+            ));
+        }
+        select_protocol(&ours, &theirs, peer_did)
+            .map_err(|e| PeerError::NoMatchingProtocol(e.to_string()))
+    }
+
+    /// Sign one document of `type_uri` to `peer_did`, send it, and await the
+    /// peer's signed reply for up to `timeout`.
+    pub(crate) async fn exchange(
+        &self,
+        peer_did: &str,
+        type_uri: &str,
+        payload: &Value,
+        timeout: std::time::Duration,
+    ) -> Result<TrustTask<Value>, PeerError> {
+        use vta_sdk::protocol::matching::Protocol;
+        let messaging = self
+            .didcomm
+            .get()
+            .ok_or_else(|| PeerError::Transient("VTC messaging is not running yet".into()))?;
+        let signer = self
+            .signer
+            .as_ref()
+            .ok_or_else(|| PeerError::Transient("this VTC has no signing key yet".into()))?;
+        let matched = self.select(peer_did).await?;
+
+        let doc = vti_common::capability_client::build_document(
+            &messaging.vtc_did,
+            peer_did,
+            type_uri,
+            payload.clone(),
+        );
+        let mut value = serde_json::to_value(&doc)
+            .map_err(|e| PeerError::Transient(format!("serialise document: {e}")))?;
+        signer
+            .sign_operational_doc(&mut value)
+            .await
+            .map_err(|e| PeerError::Transient(format!("sign document: {e}")))?;
+        let doc: TrustTask<Value> = serde_json::from_value(value)
+            .map_err(|e| PeerError::Transient(format!("reparse signed document: {e}")))?;
+
+        // Registered before sending: a reply can land while the send returns.
+        let receiver = self.replies.register(&doc.id, peer_did);
+        let sent = match matched.protocol {
+            #[cfg(feature = "tsp")]
+            Protocol::Tsp => {
+                let body =
+                    seal_trust_task_tsp(&doc).map_err(|e| PeerError::Transient(e.to_string()))?;
+                // `peer_endpoint` is the peer's TSP mediator; a peer on another
+                // mediator is reached through it (VTI-56).
+                vti_common::tsp_route::send_reestablishing(
+                    &messaging.atm,
+                    &messaging.profile,
+                    &messaging.mediator_did,
+                    peer_did,
+                    Some(matched.peer_endpoint.as_str()),
+                    &body,
+                )
+                .await
+                .map(|_| ())
+                .map_err(|e| PeerError::Transient(format!("TSP send failed: {e}")))
+            }
+            Protocol::Didcomm => send_trust_task_didcomm(messaging, peer_did, &doc)
+                .await
+                .map_err(|e| PeerError::Transient(e.to_string())),
+            _ => Err(PeerError::NoMatchingProtocol(format!(
+                "{peer_did} can be reached by no transport this VTC speaks"
+            ))),
+        };
+        if let Err(e) = sent {
+            self.replies.abandon(&doc.id);
+            return Err(e);
+        }
+        match tokio::time::timeout(timeout, receiver).await {
+            Ok(Ok(reply)) => Ok(reply),
+            Ok(Err(_)) => {
+                self.replies.abandon(&doc.id);
+                Err(PeerError::Transient("reply channel closed".into()))
+            }
+            Err(_) => {
+                self.replies.abandon(&doc.id);
+                Err(PeerError::Transient(format!(
+                    "no reply from {peer_did} within {}s",
+                    timeout.as_secs()
+                )))
+            }
+        }
+    }
+}
+
 /// Seal `doc` in the **TSP** binding envelope, ready to route.
 ///
 /// Returns the bytes rather than sending them: a TSP send needs the hop list,

@@ -176,6 +176,68 @@ pub async fn prune_chain(
     Ok((dropped, earliest))
 }
 
+/// [`prune_chain`], and the room's **epoch floor** raised to the higher of the floor it held
+/// and `before_epoch − 1` (`rooms/epoch/prune/0.2`, *The floor, and the off-by-one*) —
+/// raised even when no rung is dropped (a gap, a `fromJoin` room), and never lowered.
+/// Every version of the prune raises it: the floor is a property of the room, not of the
+/// request that moved it. Returns `(pruned, earliest_rung, epoch_floor)`.
+///
+/// The floor is written **before** the rungs go, so a prune interrupted between the two
+/// leaves a room that already refuses to serve what it is about to erase.
+pub async fn prune_chain_to_floor(
+    rooms: &KeyspaceHandle,
+    links: &KeyspaceHandle,
+    room_id: &str,
+    before_epoch: u32,
+    now: u64,
+) -> Result<(usize, u32, u32), AppError> {
+    let mut room = get_room(rooms, room_id).await?;
+    let floor = room
+        .epoch_floor
+        .unwrap_or(0)
+        .max(before_epoch.saturating_sub(1))
+        .max(1);
+    room.epoch_floor = Some(floor);
+    room.updated_at = now;
+    rooms.insert(room_key(room_id), &room).await?;
+    let (pruned, earliest) = prune_chain(links, room_id, before_epoch).await?;
+    Ok((pruned, earliest, floor))
+}
+
+/// The rungs a host may serve for `room`: every one it holds numbered **above** the room's
+/// epoch floor (`EpochFloor`: a host never serves a rung at or below it), ascending.
+pub async fn servable_epoch_links(
+    links: &KeyspaceHandle,
+    room: &Room,
+) -> Result<Vec<EpochLink>, AppError> {
+    let floor = room.epoch_floor.unwrap_or(0);
+    Ok(list_epoch_links(links, &room.room_id)
+        .await?
+        .into_iter()
+        .filter(|l| l.epoch > floor)
+        .collect())
+}
+
+/// Store a rung for `room`, refusing one numbered at or below the room's epoch floor
+/// (`EpochFloor`: a host never stores or accepts such a rung) as well as everything
+/// [`put_epoch_link`] refuses.
+pub async fn put_epoch_link_above_floor(
+    links: &KeyspaceHandle,
+    room: &Room,
+    link: &EpochLink,
+) -> Result<(), AppError> {
+    if let Some(floor) = room.epoch_floor
+        && link.epoch <= floor
+    {
+        return Err(AppError::Validation(format!(
+            "room `{}` has forgotten its history below epoch {floor}; it accepts no rung at \
+             or below it",
+            room.room_id
+        )));
+    }
+    put_epoch_link(links, &room.room_id, link).await
+}
+
 /// Prefix for the commits a host relays.
 const COMMITS_PREFIX: &str = "room-commit:";
 
@@ -269,12 +331,15 @@ pub async fn create_room(rooms: &KeyspaceHandle, room: &Room) -> Result<(), AppE
             room.room_id
         )));
     }
-    rooms.insert(room_key(&room.room_id), room).await
+    rooms.insert(room_key(&room.room_id), room).await?;
+    // A room registered: the host's rooms list moved (`crate::observe`).
+    crate::observe::changed();
+    Ok(())
 }
 
 /// How long a minted epoch is good for, in seconds.
 ///
-/// Not yet a per-room parameter: `rooms/create/0.1` has no member for it, and inventing one
+/// Not yet a per-room parameter: `rooms/create/0.2` has no member for it, and inventing one
 /// locally would put this implementation's rooms out of conformance with the published
 /// schema. A room that wants a different lifetime is a spec change first.
 fn epoch_lifetime_seconds() -> u64 {
@@ -323,6 +388,8 @@ pub async fn advance_epoch(
     room.epoch_expires_at = Some(now + epoch_lifetime_seconds());
     room.updated_at = now;
     rooms.insert(room_key(room_id), &room).await?;
+    // A renewal may bring the room back from a lapse (`crate::observe`).
+    crate::observe::changed();
     Ok(room)
 }
 
@@ -448,6 +515,11 @@ pub async fn put_record(
         ));
     }
 
+    // A new body is sealed for the version it is about to take, and that is recorded now —
+    // the one moment it is known (rooms `_shared/0.1` `SealedRecord.version`: "MUST record
+    // the version a body was sealed at when it stores it"). Whatever an earlier body at this
+    // key was sealed at no longer applies.
+    record.sealed_version = record.sealed.as_ref().map(|_| room.next_version);
     record.version = room.next_version;
     record.updated_at = now;
     room.next_version += 1;
@@ -845,6 +917,7 @@ pub async fn curate_record(
         if matches!(status, RecordStatus::Retracted) {
             record.sealed = None;
             record.nonce = None;
+            record.sealed_version = None;
             record.cleartext = None;
         }
     }
@@ -852,6 +925,12 @@ pub async fn curate_record(
         record.pinned = pinned;
     }
 
+    // A kept sealed body stays bound to the version it was sealed at, which `put_record`
+    // recorded; a curation moves the record and leaves that alone. Where nothing was recorded
+    // — a record stored before `sealed_version` existed — it is not inferred from the version
+    // here: a host that predates the field may already have curated the record, so its
+    // version need not be the one the body was sealed at. Unknown stays unknown, and readers
+    // search for it.
     record.version = room.next_version;
     record.updated_at = now;
     room.next_version += 1;
@@ -879,6 +958,124 @@ pub async fn purge_record(
         )));
     }
     records.remove(k).await
+}
+
+/// The records a prune of `kinds` at `now` would remove under `retention`
+/// ([`crate::record_retention::is_eligible`]), tombstones included, by version.
+///
+/// The caller holds the record-write lock ([`crate::blobs::BlobHost::records_lock`]), so
+/// the set it removes is the set decided here.
+pub async fn eligible_records(
+    records: &KeyspaceHandle,
+    room_id: &str,
+    retention: &crate::record_retention::RecordRetention,
+    kinds: &[crate::record_retention::PruneKind],
+    now: u64,
+) -> Result<Vec<Record>, AppError> {
+    Ok(list_records(records, room_id, None, None)
+        .await?
+        .into_iter()
+        .filter(|r| crate::record_retention::is_eligible(r, retention, kinds, now))
+        .collect())
+}
+
+/// Remove the records `keys` outright — key, version, status, body, tombstone — and leave
+/// the room its mark: the next version from its counter, the time and the count
+/// (`rooms/records/prune/0.1` item 5). `keys` must not be empty: a prune that removed
+/// nothing takes no version and leaves no mark.
+///
+/// # Order, for a process that dies part-way
+///
+/// The room row — the version and the mark — is written **first**, then the records go. A
+/// prune interrupted after the mark leaves records the mark already counted; they are
+/// still eligible, and the next prune removes them under a mark of its own. The other order
+/// would leave records gone with no mark, so an incremental reader could never learn they
+/// went — the failure `lastPrune` exists to prevent. Nothing of a removed record is kept.
+pub async fn remove_pruned(
+    rooms: &KeyspaceHandle,
+    records: &KeyspaceHandle,
+    room_id: &str,
+    keys: &[String],
+    now: u64,
+) -> Result<crate::record_retention::RecordPrune, AppError> {
+    if keys.is_empty() {
+        return Err(AppError::Internal(
+            "a prune that removes nothing leaves no mark".into(),
+        ));
+    }
+    let mut room = get_room(rooms, room_id).await?;
+    let mark = crate::record_retention::RecordPrune {
+        version: room.next_version,
+        at: now,
+        removed: keys.len() as u64,
+    };
+    room.next_version += 1;
+    room.last_prune = Some(mark);
+    room.updated_at = now;
+    rooms.insert(room_key(room_id), &room).await?;
+    for key in keys {
+        records.remove(record_key(room_id, key)).await?;
+    }
+    Ok(mark)
+}
+
+/// Replace the room's record retention whole (`rooms/records/retention/set/0.1` item 4);
+/// `None` clears it. Returns the one it replaced. Removes nothing.
+pub async fn set_record_retention(
+    rooms: &KeyspaceHandle,
+    room_id: &str,
+    retention: Option<crate::record_retention::RecordRetention>,
+    now: u64,
+) -> Result<Option<crate::record_retention::RecordRetention>, AppError> {
+    let mut room = get_room(rooms, room_id).await?;
+    let previous = std::mem::replace(&mut room.record_retention, retention);
+    room.updated_at = now;
+    rooms.insert(room_key(room_id), &room).await?;
+    Ok(previous)
+}
+
+/// [`tree_head`], with `headVersion` taken as the higher of the highest record's version
+/// and the room's latest prune (`HeadVersion`): a prune removes leaves and takes a version
+/// like any other change to the tree, so a root before it and a root after it are never
+/// labelled alike.
+///
+/// A snapshot only under the record-write lock: a prune writes the room's mark and removes
+/// records under it, so a host computing a head for an answer holds it too
+/// ([`crate::blobs::BlobHost::read_snapshot`]).
+pub async fn room_tree_head(
+    rooms: &KeyspaceHandle,
+    records: &KeyspaceHandle,
+    room_id: &str,
+) -> Result<crate::merkle::TreeHead, AppError> {
+    let mut head = tree_head(records, room_id).await?;
+    head.head_version = head.head_version.max(pruned_at(rooms, room_id).await?);
+    Ok(head)
+}
+
+/// [`tree_head_with_trace`], with `headVersion` as [`room_tree_head`] takes it.
+pub async fn room_tree_head_with_trace(
+    rooms: &KeyspaceHandle,
+    records: &KeyspaceHandle,
+    room_id: &str,
+    key: &str,
+) -> Result<
+    (
+        crate::merkle::TreeHead,
+        Option<crate::merkle::InclusionProof>,
+    ),
+    AppError,
+> {
+    let (mut head, trace) = tree_head_with_trace(records, room_id, key).await?;
+    head.head_version = head.head_version.max(pruned_at(rooms, room_id).await?);
+    Ok((head, trace))
+}
+
+/// The version of the room's latest prune, `0` if it has none.
+async fn pruned_at(rooms: &KeyspaceHandle, room_id: &str) -> Result<u64, AppError> {
+    Ok(get_room(rooms, room_id)
+        .await?
+        .last_prune
+        .map_or(0, |p| p.version))
 }
 
 #[cfg(test)]
@@ -931,6 +1128,9 @@ mod tests {
             created_at: 0,
             updated_at: 0,
             mirror_of: None,
+            record_retention: None,
+            last_prune: None,
+            epoch_floor: None,
         }
     }
 
@@ -943,6 +1143,7 @@ mod tests {
             pinned: false,
             sealed: Some("c2VhbGVk".into()),
             nonce: Some("bm9uY2U".into()),
+            sealed_version: None,
             cleartext: None,
             author: None,
             updated_at: 0,
@@ -958,6 +1159,7 @@ mod tests {
             pinned: false,
             sealed: None,
             nonce: None,
+            sealed_version: None,
             cleartext: Some(serde_json::json!({ "body": "hello" })),
             author: Some("did:key:zBob".into()),
             updated_at: 0,
@@ -1594,6 +1796,192 @@ mod tests {
         assert!(format!("{err}").contains("is at version 1"), "{err}");
     }
 
+    fn curation(status: Option<RecordStatus>, pinned: Option<bool>) -> Curation {
+        Curation {
+            status,
+            pinned,
+            expected_version: None,
+        }
+    }
+
+    /// rooms `_shared/0.1` `SealedRecord.version`, curate/0.1 *Curation assigns a new
+    /// version*: a curation moves the record and keeps its body, and the body stays bound
+    /// to the version it was sealed at — so that version is recorded when the body is
+    /// stored, and served from the first curation on. Every curation after it moves the
+    /// record again and the body with it stays where it was sealed.
+    #[tokio::test]
+    async fn curating_a_sealed_record_keeps_the_version_its_body_was_sealed_at() {
+        let (_d, rooms, rec) = open().await;
+        create_room(&rooms, &room("r1", Visibility::Private))
+            .await
+            .unwrap();
+        let put = put_record(&rooms, &rec, "r1", sealed_record("a", 1), None, 1)
+            .await
+            .unwrap();
+        assert_eq!(put.version, 1);
+        assert_eq!(
+            put.sealed_version,
+            Some(1),
+            "recorded when the body is stored"
+        );
+        assert_eq!(
+            put.committed().sealed.unwrap().version,
+            None,
+            "nothing changes shape until a curation needs it"
+        );
+
+        let archived = curate_record(
+            &rooms,
+            &rec,
+            "r1",
+            "a",
+            curation(Some(RecordStatus::Deprecated), None),
+            2,
+        )
+        .await
+        .unwrap();
+        assert_eq!(archived.version, 2);
+        assert_eq!(archived.sealed_version, Some(1));
+        assert_eq!(archived.committed().sealed.unwrap().version, Some(1));
+
+        let pinned = curate_record(&rooms, &rec, "r1", "a", curation(None, Some(true)), 3)
+            .await
+            .unwrap();
+        let restored = curate_record(
+            &rooms,
+            &rec,
+            "r1",
+            "a",
+            curation(Some(RecordStatus::Active), None),
+            4,
+        )
+        .await
+        .unwrap();
+        assert_eq!((pinned.version, pinned.sealed_version), (3, Some(1)));
+        assert_eq!((restored.version, restored.sealed_version), (4, Some(1)));
+        assert_eq!(
+            get_record(&rec, "r1", "a").await.unwrap().sealed_version,
+            Some(1),
+            "it is stored, not derived"
+        );
+    }
+
+    /// A new body is sealed for the version it takes, so an earlier body's sealed-at
+    /// version is replaced by that one; a retraction drops the body and has nothing to keep.
+    #[tokio::test]
+    async fn a_new_body_replaces_the_sealed_at_version_and_a_retraction_clears_it() {
+        let (_d, rooms, rec) = open().await;
+        create_room(&rooms, &room("r1", Visibility::Private))
+            .await
+            .unwrap();
+        put_record(&rooms, &rec, "r1", sealed_record("a", 1), None, 1)
+            .await
+            .unwrap();
+        put_record(&rooms, &rec, "r1", sealed_record("b", 1), None, 1)
+            .await
+            .unwrap();
+        for key in ["a", "b"] {
+            curate_record(
+                &rooms,
+                &rec,
+                "r1",
+                key,
+                curation(Some(RecordStatus::Deprecated), None),
+                2,
+            )
+            .await
+            .unwrap();
+        }
+
+        let rewritten = put_record(&rooms, &rec, "r1", sealed_record("a", 1), Some(3), 5)
+            .await
+            .unwrap();
+        assert_eq!(rewritten.sealed_version, Some(rewritten.version));
+        assert_eq!(rewritten.committed().sealed.unwrap().version, None);
+
+        let retracted = curate_record(
+            &rooms,
+            &rec,
+            "r1",
+            "b",
+            curation(Some(RecordStatus::Retracted), None),
+            6,
+        )
+        .await
+        .unwrap();
+        assert_eq!(retracted.sealed_version, None);
+        assert!(retracted.committed().sealed.is_none());
+    }
+
+    /// A record stored before `sealed_version` existed carries none, and a host that
+    /// predates it may already have curated it — so its version is not evidence of where the
+    /// body was sealed. A curation must leave it unknown, never stamp the version it finds:
+    /// stamped, a record archived by the old host and restored by this one was served with a
+    /// `sealed.version` it was never sealed at, and opened for nobody.
+    #[tokio::test]
+    async fn a_curation_does_not_guess_the_sealed_at_version_of_an_older_record() {
+        let (_d, rooms, rec) = open().await;
+        create_room(&rooms, &room("r1", Visibility::Private))
+            .await
+            .unwrap();
+        put_record(&rooms, &rec, "r1", sealed_record("a", 1), None, 1)
+            .await
+            .unwrap();
+        // As an older host left it: sealed at 1, archived to 2, nothing recorded.
+        let mut legacy = get_record(&rec, "r1", "a").await.unwrap();
+        legacy.sealed_version = None;
+        legacy.status = RecordStatus::Deprecated;
+        legacy.version = 2;
+        rec.insert(record_key("r1", "a"), &legacy).await.unwrap();
+        let mut r = get_room(&rooms, "r1").await.unwrap();
+        r.next_version = 3;
+        rooms.insert(room_key("r1"), &r).await.unwrap();
+
+        let restored = curate_record(
+            &rooms,
+            &rec,
+            "r1",
+            "a",
+            curation(Some(RecordStatus::Active), None),
+            3,
+        )
+        .await
+        .unwrap();
+        assert_eq!(restored.version, 3);
+        assert_eq!(
+            restored.sealed_version, None,
+            "not 2, which it was never sealed at"
+        );
+        assert_eq!(
+            restored.committed().sealed.unwrap().version,
+            None,
+            "served without one, so readers search earlier versions"
+        );
+    }
+
+    /// An open room's record has no sealed body, so a curation has nothing to bind.
+    #[tokio::test]
+    async fn curating_an_open_record_records_no_sealed_at_version() {
+        let (_d, rooms, rec) = open().await;
+        create_room(&rooms, &room("r1", Visibility::Open))
+            .await
+            .unwrap();
+        put_record(&rooms, &rec, "r1", open_record("a"), None, 1)
+            .await
+            .unwrap();
+        let archived = curate_record(
+            &rooms,
+            &rec,
+            "r1",
+            "a",
+            curation(Some(RecordStatus::Deprecated), None),
+            2,
+        )
+        .await
+        .unwrap();
+        assert_eq!(archived.sealed_version, None);
+    }
+
     #[tokio::test]
     async fn purge_removes_the_tombstone_and_is_not_idempotent() {
         let (_d, rooms, rec) = open().await;
@@ -1666,6 +2054,9 @@ mod tests {
     fn mirror(id: &str, visibility: Visibility) -> Room {
         Room {
             mirror_of: Some("https://primary.example.org".into()),
+            record_retention: None,
+            last_prune: None,
+            epoch_floor: None,
             ..room(id, visibility)
         }
     }

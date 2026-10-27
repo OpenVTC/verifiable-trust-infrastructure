@@ -45,6 +45,7 @@ use trust_tasks_rs::TrustTask;
 /// Why a Trust Task DI-proof verification failed. Callers map these onto their
 /// own transport error types (`AppError::Authentication`, `GateError`, …).
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum DiProofError {
     /// The document carries no `proof`.
     NoProof,

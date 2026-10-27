@@ -47,7 +47,7 @@ use crate::ceremony::{Credential, CredentialStatus, Presentation};
 use crate::credentials::present_challenge::{self, DEFAULT_CHALLENGE_TTL};
 use crate::credentials::task_context::{self, TaskContextBinding};
 use crate::credentials::witness::{self, WitnessBinding};
-use crate::credentials::{VerifiedPresentation, VerifiedPresentationSet, verify_vp_token};
+use crate::credentials::{VerifiedPresentation, VerifiedPresentationSet};
 use vti_common::auth::PurposeVmResolver;
 
 use crate::credentials::vm_resolver::DidVmResolver;
@@ -88,11 +88,12 @@ pub async fn present_and_decide_join(
     // 1. Cryptographically verify every presentation in the vp_token. The holder
     //    is proven (kb-jwt / DI holder proof) and consistent across the set.
     //    did:webvh / did:web issuers + holders resolve through the DID cache.
-    let set = verify_vp_token(
+    let set = crate::credentials::verify_vp_token_with_anchors(
         vp_token,
         expected_aud,
         expected_nonce,
         state.did_resolver.as_ref(),
+        &state.x509_trust_anchors,
         now,
     )
     .await?;
@@ -109,7 +110,10 @@ pub async fn present_and_decide_join(
     // carries no invitation and no vetting statements, so a criterion asking
     // for either is not met by it.
     let presented = crate::join::criteria::Presented {
-        credentials: crate::join::criteria::presented_from_verified(&presentation),
+        credentials: crate::join::criteria::presented_from_verified(
+            &presentation,
+            &set.presentations,
+        ),
         ..Default::default()
     };
     let governing =
@@ -351,19 +355,25 @@ async fn presentation_from_verified_set(
     // the list credential's own issuer signature (bound to the presented
     // credential's issuer) — so a MITM on the status-list host can't forge or
     // hide a revocation. Built once for the whole set.
-    let status_fetcher = match state.did_resolver.clone() {
-        Some(resolver) => {
-            let key_resolver: Arc<dyn PurposeVmResolver> =
-                Arc::new(DidVmResolver::new(Some(resolver)));
-            HttpStatusListFetcher::with_issuer_verification(key_resolver)
-        }
-        None => HttpStatusListFetcher::new(),
-    };
+    let status_fetcher = credential_status_fetcher(state);
 
     // Statements are accepted fail-closed, by predicate: one under a predicate
     // this community has not registered is refused rather than processed as a
     // generic statement (vtc/endorsement-types/register/0.1).
     let accepted = crate::endorsement_types::accept_list(&state.endorsement_types_ks).await?;
+
+    // The witnesses this community trusts, read once for the whole set. This
+    // path has no carriage for a witnessing session's outcome evidence, so a
+    // VWC from a trusted witness is `noOutcomeEvidence` here (VTI-CMP-023) and
+    // meets no criterion; one from any other witness is `untrustedWitness`.
+    let trusted_witnesses = crate::credentials::trusted_witnesses::live_for(state).await;
+    let vm_resolver = state.trust_task_vm_resolver();
+    let witness_ctx = witness::WitnessContext {
+        relationships_ks: &state.relationships_ks,
+        trusted: &trusted_witnesses,
+        evidence: &[],
+        resolver: &vm_resolver,
+    };
 
     let mut credentials = Vec::with_capacity(set.presentations.len());
     for p in &set.presentations {
@@ -397,15 +407,7 @@ async fn presentation_from_verified_set(
         // the edge. The policy still sees an unbound witness.
         let is_witness = witness::is_witness_statement(&p.claims);
         let witness_binding = if is_witness {
-            Some(
-                witness::resolve_binding(&state.relationships_ks, &p.claims)
-                    .await
-                    .unwrap_or_else(|e| {
-                        tracing::warn!(error = %e, issuer = %p.issuer_did,
-                            "could not resolve witness digest binding");
-                        witness::WitnessBinding::Unresolved
-                    }),
-            )
+            Some(witness::assess_or_unresolved(&witness_ctx, &p.issuer_did, &p.claims).await)
         } else {
             None
         };
@@ -475,6 +477,22 @@ fn credential_from_verified(
         // which is a property of the ceremony rather than of the credential.
         task_context,
     }
+}
+
+/// The status-list fetcher for credentials presented to this community: it
+/// verifies each list's signature as its credential issuer's — through the DID
+/// resolver when one is configured, and through the X.509 trust anchors for an
+/// issuer known by a certificate chain.
+pub(crate) fn credential_status_fetcher(state: &AppState) -> HttpStatusListFetcher {
+    let fetcher = match state.did_resolver.clone() {
+        Some(resolver) => {
+            let key_resolver: Arc<dyn PurposeVmResolver> =
+                Arc::new(DidVmResolver::new(Some(resolver)));
+            HttpStatusListFetcher::with_issuer_verification(key_resolver)
+        }
+        None => HttpStatusListFetcher::new(),
+    };
+    fetcher.with_x509_anchors(state.x509_trust_anchors.clone())
 }
 
 /// Resolve a presented credential's lifecycle [`CredentialStatus`] against the
@@ -677,6 +695,9 @@ mod tests {
             claims: json!({ "givenName": "Alice", "exp": 1_900_000_000 }),
             credential_status: None,
             task_context: None,
+            issuer_authority_key_ids: Vec::new(),
+            types: Vec::new(),
+            valid_until: None,
         }
     }
 

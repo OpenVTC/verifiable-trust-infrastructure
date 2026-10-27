@@ -66,6 +66,8 @@ export interface ExplainFacts {
       disposition?: string;
       target_role?: string;
       step_up?: boolean;
+      /** Directory: who the entry is projected for. */
+      viewer?: { public?: boolean };
     };
   };
   // The automatic vetter-grant sweep decides on a member record rather than a
@@ -355,6 +357,12 @@ const DIRECTORY: ConditionDef[] = [
     label: "viewer is authenticated",
     expr: () => "input.actor.authenticated == true",
     test: (f) => f.actor?.authenticated === true,
+  },
+  {
+    id: "viewer_is_public",
+    label: "viewer is the public (an external card)",
+    expr: () => "input.evidence.request.viewer.public == true",
+    test: (f) => f.evidence?.request?.viewer?.public === true,
   },
 ];
 

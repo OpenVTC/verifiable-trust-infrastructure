@@ -167,6 +167,7 @@ fn attach_proof<P: Serialize>(
     if doc.issued_at.is_none() {
         return refuse("a signed document must carry `issuedAt`".into());
     }
+    let created = canonical_created(created)?;
 
     // `DataIntegrityProof` is `#[non_exhaustive]` as of affinidi-data-integrity
     // 0.7.6 — build via `new` (the in-process `sign` would require the holder
@@ -177,7 +178,7 @@ fn attach_proof<P: Serialize>(
         did_key_vm(&signer_did)?,
         purpose.to_string(),
         None,
-        Some(created.to_string()),
+        Some(created),
         None,
     );
 
@@ -200,6 +201,31 @@ fn attach_proof<P: Serialize>(
             })?,
         );
     Ok(())
+}
+
+/// `created` in the one spelling the emitted document will carry.
+///
+/// The signature covers the proof configuration built here, but the document
+/// leaves through `trust_tasks_rs::Proof`, whose `created` is a
+/// `DateTime<Utc>` — so whatever string is signed, the wire carries chrono's
+/// own rendering of it. A caller's `+00:00`, nanoseconds, `.000Z` or offset
+/// would be signed in one spelling and sent in another, and every peer, which
+/// verifies the JSON as received, would refuse the proof. `issuedAt` has no
+/// such gap: it is a `DateTime<Utc>` in both what is signed and what is sent.
+/// Render `created` through the same type and serialiser, so the signed bytes
+/// are the sent bytes and `created` agrees with `issuedAt` when the caller
+/// passes the same instant.
+fn canonical_created(created: &str) -> Result<String, FfiError> {
+    let invalid = |reason: String| FfiError::InvalidInput { reason };
+    let instant = chrono::DateTime::parse_from_rfc3339(created)
+        .map_err(|e| invalid(format!("`{created}` is not an RFC 3339 timestamp: {e}")))?
+        .with_timezone(&chrono::Utc);
+    match serde_json::to_value(instant) {
+        Ok(serde_json::Value::String(s)) => Ok(s),
+        other => Err(invalid(format!(
+            "`{created}` has no wire rendering: {other:?}"
+        ))),
+    }
 }
 
 /// Verify the `eddsa-jcs-2022` Data Integrity proof on an inbound approval
@@ -446,7 +472,11 @@ async fn verify_signature(
 
 /// Whether `did_doc` lists the verification method `vm` under `relationship`,
 /// by absolute DID URL, by relative `#fragment`, or as an embedded method.
-fn lists_method_under(did_doc: &serde_json::Value, vm: &str, relationship: &str) -> bool {
+pub(crate) fn lists_method_under(
+    did_doc: &serde_json::Value,
+    vm: &str,
+    relationship: &str,
+) -> bool {
     let fragment = vm.find('#').map(|i| &vm[i..]);
     let names_vm = |id: &str| id == vm || fragment.is_some_and(|f| id == f);
     did_doc

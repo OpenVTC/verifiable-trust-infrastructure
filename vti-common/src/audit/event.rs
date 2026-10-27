@@ -242,6 +242,13 @@ pub enum AuditEvent {
     /// reads beside the other console sign-ins rather than the portal's.
     AdminWalletSignIn(MemberWalletSignInData),
 
+    /// A document a **member-portal sign-in key** signed was accepted as the
+    /// member's (`auth/oob/grant/0.2` consumer item 7): one row per document,
+    /// against the member, naming the key that acted and the grant that let it.
+    /// Written before the document's own effect, and the document is refused
+    /// when it cannot be — a delegated document is never unaudited.
+    MemberPortalKeyUsed(MemberPortalKeyUsedData),
+
     /// A step in the life of a **step-up approver** binding — a `did:key`
     /// bound to one subject as that subject's step-up factor (VTI-APV-015):
     /// an invite issued, voided after five wrong claim codes, an approver
@@ -564,6 +571,22 @@ pub enum AuditEvent {
     /// never which vetters enrolled or asked to vet at an event.
     HiddenVettingChanged(HiddenVettingChangedData),
 
+    /// A community election changed: created (parked or registered), its
+    /// registration answered, closed, cancelled or certified (VTI-VOT-100).
+    ///
+    /// Carries what governs the election — its identifier, its manifest's
+    /// digest, the ballot box's answer — and never a ballot, a tag or a
+    /// ticket: the community never holds one.
+    ElectionChanged(ElectionChangedData),
+
+    /// A ticket was issued for a community election (VTI-VOT-100). The row's
+    /// subject is the party it was issued to.
+    ///
+    /// Carries the election only. Never the request's identifier, the blinded
+    /// request or the pre-credential, nor anything derived from them: those
+    /// are what a later deanonymisation would join a ticket to its holder by.
+    ElectionTicketIssued(ElectionTicketIssuedData),
+
     VetterProfileUpdated(VetterProfileUpdatedData),
 
     /// A vetter's profile was deleted because they no longer hold a live grant —
@@ -571,7 +594,7 @@ pub enum AuditEvent {
     VetterProfileDeleted(VetterProfileDeletedData),
 
     /// A vetter grant credential was delivered again
-    /// (`vtc/vetting/vetters/resend/0.1`, or the admin resend route).
+    /// (`vtc/vetting/vetters/resend/0.2`, or the admin resend route).
     VetterGrantResent(VetterGrantResentData),
 
     /// An admin changed the automatic vetter-grant configuration
@@ -583,8 +606,65 @@ pub enum AuditEvent {
     VetterAutoGrantSwept(VetterAutoGrantSweptData),
 
     /// An admin changed the community's branding (`PUT /v1/community/branding`),
-    /// which `join-requests/manifest/0.2` publishes.
+    /// which `join-requests/manifest/0.4` publishes.
     CommunityBrandingUpdated(CommunityBrandingUpdatedData),
+
+    /// An admin replaced or removed the community's theme — the stylesheet the
+    /// console and member portal are drawn with
+    /// (`vtc/community/theme/update/0.1`). Names the stylesheet by digest,
+    /// never its text (update item 6).
+    CommunityThemeUpdated(CommunityThemeUpdatedData),
+
+    /// An administrator defined, changed or retired a member-directory field,
+    /// or the retention period of a retired one ran out and its values were
+    /// erased (`vtc/directory/fields/*`). Each ceiling in force is a promise
+    /// to members about who may see their values, so the community keeps when
+    /// each changed and who changed it.
+    DirectoryFieldChanged(DirectoryFieldChangedData),
+
+    /// A directory card changed: its member updated it
+    /// (`vtc/directory/card/update`) or an administrator asserted values on it
+    /// (`vtc/directory/card/assert`). By reference only — the entry and the
+    /// fields named, never a value (VTI-AUD-005).
+    DirectoryCardChanged(DirectoryCardChangedData),
+
+    /// A member's external card was published (`vtc/directory/card/publish`)
+    /// or withdrawn — by the member, by consent withdrawn, by their public
+    /// values changing, or at departure. By reference only: the entry, the
+    /// card's digest and the signed document, never a value.
+    DirectoryCardPublication(DirectoryCardPublicationData),
+
+    /// A picture was stored for a directory card
+    /// (`vtc/directory/images/upload`). The digest of the community's own
+    /// encoding, never the image.
+    DirectoryImageStored(DirectoryImageStoredData),
+
+    /// An administrator's note about a member was written or read
+    /// (`vtc/directory/notes/{append,list}`, VTI-DIR-032). By reference only:
+    /// the entry and the note, never its text.
+    DirectoryNoteAccessed(DirectoryNoteAccessData),
+
+    /// Data held about members was exported: one member's notes, to answer
+    /// their request for it (`vtc/directory/notes/export`, VTI-DIR-033), or the
+    /// whole directory (`vtc/directory/export`). Recorded at
+    /// [`AuditSeverity::Critical`], with the reason given and how much left.
+    DirectoryExported(DirectoryExportedData),
+
+    /// A community group was created, changed or deleted (`vtc/groups/*`). By
+    /// reference: the group, what changed and the reason given — never a name
+    /// or description.
+    GroupChanged(GroupChangedData),
+
+    /// A member joined or left a community group, or a request to join one was
+    /// made or decided (`vtc/groups/*`). By reference: the group and the
+    /// member's entry, never their DID or a request's message.
+    GroupMembershipChanged(GroupMembershipChangedData),
+
+    /// Capabilities a group carrying authority provisioned onto a member's
+    /// access-control entry, or withdrew from it (VTI-DIR-100). By reference:
+    /// the group, the binding, the member's entry and the capabilities — the
+    /// source an auditor asks of provisioned authority.
+    GroupGrantsChanged(GroupGrantsChangedData),
 
     /// An admin changed whether the join manifest answers a caller the
     /// community cannot identify (`PUT /v1/community/join-discovery`).
@@ -597,7 +677,7 @@ pub enum AuditEvent {
 
     /// An admin changed what the community asks an applicant to tell it about
     /// themselves (`PUT /v1/community/requested-attributes`), which
-    /// `join-requests/manifest/0.2` publishes as `requestedAttributes`.
+    /// `join-requests/manifest/0.4` publishes as `requestedAttributes`.
     CommunityRequestedAttributesUpdated(CommunityRequestedAttributesUpdatedData),
 
     /// An operator registered a new custom endorsement type
@@ -836,6 +916,127 @@ pub enum AuditEvent {
     /// administrator's entry, which [`Self::AclGranted`] and its neighbours
     /// record.
     CapabilityModuleChanged(CapabilityModuleChangedData),
+
+    /// A change to where a community keeps its rooms' files: a storage config
+    /// created, changed or retired (`vtc/storage/configs/*`), a room pointed
+    /// at another config (`vtc/rooms/storage/assign`), or a room's files moved
+    /// onto it (`vtc/rooms/storage/migrate`). Never carries a credential.
+    RoomStorageChanged(RoomStorageChangedData),
+
+    /// A room's file limits overridden or an override cleared
+    /// (`vtc/rooms/limits/set`): the room, the scope, what it was, what it is
+    /// now, and why. Sizes and counts only; never a file.
+    RoomLimitsChanged(RoomLimitsChangedData),
+
+    /// A change to a room the community **owns** (`vtc/rooms/community/*`,
+    /// `vtc/rooms/offers/accept`): the room created, a member offered,
+    /// admitted or removed, an offer withdrawn. The owner's record, never the
+    /// host's. Never carries a credential, a key, a Welcome or a KeyPackage.
+    CommunityRoomChanged(CommunityRoomChangedData),
+
+    /// A room's records pruned under its record retention, or the retention
+    /// replaced (`rooms/records/prune`, `rooms/records/retention/set`): the
+    /// mark, the reason, the rule and the kinds asked. Counts and rules only —
+    /// never a removed record's key or anything it said.
+    RoomRetention(RoomRetentionData),
+}
+
+/// Payload for [`AuditEvent::RoomRetention`].
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RoomRetentionData {
+    /// The room's own identifier.
+    pub room_id: String,
+    /// `room.records.prune` or `room.records.retention.set`.
+    pub action: String,
+    /// The room's visibility, so a reader can tell an actorless entry from a missing one.
+    pub visibility: String,
+    /// What the specification asks a host to keep: for a prune the mark
+    /// (`prune`), `reason`, `recordRetention`, `kinds` and `blobsReleased`; for a
+    /// change, `previous`, `recordRetention` and `reason`.
+    pub detail: serde_json::Value,
+}
+
+/// Payload for [`AuditEvent::RoomStorageChanged`].
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RoomStorageChangedData {
+    /// `configCreated`, `configUpdated`, `configRetired`, `roomAssigned`, or a
+    /// migration's `migrationStarted`, `migrationResumed`, `migrationCompleted`,
+    /// `migrationPaused` or `migrationFailed`.
+    pub event: String,
+    /// The config the change is to, or the room was assigned to.
+    pub config_id: String,
+    /// The room, on `roomAssigned` and a migration's events.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub room_id: Option<String>,
+    /// What it was: the config before the change, the room's previous
+    /// config, or the configs a migration moves files from. Absent on a create.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub previous: Option<serde_json::Value>,
+    /// What it is now.
+    pub current: serde_json::Value,
+    /// The administrators whose approvals executed it, when it was parked.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub approvers: Vec<String>,
+    /// The requester's stated reason.
+    pub reason: String,
+}
+
+/// Payload for [`AuditEvent::RoomLimitsChanged`].
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RoomLimitsChangedData {
+    pub room_id: String,
+    /// The `LimitTarget`: `{ kind, member? }`.
+    pub target: serde_json::Value,
+    /// The target's override before the change, and the room's `filesEnabled`
+    /// override on a `room` target. Absent when there was none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub previous: Option<serde_json::Value>,
+    /// The same after it; absent when the change cleared it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub current: Option<serde_json::Value>,
+    /// The requester's stated reason.
+    pub reason: String,
+}
+
+/// Payload for [`AuditEvent::CommunityRoomChanged`].
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CommunityRoomChangedData {
+    /// `created`, `detailsUpdated`, `memberOffered`, `memberAdmitted`,
+    /// `memberRemoved`, `offerWithdrawn`, `authorityRenewed` or
+    /// `authorityRenewalFailed`.
+    pub event: String,
+    /// The room: its DID.
+    pub room_id: String,
+    /// The room's tier.
+    pub visibility: String,
+    /// The member the change is about; absent on `created`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub member: Option<String>,
+    /// The actions granted, on `memberOffered`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub actions: Vec<String>,
+    /// The room epoch after the change, where the change advanced it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub epoch: Option<u64>,
+    /// What the change does not do, where that needs saying: a removal recalls
+    /// nothing the member already read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+    /// The requester's stated reason; absent on a member's own acceptance.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    /// The room's details that changed — `field` is `label`, `description` or
+    /// `tags` — each with its value before (`old`, absent when it had none)
+    /// and after (`new`, absent when removed): on `detailsUpdated`
+    /// (`vtc/rooms/community/update/0.1` item 6), and on `created` the details
+    /// it was created with. The earlier values are kept here and nowhere on
+    /// the wire.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub details: Vec<FieldChange>,
 }
 
 /// Payload for [`AuditEvent::CapabilityModuleChanged`].
@@ -950,6 +1151,7 @@ impl AuditEvent {
             Self::MemberPasskeyChanged(..) => "MemberPasskeyChanged",
             Self::MemberWalletSignIn(..) => "MemberWalletSignIn",
             Self::AdminWalletSignIn(..) => "AdminWalletSignIn",
+            Self::MemberPortalKeyUsed(..) => "MemberPortalKeyUsed",
             Self::StepUpApproverChanged(..) => "StepUpApproverChanged",
             Self::OperationStepUpApproved(..) => "OperationStepUpApproved",
             Self::TaskConsentRecorded(..) => "TaskConsentRecorded",
@@ -993,12 +1195,24 @@ impl AuditEvent {
             Self::HiddenVetterReissued(..) => "HiddenVetterReissued",
             Self::HiddenVetterTokensIssued(..) => "HiddenVetterTokensIssued",
             Self::HiddenVettingChanged(..) => "HiddenVettingChanged",
+            Self::ElectionChanged(..) => "ElectionChanged",
+            Self::ElectionTicketIssued(..) => "ElectionTicketIssued",
             Self::VetterProfileUpdated(..) => "VetterProfileUpdated",
             Self::VetterProfileDeleted(..) => "VetterProfileDeleted",
             Self::VetterGrantResent(..) => "VetterGrantResent",
             Self::VetterAutoGrantConfigured(..) => "VetterAutoGrantConfigured",
             Self::VetterAutoGrantSwept(..) => "VetterAutoGrantSwept",
             Self::CommunityBrandingUpdated(..) => "CommunityBrandingUpdated",
+            Self::CommunityThemeUpdated(..) => "CommunityThemeUpdated",
+            Self::DirectoryFieldChanged(..) => "DirectoryFieldChanged",
+            Self::DirectoryCardChanged(..) => "DirectoryCardChanged",
+            Self::DirectoryCardPublication(..) => "DirectoryCardPublication",
+            Self::DirectoryImageStored(..) => "DirectoryImageStored",
+            Self::DirectoryNoteAccessed(..) => "DirectoryNoteAccessed",
+            Self::DirectoryExported(..) => "DirectoryExported",
+            Self::GroupChanged(..) => "GroupChanged",
+            Self::GroupMembershipChanged(..) => "GroupMembershipChanged",
+            Self::GroupGrantsChanged(..) => "GroupGrantsChanged",
             Self::CommunityJoinDiscoveryUpdated(..) => "CommunityJoinDiscoveryUpdated",
             Self::CommunityRequestedAttributesUpdated(..) => "CommunityRequestedAttributesUpdated",
             Self::EndorsementTypeRegistered(..) => "EndorsementTypeRegistered",
@@ -1043,6 +1257,10 @@ impl AuditEvent {
             Self::AdminRoleDeleted(..) => "AdminRoleDeleted",
             Self::AclKeyRotated(..) => "AclKeyRotated",
             Self::CapabilityModuleChanged(..) => "CapabilityModuleChanged",
+            Self::RoomStorageChanged(..) => "RoomStorageChanged",
+            Self::RoomLimitsChanged(..) => "RoomLimitsChanged",
+            Self::CommunityRoomChanged(..) => "CommunityRoomChanged",
+            Self::RoomRetention(..) => "RoomRetention",
         }
     }
 
@@ -1058,7 +1276,8 @@ impl AuditEvent {
             | Self::AuthorityReducedUnopposed(..)
             | Self::AclMigrated(..)
             | Self::AdminActionBurst(..)
-            | Self::SingleAdminMode(..) => AuditSeverity::Critical,
+            | Self::SingleAdminMode(..)
+            | Self::DirectoryExported(..) => AuditSeverity::Critical,
             _ => AuditSeverity::Info,
         }
     }
@@ -1827,6 +2046,25 @@ pub struct MemberWalletSignInData {
     pub grant: Option<serde_json::Value>,
 }
 
+/// Payload for [`AuditEvent::MemberPortalKeyUsed`].
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct MemberPortalKeyUsedData {
+    /// The member the document was accepted as.
+    pub member: String,
+    /// The portal sign-in key that signed it (`K_b`, a `did:key`): the
+    /// acting credential.
+    pub start_key_did: String,
+    /// The `id` of the `auth/oob/grant/0.2` that delegated to the key: the
+    /// authority. Absent only for a delegation armed before it was recorded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grant_id: Option<String>,
+    /// The document's Type URI.
+    pub task_type: String,
+    /// The document's `id`.
+    pub document_id: String,
+}
+
 /// Payload for [`AuditEvent::MemberPasskeyChanged`].
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -2411,6 +2649,51 @@ pub struct HiddenVetterTokensIssuedData {
     pub issued: usize,
 }
 
+/// Payload for [`AuditEvent::ElectionChanged`].
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ElectionChangedData {
+    /// The election, by the identifier its manifest gives it.
+    pub election_id: String,
+    /// What happened: `created`, `parked`, `registered`, `registrationRefused`,
+    /// `closed`, `cancelled` or `certified`.
+    pub change: String,
+    /// The manifest's digest, multibase.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub manifest_digest: Option<String>,
+    /// Whether the manifest states its result is binding.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub binding: Option<bool>,
+    /// The parked action the change followed from, when there was one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub action_id: Option<String>,
+    /// The ballot box's answer: `success`, `pending`, or the code it refused with.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ballot_box_answer: Option<String>,
+    /// The requester's stated reason (close, cancel).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    /// The verified head a certification rests on: tree size and root hash.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub head_tree_size: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub head_root_hash: Option<String>,
+    /// The certified result's digest, multibase.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result_digest: Option<String>,
+    /// The issuer of each auditor attestation a certification carried.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attestation_issuers: Vec<String>,
+}
+
+/// Payload for [`AuditEvent::ElectionTicketIssued`].
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ElectionTicketIssuedData {
+    /// The election the ticket is for.
+    pub election_id: String,
+}
+
 /// Payload for [`AuditEvent::HiddenVettingChanged`].
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -2494,6 +2777,155 @@ pub struct VetterAutoGrantSweptData {
 pub struct CommunityBrandingUpdatedData {
     /// The branding members that changed, by wire name.
     pub fields_changed: Vec<String>,
+}
+
+/// Payload for [`AuditEvent::CommunityThemeUpdated`].
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CommunityThemeUpdatedData {
+    /// Lowercase hex SHA-256 of the stored stylesheet; `None` when the theme
+    /// was removed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub digest: Option<String>,
+    /// Its length in UTF-8 bytes; 0 when removed.
+    pub bytes: u32,
+}
+
+/// Payload for [`AuditEvent::DirectoryFieldChanged`].
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DirectoryFieldChangedData {
+    /// The field's key.
+    pub key: String,
+    /// `define`, `update`, `retire` or `purge`.
+    pub change: String,
+    /// Whether the change lets some viewer see or find more than before.
+    pub widens: bool,
+    /// The administrator's stated reason. Configuration only: a producer
+    /// places no personal data in it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+/// Payload for [`AuditEvent::DirectoryCardChanged`].
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DirectoryCardChangedData {
+    /// The card's entry identifier, never the member's DID.
+    pub entry_id: String,
+    /// `member` (`card/update`) or `admin` (`card/assert`).
+    pub by: String,
+    /// The fields whose value or visibility the write named.
+    pub fields: Vec<String>,
+    /// The card's revision after the write.
+    pub revision: u64,
+}
+
+/// Payload for [`AuditEvent::DirectoryCardPublication`].
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DirectoryCardPublicationData {
+    /// The card's entry identifier, never the member's DID.
+    pub entry_id: String,
+    /// `published`, or `withdrawn`.
+    pub change: String,
+    /// Why a card was withdrawn: `member`, `consent`, `stale` or `departure`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    /// The digest of the card published or withdrawn.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub card_digest: Option<String>,
+    /// The `id` of the member's signed `card/publish` document.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub document_id: Option<String>,
+}
+
+/// Payload for [`AuditEvent::DirectoryImageStored`].
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DirectoryImageStoredData {
+    /// Lowercase hex SHA-256 of the stored, re-encoded bytes.
+    pub sha256: String,
+    /// `member` or `admin`: whose card may take it up.
+    pub owner: String,
+}
+
+/// Payload for [`AuditEvent::DirectoryNoteAccessed`].
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DirectoryNoteAccessData {
+    /// The member's entry identifier, never their DID.
+    pub entry_id: String,
+    /// `append` or `list`.
+    pub access: String,
+    /// The note written, for an append.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note_id: Option<String>,
+    /// The note an append redacted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub redacts: Option<String>,
+    /// How many notes a read returned.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub count: Option<usize>,
+}
+
+/// Payload for [`AuditEvent::GroupChanged`].
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct GroupChangedData {
+    pub group_id: String,
+    /// `created`, `updated` or `deleted`.
+    pub change: String,
+    /// The settings an update named, by name.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fields: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+/// Payload for [`AuditEvent::GroupMembershipChanged`].
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct GroupMembershipChangedData {
+    pub group_id: String,
+    /// The member's entry identifier, never their DID.
+    pub entry_id: String,
+    /// `added`, `joined`, `requested`, `approved`, `declined`, `withdrawn`,
+    /// `removed` or `left`.
+    pub change: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+/// Payload for [`AuditEvent::GroupGrantsChanged`].
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct GroupGrantsChangedData {
+    pub group_id: String,
+    pub binding_id: String,
+    /// The member's entry identifier, never their DID.
+    pub entry_id: String,
+    /// Capabilities written, as `cap[@resource]`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub added: Vec<String>,
+    /// Capabilities withdrawn, as `cap[@resource]`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub removed: Vec<String>,
+}
+
+/// Payload for [`AuditEvent::DirectoryExported`].
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DirectoryExportedData {
+    /// `notes` (one member's notes) or `directory` (every member's card).
+    pub what: String,
+    /// The member whose notes were exported, by entry.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entry_id: Option<String>,
+    /// Why, as the exporter stated it.
+    pub reason: String,
+    /// How many notes or cards left.
+    pub count: usize,
 }
 
 /// Payload for [`AuditEvent::CommunityRequestedAttributesUpdated`].
@@ -2694,6 +3126,7 @@ pub struct DidRotatedData {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(rename_all = "camelCase")]
+#[non_exhaustive]
 pub enum DidRotationReason {
     /// Routine hygiene — scheduled or self-directed key refresh, no
     /// suspected compromise.
@@ -3625,6 +4058,23 @@ mod tests {
     }
 
     #[test]
+    fn member_portal_key_used_round_trip() {
+        let e = AuditEvent::MemberPortalKeyUsed(MemberPortalKeyUsedData {
+            member: "did:webvh:x".into(),
+            start_key_did: "did:key:z6Mk".into(),
+            grant_id: Some("urn:uuid:g".into()),
+            task_type: "https://trusttasks.org/spec/git-ns/view/0.4".into(),
+            document_id: "urn:uuid:d".into(),
+        });
+        let v = wire_value(&e);
+        assert_eq!(v["type"], "MemberPortalKeyUsed");
+        assert_eq!(v["data"]["startKeyDid"], "did:key:z6Mk");
+        assert_eq!(v["data"]["grantId"], "urn:uuid:g");
+        assert_eq!(e.variant_name(), "MemberPortalKeyUsed");
+        round_trip(&e);
+    }
+
+    #[test]
     fn variant_discriminator_strings() {
         let cases: Vec<(AuditEvent, &str)> = vec![
             (
@@ -3957,6 +4407,95 @@ mod tests {
                     fields_changed: vec![],
                 }),
                 "CommunityBrandingUpdated",
+            ),
+            (
+                AuditEvent::CommunityThemeUpdated(CommunityThemeUpdatedData {
+                    digest: None,
+                    bytes: 0,
+                }),
+                "CommunityThemeUpdated",
+            ),
+            (
+                AuditEvent::DirectoryFieldChanged(DirectoryFieldChangedData {
+                    key: "bio".into(),
+                    change: "update".into(),
+                    widens: false,
+                    reason: None,
+                }),
+                "DirectoryFieldChanged",
+            ),
+            (
+                AuditEvent::DirectoryCardChanged(DirectoryCardChangedData {
+                    entry_id: "dir_aaaaaaaaaaaaaaaa".into(),
+                    by: "member".into(),
+                    fields: vec!["displayName".into()],
+                    revision: 1,
+                }),
+                "DirectoryCardChanged",
+            ),
+            (
+                AuditEvent::DirectoryCardPublication(DirectoryCardPublicationData {
+                    entry_id: "dir_aaaaaaaaaaaaaaaa".into(),
+                    change: "withdrawn".into(),
+                    reason: Some("stale".into()),
+                    card_digest: Some("zQmExample".into()),
+                    document_id: None,
+                }),
+                "DirectoryCardPublication",
+            ),
+            (
+                AuditEvent::DirectoryNoteAccessed(DirectoryNoteAccessData {
+                    entry_id: "dir_aaaaaaaaaaaaaaaa".into(),
+                    access: "append".into(),
+                    note_id: Some("note_aaaaaaaaaaaaaaaa".into()),
+                    redacts: None,
+                    count: None,
+                }),
+                "DirectoryNoteAccessed",
+            ),
+            (
+                AuditEvent::DirectoryExported(DirectoryExportedData {
+                    what: "notes".into(),
+                    entry_id: Some("dir_aaaaaaaaaaaaaaaa".into()),
+                    reason: "subject-access request".into(),
+                    count: 3,
+                }),
+                "DirectoryExported",
+            ),
+            (
+                AuditEvent::GroupChanged(GroupChangedData {
+                    group_id: "grp_AAAAAAAAAAAAAAAAAAAAAA".into(),
+                    change: "created".into(),
+                    fields: Vec::new(),
+                    reason: Some("the working group starts".into()),
+                }),
+                "GroupChanged",
+            ),
+            (
+                AuditEvent::GroupMembershipChanged(GroupMembershipChangedData {
+                    group_id: "grp_AAAAAAAAAAAAAAAAAAAAAA".into(),
+                    entry_id: "dir_aaaaaaaaaaaaaaaa".into(),
+                    change: "joined".into(),
+                    reason: None,
+                }),
+                "GroupMembershipChanged",
+            ),
+            (
+                AuditEvent::GroupGrantsChanged(GroupGrantsChangedData {
+                    group_id: "grp_AAAAAAAAAAAAAAAAAAAAAA".into(),
+                    binding_id: "gb_AAAAAAAAAAAAAAAAAAAAAA".into(),
+                    entry_id: "dir_aaaaaaaaaaaaaaaa".into(),
+                    added: vec!["vtc.invitations.manage".into()],
+                    removed: Vec::new(),
+                }),
+                "GroupGrantsChanged",
+            ),
+            (
+                AuditEvent::DirectoryImageStored(DirectoryImageStoredData {
+                    sha256: "0".repeat(64),
+                    owner: "member".into(),
+                }),
+                "DirectoryImageStored",
             ),
             (
                 AuditEvent::CommunityRequestedAttributesUpdated(

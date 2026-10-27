@@ -13,6 +13,8 @@ pub mod consent;
 pub mod context_path;
 pub mod error;
 pub mod guards;
+#[cfg(feature = "host-session")]
+pub mod host_session;
 pub mod idempotency;
 pub mod identifier;
 /// Keeping a node's mediator inbox collected: the catch-up watch (with
@@ -27,6 +29,7 @@ pub mod pagination;
 pub mod rate_limit;
 #[cfg(feature = "tsp")]
 pub mod relationship_store;
+pub mod scid_floors;
 pub mod secure_file;
 pub mod seed_store;
 /// Per-sender arrival ordering for a concurrent inbound loop: a TSP

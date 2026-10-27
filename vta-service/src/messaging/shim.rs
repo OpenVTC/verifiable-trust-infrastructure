@@ -45,6 +45,7 @@ pub struct Extension<T>(pub T);
 /// the only variant carried forward. Rendered as an `internal-error`
 /// problem-report by the dispatch when a handler returns `Err`.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum DIDCommServiceError {
     #[error("Handler error: {0}")]
     Handler(String),
@@ -63,6 +64,7 @@ pub struct DIDCommResponse {
     pub type_: String,
     pub body: Value,
     pub thid: Option<String>,
+    pub restart: bool,
 }
 
 impl DIDCommResponse {
@@ -71,7 +73,13 @@ impl DIDCommResponse {
             type_: type_.into(),
             body,
             thid: None,
+            restart: false,
         }
+    }
+
+    pub fn with_restart_if(mut self, restart: bool) -> Self {
+        self.restart = restart;
+        self
     }
 
     /// A problem-report reply. Uses the same DIDComm v2 report-problem type URI

@@ -122,6 +122,7 @@ pub mod did_key;
 /// the module docs.
 #[cfg(feature = "proof-verify")]
 pub mod did_refresh;
+pub mod did_scid;
 pub mod did_secrets;
 pub mod did_templates;
 /// Compact-JWS verification over a resolved key — EdDSA, ES256, ES256K.
@@ -134,6 +135,10 @@ pub mod token_status_list;
 /// `vti-common` when a *client* needed it too — see the module docs.
 #[cfg(feature = "proof-verify")]
 pub mod trust_task_proof;
+/// Credential issuers known by an X.509 certificate chain to a configured
+/// trust anchor, instead of a DID.
+#[cfg(feature = "x509-issuers")]
+pub mod x509_issuer;
 // DID → human-readable display name. The single seam every operator-facing
 // surface (PNM/CNM CLIs, VTC operator CLI, VTC admin UI) renders DIDs
 // through. Core is dependency-light and always compiled; the one source that
@@ -210,6 +215,9 @@ pub mod provision_integration;
 pub mod sealed_transfer;
 #[cfg(feature = "session")]
 pub mod session;
+/// TEE first-boot claim wire (`POST /bootstrap/request`, version 2, #2066).
+#[cfg(feature = "sealed-transfer")]
+pub mod tee_bootstrap;
 // One TDK + one ATM per process, with a session per identity on it. Every
 // session type in this SDK runs on a hub; the legacy constructors just build a
 // private one (#830).

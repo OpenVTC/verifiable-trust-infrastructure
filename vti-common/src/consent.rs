@@ -15,6 +15,7 @@ use crate::store::KeyspaceHandle;
 /// Interaction kind — a 1:1 DM, a multi-party group, or a broadcast channel.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
+#[non_exhaustive]
 pub enum ConsentKind {
     Dm,
     Group,
@@ -174,16 +175,19 @@ pub async fn store_pending_consent(
 }
 
 /// Locate and **consume** the pending consent matching `challenge` (single-use).
+///
+/// The read and the removal are one atomic take, so of two responses racing on
+/// one challenge exactly one finds it.
 pub async fn consume_pending_consent(
     ks: &KeyspaceHandle,
     challenge: &str,
     now: u64,
 ) -> Result<ConsumeConsent, AppError> {
-    let key = pending_key(challenge);
-    let Some(pending): Option<PendingConsent> = ks.get(key.clone()).await? else {
+    // Single-use, live or expired.
+    let Some(bytes) = ks.take_raw(pending_key(challenge)).await? else {
         return Ok(ConsumeConsent::NotFound);
     };
-    ks.remove(key).await?; // single-use, live or expired
+    let pending: PendingConsent = serde_json::from_slice(&bytes)?;
     if now >= pending.expires_at {
         return Ok(ConsumeConsent::Expired);
     }
@@ -396,6 +400,37 @@ mod tests {
                 .unwrap(),
             ConsumeConsent::NotFound,
         );
+    }
+
+    /// Single use under contention: of many responses racing on one challenge,
+    /// exactly one finds it. A get-then-remove let several through.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+    async fn concurrent_consumes_find_a_pending_exactly_once() {
+        let ks = ks().await;
+        for round in 0..40 {
+            let chal = format!("race-{round}");
+            let p = new_pending_consent(subject(), ConsentScope::Converse, &chal, "a", None, 300);
+            store_pending_consent(&ks, &p).await.unwrap();
+            let barrier = std::sync::Arc::new(tokio::sync::Barrier::new(16));
+            let mut tasks = Vec::new();
+            for _ in 0..16 {
+                let (ks, barrier, chal) = (ks.clone(), barrier.clone(), chal.clone());
+                tasks.push(tokio::spawn(async move {
+                    barrier.wait().await;
+                    matches!(
+                        consume_pending_consent(&ks, &chal, p.created_at + 1)
+                            .await
+                            .unwrap(),
+                        ConsumeConsent::Found(_)
+                    )
+                }));
+            }
+            let mut found = 0;
+            for t in tasks {
+                found += t.await.unwrap() as usize;
+            }
+            assert_eq!(found, 1, "a pending consent must be consumed exactly once");
+        }
     }
 
     #[test]

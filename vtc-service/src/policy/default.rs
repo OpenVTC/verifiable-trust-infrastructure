@@ -108,13 +108,21 @@ const DEFAULT_SOURCES: &[(PolicyPurpose, &str)] = &[
         PolicyPurpose::Admission,
         include_str!("../../policies/default/admission.rego"),
     ),
+    (
+        PolicyPurpose::DirectoryWrite,
+        include_str!("../../policies/default/directory_write.rego"),
+    ),
+    (
+        PolicyPurpose::Groups,
+        include_str!("../../policies/default/groups.rego"),
+    ),
 ];
 
 /// Number of purposes the workspace ships defaults for. Asserted
 /// against [`PolicyPurpose::ALL`] at test time so a missed entry in
 /// `DEFAULT_SOURCES` surfaces as a build-time-ish failure rather
 /// than a silent runtime gap.
-pub const DEFAULT_COUNT: usize = 14;
+pub const DEFAULT_COUNT: usize = 16;
 
 /// Return the embedded default source for `purpose`. Useful to the
 /// admin UX layer that wants to show "reset to default" diffs
@@ -463,6 +471,165 @@ pub async fn upgrade_stale_personhood_default(
         "upgraded the shipped personhood default: it admitted a witness whose digest \
          binds no edge (#1068), predates the DTG v1 credential shapes, or reads the \
          community's identity check as an IdentityVerificationCredential (#1859)"
+    );
+    Ok(true)
+}
+
+/// Whether a workspace-shipped `rooms` default predates community-owned rooms: it
+/// refuses the community an `attributed` room of its own, which the shipped default
+/// permits (`vtc/rooms/community/create`, `data-rooms-files.md` §8.4).
+fn is_stale_rooms_default(policy: &Policy) -> bool {
+    let Ok(compiled) = compile(&policy.rego_source, policy.id) else {
+        return false;
+    };
+    let probe = serde_json::json!({
+        "now": "2026-10-16T00:00:00Z",
+        "actor": { "did": "did:example:probe-administrator", "member": false },
+        "room": {
+            "roomId": "",
+            "visibility": "attributed",
+            "ownerDid": "did:example:probe-community",
+            "communityOwned": true,
+        },
+    });
+    let allows = evaluate(&compiled, "data.vtc.rooms.decision", probe)
+        .ok()
+        .and_then(|r| {
+            r.pointer("/result/0/expressions/0/value/effect")
+                .and_then(serde_json::Value::as_str)
+                .map(|e| e == "allow")
+        })
+        .unwrap_or(false);
+    !allows
+}
+
+/// Replace a **workspace-shipped** `rooms` default that predates community-owned
+/// rooms, which refuses every room the community would own (its owner is no member).
+/// The same two conditions as [`upgrade_stale_personhood_default`] — the active row is
+/// the workspace's own, and it behaves like the superseded default — so an operator's
+/// own `rooms` policy is never touched. Fail-forward: a new revision, the active
+/// pointer moved to it. Returns whether an upgrade happened.
+pub async fn upgrade_stale_rooms_default(
+    policies_ks: &KeyspaceHandle,
+    active_policies_ks: &KeyspaceHandle,
+) -> Result<bool, AppError> {
+    upgrade_stale_default(
+        policies_ks,
+        active_policies_ks,
+        PolicyPurpose::Rooms,
+        is_stale_rooms_default,
+        "upgraded the shipped rooms default: it predates community-owned rooms and refused \
+         every room the community would own",
+    )
+    .await
+}
+
+/// Whether `policy` behaves like a `directory` default this build supersedes:
+/// the one shipped before the card model, which answers a member with a field
+/// list (`did`, `role`) the projection now reads as a narrowing, so every name
+/// and nickname members chose to show would be withheld; or the one shipped
+/// before external cards, which denies the public and so would keep every
+/// external card empty. Called only on the workspace's own row.
+fn is_stale_directory_default(policy: &Policy) -> bool {
+    let Ok(compiled) = compile(&policy.rego_source, policy.id) else {
+        return false;
+    };
+    let probe = serde_json::json!({
+        "purpose": "directory",
+        "actor": { "did": "did:example:probe-member", "role": "member", "authenticated": true },
+        "subject": { "did": "did:example:probe-subject" },
+    });
+    evaluate(&compiled, "data.vtc.directory.decision", probe)
+        .ok()
+        .and_then(|r| {
+            r.pointer("/result/0/expressions/0/value/with/fields")
+                .cloned()
+        })
+        .is_some_and(|f| f == serde_json::json!(["did", "role"]))
+        || !answers_the_public(&compiled)
+}
+
+/// Whether a `directory` policy lets the public see what members made public
+/// — the question `vtc/directory/card/publish` asks. A shipped default from
+/// before external cards denies it, and would keep every external card empty.
+fn answers_the_public(compiled: &crate::policy::engine::CompiledPolicy) -> bool {
+    let probe = serde_json::json!({
+        "purpose": "directory",
+        "actor": { "did": "", "authenticated": false },
+        "subject": { "did": "did:example:probe-subject" },
+        "evidence": { "request": { "viewer": { "public": true } } },
+    });
+    evaluate(compiled, "data.vtc.directory.decision", probe)
+        .ok()
+        .and_then(|r| r.pointer("/result/0/expressions/0/value/effect").cloned())
+        .is_some_and(|e| e == "allow")
+}
+
+/// Replace a **workspace-shipped** `directory` default that predates the
+/// member directory's card model ([`is_stale_directory_default`]). An
+/// operator's own `directory` policy is never touched; one that narrows by
+/// field keeps doing so, under the field names the card model uses.
+pub async fn upgrade_stale_directory_default(
+    policies_ks: &KeyspaceHandle,
+    active_policies_ks: &KeyspaceHandle,
+) -> Result<bool, AppError> {
+    upgrade_stale_default(
+        policies_ks,
+        active_policies_ks,
+        PolicyPurpose::Directory,
+        is_stale_directory_default,
+        "upgraded the shipped directory default: it predates directory cards or external cards, \
+         and would have withheld fields members choose to show",
+    )
+    .await
+}
+
+/// Replace the active policy for `purpose` with this build's default when, and
+/// only when, the active row is the workspace's own and `is_stale` says it
+/// behaves like a superseded default. Fail-forward: a new revision, the active
+/// pointer moved to it. Returns whether an upgrade happened.
+async fn upgrade_stale_default(
+    policies_ks: &KeyspaceHandle,
+    active_policies_ks: &KeyspaceHandle,
+    purpose: PolicyPurpose,
+    is_stale: fn(&Policy) -> bool,
+    why: &'static str,
+) -> Result<bool, AppError> {
+    let Some(active_id) = get_active_policy_id(active_policies_ks, purpose).await? else {
+        return Ok(false); // install_defaults handles the missing case
+    };
+    let Some(active) = get_policy(policies_ks, active_id).await? else {
+        return Ok(false);
+    };
+    if active.author_did != DEFAULTS_AUTHOR || !is_stale(&active) {
+        return Ok(false);
+    }
+    let source = default_source(purpose);
+    let id = Uuid::new_v4();
+    let compiled = compile(source, id).map_err(|e| {
+        AppError::Internal(format!(
+            "default policy for {} failed to compile: {e}",
+            purpose.as_str()
+        ))
+    })?;
+    let sha = *compiled.source_sha256();
+    let version = max_version_for(policies_ks, purpose).await? + 1;
+    let mut policy = new_policy(
+        purpose,
+        source.to_string(),
+        sha,
+        DEFAULTS_AUTHOR.to_string(),
+        version,
+    );
+    policy.id = id;
+    policy.activated_at = Some(Utc::now());
+    store_policy(policies_ks, &policy).await?;
+    set_active_policy_id(active_policies_ks, purpose, id).await?;
+    warn!(
+        purpose = purpose.as_str(),
+        replaced = %active_id,
+        policy_id = %id,
+        "{why}"
     );
     Ok(true)
 }
@@ -1648,40 +1815,23 @@ allow if {
     }
 
     #[test]
-    fn directory_default_projects_fields_by_viewer_role() {
-        // The directory default is now the ceremony decision spine: it
-        // returns a {effect, with} object whose `with.fields` is the
-        // projection, branching on the verified-facts `input.actor`.
+    fn directory_default_narrows_nothing_for_an_identified_reader() {
+        // The community projects each entry itself (VTI-DIR-020); the shipped
+        // default only says who may read, and narrows nothing for them.
         let c = compile_default(PolicyPurpose::Directory);
-
-        // Admin viewer → fuller record.
-        let admin = evaluate(
-            &c,
-            "data.vtc.directory.decision",
-            json!({ "actor": { "role": "admin", "authenticated": true } }),
-        )
-        .unwrap();
-        assert_eq!(
-            admin.pointer("/result/0/expressions/0/value"),
-            Some(&json!({
-                "effect": "allow",
-                "with": { "fields": ["did", "role", "joined_at", "status"] }
-            })),
-        );
-
-        // Authenticated non-admin member → did + role only.
-        let member = evaluate(
-            &c,
-            "data.vtc.directory.decision",
-            json!({ "actor": { "role": "member", "authenticated": true } }),
-        )
-        .unwrap();
-        assert_eq!(
-            member.pointer("/result/0/expressions/0/value"),
-            Some(&json!({ "effect": "allow", "with": { "fields": ["did", "role"] } })),
-        );
-
-        // Unauthenticated / non-member → structural-totality deny.
+        for role in ["admin", "member"] {
+            let got = evaluate(
+                &c,
+                "data.vtc.directory.decision",
+                json!({ "actor": { "role": role, "authenticated": true } }),
+            )
+            .unwrap();
+            assert_eq!(
+                got.pointer("/result/0/expressions/0/value"),
+                Some(&json!({ "effect": "allow", "with": {} })),
+                "{role}"
+            );
+        }
         let denied = evaluate(
             &c,
             "data.vtc.directory.decision",
@@ -1692,6 +1842,121 @@ allow if {
             denied.pointer("/result/0/expressions/0/value"),
             Some(&json!({ "effect": "deny", "with": { "code": "not-a-member" } })),
         );
+        // The public is answered only as the public — the external-card
+        // question — never as an unidentified directory reader.
+        let public = evaluate(
+            &c,
+            "data.vtc.directory.decision",
+            json!({
+                "actor": { "authenticated": false },
+                "evidence": { "request": { "viewer": { "public": true } } },
+            }),
+        )
+        .unwrap();
+        assert_eq!(
+            public.pointer("/result/0/expressions/0/value"),
+            Some(&json!({ "effect": "allow", "with": {} })),
+        );
+    }
+
+    /// The default an earlier binary shipped answered a member with
+    /// `fields: ["did", "role"]`, which the card model reads as a narrowing:
+    /// it is replaced at boot while it is the workspace's own row, and an
+    /// operator's policy that narrows the same way is left alone.
+    /// The card-model default shipped before external cards denied the
+    /// public: replaced at boot while it is the workspace's own row.
+    #[tokio::test]
+    async fn the_pre_external_card_directory_default_is_replaced() {
+        const OLD: &str = r#"package vtc.directory
+import rego.v1
+default decision := {"effect": "deny", "with": {"code": "not-a-member"}}
+decision := {"effect": "allow", "with": {}} if {
+	input.actor.authenticated == true
+}
+"#;
+        for (author, replaced) in [(DEFAULTS_AUTHOR, true), ("did:example:operator", false)] {
+            let (policies_ks, active_ks, _dir) = temp_keyspaces().await;
+            let id = Uuid::new_v4();
+            let sha = *compile(OLD, id).unwrap().source_sha256();
+            let mut policy = new_policy(
+                PolicyPurpose::Directory,
+                OLD.to_string(),
+                sha,
+                author.to_string(),
+                1,
+            );
+            policy.id = id;
+            store_policy(&policies_ks, &policy).await.unwrap();
+            set_active_policy_id(&active_ks, PolicyPurpose::Directory, id)
+                .await
+                .unwrap();
+            assert_eq!(
+                upgrade_stale_directory_default(&policies_ks, &active_ks)
+                    .await
+                    .unwrap(),
+                replaced,
+                "{author}"
+            );
+            assert!(
+                !upgrade_stale_directory_default(&policies_ks, &active_ks)
+                    .await
+                    .unwrap()
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn the_pre_card_directory_default_is_replaced_and_an_operators_kept() {
+        const OLD: &str = r#"package vtc.directory
+import rego.v1
+default decision := {"effect": "deny", "with": {"code": "not-a-member"}}
+decision := {"effect": "allow", "with": {"fields": ["did", "role", "joined_at", "status"]}} if {
+	input.actor.role == "admin"
+}
+else := {"effect": "allow", "with": {"fields": ["did", "role"]}} if {
+	input.actor.authenticated == true
+}
+"#;
+        for (author, replaced) in [(DEFAULTS_AUTHOR, true), ("did:example:operator", false)] {
+            let (policies_ks, active_ks, _dir) = temp_keyspaces().await;
+            let id = Uuid::new_v4();
+            let sha = *compile(OLD, id).unwrap().source_sha256();
+            let mut policy = new_policy(
+                PolicyPurpose::Directory,
+                OLD.to_string(),
+                sha,
+                author.to_string(),
+                1,
+            );
+            policy.id = id;
+            store_policy(&policies_ks, &policy).await.unwrap();
+            set_active_policy_id(&active_ks, PolicyPurpose::Directory, id)
+                .await
+                .unwrap();
+            assert_eq!(
+                upgrade_stale_directory_default(&policies_ks, &active_ks)
+                    .await
+                    .unwrap(),
+                replaced,
+                "{author}"
+            );
+            let now = get_active_policy_id(&active_ks, PolicyPurpose::Directory)
+                .await
+                .unwrap()
+                .unwrap();
+            let active = get_policy(&policies_ks, now).await.unwrap().unwrap();
+            assert_eq!(
+                active.rego_source == default_source(PolicyPurpose::Directory),
+                replaced,
+                "{author}"
+            );
+            // Idempotent: the new default is not stale.
+            assert!(
+                !upgrade_stale_directory_default(&policies_ks, &active_ks)
+                    .await
+                    .unwrap()
+            );
+        }
     }
 
     #[test]
@@ -1838,6 +2103,132 @@ allow if {
         assert!(
             !pluck_bool(&not_a_member),
             "proof of control is not membership; a non-member session must be denied"
+        );
+    }
+
+    /// The `rooms` default every community installed before community-owned rooms
+    /// (`vtc/rooms/community/create`): it refuses a room whose owner is no member,
+    /// which is every room the community would own.
+    const SUPERSEDED_ROOMS_DEFAULT: &str = r#"# Default `rooms` policy — who may create a data room on this community.
+#
+# This governs **creation only**. Once a room exists, every operation on it is
+# authorized by credentials the room itself issued, and this service's roster
+# has no say — that is invariant I5 of the data-rooms design, and it is what
+# lets a room move to another host. What a community decides here is narrower
+# and entirely its own: whether to lend its disk.
+#
+# The shipped posture is §7.4's: members may create `open` and `attributed`
+# rooms; `private` is denied until an operator enables it. Not because a private
+# room is dangerous, but because a community that has not decided should not
+# discover it is hosting rooms whose membership it cannot see. To permit them,
+# upload a policy with the `private` clause removed.
+#
+# The input carries the creator (with their community standing) and the room's
+# identifier, visibility and owner. It deliberately does NOT carry the hosting
+# axes the design sketches (`didControlledBy` / `contentStoredAt`): the
+# published `rooms/create/0.2` schema has no member for either, so no host can
+# know them, and inventing them locally would put this service's rooms out of
+# conformance with the schema every other host reads.
+
+package vtc.rooms
+
+import rego.v1
+
+# Structural totality. A policy that answers nothing is refused by the host
+# rather than read as consent, but saying so here means the common refusal
+# carries a code an operator can act on.
+default decision := {"effect": "deny", "with": {
+	"code": "not-a-member",
+	"reason": "this community hosts rooms for its own members",
+}}
+
+# A private room asks this community to store content it cannot read, for
+# members it cannot enumerate. Permitted only once an operator has said so.
+decision := {"effect": "deny", "with": {
+	"code": "private-tier-not-enabled",
+	"reason": "this community has not enabled private rooms; upload a rooms policy that permits them",
+}} if {
+	input.actor.member == true
+	input.room.visibility == "private"
+}
+
+# The ordinary case: a member creating a room whose tier this community serves.
+else := {"effect": "allow"} if {
+	input.actor.member == true
+	input.room.visibility in {"open", "attributed"}
+}
+"#;
+
+    async fn activate_rooms(
+        policies_ks: &KeyspaceHandle,
+        active_ks: &KeyspaceHandle,
+        source: &str,
+        author: &str,
+    ) -> Uuid {
+        let id = Uuid::new_v4();
+        let sha = *compile_policy(source, id).unwrap().source_sha256();
+        let mut p = new_policy(
+            PolicyPurpose::Rooms,
+            source.to_string(),
+            sha,
+            author.into(),
+            1,
+        );
+        p.id = id;
+        p.activated_at = Some(Utc::now());
+        store_policy(policies_ks, &p).await.unwrap();
+        set_active_policy_id(active_ks, PolicyPurpose::Rooms, id)
+            .await
+            .unwrap();
+        id
+    }
+
+    /// An upgraded VTC keeps the rooms default it installed; the upgrade moves the
+    /// workspace's own row forward so the community can own rooms, and leaves an
+    /// operator's policy — and the current default — alone.
+    #[tokio::test]
+    async fn the_rooms_default_before_community_rooms_is_upgraded() {
+        let (policies_ks, active_ks, _dir) = temp_keyspaces().await;
+        let old = activate_rooms(
+            &policies_ks,
+            &active_ks,
+            SUPERSEDED_ROOMS_DEFAULT,
+            DEFAULTS_AUTHOR,
+        )
+        .await;
+        assert!(
+            upgrade_stale_rooms_default(&policies_ks, &active_ks)
+                .await
+                .unwrap()
+        );
+        let now = get_active_policy_id(&active_ks, PolicyPurpose::Rooms)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_ne!(now, old);
+        let active = get_policy(&policies_ks, now).await.unwrap().unwrap();
+        assert_eq!(active.rego_source, default_source(PolicyPurpose::Rooms));
+        assert_eq!(active.version, 2);
+        assert!(
+            !upgrade_stale_rooms_default(&policies_ks, &active_ks)
+                .await
+                .unwrap(),
+            "the shipped default is not stale"
+        );
+
+        let (policies_ks, active_ks, _dir) = temp_keyspaces().await;
+        activate_rooms(
+            &policies_ks,
+            &active_ks,
+            SUPERSEDED_ROOMS_DEFAULT,
+            "did:key:z6MkAnOperator",
+        )
+        .await;
+        assert!(
+            !upgrade_stale_rooms_default(&policies_ks, &active_ks)
+                .await
+                .unwrap(),
+            "an operator's own rooms policy is never touched"
         );
     }
 }

@@ -4,6 +4,7 @@ use thiserror::Error;
 
 /// Errors produced by sealed-transfer operations.
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum SealedTransferError {
     #[error("hpke error: {0}")]
     Hpke(String),

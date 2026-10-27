@@ -14,7 +14,7 @@ consumer gets the new shape on the next create. No redeploy.
 
 - **Data, not code.** An operator can ship a new agent kind by dropping a JSON
   file, no recompile. The built-ins (`ai-agent`, `didcomm-mediator`,
-  `push-gateway`, `vta-admin`, `vtc-host`, `did-host-http-didcomm`,
+  `push-gateway`, `trust-registry`, `vta-admin`, `vtc-host`, `dtg-witness`, `ballot-box`, `did-host-http-didcomm`,
   `did-host-http`, `did-host-didcomm`, `did-host-http-tsp`, `did-host-tsp`)
   are baseline shapes, not the only shapes.
 - **Method-agnostic.** Same format works for `did:webvh`, `did:web`, or
@@ -274,6 +274,14 @@ template without explicit scope is **context → global → builtin**:
     same null-pruning slot and shape as `vtc-host`'s messaging transports.
     Omit it and the gateway advertises DIDComm alone, unchanged from before.
   - `vta-admin` — did:key admin DID for provision-integration admin rollover.
+  - `vtc-group` — a community group's own identity (`vtc/groups/create`). A
+    did:webvh with a signing key (`assertionMethod`, `authentication`) and a
+    key-agreement key, and **no service**: nothing delivers messages to a group
+    yet, and group messaging adds one by a DID update. It takes no name,
+    description or label, so resolving the DID says nothing about the group.
+    Requires `WEBVH_SERVER`; optional `WITNESSES`. The community's VTA mints and
+    holds it; the group's DID issues its members' membership credentials under
+    an authorization credential the community issues it.
   - `vtc-host` — Verifiable Trust Community (VTC) service identity. Mints
     the did:webvh under which a `vtc-service` binary operates and advertises
     its REST endpoint plus a placeholder URL for the BitstringStatusList
@@ -303,6 +311,26 @@ template without explicit scope is **context → global → builtin**:
     `didcomm` = a `DIDCommMessaging` endpoint, `tsp` = a `TSPTransport`
     endpoint — not the service that uses it. `didcomm` and `tsp` both route
     through the shared mediator.
+  - `ballot-box` — a `vti-voting-service` identity (integration kind
+    `ballot-box`). The `dtg-witness` shape — `#key-0` under `authentication` and
+    `assertionMethod` (it answers Trust Tasks and signs receipts and board heads),
+    `#key-1` for key agreement, `#tsp` and `#didcomm` at `MEDIATOR_DID` — plus
+    `#trust-tasks` (`TrustTaskHTTPS`) at `HTTPS_URL` (both required): a cast from a
+    key made for that cast has no mediator session, so it must be accepted over
+    HTTPS (VTI-VOT-004). Communities and auditors use TSP or DIDComm.
+  - `dtg-witness` — a `vti-witness` identity (integration kind `dtg-witness`; see
+    [the witness host service](../06-witness/README.md)). An Ed25519 key
+    (`#key-0`) under both `authentication` and `assertionMethod` — it answers
+    Trust Tasks and signs the Verifiable Witness Credentials it issues — and an
+    X25519 `keyAgreement` key (`#key-1`). Advertises `#tsp` (`TSPTransport`) and
+    `#didcomm` (`DIDCommMessaging`), both naming `MEDIATOR_DID` (required), TSP
+    first, and **no** `VTARest` or other HTTP endpoint: a witness has no HTTPS
+    door in v1. As with `did-host-didcomm`, `URL` or `WEBVH_SERVER` tells the VTA
+    where to publish the log but appears nowhere in the document. Not the
+    did:webvh log witness the `did-host-*` descriptions mention (for which
+    `pnm did-templates init witness` remains an alias of `did-host-didcomm`) —
+    this is the witness of `witness/session/0.2`. Curated builder:
+    `ProvisionAsk::dtg_witness(context, mediator_did)`.
   - `did-host-http-didcomm` — node whose DID exposes both a `WebVHHosting`
     service (URL-based) **and** a `DIDCommMessaging` service routed through
     a mediator. Use for nodes that publish DID logs over HTTP and accept

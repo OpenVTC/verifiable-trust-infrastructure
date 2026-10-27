@@ -1,7 +1,7 @@
 [package]
 name = "pnm-cli"
 description = "CLI Tool for managing a personal Verifiable Trust Agent"
-version = "0.38.0"
+version = "0.45.0"
 edition.workspace = true
 publish.workspace = true
 authors.workspace = true
@@ -28,14 +28,14 @@ azure-secrets = ["vta-sdk/azure-secrets"]
 tsp = ["vta-sdk/tsp"]
 
 [dependencies]
-vta-sdk = { path = "../vta-sdk", version = "0.66", features = ["session", "sealed-transfer", "attest-verify", "provision-integration", "crypto-provider", "acl-setup"] }
+vta-sdk = { path = "../vta-sdk", version = "0.73", features = ["session", "sealed-transfer", "attest-verify", "provision-integration", "crypto-provider", "acl-setup"] }
 affinidi-crypto = { workspace = true }
 base64 = { workspace = true }
 reqwest = { workspace = true }
 sha2 = { workspace = true }
 # `agent-names` powers the global `--resolve-agent-names` flag; without it
 # the flag parses but can never resolve anything.
-vta-cli-common = { path = "../vta-cli-common", version = "0.39", features = [
+vta-cli-common = { path = "../vta-cli-common", version = "0.46", features = [
   "agent-names",
 ] }
 affinidi-did-resolver-cache-sdk = { workspace = true }
@@ -43,8 +43,10 @@ chrono = { workspace = true }
 clap = { workspace = true, features = ["env"] }
 dialoguer = { workspace = true }
 # `pnm messaging console`: the mediator console and its engine.
-affinidi-messaging-mediator-admin = "0.9"
-affinidi-messaging-mediator-tui = "0.9"
+# 0.43 is the release on `affinidi-messaging-sdk` 0.37 / `trust-tasks-rs` 0.32
+# (affinidi-messaging-mediator #18), moving in lockstep with this workspace.
+affinidi-messaging-mediator-admin = "0.46"
+affinidi-messaging-mediator-tui = "0.46"
 affinidi-secrets-resolver = { workspace = true }
 async-trait = "0.1"
 ratatui = { workspace = true }
@@ -58,6 +60,7 @@ toml = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
+zeroize = "1"
 
 [lints]
 workspace = true

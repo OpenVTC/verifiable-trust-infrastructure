@@ -90,9 +90,14 @@ describe("member portal", () => {
     // No self-issued wallet sign-in: it would present the extension's did:key.
     expect(screen.queryByRole("button", { name: /browser's wallet/i })).toBeNull();
     expect(screen.getByRole("button", { name: /sign in with a passkey/i })).toBeTruthy();
-    // The trigger-link sign-in is the first option (contract C7).
-    const options = screen.getAllByRole("button").map((b) => b.textContent ?? "");
-    expect(options[0]).toMatch(/show sign-in code/i);
+    // The trigger-link sign-in is the first option (contract C7): its section
+    // comes before every other option. (Its code appears unasked; here the
+    // config stub refuses, so the section is retrying it.)
+    const wallet = screen.getByRole("heading", { name: /sign in with your wallet/i });
+    const passkey = screen.getByRole("button", { name: /sign in with a passkey/i });
+    expect(
+      wallet.compareDocumentPosition(passkey) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
     // SIOPv2 is legacy: folded behind "Using an older wallet?", and the
     // extension's install guide with it.
     const legacy = screen.getByText(/using an older wallet\?/i).closest("details") as HTMLDetailsElement;
@@ -342,5 +347,28 @@ describe("member api client", () => {
       "/v1/member/auth/refresh",
       "/v1/member/session",
     ]);
+  });
+});
+
+describe("portal routes", () => {
+  it("reads the directory pages from the hash", async () => {
+    const { routeOf } = await import("./Portal");
+    expect(routeOf("#/directory")).toEqual({ page: "directory" });
+    expect(routeOf("#/card")).toEqual({ page: "card" });
+    expect(routeOf("#/groups")).toEqual({ page: "groups" });
+    expect(routeOf("#/repos")).toEqual({ page: "repos" });
+    expect(routeOf("#/repos/github.com")).toEqual({ page: "home" });
+    expect(routeOf("#/groups/grp_W5k2N8xRb3Qz7TpLAAAAAA")).toEqual({
+      page: "group",
+      groupId: "grp_W5k2N8xRb3Qz7TpLAAAAAA",
+    });
+    expect(routeOf("#/groups/not-a-group")).toEqual({ page: "home" });
+    expect(routeOf("#/directory/dir_Q7m2K9xVb4Tz8LpRaB3c")).toEqual({
+      page: "entry",
+      entryId: "dir_Q7m2K9xVb4Tz8LpRaB3c",
+    });
+    // Anything that is not an entry identifier is the home page.
+    expect(routeOf("#/directory/did:example:carol")).toEqual({ page: "home" });
+    expect(routeOf("#/directory/<script>")).toEqual({ page: "home" });
   });
 });

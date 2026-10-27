@@ -365,7 +365,7 @@ pub fn sd_jwt_issuer_method(header: &Value, iss: &str) -> Result<String, JwsErro
 }
 
 /// Compress an SEC1 point (33-byte compressed or 65-byte uncompressed).
-fn compress_sec1(bytes: &[u8], curve: &str) -> Result<Vec<u8>, JwsError> {
+pub(crate) fn compress_sec1(bytes: &[u8], curve: &str) -> Result<Vec<u8>, JwsError> {
     match bytes {
         [0x02 | 0x03, rest @ ..] if rest.len() == 32 => Ok(bytes.to_vec()),
         [0x04, rest @ ..] if rest.len() == 64 => {

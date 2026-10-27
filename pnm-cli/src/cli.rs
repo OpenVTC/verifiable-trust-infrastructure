@@ -358,12 +358,137 @@ pub(crate) enum Commands {
         command: RoomCommands,
     },
 
+    /// Vote in your community's polls and elections. Your VTA holds every key: it signs your
+    /// requests to the community as your membership DID, unblinds your ticket, and builds each
+    /// cast under a key made for it alone; this CLI posts the cast to the ballot box itself.
+    ///
+    /// Needs the `pcsVoter` capability in the context your membership persona lives in.
+    #[command(name = "elections")]
+    Elections {
+        #[command(subcommand)]
+        command: ElectionCommands,
+    },
+
     /// Operate an Affinidi messaging mediator as a DID this VTA manages.
     #[command(name = "messaging")]
     Messaging {
         #[command(subcommand)]
         command: MessagingCommands,
     },
+}
+
+/// The community a member votes in, and who they are there.
+#[derive(clap::Args)]
+pub(crate) struct ElectionTarget {
+    /// Base URL of the community's Trust Task endpoint (e.g. `https://vtc.example.com/v1`).
+    #[arg(long)]
+    pub(crate) vtc: String,
+    /// The community's DID.
+    #[arg(long)]
+    pub(crate) vtc_did: String,
+    /// Your membership DID at the community: a persona your VTA holds.
+    #[arg(long)]
+    pub(crate) member: String,
+    /// The VTA context that persona lives in; your voter keys are derived there.
+    #[arg(long)]
+    pub(crate) context: String,
+}
+
+/// The election a trustee serves, and who the trustee is.
+#[derive(clap::Args)]
+pub(crate) struct TrusteeTarget {
+    /// The community's DID: the registrar that registered the election.
+    #[arg(long)]
+    pub(crate) community: String,
+    /// The ballot box's DID (the manifest's `ballotBox`).
+    #[arg(long)]
+    pub(crate) ballot_box: String,
+    /// Your trustee DID: a persona your VTA holds, named in the manifest's `trustees.dids`.
+    #[arg(long)]
+    pub(crate) trustee: String,
+    /// The VTA context that persona lives in.
+    #[arg(long)]
+    pub(crate) context: String,
+}
+
+/// A trustee's commands for a sealed or tallied-encrypted election.
+#[derive(Subcommand)]
+pub(crate) enum TrusteeCommands {
+    /// Where the trustees' ceremony stands, as the ballot box reports it to you.
+    Status {
+        election_id: String,
+        #[command(flatten)]
+        target: TrusteeTarget,
+    },
+    /// Take every step the ceremony needs of you now: enrol, deal, confirm or answer a
+    /// complaint, keep your key share, and after close decrypt.
+    ///
+    /// Safe to run again at any time; with `--watch` it keeps going until nothing more is
+    /// needed of you.
+    Step {
+        election_id: String,
+        /// Ask again every 30 seconds until the result is out.
+        #[arg(long)]
+        watch: bool,
+        #[command(flatten)]
+        target: TrusteeTarget,
+    },
+}
+
+/// A member's election commands.
+#[derive(Subcommand)]
+pub(crate) enum ElectionCommands {
+    /// The elections the community lets you vote in.
+    List {
+        #[command(flatten)]
+        target: ElectionTarget,
+    },
+    /// One election: its questions, schedule, and what you are told about its ballot box.
+    Show {
+        election_id: String,
+        #[command(flatten)]
+        target: ElectionTarget,
+    },
+    /// Take your ticket for an election, and nothing else.
+    ///
+    /// Take it early — before voting opens, or well before you vote — so the cast that
+    /// follows cannot be paired with it by when each arrived.
+    Ticket {
+        election_id: String,
+        #[command(flatten)]
+        target: ElectionTarget,
+    },
+    /// Vote with the ticket your VTA holds.
+    ///
+    /// With no ticket held this takes one and stops: run it again later to vote, or pass
+    /// `--now`. A later vote replaces an earlier one where the election allows it. Run the same
+    /// command again if the ballot box did not answer.
+    Vote {
+        election_id: String,
+        /// An answer to a choice question, as `question=option`. Repeat for each question,
+        /// and for each option of a multi-select. Optional questions left out are abstained.
+        #[arg(long = "answer")]
+        answers: Vec<String>,
+        /// The whole ballot as JSON (`voting/ballot/cast` `Ballot`), for questions `--answer`
+        /// cannot express.
+        #[arg(long, conflicts_with = "answers")]
+        ballot: Option<std::path::PathBuf>,
+        /// Cast in the same run that takes the ticket. The community and the ballot box could
+        /// then pair your ticket with your ballot by time.
+        #[arg(long)]
+        now: bool,
+        /// Send the cast at once rather than after a random pause of up to 20 seconds.
+        #[arg(long)]
+        no_delay: bool,
+        #[command(flatten)]
+        target: ElectionTarget,
+    },
+    /// Serve as a trustee of a sealed or tallied-encrypted election: your VTA holds your
+    /// transport key and your share of the election key, and signs every step as you.
+    ///
+    /// Needs the `pcsTrustee` capability in the context your trustee persona lives in.
+    #[command(subcommand)]
+    Trustee(TrusteeCommands),
 }
 
 /// Mediator operations as a VTA-managed DID.
@@ -486,8 +611,9 @@ pub(crate) enum RoomCommands {
         host_did: Option<String>,
     },
 
-    /// Write a record. `open` rooms only — sealing needs the room's group key,
-    /// which lives in your VTA and has no task that seals for a caller.
+    /// Write a record. On an `attributed` or `private` room the record is a
+    /// body you sign, sealed by your VTA (`rooms/keys/seal`) under the room's
+    /// current epoch; on `open` it goes in the clear.
     Put {
         /// Record key. On a sealed tier keys must be opaque; on `open` they may
         /// be descriptive.
@@ -508,6 +634,33 @@ pub(crate) enum RoomCommands {
         /// to be at version `n`. A mismatch reports the version you lost to.
         #[arg(long)]
         expected_version: Option<u64>,
+        /// What kind of claim the record is: `declared` (your own statement — the
+        /// default on a sealed room), `observed`, `verified` (name the evidence),
+        /// `inferred`, or `unstated`. Signed inside the body; for readers to show
+        /// and weigh, never authority.
+        #[arg(long)]
+        basis: Option<String>,
+        /// Your own estimate, 0 to 1, that the record is right.
+        #[arg(long)]
+        confidence: Option<f64>,
+        /// Cite a record of this room in support: `KEY`, or `KEY@VERSION` to cite
+        /// what it said then. Repeatable. Never fetched by a reader.
+        #[arg(long = "cite-record")]
+        cite_records: Vec<String>,
+        /// Cite a credential in support, by its `id`. Repeatable. Never fetched.
+        #[arg(long = "cite-credential")]
+        cite_credentials: Vec<String>,
+        /// A purpose the record may be used for, as an absolute IRI (for example
+        /// `https://w3id.org/dpv#ServicePersonalisation`). Repeatable.
+        #[arg(long = "purpose")]
+        purposes: Vec<String>,
+        /// The permitted use in words, such as "renewal negotiation only".
+        #[arg(long)]
+        use_note: Option<String>,
+        /// When you stop standing behind the record as current (RFC 3339).
+        /// Readers hide it after that; it is not deleted.
+        #[arg(long)]
+        valid_until: Option<String>,
     },
 
     /// Change a record's standing. Needs `curate`, which `write` does not imply.
@@ -535,11 +688,12 @@ pub(crate) enum RoomCommands {
         reason: Option<String>,
     },
 
-    /// Renew the room by minting its next epoch. Needs `admin`.
+    /// Renew an open room by minting its next epoch. Needs `admin`.
     ///
     /// This is what keeps a room live, and it is the whole defence against a
     /// hostile succession claim: an owner who renews is safe without thinking
-    /// about it.
+    /// about it. A sealed room (`attributed` / `private`) is refused: renew it
+    /// with `pnm rooms owner group-renew`, which advances its group with it.
     Renew {
         /// The epoch to mint — your group's epoch plus one.
         epoch: u32,
@@ -554,6 +708,45 @@ pub(crate) enum RoomCommands {
         reason: Option<String>,
     },
 
+    /// Drop the room's epoch key chain below an epoch (`rooms/epoch/prune`).
+    /// Needs `admin`. IRREVERSIBLE, for every member.
+    ///
+    /// The host erases the chain's rungs below `--before-epoch`, so history
+    /// sealed under those epochs can never be opened again by anyone who has
+    /// not already derived its keys — a member who restarts, moves device or
+    /// joins later. The records stay; the ability to open them goes. Members'
+    /// VTAs that already walked the chain keep what they derived: today a prune
+    /// reaches the host only.
+    ///
+    /// Prints what becomes unreadable and asks before sending; without a
+    /// terminal it refuses unless `--yes` is given.
+    Prune {
+        #[arg(long = "room")]
+        room_id: String,
+        #[arg(long)]
+        host: String,
+        #[arg(long)]
+        host_did: Option<String>,
+        /// Drop every rung below this epoch. Must be below the room's current
+        /// epoch: pruning at it would drop the whole chain.
+        #[arg(long)]
+        before_epoch: u32,
+        /// Why, for the room's audit trail — the only record of intent a prune
+        /// leaves. Keep member identifiers and record content out of it.
+        #[arg(long)]
+        reason: String,
+        /// Prune without asking. Required when there is no terminal to ask.
+        #[arg(long, short = 'y')]
+        yes: bool,
+    },
+
+    /// The room's records as a whole: how long it keeps them (its record
+    /// retention) and removing what that rule makes eligible. Both need `admin`.
+    Records {
+        #[command(subcommand)]
+        command: RoomRecordsCommands,
+    },
+
     /// Put a file in a room or fetch one, or seal and open one locally.
     ///
     /// Each file is sealed and opened here with that one file's key from your
@@ -564,17 +757,84 @@ pub(crate) enum RoomCommands {
         command: RoomFileCommands,
     },
 
-    /// Register a room with a host.
+    /// Your VTA as a room's key holder: join a room's group from an
+    /// invitation, apply its commits, and see which rooms it holds.
+    ///
+    /// Every verb is a call to your own VTA, which holds the group key; none
+    /// leaves it.
+    Keys {
+        #[command(subcommand)]
+        command: RoomKeysCommands,
+    },
+
+    /// The room's own profile — its name, description, tags and emoji, as every
+    /// member sees it. Kept inside the room, sealed on `attributed` and `private`
+    /// rooms where the host cannot read it or tell it from any other record.
+    ///
+    /// Every verb is a call to your own VTA, which finds the profile (only a key
+    /// holder can compute where it is), checks who wrote it, and reaches the host
+    /// as you (`rooms/keys/profile/{read,write}`).
+    Profile {
+        #[command(subcommand)]
+        command: RoomProfileCommands,
+    },
+
+    /// The owner's verbs, run by your VTA: register the room with a host, issue
+    /// its credentials in the room's name, and hold the owner's half of its
+    /// group. Neither the room's signing key nor any group key leaves it.
+    Owner {
+        #[command(subcommand)]
+        command: RoomOwnerCommands,
+    },
+
+    /// A community's offers of its rooms to you: list them, and accept one.
+    ///
+    /// Each request is signed as the DID the community addressed its offer to — a
+    /// persona your VTA holds — by your VTA (`rooms/keys/act`), and sent to the
+    /// community unchanged. On a sealed room your VTA mints the KeyPackage and joins
+    /// with the Welcome the community answers with.
+    Offers {
+        #[command(subcommand)]
+        command: RoomOffersCommands,
+    },
+
+    /// Every room the community has offered you and where each stands — offered,
+    /// joined, accepted but not finished, or removed — as your member portal and
+    /// OpenVTC show it too: the community's record (`vtc/rooms/memberships/list`),
+    /// signed as you by your VTA (`rooms/keys/act/0.6`), beside your VTA's own
+    /// (`rooms/keys/list`).
+    Memberships {
+        /// Base URL of the community's Trust Task endpoint (e.g.
+        /// `https://vtc.example.com/v1`).
+        #[arg(long)]
+        vtc: String,
+        /// The community's DID.
+        #[arg(long)]
+        vtc_did: String,
+        /// The DID the community addressed its offers to: a persona your VTA holds.
+        #[arg(long)]
+        member: String,
+    },
+
+    /// Register a room with a host, signed with this CLI's own key — for a
+    /// standalone `room-host` or testing.
+    ///
+    /// This names this CLI's session `did:key` as the room's owner, so the owner
+    /// is the client rather than a persona your VTA holds. On a community (VTC)
+    /// host use `pnm rooms owner register` instead: a VTC creates rooms only for
+    /// its members, and your VTA signs that request as your persona.
     ///
     /// The only verb needing no presentation — the room has issued nothing yet,
-    /// so the host checks this request's own proof instead. Sign it as the
-    /// owner it names, which this does.
+    /// so the host checks this request's own proof instead.
     Create {
         /// The room's DID, which you minted before this call.
         #[arg(long = "room")]
         room_id: String,
+        /// Base URL of the host. A VTC's includes its `/v1` mount.
         #[arg(long)]
         host: String,
+        /// The host's DID. A VTC refuses a document not addressed to it, so give
+        /// it for a VTC.
         #[arg(long)]
         host_did: Option<String>,
         /// `open`, `attributed` or `private`. Fixed for the life of the room.
@@ -726,8 +986,600 @@ pub(crate) enum ExternalCommands {
         actions: Vec<String>,
         #[arg(long)]
         object_key: Option<String>,
+        /// A presign batch (`external/credentials/issue/0.3`, `PresignBatch`) as
+        /// JSON, or `@file` to read it: up to 64 operations on one object of an
+        /// `s3-static-presign` account. Replaces `--prefix`/`--action`/`--object-key`.
+        #[arg(long, conflicts_with_all = ["prefix", "actions", "object_key"])]
+        presign: Option<String>,
         #[arg(long, default_value_t = 900)]
         ttl: u32,
+    },
+}
+
+/// `pnm rooms owner …`.
+// The shared `Group` prefix is the verb: clap derives `group-create`, `group-add` and
+// `group-remove` from these names, and the issuance verbs will sit beside them.
+#[allow(clippy::enum_variant_names)]
+#[derive(Subcommand)]
+pub(crate) enum RoomOwnerCommands {
+    /// Register the room with its host (`rooms/owner/register`). Your VTA sends
+    /// `rooms/create` itself, signed as `--owner`, then delivers the room's
+    /// revocation list there and says whether it is in force. A room whose list
+    /// is not is served without its withdrawals: deliver it with `pnm rooms owner
+    /// revoke --host` (no withdrawal) — never by registering again.
+    ///
+    /// The owner must be a persona DID your VTA holds the signing key for, in a
+    /// context you act in — typically a `did:webvh` minted there — never this
+    /// CLI's key. On a community (VTC) host the owner must also be a member of
+    /// that community. Mint the room's own DID first (`pnm did-mgmt dids create
+    /// --template room`).
+    Register {
+        /// The room's DID.
+        #[arg(long = "room")]
+        room_id: String,
+        /// The host's DID — your VTA resolves it to reach the host.
+        #[arg(long)]
+        host_did: String,
+        /// The owner's persona DID: the accountable party, whose key signs the
+        /// registration. A DID your VTA holds, not your CLI's key.
+        #[arg(long)]
+        owner: String,
+        /// `open`, `attributed` or `private`. Fixed for the life of the room.
+        #[arg(long)]
+        visibility: String,
+        /// How long the host holds the room after it lapses (the host's default
+        /// when absent, 90 days on a VTC or `room-host`).
+        #[arg(long)]
+        retention_days: Option<u64>,
+        /// `chained` (history stays readable across membership changes) or
+        /// `fromJoin`. Immutable; absent takes the host's default for good.
+        #[arg(long)]
+        retention_policy: Option<String>,
+    },
+    /// Invite a party to the room (`rooms/owner/invite`): mint a Verifiable
+    /// Invitation Credential in the room's name and write it to `--out`.
+    ///
+    /// Deliver it to the joiner directly. Their VTA requires it to mint a
+    /// KeyPackage (`pnm rooms keys key-package`) and consumes it on joining
+    /// (`pnm rooms keys welcome`).
+    Invite {
+        /// The room's DID.
+        #[arg(long = "room")]
+        room_id: String,
+        /// The room's signing key id, as printed when its DID was minted.
+        #[arg(long = "signing-key")]
+        signing_key: String,
+        /// The joiner's persona DID — a DID their VTA holds for them, not their
+        /// CLI's key.
+        #[arg(long)]
+        subject: String,
+        /// When the invitation expires, RFC 3339 (`2027-01-01T00:00:00Z`).
+        #[arg(long, conflicts_with = "valid_for")]
+        valid_until: Option<String>,
+        /// When the invitation expires, from now: `N[s|m|h|d|w]` (e.g. `7d`).
+        #[arg(long)]
+        valid_for: Option<String>,
+        /// Where to write the invitation (the credential's JSON).
+        #[arg(long)]
+        out: std::path::PathBuf,
+    },
+    /// Issue a member the room's membership credential
+    /// (`rooms/owner/issue-membership`) — the room's statement that the subject
+    /// is a member.
+    ///
+    /// `--out` writes it for delivery; `--store` also keeps it in this VTA's
+    /// credential vault, for when the subject is your own persona.
+    IssueMembership {
+        /// The room's DID.
+        #[arg(long = "room")]
+        room_id: String,
+        /// The room's signing key id, as printed when its DID was minted.
+        #[arg(long = "signing-key")]
+        signing_key: String,
+        /// The member's persona DID — a DID their VTA holds, not a CLI's key.
+        #[arg(long)]
+        subject: String,
+        /// When it expires, RFC 3339. Absent: no expiry of its own.
+        #[arg(long, conflicts_with = "valid_for")]
+        valid_until: Option<String>,
+        /// When it expires, from now: `N[s|m|h|d|w]`.
+        #[arg(long)]
+        valid_for: Option<String>,
+        /// Where to write the credential (JSON).
+        #[arg(long)]
+        out: Option<std::path::PathBuf>,
+        /// Also store it in this VTA's credential vault (`cred-vault receive`).
+        #[arg(long)]
+        store: bool,
+    },
+    /// Grant authority in the room (`rooms/owner/issue-authority`): mint an
+    /// authority credential conferring `--action`s on the subject.
+    ///
+    /// An expiry is required — a chain root is withdrawn by nothing else.
+    /// `curate` is not implied by `write`; `admin` advances epochs and admits
+    /// members.
+    IssueAuthority {
+        /// The room's DID.
+        #[arg(long = "room")]
+        room_id: String,
+        /// The room's signing key id, as printed when its DID was minted.
+        #[arg(long = "signing-key")]
+        signing_key: String,
+        /// The member's persona DID — a DID their VTA holds, not a CLI's key.
+        #[arg(long)]
+        subject: String,
+        /// `read`, `write`, `curate` or `admin`. Repeat, or separate with commas.
+        #[arg(long = "action", value_delimiter = ',', required = true)]
+        actions: Vec<String>,
+        /// When it expires, RFC 3339. One of this or `--valid-for` is required.
+        #[arg(
+            long,
+            conflicts_with = "valid_for",
+            required_unless_present = "valid_for"
+        )]
+        valid_until: Option<String>,
+        /// When it expires, from now: `N[s|m|h|d|w]` (e.g. `90d`).
+        #[arg(long)]
+        valid_for: Option<String>,
+        /// Where to write the credential (JSON).
+        #[arg(long)]
+        out: Option<std::path::PathBuf>,
+        /// Also store it in this VTA's credential vault (`cred-vault receive`).
+        #[arg(long)]
+        store: bool,
+    },
+    /// Found the room's group with you as its only member
+    /// (`rooms/owner/group/create`). Needed before anything is written to an
+    /// `attributed` or `private` room. Register the room first.
+    GroupCreate {
+        #[arg(long = "room")]
+        room_id: String,
+        /// The room's signing key id, as printed when its DID was minted.
+        #[arg(long = "signing-key")]
+        signing_key: String,
+        /// Your persona DID — the subject of your room credentials, which your
+        /// leaf identifies. A DID your VTA holds, not this CLI's key.
+        #[arg(long)]
+        member: String,
+    },
+    /// Admit a member from the KeyPackage their key holder minted
+    /// (`rooms/owner/group/add`). Your VTA advances the room at its host, then
+    /// writes the Welcome to `--out` for you to deliver to the member's key
+    /// holder (`rooms/keys/welcome`) — never through the host.
+    GroupAdd {
+        #[arg(long = "room")]
+        room_id: String,
+        /// The room host's DID: where the epoch advances.
+        #[arg(long)]
+        host_did: String,
+        /// The persona DID being admitted — the subject of their invitation.
+        #[arg(long)]
+        member: String,
+        /// The member's KeyPackage, base64url: a file, or `-` for stdin.
+        #[arg(long)]
+        key_package: String,
+        /// Why, carried to the host's epoch advance.
+        #[arg(long)]
+        reason: Option<String>,
+        /// Where to write the Welcome (JSON: `welcome`, `ratchetTree`, `epoch`).
+        #[arg(long)]
+        out: std::path::PathBuf,
+    },
+    /// Remove a member from the room (`rooms/owner/group/remove`). With
+    /// `--signing-key` (0.3, or 0.2 on an older VTA) your VTA first withdraws their credentials at the
+    /// host — signed as the room, refused from then on, and anything they
+    /// delegated with them — and then removes their leaf and advances the room. A
+    /// private room cannot withdraw one member, so there it removes the leaf alone
+    /// (0.1), as it does without `--signing-key`. It recalls nothing they
+    /// already read.
+    GroupRemove {
+        #[arg(long = "room")]
+        room_id: String,
+        /// The room host's DID: where the withdrawal goes and the epoch advances.
+        #[arg(long)]
+        host_did: String,
+        /// The persona DID being removed — the one its leaf was admitted as.
+        #[arg(long)]
+        member: String,
+        /// The room's signing key id, to withdraw their credentials at the host as
+        /// the room. Without it the removal is group-only and their credentials stay
+        /// valid until they expire.
+        #[arg(long = "signing-key")]
+        signing_key_id: Option<String>,
+        /// Another host serving the room (a mirror), delivered the withdrawal too.
+        /// Repeatable.
+        #[arg(long = "mirror")]
+        mirrors: Vec<String>,
+        /// When the last credential the room issued them expires (RFC 3339), after
+        /// which the withdrawal can be dropped from the room's list.
+        #[arg(long)]
+        until: Option<chrono::DateTime<chrono::Utc>>,
+        /// Why, carried to the host's epoch advance. Never put in the list.
+        #[arg(long)]
+        reason: Option<String>,
+    },
+    /// Withdraw credentials the room issued (`rooms/owner/revoke`): your VTA signs
+    /// the room's next revocation list as the room and delivers it to every host
+    /// you name, which refuses what it withdraws from then on. With no withdrawal,
+    /// re-delivers the list your VTA holds — to a host the room moved to, or one
+    /// that did not answer.
+    Revoke {
+        #[arg(long = "room")]
+        room_id: String,
+        /// The room's signing key id, as printed when its DID was minted.
+        #[arg(long = "signing-key")]
+        signing_key_id: String,
+        /// Every host serving the room: primary, mirrors, one it is moving to.
+        /// Repeatable; at least one.
+        #[arg(long = "host", required = true)]
+        hosts: Vec<String>,
+        /// A party to withdraw: every credential naming them as subject or issuer
+        /// issued until now (re-admitting them later works). Repeatable.
+        #[arg(long = "subject")]
+        subjects: Vec<String>,
+        /// One credential to withdraw, by its `id`. Repeatable.
+        #[arg(long = "credential")]
+        credentials: Vec<String>,
+        /// Withdraw every credential the room issued until now, from everyone — the
+        /// only withdrawal a private room can apply. Re-issue to those who remain.
+        #[arg(long)]
+        reset: bool,
+        /// When the withdrawn credentials expire anyway (RFC 3339).
+        #[arg(long)]
+        until: Option<chrono::DateTime<chrono::Utc>>,
+        /// Why, for your own record. Never put in the list.
+        #[arg(long)]
+        reason: Option<String>,
+    },
+    /// Renew a sealed room (`rooms/owner/group/renew`): your VTA advances the
+    /// room's group with a commit that changes no membership, and the room at
+    /// its host with it — host first. The only correct renewal of an
+    /// `attributed` or `private` room; `pnm rooms renew` is for open rooms.
+    /// Every remaining member then applies the commit with
+    /// `pnm rooms keys commit --host`.
+    GroupRenew {
+        #[arg(long = "room")]
+        room_id: String,
+        /// The room host's DID: where the epoch advances.
+        #[arg(long)]
+        host_did: String,
+        /// Why, carried to the host's epoch advance.
+        #[arg(long)]
+        reason: Option<String>,
+    },
+}
+
+/// `pnm rooms offers …` — rooms a community has offered you.
+#[derive(Subcommand)]
+pub(crate) enum RoomOffersCommands {
+    /// List the rooms the community has offered you (`vtc/rooms/offers/list`), each
+    /// with what it is for when the community says (its description, from list 0.2).
+    List {
+        /// Base URL of the community's Trust Task endpoint (e.g.
+        /// `https://vtc.example.com/v1`).
+        #[arg(long)]
+        vtc: String,
+        /// The community's DID.
+        #[arg(long)]
+        vtc_did: String,
+        /// The DID the community addressed its offers to: a persona your VTA holds.
+        #[arg(long)]
+        member: String,
+    },
+    /// Accept an offer (`vtc/rooms/offers/accept`): store its credentials in your
+    /// VTA, have it mint a KeyPackage on a sealed room, and join with the Welcome.
+    Accept {
+        /// The offered room's DID.
+        #[arg(long = "room")]
+        room_id: String,
+        /// Base URL of the community's Trust Task endpoint.
+        #[arg(long)]
+        vtc: String,
+        /// The community's DID.
+        #[arg(long)]
+        vtc_did: String,
+        /// The DID the community addressed the offer to: a persona your VTA holds.
+        #[arg(long)]
+        member: String,
+        /// Retry an acceptance whose answer was lost with the KeyPackage it carried
+        /// (a file): the identical request is answered with the same Welcome. Your
+        /// VTA must have minted it for this member and room.
+        #[arg(long)]
+        key_package: Option<String>,
+    },
+    /// Collect a renewal of a room you are in (`vtc/rooms/offers/list/0.3`): store its
+    /// membership and authority in your VTA in place of the ones they renew.
+    Renew {
+        /// The room's DID.
+        #[arg(long = "room")]
+        room_id: String,
+        /// Base URL of the community's Trust Task endpoint.
+        #[arg(long)]
+        vtc: String,
+        /// The community's DID.
+        #[arg(long)]
+        vtc_did: String,
+        /// The DID the community addressed its offers to: a persona your VTA holds.
+        #[arg(long)]
+        member: String,
+    },
+}
+
+/// `pnm rooms keys …` — your VTA as a room's key holder.
+#[derive(Subcommand)]
+pub(crate) enum RoomKeysCommands {
+    /// Mint a KeyPackage for a room you were invited to
+    /// (`rooms/keys/key-package`) and write it, base64url, to `--out`.
+    ///
+    /// Send that file to the room's owner, who admits it with
+    /// `pnm rooms owner group-add --key-package`. Its private half stays in your
+    /// VTA for seven days.
+    KeyPackage {
+        /// The room's DID.
+        #[arg(long = "room")]
+        room_id: String,
+        /// The invitation the owner sent (`rooms owner invite --out`): a file, or
+        /// `-` for stdin.
+        #[arg(long)]
+        invitation: String,
+        /// Where to write the KeyPackage.
+        #[arg(long)]
+        out: std::path::PathBuf,
+    },
+    /// Join the room's group from the Welcome the owner sent
+    /// (`rooms/keys/welcome`). Consumes the invitation.
+    Welcome {
+        /// The room's DID.
+        #[arg(long = "room")]
+        room_id: String,
+        /// The same invitation the KeyPackage was minted against.
+        #[arg(long)]
+        invitation: String,
+        /// The Welcome file `pnm rooms owner group-add --out` wrote, or `-`.
+        #[arg(long)]
+        welcome: String,
+    },
+    /// Apply the commits that move the room's group on (`rooms/keys/commit`).
+    ///
+    /// Every membership change after you joined produces one, and a missed one
+    /// leaves records sealed since unopenable. With `--host`, fetch every commit
+    /// this VTA lacks from the host's relay (`rooms/epoch/commits`, needs `read`)
+    /// and apply them in order — the usual way. With `--commit`, apply one
+    /// delivered to you as a file.
+    Commit {
+        /// The room's DID.
+        #[arg(long = "room")]
+        room_id: String,
+        /// One commit, base64url: a file, or `-` for stdin.
+        #[arg(
+            long,
+            conflicts_with = "host",
+            requires = "epoch",
+            required_unless_present = "host"
+        )]
+        commit: Option<String>,
+        /// The room epoch the commit produces — as the host relays it and as
+        /// `group-add` printed it.
+        #[arg(long)]
+        epoch: Option<u64>,
+        /// Base URL of the room's host. A VTC's includes its `/v1` mount.
+        #[arg(long)]
+        host: Option<String>,
+        /// The host's DID. A VTC refuses a document not addressed to it, so give
+        /// it for a VTC.
+        #[arg(long, requires = "host")]
+        host_did: Option<String>,
+    },
+    /// Fetch the room's history from its host so records sealed before you
+    /// joined open (`rooms/keys/backfill`).
+    ///
+    /// Your VTA asks the host for the epoch key chain and keeps it, walking down
+    /// until it reads the whole retained history or the host has no more. Run it
+    /// once after `keys welcome`, and whenever `rooms get` says a record is older
+    /// than this VTA can reach.
+    Backfill {
+        /// The room's DID.
+        #[arg(long = "room")]
+        room_id: String,
+        /// The host's DID. Your VTA resolves it and makes the call itself.
+        #[arg(long)]
+        host_did: String,
+    },
+    /// Which rooms your VTA holds a group for, each with the member it holds it
+    /// as, its room epoch, how far back it reads, and your own name for it
+    /// (`rooms/keys/list`). Key custody, not membership.
+    List {
+        /// Also show the name each room gives itself, read from this host
+        /// (`rooms/keys/profile/read`). A community's rooms are all on the
+        /// community's host, so its DID names them all.
+        #[arg(long)]
+        host_did: Option<String>,
+    },
+    /// Your own private name, description, notes and tags for a room you hold
+    /// (`rooms/keys/label`). Kept by your VTA for you alone: never sent to the
+    /// room, its host or a community.
+    ///
+    /// Each detail given replaces the one stored; the rest stay. `--tag` replaces
+    /// the whole set. Removing the last detail removes the label.
+    #[command(group(
+        clap::ArgGroup::new("change")
+            .required(true)
+            .multiple(true)
+            .args([
+                "label", "description", "notes", "tags",
+                "remove_label", "remove_description", "remove_notes", "remove_tags",
+            ])
+    ))]
+    Label {
+        /// The room's DID.
+        room_id: String,
+        /// The member the label is for: the DID `pnm rooms keys list` shows the
+        /// room held as. A room held as two personas keeps a label for each.
+        #[arg(long)]
+        member: String,
+        /// Your name for the room (one line, up to 128 characters).
+        #[arg(long, conflicts_with = "remove_label")]
+        label: Option<String>,
+        /// What the room is to you (up to 1000 characters).
+        #[arg(long, conflicts_with = "remove_description")]
+        description: Option<String>,
+        /// Longer notes (up to 4000 characters).
+        #[arg(long, conflicts_with = "remove_notes")]
+        notes: Option<String>,
+        /// A tag (repeat for up to 16); replaces every tag the room had.
+        #[arg(long = "tag", conflicts_with = "remove_tags")]
+        tags: Vec<String>,
+        /// Remove your name for the room.
+        #[arg(long)]
+        remove_label: bool,
+        /// Remove your description.
+        #[arg(long)]
+        remove_description: bool,
+        /// Remove your notes.
+        #[arg(long)]
+        remove_notes: bool,
+        /// Remove every tag.
+        #[arg(long)]
+        remove_tags: bool,
+    },
+}
+
+/// `pnm rooms profile …` — the room's own profile.
+#[derive(Subcommand)]
+pub(crate) enum RoomProfileCommands {
+    /// Show what the room calls itself, and whether somebody without the standing
+    /// to tried to rename it.
+    Show {
+        #[arg(long = "room")]
+        room_id: String,
+        /// The room host's DID. Your VTA resolves it and reads as you.
+        #[arg(long)]
+        host_did: String,
+        /// Which of your members to read as, where you hold more than one in the room.
+        #[arg(long)]
+        member: Option<String>,
+    },
+    /// Set the room's profile. Takes `write` and `curate` or `admin` in the room.
+    ///
+    /// What you do not give is carried over from the current profile; the
+    /// `--no-*` flags drop it.
+    Set {
+        #[arg(long = "room")]
+        room_id: String,
+        #[arg(long)]
+        host_did: String,
+        /// The room's name: one line, up to 128 characters.
+        #[arg(long)]
+        name: Option<String>,
+        /// What the room is for, up to 1000 characters.
+        #[arg(long, conflicts_with = "no_description")]
+        description: Option<String>,
+        /// Drop the description.
+        #[arg(long)]
+        no_description: bool,
+        /// A tag the room files itself under (`a-z0-9-`, up to 32). Repeat; replaces
+        /// the current tags.
+        #[arg(long = "tag", conflicts_with = "no_tags")]
+        tags: Vec<String>,
+        /// Drop every tag.
+        #[arg(long)]
+        no_tags: bool,
+        /// One emoji shown beside the name.
+        #[arg(long, conflicts_with = "no_emoji")]
+        emoji: Option<String>,
+        /// Drop the emoji.
+        #[arg(long)]
+        no_emoji: bool,
+        #[arg(long)]
+        member: Option<String>,
+    },
+    /// Clear the room's profile: retract it at the current epoch. Takes `curate`.
+    Clear {
+        #[arg(long = "room")]
+        room_id: String,
+        #[arg(long)]
+        host_did: String,
+        #[arg(long)]
+        member: Option<String>,
+    },
+}
+
+/// `pnm rooms records …` — the room's record retention, and pruning under it.
+#[derive(Subcommand)]
+pub(crate) enum RoomRecordsCommands {
+    /// Remove the records the room's record retention makes eligible: old
+    /// retracted tombstones, old records, or both. IRREVERSIBLE, for every
+    /// member — the room keeps only a mark that records went. Needs `admin`.
+    ///
+    /// Always asks the host first what would go (a dry run) and shows it; then
+    /// asks before removing anything. Without a terminal it refuses unless
+    /// `--yes` is given.
+    Prune {
+        #[arg(long = "room")]
+        room_id: String,
+        #[arg(long)]
+        host: String,
+        #[arg(long)]
+        host_did: Option<String>,
+        /// What to remove: `retracted` (tombstones older than the retention's
+        /// tombstone days), `aged` (records of any standing, pinned ones
+        /// excepted, older than its record days). Repeatable; both by default.
+        #[arg(long = "kind")]
+        kinds: Vec<String>,
+        /// Why, for the room's audit trail — the only account of intent a prune
+        /// leaves. Keep member identifiers and record content out of it.
+        #[arg(long)]
+        reason: String,
+        /// Only report what would be removed.
+        #[arg(long)]
+        dry_run: bool,
+        /// Prune without asking. Required when there is no terminal to ask.
+        #[arg(long, short = 'y')]
+        yes: bool,
+    },
+    /// The room's record retention: show it, or replace it.
+    Retention {
+        #[command(subcommand)]
+        command: RoomRetentionCommands,
+    },
+}
+
+/// `pnm rooms records retention …`.
+#[derive(Subcommand)]
+pub(crate) enum RoomRetentionCommands {
+    /// Show the record retention in force and the room's latest prune
+    /// (`rooms/info/0.2`). Needs `read`.
+    Show {
+        #[arg(long = "room")]
+        room_id: String,
+        #[arg(long)]
+        host: String,
+        #[arg(long)]
+        host_did: Option<String>,
+    },
+    /// Replace the record retention whole: members you leave out are no longer
+    /// stated. Nothing is removed until somebody prunes. Needs `admin`.
+    Set {
+        #[arg(long = "room")]
+        room_id: String,
+        #[arg(long)]
+        host: String,
+        #[arg(long)]
+        host_did: Option<String>,
+        /// Days a retracted record's tombstone is kept (1 to 36500).
+        #[arg(long)]
+        tombstone_days: Option<u32>,
+        /// Days a record is kept after it last changed, pinned ones excepted
+        /// (1 to 36500).
+        #[arg(long)]
+        record_days: Option<u32>,
+        /// Clear the retention: no record is eligible by age.
+        #[arg(long, conflicts_with_all = ["tombstone_days", "record_days"])]
+        clear: bool,
+        /// Why, for the room's audit trail. Keep member identifiers and record
+        /// content out of it.
+        #[arg(long)]
+        reason: String,
     },
 }
 
@@ -898,6 +1750,31 @@ pub(crate) enum SetupCommands {
 }
 
 #[derive(Subcommand)]
+pub(crate) enum ClaimDidCommands {
+    /// Mint a claim DID and print it. Each run mints a new one.
+    Create {
+        /// Deprecated: store the key under this slug, as older pnm did.
+        #[arg(long, hide = true)]
+        slug: Option<String>,
+    },
+    /// Deprecated: print the claim DID of a key stored under a slug.
+    #[command(hide = true)]
+    Show {
+        #[arg(long)]
+        slug: String,
+    },
+    /// Remove the claim key, e.g. when its VTA was never created or is gone.
+    Discard {
+        /// The claim DID printed by `claim-did create`.
+        #[arg(long, required_unless_present = "slug", conflicts_with = "slug")]
+        claim_did: Option<String>,
+        /// Deprecated: the slug a key from older pnm is stored under.
+        #[arg(long, hide = true)]
+        slug: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
 pub(crate) enum BootstrapCommands {
     /// Generate an ephemeral keypair and emit a BootstrapRequest for the producer.
     ///
@@ -952,13 +1829,28 @@ pub(crate) enum BootstrapCommands {
         expect_vta_did: Option<String>,
     },
 
+    /// Manage the ephemeral DID that authorizes a TEE VTA's first-boot admin
+    /// claim.
+    ///
+    /// Create it before the VTA, supply the printed DID at VTA creation, then
+    /// run `connect` with `--claim-did`. The private key stays in the OS
+    /// keyring and is removed once the claim succeeds.
+    ClaimDid {
+        #[command(subcommand)]
+        command: ClaimDidCommands,
+    },
+
     /// One-command TEE first-boot bootstrap against a running VTA.
     ///
-    /// Generates an ephemeral keypair, POSTs to `/bootstrap/request`,
-    /// verifies the attestation quote, and installs the minted admin
-    /// credential. Only works against a fresh TEE VTA that has not yet
-    /// bootstrapped an admin — the carve-out closes permanently on first
-    /// success.
+    /// Signs a claim on the VTA's DID with the claim DID given by
+    /// `--claim-did`, POSTs it to `/bootstrap/request`, and
+    /// verifies the attested acknowledgement: the VTA enrolled the claim DID
+    /// itself as its bootstrap admin (it mints no key for you). Then
+    /// authenticates as the claim DID, hands that entry over to a long-term
+    /// did:key minted here, and destroys the claim key. Only works against a
+    /// fresh TEE VTA that has not yet bootstrapped an admin — the carve-out
+    /// closes permanently on first success; re-running after an interrupted
+    /// hand-over resumes it.
     ///
     /// For non-TEE VTAs use `pnm setup` (temp did:key + ACL grant +
     /// auto-rotate on first connect).
@@ -971,27 +1863,28 @@ pub(crate) enum BootstrapCommands {
         /// Unlike --vta-did, this does not pin the VTA's identity.
         #[arg(long, required_unless_present = "vta_did", conflicts_with = "vta_did")]
         vta_url: Option<String>,
-        /// Out-of-band digest anchor. Compared against the server's
-        /// reported digest and the locally computed one. Not needed with
-        /// --expect-pcr0: connect generates the digest server-side during the call.
-        #[arg(long)]
-        expect_digest: Option<String>,
-        /// Skip out-of-band digest verification (testing only — prints a warning).
-        /// Only needed when neither --expect-digest nor --expect-pcr0 is provided.
-        #[arg(long)]
-        no_verify_digest: bool,
-        /// Pin the enclave image measurement (PCR0, hex). When set, refuse to
-        /// bootstrap unless the attested PCR0 matches — defense-in-depth so a
-        /// genuine-but-wrong enclave build can't complete the handshake. Match
-        /// the value baked into the KMS key policy (see the TEE runbook).
-        #[arg(long)]
+        /// Pin the enclave image measurement (PCR0, hex). Required: the
+        /// acknowledgement carries no bundle and no digest, so the attested
+        /// image is the anchor — refuse to bootstrap unless the attested PCR0
+        /// matches. Match the value baked into the KMS key policy (see the TEE
+        /// runbook).
+        #[arg(long, required_unless_present = "no_verify_pcr0")]
         expect_pcr0: Option<String>,
+        /// Accept any genuine Nitro enclave image (testing only — prints a
+        /// warning). Without a PCR0 pin, any enclave build can answer the claim.
+        #[arg(long, conflicts_with = "expect_pcr0")]
+        no_verify_pcr0: bool,
         /// Pin the EIF signing-certificate measurement (PCR8, hex). As
         /// `--expect-pcr0`, but for the signing cert.
         #[arg(long)]
         expect_pcr8: Option<String>,
-        /// Slug to register this VTA under in pnm config (default: tail of the
-        /// VTA DID).
+        /// Public claim DID printed by `claim-did create` and supplied at VTA
+        /// creation. Selects the claim key in the OS keyring. Never the private key.
+        /// Without it, the key stored under the slug by older pnm is used.
+        #[arg(long)]
+        claim_did: Option<String>,
+        /// Slug to register this VTA under in pnm config (default: tail of
+        /// the VTA DID). Required with --vta-url.
         #[arg(long)]
         slug: Option<String>,
     },
@@ -1431,6 +2324,14 @@ pub(crate) enum WebvhCommands {
         /// `KEY=VALUE` — supply a template variable. Repeatable.
         #[arg(long = "var", value_parser = parse_key_value)]
         vars: Vec<(String, String)>,
+        /// Present the DID as its did:webvh (`webvh`) or its did:scid:vh:1 DID
+        /// (`scid`). Default: the VTA's `[dids] default_did_method`.
+        #[arg(long, value_name = "webvh|scid")]
+        did_method: Option<vta_sdk::did_scid::DidMethod>,
+        /// List the did:scid alias in alsoKnownAs (`true`/`false`). Default: the
+        /// VTA's `[dids] scid_also_known_as`.
+        #[arg(long, value_name = "BOOL")]
+        scid_also_known_as: Option<bool>,
     },
     /// Edit an existing WebVH DID document.
     ///
@@ -1802,6 +2703,14 @@ pub(crate) enum DidMgmtDidCommands {
         /// `KEY=VALUE` — supply a template variable. Repeatable.
         #[arg(long = "var", value_parser = parse_key_value)]
         vars: Vec<(String, String)>,
+        /// Present the DID as its did:webvh (`webvh`) or its did:scid:vh:1 DID
+        /// (`scid`). Default: the VTA's `[dids] default_did_method`.
+        #[arg(long, value_name = "webvh|scid")]
+        did_method: Option<vta_sdk::did_scid::DidMethod>,
+        /// List the did:scid alias in alsoKnownAs (`true`/`false`). Default: the
+        /// VTA's `[dids] scid_also_known_as`.
+        #[arg(long, value_name = "BOOL")]
+        scid_also_known_as: Option<bool>,
     },
     /// Edit an existing DID document.
     ///
@@ -1994,6 +2903,8 @@ impl From<DidMgmtCommands> for WebvhCommands {
                     template,
                     template_context,
                     vars,
+                    did_method,
+                    scid_also_known_as,
                 } => WebvhCommands::CreateDid {
                     context,
                     server,
@@ -2013,6 +2924,8 @@ impl From<DidMgmtCommands> for WebvhCommands {
                     template,
                     template_context,
                     vars,
+                    did_method,
+                    scid_also_known_as,
                 },
                 DidMgmtDidCommands::Edit {
                     did,
@@ -2276,6 +3189,12 @@ pub(crate) enum DidcommCommands {
         /// Trust-ping round-trip timeout in seconds (default 10).
         #[arg(long)]
         handshake_timeout: Option<u64>,
+        /// Maximum time to wait for the restarted DIDComm listener (default 300).
+        #[arg(long, conflicts_with = "no_wait")]
+        wait_secs: Option<u64>,
+        /// Return after the enable response without polling readiness.
+        #[arg(long, conflicts_with = "wait_secs")]
+        no_wait: bool,
     },
     /// Update which mediator the `#vta-didcomm` entry advertises.
     /// (Replaces `pnm mediator migrate`.) Runs the pre-promotion
@@ -3283,6 +4202,7 @@ pub(crate) enum RetentionCommands {
 }
 
 #[derive(Subcommand)]
+#[allow(clippy::large_enum_variant)]
 pub(crate) enum KeyCommands {
     /// Create a new key.
     ///
@@ -3423,6 +4343,75 @@ pub(crate) enum KeyCommands {
         /// Recipient's 16-byte nonce in hex.
         #[arg(long, requires = "recipient_did", conflicts_with = "recipient")]
         recipient_nonce: Option<String>,
+    },
+    /// Seal one P-256 key that no DID publishes to a recipient, as an armored
+    /// bundle — e.g. an EUDI verifier's access-certificate key, for
+    /// `vtc oid4vp install`. A DID's keys go through `pnm keys bundle`.
+    BundleKey {
+        /// The key's id (`pnm keys list`)
+        key_id: String,
+        /// Path to the recipient's request JSON (`vtc oid4vp request`,
+        /// `pnm bootstrap request`).
+        #[arg(long, conflicts_with_all = ["recipient_did", "recipient_nonce"])]
+        recipient: Option<std::path::PathBuf>,
+        /// Recipient's `did:key` (Ed25519).
+        #[arg(long, requires = "recipient_nonce", conflicts_with = "recipient")]
+        recipient_did: Option<String>,
+        /// Recipient's 16-byte nonce in hex.
+        #[arg(long, requires = "recipient_did", conflicts_with = "recipient")]
+        recipient_nonce: Option<String>,
+        /// Write the armored bundle here instead of stdout.
+        #[arg(long)]
+        out: Option<std::path::PathBuf>,
+    },
+    /// Write a certificate signing request (PKCS#10, PEM) for a key that stays
+    /// in the VTA — e.g. an EUDI verifier's access-certificate key, used by
+    /// the VTC through the VTA. The VTA builds the request from these
+    /// attributes and the key's own public key. Needs the `sign-csr`
+    /// capability.
+    SignCsr {
+        /// The key's id (`pnm keys list`); P-256 or Ed25519
+        key_id: String,
+        /// CN: the common name
+        #[arg(long)]
+        common_name: String,
+        /// O: the organisation name
+        #[arg(long)]
+        organization: Option<String>,
+        /// organizationIdentifier, e.g. `VATDE-123456789` or `LEIXG-…`
+        #[arg(long)]
+        organization_identifier: Option<String>,
+        /// C: an ISO 3166-1 alpha-2 country code, e.g. `DE`
+        #[arg(long)]
+        country: Option<String>,
+        /// ST: state or province
+        #[arg(long)]
+        state: Option<String>,
+        /// L: locality
+        #[arg(long)]
+        locality: Option<String>,
+        /// OU: an organisational unit (repeatable)
+        #[arg(long = "organizational-unit")]
+        organizational_units: Vec<String>,
+        /// serialNumber attribute of the subject
+        #[arg(long)]
+        serial_number: Option<String>,
+        /// emailAddress in the subject (prefer `--email`, a subject
+        /// alternative name)
+        #[arg(long)]
+        email_address: Option<String>,
+        /// A dNSName subject alternative name (repeatable)
+        #[arg(long)]
+        dns: Vec<String>,
+        /// A URI subject alternative name (repeatable)
+        #[arg(long)]
+        uri: Vec<String>,
+        /// An rfc822Name subject alternative name (repeatable)
+        #[arg(long)]
+        email: Vec<String>,
+        /// Write the PEM here instead of stdout.
+        #[arg(long)]
+        out: Option<std::path::PathBuf>,
     },
     /// List seed generations
     Seeds,
@@ -3601,6 +4590,8 @@ mod config_update_flag_tests {
 mod bootstrap_connect_flag_tests {
     use super::*;
 
+    const CLAIM_DID: &str = "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK";
+
     #[test]
     fn bootstrap_connect_accepts_either_target() {
         for (flag, value) in [
@@ -3614,12 +4605,38 @@ mod bootstrap_connect_flag_tests {
                     "connect",
                     flag,
                     value,
+                    "--claim-did",
+                    CLAIM_DID,
                     "--expect-pcr0",
                     "abcd",
                 ])
                 .is_ok()
             );
         }
+    }
+
+    #[test]
+    fn older_claim_did_command_lines_still_parse() {
+        for args in [
+            &[
+                "connect",
+                "--slug",
+                "acme",
+                "--vta-did",
+                "did:webvh:scid:vta.example.com",
+                "--expect-pcr0",
+                "abcd",
+            ][..],
+            &["claim-did", "create", "--slug", "acme"],
+            &["claim-did", "show", "--slug", "acme"],
+            &["claim-did", "discard", "--slug", "acme"],
+            &["claim-did", "discard", "--claim-did", CLAIM_DID],
+        ] {
+            let argv = ["pnm", "bootstrap"].iter().chain(args).copied();
+            assert!(Cli::try_parse_from(argv).is_ok(), "{args:?}");
+        }
+        let neither = Cli::try_parse_from(["pnm", "bootstrap", "claim-did", "discard"]);
+        assert!(neither.is_err());
     }
 
     #[test]
@@ -4855,5 +5872,63 @@ mod acl_update_hint_tests {
             .is_err(),
             "`--did` is not a flag of `acl update`; a hint spelling it that way is wrong"
         );
+    }
+}
+
+#[cfg(test)]
+mod rooms_prune_flag_tests {
+    use super::*;
+
+    /// The command `pnm rooms prune` prints as the fix for `notAhead` or a missing
+    /// confirmation parses as written.
+    #[test]
+    fn rooms_prune_accepts_the_command_its_hints_print() {
+        assert!(
+            Cli::try_parse_from([
+                "pnm",
+                "rooms",
+                "prune",
+                "--room",
+                "did:webvh:Qm:example.com:rooms:northwind",
+                "--host",
+                "https://host.example",
+                "--host-did",
+                "did:web:host.example",
+                "--before-epoch",
+                "6",
+                "--reason",
+                "retention window",
+                "--yes",
+            ])
+            .is_ok()
+        );
+    }
+
+    /// A prune leaves no record of intent but its reason, so the CLI asks for one.
+    #[test]
+    fn rooms_prune_requires_a_reason_and_a_floor() {
+        for missing in ["--reason", "--before-epoch"] {
+            let mut args = vec![
+                "pnm",
+                "rooms",
+                "prune",
+                "--room",
+                "did:example:room",
+                "--host",
+                "https://host.example",
+                "--before-epoch",
+                "2",
+                "--reason",
+                "why",
+            ];
+            let at = args.iter().position(|a| *a == missing).unwrap();
+            args.drain(at..at + 2);
+            let err = Cli::try_parse_from(&args).err().unwrap();
+            assert_eq!(
+                err.kind(),
+                clap::error::ErrorKind::MissingRequiredArgument,
+                "{missing}"
+            );
+        }
     }
 }

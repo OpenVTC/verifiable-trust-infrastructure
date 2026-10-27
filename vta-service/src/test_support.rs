@@ -151,10 +151,12 @@ pub fn test_app_config(data_dir: PathBuf) -> AppConfig {
         messaging: None,
         mediator_readiness: Default::default(),
         services: Default::default(),
+        dids: Default::default(),
         auth: Default::default(),
         audit: Default::default(),
         vault: Default::default(),
         app_state: Default::default(),
+        witness: Default::default(),
         policy: Default::default(),
         secrets: Default::default(),
         tee: Default::default(),
@@ -1032,6 +1034,20 @@ pub struct TestAppOptions {
     /// `DIDCommMessaging` / `TSPTransport` — a `did:key` cannot carry a service
     /// block, so it can never tell a client which transports the VTA speaks.
     pub vta_transport: Option<VtaTransportIdentity>,
+
+    /// `[server] operation_rate_limit_per_sec` for the app: the per-appliance
+    /// operation budget. `None` (the default) leaves it unlimited.
+    pub operation_rate_limit_per_sec: Option<u32>,
+
+    /// `[server] operation_rate_limit_per_subject_per_sec`: each client's
+    /// share. `None` (the default) takes the VTA's default share.
+    pub operation_rate_limit_per_subject_per_sec: Option<u32>,
+
+    /// The clock the operation budgets read. `None` (the default) is the
+    /// monotonic clock; a test of a budget passes
+    /// [`BudgetClock::manual`](crate::trust_tasks::operation_budget::BudgetClock::manual),
+    /// so no token refills while it runs and it moves time itself.
+    pub operation_budget_clock: Option<crate::trust_tasks::operation_budget::BudgetClock>,
 }
 
 /// A mediator-backed transport identity for the mock VTA
@@ -1343,6 +1359,9 @@ pub async fn build_test_app_with(opts: TestAppOptions) -> (axum::Router, TestApp
     ))
     .expect("parse config");
     config.config_path = dir.path().join("config.toml");
+    config.server.operation_rate_limit_per_sec = opts.operation_rate_limit_per_sec;
+    config.server.operation_rate_limit_per_subject_per_sec =
+        opts.operation_rate_limit_per_subject_per_sec;
 
     let (restart_tx, _rx) = watch::channel(false);
 
@@ -1468,6 +1487,14 @@ pub async fn build_test_app_with(opts: TestAppOptions) -> (axum::Router, TestApp
         external_accounts_ks: store.keyspace(crate::keyspaces::EXTERNAL_ACCOUNTS).unwrap(),
         external_secrets_ks: store.keyspace(crate::keyspaces::EXTERNAL_SECRETS).unwrap(),
         external_rate: std::sync::Arc::new(vta_external::rate::BindingRateLimiter::new()),
+        operation_budget: std::sync::Arc::new(
+            crate::trust_tasks::operation_budget::OperationBudget::with_clock(
+                &config.read().await.server,
+                opts.operation_budget_clock.clone().unwrap_or_default(),
+            ),
+        ),
+        pcs_engine_ks: store.keyspace(crate::keyspaces::PCS_ENGINE).unwrap(),
+        witness_sessions_ks: store.keyspace(crate::keyspaces::WITNESS_SESSIONS).unwrap(),
         room_groups_ks: store.keyspace(crate::keyspaces::ROOM_GROUPS).unwrap(),
         room_invitations_ks: store.keyspace(crate::keyspaces::ROOM_INVITATIONS).unwrap(),
         app_state_ks: store.keyspace(crate::keyspaces::APP_STATE).unwrap(),
@@ -1542,7 +1569,7 @@ pub async fn build_test_app_with(opts: TestAppOptions) -> (axum::Router, TestApp
         jwt_keys: Some(jwt_keys.clone()),
         atm: transport.atm.or(opts.atm),
         tee: None,
-        restart_tx,
+        restart_gate: std::sync::Arc::new(crate::server::RestartGate::new(restart_tx)),
         #[cfg(feature = "rest")]
         metrics_handle: None,
     };
@@ -2250,6 +2277,9 @@ impl MockVta {
             webvh_servers: vec![(Self::WEBVH_SERVER_ID.to_string(), server_did)],
             atm: None,
             vta_transport: None,
+            operation_rate_limit_per_sec: None,
+            operation_rate_limit_per_subject_per_sec: None,
+            operation_budget_clock: None,
         };
         let mut mock = Self::serve(build_test_app_with(opts).await).await;
         mock.webvh_host = Some(host);

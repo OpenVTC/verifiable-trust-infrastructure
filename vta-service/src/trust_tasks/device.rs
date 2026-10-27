@@ -20,7 +20,10 @@ use crate::auth::AuthClaims;
 use crate::operations;
 use crate::server::AppState;
 
-use super::helpers::{TRANSPORT_TRUST_TASK, app_error_to_reject, parse_payload, success_response};
+use super::helpers::{
+    TRANSPORT_TRUST_TASK, app_error_to_reject, parse_payload, reject_with, success_response,
+};
+use trust_tasks_rs::RejectReason;
 
 /// `device/register/0.1` — the caller claims its DeviceBinding. The DID must
 /// already be in the ACL; re-registration is refused.
@@ -55,6 +58,10 @@ pub(super) async fn handle_register(
         Err(e) => return app_error_to_reject(&doc, e),
     };
 
+    if let Err(e) = require_remote_approver(state, auth, uv_key.as_ref()).await {
+        return app_error_to_reject(&doc, e);
+    }
+
     match operations::device::register_device(
         &state.acl_ks,
         &state.audit_sink,
@@ -73,30 +80,117 @@ pub(super) async fn handle_register(
     }
 }
 
+/// A `remoteApprover` enrolment must name an approver this device may name
+/// (`operations::device::uv_approver_eligible`).
+async fn require_remote_approver(
+    state: &AppState,
+    auth: &AuthClaims,
+    uv_key: Option<&vta_sdk::protocols::device_management::UvKeyEnrolment>,
+) -> Result<(), crate::error::AppError> {
+    use vta_sdk::protocols::device_management::UvKeyMaterial;
+    if !matches!(
+        uv_key.map(|k| &k.key),
+        Some(UvKeyMaterial::RemoteApprover { .. })
+    ) {
+        return Ok(());
+    }
+    let named = super::policy_gate::all_named_approvers(state).await?;
+    operations::device::require_uv_approver_permitted(
+        &state.acl_ks,
+        &auth.did,
+        uv_key,
+        &named,
+        now_unix(),
+    )
+    .await
+}
+
+fn now_unix() -> u64 {
+    u64::try_from(chrono::Utc::now().timestamp()).unwrap_or(0)
+}
+
 /// `device/heartbeat/0.1` — periodic check-in; refreshes `lastSeenAt` (and
 /// `platform` or `displayName` if changed) and returns server time + queued
 /// operations.
+///
+/// Two `ext` members ride here because `device/*` has no UV-key task of its
+/// own: `org.openvtc.uv-key` (+ `org.openvtc.uv-key-change` to replace a PIN)
+/// enrols or replaces the UV key, and `org.openvtc.uv-approvers` asks which
+/// DIDs this device may name as its `remoteApprover`; the response then carries
+/// `ext["org.openvtc.uv-approvers"] = { approvers: [...] }`.
 pub(super) async fn handle_heartbeat(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
+    use vta_sdk::protocols::device_management::EXT_UV_APPROVERS;
     let payload: heartbeat_spec::Payload = match parse_payload(&doc) {
         Ok(p) => p,
         Err(resp) => return resp,
     };
-    match operations::device::heartbeat_device(
+    // A malformed key is refused here exactly as `heartbeat_device` would.
+    let uv_key = match operations::device::extension_uv_key(
+        payload
+            .ext
+            .iter()
+            .flat_map(|e| e.iter().map(|(k, v)| (k.as_str(), v))),
+    ) {
+        Ok(k) => k,
+        Err(e) => return app_error_to_reject(&doc, e),
+    };
+    let wants_approvers = payload
+        .ext
+        .as_ref()
+        .is_some_and(|e| e.iter().any(|(k, _)| k.as_str() == EXT_UV_APPROVERS));
+    if let Err(e) = require_remote_approver(state, auth, uv_key.as_ref()).await {
+        return app_error_to_reject(&doc, e);
+    }
+
+    let mut body = match operations::device::heartbeat_device_checked(
         &state.acl_ks,
         &state.audit_sink,
         auth,
-        payload.platform,
+        payload.platform.clone(),
         payload.ext.as_ref(),
+        chrono::Utc::now().timestamp(),
     )
     .await
     {
-        Ok(body) => success_response(&doc, body),
-        Err(e) => app_error_to_reject(&doc, e),
+        Ok(body) => body,
+        Err(operations::device::HeartbeatError::UvKeyChange {
+            code,
+            message,
+            details,
+        }) => {
+            return reject_with(
+                &doc,
+                RejectReason::TaskFailed {
+                    reason: format!("device/heartbeat:{code} — {message}"),
+                    details: Some(details),
+                },
+            );
+        }
+        Err(operations::device::HeartbeatError::App(e)) => return app_error_to_reject(&doc, e),
+    };
+
+    if wants_approvers {
+        let named = match super::policy_gate::all_named_approvers(state).await {
+            Ok(n) => n,
+            Err(e) => return app_error_to_reject(&doc, e),
+        };
+        let approvers =
+            match operations::device::uv_approvers(&state.acl_ks, &auth.did, &named, now_unix())
+                .await
+            {
+                Ok(a) => a,
+                Err(e) => return app_error_to_reject(&doc, e),
+            };
+        if !body.get("ext").is_some_and(Value::is_object) {
+            body["ext"] = serde_json::json!({});
+        }
+        body["ext"][EXT_UV_APPROVERS] = serde_json::json!({ "approvers": approvers });
     }
+    success_response(&doc, body)
 }
 
 /// `device/list/0.1` — list the maintainer's registered devices (filtered).

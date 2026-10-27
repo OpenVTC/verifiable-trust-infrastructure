@@ -6,6 +6,7 @@ use crate::operations::did_webvh::UpdateDidWebvhError;
 use super::multikey::MultikeyError;
 
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum PasskeyVmError {
     /// `passkey` feature not configured (no `public_url`, etc.).
     #[error("passkey enrolment not available: {0}")]

@@ -8,6 +8,7 @@
 //! there is refused on the wire before any handler sees it.
 
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 use super::create::CreateContextResultBody;
 
@@ -36,6 +37,14 @@ pub struct SetContextIssuerKeyBody {
     /// genuinely different keys rather than one key described twice.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub proof_purpose: Option<String>,
+    /// Ecosystem-defined extension members (SPEC §4.5.1). Not interpreted.
+    ///
+    /// Present alongside `deny_unknown_fields` for the reason the rest of the
+    /// family carries it: the published payload schemas allow an `ext`, so a
+    /// producer sending one would otherwise have its whole document refused,
+    /// while `deny_unknown_fields` still catches a typo.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ext: Option<Value>,
 }
 
 impl SetContextIssuerKeyBody {
@@ -45,6 +54,7 @@ impl SetContextIssuerKeyBody {
             id,
             key_id,
             proof_purpose: None,
+            ext: None,
         }
     }
 
@@ -54,6 +64,7 @@ impl SetContextIssuerKeyBody {
             id,
             key_id,
             proof_purpose: Some(proof_purpose),
+            ext: None,
         }
     }
 }

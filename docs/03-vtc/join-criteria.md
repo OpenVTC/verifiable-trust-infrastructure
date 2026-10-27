@@ -20,7 +20,7 @@ Which criteria a community publishes is its administrators' decision. Nothing
 in the specification or the service assumes one: open admission, admission
 only after review, admission only by invitation, and any combination are all
 expressed the same way. Specification:
-[`vtc/join-requests/manifest/0.3`](https://github.com/trustoverip/dtgwg-trust-tasks-tf/blob/main/specs/vtc/join-requests/manifest/0.3/spec.md),
+[`vtc/join-requests/manifest/0.4`](https://github.com/trustoverip/dtgwg-trust-tasks-tf/blob/main/specs/vtc/join-requests/manifest/0.4/spec.md),
 [`vtc/join-requests/submit/0.3`](https://github.com/trustoverip/dtgwg-trust-tasks-tf/blob/main/specs/vtc/join-requests/submit/0.3/spec.md)
 and
 [`vtc/schemas/accepts/register/0.2`](https://github.com/trustoverip/dtgwg-trust-tasks-tf/blob/main/specs/vtc/schemas/accepts/register/0.2/spec.md).
@@ -120,6 +120,50 @@ Registration refuses a criterion the community could not decide against:
 `credentialIssuers: recognised` without a trust registry configured is
 `unsupportedRequirement`. A criterion with a query must say whose credentials
 count, and one without a query must not.
+
+### Who may change them
+
+The criteria decide who may become a member, so no administrator changes them
+alone (VTI-APV-023). Adding a criterion, replacing one — any requirement, its
+admission mode, its description — or removing one takes `vtc.surface.admin`,
+the requester's passkey gesture (or step-up approver) bound to that one
+document, and the approval of the community's other holders of
+`vtc.surface.admin`, through the [administrator action list](admin-access.md)
+(kind `join.criteria.change`):
+
+1. The register or delete is checked first; one the VTC would refuse
+   (`invalidQuery`, `notFound`, …) is refused as such and asks nobody for
+   anything. Re-saving a criterion exactly as it is stored is no change and
+   applies at once.
+2. Otherwise the VTC asks for the gesture, then **parks** the document and
+   answers `202` with a `trust-task-next-step` naming the action. The criteria
+   are unchanged.
+3. The other holders of `vtc.surface.admin` see the criterion as it would be
+   and decide with `task-consent/decision`. The requester never approves, and
+   one decline closes the action.
+4. The approval that reaches the consent threshold runs the register or
+   delete, with every check re-run against the community as it is then
+   (VTI-APV-017). If the criterion was written in the meantime — replaced,
+   removed, hidden vetting turned on or off — the action is void.
+
+In **single-administrator mode** (VTI-APV-022) the requester's bound gesture
+stands in for the consent, the change applies at once, and the waiver is
+audited at `Critical`. Without the mode, a community with one administrator
+cannot change its criteria at runtime: nobody else could approve, so the VTC
+refuses before asking for the gesture. The defaults seeded at first boot are
+not a change and take no consent.
+
+The console's **Vetting → Requirements** asks for the gesture where the VTC
+wants one and shows a parked change as *Sent for approval*.
+
+Hidden vetting is a way of meeting a criterion, so turning it on, changing
+what it publishes, and turning it off are changes to the criteria too
+(`vtc/vetting/hidden/{publish,withdraw}`, kind `join.criteria.hiddenVetting`).
+They take `vtc.vetting.manage`, the bound gesture and the approval of the
+other holders of `vtc.vetting.manage` — the capability those tasks take —
+on the same terms: a publish of exactly what is stored, or a withdrawal from
+a criterion with nothing to withdraw, asks nothing. See
+[vetting.md](vetting.md).
 
 ## The join policy
 

@@ -2,6 +2,1777 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.73.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-sdk-v0.72.0...vta-sdk-v0.73.0) — 2026-10-26
+
+
+### Added
+
+- **vta-vault**: Narrow a vault query to one subject with subjectDid (vault/credentials/query/0.1) ([#2284](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2284))
+
+vault/credentials/query/0.1 gained a `subjectDid` request member
+  (dtgwg-trust-tasks-tf #884, in trust-tasks-rs 0.34): it narrows the other
+  constraints to credentials whose subject — the DID a presentation of the
+  credential is made as — is that DID. The VTA now honours it, matching the
+  stored `subject_did` (Data Integrity `credentialSubject.id`, SD-JWT `sub`).
+
+  It narrows only. On its own it is no filter, so a query naming nothing
+  but `subjectDid` is still refused as an enumeration.
+
+  This lets a wallet offer a VTC member-directory verification only the
+  credentials bound to the member's DID, which is the only holder the
+  VTC accepts.
+
+- **vtc**: Seal a storage credential in the console (vtc/storage/credentials/set/0.2) ([#2280](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2280))
+
+The console now sets a `sealed` config's credential itself. The administrator
+  enters an S3 key pair, a Google service-account key file or a Sui key, and the
+  browser seals it to the community before anything is sent, as
+  `vtc/storage/credentials/set/0.2` requires of a producer: HPKE base mode
+  (X25519-HKDF-SHA256, HKDF-SHA256, ChaCha20-Poly1305, info
+  `vta-sealed-transfer/v1`) to the X25519 form of the community DID's `#key-0`,
+  read from the DID log the VTC serves at `/.well-known/did.jsonl`. Only the
+  armored block, its digest and the reason are sent; the change parks for
+  approval like every storage change, and approvers see the digest.
+
+  - `admin-ui/src/lib/sealed-transfer.ts` ports the sealing side of
+    `vta_sdk::sealed_transfer`: CBOR chunk framing, the AAD, 32 KiB chunking,
+    ASCII armor with CRC-24, and the multibase sha2-256 digest. Built on
+    `@hpke/core`, `@hpke/chacha20poly1305`, `@hpke/dhkem-x25519`,
+    `@noble/curves` and `cborg`.
+  - Shared vectors (`sealed-transfer.vectors.json`) hold the two sides together.
+    The console test reproduces them byte for byte, and the `storage_credentials`
+    tests open them with the community's own opener, including a two-chunk block
+    and a refused replay into another config.
+  - The cleartext is sealed before any mutation sees it and cleared from the
+    form once sealed. Where the browser cannot seal (no DID log served here, or
+    no console key), the page says so and shows `cnm storage credentials set`,
+    which stays the terminal route.
+  - `vta_sdk::openapi` gains wrappers for the payload, response and
+    `SealedCredentialCleartext`, so the console's types are the specification's.
+
+- **vta**: Did:scid:vh:1 identities, create/1.2, and VTA/VTC presentation config ([#2257](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2257))
+
+* feat(vta-sdk): did:scid:vh:1 identity rules and did:scid secret kids (VTI-KEY-160 to VTI-KEY-164)
+
+- **vta**: Operation budgets for Trust Task work (VTI-TRN-029) ([#2264](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2264))
+
+* feat(vta)!: operation budgets for Trust Task work (VTI-TRN-029)
+
+  A VTA offered more Trust Task work than it can serve stops answering in
+  time; on a TEE appliance health checks then fail and the watchdog restarts
+  the enclave. Three budgets now bound that work, each unset by default:
+
+  - operation_rate_limit_per_sec (+ _burst): the whole appliance, shared by
+    REST, DIDComm and TSP.
+  - operation_rate_limit_per_subject_per_sec: each client with standing, by
+    its DID, charged before the appliance budget.
+  - operation_rate_limit_unauthenticated_per_sec: DIDComm / TSP senders
+    without an ACL entry (login steps, public tasks, counterparties,
+    approvers, refusals), apart from the clients' budget. Past it there is no
+    reply, so a flood cannot cost a signature per message.
+
+  A task is charged its weight in signs (vault release 2, DID create and
+  delete 10, others 1), after authentication and before it runs. REST
+  answers 429 with x-rate-limit-source: vta and scope operations or
+  operations-subject; DIDComm and TSP a signed, retryable unavailable with
+  retryAfter. A refused document is not recorded (VTI-OPS-026), so a resend
+  is a retry.
+
+  The keys are config and tenant-overlay only, never config/patch, so a TEE
+  enclave restart keeps them. A zero is refused at load. pnm and cnm explain
+  operations and operations-subject refusals.
+
+- **rooms**: Record provenance, record retention and prune, and the epoch floor ([#2272](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2272))
+
+* feat(rooms)!: a record says what kind of claim it is and when it lapses — rooms/records/put 0.3 and provenance in the sealed body
+
+- **vtc**: Rooms/storage/migrate 0.2 and rooms/get 0.2 — fixed target, one retry owner, resume without consent, orphans, pause reporting, queueing ([#2273](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2273))
+
+Serves vtc/rooms/storage/migrate/0.2 and vtc/rooms/get/0.2 (trust-tasks-tf
+  engine and behave the 0.2 way. The migration is reported through
+  vtc/_shared/0.1/room-migration.
+
+- **vtc**: Ambient and sealed storage auth, GCS, and vtc/storage/* 0.2 ([#2271](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2271))
+
+Implements trustoverip/dtgwg-trust-tasks-tf#866 on the VTC.
+
+  - Serves vtc/storage/configs/{list,get,create,update}/0.2 beside 0.1, each
+    version answered at its own (a 0.1 reader is shown a config without its
+    `roleArn`, and `notAllowed` as `required`), and
+    vtc/storage/credentials/set/0.2.
+  - `ambient` and `sealed` authentication for `s3` and `gcs`, gated by the host
+    operator (`[rooms.files.auth]`, absent = off; create/0.2 item 9). A refusal
+    is `authNotAllowed` with `details.reason` (doesNotFitKind,
+    roleArnNotApplicable, disabledByHost); a config whose mode the host
+    withdrew reports `notAllowed` and can be moved off it (update/0.2 item 8).
+  - Room-scoped credentials (create/0.2, "Room-scoped credentials"): one per
+    (config, room or probe scope, read/write/delete), never the bucket, at most
+    15 minutes, memory only, never used unscoped. S3 ambient: STS AssumeRole of
+    `roleArn` (else the host's role, else the identity's own) with a session
+    policy written by a JSON encoder, optional `aws:SourceIp`; sealed AWS keys:
+    GetFederationToken; R2/B2/MinIO keys presign single objects. Requests are
+    SigV4-presigned here (aws-sigv4) and go through the existing PresignedBlobs.
+    GCS (new backend, object_store): ADC or an operator-named service account
+    impersonated for 900 s, or a sealed service-account key minted at Google's
+    own token endpoint, exchanged at Google STS under a Credential Access
+    Boundary whose condition a CEL builder quotes.
+  - Sealed credentials (credentials/set/0.2): opened with the community's key
+    (new additive `SealedPayloadV1::StorageCredential` in vta-sdk), checked as
+    received against `SealedStorageCredential`, kind and configId, stored
+    encrypted in a new `storage_credentials` keyspace excluded from backup and
+    cleared on import, reported by an HMAC fingerprint, never returned, logged
+    or audited, destroyed when replaced or when `auth` leaves `sealed`; the
+    parked action drops the sealed block when it closes.
+  - Console: storage forms speak 0.2 (S3/GCS, VTA account/ambient/sealed,
+    roleArn, moving auth), sealed configs labelled as no protection against the
+    machine's operator. `cnm storage {list,get,credentials set}` seals the
+    credential to the community's DID.
+  - Docs: docs/03-vtc/room-storage.md, data-rooms-files.md §7.4.
+
+- **vta**: Vault/credentials/present — present a held credential to a verifier the client names ([#2265](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2265))
+
+Serves vault/credentials/present/0.1 (trust-tasks-tf #871): the VTA
+  presents a credential from its principal's vault to the audience the
+  client names, bound to the client's nonce, as the persona the
+  credential is held by. A Data Integrity credential is wrapped in a VP
+  signed by the holder; an SD-JWT-VC is presented with a kb-jwt naming
+  the audience and nonce, disclosing only the requested claims. A request
+  that would disclose more than it names is refused wouldOverDisclose
+  unless the client allows it.
+
+  Gated on the new credentialPresent capability, classified in
+  retry_safety, audited at the dispatch spine, and guarded in vta-mcp
+  like the other vault writes. Bumps trust-tasks-rs to 0.33.2, whose
+  record_expiry now includes the skew allowance; the retention test
+  expects that bound.
+
+- **vtc**: Move a room's files to another storage config (rooms/storage/migrate) ([#2261](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2261))
+
+Serves vtc/rooms/storage/migrate/0.1 (data-rooms-files.md §7.3, phase P10):
+  a holder of vtc.rooms.admin moves a hosted room's existing blobs onto the
+  storage config it is assigned to. Each blob is copied, read back from the
+  target and checked against every chunk digest and the whole-blob digest of its
+  committed manifest, and only then switched; the old copy is deleted by the
+  collection pass after the orphan grace window. No key is involved and readers
+  notice nothing.
+
+  The engine is vti_rooms::blobs::migrate, shared host code over the blob index:
+
+  - the switch is one atomic store batch (entry, the old copy's `moved:` row,
+    counters, plan row, migration record), applied only while the blob's entry
+    is byte-for-byte what it was when the copy began; a blob orphaned,
+    collected or rewritten meanwhile is skipped and its copy discarded;
+  - the bytes to move are reserved on the target (and the host's storage) at
+    start, so capacityExceeded is answered before anything is copied; each
+    switch converts its reservation, and the old copy keeps counting against
+    its config until it is actually deleted (§6.1), so a draining config does
+    not retire early (ConfigHoldings counts pending old copies);
+  - a pending old copy of the same blob on the target is reclaimed under the
+    lock before the copy is written, so collection never deletes what a switch
+    is about to name;
+  - progress is persisted (record, plan rows, blob in flight and its copy), so
+    a restart resumes; tests stop a step after choosing, copying and verifying
+    and check the blob stays readable and the end state is exact.
+
+  vtc-service runs one migration at a time (rooms::migration), the one retry
+  owner: capped exponential backoff with full jitter on a failed copy, then
+  `paused` after eight in a row. Re-issuing the task resumes a paused migration
+  without parking again, and a running or paused one is always the answer
+  (item 5). A copy that does not verify is `failed` (item 3). A new migration is
+  parked as Act::ChangeStorage (kind rooms.storage.migrate, template pinned in
+  the server and the console); single-administrator mode waives it as for
+  assign. A room with nothing to move completes at once and parks nothing
+  (item 7). Each start, resume, completion, pause and failure is a
+  RoomStorageChanged audit row with the requester, approvers, room, configs and
+  reason (item 8). A store error kept or audited is scrubbed of URL queries and
+  long tokens.
+
+  vtc/rooms/get reports storage.migration; the rooms live-channel fingerprint
+  includes each migration's state, and the console polls a running one. A
+  restored backup brings a running migration back paused; the blob in flight is
+  verified again on resume. New optional config: [rooms.files]
+  migration_max_bytes_per_second (default 8 MiB/s), which a request's
+  maxBytesPerSecond can only lower.
+
+- **vta-sdk**: The trust-registry built-in DID template, so a trust registry can be provisioned headless ([#2252](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2252))
+
+A trust registry (affinidi-trust-registry-rs) can now be provisioned like the
+  VTC, the mediator and the did-hosting daemon: `trust-registry setup` drives a
+  template FullSetup, and the VTA mints the registry's did:webvh, publishes it to
+  the DID-hosting server named in `WEBVH_SERVER`, keeps its keys in the context
+  and rolls the setup key over to a VTA-minted admin. Until now no built-in
+  template described the registry's own document, so a headless flow had nothing
+  to provision it from.
+
+  Every service entry is an optional slot (`SERVICE_DIDCOMM`, `SERVICE_REST`,
+  `SERVICE_TRUST_REGISTRY`, `SERVICE_TSP`, all defaulting to null and pruned).
+  A registry advertises exactly the transports it serves, so the registry's setup
+  builds the entries with its own runtime builder and passes them in. The
+  published document and the one the registry serves then cannot disagree.
+  `SERVICE_TRUST_REGISTRY` here is the registry's TRQP endpoint (uri = its URL),
+  not the referral a community publishes.
+
+- **voting**: Pnm elections trustee, vta/pcs/trustee/read, end-to-end tests over a mediator, and the voting service guide ([#2248](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2248))
+
+* feat(voting): pnm elections trustee {status,step} — a trustee runs its round from the command line; vta/pcs/trustee/read (trust-tasks-tf #855)
+
+  Nothing drove a trustee's part in a sealed or tallied-encrypted election: the VTA served every
+  step, but no client carried them, and on a private board a trustee's client could not even read
+  the election — the trustee tasks take its manifest, and the reads are answered only to a party
+  signing as a trustee, whose key the VTA holds.
+
+  - vta/pcs/trustee/read: the VTA signs voting/trustees/status or voting/election/show as the
+    trustee, addressed to the ballot box, and nothing else. pcsTrustee; RetrySafe; not audited
+    (it keeps nothing), as voter/read is not.
+  - The ballot box answers voting/election/show to every trustee the manifest names on any board.
+  - pnm elections trustee step <id> [--watch]: reads both, then takes every step the ceremony needs
+    of this trustee now — enrol, deal, confirm (with any justifications), answer complaints against
+    its dealing, keep its key share, decrypt after close — carrying each signed document to the
+    ballot box's HTTPS door. Idempotent; --watch repeats every 30 s until the result is out.
+    `status` shows where the ceremony stands.
+  - Temporary [patch.crates-io] onto #855's branch until it is released.
+
+- **vta**: A contact's star, petname, lists and directory link — persona/contact/*/1.1 and persona/contact/lists/*/1.0 ([#2245](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2245))
+
+The VTA side of the member directory's personal layer (P3): what a member
+  keeps *about* other people — a star, a petname, their own lists, a link to the
+  community directory entry a contact was met through — lives in their own VTA,
+  never at a community, so no operator holds the graph of who watches whom.
+
+  - `persona/contact/put/1.1`: a filing may carry annotation changes, applied
+    with it or not at all; the annotating form (`contactId`, no document) changes
+    them without appending a revision or moving `rev`. Each annotation given
+    replaces, each `removeX` removes, `lists` replaces the set; a list the
+    context does not hold is `listUnknown` and changes nothing; an unchanged
+    request answers `annotationsChanged: false` and writes nothing. Petnames and
+    notes are kept exactly as written.
+  - `persona/contact/get/1.1`: the current annotations with any revision, `lists`
+    naming only lists that still exist.
+  - `persona/contact/list/1.1`: `starred` always, `petname`, `lists`,
+    `directoryRef` and the contact's own `displayName` (never the DID or the
+    petname); filters `knownByPersona`, `changedSince`, `starred`, `listId`
+    (`listUnknown`), `directoryVtcDid`; a stable order and a cursor bound to the
+    filters (`cursorInvalid`).
+  - `persona/contact/lists/{put,list,show,delete}/1.0`: names unique in the
+    context, compared exactly (`nameTaken`), at most 256 (`tooManyLists` with
+    its limit); listed by order then name with contact counts; deleting one takes
+    it off every contact in one batch, revising none, echoing nothing.
+  - Storage (`vta_persona::annotations`): annotations beside the contact
+    (`pca:`), lists `pcl:`, both context-scoped and in the persona keyspace (so
+    backed up); deleting a contact discards its annotations. No petname, note or
+    list name reaches a log or the audit trail.
+
+- **voting**: Community voting — polls, surveys and elections with blind tickets, a separate ballot box and trustee-encrypted levels (VTI-VOT-001 – 100) ([#2239](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2239))
+
+* feat(voting): vti-voting, PCS voting tickets, casts and the ballot box
+
+  Phase 0 of community voting (design: community voting, draft VTI-VOT-*):
+  the cryptographic core on the Predicate Credential System, no wire types
+  until the voting/* Trust Task family is specified.
+
+  - registrar: the community's voting helper key, under its own deployment
+    label (`<community>#voting-pcs`) and key-derivation info, so it is never
+    the vetting key. Issues tickets blind under `voter/<election>`,
+    sequentially under one lock.
+  - voter: a fresh key per election, the blinded ticket request, the cast:
+    `attest_in_context` for a hash-to-curve election point, with the
+    community, election, manifest digest and ballot bytes bound into the
+    context (VOT-012).
+  - ballot_box: verifies on the published `hvk` alone (VOT-007); the tag is
+    the per-election nullifier, recorded once under the revote rule
+    (VOT-002) through an atomic NullifierStore.
+
+  Measured (examples/scale.rs, 500 voters, release, M5 Max): issuance
+  2.0 ms (~500/s per VTC), cast 3.2 ms, admit 3.0 ms (~330/s per core),
+  recount 0.21 ms per ballot on 18 threads (~1 min for 300,000); a cast's
+  attestation is 248 bytes compressed.
+
+  publish = false until its first published consumer.
+
+- **vtc**: The console offers the VTA's hosting servers — vtc/config/did-hosting/list/0.1 ([#2235](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2235))
+
+The "Where identities are published" card on the Groups page asked an
+  administrator to type a hosting server's id at the community's VTA. It now
+  lists them: `vtc/config/did-hosting/list/0.1` (trust-tasks-tf #849, in
+  trust-tasks-rs 0.32.8) asks the community's VTA for its registered
+  `did:webvh` hosting servers and answers the ids `dids.webvh_server` would
+  accept.
+
+  - Needs `vtc.config.admin`, like the key it serves. The VTC holds no list of
+    its own: every answer is the VTA's, read now, filtered through
+    `did_hosting::validate` (so `local` and a malformed id never appear).
+  - Refusals are the specification's: `noKeyHolder` without a configured VTA,
+    `keyHolderUnavailable` when it cannot be reached, `keyHolderRefused` when it
+    refuses.
+  - The console shows a select of the listed servers, keeps a typed id as the
+    fallback, and says why when the list cannot be read.
+
+- **vta**: VtaPin and remoteApprover UV keys for wallet sign-in ([#2228](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2228))
+
+Browser wallets without a PRF passkey could not approve auth/oob/grant.
+  Two new UV key kinds:
+
+  - vtaPin: the browser enrols K = PBKDF2(PIN) as verifier; a grant is
+    approved by a transport-key decision plus HMAC-SHA256(K,
+    "org.openvtc.uv-pin/v1|" + D), checked in constant time against a
+    persisted, CAS-updated guess limit (5 wrong -> 15 min lock, doubling
+    to 24 h, reset on success). Refusals oobUvPinWrong (attemptsRemaining)
+    and oobUvLocked (lockedUntil). Replacing a PIN on heartbeat requires
+    ext org.openvtc.uv-key-change.pinProof. The verifier is never returned,
+    audited or logged (PinVerifier redacts Debug).
+  - remoteApprover: the grant is approved on the member's phone. The VTA
+    raises a task-consent request bound to the enrolled approver and the
+    grant digest (PendingTaskConsent::bound_approver), pushes the signed
+    task-consent/request/0.1, and answers oobUvPending (matchCode,
+    expiresAt) until the phone's task-consent/decision/0.1 approves;
+    oobUvDeclined / oobUvExpired otherwise. The approver must be
+    designated by the operator (the device's stepUpApprover or an
+    approver-set member), not created by the device. Candidates are
+    listed via heartbeat ext org.openvtc.uv-approvers.
+
+- **vtc**: A group's room bindings — vtc/groups/bindings/{add,remove,list}/0.1 — and renewals members collect from vtc/rooms/offers/list/0.3 ([#2227](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2227))
+
+* feat(vtc): a group's room bindings — vtc/groups/bindings/{add,remove,list}/0.1 — and renewals members collect from vtc/rooms/offers/list/0.3
+
+  A group can now be bound to a room the community owns (trust-tasks-tf #843).
+  Every member of the group is offered admission to it, keeps it while they stay
+  in the group, and loses it when they leave, unless something else still covers
+  them.
+
+  - bindings/add, remove, list: a manager of the group who also holds
+    `vtc.rooms.manage`, after the gesture bound to the document that
+    `vtc/rooms/community/members/add` takes. Room bindings are not parked:
+    community room changes never are. A grants or role binding is refused
+    `kindNotServed` (item 7) and nothing is stored. Codes witnessed: notFound,
+    roomNotFound, bindingExists, tooManyBindings (64), kindNotServed;
+    bindingNotFound; list's notFound, answered alike for a group that does not
+    exist and one the caller may not manage.
+  - `groups::bindings` is the reconciler, the one owner of every effect. It runs
+    each minute and whenever a group's members or bindings change.
+    - Offers: it offers each active group member admission through the normal
+      offer path, and records the offer only after the community's VTA issued its
+      credentials.
+    - Sources: it keeps `MemberRecord::sources`, the bindings (`gb_…`) that cover
+      an admission, plus `direct` where an administrator admitted the member.
+    - Removals: it drops a source when the member leaves the group or the binding
+      goes. An admission with no source left is owed a removal
+      (`DepartureCause::LeftGroup`), driven by the departures worker exactly like a
+      departure from the community. A direct admission is never removed this way.
+    - Renewals: within a third of `validFor` of expiry, it renews an admitted
+      member's membership and authority, the same actions and never an
+      invitation. The renewed `validUntil` becomes the admission's own.
+    - Ending a binding: a binding being removed is deleted once nothing names it.
+      Deleting a group puts its bindings into removal.
+  - vtc/rooms/offers/list/0.3: 0.2's offers, and on the first page the `renewals`
+    of the admissions the member holds, each listed until what it renews expires.
+    A removal drops the pending renewal.
+
+  The error-code census ceiling rises from 15 to 19. bindings/add declares four
+  codes only a grants or role binding can reach: groupNotEligible,
+  unknownCapability, unknownRole and exceedsBinderAuthority. They are baselined
+  until grants are provisioned from groups.
+
+- **vta**: Rooms/keys/act/0.6 — completes vtc/rooms/offers/list/0.3, so a member collects the renewals of the rooms they hold ([#2226](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2226))
+
+* build: trust-tasks-rs 0.32.6, which carries vtc/rooms/offers/list/0.3 and rooms/keys/act/0.6 (trust-tasks-tf #843)
+
+- **vtc**: Appointing group managers — vtc/groups/managers/{add,remove}/0.1, with a departed granter's appointments reviewed ([#2217](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2217))
+
+A group manager is `vtc.groups.manage` qualified `group:<groupId>`: a resource
+  grant on the manager's access-control entry, beside its role and never inside
+  the role's ceiling. So a member with no administrative role may manage a group
+  (trust-tasks-tf #833).
+
+  - managers/add: a manager of the group, or a holder of the unqualified
+    capability, appoints an active member. The grant is delegated by the signer,
+    who covers it by managing the group. It is written under the git-namespace
+    write lock, which `acl/*` writes re-read resource grants under, so a racing
+    role change keeps it. Codes: notFound, entryNotFound, alreadyManager (by a
+    grant or by managing every group).
+  - managers/remove: a manager steps down, or a holder of the unqualified
+    capability ends another manager's appointment. Managers of one group do not
+    remove one another. Holding the capability unqualified is no appointment
+    (`notManager`).
+  - A delegated grant (VTI-ACL-071): when a granter leaves the community or no
+    longer manages the group, the directory's pass puts the appointment under
+    review. It raises an `acl.grants.review` item listing it under
+    `groupGrants`. Approving re-affirms it under the approver, and declining or
+    letting the deadline (the action lifetime) pass withdraws it. A granter back
+    behind it clears the review.
+  - Deleting a group withdraws every appointment to it.
+
+- **vtc**: Community group membership — vtc/groups/members/{add,remove,list}, join, leave, requests/{list,decide}, and each member's group credential ([#2216](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2216))
+
+Membership for static groups (design §9), built on the group lifecycle.
+
+  - members/add and members/remove are for the group's managers; members/list
+    is for whoever the group shows its members to.
+  - join and leave are for an active member, for themselves: `open` joins where
+    the `groups` policy allows, and `request` records a request. requests/list
+    and requests/decide are for managers, and nobody decides their own request.
+    An approval re-checks that the requester is still an active member and the
+    group still takes requests.
+  - Where the group issues credentials, admitting a member first has the
+    community's VTA sign, as the group's DID through `keys/sign-document`, a DTG
+    `MembershipCredential` to the member's membership DID. It is offered with
+    the group's authority credential on the credential-exchange path, and only
+    then is the membership recorded. A VTA that does not answer or refuses
+    records nothing. There is no status list per group (VTI-CRD-014): expiry is
+    the revocation.
+  - members/list projects each member's fields exactly as
+    `vtc/directory/entries/show` does for the caller. Pending members go only to
+    managers, and `credentialValidUntil` only to the member and managers. A
+    request's note goes to managers only, and a declined requester never sees
+    the reason. Every list cursor is bound to its caller and filters.
+  - The directory's `groups` audience now counts the groups both belong to
+    whose member list the viewer may see, so a group hiding its members never
+    reveals them through somebody's card. Groups now fill `Viewer.groups` and
+    `Subject.groups`.
+  - Departure ends every membership and withdraws pending requests, before the
+    card's own departure. Deleting a group withdraws its pending requests.
+  - The member portal's sign-in key may sign `vtc/groups` as the member
+    (`signingScope`).
+  - New `GroupMembershipChanged` audit event, by reference only.
+
+  Four more declared codes are baselined until dynamic groups or authority
+  bindings exist, raising the error-code census ceiling from 11 to 15:
+  `members/add:dynamicGroup`, `members/add:exceedsRoleCeiling`,
+  `members/remove:dynamicGroup` and `leave:alreadyOptedOut`.
+
+- **vtc**: Community groups — vtc/groups/{create,update,delete,list,show}/0.1, each group with its own VTA-held identity ([#2215](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2215))
+
+* build: trust-tasks-rs 0.32.3, which carries the vtc/groups/* family (trust-tasks-tf #831, #833)
+
+- **vta**: A PRF-sealed UV key for wallet sign-in approvals (`prfSealedKey`) ([#2208](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2208))
+
+The VTA signs an auth/oob/grant only on a task-consent/decision made by the
+  device's enrolled UV key. Two kinds existed: a phone's biometric-gated
+  hardware key, which signs the decision itself, and a WebAuthn passkey, whose
+  assertion the device's transport key carries as evidence. The browser plugin
+  used the second, which needs its own ES256 credential beside the wallet's PRF
+  unlock passkey — on Chrome on Linux, a security key and three PIN rounds.
+
+- **vta-sdk**: The vtc-group built-in DID template, a community group's own identity ([#2206](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2206))
+
+`vtc/groups/create` has the community's VTA mint each group a DID of its own,
+  which then issues the group's membership credentials under an authorization
+  credential from the community. `vtc-group` is that identity's shape.
+
+  It is a did:webvh with a signing key (assertion and authentication) and a
+  key-agreement key. It has no service, because nothing delivers messages to a
+  group yet; group messaging will add one by a DID update. It has no name,
+  description or label, so resolving the DID says nothing about the group. It
+  requires `WEBVH_SERVER`; `WITNESSES` is optional. Its methods are numbered from
+  `#key-1`, and the key records follow the document, as the `room` template's do.
+
+- **vtc**: Credential-sourced directory fields — vtc/directory/card/present/0.1 ([#2205](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2205))
+
+A member fills a `credential`-sourced field (type `claim`) by presenting a
+  credential. The community keeps only the claim each named field reads, badged
+  with its issuer, and discards the presentation.
+
+  - Verification (`directory::present`) reuses the community's presentation
+    verifiers (Data Integrity VP, SD-JWT with key binding), status-list
+    resolution and issuer trust. The binding is the presentation's signed
+    `nonce` (the request's `id`) and `domain` (the community's DID); a proof
+    that also states `challenge` or `domain` must agree (trust-tasks-tf #831).
+  - The holder must be the member (item 3): their DID, or for an SD-JWT, a key
+    their DID document lists for `authentication` that the key-binding JWT's
+    `kid` names. A credential naming a subject must name them. A presentation
+    another member obtained is `presentationInvalid`, and the reason is logged,
+    never answered.
+  - Each field's `ClaimSelector` decides type, issuer and claim (item 4). With no
+    `issuers` list, an issuer is accepted on the join criteria's `recognised`
+    rule: the community's own DID, one its trust registry recognises, or one its
+    swiyu trust vouches for.
+  - Only the `VerifiedValue` is written (item 5): value, issuer, credential type,
+    `verifiedAt`, `validUntil`. Visibility is untouched, the write is audited by
+    reference, and the presentation is dropped before the card is written
+    (item 6).
+  - A value whose `validUntil` has passed is hidden from every projection at
+    once, and the directory's hourly pass withdraws it from the card, audited by
+    `expiry` (item 7).
+  - `VerifiedPresentation` gains `types` and `valid_until`, read before the
+    claims narrow to the subject. DI credentials are also held to the VC 1.1
+    validity names.
+
+  The member portal and the console show a verified value with its type as the
+  badge. Presenting from the portal waits on the wallet offering it.
+
+- **vtc**: Administrators' notes and the directory export — vtc/directory/notes/{append,list,export}, vtc/directory/export (VTI-DIR-030 – 033) ([#2203](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2203))
+
+Administrators can keep notes about a member and export the directory, as the
+  member-directory design's P4 sets out.
+
+  Notes (`directory::notes`) are kept apart from cards and never reach a card or
+  any projection (VTI-DIR-030). They are append-only: a redaction is a later note
+  naming the one it withdraws, and a redacted note's text is withheld from every
+  later read (VTI-DIR-031). A new capability, `vtc.directory.notes`, sits in the
+  community-admin ceiling only. Each append, list and export is audited
+  (`DirectoryNoteAccessed`) before it answers, by reference and never by text. A
+  departed member's notes are purged with their card under `Disposition::Purge`,
+  and otherwise kept for the retention period and then erased by the directory
+  sweeper.
+
+  `notes/export` gives a member's notes back to them whole. It takes an
+  operation-bound step-up and is audited `Critical` (`DirectoryExported`,
+  VTI-DIR-032). `vtc/directory/export` (`vtc.directory.admin`) pages every entry
+  as JSContact, using the external card's fixed mapping over every field. The
+  step-up is taken on the first page, the cursor is bound to the caller, and the
+  export is audited once, `Critical`, with its count (VTI-DIR-033).
+
+  The console gains a notes card on the member page and an export on the
+  directory's Entries tab. Disclosure now states `adminNotes: true`.
+
+- **vta**: Keys/sign-document — a Data Integrity proof made only as the DID a document names ([#2200](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2200))
+
+The VTA now serves keys/sign-document/0.1: an eddsa-jcs-2022 proof over a JSON document from a key that never leaves the VTA. It is what lets a member whose key their agent holds sign their external directory card (vtc/directory/card/publish, whose card names the membership DID as `issuer` for exactly this), and it is how a producer issues a credential as a DID without holding its key.
+
+  The checks run in the specification's order:
+  1. The `sign-document` capability. `sign` is not accepted in its place, because this VTA frames keys/sign payloads and a `sign` grant was never given with an issuer binding.
+  2. The document's own checks: `proofPresent`; `documentInvalid` for `noSigner`, `signerMalformed` or `notCanonicalizable` (integers beyond 2^53 are refused, not rounded).
+  3. The key: in scope, active, Ed25519.
+  4. The issuer binding. The key must be a verification method of the DID the document names in `issuer` or `controller` (`issuerMismatch`), listed under the requested purpose (`purposeNotAuthorized`).
+  5. `created` within five minutes of the VTA's clock.
+
+  The signer DID's document is never taken from the request. A did:key's is read from the identifier, a did:peer's derived from it (`persona::own_document`), a did:webvh this VTA minted read from its own log, and anything else resolved.
+
+  The VTA builds the proof configuration and the 64 bytes of hash data itself (`sign_formats`), with the document's @context, and `challenge` and `domain` when they are given. It signs those bytes as ProtocolDefined through the same chokepoint as keys/sign, so scope, signing policy and quota apply. The audit row names signer, method, purpose, the document's id and type, and the SHA-256 of the hash data, never the document.
+
+- **vtc**: Directory pictures and external cards — images/upload, images/get, card/publish, card/public (VTI-DIR-046, VTI-DIR-120) ([#2199](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2199))
+
+Members can now put a picture on their directory card, and publish their card beyond the community as a card they signed themselves (trust-tasks-tf #826, #827, #830).
+
+  Pictures (`directory::images`):
+  - `images/upload` stores the community's own encoding, never the bytes it was sent. It decodes the picture, applies its orientation, scales it to at most 512 px and encodes it afresh, so no metadata block survives and the digest links nothing across communities (VTI-DIR-051).
+  - It reads PNG, JPEG and WebP through the `image` crate, pure Rust, with decode limits. A picture that claims more pixels than are decoded is `tooLarge` (tf #829).
+  - An upload belongs to its writer: a member's entry, or the directory's administrators. `card/update` and `card/assert` accept only a picture the writer uploaded, or the one the field already holds, so a digest seen on another card never puts that picture on yours.
+  - An upload no card takes up within 24 hours is erased, and so is a picture no card holds any longer.
+  - `images/get` projects the entry for its caller exactly as `entries/show` does. A caller the directory does not answer is the public, answered only a picture on a published external card. Every refusal is the same `notFound`.
+
+  External cards (`directory::external`):
+  - `card/publish` accepts a JSContact card only when it is exactly the member's public values in the fixed mapping and names their membership DID as `issuer`. It must be signed by that DID for `assertionMethod`. A delegated portal key never publishes, and the member needs registry-publication consent.
+  - The card is stored exactly as received and served by `card/public` to anyone, signed or not.
+  - `cardDigest` covers the card with its proof. `dtg_credentials::digest_multibase_json` strips the proof, so it is not used here.
+  - The recognition record carries `context.directoryCard` (purpose, entry, digest, `readWith`). The syncer reads the card at dispatch time, and the audit tail queues a re-publication on every publication and withdrawal.
+  - A card is never served stale. Every serving path reconciles it against the member's current public values first; a changed value withdraws it to `awaitingSignature`. Card writes, field changes and the hourly directory pass reconcile too, so a policy change or a suspension is caught, and the pass re-queues a recognition record whose pointer is wrong.
+  - Withdrawal stops serving and erases at once, then removes the pointer. It happens when the member turns `external` off, when they withdraw registry consent (`members/update`), and before anything else at departure (VTI-DIR-120).
+  - `[directory] external_cards` (default true) lets an operator turn publication off. The disclosure statement reads it together with the dispatch table.
+  - The default `directory` policy gains a route for the one public question, what an external card may carry. A shipped default without that route is replaced at boot while it is still the workspace's own row.
+
+  Member portal:
+  - Members choose a picture on Your card; the portal scales it down in the browser before sending.
+  - Other members' pictures are shown only once their bytes match the digest the card names.
+  - The portal shows where an external card stands and offers Stop publishing.
+  - Fixed: saving Your card used to send `external: false` unconditionally. It would have withdrawn a published card on every save; it now sends the card's own value.
+
+- **rooms**: Rooms/owner/group/add 0.3 and renew 0.2 settle a pending removal like remove 0.3 (trust-tasks-tf #824) ([#2197](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2197))
+- **vtc**: The directory's disclosure statement — vtc/directory/disclosure 0.1, and join manifest 0.4 carries it (VTI-DIR-130) ([#2198](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2198))
+
+Before anyone applies, a community offering a directory must tell them what the directory would disclose about them, and to whom, generated from its configuration (VTI-DIR-130). The VTC now does this, closing the divergence recorded in dtgwg-vti-spec#69.
+
+- Growth types in published crates are #[non_exhaustive] ([#2196](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2196))
+
+A new variant on a public enum, or a new field on a public struct a consumer
+  can build with a literal, is a breaking change in a published crate. It kept
+  happening on types that were always going to grow (#1231, #1234, #1244, #1247,
+  #1250); #1262 fixed it for Capability and AuditEvent only.
+
+  This marks the rest once. 143 enums are marked: every error and refusal enum
+  (VtaError, AppError, ...) and the growth vocabularies (kinds, statuses,
+  reasons, codes, transports, SealedPayloadV1). 32 structs are marked: config
+  and response bags that no caller builds with a literal. Adding the attribute
+  is itself breaking, once. After it, additions to these types are minor
+  changes.
+
+  Left exhaustive on purpose, and pinned that way by the census:
+  VerifiedAssertion, AssertionProof, ActScope, ApproveScope, ContextDirection,
+  SigningDomain, TokenStatus and Role. For each of these, every arm must be
+  considered, and a downstream wildcard would be the bug.
+
+  Every downstream match in the workspace gets a `_ =>` arm that takes the most
+  restrictive or most generic reading: an internal error, a hidden or refused
+  entry, a stale attribute. None is unreachable!().
+
+  vta-sdk/tests/non_exhaustive_census.rs fails on a public enum in a published
+  library crate whose name ends in Error, Refusal, Violation, Kind, Event,
+  Status, Capability, Reason or Code and that is not #[non_exhaustive], unless
+  it is listed as deliberately exhaustive with a reason. It also fails when a
+  listed enum gains the attribute or disappears.
+
+- **vtc**: The member portal's directory — signing delegated by auth/oob 0.2 ([#2190](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2190))
+
+A member reads the directory and edits their own card from the portal, signed
+  by the browser's sign-in key the member lets act for them in the directory for
+  that session (trustoverip/dtgwg-trust-tasks-tf #820, auth/oob/grant/0.2).
+
+
+
+### Changed
+
+- **rooms**: Rooms/create's payload is the generated type, not a hand-written copy ([#2253](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2253))
+
+
+### Fixed
+
+- **voting**: Trustees and voters act only on signed steps, the community authorizes decryption, the key needs t dealers, ballots bind their tag ([#2254](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2254))
+
+* chore(deps)!: trust-tasks-rs 0.33, affinidi-messaging-sdk 0.38, affinidi-tdk 0.29 and the mediator 0.44 crates; an mdoc presentation binds the OpenID4VP 1.0 handover
+
+  The release train behind trust-tasks-rs 0.33 (affinidi-tdk-rs #963, affinidi-messaging-mediator
+  #25). These versions move together because the messaging SDK's public API carries
+  `trust_tasks_rs` types, so the workspace takes them in one step:
+  - trust-tasks-rs 0.33.1, which carries the voting hardening specifications of trust-tasks-tf
+    #860;
+  - the trust-tasks-* transport crates at 0.33;
+  - affinidi-messaging-sdk 0.38;
+  - affinidi-tdk 0.29;
+  - affinidi-messaging-mediator-{admin,tui} and affinidi-messaging-test-mediator 0.44.
+
+  affinidi-tdk 0.29 re-exports affinidi-mdoc 0.4 (affinidi-tdk-rs #961), which implements
+  OpenID4VP 1.0 Final's mdoc handover (Appendix B.2.6.1): `[client_id, nonce, jwk_thumbprint,
+  response_uri]`. That replaces ISO 18013-7's `mdocGeneratedNonce`. A DeviceAuth signed over the
+  old handover verifies at no 1.0 verifier, so the holder's `Oid4vpSession` changes shape:
+
+  - **Breaking (vta-sdk):** `mdoc_generated_nonce` is removed. In its place is an optional
+    `jwk_thumbprint`, the base64url SHA-256 thumbprint (RFC 7638) of the key the verifier
+    encrypts its `direct_post.jwt` response to. It is absent for an unencrypted response, which
+    the handover encodes as CBOR `null`. The field has no specification of its own and nothing in
+    the workspace sent it.
+  - A new test checks that the DeviceAuth verifies against exactly that transcript, and against
+    none without the thumbprint or with another nonce.
+
+  The test mediator 0.44 still asks for affinidi-tdk 0.28, so dev builds hold that copy beside
+  0.29. Both share one messaging SDK and one trust-tasks-rs, and nothing passes a type between
+  them.
+
+- **rooms**: A room host's DID advertises TrustTaskHTTPS, and rooms/create accepts retentionPolicy ([#2247](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2247))
+
+Found setting up a room from the wallet's console, which stopped at step 2 for
+  a host minted from the room-host template.
+
+  - The room-host template published its rooms/* surface as VTARest. A room host
+    is not a VTA; the HTTPS binding's service type is TrustTaskHTTPS, which is
+    what every Trust Task client — the wallet's console included — looks for, so
+    the console found no endpoint and refused to continue. The VTA's own sender
+    reads either; this makes the template say the right thing. Hosts minted from
+    the old template need their DID updated.
+  - rooms/create/0.1 declares retentionPolicy (and ext), and rooms/owner/register
+    0.2 forwards retentionPolicy, but both hosts parsed rooms/create into a
+    hand-written type with deny_unknown_fields that had neither — so any room
+    registered with a retention policy was refused as malformed, and the policy
+    was hard-coded to chained. CreateRoomBody gains both members and room-host
+    and the VTC store the owner's choice (chained when absent); a fromJoin room
+    then refuses epoch links, as it already would.
+  - data-rooms §8.1: --listen is opt-in and when it is needed, enrolment and the
+    scoped admin grant room-host prints, the TrustTaskHTTPS endpoint, and that a
+    private room is not served yet.
+
+- **rooms**: A read catches up on missed commits and the room's history before refusing; the portal says why a record will not open ([#2231](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2231))
+
+In any room with more than two members, every membership change left every other
+  member a commit behind, and every new member held nothing sealed before they
+  joined. The only repairs were `pnm rooms keys commit --host` and `pnm rooms keys
+  backfill`, by hand, and the wallet and member portal ran neither, so records showed
+  "Did not open" in both directions.
+
+  rooms/keys/read now repairs before it refuses (trust-tasks-tf #848, amending the
+  read/0.1 draft): it fetches and applies the commits the host relays for a newer
+  epoch, or fetches the epoch links for an older one, from the same host, as the same
+  persona, under the same read grant, at most once per read, never for a removed
+  member. It is serialised per member, and waiters time out rather than queue behind a
+  wedged host (R1.3). What still does not open is the declared
+  rooms/keys/read:cannotOpen with details.{epoch, reason}, not malformedRequest, and
+  read and backfill answer the declared hostUnreachable / hostRefused.
+
+  Member portal: a record that does not open says why in plain words; a joined room
+  has one way to open it (a direct link once shared, else "Open it here…" through
+  the wallet, then straight to the room) instead of two buttons and a red
+  "Joined" box.
+
+- **vta-sdk**: Collect a stranded TSP reply, keep the DIDComm mediator on REST, refuse an unresolvable VTA DID (OpenVTC #501) ([#2219](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2219))
+
+
+## [0.72.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-sdk-v0.71.0...vta-sdk-v0.72.0) — 2026-10-18
+
+
+### Added
+
+- **rooms**: Rooms/owner/register 0.2 and group/remove 0.3 — a room's revocation list is reported and redelivered, and a refused redelivery never loses a withdrawal (trust-tasks-tf #821) ([#2191](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2191))
+
+* feat(rooms)!: rooms/owner/register 0.2 and group/remove 0.3 — a room's revocation list is reported and redelivered, and a refused redelivery never loses a withdrawal (trust-tasks-tf #821)
+
+  Implements trust-tasks-tf #821 on trust-tasks-rs 0.32.
+
+  rooms/owner/register/0.2
+  - A registration the host accepted answers success whatever became of the
+    room's revocation list, with `revocation {head, status, code?}`: `inForce`
+    only when the host answered with that list's head, `refused` with the host's
+    code, `pending` otherwise (item 3). `hostUnreachable` / `hostRefused` report
+    the registration alone, now mapped from the host's answer (they were bare
+    task failures before, at 0.1 too; the census baseline loses both rows).
+  - The outstanding delivery (room, host, sequence, and the persona whose `admin`
+    grant delivers it) is retained durably *before* the delivery is attempted, so
+    a process dying mid-delivery leaves it for the sweeper.
+  - `trust_tasks::room_list_delivery` is the single retry owner (item 4): every
+    30 s it attempts what is due, as that persona under authority confined to the
+    persona key's own context, delivering the latest list held; capped
+    exponential backoff (30 s .. 1 h) with full jitter; `inForce` and `refused`
+    both end it, and a refused list is never delivered again (item 5). `stale`
+    with no later list of this agent's own is logged at warn with
+    `security_alert` as possible key equivocation. Remote first: the record is
+    dropped only after the host's answer. Any delivery that reaches the host
+    (revoke, a removal) settles it; a revoke the host refuses ends it.
+  - 0.1 is still served as before: a failed delivery is refused with a message
+    saying the room is registered and naming `pnm rooms owner revoke`.
+
+  rooms/owner/group/remove/0.3
+  - Item 8.2, by refusal code, when a pending removal's list is refused on
+    redelivery: `listInvalid` / `entryNotPermitted` / `sequenceConflict` discard
+    the whole removal (the list only while it is still the one held;
+    `sequenceConflict` surfaced as equivocation); `stale` with a later held list
+    delivers that list and confirms the withdrawal through it; anything else
+    discards the advance and keeps the list. Whatever is discarded, the request
+    is refused and does none of its own work: `earlierRemovalRefused`
+    `{member, code, listKept}` at 0.3; `hostRefused` with the same details at
+    add / renew / remove 0.1.
+  - The settle path is shared, so this fixes every version: 0.2 used to discard
+    the list on any refusal and carry on, losing an entry a host may enforce.
+    0.2 has no `earlierRemovalRefused`, so it answers its closest declared code,
+    `hostRefused` at `stage: revocation` (details closed to `{stage, code}`),
+    with the earlier member and whether the list was kept in the message.
+  - An unanswered epoch query while settling now carries `details.stage:
+    advance` at 0.2/0.3, which their schema requires.
+
+  Clients
+  - SDK: `room_owner_register` asks 0.2 and falls back to 0.1 on
+    `unsupportedType`/`unsupportedVersion`, returning 0.2's response;
+    `room_group_remove_v0_3` asks 0.3 and falls back to 0.2. Both new URIs are
+    classified in `retry_safety` (RetrySafe / Keyed) and in the budget set.
+  - pnm: `rooms owner register` says plainly when the list is not in force and
+    prints the `pnm rooms owner revoke` fix (never re-register);
+    `rooms owner group-remove` uses 0.3 and explains `earlierRemovalRefused`.
+  - VTC: community `members/remove` and the departure worker ask
+    `group/remove/0.3`, falling back to 0.2; an `earlierRemovalRefused` is
+    surfaced to the administrator as `keyHolderRefused` saying what to do.
+
+  trust-tasks-rs 0.32 breaks handled
+  - `SealedRecord` gains `version` ([#816](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/816)): `pnm rooms file get` now opens and
+    verifies at `sealed.version`, which the previous release could not read.
+  - The device `Capability` enum gains `sign-document` ([#819](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/819)): this VTA neither
+    grants nor serves it; mapping goes through serde, so nothing else moves.
+
+
+
+## [0.71.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-sdk-v0.70.0...vta-sdk-v0.71.0) — 2026-10-18
+
+
+### Added
+
+- **rooms**: Every surface shows a member the same community rooms, and finishes an acceptance any other began ([#2186](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2186))
+
+* feat(rooms): every surface shows a member the same community rooms, and finishes an acceptance any other began
+
+  A member reaches their community from several surfaces — the member portal
+  through their wallet, pnm, OpenVTC — and each kept no shared view: offers/list
+  drops an accepted offer after seven days, so a room accepted in one surface
+  was invisible to the others after that, and an acceptance one surface began
+  could be finished by no other (its mint replaced the private half the kept
+  Welcome is sealed to, and the community answered alreadyAccepted).
+
+  VTC
+  - vtc/rooms/memberships/list/0.1: the community's own record of the signer's
+    admissions to the rooms it owns — offered, admitted, removed; never a
+    withdrawn offer, never a credential — with repeatAcceptUntil while a sealed
+    admission's Welcome is kept. Answers only an active member, for themself.
+
+  VTA
+  - rooms/keys/key-package/0.2: returns the outstanding KeyPackage for the same
+    room, member and invitation (alreadyMinted: true, original expiresAt), and
+    mints only otherwise; serialised so concurrent requests get the same one.
+    RetrySafe, where 0.1 is Keyed.
+  - rooms/keys/welcome/0.1: a Welcome under a spent invitation, for the member
+    who joined with it, is alreadyJoined (welcome/0.1's rule) rather than
+    "invitation already used" — so a surface finishing another's acceptance
+    reads it as success.
+  - rooms/keys/act/0.5: 0.4 ([#2183](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2183)), and vtc/rooms/memberships/list/0.1 —
+    COMMUNITY_TYPES, 0.4's OFFER_TYPES_0_4 and memberships/list. 0.3 and 0.4
+    refuse memberships/list (their schemas' type pattern); an acceptance's
+    KeyPackage may come from key-package 0.1 or 0.2.
+
+  SDK / pnm
+  - VtaClient::room_key_package_v0_2, room_act_community (act 0.5, then 0.4 and
+    0.3 for the offer types an older VTA completes), unsigned_community_request,
+    is_community_type.
+  - pnm rooms memberships: the community's record beside the VTA's custody, as
+    every surface shows it. pnm rooms offers accept checks custody first, asks
+    for the KeyPackage at 0.2 (0.1 against an older VTA), and reads
+    alreadyJoined as joined.
+
+  pnm's offer steps keep #2183's OfferStepError and offers/list 0.2 to 0.1
+  fallback, now through room_act_community.
+
+  trust-tasks-rs floor 0.31.16.
+
+- **vtc**: Vtc/rooms/community/members/remove 0.2 — a removed member is refused at the room's host at once ([#2175](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2175))
+
+* feat(vtc): vtc/rooms/community/members/remove 0.2 — a removed member is refused at the room's host at once
+
+  The community half of trust-tasks-tf #804. A member removed from a room the
+  community owns kept every credential the room gave them, honoured at the host
+  until `validUntil`; on an `open` room removal withdrew nothing at all.
+
+  `vtc/rooms/community/members/remove/0.2` (0.1 still served, unchanged):
+  - item 2, admitted member: `open` — the community's VTA withdraws them
+    (`rooms/owner/revoke`, one `subject` withdrawal, delivered to this community
+    as the room's host); `attributed` — `rooms/owner/group/remove/0.2`,
+    withdrawing first and then advancing (a member with no leaf is withdrawn
+    alone); `private` — `group/remove/0.1`, the group alone;
+  - item 3: an open offer is withdrawn, and on `open` and `attributed` its
+    credentials at the host too;
+  - recorded only once the VTA answered and, on `open`/`attributed`, the host
+    accepted the withdrawal; a refused delivery is `keyHolderRefused`, an
+    unconfirmed one `keyHolderUnavailable`;
+  - item 4: the answer carries `revocation` (the list's head) and `revokedAt`
+    beside `member` and, on a sealed tier, `epoch`; the `ext` notice says what
+    the tier's removal does.
+
+  The removal is one function (`rooms::departures::remove_member`) used by the
+  administrator's request and by the departure worker ([#2156](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2156)), so a member who
+  leaves the community is withdrawn at the host of every room it owns too. Every
+  departure removal now asks the VTA, so a pass stops at the first silent VTA.
+
+- **rooms**: Rooms/keys/act 0.4 — a member reads each offered room's description (vtc/rooms/offers/list 0.2) ([#2183](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2183))
+
+Serve `rooms/keys/act/0.4` (trust-tasks-tf #810) beside 0.3, 0.2 and 0.1.
+
+  - VTA: 0.4's offer row adds `vtc/rooms/offers/list/0.2` beside `0.1`, on
+    the same terms — no presentation, `issuer` required and resolved without
+    a room credential (recipient item 2b). `room_act::OFFER_TYPES` stays
+    0.3's closed table; `OFFER_TYPES_0_4` is 0.4's, and `ActVersion::
+    completes_offer` picks by the version asked, so a 0.3 request wrapping
+    list 0.2 is still refused `typeNotActable` (0.3 recipient item 1).
+    Dispatch, policy-gate subject (`/document/issuer`), conformance witness
+    and `RetrySafe` classification as for 0.3.
+  - SDK (breaking): `TASK_ROOMS_KEYS_ACT_0_4`; `room_act` and
+    `unsigned_room_request` take and return the 0.4 generated types. A room
+    request is asked at 0.4 → 0.3 → 0.2 → 0.1, list/accept 0.1 at 0.4 → 0.3,
+    and list 0.2 at 0.4 only (`UnsupportedTaskType` otherwise).
+    `is_offer_type` includes list 0.2.
+  - pnm: `rooms offers list` asks list 0.2 through act 0.4 and prints each
+    room's description on an `about:` line, every control character replaced.
+    It falls back to list 0.1 (act 0.3 when the VTA lacks 0.4) when either
+    the member's VTA or the community answers `unsupportedType` /
+    `unsupportedVersion` — each party's refusal is kept apart
+    (`OfferStepError`). `accept` reads the offer the same way.
+  - Member portal: the offers card shows the description the wallet carries
+    (`PageOffer.description`), as text, bounded to the schema's 1000.
+  - Docs: community-rooms (the description gap closes; what remains is an
+    older VTA or VTC), the quickstart, data-rooms, the files design note.
+  - trust-tasks-rs floor 0.31.15 (the act 0.4 and offers/list 0.2 generated types).
+
+- **rooms**: Rooms/owner/revoke and group/remove 0.2 — the owner's VTA withdraws a member at the host before it advances ([#2174](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2174))
+
+The key-holder half of trust-tasks-tf #804. Only the room signs a revocation
+  list, and the owner's VTA holds the room's key, so the VTA is where lists are
+  made.
+
+  - The list is kept with the room's key: `room_groups` (backed up, encrypted),
+    `room-revocations/<roomId>`, one per room whatever persona signs. Building
+    and signing a room's next list is serialized per room (owner/revoke item 3),
+    signed as the room through `RoomKeySigner` — the gated oracle that mints the
+    room's credentials, `ProtocolDefined` — and kept and persisted before it is
+    delivered anywhere (item 4).
+  - `rooms/owner/revoke/0.1`: roomSubject, noSigningKey, noAuthority, noList
+    before anything is signed (item 1); the tier from registration or
+    `rooms/info` when a withdrawal names anyone (entryNotPermitted on private,
+    tierUnknown otherwise; item 2); `revokedAt` stamped at signing; delivered to
+    every host with `rooms/revocations/put` presenting the owner persona's
+    `admin`, each outcome reported (`accepted` only when the host answered with
+    this list's head; item 5). A success whatever the deliveries (item 6); a
+    `stale` answer is surfaced as a security signal. Before signing it asks each
+    host for its list and adopts a later one the room signed (verified under the
+    room's own key and a method under the room's DID) — recovery for a key
+    holder restored from an old backup.
+  - `rooms/owner/group/remove/0.2`: signingKeyId required, `mirrors`, `until`;
+    refuses a private room (privateRoom). The commit, link and the signed list
+    are retained as the room's pending advance before anything is sent (item 5);
+    the list goes to the host first and nothing advances until it is accepted
+    (item 6: a refused list discards the whole removal, list included, rolling
+    the held list back only while nothing was built on it); then the advance (a
+    refused advance keeps the withdrawal); then the mirrors (`mirrorsPending`).
+    A later request settles a pending removal by delivering its list again first
+    (item 8). `hostUnreachable`/`hostRefused` carry `details.stage`.
+  - `rooms/owner/register` records the room's tier and delivers the list it
+    holds to the host before answering, so a room moving hosts arrives with its
+    withdrawals.
+  - SDK: `room_group_remove_v0_2`, `room_owner_revoke`; both `Keyed` in
+    `retry_safety`, in the budget's host-reaching set and the MCP guard as
+    Sensitive. `room_group_remove` stays 0.1.
+  - pnm: `rooms owner group-remove --signing-key` asks 0.2 and falls back to
+    0.1 only on `privateRoom` — the one case the specification hands to 0.1;
+    without `--signing-key` it is 0.1 and says the credentials stay valid.
+    `rooms owner revoke --host … [--subject|--credential|--reset]` (no
+    withdrawal re-delivers).
+
+- TEE first-boot enrols the claim DID as the bootstrap admin instead of minting a key ([#2066](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2066)) ([#2182](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2182))
+
+A TEE VTA's first-boot claim (`POST /bootstrap/request`) used to mint an
+  admin did:key inside the enclave and HPKE-seal its private key back to the
+  claimant (`SealedPayloadV1::AdminCredential`). That contradicts VTI-CLT-001 /
+  VTI-CLT-002: the client generates its own key and its private key never
+  leaves it. Since #1987 the claimant already arrives with a key of its own,
+  the pre-registered `tee.bootstrap_claim_did`, so the enclave now enrols that.
+
+  Server (wire version 2, `vta_sdk::tee_bootstrap`):
+
+  - On a verified claim, under `MODE_B_LOCK` and with the same carve-out
+    ordering, durability and integrity-manifest reseal, the enclave writes an
+    ACL entry for the claim DID itself (VTI-CLT-010): Admin, unrestricted (as
+    the minted admin was), expiring after 24h (VTI-CLT-014), and marked as a
+    hand-off (VTI-ACL-054) whose granter is the VTA DID as first-boot authority
+    and whose bound is an unrestricted, permanent admin.
+  - The answer is an attested acknowledgement (`FirstBootAck`) with no key
+    material: vtaDid, adminDid, expiresAt, producerDid and the Nitro quote. The
+    quote's user_data is unchanged (SHA256(client || nonce || producer)), so
+    --expect-pcr0 / --expect-pcr8 pinning works as before. Nothing is sealed,
+    so no SealedPayloadV1 variant is added and none is reshaped.
+  - The claim signature now binds the target VTA DID under a new domain tag:
+    `vti/bootstrap-claim/v2\0 || client_pub || nonce || utf8(vtaDid)`. The
+    enclave refuses a claim naming any DID but its own (403, before the
+    carve-out, after the claimant check). Together with the quote this means
+    the acknowledgement for a nonce can only come from an enclave holding the
+    DID the claimant signed.
+  - `GET /bootstrap/request` answers `{version, vtaDid}` for `--vta-url`
+    clients (declared in REST_EXCEPTIONS beside the POST).
+  - `acl/grant/0.1` with `ext["org.openvtc"].handoffRollover: true` exercises
+    the caller's hand-off marker onto a successor the caller minted
+    (VTI-CLT-017, VTI-ACL-055 - 057), via the existing `exercise_handoff`.
+
+  Client (`pnm bootstrap connect`):
+
+  - Signs a v2 claim, verifies the acknowledgement against the claim
+    (`FirstBootAck::verify`) and the pinned image, registers the VTA, mints the
+    long-term did:key locally, persists it, exercises the hand-off as the claim
+    DID, confirms by authenticating as the new key, then destroys the claim key
+    (VTI-CLT-033 - 035). A 403 stays the substitution signal (VTI-CLT-016).
+  - Not `acl/swap-key`: a rotation preserves expiry exactly (VTI-CLT-029), so
+    rotating off the expiring bootstrap entry would leave the VTA's only admin
+    expiring with it, and nobody could lift it.
+  - An interrupted run is resumed by re-running `connect`: a 410 for a slug
+    that already registered that VTA DID (only written after a verified, pinned
+    acknowledgement) continues the hand-over with the staged key.
+  - `--expect-digest` / `--no-verify-digest` are removed from `connect` (there
+    is no bundle to digest); `--expect-pcr0` is required, `--no-verify-pcr0` is
+    the warned opt-out.
+
+- **vtc**: Community rooms carry their own name — create 0.3 and update 0.2 write the label and description into the room ([#2179](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2179))
+
+Implements the community side of trustoverip/dtgwg-trust-tasks-tf#807:
+  vtc/rooms/community/create/0.3 and vtc/rooms/community/update/0.2, on top
+  of the community-room details ([#805](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/805)).
+
+  - create 0.3 (step 5, items 8-9): once the room is stored, the community's
+    own VTA is asked (rooms/keys/profile/write, as the community, with this
+    VTC as host) to write the label as the profile's `name` and the
+    description as its `description` — never the tags. The answer's
+    `roomProfile` is `written` only when the VTA answered written, otherwise
+    `pending`; the room stands either way.
+  - update 0.2 (items 10-12): a change of label or description writes the
+    profile again, first reading the current one and carrying over the tags,
+    emoji and ext a curator set in the room; a room made before create 0.3 (or
+    one still pending) is written even when nothing changed, and that is not
+    audited as a change; a tags-only change answers `unchanged`. The change to
+    the owner's record never depends on the write. Update 0.1 still never
+    reaches the VTA.
+  - rooms::community_profile: the one retry owner for `pending` profiles — a
+    record per room (`room-profile:<room>`, beside the owner's record),
+    written pending before the VTA is asked and written only after it
+    answered, one attempt per due room per pass with a capped backoff and
+    jitter (1 min to 6 h), always writing the room's label and description as
+    they are at the attempt, so a later update supersedes a pending one.
+  - get/list carry ext["org.openvtc"].roomProfile (written / pending with the
+    retry state / none); the console shows it on a room's page and creates at
+    0.3 and updates at 0.2, toasting a `pending`; cnm rooms create/update use
+    0.3/0.2 (falling back to 0.2/0.1 against an older VTC) and get/list show
+    the state.
+  - The community's entry at its VTA needs `room-open` for the profile tasks:
+    added to the capabilities the VTA-access fix commands name, and to the
+    docs. The community's own authority already confers admin, write and
+    curate (create item 6), so item 12's re-issue is never needed here.
+  - Both new versions dispatched, with conformance entries, OpenAPI wrappers
+    (openapi.json and wire.ts regenerated) and the console manifest.
+
+- **rooms**: A room's own profile — rooms/keys/profile/{read,write}, sealed inside the room ([#2171](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2171))
+
+Implements trustoverip/dtgwg-trust-tasks-tf#807 on the key holder's side. A
+  room's name, description, tags and emoji (RoomProfile) now live inside the
+  room: one record per epoch at profile_key(E) — HKDF-SHA256 over the epoch's
+  storage key, info "openvtc/room/profile/v1" || roomId || u64be(E), 16 bytes,
+  base64url — sealed like any record, so the host stores one more opaque record
+  and cannot tell which one names the room. An open room's is the record at
+  `room-profile`, its signed body in cleartext.body.
+
+  VTA (vta-service):
+  - rooms/keys/profile/read/0.1: walks from the current epoch down (bound 32),
+    fetching each location as the member under their own `read` grant,
+    verifying the host's reply as rooms/keys/read does, and takes the newest
+    profile it accepts (`found`, `stale` below the current epoch), stops at a
+    retraction (`cleared`), or answers `absent`, with `searched`.
+  - Readers decide who may name the room
+    (operations::room_profile::check_statement): the SealedRecordBody rules
+    (1)-(4) — no unknown member, the author's assertionMethod proof, signed for
+    the location read, the host-recorded author on attributed — plus
+    RoomProfileStatement items 1-4: a profile and nothing a record carries,
+    sealed under the epoch that located it, issuedAt within
+    [updatedAt − 1h, updatedAt + 5m], and an authority chain conferring
+    `curate` or `admin` on the author at the room's scope, every link valid at
+    issuedAt (vti_rooms_dtg::profile::verify_profile_authority). Anything that
+    fails is ignored and reported in `rejected` with its reason and author; a
+    rename by a member holding only `write` is `noAuthority` and the room keeps
+    the profile before it. This VTA holds no RevocationList, so item 5 never
+    applies (revocation is not retroactive).
+  - rooms/keys/profile/write/0.1: refuses `noAuthority` before contacting the
+    host without `write` and `curate`/`admin` (`curate` to clear); signs the
+    statement as the principal (assertionMethod, through the gated oracle) with
+    the room-issued chain inside, pads the signed body to a 1 KiB multiple,
+    seals it under the current epoch and puts it as the member under a `write`
+    grant; re-seals for the version the host assigned, then `contended`.
+    `clear` retracts the current location with a `curate` grant, storing a
+    profile there first when it holds none. Delegates are refused.
+  - The epoch-advance re-write: rooms/owner/group/{add,remove,renew} read the
+    profile before the advance and write it again under the new epoch as the
+    owner once the host accepts — never failing, delaying or undoing the
+    advance (tried a few times, then logged), never for `absent`/`cleared`,
+    never retracting the earlier one (add 0.1 and 0.2, remove, renew; the
+    speaker is HostCall::profile_speaker, so a later version reuses it).
+  - rooms/keys/read does not open a profile location (answers
+    ext["org.openvtc.rooms"].roomProfile) and rooms/keys/browse leaves profile
+    records out, counting against everything the host listed.
+  - Both tasks dispatched ([None Secret true] / [Mutating Metadata true]),
+    classified RetrySafe in vta_sdk::retry_safety, counted in budget, guarded in
+    vta-mcp, with conformance entries.
+
+- **vtc**: Community-room details administrators can see, edit and track (trust-tasks-tf #805) ([#2170](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2170))
+
+* build: raise the trust-tasks-rs floor to 0.31.14 (trust-tasks-tf #805)
+
+  0.31.14 carries vtc/rooms/community/update/0.1, the 0.2 community-room
+  create/get/list and vtc/rooms/offers/list/0.2.
+
+- **rooms**: A member's own private name, description, notes and tags for each room they hold ([#2167](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2167))
+
+* build(deps): trust-tasks-rs 0.31.14 — rooms/keys/label/0.1 and rooms/keys/list/0.2
+
+
+
+## [0.70.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-sdk-v0.69.0...vta-sdk-v0.70.0) — 2026-10-16
+
+
+### Added
+
+- **vtc**: Run membership-sync jobs waiting on a backoff now — sync-jobs/retry/0.2 ([#2154](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2154))
+
+Adding a trust registry to a running community queues a publish job for
+  every existing member, and the first failures put them on an exponential
+  backoff that reaches an hour. retry/0.1 only requeues failed jobs, so an
+  operator who had fixed the cause could only wait.
+
+  The VTC serves vtc/registry/sync-jobs/retry/0.2 (trust-tasks-tf #802,
+  trust-tasks-rs 0.31.13) beside 0.1: jobId accepts a pending job waiting out
+  its backoff, and allWaiting brings every such job forward with a fresh
+  attempt budget, each reported with from: failed | pending. An RTBF-batched
+  job is held and never brought forward, whichever member names it — the
+  batch window is what keeps a removal from being timed back to the request.
+  An in-flight job is skipped as inFlight.
+
+  The console moves to 0.2 and shows "Run waiting jobs now" under the queue
+  tiles while any job is backing off; skip toasts name inFlight / held /
+  notFound. Operator docs updated.
+
+- **vtc-admin-ui**: Community rooms tab — create and run rooms the community owns ([#2152](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2152))
+
+* feat(vtc-admin-ui): Community rooms tab — create and run rooms the community owns
+
+  Data rooms gains a fourth tab, Community rooms (/rooms/community, one room at
+  /rooms/community/<room DID>), shown to holders of vtc.rooms.manage — the
+  owner's authority, distinct from hosting's vtc.rooms.admin. Everything goes
+  through the signed Trust Task door as vtc/rooms/community/*/0.1; no REST route.
+
+  - List: label, tier, lifecycle, admitted / offered counts, and when the
+    community's own authority over each room lapses (flagged 30 days ahead).
+    When [rooms.community] is absent, the tab shows the section to add from the
+    list's ext["org.openvtc"].communityRooms.
+  - New community room: label, tier (attributed by default; private shown but
+    not offered), history, retention, storage location (for vtc.rooms.admin
+    holders) and a reason.
+  - A room's page: its facts and members, filtered by state. Add a member makes
+    an offer (actions, days valid, reason); Remove / Withdraw says what removal
+    does on the tier and the member's validUntil before anything is signed
+    (members/remove producer item 1) and reports validUntil and epoch from the
+    answer (item 2).
+
+  create, members/add and members/remove use postSignedWithStepUp: the VTC's
+  operation-bound step-up (passkey or step-up approver), then the identical
+  document again. Refusals carry the fix (noKeyHolder, visibilityNotPermitted,
+  notAMember, alreadyMember, keyHolderUnavailable with the minted DID, missing
+  vtc.rooms.manage).
+
+  The generated shapes reach the console through vta_sdk::openapi wrappers for
+  the vtc/rooms/community payloads and responses, registered in the VTC's
+  OpenAPI document (snapshot and wire.ts regenerated). The two listings are
+  pinned in list-limits.json.
+
+  The pages poll once a minute: the live channel's rooms topic hints on a
+  create (a room registered) but carries no offer, admission or removal, and
+  goes only to vtc.rooms.admin holders — a specification gap, recorded in
+  community-rooms.md rather than hinted outside event 0.2 producer rule 4.
+
+- **witness**: Witness 0.2 — the member presentation and personhood outcome evidence as spec members, and vta/witness/list ([#1068](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1068)) ([#2147](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2147))
+
+* feat(witness)!: witness 0.2 — the member presentation and personhood outcome evidence as spec members ([#1068](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1068))
+
+- **rooms**: Rooms/keys/act 0.3 — a member takes up a community's offer as themself, with only a KeyPackage their VTA minted ([#2148](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2148))
+
+Serve `rooms/keys/act/0.3` (trust-tasks-tf #797) beside 0.2 and 0.1.
+
+  - The table gains `vtc/rooms/offers/list/0.1` and
+    `vtc/rooms/offers/accept/0.1`, with no presentation inserted
+    (`room_act::OFFER_TYPES`, apart from the 0.1/0.2 host-bound table;
+    0.1 and 0.2 still refuse them by schema).
+  - Recipient item 2b: for the offer types `issuer` is required
+    (`principalAmbiguous` without it, never picked for the caller), and the
+    VTA acts as it only where it holds a key that DID lists for
+    `authentication` and the caller may act as it (`issuerNotPrincipal`).
+    No room credential is asked for.
+  - Recipient item 10 (security): an acceptance's `keyPackage` is completed
+    only when this VTA minted it with `rooms/keys/key-package` for that room
+    and member and still holds its unused, unexpired private half —
+    compared by KeyPackageRef (`room_groups::holds_key_package`), never by
+    the leaf credential — else `keyPackageNotHeld`. The existing per-member
+    pending-KeyPackage row is the record: a Welcome consumes it (used), its
+    `expiresAt` bounds it. Completing an acceptance does not consume it, so
+    a retry after a lost answer is the identical acceptance and is answered
+    with the same Welcome (rooms/owner/group/add 0.2 item 8).
+  - Policy and audit subject is the member, as at 0.2.
+
+- **rooms**: Rooms/owner/group/add 0.2 — a repeated admission is answered with its Welcome ([#2146](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2146))
+
+* feat(rooms)!: rooms/owner/group/add 0.2 — a repeated admission is answered with its Welcome
+
+  Serve `rooms/owner/group/add/0.2` (trust-tasks-tf #795) beside 0.1, and
+  raise the trust-tasks-rs floor to 0.31.11, which carries it.
+
+  Under 0.1 a caller that lost an admission's answer and sent the identical
+  request again was refused `alreadyMember`: the member had a leaf and no
+  Welcome anyone could give them. 0.2 item 8:
+
+  - The owner's VTA keeps the last admission it applied for a room —
+    member, the KeyPackage's KeyPackageRef (RFC 9420 §5.2), epoch and
+    Welcome — in `room_groups` (`room-admitted/<room>/<persona>`, beside the
+    pending advance that already holds the same Welcome, under the same
+    storage encryption and backup membership). It is discarded when the
+    owner builds its next advance of the room, after 24 hours (checked on
+    read, and swept by the storage thread), and with the member's group.
+  - A request naming the same room, a string-equal member and a KeyPackage
+    with the same KeyPackageRef is answered — after item 1 and the
+    authorization checks — with that epoch and Welcome: the host is not
+    contacted, the group not changed, no new Welcome built. Anything else
+    for a member with a leaf stays `alreadyMember`.
+  - Item 6 hands over to item 8: a pending admission settled by the
+    identical request becomes the retained one and answers it.
+  - 0.1 is unchanged.
+
+- **rooms**: Rooms/keys file-key, open and act 0.2 — removed, beyondChain, and the member as act's subject ([#2145](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2145))
+
+trust-tasks-rs 0.31.10 (trust-tasks-tf #786, #787, released in #788) publishes
+  rooms/keys/file-key/0.2, rooms/keys/open/0.2 and rooms/keys/act/0.2. The
+  workspace floor moves to 0.31.10.
+
+  VTA (served beside 0.1, whose behaviour is unchanged):
+
+  - file-key 0.2: a file sealed at or after the member's removal is
+    `unknownEpoch` with `{reason: removed, removedAtEpoch}` (oracle item 4 —
+    an oracle that knows of the removal MUST NOT answer `notDelivered`). 0.1's
+    closed details schema has no `removed`, so 0.1 still answers
+    `notDelivered` with the removal in its message.
+  - open 0.2: `unknownEpoch` carries the declared closed details. An older
+    epoch the retained chain does not reach is `{reason: beyondChain,
+    earliestEpoch}`; 0.1 still answers it as a bare validation failure.
+    `room_groups::OpenError` gains `BeyondChain` (the enum is
+    `#[non_exhaustive]`).
+  - act 0.2: `subjectPath` is `/document/issuer`. The policy gate evaluates
+    act 0.2 against the member — `issuer`, or where it is absent the one member
+    of the room the caller may act as (`room_act::act_subject`) — never against
+    no subject. The 0.2 audit row names the member as its target, with the type
+    and room in its detail; a 0.1 row still names the room. Recipient item 2a
+    (a room-less type is completed only as its `issuer`; absent is
+    `principalAmbiguous`, never a member picked here) was already this VTA's
+    behaviour and is now tested at 0.2.
+  - Dispatch, conformance witnesses, and `vta_sdk::retry_safety`
+    (open/file-key ReadOnly, act RetrySafe) for the three new URIs.
+
+- **vta-mobile-core**: Connect a did:peer relationship DID to its mediator for witnessing ([#1068](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1068)) ([#2139](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2139))
+
+A wallet carries every witness document from the relationship DID: the
+  witness checks the transport-proven sender against the document's issuer,
+  and that DID's one mediator socket is the wallet's. A relationship DID is
+  a did:peer:2 with an independent signing key V and key-agreement key E
+  under their own #key-N ids. MediatorSession::connect and
+  TspMediatorSession::connect derive both secrets from one did:key seed, so
+  they could not open that session at all.
+
+  - vta-sdk: TspSession::connect_with_secrets{,_on}, mirroring
+    DIDCommSession's. connect / connect_on derive the did:key secrets and
+    delegate. Additive.
+  - vta-mobile-core: MediatorSession::connect_with_secrets(holder, secrets,
+    peer, mediator) and TspMediatorSession::connect_with_secrets(holder,
+    secrets, mediator), taking HolderSecret {key_id, private_key_multibase}
+    records (the SecretEntry shape; Debug redacts the key). Before any socket
+    opens, the holder's document is resolved and every secret must sit under
+    the holder DID, name a published verification method and carry its
+    public key, with an Ed25519 authentication key and an X25519
+    keyAgreement key present. A wrong key is refused by name instead of
+    surfacing as a mediator authentication failure.
+  - docs/02-vta/witness-party.md and the witness module doc name the new
+    constructors for a did:peer relationship DID.
+
+
+
+### Fixed
+
+- **vta-sdk**: A presign part carries uploadId only when one of its operations needs it ([#2134](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2134))
+
+`external/credentials/issue/0.3` Conformance item 4 has a batch name
+  `uploadId` exactly when an operation acts on an existing multipart upload
+  (`upload-part`, `list-parts`, `complete-multipart`, `abort-multipart`).
+  `VtaClient::external_credentials_issue_presign` split a batch refused
+  `responseTooLarge` but copied the batch's `uploadId` onto every part, so
+  splitting the checks-and-completion batch of consumer item 4 sent a lone
+  `head` with `uploadId` and the VTA refused it `invalidBatch`
+  (`vta_external::batch::check_batch`). Each part now keeps `uploadId` only
+  when one of its operations needs it, as consumer item 5 says (clarified in
+  dtgwg-trust-tasks-tf#783).
+
+  The VTC's rooms presigner (`vtc-service` `rooms::vta_storage`) builds each
+  part itself and had the same flaw, also reachable through the 64-operation
+  chunking in `vti_common::blob_store::presigned`; `batch_request` now names
+  `uploadId` only when an operation needs it, via the new
+  `StorageOp::needs_upload_id`.
+
+- **rooms**: Say a removed member's file key is a removal, and keep NoMatchingProtocol typed ([#2135](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2135))
+
+Three rough edges from the end-to-end data-rooms run.
+
+  FileKeyError gains Removed and becomes #[non_exhaustive] (breaking for
+  vta-service). file_key now reads the room-removed row exactly as
+  open_record_detailed does, so a file sealed at or after the member's
+  removal is Removed rather than NotDelivered. On the wire it stays
+  rooms/keys/file-key:unknownEpoch with reason notDelivered: the spec's
+  detailsSchema for that code is closed (reason in {notDelivered,
+  beyondChain}, additionalProperties false), so there is no `removed` to
+  send until the specification declares one. The message says it was a
+  removal, and `pnm rooms file get` now prints the same remedies a record
+  refusal prints (catch up / backfill / removed), sharing one hint function.
+
+  AppError gains NoMatchingProtocol(Box<vti_common::error::NoMatchingProtocol>)
+  (peer, ours, theirs, note; boxed for clippy::result_large_err), breaking
+  for vti-common. Outbound::pick_transport returned AppError::Validation,
+  which the Trust Task spine renders as malformedRequest: the producer was
+  told its document was wrong and lost both transport sets. It is now
+  taskFailed (SPEC 8.3 defines no transport code, and the peer is not
+  unavailable), not retryable, with details.reason no_matching_protocol
+  plus counterpartyDid/ours/theirs; REST renders 502 with the same members.
+  The SDK maps both back to VtaError::NoMatchingProtocol and the CLI prints
+  which side can add which service.
+
+
+
+## [0.69.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-sdk-v0.68.0...vta-sdk-v0.69.0) — 2026-10-15
+
+
+### Added
+
+- **vta**: External/credentials/issue 0.3 — responseTooLarge, sized before the rate, and the VTC splits ([#2127](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2127))
+
+* build(deps): trust-tasks-rs 0.31.8 — external/credentials/issue 0.3 (trust-tasks-tf #781)
+
+- **vta**: Vta/witness/{open,present,accept} — the VTA is its principal's witnessed party, the client carries the documents ([#1068](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1068)) ([#2123](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2123))
+
+The VTA side of witnessing (P3), per trustoverip/dtgwg-trust-tasks-tf#779
+  (rules in vta/_shared/0.5/CONVENTIONS.md). A witness checks that each
+  document's transport-proven sender is its issuer and replies to that sender,
+  and the relationship DID's one mediator socket belongs to the client holding
+  the relationship, so the VTA builds, signs and verifies while the client
+  carries every document. The VTA never contacts the witness and never signs as
+  itself. vta/witness/request/0.1 is retired upstream and not implemented.
+
+  - open: key custody for the relationship DID (and the member DID) in the
+    caller's contexts, distinct DIDs, the VRC/VMC by vault handle, the
+    member-link carriage and witness resolution, all checked before anything is
+    disclosed. Returns the witness/session document signed as the relationship
+    DID and opens a session record.
+  - present: checks the handed-back session #response against the record (type,
+    issuer = witness, recipient = relationship DID, thread, witness proof)
+    through VerifiedWitnessAnswer, re-reads the bound credentials, and returns
+    the signed witness/session/submit. Under the member link that carries a
+    member presentation in ext["org.openvtc.witness"].memberPresentation.
+  - accept: checks the submit #response the same way, then verifies the VWC as
+    a VerifiedWitnessOutcome: witness issuer and assertionMethod proof,
+    taskContext and task digest over the session document, subject and object
+    digest, vwcDigestMultibase. Stores the VWC in the relationship key's context
+    with both evidence documents (vault tags witness:session / witness:outcome).
+    A repeated accept of the same outcome is answered again and stores nothing.
+
+  The session record lives in a new keyspace, witness_sessions: encrypted,
+  excluded from backup, cascades on DID delete, swept by the storage thread. It
+  moves opened -> presented -> accepted with compare-and-set transitions.
+  sessionUnknown is one answer for unknown, expired, out-of-scope and
+  wrong-state sessions.
+
+  Supporting changes:
+
+  - Capability::WitnessRequest (witness-request) is derived by admin and
+    initiator, never by application, and is not satisfied by sign.
+  - persona_key_for gains a did:peer arm: the document is derived with no I/O,
+    and its methods are matched against key records in the caller's contexts.
+  - New [witness] config: session_ttl_secs and member_link_witnesses.
+  - retry_safety: all three RetrySafe.
+  - vta-mcp guard: open and present are Sensitive, accept is Mutating.
+  - SDK: VtaClient::witness_{open,present,accept}.
+  - trust-tasks-rs floor raised to 0.31.7.
+
+- **rooms**: Direct uploads — rooms/blobs 0.2 straight to storage, presigned by the VTA (trust-tasks-tf #775) ([#2121](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2121))
+
+* build(deps): trust-tasks-rs 0.31.5 floor — external/credentials/issue 0.2 (trust-tasks-tf #775)
+
+- **vta**: Rooms/owner/group/renew renews a sealed room; pnm rooms renew refuses a sealed room ([#2112](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2112))
+
+Implements trustoverip/dtgwg-trust-tasks-tf#773.
+
+  A sealed room's (`attributed` / `private`) epoch is its MLS group's epoch plus
+  one, so a bare `rooms/epoch/mint` moves the host and no member: every write is
+  then refused as sealed under a superseded epoch, and the owner's next
+  group/{add,remove} fails epochConflict. Until now a sealed room with a stable
+  membership had no correct way to renew, and one way to brick itself that
+  looked like a renewal.
+
+  The VTA now serves `rooms/owner/group/renew/0.1`, the third advance beside add
+  and remove, on the same remote-first machinery:
+
+  - Item 1: `noGroup` (an open room renews with rooms/epoch/mint), `noAuthority`
+    before anything is settled or built.
+  - Items 2, 3, 7: `vti_rooms::sealed::SealedRoom::renew` builds a self-update
+    commit (no proposal adding or removing anyone) and the epoch link on a copy;
+    `room_groups::prepare_renew` retains it durably as the room's one pending
+    advance, of the new kind `AdvanceKind::Renewal`, before anything is sent.
+  - Items 4, 5: `rooms/epoch/mint` (epoch, link, commit, the owner persona's
+    `admin` presentation, reason), signed as the owner persona; applied on
+    acceptance, discarded on refusal (`hostRefused`, or `epochConflict` with
+    `details.hostEpoch` on `nonSequential`), kept on an unknown outcome
+    (`hostUnreachable`).
+  - Item 6: any pending advance — admission, removal or renewal — is settled
+    through `rooms/info` before another is built.
+
+- **rooms**: Act as the member's persona — rooms/keys/act, seal 0.2, and read/browse/backfill as the principal ([#2107](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2107))
+
+Implements the member-acts-as-persona half of trustoverip/dtgwg-trust-tasks-tf#771
+  (trust-tasks-rs 0.31.3, now the workspace floor).
+
+- **witness**: Vti-witness host service skeleton and witness DID template (P1, #1068) ([#2105](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2105))
+
+* feat(witness): vti-witness host service skeleton and witness DID template (P1, #1068)
+
+  Phase P1 of docs/05-design-notes/witness-host-service.md: the witness as an
+  independent host service (VTI-KEY-007), skeleton only.
+
+  - vta-sdk: built-in `witness` DID template (did:webvh; Ed25519 auth +
+    assertionMethod, X25519 keyAgreement, #tsp + #didcomm at MEDIATOR_DID, no
+    VTARest; kind `witness`) and ProvisionAsk::witness.
+  - vti-witness (publish = false): two-phase VTA-provisioned setup with no
+    admin-DID hand-off, keys in the [secrets] store; config with at most 10
+    identities (enabled defaults to false); one supervised mediator session per
+    identity (TSP + DIDComm on one socket, self-resolution gate, jittered
+    backoff, MIN_HEALTHY_SESSION, graceful_shutdown on every error path); a
+    socket-free dispatcher applying the SPEC 7.2 pipeline that answers
+    trust-task-discovery 0.3/0.1, signs every reply with the identity's own key,
+    and refuses witness/session* as unsupportedType without listing them until
+    P2 serves them; shared-mediator / shared-domain correlation warnings (3.6).
+  - vta-cli-common: `witness` is now a canonical built-in name, no longer an
+    init alias for did-host-didcomm.
+  - Dockerfile.nitro copies the new member; docs/06-witness, did-templates.md,
+    CLAUDE.md.
+
+- **rooms**: Backfill from the CLI, and say plainly when a member was removed ([#2097](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2097))
+
+Found in a live run of a two-VTA room on a VTC:
+
+  - A member who had just joined could not read anything written before they
+    joined from the CLI: the VTA's rooms/keys/backfill fetches the history from
+    the host, but nothing called it. New `pnm rooms keys backfill --room
+    --host-did` (VtaClient::room_backfill) walks the chain down until the whole
+    retained history reads or the host has no more.
+  - `pnm rooms get` told every member who could not open a record to ask for the
+    latest commit, including one whose record was older than their group. It now
+    names the remedy for each case: backfill for an older record, `keys commit
+    --host` for a newer one.
+  - A removed member applying their own removal got GroupStateError
+    (UseAfterEviction) from the key export. vti-rooms now detects the eviction
+    when the commit merges and returns RoomKeyError::Removed ("this commit
+    removed this holder from the group…"), and the CLI says what it means.
+  - Wording: "an authority credential"; group-create's next step no longer tells
+    an owner to issue credentials they already issued.
+
+- **pnm**: Rooms owner register/invite/issue-* and rooms keys verbs — a sealed room from the CLI end to end ([#2092](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2092))
+
+The owner's credential tasks and the joiner's key-holder tasks had no `pnm`
+  verb, so a sealed room could not be run on a VTC from the command line.
+
+  Owner (`pnm rooms owner …`), each a call to the owner's own VTA:
+  - `register` → rooms/owner/register/0.1 (the VTA signs rooms/create as the
+    owner's persona DID)
+  - `invite` → rooms/owner/invite/0.1, writes the VIC to --out
+  - `issue-membership` → rooms/owner/issue-membership/0.1
+  - `issue-authority` → rooms/owner/issue-authority/0.2 (expiry required)
+    Both issue verbs write to --out and/or --store the credential in this VTA's
+    vault.
+
+  Key holder (`pnm rooms keys …`):
+  - `key-package` → rooms/keys/key-package/0.1, writes the KeyPackage base64url
+  - `welcome` → rooms/keys/welcome/0.1, from the file group-add wrote
+  - `commit` → rooms/keys/commit/0.1, one commit from a file, or every missed
+    commit fetched from the host's relay (rooms/epoch/commits) with --host
+  - `list` → rooms/keys/list/0.1
+
+  Every party these name — owner, subject, member — is a persona DID the VTA
+  holds, never the CLI's session key, so none defaults to the session; that
+  includes `owner group-create --member`, now required. `pnm rooms create` is
+  marked as the client-key path for a standalone room-host or testing.
+
+  The SDK gains typed `VtaClient::room_owner_*`, `room_key_package`,
+  `room_welcome`, `room_commit` and `room_keys_list`, built through the
+  generated `trust_tasks_rs::specs` payloads and read through the generated
+  responses; vtc-client gains `epoch_commits`. The keys tasks speak MLS epochs
+  per their specification; the CLI converts so every number it shows is a room
+  epoch. docs/02-vta/data-rooms.md now uses the verbs.
+
+- **sdk**: Keep a Trust Task rejection's code and details ([#1952](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1952)) ([#2093](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2093))
+
+* feat(sdk)!: keep a Trust Task rejection's code and details ([#1952](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1952))
+
+  A rejection no other variant covers now arrives as
+  `VtaError::Rejected { code, message, details }` instead of
+  `Protocol("trust task failed [code]: message")`. The code was only in a
+  sentence and `details` was dropped, so callers string-matched codes and lost
+  data the VTA sent: `persona/profile/delete:bound`'s `details.personaDids`,
+  a `versionConflict`'s `details.currentVersion`.
+
+  `Display` is unchanged, so logs, CLI output and anything reading the text
+  see the same string. New helpers `rejection_code()` / `rejection_details()`.
+
+- **vta**: Rooms/owner/group/remove — remove a member from a sealed room's group from the owner's agent ([#2090](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2090))
+
+The VTA now serves `rooms/owner/group/remove/0.1`, the mirror of
+  `rooms/owner/group/add`, on the same remote-first machinery:
+
+  - Item 1: `noGroup`, `notMember` and `ownLeaf` (the key holder's own leaf;
+    an owner leaving hands the room on with rooms/owner/transfer). `ownLeaf`
+    is answered before any host is contacted. No `admin` grant is
+    `noAuthority`, before anything is built.
+  - Items 2-3: the commit removing the leaf and the epoch link are built on a
+    copy (`vti_rooms::sealed::SealedRoom::remove_member`, which already existed)
+    and retained durably as the room's pending advance before anything is sent.
+  - Items 4-5: `rooms/epoch/mint` (epoch, link, commit, the owner's `admin`
+    presentation, reason) goes to the host; only an accepted advance replaces
+    the live group. A refusal discards the pending removal (`hostRefused`, or
+    `epochConflict` with `details.hostEpoch` on `nonSequential`); an unknown
+    outcome keeps it (`hostUnreachable`).
+  - Item 6: the next add or remove asks the host its epoch (`rooms/info`) and
+    applies (host at the pending epoch), discards (host at the previous one) or
+    discards and refuses `epochConflict` (anywhere else).
+
+  One pending-advance slot per room (item 3). `room_groups::PendingAdd` becomes
+  `PendingAdvance { kind: Admission | Removal, welcome: Option<_>, .. }`, stored
+  at `room-advance:<room>` and claimed with an atomic insert-if-absent, so a
+  second advance cannot be retained over a first. The admission-only row
+  `room-add:<room>` is still read (its JSON deserialises with `kind`
+  defaulting to `Admission`), settled like any other, and cleared with the
+  slot; it is never written. `forget` clears the slot too. add and remove
+  share `HostCall::{settle_pending, admin_presentation, advance}`, each with
+  its own task's error codes, so a pending admission found at a removal is
+  settled first and vice versa.
+
+- **vta**: Rooms/owner/group/{create,add} — found a sealed room's group and admit members from the owner's agent ([#2088](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2088))
+
+* feat(vta): rooms/owner/group/{create,add} — found a sealed room's group and admit members from the owner's agent
+
+  A sealed room (`attributed`, `private`) cannot be written to until its MLS
+  group exists, and the owner's half of a group — founding it, admitting a
+  member — was library code only. The VTA now serves both owner tasks
+  (trust-tasks-tf #763):
+
+  - `rooms/owner/group/create/0.1` founds the group with the owner as its only
+    leaf, at room epoch 1, the epoch a host records at registration. The gate
+    is the one issuing the room's credentials uses — control of its signing
+    key — checked by a new `keys::require_key_nameable` that applies
+    `sign_payload`'s scope, status, context and caller-key-filter gates
+    without signing anything. A room this VTA already holds a group for is
+    refused `alreadyExists`, never replaced.
+  - `rooms/owner/group/add/0.1` admits a member's KeyPackage, remote first:
+    the add is built on a copy and kept as a pending admission
+    (`room-add:<room>` in `room_groups`, the advanced group snapshot with its
+    link, commit and Welcome) beside the untouched live group; the room is
+    advanced at its host with `rooms/epoch/mint` (link, commit, the owner's
+    `admin` presentation); only an accepted advance replaces the live group.
+    A refusal (`hostRefused`, or `epochConflict` on `nonSequential`) discards
+    it. An unknown outcome (`hostUnreachable`) KEEPS it, and the next admission
+    asks the host its epoch (`rooms/info`) and applies or discards it first —
+    a key holder cannot process its own commit from the wire, so the pending
+    group is the only way to follow a host that did advance. The Welcome is
+    returned for delivery to the newcomer's key holder, never sent to the host.
+    The KeyPackage must identify `member` (`keyPackageInvalid` otherwise); a
+    member already in the group is `alreadyMember`; no `admin` grant in the
+    vault is `noAuthority`, before anything is built.
+
+- **vtc**: Console Storage page, moving a room's storage, and the rooms' defaults ([#2081](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2081))
+
+P9 part 3b (docs/05-design-notes/data-rooms-files.md §7, §8.1).
+
+  - Storage (/storage, vtc.rooms.admin): every storage config with what it
+    holds against its capacity, its credential state (never a credential) and
+    its health; configs whose credential is `required` — as after a restore —
+    are listed first. A config's own page probes it (optionally writing,
+    reading back and deleting a canary) and shows each step, changes its
+    label, capacity or default, and retires it. "New storage" creates a
+    `local` config or an `s3` config through an external account at the
+    community's VTA, named by its context and identifier: the form asks for
+    nothing secret. Kinds and auth modes this build does not serve (ambient,
+    sealed, gcs, walrus) are not offered.
+  - A room's page gains "Send new uploads to other storage"
+    (vtc/rooms/storage/assign/0.1). Its existing files stay where they are.
+  - Create, update, retire and assign take the requester's operation-bound
+    step-up and are parked for another holder of vtc.rooms.admin (§7.4); the
+    screens say "Sent for approval" and link the action, never "Saved".
+    Retiring the default or a config with rooms is not offered, as the VTC
+    refuses both.
+  - Data rooms gains a Defaults card (the design's Settings ▸ Rooms; the
+    console has no Settings area): each room's and each member's limits, the
+    host-wide largest file, capacity and how long a deleted file is kept,
+    read-only, with the configuration sections that change them.
+
+  To carry those defaults, vtc/rooms/list's ext["org.openvtc"].roomFiles now
+  holds, when files are on, `defaults.{room,member}` (each byte measure capped
+  at the host ceiling, as reported limits are), `maxFileBytes`,
+  `orphanGraceHours` and `storageCapacityBytes` when set. Files off still
+  answers `{ enabled: false }` and nothing else. vti-rooms gains a read-only
+  BlobHost::host_limits() accessor.
+
+  The storage response shapes are rendered from the specification
+  (vta_sdk::openapi wrappers → admin-ui/openapi.json → wire.ts). Census
+  updates: the list-limit census and its Rust counterpart gain
+  vtc/storage/configs/list (100), the sidebar census gains Storage, and the
+  console document-type manifest gains the seven storage tasks.
+
+- **vtc**: Console room detail and Room usage pages — limits, per-member usage, activity and CSV ([#2079](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2079))
+
+P9 part 3a (docs/05-design-notes/data-rooms-files.md §8.1): the admin
+  console's view of what the community stores for its rooms, over the
+  vtc/rooms/{get,usage,limits/set}/0.1 tasks #2077 serves.
+
+  - Room detail (/rooms/<roomId>, linked from each row of Data rooms): the
+    room's facts; its storage, files still on earlier configs and files
+    awaiting deletion; its ten largest files by size only; its limits with
+    where each came from (override, rooms policy, community default);
+    per-member usage on rooms that are not private (members who added nothing
+    are not listed — the host never saw them, so it is no roster); daily
+    activity over 30, 90 or 365 days. From it an administrator overrides the
+    room's limits, its members' default or one member's, clears an override,
+    or pauses and resumes uploads (filesEnabled alone, leaving every limit as
+    it is). Each change takes a reason, which the audit trail records.
+  - Room usage (/room-usage): the figures grouped by room, member, storage
+    config or day; rooms and configs past 80, 95 or 100 percent of a limit or
+    of capacity, listed first; CSV export of what is shown, with cells a
+    spreadsheet would run as a formula prefixed (OWASP CSV injection).
+  - Both pages need vtc.rooms.admin, as the room list now does. Neither shows
+    a record title, a file name or a file's contents: the host has none.
+
+  The response shapes are rendered from the specification
+  (vta_sdk::openapi wrappers → admin-ui/openapi.json → wire.ts), not written
+  by hand. Charts are hand-drawn SVG; the console has no chart library.
+
+  A size field is pre-filled in the largest unit that states it exactly
+  ("1 GiB", "1536 KB"), so re-saving a form changes nothing it was not asked
+  to. The room identifier is taken from the route as the router decoded it:
+  decoding it again would turn a did:web port's %3A into ':' and ask for a
+  different room.
+
+  Census updates: the list-limit census and its Rust counterpart gain
+  vtc/rooms/usage (100), the sidebar census gains Room usage, and the console
+  document-type manifest gains the three tasks.
+
+- **vtc**: DCQL trusted_authorities held at the response, not only published ([#1988](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1988)) ([#2067](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2067))
+
+A criterion's credential query may carry `trusted_authorities` (OpenID4VP 1.0
+  §6.1.1). The wallet uses it to choose a credential; the verifier still has to
+  check it, and the DCQL matcher does not read it. Until now the VTC published it
+  and ignored it.
+
+  - `vta_sdk::x509_issuer::x5c_issuer` returns, beside the issuer key, the key
+    identifiers of the authorities certifying it: each certificate's AKI, the SKI
+    of every certificate above the leaf, and that of the anchor reached.
+  - `aki` is held on both paths: a wallet response whose credential no named
+    authority certifies is refused `issuerNotTrusted`, and the join criterion
+    match rewrites a gated query to keys only such a credential offers. A DID
+    issuer has no chain and meets no such query. The anchors still decide trust;
+    `trusted_authorities` only narrows them.
+  - Registration refuses what cannot be held: `etsi_tl`, `openid_federation`,
+    `trusted_authorities` on a non-`dc+sd-jwt` query, an empty list, or an `aki`
+    value that is not base64url.
+
+- **vta**: Gate the TEE first-boot admin claim on a pre-registered c… ([#1987](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1987))
+
+* feat(vta)!: gate the TEE first-boot admin claim on a pre-registered claim DID
+
+  POST /bootstrap/request (Mode B) accepted an anonymous caller: whoever
+  reached a fresh TEE VTA first claimed admin, gated only by the carve-out
+  sentinel, which a hostile host can make vanish by forging its absence or
+  dropping its write.
+
+  - pnm: `bootstrap claim-did create|show|discard` mints an Ed25519 claim
+    DID before the VTA exists; the private key lives only in the OS
+    keyring (file store refused). `bootstrap connect --slug` signs the
+    request with it and drops the key once attestation verifies.
+  - vta-sdk: optional `claim_signature` on the sealed BootstrapRequest,
+    over a domain tag || client pubkey || nonce.
+  - vta-config: `tee.bootstrap_claim_did`, settable only via the tenant
+    overlay (deny_unknown_fields kept; admin_did still forbidden),
+    validated at boot and covered by the attested config digest.
+  - vta-service: verify the signature, require client_did == the
+    configured claim DID (403, nothing written), then the carve-out;
+    burn the claim DID with the sentinel on success.
+
+
+
+### Fixed
+
+- **vta-external**: Probe honours VTA_ALLOW_PRIVATE_ENDPOINTS, lifecycle rule per bound prefix ([#2124](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2124))
+
+* fix(vta-external): probe honours VTA_ALLOW_PRIVATE_ENDPOINTS; lifecycle rule per bound prefix
+
+- **messaging**: Drop a `#response` no waiter took instead of answering it ([#1949](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1949)) ([#2095](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2095))
+
+A reply that outlives its waiter (the messaging SDK fails pending requests
+  when it reconnects at 80% of the token TTL, every 12 minutes for a 15-minute
+  token) reached the VTC's DIDComm dispatcher as an ordinary request. The spine
+  answered the `#response` with `unsupportedType`, the mediator refused to
+  deliver that, and the pair repeated in the log every 12 minutes.
+
+- **auth**: Logins complete behind a shared IP — per-step auth buckets, serialized challenge cap that evicts instead of refusing ([#2083](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2083))
+
+* fix(auth)!: logins complete behind a shared IP — per-step auth buckets, serialized challenge cap that evicts instead of refusing
+
+  Behind one address (a NAT gateway, an app host running many agents) logins
+  could stop completing. A login is a challenge then an authenticate, both
+  charged to one per-IP bucket: every token that refilled went to a new
+  challenge, every authenticate was refused, and a client that started over
+  added another pending challenge. At ten pending challenges the DID was
+  refused until the cleanup sweep removed them, up to challenge_ttl plus
+  session_cleanup_interval later, with a 400 a caller could not tell from a
+  validation error.
+
+  - vta-service: anonymous POST /trust-tasks is charged per step, chosen from
+    the document's `type` (not the client-chosen header): auth/authenticate
+    and auth/refresh each get their own per-IP bucket at the auth quota.
+    `Limiter` gains `AuthAuthenticate` and `AuthRefresh` and becomes
+    #[non_exhaustive] (breaking); 429s carry the new scopes
+    `auth-authenticate` and `auth-refresh`.
+  - vti-common: the per-DID cap counts only unexpired challenges
+    (VTI-SES-003/005) and, at the cap, evicts the oldest outstanding challenge
+    instead of refusing — the refusal only ever reached enrolled subjects, so
+    it disclosed enrolment (VTI-SES-007). Listing, evicting and storing are
+    serialized per DID. Pending challenges are indexed per DID instead of
+    scanning every session. New `SessionStore::pending_challenges` (default
+    `None`: a store that does not implement it keeps the count-and-refuse
+    behaviour).
+  - vta-sdk: auth_light retries a rate-limited authenticate with the challenge
+    it already holds, until that challenge expires (at most 10 minutes), with
+    jitter. Only the VTA's or VTC's own 429 is retried.
+
+
+
+## [0.68.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-sdk-v0.67.0...vta-sdk-v0.68.0) — 2026-10-13
+
+
+### Added
+
+- **keys**: Serve keys/sign-jws and keys/sign-csr — a verifier key that never leaves the VTA ([#1988](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1988)) ([#2057](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2057))
+
+Custody B for the OpenID4VP verifier, VTA side. A VTC signing request objects
+  with a VTA-held key, or obtaining an EUDI access certificate for one, needs the
+  VTA to produce a JWS or a PKCS#10 request; keys/sign cannot, since it frames
+  caller bytes under the opaque signing domain.
+
+  keys/sign-jws/0.1 (tt-tf #749): the VTA sets alg from the key (ES256 for P-256,
+  EdDSA for Ed25519), refuses alg/crit/b64/jwk/jku/x5u, checks the registered
+  header members' types and that an x5c's first certificate carries the named
+  key, and builds the signing input itself (RFC 8785 header and payload;
+  payloadBase64Url checked canonical; integers beyond 2^53 refused). The
+  specification's example signing input and its digest are reproduced in a test.
+
+- **vta**: The VTA as hidden-vetting (PCS) engine — vta/pcs/* for clients that cannot run PCS ([#2056](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2056))
+
+* feat(vta)!: the VTA as hidden-vetting (PCS) engine — vta/pcs/* for clients that cannot run PCS
+
+  A community that runs hidden vetting admits an applicant on a zero-knowledge
+  proof that distinct eligible vetters vetted them. Every vetter and applicant
+  holds a PCS secret key, and until now the member side ran only in a client
+  linking the PCS library, so a mobile wallet (Keyring) could not take part.
+
+  The VTA now holds those keys and runs every member-side operation (design
+  vetting-hidden-vetters-pcs.md §13 C7); the client carries messages and never
+  holds a key. Twelve Trust Tasks (trust-tasks-tf #756):
+
+  - applicant: applications/{create,show,delete}, verify-attestation, prove
+  - vetter: root-request, root-accept, tokens/{request,accept,abandon}, attest,
+    vetter/show
+
+- **vtc**: Credential issuers known by an X.509 chain — x5c trust anchors for EUDI PID and Rulebook credentials ([#1988](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1988)) ([#2053](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2053))
+
+An EUDI credential (the PID, or one a Rulebook governs) is issued by an https
+  URL whose JWS names its key by an x5c chain, not by a DID. The VTC now trusts
+  such an issuer only through operator-configured anchors, never by the chain
+  alone.
+
+  vta-sdk (feature `x509-issuers`): `x509_issuer` — `X509TrustAnchors`,
+  `x5c_issuer_key` (validity, CA flags, chain signatures, ends at an anchor or a
+  certificate an anchor signed, leaf key usage, leaf SAN URI = iss or dNSName =
+  its host; P-256, secp256k1, Ed25519) and `issuer_jws_key`. Token Status Lists
+  signed the same way verify through
+  `verify_status_list_token_with_anchors` / `resolve_token_status_with_anchors`.
+
+
+
+## [0.67.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-sdk-v0.66.0...vta-sdk-v0.67.0) — 2026-10-12
+
+
+### Added
+
+- **services**: Complete DIDComm enable with a soft restart and a readiness wait ([#2045](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2045))
+
+* feat(services): complete DIDComm enable with a soft restart and a readiness wait
+
+  `services didcomm enable` published the DID document change but left the
+  VTA without a running messaging runtime until the next manual restart. The
+  operation now signals `ext["org.openvtc"].restarting` and performs a soft
+  restart after the reply reaches the transport send boundary, and `pnm`
+  waits for the restarted listener before returning.
+
+  Also fixes a TEE fleet image that could not boot REST-only, by removing the
+  baked `[messaging]` placeholder that pre-empted the tenant overlay's
+  "materialize messaging only when a mediator_did is supplied" branch.
+
+
+
 ## [0.66.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-sdk-v0.65.1...vta-sdk-v0.66.0) — 2026-10-11
 
 

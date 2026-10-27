@@ -385,9 +385,26 @@ pub async fn cmd_webvh_did_create(
     client: &VtaClient,
     req: CreateDidWebvhRequest,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let result = client.create_did_webvh(req).await?;
+    cmd_webvh_did_create_presented(client, req, Default::default()).await
+}
+
+/// [`cmd_webvh_did_create`], choosing how the DID is presented (VTI-VTA-036).
+pub async fn cmd_webvh_did_create_presented(
+    client: &VtaClient,
+    req: CreateDidWebvhRequest,
+    presentation: vta_sdk::client::DidPresentation,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let result = client.create_did_webvh_presented(req, presentation).await?;
     println!("WebVH DID created:");
     println!("  DID:              {}", result.did);
+    if result.log_did() != result.did {
+        println!("  Log:              {}", result.log_did());
+    }
+    if result.scid_also_known_as == Some(true)
+        && let Some(ref url) = result.scid_did_url
+    {
+        println!("  did:scid:         {url}");
+    }
     println!("  Context:          {}", result.context_id);
     if let Some(ref server_id) = result.server_id {
         println!("  Server:           {}", server_id);
@@ -480,6 +497,7 @@ pub async fn cmd_webvh_did_create_with_files(
     template: Option<String>,
     template_context: Option<String>,
     template_vars: Vec<(String, String)>,
+    presentation: vta_sdk::client::DidPresentation,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let did_document = match did_document_path {
         Some(p) => {
@@ -540,7 +558,7 @@ pub async fn cmd_webvh_did_create_with_files(
         template_context,
         template_vars,
     };
-    cmd_webvh_did_create(client, req).await
+    cmd_webvh_did_create_presented(client, req, presentation).await
 }
 
 /// Header cells **and** column widths for `dids list`, returned together.

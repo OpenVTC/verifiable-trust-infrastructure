@@ -57,6 +57,7 @@ by both `vta-service` (VTA) and `vtc-service` (VTC).
 |---------|---------|
 | `encryption` | AES-256-GCM encryption for `KeyspaceHandle.with_encryption()` |
 | `vsock-store` | `VsockStore` + `VsockKeyspaceHandle` (Linux only — requires `tokio-vsock`) |
+| `host-session` | `host_session` — a host service identity's mediator session, its supervisor (self-resolution gate, jittered backoff, teardown) and the TSP/DIDComm Trust Task carriage, behind a `Responder` the service implements. Used by `vti-witness` and `vti-voting-service`. Implies `tsp`. |
 | `tsp` | `relationship_store` — the durable TSP relationship store (`KeyspaceRelationshipKv` + `maintenance_loop`) shared by the VTA and VTC for Rev 3 §7.2.2 recovery. Pulls `affinidi-messaging-sdk`, so only the TSP-speaking services enable it. Also enables `trust_task_push::TspPushTransport` (`affinidi-tdk/tsp`, `vta-sdk/tsp`). |
 
 ## Key modules

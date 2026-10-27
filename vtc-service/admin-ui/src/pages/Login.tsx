@@ -29,8 +29,9 @@
 //
 // VTA wallet (additive — passkey is unchanged): the browser wallet extension
 // runs a SIOPv2 login against the VTC's header-exempt `/v1/wallet` surface
-// and returns a bearer token; we exchange it for the same cookie session via
-// `/v1/auth/admin-session`. A second option proxies the SIOP through the VTA
+// and returns a bearer token; we exchange it for the same cookie session with
+// the signed `vtc/auth/admin-session/0.2` (`lib/admin-session.ts`), signed as
+// the identity that signed in. A second option proxies the SIOP through the VTA
 // for a `did-self-issued` vault entry. Both end by invalidating the `whoami`
 // probe so the shell re-renders into the authenticated tree.
 //
@@ -48,9 +49,12 @@ import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Fingerprint, Wallet } from "lucide-react";
 
+import { openAdminSession } from "@/lib/admin-session";
 import { fetchHealth, postJson, signOut, type HealthResponse } from "@/lib/api";
 import { shortenDid } from "@/lib/format";
 import { WalletSignIn } from "@/members/WalletSignIn";
+import { heldSessionKey } from "@/members/oob";
+import { adoptBrowserSessionKey, mintBrowserSessionKey } from "@/lib/console-key";
 import {
   CommunityTopbar,
   fetchCommunityProfile,
@@ -82,8 +86,6 @@ const TRUST_TASK_START =
   "https://trusttasks.org/spec/auth/passkey/login/start/0.2";
 const TRUST_TASK_FINISH =
   "https://trusttasks.org/spec/auth/passkey/login/finish/0.2";
-const TRUST_TASK_ADMIN_SESSION =
-  "https://trusttasks.org/spec/vtc/auth/admin-session/0.1";
 
 type Phase =
   | { kind: "idle" }
@@ -128,14 +130,11 @@ export function Login() {
   const proxyAvailable = isWalletProxyAvailable();
   const busy = phase.kind === "running" || walletPhase.kind === "running";
 
-  // Shared success tail: the wallet returned a bearer; mirror it into the
-  // SPA cookie session, then flip the shell to authenticated.
-  const finishWithBearer = async (accessToken: string) => {
-    await postJson<void>(
-      "/v1/auth/admin-session",
-      { accessToken },
-      { trustTask: TRUST_TASK_ADMIN_SESSION },
-    );
+  // Shared success tail: the wallet returned a bearer issued to `subject`;
+  // exchange it for the SPA cookie session — a signed document, signed as
+  // `subject` (`lib/admin-session.ts`) — then flip the shell to authenticated.
+  const finishWithBearer = async (accessToken: string, subject: string) => {
+    await openAdminSession(accessToken, subject);
     await queryClient.invalidateQueries({ queryKey: ["whoami"] });
   };
 
@@ -183,14 +182,20 @@ export function Login() {
         return;
       }
 
+      // A fresh browser key, bound to the session this login mints: it is
+      // what signs `whoami` from now on (`console-key.ts`). Kept only once
+      // the login succeeded.
+      const sessionKey = await mintBrowserSessionKey();
       await postJson<unknown>(
         "/v1/auth/passkey-login/finish",
         {
           auth_id: start.authId,
           credential: serializeAssertion(credential),
+          ext: { "org.openvtc": { sessionKey: sessionKey.consoleDid } },
         },
         { trustTask: TRUST_TASK_FINISH },
       );
+      await adoptBrowserSessionKey(sessionKey);
 
       await queryClient.invalidateQueries({ queryKey: ["whoami"] });
     } catch (err) {
@@ -229,7 +234,7 @@ export function Login() {
     setCandidates(null);
     try {
       const result = await loginWithWallet();
-      await finishWithBearer(result.accessToken);
+      await finishWithBearer(result.accessToken, result.holderDid);
     } catch (err) {
       const e = err as { message?: string };
       // The wallet does not say which DID it presented when the sign-in is
@@ -256,7 +261,7 @@ export function Login() {
     setCandidates(null);
     try {
       const result = await loginWithWalletProxy(entry);
-      await finishWithBearer(result.accessToken);
+      await finishWithBearer(result.accessToken, result.holderDid);
     } catch (err) {
       const e = err as { message?: string };
       setWalletPhase({
@@ -279,7 +284,7 @@ export function Login() {
     setCandidates(null);
     try {
       const result = await loginWithWalletProfile();
-      await finishWithBearer(result.accessToken);
+      await finishWithBearer(result.accessToken, result.holderDid);
     } catch (err) {
       const e = err as { message?: string };
       setWalletPhase({
@@ -390,7 +395,13 @@ export function Login() {
         <WalletSignIn
           audience="admin"
           communityName={communityName}
-          onSignedIn={() => queryClient.invalidateQueries({ queryKey: ["whoami"] })}
+          onSignedIn={async () => {
+            // `redeem` bound `K_b` to the console session it set: keep it,
+            // to sign `whoami` with.
+            const kb = heldSessionKey();
+            if (kb) await adoptBrowserSessionKey(kb);
+            await queryClient.invalidateQueries({ queryKey: ["whoami"] });
+          }}
           onNotMe={signOut}
         />
 

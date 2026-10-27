@@ -2,8 +2,6 @@
 //!
 //! Single URI today (`spec/vta/management/reload-services/1.0`) —
 //! soft-reload of the VTA's internal service threads. Super-admin only.
-//! Does NOT restart the process; calls `crate::server::trigger_restart`
-//! on the in-process supervisor channel.
 
 use super::helpers::TrustTaskOutcome;
 use serde_json::Value;
@@ -41,7 +39,7 @@ pub(super) async fn handle_reload_services(
     // audit-coverage census could not see it either, because the task was
     // unspecced and therefore undriven, until #347.
     //
-    // Recorded BEFORE `trigger_restart`, which is the whole reason the ordering
+    // Recorded BEFORE the restart is requested, which is the whole reason the ordering
     // is worth a comment: the restart tears down the runtime this write is
     // running in. Recording after it is a write racing its own process going
     // away, and the failure mode is exactly the one this row exists to prevent
@@ -67,12 +65,11 @@ pub(super) async fn handle_reload_services(
         tracing::warn!(error = %e, "audit record failed for vta.reload-services");
     }
 
-    crate::server::trigger_restart(&state.restart_tx);
-
     success_response(
         &doc,
         RestartResult {
             status: "restarting".to_string(),
         },
     )
+    .with_restart()
 }

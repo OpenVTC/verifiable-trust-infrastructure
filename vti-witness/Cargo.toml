@@ -1,0 +1,107 @@
+[package]
+name = "vti-witness"
+description = "The witness host service: up to ten provisioned witness identities, each reachable over TSP and DIDComm through its own mediator session"
+version = "0.1.0"
+edition.workspace = true
+# Not published. `vti-witness` is a deployable service binary, like
+# `vtc-service` and `room-host`: nothing depends on it as a library, so a
+# crates.io artifact would carry an API nobody consumes and a version line
+# release-plz would have to keep moving for no reader. Its library target
+# exists only so its dispatch core can be tested without a socket.
+publish = false
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "vti-witness"
+path = "src/main.rs"
+
+[features]
+# The OS keyring is the default secret store, as it is for the VTA and the VTC.
+# Every other backend is opt-in, by the same feature names those two binaries use.
+default = ["keyring"]
+keyring = ["vta-sdk/keyring", "vti-secrets/keyring"]
+aws-secrets = ["vti-secrets/aws-secrets"]
+gcp-secrets = ["vti-secrets/gcp-secrets"]
+azure-secrets = ["vti-secrets/azure-secrets"]
+vault-secrets = ["vti-secrets/vault-secrets"]
+k8s-secrets = ["vti-secrets/k8s-secrets"]
+
+[dependencies]
+# `trust_task::{discovery, acceptance}` — the discovery answer and acceptance
+# window the VTA and VTC answer with — `seed_store::SeedStore`, and (`tsp`)
+# `host_session`, the mediator session and its supervisor, which routes a TSP
+# reply to a peer on another mediator (`tsp_route`).
+vti-common = { path = "../vti-common", version = "0.49", features = ["host-session"] }
+# The `[secrets]` table and `create_seed_store`: the witness keeps its key
+# material behind the same backends the VTA and VTC use, never in its config.
+vti-secrets = { path = "../vti-secrets", version = "0.22" }
+# `provision-client`: the two-phase, VTA-provisioned setup (`run_phase1_init`,
+# `run_connection_test`, `ProvisionAsk::witness`). `tsp`: the TSP leg of that
+# setup against a VTA that advertises TSP, and the binding envelope. `didcomm`:
+# `did_key::secrets_from_bundle`. `proof-verify` arrives with `client` (through
+# `provision-client`): `trust_task_proof` verifies an inbound document's proof,
+# `trust_task_sign` signs every reply.
+vta-sdk = { path = "../vta-sdk", version = "0.73", features = [
+  "didcomm",
+  "provision-client",
+  "tsp",
+  "crypto-provider",
+] }
+
+# The mediator session: one ATM per witness identity, one websocket per DID,
+# DIDComm and TSP on it. `affinidi-messaging-sdk/tsp` compiles the TSP arm of
+# the shared socket; without it a TSP frame is handed to the DIDComm unpacker.
+affinidi-tdk = { workspace = true, features = ["tsp"] }
+affinidi-messaging-sdk = { workspace = true, features = ["tsp"] }
+affinidi-messaging-core = { workspace = true }
+affinidi-did-resolver-cache-sdk = { workspace = true }
+affinidi-secrets-resolver = { workspace = true }
+
+# Trust Task documents and the generated wire types (discovery, witness).
+trust-tasks-rs = { workspace = true }
+# `ENVELOPE_TYPE`, from the crate that defines the DIDComm binding.
+trust-tasks-didcomm = { workspace = true }
+
+serde = { workspace = true }
+serde_json = { workspace = true }
+toml = { workspace = true }
+serde_ignored = { workspace = true }
+clap = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+futures-util = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }
+rand = { workspace = true }
+anyhow = "1"
+
+# The witnessing itself (P2). `dtg-credentials` builds the VWC
+# (`new_witnessed_vsc`, `with_task_citation`) and parses the presented
+# relationship and membership credentials; the verifier side (`vtc-service`)
+# uses the same crate, so both read one definition of every digest.
+dtg-credentials = { workspace = true }
+# `vwcDigestMultibase`: RFC 8785 over the delivered VWC *with* its proof, a
+# sha2-256 multihash, base58btc — the one digest `dtg-credentials` does not
+# offer (its digests all exclude the top-level proof).
+serde_json_canonicalizer = { workspace = true }
+sha2 = { workspace = true }
+multibase = { workspace = true }
+# `trust_tasks_rs::ReplayGuard` is an `async_trait` trait.
+async-trait = "0.1"
+# The session challenge: 32 bytes straight from the OS RNG.
+getrandom = "0.4"
+
+[dev-dependencies]
+tempfile = "3"
+# `store::test_fixture`: test stores copied from a pre-built template rather than
+# created keyspace by keyspace (macOS fsyncs every creation).
+vti-common = { path = "../vti-common", features = ["test-support"] }
+# Signing the presentations the tests submit (`authentication` proofs).
+affinidi-data-integrity = { workspace = true }
+
+[lints.rust]
+# See `[workspace.lints.rust]` in the workspace Cargo.toml.
+deprecated = "allow"

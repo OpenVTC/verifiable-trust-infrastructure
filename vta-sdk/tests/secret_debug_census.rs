@@ -44,6 +44,12 @@ use syn::{Attribute, Fields, GenericArgument, Item, Meta, PathArguments, Type};
 /// *holds*; "it is awkward to redact" is never one.
 const NOT_SECRET: &[(&str, &str, &str, &str)] = &[
     (
+        "vta-service/src/operations/pcs_voter.rs",
+        "VoterRecord",
+        "voting_key",
+        "the community's published voting verification key (hvk), public by design",
+    ),
+    (
         "vta-persona/src/claim_types.rs",
         "Entry",
         "token",
@@ -141,10 +147,24 @@ const NOT_SECRET: &[(&str, &str, &str, &str)] = &[
         "object_key",
         "the name of a storage object an issuance is scoped to, not key material",
     ),
+    (
+        "vti-vetting-pcs/src/snapshot.rs",
+        "HeldAttestation",
+        "token_serial",
+        "the serial a SPENT attestation token revealed — public by design: it travels in the \
+         attestation and every submission, and the community records it to catch a double spend",
+    ),
+    (
+        "vti-vetting-pcs/src/snapshot.rs",
+        "HeldAttestation",
+        "token_shown",
+        "a spent token's re-randomised signature — public by design, verified by the community \
+         under its published token key",
+    ),
 ];
 
 /// The size of [`NOT_SECRET`], asserted so the list cannot grow quietly.
-const NOT_SECRET_COUNT: usize = 15;
+const NOT_SECRET_COUNT: usize = 18;
 
 /// Field names that are exactly one of these are record or index keys, not
 /// key material.

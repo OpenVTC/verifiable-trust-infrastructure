@@ -15,9 +15,13 @@
 //! credential problem rather than a wiring one.
 
 use vta_cli_common::commands::rooms::{self, RoomSigner, RoomTarget};
+use vta_cli_common::commands::rooms_custody as custody;
 use vta_sdk::client::VtaClient;
 
-use crate::cli::{RoomCommands, RoomFileCommands};
+use crate::cli::{
+    RoomCommands, RoomFileCommands, RoomKeysCommands, RoomOffersCommands, RoomOwnerCommands,
+    RoomProfileCommands, RoomRecordsCommands, RoomRetentionCommands,
+};
 
 /// The operator's DID and key, from the session this CLI authenticates with.
 fn signer(keyring_key: &str) -> Result<vta_sdk::session::SessionInfo, Box<dyn std::error::Error>> {
@@ -48,6 +52,378 @@ pub(crate) async fn run(
         RoomCommands::File {
             command: RoomFileCommands::Open { dir, room_id, out },
         } => return rooms::cmd_rooms_file_open(client, &room_id, &dir, &out).await,
+        // The owner's group verbs are calls to this VTA alone: it reaches the host
+        // itself, as its principal, so they need no session key of their own.
+        RoomCommands::Owner { command } => {
+            return match command {
+                RoomOwnerCommands::Register {
+                    room_id,
+                    host_did,
+                    owner,
+                    visibility,
+                    retention_days,
+                    retention_policy,
+                } => {
+                    custody::cmd_rooms_owner_register(
+                        client,
+                        &room_id,
+                        &host_did,
+                        &owner,
+                        &visibility,
+                        retention_days,
+                        retention_policy.as_deref(),
+                    )
+                    .await
+                }
+                RoomOwnerCommands::Invite {
+                    room_id,
+                    signing_key,
+                    subject,
+                    valid_until,
+                    valid_for,
+                    out,
+                } => {
+                    let until = custody::validity(valid_until.as_deref(), valid_for.as_deref())?;
+                    custody::cmd_rooms_owner_invite(
+                        client,
+                        &room_id,
+                        &signing_key,
+                        &subject,
+                        until,
+                        &out,
+                    )
+                    .await
+                }
+                RoomOwnerCommands::IssueMembership {
+                    room_id,
+                    signing_key,
+                    subject,
+                    valid_until,
+                    valid_for,
+                    out,
+                    store,
+                } => {
+                    let until = custody::validity(valid_until.as_deref(), valid_for.as_deref())?;
+                    custody::cmd_rooms_owner_issue_membership(
+                        client,
+                        &room_id,
+                        &signing_key,
+                        &subject,
+                        until,
+                        custody::IssuedOutput {
+                            out: out.as_deref(),
+                            store,
+                        },
+                    )
+                    .await
+                }
+                RoomOwnerCommands::IssueAuthority {
+                    room_id,
+                    signing_key,
+                    subject,
+                    actions,
+                    valid_until,
+                    valid_for,
+                    out,
+                    store,
+                } => {
+                    let until = custody::validity(valid_until.as_deref(), valid_for.as_deref())?;
+                    custody::cmd_rooms_owner_issue_authority(
+                        client,
+                        &room_id,
+                        &signing_key,
+                        &subject,
+                        &actions,
+                        until,
+                        custody::IssuedOutput {
+                            out: out.as_deref(),
+                            store,
+                        },
+                    )
+                    .await
+                }
+                RoomOwnerCommands::GroupCreate {
+                    room_id,
+                    signing_key,
+                    member,
+                } => {
+                    rooms::cmd_rooms_owner_group_create(
+                        client,
+                        &room_id,
+                        &signing_key,
+                        Some(&member),
+                    )
+                    .await
+                }
+                RoomOwnerCommands::GroupAdd {
+                    room_id,
+                    host_did,
+                    member,
+                    key_package,
+                    reason,
+                    out,
+                } => {
+                    rooms::cmd_rooms_owner_group_add(
+                        client,
+                        &room_id,
+                        &host_did,
+                        &member,
+                        &key_package,
+                        reason.as_deref(),
+                        &out,
+                    )
+                    .await
+                }
+                RoomOwnerCommands::GroupRemove {
+                    room_id,
+                    host_did,
+                    member,
+                    signing_key_id,
+                    mirrors,
+                    until,
+                    reason,
+                } => {
+                    rooms::cmd_rooms_owner_group_remove(
+                        client,
+                        &room_id,
+                        &host_did,
+                        &member,
+                        signing_key_id.as_deref(),
+                        &mirrors,
+                        until,
+                        reason.as_deref(),
+                    )
+                    .await
+                }
+                RoomOwnerCommands::Revoke {
+                    room_id,
+                    signing_key_id,
+                    hosts,
+                    subjects,
+                    credentials,
+                    reset,
+                    until,
+                    reason,
+                } => {
+                    rooms::cmd_rooms_owner_revoke(
+                        client,
+                        &room_id,
+                        &signing_key_id,
+                        &hosts,
+                        &subjects,
+                        &credentials,
+                        reset,
+                        until,
+                        reason.as_deref(),
+                    )
+                    .await
+                }
+                RoomOwnerCommands::GroupRenew {
+                    room_id,
+                    host_did,
+                    reason,
+                } => {
+                    rooms::cmd_rooms_owner_group_renew(
+                        client,
+                        &room_id,
+                        &host_did,
+                        reason.as_deref(),
+                    )
+                    .await
+                }
+            };
+        }
+        // A community's offers: this VTA signs each request as the member and this
+        // client only carries it, so no session key of its own is used.
+        RoomCommands::Offers { command } => {
+            return match command {
+                RoomOffersCommands::List {
+                    vtc,
+                    vtc_did,
+                    member,
+                } => {
+                    rooms::cmd_rooms_offers_list(
+                        client,
+                        rooms::OfferTarget {
+                            vtc_url: &vtc,
+                            vtc_did: &vtc_did,
+                            member: &member,
+                        },
+                    )
+                    .await
+                }
+                RoomOffersCommands::Accept {
+                    room_id,
+                    vtc,
+                    vtc_did,
+                    member,
+                    key_package,
+                } => {
+                    rooms::cmd_rooms_offers_accept(
+                        client,
+                        rooms::OfferTarget {
+                            vtc_url: &vtc,
+                            vtc_did: &vtc_did,
+                            member: &member,
+                        },
+                        &room_id,
+                        key_package.as_deref(),
+                    )
+                    .await
+                }
+                RoomOffersCommands::Renew {
+                    room_id,
+                    vtc,
+                    vtc_did,
+                    member,
+                } => {
+                    rooms::cmd_rooms_offers_renew(
+                        client,
+                        rooms::OfferTarget {
+                            vtc_url: &vtc,
+                            vtc_did: &vtc_did,
+                            member: &member,
+                        },
+                        &room_id,
+                    )
+                    .await
+                }
+            };
+        }
+        // The room's profile: calls to this VTA alone, which reaches the host as the member.
+        RoomCommands::Profile { command } => {
+            return match command {
+                RoomProfileCommands::Show {
+                    room_id,
+                    host_did,
+                    member,
+                } => {
+                    custody::cmd_rooms_profile_show(client, &room_id, &host_did, member.as_deref())
+                        .await
+                }
+                RoomProfileCommands::Set {
+                    room_id,
+                    host_did,
+                    name,
+                    description,
+                    no_description,
+                    tags,
+                    no_tags,
+                    emoji,
+                    no_emoji,
+                    member,
+                } => {
+                    custody::cmd_rooms_profile_set(
+                        client,
+                        &room_id,
+                        &host_did,
+                        custody::ProfileEdit {
+                            name,
+                            description: match (description, no_description) {
+                                (_, true) => custody::Change::Drop,
+                                (Some(d), false) => custody::Change::Set(d),
+                                (None, false) => custody::Change::Keep,
+                            },
+                            tags: match (tags.is_empty(), no_tags) {
+                                (_, true) => custody::Change::Drop,
+                                (false, false) => custody::Change::Set(tags),
+                                (true, false) => custody::Change::Keep,
+                            },
+                            emoji: match (emoji, no_emoji) {
+                                (_, true) => custody::Change::Drop,
+                                (Some(e), false) => custody::Change::Set(e),
+                                (None, false) => custody::Change::Keep,
+                            },
+                        },
+                        member.as_deref(),
+                    )
+                    .await
+                }
+                RoomProfileCommands::Clear {
+                    room_id,
+                    host_did,
+                    member,
+                } => {
+                    custody::cmd_rooms_profile_clear(client, &room_id, &host_did, member.as_deref())
+                        .await
+                }
+            };
+        }
+        RoomCommands::Memberships {
+            vtc,
+            vtc_did,
+            member,
+        } => {
+            return rooms::cmd_rooms_memberships(
+                client,
+                rooms::OfferTarget {
+                    vtc_url: &vtc,
+                    vtc_did: &vtc_did,
+                    member: &member,
+                },
+            )
+            .await;
+        }
+        // The key holder's verbs are calls to this VTA alone, all but one: fetching
+        // commits from a host signs a request there, so it needs the session below.
+        RoomCommands::Keys { command } => match command {
+            RoomKeysCommands::KeyPackage {
+                room_id,
+                invitation,
+                out,
+            } => {
+                return custody::cmd_rooms_keys_key_package(client, &room_id, &invitation, &out)
+                    .await;
+            }
+            RoomKeysCommands::Welcome {
+                room_id,
+                invitation,
+                welcome,
+            } => {
+                return custody::cmd_rooms_keys_welcome(client, &room_id, &invitation, &welcome)
+                    .await;
+            }
+            RoomKeysCommands::Commit {
+                room_id,
+                commit: Some(commit),
+                epoch,
+                ..
+            } => {
+                let epoch = epoch.ok_or("--commit needs --epoch: the room epoch it produces")?;
+                return custody::cmd_rooms_keys_commit_file(client, &room_id, &commit, epoch).await;
+            }
+            RoomKeysCommands::Backfill { room_id, host_did } => {
+                return custody::cmd_rooms_keys_backfill(client, &room_id, &host_did).await;
+            }
+            RoomKeysCommands::List { host_did } => {
+                return custody::cmd_rooms_keys_list_named(client, host_did.as_deref()).await;
+            }
+            RoomKeysCommands::Label {
+                room_id,
+                member,
+                label,
+                description,
+                notes,
+                tags,
+                remove_label,
+                remove_description,
+                remove_notes,
+                remove_tags,
+            } => {
+                let edit = vta_sdk::client::RoomLabelEdit {
+                    label,
+                    description,
+                    notes,
+                    tags: (!tags.is_empty()).then_some(tags),
+                    remove_label,
+                    remove_description,
+                    remove_notes,
+                    remove_tags,
+                };
+                return custody::cmd_rooms_keys_label(client, &room_id, &member, &edit).await;
+            }
+            command @ RoomKeysCommands::Commit { .. } => RoomCommands::Keys { command },
+        },
         other => other,
     };
 
@@ -76,7 +452,6 @@ pub(crate) async fn run(
                         host_did: host_did.as_deref(),
                         room_id: &room_id,
                     },
-                    signer,
                     &path,
                     title,
                     description,
@@ -99,7 +474,6 @@ pub(crate) async fn run(
                         host_did: host_did.as_deref(),
                         room_id: &room_id,
                     },
-                    signer,
                     &key,
                     out.as_deref(),
                 )
@@ -124,7 +498,6 @@ pub(crate) async fn run(
                     host_did: host_did.as_deref(),
                     room_id: &room_id,
                 },
-                signer,
                 prefix.as_deref(),
                 since_version,
                 limit,
@@ -144,7 +517,6 @@ pub(crate) async fn run(
                     host_did: host_did.as_deref(),
                     room_id: &room_id,
                 },
-                signer,
                 &key,
             )
             .await
@@ -157,7 +529,21 @@ pub(crate) async fn run(
             host_did,
             title,
             expected_version,
+            basis,
+            confidence,
+            cite_records,
+            cite_credentials,
+            purposes,
+            use_note,
+            valid_until,
         } => {
+            // `declared` unless named: what the operator typed is their own statement, which
+            // is what a client relaying its member's words writes (`SealedRecordBody`).
+            let (basis, basis_named) = match basis.as_deref() {
+                None => (Some(rooms::RecordBasis::Declared), false),
+                Some("unstated") => (None, true),
+                Some(b) => (Some(b.parse::<rooms::RecordBasis>()?), true),
+            };
             rooms::cmd_rooms_put(
                 client,
                 RoomTarget {
@@ -165,11 +551,20 @@ pub(crate) async fn run(
                     host_did: host_did.as_deref(),
                     room_id: &room_id,
                 },
-                signer,
                 &key,
                 title,
                 body,
                 expected_version,
+                rooms::RecordProvenance {
+                    basis,
+                    basis_named,
+                    confidence,
+                    cite_records,
+                    cite_credentials,
+                    purposes,
+                    use_note,
+                    valid_until,
+                },
             )
             .await
         }
@@ -191,7 +586,6 @@ pub(crate) async fn run(
                     host_did: host_did.as_deref(),
                     room_id: &room_id,
                 },
-                signer,
                 &key,
                 status,
                 pinned,
@@ -218,6 +612,127 @@ pub(crate) async fn run(
                 reason,
             )
             .await
+        }
+        RoomCommands::Prune {
+            room_id,
+            host,
+            host_did,
+            before_epoch,
+            reason,
+            yes,
+        } => {
+            rooms::cmd_rooms_prune(
+                client,
+                RoomTarget {
+                    host_url: &host,
+                    host_did: host_did.as_deref(),
+                    room_id: &room_id,
+                },
+                signer,
+                before_epoch,
+                reason,
+                yes,
+            )
+            .await
+        }
+        RoomCommands::Records { command } => match command {
+            RoomRecordsCommands::Prune {
+                room_id,
+                host,
+                host_did,
+                kinds,
+                reason,
+                dry_run,
+                yes,
+            } => {
+                rooms::cmd_rooms_records_prune(
+                    client,
+                    RoomTarget {
+                        host_url: &host,
+                        host_did: host_did.as_deref(),
+                        room_id: &room_id,
+                    },
+                    signer,
+                    kinds,
+                    reason,
+                    dry_run,
+                    yes,
+                )
+                .await
+            }
+            RoomRecordsCommands::Retention { command } => match command {
+                RoomRetentionCommands::Show {
+                    room_id,
+                    host,
+                    host_did,
+                } => {
+                    rooms::cmd_rooms_retention_show(
+                        client,
+                        RoomTarget {
+                            host_url: &host,
+                            host_did: host_did.as_deref(),
+                            room_id: &room_id,
+                        },
+                        signer,
+                    )
+                    .await
+                }
+                RoomRetentionCommands::Set {
+                    room_id,
+                    host,
+                    host_did,
+                    tombstone_days,
+                    record_days,
+                    clear,
+                    reason,
+                } => {
+                    rooms::cmd_rooms_retention_set(
+                        client,
+                        RoomTarget {
+                            host_url: &host,
+                            host_did: host_did.as_deref(),
+                            room_id: &room_id,
+                        },
+                        signer,
+                        tombstone_days,
+                        record_days,
+                        clear,
+                        reason,
+                    )
+                    .await
+                }
+            },
+        },
+        RoomCommands::Keys { command } => match command {
+            RoomKeysCommands::Commit {
+                room_id,
+                host: Some(host),
+                host_did,
+                ..
+            } => {
+                custody::cmd_rooms_keys_commit_from_host(
+                    client,
+                    RoomTarget {
+                        host_url: &host,
+                        host_did: host_did.as_deref(),
+                        room_id: &room_id,
+                    },
+                )
+                .await
+            }
+            RoomKeysCommands::Commit { .. } => {
+                Err("pass --host <url> to fetch the commits, or --commit <file> --epoch <n>".into())
+            }
+            _ => unreachable!("the key holder's local verbs are answered above"),
+        },
+        RoomCommands::Owner { .. } => {
+            unreachable!("the owner's group verbs are answered above, before the session is read")
+        }
+        RoomCommands::Offers { .. } | RoomCommands::Memberships { .. } => {
+            unreachable!("the offer verbs are answered above, before the session is read")
+        }
+        RoomCommands::Profile { .. } => {
+            unreachable!("the profile verbs are answered above, before the session is read")
         }
         RoomCommands::Create {
             room_id,

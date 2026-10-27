@@ -87,6 +87,7 @@ fn row(did: &str, role: VtcRole, scopes: &[&str]) -> VtcAclEntry {
         updated_by: None,
         expires_at: None,
         resource_grants: Vec::new(),
+        group_grants: Vec::new(),
         label_set_by_subject: false,
         suspension: None,
     }
@@ -1504,4 +1505,537 @@ async fn a_two_admin_community_can_still_remove_one_at_the_default_threshold() {
         .await
         .unwrap();
     assert!(entry(&fix, &b.did).await.is_none());
+}
+
+// ─── VTI-CMP-090: the trusted-witness list ───────────────────────────────
+
+const WITNESSES_KEY: &str = "witnesses.trusted";
+const WITNESS_A: &str = "did:webvh:QmScid:witness-a.independent.example";
+const WITNESS_B: &str = "did:webvh:QmScid:witness-b.independent.example";
+const EXPORT: &str = "https://trusttasks.org/spec/vtc/config/export/0.1";
+const IMPORT: &str = "https://trusttasks.org/spec/vtc/config/import/0.1";
+
+fn witness_patch(list: Value) -> Value {
+    json!({ "overrides": { WITNESSES_KEY: list } })
+}
+
+async fn trusts(fix: &Fixture, did: &str) -> bool {
+    vtc_service::credentials::trusted_witnesses::live_for(&fix.vtc.state)
+        .await
+        .contains(did)
+}
+
+async fn put_witnesses(fix: &Fixture, list: Value) {
+    vtc_service::config_store::ConfigStore::new(fix.vtc.state.config_ks.clone())
+        .put(WITNESSES_KEY, &list)
+        .await
+        .unwrap();
+}
+
+/// Adding a witness takes the gesture, parks for the other holders of
+/// `vtc.config.admin`, and is applied — live and audited, as the requester —
+/// by the approval that meets the threshold. Nothing counts before then.
+#[tokio::test]
+async fn vti_cmp_090_adding_a_witness_parks_and_completes() {
+    let mut fix = fixture().await;
+    let a = requester(&mut fix).await;
+    let b = admin(&fix).await;
+    let list = json!([{ "did": WITNESS_A, "label": "Independent witness" }]);
+    let doc = signed(&a, PATCH, witness_patch(list.clone())).await;
+
+    // The gesture first, and nothing written before it.
+    let (status, reply) = post(&fix.vtc, &doc).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{reply}");
+    assert!(step_up_request(&reply).is_some(), "{reply}");
+    let id = park(&mut fix, &a, &doc).await;
+    assert!(!trusts(&fix, WITNESS_A).await, "parked, not applied");
+
+    let shown = action(&fix, &b, &id).await;
+    assert_eq!(shown["kind"], "config.witnesses.change");
+    assert_eq!(shown["callerRole"], "approver");
+    assert_eq!(shown["summary"]["fields"]["witnesses"]["value"], list);
+    crate::common::signed::assert_conforms(SHOW, &json!({ "payload": { "action": shown } }));
+
+    let (_, ack) = decide(&fix.vtc, &b, &id, "approve").await;
+    assert_eq!(ack["payload"]["status"], "granted", "{ack}");
+    assert!(trusts(&fix, WITNESS_A).await, "applied on the approval");
+    let done = action(&fix, &a, &id).await;
+    assert_eq!(done["status"], "completed", "{done}");
+    assert_eq!(
+        done["ext"]["org.openvtc"]["result"]["applied"][0], WITNESSES_KEY,
+        "{done}"
+    );
+
+    let changed: Vec<_> = audit_rows(&fix, "ConfigChanged")
+        .await
+        .into_iter()
+        .filter_map(|e| match e.event {
+            vti_common::audit::AuditEvent::ConfigChanged(d) => {
+                assert_eq!(e.actor_did_plain.as_deref(), Some(a.did.as_str()));
+                d.changes.into_iter().find(|c| c.key == WITNESSES_KEY)
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(changed.len(), 1, "audited once: {changed:?}");
+    assert_eq!(changed[0].new_value, list);
+}
+
+/// Removing a witness parks too, and one decline closes it with the list
+/// untouched. The requester never approves their own change.
+#[tokio::test]
+async fn vti_cmp_090_removing_a_witness_parks_and_a_decline_keeps_it() {
+    let mut fix = fixture().await;
+    let a = requester(&mut fix).await;
+    let b = admin(&fix).await;
+    put_witnesses(&fix, json!([{ "did": WITNESS_A }, { "did": WITNESS_B }])).await;
+
+    let id = park(
+        &mut fix,
+        &a,
+        &signed(&a, PATCH, witness_patch(json!([{ "did": WITNESS_A }]))).await,
+    )
+    .await;
+    assert!(
+        trusts(&fix, WITNESS_B).await,
+        "still trusted while it waits"
+    );
+
+    let bs = action(&fix, &b, &id).await;
+    let (_, reply) = post(
+        &fix.vtc,
+        &signed(&a, DECISION_V0_2, decision_payload(&bs, "approve")).await,
+    )
+    .await;
+    assert_eq!(
+        tt_error_code(&reply),
+        Some("task-consent/decision:requesterExcluded"),
+        "{reply}"
+    );
+
+    let (_, ack) = decide(&fix.vtc, &b, &id, "deny").await;
+    assert_eq!(ack["payload"]["status"], "denied", "{ack}");
+    assert_eq!(action(&fix, &a, &id).await["status"], "declined");
+    assert!(trusts(&fix, WITNESS_B).await, "a decline writes nothing");
+}
+
+/// Relabelling a witness is a change; the same entries in another order are
+/// not, and a list the write would refuse asks for no gesture.
+#[tokio::test]
+async fn vti_cmp_090_a_relabel_parks_a_reorder_does_not() {
+    let mut fix = fixture().await;
+    let a = requester(&mut fix).await;
+    let _b = admin(&fix).await;
+    put_witnesses(&fix, json!([{ "did": WITNESS_A }, { "did": WITNESS_B }])).await;
+
+    let (status, reply) = post(
+        &fix.vtc,
+        &signed(
+            &a,
+            PATCH,
+            witness_patch(json!([{ "did": WITNESS_B }, { "did": WITNESS_A }])),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "a reorder applies at once: {reply}");
+
+    let (status, reply) = post(
+        &fix.vtc,
+        &signed(&a, PATCH, witness_patch(json!([{ "did": "not-a-did" }]))).await,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{reply}");
+    assert_eq!(
+        reply["payload"]["rejected"][0]["key"], WITNESSES_KEY,
+        "{reply}"
+    );
+
+    park(
+        &mut fix,
+        &a,
+        &signed(
+            &a,
+            PATCH,
+            witness_patch(json!([
+                { "did": WITNESS_A, "label": "renamed" },
+                { "did": WITNESS_B }
+            ])),
+        )
+        .await,
+    )
+    .await;
+}
+
+/// Another change landing first voids the action: the approvers saw a change
+/// from a list that is no longer the one in force.
+#[tokio::test]
+async fn vti_cmp_090_the_action_is_void_when_the_list_moves() {
+    let mut fix = fixture().await;
+    let a = requester(&mut fix).await;
+    let b = admin(&fix).await;
+    let id = park(
+        &mut fix,
+        &a,
+        &signed(&a, PATCH, witness_patch(json!([{ "did": WITNESS_A }]))).await,
+    )
+    .await;
+    let bs = action(&fix, &b, &id).await;
+    put_witnesses(&fix, json!([{ "did": WITNESS_B }])).await;
+
+    let (_, reply) = post(
+        &fix.vtc,
+        &signed(&b, DECISION_V0_2, decision_payload(&bs, "approve")).await,
+    )
+    .await;
+    assert_eq!(
+        tt_error_code(&reply),
+        Some("task-consent/decision:noPending"),
+        "{reply}"
+    );
+    assert_eq!(action(&fix, &a, &id).await["closedReason"], "invalidated");
+    assert!(!trusts(&fix, WITNESS_A).await);
+}
+
+/// An applied import that changes the list takes the same gate; a preview asks
+/// nothing.
+#[tokio::test]
+async fn vti_cmp_090_an_import_changing_the_list_parks() {
+    let mut fix = fixture().await;
+    let a = requester(&mut fix).await;
+    let b = admin(&fix).await;
+    let (status, exported) = post(&fix.vtc, &signed(&a, EXPORT, json!({})).await).await;
+    assert_eq!(status, StatusCode::OK, "{exported}");
+    let mut document = exported["payload"]["document"].clone();
+    document["configOverrides"][WITNESSES_KEY] = json!([{ "did": WITNESS_A }]);
+
+    let (status, preview) = post(
+        &fix.vtc,
+        &signed(
+            &a,
+            IMPORT,
+            json!({ "document": document, "confirm": false }),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "a preview asks nothing: {preview}");
+
+    let id = park(
+        &mut fix,
+        &a,
+        &signed(&a, IMPORT, json!({ "document": document, "confirm": true })).await,
+    )
+    .await;
+    assert_eq!(
+        action(&fix, &b, &id).await["kind"],
+        "config.witnesses.change"
+    );
+    assert!(!trusts(&fix, WITNESS_A).await);
+    let (_, ack) = decide(&fix.vtc, &b, &id, "approve").await;
+    assert_eq!(ack["payload"]["status"], "granted", "{ack}");
+    assert!(trusts(&fix, WITNESS_A).await);
+}
+
+/// One parked action is one consent: a write that changes the list and lowers
+/// the threshold is refused before any gesture, naming the fix.
+#[tokio::test]
+async fn vti_cmp_090_a_list_change_and_a_threshold_lowering_go_apart() {
+    let mut fix = fixture().await;
+    let a = requester(&mut fix).await;
+    let _b = admin(&fix).await;
+    let _c = admin(&fix).await;
+    patch_threshold(&fix, &a, 2).await;
+    let (status, reply) = post(
+        &fix.vtc,
+        &signed(
+            &a,
+            PATCH,
+            json!({ "overrides": {
+                WITNESSES_KEY: [{ "did": WITNESS_A }],
+                THRESHOLD_KEY: 1,
+            } }),
+        )
+        .await,
+    )
+    .await;
+    assert!(step_up_request(&reply).is_none(), "no gesture: {reply}");
+    assert!(!status.is_success(), "{reply}");
+    assert!(reply.to_string().contains("two config/patch"), "{reply}");
+    assert!(!trusts(&fix, WITNESS_A).await);
+}
+
+// ─── VTI-APV-023: join criteria and the personhood policy ────────────────
+
+const ACCEPTS_REGISTER: &str = "https://trusttasks.org/spec/vtc/schemas/accepts/register/0.2";
+const ACCEPTS_DELETE: &str = "https://trusttasks.org/spec/vtc/schemas/accepts/delete/0.1";
+
+fn open_criterion(id: &str) -> Value {
+    json!({ "id": id, "admission": "review", "description": "Anyone may apply" })
+}
+
+async fn criterion(fix: &Fixture, id: &str) -> Option<vtc_service::schemas::AcceptsCriterion> {
+    vtc_service::schemas::get_accepts(&fix.vtc.state.schemas_ks, id)
+        .await
+        .unwrap()
+}
+
+/// VTI-APV-023: adding a join criterion takes the gesture, parks for the other
+/// holders of `vtc.surface.admin`, and is stored by the approval that meets the
+/// threshold — as the requester. Nothing admits anyone before then.
+#[tokio::test]
+async fn vti_apv_023_adding_a_criterion_parks_and_completes() {
+    let mut fix = fixture().await;
+    let a = requester(&mut fix).await;
+    let b = admin(&fix).await;
+    let doc = signed(&a, ACCEPTS_REGISTER, open_criterion("open-door")).await;
+
+    let (status, reply) = post(&fix.vtc, &doc).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{reply}");
+    assert!(
+        step_up_request(&reply).is_some(),
+        "the gesture first: {reply}"
+    );
+    let id = park(&mut fix, &a, &doc).await;
+    assert!(
+        criterion(&fix, "open-door").await.is_none(),
+        "parked, not stored"
+    );
+
+    let shown = action(&fix, &b, &id).await;
+    assert_eq!(shown["kind"], "join.criteria.change");
+    assert_eq!(shown["callerRole"], "approver");
+    assert_eq!(shown["summary"]["fields"]["id"]["value"], "open-door");
+    assert_eq!(shown["summary"]["fields"]["admission"]["value"], "review");
+    crate::common::signed::assert_conforms(SHOW, &json!({ "payload": { "action": shown } }));
+
+    let (_, ack) = decide(&fix.vtc, &b, &id, "approve").await;
+    assert_eq!(ack["payload"]["status"], "granted", "{ack}");
+    let stored = criterion(&fix, "open-door")
+        .await
+        .expect("stored on the approval");
+    assert_eq!(stored.created_by_did, a.did, "written as the requester");
+    assert_eq!(action(&fix, &a, &id).await["status"], "completed");
+}
+
+/// VTI-APV-023: removing a criterion parks too, and one decline keeps it. The
+/// requester never approves their own change.
+#[tokio::test]
+async fn vti_apv_023_removing_a_criterion_parks_and_a_decline_keeps_it() {
+    let mut fix = fixture().await;
+    let a = requester(&mut fix).await;
+    let b = admin(&fix).await;
+    crate::common::signed::seed_criterion(&fix.vtc, open_criterion("open-door")).await;
+
+    let id = park(
+        &mut fix,
+        &a,
+        &signed(&a, ACCEPTS_DELETE, json!({ "id": "open-door" })).await,
+    )
+    .await;
+    assert!(
+        criterion(&fix, "open-door").await.is_some(),
+        "kept while it waits"
+    );
+    let bs = action(&fix, &b, &id).await;
+    assert_eq!(bs["kind"], "join.criteria.change");
+    let (_, reply) = post(
+        &fix.vtc,
+        &signed(&a, DECISION_V0_2, decision_payload(&bs, "approve")).await,
+    )
+    .await;
+    assert_eq!(
+        tt_error_code(&reply),
+        Some("task-consent/decision:requesterExcluded"),
+        "{reply}"
+    );
+
+    let (_, ack) = decide(&fix.vtc, &b, &id, "deny").await;
+    assert_eq!(ack["payload"]["status"], "denied", "{ack}");
+    assert_eq!(action(&fix, &a, &id).await["status"], "declined");
+    assert!(
+        criterion(&fix, "open-door").await.is_some(),
+        "a decline removes nothing"
+    );
+}
+
+/// VTI-APV-023: every changed requirement parks — here only the admission mode
+/// — while re-saving a criterion exactly as stored asks for nothing, and a
+/// criterion the write would refuse, or a removal of one that does not exist,
+/// is refused as such without a gesture.
+#[tokio::test]
+async fn vti_apv_023_a_change_parks_an_unchanged_save_and_a_refusal_do_not() {
+    let mut fix = fixture().await;
+    let a = requester(&mut fix).await;
+    let _b = admin(&fix).await;
+    crate::common::signed::seed_criterion(&fix.vtc, open_criterion("open-door")).await;
+
+    let (status, reply) = post(
+        &fix.vtc,
+        &signed(&a, ACCEPTS_REGISTER, open_criterion("open-door")).await,
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unchanged: applied at once: {reply}"
+    );
+
+    let (_, reply) = post(
+        &fix.vtc,
+        &signed(
+            &a,
+            ACCEPTS_REGISTER,
+            json!({
+                "id": "bad",
+                "admission": "automatic",
+                "credentialIssuers": "any",
+                "query": { "credentials": "nope" },
+            }),
+        )
+        .await,
+    )
+    .await;
+    assert!(step_up_request(&reply).is_none(), "no gesture: {reply}");
+    assert_eq!(
+        tt_error_code(&reply),
+        Some("vtc/schemas/accepts/register:invalidQuery"),
+        "{reply}"
+    );
+
+    let (_, reply) = post(
+        &fix.vtc,
+        &signed(&a, ACCEPTS_DELETE, json!({ "id": "no-such-criterion" })).await,
+    )
+    .await;
+    assert!(step_up_request(&reply).is_none(), "no gesture: {reply}");
+    assert_eq!(
+        tt_error_code(&reply),
+        Some("vtc/schemas/accepts/delete:notFound"),
+        "{reply}"
+    );
+
+    let mut automatic = open_criterion("open-door");
+    automatic["admission"] = json!("automatic");
+    park(&mut fix, &a, &signed(&a, ACCEPTS_REGISTER, automatic).await).await;
+    assert_eq!(
+        criterion(&fix, "open-door")
+            .await
+            .unwrap()
+            .admission
+            .as_str(),
+        "review"
+    );
+}
+
+/// VTI-APV-023 / VTI-APV-017: another write to the criterion landing first
+/// voids the action — the approvers saw a change to a criterion that is no
+/// longer the one stored.
+#[tokio::test]
+async fn vti_apv_023_the_action_is_void_when_the_criterion_moves() {
+    let mut fix = fixture().await;
+    let a = requester(&mut fix).await;
+    let b = admin(&fix).await;
+    crate::common::signed::seed_criterion(&fix.vtc, open_criterion("open-door")).await;
+    let id = park(
+        &mut fix,
+        &a,
+        &signed(&a, ACCEPTS_DELETE, json!({ "id": "open-door" })).await,
+    )
+    .await;
+    let bs = action(&fix, &b, &id).await;
+    let mut moved = open_criterion("open-door");
+    moved["description"] = json!("changed under the approvers");
+    crate::common::signed::seed_criterion(&fix.vtc, moved).await;
+
+    let (_, reply) = post(
+        &fix.vtc,
+        &signed(&b, DECISION_V0_2, decision_payload(&bs, "approve")).await,
+    )
+    .await;
+    assert_eq!(
+        tt_error_code(&reply),
+        Some("task-consent/decision:noPending"),
+        "{reply}"
+    );
+    assert_eq!(action(&fix, &a, &id).await["closedReason"], "invalidated");
+    assert!(criterion(&fix, "open-door").await.is_some());
+}
+
+const PERSONHOOD_SRC: &str = "package vtc.personhood\nimport rego.v1\n\
+                              default allow := false\n";
+
+/// VTI-APV-023: replacing and activating the personhood policy each park as
+/// `policy.recognition.change` — not as an authority change — for the other
+/// holders of `vtc.policy.admin @ policy:personhood`, and run on the approval.
+#[tokio::test]
+async fn vti_apv_023_a_personhood_policy_change_parks_and_completes() {
+    let mut fix = fixture().await;
+    let a = requester(&mut fix).await;
+    let b = admin(&fix).await;
+    let id = park(
+        &mut fix,
+        &a,
+        &signed(
+            &a,
+            UPSERT,
+            json!({
+                "name": "personhood",
+                "module": PERSONHOOD_SRC,
+                "ext": { "org.openvtc.purpose": "personhood" },
+            }),
+        )
+        .await,
+    )
+    .await;
+    let shown = action(&fix, &b, &id).await;
+    assert_eq!(shown["kind"], "policy.recognition.change");
+    crate::common::signed::assert_conforms(SHOW, &json!({ "payload": { "action": shown } }));
+    let (_, ack) = decide(&fix.vtc, &b, &id, "approve").await;
+    assert_eq!(ack["payload"]["status"], "granted", "{ack}");
+    let done = action(&fix, &a, &id).await;
+    assert_eq!(done["status"], "completed", "{done}");
+    let pid = done["ext"]["org.openvtc"]["result"]["policy"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let id = park(
+        &mut fix,
+        &a,
+        &signed(&a, ACTIVATE, json!({ "id": pid, "purpose": "personhood" })).await,
+    )
+    .await;
+    assert_eq!(
+        action(&fix, &b, &id).await["kind"],
+        "policy.recognition.change"
+    );
+    let (_, ack) = decide(&fix.vtc, &b, &id, "approve").await;
+    assert_eq!(ack["payload"]["status"], "granted", "{ack}");
+    assert_eq!(
+        vtc_service::policy::get_active_policy_id(
+            &fix.vtc.state.active_policies_ks,
+            vtc_service::policy::PolicyPurpose::Personhood,
+        )
+        .await
+        .unwrap()
+        .map(|u| u.to_string()),
+        Some(pid)
+    );
+}
+
+/// The choice VTI-APV-023 makes for personhood: consent for the change, but
+/// the capability that makes it stays non-conferring — recognising a person
+/// confers no authority, so granting `vtc.policy.admin @ policy:personhood`
+/// is not an authority grant (VTI-APV-018).
+#[test]
+fn vti_apv_023_personhood_policy_admin_is_not_authority_conferring() {
+    use vtc_service::acl::{Capability, ResourceQualifier};
+    use vtc_service::policy::PolicyPurpose;
+    let p = PolicyPurpose::Personhood;
+    assert!(!p.decides_authority());
+    assert!(p.decides_recognition() && p.requires_consent());
+    assert!(!Capability::PolicyAdmin.is_authority_conferring(Some(&ResourceQualifier::Policy(p))));
+    assert!(PolicyPurpose::Join.requires_consent());
+    assert!(!PolicyPurpose::Directory.requires_consent());
 }

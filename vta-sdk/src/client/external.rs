@@ -252,6 +252,171 @@ impl VtaClient {
         )
         .await
     }
+
+    /// `external/credentials/issue/0.2`: a credential under `scope`, or — for an
+    /// `s3-static-presign` account — a batch of presigned requests under
+    /// `presign`, whose sealed cleartext is a
+    /// [`PresignedRequests`](crate::sealed_transfer::ExternalCredentialPayload::PresignedRequests)
+    /// set. Open it with [`open_external_credential`]; keep it in memory only.
+    pub async fn external_credentials_issue_v2(
+        &self,
+        req: &ext::credentials::issue::v0_2::Payload,
+    ) -> Result<ext::credentials::issue::v0_2::Response, VtaError> {
+        self.external_call(
+            trust_tasks::TASK_EXTERNAL_CREDENTIALS_ISSUE_0_2,
+            req,
+            EXTERNAL_TT_TIMEOUT,
+        )
+        .await
+    }
+
+    /// `external/credentials/issue/0.3`: as 0.2, with at most 64 operations in a
+    /// batch. A batch whose sealed answer would not fit is refused with
+    /// `external/credentials/issue:responseTooLarge` ([`VtaError::Rejected`]),
+    /// which cost none of the binding's rate; [`Self::external_credentials_issue_presign`]
+    /// splits it for you.
+    pub async fn external_credentials_issue_v3(
+        &self,
+        req: &ext::credentials::issue::v0_3::Payload,
+    ) -> Result<ext::credentials::issue::v0_3::Response, VtaError> {
+        self.external_call(
+            trust_tasks::TASK_EXTERNAL_CREDENTIALS_ISSUE_0_3,
+            req,
+            EXTERNAL_TT_TIMEOUT,
+        )
+        .await
+    }
+
+    /// A presign batch at `external/credentials/issue/0.3`, split as its consumer
+    /// item 5 says: on `responseTooLarge`, ask for the first `maxOperations`
+    /// operations when the VTA names it, else the first half, then for the rest.
+    /// Returns one answer per part, in order; their sets together hold one
+    /// presigned request per operation asked.
+    ///
+    /// Each part is a new request for fewer operations, never the refused one
+    /// sent again, so this is not a retry loop: it ends when every operation is
+    /// answered, or when one operation alone does not fit — which is returned,
+    /// not asked again. A part refused `responseTooLarge` is split again, the
+    /// first part included; a count the VTA named for one part is only a first
+    /// guess for the next. A part carries the batch's `uploadId` only when one of
+    /// its operations needs it (Conformance item 4), so cutting `upload-part`s
+    /// from a `head` does not make the `head` an `invalidBatch`. A VTA that does not
+    /// serve 0.3 (`unsupportedType` / `unsupportedVersion`) is asked at 0.2,
+    /// which takes the same batch; its answers are read as 0.3's.
+    pub async fn external_credentials_issue_presign(
+        &self,
+        req: &ext::credentials::issue::v0_3::Payload,
+    ) -> Result<Vec<ext::credentials::issue::v0_3::Response>, VtaError> {
+        use ext::credentials::issue::v0_3;
+        let base = serde_json::to_value(req)
+            .map_err(|e| VtaError::Validation(format!("issue request: {e}")))?;
+        let ops = base
+            .get("presign")
+            .and_then(|p| p.get("requests"))
+            .and_then(|r| r.as_array())
+            .cloned()
+            .ok_or_else(|| VtaError::Validation("not a presign request".into()))?;
+        let too_large = v0_3::error_codes::RESPONSE_TOO_LARGE.code;
+        let mut answers = Vec::new();
+        let mut rest = ops.as_slice();
+        let mut take = rest.len();
+        let mut at_0_2 = false;
+        while !rest.is_empty() {
+            let n = take.min(rest.len());
+            let part = presign_part(&base, &rest[..n]);
+            let answer = if at_0_2 {
+                self.issue_presign_part_0_2(&part).await
+            } else {
+                let p: v0_3::Payload = serde_json::from_value(part.clone())
+                    .map_err(|e| VtaError::Validation(format!("issue request: {e}")))?;
+                match self.external_credentials_issue_v3(&p).await {
+                    Err(VtaError::UnsupportedTaskType { .. }) => {
+                        at_0_2 = true;
+                        self.issue_presign_part_0_2(&part).await
+                    }
+                    other => other,
+                }
+            };
+            match answer {
+                Ok(a) => {
+                    answers.push(a);
+                    rest = &rest[n..];
+                    take = n;
+                }
+                Err(VtaError::Rejected {
+                    code,
+                    message,
+                    details,
+                }) if code == too_large => match presign_split_at(n, details.as_ref()) {
+                    Some(k) => take = k,
+                    None => {
+                        return Err(VtaError::Rejected {
+                            code,
+                            message,
+                            details,
+                        });
+                    }
+                },
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(answers)
+    }
+
+    /// One part at `issue/0.2`, for a VTA that does not serve 0.3, read as 0.3's
+    /// answer (the batch asked holds at most 64, so the echo is 0.3's too).
+    async fn issue_presign_part_0_2(
+        &self,
+        part: &serde_json::Value,
+    ) -> Result<ext::credentials::issue::v0_3::Response, VtaError> {
+        let p: ext::credentials::issue::v0_2::Payload = serde_json::from_value(part.clone())
+            .map_err(|e| VtaError::Validation(format!("issue request: {e}")))?;
+        let answer = self.external_credentials_issue_v2(&p).await?;
+        serde_json::to_value(answer)
+            .and_then(serde_json::from_value)
+            .map_err(|e| VtaError::Protocol(format!("issue/0.2 answer read as 0.3's: {e}")))
+    }
+}
+
+/// One part of a presign batch: `base` (a serialised `issue/0.3` payload) asking
+/// for `ops` only. `uploadId` is kept only when one of `ops` needs it — a batch
+/// names it exactly when an operation acts on an existing multipart upload
+/// (`issue/0.3` Conformance item 4, consumer item 5), so a part cut away from
+/// those operations leaves it out, or the VTA refuses it `invalidBatch`.
+fn presign_part(base: &serde_json::Value, ops: &[serde_json::Value]) -> serde_json::Value {
+    let mut part = base.clone();
+    part["presign"]["requests"] = serde_json::Value::Array(ops.to_vec());
+    if !ops.iter().any(presign_op_needs_upload_id)
+        && let Some(presign) = part["presign"].as_object_mut()
+    {
+        presign.remove("uploadId");
+    }
+    part
+}
+
+/// Whether a serialised `PresignRequest` acts on an existing multipart upload,
+/// and so needs the batch's `uploadId` (`issue/0.3` Conformance item 4).
+fn presign_op_needs_upload_id(op: &serde_json::Value) -> bool {
+    matches!(
+        op.get("operation").and_then(|o| o.as_str()),
+        Some("upload-part" | "list-parts" | "complete-multipart" | "abort-multipart")
+    )
+}
+
+/// How many of a refused batch's `len` operations to ask for first after
+/// `external/credentials/issue:responseTooLarge` (`issue/0.3` consumer item 5):
+/// `details.maxOperations` when the custodian gave one smaller than the batch,
+/// else half. `None` when one operation alone did not fit, which no split helps.
+pub fn presign_split_at(len: usize, details: Option<&serde_json::Value>) -> Option<usize> {
+    if len <= 1 {
+        return None;
+    }
+    let named = details
+        .and_then(|d| d.get("maxOperations"))
+        .and_then(|m| m.as_u64())
+        .and_then(|m| usize::try_from(m).ok())
+        .filter(|&m| (1..len).contains(&m));
+    Some(named.unwrap_or(len / 2))
 }
 
 /// Seal an external account's secret in the client, to `wrapping_did_key` (the
@@ -334,5 +499,68 @@ pub fn open_external_credential(
         _ => Err(VtaError::Protocol(
             "the sealed bundle is not an external credential".into(),
         )),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{presign_part, presign_split_at};
+    use serde_json::json;
+
+    /// `issue/0.3` Conformance item 4 and consumer item 5: a part keeps the
+    /// batch's `uploadId` only when one of its operations needs it. Splitting
+    /// the checks-and-completion batch of consumer item 4 must not leave a lone
+    /// `head` carrying it, which the VTA would refuse `invalidBatch`.
+    #[test]
+    fn a_part_without_a_multipart_operation_leaves_the_upload_id_out() {
+        let base = json!({
+            "account": "a", "context": "c", "ttlSeconds": 300,
+            "presign": {
+                "prefix": "rooms/x/", "objectKey": "o", "uploadId": "U",
+                "requests": [],
+            },
+        });
+        let list = json!({ "operation": "list-parts" });
+        let complete = json!({ "operation": "complete-multipart", "contentLength": 9 });
+        let head = json!({ "operation": "head" });
+        let abort = json!({ "operation": "abort-multipart" });
+
+        let first = presign_part(&base, &[list.clone(), complete.clone()]);
+        assert_eq!(first["presign"]["uploadId"], "U");
+        assert_eq!(first["presign"]["requests"], json!([list, complete]));
+
+        let rest = presign_part(&base, std::slice::from_ref(&head));
+        assert!(rest["presign"].get("uploadId").is_none(), "{rest}");
+        assert_eq!(rest["presign"]["requests"], json!([head]));
+        assert_eq!(rest["presign"]["objectKey"], "o");
+
+        let with_abort = presign_part(&base, &[head.clone(), abort]);
+        assert_eq!(with_abort["presign"]["uploadId"], "U");
+
+        // A batch that never had one gains none.
+        let mut plain = base.clone();
+        plain["presign"].as_object_mut().unwrap().remove("uploadId");
+        let p = presign_part(&plain, &[json!({ "operation": "create-multipart" })]);
+        assert!(p["presign"].get("uploadId").is_none());
+        // Every part of the presign is still a valid 0.3 payload.
+        serde_json::from_value::<
+            trust_tasks_rs::specs::external::credentials::issue::v0_3::Payload,
+        >(rest)
+        .expect("conforms to issue 0.3");
+    }
+
+    /// `issue/0.3` consumer item 5: to `maxOperations` when given, else in half;
+    /// a single operation that does not fit is not split further.
+    #[test]
+    fn a_refused_batch_splits_to_max_operations_or_in_half() {
+        let d = json!({ "maxOperations": 40 });
+        assert_eq!(presign_split_at(64, Some(&d)), Some(40));
+        assert_eq!(presign_split_at(64, None), Some(32));
+        assert_eq!(presign_split_at(64, Some(&json!({}))), Some(32));
+        // A value that would not shrink the batch is not one to follow.
+        assert_eq!(presign_split_at(30, Some(&d)), Some(15));
+        assert_eq!(presign_split_at(3, None), Some(1));
+        assert_eq!(presign_split_at(1, None), None);
+        assert_eq!(presign_split_at(1, Some(&d)), None);
     }
 }

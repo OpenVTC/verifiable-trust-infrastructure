@@ -23,6 +23,7 @@ use serde_json::Value;
 use trust_tasks_rs::{AsyncDispatcher, TrustTask};
 
 use super::policy as room_policy;
+use crate::routing::trust_task_admission::{RoomTraffic, admit_room};
 use crate::server::AppState;
 use crate::trust_tasks::helpers::{TrustTaskOutcome, app_error_to_reject, success_response};
 use vti_common::audit::{AuditEvent, RoomOperationData};
@@ -61,12 +62,37 @@ static ROOMS: std::sync::LazyLock<AsyncDispatcher<RoomCtx, TrustTaskOutcome>> =
 #[must_use]
 pub(crate) fn serves(type_uri: &str) -> bool {
     ROOMS.registered_uris().contains(&type_uri)
+        || REVOCATION_URIS.contains(&type_uri)
+        || AS_RECEIVED_URIS.contains(&type_uri)
 }
+
+/// Tasks whose payload carries members a host stores and serves back **exactly as
+/// received**, so they are read from the document's JSON rather than a typed round trip
+/// (which rewrites a `validUntil`, or an `ext` it does not model): `rooms/records/put/0.3`
+/// (an open room's cleartext, consumer item 11), `rooms/create/0.2` and
+/// `rooms/records/retention/set/0.1` (the record retention, recorded as given). Each is
+/// still checked against its generated type before anything is stored.
+const AS_RECEIVED_URIS: &[&str] = &[
+    vti_rooms::wire::ROOMS_RECORDS_PUT_V3_TYPE,
+    vti_rooms::wire::ROOMS_CREATE_V2_TYPE,
+    vti_rooms::wire::ROOMS_RECORDS_RETENTION_SET_TYPE,
+];
+
+/// `rooms/revocations/{put,get}/0.1`: served beside the dispatcher, over the payload as
+/// received ([`super::files::handle_revocations`]), because a list must reach its
+/// verifier exactly as the room signed it.
+const REVOCATION_URIS: &[&str] = &[
+    vti_rooms::revocation_tasks::PUT_TYPE,
+    vti_rooms::revocation_tasks::GET_TYPE,
+];
 
 /// Every URI this family serves — the served list, not a copy of one.
 #[must_use]
 pub(crate) fn served_uris() -> Vec<&'static str> {
-    ROOMS.registered_uris()
+    let mut uris = ROOMS.registered_uris();
+    uris.extend_from_slice(REVOCATION_URIS);
+    uris.extend_from_slice(AS_RECEIVED_URIS);
+    uris
 }
 
 /// Dispatch a room task to its handler.
@@ -84,6 +110,20 @@ pub(crate) async fn dispatch(
         state: state.clone(),
         presenter: presenter.to_string(),
     };
+    let type_uri = doc.type_uri.to_string();
+    if AS_RECEIVED_URIS.contains(&type_uri.as_str()) {
+        return match type_uri.as_str() {
+            vti_rooms::wire::ROOMS_RECORDS_PUT_V3_TYPE => {
+                super::files::handle_put_record_v3(doc, ctx).await
+            }
+            vti_rooms::wire::ROOMS_CREATE_V2_TYPE => super::files::handle_create_v2(doc, ctx).await,
+            _ => super::files::handle_retention_set(doc, ctx).await,
+        };
+    }
+    if REVOCATION_URIS.contains(&type_uri.as_str()) {
+        let put = type_uri == vti_rooms::revocation_tasks::PUT_TYPE;
+        return super::files::handle_revocations(doc, ctx, put).await;
+    }
     match ROOMS
         .dispatch_or_reject(doc, ctx, format!("urn:uuid:{}", uuid::Uuid::new_v4()))
         .await
@@ -124,27 +164,49 @@ pub(crate) struct RoomCtx {
 /// version hint the service emitted was wrong about it.
 pub(crate) fn dispatcher() -> AsyncDispatcher<RoomCtx, TrustTaskOutcome> {
     AsyncDispatcher::new()
-        .on_async(handle_create)
         .on_async(handle_put_record)
-        .on_async(handle_get_record)
         .on_async(handle_list_records)
         .on_async(handle_curate_record)
         .on_async(handle_mint_epoch)
         .on_async(handle_epoch_chain)
-        .on_async(handle_epoch_prune)
         .on_async(handle_epoch_commits)
         .on_async(handle_transfer_owner)
         .on_async(handle_claim_owner)
         .on_async(super::files::handle_put_record_v2)
+        .on_async(super::files::handle_info_v2)
+        .on_async(super::files::handle_list_records_v3)
+        .on_async(super::files::handle_records_prune)
+        .on_async(super::files::handle_epoch_chain_v2)
+        .on_async(super::files::handle_epoch_prune_v2)
         .on_async(super::files::handle_get_record_v2)
         .on_async(super::files::handle_list_records_v2)
-        .on_async(super::files::handle_upload_begin)
-        .on_async(super::files::handle_upload_chunk)
-        .on_async(super::files::handle_upload_commit)
-        .on_async(super::files::handle_upload_abort)
-        .on_async(super::files::handle_blob_get)
         .on_async(super::files::handle_download_chunk)
         .on_async(super::files::handle_info)
+        .on_async(super::files::handle_usage)
+        .on_async(super::files::handle_upload_begin_v2)
+        .on_async(super::files::handle_upload_chunk_v2)
+        .on_async(super::files::handle_upload_commit_v2)
+        .on_async(super::files::handle_upload_abort_v2)
+        .on_async(super::files::handle_blob_get_v2)
+}
+
+/// Charge an operation the room has just authorized to the presenter's budget in that
+/// room ([`crate::routing::trust_task_admission::admit_room`]), before any of its work
+/// is done. A refusal is a `429` with no body, which the HTTPS door replaces with the
+/// refusal it recorded; off that door nothing is charged.
+pub(super) fn charged(
+    room_id: &str,
+    presenter: &str,
+    traffic: RoomTraffic,
+) -> Result<(), TrustTaskOutcome> {
+    if admit_room(room_id, presenter, traffic) {
+        Ok(())
+    } else {
+        Err(TrustTaskOutcome {
+            status: axum::http::StatusCode::TOO_MANY_REQUESTS,
+            body: Vec::new(),
+        })
+    }
 }
 
 pub(super) fn presenter_and_verifier(
@@ -202,6 +264,39 @@ pub(super) async fn audit_room(
     }
 }
 
+/// [`audit_room`] for a retention act — a prune or a change to the rule — with what the
+/// specification asks a host to keep: the mark, the reason, the retention applied and the
+/// kinds asked, never anything a removed record said (`rooms/records/prune/0.1` *The audit
+/// trail*). The actor is the tier's to disclose, as for every room operation.
+pub(super) async fn audit_room_detail(
+    state: &AppState,
+    room: &Room,
+    authorized: &authz::AuthorizedAction,
+    operation: RoomOperation,
+    detail: &vti_rooms::record_tasks::RetentionAudit,
+) {
+    let Some(writer) = state.audit_writer.as_ref() else {
+        return;
+    };
+    let entry = rooms_audit::for_operation(room.visibility, authorized, None);
+    let action = operation.action_name();
+    if let Err(e) = writer
+        .write(
+            entry.actor.as_str(),
+            None,
+            AuditEvent::RoomRetention(vti_common::audit::RoomRetentionData {
+                room_id: entry.room_id,
+                action: action.to_string(),
+                visibility: format!("{:?}", room.visibility).to_lowercase(),
+                detail: detail.detail(),
+            }),
+        )
+        .await
+    {
+        tracing::error!(error = %e, action, "failed to record a room audit entry");
+    }
+}
+
 /// Seconds since the Unix epoch.
 pub(super) fn now() -> u64 {
     std::time::SystemTime::now()
@@ -217,7 +312,7 @@ pub(super) fn now() -> u64 {
 const DEFAULT_RETENTION_DAYS: u32 = 90;
 
 /// One epoch lifetime in seconds — how long a newly created room is live before it needs
-/// renewing. Not a per-room parameter yet: `rooms/create/0.1` has no member for it, and
+/// renewing. Not a per-room parameter yet: `rooms/create/0.2` has no member for it, and
 /// inventing one locally would put this host's rooms out of conformance with the schema.
 const EPOCH_LIFETIME_DAYS_SECS: u64 =
     vti_rooms::lifecycle::DEFAULT_EPOCH_LIFETIME_DAYS as u64 * 24 * 60 * 60;
@@ -257,6 +352,7 @@ async fn govern_creation(
             visibility,
             owner_did: authorized.owner_did().to_string(),
             retention_days,
+            community_owned: false,
         },
     })?;
 
@@ -293,18 +389,20 @@ async fn govern_creation(
     room_policy::decide_room_creation(&verified, &policy)
 }
 
-/// `rooms/create/0.1`.
+/// Register a room: `rooms/create/0.2`, which also records the room's record retention as
+/// given and echoes it.
 ///
 /// The creator brings the room's identifier; this service does not assign one. A room
 /// identified by something its host chose could not move to another host without changing
 /// identity, and portability is the property the whole family rests on.
-pub(crate) async fn handle_create(
-    doc: TrustTask<CreateRoomBody>,
-    ctx: RoomCtx,
+pub(super) async fn create_room<P>(
+    doc: &TrustTask<P>,
+    ctx: &RoomCtx,
+    req: &CreateRoomBody,
+    record_retention: Option<vti_rooms::record_retention::RecordRetention>,
 ) -> TrustTaskOutcome {
     let state = &ctx.state;
     let presenter = ctx.presenter.as_str();
-    let req = &doc.payload;
 
     // The one room operation no chain can authorize: the room has issued nothing yet, so all
     // this service has is the proof on the request. That proof is what makes `ownerDid` a
@@ -315,17 +413,28 @@ pub(crate) async fn handle_create(
     // a typed payload, because re-deriving the signed bytes from a parsed payload is
     // only sound if that type round-trips losslessly — see `JoinAuthCtx::
     // verified_signer`.
+    let terms = match vti_rooms::wire::CreateRoomTerms::from_request(req) {
+        Ok(t) => t,
+        Err(reason) => {
+            return app_error_to_reject(doc, &vti_common::error::AppError::Validation(reason));
+        }
+    };
     let authorized = match authz::authorize_create(&req.room_id, &req.owner_did, presenter) {
         Ok(a) => a,
-        Err(e) => return app_error_to_reject(&doc, &e),
+        Err(e) => return app_error_to_reject(doc, &e),
     };
+    if let Err(o) = charged(authorized.room_id(), presenter, RoomTraffic::Operation) {
+        return o;
+    }
 
     // …and the one room operation this community governs. Registering a room is
     // asking a host for its disk, which is the host's to refuse; every operation
     // *within* the room stays authorized by the room's own credentials, and the
     // handlers below never consult the roster. See `super::policy`.
-    if let Err(e) = govern_creation(state, &authorized, req.visibility, req.retention_days).await {
-        return app_error_to_reject(&doc, &e);
+    if let Err(e) =
+        govern_creation(state, &authorized, terms.visibility, terms.retention_days).await
+    {
+        return app_error_to_reject(doc, &e);
     }
 
     let room = Room {
@@ -334,41 +443,47 @@ pub(crate) async fn handle_create(
         // what was just established — and taking it from here is what keeps them equal if
         // this ever grows a second way to be authorized.
         owner_did: authorized.owner_did().to_string(),
-        visibility: req.visibility,
-        // Every room this host creates is chained: joining a room means being able to read
-        // it, and the alternative silently loses the room's contents at the first membership
-        // change. Not yet a per-room choice because `rooms/create/0.1` has no member for one
-        // and its schema is `additionalProperties: false` — inventing a field locally would
-        // put these rooms out of conformance. A room wanting `FromJoin` is a spec change
-        // first, exactly as `retention_days` was.
-        retention_policy: vti_rooms::RetentionPolicy::Chained,
+        visibility: terms.visibility,
+        // The owner's choice, `chained` when unstated: joining a room means being able to
+        // read it, and the alternative loses the room's contents at each membership change.
+        retention_policy: terms.retention_policy,
         // What the caller asked for, or the default that draws no expectation.
-        anchor_cadence: req.anchor_cadence.unwrap_or_default(),
+        anchor_cadence: terms.anchor_cadence,
         epoch: 1,
         next_version: 1,
-        retention_days: req.retention_days.unwrap_or(DEFAULT_RETENTION_DAYS),
+        retention_days: terms.retention_days.unwrap_or(DEFAULT_RETENTION_DAYS),
         // A room is live from creation for one epoch lifetime; minting the next epoch
         // renews it. Nothing else moves this clock — see `vti_rooms::lifecycle`.
         epoch_expires_at: Some(now() + EPOCH_LIFETIME_DAYS_SECS),
         created_at: now(),
         updated_at: now(),
         mirror_of: None,
+        // As given (create 0.2): never shortened, and `{}` records none.
+        record_retention: record_retention.filter(|r| !r.is_empty() || r.ext.is_some()),
+        last_prune: None,
+        epoch_floor: None,
     };
 
     if let Err(e) = storage::create_room(&state.rooms_ks, &room).await {
-        return app_error_to_reject(&doc, &e);
+        return app_error_to_reject(doc, &e);
+    }
+    // Pinned to today's default, so a later change of default does not move its new
+    // uploads. A failure here is not the room's: the first upload assigns it instead.
+    if let Err(e) = state.room_storage.assign_new_room(&room.room_id).await {
+        tracing::warn!(room = %room.room_id, error = %e, "room not yet assigned a storage config");
     }
 
-    success_response(
-        &doc,
-        CreateRoomResponse {
-            room_id: req.room_id.clone(),
-            epoch: 1,
-            // What was recorded, never what was asked: the two differ on a
-            // host that predates this member, and echoing the request would
-            // tell a caller their choice took effect when it did not.
-            anchor_cadence: Some(room.anchor_cadence),
-        },
+    let response = CreateRoomResponse {
+        room_id: req.room_id.clone(),
+        epoch: 1,
+        // What was recorded, never what was asked: the two differ on a
+        // host that predates this member, and echoing the request would
+        // tell a caller their choice took effect when it did not.
+        anchor_cadence: Some(room.anchor_cadence),
+    };
+    super::files::render(
+        doc,
+        vti_rooms::record_tasks::create_v2_response(response, room.record_retention.as_ref()),
     )
 }
 
@@ -378,18 +493,22 @@ pub(crate) async fn handle_put_record(
     ctx: RoomCtx,
 ) -> TrustTaskOutcome {
     let req = doc.payload.clone();
-    put_record(&doc, &ctx, req, Vec::new()).await
+    put_record(&doc, &ctx, req, Vec::new(), None).await
 }
 
-/// Write a record: `rooms/records/put` 0.1 (no `blobs`) or 0.2.
+/// Write a record: `rooms/records/put` 0.1 (no `blobs`), 0.2, or 0.3.
 ///
 /// A 0.1 write names no blobs, so rewriting a record that carried a file under 0.1
 /// releases it: the new version does not name it, which is what 0.2 says a release is.
+///
+/// `cleartext_as_received` is a 0.3 write's `cleartext`, provenance and expiry included,
+/// stored in place of the 0.1 body's exactly as the writer sent it (0.3 consumer item 11).
 pub(super) async fn put_record<P>(
     doc: &TrustTask<P>,
     ctx: &RoomCtx,
     req: PutRecordBody,
     blobs: Vec<String>,
+    cleartext_as_received: Option<Value>,
 ) -> TrustTaskOutcome {
     let state = &ctx.state;
 
@@ -405,12 +524,24 @@ pub(super) async fn put_record<P>(
         &presenter,
         now(),
         &verifier,
+        &state.room_revocations_ks,
     )
     .await
     {
         Ok(a) => a,
         Err(e) => return app_error_to_reject(doc, &e),
     };
+    if let Err(o) = charged(&room.room_id, &presenter, RoomTraffic::Operation) {
+        return o;
+    }
+    // A record sealed under a superseded epoch is the declared `epochMismatch`, not a
+    // generic validation failure: the writer's remedy (apply the commit it missed) follows
+    // from the code alone.
+    if let Some(refusal) =
+        vti_rooms::blob_tasks::record_epoch_refused(&room, req.sealed.as_ref().map(|s| s.epoch))
+    {
+        return super::files::refused(doc, refusal);
+    }
 
     // Held across the write: the blobs it names cannot be collected, and their limits
     // cannot change, between this check and the references it records.
@@ -444,10 +575,12 @@ pub(super) async fn put_record<P>(
         pinned: false,
         sealed: req.sealed.as_ref().map(|s| s.ciphertext.clone()),
         nonce: req.sealed.as_ref().map(|s| s.nonce.clone()),
-        cleartext: req
-            .cleartext
-            .as_ref()
-            .map(|c| serde_json::to_value(c).unwrap_or(Value::Null)),
+        sealed_version: None,
+        cleartext: req.cleartext.as_ref().map(|c| {
+            cleartext_as_received
+                .clone()
+                .unwrap_or_else(|| serde_json::to_value(c).unwrap_or(Value::Null))
+        }),
         author,
         updated_at: 0,
     };
@@ -490,25 +623,15 @@ pub(super) async fn put_record<P>(
     }
 }
 
-/// `rooms/records/get/0.1`.
+/// Read a record: `rooms/records/get/0.2`, which also names its blobs.
 ///
 /// A read presents exactly as a write does. Authorizing reads by session would record a
 /// member identifier on every access, and a period of those records reconstructs the
 /// membership a sealed room exists to withhold — without breaking any cryptography.
-pub(crate) async fn handle_get_record(
-    doc: TrustTask<GetRecordBody>,
-    ctx: RoomCtx,
-) -> TrustTaskOutcome {
-    let req = doc.payload.clone();
-    get_record(&doc, &ctx, req, false).await
-}
-
-/// Read a record: `rooms/records/get` 0.1, or 0.2 (`v2`), which also names its blobs.
 pub(super) async fn get_record<P>(
     doc: &TrustTask<P>,
     ctx: &RoomCtx,
     req: GetRecordBody,
-    v2: bool,
 ) -> TrustTaskOutcome {
     let state = &ctx.state;
 
@@ -524,19 +647,21 @@ pub(super) async fn get_record<P>(
         &presenter,
         now(),
         &verifier,
+        &state.room_revocations_ks,
     )
     .await
     {
         Ok(a) => a,
         Err(e) => return app_error_to_reject(doc, &e),
     };
+    if let Err(o) = charged(&room.room_id, &presenter, RoomTraffic::Operation) {
+        return o;
+    }
 
-    // A 0.2 read names the blobs of the version it returns: the record and its
-    // references are read under the lock every record write holds.
-    let snapshot = match v2 {
-        true => Some(state.room_files.read_snapshot().await),
-        false => None,
-    };
+    // Read under the lock every record write holds — and every prune: a 0.2 read names the
+    // blobs of the version it returns, and every read's head must be one snapshot with its
+    // root, which a prune moves both of (`HeadVersion`).
+    let snapshot = state.room_files.read_snapshot().await;
     match storage::get_record(&state.room_records_ks, &req.room_id, &req.key).await {
         Ok(record) => {
             audit_room(
@@ -552,9 +677,6 @@ pub(super) async fn get_record<P>(
             // six undeclared members on the wire — see `GetRecordResponse`.
             let (commitment, trace) = record_verification(state, &req.room_id, &req.key).await;
             let response = GetRecordResponse::of(&record, commitment.as_ref(), trace);
-            let Some(snapshot) = snapshot else {
-                return success_response(doc, response);
-            };
             super::files::render(
                 doc,
                 vti_rooms::blob_tasks::get_v2_response(&snapshot, &req.room_id, &req.key, response)
@@ -574,15 +696,16 @@ pub(crate) async fn handle_list_records(
     ctx: RoomCtx,
 ) -> TrustTaskOutcome {
     let req = doc.payload.clone();
-    list_records(&doc, &ctx, req, false).await
+    list_records(&doc, &ctx, req, 1).await
 }
 
-/// List records: `rooms/records/list` 0.1, or 0.2 (`v2`), whose rows also name their blobs.
+/// List records: `rooms/records/list` 0.1; 0.2, whose rows also name their blobs; or 0.3,
+/// whose every page also carries the room's `lastPrune`.
 pub(super) async fn list_records<P>(
     doc: &TrustTask<P>,
     ctx: &RoomCtx,
     req: ListRecordsBody,
-    v2: bool,
+    minor: u8,
 ) -> TrustTaskOutcome {
     let state = &ctx.state;
 
@@ -598,17 +721,20 @@ pub(super) async fn list_records<P>(
         &presenter,
         now(),
         &verifier,
+        &state.room_revocations_ks,
     )
     .await
     {
         Ok(a) => a,
         Err(e) => return app_error_to_reject(doc, &e),
     };
+    if let Err(o) = charged(&room.room_id, &presenter, RoomTraffic::Operation) {
+        return o;
+    }
 
-    let snapshot = match v2 {
-        true => Some(state.room_files.read_snapshot().await),
-        false => None,
-    };
+    // Under the record-write lock, which a prune also holds: the page, the head and the
+    // room's `lastPrune` are one snapshot.
+    let snapshot = state.room_files.read_snapshot().await;
     // Paginated honestly: the page the caller asked for, and a cursor when more
     // remain. This used to `take(limit)` and drop the rest without a word, so a
     // short page and a complete room were indistinguishable.
@@ -641,13 +767,22 @@ pub(super) async fn list_records<P>(
         record_count: head.as_ref().map(|h| h.record_count),
         head_version: head.as_ref().map(|h| h.head_version),
     };
-    let Some(snapshot) = snapshot else {
-        return success_response(doc, response);
-    };
-    super::files::render(
-        doc,
-        vti_rooms::blob_tasks::list_v2_response(&snapshot, &req.room_id, response).await,
-    )
+    match minor {
+        1 => success_response(doc, response),
+        2 => super::files::render(
+            doc,
+            vti_rooms::blob_tasks::list_v2_response(&snapshot, &req.room_id, response).await,
+        ),
+        _ => match storage::get_room(&state.rooms_ks, &req.room_id).await {
+            // The room as it stands under the lock: its `lastPrune` is the one the page and
+            // head were taken with.
+            Ok(now_room) => super::files::render(
+                doc,
+                vti_rooms::record_tasks::list_v3_response(&snapshot, &now_room, response).await,
+            ),
+            Err(e) => app_error_to_reject(doc, &e),
+        },
+    }
 }
 
 /// The room's commitment and this record's trace, from one snapshot.
@@ -669,7 +804,9 @@ async fn record_verification(
     Option<vti_rooms::merkle::TreeHead>,
     Option<vti_rooms::merkle::InclusionProof>,
 ) {
-    match storage::tree_head_with_trace(&state.room_records_ks, room_id, key).await {
+    match storage::room_tree_head_with_trace(&state.rooms_ks, &state.room_records_ks, room_id, key)
+        .await
+    {
         Ok((head, trace)) => (Some(head), trace),
         Err(e) => {
             tracing::error!(
@@ -693,7 +830,7 @@ async fn record_verification(
 /// Logged rather than swallowed silently: a host that has quietly stopped
 /// committing looks, to a member, exactly like a host that never did.
 async fn room_head(state: &AppState, room_id: &str) -> Option<vti_rooms::merkle::TreeHead> {
-    match storage::tree_head(&state.room_records_ks, room_id).await {
+    match storage::room_tree_head(&state.rooms_ks, &state.room_records_ks, room_id).await {
         Ok(head) => Some(head),
         Err(e) => {
             tracing::error!(
@@ -733,12 +870,16 @@ pub(crate) async fn handle_mint_epoch(
         &presenter,
         now(),
         &verifier,
+        &state.room_revocations_ks,
     )
     .await
     {
         Ok(a) => a,
         Err(e) => return app_error_to_reject(&doc, &e),
     };
+    if let Err(o) = charged(&room.room_id, &presenter, RoomTraffic::Operation) {
+        return o;
+    }
 
     // The room's policy governs whether it has a chain at all, so a rung for a room that
     // does not chain is refused rather than dropped. Storing it would give the room a chain
@@ -777,7 +918,8 @@ pub(crate) async fn handle_mint_epoch(
             // safe and a second, different rung impossible.
             if let Some(link) = &req.link
                 && let Err(e) =
-                    storage::put_epoch_link(&state.room_epoch_links_ks, &req.room_id, link).await
+                    storage::put_epoch_link_above_floor(&state.room_epoch_links_ks, &updated, link)
+                        .await
             {
                 return app_error_to_reject(&doc, &e);
             }
@@ -806,23 +948,24 @@ pub(crate) async fn handle_mint_epoch(
     }
 }
 
-/// `rooms/epoch/prune/0.1`.
+/// Prune the chain: `rooms/epoch/prune/0.2`, which raises the room's epoch floor to
+/// `beforeEpoch − 1` (trust-tasks-tf #869) and returns it: the floor is the room's, not the
+/// request's.
 ///
-/// Drop the epoch key chain below an epoch. The **rungs** go, not the records: a
-/// pruned room still holds every record and this host still serves them, and
-/// what is gone is the ability to derive the keys they were sealed under. Closer
-/// to losing a key than to shredding a document, and irreversible either way.
-pub(crate) async fn handle_epoch_prune(
-    doc: TrustTask<PruneBody>,
-    ctx: RoomCtx,
+/// The **rungs** go, not the records: a pruned room still holds every record and this host
+/// still serves them, and what is gone is the ability to derive the keys they were sealed
+/// under. Closer to losing a key than to shredding a document, and irreversible either way.
+pub(super) async fn epoch_prune<P>(
+    doc: &TrustTask<P>,
+    ctx: &RoomCtx,
+    req: &PruneBody,
 ) -> TrustTaskOutcome {
     let state = &ctx.state;
     let presenter = ctx.presenter.as_str();
-    let req = &doc.payload;
 
     let room = match storage::get_room(&state.rooms_ks, &req.room_id).await {
         Ok(r) => r,
-        Err(e) => return app_error_to_reject(&doc, &e),
+        Err(e) => return app_error_to_reject(doc, &e),
     };
     let (presenter, verifier) = presenter_and_verifier(state, presenter);
     // `admin`, not `curate`: pruning makes no statement about any record, and
@@ -835,47 +978,48 @@ pub(crate) async fn handle_epoch_prune(
         &presenter,
         now(),
         &verifier,
+        &state.room_revocations_ks,
     )
     .await
     {
         Ok(a) => a,
-        Err(e) => return app_error_to_reject(&doc, &e),
+        Err(e) => return app_error_to_reject(doc, &e),
     };
+    if let Err(o) = charged(&room.room_id, &presenter, RoomTraffic::Operation) {
+        return o;
+    }
 
     // Refused rather than performed. `beforeEpoch: currentEpoch` reads like
     // "keep from here" and would drop every rung, leaving a member who restarts
     // unable to derive anything below the epoch they are handed next — a
     // plausible typo with a consequence nobody would choose.
-    if req.before_epoch >= room.epoch {
-        return app_error_to_reject(
-            &doc,
-            &vti_common::error::AppError::Validation(format!(
-                "`beforeEpoch` {} is at or above the current epoch {} of `{}`; pruning there \
-                 would drop the whole chain, not shorten it",
-                req.before_epoch, room.epoch, req.room_id
-            )),
-        );
+    // The declared `notAhead`, with the room's current epoch in `details.epoch`.
+    if let Some(refusal) = vti_rooms::blob_tasks::prune_floor_refused(&room, req.before_epoch) {
+        return super::files::refused(doc, refusal);
     }
 
-    let (pruned, earliest_rung) = match storage::prune_chain(
+    let (pruned, earliest_rung, floor) = match storage::prune_chain_to_floor(
+        &state.rooms_ks,
         &state.room_epoch_links_ks,
         &req.room_id,
         req.before_epoch,
+        now(),
     )
     .await
     {
         Ok(r) => r,
-        Err(e) => return app_error_to_reject(&doc, &e),
+        Err(e) => return app_error_to_reject(doc, &e),
     };
 
-    audit_room(state, &room, &authorized, RoomOperation::MintEpoch, None).await;
-    success_response(
-        &doc,
-        PruneResponse {
-            room_id: req.room_id.clone(),
-            pruned: pruned as u32,
-            earliest_rung,
-        },
+    audit_room(state, &room, &authorized, RoomOperation::PruneEpoch, None).await;
+    let response = PruneResponse {
+        room_id: req.room_id.clone(),
+        pruned: pruned as u32,
+        earliest_rung,
+    };
+    super::files::render(
+        doc,
+        vti_rooms::record_tasks::epoch_prune_v2_response(response, floor),
     )
 }
 
@@ -905,12 +1049,16 @@ pub(crate) async fn handle_epoch_commits(
         &presenter,
         now(),
         &verifier,
+        &state.room_revocations_ks,
     )
     .await
     {
         Ok(a) => a,
         Err(e) => return app_error_to_reject(&doc, &e),
     };
+    if let Err(o) = charged(&room.room_id, &presenter, RoomTraffic::Operation) {
+        return o;
+    }
 
     let commits = match storage::commits_since(
         &state.room_epoch_links_ks,
@@ -958,13 +1106,24 @@ pub(crate) async fn handle_epoch_chain(
     doc: TrustTask<ChainBody>,
     ctx: RoomCtx,
 ) -> TrustTaskOutcome {
+    let req = doc.payload.clone();
+    epoch_chain(&doc, &ctx, &req, false).await
+}
+
+/// Serve the chain: `rooms/epoch/chain` 0.1, or 0.2 (`v2`), which carries the room's epoch
+/// floor. Neither serves a rung at or below it (trust-tasks-tf #869).
+pub(super) async fn epoch_chain<P>(
+    doc: &TrustTask<P>,
+    ctx: &RoomCtx,
+    req: &ChainBody,
+    v2: bool,
+) -> TrustTaskOutcome {
     let state = &ctx.state;
     let presenter = ctx.presenter.as_str();
-    let req = &doc.payload;
 
     let room = match storage::get_room(&state.rooms_ks, &req.room_id).await {
         Ok(r) => r,
-        Err(e) => return app_error_to_reject(&doc, &e),
+        Err(e) => return app_error_to_reject(doc, &e),
     };
     let (presenter, verifier) = presenter_and_verifier(state, presenter);
     let authorized = match authz::authorize(
@@ -974,17 +1133,20 @@ pub(crate) async fn handle_epoch_chain(
         &presenter,
         now(),
         &verifier,
+        &state.room_revocations_ks,
     )
     .await
     {
         Ok(a) => a,
-        Err(e) => return app_error_to_reject(&doc, &e),
+        Err(e) => return app_error_to_reject(doc, &e),
     };
+    if let Err(o) = charged(&room.room_id, &presenter, RoomTraffic::Operation) {
+        return o;
+    }
 
-    let mut links = match storage::list_epoch_links(&state.room_epoch_links_ks, &req.room_id).await
-    {
+    let mut links = match storage::servable_epoch_links(&state.room_epoch_links_ks, &room).await {
         Ok(l) => l,
-        Err(e) => return app_error_to_reject(&doc, &e),
+        Err(e) => return app_error_to_reject(doc, &e),
     };
 
     // Highest epoch first: the chain is walked downwards, so a member reads it in the order
@@ -998,12 +1160,16 @@ pub(crate) async fn handle_epoch_chain(
     }
 
     audit_room(state, &room, &authorized, RoomOperation::ListRecords, None).await;
-    success_response(
-        &doc,
-        ChainResponse {
-            room_id: req.room_id.clone(),
-            links,
-        },
+    let response = ChainResponse {
+        room_id: req.room_id.clone(),
+        links,
+    };
+    if !v2 {
+        return success_response(doc, response);
+    }
+    super::files::render(
+        doc,
+        vti_rooms::record_tasks::epoch_chain_v2_response(response, &room),
     )
 }
 
@@ -1047,12 +1213,16 @@ pub(crate) async fn handle_transfer_owner(
         &presenter,
         now(),
         &verifier,
+        &state.room_revocations_ks,
     )
     .await
     {
         Ok(a) => a,
         Err(e) => return app_error_to_reject(&doc, &e),
     };
+    if let Err(o) = charged(&room.room_id, &presenter, RoomTraffic::Operation) {
+        return o;
+    }
 
     match storage::set_owner(&state.rooms_ks, &req.room_id, &req.new_owner_did, now()).await {
         Ok(updated) => {
@@ -1114,9 +1284,11 @@ pub(crate) async fn handle_claim_owner(
     // 1. The nomination, against the party who actually signed this request — never against
     //    a DID named in the payload, which the claimant chooses.
     let keys = DataIntegrityKeys(state.trust_task_vm_resolver());
-    if let Err(e) = nomination::verify(&req.nomination, &room.room_id, &presenter, &keys).await {
-        return app_error_to_reject(&doc, &e);
-    }
+    let nominated =
+        match nomination::verify(&req.nomination, &room.room_id, &presenter, &keys).await {
+            Ok(n) => n,
+            Err(e) => return app_error_to_reject(&doc, &e),
+        };
 
     // 2. Dormant, not merely lapsed. An epoch expiring is frequently somebody on holiday.
     let lifecycle = room.lifecycle(now());
@@ -1141,12 +1313,21 @@ pub(crate) async fn handle_claim_owner(
         &presenter,
         now(),
         &verifier,
+        &state.room_revocations_ks,
     )
     .await
     {
         Ok(a) => a,
         Err(e) => return app_error_to_reject(&doc, &e),
     };
+    // A nomination is a credential the room issued, and a revocation list governs
+    // succession like every other task (`rooms/revocations/put`, *Enforcement* item 2).
+    if let Err(e) = authorized.also_unrevoked(nominated.facts()) {
+        return app_error_to_reject(&doc, &e);
+    }
+    if let Err(o) = charged(&room.room_id, &presenter, RoomTraffic::Operation) {
+        return o;
+    }
 
     match storage::set_owner(&state.rooms_ks, &req.room_id, &presenter, now()).await {
         Ok(updated) => {
@@ -1197,12 +1378,16 @@ pub(crate) async fn handle_curate_record(
         &presenter,
         now(),
         &verifier,
+        &state.room_revocations_ks,
     )
     .await
     {
         Ok(a) => a,
         Err(e) => return app_error_to_reject(&doc, &e),
     };
+    if let Err(o) = charged(&room.room_id, &presenter, RoomTraffic::Operation) {
+        return o;
+    }
 
     // Held across the curation, so a 0.2 read never sees a retracted record still
     // naming the blobs the retraction released.
@@ -1430,7 +1615,7 @@ mod tests {
             state,
             doc(
                 state,
-                vti_rooms::wire::ROOMS_CREATE_TYPE,
+                vti_rooms::wire::ROOMS_CREATE_V2_TYPE,
                 json!({
                     "roomId": f.room.room_id,
                     "visibility": f.room.visibility,
@@ -1466,7 +1651,7 @@ mod tests {
 
         let signed = doc(
             state,
-            vti_rooms::wire::ROOMS_CREATE_TYPE,
+            vti_rooms::wire::ROOMS_CREATE_V2_TYPE,
             json!({
                 "roomId": f.room.room_id,
                 "visibility": f.room.visibility,
@@ -1530,7 +1715,7 @@ mod tests {
 
         let first = doc(
             state,
-            vti_rooms::wire::ROOMS_CREATE_TYPE,
+            vti_rooms::wire::ROOMS_CREATE_V2_TYPE,
             json!({
                 "roomId": f.room.room_id,
                 "visibility": f.room.visibility,
@@ -1551,7 +1736,7 @@ mod tests {
         // A genuinely different registration, wearing the first document's id.
         let mut second = doc(
             state,
-            vti_rooms::wire::ROOMS_CREATE_TYPE,
+            vti_rooms::wire::ROOMS_CREATE_V2_TYPE,
             json!({
                 "roomId": g.room.room_id,
                 "visibility": g.room.visibility,
@@ -1602,7 +1787,7 @@ mod tests {
             state,
             doc(
                 state,
-                vti_rooms::wire::ROOMS_CREATE_TYPE,
+                vti_rooms::wire::ROOMS_CREATE_V2_TYPE,
                 json!({
                     "roomId": f.room.room_id,
                     "visibility": f.room.visibility,
@@ -1656,7 +1841,7 @@ mod tests {
             state,
             doc(
                 state,
-                vti_rooms::wire::ROOMS_CREATE_TYPE,
+                vti_rooms::wire::ROOMS_CREATE_V2_TYPE,
                 json!({
                     "roomId": f.room.room_id,
                     "visibility": f.room.visibility,
@@ -1696,7 +1881,7 @@ mod tests {
             state,
             doc(
                 state,
-                vti_rooms::wire::ROOMS_CREATE_TYPE,
+                vti_rooms::wire::ROOMS_CREATE_V2_TYPE,
                 json!({
                     "roomId": f.room.room_id,
                     "visibility": f.room.visibility,
@@ -1722,6 +1907,59 @@ mod tests {
 
         // The owner's own registration still succeeds — a gate, not a wall.
         assert!(create(state, &f).await.status.is_success());
+    }
+
+    /// `rooms/revocations/put` over this host's production path: the room-signed list is
+    /// accepted with its head, the member it withdraws is refused from then on — including
+    /// under `rooms/records/put` 0.1, a version published before revocation existed
+    /// (*Enforcement* item 2) — and `get` serves the list back as the room signed it.
+    #[tokio::test]
+    async fn a_delivered_list_is_enforced_on_every_version_and_served_back() {
+        let tv = build_test_vtc().await;
+        let state = &tv.state;
+        let f = RoomFixture::new(Visibility::Open).await;
+        assert!(create(state, &f).await.status.is_success());
+
+        let list = f
+            .revocation_list(1, vec![RoomFixture::withdraw_subject(&f.successor.did)])
+            .await;
+        let call =
+            |uri: &'static str, payload: Value, signer: &vti_rooms_dtg::test_support::Party| {
+                let did = signer.did.clone();
+                let key = signer.secret_multibase.clone();
+                async move {
+                    let d = doc(state, uri, payload, &did, &key).await;
+                    let presenter = spine_presenter(state, &d).await;
+                    super::dispatch(state, d, &presenter).await
+                }
+            };
+        let out = call(
+            vti_rooms::revocation_tasks::PUT_TYPE,
+            json!({ "roomId": f.room.room_id, "presentation": f.as_owner(), "list": list }),
+            &f.owner,
+        )
+        .await;
+        assert!(out.status.is_success(), "put: {}", payload_of(&out));
+        assert_eq!(payload_of(&out)["head"]["sequence"], 1);
+        assert!(super::serves(vti_rooms::revocation_tasks::PUT_TYPE));
+
+        let out = call(
+            vti_rooms::wire::ROOMS_RECORDS_GET_V2_TYPE,
+            json!({ "roomId": f.room.room_id, "key": "k1", "presentation": f.as_successor() }),
+            &f.successor,
+        )
+        .await;
+        assert_eq!(out.status.as_u16(), 403, "{}", payload_of(&out));
+        assert_eq!(payload_of(&out)["code"], "permissionDenied");
+
+        let out = call(
+            vti_rooms::revocation_tasks::GET_TYPE,
+            json!({ "roomId": f.room.room_id, "presentation": f.as_owner() }),
+            &f.owner,
+        )
+        .await;
+        assert!(out.status.is_success(), "get: {}", payload_of(&out));
+        assert_eq!(payload_of(&out)["list"], list, "served back unaltered");
     }
 
     #[tokio::test]
@@ -1754,7 +1992,7 @@ mod tests {
             state,
             doc(
                 state,
-                vti_rooms::wire::ROOMS_RECORDS_GET_TYPE,
+                vti_rooms::wire::ROOMS_RECORDS_GET_V2_TYPE,
                 json!({ "roomId": f.room.room_id, "key": "k1", "presentation": f.as_owner() }),
                 &f.owner.did,
                 &f.owner.secret_multibase,
@@ -1771,6 +2009,49 @@ mod tests {
         );
     }
 
+    /// A record sealed under an epoch the room has moved past is the declared
+    /// `epochMismatch`, the code a writer's client turns into "apply the commit you
+    /// missed" — never a bare validation failure only its message explains.
+    #[tokio::test]
+    async fn a_record_sealed_under_a_superseded_epoch_is_epoch_mismatch() {
+        let tv = build_test_vtc().await;
+        let state = &tv.state;
+        let f = RoomFixture::new(Visibility::Attributed).await;
+        let out = create(state, &f).await;
+        assert!(out.status.is_success(), "create: {}", payload_of(&out));
+        let current = storage::get_room(&state.rooms_ks, &f.room.room_id)
+            .await
+            .unwrap()
+            .epoch;
+
+        let out = handle_put_record(
+            state,
+            doc(
+                state,
+                vti_rooms::wire::ROOMS_RECORDS_PUT_TYPE,
+                json!({
+                    "roomId": f.room.room_id, "key": "k1", "presentation": f.as_owner(),
+                    "sealed": {
+                        "ciphertext": "9jK2_QhV1sVvR0m5xAqZ7A",
+                        "nonce": "b0Zt8Qm2Yq1sVvR0",
+                        "epoch": current + 1
+                    }
+                }),
+                &f.owner.did,
+                &f.owner.secret_multibase,
+            )
+            .await,
+        )
+        .await;
+        assert!(!out.status.is_success(), "{}", payload_of(&out));
+        assert_eq!(
+            payload_of(&out)["code"],
+            "rooms/records/put:epochMismatch",
+            "{}",
+            payload_of(&out)
+        );
+    }
+
     /// The invariant the whole family rests on: authorization is the chain, and a request
     /// without one is refused regardless of who is asking.
     #[tokio::test]
@@ -1784,7 +2065,7 @@ mod tests {
             state,
             doc(
                 state,
-                vti_rooms::wire::ROOMS_RECORDS_GET_TYPE,
+                vti_rooms::wire::ROOMS_RECORDS_GET_V2_TYPE,
                 json!({
                     "roomId": f.room.room_id, "key": "k1",
                     "presentation": { "membership": f.membership, "authority": [] }
@@ -1827,7 +2108,7 @@ mod tests {
             state,
             doc(
                 state,
-                vti_rooms::wire::ROOMS_RECORDS_GET_TYPE,
+                vti_rooms::wire::ROOMS_RECORDS_GET_V2_TYPE,
                 json!({ "roomId": f.room.room_id, "key": "k", "presentation": f.as_agent() }),
                 &f.agent.did,
                 &f.agent.secret_multibase,
@@ -1875,7 +2156,7 @@ mod tests {
             state,
             doc(
                 state,
-                vti_rooms::wire::ROOMS_RECORDS_GET_TYPE,
+                vti_rooms::wire::ROOMS_RECORDS_GET_V2_TYPE,
                 json!({ "roomId": f.room.room_id, "key": "k", "presentation": p }),
                 &f.owner.did,
                 &f.owner.secret_multibase,
@@ -1907,7 +2188,7 @@ mod tests {
             state,
             doc(
                 state,
-                vti_rooms::wire::ROOMS_RECORDS_GET_TYPE,
+                vti_rooms::wire::ROOMS_RECORDS_GET_V2_TYPE,
                 json!({ "roomId": f.room.room_id, "key": "k", "presentation": f.as_owner() }),
                 &f.owner.did,
                 &f.owner.secret_multibase,
@@ -1959,7 +2240,7 @@ mod tests {
             state,
             doc(
                 state,
-                vti_rooms::wire::ROOMS_RECORDS_GET_TYPE,
+                vti_rooms::wire::ROOMS_RECORDS_GET_V2_TYPE,
                 json!({ "roomId": f.room.room_id, "key": "k", "presentation": f.as_owner() }),
                 &f.owner.did,
                 &f.owner.secret_multibase,
@@ -2007,6 +2288,7 @@ mod tests {
             &f.owner.did,
             now(),
             &AlwaysVouches,
+            &state.room_revocations_ks,
         )
         .await
         .expect("authorized");
@@ -2052,6 +2334,7 @@ mod tests {
                 subject: presenter.to_string(),
                 actions: vec!["read".into()],
                 member: Some(presenter.to_string()),
+                presented: Default::default(),
             })
         }
     }
@@ -2067,6 +2350,92 @@ mod tests {
             .map(|(_, v)| String::from_utf8_lossy(&v).into_owned())
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    /// `rooms/epoch/prune/0.2`: `admin` only, `notAhead` at the current epoch, and a prune
+    /// that runs is audited as `room.epoch.prune` — never as the mint it was logged as.
+    #[tokio::test]
+    async fn a_prune_needs_admin_and_is_audited_as_a_prune() {
+        let tv = crate::test_support::TestVtc::builder()
+            .with_audit(true)
+            .build()
+            .await;
+        let state = &tv.state;
+        let f = RoomFixture::new(Visibility::Open).await;
+        create(state, &f).await;
+
+        let out = handle_mint_epoch(
+            state,
+            doc(
+                state,
+                vti_rooms::wire::ROOMS_EPOCH_MINT_TYPE,
+                json!({
+                    "roomId": f.room.room_id,
+                    "epoch": f.room.epoch + 1,
+                    "presentation": f.as_owner(),
+                }),
+                &f.owner.did,
+                &f.owner.secret_multibase,
+            )
+            .await,
+        )
+        .await;
+        assert!(out.status.is_success(), "{}", payload_of(&out));
+        let current = payload_of(&out)["epoch"].as_u64().unwrap();
+        let mints_before = audit_rows(state).await.matches("room.epoch.mint").count();
+
+        let prune = |presentation: vti_rooms::wire::AuthorityPresentation,
+                     before: u64,
+                     who: &'static str| {
+            let f = &f;
+            async move {
+                let (did, key) = if who == "agent" {
+                    (&f.agent.did, &f.agent.secret_multibase)
+                } else {
+                    (&f.owner.did, &f.owner.secret_multibase)
+                };
+                let d = doc(
+                    state,
+                    vti_rooms::wire::ROOMS_EPOCH_PRUNE_V2_TYPE,
+                    json!({
+                        "roomId": f.room.room_id,
+                        "beforeEpoch": before,
+                        "presentation": presentation,
+                        "reason": "retention window",
+                    }),
+                    did,
+                    key,
+                )
+                .await;
+                let presenter = spine_presenter(state, &d).await;
+                super::dispatch(state, d, &presenter).await
+            }
+        };
+
+        // `read` is not enough.
+        let out = prune(f.as_agent(), current - 1, "agent").await;
+        assert!(!out.status.is_success(), "an agent may not prune");
+        assert!(!audit_rows(state).await.contains("room.epoch.prune"));
+
+        // The current epoch is not a floor.
+        let out = prune(f.as_owner(), current, "owner").await;
+        assert!(!out.status.is_success());
+        let body: Value = serde_json::from_slice(&out.body).unwrap();
+        assert_eq!(
+            body["payload"]["code"], "rooms/epoch/prune:notAhead",
+            "{body}"
+        );
+        assert_eq!(body["payload"]["details"]["epoch"].as_u64(), Some(current));
+
+        let out = prune(f.as_owner(), current - 1, "owner").await;
+        assert!(out.status.is_success(), "{}", payload_of(&out));
+        let rows = audit_rows(state).await;
+        assert!(rows.contains("room.epoch.prune"), "{rows}");
+        assert_eq!(
+            rows.matches("room.epoch.mint").count(),
+            mints_before,
+            "a prune is not a mint: {rows}"
+        );
     }
 
     /// The grant separation, end to end. The fixture's agent chain confers `read` alone,
@@ -2201,7 +2570,7 @@ mod tests {
             state,
             doc(
                 state,
-                vti_rooms::wire::ROOMS_RECORDS_GET_TYPE,
+                vti_rooms::wire::ROOMS_RECORDS_GET_V2_TYPE,
                 json!({ "roomId": f.room.room_id, "key": "k", "presentation": f.as_owner() }),
                 &f.owner.did,
                 &f.owner.secret_multibase,
@@ -2568,14 +2937,31 @@ mod tests {
         (chunks, builder.finish().expect("a manifest"))
     }
 
-    /// Upload and commit a blob into the fixture's room; its BlobRef.
+    /// Dispatch a document signed by `signer` — an upload's own key, say — the way the
+    /// spine does.
+    async fn send_as(
+        state: &AppState,
+        uri: &str,
+        payload: Value,
+        signer: &vti_rooms_dtg::test_support::Party,
+    ) -> TrustTaskOutcome {
+        let d = doc(state, uri, payload, &signer.did, &signer.secret_multibase).await;
+        let presenter = spine_presenter(state, &d).await;
+        super::dispatch(state, d, &presenter).await
+    }
+
+    /// Upload and commit a blob into the fixture's room, proxied: the owner begins, naming
+    /// a key generated for this upload alone, which sends the chunks and commits
+    /// (`rooms/blobs/upload/begin/0.2` producer item 3). Its BlobRef.
     async fn upload(state: &AppState, f: &RoomFixture, seed: u8) -> String {
         use base64::Engine as _;
         let (chunks, manifest) = blob(40_000, seed);
+        let key = vti_rooms_dtg::test_support::Party::new();
         let out = send(
             state,
-            vti_rooms::wire::ROOMS_BLOBS_UPLOAD_BEGIN_TYPE,
-            json!({ "roomId": f.room.room_id, "presentation": f.as_owner(), "manifest": manifest }),
+            vti_rooms::wire::ROOMS_BLOBS_UPLOAD_BEGIN_V2_TYPE,
+            json!({ "roomId": f.room.room_id, "presentation": f.as_owner(), "manifest": manifest,
+                    "uploadKey": key.did }),
             f,
         )
         .await;
@@ -2584,24 +2970,24 @@ mod tests {
         let upload_id = begun["uploadId"].as_str().unwrap().to_string();
         assert_eq!(begun["missing"].as_array().unwrap().len(), chunks.len());
         for (i, c) in chunks.iter().enumerate() {
-            let out = send(
+            let out = send_as(
                 state,
-                vti_rooms::wire::ROOMS_BLOBS_UPLOAD_CHUNK_TYPE,
+                vti_rooms::wire::ROOMS_BLOBS_UPLOAD_CHUNK_V2_TYPE,
                 json!({
                     "uploadId": upload_id, "index": i,
                     "digestMultibase": vti_rooms::files::digest_multibase(c),
                     "data": base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(c),
                 }),
-                f,
+                &key,
             )
             .await;
             assert!(out.status.is_success(), "chunk {i}: {}", payload_of(&out));
         }
-        let out = send(
+        let out = send_as(
             state,
-            vti_rooms::wire::ROOMS_BLOBS_UPLOAD_COMMIT_TYPE,
+            vti_rooms::wire::ROOMS_BLOBS_UPLOAD_COMMIT_V2_TYPE,
             json!({ "uploadId": upload_id }),
-            f,
+            &key,
         )
         .await;
         assert!(out.status.is_success(), "commit: {}", payload_of(&out));
@@ -2676,7 +3062,7 @@ mod tests {
 
         let out = send(
             state,
-            vti_rooms::wire::ROOMS_BLOBS_GET_TYPE,
+            vti_rooms::wire::ROOMS_BLOBS_GET_V2_TYPE,
             json!({ "roomId": f.room.room_id, "blobRef": blob_ref, "presentation": f.as_owner() }),
             &f,
         )
@@ -2775,8 +3161,8 @@ mod tests {
         );
     }
 
-    /// An upload belongs to the party that opened it. Anyone else sending to it is told
-    /// there is no such upload, which says nothing about whether one exists.
+    /// A proxied upload's chunks come from the key its begin named. Anyone else sending to
+    /// it is told there is no such upload, which says nothing about whether one exists.
     #[tokio::test]
     async fn only_the_uploader_can_send_chunks_to_an_upload() {
         use base64::Engine as _;
@@ -2786,10 +3172,12 @@ mod tests {
         assert!(create(state, &f).await.status.is_success());
 
         let (chunks, manifest) = blob(20_000, 3);
+        let key = vti_rooms_dtg::test_support::Party::new();
         let out = send(
             state,
-            vti_rooms::wire::ROOMS_BLOBS_UPLOAD_BEGIN_TYPE,
-            json!({ "roomId": f.room.room_id, "presentation": f.as_owner(), "manifest": manifest }),
+            vti_rooms::wire::ROOMS_BLOBS_UPLOAD_BEGIN_V2_TYPE,
+            json!({ "roomId": f.room.room_id, "presentation": f.as_owner(), "manifest": manifest,
+                    "uploadKey": key.did }),
             &f,
         )
         .await;
@@ -2797,7 +3185,7 @@ mod tests {
 
         let d = doc(
             state,
-            vti_rooms::wire::ROOMS_BLOBS_UPLOAD_CHUNK_TYPE,
+            vti_rooms::wire::ROOMS_BLOBS_UPLOAD_CHUNK_V2_TYPE,
             json!({
                 "uploadId": upload_id, "index": 0,
                 "digestMultibase": vti_rooms::files::digest_multibase(&chunks[0]),
@@ -2814,6 +3202,254 @@ mod tests {
             "rooms/blobs/upload/chunk:notFound",
             "{}",
             payload_of(&out)
+        );
+    }
+
+    /// `rooms/records/put/0.3` consumer item 11, as room-host holds it: an open room's
+    /// provenance and expiry are stored and served back exactly as received, a passed
+    /// `validUntil` is not acted on, and 0.2 still refuses those members in its closed
+    /// `cleartext`.
+    #[tokio::test]
+    async fn put_0_3_provenance_is_stored_and_served_as_received() {
+        let tv = build_test_vtc().await;
+        let state = &tv.state;
+        let f = RoomFixture::new(Visibility::Open).await;
+        assert!(create(state, &f).await.status.is_success());
+
+        let cleartext = json!({
+            "body": "Pushed back twice on list price.",
+            "basis": "inferred",
+            "confidence": 0.6,
+            "evidence": [{ "kind": "credential", "credentialId": "urn:uuid:1" }],
+            "validFor": { "note": "renewal negotiation only" },
+            "validUntil": "2020-01-01T00:00:00+00:00"
+        });
+        let out = send(
+            state,
+            vti_rooms::wire::ROOMS_RECORDS_PUT_V3_TYPE,
+            json!({ "roomId": f.room.room_id, "key": "note", "presentation": f.as_owner(),
+                    "cleartext": cleartext }),
+            &f,
+        )
+        .await;
+        assert!(out.status.is_success(), "put 0.3: {}", payload_of(&out));
+
+        let out = send(
+            state,
+            vti_rooms::wire::ROOMS_RECORDS_GET_V2_TYPE,
+            json!({ "roomId": f.room.room_id, "key": "note", "presentation": f.as_owner() }),
+            &f,
+        )
+        .await;
+        let got = payload_of(&out);
+        let served = if got["cleartext"].is_null() {
+            got["record"]["cleartext"].clone()
+        } else {
+            got["cleartext"].clone()
+        };
+        assert_eq!(served, cleartext, "{got}");
+
+        let out = send(
+            state,
+            vti_rooms::wire::ROOMS_RECORDS_PUT_V2_TYPE,
+            json!({ "roomId": f.room.room_id, "key": "note2", "presentation": f.as_owner(),
+                    "cleartext": { "body": "x", "basis": "declared" } }),
+            &f,
+        )
+        .await;
+        assert!(!out.status.is_success(), "0.2 must refuse provenance");
+    }
+
+    /// The record-retention tasks on the VTC's host, as room-host holds them
+    /// (trust-tasks-tf #868): create 0.2 records and echoes the rule; a prune removes only
+    /// what it makes eligible and leaves its mark, which list 0.3, `headVersion` and info
+    /// 0.2 report; a change is conditional on the rule in force.
+    #[tokio::test]
+    async fn record_retention_and_prune_behave_as_on_room_host() {
+        const DAY: u64 = 24 * 60 * 60;
+        let tv = build_test_vtc().await;
+        let state = &tv.state;
+        let f = RoomFixture::new(Visibility::Open).await;
+        let retention = json!({ "tombstoneDays": 30, "recordDays": 365 });
+        // The community's own policy and member row, as `create` sets them up.
+        seed_creator(state, &f).await;
+        let out = send(
+            state,
+            vti_rooms::wire::ROOMS_CREATE_V2_TYPE,
+            json!({ "roomId": f.room.room_id, "ownerDid": f.room.owner_did,
+                    "visibility": "open", "recordRetention": retention }),
+            &f,
+        )
+        .await;
+        assert!(out.status.is_success(), "create 0.2: {}", payload_of(&out));
+        assert_eq!(payload_of(&out)["recordRetention"], retention);
+
+        let aged = |key: &'static str, age: u64, retract: bool| {
+            let state = state.clone();
+            let room_id = f.room.room_id.clone();
+            async move {
+                let at = now() - age * DAY;
+                let record = Record {
+                    key: key.into(),
+                    version: 0,
+                    epoch: None,
+                    status: RecordStatus::Active,
+                    pinned: false,
+                    sealed: None,
+                    nonce: None,
+                    sealed_version: None,
+                    cleartext: Some(json!({ "body": key })),
+                    author: None,
+                    updated_at: 0,
+                };
+                storage::put_record(
+                    &state.rooms_ks,
+                    &state.room_records_ks,
+                    &room_id,
+                    record,
+                    None,
+                    at,
+                )
+                .await
+                .unwrap();
+                if retract {
+                    storage::curate_record(
+                        &state.rooms_ks,
+                        &state.room_records_ks,
+                        &room_id,
+                        key,
+                        storage::Curation {
+                            status: Some(RecordStatus::Retracted),
+                            ..Default::default()
+                        },
+                        at,
+                    )
+                    .await
+                    .unwrap();
+                }
+            }
+        };
+        aged("old-tomb", 40, true).await;
+        aged("young-tomb", 10, true).await;
+        aged("old-active", 400, false).await;
+        aged("fresh", 0, false).await;
+
+        let prune = |dry: bool| {
+            json!({ "roomId": f.room.room_id, "presentation": f.as_owner(),
+                    "kinds": ["retracted", "aged"], "reason": "the agreed retention",
+                    "dryRun": dry })
+        };
+        let out = send(
+            state,
+            vti_rooms::wire::ROOMS_RECORDS_PRUNE_TYPE,
+            prune(true),
+            &f,
+        )
+        .await;
+        assert_eq!(payload_of(&out)["removed"], 2, "{}", payload_of(&out));
+        let out = send(
+            state,
+            vti_rooms::wire::ROOMS_RECORDS_PRUNE_TYPE,
+            prune(false),
+            &f,
+        )
+        .await;
+        let done = payload_of(&out);
+        assert_eq!(done["removed"], 2, "{done}");
+        let mark = done["prune"].clone();
+
+        let read = json!({ "roomId": f.room.room_id, "presentation": f.as_owner() });
+        let out = send(
+            state,
+            vti_rooms::wire::ROOMS_RECORDS_LIST_V3_TYPE,
+            read.clone(),
+            &f,
+        )
+        .await;
+        let listing = payload_of(&out);
+        assert_eq!(listing["records"].as_array().unwrap().len(), 2, "{listing}");
+        assert_eq!(listing["lastPrune"], mark);
+        assert_eq!(listing["headVersion"], mark["version"]);
+        let out = send(state, vti_rooms::wire::ROOMS_INFO_V2_TYPE, read.clone(), &f).await;
+        let info = payload_of(&out);
+        assert_eq!(info["recordRetention"], retention, "{info}");
+        assert_eq!(info["lastPrune"], mark);
+
+        let out = send(
+            state,
+            vti_rooms::wire::ROOMS_RECORDS_RETENTION_SET_TYPE,
+            json!({ "roomId": f.room.room_id, "presentation": f.as_owner(),
+                    "recordRetention": {}, "expectedRetention": { "tombstoneDays": 1 },
+                    "reason": "stale" }),
+            &f,
+        )
+        .await;
+        assert_eq!(
+            payload_of(&out)["code"],
+            "rooms/records/retention/set:retentionConflict",
+            "{}",
+            payload_of(&out)
+        );
+    }
+
+    /// `rooms/epoch/prune/0.2` and `rooms/epoch/chain/0.2` on the VTC's host, as on
+    /// room-host (trust-tasks-tf #869): the floor is kept, returned and served, and no rung
+    /// at or below it is served at either version.
+    #[tokio::test]
+    async fn the_epoch_floor_is_kept_and_served_as_on_room_host() {
+        let tv = build_test_vtc().await;
+        let state = &tv.state;
+        let f = RoomFixture::new(Visibility::Open).await;
+        assert!(create(state, &f).await.status.is_success());
+        for epoch in 2..=4u32 {
+            let out = send(
+                state,
+                vti_rooms::wire::ROOMS_EPOCH_MINT_TYPE,
+                json!({ "roomId": f.room.room_id, "epoch": epoch, "presentation": f.as_owner(),
+                        "link": { "epoch": epoch, "wrapped": format!("d3JhcHBlZA{epoch}"),
+                                  "nonce": "bm9uY2U" } }),
+                &f,
+            )
+            .await;
+            assert!(
+                out.status.is_success(),
+                "mint {epoch}: {}",
+                payload_of(&out)
+            );
+        }
+        let out = send(
+            state,
+            vti_rooms::wire::ROOMS_EPOCH_PRUNE_V2_TYPE,
+            json!({ "roomId": f.room.room_id, "beforeEpoch": 3, "presentation": f.as_owner(),
+                    "reason": "the agreed window" }),
+            &f,
+        )
+        .await;
+        let pruned = payload_of(&out);
+        assert_eq!(pruned["epochFloor"], 2, "{pruned}");
+        assert_eq!(pruned["earliestRung"], 3);
+
+        let read = json!({ "roomId": f.room.room_id, "presentation": f.as_owner() });
+        let out = send(
+            state,
+            vti_rooms::wire::ROOMS_EPOCH_CHAIN_V2_TYPE,
+            read.clone(),
+            &f,
+        )
+        .await;
+        let chain = payload_of(&out);
+        assert_eq!(chain["epochFloor"], 2, "{chain}");
+        let epochs: Vec<u64> = chain["links"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|l| l["epoch"].as_u64().unwrap())
+            .collect();
+        assert_eq!(epochs, [4, 3]);
+        let out = send(state, vti_rooms::wire::ROOMS_EPOCH_CHAIN_TYPE, read, &f).await;
+        assert!(
+            payload_of(&out).get("epochFloor").is_none(),
+            "0.1 is unchanged"
         );
     }
 }

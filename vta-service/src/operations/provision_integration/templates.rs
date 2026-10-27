@@ -83,6 +83,42 @@ pub(super) fn template_targets_did_peer(template: &vta_sdk::did_templates::DidTe
     template.methods.iter().any(|m| m == "peer")
 }
 
+/// Refuse, before anything is minted, a webvh template whose DID an
+/// integration bundle cannot carry.
+///
+/// The sealed bundle hands the holder the key it signs with and the key it
+/// decrypts with, each under the `verificationMethod` id the published
+/// document gives it — that is how a holder resolves an inbound message's
+/// `kid` to a private key. So the `signing` slot must be published and there
+/// must be a `ka` slot. A template that keeps its update key out of the
+/// document, or has no key agreement (`swiyu-verifier`: the Swiss Profile
+/// Anchor forbids both), describes an identity that is not an integration;
+/// minting it here would leave a DID the bundle then fails to describe.
+pub(super) fn require_bundle_shape(
+    name: &str,
+    template: &vta_sdk::did_templates::DidTemplate,
+) -> Result<(), AppError> {
+    use vta_sdk::did_templates::{SLOT_KA, SLOT_SIGNING};
+    let slots = template.key_slots();
+    let why = match (slots.get(SLOT_SIGNING), slots.get(SLOT_KA)) {
+        (Some(signing), _) if !signing.publish => "its signing key is kept out of the DID document",
+        (_, None) => "it has no key-agreement key",
+        _ => return Ok(()),
+    };
+    let next = if template.kind == "oid4vp-verifier" {
+        "\nThen, for a VTC verifier: `pnm keys bundle <context>` → `vtc oid4vp install`, or keep \
+         the key in the VTA with `vtc oid4vp attach`."
+    } else {
+        "\nThen hand its keys over with `pnm keys bundle <context>`."
+    };
+    Err(AppError::Validation(format!(
+        "template '{name}' cannot be provisioned as an integration: {why}, and an integration's \
+         sealed bundle carries both its signing and its key-agreement key as its DID document \
+         publishes them. Mint the DID directly instead:\n  pnm did-mgmt dids create --context \
+         <context> --template {name} …{next}"
+    )))
+}
+
 /// Resolve only the `kind` field of a template (context → global →
 /// builtin). Used for the VC's `credentialSubject.integrationKind`
 /// without the cost of parsing the full template body.

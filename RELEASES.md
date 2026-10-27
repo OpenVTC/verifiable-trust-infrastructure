@@ -101,7 +101,7 @@ a branch operators run, it is not.
 Two version schemes, deliberately kept apart:
 
 1. **The release version** — `VTI-Eucalyptus`, `VTI-Eucalyptus-R2`. What an operator deploys,
-   and what identifies the unpublished crates (`vtc-service`, `vta-enclave`,
+   and what identifies the unpublished crates (`vta-enclave`, `vti-witness`,
    …) at the commit it tags. The project publishes no container images or
    enclave images: operators build their own from the tag, and generate their
    own PCR0 to pin with `--expect-pcr0`. Each one is a GitHub Release whose notes
@@ -159,7 +159,7 @@ moves `RELEASE`, and opens a `chore(release): VTI-<Name>-…` PR. **Merging it
 is the release:** `publish.yml` publishes the crates and tags it.
 
 A prep with no crate changes still produces a release: something unpublished
-(`vtc-service`, the enclave) changed.
+(the enclave, the witness) changed.
 
 ### End of life
 

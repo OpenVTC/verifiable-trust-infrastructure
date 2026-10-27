@@ -36,6 +36,10 @@ use crate::error::AppError;
 /// parent can make the enclave allocate.
 pub(crate) const MAX_MESSAGE_SIZE: u32 = 16 * 1024 * 1024;
 
+fn is_deterministic_oversized_response(error: &AppError) -> bool {
+    super::is_oversized_response(error)
+}
+
 /// Largest request coalesced with its length prefix into one write. Storage
 /// requests are almost all far below this; the rare large value (a backup
 /// bundle chunk) is not copied.
@@ -120,7 +124,12 @@ impl ConnectionPool {
                     self.put_idle(stream);
                     return Ok(resp);
                 }
-                Err(e) => warn!(error = %e.error(), "storage request failed, reconnecting"),
+                Err(e) => {
+                    if is_deterministic_oversized_response(e.error()) {
+                        return Err(e.into_error());
+                    }
+                    warn!(error = %e.error(), "storage request failed, reconnecting");
+                }
             }
         }
 
@@ -374,8 +383,10 @@ async fn round_trip_inner(
 
     let len = stream.read_u32().await.map_err(sent("vsock read"))?;
     if len > MAX_MESSAGE_SIZE {
+        // Built from the shared prefix so the matchers cannot drift from it.
         return Err(RoundTripError::Sent(AppError::Internal(format!(
-            "vsock response too large: {len} > {MAX_MESSAGE_SIZE}"
+            "{} {len} > {MAX_MESSAGE_SIZE}",
+            super::OVERSIZED_RESPONSE_PREFIX
         ))));
     }
     let mut buf = vec![0u8; len as usize];
@@ -414,6 +425,10 @@ mod tests {
         hangup_after_first_frame: bool,
         /// Complete request frames received, across all connections.
         frames: Arc<AtomicUsize>,
+        /// When set, answer every frame with a length header above
+        /// `MAX_MESSAGE_SIZE` and no body — a parent whose response cannot
+        /// fit one frame.
+        oversized: bool,
     }
 
     impl Server {
@@ -453,6 +468,10 @@ mod tests {
                 self.frames.fetch_add(1, Ordering::SeqCst);
                 if hang_up {
                     return;
+                }
+                if self.oversized {
+                    let _ = stream.write_u32(MAX_MESSAGE_SIZE + 1).await;
+                    continue;
                 }
                 let now = self.in_flight.fetch_add(1, Ordering::SeqCst) + 1;
                 self.peak.fetch_max(now, Ordering::SeqCst);
@@ -593,6 +612,53 @@ mod tests {
         assert_eq!(resp, b"retry");
         assert_eq!(server.connects.load(Ordering::SeqCst), 2);
         assert_eq!(pool.idle_len(), 1, "only the working connection is kept");
+    }
+
+    /// A response too large for one frame is refused on the spot, not resent.
+    ///
+    /// The request is deterministic, so resending it re-reads the same
+    /// oversized response: on an enclave whose audit log outgrew the frame cap
+    /// that doubled every failed read. It is only visible by counting what
+    /// reached the parent — the caller sees the same error either way, which
+    /// is how a matcher that never fired went unnoticed. (It compared
+    /// `AppError`'s *rendered* form, which carries a `"internal error: "`
+    /// prefix the raw message does not, so the refusal below was dead code and
+    /// every oversized read fell through to the reconnect path.)
+    #[tokio::test]
+    async fn an_oversized_response_is_refused_without_a_retry() {
+        let server = Server {
+            oversized: true,
+            ..Server::default()
+        };
+        // `pool()` opens one connection eagerly, so a reconnect would be the
+        // second.
+        let pool = server.pool(4);
+        let before = server.connects.load(Ordering::SeqCst);
+
+        let error = pool
+            .request(b"big")
+            .await
+            .expect_err("an oversized response must fail");
+
+        assert!(
+            super::super::is_oversized_response(&error),
+            "the error must stay recognisable to the callers that map it: {error}"
+        );
+        assert_eq!(
+            server.frames.load(Ordering::SeqCst),
+            1,
+            "the request reached the parent once; a resend would make it two"
+        );
+        assert_eq!(
+            server.connects.load(Ordering::SeqCst) - before,
+            0,
+            "no reconnect: the retry path must not be taken"
+        );
+        assert_eq!(
+            pool.idle_len(),
+            0,
+            "the connection still holds an unread body, so it is discarded"
+        );
     }
 
     #[tokio::test]

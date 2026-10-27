@@ -55,7 +55,7 @@ use trust_tasks_rs::specs::persona::attribute::get::v1_0 as attribute_get;
 use trust_tasks_rs::specs::persona::claim_types::list::v1_0 as claim_types_list;
 use trust_tasks_rs::specs::persona::world::delete::v1_0 as world_delete;
 use trust_tasks_rs::specs::persona::world::list::v1_0 as world_list;
-use trust_tasks_rs::specs::persona::world::put::v1_0 as world_put;
+use trust_tasks_rs::specs::persona::world::put::v1_1 as world_put;
 
 /// Round-trip timeout (seconds) for persona trust tasks. Matches the
 /// application-state and memory slices: these are local store operations, and
@@ -86,7 +86,7 @@ impl VtaClient {
     // The pool — holder-scoped
     // -----------------------------------------------------------------------
 
-    /// `persona/attribute/put/1.0` — create or update one attribute in the
+    /// `persona/attribute/put/1.1` — create or update one attribute in the
     /// holder's pool.
     ///
     /// Omit `attribute_id` to create. Supplying one makes a create idempotent;
@@ -117,7 +117,7 @@ impl VtaClient {
             ext: None,
         })?;
         self.dispatch_trust_task(
-            trust_tasks::TASK_PERSONA_ATTRIBUTE_PUT_1_0,
+            trust_tasks::TASK_PERSONA_ATTRIBUTE_PUT_1_1,
             payload,
             PERSONA_TT_TIMEOUT,
         )
@@ -255,7 +255,7 @@ impl VtaClient {
         .await
     }
 
-    /// `persona/attribute/promote/1.0` — make values a context-local face
+    /// `persona/attribute/promote/1.1` — make values a context-local face
     /// carries reusable across the holder's faces.
     ///
     /// `entries` are zero-based positions in the face as read at
@@ -268,9 +268,9 @@ impl VtaClient {
         profile_id: &str,
         entries: &[u64],
         expected_version: u64,
-    ) -> Result<trust_tasks_rs::specs::persona::attribute::promote::v1_0::Response, VtaError> {
+    ) -> Result<trust_tasks_rs::specs::persona::attribute::promote::v1_1::Response, VtaError> {
         self.rpc_tt(
-            trust_tasks::TASK_PERSONA_ATTRIBUTE_PROMOTE_1_0,
+            trust_tasks::TASK_PERSONA_ATTRIBUTE_PROMOTE_1_1,
             serde_json::json!({
                 "contextId": context_id,
                 "profileId": profile_id,
@@ -286,7 +286,7 @@ impl VtaClient {
     // Profiles — holder-scoped
     // -----------------------------------------------------------------------
 
-    /// `persona/profile/compose/1.0` — compose a face for one context where it
+    /// `persona/profile/compose/1.1` — compose a face for one context where it
     /// is asked for, local by default, and optionally wear it there.
     ///
     /// Takes the generated payload: a claim is either typed now
@@ -295,17 +295,17 @@ impl VtaClient {
     /// in `scope`.
     pub async fn persona_profile_compose(
         &self,
-        payload: &trust_tasks_rs::specs::persona::profile::compose::v1_0::Payload,
-    ) -> Result<trust_tasks_rs::specs::persona::profile::compose::v1_0::Response, VtaError> {
+        payload: &trust_tasks_rs::specs::persona::profile::compose::v1_1::Payload,
+    ) -> Result<trust_tasks_rs::specs::persona::profile::compose::v1_1::Response, VtaError> {
         self.rpc_tt(
-            trust_tasks::TASK_PERSONA_PROFILE_COMPOSE_1_0,
+            trust_tasks::TASK_PERSONA_PROFILE_COMPOSE_1_1,
             body(payload)?,
             PERSONA_TT_TIMEOUT,
         )
         .await
     }
 
-    /// `persona/profile/put/1.0` — create or update an agent-scoped profile.
+    /// `persona/profile/put/1.1` — create or update an agent-scoped profile.
     ///
     /// `reach: None` keeps the face's current reach (anywhere, for a new one);
     /// it is the one member a put does not reset by omission.
@@ -314,7 +314,7 @@ impl VtaClient {
         name: &str,
         entries: Vec<ProfileEntry>,
         credential_refs: Vec<String>,
-        reach: Option<trust_tasks_rs::specs::persona::profile::put::v1_0::FaceReach>,
+        reach: Option<trust_tasks_rs::specs::persona::profile::put::v1_1::FaceReach>,
         profile_id: Option<&str>,
         expected_version: Option<u64>,
     ) -> Result<Value, VtaError> {
@@ -328,7 +328,7 @@ impl VtaClient {
             ext: None,
         })?;
         self.dispatch_trust_task(
-            trust_tasks::TASK_PERSONA_PROFILE_PUT_1_0,
+            trust_tasks::TASK_PERSONA_PROFILE_PUT_1_1,
             payload,
             PERSONA_TT_TIMEOUT,
         )
@@ -587,7 +587,7 @@ impl VtaClient {
     // Contacts — context-scoped
     // -----------------------------------------------------------------------
 
-    /// `persona/contact/put/1.0` — record what a peer disclosed.
+    /// `persona/contact/put/1.2` — record what a peer disclosed.
     ///
     /// Writes a new revision rather than overwriting: the previous one is
     /// retained while anything still references it, so "what did they tell me
@@ -611,14 +611,14 @@ impl VtaClient {
             ext: None,
         })?;
         self.dispatch_trust_task(
-            trust_tasks::TASK_PERSONA_CONTACT_PUT_1_0,
+            trust_tasks::TASK_PERSONA_CONTACT_PUT_1_2,
             payload,
             PERSONA_TT_TIMEOUT,
         )
         .await
     }
 
-    /// `persona/contact/get/1.0` — read one contact, optionally at an older
+    /// `persona/contact/get/1.1` — read one contact, optionally at an older
     /// revision or with its full history.
     pub async fn persona_contact_get(
         &self,
@@ -635,14 +635,14 @@ impl VtaClient {
             ext: None,
         })?;
         self.dispatch_trust_task(
-            trust_tasks::TASK_PERSONA_CONTACT_GET_1_0,
+            trust_tasks::TASK_PERSONA_CONTACT_GET_1_1,
             payload,
             PERSONA_TT_TIMEOUT,
         )
         .await
     }
 
-    /// `persona/contact/list/1.0` — enumerate contacts in one context.
+    /// `persona/contact/list/1.1` — enumerate contacts in one context.
     pub async fn persona_contact_list(
         &self,
         context_id: &str,
@@ -660,7 +660,7 @@ impl VtaClient {
             ext: None,
         })?;
         self.dispatch_trust_task(
-            trust_tasks::TASK_PERSONA_CONTACT_LIST_1_0,
+            trust_tasks::TASK_PERSONA_CONTACT_LIST_1_1,
             payload,
             PERSONA_TT_TIMEOUT,
         )
@@ -839,7 +839,7 @@ impl VtaClient {
     // Worlds and the claim-type registry
     // -----------------------------------------------------------------------
 
-    /// `persona/world/put/1.0` — name a part of a life, and say which faces
+    /// `persona/world/put/1.1` — name a part of a life, and say which faces
     /// and attributes belong to it.
     ///
     /// **Both lists replace.** Omitting `face_ids` empties the world rather
@@ -856,7 +856,7 @@ impl VtaClient {
     ) -> Result<world_put::Response, VtaError> {
         let value = self
             .dispatch_trust_task(
-                trust_tasks::TASK_PERSONA_WORLD_PUT_1_0,
+                trust_tasks::TASK_PERSONA_WORLD_PUT_1_1,
                 body(payload)?,
                 PERSONA_TT_TIMEOUT,
             )
@@ -926,7 +926,7 @@ impl VtaClient {
     // Context-local profiles and bindings
     // -----------------------------------------------------------------------
 
-    /// `persona/local/profile/put/1.0` — a profile that lives inside one
+    /// `persona/local/profile/put/1.1` — a profile that lives inside one
     /// context.
     ///
     /// Entries are [`LocalProfileEntry`] — inline only. A context-local
@@ -949,7 +949,7 @@ impl VtaClient {
             ext: None,
         })?;
         self.dispatch_trust_task(
-            trust_tasks::TASK_PERSONA_LOCAL_PROFILE_PUT_1_0,
+            trust_tasks::TASK_PERSONA_LOCAL_PROFILE_PUT_1_1,
             payload,
             PERSONA_TT_TIMEOUT,
         )

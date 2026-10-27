@@ -2,7 +2,193 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
-## [0.15.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-keyspaces-v0.13.0...vta-keyspaces-v0.15.0) — 2026-10-11
+## [0.22.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-keyspaces-v0.21.0...vta-keyspaces-v0.22.0) — 2026-10-26
+
+
+## [0.21.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-keyspaces-v0.19.0...vta-keyspaces-v0.21.0) — 2026-10-18
+
+
+## [0.19.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-keyspaces-v0.18.0...vta-keyspaces-v0.19.0) — 2026-10-16
+
+
+### Added
+
+- **witness**: Witness 0.2 — the member presentation and personhood outcome evidence as spec members, and vta/witness/list ([#1068](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1068)) ([#2147](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2147))
+
+* feat(witness)!: witness 0.2 — the member presentation and personhood outcome evidence as spec members ([#1068](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1068))
+
+- **rooms**: Rooms/owner/group/add 0.2 — a repeated admission is answered with its Welcome ([#2146](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2146))
+
+* feat(rooms)!: rooms/owner/group/add 0.2 — a repeated admission is answered with its Welcome
+
+  Serve `rooms/owner/group/add/0.2` (trust-tasks-tf #795) beside 0.1, and
+  raise the trust-tasks-rs floor to 0.31.11, which carries it.
+
+  Under 0.1 a caller that lost an admission's answer and sent the identical
+  request again was refused `alreadyMember`: the member had a leaf and no
+  Welcome anyone could give them. 0.2 item 8:
+
+  - The owner's VTA keeps the last admission it applied for a room —
+    member, the KeyPackage's KeyPackageRef (RFC 9420 §5.2), epoch and
+    Welcome — in `room_groups` (`room-admitted/<room>/<persona>`, beside the
+    pending advance that already holds the same Welcome, under the same
+    storage encryption and backup membership). It is discarded when the
+    owner builds its next advance of the room, after 24 hours (checked on
+    read, and swept by the storage thread), and with the member's group.
+  - A request naming the same room, a string-equal member and a KeyPackage
+    with the same KeyPackageRef is answered — after item 1 and the
+    authorization checks — with that epoch and Welcome: the host is not
+    contacted, the group not changed, no new Welcome built. Anything else
+    for a member with a leaf stays `alreadyMember`.
+  - Item 6 hands over to item 8: a pending admission settled by the
+    identical request becomes the retained one and answers it.
+  - 0.1 is unchanged.
+
+
+
+## [0.18.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-keyspaces-v0.17.0...vta-keyspaces-v0.18.0) — 2026-10-15
+
+
+### Added
+
+- **vta**: Vta/witness/{open,present,accept} — the VTA is its principal's witnessed party, the client carries the documents ([#1068](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1068)) ([#2123](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2123))
+
+The VTA side of witnessing (P3), per trustoverip/dtgwg-trust-tasks-tf#779
+  (rules in vta/_shared/0.5/CONVENTIONS.md). A witness checks that each
+  document's transport-proven sender is its issuer and replies to that sender,
+  and the relationship DID's one mediator socket belongs to the client holding
+  the relationship, so the VTA builds, signs and verifies while the client
+  carries every document. The VTA never contacts the witness and never signs as
+  itself. vta/witness/request/0.1 is retired upstream and not implemented.
+
+  - open: key custody for the relationship DID (and the member DID) in the
+    caller's contexts, distinct DIDs, the VRC/VMC by vault handle, the
+    member-link carriage and witness resolution, all checked before anything is
+    disclosed. Returns the witness/session document signed as the relationship
+    DID and opens a session record.
+  - present: checks the handed-back session #response against the record (type,
+    issuer = witness, recipient = relationship DID, thread, witness proof)
+    through VerifiedWitnessAnswer, re-reads the bound credentials, and returns
+    the signed witness/session/submit. Under the member link that carries a
+    member presentation in ext["org.openvtc.witness"].memberPresentation.
+  - accept: checks the submit #response the same way, then verifies the VWC as
+    a VerifiedWitnessOutcome: witness issuer and assertionMethod proof,
+    taskContext and task digest over the session document, subject and object
+    digest, vwcDigestMultibase. Stores the VWC in the relationship key's context
+    with both evidence documents (vault tags witness:session / witness:outcome).
+    A repeated accept of the same outcome is answered again and stores nothing.
+
+  The session record lives in a new keyspace, witness_sessions: encrypted,
+  excluded from backup, cascades on DID delete, swept by the storage thread. It
+  moves opened -> presented -> accepted with compare-and-set transitions.
+  sessionUnknown is one answer for unknown, expired, out-of-scope and
+  wrong-state sessions.
+
+  Supporting changes:
+
+  - Capability::WitnessRequest (witness-request) is derived by admin and
+    initiator, never by application, and is not satisfied by sign.
+  - persona_key_for gains a did:peer arm: the document is derived with no I/O,
+    and its methods are matched against key records in the caller's contexts.
+  - New [witness] config: session_ttl_secs and member_link_witnesses.
+  - retry_safety: all three RetrySafe.
+  - vta-mcp guard: open and present are Sensitive, accept is Mutating.
+  - SDK: VtaClient::witness_{open,present,accept}.
+  - trust-tasks-rs floor raised to 0.31.7.
+
+
+
+### Fixed
+
+- **pnm**: Rooms and setup messages say what happened and print the fix ([#2126](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2126))
+
+Three operator-facing messages from a live run.
+
+  A sealed-room write at a superseded epoch (after `pnm rooms owner
+  group-renew`, before the member applied the commit) printed a raw HTTP 400
+  body. The VTC and room-host now refuse it with the declared
+  `rooms/records/put:epochMismatch` (vti_rooms::blob_tasks::record_epoch_refused,
+  checked before the store, which keeps its own check as the backstop), and
+  pnm matches that code to say the room moved on and print
+  `pnm rooms keys commit --room <room> --host <url> [--host-did <did>]` with
+  the real values.
+
+  A member removed from a sealed room was told "a commit has not been
+  delivered" when reading a newer record. The VTA now records the removal
+  (`room-removed/<room>/<persona>`) when it applies the commit that removed
+  its member, clears it on a fresh join, and `rooms/keys/open` answers the
+  declared `unknownEpoch` with `details.reason` `removed` or `notDelivered`
+  (as `rooms/keys/file-key` already does). `pnm rooms get` tells a removed
+  member so, without suggesting `keys commit`; a member who is only behind
+  gets the catch-up command with the real values.
+
+  `pnm setup continue` always ended with the `vta import-did` advice. It now
+  authenticates as the phase-1 identity (which is also the cold start's
+  rotation) and prints the advice only when the VTA refused it or could not
+  be reached; on success it reports the rotated DID, which is also what the
+  non-interactive JSON line now carries as `admin_did`.
+
+- **vta**: Room group state is per member (room, persona), so two personas on one VTA can share a room ([#2096](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2096))
+
+One VTA serves several principals, and a person may hold several personas.
+  Group state was keyed by room alone, so a VTA could hold only one member's
+  group per room: with Alice (context alice) owning room R and Bob (context bob)
+  admitted, Bob's rooms/keys/welcome failed with "this VTA already holds group
+  state for room R". A family on one VTA, or a team on a company VTA, could not
+  be in the same room.
+
+  Everything the VTA keeps per room in `room_groups` is now keyed per member:
+  `room-group/<roomId>/<persona>`, `room-kp/…`, `room-advance/…` and
+  `room-roots/…` (DIDs carry no `/`, so the key is unambiguous; `Member::new`
+  refuses anything that does). Consumed invitations stay keyed by credential id,
+  which already names one subject.
+
+  Which member a task acts as (`operations::room_member`):
+  - key-package / welcome: the invitation's subject;
+  - read / browse / backfill / owner anchor: the persona whose credentials are
+    presented (`room_oracle::principal`), one resolution for both;
+  - rooms/owner/group/*: the owner persona (`HostCall`), with noGroup / ownLeaf
+    answered against the persona the caller holds the group as;
+  - open / seal / file-key / commit / chain: exactly one persona the caller may
+    act as holding the room, else Conflict "act from the context of the one you
+    mean"; never the client DID;
+  - list: every room held by a persona the caller may act as.
+  A persona in a context the caller cannot act in is invisible: its group answers
+  like a room nobody holds, and nothing of it is read, advanced or listed. Root
+  memory is per member for the same reason. rooms/keys/commit now resolves its
+  group this way (before, any authenticated caller reached the one group).
+
+  rooms/keys/welcome answers the declared `rooms/keys/welcome:alreadyJoined` when
+  the invitation's persona already holds the room's group; another persona on
+  the VTA is no obstacle.
+
+
+
+## [0.17.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-keyspaces-v0.16.0...vta-keyspaces-v0.17.0) — 2026-10-13
+
+
+### Added
+
+- **vta**: The VTA as hidden-vetting (PCS) engine — vta/pcs/* for clients that cannot run PCS ([#2056](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2056))
+
+* feat(vta)!: the VTA as hidden-vetting (PCS) engine — vta/pcs/* for clients that cannot run PCS
+
+  A community that runs hidden vetting admits an applicant on a zero-knowledge
+  proof that distinct eligible vetters vetted them. Every vetter and applicant
+  holds a PCS secret key, and until now the member side ran only in a client
+  linking the PCS library, so a mobile wallet (Keyring) could not take part.
+
+  The VTA now holds those keys and runs every member-side operation (design
+  vetting-hidden-vetters-pcs.md §13 C7); the client carries messages and never
+  holds a key. Twelve Trust Tasks (trust-tasks-tf #756):
+
+  - applicant: applications/{create,show,delete}, verify-attestation, prove
+  - vetter: root-request, root-accept, tokens/{request,accept,abandon}, attest,
+    vetter/show
+
+
+
+## [0.16.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-keyspaces-v0.13.0...vta-keyspaces-v0.16.0) — 2026-10-11
 
 
 ### Added

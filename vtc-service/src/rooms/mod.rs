@@ -9,9 +9,19 @@
 //! The re-exports keep `crate::rooms::Room` and friends resolving, so nothing outside this
 //! module had to move when the subsystem did.
 
+pub mod community;
+pub mod community_profile;
+pub mod community_renewal;
+pub mod departures;
 pub mod files;
 pub mod handlers;
+pub mod migration;
 pub mod policy;
+pub mod storage_auth;
+pub mod storage_configs;
+pub mod storage_credentials;
+pub mod vta_access;
+pub mod vta_storage;
 
 pub use vti_rooms::{
     ROOM_RECORDS_KEYSPACE, ROOMS_KEYSPACE, Record, RecordStatus, Room, Visibility, authz, storage,

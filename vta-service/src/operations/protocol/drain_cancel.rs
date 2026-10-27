@@ -33,6 +33,7 @@ pub struct DrainCancelResult {
 }
 
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum DrainCancelError {
     #[error("auth: {0}")]
     Auth(String),

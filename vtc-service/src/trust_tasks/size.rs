@@ -338,13 +338,43 @@ pub(crate) struct LargeDocumentCharge {
 ///
 /// Returns the charge to settle once verification concludes
 /// ([`settle_large_document_charge`]), or `None` when no charge was made.
+#[cfg(test)]
 pub(crate) async fn check_for_known_issuer(
     state: &AppState,
     body: &[u8],
     address: &str,
     now: u64,
 ) -> Result<Option<LargeDocumentCharge>, TrustTaskOutcome> {
+    check_for_known_issuer_with(state, body, address, now, false).await
+}
+
+/// [`check_for_known_issuer`], told whether the transport has already charged this
+/// document to a room budget sized for file transfer
+/// ([`crate::routing::trust_task_admission`]'s per-address room ceiling, which a
+/// document that never verifies and is never authorized by its room pays extra).
+///
+/// When it has, an upload chunk from the party holding the open upload is admitted at
+/// the chunk's size without the [`LargeDocumentBudget`]: five raised-limit documents a
+/// minute per address, sixty across the node, would make a 100 MB file (400 chunks at
+/// the default chunk size) take an hour and a half. Every other large document, and a
+/// chunk arriving on a transport that charged no room budget, is held to the budget as
+/// before.
+pub(crate) async fn check_for_known_issuer_with(
+    state: &AppState,
+    body: &[u8],
+    address: &str,
+    now: u64,
+    room_precharged: bool,
+) -> Result<Option<LargeDocumentCharge>, TrustTaskOutcome> {
     if body.len() <= DEFAULT_MAX_DOCUMENT_BYTES {
+        return Ok(None);
+    }
+    if room_precharged
+        && let Some(issuer) = peek_issuer(body)
+        && peek_type(body).as_deref() == Some(vti_rooms::blob_tasks::UPLOAD_CHUNK_V2_TYPE)
+        && holds_upload_key(state, &issuer).await
+    {
+        check_with(body, max_document_bytes)?;
         return Ok(None);
     }
     let claimed_issuer = match peek_issuer(body) {
@@ -394,8 +424,10 @@ pub(crate) fn settle_large_document_charge(
 }
 
 /// Whether the claimed `issuer` of this large document has standing for its
-/// raised limit: it is known here ([`is_known_issuer`]), or the document is a
-/// room file's and the claim holds for that task.
+/// raised limit: it is known here ([`is_known_issuer`]), it is a member-portal
+/// key whose live delegation covers the document's type and whose member is
+/// known here, or the document is a room file's and the claim holds for that
+/// task.
 ///
 /// Room members hold no ACL entry here, by design: a room is authorized by the
 /// credentials the room issued. So for the two room-file tasks whose
@@ -414,13 +446,25 @@ async fn has_standing(state: &AppState, body: &[u8], issuer: &str) -> bool {
     if is_known_issuer(state, issuer).await {
         return true;
     }
+    // A member-portal sign-in key the member delegated this type's family to
+    // (`auth/oob/grant/0.2`) stands in for the member: the portal uploads a
+    // member's picture (`vtc/directory/images/upload`, up to 360 KiB) signed by
+    // it. Only while that delegation is live, and only for a type it covers.
+    if let Some(type_uri) = peek_type(body)
+        && let Ok(Some(member)) = crate::member_portal::delegation::member_for(
+            &state.member_sessions_ks,
+            issuer.split('#').next().unwrap_or(issuer),
+            &type_uri,
+        )
+        .await
+        && is_known_issuer(state, &member).await
+    {
+        return true;
+    }
     let files = &state.room_files;
     match peek_type(body).as_deref() {
-        Some(vti_rooms::blob_tasks::UPLOAD_CHUNK_TYPE) => {
-            let did = issuer.split('#').next().unwrap_or(issuer);
-            files.holds_open_upload(did).await
-        }
-        Some(vti_rooms::blob_tasks::UPLOAD_BEGIN_TYPE) if files.files_enabled() => {
+        Some(vti_rooms::blob_tasks::UPLOAD_CHUNK_V2_TYPE) => holds_upload_key(state, issuer).await,
+        Some(vti_rooms::blob_tasks::UPLOAD_BEGIN_V2_TYPE) if files.files_enabled() => {
             match peek_room_id(body) {
                 Some(room_id) => vti_rooms::storage::get_room(&state.rooms_ks, &room_id)
                     .await
@@ -430,6 +474,13 @@ async fn has_standing(state: &AppState, body: &[u8], issuer: &str) -> bool {
         }
         _ => false,
     }
+}
+
+/// Whether the claimed `issuer` of an upload chunk is the single-use key of an open
+/// upload (`rooms/blobs/upload/begin/0.2` item 12).
+async fn holds_upload_key(state: &AppState, issuer: &str) -> bool {
+    let did = issuer.split('#').next().unwrap_or(issuer);
+    state.room_files.holds_open_upload_key(did).await
 }
 
 /// The `payload.roomId` of a room task, read as [`peek_type`] reads `type`.
@@ -769,6 +820,7 @@ mod tests {
                 updated_by: None,
                 expires_at: None,
                 resource_grants: Vec::new(),
+                group_grants: Vec::new(),
                 label_set_by_subject: false,
                 suspension: None,
             },
@@ -805,7 +857,7 @@ mod tests {
     /// document is held to the default, and charges nothing.
     #[tokio::test]
     async fn a_room_file_document_takes_its_raised_limit_from_room_standing() {
-        use vti_rooms::wire::{ROOMS_BLOBS_UPLOAD_BEGIN_TYPE, ROOMS_BLOBS_UPLOAD_CHUNK_TYPE};
+        use vti_rooms::wire::{ROOMS_BLOBS_UPLOAD_BEGIN_V2_TYPE, ROOMS_BLOBS_UPLOAD_CHUNK_V2_TYPE};
         let vtc = crate::test_support::build_test_vtc().await;
         let state = &vtc.state;
         let f = vti_rooms_dtg::test_support::RoomFixture::new(vti_rooms::Visibility::Open).await;
@@ -813,12 +865,14 @@ mod tests {
             .await
             .unwrap();
         let len = DEFAULT_MAX_DOCUMENT_BYTES + 1;
-        assert!(max_document_bytes(ROOMS_BLOBS_UPLOAD_CHUNK_TYPE) >= len);
-        assert!(max_document_bytes(ROOMS_BLOBS_UPLOAD_BEGIN_TYPE) >= len);
+        assert!(max_document_bytes(ROOMS_BLOBS_UPLOAD_CHUNK_V2_TYPE) >= len);
+        assert!(max_document_bytes(ROOMS_BLOBS_UPLOAD_BEGIN_V2_TYPE) >= len);
 
-        // Nobody holds an upload yet: the would-be uploader is a stranger.
-        let uploader = f.owner.did.as_str();
-        let chunk = |issuer: &str| room_document(issuer, ROOMS_BLOBS_UPLOAD_CHUNK_TYPE, "-", len);
+        // Nobody holds an upload yet: the would-be upload key is a stranger.
+        let upload_key = vti_rooms_dtg::test_support::Party::new();
+        let uploader = upload_key.did.as_str();
+        let chunk =
+            |issuer: &str| room_document(issuer, ROOMS_BLOBS_UPLOAD_CHUNK_V2_TYPE, "-", len);
         let early = refusal(
             check_for_known_issuer(state, &chunk(uploader), "ip:early", 0)
                 .await
@@ -835,11 +889,15 @@ mod tests {
         let manifest = serde_json::to_value(builder.finish().unwrap()).unwrap();
         state
             .room_files
-            .begin(
+            .begin_v2(
                 &f.room,
-                uploader,
+                f.owner.did.as_str(),
                 None,
                 vti_rooms::blobs::Manifest::parse(&manifest).unwrap(),
+                vti_rooms::blobs::UploadOffer {
+                    upload_key_did: Some(upload_key.did.clone()),
+                    direct_parts: None,
+                },
             )
             .await
             .expect("open an upload");
@@ -866,7 +924,7 @@ mod tests {
         let begin = |room: &str| {
             room_document(
                 "did:key:z6MkSizeMember",
-                ROOMS_BLOBS_UPLOAD_BEGIN_TYPE,
+                ROOMS_BLOBS_UPLOAD_BEGIN_V2_TYPE,
                 room,
                 len,
             )

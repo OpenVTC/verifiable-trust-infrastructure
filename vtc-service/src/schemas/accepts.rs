@@ -4,7 +4,7 @@
 //!
 //! Where the **Issues** registry ([`super::SchemaEntry`]) names the types the
 //! community *mints*, an **Accepts criterion** is one way into the community
-//! (`vtc/schemas/accepts/register/0.2`, `vtc/join-requests/manifest/0.3`): an
+//! (`vtc/schemas/accepts/register/0.2`, `vtc/join-requests/manifest/0.4`): an
 //! `admission` mode, and the requirements it states — any of a DCQL query over
 //! the registry with the issuers whose credentials count, peer-vetting
 //! requirements, and an invitation — or none. Which criteria a community has,
@@ -23,7 +23,7 @@
 //!
 //! The manifest lists criteria **in the order the community decides by**: a
 //! submission naming no criterion is decided under the first it meets
-//! (`vtc/join-requests/manifest/0.3` item 3). That order is registration order
+//! (`vtc/join-requests/manifest/0.4` item 3). That order is registration order
 //! — [`AcceptsCriterion::position`], assigned when an id is first registered and
 //! kept when it is replaced — so an administrator reorders by deleting a
 //! criterion and registering it again. `vtc/schemas/accepts/list/0.2` pages in
@@ -153,7 +153,7 @@ pub struct AcceptsCriterion {
     /// The register task additionally requires its `statementType` to be a
     /// registered endorsement type.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schema(value_type = Option<vta_sdk::openapi::JoinManifest02VettingRequirements>)]
+    #[schema(value_type = Option<vta_sdk::openapi::JoinManifest04VettingRequirements>)]
     pub vetting: Option<VettingRequirements>,
     /// Hidden-vetter admission (ZKP, development branch `zkp-pcs`): the published
     /// parameters an applicant proves against, and this VTC checks — `hvk`, `tvk`
@@ -273,6 +273,11 @@ pub async fn validate_accepts_query(
 ) -> Result<DcqlQuery, AppError> {
     let dcql = DcqlQuery::from_json(query)
         .map_err(|e| AppError::Validation(format!("invalid DCQL query: {e}")))?;
+    for cq in &dcql.credentials {
+        if let Some(authorities) = &cq.trusted_authorities {
+            check_trusted_authorities(&cq.id, &cq.format, authorities)?;
+        }
+    }
 
     for type_uri in referenced_types(&dcql) {
         if !schema_exists(schemas_ks, &type_uri).await? {
@@ -283,6 +288,62 @@ pub async fn validate_accepts_query(
         }
     }
     Ok(dcql)
+}
+
+/// A credential query's `trusted_authorities` must be one this verifier can
+/// hold, not merely publish: the wallet treats it as a filter, and the
+/// verifier still has to check it (OpenID4VP 1.0 §6.1.1). Only `aki` is
+/// checkable — against the `x5c` chain of an SD-JWT VC issuer — so an
+/// `etsi_tl` or `openid_federation` entry, or one on another format, is
+/// refused rather than published and ignored.
+fn check_trusted_authorities(
+    id: &str,
+    format: &str,
+    authorities: &[affinidi_openid4vp::TrustedAuthoritiesQuery],
+) -> Result<(), AppError> {
+    use affinidi_openid4vp::TrustedAuthorityType;
+    use base64::Engine as _;
+    let refuse = |why: String| {
+        Err(AppError::Validation(format!(
+            "credential query `{id}`: trusted_authorities {why}"
+        )))
+    };
+    if format != crate::join::criteria::SD_JWT_VC_FORMAT {
+        return refuse(format!(
+            "is checked against an SD-JWT VC issuer's certificate chain, and this query asks \
+             for `{format}`"
+        ));
+    }
+    if authorities.is_empty() {
+        return refuse("is empty; omit it to accept any issuer".into());
+    }
+    for entry in authorities {
+        let unchecked = match entry.authority_type {
+            TrustedAuthorityType::Aki => None,
+            TrustedAuthorityType::EtsiTl => Some("etsi_tl"),
+            TrustedAuthorityType::OpenidFederation => Some("openid_federation"),
+        };
+        if let Some(kind) = unchecked {
+            return refuse(format!(
+                "of type `{kind}` cannot be checked by this verifier; use `aki` with the key \
+                 identifier of the certification authority, and configure that authority in \
+                 `[oid4vp] x509_trust_anchors`"
+            ));
+        }
+        if entry.values.is_empty() {
+            return refuse("has an `aki` entry with no values".into());
+        }
+        for value in &entry.values {
+            let decoded = base64::engine::general_purpose::URL_SAFE_NO_PAD
+                .decode(value.trim_end_matches('='));
+            if !matches!(decoded, Ok(ref id) if !id.is_empty()) {
+                return refuse(format!(
+                    "`aki` value `{value}` is not a base64url key identifier"
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 /// The rules the criterion's own shape states, which a JSON Schema
@@ -613,6 +674,76 @@ mod tests {
 
         delete_accepts(&ks, "join").await.unwrap();
         assert!(get_accepts(&ks, "join").await.unwrap().is_none());
+    }
+
+    fn with_trusted_authorities(format: &str, authorities: Value) -> AcceptsCriterion {
+        let mut c = criterion("pid", MEMBERSHIP_VCT);
+        let cq = &mut c.query.as_mut().unwrap()["credentials"][0];
+        cq["format"] = json!(format);
+        cq["trusted_authorities"] = authorities;
+        c
+    }
+
+    /// `aki` is checked against the issuer's chain, so it is accepted and
+    /// published with the query.
+    #[tokio::test]
+    async fn an_aki_trusted_authority_is_stored_with_the_query() {
+        let (_d, _s, ks) = ks().await;
+        register_membership(&ks).await;
+        let c = with_trusted_authorities(
+            "dc+sd-jwt",
+            json!([{ "type": "aki", "values": ["s9tIpPmhxdiuNkHMEWNpYim8S8Y"] }]),
+        );
+        store_accepts(&ks, &c).await.expect("an aki query stores");
+        let q = get_accepts(&ks, "pid")
+            .await
+            .unwrap()
+            .unwrap()
+            .dcql()
+            .unwrap()
+            .unwrap();
+        assert!(q.credentials[0].trusted_authorities.is_some());
+    }
+
+    /// A constraint this verifier cannot hold is refused rather than published
+    /// to wallets and then ignored.
+    #[tokio::test]
+    async fn a_trusted_authority_the_verifier_cannot_check_is_refused() {
+        let (_d, _s, ks) = ks().await;
+        register_membership(&ks).await;
+        let aki = json!([{ "type": "aki", "values": ["s9tIpPmhxdiuNkHMEWNpYim8S8Y"] }]);
+        for (format, authorities, says) in [
+            (
+                "dc+sd-jwt",
+                json!([{ "type": "etsi_tl", "values": ["https://tl.example"] }]),
+                "etsi_tl",
+            ),
+            (
+                "dc+sd-jwt",
+                json!([{ "type": "openid_federation", "values": ["https://ta.example"] }]),
+                "openid_federation",
+            ),
+            (
+                "dc+sd-jwt",
+                json!([{ "type": "aki", "values": ["not base64!"] }]),
+                "base64url",
+            ),
+            (
+                "dc+sd-jwt",
+                json!([{ "type": "aki", "values": [] }]),
+                "no values",
+            ),
+            ("dc+sd-jwt", json!([]), "empty"),
+            ("ldp_vc", aki.clone(), "ldp_vc"),
+        ] {
+            let c = with_trusted_authorities(format, authorities);
+            let err = store_accepts(&ks, &c).await.expect_err(says);
+            assert!(
+                matches!(&err, AppError::Validation(m) if m.contains(says)),
+                "{says}: {err:?}"
+            );
+        }
+        assert!(get_accepts(&ks, "pid").await.unwrap().is_none());
     }
 
     /// Open admission is a criterion that requires nothing: no query, no

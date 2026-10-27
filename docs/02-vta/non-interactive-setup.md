@@ -198,12 +198,24 @@ summary.
 | `"vault"` | `addr`, `secret_path`, optional `kv_mount`/`secret_key`/`namespace`/`auth_method`/auth fields |
 | `"kubernetes"` | `secret_name`, optional `namespace`, optional `secret_key` (default `"seed"`) |
 | `"config_seed"` | none — hex seed embedded in `config.toml`. **Not recommended.** |
+| `"encrypted_file"` | `kek` (`{ source = "passphrase", file = … }` / `{ source = "passphrase", credential = … }` / `{ source = "systemd_creds", credential = … }` / `{ source = "tpm", pcrs = [ … ] }`), optional `path` (default `<data_dir>/seed.enc`). AES-256-GCM file for a host with no OS keyring; the KEK must be readable when setup runs. See [secret backends](secret-backends.md#encrypted-file-encrypted_file). |
 | `"plaintext"` | none — plaintext file under `data_dir`. **Dev only.** |
 
 Cloud / external backends require the matching feature at compile time
 (`aws-secrets`, `gcp-secrets`, `azure-secrets`, `vault-secrets`,
 `k8s-secrets`) — the wizard refuses to proceed with a clear error if the
 feature isn't compiled in.
+
+`encrypted_file` needs no feature, except for `source = "tpm"`, which needs a
+Linux build with the `tpm` feature. In the setup file its fields sit directly
+in `[secrets]`; the generated `config.toml` carries them as a
+`[secrets.encrypted_file]` table:
+
+```toml
+[secrets]
+backend = "encrypted_file"
+kek = { source = "systemd_creds", credential = "vta-seed-kek" }
+```
 
 A Kubernetes `Secret` backend, for example:
 
@@ -363,6 +375,17 @@ starting point is to keep that sum at 40–60% of the container's memory
 `limit` and leave the remainder for everything else. Startup's journal
 replay briefly holds close to `max_journal` in memory, so a limit set
 right at the steady-state sum above can still OOM on a restart.
+
+**The floor none of these settings lower.** fjall (3.1.12, the current
+release) starts a new journal file only once the active one passes about
+64 MB, and on startup it replays the *whole* active journal into memory,
+including writes it had already flushed to disk. A clean shutdown does not
+shorten it. So whatever the three settings say, a restart can briefly need
+up to ~64 MiB for the replay on top of the block cache and the process's
+own baseline, and a quiet store keeps that journal for as long as it takes
+to write 64 MB. Do not give a VTA or VTC less than **256 MiB**. Below that,
+an OOM kill can repeat at every start: each kill happens before anything is
+flushed, so the journal the next start replays is never shorter (#1777).
 
 ## Validation and errors
 

@@ -47,7 +47,7 @@
 use std::sync::Arc;
 
 use axum::Json;
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use dtg_credentials::DTGCredentialType;
 use serde::Serialize;
 use serde_json::Value as JsonValue;
@@ -71,7 +71,7 @@ use crate::recognition::{
 };
 use crate::server::AppState;
 use affinidi_vc::VerifiableCredential;
-use trust_tasks_rs::specs::vtc::auth::recognise::challenge::v0_1::Response as RecogniseChallengeResponse;
+use trust_tasks_rs::specs::vtc::auth::recognise::challenge::v0_2::Response as RecogniseChallengeResponse;
 use vta_sdk::protocols::members::{AUTHORITY_CREDENTIAL_TYPE, MEMBERSHIP_CREDENTIAL_TYPE};
 
 #[derive(Debug, Serialize)]
@@ -89,7 +89,9 @@ pub struct RecogniseData {
     /// Minted JWT. Carries the *mapped local* role, not the
     /// foreign one.
     pub access_token: String,
-    pub access_expires_at: u64,
+    /// The access token's expiry: RFC 3339 on the wire (`vtc/auth/recognise/0.3`;
+    /// 0.2 sent Unix seconds).
+    pub access_expires_at: DateTime<Utc>,
     /// Foreign issuer DID, surfaced so the caller can correlate
     /// the response with their request (the route doesn't echo
     /// the credentials).
@@ -110,7 +112,7 @@ impl std::fmt::Debug for RecogniseData {
     }
 }
 
-/// `vtc/auth/recognise/challenge/0.1` — issue a single-use, TTL'd nonce the
+/// `vtc/auth/recognise/challenge/0.2` — issue a single-use, TTL'd nonce the
 /// holder binds into their recognise VP. Bound to this VTC's DID as the
 /// audience, so the resulting VP can't be replayed against a different VTC.
 /// Called from `trust_tasks::recognise_tasks`; no REST route mounts it.
@@ -126,7 +128,7 @@ pub(crate) async fn recognise_challenge(
         now,
     )
     .await?;
-    let expires_at = (now + challenge::DEFAULT_CHALLENGE_TTL).timestamp() as u64;
+    let expires_at = now + challenge::DEFAULT_CHALLENGE_TTL;
     RecogniseChallengeResponse::builder()
         .nonce(nonce)
         .expires_at(expires_at)
@@ -138,17 +140,17 @@ pub(crate) async fn recognise_challenge(
 /// verification, fell outside its validity window, or was revoked through
 /// `credentialStatus`.
 pub const RECOGNISE_ERR_CREDENTIAL_INVALID: &str =
-    trust_tasks_rs::specs::vtc::auth::recognise::v0_2::error_codes::CREDENTIAL_INVALID.code;
+    trust_tasks_rs::specs::vtc::auth::recognise::v0_3::error_codes::CREDENTIAL_INVALID.code;
 /// `vtc/auth/recognise:issuerNotRecognised` — the foreign issuer is not in this
 /// community's recognition graph.
 pub const RECOGNISE_ERR_ISSUER_NOT_RECOGNISED: &str =
-    trust_tasks_rs::specs::vtc::auth::recognise::v0_2::error_codes::ISSUER_NOT_RECOGNISED.code;
+    trust_tasks_rs::specs::vtc::auth::recognise::v0_3::error_codes::ISSUER_NOT_RECOGNISED.code;
 /// `vtc/auth/recognise:roleNotMapped` — policy allowed the issuer but mapped
 /// the foreign role to no local role.
 pub const RECOGNISE_ERR_ROLE_NOT_MAPPED: &str =
-    trust_tasks_rs::specs::vtc::auth::recognise::v0_2::error_codes::ROLE_NOT_MAPPED.code;
+    trust_tasks_rs::specs::vtc::auth::recognise::v0_3::error_codes::ROLE_NOT_MAPPED.code;
 
-/// `vtc/auth/recognise/0.2` — cross-community session mint from a
+/// `vtc/auth/recognise/0.3` — cross-community session mint from a
 /// holder-signed VP embedding a foreign VAC + VMC. Called from
 /// `trust_tasks::recognise_tasks`; no REST route mounts it.
 pub(crate) async fn recognise(
@@ -473,7 +475,8 @@ pub async fn mint_recognised_session(
             false,
         )
         .with_aal(vec!["did".to_string()], "aal1");
-    let access_expires_at = claims.exp;
+    let access_expires_at =
+        DateTime::from_timestamp(claims.exp as i64, 0).unwrap_or(DateTime::UNIX_EPOCH);
     let access_token = jwt_keys.encode(&claims)?;
 
     // Audit: minted.
@@ -596,7 +599,7 @@ fn map_recognition_error(e: RecognitionError) -> TaskError {
         .into(),
         // The three the specification names, each carrying its declared code so
         // a client can branch on the refusal instead of parsing prose
-        // (SPEC §8.5; `vtc/auth/recognise/0.2`).
+        // (SPEC §8.5; `vtc/auth/recognise/0.3`).
         //
         // `credentialInvalid` is declared as "failed proof verification, was
         // expired, or was revoked via credentialStatus" — exactly these three

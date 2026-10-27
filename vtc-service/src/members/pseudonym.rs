@@ -48,7 +48,7 @@ use serde_json::Value as JsonValue;
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 use vti_common::error::AppError;
-use vti_common::store::KeyspaceHandle;
+use vti_common::store::{Batch, KeyspaceHandle};
 
 /// Storage prefix for pseudonym claims, inside the `members` keyspace.
 pub const PSEUDONYM_PREFIX: &str = "personhood_pseudonym:";
@@ -107,6 +107,30 @@ pub async fn holder(
         .map_err(|e| AppError::Internal(format!("PseudonymClaim decode: {e}")))
 }
 
+/// How many times a claim re-reads the rows it checks after another writer
+/// changed one between the read and the conditional write. An attempt is lost
+/// only to another claim or release on the same pseudonym that was applied;
+/// the bound only stops a pathological stream of them from holding a caller.
+const CLAIM_ATTEMPTS: usize = 64;
+
+fn already_held() -> AppError {
+    AppError::Conflict("this person already holds a membership in this community".into())
+}
+
+/// The claim at `key` as stored (plaintext, for a `require_unchanged`
+/// precondition) and as parsed.
+async fn read_claim(
+    members_ks: &KeyspaceHandle,
+    key: &str,
+) -> Result<Option<(Vec<u8>, PseudonymClaim)>, AppError> {
+    let Some(bytes) = members_ks.get_raw(key).await? else {
+        return Ok(None);
+    };
+    let claim = serde_json::from_slice(&bytes)
+        .map_err(|e| AppError::Internal(format!("PseudonymClaim decode: {e}")))?;
+    Ok(Some((bytes, claim)))
+}
+
 /// Bind `pseudonym` to `member_did`, or report who already holds it.
 ///
 /// Re-claiming for the **same** member succeeds: a member who asserts
@@ -125,23 +149,57 @@ pub async fn claim(
     pseudonym: &str,
     member_did: &str,
 ) -> Result<(), AppError> {
-    if let Some(existing) = holder(members_ks, community_did, pseudonym).await?
-        && existing.member_did != member_did
-    {
-        return Err(AppError::Conflict(
-            "this person already holds a membership in this community".into(),
-        ));
+    claim_all(members_ks, community_did, &[pseudonym], member_did).await
+}
+
+/// Bind every one of `pseudonyms` to `member_did`, all or nothing — [`claim`]
+/// for each, as one conditional store batch.
+///
+/// Each pseudonym's write applies only while its row is still what was checked
+/// (absent, or this member's own claim), so of two members racing for one
+/// pseudonym exactly one is bound and the other gets `Conflict`. A check then
+/// an insert let both pass the check, the later insert silently re-pointing
+/// the claim — two memberships for one person. And because the batch is
+/// all-or-nothing, a member refused on one pseudonym is left holding none of
+/// the others: claiming one by one bound the earlier ones before the refusal.
+pub async fn claim_all(
+    members_ks: &KeyspaceHandle,
+    community_did: &str,
+    pseudonyms: &[&str],
+    member_did: &str,
+) -> Result<(), AppError> {
+    let mut keys: Vec<String> = pseudonyms.iter().map(|p| key(community_did, p)).collect();
+    keys.sort();
+    keys.dedup();
+    if keys.is_empty() {
+        return Ok(());
     }
-    members_ks
-        .insert(
-            key(community_did, pseudonym),
-            &PseudonymClaim {
-                member_did: member_did.to_string(),
-                claimed_at: Utc::now(),
-                endorsement_id: None,
-            },
-        )
-        .await
+    for _ in 0..CLAIM_ATTEMPTS {
+        let mut batch = Batch::new();
+        for k in &keys {
+            match read_claim(members_ks, k).await? {
+                Some((_, existing)) if existing.member_did != member_did => {
+                    return Err(already_held());
+                }
+                Some((raw, _)) => batch.require_unchanged(k.clone(), raw),
+                None => batch.require_absent(k.clone()),
+            };
+            batch.insert(
+                k.clone(),
+                &PseudonymClaim {
+                    member_did: member_did.to_string(),
+                    claimed_at: Utc::now(),
+                    endorsement_id: None,
+                },
+            )?;
+        }
+        if members_ks.apply_batch(batch).await?.is_applied() {
+            return Ok(());
+        }
+    }
+    Err(AppError::Conflict(
+        "a personhood pseudonym kept changing while it was being claimed".into(),
+    ))
 }
 
 /// Whether [`claim_for_statement`] wrote a new binding or found one already
@@ -163,7 +221,9 @@ pub enum StatementClaim {
 /// The pseudonym comes from the operator who made the check, never from the
 /// credential: a `vetted/1` value has no member for it, and the community
 /// does not write one into anything it signs. Like [`claim`], only a digest is
-/// stored, and the same member re-claiming succeeds.
+/// stored, the same member re-claiming succeeds, and the write is conditional
+/// on the row still being what was checked, so two members racing for one
+/// pseudonym cannot both be bound.
 ///
 /// A same-member binding from an accepted provider's credential is left
 /// untagged, so revoking the statement does not release uniqueness the
@@ -181,34 +241,42 @@ pub async fn claim_for_statement(
     member_did: &str,
     endorsement_id: Uuid,
 ) -> Result<StatementClaim, AppError> {
-    let existing = holder(members_ks, community_did, pseudonym).await?;
-    let outcome = match &existing {
-        Some(c) if c.member_did != member_did => {
-            return Err(AppError::Conflict(
-                "this person already holds a membership in this community".into(),
-            ));
-        }
-        Some(c) if c.endorsement_id.is_none() => return Ok(StatementClaim::AlreadyHeld),
-        Some(_) => StatementClaim::AlreadyHeld,
-        None => StatementClaim::Bound,
-    };
-    members_ks
-        .insert(
-            key(community_did, pseudonym),
+    let k = key(community_did, pseudonym);
+    for _ in 0..CLAIM_ATTEMPTS {
+        let mut batch = Batch::new();
+        let outcome = match read_claim(members_ks, &k).await? {
+            Some((_, c)) if c.member_did != member_did => return Err(already_held()),
+            Some((_, c)) if c.endorsement_id.is_none() => return Ok(StatementClaim::AlreadyHeld),
+            Some((raw, _)) => {
+                batch.require_unchanged(k.clone(), raw);
+                StatementClaim::AlreadyHeld
+            }
+            None => {
+                batch.require_absent(k.clone());
+                StatementClaim::Bound
+            }
+        };
+        batch.insert(
+            k.clone(),
             &PseudonymClaim {
                 member_did: member_did.to_string(),
                 claimed_at: Utc::now(),
                 endorsement_id: Some(endorsement_id),
             },
-        )
-        .await?;
-    Ok(outcome)
+        )?;
+        if members_ks.apply_batch(batch).await?.is_applied() {
+            return Ok(outcome);
+        }
+    }
+    Err(AppError::Conflict(
+        "a personhood pseudonym kept changing while it was being claimed".into(),
+    ))
 }
 
-/// Every readable claim, with its storage key.
+/// Every readable claim, with its storage key and stored bytes.
 async fn all_claims(
     members_ks: &KeyspaceHandle,
-) -> Result<Vec<(Vec<u8>, PseudonymClaim)>, AppError> {
+) -> Result<Vec<(Vec<u8>, Vec<u8>, PseudonymClaim)>, AppError> {
     let rows = members_ks
         .prefix_iter_raw(PSEUDONYM_PREFIX.as_bytes())
         .await?;
@@ -217,9 +285,21 @@ async fn all_claims(
         .filter_map(|(key, bytes)| {
             serde_json::from_slice::<PseudonymClaim>(&bytes)
                 .ok()
-                .map(|c| (key, c))
+                .map(|c| (key, bytes, c))
         })
         .collect())
+}
+
+/// Remove a claim only while it is still the row a scan read — a release
+/// decided on one claim never deletes a different one written since.
+async fn remove_if_unchanged(
+    members_ks: &KeyspaceHandle,
+    key: Vec<u8>,
+    bytes: Vec<u8>,
+) -> Result<bool, AppError> {
+    let mut batch = Batch::new();
+    batch.require_unchanged(key.clone(), bytes).remove(key);
+    Ok(members_ks.apply_batch(batch).await?.is_applied())
 }
 
 /// Whether the community holds a pseudonym binding for `member_did` — the
@@ -232,7 +312,7 @@ pub async fn is_bound(members_ks: &KeyspaceHandle, member_did: &str) -> Result<b
     Ok(all_claims(members_ks)
         .await?
         .iter()
-        .any(|(_, c)| c.member_did == member_did))
+        .any(|(_, _, c)| c.member_did == member_did))
 }
 
 /// Release the binding the community made when it issued the `vetted/1`
@@ -245,9 +325,10 @@ pub async fn release_for_statement(
     endorsement_id: Uuid,
 ) -> Result<usize, AppError> {
     let mut freed = 0usize;
-    for (key, claim) in all_claims(members_ks).await? {
-        if claim.endorsement_id == Some(endorsement_id) {
-            members_ks.remove(key).await?;
+    for (key, bytes, claim) in all_claims(members_ks).await? {
+        if claim.endorsement_id == Some(endorsement_id)
+            && remove_if_unchanged(members_ks, key, bytes).await?
+        {
             freed += 1;
         }
     }
@@ -264,7 +345,11 @@ pub async fn release(
     community_did: &str,
     pseudonym: &str,
 ) -> Result<(), AppError> {
-    members_ks.remove(key(community_did, pseudonym)).await
+    // A batch, so it is ordered against a claim's conditional write.
+    let mut batch = Batch::new();
+    batch.remove(key(community_did, pseudonym));
+    members_ks.apply_batch(batch).await?;
+    Ok(())
 }
 
 /// Release every claim held by `member_did`, returning how many were freed.
@@ -303,8 +388,7 @@ pub async fn release_for_member(
             // duplicate. Leave it and let the decode failure surface elsewhere.
             continue;
         };
-        if claim.member_did == member_did {
-            members_ks.remove(key).await?;
+        if claim.member_did == member_did && remove_if_unchanged(members_ks, key, bytes).await? {
             freed += 1;
         }
     }
@@ -658,5 +742,110 @@ mod tests {
             extract(&blank, &[IDVP.into()]).is_empty(),
             "an empty pseudonym is absent, not a value everyone shares"
         );
+    }
+    /// One person, two identities racing to join: exactly one is bound. A
+    /// check then an insert let both pass, the later re-pointing the claim.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+    async fn racing_claims_bind_a_pseudonym_to_exactly_one_member() {
+        let (ks, _dir) = temp_ks();
+        for round in 0..40 {
+            let pseudonym = format!("race-{round}");
+            let barrier = std::sync::Arc::new(tokio::sync::Barrier::new(16));
+            let mut tasks = Vec::new();
+            for i in 0..16 {
+                let (ks, barrier, pseudonym) = (ks.clone(), barrier.clone(), pseudonym.clone());
+                tasks.push(tokio::spawn(async move {
+                    let member = format!("did:key:zMember{i}");
+                    barrier.wait().await;
+                    if i % 2 == 0 {
+                        claim(&ks, COMMUNITY, &pseudonym, &member).await.is_ok()
+                    } else {
+                        claim_for_statement(&ks, COMMUNITY, &pseudonym, &member, Uuid::new_v4())
+                            .await
+                            .is_ok()
+                    }
+                }));
+            }
+            let mut bound = 0;
+            for t in tasks {
+                bound += t.await.unwrap() as usize;
+            }
+            assert_eq!(bound, 1, "one pseudonym, {bound} members bound");
+        }
+    }
+
+    /// A member refused on one pseudonym holds none of the others they
+    /// presented: claiming is all or nothing.
+    #[tokio::test]
+    async fn a_refused_multi_claim_binds_nothing() {
+        let (ks, _dir) = temp_ks();
+        claim(&ks, COMMUNITY, "p-2", BOB).await.unwrap();
+        let err = claim_all(&ks, COMMUNITY, &["p-1", "p-2", "p-3"], ALICE)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, AppError::Conflict(_)), "{err}");
+        assert!(holder(&ks, COMMUNITY, "p-1").await.unwrap().is_none());
+        assert!(holder(&ks, COMMUNITY, "p-3").await.unwrap().is_none());
+        assert_eq!(
+            holder(&ks, COMMUNITY, "p-2")
+                .await
+                .unwrap()
+                .unwrap()
+                .member_did,
+            BOB
+        );
+    }
+
+    /// Two members racing over overlapping pseudonym sets: the loser holds
+    /// none of its set, never a part of it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+    async fn racing_multi_claims_are_all_or_nothing() {
+        let (ks, _dir) = temp_ks();
+        for round in 0..40 {
+            let (a, b, c) = (
+                format!("a{round}"),
+                format!("b{round}"),
+                format!("c{round}"),
+            );
+            let barrier = std::sync::Arc::new(tokio::sync::Barrier::new(2));
+            let t1 = {
+                let (ks, barrier, a, b) = (ks.clone(), barrier.clone(), a.clone(), b.clone());
+                tokio::spawn(async move {
+                    barrier.wait().await;
+                    claim_all(&ks, COMMUNITY, &[&a, &b], ALICE).await.is_ok()
+                })
+            };
+            let t2 = {
+                let (ks, barrier, b, c) = (ks.clone(), barrier.clone(), b.clone(), c.clone());
+                tokio::spawn(async move {
+                    barrier.wait().await;
+                    claim_all(&ks, COMMUNITY, &[&b, &c], BOB).await.is_ok()
+                })
+            };
+            let (alice, bob) = (t1.await.unwrap(), t2.await.unwrap());
+            assert!(alice ^ bob, "exactly one of the overlapping claims wins");
+            let held = |p: String| {
+                let ks = ks.clone();
+                async move {
+                    holder(&ks, COMMUNITY, &p)
+                        .await
+                        .unwrap()
+                        .map(|c| c.member_did)
+                }
+            };
+            if alice {
+                assert_eq!(
+                    held(c.clone()).await,
+                    None,
+                    "Bob kept part of a refused claim"
+                );
+            } else {
+                assert_eq!(
+                    held(a.clone()).await,
+                    None,
+                    "Alice kept part of a refused claim"
+                );
+            }
+        }
     }
 }

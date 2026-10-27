@@ -9,7 +9,6 @@
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use tokio::sync::watch;
 use tracing::info;
 
 use vta_backup::restore::{PendingRestore, RestoreProvenance};
@@ -149,9 +148,12 @@ static REBOOT_REQUESTED: AtomicBool = AtomicBool::new(false);
 /// only way a committed restore takes effect. A soft restart is not enough: it
 /// keeps the storage key the process started with, and a restore may have
 /// changed it.
-pub fn request_reboot(restart_tx: &watch::Sender<bool>) {
+///
+/// The caller marks its outcome `with_restart()`, which stops the current
+/// generation once the reply has been sent; this flag turns that stop into an
+/// exit.
+pub fn request_reboot() {
     REBOOT_REQUESTED.store(true, Ordering::SeqCst);
-    crate::server::trigger_restart(restart_tx);
 }
 
 /// Whether [`request_reboot`] was called. The server's run loop returns instead

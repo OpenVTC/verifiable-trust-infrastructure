@@ -4,6 +4,7 @@
 //! envelope's hash.
 
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use chrono::Utc;
 use hmac::{Hmac, KeyInit, Mac};
@@ -15,9 +16,66 @@ use super::envelope::{AuditEnvelope, EVENT_VERSION, GENESIS_HASH, SCHEMA_VERSION
 use super::event::AuditEvent;
 use super::key_store::AuditKeyStore;
 use crate::error::AppError;
-use crate::store::KeyspaceHandle;
+use crate::store::{KeyspaceHandle, RawKvPair, ScanOpts};
 
 type HmacSha256 = Hmac<Sha256>;
+
+/// How many of the newest rows chain-head recovery reads before falling back
+/// to the deep scan below.
+///
+/// **The number is not load-bearing.** On a running log the newest row is
+/// already an envelope, so one row would usually do; the window is slack for
+/// the few non-envelope rows that can sort above it — a VTC's keyspace holds
+/// rows whose keys outrank an RFC 3339 timestamp, and a VTA mid-migration has
+/// pre-chain rows about. Because the deep scan stands behind it, choosing this
+/// too small costs an extra page, never a wrong answer, which is why 20 rather
+/// than the 8 first proposed is not a decision anyone needs to defend. Keep it
+/// small enough that the read stays trivial on every restart.
+const HEAD_LOOKBACK: usize = 20;
+
+/// How long a failed recovery is answered from the cached failure before one
+/// more attempt is made.
+///
+/// Long enough that a busy node does not re-read storage per audited
+/// operation while it is broken, short enough that fixing the cause (a
+/// restarted storage proxy) takes effect without restarting the node.
+const HEAD_RECOVERY_RETRY_BACKOFF: Duration = Duration::from_secs(60);
+
+/// Page size for the deep-scan fallback below — bounded per request so a
+/// single page still respects the vsock frame cap, same as `HEAD_LOOKBACK`.
+///
+/// The deep scan has a page size but no row cap. It walks until it finds an
+/// envelope or reaches the end of the prefix, because every answer short of
+/// the end is wrong: stopping and anchoring at genesis forks the chain if an
+/// envelope lies further back, and stopping and failing closed refuses every
+/// audit write to the prefix with nothing that could ever clear it (no write
+/// succeeds, so the next attempt walks the same rows). A legacy log larger
+/// than a fixed cap is ordinary — one row per audited operation over the
+/// retention window — so the cap would turn an upgrade into a lost audit
+/// trail. The walk's cost is bounded by the prefix and paid once: the
+/// envelope it lets the next write anchor is found by every later restart's
+/// `HEAD_LOOKBACK` read.
+const DEEP_SCAN_PAGE: usize = 500;
+
+/// Counter incremented once per failed chain-head recovery.
+///
+/// Recovery fails only when the scan itself fails — storage unreachable, a
+/// response too large for one frame, a value that would not decrypt — and by
+/// the time this fires every audit write to that prefix is failing closed.
+/// Nothing else makes that visible from outside the log itself.
+pub const AUDIT_CHAIN_RECOVERY_FAILURES: &str = "audit_chain_recovery_failures_total";
+
+#[derive(Clone)]
+enum ChainHeadState {
+    Unknown,
+    Known([u8; 32]),
+    /// Recovery failed at `since`; `cause` is the failure rendered whole
+    /// (`store error: …`), quoted by the refusals during the backoff.
+    Failed {
+        since: Instant,
+        cause: String,
+    },
+}
 
 /// Computes the envelope key (`<rfc3339-timestamp>:<event_id>`) so a
 /// prefix-iter scan walks rows in time order. Visible to other
@@ -52,12 +110,19 @@ pub struct AuditWriter {
     /// [`envelope_storage_key`] is the default and the only one a fresh
     /// keyspace needs.
     storage_key: Arc<dyn Fn(&AuditEnvelope) -> Vec<u8> + Send + Sync>,
+    /// Restricts chain-head recovery to the rows written by this writer.
+    /// Empty keeps the default whole-keyspace behavior used by VTC.
+    key_prefix: Vec<u8>,
+    /// Page size for the deep-scan fallback. See [`DEEP_SCAN_PAGE`] for the
+    /// production default and `AuditWriter::with_deep_scan_page` for why
+    /// tests override it.
+    deep_scan_page: usize,
     /// Cached `entry_hash` of the last-written envelope (the chain
     /// head). `None` until the first write loads it from storage
     /// (restart recovery). Guarded by an async mutex so the
     /// read-head → stamp → insert → update-head sequence is atomic
     /// across concurrent writers.
-    chain_head: Arc<Mutex<Option<[u8; 32]>>>,
+    chain_head: Arc<Mutex<ChainHeadState>>,
 }
 
 impl AuditWriter {
@@ -66,7 +131,9 @@ impl AuditWriter {
             audit_ks,
             key_store,
             storage_key: Arc::new(envelope_storage_key),
-            chain_head: Arc::new(Mutex::new(None)),
+            key_prefix: Vec::new(),
+            deep_scan_page: DEEP_SCAN_PAGE,
+            chain_head: Arc::new(Mutex::new(ChainHeadState::Unknown)),
         }
     }
 
@@ -82,6 +149,38 @@ impl AuditWriter {
         f: impl Fn(&AuditEnvelope) -> Vec<u8> + Send + Sync + 'static,
     ) -> Self {
         self.storage_key = Arc::new(f);
+        self
+    }
+
+    /// Restrict chain-head recovery to keys beginning with `prefix`.
+    ///
+    /// **The prefix must match what [`Self::with_storage_key`] emits**, and
+    /// the two are checked against each other nowhere. A prefix no envelope
+    /// key begins with makes recovery scan an empty range, find nothing,
+    /// conclude the prefix holds no chain, and anchor the next write at
+    /// [`GENESIS_HASH`] — forking the chain as quietly as a storage key that
+    /// does not sort by time does. Same failure, same silence; set them
+    /// together.
+    ///
+    /// The default is empty, meaning the whole keyspace, which is what a
+    /// keyspace holding nothing but envelopes wants. A VTA passes `log:`
+    /// because its audit keyspace also holds `prune:watermark`, which sorts
+    /// after every envelope and would otherwise be read as the newest row.
+    #[must_use]
+    pub fn with_key_prefix(mut self, prefix: impl Into<Vec<u8>>) -> Self {
+        self.key_prefix = prefix.into();
+        self
+    }
+
+    /// Override the deep-scan page size used by [`Self::load_chain_head`].
+    ///
+    /// Test-only: a small page lets a test walk many pages (or prove a page
+    /// shorter than requested means the prefix has ended) without writing
+    /// hundreds of rows per page.
+    #[cfg(test)]
+    #[must_use]
+    fn with_deep_scan_page(mut self, page: usize) -> Self {
+        self.deep_scan_page = page;
         self
     }
 
@@ -115,10 +214,28 @@ impl AuditWriter {
         // Hold the chain lock across the whole read-head → stamp →
         // insert → update-head sequence so concurrent writers can't
         // fork the chain (two envelopes sharing one `prev_hash`).
+        //
+        // A deliberate exception to "no lock across an await": releasing it to
+        // recover would let two writers recover and anchor concurrently, which
+        // is the fork this lock exists to prevent. The cost is that a first
+        // write needing the deep scan holds it for one storage round trip per
+        // `DEEP_SCAN_PAGE` legacy rows, blocking every other audit write
+        // meanwhile. Once per process, and only during the legacy-to-chained
+        // migration window — the steady state is one bounded read, and
+        // thereafter a cache hit.
         let mut head = self.chain_head.lock().await;
-        let prev_hash = match *head {
-            Some(h) => h,
-            None => self.load_chain_head().await?,
+        let current_state = head.clone();
+        let prev_hash = match current_state {
+            ChainHeadState::Known(hash) => hash,
+            ChainHeadState::Unknown => self.recover_chain_head(&mut head).await?,
+            ChainHeadState::Failed { since, cause } => {
+                if since.elapsed() < HEAD_RECOVERY_RETRY_BACKOFF {
+                    return Err(AppError::Internal(format!(
+                        "audit chain head unavailable: {cause}"
+                    )));
+                }
+                self.recover_chain_head(&mut head).await?
+            }
         };
 
         let mut envelope = AuditEnvelope {
@@ -140,33 +257,130 @@ impl AuditWriter {
         self.audit_ks
             .insert((self.storage_key)(&envelope), &envelope)
             .await?;
-        *head = Some(envelope.entry_hash);
+        *head = ChainHeadState::Known(envelope.entry_hash);
         Ok(envelope)
     }
 
-    /// Recover the chain head from storage on the first write after a
-    /// (re)start. The audit keyspace is keyed by
-    /// `<rfc3339-timestamp>:<event_id>`, so the last pair in ascending
-    /// key order is the most recently written envelope; its
-    /// `entry_hash` is the head. An empty (or pre-v2) log anchors at
-    /// [`GENESIS_HASH`].
-    async fn load_chain_head(&self) -> Result<[u8; 32], AppError> {
-        let pairs = self.audit_ks.prefix_iter_raw(Vec::new()).await?;
-
-        // Walk back to the newest row that is an envelope. Everything after
-        // it is a row written before this log was chained: a VTA's keyspace
-        // holds those, and the first chained write has to anchor at genesis
-        // rather than fail because the row next to it predates the scheme.
-        //
-        // Deserialization is the test rather than the key, because the key
-        // format is the caller's (see `with_storage_key`) and a value either
-        // is an envelope or is not.
-        for (_, raw) in pairs.iter().rev() {
-            if let Ok(env) = serde_json::from_slice::<AuditEnvelope>(raw) {
-                return Ok(env.entry_hash);
+    async fn recover_chain_head(&self, state: &mut ChainHeadState) -> Result<[u8; 32], AppError> {
+        match self.load_chain_head().await {
+            Ok(hash) => {
+                *state = ChainHeadState::Known(hash);
+                Ok(hash)
+            }
+            Err(error) => {
+                // The one place a recovery failure is counted, so none can be
+                // missed and none double-counted: every path out of
+                // `load_chain_head` arrives here exactly once.
+                metrics::counter!(AUDIT_CHAIN_RECOVERY_FAILURES).increment(1);
+                let cause = error.to_string();
+                tracing::error!(
+                    target: "audit.chain_recovery",
+                    error = %error,
+                    retry_after_secs = HEAD_RECOVERY_RETRY_BACKOFF.as_secs(),
+                    "audit chain head recovery failed"
+                );
+                *state = ChainHeadState::Failed {
+                    since: Instant::now(),
+                    cause,
+                };
+                Err(error)
             }
         }
-        Ok(GENESIS_HASH)
+    }
+
+    /// Recover the chain head from storage on the first write after a
+    /// (re)start. The last pair in ascending key order is the most recently
+    /// written envelope; its `entry_hash` is the head. The VTA supplies the
+    /// `log:` prefix, which includes both pre-v2 `log:<seconds>:<uuid>` rows
+    /// and chained `log:<seconds>:<nanos>:<uuid>` rows; VTC keeps the empty
+    /// prefix for its default `<rfc3339-timestamp>:<event_id>` keys. An empty
+    /// (or pre-v2) log anchors at [`GENESIS_HASH`].
+    ///
+    /// The fast path scans only the newest `HEAD_LOOKBACK` rows, which is all
+    /// a prefix that has ever anchored a chain needs: that first envelope is
+    /// permanent, so it is always within the lookback window of every later
+    /// restart. A prefix that has *not* anchored yet — a legacy log mid
+    /// migration — can have an arbitrary number of pre-chain rows newer than
+    /// the window, and wrongly reading that as "nothing here, anchor at
+    /// genesis" risks forking the chain if an envelope does exist further
+    /// back; wrongly reading it as "fail closed" bricks every future write to
+    /// this prefix forever, because no write ever succeeds to clear the
+    /// condition. So when the fast path is inconclusive, page further back
+    /// (bounded per request, to respect the vsock frame cap, but not in
+    /// total — see [`DEEP_SCAN_PAGE`]) until either an envelope turns up or
+    /// the prefix ends. This deep scan only runs during that one-time
+    /// migration window: the envelope the next write anchors is found by
+    /// every later restart's fast path in O(`HEAD_LOOKBACK`).
+    ///
+    /// The only failure is a failed read.
+    async fn load_chain_head(&self) -> Result<[u8; 32], AppError> {
+        let pairs = self
+            .audit_ks
+            .scan_raw(ScanOpts::newest_first(
+                self.key_prefix.clone(),
+                HEAD_LOOKBACK,
+            ))
+            .await?;
+
+        if let Some(hash) = newest_envelope_hash(&pairs) {
+            return Ok(hash);
+        }
+
+        if pairs.len() < HEAD_LOOKBACK {
+            // Fewer rows than the fast-path window: there is nothing older
+            // left to find, so this prefix is empty or entirely legacy.
+            return Ok(GENESIS_HASH);
+        }
+
+        // `Box::pin` rather than a bare `.await`: this fallback is only ever
+        // taken during the one-time legacy-migration window (see the doc
+        // comment above), but the compiler still has to size *this* function's
+        // state machine for the largest future it can await, branch taken or
+        // not. Inlining `deep_scan_for_chain_head`'s loop (with its page
+        // buffers and cursor) into every `load_chain_head` call — which is to
+        // say every first `write()` after a restart, on the hot context/task
+        // dispatch spine — blew the pinned 512 KiB worker-stack budget
+        // (`vti_08_context_create_fits_half_a_default_worker_stack`). Boxing
+        // puts the large, rarely-used half on the heap and leaves a
+        // pointer-sized slot in the common-path state machine instead.
+        Box::pin(self.deep_scan_for_chain_head(pairs)).await
+    }
+
+    /// Fallback for [`Self::load_chain_head`] when the fast-path window is
+    /// entirely non-envelope rows but the prefix holds more rows below it.
+    /// Pages backward until an envelope is found or the prefix runs out.
+    async fn deep_scan_for_chain_head(
+        &self,
+        fast_path: Vec<RawKvPair>,
+    ) -> Result<[u8; 32], AppError> {
+        let mut cursor = fast_path.into_iter().next_back().map(|(key, _)| key);
+
+        loop {
+            let Some(after) = cursor.take() else {
+                // No resume key: the fast-path window was itself the whole
+                // prefix (shouldn't happen, since that implies
+                // `pairs.len() < HEAD_LOOKBACK` above, but fail safe).
+                return Ok(GENESIS_HASH);
+            };
+
+            let page = self
+                .audit_ks
+                .scan_raw(
+                    ScanOpts::newest_first(self.key_prefix.clone(), self.deep_scan_page)
+                        .after(after),
+                )
+                .await?;
+
+            if let Some(hash) = newest_envelope_hash(&page) {
+                return Ok(hash);
+            }
+
+            if page.len() < self.deep_scan_page {
+                // Fewer rows than requested: this was the prefix's last page.
+                return Ok(GENESIS_HASH);
+            }
+            cursor = page.into_iter().next_back().map(|(key, _)| key);
+        }
     }
 
     /// Verify that `candidate_did` matches the actor recorded on
@@ -206,6 +420,17 @@ impl AuditWriter {
         let recomputed = hmac_did(&key.key, candidate_did);
         Ok(constant_time_eq(&recomputed, &expected))
     }
+}
+
+/// Returns the `entry_hash` of the newest pair in `pairs` that deserializes
+/// as an [`AuditEnvelope`], scanning in the slice's own (newest-first) order.
+/// A value either is an envelope or is not — the key format belongs to the
+/// caller, so deserialization is the test rather than the key.
+fn newest_envelope_hash(pairs: &[RawKvPair]) -> Option<[u8; 32]> {
+    pairs
+        .iter()
+        .find_map(|(_, raw)| serde_json::from_slice::<AuditEnvelope>(raw).ok())
+        .map(|env| env.entry_hash)
 }
 
 fn hmac_did(key: &[u8; 32], did: &str) -> [u8; 32] {
@@ -301,6 +526,306 @@ mod tests {
         assert_eq!(
             env.prev_hash, GENESIS_HASH,
             "the first chained entry anchors at genesis, not at a row that predates the chain"
+        );
+    }
+
+    #[tokio::test]
+    async fn prefixed_recovery_ignores_rows_outside_the_log_prefix() {
+        let f = fixture();
+        f.key_store.ensure_initial(&[0x0a; 32]).await.unwrap();
+        f.writer
+            .audit_ks
+            .insert(
+                b"log:00000000001700000000:legacy".to_vec(),
+                &serde_json::json!({
+                    "id": "legacy",
+                    "timestamp": 1_700_000_000u64,
+                    "action": "auth.challenge",
+                    "actor": "did:key:z6MkLegacy",
+                    "outcome": "success",
+                }),
+            )
+            .await
+            .unwrap();
+        f.writer
+            .audit_ks
+            .insert(
+                b"prune:watermark".to_vec(),
+                &serde_json::json!({
+                    "head": "00",
+                    "prunedEntries": 1,
+                    "prunedAt": "2026-10-13T00:00:00Z",
+                }),
+            )
+            .await
+            .unwrap();
+
+        let env = f
+            .writer
+            .clone()
+            .with_key_prefix("log:")
+            .write("did:key:z6Mk", None, sample_event())
+            .await
+            .unwrap();
+
+        assert_eq!(env.prev_hash, GENESIS_HASH);
+    }
+
+    /// Run `body` with a metrics recorder installed on this thread, and
+    /// return the total [`AUDIT_CHAIN_RECOVERY_FAILURES`] count it emitted.
+    ///
+    /// Thread-local rather than a global recorder, so tests running in
+    /// parallel cannot see each other's counters. The runtime is built inside
+    /// the closure for the same reason: `with_local_recorder`'s guard is tied
+    /// to this thread, and a current-thread runtime keeps the whole future on
+    /// it.
+    #[cfg(feature = "encryption")]
+    fn recovery_failures_during<F>(body: F) -> u64
+    where
+        F: std::future::Future<Output = ()>,
+    {
+        use metrics_util::debugging::{DebugValue, DebuggingRecorder};
+
+        let recorder = DebuggingRecorder::new();
+        let snapshotter = recorder.snapshotter();
+        metrics::with_local_recorder(&recorder, || {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("runtime")
+                .block_on(body);
+        });
+
+        snapshotter
+            .snapshot()
+            .into_vec()
+            .into_iter()
+            .filter(|(key, _, _, _)| key.key().name() == AUDIT_CHAIN_RECOVERY_FAILURES)
+            .map(|(_, _, _, value)| match value {
+                DebugValue::Counter(count) => count,
+                other => panic!("{AUDIT_CHAIN_RECOVERY_FAILURES} is not a counter: {other:?}"),
+            })
+            .sum()
+    }
+
+    /// Seed `count` non-envelope rows under `log:`, the shape a pre-chain VTA
+    /// log has.
+    async fn seed_legacy_rows(writer: &AuditWriter, count: usize) {
+        for index in 0..count {
+            writer
+                .audit_ks
+                .insert(
+                    format!("log:{index:020}:legacy"),
+                    &serde_json::json!({
+                        "id": format!("legacy-{index}"),
+                        "timestamp": 1_700_000_000u64 + index as u64,
+                        "action": "auth.challenge",
+                        "actor": "did:key:z6MkLegacy",
+                        "outcome": "success",
+                    }),
+                )
+                .await
+                .unwrap();
+        }
+    }
+
+    /// A writer whose recovery read storage refuses: rows written in the
+    /// clear, read back through a handle that insists on decrypting. The
+    /// scan reaches storage and is refused by it, which is the shape of the
+    /// real failures (an unreachable proxy, an oversized frame, a value that
+    /// will not decrypt).
+    #[cfg(feature = "encryption")]
+    async fn writer_whose_recovery_read_fails() -> (AuditWriter, tempfile::TempDir) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = Store::open(&StoreConfig {
+            data_dir: dir.path().to_path_buf(),
+        })
+        .expect("store");
+        let plain_ks = store.keyspace("audit").expect("audit ks");
+        let key_store = AuditKeyStore::new(store.keyspace("audit_key").expect("key ks"));
+        key_store.ensure_initial(&[0x1b; 32]).await.unwrap();
+
+        let seeding_writer = AuditWriter::new(plain_ks.clone(), key_store.clone());
+        seed_legacy_rows(&seeding_writer, 3).await;
+
+        let encrypted_ks = plain_ks.with_encryption([0x1c; 32]);
+        let writer = AuditWriter::new(encrypted_ks, key_store).with_key_prefix("log:");
+        (writer, dir)
+    }
+
+    /// A recovery that fails because the scan failed is counted once.
+    #[cfg(feature = "encryption")]
+    #[test]
+    fn a_storage_failure_during_recovery_is_counted_once() {
+        let count = recovery_failures_during(async {
+            let (writer, _dir) = writer_whose_recovery_read_fails().await;
+            writer
+                .write("did:key:z6Mk", None, sample_event())
+                .await
+                .expect_err("a scan that storage refuses must fail closed");
+        });
+
+        assert_eq!(count, 1);
+    }
+
+    /// Writes refused during the backoff window do not re-count the failure.
+    ///
+    /// The counter has to stay a count of *recoveries attempted and failed*,
+    /// not of audit writes refused: the backoff deliberately answers without
+    /// touching storage, so counting there would turn one broken log into a
+    /// rate that tracks traffic and tells an operator nothing about severity.
+    #[cfg(feature = "encryption")]
+    #[test]
+    fn writes_refused_during_the_backoff_do_not_re_count() {
+        let count = recovery_failures_during(async {
+            let (writer, _dir) = writer_whose_recovery_read_fails().await;
+            for _ in 0..3 {
+                writer
+                    .write("did:key:z6Mk", None, sample_event())
+                    .await
+                    .expect_err("every write fails while the head is unknown");
+            }
+        });
+
+        assert_eq!(
+            count, 1,
+            "three refused writes, one recovery attempt, one count"
+        );
+    }
+
+    /// A legacy log far longer than one deep-scan page, with no envelope
+    /// anywhere, is walked to its end and anchors at genesis — never refused.
+    /// A fixed cap here once turned an ordinary pre-chain log (one row per
+    /// audited operation over the retention window) into every audit write
+    /// failing closed, with nothing that could clear it.
+    #[tokio::test]
+    async fn a_legacy_log_spanning_many_deep_scan_pages_anchors_at_genesis() {
+        let f = fixture();
+        f.key_store.ensure_initial(&[0x0b; 32]).await.unwrap();
+        seed_legacy_rows(&f.writer, HEAD_LOOKBACK + 10 * 7 + 3).await;
+
+        let env = f
+            .writer
+            .with_key_prefix("log:")
+            .with_deep_scan_page(10)
+            .write("did:key:z6Mk", None, sample_event())
+            .await
+            .expect("a long legacy log must anchor, not fail closed");
+
+        assert_eq!(env.prev_hash, GENESIS_HASH);
+    }
+
+    /// A keyspace with *more* non-envelope rows than `HEAD_LOOKBACK` and no
+    /// envelope anywhere: a lookback-only scan would have failed closed
+    /// forever. Recovery must keep walking until it proves the prefix empty
+    /// of envelopes, then anchor at genesis.
+    #[tokio::test]
+    async fn legacy_log_longer_than_head_lookback_without_envelope_still_anchors_at_genesis() {
+        let f = fixture();
+        f.key_store.ensure_initial(&[0x0e; 32]).await.unwrap();
+        // More than HEAD_LOOKBACK: the fast path alone cannot decide.
+        let total_rows = HEAD_LOOKBACK + 10;
+        for index in 0..total_rows {
+            f.writer
+                .audit_ks
+                .insert(
+                    format!("log:{index:020}:legacy"),
+                    &serde_json::json!({
+                        "id": format!("legacy-{index}"),
+                        "timestamp": 1_700_000_000u64 + index as u64,
+                        "action": "auth.challenge",
+                        "actor": "did:key:z6MkLegacy",
+                        "outcome": "success",
+                    }),
+                )
+                .await
+                .unwrap();
+        }
+
+        let env = f
+            .writer
+            .with_key_prefix("log:")
+            .write("did:key:z6Mk", None, sample_event())
+            .await
+            .expect(
+                "a legacy log longer than HEAD_LOOKBACK but with no envelope must still anchor, \
+                 not fail closed",
+            );
+
+        assert_eq!(
+            env.prev_hash, GENESIS_HASH,
+            "the deep scan must prove the prefix envelope-free before anchoring at genesis"
+        );
+    }
+
+    /// The other half of the same regression: a chain that *did* anchor once
+    /// (its envelope key sorts older than a pile of more-recent legacy
+    /// rows written beneath it) must still be found by the deep-scan
+    /// fallback, not mistaken for an unanchored prefix.
+    #[tokio::test]
+    async fn deep_scan_finds_an_envelope_further_back_than_head_lookback() {
+        let f = fixture();
+        f.key_store.ensure_initial(&[0x0f; 32]).await.unwrap();
+
+        let anchor = f
+            .writer
+            .write("did:key:z6Mk", None, sample_event())
+            .await
+            .expect("seed the anchor envelope");
+
+        // Pile on more non-envelope rows than HEAD_LOOKBACK, sorted after
+        // the anchor's RFC 3339 storage key.
+        for index in 0..(HEAD_LOOKBACK + 5) {
+            f.writer
+                .audit_ks
+                .insert(
+                    format!("zzz-legacy-{index:020}"),
+                    &serde_json::json!({
+                        "id": format!("legacy-{index}"),
+                        "timestamp": 1_700_000_000u64 + index as u64,
+                        "action": "auth.challenge",
+                        "actor": "did:key:z6MkLegacy",
+                        "outcome": "success",
+                    }),
+                )
+                .await
+                .unwrap();
+        }
+
+        // A fresh writer over the same storage simulates a restart: the
+        // in-process chain-head cache from the `write` above must not be
+        // reused, so this exercises storage recovery, not the cache.
+        let restarted = AuditWriter::new(f.writer.audit_ks.clone(), f.key_store.clone());
+        let next = restarted
+            .write("did:key:z6Mk", None, sample_event())
+            .await
+            .expect("an envelope below the fast-path window must still be found");
+
+        assert_eq!(
+            next.prev_hash, anchor.entry_hash,
+            "the deep-scan fallback must anchor on the buried envelope, not genesis"
+        );
+    }
+
+    #[cfg(feature = "encryption")]
+    #[tokio::test]
+    async fn failed_head_recovery_is_cached_during_backoff() {
+        let (writer, _dir) = writer_whose_recovery_read_fails().await;
+
+        let first = writer
+            .write("did:key:z6Mk", None, sample_event())
+            .await
+            .expect_err("first head recovery must fail");
+        let second = writer
+            .write("did:key:z6Mk", None, sample_event())
+            .await
+            .expect_err("backoff must keep failing without a storage retry");
+
+        // The refusal quotes the original failure whole, so it keeps the kind
+        // that tells an operator which thing broke.
+        assert_eq!(
+            second.to_string(),
+            format!("internal error: audit chain head unavailable: {first}")
         );
     }
 

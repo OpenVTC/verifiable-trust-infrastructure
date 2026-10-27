@@ -2219,12 +2219,39 @@ pub async fn resolve_vta_endpoint_with_resolver_and_policy(
     did_resolver: &DIDCacheClient,
     policy: crate::http::EndpointPolicy,
 ) -> Result<VtaEndpoint, Box<dyn std::error::Error>> {
+    resolve_vta_endpoint_inner(vta_did, did_resolver, policy, OnUnresolved::GuessFromDid).await
+}
+
+/// What [`resolve_vta_endpoint_inner`] does when the DID itself does not
+/// resolve.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum OnUnresolved {
+    /// Guess a REST URL from the DID string — the session-connect behaviour,
+    /// for a `did:web` VTA reachable before its document is served.
+    GuessFromDid,
+    /// Fail, naming the resolution error. What a setup flow wants: a mistyped
+    /// DID otherwise surfaces much later as an unrelated "is this a VTA?"
+    /// against a guessed host (OpenVTC #501).
+    Refuse,
+}
+
+/// [`resolve_vta_endpoint_with_resolver_and_policy`] with the
+/// unresolved-DID behaviour chosen by the caller.
+pub(crate) async fn resolve_vta_endpoint_inner(
+    vta_did: &str,
+    did_resolver: &DIDCacheClient,
+    policy: crate::http::EndpointPolicy,
+    on_unresolved: OnUnresolved,
+) -> Result<VtaEndpoint, Box<dyn std::error::Error>> {
     use crate::protocol::matching::ServiceCapabilities;
 
     debug!(vta_did, "resolving VTA DID for transport selection");
 
     let resolved = match did_resolver.resolve(vta_did).await {
         Ok(r) => r,
+        Err(e) if on_unresolved == OnUnresolved::Refuse => {
+            return Err(format!("the DID does not resolve: {e}").into());
+        }
         Err(e) => {
             debug!(error = %e, "DID resolution failed, falling back to URL parsing");
             let url = url_from_did(vta_did)
@@ -2414,7 +2441,8 @@ pub async fn resolve_vta_url(vta_did: &str) -> Result<String, Box<dyn std::error
     )
 }
 
-/// Extract the base URL from a `did:web:` or `did:webvh:` DID string.
+/// Extract the base URL from a `did:web:` or `did:webvh:` DID string, or from
+/// the `src` of a `did:scid:vh:1` DID URL (a bare did:scid names no host).
 fn url_from_did(did: &str) -> Option<String> {
     let domain = if let Some(rest) = did.strip_prefix("did:web:") {
         // did:web:domain.com or did:web:domain.com%3A8100
@@ -2422,6 +2450,9 @@ fn url_from_did(did: &str) -> Option<String> {
     } else if let Some(rest) = did.strip_prefix("did:webvh:") {
         // did:webvh:SCID:domain.com or did:webvh:SCID:domain.com%3A8100
         rest.split(':').nth(1)
+    } else if did.starts_with(crate::did_scid::SCID_VH_PREFIX) {
+        // did:scid:vh:1:SCID?src=domain.com/path or ?src=domain.com%3A8100
+        crate::did_scid::src(did)?.split('/').next()
     } else {
         None
     }?;
@@ -3049,6 +3080,19 @@ pub struct TspSession {
     demux: crate::tsp_demux::TspDemux,
 }
 
+/// The signing + key-agreement secrets of a `did:key`, both from its one
+/// Ed25519 seed — what [`TspSession::connect`] and [`TspSession::connect_on`]
+/// hand to the secrets-driven constructors.
+#[cfg(feature = "tsp")]
+fn did_key_secrets(
+    client_did: &str,
+    private_key_multibase: &str,
+) -> Result<Vec<affinidi_tdk::secrets_resolver::secrets::Secret>, Box<dyn std::error::Error>> {
+    let seed = crate::did_key::decode_private_key_multibase(private_key_multibase)?;
+    let secrets = crate::did_key::secrets_from_did_key(client_did, &seed)?;
+    Ok(vec![secrets.signing, secrets.key_agreement])
+}
+
 #[cfg(feature = "tsp")]
 impl TspSession {
     /// Connect the client's TSP websocket to `mediator_did` (the VTA's `#tsp`
@@ -3060,6 +3104,31 @@ impl TspSession {
         private_key_multibase: &str,
         mediator_did: &str,
     ) -> Result<Self, Box<dyn std::error::Error>> {
+        let secrets = did_key_secrets(client_did, private_key_multibase)?;
+        Self::connect_with_secrets(client_did, secrets, mediator_did).await
+    }
+
+    /// Connect with pre-built secrets — the counterpart to
+    /// [`connect`](Self::connect) for an identity that is **not** a `did:key`.
+    ///
+    /// `connect` derives both secrets from one Ed25519 seed, which is right for
+    /// a `did:key` (its X25519 key-agreement key *is* the converted signing
+    /// key) and wrong for anything else. A `did:peer:2` relationship DID carries
+    /// an independent signing key `V` and key-agreement key `E` under its own
+    /// `#key-N` ids, as does a `did:webvh` with a
+    /// [`DidSecretsBundle`](crate::did_secrets::DidSecretsBundle) — build those
+    /// with [`crate::did_key::secrets_from_bundle`] and pass them here.
+    ///
+    /// Every secret's `id` MUST be a verification-method id of `client_did`, so
+    /// the mediator can match inbound recipients against it. Same contract as
+    /// [`DIDCommSession::connect_with_secrets`].
+    ///
+    /// [`DIDCommSession::connect_with_secrets`]: crate::didcomm_session::DIDCommSession::connect_with_secrets
+    pub async fn connect_with_secrets(
+        client_did: &str,
+        secrets: Vec<affinidi_tdk::secrets_resolver::secrets::Secret>,
+        mediator_did: &str,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
         let hub = crate::session_hub::SessionHub::new().await?;
         // Stringify before the shutdown await: a `Box<dyn Error>` is not `Send`,
         // and one held across an await would make this future non-`Send`.
@@ -3067,7 +3136,7 @@ impl TspSession {
             &hub,
             crate::session_hub::HubOwnership::Exclusive,
             client_did,
-            private_key_multibase,
+            secrets,
             mediator_did,
         )
         .await
@@ -3101,11 +3170,24 @@ impl TspSession {
         private_key_multibase: &str,
         mediator_did: &str,
     ) -> Result<Self, Box<dyn std::error::Error>> {
+        let secrets = did_key_secrets(client_did, private_key_multibase)?;
+        Self::connect_with_secrets_on(hub, client_did, secrets, mediator_did).await
+    }
+
+    /// Connect with pre-built secrets as one identity on a shared
+    /// [`SessionHub`](crate::session_hub::SessionHub) — the multi-identity
+    /// counterpart to [`connect_with_secrets`](Self::connect_with_secrets).
+    pub async fn connect_with_secrets_on(
+        hub: &std::sync::Arc<crate::session_hub::SessionHub>,
+        client_did: &str,
+        secrets: Vec<affinidi_tdk::secrets_resolver::secrets::Secret>,
+        mediator_did: &str,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
         Self::attach(
             hub,
             crate::session_hub::HubOwnership::Shared,
             client_did,
-            private_key_multibase,
+            secrets,
             mediator_did,
         )
         .await
@@ -3117,19 +3199,10 @@ impl TspSession {
         hub: &std::sync::Arc<crate::session_hub::SessionHub>,
         ownership: crate::session_hub::HubOwnership,
         client_did: &str,
-        private_key_multibase: &str,
+        secrets: Vec<affinidi_tdk::secrets_resolver::secrets::Secret>,
         mediator_did: &str,
     ) -> Result<Self, Box<dyn std::error::Error>> {
-        let seed = crate::did_key::decode_private_key_multibase(private_key_multibase)?;
-        let secrets = crate::did_key::secrets_from_did_key(client_did, &seed)?;
-
-        let identity = hub
-            .attach(
-                client_did,
-                vec![secrets.signing, secrets.key_agreement],
-                mediator_did,
-            )
-            .await?;
+        let identity = hub.attach(client_did, secrets, mediator_did).await?;
 
         // Stringified before the detach await: a boxed error is not `Send`.
         let prepared = hub
@@ -3388,7 +3461,16 @@ impl TspSession {
     ///   for [`receive_next`](Self::receive_next), not discarded — a
     ///   `task-consent/request` must not be eaten by a request waiting on
     ///   something unrelated.
-    /// - **Finite.** Every wait is bounded by `timeout` (R1.2).
+    /// - **Finite.** Every wait is bounded by `timeout` (R1.2), plus at most one
+    ///   [`STRANDED_REPLY_GRACE`] after a reconnect.
+    /// - **A stranded reply is collected, not abandoned.** On a reply timeout
+    ///   the socket is reconnected once and the same waiter given
+    ///   [`STRANDED_REPLY_GRACE`] more. Raw-TSP sockets are flush-on-connect,
+    ///   so a reply the mediator stored but never pushed is delivered by the
+    ///   reconnect — nothing is resent. Before mediator 0.43.0 a slow store
+    ///   lost a race with the live notification and stranded the reply for
+    ///   days (affinidi-tdk-rs#957); for `provision/integration` that reply
+    ///   carried the only copy of a freshly minted admin key (OpenVTC #501).
     ///
     /// # Authentication
     ///
@@ -3433,14 +3515,71 @@ impl TspSession {
         sent?;
 
         let deadline = Instant::now() + timeout;
-        let outcome = self
-            .await_reply(&request_id, &mut rx, deadline)
-            .await
-            .map_err(|e| e.to_string());
+        let mut outcome = self.await_reply(&request_id, &mut rx, deadline).await;
+        if outcome
+            .as_ref()
+            .is_err_and(|e| e.starts_with(crate::error::TSP_REPLY_TIMEOUT_PREFIX))
+        {
+            // The waiter is still registered, so whatever the reconnect flushes
+            // is routed to it like any other frame.
+            match self.reconnect().await {
+                Ok(()) => {
+                    tracing::debug!(
+                        request_id,
+                        "TSP reply timed out; reconnected to collect a stranded reply"
+                    );
+                    let grace = Instant::now() + STRANDED_REPLY_GRACE;
+                    outcome = self.await_reply(&request_id, &mut rx, grace).await;
+                }
+                Err(e) => {
+                    tracing::debug!(request_id, error = %e, "TSP reconnect after a reply timeout failed");
+                }
+            }
+        }
         // Always deregister — a timed-out or failed request must not leave a
         // waiter behind for the pump to deliver into.
         self.demux.deregister(&request_id).await;
         Ok(outcome?)
+    }
+
+    /// Replace this session's websocket with a fresh one, which the mediator
+    /// flushes this client's stored inbox onto as it connects.
+    ///
+    /// The new socket is opened **before** the old one is closed, so a failed
+    /// reconnect leaves the session on the socket it had rather than shut
+    /// down. The mediator keeps one raw-TSP socket per DID and closes the older
+    /// one itself when the new one arrives.
+    ///
+    /// The socket lock is held across the connect, as [`pump_once`] holds it
+    /// across a read: it is this socket's own lock, not shared state. Releasing
+    /// it would be worse — the mediator closes the old socket the moment the
+    /// new one connects, and a request pumping the old one meanwhile would fail
+    /// with "closed by the mediator" instead of waiting. Every waiter stays
+    /// bounded by its own deadline (`await_reply` selects on it beside the
+    /// lock), and the connect itself is bounded by [`STRANDED_REPLY_GRACE`]
+    /// (R1.2).
+    ///
+    /// [`pump_once`]: Self::pump_once
+    async fn reconnect(&self) -> Result<(), String> {
+        let mut guard = self.ws.lock().await;
+        if guard.is_none() {
+            return Err("TSP session was shut down".to_string());
+        }
+        let fresh = tokio::time::timeout(
+            STRANDED_REPLY_GRACE,
+            self.identity
+                .hub
+                .atm()
+                .tsp()
+                .connect_websocket(&self.identity.profile),
+        )
+        .await
+        .map_err(|_| "timed out reconnecting the TSP websocket".to_string())?
+        .map_err(|e| e.to_string())?;
+        if let Some(old) = guard.replace(fresh) {
+            let _ = old.close().await;
+        }
+        Ok(())
     }
 
     /// Wait for `request_id`'s reply, taking a turn at pumping the socket
@@ -3641,6 +3780,13 @@ impl TspSession {
         }
     }
 }
+
+/// How long [`TspSession::request`] waits for a stranded reply after the
+/// reconnect that flushes it. The flush happens as the socket connects, so this
+/// only has to cover the frame's unpack and routing — plus a reply that was
+/// genuinely slow rather than stranded and lands during the window.
+#[cfg(feature = "tsp")]
+pub const STRANDED_REPLY_GRACE: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// How long one turn at the socket lasts before the holder must release it.
 ///
@@ -4006,6 +4152,15 @@ mod tests {
     #[test]
     fn test_url_from_did_key_returns_none() {
         assert_eq!(url_from_did("did:key:z6MkTest"), None);
+        assert_eq!(
+            url_from_did("did:scid:vh:1:QmSCID123?src=vta.example.com/vta").as_deref(),
+            Some("https://vta.example.com")
+        );
+        assert_eq!(
+            url_from_did("did:scid:vh:1:QmSCID123?src=localhost%3A8100").as_deref(),
+            Some("https://localhost:8100")
+        );
+        assert_eq!(url_from_did("did:scid:vh:1:QmSCID123"), None);
     }
 
     fn test_store() -> SessionStore {

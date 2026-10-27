@@ -29,6 +29,7 @@ mod key_custody_census;
 mod keyring_vti_09_23_https;
 mod mock_vta;
 mod openapi_schema_names;
+mod operation_budget;
 mod pending_presentation_trust_task;
 mod persona_trust_task;
 mod producer_payload_conformance;

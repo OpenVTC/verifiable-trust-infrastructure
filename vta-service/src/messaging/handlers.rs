@@ -73,14 +73,16 @@ pub async fn handle_trust_task(
     {
         let response = crate::trust_tasks::transport::with_binding(
             "didcomm",
-            crate::trust_tasks::dispatch_auth_family(&app_state, &body),
+            crate::trust_tasks::dispatch_auth_family_from_peer(&app_state, &body),
         )
         .await;
         if response.body.is_empty() {
             return Ok(None);
         }
         let doc: serde_json::Value = serde_json::from_slice(&response.body).map_err(handler_err)?;
-        return Ok(Some(DIDCommResponse::new(TRUST_TASK_ENVELOPE_TYPE, doc)));
+        return Ok(Some(
+            DIDCommResponse::new(TRUST_TASK_ENVELOPE_TYPE, doc).with_restart_if(response.restart),
+        ));
     }
 
     // The DIDComm sender is a claim, not a proof of who composed the
@@ -122,14 +124,12 @@ pub async fn handle_trust_task(
             .await
         }
         Err(e) => {
-            crate::trust_tasks::sign_response(
+            crate::trust_tasks::refuse_without_standing(
                 &app_state,
-                crate::trust_tasks::reject_trust_task(
-                    &body,
-                    trust_tasks_rs::RejectReason::PermissionDenied {
-                        reason: e.to_string(),
-                    },
-                ),
+                &body,
+                trust_tasks_rs::RejectReason::PermissionDenied {
+                    reason: e.to_string(),
+                },
             )
             .await
         }
@@ -154,7 +154,9 @@ pub async fn handle_trust_task(
 
     // The reply is itself a trust-task envelope; the service sets `thid`
     // from the inbound message id for client correlation.
-    Ok(Some(DIDCommResponse::new(TRUST_TASK_ENVELOPE_TYPE, doc)))
+    Ok(Some(
+        DIDCommResponse::new(TRUST_TASK_ENVELOPE_TYPE, doc).with_restart_if(response.restart),
+    ))
 }
 
 // ---------------------------------------------------------------------------

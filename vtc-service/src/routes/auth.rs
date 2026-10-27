@@ -410,37 +410,7 @@ async fn authenticate_trust_task(
     Ok(Some(resp))
 }
 
-// ---------- POST /auth/admin-session ----------
-
-/// Request body for [`admin_session`].
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-#[derive(utoipa::ToSchema)]
-pub struct AdminSessionRequest {
-    /// A valid VTC access token the caller already holds — e.g. from the
-    /// VTA-wallet SIOP login, which returns it in `tokens.accessToken`.
-    pub access_token: String,
-    /// Extension members. Carries the optional refresh token this route
-    /// needs but the canonical payload has no top-level member for.
-    ///
-    /// `spec/vtc/auth/admin-session/0.1` types its payload as
-    /// `{accessToken, ext}` and the conformance witness compares this
-    /// struct against it, so a top-level `refreshToken` would fail the
-    /// build. `ext` is the schema's own escape hatch; see
-    /// [`refresh_token_from_ext`].
-    #[serde(default)]
-    pub ext: Option<JsonValue>,
-}
-
-/// Written by hand so the access token never reaches a log: a derived `Debug` would print it.
-impl std::fmt::Debug for AdminSessionRequest {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("AdminSessionRequest")
-            .field("access_token", &"<redacted>")
-            .field("ext", &self.ext.as_ref().map(|_| "<redacted>"))
-            .finish()
-    }
-}
+// ---------- vtc/auth/admin-session/0.2 ----------
 
 /// The `ext` member the console puts the refresh token under.
 const EXT_NAMESPACE: &str = "org.openvtc";
@@ -448,11 +418,15 @@ const EXT_NAMESPACE: &str = "org.openvtc";
 /// Pull `ext["org.openvtc"].refreshToken` out of an admin-session request.
 ///
 /// The wallet login path receives a refresh token from `/v1/auth/` and is
-/// the only party that can hand it to this route — unlike passkey login,
-/// this handler mints nothing and so has no refresh token of its own. A
-/// caller that omits it still gets a working cookie session; it simply
-/// cannot renew, which is the behaviour every caller had before.
-fn refresh_token_from_ext(ext: Option<&JsonValue>) -> Option<String> {
+/// the only party that can hand it to this task — unlike passkey login,
+/// it mints nothing and so has no refresh token of its own. A caller that
+/// omits it still gets a working cookie session; it simply cannot renew,
+/// which is the behaviour every caller had before.
+///
+/// `spec/vtc/auth/admin-session/0.2` types its payload as `{accessToken,
+/// ext}`, so a top-level `refreshToken` would be refused by the schema; `ext`
+/// is the schema's own escape hatch.
+pub(crate) fn refresh_token_from_ext(ext: Option<&JsonValue>) -> Option<String> {
     ext?.get(EXT_NAMESPACE)?
         .get("refreshToken")?
         .as_str()
@@ -460,14 +434,14 @@ fn refresh_token_from_ext(ext: Option<&JsonValue>) -> Option<String> {
         .map(str::to_string)
 }
 
-/// `POST /v1/auth/admin-session` — exchange a bearer access token for the
+/// `vtc/auth/admin-session/0.2` — exchange a bearer access token for the
 /// admin SPA's cookie session.
 ///
 /// The VTA-wallet login path returns a bearer token in the response body
 /// (the wallet extension posts the SIOP `id_token` to `/wallet/auth/` and
 /// reads `tokens.accessToken`), but the admin SPA drives the API with the
 /// `vtc_admin_session` cookie + `csrf` double-submit, not an
-/// `Authorization` header. This endpoint bridges the two: it validates the
+/// `Authorization` header. This task bridges the two: it validates the
 /// presented token (signature + VTC audience + expiry) and, on success,
 /// sets the `vtc_admin_session` + `csrf` cookie pair:
 ///
@@ -481,67 +455,69 @@ fn refresh_token_from_ext(ext: Option<&JsonValue>) -> Option<String> {
 ///
 /// No privilege escalation — the caller must already possess a valid VTC
 /// access token, which it could use directly as a bearer; this only mirrors
-/// it into the cookie the browser SPA expects. Browser-only by nature: the
-/// CSRF layer's same-origin check carries the (cookie-less) first call.
-/// `{ sessionId, expiresAt }` — the shape `vtc/auth/admin-session/0.1`
-/// publishes, and which this route did not return until #1059's witness put
-/// the handler beside its own schema.
+/// it into the cookie the browser SPA expects.
+///
+/// It is served only as a signed document on the HTTPS door
+/// (`trust_tasks::admin_session_tasks`), which checks the proof's signer is
+/// the token's subject (or a console key that subject enrolled) and sets the
+/// cookies [`admin_session_cookies`] returns. Its bearer route is gone (#1641).
+///
+/// `{ sessionId, expiresAt }` — the shape `vtc/auth/admin-session/0.2`
+/// publishes, and which the route did not return until #1059's witness put
+/// the handler beside its own schema. 0.2 sends `expiresAt` as an RFC 3339
+/// date-time, where 0.1 sent Unix seconds.
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct AdminSessionResponse {
     pub session_id: String,
-    /// Unix seconds, from the token's own expiry — the same value the
-    /// cookies' `Max-Age` is derived from, so the two cannot disagree.
-    pub expires_at: u64,
+    /// The token's own expiry — the same instant the cookies' `Max-Age` is
+    /// derived from, so the two cannot disagree. RFC 3339 on the wire.
+    pub expires_at: DateTime<Utc>,
 }
 
 /// `vtc/auth/admin_session:invalidToken` — the mirrored access token did not
 /// verify (signature, this VTC's audience, or expiry).
 pub const ADMIN_SESSION_ERR_INVALID_TOKEN: &str =
-    trust_tasks_rs::specs::vtc::auth::admin_session::v0_1::error_codes::INVALID_TOKEN.code;
+    trust_tasks_rs::specs::vtc::auth::admin_session::v0_2::error_codes::INVALID_TOKEN.code;
 
-#[utoipa::path(
-    post, path = "/auth/admin-session", tag = "auth",
-    request_body = AdminSessionRequest,
-    responses(
-        (status = 200, description = "Admin session + CSRF cookies set", body = AdminSessionResponse),
-        (status = 401, description = "Invalid or expired access token"),
-    ),
-)]
-pub async fn admin_session(
-    State(state): State<AppState>,
-    Json(req): Json<AdminSessionRequest>,
-) -> Result<axum::response::Response, TaskError> {
-    use axum::http::HeaderValue;
-    use axum::http::header::SET_COOKIE;
-    use axum::response::IntoResponse;
-    use rand::RngExt;
-
+/// The access token's claims, verified: signature, this VTC's audience
+/// (audience isolation — a foreign-audience token is refused here exactly as
+/// on every other surface) and expiry. A bad token is `invalidToken`, and
+/// never sets a cookie.
+pub(crate) fn decode_admin_session_token(
+    state: &AppState,
+    access_token: &str,
+) -> Result<vti_common::auth::jwt::Claims, TaskError> {
     let jwt_keys = state
         .jwt_keys
         .as_ref()
         .ok_or_else(|| AppError::Internal("JWT keys not configured".into()))?;
-
-    // Validate the token: signature, VTC audience (audience isolation — a
-    // foreign-audience token is rejected here exactly as on every other
-    // surface), and expiry. A bad token never sets a cookie.
-    let claims = jwt_keys.decode(&req.access_token).map_err(|_| {
+    jwt_keys.decode(access_token).map_err(|_| {
         TaskError::declared(
             ADMIN_SESSION_ERR_INVALID_TOKEN,
             AppError::Authentication("invalid or expired access token".into()),
         )
-    })?;
+    })
+}
+
+/// The cookie session for an access token [`decode_admin_session_token`]
+/// verified, and the `Set-Cookie` values that carry it. Nothing is minted:
+/// the session is the token's own, mirrored into cookies.
+pub(crate) async fn admin_session_cookies(
+    state: &AppState,
+    access_token: &str,
+    claims: &vti_common::auth::jwt::Claims,
+    refresh_token: Option<String>,
+) -> (AdminSessionResponse, Vec<String>) {
+    use rand::RngExt;
 
     let max_age = claims.exp.saturating_sub(now_epoch()).max(1);
 
     // A refresh token, if the caller sent one, is what lets this session
-    // renew. This handler mints nothing — it mirrors a token the caller
-    // already held — so unlike the passkey path it has no refresh token
-    // of its own to fall back on. The refresh cookie must outlive the
-    // access cookie or it could never renew it; its own expiry is
-    // enforced server-side on the session row, so a generous Max-Age here
-    // grants nothing the row does not already allow.
-    let refresh_token = refresh_token_from_ext(req.ext.as_ref());
+    // renew. The refresh cookie must outlive the access cookie or it could
+    // never renew it; its own expiry is enforced server-side on the session
+    // row, so a generous Max-Age here grants nothing the row does not already
+    // allow.
     let refresh_max_age = {
         let cfg = state.config.read().await;
         cfg.auth.refresh_token_expiry
@@ -560,48 +536,23 @@ pub async fn admin_session(
     rand::rng().fill(&mut csrf_bytes);
     let csrf = hex::encode(csrf_bytes);
 
-    let session_cookie = build_session_cookie(&req.access_token, max_age);
-    let csrf_cookie = build_csrf_cookie(&csrf, cookie_window);
-
-    // The spec's response is `{sessionId, expiresAt}`, and this handler
-    // returned 204 with both values only in `Set-Cookie` headers.
-    //
-    // A cookie is not a Trust Task response. Nothing but a browser can read
-    // one, so every non-browser caller — the CLIs, a DIDComm binding, any
-    // integration — could authenticate here and learn nothing about the
-    // session it had just been given. The cookies stay, because the admin SPA
-    // relies on them; the body is what makes the route usable by anything
-    // else.
-    let mut response = (
-        StatusCode::OK,
-        Json(AdminSessionResponse {
-            session_id: claims.session_id.clone(),
-            // Unix seconds, as the schema types it — the same value the
-            // cookies' `Max-Age` is derived from, so the body and the headers
-            // cannot disagree about when this session ends.
-            expires_at: claims.exp,
-        }),
-    )
-        .into_response();
-    let headers = response.headers_mut();
-    headers.append(
-        SET_COOKIE,
-        HeaderValue::try_from(session_cookie)
-            .map_err(|e| AppError::Internal(format!("invalid session cookie value: {e}")))?,
-    );
-    headers.append(
-        SET_COOKIE,
-        HeaderValue::try_from(csrf_cookie)
-            .map_err(|e| AppError::Internal(format!("invalid csrf cookie value: {e}")))?,
-    );
+    let mut cookies = vec![
+        build_session_cookie(access_token, max_age),
+        build_csrf_cookie(&csrf, cookie_window),
+    ];
     if let Some(token) = refresh_token {
-        headers.append(
-            SET_COOKIE,
-            HeaderValue::try_from(build_refresh_cookie(&token, refresh_max_age))
-                .map_err(|e| AppError::Internal(format!("invalid refresh cookie value: {e}")))?,
-        );
+        cookies.push(build_refresh_cookie(&token, refresh_max_age));
     }
-    Ok(response)
+    (
+        AdminSessionResponse {
+            session_id: claims.session_id.clone(),
+            // The same instant the cookies' `Max-Age` is derived from, so the
+            // body and the headers cannot disagree about when this session
+            // ends.
+            expires_at: epoch_to_datetime(claims.exp),
+        },
+        cookies,
+    )
 }
 
 // ---------- POST /auth/passkey-login/start ----------
@@ -783,6 +734,15 @@ pub struct PasskeyLoginFinishRequest {
     pub auth_id: String,
     #[schema(value_type = Object)]
     pub credential: webauthn_rs::prelude::PublicKeyCredential,
+    /// Extension members. `ext["org.openvtc"].sessionKey` is the browser key
+    /// (an Ed25519 `did:key`) a console login binds to the session it mints,
+    /// so the console can later sign `auth/whoami/0.1` for that session
+    /// ([`session_key_from_ext`]). Whoever submits this finish receives the
+    /// session's cookies anyway; binding the key they hold to it confers
+    /// nothing those cookies do not.
+    #[serde(default)]
+    #[schema(value_type = Option<Object>)]
+    pub ext: Option<serde_json::Value>,
 }
 
 /// `POST /v1/auth/passkey-login/finish` — verify the WebAuthn assertion and
@@ -814,6 +774,10 @@ pub async fn passkey_login_finish(
         .ok_or_else(|| AppError::Authentication("WebAuthn not configured".into()))?;
     // JWT-keys presence is enforced by `VtcAuthBackend::from_state` at the
     // mint step below (the shared minter owns token issuance now).
+
+    // Refused before the ceremony state is spent, so a malformed key costs
+    // the operator a retry, not the ceremony.
+    let session_key = session_key_from_ext(req.ext.as_ref())?;
 
     let auth_state = take_auth_state(&state.passkey_ks, &req.auth_id)
         .await?
@@ -860,7 +824,7 @@ pub async fn passkey_login_finish(
         session_id,
         minted,
         cookies,
-    } = mint_admin_cookie_session(&state, &user.did, &["passkey"], None, None).await?;
+    } = mint_admin_cookie_session(&state, &user.did, &["passkey"], session_key, None).await?;
     let amr = vec!["passkey".to_string()];
     let acr = "aal2".to_string();
 
@@ -1123,19 +1087,25 @@ async fn step_up_finish(
     // 4. Elevate. Read-modify-write on the live row so we inherit whatever the
     //    session already carries (tokens, pubkey, tee flag) rather than
     //    rebuilding it and dropping a field.
-    let mut session = get_session(&state.sessions_ks, &binding.session_id)
-        .await?
-        .ok_or_else(|| AppError::Unauthorized("session not found".into()))?;
+    //    Conditional on the row as stored: a session signed out while the
+    //    ceremony ran stays signed out instead of being written back elevated.
     let now = now_epoch();
     let expires_at = now.saturating_add(STEP_UP_ELEVATION_TTL_SECS);
-
-    if !session.amr.iter().any(|m| m == "passkey") {
-        session.amr.push("passkey".to_string());
-    }
-    session.acr = "aal2".to_string();
-    session.acr_expires_at = Some(expires_at);
-    session.last_seen = now;
-    crate::auth::session::update_session(&state.sessions_ks, &session).await?;
+    let session = crate::auth::session::update_session_with(
+        &state.sessions_ks,
+        &binding.session_id,
+        |session| {
+            if !session.amr.iter().any(|m| m == "passkey") {
+                session.amr.push("passkey".to_string());
+            }
+            session.acr = "aal2".to_string();
+            session.acr_expires_at = Some(expires_at);
+            session.last_seen = now;
+            true
+        },
+    )
+    .await?
+    .ok_or_else(|| AppError::Unauthorized("session not found".into()))?;
 
     // The user-verification gesture is the authority for whatever privileged
     // operation follows inside the window — and since the promote-to-admin
@@ -1562,24 +1532,28 @@ pub struct SessionView {
     pub acr: Option<String>,
 }
 
-/// `GET /v1/auth/whoami` — returns the caller's identity claims
-/// pulled from the access token. Lets browser SPAs render a
-/// "signed in as" indicator without exposing the JWT to JS (the
-/// session cookie is HttpOnly by design).
-#[utoipa::path(
-    get, path = "/auth/whoami", tag = "auth",
-    security(("bearer_jwt" = [])),
-    responses(
-        (status = 200, description = "Caller identity claims", body = WhoamiResponse),
-        (status = 401, description = "Missing or invalid bearer token"),
-    ),
-)]
-pub async fn whoami(
-    axum::extract::State(state): axum::extract::State<AppState>,
-    auth: AuthClaims,
-) -> Json<WhoamiResponse> {
+/// `auth/whoami/0.1`'s answer for `session`, whose subject is `did`: the
+/// session as stored, and what the subject's live ACL entry lets it do now
+/// (VTI-ACL-034).
+///
+/// Served only as a signed document (`trust_tasks::whoami_tasks`), whose
+/// signer is the key bound to `session` at sign-in or a console key the
+/// subject enrolled. The bearer route `GET /v1/auth/whoami` is gone (#1641):
+/// the cookie names a session, and a key now has to speak for it.
+///
+/// `session.expiresAt` is when the **session** ends — its refresh expiry,
+/// clamped to any absolute end — which is what the published member means
+/// ("when the session ceases to be valid"). The console's access cookie is
+/// shorter-lived and renewed through `auth/refresh/0.1`, which reports its
+/// own expiry.
+pub(crate) async fn whoami_for(
+    state: &AppState,
+    session: &Session,
+    role: vti_common::acl::Role,
+) -> WhoamiResponse {
+    let did = session.did.as_str();
     // The live entry, read now (VTI-ACL-034): what the console may offer.
-    let entry = crate::acl::get_acl_entry(&state.acl_ks, &auth.did)
+    let entry = crate::acl::get_acl_entry(&state.acl_ks, did)
         .await
         .ok()
         .flatten()
@@ -1603,20 +1577,54 @@ pub async fn whoami(
             "approves": approves,
         }})
     });
-    Json(WhoamiResponse {
+    let ends_at = match (session.refresh_expires_at, session.not_after) {
+        (Some(r), Some(n)) => r.min(n),
+        (Some(r), None) => r,
+        (None, Some(n)) => n,
+        (None, None) => now_epoch(),
+    };
+    WhoamiResponse {
         capabilities,
         ext,
         session: SessionView {
-            id: auth.session_id,
-            subject: auth.did,
-            issued_at: epoch_to_datetime(auth.issued_at),
-            expires_at: epoch_to_datetime(auth.access_expires_at),
-            amr: auth.amr,
-            acr: Some(auth.acr).filter(|a| !a.is_empty()),
+            id: session.session_id.clone(),
+            subject: did.to_string(),
+            issued_at: epoch_to_datetime(session.created_at),
+            expires_at: epoch_to_datetime(ends_at),
+            amr: session.amr.clone(),
+            acr: Some(session.acr.clone()).filter(|a| !a.is_empty()),
         },
-        roles: vec![auth.role.to_string()],
-        scopes: auth.allowed_contexts,
-    })
+        roles: vec![role.to_string()],
+        // A VTC entry holds no contexts (VTI-VTC-010).
+        scopes: Vec::new(),
+    }
+}
+
+/// The `ext["org.openvtc"].sessionKey` a console sign-in asks to bind to the
+/// session it mints, as the Ed25519 multikey `Session::session_pubkey_b58btc`
+/// stores (`z6Mk…`).
+///
+/// The same binding `auth/authenticate/0.2`'s `sessionKey` makes and
+/// `auth/oob/redeem` makes for its `K_b`: a browser key, non-extractable on
+/// the console's side, that later signs `auth/whoami/0.1` for this session.
+/// Absent is `Ok(None)`; anything but an Ed25519 `did:key` is refused, before
+/// any ceremony state is spent.
+pub(crate) fn session_key_from_ext(ext: Option<&JsonValue>) -> Result<Option<String>, AppError> {
+    let Some(value) = ext
+        .and_then(|e| e.get(EXT_NAMESPACE))
+        .and_then(|o| o.get("sessionKey"))
+    else {
+        return Ok(None);
+    };
+    value
+        .as_str()
+        .and_then(crate::member_portal::oob::did_key_multikey)
+        .map(|mk| Some(mk.to_string()))
+        .ok_or_else(|| {
+            AppError::Validation(
+                "ext[\"org.openvtc\"].sessionKey must be an Ed25519 did:key (did:key:z6Mk…)".into(),
+            )
+        })
 }
 
 /// Unix seconds to a `DateTime`, for the `format: date-time` members the

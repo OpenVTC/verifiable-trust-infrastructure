@@ -130,6 +130,17 @@ if [ "${GITHUB_EVENT_NAME:-pull_request}" != "pull_request" ]; then
   emit true "not a pull request — always builds"
 fi
 
+# The Release PR changes only versions, lockfile entries and changelogs. What it
+# releases is main as it stands, which CI already built and tested commit by
+# commit, and the merge of the Release PR is a push to main, so the whole graph
+# runs on it again. Rebuilding it here as well doubled a release's CI time and
+# left it waiting on test jobs that could only repeat main's results. The
+# release-specific checks (release bump, lockfile self-pins, lockfile resolves,
+# branch rules) do not go through this script and still run.
+case "${GITHUB_HEAD_REF:-}" in
+  release-plz-*) emit false "a Release PR — main's own CI covers what it releases" ;;
+esac
+
 if [ -z "$BASE" ]; then
   emit true "${BASE_NOTE:-no base ref} — running rather than guessing"
 fi

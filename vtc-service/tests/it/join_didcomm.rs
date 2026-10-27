@@ -151,6 +151,7 @@ async fn seed_join_ceremony(mock: &MockVtcTransport) -> String {
             updated_by: None,
             expires_at: None,
             resource_grants: Vec::new(),
+            group_grants: Vec::new(),
             label_set_by_subject: false,
             suspension: None,
         },
@@ -226,7 +227,7 @@ async fn didcomm_join_round_trips_submit_manifest_status_approve_and_vmc_deliver
 
     // 2. Discover the community's join evidence over DIDComm (real
     //    manifest read) — the seeded DCQL Accepts criterion.
-    let manifest: manifest::v0_3::Response = serde_json::from_value(response_payload(
+    let manifest: manifest::v0_4::Response = serde_json::from_value(response_payload(
         mock.client
             .request(&vtc_did, JOIN_REQUEST_MANIFEST_TYPE, json!({}))
             .await,

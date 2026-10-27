@@ -81,8 +81,11 @@ pub enum AuthError {
     DidMethodRejected,
 
     /// Too many concurrent `ChallengeSent` sessions for this DID;
-    /// the per-DID rate limit (default 10) is exhausted. Returned
-    /// as 429 Too Many Requests so clients can back off.
+    /// the per-DID cap (default 10) is reached. Raised only for a
+    /// store that cannot list a subject's challenges
+    /// ([`SessionStore::pending_challenges`] returns `None`); one that
+    /// can evicts the oldest instead. How it is rendered is the
+    /// backend's error type's call — vti-common's `AppError` answers 400.
     #[error("too many pending challenges")]
     PendingChallengeLimitReached,
 
@@ -327,6 +330,33 @@ pub trait SessionStore: Send + Sync + 'static {
     /// yet built a tracker — correct but slow under load. Override
     /// before relying on per-DID rate limiting in production.
     async fn count_pending_challenges(&self, did: &str) -> Result<usize, Self::Error>;
+
+    /// The `ChallengeSent` sessions of `did`, oldest first, expired ones
+    /// included; `None` if this store cannot enumerate them.
+    ///
+    /// With `Some`, `/auth/challenge` holds the per-DID cap
+    /// ([`AuthBackend::max_pending_challenges_per_did`], VTI-SES-005) by
+    /// discarding expired challenges and evicting the oldest outstanding one,
+    /// so a subject is never refused a challenge. With `None` it falls back to
+    /// [`Self::count_pending_challenges`] and refuses at the cap with
+    /// [`AuthError::PendingChallengeLimitReached`] — a refusal only an enrolled
+    /// subject can provoke, and which holds until the sweep removes the rows.
+    ///
+    /// Either way the handler holds an in-process lock per subject from this
+    /// call until the new challenge is stored, so the cap is exact for a store
+    /// one process owns. A store shared by several processes needs the cap
+    /// held by the store itself.
+    ///
+    /// **Default: `Ok(None)`.** [`crate::auth::session::list_pending_challenges`]
+    /// implements it for a [`crate::store::KeyspaceHandle`] whose rows were
+    /// written through [`crate::auth::session`]. Rows written before that index
+    /// existed are not listed, so for one `challenge_ttl` after an upgrade a
+    /// subject can hold up to twice the cap; those rows then expire.
+    ///
+    /// Must not write: a caller outside the handler's lock may list too.
+    async fn pending_challenges(&self, _did: &str) -> Result<Option<Vec<Session>>, Self::Error> {
+        Ok(None)
+    }
 
     /// Record that `session_id` saw **user activity** at `at` (epoch
     /// seconds), by writing [`Session::last_seen`].

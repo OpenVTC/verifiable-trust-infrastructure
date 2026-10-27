@@ -11,7 +11,8 @@
     "PROFILE_VERSION": "swiss-profile-anchor:1.0.0"
   },
   "defaults": {
-    "portable": false
+    "portable": false,
+    "scidAlsoKnownAs": false
   },
   "keys": {
     "signing": {

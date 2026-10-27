@@ -161,6 +161,20 @@ live ACL state at the moment the grant is minted.
 Ceremony tasks are also exempt from PDP re-gating (`trust_tasks/ceremony.rs:48`)
 — otherwise approving would require approving, forever.
 
+### Requests bound to one approver
+
+A request may instead be **bound to one approver**
+(`PendingTaskConsent::bound_approver`). The VTA raises one, not the PDP, when a
+browser whose UV key is a `remoteApprover` asks for a sign-in grant (see
+[Wallet sign-in UV keys](./wallet-sign-in-uv-keys.md)): the request names the
+member's phone, and the decision handler accepts that DID's decision and no
+other, whatever any approver set says. Everything else is the ordinary
+ceremony — the same signed `task-consent/request/0.1`, the same push, the same
+`task-consent/decision/0.1`, the same single-use grant — so the phone app needs
+nothing new. A bound request also leaves a mark that outlives it
+(`BoundRequestMark`), so its requester can read "declined" or "expired" instead
+of raising the question again.
+
 ## What the approver is shown
 
 Not just a digest. The VTA dry-runs the handler it is about to invoke and signs

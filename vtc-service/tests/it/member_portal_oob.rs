@@ -45,6 +45,8 @@ async fn fixture() -> Fixture {
     let vtc = TestVtc::builder()
         .vtc_did(VTC_DID)
         .with_public_url(PORTAL)
+        // Directory writes are never unaudited.
+        .with_audit(true)
         .with_credential_signer(std::sync::Arc::new(LocalSigner::from_ed25519_seed(
             VTC_DID.into(),
             &SEED,
@@ -55,12 +57,16 @@ async fn fixture() -> Fixture {
 }
 
 async fn enrol_member(vtc: &TestVtc, did: &str, label: Option<&str>) {
+    enrol_as(vtc, did, label, VtcRole::Member).await;
+}
+
+async fn enrol_as(vtc: &TestVtc, did: &str, label: Option<&str>, role: VtcRole) {
     store_acl_entry(
         &vtc.state.acl_ks,
         &VtcAclEntry {
             did: did.into(),
-            admin: VtcRole::Member.implied_authority(),
-            role: VtcRole::Member,
+            admin: role.implied_authority(),
+            role,
             label: label.map(str::to_string),
             delegated_by: None,
             created_at: now_epoch(),
@@ -69,6 +75,7 @@ async fn enrol_member(vtc: &TestVtc, did: &str, label: Option<&str>) {
             updated_by: None,
             expires_at: None,
             resource_grants: Vec::new(),
+            group_grants: Vec::new(),
             label_set_by_subject: false,
             suspension: None,
         },
@@ -999,6 +1006,49 @@ async fn sign_in_config_names_the_link_host_and_the_member_page_is_hardened() {
     }
 }
 
+/// Sign-in from one address is not held to the anonymous governor (a burst of
+/// 10): the page reads its config on every load, and one sign-in alone sends
+/// about ten `auth/oob/*` documents from the same address when the wallet is on
+/// the same device (`routing::trust_task_admission`, "Sign-in traffic").
+#[tokio::test]
+async fn sign_in_from_one_address_is_not_held_to_the_anonymous_governor() {
+    let f = fixture().await;
+    for n in 0..25 {
+        let mut req = Request::builder()
+            .uri("/v1/member/sign-in/config")
+            .body(Body::empty())
+            .unwrap();
+        req.extensions_mut()
+            .insert(axum::extract::ConnectInfo(SocketAddr::new(
+                "198.51.100.77".parse::<IpAddr>().unwrap(),
+                40_000,
+            )));
+        let res = f.vtc.router.clone().oneshot(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK, "config read {n}");
+    }
+
+    let b = Browser {
+        key: Party::new(),
+        ip: "198.51.100.78",
+    };
+    let id = start(&f, &b).await;
+    for n in 0..20 {
+        let r = redeem(&f, &b, &id).await;
+        assert_ne!(
+            r.status,
+            StatusCode::TOO_MANY_REQUESTS,
+            "redeem {n}: {}",
+            r.body
+        );
+        assert_eq!(
+            code(&r),
+            "auth/oob/redeem:pending",
+            "redeem {n}: {}",
+            r.body
+        );
+    }
+}
+
 // ── Operator console: the `admin` session audience ──────────────────────────
 //
 // The console's login page asks for an admin session by putting
@@ -1032,6 +1082,7 @@ async fn enrol_admin(vtc: &TestVtc, did: &str, label: Option<&str>) {
             updated_by: None,
             expires_at: None,
             resource_grants: Vec::new(),
+            group_grants: Vec::new(),
             label_set_by_subject: false,
             suspension: None,
         },
@@ -1110,14 +1161,19 @@ fn cookie_value<'a>(r: &'a Reply, name: &str) -> Option<&'a str> {
     })
 }
 
-async fn whoami_with_admin_cookie(f: &Fixture, token: &str) -> StatusCode {
-    let req = Request::builder()
-        .uri("/v1/auth/whoami")
-        .header("Trust-Task", WHOAMI_TASK)
-        .header("cookie", format!("vtc_admin_session={token}"))
-        .body(Body::empty())
-        .unwrap();
-    f.vtc.router.clone().oneshot(req).await.unwrap().status()
+/// Whether the console's access-token extractor admits `token` as its cookie
+/// (`common::session_probe`).
+async fn console_admits_cookie(f: &Fixture, token: &str) -> StatusCode {
+    crate::common::session_probe::probe(&f.vtc, &[("cookie", format!("vtc_admin_session={token}"))])
+        .await
+        .0
+}
+
+/// `auth/whoami/0.1` signed by `key`: the status and reply.
+async fn signed_whoami(f: &Fixture, key: &Party) -> (StatusCode, Value) {
+    let doc = crate::common::signed::signed_to(key, VTC_DID, WHOAMI_TASK, json!({})).await;
+    let (status, _, reply) = crate::common::signed::post_for_cookies(&f.vtc, &doc).await;
+    (status, reply)
 }
 
 async fn member_me_with_cookie(f: &Fixture, token: &str) -> StatusCode {
@@ -1215,7 +1271,11 @@ async fn an_admin_request_by_an_administrator_opens_a_console_session() {
 
     // It opens the console (audience `VTC`) and not the portal.
     let token = cookie_value(&done, "vtc_admin_session").unwrap();
-    assert_eq!(whoami_with_admin_cookie(&f, token).await, StatusCode::OK);
+    assert_eq!(console_admits_cookie(&f, token).await, StatusCode::OK);
+    // `K_b` is bound to the session it redeemed: it signs `whoami` for it.
+    let (status, who) = signed_whoami(&f, &b.key).await;
+    assert_eq!(status, StatusCode::OK, "{who}");
+    assert_eq!(who["payload"]["session"]["subject"], admin.did.as_str());
     assert_eq!(
         member_me_with_cookie(&f, token).await,
         StatusCode::UNAUTHORIZED
@@ -1327,9 +1387,12 @@ async fn a_member_request_by_an_administrator_gives_a_member_session_only() {
     );
     // The member token does not open the console (T19).
     assert_eq!(
-        whoami_with_admin_cookie(&f, token).await,
+        console_admits_cookie(&f, token).await,
         StatusCode::UNAUTHORIZED
     );
+    // Nor does its `K_b`: a member session is no console session, so the key
+    // bound to it speaks for nothing `whoami` answers.
+    assert_eq!(signed_whoami(&f, &b.key).await.0, StatusCode::FORBIDDEN);
     let sessions = vtc_service::auth::session::list_sessions(&f.vtc.state.sessions_ks)
         .await
         .unwrap();
@@ -1759,9 +1822,12 @@ async fn a_member_session_is_bounded_by_the_grants_not_after_across_refreshes() 
         .expect("refresh cookie")
         .to_string();
     for _ in 0..3 {
+        // Read before the request: a cookie's Max-Age counts from the server's
+        // clock, which is never earlier than this, whereas a reading taken after
+        // the response can be a second later and overstate the cookie's end.
+        let before = now_epoch();
         let r = member_refresh(&f, &refresh).await;
         assert_eq!(r.status, StatusCode::OK, "{}", r.body);
-        let now = now_epoch();
         assert!(r.body["expiresAt"].as_u64().unwrap() <= not_after);
         for name in [
             "vtc_member_session",
@@ -1769,7 +1835,7 @@ async fn a_member_session_is_bounded_by_the_grants_not_after_across_refreshes() 
             "vtc_member_csrf",
         ] {
             assert!(
-                now + max_age(&r.cookies, name) <= not_after,
+                before + max_age(&r.cookies, name) <= not_after,
                 "{name} outlives the grant: {:?}",
                 r.cookies
             );
@@ -1789,19 +1855,21 @@ async fn a_member_session_is_bounded_by_the_grants_not_after_across_refreshes() 
 #[tokio::test]
 async fn a_member_refresh_near_the_end_is_clamped_to_it() {
     let f = fixture().await;
-    // Nearer than both the access and the refresh TTL.
-    let not_after = now_epoch() + 30;
+    // Nearer than both the access and the refresh TTL. Clock readings are taken
+    // before each request: a Max-Age counts from the server's clock, never earlier.
+    let start = now_epoch();
+    let not_after = start + 30;
     let (member, done) = member_signed_in_until(&f, "198.51.100.111", not_after).await;
     assert_eq!(done.body["payload"]["notAfter"].as_u64(), Some(not_after));
-    assert!(now_epoch() + max_age(&done.cookies, "vtc_member_session") <= not_after);
+    assert!(start + max_age(&done.cookies, "vtc_member_session") <= not_after);
 
     let refresh = cookie_in(&done.cookies, "vtc_member_refresh").unwrap();
+    let before = now_epoch();
     let r = member_refresh(&f, refresh).await;
     assert_eq!(r.status, StatusCode::OK, "{}", r.body);
-    let now = now_epoch();
     assert!(r.body["expiresAt"].as_u64().unwrap() <= not_after);
     assert!(max_age(&r.cookies, "vtc_member_session") <= 30);
-    assert!(now + max_age(&r.cookies, "vtc_member_refresh") <= not_after);
+    assert!(before + max_age(&r.cookies, "vtc_member_refresh") <= not_after);
 
     // The access token's own `exp` is clamped too, not just its cookie.
     let token = cookie_in(&r.cookies, "vtc_member_session").unwrap();
@@ -1834,7 +1902,10 @@ async fn a_member_refresh_after_the_end_is_refused() {
 #[tokio::test]
 async fn a_console_session_is_bounded_by_the_grants_not_after() {
     let f = fixture().await;
-    let not_after = now_epoch() + 600;
+    // Clock readings are taken before each request: a Max-Age counts from the
+    // server's clock, which is never earlier.
+    let start = now_epoch();
+    let not_after = start + 600;
     let (admin, done) = admin_signed_in_until(&f, "198.51.100.113", not_after).await;
     let refresh_cookie = vti_common::auth::extractor::ADMIN_REFRESH_COOKIE;
 
@@ -1842,23 +1913,23 @@ async fn a_console_session_is_bounded_by_the_grants_not_after() {
     assert_eq!(done.body["payload"]["notAfter"].as_u64(), Some(not_after));
     let row = session_row(&f.vtc.state.sessions_ks, &admin.did).await;
     assert_eq!(row.not_after, Some(not_after));
-    assert!(now_epoch() + max_age(&done.cookies, refresh_cookie) <= not_after);
+    assert!(start + max_age(&done.cookies, refresh_cookie) <= not_after);
 
     let mut refresh = cookie_in(&done.cookies, refresh_cookie)
         .unwrap()
         .to_string();
     for _ in 0..2 {
+        let before = now_epoch();
         let r = admin_refresh(&f, &refresh).await;
         assert_eq!(r.status, StatusCode::OK, "{}", r.body);
-        let now = now_epoch();
         for name in ["vtc_admin_session", refresh_cookie, "csrf"] {
             assert!(
-                now + max_age(&r.cookies, name) <= not_after,
+                before + max_age(&r.cookies, name) <= not_after,
                 "{name} outlives the grant: {:?}",
                 r.cookies
             );
         }
-        assert!(now + r.body["tokens"]["refreshExpiresIn"].as_u64().unwrap() <= not_after);
+        assert!(before + r.body["tokens"]["refreshExpiresIn"].as_u64().unwrap() <= not_after);
         let row = session_row(&f.vtc.state.sessions_ks, &admin.did).await;
         assert_eq!(row.not_after, Some(not_after));
         assert!(row.refresh_expires_at.unwrap() <= not_after);
@@ -1931,5 +2002,565 @@ async fn a_session_stored_before_not_after_existed_still_refreshes() {
     assert!(
         row.refresh_expires_at.unwrap() >= now + ttl,
         "an unbounded session keeps sliding by the full TTL"
+    );
+}
+
+// ── 0.2: delegated signing (auth/oob/grant/0.2 `signingScope`) ───────────────
+
+fn t2(task: &str) -> String {
+    format!("{BASE}/{task}/0.2")
+}
+
+const DIRECTORY: &str = "https://trusttasks.org/spec/vtc/directory";
+
+/// Sign in at 0.2, approving the scope step 2 offers (or `scope` instead),
+/// and return the browser, the member and the redeem reply.
+async fn sign_in_v0_2(f: &Fixture, scope: Option<Value>) -> (Browser, Party, Reply, Reply) {
+    vtc_service::policy::default::install_defaults(
+        &f.vtc.state.policies_ks,
+        &f.vtc.state.active_policies_ks,
+    )
+    .await
+    .unwrap();
+    let member = Party::new();
+    enrol_member(&f.vtc, &member.did, Some("Alice")).await;
+    let b = Browser {
+        key: Party::new(),
+        ip: "198.51.100.8",
+    };
+    let p = Phone {
+        key: Party::new(),
+        ip: "198.51.100.8",
+    };
+    let id = start(f, &b).await;
+    let (_, number) = claim_and_number(f, &b, &p, &id).await;
+    let identify = identify(&member, &id, &p.key.did, &number).await;
+    let pr = post(
+        &f.vtc,
+        &doc(
+            &p.key,
+            &t2("prove"),
+            json!({ "identify": identify }),
+            None,
+            "authentication",
+        )
+        .await,
+        p.ip,
+        None,
+    )
+    .await;
+    assert_eq!(pr.status, StatusCode::OK, "{}", pr.body);
+    assert_vtc_attested(f, &pr.body);
+    assert_eq!(pr.body["type"], format!("{}#response", t2("prove")));
+    assert_eq!(
+        pr.body["payload"]["signingScope"],
+        json!([
+            "vtc/directory",
+            "vtc/groups",
+            "git-ns/view",
+            "git-ns/account/link-status"
+        ])
+    );
+    let digest = oob::context_digest(&pr.body).unwrap();
+    let scope = scope.unwrap_or_else(|| pr.body["payload"]["signingScope"].clone());
+    let grant = doc(
+        &member,
+        &t2("grant"),
+        json!({
+            "requestId": id,
+            "decision": "approve",
+            "sessionKey": b.key.did,
+            "approverKey": p.key.did,
+            "origin": PORTAL,
+            "contextDigest": digest,
+            "notAfter": now_epoch() + 3600,
+            "signingScope": scope,
+        }),
+        None,
+        "assertionMethod",
+    )
+    .await;
+    let rs = post(
+        &f.vtc,
+        &doc(
+            &p.key,
+            &t2("respond"),
+            json!({ "grant": grant }),
+            None,
+            "authentication",
+        )
+        .await,
+        p.ip,
+        None,
+    )
+    .await;
+    let done = if rs.status == StatusCode::OK {
+        redeem(f, &b, &id).await
+    } else {
+        Reply {
+            status: rs.status,
+            body: Value::Null,
+            cookies: vec![],
+            cache_control: None,
+        }
+    };
+    (b, member, rs, done)
+}
+
+/// A document `K_b` signs, as the portal sends one.
+async fn as_portal(f: &Fixture, b: &Browser, type_uri: &str, payload: Value) -> Reply {
+    post(
+        &f.vtc,
+        &doc(&b.key, type_uri, payload, None, "authentication").await,
+        b.ip,
+        Some(PORTAL),
+    )
+    .await
+}
+
+/// auth/oob/grant/0.2 consumer item 4: once the member approves a grant
+/// carrying `signingScope`, `K_b` signs directory documents as the member for
+/// that session — and nothing outside the scope, and never a value made
+/// public (item 6, `card/update`'s producer rule).
+#[tokio::test]
+async fn a_scoped_grant_lets_the_portal_key_sign_directory_documents_as_the_member() {
+    let f = fixture().await;
+    let (b, member, rs, done) = sign_in_v0_2(&f, None).await;
+    assert_eq!(rs.body["payload"]["status"], "approved", "{}", rs.body);
+    assert_vtc_attested(&f, &rs.body);
+    assert_eq!(done.status, StatusCode::OK, "{}", done.body);
+
+    let shown = as_portal(&f, &b, &format!("{DIRECTORY}/card/show/0.1"), json!({})).await;
+    assert_eq!(shown.status, StatusCode::OK, "{}", shown.body);
+    let entry = shown.body["payload"]["card"]["entryId"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let up = as_portal(
+        &f,
+        &b,
+        &format!("{DIRECTORY}/card/update/0.1"),
+        json!({ "values": { "displayName": "Alice" }, "visibility": { "displayName": "members" } }),
+    )
+    .await;
+    assert_eq!(up.status, StatusCode::OK, "{}", up.body);
+    // The card is the member's, keyed to their entry.
+    let card = vtc_service::directory::cards::by_did(f.vtc.state.directory.ks(), &member.did)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(card.entry_id, entry);
+    assert_eq!(card.values["displayName"], "Alice");
+
+    // Making a value public needs the membership DID itself.
+    let public = as_portal(
+        &f,
+        &b,
+        &format!("{DIRECTORY}/card/update/0.1"),
+        json!({ "visibility": { "displayName": "public" } }),
+    )
+    .await;
+    assert_eq!(code(&public), "permissionDenied", "{}", public.body);
+
+    // Outside the scope the key is nobody.
+    let profile = as_portal(
+        &f,
+        &b,
+        "https://trusttasks.org/spec/vtc/community/profile/show/0.1",
+        json!({}),
+    )
+    .await;
+    assert_eq!(code(&profile), "permissionDenied", "{}", profile.body);
+}
+
+/// A member browsing the portal's directory signs every read with `K_b`. Those
+/// are charged to the member's own signer bucket (a burst of 60), not the
+/// address's anonymous burst of 10 — which refused a member within a few clicks.
+#[tokio::test]
+async fn a_portal_key_browsing_the_directory_is_charged_to_its_member_not_the_anonymous_burst() {
+    let f = fixture().await;
+    let (b, _member, _rs, done) = sign_in_v0_2(&f, None).await;
+    assert_eq!(done.status, StatusCode::OK, "{}", done.body);
+
+    for i in 0..30 {
+        let shown = as_portal(&f, &b, &format!("{DIRECTORY}/card/show/0.1"), json!({})).await;
+        assert_ne!(
+            shown.status,
+            StatusCode::TOO_MANY_REQUESTS,
+            "read {i} was rate limited within the member's own burst: {}",
+            shown.body
+        );
+    }
+}
+
+/// Outside what the member delegated, the same key is a stranger: it pays the
+/// anonymous governor and is refused at its burst.
+#[tokio::test]
+async fn a_portal_key_outside_its_scope_still_pays_the_anonymous_burst() {
+    let f = fixture().await;
+    let (b, _member, _rs, done) = sign_in_v0_2(&f, None).await;
+    assert_eq!(done.status, StatusCode::OK, "{}", done.body);
+
+    let mut refused = false;
+    for _ in 0..30 {
+        let r = as_portal(
+            &f,
+            &b,
+            "https://trusttasks.org/spec/vtc/community/profile/show/0.1",
+            json!({}),
+        )
+        .await;
+        if r.status == StatusCode::TOO_MANY_REQUESTS {
+            refused = true;
+            break;
+        }
+    }
+    assert!(refused, "a key nobody delegated this to was never limited");
+}
+
+/// A delegated portal key stands in for its member at the size gate: a
+/// picture the portal uploads (`vtc/directory/images/upload`, declared up to
+/// 360 KiB) is measured against that task's limit, not the 64 KiB a stranger
+/// gets. Before this the portal could upload no photograph at all.
+#[tokio::test]
+async fn the_portal_key_uploads_a_picture_larger_than_the_default_document_limit() {
+    use base64::Engine as _;
+    let f = fixture().await;
+    let (b, _member, _, done) = sign_in_v0_2(&f, None).await;
+    assert_eq!(done.status, StatusCode::OK, "{}", done.body);
+
+    // Noise does not compress: about 190 KB of PNG, under the 256 KiB a
+    // picture may be.
+    let mut seed = 0x1234_5678u32;
+    let img = image::RgbaImage::from_fn(220, 220, |_, _| {
+        seed ^= seed << 13;
+        seed ^= seed >> 17;
+        seed ^= seed << 5;
+        image::Rgba(seed.to_le_bytes())
+    });
+    let mut png = Vec::new();
+    image::DynamicImage::ImageRgba8(img)
+        .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+        .unwrap();
+    assert!(
+        png.len() > 128 * 1024 && png.len() <= 262_144,
+        "{}",
+        png.len()
+    );
+    let payload = json!({
+        "mediaType": "image/png",
+        "data": base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&png),
+    });
+
+    let up = as_portal(
+        &f,
+        &b,
+        &format!("{DIRECTORY}/images/upload/0.1"),
+        payload.clone(),
+    )
+    .await;
+    assert_eq!(up.status, StatusCode::OK, "{}", up.body);
+    assert!(
+        up.body["payload"]["image"]["sha256"].is_string(),
+        "{}",
+        up.body
+    );
+
+    // The same document from a key nobody delegated anything to meets the
+    // default limit.
+    let stranger = Browser {
+        key: Party::new(),
+        ip: "198.51.100.9",
+    };
+    let refused = as_portal(
+        &f,
+        &stranger,
+        &format!("{DIRECTORY}/images/upload/0.1"),
+        payload,
+    )
+    .await;
+    assert_eq!(code(&refused), "malformedRequest", "{}", refused.body);
+    assert_eq!(refused.body["payload"]["details"]["maxBytes"], 65536);
+}
+
+const GIT_NS: &str = "https://trusttasks.org/spec/git-ns";
+
+/// The portal's Repos page: `K_b` reads the member's own `git-ns/view/0.4` and
+/// where a link they began stands, as the member — and nothing that changes a
+/// right or an account binding, whatever the scope names (grant 0.2 consumer
+/// item 6). Those are the member's own signature, through their wallet.
+#[tokio::test]
+async fn the_portal_key_reads_the_members_repos_and_never_changes_them() {
+    let f = fixture().await;
+    let (b, member, _, done) = sign_in_v0_2(&f, None).await;
+    assert_eq!(done.status, StatusCode::OK, "{}", done.body);
+
+    let admin = Party::new();
+    enrol_as(&f.vtc, &admin.did, None, VtcRole::Admin).await;
+    for (task, payload) in [
+        (
+            "namespace/bind/0.1",
+            json!({ "forge": "github.com", "owner": "acme", "mode": "manual" }),
+        ),
+        (
+            "right/grant/0.3",
+            json!({
+                "subject": member.did,
+                "right": "git.commit.sign",
+                "resource": "github.com/acme",
+            }),
+        ),
+    ] {
+        let r = post(
+            &f.vtc,
+            &doc(
+                &admin,
+                &format!("{GIT_NS}/{task}"),
+                payload,
+                None,
+                "authentication",
+            )
+            .await,
+            "198.51.100.20",
+            None,
+        )
+        .await;
+        assert_eq!(r.status, StatusCode::OK, "{task}: {}", r.body);
+    }
+
+    let view = as_portal(&f, &b, &format!("{GIT_NS}/view/0.4"), json!({})).await;
+    assert_eq!(view.status, StatusCode::OK, "{}", view.body);
+    let p = &view.body["payload"];
+    assert_eq!(p["namespaces"][0]["owner"], "acme", "{p}");
+    let rights = p["rights"].as_array().unwrap();
+    assert_eq!(rights.len(), 1, "{p}");
+    assert_eq!(rights[0]["subject"], member.did);
+    assert_eq!(rights[0]["right"], "git.commit.sign");
+    assert_eq!(p["accounts"], json!([]));
+
+    // A link the member never began is unknown to them, read as the member.
+    let status = as_portal(
+        &f,
+        &b,
+        &format!("{GIT_NS}/account/link-status/0.1"),
+        json!({ "linkId": "lnk_nothing" }),
+    )
+    .await;
+    assert_ne!(code(&status), "permissionDenied", "{}", status.body);
+    assert_ne!(status.status, StatusCode::OK, "{}", status.body);
+
+    // Linking, unlinking and granting are outside the scope: the key is nobody.
+    for (task, payload) in [
+        ("account/link/0.1", json!({ "forge": "github.com" })),
+        ("account/unlink/0.1", json!({ "forge": "github.com" })),
+        (
+            "right/grant/0.3",
+            json!({
+                "subject": member.did,
+                "right": "git.repo.create",
+                "resource": "github.com/acme",
+            }),
+        ),
+    ] {
+        let r = as_portal(&f, &b, &format!("{GIT_NS}/{task}"), payload).await;
+        assert_ne!(r.status, StatusCode::OK, "{task}: {}", r.body);
+    }
+    let again = as_portal(&f, &b, &format!("{GIT_NS}/view/0.4"), json!({})).await;
+    assert_eq!(
+        again.body["payload"]["rights"].as_array().map(Vec::len),
+        Some(1),
+        "a portal key changed a right: {}",
+        again.body
+    );
+
+    // Signed out, the key reads nothing.
+    for s in vti_common::auth::session::list_sessions(&f.vtc.state.member_sessions_ks)
+        .await
+        .unwrap()
+        .iter()
+        .filter(|s| s.did == member.did)
+    {
+        vti_common::auth::session::delete_session(&f.vtc.state.member_sessions_ks, &s.session_id)
+            .await
+            .unwrap();
+    }
+    let gone = as_portal(&f, &b, &format!("{GIT_NS}/view/0.4"), json!({})).await;
+    assert_eq!(code(&gone), "permissionDenied", "{}", gone.body);
+}
+
+async fn audit_events(f: &Fixture) -> Vec<vti_common::audit::AuditEvent> {
+    f.vtc
+        .state
+        .audit_ks
+        .prefix_iter_raw(Vec::new())
+        .await
+        .unwrap()
+        .into_iter()
+        .filter_map(|(_, v)| serde_json::from_slice::<vti_common::audit::AuditEnvelope>(&v).ok())
+        .map(|env| env.event)
+        .collect()
+}
+
+/// Item 7: every document the portal key signs that is accepted as the
+/// member's is audited against the member, naming the key and the grant —
+/// once per document, whichever family it is (directory, groups, git-ns), and
+/// never for a document the key could not sign.
+#[tokio::test]
+async fn every_document_the_portal_key_signs_is_audited_with_its_grant() {
+    use vti_common::audit::AuditEvent;
+    let f = fixture().await;
+    let (b, member, _, done) = sign_in_v0_2(&f, None).await;
+    assert_eq!(done.status, StatusCode::OK, "{}", done.body);
+
+    let card = as_portal(&f, &b, &format!("{DIRECTORY}/card/show/0.1"), json!({})).await;
+    assert_eq!(card.status, StatusCode::OK, "{}", card.body);
+    let groups = as_portal(
+        &f,
+        &b,
+        "https://trusttasks.org/spec/vtc/groups/list/0.1",
+        json!({ "limit": 10 }),
+    )
+    .await;
+    assert_eq!(groups.status, StatusCode::OK, "{}", groups.body);
+    let view = as_portal(&f, &b, &format!("{GIT_NS}/view/0.4"), json!({})).await;
+    assert_eq!(view.status, StatusCode::OK, "{}", view.body);
+    // Outside the scope: the key is nobody, and nothing is accepted.
+    let refused = as_portal(
+        &f,
+        &b,
+        "https://trusttasks.org/spec/vtc/community/profile/show/0.1",
+        json!({}),
+    )
+    .await;
+    assert_eq!(code(&refused), "permissionDenied", "{}", refused.body);
+
+    let events = audit_events(&f).await;
+    let grant_id = events
+        .iter()
+        .find_map(|e| match e {
+            AuditEvent::MemberWalletSignIn(d) if d.stage == "approved" => d
+                .grant
+                .as_ref()
+                .and_then(|g| g["id"].as_str())
+                .map(str::to_string),
+            _ => None,
+        })
+        .expect("the approval is audited with its grant");
+    let used: Vec<_> = events
+        .into_iter()
+        .filter_map(|e| match e {
+            AuditEvent::MemberPortalKeyUsed(d) => Some(d),
+            _ => None,
+        })
+        .collect();
+    let mut types: Vec<&str> = used.iter().map(|d| d.task_type.as_str()).collect();
+    types.sort_unstable();
+    assert_eq!(
+        types,
+        [
+            "https://trusttasks.org/spec/git-ns/view/0.4",
+            "https://trusttasks.org/spec/vtc/directory/card/show/0.1",
+            "https://trusttasks.org/spec/vtc/groups/list/0.1",
+        ],
+        "one row per accepted document, none for the refused one"
+    );
+    for d in &used {
+        assert_eq!(d.member, member.did);
+        assert_eq!(d.start_key_did, b.key.did);
+        assert_eq!(d.grant_id.as_deref(), Some(grant_id.as_str()));
+        assert!(!d.document_id.is_empty());
+    }
+}
+
+/// Item 3: the grant's scope must be the one step 2 offered.
+#[tokio::test]
+async fn a_grant_widening_the_offered_scope_is_refused() {
+    let f = fixture().await;
+    let (_, _, rs, _) = sign_in_v0_2(
+        &f,
+        Some(json!([
+            "vtc/directory",
+            "vtc/groups",
+            "git-ns/view",
+            "git-ns/account/link-status",
+            "vtc/rooms"
+        ])),
+    )
+    .await;
+    assert_eq!(
+        rs.body["payload"]["code"], "auth/oob/respond:contextMismatch",
+        "{}",
+        rs.body
+    );
+}
+
+/// Item 4.2: the delegation lives exactly as long as the session.
+#[tokio::test]
+async fn ending_the_session_disarms_the_portal_key() {
+    let f = fixture().await;
+    let (b, member, _, done) = sign_in_v0_2(&f, None).await;
+    assert_eq!(done.status, StatusCode::OK, "{}", done.body);
+    let sessions = vti_common::auth::session::list_sessions(&f.vtc.state.member_sessions_ks)
+        .await
+        .unwrap();
+    for s in sessions.iter().filter(|s| s.did == member.did) {
+        vti_common::auth::session::delete_session(&f.vtc.state.member_sessions_ks, &s.session_id)
+            .await
+            .unwrap();
+    }
+    let shown = as_portal(&f, &b, &format!("{DIRECTORY}/card/show/0.1"), json!({})).await;
+    assert_eq!(
+        code(&shown),
+        "vtc/directory/card/show:notMember",
+        "{}",
+        shown.body
+    );
+}
+
+/// A 0.1 sign-in delegates nothing: `K_b` is no member.
+#[tokio::test]
+async fn a_0_1_sign_in_delegates_no_signing() {
+    let f = fixture().await;
+    vtc_service::policy::default::install_defaults(
+        &f.vtc.state.policies_ks,
+        &f.vtc.state.active_policies_ks,
+    )
+    .await
+    .unwrap();
+    let member = Party::new();
+    enrol_member(&f.vtc, &member.did, None).await;
+    let b = Browser {
+        key: Party::new(),
+        ip: "198.51.100.9",
+    };
+    let p = Phone {
+        key: Party::new(),
+        ip: "198.51.100.9",
+    };
+    let id = start(&f, &b).await;
+    let (_, number) = claim_and_number(&f, &b, &p, &id).await;
+    let pr = prove(&f, &p, identify(&member, &id, &p.key.did, &number).await).await;
+    assert!(pr.body["payload"].get("signingScope").is_none());
+    let digest = oob::context_digest(&pr.body).unwrap();
+    let g = grant(
+        &member,
+        &id,
+        "approve",
+        &b.key.did,
+        &p.key.did,
+        PORTAL,
+        &digest,
+        "assertionMethod",
+    )
+    .await;
+    assert_eq!(respond(&f, &p, g).await.status, StatusCode::OK);
+    assert_eq!(redeem(&f, &b, &id).await.status, StatusCode::OK);
+    let shown = as_portal(&f, &b, &format!("{DIRECTORY}/card/show/0.1"), json!({})).await;
+    assert_eq!(
+        code(&shown),
+        "vtc/directory/card/show:notMember",
+        "{}",
+        shown.body
     );
 }

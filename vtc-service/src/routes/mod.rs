@@ -9,7 +9,6 @@ pub(crate) mod ceremonies;
 pub(crate) mod community;
 pub(crate) mod credential_exchange;
 pub(crate) mod did_log;
-pub(crate) mod directory;
 pub(crate) mod endorsement_types;
 pub(crate) mod endorsements;
 pub(crate) mod health;
@@ -109,9 +108,145 @@ use crate::server::AppState;
         // The operational verbs the console signs (`trust_tasks::admin_tasks`).
         health::DiagnosticsResponse,
         vta_sdk::openapi::RegistrySyncJobsList01Response,
-        vta_sdk::openapi::RegistrySyncJobsRetry01Response,
+        vta_sdk::openapi::RegistrySyncJobsRetry02Response,
         vta_sdk::openapi::RegistrySyncJobsDiscard01Response,
         vta_sdk::openapi::RegistryRecordsList01Response,
+        // The room-hosting administrator's reads and limit override
+        // (`trust_tasks::room_admin_tasks`), signed documents only.
+        vta_sdk::openapi::RoomsGet01Response,
+        vta_sdk::openapi::RoomsGet02Response,
+        vta_sdk::openapi::RoomsUsage01Payload,
+        vta_sdk::openapi::RoomsUsage01Response,
+        vta_sdk::openapi::RoomsLimitsSet01Payload,
+        vta_sdk::openapi::RoomsLimitsSet01Response,
+        // Rooms the community itself owns (`trust_tasks::community_room_tasks`),
+        // signed documents only.
+        vta_sdk::openapi::RoomsCommunityCreate01Payload,
+        vta_sdk::openapi::RoomsCommunityCreate01Response,
+        vta_sdk::openapi::RoomsCommunityList01Response,
+        vta_sdk::openapi::RoomsCommunityGet01Response,
+        // 0.2 — each room's description, tags and who last changed them — and the
+        // update that changes them.
+        vta_sdk::openapi::RoomsCommunityCreate02Payload,
+        vta_sdk::openapi::RoomsCommunityCreate02Response,
+        vta_sdk::openapi::RoomsCommunityList02Payload,
+        vta_sdk::openapi::RoomsCommunityList02Response,
+        vta_sdk::openapi::RoomsCommunityGet02Response,
+        vta_sdk::openapi::RoomsCommunityUpdate01Payload,
+        vta_sdk::openapi::RoomsCommunityUpdate01Response,
+        // 0.3 / 0.2: the label and description also written into the room as its profile.
+        vta_sdk::openapi::RoomsCommunityCreate03Payload,
+        vta_sdk::openapi::RoomsCommunityCreate03Response,
+        vta_sdk::openapi::RoomsCommunityUpdate02Payload,
+        vta_sdk::openapi::RoomsCommunityUpdate02Response,
+        vta_sdk::openapi::RoomsCommunityMembersAdd01Payload,
+        vta_sdk::openapi::RoomsCommunityMembersAdd01Response,
+        vta_sdk::openapi::RoomsCommunityMembersRemove01Payload,
+        vta_sdk::openapi::RoomsCommunityMembersRemove01Response,
+        vta_sdk::openapi::RoomsCommunityMembersRemove02Payload,
+        vta_sdk::openapi::RoomsCommunityMembersRemove02Response,
+        // The member directory the console administers (`trust_tasks::directory_tasks`).
+        vta_sdk::openapi::DirectoryFieldsList01Payload,
+        vta_sdk::openapi::DirectoryFieldsList01Response,
+        vta_sdk::openapi::DirectoryFieldsDefine01Payload,
+        vta_sdk::openapi::DirectoryFieldsDefine01Response,
+        vta_sdk::openapi::DirectoryFieldsUpdate01Payload,
+        vta_sdk::openapi::DirectoryFieldsUpdate01Response,
+        vta_sdk::openapi::DirectoryFieldsRetire01Payload,
+        vta_sdk::openapi::DirectoryFieldsRetire01Response,
+        vta_sdk::openapi::DirectoryCardAssert01Payload,
+        vta_sdk::openapi::DirectoryCardAssert01Response,
+        vta_sdk::openapi::DirectoryEntriesList01Payload,
+        vta_sdk::openapi::DirectoryEntriesList01Response,
+        vta_sdk::openapi::DirectoryEntriesShow01Payload,
+        vta_sdk::openapi::DirectoryEntriesShow01Response,
+        vta_sdk::openapi::DirectoryCardShow01Payload,
+        vta_sdk::openapi::DirectoryCardShow01Response,
+        vta_sdk::openapi::DirectoryCardUpdate01Payload,
+        vta_sdk::openapi::DirectoryCardUpdate01Response,
+        vta_sdk::openapi::DirectoryDisclosure01Payload,
+        vta_sdk::openapi::DirectoryDisclosure01Response,
+        vta_sdk::openapi::DirectoryImagesUpload01Payload,
+        vta_sdk::openapi::DirectoryImagesUpload01Response,
+        vta_sdk::openapi::DirectoryImagesGet01Payload,
+        vta_sdk::openapi::DirectoryImagesGet01Response,
+        vta_sdk::openapi::DirectoryCardPublish01Payload,
+        vta_sdk::openapi::DirectoryCardPublish01Response,
+        vta_sdk::openapi::DirectoryCardPublic01Payload,
+        vta_sdk::openapi::DirectoryCardPublic01Response,
+        vta_sdk::openapi::GroupsCreate01Payload,
+        vta_sdk::openapi::GroupsCreate01Response,
+        vta_sdk::openapi::GroupsUpdate01Payload,
+        vta_sdk::openapi::GroupsUpdate01Response,
+        vta_sdk::openapi::GroupsDelete01Payload,
+        vta_sdk::openapi::GroupsDelete01Response,
+        vta_sdk::openapi::GroupsList01Payload,
+        vta_sdk::openapi::GroupsList01Response,
+        vta_sdk::openapi::GroupsShow01Payload,
+        vta_sdk::openapi::GroupsShow01Response,
+        vta_sdk::openapi::GroupsMembersAdd01Payload,
+        vta_sdk::openapi::GroupsMembersAdd01Response,
+        vta_sdk::openapi::GroupsMembersRemove01Payload,
+        vta_sdk::openapi::GroupsMembersRemove01Response,
+        vta_sdk::openapi::GroupsMembersList01Payload,
+        vta_sdk::openapi::GroupsMembersList01Response,
+        vta_sdk::openapi::GroupsJoin01Payload,
+        vta_sdk::openapi::GroupsJoin01Response,
+        vta_sdk::openapi::GroupsLeave01Payload,
+        vta_sdk::openapi::GroupsLeave01Response,
+        vta_sdk::openapi::GroupsRequestsList01Payload,
+        vta_sdk::openapi::GroupsRequestsList01Response,
+        vta_sdk::openapi::GroupsRequestsDecide01Payload,
+        vta_sdk::openapi::GroupsRequestsDecide01Response,
+        vta_sdk::openapi::GroupsManagersAdd01Payload,
+        vta_sdk::openapi::GroupsManagersAdd01Response,
+        vta_sdk::openapi::GroupsManagersRemove01Payload,
+        vta_sdk::openapi::GroupsManagersRemove01Response,
+        vta_sdk::openapi::ConfigDidHostingList01Payload,
+        vta_sdk::openapi::ConfigDidHostingList01Response,
+        vta_sdk::openapi::GroupsBindingsAdd01Payload,
+        vta_sdk::openapi::GroupsBindingsAdd01Response,
+        vta_sdk::openapi::GroupsBindingsRemove01Payload,
+        vta_sdk::openapi::GroupsBindingsRemove01Response,
+        vta_sdk::openapi::GroupsBindingsList01Payload,
+        vta_sdk::openapi::GroupsBindingsList01Response,
+        vta_sdk::openapi::DirectoryCardPresent01Payload,
+        vta_sdk::openapi::DirectoryCardPresent01Response,
+        vta_sdk::openapi::DirectoryNotesAppend01Payload,
+        vta_sdk::openapi::DirectoryNotesAppend01Response,
+        vta_sdk::openapi::DirectoryNotesList01Payload,
+        vta_sdk::openapi::DirectoryNotesList01Response,
+        vta_sdk::openapi::DirectoryNotesExport01Payload,
+        vta_sdk::openapi::DirectoryNotesExport01Response,
+        vta_sdk::openapi::DirectoryExport01Payload,
+        vta_sdk::openapi::DirectoryExport01Response,
+        vta_sdk::openapi::RoomsCommunityMembersList01Payload,
+        vta_sdk::openapi::RoomsCommunityMembersList01Response,
+        // Where rooms' files are kept (`trust_tasks::storage_tasks`), signed
+        // documents only.
+        vta_sdk::openapi::RoomsStorageAssign01Payload,
+        vta_sdk::openapi::RoomsStorageAssign01Response,
+        vta_sdk::openapi::RoomsStorageMigrate01Payload,
+        vta_sdk::openapi::RoomsStorageMigrate01Response,
+        vta_sdk::openapi::RoomsStorageMigrate02Payload,
+        vta_sdk::openapi::RoomsStorageMigrate02Response,
+        vta_sdk::openapi::StorageConfigsList01Response,
+        vta_sdk::openapi::StorageConfigsGet01Response,
+        vta_sdk::openapi::StorageConfigsCreate01Payload,
+        vta_sdk::openapi::StorageConfigsCreate01Response,
+        vta_sdk::openapi::StorageConfigsUpdate01Payload,
+        vta_sdk::openapi::StorageConfigsUpdate01Response,
+        vta_sdk::openapi::StorageConfigsList02Response,
+        vta_sdk::openapi::StorageConfigsGet02Response,
+        vta_sdk::openapi::StorageConfigsCreate02Payload,
+        vta_sdk::openapi::StorageConfigsCreate02Response,
+        vta_sdk::openapi::StorageCredentialsSet02Payload,
+        vta_sdk::openapi::StorageCredentialsSet02Response,
+        vta_sdk::openapi::StorageCredentialsSet02Cleartext,
+        vta_sdk::openapi::StorageConfigsUpdate02Payload,
+        vta_sdk::openapi::StorageConfigsUpdate02Response,
+        vta_sdk::openapi::StorageConfigsRetire01Response,
+        vta_sdk::openapi::StorageConfigsProbe01Response,
         audit::AuditListResponse,
         crate::config_store::EffectiveConfig,
         admin::config::PatchResponse,
@@ -123,10 +258,21 @@ use crate::server::AppState;
         admin::invites::RevokeInviteResponse,
         auth::SessionListResponse,
         auth::RevokeSessionResponse,
+        // The console's bearer → cookie bridge and an administrator's own
+        // passkeys (`trust_tasks::{admin_session_tasks,admin_passkey_tasks}`),
+        // signed documents only since #1641's last batch.
+        auth::AdminSessionResponse,
+        auth::WhoamiResponse,
+        auth::SessionView,
+        admin::passkeys::ListResponse,
+        admin::passkeys::RegisteredCredential,
+        admin::passkeys::RegisterStartResponse,
+        admin::passkeys::RegisterFinishResponse,
+        admin::passkeys::RevokeStartResponse,
+        admin::passkeys::RevokeFinishResponse,
         // The community verbs the console signs (`trust_tasks::community_tasks`).
         community::profile::CommunityProfileResponse,
         ceremonies::CeremonyListResponse,
-        directory::DirectoryResponse,
         vti_common::pagination::Paginated<crate::endorsement_types::EndorsementType>,
         recognition_admin::RecognitionCheck,
         members::read::RemovedMembersResponse,
@@ -159,10 +305,10 @@ use crate::server::AppState;
         join_requests::read::JoinRequestVettingStatement,
         // The join criteria, as the console registers and lists them
         // (`vtc/schemas/accepts/{register,list}/0.2`) and as applicants read
-        // them (`vtc/join-requests/manifest/0.3`).
+        // them (`vtc/join-requests/manifest/0.4`).
         vta_sdk::openapi::AcceptsRegister02Payload,
         vta_sdk::openapi::AcceptsList02Response,
-        vta_sdk::openapi::JoinManifest03Response,
+        vta_sdk::openapi::JoinManifest04Response,
         rooms::HostedRoom,
         // The custom-endorsement reads/revoke the console signs
         // (`vtc/endorsements/{list,show,revoke}/0.1`) — bearer REST routes for
@@ -175,9 +321,8 @@ use crate::server::AppState;
         // The admin resend-on-behalf the console signs
         // (`vtc/vetting/vetters/resend/0.2`) — its admin-only bearer REST
         // route had no caller once the spine dispatched it (tt-tf#689) and
-        // was removed. `0.1`'s response shape covers `0.2`'s too: neither
-        // adds a member.
-        vta_sdk::openapi::VetterResend01Response,
+        // was removed.
+        vta_sdk::openapi::VetterResend02Response,
         // The website admin verbs the console signs
         // (`vtc/website/{files/list,files/delete,generations/list,rollback}/0.1`,
         // `trust_tasks::website_tasks`) — every bearer REST route for these had
@@ -394,8 +539,7 @@ fn build_api_chain(
     // openvtc/vtc/auth/legacy/* slugs were VTC-specific reimplementations
     // of primitives that VTA + did-hosting also have; consolidating here
     // so a multi-service deployment can use one client library.
-    // Browser-SPA convenience surface: `whoami` here, bound to the
-    // access-token session (cookie or bearer). Its partner `sign-out`
+    // Browser-SPA convenience surface: `sign-out`
     // revokes the session and clears the browser cookies in one trip; it
     // is on the unauthenticated chain because it also answers a session
     // that has already ended.
@@ -427,7 +571,7 @@ fn build_api_chain(
     // Trust Tasks are declared there. (`accept` is gone — retired upstream,
     // folded into `members/vmc` + `requestId`.) The admin GET list shares the
     // `/join-requests` path with the governed POST but carries its own
-    // `join-requests/list/0.1` task (axum merges same-path method routers
+    // `join-requests/list/0.2` task (axum merges same-path method routers
     // per method).
     // Policies (Phase 2 M2.3). Three distinct Trust Tasks for the
     // three POST endpoints — upload, activate, test — so SIEM
@@ -494,13 +638,10 @@ fn build_api_chain(
         // The session listing and revocation are the signed
         // `auth/sessions/list/0.1` and `auth/revoke-session/0.2`, served by the
         // spine (`trust_tasks::admin_tasks`) on every transport; neither has a
-        // route. `whoami` describes the bearer session the request carries,
-        // which a signed document does not have, so it stays with the session
-        // surface.
-        .routes(tt(
-            routes!(auth::whoami),
-            "https://trusttasks.org/spec/auth/whoami/0.1",
-        ))
+        // route. Nor has `auth/whoami/0.1`: it is answered on the spine
+        // (`trust_tasks::whoami_tasks`) for the key a sign-in bound to the
+        // session, never for a cookie (#1641).
+        //
         // Sign-out is on the unauthenticated chain (`build_unauth_routes`):
         // it answers a caller whose session has already ended.
         // Audit log (super-admin only): `audit/list` and `audit/verify` are
@@ -529,7 +670,7 @@ fn build_api_chain(
         // Community branding (`vtc/community/branding/{show,update}/0.1`) and
         // what the community asks an applicant to tell it about themselves
         // (`vtc/community/requested-attributes/{show,update}/0.1`), both
-        // published on `join-requests/manifest/0.2`, are signed documents
+        // published on `join-requests/manifest/0.4`, are signed documents
         // only now (`trust_tasks::surface_tasks`) — their admin-only bearer
         // REST mounts had no caller left once `vtc-client` and the admin
         // console signed them instead.
@@ -554,44 +695,12 @@ fn build_api_chain(
         // required and no REST route binds them. Their dedicated,
         // `Trust-Task`-header-gated REST mounts had no caller once the admin
         // console signed the documents instead.
-        // Admin passkey management (M0.6.3), on the canonical
-        // `auth/passkey/*` tasks (trust-tasks-tf#145).
-        //
-        // Each leg now carries its OWN task, where the retired
-        // `admin/passkeys/{register,revoke}/1.0` pair had start and
-        // finish sharing one URI. A shared URI could not describe
-        // either leg honestly: start takes no assertion and returns a
-        // challenge, finish takes the assertion and returns nothing
-        // like a challenge, so one schema covering both had to permit
-        // every member of each — which is how a finish missing its UV
-        // assertion validated cleanly.
-        //
-        // Step-up UV is unchanged in behaviour and is now *specified*:
-        // `enroll/start/0.2` returns `uvOptions` alongside the
-        // registration challenge and `enroll/finish/0.2` requires the
-        // matching `uvCredential`; revoke's two legs do the same. The
-        // canonical specs were written from this implementation, so
-        // the wire shape is what it always was.
-        .routes(tt(
-            routes!(admin::passkeys::list),
-            "https://trusttasks.org/spec/auth/passkey/list/0.1",
-        ))
-        .routes(tt(
-            routes!(admin::passkeys::register_start),
-            "https://trusttasks.org/spec/auth/passkey/enroll/start/0.2",
-        ))
-        .routes(tt(
-            routes!(admin::passkeys::register_finish),
-            "https://trusttasks.org/spec/auth/passkey/enroll/finish/0.2",
-        ))
-        .routes(tt(
-            routes!(admin::passkeys::revoke_start),
-            "https://trusttasks.org/spec/auth/passkey/revoke/start/0.1",
-        ))
-        .routes(tt(
-            routes!(admin::passkeys::revoke_finish),
-            "https://trusttasks.org/spec/auth/passkey/revoke/finish/0.1",
-        ))
+        // An administrator's own passkeys (M0.6.3) — `auth/passkey/list/0.1`,
+        // `enroll/{start,finish}/0.2`, `revoke/{start,finish}/0.1` — have no
+        // route: each declares `proof` REQUIRED and is served only as a signed
+        // document by the spine (`trust_tasks::admin_passkey_tasks`), on every
+        // transport. The `/v1/admin/passkeys/*` bearer routes were removed
+        // with #1641's last batch, once the console signed them.
         // Members' step-up passkeys (`crate::step_up_passkey`) have no route
         // here: issuing, redeeming, revoking and an administrator's listing
         // (`auth/passkey/admin-list/0.1`) are Trust Tasks served only by the
@@ -608,7 +717,7 @@ fn build_api_chain(
         // ceremony decision pipeline).
         // Ceremony registry — the admin-UI renders its flow + simulator
         // from these manifests (purpose / fields / facts template).
-        // Members (Phase 1 M1.4–M1.6). The roster (`vtc/members/list/0.1`) is a
+        // Members (Phase 1 M1.4–M1.6). The roster (`vtc/members/list/0.2`) is a
         // signed document only.
         // Departed (tombstoned/historical) members. The literal `/removed`
         // must precede the `/{did}` catchall so axum's path-trie doesn't route
@@ -681,7 +790,7 @@ fn build_api_chain(
         // design §10) is a signed document only, withdrawn through
         // endorsements/revoke.
         // The vetter registry's admin surface. Resend
-        // (`vtc/vetting/vetters/resend/{0.1,0.2}`) is a signed document only:
+        // (`vtc/vetting/vetters/resend/0.2`) is a signed document only:
         // `0.1` enforces the task a vetter sends for themselves, `0.2` adds
         // the `memberDid` an administrator names to resend on a vetter's
         // behalf (tt-tf#689) — what let the admin-only REST resend route
@@ -704,12 +813,12 @@ fn build_api_chain(
     // A member's update and removal (`vtc/members/{update,admin-remove}/0.1`)
     // are signed documents only.
     // Join requests (Phase 1 M1.7–M1.10). The admin queue
-    // (`vtc/join-requests/list/0.1`) and its decision
+    // (`vtc/join-requests/list/0.2`) and its decision
     // (`vtc/join-requests/decide/0.1`) are signed documents only.
     // The vetting facts a request was decided on — admin REST with no Trust
     // Task of its own.
     // The join manifest has no route: the console reads it as the signed
-    // `vtc/join-requests/manifest/0.2` document applicants send.
+    // `vtc/join-requests/manifest/0.4` document applicants send.
     // (Manifest discovery moved to the single `POST /v1/trust-tasks`
     // document endpoint — `join-requests/manifest/1.0` is now a Trust
     // Task verb, no longer a bespoke GET.)
@@ -734,7 +843,16 @@ fn build_api_chain(
 
     // The member portal's session-gated routes (`MemberAuth`): off the
     // governor, like every other authenticated route — the session is the gate.
+    //
+    // And the sign-in pages' config, which needs no session but is no work to
+    // serve: public settings and the cached DID self-check. Every load of the
+    // member portal's and the console's sign-in page reads it before it makes a
+    // code. Behind the per-IP governor it shared one small bucket with the code
+    // request, the redeem polls and the wallet's own claim, prove and respond
+    // from the same address, so a few sign-ins or reloads in a minute left the
+    // next page load refused and the page fell back to a button.
     let api = api
+        .route("/member/sign-in/config", get(member_portal::sign_in_config))
         .route("/member/me", get(member_portal::me))
         .route("/member/passkeys", get(member_portal::list_passkeys))
         .route(
@@ -783,13 +901,11 @@ fn build_api_chain(
 fn build_unauth_routes(trust_xff_cidrs: &[IpNetwork]) -> OpenApiRouter<AppState> {
     // Canonical cross-cutting auth tasks from trusttasks-tf.
     //
-    // Bearer→cookie bridge: the SPA posts an access token it already
-    // holds (from the VTA-wallet login or `POST /v1/auth/`), the daemon
-    // validates it and mirrors it into the `vtc_admin_session` + `csrf`
-    // cookies. This is the *only* cookie-session mint besides passkey
-    // login — the fused `/v1/auth/admin-login` that authenticated and set
-    // cookies in one call was removed in #710, since it re-implemented
-    // `POST /v1/auth/` to add a side-effect this task already provides.
+    // Bearer→cookie bridge: `vtc/auth/admin-session/0.2`, now a signed
+    // document only (`trust_tasks::admin_session_tasks`, #1641). The fused
+    // `/v1/auth/admin-login` that authenticated and set cookies in one call
+    // was removed in #710, since it re-implemented `POST /v1/auth/` to add a
+    // side-effect this task already provides.
     // Browser-friendly passkey login — one canonical spec serves both
     // initial login and AAL step-up, selected by the start payload's
     // `purpose` field (0.2's camelCase `stepUp`). Login is genuinely
@@ -908,10 +1024,6 @@ fn build_unauth_routes(trust_xff_cidrs: &[IpNetwork]) -> OpenApiRouter<AppState>
             "/member/wallet/auth/refresh",
             post(member_portal::wallet_refresh),
         )
-        .route(
-            "/member/sign-in/config",
-            get(member_portal::sign_in_config),
-        )
         .route("/member/session", post(member_portal::session))
         .route("/member/auth/refresh", post(member_portal::cookie_refresh))
         .route("/member/sign-out", post(member_portal::sign_out))
@@ -932,10 +1044,11 @@ fn build_unauth_routes(trust_xff_cidrs: &[IpNetwork]) -> OpenApiRouter<AppState>
         // `[oid4vp] max_response_bytes`, not this chain's cap.
         .routes(routes!(oid4vp::request_object))
         .routes(routes!(oid4vp::response))
-        .routes(tt(
-            routes!(auth::admin_session),
-            "https://trusttasks.org/spec/vtc/auth/admin-session/0.1",
-        ))
+        // The bearer → cookie bridge (`vtc/auth/admin-session/0.2`) has no
+        // route: its specification declares `proof` REQUIRED, so it is served
+        // only as a signed document on `POST /v1/trust-tasks`
+        // (`trust_tasks::admin_session_tasks`), signed by the access token's
+        // subject, which sets the cookies there (#1641).
         .routes(tt(
             routes!(auth::passkey_login_start),
             "https://trusttasks.org/spec/auth/passkey/login/start/0.2",
@@ -1069,6 +1182,17 @@ fn assemble(routing: &RoutingConfig, api: Router<AppState>) -> Router<AppState> 
         // VTC's own DID to be resolvable. The VTC hosts exactly one
         // DID, its own. See `tasks/vtc-mvp/vta-driven-keys.md` §10.
         .route("/.well-known/did.jsonl", get(did_log::did_log))
+        // The logs of the room identities this community minted serverless
+        // (`rooms::community`): a room it owns resolves to
+        // `https://<host>/room-dids/<id>/did.jsonl`. Public, like the line above.
+        .route(
+            "/room-dids/{id}/did.jsonl",
+            get(crate::rooms::community::serve_room_did_log),
+        )
+        .route(
+            "/group-dids/{id}/did.jsonl",
+            get(crate::groups::identity::serve_group_did_log),
+        )
         // API surface — existing TrustTaskRouter result nested at
         // the configured mount.
         .nest(&routing.api.mount, api);
@@ -1177,6 +1301,14 @@ pub fn assemble_with_website(
         // `did:webvh:<scid>:<host>` resolves to
         // `https://<host>/.well-known/did.jsonl`, the URL we serve.
         .route("/.well-known/did.jsonl", get(did_log::did_log))
+        .route(
+            "/room-dids/{id}/did.jsonl",
+            get(crate::rooms::community::serve_room_did_log),
+        )
+        .route(
+            "/group-dids/{id}/did.jsonl",
+            get(crate::groups::identity::serve_group_did_log),
+        )
         .nest(&routing.api.mount, api);
     app = app.nest(&routing.admin_ui.mount, admin);
     // axum 0.8's `nest("/admin", inner)` registers `/admin` (bare)
@@ -1259,16 +1391,6 @@ mod openapi_tests {
     /// moment a conscious decision should be recorded.
     const REST_EXCEPTIONS: &[(&str, &str, &str)] = &[
         (
-            "GET",
-            "/v1/admin/passkeys",
-            "lists the console's own registered WebAuthn credentials for its passkey-management UI",
-        ),
-        (
-            "POST",
-            "/v1/auth/admin-session",
-            "bootstraps the admin console's cookie session; no signed-document equivalent exists before a session does",
-        ),
-        (
             "POST",
             "/v1/auth/refresh",
             "the admin console's cookie-bound session renewal; it has no signed-document equivalent",
@@ -1277,11 +1399,6 @@ mod openapi_tests {
             "POST",
             "/v1/auth/sign-out",
             "clears the console's cookie session; a browser action, not a protocol verb",
-        ),
-        (
-            "GET",
-            "/v1/auth/whoami",
-            "reads the caller's own cookie session for the console UI; not a Trust Task",
         ),
         (
             "POST",
@@ -1421,7 +1538,6 @@ mod openapi_tests {
         // cross-community recognition (`auth/recognise/*`) moved there too —
         // neither has a dedicated REST mount any more.
         ("POST", "/v1/auth/refresh"),
-        ("POST", "/v1/auth/admin-session"),
         ("POST", "/v1/auth/passkey-login/start"),
         ("POST", "/v1/auth/passkey-login/finish"),
         // The single Trust Task document endpoint — the holder-facing join

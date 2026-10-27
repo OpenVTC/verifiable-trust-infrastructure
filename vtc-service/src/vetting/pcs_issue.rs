@@ -811,7 +811,7 @@ mod tests {
             .map(|p| vti_vetting_pcs::scheme::dec(p).unwrap())
             .collect::<Vec<_>>();
         wallet
-            .receive(issuer.tvk(), &pres)
+            .receive(issuer.tvk(), TOKEN_LABEL, 1, &pres)
             .expect("the tokens unblind under the published key");
         assert_eq!(wallet.free(), 3);
 

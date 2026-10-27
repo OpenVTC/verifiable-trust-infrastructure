@@ -37,6 +37,7 @@ use crate::store::{PersonaStore, now_rfc3339};
 /// What happened to a face.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[non_exhaustive]
 pub enum FaceEventKind {
     Composed,
     Worn,

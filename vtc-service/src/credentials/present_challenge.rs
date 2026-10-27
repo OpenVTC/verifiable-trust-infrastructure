@@ -83,13 +83,14 @@ pub async fn consume(
     thread_id: &str,
     now: DateTime<Utc>,
 ) -> Result<ConsumedChallenge, AppError> {
-    let rec: PresentChallenge = ks.get(key(thread_id)).await?.ok_or_else(|| {
+    // Read and remove as one atomic take — single-use, even on the expired
+    // path, and of two presentations racing on one thread exactly one finds it.
+    let bytes = ks.take_raw(key(thread_id)).await?.ok_or_else(|| {
         AppError::Validation(format!(
             "no presentation challenge for thread `{thread_id}` (unknown or already consumed)"
         ))
     })?;
-    // Remove first — single-use, even on the expired path.
-    ks.remove(key(thread_id)).await?;
+    let rec: PresentChallenge = serde_json::from_slice(&bytes)?;
     if now >= rec.expires_at {
         return Err(AppError::Validation(format!(
             "presentation challenge for thread `{thread_id}` expired at {}",
@@ -245,5 +246,39 @@ mod tests {
         assert!(consume(&ks, "fresh", now).await.is_ok());
         let err = consume(&ks, "stale", now).await.unwrap_err();
         assert!(matches!(&err, AppError::Validation(m) if m.contains("unknown")));
+    }
+    /// Single use under contention: of many presentations racing on one
+    /// challenge, exactly one consumes it. A get-then-remove let several in.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+    async fn concurrent_consumes_succeed_exactly_once() {
+        let (_dir, ks) = fresh_ks();
+        let now = Utc::now();
+        for _ in 0..40 {
+            issue(
+                &ks,
+                "thread-1",
+                "did:web:vtc.example",
+                None,
+                DEFAULT_CHALLENGE_TTL,
+                now,
+            )
+            .await
+            .unwrap();
+            let nonce = "thread-1".to_string();
+            let barrier = std::sync::Arc::new(tokio::sync::Barrier::new(16));
+            let mut tasks = Vec::new();
+            for _ in 0..16 {
+                let (ks, barrier, nonce) = (ks.clone(), barrier.clone(), nonce.clone());
+                tasks.push(tokio::spawn(async move {
+                    barrier.wait().await;
+                    consume(&ks, &nonce, now).await.is_ok()
+                }));
+            }
+            let mut ok = 0;
+            for t in tasks {
+                ok += t.await.unwrap() as usize;
+            }
+            assert_eq!(ok, 1, "a challenge must be consumed exactly once");
+        }
     }
 }

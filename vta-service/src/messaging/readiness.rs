@@ -50,7 +50,7 @@ use vta_config::{MediatorReadinessConfig, ReadinessTimeoutPolicy};
 /// recognise) is not gated — `did:key` and friends resolve straight from the
 /// identifier, and an unrecognised method must not have DIDComm withheld from
 /// it on the strength of a probe we can't reason about.
-const NETWORK_RESOLVED_METHODS: &[&str] = &["did:webvh:", "did:web:"];
+const NETWORK_RESOLVED_METHODS: &[&str] = &["did:webvh:", "did:web:", "did:scid:vh:1:"];
 
 /// What the caller should do after the gate runs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -103,6 +103,11 @@ pub fn needs_network_probe(vta_did: &str) -> bool {
 /// non-`webvh` method, an unparseable DID, or a build without the `webvh`
 /// feature).
 pub fn self_did_endpoint_hint(vta_did: &str) -> Option<String> {
+    // A did:scid VTA DID is published where its `src` says (VTI-KEY-160).
+    #[cfg(feature = "webvh")]
+    let log_did = vta_sdk::did_scid::webvh_did(vta_did);
+    #[cfg(feature = "webvh")]
+    let vta_did = log_did.as_deref().unwrap_or(vta_did);
     #[cfg(feature = "webvh")]
     if vta_did.starts_with("did:webvh:") {
         return match didwebvh_rs::url::WebVHURL::parse_did_url(vta_did) {
@@ -838,9 +843,10 @@ mod tests {
 
     #[test]
     fn policy_with_reconnect_disabled_never_retries() {
-        let policy = ReconnectPolicy::from_config(&MediatorReadinessConfig {
-            reconnect: false,
-            ..Default::default()
+        let policy = ReconnectPolicy::from_config(&{
+            let mut c = MediatorReadinessConfig::default();
+            c.reconnect = false;
+            c
         });
         assert!(
             policy.next_backoff(0, Duration::ZERO).is_none(),
@@ -850,9 +856,10 @@ mod tests {
 
     #[test]
     fn policy_gives_up_once_the_horizon_is_exhausted() {
-        let policy = ReconnectPolicy::from_config(&MediatorReadinessConfig {
-            reconnect_max_elapsed_secs: 120,
-            ..Default::default()
+        let policy = ReconnectPolicy::from_config(&{
+            let mut c = MediatorReadinessConfig::default();
+            c.reconnect_max_elapsed_secs = 120;
+            c
         });
         assert!(policy.next_backoff(3, Duration::from_secs(119)).is_some());
         assert!(
@@ -864,10 +871,11 @@ mod tests {
 
     #[test]
     fn policy_backoff_is_bounded_by_the_reconnect_cap() {
-        let policy = ReconnectPolicy::from_config(&MediatorReadinessConfig {
-            retry_secs: 5,
-            reconnect_backoff_cap_secs: 60,
-            ..Default::default()
+        let policy = ReconnectPolicy::from_config(&{
+            let mut c = MediatorReadinessConfig::default();
+            c.retry_secs = 5;
+            c.reconnect_backoff_cap_secs = 60;
+            c
         });
         assert_eq!(policy.ceiling_for(0), Duration::from_secs(5));
         assert_eq!(policy.ceiling_for(4), Duration::from_secs(60)); // 80 -> cap
@@ -886,10 +894,11 @@ mod tests {
     fn policy_cap_below_base_still_grows() {
         // A misconfigured cap under the base would otherwise pin the backoff at
         // the (smaller) cap and defeat the escalation entirely.
-        let policy = ReconnectPolicy::from_config(&MediatorReadinessConfig {
-            retry_secs: 30,
-            reconnect_backoff_cap_secs: 5,
-            ..Default::default()
+        let policy = ReconnectPolicy::from_config(&{
+            let mut c = MediatorReadinessConfig::default();
+            c.retry_secs = 30;
+            c.reconnect_backoff_cap_secs = 5;
+            c
         });
         assert_eq!(policy.ceiling_for(0), Duration::from_secs(30));
     }
@@ -907,9 +916,10 @@ mod tests {
 
     #[tokio::test]
     async fn disabled_gate_proceeds_without_probing() {
-        let cfg = MediatorReadinessConfig {
-            enabled: false,
-            ..Default::default()
+        let cfg = {
+            let mut c = MediatorReadinessConfig::default();
+            c.enabled = false;
+            c
         };
         assert_eq!(
             run_gate(

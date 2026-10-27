@@ -1391,6 +1391,107 @@ async fn services_write_paths_against_a_hosted_vta_did_inner() {
     mock.shutdown().await;
 }
 
+/// DIDComm enable publishes the service change and marks the reply as a
+/// reply-safe restart. The test uses `force` only to bypass the live mediator
+/// steps; resolver step 1 still runs against a DIDComm-shaped mediator
+/// document, so this exercises the real enable operation and dispatch spine.
+#[tokio::test]
+async fn didcomm_enable_response_requests_reply_safe_restart() {
+    use vta_sdk::client::{CreateDidWebvhRequest, VtaClient};
+    use vta_sdk::protocols::did_management::create::WebvhPathMode;
+
+    let mut mock = MockVta::start_with_webvh_host().await;
+    mock.ctx.config.write().await.services.didcomm = false;
+    let client: VtaClient = mock.signing_client(0x41, "admin", vec![]).await;
+
+    let minted = client
+        .create_did_webvh(CreateDidWebvhRequest {
+            context_id: "ctx1".into(),
+            server_id: Some(MockVta::WEBVH_SERVER_ID.into()),
+            url: None,
+            path: None,
+            path_mode: Some(WebvhPathMode::AutoAssign),
+            domain: None,
+            label: None,
+            portable: false,
+            add_mediator_service: false,
+            add_tsp_service: false,
+            additional_services: None,
+            pre_rotation_count: 0,
+            did_document: None,
+            did_log: None,
+            set_primary: false,
+            signing_key_id: None,
+            ka_key_id: None,
+            template: None,
+            template_context: None,
+            template_vars: Default::default(),
+        })
+        .await
+        .expect("mint a hosted DID for the VTA itself");
+    mock.ctx.adopt_vta_did(&minted.did).await;
+
+    // Reuse the stub host DID as a resolver-only mediator document. `force`
+    // skips the live connection steps, but enable_didcomm still requires the
+    // mediator DID to resolve and expose DIDCommMessaging + keyAgreement.
+    let mediator_did = "did:webvh:mediator-scid:mediator.test";
+    let (_, mediator_key) = vta_service::test_support::did_for_seed(0x5E);
+    let mediator_key = mediator_key.rsplit('#').next().unwrap_or_default();
+    let mediator_doc = serde_json::json!({
+        "@context": ["https://www.w3.org/ns/did/v1"],
+        "id": mediator_did,
+        "verificationMethod": [{
+            "id": format!("{mediator_did}#key-0"),
+            "type": "Multikey",
+            "controller": mediator_did,
+            "publicKeyMultibase": mediator_key
+        }],
+        "authentication": [format!("{mediator_did}#key-0")],
+        "keyAgreement": [format!("{mediator_did}#key-0")],
+        "service": [{
+            "id": format!("{mediator_did}#didcomm"),
+            "type": "DIDCommMessaging",
+            "serviceEndpoint": "https://mediator.test"
+        }]
+    });
+    let mediator_doc: affinidi_tdk::did_common::Document =
+        serde_json::from_value(mediator_doc).expect("mediator DID document");
+    mock.ctx
+        .state
+        .did_resolver
+        .as_mut()
+        .expect("mock resolver")
+        .add_did_document(mediator_did, mediator_doc)
+        .await;
+
+    let (identity, token) = mock
+        .ctx
+        .mint_signing_identity(0x42, "admin", vec![], &minted.did)
+        .await;
+    let reply = post_trust_task(
+        &mock,
+        &identity,
+        &token,
+        vta_sdk::trust_tasks::TASK_SERVICES_ENABLE_1_0,
+        serde_json::json!({
+            "service": "didcomm",
+            "config": {
+                "mediatorDid": mediator_did,
+                "force": true
+            }
+        }),
+    )
+    .await
+    .expect("DIDComm enable response");
+
+    assert_eq!(
+        reply["payload"]["result"]["ext"]["org.openvtc"]["restarting"], true,
+        "DIDComm enable must tell the client to wait for the restarted listener: {reply}"
+    );
+
+    mock.shutdown().await;
+}
+
 // ── `webvh/dids/delete` and the copy of the log on the host ─────────────────
 //
 // VTI R2.1 (Remote-First): no local commit before the remote effect. A DID's

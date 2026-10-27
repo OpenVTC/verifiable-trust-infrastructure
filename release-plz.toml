@@ -8,12 +8,12 @@
 # So merging a feature PR never releases anything, and a release is a reviewable
 # diff rather than a side effect. See RELEASING.md.
 #
-# WHAT GETS PUBLISHED is decided in each crate's Cargo.toml, not here: 20 crates
-# have `publish` inherited from `[workspace.package]`, and the other 6 set
-# `publish = false` with a comment saying why. release-plz honours that — it
-# still updates an unpublished crate's version and dependency requirements (so
-# the workspace stays coherent when a published dependency bumps), it just never
-# uploads it. Keeping the decision in the manifests means `cargo` and
+# WHAT GETS PUBLISHED is decided in each crate's Cargo.toml, not here: 26
+# crates have `publish` inherited from `[workspace.package]`, and the other 9
+# set `publish = false` with a comment saying why (RELEASING.md lists both).
+# release-plz honours that — it still updates an unpublished crate's version and
+# dependency requirements (so the workspace stays coherent when a published
+# dependency bumps), it just never uploads it. Keeping the decision in the manifests means `cargo` and
 # release-plz cannot disagree about it.
 
 [workspace]
@@ -37,10 +37,12 @@ git_release_enable = true
 # Label the Release PR so it is obvious in the queue and easy to filter.
 pr_labels = ["release"]
 
-# Publishing runs `cargo publish` per crate in dependency order. vtc-service
-# used to need `--no-verify` here because its build.rs npm-builds an admin UI
-# and cargo rejects a build.rs that modifies the source tree — that special
-# case is gone with `publish = false` on that crate.
+# Publishing runs `cargo publish` per crate in dependency order, verify build
+# included. vtc-service once needed `--no-verify` here because its build.rs
+# npm-built the admin UI into the source tree, which cargo rejects. It no longer
+# does either: the package carries the web bundles pre-built (publish.yml runs
+# `scripts/build-vtc-web-bundles.sh` first), and build.rs bakes those without
+# touching npm when it finds no `admin-ui/package.json`.
 
 
 # ── semver checks: on where the API has a consumer ───────────────────────────
@@ -115,3 +117,20 @@ semver_check = false
 [[package]]
 name = "vti-webauthn"
 semver_check = false
+
+# vtc-service is published as a binary, for `cargo install vtc-service`. Its
+# library has no consumer in or outside this workspace, so checking its API is
+# the same cost-for-no-signal as the subsystem crates above, on the largest
+# crate here. Bumps come from conventional commits. `scripts/semver-report.sh`
+# excludes it to match.
+#
+# `publish_allow_dirty`: cargo counts gitignored files that `include` names as
+# uncommitted, and the package's two web bundles are exactly that (built by
+# publish.yml just before this runs). Without it `cargo publish` refuses
+# vtc-service with "154 files in the working directory contain changes". The
+# step that builds them also checks the tree is otherwise clean, so this admits
+# the bundles and nothing else.
+[[package]]
+name = "vtc-service"
+semver_check = false
+publish_allow_dirty = true

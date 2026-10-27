@@ -22,8 +22,8 @@ use crate::common::signed::{assert_conforms, post, signed};
 const RP_ORIGIN: &str = "https://vtc.example.com";
 const LIST: &str = "https://trusttasks.org/spec/vtc/admin/actions/list/0.1";
 const LIST_V0_2: &str = "https://trusttasks.org/spec/vtc/admin/actions/list/0.2";
-const JOINS_LIST: &str = "https://trusttasks.org/spec/vtc/join-requests/list/0.1";
-const MEMBERS_LIST: &str = "https://trusttasks.org/spec/vtc/members/list/0.1";
+const JOINS_LIST: &str = "https://trusttasks.org/spec/vtc/join-requests/list/0.2";
+const MEMBERS_LIST: &str = "https://trusttasks.org/spec/vtc/members/list/0.2";
 
 async fn vtc() -> TestVtc {
     let vtc = TestVtc::builder()
@@ -71,6 +71,7 @@ async fn administrator(vtc: &TestVtc) -> Party {
             updated_by: None,
             expires_at: None,
             resource_grants: Vec::new(),
+            group_grants: Vec::new(),
             label_set_by_subject: false,
             suspension: None,
         },
@@ -178,7 +179,7 @@ async fn rejecting_a_join_review_rejects_the_request() {
     assert_eq!(stored.status, JoinStatus::Rejected);
 }
 
-/// `vtc/join-requests/list/0.1` and `vtc/members/list/0.1` fill
+/// `vtc/join-requests/list/0.2` and `vtc/members/list/0.2` fill
 /// `totalEstimate`, so the console's badge is one `limit: 1` read.
 #[tokio::test]
 async fn the_listings_count_what_they_filter_in_one_page() {

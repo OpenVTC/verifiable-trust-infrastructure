@@ -507,6 +507,74 @@ mod tests {
         .expect("the authenticate proof must verify against the holder key");
     }
 
+    /// A wallet stamps `issued_at` however its platform clock formats it —
+    /// Swift/Kotlin/`Utc::now().to_rfc3339()` give fractional seconds and
+    /// `+00:00`, JavaScript gives three-digit milliseconds. Whatever it sends,
+    /// the signed document must verify **as received**, with the verifier
+    /// every VTA ingress uses (`verify_trust_task_proof_value`), and its
+    /// `issuedAt` and proof `created` must name the same instant in the same
+    /// spelling.
+    #[tokio::test]
+    async fn authenticate_verifies_as_received_for_every_issued_at_shape() {
+        use ed25519_dalek::{Signer as _, SigningKey};
+        use vta_sdk::trust_task_proof::{TrustTaskVmResolver, verify_trust_task_proof_value};
+
+        struct EnclaveStub {
+            sk: SigningKey,
+            did: String,
+        }
+        impl Signer for EnclaveStub {
+            fn did(&self) -> String {
+                self.did.clone()
+            }
+            fn sign(&self, payload: Vec<u8>) -> Result<Vec<u8>, FfiError> {
+                Ok(self.sk.sign(&payload).to_bytes().to_vec())
+            }
+        }
+
+        let sk = SigningKey::from_bytes(&[43u8; 32]);
+        let did = affinidi_crypto::did_key::ed25519_pub_to_did_key(&sk.verifying_key().to_bytes());
+
+        for issued_at in [
+            "2026-05-30T10:00:00Z",
+            "2026-05-30T10:00:00.000Z",
+            "2026-05-30T10:00:00.123Z",
+            "2026-05-30T10:00:00.123456Z",
+            "2026-05-30T10:00:00.123456789+00:00",
+            "2026-05-30T10:00:00+00:00",
+            "2026-05-30T15:30:00.5+05:30",
+            "2026-05-30T10:00:00.1z",
+        ] {
+            let json = build_authenticate(
+                AuthEnvelope {
+                    id: "auth-shape".to_string(),
+                    holder_did: did.clone(),
+                    vta_did: "did:web:vta.example".to_string(),
+                    issued_at: issued_at.to_string(),
+                },
+                "VHJhbnNmZXJDb25maXJtTm9uY2VYWQ".to_string(),
+                "sess-1".to_string(),
+                vec![],
+                Box::new(EnclaveStub {
+                    sk: sk.clone(),
+                    did: did.clone(),
+                }),
+            )
+            .unwrap_or_else(|e| panic!("{issued_at}: {e}"));
+
+            let received: serde_json::Value = serde_json::from_str(&json).unwrap();
+            assert_eq!(
+                received["issuedAt"], received["proof"]["created"],
+                "{issued_at}: issuedAt and created must agree"
+            );
+            let proven =
+                verify_trust_task_proof_value(&received, &TrustTaskVmResolver::did_key_only())
+                    .await
+                    .unwrap_or_else(|e| panic!("{issued_at}: proof refused as received: {e}"));
+            assert_eq!(proven, did, "{issued_at}");
+        }
+    }
+
     #[test]
     fn parses_authenticate_response_tokens() {
         let json = r#"{

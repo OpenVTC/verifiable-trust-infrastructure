@@ -148,6 +148,7 @@ pub const RELAYS_ONWARD: &[&str] = &[
     // share its path and were latent behind the same arithmetic.
     trust_tasks::TASK_WEBVH_DIDS_CREATE_1_0,
     trust_tasks::TASK_WEBVH_DIDS_CREATE_1_1,
+    trust_tasks::TASK_WEBVH_DIDS_CREATE_1_2,
     trust_tasks::TASK_WEBVH_DIDS_DELETE_1_0,
     trust_tasks::TASK_WEBVH_DIDS_UPDATE_1_0,
     trust_tasks::TASK_WEBVH_DIDS_ROTATE_KEYS_1_0,
@@ -169,9 +170,26 @@ pub const RELAYS_ONWARD: &[&str] = &[
     // epoch state from it.
     trust_tasks::TASK_ROOMS_OWNER_ANCHOR_0_1,
     trust_tasks::TASK_ROOMS_OWNER_REGISTER_0_1,
-    trust_tasks::TASK_ROOMS_KEYS_BACKFILL_0_1,
+    trust_tasks::TASK_ROOMS_OWNER_REGISTER_0_2,
+    // Admission advances the room's epoch at its host (and may first ask it which
+    // epoch it is at).
+    trust_tasks::TASK_ROOMS_OWNER_GROUP_ADD_0_3,
+    // So does removal — at 0.2 after delivering the room's revocation list there.
+    trust_tasks::TASK_ROOMS_OWNER_GROUP_REMOVE_0_1,
+    trust_tasks::TASK_ROOMS_OWNER_GROUP_REMOVE_0_3,
+    // Withdrawal delivers the room's list to every host serving it (and first asks them
+    // for a later one).
+    trust_tasks::TASK_ROOMS_OWNER_REVOKE_0_1,
+    // And renewal.
+    trust_tasks::TASK_ROOMS_OWNER_GROUP_RENEW_0_2,
+    trust_tasks::TASK_ROOMS_KEYS_BACKFILL_0_2,
     trust_tasks::TASK_ROOMS_KEYS_READ_0_1,
     trust_tasks::TASK_ROOMS_KEYS_BROWSE_0_1,
+    trust_tasks::TASK_ROOMS_KEYS_BROWSE_0_2,
+    // The profile walk fetches one location per epoch down to where it finds one, and a
+    // write lists, seals and puts — each a call to the room's host.
+    trust_tasks::TASK_ROOMS_KEYS_PROFILE_READ_0_1,
+    trust_tasks::TASK_ROOMS_KEYS_PROFILE_WRITE_0_1,
     // ── Vault ───────────────────────────────────────────────────────────
     // A `password` entry logs in to the third-party site and waits on it. The
     // `did-self-issued` driver mints locally, but the URI cannot say which.

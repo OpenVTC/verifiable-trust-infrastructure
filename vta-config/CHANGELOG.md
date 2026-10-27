@@ -2,6 +2,223 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.26.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-config-v0.25.0...vta-config-v0.26.0) — 2026-10-26
+
+
+### Added
+
+- **vta**: Did:scid:vh:1 identities, create/1.2, and VTA/VTC presentation config ([#2257](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2257))
+
+* feat(vta-sdk): did:scid:vh:1 identity rules and did:scid secret kids (VTI-KEY-160 to VTI-KEY-164)
+
+- **vta**: Operation budgets for Trust Task work (VTI-TRN-029) ([#2264](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2264))
+
+* feat(vta)!: operation budgets for Trust Task work (VTI-TRN-029)
+
+  A VTA offered more Trust Task work than it can serve stops answering in
+  time; on a TEE appliance health checks then fail and the watchdog restarts
+  the enclave. Three budgets now bound that work, each unset by default:
+
+  - operation_rate_limit_per_sec (+ _burst): the whole appliance, shared by
+    REST, DIDComm and TSP.
+  - operation_rate_limit_per_subject_per_sec: each client with standing, by
+    its DID, charged before the appliance budget.
+  - operation_rate_limit_unauthenticated_per_sec: DIDComm / TSP senders
+    without an ACL entry (login steps, public tasks, counterparties,
+    approvers, refusals), apart from the clients' budget. Past it there is no
+    reply, so a flood cannot cost a signature per message.
+
+  A task is charged its weight in signs (vault release 2, DID create and
+  delete 10, others 1), after authentication and before it runs. REST
+  answers 429 with x-rate-limit-source: vta and scope operations or
+  operations-subject; DIDComm and TSP a signed, retryable unavailable with
+  retryAfter. A refused document is not recorded (VTI-OPS-026), so a resend
+  is a retry.
+
+  The keys are config and tenant-overlay only, never config/patch, so a TEE
+  enclave restart keeps them. A zero is refused at load. pnm and cnm explain
+  operations and operations-subject refusals.
+
+- Growth types in published crates are #[non_exhaustive] ([#2196](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2196))
+
+A new variant on a public enum, or a new field on a public struct a consumer
+  can build with a literal, is a breaking change in a published crate. It kept
+  happening on types that were always going to grow (#1231, #1234, #1244, #1247,
+  #1250); #1262 fixed it for Capability and AuditEvent only.
+
+  This marks the rest once. 143 enums are marked: every error and refusal enum
+  (VtaError, AppError, ...) and the growth vocabularies (kinds, statuses,
+  reasons, codes, transports, SealedPayloadV1). 32 structs are marked: config
+  and response bags that no caller builds with a literal. Adding the attribute
+  is itself breaking, once. After it, additions to these types are minor
+  changes.
+
+  Left exhaustive on purpose, and pinned that way by the census:
+  VerifiedAssertion, AssertionProof, ActScope, ApproveScope, ContextDirection,
+  SigningDomain, TokenStatus and Role. For each of these, every arm must be
+  considered, and a downstream wildcard would be the bug.
+
+  Every downstream match in the workspace gets a `_ =>` arm that takes the most
+  restrictive or most generic reading: an internal error, a hidden or refused
+  entry, a stale attribute. None is unreachable!().
+
+  vta-sdk/tests/non_exhaustive_census.rs fails on a public enum in a published
+  library crate whose name ends in Error, Refusal, Violation, Kind, Event,
+  Status, Capability, Reason or Code and that is not #[non_exhaustive], unless
+  it is listed as deliberately exhaustive with a reason. It also fails when a
+  listed enum gains the attribute or disappears.
+
+
+
+### Fixed
+
+- **vta**: Bound each client and unauthenticated peers by default (VTI-TRN-029) ([#2274](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2274))
+
+VTI-TRN-029 is a MUST: a node bounds what any one subject can consume, and
+  bounds unauthenticated peers separately. The operation budgets shipped unset,
+  so a VTA nobody sized met neither clause. The per-client share now defaults to
+  100 operations a second and the budget for DIDComm / TSP senders without
+  standing to 50; there is no setting that turns either off, and a higher value
+  loosens them. The appliance budget stays unset by default: its right value is
+  a property of the hardware.
+
+  The budgets read an injectable clock (`BudgetClock`), so their tests run on a
+  manual clock that does not refill while they run, rather than racing the
+  monotonic one. Two tests that send more than the default share in under a
+  second (every dispatched verb from one stranger; filling the contact-list cap)
+  size the budget they need.
+
+
+
+## [0.25.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-config-v0.24.0...vta-config-v0.25.0) — 2026-10-18
+
+
+## [0.24.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-config-v0.23.0...vta-config-v0.24.0) — 2026-10-18
+
+
+## [0.23.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-config-v0.22.0...vta-config-v0.23.0) — 2026-10-16
+
+
+### Added
+
+- **witness**: Witness 0.2 — the member presentation and personhood outcome evidence as spec members, and vta/witness/list ([#1068](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1068)) ([#2147](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2147))
+
+* feat(witness)!: witness 0.2 — the member presentation and personhood outcome evidence as spec members ([#1068](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1068))
+
+
+
+## [0.22.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-config-v0.21.0...vta-config-v0.22.0) — 2026-10-15
+
+
+### Added
+
+- **vta**: Vta/witness/{open,present,accept} — the VTA is its principal's witnessed party, the client carries the documents ([#1068](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1068)) ([#2123](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2123))
+
+The VTA side of witnessing (P3), per trustoverip/dtgwg-trust-tasks-tf#779
+  (rules in vta/_shared/0.5/CONVENTIONS.md). A witness checks that each
+  document's transport-proven sender is its issuer and replies to that sender,
+  and the relationship DID's one mediator socket belongs to the client holding
+  the relationship, so the VTA builds, signs and verifies while the client
+  carries every document. The VTA never contacts the witness and never signs as
+  itself. vta/witness/request/0.1 is retired upstream and not implemented.
+
+  - open: key custody for the relationship DID (and the member DID) in the
+    caller's contexts, distinct DIDs, the VRC/VMC by vault handle, the
+    member-link carriage and witness resolution, all checked before anything is
+    disclosed. Returns the witness/session document signed as the relationship
+    DID and opens a session record.
+  - present: checks the handed-back session #response against the record (type,
+    issuer = witness, recipient = relationship DID, thread, witness proof)
+    through VerifiedWitnessAnswer, re-reads the bound credentials, and returns
+    the signed witness/session/submit. Under the member link that carries a
+    member presentation in ext["org.openvtc.witness"].memberPresentation.
+  - accept: checks the submit #response the same way, then verifies the VWC as
+    a VerifiedWitnessOutcome: witness issuer and assertionMethod proof,
+    taskContext and task digest over the session document, subject and object
+    digest, vwcDigestMultibase. Stores the VWC in the relationship key's context
+    with both evidence documents (vault tags witness:session / witness:outcome).
+    A repeated accept of the same outcome is answered again and stores nothing.
+
+  The session record lives in a new keyspace, witness_sessions: encrypted,
+  excluded from backup, cascades on DID delete, swept by the storage thread. It
+  moves opened -> presented -> accepted with compare-and-set transitions.
+  sessionUnknown is one answer for unknown, expired, out-of-scope and
+  wrong-state sessions.
+
+  Supporting changes:
+
+  - Capability::WitnessRequest (witness-request) is derived by admin and
+    initiator, never by application, and is not satisfied by sign.
+  - persona_key_for gains a did:peer arm: the document is derived with no I/O,
+    and its methods are matched against key records in the caller's contexts.
+  - New [witness] config: session_ttl_secs and member_link_witnesses.
+  - retry_safety: all three RetrySafe.
+  - vta-mcp guard: open and present are Sensitive, accept is Mutating.
+  - SDK: VtaClient::witness_{open,present,accept}.
+  - trust-tasks-rs floor raised to 0.31.7.
+
+- **vta**: Gate the TEE first-boot admin claim on a pre-registered c… ([#1987](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1987))
+
+* feat(vta)!: gate the TEE first-boot admin claim on a pre-registered claim DID
+
+  POST /bootstrap/request (Mode B) accepted an anonymous caller: whoever
+  reached a fresh TEE VTA first claimed admin, gated only by the carve-out
+  sentinel, which a hostile host can make vanish by forging its absence or
+  dropping its write.
+
+  - pnm: `bootstrap claim-did create|show|discard` mints an Ed25519 claim
+    DID before the VTA exists; the private key lives only in the OS
+    keyring (file store refused). `bootstrap connect --slug` signs the
+    request with it and drops the key once attestation verifies.
+  - vta-sdk: optional `claim_signature` on the sealed BootstrapRequest,
+    over a domain tag || client pubkey || nonce.
+  - vta-config: `tee.bootstrap_claim_did`, settable only via the tenant
+    overlay (deny_unknown_fields kept; admin_did still forbidden),
+    validated at boot and covered by the attested config digest.
+  - vta-service: verify the signature, require client_did == the
+    configured claim DID (403, nothing written), then the carve-out;
+    burn the claim DID with the sentinel on success.
+
+
+
+## [0.21.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-config-v0.20.0...vta-config-v0.21.0) — 2026-10-13
+
+
+## [0.20.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-config-v0.19.0...vta-config-v0.20.0) — 2026-10-12
+
+
+### Added
+
+- **services**: Complete DIDComm enable with a soft restart and a readiness wait ([#2045](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2045))
+
+* feat(services): complete DIDComm enable with a soft restart and a readiness wait
+
+  `services didcomm enable` published the DID document change but left the
+  VTA without a running messaging runtime until the next manual restart. The
+  operation now signals `ext["org.openvtc"].restarting` and performs a soft
+  restart after the reply reaches the transport send boundary, and `pnm`
+  waits for the restarted listener before returning.
+
+  Also fixes a TEE fleet image that could not boot REST-only, by removing the
+  baked `[messaging]` placeholder that pre-empted the tenant overlay's
+  "materialize messaging only when a mediator_did is supplied" branch.
+
+
+
+### Security
+
+- **config**: Runtime config write-backs never write the boot-injected JWT key ([#2046](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2046))
+
+Every runtime operation that persists configuration — `config/patch`, audit
+  retention, `services {didcomm,webauthn} {enable,update,disable}` — wrote it
+  back by serialising the whole in-memory `AppConfig`. On a hardened or
+  KMS-backed VTA that includes `auth.jwt_signing_key`, which boot injects into
+  memory precisely so it never reaches `config.toml`; the first such operation
+  put it on disk. `VTA_AUTH_JWT_SIGNING_KEY` leaked the same way, replacing the
+  file's own key with the environment's.
+
+
+
 ## [0.19.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-config-v0.18.0...vta-config-v0.19.0) — 2026-10-11
 
 

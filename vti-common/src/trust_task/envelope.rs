@@ -23,6 +23,7 @@ pub enum EnvelopeRole {
 
 /// Why a document cannot be sealed.
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum EnvelopeError {
     #[error("the document is not a JSON object")]
     NotAnObject,

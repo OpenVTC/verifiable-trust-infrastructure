@@ -31,6 +31,7 @@ pub struct RequestedScope {
 
 /// Why a scope was refused, in the order the issue specification checks.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ScopeRefusal {
     /// A value is malformed: not a prefix, not an action, not an object key.
     Malformed(String),

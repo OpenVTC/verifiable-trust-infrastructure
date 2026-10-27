@@ -16,6 +16,7 @@
 
 mod auth;
 mod bootstrap;
+mod bootstrap_claim;
 mod cli;
 mod commands;
 mod config;
@@ -378,6 +379,7 @@ async fn main() {
         Commands::Memory { command } => commands::memory::run(&client, command).await,
         Commands::External { command } => commands::external::run(&client, command).await,
         Commands::Rooms { command } => commands::rooms::run(&client, &keyring_key, command).await,
+        Commands::Elections { command } => commands::elections::run(&client, command).await,
         Commands::Messaging { command } => {
             commands::messaging::run(&client, &keyring_key, mediator_did_hint, command).await
         }
@@ -695,6 +697,8 @@ mod tests {
             setup_acl: false,
             force: false,
             handshake_timeout: None,
+            wait_secs: None,
+            no_wait: false,
         });
         assert_eq!(
             pending_mediator_hint(&cmd, &vta_config(Some("did:web:old-mediator"))),
@@ -769,5 +773,347 @@ mod tests {
     fn test_exit_code_for_unknown_error_is_generic_failure() {
         let err = std::io::Error::other("disk gone");
         assert_eq!(exit_code_for(&err), exit::FAILURE);
+    }
+
+    // ── Room owner and key-holder verbs ───────────────────────────
+
+    fn rooms(args: &[&str]) -> crate::cli::RoomCommands {
+        let mut full = vec!["pnm", "rooms"];
+        full.extend_from_slice(args);
+        match parse(&full).command {
+            Commands::Rooms { command } => command,
+            _ => panic!("expected Rooms"),
+        }
+    }
+
+    #[test]
+    fn rooms_owner_register_requires_an_explicit_owner_and_tier() {
+        use crate::cli::{RoomCommands, RoomOwnerCommands};
+        let base = [
+            "owner",
+            "register",
+            "--room",
+            "did:webvh:r",
+            "--host-did",
+            "did:web:h",
+        ];
+        assert!(
+            Cli::try_parse_from(
+                ["pnm", "rooms"]
+                    .iter()
+                    .chain(&base)
+                    .chain(&["--visibility", "open"])
+            )
+            .is_err(),
+            "the owner is a persona DID and is never defaulted to the session"
+        );
+        assert!(
+            Cli::try_parse_from(
+                ["pnm", "rooms"]
+                    .iter()
+                    .chain(&base)
+                    .chain(&["--owner", "did:webvh:a"])
+            )
+            .is_err(),
+            "the tier is fixed for life and is never defaulted"
+        );
+        let mut args = base.to_vec();
+        args.extend(["--owner", "did:webvh:a", "--visibility", "attributed"]);
+        match rooms(&args) {
+            RoomCommands::Owner {
+                command:
+                    RoomOwnerCommands::Register {
+                        owner, visibility, ..
+                    },
+            } => {
+                assert_eq!(owner, "did:webvh:a");
+                assert_eq!(visibility, "attributed");
+            }
+            _ => panic!("expected owner register"),
+        }
+    }
+
+    #[test]
+    fn rooms_owner_issue_authority_needs_actions_and_an_expiry() {
+        use crate::cli::{RoomCommands, RoomOwnerCommands};
+        let base = [
+            "pnm",
+            "rooms",
+            "owner",
+            "issue-authority",
+            "--room",
+            "did:webvh:r",
+            "--signing-key",
+            "k",
+            "--subject",
+            "did:webvh:a",
+        ];
+        assert!(
+            Cli::try_parse_from(base.iter().chain(&["--valid-for", "90d"])).is_err(),
+            "no action"
+        );
+        assert!(
+            Cli::try_parse_from(base.iter().chain(&["--action", "read"])).is_err(),
+            "no expiry"
+        );
+        assert!(
+            Cli::try_parse_from(base.iter().chain(&[
+                "--action",
+                "read",
+                "--valid-for",
+                "1d",
+                "--valid-until",
+                "2999-01-01T00:00:00Z"
+            ]))
+            .is_err(),
+            "two expiries"
+        );
+        let cli = Cli::try_parse_from(base.iter().chain(&[
+            "--action",
+            "read,write",
+            "--action",
+            "admin",
+            "--valid-for",
+            "90d",
+            "--store",
+        ]))
+        .expect("parses");
+        match cli.command {
+            Commands::Rooms {
+                command:
+                    RoomCommands::Owner {
+                        command:
+                            RoomOwnerCommands::IssueAuthority {
+                                actions,
+                                store,
+                                out,
+                                ..
+                            },
+                    },
+            } => {
+                assert_eq!(actions, ["read", "write", "admin"]);
+                assert!(store);
+                assert!(out.is_none());
+            }
+            _ => panic!("expected owner issue-authority"),
+        }
+    }
+
+    #[test]
+    fn rooms_owner_group_create_requires_the_member_persona() {
+        assert!(
+            Cli::try_parse_from([
+                "pnm",
+                "rooms",
+                "owner",
+                "group-create",
+                "--room",
+                "did:webvh:r",
+                "--signing-key",
+                "k"
+            ])
+            .is_err(),
+            "the member is a persona DID and is never defaulted to the session"
+        );
+    }
+
+    #[test]
+    fn rooms_keys_label_needs_a_member_and_a_change() {
+        use crate::cli::{RoomCommands, RoomKeysCommands};
+        let base = ["pnm", "rooms", "keys", "label", "did:webvh:r"];
+        assert!(
+            Cli::try_parse_from(base.iter().chain(&["--label", "x"])).is_err(),
+            "the member is never inferred"
+        );
+        assert!(
+            Cli::try_parse_from(base.iter().chain(&["--member", "did:key:z"])).is_err(),
+            "a request that changes nothing"
+        );
+        assert!(
+            Cli::try_parse_from(base.iter().chain(&[
+                "--member",
+                "did:key:z",
+                "--label",
+                "x",
+                "--remove-label"
+            ]))
+            .is_err(),
+            "a detail both given and removed"
+        );
+        match rooms(&[
+            "keys",
+            "label",
+            "did:webvh:r",
+            "--member",
+            "did:key:z",
+            "--tag",
+            "work",
+            "--tag",
+            "bids",
+            "--remove-notes",
+        ]) {
+            RoomCommands::Keys {
+                command:
+                    RoomKeysCommands::Label {
+                        room_id,
+                        member,
+                        tags,
+                        remove_notes,
+                        label,
+                        ..
+                    },
+            } => {
+                assert_eq!(room_id, "did:webvh:r");
+                assert_eq!(member, "did:key:z");
+                assert_eq!(tags, ["work", "bids"]);
+                assert!(remove_notes);
+                assert!(label.is_none());
+            }
+            _ => panic!("expected keys label"),
+        }
+    }
+
+    #[test]
+    fn rooms_keys_commit_takes_a_file_with_its_epoch_or_a_host() {
+        use crate::cli::{RoomCommands, RoomKeysCommands};
+        let base = ["pnm", "rooms", "keys", "commit", "--room", "did:webvh:r"];
+        assert!(Cli::try_parse_from(base).is_err(), "neither source");
+        assert!(
+            Cli::try_parse_from(base.iter().chain(&["--commit", "c.b64"])).is_err(),
+            "a file without its epoch"
+        );
+        assert!(
+            Cli::try_parse_from(base.iter().chain(&[
+                "--commit",
+                "c",
+                "--epoch",
+                "2",
+                "--host",
+                "https://h"
+            ]))
+            .is_err(),
+            "both sources"
+        );
+        match rooms(&[
+            "keys", "commit", "--room", "r", "--commit", "c", "--epoch", "3",
+        ]) {
+            RoomCommands::Keys {
+                command:
+                    RoomKeysCommands::Commit {
+                        commit,
+                        epoch,
+                        host,
+                        ..
+                    },
+            } => {
+                assert_eq!(commit.as_deref(), Some("c"));
+                assert_eq!(epoch, Some(3));
+                assert!(host.is_none());
+            }
+            _ => panic!("expected keys commit"),
+        }
+        assert!(matches!(
+            rooms(&[
+                "keys",
+                "commit",
+                "--room",
+                "r",
+                "--host",
+                "https://h/v1",
+                "--host-did",
+                "did:web:h"
+            ]),
+            RoomCommands::Keys {
+                command: RoomKeysCommands::Commit { host: Some(_), .. }
+            }
+        ));
+        assert!(matches!(
+            rooms(&["keys", "list"]),
+            RoomCommands::Keys {
+                command: RoomKeysCommands::List { .. }
+            }
+        ));
+        assert!(matches!(
+            rooms(&["keys", "backfill", "--room", "r", "--host-did", "did:web:h"]),
+            RoomCommands::Keys {
+                command: RoomKeysCommands::Backfill { .. }
+            }
+        ));
+        assert!(matches!(
+            rooms(&["keys", "list", "--host-did", "did:web:h"]),
+            RoomCommands::Keys {
+                command: RoomKeysCommands::List { host_did: Some(_) }
+            }
+        ));
+    }
+
+    /// `pnm rooms profile {show,set,clear}`: the room and its host are required, and a
+    /// value and its `--no-*` cannot both be given.
+    #[test]
+    fn rooms_profile_parses() {
+        use crate::cli::{RoomCommands, RoomProfileCommands};
+        let base = ["profile"];
+        let with = |rest: &[&str]| {
+            let mut args = base.to_vec();
+            args.extend_from_slice(rest);
+            rooms(&args)
+        };
+        assert!(matches!(
+            with(&["show", "--room", "r", "--host-did", "did:web:h"]),
+            RoomCommands::Profile {
+                command: RoomProfileCommands::Show { .. }
+            }
+        ));
+        match with(&[
+            "set",
+            "--room",
+            "r",
+            "--host-did",
+            "did:web:h",
+            "--name",
+            "Board",
+            "--tag",
+            "a",
+            "--tag",
+            "b",
+            "--no-emoji",
+        ]) {
+            RoomCommands::Profile {
+                command:
+                    RoomProfileCommands::Set {
+                        name,
+                        tags,
+                        no_emoji,
+                        ..
+                    },
+            } => {
+                assert_eq!(name.as_deref(), Some("Board"));
+                assert_eq!(tags, vec!["a".to_string(), "b".to_string()]);
+                assert!(no_emoji);
+            }
+            _ => panic!("profile set"),
+        }
+        assert!(
+            Cli::try_parse_from([
+                "pnm",
+                "rooms",
+                "profile",
+                "set",
+                "--room",
+                "r",
+                "--host-did",
+                "h",
+                "--emoji",
+                "x",
+                "--no-emoji"
+            ])
+            .is_err()
+        );
+        assert!(matches!(
+            with(&["clear", "--room", "r", "--host-did", "did:web:h"]),
+            RoomCommands::Profile {
+                command: RoomProfileCommands::Clear { .. }
+            }
+        ));
     }
 }

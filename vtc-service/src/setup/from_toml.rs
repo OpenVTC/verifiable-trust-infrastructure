@@ -37,8 +37,8 @@ use vti_common::error::AppError;
 use crate::config::{MessagingConfig, SecretsConfig};
 
 use super::wizard::{
-    SetupOutcome, Transport, WebvhTarget, WizardInputs, WizardPlan, apply, normalize_registry_did,
-    refuse_if_already_set_up,
+    ProvisionTransport, SetupOutcome, Transport, WebvhTarget, WizardInputs, WizardPlan, apply,
+    normalize_registry_did, refuse_if_already_set_up,
 };
 
 /// The `[messaging]` table: the mediator, plus which transports the
@@ -138,6 +138,26 @@ pub(crate) struct VtcWizardInputs {
     #[serde(default)]
     pub single_admin_mode: bool,
 
+    /// Force the transport setup provisions over: `"tsp"`, `"didcomm"` or
+    /// `"rest"`. Omit for the automatic TSP > DIDComm > REST, which moves on
+    /// only when a transport fails to connect. A reply lost after the VTA acted
+    /// is final — the setup DID's one-time hand-off is spent — so force one
+    /// here to avoid a mediator known to drop replies (OpenVTC #501). A
+    /// transport the VTA does not advertise is ignored, and the automatic
+    /// choice used.
+    #[serde(default)]
+    pub provision_transport: Option<ProvisionTransport>,
+
+    /// How the community's DID, and those it mints later, are presented:
+    /// `"webvh"` or `"scid"` (VTI-VTC-004). Omit for the VTA's `[dids]`.
+    #[serde(default)]
+    pub did_method: Option<vta_sdk::did_scid::DidMethod>,
+
+    /// Whether the community's logs list their did:scid alias. Omit for the
+    /// VTA's `[dids]`.
+    #[serde(default)]
+    pub scid_also_known_as: Option<bool>,
+
     /// Where the VTC's `did:webvh` is published. All fields optional; an
     /// empty `[webvh]` table (or omitting it) reproduces the serverless
     /// default — the VTC self-hosts its `did.jsonl` at `base_url` with a
@@ -230,6 +250,9 @@ pub(crate) fn parse_from_toml(
                 inputs.co_admin_did.as_deref().unwrap_or(""),
             )?,
             single_admin_mode: inputs.single_admin_mode || single_admin,
+            provision_transport: inputs.provision_transport,
+            did_method: inputs.did_method,
+            scid_also_known_as: inputs.scid_also_known_as,
         },
         webvh: inputs.webvh,
         secrets: inputs.secrets,
@@ -691,6 +714,35 @@ keyring_service = "vtc-test"
         };
         assert!(err.contains("load setup key"), "{err}");
         assert!(err.contains("admin ACL"), "actionable hint present: {err}");
+    }
+
+    /// #501: `provision_transport` forces the transport setup provisions over;
+    /// omitted, the runner chooses; anything else is a hard error.
+    #[test]
+    fn provision_transport_from_the_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (key_path, _) = persist_setup_key(dir.path());
+        let parse = |extra: &str| {
+            let toml = format!(
+                "{extra}\n{}",
+                minimal_toml(
+                    dir.path().join("config.toml").to_str().unwrap(),
+                    key_path.to_str().unwrap(),
+                )
+            );
+            let path = dir.path().join("setup.toml");
+            std::fs::write(&path, toml).expect("write toml");
+            parse_from_toml(&path, false).map_err(|e| e.to_string())
+        };
+        assert_eq!(parse("").unwrap().inputs.provision_transport, None);
+        assert_eq!(
+            parse(r#"provision_transport = "rest""#)
+                .unwrap()
+                .inputs
+                .provision_transport,
+            Some(ProvisionTransport::Rest)
+        );
+        assert!(parse(r#"provision_transport = "carrier-pigeon""#).is_err());
     }
 
     // ── single-administrator mode (VTI-APV-022) ────────────────────

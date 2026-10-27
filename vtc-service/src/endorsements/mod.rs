@@ -43,8 +43,8 @@ pub const VETTER_GRANT_ROW_TYPE: &str = vta_sdk::protocols::vetting::VETTER_ROLE
 
 pub use storage::{
     ENDORSEMENTS_PREFIX, count_live_by_type, delete_endorsement, endorsements_by_type,
-    endorsements_for_subject, get_endorsement, list_endorsements, list_endorsements_matching,
-    mark_revoked, store_endorsement,
+    endorsements_for_subject, get_endorsement, get_endorsement_raw, list_endorsements,
+    list_endorsements_matching, mark_revoked, replace_if_unchanged, store_endorsement,
 };
 
 /// A stored community-issued credential record. The accompanying credential
@@ -99,7 +99,7 @@ pub struct Endorsement {
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub auto_granted: bool,
     /// The signed credential, kept so it can be delivered again
-    /// (`vtc/vetting/vetters/resend/0.1`). Recorded for vetter grants and for
+    /// (`vtc/vetting/vetters/resend/0.2`). Recorded for vetter grants and for
     /// the community's own `vetted/1` statement; absent on other endorsements
     /// and on rows written before it was kept.
     #[serde(default, skip_serializing_if = "Option::is_none")]

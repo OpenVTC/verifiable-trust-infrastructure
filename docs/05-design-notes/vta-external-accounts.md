@@ -187,7 +187,7 @@ Two consumer tasks, and only two.
 
 | Task | Models | Returns |
 |---|---|---|
-| `external/credentials/issue/0.1` | every brokered model | cloud credentials or a presigned URL, **sealed** (§6), with an expiry |
+| `external/credentials/issue/0.1` (`0.2`, `0.3`) | every brokered model | cloud credentials or a presigned URL, **sealed** (§6), with an expiry; from `0.2`, a batch of presigned requests on one object for `s3-static-presign` (at most 64 at `0.3`) |
 | `external/sign/0.1` | `sui-signer` | a signature over a transaction the VTA validated |
 
 **The VTA does the exchange.** For brokered models the consumer never sees the
@@ -231,6 +231,24 @@ policy string is a known class of bug (CVE-2026-42811, a CEL injection in Apache
 A refusal says which of those failed, and is audited with `security_alert` when
 it is a scope or binding violation, since those are what a compromised consumer
 looks like.
+
+**A batch's answer is sized before the rate is counted** (`issue/0.3` items 7
+and 8, trust-tasks-tf #781). A sealed presigned request is ~2.9 KiB with a short
+object key and several times that with a 1024-character key and upload id (10
+fit `sealedCredential`'s 256 KiB then), because the sealed-transfer encoding
+carries every byte field as a CBOR array, twice over. So the VTA resolves the
+key-agreement key, presigns and seals — computation only, no provider contact —
+and refuses an answer over the bound with `responseTooLarge` rather than trim
+the set or answer out of schema. `details.maxOperations` comes from
+`sealed_transfer::sealed_armor_len_bound`, the widest armor a payload can seal
+to: a sealed bundle's length varies with its ciphertext's bytes, so a count read
+off one trial seal could be one too many when the caller asks again. Only a
+batch that fits counts against the rate; a refusal at any check spent nothing,
+and the refused set is dropped unreturned and unlogged. The consumer splits —
+to `maxOperations`, else in half — and asks for each part; that is a split, not
+a retry of the refused request, so it sits beside `VtaClient::idempotent`
+rather than in it. `0.2` is still served with its own order (rate first, an
+oversized answer `invalidBatch`): `responseTooLarge` is not one of its codes.
 
 **Retry class**: `issue` is `Idempotent` in effect, because a second credential
 is harmless and expires. `sign` is `NotRetrySafe` for `sui-signer`: a second

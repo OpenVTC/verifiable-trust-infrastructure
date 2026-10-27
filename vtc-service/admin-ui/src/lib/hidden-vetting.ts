@@ -14,7 +14,8 @@
 // replaces the events wholesale and the manifest leaves out each event's
 // `approvedBy` and `graceDays`.
 
-import { postSignedRead, postSignedTrustTask } from "@/lib/api";
+import { postSignedRead } from "@/lib/api";
+import { postSignedWithStepUp, type ConfirmGesture } from "@/lib/signed-act";
 
 export const TASK_DISCOVERY = "https://trusttasks.org/spec/trust-task-discovery/0.3";
 export const TASK_HIDDEN_PUBLISH = "https://trusttasks.org/spec/vtc/vetting/hidden/publish/0.1";
@@ -131,8 +132,19 @@ export interface PublishHiddenResult {
   requirementsDigest: string;
 }
 
-export const publishHiddenVetting = (input: PublishHiddenInput): Promise<PublishHiddenResult> =>
-  postSignedTrustTask<PublishHiddenResult>(TASK_HIDDEN_PUBLISH, input);
+/**
+ * Turn hidden vetting on for a criterion, or change what it publishes. A way of
+ * meeting a criterion is a change to the join criteria, so it takes a passkey
+ * gesture bound to this publish and the approval of the community's other
+ * `vtc.vetting.manage` holders (VTI-APV-023): `confirmGesture` answers the
+ * first, and for the second the publish is parked and thrown as a
+ * `ParkedAction`. Publishing exactly what is stored asks for neither.
+ */
+export const publishHiddenVetting = (
+  input: PublishHiddenInput,
+  confirmGesture: ConfirmGesture,
+): Promise<PublishHiddenResult> =>
+  postSignedWithStepUp<PublishHiddenResult>(TASK_HIDDEN_PUBLISH, input, confirmGesture);
 
 export interface WithdrawHiddenResult {
   criterionId: string;
@@ -140,8 +152,12 @@ export interface WithdrawHiddenResult {
   requirementsDigest: string | null;
 }
 
-export const withdrawHiddenVetting = (criterionId: string): Promise<WithdrawHiddenResult> =>
-  postSignedTrustTask<WithdrawHiddenResult>(TASK_HIDDEN_WITHDRAW, { criterionId });
+/** Turn hidden vetting off — gated as [`publishHiddenVetting`] is (VTI-APV-023). */
+export const withdrawHiddenVetting = (
+  criterionId: string,
+  confirmGesture: ConfirmGesture,
+): Promise<WithdrawHiddenResult> =>
+  postSignedWithStepUp<WithdrawHiddenResult>(TASK_HIDDEN_WITHDRAW, { criterionId }, confirmGesture);
 
 /** The configuration as stored: the bare periods, and events with their approvals. */
 export interface StoredHiddenVetting {

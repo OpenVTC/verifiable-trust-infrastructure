@@ -12,11 +12,13 @@
 // to the same wire.
 
 import {
+  adoptMemberSessionKey,
   buildTrustTaskDocument,
   signTrustTaskDocument,
   type ConsoleSigningKey,
 } from "@/lib/console-key";
 import { ed25519Multikey } from "@/lib/jcs";
+import { guardPreviewRequest } from "@/lib/theme-preview";
 
 // TODO: replace with generated trust-tasks types
 export const OOB_TYPES = {
@@ -95,6 +97,39 @@ export class OobError extends Error {
   }
 }
 
+/** What a sign-in refused by a rate limit says, once retrying has not helped:
+ *  never the bare status. */
+export const RATE_LIMITED_MESSAGE =
+  "Too many sign-in attempts from this network. Try again in a moment.";
+
+/** How long to wait before retrying after a `rateLimited` refusal: the
+ *  service's `Retry-After` when it gave one, else a second, never more than
+ *  ten. */
+export function retryAfterMs(e: OobError): number {
+  const secs = e.details.retryAfter;
+  const s = typeof secs === "number" && Number.isFinite(secs) && secs > 0 ? secs : 1;
+  return Math.min(s, 10) * 1000;
+}
+
+/** A `429` from one of the service's limiters (`routing::rate_limit`): its
+ *  body is not a trust-task reply, so the wait comes from `Retry-After`, or
+ *  the body's `retryAfterSecs`. */
+function rateLimited(res: Response, body: unknown): OobError {
+  const header = Number(res.headers.get("retry-after"));
+  const fromBody = (body as { retryAfterSecs?: unknown } | null)?.retryAfterSecs;
+  const retryAfter =
+    Number.isFinite(header) && header > 0
+      ? header
+      : typeof fromBody === "number"
+        ? fromBody
+        : undefined;
+  return new OobError(
+    "rateLimited",
+    RATE_LIMITED_MESSAGE,
+    retryAfter !== undefined ? { retryAfter } : {},
+  );
+}
+
 /** The session key `K_b`: non-extractable, held in memory for this page
  *  only, and dropped at sign-out. */
 let sessionKey: ConsoleSigningKey | null = null;
@@ -116,6 +151,19 @@ export async function generateSessionKey(): Promise<ConsoleSigningKey> {
   return sessionKey;
 }
 
+/** `K_b` as it stands. The operator console keeps it once `redeem` has
+ *  bound it to the console session, to sign `auth/whoami/0.1` with. */
+export function heldSessionKey(): ConsoleSigningKey | null {
+  return sessionKey;
+}
+
+/** Keep `K_b` for the member portal once a sign-in has bound it to a member
+ *  session, so the directory pages can sign with it after a reload. A 0.1
+ *  sign-in delegated nothing, and the VTC then refuses what it signs. */
+export async function keepSessionKeyForPortal(): Promise<void> {
+  if (sessionKey) await adoptMemberSessionKey(sessionKey);
+}
+
 /** Forget `K_b` — at sign-out, or when a sign-in ends without a session. */
 export function forgetSessionKey(): void {
   sessionKey = null;
@@ -126,6 +174,7 @@ export async function fetchSignInConfig(): Promise<SignInConfig> {
   const body = (await res.json().catch(() => ({}))) as Partial<SignInConfig> & {
     message?: string;
   };
+  if (res.status === 429) throw rateLimited(res, body);
   if (!res.ok || !body.vtcDid || !body.linkHost || !body.flow) {
     throw new Error(body.message || "Wallet sign-in isn't available on this community yet.");
   }
@@ -179,6 +228,8 @@ async function send(
   signal?: AbortSignal,
 ): Promise<Record<string, unknown>> {
   if (!sessionKey) throw new Error("No sign-in key; start again.");
+  // Signing in is a write; a theme preview never does it.
+  guardPreviewRequest("POST", "/v1/trust-tasks");
   const doc = await signTrustTaskDocument(
     buildTrustTaskDocument({
       typeUri: type,
@@ -200,6 +251,7 @@ async function send(
     type?: string;
     payload?: Record<string, unknown>;
   } | null;
+  if (res.status === 429) throw rateLimited(res, body);
   const reply: WireReply = {
     ok: res.ok && !(body?.type ?? "").includes("/trust-task-error/"),
     payload: body?.payload ?? {},
@@ -209,7 +261,9 @@ async function send(
   const local = raw.includes(":") ? raw.slice(raw.lastIndexOf(":") + 1) : raw;
   throw new OobError(
     local,
-    typeof reply.payload.message === "string" ? reply.payload.message : `${res.status}`,
+    typeof reply.payload.message === "string"
+      ? reply.payload.message
+      : `The community refused the sign-in (HTTP ${res.status}).`,
     (reply.payload.details as Record<string, unknown>) ?? {},
   );
 }

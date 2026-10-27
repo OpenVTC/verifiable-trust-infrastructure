@@ -48,7 +48,20 @@ pub struct Template {
 pub const KIND_GRANT_AUTHORITY: &str = "acl.grant.authority";
 pub const KIND_REDUCE_AUTHORITY: &str = "acl.reduce.authority";
 pub const KIND_THRESHOLD_LOWER: &str = "config.threshold.lower";
+/// Changing the trusted-witness list, `witnesses.trusted` (VTI-CMP-090).
+pub const KIND_WITNESSES_CHANGE: &str = "config.witnesses.change";
 pub const KIND_POLICY_AUTHORITY: &str = "policy.authority.change";
+/// Registering, replacing or deleting a join criterion (VTI-APV-023).
+pub const KIND_CRITERIA_CHANGE: &str = "join.criteria.change";
+/// Replacing or activating the personhood policy (VTI-APV-023).
+pub const KIND_POLICY_RECOGNITION: &str = "policy.recognition.change";
+/// Publishing, changing or withdrawing hidden vetting on a join criterion
+/// (VTI-APV-023).
+pub const KIND_HIDDEN_VETTING_CHANGE: &str = "join.criteria.hiddenVetting";
+/// Widening a member-directory field (VTI-DIR-024).
+pub const KIND_DIRECTORY_FIELD_WIDEN: &str = "directory.field.widen";
+/// Creating a binding election (VTI-VOT-081).
+pub const KIND_ELECTION_BINDING_CREATE: &str = "election.binding.create";
 pub const KIND_INVITE_CREATE: &str = "admin.invite.create";
 /// An operator's offline write, raised for acknowledgement (VTI-VTC-023).
 pub const KIND_OPERATOR_WRITE: &str = "operator.offlineWrite";
@@ -89,6 +102,21 @@ pub const KIND_MEMBER_ADMIT: &str = "member.admit";
 /// existing ACL entry a membership (`vtc/members/make-membership/0.1`).
 pub const KIND_MEMBER_MAKE_MEMBERSHIP: &str = "member.makeMembership";
 
+/// Adding a storage config (`vtc/storage/configs/create/0.1`).
+pub const KIND_STORAGE_CONFIG_CREATE: &str = "storage.config.create";
+/// Changing a storage config (`vtc/storage/configs/update/0.1`).
+pub const KIND_STORAGE_CONFIG_UPDATE: &str = "storage.config.update";
+/// Setting a `sealed` storage config's credential (`vtc/storage/credentials/set/0.2`).
+/// Approvers see the config and the sealed block's digest, never the credential.
+pub const KIND_STORAGE_CREDENTIAL_SET: &str = "storage.credential.set";
+/// Retiring a storage config (`vtc/storage/configs/retire/0.1`).
+pub const KIND_STORAGE_CONFIG_RETIRE: &str = "storage.config.retire";
+/// Pointing a room's new uploads at another config (`vtc/rooms/storage/assign/0.1`).
+pub const KIND_ROOM_STORAGE_ASSIGN: &str = "rooms.storage.assign";
+/// Moving a room's existing files onto its assigned config
+/// (`vtc/rooms/storage/migrate/0.1` and `/0.2`).
+pub const KIND_ROOM_STORAGE_MIGRATE: &str = "rooms.storage.migrate";
+
 /// The record type a break-glass review is raised under.
 pub const BREAK_GLASS_REVIEW_URI: &str = "urn:openvtc:vtc:git-ns:break-glass-review";
 /// The record type a join review is raised under.
@@ -115,11 +143,90 @@ const CONFIG_PATCH: &str = "https://trusttasks.org/spec/config/patch/0.1";
 const CONFIG_IMPORT: &str = "https://trusttasks.org/spec/vtc/config/import/0.1";
 const POLICY_UPSERT: &str = "https://trusttasks.org/spec/policy/upsert/0.2";
 const POLICY_ACTIVATE: &str = "https://trusttasks.org/spec/policy/activate/0.1";
+const ACCEPTS_REGISTER: &str = crate::trust_tasks::surface_tasks::ACCEPTS_REGISTER_TYPE;
+const ACCEPTS_DELETE: &str = crate::trust_tasks::surface_tasks::ACCEPTS_DELETE_TYPE;
+/// `vtc/vetting/hidden/publish/0.1`, off the generated type rather than
+/// `vetting::pcs_tasks`, which is compiled only with `vetting-pcs`: a build
+/// without the feature still pins the template the console holds.
+pub(crate) const HIDDEN_PUBLISH: &str =
+    <trust_tasks_rs::specs::vtc::vetting::hidden::publish::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+/// `vtc/vetting/hidden/withdraw/0.1`.
+pub(crate) const HIDDEN_WITHDRAW: &str =
+    <trust_tasks_rs::specs::vtc::vetting::hidden::withdraw::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+const DIRECTORY_FIELDS_UPDATE: &str = crate::trust_tasks::directory_tasks::FIELDS_UPDATE_TYPE;
+/// `vtc/elections/create/0.1`, off the generated type: a build without `voting`
+/// still pins the template the console holds.
+pub(crate) const ELECTIONS_CREATE: &str =
+    <trust_tasks_rs::specs::vtc::elections::create::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 const ROLES_DEFINE: &str = "https://trusttasks.org/spec/vtc/roles/define/0.1";
 const ROLES_DELETE: &str = "https://trusttasks.org/spec/vtc/roles/delete/0.1";
 const BACKUP_FINALIZE_IMPORT: &str = "https://trusttasks.org/spec/backup/finalize-import/0.1";
 const MEMBERS_ADMIT: &str = crate::trust_tasks::admission_tasks::ADMIT_TYPE;
 const MEMBERS_MAKE_MEMBERSHIP: &str = crate::trust_tasks::admission_tasks::MAKE_MEMBERSHIP_TYPE;
+const STORAGE_CREATE: &str = crate::trust_tasks::storage_tasks::CREATE_TYPE;
+const STORAGE_UPDATE: &str = crate::trust_tasks::storage_tasks::UPDATE_TYPE;
+const STORAGE_RETIRE: &str = crate::trust_tasks::storage_tasks::RETIRE_TYPE;
+const STORAGE_CREATE_V0_2: &str = crate::trust_tasks::storage_tasks::CREATE_V0_2_TYPE;
+const STORAGE_UPDATE_V0_2: &str = crate::trust_tasks::storage_tasks::UPDATE_V0_2_TYPE;
+const STORAGE_CREDENTIAL_SET: &str = crate::trust_tasks::storage_tasks::CREDENTIALS_SET_TYPE;
+const ROOM_STORAGE_ASSIGN: &str = crate::trust_tasks::storage_tasks::ASSIGN_TYPE;
+const ROOM_STORAGE_MIGRATE: &str = crate::trust_tasks::storage_tasks::MIGRATE_TYPE;
+const ROOM_STORAGE_MIGRATE_V2: &str = crate::trust_tasks::storage_tasks::MIGRATE_V2_TYPE;
+const GROUPS_MEMBERS_ADD: &str = crate::trust_tasks::group_tasks::MEMBERS_ADD_TYPE;
+const GROUPS_MEMBERS_REMOVE: &str = crate::trust_tasks::group_tasks::MEMBERS_REMOVE_TYPE;
+const GROUPS_BINDINGS_ADD: &str = crate::trust_tasks::group_tasks::BINDINGS_ADD_TYPE;
+const GROUPS_BINDINGS_REMOVE: &str = crate::trust_tasks::group_tasks::BINDINGS_REMOVE_TYPE;
+const GROUPS_DELETE: &str = crate::trust_tasks::group_tasks::DELETE_TYPE;
+
+// A group carrying authority (VTI-DIR-104): its membership changes are grants
+// and reductions of what it confers.
+const GROUP_MEMBER_GRANT_EFFECT: &str = "The member {entryId} joins the group {groupId}, which \
+                                         carries authority: what it confers is written onto \
+                                         their access-control entry, within their role's \
+                                         ceiling, for as long as they stay in it.";
+const GROUP_BIND_EFFECT: &str = "Every member of the group {groupId} whose role admits it is given \
+                                 {grants}{role} — now, and each member added later, for as long \
+                                 as the binding stands.";
+const GROUP_MEMBER_REDUCE_EFFECT: &str = "The member {entryId} leaves the group {groupId} and \
+                                          loses what it gave them. They are not asked: a party \
+                                          to a removal never decides it.";
+const GROUP_UNBIND_EFFECT: &str = "Every member of the group {groupId} loses what the binding \
+                                   {bindingId} gave them. They are not asked: a party to a \
+                                   removal never decides it.";
+const GROUP_DELETE_EFFECT: &str = "The group {groupId} is deleted, and every member loses what it \
+                                   gave them. They are not asked: a party to a removal never \
+                                   decides it.";
+
+const STORAGE_CREATE_EFFECT: &str = "A new place this community can keep its members' room files: \
+                                     {label} ({settings}). It takes rooms once one is assigned to \
+                                     it, or at once if it becomes the default.";
+const STORAGE_UPDATE_EFFECT: &str = "The storage config {configId} changes. Rooms assigned to it \
+                                     store their new files under the new settings.";
+const STORAGE_CREDENTIAL_SET_EFFECT: &str = "The storage config {configId} stores with a \
+                                             long-lived credential this community keeps: the \
+                                             one sealed in the block whose digest is {digest}, \
+                                             replacing any before it. No administrator can read \
+                                             it back; whoever operates the machine the community \
+                                             runs on can.";
+const STORAGE_RETIRE_EFFECT: &str = "The storage config {configId} takes no new rooms or uploads. \
+                                     Files already on it stay readable until they are moved off.";
+const ROOM_STORAGE_ASSIGN_EFFECT: &str = "Room {roomId}'s new files are stored on {configId}. \
+                                          Files it already holds stay where they are.";
+const ROOM_STORAGE_MIGRATE_EFFECT: &str = "Room {roomId}'s existing files are copied to the \
+                                           storage config it is assigned to, checked against \
+                                           what their uploaders committed to, and switched; \
+                                           the old copies are deleted after the grace window. \
+                                           On Walrus a deletion is a lapse, and ciphertext \
+                                           stored there stays public.";
+const ROOM_STORAGE_MIGRATE_V2_EFFECT: &str = "Room {roomId}'s existing files are copied to the \
+                                              storage config it is assigned to now, checked \
+                                              against what their uploaders committed to, and \
+                                              switched; the old copies are deleted after the \
+                                              grace window. The move keeps that destination \
+                                              if the room is reassigned meanwhile, and the \
+                                              community retries and resumes it without asking \
+                                              again. On Walrus a deletion is a lapse, and \
+                                              ciphertext stored there stays public.";
 
 const fn f(name: &'static str, pointer: &'static str, format: &'static str) -> FieldDef {
     FieldDef {
@@ -143,7 +250,40 @@ const REDUCE_CAPABILITY_EFFECT: &str = "{subject} loses capabilities that create
                                         decides it.";
 const THRESHOLD_EFFECT: &str = "Fewer administrators will be needed to make an unrestricted \
                                 administrator — including the next one this requester asks for.";
+const WITNESSES_EFFECT: &str = "The witnesses whose Verifiable Witness Credentials count as \
+                                evidence in this community become exactly {witnesses}. A VWC from \
+                                any witness not listed counts for nothing here, including ones \
+                                members already hold.";
+const DIRECTORY_WIDEN_EFFECT: &str = "Members' directory values in the field {key} may reach \
+                                      further: a wider ceiling or default, a field searched or \
+                                      counted, or one shown again. No member's own choice changes, \
+                                      but every card that made none takes the new default.";
+const ELECTION_CREATE_EFFECT: &str = "The community creates {electionId}, a binding election: its \
+                                      result decides something in the community's name. Voting \
+                                      runs from {votingOpens} to {votingCloses} at the ballot box \
+                                      {ballotBox}, and the roll is {roll}.";
 const POLICY_EFFECT: &str = "The rules that decide who holds authority in this community change.";
+const RECOGNITION_POLICY_EFFECT: &str = "The rules that decide who this community recognises as a \
+                                         person change — for joining, and for members whose \
+                                         personhood it has already recognised.";
+const CRITERION_REGISTER_EFFECT: &str = "Who may become a member of this community changes: \
+                                         {id} becomes exactly what is shown, with admission \
+                                         {admission} — automatic admits an applicant who meets \
+                                         it, review refers them to an administrator. It replaces \
+                                         any criterion of that name, keeping its place in the \
+                                         order.";
+const HIDDEN_PUBLISH_EFFECT: &str = "Who may become a member of this community changes: the \
+                                     criterion {criterionId} can also be met by a hidden vetting \
+                                     proof, which shows an applicant was vetted without naming \
+                                     their vetters, under the vetter periods {livePeriods} and the \
+                                     events shown. Publishing again replaces the parameters.";
+const HIDDEN_WITHDRAW_EFFECT: &str = "Who may become a member of this community changes: the \
+                                      criterion {criterionId} stops accepting a hidden vetting \
+                                      proof. Its named vetting is unchanged, and vetters' \
+                                      enrolments are kept for a later publish.";
+const CRITERION_DELETE_EFFECT: &str = "Who may become a member of this community changes: \
+                                       applicants can no longer join through {id}. Members \
+                                       admitted through it keep their membership.";
 const ACL_MIGRATION_EFFECT: &str = "This VTC ran {command} when it started on {host} at {at}. It \
                                     is already in effect: acknowledging records that you have \
                                     seen it, and changes nothing. Re-grant anyone who should keep \
@@ -185,6 +325,61 @@ const VETTING_REVIEW_EFFECT: &str = "{issuer} withdrew the vetting statement {st
 
 /// Every template this build renders.
 pub const TEMPLATES: &[Template] = &[
+    Template {
+        kind: KIND_GRANT_AUTHORITY,
+        type_uri: GROUPS_MEMBERS_ADD,
+        title: "Add {entryId} to the group {groupId}",
+        effect: GROUP_MEMBER_GRANT_EFFECT,
+        fields: &[
+            f("groupId", "/groupId", "text"),
+            f("entryId", "/entryId", "text"),
+            f("reason", "/reason", "text"),
+        ],
+    },
+    Template {
+        kind: KIND_GRANT_AUTHORITY,
+        type_uri: GROUPS_BINDINGS_ADD,
+        title: "Give authority through the group {groupId}",
+        effect: GROUP_BIND_EFFECT,
+        fields: &[
+            f("groupId", "/groupId", "text"),
+            f("grants", "/binding/grants", "text"),
+            f("role", "/binding/role", "text"),
+            f("reason", "/reason", "text"),
+        ],
+    },
+    Template {
+        kind: KIND_REDUCE_AUTHORITY,
+        type_uri: GROUPS_MEMBERS_REMOVE,
+        title: "Remove {entryId} from the group {groupId}",
+        effect: GROUP_MEMBER_REDUCE_EFFECT,
+        fields: &[
+            f("groupId", "/groupId", "text"),
+            f("entryId", "/entryId", "text"),
+            f("reason", "/reason", "text"),
+        ],
+    },
+    Template {
+        kind: KIND_REDUCE_AUTHORITY,
+        type_uri: GROUPS_BINDINGS_REMOVE,
+        title: "Stop giving authority through the group {groupId}",
+        effect: GROUP_UNBIND_EFFECT,
+        fields: &[
+            f("groupId", "/groupId", "text"),
+            f("bindingId", "/bindingId", "text"),
+            f("reason", "/reason", "text"),
+        ],
+    },
+    Template {
+        kind: KIND_REDUCE_AUTHORITY,
+        type_uri: GROUPS_DELETE,
+        title: "Delete the group {groupId}",
+        effect: GROUP_DELETE_EFFECT,
+        fields: &[
+            f("groupId", "/groupId", "text"),
+            f("reason", "/reason", "text"),
+        ],
+    },
     Template {
         kind: KIND_GRANT_AUTHORITY,
         type_uri: ACL_GRANT_V0_2,
@@ -370,6 +565,50 @@ pub const TEMPLATES: &[Template] = &[
         )],
     },
     Template {
+        kind: KIND_WITNESSES_CHANGE,
+        type_uri: CONFIG_PATCH,
+        title: "Change the witnesses this community trusts",
+        effect: WITNESSES_EFFECT,
+        fields: &[f("witnesses", "/overrides/witnesses.trusted", "text")],
+    },
+    Template {
+        kind: KIND_WITNESSES_CHANGE,
+        type_uri: CONFIG_IMPORT,
+        title: "Import a configuration that changes the witnesses this community trusts",
+        effect: WITNESSES_EFFECT,
+        fields: &[f(
+            "witnesses",
+            "/document/configOverrides/witnesses.trusted",
+            "text",
+        )],
+    },
+    Template {
+        kind: KIND_ELECTION_BINDING_CREATE,
+        type_uri: ELECTIONS_CREATE,
+        title: "Create the binding election {electionId}",
+        effect: ELECTION_CREATE_EFFECT,
+        fields: &[
+            f("electionId", "/manifest/electionId", "text"),
+            f("title", "/manifest/title", "text"),
+            f("ballotBox", "/manifest/ballotBox", "did"),
+            f("roll", "/manifest/roll/rule", "text"),
+            f("votingOpens", "/manifest/votingOpens", "datetime"),
+            f("votingCloses", "/manifest/votingCloses", "datetime"),
+        ],
+    },
+    Template {
+        kind: KIND_DIRECTORY_FIELD_WIDEN,
+        type_uri: DIRECTORY_FIELDS_UPDATE,
+        title: "Widen the directory field {key}",
+        effect: DIRECTORY_WIDEN_EFFECT,
+        fields: &[
+            f("key", "/key", "text"),
+            f("ceiling", "/ceiling", "text"),
+            f("defaultVisibility", "/defaultVisibility", "text"),
+            f("reason", "/reason", "text"),
+        ],
+    },
+    Template {
         kind: KIND_POLICY_AUTHORITY,
         type_uri: POLICY_UPSERT,
         title: "Replace the policy {name}",
@@ -386,6 +625,67 @@ pub const TEMPLATES: &[Template] = &[
         title: "Activate policy {id} for {purpose}",
         effect: POLICY_EFFECT,
         fields: &[f("id", "/id", "text"), f("purpose", "/purpose", "text")],
+    },
+    Template {
+        kind: KIND_POLICY_RECOGNITION,
+        type_uri: POLICY_UPSERT,
+        title: "Replace the policy {name}",
+        effect: RECOGNITION_POLICY_EFFECT,
+        fields: &[
+            f("name", "/name", "text"),
+            f("id", "/id", "text"),
+            f("module", "/module", "text"),
+        ],
+    },
+    Template {
+        kind: KIND_POLICY_RECOGNITION,
+        type_uri: POLICY_ACTIVATE,
+        title: "Activate policy {id} for {purpose}",
+        effect: RECOGNITION_POLICY_EFFECT,
+        fields: &[f("id", "/id", "text"), f("purpose", "/purpose", "text")],
+    },
+    Template {
+        kind: KIND_CRITERIA_CHANGE,
+        type_uri: ACCEPTS_REGISTER,
+        title: "Register the join criterion {id}",
+        effect: CRITERION_REGISTER_EFFECT,
+        fields: &[
+            f("id", "/id", "text"),
+            f("admission", "/admission", "text"),
+            f("query", "/query", "text"),
+            f("credentialIssuers", "/credentialIssuers", "text"),
+            f("invitationRequired", "/invitationRequired", "text"),
+            f("vetting", "/vetting", "text"),
+            f("description", "/description", "text"),
+        ],
+    },
+    Template {
+        kind: KIND_CRITERIA_CHANGE,
+        type_uri: ACCEPTS_DELETE,
+        title: "Remove the join criterion {id}",
+        effect: CRITERION_DELETE_EFFECT,
+        fields: &[f("id", "/id", "text")],
+    },
+    Template {
+        kind: KIND_HIDDEN_VETTING_CHANGE,
+        type_uri: HIDDEN_PUBLISH,
+        title: "Turn on hidden vetting for the join criterion {criterionId}",
+        effect: HIDDEN_PUBLISH_EFFECT,
+        fields: &[
+            f("criterionId", "/criterionId", "text"),
+            f("livePeriods", "/livePeriods", "text"),
+            f("liveTokenLabels", "/liveTokenLabels", "text"),
+            f("dripPerTick", "/dripPerTick", "text"),
+            f("tickLength", "/tickLength", "text"),
+            f("events", "/events", "text"),
+        ],
+    },
+    Template {
+        kind: KIND_HIDDEN_VETTING_CHANGE,
+        type_uri: HIDDEN_WITHDRAW,
+        title: "Turn off hidden vetting for the join criterion {criterionId}",
+        effect: HIDDEN_WITHDRAW_EFFECT,
+        fields: &[f("criterionId", "/criterionId", "text")],
     },
     Template {
         kind: KIND_OPERATOR_WRITE,
@@ -437,6 +737,120 @@ pub const TEMPLATES: &[Template] = &[
         title: "Restore this community from backup {bundleId}",
         effect: BACKUP_RESTORE_EFFECT,
         fields: &[f("bundleId", "/bundleId", "text")],
+    },
+    Template {
+        kind: KIND_STORAGE_CONFIG_CREATE,
+        type_uri: STORAGE_CREATE,
+        title: "Add the storage config {id}",
+        effect: STORAGE_CREATE_EFFECT,
+        fields: &[
+            f("id", "/id", "text"),
+            f("label", "/label", "text"),
+            f("settings", "/settings", "text"),
+            f("auth", "/auth", "text"),
+            f("capacityBytes", "/capacityBytes", "text"),
+            f("isDefault", "/isDefault", "text"),
+            f("reason", "/reason", "text"),
+        ],
+    },
+    Template {
+        kind: KIND_STORAGE_CONFIG_UPDATE,
+        type_uri: STORAGE_UPDATE,
+        title: "Change the storage config {configId}",
+        effect: STORAGE_UPDATE_EFFECT,
+        fields: &[
+            f("configId", "/configId", "text"),
+            f("label", "/label", "text"),
+            f("settings", "/settings", "text"),
+            f("auth", "/auth", "text"),
+            f("capacityBytes", "/capacityBytes", "text"),
+            f("isDefault", "/isDefault", "text"),
+            f("reason", "/reason", "text"),
+        ],
+    },
+    Template {
+        kind: KIND_STORAGE_CONFIG_CREATE,
+        type_uri: STORAGE_CREATE_V0_2,
+        title: "Add the storage config {id}",
+        effect: STORAGE_CREATE_EFFECT,
+        fields: &[
+            f("id", "/id", "text"),
+            f("label", "/label", "text"),
+            f("settings", "/settings", "text"),
+            f("auth", "/auth", "text"),
+            f("capacityBytes", "/capacityBytes", "text"),
+            f("isDefault", "/isDefault", "text"),
+            f("reason", "/reason", "text"),
+        ],
+    },
+    Template {
+        kind: KIND_STORAGE_CONFIG_UPDATE,
+        type_uri: STORAGE_UPDATE_V0_2,
+        title: "Change the storage config {configId}",
+        effect: STORAGE_UPDATE_EFFECT,
+        fields: &[
+            f("configId", "/configId", "text"),
+            f("label", "/label", "text"),
+            f("settings", "/settings", "text"),
+            f("auth", "/auth", "text"),
+            f("capacityBytes", "/capacityBytes", "text"),
+            f("isDefault", "/isDefault", "text"),
+            f("reason", "/reason", "text"),
+        ],
+    },
+    Template {
+        kind: KIND_STORAGE_CREDENTIAL_SET,
+        type_uri: STORAGE_CREDENTIAL_SET,
+        title: "Set the sealed credential of the storage config {configId}",
+        effect: STORAGE_CREDENTIAL_SET_EFFECT,
+        fields: &[
+            f("configId", "/configId", "text"),
+            f("digest", "/digestMultibase", "text"),
+            f("reason", "/reason", "text"),
+        ],
+    },
+    Template {
+        kind: KIND_STORAGE_CONFIG_RETIRE,
+        type_uri: STORAGE_RETIRE,
+        title: "Retire the storage config {configId}",
+        effect: STORAGE_RETIRE_EFFECT,
+        fields: &[
+            f("configId", "/configId", "text"),
+            f("reason", "/reason", "text"),
+        ],
+    },
+    Template {
+        kind: KIND_ROOM_STORAGE_ASSIGN,
+        type_uri: ROOM_STORAGE_ASSIGN,
+        title: "Store room {roomId}'s new files on {configId}",
+        effect: ROOM_STORAGE_ASSIGN_EFFECT,
+        fields: &[
+            f("roomId", "/roomId", "text"),
+            f("configId", "/configId", "text"),
+            f("reason", "/reason", "text"),
+        ],
+    },
+    Template {
+        kind: KIND_ROOM_STORAGE_MIGRATE,
+        type_uri: ROOM_STORAGE_MIGRATE,
+        title: "Move room {roomId}'s files to its assigned storage",
+        effect: ROOM_STORAGE_MIGRATE_EFFECT,
+        fields: &[
+            f("roomId", "/roomId", "text"),
+            f("maxBytesPerSecond", "/maxBytesPerSecond", "text"),
+            f("reason", "/reason", "text"),
+        ],
+    },
+    Template {
+        kind: KIND_ROOM_STORAGE_MIGRATE,
+        type_uri: ROOM_STORAGE_MIGRATE_V2,
+        title: "Move room {roomId}'s files to its assigned storage",
+        effect: ROOM_STORAGE_MIGRATE_V2_EFFECT,
+        fields: &[
+            f("roomId", "/roomId", "text"),
+            f("maxBytesPerSecond", "/maxBytesPerSecond", "text"),
+            f("reason", "/reason", "text"),
+        ],
     },
     Template {
         kind: KIND_GRANTS_REVIEW,
@@ -516,6 +930,31 @@ pub const TEMPLATES: &[Template] = &[
 /// (`admin-ui/src/lib/action-summary.ts`) — is updated with it: what approvers
 /// are shown cannot move silently.
 pub const PINNED: &[(&str, &str, &str)] = &[
+    (
+        KIND_GRANT_AUTHORITY,
+        GROUPS_MEMBERS_ADD,
+        "zQmZr8mXvAph3Sxdxbv9ge82svqswrBn9xunstWKDsSD1tG",
+    ),
+    (
+        KIND_GRANT_AUTHORITY,
+        GROUPS_BINDINGS_ADD,
+        "zQmXa9sTSnLan8LEf7QyEzavkt5doEHVz6jZ9c34Yg8bKi9",
+    ),
+    (
+        KIND_REDUCE_AUTHORITY,
+        GROUPS_MEMBERS_REMOVE,
+        "zQmQVW9TAVk3kGCAiCwc7vvyhKCXYJobPYRxxfD9nphPMfi",
+    ),
+    (
+        KIND_REDUCE_AUTHORITY,
+        GROUPS_BINDINGS_REMOVE,
+        "zQmPdSegnSr9GKnqAyFoiBrBQV4pHHHea4sQ9oKeyu1FsSq",
+    ),
+    (
+        KIND_REDUCE_AUTHORITY,
+        GROUPS_DELETE,
+        "zQmemh2M3haEy21mKWDKRoaswuSUeD6oSRyjUKGwUSENWZz",
+    ),
     (
         KIND_GRANT_AUTHORITY,
         ACL_GRANT_V0_2,
@@ -602,6 +1041,56 @@ pub const PINNED: &[(&str, &str, &str)] = &[
         "zQmQ6yxgM1HYuJkY4RvQDYiB7NyfsFeAeYzcPnh6d5rrrPc",
     ),
     (
+        KIND_WITNESSES_CHANGE,
+        CONFIG_PATCH,
+        "zQmYGMiMk9SpEJwJ7g4EpxKCourBJVRP6PnmHMzYccbQugH",
+    ),
+    (
+        KIND_WITNESSES_CHANGE,
+        CONFIG_IMPORT,
+        "zQmathdofD8yrXDQ2AuSfsWwjjKdx9RdPkAnC2r7qdU79hc",
+    ),
+    (
+        KIND_ELECTION_BINDING_CREATE,
+        ELECTIONS_CREATE,
+        "zQmRruPSiJx9JHEBJCdQiH1qXMTdqf2Dy6yL1WmUJqTU8mX",
+    ),
+    (
+        KIND_DIRECTORY_FIELD_WIDEN,
+        DIRECTORY_FIELDS_UPDATE,
+        "zQmafxMMkTfH4kb9QgoUQEJtUs4tuZFvqM8nxhjEawj6vYZ",
+    ),
+    (
+        KIND_POLICY_RECOGNITION,
+        POLICY_UPSERT,
+        "zQmT4hA8bE6Z1G2PDPPTvzH9ZTGrKdnyS3UBhhEXZkeDLhm",
+    ),
+    (
+        KIND_POLICY_RECOGNITION,
+        POLICY_ACTIVATE,
+        "zQmSdYoQSJ79w1Di8LMr3QJKcjLt47c2DdH2F9gbfoLF6hv",
+    ),
+    (
+        KIND_HIDDEN_VETTING_CHANGE,
+        HIDDEN_PUBLISH,
+        "zQmfB8sMNE5otp8D7uYDLeBuWhHfLHQUe3BPCVrwqNWyRDi",
+    ),
+    (
+        KIND_HIDDEN_VETTING_CHANGE,
+        HIDDEN_WITHDRAW,
+        "zQmcN7gkKudstTLhhf5kKTrS6eoxNyS5hBkjSGzoK8nYcKL",
+    ),
+    (
+        KIND_CRITERIA_CHANGE,
+        ACCEPTS_REGISTER,
+        "zQmbgGnKd4rpcj5dPZsKGTrL48wFiL5jGnyyUe9o3JcP5mr",
+    ),
+    (
+        KIND_CRITERIA_CHANGE,
+        ACCEPTS_DELETE,
+        "zQmaKTFtV3fF3hBkeWwduWohd35nePzqcEvBP95HLa3e7Pu",
+    ),
+    (
         KIND_POLICY_AUTHORITY,
         POLICY_UPSERT,
         "zQma1zFb7cvRpSH7erp14W83wYZW5vP7cke1yLwcwQZdEie",
@@ -665,6 +1154,51 @@ pub const PINNED: &[(&str, &str, &str)] = &[
         KIND_MEMBER_MAKE_MEMBERSHIP,
         MEMBERS_MAKE_MEMBERSHIP,
         "zQmYUPeQMYvpEnuBu9RCX4BSvQ5Nmpz4t2sRxKpyQpg6FVB",
+    ),
+    (
+        KIND_STORAGE_CONFIG_CREATE,
+        STORAGE_CREATE,
+        "zQmbKUbMCxeKhULY9Ea5CL5SYQozDAE4ithNpnKx7jCQZAJ",
+    ),
+    (
+        KIND_STORAGE_CONFIG_UPDATE,
+        STORAGE_UPDATE,
+        "zQmUr4boR7Uk2yrYFGFggoTMbcK33AVKA8DbZUKct3bbGqN",
+    ),
+    (
+        KIND_STORAGE_CONFIG_RETIRE,
+        STORAGE_RETIRE,
+        "zQmW4jo3NSHqJGAeDeEPzJt1fUgdDAeAsur9ehhSCyA4bEh",
+    ),
+    (
+        KIND_ROOM_STORAGE_ASSIGN,
+        ROOM_STORAGE_ASSIGN,
+        "zQmZWR9odGdRi5noLhZxgzSrNk3YRF5ZWH4JaNVBYMqMKja",
+    ),
+    (
+        KIND_ROOM_STORAGE_MIGRATE,
+        ROOM_STORAGE_MIGRATE,
+        "zQmZamMHumTwGimMGYsuEGBoxvuYmEozzpkSStPjrZHrShX",
+    ),
+    (
+        KIND_STORAGE_CONFIG_CREATE,
+        STORAGE_CREATE_V0_2,
+        "zQmSJcki3MwXF8HBUbPpwZScUm4HuzqomYhA825hYGLbmyN",
+    ),
+    (
+        KIND_STORAGE_CONFIG_UPDATE,
+        STORAGE_UPDATE_V0_2,
+        "zQmbqMzuGGxuGv2dmp6qVDQnZTeGvJSYU93eg8JiaxdirAi",
+    ),
+    (
+        KIND_STORAGE_CREDENTIAL_SET,
+        STORAGE_CREDENTIAL_SET,
+        "zQmTzhrbBfZEaijm2CMzMvNzeYzPBA4RW1DBJRWPTwJc3XL",
+    ),
+    (
+        KIND_ROOM_STORAGE_MIGRATE,
+        ROOM_STORAGE_MIGRATE_V2,
+        "zQmR7m9q28aLudzaema3wPTgyt9VJnPAVoSykoCL14YiVAN",
     ),
 ];
 
@@ -801,6 +1335,28 @@ mod tests {
             mismatched.is_empty(),
             "template digests changed — update PINNED and the console's copy:\n{}",
             mismatched.join("\n")
+        );
+    }
+
+    /// The console holds its own copy of [`PINNED`] and refuses to render any
+    /// action whose template it has no pin for, so a pin missing there makes
+    /// that kind unapprovable from the console. Every server pin must appear
+    /// in the console's table.
+    #[test]
+    fn the_console_pins_every_template() {
+        let console = include_str!("../../admin-ui/src/lib/action-summary.ts");
+        let mut missing = Vec::new();
+        for (kind, type_uri, digest) in PINNED {
+            // A template's digest covers its kind and type URI, so the digest
+            // alone names the entry.
+            if !console.contains(&format!("\"{digest}\"")) {
+                missing.push(format!("({kind}, {type_uri}) => {digest}"));
+            }
+        }
+        assert!(
+            missing.is_empty(),
+            "the console's PINNED_TEMPLATE_DIGESTS lacks:\n{}",
+            missing.join("\n")
         );
     }
 

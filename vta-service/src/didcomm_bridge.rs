@@ -124,6 +124,12 @@ pub struct DIDCommBridge {
     /// current primary regardless.
     #[allow(dead_code)]
     listener_id: String,
+    /// Test seam: report a live session authenticated as this DID without one
+    /// ([`Self::pretend_live_as`]). Sends still fail "not initialized", which
+    /// is the point — a test using it shows what transport selection does when
+    /// DIDComm is wired, without a mediator.
+    #[cfg(test)]
+    pretend_sender: RwLock<Option<String>>,
 }
 
 impl DIDCommBridge {
@@ -134,6 +140,8 @@ impl DIDCommBridge {
             inner: RwLock::new(None),
             signer: RwLock::new(None),
             listener_id: listener_id.into(),
+            #[cfg(test)]
+            pretend_sender: RwLock::new(None),
         }
     }
 
@@ -141,6 +149,54 @@ impl DIDCommBridge {
     /// Attempting to send via a placeholder returns an error.
     pub fn placeholder() -> Self {
         Self::new("")
+    }
+
+    /// A placeholder that signs as this VTA: no mediator session, but
+    /// [`Self::sign_outbound_request`] works.
+    ///
+    /// For the offline CLI. Every document sent to a DID hosting server
+    /// carries this VTA's proof, and the daemon installs that signer at
+    /// startup. The offline CLI never starts the daemon, so with a bare
+    /// placeholder every create, publish, register and delete on a hosting
+    /// server failed with "could not sign the DID-management task", however
+    /// the VTA was configured. The key loaded here is the one the daemon signs
+    /// with, read from the same store. With no mediator session the request
+    /// goes over the host's HTTPS endpoint, where the proof is the whole of
+    /// the authentication.
+    ///
+    /// `vta_did == None` gives the bare placeholder: the hosting client
+    /// refuses a VTA with no DID by name before anything is signed.
+    pub async fn signing_only(
+        vta_did: Option<&str>,
+        keys_ks: &crate::store::KeyspaceHandle,
+        imported_ks: &crate::store::KeyspaceHandle,
+        contexts_ks: &crate::store::KeyspaceHandle,
+        seed_store: &dyn crate::keys::seed_store::SeedStore,
+        audit: &vta_audit::SharedAuditSink,
+    ) -> Result<Self, AppError> {
+        let bridge = Self::placeholder();
+        let Some(vta_did) = vta_did else {
+            return Ok(bridge);
+        };
+        let secret = crate::operations::credentials::load_vta_issuer_secret_from_store(
+            keys_ks,
+            imported_ks,
+            contexts_ks,
+            seed_store,
+            audit,
+            vta_did,
+            "cli-did-management",
+        )
+        .await?;
+        let vm_id = secret.id.clone();
+        let (resolver, _handle) =
+            affinidi_tdk::secrets_resolver::ThreadedSecretsResolver::new(None).await;
+        {
+            use affinidi_tdk::secrets_resolver::SecretsResolver as _;
+            resolver.insert(secret).await;
+        }
+        bridge.set_document_signer(Arc::new(resolver), vm_id);
+        Ok(bridge)
     }
 
     /// A process-wide placeholder bridge for builds that never send DIDComm
@@ -277,7 +333,28 @@ impl DIDCommBridge {
 
     /// The VTA's own DID, or `None` before the service is published.
     pub fn vta_did(&self) -> Option<String> {
+        #[cfg(test)]
+        if let Some(did) = self
+            .pretend_sender
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone()
+        {
+            return Some(did);
+        }
         self.snapshot().map(|i| i.vta_did.clone())
+    }
+
+    /// Test-only: make [`Self::vta_did`] report a live session authenticated
+    /// as `did`, as `server::MessagingConnect` would after connecting. Nothing
+    /// is wired, so a DIDComm send still fails — a test that selects DIDComm
+    /// sees that failure instead of the peer.
+    #[cfg(all(test, feature = "didcomm"))]
+    pub(crate) fn pretend_live_as(&self, did: &str) {
+        *self
+            .pretend_sender
+            .write()
+            .unwrap_or_else(|p| p.into_inner()) = Some(did.to_string());
     }
 
     /// The live, **non-latched** messaging status (R6.2), or `None` before the
@@ -589,5 +666,74 @@ mod tests {
         let msg = err.to_string();
         assert!(msg.contains("lowercase letters"), "lost comment: {msg}");
         assert!(msg.contains("e.p.did.path-invalid"), "lost code: {msg}");
+    }
+
+    /// A request this VTA really produces, with the envelope
+    /// `sign_outbound_request` needs. A real one rather than a literal, so
+    /// `produced_census` has no new URI to account for.
+    #[cfg(feature = "didcomm")]
+    fn request_from(issuer: &str) -> serde_json::Value {
+        crate::trust_tasks::step_up::push_wake_document(
+            Some(issuer),
+            "did:key:z6MkGateway",
+            "handle-1",
+            "did:web:mediator.example",
+        )
+    }
+
+    async fn signing_only_for(
+        state: &crate::server::AppState,
+        vta_did: Option<&str>,
+    ) -> DIDCommBridge {
+        DIDCommBridge::signing_only(
+            vta_did,
+            &state.keys_ks,
+            &state.imported_ks,
+            &state.contexts_ks,
+            &*state.seed_store,
+            &state.audit_sink,
+        )
+        .await
+        .expect("signing-only bridge")
+    }
+
+    /// The offline CLI's bridge signs as this VTA, with the key the daemon
+    /// signs with, so a DID hosting server accepts what it sends. Before, the
+    /// offline `did-mgmt` commands used a bare placeholder and every one that
+    /// reached a hosting server failed with "could not sign the
+    /// DID-management task".
+    #[cfg(feature = "didcomm")]
+    #[tokio::test]
+    async fn signing_only_signs_as_the_vta() {
+        let (state, _dir) = crate::test_support::build_signing_test_app_state().await;
+        let vta_did = state.config.read().await.vta_did.clone().expect("vta_did");
+        let bridge = signing_only_for(&state, Some(&vta_did)).await;
+
+        let mut doc = request_from(&vta_did);
+        assert!(bridge.sign_outbound_request(&mut doc).await, "must sign");
+
+        let typed: trust_tasks_rs::TrustTask<serde_json::Value> =
+            serde_json::from_value(doc.clone()).unwrap();
+        let signer =
+            vti_common::auth::verify_trust_task_proof_with(&typed, &state.trust_task_vm_resolver())
+                .await
+                .expect("the proof verifies against the VTA's DID");
+        assert_eq!(signer.split('#').next(), Some(vta_did.as_str()));
+        assert_eq!(
+            doc["proof"]["verificationMethod"],
+            crate::operations::credentials::vta_signing_vm(&vta_did)
+        );
+    }
+
+    /// No VTA DID, nothing to sign as: the bridge stays a bare placeholder
+    /// and refuses rather than signing as someone.
+    #[cfg(feature = "didcomm")]
+    #[tokio::test]
+    async fn signing_only_without_a_vta_did_does_not_sign() {
+        let (state, _dir) = crate::test_support::build_signing_test_app_state().await;
+        let bridge = signing_only_for(&state, None).await;
+        let mut doc = request_from("did:key:z6MkAnyone");
+        assert!(!bridge.sign_outbound_request(&mut doc).await);
+        assert!(doc.get("proof").is_none());
     }
 }

@@ -35,8 +35,6 @@ const ISSUE_TASK: &str = "https://trusttasks.org/spec/vtc/endorsements/issue/0.1
 const REVOKE_TASK: &str = "https://trusttasks.org/spec/vtc/endorsements/revoke/0.1";
 const SHOW_TASK: &str = "https://trusttasks.org/spec/vtc/endorsements/show/0.1";
 const SCHEMA_REGISTER_TASK: &str = "https://trusttasks.org/spec/vtc/schemas/register/0.1";
-const ACCEPTS_REGISTER_TASK: &str = "https://trusttasks.org/spec/vtc/schemas/accepts/register/0.2";
-const ACCEPTS_DELETE_TASK: &str = "https://trusttasks.org/spec/vtc/schemas/accepts/delete/0.1";
 const ADMIN_DID: &str = "did:key:zEndAdmin";
 const ISSUER_DID: &str = "did:key:zEndIssuer";
 const MEMBER_DID: &str = "did:key:zEndMember";
@@ -97,6 +95,7 @@ async fn build() -> Fixture {
                 updated_by: None,
                 expires_at: None,
                 resource_grants: Vec::new(),
+                group_grants: Vec::new(),
                 label_set_by_subject: false,
                 suspension: None,
             },
@@ -130,6 +129,7 @@ async fn build() -> Fixture {
                 updated_by: None,
                 expires_at: None,
                 resource_grants: Vec::new(),
+                group_grants: Vec::new(),
                 label_set_by_subject: false,
                 suspension: None,
             },
@@ -440,14 +440,11 @@ async fn delete_type_refused_while_a_criterion_names_it() {
     );
 
     // Removing the criterion releases the type — the guard is not sticky.
-    let (status, body) = signed_task(
-        &fix,
-        &fix.admin,
-        ACCEPTS_DELETE_TASK,
-        json!({ "id": "kernel-developer" }),
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK, "{body}");
+    // (Removed in the store: removing it through `vtc/schemas/accepts/delete`
+    // takes another administrator's consent, VTI-APV-023.)
+    vtc_service::schemas::delete_accepts(&fix._vtc.state.schemas_ks, "kernel-developer")
+        .await
+        .unwrap();
 
     let (status, body) = delete_type(&fix, uri).await;
     assert_eq!(status, StatusCode::OK, "{body}");
@@ -595,10 +592,10 @@ async fn register_vetting_criterion(fix: &Fixture, id: &str, statement_type: &st
     .await;
     assert_eq!(status, StatusCode::OK, "register schema: {body}");
 
-    let (status, body) = signed_task(
-        fix,
-        &fix.admin,
-        ACCEPTS_REGISTER_TASK,
+    // Stored directly: registering through `vtc/schemas/accepts/register`
+    // takes another administrator's consent (VTI-APV-023).
+    crate::common::signed::seed_criterion(
+        &fix._vtc,
         json!({
                 "id": id,
                 "description": "Two vetters, at least one in person",
@@ -615,7 +612,6 @@ async fn register_vetting_criterion(fix: &Fixture, id: &str, statement_type: &st
         }),
     )
     .await;
-    assert_eq!(status, StatusCode::OK, "register criterion: {body}");
 }
 
 // ─── Revoke ──────────────────────────────────────────────
@@ -778,7 +774,7 @@ const SHOW_ERR_NOT_FOUND: &str = end_spec::show::v0_1::error_codes::NOT_FOUND.co
 const REVOKE_ERR_NOT_FOUND: &str = end_spec::revoke::v0_1::error_codes::NOT_FOUND.code;
 const REVOKE_ERR_ALREADY_REVOKED: &str = end_spec::revoke::v0_1::error_codes::ALREADY_REVOKED.code;
 
-const LIST_TASK: &str = "https://trusttasks.org/spec/vtc/endorsements/list/0.1";
+const LIST_TASK: &str = "https://trusttasks.org/spec/vtc/endorsements/list/0.2";
 
 /// The extended error code carried by a REST error body (`{"error", "code"}`).
 fn rest_error_code(body: &Value) -> &str {

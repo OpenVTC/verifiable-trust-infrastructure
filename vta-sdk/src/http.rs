@@ -7,7 +7,9 @@
 //!
 //! This module is also the SDK's one egress-policy chokepoint: the address
 //! classifier ([`classify_ip`], [`classify_host`]), the foreign-fetch guard
-//! ([`guard_public_url`]) and the VTA-endpoint guard ([`guard_vta_endpoint`]).
+//! ([`guard_public_url`], and [`guard_foreign_url`] for an administrator-named
+//! target under an [`EndpointPolicy`]) and the VTA-endpoint guard
+//! ([`guard_vta_endpoint`]).
 //!
 //! The classifier mirrors the one in `affinidi-did-web` (`ip_is_blocked` /
 //! `host_is_blocked` / `GuardedResolver`). A shared `affinidi-net-guard` crate is
@@ -343,6 +345,7 @@ pub const DEFAULT_MAX_FOREIGN_BODY: usize = 2 * 1024 * 1024;
 /// Errors from the foreign-fetch helpers. Callers map these into their own
 /// error types (e.g. `AppError`, `RecognitionError`).
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum ForeignFetchError {
     /// The URL failed [`guard_public_url`] or [`guard_vta_endpoint`] (bad
     /// scheme, userinfo, non-public host).
@@ -376,16 +379,24 @@ pub enum ForeignFetchError {
 /// directly), which is why [`guard_public_url`] must still run first.
 ///
 /// Body size is capped per-fetch by [`read_body_capped`] (reqwest has none).
-static FOREIGN_FETCH_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(|| {
+static FOREIGN_FETCH_CLIENT: LazyLock<reqwest::Client> =
+    LazyLock::new(|| build_foreign_fetch_client(EndpointPolicy::public_only()));
+
+/// The same client with private-network answers admitted by its resolver; see
+/// [`foreign_fetch_client_for`]. Built only if a process opts in.
+static FOREIGN_FETCH_CLIENT_PRIVATE: LazyLock<reqwest::Client> =
+    LazyLock::new(|| build_foreign_fetch_client(EndpointPolicy::private_allowed()));
+
+fn build_foreign_fetch_client(policy: EndpointPolicy) -> reqwest::Client {
     reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
-        .dns_resolver(PublicOnlyResolver)
+        .dns_resolver(GuardedResolver { policy })
         .no_proxy()
         .timeout(FOREIGN_FETCH_TIMEOUT)
         .connect_timeout(FOREIGN_FETCH_TIMEOUT)
         .build()
         .expect("hardened foreign-fetch client builds from static config")
-});
+}
 
 /// A clone of the shared hardened foreign-fetch client. Use this — never
 /// `reqwest::Client::new()` — for any fetch of an attacker-influenceable URL.
@@ -393,8 +404,41 @@ pub fn foreign_fetch_client() -> reqwest::Client {
     FOREIGN_FETCH_CLIENT.clone()
 }
 
-/// Refusal raised by [`PublicOnlyResolver`] when a hostname resolves to an
-/// address that is not globally routable. Travels out through `reqwest`'s error
+/// The hardened foreign-fetch client for `policy`.
+///
+/// [`EndpointPolicy::public_only`] is exactly [`foreign_fetch_client`].
+/// [`EndpointPolicy::private_allowed`] is the same client — no redirects, no
+/// proxy, the same timeouts — whose resolver also admits private-network,
+/// carrier-grade NAT and loopback answers. Link-local, cloud-metadata and every
+/// other non-routable class stay refused under either policy.
+///
+/// For a target an administrator named (an object store's endpoint) rather
+/// than one a third party handed over, where reaching a LAN or loopback service
+/// is legitimate in development. Pass [`EndpointPolicy::process_default`] so
+/// the opt-in is the one this workspace already has
+/// ([`ALLOW_PRIVATE_ENDPOINTS_ENV`]); check the URL with
+/// [`guard_foreign_url`] under the same policy first, because IP-literal hosts
+/// never reach the resolver.
+pub fn foreign_fetch_client_for(policy: EndpointPolicy) -> reqwest::Client {
+    if policy.allow_private {
+        FOREIGN_FETCH_CLIENT_PRIVATE.clone()
+    } else {
+        FOREIGN_FETCH_CLIENT.clone()
+    }
+}
+
+/// Whether a connection to an address of `class` is permitted under `policy`.
+fn address_permitted(class: IpClass, policy: EndpointPolicy) -> bool {
+    class.is_public()
+        || (policy.allow_private
+            && matches!(
+                class,
+                IpClass::Private | IpClass::SharedAddressSpace | IpClass::Loopback
+            ))
+}
+
+/// Refusal raised by [`GuardedResolver`] when a hostname resolves to an
+/// address its policy does not permit. Travels out through `reqwest`'s error
 /// chain.
 #[derive(Debug)]
 struct BlockedAddress {
@@ -410,12 +454,16 @@ impl std::fmt::Display for BlockedAddress {
 
 impl std::error::Error for BlockedAddress {}
 
-/// A DNS resolver that refuses to hand back a non-public address.
+/// A DNS resolver that refuses to hand back an address its policy does not
+/// permit: under [`EndpointPolicy::public_only`], any non-public address.
 #[derive(Debug, Clone, Copy)]
-struct PublicOnlyResolver;
+struct GuardedResolver {
+    policy: EndpointPolicy,
+}
 
-impl reqwest::dns::Resolve for PublicOnlyResolver {
+impl reqwest::dns::Resolve for GuardedResolver {
     fn resolve(&self, name: reqwest::dns::Name) -> reqwest::dns::Resolving {
+        let policy = self.policy;
         Box::pin(async move {
             let host = name.as_str().to_owned();
             // Port 0: reqwest substitutes the URL's port over whatever we return.
@@ -423,23 +471,30 @@ impl reqwest::dns::Resolve for PublicOnlyResolver {
                 .await
                 .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { Box::new(e) })?
                 .collect();
-            let vetted = vet_resolved(&host, addrs)
+            let vetted = vet_resolved(&host, addrs, policy)
                 .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { Box::new(e) })?;
             Ok(Box::new(vetted.into_iter()) as reqwest::dns::Addrs)
         })
     }
 }
 
-/// Fail closed on the whole name: a name with even one non-public answer, or
-/// with no answers at all, is not one we are willing to connect to.
-fn vet_resolved(host: &str, addrs: Vec<SocketAddr>) -> Result<Vec<SocketAddr>, BlockedAddress> {
+/// Fail closed on the whole name: a name with even one answer `policy` does not
+/// permit, or with no answers at all, is not one we are willing to connect to.
+fn vet_resolved(
+    host: &str,
+    addrs: Vec<SocketAddr>,
+    policy: EndpointPolicy,
+) -> Result<Vec<SocketAddr>, BlockedAddress> {
     if addrs.is_empty() {
         return Err(BlockedAddress {
             host: host.to_owned(),
             detail: "name resolved to no addresses".into(),
         });
     }
-    if let Some(bad) = addrs.iter().find(|a| !classify_ip(a.ip()).is_public()) {
+    if let Some(bad) = addrs
+        .iter()
+        .find(|a| !address_permitted(classify_ip(a.ip()), policy))
+    {
         return Err(BlockedAddress {
             host: host.to_owned(),
             detail: format!(
@@ -665,6 +720,53 @@ pub fn guard_vta_endpoint(
              DID document must be public by default. If this VTA is meant to be reached \
              over a private network, set {ALLOW_PRIVATE_ENDPOINTS_ENV}=1 or pass \
              --allow-private-endpoints"
+        )))
+    }
+}
+
+/// Vet an administrator-named HTTPS target (an object store's endpoint, say)
+/// under `policy`, before fetching it through [`foreign_fetch_client_for`] with
+/// the same policy.
+///
+/// Under [`EndpointPolicy::public_only`] this is exactly [`guard_public_url`].
+/// Under [`EndpointPolicy::private_allowed`] it also accepts private-network,
+/// carrier-grade NAT and loopback IP literals, `localhost`, and local-only names
+/// (`*.internal`, `*.local`, single-label, …). Always refused: a scheme other
+/// than `https`, userinfo, link-local and cloud-metadata addresses and names,
+/// every other non-routable class, and an IPv6 address embedding a non-public
+/// IPv4 destination. A refusal of a host the opt-in would admit names it.
+pub fn guard_foreign_url(url: &str, policy: EndpointPolicy) -> Result<(), ForeignFetchError> {
+    let refused_private = match guard_public_url(url) {
+        Ok(()) => return Ok(()),
+        Err(e) => e,
+    };
+    // `guard_public_url` already refused scheme, userinfo and parse failures;
+    // what is left to decide is whether the host is one the opt-in admits.
+    let parsed = reqwest::Url::parse(url)
+        .map_err(|e| ForeignFetchError::Blocked(format!("invalid url {url}: {e}")))?;
+    if parsed.scheme() != "https" || parsed.username() != "" || parsed.password().is_some() {
+        return Err(refused_private);
+    }
+    let Some(host) = parsed.host() else {
+        return Err(refused_private);
+    };
+    let embeds_ipv4 = matches!(host, url::Host::Ipv6(a) if embedded_ipv4(a).is_some());
+    let opt_in_would_admit = match classify_host(&host) {
+        HostClass::Ip(IpClass::Private | IpClass::SharedAddressSpace | IpClass::Loopback) => {
+            !embeds_ipv4
+        }
+        HostClass::Localhost | HostClass::LocalName => true,
+        _ => false,
+    };
+    if !opt_in_would_admit {
+        return Err(refused_private);
+    }
+    if policy.allow_private {
+        Ok(())
+    } else {
+        Err(ForeignFetchError::Blocked(format!(
+            "{refused_private}; to reach a private-network or loopback host, set \
+             {ALLOW_PRIVATE_ENDPOINTS_ENV}=1"
         )))
     }
 }
@@ -912,20 +1014,158 @@ mod tests {
 
     #[test]
     fn resolver_vets_every_answer() {
-        assert!(vet_resolved("a.test", socks(&["93.184.216.34"])).is_ok());
-        assert!(vet_resolved("b.test", socks(&["127.0.0.1"])).is_err());
-        assert!(vet_resolved("c.test", socks(&["93.184.216.34", "10.0.0.1"])).is_err());
-        assert!(vet_resolved("d.test", socks(&["::ffff:169.254.169.254"])).is_err());
-        assert!(vet_resolved("e.test", socks(&["64:ff9b::7f00:1"])).is_err());
-        assert!(vet_resolved("f.test", Vec::new()).is_err());
+        let p = EndpointPolicy::public_only();
+        assert!(vet_resolved("a.test", socks(&["93.184.216.34"]), p).is_ok());
+        assert!(vet_resolved("b.test", socks(&["127.0.0.1"]), p).is_err());
+        assert!(vet_resolved("c.test", socks(&["93.184.216.34", "10.0.0.1"]), p).is_err());
+        assert!(vet_resolved("d.test", socks(&["::ffff:169.254.169.254"]), p).is_err());
+        assert!(vet_resolved("e.test", socks(&["64:ff9b::7f00:1"]), p).is_err());
+        assert!(vet_resolved("f.test", Vec::new(), p).is_err());
+    }
+
+    #[test]
+    fn resolver_with_the_opt_in_admits_private_and_loopback_only() {
+        let p = EndpointPolicy::private_allowed();
+        for ok in [
+            "93.184.216.34",
+            "127.0.0.1",
+            "::1",
+            "10.0.0.1",
+            "192.168.1.20",
+            "100.64.0.9",
+            "fd12::1",
+        ] {
+            assert!(vet_resolved("ok.test", socks(&[ok]), p).is_ok(), "{ok}");
+        }
+        for bad in [
+            "169.254.169.254",
+            "::ffff:169.254.169.254",
+            "fd00:ec2::254",
+            "100.100.100.200",
+            "fe80::1",
+            "0.0.0.0",
+            "224.0.0.1",
+        ] {
+            assert!(vet_resolved("bad.test", socks(&[bad]), p).is_err(), "{bad}");
+        }
+        assert!(vet_resolved("mix.test", socks(&["10.0.0.1", "169.254.169.254"]), p).is_err());
+        assert!(vet_resolved("none.test", Vec::new(), p).is_err());
     }
 
     #[tokio::test]
     async fn resolver_refuses_a_name_resolving_to_loopback() {
         use reqwest::dns::Resolve;
         let name: reqwest::dns::Name = "localhost".parse().unwrap();
-        let result = PublicOnlyResolver.resolve(name).await;
+        let result = GuardedResolver {
+            policy: EndpointPolicy::public_only(),
+        }
+        .resolve(name)
+        .await;
         assert!(result.is_err(), "localhost resolves to loopback; must fail");
+    }
+
+    #[tokio::test]
+    async fn resolver_with_the_opt_in_resolves_localhost() {
+        use reqwest::dns::Resolve;
+        let name: reqwest::dns::Name = "localhost".parse().unwrap();
+        let result = GuardedResolver {
+            policy: EndpointPolicy::private_allowed(),
+        }
+        .resolve(name)
+        .await;
+        assert!(result.is_ok(), "the opt-in admits loopback");
+    }
+
+    #[tokio::test]
+    async fn the_private_client_reaches_a_loopback_name_and_the_default_does_not() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            while let Ok((mut sock, _)) = listener.accept().await {
+                let mut buf = [0u8; 1024];
+                let _ = sock.read(&mut buf).await;
+                let _ = sock
+                    .write_all(b"HTTP/1.1 204 No Content\r\nContent-Length: 0\r\n\r\n")
+                    .await;
+            }
+        });
+        // A name, not a literal, so the resolver is what decides. Plain http
+        // here only because the listener has no certificate; the resolver runs
+        // the same either way.
+        let url = format!("http://localhost:{port}/");
+        let public = foreign_fetch_client_for(EndpointPolicy::public_only())
+            .get(&url)
+            .send()
+            .await;
+        assert!(
+            public.is_err(),
+            "the default client must not reach loopback"
+        );
+        let private = foreign_fetch_client_for(EndpointPolicy::private_allowed())
+            .get(&url)
+            .send()
+            .await
+            .expect("the opt-in client reaches loopback");
+        assert_eq!(private.status(), reqwest::StatusCode::NO_CONTENT);
+    }
+
+    // ── guard_foreign_url ───────────────────────────────────────────────────
+
+    #[test]
+    fn foreign_url_public_only_is_guard_public_url() {
+        let p = EndpointPolicy::public_only();
+        assert!(guard_foreign_url("https://s3.example.com/", p).is_ok());
+        for u in [
+            "https://10.0.0.5/",
+            "https://127.0.0.1:4566/",
+            "https://localhost:4566/",
+            "https://minio.internal/",
+            "https://minio/",
+        ] {
+            let e = guard_foreign_url(u, p).expect_err(u).to_string();
+            assert!(e.contains(ALLOW_PRIVATE_ENDPOINTS_ENV), "{u}: {e}");
+        }
+        for u in [
+            "https://169.254.169.254/",
+            "https://metadata.google.internal/",
+        ] {
+            let e = guard_foreign_url(u, p).expect_err(u).to_string();
+            assert!(!e.contains(ALLOW_PRIVATE_ENDPOINTS_ENV), "{u}: {e}");
+        }
+    }
+
+    #[test]
+    fn foreign_url_opt_in_admits_private_and_loopback_only() {
+        let p = EndpointPolicy::private_allowed();
+        for u in [
+            "https://s3.example.com/",
+            "https://10.0.0.5:9000/",
+            "https://192.168.1.20/",
+            "https://100.64.1.1/",
+            "https://[fd12::1]/",
+            "https://127.0.0.1:4566/",
+            "https://[::1]:4566/",
+            "https://localhost:4566/",
+            "https://minio.internal/",
+            "https://minio/",
+        ] {
+            assert!(guard_foreign_url(u, p).is_ok(), "{u}");
+        }
+        for u in [
+            "http://10.0.0.5/",
+            "http://localhost:4566/",
+            "https://user:pw@10.0.0.5/",
+            "https://169.254.169.254/",
+            "https://[fe80::1]/",
+            "https://[fd00:ec2::254]/",
+            "https://100.100.100.200/",
+            "https://metadata.google.internal/",
+            "https://[::ffff:10.0.0.5]/",
+            "https://0.0.0.0/",
+        ] {
+            assert!(guard_foreign_url(u, p).is_err(), "{u}");
+        }
     }
 
     // ── guard_vta_endpoint ──────────────────────────────────────────────────

@@ -250,6 +250,7 @@ fn replay(
     TrustTaskOutcome {
         status,
         body: entry.response_body.clone(),
+        restart: false,
     }
 }
 
@@ -353,6 +354,7 @@ mod tests {
             &TrustTaskOutcome {
                 status: axum::http::StatusCode::NO_CONTENT,
                 body: Vec::new(),
+                restart: false,
             },
         )
         .await;

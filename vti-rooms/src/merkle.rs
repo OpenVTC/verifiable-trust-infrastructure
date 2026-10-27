@@ -67,6 +67,7 @@ pub type Hash = [u8; 32];
 
 /// Errors this module can produce.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum MerkleError {
     /// A record would not canonicalise — it holds something JSON cannot express.
     #[error("record `{key}` could not be canonicalised for commitment: {source}")]
@@ -373,6 +374,7 @@ mod tests {
             pinned: false,
             sealed: Some("Zm9v".into()),
             nonce: Some("YmFy".into()),
+            sealed_version: None,
             cleartext: None,
             author: None,
             updated_at: 1_700_000_000,

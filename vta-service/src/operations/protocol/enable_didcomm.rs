@@ -69,6 +69,7 @@ pub struct EnableDidcommResult {
 }
 
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum EnableDidcommError {
     #[error(
         "`setup_acl` cannot be combined with `force` because ACL provisioning requires a live mediator connection"
@@ -286,7 +287,8 @@ async fn persist_didcomm_enabled(
                 .as_ref()
                 .is_some_and(|m| m.drain_inbox_on_start),
         });
-        let contents = toml::to_string_pretty(&*cfg)
+        let contents = cfg
+            .to_runtime_toml()
             .map_err(|e| EnableDidcommError::ConfigPersistence(e.to_string()))?;
         let path = cfg.config_path.clone();
         (contents, path)

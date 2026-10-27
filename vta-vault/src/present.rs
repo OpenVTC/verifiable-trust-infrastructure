@@ -50,7 +50,7 @@
 //! credential committed to in its `cnf.jwk` at issuance, or a verifier's
 //! key-binding check will (correctly) fail.
 
-use affinidi_data_integrity::{DataIntegrityProof, SignOptions, crypto_suites::CryptoSuite};
+use affinidi_data_integrity::{DataIntegrityProof, SignOptions};
 use affinidi_sd_jwt::SdJwt;
 use affinidi_sd_jwt::hasher::Sha256Hasher;
 use affinidi_sd_jwt::holder::{KbJwtInput, present, select_disclosures};
@@ -375,7 +375,7 @@ pub async fn present_di_vc(
         holder_secret,
         SignOptions::new()
             .with_proof_purpose("authentication")
-            .with_cryptosuite(CryptoSuite::EddsaJcs2022),
+            .with_cryptosuite(consent::holder_suite(holder_secret)?),
     )
     .await
     .map_err(|e| AppError::Internal(format!("sign VP: {e}")))?;

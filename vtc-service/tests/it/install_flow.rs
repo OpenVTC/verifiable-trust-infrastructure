@@ -8,8 +8,9 @@
 //! 2. `POST /v1/install/claim/start` — WebAuthn ceremony begins.
 //! 3. `POST /v1/install/claim/finish` — token consumed, session-JWT minted.
 //! 4. `POST /v1/admin/bootstrap` — first ACL admin written.
-//! 5. `POST /v1/admin/passkeys/register/{start,finish}` — second passkey.
-//! 6. `GET  /v1/admin/passkeys` — both passkeys present.
+//! 5. `auth/passkey/enroll/{start,finish}/0.2` — second passkey, signed by a
+//!    console key the admin enrolled (#1641).
+//! 6. `auth/passkey/list/0.1` — both passkeys present.
 //! 7. The community profile setup wrote is in place.
 //! 10. Second `POST /v1/install/claim/start` — refused (carve-out closed).
 //!
@@ -25,13 +26,13 @@ use serde_json::{Value, json};
 use tower::ServiceExt;
 use uuid::Uuid;
 use vti_common::audit::{AuditEnvelope, AuditEvent};
-use vti_common::auth::jwt::JwtKeys;
 use webauthn_rs::prelude::{CreationChallengeResponse, RequestChallengeResponse};
 
 use vtc_service::install::{InstallTokenSigner, InstallTokenStore, mint_install_token};
 use vtc_service::server::AppState;
 use vtc_service::test_support::TestVtc;
 
+use crate::common::signed::call;
 use crate::common::webauthn_harness::SoftEd25519Authenticator;
 
 /// Re-wrap the inner WebAuthn options as webauthn-rs's `{publicKey: …}`.
@@ -60,7 +61,6 @@ struct Fixture {
     router: axum::Router,
     install_signer: Arc<InstallTokenSigner>,
     install_store: InstallTokenStore,
-    jwt_keys: Arc<JwtKeys>,
     recipient: String,
     // Owns the temp data dir + serves `router`'s state; must outlive them.
     _vtc: TestVtc,
@@ -82,7 +82,6 @@ async fn build_fixture() -> Fixture {
     let state = vtc.state.clone();
     let router = vtc.router.clone();
     let install_store = vtc.state.install_store.clone();
-    let jwt_keys = vtc.jwt_keys.clone();
     let recipient = vtc
         .state
         .config
@@ -97,7 +96,6 @@ async fn build_fixture() -> Fixture {
         router,
         install_signer,
         install_store,
-        jwt_keys,
         recipient,
         _vtc: vtc,
     }
@@ -165,83 +163,24 @@ async fn mint_install(fix: &Fixture) -> String {
 }
 
 // ---------------------------------------------------------------------------
-// HTTP helpers
+// Helpers
 // ---------------------------------------------------------------------------
 
-async fn request(
-    router: &axum::Router,
-    method: &str,
-    path: &str,
-    trust_task: &str,
-    token: Option<&str>,
-    body: Option<Value>,
-) -> (StatusCode, Value) {
-    let mut builder = Request::builder()
-        .method(method)
-        .uri(path)
-        .header("Trust-Task", trust_task);
-    if let Some(tok) = token {
-        builder = builder.header("Authorization", format!("Bearer {tok}"));
+/// A webauthn-rs result as the browser's published JSON — what the console's
+/// `serializeRegistration` / `serializeAssertion` send.
+fn published(v: impl serde::Serialize) -> Value {
+    fn strip_nulls(v: &mut Value) {
+        if let Value::Object(map) = v {
+            map.retain(|_, v| !v.is_null());
+            map.values_mut().for_each(strip_nulls);
+        }
     }
-    let body = if let Some(b) = body {
-        builder = builder.header("Content-Type", "application/json");
-        Body::from(b.to_string())
-    } else {
-        Body::empty()
-    };
-    let res = router
-        .clone()
-        .oneshot(builder.body(body).unwrap())
-        .await
-        .unwrap();
-    let status = res.status();
-    let bytes = res.into_body().collect().await.unwrap().to_bytes();
-    let json: Value = if bytes.is_empty() {
-        Value::Null
-    } else {
-        serde_json::from_slice(&bytes).unwrap_or(Value::Null)
-    };
-    (status, json)
-}
-
-/// Mint a VTC admin JWT for `admin_did` so subsequent admin-gated
-/// endpoints (`/v1/admin/*`, `/v1/community/profile` PUT) accept
-/// the caller. M0.6 still wires this through a normal challenge-
-/// response auth flow in production; here we synthesise the same
-/// session shape directly because the install-flow happy path
-/// doesn't exercise the auth challenge endpoints.
-async fn admin_jwt_for(fix: &Fixture, admin_did: &str) -> String {
-    use vti_common::auth::session::{Session, SessionState, now_epoch, store_session};
-    let session_id = format!("sess-{}", Uuid::new_v4());
-    let session = Session {
-        session_id: session_id.clone(),
-        did: admin_did.to_string(),
-        challenge: "test".into(),
-        state: SessionState::Authenticated,
-        created_at: now_epoch(),
-        last_seen: now_epoch(),
-        refresh_token: None,
-        refresh_expires_at: None,
-        tee_attested: false,
-        amr: Vec::new(),
-        acr: String::new(),
-        acr_expires_at: None,
-        token_id: None,
-        session_pubkey_b58btc: None,
-        not_after: None,
-    };
-    store_session(&fix.state.sessions_ks, &session)
-        .await
-        .unwrap();
-    let claims = fix.jwt_keys.new_claims(
-        admin_did.to_string(),
-        session_id,
-        "admin".to_string(),
-        vec![],
-        900,
-        false,
-    );
-    fix.jwt_keys.encode(&claims).unwrap()
+    let mut v = serde_json::to_value(v).unwrap();
+    let obj = v.as_object_mut().unwrap();
+    obj.remove("extensions");
+    obj.insert("clientExtensionResults".into(), json!({}));
+    strip_nulls(&mut v);
+    v
 }
 
 // ---------------------------------------------------------------------------
@@ -306,10 +245,22 @@ async fn end_to_end_install_flow_phase_0_gate() {
     assert_eq!(status, StatusCode::OK, "bootstrap: {body}");
     assert_eq!(body["adminDid"].as_str().unwrap(), admin_did);
 
-    // Mint a VTC admin JWT for the bootstrapped DID. M0.12.1 calls
-    // this a "test harness shortcut"; production goes through the
-    // existing challenge-response auth flow.
-    let admin_token = admin_jwt_for(&fix, &admin_did).await;
+    // The console signs as a key it enrolled for the bootstrapped DID — the
+    // admin's identity is the passkey's own `did:key`, whose private half
+    // lives in the authenticator, so the console never signs as it directly.
+    // Enrolment is `auth/signing-key/enroll` (`signed_step_up.rs` drives it);
+    // here the delegation is written directly.
+    let console = vti_rooms_dtg::test_support::Party::new();
+    vtc_service::acl::console_key::enrol_delegation(
+        &fix.state.console_keys_ks,
+        &fix.state.acl_ks,
+        &console.did,
+        &admin_did,
+        Some("install browser".into()),
+        None,
+    )
+    .await
+    .unwrap();
 
     // Seed the community profile so step 7's GET has something to
     // return. The bootstrap path doesn't write the profile (that's
@@ -324,18 +275,11 @@ async fn end_to_end_install_flow_phase_0_gate() {
         .unwrap();
 
     // ----------------------------------------------------------------
-    // Step 5 — passkeys/register (start + finish)
+    // Step 5 — auth/passkey/enroll (start + finish), signed documents
     // ----------------------------------------------------------------
-    let (status, body) = request(
-        &fix.router,
-        "POST",
-        "/v1/admin/passkeys/register/start",
-        ENROLL_START_TASK,
-        Some(&admin_token),
-        Some(json!({})),
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK, "register/start: {body}");
+    let (status, doc) = call(&fix._vtc, &console, ENROLL_START_TASK, json!({})).await;
+    assert_eq!(status, StatusCode::OK, "enroll/start: {doc}");
+    let body = doc["payload"].clone();
     let reg_id = body["enrollmentId"].as_str().unwrap().to_string();
     let register_options: CreationChallengeResponse = wrap_options(&body["options"]);
     let uv_options: RequestChallengeResponse = wrap_options(&body["uvOptions"]);
@@ -343,41 +287,27 @@ async fn end_to_end_install_flow_phase_0_gate() {
     let (register_response, _new_pub) = authenticator.register(&register_options, RP_ORIGIN);
     let uv_response = authenticator.authenticate(&uv_options, RP_ORIGIN);
 
-    let (status, body) = request(
-        &fix.router,
-        "POST",
-        "/v1/admin/passkeys/register/finish",
+    let (status, doc) = call(
+        &fix._vtc,
+        &console,
         ENROLL_FINISH_TASK,
-        Some(&admin_token),
-        Some(json!({
-            // `RegisterFinishRequest` (routes/admin/passkeys.rs) has no
-            // `rename_all`, so this endpoint is still snake_case. It is a
-            // separate divergence from the install-claim ones fixed here.
-            "registration_id": reg_id,
-            "register_response": register_response,
-            "uv_response": uv_response,
-            "label": "second device",
-            "transports": ["usb"],
-        })),
+        json!({
+            "enrollmentId": reg_id,
+            "credential": published(&register_response),
+            "uvCredential": published(&uv_response),
+            "deviceLabel": "second device",
+        }),
     )
     .await;
-    assert_eq!(status, StatusCode::OK, "register/finish: {body}");
+    assert_eq!(status, StatusCode::OK, "enroll/finish: {doc}");
 
     // ----------------------------------------------------------------
     // Step 6 — passkeys list returns both
     // ----------------------------------------------------------------
-    let (status, body) = request(
-        &fix.router,
-        "GET",
-        "/v1/admin/passkeys",
-        LIST_TASK,
-        Some(&admin_token),
-        None,
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK);
+    let (status, doc) = call(&fix._vtc, &console, LIST_TASK, json!({})).await;
+    assert_eq!(status, StatusCode::OK, "{doc}");
     // `credentials`, the name `auth/passkey/list/0.1` publishes (#1112).
-    let passkeys = body["credentials"].as_array().unwrap();
+    let passkeys = doc["payload"]["credentials"].as_array().unwrap();
     assert_eq!(passkeys.len(), 2, "expected 2 passkeys, got {passkeys:?}");
     let labels: std::collections::HashSet<_> = passkeys
         .iter()

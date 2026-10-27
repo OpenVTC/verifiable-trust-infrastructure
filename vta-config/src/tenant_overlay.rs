@@ -34,6 +34,7 @@ use serde::Deserialize;
 /// boots restore it from the encrypted store.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[non_exhaustive]
 pub struct TenantConfigOverlay {
     #[serde(default)]
     pub vta_name: Option<String>,
@@ -43,6 +44,16 @@ pub struct TenantConfigOverlay {
     pub tee_kms: Option<TenantKmsOverlay>,
     #[serde(default)]
     pub messaging: Option<TenantMessagingOverlay>,
+    /// Public Ed25519 `did:key` the operator minted (`pnm bootstrap claim-did
+    /// create`); only its holder may claim first-boot admin. Distinct from
+    /// `admin_did`, which stays forbidden: this authorizes who may claim, it
+    /// grants nothing itself.
+    #[serde(default)]
+    pub bootstrap_claim_did: Option<String>,
+    /// The per-appliance operation budget, sized for the instance the parent
+    /// runs the enclave on. See [`TenantServerOverlay`].
+    #[serde(default)]
+    pub server: Option<TenantServerOverlay>,
 }
 
 /// The tenant-scoped subset of `[tee.kms]` an operator may deliver at runtime.
@@ -53,6 +64,7 @@ pub struct TenantConfigOverlay {
 /// un-attested super-admin through the config channel.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[non_exhaustive]
 pub struct TenantKmsOverlay {
     /// Full KMS key ARN. The region is *derived* from the ARN
     /// ([`region_from_arn`]) rather than accepted as a separate field, so there
@@ -74,20 +86,65 @@ pub struct TenantKmsOverlay {
 }
 
 /// The tenant-scoped subset of `[messaging]` an operator may deliver at runtime.
+///
+/// `setup_acl` is here deliberately, and it is the only `[messaging]` flag
+/// that is (`mediator_host` and `drain_inbox_on_start` stay baked). It asks the
+/// enclave to set its *own* account on the chosen mediator to allow-all, which
+/// a mediator in explicit-allow mode needs before the VTA can receive at all.
+/// It confers nothing on the parent that `mediator_did` does not already: the
+/// parent picks the mediator, so it can point the VTA at one that applies no
+/// ACL in the first place, and every inbound message is still authenticated by
+/// the VTA itself. Allowlist rationale: `tenant-config-allowlist.md` §3.3.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[non_exhaustive]
 pub struct TenantMessagingOverlay {
     #[serde(default)]
     pub mediator_did: Option<String>,
     #[serde(default)]
     pub mediator_url: Option<String>,
+    #[serde(default)]
+    pub setup_acl: Option<bool>,
 }
+
+/// The tenant-scoped subset of `[server]` an operator may deliver at runtime:
+/// the operation budgets (appliance, per client, unauthenticated), and nothing
+/// else.
+///
+/// It belongs here because its right value follows the instance size, which
+/// the parent chooses and the image does not know, and because the overlay is
+/// delivered on every boot, so the budget survives an enclave restart. It
+/// confers nothing on the parent: a budget of 1 starves the VTA, which a parent
+/// that carries every packet can do anyway, and without the field the baked
+/// value, or the default, applies. `host`, `port`, the per-IP limiters and above all
+/// `trust_xff_cidrs` (which would let the parent choose whose address a request
+/// is charged to) stay baked. Allowlist rationale: `tenant-config-allowlist.md`
+/// §3.3.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[non_exhaustive]
+pub struct TenantServerOverlay {
+    #[serde(default)]
+    pub operation_rate_limit_per_sec: Option<u32>,
+    #[serde(default)]
+    pub operation_rate_limit_burst: Option<u32>,
+    #[serde(default)]
+    pub operation_rate_limit_per_subject_per_sec: Option<u32>,
+    #[serde(default)]
+    pub operation_rate_limit_unauthenticated_per_sec: Option<u32>,
+}
+
+/// Largest operation budget, per second or as a burst, the overlay accepts.
+/// Well above what any appliance serves; past it a value is a typo, and one
+/// that would quietly turn the budget off.
+pub const MAX_OPERATION_RATE_LIMIT: u32 = 100_000;
 
 /// Failure applying a [`TenantConfigOverlay`] to a baked base config.
 ///
 /// Every variant is fail-closed: an overlay that trips any of these must abort
 /// the boot rather than fall through to a weaker config.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum TenantOverlayError {
     /// The overlay's `key_arn` is not a well-formed
     /// `arn:aws:kms:<region>:<account>:key/<id>`.
@@ -116,6 +173,12 @@ pub enum TenantOverlayError {
     /// The baked base has no `[messaging]` section and the overlay's `messaging`
     /// block omits `mediator_did`, which is required to construct one.
     MessagingMediatorDidRequired,
+    /// The overlay's `bootstrap_claim_did` is not an Ed25519 `did:key`.
+    MalformedBootstrapClaimDid(String),
+    /// An operation budget in the overlay's `server` block is 0 or above
+    /// [`MAX_OPERATION_RATE_LIMIT`]. Zero is refused rather than read as "no
+    /// budget": omitting the field keeps the baked value, or the default.
+    InvalidOperationRateLimit { field: &'static str, value: u32 },
 }
 
 impl std::fmt::Display for TenantOverlayError {
@@ -158,6 +221,15 @@ impl std::fmt::Display for TenantOverlayError {
                 f,
                 "tenant overlay carries a messaging block and the baked base has \
                  no [messaging] section — the overlay must supply mediator_did"
+            ),
+            Self::MalformedBootstrapClaimDid(did) => write!(
+                f,
+                "tenant overlay bootstrap_claim_did is not an Ed25519 did:key: {did}"
+            ),
+            Self::InvalidOperationRateLimit { field, value } => write!(
+                f,
+                "tenant overlay server.{field} = {value} is out of range \
+                 (1..={MAX_OPERATION_RATE_LIMIT}); omit it to keep the baked value"
             ),
         }
     }
@@ -287,6 +359,60 @@ pub fn apply_tenant_overlay(
         }
     }
 
+    if let Some(did) = overlay.bootstrap_claim_did {
+        // Fail at boot, not at the one-shot claim, if the DID can't be a claimant.
+        affinidi_crypto::did_key::did_key_to_ed25519_pub(&did)
+            .map_err(|_| TenantOverlayError::MalformedBootstrapClaimDid(did.clone()))?;
+        base.tee.bootstrap_claim_did = Some(did);
+    }
+
+    if let Some(server) = overlay.server {
+        let checked = |field: &'static str, v: Option<u32>| match v {
+            Some(value) if value == 0 || value > MAX_OPERATION_RATE_LIMIT => {
+                Err(TenantOverlayError::InvalidOperationRateLimit { field, value })
+            }
+            v => Ok(v),
+        };
+        // Every value is checked before any is written, so a refused overlay
+        // leaves the base as it was.
+        let values = [
+            (
+                "operation_rate_limit_per_sec",
+                server.operation_rate_limit_per_sec,
+            ),
+            (
+                "operation_rate_limit_burst",
+                server.operation_rate_limit_burst,
+            ),
+            (
+                "operation_rate_limit_per_subject_per_sec",
+                server.operation_rate_limit_per_subject_per_sec,
+            ),
+            (
+                "operation_rate_limit_unauthenticated_per_sec",
+                server.operation_rate_limit_unauthenticated_per_sec,
+            ),
+        ]
+        .map(|(field, v)| checked(field, v));
+        let [per_sec, burst, per_subject, unauthenticated] = values;
+        let (per_sec, burst, per_subject, unauthenticated) =
+            (per_sec?, burst?, per_subject?, unauthenticated?);
+        let s = &mut base.server;
+        for (field, value) in [
+            (&mut s.operation_rate_limit_per_sec, per_sec),
+            (&mut s.operation_rate_limit_burst, burst),
+            (&mut s.operation_rate_limit_per_subject_per_sec, per_subject),
+            (
+                &mut s.operation_rate_limit_unauthenticated_per_sec,
+                unauthenticated,
+            ),
+        ] {
+            if value.is_some() {
+                *field = value;
+            }
+        }
+    }
+
     if let Some(m) = overlay.messaging {
         match base.messaging.as_mut() {
             Some(msg) => {
@@ -295,6 +421,9 @@ pub fn apply_tenant_overlay(
                 }
                 if let Some(v) = m.mediator_url {
                     msg.mediator_url = v;
+                }
+                if let Some(v) = m.setup_acl {
+                    msg.setup_acl = v;
                 }
             }
             None => {
@@ -310,7 +439,7 @@ pub fn apply_tenant_overlay(
                     mediator_did,
                     mediator_url: m.mediator_url.unwrap_or_default(),
                     mediator_host: None,
-                    setup_acl: false,
+                    setup_acl: m.setup_acl.unwrap_or(false),
                     drain_inbox_on_start: false,
                 });
             }
@@ -361,11 +490,20 @@ mod tests {
             r#"{"tee":{"mode":"optional"}}"#,
             r#"{"resolver_url":"http://evil"}"#,
             r#"{"storage_key_salt":"x"}"#,
-            r#"{"messaging":{"mediator_did":"did:x","setup_acl":true}}"#,
+            // `setup_acl` is the one overlayable `[messaging]` flag (see
+            // `TenantMessagingOverlay`); its neighbours stay baked.
+            r#"{"messaging":{"mediator_did":"did:x","drain_inbox_on_start":true}}"#,
+            r#"{"messaging":{"mediator_did":"did:x","mediator_host":"evil"}}"#,
             // A bare, keyless DID string is NOT identity provisioning (ADR-0109):
             // the enclave provisions from `vta_did_template`, so `vta_did` is not
             // an overlay field and must be rejected structurally.
             r#"{"vta_did":"did:webvh:scid:acme.example.com:vta"}"#,
+            // `server` carries the operation budget only: the parent must not
+            // choose whose address a request is charged to, or where the VTA
+            // listens, or loosen the per-IP limiters.
+            r#"{"server":{"trust_xff_cidrs":["0.0.0.0/0"]}}"#,
+            r#"{"server":{"port":1}}"#,
+            r#"{"server":{"rate_limit_burst":10000}}"#,
         ];
         for p in poison {
             assert!(
@@ -383,11 +521,16 @@ mod tests {
                              "vta_did_template":"did:webvh:{{SCID}}:acme.example.com:vta",
                              "anchor_table_name":"vta-rollback-anchor-acme",
                              "anchor_writer_credential_ciphertext":"base64=="}},
-                 "messaging":{{"mediator_did":"did:webvh:scid:mediator","mediator_url":"wss://m"}}}}"#
+                 "messaging":{{"mediator_did":"did:webvh:scid:mediator","mediator_url":"wss://m"}},
+                 "bootstrap_claim_did":"{CLAIM_DID}",
+                 "server":{{"operation_rate_limit_per_sec":110,"operation_rate_limit_burst":220}}}}"#
         );
         let parsed: TenantConfigOverlay =
             serde_json::from_str(&ok).expect("well-formed overlay must parse");
         assert_eq!(parsed.vta_name.as_deref(), Some("acme"));
+        assert_eq!(parsed.bootstrap_claim_did.as_deref(), Some(CLAIM_DID));
+        let server = parsed.server.expect("server present");
+        assert_eq!(server.operation_rate_limit_per_sec, Some(110));
         let kms = parsed.tee_kms.expect("tee_kms present");
         assert_eq!(kms.key_arn, GOOD_ARN);
     }
@@ -451,6 +594,55 @@ mod tests {
     }
 
     // -- apply onto a baked base (tee-only).
+
+    #[cfg(feature = "tee")]
+    #[test]
+    fn apply_overlay_sets_the_operation_budget() {
+        let mut base: crate::AppConfig = toml::from_str("").expect("empty config parses");
+        let overlay: TenantConfigOverlay = serde_json::from_str(
+            r#"{"server":{"operation_rate_limit_per_sec":80,
+                    "operation_rate_limit_per_subject_per_sec":20,
+                    "operation_rate_limit_unauthenticated_per_sec":10}}"#,
+        )
+        .unwrap();
+        apply_tenant_overlay(&mut base, overlay).expect("apply succeeds");
+        assert_eq!(base.server.operation_rate_limit_per_sec, Some(80));
+        assert_eq!(base.server.operation_rate_limit_burst, None);
+        assert_eq!(
+            base.server.operation_rate_limit_per_subject_per_sec,
+            Some(20)
+        );
+        assert_eq!(
+            base.server.operation_rate_limit_unauthenticated_per_sec,
+            Some(10)
+        );
+    }
+
+    #[cfg(feature = "tee")]
+    #[test]
+    fn apply_overlay_refuses_a_zero_or_huge_operation_budget() {
+        for (json, field, value) in [
+            (
+                r#"{"server":{"operation_rate_limit_per_sec":0}}"#,
+                "operation_rate_limit_per_sec",
+                0,
+            ),
+            (
+                r#"{"server":{"operation_rate_limit_per_sec":80,"operation_rate_limit_burst":100001}}"#,
+                "operation_rate_limit_burst",
+                100_001,
+            ),
+        ] {
+            let mut base: crate::AppConfig = toml::from_str("").expect("empty config parses");
+            let overlay: TenantConfigOverlay = serde_json::from_str(json).unwrap();
+            assert_eq!(
+                apply_tenant_overlay(&mut base, overlay),
+                Err(TenantOverlayError::InvalidOperationRateLimit { field, value }),
+                "{json}"
+            );
+            assert_eq!(base.server.operation_rate_limit_per_sec, None, "{json}");
+        }
+    }
 
     #[cfg(feature = "tee")]
     #[test]
@@ -622,6 +814,134 @@ mod tests {
         let msg = base.messaging.as_ref().unwrap();
         assert_eq!(msg.mediator_did, "did:web:mediator.test");
         assert_eq!(msg.mediator_url, "wss://mediator.test/ws");
+        assert!(
+            !msg.setup_acl,
+            "setup_acl defaults to false unless the overlay passes it"
+        );
+
+        // The overlay may pass setup_acl explicitly.
+        let mut base: crate::AppConfig = toml::from_str("").unwrap();
+        let with_acl: TenantConfigOverlay = serde_json::from_str(
+            r#"{"messaging":{"mediator_did":"did:web:mediator.test","setup_acl":true}}"#,
+        )
+        .unwrap();
+        apply_tenant_overlay(&mut base, with_acl).expect("apply succeeds");
+        assert!(
+            base.messaging.unwrap().setup_acl,
+            "setup_acl=true in the overlay must apply"
+        );
+    }
+
+    /// Regression: the baked fleet-base.toml used to pre-populate `[messaging]`
+    /// with `mediator_did = "OVERLAY_PLACEHOLDER_MEDIATOR_DID"`, which pre-empted
+    /// the `None` branch above — an overlay that supplied no `messaging` block at
+    /// all (a tenant with no mediator) left that literal placeholder in
+    /// `base.messaging`, which the enclave then treated as a real mediator: it
+    /// retried connecting to it forever and published it in the DID document.
+    /// The actual baked file must parse with `messaging: None`, and an overlay
+    /// that doesn't mention messaging must leave it that way.
+    #[cfg(feature = "tee")]
+    #[test]
+    fn fleet_base_boots_rest_only_when_the_overlay_sends_no_mediator() {
+        let fleet_base = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../deploy/nitro/config.fleet-base.toml"
+        ))
+        .expect("deploy/nitro/config.fleet-base.toml reads");
+        let mut base: crate::AppConfig =
+            toml::from_str(&fleet_base).expect("the baked fleet base parses");
+        assert!(
+            base.messaging.is_none(),
+            "the baked config must not pre-populate [messaging] — REST-only \
+             must be representable without an overlay"
+        );
+        // Swap the build-arg placeholder allowlist for GOOD_ARN's account —
+        // the actual deploy pipeline fills this in before baking; it is not
+        // what this test is about.
+        base.tee.allowed_kms_accounts = vec!["111122223333".to_string()];
+
+        // The overlay a tenant with no mediator sends: tee_kms only, no
+        // messaging block at all (not even an empty one).
+        let overlay: TenantConfigOverlay = serde_json::from_str(&format!(
+            r#"{{"tee_kms":{{"key_arn":"{GOOD_ARN}","anchor_table_name":"vta-anchor-acme"}}}}"#
+        ))
+        .unwrap();
+        apply_tenant_overlay(&mut base, overlay).expect("apply succeeds");
+        assert!(
+            base.messaging.is_none(),
+            "an overlay silent on messaging must leave the VTA REST-only, \
+             never a placeholder mediator DID"
+        );
+
+        // The overlay a tenant WITH a mediator sends, against the same baked
+        // file: `[messaging]` must still materialize, with setup_acl passed
+        // through from the overlay (defaulting to false if omitted).
+        let fleet_base = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../deploy/nitro/config.fleet-base.toml"
+        ))
+        .expect("deploy/nitro/config.fleet-base.toml reads");
+        let mut base: crate::AppConfig = toml::from_str(&fleet_base).unwrap();
+        base.tee.allowed_kms_accounts = vec!["111122223333".to_string()];
+        let overlay_with_mediator: TenantConfigOverlay = serde_json::from_str(&format!(
+            r#"{{"tee_kms":{{"key_arn":"{GOOD_ARN}","anchor_table_name":"vta-anchor-acme"}},
+               "messaging":{{"mediator_did":"did:web:mediator.test","setup_acl":true}}}}"#
+        ))
+        .unwrap();
+        apply_tenant_overlay(&mut base, overlay_with_mediator).expect("apply succeeds");
+        let msg = base
+            .messaging
+            .expect("a supplied mediator_did must materialize [messaging]");
+        assert_eq!(msg.mediator_did, "did:web:mediator.test");
+        assert!(msg.setup_acl, "setup_acl=true in the overlay must apply");
+    }
+
+    const CLAIM_DID: &str = "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK";
+
+    #[cfg(feature = "tee")]
+    fn empty_base() -> crate::AppConfig {
+        toml::from_str("").unwrap()
+    }
+
+    #[cfg(feature = "tee")]
+    fn claim_overlay(did: &str) -> TenantConfigOverlay {
+        serde_json::from_value(serde_json::json!({ "bootstrap_claim_did": did })).unwrap()
+    }
+
+    #[cfg(feature = "tee")]
+    #[test]
+    fn apply_overlay_sets_bootstrap_claim_did() {
+        let mut base = empty_base();
+        apply_tenant_overlay(&mut base, claim_overlay(CLAIM_DID)).expect("apply succeeds");
+        assert_eq!(base.tee.bootstrap_claim_did.as_deref(), Some(CLAIM_DID));
+    }
+
+    #[cfg(feature = "tee")]
+    #[test]
+    fn apply_overlay_rejects_a_claim_did_that_is_not_ed25519_did_key() {
+        for bad in ["did:web:example.com", "did:key:zNotMultibase", ""] {
+            let mut base = empty_base();
+            assert_eq!(
+                apply_tenant_overlay(&mut base, claim_overlay(bad)),
+                Err(TenantOverlayError::MalformedBootstrapClaimDid(bad.into())),
+            );
+            assert!(base.tee.bootstrap_claim_did.is_none());
+        }
+    }
+
+    /// A substituted claim DID must be visible to a remote verifier.
+    #[cfg(feature = "tee")]
+    #[test]
+    fn effective_config_digest_reflects_bootstrap_claim_did() {
+        let other = affinidi_crypto::did_key::ed25519_pub_to_did_key(&[2u8; 32]);
+        let mut a = empty_base();
+        let mut b = empty_base();
+        let unset = a.compute_config_attestation_digest().unwrap();
+        apply_tenant_overlay(&mut a, claim_overlay(CLAIM_DID)).unwrap();
+        apply_tenant_overlay(&mut b, claim_overlay(&other)).unwrap();
+        let da = a.compute_config_attestation_digest().unwrap();
+        assert_ne!(da, b.compute_config_attestation_digest().unwrap());
+        assert_ne!(da, unset);
     }
 
     #[cfg(feature = "tee")]

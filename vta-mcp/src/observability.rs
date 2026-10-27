@@ -15,7 +15,7 @@
 //! - **the audit log** (`--audit-log`) — one JSON object per line per call,
 //!   durable, owner-only, machine-readable. This is the record you read *after*
 //!   something happened; stderr is what you watch while it happens.
-//! - **redaction** — both of the above pass every payload through [`redact`]
+//! - **redaction** — both of the above pass every payload through [`redact_call`]
 //!   first. The bridge handles signing input, released secrets and holder keys,
 //!   and none of that may reach a log file.
 //!
@@ -127,7 +127,7 @@ const SAFE_KEYS: &[&str] = &[
     "vtaDid",
 ];
 
-/// How deep [`redact`] walks before collapsing a subtree.
+/// How deep [`redact_call`] walks before collapsing a subtree.
 const MAX_DEPTH: usize = 4;
 /// How many array elements survive; the rest become a count marker.
 const MAX_ARRAY: usize = 8;
@@ -140,11 +140,26 @@ const MAX_ARRAY: usize = 8;
 /// [`SAFE_KEYS`] name, so `text` (what `sign` signs), `secret`, `privateKey`,
 /// `mnemonic`, `jwe` and every field of a released credential are elided
 /// without this module needing to know they exist.
-pub fn redact(value: &Value) -> Value {
-    redact_at(value, 0, false)
+///
+/// A call to a task whose payload is text a person wrote for themselves keeps **no**
+/// string at all — a member's personal label for a room (`rooms/keys/label`), whose own
+/// `label` is exactly the safe key a display name rides under elsewhere. Its text is never logged
+/// (`rooms/keys/label/0.1` recipient item 10, which binds a client too).
+pub fn redact_call(operation: Option<&str>, value: &Value) -> Value {
+    let safe = if carries_personal_text(operation) {
+        &[]
+    } else {
+        SAFE_KEYS
+    };
+    redact_at(value, 0, false, safe)
 }
 
-fn redact_at(value: &Value, depth: usize, key_is_safe: bool) -> Value {
+/// Whether a call to `operation` carries a member's personal label for a room.
+pub fn carries_personal_text(operation: Option<&str>) -> bool {
+    operation.is_some_and(|uri| uri.contains("/rooms/keys/label/"))
+}
+
+fn redact_at(value: &Value, depth: usize, key_is_safe: bool, safe_keys: &[&str]) -> Value {
     if depth > MAX_DEPTH {
         return json!("<elided:depth>");
     }
@@ -152,8 +167,8 @@ fn redact_at(value: &Value, depth: usize, key_is_safe: bool) -> Value {
         Value::Object(map) => {
             let mut out = Map::new();
             for (k, v) in map {
-                let safe = SAFE_KEYS.contains(&k.as_str());
-                out.insert(k.clone(), redact_at(v, depth + 1, safe));
+                let safe = safe_keys.contains(&k.as_str());
+                out.insert(k.clone(), redact_at(v, depth + 1, safe, safe_keys));
             }
             Value::Object(out)
         }
@@ -161,7 +176,7 @@ fn redact_at(value: &Value, depth: usize, key_is_safe: bool) -> Value {
             let mut out: Vec<Value> = items
                 .iter()
                 .take(MAX_ARRAY)
-                .map(|v| redact_at(v, depth + 1, key_is_safe))
+                .map(|v| redact_at(v, depth + 1, key_is_safe, safe_keys))
                 .collect();
             if items.len() > MAX_ARRAY {
                 out.push(json!(format!("<elided:{} more>", items.len() - MAX_ARRAY)));
@@ -398,14 +413,14 @@ mod tests {
 
     #[test]
     fn unnamed_strings_are_elided() {
-        let out = redact(&json!({ "text": "sign me", "keyId": "key-1" }));
+        let out = redact_call(None, &json!({ "text": "sign me", "keyId": "key-1" }));
         assert_eq!(out["text"], json!("<elided>"));
         assert_eq!(out["keyId"], json!("key-1"));
     }
 
     #[test]
     fn numbers_and_booleans_survive() {
-        let out = redact(&json!({ "limit": 50, "force": true, "offset": 0 }));
+        let out = redact_call(None, &json!({ "limit": 50, "force": true, "offset": 0 }));
         assert_eq!(out["limit"], json!(50));
         assert_eq!(out["force"], json!(true));
         assert_eq!(out["offset"], json!(0));
@@ -415,12 +430,15 @@ mod tests {
     fn secrets_are_elided_without_being_named() {
         // The point of the allowlist: none of these key names appear anywhere
         // in this crate, and all of them are still elided.
-        let out = redact(&json!({
-            "mnemonic": "abandon abandon …",
-            "privateKeyMultibase": "z3u2…",
-            "jwe": "eyJhbGciOi…",
-            "password": "hunter2",
-        }));
+        let out = redact_call(
+            None,
+            &json!({
+                "mnemonic": "abandon abandon …",
+                "privateKeyMultibase": "z3u2…",
+                "jwe": "eyJhbGciOi…",
+                "password": "hunter2",
+            }),
+        );
         for k in ["mnemonic", "privateKeyMultibase", "jwe", "password"] {
             assert_eq!(out[k], json!("<elided>"), "{k} leaked");
         }
@@ -429,23 +447,44 @@ mod tests {
     #[test]
     fn nested_objects_are_walked_and_bounded() {
         let deep = json!({"a":{"b":{"c":{"d":{"e":{"f":"secret"}}}}}});
-        let out = redact(&deep).to_string();
+        let out = redact_call(None, &deep).to_string();
         assert!(!out.contains("secret"), "{out}");
     }
 
     #[test]
     fn long_arrays_are_truncated_with_a_count() {
-        let out = redact(&json!({ "did": (0..20).map(|i| i.to_string()).collect::<Vec<_>>() }));
+        let out = redact_call(
+            None,
+            &json!({ "did": (0..20).map(|i| i.to_string()).collect::<Vec<_>>() }),
+        );
         let arr = out["did"].as_array().unwrap();
         assert_eq!(arr.len(), MAX_ARRAY + 1);
         assert_eq!(arr[MAX_ARRAY], json!("<elided:12 more>"));
     }
 
     #[test]
+    fn a_personal_label_keeps_no_string_at_all() {
+        let args = json!({
+            "type": "https://trusttasks.org/spec/rooms/keys/label/0.1",
+            "payload": { "roomId": "did:web:r", "label": "what I call it", "tags": ["mine"] }
+        });
+        let out = redact_call(
+            Some("https://trusttasks.org/spec/rooms/keys/label/0.1"),
+            &args,
+        )
+        .to_string();
+        assert!(!out.contains("what I call it"), "{out}");
+        assert!(!out.contains("mine"), "{out}");
+        // Any other task keeps its safe keys.
+        let out = redact_call(Some("https://trusttasks.org/spec/vta/x/0.1"), &args);
+        assert_eq!(out["payload"]["label"], json!("what I call it"));
+    }
+
+    #[test]
     fn a_safe_key_does_not_whitelist_its_whole_subtree() {
         // `name` is safe, but a nested `secret` under it is not — the flag is
         // recomputed per key on the way down, not inherited.
-        let out = redact(&json!({ "name": { "secret": "no" } }));
+        let out = redact_call(None, &json!({ "name": { "secret": "no" } }));
         assert_eq!(out["name"]["secret"], json!("<elided>"));
     }
 
@@ -470,7 +509,7 @@ mod tests {
             decision: "allow",
             outcome: "ok",
             duration_ms: 12,
-            args: redact(&json!({"text": "shh"})),
+            args: redact_call(None, &json!({"text": "shh"})),
             error: None,
         }
     }

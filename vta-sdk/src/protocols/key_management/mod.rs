@@ -9,7 +9,6 @@ pub mod revoke;
 pub mod secret;
 pub mod set_exportability;
 pub mod sign;
-pub mod sign_jws;
 
 pub const PROTOCOL_BASE: &str = "https://firstperson.network/protocols/key-management/1.0";
 
@@ -46,4 +45,7 @@ pub const SIGN_RESULT: &str =
 pub const IMPORT_KEY: &str = "https://firstperson.network/protocols/key-management/1.0/import-key";
 pub const IMPORT_KEY_RESULT: &str =
     "https://firstperson.network/protocols/key-management/1.0/import-key-result";
+pub mod sign_csr;
+pub mod sign_document;
+pub mod sign_jws;
 pub mod sign_sshsig;

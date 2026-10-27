@@ -2,6 +2,27 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.21.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-policy-v0.20.0...vta-policy-v0.21.0) — 2026-10-26
+
+
+## [0.20.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-policy-v0.19.0...vta-policy-v0.20.0) — 2026-10-18
+
+
+## [0.19.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-policy-v0.18.0...vta-policy-v0.19.0) — 2026-10-18
+
+
+## [0.18.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-policy-v0.17.0...vta-policy-v0.18.0) — 2026-10-16
+
+
+## [0.17.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-policy-v0.16.0...vta-policy-v0.17.0) — 2026-10-15
+
+
+## [0.16.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-policy-v0.15.0...vta-policy-v0.16.0) — 2026-10-13
+
+
+## [0.15.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-policy-v0.14.0...vta-policy-v0.15.0) — 2026-10-12
+
+
 ## [0.14.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-policy-v0.13.0...vta-policy-v0.14.0) — 2026-10-11
 
 

@@ -225,7 +225,7 @@ fn as_response<T: serde::de::DeserializeOwned>(what: &str, value: Value) -> Resu
 
 /// webauthn-rs options as the published `CredentialCreationOptions` /
 /// `CredentialRequestOptions`, which carry only what WebAuthn Level 2 names.
-fn webauthn_options(options: &impl Serialize) -> Result<Value, AppError> {
+pub(crate) fn webauthn_options(options: &impl Serialize) -> Result<Value, AppError> {
     let mut v = serde_json::to_value(options)
         .map_err(|e| AppError::Internal(format!("webauthn options: {e}")))?;
     if let Some(obj) = v.as_object_mut() {
@@ -244,7 +244,9 @@ fn webauthn_options(options: &impl Serialize) -> Result<Value, AppError> {
 /// as the webauthn-rs type that verifies it. The two describe the same
 /// browser object; webauthn-rs requires `extensions` where the published
 /// shape calls it `clientExtensionResults`.
-fn webauthn_result<T: serde::de::DeserializeOwned>(published: &impl Serialize) -> Option<T> {
+pub(crate) fn webauthn_result<T: serde::de::DeserializeOwned>(
+    published: &impl Serialize,
+) -> Option<T> {
     let mut v = serde_json::to_value(published).ok()?;
     let obj = v.as_object_mut()?;
     let ext = obj
@@ -321,12 +323,21 @@ pub(crate) async fn revoke_session_elevation(
     sessions: &KeyspaceHandle,
     subject: &str,
 ) -> Result<(), AppError> {
-    use vti_common::auth::session::{list_sessions, update_session};
+    use vti_common::auth::session::{list_sessions, update_session_with};
 
-    for mut session in list_sessions(sessions).await? {
-        if session.did == subject && session.acr_expires_at.is_some() {
-            session.acr_expires_at = None;
-            update_session(sessions, &session).await?;
+    for session in list_sessions(sessions).await? {
+        if session.did != subject || session.acr_expires_at.is_none() {
+            continue;
+        }
+        // Conditional on the row as stored: writing back the listed copy would
+        // resurrect a session signed out since the scan, or revert a refresh.
+        let mut revoked = false;
+        update_session_with(sessions, &session.session_id, |s| {
+            revoked = s.did == subject && s.acr_expires_at.take().is_some();
+            revoked
+        })
+        .await?;
+        if revoked {
             info!(
                 subject = %subject,
                 session_id = %session.session_id,

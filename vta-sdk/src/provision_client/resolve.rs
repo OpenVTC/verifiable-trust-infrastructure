@@ -1,8 +1,9 @@
 //! Thin wrapper over [`crate::session::resolve_vta_endpoint`] that presents
 //! a flat result type and distinguishes "TSP" / "DIDComm" / "REST" / several
-//! at once, for downstream consumers.
+//! at once, for downstream consumers — and, unlike it, refuses a DID that does
+//! not resolve rather than guessing a REST URL from it.
 
-use crate::session::{VtaEndpoint, resolve_vta_endpoint};
+use crate::session::VtaEndpoint;
 
 use super::error::ProvisionError;
 
@@ -47,18 +48,20 @@ impl ResolvedVta {
 
 /// Resolve a VTA DID and extract its transport endpoints.
 ///
-/// Returns an error if the DID cannot be resolved and no fallback URL can
-/// be inferred from the DID string.
+/// Returns an error if the DID does not resolve. Unlike session connect, this
+/// never guesses a REST URL from the DID string: a setup flow resolves to find
+/// out *whether* the DID names a VTA, and a guess turned a typo into a much
+/// later "unexpected challenge response … (is this a VTA?)" against whatever
+/// host the DID happened to name (OpenVTC #501). A document that resolves but
+/// advertises no service still falls back to its domain.
 pub async fn resolve_vta(vta_did: &str) -> Result<ResolvedVta, ProvisionError> {
-    flatten(
-        vta_did,
-        resolve_vta_endpoint(vta_did)
-            .await
-            .map_err(|e| ProvisionError::Resolve {
-                vta_did: vta_did.to_string(),
-                message: e.to_string(),
-            })?,
-    )
+    let resolver = crate::resolver::shared_did_resolver_from_env()
+        .await
+        .map_err(|e| ProvisionError::Resolve {
+            vta_did: vta_did.to_string(),
+            message: format!("DID resolver init failed: {e}"),
+        })?;
+    resolve_vta_with_resolver(vta_did, &resolver).await
 }
 
 /// [`resolve_vta`] over an **existing** resolver.
@@ -75,12 +78,17 @@ pub async fn resolve_vta_with_resolver(
 ) -> Result<ResolvedVta, ProvisionError> {
     flatten(
         vta_did,
-        crate::session::resolve_vta_endpoint_with_resolver(vta_did, resolver)
-            .await
-            .map_err(|e| ProvisionError::Resolve {
-                vta_did: vta_did.to_string(),
-                message: e.to_string(),
-            })?,
+        crate::session::resolve_vta_endpoint_inner(
+            vta_did,
+            resolver,
+            crate::http::EndpointPolicy::process_default(),
+            crate::session::OnUnresolved::Refuse,
+        )
+        .await
+        .map_err(|e| ProvisionError::Resolve {
+            vta_did: vta_did.to_string(),
+            message: e.to_string(),
+        })?,
     )
 }
 
@@ -225,6 +233,22 @@ mod seeded_discovery_tests {
             "id": VTA,
             "service": services,
         })
+    }
+
+    /// #501: a DID that does not resolve is an error naming that, not a REST
+    /// endpoint guessed from its host — which a setup flow then failed against
+    /// much later as "unexpected challenge response … (is this a VTA?)".
+    #[tokio::test]
+    async fn an_unresolvable_did_is_refused_not_guessed() {
+        let resolver = DIDCacheClient::new(DIDCacheConfigBuilder::default().build())
+            .await
+            .expect("local DID cache");
+        let err = resolve_vta_with_resolver("did:web:vta.example.invalid", &resolver)
+            .await
+            .expect_err("an unresolvable DID must not yield a guessed endpoint");
+        let msg = err.to_string();
+        assert!(msg.contains("does not resolve"), "{msg}");
+        assert!(msg.contains("did:web:vta.example.invalid"), "{msg}");
     }
 
     /// The shape the reference deployment actually has: `#tsp` and

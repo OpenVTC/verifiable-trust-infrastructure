@@ -33,7 +33,11 @@
 
 use std::collections::HashMap;
 
-use affinidi_openid4vp::dcql::CandidateCredential;
+use affinidi_openid4vp::dcql::{
+    CandidateCredential, TrustedAuthoritiesQuery, TrustedAuthorityType,
+};
+use base64::Engine as _;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value as JsonValue, json};
@@ -157,6 +161,15 @@ pub struct PresentedCredential {
     pub claims: JsonValue,
     /// Its issuer's DID.
     pub issuer: String,
+    /// For an issuer known by an `x5c` chain, the key identifiers (base64url)
+    /// of the authorities certifying it — what a credential query's
+    /// `trusted_authorities` of type `aki` is matched against. Empty for a DID
+    /// issuer, which therefore meets no such query.
+    pub issuer_authority_key_ids: Vec<String>,
+    /// The `requirementsDigest` of the only criterion it counts toward, when
+    /// it came from a wallet session collected for one
+    /// (`wallet-session/start/0.1` consumer rule 11). `None`: any criterion.
+    pub only_for: Option<String>,
 }
 
 /// Everything a submission presented that a criterion can ask for, verified
@@ -255,12 +268,26 @@ pub async fn issuer_admitted(
         CredentialIssuers::Any => true,
         CredentialIssuers::Community => own,
         CredentialIssuers::Recognised => {
-            own || crate::routes::join_requests::present::issuer_trusted(
-                state.registry_client.as_deref(),
-                own_did,
-                issuer,
-            )
-            .await
+            if own
+                || crate::routes::join_requests::present::issuer_trusted(
+                    state.registry_client.as_deref(),
+                    own_did,
+                    issuer,
+                )
+                .await
+            {
+                return true;
+            }
+            // An issuer the swiyu trust registry vouches for, when the
+            // community takes issuer trust from it.
+            let swiyu = state.config.read().await.oid4vp.swiyu_trust.clone();
+            match swiyu {
+                Some(swiyu) => {
+                    crate::oid4vp::swiyu_issuer::trusted(state, &swiyu, issuer, chrono::Utc::now())
+                        .await
+                }
+                None => false,
+            }
         }
     }
 }
@@ -364,7 +391,7 @@ impl<'a> Evaluator<'a> {
         let mut needs = Vec::new();
 
         if let Some(query) = stored.dcql()?
-            && !self.credentials_meet(stored, &query).await
+            && !self.credentials_meet(stored, &served.digest, &query).await
         {
             needs.push(NEED_CREDENTIALS.to_string());
         }
@@ -442,6 +469,7 @@ impl<'a> Evaluator<'a> {
     async fn credentials_meet(
         &mut self,
         stored: &AcceptsCriterion,
+        digest: &str,
         query: &affinidi_openid4vp::DcqlQuery,
     ) -> bool {
         let issuers = stored
@@ -451,6 +479,11 @@ impl<'a> Evaluator<'a> {
             .unwrap_or(CredentialIssuers::Community);
         let mut admitted = Vec::new();
         for c in &self.presented.credentials {
+            // Wallet evidence counts only toward the criterion it was
+            // collected for.
+            if c.only_for.as_deref().is_some_and(|d| d != digest) {
+                continue;
+            }
             if self.issuer_admitted(issuers, &c.issuer).await {
                 admitted.push(c);
             }
@@ -478,6 +511,7 @@ fn query_met_by(
     credentials: &[&PresentedCredential],
 ) -> bool {
     let (query, type_selectors) = with_type_values_as_keys(query);
+    let (query, authority_gates) = with_trusted_authorities_as_keys(&query);
     let mut candidates = Vec::new();
     for (n, c) in credentials.iter().enumerate() {
         let selected_by = type_selectors
@@ -488,7 +522,18 @@ fn query_met_by(
                     .any(|all| all.iter().all(|t| c.types.contains(t)))
             })
             .map(|(key, _)| key.clone());
-        let keys: Vec<String> = c.types.iter().cloned().chain(selected_by).collect();
+        let mut keys: Vec<String> = c.types.iter().cloned().chain(selected_by).collect();
+        let gated: Vec<String> = authority_gates
+            .iter()
+            .filter(|(_, authorities)| {
+                meets_trusted_authorities(authorities, &c.issuer_authority_key_ids)
+            })
+            .flat_map(|(id, _)| {
+                std::iter::once(trusted_key(id, None))
+                    .chain(keys.iter().map(|k| trusted_key(id, Some(k))))
+            })
+            .collect();
+        keys.extend(gated);
         for format in &c.formats {
             for vct in &keys {
                 candidates.push(CandidateCredential {
@@ -558,6 +603,69 @@ fn with_type_values_as_keys(
     (query, selectors)
 }
 
+/// The key a credential query gated by `trusted_authorities` selects by, in
+/// place of each of its type keys (`None`: it selected by no type).
+fn trusted_key(query_id: &str, type_key: Option<&str>) -> String {
+    match type_key {
+        Some(k) => format!("urn:vtc:dcql:trusted:{query_id}:{k}"),
+        None => format!("urn:vtc:dcql:trusted:{query_id}"),
+    }
+}
+
+/// The matcher does not read `trusted_authorities`, so each credential query
+/// carrying it is rewritten to select by keys of its own ([`trusted_key`]),
+/// offered only by a candidate whose issuer one of its entries names. Returns
+/// the rewritten query and, per query id, the entries it stands for. Without
+/// this the constraint would be published to the wallet and never held.
+fn with_trusted_authorities_as_keys(
+    query: &affinidi_openid4vp::DcqlQuery,
+) -> (
+    affinidi_openid4vp::DcqlQuery,
+    Vec<(String, Vec<TrustedAuthoritiesQuery>)>,
+) {
+    let mut query = query.clone();
+    let mut gates = Vec::new();
+    for cq in &mut query.credentials {
+        let Some(authorities) = cq.trusted_authorities.take() else {
+            continue;
+        };
+        let meta = cq.meta.get_or_insert_with(Default::default);
+        let keys: Vec<String> = match meta.get("vct_values").and_then(JsonValue::as_array) {
+            Some(types) => types
+                .iter()
+                .filter_map(JsonValue::as_str)
+                .map(|t| trusted_key(&cq.id, Some(t)))
+                .collect(),
+            None => vec![trusted_key(&cq.id, None)],
+        };
+        meta.insert("vct_values".into(), json!(keys));
+        gates.push((cq.id.clone(), authorities));
+    }
+    (query, gates)
+}
+
+/// Whether an issuer certified by `authority_key_ids` (base64url) meets a
+/// credential query's `trusted_authorities` (OpenID4VP 1.0 §6.1.1): one of its
+/// entries names one of them. Only `aki` can be held here — an ETSI trusted
+/// list or an OpenID Federation would need resolving — so an entry of another
+/// type is met by nothing; registration refuses one
+/// ([`crate::schemas::accepts::validate_accepts_query`]).
+pub fn meets_trusted_authorities(
+    authorities: &[TrustedAuthoritiesQuery],
+    authority_key_ids: &[String],
+) -> bool {
+    let decode = |v: &str| URL_SAFE_NO_PAD.decode(v.trim_end_matches('=')).ok();
+    let held: Vec<Vec<u8>> = authority_key_ids.iter().filter_map(|v| decode(v)).collect();
+    authorities.iter().any(|entry| {
+        entry.authority_type == TrustedAuthorityType::Aki
+            && entry
+                .values
+                .iter()
+                .filter_map(|v| decode(v))
+                .any(|id| !id.is_empty() && held.contains(&id))
+    })
+}
+
 /// What a vetting count still lacks, in the `vetting:*` grammar. Never empty
 /// when the vetting requirement is unmet: a count that is complete but whose
 /// vetters disagree, or are not independent enough, names that.
@@ -616,43 +724,43 @@ pub async fn verify_embedded_credentials(
         return Ok(Vec::new());
     }
     let resolver = crate::credentials::vm_resolver::DidVmResolver::new(state.did_resolver.clone());
-    let fetcher = match state.did_resolver.clone() {
-        Some(r) => {
-            let key_resolver: std::sync::Arc<dyn vti_common::auth::PurposeVmResolver> =
-                std::sync::Arc::new(crate::credentials::vm_resolver::DidVmResolver::new(Some(r)));
-            crate::recognition::HttpStatusListFetcher::with_issuer_verification(key_resolver)
-        }
-        None => crate::recognition::HttpStatusListFetcher::new(),
-    };
+    let fetcher = crate::routes::join_requests::present::credential_status_fetcher(state);
     let aliases = type_aliases(state).await?;
+    // A VWC counts toward a criterion only on the host's full verdict
+    // (`credentials::witness::assess`). The join submission has no carriage
+    // for a witnessing session's outcome evidence yet, so none travels here:
+    // a VWC from a trusted witness is `noOutcomeEvidence` (VTI-CMP-023), and
+    // one from any other witness `untrustedWitness`.
+    let trusted_witnesses = crate::credentials::trusted_witnesses::live_for(state).await;
+    let vm_resolver = state.trust_task_vm_resolver();
+    let witness_ctx = crate::credentials::witness::WitnessContext {
+        relationships_ks: &state.relationships_ks,
+        trusted: &trusted_witnesses,
+        evidence: &[],
+        resolver: &vm_resolver,
+    };
 
     let mut out = Vec::new();
     for vc in vcs.iter().filter(|v| v.is_object()) {
         match verify_one_credential(vc, applicant_did, &resolver, &fetcher, now).await {
+            Ok((issuer, concrete)) if crate::credentials::witness::is_witness_statement(vc) => {
+                let verdict =
+                    crate::credentials::witness::assess_or_unresolved(&witness_ctx, &issuer, vc)
+                        .await;
+                if !verdict.is_bound() {
+                    warn!(
+                        applicant = %applicant_did,
+                        witness = %issuer,
+                        ?verdict,
+                        "presented witness credential does not count here — it meets no join \
+                         criterion"
+                    );
+                    continue;
+                }
+                out.push(presented_credential(vc, issuer, concrete, &aliases));
+            }
             Ok((issuer, concrete)) => {
-                // Its own `type` array, and the registered URIs its concrete
-                // type is also known by.
-                let mut types: Vec<String> = match vc.get("type") {
-                    Some(JsonValue::Array(t)) => t
-                        .iter()
-                        .filter_map(JsonValue::as_str)
-                        .map(str::to_string)
-                        .collect(),
-                    Some(JsonValue::String(t)) => vec![t.clone()],
-                    _ => Vec::new(),
-                };
-                if !types.contains(&concrete) {
-                    types.push(concrete.clone());
-                }
-                if let Some(more) = aliases.get(&concrete) {
-                    types.extend(more.iter().cloned());
-                }
-                out.push(PresentedCredential {
-                    formats: vec![LDP_VC_FORMAT],
-                    types,
-                    claims: vc.clone(),
-                    issuer,
-                });
+                out.push(presented_credential(vc, issuer, concrete, &aliases))
             }
             Err(reason) => warn!(
                 applicant = %applicant_did,
@@ -663,6 +771,40 @@ pub async fn verify_embedded_credentials(
         }
     }
     Ok(out)
+}
+
+/// A verified embedded credential as a criterion's query reads it: its own
+/// `type` array, its concrete type, and the registered URIs that type is also
+/// known by.
+fn presented_credential(
+    vc: &JsonValue,
+    issuer: String,
+    concrete: String,
+    aliases: &HashMap<String, Vec<String>>,
+) -> PresentedCredential {
+    let mut types: Vec<String> = match vc.get("type") {
+        Some(JsonValue::Array(t)) => t
+            .iter()
+            .filter_map(JsonValue::as_str)
+            .map(str::to_string)
+            .collect(),
+        Some(JsonValue::String(t)) => vec![t.clone()],
+        _ => Vec::new(),
+    };
+    if !types.contains(&concrete) {
+        types.push(concrete.clone());
+    }
+    if let Some(more) = aliases.get(&concrete) {
+        types.extend(more.iter().cloned());
+    }
+    PresentedCredential {
+        formats: vec![LDP_VC_FORMAT],
+        types,
+        claims: vc.clone(),
+        issuer,
+        issuer_authority_key_ids: Vec::new(),
+        only_for: None,
+    }
 }
 
 /// The registered type URIs each concrete DTG type is also known by, so a
@@ -725,12 +867,31 @@ async fn verify_one_credential(
 /// The SD-JWT path's claims are the credential's own; the Data Integrity
 /// path's are its `credentialSubject`, so as an `ldp_vc` they are read from
 /// under that member, where a W3C claim path starts.
-pub fn presented_from_verified(presentation: &Presentation) -> Vec<PresentedCredential> {
+///
+/// `presentation` is the projection of `verified`, one credential per
+/// presentation in order; the certifying authorities are read from the
+/// latter. Were the two ever to disagree in length, no credential would carry
+/// any — a `trusted_authorities` query fails rather than reading another
+/// credential's chain.
+pub fn presented_from_verified(
+    presentation: &Presentation,
+    verified: &[crate::credentials::VerifiedPresentation],
+) -> Vec<PresentedCredential> {
+    let aligned = presentation.credentials.len() == verified.len();
     presentation
         .credentials
         .iter()
-        .filter(|c| c.holder_bound && c.status == CredentialStatus::Valid)
-        .map(|c| PresentedCredential {
+        .enumerate()
+        .filter(|(_, c)| c.holder_bound && c.status == CredentialStatus::Valid)
+        // A VWC meets a criterion only on the host's full verdict: a trusted
+        // witness, its session shown complete, its digest bound to an edge
+        // held here. `None` is every credential that is not a VWC.
+        .filter(|(_, c)| {
+            c.witness_binding
+                .as_ref()
+                .is_none_or(crate::credentials::witness::WitnessBinding::is_bound)
+        })
+        .map(|(n, c)| PresentedCredential {
             formats: vec![SD_JWT_VC_FORMAT, LDP_VC_FORMAT],
             types: vec![c.credential_type.clone()],
             claims: match c.claims.get("credentialSubject") {
@@ -744,6 +905,44 @@ pub fn presented_from_verified(presentation: &Presentation) -> Vec<PresentedCred
                 }
             },
             issuer: c.issuer.clone(),
+            issuer_authority_key_ids: verified
+                .get(n)
+                .filter(|_| aligned)
+                .map(|p| p.issuer_authority_key_ids.clone())
+                .unwrap_or_default(),
+            only_for: None,
+        })
+        .collect()
+}
+
+/// The credentials a wallet session's verified presentation carried, as a
+/// criterion's query reads them, each counting only toward the criterion the
+/// session was opened for (`requirements_digest`).
+///
+/// They are not bound to the applicant by a key — the wallet's holder key is
+/// not theirs (`wallet-session/start/0.1` consumer rule 10) — but by the
+/// session: the applicant opened it with a signed document, and nothing a
+/// wallet sends can re-bind it.
+pub fn presented_from_wallet(
+    requirements_digest: &str,
+    credentials: &[crate::oid4vp::session::EvidenceCredential],
+) -> Vec<PresentedCredential> {
+    credentials
+        .iter()
+        .filter_map(|c| {
+            let format = match c.format.as_str() {
+                SD_JWT_VC_FORMAT => SD_JWT_VC_FORMAT,
+                LDP_VC_FORMAT => LDP_VC_FORMAT,
+                _ => return None,
+            };
+            Some(PresentedCredential {
+                formats: vec![format],
+                types: c.vct.iter().cloned().collect(),
+                claims: c.claims.clone(),
+                issuer: c.issuer.clone(),
+                issuer_authority_key_ids: c.issuer_authority_key_ids.clone(),
+                only_for: Some(requirements_digest.to_string()),
+            })
         })
         .collect()
 }
@@ -810,11 +1009,93 @@ mod tests {
             types: types.iter().map(|t| t.to_string()).collect(),
             claims: json!({ "type": types, "credentialSubject": subject }),
             issuer: "did:web:issuer.example".into(),
+            issuer_authority_key_ids: Vec::new(),
+            only_for: None,
         }
     }
 
     fn query(v: serde_json::Value) -> affinidi_openid4vp::DcqlQuery {
         affinidi_openid4vp::DcqlQuery::from_json(&v).unwrap()
+    }
+
+    /// An SD-JWT VC whose issuer is certified by the authorities `akis`.
+    fn sd_jwt(vct: &str, akis: &[&str]) -> PresentedCredential {
+        PresentedCredential {
+            formats: vec![SD_JWT_VC_FORMAT],
+            types: vec![vct.to_string()],
+            claims: json!({ "vct": vct }),
+            issuer: "https://pid.example.org".into(),
+            issuer_authority_key_ids: akis.iter().map(|a| a.to_string()).collect(),
+            only_for: None,
+        }
+    }
+
+    const PID: &str = "urn:eudi:pid:1";
+    // base64url key identifiers.
+    const TRUSTED: &str = "s9tIpPmhxdiuNkHMEWNpYim8S8Y";
+    const OTHER: &str = "AQIDBAUGBwgJCgsMDQ4PEBESExQ";
+
+    /// `trusted_authorities` is a constraint the matcher does not read: without
+    /// the gate, a credential from any anchored issuer would meet the query.
+    #[test]
+    fn trusted_authorities_admits_only_an_issuer_a_named_authority_certifies() {
+        let q = query(json!({ "credentials": [{
+            "id": "pid",
+            "format": "dc+sd-jwt",
+            "meta": { "vct_values": [PID] },
+            "trusted_authorities": [{ "type": "aki", "values": [OTHER, TRUSTED] }]
+        }]}));
+        assert!(query_met_by(&q, &[&sd_jwt(PID, &[TRUSTED])]));
+        // Padding on the published value does not change the identifier.
+        assert!(query_met_by(
+            &q,
+            &[&sd_jwt(PID, &["s9tIpPmhxdiuNkHMEWNpYim8S8Y="])]
+        ));
+        assert!(!query_met_by(&q, &[&sd_jwt(PID, &["AAAA"])]));
+        // A DID issuer has no certifying authority.
+        assert!(!query_met_by(&q, &[&sd_jwt(PID, &[])]));
+        // The type still selects.
+        assert!(!query_met_by(&q, &[&sd_jwt("urn:other:1", &[TRUSTED])]));
+    }
+
+    /// The gate is per credential query: a second, ungated query is met by a
+    /// credential the first's authorities do not certify.
+    #[test]
+    fn trusted_authorities_gates_only_its_own_query() {
+        let q = query(json!({ "credentials": [
+            {
+                "id": "pid",
+                "format": "dc+sd-jwt",
+                "meta": { "vct_values": [PID] },
+                "trusted_authorities": [{ "type": "aki", "values": [TRUSTED] }]
+            },
+            { "id": "email", "format": "dc+sd-jwt", "meta": { "vct_values": ["urn:email:1"] } }
+        ]}));
+        let pid = sd_jwt(PID, &[TRUSTED]);
+        let email = sd_jwt("urn:email:1", &[]);
+        assert!(query_met_by(&q, &[&pid, &email]));
+        assert!(!query_met_by(&q, &[&sd_jwt(PID, &[OTHER]), &email]));
+    }
+
+    /// An entry this verifier cannot check is met by nothing — registration
+    /// refuses one, and a row that has one anyway is read the restrictive way.
+    #[test]
+    fn an_unchecked_trusted_authority_type_is_met_by_nothing() {
+        let entry = |t: &str| {
+            serde_json::from_value::<Vec<TrustedAuthoritiesQuery>>(
+                json!([{ "type": t, "values": [TRUSTED] }]),
+            )
+            .unwrap()
+        };
+        assert!(meets_trusted_authorities(&entry("aki"), &[TRUSTED.into()]));
+        assert!(!meets_trusted_authorities(
+            &entry("etsi_tl"),
+            &[TRUSTED.into()]
+        ));
+        assert!(!meets_trusted_authorities(
+            &entry("openid_federation"),
+            &[TRUSTED.into()]
+        ));
     }
 
     /// `type_values` selects by the credential's types. The matcher alone
@@ -913,5 +1194,51 @@ mod tests {
             needs,
             ["agreed:code-of-conduct", NEED_INVITATION, NEED_CREDENTIALS]
         );
+    }
+
+    /// A VWC meets a criterion only on the host's full verdict. Every other
+    /// state — an untrusted witness, no outcome evidence, a digest naming no
+    /// edge held here — leaves it out of what a query can be met by.
+    #[test]
+    fn a_witness_counts_toward_a_criterion_only_when_bound() {
+        use crate::ceremony::{Credential, CredentialStatus, Presentation};
+        use crate::credentials::witness::WitnessBinding;
+
+        let credential = |binding: Option<WitnessBinding>| Credential {
+            credential_type: "StatementCredential".into(),
+            predicate: binding
+                .as_ref()
+                .map(|_| dtg_credentials::WITNESSED_V1.into()),
+            issuer: "did:key:z6MkWitness".into(),
+            issuer_trusted: true,
+            status: CredentialStatus::Valid,
+            holder_bound: true,
+            claims: json!({ "credentialSubject": { "id": "did:key:zApplicant" } }),
+            valid_until: None,
+            witness_binding: binding,
+            task_context: None,
+        };
+        let bound = WitnessBinding::Bound {
+            relationship_id: uuid::Uuid::new_v4(),
+        };
+        for (binding, counts) in [
+            (None, true),
+            (Some(bound), true),
+            (Some(WitnessBinding::UntrustedWitness), false),
+            (Some(WitnessBinding::NoOutcomeEvidence), false),
+            (Some(WitnessBinding::OutcomeInvalid), false),
+            (Some(WitnessBinding::Unresolved), false),
+        ] {
+            let presentation = Presentation {
+                verified: true,
+                holder: "did:key:zApplicant".into(),
+                credentials: vec![credential(binding.clone())],
+            };
+            assert_eq!(
+                presented_from_verified(&presentation, &[]).len(),
+                usize::from(counts),
+                "{binding:?}"
+            );
+        }
     }
 }

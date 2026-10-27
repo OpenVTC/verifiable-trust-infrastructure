@@ -2,6 +2,100 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.24.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-vault-v0.23.0...vta-vault-v0.24.0) — 2026-10-26
+
+
+### Added
+
+- **vta-vault**: Narrow a vault query to one subject with subjectDid (vault/credentials/query/0.1) ([#2284](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2284))
+
+vault/credentials/query/0.1 gained a `subjectDid` request member
+  (dtgwg-trust-tasks-tf #884, in trust-tasks-rs 0.34): it narrows the other
+  constraints to credentials whose subject — the DID a presentation of the
+  credential is made as — is that DID. The VTA now honours it, matching the
+  stored `subject_did` (Data Integrity `credentialSubject.id`, SD-JWT `sub`).
+
+  It narrows only. On its own it is no filter, so a query naming nothing
+  but `subjectDid` is still refused as an enumeration.
+
+  This lets a wallet offer a VTC member-directory verification only the
+  credentials bound to the member's DID, which is the only holder the
+  VTC accepts.
+
+- Growth types in published crates are #[non_exhaustive] ([#2196](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2196))
+
+A new variant on a public enum, or a new field on a public struct a consumer
+  can build with a literal, is a breaking change in a published crate. It kept
+  happening on types that were always going to grow (#1231, #1234, #1244, #1247,
+  #1250); #1262 fixed it for Capability and AuditEvent only.
+
+  This marks the rest once. 143 enums are marked: every error and refusal enum
+  (VtaError, AppError, ...) and the growth vocabularies (kinds, statuses,
+  reasons, codes, transports, SealedPayloadV1). 32 structs are marked: config
+  and response bags that no caller builds with a literal. Adding the attribute
+  is itself breaking, once. After it, additions to these types are minor
+  changes.
+
+  Left exhaustive on purpose, and pinned that way by the census:
+  VerifiedAssertion, AssertionProof, ActScope, ApproveScope, ContextDirection,
+  SigningDomain, TokenStatus and Role. For each of these, every arm must be
+  considered, and a downstream wildcard would be the bug.
+
+  Every downstream match in the workspace gets a `_ =>` arm that takes the most
+  restrictive or most generic reading: an internal error, a hidden or refused
+  entry, a stale attribute. None is unreachable!().
+
+  vta-sdk/tests/non_exhaustive_census.rs fails on a public enum in a published
+  library crate whose name ends in Error, Refusal, Violation, Kind, Event,
+  Status, Capability, Reason or Code and that is not #[non_exhaustive], unless
+  it is listed as deliberately exhaustive with a reason. It also fails when a
+  listed enum gains the attribute or disappears.
+
+
+
+## [0.23.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-vault-v0.22.0...vta-vault-v0.23.0) — 2026-10-18
+
+
+## [0.22.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-vault-v0.21.0...vta-vault-v0.22.0) — 2026-10-18
+
+
+## [0.21.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-vault-v0.20.0...vta-vault-v0.21.0) — 2026-10-16
+
+
+## [0.20.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-vault-v0.19.0...vta-vault-v0.20.0) — 2026-10-15
+
+
+### Added
+
+- **store**: Conditional atomic batches across local and vsock backends ([#2106](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2106))
+- **vault**: Present P-256-bound SD-JWT-VCs with an ES256 kb-jwt ([#1988](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1988)) ([#2099](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2099))
+
+A credential bound to a P-256 `cnf.jwk` (swiyu, EUDI) can now be presented
+  from the VTA's vault. Its holder is the key's own `did:key` (`zDn…`), a
+  derived P-256 key the VTA custodies.
+
+  - `resolve_holder_keys` accepts a P-256 holder key: the `kb-jwt` signer is
+    ES256 (raw r||s), the consent secret P-256.
+  - `vta_vault::consent::holder_suite` fixes the Data Integrity suite by the
+    holder key: `eddsa-jcs-2022` for Ed25519, `ecdsa-jcs-2019` for P-256. Consent
+    receipts and DI presentations sign under it; `verify_proof` requires the
+    suite the subject `did:key`'s type takes, never the one the proof names.
+
+  This also fixes mdoc presentation, which signs its consent receipt with the
+  P-256 device key: `consent::create` asked that key to sign `eddsa-jcs-2022`,
+  which affinidi-data-integrity refuses, so no mdoc could be presented.
+
+  CLAUDE.md's key policy names the holder-key exception alongside the
+  foreign-protocol identity one.
+
+
+
+## [0.19.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-vault-v0.18.0...vta-vault-v0.19.0) — 2026-10-13
+
+
+## [0.18.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-vault-v0.17.0...vta-vault-v0.18.0) — 2026-10-12
+
+
 ## [0.17.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-vault-v0.16.0...vta-vault-v0.17.0) — 2026-10-11
 
 

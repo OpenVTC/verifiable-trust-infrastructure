@@ -4,6 +4,7 @@ use axum::response::{IntoResponse, Response};
 use tracing::{debug, warn};
 
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum AppError {
     #[error("configuration error: {0}")]
     Config(String),
@@ -95,6 +96,24 @@ pub enum AppError {
     #[error("validation error: {0}")]
     Validation(String),
 
+    /// A peer this service had to reach shares no transport it can use: the
+    /// intersection of what the peer's DID document advertises and what this
+    /// service can initiate is empty.
+    ///
+    /// Typed rather than folded into [`Self::Validation`], whose wire form is
+    /// `malformedRequest` — which tells the producer its document was wrong,
+    /// when nothing in it was. The remedy is a transport on one side or the
+    /// other, and a client can say which only if it is told both sets. The
+    /// SDK's `VtaError::NoMatchingProtocol` is what this becomes on the far
+    /// side of either transport.
+    ///
+    /// Rendered as **502 Bad Gateway**: the failure is in reaching the peer.
+    ///
+    /// Boxed so the variant does not grow every `Result<_, AppError>` in the
+    /// workspace (`clippy::result_large_err`).
+    #[error("{0}")]
+    NoMatchingProtocol(Box<NoMatchingProtocol>),
+
     /// The request did not carry a required `Trust-Task` header. Routes
     /// registered via [`crate::trust_task::TrustTaskRouter::route_with_task`]
     /// reject missing headers with this variant (400). Only `/health` is
@@ -163,6 +182,45 @@ pub enum AppError {
     },
 }
 
+/// [`AppError::NoMatchingProtocol`]'s payload: who, and what each side has.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error(
+    "no transport in common with `{peer}`: it advertises [{}] and this agent can initiate [{}]{}",
+    protocol_list(theirs),
+    protocol_list(ours),
+    note.as_deref().map(|n| format!(". {n}")).unwrap_or_default()
+)]
+pub struct NoMatchingProtocol {
+    /// The peer's DID.
+    pub peer: String,
+    /// What this service can initiate, for the document it was sending.
+    pub ours: Vec<vta_sdk::protocol::matching::Protocol>,
+    /// What the peer's DID document advertises.
+    pub theirs: Vec<vta_sdk::protocol::matching::Protocol>,
+    /// Why a transport one side has was not usable, where that is not
+    /// evident from the two sets (a plaintext REST endpoint; a document
+    /// issued by a DID the messaging transports do not authenticate).
+    pub note: Option<String>,
+}
+
+impl From<NoMatchingProtocol> for AppError {
+    fn from(e: NoMatchingProtocol) -> Self {
+        Self::NoMatchingProtocol(Box::new(e))
+    }
+}
+
+/// `[tsp, rest]`'s inside, or `nothing` for an empty set.
+fn protocol_list(set: &[vta_sdk::protocol::matching::Protocol]) -> String {
+    if set.is_empty() {
+        "nothing".to_string()
+    } else {
+        set.iter()
+            .map(|p| p.as_str())
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+}
+
 impl AppError {
     /// Build a closure suitable for `.map_err(...)` that wraps an
     /// `std::io::Error` into [`AppError::Vsock`] with the given operation
@@ -180,9 +238,9 @@ impl AppError {
 /// doc-comments:
 ///
 /// - `Forbidden`, `DidMethodRejected` → 403
-/// - `PendingChallengeLimitReached` → 429 via the Validation arm
-///   (route layer can return a typed 429 if needed; the canonical
-///   variant carries the rate-limit signal in the message).
+/// - `PendingChallengeLimitReached` → 400 via the Validation arm.
+///   Only a store that cannot list a subject's challenges raises it
+///   (`SessionStore::pending_challenges`); the others evict instead.
 /// - `SessionNotFound`, `SessionStateMismatch`, `ChallengeMismatch`,
 ///   `ChallengeExpired`, `SignerMismatch`, `StaleMessage`,
 ///   `RefreshTokenInvalid`, `RefreshTokenExpired` → 401
@@ -273,6 +331,7 @@ impl IntoResponse for AppError {
             AppError::StepUpRequired(_) => StatusCode::FORBIDDEN,
             AppError::ApprovalRequired { .. } => StatusCode::FORBIDDEN,
             AppError::Validation(_) => StatusCode::BAD_REQUEST,
+            AppError::NoMatchingProtocol(_) => StatusCode::BAD_GATEWAY,
             AppError::TrustTaskMissing => StatusCode::BAD_REQUEST,
             AppError::TrustTaskMismatch { .. } => StatusCode::UNSUPPORTED_MEDIA_TYPE,
             AppError::TrustTaskMalformed(_) => StatusCode::BAD_REQUEST,
@@ -331,6 +390,15 @@ impl IntoResponse for AppError {
                 body.insert("error".to_string(), serde_json::json!(code));
                 serde_json::Value::Object(body)
             }
+            // The same members the Trust Task rejection carries in `details`,
+            // so the SDK reads both with one parser.
+            AppError::NoMatchingProtocol(e) => serde_json::json!({
+                "error": vta_sdk::protocols::trust_task_reject_reasons::NO_MATCHING_PROTOCOL,
+                "message": self.to_string(),
+                "counterpartyDid": e.peer,
+                "ours": e.ours,
+                "theirs": e.theirs,
+            }),
             _ => serde_json::json!({ "error": self.to_string() }),
         };
         (status, axum::Json(body)).into_response()

@@ -308,6 +308,29 @@ Why wrap rather than adopt OID4VP raw:
 `purpose` on every query is mandatory and **shown to the holder** (purpose
 binding); the verifier cannot ask for a credential without stating why.
 
+### Presentation the holder's client carries (`vault/credentials/present/0.1`)
+
+Some verifiers never talk to the agent: they take the presentation inside a
+request document of their own — `vtc/directory/card/present` binds it to that
+document's `id` (nonce) and the community's DID (audience). The holder's client
+(a browser wallet, a phone) holds no holder key, so it asks the agent:
+
+```
+client → VTA: vault/credentials/present/0.1 { id, audience, nonce, claims[, purpose] }
+VTA → client: { presentation, disclosed }
+```
+
+The VTA signs as the credential's subject — its `did:key`, or a persona
+(`did:webvh` / `did:peer`) under the key its document lists for
+`authentication` — after the same consent record and presentation gate as
+`credential-exchange/present`, and refuses rather than over-discloses
+(`wouldOverDisclose`: a Data Integrity credential, or an SD-JWT claim carried
+in the clear, that the request does not name). Gated on `credential-present`,
+which `admin` and `initiator` derive and `application` and `reader` do not: it
+is neither `sign` nor `vault-read`. Custody failures read as `notFound`.
+Code: `operations::credential_exchange::present_to_audience`,
+`trust_tasks::cred_vault::handle_present`, `VtaClient::cred_vault_present`.
+
 ---
 
 ## 7. Privacy-first discovery (DCQL)
@@ -551,7 +574,10 @@ The plugin is the consent + key + legibility surface:
    management-by-id; archived / soft-deleted credentials remain refused at
    `get`/present, and a revoked/expired row stays excluded regardless
    (invariant 5). This is a scoped relaxation of the post-filter, never a
-   cross-boundary list of the wallet.
+   cross-boundary list of the wallet. `subjectDid` (narrow to the credentials
+   presented as one of the holder's identities, so a wallet offers only those a
+   verifier requiring that holder will accept) is the same kind of modifier: it
+   narrows an anchored scan and never satisfies the requirement alone.
 2. **Consent before disclosure.** The VTA never presents a credential
    without explicit, purpose-bound holder consent.
 3. **Claim minimisation.** Presentations disclose only the DCQL-requested

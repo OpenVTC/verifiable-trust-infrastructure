@@ -8,7 +8,7 @@
 //! | `vtc/community/profile/show/0.1` | any entry |
 //! | `vtc/ceremonies/list/0.1` | any entry |
 //! | `vtc/directory/query/0.1` | any entry, as the viewer the directory policy projects for |
-//! | `vtc/endorsement-types/list/0.1` | `Admin` |
+//! | `vtc/endorsement-types/list/0.2` | `Admin` |
 //! | `vtc/recognition/check/0.1` | `Admin` |
 //! | `vtc/members/{list,removed,show,solicit-vmc}/0.1` | `Admin` |
 //! | `vtc/join-requests/{list,show}/0.1` | `Admin` |
@@ -35,16 +35,16 @@ use serde_json::Value;
 use trust_tasks_rs::specs::vtc::ceremonies::list::v0_1 as ceremonies_list;
 use trust_tasks_rs::specs::vtc::community::profile::show::v0_1 as profile_show;
 use trust_tasks_rs::specs::vtc::directory::query::v0_1 as directory_query;
-use trust_tasks_rs::specs::vtc::endorsement_types::list::v0_1 as endorsement_types_list;
+use trust_tasks_rs::specs::vtc::endorsement_types::list::v0_2 as endorsement_types_list;
 use trust_tasks_rs::specs::vtc::invitations::{
     deliver::v0_1 as invitation_deliver, issue::v0_1 as invitation_issue,
     list::v0_1 as invitation_list, revoke::v0_1 as invitation_revoke,
 };
 use trust_tasks_rs::specs::vtc::join_requests::{
-    list::v0_1 as join_requests_list, show::v0_1 as join_requests_show,
+    list::v0_2 as join_requests_list, show::v0_1 as join_requests_show,
 };
 use trust_tasks_rs::specs::vtc::members::{
-    list::v0_1 as members_list, removed::v0_1 as members_removed, show::v0_1 as members_show,
+    list::v0_2 as members_list, removed::v0_1 as members_removed, show::v0_1 as members_show,
     solicit_vmc::v0_1 as members_solicit_vmc,
 };
 use trust_tasks_rs::specs::vtc::recognition::check::v0_1 as recognition_check;
@@ -198,22 +198,54 @@ async fn handle_directory_query(
     ctx: &JoinAuthCtx,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    let (viewer, payload) = match member_with::<directory_query::Payload>(state, ctx, &doc).await {
+    let (signer, payload) = match member_with::<directory_query::Payload>(state, ctx, &doc).await {
         Ok(p) => p,
         Err(reject) => return reject,
     };
-    match crate::routes::directory::query(
-        state,
-        &viewer,
-        payload.subject.to_string(),
-        payload.fields.map(|f| f.to_string()),
-    )
-    .await
-    {
-        Ok(response) => success_response(&doc, response),
-        Err(e) => task_error_to_reject(&doc, &e),
+    let subject = payload.subject.to_string();
+    let viewer = match crate::directory::read::viewer(state, &signer.did).await {
+        Ok(v) => v,
+        Err(e) => return app_error_to_reject(&doc, &e),
+    };
+    match crate::directory::read::query_by_did(state, &viewer, &subject).await {
+        Ok(Some(mut fields)) => {
+            // `fields` is a narrowing hint, never an authorisation: a field
+            // asked for and withheld is absent, never an error.
+            if let Some(hint) = payload.fields.as_ref().map(|f| f.to_string()) {
+                let wanted: std::collections::BTreeSet<&str> = hint
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .collect();
+                fields.retain(|k, _| wanted.contains(k.as_str()));
+            }
+            if fields.is_empty() {
+                return not_visible(&doc);
+            }
+            success_response(
+                &doc,
+                serde_json::json!({ "subject": subject, "fields": fields }),
+            )
+        }
+        Ok(None) => not_visible(&doc),
+        Err(e) => app_error_to_reject(&doc, &e),
     }
 }
+
+/// The one answer for every "nothing to show" outcome: "no such member" and
+/// "nothing visible to you" share a code and a message, or the task is a
+/// membership oracle.
+fn not_visible(doc: &TrustTask<Value>) -> TrustTaskOutcome {
+    super::helpers::reject_with_code(
+        doc,
+        super::helpers::extended_code(DIRECTORY_QUERY_ERR_NOT_FOUND),
+        "no directory entry for that DID is visible to this caller",
+        None,
+    )
+}
+
+/// `vtc/directory/query:notFound`.
+pub(crate) const DIRECTORY_QUERY_ERR_NOT_FOUND: &str = directory_query::error_codes::NOT_FOUND.code;
 
 async fn handle_endorsement_types_list(
     state: &AppState,

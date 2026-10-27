@@ -78,7 +78,7 @@ use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 use vti_common::error::AppError;
-use vti_common::store::KeyspaceHandle;
+use vti_common::store::{Batch, KeyspaceHandle};
 
 /// The longest a delegation lives, and the lifetime one gets when its
 /// enrolment asked for none: 30 days, the ceiling
@@ -412,15 +412,32 @@ pub async fn revoke_delegation(
     console_did: &str,
     revoked_by: &str,
 ) -> Result<Option<ConsoleKeyDelegation>, AppError> {
-    let Some(mut delegation) = get_delegation(ks, console_did).await? else {
-        return Ok(None);
-    };
-    if delegation.revoked_at.is_none() {
+    // A store batch rather than a plain insert, so the tombstone is ordered
+    // against `touch_last_used`'s conditional stamp: the stamp either lands
+    // first (and is overwritten here) or finds the row revoked. A plain write
+    // could land between the stamp's check and its commit, and the stamp would
+    // then write the un-revoked row back.
+    let k = key(console_did);
+    loop {
+        let Some(raw) = ks.get_raw(k.clone()).await? else {
+            return Ok(None);
+        };
+        let mut delegation: ConsoleKeyDelegation = serde_json::from_slice(&raw)?;
+        if delegation.revoked_at.is_some() {
+            return Ok(Some(delegation));
+        }
         delegation.revoked_at = Some(Utc::now());
         delegation.revoked_by = Some(revoked_by.to_string());
-        store_delegation(ks, &delegation).await?;
+        let mut batch = Batch::new();
+        batch
+            .require_unchanged(k.clone(), raw)
+            .insert(k.clone(), &delegation)?;
+        // Refused only by a concurrent stamp, which cannot recur once this
+        // lands, so the loop is bounded by the stamps already in flight.
+        if ks.apply_batch(batch).await?.is_applied() {
+            return Ok(Some(delegation));
+        }
     }
-    Ok(Some(delegation))
 }
 
 /// The admin DID a signed document's signer may act as, or `None`.
@@ -442,16 +459,39 @@ pub async fn resolve_delegated_admin(
 /// Stamp `last_used_at`. Best-effort by contract: errors are logged, never
 /// returned, because a storage hiccup must not turn an authorized operation
 /// into a refusal.
+///
+/// Stamps the row as stored, and only while it is still that row and still
+/// active — never the caller's copy, which was read before the operation ran
+/// and outside [`DELEGATION_LOCK`]. Writing that copy back undid a revocation
+/// that landed in between, reactivating a disowned console key. A stamp lost to
+/// a concurrent write is not retried.
 pub async fn touch_last_used(ks: &KeyspaceHandle, delegation: &ConsoleKeyDelegation) {
-    let mut updated = delegation.clone();
-    updated.last_used_at = Some(Utc::now());
-    if let Err(err) = store_delegation(ks, &updated).await {
+    if let Err(err) = stamp_last_used(ks, &delegation.console_did).await {
         tracing::warn!(
             console_did = %delegation.console_did,
             error = %err,
             "could not stamp console-key last-used"
         );
     }
+}
+
+async fn stamp_last_used(ks: &KeyspaceHandle, console_did: &str) -> Result<(), AppError> {
+    let k = key(console_did);
+    let Some(raw) = ks.get_raw(k.clone()).await? else {
+        return Ok(());
+    };
+    let mut current: ConsoleKeyDelegation = serde_json::from_slice(&raw)?;
+    let now = Utc::now();
+    if !current.is_active_at(now) {
+        return Ok(());
+    }
+    current.last_used_at = Some(now);
+    let mut batch = Batch::new();
+    batch
+        .require_unchanged(k.clone(), raw)
+        .insert(k, &current)?;
+    ks.apply_batch(batch).await?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -505,6 +545,7 @@ mod tests {
                 updated_by: None,
                 expires_at: None,
                 resource_grants: Vec::new(),
+                group_grants: Vec::new(),
                 label_set_by_subject: false,
                 suspension: None,
             },
@@ -560,6 +601,49 @@ mod tests {
                 .is_none(),
             "a revoked delegation must resolve to nothing"
         );
+    }
+
+    /// A last-used stamp carrying a copy read before a revocation must not
+    /// write it back: the stale write reactivated the revoked key.
+    #[tokio::test]
+    async fn a_last_used_stamp_never_reactivates_a_revoked_delegation() {
+        let (console_ks, acl_ks, _dir) = temp_store();
+        seed_acl(&acl_ks, ADMIN, VtcRole::Admin).await;
+        enrol_delegation(&console_ks, &acl_ks, CONSOLE, ADMIN, None, None)
+            .await
+            .expect("enrol");
+        let stale = resolve_delegated_admin(&console_ks, CONSOLE)
+            .await
+            .expect("resolve")
+            .expect("active");
+
+        revoke_delegation(&console_ks, CONSOLE, ADMIN)
+            .await
+            .expect("revoke")
+            .expect("existed");
+        touch_last_used(&console_ks, &stale).await;
+
+        assert!(
+            resolve_delegated_admin(&console_ks, CONSOLE)
+                .await
+                .expect("resolve")
+                .is_none(),
+            "a last-used stamp reactivated a revoked console key"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_last_used_stamp_records_use_of_a_live_delegation() {
+        let (console_ks, acl_ks, _dir) = temp_store();
+        seed_acl(&acl_ks, ADMIN, VtcRole::Admin).await;
+        enrol_delegation(&console_ks, &acl_ks, CONSOLE, ADMIN, None, None)
+            .await
+            .expect("enrol");
+        let d = get_delegation(&console_ks, CONSOLE).await.unwrap().unwrap();
+        assert!(d.last_used_at.is_none());
+        touch_last_used(&console_ks, &d).await;
+        let d = get_delegation(&console_ks, CONSOLE).await.unwrap().unwrap();
+        assert!(d.last_used_at.is_some());
     }
 
     #[tokio::test]

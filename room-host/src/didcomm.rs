@@ -81,7 +81,9 @@ const MAX_DID_BYTES: usize = 1000;
 /// copies of this URI across the workspace is what let a push go out under the *task* type
 /// instead of the envelope type — which a conformant peer drops silently, because "not an
 /// envelope" and "not addressed to me" look identical from the outside.
-use trust_tasks_didcomm::ENVELOPE_TYPE;
+use trust_tasks_didcomm::{DidcommHandler, ENVELOPE_TYPE};
+use trust_tasks_rs::{RejectReason, TransportHandler, TrustTask};
+use trust_tasks_tsp::TspHandler;
 
 /// The host's own identity: the key it is reached by, and the `did:peer:2` naming it.
 ///
@@ -269,6 +271,10 @@ pub async fn serve(
     identity: HostIdentity,
     mediator_did: String,
 ) -> anyhow::Result<()> {
+    // Reachable by DID from here on, so a document must be addressed to this DID
+    // (framework SPEC §7.2 item 5) — over this socket and over HTTP alike.
+    state.set_host_did(&identity.did)?;
+
     let tdk = TDKSharedState::new(TDKConfig::builder().build()?).await?;
     for secret in &identity.secrets {
         tdk.secrets_resolver().insert(secret.clone()).await;
@@ -326,10 +332,17 @@ pub async fn serve(
             };
             let reply_thread = thread;
 
-            let answer = crate::dispatch(&state, &envelope).await;
-            // The document is the answer, and it is self-describing. The status `dispatch`
-            // derived is HTTP's way of saying the same thing and is dropped here.
-            let reply = answer.document;
+            // The binding's consistency check comes before anything else reads the
+            // document: one whose `issuer` or `recipient` disagrees with what the carrier
+            // authenticated is refused here, and never reaches `dispatch`.
+            let reply =
+                match identity_refusal(frame.message.protocol, &identity.did, &sender, &envelope) {
+                    Some(refusal) => refusal,
+                    // The document is the answer, and it is self-describing. The status
+                    // `dispatch` derived is HTTP's way of saying the same thing and is dropped
+                    // here.
+                    None => crate::dispatch(&state, &envelope).await.document,
+                };
 
             let sent = match frame.message.protocol {
                 Protocol::TSP => send_tsp(&atm, &profile, &mediator_did, &sender, &reply).await,
@@ -415,6 +428,69 @@ fn unwrap_request(protocol: Protocol, payload: &[u8]) -> Option<Request> {
             })
         }
     }
+}
+
+/// The binding's refusal of a document whose parties disagree with the carrier's, if any.
+///
+/// # A carrier that authenticates its sender is a cross-check, not a bystander
+///
+/// Authorization here comes from the document's proof, never the carrier — that is what
+/// lets one `dispatch` serve HTTP, DIDComm and TSP. It does **not** follow that the carrier's
+/// sender can be ignored. The DIDComm (0.2 §3) and TSP (0.1 §3) bindings both require an
+/// in-band `issuer` to equal the authenticated sender, and an in-band `recipient` the party
+/// the message was sealed to, and a disagreement is `identityMismatch` (framework SPEC §7.2
+/// item 6). This host used to skip the comparison and answer whoever sent the frame, so a
+/// document signed by one party could be delivered by another and the answer handed to the
+/// deliverer. The VTC refuses that; so does this host now.
+///
+/// The comparison is the bindings' own ([`DidcommHandler`], [`TspHandler`]): DIDComm on
+/// the bare DID (a `sender_kid` names a key, so its fragment goes), TSP on the VID exactly.
+/// Absent in-band members take the carrier's values, which the bindings permit.
+///
+/// The refusal goes to the authenticated sender and does not echo the document's `id`
+/// (SPEC §8.1): the in-band `issuer` is the contested party, and the sender did not
+/// necessarily compose the document.
+///
+/// `None` also for a body that is not a Trust-Task document: `dispatch` answers that one,
+/// as it does over HTTP.
+fn identity_refusal(
+    protocol: Protocol,
+    host_did: &str,
+    sender: &str,
+    envelope: &[u8],
+) -> Option<serde_json::Value> {
+    let doc: TrustTask<serde_json::Value> = serde_json::from_slice(envelope).ok()?;
+    match protocol {
+        Protocol::TSP => refuse_mismatch(
+            &TspHandler::new(host_did.to_string(), sender.to_string()),
+            &doc,
+        ),
+        _ => {
+            let sender = sender.split('#').next().unwrap_or(sender);
+            refuse_mismatch(
+                &DidcommHandler::new(host_did.to_string(), sender.to_string()),
+                &doc,
+            )
+        }
+    }
+}
+
+fn refuse_mismatch<H: TransportHandler>(
+    handler: &H,
+    doc: &TrustTask<serde_json::Value>,
+) -> Option<serde_json::Value> {
+    let mismatch = handler.resolve_parties(doc).err()?;
+    tracing::warn!(
+        binding = handler.binding_uri(),
+        error = %mismatch,
+        "inbound document's parties disagree with the carrier's — refused identityMismatch"
+    );
+    let refusal = handler.reject(
+        doc,
+        format!("urn:uuid:{}", uuid::Uuid::new_v4()),
+        RejectReason::IdentityMismatch(mismatch),
+    )?;
+    serde_json::to_value(refusal).ok()
 }
 
 /// Return an answer over DIDComm: authcrypt to the caller, then forward through the mediator.
@@ -609,5 +685,108 @@ mod tests {
             HostIdentity::from_vta("did:webvh:QmScid:rooms.example:host".into(), Vec::new());
         let rendered = format!("{identity:?}");
         assert!(rendered.contains("redacted"), "got: {rendered}");
+    }
+
+    const HOST: &str = "did:webvh:QmScid:rooms.example:host";
+    const MEMBER: &str = "did:webvh:QmScid:people.example:alice";
+    const CARRIER: &str = "did:key:z6MkCarrier";
+
+    /// A document from `issuer` to this host, as the body a carrier delivers.
+    fn addressed(issuer: Option<&str>, recipient: Option<&str>) -> Vec<u8> {
+        let mut doc = document();
+        if let Some(issuer) = issuer {
+            doc["issuer"] = json!(issuer);
+        }
+        if let Some(recipient) = recipient {
+            doc["recipient"] = json!(recipient);
+        }
+        serde_json::to_vec(&doc).unwrap()
+    }
+
+    fn refusal_code(refusal: &serde_json::Value) -> &str {
+        refusal["payload"]["code"].as_str().unwrap_or_default()
+    }
+
+    /// Binding DIDComm 0.2 §3 / TSP 0.1 §3: a document signed by one party and delivered
+    /// by another is `identityMismatch`, on both carriers. Before, this host answered the
+    /// deliverer with whatever the document's proof authorized.
+    #[test]
+    fn a_document_carried_by_someone_other_than_its_issuer_is_refused() {
+        for protocol in [Protocol::DIDComm, Protocol::TSP] {
+            let refusal = identity_refusal(
+                protocol,
+                HOST,
+                CARRIER,
+                &addressed(Some(MEMBER), Some(HOST)),
+            )
+            .unwrap_or_else(|| panic!("{protocol:?}: a mismatched issuer must be refused"));
+            assert_eq!(
+                refusal_code(&refusal),
+                "identityMismatch",
+                "{protocol:?}: {refusal}"
+            );
+        }
+    }
+
+    /// SPEC §8.1: the refusal goes to the authenticated sender — never the contested
+    /// issuer — and does not echo an id the sender did not necessarily write.
+    #[test]
+    fn the_refusal_is_addressed_to_the_carrier_and_echoes_no_id() {
+        let refusal = identity_refusal(
+            Protocol::DIDComm,
+            HOST,
+            CARRIER,
+            &addressed(Some(MEMBER), Some(HOST)),
+        )
+        .expect("refused");
+        assert_eq!(refusal["recipient"], CARRIER, "{refusal}");
+        assert!(
+            refusal["payload"]["inResponseTo"].get("id").is_none(),
+            "an identityMismatch names no document id: {refusal}"
+        );
+    }
+
+    /// A document whose issuer is its sender goes on to `dispatch` — the check refuses
+    /// mismatches, not the carrier. DIDComm compares the bare DID, so a sender named by
+    /// its key (`did#key`) still matches; TSP compares the VID exactly.
+    #[test]
+    fn a_document_from_its_own_sender_passes() {
+        let body = addressed(Some(MEMBER), Some(HOST));
+        assert!(identity_refusal(Protocol::TSP, HOST, MEMBER, &body).is_none());
+        assert!(identity_refusal(Protocol::DIDComm, HOST, MEMBER, &body).is_none());
+        let kid = format!("{MEMBER}#key-1");
+        assert!(
+            identity_refusal(Protocol::DIDComm, HOST, &kid, &body).is_none(),
+            "a sender_kid's fragment is not part of the DID"
+        );
+    }
+
+    /// The bindings let a document leave its parties to the carrier. Absent members are
+    /// not a mismatch; `dispatch` still applies the task's own proof requirement.
+    #[test]
+    fn absent_parties_take_the_carriers() {
+        let body = addressed(None, None);
+        for protocol in [Protocol::DIDComm, Protocol::TSP] {
+            assert!(
+                identity_refusal(protocol, HOST, CARRIER, &body).is_none(),
+                "{protocol:?}"
+            );
+        }
+    }
+
+    /// The other half of the same rule: a document sealed to this host but addressed
+    /// in-band to another party is refused here, too.
+    #[test]
+    fn a_document_addressed_to_another_host_is_refused() {
+        let body = addressed(Some(MEMBER), Some("did:webvh:QmScid:other.example:host"));
+        let refusal =
+            identity_refusal(Protocol::TSP, HOST, MEMBER, &body).expect("recipient mismatch");
+        assert_eq!(refusal_code(&refusal), "identityMismatch", "{refusal}");
+    }
+
+    /// A body that is not a Trust-Task document is `dispatch`'s to answer, as over HTTP.
+    #[test]
+    fn a_body_that_is_not_a_document_is_left_to_dispatch() {
+        assert!(identity_refusal(Protocol::TSP, HOST, MEMBER, b"not json").is_none());
     }
 }

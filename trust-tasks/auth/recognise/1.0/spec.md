@@ -2,7 +2,7 @@
 id: https://trusttasks.org/openvtc/vtc/auth/recognise/1.0
 title: VTC — Cross-Community Session Mint
 status: retired
-supersededBy: https://trusttasks.org/spec/vtc/auth/recognise/0.2
+supersededBy: https://trusttasks.org/spec/vtc/auth/recognise/0.3
 version: "1.0"
 authors:
   - did:webvh:openvtc.org
@@ -19,8 +19,8 @@ community's role credential — a DTG `AuthorityCredential` (VAC) conferring
 the pair in a holder-signed VP.)
 
 > **Retired.** The VTC serves this as the Trust Task
-> `https://trusttasks.org/spec/vtc/auth/recognise/0.2` (0.1 is retired too),
-> preceded by `vtc/auth/recognise/challenge/0.1`. The REST route
+> `https://trusttasks.org/spec/vtc/auth/recognise/0.3` (0.1 and 0.2 are retired too),
+> preceded by `vtc/auth/recognise/challenge/0.2`. The REST route
 > `POST /v1/auth/recognise` is gone (#1858). This document is kept as the
 > record of the original shape. Phase 3 M3.10; spec §8.4.
 

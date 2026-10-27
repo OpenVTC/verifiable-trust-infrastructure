@@ -35,9 +35,9 @@ use vtc_service::acl::{VtcAclEntry, VtcRole, store_acl_entry};
 use vtc_service::server::AppState;
 use vtc_service::test_support::TestVtc;
 
+use crate::common::session_probe::probe;
+
 const ADMIN_DID: &str = "did:key:z6MkAdminIdle";
-/// A protected route that stays a bearer route: `auth/whoami`, which reads the session.
-const PROTECTED_TASK: &str = "https://trusttasks.org/spec/auth/whoami/0.1";
 const REFRESH_TASK: &str = "https://trusttasks.org/spec/auth/refresh/0.1";
 
 struct Fixture {
@@ -68,6 +68,7 @@ async fn build() -> Fixture {
             updated_by: None,
             expires_at: None,
             resource_grants: Vec::new(),
+            group_grants: Vec::new(),
             label_set_by_subject: false,
             suspension: None,
         },
@@ -151,14 +152,11 @@ async fn a_cookie_request_records_activity() {
         .unwrap()
         .unwrap();
 
-    let req = Request::builder()
-        .method("GET")
-        .uri("/v1/auth/whoami")
-        .header("cookie", format!("{ADMIN_SESSION_COOKIE}={access}"))
-        .header("trust-task", PROTECTED_TASK)
-        .body(Body::empty())
-        .unwrap();
-    let (status, body) = send(&fix.router, req).await;
+    let (status, body) = probe(
+        &fix._vtc,
+        &[("cookie", format!("{ADMIN_SESSION_COOKIE}={access}"))],
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "{body}");
 
     let after = get_session(&fix.state.sessions_ks, &session_id)
@@ -188,14 +186,7 @@ async fn a_bearer_request_does_not_record_activity() {
         .unwrap()
         .unwrap();
 
-    let req = Request::builder()
-        .method("GET")
-        .uri("/v1/auth/whoami")
-        .header("authorization", format!("Bearer {access}"))
-        .header("trust-task", PROTECTED_TASK)
-        .body(Body::empty())
-        .unwrap();
-    let (status, body) = send(&fix.router, req).await;
+    let (status, body) = probe(&fix._vtc, &[("authorization", format!("Bearer {access}"))]).await;
     assert_eq!(status, StatusCode::OK, "{body}");
 
     let after = get_session(&fix.state.sessions_ks, &session_id)

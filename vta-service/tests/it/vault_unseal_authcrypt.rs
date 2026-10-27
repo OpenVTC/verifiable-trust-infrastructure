@@ -56,5 +56,6 @@ async fn plaintext_sealed_secret_is_rejected() {
         UnsealError::CleartextInvalid(_) => {
             panic!("plaintext must be rejected before body deserialisation")
         }
+        _ => panic!("plaintext must be rejected as not-authcrypt"),
     }
 }

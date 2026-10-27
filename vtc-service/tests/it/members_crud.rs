@@ -58,7 +58,7 @@ fn tt_error_code(payload: &Value) -> &str {
 }
 
 const RP_ORIGIN: &str = "https://vtc.example.com";
-const LIST_TASK: &str = "https://trusttasks.org/spec/vtc/members/list/0.1";
+const LIST_TASK: &str = "https://trusttasks.org/spec/vtc/members/list/0.2";
 const REMOVED_TASK: &str = "https://trusttasks.org/spec/vtc/members/removed/0.1";
 const PURGE_TASK: &str = "https://trusttasks.org/spec/vtc/members/purge/0.1";
 const SHOW_TASK: &str = "https://trusttasks.org/spec/vtc/members/show/0.1";
@@ -118,6 +118,7 @@ async fn build_fixture() -> Fixture {
             updated_by: None,
             expires_at: None,
             resource_grants: Vec::new(),
+            group_grants: Vec::new(),
             label_set_by_subject: false,
             suspension: None,
         },
@@ -242,6 +243,7 @@ async fn seed_member(fix: &Fixture, did: &str, role: VtcRole) {
             updated_by: None,
             expires_at: None,
             resource_grants: Vec::new(),
+            group_grants: Vec::new(),
             label_set_by_subject: false,
             suspension: None,
         },

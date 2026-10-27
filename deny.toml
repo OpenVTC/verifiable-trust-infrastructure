@@ -32,6 +32,72 @@ all-features = true
 version = 2
 ignore = [
 
+  { id = "RUSTSEC-2026-0367", reason = """
+  zip 2.x: ZIP extraction preserves SUID/SGID bits. Patched only in >= 9.0.
+
+  The only path is `nitro_attest` 0.2.0's *build script* (a dev-dependency of
+  vta-sdk, for the attestation tests). It opens AWS's Nitro root-certificate
+  archive, vendored inside the crate and SHA-256-pinned before it is opened,
+  and reads the one `root.pem` entry with `by_name` + `read_to_end`. It never
+  calls `extract()`, which is where all three of these advisories live, and
+  never sees an archive anyone else supplies.
+
+  0.2.0 is nitro_attest's latest release and it requires zip ^2. Drop all
+  three ignores when it moves to zip >= 9.
+  """ },
+
+  { id = "RUSTSEC-2026-0368", reason = """
+  zip 2.x: `ZipArchive::extract` follows attacker-controlled symlink targets
+  out of the destination. Same sole path as RUSTSEC-2026-0367 (nitro_attest's
+  build script, which never extracts); drop with it.
+  """ },
+
+  { id = "RUSTSEC-2026-0369", reason = """
+  zip 2.x: `extract()` applies Unix permissions through symlinks. Same sole
+  path as RUSTSEC-2026-0367 (nitro_attest's build script, which never
+  extracts); drop with it.
+  """ },
+
+  { id = "RUSTSEC-2026-0381", reason = """
+  webpki-roots 0.26.x: bundled roots trust distrusted emSign intermediates.
+  Patched only in >= 1.0.10; there is no fixed 0.26 release.
+
+  0.26.11 is a compatibility shim with no roots of its own: it re-exports
+  webpki-roots 1.x, which Cargo.lock pins at 1.0.10, the patched release. So
+  the roots any 0.26 user (tokio-tungstenite 0.30, under the messaging SDK,
+  the test mediator and vta-mobile-core) actually gets are the fixed ones; the
+  advisory matches on the shim's version number alone.
+
+  Drop when tokio-tungstenite depends on webpki-roots 1.x directly.
+  """ },
+
+  { id = "RUSTSEC-2026-0387", reason = """
+  crypto-bigint: secret-dependent branches in operations meant to be
+  constant-time. Patched only in >= 0.7.6; there is no fixed 0.5 release.
+
+  Cargo.lock pins the 0.7 line at 0.7.6, and that line is what the
+  workspace's own P-256 / secp256k1 keys run on (p256 / k256 0.14). The
+  residue is 0.5.5, reached only through elliptic-curve 0.13: OpenMLS's
+  provider (vti-rooms, whose ciphersuite is X25519 / Ed25519), rPGP (cnm's
+  web-of-trust reader, verify-only), and bls12_381_plus under affinidi-bbs,
+  which uses it for byte encoding and wide scalar reduction while doing its
+  field arithmetic itself. The findings the advisory names — `UintRef`
+  equality, `BoxedMontyForm::invert` and the `ctutils` masks — are 0.7 APIs
+  that 0.5 does not have.
+
+  This ignore matches by ID, so it would also hide a 0.7 regression: keep
+  Cargo.lock at >= 0.7.6. Drop when elliptic-curve 0.13 leaves the graph.
+  """ },
+
+  { id = "RUSTSEC-2026-0374", reason = """
+  basic-toml is unmaintained. Build-time only: askama_derive reads its
+  template configuration with it, under uniffi_bindgen, for vta-mobile-core's
+  UniFFI scaffolding. No runtime code, and it parses only askama's own
+  configuration in the build; "unmaintained" is the only flagged risk.
+
+  Drop when askama (through uniffi) moves off basic-toml.
+  """ },
+
   { id = "RUSTSEC-2023-0071", reason = """
   rsa 0.9 "Marvin Attack": decrypting or signing with an RSA *private* key
   leaks timing that can recover it. No patched 0.9 release exists.
@@ -111,6 +177,11 @@ allow = [
   # is the functionally-equivalent BSD variant we already accept.
   "MIT-0",
   "Apache-2.0",
+  # Apache-2.0 plus the LLVM exception, which only waives obligations for
+  # code compiled into a binary — strictly more permissive than Apache-2.0.
+  # Pulled in as a build dependency (target-lexicon) of tss-esapi-sys, behind
+  # vti-secrets' optional `tpm` feature (#1820).
+  "Apache-2.0 WITH LLVM-exception",
   "BSD-2-Clause",
   "BSD-3-Clause",
   "BSL-1.0",

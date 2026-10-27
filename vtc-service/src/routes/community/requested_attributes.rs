@@ -1,5 +1,5 @@
 //! What the community asks an applicant to tell it about themselves,
-//! published as `requestedAttributes` on `join-requests/manifest/0.2`.
+//! published as `requestedAttributes` on `join-requests/manifest/0.4`.
 //!
 //! Signed documents only
 //! (`vtc/community/requested-attributes/{show,update}/0.1`,
@@ -11,7 +11,7 @@
 use axum::http::StatusCode;
 use serde_json::Value;
 use tracing::info;
-use vta_sdk::protocols::join_requests::manifest::v0_2::ResponseRequestedAttributesItem as RequestedAttribute;
+use vta_sdk::protocols::join_requests::manifest::v0_4::ResponseRequestedAttributesItem as RequestedAttribute;
 use vti_common::audit::{AuditEvent, CommunityRequestedAttributesUpdatedData};
 use vti_common::error::AppError;
 

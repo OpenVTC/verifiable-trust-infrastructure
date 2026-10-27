@@ -27,6 +27,7 @@ use vta_sdk::trust_task_proof::{ProofPurpose, PurposeVmResolver, verify_proof_se
 use vta_sdk::trust_task_sign::{HolderKey, sign_object_for_assertion};
 
 pub use vti_rooms::files::FileManifest;
+pub use vti_rooms::provenance::RecordBasis;
 
 /// The suites a body may be signed with: `eddsa-jcs-2022`, which every writer supports,
 /// and `ecdsa-jcs-2019`, for a hardware-backed signer.
@@ -42,6 +43,7 @@ const MAX_TAG: usize = 64;
 
 /// Why a body could not be signed, or was refused on reading.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum BodyError {
     /// The body breaks the schema: an unknown member, a bound exceeded, a missing one.
     #[error("the record body is malformed: {0}")]
@@ -95,6 +97,29 @@ pub struct SealedRecordBody {
     pub body: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tags: Vec<String>,
+    /// What kind of claim the record is (`RecordBasis`). Absent means the author did not
+    /// say — a reader shows it as unstated. A writer SHOULD set it: a client relaying what
+    /// its member typed writes `declared`, an agent on its own account that does not know
+    /// writes `inferred`. Provenance for display and weighting, **never authority**.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub basis: Option<RecordBasis>,
+    /// The author's own estimate, 0 to 1, that the record is right (`RecordConfidence`).
+    /// Comparable only within one author's records. Kept as received.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confidence: Option<Value>,
+    /// What the author cites in support — other records and credentials, by reference,
+    /// never fetched (`RecordEvidenceList`). Kept as received.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub evidence: Option<Value>,
+    /// What the author permits the record to be used for (`PermittedUse`): purposes by IRI
+    /// and a plain-text note — the note is text, never instructions. Kept as received.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub valid_for: Option<Value>,
+    /// When the author stops standing behind the record as current (`RecordValidUntil`),
+    /// RFC 3339 as written. A reader hides an expired record by default
+    /// ([`Self::is_expired`]); expiry hides, it never deletes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub valid_until: Option<String>,
     /// Present when the record carries a file. Its `blobRef` must be the one the record
     /// names in `blobs`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -113,8 +138,25 @@ impl SealedRecordBody {
             description: None,
             body: None,
             tags: Vec::new(),
+            basis: None,
+            confidence: None,
+            evidence: None,
+            valid_for: None,
+            valid_until: None,
             file: None,
         }
+    }
+
+    /// Whether the record has expired at `now`: its `validUntil` is at or before `now`.
+    ///
+    /// A reader leaves an expired record out of a default listing, search, browse or
+    /// recall, and shows it only when asked for expired records, marked as expired
+    /// (`SealedRecordBody`, *Expiry*).
+    pub fn is_expired(&self, now: chrono::DateTime<chrono::Utc>) -> bool {
+        self.valid_until
+            .as_deref()
+            .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+            .is_some_and(|until| until.with_timezone(&chrono::Utc) <= now)
     }
 
     /// The location the body names.
@@ -166,6 +208,11 @@ impl SealedRecordBody {
             return bad(format!(
                 "at most {MAX_TAGS} tags of {MAX_TAG} characters each"
             ));
+        }
+        // The provenance members, against the specification's own types. Read back from
+        // the body's JSON so what is checked is what is signed.
+        if let Ok(Value::Object(obj)) = serde_json::to_value(self) {
+            vti_rooms::provenance::check(&obj).map_err(BodyError::Malformed)?;
         }
         Ok(())
     }
@@ -322,6 +369,58 @@ mod tests {
 
     fn resolver() -> TrustTaskVmResolver {
         TrustTaskVmResolver::did_key_only()
+    }
+
+    /// trust-tasks-tf #865: provenance and expiry are inside the signature — they round-trip
+    /// sealed exactly as written, a change to any of them breaks the proof, and expiry is
+    /// the reader's to apply.
+    #[tokio::test]
+    async fn provenance_round_trips_signed_and_is_covered_by_the_proof() {
+        let (did, key) = did_key(7);
+        let mut body = SealedRecordBody::new(at("k1", 3), &did);
+        body.body = Some("Northwind is price-sensitive.".into());
+        body.basis = Some(RecordBasis::Inferred);
+        body.confidence = Some(serde_json::json!(0.6));
+        body.evidence = Some(serde_json::json!([
+            { "kind": "record", "key": "meetings/2026-10-08", "version": 3 },
+            { "kind": "credential", "credentialId": "urn:uuid:7" }
+        ]));
+        body.valid_for = Some(serde_json::json!({
+            "purposes": ["https://w3id.org/dpv#ServicePersonalisation"],
+            "note": "renewal negotiation only"
+        }));
+        body.valid_until = Some("2020-01-01T00:00:00+00:00".into());
+        let bytes = body.sign(&key).await.expect("signs");
+
+        let v = verify_record_body(&bytes, at("k1", 3), Some(&did), &resolver())
+            .await
+            .expect("verifies");
+        assert_eq!(v.body(), &body, "every member round-trips as written");
+        assert!(v.body().is_expired(chrono::Utc::now()), "past validUntil");
+
+        // Any provenance member changed after signing fails rule (2).
+        for (member, value) in [
+            ("basis", serde_json::json!("verified")),
+            ("confidence", serde_json::json!(0.9)),
+            ("validUntil", serde_json::json!("2099-01-01T00:00:00Z")),
+        ] {
+            let mut tampered: Value = serde_json::from_slice(&bytes).unwrap();
+            tampered[member] = value;
+            let err = verify_record_body(
+                &serde_json::to_vec(&tampered).unwrap(),
+                at("k1", 3),
+                Some(&did),
+                &resolver(),
+            )
+            .await
+            .expect_err("tampered provenance must not verify");
+            assert!(matches!(err, BodyError::Signature(_)), "{member}: {err}");
+        }
+
+        // What the schema refuses is refused before anything is signed.
+        let mut bad = SealedRecordBody::new(at("k1", 3), &did);
+        bad.confidence = Some(serde_json::json!(1.5));
+        assert!(matches!(bad.sign(&key).await, Err(BodyError::Malformed(_))));
     }
 
     #[tokio::test]

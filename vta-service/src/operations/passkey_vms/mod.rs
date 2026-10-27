@@ -395,19 +395,25 @@ async fn clear_non_passkey_elevation_for_did(
     sessions_ks: &KeyspaceHandle,
     did: &str,
 ) -> Result<usize, PasskeyVmError> {
-    use crate::auth::session::{list_sessions, update_session};
+    use crate::auth::session::{list_sessions, update_session_with};
 
     let mut cleared = 0usize;
-    for mut session in list_sessions(sessions_ks)
+    for session in list_sessions(sessions_ks)
         .await
         .map_err(|e| PasskeyVmError::Persistence(format!("list sessions: {e}")))?
         .into_iter()
         .filter(|s| s.did == did)
     {
-        if session.clear_non_passkey_elevation() {
-            update_session(sessions_ks, &session)
-                .await
-                .map_err(|e| PasskeyVmError::Persistence(format!("update session: {e}")))?;
+        // Conditional on the row as stored, so the listed copy is never
+        // written back over a sign-out or a refresh that landed since.
+        let mut changed = false;
+        update_session_with(sessions_ks, &session.session_id, |s| {
+            changed = s.did == did && s.clear_non_passkey_elevation();
+            changed
+        })
+        .await
+        .map_err(|e| PasskeyVmError::Persistence(format!("update session: {e}")))?;
+        if changed {
             cleared += 1;
         }
     }

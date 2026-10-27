@@ -31,7 +31,8 @@
 //!      path on every recognised host.
 //!
 //! Parent-root infrastructure routes (`/health`, `/openapi.json`,
-//! `/.well-known/did.jsonl`) are mounted outside any surface and must
+//! `/.well-known/did.jsonl`, and the logs of the room identities the community
+//! publishes at `/room-dids/<id>/did.jsonl`) are mounted outside any surface and must
 //! answer on every recognised host (the did:webvh log has to resolve
 //! on the website host; liveness has to answer on the api host), so
 //! they bypass the surface gate.
@@ -177,7 +178,10 @@ impl HostMap {
     /// i.e. a path-mode surface in a mixed config, which can't be
     /// isolated).
     fn surface_allowed(&self, path: &str, req_host: &str) -> bool {
-        if INFRA_PATHS.contains(&path) {
+        if INFRA_PATHS.contains(&path)
+            || crate::rooms::community::is_room_did_log_path(path)
+            || crate::groups::identity::is_group_did_log_path(path)
+        {
             return true;
         }
         match self.target_surface(path, req_host) {

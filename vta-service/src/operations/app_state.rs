@@ -75,6 +75,7 @@ use vti_common::pagination::{Cursor, CursorKey, MAX_LIMIT, paginate};
 
 use crate::error::AppError;
 use crate::store::KeyspaceHandle;
+use vti_common::store::Batch;
 
 // ---------------------------------------------------------------------------
 // Limits
@@ -159,6 +160,7 @@ fn key_is_valid(key: &str) -> bool {
 /// `detailsSchema` enum.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
+#[non_exhaustive]
 pub enum ConflictReason {
     /// A positive `expectedVersion` did not match the live record's version.
     VersionMismatch,
@@ -185,6 +187,7 @@ pub enum FilterConflict {
 /// Failures the application-state operations raise, mapped by the trust-task
 /// handler onto the published error taxonomy.
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum AppStateError {
     /// No record at the address (`get`), or a `mergePatch` with nothing to
     /// apply to (`put`).
@@ -683,6 +686,41 @@ async fn put_locked(
     version: u64,
     now: &str,
 ) -> Result<PutOutcome, AppStateError> {
+    let mut batch = Batch::new();
+    let outcome = stage_put(
+        ks,
+        &mut batch,
+        context_id,
+        namespace,
+        key,
+        value,
+        patch,
+        expected_version,
+        version,
+        now,
+    )
+    .await?;
+    ks.apply_batch(batch).await?;
+    Ok(outcome)
+}
+
+/// [`put_locked`]'s checks, with its writes staged into `batch` rather than
+/// applied — so [`put_many`]'s atomic mode can commit a whole batch of writes
+/// as one store batch. The caller holds the namespace lock until the batch is
+/// applied.
+#[allow(clippy::too_many_arguments)]
+async fn stage_put(
+    ks: &KeyspaceHandle,
+    batch: &mut Batch,
+    context_id: &str,
+    namespace: &str,
+    key: &str,
+    value: Option<&Value>,
+    patch: Option<&Value>,
+    expected_version: Option<u64>,
+    version: u64,
+    now: &str,
+) -> Result<PutOutcome, AppStateError> {
     validate_address(namespace, key)?;
 
     let existing = read_record(ks, context_id, namespace, key).await?;
@@ -776,22 +814,19 @@ async fn put_locked(
 
     // The counter was already advanced and fsynced by `reserve_versions`
     // before this function was called, so `next` cannot be handed out twice
-    // even across a crash here. What remains is index-then-record: a crash
-    // between them leaves an index entry pointing at a record still holding
-    // its previous version, which the change feed resolves to a real record
-    // and may therefore deliver twice. At-least-once is the failure this
-    // design accepts throughout; losing a change is the one it does not.
+    // even across a crash here. The old index entry's removal, the new one and
+    // the record are one store batch — one journal record — so a crash leaves
+    // either the previous version wholly in place or this one: never an index
+    // entry pointing at a record that does not carry its version, nor a record
+    // the change feed cannot reach.
     if let Some(prev) = existing.as_ref() {
-        ks.remove(index_key(context_id, namespace, prev.version))
-            .await?;
+        batch.remove(index_key(context_id, namespace, prev.version));
     }
-    ks.insert_raw(
+    batch.insert_raw(
         index_key(context_id, namespace, next),
         key.as_bytes().to_vec(),
-    )
-    .await?;
-    ks.insert(record_key(context_id, namespace, key), &record)
-        .await?;
+    );
+    batch.insert(record_key(context_id, namespace, key), &record)?;
 
     Ok(PutOutcome {
         version: next,
@@ -912,17 +947,7 @@ pub async fn put_many(
                     if i == failed_at.index {
                         failed_at.result.clone()
                     } else {
-                        WriteResult {
-                            key: w.key.clone(),
-                            outcome: WriteOutcome::Skipped,
-                            version: None,
-                            created: None,
-                            current_version: None,
-                            current_value: None,
-                            current_deleted: None,
-                            limit_bytes: None,
-                            actual_bytes: None,
-                        }
+                        skipped(&w.key)
                     }
                 })
                 .collect();
@@ -934,6 +959,57 @@ pub async fn put_many(
     // `reserve_versions` takes a count. Writes that then conflict leave their
     // reserved versions unused, which is a gap and therefore safe.
     let first = reserve_versions(ks, context_id, namespace, writes.len() as u64).await?;
+
+    if mode == PutManyMode::Atomic {
+        // Every write staged into one store batch and committed as one journal
+        // record, so "all or none" holds across a crash too — applied one by
+        // one, a crash part-way left the first writes durable and the rest
+        // not. The dry run above already passed, so a staging failure here is
+        // the store failing, and it writes nothing.
+        let mut batch = Batch::new();
+        let mut outcomes = Vec::with_capacity(writes.len());
+        for (i, w) in writes.iter().enumerate() {
+            match stage_put(
+                ks,
+                &mut batch,
+                context_id,
+                namespace,
+                &w.key,
+                w.value.as_ref(),
+                w.merge_patch.as_ref(),
+                w.expected_version,
+                first + i as u64,
+                &now,
+            )
+            .await
+            {
+                Ok(o) => outcomes.push(o),
+                Err(e) => {
+                    let failed = write_result(&w.key, Err(e))?;
+                    let results = writes
+                        .iter()
+                        .enumerate()
+                        .map(|(j, w)| {
+                            if j == i {
+                                failed.clone()
+                            } else {
+                                skipped(&w.key)
+                            }
+                        })
+                        .collect();
+                    return Err(AppStateError::AtomicBatchRejected(results));
+                }
+            }
+        }
+        ks.apply_batch(batch).await?;
+        let results = writes
+            .iter()
+            .zip(outcomes)
+            .map(|(w, o)| write_result(&w.key, Ok(o)))
+            .collect::<Result<Vec<_>, _>>()?;
+        let high = read_counter(ks, context_id, namespace).await?;
+        return Ok((results, high));
+    }
 
     let mut results = Vec::with_capacity(writes.len());
     for (i, w) in writes.iter().enumerate() {
@@ -953,6 +1029,21 @@ pub async fn put_many(
     }
     let high = read_counter(ks, context_id, namespace).await?;
     Ok((results, high))
+}
+
+/// The result of an atomic batch's write that was never attempted.
+fn skipped(key: &str) -> WriteResult {
+    WriteResult {
+        key: key.to_string(),
+        outcome: WriteOutcome::Skipped,
+        version: None,
+        created: None,
+        current_version: None,
+        current_value: None,
+        current_deleted: None,
+        limit_bytes: None,
+        actual_bytes: None,
+    }
 }
 
 /// One write's dry-run failure.
@@ -1213,15 +1304,16 @@ pub async fn delete(
         deleted_at: Some(now.clone()),
     };
 
-    ks.remove(index_key(context_id, namespace, prev.version))
-        .await?;
-    ks.insert_raw(
-        index_key(context_id, namespace, next),
-        key.as_bytes().to_vec(),
-    )
-    .await?;
-    ks.insert(record_key(context_id, namespace, key), &tombstone)
-        .await?;
+    // One store batch, as in `put`: the tombstone and its index move together.
+    let mut batch = Batch::new();
+    batch
+        .remove(index_key(context_id, namespace, prev.version))
+        .insert_raw(
+            index_key(context_id, namespace, next),
+            key.as_bytes().to_vec(),
+        )
+        .insert(record_key(context_id, namespace, key), &tombstone)?;
+    ks.apply_batch(batch).await?;
 
     Ok(DeleteOutcome {
         existed: true,
@@ -1265,9 +1357,11 @@ pub async fn reap_tombstones_through(
             continue;
         };
         if rec.deleted && rec.version <= through {
-            ks.remove(index_key(context_id, namespace, rec.version))
-                .await?;
-            ks.remove(record_key(context_id, namespace, key)).await?;
+            let mut batch = Batch::new();
+            batch
+                .remove(index_key(context_id, namespace, rec.version))
+                .remove(record_key(context_id, namespace, key));
+            ks.apply_batch(batch).await?;
             reaped += 1;
         }
     }
@@ -2681,6 +2775,66 @@ mod tests {
             .await
             .unwrap();
         assert!(results.iter().all(|r| r.outcome == WriteOutcome::Written));
+    }
+
+    /// Journal records `f` wrote. A version reservation is one (the counter);
+    /// everything else a write does must be one more — the record and both of
+    /// its index changes in a single batch, all or none after a crash.
+    async fn journal_records<F, Fut, T>(ks: &KeyspaceHandle, f: F) -> u64
+    where
+        F: FnOnce() -> Fut,
+        Fut: std::future::Future<Output = T>,
+    {
+        let before = ks.journal_seqno().expect("local store");
+        f().await;
+        ks.journal_seqno().expect("local store") - before
+    }
+
+    #[tokio::test]
+    async fn a_write_commits_its_record_and_index_as_one_journal_record() {
+        let (_d, ks, locks) = open().await;
+        put_value(&ks, &locks, "ctx", "openvtc", "k", json!(1)).await;
+        let n = journal_records(&ks, || {
+            put_value(&ks, &locks, "ctx", "openvtc", "k", json!(2))
+        })
+        .await;
+        assert_eq!(n, 2, "counter reservation + one batch, got {n} records");
+        let n = journal_records(&ks, || async {
+            delete(&ks, &locks, "ctx", "openvtc", "k", None)
+                .await
+                .unwrap();
+        })
+        .await;
+        assert_eq!(n, 2, "counter reservation + one batch, got {n} records");
+    }
+
+    /// Atomic mode is all-or-none across a crash, not only across a refusal:
+    /// every write of the batch is one journal record.
+    #[tokio::test]
+    async fn an_atomic_batch_commits_as_one_journal_record() {
+        let (_d, ks, locks) = open().await;
+        put_value(&ks, &locks, "ctx", "openvtc", "a", json!(1)).await;
+        let writes: Vec<AppStateWrite> = ["a", "b", "c"]
+            .iter()
+            .map(|k| {
+                let mut w = AppStateWrite::new((*k).into());
+                w.value = Some(json!({ "k": k }));
+                w
+            })
+            .collect();
+        let n = journal_records(&ks, || async {
+            put_many(&ks, &locks, "ctx", "openvtc", &writes, PutManyMode::Atomic)
+                .await
+                .unwrap();
+        })
+        .await;
+        assert_eq!(n, 2, "counter reservation + one batch, got {n} records");
+        for k in ["a", "b", "c"] {
+            assert_eq!(
+                get(&ks, "ctx", "openvtc", k, false).await.unwrap().value,
+                Some(json!({ "k": k }))
+            );
+        }
     }
 
     #[tokio::test]

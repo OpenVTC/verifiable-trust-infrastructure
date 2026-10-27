@@ -219,6 +219,73 @@ switcher stays hidden and the page follows the system. An operator site
 under `website.root_dir` can do the same by setting `data-theme="light"`
 or `"dark"` on `<html>` over the shared `tokens.css`.
 
+### Community theme, and the theme preview
+
+The console's **Community profile** page has a **Theme** card: the
+colours, fonts and corners the console and the member portal are drawn
+with. Start from a built-in theme (Default, Forest, Ocean, Slate,
+Sunset, High contrast) or **Upload .css**, edit it in place, and
+**Download** it to keep or share. A theme is one stylesheet in the
+*theme profile* of `vtc/community/theme/update/0.1`
+([dtgwg-trust-tasks-tf#811](https://github.com/trustoverip/dtgwg-trust-tasks-tf/pull/811)):
+
+- design tokens (`--brand`, `--bg`, `--radius-md`, …, see
+  `admin-ui/src/styles/tokens.css`) on `:root`, `:root[data-theme=…]`
+  or inside `@media (prefers-color-scheme: light|dark)`;
+- on elements, only colours, gradients, borders (at most 4px wide,
+  32px round), font family / weight / style, letter-spacing (±0.2em),
+  text decoration and case;
+- nothing that loads a file (`url()`, `@import`, `@font-face`), no
+  `!important`, no escapes or `<`, and nothing that moves, sizes, hides,
+  overlays or adds content.
+
+The card checks the draft as you type and names the line, column and
+profile item of the first thing outside it
+(`admin-ui/src/lib/theme-profile.ts`; the cases it must agree on with
+the community's own check are `theme-profile.vectors.json`).
+
+**Preview console** and **Preview member portal** open that surface in
+a new tab drawn with the draft, under a bar that says nothing there is
+saved. The preview follows the draft live as you edit. In a preview
+tab:
+
+- the console sends **reads only** — a Trust Task document goes only
+  when its task is a read (`show`, `list`, `get`, …), a plain request
+  only when it is a `GET`; every other action is refused in the
+  browser before it is sent, and the bar says *Nothing was changed*
+  (`admin-ui/src/lib/theme-preview.ts`, default-deny);
+- the console loads no third-party plugin, since a plugin could send a
+  write past that guard;
+- the member portal answers its own routes from a sample member, so an
+  administrator who is not a member can preview it; the bar switches
+  between the signed-in home and the sign-in page. Public reads (the
+  community's name and logo) are real. Rooms never reach the member's
+  wallet.
+
+Leave the preview with **Exit preview**; the flag lives in that tab
+only. Preview first asks the community to check the draft without
+storing it (`dryRun`), so the preview draws exactly what **Save theme**
+would store.
+
+**Save theme** stores it for everyone (`vtc/community/theme/update/0.1`,
+`vtc.surface.admin`, audited as `CommunityThemeUpdated` with the
+stylesheet's SHA-256, never its text); **Remove theme** goes back to the
+standard look. The theme lives in the `community` keyspace beside the
+profile and branding, so it is backed up with them. Every page — the
+console, the portal and its sign-in page — reads it with
+`vtc/community/theme/show/0.1`, which answers an unidentified caller,
+checks it again, and draws it; a stored theme the daemon's check now
+refuses is answered as none.
+
+**What a theme never reaches.** Approvals, confirmations, step-ups and
+warnings are drawn in a shadow tree with the standard tokens and their
+own ground (`admin-ui/src/components/Protected.tsx`), so no theme can
+recolour, hide or restyle them: the confirm dialogs, the action-list and
+break-glass banners, the attention strip, the step-up page, the whole
+Actions, Join requests, Members and Repos pages, and in the portal the
+wallet sign-in number and identity choice. While a theme is drawn, the
+console's top bar says **Custom theme**, out of the theme's reach too.
+
 ### Community DID as a QR code
 
 The default landing page shows the community DID as a QR code beside
@@ -393,8 +460,8 @@ and **Service health** gives one row each to the daemon, the VTA, the mediator,
 the trust registry, this browser's signing key, the build and hidden-vetting
 support. The transport advertisement and the community's identifiers follow.
 
-Each count is **one read**. `vtc/members/list/0.1` and
-`vtc/join-requests/list/0.1` apply their filter (role, status) before paging,
+Each count is **one read**. `vtc/members/list/0.2` and
+`vtc/join-requests/list/0.2` apply their filter (role, status) before paging,
 so the cursor walks only matching rows and a page is never empty while a match
 lies further on, and they fill `totalEstimate` with the exact number of
 matches. Exact is cheap at a community's size: the page is already cut from
@@ -435,12 +502,16 @@ once and then dropped from the URL.
 ### Live updates, and polling as the fallback
 
 A signed-in console holds **one live channel** per session:
-`vtc/admin/events/subscribe/0.1`, sent as a signed document to the ordinary
+`vtc/admin/events/subscribe` — at the newest version the VTC lists in
+`trust-task-discovery` (**0.4**, 0.3, 0.2, else 0.1) — sent as a signed document to the ordinary
 `POST /v1/trust-tasks` with `Accept: text/event-stream, application/json;q=0.5`
 and answered as a **streamed response** (HTTPS binding 0.3 §2.1): `200
 text/event-stream`, whose first event is the signed `#response` and whose later
-events are `vtc/admin/events/event/0.1` **hints**. There is no other route — no
-`GET`, no WebSocket — and nothing about the door changes for any other task.
+events are `vtc/admin/events/event` **hints** of the same version. There is no
+other route — no `GET`, no WebSocket — and nothing about the door changes for
+any other task. The VTC serves all four versions; 0.2 adds the `rooms` topic,
+0.3 the `directory` and `groups` topics and 0.4 the `communityRooms` topic, and
+nothing else, so an older console (or `cnm actions watch`) is unchanged.
 
 **A hint is never data.** It names a topic, when it changed, and for the three
 badge topics the viewer's count:
@@ -453,6 +524,48 @@ badge topics the viewer's count:
 | `members` | the Members page and tile | — | every administrator |
 | `singleAdminMode` | the single-administrator banner | — | every administrator |
 | `config` | the configuration and profile screens | — | holders of `vtc.config.admin` |
+| `rooms` (0.2) | the Data rooms page (its Rooms, Usage, Storage and Community rooms tabs) and a room's page | — | holders of `vtc.rooms.admin` |
+| `directory` (0.3) | the Directory pages, and the member list and member page, which show each member's card | — | holders of `vtc.directory.admin` or `vtc.directory.notes` |
+| `groups` (0.3) | the Groups page and a group's page | — | holders of `vtc.groups.manage`; a manager of one group hears only about that group |
+| `communityRooms` (0.4) | the Community rooms tab, a community room's page and its members | — | holders of `vtc.rooms.manage` (`vtc.rooms.admin` alone does not qualify) |
+
+`directory` is hinted when a field, a card or a value, an external card or an
+administrators' note is written or removed, at most once every ten seconds, so
+one member editing their card does not read as a rhythm. `groups` is hinted
+when a group, a membership, a join request or a manager's appointment changes —
+only for the groups the administrator may manage: the VTC digests each group
+they manage, with its members, requests and managers, and hints when that
+moves. Neither hint names an entry, a group or a member.
+
+`rooms` is hinted when a room is registered (or removed), when a room's
+lifecycle state changes — which happens with the clock, so the VTC wakes the
+stream at the moment a room is due to lapse, go dormant or become reclaimable —
+when a room's usage or a storage config's held bytes crosses 80, 95 or 100 % of
+its limit or capacity in either direction, and when a storage config is
+created, changed or changes state. Holdings moving inside a band, or a live
+room renewing, send nothing: the VTC digests exactly those facts, as the rooms
+reads report them, and hints only when the digest moves. The pages also poll
+(60 s, 5 min while the stream carries `rooms`), so a 0.1 VTC or an
+administrator without the topic still sees changes.
+
+`communityRooms` is the rooms the community itself **owns**
+([`community-rooms.md`](community-rooms.md)), as their owner sees them — a
+separate topic from `rooms` because it is a separate authority over a separate
+view: `rooms` is the host's (storage, limits, lifecycle) for
+`vtc.rooms.admin`, `communityRooms` the owner's (details and who is admitted)
+for `vtc.rooms.manage`. It is hinted when anything
+`vtc/rooms/community/list`, `get` or `members/list` would show changes: a
+community room created, or its label, description or tags changed; an
+admission offered, withdrawn, accepted or renewed; a removal owed (including
+one owed because a member left the community), retried, settled or failed;
+the room's profile write going `pending` or `written`; and the renewal of the
+community's own authority over the room. The VTC digests what those reads show
+and hints only when the digest moves, so a host-side change the owner's reads
+do not show — holdings moving on an upload — sends nothing; one they do show,
+such as the embedded room's lifecycle, does. The hint names no room, member,
+DID, offer or credential. The Community rooms pages poll at 60 s, and at 5 min
+while the stream carries `communityRooms`; before 0.4 they poll at 60 s
+whatever the stream carries.
 
 The console reacts to a hint only by invalidating the react-query keys of that
 topic's own signed read, so authorization stays on every read: a hint can
@@ -682,12 +795,23 @@ The SIOPv2 path is two calls, both on canonical Trust Tasks:
 1. `POST /v1/auth/` (`spec/auth/authenticate/0.1`) — the DIDComm-packed or
    SIOP challenge response, returning `{ session, tokens }` with a bearer
    access token.
-2. `POST /v1/auth/admin-session` (`spec/vtc/auth/admin-session/0.1`) — post
-   that access token back; the daemon validates it (signature, VTC audience,
-   expiry) and returns `Set-Cookie` headers carrying the session JWT + CSRF
-   token. No privilege escalation: the caller already held a token it could
-   have used as a bearer, so this only mirrors it into the cookie the browser
-   SPA expects.
+2. `spec/vtc/auth/admin-session/0.2`, a signed document on
+   `POST /v1/trust-tasks` — post that access token back; the daemon validates
+   it (signature, VTC audience, expiry), checks the document is **signed by
+   the token's subject** (or by a console key that subject enrolled), and
+   answers with `Set-Cookie` headers carrying the session JWT + CSRF token. The
+   console has the wallet sign it as the identity that just signed in, or
+   signs with this browser's console key when the wallet cannot. No privilege
+   escalation: the caller already held a token it could have used as a bearer,
+   so this only mirrors it into the cookie the browser SPA expects — and a
+   token alone, without the subject's key, no longer does even that. The
+   document also names a fresh browser key (`ext["org.openvtc"].sessionKey`)
+   that the daemon binds to the session; the console signs `auth/whoami/0.1`
+   with it, as it does with the key every other console sign-in binds. The
+   bearer route `POST /v1/auth/admin-session` was removed (#1641): the task
+   declares a proof REQUIRED. A wallet that cannot sign Trust Tasks, in a
+   browser holding no signing key for that identity, cannot finish this
+   sign-in; use the wallet sign-in above or a passkey.
 
 Passkey login is a single call — `POST /v1/auth/passkey-login/finish` mints
 the same cookie pair directly.
@@ -841,8 +965,9 @@ their own keyspace too, so one can never open a console session or
 answer a step-up.
 
 **Signing in with your wallet** (the default, first option). The page
-shows a sign-in code: a QR code that is also a link, so a wallet on the
-same device can be clicked instead of scanned. Its text is a **trigger
+shows a sign-in code as soon as it loads, with no click: a QR code that
+is also a link, so a wallet on the same device can be clicked instead of
+scanned. Its text is a **trigger
 link** (VTI spec §7a, flow `/vti/flow/sign-in/0.1`):
 
 ```
@@ -869,7 +994,11 @@ Trust Task document on `POST /v1/trust-tasks`:
    `assertionMethod` key. A claim starts a fresh 120 s decision window.
 3. The browser's long poll (`auth/oob/redeem`, 25 s, one open poll per
    request) now shows **"Your number is 47"** — only to the holder of
-   `K_b`.
+   `K_b`. The number's element carries `data-oob-request-id` and
+   `data-oob-match-number` (sign-in contract C11): when the person
+   clicked the code on this page, the browser plugin reads them and
+   fills the number in, so only a phone wallet asks for it to be typed.
+   The page posts nothing to the plugin and learns nothing back.
 4. The wallet sends `auth/oob/prove` carrying `auth/oob/identify`, signed
    by the member's DID for `authentication`, with the typed number. The
    VTC checks the DID against the ACL **before** resolving anything, then
@@ -885,20 +1014,39 @@ Trust Task document on `POST /v1/trust-tasks`:
 6. The browser's next poll redeems: the VTC creates a member session
    bound to `K_b` (`amr = ["did","oob","uv"]`, ending no later than the
    grant's `notAfter`), sets the usual portal cookies, and the page asks
-   **"Continue as Alice?"** before using it. *Not me* signs out. The
+   **"Continue as Alice?"** before using it. *Not me* signs out. A browser
+   that last continued as the same identity (for the same portal or
+   console) is let straight in; a new or different identity is always
+   asked. The
    grant's `notAfter` is the session's absolute end, not just its first
    window: each refresh renews the tokens inside it, and once it has passed
    refresh is refused and the member signs in again. The console's wallet
    sign-in is bounded the same way.
 
 The page hides the code when the tab is hidden (the request keeps
-running). It is served with `Referrer-Policy: no-referrer`,
+running). An unclaimed code is replaced with a fresh one when its 120 s
+run out, but only while the tab is in view: a page left in a background
+tab makes no requests, and gets a new code when it comes back. A code
+that ends within 10 s of being made is shown as expired instead, so a
+skewed clock cannot make the page request code after code. A claimed
+code that expires is shown as expired: someone scanned it. It is served with `Referrer-Policy: no-referrer`,
 `Cache-Control: no-store` and a CSP with `frame-ancestors 'none'`, and
 every `auth/oob` response is `no-store`. Each step is audited as
 `MemberWalletSignIn` (city and country, never the address). The city and
 country come from a local GeoIP database the operator configures
 (`[geoip] database`, see [GeoIP: sign-in locations](geoip.md)); without
 one they are `unknown`.
+
+Every document the portal then signs with the browser's sign-in key and
+the community accepts as the member's — a directory read, a card edit, a
+group join, a repository view — is audited as `MemberPortalKeyUsed`
+against the member, naming the key (`startKeyDid`), the grant that delegated
+to it (`grantId`, the `id` of the approved `auth/oob/grant/0.2`), the
+task type and the document's id (grant 0.2 consumer item 7). The row is
+written before the document takes effect, and a community without an
+audit writer refuses the document rather than accept it unaudited. The
+admission budget and the size limit also ask whether a key stands for a
+member, but they accept nothing and audit nothing.
 
 **Wallets find this portal in the community's DID document.** A wallet
 refuses a sign-in link unless the VTC's DID document lists a
@@ -923,7 +1071,7 @@ then `cnm did-log install` if the VTC serves its own log; see
 (`{"status":"ok"}`, `{"status":"unknown"}`, or
 `{"status":"missing","missing":["SignInPortal"]}`): only the service types
 the public document lacks. When it is `missing`, the member portal's and
-the console's sign-in pages replace "Show sign-in code" with a short note
+the console's sign-in pages replace the sign-in code with a short note
 naming them, and the other options are unchanged. The check never blocks
 start-up, and a DID that does not resolve is `unknown`, not `missing`, so
 the page keeps offering wallet sign-in.
@@ -976,6 +1124,64 @@ the console's wallet aliases and sign-out carry none: they are a
 WebAuthn ceremony, the wallet's header-less SIOP exchange, and cookie
 plumbing. Anything a member *does* in the portal beyond signing in
 belongs on the Trust Task surface, signed by the member's own DID.
+
+**Data rooms** (`/members/#/rooms`, `#/rooms/<roomId>`). A member's
+rooms open through their wallet extension, never through the portal's
+server: the pages call `window.vtaWallet.rooms`, and the wallet acts in
+the room as the member's own identity through their VTA, so this page
+holds no key and the daemon adds no route. The wallet answers only the
+portal this community's DID document names (`SignInPortal`), shows the
+page only the rooms the member shared with it in the wallet's own
+window, and confirms every note and file before it is written. A
+`private` room is never shared with the portal, because the portal is
+the host's own page. The pages show the room's tier, the member's and
+the room's storage against their limits, the records (each sealed one
+opened through the wallet for its title), a note as plain text, a
+file's download (decrypted in the wallet and checked against what its
+author signed before the page receives it), and adding a note or a
+file. A file is also **previewed**, from those verified bytes and never
+from the type its record claims: PNG, JPEG, GIF and WebP pictures
+recognised by their signature, drawn in an `<img>` from a `data:` URL
+(which the default CSP's `img-src 'self' data:` already allows), and
+plain UTF-8 text with no control characters, shown as text in a
+scrollable box and cut at 20,000 characters. Nothing else is previewed
+— SVG, PDF and HTML included — and nothing is framed: this page is the
+community's own origin, so an author's markup drawn here would run with
+its sessions. Pictures up to 2 MB get a thumbnail in the record list
+without a click, two fetched at a time so a big room does not send
+dozens of reads to the member's agent at once; any other file has a
+**Preview** button. One fetch serves the thumbnail, the preview and the
+download, all through the wallet's `getFile` — reads of a shared room
+do not prompt. Running a room as its owner, curating and direct-to-storage
+transfer from the browser come later
+([`data-rooms-files.md`](../05-design-notes/data-rooms-files.md) §8.5).
+
+**Repositories** (`/members/#/repos`). What the member may do on the
+community's repositories: their own git rights, grouped by repository or
+namespace, with who gave each and any expiry; on the repositories they
+own or administer, what every other member holds there, with the
+granter's reason; every repository the community governs, with its
+owners; and the forge accounts linked to them. The page reads
+`git-ns/view/0.4` and `git-ns/account/link-status/0.1`, signed by the
+portal's sign-in key: a wallet sign-in offers `git-ns/view` and
+`git-ns/account/link-status` in its `signingScope` beside the directory
+and groups, and nothing else under `git-ns`. The view is the member's
+own, never the administrator's (a community administrator sees what the
+console shows in the console).
+
+**Linking or unlinking a forge account** is not signed by the portal key.
+It binds the account the forge then gives the member's roles to, so
+`auth/oob/grant/0.2` consumer item 6 excludes it from a delegated key,
+as it does every right change. The page asks the member's wallet instead
+(`window.vtaWallet.git.linkAccount` / `unlinkAccount`), which asks the
+member, signs `git-ns/account/link` or `git-ns/account/unlink` as their
+DID, and shows the forge's authorisation page and any device code in its
+own window; the page follows the link with `link-status` until it is
+`linked`, `expired` or `failed`. A link is offered only on a forge with a
+bridge-mode namespace, since the bridge is what gives the account its
+roles. A member whose wallet has no `git` channel is shown
+`cnm git link --forge <forge>`. Granting and revoking stay in `cnm git`
+and the console.
 
 **Routing.** The mount is fixed at `/members` and takes precedence
 over an operator website's own `/members` path. In subdomain mode it
@@ -1106,6 +1312,17 @@ host = "www.example.com"                     # dedicated host (distinct)
 
 [cors]
 allowed_origins = []                       # add SPA origin for external mode
+
+# Optional. How much `rooms/*` traffic POST /v1/trust-tasks admits; absent,
+# these defaults. Each is a burst, then one document every *_interval_ms
+# milliseconds (larger = tighter). See docs/02-vta/data-rooms.md §8.2.
+[rooms.rate_limits]
+address_burst = 400                        # per address, before verification
+address_interval_ms = 10
+presenter_burst = 120                      # per (room, presenter), once authorized
+presenter_interval_ms = 100
+transfer_burst = 200                       # per (room, presenter), file chunks
+transfer_interval_ms = 20
 ```
 
 In pure **path mode** (omit every `host`), all three surfaces share

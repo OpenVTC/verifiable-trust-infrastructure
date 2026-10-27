@@ -5,7 +5,7 @@ use uuid::Uuid;
 use vti_common::audit::AuditKey;
 use vti_common::error::AppError;
 use vti_common::pagination::{Cursor, Paginated, paginate};
-use vti_common::store::KeyspaceHandle;
+use vti_common::store::{Batch, KeyspaceHandle};
 
 use super::Endorsement;
 
@@ -36,6 +36,36 @@ pub async fn get_endorsement(
 pub async fn store_endorsement(ks: &KeyspaceHandle, end: &Endorsement) -> Result<(), AppError> {
     ks.insert(String::from_utf8(key(end.id)).expect("ascii key"), end)
         .await
+}
+
+/// The row and its stored bytes, for a later [`replace_if_unchanged`].
+pub async fn get_endorsement_raw(
+    ks: &KeyspaceHandle,
+    id: Uuid,
+) -> Result<Option<(Vec<u8>, Endorsement)>, AppError> {
+    match ks.get_raw(key(id)).await? {
+        Some(bytes) => {
+            let row = decode(&bytes)?;
+            Ok(Some((bytes, row)))
+        }
+        None => Ok(None),
+    }
+}
+
+/// Replace row `new.id` with `new`, only while it still holds exactly
+/// `expected` (as [`get_endorsement_raw`] read it). Returns whether it was
+/// written: `false` means another writer — a revocation — got there first,
+/// and nothing was changed.
+pub async fn replace_if_unchanged(
+    ks: &KeyspaceHandle,
+    expected: Vec<u8>,
+    new: &Endorsement,
+) -> Result<bool, AppError> {
+    let mut batch = Batch::new();
+    batch
+        .require_unchanged(key(new.id), expected)
+        .insert(key(new.id), new)?;
+    Ok(ks.apply_batch(batch).await?.is_applied())
 }
 
 /// Hard-delete the row. Used only by tests + the (unlikely)
@@ -132,7 +162,7 @@ pub async fn list_endorsements(
 /// The filter runs **before** pagination, so a page is `limit` matching rows
 /// and `nextCursor` continues through matching rows — filtering a page after
 /// it was cut would return short pages and could end the walk early.
-/// `vtc/endorsements/list/0.1` names the filters (`subjectDid`, `typeUri`,
+/// `vtc/endorsements/list/0.2` names the filters (`subjectDid`, `typeUri`,
 /// `includeRevoked`) and requires the consumer to apply them.
 pub async fn list_endorsements_matching(
     ks: &KeyspaceHandle,

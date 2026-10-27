@@ -2,6 +2,226 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.39.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/cnm-cli-v0.38.0...cnm-cli-v0.39.0) — 2026-10-26
+
+
+### Added
+
+- **vtc**: Ambient and sealed storage auth, GCS, and vtc/storage/* 0.2 ([#2271](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2271))
+
+Implements trustoverip/dtgwg-trust-tasks-tf#866 on the VTC.
+
+  - Serves vtc/storage/configs/{list,get,create,update}/0.2 beside 0.1, each
+    version answered at its own (a 0.1 reader is shown a config without its
+    `roleArn`, and `notAllowed` as `required`), and
+    vtc/storage/credentials/set/0.2.
+  - `ambient` and `sealed` authentication for `s3` and `gcs`, gated by the host
+    operator (`[rooms.files.auth]`, absent = off; create/0.2 item 9). A refusal
+    is `authNotAllowed` with `details.reason` (doesNotFitKind,
+    roleArnNotApplicable, disabledByHost); a config whose mode the host
+    withdrew reports `notAllowed` and can be moved off it (update/0.2 item 8).
+  - Room-scoped credentials (create/0.2, "Room-scoped credentials"): one per
+    (config, room or probe scope, read/write/delete), never the bucket, at most
+    15 minutes, memory only, never used unscoped. S3 ambient: STS AssumeRole of
+    `roleArn` (else the host's role, else the identity's own) with a session
+    policy written by a JSON encoder, optional `aws:SourceIp`; sealed AWS keys:
+    GetFederationToken; R2/B2/MinIO keys presign single objects. Requests are
+    SigV4-presigned here (aws-sigv4) and go through the existing PresignedBlobs.
+    GCS (new backend, object_store): ADC or an operator-named service account
+    impersonated for 900 s, or a sealed service-account key minted at Google's
+    own token endpoint, exchanged at Google STS under a Credential Access
+    Boundary whose condition a CEL builder quotes.
+  - Sealed credentials (credentials/set/0.2): opened with the community's key
+    (new additive `SealedPayloadV1::StorageCredential` in vta-sdk), checked as
+    received against `SealedStorageCredential`, kind and configId, stored
+    encrypted in a new `storage_credentials` keyspace excluded from backup and
+    cleared on import, reported by an HMAC fingerprint, never returned, logged
+    or audited, destroyed when replaced or when `auth` leaves `sealed`; the
+    parked action drops the sealed block when it closes.
+  - Console: storage forms speak 0.2 (S3/GCS, VTA account/ambient/sealed,
+    roleArn, moving auth), sealed configs labelled as no protection against the
+    machine's operator. `cnm storage {list,get,credentials set}` seals the
+    credential to the community's DID.
+  - Docs: docs/03-vtc/room-storage.md, data-rooms-files.md §7.4.
+
+- **voting**: Community voting — polls, surveys and elections with blind tickets, a separate ballot box and trustee-encrypted levels (VTI-VOT-001 – 100) ([#2239](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2239))
+
+* feat(voting): vti-voting, PCS voting tickets, casts and the ballot box
+
+  Phase 0 of community voting (design: community voting, draft VTI-VOT-*):
+  the cryptographic core on the Predicate Credential System, no wire types
+  until the voting/* Trust Task family is specified.
+
+  - registrar: the community's voting helper key, under its own deployment
+    label (`<community>#voting-pcs`) and key-derivation info, so it is never
+    the vetting key. Issues tickets blind under `voter/<election>`,
+    sequentially under one lock.
+  - voter: a fresh key per election, the blinded ticket request, the cast:
+    `attest_in_context` for a hash-to-curve election point, with the
+    community, election, manifest digest and ballot bytes bound into the
+    context (VOT-012).
+  - ballot_box: verifies on the published `hvk` alone (VOT-007); the tag is
+    the per-election nullifier, recorded once under the revote rule
+    (VOT-002) through an atomic NullifierStore.
+
+  Measured (examples/scale.rs, 500 voters, release, M5 Max): issuance
+  2.0 ms (~500/s per VTC), cast 3.2 ms, admit 3.0 ms (~330/s per core),
+  recount 0.21 ms per ballot on 18 threads (~1 min for 300,000); a cast's
+  attestation is 248 bytes compressed.
+
+  publish = false until its first published consumer.
+
+
+
+### Fixed
+
+- **cnm**: Build the step-up and enrol links on the console's origin, not the API base ([#2267](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2267))
+
+`cnm git` printed the operation-bound step-up link (and the step-up passkey enrolment link) by appending `/admin/step-up` to the profile's VTC base. That base is the `VTCRest` endpoint the DID document advertises, which carries the API mount: `https://vtc.example/v1`. The console is a sibling mount on the same host, so the link landed on `/v1/admin/step-up`, which a VTC serving a community website answers with its home page, and an operator following the printed link saw no step-up form.
+
+  `console_url` now keeps the base's origin and sets the path to `/admin/<page>`, dropping the API mount, any query and any fragment. A base that does not parse as a URL falls back to the old appending behaviour. Both `step_up_url` and `enrol_url` go through it; a test pins that a `/v1` base yields `https://vtc.example/admin/step-up#request=…`.
+
+  Seen on a single-administrator community while recording `git.repo.own` under the VTI-APV-022 waiver: the printed link showed the website, and the console's step-up page at `/admin/step-up` with the same fragment worked.
+
+
+
+## [0.38.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/cnm-cli-v0.37.0...cnm-cli-v0.38.0) — 2026-10-18
+
+
+## [0.37.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/cnm-cli-v0.36.0...cnm-cli-v0.37.0) — 2026-10-18
+
+
+### Added
+
+- **vtc**: Vtc/rooms/community/members/remove 0.2 — a removed member is refused at the room's host at once ([#2175](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2175))
+
+* feat(vtc): vtc/rooms/community/members/remove 0.2 — a removed member is refused at the room's host at once
+
+  The community half of trust-tasks-tf #804. A member removed from a room the
+  community owns kept every credential the room gave them, honoured at the host
+  until `validUntil`; on an `open` room removal withdrew nothing at all.
+
+  `vtc/rooms/community/members/remove/0.2` (0.1 still served, unchanged):
+  - item 2, admitted member: `open` — the community's VTA withdraws them
+    (`rooms/owner/revoke`, one `subject` withdrawal, delivered to this community
+    as the room's host); `attributed` — `rooms/owner/group/remove/0.2`,
+    withdrawing first and then advancing (a member with no leaf is withdrawn
+    alone); `private` — `group/remove/0.1`, the group alone;
+  - item 3: an open offer is withdrawn, and on `open` and `attributed` its
+    credentials at the host too;
+  - recorded only once the VTA answered and, on `open`/`attributed`, the host
+    accepted the withdrawal; a refused delivery is `keyHolderRefused`, an
+    unconfirmed one `keyHolderUnavailable`;
+  - item 4: the answer carries `revocation` (the list's head) and `revokedAt`
+    beside `member` and, on a sealed tier, `epoch`; the `ext` notice says what
+    the tier's removal does.
+
+  The removal is one function (`rooms::departures::remove_member`) used by the
+  administrator's request and by the departure worker ([#2156](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2156)), so a member who
+  leaves the community is withdrawn at the host of every room it owns too. Every
+  departure removal now asks the VTA, so a pass stops at the first silent VTA.
+
+- **vtc**: Community rooms carry their own name — create 0.3 and update 0.2 write the label and description into the room ([#2179](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2179))
+
+Implements the community side of trustoverip/dtgwg-trust-tasks-tf#807:
+  vtc/rooms/community/create/0.3 and vtc/rooms/community/update/0.2, on top
+  of the community-room details ([#805](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/805)).
+
+  - create 0.3 (step 5, items 8-9): once the room is stored, the community's
+    own VTA is asked (rooms/keys/profile/write, as the community, with this
+    VTC as host) to write the label as the profile's `name` and the
+    description as its `description` — never the tags. The answer's
+    `roomProfile` is `written` only when the VTA answered written, otherwise
+    `pending`; the room stands either way.
+  - update 0.2 (items 10-12): a change of label or description writes the
+    profile again, first reading the current one and carrying over the tags,
+    emoji and ext a curator set in the room; a room made before create 0.3 (or
+    one still pending) is written even when nothing changed, and that is not
+    audited as a change; a tags-only change answers `unchanged`. The change to
+    the owner's record never depends on the write. Update 0.1 still never
+    reaches the VTA.
+  - rooms::community_profile: the one retry owner for `pending` profiles — a
+    record per room (`room-profile:<room>`, beside the owner's record),
+    written pending before the VTA is asked and written only after it
+    answered, one attempt per due room per pass with a capped backoff and
+    jitter (1 min to 6 h), always writing the room's label and description as
+    they are at the attempt, so a later update supersedes a pending one.
+  - get/list carry ext["org.openvtc"].roomProfile (written / pending with the
+    retry state / none); the console shows it on a room's page and creates at
+    0.3 and updates at 0.2, toasting a `pending`; cnm rooms create/update use
+    0.3/0.2 (falling back to 0.2/0.1 against an older VTC) and get/list show
+    the state.
+  - The community's entry at its VTA needs `room-open` for the profile tasks:
+    added to the capabilities the VTA-access fix commands name, and to the
+    docs. The community's own authority already confers admin, write and
+    curate (create item 6), so item 12's re-issue is never needed here.
+  - Both new versions dispatched, with conformance entries, OpenAPI wrappers
+    (openapi.json and wire.ts regenerated) and the console manifest.
+
+- **vtc**: Community-room details administrators can see, edit and track (trust-tasks-tf #805) ([#2170](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2170))
+
+* build: raise the trust-tasks-rs floor to 0.31.14 (trust-tasks-tf #805)
+
+  0.31.14 carries vtc/rooms/community/update/0.1, the 0.2 community-room
+  create/get/list and vtc/rooms/offers/list/0.2.
+
+- **vtc**: A VTA permission refusal shows the pnm commands that fix it ([#2160](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2160))
+
+When the community's VTA refuses a community-room step for lack of
+  permission, the console and `cnm rooms` show the `pnm acl` commands that
+  fix the VTC's entry at its VTA, filled in with the VTC's DID and contexts.
+
+  The entry must cover the context holding the VTC's own DID, not only the
+  `[rooms.community]` context: the VTA acts as the community only for a DID
+  in a context the entry covers, and a scope covers descendants, never a
+  parent. An entry scoped to `vtc-test/rooms` with the DID in `vtc-test` is
+  refused "... is not a persona you may act as".
+
+  The fixes ride `vtc/rooms/community/list`
+  (`ext["org.openvtc"].communityRooms.vtaAccess`), answered to holders of
+  `vtc.rooms.manage`, not the refusal: a trust-task-error message may not
+  carry consumer-internal state such as VTA contexts, and keyHolderRefused's
+  details admit only the VTA's code and message. Each fix names the refusals
+  it answers, so clients apply one rule set as data. The list also warns
+  when the rooms context is outside the DID's context or `vta_context` is
+  unknown.
+
+  New optional config key `vta_context` (written by `vtc setup`) records the
+  VTA context holding the VTC's DID; absent, the commands use a placeholder.
+  Docs gain a troubleshooting section; quickstart §12 now passes
+  `--contexts vtc`.
+
+
+
+## [0.36.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/cnm-cli-v0.35.0...cnm-cli-v0.36.0) — 2026-10-16
+
+
+### Added
+
+- **cnm**: Cnm rooms — run the rooms the community owns; docs ([#2142](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2142))
+
+* feat(cnm): cnm rooms — run the rooms the community owns; docs
+
+  `cnm rooms {create,list,get}` and `cnm rooms members {add,remove,list}` over
+  vtc/rooms/community/*, signed as the profile's administrator identity, changes
+  through the bound passkey gesture as `cnm git` changes are. vtc-client
+  re-exports the community_rooms / room_offers spec modules.
+
+- **vtc**: Direct admission on the generated vtc/members types (trust-tasks-rs 0.31.9) ([#2138](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2138))
+
+* build(deps): trust-tasks-rs 0.31.9 — vtc/members/admit and make-membership (trust-tasks-tf #784)
+
+
+
+## [0.35.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/cnm-cli-v0.34.0...cnm-cli-v0.35.0) — 2026-10-15
+
+
+## [0.34.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/cnm-cli-v0.33.0...cnm-cli-v0.34.0) — 2026-10-13
+
+
+## [0.33.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/cnm-cli-v0.32.0...cnm-cli-v0.33.0) — 2026-10-12
+
+
 ## [0.32.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/cnm-cli-v0.31.1...cnm-cli-v0.32.0) — 2026-10-11
 
 

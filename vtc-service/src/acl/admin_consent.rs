@@ -101,6 +101,29 @@
 //!   the policy that decides authority (role change, removal, join,
 //!   cross-community roles, git namespaces), approved by the holders of
 //!   `vtc.policy.admin @ policy:<purpose>`.
+//! - [`Act::ChangeTrustedWitnesses`] — **VTI-CMP-090**: any change to the
+//!   witnesses whose Verifiable Witness Credentials count in this community
+//!   (`witnesses.trusted`) — adding, removing or relabelling one — approved by
+//!   the other holders of `vtc.config.admin`. Whose attestation counts as
+//!   evidence is a major trust change, and the "same review" CMP-090 asks of
+//!   it is a second administrator's (`credentials::trusted_witnesses`).
+//! - [`Act::ChangeJoinCriteria`] — **VTI-APV-023**: registering, replacing or
+//!   deleting a join criterion (`vtc/schemas/accepts/*`), approved by the other
+//!   holders of `vtc.surface.admin`. Who may become a member is decided by the
+//!   criteria; one administrator should not change what admission means alone.
+//! - [`Act::ChangeHiddenVetting`] — **VTI-APV-023**: publishing or withdrawing
+//!   hidden vetting on a join criterion (`vtc/vetting/hidden/{publish,withdraw}`),
+//!   approved by the other holders of `vtc.vetting.manage` — the capability
+//!   those tasks take. A further way to meet a criterion is a change to it.
+//! - [`Act::ChangeDirectoryPrivacy`] — **VTI-DIR-024**: widening a member
+//!   directory field (`vtc/directory/fields/update`) — a wider ceiling or
+//!   default visibility, a field made searchable or a facet, re-enabled or no
+//!   longer required — approved by the other holders of `vtc.directory.admin`.
+//!   It changes what membership exposes, for every member at once.
+//! - [`Act::ChangeRecognitionPolicy`] — **VTI-APV-023**: replacing or
+//!   activating the personhood policy, approved by the other holders of
+//!   `vtc.policy.admin @ policy:personhood`. Not authority — the capability is
+//!   not conferring — but who is recognised as a person is a trust change.
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -213,6 +236,73 @@ pub enum Act {
     /// subject is the DID being admitted; the consent is pinned to its ACL
     /// entry and member record.
     DirectAdmission,
+    /// A change to where the community keeps its rooms' files
+    /// (`vtc/storage/configs/{create,update,retire}`, `vtc/storage/credentials/set`,
+    /// `vtc/rooms/storage/{assign,migrate}`): parked for the other holders of
+    /// `vtc.rooms.admin` by those tasks' own definitions. Not conferring — it
+    /// grants nobody anything — but it decides where members' files go and
+    /// what reaches them. The subject is the config or the room; the consent is
+    /// pinned to its stored config and assignment.
+    ChangeStorage,
+    /// **VTI-CMP-090** — changing the trusted-witness list
+    /// (`witnesses.trusted`): adding, removing or relabelling a witness whose
+    /// VWCs count here. Not conferring, but it decides whose attestations are
+    /// evidence in this community, so a second administrator reviews it. The
+    /// subject is the config key; the consent is pinned to the list in force.
+    ChangeTrustedWitnesses,
+    /// **VTI-APV-023** — registering, replacing or deleting a join criterion
+    /// (`vtc/schemas/accepts/register` / `delete`). Not conferring, but the
+    /// criteria decide who may become a member. The subject is the criterion's
+    /// id; the consent is pinned to the criterion as stored (or its absence).
+    ChangeJoinCriteria,
+    /// **VTI-APV-023** — publishing, changing or withdrawing hidden vetting on
+    /// a join criterion (`vtc/vetting/hidden/publish` / `withdraw`): another
+    /// way of meeting the criterion, so a change to the criteria. A sibling of
+    /// [`Self::ChangeJoinCriteria`] rather than the same act because those
+    /// tasks are `vtc.vetting.manage`'s, not `vtc.surface.admin`'s: the
+    /// approvers, and what the requester must still hold at execution, follow
+    /// the capability that makes the change. The subject is the criterion's
+    /// id; the consent is pinned to the criterion as stored.
+    ChangeHiddenVetting,
+    /// **VTI-DIR-024** — widening a member-directory field
+    /// (`vtc/directory/fields/update`): after it, some viewer could see or find
+    /// what they could not before. Never changes a choice a member made, but it
+    /// changes the community's privacy semantics (VTI-VTC-032, VTI-CMP-090). The
+    /// subject is the field's key; the consent is pinned to its definition.
+    ChangeDirectoryPrivacy,
+    /// **VTI-APV-023** — replacing or activating a policy that decides who this
+    /// community recognises as a person
+    /// ([`crate::policy::PolicyPurpose::decides_recognition`]). Kept apart from
+    /// [`Self::ChangeAuthorityPolicy`] because it decides no authority: what
+    /// approvers are told differs, and so does the requirement it implements.
+    /// The subject names the purpose; the consent is pinned to the revision
+    /// active for it now.
+    ChangeRecognitionPolicy(crate::policy::PolicyPurpose),
+    /// **VTI-VOT-081** — creating a **binding** election
+    /// (`vtc/elections/create` with `manifest.binding`): its result decides
+    /// something in the community's name, so its creation is the agreement of
+    /// two holders of `vtc.elections.manage`. The subject is the election's
+    /// identifier; the consent is pinned to there being no election under it.
+    CreateBindingElection,
+    /// **VTI-DIR-104** — conferring authority through a group: binding an
+    /// authority-conferring capability to a group (`vtc/groups/bindings/add`,
+    /// subject `group:<groupId>`), or adding a member to a group carrying one
+    /// (`vtc/groups/members/add`, `vtc/groups/requests/decide`; subject the
+    /// member's DID). The stake is what is conferred; the approvers hold and
+    /// may approve it, as for any grant of it. The requester is the group's
+    /// manager, whose `vtc.groups.manage` is what they must still hold.
+    GroupAuthority,
+    /// **VTI-DIR-104** with **VTI-APV-019** — withdrawing a group's
+    /// authority from every member at once: removing its `grants` or `role`
+    /// binding, or deleting the group. The subject is `group:<groupId>`, and
+    /// every member who loses something is a party to it, so none of them
+    /// approves; the stake is what they lose.
+    ReduceGroupAuthority,
+}
+
+/// The subject a group-wide act names: `group:<groupId>`.
+pub fn group_subject(group_id: &str) -> String {
+    format!("group:{group_id}")
 }
 
 impl Act {
@@ -234,6 +324,14 @@ impl Act {
             // The community's own rule, not a fixed requirement: the
             // `admission` policy referred it.
             Self::DirectAdmission => "the admission policy",
+            Self::ChangeStorage => "the storage tasks' consent",
+            Self::ChangeTrustedWitnesses => "VTI-CMP-090",
+            Self::ChangeDirectoryPrivacy => "VTI-DIR-024",
+            Self::CreateBindingElection => "VTI-VOT-081",
+            Self::ChangeJoinCriteria
+            | Self::ChangeHiddenVetting
+            | Self::ChangeRecognitionPolicy(_) => "VTI-APV-023",
+            Self::GroupAuthority | Self::ReduceGroupAuthority => "VTI-DIR-104",
         }
     }
 
@@ -245,6 +343,11 @@ impl Act {
             Self::JoinReview => "join-deciders",
             Self::VettingReview => "vetting-managers-except-subject",
             Self::DirectAdmission => "member-managers-except-subject",
+            // The member a change names, or every member of a group a
+            // group-wide change reaches.
+            Self::GroupAuthority | Self::ReduceGroupAuthority => {
+                "capability-holders-except-parties"
+            }
             _ => APPROVER_SET,
         }
     }
@@ -256,6 +359,8 @@ impl Act {
         matches!(
             self,
             Self::ReduceUnrestricted
+                | Self::GroupAuthority
+                | Self::ReduceGroupAuthority
                 | Self::GrantsReview
                 | Self::BreakGlassReview
                 | Self::JoinReview
@@ -284,7 +389,9 @@ impl Act {
             | Self::ReduceUnrestricted
             | Self::LowerThreshold
             | Self::OperatorWrite
-            | Self::GrantsReview => vec![CapRef::all(Capability::RolesAssign)],
+            | Self::GrantsReview
+            | Self::GroupAuthority
+            | Self::ReduceGroupAuthority => vec![CapRef::all(Capability::RolesAssign)],
             Self::ChangeAuthorityPolicy(purpose) => vec![CapRef::new(
                 Capability::PolicyAdmin,
                 Some(ResourceQualifier::Policy(purpose)),
@@ -302,6 +409,16 @@ impl Act {
             Self::JoinReview => vec![CapRef::all(Capability::JoinDecide)],
             Self::VettingReview => vec![CapRef::all(Capability::VettingManage)],
             Self::DirectAdmission => vec![CapRef::all(Capability::MembersManage)],
+            Self::ChangeStorage => vec![CapRef::all(Capability::RoomsAdmin)],
+            Self::ChangeTrustedWitnesses => vec![CapRef::all(Capability::ConfigAdmin)],
+            Self::ChangeJoinCriteria => vec![CapRef::all(Capability::SurfaceAdmin)],
+            Self::ChangeHiddenVetting => vec![CapRef::all(Capability::VettingManage)],
+            Self::ChangeDirectoryPrivacy => vec![CapRef::all(Capability::DirectoryAdmin)],
+            Self::CreateBindingElection => vec![CapRef::all(Capability::ElectionsManage)],
+            Self::ChangeRecognitionPolicy(purpose) => vec![CapRef::new(
+                Capability::PolicyAdmin,
+                Some(ResourceQualifier::Policy(purpose)),
+            )],
         }
     }
 
@@ -344,6 +461,30 @@ impl Act {
                 s::KIND_MEMBER_MAKE_MEMBERSHIP
             }
             Self::DirectAdmission => s::KIND_MEMBER_ADMIT,
+            Self::ChangeStorage => match type_uri {
+                crate::trust_tasks::storage_tasks::CREATE_TYPE
+                | crate::trust_tasks::storage_tasks::CREATE_V0_2_TYPE => {
+                    s::KIND_STORAGE_CONFIG_CREATE
+                }
+                crate::trust_tasks::storage_tasks::CREDENTIALS_SET_TYPE => {
+                    s::KIND_STORAGE_CREDENTIAL_SET
+                }
+                crate::trust_tasks::storage_tasks::RETIRE_TYPE => s::KIND_STORAGE_CONFIG_RETIRE,
+                crate::trust_tasks::storage_tasks::ASSIGN_TYPE => s::KIND_ROOM_STORAGE_ASSIGN,
+                crate::trust_tasks::storage_tasks::MIGRATE_TYPE
+                | crate::trust_tasks::storage_tasks::MIGRATE_V2_TYPE => {
+                    s::KIND_ROOM_STORAGE_MIGRATE
+                }
+                _ => s::KIND_STORAGE_CONFIG_UPDATE,
+            },
+            Self::ChangeTrustedWitnesses => s::KIND_WITNESSES_CHANGE,
+            Self::ChangeJoinCriteria => s::KIND_CRITERIA_CHANGE,
+            Self::ChangeHiddenVetting => s::KIND_HIDDEN_VETTING_CHANGE,
+            Self::ChangeDirectoryPrivacy => s::KIND_DIRECTORY_FIELD_WIDEN,
+            Self::CreateBindingElection => s::KIND_ELECTION_BINDING_CREATE,
+            Self::ChangeRecognitionPolicy(_) => s::KIND_POLICY_RECOGNITION,
+            Self::GroupAuthority => s::KIND_GRANT_AUTHORITY,
+            Self::ReduceGroupAuthority => s::KIND_REDUCE_AUTHORITY,
         }
     }
 }
@@ -368,10 +509,9 @@ pub struct Operation<'a> {
 pub fn newly_conferred(prev: Option<&VtcAclEntry>, next: &VtcAclEntry, now: u64) -> Vec<CapRef> {
     let held: Vec<CapRef> = prev
         .filter(|p| !p.is_expired(now))
-        .map(|p| p.admin.conferring())
+        .map(VtcAclEntry::conferring)
         .unwrap_or_default();
-    next.admin
-        .conferring()
+    next.conferring()
         .into_iter()
         .filter(|c| !held.iter().any(|h| h.covers(c)))
         .collect()
@@ -394,10 +534,9 @@ pub fn lost_conferring(prev: &VtcAclEntry, next: Option<&VtcAclEntry>, now: u64)
     });
     let kept: Vec<CapRef> = next
         .filter(|_| !shortened)
-        .map(|n| n.admin.conferring())
+        .map(VtcAclEntry::conferring)
         .unwrap_or_default();
-    prev.admin
-        .conferring()
+    prev.conferring()
         .into_iter()
         .filter(|c| !kept.iter().any(|k| k.covers(c)))
         .collect()
@@ -890,6 +1029,33 @@ pub async fn gate_reduction(
     gesture_reason: &str,
     consent_summary: &str,
 ) -> Result<ReductionGate, AppError> {
+    gate_reduction_as(
+        state,
+        Act::ReduceUnrestricted,
+        requester,
+        subject,
+        after,
+        op,
+        gesture_reason,
+        consent_summary,
+    )
+    .await
+}
+
+/// [`gate_reduction`] parked as `act` — [`Act::ReduceGroupAuthority`] for a
+/// member's removal from a group carrying authority (VTI-DIR-104), whose
+/// requester is the group's manager rather than a role assigner.
+#[allow(clippy::too_many_arguments)]
+pub async fn gate_reduction_as(
+    state: &AppState,
+    act: Act,
+    requester: &str,
+    subject: &VtcAclEntry,
+    after: Option<&VtcAclEntry>,
+    op: Operation<'_>,
+    gesture_reason: &str,
+    consent_summary: &str,
+) -> Result<ReductionGate, AppError> {
     use super::bound_step_up::{self, EvidencedGate, Gate};
 
     let now = now_epoch();
@@ -939,16 +1105,9 @@ pub async fn gate_reduction(
         let third = if single_admin_mode(state).await {
             0
         } else {
-            approvers_for(
-                state,
-                Act::ReduceUnrestricted,
-                &lost,
-                requester,
-                &subject.did,
-                now,
-            )
-            .await?
-            .len()
+            approvers_for(state, act, &lost, requester, &subject.did, now)
+                .await?
+                .len()
         };
         // First to act wins (§8.2): with nobody else to decide, a
         // counter-request lands the earlier one.
@@ -981,7 +1140,7 @@ pub async fn gate_reduction(
             return Ok(
                 match gesture_then_consent_for(
                     state,
-                    Act::ReduceUnrestricted,
+                    act,
                     &lost,
                     requester,
                     &subject.did,
@@ -1030,13 +1189,7 @@ pub async fn gate_reduction(
             {
                 check_attrition(state, &subject.did).await?;
             }
-            crate::admin_actions::check_limits(
-                state,
-                Act::ReduceUnrestricted,
-                requester,
-                &subject.did,
-            )
-            .await?;
+            crate::admin_actions::check_limits(state, act, requester, &subject.did).await?;
             let evidence = match bound_step_up::redeem_or_request_with_evidence(
                 state,
                 requester,
@@ -1059,11 +1212,11 @@ pub async fn gate_reduction(
                 "ending an unrestricted admin's authority with nobody else left to consent \
                  (VTI-APV-019): parked for its cooling-off, the subject suspended until it lands"
             );
-            let pin = pin_for(state, Act::ReduceUnrestricted, &subject.did).await?;
+            let pin = pin_for(state, act, &subject.did).await?;
             let action = crate::admin_actions::park(
                 state,
                 crate::admin_actions::Parking {
-                    act: Act::ReduceUnrestricted,
+                    act,
                     stake: lost.clone(),
                     requester,
                     subject: &subject.did,
@@ -1218,11 +1371,37 @@ pub async fn settle_reduction(
     gesture_reason: &str,
     consent_summary: &str,
 ) -> Result<Option<Agreement>, crate::error::TaskError> {
+    settle_reduction_as(
+        state,
+        Act::ReduceUnrestricted,
+        requester,
+        prior,
+        after,
+        op,
+        gesture_reason,
+        consent_summary,
+    )
+    .await
+}
+
+/// [`settle_reduction`] parked as `act` ([`gate_reduction_as`]).
+#[allow(clippy::too_many_arguments)]
+pub async fn settle_reduction_as(
+    state: &AppState,
+    act: Act,
+    requester: &str,
+    prior: &VtcAclEntry,
+    after: Option<&VtcAclEntry>,
+    op: Operation<'_>,
+    gesture_reason: &str,
+    consent_summary: &str,
+) -> Result<Option<Agreement>, crate::error::TaskError> {
     if !prior.is_administrator() {
         return Ok(None);
     }
-    match gate_reduction(
+    match gate_reduction_as(
         state,
+        act,
         requester,
         prior,
         after,
@@ -1430,12 +1609,22 @@ pub(crate) async fn approvers_for(
     now: u64,
 ) -> Result<Vec<String>, AppError> {
     let stake = act.stake_or_default(stake);
+    // A group-wide act has a party in every member of the group: each gains
+    // or loses by it, so none decides it.
+    let parties = match subject.strip_prefix("group:") {
+        Some(group_id) if matches!(act, Act::GroupAuthority | Act::ReduceGroupAuthority) => {
+            crate::groups::member_dids(state, group_id).await?
+        }
+        _ => Default::default(),
+    };
     Ok(list_acl_entries(&state.acl_ks)
         .await?
         .into_iter()
         .filter(|e| may_decide(e, act, &stake, now))
         .map(|e| e.did)
-        .filter(|d| d != requester && !(act.excludes_subject() && d == subject))
+        .filter(|d| {
+            d != requester && !(act.excludes_subject() && d == subject) && !parties.contains(d)
+        })
         .collect())
 }
 
@@ -1453,7 +1642,15 @@ pub(crate) fn requester_still_authorized(
     // A suspended requester authorizes nothing while its own reduction cools
     // off (`vtc-action-list.md` §8.2), so what it asked for can no longer run
     // as it.
-    if entry.is_expired(now) || !entry.admin.is_administrator() || entry.is_suspended() {
+    if entry.is_expired(now) || entry.is_suspended() {
+        return false;
+    }
+    // A group's manager may hold no administrative role: their appointment is
+    // a resource grant (`groups::managers`).
+    if matches!(act, Act::GroupAuthority | Act::ReduceGroupAuthority) {
+        return entry.can_any(Capability::GroupsManage);
+    }
+    if !entry.admin.is_administrator() {
         return false;
     }
     match act {
@@ -1487,6 +1684,19 @@ pub(crate) fn requester_still_authorized(
         // Admitting is `vtc.members.manage`'s; a role beyond `member` is
         // re-bounded by the handler when the action executes.
         Act::DirectAdmission => entry.admin.can(Capability::MembersManage, None),
+        Act::ChangeStorage => entry.admin.can(Capability::RoomsAdmin, None),
+        Act::ChangeTrustedWitnesses => entry.admin.can(Capability::ConfigAdmin, None),
+        Act::ChangeJoinCriteria => entry.admin.can(Capability::SurfaceAdmin, None),
+        Act::ChangeHiddenVetting => entry.admin.can(Capability::VettingManage, None),
+        Act::ChangeDirectoryPrivacy => entry.admin.can(Capability::DirectoryAdmin, None),
+        Act::CreateBindingElection => entry.admin.can(Capability::ElectionsManage, None),
+        Act::ChangeRecognitionPolicy(p) => entry
+            .admin
+            .can(Capability::PolicyAdmin, Some(&ResourceQualifier::Policy(p))),
+        // Answered above: a group's manager, for some group. The handler
+        // re-reads which, and every other bound, when the action executes
+        // (VTI-APV-017).
+        Act::GroupAuthority | Act::ReduceGroupAuthority => true,
     }
 }
 
@@ -1501,10 +1711,29 @@ pub(crate) async fn pin_for(
         Act::GrantUnrestricted | Act::ReduceUnrestricted | Act::OperatorWrite => {
             return state_pin(state, subject).await;
         }
+        // A member's entry, like any grant or reduction of it — or, for a
+        // group-wide act, the group's join policy and its bindings: either
+        // moving means what the approvers agreed to is not what would run.
+        Act::GroupAuthority | Act::ReduceGroupAuthority => {
+            let Some(group_id) = subject.strip_prefix("group:") else {
+                return state_pin(state, subject).await;
+            };
+            let ks = state.directory.ks();
+            let group = crate::groups::get(ks, group_id).await?;
+            let bindings: Vec<Value> = crate::groups::bindings::of_group(ks, group_id)
+                .await?
+                .iter()
+                .map(crate::groups::bindings::Binding::wire)
+                .collect();
+            json!({
+                "joinPolicy": group.map(|g| g.join_policy),
+                "bindings": bindings,
+            })
+        }
         // VTI-APV-020: the consent is to lowering *this* threshold. Once it
         // moves, what the approvers agreed to is not what would happen.
         Act::LowerThreshold => json!(threshold(state).await?),
-        Act::ChangeAuthorityPolicy(purpose) => json!(
+        Act::ChangeAuthorityPolicy(purpose) | Act::ChangeRecognitionPolicy(purpose) => json!(
             crate::policy::get_active_policy_id(&state.active_policies_ks, purpose)
                 .await?
                 .map(|id| id.to_string())
@@ -1532,6 +1761,42 @@ pub(crate) async fn pin_for(
                 .await?
                 .map(|m| if m.is_removed() { "removed" } else { "active" });
             json!({ "entry": entry, "member": member })
+        }
+        // What the approvers were shown is this config (none, for a create) or
+        // this room's assignment. Either moving means the change they agreed to
+        // is not the one that would run.
+        Act::ChangeStorage => json!({
+            "config": state.room_storage.config(subject).await?,
+            "assignment": state.room_storage.assignment(subject).await?,
+        }),
+        // The approvers were shown a change from *this* list. Once it moves —
+        // another change landed first — what they agreed to is not what would
+        // happen.
+        Act::ChangeTrustedWitnesses => {
+            crate::credentials::trusted_witnesses::current_value(state).await?
+        }
+        // The approvers were shown a change to *this* criterion (none, for a
+        // new one). Any write to it in the meantime — another replacement, a
+        // deletion, hidden vetting turned on or off — voids the action.
+        Act::ChangeJoinCriteria | Act::ChangeHiddenVetting => {
+            json!(crate::schemas::get_accepts(&state.schemas_ks, subject).await?)
+        }
+        // The approvers were shown a change from *this* definition. Any write to
+        // the field in the meantime — a narrowing, another widening — voids the
+        // action. `updatedAt` is when, not what, and is left out.
+        // The approvers were shown a new election under this identifier. One
+        // created under it meanwhile means the creation they agreed to would not run.
+        Act::CreateBindingElection => json!(
+            crate::elections::store::get(state.elections.ks(), subject)
+                .await?
+                .map(|r| r.manifest_digest)
+        ),
+        Act::ChangeDirectoryPrivacy => {
+            let mut f = crate::directory::fields::get(state.directory.ks(), subject).await?;
+            if let Some(f) = f.as_mut() {
+                f.updated_at = None;
+            }
+            json!(f)
         }
     };
     Ok(StatePin {
@@ -1572,6 +1837,7 @@ mod tests {
             updated_by: None,
             expires_at,
             resource_grants: Vec::new(),
+            group_grants: Vec::new(),
             label_set_by_subject: false,
             suspension: None,
         }
@@ -1693,6 +1959,14 @@ mod tests {
             Act::ChangeRoles,
             Act::RestoreBackup,
             Act::GrantsReview,
+            Act::ChangeTrustedWitnesses,
+            Act::ChangeJoinCriteria,
+            Act::ChangeHiddenVetting,
+            Act::ChangeDirectoryPrivacy,
+            Act::CreateBindingElection,
+            Act::ChangeRecognitionPolicy(PolicyPurpose::Personhood),
+            Act::GroupAuthority,
+            Act::ReduceGroupAuthority,
         ] {
             assert!(may_approve(&approver, &act.default_stake(), now), "{act:?}");
         }
@@ -1727,6 +2001,17 @@ mod tests {
         use crate::policy::PolicyPurpose;
         use crate::trust_tasks as tt;
         for (act, uri) in [
+            (Act::GroupAuthority, tt::group_tasks::MEMBERS_ADD_TYPE),
+            (Act::GroupAuthority, tt::group_tasks::BINDINGS_ADD_TYPE),
+            (
+                Act::ReduceGroupAuthority,
+                tt::group_tasks::MEMBERS_REMOVE_TYPE,
+            ),
+            (
+                Act::ReduceGroupAuthority,
+                tt::group_tasks::BINDINGS_REMOVE_TYPE,
+            ),
+            (Act::ReduceGroupAuthority, tt::group_tasks::DELETE_TYPE),
             (Act::GrantUnrestricted, tt::ACL_GRANT_TYPE),
             (Act::GrantUnrestricted, tt::ACL_CHANGE_ROLE_TYPE),
             (Act::GrantUnrestricted, tt::ACL_UPDATE_TYPE),
@@ -1744,6 +2029,43 @@ mod tests {
             (Act::ReduceUnrestricted, tt::MEMBER_ADMIN_REMOVE_TYPE),
             (Act::LowerThreshold, tt::admin_tasks::CONFIG_PATCH_TYPE),
             (Act::LowerThreshold, tt::CONFIG_IMPORT_TYPE),
+            (
+                Act::ChangeTrustedWitnesses,
+                tt::admin_tasks::CONFIG_PATCH_TYPE,
+            ),
+            (Act::ChangeTrustedWitnesses, tt::CONFIG_IMPORT_TYPE),
+            (
+                Act::ChangeJoinCriteria,
+                tt::surface_tasks::ACCEPTS_REGISTER_TYPE,
+            ),
+            (
+                Act::ChangeJoinCriteria,
+                tt::surface_tasks::ACCEPTS_DELETE_TYPE,
+            ),
+            (
+                Act::ChangeHiddenVetting,
+                crate::admin_actions::summary::HIDDEN_PUBLISH,
+            ),
+            (
+                Act::ChangeDirectoryPrivacy,
+                crate::trust_tasks::directory_tasks::FIELDS_UPDATE_TYPE,
+            ),
+            (
+                Act::CreateBindingElection,
+                crate::admin_actions::summary::ELECTIONS_CREATE,
+            ),
+            (
+                Act::ChangeHiddenVetting,
+                crate::admin_actions::summary::HIDDEN_WITHDRAW,
+            ),
+            (
+                Act::ChangeRecognitionPolicy(PolicyPurpose::Personhood),
+                tt::policy_tasks::POLICY_UPSERT_TYPE,
+            ),
+            (
+                Act::ChangeRecognitionPolicy(PolicyPurpose::Personhood),
+                tt::policy_tasks::POLICY_ACTIVATE_TYPE,
+            ),
             (
                 Act::ChangeAuthorityPolicy(PolicyPurpose::Removal),
                 tt::policy_tasks::POLICY_UPSERT_TYPE,

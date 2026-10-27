@@ -223,6 +223,7 @@ async fn build_fixture(public_url: Option<&str>) -> Fixture {
     let rooms_ks = store.keyspace("rooms").unwrap();
     let room_records_ks = store.keyspace("room_records").unwrap();
     let room_epoch_links_ks = store.keyspace("room_epoch_links").unwrap();
+    let room_revocations_ks = store.keyspace("room_revocations").unwrap();
     let audit_ks = store.keyspace("audit").unwrap();
     let audit_key_ks = store.keyspace("audit_key").unwrap();
     let audit_checkpoint_ks = store.keyspace("audit_checkpoint").unwrap();
@@ -309,6 +310,14 @@ async fn build_fixture(public_url: Option<&str>) -> Fixture {
         vtc_service::install::InstallTokenSigner::from_master_seed(&*ed25519_priv).unwrap(),
     );
 
+    let room_storage = vtc_service::rooms::files::open_room_storage(
+        &store,
+        dir.path(),
+        None,
+        Some("did:key:zCommunity"),
+    )
+    .await
+    .unwrap();
     let state = AppState {
         publish_rate_limiter: vtc_service::relationships::rate_limit::PublishRateLimiter::new(
             [0x5a; 32],
@@ -344,10 +353,35 @@ async fn build_fixture(public_url: Option<&str>) -> Fixture {
         rooms_ks: rooms_ks.clone(),
         room_records_ks: room_records_ks.clone(),
         room_epoch_links_ks: room_epoch_links_ks.clone(),
+        room_revocations_ks: room_revocations_ks.clone(),
         room_files: std::sync::Arc::new(
-            vtc_service::rooms::files::open_blob_host(&store, dir.path(), &Default::default())
-                .unwrap(),
+            vtc_service::rooms::files::open_blob_host(
+                &store,
+                dir.path(),
+                None,
+                room_storage.clone(),
+            )
+            .unwrap(),
         ),
+        room_storage,
+        community_rooms: vtc_service::rooms::community::CommunityRooms::new(
+            store
+                .keyspace(vtc_service::store::keyspaces::COMMUNITY_ROOMS)
+                .unwrap(),
+            None,
+        ),
+        directory: std::sync::Arc::new(vtc_service::directory::Directory::new(
+            store
+                .keyspace(vtc_service::store::keyspaces::DIRECTORY)
+                .unwrap(),
+            vtc_service::directory::model::Settings::default(),
+        )),
+        elections: std::sync::Arc::new(vtc_service::elections::Elections::new(
+            store
+                .keyspace(vtc_service::store::keyspaces::ELECTIONS)
+                .unwrap(),
+            None,
+        )),
         invitations_ks,
         consumed_invitations_ks,
         console_keys_ks,
@@ -361,6 +395,7 @@ async fn build_fixture(public_url: Option<&str>) -> Fixture {
         oid4vp_keys_ks: store.keyspace("oid4vp_keys").unwrap(),
         oid4vp_signers: Arc::new(vtc_service::oid4vp::VerifierSigners::new()),
         oid4vp_sessions_ks: store.keyspace("oid4vp_sessions").unwrap(),
+        x509_trust_anchors: Default::default(),
         tsp_reach: std::sync::Arc::new(vti_common::tsp_reach::TspReachability::new()),
         geoip: std::sync::Arc::new(vtc_service::geoip::GeoIp::disabled()),
         backup_bundles_ks,

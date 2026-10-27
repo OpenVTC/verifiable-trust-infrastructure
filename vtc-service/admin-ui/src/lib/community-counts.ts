@@ -2,7 +2,7 @@
 // administrator's decision (the Join requests nav badge and dashboard tile) and
 // current members (the Members tile).
 //
-// Each is **one read**: `vtc/join-requests/list/0.1` and `vtc/members/list/0.1`
+// Each is **one read**: `vtc/join-requests/list/0.2` and `vtc/members/list/0.2`
 // answer `Paginated` pages whose `totalEstimate` the VTC fills with the exact
 // number of rows the request's filter admits, and the filter is applied before
 // paging (`join::storage::list_join_requests_filtered`,
@@ -24,8 +24,8 @@ import { useLivePollMs } from "./use-live-events";
 import { holds } from "./viewer";
 import type { JoinRequestsPage, MembersPage } from "./wire-types";
 
-export const JOIN_REQUESTS_LIST_TASK = "https://trusttasks.org/spec/vtc/join-requests/list/0.1";
-export const MEMBERS_LIST_TASK = "https://trusttasks.org/spec/vtc/members/list/0.1";
+export const JOIN_REQUESTS_LIST_TASK = "https://trusttasks.org/spec/vtc/join-requests/list/0.2";
+export const MEMBERS_LIST_TASK = "https://trusttasks.org/spec/vtc/members/list/0.2";
 
 /** The Join requests plugin's id — the shell draws its nav badge. */
 export const JOIN_REQUESTS_PLUGIN_ID = "join-requests";

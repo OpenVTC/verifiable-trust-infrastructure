@@ -78,6 +78,40 @@ pub enum Capability {
     RegistryAdmin,
     /// Revoking others' sessions and console keys (incident response).
     SessionsRevoke,
+    /// Hosting the community's data rooms: storage configs, which config each
+    /// room stores to, room limits and usage. The host's authority, never a
+    /// room's: it confers nothing inside a room.
+    RoomsAdmin,
+    /// Running the rooms the community itself **owns**: create them, admit and
+    /// remove their members (`vtc/rooms/community/*`). The owner's authority,
+    /// distinct from hosting's [`Capability::RoomsAdmin`]: a community may let
+    /// someone run its board room without letting them reassign every room's
+    /// storage, and the reverse.
+    RoomsManage,
+    /// The member directory (`vtc/directory/*`): its fields and their
+    /// ceilings, administrator-asserted values, and reading every entry whole.
+    /// Not conferring: it decides what the directory may disclose, never who
+    /// holds authority.
+    DirectoryAdmin,
+    /// The community's polls, surveys and elections (`vtc/elections/*`):
+    /// create, close, cancel and certify them, and read every one with its
+    /// issued-ticket count (VTI-VOT-080). Not conferring: a binding election's
+    /// creation takes a second holder's consent (VTI-VOT-081), and a certified
+    /// result authorizes nothing by itself.
+    ElectionsManage,
+    /// Administrators' notes about members (`vtc/directory/notes/*`,
+    /// VTI-DIR-030 – 033): writing them, reading them, and exporting a
+    /// member's notes to answer their request for the data held about them.
+    /// Apart from [`Capability::DirectoryAdmin`] so a community can let a
+    /// moderator keep notes without changing what the directory discloses, and
+    /// the reverse. Not conferring.
+    DirectoryNotes,
+    /// Running the community's groups (`vtc/groups/*`): unqualified, every
+    /// group, and creating them; qualified `group:<groupId>`, that one group's
+    /// members, requests and settings. A manager of one group holds it as a
+    /// resource grant (`vtc/groups/managers/add`). Not conferring: a group
+    /// confers authority only through a binding, whose consent is its own.
+    GroupsManage,
     /// A git namespace (qualified by namespace).
     GitNsAdmin,
     /// Repository create, adopt, archive, transfer.
@@ -88,7 +122,7 @@ pub enum Capability {
 
 impl Capability {
     /// Every capability, in registry order.
-    pub const ALL: [Capability; 20] = [
+    pub const ALL: [Capability; 26] = [
         Capability::RolesAssign,
         Capability::ApprovalsAdmin,
         Capability::PolicyAdmin,
@@ -106,6 +140,12 @@ impl Capability {
         Capability::SurfaceAdmin,
         Capability::RegistryAdmin,
         Capability::SessionsRevoke,
+        Capability::RoomsAdmin,
+        Capability::RoomsManage,
+        Capability::DirectoryAdmin,
+        Capability::ElectionsManage,
+        Capability::DirectoryNotes,
+        Capability::GroupsManage,
         Capability::GitNsAdmin,
         Capability::GitRepoManage,
         Capability::GitCommitSign,
@@ -131,6 +171,12 @@ impl Capability {
             Capability::SurfaceAdmin => "vtc.surface.admin",
             Capability::RegistryAdmin => "vtc.registry.admin",
             Capability::SessionsRevoke => "vtc.sessions.revoke",
+            Capability::RoomsAdmin => "vtc.rooms.admin",
+            Capability::RoomsManage => "vtc.rooms.manage",
+            Capability::DirectoryAdmin => "vtc.directory.admin",
+            Capability::ElectionsManage => "vtc.elections.manage",
+            Capability::DirectoryNotes => "vtc.directory.notes",
+            Capability::GroupsManage => "vtc.groups.manage",
             Capability::GitNsAdmin => "git.ns.admin",
             Capability::GitRepoManage => "git.repo.manage",
             Capability::GitCommitSign => "git.commit.sign",
@@ -185,6 +231,7 @@ impl Capability {
             Capability::PolicyAdmin => matches!(resource, Q::Policy(_)),
             Capability::VettingManage => matches!(resource, Q::Criterion(_)),
             Capability::GitNsAdmin => matches!(resource, Q::GitNs(_)),
+            Capability::GroupsManage => matches!(resource, Q::Group(_)),
             Capability::GitRepoManage | Capability::GitCommitSign => {
                 matches!(resource, Q::GitNs(_) | Q::GitRepo(_))
             }
@@ -244,6 +291,8 @@ pub enum ResourceQualifier {
     Policy(PolicyPurpose),
     /// `criterion:<id>` — one join criterion.
     Criterion(String),
+    /// `group:<groupId>` — one community group.
+    Group(String),
 }
 
 impl ResourceQualifier {
@@ -272,6 +321,7 @@ impl fmt::Display for ResourceQualifier {
             ResourceQualifier::GitRepo(v) => write!(f, "git-repo:{v}"),
             ResourceQualifier::Policy(p) => write!(f, "policy:{}", p.as_str()),
             ResourceQualifier::Criterion(v) => write!(f, "criterion:{v}"),
+            ResourceQualifier::Group(v) => write!(f, "group:{v}"),
         }
     }
 }
@@ -282,7 +332,7 @@ impl FromStr for ResourceQualifier {
         let bad = |why: &str| {
             AppError::Validation(format!(
                 "resource qualifier '{s}' {why} — expected git-ns:<namespace>, \
-                 git-repo:<repository-id>, policy:<purpose> or criterion:<id>"
+                 git-repo:<repository-id>, policy:<purpose>, criterion:<id> or group:<id>"
             ))
         };
         let (kind, value) = s.split_once(':').ok_or_else(|| bad("has no kind"))?;
@@ -293,6 +343,7 @@ impl FromStr for ResourceQualifier {
             "git-ns" => Ok(ResourceQualifier::GitNs(value.to_string())),
             "git-repo" => Ok(ResourceQualifier::GitRepo(value.to_string())),
             "criterion" => Ok(ResourceQualifier::Criterion(value.to_string())),
+            "group" => Ok(ResourceQualifier::Group(value.to_string())),
             "policy" => serde_json::from_value::<PolicyPurpose>(serde_json::Value::String(
                 value.to_string(),
             ))

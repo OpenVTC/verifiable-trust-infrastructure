@@ -6,16 +6,24 @@
 // Polling stays the fallback and never stops: while live, the badge and tile
 // polls slow to `LIVE_POLL_MS`; the moment the stream is not live they are
 // back at `WAITING_POLL_MS`, and every topic is re-read at once.
+//
+// The version is read from `trust-task-discovery`: the newest the community
+// lists — 0.4 (with `communityRooms`), 0.3 (with `directory` and `groups`),
+// 0.2 (with `rooms`), else 0.1.
+// A page whose topic the version lacks simply polls.
 
 import { useEffect, useSyncExternalStore } from "react";
 import { useQueryClient, type QueryClient, type QueryKey } from "@tanstack/react-query";
 
-import { csrfToken, signedDocument } from "./api";
+import { csrfToken, postSignedRead, signedDocument } from "./api";
+import { TASK_DISCOVERY } from "./hidden-vetting";
 import {
   ALL_TOPICS,
+  LIVE_V0_1,
   LiveEvents,
-  SUBSCRIBE_TASK,
+  liveVersionFor,
   type LiveStatus,
+  type LiveVersion,
   type SignedSubscribe,
   type Topic,
 } from "./live-events";
@@ -45,6 +53,24 @@ export function keysFor(topic: Topic): QueryKey[] {
       return [["members"], ["member"], ["members-removed"]];
     case "config":
       return [["admin-config"], ["profile"], ["community"]];
+    // The rooms pages: the list and a room (`vtc/rooms/list`, `vtc/rooms/get`),
+    // usage and the near-a-limit panel (`vtc/rooms/usage`), and storage configs
+    // (`vtc/storage/configs/*`).
+    case "rooms":
+      return [["rooms"], ["room-usage"], ["storage"]];
+    // The directory pages, and the member list and member page, which show
+    // each member's directory card (`vtc/directory/*`).
+    case "directory":
+      return [["directory"]];
+    // The groups pages: the list, a group, its members and requests
+    // (`vtc/groups/*`).
+    case "groups":
+      return [["groups"]];
+    // The community rooms pages: the owner's list, a room and its members
+    // (`vtc/rooms/community/{list,get}`, `members/list`), and the room names
+    // other pages read from that list.
+    case "communityRooms":
+      return [["rooms", "community"]];
   }
 }
 
@@ -64,11 +90,15 @@ export function invalidateTopics(qc: QueryClient, topics: readonly Topic[]): voi
 // ─── status, shared across the shell ────────────────────────────────────
 
 let status: LiveStatus = "offline";
+/** The open stream's effective topics; empty unless live. */
+let effective: readonly Topic[] = [];
 const listeners = new Set<() => void>();
 
-function setLiveStatus(next: LiveStatus): void {
-  if (next === status) return;
+function setLiveStatus(next: LiveStatus, topics: readonly Topic[] = []): void {
+  const nextEffective = next === "live" ? topics : [];
+  if (next === status && nextEffective.join() === effective.join()) return;
   status = next;
+  effective = nextEffective;
   for (const l of listeners) l();
 }
 
@@ -82,9 +112,32 @@ export function useLiveStatus(): LiveStatus {
   return useSyncExternalStore(subscribeStatus, () => status, () => status);
 }
 
-/** The interval a badge or tile poll should run at right now. */
-export function useLivePollMs(): number {
-  return useLiveStatus() === "live" ? LIVE_POLL_MS : OFFLINE_POLL_MS;
+/**
+ * The interval a badge, tile or page poll should run at right now: slow only
+ * while the stream is live **and** carries `topic` (any topic, when none is
+ * named). A topic the stream does not carry — `rooms` on a 0.1 community, or
+ * for an administrator who cannot read it — polls at the ordinary pace.
+ */
+export function useLivePollMs(topic?: Topic): number {
+  const live = useSyncExternalStore(
+    subscribeStatus,
+    () => status === "live" && (topic === undefined || effective.includes(topic)),
+    () => false,
+  );
+  return live ? LIVE_POLL_MS : OFFLINE_POLL_MS;
+}
+
+/** The version to subscribe at: the newest discovery lists, else 0.1 — and
+ * 0.1 when discovery cannot be read. */
+export async function chooseLiveVersion(): Promise<LiveVersion> {
+  try {
+    const res = await postSignedRead<{ supportedTypes?: unknown[] }>(TASK_DISCOVERY, {
+      patterns: ["vtc/admin/events/*"],
+    });
+    return liveVersionFor(res.supportedTypes ?? []);
+  } catch {
+    return LIVE_V0_1;
+  }
 }
 
 /**
@@ -96,21 +149,31 @@ export function useLiveEvents(enabled: boolean): void {
   const qc = useQueryClient();
   useEffect(() => {
     if (!enabled) return;
-    const client = new LiveEvents(
-      ALL_TOPICS,
-      {
-        onHint: (topic) => invalidateTopics(qc, [topic]),
-        onResync: (topics) => invalidateTopics(qc, topics),
-        onStatus: setLiveStatus,
-      },
-      {
-        sign: async (payload) =>
-          (await signedDocument(SUBSCRIBE_TASK, payload)) as unknown as SignedSubscribe,
-        fetch: (input, init) => fetch(input, init),
-        csrf: csrfToken,
-      },
-    );
-    client.start();
-    return () => client.stop();
+    let client: LiveEvents | null = null;
+    let cancelled = false;
+    void chooseLiveVersion().then((version) => {
+      if (cancelled) return;
+      const live: LiveEvents = new LiveEvents(
+        ALL_TOPICS,
+        {
+          onHint: (topic) => invalidateTopics(qc, [topic]),
+          onResync: (topics) => invalidateTopics(qc, topics),
+          onStatus: (s) => setLiveStatus(s, live.effectiveTopics),
+        },
+        {
+          sign: async (payload) =>
+            (await signedDocument(version.subscribe, payload)) as unknown as SignedSubscribe,
+          fetch: (input, init) => fetch(input, init),
+          csrf: csrfToken,
+        },
+        version,
+      );
+      client = live;
+      live.start();
+    });
+    return () => {
+      cancelled = true;
+      client?.stop();
+    };
   }, [enabled, qc]);
 }

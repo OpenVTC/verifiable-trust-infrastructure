@@ -16,8 +16,10 @@ the exact same way.
 - `SeedStore` — the storage trait (re-exported from `vti-common`).
 - Concrete backends, each behind its own feature flag:
   `aws-secrets`, `gcp-secrets`, `azure-secrets`, `vault-secrets`,
-  `k8s-secrets`, `keyring`, `config-seed`, `tee` (in-enclave KMS), and the
-  always-available plaintext dev fallback.
+  `k8s-secrets`, `keyring`, `config-seed`, `tee` (in-enclave KMS), the
+  always-available `encrypted_file` backend (AES-256-GCM, keyed from a
+  passphrase via Argon2id, a systemd credential, or — feature `tpm`, Linux —
+  a TPM 2.0 sealed key), and the always-available plaintext dev fallback.
 - `create_seed_store(&secrets, &data_dir)` — the feature-aware factory.
 - `SecretsConfig` — the `[secrets]` config shape.
 - *(feature `onboarding`)* `IntegrationOnboarding` — the ephemeral-`did:key`

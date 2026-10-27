@@ -412,6 +412,9 @@ fn print_opened(
             println!("Payload: ExternalCredential");
             println!("  Expires at: {}", c.expires_at());
         }
+        // `SealedPayloadV1` is `#[non_exhaustive]`: a payload kind newer than
+        // this binary is opened but not described.
+        _ => println!("Payload: a kind this version of vta does not describe"),
     }
     Ok(())
 }
@@ -1147,8 +1150,8 @@ pub async fn run_context_delete(
             seed_store: &*seed_store,
             did_resolver: &did_resolver,
             didcomm_bridge: &no_bridge,
-            // Offline: no mediator socket to lend, so the seam falls to
-            // DIDComm. Same reason as `webvh_cli`.
+            // Offline: no mediator session at all, so the seam is left with
+            // REST. Same as `webvh_cli`.
             #[cfg(feature = "tsp")]
             tsp: None,
         };

@@ -2137,3 +2137,536 @@ async fn shutdown_is_noop_for_rest() {
     let c = VtaClient::new("https://vta.example.com");
     c.shutdown().await;
 }
+
+// ── external/credentials/issue/0.3: splitting a presign batch ───────
+
+/// A stand-in VTA for `external/credentials/issue/0.3` presign batches. It
+/// refuses `invalidBatch` a batch whose `uploadId` no operation needs (as
+/// `vta_external::batch::check_batch` does, Conformance item 4), and
+/// `responseTooLarge` one of more than `fits` operations — naming `fits` as
+/// `maxOperations` when `names_max`. Every request's size and whether it
+/// carried `uploadId` is recorded.
+struct PresignVta {
+    fits: usize,
+    names_max: bool,
+    ok: Value,
+    asked: std::sync::Arc<std::sync::Mutex<Vec<(usize, bool)>>>,
+}
+
+impl wiremock::Respond for PresignVta {
+    fn respond(&self, req: &wiremock::Request) -> ResponseTemplate {
+        let body: Value = serde_json::from_slice(&req.body).unwrap();
+        let presign = &body["payload"]["presign"];
+        let ops = presign["requests"].as_array().unwrap();
+        let has_upload_id = presign.get("uploadId").is_some();
+        self.asked.lock().unwrap().push((ops.len(), has_upload_id));
+        let refuse = |code: &str, details: Value| {
+            ResponseTemplate::new(422).set_body_json(json!({
+                "id": "urn:uuid:00000000-0000-4000-8000-000000000001",
+                "type": "https://trusttasks.org/spec/trust-task-error/0.5",
+                "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+                "payload": { "code": code, "message": "no", "retryable": false, "details": details },
+            }))
+        };
+        let needs = ops.iter().any(|op| {
+            matches!(
+                op["operation"].as_str(),
+                Some("upload-part" | "list-parts" | "complete-multipart" | "abort-multipart")
+            )
+        });
+        if has_upload_id != needs {
+            return refuse("external/credentials/issue:invalidBatch", json!({}));
+        }
+        if ops.len() > self.fits {
+            let details = if self.names_max {
+                json!({ "maxOperations": self.fits })
+            } else {
+                json!({})
+            };
+            return refuse("external/credentials/issue:responseTooLarge", details);
+        }
+        ResponseTemplate::new(200).set_body_json(self.ok.clone())
+    }
+}
+
+/// Mount a [`PresignVta`] and return what it records.
+async fn mount_presign_vta(
+    server: &MockServer,
+    fits: usize,
+    names_max: bool,
+) -> std::sync::Arc<std::sync::Mutex<Vec<(usize, bool)>>> {
+    let ok = signed_response(json!({
+        "expiresAt": "2030-01-01T00:00:00Z",
+        "sealedCredential": format!(
+            "-----BEGIN VTA SEALED BUNDLE-----\n{}\n-----END VTA SEALED BUNDLE-----\n",
+            "x".repeat(64)
+        ),
+        "presign": { "prefix": "rooms/x/", "objectKey": "o", "requests": [{ "operation": "head" }] },
+    }))
+    .await;
+    let asked = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    Mock::given(method("POST"))
+        .and(path("/trust-tasks"))
+        .and(auth_match())
+        .respond_with(PresignVta {
+            fits,
+            names_max,
+            ok,
+            asked: asked.clone(),
+        })
+        .mount(server)
+        .await;
+    asked
+}
+
+fn presign_request(
+    upload_id: Option<&str>,
+    ops: Vec<Value>,
+) -> trust_tasks_rs::specs::external::credentials::issue::v0_3::Payload {
+    let mut presign = json!({ "prefix": "rooms/x/", "objectKey": "o", "requests": ops });
+    if let Some(id) = upload_id {
+        presign["uploadId"] = json!(id);
+    }
+    serde_json::from_value(json!({
+        "account": "a", "context": "c", "ttlSeconds": 300, "presign": presign,
+    }))
+    .expect("a valid issue/0.3 presign payload")
+}
+
+/// `issue/0.3` consumer items 4 and 5: the checks-and-completion batch of a
+/// multipart upload, split, sends the trailing `head` without `uploadId` —
+/// carrying it there is `invalidBatch` (Conformance item 4).
+#[tokio::test]
+async fn a_split_part_with_no_multipart_operation_omits_the_upload_id() {
+    let server = MockServer::start().await;
+    let asked = mount_presign_vta(&server, 2, true).await;
+    let c = client(&server).await;
+    let req = presign_request(
+        Some("U"),
+        vec![
+            json!({ "operation": "list-parts" }),
+            json!({ "operation": "complete-multipart", "contentLength": 9 }),
+            json!({ "operation": "head" }),
+        ],
+    );
+    let answers = c.external_credentials_issue_presign(&req).await.unwrap();
+    assert_eq!(answers.len(), 2);
+    assert_eq!(
+        *asked.lock().unwrap(),
+        [(3, true), (2, true), (1, false)],
+        "refused whole, then the multipart part with uploadId, then head without"
+    );
+}
+
+/// `issue/0.3` consumer item 5: `maxOperations` holds for the first part only.
+/// A later part refused `responseTooLarge` again is split again — here in
+/// half, since that refusal names no count — rather than failing the batch.
+#[tokio::test]
+async fn a_part_refused_again_is_split_again() {
+    let server = MockServer::start().await;
+    // Fits 3, but the first refusal names none: 8 → 4 (refused) → 2, 2, 2, 2.
+    let asked = mount_presign_vta(&server, 3, false).await;
+    let c = client(&server).await;
+    let parts = (1..=8)
+        .map(|n| {
+            json!({
+                "operation": "upload-part", "partNumber": n, "contentLength": 5_242_880,
+                "checksumSha256": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+            })
+        })
+        .collect();
+    let answers = c
+        .external_credentials_issue_presign(&presign_request(Some("U"), parts))
+        .await
+        .unwrap();
+    assert_eq!(answers.len(), 4);
+    let sizes: Vec<usize> = asked.lock().unwrap().iter().map(|(n, _)| *n).collect();
+    assert_eq!(sizes, [8, 4, 2, 2, 2, 2]);
+}
+
+/// `issue/0.3` consumer item 5: a single operation refused `responseTooLarge`
+/// cannot be split, and asking for it again will not succeed — the refusal is
+/// returned after exactly one request for it.
+#[tokio::test]
+async fn a_single_operation_too_large_is_not_asked_again() {
+    let server = MockServer::start().await;
+    let asked = mount_presign_vta(&server, 0, false).await;
+    let c = client(&server).await;
+    let err = c
+        .external_credentials_issue_presign(&presign_request(
+            None,
+            vec![json!({ "operation": "head" })],
+        ))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(&err, VtaError::Rejected { code, .. }
+            if code == "external/credentials/issue:responseTooLarge"),
+        "{err:?}"
+    );
+    assert_eq!(*asked.lock().unwrap(), [(1, false)]);
+}
+
+// ── rooms/keys/act 0.2, falling back to 0.1 ─────────────────────────
+
+/// Matches a request whose document `type` is `uri` (with or without a fragment).
+fn task_type(uri: &'static str) -> impl Fn(&wiremock::Request) -> bool {
+    move |req: &wiremock::Request| {
+        serde_json::from_slice::<Value>(&req.body)
+            .ok()
+            .and_then(|v| v["type"].as_str().map(|t| t.split('#').next() == Some(uri)))
+            .unwrap_or(false)
+    }
+}
+
+/// A VTA that predates the 0.2 versions: it refuses them `unsupportedType` and answers
+/// 0.1 with `ok`.
+async fn mount_only_0_1(
+    server: &MockServer,
+    v0_2: &'static str,
+    v0_1: &'static str,
+    ok: Value,
+) -> (wiremock::MockGuard, wiremock::MockGuard) {
+    let refused = Mock::given(method("POST"))
+        .and(path("/trust-tasks"))
+        .and(task_type(v0_2))
+        .respond_with(ResponseTemplate::new(400).set_body_json(json!({
+            "id": "urn:uuid:00000000-0000-4000-8000-000000000001",
+            "type": "https://trusttasks.org/spec/trust-task-error/0.5",
+            "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+            "payload": {
+                "code": "unsupportedType",
+                "message": format!("unsupported type: {v0_2}"),
+                "retryable": false,
+            },
+        })))
+        .expect(1)
+        .mount_as_scoped(server)
+        .await;
+    let answered = Mock::given(method("POST"))
+        .and(path("/trust-tasks"))
+        .and(task_type(v0_1))
+        .respond_with(ResponseTemplate::new(200).set_body_json(signed_response(ok).await))
+        .expect(1)
+        .mount_as_scoped(server)
+        .await;
+    (refused, answered)
+}
+
+/// A VTA refusing `uri` `unsupportedType`, exactly `times` times.
+async fn mount_unsupported(
+    server: &MockServer,
+    uri: &'static str,
+    times: u64,
+) -> wiremock::MockGuard {
+    Mock::given(method("POST"))
+        .and(path("/trust-tasks"))
+        .and(task_type(uri))
+        .respond_with(ResponseTemplate::new(400).set_body_json(json!({
+            "id": "urn:uuid:00000000-0000-4000-8000-000000000001",
+            "type": "https://trusttasks.org/spec/trust-task-error/0.5",
+            "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+            "payload": {
+                "code": "unsupportedType",
+                "message": format!("unsupported type: {uri}"),
+                "retryable": false,
+            },
+        })))
+        .expect(times)
+        .mount_as_scoped(server)
+        .await
+}
+
+/// `rooms/keys/act/0.4` first, then 0.3, then 0.2, then 0.1 with the same document.
+#[tokio::test]
+async fn room_act_falls_back_to_0_1() {
+    let server = MockServer::start().await;
+    let member = "did:webvh:example.com:people:alice";
+    let _v4 = mount_unsupported(&server, "https://trusttasks.org/spec/rooms/keys/act/0.4", 1).await;
+    let _v3 = mount_unsupported(&server, "https://trusttasks.org/spec/rooms/keys/act/0.3", 1).await;
+    let _m = mount_only_0_1(
+        &server,
+        "https://trusttasks.org/spec/rooms/keys/act/0.2",
+        "https://trusttasks.org/spec/rooms/keys/act/0.1",
+        json!({
+            "principal": member,
+            "document": {
+                "id": "urn:uuid:00000000-0000-4000-8000-0000000000a2",
+                "type": "https://trusttasks.org/spec/rooms/blobs/upload/commit/0.2",
+                "issuer": member,
+                "recipient": "did:key:zHost",
+                "issuedAt": "2026-01-01T00:05:00Z",
+                "payload": { "uploadId": "u" },
+                "proof": { "type": "DataIntegrityProof" }
+            }
+        }),
+    )
+    .await;
+    let c = client(&server).await;
+    let doc = unsigned_room_request(
+        "https://trusttasks.org/spec/rooms/blobs/upload/commit/0.2",
+        "did:key:zHost",
+        Some(member),
+        json!({ "uploadId": "u" }),
+    )
+    .unwrap();
+    let resp = c.room_act(&doc).await.expect("answered at 0.1");
+    assert_eq!(resp.principal.as_str(), member);
+}
+
+/// The owner's group tasks go at their current version only: a VTA that does not serve it
+/// is reported as such, never asked at a superseded version.
+#[tokio::test]
+async fn room_group_tasks_never_fall_back_to_a_superseded_version() {
+    let server = MockServer::start().await;
+    let room = "did:webvh:example.com:rooms:northwind";
+    let member = "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK";
+    let _add = mount_unsupported(
+        &server,
+        "https://trusttasks.org/spec/rooms/owner/group/add/0.3",
+        1,
+    )
+    .await;
+    let _renew = mount_unsupported(
+        &server,
+        "https://trusttasks.org/spec/rooms/owner/group/renew/0.2",
+        1,
+    )
+    .await;
+    let _remove = mount_unsupported(
+        &server,
+        "https://trusttasks.org/spec/rooms/owner/group/remove/0.3",
+        1,
+    )
+    .await;
+    let c = client(&server).await;
+    let add = c
+        .room_group_add(room, "did:key:zHost", member, "AAEAAgADAAQ", None)
+        .await
+        .map(|_| ());
+    let renew = c
+        .room_group_renew(room, "did:key:zHost", None)
+        .await
+        .map(|_| ());
+    let remove = c
+        .room_group_remove_v0_3(room, "did:key:zHost", member, "room-key", &[], None, None)
+        .await
+        .map(|_| ());
+    for (task, r) in [("add", add), ("renew", renew), ("remove", remove)] {
+        assert!(
+            matches!(r, Err(VtaError::UnsupportedTaskType { .. })),
+            "{task}: {r:?}"
+        );
+    }
+}
+
+/// An `earlierRemovalRefused` is the VTA's answer: it reaches the caller typed, with its
+/// `details`.
+#[tokio::test]
+async fn an_earlier_removal_refused_is_final_and_never_falls_back() {
+    let server = MockServer::start().await;
+    let room = "did:webvh:example.com:rooms:northwind";
+    let earlier = "did:key:z6MkEarlier";
+    let refusal = |code: &str| {
+        ResponseTemplate::new(409).set_body_json(json!({
+            "id": "urn:uuid:00000000-0000-4000-8000-000000000001",
+            "type": "https://trusttasks.org/spec/trust-task-error/0.5",
+            "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+            "payload": {
+                "code": code,
+                "message": "an earlier removal did not take effect",
+                "retryable": true,
+                "details": { "member": earlier, "code": "permissionDenied", "listKept": true },
+            },
+        }))
+    };
+    let _add = Mock::given(method("POST"))
+        .and(path("/trust-tasks"))
+        .and(task_type(
+            "https://trusttasks.org/spec/rooms/owner/group/add/0.3",
+        ))
+        .respond_with(refusal("rooms/owner/group/add:earlierRemovalRefused"))
+        .expect(1)
+        .mount_as_scoped(&server)
+        .await;
+    let _renew = Mock::given(method("POST"))
+        .and(path("/trust-tasks"))
+        .and(task_type(
+            "https://trusttasks.org/spec/rooms/owner/group/renew/0.2",
+        ))
+        .respond_with(refusal("rooms/owner/group/renew:earlierRemovalRefused"))
+        .expect(1)
+        .mount_as_scoped(&server)
+        .await;
+    let c = client(&server).await;
+    for (task, err) in [
+        (
+            "add",
+            c.room_group_add(room, "did:key:zHost", "did:key:z6MkNew", "AAEA", None)
+                .await
+                .map(|_| ())
+                .unwrap_err(),
+        ),
+        (
+            "renew",
+            c.room_group_renew(room, "did:key:zHost", None)
+                .await
+                .map(|_| ())
+                .unwrap_err(),
+        ),
+    ] {
+        match err {
+            VtaError::Rejected { code, details, .. } => {
+                assert_eq!(
+                    code,
+                    format!("rooms/owner/group/{task}:earlierRemovalRefused")
+                );
+                assert_eq!(details.unwrap()["member"], earlier);
+            }
+            other => panic!("{task}: expected the refusal, got {other:?}"),
+        }
+    }
+}
+
+/// `rooms/owner/register/0.2` first; a VTA that does not serve it is asked at 0.1, the
+/// same request, and its answer — 0.2's without `revocation` — read as 0.2's.
+#[tokio::test]
+async fn room_owner_register_falls_back_to_0_1() {
+    let server = MockServer::start().await;
+    let room = "did:webvh:example.com:rooms:northwind";
+    let host = "did:webvh:example.com:northwind-community";
+    let _m = mount_only_0_1(
+        &server,
+        "https://trusttasks.org/spec/rooms/owner/register/0.2",
+        "https://trusttasks.org/spec/rooms/owner/register/0.1",
+        json!({ "roomId": room, "host": host, "epoch": 1 }),
+    )
+    .await;
+    let c = client(&server).await;
+    let resp = c
+        .room_owner_register(vta_sdk::client::RoomRegistration {
+            room_id: room,
+            host_did: host,
+            visibility: "attributed".parse().unwrap(),
+            owner_did: Some("did:webvh:example.com:people:alice"),
+            retention_days: None,
+            retention_policy: None,
+        })
+        .await
+        .expect("answered at 0.1");
+    assert_eq!(resp.epoch.get(), 1);
+    assert!(resp.revocation.is_none());
+}
+
+/// A reply to a community's offer is completed at `rooms/keys/act/0.4` or 0.3, or not at
+/// all: the earlier versions' schema refuses its type, so a VTA without either is reported
+/// as such and never asked at 0.2.
+#[tokio::test]
+async fn room_act_for_an_offer_does_not_fall_back_past_0_3() {
+    let server = MockServer::start().await;
+    let _v4 = mount_unsupported(&server, "https://trusttasks.org/spec/rooms/keys/act/0.4", 1).await;
+    let _v3 = mount_unsupported(&server, "https://trusttasks.org/spec/rooms/keys/act/0.3", 1).await;
+    let _v2 = mount_unsupported(&server, "https://trusttasks.org/spec/rooms/keys/act/0.2", 0).await;
+    let c = client(&server).await;
+    let doc = unsigned_room_request(
+        "https://trusttasks.org/spec/vtc/rooms/offers/list/0.1",
+        "did:webvh:example.com:northwind-community",
+        Some("did:webvh:example.com:people:alice"),
+        json!({}),
+    )
+    .unwrap();
+    let err = c.room_act(&doc).await.expect_err("no 0.3");
+    assert!(matches!(err, VtaError::UnsupportedTaskType { .. }), "{err}");
+}
+
+/// A member's VTA that serves `rooms/keys/act/0.3` but not 0.4 still completes
+/// `vtc/rooms/offers/list/0.1`: asked at 0.4, refused, asked at 0.3.
+#[tokio::test]
+async fn room_act_for_offers_list_0_1_falls_back_to_0_3() {
+    let server = MockServer::start().await;
+    let member = "did:webvh:example.com:people:alice";
+    let _v4 = mount_unsupported(&server, "https://trusttasks.org/spec/rooms/keys/act/0.4", 1).await;
+    let _v3 = Mock::given(method("POST"))
+        .and(path("/trust-tasks"))
+        .and(task_type("https://trusttasks.org/spec/rooms/keys/act/0.3"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(
+                signed_response(json!({
+                    "principal": member,
+                    "document": {
+                        "id": "urn:uuid:00000000-0000-4000-8000-0000000000a4",
+                        "type": "https://trusttasks.org/spec/vtc/rooms/offers/list/0.1",
+                        "issuer": member,
+                        "recipient": "did:webvh:example.com:northwind-community",
+                        "issuedAt": "2026-01-01T00:09:00Z",
+                        "payload": {},
+                        "proof": { "type": "DataIntegrityProof" }
+                    }
+                }))
+                .await,
+            ),
+        )
+        .expect(1)
+        .mount_as_scoped(&server)
+        .await;
+    let c = client(&server).await;
+    let doc = unsigned_room_request(
+        "https://trusttasks.org/spec/vtc/rooms/offers/list/0.1",
+        "did:webvh:example.com:northwind-community",
+        Some(member),
+        json!({}),
+    )
+    .unwrap();
+    let resp = c.room_act(&doc).await.expect("answered at 0.3");
+    assert_eq!(resp.principal.as_str(), member);
+}
+
+/// `vtc/rooms/offers/list/0.2` is completed at `rooms/keys/act/0.4` only: 0.3's closed
+/// table refuses it (`typeNotActable`), so a VTA without 0.4 is reported as
+/// [`VtaError::UnsupportedTaskType`] — the caller's cue to list at 0.1 — and never asked
+/// at 0.3.
+#[tokio::test]
+async fn room_act_for_offers_list_0_2_goes_at_0_4_only() {
+    let server = MockServer::start().await;
+    let _v4 = mount_unsupported(&server, "https://trusttasks.org/spec/rooms/keys/act/0.4", 1).await;
+    let _v3 = mount_unsupported(&server, "https://trusttasks.org/spec/rooms/keys/act/0.3", 0).await;
+    let c = client(&server).await;
+    let doc = unsigned_room_request(
+        "https://trusttasks.org/spec/vtc/rooms/offers/list/0.2",
+        "did:webvh:example.com:northwind-community",
+        Some("did:webvh:example.com:people:alice"),
+        json!({}),
+    )
+    .unwrap();
+    let err = c.room_act(&doc).await.expect_err("no 0.4");
+    assert!(matches!(err, VtaError::UnsupportedTaskType { .. }), "{err}");
+}
+
+// ── rooms/keys/list 0.2 ──────────────────────────────────────────────
+
+/// `include_personal` is the request's `includePersonal`, and only when asked.
+#[tokio::test]
+async fn room_list_asks_for_labels_only_when_told() {
+    let server = MockServer::start().await;
+    let asked = std::sync::Arc::new(std::sync::Mutex::new(Vec::<Value>::new()));
+    let seen = asked.clone();
+    Mock::given(method("POST"))
+        .and(path("/trust-tasks"))
+        .and(task_type("https://trusttasks.org/spec/rooms/keys/list/0.2"))
+        .and(move |req: &wiremock::Request| {
+            if let Ok(v) = serde_json::from_slice::<Value>(&req.body) {
+                seen.lock().unwrap().push(v["payload"].clone());
+            }
+            true
+        })
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(signed_response(json!({ "rooms": [] })).await),
+        )
+        .mount(&server)
+        .await;
+    let c = client(&server).await;
+    c.room_list(false).await.unwrap();
+    c.room_list(true).await.unwrap();
+    let asked = asked.lock().unwrap().clone();
+    assert_eq!(asked, vec![json!({}), json!({ "includePersonal": true })]);
+}

@@ -1,5 +1,12 @@
-// The console's live channel: one `vtc/admin/events/subscribe/0.1` stream per
+// The console's live channel: one `vtc/admin/events/subscribe` stream per
 // session, read over the HTTPS binding's streamed response (0.3 §2.1).
+//
+// At the newest version the community lists in `trust-task-discovery` — 0.4
+// (adds `communityRooms`), 0.3 (adds `directory` and `groups`), 0.2 (adds
+// `rooms`), else 0.1. The topic
+// set is closed per version: a subscription never asks for a topic its
+// version lacks, and a stream's `#response` and hints are documents of the
+// version it was opened at (`LiveVersion`).
 //
 // What it carries is hints — "this topic changed", and for the badge topics
 // "your count is now n" — never records. A hint is acted on only by
@@ -24,19 +31,29 @@
 
 export const SUBSCRIBE_TASK = "https://trusttasks.org/spec/vtc/admin/events/subscribe/0.1";
 export const EVENT_TASK = "https://trusttasks.org/spec/vtc/admin/events/event/0.1";
-const RESPONSE_TYPE = `${SUBSCRIBE_TASK}#response`;
+export const SUBSCRIBE_TASK_V0_2 = "https://trusttasks.org/spec/vtc/admin/events/subscribe/0.2";
+export const EVENT_TASK_V0_2 = "https://trusttasks.org/spec/vtc/admin/events/event/0.2";
+export const SUBSCRIBE_TASK_V0_3 = "https://trusttasks.org/spec/vtc/admin/events/subscribe/0.3";
+export const EVENT_TASK_V0_3 = "https://trusttasks.org/spec/vtc/admin/events/event/0.3";
+export const SUBSCRIBE_TASK_V0_4 = "https://trusttasks.org/spec/vtc/admin/events/subscribe/0.4";
+export const EVENT_TASK_V0_4 = "https://trusttasks.org/spec/vtc/admin/events/event/0.4";
 
 /** What the binding asks for: a stream, or JSON from a server that cannot. */
 export const STREAM_ACCEPT = "text/event-stream, application/json;q=0.5";
 
-/** The shared `Topic` of `vtc/admin/events/_shared/0.1`. */
+/** The shared `Topic` of `vtc/admin/events/_shared/0.4` (0.1's, plus `rooms`,
+ * `directory`, `groups` and `communityRooms`). */
 export type Topic =
   | "actions"
   | "acknowledgements"
   | "joinRequests"
   | "members"
   | "singleAdminMode"
-  | "config";
+  | "config"
+  | "rooms"
+  | "directory"
+  | "groups"
+  | "communityRooms";
 
 /** Every topic the console renders — one subscription for all of them. */
 export const ALL_TOPICS: readonly Topic[] = [
@@ -46,7 +63,61 @@ export const ALL_TOPICS: readonly Topic[] = [
   "members",
   "singleAdminMode",
   "config",
+  "rooms",
+  "directory",
+  "groups",
+  "communityRooms",
 ];
+
+/** The topics 0.3 adds. */
+const V0_3_TOPICS: readonly Topic[] = ["directory", "groups"];
+/** The topic 0.4 adds. */
+const V0_4_TOPICS: readonly Topic[] = ["communityRooms"];
+
+/** One version of the channel: the task it subscribes with, the hints it
+ * accepts, and its closed topic set. */
+export interface LiveVersion {
+  subscribe: string;
+  event: string;
+  topics: readonly Topic[];
+}
+
+export const LIVE_V0_1: LiveVersion = {
+  subscribe: SUBSCRIBE_TASK,
+  event: EVENT_TASK,
+  topics: ALL_TOPICS.filter(
+    (t) => t !== "rooms" && !V0_3_TOPICS.includes(t) && !V0_4_TOPICS.includes(t),
+  ),
+};
+
+/** 0.2 adds `rooms`: the rooms this community hosts and where their files are kept. */
+export const LIVE_V0_2: LiveVersion = {
+  subscribe: SUBSCRIBE_TASK_V0_2,
+  event: EVENT_TASK_V0_2,
+  topics: ALL_TOPICS.filter((t) => !V0_3_TOPICS.includes(t) && !V0_4_TOPICS.includes(t)),
+};
+
+/** 0.3 adds `directory` and `groups`: the member directory and the community's groups. */
+export const LIVE_V0_3: LiveVersion = {
+  subscribe: SUBSCRIBE_TASK_V0_3,
+  event: EVENT_TASK_V0_3,
+  topics: ALL_TOPICS.filter((t) => !V0_4_TOPICS.includes(t)),
+};
+
+/** 0.4 adds `communityRooms`: the rooms the community itself owns, as their
+ * owner sees them — for holders of `vtc.rooms.manage`. */
+export const LIVE_V0_4: LiveVersion = {
+  subscribe: SUBSCRIBE_TASK_V0_4,
+  event: EVENT_TASK_V0_4,
+  topics: ALL_TOPICS,
+};
+
+/** The version to subscribe at, from what `trust-task-discovery` lists. */
+export function liveVersionFor(served: readonly unknown[]): LiveVersion {
+  if (served.includes(SUBSCRIBE_TASK_V0_4)) return LIVE_V0_4;
+  if (served.includes(SUBSCRIBE_TASK_V0_3)) return LIVE_V0_3;
+  return served.includes(SUBSCRIBE_TASK_V0_2) ? LIVE_V0_2 : LIVE_V0_1;
+}
 
 /** The topics whose hints carry a count; any other's `count` is ignored. */
 export const COUNT_TOPICS: readonly Topic[] = ["actions", "acknowledgements", "joinRequests"];
@@ -194,11 +265,23 @@ export class LiveEvents {
   private retryFloorMs = 0;
   private current: LiveStatus = "offline";
 
+  private readonly topics: readonly Topic[];
+
   constructor(
-    private readonly topics: readonly Topic[],
+    topics: readonly Topic[],
     private readonly handlers: LiveEventsHandlers,
     private readonly deps: LiveEventsDeps,
-  ) {}
+    private readonly version: LiveVersion = LIVE_V0_1,
+  ) {
+    // The version's topic set is closed: never ask it for one it lacks.
+    this.topics = topics.filter((t) => version.topics.includes(t));
+  }
+
+  /** The topics the community said it will hint about on the open stream —
+   * empty unless live. */
+  get effectiveTopics(): readonly Topic[] {
+    return this.current === "live" ? this.effective : [];
+  }
 
   get status(): LiveStatus {
     return this.current;
@@ -378,10 +461,10 @@ export class LiveEvents {
 
     if (!opened) {
       // The #response is first, or this is not the stream we asked for.
-      if (parsed.type !== RESPONSE_TYPE) return "close";
+      if (parsed.type !== `${this.version.subscribe}#response`) return "close";
       const topics = Array.isArray(payload.topics)
         ? (payload.topics as unknown[]).filter((t): t is Topic =>
-            (ALL_TOPICS as readonly unknown[]).includes(t),
+            (this.topics as readonly unknown[]).includes(t),
           )
         : [];
       const hb = Number(payload.heartbeatSeconds);
@@ -396,7 +479,7 @@ export class LiveEvents {
       return "opened";
     }
 
-    if (parsed.type !== EVENT_TASK) return "ok"; // not a hint: discard
+    if (parsed.type !== this.version.event) return "ok"; // not a hint: discard
     const topic = payload.topic as Topic;
     if (!this.effective.includes(topic)) return "ok"; // not ours: discard
     if (typeof payload.resumeToken === "string") this.since = payload.resumeToken;

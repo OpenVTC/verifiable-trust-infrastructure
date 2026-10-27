@@ -18,6 +18,7 @@ pub mod external;
 pub mod hpke;
 pub mod nonce;
 pub mod request;
+pub mod storage;
 pub mod template_bootstrap;
 pub mod verify;
 
@@ -28,10 +29,11 @@ pub use bundle::{
 };
 pub use chunk::{ChunkPlaintext, MAX_PAYLOAD_FRAGMENT, VERSION};
 pub use error::SealedTransferError;
-pub use external::{ExternalCredentialPayload, ExternalSecretPayload};
+pub use external::{ExternalCredentialPayload, ExternalSecretPayload, PresignedEntry};
 pub use hpke::{HpkeSealed, generate_keypair, open as hpke_open, seal as hpke_seal};
 pub use nonce::{InMemoryNonceStore, NonceStore};
 pub use request::BootstrapRequest;
+pub use storage::StorageCredentialPayload;
 pub use template_bootstrap::{
     AdminRotationPayload, DidKeyMaterial, DidKeyMaterialV2, KeyPair, SlotKeyPair,
     TemplateBootstrapConfig, TemplateBootstrapPayload, TemplateBootstrapPayloadV2, TemplateOutput,
@@ -146,34 +148,8 @@ pub async fn seal_payload(
 ) -> Result<SealedBundle, SealedTransferError> {
     nonce_store.check_and_record(&bundle_id).await?;
 
-    let mut payload_bytes = Vec::new();
-    ciborium::ser::into_writer(payload, &mut payload_bytes)
-        .map_err(|e| SealedTransferError::CborEncode(e.to_string()))?;
-
-    let total_chunks_usize = payload_bytes.len().div_ceil(MAX_PAYLOAD_FRAGMENT).max(1);
-    let total_chunks: u16 = total_chunks_usize
-        .try_into()
-        .map_err(|_| SealedTransferError::Wire("payload too large for u16 chunk count".into()))?;
-
-    let mut chunks: Vec<ArmoredChunk> = Vec::with_capacity(total_chunks_usize);
-    for i in 0..total_chunks_usize {
-        let start = i * MAX_PAYLOAD_FRAGMENT;
-        let end = (start + MAX_PAYLOAD_FRAGMENT).min(payload_bytes.len());
-        let fragment = payload_bytes[start..end].to_vec();
-        let chunk_index = i as u16;
-        let plaintext = ChunkPlaintext {
-            version: VERSION,
-            bundle_id,
-            chunk_index,
-            total_chunks,
-            producer_did: if i == 0 {
-                Some(producer.producer_did.clone())
-            } else {
-                None
-            },
-            producer_assertion: if i == 0 { Some(producer.clone()) } else { None },
-            payload_fragment: fragment,
-        };
+    let mut chunks = Vec::new();
+    for plaintext in chunk_plaintexts(payload, bundle_id, &producer)? {
         let aad = plaintext.aad(DEFAULT_DIGEST_ALGO);
         let mut pt_cbor = Vec::new();
         ciborium::ser::into_writer(&plaintext, &mut pt_cbor)
@@ -183,8 +159,8 @@ pub async fn seal_payload(
         ciborium::ser::into_writer(&sealed, &mut sealed_cbor)
             .map_err(|e| SealedTransferError::CborEncode(e.to_string()))?;
         chunks.push(ArmoredChunk {
-            chunk_index,
-            total_chunks,
+            chunk_index: plaintext.chunk_index,
+            total_chunks: plaintext.total_chunks,
             sealed_bytes: sealed_cbor,
         });
     }
@@ -194,6 +170,84 @@ pub async fn seal_payload(
         digest_algo: DEFAULT_DIGEST_ALGO.to_string(),
         chunks,
     })
+}
+
+/// Split `payload`'s CBOR encoding into the chunk plaintexts [`seal_payload`]
+/// seals, one HPKE call each; chunk 0 carries the producer.
+fn chunk_plaintexts(
+    payload: &SealedPayloadV1,
+    bundle_id: [u8; 16],
+    producer: &ProducerAssertion,
+) -> Result<Vec<ChunkPlaintext>, SealedTransferError> {
+    let mut payload_bytes = Vec::new();
+    ciborium::ser::into_writer(payload, &mut payload_bytes)
+        .map_err(|e| SealedTransferError::CborEncode(e.to_string()))?;
+
+    let total_chunks_usize = payload_bytes.len().div_ceil(MAX_PAYLOAD_FRAGMENT).max(1);
+    let total_chunks: u16 = total_chunks_usize
+        .try_into()
+        .map_err(|_| SealedTransferError::Wire("payload too large for u16 chunk count".into()))?;
+
+    Ok((0..total_chunks_usize)
+        .map(|i| {
+            let start = i * MAX_PAYLOAD_FRAGMENT;
+            let end = (start + MAX_PAYLOAD_FRAGMENT).min(payload_bytes.len());
+            ChunkPlaintext {
+                version: VERSION,
+                bundle_id,
+                chunk_index: i as u16,
+                total_chunks,
+                producer_did: (i == 0).then(|| producer.producer_did.clone()),
+                producer_assertion: (i == 0).then(|| producer.clone()),
+                payload_fragment: payload_bytes[start..end].to_vec(),
+            }
+        })
+        .collect())
+}
+
+/// The longest armored text [`seal_payload`] can produce for `payload` from
+/// `producer`, computed without sealing anything.
+///
+/// The length of a sealed bundle is not a function of its payload's length
+/// alone: each chunk's HPKE ciphertext — random bytes — is carried as a CBOR
+/// array of integers, one byte for a value below 24 and two for any other, and
+/// the bundle id is carried the same way inside the plaintext. This takes every
+/// such byte at its widest (and the AEAD tag at its fixed 16 bytes), so the
+/// armor of every bundle `seal_payload` makes of this payload is at most this
+/// long, whatever the randomness. A producer that must keep its answer under a
+/// bound (`external/credentials/issue/0.3` item 7) can tell from it how much of
+/// a payload is certain to fit.
+pub fn sealed_armor_len_bound(
+    payload: &SealedPayloadV1,
+    producer: &ProducerAssertion,
+) -> Result<usize, SealedTransferError> {
+    /// ChaCha20-Poly1305's tag, appended to every HPKE ciphertext.
+    const AEAD_TAG_LEN: usize = 16;
+    let widest_id = [0xff; 16];
+    let mut chunks = Vec::new();
+    for plaintext in chunk_plaintexts(payload, widest_id, producer)? {
+        let mut pt_cbor = Vec::new();
+        ciborium::ser::into_writer(&plaintext, &mut pt_cbor)
+            .map_err(|e| SealedTransferError::CborEncode(e.to_string()))?;
+        let widest = HpkeSealed {
+            kem_encap: [0xff; 32],
+            aead_ciphertext: vec![0xff; pt_cbor.len() + AEAD_TAG_LEN],
+        };
+        let mut sealed_cbor = Vec::new();
+        ciborium::ser::into_writer(&widest, &mut sealed_cbor)
+            .map_err(|e| SealedTransferError::CborEncode(e.to_string()))?;
+        chunks.push(ArmoredChunk {
+            chunk_index: plaintext.chunk_index,
+            total_chunks: plaintext.total_chunks,
+            sealed_bytes: sealed_cbor,
+        });
+    }
+    Ok(armor::encode(&SealedBundle {
+        bundle_id: widest_id,
+        digest_algo: DEFAULT_DIGEST_ALGO.to_string(),
+        chunks,
+    })
+    .len())
 }
 
 /// The result of opening a sealed bundle: the payload, plus the producer
@@ -390,6 +444,47 @@ mod tests {
         ProducerAssertion {
             producer_did,
             proof: AssertionProof::PinnedOnly,
+        }
+    }
+
+    /// The bound holds for every seal, single- and multi-chunk, and is close:
+    /// a producer refusing on it gives up little.
+    #[tokio::test]
+    async fn no_seal_is_longer_than_the_armor_bound() {
+        use super::external::{ExternalCredentialPayload, PresignedEntry};
+        let (_prod_sk, prod_pk) = generate_ed25519_keypair();
+        let producer = sample_assertion(affinidi_crypto::did_key::ed25519_pub_to_did_key(&prod_pk));
+        let store = InMemoryNonceStore::new();
+        for n in [1usize, 8, 64] {
+            let entry = |i: usize| PresignedEntry {
+                index: i as u32,
+                operation: "upload-part".into(),
+                method: "PUT".into(),
+                url: format!("https://s3.example/b/{}?partNumber={i}", "k".repeat(1024)),
+                headers: [("Content-Length".to_string(), "5242880".to_string())].into(),
+                expires_at: "2026-10-10T10:05:00Z".into(),
+            };
+            let payload = SealedPayloadV1::ExternalCredential(Box::new(
+                ExternalCredentialPayload::PresignedRequests {
+                    requests: (0..n).map(entry).collect(),
+                    expires_at: "2026-10-10T10:05:00Z".into(),
+                },
+            ));
+            let bound = sealed_armor_len_bound(&payload, &producer).unwrap();
+            for _ in 0..16 {
+                let (_sk, pk) = generate_keypair();
+                let mut id = [0u8; 16];
+                getrandom::fill(&mut id).unwrap();
+                let bundle = seal_payload(&pk, id, producer.clone(), &payload, &store)
+                    .await
+                    .unwrap();
+                let len = armor::encode(&bundle).len();
+                assert!(len <= bound, "{n} entries: sealed {len} > bound {bound}");
+                assert!(
+                    bound - len < bound / 10,
+                    "{n} entries: bound {bound} is far above sealed {len}"
+                );
+            }
         }
     }
 

@@ -57,10 +57,9 @@ pub const UPDATE_ERR_ADMIN_ROLE_FORBIDDEN: &str =
 /// rejoin, which writes a fresh member row). An administrator may **withdraw**
 /// it — a takedown, which the registry syncer turns into a delete of the
 /// member's record — but never grant it, or an administrator could publish
-/// someone who said no. Minted under the task's namespace (SPEC §8.5); see
-/// [`vta_sdk::protocols::members::MEMBER_UPDATE_ERR_CONSENT_GRANT_FORBIDDEN`].
+/// someone who said no. Declared by the specification (trust-tasks-tf #789).
 pub const UPDATE_ERR_CONSENT_GRANT_FORBIDDEN: &str =
-    vta_sdk::protocols::members::MEMBER_UPDATE_ERR_CONSENT_GRANT_FORBIDDEN;
+    trust_tasks_rs::specs::vtc::members::update::v0_1::error_codes::CONSENT_GRANT_FORBIDDEN.code;
 use crate::members::{Disposition, Member, get_member, store_member};
 use crate::routes::members::read::{MemberEnvelope, MemberResponse};
 use crate::server::AppState;
@@ -274,6 +273,21 @@ pub(crate) async fn update_member_inner(
         store_member(&state.members_ks, &member).await?;
     }
     drop(edit_guard);
+
+    // An external card hangs off registry-publication consent (VTI-DIR-047):
+    // withdrawn with it.
+    if fields_changed.iter().any(|f| f == "publishConsent")
+        && !member.publish_consent
+        && let Some(entry_id) =
+            crate::directory::cards::entry_of(state.directory.ks(), &member.did).await?
+    {
+        crate::directory::external::withdraw(
+            state,
+            &entry_id,
+            crate::directory::external::Withdrawal::Consent,
+        )
+        .await?;
+    }
 
     // The label lives on the ACL row, not the member row. Written before any
     // role change so the ceremony (which re-reads the ACL entry) picks it up

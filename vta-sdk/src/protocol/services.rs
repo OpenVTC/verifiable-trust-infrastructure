@@ -449,6 +449,7 @@ pub enum ServiceState {
 /// convention from `DisableDidcommResponse::drains_until`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[non_exhaustive]
 pub struct ServiceMutationResponse {
     /// Version-id of the new WebVH LogEntry produced by the
     /// mutation. Joins telemetry events to chain history.
@@ -476,6 +477,22 @@ pub struct ServiceMutationResponse {
     /// clients treat absent → false (no spurious hint).
     #[serde(default)]
     pub serverless: bool,
+    /// Vendor extensions returned by the VTA. DIDComm enable uses
+    /// `ext.org.openvtc.restarting` to tell clients to wait for the
+    /// restarted listener before continuing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ext: Option<serde_json::Value>,
+}
+
+impl ServiceMutationResponse {
+    pub fn is_restarting(&self) -> bool {
+        self.ext
+            .as_ref()
+            .and_then(|ext| ext.get("org.openvtc"))
+            .and_then(|namespace| namespace.get("restarting"))
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false)
+    }
 }
 
 #[cfg(test)]
@@ -610,6 +627,7 @@ mod tests {
             drain_until: None,
             vta_did: "did:webvh:scid:host:vta".into(),
             serverless: false,
+            ext: None,
         };
         let json = serde_json::to_value(&rest_response).unwrap();
         assert_eq!(json["log_entry_version_id"], "1-zQm...A");
@@ -627,6 +645,7 @@ mod tests {
             drain_until: Some("2026-05-07T13:00:00Z".into()),
             vta_did: "did:webvh:scid:host:vta".into(),
             serverless: true,
+            ext: None,
         };
         let json = serde_json::to_value(&didcomm_response).unwrap();
         assert_eq!(json["drain_until"], "2026-05-07T13:00:00Z");
@@ -634,6 +653,25 @@ mod tests {
         assert_eq!(json["serverless"], true);
         let restored: ServiceMutationResponse = serde_json::from_value(json).unwrap();
         assert_eq!(restored, didcomm_response);
+    }
+
+    #[test]
+    fn mutation_restart_extension_is_optional_and_detected() {
+        let legacy: ServiceMutationResponse = serde_json::from_value(serde_json::json!({
+            "log_entry_version_id": "1-zQm...A",
+            "effective_at": "2026-05-06T13:00:00Z",
+            "serverless": false
+        }))
+        .unwrap();
+        assert!(!legacy.is_restarting());
+
+        let restarting = ServiceMutationResponse {
+            ext: Some(serde_json::json!({
+                "org.openvtc": { "restarting": true }
+            })),
+            ..legacy
+        };
+        assert!(restarting.is_restarting());
     }
 
     /// Back-compat: older servers don't emit `vta_did` /

@@ -114,16 +114,21 @@ pub fn for_operation(
 /// A room operation, as an audit log names it.
 ///
 /// The authority action is not enough to name an operation, and the gap is not cosmetic.
-/// Three distinct operations gate on `admin` — minting an epoch, handing the room to
-/// someone, and a successor taking it — and an audit trail that recorded all three as
-/// `room.epoch.mint` would be at its least informative at exactly the moment someone reads
-/// it, which is after an ownership change they did not expect.
+/// Several distinct operations gate on `admin` — minting an epoch, pruning the epoch key
+/// chain, handing the room to someone, and a successor taking it — and an audit trail that
+/// recorded them all as `room.epoch.mint` would be at its least informative at exactly the
+/// moment someone reads it, which is after an ownership change or a lost history they did
+/// not expect.
 ///
 /// So the handler names the operation and the required action is *derived* from it
 /// ([`RoomOperation::required_action`]). That direction matters: it is the one that cannot
 /// drift. A handler cannot gate on `read` while logging a transfer, because it does not get
 /// to choose both.
+///
+/// `#[non_exhaustive]`: the room task surface keeps growing, and each new operation gets a
+/// name of its own here rather than borrowing a neighbour's.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum RoomOperation {
     /// Read one record.
     GetRecord,
@@ -137,10 +142,24 @@ pub enum RoomOperation {
     CurateRecord,
     /// Advance the epoch — which is also what renews the room.
     MintEpoch,
+    /// `rooms/epoch/prune`: drop the epoch key chain below an epoch. Irreversible, and
+    /// never a mint — a log that called it one would hide the one event that ends a span
+    /// of the room's readable history.
+    PruneEpoch,
+    /// `rooms/records/prune`: remove the records the room's record retention makes
+    /// eligible. Irreversible; the audit row keeps the mark, the reason and the rule, never
+    /// a removed record.
+    PruneRecords,
+    /// `rooms/records/retention/set`: replace the room's record retention.
+    SetRecordRetention,
     /// The owner hands the room to another member.
     TransferOwner,
     /// A nominated successor takes a dormant room.
     ClaimOwner,
+    /// `rooms/revocations/put`: an administrator delivered the room's revocation list.
+    PutRevocations,
+    /// `rooms/revocations/get`: an administrator read the list this host holds.
+    GetRevocations,
 }
 
 impl RoomOperation {
@@ -152,8 +171,13 @@ impl RoomOperation {
             RoomOperation::PutRecord => "room.records.put",
             RoomOperation::CurateRecord => "room.records.curate",
             RoomOperation::MintEpoch => "room.epoch.mint",
+            RoomOperation::PruneEpoch => "room.epoch.prune",
+            RoomOperation::PruneRecords => "room.records.prune",
+            RoomOperation::SetRecordRetention => "room.records.retention.set",
             RoomOperation::TransferOwner => "room.owner.transfer",
             RoomOperation::ClaimOwner => "room.owner.claim",
+            RoomOperation::PutRevocations => "room.revocations.put",
+            RoomOperation::GetRevocations => "room.revocations.get",
         }
     }
 
@@ -171,7 +195,13 @@ impl RoomOperation {
             }
             RoomOperation::PutRecord => Action::Write,
             RoomOperation::CurateRecord => Action::Curate,
-            RoomOperation::MintEpoch | RoomOperation::TransferOwner => Action::Admin,
+            RoomOperation::MintEpoch
+            | RoomOperation::PruneEpoch
+            | RoomOperation::PruneRecords
+            | RoomOperation::SetRecordRetention
+            | RoomOperation::TransferOwner
+            | RoomOperation::PutRevocations
+            | RoomOperation::GetRevocations => Action::Admin,
         }
     }
 }
@@ -202,6 +232,7 @@ mod tests {
                 subject: presenter.to_string(),
                 actions: vec!["read".into(), "write".into()],
                 member: Some(presenter.to_string()),
+                presented: Default::default(),
             })
         }
     }
@@ -220,15 +251,26 @@ mod tests {
             created_at: 0,
             updated_at: 0,
             mirror_of: None,
+            record_retention: None,
+            last_prune: None,
+            epoch_floor: None,
         };
         let presentation = AuthorityPresentation {
             membership: "vmc".into(),
             authority: vec!["vac".into()],
             subject_binding: Some("binding".into()),
         };
-        authorize(&room, &presentation, Action::Read, PRESENTER, NOW, &Vouches)
-            .await
-            .expect("authorized")
+        authorize(
+            &room,
+            &presentation,
+            Action::Read,
+            PRESENTER,
+            NOW,
+            &Vouches,
+            crate::revocation::test_keyspace(),
+        )
+        .await
+        .expect("authorized")
     }
 
     #[tokio::test]
@@ -304,6 +346,9 @@ mod tests {
             RoomOperation::PutRecord,
             RoomOperation::CurateRecord,
             RoomOperation::MintEpoch,
+            RoomOperation::PruneEpoch,
+            RoomOperation::PruneRecords,
+            RoomOperation::SetRecordRetention,
             RoomOperation::TransferOwner,
             RoomOperation::ClaimOwner,
         ];
@@ -330,6 +375,18 @@ mod tests {
             RoomOperation::TransferOwner.required_action(),
             Action::Admin,
             "an owner handing the room away is the most consequential thing they do"
+        );
+    }
+
+    /// A prune is `admin` (rooms/epoch/prune/0.2 *Authorization*: not `curate`, which every
+    /// writer holds) and is logged as a prune — never as the mint it sits beside.
+    #[test]
+    fn a_prune_is_admin_and_named_as_a_prune() {
+        assert_eq!(RoomOperation::PruneEpoch.required_action(), Action::Admin);
+        assert_eq!(RoomOperation::PruneEpoch.action_name(), "room.epoch.prune");
+        assert_ne!(
+            RoomOperation::PruneEpoch.action_name(),
+            RoomOperation::MintEpoch.action_name()
         );
     }
 }

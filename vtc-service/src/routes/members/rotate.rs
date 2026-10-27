@@ -301,15 +301,16 @@ pub struct FinishResponse {
 pub(crate) async fn rotate_inner(
     state: &AppState,
     caller_did: &str,
-    body: FinishBody,
+    mut body: FinishBody,
 ) -> Result<FinishResponse, TaskError> {
     let audit_writer = state
         .audit_writer
         .as_ref()
         .ok_or_else(|| AppError::Internal("audit_writer not initialised".into()))?;
 
-    // 1. Authenticated session must match `oldDid`.
-    if caller_did != body.old_did {
+    // 1. Authenticated session must match `oldDid` — by identity, so a
+    //    did:scid member that signed in with its `src` matches (VTI-KEY-160).
+    if !vta_sdk::did_scid::same_reference(caller_did, &body.old_did) {
         return Err(AppError::Forbidden(format!(
             "authenticated DID ({caller_did}) does not match oldDid ({})",
             body.old_did
@@ -382,7 +383,9 @@ pub(crate) async fn rotate_inner(
     match method {
         "did:key" => verify_did_key_signature(&body.new_did, &payload, &body.new_signature)
             .map_err(|e| signature_invalid(format!("newSignature failed: {e}")))?,
-        "did:webvh" => {
+        // A did:scid:vh:1 is verified like the did:webvh log it resolves
+        // through, by its own document (VTI-KEY-161).
+        "did:webvh" | "did:scid" => {
             let resolver = state.did_resolver.as_ref().ok_or_else(|| {
                 AppError::Internal(
                     "DID resolver not configured — did:webvh rotation requires it".into(),
@@ -399,6 +402,11 @@ pub(crate) async fn rotate_inner(
             .into());
         }
     }
+    // The member is recorded under the identity it presented: a did:scid's DID,
+    // without the `src` its signature was resolved through (VTI-KEY-164,
+    // VTI-VTC-004).
+    body.new_did = vta_sdk::did_scid::identity(&body.new_did);
+    body.old_did = vta_sdk::did_scid::identity(&body.old_did);
 
     // 6. Refuse if the new DID already has an ACL row (would
     //    collide).
@@ -410,21 +418,19 @@ pub(crate) async fn rotate_inner(
         .into());
     }
 
-    // 7. Move the ACL row. `KeyspaceHandle::swap` runs the
-    // insert-new + remove-old pair inside a single blocking closure
-    // so no async yield can land between them — the previous
+    // 6a. The member's election tickets follow them (VTI-VOT-022), before anything moves and
+    //     with issuance held until the rotation is done.
+    let _tickets = state
+        .elections
+        .carry_tickets(&body.old_did, &body.new_did)
+        .await?;
+
+    // 7. Move the ACL row. `KeyspaceHandle::swap` commits the
+    // insert-new + remove-old pair as one write batch — one journal
+    // record, so a crash replays both or neither. The previous
     // sequential store/delete pattern had a window where a crash or
     // a competing handler could observe both rows live and treat
     // the rotated member as having two valid identities.
-    //
-    // A process crash between the two fjall calls inside `swap` is
-    // still observable on next boot (fjall's WAL persists each call
-    // individually, not as a batch). That residual gap is a
-    // `fjall::WriteBatch` upgrade in `vti-common` away from being
-    // fully atomic; until then, a reconciliation step at boot would
-    // need to look for `(old_did, new_did)` pairs and complete the
-    // rotation. Tracked as a follow-up since the window shrinks
-    // from milliseconds to microseconds here.
     let mut acl = get_acl_entry(&state.acl_ks, &body.old_did)
         .await?
         .ok_or_else(|| {
@@ -472,6 +478,10 @@ pub(crate) async fn rotate_inner(
             .into());
         }
     }
+
+    // 8a. The directory card follows, keeping its entry identifier: everything
+    // that refers to the entry is unaffected (VTI-DIR-122).
+    crate::directory::cards::rotate(state.directory.ks(), &body.old_did, &body.new_did).await?;
 
     // 8b. A rotated administrator is the same granter under a new name, not a
     // departed one: the entries it delegated follow it (VTI-ACL-071).
@@ -533,16 +543,19 @@ pub(crate) async fn rotate_inner(
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// Wire-form DID method prefix — `did:key` or `did:webvh`. Used
-/// by the rotation endpoint's method-detection step.
+/// Wire-form DID method prefix — `did:key`, `did:webvh` or `did:scid` (a
+/// `did:scid:vh:1`, VTI-KEY-001). Used by the rotation endpoint's
+/// method-detection step.
 fn method_of(did: &str) -> Result<&'static str, AppError> {
     if did.starts_with("did:key:") {
         Ok("did:key")
     } else if did.starts_with("did:webvh:") {
         Ok("did:webvh")
+    } else if did.starts_with(vta_sdk::did_scid::SCID_VH_PREFIX) {
+        Ok("did:scid")
     } else {
         Err(AppError::Validation(format!(
-            "DID '{did}' is not did:key or did:webvh"
+            "DID '{did}' is not did:key, did:webvh or did:scid:vh:1"
         )))
     }
 }
@@ -708,6 +721,16 @@ mod tests {
     #[test]
     fn method_of_recognises_did_webvh() {
         assert_eq!(method_of("did:webvh:example.com:abc").unwrap(), "did:webvh");
+    }
+
+    #[test]
+    fn method_of_recognises_did_scid() {
+        assert_eq!(method_of("did:scid:vh:1:QmScid").unwrap(), "did:scid");
+        assert_eq!(
+            method_of("did:scid:vh:1:QmScid?src=example.com").unwrap(),
+            "did:scid"
+        );
+        assert!(method_of("did:scid:ke:1:QmScid?src=example.com").is_err());
     }
 
     #[test]

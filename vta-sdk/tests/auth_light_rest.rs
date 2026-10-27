@@ -287,6 +287,56 @@ async fn mount_authenticate(server: &MockServer, expires_at: u64) {
 
 // ── challenge_response_light ────────────────────────────────────────
 
+/// A login behind a busy IP: authenticate is refused by the VTA's limiter.
+/// The client must wait and redeem the challenge it holds — asking for a new
+/// one would spend the token its authenticate needed, and leave the old
+/// challenge pending against the DID's cap.
+#[tokio::test]
+async fn a_rate_limited_authenticate_is_retried_with_the_same_challenge() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/trust-tasks"))
+        .and(header(
+            "Trust-Task",
+            vta_sdk::trust_tasks::TASK_AUTH_CHALLENGE_0_1,
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "challenge": CHALLENGE,
+            "sessionId": "sess-test",
+            "expiresAt": "2099-12-31T23:59:59Z"
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/trust-tasks"))
+        .and(header(
+            "Trust-Task",
+            vta_sdk::trust_tasks::TASK_AUTH_AUTHENTICATE_0_2,
+        ))
+        .respond_with(
+            ResponseTemplate::new(429)
+                .insert_header("x-rate-limit-source", "vta")
+                .insert_header("x-rate-limit-scope", "auth-authenticate")
+                .insert_header("retry-after", "1"),
+        )
+        .up_to_n_times(1)
+        .with_priority(1)
+        .mount(&server)
+        .await;
+    mount_authenticate(&server, now_secs() + 900).await;
+
+    let (client_did, client_priv) = did_key_from_seed(0x11);
+    let (vta_did, _) = did_key_from_seed(0x22);
+    let http = reqwest::Client::new();
+    let result =
+        challenge_response_light(&http, &server.uri(), &client_did, &client_priv, &vta_did)
+            .await
+            .expect("the login completes after waiting out the limit");
+    assert_eq!(result.access_token, "access-jwt");
+    // `.expect(1)` on the challenge mock is verified when `server` drops.
+}
+
 #[tokio::test]
 async fn challenge_response_success_returns_tokens() {
     let server = MockServer::start().await;

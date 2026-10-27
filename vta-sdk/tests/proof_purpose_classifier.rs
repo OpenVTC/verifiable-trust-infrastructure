@@ -19,7 +19,6 @@ fn purpose_of(uri: &str) -> ProofPurpose {
 #[test]
 fn a_type_that_is_not_a_type_uri_is_not_classified() {
     for uri in [
-        "HTTPS://trusttasks.org/spec/task-consent/decision/0.1",
         "https://trusttasks.org/spec/Task-Consent/decision/0.1",
         "https://trusttasks.org/spec/task-consent/decision/0.1#Response",
         "https://trusttasks.org/spec/task-consent/decision/0.1#attestation",
@@ -39,6 +38,7 @@ fn approver_decisions_are_signed_for_assertion_method() {
         // The wallet sign-in grant is the approving DID's attestation
         // (VTI-KEY-106; sign-in trigger-link contract C5).
         "https://trusttasks.org/spec/auth/oob/grant/0.1",
+        "https://trusttasks.org/spec/auth/oob/grant/0.2",
     ] {
         assert_eq!(purpose_of(uri), ProofPurpose::AssertionMethod, "{uri}");
     }
@@ -59,6 +59,11 @@ fn operational_documents_are_signed_for_authentication() {
         // Lookalike authorities are private registries, not the registry.
         "https://trusttasks.org.example/spec/task-consent/decision/0.1",
         "https://TrustTasks.org/spec/task-consent/decision/0.1",
+        // Since trust-tasks-rs 0.35 a Type URI may name any scheme but
+        // `http`, compared case-insensitively, so this parses. Its authority
+        // is kept as written, so it is not the registry's and gets no
+        // attestation purpose.
+        "HTTPS://trusttasks.org/spec/task-consent/decision/0.1",
         "https://trusttasks.org:443/spec/task-consent/decision/0.1",
         "https://user@trusttasks.org/spec/task-consent/decision/0.1",
         // A slug that only ends in, or nests, an attestation slug.

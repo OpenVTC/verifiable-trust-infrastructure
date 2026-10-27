@@ -13,9 +13,9 @@
 # upload a policy with the `private` clause removed.
 #
 # The input carries the creator (with their community standing) and the room's
-# identifier, visibility and owner. It deliberately does NOT carry the hosting
+# identifier, visibility and owner, and whether the community itself is to own it. It deliberately does NOT carry the hosting
 # axes the design sketches (`didControlledBy` / `contentStoredAt`): the
-# published `rooms/create/0.1` schema has no member for either, so no host can
+# published `rooms/create/0.2` schema has no member for either, so no host can
 # know them, and inventing them locally would put this service's rooms out of
 # conformance with the schema every other host reads.
 
@@ -31,18 +31,28 @@ default decision := {"effect": "deny", "with": {
 	"reason": "this community hosts rooms for its own members",
 }}
 
+# Who this community lends its disk to: a member for a room of their own, and the
+# community itself for a room it owns (`vtc/rooms/community/create`, where
+# `input.room.communityOwned` is true and `input.actor` is the administrator asking,
+# who already holds `vtc.rooms.manage`).
+eligible if input.actor.member == true
+
+eligible if input.room.communityOwned == true
+
 # A private room asks this community to store content it cannot read, for
-# members it cannot enumerate. Permitted only once an operator has said so.
+# members it cannot enumerate. Permitted only once an operator has said so —
+# for the community's own rooms too.
 decision := {"effect": "deny", "with": {
 	"code": "private-tier-not-enabled",
 	"reason": "this community has not enabled private rooms; upload a rooms policy that permits them",
 }} if {
-	input.actor.member == true
+	eligible
 	input.room.visibility == "private"
 }
 
-# The ordinary case: a member creating a room whose tier this community serves.
+# The ordinary case: a member, or the community, creating a room whose tier this
+# community serves.
 else := {"effect": "allow"} if {
-	input.actor.member == true
+	eligible
 	input.room.visibility in {"open", "attributed"}
 }

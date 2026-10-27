@@ -2,6 +2,44 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.23.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-support-v0.22.0...vta-support-v0.23.0) — 2026-10-26
+
+
+### Fixed
+
+- **vta-support**: The versionTime wait budgets whole-millisecond sleeps ([#2262](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2262))
+
+wait_until_not_future charged each sleep as the exact time remaining, but
+  Tokio's timer sleeps in whole milliseconds. Once the clock sat microseconds
+  short of the target, every pass slept 1ms and was charged microseconds, so the
+  total sleep could run past MAX_WAIT_SECONDS. Under paused time this showed up
+  as waits_for_rapid_back_to_back_calls failing intermittently with
+  elapsed=5.252s against the 5s budget.
+
+  Each sleep is now rounded up to a whole millisecond and counted as such, so
+  the budget matches what is slept. A new test drives a clock that creeps by a
+  microsecond per pass and fails on the old accounting.
+
+
+
+## [0.22.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-support-v0.21.0...vta-support-v0.22.0) — 2026-10-18
+
+
+## [0.21.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-support-v0.20.0...vta-support-v0.21.0) — 2026-10-18
+
+
+## [0.20.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-support-v0.19.0...vta-support-v0.20.0) — 2026-10-16
+
+
+## [0.19.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-support-v0.18.0...vta-support-v0.19.0) — 2026-10-15
+
+
+## [0.18.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-support-v0.17.0...vta-support-v0.18.0) — 2026-10-13
+
+
+## [0.17.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-support-v0.16.0...vta-support-v0.17.0) — 2026-10-12
+
+
 ## [0.16.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-support-v0.15.0...vta-support-v0.16.0) — 2026-10-11
 
 

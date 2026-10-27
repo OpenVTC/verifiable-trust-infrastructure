@@ -30,9 +30,11 @@ storage, and signed enclave images.
 > **Only the tenant-scoped fields are overlay-settable** — `tee.kms.key_arn`
 > (validated against the baked `tee.allowed_kms_accounts`; region is derived from
 > the ARN), `tee.kms.vta_did_template`, `messaging.mediator_did`/
-> `mediator_url`, `public_url`, `vta_name`, and the KMS-sealed anchor fields.
+> `mediator_url`, `public_url`, `vta_name`, the KMS-sealed anchor fields, and
+> the operation budgets (`server.operation_rate_limit_*`, sized for the
+> instance; see `docs/02-vta/rate-limiting.md`).
 > Everything else — `tee.mode`, every `allow_*` break-glass flag, `admin_did`,
-> `resolver_url`, `server.*`, `store.*`, `policy.*`, **and a bare `vta_did`** — is
+> `resolver_url`, the rest of `server.*`, `store.*`, `policy.*`, **and a bare `vta_did`** — is
 > baked or provisioned in-enclave and **structurally cannot** be carried by the
 > overlay type. (The VTA's own identity is *provisioned* from
 > `vta_did_template` — the enclave derives the keys and signs the `did:webvh`
@@ -64,7 +66,14 @@ storage, and signed enclave images.
 > admin_did`. With the typed overlay those can no longer be *delivered* at all —
 > the floor now guards against a bug in the merge, not a malicious parent. Leave
 > `admin_did` unset and use the attested sealed-bootstrap flow (Mode B,
-> `POST /bootstrap/request`).
+> `POST /bootstrap/request`). Only the overlay's `bootstrap_claim_did` — minted
+> by the operator with `pnm bootstrap claim-did create` before the VTA exists —
+> can claim it, and the enclave enrols that DID itself as an expiring bootstrap
+> admin that `connect` hands over to a key it mints locally (#2066); without
+> one, no claim is accepted. Because the parent delivers
+> that DID, it is part of the attested config digest below: verify it like
+> `key_arn`, and treat a `403` from `pnm bootstrap connect` as a substituted
+> claim DID.
 >
 > **Config attestation anchor — and the verification step it REQUIRES.** Because
 > the parent supplies `tee.kms.key_arn`, on first boot the enclave generates its
@@ -1062,26 +1071,37 @@ The proxy starts four channels:
 | Storage | `Enclave → vsock:5500 → fjall on EBS` | Persistent K/V store |
 | DID Resolver | `Enclave → vsock:5600 → resolver sidecar` | DID resolution (WebSocket) |
 
-### Storage: atomic operations and version compatibility
+### Storage: atomic operations, bounded scan, and version compatibility
 
 The storage channel carries ciphertext only: the enclave encrypts every value
 (AES-256-GCM, bound to keyspace and key) before it reaches the parent. Beyond
-get / insert / delete / prefix scans, the proxy serves four atomic operations
-the enclave uses for claims and moves: **take** (get + delete — a refresh
-token is single-use because of it), **insert-if-absent**, **swap-if-absent**
-and **move-if-equal**. Each runs under the keyspace's lock in the parent, in
-one round trip instead of two to four. Move-if-equal compares the stored
-ciphertext with bytes the enclave has just read and compared in plaintext
-itself, so the parent never needs plaintext for any of them.
+get / insert / delete / prefix scans, the proxy serves five opcodes negotiated
+the same way: four atomic operations the enclave uses for claims and moves —
+**take** (get + delete — a refresh token is single-use because of it),
+**insert-if-absent**, **swap-if-absent** and **move-if-equal** — each running
+under the keyspace's lock in the parent in one round trip instead of two to
+four; and **bounded scan**, which returns an ordered, size-capped page of a
+keyspace (prefix, optional cursor, limit, direction) in one round trip instead
+of transferring the whole prefix and paging client-side. Move-if-equal
+compares the stored ciphertext with bytes the enclave has just read and
+compared in plaintext itself, so the parent never needs plaintext for any of
+them; scan returns ciphertext rows unchanged, same as get.
 
-**Either side may be upgraded first.** At connect the enclave asks the proxy
-which atomic operations it serves (`HELLO`). A proxy that predates them
-answers "unknown opcode", and the enclave uses single operations instead, under
-its own per-key locks — the same exactly-one guarantee, more round trips. A
-proxy replaced by an older build while the enclave runs is detected the same
-way on the next atomic operation, which falls back without failing. A newer
-proxy serves an older enclave unchanged: the older enclave never sends the new
-opcodes.
+**Either side may be upgraded first.** At connect the enclave sends one
+`HELLO` and caches the bitmask of opcodes the proxy answers with — one bit per
+atomic operation plus one for scan. A proxy that predates `HELLO` answers
+"unknown opcode" to it, read as "none" rather than an error, and the enclave
+uses the older per-operation path for everything instead: single operations
+under its own per-key locks for the atomic ops (same exactly-one guarantee,
+more round trips), and one unbounded `prefix_iter_raw` filtered and paged
+client-side for scan (bounded to 16 MiB; a response that would exceed it is a
+proxy-upgrade error, not a retry). A proxy replaced by an older build while
+the enclave runs is detected the same way on the next call to an opcode the
+enclave believed was supported: that one request falls back without failing,
+the affected capability bit is cleared, and a re-probe is scheduled 60 seconds
+out so the enclave picks it back up without restarting if the proxy is
+upgraded again. A newer proxy serves an older enclave unchanged: the older
+enclave never sends the new opcodes.
 
 The HTTPS channel implements an **HTTP CONNECT proxy** with an allowlist.
 Inside the enclave, `HTTPS_PROXY=http://127.0.0.1:4444` routes all HTTPS

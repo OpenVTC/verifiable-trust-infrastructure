@@ -221,6 +221,21 @@ pub struct CreateDidWebvhBody {
         alias = "template_vars"
     )]
     pub template_vars: Option<std::collections::HashMap<String, serde_json::Value>>,
+    /// The identity the new log is presented as: its `did:webvh` DID, or its
+    /// `did:scid:vh:1` DID (`vta/webvh/dids/create/1.2`, VTI-KEY-165). Absent →
+    /// the VTA's `[dids] default_did_method`. 1.0 and 1.1 refuse it.
+    #[serde(default, skip_serializing_if = "Option::is_none", alias = "did_method")]
+    pub did_method: Option<crate::did_scid::DidMethod>,
+    /// Whether the first log entry lists the did:scid DID URL in `alsoKnownAs`
+    /// (`create/1.2`, VTI-KEY-166). Absent → the VTA's
+    /// `[dids] scid_also_known_as`. `false` with `did_method: scid` is refused
+    /// with `scidAliasRequired`. 1.0 and 1.1 refuse it.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        alias = "scid_also_known_as"
+    )]
+    pub scid_also_known_as: Option<bool>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -275,9 +290,53 @@ pub struct CreateDidWebvhResultBody {
     pub did_document: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none", alias = "log_entry")]
     pub log_entry: Option<String>,
+    /// The form the VTA applied (`create/1.2`). `did` is in this form: the
+    /// did:webvh DID, or the bare `did:scid:vh:1:<scid>`. `None` in a 1.0 or 1.1
+    /// answer, where `did` is the form applied all the same.
+    #[serde(default, skip_serializing_if = "Option::is_none", alias = "did_method")]
+    pub did_method: Option<crate::did_scid::DidMethod>,
+    /// Whether the first log entry lists `scid_did_url` in `alsoKnownAs`
+    /// (`create/1.2`).
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        alias = "scid_also_known_as"
+    )]
+    pub scid_also_known_as: Option<bool>,
+    /// The did:webvh DID of the log — the handle the rest of the `webvh/dids`
+    /// family takes alongside `did` (`create/1.2`).
+    #[serde(default, skip_serializing_if = "Option::is_none", alias = "webvh_did")]
+    pub webvh_did: Option<String>,
+    /// The `did:scid:vh:1:<scid>?src=…` DID URL of the log: what to give out
+    /// where a recipient may not hold a source for the did:scid (`create/1.2`,
+    /// VTI-KEY-163).
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        alias = "scid_did_url"
+    )]
+    pub scid_did_url: Option<String>,
 }
 
 impl CreateDidWebvhResultBody {
+    /// The did:webvh DID of the log: `webvh_did` where the answer states it,
+    /// and otherwise `did`, which a 1.0/1.1 answer from a VTA presenting
+    /// did:webvh is.
+    #[must_use]
+    pub fn log_did(&self) -> &str {
+        self.webvh_did.as_deref().unwrap_or(&self.did)
+    }
+
+    /// Strip the `create/1.2` members, for a 1.0 or 1.1 answer: those
+    /// responses refuse members they do not define.
+    pub fn without_1_2_members(mut self) -> Self {
+        self.did_method = None;
+        self.scid_also_known_as = None;
+        self.webvh_did = None;
+        self.scid_did_url = None;
+        self
+    }
+
     /// Whether this DID was minted serverless and so does not resolve until
     /// the caller serves its log: the stated `serverless`, or, from an answer
     /// that predates it, an absent `server_id`.
@@ -308,6 +367,10 @@ impl std::fmt::Debug for CreateDidWebvhResultBody {
             .field("created_at", &self.created_at)
             .field("did_document", &self.did_document)
             .field("log_entry", &self.log_entry)
+            .field("did_method", &self.did_method)
+            .field("scid_also_known_as", &self.scid_also_known_as)
+            .field("webvh_did", &self.webvh_did)
+            .field("scid_did_url", &self.scid_did_url)
             .finish()
     }
 }

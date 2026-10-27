@@ -30,6 +30,7 @@ fn room(n: usize) -> Vec<Record> {
             // the hash input scales with what a room actually stores.
             sealed: Some("A".repeat(2048)),
             nonce: Some("bm9uY2UtMTI".into()),
+            sealed_version: None,
             cleartext: None,
             author: None,
             updated_at: 1_756_000_000,

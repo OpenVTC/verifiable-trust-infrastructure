@@ -32,7 +32,7 @@ const REGISTERED = {
   createdByDid: "did:key:zAdmin",
 };
 
-const listRoute: MockRoute = taskRoute("https://trusttasks.org/spec/vtc/endorsement-types/list/0.1", { items: [REGISTERED] });
+const listRoute: MockRoute = taskRoute("https://trusttasks.org/spec/vtc/endorsement-types/list/0.2", { items: [REGISTERED] });
 
 /** A criterion counting statements of `statementType`. */
 const criterion = (id: string, statementType: string): AcceptsCriterion =>
@@ -55,7 +55,7 @@ const registerRoute: MockRoute = taskRoute(REGISTER_TASK, (payload) => ({
 describe("StatementTypesCard", () => {
   it("registers the identity-vetting type when the community has none", async () => {
     const requests = mockFetch([
-      taskRoute("https://trusttasks.org/spec/vtc/endorsement-types/list/0.1", { items: [] }),
+      taskRoute("https://trusttasks.org/spec/vtc/endorsement-types/list/0.2", { items: [] }),
       registerRoute,
     ]);
     renderWithProviders(<StatementTypesCard criteria={[]} />);
@@ -74,7 +74,7 @@ describe("StatementTypesCard", () => {
 
   it("lists what is registered and does not offer to register it again", async () => {
     mockFetch([
-      taskRoute("https://trusttasks.org/spec/vtc/endorsement-types/list/0.1", {
+      taskRoute("https://trusttasks.org/spec/vtc/endorsement-types/list/0.2", {
           items: [
             {
               typeUri: STATEMENT_TYPE,
@@ -93,7 +93,7 @@ describe("StatementTypesCard", () => {
 
   it("registers a type an admin types in", async () => {
     const requests = mockFetch([
-      taskRoute("https://trusttasks.org/spec/vtc/endorsement-types/list/0.1", {
+      taskRoute("https://trusttasks.org/spec/vtc/endorsement-types/list/0.2", {
           items: [
             {
               typeUri: STATEMENT_TYPE,

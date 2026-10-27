@@ -171,6 +171,21 @@ impl Room {
     pub fn expires_at(&self) -> Option<u64> {
         self.epoch_expires_at
     }
+
+    /// The first moment after `now` (unix seconds) at which [`Self::lifecycle`] answers
+    /// differently with nothing written — the clock alone moving the room on — or `None`
+    /// when it never will (no expiry, or already `Reclaimable`).
+    ///
+    /// For a host that reports the state as it changes: the state is computed, so no write
+    /// marks the transition, and this says when to look.
+    pub fn next_lifecycle_change(&self, now: u64) -> Option<u64> {
+        let expires = self.epoch_expires_at?;
+        let grace = u64::from(DORMANT_AFTER_LAPSE_DAYS) * DAY;
+        let reclaim_after = std::cmp::max(u64::from(self.retention_days) * DAY, grace);
+        [expires, expires + grace, expires + reclaim_after]
+            .into_iter()
+            .find(|t| *t > now)
+    }
 }
 
 #[cfg(test)]
@@ -194,7 +209,34 @@ mod tests {
             created_at: 0,
             updated_at: 0,
             mirror_of: None,
+            record_retention: None,
+            last_prune: None,
+            epoch_floor: None,
         }
+    }
+
+    /// Every moment `next_lifecycle_change` names is one where the state really does
+    /// change, and nothing changes before it.
+    #[test]
+    fn the_next_change_is_exactly_where_the_state_moves() {
+        for retention in [7, 90] {
+            let r = room(Some(NOW + DAY), retention);
+            let mut at = NOW;
+            let mut seen = vec![r.lifecycle(at)];
+            while let Some(next) = r.next_lifecycle_change(at) {
+                assert!(next > at);
+                assert_eq!(
+                    r.lifecycle(next - 1),
+                    r.lifecycle(at),
+                    "no change before it"
+                );
+                assert_ne!(r.lifecycle(next), r.lifecycle(at), "a change at it");
+                at = next;
+                seen.push(r.lifecycle(at));
+            }
+            assert_eq!(seen.last(), Some(&Lifecycle::Reclaimable));
+        }
+        assert_eq!(room(None, 90).next_lifecycle_change(NOW), None);
     }
 
     #[test]

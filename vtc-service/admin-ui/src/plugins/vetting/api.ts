@@ -14,6 +14,7 @@
 // out below, since nothing else on this page names its task.
 
 import { postSignedRead, postSignedTrustTask } from "@/lib/api";
+import { postSignedWithStepUp, type ConfirmGesture } from "@/lib/signed-act";
 import type {
   AcceptsCriterion,
   AutoGrantConfig,
@@ -47,15 +48,15 @@ const TASK_VETTER_LIST =
   "https://trusttasks.org/spec/vtc/vetting/vetters/list/0.1";
 const TASK_ENDORSEMENT_REVOKE =
   "https://trusttasks.org/spec/vtc/endorsements/revoke/0.1";
-const TASK_MEMBERS_LIST = "https://trusttasks.org/spec/vtc/members/list/0.1";
+const TASK_MEMBERS_LIST = "https://trusttasks.org/spec/vtc/members/list/0.2";
 const TASK_ENDORSEMENT_TYPE_REGISTER =
   "https://trusttasks.org/spec/vtc/endorsement-types/register/0.1";
 const TASK_ENDORSEMENT_TYPE_LIST =
-  "https://trusttasks.org/spec/vtc/endorsement-types/list/0.1";
+  "https://trusttasks.org/spec/vtc/endorsement-types/list/0.2";
 const TASK_ENDORSEMENT_TYPE_DELETE =
   "https://trusttasks.org/spec/vtc/endorsement-types/delete/0.1";
 const TASK_JOIN_REQUESTS_LIST =
-  "https://trusttasks.org/spec/vtc/join-requests/list/0.1";
+  "https://trusttasks.org/spec/vtc/join-requests/list/0.2";
 const TASK_GRANTS_LIST = "https://trusttasks.org/spec/vtc/vetting/vetters/grants/list/0.1";
 const TASK_AUTO_GRANT_SHOW = "https://trusttasks.org/spec/vtc/vetting/auto-grant/show/0.1";
 const TASK_AUTO_GRANT_UPDATE = "https://trusttasks.org/spec/vtc/vetting/auto-grant/update/0.1";
@@ -95,8 +96,8 @@ async function allItems<T>(task: string, pageSize: number = PAGE_SIZE_100): Prom
   }
   return out;
 }
-export const TASK_MANIFEST_V0_3 =
-  "https://trusttasks.org/spec/vtc/join-requests/manifest/0.3";
+export const TASK_MANIFEST =
+  "https://trusttasks.org/spec/vtc/join-requests/manifest/0.4";
 
 /** Query keys. Everything under `["vetting"]` is refreshed after a change. */
 export const vettingKeys = {
@@ -227,13 +228,13 @@ export async function fetchPendingWithVetting(): Promise<PendingWithVetting> {
 export type { JoinManifest, ManifestCriterion };
 
 /**
- * `join-requests/manifest/0.3` as applicants receive it — each criterion with
+ * `join-requests/manifest/0.4` as applicants receive it — each criterion with
  * its admission, its requirements and its `requirementsDigest`, in the order
  * the community decides by — read as the same signed document an applicant
  * sends. The shape is the manifest specification's own.
  */
 export const fetchManifest = (): Promise<JoinManifest> =>
-  postSignedRead<JoinManifest>(TASK_MANIFEST_V0_3, {});
+  postSignedRead<JoinManifest>(TASK_MANIFEST, {});
 
 // ── Admission criteria ──────────────────────────────────────────────────
 //
@@ -253,12 +254,28 @@ export const fetchCriteria = (): Promise<AcceptsCriterion[]> =>
  * vetting requirements against the manifest schema, that the `statementType`
  * is registered, and that it can evaluate every requirement stated.
  */
-export const saveCriterion = async (body: RegisterAcceptsBody): Promise<AcceptsCriterion> =>
-  (await postSignedTrustTask<{ criterion: AcceptsCriterion }>(TASK_ACCEPTS_REGISTER, body))
-    .criterion;
+//
+// Adding, changing or removing a criterion decides who may become a member, so
+// it takes a passkey gesture bound to that one write and the approval of the
+// community's other `vtc.surface.admin` holders (VTI-APV-023):
+// `confirmGesture` answers the first, and for the second the write is parked
+// as an administrator action and thrown as a `ParkedAction` — a success that
+// applied nothing yet. Re-saving a criterion unchanged asks for neither.
+export const saveCriterion = async (
+  body: RegisterAcceptsBody,
+  confirmGesture: ConfirmGesture,
+): Promise<AcceptsCriterion> =>
+  (
+    await postSignedWithStepUp<{ criterion: AcceptsCriterion }>(
+      TASK_ACCEPTS_REGISTER,
+      body,
+      confirmGesture,
+    )
+  ).criterion;
 
-export const deleteCriterion = (id: string): Promise<unknown> =>
-  postSignedTrustTask<unknown>(TASK_ACCEPTS_DELETE, { id });
+/** Remove a criterion — gated as [`saveCriterion`] is (VTI-APV-023). */
+export const deleteCriterion = (id: string, confirmGesture: ConfirmGesture): Promise<unknown> =>
+  postSignedWithStepUp<unknown>(TASK_ACCEPTS_DELETE, { id }, confirmGesture);
 
 // ── Endorsement types ───────────────────────────────────────────────────
 

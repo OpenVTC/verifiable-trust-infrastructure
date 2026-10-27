@@ -3,6 +3,7 @@
 use predicate_credential_system::Error as PcsError;
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ProtoError {
     #[error("pcs: {0}")]
     Pcs(#[from] PcsError),

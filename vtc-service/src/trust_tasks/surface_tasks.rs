@@ -40,6 +40,7 @@ use trust_tasks_rs::specs::vtc::community::{
     branding::{show::v0_1 as branding_show, update::v0_1 as branding_update},
     join_discovery::{show::v0_1 as join_discovery_show, update::v0_1 as join_discovery_update},
     requested_attributes::{show::v0_1 as requested_show, update::v0_1 as requested_update},
+    theme::{show::v0_1 as theme_show, update::v0_1 as theme_update},
 };
 use trust_tasks_rs::specs::vtc::join_requests::{
     query::v0_1 as join_query, vetting::show::v0_1 as join_vetting_show,
@@ -77,6 +78,8 @@ use crate::server::AppState;
 
 pub(crate) const BRANDING_SHOW_TYPE: &str = <branding_show::Payload as Payload>::TYPE_URI;
 pub(crate) const BRANDING_UPDATE_TYPE: &str = <branding_update::Payload as Payload>::TYPE_URI;
+pub(crate) const THEME_SHOW_TYPE: &str = <theme_show::Payload as Payload>::TYPE_URI;
+pub(crate) const THEME_UPDATE_TYPE: &str = <theme_update::Payload as Payload>::TYPE_URI;
 pub(crate) const REQUESTED_SHOW_TYPE: &str = <requested_show::Payload as Payload>::TYPE_URI;
 pub(crate) const REQUESTED_UPDATE_TYPE: &str = <requested_update::Payload as Payload>::TYPE_URI;
 pub(crate) const JOIN_DISCOVERY_SHOW_TYPE: &str =
@@ -103,6 +106,8 @@ pub(crate) const ROOMS_LIST_TYPE: &str = <rooms_list::Payload as Payload>::TYPE_
 
 // ─── the codes these tasks declare, as the error-code census witnesses them ─
 
+pub(crate) const THEME_UPDATE_ERR_OUTSIDE_PROFILE: &str =
+    theme_update::error_codes::OUTSIDE_PROFILE.code;
 pub(crate) const REQUESTED_ERR_DUPLICATE_TYPE: &str =
     requested_update::error_codes::DUPLICATE_TYPE.code;
 pub(crate) const SCHEMAS_REGISTER_ERR_INVALID_CREDENTIAL_SCHEMA: &str =
@@ -139,6 +144,8 @@ pub(crate) const JOIN_QUERY_ERR_CRITERION_NOT_FOUND: &str =
 pub(crate) const URIS: &[&str] = &[
     BRANDING_SHOW_TYPE,
     BRANDING_UPDATE_TYPE,
+    THEME_SHOW_TYPE,
+    THEME_UPDATE_TYPE,
     REQUESTED_SHOW_TYPE,
     REQUESTED_UPDATE_TYPE,
     JOIN_DISCOVERY_SHOW_TYPE,
@@ -171,6 +178,8 @@ pub(super) async fn dispatch(
     Some(match type_uri {
         BRANDING_SHOW_TYPE => handle_branding_show(state, ctx, doc).await,
         BRANDING_UPDATE_TYPE => handle_branding_update(state, ctx, doc).await,
+        THEME_SHOW_TYPE => handle_theme_show(state, doc).await,
+        THEME_UPDATE_TYPE => handle_theme_update(state, ctx, doc).await,
         REQUESTED_SHOW_TYPE => handle_requested_show(state, ctx, doc).await,
         REQUESTED_UPDATE_TYPE => handle_requested_update(state, ctx, doc).await,
         JOIN_DISCOVERY_SHOW_TYPE => handle_join_discovery_show(state, ctx, doc).await,
@@ -234,6 +243,76 @@ where
     Ok(actor.did)
 }
 
+/// [`as_capable`], keeping the signer's claims for a consent gate.
+async fn as_capable_claims<P>(
+    state: &AppState,
+    ctx: &JoinAuthCtx,
+    doc: &TrustTask<Value>,
+    cap: crate::acl::Capability,
+) -> Result<vti_common::auth::extractor::AuthClaims, TrustTaskOutcome>
+where
+    P: trust_tasks_rs::validate::ValidatedPayload + serde::de::DeserializeOwned,
+{
+    let actor = super::capable_signer(state, ctx, doc, cap, None).await?;
+    parse_spec_payload::<P>(doc)?;
+    Ok(actor)
+}
+
+/// What a criterion states — every requirement the register payload carries —
+/// without what the store adds (registrant, time, position, hidden-vetting
+/// parameters). Two criteria that state the same are no change, so
+/// re-registering one as it stands asks nobody for anything.
+fn stated_requirements(c: &crate::schemas::AcceptsCriterion) -> Value {
+    json!({
+        "admission": c.admission.as_str(),
+        "query": c.query,
+        "credentialIssuers": c.credential_issuers,
+        "invitationRequired": c.invitation_required,
+        "description": c.description,
+        "vetting": c.vetting,
+    })
+}
+
+/// The gate on registering, replacing or deleting a join criterion —
+/// **VTI-APV-023**: the requester's bound gesture and the consent of the other
+/// holders of `vtc.surface.admin`, or, in single-administrator mode
+/// (VTI-APV-022), the gesture alone at `Critical`
+/// ([`super::acl_tasks::settle_consent_gate`]). The parked action runs this
+/// handler again on its N-th approval, against the criteria as they are then
+/// (VTI-APV-017); the consent is pinned to the criterion as stored, so a write
+/// to it in the meantime voids the action.
+async fn settle_criteria_gate(
+    state: &AppState,
+    actor: &vti_common::auth::extractor::AuthClaims,
+    doc: &TrustTask<Value>,
+    id: &str,
+    summary: &str,
+) -> Result<(), TrustTaskOutcome> {
+    settle_criterion_consent(
+        state,
+        actor,
+        doc,
+        crate::acl::admin_consent::Act::ChangeJoinCriteria,
+        id,
+        summary,
+    )
+    .await
+}
+
+/// [`settle_criteria_gate`] for any act that changes a join criterion —
+/// [`Act::ChangeHiddenVetting`](crate::acl::admin_consent::Act::ChangeHiddenVetting)
+/// too, which `vtc/vetting/hidden/{publish,withdraw}` settle before they write.
+pub(crate) async fn settle_criterion_consent(
+    state: &AppState,
+    actor: &vti_common::auth::extractor::AuthClaims,
+    doc: &TrustTask<Value>,
+    act: crate::acl::admin_consent::Act,
+    id: &str,
+    summary: &str,
+) -> Result<(), TrustTaskOutcome> {
+    super::acl_tasks::settle_consent_gate(state, actor, doc, act, id, summary, summary).await
+}
+
 /// Any signer the community holds an entry for, with its payload held to the
 /// published schema.
 async fn as_member<P>(
@@ -258,6 +337,15 @@ const MAX_PAGE: usize = 100;
 /// prefixed so that a cursor from another listing's scheme is refused rather
 /// than read as an offset.
 fn page<T: Serialize>(doc: &TrustTask<Value>, items: Vec<T>) -> TrustTaskOutcome {
+    page_with(doc, items, None)
+}
+
+/// [`page`], with an `ext` member on the response.
+fn page_with<T: Serialize>(
+    doc: &TrustTask<Value>,
+    items: Vec<T>,
+    ext: Option<Value>,
+) -> TrustTaskOutcome {
     let start = match doc.payload.get("cursor").and_then(Value::as_str) {
         None => 0,
         Some(c) => match c.strip_prefix("o").and_then(|n| n.parse::<usize>().ok()) {
@@ -283,6 +371,9 @@ fn page<T: Serialize>(doc: &TrustTask<Value>, items: Vec<T>) -> TrustTaskOutcome
     let mut body = json!({ "items": slice });
     if let Some(next) = next {
         body["nextCursor"] = Value::String(next);
+    }
+    if let Some(ext) = ext {
+        body["ext"] = ext;
     }
     success_response(doc, body)
 }
@@ -358,6 +449,73 @@ async fn handle_branding_update(
     match crate::routes::community::branding::update_branding(state, &actor, &body).await {
         Ok(b) => success_response(&doc, json!({ "branding": b })),
         Err(e) => app_error_to_reject(&doc, &e),
+    }
+}
+
+/// `vtc/community/theme/show/0.1`. Answered to anyone, identified or not
+/// (show item 1): the sign-in pages draw the theme before the visitor holds an
+/// identity, and the stylesheet is what every loaded page shows anyway.
+async fn handle_theme_show(state: &AppState, doc: TrustTask<Value>) -> TrustTaskOutcome {
+    if let Err(reject) = parse_spec_payload::<theme_show::Payload>(&doc) {
+        return reject;
+    }
+    match crate::community::theme::shown_stylesheet(&state.community_ks).await {
+        Ok(Some(t)) => success_response(
+            &doc,
+            json!({ "stylesheet": t.stylesheet, "updatedAt": t.updated_at }),
+        ),
+        Ok(None) => success_response(&doc, json!({ "stylesheet": "" })),
+        Err(e) => app_error_to_reject(&doc, &e),
+    }
+}
+
+/// `vtc/community/theme/update/0.1` — administrator standing, as for branding.
+async fn handle_theme_update(
+    state: &AppState,
+    ctx: &JoinAuthCtx,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    use crate::routes::community::theme::{ThemeUpdateError, update_theme};
+
+    let actor = match as_capable::<theme_update::Payload>(
+        state,
+        ctx,
+        &doc,
+        crate::acl::Capability::SurfaceAdmin,
+    )
+    .await
+    {
+        Ok(a) => a,
+        Err(reject) => return reject,
+    };
+    let stylesheet = doc
+        .payload
+        .get("stylesheet")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    let dry_run = doc
+        .payload
+        .get("dryRun")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    match update_theme(state, &actor, &stylesheet, dry_run).await {
+        Ok(u) => {
+            let mut body = json!({ "stylesheet": u.stylesheet, "stored": u.stored });
+            if let Some(at) = u.updated_at {
+                body["updatedAt"] = json!(at);
+            }
+            success_response(&doc, body)
+        }
+        Err(ThemeUpdateError::OutsideProfile(v)) => reject_with_code(
+            &doc,
+            extended_code(THEME_UPDATE_ERR_OUTSIDE_PROFILE),
+            v.message.clone(),
+            Some(json!({ "line": v.line, "column": v.column, "rule": v.rule })),
+        ),
+        // Item 2's byte bound arrives here as a validation error, so it is
+        // `malformedRequest`, not `outsideProfile`.
+        Err(ThemeUpdateError::App(e)) => app_error_to_reject(&doc, &e),
     }
 }
 
@@ -646,7 +804,7 @@ async fn handle_accepts_register(
     ctx: &JoinAuthCtx,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    let actor = match as_capable::<accepts_register::Payload>(
+    let claims = match as_capable_claims::<accepts_register::Payload>(
         state,
         ctx,
         &doc,
@@ -657,6 +815,7 @@ async fn handle_accepts_register(
         Ok(a) => a,
         Err(reject) => return reject,
     };
+    let actor = claims.did.clone();
     let body: accepts_register::Payload = match parse_payload(&doc) {
         Ok(b) => b,
         Err(reject) => return reject,
@@ -712,6 +871,30 @@ async fn handle_accepts_register(
     }
     if let Some(reason) = unsupported_requirement(state, &criterion) {
         return declared(&doc, ACCEPTS_REGISTER_ERR_UNSUPPORTED_REQUIREMENT, reason);
+    }
+    // VTI-APV-023: a criterion that differs from the one stored under its id —
+    // a new one, or any requirement changed — takes the requester's bound
+    // gesture and the other `vtc.surface.admin` holders' consent. Last, so a
+    // criterion the checks above refuse asks nobody for anything.
+    let stored = match crate::schemas::get_accepts(&state.schemas_ks, &criterion.id).await {
+        Ok(c) => c,
+        Err(e) => return app_error_to_reject(&doc, &e),
+    };
+    if !criterion.id.is_empty()
+        && stored.as_ref().map(stated_requirements) != Some(stated_requirements(&criterion))
+    {
+        let verb = if stored.is_some() { "Replace" } else { "Add" };
+        let summary = format!(
+            "{verb} the join criterion {} (admission {}), which decides who may become a \
+             member of this community",
+            criterion.id,
+            criterion.admission.as_str()
+        );
+        if let Err(refusal) =
+            settle_criteria_gate(state, &claims, &doc, &criterion.id, &summary).await
+        {
+            return refusal;
+        }
     }
     match crate::routes::schemas::register_accepts_inner(state, &actor, criterion).await {
         Ok(criterion) => success_response(&doc, json!({ "criterion": criterion.to_wire() })),
@@ -835,7 +1018,7 @@ async fn handle_accepts_delete(
     ctx: &JoinAuthCtx,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    let actor = match as_capable::<accepts_delete::Payload>(
+    let claims = match as_capable_claims::<accepts_delete::Payload>(
         state,
         ctx,
         &doc,
@@ -846,10 +1029,36 @@ async fn handle_accepts_delete(
         Ok(a) => a,
         Err(reject) => return reject,
     };
+    let actor = claims.did.clone();
     let id: String = match member_of(&doc, "id") {
         Ok(i) => i,
         Err(reject) => return reject,
     };
+    // VTI-APV-023: removing a criterion changes who may become a member as
+    // surely as adding one does. One that does not exist is refused as such,
+    // without asking anyone to approve it.
+    match crate::schemas::get_accepts(&state.schemas_ks, id.trim()).await {
+        Ok(Some(_)) => {
+            let summary = format!(
+                "Remove the join criterion {}, which decides who may become a member of this \
+                 community",
+                id.trim()
+            );
+            if let Err(refusal) =
+                settle_criteria_gate(state, &claims, &doc, id.trim(), &summary).await
+            {
+                return refusal;
+            }
+        }
+        Ok(None) => {
+            return declared_as(
+                &doc,
+                ACCEPTS_DELETE_ERR_NOT_FOUND,
+                AppError::NotFound(format!("accepts criterion `{}` not found", id.trim())),
+            );
+        }
+        Err(e) => return app_error_to_reject(&doc, &e),
+    }
     match crate::routes::schemas::delete_accepts_inner(state, &actor, id.trim()).await {
         Ok(id) => success_response(&doc, json!({ "id": id })),
         Err(e @ AppError::NotFound(_)) => declared_as(&doc, ACCEPTS_DELETE_ERR_NOT_FOUND, e),
@@ -1111,7 +1320,13 @@ async fn handle_rooms_list(
     ctx: &JoinAuthCtx,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    if let Err(reject) = as_admin::<rooms_list::Payload>(state, ctx, &doc).await {
+    // `vtc.rooms.admin`, as every task about hosting rooms is
+    // (`data-rooms-files.md` §6.2): a community can hand room hosting to someone
+    // who is not a full administrator.
+    if let Err(reject) =
+        as_capable::<rooms_list::Payload>(state, ctx, &doc, crate::acl::Capability::RoomsAdmin)
+            .await
+    {
         return reject;
     }
     let lifecycle: Option<String> = match member_of(&doc, "lifecycle") {
@@ -1121,12 +1336,38 @@ async fn handle_rooms_list(
     match crate::routes::rooms::hosted_rooms(state).await {
         Ok(mut rooms) => {
             rooms.sort_by(|a, b| a.room_id.cmp(&b.room_id));
-            page(
+            // Whether this community takes room files, so the console can say how to
+            // turn them on (a `[rooms.files]` section) rather than show uploads that
+            // would be refused — and, when it does, the defaults its configuration
+            // sets: what every room is held to unless the rooms policy or an override
+            // says otherwise (`data-rooms-files.md` §8.1, Settings ▸ Rooms). Read-only:
+            // they are changed in the configuration file.
+            let host = state.room_files.host_limits();
+            let room_files = if host.files_enabled {
+                let mut on = json!({
+                    "enabled": true,
+                    "defaults": {
+                        "room": host.room.capped(host.max_file_bytes),
+                        "member": host.member.capped(host.max_file_bytes),
+                    },
+                    "maxFileBytes": host.max_file_bytes,
+                    "orphanGraceHours": host.orphan_grace_secs / 3600,
+                });
+                if let Some(capacity) = host.storage_capacity_bytes {
+                    on["storageCapacityBytes"] = json!(capacity);
+                }
+                on
+            } else {
+                json!({ "enabled": false })
+            };
+            let ext = json!({ "org.openvtc": { "roomFiles": room_files } });
+            page_with(
                 &doc,
                 rooms
                     .into_iter()
                     .filter(|r| lifecycle.as_deref().is_none_or(|l| r.lifecycle == l))
                     .collect(),
+                Some(ext),
             )
         }
         Err(e) => app_error_to_reject(&doc, &e),

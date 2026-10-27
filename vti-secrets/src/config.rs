@@ -13,8 +13,13 @@ use serde::{Deserialize, Serialize};
 /// Mirrors `vtc_service::config::SecretBackend` and the wizard's
 /// `SecretsBackendInput` discriminator, so operators meet one vocabulary
 /// across the setup TOML, the generated `config.toml`, and the VTC.
+///
+/// `#[non_exhaustive]` since `EncryptedFile` (#1820): adding that variant was
+/// a breaking change, and marking the enum at the same time makes the next
+/// backend an additive one. Match it with a wildcard arm outside this crate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum SecretBackend {
     /// OS keyring (libsecret / Keychain / Credential Manager).
     Keyring,
@@ -32,6 +37,98 @@ pub enum SecretBackend {
     Kubernetes,
     /// Plaintext file under the data dir — NOT secure, dev/test only.
     Plaintext,
+    /// AEAD-encrypted file under the data dir, keyed by an explicitly
+    /// configured key-encryption key (`[secrets.encrypted_file]`). Never
+    /// chosen implicitly. See
+    /// [`EncryptedFileSeedStore`](crate::seed_store::EncryptedFileSeedStore).
+    EncryptedFile,
+}
+
+/// `[secrets.encrypted_file]`: where the encrypted envelope lives and where its
+/// key-encryption key (KEK) comes from.
+///
+/// ```toml
+/// [secrets]
+/// backend = "encrypted_file"
+///
+/// [secrets.encrypted_file]
+/// # Optional. Default: `<data_dir>/seed.enc` (VTA), `<data_dir>/secret.enc` (VTC).
+/// path = "/var/lib/vta/seed.enc"
+/// # Exactly one KEK source:
+/// kek = { source = "passphrase", file = "/etc/vta/seed-passphrase" }
+/// # kek = { source = "passphrase", credential = "vta-seed-passphrase" }
+/// # kek = { source = "systemd_creds", credential = "vta-seed-kek" }
+/// # kek = { source = "tpm", pcrs = [7] }
+/// ```
+///
+/// Holds only locations and names, never key material, so the derived `Debug`
+/// is safe.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+#[non_exhaustive]
+pub struct EncryptedFileConfig {
+    /// Envelope location. When unset the consuming service picks a file name
+    /// under its data directory.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<std::path::PathBuf>,
+    /// Where the key-encryption key comes from. Required: there is no default
+    /// source, because each one makes a different promise about who can
+    /// decrypt the file.
+    pub kek: KekSource,
+}
+
+impl EncryptedFileConfig {
+    /// An `encrypted_file` table with the default path and the given source.
+    pub fn new(kek: KekSource) -> Self {
+        Self { path: None, kek }
+    }
+}
+
+/// The key-encryption key source for the `encrypted_file` backend, selected by
+/// `source = "…"`.
+///
+/// A secret never appears in the config itself: a passphrase is read from a
+/// file or a systemd credential, never from an environment variable or an
+/// inline value, and a KEK from a systemd credential or the TPM.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(tag = "source", rename_all = "snake_case", deny_unknown_fields)]
+#[non_exhaustive]
+pub enum KekSource {
+    /// A passphrase stretched with Argon2id (m = 64 MiB, t = 3, p = 4; the
+    /// salt and parameters are stored in the file header). Set exactly one of
+    /// `file` and `credential`.
+    Passphrase {
+        /// A file holding the passphrase. One trailing newline is ignored.
+        /// Should be readable by the service user only.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        file: Option<std::path::PathBuf>,
+        /// A systemd credential name, read from
+        /// `$CREDENTIALS_DIRECTORY/<credential>` (`LoadCredential=` /
+        /// `LoadCredentialEncrypted=`).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        credential: Option<String>,
+    },
+    /// A 32-byte KEK delivered by systemd from
+    /// `$CREDENTIALS_DIRECTORY/<credential>`; systemd seals it to the TPM
+    /// and/or the host key (`systemd-creds encrypt`). The credential holds 32
+    /// raw bytes or 64 hex characters (a trailing newline is ignored).
+    SystemdCreds {
+        /// The credential name.
+        credential: String,
+    },
+    /// A random KEK sealed by the TPM 2.0 (under the owner hierarchy) and
+    /// stored, sealed, in the file header; optionally bound to SHA-256 PCRs.
+    /// Needs the `tpm` feature, on Linux.
+    Tpm {
+        /// SHA-256 PCR indexes (0–23) the KEK is bound to. Empty: not bound to
+        /// PCRs (any process that can use the TPM as this host can unseal).
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        pcrs: Vec<u8>,
+        /// The TCTI to reach the TPM, e.g. `device:/dev/tpmrm0` (the default)
+        /// or `swtpm:host=localhost,port=2321`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tcti: Option<String>,
+    },
 }
 
 /// `#[non_exhaustive]`: this struct has grown a field per backend since it was
@@ -157,6 +254,11 @@ pub struct SecretsConfig {
     /// long the master seed sits resident in process memory (P0.7).
     #[serde(default = "default_cache_ttl_secs")]
     pub cache_ttl_secs: u64,
+    /// `[secrets.encrypted_file]`: the encrypted-at-rest file backend's
+    /// location and key-encryption key source. Read only when
+    /// `backend = "encrypted_file"`; it never selects the backend by itself.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub encrypted_file: Option<EncryptedFileConfig>,
 }
 
 /// Written by hand so the seed and Vault credentials never reach a log: a derived `Debug` would print them.
@@ -197,6 +299,7 @@ impl std::fmt::Debug for SecretsConfig {
             .field("k8s_secret_key", &self.k8s_secret_key)
             .field("allow_plaintext", &self.allow_plaintext)
             .field("cache_ttl_secs", &self.cache_ttl_secs)
+            .field("encrypted_file", &self.encrypted_file)
             .finish()
     }
 }
@@ -271,6 +374,7 @@ impl Default for SecretsConfig {
             k8s_secret_key: default_k8s_secret_key(),
             allow_plaintext: false,
             cache_ttl_secs: default_cache_ttl_secs(),
+            encrypted_file: None,
         }
     }
 }

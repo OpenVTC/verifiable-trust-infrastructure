@@ -269,8 +269,9 @@ At least one service must be enabled. These can also be disabled at compile time
 | `aws-secrets` | No | AWS Secrets Manager seed storage backend |
 | `gcp-secrets` | No | Google Cloud Secret Manager seed storage backend |
 | `azure-secrets` | No | Azure Key Vault seed storage backend |
+| `tpm` | No | TPM 2.0 key-encryption key for the `encrypted_file` backend (Linux; needs the native tss2 libraries) |
 
-A plaintext file fallback (`seed.plaintext` in the data directory) is always available regardless of feature flags.
+A plaintext file fallback (`seed.plaintext` in the data directory) and the encrypted file backend (`backend = "encrypted_file"`, `seed.enc`) are always available regardless of feature flags.
 
 ## Architecture
 
@@ -310,6 +311,7 @@ The BIP-32 master seed can be stored in any of the following backends. The seed 
 | Config file (hex) | `config-seed` | `seed` |
 | OS keyring | `keyring` | `keyring_service` |
 | Plaintext file | — (always available) | Falls back to `seed.plaintext` in `data_dir` |
+| Encrypted file | — (`tpm` for a TPM key) | Explicit only: `backend = "encrypted_file"` + `[secrets.encrypted_file]` (`kek` source, optional `path`); never picked implicitly. See `docs/02-vta/secret-backends.md` |
 
 ## License
 

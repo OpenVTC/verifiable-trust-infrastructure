@@ -27,6 +27,7 @@ fn cfg_with(routing: RoutingConfig, cors: CorsConfig) -> AppConfig {
     AppConfig {
         vtc_did: None,
         vta_did: None,
+        vta_context: None,
         vtc_name: None,
         hooks: Default::default(),
         git_ns: Default::default(),
@@ -55,6 +56,11 @@ fn cfg_with(routing: RoutingConfig, cors: CorsConfig) -> AppConfig {
         geoip: Default::default(),
         rooms: Default::default(),
         oid4vp: Default::default(),
+        witnesses: Default::default(),
+        directory: Default::default(),
+        voting: Default::default(),
+        groups: None,
+        dids: Default::default(),
         config_path: std::path::PathBuf::new(),
     }
 }

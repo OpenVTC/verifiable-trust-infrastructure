@@ -326,6 +326,8 @@ impl VtaClient {
     /// returned; each descriptor then carries `lifecycle`
     /// (`active` | `archived` | `deleted`) alongside the existing validity
     /// `status`, plus `archivedAt` / `deletedAt` / `graceUntil` as applicable.
+    /// `subjectDid` narrows to credentials presented as that identity; it does
+    /// not count as a filter on its own.
     pub async fn cred_vault_query(&self, filter: Value) -> Result<Value, VtaError> {
         self.dispatch_trust_task(
             trust_tasks::TASK_VAULT_CREDENTIALS_QUERY_0_1,
@@ -341,6 +343,26 @@ impl VtaClient {
         self.dispatch_trust_task(
             trust_tasks::TASK_VAULT_CREDENTIALS_GET_0_1,
             json!({ "id": id }),
+            VAULT_TT_TIMEOUT,
+        )
+        .await
+    }
+
+    /// `vault/credentials/present/0.1` — have the VTA present one held
+    /// credential to a verifier the caller names, bound to `payload.audience`
+    /// and `payload.nonce`, disclosing only `payload.claims`, signed as the
+    /// credential's subject. Requires `CredentialPresent`.
+    ///
+    /// The caller carries the returned `presentation` to the verifier unchanged.
+    pub async fn cred_vault_present(
+        &self,
+        payload: &trust_tasks_rs::specs::vault::credentials::present::v0_1::Payload,
+    ) -> Result<trust_tasks_rs::specs::vault::credentials::present::v0_1::Response, VtaError> {
+        let body = serde_json::to_value(payload)
+            .map_err(|e| VtaError::Validation(format!("present payload: {e}")))?;
+        self.rpc_tt(
+            trust_tasks::TASK_VAULT_CREDENTIALS_PRESENT_0_1,
+            body,
             VAULT_TT_TIMEOUT,
         )
         .await

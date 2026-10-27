@@ -122,6 +122,7 @@ impl<'a> BackendResolvers<'a> {
 /// supplied resolvers produce so the caller can preserve their own
 /// error context.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum SecretsPromptError {
     #[error("no backends configured — service must enable at least one")]
     NoBackendsAvailable,

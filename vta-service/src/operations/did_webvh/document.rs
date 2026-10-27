@@ -176,12 +176,17 @@ fn is_tsp_service(service: &serde_json::Value) -> bool {
 ///   decodes TSP is the caller's claim, exactly as `SERVICE_TSP` is at
 ///   provisioning (see `vta_sdk::did_templates::transports`).
 ///
-/// Refused rather than skipped when the document names no DIDComm mediator: a
-/// TSP entry advertises a mediator DID, so there is nothing to point it at, and
-/// minting without the entry the caller asked for is the defect this replaces.
+/// When the document names no DIDComm mediator, a TSP entry has nothing to point
+/// at. If the caller asked for one (`requested`), that is refused rather than
+/// skipped: minting without the entry the caller asked for is the defect this
+/// replaces. If it was only this VTA's default for a caller that said nothing
+/// ([`resolve_add_tsp_service`]), the document is minted as rendered — a
+/// template with no service (a community group's identity, say) asks for no
+/// transport, and the default must never refuse what the caller did not ask.
 /// A document that already carries a `TSPTransport` entry keeps it.
 pub(crate) fn with_tsp_in_rendered_document(
     add_tsp_service: bool,
+    requested: bool,
     document: &mut serde_json::Value,
 ) -> Result<(), AppError> {
     if !add_tsp_service {
@@ -194,6 +199,9 @@ pub(crate) fn with_tsp_in_rendered_document(
         return Ok(());
     }
     let Some(mediator_did) = services.and_then(|s| s.iter().find_map(didcomm_mediator)) else {
+        if !requested {
+            return Ok(());
+        }
         return Err(AppError::Validation(
             "addTspService: this document names no DIDComm mediator, and a TSP entry \
              advertises the same mediator DIDComm uses — there is nothing to point it at"
@@ -788,7 +796,7 @@ mod tests {
             "room",
             &[("WEBVH_SERVER", "prod"), ("MEDIATOR_DID", ROOM_MEDIATOR)],
         );
-        with_tsp_in_rendered_document(true, &mut doc).expect("tsp added");
+        with_tsp_in_rendered_document(true, true, &mut doc).expect("tsp added");
         assert_eq!(service_types(&doc), ["TSPTransport", "DIDCommMessaging"]);
         assert_eq!(doc["service"][0]["id"], "{DID}#tsp");
         assert_eq!(doc["service"][0]["serviceEndpoint"], ROOM_MEDIATOR);
@@ -806,10 +814,10 @@ mod tests {
                 ("MEDIATOR_DID", ROOM_MEDIATOR),
             ],
         );
-        with_tsp_in_rendered_document(true, &mut doc).expect("tsp added");
+        with_tsp_in_rendered_document(true, true, &mut doc).expect("tsp added");
         assert_eq!(
             service_types(&doc),
-            ["TSPTransport", "DIDCommMessaging", "VTARest"]
+            ["TSPTransport", "DIDCommMessaging", "TrustTaskHTTPS"]
         );
         assert_eq!(doc["service"][0]["serviceEndpoint"], ROOM_MEDIATOR);
     }
@@ -823,7 +831,7 @@ mod tests {
             &[("WEBVH_SERVER", "prod"), ("MEDIATOR_DID", ROOM_MEDIATOR)],
         );
         let mut doc = rendered.clone();
-        with_tsp_in_rendered_document(false, &mut doc).expect("no-op");
+        with_tsp_in_rendered_document(false, false, &mut doc).expect("no-op");
         assert_eq!(doc, rendered);
     }
 
@@ -832,7 +840,7 @@ mod tests {
     #[test]
     fn a_template_that_already_advertises_tsp_is_not_duplicated() {
         let mut doc = render_builtin("ai-agent", &[("MEDIATOR_DID", ROOM_MEDIATOR)]);
-        with_tsp_in_rendered_document(true, &mut doc).expect("left as is");
+        with_tsp_in_rendered_document(true, true, &mut doc).expect("left as is");
         let tsp = service_types(&doc)
             .into_iter()
             .filter(|t| *t == "TSPTransport")
@@ -845,8 +853,19 @@ mod tests {
     #[test]
     fn asking_for_tsp_on_a_document_with_no_mediator_is_refused() {
         let mut doc = render_builtin("did-host-http", &[("URL", "https://host.example.com")]);
-        let err = with_tsp_in_rendered_document(true, &mut doc).expect_err("refused");
+        let err = with_tsp_in_rendered_document(true, true, &mut doc).expect_err("refused");
         assert!(matches!(err, AppError::Validation(_)), "got {err:?}");
+    }
+
+    /// The same document under this VTA's *default* — a caller that said
+    /// nothing about TSP — is minted as rendered: a template with no service
+    /// (`vtc-group`) asked for no transport, and the default never refuses.
+    #[test]
+    fn a_defaulted_tsp_on_a_document_with_no_mediator_mints_as_rendered() {
+        let mut doc = render_builtin("vtc-group", &[("WEBVH_SERVER", "https://host.example.com")]);
+        let before = doc.clone();
+        with_tsp_in_rendered_document(true, false, &mut doc).expect("not refused");
+        assert_eq!(doc, before, "nothing added");
     }
 
     /// All three `serviceEndpoint` shapes resolve to the mediator, and a URL in
@@ -912,7 +931,7 @@ mod tests {
     #[test]
     fn a_template_numbering_its_methods_from_one_is_followed() {
         let derived = fake_keys();
-        for template in ["room", "room-host"] {
+        for template in ["room", "room-host", "vtc-group"] {
             let doc = rendered(template, &derived);
             let ids = minted_vm_ids(&doc, DID, &derived.signing_pub, Some(&derived.ka_pub), &[]);
 

@@ -103,7 +103,9 @@ const SESSION_TIMEOUT_SECS: u64 = 60;
 
 pub mod acl;
 pub mod actions;
+pub mod elections;
 pub mod git_ns;
+pub mod members;
 pub mod rooms;
 
 /// The Trust Task type URI of each admin verb this client sends as a signed
@@ -113,11 +115,11 @@ pub mod rooms;
 /// (`vtc-service/src/trust_tasks`) in a single read, rather than scattered as
 /// string literals down the file.
 pub mod task {
-    pub const MEMBERS_LIST: &str = "https://trusttasks.org/spec/vtc/members/list/0.1";
+    pub const MEMBERS_LIST: &str = "https://trusttasks.org/spec/vtc/members/list/0.2";
     pub const MEMBERS_UPDATE: &str = "https://trusttasks.org/spec/vtc/members/update/0.1";
     pub const MEMBERS_ADMIN_REMOVE: &str =
         "https://trusttasks.org/spec/vtc/members/admin-remove/0.1";
-    pub const JOIN_REQUESTS_LIST: &str = "https://trusttasks.org/spec/vtc/join-requests/list/0.1";
+    pub const JOIN_REQUESTS_LIST: &str = "https://trusttasks.org/spec/vtc/join-requests/list/0.2";
     pub const JOIN_REQUESTS_DECIDE: &str =
         "https://trusttasks.org/spec/vtc/join-requests/decide/0.1";
     pub const POLICY_LIST: &str = "https://trusttasks.org/spec/policy/list/0.2";
@@ -181,6 +183,12 @@ pub const REST_SERVICE_TYPE: &str = "VTCRest";
 /// full API base including the mount (`https://vtc.example.com/v1`), which is
 /// what [`VtcClient::connect`] takes.
 ///
+/// A bare origin (`https://vtc.example.com`, no path) is read as that origin
+/// mounted at `/v1`. The `vtc-host` template emitted the endpoint without its
+/// mount until #1615 (Keyring KR-15), and a DID minted then still says so;
+/// the VTC serves its API nowhere but `/v1`, so the bare form names nothing
+/// else.
+///
 /// This is the direction discovery has to run in: from the community's DID to
 /// its URL. The reverse — asking a URL which DID it is — would let whoever
 /// answers at that URL choose the audience a client signs for, and the audience
@@ -206,6 +214,12 @@ pub fn api_base_from_did_document(doc: &serde_json::Value) -> Option<String> {
         .find_map(|svc| uri(svc.get("serviceEndpoint")?))
         .map(|u| u.trim_end_matches('/').to_string())
         .filter(|u| !u.is_empty())
+        .map(|u| {
+            let bare_origin = u
+                .split_once("://")
+                .is_some_and(|(_, rest)| !rest.contains(['/', '?', '#']));
+            if bare_origin { format!("{u}/v1") } else { u }
+        })
 }
 
 /// Largest audit-verification report [`VtcClient::audit_verify`] reads. The
@@ -274,6 +288,15 @@ pub use trust_tasks_rs::specs::policy::upsert::v0_2 as policy_upsert;
 /// `vtc/members/credentials/0.1` — what [`VtcClient::member_credentials`]
 /// returns, and the error code it maps to [`VtcError::NotFound`].
 pub use trust_tasks_rs::specs::vtc::members::credentials::v0_1 as members_credentials;
+
+/// `vtc/rooms/community/*` — the rooms a community owns, as its administrators run
+/// them: create, list, get and update (a room's label, description and tags — at 0.2
+/// the reads carry them), and members add, remove and list.
+pub use trust_tasks_rs::specs::vtc::rooms::community as community_rooms;
+
+/// `vtc/rooms/offers/*` — a member's offers of admission to the community's own rooms,
+/// and accepting one.
+pub use trust_tasks_rs::specs::vtc::rooms::offers as room_offers;
 
 /// The `ext` key under which a VTC binds an uploaded policy module to the
 /// decision slot (purpose) it serves.
@@ -455,6 +478,7 @@ struct Page<T> {
 /// A join request in the admin work queue (subset of the VTC's `JoinRequest`).
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
+#[non_exhaustive]
 pub struct JoinRequestSummary {
     /// The request id (used to approve / reject).
     pub id: String,
@@ -468,6 +492,7 @@ pub struct JoinRequestSummary {
 /// Outcome of approving or rejecting a join request.
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
+#[non_exhaustive]
 pub struct DecideResult {
     pub request_id: String,
     pub status: String,
@@ -484,6 +509,7 @@ pub struct DecideResult {
 /// status-list revocation bit as part of removal.
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
+#[non_exhaustive]
 pub struct RemoveResult {
     pub did: String,
     /// Wire disposition: `"tombstone"`, `"purge"`, `"historical"`.
@@ -568,6 +594,7 @@ pub struct RotationChallenge {
 /// envelope; NOT covered by either rotation signature.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[non_exhaustive]
 pub enum RotationReason {
     /// Routine hygiene — no suspected compromise.
     Routine,
@@ -722,7 +749,7 @@ struct AutoGrantShowResponse {
 /// `vtc/community/branding/{show,update}/0.1`'s response payload shape.
 #[derive(Deserialize)]
 struct BrandingResponse {
-    branding: join_requests::manifest::v0_2::CommunityBranding,
+    branding: join_requests::manifest::v0_4::CommunityBranding,
 }
 
 /// `vtc/community/requested-attributes/{show,update}/0.1`'s response payload
@@ -730,7 +757,7 @@ struct BrandingResponse {
 #[derive(Deserialize)]
 struct RequestedAttributesResponse {
     #[serde(rename = "requestedAttributes")]
-    requested_attributes: Vec<join_requests::manifest::v0_2::ResponseRequestedAttributesItem>,
+    requested_attributes: Vec<join_requests::manifest::v0_4::ResponseRequestedAttributesItem>,
 }
 
 /// A client bound to one VTC: its API base, and a session or the operator's
@@ -1130,7 +1157,7 @@ impl VtcClient {
     }
 
     /// List every community member, optionally filtered by `role`, following the
-    /// cursor to completion (`vtc/members/list/0.1`). Administrator. This is
+    /// cursor to completion (`vtc/members/list/0.2`). Administrator. This is
     /// the fleet roster when the community's members are managed VTAs.
     pub async fn list_members(&self, role: Option<&str>) -> Result<Vec<MemberRecord>, VtcError> {
         let mut payload = serde_json::json!({});
@@ -1143,7 +1170,7 @@ impl VtcClient {
 
     /// List join requests (the admin work queue), optionally filtered by
     /// `status` (e.g. `"pending"`), following the cursor to completion
-    /// (`vtc/join-requests/list/0.1`). Administrator. For a fleet, these are
+    /// (`vtc/join-requests/list/0.2`). Administrator. For a fleet, these are
     /// VTAs awaiting enrollment.
     pub async fn list_join_requests(
         &self,
@@ -1959,7 +1986,7 @@ impl VtcClient {
     /// (`vtc/community/branding/show/0.1`) — the join manifest 0.2 `branding`.
     pub async fn branding(
         &self,
-    ) -> Result<join_requests::manifest::v0_2::CommunityBranding, VtcError> {
+    ) -> Result<join_requests::manifest::v0_4::CommunityBranding, VtcError> {
         let reply = self
             .document(
                 task::COMMUNITY_BRANDING_SHOW,
@@ -1976,8 +2003,8 @@ impl VtcClient {
     /// is cleared.
     pub async fn set_branding(
         &self,
-        branding: &join_requests::manifest::v0_2::CommunityBranding,
-    ) -> Result<join_requests::manifest::v0_2::CommunityBranding, VtcError> {
+        branding: &join_requests::manifest::v0_4::CommunityBranding,
+    ) -> Result<join_requests::manifest::v0_4::CommunityBranding, VtcError> {
         let reply = self
             .document(
                 task::COMMUNITY_BRANDING_UPDATE,
@@ -1994,7 +2021,7 @@ impl VtcClient {
     /// `requestedAttributes`.
     pub async fn requested_attributes(
         &self,
-    ) -> Result<Vec<join_requests::manifest::v0_2::ResponseRequestedAttributesItem>, VtcError> {
+    ) -> Result<Vec<join_requests::manifest::v0_4::ResponseRequestedAttributesItem>, VtcError> {
         let reply = self
             .document(
                 task::COMMUNITY_REQUESTED_ATTRIBUTES_SHOW,
@@ -2012,8 +2039,8 @@ impl VtcClient {
     /// for nothing.
     pub async fn set_requested_attributes(
         &self,
-        requested: &[join_requests::manifest::v0_2::ResponseRequestedAttributesItem],
-    ) -> Result<Vec<join_requests::manifest::v0_2::ResponseRequestedAttributesItem>, VtcError> {
+        requested: &[join_requests::manifest::v0_4::ResponseRequestedAttributesItem],
+    ) -> Result<Vec<join_requests::manifest::v0_4::ResponseRequestedAttributesItem>, VtcError> {
         let reply = self
             .document(
                 task::COMMUNITY_REQUESTED_ATTRIBUTES_UPDATE,
@@ -2346,6 +2373,28 @@ mod tests {
         });
         assert_eq!(api_base_from_did_document(&vta_only), None);
         assert_eq!(api_base_from_did_document(&serde_json::json!({})), None);
+    }
+
+    /// KR-15: a DID minted before #1615 advertises the bare origin; it is read
+    /// as the `/v1` mount, and an endpoint that names a path is left alone.
+    #[test]
+    fn a_bare_origin_vtc_rest_endpoint_is_read_as_the_v1_mount() {
+        let with = |endpoint: &str| {
+            api_base_from_did_document(&serde_json::json!({
+                "service": [{ "type": "VTCRest", "serviceEndpoint": endpoint }],
+            }))
+        };
+        for bare in ["https://vtc.example.com", "https://vtc.example.com/"] {
+            assert_eq!(with(bare).as_deref(), Some("https://vtc.example.com/v1"));
+        }
+        assert_eq!(
+            with("https://vtc.example.com:8443/v1").as_deref(),
+            Some("https://vtc.example.com:8443/v1")
+        );
+        assert_eq!(
+            with("https://example.com/vtc/v1").as_deref(),
+            Some("https://example.com/vtc/v1")
+        );
     }
 
     #[tokio::test]

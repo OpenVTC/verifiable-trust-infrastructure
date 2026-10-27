@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 /// written against them keeps working while it migrates.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[non_exhaustive]
 pub enum SignAlgorithm {
     /// Ed25519 / EdDSA signing.
     #[serde(rename = "EdDSA", alias = "eddsa")]

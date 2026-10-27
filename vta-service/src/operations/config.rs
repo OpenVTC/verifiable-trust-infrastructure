@@ -65,7 +65,18 @@ enum Kind {
     /// An integer in `min..=max`. A JSON number, or a string of decimal digits
     /// (so a client that only sends strings is not locked out).
     Int { min: u64, max: u64 },
+    /// A boolean. A JSON boolean, or the string `true` / `false`.
+    Bool,
+    /// One of a fixed set of strings.
+    Choice(&'static [&'static str]),
 }
+
+/// `dids.default_did_method` — how a DID this VTA creates is presented when the
+/// request and its VTC say nothing (VTI-VTA-034, VTI-VTA-036).
+pub(crate) const DIDS_DEFAULT_DID_METHOD_KEY: &str = "dids.default_did_method";
+/// `dids.scid_also_known_as` — whether a new log lists its did:scid alias
+/// (VTI-VTA-035).
+pub(crate) const DIDS_SCID_ALSO_KNOWN_AS_KEY: &str = "dids.scid_also_known_as";
 
 /// One registered configuration key.
 struct KeyDef {
@@ -140,6 +151,22 @@ const REGISTRY: &[KeyDef] = &[
         requires_restart: false,
         immutable_reason: "",
     },
+    // How new DIDs are presented. Read on every create, so a change applies
+    // to the next DID minted; existing DIDs keep the form they were given.
+    KeyDef {
+        key: DIDS_DEFAULT_DID_METHOD_KEY,
+        kind: Kind::Choice(&["webvh", "scid"]),
+        mutable: true,
+        requires_restart: false,
+        immutable_reason: "",
+    },
+    KeyDef {
+        key: DIDS_SCID_ALSO_KNOWN_AS_KEY,
+        kind: Kind::Bool,
+        mutable: true,
+        requires_restart: false,
+        immutable_reason: "",
+    },
 ];
 
 const INTERVAL: Kind = Kind::Int {
@@ -155,6 +182,7 @@ const BURST: Kind = Kind::Int {
 enum Parsed {
     Text(String),
     Int(u64),
+    Bool(bool),
 }
 
 impl Kind {
@@ -177,6 +205,16 @@ impl Kind {
                     _ => Err(format!("expected an integer from {min} to {max}")),
                 }
             }
+            Kind::Bool => match value {
+                Value::Bool(b) => Ok(Parsed::Bool(*b)),
+                Value::String(s) if s == "true" => Ok(Parsed::Bool(true)),
+                Value::String(s) if s == "false" => Ok(Parsed::Bool(false)),
+                _ => Err("expected true or false".to_string()),
+            },
+            Kind::Choice(choices) => match value.as_str() {
+                Some(s) if choices.contains(&s) => Ok(Parsed::Text(s.to_string())),
+                _ => Err(format!("expected one of {}", choices.join(", "))),
+            },
         }
     }
 }
@@ -209,6 +247,13 @@ fn value_of(config: &AppConfig, key: &str) -> Value {
     if let Some((current, _)) = int_value_of(config, key) {
         return Value::from(current);
     }
+    match key {
+        DIDS_DEFAULT_DID_METHOD_KEY => {
+            return Value::from(config.dids.default_did_method.as_str());
+        }
+        DIDS_SCID_ALSO_KNOWN_AS_KEY => return Value::from(config.dids.scid_also_known_as),
+        _ => {}
+    }
     let v = match key {
         "vta_did" => config.vta_did.clone(),
         "vta_name" => config.vta_name.clone(),
@@ -227,6 +272,24 @@ fn source_of(config: &AppConfig, key: &str) -> &'static str {
         } else {
             "toml"
         };
+    }
+    let dids_default = crate::config::DidsConfig::default();
+    match key {
+        DIDS_DEFAULT_DID_METHOD_KEY => {
+            return if config.dids.default_did_method == dids_default.default_did_method {
+                "default"
+            } else {
+                "toml"
+            };
+        }
+        DIDS_SCID_ALSO_KNOWN_AS_KEY => {
+            return if config.dids.scid_also_known_as == dids_default.scid_also_known_as {
+                "default"
+            } else {
+                "toml"
+            };
+        }
+        _ => {}
     }
     if value_of(config, key).is_null() {
         "default"
@@ -331,6 +394,13 @@ pub async fn update_config(
                 (rl::VTA_DID_LOG_BURST_KEY, Parsed::Int(n)) => {
                     config.server.did_log_rate_limit_burst = u32::try_from(*n).unwrap_or(u32::MAX)
                 }
+                (DIDS_DEFAULT_DID_METHOD_KEY, Parsed::Text(v)) => {
+                    // `Kind::Choice` admitted only the two spellings.
+                    config.dids.default_did_method = v.parse().map_err(AppError::Validation)?
+                }
+                (DIDS_SCID_ALSO_KNOWN_AS_KEY, Parsed::Bool(b)) => {
+                    config.dids.scid_also_known_as = *b
+                }
                 // Unreachable: `writes` only ever holds mutable registry keys,
                 // each parsed by its own registered kind.
                 (other, _) => {
@@ -343,8 +413,7 @@ pub async fn update_config(
                 applied.push(def.key.to_string());
             }
         }
-        let contents = toml::to_string_pretty(&*config)
-            .map_err(|e| AppError::Config(format!("failed to serialize config: {e}")))?;
+        let contents = config.to_runtime_toml()?;
         let mut changed: Vec<String> = writes
             .iter()
             .map(|(def, _)| format!("{}={}", def.key, value_of(&config, def.key)))

@@ -28,6 +28,7 @@ use vta_sdk::protocols::did_management::update::UpdateDidWebvhBody;
 /// — formatted with leading lowercase so they read naturally after
 /// "Error: " in the CLI output.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum EditFlowError {
     #[error("DID log is empty — cannot extract the current document")]
     EmptyLog,

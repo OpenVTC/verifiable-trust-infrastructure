@@ -536,3 +536,97 @@ async fn a_document_with_no_recipient_is_malformed() {
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
     assert!(body.to_string().contains("malformedRequest"), "{body}");
 }
+
+/// Several agents behind one address log in while other traffic keeps taking
+/// challenge tokens from that same address — the shape of the login livelock.
+///
+/// With one auth bucket, every token that refilled went to whichever request
+/// came first; the noise took them, each authenticate was refused, and a
+/// caller restarting with a new challenge never finished. Now the steps draw
+/// on separate buckets and the SDK redeems the challenge it holds, so every
+/// agent completes. Served over real TCP so all of them share the peer
+/// address the limiter keys on, at a quota tiny enough to make them queue.
+///
+/// The timeout is the point, not just a guard: measured, the full fix
+/// finishes in about 5 s, and the SDK's same-challenge retry alone — with
+/// one shared bucket — needs nearly a minute, so 20 s tells the two apart.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn agents_behind_one_address_all_log_in_under_a_tight_auth_limit() {
+    let (router, ctx) = build_test_app().await;
+    {
+        let mut config = ctx.config.write().await;
+        config.server.rate_limit_interval_secs = 1;
+        config.server.rate_limit_burst = 1;
+    }
+    let agents: Vec<(String, String)> = (0..4).map(|i| did_key_from_seed(0x70 + i)).collect();
+    for (did, _) in &agents {
+        let entry = vti_common::acl::AclEntry::new(did, vti_common::acl::Role::Admin, "test")
+            .with_created_at(1);
+        vti_common::acl::store_acl_entry(&ctx.acl_ks, &entry)
+            .await
+            .expect("seed ACL");
+    }
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base_url = format!("http://{}", listener.local_addr().unwrap());
+    tokio::spawn(async move {
+        axum::serve(
+            listener,
+            router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+        )
+        .await
+    });
+
+    let http = reqwest::Client::new();
+    let noise = {
+        let (http, url) = (http.clone(), format!("{base_url}/trust-tasks"));
+        tokio::spawn(async move {
+            loop {
+                let _ = http
+                    .post(&url)
+                    .header("content-type", "application/json")
+                    .body(challenge_doc("did:key:z6MkOtherAgentOnThisHost").to_string())
+                    .send()
+                    .await;
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
+        })
+    };
+
+    let logins = agents.iter().map(|(did, key)| {
+        let (http, base_url, vta_did) = (http.clone(), base_url.clone(), ctx.vta_did.clone());
+        async move {
+            // The agent's own retry: no challenge was obtained (the
+            // challenge bucket refused), so it waits and asks again. A refused
+            // *authenticate* never reaches here — the SDK waits and redeems
+            // the challenge it already holds.
+            loop {
+                match vta_sdk::auth_light::challenge_response_light(
+                    &http, &base_url, did, key, &vta_did,
+                )
+                .await
+                {
+                    Ok(result) => return result,
+                    Err(vta_sdk::error::VtaError::RateLimited { retry_after, .. }) => {
+                        let wait = retry_after
+                            .and_then(|at| (at - chrono::Utc::now()).to_std().ok())
+                            .unwrap_or_default()
+                            .max(std::time::Duration::from_millis(200));
+                        tokio::time::sleep(wait).await;
+                    }
+                    Err(e) => panic!("{did}: login failed: {e}"),
+                }
+            }
+        }
+    });
+    let results = tokio::time::timeout(
+        std::time::Duration::from_secs(20),
+        futures_util::future::join_all(logins),
+    )
+    .await
+    .expect("every agent logs in; none is starved by the shared address");
+    noise.abort();
+
+    assert_eq!(results.len(), agents.len());
+    assert!(results.iter().all(|r| !r.access_token.is_empty()));
+}

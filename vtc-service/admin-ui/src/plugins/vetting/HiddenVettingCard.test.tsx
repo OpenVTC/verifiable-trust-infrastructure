@@ -25,7 +25,7 @@ vi.mock("@/lib/api", async (original) => ({
 
 afterEach(() => vi.useRealTimers());
 
-const MANIFEST_TASK = "https://trusttasks.org/spec/vtc/join-requests/manifest/0.3";
+const MANIFEST_TASK = "https://trusttasks.org/spec/vtc/join-requests/manifest/0.4";
 const ACCEPTS_LIST_TASK = "https://trusttasks.org/spec/vtc/schemas/accepts/list/0.2";
 const STATEMENT_TYPE = "https://registry.trustoverip.org/dtg/vsc/vetted/1";
 
@@ -87,7 +87,7 @@ function routes({
         },
       ],
     }),
-    taskRoute("https://trusttasks.org/spec/vtc/endorsement-types/list/0.1", { items: [] }),
+    taskRoute("https://trusttasks.org/spec/vtc/endorsement-types/list/0.2", { items: [] }),
     ...extra,
   ];
 }
@@ -182,7 +182,7 @@ describe("hidden vetting on a criterion", () => {
           { id: "second-route", admission: "automatic", vetting: VETTING, requirementsDigest: "zQmB" },
         ],
       }),
-      taskRoute("https://trusttasks.org/spec/vtc/endorsement-types/list/0.1", { items: [] }),
+      taskRoute("https://trusttasks.org/spec/vtc/endorsement-types/list/0.2", { items: [] }),
     ]);
     renderWithProviders(<RequirementsPanel />);
     const second = (

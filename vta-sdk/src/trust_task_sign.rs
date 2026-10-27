@@ -38,6 +38,7 @@ use crate::did_key::decode_private_key_multibase;
 
 /// Why building or signing a Trust Task document failed.
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum TrustTaskSignError {
     /// [`HolderKey::from_did_key`] was handed something that is not a
     /// `did:key`. Only that constructor is method-specific, because only

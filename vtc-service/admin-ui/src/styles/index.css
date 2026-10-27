@@ -39,4 +39,5 @@
 @import "./plugins/sessions.css";
 @import "./plugins/profile.css";
 @import "./plugins/rooms.css";
+@import "./plugins/wallet-verifier.css";
 @import "./plugins/account.css";

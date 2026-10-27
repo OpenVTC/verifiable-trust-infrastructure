@@ -164,22 +164,10 @@ impl PurposeVmResolver for DidVmResolver {
 /// A credential proof's `verificationMethod` must sit under the credential's
 /// declared `issuer` — a key controlled by some *other* DID must not sign a
 /// credential claiming this issuer. Shared by every issuer-bound DI verify
-/// (credential-exchange DI VPs, recognition foreign VACs, VRC relationships).
-///
-/// Exact string equality of the DID, and the method must be a DID URL with a
-/// fragment: a bare DID names no verification method. The message names the
-/// rule, not the identifiers.
-pub(crate) fn check_issuer_binding(vm: &str, issuer_did: &str) -> Result<(), AppError> {
-    match vm.split_once('#') {
-        Some((base, fragment)) if !fragment.is_empty() && base == issuer_did => Ok(()),
-        Some((_, fragment)) if !fragment.is_empty() => Err(AppError::Validation(
-            "proof verificationMethod is not under the credential's issuer".to_string(),
-        )),
-        _ => Err(AppError::Validation(
-            "proof verificationMethod is not a DID URL naming a verification method".to_string(),
-        )),
-    }
-}
+/// (credential-exchange DI VPs, recognition foreign VACs, VRC relationships),
+/// and with the room credential opener in `vti-rooms-dtg`, which is why the
+/// rule itself lives in `vti-common`.
+pub(crate) use vti_common::auth::check_issuer_binding;
 
 #[cfg(test)]
 mod tests {

@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use crate::auth::extractor::AuthClaims;
 use crate::auth::step_up::StepUpMode;
 use crate::error::AppError;
-use crate::store::KeyspaceHandle;
+use crate::store::{Batch, KeyspaceHandle};
 
 /// Roles that determine endpoint access permissions.
 ///
@@ -73,6 +73,7 @@ impl Role {
 /// existing operator-deployed mediator or daemon.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
+#[non_exhaustive]
 pub enum ConsumerKind {
     #[serde(rename_all = "kebab-case")]
     Companion { form_factor: CompanionFormFactor },
@@ -101,6 +102,7 @@ pub enum CompanionFormFactor {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
+#[non_exhaustive]
 pub enum ServiceKind {
     Mediator,
     AiAgent,
@@ -176,6 +178,38 @@ pub enum Capability {
     /// Derived by every role that derives `Sign`, which already confers strictly
     /// more; the gate accepts either.
     SignSshsig,
+    /// JWS signing — `keys/sign-jws/0.1`: a compact JWS (an OpenID4VP request
+    /// object, a proof-of-possession JWT) from a key that never leaves the VTA.
+    ///
+    /// Registered upstream as `signJws`. The VTA writes the header's `alg`
+    /// and builds the JWS signing input itself, so a holder obtains a JWS and
+    /// nothing else. Unlike [`Capability::SignSshsig`], the gate does **not**
+    /// accept [`Capability::Sign`] in its place: this VTA frames `keys/sign`
+    /// payloads under its own signing domain, so `sign` is a grant that cannot
+    /// yield a JWS, and the specification says such a custodian SHOULD NOT
+    /// widen it into one.
+    ///
+    /// Derived by every role that derives `Sign`.
+    SignJws,
+    /// Certificate-request signing — `keys/sign-csr/0.1`: a PKCS#10 request for
+    /// a key that never leaves the VTA, so a CA can certify it (an EUDI access
+    /// certificate). Registered upstream as `signCsr`; `sign` is not accepted
+    /// for it, for the reason given on [`Capability::SignJws`].
+    ///
+    /// Derived by every role that derives `Sign`.
+    SignCsr,
+    /// Data Integrity document signing — `keys/sign-document/0.1`: an
+    /// `eddsa-jcs-2022` proof over a JSON document that names its signer (a
+    /// credential, a member's external directory card), from a key that never
+    /// leaves the VTA and only as the DID the document names. Registered
+    /// upstream as `signDocument` (`sign-document`). The VTA builds the proof
+    /// itself, so a holder obtains a Data Integrity proof and nothing else;
+    /// `sign` is not accepted in its place, for the reason given on
+    /// [`Capability::SignJws`] and because a `sign` grant was never given with
+    /// the issuer binding this task adds.
+    ///
+    /// Derived by every role that derives `Sign`.
+    SignDocument,
     /// Mutating the **archival lifecycle** of a stored credential — the
     /// `vault/credentials/{archive,unarchive,delete,restore,purge}/0.1`
     /// tasks. Distinct from `VaultWrite` (which gates `vault/credentials/
@@ -209,7 +243,7 @@ pub enum Capability {
     /// Withheld from [`Role::Reader`]: minting a credential on a principal's
     /// behalf is not a read.
     RoomPresent,
-    /// Asking this VTA to open a sealed room record — `rooms/keys/open/0.1`.
+    /// Asking this VTA to open a sealed room record — `rooms/keys/open/{0.1,0.2}`.
     ///
     /// Registered upstream as `roomOpen` alongside `roomPresent`
     /// (`trustoverip/dtgwg-trust-tasks-tf` #351), and separate from it on
@@ -217,7 +251,7 @@ pub enum Capability {
     /// powers. An agent that indexes a room — walking the listing and building
     /// a searchable view — should not thereby be able to read it.
     ///
-    /// Also gates `rooms/keys/{seal,file-key}/0.1`: a sealing key is a file key
+    /// Also gates `rooms/keys/seal` and `rooms/keys/file-key`: a sealing key is a file key
     /// like any other, and opens the file it seals.
     RoomOpen,
     /// Acting for the **holder** over their own identity: the ten holder-scoped
@@ -263,6 +297,79 @@ pub enum Capability {
     /// often. Derived by the roles that already hold [`Capability::Sign`],
     /// because the binding, not the role, is what bounds the grant.
     ExternalAuthUse,
+    /// Acting as the principal's **vetter** under hidden vetting — the vetter
+    /// tasks of `vta/pcs/*` (enrolment, the token drip, attesting): the VTA runs
+    /// the PCS engine and the caller carries its messages.
+    ///
+    /// Registered upstream as `pcsVetter`. Deliberately **not**
+    /// [`Capability::Sign`] and not conferred by it (VTI-VTA-007): these tasks
+    /// produce PCS artefacts and nothing else, so a caller that may drive a
+    /// vetter's drip is not thereby a caller that may sign as the vetter. An
+    /// attestation is the vetter's word that a person was checked, so it is
+    /// derived only by the roles that act as the principal — [`Role::Admin`]
+    /// and [`Role::Initiator`] — and never by [`Role::Application`]: an agent
+    /// vets on the principal's behalf only where it is granted this by name.
+    PcsVetter,
+    /// Acting as the principal's **applicant** under hidden vetting — the
+    /// applicant tasks of `vta/pcs/*` (an application's key, taking in
+    /// attestations, the proof a join submission carries).
+    ///
+    /// Registered upstream as `pcsApplicant`. Not [`Capability::Sign`], for the
+    /// same reason as [`Capability::PcsVetter`], and derived by the same roles.
+    PcsApplicant,
+    /// Being the principal's **witnessed party** — `vta/witness/{open,present,accept}`:
+    /// the VTA builds and signs, as the principal's relationship DID (and, under the member
+    /// link, its member DID), every document of a `witness/session`, verifies the witness's
+    /// answers, and stores the Verifiable Witness Credential; the caller carries the
+    /// documents (`vta/_shared/0.6/CONVENTIONS.md` §4).
+    ///
+    /// Registered upstream as `witnessRequest`. Deliberately **not** [`Capability::Sign`]
+    /// and not conferred by it: these tasks sign only documents and presentations the VTA
+    /// builds itself, bound to one session with one witness, and they read and write the
+    /// credential vault, which `sign` does not confer. Witnessing discloses the principal's
+    /// credentials to a third party, so it is derived only by the roles that act as the
+    /// principal — [`Role::Admin`] and [`Role::Initiator`] — and never by
+    /// [`Role::Application`], as for [`Capability::PcsVetter`].
+    WitnessRequest,
+    /// Acting as the principal's **voter** in a community's elections — the
+    /// voter tasks `vta/pcs/voter/{register,accept,receipt}` and `vta/pcs/vote`:
+    /// a key per election, the blinded ticket request, the cast, and checking
+    /// receipts (VTI-VOT-020 – 033, VTI-VOT-053).
+    ///
+    /// Registered upstream as `pcsVoter`. Not [`Capability::Sign`], for the same
+    /// reason as [`Capability::PcsVetter`]: a vote is the principal's, so it is
+    /// derived by the roles that act as the principal and never by
+    /// [`Role::Application`] — an agent votes for the principal only where it is
+    /// granted this by name.
+    ///
+    PcsVoter,
+    /// Acting as the principal's **trustee** in a community's sealed or
+    /// tallied-encrypted elections — `vta/pcs/trustee/{enrol,deal,keys,justify,decrypt}`:
+    /// a transport key and a share of the election key per election, kept here,
+    /// and the documents a trustee publishes, signed as the trustee persona
+    /// (VTI-VOT-062, VTI-VOT-063).
+    ///
+    /// Registered upstream as `pcsTrustee`. Not [`Capability::Sign`]: the VTA
+    /// signs only the trustee documents it builds. A trustee's share decides an
+    /// election's secrecy, so it is derived by the roles that act as the
+    /// principal and never by [`Role::Application`].
+    ///
+    /// Last on purpose: a variant inserted before another shifts its implicit
+    /// discriminant, which is a breaking change to a published enum.
+    PcsTrustee,
+    /// Presenting a held credential to a verifier the caller names —
+    /// `vault/credentials/present/0.1`: the VTA builds a presentation of a
+    /// credential it holds, bound to one audience and nonce, disclosing only
+    /// the named claims, and signs it as the credential's subject.
+    ///
+    /// Registered upstream as `credentialPresent`. Not [`Capability::Sign`] and
+    /// not conferred by it, for the reason given on [`Capability::RoomPresent`];
+    /// not [`Capability::VaultRead`] either, because reading a credential is not
+    /// disclosing it to a third party under its subject's signature. A
+    /// presentation is the principal's word, so it is derived only by the roles
+    /// that act as the principal — [`Role::Admin`] and [`Role::Initiator`] —
+    /// and never by [`Role::Application`], as for [`Capability::WitnessRequest`].
+    CredentialPresent,
     /// Creating a **sub-context** — `vta/contexts/create/1.0` with a `parent`.
     ///
     /// Necessary and not sufficient: the caller must also reach the parent
@@ -297,6 +404,10 @@ pub enum Capability {
     /// set, so a capability that must reach a non-admin cannot be role-derived.
     /// Granting it is super-admin-only (`validate_additive_capability_grant`),
     /// which is the same one-time consent step pairing already is.
+    ///
+    /// Appended last for the reason [`Capability::PcsTrustee`] gives: a variant
+    /// inserted before another shifts its implicit discriminant, which is a
+    /// breaking change to a published enum.
     ContextCreate,
 }
 
@@ -427,11 +538,20 @@ pub fn derived_capabilities_for_role(role: &Role) -> Vec<Capability> {
             Capability::DeviceAdmin,
             Capability::Sign,
             Capability::SignSshsig,
+            Capability::SignJws,
+            Capability::SignCsr,
+            Capability::SignDocument,
             Capability::SignTrustTask,
             Capability::KeyMint,
             Capability::KeyExport,
             Capability::ExternalAccountsManage,
             Capability::ExternalAuthUse,
+            Capability::PcsVetter,
+            Capability::PcsApplicant,
+            Capability::PcsVoter,
+            Capability::PcsTrustee,
+            Capability::WitnessRequest,
+            Capability::CredentialPresent,
         ],
         Role::Initiator => vec![
             Capability::VaultRead,
@@ -446,9 +566,18 @@ pub fn derived_capabilities_for_role(role: &Role) -> Vec<Capability> {
             Capability::DeviceAdmin,
             Capability::Sign,
             Capability::SignSshsig,
+            Capability::SignJws,
+            Capability::SignCsr,
+            Capability::SignDocument,
             Capability::SignTrustTask,
             Capability::KeyMint,
             Capability::ExternalAuthUse,
+            Capability::PcsVetter,
+            Capability::PcsApplicant,
+            Capability::PcsVoter,
+            Capability::PcsTrustee,
+            Capability::WitnessRequest,
+            Capability::CredentialPresent,
         ],
         // `application` is the role a memory agent runs as — `vta-agent-memory`
         // grants exactly it, deliberately, so the memory service is not the
@@ -476,6 +605,9 @@ pub fn derived_capabilities_for_role(role: &Role) -> Vec<Capability> {
             Capability::FillRelease,
             Capability::Sign,
             Capability::SignSshsig,
+            Capability::SignJws,
+            Capability::SignCsr,
+            Capability::SignDocument,
             Capability::SignTrustTask,
             Capability::MemoryRead,
             Capability::MemoryWrite,
@@ -1109,7 +1241,12 @@ pub async fn move_acl_entry_if_unchanged(
 /// paths (admin import, initial seed, sweeper) where there's no
 /// concurrent-edit risk.
 pub async fn store_acl_entry(acl: &KeyspaceHandle, entry: &AclEntry) -> Result<(), AppError> {
-    acl.insert(acl_key(&entry.did), entry).await?;
+    // A batch rather than a plain insert, so it is ordered against
+    // `update_acl_entry_versioned`'s conditional write: a plain insert could
+    // land between that write's check and its commit and be overwritten.
+    let mut batch = Batch::new();
+    batch.insert(acl_key(&entry.did), entry)?;
+    acl.apply_batch(batch).await?;
     // Re-seal the TEE integrity manifest so this ACL change is reflected in the
     // sealed snapshot (P0.2a). No-op unless running in a TEE.
     crate::integrity::reseal_if_active().await
@@ -1126,33 +1263,55 @@ pub async fn store_acl_entry(acl: &KeyspaceHandle, entry: &AclEntry) -> Result<(
 /// on a stale write (the caller should re-read, re-apply their
 /// edits to the fresh row, and retry).
 ///
-/// Atomicity: implemented as a read-modify-write inside a
-/// keyspace-level `swap`-style sequence. Single-process fjall
-/// serialises within the closure; cross-replica deployments rely
-/// on the underlying store's `swap` semantics.
+/// Atomicity: the check and the write are one conditional store batch — the
+/// write applies only while the row is still exactly the one whose version was
+/// checked (or still absent, for version 0) — so of concurrent writers that
+/// observed the same version exactly one succeeds and every other gets
+/// `Conflict`. A plain read-check-write let two of them both pass the check,
+/// and the later write silently discarded the earlier one's edits.
 pub async fn update_acl_entry_versioned(
     acl: &KeyspaceHandle,
     mut new_entry: AclEntry,
     expected_version: u32,
 ) -> Result<u32, AppError> {
     let key = acl_key(&new_entry.did);
-    let current: Option<AclEntry> = acl.get(key.clone()).await?;
+    let current_raw = acl.get_raw(key.clone()).await?;
+    let current: Option<AclEntry> = current_raw
+        .as_deref()
+        .map(serde_json::from_slice)
+        .transpose()?;
     let stored_version = current.as_ref().map(|e| e.version).unwrap_or(0);
-    if stored_version != expected_version {
-        return Err(AppError::Conflict(format!(
+    let conflict = || {
+        AppError::Conflict(format!(
             "ACL entry for {} has moved ahead (expected v{}, found v{}); re-read and retry",
             new_entry.did, expected_version, stored_version,
-        )));
+        ))
+    };
+    if stored_version != expected_version {
+        return Err(conflict());
     }
-    new_entry.version = expected_version + 1;
-    acl.insert(key, &new_entry).await?;
+    let mut batch = Batch::new();
+    match current_raw {
+        Some(raw) => batch.require_unchanged(key.clone(), raw),
+        None => batch.require_absent(key.clone()),
+    };
+    let new_version = expected_version + 1;
+    new_entry.version = new_version;
+    batch.insert(key, &new_entry)?;
+    if !acl.apply_batch(batch).await?.is_applied() {
+        return Err(conflict());
+    }
     crate::integrity::reseal_if_active().await?; // P0.2a
-    Ok(new_entry.version)
+    Ok(new_version)
 }
 
 /// Delete an ACL entry by DID.
 pub async fn delete_acl_entry(acl: &KeyspaceHandle, did: &str) -> Result<(), AppError> {
-    acl.remove(acl_key(did)).await?;
+    // A batch, for the same ordering as `store_acl_entry`: a versioned update
+    // racing this delete either lands first (and is deleted) or finds no row.
+    let mut batch = Batch::new();
+    batch.remove(acl_key(did));
+    acl.apply_batch(batch).await?;
     // Re-seal so the deletion is reflected in the manifest (P0.2a). No-op
     // outside a TEE.
     crate::integrity::reseal_if_active().await
@@ -1886,6 +2045,74 @@ mod tests {
         );
     }
 
+    /// The hidden-vetting engine capabilities are the principal's to exercise:
+    /// derived by the roles that act as the principal, never by `application`
+    /// (an agent vets for the principal only when granted by name), and never
+    /// implied by `sign` (VTI-VTA-007).
+    #[test]
+    fn pcs_capabilities_are_the_principals_and_not_sign() {
+        for cap in [
+            Capability::PcsVetter,
+            Capability::PcsApplicant,
+            Capability::PcsVoter,
+            Capability::PcsTrustee,
+        ] {
+            assert!(role_has_capability(&Role::Admin, cap));
+            assert!(role_has_capability(&Role::Initiator, cap));
+            assert!(!role_has_capability(&Role::Application, cap));
+            assert!(!role_has_capability(&Role::Reader, cap));
+            assert!(!role_has_capability(&Role::Monitor, cap));
+            assert!(!is_additive(cap));
+        }
+        assert_eq!(
+            serde_json::to_value(Capability::PcsVetter).unwrap(),
+            "pcs-vetter"
+        );
+        assert_eq!(
+            serde_json::to_value(Capability::PcsApplicant).unwrap(),
+            "pcs-applicant"
+        );
+        assert_eq!(
+            serde_json::to_value(Capability::PcsVoter).unwrap(),
+            "pcs-voter"
+        );
+        assert_eq!(
+            serde_json::to_value(Capability::PcsTrustee).unwrap(),
+            "pcs-trustee"
+        );
+    }
+
+    /// `witness-request` is the principal's, like the PCS capabilities: derived by the
+    /// roles that act as the principal, never by `application`, never implied by `sign`
+    /// (`vta/_shared/0.6/CONVENTIONS.md` §4), and spelled as `device/_shared` 0.1 registers it.
+    #[test]
+    fn witness_request_is_the_principals_and_not_sign() {
+        let cap = Capability::WitnessRequest;
+        assert!(role_has_capability(&Role::Admin, cap));
+        assert!(role_has_capability(&Role::Initiator, cap));
+        assert!(!role_has_capability(&Role::Application, cap));
+        assert!(!role_has_capability(&Role::Reader, cap));
+        assert!(!role_has_capability(&Role::Monitor, cap));
+        assert!(!is_additive(cap));
+        assert_eq!(serde_json::to_value(cap).unwrap(), "witness-request");
+    }
+
+    /// `credential-present` is the principal's: derived by the roles that act as the
+    /// principal, never by `application` or `reader`, never implied by `sign` or
+    /// `vault-read` (`vault/credentials/present/0.1`, *Authorization*), and spelled as
+    /// `device/_shared` 0.2 registers it.
+    #[test]
+    fn credential_present_is_the_principals_and_neither_sign_nor_vault_read() {
+        let cap = Capability::CredentialPresent;
+        assert!(role_has_capability(&Role::Admin, cap));
+        assert!(role_has_capability(&Role::Initiator, cap));
+        assert!(!role_has_capability(&Role::Application, cap));
+        assert!(!role_has_capability(&Role::Reader, cap));
+        assert!(!role_has_capability(&Role::Monitor, cap));
+        assert!(!is_additive(cap));
+        assert_eq!(serde_json::to_value(cap).unwrap(), "credential-present");
+    }
+
     #[test]
     fn every_role_that_derives_sign_derives_sign_sshsig() {
         for role in [
@@ -1913,6 +2140,53 @@ mod tests {
         assert!(entry_has_capability(&entry, Capability::SignSshsig));
         assert!(!entry_has_capability(&entry, Capability::Sign));
         assert!(!entry_has_capability(&entry, Capability::VaultRead));
+    }
+
+    /// `sign-jws`, `sign-csr` and `sign-document` follow `sign` through the
+    /// roles, and a holder narrowed to one holds neither the general oracle
+    /// nor another's, on the wire under their registered names.
+    #[test]
+    fn sign_jws_and_sign_csr_follow_sign_and_narrow_alone() {
+        for role in [
+            Role::Admin,
+            Role::Initiator,
+            Role::Application,
+            Role::Reader,
+            Role::Monitor,
+        ] {
+            for cap in [
+                Capability::SignJws,
+                Capability::SignCsr,
+                Capability::SignDocument,
+            ] {
+                assert_eq!(
+                    role_has_capability(&role, Capability::Sign),
+                    role_has_capability(&role, cap),
+                    "{role:?} {cap:?}"
+                );
+                assert!(!is_additive(cap));
+            }
+        }
+        let mut entry = AclEntry::new("did:key:zVerifier", Role::Application, "did:key:zRoot");
+        entry.capabilities = vec![Capability::SignDocument];
+        assert!(entry_has_capability(&entry, Capability::SignDocument));
+        assert!(!entry_has_capability(&entry, Capability::SignJws));
+        assert_eq!(
+            serde_json::to_value(Capability::SignDocument).unwrap(),
+            "sign-document"
+        );
+        entry.capabilities = vec![Capability::SignJws];
+        assert!(entry_has_capability(&entry, Capability::SignJws));
+        assert!(!entry_has_capability(&entry, Capability::SignCsr));
+        assert!(!entry_has_capability(&entry, Capability::Sign));
+        assert_eq!(
+            serde_json::to_value(Capability::SignJws).unwrap(),
+            "sign-jws"
+        );
+        assert_eq!(
+            serde_json::to_value(Capability::SignCsr).unwrap(),
+            "sign-csr"
+        );
     }
 
     // ── Additive capabilities ───────────────────────────────────────
@@ -2022,6 +2296,43 @@ mod tests {
 
     fn sample_entry(did: &str, role: Role) -> AclEntry {
         AclEntry::new(did, role, "did:key:zSetup").with_label(Some(format!("test-{did}")))
+    }
+
+    /// Optimistic concurrency under contention: of writers that all observed
+    /// the same version, exactly one wins. A read-check-write let several pass
+    /// the check, and the last silently discarded the others' edits.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+    async fn concurrent_versioned_updates_admit_exactly_one_writer() {
+        let (store, _dir) = temp_store();
+        let ks = store.keyspace("acl").unwrap();
+        let did = "did:key:zVersioned";
+        store_acl_entry(&ks, &sample_entry(did, Role::Reader))
+            .await
+            .unwrap();
+        for _ in 0..40 {
+            let observed = get_acl_entry(&ks, did).await.unwrap().unwrap().version;
+            let barrier = std::sync::Arc::new(tokio::sync::Barrier::new(16));
+            let mut tasks = Vec::new();
+            for i in 0..16 {
+                let (ks, barrier) = (ks.clone(), barrier.clone());
+                tasks.push(tokio::spawn(async move {
+                    let entry = sample_entry(did, Role::Reader).with_label(Some(format!("w{i}")));
+                    barrier.wait().await;
+                    update_acl_entry_versioned(&ks, entry, observed)
+                        .await
+                        .is_ok()
+                }));
+            }
+            let mut won = 0;
+            for t in tasks {
+                won += t.await.unwrap() as usize;
+            }
+            assert_eq!(won, 1, "exactly one writer may win a version");
+            assert_eq!(
+                get_acl_entry(&ks, did).await.unwrap().unwrap().version,
+                observed + 1
+            );
+        }
     }
 
     #[tokio::test]

@@ -2,7 +2,7 @@
 //!
 //! A VWC is a DTG Verifiable Statement Credential (`StatementCredential`)
 //! under the predicate `https://registry.trustoverip.org/dtg/vsc/witnessed/1`
-//! (`dtg_credentials::WITNESSED_V1`; witness/session/submit/0.1, "The
+//! (`dtg_credentials::WITNESSED_V1`; witness/session/submit/0.2, "The
 //! credential delivered"). It is recognised by that predicate, never by a type
 //! string: DTG Credentials no longer defines a witness credential type.
 //!
@@ -70,10 +70,16 @@ use uuid::Uuid;
 use vti_common::error::AppError;
 use vti_common::store::KeyspaceHandle;
 
+use serde::Deserialize;
+use vti_common::auth::TrustTaskVmResolver;
+
 use crate::credentials::ingress::dtg_credential_digest_multibase;
+use crate::credentials::trusted_witnesses::TrustedWitnesses;
 use crate::relationships::Relationship;
 
-/// The host's verdict on a VWC's digest binding, resolved before policy runs.
+/// The host's verdict on a VWC, resolved before policy runs: whether its
+/// witness is one this community trusts, whether the witnessing it cites is
+/// shown to have completed, and which edge its digest names.
 ///
 /// Follows the same division of labour as `issuer_trusted` and the resolved
 /// `CredentialStatus`: the host does the work that needs keys, storage or a
@@ -85,12 +91,26 @@ use crate::relationships::Relationship;
 /// credential that witnessed *something this service cannot see* and one that
 /// witnessed *nothing*.
 ///
+/// The checks run in a fixed order, and each later state implies every earlier
+/// check passed ([`assess`]):
+///
+/// 1. the issuer is a trusted witness, else [`Self::UntrustedWitness`];
+/// 2. the witnessing it cites completed, shown by outcome evidence that pairs
+///    with it, else [`Self::NoOutcomeEvidence`] or [`Self::OutcomeInvalid`];
+/// 3. its digest names an edge — [`Self::Bound`], [`Self::SubjectMismatch`],
+///    [`Self::Unresolved`], [`Self::Absent`] or [`Self::Malformed`].
+///
+/// So a policy that accepts `unresolved` (an edge held elsewhere) still accepts
+/// only a trusted witness whose session completed: no policy can admit a VWC the
+/// host refused at steps 1–2 (VTI-VTC-022).
+///
 /// Reaches policy under the snake_case key `witness_binding`, as
 /// `{ "state": "bound", "relationship_id": "<uuid>" }` or
 /// `{ "state": "subjectMismatch", "relationship_id": "<uuid>" }` or
-/// `{ "state": "unresolved" | "absent" | "malformed" }` — on the ceremony
-/// `Credential` fact and on each `witnessed/1` statement of the personhood
-/// projection alike ([`annotate_vp_claims`]).
+/// `{ "state": "untrustedWitness" | "noOutcomeEvidence" | "outcomeInvalid" |
+/// "unresolved" | "absent" | "malformed" }` — on the ceremony `Credential`
+/// fact and on each `witnessed/1` statement of the personhood projection alike
+/// ([`annotate_vp_claims`]).
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase", tag = "state")]
 pub enum WitnessBinding {
@@ -120,6 +140,23 @@ pub enum WitnessBinding {
     /// §Digest Encoding requires a digest naming an algorithm the verifier does
     /// not accept to be *rejected*, "rather than treating it as a mismatch".
     Malformed,
+    /// The issuer is not on this community's list of trusted witnesses
+    /// ([`crate::credentials::trusted_witnesses`]). Nothing else is checked:
+    /// whoever issued it, it counts for nothing here. The default list is
+    /// empty, so this is every VWC until a community names a witness.
+    UntrustedWitness,
+    /// No outcome evidence for the witnessing session this VWC cites travelled
+    /// with it. VTI-CMP-022/023: a credential citing an exchange is not evidence
+    /// that the exchange completed unless the relying party holds the outcome
+    /// evidence — the `witness/session` document and the witness's
+    /// `witness/session/submit#response` — and a VWC verifies in full for a
+    /// session that was cancelled or never completed.
+    NoOutcomeEvidence,
+    /// Outcome evidence for the cited session travelled with the VWC but does
+    /// not pair with it under the four checks of the Trust Task framework's
+    /// *Evidence That a Cited Exchange Completed*, or the response does not
+    /// carry this VWC. The reason is logged, not exposed to policy.
+    OutcomeInvalid,
 }
 
 impl WitnessBinding {
@@ -264,7 +301,7 @@ pub const WITNESS_BINDING_KEY: &str = "witness_binding";
 
 /// Attach the host's [`WitnessBinding`] verdict to every `witnessed/1`
 /// statement in a `vp_claims` projection
-/// (`crate::policy::extract::extract_vp_claims`).
+/// (`crate::policy::extract::extract_vp_claims`) of `presentation`.
 ///
 /// The personhood `assert` path hands policy this projection rather than the
 /// ceremony facts, and before this existed it carried no binding verdict at
@@ -272,6 +309,13 @@ pub const WITNESS_BINDING_KEY: &str = "witness_binding";
 /// witness credential had a non-empty issuer, which says nothing about which
 /// edge, if any, was witnessed. This puts the same verdict the ceremony path
 /// computes onto the projection, and the policy branches on it the same way.
+///
+/// The verdict is assessed over the credential **as presented** — the
+/// projection drops `taskContext` and `taskDigestMultibase`, which the outcome
+/// evidence pairs on — taking the presentation's object credentials in order,
+/// which is the order the projection keeps. A projection that does not line up
+/// with `presentation` is assessed from its own entries, which carry no
+/// citation and so pair with no evidence: the restrictive reading.
 ///
 /// The key is **host-owned**: it is written on every witness entry and
 /// removed from every other one, so nothing a presenter put in the VP can
@@ -282,14 +326,24 @@ pub const WITNESS_BINDING_KEY: &str = "witness_binding";
 /// choice the join path makes: one unreadable keyspace must not decide the
 /// assertion, and "could not find the edge" is the honest answer. The policy
 /// still sees an unbound witness.
-pub async fn annotate_vp_claims(relationships_ks: &KeyspaceHandle, vp_claims: &mut JsonValue) {
+pub async fn annotate_vp_claims(
+    ctx: &WitnessContext<'_>,
+    presentation: &JsonValue,
+    vp_claims: &mut JsonValue,
+) {
+    let originals: Vec<JsonValue> = presentation
+        .get("verifiableCredential")
+        .and_then(JsonValue::as_array)
+        .map(|vcs| vcs.iter().filter(|v| v.is_object()).cloned().collect())
+        .unwrap_or_default();
     let Some(credentials) = vp_claims
         .get_mut("credentials")
         .and_then(JsonValue::as_array_mut)
     else {
         return;
     };
-    for credential in credentials {
+    let aligned = originals.len() == credentials.len();
+    for (n, credential) in credentials.iter_mut().enumerate() {
         let is_witness = is_witness_statement(credential);
         let Some(entry) = credential.as_object_mut() else {
             continue;
@@ -298,18 +352,319 @@ pub async fn annotate_vp_claims(relationships_ks: &KeyspaceHandle, vp_claims: &m
             entry.remove(WITNESS_BINDING_KEY);
             continue;
         }
-        let snapshot = JsonValue::Object(entry.clone());
-        let binding = resolve_binding(relationships_ks, &snapshot)
-            .await
-            .unwrap_or_else(|e| {
-                tracing::warn!(error = %e, "could not resolve witness digest binding");
-                WitnessBinding::Unresolved
-            });
+        entry.remove(WITNESS_BINDING_KEY);
+        let snapshot = match originals.get(n).filter(|_| aligned) {
+            Some(original) => original.clone(),
+            None => JsonValue::Object(entry.clone()),
+        };
+        let issuer = credential_issuer(&snapshot).unwrap_or_default().to_string();
+        let binding = assess_or_unresolved(ctx, &issuer, &snapshot).await;
         entry.insert(
             WITNESS_BINDING_KEY.into(),
             serde_json::to_value(&binding).expect("WitnessBinding serializes"),
         );
     }
+}
+
+/// A credential's `issuer`, as a string or as an object's `id`.
+pub fn credential_issuer(credential: &JsonValue) -> Option<&str> {
+    match credential.get("issuer")? {
+        JsonValue::String(s) => Some(s),
+        JsonValue::Object(o) => o.get("id").and_then(JsonValue::as_str),
+        _ => None,
+    }
+}
+
+// ─── trust, completion and binding, in one verdict ───────────────────────────
+
+/// Everything the host needs to assess a VWC: the edges it holds, the
+/// witnesses it trusts, the outcome evidence that travelled with the
+/// presentation, and a resolver for the witness's DID.
+pub struct WitnessContext<'a> {
+    pub relationships_ks: &'a KeyspaceHandle,
+    pub trusted: &'a TrustedWitnesses,
+    pub evidence: &'a [OutcomeEvidence],
+    pub resolver: &'a TrustTaskVmResolver,
+}
+
+/// Assess one `witnessed/1` statement issued by `issuer`. `credential` is the
+/// credential as presented — the whole VWC where the path has it, which the
+/// outcome evidence pairs on. The order of the checks is [`WitnessBinding`]'s.
+pub async fn assess(
+    ctx: &WitnessContext<'_>,
+    issuer: &str,
+    credential: &JsonValue,
+) -> Result<WitnessBinding, AppError> {
+    if !ctx.trusted.contains(issuer) {
+        return Ok(WitnessBinding::UntrustedWitness);
+    }
+    match pair_outcome(ctx.evidence, issuer, credential, ctx.resolver).await {
+        Pairing::Paired => {}
+        Pairing::Missing => return Ok(WitnessBinding::NoOutcomeEvidence),
+        Pairing::Invalid(reason) => {
+            tracing::warn!(
+                witness = %issuer,
+                %reason,
+                "a VWC's outcome evidence does not pair with it; it counts for nothing"
+            );
+            return Ok(WitnessBinding::OutcomeInvalid);
+        }
+    }
+    resolve_binding(ctx.relationships_ks, credential).await
+}
+
+/// [`assess`], with a storage failure read as [`WitnessBinding::Unresolved`]:
+/// one unreadable keyspace must not decide a ceremony, and "could not find the
+/// edge" is the honest answer. Only the digest scan reads storage, so the
+/// trust and completion checks have already passed when this happens.
+pub async fn assess_or_unresolved(
+    ctx: &WitnessContext<'_>,
+    issuer: &str,
+    credential: &JsonValue,
+) -> WitnessBinding {
+    assess(ctx, issuer, credential).await.unwrap_or_else(|e| {
+        tracing::warn!(error = %e, %issuer, "could not resolve witness digest binding");
+        WitnessBinding::Unresolved
+    })
+}
+
+// ─── outcome evidence ────────────────────────────────────────────────────────
+
+/// The `vtc/members/personhood/assert/0.2` payload member carrying it: an array
+/// of [`OutcomeEvidence`], one per VWC the member wants counted.
+pub const OUTCOME_EVIDENCE: &str = "outcomeEvidence";
+
+/// The most outcome-evidence entries one presentation may carry (the schema's
+/// `maxItems`).
+pub const MAX_OUTCOME_EVIDENCE: usize = 16;
+
+/// Outcome evidence for one witnessing session (Trust Task framework,
+/// *Evidence That a Cited Exchange Completed*; `witness/_shared/0.1`
+/// `OutcomeEvidence`): the initiating `witness/session` document and the
+/// terminal `witness/session/submit#response`, both exactly as received. The
+/// shape `vta/witness/accept` answers in its `evidence` member, so a client
+/// hands on what its VTA gave it.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OutcomeEvidence {
+    pub session: JsonValue,
+    pub outcome: JsonValue,
+}
+
+/// Read `outcomeEvidence` from a `personhood/assert/0.2` payload as received —
+/// never through a re-serialised typed copy, since each document's proof and
+/// task digest are taken over its members. Absent is none; anything the schema
+/// would refuse (an empty list, more than [`MAX_OUTCOME_EVIDENCE`], an entry
+/// that is not `{ session, outcome }` objects) is refused rather than read as
+/// none. An entry pairing no VWC in the presentation is ignored by
+/// [`pair_outcome`], as the specification says.
+pub fn outcome_evidence_from_payload(
+    payload: &JsonValue,
+) -> Result<Vec<OutcomeEvidence>, AppError> {
+    let Some(list) = payload.get(OUTCOME_EVIDENCE) else {
+        return Ok(Vec::new());
+    };
+    let evidence: Vec<OutcomeEvidence> = serde_json::from_value(list.clone()).map_err(|e| {
+        AppError::Validation(format!(
+            "{OUTCOME_EVIDENCE} must be an array of {{ \"session\", \"outcome\" }} objects: {e}"
+        ))
+    })?;
+    if evidence.is_empty() {
+        return Err(AppError::Validation(format!(
+            "{OUTCOME_EVIDENCE} is empty; omit it when no witness credential is to count"
+        )));
+    }
+    if evidence.len() > MAX_OUTCOME_EVIDENCE {
+        return Err(AppError::Validation(format!(
+            "{} outcome-evidence entries; at most {MAX_OUTCOME_EVIDENCE} may travel with one \
+             presentation",
+            evidence.len()
+        )));
+    }
+    if let Some(i) = evidence
+        .iter()
+        .position(|e| !is_document(&e.session) || !is_document(&e.outcome))
+    {
+        return Err(AppError::Validation(format!(
+            "{OUTCOME_EVIDENCE}[{i}]: session and outcome must each be a whole Trust Task document"
+        )));
+    }
+    Ok(evidence)
+}
+
+/// A non-empty object: the least a carried Trust Task document can be
+/// (`EvidenceDocument`, `minProperties: 1`).
+fn is_document(v: &JsonValue) -> bool {
+    v.as_object().is_some_and(|o| !o.is_empty())
+}
+
+/// Whether outcome evidence pairs with a VWC.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Pairing {
+    /// One entry pairs under every check.
+    Paired,
+    /// No entry names the session the VWC cites.
+    Missing,
+    /// An entry names it and fails a check; the reason is for the log.
+    Invalid(String),
+}
+
+/// The terminal response a `witness/session` document's own version declares as
+/// its outcome evidence (`witness/session/0.2`, *how the versions pair*): 0.1
+/// closes with `submit/0.1#response`, 0.2 with `submit/0.2#response`. `None`
+/// for any other document.
+fn declared_outcome_type(session_type: &str) -> Option<&'static str> {
+    use trust_tasks_rs::Payload;
+    use trust_tasks_rs::specs::witness::session;
+    if session_type == <session::v0_1::Payload as Payload>::TYPE_URI {
+        Some(<session::submit::v0_1::Response as Payload>::TYPE_URI)
+    } else if session_type == <session::v0_2::Payload as Payload>::TYPE_URI {
+        Some(<session::submit::v0_2::Response as Payload>::TYPE_URI)
+    } else {
+        None
+    }
+}
+
+/// Pair a VWC issued by `issuer` with the outcome evidence of the session it
+/// cites (its `taskContext`). An entry for another session is not this VWC's
+/// evidence and is passed over.
+pub async fn pair_outcome(
+    evidence: &[OutcomeEvidence],
+    issuer: &str,
+    vwc: &JsonValue,
+    resolver: &TrustTaskVmResolver,
+) -> Pairing {
+    let Some(cited) = vwc.get("taskContext").and_then(JsonValue::as_str) else {
+        return Pairing::Missing;
+    };
+    let mut first_failure = None;
+    for entry in evidence
+        .iter()
+        .filter(|e| e.session.get("id").and_then(JsonValue::as_str) == Some(cited))
+    {
+        match check_pair(entry, issuer, vwc, resolver).await {
+            Ok(()) => return Pairing::Paired,
+            Err(reason) => {
+                first_failure.get_or_insert(reason);
+            }
+        }
+    }
+    match first_failure {
+        Some(reason) => Pairing::Invalid(reason),
+        None => Pairing::Missing,
+    }
+}
+
+/// A string member of a document.
+fn str_at<'a>(doc: &'a JsonValue, key: &str) -> Option<&'a str> {
+    doc.get(key).and_then(JsonValue::as_str)
+}
+
+/// The checks, cheapest first and the witness's signature last.
+///
+/// The framework's four (*Evidence That a Cited Exchange Completed*):
+///
+/// 1. the citation binds the initiating document — its `id` is the VWC's
+///    `taskContext` (the caller selected on it) and the VWC's
+///    `taskDigestMultibase` reproduces over it;
+/// 2. the terminal document is on that exchange's thread, and carries the
+///    binding `witness/session/submit` declares — the VWC it delivers cites the
+///    same document, which holds because it is this VWC (below);
+/// 3. its type is the outcome evidence the session document's own version
+///    declares — `witness/session/submit/0.1#response` for a 0.1 session,
+///    `/0.2#response` for a 0.2 one, never the other;
+/// 4. its proof verifies under the initiating document's `recipient`.
+///
+/// Then what makes it *this* VWC's evidence: the `recipient` is the VWC's
+/// issuer; the session was opened by, and answered to, the VWC's subject; the
+/// response's `vwcDigestMultibase` is the digest of the VWC it delivers, proof
+/// included; and that VWC is the one presented, compared over its content
+/// (DTG §Digest Encoding, proof excluded), since a presentation path may have
+/// kept only what its proof covers.
+async fn check_pair(
+    entry: &OutcomeEvidence,
+    issuer: &str,
+    vwc: &JsonValue,
+    resolver: &TrustTaskVmResolver,
+) -> Result<(), String> {
+    let session = &entry.session;
+    let outcome = &entry.outcome;
+
+    let declared = str_at(session, "type")
+        .and_then(declared_outcome_type)
+        .ok_or("the initiating document is not a witness/session")?;
+    // Check 1, the digest half.
+    let cited_digest =
+        str_at(vwc, "taskDigestMultibase").ok_or("the VWC carries no taskDigestMultibase")?;
+    let session_digest = dtg_credentials::task_digest_multibase_json(session)
+        .map_err(|e| format!("the session document will not canonicalize ({e})"))?;
+    if !digests_match(cited_digest, &session_digest) {
+        return Err("the VWC's taskDigestMultibase is not the session document's".into());
+    }
+    // Check 2: the thread runs through the initiating document.
+    let thread = str_at(session, "threadId")
+        .or_else(|| str_at(session, "id"))
+        .ok_or("the session document has no id")?;
+    if str_at(outcome, "threadId") != Some(thread) {
+        return Err("the response is not on the session's thread".into());
+    }
+    // Check 3: the type the initiating document's own version declares.
+    if str_at(outcome, "type") != Some(declared) {
+        return Err(format!("the response is not {declared}"));
+    }
+    // The responder named by the initiating document is the witness.
+    let recipient = str_at(session, "recipient")
+        .ok_or("the session document names no recipient, so no responder can be checked")?;
+    if recipient != issuer {
+        return Err("the session was addressed to someone other than the VWC's issuer".into());
+    }
+    if str_at(outcome, "issuer") != Some(recipient) {
+        return Err("the response is not issued by the session's witness".into());
+    }
+    // The party: the VWC's subject opened the session and was answered.
+    let subject = statement_subject(vwc)
+        .get("id")
+        .and_then(JsonValue::as_str)
+        .ok_or("the VWC names no subject")?;
+    if str_at(session, "issuer") != Some(subject) {
+        return Err("the session was not opened by the VWC's subject".into());
+    }
+    if str_at(outcome, "recipient") != Some(subject) {
+        return Err("the response was not addressed to the VWC's subject".into());
+    }
+    // The VWC delivered, and that it is the one presented.
+    let payload = outcome
+        .get("payload")
+        .ok_or("the response has no payload")?;
+    let delivered = payload
+        .get("vwc")
+        .filter(|v| v.is_object())
+        .ok_or("the response delivers no VWC")?;
+    let carried = str_at(payload, "vwcDigestMultibase")
+        .ok_or("the response carries no vwcDigestMultibase")?;
+    let delivered_digest = crate::credentials::ingress::digest_multibase(delivered)
+        .map_err(|e| format!("the delivered VWC will not canonicalize ({e})"))?;
+    if !digests_match(carried, &delivered_digest) {
+        return Err("vwcDigestMultibase is not the digest of the VWC delivered".into());
+    }
+    let same = match (
+        dtg_credential_digest_multibase(delivered),
+        dtg_credential_digest_multibase(vwc),
+    ) {
+        (Ok(a), Ok(b)) => digests_match(&a, &b),
+        _ => false,
+    };
+    if !same {
+        return Err("the response delivered a different VWC from the one presented".into());
+    }
+    // Check 4, last: the only one that resolves a DID.
+    let signer = vti_common::auth::verify_trust_task_proof_value(outcome, resolver)
+        .await
+        .map_err(|e| format!("the response's proof does not verify ({e})"))?;
+    if signer != recipient {
+        return Err("the response is signed by someone other than the session's witness".into());
+    }
+    Ok(())
 }
 
 /// Whether this relationship's stored VRC recomputes to the asserted digest.
@@ -327,6 +682,171 @@ fn recomputes_to(rel: &Relationship, asserted: &str) -> bool {
             );
             false
         }
+    }
+}
+
+/// Real witnessing evidence for tests: a `did:key` witness, the session
+/// document, a signed VWC, and the witness-signed `submit#response`.
+#[cfg(test)]
+pub(crate) mod fixtures {
+    use super::*;
+    use affinidi_data_integrity::{DataIntegrityProof, SignOptions};
+    use chrono::Utc;
+    use dtg_credentials::{DTGCredential, IssuerScope};
+    use serde_json::json;
+    pub use vti_rooms_dtg::test_support::Party;
+
+    /// The 0.2 session type, which the fixtures build unless told otherwise.
+    pub fn session_type() -> &'static str {
+        <trust_tasks_rs::specs::witness::session::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI
+    }
+
+    /// The outcome evidence a 0.2 session declares.
+    pub fn submit_response_type() -> &'static str {
+        <trust_tasks_rs::specs::witness::session::submit::v0_2::Response as trust_tasks_rs::Payload>::TYPE_URI
+    }
+
+    pub struct Witnessed {
+        pub witness: Party,
+        pub session: JsonValue,
+        /// The VWC as presented: signed by the witness.
+        pub vwc: JsonValue,
+        pub evidence: OutcomeEvidence,
+    }
+
+    /// The `witness/session` document `party` opened with `witness`, of type `type_uri`.
+    pub fn session_document_typed(
+        party: &str,
+        counterparty: &str,
+        witness: &str,
+        type_uri: &str,
+    ) -> JsonValue {
+        let id = format!("urn:uuid:{}", Uuid::new_v4());
+        json!({
+            "id": id,
+            "type": type_uri,
+            "threadId": id,
+            "issuer": party,
+            "recipient": witness,
+            "issuedAt": "2026-10-15T09:59:00Z",
+            "payload": { "parties": [party, counterparty] }
+        })
+    }
+
+    /// The witness's signed `witness/session/submit/0.2#response` delivering `vwc`.
+    pub async fn outcome(witness: &Party, session: &JsonValue, vwc: &JsonValue) -> JsonValue {
+        outcome_typed(witness, session, vwc, submit_response_type()).await
+    }
+
+    /// [`outcome`] as the response type `type_uri`.
+    pub async fn outcome_typed(
+        witness: &Party,
+        session: &JsonValue,
+        vwc: &JsonValue,
+        type_uri: &str,
+    ) -> JsonValue {
+        let submitter = session["issuer"].as_str().unwrap();
+        let mut doc = vta_sdk::trust_task_sign::build_unsigned(
+            type_uri,
+            json!({
+                "vwc": vwc,
+                "vwcDigestMultibase": crate::credentials::ingress::digest_multibase(vwc).unwrap(),
+            }),
+            &witness.did,
+            submitter,
+        )
+        .expect("build the response");
+        doc.thread_id = session["threadId"].as_str().map(str::to_string);
+        let key = vta_sdk::trust_task_sign::HolderKey::from_did_key(
+            &witness.did,
+            &witness.secret_multibase,
+        )
+        .expect("a did:key names its own verification method");
+        vta_sdk::trust_task_sign::sign_in_place_with(&mut doc, &key)
+            .await
+            .expect("sign the response");
+        serde_json::to_value(&doc).unwrap()
+    }
+
+    /// A witness attests `edge` (issued by `edge["issuer"]`, the party) being
+    /// presented in a session with `counterparty`.
+    pub async fn witnessed(edge: &JsonValue, counterparty: &str) -> Witnessed {
+        witnessed_with(edge, counterparty, |_| {}).await
+    }
+
+    /// [`witnessed`], with the VWC edited by `edit` before the witness signs it
+    /// and delivers it — how a witness would issue a VWC naming some other
+    /// digest, or none.
+    pub async fn witnessed_with(
+        edge: &JsonValue,
+        counterparty: &str,
+        edit: impl FnOnce(&mut JsonValue),
+    ) -> Witnessed {
+        witnessed_at(
+            edge,
+            counterparty,
+            session_type(),
+            submit_response_type(),
+            edit,
+        )
+        .await
+    }
+
+    /// [`witnessed_with`] for a session opened as `session_type`, closed with a
+    /// response of `outcome_type`.
+    pub async fn witnessed_at(
+        edge: &JsonValue,
+        counterparty: &str,
+        session_type: &str,
+        outcome_type: &str,
+        edit: impl FnOnce(&mut JsonValue),
+    ) -> Witnessed {
+        let witness = Party::new();
+        let party = edge["issuer"].as_str().unwrap().to_string();
+        let session = session_document_typed(&party, counterparty, &witness.did, session_type);
+        let built = DTGCredential::new_witnessed_vsc(
+            witness.did.clone(),
+            IssuerScope::Public,
+            edge,
+            &session,
+            Utc::now(),
+            None,
+            None,
+        )
+        .expect("the opening witness/session document builds a VWC");
+        let mut vwc = crate::test_support::dtg_json(&built);
+        edit(&mut vwc);
+        let proof = DataIntegrityProof::sign(
+            &vwc,
+            &witness.secret,
+            SignOptions::new().with_proof_purpose("assertionMethod"),
+        )
+        .await
+        .expect("sign the VWC");
+        vwc["proof"] = serde_json::to_value(proof).unwrap();
+        let outcome = outcome_typed(&witness, &session, &vwc, outcome_type).await;
+        Witnessed {
+            witness,
+            evidence: OutcomeEvidence {
+                session: session.clone(),
+                outcome,
+            },
+            session,
+            vwc,
+        }
+    }
+
+    /// Trust `dids` as witnesses, through the runtime key as `config/patch`
+    /// writes it.
+    pub async fn trust(state: &crate::server::AppState, dids: &[&str]) {
+        let list: Vec<JsonValue> = dids.iter().map(|d| json!({ "did": d })).collect();
+        crate::config_store::ConfigStore::new(state.config_ks.clone())
+            .put(
+                crate::credentials::trusted_witnesses::WITNESSES_TRUSTED,
+                &JsonValue::Array(list),
+            )
+            .await
+            .expect("store the list");
     }
 }
 
@@ -676,7 +1196,7 @@ mod tests {
     const BOB: &str = "did:key:zBob";
     /// The `id` of the `witness/session` document that opened the witnessing
     /// session — what a VWC's `taskContext` names (trust task
-    /// `witness/session/0.1` §The nesting).
+    /// `witness/session/0.2` §The nesting).
     const SESSION: &str = "urn:uuid:6f1c1c1e-5a8b-4f7e-9d0c-2b7a4e1d9c30";
 
     /// The `witness/session` document that opened the session, as the witness
@@ -688,7 +1208,7 @@ mod tests {
     fn witness_session() -> JsonValue {
         json!({
             "id": SESSION,
-            "type": "https://trusttasks.org/spec/witness/session/0.1",
+            "type": "https://trusttasks.org/spec/witness/session/0.2",
             "threadId": SESSION,
             "issuer": ALICE,
             "recipient": WITNESS,
@@ -855,19 +1375,32 @@ mod tests {
     #[tokio::test]
     async fn annotation_puts_the_verdict_on_witness_entries_only() {
         let (primary, index, _dir) = temp_kss().await;
-        let (alice_to_bob, edge) = stored_signed_vrc(ALICE, BOB);
+        let (_, edge) = stored_signed_vrc(ALICE, BOB);
         store_relationship(&primary, &index, &edge).await.unwrap();
+        let w = fixtures::witnessed(&edge.vrc_jsonld, BOB).await;
+        let trusted = TrustedWitnesses::from_list(&[TrustedWitness {
+            did: w.witness.did.clone(),
+            label: None,
+        }]);
+        let resolver = TrustTaskVmResolver::did_key_only();
+        let evidence = [w.evidence.clone()];
+        let ctx = WitnessContext {
+            relationships_ks: &primary,
+            trusted: &trusted,
+            evidence: &evidence,
+            resolver: &resolver,
+        };
 
         let vp = json!({
-            "holder": BOB,
+            "holder": ALICE,
             "verifiableCredential": [
-                dtg_json(&vwc_for(&alice_to_bob)),
+                w.vwc,
                 { "type": ["VerifiableCredential"], "issuer": "did:key:zOther",
-                  "credentialSubject": { "id": BOB } }
+                  "credentialSubject": { "id": ALICE } }
             ]
         });
         let mut claims = crate::policy::extract::extract_vp_claims(&vp);
-        annotate_vp_claims(&primary, &mut claims).await;
+        annotate_vp_claims(&ctx, &vp, &mut claims).await;
 
         assert_eq!(
             claims["credentials"][0][WITNESS_BINDING_KEY],
@@ -886,6 +1419,17 @@ mod tests {
     async fn a_presenter_cannot_supply_the_verdict() {
         let (primary, _index, _dir) = temp_kss().await;
         let forged_verdict = json!({ "state": "bound", "relationship_id": Uuid::new_v4() });
+        let trusted = TrustedWitnesses::from_list(&[TrustedWitness {
+            did: WITNESS.into(),
+            label: None,
+        }]);
+        let resolver = TrustTaskVmResolver::did_key_only();
+        let ctx = WitnessContext {
+            relationships_ks: &primary,
+            trusted: &trusted,
+            evidence: &[],
+            resolver: &resolver,
+        };
 
         let mut claims = json!({
             "holder": BOB,
@@ -903,14 +1447,305 @@ mod tests {
                   "witness_binding": forged_verdict }
             ]
         });
-        annotate_vp_claims(&primary, &mut claims).await;
+        annotate_vp_claims(&ctx, &JsonValue::Null, &mut claims).await;
 
         assert_eq!(
             claims["credentials"][0][WITNESS_BINDING_KEY],
-            json!({ "state": "absent" }),
+            json!({ "state": "noOutcomeEvidence" }),
             "overwritten with what the credential actually establishes"
         );
         assert!(claims["credentials"][1].get(WITNESS_BINDING_KEY).is_none());
+    }
+
+    // ── the trusted-witness list and the outcome evidence ─────────────────
+
+    use crate::credentials::trusted_witnesses::TrustedWitness;
+    use fixtures::Witnessed;
+
+    async fn assess_with(
+        w: &Witnessed,
+        trusted: &[&str],
+        evidence: &[OutcomeEvidence],
+    ) -> WitnessBinding {
+        let (primary, index, _dir) = temp_kss().await;
+        let edge = Relationship {
+            id: Uuid::new_v4(),
+            issuer_did: ALICE.into(),
+            subject_did: BOB.into(),
+            vrc_jsonld: witnessed_edge(),
+            vrc_digest_multibase: String::new(),
+            created_at: Utc::now(),
+            persona: None,
+            lifecycle: Default::default(),
+        };
+        store_relationship(&primary, &index, &edge).await.unwrap();
+        let list: Vec<TrustedWitness> = trusted
+            .iter()
+            .map(|d| TrustedWitness {
+                did: (*d).into(),
+                label: None,
+            })
+            .collect();
+        let trusted = TrustedWitnesses::from_list(&list);
+        let resolver = TrustTaskVmResolver::did_key_only();
+        let ctx = WitnessContext {
+            relationships_ks: &primary,
+            trusted: &trusted,
+            evidence,
+            resolver: &resolver,
+        };
+        assess(&ctx, &w.witness.did, &w.vwc).await.unwrap()
+    }
+
+    fn witnessed_edge() -> JsonValue {
+        json!({
+            "@context": ["https://www.w3.org/ns/credentials/v2"],
+            "type": ["VerifiableCredential", "DTGCredential", "RelationshipCredential"],
+            "issuer": ALICE,
+            "credentialSubject": { "id": BOB }
+        })
+    }
+
+    #[tokio::test]
+    async fn a_listed_witness_with_paired_evidence_binds() {
+        let w = fixtures::witnessed(&witnessed_edge(), BOB).await;
+        let did = w.witness.did.clone();
+        let evidence = [w.evidence.clone()];
+        assert!(assess_with(&w, &[&did], &evidence).await.is_bound());
+    }
+
+    /// Empty is the default, and it trusts nobody — before any evidence or
+    /// digest is looked at.
+    #[tokio::test]
+    async fn an_unlisted_witness_is_untrusted_whatever_else_holds() {
+        let w = fixtures::witnessed(&witnessed_edge(), BOB).await;
+        let evidence = [w.evidence.clone()];
+        assert_eq!(
+            assess_with(&w, &[], &evidence).await,
+            WitnessBinding::UntrustedWitness,
+            "the empty default"
+        );
+        assert_eq!(
+            assess_with(&w, &["did:key:z6MkSomeoneElse"], &evidence).await,
+            WitnessBinding::UntrustedWitness
+        );
+    }
+
+    #[tokio::test]
+    async fn a_listed_witness_without_evidence_has_none() {
+        let w = fixtures::witnessed(&witnessed_edge(), BOB).await;
+        let did = w.witness.did.clone();
+        assert_eq!(
+            assess_with(&w, &[&did], &[]).await,
+            WitnessBinding::NoOutcomeEvidence
+        );
+        // Evidence for some other session is not this VWC's.
+        let other = fixtures::witnessed(&witnessed_edge(), BOB).await;
+        assert_eq!(
+            assess_with(&w, &[&did], &[other.evidence]).await,
+            WitnessBinding::NoOutcomeEvidence
+        );
+    }
+
+    /// Each way the evidence can fail to pair, one at a time. Every one is
+    /// `OutcomeInvalid` with its own reason.
+    #[tokio::test]
+    async fn evidence_that_does_not_pair_is_invalid() {
+        let w = fixtures::witnessed(&witnessed_edge(), BOB).await;
+        let resolver = TrustTaskVmResolver::did_key_only();
+        let pair = |e: OutcomeEvidence| {
+            let vwc = w.vwc.clone();
+            let did = w.witness.did.clone();
+            let resolver = resolver.clone();
+            async move { pair_outcome(&[e], &did, &vwc, &resolver).await }
+        };
+        assert_eq!(pair(w.evidence.clone()).await, Pairing::Paired);
+
+        let resign = |outcome: &JsonValue| {
+            let mut unsigned = outcome.clone();
+            unsigned.as_object_mut().unwrap().remove("proof");
+            unsigned
+        };
+        let mut cases: Vec<(&str, OutcomeEvidence, &str)> = Vec::new();
+
+        // Check 1: the session document is not the one the VWC's digest names.
+        let mut e = w.evidence.clone();
+        e.session["payload"]["parties"] = json!([ALICE, "did:key:zMallory"]);
+        cases.push(("tampered session", e, "taskDigestMultibase"));
+
+        // Check 2: a response on another thread.
+        let mut e = w.evidence.clone();
+        e.outcome["threadId"] = json!("urn:uuid:another-thread");
+        cases.push(("another thread", e, "thread"));
+
+        // Check 3: not the declared outcome evidence (a session #response).
+        let mut e = w.evidence.clone();
+        e.outcome["type"] = json!(format!("{}#response", fixtures::session_type()));
+        cases.push(("wrong type", e, "is not"));
+
+        // Check 4: signed by someone other than the session's recipient.
+        let forger = fixtures::Party::new();
+        let mut forged = fixtures::outcome(&forger, &w.session, &w.vwc).await;
+        forged["issuer"] = json!(w.witness.did);
+        cases.push((
+            "forged signature",
+            OutcomeEvidence {
+                session: w.session.clone(),
+                outcome: forged,
+            },
+            "proof",
+        ));
+
+        // A response whose proof no longer covers what it says.
+        let mut e = w.evidence.clone();
+        e.outcome["payload"]["vwcDigestMultibase"] =
+            json!(crate::credentials::ingress::digest_multibase(&json!({ "x": 1 })).unwrap());
+        cases.push(("wrong vwcDigestMultibase", e, "vwcDigestMultibase"));
+
+        // A response delivering a different VWC from the one presented.
+        let other = fixtures::witnessed(&witnessed_edge(), BOB).await;
+        let delivered_elsewhere = fixtures::outcome(&w.witness, &w.session, &other.vwc).await;
+        cases.push((
+            "another VWC",
+            OutcomeEvidence {
+                session: w.session.clone(),
+                outcome: delivered_elsewhere,
+            },
+            "different VWC",
+        ));
+
+        // An unsigned response.
+        cases.push((
+            "unsigned",
+            OutcomeEvidence {
+                session: w.session.clone(),
+                outcome: resign(&w.evidence.outcome),
+            },
+            "proof",
+        ));
+
+        for (why, evidence, expect) in cases {
+            match pair(evidence).await {
+                Pairing::Invalid(reason) => {
+                    assert!(reason.contains(expect), "{why}: {reason}")
+                }
+                other => panic!("{why}: expected Invalid, got {other:?}"),
+            }
+        }
+    }
+
+    /// The session must have been addressed to the VWC's issuer: evidence of
+    /// a session with another witness does not pair.
+    #[tokio::test]
+    async fn a_session_with_another_witness_does_not_pair() {
+        let w = fixtures::witnessed(&witnessed_edge(), BOB).await;
+        let resolver = TrustTaskVmResolver::did_key_only();
+        assert!(matches!(
+            pair_outcome(
+                std::slice::from_ref(&w.evidence),
+                "did:key:z6MkAnotherWitness",
+                &w.vwc,
+                &resolver
+            )
+            .await,
+            Pairing::Invalid(_)
+        ));
+    }
+
+    /// `outcomeEvidence` is read from the payload, whole; anything the schema
+    /// refuses is refused, never read as none.
+    #[test]
+    fn the_payload_member_is_read_and_its_shape_is_enforced() {
+        let session = json!({ "id": "urn:uuid:s" });
+        let outcome = json!({ "type": "x" });
+        let payload = json!({ OUTCOME_EVIDENCE: [{ "session": session, "outcome": outcome }] });
+        let got = outcome_evidence_from_payload(&payload).unwrap();
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].session, session);
+
+        assert!(
+            outcome_evidence_from_payload(&json!({}))
+                .unwrap()
+                .is_empty()
+        );
+        for bad in [
+            json!({ OUTCOME_EVIDENCE: [] }),
+            json!({ OUTCOME_EVIDENCE: {} }),
+            json!({ OUTCOME_EVIDENCE: [{ "session": {} }] }),
+            json!({ OUTCOME_EVIDENCE: [{ "session": {}, "outcome": {} }] }),
+            json!({ OUTCOME_EVIDENCE: [{ "session": session, "outcome": outcome, "extra": 1 }] }),
+        ] {
+            assert!(outcome_evidence_from_payload(&bad).is_err(), "{bad}");
+        }
+        let too_many: Vec<_> = (0..=MAX_OUTCOME_EVIDENCE)
+            .map(|_| json!({ "session": session, "outcome": outcome }))
+            .collect();
+        assert!(outcome_evidence_from_payload(&json!({ OUTCOME_EVIDENCE: too_many })).is_err());
+    }
+
+    /// The retired vendor-extension carriage is not read: evidence only in
+    /// `ext["org.openvtc.witness"]` is no evidence.
+    #[test]
+    fn the_retired_ext_carriage_is_not_read() {
+        let payload = json!({ "ext": { "org.openvtc.witness": { OUTCOME_EVIDENCE: [
+            { "session": { "id": "urn:uuid:s" }, "outcome": { "type": "x" } }
+        ] } } });
+        assert!(outcome_evidence_from_payload(&payload).unwrap().is_empty());
+    }
+
+    /// The versions pair one to one (`witness/session/0.2`): a 0.1 session
+    /// pairs with a `submit/0.1#response`, and with nothing else.
+    #[tokio::test]
+    async fn the_terminal_type_follows_the_sessions_own_version() {
+        use trust_tasks_rs::Payload;
+        use trust_tasks_rs::specs::witness::session;
+        let resolver = TrustTaskVmResolver::did_key_only();
+        let v01 = <session::v0_1::Payload as Payload>::TYPE_URI;
+        let v01_out = <session::submit::v0_1::Response as Payload>::TYPE_URI;
+        let v02_out = fixtures::submit_response_type();
+
+        let w = fixtures::witnessed_at(&witnessed_edge(), BOB, v01, v01_out, |_| {}).await;
+        assert_eq!(
+            pair_outcome(
+                std::slice::from_ref(&w.evidence),
+                &w.witness.did,
+                &w.vwc,
+                &resolver
+            )
+            .await,
+            Pairing::Paired,
+            "a 0.1 session under its own declaration"
+        );
+
+        let crossed = fixtures::witnessed_at(&witnessed_edge(), BOB, v01, v02_out, |_| {}).await;
+        assert!(matches!(
+            pair_outcome(
+                std::slice::from_ref(&crossed.evidence),
+                &crossed.witness.did,
+                &crossed.vwc,
+                &resolver
+            )
+            .await,
+            Pairing::Invalid(reason) if reason.contains("is not")
+        ));
+        let crossed = fixtures::witnessed_at(
+            &witnessed_edge(),
+            BOB,
+            fixtures::session_type(),
+            v01_out,
+            |_| {},
+        )
+        .await;
+        assert!(matches!(
+            pair_outcome(
+                std::slice::from_ref(&crossed.evidence),
+                &crossed.witness.did,
+                &crossed.vwc,
+                &resolver
+            )
+            .await,
+            Pairing::Invalid(_)
+        ));
     }
 
     /// A witness is classified by its predicate. A single-string `type` is

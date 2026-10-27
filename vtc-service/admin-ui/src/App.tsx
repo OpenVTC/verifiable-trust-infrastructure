@@ -8,6 +8,8 @@ import { AccountMenu } from "@/components/AccountMenu";
 import { CommandPalette, usePaletteShortcut } from "@/components/CommandPalette";
 import { AttentionStrip, type AttentionItem } from "@/components/AttentionStrip";
 import { BreakGlassNotice, useBreakGlassState } from "@/components/BreakGlassBanner";
+import { LegacyRedirect } from "@/components/LegacyRedirect";
+import { CustomThemeMarker } from "@/components/CustomThemeMarker";
 import { LiveIndicator } from "@/components/LiveIndicator";
 import { PluginHost } from "@/components/PluginHost";
 import { PluginIcon } from "@/components/PluginIcon";
@@ -39,6 +41,7 @@ import {
   mayCount,
   usePendingJoinRequests,
 } from "@/lib/community-counts";
+import { LEGACY_ROUTES } from "@/lib/legacy-routes";
 import { pluginVisible } from "@/lib/viewer";
 import { useCommunityIdentity } from "@/lib/community-identity";
 import { arrangeNav } from "@/lib/nav-groups";
@@ -139,7 +142,8 @@ export default function App() {
     };
   }, [qc, toast]);
 
-  // Probe the session cookie via `/v1/auth/whoami`. Returning the
+  // Probe the session with a signed `auth/whoami/0.1` from the key the
+  // sign-in bound to it (`lib/api.ts` `fetchWhoami`). Returning the
   // claim payload (not just a bool) lets the navbar show "Signed
   // in as …" without a second round trip. 401/403 → show Login.
   //
@@ -428,6 +432,7 @@ export default function App() {
               <kbd aria-hidden="true">{paletteShortcutLabel()}</kbd>
             </button>
             {needsSigning && <LiveIndicator />}
+            <CustomThemeMarker />
             <AccountMenu
               whoami={probe.data}
               plugins={nav.account}
@@ -516,6 +521,15 @@ export default function App() {
           {plugins[0] && (
             <Route path="/" element={<PluginHost plugin={plugins[0]} />} />
           )}
+          {/* Routes that moved (`lib/legacy-routes.ts`) — unless a plugin
+              registered since claims the old path. */}
+          {LEGACY_ROUTES.filter((r) => !allPlugins.some((p) => p.path === r.from)).map((r) => (
+            <Route
+              key={r.from}
+              path={`${r.from}/*`}
+              element={<LegacyRedirect fallback={<NotFound />} />}
+            />
+          ))}
           {/* A passkey step-up handed over from `cnm` (lib/bound-step-up.ts). */}
           <Route path="/step-up" element={<StepUpPage />} />
           {/* Fallback for unknown URLs under /admin/ */}

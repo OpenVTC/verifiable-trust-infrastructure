@@ -1,19 +1,32 @@
-# Default `directory` policy — the ceremony decision spine
-# (ceremony-pipeline design §4; supersedes the Phase-5 boolean
-# placeholder).
+# Default `directory` policy — who may read the member directory, and what
+# of each entry a policy narrows.
 #
-# The directory ceremony is the read-only instance of the decision
-# pipeline: `allow` carries a FIELD PROJECTION (`with.fields`), not a
-# boolean. The host runs `data.vtc.directory.decision` over the
-# verified Facts (`input.actor` / `input.subject` / `input.state`),
-# realizes the verdict by returning exactly `with.fields` of the
-# subject, and intersects those fields with the community PII-boundary
-# whitelist before they cross the wire.
+# The community computes every projection itself (VTI-DIR-020): a field
+# leaves only where the member's own visibility and the field's ceiling both
+# admit the viewer. This policy is asked about each entry after that, and can
+# only narrow it — `deny` withholds the entry, and `allow` with
+# `with.fields` keeps only the fields it names. It can never show a field the
+# community withheld: naming one changes nothing (VTI-DIR-021).
 #
-# Privacy floor: a non-member viewer sees nothing; an authenticated
-# member sees `did` + `role`; an admin sees the fuller record. An
-# operator can upload a wider- or narrower-scope policy; the PII
-# boundary still caps what any policy can project.
+# `allow` with no `fields` narrows nothing: the viewer sees what the members'
+# own choices and the community's ceilings allow. That is the shipped
+# posture. Before directory cards existed, this default answered members with
+# `fields: ["did", "role"]`; that default is replaced at boot while it is
+# still the workspace's own row, and an operator's own policy is left alone.
+#
+# Input, beside the ceremony facts (`input.actor`, `input.subject`,
+# `input.state.subject_member`):
+#   input.evidence.request.entryId           the entry
+#   input.evidence.request.fields_requested  what the community already allows
+#   input.evidence.request.listing           listed | findable | hidden
+#   input.evidence.request.viewer            { directoryAdmin, membersManage, connected, public }
+#
+# `viewer.public` is true, and `input.actor.authenticated` false, for one
+# question only: what a member's external card may carry
+# (`vtc/directory/card/publish`). The community has already kept just the
+# values the member made `public` under a `public` ceiling; denying here, or
+# naming fewer fields, keeps those values off every external card. No
+# directory read is ever answered to the public.
 
 package vtc.directory
 
@@ -23,17 +36,17 @@ import rego.v1
 # reads the header to render it in plain English, show a decision
 # trace, and open it in the route-card editor. Keep it in step with the
 # body if you hand-edit the Rego.
-# @vtc-rule-ir: eyJwdXJwb3NlIjoiZGlyZWN0b3J5Iiwicm91dGVzIjpbeyJuYW1lIjoiQWRtaW4gdmlld2VyIiwid2hlbiI6eyJhbGwiOlsidmlld2VyX2lzX2FkbWluIl19LCJ0aGVuIjp7ImVmZmVjdCI6ImFsbG93Iiwid2l0aCI6eyJmaWVsZHMiOlsiZGlkIiwicm9sZSIsImpvaW5lZF9hdCIsInN0YXR1cyJdfX19LHsibmFtZSI6IkF1dGhlbnRpY2F0ZWQgbWVtYmVyIiwid2hlbiI6eyJhbGwiOlsidmlld2VyX2lzX21lbWJlciJdfSwidGhlbiI6eyJlZmZlY3QiOiJhbGxvdyIsIndpdGgiOnsiZmllbGRzIjpbImRpZCIsInJvbGUiXX19fSx7Im5hbWUiOiJOb3QgYSBtZW1iZXIiLCJ3aGVuIjp7ImFsbCI6WyJhbHdheXMiXX0sInRoZW4iOnsiZWZmZWN0IjoiZGVueSIsIndpdGgiOnsiY29kZSI6Im5vdC1hLW1lbWJlciJ9fX1dfQ==
+# @vtc-rule-ir: eyJwdXJwb3NlIjoiZGlyZWN0b3J5Iiwicm91dGVzIjpbeyJuYW1lIjoiTWVtYmVyIG9yIGFkbWluaXN0cmF0b3IiLCJ3aGVuIjp7ImFsbCI6WyJ2aWV3ZXJfaXNfbWVtYmVyIl19LCJ0aGVuIjp7ImVmZmVjdCI6ImFsbG93Iiwid2l0aCI6e319fSx7Im5hbWUiOiJUaGUgcHVibGljLCBmb3IgYW4gZXh0ZXJuYWwgY2FyZCIsIndoZW4iOnsiYWxsIjpbInZpZXdlcl9pc19wdWJsaWMiXX0sInRoZW4iOnsiZWZmZWN0IjoiYWxsb3ciLCJ3aXRoIjp7fX19LHsibmFtZSI6Ik5vdCBhIG1lbWJlciIsIndoZW4iOnsiYWxsIjpbImFsd2F5cyJdfSwidGhlbiI6eyJlZmZlY3QiOiJkZW55Iiwid2l0aCI6eyJjb2RlIjoibm90LWEtbWVtYmVyIn19fV19
 
-# structural totality — a non-member sees nothing
+# structural totality — anyone else sees nothing
 default decision := {"effect": "deny", "with": {"code": "not-a-member"}}
 
-# Admin viewer — fuller record
-decision := {"effect": "allow", "with": {"fields": ["did", "role", "joined_at", "status"]}} if {
-	input.actor.role == "admin"
+# Member or administrator — the community's own projection, unnarrowed
+decision := {"effect": "allow", "with": {}} if {
+	input.actor.authenticated == true
 }
 
-# Authenticated member viewer — minimal projection
-else := {"effect": "allow", "with": {"fields": ["did", "role"]}} if {
-	input.actor.authenticated == true
+# The public, for an external card — what members chose to make public, unnarrowed
+decision := {"effect": "allow", "with": {}} if {
+	input.evidence.request.viewer.public == true
 }

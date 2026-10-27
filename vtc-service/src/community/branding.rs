@@ -2,13 +2,13 @@
 //! client.
 //!
 //! One row in the `community` keyspace at [`BRANDING_STORAGE_KEY`]. Published
-//! as `branding` on `join-requests/manifest/0.2`, and managed by an admin with
+//! as `branding` on `join-requests/manifest/0.4`, and managed by an admin with
 //! `GET`/`PUT /v1/community/branding`. The shape is the manifest's own
-//! [`CommunityBranding`], generated from `vtc/join-requests/manifest/0.2`: what
+//! [`CommunityBranding`], generated from `vtc/join-requests/manifest/0.4`: what
 //! an admin stores is exactly what the manifest publishes. Every member is
 //! optional, and a community that has set none publishes no `branding` at all.
 
-use vta_sdk::protocols::join_requests::manifest::v0_2::{
+use vta_sdk::protocols::join_requests::manifest::v0_4::{
     CommunityBranding, CommunityBrandingAccentColor,
 };
 use vta_sdk::protocols::vetting::CheckShape;

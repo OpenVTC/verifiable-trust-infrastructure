@@ -2,6 +2,119 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.26.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-keys-v0.25.0...vta-keys-v0.26.0) — 2026-10-26
+
+
+### Added
+
+- Growth types in published crates are #[non_exhaustive] ([#2196](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2196))
+
+A new variant on a public enum, or a new field on a public struct a consumer
+  can build with a literal, is a breaking change in a published crate. It kept
+  happening on types that were always going to grow (#1231, #1234, #1244, #1247,
+  #1250); #1262 fixed it for Capability and AuditEvent only.
+
+  This marks the rest once. 143 enums are marked: every error and refusal enum
+  (VtaError, AppError, ...) and the growth vocabularies (kinds, statuses,
+  reasons, codes, transports, SealedPayloadV1). 32 structs are marked: config
+  and response bags that no caller builds with a literal. Adding the attribute
+  is itself breaking, once. After it, additions to these types are minor
+  changes.
+
+  Left exhaustive on purpose, and pinned that way by the census:
+  VerifiedAssertion, AssertionProof, ActScope, ApproveScope, ContextDirection,
+  SigningDomain, TokenStatus and Role. For each of these, every arm must be
+  considered, and a downstream wildcard would be the bug.
+
+  Every downstream match in the workspace gets a `_ =>` arm that takes the most
+  restrictive or most generic reading: an internal error, a hidden or refused
+  entry, a stale attribute. None is unreachable!().
+
+  vta-sdk/tests/non_exhaustive_census.rs fails on a public enum in a published
+  library crate whose name ends in Error, Refusal, Violation, Kind, Event,
+  Status, Capability, Reason or Code and that is not #[non_exhaustive], unless
+  it is listed as deliberately exhaustive with a reason. It also fails when a
+  listed enum gains the attribute or disappears.
+
+
+
+## [0.25.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-keys-v0.24.0...vta-keys-v0.25.0) — 2026-10-18
+
+
+## [0.24.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-keys-v0.23.0...vta-keys-v0.24.0) — 2026-10-18
+
+
+## [0.23.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-keys-v0.22.0...vta-keys-v0.23.0) — 2026-10-16
+
+
+## [0.22.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-keys-v0.21.0...vta-keys-v0.22.0) — 2026-10-15
+
+
+### Added
+
+- **secrets**: Encrypted-at-rest file backend ([#1820](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1820)) ([#2101](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2101))
+
+* feat(secrets)!: encrypted-at-rest file backend ([#1820](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1820))
+
+  Add `encrypted_file` to vti-secrets: the secret is kept in one file under
+  AES-256-GCM, keyed from an explicitly configured key-encryption key, so a
+  headless host with no OS keychain has a secure local option instead of
+  `plaintext`.
+
+  KEK sources (`[secrets.encrypted_file] kek = { source = ... }`):
+  - `passphrase`: Argon2id (m = 64 MiB, t = 3, p = 4; salt and parameters in
+    the header, floors enforced on read), passphrase from a file or a systemd
+    credential, never from the config or an environment variable;
+  - `systemd_creds`: a 32-byte KEK from $CREDENTIALS_DIRECTORY, HKDF-SHA256;
+  - `tpm` (feature `tpm`, Linux, tss-esapi 7.7): a random KEK sealed under the
+    owner-hierarchy SRK, optionally bound to SHA-256 PCRs, stored sealed in the
+    header, HKDF-SHA256.
+
+  Envelope v1: magic, version, AEAD id, KEK source id, salt, nonce and a
+  length-prefixed descriptor, all of it the AEAD's associated data. Fresh salt
+  and nonce per write. Writes are atomic (0600 temp file via
+  `secure_file::write_secret_file`, fsync, rename, directory fsync). Fails
+  closed: only a missing file is "no secret"; a wrong key, any modified byte,
+  an unknown version, a malformed header or a header from another KEK source
+  is an error. Key material and passphrases are zeroized; no derived Debug
+  holds a secret.
+
+  Selection is explicit only, in both the VTA factory and the VTC's
+  `create_secret_store` (`encrypted-file`): implicit resolution never picks it,
+  and a `[secrets.encrypted_file]` table without the selector is a config
+  error. The VTA setup TOML and interactive wizard offer it; vta-keys
+  re-exports the store; vta-service, vta-keys and vtc-service gain a `tpm`
+  feature.
+
+
+
+## [0.21.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-keys-v0.20.0...vta-keys-v0.21.0) — 2026-10-13
+
+
+### Added
+
+- **vta**: The VTA as hidden-vetting (PCS) engine — vta/pcs/* for clients that cannot run PCS ([#2056](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2056))
+
+* feat(vta)!: the VTA as hidden-vetting (PCS) engine — vta/pcs/* for clients that cannot run PCS
+
+  A community that runs hidden vetting admits an applicant on a zero-knowledge
+  proof that distinct eligible vetters vetted them. Every vetter and applicant
+  holds a PCS secret key, and until now the member side ran only in a client
+  linking the PCS library, so a mobile wallet (Keyring) could not take part.
+
+  The VTA now holds those keys and runs every member-side operation (design
+  vetting-hidden-vetters-pcs.md §13 C7); the client carries messages and never
+  holds a key. Twelve Trust Tasks (trust-tasks-tf #756):
+
+  - applicant: applications/{create,show,delete}, verify-attestation, prove
+  - vetter: root-request, root-accept, tokens/{request,accept,abandon}, attest,
+    vetter/show
+
+
+
+## [0.20.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-keys-v0.19.0...vta-keys-v0.20.0) — 2026-10-12
+
+
 ## [0.19.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-keys-v0.18.0...vta-keys-v0.19.0) — 2026-10-11
 
 

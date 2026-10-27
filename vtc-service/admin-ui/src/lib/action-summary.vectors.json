@@ -150,6 +150,44 @@
     "typeUri": "https://trusttasks.org/spec/config/patch/0.1"
   },
   {
+    "kind": "config.witnesses.change",
+    "name": "change the trusted witnesses",
+    "payload": {
+      "overrides": {
+        "witnesses.trusted": [
+          {
+            "did": "did:webvh:QmScidExample:witness.independent.example",
+            "label": "Independent witness"
+          },
+          {
+            "did": "did:webvh:QmScidExample:witness.other.example"
+          }
+        ]
+      }
+    },
+    "summary": {
+      "effect": "The witnesses whose Verifiable Witness Credentials count as evidence in this community become exactly {witnesses}. A VWC from any witness not listed counts for nothing here, including ones members already hold.",
+      "fields": {
+        "witnesses": {
+          "format": "text",
+          "pointer": "/overrides/witnesses.trusted",
+          "value": [
+            {
+              "did": "did:webvh:QmScidExample:witness.independent.example",
+              "label": "Independent witness"
+            },
+            {
+              "did": "did:webvh:QmScidExample:witness.other.example"
+            }
+          ]
+        }
+      },
+      "templateDigest": "zQmYGMiMk9SpEJwJ7g4EpxKCourBJVRP6PnmHMzYccbQugH",
+      "title": "Change the witnesses this community trusts"
+    },
+    "typeUri": "https://trusttasks.org/spec/config/patch/0.1"
+  },
+  {
     "kind": "policy.authority.change",
     "name": "activate an authority policy",
     "payload": {
@@ -174,6 +212,206 @@
       "title": "Activate policy {id} for {purpose}"
     },
     "typeUri": "https://trusttasks.org/spec/policy/activate/0.1"
+  },
+  {
+    "kind": "policy.recognition.change",
+    "name": "activate a personhood policy",
+    "payload": {
+      "id": "8d7f1c2e-0a4b-4c55-9d1e-3f2a6b7c8d9e",
+      "purpose": "personhood"
+    },
+    "summary": {
+      "effect": "The rules that decide who this community recognises as a person change — for joining, and for members whose personhood it has already recognised.",
+      "fields": {
+        "id": {
+          "format": "text",
+          "pointer": "/id",
+          "value": "8d7f1c2e-0a4b-4c55-9d1e-3f2a6b7c8d9e"
+        },
+        "purpose": {
+          "format": "text",
+          "pointer": "/purpose",
+          "value": "personhood"
+        }
+      },
+      "templateDigest": "zQmSdYoQSJ79w1Di8LMr3QJKcjLt47c2DdH2F9gbfoLF6hv",
+      "title": "Activate policy {id} for {purpose}"
+    },
+    "typeUri": "https://trusttasks.org/spec/policy/activate/0.1"
+  },
+  {
+    "kind": "join.criteria.change",
+    "name": "register a join criterion",
+    "payload": {
+      "admission": "review",
+      "credentialIssuers": "community",
+      "id": "member-referral",
+      "invitationRequired": true,
+      "query": {
+        "credentials": [
+          {
+            "format": "ldp_vc",
+            "id": "m",
+            "meta": {
+              "type_values": [
+                "MembershipCredential"
+              ]
+            }
+          }
+        ]
+      }
+    },
+    "summary": {
+      "effect": "Who may become a member of this community changes: {id} becomes exactly what is shown, with admission {admission} — automatic admits an applicant who meets it, review refers them to an administrator. It replaces any criterion of that name, keeping its place in the order.",
+      "fields": {
+        "admission": {
+          "format": "text",
+          "pointer": "/admission",
+          "value": "review"
+        },
+        "credentialIssuers": {
+          "format": "text",
+          "pointer": "/credentialIssuers",
+          "value": "community"
+        },
+        "description": {
+          "format": "text",
+          "pointer": "/description",
+          "value": null
+        },
+        "id": {
+          "format": "text",
+          "pointer": "/id",
+          "value": "member-referral"
+        },
+        "invitationRequired": {
+          "format": "text",
+          "pointer": "/invitationRequired",
+          "value": true
+        },
+        "query": {
+          "format": "text",
+          "pointer": "/query",
+          "value": {
+            "credentials": [
+              {
+                "format": "ldp_vc",
+                "id": "m",
+                "meta": {
+                  "type_values": [
+                    "MembershipCredential"
+                  ]
+                }
+              }
+            ]
+          }
+        },
+        "vetting": {
+          "format": "text",
+          "pointer": "/vetting",
+          "value": null
+        }
+      },
+      "templateDigest": "zQmbgGnKd4rpcj5dPZsKGTrL48wFiL5jGnyyUe9o3JcP5mr",
+      "title": "Register the join criterion {id}"
+    },
+    "typeUri": "https://trusttasks.org/spec/vtc/schemas/accepts/register/0.2"
+  },
+  {
+    "kind": "join.criteria.change",
+    "name": "remove a join criterion",
+    "payload": {
+      "id": "member-referral"
+    },
+    "summary": {
+      "effect": "Who may become a member of this community changes: applicants can no longer join through {id}. Members admitted through it keep their membership.",
+      "fields": {
+        "id": {
+          "format": "text",
+          "pointer": "/id",
+          "value": "member-referral"
+        }
+      },
+      "templateDigest": "zQmaKTFtV3fF3hBkeWwduWohd35nePzqcEvBP95HLa3e7Pu",
+      "title": "Remove the join criterion {id}"
+    },
+    "typeUri": "https://trusttasks.org/spec/vtc/schemas/accepts/delete/0.1"
+  },
+  {
+    "kind": "join.criteria.hiddenVetting",
+    "name": "turn on hidden vetting",
+    "payload": {
+      "criterionId": "vetted-member",
+      "dripPerTick": 3,
+      "livePeriods": [
+        "2026-10"
+      ],
+      "liveTokenLabels": [
+        "token/2026-10"
+      ]
+    },
+    "summary": {
+      "effect": "Who may become a member of this community changes: the criterion {criterionId} can also be met by a hidden vetting proof, which shows an applicant was vetted without naming their vetters, under the vetter periods {livePeriods} and the events shown. Publishing again replaces the parameters.",
+      "fields": {
+        "criterionId": {
+          "format": "text",
+          "pointer": "/criterionId",
+          "value": "vetted-member"
+        },
+        "dripPerTick": {
+          "format": "text",
+          "pointer": "/dripPerTick",
+          "value": 3
+        },
+        "events": {
+          "format": "text",
+          "pointer": "/events",
+          "value": null
+        },
+        "livePeriods": {
+          "format": "text",
+          "pointer": "/livePeriods",
+          "value": [
+            "2026-10"
+          ]
+        },
+        "liveTokenLabels": {
+          "format": "text",
+          "pointer": "/liveTokenLabels",
+          "value": [
+            "token/2026-10"
+          ]
+        },
+        "tickLength": {
+          "format": "text",
+          "pointer": "/tickLength",
+          "value": null
+        }
+      },
+      "templateDigest": "zQmfB8sMNE5otp8D7uYDLeBuWhHfLHQUe3BPCVrwqNWyRDi",
+      "title": "Turn on hidden vetting for the join criterion {criterionId}"
+    },
+    "typeUri": "https://trusttasks.org/spec/vtc/vetting/hidden/publish/0.1"
+  },
+  {
+    "kind": "join.criteria.hiddenVetting",
+    "name": "turn off hidden vetting",
+    "payload": {
+      "criterionId": "vetted-member"
+    },
+    "summary": {
+      "effect": "Who may become a member of this community changes: the criterion {criterionId} stops accepting a hidden vetting proof. Its named vetting is unchanged, and vetters' enrolments are kept for a later publish.",
+      "fields": {
+        "criterionId": {
+          "format": "text",
+          "pointer": "/criterionId",
+          "value": "vetted-member"
+        }
+      },
+      "templateDigest": "zQmcN7gkKudstTLhhf5kKTrS6eoxNyS5hBkjSGzoK8nYcKL",
+      "title": "Turn off hidden vetting for the join criterion {criterionId}"
+    },
+    "typeUri": "https://trusttasks.org/spec/vtc/vetting/hidden/withdraw/0.1"
   },
   {
     "kind": "operator.offlineWrite",

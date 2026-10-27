@@ -1,5 +1,5 @@
 //! Naming vetters (`vtc/vetting/vetters/grant/0.1`) and delivering a grant
-//! again (`vtc/vetting/vetters/resend/0.1`).
+//! again (`vtc/vetting/vetters/resend/0.2`).
 //!
 //! OpenVTC vetting design §10. A vetter is a member the community has issued a
 //! **vetter role credential**: a DTG Verifiable Authority Credential, issued by
@@ -44,7 +44,7 @@ use uuid::Uuid;
 
 use vta_sdk::protocols::members::AUTHORITY_CREDENTIAL_TYPE;
 use vta_sdk::protocols::vetting::vetters::{
-    grant::v0_1 as grant_wire, resend::v0_1 as resend_wire,
+    grant::v0_1 as grant_wire, resend::v0_2 as resend_wire,
 };
 use vta_sdk::protocols::vetting::{
     CheckShape, DEFAULT_VETTER_GRANT_VALIDITY_SECONDS, GrantOrigin, VETTER_ROLE, VetterGrantRow,
@@ -59,10 +59,10 @@ use vti_common::error::AppError;
 use super::profiles;
 use crate::credentials::CredentialStatusRef;
 use crate::credentials::delivery::deliver_credentials;
-use crate::credentials::dtg::{into_typed, issue_role_action};
+use crate::credentials::dtg::{into_typed, issue_role_action, issue_role_action_in};
 use crate::endorsements::{
     Endorsement, VETTER_GRANT_ROW_TYPE, endorsements_by_type, endorsements_for_subject,
-    mark_revoked, store_endorsement,
+    get_endorsement_raw, mark_revoked, replace_if_unchanged, store_endorsement,
 };
 use crate::error::TaskError;
 use crate::members::Member;
@@ -301,7 +301,7 @@ pub async fn grant(
 /// slow or unreachable mediator must not hold up every other grant, revocation
 /// and profile write. The record is what counts statements, so a member whose
 /// wallet missed the credential is still a vetter, and can ask for it again
-/// (`vtc/vetting/vetters/resend/0.1`).
+/// (`vtc/vetting/vetters/resend/0.2`).
 pub(crate) async fn deliver_grant(state: &AppState, member_did: &str, credential: &JsonValue) {
     match into_typed(credential.clone(), "vetter role VAC") {
         Ok(typed) => {
@@ -467,7 +467,7 @@ pub(crate) async fn grant_locked(
 }
 
 /// Deliver `member_did`'s live vetter grant credential again, on behalf of
-/// `actor_did` — the member themselves over `vtc/vetting/vetters/resend/0.1`,
+/// `actor_did` — the member themselves over `vtc/vetting/vetters/resend/0.2`,
 /// or an admin.
 ///
 /// "Delivered" means the credential was handed to the messaging layer for the
@@ -485,9 +485,37 @@ pub async fn resend(
     actor_did: &str,
     member_did: &str,
 ) -> Result<resend_wire::Response, AppError> {
-    let row = live_grant(state, member_did, Utc::now())
+    let not_granted = || AppError::NotFound(format!("{member_did} holds no live vetter grant"));
+    let mut row = live_grant(state, member_did, Utc::now())
         .await?
-        .ok_or_else(|| AppError::NotFound(format!("{member_did} holds no live vetter grant")))?;
+        .ok_or_else(not_granted)?;
+    // A write landing between the read and the re-issue (a revocation)
+    // refuses ours; read again, and the grant is either still live or gone.
+    let mut settled = false;
+    for _ in 0..2 {
+        match reissue_if_stale(state, actor_did, &row).await? {
+            Reissue::Current => settled = true,
+            Reissue::Reissued(fresh) => {
+                row = *fresh;
+                settled = true;
+            }
+            Reissue::Raced => {
+                row = live_grant(state, member_did, Utc::now())
+                    .await?
+                    .ok_or_else(not_granted)?;
+            }
+        }
+        if settled {
+            break;
+        }
+    }
+    if !settled {
+        return Err(AppError::ServiceError {
+            status: axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            message: "the vetter grant kept changing while it was being re-issued; ask again"
+                .into(),
+        });
+    }
     let credential = row.credential.clone().ok_or_else(|| {
         AppError::NotFound(format!(
             "{member_did}'s vetter grant was recorded before grant credentials were kept; \
@@ -535,6 +563,108 @@ pub async fn resend_as_admin(
 ) -> Result<resend_wire::Response, AppError> {
     require_admin(state, actor_did).await?;
     resend(state, actor_did, member_did).await
+}
+
+/// What [`reissue_if_stale`] did.
+enum Reissue {
+    /// The stored credential already names the status list the VTC serves.
+    Current,
+    /// The credential was re-signed and the row updated; this is the new row.
+    Reissued(Box<Endorsement>),
+    /// The row changed after it was read; nothing was written.
+    Raced,
+}
+
+/// Re-sign `row`'s credential if its `credentialStatus` names a status list
+/// URL the VTC no longer serves.
+///
+/// A resend delivers the stored credential, and a grant issued before
+/// `public_url` changed still names the old list URL after the list itself
+/// was re-pointed (#2087). No holder can establish that credential's status,
+/// so openvtc refuses it — and every resend replayed the same refusal. The
+/// re-issue keeps the credential's id, its revocation slot and its validity
+/// window; only the list URL changes, and with it the proof.
+///
+/// The row is written only if nothing else wrote it since it was read, so a
+/// revocation that lands meanwhile is never overwritten ([`Reissue::Raced`]).
+async fn reissue_if_stale(
+    state: &AppState,
+    actor_did: &str,
+    row: &Endorsement,
+) -> Result<Reissue, AppError> {
+    let Some(credential) = row.credential.as_ref() else {
+        return Ok(Reissue::Current);
+    };
+    let Some(named) = credential
+        .pointer("/credentialStatus/statusListCredential")
+        .and_then(JsonValue::as_str)
+    else {
+        return Ok(Reissue::Current);
+    };
+    let served = status_list::get_state(
+        &state.status_lists_ks,
+        affinidi_status_list::StatusPurpose::Revocation,
+    )
+    .await?
+    .ok_or_else(|| AppError::Internal("revocation status list is not provisioned".into()))?
+    .list_credential_id;
+    if named == served {
+        return Ok(Reissue::Current);
+    }
+
+    let Some((stored, current)) = get_endorsement_raw(&state.endorsements_ks, row.id).await? else {
+        return Ok(Reissue::Raced);
+    };
+    if current != *row {
+        return Ok(Reissue::Raced);
+    }
+    let signer = state
+        .credential_signer
+        .as_ref()
+        .ok_or_else(|| AppError::Internal("credential signer not configured".into()))?;
+    let valid_until = row
+        .valid_until
+        .ok_or_else(|| AppError::Internal("vetter grant row has no validUntil".into()))?;
+    let status_ref = CredentialStatusRef::revocation(served.clone(), row.status_list_index);
+    let reissued = issue_role_action_in(
+        signer,
+        &row.subject_did,
+        VETTER_ROLE,
+        Some(&row.credential_id),
+        Some(&status_ref),
+        row.created_at,
+        valid_until,
+    )
+    .await?;
+    let mut fresh = row.clone();
+    fresh.credential = Some(reissued);
+    if !replace_if_unchanged(&state.endorsements_ks, stored, &fresh).await? {
+        return Ok(Reissue::Raced);
+    }
+
+    if let Some(writer) = state.audit_writer.as_ref() {
+        writer
+            .write(
+                actor_did,
+                Some(&row.subject_did),
+                AuditEvent::VecIssued(CredentialIssuedData {
+                    credential_id: row.credential_id.clone(),
+                    credential_type: AUTHORITY_CREDENTIAL_TYPE.into(),
+                    valid_from: rfc3339(row.created_at),
+                    valid_until: rfc3339(valid_until),
+                    status_list_index: Some(row.status_list_index),
+                }),
+            )
+            .await?;
+    }
+    info!(
+        member = %row.subject_did,
+        endorsement_id = %row.id,
+        from = %named,
+        to = %served,
+        "vetter grant re-signed under the status list's current URL"
+    );
+    Ok(Reissue::Reissued(Box::new(fresh)))
 }
 
 /// Revoke the live grants the sweep issued `member_did`, and their profile when

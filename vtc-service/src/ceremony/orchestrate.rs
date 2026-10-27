@@ -1123,6 +1123,7 @@ mod p0_14_role_change_policy_tests {
                 updated_by: None,
                 expires_at: None,
                 resource_grants: Vec::new(),
+                group_grants: Vec::new(),
                 label_set_by_subject: false,
                 suspension: None,
             },

@@ -225,6 +225,30 @@ pub(crate) fn render_v0_2(e: &VtcAclEntry, review: Option<&DelegationReview>) ->
                 .collect(),
         );
     }
+    // What its groups provision (VTI-DIR-100): each row names its group, so
+    // the entry shows why it holds what it holds, and whether its role's
+    // ceiling lets it count now.
+    if !e.group_grants.is_empty() {
+        ours["groupGrants"] = Value::Array(
+            e.group_grants
+                .iter()
+                .map(|g| {
+                    let mut v = json!({
+                        "capability": g.capability,
+                        "groupId": g.group_id,
+                        "bindingId": g.binding_id,
+                        "delegatedBy": g.delegated_by,
+                        "grantedAt": g.granted_at,
+                        "inEffect": g.in_effect(&e.admin),
+                    });
+                    if let Some(r) = &g.resource {
+                        v["resource"] = json!(r);
+                    }
+                    v
+                })
+                .collect(),
+        );
+    }
     if let Some(r) = review {
         ours["delegationReview"] = json!({
             "granter": r.granter,
@@ -1033,10 +1057,14 @@ pub(crate) async fn commit_grant(
     let mut entry = entry;
     {
         let _git = crate::git_ns::store::write_lock().await;
-        entry.resource_grants = get_acl_entry(&state.acl_ks, &entry.did)
-            .await?
-            .map(|e| e.resource_grants)
+        // So are the grants its groups provision (VTI-DIR-100): the groups'
+        // own writer keeps them, under the same lock.
+        let stored = get_acl_entry(&state.acl_ks, &entry.did).await?;
+        entry.resource_grants = stored
+            .as_ref()
+            .map(|e| e.resource_grants.clone())
             .unwrap_or_default();
+        entry.group_grants = stored.map(|e| e.group_grants).unwrap_or_default();
         store_acl_entry(&state.acl_ks, &entry).await?;
     }
     crate::admin_actions::record_effect(state).await;
@@ -1917,6 +1945,14 @@ pub(crate) async fn remove_entry(
     delete_acl_entry(&acl, &did).await?;
     crate::admin_actions::record_effect(state).await;
     drop(_admin_set);
+    // Whatever admissions to the community's rooms the entry's holder still has are owed a
+    // removal (`crate::rooms::departures`).
+    crate::rooms::departures::on_departure(
+        state,
+        &did,
+        crate::rooms::community::DepartureCause::AclRemoved,
+    )
+    .await?;
 
     let revoked = super::auth::revoke_sessions_for_did(&state.sessions_ks, &did).await?;
     delegation::clear(state, &did).await?;
@@ -2129,6 +2165,9 @@ pub(crate) async fn swap_key(
     successor.updated_at = Some(now);
     successor.updated_by = Some(current.to_string());
 
+    // VTI-VOT-022: the member's tickets follow them, before the rotation commits and with
+    // issuance held until it has.
+    let _tickets = state.elections.carry_tickets(current, new).await?;
     let _admin_set = crate::ceremony::lock_admin_set().await;
     let old_key = format!("acl:{current}");
     let Some(expected) = state.acl_ks.get_raw(old_key.as_bytes()).await? else {
@@ -2324,6 +2363,7 @@ mod tests {
             updated_by: None,
             expires_at: Some(1_800_000_000),
             resource_grants: Vec::new(),
+            group_grants: Vec::new(),
             label_set_by_subject: false,
             suspension: None,
         }

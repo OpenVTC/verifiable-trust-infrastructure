@@ -39,17 +39,27 @@ const FILES: Record<string, string> = Object.fromEntries(
 
 const T = "https://trusttasks.org/spec";
 const ACTIONS = `${T}/vtc/admin/actions/list/0.2`;
-const JOINS = `${T}/vtc/join-requests/list/0.1`;
-const MEMBERS = `${T}/vtc/members/list/0.1`;
+const JOINS = `${T}/vtc/join-requests/list/0.2`;
+const MEMBERS = `${T}/vtc/members/list/0.2`;
 const REGISTRY_RECORDS = `${T}/vtc/registry/records/list/0.1`;
-const ENDORSEMENTS = `${T}/vtc/endorsements/list/0.1`;
-const ENDORSEMENT_TYPES = `${T}/vtc/endorsement-types/list/0.1`;
+const ENDORSEMENTS = `${T}/vtc/endorsements/list/0.2`;
+const ENDORSEMENT_TYPES = `${T}/vtc/endorsement-types/list/0.2`;
 const ROOMS = `${T}/vtc/rooms/list/0.1`;
+const ROOMS_USAGE = `${T}/vtc/rooms/usage/0.1`;
+const COMMUNITY_ROOMS = `${T}/vtc/rooms/community/list/0.2`;
+const COMMUNITY_ROOM_MEMBERS = `${T}/vtc/rooms/community/members/list/0.1`;
+const STORAGE_CONFIGS = `${T}/vtc/storage/configs/list/0.2`;
 const ACCEPTS = `${T}/vtc/schemas/accepts/list/0.2`;
 const GRANTS = `${T}/vtc/vetting/vetters/grants/list/0.1`;
 const REVOCATIONS = `${T}/vtc/vetting/revocations/list/0.1`;
 const VETTERS = `${T}/vtc/vetting/vetters/list/0.1`;
 const ACTIVITY = `${T}/git-ns/activity/list/0.1`;
+const DIRECTORY_ENTRIES = `${T}/vtc/directory/entries/list/0.1`;
+const DIRECTORY_EXPORT = `${T}/vtc/directory/export/0.1`;
+const GROUPS_LIST = `${T}/vtc/groups/list/0.1`;
+const GROUPS_MEMBERS = `${T}/vtc/groups/members/list/0.1`;
+const GROUPS_REQUESTS = `${T}/vtc/groups/requests/list/0.1`;
+const ELECTIONS = `${T}/vtc/elections/list/0.1`;
 
 interface Site {
   /** The file, under `src/`. */
@@ -67,6 +77,21 @@ interface Site {
 }
 
 const SITES: Site[] = [
+  // The Directory page's entries tab: one page of the largest size.
+  { file: "plugins/directory.tsx", site: "limit: 100", uri: DIRECTORY_ENTRIES, uriFile: "lib/directory.ts", from: ["100"] },
+  // The directory export: the largest page, followed to the end.
+  { file: "lib/directory.ts", site: "limit: 500", uri: DIRECTORY_EXPORT, from: ["500"] },
+  // The Groups page: every group, every member and every pending request, the largest page.
+  { file: "lib/groups.ts", site: "(GROUPS_LIST_TASK, {\n      limit: PAGE", uri: GROUPS_LIST, from: ["PAGE"] },
+  { file: "lib/groups.ts", site: "(GROUPS_MEMBERS_LIST_TASK, {\n      groupId,\n      limit: PAGE", uri: GROUPS_MEMBERS, from: ["PAGE"] },
+  { file: "lib/groups.ts", site: "(GROUPS_REQUESTS_LIST_TASK, {\n    limit: PAGE", uri: GROUPS_REQUESTS, from: ["PAGE"] },
+  // The member portal's groups: one page of a hundred groups, and of a group's members.
+  { file: "members/groups-api.ts", site: "(GROUPS_LIST_TASK, { limit: 100 })", uri: GROUPS_LIST, from: ["100"] },
+  { file: "members/groups-api.ts", site: "{ groupId, limit: 100 }", uri: GROUPS_MEMBERS, from: ["100"] },
+  // The Members list's directory faces: the largest page, followed to the end.
+  { file: "lib/directory.ts", site: "limit: ENTRIES_PAGE", uri: DIRECTORY_ENTRIES, from: ["ENTRIES_PAGE"] },
+  // The member portal's directory: one page of fifty.
+  { file: "members/Directory.tsx", site: "limit: 50", uri: DIRECTORY_ENTRIES, uriFile: "members/directory-api.ts", from: ["50"] },
   // The action list: the page, and the badge's one-row read.
   { file: "plugins/actions.tsx", site: "listActions({ view, limit: PAGE_SIZE", uri: ACTIONS, uriFile: "lib/actions-api.ts", from: ["PAGE_SIZE"] },
   // `listActions` passes its caller's limit through; each call is listed.
@@ -93,6 +118,15 @@ const SITES: Site[] = [
   { file: "plugins/vetting/api.ts", site: "{ limit: 200, ...(cursor ? { cursor } : {}) }", uri: ENDORSEMENT_TYPES, from: ["200"] },
   // Rooms.
   { file: "plugins/rooms.tsx", site: "{ limit: 100, ...(cursor ? { cursor } : {}) }", uri: ROOMS, from: ["100"] },
+  // Rooms the community owns, and one room's members, every page.
+  { file: "lib/community-rooms-api.ts", site: "COMMUNITY_ROOMS_LIST_TASK, {\n      limit: COMMUNITY_PAGE", uri: COMMUNITY_ROOMS, from: ["COMMUNITY_PAGE"] },
+  { file: "lib/community-rooms-api.ts", site: "roomId,\n      limit: COMMUNITY_PAGE", uri: COMMUNITY_ROOM_MEMBERS, from: ["COMMUNITY_PAGE"] },
+  // The community's elections, every page.
+  { file: "lib/elections-api.ts", site: "{ limit: PAGE, ...(cursor ? { cursor } : {}) }", uri: ELECTIONS, from: ["PAGE"] },
+  // Room usage, every page (room detail, Room usage).
+  { file: "lib/rooms-api.ts", site: "limit: USAGE_PAGE", uri: ROOMS_USAGE, from: ["USAGE_PAGE"] },
+  // Storage configs, every page (Storage, a room's "other storage").
+  { file: "lib/storage-api.ts", site: "limit: CONFIGS_PAGE", uri: STORAGE_CONFIGS, uriFile: "lib/storage-api.ts", from: ["CONFIGS_PAGE"] },
   // Git-namespace activity.
   { file: "plugins/repos/api.ts", site: "{ namespace, limit }", uri: ACTIVITY, from: ["limit"] },
   // The vetting listings walked by `allItems(task, pageSize)`.

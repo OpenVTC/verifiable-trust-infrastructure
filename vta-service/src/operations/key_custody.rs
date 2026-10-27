@@ -221,6 +221,38 @@ async fn derive_with_base(
     authorized.load(keys_ks, seed_store).await
 }
 
+/// The 32-byte seed of a hidden-vetting (PCS) member key at `path`, in
+/// `context_id` (`vta/pcs/*`). The context's base is read here, from the
+/// context store, and the path is held to it (rules 3 and 6); a refusal is
+/// audited and logged like every other custody violation. A context that no
+/// longer exists is refused the same way: a PCS key outlives nothing it was
+/// derived for.
+#[allow(clippy::too_many_arguments)]
+pub async fn derive_pcs_member_seed(
+    contexts_ks: &KeyspaceHandle,
+    keys_ks: &KeyspaceHandle,
+    seed_store: &dyn SeedStore,
+    audit_sink: &vta_audit::SharedAuditSink,
+    actor: &str,
+    context_id: &str,
+    path: &str,
+    seed_id: Option<u32>,
+    channel: &str,
+) -> Result<zeroize::Zeroizing<[u8; 32]>, AppError> {
+    let base = get_context(contexts_ks, context_id)
+        .await?
+        .map(|c| c.base_path)
+        .unwrap_or_default();
+    let authorized = match custody::authorize_pcs_derivation(path, context_id, &base, seed_id) {
+        Ok(a) => a,
+        Err(v) => {
+            report(audit_sink, actor, &v, None, Some(context_id), channel).await;
+            return Err(v.into());
+        }
+    };
+    authorized.seed(keys_ks, seed_store).await
+}
+
 /// Rule 7: require that `key_id`, referenced from a resource in
 /// `scope_context`, is a key in that context's subtree. Audits a refusal.
 ///

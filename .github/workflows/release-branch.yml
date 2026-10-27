@@ -40,12 +40,12 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
       - name: Install system dependencies
-        run: bash scripts/install-build-deps.sh
+        run: bash scripts/install-build-deps.sh libtss2-dev
       - name: Install the Rust toolchain
         run: |
           rustup toolchain install stable --profile minimal --no-self-update
           rustup default stable
-      - uses: taiki-e/install-action@4cef1412cce204788f482e778a0b9187f9626a29 # v2.87.21
+      - uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2.87.29
         with:
           tool: cargo-semver-checks,git-cliff
       - name: Bump changed crates, write changelogs, move RELEASE

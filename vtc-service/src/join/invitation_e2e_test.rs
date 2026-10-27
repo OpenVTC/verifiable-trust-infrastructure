@@ -209,3 +209,120 @@ async fn vic_bound_to_another_did_cannot_be_redeemed() {
         "a refused redeem must not consume the VIC"
     );
 }
+
+/// Realize an auto-admit verdict for `applicant` that redeems `vic_id`, the
+/// way the submit spine does once the policy has decided over an
+/// unconsumed invitation.
+async fn realize_invited_admit(
+    state: &crate::server::AppState,
+    applicant: &str,
+    vic_id: &str,
+) -> Result<crate::join::JoinSubmitOutcome, vti_common::error::AppError> {
+    crate::join::realize_join_verdict(
+        state,
+        applicant,
+        json!({ "type": "VerifiablePresentation", "holder": applicant }),
+        json!({}),
+        false,
+        json!({}),
+        Vec::new(),
+        crate::ceremony::verdict::Verdict::Allow(crate::ceremony::verdict::Allow::default()),
+        JoinTransport::DIDComm,
+        Some(vic_id.to_string()),
+    )
+    .await
+}
+
+/// The race's loser: its verdict was decided over an invitation that another
+/// redeem consumed before this one was admitted. It must be admitted on
+/// nothing — burning the invitation only after admission admitted both.
+#[tokio::test]
+async fn an_invitation_consumed_since_the_decision_admits_nobody() {
+    let issuer = signer(&ISSUER_SEED);
+    let tv = vtc_with_signer(&issuer).await;
+    let applicant = did_key(&APPLICANT_SEED);
+    let vic_id = format!("urn:uuid:{}", uuid::Uuid::new_v4());
+    let record = crate::credentials::invitation_verify::ConsumedInvitation {
+        applicant: "did:key:zSomeoneElse".into(),
+        consumed_at: chrono::Utc::now(),
+        via_join_request_id: "earlier".into(),
+    };
+    assert!(
+        crate::credentials::invitation_verify::mark_consumed(
+            &tv.state.consumed_invitations_ks,
+            &vic_id,
+            &record,
+        )
+        .await
+        .unwrap()
+    );
+
+    let err = realize_invited_admit(&tv.state, &applicant, &vic_id)
+        .await
+        .err()
+        .expect("a consumed invitation must not admit");
+    assert!(
+        matches!(err, vti_common::error::AppError::Conflict(_)),
+        "{err:?}"
+    );
+    assert!(
+        get_acl_entry(&tv.state.acl_ks, &applicant)
+            .await
+            .unwrap()
+            .is_none(),
+        "admitted on an invitation somebody else had already redeemed"
+    );
+}
+
+/// Redeems of one single-use invitation racing past the decision: exactly
+/// one is admitted.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn racing_redeems_of_one_invitation_admit_exactly_one() {
+    let issuer = signer(&ISSUER_SEED);
+    let tv = vtc_with_signer(&issuer).await;
+    let vic_id = format!("urn:uuid:{}", uuid::Uuid::new_v4());
+    let barrier = Arc::new(tokio::sync::Barrier::new(8));
+    let mut tasks = Vec::new();
+    for i in 0..8u8 {
+        let (state, barrier, vic_id) = (tv.state.clone(), barrier.clone(), vic_id.clone());
+        tasks.push(tokio::spawn(async move {
+            let applicant = did_key(&[0x40 + i; 32]);
+            barrier.wait().await;
+            realize_invited_admit(&state, &applicant, &vic_id)
+                .await
+                .is_ok_and(|o| o.admit.is_some())
+        }));
+    }
+    let mut admitted = 0;
+    for t in tasks {
+        admitted += t.await.unwrap() as usize;
+    }
+    assert_eq!(admitted, 1, "one invitation admitted {admitted} members");
+}
+
+/// An admission that fails after claiming the invitation gives it back, so
+/// the invitee can redeem it again.
+#[tokio::test]
+async fn a_failed_admission_releases_the_invitation() {
+    let issuer = signer(&ISSUER_SEED);
+    let tv = vtc_with_signer(&issuer).await;
+    let applicant = did_key(&APPLICANT_SEED);
+    let vic_id = format!("urn:uuid:{}", uuid::Uuid::new_v4());
+    // Already a member: the admit effect refuses the duplicate.
+    realize_invited_admit(&tv.state, &applicant, &format!("{vic_id}-first"))
+        .await
+        .expect("first admission");
+
+    assert!(
+        realize_invited_admit(&tv.state, &applicant, &vic_id)
+            .await
+            .is_err(),
+        "a duplicate admission is refused"
+    );
+    assert!(
+        !is_consumed(&tv.state.consumed_invitations_ks, &vic_id)
+            .await
+            .unwrap(),
+        "a failed admission must not burn the invitation"
+    );
+}

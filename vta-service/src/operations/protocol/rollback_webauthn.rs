@@ -39,6 +39,7 @@ use crate::store::KeyspaceHandle;
 pub struct RollbackWebauthnParams;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum RollbackKind {
     Disabled,
     Enabled,
@@ -55,6 +56,7 @@ pub struct RollbackWebauthnResult {
 }
 
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum RollbackWebauthnError {
     #[error(
         "no prior mutation for `services webauthn` to roll back from. \

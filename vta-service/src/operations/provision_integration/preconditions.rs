@@ -169,6 +169,7 @@ pub async fn ensure_target_context_or_create(
 /// Failure modes of [`resolve_target_context`], kept distinct so each transport
 /// renders the ambiguous case in its own idiom.
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum ResolveContextError {
     /// Inference couldn't pick a single target — carries the candidates so the
     /// transport can surface them (REST: 400 with candidates inlined; DIDComm:

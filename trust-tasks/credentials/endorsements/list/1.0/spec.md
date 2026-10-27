@@ -2,7 +2,7 @@
 id: https://trusttasks.org/openvtc/vtc/credentials/endorsements/list/1.0
 title: VTC — Custom Endorsement List
 status: retired
-supersededBy: https://trusttasks.org/spec/vtc/endorsements/list/0.1
+supersededBy: https://trusttasks.org/spec/vtc/endorsements/list/0.2
 version: "1.0"
 authors:
   - did:webvh:openvtc.org

@@ -383,14 +383,37 @@ pub(crate) async fn load_vta_issuer_secret(
     vta_did: &str,
     purpose: &'static str,
 ) -> Result<Secret, AppError> {
-    let key_id = format!("{vta_did}#key-0");
-    let authority = InternalAuthority::new(purpose);
-    let resp = crate::operations::keys::get_key_secret_internal(
+    load_vta_issuer_secret_from_store(
         &state.keys_ks,
         &state.imported_ks,
         &state.contexts_ks,
         &*state.seed_store,
         &state.audit_sink,
+        vta_did,
+        purpose,
+    )
+    .await
+}
+
+/// [`load_vta_issuer_secret`] over the keyspaces themselves, for the offline
+/// CLI, which opens the store directly and has no `AppState`.
+pub async fn load_vta_issuer_secret_from_store(
+    keys_ks: &KeyspaceHandle,
+    imported_ks: &KeyspaceHandle,
+    contexts_ks: &KeyspaceHandle,
+    seed_store: &dyn crate::keys::seed_store::SeedStore,
+    audit: &vta_audit::SharedAuditSink,
+    vta_did: &str,
+    purpose: &'static str,
+) -> Result<Secret, AppError> {
+    let key_id = format!("{vta_did}#key-0");
+    let authority = InternalAuthority::new(purpose);
+    let resp = crate::operations::keys::get_key_secret_internal(
+        keys_ks,
+        imported_ks,
+        contexts_ks,
+        seed_store,
+        audit,
         authority,
         &key_id,
         purpose,

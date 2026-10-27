@@ -37,6 +37,7 @@ pub struct EnableWebauthnResult {
 }
 
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum EnableWebauthnError {
     #[error(
         "WebAuthn is already enabled. Use `services webauthn update --url <url>` to change the URL."
@@ -125,7 +126,7 @@ pub async fn enable_webauthn(
             let (contents, path) = {
                 let mut cfg = deps.config.write().await;
                 cfg.services.webauthn = true;
-                let contents = toml::to_string_pretty(&*cfg).map_err(|e| e.to_string())?;
+                let contents = cfg.to_runtime_toml().map_err(|e| e.to_string())?;
                 let path = cfg.config_path.clone();
                 (contents, path)
             };

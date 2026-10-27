@@ -1,5 +1,5 @@
-// Rooms plugin — the data rooms this community hosts, and the one decision it
-// gets to make about them.
+// The Rooms tab of the Data rooms page (`dataRooms.tsx`) — the data rooms this
+// community hosts, and the one decision it gets to make about them.
 //
 // ## What a host knows, and why so little is not a bug
 //
@@ -59,18 +59,30 @@
 // a different question, which is worse than not asking.
 
 import { useMemo, useState } from "react";
+import { Link } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
+import { useLivePollMs } from "@/lib/use-live-events";
 import { DoorOpen, RefreshCw } from "lucide-react";
 
 import { postSignedRead } from "@/lib/api";
 import { fetchActivePolicy } from "@/lib/policies-api";
 import { formatEpoch, shorten } from "@/lib/format";
+import { CopyButton } from "@/components/CopyButton";
 import { NamedDid } from "@/components/NamedDid";
-import { DataTable } from "@/components/DataTable";
+import { DataTable, useSortedRows } from "@/components/DataTable";
+import { Field } from "@/components/Field";
 import { EmptyState } from "@/components/EmptyState";
-import { PageHeader } from "@/components/PageHeader";
 import { useNameBook } from "@/lib/names";
-import type { HostedRoom, PolicyTestResponse } from "@/lib/wire-types";
+import { formatBytes } from "@/lib/rooms-api";
+import type { HostedRoom, PolicyTestResponse, RoomScopeLimits } from "@/lib/wire-types";
+
+import { LifecyclePill, STORAGE_PATH, TIER_BLURB, TIERS, roomPath, type Tier } from "./rooms/shared";
+import {
+  CommunityRoomBadge,
+  MEMBER_NAMED_NOTE,
+  useRoomNames,
+  type RoomName,
+} from "./rooms/useRoomNames";
 
 const TRUST_TASK_TEST = "https://trusttasks.org/spec/vtc/policies/test/0.1";
 /** `vtc/rooms/list/0.1` — under `vtc/`, not `rooms/`: it is answered from the
@@ -79,15 +91,6 @@ const TRUST_TASK_ROOMS_LIST = "https://trusttasks.org/spec/vtc/rooms/list/0.1";
 
 /** The query the real creation path evaluates. Anything else probes a different rule. */
 const DECISION_QUERY = "data.vtc.rooms.decision";
-
-const TIERS = ["open", "attributed", "private"] as const;
-type Tier = (typeof TIERS)[number];
-
-const TIER_BLURB: Record<Tier, string> = {
-  open: "Records are stored in the clear. This host can read every one of them.",
-  attributed: "Records are sealed, and this host sees who wrote which.",
-  private: "Records are sealed and this host cannot see the membership at all.",
-};
 
 /**
  * The rooms this community hosts.
@@ -98,19 +101,152 @@ const TIER_BLURB: Record<Tier, string> = {
  * the opposite question — what is this *operator* storing — from the host's
  * admin authority.
  */
-async function fetchRooms(): Promise<HostedRoom[]> {
+interface RoomsListing {
+  rooms: HostedRoom[];
+  /** Whether this community takes room files. `null` from a VTC too old to say. */
+  filesEnabled: boolean | null;
+  /** What its configuration holds every room to, when files are on. */
+  defaults: FileDefaults | null;
+}
+
+/** `ext["org.openvtc"].roomFiles` on `vtc/rooms/list`, when files are on: the
+ *  limits the configuration file sets, which a room's override or the rooms
+ *  policy may replace. */
+interface FileDefaults {
+  room: RoomScopeLimits;
+  member: RoomScopeLimits;
+  maxFileBytes: number;
+  storageCapacityBytes?: number;
+  orphanGraceHours?: number;
+}
+
+function defaultsOf(v: unknown): FileDefaults | null {
+  const f = v as {
+    defaults?: { room?: RoomScopeLimits; member?: RoomScopeLimits };
+    maxFileBytes?: unknown;
+    storageCapacityBytes?: unknown;
+    orphanGraceHours?: unknown;
+  } | null;
+  if (!f?.defaults || typeof f.maxFileBytes !== "number") return null;
+  return {
+    room: f.defaults.room ?? {},
+    member: f.defaults.member ?? {},
+    maxFileBytes: f.maxFileBytes,
+    ...(typeof f.storageCapacityBytes === "number"
+      ? { storageCapacityBytes: f.storageCapacityBytes }
+      : {}),
+    ...(typeof f.orphanGraceHours === "number" ? { orphanGraceHours: f.orphanGraceHours } : {}),
+  };
+}
+
+async function fetchRooms(): Promise<RoomsListing> {
   const rooms: HostedRoom[] = [];
+  let filesEnabled: boolean | null = null;
+  let defaults: FileDefaults | null = null;
   let cursor: string | null = null;
   for (let page = 0; page < 20; page++) {
-    const body: { items: HostedRoom[]; nextCursor?: string | null } = await postSignedRead(
-      TRUST_TASK_ROOMS_LIST,
-      { limit: 100, ...(cursor ? { cursor } : {}) },
-    );
+    const body: {
+      items: HostedRoom[];
+      nextCursor?: string | null;
+      ext?: { "org.openvtc"?: { roomFiles?: { enabled?: unknown } } };
+    } = await postSignedRead(TRUST_TASK_ROOMS_LIST, { limit: 100, ...(cursor ? { cursor } : {}) });
     rooms.push(...body.items);
+    const roomFiles = body.ext?.["org.openvtc"]?.roomFiles;
+    if (typeof roomFiles?.enabled === "boolean") filesEnabled = roomFiles.enabled;
+    defaults ??= defaultsOf(roomFiles);
     cursor = body.nextCursor ?? null;
     if (!cursor) break;
   }
-  return rooms;
+  return { rooms, filesEnabled, defaults };
+}
+
+/** What an operator adds to turn room files on. The paths are examples: absolute
+ *  directories on this host, writable by the VTC. */
+const ROOM_FILES_SNIPPET = `[rooms.files]
+local_storage_bases = ["/var/lib/vtc/room-storage"]
+blob_dir = "/var/lib/vtc/room-blobs"`;
+
+/**
+ * Room files are off: the configuration has no `[rooms.files]` section, which is
+ * every configuration written before files existed. Said here, with the section
+ * to add, rather than discovered as a refused upload.
+ */
+function RoomFilesOff() {
+  return (
+    <section className="card">
+      <h2>Room files are off</h2>
+      <p className="muted">
+        Rooms work without them — records are stored and served as before — but
+        members cannot add files. To let them, add a <code>[rooms.files]</code>{" "}
+        section to this VTC&rsquo;s configuration file and restart it:
+      </p>
+      <pre className="rooms-config-snippet">{ROOM_FILES_SNIPPET}</pre>
+      <p className="muted rooms-sub">
+        Use absolute paths on this host that the VTC can write to.{" "}
+        <code>blob_dir</code> is where files go at first; <code>local_storage_bases</code>{" "}
+        are the directories an administrator may later point a storage location
+        at. Files are encrypted by members before they arrive, so this host stores
+        ciphertext it cannot read. Neither directory is in a VTC backup: back them
+        up beside the data directory.
+      </p>
+    </section>
+  );
+}
+
+function limitsText(l: RoomScopeLimits): string {
+  const parts = [
+    l.maxFiles !== undefined ? `${l.maxFiles.toLocaleString()} files` : null,
+    l.maxBytes !== undefined ? `${formatBytes(l.maxBytes)} in all` : null,
+    l.maxFileBytes !== undefined ? `${formatBytes(l.maxFileBytes)} a file` : null,
+  ].filter(Boolean);
+  return parts.length ? parts.join(", ") : "no limit";
+}
+
+/**
+ * What every room is held to unless the rooms policy or an override on the room
+ * says otherwise — the `[rooms.files]` section of the configuration file. Shown,
+ * not edited: it changes with the file and a restart, and saying where is more
+ * use than a form that could not save it.
+ */
+function FileDefaultsCard({ d }: { d: FileDefaults }) {
+  return (
+    <section className="card">
+      <h3>Defaults</h3>
+      <p className="muted">
+        What each room is held to unless the rooms policy or an override on the room
+        says otherwise. Change a single room from its own page; where its files go is
+        on the <Link to={STORAGE_PATH}>Storage</Link> tab.
+      </p>
+      <dl className="rooms-facts">
+        <dt>Each room</dt>
+        <dd>{limitsText(d.room)}</dd>
+        <dt>Each member, per room</dt>
+        <dd>
+          {limitsText(d.member)}
+          <div className="muted rooms-sub">Not applied on private rooms, whose members this host cannot tell apart.</div>
+        </dd>
+        <dt>Largest file anywhere</dt>
+        <dd>{formatBytes(d.maxFileBytes)}</dd>
+        {d.storageCapacityBytes !== undefined && (
+          <>
+            <dt>Storage capacity</dt>
+            <dd>{formatBytes(d.storageCapacityBytes)}</dd>
+          </>
+        )}
+        {d.orphanGraceHours !== undefined && (
+          <>
+            <dt>Deleted files kept for</dt>
+            <dd>{d.orphanGraceHours} hours, then removed from storage</dd>
+          </>
+        )}
+      </dl>
+      <p className="muted rooms-sub">
+        To change these, edit <code>[rooms.files]</code>, <code>[rooms.files.room]</code>{" "}
+        and <code>[rooms.files.member]</code> in this VTC&rsquo;s configuration file and
+        restart it.
+      </p>
+    </section>
+  );
 }
 
 /**
@@ -160,77 +296,170 @@ function pluckDecision(resp: PolicyTestResponse): Verdict | null {
   };
 }
 
-const LIFECYCLE_MEANS: Record<string, string> = {
-  live: "Renewed. Accepting writes.",
-  lapsed:
-    "The epoch expired, so the room is read-only. Nothing is destroyed or hidden, and one renewal returns it to live \u2014 often this is just somebody on holiday.",
-  dormant:
-    "Still unrenewed after the grace window. The owner is owed the notice, and a successor the room nominated may claim it from here.",
-  reclaimable:
-    "Past the retention period agreed at creation. The host may delete it; reads keep working until it does.",
-};
+/** Lifecycle states in the order they happen, which is how the column sorts. */
+const LIFECYCLES = ["live", "lapsed", "dormant", "reclaimable"] as const;
 
-function LifecyclePill({ value }: { value: string }) {
-  // `lapsed` must not read as a failure — the room is intact and one renewal
-  // fixes it. `reclaimable` is the only state where anything is at risk.
-  const tone =
-    value === "live" ? "success" : value === "reclaimable" ? "danger" : "warning";
+type RoomSortKey = "room" | "tier" | "lifecycle" | "created";
+
+/**
+ * The hosted rooms, searchable by name and DID, filterable by tier and
+ * lifecycle, sortable by column. All client-side over the list read whole:
+ * the name is joined in here (`useRoomNames`), so the VTC could not search it.
+ */
+function RoomsTable({ rooms }: { rooms: HostedRoom[] }) {
+  const nameBook = useNameBook();
+  const nameOf = useRoomNames();
+  const [search, setSearch] = useState("");
+  const [tier, setTier] = useState<"" | Tier>("");
+  const [lifecycle, setLifecycle] = useState("");
+
+  const labelOf = (r: HostedRoom): string | null => {
+    const n = nameOf(r.roomId);
+    return n.kind === "community" ? n.label : null;
+  };
+  const needle = search.trim().toLowerCase();
+  const shown = rooms.filter(
+    (r) =>
+      (tier === "" || r.visibility === tier) &&
+      (lifecycle === "" || r.lifecycle === lifecycle) &&
+      (needle === "" ||
+        r.roomId.toLowerCase().includes(needle) ||
+        (labelOf(r) ?? "").toLowerCase().includes(needle)),
+  );
+  const sorted = useSortedRows<HostedRoom, RoomSortKey>(shown, (r, key) => {
+    switch (key) {
+      // A named room sorts by its name, before the rooms known only by DID.
+      case "room":
+        return labelOf(r)?.toLowerCase() ?? `\uffff${r.roomId}`;
+      case "tier":
+        return TIERS.indexOf(r.visibility as Tier);
+      case "lifecycle":
+        return LIFECYCLES.indexOf(r.lifecycle as (typeof LIFECYCLES)[number]);
+      case "created":
+        return r.createdAt;
+    }
+  });
+  const filtered = needle !== "" || tier !== "" || lifecycle !== "";
+
   return (
-    <span className={`chip ${tone}`} title={LIFECYCLE_MEANS[value] ?? value}>
-      {value}
-    </span>
+    <>
+      <div className="toolbar">
+        <Field label="Search" inline>
+          <input
+            type="search"
+            placeholder="Name or DID"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+          />
+        </Field>
+        <Field label="Tier" inline>
+          <select value={tier} onChange={(e) => setTier(e.target.value as "" | Tier)}>
+            <option value="">Any</option>
+            {TIERS.map((t) => (
+              <option key={t} value={t}>
+                {t}
+              </option>
+            ))}
+          </select>
+        </Field>
+        <Field label="Lifecycle" inline>
+          <select value={lifecycle} onChange={(e) => setLifecycle(e.target.value)}>
+            <option value="">Any</option>
+            {LIFECYCLES.map((l) => (
+              <option key={l} value={l}>
+                {l}
+              </option>
+            ))}
+          </select>
+        </Field>
+        <span className="muted">
+          {filtered ? `${shown.length} of ${rooms.length}` : `${rooms.length}`}{" "}
+          {rooms.length === 1 ? "room" : "rooms"}
+        </span>
+      </div>
+      {shown.length === 0 ? (
+        <p className="muted">No room matches. Clear the search or the filters to see every room.</p>
+      ) : (
+        <DataTable<RoomSortKey>
+          sort={sorted.sort}
+          onSort={sorted.onSort}
+          columns={[
+            { key: "room", label: "Room", sortKey: "room" },
+            { key: "owner", label: "Owner" },
+            { key: "tier", label: "Tier", sortKey: "tier" },
+            { key: "epoch", label: "Epoch" },
+            { key: "lifecycle", label: "Lifecycle", sortKey: "lifecycle" },
+            { key: "retention", label: "Retention" },
+            { key: "created", label: "Created", sortKey: "created" },
+          ]}
+        >
+          {sorted.rows.map((r) => (
+            <tr key={r.roomId}>
+              <td>
+                <RoomCell roomId={r.roomId} name={nameOf(r.roomId)} />
+                {r.mirrorOf && (
+                  <div className="muted rooms-sub">read-only copy of {shorten(r.mirrorOf)}</div>
+                )}
+              </td>
+              <td>
+                <NamedDid did={r.ownerDid} book={nameBook} />
+              </td>
+              <td>{r.visibility}</td>
+              <td>
+                {r.epoch}
+                {r.epochExpiresAt ? (
+                  <div className="muted rooms-sub">expires {formatEpoch(r.epochExpiresAt)}</div>
+                ) : null}
+              </td>
+              <td>
+                <LifecyclePill value={r.lifecycle} />
+              </td>
+              <td>
+                {r.retentionDays}d
+                <div className="muted rooms-sub">
+                  {r.retentionPolicy === "chained" ? "history kept" : "from join"}
+                </div>
+              </td>
+              <td>{formatEpoch(r.createdAt)}</td>
+            </tr>
+          ))}
+        </DataTable>
+      )}
+    </>
   );
 }
 
-function RoomsTable({ rooms }: { rooms: HostedRoom[] }) {
-  const nameBook = useNameBook();
+/**
+ * A room's first cell: the label of a room the community owns (with the DID
+ * under it), or the DID — and, when the console can tell a member owns the
+ * room, why there is no name to show (`rooms/useRoomNames.tsx`).
+ */
+function RoomCell({ roomId, name }: { roomId: string; name: RoomName }) {
+  if (name.kind === "community") {
+    return (
+      <>
+        <Link to={roomPath(roomId)} title={roomId}>
+          {name.label}
+        </Link>{" "}
+        <CommunityRoomBadge roomId={roomId} />
+        {name.description && (
+          <div className="muted rooms-sub rooms-description-preview" title={name.description}>
+            {name.description}
+          </div>
+        )}
+        <div className="muted rooms-sub">
+          <code title={roomId}>{shorten(roomId)}</code> <CopyButton value={roomId} />
+        </div>
+      </>
+    );
+  }
   return (
-    <DataTable
-      columns={[
-        { key: "room", label: "Room" },
-        { key: "owner", label: "Owner" },
-        { key: "tier", label: "Tier" },
-        { key: "epoch", label: "Epoch" },
-        { key: "lifecycle", label: "Lifecycle" },
-        { key: "retention", label: "Retention" },
-        { key: "created", label: "Created" },
-      ]}
-    >
-      {rooms.map((r) => (
-        <tr key={r.roomId}>
-          <td>
-            <code title={r.roomId}>{shorten(r.roomId)}</code>
-            {r.mirrorOf && (
-              <div className="muted rooms-sub">
-                read-only copy of {shorten(r.mirrorOf)}
-              </div>
-            )}
-          </td>
-          <td>
-            <NamedDid did={r.ownerDid} book={nameBook} />
-          </td>
-          <td>{r.visibility}</td>
-          <td>
-            {r.epoch}
-            {r.epochExpiresAt ? (
-              <div className="muted rooms-sub">
-                expires {formatEpoch(r.epochExpiresAt)}
-              </div>
-            ) : null}
-          </td>
-          <td>
-            <LifecyclePill value={r.lifecycle} />
-          </td>
-          <td>
-            {r.retentionDays}d
-            <div className="muted rooms-sub">
-              {r.retentionPolicy === "chained" ? "history kept" : "from join"}
-            </div>
-          </td>
-          <td>{formatEpoch(r.createdAt)}</td>
-        </tr>
-      ))}
-    </DataTable>
+    <>
+      <Link to={roomPath(roomId)} title={roomId}>
+        <code>{shorten(roomId)}</code>
+      </Link>
+      {name.kind === "member" && <div className="muted rooms-sub">{MEMBER_NAMED_NOTE}</div>}
+    </>
   );
 }
 
@@ -365,9 +594,18 @@ function CreationPolicy() {
   );
 }
 
-export function Rooms() {
-  const roomsQuery = useQuery({ queryKey: ["rooms"], queryFn: fetchRooms });
-  const rooms = roomsQuery.data ?? [];
+/** The Rooms tab of the Data rooms page (`plugins/dataRooms.tsx`). */
+export function RoomsList() {
+  // Re-read on a live `rooms` hint (`lib/use-live-events.ts`); polled as the
+  // fallback, slowly while the stream carries the topic.
+  const pollMs = useLivePollMs("rooms");
+  const roomsQuery = useQuery({
+    queryKey: ["rooms"],
+    queryFn: fetchRooms,
+    refetchInterval: pollMs,
+  });
+  const rooms = roomsQuery.data?.rooms ?? [];
+  const filesOff = roomsQuery.data?.filesEnabled === false;
 
   // Worth surfacing above the table: these two are the states that ask the
   // operator to do something, and they are invisible in a long list.
@@ -380,19 +618,8 @@ export function Rooms() {
   );
 
   return (
-    <section className="page">
-      <PageHeader
-        title="Data rooms"
-        lead={
-          <>
-          Rooms this community stores. It cannot read their records and holds no
-          member list — both by construction — so this is the row and nothing
-          derived from a room's contents. The owner is shown at every tier,
-          including private, because they are the party a quota or reclamation
-          notice has to reach.
-          </>
-        }
-      />
+    <>
+      {filesOff && <RoomFilesOff />}
 
       {roomsQuery.isPending && (
         <section className="card">
@@ -441,7 +668,9 @@ export function Rooms() {
         </section>
       )}
 
+      {roomsQuery.data?.defaults && <FileDefaultsCard d={roomsQuery.data.defaults} />}
+
       <CreationPolicy />
-    </section>
+    </>
   );
 }

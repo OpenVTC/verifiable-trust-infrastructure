@@ -529,6 +529,8 @@ fn lifecycle_reject(
         LifecycleError::GraceExpired => {
             "the grace window has elapsed — the entry has been (or is about to be) purged"
         }
+        // `LifecycleError` is `#[non_exhaustive]`.
+        _ => "the entry's lifecycle state does not allow this",
     };
     reject_with(
         doc,
@@ -778,6 +780,8 @@ pub(super) async fn handle_upsert(
                 "restore it first (vault/restore), or vault/purge and recreate",
             ),
             VaultStatus::Active => unreachable!("guarded by the != Active check above"),
+            // `VaultStatus` is `#[non_exhaustive]`: refused like any non-Active state.
+            _ => ("inactive", "it is not active and cannot be edited"),
         };
         return reject_with(
             &doc,
@@ -1741,6 +1745,85 @@ struct VaultSignTrustTaskResponseBody {
     signed_envelope: Value,
 }
 
+/// The service's side of a wallet sign-in approved on the member's phone
+/// (`oob_sign_in::RemoteApproval`): who may approve (the operator's
+/// designation, `operations::device::uv_approver_eligible`), and the signed
+/// `task-consent/request` pushed to them — the same document, and the same push
+/// path, as a consent the PDP raises, so the phone app answers it with the
+/// `task-consent/decision/0.1` it already sends.
+/// The sentence the phone shows: where, from which browser, until when. At
+/// most 500 characters, the schema's bound on an effect's `summary`.
+fn sign_in_summary(ask: &crate::operations::vault::oob_sign_in::RemoteAsk, until: &str) -> String {
+    let text = format!(
+        "Sign in to {} from your browser \"{}\". That browser can then act as you on {} \
+         until {until}.",
+        ask.origin, ask.device_name, ask.origin
+    );
+    text.chars().take(500).collect()
+}
+
+struct StateRemoteApproval<'a> {
+    state: &'a AppState,
+}
+
+#[async_trait::async_trait]
+impl crate::operations::vault::oob_sign_in::RemoteApproval for StateRemoteApproval<'_> {
+    async fn approver_permitted(
+        &self,
+        device_did: &str,
+        approver: &str,
+    ) -> Result<bool, crate::error::AppError> {
+        let named = super::policy_gate::all_named_approvers(self.state).await?;
+        let now = u64::try_from(chrono::Utc::now().timestamp()).unwrap_or(0);
+        crate::operations::device::uv_approver_permitted(
+            &self.state.acl_ks,
+            device_did,
+            approver,
+            &named,
+            now,
+        )
+        .await
+    }
+
+    async fn ask(
+        &self,
+        pending: &crate::policy::consent::PendingTaskConsent,
+        ask: &crate::operations::vault::oob_sign_in::RemoteAsk,
+    ) -> Result<(), crate::error::AppError> {
+        use crate::policy::types::{Discloses, SideEffectLevel, TaskClass};
+        let Some(approver) = pending.bound_approver.clone() else {
+            return Err(crate::error::AppError::Internal(
+                "a remote approval request names no approver".into(),
+            ));
+        };
+        let until = i64::try_from(ask.not_after)
+            .ok()
+            .and_then(|t| chrono::DateTime::from_timestamp(t, 0))
+            .map(|t| t.format("%Y-%m-%d %H:%M UTC").to_string())
+            .unwrap_or_else(|| "the grant expires".into());
+        let mut detail = serde_json::Map::new();
+        detail.insert("origin".into(), serde_json::json!(ask.origin));
+        detail.insert("device".into(), serde_json::json!(ask.device_name));
+        detail.insert("notAfter".into(), serde_json::json!(ask.not_after));
+        let effects = vec![
+            crate::policy::effects::Effect::new("signIn", sign_in_summary(ask, &until))
+                .detail(detail),
+        ];
+        let requests = super::consent_request::mint_signed_requests(
+            self.state,
+            pending,
+            &[approver],
+            TaskClass::new(SideEffectLevel::Mutating, Discloses::None, true),
+            &effects,
+            Some(&ask.persona),
+            Some(&ask.origin),
+        )
+        .await?;
+        super::consent_request::push_signed_requests(self.state, &requests).await;
+        Ok(())
+    }
+}
+
 /// Handler for `spec/vault/sign-trust-task/0.1`. Attaches an
 /// `eddsa-jcs-2022` Data Integrity proof to a Trust Task envelope,
 /// signing as the principal DID of a `did-self-issued` or
@@ -1821,12 +1904,15 @@ pub(super) async fn handle_sign_trust_task(
     use crate::operations::vault::oob_sign_in;
     let oob = {
         let vta_did = state.config.read().await.vta_did.clone();
+        let remote = StateRemoteApproval { state };
         let deps = oob_sign_in::OobDeps {
             acl_ks: &state.acl_ks,
             task_consent_ks: &state.task_consent_ks,
             #[cfg(feature = "webvh")]
             webvh_ks: &state.webvh_ks,
             vta_did,
+            audit: &state.audit_sink,
+            remote: Some(&remote),
         };
         match oob_sign_in::authorize(
             &deps,
@@ -1864,7 +1950,7 @@ pub(super) async fn handle_sign_trust_task(
                     &doc,
                     RejectReason::TaskFailed {
                         reason: format!("vault/sign-trust-task:{code} — {message}"),
-                        details: Some(serde_json::json!({ "code": code })),
+                        details: Some(e.details()),
                     },
                 );
             }
@@ -2251,5 +2337,105 @@ mod tsp_unseal_tests {
             body.contains("TSP not configured"),
             "rejection should explain TSP isn't configured, got: {body}"
         );
+    }
+}
+
+/// The request a phone receives for a browser's sign-in is the ordinary signed
+/// `task-consent/request/0.1`, and it reads as one: it verifies under the VTA's
+/// key, it is addressed to the phone, its match code is the one the browser is
+/// told, and its effect says where, from which browser and until when.
+#[cfg(all(test, feature = "didcomm", feature = "webvh"))]
+mod remote_approval_tests {
+    use super::*;
+    use crate::messaging::registry::MediatorBinding;
+    use crate::operations::vault::oob_sign_in::{REMOTE_APPROVER_SET, RemoteApproval, RemoteAsk};
+    use crate::policy::consent::{self, PendingTaskConsent};
+
+    const MEDIATOR: &str = "did:example:mediator";
+    const PHONE: &str = "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK";
+    const BROWSER: &str = "did:key:z6MkpTHR8VNsBxYAAWHut2Geadd9jSwuBV8xRoAnwWsdvktH";
+
+    #[tokio::test]
+    async fn the_phone_gets_a_signed_request_it_can_verify_and_read() {
+        let (state, _dir) = crate::test_support::build_signing_test_app_state().await;
+        state
+            .mediator_registry
+            .record_activate(MediatorBinding {
+                mediator_did: MEDIATOR.into(),
+                endpoint: "https://mediator.test".into(),
+            })
+            .await;
+        {
+            let mut cfg = state.config.write().await;
+            cfg.messaging = Some(vti_common::config::MessagingConfig {
+                mediator_url: String::new(),
+                mediator_did: MEDIATOR.into(),
+                mediator_host: None,
+                setup_acl: false,
+                drain_inbox_on_start: false,
+            });
+        }
+        let vta_did = state.config.read().await.vta_did.clone().expect("vta did");
+
+        let task =
+            serde_json::json!({ "grantDigest": "zQmX", "device": BROWSER, "approver": PHONE });
+        let type_uri = "https://trusttasks.org/spec/auth/oob/grant/0.1";
+        let challenge = "0123456789abcdef0123456789abcdef".to_string();
+        let now = u64::try_from(chrono::Utc::now().timestamp()).unwrap();
+        let pending = PendingTaskConsent {
+            digest: consent::payload_digest(type_uri, &task).unwrap(),
+            wire_digest: consent::wire_digest(type_uri, &task, &challenge).unwrap(),
+            correlator: "urn:uuid:c".into(),
+            type_uri: type_uri.into(),
+            requester_did: BROWSER.into(),
+            approver_set: REMOTE_APPROVER_SET.into(),
+            min_approvals: 1,
+            exclude_requester: true,
+            challenge,
+            approvals: vec![],
+            state_pin: None,
+            guards: Default::default(),
+            subject_context: None,
+            requester_authorized: true,
+            bound_approver: Some(PHONE.into()),
+            created_at: now,
+            expires_at: now + 120,
+        };
+        let ask = RemoteAsk {
+            origin: "https://portal.vtc.example".into(),
+            device_name: "Chromium on Linux".into(),
+            persona: "did:key:zPersona".into(),
+            not_after: now + 3600,
+        };
+        StateRemoteApproval { state: &state }
+            .ask(&pending, &ask)
+            .await
+            .expect("asked");
+
+        let pushed = crate::messaging::push::take_pushes(&state);
+        assert_eq!(pushed.len(), 1, "the phone is asked once");
+        assert_eq!(pushed[0].recipient_did, PHONE);
+        let verified = vta_sdk::task_consent::ConsentRequest::new(pushed[0].body.clone())
+            .verify(
+                &vta_did,
+                PHONE,
+                &state.trust_task_vm_resolver(),
+                chrono::Utc::now(),
+            )
+            .await
+            .expect("the phone verifies the request");
+        assert_eq!(
+            verified.match_code(),
+            vta_sdk::task_consent::match_code(&pending.wire_digest).unwrap(),
+            "the phone shows the code the browser is told"
+        );
+        let payload = serde_json::to_value(verified.payload()).unwrap();
+        assert_eq!(payload["taskType"], type_uri);
+        assert_eq!(payload["requester"], BROWSER);
+        assert_eq!(payload["origin"], "https://portal.vtc.example");
+        let summary = payload["effects"][0]["summary"].as_str().unwrap();
+        assert!(summary.contains("https://portal.vtc.example"), "{summary}");
+        assert!(summary.contains("Chromium on Linux"), "{summary}");
+        assert!(summary.starts_with("Sign in"), "{summary}");
     }
 }

@@ -1,7 +1,7 @@
 name: Rust build cache
 description: >
-  mold as the linker (Linux), and a cache of compiled third-party crates.
-  Every Rust job in ci.yml uses it after installing its toolchain.
+  Swap, mold as the linker (Linux), and a cache of compiled third-party
+  crates. Every Rust job in ci.yml uses it after installing its toolchain.
 inputs:
   workspaces:
     description: Workspace root(s), as Swatinem/rust-cache takes them.
@@ -19,6 +19,11 @@ inputs:
 runs:
   using: composite
   steps:
+    # ── Memory ──────────────────────────────────────────────────────────────
+    # See add-swap: compiling trust-tasks-rs with every spec does not fit in
+    # the runner's RAM.
+    - uses: ./.github/actions/add-swap
+
     # ── Linker ──────────────────────────────────────────────────────────────
     # Since Rust 1.90 x86_64 Linux links with the bundled LLD by default;
     # mold is faster again on the large test binaries. `-Clinker-features=-lld`

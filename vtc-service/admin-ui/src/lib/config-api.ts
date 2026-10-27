@@ -19,8 +19,10 @@ const CONFIG_RELOAD_TASK = "https://trusttasks.org/spec/config/reload/0.1";
  *
  * Lowering `acl.unrestricted_admin_consent_threshold` takes a passkey gesture
  * bound to this patch and the approval of the threshold as it stands
- * (VTI-APV-020); `confirmGesture` answers the first, and for the second the
- * patch is parked as an administrator action and thrown as a `ParkedAction`.
+ * (VTI-APV-020), and so does any change to `witnesses.trusted`, approved by
+ * the other holders of `vtc.config.admin` (VTI-CMP-090); `confirmGesture`
+ * answers the first, and for the second the patch is parked as an
+ * administrator action and thrown as a `ParkedAction`.
  * A parked patch applied nothing, so no `config/reload` follows it here; the
  * VTC applies the patch when the action completes. Every other key is written
  * at once.

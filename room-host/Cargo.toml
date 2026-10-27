@@ -3,6 +3,9 @@ name = "room-host"
 description = "Stores data-room records for rooms it does not govern — a delivery service, not a community"
 version = "0.1.0"
 edition.workspace = true
+# Not published. A deployable service binary, like `vtc-service`: nothing depends
+# on it as a library except `vta-service`'s tests, which take it as a path-only
+# dev-dependency, so a crates.io artifact would carry an API nobody consumes.
 publish = false
 rust-version.workspace = true
 license.workspace = true
@@ -15,14 +18,14 @@ path = "src/main.rs"
 [dependencies]
 # Storage, wire types and authorization. The whole of what hosting a room needs —
 # no member lifecycle, no policy engine, no credential issuance, no admin UI.
-vti-rooms = { path = "../vti-rooms", version = "0.13" }
+vti-rooms = { path = "../vti-rooms", version = "0.20" }
 # The store and AppError. Nothing else internal.
-vti-common = { path = "../vti-common", version = "0.42" }
+vti-common = { path = "../vti-common", version = "0.49" }
 vti-rooms-dtg = { path = "../vti-rooms-dtg" }
 # The room client, for pulling from a write-primary. Host-neutral despite the
 # name: a mirror reads its primary exactly as any member would, because that is
 # the only way to read a room.
-vtc-client = { path = "../vtc-client", version = "0.21" }
+vtc-client = { path = "../vtc-client", version = "0.28" }
 
 axum = { workspace = true }
 # `retention_policy` needs a clock to compute a record's expiry.
@@ -64,10 +67,10 @@ affinidi-messaging-core = { workspace = true, optional = true }
 # host's identity is a private key; it belongs behind the same `[secrets]`
 # config and the same backends the VTA and VTC take, not in a file this crate
 # invented. See `didcomm::HostIdentity`.
-vti-secrets = { path = "../vti-secrets", version = "0.15", optional = true }
+vti-secrets = { path = "../vti-secrets", version = "0.22", optional = true }
 # The session store behind `onboarding` — which backend is an operator's choice,
 # exactly as `[secrets]` is.
-vta-sdk = { path = "../vta-sdk", version = "0.66", optional = true }
+vta-sdk = { path = "../vta-sdk", version = "0.73", optional = true }
 # Reading the `[secrets]` table out of a config file.
 toml = { workspace = true, optional = true }
 serde_ignored = { workspace = true, optional = true }
@@ -75,6 +78,9 @@ affinidi-secrets-resolver = { workspace = true, optional = true }
 # `ENVELOPE_TYPE`, from the crate that defines the binding rather than a fourth
 # hand-written copy of the URI.
 trust-tasks-didcomm = { workspace = true, optional = true }
+# `TspHandler`: the TSP binding's own issuer-vs-sender comparison, beside
+# `DidcommHandler` above, rather than a hand-written one.
+trust-tasks-tsp = { workspace = true, optional = true }
 futures-util = { workspace = true, optional = true }
 
 
@@ -134,6 +140,7 @@ didcomm = [
     "dep:affinidi-messaging-core",
     "dep:affinidi-secrets-resolver",
     "dep:trust-tasks-didcomm",
+    "dep:trust-tasks-tsp",
     "dep:futures-util",
 
 ]
@@ -143,7 +150,7 @@ didcomm = [
 # rather than a simulator. Everything `tests/carrier.rs` covers is packing,
 # routing, threading and acking — a simulator would be a second opinion about
 # exactly the parts that were wrong.
-affinidi-messaging-test-mediator = { version = "0.20", features = ["tsp"] }
+affinidi-messaging-test-mediator = { version = "0.46", features = ["tsp"] }
 tempfile = "3"
 tower = { version = "0.5", features = ["util"] }
 vti-rooms-dtg = { path = "../vti-rooms-dtg", features = ["test-support"] }
@@ -158,6 +165,15 @@ sha2 = { workspace = true }
 ed25519-dalek = { workspace = true }
 multibase = { workspace = true }
 base64 = { workspace = true }
+# A stand-in store that presigns reads, for the direct `rooms/blobs/get/0.2` tests.
+async-trait = "0.1"
+# The S3-shaped mock store and its presigner, for the direct-upload tests.
+vti-common = { path = "../vti-common", features = ["blob-presigned", "test-support"] }
+vti-rooms = { path = "../vti-rooms", features = ["test-support"] }
 getrandom = "0.4"
 reqwest = { workspace = true }
 uuid = { workspace = true }
+
+[lints.rust]
+# See `[workspace.lints.rust]` in the workspace Cargo.toml.
+deprecated = "allow"

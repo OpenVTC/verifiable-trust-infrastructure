@@ -41,8 +41,12 @@ use trust_tasks_rs::specs::device::register::v0_1 as register_spec;
 // weakens nothing: the binding, its `deviceId` and its `registeredAt` are
 // untouched, and no new binding can be claimed this way.
 use vta_sdk::protocols::device_management::EXT_DEVICE_NAME;
-use vta_sdk::protocols::device_management::{EXT_UV_KEY, UvKeyEnrolment, UvKeyMaterial};
+use vta_sdk::protocols::device_management::{
+    EXT_UV_KEY, EXT_UV_KEY_CHANGE, UvKeyEnrolment, UvKeyMaterial,
+};
 use vti_common::acl::UvKey;
+
+use super::uv_pin::{self, PinRefusal, PinStatus};
 
 /// The UV key a `device/register` or `device/heartbeat` payload's `ext`
 /// carries under [`EXT_UV_KEY`], if any.
@@ -217,12 +221,87 @@ pub async fn heartbeat_device(
     platform: Option<String>,
     ext: Option<&heartbeat_spec::Ext>,
 ) -> Result<Value, AppError> {
+    heartbeat_device_checked(
+        acl_ks,
+        audit,
+        auth,
+        platform,
+        ext,
+        chrono::Utc::now().timestamp(),
+    )
+    .await
+    .map_err(AppError::from)
+}
+
+/// Why a heartbeat was refused.
+#[derive(Debug)]
+#[non_exhaustive]
+pub enum HeartbeatError {
+    App(AppError),
+    /// Replacing a `vtaPin` UV key was refused for want of the current PIN.
+    /// `code` is the `device:*` code, `details` the refusal's machine-readable
+    /// member (`code`, and `attemptsRemaining` or `lockedUntil`).
+    UvKeyChange {
+        code: &'static str,
+        message: String,
+        details: Value,
+    },
+}
+
+impl From<AppError> for HeartbeatError {
+    fn from(e: AppError) -> Self {
+        HeartbeatError::App(e)
+    }
+}
+
+impl From<HeartbeatError> for AppError {
+    fn from(e: HeartbeatError) -> Self {
+        match e {
+            HeartbeatError::App(e) => e,
+            HeartbeatError::UvKeyChange { code, message, .. } => {
+                AppError::Forbidden(format!("{code} — {message}"))
+            }
+        }
+    }
+}
+
+/// [`heartbeat_device`], with the clock `now` (unix seconds) the PIN guess
+/// limit reads, and a typed refusal for a `vtaPin` change.
+///
+/// Replacing a `vtaPin` UV key — with any new key — needs
+/// `ext["org.openvtc.uv-key-change"].pinProof`, an HMAC by the **current**
+/// PIN over the new enrolment ([`uv_pin::change_message`]), counted against the
+/// same guess limit as a sign-in. Without it, a copied browser profile (which
+/// holds the transport key that authenticates this call) could swap the PIN
+/// for one it chose and so walk around the limit. Enrolling where there is no
+/// key, or replacing a key of another kind, needs nothing extra.
+pub async fn heartbeat_device_checked(
+    acl_ks: &KeyspaceHandle,
+    audit: &vta_audit::SharedAuditSink,
+    auth: &AuthClaims,
+    platform: Option<String>,
+    ext: Option<&heartbeat_spec::Ext>,
+    now: i64,
+) -> Result<Value, HeartbeatError> {
     // Read (and refuse) a UV key replacement before touching the row, so a bad
     // one leaves the binding exactly as it was.
+    let ext_member = |key: &str| -> Option<Value> {
+        ext.and_then(|e| {
+            e.iter()
+                .find(|(k, _)| k.as_str() == key)
+                .map(|(_, v)| v.clone())
+        })
+    };
     let uv_replacement = extension_uv_key(
         ext.into_iter()
             .flat_map(|e| e.iter().map(|(k, v)| (k.as_str(), v))),
     )?;
+    let sent_uv_key = ext_member(EXT_UV_KEY).unwrap_or(Value::Null);
+    let change_proof: Option<String> = ext_member(EXT_UV_KEY_CHANGE).and_then(|v| {
+        v.get("pinProof")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+    });
     let did = auth.did.clone();
     let mut entry = get_acl_entry(acl_ks, &did).await?.ok_or_else(|| {
         AppError::NotFound(format!(
@@ -235,8 +314,8 @@ pub async fn heartbeat_device(
         ))
     })?;
 
-    let now = chrono::Utc::now().to_rfc3339();
-    binding.last_seen_at = Some(now.clone());
+    let now_rfc3339 = chrono::Utc::now().to_rfc3339();
+    binding.last_seen_at = Some(now_rfc3339.clone());
     if platform.is_some() {
         binding.platform = platform;
     }
@@ -260,17 +339,39 @@ pub async fn heartbeat_device(
             if binding.disabled_at.is_some() || binding.wiped_at.is_some() {
                 return Err(AppError::Forbidden(format!(
                     "device/heartbeat:deviceDisabled — {did} is disabled and cannot enrol a UV key"
-                )));
+                ))
+                .into());
+            }
+            if let Some(current) = binding.uv_key.as_ref()
+                && matches!(current.enrolment.key, UvKeyMaterial::VtaPin { .. })
+            {
+                authorize_pin_change(
+                    acl_ks,
+                    audit,
+                    &did,
+                    current,
+                    &sent_uv_key,
+                    change_proof.as_deref(),
+                    now,
+                )
+                .await?;
             }
             let replaced = binding.uv_key.is_some();
             let key = UvKey {
                 enrolment,
-                enrolled_at: now.clone(),
+                enrolled_at: now_rfc3339.clone(),
             };
             let detail = uv_key_audit_detail(&key);
             binding.uv_key = Some(key);
             Some((replaced, detail))
         }
+        None => None,
+    };
+    let uv_summary = match binding.uv_key.as_ref() {
+        Some(key) => Some(uv_key_summary(
+            key,
+            pin_status(acl_ks, &did, key, now).await,
+        )),
         None => None,
     };
     store_acl_entry(acl_ks, &entry).await?;
@@ -293,11 +394,232 @@ pub async fn heartbeat_device(
         .await;
     }
 
-    Ok(json!({
-        "serverTime": now,
+    let mut out = json!({
+        "serverTime": now_rfc3339,
         "queuedOperations": [],
         "syncHint": "up-to-date",
-    }))
+    });
+    // The device's own UV key summary — never the key — so a browser whose
+    // local state was cleared can recover a PIN's salt and iterations, and see
+    // a lock, without a management read.
+    if let Some(summary) = uv_summary {
+        out["ext"] = json!({ EXT_UV_KEY: summary });
+    }
+    Ok(out)
+}
+
+/// Check the `pinProof` that authorises replacing the `vtaPin` key `current`
+/// with the enrolment `sent` (the `org.openvtc.uv-key` value as received).
+async fn authorize_pin_change(
+    acl_ks: &KeyspaceHandle,
+    audit: &vta_audit::SharedAuditSink,
+    did: &str,
+    current: &UvKey,
+    sent: &Value,
+    proof: Option<&str>,
+    now: i64,
+) -> Result<(), HeartbeatError> {
+    let refuse = |code: &'static str, message: &str, details: Value| HeartbeatError::UvKeyChange {
+        code,
+        message: message.to_string(),
+        details,
+    };
+    let Some(proof) = proof else {
+        return Err(refuse(
+            "device:uvKeyChangeProofRequired",
+            "this device's UV key is a PIN; replacing it needs \
+             ext.org.openvtc.uv-key-change.pinProof made with the current PIN",
+            json!({ "code": "device:uvKeyChangeProofRequired" }),
+        ));
+    };
+    let message = uv_pin::change_message(sent)?;
+    match uv_pin::check(acl_ks, did, current, &message, proof, now).await {
+        Ok(()) => Ok(()),
+        Err(refusal) => {
+            uv_pin::audit_refusal(audit, did, "uv-key-change", &refusal).await;
+            Err(match refusal {
+                PinRefusal::Locked { locked_until } => refuse(
+                    "device:uvKeyLocked",
+                    "too many wrong PINs; the PIN is locked",
+                    json!({ "code": "device:uvKeyLocked", "lockedUntil": locked_until }),
+                ),
+                PinRefusal::Wrong {
+                    attempts_remaining,
+                    locked_until,
+                    ..
+                } => {
+                    let mut details = json!({
+                        "code": "device:uvPinWrong",
+                        "attemptsRemaining": attempts_remaining,
+                    });
+                    if let Some(t) = locked_until {
+                        details["lockedUntil"] = json!(t);
+                    }
+                    refuse("device:uvPinWrong", "the current PIN is wrong", details)
+                }
+                PinRefusal::Malformed => refuse(
+                    "device:uvKeyChangeProofInvalid",
+                    "pinProof must be a 32-byte HMAC in base64url",
+                    json!({ "code": "device:uvKeyChangeProofInvalid" }),
+                ),
+                PinRefusal::NotAPin => HeartbeatError::App(AppError::Internal(
+                    "the stored PIN verifier is unreadable".into(),
+                )),
+                PinRefusal::App(e) => HeartbeatError::App(e),
+            })
+        }
+    }
+}
+
+/// The guard state a `vtaPin` summary shows; `None` for any other kind.
+async fn pin_status(
+    acl_ks: &KeyspaceHandle,
+    did: &str,
+    key: &UvKey,
+    now: i64,
+) -> Option<PinStatus> {
+    match key.enrolment.key {
+        UvKeyMaterial::VtaPin { .. } => Some(uv_pin::status(acl_ks, did, key, now).await),
+        _ => None,
+    }
+}
+
+/// Whether `candidate` may be named as `device`'s `remoteApprover` — the
+/// member's phone that approves this browser's sign-ins.
+///
+/// A browser must not be able to name a DID it controls: the approval would
+/// then be its own. A browser device is commonly a context admin, and a context
+/// admin can create ACL entries in its contexts and register them as devices,
+/// so neither "has an ACL entry" nor "is a registered mobile companion" is
+/// something it cannot forge. What it cannot write is the operator's own
+/// designation of an approver, so that is the rule:
+///
+/// 1. the candidate is not the device itself, and holds a live (unexpired) ACL
+///    entry;
+/// 2. it is **designated by the operator** as an approver, either as this
+///    device's own `stepUpApprover` (set on the device's entry by another
+///    administrator — an entry may not modify itself, `acl/update`), or as a
+///    member of an approver set (`pnm approvals approvers add`, written only
+///    by a super-admin through `policy/upsert`). Both are how the phone app is
+///    named today (`pnm acl create --did <phone>` then one of those two);
+/// 3. the device did not create the candidate's entry;
+/// 4. if the candidate carries a device binding of its own, it is an active
+///    mobile or desktop companion — never another browser or a service. The
+///    phone app itself registers no binding, so an entry without one passes.
+pub fn uv_approver_eligible(
+    device: &AclEntry,
+    candidate: &AclEntry,
+    approver_set_members: &std::collections::HashSet<String>,
+    now_unix: u64,
+) -> bool {
+    if candidate.did == device.did || candidate.is_expired(now_unix) {
+        return false;
+    }
+    let designated = device.step_up_approver.as_deref() == Some(candidate.did.as_str())
+        || approver_set_members.contains(&candidate.did);
+    if !designated || candidate.created_by == device.did {
+        return false;
+    }
+    match &candidate.device {
+        None => true,
+        Some(b) => {
+            b.disabled_at.is_none()
+                && b.wiped_at.is_none()
+                && matches!(
+                    candidate.kind,
+                    ConsumerKind::Companion {
+                        form_factor: CompanionFormFactor::Mobile | CompanionFormFactor::Desktop
+                    }
+                )
+        }
+    }
+}
+
+/// The approvers `device_did` may name ([`uv_approver_eligible`]), as
+/// `[{ did, displayName?, formFactor? }]` for a picker.
+pub async fn uv_approvers(
+    acl_ks: &KeyspaceHandle,
+    device_did: &str,
+    approver_set_members: &std::collections::HashSet<String>,
+    now_unix: u64,
+) -> Result<Vec<Value>, AppError> {
+    let Some(device) = get_acl_entry(acl_ks, device_did).await? else {
+        return Ok(Vec::new());
+    };
+    let mut out = Vec::new();
+    for candidate in list_acl_entries(acl_ks).await? {
+        if !uv_approver_eligible(&device, &candidate, approver_set_members, now_unix) {
+            continue;
+        }
+        let mut row = json!({ "did": candidate.did });
+        let name = candidate
+            .device
+            .as_ref()
+            .map(|b| b.display_name.clone())
+            .or_else(|| candidate.label.clone());
+        if let Some(name) = name {
+            row["displayName"] = json!(name);
+        }
+        if candidate.device.is_some()
+            && let ConsumerKind::Companion { form_factor } = &candidate.kind
+        {
+            row["formFactor"] = json!(match form_factor {
+                CompanionFormFactor::Browser => "browser",
+                CompanionFormFactor::Mobile => "mobile",
+                CompanionFormFactor::Desktop => "desktop",
+            });
+        }
+        out.push(row);
+    }
+    Ok(out)
+}
+
+/// Refuse a `remoteApprover` enrolment naming an approver the device may not
+/// name. Any other enrolment passes.
+pub async fn require_uv_approver_permitted(
+    acl_ks: &KeyspaceHandle,
+    device_did: &str,
+    enrolment: Option<&UvKeyEnrolment>,
+    approver_set_members: &std::collections::HashSet<String>,
+    now_unix: u64,
+) -> Result<(), AppError> {
+    let Some(UvKeyMaterial::RemoteApprover { approver }) = enrolment.map(|e| &e.key) else {
+        return Ok(());
+    };
+    if uv_approver_permitted(acl_ks, device_did, approver, approver_set_members, now_unix).await? {
+        Ok(())
+    } else {
+        Err(AppError::Validation(
+            "device:uvApproverNotPermitted — the remote approver must be another of your \
+             devices that the operator has designated as an approver (this device's \
+             stepUpApprover, or a member of an approver set); list the candidates with \
+             device/heartbeat ext org.openvtc.uv-approvers"
+                .into(),
+        ))
+    }
+}
+
+/// Whether `device_did` may name `approver` ([`uv_approver_eligible`]),
+/// against the ACL as it stands.
+pub async fn uv_approver_permitted(
+    acl_ks: &KeyspaceHandle,
+    device_did: &str,
+    approver: &str,
+    approver_set_members: &std::collections::HashSet<String>,
+    now_unix: u64,
+) -> Result<bool, AppError> {
+    let (Some(device), Some(candidate)) = (
+        get_acl_entry(acl_ks, device_did).await?,
+        get_acl_entry(acl_ks, approver).await?,
+    ) else {
+        return Ok(false);
+    };
+    Ok(uv_approver_eligible(
+        &device,
+        &candidate,
+        approver_set_members,
+        now_unix,
+    ))
 }
 
 /// List the registered devices the caller may manage, filtered per the request.
@@ -369,7 +691,11 @@ pub async fn list_devices(
                 continue;
             }
         }
-        devices.push(to_wire_binding(entry));
+        let pin = match b.uv_key.as_ref() {
+            Some(key) => pin_status(acl_ks, &entry.did, key, chrono::Utc::now().timestamp()).await,
+            None => None,
+        };
+        devices.push(to_wire_binding_with(entry, pin));
     }
 
     let limit = payload.page_size.map(|n| n.get() as usize).unwrap_or(200);
@@ -629,6 +955,11 @@ pub async fn set_wake_device(
 /// # Panics
 /// If `entry.device` is `None` — callers must check first.
 pub fn to_wire_binding(entry: &AclEntry) -> Value {
+    to_wire_binding_with(entry, None)
+}
+
+/// [`to_wire_binding`], with a `vtaPin` key's guard state for its summary.
+pub fn to_wire_binding_with(entry: &AclEntry, pin: Option<PinStatus>) -> Value {
     let b = entry
         .device
         .as_ref()
@@ -655,7 +986,7 @@ pub fn to_wire_binding(entry: &AclEntry) -> Value {
     if let Some(uv) = &b.uv_key {
         // The binding schema has no UV-key member yet, so its summary rides
         // in the same slot.
-        openvtc.insert("uvKey".into(), uv_key_summary(uv));
+        openvtc.insert("uvKey".into(), uv_key_summary(uv, pin));
     }
     if !openvtc.is_empty() {
         map.insert("ext".into(), json!({ "org.openvtc": openvtc }));
@@ -676,35 +1007,59 @@ pub fn to_wire_binding(entry: &AclEntry) -> Value {
 }
 
 /// What the audit trail records about a UV key: its kind, its public
-/// identifier and the device's claims about it — never anything secret, since
-/// nothing about a UV key is.
+/// identifier and the device's claims about it — never anything secret. A
+/// `vtaPin` key's verifier is the one secret a UV key carries, and it is in
+/// neither the summary nor `publicKey`.
 fn uv_key_audit_detail(key: &UvKey) -> String {
     json!({
-        "uvKey": uv_key_summary(key),
+        "uvKey": uv_key_summary(key, None),
         "publicKey": match &key.enrolment.key {
-            UvKeyMaterial::HardwareKey { did } => did.clone(),
+            UvKeyMaterial::HardwareKey { did } | UvKeyMaterial::PrfSealedKey { did } => did.clone(),
             UvKeyMaterial::Webauthn { credential_id, .. } => credential_id.clone(),
+            UvKeyMaterial::RemoteApprover { approver } => approver.clone(),
             _ => String::new(),
         },
     })
     .to_string()
 }
 
-/// The binding's view of its UV key, for `device/list` and the register
-/// response: enough for a device to know whether it can approve grants.
-fn uv_key_summary(key: &UvKey) -> Value {
+/// The binding's view of its UV key, for `device/list`, the register and the
+/// heartbeat responses: enough for a device to know whether, and how, it can
+/// approve grants. For a `vtaPin` key: the salt and iterations (so a browser
+/// that lost its local state can derive `K` again) and the guess-limit state —
+/// **never** the verifier. For a `remoteApprover`: the approver's DID.
+fn uv_key_summary(key: &UvKey, pin: Option<PinStatus>) -> Value {
     let kind = match &key.enrolment.key {
         UvKeyMaterial::HardwareKey { .. } => "hardwareKey",
+        UvKeyMaterial::PrfSealedKey { .. } => "prfSealedKey",
         UvKeyMaterial::Webauthn { .. } => "webauthn",
+        UvKeyMaterial::VtaPin { .. } => "vtaPin",
+        UvKeyMaterial::RemoteApprover { .. } => "remoteApprover",
         _ => "unknown",
     };
-    json!({
+    let mut out = json!({
         "kind": kind,
         "hardwareBacked": key.enrolment.hardware_backed,
         "biometricGated": key.enrolment.biometric_gated,
         "attestationPresented": key.enrolment.attestation.is_some(),
         "enrolledAt": key.enrolled_at,
-    })
+    });
+    match &key.enrolment.key {
+        UvKeyMaterial::VtaPin {
+            salt, iterations, ..
+        } => {
+            let pin = pin.unwrap_or_default();
+            out["salt"] = json!(salt);
+            out["iterations"] = json!(iterations);
+            out["failedAttempts"] = json!(pin.failed_attempts);
+            out["lockedUntil"] = json!(pin.locked_until);
+        }
+        UvKeyMaterial::RemoteApprover { approver } => {
+            out["approver"] = json!(approver);
+        }
+        _ => {}
+    }
+    out
 }
 
 /// Wire `ConsumerKind` (register payload) → internal [`ConsumerKind`].
@@ -762,8 +1117,13 @@ fn kind_to_wire(kind: &ConsumerKind) -> Value {
                 ServiceKind::Mediator => "mediator",
                 ServiceKind::AiAgent => "ai-agent",
                 ServiceKind::Daemon => "daemon",
+                // `ServiceKind` is `#[non_exhaustive]`: its kebab-case serde
+                // name is the wire value.
+                other => return json!({ "kind": "service", "serviceKind": other }),
             },
         }),
+        // `ConsumerKind` is `#[non_exhaustive]`: its serde form is the wire form.
+        _ => serde_json::to_value(kind).unwrap_or(Value::Null),
     }
 }
 
@@ -861,6 +1221,54 @@ mod tests {
         e
     }
 
+    /// The remote-approver rule (`uv_approver_eligible`): only an entry the
+    /// operator designated, that the browser did not create, that is not
+    /// itself, expired, a browser, a service, or a disabled device.
+    #[test]
+    fn a_remote_approver_must_be_designated_by_the_operator() {
+        use std::collections::HashSet;
+        let browser = AclEntry::new("did:key:zBrowser", Role::Admin, "did:key:zAdmin")
+            .with_step_up_approver(Some("did:key:zPhone".into()));
+        let phone = AclEntry::new("did:key:zPhone", Role::Reader, "did:key:zAdmin");
+        let none = HashSet::new();
+        assert!(uv_approver_eligible(&browser, &phone, &none, 0));
+
+        // Undesignated: neither the step-up approver nor in any set.
+        let tablet = AclEntry::new("did:key:zTablet", Role::Reader, "did:key:zAdmin");
+        assert!(!uv_approver_eligible(&browser, &tablet, &none, 0));
+        let sets: HashSet<String> = ["did:key:zTablet".to_string()].into();
+        assert!(uv_approver_eligible(&browser, &tablet, &sets, 0));
+
+        // Itself, or one it created.
+        let me = browser
+            .clone()
+            .with_step_up_approver(Some("did:key:zBrowser".into()));
+        assert!(!uv_approver_eligible(&me, &me, &none, 0));
+        let minted = AclEntry::new("did:key:zPhone", Role::Reader, "did:key:zBrowser");
+        assert!(!uv_approver_eligible(&browser, &minted, &none, 0));
+
+        // Expired.
+        let lapsed = phone.clone().with_expires_at(Some(10));
+        assert!(!uv_approver_eligible(&browser, &lapsed, &none, 10));
+
+        // A registered device must be an active phone or desktop.
+        let mut registered = entry_with_binding();
+        registered.did = "did:key:zPhone".into();
+        registered.created_by = "did:key:zAdmin".into();
+        assert!(uv_approver_eligible(&browser, &registered, &none, 0));
+        let mut other_browser = registered.clone();
+        other_browser.kind = ConsumerKind::Companion {
+            form_factor: CompanionFormFactor::Browser,
+        };
+        assert!(!uv_approver_eligible(&browser, &other_browser, &none, 0));
+        let mut service = registered.clone();
+        service.kind = ConsumerKind::default();
+        assert!(!uv_approver_eligible(&browser, &service, &none, 0));
+        let mut disabled = registered.clone();
+        disabled.device.as_mut().unwrap().disabled_at = Some("2026-01-01T00:00:00Z".into());
+        assert!(!uv_approver_eligible(&browser, &disabled, &none, 0));
+    }
+
     #[test]
     fn wire_binding_uses_camel_case_consumer_kind() {
         let v = to_wire_binding(&entry_with_binding());
@@ -921,6 +1329,12 @@ mod tests {
             "key-export",
             "external-accounts-manage",
             "external-auth-use",
+            "pcs-vetter",
+            "pcs-applicant",
+            "witness-request",
+            "pcs-voter",
+            "pcs-trustee",
+            "credential-present",
         ] {
             assert!(
                 p.contains(&cap.to_string()),

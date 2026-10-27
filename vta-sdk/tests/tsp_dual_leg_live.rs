@@ -99,15 +99,15 @@ async fn dual_endpoint() -> (String, String, String, Option<String>) {
 /// Did the VTA *answer*? A denial is an answer; a transport error is not.
 ///
 /// This is the whole distinction the test turns on. `dispatch_trust_task`
-/// surfaces a rejected task as [`VtaError::Protocol`] carrying the VTA's own
-/// response document — which can only exist if the request arrived, was
+/// surfaces a rejected task as [`VtaError::Rejected`] carrying the VTA's own
+/// response — which can only exist if the request arrived, was
 /// dispatched, and its reply was routed back to this waiter. A
 /// [`VtaError::TspTransport`] or a timeout is the opposite: nothing came back.
 fn assert_vta_answered(result: Result<serde_json::Value, VtaError>, authorized: bool, over: &str) {
     match result {
         Ok(payload) => eprintln!("  ✅ {over}: authorized round trip — {payload}"),
-        Err(VtaError::Protocol(msg)) if !authorized => {
-            eprintln!("  ✅ {over}: the VTA answered (unauthorized identity) — {msg}");
+        Err(e @ (VtaError::Rejected { .. } | VtaError::Protocol(_))) if !authorized => {
+            eprintln!("  ✅ {over}: the VTA answered (unauthorized identity) — {e}");
         }
         Err(e) => panic!(
             "{over}: no correlated reply came back from the deployed VTA — the exchange did \

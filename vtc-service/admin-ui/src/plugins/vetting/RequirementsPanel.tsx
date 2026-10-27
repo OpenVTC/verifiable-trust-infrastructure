@@ -8,7 +8,7 @@
 //
 // It reads both surfaces, because they answer different questions. The criteria
 // (`vtc/schemas/accepts/list/0.2`) are the records being edited. The manifest
-// (`vtc/join-requests/manifest/0.3`) is what applicants receive, and it alone
+// (`vtc/join-requests/manifest/0.4`) is what applicants receive, and it alone
 // carries two things: each criterion's `requirementsDigest` — the value an
 // applicant cites, so a change made here is visible to them rather than silent
 // — and the order the community decides by, which is the order shown here.
@@ -24,6 +24,7 @@ import { ExternalLink } from "lucide-react";
 import { CopyButton } from "@/components/CopyButton";
 import { useConfirm } from "@/components/ConfirmDialog";
 import { EmptyState } from "@/components/EmptyState";
+import { gestureFromConfirm, parkedOf } from "@/lib/signed-act";
 import { useToast } from "@/lib/toast";
 import {
   admissionSentence,
@@ -81,8 +82,17 @@ export function RequirementsPanel() {
   // (`pcs_tasks::config_for`), so turning it on for a second is worth a word.
   const firstHidden = (manifest.data?.criteria ?? []).find((c) => publishedHiddenVetting(c))?.id;
 
+  // Removing a criterion takes a passkey gesture and the other surface
+  // administrators' approval (VTI-APV-023); a parked removal is a success.
+  const confirmGesture = gestureFromConfirm(confirm);
+
   const remove = useMutation({
-    mutationFn: deleteCriterion,
+    mutationFn: (id: string) => deleteCriterion(id, confirmGesture),
+    onError: (err) => {
+      if (!parkedOf(err)) return;
+      toast.pushFromError(err);
+      setEditing({ kind: "none" });
+    },
     onSuccess: (_res, id) => {
       void queryClient.invalidateQueries({ queryKey: vettingKeys.criteria });
       void queryClient.invalidateQueries({ queryKey: vettingKeys.manifest });
@@ -142,7 +152,7 @@ export function RequirementsPanel() {
             </button>
           </div>
         )}
-        {remove.error && (
+        {remove.error && !parkedOf(remove.error) && (
           <div className="finding error" role="alert">
             <strong>Could not remove the criterion</strong>
             <p>{errorMessage(remove.error)}</p>

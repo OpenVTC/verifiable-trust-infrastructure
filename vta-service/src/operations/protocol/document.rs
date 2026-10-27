@@ -51,6 +51,7 @@ pub fn current_document_from_log(did_log: &str) -> Result<Value, CurrentDocument
 /// converts these into its own variants so the wire-error mapping
 /// stays per-op (different status codes, different suggested fixes).
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum CurrentDocumentError {
     #[error("VTA DID log is empty — cannot read current document")]
     EmptyLog,
@@ -156,6 +157,7 @@ pub struct TspServiceRef {
 }
 
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum DocumentPatchError {
     #[error("DID document is not a JSON object")]
     NotAnObject,

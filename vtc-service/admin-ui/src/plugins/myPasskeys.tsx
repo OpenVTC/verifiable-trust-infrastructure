@@ -1,9 +1,8 @@
 // My passkeys plugin — list, register additional, revoke.
 //
-// Wraps the `/v1/admin/passkeys/*` endpoint family. Register is a
-// dual-ceremony: a new-credential `create` plus a step-up UV
-// `get` against an existing passkey in the same start/finish pair.
-// Revoke is a single UV ceremony.
+// The calls are `lib/my-passkeys-api.ts`: signed `auth/passkey/*` documents
+// from this browser's console key, each step-up verified by a passkey you
+// already hold.
 
 import { useState } from "react";
 import {
@@ -13,146 +12,15 @@ import {
 } from "@tanstack/react-query";
 import { KeyRound, Plus, X } from "lucide-react";
 
-import { getJson, postJson } from "@/lib/api";
-import type { PasskeyListResponse } from "@/lib/wire-types";
+import { fetchPasskeys, registerPasskey, revokePasskey } from "@/lib/my-passkeys-api";
 import { useConfirm } from "@/components/ConfirmDialog";
 import { formatIso as formatDate } from "@/lib/format";
 import { useViewerDid } from "@/lib/viewer";
 import { ApproverDevicesCard } from "@/plugins/members/StepUpApprovers";
-import {
-  decodePublicKeyOptions,
-  serializeAssertion,
-  serializeRegistration,
-  type JsonPublicKeyOptions,
-} from "@/lib/webauthn";
 import { Field } from "@/components/Field";
 import { DataTable } from "@/components/DataTable";
 import { EmptyState } from "@/components/EmptyState";
 import { PageHeader } from "@/components/PageHeader";
-
-// Canonical `auth/passkey/*` tasks (trust-tasks-tf#145). One task per
-// ceremony leg — the retired `admin/passkeys/{register,revoke}/1.0` pair
-// had start and finish sharing a URI.
-const TRUST_TASK_LIST = "https://trusttasks.org/spec/auth/passkey/list/0.1";
-const TRUST_TASK_ENROLL_START =
-  "https://trusttasks.org/spec/auth/passkey/enroll/start/0.2";
-const TRUST_TASK_ENROLL_FINISH =
-  "https://trusttasks.org/spec/auth/passkey/enroll/finish/0.2";
-const TRUST_TASK_REVOKE_START =
-  "https://trusttasks.org/spec/auth/passkey/revoke/start/0.1";
-const TRUST_TASK_REVOKE_FINISH =
-  "https://trusttasks.org/spec/auth/passkey/revoke/finish/0.1";
-
-
-// The list and its rows are the generated wire types, not local interfaces: a
-// local copy is what let `GET /v1/admin/passkeys` be documented with another
-// endpoint's shape (#1697) without anything here noticing. `deviceLabel` and
-// `lastUsedAt` are both genuinely optional: the schema is explicit that a
-// consumer must not invent a label, "because an invented one is
-// indistinguishable from a chosen one to somebody deciding which credential to
-// revoke", so an unlabelled credential renders as unlabelled.
-
-// `enroll/start/0.2` sends the *inner* WebAuthn options — the value that goes
-// in `navigator.credentials.create({ publicKey: … })` — not the wrapper. The
-// daemon used to send `{publicKey: …}` and this file unwrapped it only to
-// re-wrap it one line later; #1112 removed that round trip.
-interface RegisterStartResponse {
-  enrollmentId: string;
-  options: JsonPublicKeyOptions;
-  uvOptions: JsonPublicKeyOptions;
-}
-
-interface RevokeStartResponse {
-  revocationId: string;
-  uvOptions: JsonPublicKeyOptions;
-}
-
-async function fetchPasskeys(): Promise<PasskeyListResponse> {
-  return getJson<PasskeyListResponse>("/v1/admin/passkeys", {
-    trustTask: TRUST_TASK_LIST,
-  });
-}
-
-async function registerPasskey(args: {
-  label: string;
-}): Promise<void> {
-  // /register/start returns BOTH a create challenge (for the new
-  // passkey) and a UV challenge (against existing passkeys, for
-  // step-up). The browser runs both ceremonies, then /register/
-  // finish takes both responses.
-  const start = await postJson<RegisterStartResponse>(
-    "/v1/admin/passkeys/register/start",
-    undefined,
-    {
-      trustTask: TRUST_TASK_ENROLL_START,
-      requires: ["enrollmentId", "options.challenge", "uvOptions.challenge"],
-    },
-  );
-
-  const createPublicKey = decodePublicKeyOptions(
-    start.options,
-  ) as PublicKeyCredentialCreationOptions;
-  const newCred = (await navigator.credentials.create({
-    publicKey: createPublicKey,
-  })) as PublicKeyCredential | null;
-  if (!newCred) {
-    throw new Error("Passkey creation returned no credential");
-  }
-
-  const uvPublicKey = decodePublicKeyOptions(
-    start.uvOptions,
-  ) as PublicKeyCredentialRequestOptions;
-  const uvCred = (await navigator.credentials.get({
-    publicKey: uvPublicKey,
-  })) as PublicKeyCredential | null;
-  if (!uvCred) {
-    throw new Error("Step-up UV returned no credential");
-  }
-
-  await postJson<unknown>(
-    "/v1/admin/passkeys/register/finish",
-    {
-      registration_id: start.enrollmentId,
-      register_response: serializeRegistration(newCred),
-      uv_response: serializeAssertion(uvCred),
-      label: args.label,
-      transports: [],
-    },
-    { trustTask: TRUST_TASK_ENROLL_FINISH },
-  );
-}
-
-async function revokePasskey(args: {
-  credentialId: string;
-}): Promise<void> {
-  const start = await postJson<RevokeStartResponse>(
-    "/v1/admin/passkeys/revoke/start",
-    { credential_id: args.credentialId },
-    {
-      trustTask: TRUST_TASK_REVOKE_START,
-      requires: ["revocationId", "uvOptions.challenge"],
-    },
-  );
-
-  const uvPublicKey = decodePublicKeyOptions(
-    start.uvOptions,
-  ) as PublicKeyCredentialRequestOptions;
-  const uvCred = (await navigator.credentials.get({
-    publicKey: uvPublicKey,
-  })) as PublicKeyCredential | null;
-  if (!uvCred) {
-    throw new Error("Step-up UV returned no credential");
-  }
-
-  await postJson<unknown>(
-    "/v1/admin/passkeys/revoke/finish",
-    {
-      revocation_id: start.revocationId,
-      uv_response: serializeAssertion(uvCred),
-    },
-    { trustTask: TRUST_TASK_REVOKE_FINISH },
-  );
-}
 
 export function MyPasskeys() {
   const queryClient = useQueryClient();
@@ -171,7 +39,7 @@ export function MyPasskeys() {
   const canRegister = (query.data?.credentials.length ?? 0) > 0;
 
   const registerMutation = useMutation({
-    mutationFn: registerPasskey,
+    mutationFn: (args: { label: string }) => registerPasskey(args),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["my-passkeys"] });
       setShowRegister(false);
@@ -180,7 +48,7 @@ export function MyPasskeys() {
   });
 
   const revokeMutation = useMutation({
-    mutationFn: revokePasskey,
+    mutationFn: (args: { credentialId: string }) => revokePasskey(args),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["my-passkeys"] });
     },

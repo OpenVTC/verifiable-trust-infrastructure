@@ -16,7 +16,16 @@
 //! - an unknown `since` opens `resumed: false`; a known one resumes;
 //! - heartbeats are SSE comments;
 //! - the stream ends when the caller's readable topics shrink and when the
-//!   credential it was opened on expires.
+//!   credential it was opened on expires;
+//! - 0.2 (`rooms`): served beside 0.1, each answered at its own version; the
+//!   topic is effective only for a holder of `vtc.rooms.admin`, is refused in
+//!   a 0.1 subscribe, follows a room registered, a storage config written and
+//!   a room's lifecycle moving with the clock, and never names a room;
+//! - 0.3 (`directory`, `groups`) and 0.4 (`communityRooms`): each only at its
+//!   version; `communityRooms` is effective only for a holder of
+//!   `vtc.rooms.manage` (`vtc.rooms.admin` alone does not qualify), follows the
+//!   owner's record of a community room, and is fingerprinted so a `rooms`
+//!   seam that moves nothing the owner sees is no hint.
 
 use std::time::Duration;
 
@@ -40,6 +49,12 @@ fn tt_error_code(doc: &Value) -> Option<&str> {
 
 const SUBSCRIBE: &str = "https://trusttasks.org/spec/vtc/admin/events/subscribe/0.1";
 const EVENT: &str = "https://trusttasks.org/spec/vtc/admin/events/event/0.1";
+const SUBSCRIBE_V0_2: &str = "https://trusttasks.org/spec/vtc/admin/events/subscribe/0.2";
+const EVENT_V0_2: &str = "https://trusttasks.org/spec/vtc/admin/events/event/0.2";
+const SUBSCRIBE_V0_3: &str = "https://trusttasks.org/spec/vtc/admin/events/subscribe/0.3";
+const EVENT_V0_3: &str = "https://trusttasks.org/spec/vtc/admin/events/event/0.3";
+const SUBSCRIBE_V0_4: &str = "https://trusttasks.org/spec/vtc/admin/events/subscribe/0.4";
+const EVENT_V0_4: &str = "https://trusttasks.org/spec/vtc/admin/events/event/0.4";
 const STREAM_ACCEPT: &str = "text/event-stream, application/json;q=0.5";
 
 use vtc_service::admin_events::codes::{NOT_ADMINISTRATOR, STREAM_UNAVAILABLE, TOO_MANY_STREAMS};
@@ -65,6 +80,7 @@ fn entry(did: &str, admin: AdminAuthority, expires_at: Option<u64>) -> VtcAclEnt
         updated_by: None,
         expires_at,
         resource_grants: Vec::new(),
+        group_grants: Vec::new(),
         label_set_by_subject: false,
         suspension: None,
     }
@@ -95,7 +111,19 @@ async fn subscribe(
     accept: Option<&str>,
     last_event_id: Option<&str>,
 ) -> (Value, axum::response::Response) {
-    let doc = signed_to(from, &vtc_did(vtc).await, SUBSCRIBE, payload).await;
+    subscribe_at(vtc, SUBSCRIBE, from, payload, accept, last_event_id).await
+}
+
+/// [`subscribe`] at the version `task` names.
+async fn subscribe_at(
+    vtc: &TestVtc,
+    task: &str,
+    from: &Party,
+    payload: Value,
+    accept: Option<&str>,
+    last_event_id: Option<&str>,
+) -> (Value, axum::response::Response) {
+    let doc = signed_to(from, &vtc_did(vtc).await, task, payload).await;
     (
         doc.clone(),
         post_raw(vtc, &doc, accept, last_event_id).await,
@@ -255,14 +283,25 @@ async fn open_stream(
     from: &Party,
     payload: Value,
 ) -> (Value, Sse, Option<String>, Value) {
-    let (request, res) = subscribe(vtc, from, payload, Some(STREAM_ACCEPT), None).await;
+    open_stream_at(vtc, SUBSCRIBE, from, payload).await
+}
+
+/// [`open_stream`] at the version `task` names: the `#response` is that
+/// version's.
+async fn open_stream_at(
+    vtc: &TestVtc,
+    task: &str,
+    from: &Party,
+    payload: Value,
+) -> (Value, Sse, Option<String>, Value) {
+    let (request, res) = subscribe_at(vtc, task, from, payload, Some(STREAM_ACCEPT), None).await;
     let mut sse = Sse::open(res);
     let (id, first) = sse
         .next_event(Duration::from_secs(5))
         .await
         .expect("the #response is the first event");
-    assert_eq!(first["type"], format!("{SUBSCRIBE}#response"));
-    crate::common::signed::assert_conforms(SUBSCRIBE, &first);
+    assert_eq!(first["type"], format!("{task}#response"));
+    crate::common::signed::assert_conforms(task, &first);
     assert_eq!(first["threadId"], request["id"]);
     assert_eq!(
         id.as_deref(),
@@ -272,10 +311,20 @@ async fn open_stream(
     (request, sse, id, first)
 }
 
-/// A hint, held to everything event 0.1 says one may carry — and nothing else.
+/// A hint, held to everything its event version says one may carry — and
+/// nothing else. A stream's hints are of the version it was opened at.
 fn assert_hint_shape(hint: &Value, id: Option<&str>, request: &Value, subscriber: &str) {
-    assert_eq!(hint["type"], EVENT);
-    let schema = trust_tasks_rs::schema_index::schema_for(EVENT).expect("event schema");
+    let event = if request["type"] == SUBSCRIBE_V0_4 {
+        EVENT_V0_4
+    } else if request["type"] == SUBSCRIBE_V0_3 {
+        EVENT_V0_3
+    } else if request["type"] == SUBSCRIBE_V0_2 {
+        EVENT_V0_2
+    } else {
+        EVENT
+    };
+    assert_eq!(hint["type"], event);
+    let schema = trust_tasks_rs::schema_index::schema_for(event).expect("event schema");
     trust_tasks_rs::validate::against_schema(schema, &hint["payload"])
         .unwrap_or_else(|e| panic!("hint does not match its schema: {e}\n{hint}"));
     let payload = hint["payload"].as_object().unwrap();
@@ -419,7 +468,7 @@ async fn a_pending_join_request_is_hinted_with_the_lists_own_count() {
     let (_, page) = crate::common::signed::call(
         &vtc,
         &admin,
-        "https://trusttasks.org/spec/vtc/join-requests/list/0.1",
+        "https://trusttasks.org/spec/vtc/join-requests/list/0.2",
         json!({ "status": "pending", "limit": 1 }),
     )
     .await;
@@ -703,4 +752,614 @@ async fn streams_past_the_cap_are_refused_too_many_streams() {
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
     assert!(reopened, "a closed stream releases its place under the cap");
+}
+
+// ─── 0.2: the `rooms` topic ──────────────────────────────────────────────
+
+/// A room as the host registers it, its epoch expiring at `epoch_expires_at`.
+fn hosted_room(epoch_expires_at: Option<u64>) -> vtc_service::rooms::Room {
+    vtc_service::rooms::Room {
+        room_id: format!("did:key:zRoom{}", uuid::Uuid::new_v4().simple()),
+        owner_did: Party::new().did,
+        visibility: vtc_service::rooms::Visibility::Open,
+        retention_policy: Default::default(),
+        anchor_cadence: Default::default(),
+        epoch: 1,
+        next_version: 1,
+        retention_days: 90,
+        epoch_expires_at,
+        created_at: 0,
+        updated_at: 0,
+        mirror_of: None,
+        record_retention: None,
+        last_prune: None,
+        epoch_floor: None,
+    }
+}
+
+/// The next `rooms` hint, skipping any other topic's.
+async fn next_rooms_hint(sse: &mut Sse, within: Duration) -> Option<(Option<String>, Value)> {
+    let deadline = tokio::time::Instant::now() + within;
+    loop {
+        let left = deadline.saturating_duration_since(tokio::time::Instant::now());
+        let (id, hint) = sse.next_event(left).await?;
+        if hint["payload"]["topic"] == "rooms" {
+            return Some((id, hint));
+        }
+    }
+}
+
+#[tokio::test]
+async fn a_room_registered_is_a_countless_rooms_hint_at_0_2() {
+    let vtc = vtc().await;
+    let admin = community_admin(&vtc).await;
+    let (request, mut sse, _, first) = open_stream_at(
+        &vtc,
+        SUBSCRIBE_V0_2,
+        &admin,
+        json!({ "topics": ["rooms", "actions"] }),
+    )
+    .await;
+    assert_eq!(first["payload"]["topics"], json!(["actions", "rooms"]));
+
+    let room = hosted_room(None);
+    vtc_service::rooms::storage::create_room(&vtc.state.rooms_ks, &room)
+        .await
+        .unwrap();
+    let (id, hint) = next_rooms_hint(&mut sse, Duration::from_secs(5))
+        .await
+        .expect("a rooms hint follows the registration");
+    assert_hint_shape(&hint, id.as_deref(), &request, &admin.did);
+    assert!(
+        !hint.to_string().contains(&room.room_id) && !hint.to_string().contains(&room.owner_did),
+        "the room is never named"
+    );
+}
+
+#[tokio::test]
+async fn a_storage_config_written_is_a_rooms_hint() {
+    let vtc = vtc().await;
+    let admin = community_admin(&vtc).await;
+    let (request, mut sse, _, _) =
+        open_stream_at(&vtc, SUBSCRIBE_V0_2, &admin, json!({ "topics": ["rooms"] })).await;
+
+    let storage = &vtc.state.room_storage;
+    let mut config = storage.configs().await.unwrap().remove(0);
+    config["label"] = json!("Relabelled");
+    {
+        let _guard = storage.lock().await;
+        storage.put_config(config).await.unwrap();
+    }
+    let (id, hint) = next_rooms_hint(&mut sse, Duration::from_secs(5))
+        .await
+        .expect("a changed storage config is hinted");
+    assert_hint_shape(&hint, id.as_deref(), &request, &admin.did);
+}
+
+/// Lifecycle is computed from the clock and never written, so the stream
+/// looks again when a room's state is due to change (event 0.2 producer rule
+/// 4: "a room's lifecycle state changes").
+#[tokio::test]
+async fn a_room_lapsing_with_the_clock_is_hinted_without_a_write() {
+    let vtc = vtc().await;
+    let admin = community_admin(&vtc).await;
+    let expires = vti_common::auth::session::now_epoch() + 2;
+    vtc_service::rooms::storage::create_room(&vtc.state.rooms_ks, &hosted_room(Some(expires)))
+        .await
+        .unwrap();
+    // Opened after the registration: only the lapse is left to hint.
+    let (request, mut sse, _, _) =
+        open_stream_at(&vtc, SUBSCRIBE_V0_2, &admin, json!({ "topics": ["rooms"] })).await;
+    let (id, hint) = next_rooms_hint(&mut sse, Duration::from_secs(8))
+        .await
+        .expect("the room lapsing is hinted");
+    assert_hint_shape(&hint, id.as_deref(), &request, &admin.did);
+}
+
+/// A rooms signal that moves nothing the reads report — a renewal of a live
+/// room — is no hint: only the changes rule 4 names are.
+#[tokio::test]
+async fn a_renewal_of_a_live_room_is_no_hint() {
+    let vtc = vtc().await;
+    let admin = community_admin(&vtc).await;
+    let now = vti_common::auth::session::now_epoch();
+    let room = hosted_room(Some(now + 86_400));
+    vtc_service::rooms::storage::create_room(&vtc.state.rooms_ks, &room)
+        .await
+        .unwrap();
+    let (_, mut sse, _, _) =
+        open_stream_at(&vtc, SUBSCRIBE_V0_2, &admin, json!({ "topics": ["rooms"] })).await;
+    vtc_service::rooms::storage::advance_epoch(&vtc.state.rooms_ks, &room.room_id, 2, now)
+        .await
+        .unwrap();
+    assert!(
+        next_rooms_hint(&mut sse, Duration::from_secs(3))
+            .await
+            .is_none(),
+        "a live room renewed is still live: nothing a read reports moved"
+    );
+}
+
+#[tokio::test]
+async fn rooms_is_effective_only_for_a_rooms_administrator() {
+    let vtc = vtc().await;
+    // A moderator administers, but holds no `vtc.rooms.admin`: the rooms reads
+    // refuse it, and so does the topic.
+    let moderator = with_role(&vtc, Some(AdminRole::Moderator), None).await;
+    let (_, _sse, _, first) = open_stream_at(
+        &vtc,
+        SUBSCRIBE_V0_2,
+        &moderator,
+        json!({ "topics": ["rooms", "actions"] }),
+    )
+    .await;
+    assert_eq!(first["payload"]["topics"], json!(["actions"]));
+    let (_, refused) = crate::common::signed::call(
+        &vtc,
+        &moderator,
+        "https://trusttasks.org/spec/vtc/rooms/list/0.1",
+        json!({}),
+    )
+    .await;
+    assert_eq!(tt_error_code(&refused), Some("permissionDenied"));
+}
+
+/// The topic set is closed per version: a 0.1 subscribe cannot ask for
+/// `rooms`, and a 0.1 stream is answered at 0.1 throughout.
+#[tokio::test]
+async fn a_0_1_subscribe_cannot_ask_for_rooms_and_stays_at_0_1() {
+    let vtc = vtc().await;
+    let admin = community_admin(&vtc).await;
+    let (_, res) = subscribe(
+        &vtc,
+        &admin,
+        json!({ "topics": ["rooms"] }),
+        Some(STREAM_ACCEPT),
+        None,
+    )
+    .await;
+    let (status, doc) = json_refusal(res).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(tt_error_code(&doc), Some("malformedRequest"));
+
+    let (request, mut sse, _, first) =
+        open_stream(&vtc, &admin, json!({ "topics": ["members"] })).await;
+    assert_eq!(first["payload"]["topics"], json!(["members"]));
+    vtc_service::members::store_member(
+        &vtc.state.members_ks,
+        &vtc_service::members::Member::fresh(&Party::new().did),
+    )
+    .await
+    .unwrap();
+    let (id, hint) = sse.next_event(Duration::from_secs(5)).await.unwrap();
+    assert_hint_shape(&hint, id.as_deref(), &request, &admin.did);
+    assert_eq!(hint["type"], EVENT);
+}
+
+/// A resumed stream hints a fingerprinted topic that changed while away, even
+/// though what the stream observes when it opens already includes the change.
+#[tokio::test]
+async fn a_resumed_rooms_change_is_hinted_after_the_response() {
+    let vtc = vtc().await;
+    let admin = community_admin(&vtc).await;
+    let (_, sse, token, _) =
+        open_stream_at(&vtc, SUBSCRIBE_V0_2, &admin, json!({ "topics": ["rooms"] })).await;
+    drop(sse);
+    vtc_service::rooms::storage::create_room(&vtc.state.rooms_ks, &hosted_room(None))
+        .await
+        .unwrap();
+    let token = token.unwrap();
+    let (request, res) = subscribe_at(
+        &vtc,
+        SUBSCRIBE_V0_2,
+        &admin,
+        json!({ "topics": ["rooms"], "since": token }),
+        Some(STREAM_ACCEPT),
+        Some(&token),
+    )
+    .await;
+    let mut sse = Sse::open(res);
+    let (_, first) = sse.next_event(Duration::from_secs(5)).await.unwrap();
+    assert_eq!(first["payload"]["resumed"], true);
+    let (id, hint) = next_rooms_hint(&mut sse, Duration::from_secs(5))
+        .await
+        .expect("the registration made while away is hinted");
+    assert_hint_shape(&hint, id.as_deref(), &request, &admin.did);
+}
+
+// ─── 0.3: `directory` and `groups` ───────────────────────────────────────
+
+/// The next hint of `topic`, skipping any other topic's.
+async fn next_hint_of(
+    sse: &mut Sse,
+    topic: &str,
+    within: Duration,
+) -> Option<(Option<String>, Value)> {
+    let deadline = tokio::time::Instant::now() + within;
+    loop {
+        let left = deadline.saturating_duration_since(tokio::time::Instant::now());
+        let (id, hint) = sse.next_event(left).await?;
+        if hint["payload"]["topic"] == topic {
+            return Some((id, hint));
+        }
+    }
+}
+
+fn a_group(group_id: &str) -> vtc_service::groups::Group {
+    serde_json::from_value(json!({
+        "groupId": group_id,
+        "groupDid": format!("did:webvh:Qm{group_id}:groups.example"),
+        "signingKeyId": "key-1",
+        "name": "Working group",
+        "joinPolicy": "closed",
+        "visibility": "members",
+        "showMembers": "members",
+        "issuesCredentials": false,
+        "createdAt": "2026-10-20T00:00:00Z",
+        "updatedAt": "2026-10-20T00:00:00Z",
+    }))
+    .unwrap()
+}
+
+#[tokio::test]
+async fn directory_and_groups_are_countless_hints_at_0_3_naming_nothing() {
+    let vtc = vtc().await;
+    let admin = community_admin(&vtc).await;
+    let (request, mut sse, _, first) = open_stream_at(
+        &vtc,
+        SUBSCRIBE_V0_3,
+        &admin,
+        json!({ "topics": ["groups", "directory"] }),
+    )
+    .await;
+    assert_eq!(first["payload"]["topics"], json!(["directory", "groups"]));
+
+    let member = Party::new();
+    let card = vtc_service::directory::cards::ensure(
+        vtc.state.directory.ks(),
+        &member.did,
+        &vtc.state.directory.settings(),
+        None,
+    )
+    .await
+    .unwrap();
+    let (id, hint) = next_hint_of(&mut sse, "directory", Duration::from_secs(15))
+        .await
+        .expect("a card written is a directory hint");
+    assert_hint_shape(&hint, id.as_deref(), &request, &admin.did);
+    assert!(
+        !hint.to_string().contains(&card.entry_id),
+        "no entry is named"
+    );
+
+    vtc_service::groups::put(
+        vtc.state.directory.ks(),
+        &a_group("grp_AAAAAAAAAAAAAAAAAAAAAA"),
+    )
+    .await
+    .unwrap();
+    let (id, hint) = next_hint_of(&mut sse, "groups", Duration::from_secs(5))
+        .await
+        .expect("a group stored is a groups hint");
+    assert_hint_shape(&hint, id.as_deref(), &request, &admin.did);
+    assert!(!hint.to_string().contains("grp_"), "no group is named");
+}
+
+#[tokio::test]
+async fn a_0_2_subscribe_cannot_ask_for_directory_or_groups() {
+    let vtc = vtc().await;
+    let admin = community_admin(&vtc).await;
+    for topic in ["directory", "groups"] {
+        let (_, res) = subscribe_at(
+            &vtc,
+            SUBSCRIBE_V0_2,
+            &admin,
+            json!({ "topics": [topic] }),
+            Some(STREAM_ACCEPT),
+            None,
+        )
+        .await;
+        let (status, doc) = json_refusal(res).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{topic}");
+        assert_eq!(tt_error_code(&doc), Some("malformedRequest"), "{topic}");
+    }
+}
+
+/// A manager qualified to one group (`group:<id>`) is sent a hint only for a
+/// change to that group (subscribe 0.3 §Authorization), and an administrator
+/// holding neither directory capability is not sent `directory` at all.
+#[tokio::test]
+async fn a_manager_of_one_group_is_hinted_only_about_that_group() {
+    let vtc = vtc().await;
+    let ks = vtc.state.directory.ks();
+    let mine = "grp_MMMMMMMMMMMMMMMMMMMMMM";
+    let other = "grp_OOOOOOOOOOOOOOOOOOOOOO";
+    vtc_service::groups::put(ks, &a_group(mine)).await.unwrap();
+    vtc_service::groups::put(ks, &a_group(other)).await.unwrap();
+
+    let manager = Party::new();
+    let mut e = entry(
+        &manager.did,
+        AdminAuthority::for_role(AdminRole::Approver),
+        None,
+    );
+    e.resource_grants.push(
+        serde_json::from_value(json!({
+            "capability": "vtc.groups.manage",
+            "resource": format!("group:{mine}"),
+            "delegatedBy": "did:key:vtc-install",
+            "grantedAt": "2026-10-20T00:00:00Z",
+        }))
+        .unwrap(),
+    );
+    store_acl_entry(&vtc.state.acl_ks, &e).await.unwrap();
+
+    let (request, mut sse, _, first) = open_stream_at(
+        &vtc,
+        SUBSCRIBE_V0_3,
+        &manager,
+        json!({ "topics": ["groups", "directory", "actions"] }),
+    )
+    .await;
+    assert_eq!(first["payload"]["topics"], json!(["actions", "groups"]));
+
+    let mut changed = a_group(other);
+    changed.name = "Renamed".into();
+    vtc_service::groups::put(ks, &changed).await.unwrap();
+    assert!(
+        next_hint_of(&mut sse, "groups", Duration::from_secs(3))
+            .await
+            .is_none(),
+        "another group's change is no hint to a manager of one"
+    );
+
+    let mut changed = a_group(mine);
+    changed.name = "Renamed".into();
+    vtc_service::groups::put(ks, &changed).await.unwrap();
+    let (id, hint) = next_hint_of(&mut sse, "groups", Duration::from_secs(5))
+        .await
+        .expect("their own group's change is hinted");
+    assert_hint_shape(&hint, id.as_deref(), &request, &manager.did);
+}
+
+// ─── 0.4: `communityRooms` ───────────────────────────────────────────────
+
+fn owned_room(room_id: &str) -> vtc_service::rooms::community::OwnedRoom {
+    vtc_service::rooms::community::OwnedRoom {
+        room_id: room_id.to_string(),
+        label: "Book club".into(),
+        visibility: "attributed".into(),
+        signing_key_id: "key-1".into(),
+        created_by: "did:key:zCreator".into(),
+        created_at: "2026-10-22T00:00:00Z".into(),
+        owner_authority_valid_until: "2027-10-22T00:00:00Z".into(),
+        did_path: None,
+        description: None,
+        tags: Vec::new(),
+        details_updated_at: None,
+        details_updated_by: None,
+    }
+}
+
+/// An administrator whose authority is `community-admin` narrowed to `caps`.
+async fn holding(vtc: &TestVtc, caps: &[vtc_service::acl::Capability]) -> Party {
+    use vtc_service::acl::{CapRef, CapabilityGrant, CapabilityScope};
+    let party = Party::new();
+    let mut admin = AdminAuthority::for_role(AdminRole::CommunityAdmin);
+    admin.capabilities = CapabilityScope::Listed {
+        grants: caps
+            .iter()
+            .map(|c| CapabilityGrant::from(CapRef::all(*c)))
+            .collect(),
+    };
+    store_acl_entry(&vtc.state.acl_ks, &entry(&party.did, admin, None))
+        .await
+        .unwrap();
+    party
+}
+
+/// Event 0.4 producer rules 8 and 9: the owner's record of a community room
+/// changing — a room created, its details, a member's admission, a removal
+/// owed — is a countless `communityRooms` hint at 0.4 that names no room and
+/// no member.
+#[tokio::test]
+async fn a_community_room_change_is_a_countless_hint_at_0_4_naming_nothing() {
+    let vtc = vtc().await;
+    let admin = community_admin(&vtc).await;
+    let (request, mut sse, _, first) = open_stream_at(
+        &vtc,
+        SUBSCRIBE_V0_4,
+        &admin,
+        json!({ "topics": ["communityRooms", "actions"] }),
+    )
+    .await;
+    assert_eq!(
+        first["payload"]["topics"],
+        json!(["actions", "communityRooms"])
+    );
+
+    let owner = &vtc.state.community_rooms;
+    let room_id = format!(
+        "did:webvh:QmRoom{}:rooms.example",
+        uuid::Uuid::new_v4().simple()
+    );
+    let member = Party::new();
+    let names_nothing = |hint: &Value| {
+        let text = hint.to_string();
+        assert!(!text.contains(&room_id), "no room is named: {hint}");
+        assert!(!text.contains(&member.did), "no member is named: {hint}");
+        assert!(!text.contains("Book club"), "no detail is carried: {hint}");
+    };
+
+    owner.put_room(&owned_room(&room_id)).await.unwrap();
+    let (id, hint) = next_hint_of(&mut sse, "communityRooms", Duration::from_secs(5))
+        .await
+        .expect("a room created is a communityRooms hint");
+    assert_hint_shape(&hint, id.as_deref(), &request, &admin.did);
+    names_nothing(&hint);
+
+    let mut renamed = owned_room(&room_id);
+    renamed.label = "Reading circle".into();
+    renamed.tags = vec!["books".into()];
+    owner.put_room_details(&renamed).await.unwrap();
+    let (id, hint) = next_hint_of(&mut sse, "communityRooms", Duration::from_secs(5))
+        .await
+        .expect("a room's details changed is hinted");
+    assert_hint_shape(&hint, id.as_deref(), &request, &admin.did);
+    names_nothing(&hint);
+
+    owner
+        .put_member(&vtc_service::rooms::community::MemberRecord {
+            room_id: room_id.clone(),
+            member: member.did.clone(),
+            actions: vec!["read".into()],
+            valid_until: "2027-01-01T00:00:00Z".into(),
+            state: "offered".into(),
+            offered_at: "2026-10-22T00:00:00Z".into(),
+            admitted_at: None,
+            removed_at: None,
+            credentials: None,
+            welcome: None,
+            admitted_epoch: None,
+            renewal: None,
+            sources: Vec::new(),
+        })
+        .await
+        .unwrap();
+    let (id, hint) = next_hint_of(&mut sse, "communityRooms", Duration::from_secs(5))
+        .await
+        .expect("an admission offered is hinted");
+    assert_hint_shape(&hint, id.as_deref(), &request, &admin.did);
+    names_nothing(&hint);
+
+    owner
+        .record_removal(
+            &room_id,
+            &member.did,
+            vtc_service::rooms::community::DepartureCause::Left,
+            chrono::Utc::now(),
+        )
+        .await
+        .unwrap();
+    let (id, hint) = next_hint_of(&mut sse, "communityRooms", Duration::from_secs(5))
+        .await
+        .expect("a removal owed is hinted");
+    assert_hint_shape(&hint, id.as_deref(), &request, &admin.did);
+    names_nothing(&hint);
+}
+
+/// The fingerprint: a `rooms` seam that moves nothing the owner's reads show
+/// (a holdings write, a room the community does not own) and a write no read
+/// shows (a served identity log) are no `communityRooms` hint.
+#[tokio::test]
+async fn community_rooms_ignores_what_the_owners_reads_do_not_show() {
+    let vtc = vtc().await;
+    let admin = community_admin(&vtc).await;
+    let owner = &vtc.state.community_rooms;
+    let room_id = format!(
+        "did:webvh:QmRoom{}:rooms.example",
+        uuid::Uuid::new_v4().simple()
+    );
+    owner.put_room(&owned_room(&room_id)).await.unwrap();
+
+    let (_, mut sse, _, _) = open_stream_at(
+        &vtc,
+        SUBSCRIBE_V0_4,
+        &admin,
+        json!({ "topics": ["communityRooms"] }),
+    )
+    .await;
+
+    // A rooms seam, as a holdings or limit write calls it.
+    vtc_service::admin_events::notify_rooms();
+    // A room hosted here that the community does not own.
+    vtc_service::rooms::storage::create_room(&vtc.state.rooms_ks, &hosted_room(None))
+        .await
+        .unwrap();
+    // A served room-identity log: no read shows it.
+    owner.put_did_log("abcdef", &room_id, "{}").await.unwrap();
+    assert!(
+        next_hint_of(&mut sse, "communityRooms", Duration::from_secs(3))
+            .await
+            .is_none(),
+        "nothing the owner's reads show moved"
+    );
+
+    // …and the same stream still hints a change they do show.
+    let mut renamed = owned_room(&room_id);
+    renamed.description = Some("Monthly".into());
+    owner.put_room_details(&renamed).await.unwrap();
+    assert!(
+        next_hint_of(&mut sse, "communityRooms", Duration::from_secs(5))
+            .await
+            .is_some(),
+        "a description changed is hinted"
+    );
+}
+
+/// Subscribe 0.4 §Authorization: holders of `vtc.rooms.manage`; holding
+/// `vtc.rooms.admin` alone does not qualify, and an administrator with
+/// neither is not sent the topic at all.
+#[tokio::test]
+async fn community_rooms_is_effective_only_for_a_rooms_manager() {
+    use vtc_service::acl::Capability;
+    let vtc = vtc().await;
+
+    let host_admin = holding(&vtc, &[Capability::RoomsAdmin]).await;
+    let (_, _sse, _, first) = open_stream_at(
+        &vtc,
+        SUBSCRIBE_V0_4,
+        &host_admin,
+        json!({ "topics": ["communityRooms", "rooms", "actions"] }),
+    )
+    .await;
+    assert_eq!(first["payload"]["topics"], json!(["actions", "rooms"]));
+
+    let manager = holding(&vtc, &[Capability::RoomsManage]).await;
+    let (_, _sse, _, first) = open_stream_at(
+        &vtc,
+        SUBSCRIBE_V0_4,
+        &manager,
+        json!({ "topics": ["communityRooms", "rooms", "actions"] }),
+    )
+    .await;
+    assert_eq!(
+        first["payload"]["topics"],
+        json!(["actions", "communityRooms"])
+    );
+
+    // Nothing to read at all: refused, opening no stream.
+    let moderator = with_role(&vtc, Some(AdminRole::Moderator), None).await;
+    let (_, res) = subscribe_at(
+        &vtc,
+        SUBSCRIBE_V0_4,
+        &moderator,
+        json!({ "topics": ["communityRooms"] }),
+        Some(STREAM_ACCEPT),
+        None,
+    )
+    .await;
+    let (status, doc) = json_refusal(res).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(tt_error_code(&doc), Some("permissionDenied"));
+}
+
+/// The topic set is closed per version: a 0.3 subscribe cannot ask for
+/// `communityRooms`, which only 0.4 has.
+#[tokio::test]
+async fn a_0_3_subscribe_cannot_ask_for_community_rooms() {
+    let vtc = vtc().await;
+    let admin = community_admin(&vtc).await;
+    let (_, res) = subscribe_at(
+        &vtc,
+        SUBSCRIBE_V0_3,
+        &admin,
+        json!({ "topics": ["communityRooms"] }),
+        Some(STREAM_ACCEPT),
+        None,
+    )
+    .await;
+    let (status, doc) = json_refusal(res).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(tt_error_code(&doc), Some("malformedRequest"));
 }

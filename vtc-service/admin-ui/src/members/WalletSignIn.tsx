@@ -4,7 +4,30 @@
 // VTC for a console session through `ext["org.openvtc.session"]`.
 //
 // States: idle → waiting (the code) → claimed (the number) → confirm
-// ("Continue as …?") → signed in; or declined, cancelled, expired.
+// ("Continue as …?") → signed in; or declined, cancelled, expired. The
+// confirm is skipped when this browser last continued as the same identity
+// for the same audience: "Continue as …?" guards against someone else's
+// identity being signed in here (T4), and a known identity is not that.
+//
+// The code needs no click: it is made as soon as the page knows wallet
+// sign-in can work and the tab is in view. Reading the config is retried a
+// few times; when it still fails, the page says why, with "Try again". Nobody can use a code without
+// being a member and seeing the number, and the first scanner locks it, so
+// showing it unasked costs one request and gives nothing away. An unclaimed
+// code is renewed when its claim window closes — while the tab is in view
+// only, so a page left in a background tab makes no requests; one that
+// lapsed there is renewed when the tab comes back (`lapsed`). A claimed code
+// that expires still ends as expired: someone scanned it.
+//
+// The claimed number carries `data-oob-request-id` and
+// `data-oob-match-number` (contract C11). The browser plugin's content
+// script reads them, only for a code the person clicked on this page, and
+// fills the number in for them. The page posts nothing and learns nothing
+// back; a phone wallet still asks the person to type the number.
+//
+// A rate-limit refusal (`429`, or the VTC's own `rateLimited`) is waited out
+// for its `Retry-After` and retried — a poll always, the code request a few
+// times — and only one that persists is shown, in words, never as "429".
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import QRCode from "qrcode";
@@ -16,8 +39,10 @@ import {
   fetchSignInConfig,
   forgetSessionKey,
   generateSessionKey,
+  keepSessionKeyForPortal,
   missingDidServices,
   NOT_AN_ADMIN,
+  retryAfterMs,
   OobError,
   openRequest,
   redeemOnce,
@@ -31,10 +56,28 @@ type Phase =
   | { kind: "idle" }
   | { kind: "starting" }
   | { kind: "waiting"; link: string; requestId: string; claimDeadline: number }
+  /** An unclaimed code's window closed while the tab was hidden; a new one
+   *  is made when the tab is in view again. */
+  | { kind: "lapsed" }
   | { kind: "claimed"; requestId: string; matchNumber: string }
   | { kind: "confirm"; result: RedeemResult }
   | { kind: "ended"; reason: "declined" | "cancelled" | "expired" | "notAnAdmin" }
   | { kind: "error"; message: string };
+
+/** Tries for the config on page load, and for a code request a rate limit
+ *  refused, before the page says what went wrong. */
+const CONFIG_ATTEMPTS = 3;
+const REQUEST_ATTEMPTS = 3;
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/** The wait before try `attempt + 1`: a rate limit's own `Retry-After`, else
+ *  a short backoff. */
+function backoffMs(e: unknown, attempt: number): number {
+  return e instanceof OobError && e.code === "rateLimited"
+    ? retryAfterMs(e)
+    : 500 * 2 ** attempt;
+}
 
 /** The code as SVG rects: level M, no logo, a 4-module quiet zone, at least
  *  4 CSS px a module, dark on light in every theme (contract C1). */
@@ -65,6 +108,30 @@ export function QrSvg({ text, label }: { text: string; label: string }) {
     </svg>
   );
 }
+
+/** The identity this browser last chose "Continue" for, per audience. A
+ *  convenience only: when it is missing (cleared, private window, storage
+ *  blocked) the page asks again. */
+const knownKey = (audience: SessionAudience) => `vtc-wallet-signin-known-${audience}`;
+
+function knownSubject(audience: SessionAudience): string | null {
+  try {
+    return window.localStorage.getItem(knownKey(audience));
+  } catch {
+    return null;
+  }
+}
+
+function rememberSubject(audience: SessionAudience, subject: string): void {
+  try {
+    window.localStorage.setItem(knownKey(audience), subject);
+  } catch {
+    /* the next sign-in asks again */
+  }
+}
+
+/** How long a code must have lived to be renewed when it ends unclaimed. */
+const MIN_CODE_LIFE_MS = 10_000;
 
 /** What an ended sign-in says. */
 function endedMessage(reason: Extract<Phase, { kind: "ended" }>["reason"]): string {
@@ -105,6 +172,13 @@ export function WalletSignIn({
   // its codes: the option is replaced by a note and the page's other options
   // carry on. `null` until known, and whenever wallet sign-in can be offered.
   const [missing, setMissing] = useState<string[] | null>(null);
+  // Whether the config is known and wallet sign-in can be offered: the code
+  // is made unasked only then.
+  const [ready, setReady] = useState(false);
+  // Why the config could not be read, after its retries; `null` while it
+  // could be, or is still being tried.
+  const [configFailed, setConfigFailed] = useState<string | null>(null);
+  const [visible, setVisible] = useState(() => document.visibilityState !== "hidden");
   const abortRef = useRef<AbortController | null>(null);
   const runRef = useRef(0);
 
@@ -116,17 +190,32 @@ export function WalletSignIn({
 
   useEffect(() => stopPolling, [stopPolling]);
 
-  // Learn up front whether wallet sign-in can work. A failure here changes
-  // nothing: the click fetches again and reports what went wrong.
+  // Learn up front whether wallet sign-in can work, trying a few times — a
+  // rate limit or a blip on load is not worth showing. One that persists is
+  // shown with its reason and "Try again".
   useEffect(() => {
     let live = true;
-    fetchSignInConfig()
-      .then((cfg) => {
-        if (!live) return;
-        cfgRef.current = cfg;
-        setMissing(missingDidServices(cfg));
-      })
-      .catch(() => {});
+    void (async () => {
+      for (let attempt = 0; ; attempt++) {
+        try {
+          const cfg = await fetchSignInConfig();
+          if (!live) return;
+          cfgRef.current = cfg;
+          const lacking = missingDidServices(cfg);
+          setMissing(lacking);
+          setReady(lacking === null);
+          return;
+        } catch (e) {
+          if (!live) return;
+          if (attempt + 1 >= CONFIG_ATTEMPTS) {
+            setConfigFailed(e instanceof Error ? e.message : String(e));
+            return;
+          }
+          await sleep(backoffMs(e, attempt));
+          if (!live) return;
+        }
+      }
+    })();
     return () => {
       live = false;
     };
@@ -134,27 +223,51 @@ export function WalletSignIn({
 
   useEffect(() => {
     const onVisibility = () => {
-      if (document.visibilityState === "hidden") setCodeHidden(true);
+      const shown = document.visibilityState !== "hidden";
+      setVisible(shown);
+      if (!shown) setCodeHidden(true);
     };
     document.addEventListener("visibilitychange", onVisibility);
     return () => document.removeEventListener("visibilitychange", onVisibility);
   }, []);
 
-  // Hide an unclaimed code once its claim window closes.
+  // An unclaimed code whose claim window closed: a new one while the tab is
+  // in view, otherwise `lapsed` until it is. Read through a ref so the poll
+  // loop calls the current `showCode`.
+  // A code that ends within `MIN_CODE_LIFE_MS` of being made (a clock off by
+  // minutes, a VTC that drops requests) ends as expired instead, so a page
+  // never makes code after code in a loop.
+  const renewRef = useRef<() => void>(() => {});
+  const openedAtRef = useRef(0);
+  renewRef.current = () => {
+    stopPolling();
+    forgetSessionKey();
+    if (Date.now() - openedAtRef.current < MIN_CODE_LIFE_MS) {
+      setPhase({ kind: "ended", reason: "expired" });
+    } else if (document.visibilityState === "hidden") setPhase({ kind: "lapsed" });
+    else void showCode();
+  };
+
   useEffect(() => {
     if (phase.kind !== "waiting") return;
     const ms = phase.claimDeadline * 1000 - Date.now();
-    const t = window.setTimeout(() => {
-      stopPolling();
-      forgetSessionKey();
-      setPhase({ kind: "ended", reason: "expired" });
-    }, Math.max(0, ms));
+    const t = window.setTimeout(() => renewRef.current(), Math.max(0, ms));
     return () => window.clearTimeout(t);
-  }, [phase, stopPolling]);
+  }, [phase]);
+
+  // A member sign-in keeps its browser key for the directory pages, which
+  // sign with it under the delegation the member approved.
+  // Kept before anything else runs (the key is cached synchronously); its
+  // write to storage finishes in the background and never holds sign-in up.
+  const signedIn = useCallback(async () => {
+    if (audience === "member") void keepSessionKeyForPortal();
+    await onSignedIn();
+  }, [audience, onSignedIn]);
 
   const poll = useCallback(
     async (requestId: string, run: number) => {
       const cfg = cfgRef.current!;
+      let claimed = false;
       while (runRef.current === run) {
         const ctl = new AbortController();
         abortRef.current = ctl;
@@ -170,6 +283,10 @@ export function WalletSignIn({
             });
             return;
           }
+          if (result.subject && result.subject === knownSubject(audience)) {
+            void signedIn();
+            return;
+          }
           setPhase({ kind: "confirm", result });
           return;
         } catch (e) {
@@ -183,12 +300,14 @@ export function WalletSignIn({
             case "pending": {
               const n = e.details.matchNumber;
               if (typeof n === "string") {
+                claimed = true;
                 setPhase({ kind: "claimed", requestId, matchNumber: n });
               }
               continue;
             }
             case "rateLimited":
-              await new Promise((r) => setTimeout(r, 1000));
+              // Wait out the limit, then poll the same request again.
+              await sleep(retryAfterMs(e));
               continue;
             case "declined":
               forgetSessionKey();
@@ -204,6 +323,11 @@ export function WalletSignIn({
               return;
             case "requestExpired":
             case "requestNotFound":
+              if (!claimed) {
+                // Nobody scanned it: a fresh code, not an error.
+                renewRef.current();
+                return;
+              }
               forgetSessionKey();
               setPhase({ kind: "ended", reason: "expired" });
               return;
@@ -215,7 +339,7 @@ export function WalletSignIn({
         }
       }
     },
-    [audience],
+    [audience, signedIn],
   );
 
   const showCode = async () => {
@@ -226,8 +350,22 @@ export function WalletSignIn({
     try {
       cfgRef.current ??= await fetchSignInConfig();
       await generateSessionKey();
-      const { requestId, claimDeadline } = await openRequest(cfgRef.current, audience);
+      // Unmounted or superseded while the key was made: open no request.
       if (runRef.current !== run) return;
+      let opened: Awaited<ReturnType<typeof openRequest>> | undefined;
+      for (let attempt = 0; !opened; attempt++) {
+        try {
+          opened = await openRequest(cfgRef.current, audience);
+        } catch (e) {
+          const limited = e instanceof OobError && e.code === "rateLimited";
+          if (!limited || attempt + 1 >= REQUEST_ATTEMPTS) throw e;
+          await sleep(retryAfterMs(e));
+          if (runRef.current !== run) return;
+        }
+      }
+      const { requestId, claimDeadline } = opened;
+      if (runRef.current !== run) return;
+      openedAtRef.current = Date.now();
       setPhase({
         kind: "waiting",
         link: triggerLink(cfgRef.current, requestId, claimDeadline),
@@ -249,11 +387,25 @@ export function WalletSignIn({
     }
   };
 
+  // Make the code unasked once wallet sign-in can work and the tab is in
+  // view, and renew one that lapsed while the tab was hidden.
+  const showCodeRef = useRef(showCode);
+  showCodeRef.current = showCode;
+  useEffect(() => {
+    if (!ready || !visible) return;
+    if (phase.kind === "idle" || phase.kind === "lapsed") void showCodeRef.current();
+  }, [ready, visible, phase.kind]);
+
   const cancel = async (requestId: string) => {
     stopPolling();
     if (cfgRef.current) await cancelRequest(cfgRef.current, requestId);
     forgetSessionKey();
     setPhase({ kind: "ended", reason: "cancelled" });
+  };
+
+  const continueAs = (subject: string) => {
+    rememberSubject(audience, subject);
+    void signedIn();
   };
 
   const notMe = async () => {
@@ -282,17 +434,21 @@ export function WalletSignIn({
         </div>
       )}
 
-      {!missing && (phase.kind === "idle" || phase.kind === "starting") && (
+      {!missing &&
+        (phase.kind === "idle" || phase.kind === "starting" || phase.kind === "lapsed") && (
         <>
-          <button
-            type="button"
-            className="btn btn-primary btn-lg"
-            onClick={showCode}
-            disabled={phase.kind === "starting"}
-          >
-            <QrCode size={18} aria-hidden="true" />
-            {phase.kind === "starting" ? "Getting a code…" : "Show sign-in code"}
-          </button>
+          {configFailed && phase.kind === "idle" ? (
+            <div className="alert" role="status">
+              <p className="alert-title">{configFailed}</p>
+              <button type="button" className="btn btn-secondary btn-sm" onClick={showCode}>
+                Try again
+              </button>
+            </div>
+          ) : (
+            <p className="option-note" role="status">
+              <QrCode size={18} aria-hidden="true" /> Getting a code…
+            </p>
+          )}
           <p className="option-note">
             Scan it with your wallet app (Keyring is the first), or click it if your wallet
             is on this device. Your keys stay with your wallet.
@@ -322,7 +478,11 @@ export function WalletSignIn({
                 }. Scan it with your wallet, or click it to open your wallet.`}
               />
             </a>
-            <p className="option-note">Waiting for your wallet…</p>
+            <p className="option-note">
+              Scan it with your wallet app, or click it if your wallet is on this device.
+              {audience === "admin" &&
+                " Approve as the identity that administers this community."}
+            </p>
             <button
               type="button"
               className="btn btn-ghost btn-sm"
@@ -337,7 +497,14 @@ export function WalletSignIn({
         <div className="claimed" role="status">
           <p className="lead">
             Approve on your phone. Your number is{" "}
-            <strong className="match-number">{phase.matchNumber}</strong>
+            {/* C11: the browser plugin reads these, for a code clicked here. */}
+            <strong
+              className="match-number"
+              data-oob-request-id={phase.requestId}
+              data-oob-match-number={phase.matchNumber}
+            >
+              {phase.matchNumber}
+            </strong>
           </p>
           <p className="option-note">
             If you didn't just scan this code, someone else did: cancel and get a new one.
@@ -362,7 +529,11 @@ export function WalletSignIn({
             ?
           </p>
           <div className="confirm-actions">
-            <button type="button" className="btn btn-primary" onClick={() => onSignedIn()}>
+            <button
+              type="button"
+              className="btn btn-primary"
+              onClick={() => continueAs(phase.result.subject)}
+            >
               Continue
             </button>
             <button type="button" className="btn btn-secondary" onClick={notMe}>

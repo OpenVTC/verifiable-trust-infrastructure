@@ -348,6 +348,7 @@ pub(super) async fn handle_finalize_import(
     let deps = crate::operations::descriptor_deps_from_app_state(state, &committer);
     match descriptors::finalize_import(&deps, auth, req).await {
         Ok(body) => {
+            let committed = body.status == "committed";
             // The most consequential row this service writes. On commit the
             // agent's keys, ACLs, contexts and trail are REPLACED with the
             // bundle's — including, note, the audit trail itself. Anything this
@@ -378,10 +379,15 @@ pub(super) async fn handle_finalize_import(
             .await;
             // A commit staged the restore and committed its seed; it takes
             // effect only when the VTA boots again. The reply goes out first.
-            if body.status == "committed" {
-                crate::restore::request_reboot(&state.restart_tx);
+            if committed {
+                crate::restore::request_reboot();
             }
-            success_response(&doc, body)
+            let response = success_response(&doc, body);
+            if committed {
+                response.with_restart()
+            } else {
+                response
+            }
         }
         Err(e) => app_error_to_reject(&doc, e),
     }
@@ -487,6 +493,11 @@ fn chunked_reject(doc: &TrustTask<Value>, err: chunked::ChunkedError) -> TrustTa
         E::BundleDigestMismatch => ("bundleDigestMismatch", None),
         E::BundleTooLarge { .. } => ("bundleTooLarge", None),
         E::InvalidManifest(_) => ("invalidManifest", None),
+        // `ChunkedError` is `#[non_exhaustive]`: one this family declares no
+        // code for is an internal error.
+        _ => {
+            return reject_with(doc, RejectReason::InternalError { reason: message });
+        }
     };
     let code = trust_tasks_rs::TrustTaskCode::new_extended(&slug, local)
         .expect("backup extended code is grammar-valid");

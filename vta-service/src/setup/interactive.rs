@@ -412,6 +412,8 @@ async fn configure_secrets(p: &dyn Prompter) -> Result<SecretsBackendInput, DynE
         labels.push("OS keyring");
         tags.push("keyring");
     }
+    labels.push("Encrypted file (passphrase, systemd-creds or TPM key)");
+    tags.push("encrypted-file");
     labels.push("Plaintext file (NOT recommended)");
     tags.push("plaintext");
 
@@ -457,6 +459,9 @@ async fn configure_secrets(p: &dyn Prompter) -> Result<SecretsBackendInput, DynE
         )?;
         return Ok(SecretsBackendInput::Keyring { service });
     }
+    if tag == "encrypted-file" {
+        return prompt_encrypted_file_secrets(p);
+    }
     if tag == "plaintext" {
         eprintln!();
         eprintln!("\x1b[1;33m╔══════════════════════════════════════════════════════════╗");
@@ -469,6 +474,77 @@ async fn configure_secrets(p: &dyn Prompter) -> Result<SecretsBackendInput, DynE
     }
 
     unreachable!("selected backend tag does not match any compiled feature")
+}
+
+/// The `encrypted_file` backend's key-encryption key source and location.
+/// The KEK has to be readable now: setup writes the seed with it.
+fn prompt_encrypted_file_secrets(p: &dyn Prompter) -> Result<SecretsBackendInput, DynErr> {
+    use vti_secrets::KekSource;
+
+    #[allow(unused_mut)]
+    let mut labels = vec![
+        "Passphrase in a file",
+        "Passphrase in a systemd credential",
+        "32-byte key in a systemd credential (systemd-creds)",
+    ];
+    #[cfg(all(feature = "tpm", target_os = "linux"))]
+    labels.push("Key sealed to this host's TPM 2.0");
+    let choice = p.select("Key-encryption key source", &labels, 0)?;
+    let credential = |prompt: &str| p.text(prompt, None, false, None);
+    let kek = match choice {
+        0 => KekSource::Passphrase {
+            file: Some(PathBuf::from(p.text(
+                "Passphrase file (readable by the VTA user only; never put the passphrase in config)",
+                None,
+                false,
+                None,
+            )?)),
+            credential: None,
+        },
+        1 => KekSource::Passphrase {
+            file: None,
+            credential: Some(credential(
+                "systemd credential name (LoadCredential=/LoadCredentialEncrypted=)",
+            )?),
+        },
+        2 => KekSource::SystemdCreds {
+            credential: credential("systemd credential name holding the key")?,
+        },
+        _ => {
+            let pcrs = p.text(
+                "Bind to SHA-256 PCRs (comma-separated, e.g. 7; empty for none)",
+                None,
+                true,
+                Some(&|s: &str| parse_pcr_list(s).map(|_| ())),
+            )?;
+            KekSource::Tpm {
+                pcrs: parse_pcr_list(&pcrs)?,
+                tcti: None,
+            }
+        }
+    };
+    let path = p.text(
+        "Encrypted file path (empty for <data_dir>/seed.enc)",
+        None,
+        true,
+        None,
+    )?;
+    Ok(SecretsBackendInput::EncryptedFile {
+        path: (!path.trim().is_empty()).then(|| PathBuf::from(path.trim())),
+        kek,
+    })
+}
+
+#[cfg_attr(not(all(feature = "tpm", target_os = "linux")), allow(dead_code))]
+fn parse_pcr_list(s: &str) -> Result<Vec<u8>, String> {
+    s.split(',')
+        .map(str::trim)
+        .filter(|t| !t.is_empty())
+        .map(|t| match t.parse::<u8>() {
+            Ok(n) if n <= 23 => Ok(n),
+            _ => Err(format!("'{t}' is not a PCR index (0-23)")),
+        })
+        .collect()
 }
 
 #[cfg(feature = "aws-secrets")]
@@ -913,6 +989,37 @@ fn create_vta_did(p: &dyn Prompter) -> Result<VtaDidInput, DynErr> {
     }
 }
 
+/// How this VTA presents the DIDs it creates, its own included (VTI-VTA-034,
+/// VTI-VTA-035). Asked only when the wizard mints a did:webvh log; otherwise
+/// the defaults apply — did:webvh, with the did:scid alias listed.
+fn prompt_did_presentation(
+    p: &dyn Prompter,
+    vta_did: &VtaDidInput,
+) -> Result<crate::config::DidsConfig, DynErr> {
+    let mut dids = crate::config::DidsConfig::default();
+    if !matches!(vta_did, VtaDidInput::CreateWebvh { .. }) {
+        return Ok(dids);
+    }
+    eprintln!();
+    eprintln!(
+        "  \x1b[2mA did:webvh log can be presented as its did:scid:vh:1 DID, which the same\n  \
+         log verifies but which does not name its host, so it survives a move.\x1b[0m"
+    );
+    let options = [
+        "did:webvh (recommended; what every existing peer expects)",
+        "did:scid (portable identity, located by ?src=)",
+    ];
+    if p.select("Present this VTA's DIDs as", &options, 0)? == 1 {
+        dids.default_did_method = vta_sdk::did_scid::DidMethod::Scid;
+    } else {
+        dids.scid_also_known_as = p.confirm(
+            "List the did:scid alias in alsoKnownAs, so peers can also use that form?",
+            true,
+        )?;
+    }
+    Ok(dids)
+}
+
 /// Prompt for a webvh hosting URL, returning the raw string the engine parses.
 /// Re-prompts (via the validator) until the URL parses as an `http(s)://` URL.
 ///
@@ -1101,7 +1208,8 @@ async fn gather_inputs(
         )?
         .parse()
         .expect("validated above");
-    let audit = AuditConfig { retention_days };
+    let mut audit = AuditConfig::default();
+    audit.retention_days = retention_days;
 
     // 8. Data directory + existing-store policy. Trimmed because operators
     //    paste paths, and a stray trailing space silently becomes part of
@@ -1229,6 +1337,7 @@ async fn gather_inputs(
 
     // 13. VTA DID.
     let vta_did = create_vta_did(p)?;
+    let dids = prompt_did_presentation(p, &vta_did)?;
 
     Ok(Some(WizardInputs {
         config_path,
@@ -1243,21 +1352,22 @@ async fn gather_inputs(
             webauthn,
             tsp: enable_tsp,
         },
-        server: ServerConfig {
-            host,
-            port,
-            cors_origins,
-            trust_xff_cidrs,
-            rate_limit_interval_secs: ServerConfig::default().rate_limit_interval_secs,
-            rate_limit_burst: ServerConfig::default().rate_limit_burst,
-            did_log_rate_limit_interval_secs: ServerConfig::default()
-                .did_log_rate_limit_interval_secs,
-            did_log_rate_limit_burst: ServerConfig::default().did_log_rate_limit_burst,
-            trust_xff: (),
+        dids,
+        server: {
+            // `ServerConfig` is `#[non_exhaustive]`: start from its defaults
+            // (the rate limits among them) and set what the wizard asked.
+            let mut server = ServerConfig::default();
+            server.host = host;
+            server.port = port;
+            server.cors_origins = cors_origins;
+            server.trust_xff_cidrs = trust_xff_cidrs;
+            server
         },
-        log: LogConfig {
-            level: log_level,
-            format: log_format,
+        log: {
+            let mut log = LogConfig::default();
+            log.level = log_level;
+            log.format = log_format;
+            log
         },
         secrets,
         messaging,
@@ -1683,12 +1793,15 @@ mod tests {
             text("did:key:z6MkKa#key-1"),           // ka key id
             Answer::Bool(true), // portable (existing-keys still prompts — no pre-signed log)
             text("2"),          // pre-rotation count
+            Answer::Index(0),   // present the VTA's DIDs as did:webvh
+            Answer::Bool(true), // ...listing the did:scid alias
         ];
         let p = ScriptedPrompter::new(answers);
         let gathered = gather_inputs(&p, None)
             .await
             .expect("gather should succeed")
             .expect("gather should not cancel");
+        assert_eq!(gathered.dids, crate::config::DidsConfig::default());
 
         match gathered.vta_did {
             VtaDidInput::CreateWebvh {

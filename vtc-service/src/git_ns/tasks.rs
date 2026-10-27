@@ -281,6 +281,40 @@ async fn acting_as_unchecked(state: &AppState, signer: &str) -> Result<String, O
     }
 }
 
+/// The member a **member-portal sign-in key** reads `type_uri` as, else
+/// [`acting_as`]: `(actor, delegated)`.
+///
+/// A portal sign-in under `auth/oob/grant/0.2` lets the browser's key sign the
+/// families in `PORTAL_SIGNING_SCOPE` as the member for that session (consumer
+/// item 4, `member_portal::delegation`). Only the member's reads call this —
+/// `view/0.4` and `account/link-status` — so whatever the scope names, no
+/// git-ns change is authorized by a portal key: each confers, withdraws or
+/// changes authority, or binds an account the forge then relies on as the
+/// member's, which item 6 excludes. Those take the member's own signature,
+/// through their wallet. The member's standing is read at execution time
+/// (item 5), and a cooling-off suspension refuses the read as it refuses a
+/// change.
+async fn reader_as<P>(
+    state: &AppState,
+    signer: &str,
+    doc: &TrustTask<P>,
+) -> Result<(String, bool), OpError> {
+    let delegated = crate::member_portal::delegation::accept(
+        state,
+        signer,
+        &doc.type_uri.to_string(),
+        &doc.id.to_string(),
+    )
+    .await?;
+    let Some(member) = delegated else {
+        return Ok((acting_as(state, signer).await?, false));
+    };
+    if let Some(s) = crate::acl::storage::get_suspension(&state.acl_ks, &member).await? {
+        return Err(OpError::PermissionDenied(s.message(&member)));
+    }
+    Ok((member, true))
+}
+
 macro_rules! signed_handler {
     ($name:ident, $payload:ty, $op:path) => {
         pub(crate) async fn $name(doc: TrustTask<$payload>, ctx: GitNsCtx) -> TrustTaskOutcome {
@@ -560,7 +594,7 @@ pub(crate) async fn handle_view_v4(
         Err(r) => return r,
     };
     let r = async {
-        let who = acting_as(&ctx.state, &who).await?;
+        let (who, delegated) = reader_as(&ctx.state, &who, &doc).await?;
         let standing = ops::standing(&ctx.state, &who).await?;
         if !standing.member {
             return Err(OpError::PermissionDenied(
@@ -576,7 +610,10 @@ pub(crate) async fn handle_view_v4(
         Ok(super::view::for_member_v4(
             &snap,
             &who,
-            standing.community_admin,
+            // The portal is the member's surface: what a community
+            // administrator sees beyond that is the console's (grant 0.2
+            // consumer item 5).
+            standing.community_admin && !delegated,
             filter.as_ref(),
             member.as_ref(),
         )?)
@@ -594,8 +631,8 @@ pub(crate) async fn handle_link_status(
         Ok(w) => w,
         Err(r) => return r,
     };
-    let r = match acting_as(&ctx.state, &who).await {
-        Ok(who) => ops::account_link_status(&ctx.state, &who, doc.payload.clone()).await,
+    let r = match reader_as(&ctx.state, &who, &doc).await {
+        Ok((who, _)) => ops::account_link_status(&ctx.state, &who, doc.payload.clone()).await,
         Err(e) => Err(e),
     };
     respond(&doc, r)

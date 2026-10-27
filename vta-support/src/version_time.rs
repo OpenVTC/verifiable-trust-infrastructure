@@ -167,7 +167,9 @@ pub async fn next_version_time(previous: Option<DateTime<FixedOffset>>) -> DateT
 /// Recheck after every sleep: wall time can move backwards while waiting (for
 /// example, due to NTP correction), making the original wait insufficient.
 /// Budget the *accumulated* sleep rather than trusting a clock difference, so
-/// a clock that keeps stepping backwards cannot loop here indefinitely. The
+/// a clock that keeps stepping backwards cannot loop here indefinitely. Each
+/// sleep is a whole number of milliseconds, the timer's granularity, and is
+/// counted as such. The
 /// injected functions keep both cases testable.
 ///
 /// `target` is compared against the raw clock, deliberately not a truncated
@@ -195,14 +197,29 @@ where
         if remaining <= Duration::zero() {
             return Ok(());
         }
-        if slept + remaining > max_wait {
+        // Tokio's timer sleeps in whole milliseconds, so a sleep of 40µs takes 1ms.
+        // Budget what is actually slept: counting the 40µs instead let the
+        // accumulated wait run past `max_wait` once the clock sat a few
+        // microseconds short of `target` for many passes.
+        let step = round_up_to_millis(remaining);
+        if slept + step > max_wait {
             return Err(remaining);
         }
-        // `remaining` is positive, so conversion to std duration cannot fail.
-        if let Ok(std_remaining) = remaining.to_std() {
-            sleep(std_remaining).await;
+        // `step` is positive, so conversion to std duration cannot fail.
+        if let Ok(std_step) = step.to_std() {
+            sleep(std_step).await;
         }
-        slept += remaining;
+        slept += step;
+    }
+}
+
+/// `d` rounded up to a whole millisecond (`d` positive).
+fn round_up_to_millis(d: Duration) -> Duration {
+    let whole = Duration::milliseconds(d.num_milliseconds());
+    if whole < d {
+        whole + Duration::milliseconds(1)
+    } else {
+        whole
     }
 }
 
@@ -300,12 +317,20 @@ mod tests {
 
         assert!(update > genesis, "update must be strictly after genesis");
         assert_eq!(update.timestamp(), genesis.timestamp() + 1);
-        // Paused tokio time only advances via `sleep` — this confirms the
-        // second call actually awaited rather than returning immediately
-        // with a stamped-but-invalid future timestamp.
+        // Paused tokio time only advances via `sleep`, so any elapsed time
+        // means the second call awaited rather than returning at once with a
+        // future-dated timestamp. How much is not a fixed second: the wait
+        // runs from the real clock's sub-second position to the next whole
+        // second (851 ms from x.149 s), and a busy machine can carry the real
+        // clock past the target during the first, instant, virtual sleep —
+        // which is the wait working, not a short one.
         assert!(
-            elapsed >= std::time::Duration::from_secs(1),
+            elapsed > std::time::Duration::ZERO,
             "must have waited out the collision, elapsed={elapsed:?}"
+        );
+        assert!(
+            elapsed <= std::time::Duration::from_secs(MAX_WAIT_SECONDS as u64),
+            "the wait never exceeds its budget, elapsed={elapsed:?}"
         );
     }
 
@@ -367,6 +392,59 @@ mod tests {
                 std::time::Duration::from_secs(3)
             ],
             "a backward clock adjustment must trigger another wait"
+        );
+    }
+
+    /// The budget counts what is actually slept. The timer sleeps in whole
+    /// milliseconds, so a clock that creeps up on `target` by microseconds per
+    /// pass must be charged a millisecond per pass: charging the microseconds
+    /// let the total sleep run past `max_wait` (seen as 5.25s against a 5s
+    /// budget under paused time).
+    #[tokio::test]
+    async fn the_budget_counts_whole_millisecond_sleeps() {
+        let start = truncate_to_second(now());
+        let target = start + Duration::seconds(1);
+        // The clock stops 40µs short of the target and then barely moves.
+        let current = Rc::new(Cell::new(start));
+        let sleeps = Rc::new(std::cell::RefCell::new(Vec::new()));
+        let current_for_clock = Rc::clone(&current);
+        let current_for_sleep = Rc::clone(&current);
+        let sleeps_for_sleep = Rc::clone(&sleeps);
+        // Reaching the target takes 1s plus 40 one-microsecond passes, each a
+        // 1ms sleep: 1.04s, over this budget. Charged by the microsecond it
+        // looked like 1.00004s, so the old loop slept on past the budget.
+        let budget = Duration::seconds(1) + Duration::milliseconds(20);
+
+        let outcome = wait_until_not_future(
+            target,
+            budget,
+            move || current_for_clock.get(),
+            move |duration| {
+                sleeps_for_sleep.borrow_mut().push(duration);
+                let next = if sleeps_for_sleep.borrow().len() == 1 {
+                    target - Duration::microseconds(40)
+                } else {
+                    current_for_sleep.get() + Duration::microseconds(1)
+                };
+                current_for_sleep.set(next);
+                std::future::ready(())
+            },
+        )
+        .await;
+
+        assert!(outcome.is_err(), "the creeping clock exhausts the budget");
+        let slept: std::time::Duration = sleeps.borrow().iter().sum();
+        assert!(
+            slept <= budget.to_std().unwrap(),
+            "never sleeps past the budget, slept {slept:?}"
+        );
+        assert!(
+            sleeps
+                .borrow()
+                .iter()
+                .all(|d| d.subsec_nanos() % 1_000_000 == 0 && !d.is_zero()),
+            "every sleep is a whole, non-zero number of milliseconds: {:?}",
+            sleeps.borrow()
         );
     }
 

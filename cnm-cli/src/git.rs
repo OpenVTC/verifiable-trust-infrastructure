@@ -463,7 +463,7 @@ impl RightArg {
 }
 
 /// This profile's key, as the signer of `git-ns/*` documents.
-fn signing_key(keyring_key: &str) -> CliResult<(String, HolderKey)> {
+pub(crate) fn signing_key(keyring_key: &str) -> CliResult<(String, HolderKey)> {
     let session = auth::loaded_session(keyring_key).ok_or_else(|| {
         format!(
             "no stored identity for this community profile. Run `{} setup` first.",
@@ -480,7 +480,7 @@ fn signing_key(keyring_key: &str) -> CliResult<(String, HolderKey)> {
 /// A DID argument, checked as DID-core has it before anything is signed:
 /// what the VTC would refuse, and what could not be pasted safely, is caught
 /// here with the reason.
-fn did_arg(label: &str, value: &str) -> CliResult<String> {
+pub(crate) fn did_arg(label: &str, value: &str) -> CliResult<String> {
     vta_sdk::identifier::validate_did_core(label, value)?;
     Ok(value.to_string())
 }
@@ -547,7 +547,7 @@ fn shell_word(s: &str) -> String {
 /// ones among them — U+202A–202E, U+2066–2069 — reorder what follows, and
 /// the zero-width ones hide in plain sight, so a hostile value could make an
 /// authorisation URL read as another. Nothing here needs one.
-fn terminal_safe(s: &str) -> String {
+pub(crate) fn terminal_safe(s: &str) -> String {
     s.chars()
         .map(|c| {
             if c.is_control() || is_format_char(c) {
@@ -1034,13 +1034,33 @@ fn base64url(bytes: &[u8]) -> String {
     out
 }
 
+/// A page of the admin console, on the VTC's origin.
+///
+/// `base` is the Trust-Task base the DID document advertises
+/// (`https://vtc.example/v1`): the API mount, not the console. The console
+/// is served beside the API on the same host at its own mount (`/admin`), so
+/// a link built by appending to the API base lands on `/v1/admin/…`, which a
+/// VTC serving a website answers with its home page. Keep the origin, drop
+/// the path.
+fn console_url(base: &str, page: &str) -> String {
+    match url::Url::parse(base) {
+        Ok(mut u) if u.has_host() => {
+            u.set_path(&format!("/admin/{page}"));
+            u.set_query(None);
+            u.set_fragment(None);
+            u.to_string()
+        }
+        _ => format!("{}/admin/{page}", base.trim_end_matches('/')),
+    }
+}
+
 /// Where the admin console answers an operation-bound step-up: the console
 /// is the WebAuthn relying party, so the passkey gesture happens there.
 fn step_up_url(base: &str, request: &Value) -> String {
     let json = serde_json::to_vec(request).unwrap_or_default();
     format!(
-        "{}/admin/step-up#request={}",
-        base.trim_end_matches('/'),
+        "{}#request={}",
+        console_url(base, "step-up"),
         base64url(&json)
     )
 }
@@ -1124,7 +1144,7 @@ fn self_grant_waived_note(answer: &Value) -> Option<String> {
 /// a change the VTC answers with an operation-bound step-up — a self-grant
 /// under single-administrator mode — is completed rather than refused, then
 /// say when the single-administrator waiver applied.
-async fn send_change<P: serde::Serialize>(
+pub(crate) async fn send_change<P: serde::Serialize>(
     client: &VtcClient,
     base: &str,
     type_uri: &str,
@@ -1242,8 +1262,8 @@ fn invite_token(invite: &str) -> CliResult<String> {
 fn enrol_url(base: &str, started: &Value) -> String {
     let json = serde_json::to_vec(started).unwrap_or_default();
     format!(
-        "{}/admin/enrol-step-up#enrollment={}",
-        base.trim_end_matches('/'),
+        "{}#enrollment={}",
+        console_url(base, "enrol-step-up"),
         base64url(&json)
     )
 }
@@ -2803,6 +2823,42 @@ mod tests {
         assert!(
             !url.split("request=").nth(1).unwrap().contains('='),
             "{url}"
+        );
+    }
+
+    /// The base a profile holds is the `VTCRest` endpoint, which carries the
+    /// API mount (`/v1`). The console is a sibling mount on the same origin,
+    /// so the link must not inherit the API's path: `/v1/admin/step-up` is
+    /// answered by the community website, not the console.
+    #[test]
+    fn console_links_are_built_on_the_origin_not_the_api_base() {
+        for (base, origin) in [
+            ("https://vtc.example/v1", "https://vtc.example"),
+            ("https://vtc.example/v1/", "https://vtc.example"),
+            (
+                "https://vtc.example:8443/api/v2",
+                "https://vtc.example:8443",
+            ),
+        ] {
+            let url = step_up_url(base, &json!({ "challenge": "c" }));
+            assert!(
+                url.starts_with(&format!("{origin}/admin/step-up#request=")),
+                "{base} -> {url}"
+            );
+            let url = enrol_url(base, &json!({ "enrollmentId": "e" }));
+            assert!(
+                url.starts_with(&format!("{origin}/admin/enrol-step-up#enrollment=")),
+                "{base} -> {url}"
+            );
+        }
+        assert_eq!(
+            console_url("https://vtc.example/v1?x=1#f", "step-up"),
+            "https://vtc.example/admin/step-up"
+        );
+        // Not a URL at all: fall back to appending, as before.
+        assert_eq!(
+            console_url("vtc.example/v1", "step-up"),
+            "vtc.example/v1/admin/step-up"
         );
     }
 

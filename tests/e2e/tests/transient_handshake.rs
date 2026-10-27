@@ -207,7 +207,9 @@ async fn transient_handshake_unresolvable_did_fails_at_resolve_stage() {
         .await
         .expect_err("handshake against an unresolvable DID must fail");
 
-    let vta_service::messaging::handshake::HandshakeError::Failed { stage, .. } = err;
+    let vta_service::messaging::handshake::HandshakeError::Failed { stage, .. } = err else {
+        panic!("expected a stage failure, got {err:?}");
+    };
     assert_eq!(
         stage,
         HandshakeStage::Resolve,

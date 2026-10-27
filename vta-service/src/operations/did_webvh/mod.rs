@@ -10,6 +10,7 @@ mod concurrency;
 mod document;
 pub(crate) mod host;
 mod lifecycle;
+pub(crate) mod presentation;
 mod realign;
 mod register_server;
 mod servers;
@@ -38,10 +39,11 @@ pub use servers::{
     register_webvh_server, remove_webvh_server, retire_orphan_slot,
 };
 pub use update::{
-    AgentNameVerb, RotateDidWebvhKeysOptions, StagedRotationRecovery, UpdateDidWebvhError,
+    AgentNameVerb, Commit, RotateDidWebvhKeysOptions, StagedRotationRecovery, UpdateDidWebvhError,
     UpdateDidWebvhOptions, UpdateDidWebvhResult, UpdatePlan, agent_name_op, check_agent_name,
     list_agent_names, plan_did_webvh_update, recover_staged_rotations, resolve_webvh_did,
     rotate_did_webvh_keys, state_from_jsonl_pub, update_did_webvh,
+    update_did_webvh_reporting_commit,
 };
 
 use std::sync::Arc;
@@ -132,8 +134,10 @@ pub struct WebvhDeps<'a> {
     /// What lets the outbound seam choose TSP when talking to a webvh host.
     ///
     /// `None` is a real answer, not a gap: a CLI, a setup wizard or a DIDComm
-    /// handler holds no mediator socket of its own, and the seam correctly
-    /// falls to DIDComm there. It is carried on the dep bundle rather than
+    /// handler holds no TSP socket of its own. A DIDComm handler still has the
+    /// live bridge, so the seam falls to DIDComm there; the offline CLI and the
+    /// wizards have a signing-only bridge and no mediator session, so there the
+    /// seam is left with REST. It is carried on the dep bundle rather than
     /// rebuilt further down because `AppState` is the only thing that can
     /// produce one, and the webvh ops layer deliberately does not take an
     /// `AppState`.
@@ -351,7 +355,7 @@ pub(crate) async fn refresh_resolver_doc_from_log(
         }
     };
 
-    let doc = match serde_json::from_value(doc_value) {
+    let doc = match serde_json::from_value(doc_value.clone()) {
         Ok(doc) => doc,
         Err(e) => {
             warn!(
@@ -366,6 +370,29 @@ pub(crate) async fn refresh_resolver_doc_from_log(
 
     let mut cache = did_resolver.clone();
     cache.add_did_document(did, doc).await;
+
+    // A log that lists its did:scid alias is also known by that DID: cache its
+    // own document under it (VTI-KEY-161) and record its source, so the bare
+    // DID resolves here — a serverless log is reachable no other way.
+    if presentation::document_lists_alias(&doc_value)
+        && let Some((bare, url)) = vta_sdk::did_scid::scid_forms(did)
+    {
+        match didwebvh_rs::did_web::to_scid_did_document(&doc_value)
+            .map_err(|e| e.to_string())
+            .and_then(|v| serde_json::from_value(v).map_err(|e| e.to_string()))
+        {
+            Ok(scid_doc) => {
+                cache.scid_sources().add_source(&url);
+                cache.add_did_document(&bare, scid_doc).await;
+            }
+            Err(e) => warn!(
+                channel,
+                did = %did,
+                error = %e,
+                "resolver refresh: the did:scid document could not be derived from the log"
+            ),
+        }
+    }
 }
 
 /// Resolve a DID template by name for use in a create-DID flow.
@@ -498,6 +525,13 @@ fn plan_key_slots(
                      cannot mint. One key-agreement key per DID: a second `keyAgreement` entry \
                      changes which secret an inbound encrypted message resolves to, and nothing \
                      here decides that. Declare it as `{SLOT_KA}` if it is the DID's only one."
+                )));
+            }
+            // `KeyPurpose` is `#[non_exhaustive]`: a purpose this VTA cannot
+            // mint is refused, never guessed at.
+            (_, purpose) => {
+                return Err(AppError::Validation(format!(
+                    "key slot '{slot}' declares purpose {purpose:?}, which this VTA cannot mint"
                 )));
             }
         }
@@ -636,6 +670,12 @@ pub struct CreateDidWebvhParams {
     /// `did_document` is caller-supplied or `did_log` is pre-signed —
     /// templates that need the key must declare it themselves.
     pub is_vta_identity: bool,
+    /// The identity the new log is presented as. `None` → the VTA's
+    /// `[dids] default_did_method` (VTI-VTA-036).
+    pub did_method: Option<vta_sdk::did_scid::DidMethod>,
+    /// Whether the first log entry lists the did:scid alias. `None` → the
+    /// VTA's `[dids] scid_also_known_as` (VTI-VTA-036).
+    pub scid_also_known_as: Option<bool>,
 }
 
 impl From<CreateDidWebvhBody> for CreateDidWebvhParams {
@@ -670,6 +710,8 @@ impl From<CreateDidWebvhBody> for CreateDidWebvhParams {
             // non-interactive --from). An admin hitting create-did-webvh at
             // runtime is always creating an integration DID.
             is_vta_identity: false,
+            did_method: body.did_method,
+            scid_also_known_as: body.scid_also_known_as,
         }
     }
 }
@@ -908,6 +950,10 @@ pub async fn create_did_webvh(
     // Resolved once, here, because both document paths below consume it.
     let add_tsp_service =
         document::resolve_add_tsp_service(params.add_tsp_service, config, did_resolver).await;
+    // Whether the caller asked for `#tsp` itself, rather than having it
+    // defaulted on: only an explicit request may refuse a document it cannot be
+    // added to.
+    let tsp_requested = params.add_tsp_service == Some(true);
 
     // `KeyMint` decides *whether*; the context check below still bounds *where*.
     ensure_may_mint(acl_ks, auth).await?;
@@ -989,10 +1035,13 @@ pub async fn create_did_webvh(
             .ok_or_else(|| AppError::Validation("DID document missing 'id' field".into()))?
             .to_string();
         let scid = log_entry.get_scid().unwrap_or_default().to_string();
+        let applied =
+            presentation::decide_for_log(params.did_method, &config.dids, &final_did_document)?;
+        let identity = presented_identity(&final_did, applied);
 
         // Optionally set as primary DID
         if params.set_primary {
-            ctx.did = Some(final_did.clone());
+            ctx.did = Some(identity.context_did());
             ctx.updated_at = now;
             crate::contexts::store_context(contexts_ks, &ctx)
                 .await
@@ -1024,17 +1073,19 @@ pub async fn create_did_webvh(
         };
         webvh_store::store_did(webvh_ks, &did_record).await?;
         webvh_store::store_did_log(webvh_ks, &final_did, did_log).await?;
+        record_scid_identity(webvh_ks, &final_did, applied).await?;
         refresh_resolver_doc_from_log(did_resolver, &final_did, did_log, channel).await;
 
         info!(
             channel,
-            did = %final_did,
+            did = %identity.did,
+            log = %final_did,
             context = %params.context_id,
             "did:webvh created (final mode)"
         );
 
         return Ok(CreateDidWebvhResultBody {
-            did: final_did.clone(),
+            did: identity.did,
             context_id: params.context_id,
             server_id: if serverless { None } else { params.server_id },
             serverless: Some(serverless),
@@ -1050,6 +1101,10 @@ pub async fn create_did_webvh(
             created_at: now,
             did_document: Some(final_did_document),
             log_entry: Some(did_log.clone()),
+            did_method: Some(applied.method),
+            scid_also_known_as: Some(applied.alias),
+            webvh_did: Some(final_did.clone()),
+            scid_did_url: identity.scid_did_url,
         });
     }
 
@@ -1092,6 +1147,17 @@ pub async fn create_did_webvh(
     }) {
         params.portable = false;
     }
+
+    // The form and alias (VTI-VTA-036). Decided before any key is minted, so a
+    // request refused with `scidAliasRequired` leaves nothing behind.
+    let applied = presentation::decide(
+        params.did_method,
+        params.scid_also_known_as,
+        template_record
+            .as_ref()
+            .is_some_and(|r| presentation::template_forbids_alias(&r.template.defaults)),
+        &config.dids,
+    )?;
 
     // What the template asks each slot to be minted as. A v1 template answers
     // with the historical Ed25519/X25519 pair (`key_slots`), so this is the same
@@ -1426,7 +1492,7 @@ pub async fn create_did_webvh(
         // never reaches the builder `with_tsp_service` feeds below — which is how
         // `add_tsp_service` came to be silently ignored for every templated DID.
         // Apply it to the document itself, at the mediator the template names.
-        document::with_tsp_in_rendered_document(add_tsp_service, &mut rendered)?;
+        document::with_tsp_in_rendered_document(add_tsp_service, tsp_requested, &mut rendered)?;
         params.did_document = Some(rendered);
     }
 
@@ -1522,6 +1588,8 @@ pub async fn create_did_webvh(
         .authorization_key(derived.signing_secret.clone())
         .did_document(did_document.clone())
         .parameters(parameters)
+        // VTI-KEY-166: the did:scid DID URL in the first entry's alsoKnownAs.
+        .also_known_as_scid(applied.alias)
         // No previous entry to be later than — see `next_version_time`. A
         // follow-on update lands strictly after this by clamping against the
         // entry actually written here, not by this being backdated.
@@ -1751,9 +1819,14 @@ pub async fn create_did_webvh(
         })?;
     }
 
+    // The identity it is given out as (VTI-KEY-165). Key records keep the
+    // log's own method ids; a did:scid identity's secrets are published under
+    // its DID by `select_secret_kid`.
+    let identity = presented_identity(&final_did, applied);
+
     // Optionally set as primary DID
     if params.set_primary {
-        ctx.did = Some(final_did.clone());
+        ctx.did = Some(identity.context_did());
         ctx.updated_at = now;
         crate::contexts::store_context(contexts_ks, &ctx)
             .await
@@ -1791,17 +1864,19 @@ pub async fn create_did_webvh(
         };
         webvh_store::store_did(webvh_ks, &did_record).await?;
         webvh_store::store_did_log(webvh_ks, &final_did, &log_content).await?;
+        record_scid_identity(webvh_ks, &final_did, applied).await?;
         refresh_resolver_doc_from_log(did_resolver, &final_did, &log_content, channel).await;
 
         info!(
             channel,
-            did = %final_did,
+            did = %identity.did,
+            log = %final_did,
             context = %params.context_id,
             "did:webvh created (serverless)"
         );
 
         Ok(CreateDidWebvhResultBody {
-            did: final_did.clone(),
+            did: identity.did,
             context_id: params.context_id,
             server_id: None,
             serverless: Some(true),
@@ -1815,6 +1890,10 @@ pub async fn create_did_webvh(
             created_at: now,
             did_document: Some(final_did_document),
             log_entry: Some(log_content),
+            did_method: Some(applied.method),
+            scid_also_known_as: Some(applied.alias),
+            webvh_did: Some(final_did.clone()),
+            scid_did_url: identity.scid_did_url,
         })
     } else {
         // Server-managed: publish, update context, store records
@@ -1869,18 +1948,20 @@ pub async fn create_did_webvh(
         // one whose publishes have never landed. Serverless creation
         // deliberately does not set it — there is no host to confirm against.
         webvh_store::set_published_version(webvh_ks, &final_did, &genesis_version_id).await?;
+        record_scid_identity(webvh_ks, &final_did, applied).await?;
         refresh_resolver_doc_from_log(did_resolver, &final_did, &log_content, channel).await;
 
         info!(
             channel,
-            did = %final_did,
+            did = %identity.did,
+            log = %final_did,
             context = %params.context_id,
             server = %server_id,
             "did:webvh created and published"
         );
 
         Ok(CreateDidWebvhResultBody {
-            did: final_did.clone(),
+            did: identity.did,
             context_id: params.context_id,
             server_id: Some(server_id.clone()),
             serverless: Some(false),
@@ -1894,8 +1975,66 @@ pub async fn create_did_webvh(
             created_at: now,
             did_document: Some(final_did_document),
             log_entry: Some(log_content),
+            did_method: Some(applied.method),
+            scid_also_known_as: Some(applied.alias),
+            webvh_did: Some(final_did.clone()),
+            scid_did_url: identity.scid_did_url,
         })
     }
+}
+
+/// The identity a new log is given out as, and its did:scid DID URL.
+struct PresentedIdentity {
+    /// The did:webvh DID, or the bare `did:scid:vh:1:<scid>` (VTI-KEY-165).
+    did: String,
+    /// `did:scid:vh:1:<scid>?src=…`, for a did:webvh DID (always one here).
+    scid_did_url: Option<String>,
+}
+
+impl PresentedIdentity {
+    /// What a context acting as this DID records: the did:webvh DID, or the
+    /// did:scid DID URL with `src` — the context's DID is what its holder is
+    /// given out as, so it carries the locator a recipient needs (VTI-KEY-163).
+    /// Comparisons against it are by DID (`did_scid::same_reference`).
+    fn context_did(&self) -> String {
+        if vta_sdk::did_scid::is_scid(&self.did) {
+            self.scid_did_url
+                .clone()
+                .unwrap_or_else(|| self.did.clone())
+        } else {
+            self.did.clone()
+        }
+    }
+}
+
+fn presented_identity(webvh_did: &str, applied: presentation::Presentation) -> PresentedIdentity {
+    let forms = vta_sdk::did_scid::scid_forms(webvh_did);
+    let did = match (&forms, applied.method) {
+        (Some((bare, _)), vta_sdk::did_scid::DidMethod::Scid) => bare.clone(),
+        _ => webvh_did.to_string(),
+    };
+    PresentedIdentity {
+        did,
+        scid_did_url: forms.map(|(_, url)| url),
+    }
+}
+
+/// Record the did:scid identity of a new log, where it has one to record: it
+/// is presented as the did:scid, or lists the alias. Lets every webvh/dids task
+/// take the did:scid DID, and seeds the resolver's did:scid sources at boot.
+async fn record_scid_identity(
+    webvh_ks: &KeyspaceHandle,
+    webvh_did: &str,
+    applied: presentation::Presentation,
+) -> Result<(), AppError> {
+    let presented = applied.method == vta_sdk::did_scid::DidMethod::Scid;
+    if !presented && !applied.alias {
+        return Ok(());
+    }
+    if let Some(identity) = webvh_store::ScidIdentity::of(webvh_did, presented, applied.alias) {
+        webvh_store::store_scid_identity(webvh_ks, &identity).await?;
+    }
+    Ok(())
 }
 
 /// How a DID deletion treats the copy of its log on a hosting server.
@@ -2039,7 +2178,14 @@ pub async fn delete_did_webvh_with(
     // credentials are already dead and the DID still exists, which is
     // recoverable by re-running. The other order leaves live credentials for a
     // DID nobody can revoke through any more.
-    let revoked = revoke_credentials_for_did(cascade.issued_credentials_ks, did).await?;
+    // Everything below runs for each name of the log: its did:webvh DID, and
+    // the did:scid DID it may be presented as, which is a distinct identity
+    // (VTI-KEY-164) and so holds its own credentials, ACL entry and sessions.
+    let names = names_of_log(deps.webvh_ks, did).await?;
+    let mut revoked = 0;
+    for name in &names {
+        revoked += revoke_credentials_for_did(cascade.issued_credentials_ks, name).await?;
+    }
     if revoked > 0 {
         info!(channel, did = %did, revoked, "revoked credentials issued to a DID being deleted");
     }
@@ -2112,6 +2258,9 @@ pub async fn delete_did_webvh_with(
 
     // Remove local DID record and log
     webvh_store::delete_did(deps.webvh_ks, did).await?;
+    if let Some(identity) = webvh_store::get_scid_identity(deps.webvh_ks, did).await? {
+        webvh_store::delete_scid_identity(deps.webvh_ks, &identity.scid_did).await?;
+    }
 
     // Clean up associated key records (best-effort).
     //
@@ -2147,8 +2296,11 @@ pub async fn delete_did_webvh_with(
     // that can no longer be resolved or rotated — strictly worse than an
     // orphaned record, because it still grants. Sessions are authority already
     // issued and go the same way.
-    vti_common::acl::delete_acl_entry(cascade.acl_ks, did).await?;
-    let sessions_revoked = revoke_sessions_for_did(cascade.sessions_ks, did).await?;
+    let mut sessions_revoked = 0;
+    for name in &names {
+        vti_common::acl::delete_acl_entry(cascade.acl_ks, name).await?;
+        sessions_revoked += revoke_sessions_for_did(cascade.sessions_ks, name).await?;
+    }
 
     info!(
         channel,
@@ -2227,14 +2379,33 @@ pub async fn plan_did_deletion_with(
         });
     };
 
+    let mut credentials_to_revoke = Vec::new();
+    let mut sessions_to_revoke = 0;
+    let mut has_acl_entry = false;
+    for name in names_of_log(deps.webvh_ks, did).await? {
+        credentials_to_revoke
+            .extend(credentials_issued_to(cascade.issued_credentials_ks, &name).await?);
+        sessions_to_revoke += sessions_for_did(cascade.sessions_ks, &name).await?.len();
+        has_acl_entry |= vti_common::acl::get_acl_entry(cascade.acl_ks, &name)
+            .await?
+            .is_some();
+    }
     Ok(DidDeletionPlan {
         blockers,
-        credentials_to_revoke: credentials_issued_to(cascade.issued_credentials_ks, did).await?,
-        sessions_to_revoke: sessions_for_did(cascade.sessions_ks, did).await?.len(),
-        has_acl_entry: vti_common::acl::get_acl_entry(cascade.acl_ks, did)
-            .await?
-            .is_some(),
+        credentials_to_revoke,
+        sessions_to_revoke,
+        has_acl_entry,
     })
+}
+
+/// Every name a log is known by here: its did:webvh DID, and the did:scid DID
+/// recorded for it (VTI-KEY-164). Deleting the log retires both.
+async fn names_of_log(webvh_ks: &KeyspaceHandle, did: &str) -> Result<Vec<String>, AppError> {
+    let mut names = vec![did.to_string()];
+    if let Some(identity) = webvh_store::get_scid_identity(webvh_ks, did).await? {
+        names.push(identity.scid_did);
+    }
+    Ok(names)
 }
 
 /// Everything that still depends on `did`, as operator-facing lines naming the
@@ -2284,7 +2455,13 @@ async fn delete_blockers(
     // The VTA's own DID. Deleting it does not decommission the VTA; it strands
     // it — unable to authenticate to its mediator, unable to publish, and
     // unable to be found by anyone holding its credentials.
-    if vta_did_value == Some(did) {
+    let names = names_of_log(deps.webvh_ks, did).await?;
+    let names_it = |other: &str| {
+        names
+            .iter()
+            .any(|n| vta_sdk::did_scid::same_reference(n, other))
+    };
+    if vta_did_value.is_some_and(names_it) {
         blockers.push(format!(
             "this VTA's own DID ({did}) — deleting it would strand the VTA rather than              decommission it; change `vta_did` first if that is really the intent"
         ));
@@ -2293,7 +2470,9 @@ async fn delete_blockers(
     // A context whose identity this DID is — unless that context is going away
     // in the same operation, in which case there is nothing left to strand.
     for ctx in crate::contexts::list_contexts(deps.contexts_ks).await? {
-        if ctx.did.as_deref() == Some(did) && !options.contexts_being_deleted.contains(&ctx.id) {
+        if ctx.did.as_deref().is_some_and(names_it)
+            && !options.contexts_being_deleted.contains(&ctx.id)
+        {
             let id = &ctx.id;
             blockers.push(format!(
                 "context `{id}` acts as this DID — reassign it first: \

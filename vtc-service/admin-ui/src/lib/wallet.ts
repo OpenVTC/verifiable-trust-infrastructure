@@ -6,7 +6,8 @@
 // `lib/wallet.ts`.
 //
 // Two flows, both ending in a server-issued bearer token that the caller
-// exchanges for the admin cookie session via `/v1/auth/admin-session`:
+// exchanges for the admin cookie session with the signed
+// `vtc/auth/admin-session/0.2` (`lib/admin-session.ts`):
 //
 //  - `loginWithWallet()` — the holder self-issues a SIOPv2 id_token; the
 //    extension runs the `/auth/challenge` → `/auth/` round-trip internally.
@@ -19,6 +20,7 @@
 // `/v1/wallet` surface.
 
 import { daemonErrorMessage, fetchHealth } from "@/lib/api";
+import { guardPreviewRequest } from "@/lib/theme-preview";
 
 interface VtaWalletLoginParams {
   rpDid: string;
@@ -545,6 +547,8 @@ async function runProxySiop(
 ): Promise<VtaWalletLoginResult> {
   const rp = await rpDid();
   const base = walletApiBase().replace(/\/+$/, "");
+  // Signing in is a write; a theme preview never does it.
+  guardPreviewRequest("POST", `${base}/auth/challenge`);
 
   // 1. Challenge bound to the entry's principal DID.
   const chRes = await fetch(`${base}/auth/challenge`, {

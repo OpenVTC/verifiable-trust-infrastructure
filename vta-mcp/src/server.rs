@@ -32,7 +32,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use crate::guard::{Decision, Guard, Risk, classify};
-use crate::observability::{CallRecord, Recorder, redact};
+use crate::observability::{CallRecord, Recorder, redact_call};
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{
     CallToolResult, ContentBlock, Implementation, ListResourcesResult, PaginatedRequestParams,
@@ -318,6 +318,13 @@ impl CallGuard {
     }
 
     fn emit(&self, outcome: &'static str, error: Option<String>, duration_ms: u128) {
+        // A refusal can quote the request back (a schema error names the offending value);
+        // for a personal label that value is text no log may carry.
+        let error = if crate::observability::carries_personal_text(self.operation.as_deref()) {
+            error.map(|_| "<elided: personal label>".to_string())
+        } else {
+            error
+        };
         let record = CallRecord {
             seq: self.seq,
             tool: self.tool,
@@ -420,7 +427,7 @@ impl VtaMcp {
     /// Gate, log and (where the policy asks) confirm one call.
     ///
     /// `operation` is the Trust Task URI the tool resolves to — `None` only for
-    /// the two purely local tools. `args` is passed through [`redact`] here, so
+    /// the two purely local tools. `args` is passed through [`redact_call`] here, so
     /// no caller can forget to.
     async fn begin(
         &self,
@@ -439,7 +446,7 @@ impl VtaMcp {
             operation: operation.map(str::to_string),
             risk,
             decision: decision.label(),
-            args: redact(&args),
+            args: redact_call(operation, &args),
             started: Instant::now(),
             recorder: self.recorder.clone(),
         };
@@ -605,7 +612,7 @@ impl VtaMcp {
         Parameters(p): Parameters<SignParams>,
         peer: Peer<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
-        // `text` is deliberately not in the recorded arguments — `redact` elides
+        // `text` is deliberately not in the recorded arguments — `redact_call` elides
         // it, and what gets signed is the caller's business, not the log's.
         let call = match self
             .begin(

@@ -345,6 +345,134 @@ const OTHER_DID: &str = "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2do
 const COMMUNITY_DID: &str = "did:web:community.example";
 const REQUEST_ID: &str = "5b8f1d4e-9c2a-4f6b-8e31-7a0c5d9e2f14";
 const TS: &str = "2026-08-23T00:00:00Z";
+
+/// The disclosure statement a community with only the base fields publishes,
+/// generated as `directory::disclosure::statement` generates it.
+fn base_disclosure() -> Value {
+    crate::directory::disclosure::build(
+        &crate::directory::fields::base_fields(),
+        crate::directory::model::Settings::default().default_listing,
+        crate::directory::disclosure::Served::this_build(
+            &crate::directory::model::Settings::default(),
+        ),
+    )
+    .expect("the base schema gives a statement")
+}
+
+fn sample_binding() -> crate::groups::bindings::Binding {
+    crate::groups::bindings::Binding {
+        binding_id: "gb_P2k8W5qYc6Vd1MsKAAAAAA".into(),
+        group_id: "grp_W5k2N8xRb3Qz7TpLAAAAAA".into(),
+        binding: json!({ "kind": "room", "roomId": "did:key:z6MkRoom", "actions": ["read"], "validFor": "P30D" }),
+        state: "active".into(),
+        created_at: chrono::DateTime::parse_from_rfc3339("2026-10-20T09:00:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc),
+        created_by: "did:example:administrator".into(),
+        reason: "The working group's room.".into(),
+        delegated_by: None,
+    }
+}
+
+/// A note as `directory::notes` stores it.
+fn admin_note() -> crate::directory::notes::Note {
+    crate::directory::notes::Note {
+        note_id: "note_Q2xhcmFRMmxoY21GUk1t".into(),
+        entry_id: DIRECTORY_ENTRY.into(),
+        author: "did:example:administrator".into(),
+        created_at: "2026-10-19T09:00:00Z".parse().unwrap(),
+        text: Some("Spoke at the June meetup.".into()),
+        follow_up: Some(chrono::NaiveDate::from_ymd_opt(2026, 11, 1).unwrap()),
+        redacts: None,
+        redacted_by: None,
+    }
+}
+
+/// A group as `groups::wire` answers it to one of its managers.
+fn group_wire() -> Value {
+    json!({
+        "groupId": "grp_W5k2N8xRb3Qz7TpLAAAAAA",
+        "groupDid": "did:webvh:QmScid:groups.example:grp",
+        "name": "Identity WG",
+        "description": "Where the community works on identity.",
+        "kind": "static",
+        "joinPolicy": "request",
+        "visibility": "members",
+        "showMembers": "groupMembers",
+        "issuesCredentials": true,
+        "carriesAuthority": false,
+        "createdAt": "2026-10-19T09:00:00Z",
+        "updatedAt": "2026-10-19T09:00:00Z",
+        "createdBy": DIRECTORY_ENTRY,
+        "memberCount": 0,
+        "managers": [],
+        "credentialAuthorityValidUntil": "2027-10-19T09:00:00Z",
+    })
+}
+
+/// A stored picture's reference, as `directory::images` answers it.
+fn stored_picture() -> Value {
+    json!({ "sha256": "3a7bd3e2360a3d29eea436fcfb7e44c735d117c42d1c1835420b6b9942dd4f1b", "mediaType": "image/jpeg", "size": 18342 })
+}
+
+/// An external card as a member signs it: their public values mapped as
+/// `directory::external::expected_members` maps them, with their proof.
+fn published_card() -> Value {
+    let mut public = serde_json::Map::new();
+    public.insert("displayName".into(), json!("Carol Example"));
+    let mut card = json!({
+        "@type": "Card",
+        "version": "1.0",
+        "uid": format!("{}{DIRECTORY_ENTRY}", crate::directory::external::UID_PREFIX),
+        "issuer": "did:example:carol",
+    });
+    for (k, v) in crate::directory::external::expected_members(
+        DIRECTORY_ENTRY,
+        &crate::directory::fields::base_fields(),
+        &public,
+    ) {
+        card[k] = v;
+    }
+    card["proof"] = json!({
+        "type": "DataIntegrityProof",
+        "cryptosuite": "eddsa-jcs-2022",
+        "verificationMethod": "did:example:carol#key-1",
+        "created": "2026-10-19T09:10:00Z",
+        "proofPurpose": "assertionMethod",
+        "proofValue": "z58DAdFfa9SkqZMVPxAQpic7ndSayn1PzZs6ZjWp1CktyGesjuTSwRdoWhAfGFCF5bppETSTojQCrfFPP2oumHKtz",
+    });
+    card
+}
+
+/// A directory entry identifier, as `directory::cards::new_entry_id` mints one.
+const DIRECTORY_ENTRY: &str = "dir_Q7m2K9xVb4Tz8LpRaB3c";
+
+/// A base field as `vtc/directory/fields/*` answer it.
+fn directory_field() -> Value {
+    serde_json::to_value(
+        crate::directory::fields::base_fields()
+            .into_iter()
+            .find(|f| f.key == "displayName")
+            .unwrap(),
+    )
+    .unwrap()
+}
+
+/// A card as its member reads it.
+fn directory_card() -> Value {
+    let mut c = crate::directory::cards::fresh(
+        DID,
+        &crate::directory::model::Settings::default(),
+        Some("Carol"),
+        chrono::Utc::now(),
+    );
+    c.entry_id = DIRECTORY_ENTRY.into();
+    c.visibility.insert(
+        "pronouns".into(),
+        crate::directory::model::Audience::Members,
+    );
+    c.wire()
+}
 const ACTION_ID: &str = "act-5b8f1d4e9c2a4f6b8e317a0c5d9e2f14";
 
 /// An action as `crate::admin_actions` renders one: open with the caller's
@@ -412,6 +540,116 @@ fn sample_cooling_off(open: bool, caller_role: &str) -> serde_json::Value {
         action["closedReason"] = json!("landedAfterCoolingOff");
     }
     action
+}
+
+/// A room the community owns, as `vtc/rooms/community/*` answers it.
+fn sample_community_room() -> serde_json::Value {
+    json!({
+        "room": {
+            "roomId": "did:key:z6MkRoom", "ownerDid": "did:example:community",
+            "visibility": "attributed", "retentionPolicy": "chained", "epoch": 1,
+            "lifecycle": "live", "retentionDays": 90, "createdAt": 0, "updatedAt": 0,
+        },
+        "label": "Board pack",
+        "storageConfig": "local",
+        "admitted": 0,
+        "offered": 1,
+        "ownerAuthorityValidUntil": "2027-10-14T10:00:00Z",
+        "createdBy": "did:key:z6MkAdmin",
+    })
+}
+
+/// The same room as `vtc/rooms/community/*` 0.2 answers it: with its details.
+fn sample_community_room_v2() -> serde_json::Value {
+    let mut room = sample_community_room();
+    room["description"] = json!("Papers for the board's meetings.");
+    room["tags"] = json!(["board", "finance"]);
+    room["detailsUpdatedAt"] = json!("2026-10-15T09:30:01Z");
+    room["detailsUpdatedBy"] = json!("did:key:z6MkAdmin");
+    room
+}
+
+/// A room's migration as `vti_rooms::blobs` records it.
+fn sample_migration() -> vti_rooms::blobs::Migration {
+    serde_json::from_value(json!({
+        "migrationId": "6f1c2b3a-4d5e-4f60-8172-93a4b5c6d7e8",
+        "roomId": "did:key:z6MkRoom",
+        "toConfig": "eu",
+        "fromConfigs": ["local"],
+        "state": "running",
+        "totalFiles": 12,
+        "totalBytes": 48234496,
+        "doneFiles": 3,
+        "doneBytes": 1024,
+        "requestedBy": "did:key:zAdmin",
+        "reason": "retiring local",
+        "startedAt": 0,
+        "updatedAt": 0,
+    }))
+    .expect("a migration record")
+}
+
+/// A migration paused after its retries, which the runner will try again by itself.
+fn sample_paused_migration() -> vti_rooms::blobs::Migration {
+    let mut m = serde_json::to_value(sample_migration()).expect("a migration record");
+    m["state"] = json!("paused");
+    m["pausedCause"] = json!("destination");
+    m["lastError"] = json!("put to eu: 503 SlowDown");
+    m["nextAttemptAt"] = json!(1_791_000_000u64);
+    serde_json::from_value(m).expect("a migration record")
+}
+
+/// A stored storage config as `crate::rooms::storage_configs` keeps it.
+fn sample_storage_config() -> serde_json::Value {
+    json!({
+        "id": "local",
+        "label": "This host's disk",
+        "settings": { "kind": "local", "root": "/var/lib/vtc/room-blobs" },
+        "state": "active",
+        "isDefault": true,
+        "capacityBytes": 1_000_000,
+        "createdBy": "did:key:z6MkCommunity",
+        "createdAt": "2026-10-12T09:00:00Z",
+        "updatedBy": "did:key:z6MkAdmin",
+        "updatedAt": "2026-10-12T10:00:00Z",
+    })
+}
+
+/// Its facts, as `RoomStorage::facts` renders them.
+fn sample_storage_facts() -> serde_json::Value {
+    json!({
+        "rooms": 1,
+        "files": 3,
+        "bytes": 1024,
+        "pendingDeleteBytes": 0,
+        "credential": { "status": "none" },
+        "health": { "lastProbeAt": "2026-10-12T10:00:00Z", "lastProbeOk": true },
+    })
+}
+
+/// An `ambient` `s3` config at 0.2, assuming a named role.
+fn sample_storage_config_v2() -> serde_json::Value {
+    json!({
+        "id": "eu-s3-instance",
+        "label": "EU — S3 (instance role)",
+        "settings": { "kind": "s3", "region": "eu-west-1", "bucket": "northwind-rooms-eu" },
+        "auth": { "mode": "ambient", "roleArn": "arn:aws:iam::123456789012:role/northwind-rooms-writer" },
+        "state": "active",
+        "createdBy": "did:key:z6MkAdmin",
+        "createdAt": "2026-10-12T09:00:00Z",
+    })
+}
+
+/// Its facts at 0.2: a mode the host no longer permits reads `notAllowed`.
+fn sample_storage_facts_v2() -> serde_json::Value {
+    json!({
+        "rooms": 0,
+        "files": 0,
+        "bytes": 0,
+        "pendingDeleteBytes": 0,
+        "credential": { "status": "notAllowed" },
+        "health": {},
+    })
 }
 
 /// An operator's offline write as an acknowledge item names it: the record
@@ -529,6 +767,24 @@ fn member_credentials_response() -> Value {
         crate::routes::members::credentials::credentials_response(&member)
             .expect("a populated member projects"),
     )
+}
+
+/// A completed direct admission, as `ceremony::admission::admit_directly`
+/// returns one, with the credentials [`credential`] stands for.
+fn admitted(label: Option<&str>) -> crate::ceremony::admission::Admitted {
+    let vc = || serde_json::from_value(credential()).expect("the fixture credential parses");
+    crate::ceremony::admission::Admitted {
+        subject: DID.into(),
+        role: crate::acl::VtcRole::Moderator,
+        label: label.map(Into::into),
+        returning: false,
+        approval: crate::ceremony::admission::Approval::Approved,
+        creds: crate::ceremony::execute::AdmitOutcome {
+            vmc: vc(),
+            role_vac: vc(),
+            status_list_index: 7,
+        },
+    }
 }
 
 /// The `CommunityProfile` this service serialises
@@ -672,7 +928,7 @@ const SCHEMA_TYPE: &str = "https://schemas.example.com/membership/v1";
 
 /// The branding the store holds, round-tripped through the stored type.
 fn branding() -> Value {
-    let b: vta_sdk::protocols::join_requests::manifest::v0_2::CommunityBranding =
+    let b: vta_sdk::protocols::join_requests::manifest::v0_4::CommunityBranding =
         serde_json::from_value(json!({
             "displayName": "Example Community",
             "accentColor": "#1a2b3c",
@@ -684,7 +940,7 @@ fn branding() -> Value {
 
 /// The requested attributes the store holds, round-tripped through the type.
 fn requested_attributes() -> Value {
-    let r: Vec<vta_sdk::protocols::join_requests::manifest::v0_2::ResponseRequestedAttributesItem> =
+    let r: Vec<vta_sdk::protocols::join_requests::manifest::v0_4::ResponseRequestedAttributesItem> =
         serde_json::from_value(json!([
             { "type": "name.display", "required": true, "purpose": "To greet you" },
             { "type": "address.country", "required": false },
@@ -924,6 +1180,57 @@ fn table() -> Vec<Conformance> {
                 "resumeToken": "e1.AAAAAAAAAAAAAAAA.BBBBBBBBBBBBBBBB",
             })
         ),
+        // 0.2: the same, plus `rooms`; its hints are `event/0.2` documents.
+        checked!(
+            s::admin::events::subscribe::v0_2::Payload,
+            s::admin::events::subscribe::v0_2::Response,
+            json!({
+                "topics": ["actions", "acknowledgements", "joinRequests", "members",
+                           "singleAdminMode", "config", "rooms"],
+                "since": "e1.AAAAAAAAAAAAAAAA.BBBBBBBBBBBBBBBB",
+            }),
+            json!({
+                "topics": ["actions", "members", "singleAdminMode", "rooms"],
+                "heartbeatSeconds": 25,
+                "resumed": false,
+                "resumeToken": "e1.AAAAAAAAAAAAAAAA.BBBBBBBBBBBBBBBB",
+            })
+        ),
+        // 0.3: the same, plus `directory` and `groups`; its hints are
+        // `event/0.3` documents.
+        checked!(
+            s::admin::events::subscribe::v0_3::Payload,
+            s::admin::events::subscribe::v0_3::Response,
+            json!({
+                "topics": ["actions", "acknowledgements", "joinRequests", "members",
+                           "singleAdminMode", "config", "rooms", "directory", "groups"],
+                "since": "e1.AAAAAAAAAAAAAAAA.BBBBBBBBBBBBBBBB",
+            }),
+            json!({
+                "topics": ["actions", "members", "directory", "groups"],
+                "heartbeatSeconds": 25,
+                "resumed": false,
+                "resumeToken": "e1.AAAAAAAAAAAAAAAA.BBBBBBBBBBBBBBBB",
+            })
+        ),
+        // 0.4: the same, plus `communityRooms`; its hints are `event/0.4`
+        // documents.
+        checked!(
+            s::admin::events::subscribe::v0_4::Payload,
+            s::admin::events::subscribe::v0_4::Response,
+            json!({
+                "topics": ["actions", "acknowledgements", "joinRequests", "members",
+                           "singleAdminMode", "config", "rooms", "directory", "groups",
+                           "communityRooms"],
+                "since": "e1.AAAAAAAAAAAAAAAA.BBBBBBBBBBBBBBBB",
+            }),
+            json!({
+                "topics": ["actions", "members", "communityRooms"],
+                "heartbeatSeconds": 25,
+                "resumed": false,
+                "resumeToken": "e1.AAAAAAAAAAAAAAAA.BBBBBBBBBBBBBBBB",
+            })
+        ),
         // ─── custom administrative roles ─────────────────────────────
         // Responses rendered by the handler's own renderers.
         checked!(
@@ -966,6 +1273,505 @@ fn table() -> Vec<Conformance> {
             s::roles::delete::v0_1::Response,
             json!({ "name": "events-team", "reason": "events moved elsewhere" }),
             json!({ "deleted": "events-team" })
+        ),
+        // ─── the OpenID4VP verifier identities (`oid4vp_tasks`) ──────
+        checked!(
+            s::oid4vp::identities::list::v0_1::Payload,
+            s::oid4vp::identities::list::v0_1::Response,
+            json!({}),
+            json!({
+                "identities": [{
+                    "id": "eudi", "kind": "eudi",
+                    "clientId": "x509_hash:Uvo3HtuIxuhC92rShpgqcT3YXwrqRxWEviRiA0OZszk",
+                    "custody": "agent", "usable": true, "isDefault": true,
+                    "certificate": {
+                        "subject": "CN=Example community verifier",
+                        "issuer": "CN=Test Access CA",
+                        "notBefore": "2026-07-01T00:00:00Z",
+                        "notAfter": "2026-10-31T00:00:00Z",
+                        "chainLength": 1,
+                    },
+                    "attestations": [{
+                        "kind": "registrationCertificate",
+                        "expiresAt": "2027-01-01T00:00:00Z",
+                    }],
+                    "problems": [{
+                        "code": "certificateExpiresSoon", "severity": "warning",
+                        "detail": "the access certificate expires 2026-10-31",
+                    }],
+                    "installedAt": "2026-07-01T09:30:00Z",
+                }],
+                "defaultIdentity": null,
+                "problems": [],
+            })
+        ),
+        // ─── what rooms store and may store (`room_admin_tasks`) ─────
+        checked!(
+            s::rooms::get::v0_1::Payload,
+            s::rooms::get::v0_1::Response,
+            json!({ "roomId": "did:key:z6MkRoom" }),
+            json!({
+                "room": {
+                    "roomId": "did:key:z6MkRoom", "ownerDid": "did:key:zOwner",
+                    "visibility": "attributed", "retentionPolicy": "chained", "epoch": 1,
+                    "lifecycle": "live", "retentionDays": 30, "createdAt": 0, "updatedAt": 0,
+                },
+                "storage": {
+                    "configId": "local",
+                    "earlierConfigs": [{ "configId": "old", "files": 1, "bytes": 10 }],
+                    "migration": crate::rooms::migration::progress_json(
+                        &sample_migration(),
+                        crate::rooms::migration::Wire::V0_1,
+                    ),
+                },
+                "limits": {
+                    "limits": {
+                        "filesEnabled": true,
+                        "room": { "maxFiles": 10000, "maxFileBytes": 104857600, "maxBytes": 5368709120u64 },
+                        "member": { "maxFiles": 2000, "maxFileBytes": 104857600, "maxBytes": 1073741824 },
+                    },
+                    "roomSource": "override", "memberSource": "default",
+                    "hostCeilingBytes": 1073741824,
+                },
+                "usage": {
+                    "room": { "files": 3, "bytes": 1800, "reservedBytes": 0, "reservedFiles": 0 },
+                    "orphans": { "files": 1, "bytes": 5, "oldestOrphanedAt": "2026-10-10T10:00:00+00:00" },
+                },
+                "largestBlobs": [{ "size": 900, "configId": "local", "createdAt": "2026-10-10T10:00:00+00:00" }],
+                "membersWithUsage": 1,
+            })
+        ),
+        // 0.2: the migration names its target, and a paused one says why and when.
+        checked!(
+            s::rooms::get::v0_2::Payload,
+            s::rooms::get::v0_2::Response,
+            json!({ "roomId": "did:key:z6MkRoom" }),
+            json!({
+                "room": {
+                    "roomId": "did:key:z6MkRoom", "ownerDid": "did:key:zOwner",
+                    "visibility": "attributed", "retentionPolicy": "chained", "epoch": 1,
+                    "lifecycle": "live", "retentionDays": 30, "createdAt": 0, "updatedAt": 0,
+                },
+                "storage": {
+                    "configId": "local",
+                    "earlierConfigs": [{ "configId": "old", "files": 1, "bytes": 10 }],
+                    "migration": crate::rooms::migration::progress_json(
+                        &sample_paused_migration(),
+                        crate::rooms::migration::Wire::V0_2,
+                    ),
+                },
+                "limits": {
+                    "limits": {
+                        "filesEnabled": true,
+                        "room": { "maxFiles": 10000, "maxFileBytes": 104857600, "maxBytes": 5368709120u64 },
+                        "member": { "maxFiles": 2000, "maxFileBytes": 104857600, "maxBytes": 1073741824 },
+                    },
+                    "roomSource": "override", "memberSource": "default",
+                    "hostCeilingBytes": 1073741824,
+                },
+                "usage": {
+                    "room": { "files": 3, "bytes": 1800, "reservedBytes": 0, "reservedFiles": 0 },
+                    "orphans": { "files": 1, "bytes": 5, "oldestOrphanedAt": "2026-10-10T10:00:00+00:00" },
+                },
+                "largestBlobs": [{ "size": 900, "configId": "local", "createdAt": "2026-10-10T10:00:00+00:00" }],
+                "membersWithUsage": 1,
+            })
+        ),
+        checked!(
+            s::rooms::usage::v0_1::Payload,
+            s::rooms::usage::v0_1::Response,
+            json!({
+                "groupBy": "room",
+                "filter": { "from": "2026-09-15", "to": "2026-10-14" },
+                "sort": { "by": "bytes", "order": "desc" },
+                "limit": 10,
+            }),
+            json!({
+                "asOf": "2026-10-14T10:00:00+00:00", "from": "2026-09-15", "to": "2026-10-14",
+                "items": [{
+                    "roomId": "did:key:z6MkRoom", "storageConfig": "local",
+                    "files": 2, "bytes": 1500, "reservedBytes": 0,
+                    "uploads": 2, "downloads": 1, "egressBytes": 1000,
+                    "limits": { "maxFiles": 10000, "maxFileBytes": 104857600, "maxBytes": 5368709120u64 },
+                }],
+                "nextCursor": "vtc-rooms-usage:0011223344556677:10",
+            })
+        ),
+        checked!(
+            s::rooms::limits::set::v0_1::Payload,
+            s::rooms::limits::set::v0_1::Response,
+            json!({
+                "roomId": "did:key:z6MkRoom",
+                "target": { "kind": "member", "member": "did:key:zMember" },
+                "limits": { "maxFiles": 1 },
+                "reason": "tidy up first",
+            }),
+            json!({
+                "roomId": "did:key:z6MkRoom",
+                "target": { "kind": "member", "member": "did:key:zMember" },
+                "limits": {
+                    "limits": {
+                        "filesEnabled": true,
+                        "room": { "maxFiles": 10000, "maxFileBytes": 104857600, "maxBytes": 5368709120u64 },
+                        "member": { "maxFiles": 2000, "maxFileBytes": 104857600, "maxBytes": 1073741824 },
+                    },
+                    "roomSource": "default", "memberSource": "default",
+                    "hostCeilingBytes": 1073741824,
+                },
+                "targetLimits": { "maxFiles": 1, "maxFileBytes": 104857600 },
+                "usage": { "files": 2, "bytes": 200, "reservedBytes": 0, "reservedFiles": 0 },
+                "overLimit": true,
+            })
+        ),
+        // ─── rooms the community owns (`community_room_tasks`) ───────
+        checked!(
+            s::rooms::community::create::v0_1::Payload,
+            s::rooms::community::create::v0_1::Response,
+            json!({ "label": "Board pack", "visibility": "attributed", "reason": "the board" }),
+            json!({ "room": sample_community_room() })
+        ),
+        checked!(
+            s::rooms::community::list::v0_1::Payload,
+            s::rooms::community::list::v0_1::Response,
+            json!({ "limit": 10 }),
+            json!({
+                "items": [sample_community_room()],
+                "nextCursor": "community-rooms:did:key:z6MkRoom",
+            })
+        ),
+        checked!(
+            s::rooms::community::get::v0_1::Payload,
+            s::rooms::community::get::v0_1::Response,
+            json!({ "roomId": "did:key:z6MkRoom" }),
+            json!({ "room": sample_community_room() })
+        ),
+        checked!(
+            s::rooms::community::create::v0_2::Payload,
+            s::rooms::community::create::v0_2::Response,
+            json!({
+                "label": "Board pack", "visibility": "attributed", "reason": "the board",
+                "description": "Papers for the board's meetings.", "tags": ["board", "finance"],
+            }),
+            json!({ "room": sample_community_room_v2() })
+        ),
+        checked!(
+            s::rooms::community::list::v0_2::Payload,
+            s::rooms::community::list::v0_2::Response,
+            json!({ "limit": 10, "tag": "board" }),
+            json!({
+                "items": [sample_community_room_v2()],
+                "nextCursor": "community-rooms:did:key:z6MkRoom",
+            })
+        ),
+        checked!(
+            s::rooms::community::get::v0_2::Payload,
+            s::rooms::community::get::v0_2::Response,
+            json!({ "roomId": "did:key:z6MkRoom" }),
+            json!({ "room": sample_community_room_v2() })
+        ),
+        checked!(
+            s::rooms::community::update::v0_1::Payload,
+            s::rooms::community::update::v0_1::Response,
+            json!({
+                "roomId": "did:key:z6MkRoom", "label": "Board pack — 2027",
+                "tags": [], "reason": "the 2027 cycle",
+            }),
+            json!({ "room": sample_community_room_v2(), "changed": true })
+        ),
+        // 0.3: as 0.2, and the community's VTA writes the label and description into the
+        // room as its profile — here it did not answer yet, so `pending`.
+        checked!(
+            s::rooms::community::create::v0_3::Payload,
+            s::rooms::community::create::v0_3::Response,
+            json!({
+                "label": "Board pack", "visibility": "attributed", "reason": "the board",
+                "description": "Papers for the board's meetings.", "tags": ["board"],
+            }),
+            json!({ "room": sample_community_room_v2(), "roomProfile": "pending" })
+        ),
+        checked!(
+            s::rooms::community::update::v0_2::Payload,
+            s::rooms::community::update::v0_2::Response,
+            json!({
+                "roomId": "did:key:z6MkRoom", "label": "Board pack — 2027",
+                "reason": "the 2027 cycle",
+            }),
+            json!({ "room": sample_community_room_v2(), "changed": true, "roomProfile": "written" })
+        ),
+        checked!(
+            s::rooms::community::members::add::v0_1::Payload,
+            s::rooms::community::members::add::v0_1::Response,
+            json!({
+                "roomId": "did:key:z6MkRoom", "member": "did:key:z6MkMember",
+                "actions": ["read", "write"], "validUntil": "2027-10-01T00:00:00Z",
+                "reason": "joins the board",
+            }),
+            json!({ "member": {
+                "member": "did:key:z6MkMember", "actions": ["read", "write"],
+                "validUntil": "2027-10-01T00:00:00Z", "state": "offered",
+                "offeredAt": "2026-10-14T10:00:00Z",
+            } })
+        ),
+        checked!(
+            s::rooms::community::members::remove::v0_1::Payload,
+            s::rooms::community::members::remove::v0_1::Response,
+            json!({ "roomId": "did:key:z6MkRoom", "member": "did:key:z6MkMember", "reason": "left" }),
+            json!({
+                "member": {
+                    "member": "did:key:z6MkMember", "actions": ["read"],
+                    "validUntil": "2027-10-01T00:00:00Z", "state": "removed",
+                    "offeredAt": "2026-10-14T10:00:00Z", "admittedAt": "2026-10-14T11:00:00Z",
+                    "removedAt": "2026-11-02T09:00:00Z",
+                },
+                "epoch": 3,
+                "ext": { "org.openvtc": { "notice": "Removal recalls nothing already read." } },
+            })
+        ),
+        checked!(
+            s::rooms::community::members::remove::v0_2::Payload,
+            s::rooms::community::members::remove::v0_2::Response,
+            json!({ "roomId": "did:key:z6MkRoom", "member": "did:key:z6MkMember", "reason": "left" }),
+            json!({
+                "member": {
+                    "member": "did:key:z6MkMember", "actions": ["read"],
+                    "validUntil": "2027-10-01T00:00:00Z", "state": "removed",
+                    "offeredAt": "2026-10-14T10:00:00Z", "admittedAt": "2026-10-14T11:00:00Z",
+                    "removedAt": "2026-11-02T09:00:00Z",
+                },
+                "revocation": { "sequence": 2,
+                    "digest": "zQmbWqxBEKC3P8tqsKc98xmWNzrzDtRLMiMPL8wBuTGsMnR" },
+                "revokedAt": "2026-11-02T09:00:00Z",
+                "epoch": 3,
+            })
+        ),
+        checked!(
+            s::rooms::community::members::list::v0_1::Payload,
+            s::rooms::community::members::list::v0_1::Response,
+            json!({ "roomId": "did:key:z6MkRoom", "state": "admitted", "limit": 10 }),
+            json!({ "items": [{
+                "member": "did:key:z6MkMember", "actions": ["read"],
+                "validUntil": "2027-10-01T00:00:00Z", "state": "admitted",
+                "offeredAt": "2026-10-14T10:00:00Z", "admittedAt": "2026-10-14T11:00:00Z",
+            }] })
+        ),
+        checked!(
+            s::rooms::offers::list::v0_1::Payload,
+            s::rooms::offers::list::v0_1::Response,
+            json!({}),
+            json!({ "items": [{
+                "roomId": "did:key:z6MkRoom", "host": "did:example:community",
+                "label": "Board pack", "visibility": "attributed", "actions": ["read"],
+                "validUntil": "2027-10-01T00:00:00Z", "offeredAt": "2026-10-14T10:00:00Z",
+                "state": "open",
+                "credentials": { "invitation": "{}", "membership": "{}", "authority": "{}" },
+            }] })
+        ),
+        checked!(
+            s::rooms::offers::list::v0_2::Payload,
+            s::rooms::offers::list::v0_2::Response,
+            json!({}),
+            json!({ "items": [{
+                "roomId": "did:key:z6MkRoom", "host": "did:example:community",
+                "label": "Board pack", "description": "Papers for the board's meetings.",
+                "visibility": "attributed", "actions": ["read"],
+                "validUntil": "2027-10-01T00:00:00Z", "offeredAt": "2026-10-14T10:00:00Z",
+                "state": "open",
+                "credentials": { "invitation": "{}", "membership": "{}", "authority": "{}" },
+            }] })
+        ),
+        // 0.3: the same offers, and on the first page the renewals of the
+        // admissions the member holds (`groups::bindings`).
+        checked!(
+            s::rooms::offers::list::v0_3::Payload,
+            s::rooms::offers::list::v0_3::Response,
+            json!({}),
+            json!({
+                "items": [],
+                "renewals": [{
+                    "roomId": "did:key:z6MkRoom", "host": "did:example:community",
+                    "label": "Board pack", "visibility": "attributed", "actions": ["read"],
+                    "validUntil": "2027-11-10T00:00:00Z", "renews": "2026-11-10T00:00:00Z",
+                    "issuedAt": "2026-10-20T09:00:00Z",
+                    "credentials": { "membership": "{}", "authority": "{}" },
+                }],
+            })
+        ),
+        checked!(
+            s::rooms::memberships::list::v0_1::Payload,
+            s::rooms::memberships::list::v0_1::Response,
+            json!({ "limit": 10 }),
+            json!({ "items": [{
+                "roomId": "did:key:z6MkRoom", "host": "did:example:community",
+                "label": "Board pack", "visibility": "attributed", "actions": ["read"],
+                "validUntil": "2027-10-01T00:00:00Z", "state": "admitted",
+                "offeredAt": "2026-10-14T10:00:00Z", "admittedAt": "2026-10-14T11:00:00Z",
+                "repeatAcceptUntil": "2026-10-21T11:00:00Z",
+            }] })
+        ),
+        checked!(
+            s::rooms::offers::accept::v0_1::Payload,
+            s::rooms::offers::accept::v0_1::Response,
+            json!({ "roomId": "did:key:z6MkRoom", "keyPackage": "AAEAAgADAAQ" }),
+            json!({ "roomId": "did:key:z6MkRoom", "state": "admitted", "epoch": 2, "welcome": "AAEAAgADAAQ" })
+        ),
+        // ─── storage configs (`storage_tasks`) ───────────────────────
+        checked!(
+            s::storage::configs::list::v0_1::Payload,
+            s::storage::configs::list::v0_1::Response,
+            json!({ "state": "active", "limit": 10 }),
+            json!({
+                "items": [{ "config": sample_storage_config(), "facts": sample_storage_facts() }],
+                "nextCursor": "storage-configs:local",
+            })
+        ),
+        checked!(
+            s::storage::configs::get::v0_1::Payload,
+            s::storage::configs::get::v0_1::Response,
+            json!({ "configId": "local" }),
+            json!({
+                "config": sample_storage_config(),
+                "facts": sample_storage_facts(),
+                "assignedRooms": ["did:key:z6MkRoom"],
+                "assignedRoomsTruncated": false,
+            })
+        ),
+        checked!(
+            s::storage::configs::create::v0_1::Payload,
+            s::storage::configs::create::v0_1::Response,
+            json!({
+                "id": "local",
+                "label": "This host's disk",
+                "settings": { "kind": "local", "root": "/var/lib/vtc/room-storage/local" },
+                "capacityBytes": 1_000_000,
+                "isDefault": true,
+                "reason": "the community's first storage",
+            }),
+            json!({ "config": sample_storage_config() })
+        ),
+        checked!(
+            s::storage::configs::update::v0_1::Payload,
+            s::storage::configs::update::v0_1::Response,
+            json!({ "configId": "local", "label": "Main disk", "reason": "renamed" }),
+            json!({ "config": sample_storage_config() })
+        ),
+        // 0.2 (trust-tasks-tf #866): `roleArn`, `notAllowed`, sealed credentials.
+        checked!(
+            s::storage::configs::list::v0_2::Payload,
+            s::storage::configs::list::v0_2::Response,
+            json!({ "kind": "s3", "limit": 10 }),
+            json!({
+                "items": [{ "config": sample_storage_config_v2(), "facts": sample_storage_facts_v2() }],
+            })
+        ),
+        checked!(
+            s::storage::configs::get::v0_2::Payload,
+            s::storage::configs::get::v0_2::Response,
+            json!({ "configId": "eu-s3-instance" }),
+            json!({
+                "config": sample_storage_config_v2(),
+                "facts": {
+                    "rooms": 2, "files": 5, "bytes": 4096, "pendingDeleteBytes": 0,
+                    "credential": { "status": "ambient", "roomsHoldingCredentials": 1 },
+                    "health": {},
+                },
+                "assignedRooms": ["did:key:z6MkRoom"],
+                "assignedRoomsTruncated": false,
+            })
+        ),
+        checked!(
+            s::storage::configs::create::v0_2::Payload,
+            s::storage::configs::create::v0_2::Response,
+            json!({
+                "id": "eu-s3-instance",
+                "label": "EU — S3 (instance role)",
+                "settings": { "kind": "s3", "region": "eu-west-1", "bucket": "northwind-rooms-eu" },
+                "auth": { "mode": "ambient", "roleArn": "arn:aws:iam::123456789012:role/northwind-rooms-writer" },
+                "reason": "the community runs in the bucket's account",
+            }),
+            json!({ "config": sample_storage_config_v2() })
+        ),
+        checked!(
+            s::storage::configs::update::v0_2::Payload,
+            s::storage::configs::update::v0_2::Response,
+            json!({ "configId": "eu-s3-instance", "auth": { "mode": "sealed" }, "reason": "x" }),
+            json!({ "config": sample_storage_config_v2() })
+        ),
+        checked!(
+            s::storage::credentials::set::v0_2::Payload,
+            s::storage::credentials::set::v0_2::Response,
+            json!({
+                "configId": "r2-archive",
+                "sealed": format!("-----BEGIN VTA SEALED BUNDLE-----\n{}\n-----END VTA SEALED BUNDLE-----", "A".repeat(64)),
+                "digestMultibase": "zQmRq2ZwqJ3vWJrK1v8R8oPqWXhD4nVb1JmT9pV6uYh3aBc",
+                "reason": "evaluation only",
+            }),
+            json!({
+                "configId": "r2-archive",
+                "credentialState": {
+                    "status": "sealed",
+                    "fingerprint": "zQmT5NvUtoM5nWFfrQdVrFtvGfKFmG7AHE8P34isapyhCxX",
+                    "setAt": "2026-10-10T10:30:00Z",
+                },
+                "probeOk": true,
+            })
+        ),
+        checked!(
+            s::storage::configs::retire::v0_1::Payload,
+            s::storage::configs::retire::v0_1::Response,
+            json!({ "configId": "local", "reason": "moving to object storage" }),
+            json!({ "configId": "local", "state": "draining", "blobsRemaining": 3 })
+        ),
+        checked!(
+            s::storage::configs::probe::v0_1::Payload,
+            s::storage::configs::probe::v0_1::Response,
+            json!({ "configId": "local" }),
+            json!({
+                "configId": "local",
+                "ok": false,
+                "probedAt": "2026-10-12T10:00:00Z",
+                "prefix": vti_common::blob_store::PROBE_PREFIX,
+                "steps": [
+                    { "step": "authenticate", "ok": true, "durationMs": 0 },
+                    { "step": "put", "ok": false, "durationMs": 3, "error": "permission denied" },
+                ],
+            })
+        ),
+        checked!(
+            s::rooms::storage::assign::v0_1::Payload,
+            s::rooms::storage::assign::v0_1::Response,
+            json!({ "roomId": "did:key:z6MkRoom", "configId": "eu", "reason": "EU residency" }),
+            json!({
+                "roomId": "did:key:z6MkRoom",
+                "configId": "eu",
+                "previousConfigId": "local",
+                "blobsOnEarlierConfigs": 2,
+            })
+        ),
+        checked!(
+            s::rooms::storage::migrate::v0_1::Payload,
+            s::rooms::storage::migrate::v0_1::Response,
+            json!({
+                "roomId": "did:key:z6MkRoom",
+                "maxBytesPerSecond": 1_048_576,
+                "reason": "retiring local",
+            }),
+            crate::rooms::migration::response_json(
+                &sample_migration(),
+                crate::rooms::migration::Wire::V0_1,
+            )
+        ),
+        checked!(
+            s::rooms::storage::migrate::v0_2::Payload,
+            s::rooms::storage::migrate::v0_2::Response,
+            json!({
+                "roomId": "did:key:z6MkRoom",
+                "maxBytesPerSecond": 1_048_576,
+                "reason": "retiring local",
+            }),
+            crate::rooms::migration::response_json(
+                &sample_paused_migration(),
+                crate::rooms::migration::Wire::V0_2,
+            )
         ),
         // ─── admin ───────────────────────────────────────────────────
         checked!(
@@ -1020,25 +1826,25 @@ fn table() -> Vec<Conformance> {
         ),
         // ─── auth ────────────────────────────────────────────────────
         checked!(
-            s::auth::admin_session::v0_1::Payload,
-            s::auth::admin_session::v0_1::Response,
+            s::auth::admin_session::v0_2::Payload,
+            s::auth::admin_session::v0_2::Response,
             json!({ "accessToken": "eyJhbGciOiJFZERTQSJ9.e30.sig" }),
             // `AdminSessionResponse` — the handler returned 204 and nothing
             // else until #1059. The cookies remain; the body is what makes
             // the route usable by anything that is not a browser.
-            json!({ "sessionId": REQUEST_ID, "expiresAt": 1_787_500_800_u64 })
+            json!({ "sessionId": REQUEST_ID, "expiresAt": TS })
         ),
         checked!(
-            s::auth::recognise::challenge::v0_1::Payload,
-            s::auth::recognise::challenge::v0_1::Response,
+            s::auth::recognise::challenge::v0_2::Payload,
+            s::auth::recognise::challenge::v0_2::Response,
             json!({}),
-            // `RecogniseChallengeResponse` — routes/recognise.rs:92.
-            // `expiresAt` is unix seconds, which is what the spec types.
-            json!({ "nonce": "b7c1e0a94f2d4e8ab5c36f01d9e27a3c", "expiresAt": 1_787_654_400_u64 })
+            // `RecogniseChallengeResponse` — routes/recognise.rs. `expiresAt`
+            // is an RFC 3339 date-time from 0.2 (0.1 typed it Unix seconds).
+            json!({ "nonce": "b7c1e0a94f2d4e8ab5c36f01d9e27a3c", "expiresAt": TS })
         ),
         checked!(
-            s::auth::recognise::v0_2::Payload,
-            s::auth::recognise::v0_2::Response,
+            s::auth::recognise::v0_3::Payload,
+            s::auth::recognise::v0_3::Response,
             // `RecogniseRequest` — routes/recognise.rs:82.
             json!({ "presentation": { "type": ["VerifiablePresentation"], "nonce": "b7c1e0" } }),
             // `RecogniseResponse` — routes/recognise.rs:102.
@@ -1046,7 +1852,7 @@ fn table() -> Vec<Conformance> {
                 "sessionId": "xc-6f2b1a7c-9d3e-4c58-b0a1-2e7d4f6a8b9c",
                 "data": {
                     "accessToken": "eyJhbGciOiJFZERTQSJ9.e30.sig",
-                    "accessExpiresAt": 1_787_655_300_u64,
+                    "accessExpiresAt": TS,
                     "foreignIssuerDid": "did:web:peer.example",
                     "mappedRole": "member",
                 },
@@ -1115,6 +1921,12 @@ fn table() -> Vec<Conformance> {
         ),
         // ─── config ──────────────────────────────────────────────────
         checked!(
+            s::config::did_hosting::list::v0_1::Payload,
+            s::config::did_hosting::list::v0_1::Response,
+            json!({}),
+            json!({ "servers": [{ "id": "hosting-eu", "did": "did:webvh:QmHost:hosting.example.com", "label": "EU hosting" }] })
+        ),
+        checked!(
             s::config::export::v0_1::Payload,
             s::config::export::v0_1::Response,
             json!({}),
@@ -1159,14 +1971,112 @@ fn table() -> Vec<Conformance> {
             s::directory::query::v0_1::Response,
             // `subject` is the path segment and `fields` the query string
             // (routes/directory.rs:65,93); both are consumable in the body.
-            json!({ "subject": DID, "fields": "did,role,joined_at,status" }),
-            // `DirectoryResponse` — routes/directory.rs:74. The projection's
-            // keys are policy output, and the spec types `fields` as a free
-            // object, so their snake_case is in scope here.
+            json!({ "subject": DID, "fields": "did,role,joinedAt" }),
+            // Answered through the directory projection
+            // (`directory::read::query_by_did`), keyed by field.
             json!({
                 "subject": DID,
-                "fields": { "did": DID, "role": "member", "joined_at": TS, "status": "active" },
+                "fields": { "did": DID, "role": "member", "joinedAt": "2026-08-23" },
             })
+        ),
+        checked!(
+            s::directory::fields::list::v0_1::Payload,
+            s::directory::fields::list::v0_1::Response,
+            json!({ "includeRetired": true }),
+            json!({
+                "fields": [directory_field()],
+                "listingDefaults": { "defaultListing": "listed" },
+            })
+        ),
+        checked!(
+            s::directory::fields::define::v0_1::Payload,
+            s::directory::fields::define::v0_1::Response,
+            json!({
+                "field": {
+                    "key": "org.example.chapter", "label": "Chapter", "type": "enum",
+                    "source": "admin", "ceiling": "members", "defaultVisibility": "members",
+                    "facet": true, "order": 40,
+                    "constraints": { "options": [{ "value": "sydney", "label": "Sydney" }] },
+                },
+                "reason": "Members asked to find their chapter.",
+            }),
+            json!({ "field": directory_field() })
+        ),
+        checked!(
+            s::directory::fields::update::v0_1::Payload,
+            s::directory::fields::update::v0_1::Response,
+            json!({ "key": "bio", "ceiling": "members", "enabled": true, "reason": "narrow" }),
+            json!({ "field": directory_field() })
+        ),
+        checked!(
+            s::directory::fields::retire::v0_1::Payload,
+            s::directory::fields::retire::v0_1::Response,
+            json!({ "key": "org.example.chapter", "reason": "No longer collected." }),
+            json!({ "field": {
+                "key": "org.example.chapter", "label": "Chapter", "type": "text",
+                "source": "member", "base": false, "required": false, "ceiling": "members",
+                "defaultVisibility": "members", "searchable": false, "facet": false,
+                "order": 40, "state": "retired", "retiredAt": TS, "purgeAfter": TS,
+            }})
+        ),
+        checked!(
+            s::directory::card::show::v0_1::Payload,
+            s::directory::card::show::v0_1::Response,
+            json!({}),
+            json!({ "card": directory_card(), "missingRequired": ["displayName"] })
+        ),
+        checked!(
+            s::directory::card::update::v0_1::Payload,
+            s::directory::card::update::v0_1::Response,
+            json!({
+                "values": { "displayName": "Carol", "bio": null },
+                "visibility": { "displayName": "members", "pronouns": null },
+                "discoverability": { "listing": "findable", "search": "exactNickname", "external": false },
+                "introductions": "groups",
+                "groupAudience": null,
+                "expectedRevision": 3,
+            }),
+            json!({ "card": directory_card(), "missingRequired": [] })
+        ),
+        checked!(
+            s::directory::card::assert::v0_1::Payload,
+            s::directory::card::assert::v0_1::Response,
+            json!({
+                "entryId": DIRECTORY_ENTRY,
+                "values": { "org.example.chapter": "sydney" },
+                "reason": "Moved to the Sydney chapter.",
+            }),
+            json!({ "entryId": DIRECTORY_ENTRY, "written": ["org.example.chapter"], "revision": 5 })
+        ),
+        checked!(
+            s::directory::entries::list::v0_1::Payload,
+            s::directory::entries::list::v0_1::Response,
+            json!({
+                "query": "caro",
+                "filters": [{ "field": "org.example.chapter", "values": ["sydney"] }],
+                "limit": 25,
+            }),
+            json!({
+                "items": [{
+                    "entryId": DIRECTORY_ENTRY,
+                    "fields": { "displayName": "Carol", "role": "member" },
+                    "connected": true,
+                }],
+                "facets": [{ "field": "org.example.chapter", "values": [
+                    { "value": "sydney", "count": 12 },
+                    { "value": "berlin", "fewerThan": 5 },
+                ]}],
+                "nextCursor": null,
+            })
+        ),
+        checked!(
+            s::directory::entries::show::v0_1::Payload,
+            s::directory::entries::show::v0_1::Response,
+            json!({ "entryId": DIRECTORY_ENTRY }),
+            json!({ "entry": {
+                "entryId": DIRECTORY_ENTRY,
+                "fields": { "displayName": "Carol", "role": "member", "did": DID },
+            }})
         ),
         // ─── endorsement-types ───────────────────────────────────────
         checked!(
@@ -1182,8 +2092,8 @@ fn table() -> Vec<Conformance> {
             json!({ "endorsementType": endorsement_type() })
         ),
         checked!(
-            s::endorsement_types::list::v0_1::Payload,
-            s::endorsement_types::list::v0_1::Response,
+            s::endorsement_types::list::v0_2::Payload,
+            s::endorsement_types::list::v0_2::Response,
             json!({ "cursor": "eyJsYXN0S2V5Ijoi", "limit": 50 }),
             paginated(json!([endorsement_type()]))
         ),
@@ -1218,8 +2128,8 @@ fn table() -> Vec<Conformance> {
             .expect("IssueResponse serialises")
         ),
         checked!(
-            s::endorsements::list::v0_1::Payload,
-            s::endorsements::list::v0_1::Response,
+            s::endorsements::list::v0_2::Payload,
+            s::endorsements::list::v0_2::Response,
             json!({ "subjectDid": DID, "typeUri": "https://skills.example.com/v1/rust",
                     "includeRevoked": true, "cursor": "eyJsYXN0S2V5Ijoi", "limit": 50 }),
             paginated(json!([endorsement()]))
@@ -1359,8 +2269,8 @@ fn table() -> Vec<Conformance> {
         ),
         // ─── join-requests ───────────────────────────────────────────
         checked!(
-            s::join_requests::list::v0_1::Payload,
-            s::join_requests::list::v0_1::Response,
+            s::join_requests::list::v0_2::Payload,
+            s::join_requests::list::v0_2::Response,
             json!({ "status": "pending", "cursor": "eyJsYXN0S2V5Ijoi", "limit": 25 }),
             paginated(json!([join_request()]))
         ),
@@ -1539,8 +2449,8 @@ fn table() -> Vec<Conformance> {
             json!({ "did": DID, "disposition": "purge", "removed": true })
         ),
         checked!(
-            s::members::list::v0_1::Payload,
-            s::members::list::v0_1::Response,
+            s::members::list::v0_2::Payload,
+            s::members::list::v0_2::Response,
             json!({ "role": "member", "cursor": "eyJsYXN0S2V5Ijoi", "limit": 50 }),
             paginated(json!([member_response()]))
         ),
@@ -1561,6 +2471,30 @@ fn table() -> Vec<Conformance> {
             // optional document present, so the witness covers the widest
             // shape the route sends.
             member_credentials_response()
+        ),
+        checked!(
+            s::members::admit::v0_1::Payload,
+            s::members::admit::v0_1::Response,
+            json!({
+                "subject": DID,
+                "role": "moderator",
+                "label": "Ada",
+                "reason": "the founding moderator"
+            }),
+            // Built by the handler's own projection from a completed admission.
+            to_v(
+                crate::trust_tasks::admission_tasks::admit_response(admitted(Some("Ada")))
+                    .expect("a completed admission projects")
+            )
+        ),
+        checked!(
+            s::members::make_membership::v0_1::Payload,
+            s::members::make_membership::v0_1::Response,
+            json!({ "subject": DID, "reason": "the founder is a member too" }),
+            to_v(
+                crate::trust_tasks::admission_tasks::make_response(admitted(None))
+                    .expect("a completed admission projects")
+            )
         ),
         checked!(
             s::members::update::v0_1::Payload,
@@ -1655,8 +2589,8 @@ fn table() -> Vec<Conformance> {
                     "ext": { crate::members::match_code::MATCH_CODE_EXT_KEY: "7F4K-2QX9" } })
         ),
         checked!(
-            s::members::personhood::assert::v0_1::Payload,
-            s::members::personhood::assert::v0_1::Response,
+            s::members::personhood::assert::v0_2::Payload,
+            s::members::personhood::assert::v0_2::Response,
             // The payload the spine's assert handler reads.
             json!({ "did": DID, "presentation": { "type": ["VerifiablePresentation"] } }),
             // `AssertResponse` — routes/members/personhood.rs:206.
@@ -1778,6 +2712,24 @@ fn table() -> Vec<Conformance> {
                 "skipped": [{
                     "jobId": "1f2e3d4c-5b6a-4798-8765-43210fedcba9",
                     "reason": "notFailed",
+                }],
+            })
+        ),
+        // `sync_jobs_retry_v0_2`: a pending job brought forward says so, and
+        // an RTBF-batched one is `held`.
+        checked!(
+            s::registry::sync_jobs::retry::v0_2::Payload,
+            s::registry::sync_jobs::retry::v0_2::Response,
+            json!({ "allWaiting": true }),
+            json!({
+                "requeued": [{
+                    "jobId": "07c6c189-8272-4761-96e9-0ef869380665",
+                    "memberDid": "did:web:member.example",
+                    "from": "pending",
+                }],
+                "skipped": [{
+                    "jobId": "1f2e3d4c-5b6a-4798-8765-43210fedcba9",
+                    "reason": "held",
                 }],
             })
         ),
@@ -2036,18 +2988,20 @@ fn table() -> Vec<Conformance> {
                 "complete": true,
             })
         ),
-        // ─── join manifest 0.3 and peer identity vetting ─────────────
+        // ─── join manifest 0.4 and peer identity vetting ─────────────
         //
         // Every one of these handlers speaks the generated types. The
         // responses are built the way the handlers build them — through the
         // generated builders, or the manifest read itself — so a response the
         // service could not produce cannot stand in for one it does.
         checked!(
-            s::join_requests::manifest::v0_3::Payload,
-            s::join_requests::manifest::v0_3::Response,
+            s::join_requests::manifest::v0_4::Payload,
+            s::join_requests::manifest::v0_4::Response,
             json!({}),
             to_v(
-                crate::routes::join_requests::manifest::response_v0_3(
+                // With the directory's disclosure statement the way
+                // `directory::disclosure` generates it from the base schema.
+                crate::routes::join_requests::manifest::response(
                     COMMUNITY_DID.into(),
                     vec![crate::schemas::accepts::AcceptsCriterion {
                         id: "kernel-developer".into(),
@@ -2089,9 +3043,237 @@ fn table() -> Vec<Conformance> {
                         }))
                         .expect("requested attribute"),
                     ],
+                    base_disclosure(),
                 )
                 .expect("the manifest projects the criterion"),
             )
+        ),
+        checked!(
+            s::directory::disclosure::v0_1::Payload,
+            s::directory::disclosure::v0_1::Response,
+            json!({}),
+            json!({ "communityDid": COMMUNITY_DID, "disclosure": base_disclosure() })
+        ),
+        checked!(
+            s::directory::card::present::v0_1::Payload,
+            s::directory::card::present::v0_1::Response,
+            json!({
+                "fields": ["org.example.registration"],
+                "presentation": "eyJhbGciOiJFZERTQSJ9.e30.c2ln~WyJzYWx0IiwicmVnIiwiUkVHLTEiXQ~eyJhbGciOiJFZERTQSIsInR5cCI6ImtiK2p3dCJ9.e30.c2ln",
+            }),
+            json!({
+                "verified": {
+                    "org.example.registration": {
+                        "value": "REG-48213",
+                        "issuer": "did:example:registry",
+                        "credentialType": "ProfessionalRegistration",
+                        "verifiedAt": "2026-10-19T09:00:01Z",
+                        "validUntil": "2027-06-30T00:00:00Z",
+                    }
+                },
+                "revision": 6,
+            })
+        ),
+        checked!(
+            s::groups::create::v0_1::Payload,
+            s::groups::create::v0_1::Response,
+            json!({
+                "name": "Identity WG",
+                "kind": "static",
+                "joinPolicy": "request",
+                "visibility": "members",
+                "showMembers": "groupMembers",
+                "reason": "the working group starts",
+            }),
+            json!({ "group": group_wire() })
+        ),
+        checked!(
+            s::groups::update::v0_1::Payload,
+            s::groups::update::v0_1::Response,
+            json!({ "groupId": "grp_W5k2N8xRb3Qz7TpLAAAAAA", "showMembers": "admins" }),
+            json!({ "group": group_wire() })
+        ),
+        checked!(
+            s::groups::delete::v0_1::Payload,
+            s::groups::delete::v0_1::Response,
+            json!({ "groupId": "grp_W5k2N8xRb3Qz7TpLAAAAAA", "reason": "wound up" }),
+            json!({
+                "groupId": "grp_W5k2N8xRb3Qz7TpLAAAAAA",
+                "state": "deleted",
+                "membersRemoved": 0,
+                "bindingsRemoved": 0,
+            })
+        ),
+        checked!(
+            s::groups::list::v0_1::Payload,
+            s::groups::list::v0_1::Response,
+            json!({ "joinable": true, "limit": 50 }),
+            json!({ "items": [{ "group": group_wire(), "myMembership": "none" }] })
+        ),
+        checked!(
+            s::groups::show::v0_1::Payload,
+            s::groups::show::v0_1::Response,
+            json!({ "groupId": "grp_W5k2N8xRb3Qz7TpLAAAAAA" }),
+            json!({ "group": group_wire(), "myMembership": "member" })
+        ),
+        checked!(
+            s::groups::members::add::v0_1::Payload,
+            s::groups::members::add::v0_1::Response,
+            json!({ "groupId": "grp_W5k2N8xRb3Qz7TpLAAAAAA", "entryId": DIRECTORY_ENTRY }),
+            json!({ "member": { "entryId": DIRECTORY_ENTRY, "source": "added", "since": "2026-10-19T09:00:00Z", "state": "active", "credentialId": "urn:uuid:5a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d", "credentialValidUntil": "2026-11-18T09:00:00Z" }, "credentialId": "urn:uuid:5a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d" })
+        ),
+        checked!(
+            s::groups::members::remove::v0_1::Payload,
+            s::groups::members::remove::v0_1::Response,
+            json!({ "groupId": "grp_W5k2N8xRb3Qz7TpLAAAAAA", "entryId": DIRECTORY_ENTRY }),
+            json!({ "groupId": "grp_W5k2N8xRb3Qz7TpLAAAAAA", "entryId": DIRECTORY_ENTRY, "state": "removed", "credentialValidUntil": "2026-11-18T09:00:00Z" })
+        ),
+        checked!(
+            s::groups::members::list::v0_1::Payload,
+            s::groups::members::list::v0_1::Response,
+            json!({ "groupId": "grp_W5k2N8xRb3Qz7TpLAAAAAA", "limit": 50 }),
+            json!({ "items": [{ "entryId": DIRECTORY_ENTRY, "source": "added", "since": "2026-10-19T09:00:00Z", "state": "active", "credentialId": "urn:uuid:5a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d", "credentialValidUntil": "2026-11-18T09:00:00Z" }] })
+        ),
+        checked!(
+            s::groups::join::v0_1::Payload,
+            s::groups::join::v0_1::Response,
+            json!({ "groupId": "grp_W5k2N8xRb3Qz7TpLAAAAAA", "message": "I work on identity." }),
+            json!({ "groupId": "grp_W5k2N8xRb3Qz7TpLAAAAAA", "outcome": "requested", "request": { "requestId": "greq_W5k2N8xRb3Qz7TpLAAAAAA", "groupId": "grp_W5k2N8xRb3Qz7TpLAAAAAA", "entryId": DIRECTORY_ENTRY, "message": "I work on identity.", "createdAt": "2026-10-19T09:00:00Z", "state": "pending" }, "credentialId": null })
+        ),
+        checked!(
+            s::groups::leave::v0_1::Payload,
+            s::groups::leave::v0_1::Response,
+            json!({ "groupId": "grp_W5k2N8xRb3Qz7TpLAAAAAA" }),
+            json!({ "groupId": "grp_W5k2N8xRb3Qz7TpLAAAAAA", "state": "left", "credentialValidUntil": "2026-11-18T09:00:00Z" })
+        ),
+        checked!(
+            s::groups::requests::list::v0_1::Payload,
+            s::groups::requests::list::v0_1::Response,
+            json!({ "groupId": "grp_W5k2N8xRb3Qz7TpLAAAAAA", "state": "pending" }),
+            json!({ "items": [{ "request": { "requestId": "greq_W5k2N8xRb3Qz7TpLAAAAAA", "groupId": "grp_W5k2N8xRb3Qz7TpLAAAAAA", "entryId": DIRECTORY_ENTRY, "message": "I work on identity.", "createdAt": "2026-10-19T09:00:00Z", "state": "pending" } }] })
+        ),
+        checked!(
+            s::groups::requests::decide::v0_1::Payload,
+            s::groups::requests::decide::v0_1::Response,
+            json!({ "requestId": "greq_W5k2N8xRb3Qz7TpLAAAAAA", "decision": "approve" }),
+            json!({ "request": { "requestId": "greq_W5k2N8xRb3Qz7TpLAAAAAA", "groupId": "grp_W5k2N8xRb3Qz7TpLAAAAAA", "entryId": DIRECTORY_ENTRY, "message": "I work on identity.", "createdAt": "2026-10-19T09:00:00Z", "state": "pending" }, "member": { "entryId": DIRECTORY_ENTRY, "source": "added", "since": "2026-10-19T09:00:00Z", "state": "active", "credentialId": "urn:uuid:5a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d", "credentialValidUntil": "2026-11-18T09:00:00Z" }, "credentialId": "urn:uuid:5a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d" })
+        ),
+        checked!(
+            s::groups::managers::add::v0_1::Payload,
+            s::groups::managers::add::v0_1::Response,
+            json!({ "groupId": "grp_W5k2N8xRb3Qz7TpLAAAAAA", "entryId": DIRECTORY_ENTRY, "reason": "she convenes it" }),
+            json!({ "groupId": "grp_W5k2N8xRb3Qz7TpLAAAAAA", "managers": [DIRECTORY_ENTRY] })
+        ),
+        checked!(
+            s::groups::managers::remove::v0_1::Payload,
+            s::groups::managers::remove::v0_1::Response,
+            json!({ "groupId": "grp_W5k2N8xRb3Qz7TpLAAAAAA", "entryId": DIRECTORY_ENTRY }),
+            json!({ "groupId": "grp_W5k2N8xRb3Qz7TpLAAAAAA", "managers": [] })
+        ),
+        // A group's room bindings (`groups::bindings`); the response is the
+        // stored binding's own `wire()`.
+        checked!(
+            s::groups::bindings::add::v0_1::Payload,
+            s::groups::bindings::add::v0_1::Response,
+            json!({
+                "groupId": "grp_W5k2N8xRb3Qz7TpLAAAAAA",
+                "binding": { "kind": "room", "roomId": "did:key:z6MkRoom", "actions": ["read"], "validFor": "P30D" },
+                "reason": "The working group's room.",
+            }),
+            json!({ "binding": sample_binding().wire() })
+        ),
+        checked!(
+            s::groups::bindings::list::v0_1::Payload,
+            s::groups::bindings::list::v0_1::Response,
+            json!({ "groupId": "grp_W5k2N8xRb3Qz7TpLAAAAAA" }),
+            json!({ "items": [sample_binding().wire()] })
+        ),
+        checked!(
+            s::groups::bindings::remove::v0_1::Payload,
+            s::groups::bindings::remove::v0_1::Response,
+            json!({
+                "groupId": "grp_W5k2N8xRb3Qz7TpLAAAAAA",
+                "bindingId": "gb_P2k8W5qYc6Vd1MsKAAAAAA",
+                "reason": "The room moved.",
+            }),
+            json!({ "bindingId": "gb_P2k8W5qYc6Vd1MsKAAAAAA", "state": "removing" })
+        ),
+        checked!(
+            s::directory::notes::append::v0_1::Payload,
+            s::directory::notes::append::v0_1::Response,
+            json!({ "entryId": DIRECTORY_ENTRY, "text": "Spoke at the June meetup.", "followUp": "2026-11-01" }),
+            json!({ "note": admin_note().wire() })
+        ),
+        checked!(
+            s::directory::notes::list::v0_1::Payload,
+            s::directory::notes::list::v0_1::Response,
+            json!({ "entryId": DIRECTORY_ENTRY, "limit": 20 }),
+            json!({ "items": [admin_note().wire()], "nextCursor": null })
+        ),
+        checked!(
+            s::directory::notes::export::v0_1::Payload,
+            s::directory::notes::export::v0_1::Response,
+            json!({ "entryId": DIRECTORY_ENTRY, "reason": "The member asked for the data held about them." }),
+            json!({
+                "entryId": DIRECTORY_ENTRY,
+                "notes": [admin_note().wire_whole()],
+                "exportedAt": "2026-10-19T09:00:00Z",
+            })
+        ),
+        checked!(
+            s::directory::export::v0_1::Payload,
+            s::directory::export::v0_1::Response,
+            json!({ "format": "jscontact", "reason": "Annual archive.", "limit": 200 }),
+            json!({
+                "items": [{
+                    "@type": "Card",
+                    "version": "1.0",
+                    "uid": format!("{}{DIRECTORY_ENTRY}", crate::directory::external::UID_PREFIX),
+                    "name": { "full": "Carol Example" },
+                    "role": "member",
+                }],
+                "nextCursor": null,
+                "exportedAt": "2026-10-19T09:00:00Z",
+            })
+        ),
+        checked!(
+            s::directory::images::upload::v0_1::Payload,
+            s::directory::images::upload::v0_1::Response,
+            json!({ "mediaType": "image/png", "data": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAAB" }),
+            json!({ "image": stored_picture(), "expiresAt": "2026-10-20T09:00:01Z" })
+        ),
+        checked!(
+            s::directory::images::get::v0_1::Payload,
+            s::directory::images::get::v0_1::Response,
+            json!({
+                "entryId": DIRECTORY_ENTRY,
+                "field": "avatar",
+                "sha256": stored_picture()["sha256"],
+            }),
+            json!({ "image": stored_picture(), "data": "_9j_4AAQSkZJRgABAQAAAQABAAD" })
+        ),
+        checked!(
+            s::directory::card::publish::v0_1::Payload,
+            s::directory::card::publish::v0_1::Response,
+            json!({ "card": published_card(), "expectedRevision": 7 }),
+            json!({ "externalCard": {
+                "state": "published",
+                "cardDigest": crate::directory::external::card_digest(&published_card()).unwrap(),
+                "publishedAt": "2026-10-19T09:10:02Z",
+            }})
+        ),
+        checked!(
+            s::directory::card::public::v0_1::Payload,
+            s::directory::card::public::v0_1::Response,
+            json!({
+                "entryId": DIRECTORY_ENTRY,
+                "cardDigest": crate::directory::external::card_digest(&published_card()).unwrap(),
+            }),
+            json!({
+                "card": published_card(),
+                "cardDigest": crate::directory::external::card_digest(&published_card()).unwrap(),
+                "publishedAt": "2026-10-19T09:10:02Z",
+            })
         ),
         checked!(
             s::vetting::revoke_statement::v0_1::Payload,
@@ -2207,23 +3389,10 @@ fn table() -> Vec<Conformance> {
             )
         ),
         checked!(
-            s::vetting::vetters::resend::v0_1::Payload,
-            s::vetting::vetters::resend::v0_1::Response,
-            json!({}),
-            to_v(
-                s::vetting::vetters::resend::v0_1::Response::try_from(
-                    s::vetting::vetters::resend::v0_1::Response::builder()
-                        .credential_id(format!("urn:uuid:{REQUEST_ID}"))
-                        .valid_until(TS.parse::<DateTime<chrono::Utc>>().unwrap()),
-                )
-                .expect("resend response")
-            )
-        ),
-        checked!(
             s::vetting::vetters::resend::v0_2::Payload,
             s::vetting::vetters::resend::v0_2::Response,
             // The administrator's route: `memberDid` names whose grant to
-            // resend, instead of the sender's own (`0.1`'s empty payload).
+            // resend, instead of the sender's own (an empty payload).
             json!({ "memberDid": OTHER_DID }),
             to_v(
                 s::vetting::vetters::resend::v0_2::Response::try_from(
@@ -2250,6 +3419,18 @@ fn table() -> Vec<Conformance> {
             s::community::branding::update::v0_1::Response,
             json!({ "branding": branding() }),
             json!({ "branding": branding() })
+        ),
+        checked!(
+            s::community::theme::show::v0_1::Payload,
+            s::community::theme::show::v0_1::Response,
+            json!({}),
+            json!({ "stylesheet": ":root { --brand: #0a7f5c; }", "updatedAt": TS })
+        ),
+        checked!(
+            s::community::theme::update::v0_1::Payload,
+            s::community::theme::update::v0_1::Response,
+            json!({ "stylesheet": ":root { --brand: #0a7f5c; }", "dryRun": true }),
+            json!({ "stylesheet": ":root { --brand: #0a7f5c; }", "stored": false })
         ),
         checked!(
             s::community::requested_attributes::show::v0_1::Payload,
@@ -2497,7 +3678,60 @@ fn table() -> Vec<Conformance> {
     ];
     #[cfg(feature = "vetting-pcs")]
     table.extend(pcs_witnesses());
+    #[cfg(feature = "voting")]
+    table.extend(election_witnesses());
     table
+}
+
+/// Community elections (`vtc/elections/*`), witnessed only where they are bound: each the
+/// specification's own example request and response.
+#[cfg(feature = "voting")]
+fn election_witnesses() -> Vec<Conformance> {
+    use trust_tasks_rs::specs::vtc as s;
+    vec![
+        checked!(
+            s::elections::create::v0_1::Payload,
+            s::elections::create::v0_1::Response,
+            serde_json::from_str::<Value>(r#"{"manifest": {"electionId": "board-2026", "community": "did:webvh:QmCommunity:community.example", "title": "Board election 2026", "questions": [{"key": "chair", "type": "choice", "text": "Who should chair the board?", "options": [{"key": "alice", "label": "Alice"}, {"key": "bob", "label": "Bob"}], "minSelections": 1, "maxSelections": 1, "optional": true}], "secrecy": "open", "roll": {"rule": "members"}, "registrationOpens": "2026-11-01T00:00:00Z", "votingOpens": "2026-11-08T00:00:00Z", "votingCloses": "2026-11-15T00:00:00Z", "revote": "replace", "board": {"visibility": "public", "auditors": ["did:web:audit.example"]}, "ballotBox": "did:web:ballots.example", "binding": true, "allowEarlyClose": false, "resultsBeforeClose": false, "textReleaseThreshold": 10}}"#).unwrap(),
+            serde_json::from_str::<Value>(r#"{"electionId": "board-2026", "manifestDigest": "zQmbWqxBEKC3P8tqsKc98xmWNzrzDtRLMiMPL8wBuTGsMnR", "state": "registered", "actionId": "act_Vb3k9Qm2Lp7xR4tZ"}"#).unwrap()
+        ),
+        checked!(
+            s::elections::list::v0_1::Payload,
+            s::elections::list::v0_1::Response,
+            serde_json::from_str::<Value>(r#"{"state": "voting", "limit": 20}"#).unwrap(),
+            serde_json::from_str::<Value>(r#"{"elections": [{"electionId": "board-2026", "title": "Board election 2026", "state": "voting", "votingOpens": "2026-11-08T00:00:00Z", "votingCloses": "2026-11-15T00:00:00Z", "binding": true, "ticketHeld": true}]}"#).unwrap()
+        ),
+        checked!(
+            s::elections::show::v0_1::Payload,
+            s::elections::show::v0_1::Response,
+            serde_json::from_str::<Value>(r#"{"electionId": "board-2026"}"#).unwrap(),
+            serde_json::from_str::<Value>(r#"{"manifest": {"electionId": "board-2026", "community": "did:webvh:QmCommunity:community.example", "title": "Board election 2026", "questions": [{"key": "chair", "type": "choice", "text": "Who should chair the board?", "options": [{"key": "alice", "label": "Alice"}, {"key": "bob", "label": "Bob"}], "minSelections": 1, "maxSelections": 1, "optional": true}], "secrecy": "open", "roll": {"rule": "members"}, "registrationOpens": "2026-11-01T00:00:00Z", "votingOpens": "2026-11-08T00:00:00Z", "votingCloses": "2026-11-15T00:00:00Z", "revote": "replace", "board": {"visibility": "public", "auditors": ["did:web:audit.example"]}, "ballotBox": "did:web:ballots.example", "binding": true, "allowEarlyClose": false, "resultsBeforeClose": false, "textReleaseThreshold": 10}, "manifestDigest": "zQmbWqxBEKC3P8tqsKc98xmWNzrzDtRLMiMPL8wBuTGsMnR", "state": "registration", "parameters": {"suite": "ps-ddh-bls12381", "votingKey": "z3Xef1JY2x1s2vY6yKWfLu8Ap2vKuoZGwaQLZ2tjq8QkEZbGeZyaNgtznZ8B7N1yf14"}, "disclosure": {"ballotBox": "did:web:ballots.example", "ballotBoxOperator": "Ballots Example Ltd", "sameOperator": false, "boardVisibility": "public", "auditors": ["did:web:audit.example"], "revote": "replace", "coercionResistance": false}, "checkpoints": [{"head": {"electionId": "board-2026", "treeSize": 0, "rootHash": "zQmdfTbBqBPQ7VNxZEYEj14VmRuZBkqFbiwReogJgS1zR1n", "issuedAt": "2026-11-01T00:00:05Z"}, "document": {"id": "urn:uuid:92a3b4c5-d6e7-4f80-a9ba-2b3c4d5e6f70", "type": "https://trusttasks.org/spec/voting/board/head/0.1#response", "issuer": "did:web:ballots.example", "recipient": "did:webvh:QmCommunity:community.example", "issuedAt": "2026-11-01T00:00:05Z", "threadId": "urn:uuid:a3b4c5d6-e7f8-4091-bacb-3c4d5e6f7081", "payload": {"head": {"electionId": "board-2026", "treeSize": 0, "rootHash": "zQmdfTbBqBPQ7VNxZEYEj14VmRuZBkqFbiwReogJgS1zR1n", "issuedAt": "2026-11-01T00:00:05Z"}}, "proof": {"type": "DataIntegrityProof", "cryptosuite": "eddsa-jcs-2022", "verificationMethod": "did:web:ballots.example#key-1", "created": "2026-11-01T00:00:05Z", "proofPurpose": "assertionMethod", "proofValue": "z5BallotBoxHeadProofValue"}}}]}"#).unwrap()
+        ),
+        checked!(
+            s::elections::close::v0_1::Payload,
+            s::elections::close::v0_1::Response,
+            serde_json::from_str::<Value>(r#"{"electionId": "motion-17", "reason": "Every one of the 12 eligible members has voted."}"#).unwrap(),
+            serde_json::from_str::<Value>(r#"{"electionId": "motion-17", "state": "closed"}"#).unwrap()
+        ),
+        checked!(
+            s::elections::cancel::v0_1::Payload,
+            s::elections::cancel::v0_1::Response,
+            serde_json::from_str::<Value>(r#"{"electionId": "board-2026", "reason": "The candidate list omitted a nominee; the election will be created again."}"#).unwrap(),
+            serde_json::from_str::<Value>(r#"{"electionId": "board-2026", "state": "cancelled"}"#).unwrap()
+        ),
+        checked!(
+            s::elections::certify::v0_1::Payload,
+            s::elections::certify::v0_1::Response,
+            serde_json::from_str::<Value>(r#"{"electionId": "board-2026", "auditAttestations": [{"@context": ["https://www.w3.org/ns/credentials/v2"], "type": ["VerifiableCredential"], "issuer": "did:web:audit.example", "validFrom": "2026-11-15T18:00:00Z", "credentialSubject": {"electionId": "board-2026", "community": "did:webvh:QmCommunity:community.example", "treeSize": 84, "rootHash": "zQmPXME1oRtoT627YKaDPDQ3PwA8tdP9rWuAAweLzqSwAWT"}}]}"#).unwrap(),
+            serde_json::from_str::<Value>(r#"{"electionId": "board-2026", "result": {"electionId": "board-2026", "manifestDigest": "zQmbWqxBEKC3P8tqsKc98xmWNzrzDtRLMiMPL8wBuTGsMnR", "ballotsCounted": 80, "questions": [{"question": "chair", "abstained": 2, "choice": {"alice": 41, "bob": 37}}], "head": {"electionId": "board-2026", "treeSize": 84, "rootHash": "zQmPXME1oRtoT627YKaDPDQ3PwA8tdP9rWuAAweLzqSwAWT", "issuedAt": "2026-11-15T00:00:03Z"}}, "head": {"electionId": "board-2026", "treeSize": 84, "rootHash": "zQmPXME1oRtoT627YKaDPDQ3PwA8tdP9rWuAAweLzqSwAWT", "issuedAt": "2026-11-15T00:00:03Z"}, "certifiedAt": "2026-11-16T09:00:19Z", "auditAttestations": [{"@context": ["https://www.w3.org/ns/credentials/v2"], "type": ["VerifiableCredential"], "issuer": "did:web:audit.example", "validFrom": "2026-11-15T18:00:00Z", "credentialSubject": {"electionId": "board-2026", "community": "did:webvh:QmCommunity:community.example", "treeSize": 84, "rootHash": "zQmPXME1oRtoT627YKaDPDQ3PwA8tdP9rWuAAweLzqSwAWT"}}]}"#).unwrap()
+        ),
+        checked!(
+            s::elections::tickets::issue::v0_1::Payload,
+            s::elections::tickets::issue::v0_1::Response,
+            serde_json::from_str::<Value>(r#"{"electionId": "board-2026", "manifestDigest": "zQmbWqxBEKC3P8tqsKc98xmWNzrzDtRLMiMPL8wBuTGsMnR", "request": {"label": "voter/board-2026", "id": "z5jokfsiZx1sk1mJyQnBnR519B9mcQhw9a8LrF9VQdAjExwoLzcdVdZ2aXaH14a3mdF", "request": {"encoding": "z6P4jNSt4qHKYhSBGSWgr6VcQGMsjmfYGUBdYWNtS7xbpGsTuiY1PDfoce4yTApuqUm", "proof": "zSzFTCny3qaXpSHTsTE877ffQfSuF9T5zo53iuZkwx9NbLYSq3GeLZpRda286SBhqwJg"}}}"#).unwrap(),
+            serde_json::from_str::<Value>(r#"{"electionId": "board-2026", "label": "voter/board-2026", "preCredential": "z3Xef1JY2x1s2vY6yKWfLu8Ap2vKuoZGwaQLZ2tjq8QkEZbGeZyaNgtznZ8B7N1yf14"}"#).unwrap()
+        ),
+    ]
 }
 
 /// Hidden vetting's four exchanges (`zkp-pcs`), witnessed only where they are bound.

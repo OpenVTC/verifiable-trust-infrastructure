@@ -30,6 +30,10 @@ pub struct CreateDidWebvhArgs {
     pub admin: bool,
     /// Write the DID log (did.jsonl) to this file.
     pub did_log_file: Option<PathBuf>,
+    /// How the DID is presented (VTI-VTA-036). `None` → `[dids]`.
+    pub did_method: Option<vta_sdk::did_scid::DidMethod>,
+    /// Whether the log lists its did:scid alias. `None` → `[dids]`.
+    pub scid_also_known_as: Option<bool>,
 }
 
 pub async fn run_create_did_webvh(
@@ -171,6 +175,8 @@ pub async fn run_create_did_webvh(
         // used to mint the VTA's own identity (that's setup wizard /
         // setup --from / TEE autogen).
         is_vta_identity: false,
+        did_method: args.did_method,
+        scid_also_known_as: args.scid_also_known_as,
     };
 
     let deps = operations::did_webvh::CreateDidWebvhDeps {
@@ -536,6 +542,8 @@ mod tests {
             export_secrets: true,
             admin: true,
             did_log_file: None,
+            did_method: None,
+            scid_also_known_as: None,
         };
         run_create_did_webvh(args).await.expect("create-did-webvh");
 
@@ -635,6 +643,8 @@ mod tests {
             export_secrets: false,
             admin: false,
             did_log_file: Some(log_path.clone()),
+            did_method: None,
+            scid_also_known_as: None,
         };
         run_create_did_webvh(args).await.expect("create-did-webvh");
 
@@ -725,6 +735,8 @@ mod tests {
             export_secrets: false,
             admin: false,
             did_log_file: Some(log_path.clone()),
+            did_method: None,
+            scid_also_known_as: None,
         };
         run_create_did_webvh(args).await.expect("create-did-webvh");
 
@@ -945,6 +957,8 @@ mod tests {
                 template_context: None,
                 template_vars: std::collections::HashMap::new(),
                 is_vta_identity: false,
+                did_method: None,
+                scid_also_known_as: None,
             },
             "test",
         )
@@ -1058,6 +1072,8 @@ mod tests {
                 template_context: None,
                 template_vars: std::collections::HashMap::new(),
                 is_vta_identity: false,
+                did_method: None,
+                scid_also_known_as: None,
             },
             "test",
         )

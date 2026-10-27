@@ -109,6 +109,35 @@ async fn compute_delegated_contexts(
     }
 }
 
+/// The pending was read but is gone by the time the decision is recorded — it
+/// lapsed, or a concurrent decision resolved it (a denial, or the approval that
+/// minted its grant). Rare, and the only rejection after a proven signer that
+/// recorded nothing, which made it look identical to a decision that never
+/// arrived — so it is audited.
+async fn pending_vanished(
+    state: &AppState,
+    doc: &TrustTask<Value>,
+    approver: &str,
+    type_uri: &str,
+) -> TrustTaskOutcome {
+    crate::audit::record_consent(
+        &state.audit_sink,
+        "consent.decision",
+        approver,
+        type_uri,
+        "denied:no_pending",
+        Some("the pending vanished between lookup and decision (lapsed or concurrently resolved)"),
+    )
+    .await;
+    reject_with(
+        doc,
+        RejectReason::TaskFailed {
+            reason: "task-consent/decision:noPending".into(),
+            details: None,
+        },
+    )
+}
+
 pub(super) async fn handle_decision(
     state: &AppState,
     _auth: &AuthClaims,
@@ -211,10 +240,18 @@ pub(super) async fn handle_decision(
     // that *asks* for a decision and the side that *accepts* one disagreed about
     // who was in the set, so every approver added with `pnm approvals approvers
     // add` (which writes the declarative row) was denied `not_a_member`.
-    let members = match super::policy_gate::approver_set_members(state, &pending.approver_set).await
-    {
-        Ok(m) => m,
-        Err(e) => return app_error_to_reject(&doc, e),
+    //
+    // A request bound to one approver (a browser's sign-in approved on the
+    // member's phone, `oob_sign_in::remote_approval`) names that approver and
+    // no set: only its decision counts, whatever any policy set says.
+    let members = match &pending.bound_approver {
+        Some(bound) => vec![bound.clone()],
+        None => {
+            match super::policy_gate::approver_set_members(state, &pending.approver_set).await {
+                Ok(m) => m,
+                Err(e) => return app_error_to_reject(&doc, e),
+            }
+        }
     };
     if !members.iter().any(|m| m == &approver) {
         crate::audit::record_consent(
@@ -257,7 +294,21 @@ pub(super) async fn handle_decision(
 
     // A denial aborts the request.
     if payload.decision == Decision::Deny {
-        let _ = consent::delete_pending(ks, &pending).await;
+        // Conditional on the pending still being there: if a concurrent
+        // approval already minted its grant, this denial came too late and
+        // must not be reported as having refused anything.
+        // A bound request is marked denied, so its requester's next poll
+        // reads "declined" instead of asking the approver again.
+        let removed = if pending.bound_approver.is_some() {
+            consent::deny_bound_pending(ks, &pending).await
+        } else {
+            consent::remove_pending_if_present(ks, &pending).await
+        };
+        match removed {
+            Ok(true) => {}
+            Ok(false) => return pending_vanished(state, &doc, &approver, &pending.type_uri).await,
+            Err(e) => return app_error_to_reject(&doc, e),
+        }
         crate::audit::record_consent(
             &state.audit_sink,
             "consent.decision",
@@ -276,29 +327,7 @@ pub(super) async fn handle_decision(
     // Accumulate the approval; at the threshold, issue a single-use grant.
     let updated = match consent::add_approval(ks, &pending.digest, &approver, now).await {
         Ok(Some(p)) => p,
-        Ok(None) => {
-            // The pending was read above but is gone by the time the approval
-            // is recorded — it lapsed, or a concurrent decision resolved it.
-            // Rare, and the only rejection after a proven signer that recorded
-            // nothing, which made it look identical to a decision that never
-            // arrived.
-            crate::audit::record_consent(
-                &state.audit_sink,
-                "consent.decision",
-                &approver,
-                &pending.type_uri,
-                "denied:no_pending",
-                Some("the pending vanished between lookup and approval (lapsed or concurrently resolved)"),
-            )
-            .await;
-            return reject_with(
-                &doc,
-                RejectReason::TaskFailed {
-                    reason: "task-consent/decision:noPending".into(),
-                    details: None,
-                },
-            );
-        }
+        Ok(None) => return pending_vanished(state, &doc, &approver, &pending.type_uri).await,
         Err(e) => return app_error_to_reject(&doc, e),
     };
 
@@ -324,10 +353,14 @@ pub(super) async fn handle_decision(
             granted_at: now,
             expires_at: now + GRANT_TTL_SECS,
         };
-        if let Err(e) = consent::store_grant(ks, &grant).await {
-            return app_error_to_reject(&doc, e);
+        // The grant and the pending's retirement are one conditional batch:
+        // a denial (or another approval's grant) that resolved the request
+        // since `add_approval` wins, and this approval mints nothing.
+        match consent::grant_from_pending(ks, &grant, now).await {
+            Ok(true) => {}
+            Ok(false) => return pending_vanished(state, &doc, &approver, &updated.type_uri).await,
+            Err(e) => return app_error_to_reject(&doc, e),
         }
-        let _ = consent::delete_pending(ks, &updated).await;
         // The approval that crossed the threshold, then the grant it minted:
         // two rows so the trail shows both the final approver and the single-use
         // grant the requester will consume.
@@ -496,6 +529,7 @@ mod tests {
                 guards: Default::default(),
                 subject_context: None,
                 requester_authorized: true,
+                bound_approver: None,
                 created_at: now,
                 expires_at: now + 900,
             },
@@ -670,6 +704,7 @@ mod tests {
             guards: Default::default(),
             subject_context: Some(OPENVTC.into()),
             requester_authorized: false,
+            bound_approver: None,
             created_at: 0,
             expires_at: u64::MAX,
         }

@@ -116,14 +116,30 @@ function json(body: unknown, status: number): Response {
   });
 }
 
-/** `vtc/members/list/0.1`, which the name book and the member pickers read. */
-export const MEMBERS_LIST_TASK = "https://trusttasks.org/spec/vtc/members/list/0.1";
+/** `vtc/members/list/0.2`, which the name book and the member pickers read. */
+export const MEMBERS_LIST_TASK = "https://trusttasks.org/spec/vtc/members/list/0.2";
 
 /** Members and ACL answers for `useNameBook`, which most panels call. */
 export const NAME_BOOK_ROUTES: MockRoute[] = [
   taskRoute(MEMBERS_LIST_TASK, { items: [] }),
   taskRoute("https://trusttasks.org/spec/acl/list/0.2", { entries: [], truncated: false }),
 ];
+
+/** A signed-in administrator holding `capabilities` — for a screen that
+ *  offers what it offers by what the viewer holds. */
+export function whoamiWith(capabilities: string[]): WhoamiResponse {
+  return {
+    session: {
+      id: "sess_test",
+      subject: "did:key:z6MkViewer",
+      issuedAt: "2026-10-01T00:00:00Z",
+      expiresAt: "2026-10-01T00:05:00Z",
+    },
+    roles: ["admin"],
+    scopes: [],
+    capabilities,
+  };
+}
 
 /**
  * `path` is the route the component is mounted on, as the shell mounts a

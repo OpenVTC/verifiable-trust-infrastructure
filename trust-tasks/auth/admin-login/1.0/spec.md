@@ -2,7 +2,7 @@
 id: https://trusttasks.org/openvtc/vtc/auth/admin-login/1.0
 title: VTC — Admin SPA cookie session mint
 status: retired
-supersededBy: https://trusttasks.org/spec/vtc/auth/admin-session/0.1
+supersededBy: https://trusttasks.org/spec/vtc/auth/admin-session/0.2
 version: "1.0"
 authors:
   - did:webvh:openvtc.org
@@ -37,10 +37,10 @@ related:
 > authenticated exactly as `POST /v1/auth/` did — the same
 > `authenticate_and_mint` call, the same `{ session, tokens }` body — and
 > differed only in appending the `Set-Cookie` pair. That cookie half is a
-> task of its own, `spec/vtc/auth/admin-session/0.1`
+> task of its own, `spec/vtc/auth/admin-session/0.2`
 > (`POST /v1/auth/admin-session`), which takes an access token the caller
 > already holds and mints the same two cookies. So the flow is
-> `spec/auth/authenticate/0.1` then `spec/vtc/auth/admin-session/0.1` — two
+> `spec/auth/authenticate/0.1` then `spec/vtc/auth/admin-session/0.2` — two
 > canonical tasks, no third interface for the same operation. That is the
 > path the admin SPA already took (`admin-ui/src/lib/wallet.ts` →
 > `pages/Login.tsx`); nothing called `admin-login` when it was removed.

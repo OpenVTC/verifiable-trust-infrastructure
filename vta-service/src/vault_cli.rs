@@ -271,6 +271,8 @@ fn secret_kind_label(k: SecretKind) -> &'static str {
         SecretKind::BearerToken => "bearer-token",
         SecretKind::SshKey => "ssh-key",
         SecretKind::Custom => "custom",
+        // `SecretKind` is `#[non_exhaustive]`.
+        _ => "unknown",
     }
 }
 

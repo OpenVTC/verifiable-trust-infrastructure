@@ -107,6 +107,18 @@ impl SealedRoom {
         self.chain.links()
     }
 
+    /// Apply the room's epoch floor ([`EpochKeyChain::apply_floor`]): forget every rung
+    /// numbered at or below it and every key below it, and never derive there again.
+    /// Monotonic; returns whether the floor rose.
+    pub fn apply_epoch_floor(&mut self, floor: u32) -> bool {
+        self.chain.apply_floor(floor)
+    }
+
+    /// The epoch floor this room's chain holds, `0` when none has been learnt.
+    pub fn epoch_floor(&self) -> u32 {
+        self.chain.floor()
+    }
+
     /// The earliest epoch this room can currently open.
     ///
     /// Worth surfacing to a member: on a chained room it should be 1, and anything else
@@ -157,6 +169,24 @@ impl SealedRoom {
     ) -> Result<(MembershipChange, Option<EpochLink>), RoomKeyError> {
         let outgoing = self.group.storage_key()?;
         let change = self.group.remove_member(index)?;
+        let link = self.mint_link(outgoing)?;
+        self.chain.add_links(link.clone());
+        Ok((change, link))
+    }
+
+    /// Renew the room — advance its epoch with a commit that changes no membership — keeping
+    /// the chain intact.
+    ///
+    /// `rooms/owner/group/renew/0.2` item 2: the committer updates its own leaf
+    /// ([`RoomGroup::self_update`]), and the outgoing epoch's storage key is sealed under the
+    /// incoming one, so every member who applies the commit still reads everything sealed
+    /// before it. Nobody joins and nobody leaves; the Welcome is always `None`.
+    ///
+    /// Like its two siblings this advances `self`. A caller that must not move its live
+    /// group until a host accepts (remote first) renews a copy restored from a snapshot.
+    pub fn renew(&mut self) -> Result<(MembershipChange, Option<EpochLink>), RoomKeyError> {
+        let outgoing = self.group.storage_key()?;
+        let change = self.group.self_update()?;
         let link = self.mint_link(outgoing)?;
         self.chain.add_links(link.clone());
         Ok((change, link))
@@ -256,6 +286,7 @@ impl SealedRoom {
             ciphertext: B64.encode(ciphertext),
             nonce: B64.encode(nonce_bytes),
             epoch,
+            version: None,
         })
     }
 
@@ -343,6 +374,31 @@ impl SealedRoom {
         ))
     }
 
+    /// Where the room's profile written under the **current** epoch is stored, and that
+    /// epoch — what a writer seals a profile for (`rooms/keys/profile/write`).
+    pub fn profile_key_for_seal(&self) -> Result<(String, u32), RoomKeyError> {
+        let epoch = self.room_epoch();
+        let storage_key = self.group.storage_key()?;
+        Ok((
+            crate::profile::derive_profile_key(&storage_key, &self.room_id, u64::from(epoch)),
+            epoch,
+        ))
+    }
+
+    /// Where the room's profile written under `epoch` is stored, walked out of the chain as
+    /// a record's key is — what a reader looks at, epoch by epoch, from the current one down
+    /// (`rooms/keys/profile/read`). Fails as [`Self::open_record`] does for an epoch this
+    /// holder cannot reach.
+    pub fn profile_key_for_open(&mut self, epoch: u32) -> Result<String, RoomKeyError> {
+        self.reanchor()?;
+        let storage_key = self.chain.key_for(epoch)?;
+        Ok(crate::profile::derive_profile_key(
+            &storage_key,
+            &self.room_id,
+            u64::from(epoch),
+        ))
+    }
+
     /// The value to anchor in the room's witnessed DID log for this epoch.
     ///
     /// A host that forks the group shows different members different commit sequences.
@@ -369,6 +425,27 @@ mod tests {
     fn room(did: &str) -> SealedRoom {
         let group = RoomGroup::create("did:key:zAlice").expect("group");
         SealedRoom::new(did, group)
+    }
+
+    /// The profile's location for an epoch is the same whether it is computed to write
+    /// (at that epoch) or to read (walked back to it from a later one), and it moves with
+    /// every epoch.
+    #[test]
+    fn the_profile_location_is_the_same_to_writer_and_later_reader() {
+        let mut r = room("did:webvh:zRoom");
+        let (at_1, epoch) = r.profile_key_for_seal().expect("location");
+        assert_eq!(epoch, 1);
+        assert_eq!(r.profile_key_for_open(1).expect("same epoch"), at_1);
+
+        r.renew().expect("advance");
+        let (at_2, epoch) = r.profile_key_for_seal().expect("location");
+        assert_eq!(epoch, 2);
+        assert_ne!(at_1, at_2, "one record per epoch, at a different key");
+        assert_eq!(
+            r.profile_key_for_open(1)
+                .expect("walked back through the chain"),
+            at_1
+        );
     }
 
     #[test]
@@ -479,6 +556,36 @@ mod tests {
             r.file_key_for_open(&id, 3),
             Err(RoomKeyError::EpochAhead { .. })
         ));
+    }
+
+    /// A renewal advances the epoch without changing who is in the room: a member who
+    /// applies its commit reads what is sealed after it, and what was sealed before still
+    /// opens through the link.
+    #[test]
+    fn a_renewal_advances_the_epoch_and_keeps_history_and_membership() {
+        let mut owner = room("did:webvh:zRoom");
+        let (bob_id, kp) = crate::mls::IdentitySnapshot::mint("did:key:zBob").unwrap();
+        let (change, _) = owner.add_member(&kp).unwrap();
+        let mut bob = SealedRoom::new(
+            "did:webvh:zRoom",
+            RoomGroup::join_from_identity(&bob_id, &change.welcome.unwrap()).unwrap(),
+        );
+        assert_eq!(bob.room_epoch(), 2);
+        let before = owner.seal_record("k1", 1, b"before").unwrap();
+
+        let (renewal, link) = owner.renew().unwrap();
+        assert!(renewal.welcome.is_none(), "nobody to welcome");
+        assert!(link.is_some(), "the outgoing key is linked");
+        assert_eq!(owner.room_epoch(), 3);
+        assert_eq!(owner.group().member_count(), 2, "membership unchanged");
+
+        let (epoch, _) = bob.apply_commit(&renewal.commit).unwrap();
+        assert_eq!(epoch, 3);
+        let after = owner.seal_record("k2", 1, b"after").unwrap();
+        assert_eq!(after.epoch, 3);
+        assert_eq!(bob.open_record("k2", 1, &after).unwrap(), b"after");
+        assert_eq!(bob.open_record("k1", 1, &before).unwrap(), b"before");
+        assert_eq!(owner.open_record("k1", 1, &before).unwrap(), b"before");
     }
 
     /// Sealing twice must not reuse a nonce, or the AEAD's guarantee is gone.

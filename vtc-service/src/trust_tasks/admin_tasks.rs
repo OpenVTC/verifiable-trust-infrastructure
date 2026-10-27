@@ -42,7 +42,7 @@ use trust_tasks_rs::specs::vtc::admin::invites::{
 use trust_tasks_rs::specs::vtc::registry::{
     diagnostics::v0_1 as diagnostics, records::list::v0_1 as records_list,
     sync_jobs::discard::v0_1 as sync_discard, sync_jobs::list::v0_1 as sync_list,
-    sync_jobs::retry::v0_1 as sync_retry,
+    sync_jobs::retry::v0_1 as sync_retry, sync_jobs::retry::v0_2 as sync_retry_0_2,
 };
 use trust_tasks_rs::{Payload, RejectReason, StandardCode, TrustTask, TrustTaskCode};
 use vti_common::auth::extractor::AuthClaims;
@@ -59,6 +59,7 @@ use crate::server::AppState;
 pub(crate) const DIAGNOSTICS_TYPE: &str = <diagnostics::Payload as Payload>::TYPE_URI;
 pub(crate) const SYNC_JOBS_LIST_TYPE: &str = <sync_list::Payload as Payload>::TYPE_URI;
 pub(crate) const SYNC_JOBS_RETRY_TYPE: &str = <sync_retry::Payload as Payload>::TYPE_URI;
+pub(crate) const SYNC_JOBS_RETRY_0_2_TYPE: &str = <sync_retry_0_2::Payload as Payload>::TYPE_URI;
 pub(crate) const SYNC_JOBS_DISCARD_TYPE: &str = <sync_discard::Payload as Payload>::TYPE_URI;
 pub(crate) const RECORDS_LIST_TYPE: &str = <records_list::Payload as Payload>::TYPE_URI;
 pub(crate) const AUDIT_LIST_TYPE: &str = <audit_list::Payload as Payload>::TYPE_URI;
@@ -78,6 +79,7 @@ pub(crate) const URIS: &[&str] = &[
     DIAGNOSTICS_TYPE,
     SYNC_JOBS_LIST_TYPE,
     SYNC_JOBS_RETRY_TYPE,
+    SYNC_JOBS_RETRY_0_2_TYPE,
     SYNC_JOBS_DISCARD_TYPE,
     RECORDS_LIST_TYPE,
     AUDIT_LIST_TYPE,
@@ -108,6 +110,7 @@ pub(super) async fn dispatch(
         DIAGNOSTICS_TYPE => handle_diagnostics(state, ctx, doc).await,
         SYNC_JOBS_LIST_TYPE => handle_sync_jobs_list(state, ctx, doc).await,
         SYNC_JOBS_RETRY_TYPE => handle_sync_jobs_retry(state, ctx, doc).await,
+        SYNC_JOBS_RETRY_0_2_TYPE => handle_sync_jobs_retry_0_2(state, ctx, doc).await,
         SYNC_JOBS_DISCARD_TYPE => handle_sync_jobs_discard(state, ctx, doc).await,
         RECORDS_LIST_TYPE => handle_records_list(state, ctx, doc).await,
         AUDIT_LIST_TYPE => handle_audit_list(state, ctx, doc).await,
@@ -224,6 +227,24 @@ async fn handle_sync_jobs_retry(
         Err(reject) => return reject,
     };
     match crate::routes::registry_admin::sync_jobs_retry(state, &actor.did, payload).await {
+        Ok(response) => success_response(&doc, response),
+        Err(e) => app_error_to_reject(&doc, &e),
+    }
+}
+
+async fn handle_sync_jobs_retry_0_2(
+    state: &AppState,
+    ctx: &JoinAuthCtx,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    let (actor, payload) =
+        match capable_with::<sync_retry_0_2::Payload>(state, ctx, &doc, Capability::RegistryAdmin)
+            .await
+        {
+            Ok(p) => p,
+            Err(reject) => return reject,
+        };
+    match crate::routes::registry_admin::sync_jobs_retry_v0_2(state, &actor.did, payload).await {
         Ok(response) => success_response(&doc, response),
         Err(e) => app_error_to_reject(&doc, &e),
     }
@@ -354,6 +375,14 @@ async fn handle_config_patch(
     let request = crate::routes::admin::config::PatchRequest {
         overrides: payload.overrides.into_iter().collect(),
     };
+    // VTI-CMP-090: any change to the trusted-witness list takes the gesture
+    // and the consent of the other holders of `vtc.config.admin`.
+    if let Err(refusal) =
+        super::acl_tasks::settle_witness_list_gate(state, &actor, &doc, &request.overrides, "")
+            .await
+    {
+        return refusal;
+    }
     // VTI-APV-020: lowering the consent threshold takes the gesture and the
     // consent of the threshold as it stands. Raising it does not.
     match crate::routes::admin::config::lowered_threshold(state, &request.overrides).await {

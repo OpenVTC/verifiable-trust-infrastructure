@@ -111,6 +111,7 @@ pub struct Composed {
 
 /// Why a compose was refused before anything was written.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ComposeRefusal {
     /// Held claims naming attributes the pool does not hold.
     UnresolvedReference(Vec<Ulid>),

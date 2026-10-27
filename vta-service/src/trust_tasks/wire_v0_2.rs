@@ -342,11 +342,21 @@ pub(super) fn upconvert_response(
     spec: &WireSpecV02,
     uri_wire: &str,
 ) -> TrustTaskOutcome {
-    let TrustTaskOutcome { status, body } = outcome;
+    let TrustTaskOutcome {
+        status,
+        body,
+        restart,
+    } = outcome;
     let mut doc: Value = match serde_json::from_slice(&body) {
         Ok(v) => v,
         // Not JSON (shouldn't happen) — pass the original bytes through.
-        Err(_) => return TrustTaskOutcome { status, body },
+        Err(_) => {
+            return TrustTaskOutcome {
+                status,
+                body,
+                restart,
+            };
+        }
     };
 
     // Retype the response document. A success response echoes the (now 0.1)
@@ -372,6 +382,7 @@ pub(super) fn upconvert_response(
     TrustTaskOutcome {
         status,
         body: new_body,
+        restart,
     }
 }
 
@@ -484,6 +495,7 @@ mod tests {
         let outcome = TrustTaskOutcome {
             status: axum::http::StatusCode::OK,
             body: serde_json::to_vec(&doc).unwrap(),
+            restart: false,
         };
 
         let out = upconvert_response(outcome, spec, "https://trusttasks.org/spec/device/list/0.2");
@@ -518,6 +530,7 @@ mod tests {
         let outcome = TrustTaskOutcome {
             status: axum::http::StatusCode::FORBIDDEN,
             body: serde_json::to_vec(&doc).unwrap(),
+            restart: false,
         };
         let out = upconvert_response(outcome, spec, "https://trusttasks.org/spec/device/list/0.2");
         let v: Value = serde_json::from_slice(&out.body).unwrap();
@@ -570,6 +583,7 @@ mod tests {
         let outcome = TrustTaskOutcome {
             status: axum::http::StatusCode::OK,
             body: serde_json::to_vec(&doc).unwrap(),
+            restart: false,
         };
         let out = upconvert_response(outcome, spec, "https://trusttasks.org/spec/vault/list/0.2");
         let v: Value = serde_json::from_slice(&out.body).unwrap();
@@ -603,6 +617,7 @@ mod tests {
         let outcome = TrustTaskOutcome {
             status: axum::http::StatusCode::OK,
             body: serde_json::to_vec(&doc).unwrap(),
+            restart: false,
         };
         let out = upconvert_response(
             outcome,
@@ -640,6 +655,7 @@ mod tests {
         let outcome = TrustTaskOutcome {
             status: axum::http::StatusCode::OK,
             body: serde_json::to_vec(&doc).unwrap(),
+            restart: false,
         };
         let out = upconvert_response(
             outcome,

@@ -59,6 +59,7 @@ pub struct VtaDocState {
 /// implements `From<ProtocolPreconditionError> for SelfError` (a
 /// 5-line mechanical wrap; see e.g. `disable_rest::DisableRestError`).
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum ProtocolPreconditionError {
     #[error("VTA DID is not configured — run `vta setup` first")]
     VtaDidNotConfigured,

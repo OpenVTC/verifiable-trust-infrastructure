@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use fjall::{Database, Keyspace, KeyspaceCreateOptions, PersistMode};
+use fjall::{Database, Keyspace, KeyspaceCreateOptions, PersistMode, Readable};
 use tokio::sync::RwLock;
 use tokio_vsock::{VMADDR_CID_ANY, VsockAddr, VsockListener};
 use tracing::{debug, error, info, warn};
@@ -122,8 +122,10 @@ struct StorageState {
 /// the blocking pool (see [`critical_section`]). A plain mutex rather than
 /// fjall's transactional database: the critical sections are a few fjall
 /// calls with no await inside, and switching the database type would touch
-/// every operation for no gain. Plain get/insert/delete do not take it,
-/// matching the enclave's local store.
+/// every operation for no gain. Plain get/insert/delete do not take it: the
+/// enclave is the only writer, and it holds its own lock on a key across
+/// every operation that touches it, plain or atomic, so a plain write to a
+/// key never arrives while an atomic operation on that key is in flight.
 #[derive(Clone)]
 struct KeyspaceEntry {
     ks: Keyspace,
@@ -213,12 +215,14 @@ async fn handle_connection(
             OP_DELETE => handle_delete(state, &request[1..]).await,
             OP_PREFIX_ITER => handle_prefix_iter(state, &request[1..]).await,
             OP_PREFIX_KEYS => handle_prefix_keys(state, &request[1..]).await,
+            OP_SCAN => handle_scan(state, &request[1..]).await,
             OP_PERSIST => handle_persist(state).await,
             OP_HELLO => build_ok_u32(CAPABILITIES),
             OP_TAKE => handle_take(state, &request[1..]).await,
             OP_INSERT_IF_ABSENT => handle_insert_if_absent(state, &request[1..]).await,
             OP_SWAP_IF_ABSENT => handle_swap_if_absent(state, &request[1..]).await,
             OP_MOVE_IF_EQUAL => handle_move_if_equal(state, &request[1..]).await,
+            OP_APPLY_BATCH => handle_apply_batch(state, &request[1..]).await,
             _ => build_error(&format!("unknown opcode: {opcode:#04x}")),
         };
 
@@ -389,6 +393,134 @@ async fn handle_prefix_keys(state: &StorageState, data: &[u8]) -> Vec<u8> {
 
     let refs: Vec<&[u8]> = keys.iter().map(|k| k.as_slice()).collect();
     build_ok_key_list(&refs)
+}
+
+async fn handle_scan(state: &StorageState, data: &[u8]) -> Vec<u8> {
+    let result: Result<_, String> = (|| {
+        let (ks_name, offset) = decode_keyspace(data, 0)?;
+        let (prefix, offset) = decode_bytes(data, offset)?;
+        let (after, offset) = decode_bytes(data, offset)?;
+        if offset + 5 > data.len() {
+            return Err("truncated scan options".into());
+        }
+        let limit = u32::from_be_bytes([
+            data[offset],
+            data[offset + 1],
+            data[offset + 2],
+            data[offset + 3],
+        ]) as usize;
+        let flags = data[offset + 4];
+        if flags & !0x01 != 0 {
+            return Err(format!("unknown scan flags: {flags:#04x}"));
+        }
+        Ok((
+            ks_name.to_string(),
+            prefix.to_vec(),
+            (!after.is_empty()).then(|| after.to_vec()),
+            limit,
+            flags & 0x01 != 0,
+        ))
+    })();
+
+    let (ks_name, prefix, after, limit, reverse) = match result {
+        Ok(v) => v,
+        Err(e) => return build_error(&format!("invalid scan request: {e}")),
+    };
+    if limit == 0 {
+        return build_ok_kv_list(&[]);
+    }
+
+    let ks = match state.get_keyspace(&ks_name).await {
+        Ok(ks) => ks,
+        Err(e) => return build_error(&e),
+    };
+    let (lower, upper) = scan_bounds(&prefix, after.as_deref(), reverse);
+    let mut pairs = Vec::with_capacity(limit.min(1024));
+    let mut response_size = 5usize;
+    // Read at the last published sequence number, as the enclave's local
+    // backend does (`vti_common::store::read_snapshot`): a plain `range` can
+    // see a write batch half-applied, and a page torn across a batch is what a
+    // chain verifier reports as tampering.
+    let snapshot = state.db.snapshot();
+    let iter = snapshot.range(&ks, (lower, upper));
+    let guards: Box<dyn Iterator<Item = _>> = if reverse {
+        Box::new(iter.rev())
+    } else {
+        Box::new(iter)
+    };
+    for guard in guards.take(limit) {
+        let (key, value) = match guard.into_inner() {
+            Ok(pair) => pair,
+            Err(e) => return build_error(&format!("scan error: {e}")),
+        };
+        let pair_size = 8usize.saturating_add(key.len()).saturating_add(value.len());
+        if response_size.saturating_add(pair_size) > MAX_MESSAGE_SIZE as usize {
+            // Fails the request rather than returning the rows that do fit,
+            // and **must keep doing so**: the enclave reads a page shorter
+            // than the limit it asked for as "the range ended", so a
+            // size-capped page would stop a walk early and, in chain-head
+            // recovery, anchor the next audit write at genesis — forking a
+            // chain that was never broken. The wire cannot currently tell
+            // "short because the range ended" from "short because it did not
+            // fit"; serving partial pages needs that distinction added first.
+            return build_error("scan response exceeds maximum message size");
+        }
+        response_size += pair_size;
+        pairs.push((key.to_vec(), value.to_vec()));
+    }
+    let refs: Vec<(&[u8], &[u8])> = pairs
+        .iter()
+        .map(|(key, value)| (key.as_slice(), value.as_slice()))
+        .collect();
+    build_ok_kv_list(&refs)
+}
+
+/// The key range an `OP_SCAN` request covers, as `(lower, upper)` bounds.
+///
+/// **Mirrors `vti_common::store::scan_bounds`**, which computes the same
+/// range inside the enclave — for a scan this proxy cannot serve, the
+/// enclave reads the whole prefix and applies these bounds itself, and a
+/// caller must get the same rows either way. The two live in separate cargo
+/// workspaces and cannot share code without coupling them, so they are
+/// pinned to the shared vectors in
+/// `vti-common/src/store/scan_range_vectors.json` instead — a change here
+/// needs the same change there, and a new edge case needs a new vector.
+fn scan_bounds(
+    prefix: &[u8],
+    after: Option<&[u8]>,
+    reverse: bool,
+) -> (std::ops::Bound<Vec<u8>>, std::ops::Bound<Vec<u8>>) {
+    let lower = if prefix.is_empty() {
+        std::ops::Bound::Unbounded
+    } else {
+        std::ops::Bound::Included(prefix.to_vec())
+    };
+    let mut upper = prefix_upper_bound(prefix);
+    if let Some(after) = after {
+        if reverse {
+            let within = match &upper {
+                std::ops::Bound::Excluded(end) => after < end.as_slice(),
+                _ => true,
+            };
+            if within {
+                upper = std::ops::Bound::Excluded(after.to_vec());
+            }
+        } else if after >= prefix {
+            return (std::ops::Bound::Excluded(after.to_vec()), upper);
+        }
+    }
+    (lower, upper)
+}
+
+fn prefix_upper_bound(prefix: &[u8]) -> std::ops::Bound<Vec<u8>> {
+    let mut end = prefix.to_vec();
+    while let Some(last) = end.pop() {
+        if last < u8::MAX {
+            end.push(last + 1);
+            return std::ops::Bound::Excluded(end);
+        }
+    }
+    std::ops::Bound::Unbounded
 }
 
 async fn handle_persist(state: &StorageState) -> Vec<u8> {
@@ -565,6 +697,113 @@ async fn handle_move_if_equal(state: &Arc<StorageState>, data: &[u8]) -> Vec<u8>
     .await
 }
 
+/// One OP_APPLY_BATCH precondition.
+enum BatchCheck {
+    Absent(Vec<u8>),
+    Present(Vec<u8>),
+    Equals(Vec<u8>, Vec<u8>),
+}
+
+/// One OP_APPLY_BATCH write; `None` deletes.
+type BatchWrite = (Vec<u8>, Option<Vec<u8>>);
+
+fn parse_batch(data: &[u8]) -> Result<(String, Vec<BatchCheck>, Vec<BatchWrite>), String> {
+    let (ks_name, mut offset) = decode_keyspace(data, 0)?;
+    let mut checks = Vec::new();
+    let mut writes: Vec<BatchWrite> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    while offset < data.len() {
+        let (tag, next) = decode_bytes(data, offset)?;
+        let (key, next) = decode_bytes(data, next)?;
+        offset = next;
+        let [tag] = tag else {
+            return Err(format!("batch tag of {} bytes", tag.len()));
+        };
+        let is_check = matches!(*tag, BATCH_ABSENT | BATCH_PRESENT | BATCH_EQUALS);
+        if is_check && !writes.is_empty() {
+            return Err("batch precondition after a write".into());
+        }
+        if !is_check && !seen.insert(key.to_vec()) {
+            // One sequence number per batch: two writes to a key would leave
+            // which one survives to the memtable.
+            return Err("batch writes the same key twice".into());
+        }
+        let mut field = || -> Result<Vec<u8>, String> {
+            let (v, next) = decode_bytes(data, offset)?;
+            offset = next;
+            Ok(v.to_vec())
+        };
+        match *tag {
+            BATCH_ABSENT => checks.push(BatchCheck::Absent(key.to_vec())),
+            BATCH_PRESENT => checks.push(BatchCheck::Present(key.to_vec())),
+            BATCH_EQUALS => checks.push(BatchCheck::Equals(key.to_vec(), field()?)),
+            BATCH_PUT => writes.push((key.to_vec(), Some(field()?))),
+            BATCH_DELETE => writes.push((key.to_vec(), None)),
+            other => return Err(format!("unknown batch tag {other:#04x}")),
+        }
+    }
+    if checks.is_empty() && writes.is_empty() {
+        return Err("empty batch".into());
+    }
+    if checks.len() >= u32::MAX as usize {
+        return Err("too many batch preconditions".into());
+    }
+    Ok((ks_name.to_string(), checks, writes))
+}
+
+async fn handle_apply_batch(state: &Arc<StorageState>, data: &[u8]) -> Vec<u8> {
+    let (ks_name, checks, writes) = match parse_batch(data) {
+        Ok(v) => v,
+        Err(e) => return build_error(&format!("invalid apply_batch request: {e}")),
+    };
+    let entry = match state.entry(&ks_name).await {
+        Ok(e) => e,
+        Err(e) => return build_error(&e),
+    };
+    critical_section(state, entry, move |state, ks| {
+        for (i, check) in checks.iter().enumerate() {
+            let holds = match check {
+                BatchCheck::Absent(k) => ks.contains_key(k).map(|present| !present),
+                BatchCheck::Present(k) => ks.contains_key(k),
+                BatchCheck::Equals(k, expected) => ks
+                    .get(k)
+                    .map(|current| current.is_some_and(|c| *c == **expected)),
+            };
+            match holds {
+                Ok(true) => {}
+                Ok(false) => return build_ok_u32(i as u32 + 1),
+                Err(e) => return build_error(&format!("apply_batch failed: {e}")),
+            }
+        }
+        if writes.is_empty() {
+            return build_ok_u32(0);
+        }
+        // One write batch: one journal record, so recovery after a crash
+        // replays every write or none.
+        let mut batch = state.db.batch();
+        for (k, v) in &writes {
+            match v {
+                Some(v) => batch.insert(ks, k.as_slice(), v.as_slice()),
+                None => batch.remove(ks, k.as_slice()),
+            }
+        }
+        if let Err(e) = batch.commit() {
+            return build_error(&format!("apply_batch failed: {e}"));
+        }
+        #[cfg(test)]
+        state
+            .batch_commits
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        for (k, v) in &writes {
+            if let Some(v) = v {
+                after_insert(state, &ks_name, k, v);
+            }
+        }
+        build_ok_u32(0)
+    })
+    .await
+}
+
 /// Write `value` at `new` and delete `old`, unless `new` is occupied
 /// (`Ok(false)`, nothing written). The caller holds the keyspace's lock.
 ///
@@ -640,8 +879,21 @@ mod tests {
             OP_INSERT_IF_ABSENT => handle_insert_if_absent(state, body).await,
             OP_SWAP_IF_ABSENT => handle_swap_if_absent(state, body).await,
             OP_MOVE_IF_EQUAL => handle_move_if_equal(state, body).await,
+            OP_APPLY_BATCH => handle_apply_batch(state, body).await,
+            OP_SCAN => handle_scan(state, body).await,
             op => panic!("unexpected op {op}"),
         }
+    }
+
+    /// Build an `OP_SCAN` request: `[op][ks][prefix][after][limit:u32][flags:u8]`.
+    fn scan_req(prefix: &[u8], after: &[u8], limit: u32, reverse: bool) -> Vec<u8> {
+        let mut buf = vec![OP_SCAN];
+        encode_keyspace(&mut buf, "ks");
+        encode_bytes(&mut buf, prefix);
+        encode_bytes(&mut buf, after);
+        buf.extend_from_slice(&limit.to_be_bytes());
+        buf.push(if reverse { 0x01 } else { 0x00 });
+        buf
     }
 
     async fn get(state: &Arc<StorageState>, key: &[u8]) -> Option<Vec<u8>> {
@@ -683,8 +935,114 @@ mod tests {
         let caps = u32::from_be_bytes([resp[1], resp[2], resp[3], resp[4]]);
         assert_eq!(
             caps,
-            CAP_TAKE | CAP_INSERT_IF_ABSENT | CAP_SWAP_IF_ABSENT | CAP_MOVE_IF_EQUAL
+            CAP_TAKE
+                | CAP_INSERT_IF_ABSENT
+                | CAP_SWAP_IF_ABSENT
+                | CAP_MOVE_IF_EQUAL
+                | CAP_APPLY_BATCH
+                | CAP_SCAN
         );
+    }
+
+    /// An OP_APPLY_BATCH request: each entry is a tag and its fields.
+    fn batch(entries: &[(u8, &[&[u8]])]) -> Vec<u8> {
+        let mut fields: Vec<&[u8]> = Vec::new();
+        let tags: Vec<[u8; 1]> = entries.iter().map(|(t, _)| [*t]).collect();
+        for ((_, rest), tag) in entries.iter().zip(&tags) {
+            fields.push(tag);
+            fields.extend_from_slice(rest);
+        }
+        req(OP_APPLY_BATCH, &fields)
+    }
+
+    fn batch_outcome(resp: &[u8]) -> u32 {
+        assert_eq!(resp[0], STATUS_OK, "{resp:?}");
+        u32::from_be_bytes([resp[1], resp[2], resp[3], resp[4]])
+    }
+
+    /// An applied batch is one write batch (one journal record); a refused
+    /// one names the first precondition that failed and writes nothing.
+    #[tokio::test]
+    async fn apply_batch_commits_one_write_batch_or_nothing() {
+        let s = state();
+        let batches = || s.batch_commits.load(Ordering::SeqCst);
+        put(&s, b"old", b"v").await;
+
+        let r = dispatch(
+            &s,
+            &batch(&[
+                (BATCH_ABSENT, &[b"new"]),
+                (BATCH_EQUALS, &[b"old", b"v"]),
+                (BATCH_PUT, &[b"new", b"w"]),
+                (BATCH_PUT, &[b"idx", b"1"]),
+                (BATCH_DELETE, &[b"old"]),
+            ]),
+        )
+        .await;
+        assert_eq!(batch_outcome(&r), 0);
+        assert_eq!(batches(), 1);
+        assert_eq!(get(&s, b"old").await, None);
+        assert_eq!(get(&s, b"new").await, Some(b"w".to_vec()));
+        assert_eq!(get(&s, b"idx").await, Some(b"1".to_vec()));
+
+        // Each kind of precondition refusing, reported by its 1-based index.
+        let put_xy: &[&[u8]] = &[b"x", b"y"];
+        for (entries, refused) in [
+            (vec![(BATCH_ABSENT, &[&b"new"[..]][..])], 1),
+            (
+                vec![
+                    (BATCH_PRESENT, &[&b"new"[..]][..]),
+                    (BATCH_PRESENT, &[&b"old"[..]][..]),
+                ],
+                2,
+            ),
+            (vec![(BATCH_EQUALS, &[&b"new"[..], &b"other"[..]][..])], 1),
+            (vec![(BATCH_EQUALS, &[&b"old"[..], &b"v"[..]][..])], 1),
+        ] {
+            let mut entries = entries;
+            entries.push((BATCH_PUT, put_xy));
+            let r = dispatch(&s, &batch(&entries)).await;
+            assert_eq!(batch_outcome(&r), refused);
+        }
+        assert_eq!(get(&s, b"x").await, None, "refusals write nothing");
+        assert_eq!(batches(), 1);
+
+        // Preconditions only: checked, nothing committed.
+        let r = dispatch(&s, &batch(&[(BATCH_PRESENT, &[b"new"])])).await;
+        assert_eq!(batch_outcome(&r), 0);
+        assert_eq!(batches(), 1);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn apply_batch_under_concurrency_admits_exactly_one() {
+        let s = state();
+        let request = batch(&[
+            (BATCH_ABSENT, &[b"claim"]),
+            (BATCH_PUT, &[b"claim", b"v"]),
+            (BATCH_PUT, &[b"index", b"v"]),
+        ]);
+        let wins = race(&s, request, 64, |r| batch_outcome(r) == 0).await;
+        assert_eq!(wins, 1);
+    }
+
+    #[tokio::test]
+    async fn malformed_batches_are_refused_before_any_write() {
+        let s = state();
+        for bad in [
+            // A precondition after a write.
+            batch(&[(BATCH_PUT, &[b"a", b"1"]), (BATCH_ABSENT, &[b"b"])]),
+            // One key written twice.
+            batch(&[(BATCH_PUT, &[b"a", b"1"]), (BATCH_DELETE, &[b"a"])]),
+            // An unknown tag.
+            batch(&[(b'z', &[b"a"])]),
+            // A put without its value.
+            batch(&[(BATCH_PUT, &[b"a"])]),
+        ] {
+            let resp = dispatch(&s, &bad).await;
+            assert_eq!(resp[0], STATUS_ERROR, "{resp:?}");
+        }
+        assert_eq!(get(&s, b"a").await, None);
+        assert_eq!(s.batch_commits.load(Ordering::SeqCst), 0);
     }
 
     #[tokio::test]
@@ -886,6 +1244,203 @@ mod tests {
         assert_eq!(inserted, 1, "still exactly one winner");
     }
 
+    /// The shared bounded-scan vectors, against this proxy's real
+    /// `handle_scan`.
+    ///
+    /// The file is the contract between this implementation and
+    /// `vti_common::store::scan_bounds` inside the enclave: for a scan an
+    /// older proxy cannot serve, the enclave reads the whole prefix and
+    /// applies its own bounds, and a caller must get the same rows either
+    /// way. The two cannot share code — separate cargo workspaces, and this
+    /// binary's dependency surface is deliberately small — so they share this
+    /// table instead. `include_str!` reaches across the workspace boundary at
+    /// compile time, which costs no dependency.
+    #[tokio::test]
+    async fn scan_matches_the_shared_range_vectors() {
+        #[derive(serde::Deserialize)]
+        struct Case {
+            name: String,
+            #[serde(default)]
+            encoding: Option<String>,
+            keys: Vec<String>,
+            prefix: String,
+            after: Option<String>,
+            reverse: bool,
+            expect: Vec<String>,
+        }
+        #[derive(serde::Deserialize)]
+        struct Vectors {
+            cases: Vec<Case>,
+        }
+
+        /// Render a key the way its case wrote it, so a failure reads as
+        /// keys rather than as byte arrays.
+        fn render(keys: &[Vec<u8>], hex_encoded: bool) -> Vec<String> {
+            keys.iter()
+                .map(|key| {
+                    if hex_encoded {
+                        key.iter().map(|b| format!("{b:02x}")).collect()
+                    } else {
+                        String::from_utf8_lossy(key).into_owned()
+                    }
+                })
+                .collect()
+        }
+
+        fn bytes(value: &str, hex_encoded: bool) -> Vec<u8> {
+            if hex_encoded {
+                assert!(value.len().is_multiple_of(2), "hex field has odd length");
+                (0..value.len())
+                    .step_by(2)
+                    .map(|i| u8::from_str_radix(&value[i..i + 2], 16).expect("hex byte"))
+                    .collect()
+            } else {
+                value.as_bytes().to_vec()
+            }
+        }
+
+        let vectors: Vectors = serde_json::from_str(include_str!(
+            "../../../../vti-common/src/store/scan_range_vectors.json"
+        ))
+        .expect("scan range vectors parse");
+
+        for case in vectors.cases {
+            let hex_encoded = case.encoding.as_deref() == Some("hex");
+            let s = state();
+            for key in &case.keys {
+                put(&s, &bytes(key, hex_encoded), b"v").await;
+            }
+
+            // The vectors describe the range, not a page, so the limit is
+            // only there to stop a bounds error hiding behind a truncation.
+            let request = scan_req(
+                &bytes(&case.prefix, hex_encoded),
+                &case
+                    .after
+                    .as_deref()
+                    .map(|a| bytes(a, hex_encoded))
+                    .unwrap_or_default(),
+                u32::MAX,
+                case.reverse,
+            );
+            let scanned: Vec<Vec<u8>> = decode_kv_list_response(&dispatch(&s, &request).await)
+                .expect("scan response")
+                .into_iter()
+                .map(|(key, _)| key)
+                .collect();
+
+            let expect: Vec<Vec<u8>> = case
+                .expect
+                .iter()
+                .map(|key| bytes(key, hex_encoded))
+                .collect();
+            assert_eq!(
+                render(&scanned, hex_encoded),
+                render(&expect, hex_encoded),
+                "proxy scan disagrees with the shared vectors: {}",
+                case.name
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn scan_returns_ascending_range_respecting_limit() {
+        let s = state();
+        for i in 0..5u8 {
+            put(&s, &[b'k', i], &[b'v', i]).await;
+        }
+        let resp = dispatch(&s, &scan_req(b"k", b"", 3, false)).await;
+        let pairs = decode_kv_list_response(&resp).unwrap();
+        assert_eq!(
+            pairs,
+            vec![
+                (vec![b'k', 0], vec![b'v', 0]),
+                (vec![b'k', 1], vec![b'v', 1]),
+                (vec![b'k', 2], vec![b'v', 2]),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn scan_reverse_flag_returns_newest_first() {
+        let s = state();
+        for i in 0..5u8 {
+            put(&s, &[b'k', i], &[b'v', i]).await;
+        }
+        let resp = dispatch(&s, &scan_req(b"k", b"", 3, true)).await;
+        let pairs = decode_kv_list_response(&resp).unwrap();
+        assert_eq!(
+            pairs,
+            vec![
+                (vec![b'k', 4], vec![b'v', 4]),
+                (vec![b'k', 3], vec![b'v', 3]),
+                (vec![b'k', 2], vec![b'v', 2]),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn scan_after_cursor_is_exclusive_in_both_directions() {
+        let s = state();
+        for i in 0..5u8 {
+            put(&s, &[b'k', i], &[b'v', i]).await;
+        }
+
+        // Ascending: resume strictly after k2 -> k3, k4.
+        let resp = dispatch(&s, &scan_req(b"k", &[b'k', 2], 10, false)).await;
+        let pairs = decode_kv_list_response(&resp).unwrap();
+        assert_eq!(
+            pairs,
+            vec![
+                (vec![b'k', 3], vec![b'v', 3]),
+                (vec![b'k', 4], vec![b'v', 4])
+            ]
+        );
+
+        // Reverse: resume strictly before (older than) k2 -> k1, k0.
+        let resp = dispatch(&s, &scan_req(b"k", &[b'k', 2], 10, true)).await;
+        let pairs = decode_kv_list_response(&resp).unwrap();
+        assert_eq!(
+            pairs,
+            vec![
+                (vec![b'k', 1], vec![b'v', 1]),
+                (vec![b'k', 0], vec![b'v', 0])
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn scan_zero_limit_returns_an_empty_list() {
+        let s = state();
+        put(&s, b"k", b"v").await;
+        let resp = dispatch(&s, &scan_req(b"k", b"", 0, false)).await;
+        assert_eq!(decode_kv_list_response(&resp).unwrap(), vec![]);
+    }
+
+    #[tokio::test]
+    async fn scan_rejects_unknown_flag_bits() {
+        let s = state();
+        let mut request = scan_req(b"k", b"", 10, false);
+        // Flip a bit outside the single defined `reverse` flag.
+        *request.last_mut().unwrap() = 0x02;
+        let resp = dispatch(&s, &request).await;
+        assert_eq!(resp[0], STATUS_ERROR);
+    }
+
+    #[tokio::test]
+    async fn scan_rejects_responses_over_the_frame_size_cap() {
+        let s = state();
+        // Large enough values that a handful of pairs already exceed
+        // MAX_MESSAGE_SIZE (16 MiB), proving the cap is enforced while the
+        // scan is being assembled rather than only at the transport layer.
+        let value = vec![0u8; 1_048_576];
+        for i in 0..20u8 {
+            put(&s, &[b'k', i], &value).await;
+        }
+        let resp = dispatch(&s, &scan_req(b"k", b"", 20, false)).await;
+        assert_eq!(resp[0], STATUS_ERROR);
+    }
+
     #[tokio::test]
     async fn malformed_requests_are_errors_not_panics() {
         let s = state();
@@ -894,6 +1449,8 @@ mod tests {
             OP_INSERT_IF_ABSENT,
             OP_SWAP_IF_ABSENT,
             OP_MOVE_IF_EQUAL,
+            OP_APPLY_BATCH,
+            OP_SCAN,
         ] {
             // Keyspace only; every key/value field missing.
             let mut truncated = vec![op];

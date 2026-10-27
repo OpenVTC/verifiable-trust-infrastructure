@@ -139,13 +139,37 @@ pub async fn list_states(ks: &KeyspaceHandle) -> Result<Vec<StatusListState>, Ap
 /// create one with [`StatusListState::new`] and seed decoys via
 /// [`super::add_initial_decoys`]. Returns the state regardless
 /// (boot path can act on it without a second `get_state` call).
+///
+/// An existing row whose `list_credential_id` is not
+/// `list_credential_id` — the VTC's `public_url` changed since the
+/// row was minted — is re-pointed at the configured URL, keeping its
+/// bits and assignments. Otherwise every credential issued from then
+/// on would name a list URL the VTC no longer serves, and the list it
+/// does serve would carry an `id` that is not the URL it was fetched
+/// from, so no holder could establish a credential's status.
+/// Credentials issued under the old URL still name it; they need
+/// re-issuing.
 pub async fn ensure_initial(
     ks: &KeyspaceHandle,
     purpose: StatusPurpose,
     list_credential_id: String,
 ) -> Result<StatusListState, AppError> {
     if let Some(existing) = get_state(ks, purpose).await? {
-        return Ok(existing);
+        if existing.list_credential_id == list_credential_id {
+            return Ok(existing);
+        }
+        tracing::warn!(
+            ?purpose,
+            from = %existing.list_credential_id,
+            to = %list_credential_id,
+            "status list URL changed with public_url; credentials naming the old URL \
+             need re-issuing"
+        );
+        return with_locked(ks, purpose, |row| {
+            row.list_credential_id = list_credential_id;
+            Ok(row.clone())
+        })
+        .await;
     }
     let mut state = StatusListState::new(purpose, list_credential_id);
     let decoy_count = state.initial_decoy_count();
@@ -348,6 +372,37 @@ mod tests {
         // (re-init must not re-seed decoys).
         assert_eq!(a.bits, b.bits);
         assert_eq!(a.assigned, b.assigned);
+    }
+
+    #[tokio::test]
+    async fn ensure_initial_follows_a_changed_public_url() {
+        let (ks, _dir) = temp_ks().await;
+        let before = ensure_initial(
+            &ks,
+            StatusPurpose::Revocation,
+            "https://old.example.com/v1/status-lists/revocation".into(),
+        )
+        .await
+        .unwrap();
+        let after = ensure_initial(
+            &ks,
+            StatusPurpose::Revocation,
+            "https://new.example.com/v1/status-lists/revocation".into(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            after.list_credential_id,
+            "https://new.example.com/v1/status-lists/revocation"
+        );
+        // The list itself is kept: same bits, same assignments.
+        assert_eq!(after.bits, before.bits);
+        assert_eq!(after.assigned, before.assigned);
+        let stored = get_state(&ks, StatusPurpose::Revocation)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored.list_credential_id, after.list_credential_id);
     }
 
     #[tokio::test]

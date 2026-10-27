@@ -12,7 +12,7 @@
 //!    successful assert. Reuses the rotation-challenge storage
 //!    pattern: `passkey_ks` keyspace, `personhood_chal:` prefix.
 //!
-//! 2. `vtc/members/personhood/assert/0.1` — accepts a VP signed by the
+//! 2. `vtc/members/personhood/assert/0.2` — accepts a VP signed by the
 //!    member's `#key-0`. Flow:
 //!    - Consume the challenge (single-use; refuses on missing /
 //!      expired / wrong-DID). The challenge must appear **both** at
@@ -94,15 +94,15 @@ use trust_tasks_rs::specs::vtc::members::personhood as personhood_spec;
 pub const CHALLENGE_ERR_NOT_FOUND: &str =
     personhood_spec::challenge::v0_1::error_codes::NOT_FOUND.code;
 /// `vtc/members/personhood/assert:notFound` — no member with that DID.
-pub const ASSERT_ERR_NOT_FOUND: &str = personhood_spec::assert::v0_1::error_codes::NOT_FOUND.code;
+pub const ASSERT_ERR_NOT_FOUND: &str = personhood_spec::assert::v0_2::error_codes::NOT_FOUND.code;
 /// `vtc/members/personhood/assert:challengeExpired` — the challenge is
 /// unknown or expired.
 pub const ASSERT_ERR_CHALLENGE_EXPIRED: &str =
-    personhood_spec::assert::v0_1::error_codes::CHALLENGE_EXPIRED.code;
+    personhood_spec::assert::v0_2::error_codes::CHALLENGE_EXPIRED.code;
 /// `vtc/members/personhood/assert:presentationInvalid` — the VP failed
 /// verification, its holder is not `did`, or the personhood policy refused it.
 pub const ASSERT_ERR_PRESENTATION_INVALID: &str =
-    personhood_spec::assert::v0_1::error_codes::PRESENTATION_INVALID.code;
+    personhood_spec::assert::v0_2::error_codes::PRESENTATION_INVALID.code;
 /// `vtc/members/personhood/revoke:notFound` — no member with that DID.
 pub const REVOKE_ERR_NOT_FOUND: &str = personhood_spec::revoke::v0_1::error_codes::NOT_FOUND.code;
 
@@ -252,7 +252,7 @@ pub struct AssertResponse {
 /// ceremony, not two implementations that agree today.
 ///
 /// Note what is deliberately *not* a parameter — the caller's identity.
-/// `assert/0.1` §Authorization makes the presentation the gate: holder
+/// `assert/0.2` §Authorization makes the presentation the gate: holder
 /// equality binds the assertion to the party it is about, and the
 /// single-use challenge binds it to this exchange. Neither is a claim
 /// about who delivered the bytes, so a relaying transport does not get a
@@ -261,6 +261,7 @@ pub(crate) async fn assert_inner(
     state: &AppState,
     member_did: &str,
     presentation: &JsonValue,
+    evidence: &[crate::credentials::witness::OutcomeEvidence],
 ) -> Result<AssertResponse, TaskError> {
     vti_common::identifier::validate_did("did", member_did)?;
     // Load Member row first — `404` for an unknown subject
@@ -399,7 +400,7 @@ pub(crate) async fn assert_inner(
     //    binding verdict attached. (Per D2 review, embedded-VC proofs are
     //    surfaced to the policy via extract but not verified at the route —
     //    operators wanting strict VC verification upload custom rego.)
-    let vp_claims = policy_projection(state, presentation).await;
+    let vp_claims = policy_projection(state, presentation, evidence).await;
     // A statement under a predicate this community does not accept is
     // refused, not handed to the policy as a generic statement (fail closed).
     reject_unaccepted_statements(state, &vp_claims)
@@ -768,9 +769,27 @@ async fn reject_unaccepted_statements(
 /// instead of doing cryptography, and DTG Credentials Security Considerations
 /// 6 (*Digest integrity*) makes recomputing the digest against the referenced
 /// edge credential the verifier's job.
-async fn policy_projection(state: &AppState, presentation: &JsonValue) -> JsonValue {
+///
+/// A `witnessed/1` statement counts only from a witness this community trusts
+/// ([`crate::credentials::trusted_witnesses`]) and only with the outcome
+/// evidence of its session (`evidence`, carried in the payload's own
+/// `outcomeEvidence`, `vtc/members/personhood/assert/0.2`), both settled into the same
+/// verdict.
+async fn policy_projection(
+    state: &AppState,
+    presentation: &JsonValue,
+    evidence: &[crate::credentials::witness::OutcomeEvidence],
+) -> JsonValue {
     let mut vp_claims = extract_vp_claims(presentation);
-    crate::credentials::witness::annotate_vp_claims(&state.relationships_ks, &mut vp_claims).await;
+    let trusted = crate::credentials::trusted_witnesses::live_for(state).await;
+    let resolver = state.trust_task_vm_resolver();
+    let ctx = crate::credentials::witness::WitnessContext {
+        relationships_ks: &state.relationships_ks,
+        trusted: &trusted,
+        evidence,
+        resolver: &resolver,
+    };
+    crate::credentials::witness::annotate_vp_claims(&ctx, presentation, &mut vp_claims).await;
     vp_claims
 }
 
@@ -840,12 +859,10 @@ async fn enforce_single_membership(
 
     // Every presented pseudonym is claimed, not just the first. A member may
     // legitimately present two accepted IDVCs; if either names a person
-    // already here, they are that person.
-    for pseudonym in &pseudonyms {
-        crate::members::pseudonym::claim(&state.members_ks, community_did, pseudonym, member_did)
-            .await?;
-    }
-    Ok(())
+    // already here, they are that person — and then none is claimed.
+    let pseudonyms: Vec<&str> = pseudonyms.iter().map(String::as_str).collect();
+    crate::members::pseudonym::claim_all(&state.members_ks, community_did, &pseudonyms, member_did)
+        .await
 }
 
 /// Whether `vp_claims` carries this community's own `vetted/1` statement about
@@ -1148,16 +1165,16 @@ mod witness_binding_tests {
     //! shipped default policy (#1068).
 
     use super::*;
+    use crate::credentials::witness::OutcomeEvidence;
+    use crate::credentials::witness::fixtures::{self, Witnessed};
     use crate::relationships::Relationship;
     use crate::relationships::storage::store_relationship;
     use crate::test_support::{TestVtc, dtg_json};
     use dtg_credentials::{DTGCredential, IssuerScope};
 
     const COMMUNITY: &str = "did:webvh:acme.example";
-    const WITNESS: &str = "did:webvh:witness.example";
     const ALICE: &str = "did:key:zAlice";
     const BOB: &str = "did:key:zBob";
-    const SESSION: &str = "urn:uuid:0b7d8f3e-2c4a-4e57-9a3b-5d1e6c8f9a20";
 
     /// A VTC running the shipped default policies, holding the published
     /// Alice → Bob edge (signed, as publication stores it).
@@ -1206,87 +1223,145 @@ mod witness_binding_tests {
         (vtc, vrc)
     }
 
-    /// The `witness/session` document that opened the session `SESSION` names.
-    /// `new_witnessed_vsc` reads `taskContext` and `taskDigestMultibase` off
-    /// it, so the pair cannot disagree.
-    fn witness_session() -> JsonValue {
-        json!({
-            "id": SESSION,
-            "type": "https://trusttasks.org/spec/witness/session/0.1",
-            "threadId": SESSION,
-            "issuer": ALICE,
-            "recipient": WITNESS,
-            "issuedAt": "2026-09-22T09:59:00Z",
-            "payload": { "parties": [ALICE, BOB] }
-        })
-    }
-
-    /// A catalog-built VWC — a `witnessed/1` statement about Alice issuing
-    /// an edge — presented by Alice, with its `object.digestMultibase` set to
-    /// `digest`, or removed for `None`.
-    ///
-    /// `new_witnessed_vsc` computes the digest from the edge credential it is
-    /// handed, so a VWC naming some other digest — or none — is not something
-    /// the constructor produces: the only honest way to hold one is to edit
-    /// the wire form, which is how it would arrive. The proof is not checked
-    /// on this path, so an unsigned statement stands in for a signed one.
-    fn presentation_with_witness(digest: Option<String>) -> JsonValue {
-        let edge = dtg_json(&DTGCredential::new_vrc(
+    /// The Alice → Bob edge, as the party presented it to the witness.
+    fn edge() -> JsonValue {
+        dtg_json(&DTGCredential::new_vrc(
             ALICE.into(),
             IssuerScope::Pairwise,
             BOB.into(),
             Utc::now(),
             None,
-        ));
-        let vwc = DTGCredential::new_witnessed_vsc(
-            WITNESS.into(),
-            IssuerScope::Directed,
-            &edge,
-            &witness_session(),
-            Utc::now(),
-            None,
-            None,
-        )
-        .expect("the opening witness/session document builds a VWC");
-        let mut vwc = dtg_json(&vwc);
-        let object = vwc["credentialSubject"]["object"]
-            .as_object_mut()
-            .expect("object is an object");
-        match digest {
-            Some(d) => {
-                object.insert("digestMultibase".into(), JsonValue::String(d));
+        ))
+    }
+
+    /// A witness's VWC — a `witnessed/1` statement about Alice issuing an
+    /// edge — presented by Alice, its `object.digestMultibase` set to `digest`
+    /// (removed for `None`) before the witness signed it, with the outcome
+    /// evidence of its session.
+    ///
+    /// `new_witnessed_vsc` computes the digest from the edge credential it is
+    /// handed, so a VWC naming some other digest — or none — is not something
+    /// the constructor produces; editing it before the witness signs is how a
+    /// careless or dishonest witness would issue one.
+    async fn witnessed(digest: Option<String>) -> (JsonValue, Witnessed) {
+        let w = fixtures::witnessed_with(&edge(), BOB, |vwc| {
+            let object = vwc["credentialSubject"]["object"]
+                .as_object_mut()
+                .expect("object is an object");
+            match digest {
+                Some(d) => {
+                    object.insert("digestMultibase".into(), JsonValue::String(d));
+                }
+                None => {
+                    object.remove("digestMultibase");
+                }
             }
-            None => {
-                object.remove("digestMultibase");
-            }
-        }
-        json!({
+        })
+        .await;
+        let vp = json!({
             "@context": ["https://www.w3.org/ns/credentials/v2"],
             "type": ["VerifiablePresentation"],
             "holder": ALICE,
-            "verifiableCredential": [vwc]
-        })
+            "verifiableCredential": [w.vwc.clone()]
+        });
+        (vp, w)
     }
 
-    async fn decide(vtc: &TestVtc, presentation: &JsonValue) -> bool {
-        let vp_claims = policy_projection(&vtc.state, presentation).await;
+    async fn verdict(
+        vtc: &TestVtc,
+        presentation: &JsonValue,
+        evidence: &[OutcomeEvidence],
+    ) -> JsonValue {
+        policy_projection(&vtc.state, presentation, evidence).await["credentials"][0]
+            ["witness_binding"]
+            .clone()
+    }
+
+    async fn decide(vtc: &TestVtc, presentation: &JsonValue, evidence: &[OutcomeEvidence]) -> bool {
+        let vp_claims = policy_projection(&vtc.state, presentation, evidence).await;
         evaluate_personhood_assert(&vtc.state, ALICE, COMMUNITY, &vp_claims)
             .await
             .expect("evaluate")
     }
 
-    /// A witness whose `digestMultibase` recomputes to an edge this community
-    /// holds is personhood evidence under the shipped default.
+    /// A trusted witness whose `digestMultibase` recomputes to an edge this
+    /// community holds, with its session's outcome evidence, is personhood
+    /// evidence under the shipped default.
     #[tokio::test]
-    async fn assert_accepts_a_witness_bound_to_a_held_edge() {
+    async fn assert_accepts_a_trusted_witness_bound_to_a_held_edge() {
         let (vtc, vrc) = vtc_holding_an_edge().await;
-        let digest = vrc.digest_multibase().expect("catalog digest");
-        assert!(decide(&vtc, &presentation_with_witness(Some(digest))).await);
+        let (vp, w) = witnessed(Some(vrc.digest_multibase().unwrap())).await;
+        fixtures::trust(&vtc.state, &[&w.witness.did]).await;
+        assert_eq!(
+            verdict(&vtc, &vp, std::slice::from_ref(&w.evidence)).await["state"],
+            "bound"
+        );
+        assert!(decide(&vtc, &vp, &[w.evidence]).await);
+    }
+
+    /// The list is empty by default, and an empty list trusts no witness: the
+    /// same VWC, with the same evidence, grants nothing.
+    #[tokio::test]
+    async fn assert_refuses_every_witness_by_default() {
+        let (vtc, vrc) = vtc_holding_an_edge().await;
+        let (vp, w) = witnessed(Some(vrc.digest_multibase().unwrap())).await;
+        assert_eq!(
+            verdict(&vtc, &vp, std::slice::from_ref(&w.evidence)).await["state"],
+            "untrustedWitness"
+        );
+        assert!(!decide(&vtc, &vp, &[w.evidence]).await);
+    }
+
+    /// A witness the community has not listed counts for nothing, whoever else
+    /// is listed.
+    #[tokio::test]
+    async fn assert_refuses_an_unlisted_witness() {
+        let (vtc, vrc) = vtc_holding_an_edge().await;
+        let (vp, w) = witnessed(Some(vrc.digest_multibase().unwrap())).await;
+        fixtures::trust(&vtc.state, &["did:key:z6MkSomeOtherWitness"]).await;
+        assert_eq!(
+            verdict(&vtc, &vp, std::slice::from_ref(&w.evidence)).await["state"],
+            "untrustedWitness"
+        );
+        assert!(!decide(&vtc, &vp, &[w.evidence]).await);
+    }
+
+    /// VTI-CMP-023: without the outcome evidence of the session it cites, a
+    /// VWC is not evidence that the witnessing completed.
+    #[tokio::test]
+    async fn assert_refuses_a_trusted_witness_without_outcome_evidence() {
+        let (vtc, vrc) = vtc_holding_an_edge().await;
+        let (vp, w) = witnessed(Some(vrc.digest_multibase().unwrap())).await;
+        fixtures::trust(&vtc.state, &[&w.witness.did]).await;
+        assert_eq!(verdict(&vtc, &vp, &[]).await["state"], "noOutcomeEvidence");
+        assert!(!decide(&vtc, &vp, &[]).await);
+    }
+
+    /// Evidence that does not pair — here, a response signed by somebody
+    /// other than the witness — is no evidence.
+    #[tokio::test]
+    async fn assert_refuses_evidence_that_does_not_pair() {
+        let (vtc, vrc) = vtc_holding_an_edge().await;
+        let (vp, w) = witnessed(Some(vrc.digest_multibase().unwrap())).await;
+        fixtures::trust(&vtc.state, &[&w.witness.did]).await;
+        let forger = fixtures::Party::new();
+        let mut forged = fixtures::outcome(&forger, &w.session, &w.vwc).await;
+        forged["issuer"] = json!(w.witness.did);
+        let evidence = [OutcomeEvidence {
+            session: w.session.clone(),
+            outcome: forged,
+        }];
+        assert_eq!(
+            verdict(&vtc, &vp, &evidence).await["state"],
+            "outcomeInvalid"
+        );
+        assert!(!decide(&vtc, &vp, &evidence).await);
     }
 
     /// DTG Credentials Security Considerations 6: a witness whose digest does
-    /// not bind to the referenced edge is not evidence of it. Before #1068
-    /// the default admitted every one of these on the issuer alone.
+    /// not bind to the referenced edge is not evidence of it — even a trusted
+    /// witness whose session completed. Before #1068 the default admitted
+    /// every one of these on the issuer alone.
     #[tokio::test]
     async fn assert_refuses_a_witness_whose_digest_does_not_bind() {
         let (vtc, vrc) = vtc_holding_an_edge().await;
@@ -1307,14 +1382,29 @@ mod witness_binding_tests {
         signed["proof"] = json!({ "type": "DataIntegrityProof", "proofValue": "zSig" });
         let wrong_coverage = crate::credentials::ingress::digest_multibase(&signed).unwrap();
 
-        for (why, digest) in [
-            ("names an edge not held here", Some(elsewhere)),
-            ("digest over the wrong coverage", Some(wrong_coverage)),
-            ("no digest at all", None),
-            ("not a multihash", Some("not-a-digest".to_string())),
+        for (why, digest, state) in [
+            ("names an edge not held here", Some(elsewhere), "unresolved"),
+            (
+                "digest over the wrong coverage",
+                Some(wrong_coverage),
+                "unresolved",
+            ),
+            ("no digest at all", None, "absent"),
+            (
+                "not a multihash",
+                Some("not-a-digest".to_string()),
+                "malformed",
+            ),
         ] {
+            let (vp, w) = witnessed(digest).await;
+            fixtures::trust(&vtc.state, &[&w.witness.did]).await;
+            assert_eq!(
+                verdict(&vtc, &vp, std::slice::from_ref(&w.evidence)).await["state"],
+                state,
+                "{why}"
+            );
             assert!(
-                !decide(&vtc, &presentation_with_witness(digest)).await,
+                !decide(&vtc, &vp, &[w.evidence]).await,
                 "{why}: must not grant personhood"
             );
         }
@@ -1326,9 +1416,10 @@ mod witness_binding_tests {
     #[tokio::test]
     async fn assert_ignores_a_presenter_supplied_verdict() {
         let (vtc, _) = vtc_holding_an_edge().await;
-        let mut vp = presentation_with_witness(None);
+        let (mut vp, w) = witnessed(None).await;
+        fixtures::trust(&vtc.state, &[&w.witness.did]).await;
         vp["verifiableCredential"][0]["witness_binding"] =
             json!({ "state": "bound", "relationship_id": Uuid::new_v4() });
-        assert!(!decide(&vtc, &vp).await);
+        assert!(!decide(&vtc, &vp, &[w.evidence]).await);
     }
 }

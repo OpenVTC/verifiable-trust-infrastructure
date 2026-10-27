@@ -202,6 +202,14 @@ enum Commands {
         /// publishing to external hosting (e.g. GitLab Pages).
         #[arg(long)]
         did_log_file: Option<PathBuf>,
+        /// Present the DID as its did:webvh (`webvh`) or its did:scid:vh:1
+        /// DID (`scid`). Default: the VTA's `[dids] default_did_method`.
+        #[arg(long, value_name = "webvh|scid")]
+        did_method: Option<vta_sdk::did_scid::DidMethod>,
+        /// List the did:scid alias in alsoKnownAs (`true`/`false`). Default:
+        /// the VTA's `[dids] scid_also_known_as`.
+        #[arg(long, value_name = "BOOL")]
+        scid_also_known_as: Option<bool>,
     },
     /// Create a self-contained did:peer:2 agent identity for a context.
     ///
@@ -897,6 +905,14 @@ enum WebvhCommands {
         /// Number of pre-rotation keys to generate
         #[arg(long)]
         pre_rotation: Option<u32>,
+        /// Present the DID as its did:webvh (`webvh`) or its did:scid:vh:1
+        /// DID (`scid`). Default: the VTA's `[dids] default_did_method`.
+        #[arg(long, value_name = "webvh|scid")]
+        did_method: Option<vta_sdk::did_scid::DidMethod>,
+        /// List the did:scid alias in alsoKnownAs (`true`/`false`). Default:
+        /// the VTA's `[dids] scid_also_known_as`.
+        #[arg(long, value_name = "BOOL")]
+        scid_also_known_as: Option<bool>,
         /// Print the generated mnemonic to stderr. **Off by default** —
         /// printing puts the master seed in shell history, terminal
         /// scrollback, CI log collectors, and tmux/screen buffers. The
@@ -1092,6 +1108,14 @@ enum DidMgmtDidCommands {
         /// Number of pre-rotation keys to generate.
         #[arg(long)]
         pre_rotation: Option<u32>,
+        /// Present the DID as its did:webvh (`webvh`) or its did:scid:vh:1
+        /// DID (`scid`). Default: the VTA's `[dids] default_did_method`.
+        #[arg(long, value_name = "webvh|scid")]
+        did_method: Option<vta_sdk::did_scid::DidMethod>,
+        /// List the did:scid alias in alsoKnownAs (`true`/`false`). Default:
+        /// the VTA's `[dids] scid_also_known_as`.
+        #[arg(long, value_name = "BOOL")]
+        scid_also_known_as: Option<bool>,
         /// Print the generated mnemonic to stderr. **Off by default** —
         /// printing puts the master seed in shell history, terminal
         /// scrollback, CI log collectors, and tmux/screen buffers. The
@@ -1214,6 +1238,8 @@ impl From<DidMgmtCommands> for WebvhCommands {
                     services,
                     pre_rotation,
                     print_mnemonic,
+                    did_method,
+                    scid_also_known_as,
                 } => WebvhCommands::CreateDid {
                     context,
                     server,
@@ -1224,6 +1250,8 @@ impl From<DidMgmtCommands> for WebvhCommands {
                     services,
                     pre_rotation,
                     print_mnemonic,
+                    did_method,
+                    scid_also_known_as,
                 },
                 DidMgmtDidCommands::Edit {
                     did,
@@ -1878,6 +1906,8 @@ async fn main() {
             export_secrets,
             admin,
             did_log_file,
+            did_method,
+            scid_also_known_as,
         }) => {
             // SEALED CHECK: creates keys and DIDs
             check_seal(&cli.config).await;
@@ -1891,6 +1921,8 @@ async fn main() {
                     export_secrets,
                     admin,
                     did_log_file,
+                    did_method,
+                    scid_also_known_as,
                 };
                 if let Err(e) = did_webvh::run_create_did_webvh(args).await {
                     eprintln!("Error: {e}");
@@ -2661,6 +2693,8 @@ async fn run_webvh_dispatch(config_path: Option<PathBuf>, command: WebvhCommands
             services,
             pre_rotation,
             print_mnemonic,
+            did_method,
+            scid_also_known_as,
         } => {
             webvh_cli::run_create_did(
                 config_path,
@@ -2673,6 +2707,8 @@ async fn run_webvh_dispatch(config_path: Option<PathBuf>, command: WebvhCommands
                 services,
                 pre_rotation,
                 print_mnemonic,
+                did_method,
+                scid_also_known_as,
             )
             .await
         }

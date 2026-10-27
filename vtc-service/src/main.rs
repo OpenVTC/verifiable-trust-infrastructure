@@ -117,7 +117,9 @@ enum Commands {
     /// A swiyu or EUDI wallet presents credentials to a verifier it can
     /// identify, signed with a key the VTA minted for that identity. The key
     /// reaches this VTC by a sealed hand-off: `request` writes a request,
-    /// `pnm keys bundle` seals the key to it, `install` stores it encrypted.
+    /// `pnm keys bundle` (swiyu) or `pnm keys bundle-key` (EUDI) seals the key
+    /// to it, `install` stores it encrypted. An EUDI identity then needs its
+    /// access certificate: `csr`, then `certificate`.
     Oid4vp {
         #[command(subcommand)]
         command: Oid4vpCommands,
@@ -161,8 +163,9 @@ enum Oid4vpCommands {
         #[arg(long)]
         out: Option<PathBuf>,
     },
-    /// Open the sealed bundle `pnm keys bundle` produced for the request and
-    /// store the identity's request-signing key, encrypted.
+    /// Open the sealed bundle `pnm keys bundle` (a swiyu DID's keys) or
+    /// `pnm keys bundle-key` (an EUDI identity's key) produced for the
+    /// request and store the identity's request-signing key, encrypted.
     Install {
         #[arg(long)]
         identity: String,
@@ -176,6 +179,81 @@ enum Oid4vpCommands {
         /// bundle holds more than one P-256 key.
         #[arg(long)]
         kid: Option<String>,
+    },
+    /// Record a verifier identity whose key the VTA keeps: every request
+    /// object is signed there, through `keys/sign-jws`, and this VTC holds no
+    /// private key. The VTC's DID needs `sign-jws` in the key's context at the
+    /// VTA.
+    Attach {
+        #[arg(long)]
+        identity: String,
+        /// The key's id at the VTA (`pnm keys list`); a P-256 key.
+        #[arg(long)]
+        vta_key: String,
+        /// The key's public half, multibase (`zDn…`), as `pnm keys list`
+        /// shows it. Every JWS the VTA returns must verify under it.
+        #[arg(long)]
+        public_key: String,
+        /// A swiyu identity's DID. Omitted: an EUDI identity, known by the
+        /// access certificate `vtc oid4vp certificate` installs.
+        #[arg(long, requires = "kid")]
+        did: Option<String>,
+        /// The verification method of `--did` that is this key.
+        #[arg(long, requires = "did")]
+        kid: Option<String>,
+    },
+    /// Write a certificate signing request for an EUDI identity's key, signed
+    /// by it, for your registrar to issue the access certificate from.
+    Csr {
+        #[arg(long)]
+        identity: String,
+        /// The certificate's common name.
+        #[arg(long)]
+        common_name: String,
+        #[arg(long)]
+        organization: Option<String>,
+        /// The organisation's registered identifier (2.5.4.97), e.g.
+        /// `VATDE-123456789`.
+        #[arg(long)]
+        organization_identifier: Option<String>,
+        /// ISO 3166-1 alpha-2 country code.
+        #[arg(long)]
+        country: Option<String>,
+        /// A DNS name for the subject alternative name; repeatable.
+        #[arg(long = "dns")]
+        dns_names: Vec<String>,
+        /// Write the PEM request here instead of to stdout.
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
+    /// Install the access certificate chain the registrar issued for an EUDI
+    /// identity (PEM, leaf first), and optionally its registration
+    /// certificate.
+    Certificate {
+        #[arg(long)]
+        identity: String,
+        /// PEM file: the access certificate, then each issuer in turn.
+        #[arg(long)]
+        chain: PathBuf,
+        /// The registration certificate, carried in every request's
+        /// `verifier_info`.
+        #[arg(long, requires = "registration_format")]
+        registration_certificate: Option<PathBuf>,
+        /// The `verifier_info` format identifier the wallet ecosystem gives the
+        /// registration certificate.
+        #[arg(long, requires = "registration_certificate")]
+        registration_format: Option<String>,
+    },
+    /// Install the trust statements the swiyu trust registry issued about a
+    /// swiyu identity — its identity trust statement and any protected
+    /// verification authorization — carried in every request's
+    /// `verifier_info`. Each replaces the one of its kind it renews.
+    TrustStatement {
+        #[arg(long)]
+        identity: String,
+        /// A file holding one statement, a compact JWT; repeatable.
+        #[arg(long = "file", required = true)]
+        files: Vec<PathBuf>,
     },
     /// List the installed verifier identities.
     List,
@@ -501,6 +579,51 @@ async fn main() {
                     digest,
                     kid,
                 } => oid4vp_cli::run_install(cli.config, identity, bundle, digest, kid).await,
+                Oid4vpCommands::Attach {
+                    identity,
+                    vta_key,
+                    public_key,
+                    did,
+                    kid,
+                } => {
+                    oid4vp_cli::run_attach(cli.config, identity, vta_key, public_key, did.zip(kid))
+                        .await
+                }
+                Oid4vpCommands::Csr {
+                    identity,
+                    common_name,
+                    organization,
+                    organization_identifier,
+                    country,
+                    dns_names,
+                    out,
+                } => {
+                    let subject = vtc_service::oid4vp::x509::CsrSubject {
+                        common_name,
+                        organization,
+                        organization_identifier,
+                        country,
+                        dns_names,
+                    };
+                    oid4vp_cli::run_csr(cli.config, identity, subject, out).await
+                }
+                Oid4vpCommands::Certificate {
+                    identity,
+                    chain,
+                    registration_certificate,
+                    registration_format,
+                } => {
+                    oid4vp_cli::run_certificate(
+                        cli.config,
+                        identity,
+                        chain,
+                        registration_certificate.zip(registration_format),
+                    )
+                    .await
+                }
+                Oid4vpCommands::TrustStatement { identity, files } => {
+                    oid4vp_cli::run_trust_statement(cli.config, identity, files).await
+                }
                 Oid4vpCommands::List => oid4vp_cli::run_list(cli.config).await,
                 Oid4vpCommands::Remove { identity } => {
                     oid4vp_cli::run_remove(cli.config, identity).await
@@ -736,6 +859,7 @@ async fn run_invite_cli(
             updated_by: None,
             expires_at: None,
             resource_grants: Vec::new(),
+            group_grants: Vec::new(),
             label_set_by_subject: false,
             suspension: None,
         };

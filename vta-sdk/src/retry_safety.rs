@@ -230,10 +230,15 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     // deterministic; an ES256 retry yields another valid signature). Nothing
     // durable beyond the audit row.
     (trust_tasks::TASK_KEYS_SIGN_SSHSIG_0_1, ReadOnly),
-    // A compact JWS over a caller-supplied header + payload: the same request
-    // signs the same bytes, and nothing durable is written beyond the audit
-    // row. Same reasoning as the two signing tasks above.
+    // The VTA builds the same signing input from the same request (RFC 8785),
+    // and a certificate request from the same subject and key; a retry yields
+    // another valid signature over it. Nothing durable beyond the audit row.
     (trust_tasks::TASK_KEYS_SIGN_JWS_0_1, ReadOnly),
+    (trust_tasks::TASK_KEYS_SIGN_CSR_0_1, ReadOnly),
+    // The same document and proof configuration hash to the same bytes, and
+    // Ed25519 signs them the same way; with `created` left to the VTA a retry
+    // is another valid proof. Nothing durable beyond the audit row.
+    (trust_tasks::TASK_KEYS_SIGN_DOCUMENT_0_1, ReadOnly),
     (trust_tasks::TASK_KEYS_DERIVE_AND_SIGN_0_1, ReadOnly),
     (
         trust_tasks::TASK_KEYS_DERIVE_AND_SIGN_DOCUMENT_0_1,
@@ -390,6 +395,7 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     // silently orphans.
     (trust_tasks::TASK_WEBVH_DIDS_CREATE_1_0, Keyed),
     (trust_tasks::TASK_WEBVH_DIDS_CREATE_1_1, Keyed),
+    (trust_tasks::TASK_WEBVH_DIDS_CREATE_1_2, Keyed),
     (trust_tasks::TASK_WEBVH_DIDS_GET_1_0, ReadOnly),
     // Deleting an already-deleted DID answers not-found, which is deterministic
     // and therefore never retried.
@@ -503,6 +509,72 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     // ── Memory ──────────────────────────────────────────────────────────
     (trust_tasks::TASK_VTA_MEMORY_PUT_0_1, RetrySafe),
     (trust_tasks::TASK_VTA_MEMORY_LIST_0_1, ReadOnly),
+    // ── Hidden-vetting PCS engine (`vta/pcs/*`) ─────────────────────────
+    // A second create is a second application with a second key.
+    (trust_tasks::TASK_VTA_PCS_APPLICATIONS_CREATE_0_1, Keyed),
+    (trust_tasks::TASK_VTA_PCS_APPLICATIONS_SHOW_0_1, ReadOnly),
+    // A retry after a lost reply would answer `notFound`; keyed so it gets
+    // the original answer.
+    (trust_tasks::TASK_VTA_PCS_APPLICATIONS_DELETE_0_1, Keyed),
+    // Replaces an attestation with the same tag, so a repeat converges.
+    (trust_tasks::TASK_VTA_PCS_VERIFY_ATTESTATION_0_1, RetrySafe),
+    // Builds a proof and stores nothing; the challenge is spent at the
+    // community, not here.
+    (trust_tasks::TASK_VTA_PCS_PROVE_0_1, ReadOnly),
+    // A repeat replaces the blinding state for the same label; the client sends
+    // whichever request it received last, and it unblinds.
+    (trust_tasks::TASK_VTA_PCS_ROOT_REQUEST_0_1, RetrySafe),
+    // A repeat finds no enrolment in flight; keyed so it gets the original answer.
+    (trust_tasks::TASK_VTA_PCS_ROOT_ACCEPT_0_1, Keyed),
+    // A repeat is refused `alreadyInFlight`, a lost first reply strands the
+    // draw: keyed so the retry is answered with the commitments it would have
+    // had. They are blinded; the serials never leave the VTA.
+    (trust_tasks::TASK_VTA_PCS_TOKENS_REQUEST_0_1, Keyed),
+    (trust_tasks::TASK_VTA_PCS_TOKENS_ACCEPT_0_1, Keyed),
+    (trust_tasks::TASK_VTA_PCS_TOKENS_ABANDON_0_1, Keyed),
+    // Spends a token: a second execution is a second attestation and a second
+    // token gone.
+    (trust_tasks::TASK_VTA_PCS_ATTEST_0_1, Keyed),
+    (trust_tasks::TASK_VTA_PCS_VETTER_SHOW_0_1, ReadOnly),
+    // ── Voter role (`vta/pcs/voter/*`, `vta/pcs/vote`) ──────────────────
+    // A repeat before the ticket is held answers with the request already kept,
+    // under the same key and blinding state, so a replayed answer still unblinds.
+    (trust_tasks::TASK_VTA_PCS_VOTER_REGISTER_0_1, RetrySafe),
+    // Signs a read as the member and keeps nothing: a repeat is another signed read.
+    (trust_tasks::TASK_VTA_PCS_VOTER_READ_0_1, RetrySafe),
+    // A repeat finds no request in flight; keyed so it gets the original answer.
+    (trust_tasks::TASK_VTA_PCS_VOTER_ACCEPT_0_1, Keyed),
+    // Each execution is a new cast, signed by a new one-time key: keyed so a
+    // retry is answered with the same document, which is what the client must
+    // resend to the ballot box (a second cast would be a second board entry).
+    (trust_tasks::TASK_VTA_PCS_VOTE_0_1, Keyed),
+    // Keeping a receipt already kept stores nothing new.
+    (trust_tasks::TASK_VTA_PCS_VOTER_RECEIPT_0_1, RetrySafe),
+    // As vote: a new encrypted cast under a new one-time key each time; keyed so a
+    // retry is answered with the same document.
+    (trust_tasks::TASK_VTA_PCS_VOTE_ENCRYPTED_0_2, Keyed),
+    // The trustee role: the transport key and the dealing are fixed on first use and
+    // derived again after, so a repeat is the same enrolment or dealing re-signed —
+    // which the ballot box answers as the first. keys keeps a share that is a
+    // function of the board; justify and decrypt keep nothing.
+    (trust_tasks::TASK_VTA_PCS_TRUSTEE_ENROL_0_1, RetrySafe),
+    (trust_tasks::TASK_VTA_PCS_TRUSTEE_DEAL_0_2, RetrySafe),
+    (trust_tasks::TASK_VTA_PCS_TRUSTEE_KEYS_0_2, RetrySafe),
+    (trust_tasks::TASK_VTA_PCS_TRUSTEE_JUSTIFY_0_2, RetrySafe),
+    (trust_tasks::TASK_VTA_PCS_TRUSTEE_DECRYPT_0_2, RetrySafe),
+    // Signs a read as the trustee and keeps nothing.
+    (trust_tasks::TASK_VTA_PCS_TRUSTEE_READ_0_1, RetrySafe),
+    // ── Witnessed party (`vta/witness/*`) ───────────────────────────────
+    // Each step is safe to repeat (`vta/_shared/0.6/CONVENTIONS.md` §5): a
+    // repeated open is an unsent, expiring session; a repeated present builds a
+    // fresh submit document, and the witness spends its challenge on the first
+    // it accepts; a repeated accept of the same outcome is answered again and
+    // stores nothing new.
+    (trust_tasks::TASK_VTA_WITNESS_OPEN_0_2, RetrySafe),
+    (trust_tasks::TASK_VTA_WITNESS_PRESENT_0_2, RetrySafe),
+    (trust_tasks::TASK_VTA_WITNESS_ACCEPT_0_2, RetrySafe),
+    // A read of what accept stored.
+    (trust_tasks::TASK_VTA_WITNESS_LIST_0_1, ReadOnly),
     // ── External accounts (`external/*`) ────────────────────────────────
     (trust_tasks::TASK_EXTERNAL_ACCOUNTS_LIST_0_1, ReadOnly),
     (trust_tasks::TASK_EXTERNAL_ACCOUNTS_GET_0_1, ReadOnly),
@@ -540,6 +612,13 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     // carries a sealed credential, so it must never be cached — which
     // `RetrySafe` guarantees by keeping no record at all.
     (trust_tasks::TASK_EXTERNAL_CREDENTIALS_ISSUE_0_1, RetrySafe),
+    // The same for a presign batch: a second set of presigned requests is
+    // harmless and expires (`issue/0.2`, Retries).
+    (trust_tasks::TASK_EXTERNAL_CREDENTIALS_ISSUE_0_2, RetrySafe),
+    // And at 0.3. A `responseTooLarge` refusal is answered by splitting the
+    // batch into new, smaller requests (consumer item 5) — not by sending this
+    // one again — and spent none of the binding's rate.
+    (trust_tasks::TASK_EXTERNAL_CREDENTIALS_ISSUE_0_3, RetrySafe),
     // The room oracle mints a presentation and **stores nothing** — the spec's
     // own `sideEffects: none`. A second execution leaves this VTA's state
     // byte-identical, which is what `RetrySafe` means; it does not mean the
@@ -553,17 +632,20 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     // Keying it would buy a dedup record against a duplicate that costs
     // nothing, at the price of failing a retry the caller legitimately needs.
     (trust_tasks::TASK_ROOMS_KEYS_PRESENT_0_2, RetrySafe),
+    // Signs and records the disclosure, like `rooms/keys/present`: a retry makes a
+    // second presentation of the same claims for the same audience and nonce,
+    // which the verifier accepts at most once, and a second record of a
+    // disclosure that happened. Nothing a duplicate confers is new.
+    (trust_tasks::TASK_VAULT_CREDENTIALS_PRESENT_0_1, RetrySafe),
     // Reads group state and returns plaintext. Nothing is written, and a second
     // execution is indistinguishable from one.
-    (trust_tasks::TASK_ROOMS_KEYS_OPEN_0_1, ReadOnly),
+    (trust_tasks::TASK_ROOMS_KEYS_OPEN_0_2, ReadOnly),
     // A pure derivation: the same request yields the same key, and nothing is
     // stored but the audit line.
-    (trust_tasks::TASK_ROOMS_KEYS_FILE_KEY_0_1, ReadOnly),
-    // Minting retains a private key. A retry after a lost reply mints a SECOND
-    // one and leaves a second private half behind for a Welcome that will
-    // consume at most one — a duplicate that costs real key material, which is
-    // exactly the case a key exists for.
-    (trust_tasks::TASK_ROOMS_KEYS_KEY_PACKAGE_0_1, Keyed),
+    (trust_tasks::TASK_ROOMS_KEYS_FILE_KEY_0_2, ReadOnly),
+    // Converges: a repeat for the same room, member and invitation returns the
+    // KeyPackage the first one minted (recipient item 3), and leaves nothing behind.
+    (trust_tasks::TASK_ROOMS_KEYS_KEY_PACKAGE_0_2, RetrySafe),
     // Joining is once. A retry after a lost reply finds the group already
     // present and fails `alreadyJoined` — so without a key the caller cannot
     // tell "my join was lost" from "my join worked and the reply was", and the
@@ -576,16 +658,21 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     (trust_tasks::TASK_ROOMS_KEYS_COMMIT_0_1, RetrySafe),
     // Rungs are identified by epoch and one already held is never replaced, so a
     // redelivery stores nothing and reports the same reachability. A lost reply
-    // costs the caller the answer, never the state.
-    (trust_tasks::TASK_ROOMS_KEYS_CHAIN_0_1, RetrySafe),
+    // costs the caller the answer, never the state. The floor only rises: applying it
+    // twice discards nothing more and reports the same floor.
+    (trust_tasks::TASK_ROOMS_KEYS_CHAIN_0_2, RetrySafe),
     // Idempotent by epoch on both halves: a rung already held is never replaced,
     // and re-fetching from the host yields the same rungs. A retry that arrives
-    // after the first succeeded stores nothing and reports the same reach.
-    (trust_tasks::TASK_ROOMS_KEYS_BACKFILL_0_1, RetrySafe),
-    // A read stores nothing and changes nothing at either end: the host serves
-    // the same record, and this agent opens it again. What a retry costs is one
-    // more disclosure of the presentation to the host, which is why it is safe
-    // rather than free.
+    // after the first succeeded stores nothing and reports the same reach. The floor the
+    // host serves only rises — idempotent as the rungs are.
+    (trust_tasks::TASK_ROOMS_KEYS_BACKFILL_0_2, RetrySafe),
+    // A read changes nothing at the host: it serves the same record, and this
+    // agent opens it again. What it may change here is the agent's own epoch
+    // state — before refusing, it applies relayed commits and keeps epoch links
+    // (trust-tasks-tf #848) — and both are idempotent by epoch, exactly as
+    // `rooms/keys/commit` and `rooms/keys/backfill` above, so a retry repeats
+    // nothing. What a retry costs is one more disclosure of the presentation to
+    // the host, which is why it is safe rather than free.
     // `Keyed`, and the reason is that "harmless duplicate" is not quite true
     // here. A second anchor supersedes the first and says the same thing, so it
     // converges on state — but each attempt appends a permanent witnessed log
@@ -597,11 +684,49 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     // tries can differ — that is the room changing, not the task misbehaving,
     // and `headVersion` is what tells them apart.
     (trust_tasks::TASK_ROOMS_KEYS_BROWSE_0_1, RetrySafe),
+    // 0.2 passes the host's `lastPrune` through: still a read, stores nothing.
+    (trust_tasks::TASK_ROOMS_KEYS_BROWSE_0_2, RetrySafe),
     // Sealing is a pure function of the key and the bytes, and it stores nothing:
     // a lost reply costs the caller a round trip, never any state. Re-sealing the
-    // same body yields a different nonce, which is correct and changes nothing.
-    (trust_tasks::TASK_ROOMS_KEYS_SEAL_0_1, RetrySafe),
-    (trust_tasks::TASK_ROOMS_KEYS_LIST_0_1, RetrySafe),
+    // same body yields a different nonce, which is correct and changes nothing. The
+    // optional signature over the body (`signAsPrincipal`) is a pure function of the
+    // body and the key too: a retry signs and seals again and leaves this VTA's state as
+    // it was.
+    (trust_tasks::TASK_ROOMS_KEYS_SEAL_0_2, RetrySafe),
+    // `sideEffects: none` — the VTA completes, signs and returns one document and keeps
+    // neither it nor the presentation. A retry mints a second short-lived leaf and a second
+    // signature over the SAME document `id`, so whichever copy reaches the host is the one
+    // operation the host's duplicate-execution record keys on. Not `Keyed`: caching the
+    // answer would buy nothing a host does not already dedupe, and the client that lost
+    // the reply legitimately needs it again.
+    (trust_tasks::TASK_ROOMS_KEYS_ACT_0_1, RetrySafe),
+    // 0.2 changes whom the VTA acts as for a room-less type (always the named
+    // `issuer`) and what the subject is, not what a completion stores: still nothing.
+    (trust_tasks::TASK_ROOMS_KEYS_ACT_0_2, RetrySafe),
+    // 0.3 adds the offer types, which also store nothing: completing an acceptance checks
+    // the KeyPackage this VTA minted and leaves it unused — a Welcome consumes it — so a
+    // repeat completes it again, as the lost-answer retry of the acceptance needs.
+    (trust_tasks::TASK_ROOMS_KEYS_ACT_0_3, RetrySafe),
+    // 0.4 adds `vtc/rooms/offers/list/0.2` to the offer row, a listing: still nothing stored.
+    (trust_tasks::TASK_ROOMS_KEYS_ACT_0_4, RetrySafe),
+    // 0.5 adds `vtc/rooms/memberships/list/0.1`, a read: still nothing stored.
+    (trust_tasks::TASK_ROOMS_KEYS_ACT_0_5, RetrySafe),
+    // 0.6 adds `vtc/rooms/offers/list/0.3`, a listing: still nothing stored.
+    (trust_tasks::TASK_ROOMS_KEYS_ACT_0_6, RetrySafe),
+    // A read: names each entry's member and can carry the member's own labels.
+    (trust_tasks::TASK_ROOMS_KEYS_LIST_0_2, RetrySafe),
+    // Idempotent by specification (`rooms/keys/label/0.1` *Retry safety*): each detail is
+    // replaced, not appended, so a repeat leaves the label as the first left it and answers
+    // `changed: false`. No key needed — there is nothing a repeat could duplicate.
+    (trust_tasks::TASK_ROOMS_KEYS_LABEL_0_1, RetrySafe),
+    // A read, as `rooms/keys/read` is: the host serves the same records and this agent
+    // opens and judges them again. A retry costs another disclosure of the presentation.
+    (trust_tasks::TASK_ROOMS_KEYS_PROFILE_READ_0_1, RetrySafe),
+    // Convergent: the profile is one record per epoch, so a second write replaces the
+    // first at the same key with the same profile (one more version, the same end state),
+    // and a second clear finds the record already retracted and changes nothing. The
+    // specification says as much of `contended`: retrying is safe.
+    (trust_tasks::TASK_ROOMS_KEYS_PROFILE_WRITE_0_1, RetrySafe),
     // Issuance mints a NEW credential with a fresh id on every call, so a retry
     // without a key leaves a second durable artefact that persists and matters —
     // two memberships for one member, or two grants where the owner meant one.
@@ -621,8 +746,53 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     // That is a worse *message*, not a worse world, which is the distinction
     // this axis is about.
     (trust_tasks::TASK_ROOMS_OWNER_REGISTER_0_1, RetrySafe),
+    // Convergent as 0.1, and a second execution also delivers the room's list again, which
+    // a host answers as accepted. Its `revocation` reports the list at the host *now*, so a
+    // retry's answer is the more current one, not a worse one.
+    (trust_tasks::TASK_ROOMS_OWNER_REGISTER_0_2, RetrySafe),
     (trust_tasks::TASK_ROOMS_OWNER_ISSUE_MEMBERSHIP_0_1, Keyed),
     (trust_tasks::TASK_ROOMS_OWNER_ISSUE_AUTHORITY_0_2, Keyed),
+    // Founding converges: a second execution is refused `alreadyExists` and
+    // changes nothing, so a retry after a lost reply reports a refusal over a
+    // group that in fact exists — a worse message, not a worse world.
+    (trust_tasks::TASK_ROOMS_OWNER_GROUP_CREATE_0_1, RetrySafe),
+    // `Keyed`, because the answer is the only copy of something. The Welcome
+    // exists in the response and nowhere else once the admission is applied:
+    // a retry after a lost reply is refused `alreadyMember`, and the member can
+    // then never join without a removal and a fresh admission. Replaying the
+    // cached response is exactly what that caller needs. Not `KeyedSecret`:
+    // the Welcome is sealed to the newcomer's KeyPackage and opens nothing for
+    // anyone else, including whoever holds the cached copy. A repeat is answered with
+    // the kept Welcome (item 8), but only until the agent's next advance of the room or
+    // 24 hours, so a key still covers a retry later than that. An `earlierRemovalRefused`
+    // refusal did nothing of the request, so its repeat under a new key is a new request,
+    // as the code's meaning says.
+    (trust_tasks::TASK_ROOMS_OWNER_GROUP_ADD_0_3, Keyed),
+    // `Keyed`, like add. A second execution after a lost reply is refused
+    // `notMember` — the removal happened, but the caller is told the member was
+    // never there, and an operator reading that may conclude the wrong person
+    // was named. Replaying the first answer reports what was done. Nothing in
+    // the answer is secret.
+    (trust_tasks::TASK_ROOMS_OWNER_GROUP_REMOVE_0_1, Keyed),
+    // `Keyed`, like 0.1. A second execution after a lost reply signs nothing new (the
+    // member has no leaf: `notMember`), and reads as though the wrong member was named;
+    // the first answer — the list in force and the epoch — is what happened. An
+    // `earlierRemovalRefused` refusal changed nothing of the request, so its repeat under
+    // a new key is a new request, as the code's meaning says.
+    (trust_tasks::TASK_ROOMS_OWNER_GROUP_REMOVE_0_3, Keyed),
+    // `Keyed`. With withdrawals, a second execution signs a second list carrying the same
+    // withdrawals again at a later `revokedAt` — harmless to a host, but a list that grows
+    // with every lost reply and a second sequence the caller asked for once. Replaying the
+    // first answer reports the list and each host's outcome. With nothing to withdraw it is
+    // a re-delivery and could simply run again; the key costs nothing there.
+    (trust_tasks::TASK_ROOMS_OWNER_REVOKE_0_1, Keyed),
+    // `Keyed`, like add and remove. A second execution after a lost reply is not
+    // refused — it renews again, advancing the room a second epoch the caller
+    // asked for once, and every member's key holder then has two commits to
+    // apply instead of one. Replaying the first answer reports the one renewal
+    // that happened. Nothing in the answer is secret. An `earlierRemovalRefused` refusal
+    // did nothing of the request, as at add.
+    (trust_tasks::TASK_ROOMS_OWNER_GROUP_RENEW_0_2, Keyed),
     (trust_tasks::TASK_VTA_MEMORY_DELETE_0_1, RetrySafe),
     // ── Application state ───────────────────────────────────────────────
     //
@@ -676,7 +846,7 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     // record of it — the one task in this family where a lost reply must never
     // be retried blind.
     (
-        trust_tasks::TASK_PERSONA_ATTRIBUTE_PUT_1_0,
+        trust_tasks::TASK_PERSONA_ATTRIBUTE_PUT_1_1,
         RetrySafety::Keyed,
     ),
     (
@@ -703,7 +873,7 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     // failure to a caller whose first attempt succeeded. Keyed, so the replay
     // returns the first response.
     (
-        trust_tasks::TASK_PERSONA_ATTRIBUTE_PROMOTE_1_0,
+        trust_tasks::TASK_PERSONA_ATTRIBUTE_PROMOTE_1_1,
         RetrySafety::Keyed,
     ),
     // Both converge: a repeat retire takes no version and clears whatever is
@@ -726,11 +896,11 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     ),
     // Each execution makes a new face with a new id.
     (
-        trust_tasks::TASK_PERSONA_PROFILE_COMPOSE_1_0,
+        trust_tasks::TASK_PERSONA_PROFILE_COMPOSE_1_1,
         RetrySafety::Keyed,
     ),
     (
-        trust_tasks::TASK_PERSONA_PROFILE_PUT_1_0,
+        trust_tasks::TASK_PERSONA_PROFILE_PUT_1_1,
         RetrySafety::Keyed,
     ),
     (
@@ -747,7 +917,7 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     ),
     // The world tasks and the `facet` spellings they supersede classify alike:
     // they are the same operation under two names for one release.
-    (trust_tasks::TASK_PERSONA_WORLD_PUT_1_0, RetrySafety::Keyed),
+    (trust_tasks::TASK_PERSONA_WORLD_PUT_1_1, RetrySafety::Keyed),
     (
         trust_tasks::TASK_PERSONA_WORLD_LIST_1_0,
         RetrySafety::ReadOnly,
@@ -778,19 +948,35 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
         RetrySafety::ReadOnly,
     ),
     (
-        trust_tasks::TASK_PERSONA_CONTACT_PUT_1_0,
+        trust_tasks::TASK_PERSONA_CONTACT_DELETE_1_0,
+        RetrySafety::RetrySafe,
+    ),
+    (
+        trust_tasks::TASK_PERSONA_CONTACT_PUT_1_2,
         RetrySafety::Keyed,
     ),
     (
-        trust_tasks::TASK_PERSONA_CONTACT_GET_1_0,
+        trust_tasks::TASK_PERSONA_CONTACT_GET_1_1,
         RetrySafety::ReadOnly,
     ),
     (
-        trust_tasks::TASK_PERSONA_CONTACT_LIST_1_0,
+        trust_tasks::TASK_PERSONA_CONTACT_LIST_1_1,
         RetrySafety::ReadOnly,
     ),
     (
-        trust_tasks::TASK_PERSONA_CONTACT_DELETE_1_0,
+        trust_tasks::TASK_PERSONA_CONTACT_LISTS_PUT_1_1,
+        RetrySafety::Keyed,
+    ),
+    (
+        trust_tasks::TASK_PERSONA_CONTACT_LISTS_LIST_1_0,
+        RetrySafety::ReadOnly,
+    ),
+    (
+        trust_tasks::TASK_PERSONA_CONTACT_LISTS_SHOW_1_0,
+        RetrySafety::ReadOnly,
+    ),
+    (
+        trust_tasks::TASK_PERSONA_CONTACT_LISTS_DELETE_1_0,
         RetrySafety::RetrySafe,
     ),
     (
@@ -824,7 +1010,7 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
         RetrySafety::ReadOnly,
     ),
     (
-        trust_tasks::TASK_PERSONA_LOCAL_PROFILE_PUT_1_0,
+        trust_tasks::TASK_PERSONA_LOCAL_PROFILE_PUT_1_1,
         RetrySafety::Keyed,
     ),
     (

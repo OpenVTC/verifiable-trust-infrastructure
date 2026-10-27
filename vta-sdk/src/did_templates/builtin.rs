@@ -11,17 +11,21 @@ use super::{DidTemplate, TemplateError};
 pub const BUILTIN_NAMES: &[&str] = &[
     "ai-agent",
     "ai-agent-peer",
+    "ballot-box",
     "did-host-didcomm",
     "did-host-http",
     "did-host-http-didcomm",
     "did-host-http-tsp",
     "did-host-tsp",
     "didcomm-mediator",
+    "dtg-witness",
     "push-gateway",
     "room",
     "room-host",
     "swiyu-verifier",
+    "trust-registry",
     "vta-admin",
+    "vtc-group",
     "vtc-host",
 ];
 
@@ -32,13 +36,17 @@ const PUSH_GATEWAY: &str = include_str!("../../templates/push-gateway.json");
 const ROOM: &str = include_str!("../../templates/room.json");
 const ROOM_HOST: &str = include_str!("../../templates/room-host.json");
 const SWIYU_VERIFIER: &str = include_str!("../../templates/swiyu-verifier.json");
+const TRUST_REGISTRY: &str = include_str!("../../templates/trust-registry.json");
 const VTA_ADMIN: &str = include_str!("../../templates/vta-admin.json");
+const VTC_GROUP: &str = include_str!("../../templates/vtc-group.json");
 const VTC_HOST: &str = include_str!("../../templates/vtc-host.json");
 const DID_HOST_HTTP_DIDCOMM: &str = include_str!("../../templates/did-host-http-didcomm.json");
 const DID_HOST_HTTP: &str = include_str!("../../templates/did-host-http.json");
 const DID_HOST_DIDCOMM: &str = include_str!("../../templates/did-host-didcomm.json");
 const DID_HOST_HTTP_TSP: &str = include_str!("../../templates/did-host-http-tsp.json");
 const DID_HOST_TSP: &str = include_str!("../../templates/did-host-tsp.json");
+const DTG_WITNESS: &str = include_str!("../../templates/dtg-witness.json");
+const BALLOT_BOX: &str = include_str!("../../templates/ballot-box.json");
 
 /// Load a built-in template by name. Returns [`TemplateError::BuiltinNotFound`]
 /// for any name not in [`BUILTIN_NAMES`]. The legacy `webvh-*` / `did-hosting-*`
@@ -53,13 +61,17 @@ pub fn load_embedded(name: &str) -> Result<DidTemplate, TemplateError> {
         "room" => ROOM,
         "room-host" => ROOM_HOST,
         "swiyu-verifier" => SWIYU_VERIFIER,
+        "trust-registry" => TRUST_REGISTRY,
         "vta-admin" => VTA_ADMIN,
+        "vtc-group" => VTC_GROUP,
         "vtc-host" => VTC_HOST,
         "did-host-http-didcomm" => DID_HOST_HTTP_DIDCOMM,
         "did-host-http" => DID_HOST_HTTP,
         "did-host-didcomm" => DID_HOST_DIDCOMM,
         "did-host-http-tsp" => DID_HOST_HTTP_TSP,
         "did-host-tsp" => DID_HOST_TSP,
+        "dtg-witness" => DTG_WITNESS,
+        "ballot-box" => BALLOT_BOX,
         _ => return Err(TemplateError::BuiltinNotFound(name.to_string())),
     };
     let value: serde_json::Value = serde_json::from_str(raw)?;
@@ -94,13 +106,17 @@ mod tests {
             ROOM,
             ROOM_HOST,
             SWIYU_VERIFIER,
+            TRUST_REGISTRY,
             VTA_ADMIN,
+            VTC_GROUP,
             VTC_HOST,
             DID_HOST_HTTP_DIDCOMM,
             DID_HOST_HTTP,
             DID_HOST_DIDCOMM,
             DID_HOST_HTTP_TSP,
             DID_HOST_TSP,
+            DTG_WITNESS,
+            BALLOT_BOX,
         ];
         assert_eq!(raws.len(), BUILTIN_NAMES.len(), "a builtin is missing here");
         for raw in raws {

@@ -24,7 +24,7 @@ name: Release-plz
 # the bumps and changelog entries those merges imply. Merging THAT PR is the
 # release — `release` then tags each crate and publishes it. See RELEASING.md.
 #
-# Which crates publish is decided in the manifests (`publish = false` on the 14
+# Which crates publish is decided in the manifests (`publish = false` on the 9
 # internal ones), not here.
 
 on:
@@ -132,6 +132,28 @@ jobs:
           rustup toolchain install stable --profile minimal --no-self-update
           rustup default stable
 
+      # The same room the PR job gives its semver check, for the same reason:
+      # `cargo publish` verify-builds each new crate's whole dependency tree
+      # from scratch, and the first publish of `vti-voting` (2026-10-22) killed
+      # the runner three pushes running, ~5 minutes into that build, with "The
+      # runner has received a shutdown signal" — the out-of-memory signature the
+      # PR job's note below describes. The release is half-shipped until it
+      # publishes: `vta-service` and `vtc-service` depend on it. Measured cold
+      # (a RUSTC_WRAPPER recording each rustc's peak RSS): `trust-tasks-rs`
+      # 0.33 peaks at 9.75 GB and 10.39 GB in the two rustc invocations that
+      # build it, everything else under 1.1 GB. Two of those at once do not fit
+      # in the runner's 16 GB + 4 GB swap.
+      - name: Give the publish verify build room to run
+        run: |
+          set -euo pipefail
+          sudo swapoff /mnt/swapfile || true
+          sudo rm -f /mnt/swapfile
+          sudo fallocate -l 12G /mnt/swapfile
+          sudo chmod 600 /mnt/swapfile
+          sudo mkswap /mnt/swapfile
+          sudo swapon /mnt/swapfile
+          free -h
+
       # Checked before the Trusted Publishing exchange below, so a malformed
       # `package` fails the run before a registry token exists. The value is
       # read from the environment, never spliced into the script, and `[[ =~ ]]`
@@ -144,6 +166,29 @@ jobs:
         run: |
           [[ "$PACKAGE" =~ ^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$ ]] \
             || { echo "::error::package must be a crate name"; exit 1; }
+
+      # vtc-service's crate carries its two web bundles pre-built, and they
+      # are gitignored output, so they exist only if this runs first. Without
+      # it the verify build of vtc-service fails, naming this script. Before
+      # the Trusted Publishing exchange, so the npm build does not spend the
+      # token's 30 minutes. Node from the console's `.nvmrc`, as in ci.yml.
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: vtc-service/admin-ui/.nvmrc
+          cache: npm
+          cache-dependency-path: vtc-service/admin-ui/package-lock.json
+      # vtc-service publishes with `--allow-dirty` (release-plz.toml
+      # `publish_allow_dirty`), because cargo counts these gitignored bundles as
+      # uncommitted. So prove that they are the only thing that differs from
+      # the commit: no tracked or untracked-unignored change may exist.
+      - name: Build the VTC web bundles
+        run: |
+          bash scripts/build-vtc-web-bundles.sh
+          if [ -n "$(git status --porcelain)" ]; then
+            git status --porcelain
+            echo "::error::the tree differs from the commit beyond the gitignored web bundles"
+            exit 1
+          fi
 
       - name: Authenticate to crates.io (Trusted Publishing)
         uses: rust-lang/crates-io-auth-action@c6f97d42243bad5fab37ca0427f495c86d5b1a18 # v1.0.5
@@ -159,7 +204,13 @@ jobs:
       # would be accepted by YAML and silently ignored.
       - name: Publish one crate
         if: inputs.package != ''
-        run: cargo publish -p "$PACKAGE"
+        # vtc-service only: see `publish_allow_dirty` in release-plz.toml.
+        run: |
+          if [ "$PACKAGE" = vtc-service ]; then
+            cargo publish -p "$PACKAGE" --allow-dirty
+          else
+            cargo publish -p "$PACKAGE"
+          fi
         env:
           CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
           PACKAGE: ${{ inputs.package }}
@@ -185,7 +236,7 @@ jobs:
         # moving major tag, so `@v0` resolves to nothing and the job fails at
         # "Set up job" before running a step. (actions/checkout@v6 works
         # because that repo does publish v6 — the convention is not universal.)
-        uses: release-plz/action@b8d6b54b02889ff2ae2bb82e8b57c3a8fc1683a5 # v0.5.139
+        uses: release-plz/action@6caa8d34f74d82b0dc76a18edd1cc3d6801c9baf # v0.5.143
         with:
           command: release
         env:
@@ -205,7 +256,7 @@ jobs:
         id: release2
         if: inputs.package == '' && steps.release1.outcome == 'failure'
         continue-on-error: true
-        uses: release-plz/action@b8d6b54b02889ff2ae2bb82e8b57c3a8fc1683a5 # v0.5.139
+        uses: release-plz/action@6caa8d34f74d82b0dc76a18edd1cc3d6801c9baf # v0.5.143
         with:
           command: release
         env:
@@ -224,7 +275,7 @@ jobs:
       - name: Run release-plz (attempt 3)
         id: release3
         if: inputs.package == '' && steps.release2.outcome == 'failure'
-        uses: release-plz/action@b8d6b54b02889ff2ae2bb82e8b57c3a8fc1683a5 # v0.5.139
+        uses: release-plz/action@6caa8d34f74d82b0dc76a18edd1cc3d6801c9baf # v0.5.143
         with:
           command: release
         env:
@@ -322,7 +373,11 @@ jobs:
     # 120, not 60: after a change that moves vta-sdk and vti-common to breaking
     # versions, semver-checks runs over nearly every published crate. The run for
     # #1859 was cancelled at 60 min and the Release PR had to be regenerated by hand.
-    timeout-minutes: 120
+    #
+    # 300, not 120: the semver gate below now admits one check at a time (see
+    # "Bound concurrent semver checks"), which trades wall time for not losing
+    # the runner. The last full regeneration took 97 min with two at once.
+    timeout-minutes: 300
     permissions:
       contents: write
       pull-requests: write
@@ -367,12 +422,18 @@ jobs:
           # install straight from the shipped index. Refreshing the index is the
           # fallback, still bounded and retried, for the case where the package
           # genuinely is not in it.
+          #
+          # libtss2-dev: release-plz semver-checks every crate with its
+          # features on, which turns on vti-secrets' `tpm` feature (#1820);
+          # `tss-esapi-sys` links the system tss2 libraries, and without them
+          # rustdoc for vta-service fails and the Release PR is never
+          # regenerated. The release job above builds default features only.
           pkgs=""
-          for p in libdbus-1-dev pkg-config; do
+          for p in libdbus-1-dev pkg-config libtss2-dev; do
             dpkg -s "$p" >/dev/null 2>&1 || pkgs="$pkgs $p"
           done
           if [ -z "$pkgs" ]; then
-            echo "libdbus-1-dev and pkg-config already present; nothing to do"
+            echo "libdbus-1-dev, pkg-config and libtss2-dev already present; nothing to do"
             exit 0
           fi
           echo "missing:$pkgs"
@@ -403,7 +464,7 @@ jobs:
       # guessing from commit messages — which is the failure this exists to
       # prevent, and it is only a warning, so nothing goes red.
       - name: Install cargo-semver-checks
-        uses: taiki-e/install-action@4cef1412cce204788f482e778a0b9187f9626a29 # v2.87.21
+        uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2.87.29
         with:
           tool: cargo-semver-checks
 
@@ -478,6 +539,13 @@ jobs:
       # one by one. The gate logs every check it admits; the log and a 30 s
       # memory sample are printed after the run, so if this recurs the log
       # says what was running when it did.
+      #
+      # One, not two, since 2026-10-25: after #2282 moved every crate to TSP
+      # 1.0 / trust-tasks 0.34 the regeneration died twice in a row the same
+      # way, ~10 min into "Checking API compatibility" with two slots. One
+      # vta-service-sized check fits in RAM without paging, so the runner agent
+      # keeps its heartbeat; the job's timeout was raised to pay for the
+      # longer serial run.
       - name: Bound concurrent semver checks
         run: |
           set -euo pipefail
@@ -486,10 +554,10 @@ jobs:
           real=$(command -v cargo-semver-checks)
           cat > "$gate_dir/bin/cargo-semver-checks" <<EOF
           #!/usr/bin/env bash
-          # Generated by publish.yml: at most two concurrent semver checks.
+          # Generated by publish.yml: one semver check at a time.
           if [ "\${1:-}" = "--version" ]; then exec "$real" "\$@"; fi
           while true; do
-            for slot in 1 2; do
+            for slot in 1; do
               exec 9>"$gate_dir/slot-\$slot.lock"
               if flock -n 9; then
                 echo "\$(date -u +%H:%M:%S) slot \$slot start \$*" >> "$gate_dir/gate.log"
@@ -511,7 +579,7 @@ jobs:
         # moving major tag, so `@v0` resolves to nothing and the job fails at
         # "Set up job" before running a step. (actions/checkout@v6 works
         # because that repo does publish v6 — the convention is not universal.)
-        uses: release-plz/action@b8d6b54b02889ff2ae2bb82e8b57c3a8fc1683a5 # v0.5.139
+        uses: release-plz/action@6caa8d34f74d82b0dc76a18edd1cc3d6801c9baf # v0.5.143
         with:
           command: release-pr
         env:

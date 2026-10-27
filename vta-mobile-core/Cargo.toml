@@ -68,7 +68,7 @@ affinidi-messaging-didcomm = "0.15.9"
 # lookup the approval sheets render through. Costs a DID resolution plus an
 # outbound fetch per claimed name, which is why the app resolves lazily and
 # caches; see `crate::display_name`.
-vta-sdk = { path = "../vta-sdk", version = "0.66", features = [
+vta-sdk = { path = "../vta-sdk", version = "0.73", features = [
   "session",
   "tsp",
   "agent-names",
@@ -82,6 +82,11 @@ vta-sdk = { path = "../vta-sdk", version = "0.66", features = [
 # the crate directly (`use tokio_tungstenite as _` in lib.rs); it's a feature
 # enabler matched to the version affinidi-messaging-sdk already pulls.
 tokio-tungstenite = { version = "0.30", features = ["rustls-tls-webpki-roots"] }
+# `Secret::from_multibase` for a holder that is not a `did:key` — a `did:peer:2`
+# relationship DID's independent `V` / `E` keys (`holder_secrets`). The same
+# crate `vta-sdk`'s sessions take their secrets in; the tests also use it to
+# mint the executor keys they sign with.
+affinidi-secrets-resolver = { workspace = true }
 
 [dev-dependencies]
 # Test-only Ed25519 signing for the did-signed verify round-trip (stands in for
@@ -90,9 +95,24 @@ ed25519-dalek = { workspace = true }
 # Test-only: builds real sha2-256 digests to prove the match code discriminates
 # between payloads once the constant multihash prefix is stripped.
 sha2 = { workspace = true }
-# Test-only `Secret::generate_ed25519` — mints the executor keys the request
-# verification tests sign with (the same sign path the VTA uses in production).
-affinidi-secrets-resolver = { workspace = true }
+# Test-only: mints a `did:peer:2` relationship DID (`DID::generate_did_peer`) for
+# the `connect_with_secrets` checks in `holder_secrets`.
+affinidi-tdk = { workspace = true }
+# `tests/witness_e2e.rs`: a witnessed session driven through this crate's API
+# against the real VTA tasks (`MockVta`, over HTTPS) and the real witness core
+# (`vti_witness::dispatch::answer`), carried by the test as a wallet would.
+# Path-only (no version): neither this crate nor `vti-witness` is published,
+# and nothing here reaches the mobile artifacts, which build no dev-deps.
+vta-service = { path = "../vta-service", features = ["test-support"] }
+vti-witness = { path = "../vti-witness" }
+vti-common = { path = "../vti-common", features = ["test-support"] }
+# `client` (`trust_task_sign`) and `proof-verify` (`trust_task_proof`) for the
+# witness's key and resolver.
+vta-sdk = { path = "../vta-sdk", features = ["client", "proof-verify"] }
+dtg-credentials = { workspace = true }
+reqwest = { workspace = true }
+tempfile = "3"
+uuid = { workspace = true }
 
 [[bin]]
 # `cargo run -p vta-mobile-core --bin uniffi-bindgen -- generate ...`

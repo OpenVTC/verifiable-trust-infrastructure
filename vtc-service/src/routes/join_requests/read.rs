@@ -26,7 +26,7 @@ pub struct ListJoinRequestsQuery {
     pub limit: Option<usize>,
 }
 
-/// The admin work queue of join requests, `vtc/join-requests/list/0.1`: the
+/// The admin work queue of join requests, `vtc/join-requests/list/0.2`: the
 /// signed document the spine serves (`trust_tasks::community_tasks`).
 pub(crate) async fn list_join_requests_inner(
     state: &AppState,

@@ -96,6 +96,11 @@ vault_auth_method = "kubernetes"   # pod ServiceAccount token — nothing to mou
 vault_k8s_role    = "vtc"
 ```
 
+`context` is the context at the VTA the VTC's own DID is minted in. Setup writes
+it to `config.toml` as `vta_context`, so the community rooms' fix commands can
+name it ([`community-rooms.md`](community-rooms.md#troubleshooting-permission-errors));
+a VTC set up before that has no `vta_context` and may add it by hand.
+
 Phase 2 prints a terse, scrape-friendly block (`vtc_did=…`, `admin_did=…`,
 `install_url=…`, `claim_code=…`, `single_admin_mode=…`); it never prints the
 admin private key.
@@ -129,6 +134,19 @@ refuse it. Given together with `co_admin_did` it is accepted with a warning:
 keep it only if that DID is another of your own identifiers. See
 [`admin-access.md`](admin-access.md) §2.1a.
 
+### Choosing the provisioning transport
+
+`provision_transport = "tsp" | "didcomm" | "rest"` forces the transport setup
+provisions over; the interactive wizard asks the same when the VTA advertises
+more than one. Omitted, the runner picks TSP > DIDComm > REST and moves on only
+when a transport fails to *connect*. Once the VTA has acted on the request a lost
+reply is final: the setup DID's one-time hand-off is spent, and the VTA holds an
+admin entry whose key was only in that reply. Re-grant the setup DID, delete that
+entry (`pnm acl list --context <context>` shows it), and force a transport the
+mediator delivers. The SDK reconnects once on a reply timeout to collect a reply
+the mediator stored but did not push, so this is the fallback, not the first
+line.
+
 **The VTC's ACL is still empty at this point.** `admin_did` cannot
 authenticate until the install URL is claimed or an ACL entry is added
 offline, and a headless deploy usually needs its own automation key as well.
@@ -152,6 +170,7 @@ legacy "whichever field is set wins" resolution.
 | `gcp` | `gcp-secrets` | `gcp_secret_name` (+ `gcp_project`) | |
 | `azure` | `azure-secrets` | `azure_vault_url` | |
 | `config` | `config-secret` | `secret` (written by setup) | Hex bundle inline in config.toml; read-only at runtime. |
+| `encrypted-file` | always (`tpm` for a TPM key) | `[secrets.encrypted_file]` with a `kek` source | AES-256-GCM file, default `<data_dir>/secret.enc`. The secure local option for a host with no OS keyring. Never selected implicitly. |
 | `plaintext` | always | — | NOT secure; dev/test only. |
 
 A backend selected on a binary built without its feature is a hard config
@@ -160,7 +179,25 @@ intentionally not a VTC backend; only the VTA runs in a TEE.)
 
 `[secrets]` is flat here (e.g. `vault_addr`, `k8s_secret_name`), matching
 the runtime `config.toml` — the same table setup writes and the daemon
-reads back at boot.
+reads back at boot. The one sub-table is `[secrets.encrypted_file]`:
+
+```toml
+[secrets]
+backend = "encrypted-file"
+
+[secrets.encrypted_file]
+path = "/var/lib/vtc/secret.enc"   # optional; default <data_dir>/secret.enc
+kek  = { source = "systemd_creds", credential = "vtc-secret-kek" }
+# or { source = "passphrase", file = "/etc/vtc/secret-passphrase" }
+# or { source = "passphrase", credential = "vtc-secret-passphrase" }
+# or { source = "tpm", pcrs = [7] }   # Linux build with the `tpm` feature
+```
+
+A passphrase is never taken from the config or an environment variable.
+The KEK must be readable while setup runs, since setup writes the key bundle.
+The KEK sources, the file format and the threat model (it protects a copied
+disk, image or backup; it does not protect against root on the running host)
+are described in [secret backends](../02-vta/secret-backends.md#encrypted-file-encrypted_file).
 
 ## Kubernetes
 
@@ -196,4 +233,6 @@ per-service one; an env var overrides the file). All three are optional
 and default to fjall's own behaviour when unset. See
 [the VTA doc](../02-vta/non-interactive-setup.md#fjall-memory-settings)
 for the full table, accepted byte-size formats, and sizing guidance
-against a pod's memory limit — it applies unchanged here.
+against a pod's memory limit — it applies unchanged here, including the
+**256 MiB minimum**: a VTC writes more than a VTA and is the first to hit
+the journal-replay floor those settings cannot lower (#1777).

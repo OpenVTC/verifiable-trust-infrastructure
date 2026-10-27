@@ -411,7 +411,7 @@ fn subject_id(vc: &VerifiableCredential, label: &str) -> Result<String, Recognit
 /// The bearer and the foreign role a community role VAC confers.
 ///
 /// The role credential is a DTG Verifiable Authority Credential (vtc/auth/
-/// recognise/0.2): `credentialSubject.authority` is `{ scope: <foreign
+/// recognise/0.3): `credentialSubject.authority` is `{ scope: <foreign
 /// community DID>, actions: ["role:<name>", …] }`. The foreign role is the
 /// `<name>` of its first `role:` action. It must be the community conferring
 /// authority in itself — `authority.scope` is the issuer — and issued directly,
@@ -485,6 +485,9 @@ pub struct HttpStatusListFetcher {
     /// Resolves the list credential's issuer key for the signature check. `None`
     /// → no verification (fetch + decode only).
     key_resolver: Option<Arc<dyn PurposeVmResolver>>,
+    /// Trusted to certify issuers known by an X.509 chain, whose Token Status
+    /// Lists are signed by the chain's leaf key. Empty: only DID issuers'.
+    x509_anchors: Arc<vta_sdk::x509_issuer::X509TrustAnchors>,
 }
 
 impl HttpStatusListFetcher {
@@ -495,6 +498,7 @@ impl HttpStatusListFetcher {
         Self {
             client: foreign_fetch_client(),
             key_resolver: None,
+            x509_anchors: Default::default(),
         }
     }
 
@@ -505,7 +509,18 @@ impl HttpStatusListFetcher {
         Self {
             client: foreign_fetch_client(),
             key_resolver: Some(key_resolver),
+            x509_anchors: Default::default(),
         }
+    }
+
+    /// Also read the Token Status Lists of issuers known by an X.509 chain to
+    /// one of `anchors`.
+    pub fn with_x509_anchors(
+        mut self,
+        anchors: Arc<vta_sdk::x509_issuer::X509TrustAnchors>,
+    ) -> Self {
+        self.x509_anchors = anchors;
+        self
     }
 }
 
@@ -738,23 +753,34 @@ impl StatusListFetcher for HttpStatusListFetcher {
         reference: &affinidi_status_list::token::StatusListReference,
         expected_issuer: Option<&str>,
     ) -> Result<affinidi_status_list::token::TokenStatus, RecognitionError> {
-        let resolver = self.key_resolver.as_ref().ok_or_else(|| {
-            RecognitionError::StatusListFailed(
-                "a Token Status List is read only with issuer verification, which this fetcher \
-                 was built without"
-                    .to_string(),
-            )
-        })?;
+        // An X.509 issuer's list needs no DID resolution; a `did:key` one
+        // resolves locally. Anything else needs the fetcher's resolver.
+        let local_only;
+        let resolver: &dyn PurposeVmResolver = match &self.key_resolver {
+            Some(resolver) => resolver.as_ref(),
+            None if !self.x509_anchors.is_empty() => {
+                local_only = crate::credentials::vm_resolver::DidVmResolver::new(None);
+                &local_only
+            }
+            None => {
+                return Err(RecognitionError::StatusListFailed(
+                    "a Token Status List is read only with issuer verification, which this \
+                     fetcher was built without"
+                        .to_string(),
+                ));
+            }
+        };
         let issuer = expected_issuer.ok_or_else(|| {
             RecognitionError::StatusListFailed(
                 "a Token Status List needs the credential's issuer to bind it to".to_string(),
             )
         })?;
-        vta_sdk::token_status_list::resolve_token_status(
+        vta_sdk::token_status_list::resolve_token_status_with_anchors(
             &self.client,
             reference,
             issuer,
-            resolver.as_ref(),
+            resolver,
+            &self.x509_anchors,
             chrono::Utc::now().timestamp(),
         )
         .await

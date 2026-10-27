@@ -35,28 +35,17 @@ async fn minted_admin_token_is_accepted() {
     let tv = TestVtc::builder().build().await;
     let token = tv.admin_token().await;
 
-    // `GET /v1/auth/whoami` is session gated. Without a token the gate
-    // refuses — proof the route is there and gated, so the second request's
-    // answer says something about the token. With the minted admin token it
-    // must not 401/403 (any non-auth status is fine: only the gate is under
-    // test).
-    let verify = |bearer: Option<String>| {
-        let mut req = Request::builder()
-            .method("GET")
-            .uri("/v1/auth/whoami")
-            .header("trust-task", "https://trusttasks.org/spec/auth/whoami/0.1");
-        if let Some(token) = bearer {
-            req = req.header("authorization", format!("Bearer {token}"));
-        }
-        tv.router.clone().oneshot(req.body(Body::empty()).unwrap())
-    };
-    let anonymous = verify(None).await.unwrap();
-    assert_eq!(anonymous.status(), StatusCode::UNAUTHORIZED);
+    // The access-token extractor every session-gated handler takes
+    // (`common::session_probe`). Without a token it refuses — proof the gate
+    // is there, so the second request's answer says something about the
+    // token. With the minted admin token it admits the caller.
+    let (anonymous, _) = crate::common::session_probe::probe(&tv, &[]).await;
+    assert_eq!(anonymous, StatusCode::UNAUTHORIZED);
 
-    let resp = verify(Some(token)).await.unwrap();
-    assert_ne!(resp.status(), StatusCode::UNAUTHORIZED);
-    assert_ne!(resp.status(), StatusCode::FORBIDDEN);
-    assert_ne!(resp.status(), StatusCode::NOT_FOUND);
+    let (status, body) =
+        crate::common::session_probe::probe(&tv, &[("authorization", format!("Bearer {token}"))])
+            .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
 }
 
 /// Opting into signers makes the credential + install signers present, so

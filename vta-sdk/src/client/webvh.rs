@@ -180,12 +180,37 @@ impl VtaClient {
         &self,
         req: CreateDidWebvhRequest,
     ) -> Result<crate::protocols::did_management::create::CreateDidWebvhResultBody, VtaError> {
-        self.rpc_tt(
-            crate::trust_tasks::TASK_WEBVH_DIDS_CREATE_1_1,
-            serde_json::to_value(&req)?,
-            60,
-        )
-        .await
+        self.create_did_webvh_presented(req, Default::default())
+            .await
+    }
+
+    /// [`create_did_webvh`](Self::create_did_webvh), choosing how the new log is
+    /// presented: as its did:webvh or its did:scid:vh:1 DID, and whether it
+    /// lists its did:scid alias (VTI-VTA-036).
+    ///
+    /// Sends `vta/webvh/dids/create/1.2` when `presentation` states either
+    /// member, and 1.1 otherwise — so a caller that states nothing keeps working
+    /// against a VTA that predates 1.2. Read
+    /// [`log_did`](crate::protocols::did_management::create::CreateDidWebvhResultBody::log_did)
+    /// for the did:webvh handle the rest of the family takes.
+    pub async fn create_did_webvh_presented(
+        &self,
+        req: CreateDidWebvhRequest,
+        presentation: super::types::DidPresentation,
+    ) -> Result<crate::protocols::did_management::create::CreateDidWebvhResultBody, VtaError> {
+        let mut payload = serde_json::to_value(&req)?;
+        let uri = if presentation.is_stated() {
+            if let Some(method) = presentation.did_method {
+                payload["didMethod"] = serde_json::to_value(method)?;
+            }
+            if let Some(listed) = presentation.scid_also_known_as {
+                payload["scidAlsoKnownAs"] = serde_json::Value::Bool(listed);
+            }
+            crate::trust_tasks::TASK_WEBVH_DIDS_CREATE_1_2
+        } else {
+            crate::trust_tasks::TASK_WEBVH_DIDS_CREATE_1_1
+        };
+        self.rpc_tt(uri, payload, 60).await
     }
 
     pub async fn list_dids_webvh(

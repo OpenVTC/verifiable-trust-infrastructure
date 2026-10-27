@@ -37,9 +37,16 @@
 //! `endorsement-types/{register,delete}` the fourth and `backup/export` the
 //! fifth. Their authority is not a bearer token (this endpoint reads none) but
 //! the **verified signer's ACL entry**, read at execution time; see
-//! [`admin_signer`]. The remaining operator-facing verbs (`list`, `show`, the
-//! admin-invite pair, `backup/import`, …) are still served only on their
-//! JWT-gated REST routes, and moving them is what the rest of phase 2 is.
+//! [`admin_signer`]. Every later batch followed, and the last (#1641) moved
+//! an administrator's own passkeys (`auth/passkey/{list,enroll,revoke}`,
+//! [`admin_passkey_tasks`]) and the console's bearer → cookie bridge
+//! (`vtc/auth/admin-session/0.2`, [`admin_session_tasks`]) and session
+//! introspection (`auth/whoami/0.1`, [`whoami_tasks`], answered for the key a
+//! sign-in bound to the session). No task whose specification declares
+//! `proof` REQUIRED is served on a bearer route any more
+//! (`docs/05-design-notes/vtc-trust-task-proof-enforcement.md` §6c).
+//! `vtc/backup/import/0.1` is not served at all: the chunked `backup/*` family
+//! ([`backup_tasks`]) supersedes it.
 //!
 //! The personhood pair (`members/personhood/{challenge,assert}`) is the
 //! member-facing half of the family; its `revoke` verb is served here too,
@@ -93,6 +100,16 @@ pub(crate) mod policy_tasks;
 pub(crate) mod surface_tasks;
 // `auth/signing-key/*`: the console's signing keys, as delegations.
 pub(crate) mod signing_key_tasks;
+// An administrator's own login passkeys: `auth/passkey/list/0.1`,
+// `enroll/{start,finish}/0.2`, `revoke/{start,finish}/0.1` (#1641, which
+// removed their `/v1/admin/passkeys/*` bearer routes).
+pub(crate) mod admin_passkey_tasks;
+// The console's bearer → cookie bridge, `vtc/auth/admin-session/0.2` (#1641,
+// which removed `POST /v1/auth/admin-session`). HTTPS only: it sets cookies.
+pub(crate) mod admin_session_tasks;
+// `auth/whoami/0.1`, answered for the key bound to a session at sign-in (or a
+// console key acting for its administrator), never for a cookie (#1641).
+pub(crate) mod whoami_tasks;
 // The website's content: chunked upload, deploy, ranged reads, the listing,
 // delete, generation history and rollback.
 #[cfg(feature = "website")]
@@ -106,7 +123,7 @@ pub(crate) mod oob_tasks;
 // First-admin onboarding: `vtc/install/claim/{start,finish}/0.2`,
 // `vtc/admin/bootstrap/0.1`. Pre-session, like `auth_tasks`.
 mod install_tasks;
-// Cross-community recognition: `vtc/auth/recognise/{challenge/0.1,0.2}`.
+// Cross-community recognition: `vtc/auth/recognise/{challenge/0.2,0.3}`.
 // Pre-session, like `auth_tasks`.
 mod recognise_tasks;
 
@@ -138,7 +155,17 @@ pub(crate) mod step_up_approver_tasks;
 // Custom administrative roles: `vtc/roles/{define,list,show,delete}/0.1`
 // (`vtc-admin-roles.md` §6.2). The records are `crate::acl::roles`'s; this is
 // their only door.
+pub(crate) mod community_room_tasks;
+// The member directory: `vtc/directory/{fields,card,entries}/*` (the
+// `query/0.1` lookup stays in `community_tasks`, answered through the same
+// projection). Its records are `crate::directory`'s.
+pub(crate) mod directory_tasks;
+pub(crate) mod group_tasks;
 pub(crate) mod role_tasks;
+pub(crate) mod room_admin_tasks;
+// The administrators' view of the OpenID4VP verifier identities (#1988).
+pub(crate) mod oid4vp_tasks;
+pub(crate) mod storage_tasks;
 // Direct admission: adding a member without a join request, and making an
 // existing ACL entry a membership — decided by the community's `admission`
 // policy, which may park either for approval (`crate::ceremony::admission`).
@@ -148,6 +175,12 @@ pub(crate) mod admission_tasks;
 // (`design-docs/vtc-capability-modules.md`). The decisions and their registry
 // projection are `crate::capability_modules`'s; this is their only door.
 pub(crate) mod capability_module_tasks;
+
+// Community elections: `vtc/elections/*` (VTI-VOT-001 – 100). The registrar's
+// records and its link to ballot boxes are `crate::elections`'s; feature-gated
+// with the PCS key they issue tickets under.
+#[cfg(feature = "voting")]
+pub(crate) mod election_tasks;
 
 // The integration tests' soft WebAuthn authenticator, for the spine tests that
 // drive a real passkey ceremony.
@@ -171,7 +204,7 @@ mod conformance;
 mod error_code_census;
 
 use serde_json::Value;
-use trust_tasks_rs::specs::vtc::members::personhood::{assert::v0_1 as pa, challenge::v0_1 as pc};
+use trust_tasks_rs::specs::vtc::members::personhood::{assert::v0_2 as pa, challenge::v0_1 as pc};
 // The admin-facing member verbs (#1641 phase 2). Their wire types are
 // generated from the published schemas, so there is no hand-written SDK
 // constant to import and the Type URIs below are read off the payload types.
@@ -186,7 +219,8 @@ use trust_tasks_rs::specs::vtc::community::profile::update::v0_1 as community_pr
 use trust_tasks_rs::specs::vtc::join_requests::decide::v0_1 as join_decide;
 // Batch 3: the portable-configuration pair.
 use trust_tasks_rs::specs::vtc::config::{
-    export::v0_1 as config_export, import::v0_1 as config_import,
+    did_hosting::list::v0_1 as did_hosting_list, export::v0_1 as config_export,
+    import::v0_1 as config_import,
 };
 // Batch 4: the endorsement-type registry's two writes.
 use trust_tasks_rs::specs::vtc::endorsement_types::{
@@ -365,6 +399,14 @@ pub(crate) trait VerifiedAdmission: Sync {
     /// `429` outcome, which the transport replaces with its own refusal; the
     /// admission is expected to have recorded why.
     fn admit_verified(&self, signer: &str) -> bool;
+
+    /// The transport has charged this document to a room budget sized for file
+    /// transfer before anything in it was verified, and settles that charge
+    /// itself — so the size check need not also charge an upload chunk to the
+    /// large-document budget ([`size::check_for_known_issuer_with`]).
+    fn room_precharged(&self) -> bool {
+        false
+    }
 }
 
 /// [`dispatch_trust_task_core`], with `admit` consulted once the proof has
@@ -399,12 +441,14 @@ async fn dispatch_trust_task_validated(
     //    budget first — see `size`'s module docs for why an unverified claim
     //    alone would otherwise be a DoS amplifier. Settled below, once this
     //    document's own proof verification concludes (or does not run at
-    //    all).
-    let large_doc_charge = match size::check_for_known_issuer(
+    //    all). An upload chunk a transport has already charged to its room
+    //    budget is not charged again here (`size::check_for_known_issuer_with`).
+    let large_doc_charge = match size::check_for_known_issuer_with(
         state,
         body,
         budget_address,
         crate::auth::session::now_epoch(),
+        admit.is_some_and(|a| a.room_precharged()),
     )
     .await
     {
@@ -451,7 +495,7 @@ async fn dispatch_trust_task_validated(
         return reject_with(&doc, reason);
     }
 
-    let type_uri = doc.type_uri.to_string();
+    let type_uri = doc.type_uri.for_routing().to_string();
 
     // 2c. SPEC §7.2's *flag-driven* checks — the ones the published
     //    specification declares rather than this consumer chooses:
@@ -636,6 +680,10 @@ async fn dispatch_trust_task_validated(
                         Err(e) => return app_error_to_reject(&doc, &e),
                     }
                 }
+                // A did:scid signer verified through its `src`: remember where,
+                // so the bare DID it is recorded by resolves after a restart
+                // (VTI-KEY-162).
+                crate::scid_sources::record_best_effort(&state.members_ks, &signer).await;
                 &ctx.with_verified_signer(Some(signer))
             }
             // A proof that is present and does not verify is always fatal,
@@ -670,7 +718,8 @@ async fn dispatch_trust_task_validated(
     //     `sender_did` then read a DID the document proves, whatever the task's
     //     own proof requirement.
     if matches!(ctx.transport, JoinTransport::DIDComm | JoinTransport::Tsp) {
-        let base = |d: &str| d.split('#').next().unwrap_or(d).to_string();
+        // By identity: a did:scid's `src` locator is not part of it (VTI-KEY-160).
+        let base = vta_sdk::did_scid::identity;
         match (ctx.verified_signer.as_deref(), ctx.sender_did.as_deref()) {
             (Some(signer), Some(sender)) if base(signer) == base(sender) => {}
             (None, _) => {
@@ -844,13 +893,9 @@ async fn dispatch_trust_task_validated(
 }
 
 /// The document requirements (SPEC §7.2 items 5b, 7a, 8; §7.3 item 17) of
-/// `type_uri`: its published specification's, read off the registry — or, for
-/// a task this service binds ahead of its specification, the policy its draft
-/// declares ([`admission_tasks::local_spec_policy`]), so a task with no
-/// published schema is never dispatched with none of them enforced.
+/// `type_uri`: its published specification's, read off the registry.
 pub(crate) fn spec_policy_for(type_uri: &str) -> Option<trust_tasks_rs::SpecPolicy> {
     trust_tasks_rs::schema_index::spec_policy_for(type_uri)
-        .or_else(|| admission_tasks::local_spec_policy(type_uri))
 }
 
 /// The acceptance window this VTC is willing to act inside — **VTI-OPS-024**,
@@ -1022,7 +1067,7 @@ async fn dispatch_parked(
     ctx: JoinAuthCtx,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    let type_uri = doc.type_uri.to_string();
+    let type_uri = doc.type_uri.for_routing().to_string();
     let outcome = dispatch_typed(state, &ctx, doc, &type_uri).await;
     sign_response(state, outcome).await
 }
@@ -1124,9 +1169,6 @@ fn dispatch_typed<'a>(
         }
         vetting_wire::VETTING_VETTER_RESEND_TYPE => {
             Box::pin(async move { handle_vetter_resend(state, ctx, doc).await })
-        }
-        vetting_wire::VETTING_VETTER_RESEND_0_2_TYPE => {
-            Box::pin(async move { handle_vetter_resend_v0_2(state, ctx, doc).await })
         }
         // Hidden vetting's community half (development branch `zkp-pcs`). Four exchanges: a
         // vetter enrolling, a vetter drawing its drip, a vetter asking to vet at an event, an
@@ -1253,6 +1295,31 @@ fn dispatch_typed<'a>(
                 None => unreachable!("website_tasks::URIS names {uri}, which it does not route"),
             }
         }),
+        uri if admin_passkey_tasks::URIS.contains(&uri) => Box::pin(async move {
+            match admin_passkey_tasks::dispatch(state, ctx, doc, uri).await {
+                Some(outcome) => outcome,
+                // `URIS` is exactly what `dispatch` routes.
+                None => {
+                    unreachable!("admin_passkey_tasks::URIS names {uri}, which it does not route")
+                }
+            }
+        }),
+        uri if whoami_tasks::URIS.contains(&uri) => Box::pin(async move {
+            match whoami_tasks::dispatch(state, ctx, doc, uri).await {
+                Some(outcome) => outcome,
+                // `URIS` is exactly what `dispatch` routes.
+                None => unreachable!("whoami_tasks::URIS names {uri}, which it does not route"),
+            }
+        }),
+        uri if admin_session_tasks::URIS.contains(&uri) => Box::pin(async move {
+            match admin_session_tasks::dispatch(state, ctx, doc, uri).await {
+                Some(outcome) => outcome,
+                // `URIS` is exactly what `dispatch` routes.
+                None => {
+                    unreachable!("admin_session_tasks::URIS names {uri}, which it does not route")
+                }
+            }
+        }),
         uri if signing_key_tasks::URIS.contains(&uri) => Box::pin(async move {
             match signing_key_tasks::dispatch(state, ctx, doc, uri).await {
                 Some(outcome) => outcome,
@@ -1274,6 +1341,50 @@ fn dispatch_typed<'a>(
                 Some(outcome) => outcome,
                 // `URIS` is exactly what `dispatch` routes.
                 None => unreachable!("policy_tasks::URIS names {uri}, which it does not route"),
+            }
+        }),
+        uri if storage_tasks::URIS.contains(&uri) => Box::pin(async move {
+            match Box::pin(storage_tasks::dispatch(state, ctx, doc, uri)).await {
+                Some(outcome) => outcome,
+                // `URIS` is exactly what `dispatch` routes.
+                None => unreachable!("storage_tasks::URIS names {uri}, which it does not route"),
+            }
+        }),
+        uri if oid4vp_tasks::URIS.contains(&uri) => Box::pin(async move {
+            match Box::pin(oid4vp_tasks::dispatch(state, ctx, doc, uri)).await {
+                Some(outcome) => outcome,
+                // `URIS` is exactly what `dispatch` routes.
+                None => unreachable!("oid4vp_tasks::URIS names {uri}, which it does not route"),
+            }
+        }),
+        uri if directory_tasks::URIS.contains(&uri) => Box::pin(async move {
+            match Box::pin(directory_tasks::dispatch(state, ctx, doc, uri)).await {
+                Some(outcome) => outcome,
+                // `URIS` is exactly what `dispatch` routes.
+                None => unreachable!("directory_tasks::URIS names {uri}, which it does not route"),
+            }
+        }),
+        uri if group_tasks::URIS.contains(&uri) => Box::pin(async move {
+            match Box::pin(group_tasks::dispatch(state, ctx, doc, uri)).await {
+                Some(outcome) => outcome,
+                // `URIS` is exactly what `dispatch` routes.
+                None => unreachable!("group_tasks::URIS names {uri}, which it does not route"),
+            }
+        }),
+        uri if community_room_tasks::URIS.contains(&uri) => Box::pin(async move {
+            match Box::pin(community_room_tasks::dispatch(state, ctx, doc, uri)).await {
+                Some(outcome) => outcome,
+                // `URIS` is exactly what `dispatch` routes.
+                None => {
+                    unreachable!("community_room_tasks::URIS names {uri}, which it does not route")
+                }
+            }
+        }),
+        uri if room_admin_tasks::URIS.contains(&uri) => Box::pin(async move {
+            match Box::pin(room_admin_tasks::dispatch(state, ctx, doc, uri)).await {
+                Some(outcome) => outcome,
+                // `URIS` is exactly what `dispatch` routes.
+                None => unreachable!("room_admin_tasks::URIS names {uri}, which it does not route"),
             }
         }),
         uri if role_tasks::URIS.contains(&uri) => Box::pin(async move {
@@ -1310,6 +1421,14 @@ fn dispatch_typed<'a>(
                         "step_up_approver_tasks::URIS names {uri}, which it does not route"
                     )
                 }
+            }
+        }),
+        #[cfg(feature = "voting")]
+        uri if election_tasks::URIS.contains(&uri) => Box::pin(async move {
+            match election_tasks::dispatch(state, ctx, doc, uri).await {
+                Some(outcome) => outcome,
+                // `URIS` is exactly what `dispatch` routes.
+                None => unreachable!("election_tasks::URIS names {uri}, which it does not route"),
             }
         }),
         uri if capability_module_tasks::URIS.contains(&uri) => Box::pin(async move {
@@ -1366,6 +1485,9 @@ fn dispatch_typed<'a>(
             Box::pin(async move { handle_community_profile_update(state, ctx, doc).await })
         }
         CONFIG_EXPORT_TYPE => Box::pin(async move { handle_config_export(state, ctx, doc).await }),
+        DID_HOSTING_LIST_TYPE => {
+            Box::pin(async move { handle_did_hosting_list(state, ctx, doc).await })
+        }
         CONFIG_IMPORT_TYPE => Box::pin(async move { handle_config_import(state, ctx, doc).await }),
         ENDORSEMENT_TYPE_REGISTER_TYPE => {
             Box::pin(async move { handle_endorsement_type_register(state, ctx, doc).await })
@@ -1418,7 +1540,10 @@ fn dispatch_typed<'a>(
         | crate::acl::admin_consent::DECISION_V0_2_TYPE => {
             Box::pin(async move { action_tasks::handle_decision(state, ctx, doc).await })
         }
-        event_tasks::SUBSCRIBE_TYPE => {
+        event_tasks::SUBSCRIBE_TYPE
+        | event_tasks::SUBSCRIBE_V0_2_TYPE
+        | event_tasks::SUBSCRIBE_V0_3_TYPE
+        | event_tasks::SUBSCRIBE_V0_4_TYPE => {
             Box::pin(async move { event_tasks::handle_subscribe(state, ctx, doc).await })
         }
         uri if action_tasks::URIS.contains(&uri) => Box::pin(async move {
@@ -1916,12 +2041,6 @@ mod spine_proof_tests {
     #[test]
     fn every_rooms_task_declares_the_proof_its_arm_requires() {
         for uri in vti_rooms::wire::ROOMS_DISPATCHED_URIS {
-            // Reasoned about there, and removed when its specification agrees
-            // (`the_dispatched_set_declares_the_proofs_the_design_note_records`
-            // fails on a stale entry).
-            if DISPATCHED_WITHOUT_PROOF.iter().any(|(u, _)| u == uri) {
-                continue;
-            }
             let policy = trust_tasks_rs::schema_index::spec_policy_for(uri)
                 .unwrap_or_else(|| panic!("{uri} has no published spec policy"));
             assert!(
@@ -1944,15 +2063,20 @@ mod spine_proof_tests {
     /// stale entry) or an unlisted one stops (an unreasoned one).
     const DISPATCHED_WITHOUT_PROOF: &[(&str, &str)] = &[
         (
-            vti_rooms::wire::ROOMS_INFO_TYPE,
-            "the rooms arm refuses a request with no verified signer, since the room's chain \
-             is bound to it; the specification says RECOMMENDED until \
-             trustoverip/dtgwg-trust-tasks-tf#750 reaches trust-tasks-rs, and this entry \
-             goes with that bump",
-        ),
-        (
             jr::JOIN_REQUEST_MANIFEST_TYPE,
             "a public read of the community's join criteria; names no identity to authorize",
+        ),
+        (
+            directory_tasks::DISCLOSURE_TYPE,
+            "a public read of what the directory discloses, answered to whoever the join manifest is",
+        ),
+        (
+            directory_tasks::CARD_PUBLIC_TYPE,
+            "a public read of a card its member published so that anyone may read it",
+        ),
+        (
+            directory_tasks::IMAGES_GET_TYPE,
+            "a picture read through the projection; an unsigned caller is the public, answered only a picture on a published external card",
         ),
         (
             vetting_wire::VETTING_VETTER_LIST_TYPE,
@@ -1965,6 +2089,54 @@ mod spine_proof_tests {
         (
             role_tasks::SHOW_TYPE,
             "reads one role; the handler authorizes from the signer's own entry, so an unsigned caller is refused regardless",
+        ),
+        (
+            storage_tasks::LIST_TYPE,
+            "reads the storage configs; the handler authorizes vtc.rooms.admin from the signer's own entry, so an unsigned caller is refused regardless",
+        ),
+        (
+            storage_tasks::GET_TYPE,
+            "reads one storage config; the handler authorizes vtc.rooms.admin from the signer's own entry, so an unsigned caller is refused regardless",
+        ),
+        (
+            storage_tasks::LIST_V0_2_TYPE,
+            "reads the storage configs at 0.2; the handler authorizes vtc.rooms.admin from the signer's own entry, so an unsigned caller is refused regardless",
+        ),
+        (
+            storage_tasks::GET_V0_2_TYPE,
+            "reads one storage config at 0.2; the handler authorizes vtc.rooms.admin from the signer's own entry, so an unsigned caller is refused regardless",
+        ),
+        (
+            storage_tasks::PROBE_TYPE,
+            "probes one storage config; the handler authorizes vtc.rooms.admin from the signer's own entry, so an unsigned caller is refused regardless",
+        ),
+        (
+            room_admin_tasks::GET_TYPE,
+            "reads one room's storage, limits and usage; the handler authorizes vtc.rooms.admin from the signer's own entry, so an unsigned caller is refused regardless",
+        ),
+        (
+            room_admin_tasks::GET_V2_TYPE,
+            "reads one room's storage, limits, usage and migration; the handler authorizes vtc.rooms.admin from the signer's own entry, so an unsigned caller is refused regardless",
+        ),
+        (
+            community_room_tasks::LIST_TYPE,
+            "lists the rooms the community owns; the handler authorizes vtc.rooms.manage from the signer's own entry, so an unsigned caller is refused regardless",
+        ),
+        (
+            community_room_tasks::GET_TYPE,
+            "reads one room the community owns; the handler authorizes vtc.rooms.manage from the signer's own entry, so an unsigned caller is refused regardless",
+        ),
+        (
+            community_room_tasks::LIST_V0_2_TYPE,
+            "lists the rooms the community owns, with their details; the handler authorizes vtc.rooms.manage from the signer's own entry, so an unsigned caller is refused regardless",
+        ),
+        (
+            community_room_tasks::GET_V0_2_TYPE,
+            "reads one room the community owns, with its details; the handler authorizes vtc.rooms.manage from the signer's own entry, so an unsigned caller is refused regardless",
+        ),
+        (
+            room_admin_tasks::USAGE_TYPE,
+            "reads rooms' usage; the handler authorizes vtc.rooms.admin from the signer's own entry, so an unsigned caller is refused regardless",
         ),
         (
             vetting_wire::VETTING_VETTER_SHOW_TYPE,
@@ -2075,6 +2247,42 @@ mod spine_proof_tests {
             "a community read; the handler refuses an unsigned caller where that read is gated at all",
         ),
         (
+            directory_tasks::FIELDS_LIST_TYPE,
+            "reads the directory schema; the handler authorizes from the signer's own standing, so an unsigned caller is refused regardless",
+        ),
+        (
+            directory_tasks::CARD_SHOW_TYPE,
+            "reads the signer's own card; the handler matches the signer to their membership, so an unsigned caller is refused regardless",
+        ),
+        (
+            directory_tasks::ENTRIES_LIST_TYPE,
+            "reads the directory projected for the signer; the handler authorizes from the signer's own standing, so an unsigned caller is refused regardless",
+        ),
+        (
+            directory_tasks::ENTRIES_SHOW_TYPE,
+            "reads one entry projected for the signer; the handler authorizes from the signer's own standing, so an unsigned caller is refused regardless",
+        ),
+        (
+            group_tasks::LIST_TYPE,
+            "reads the groups the signer may see; the handler authorizes from the signer's own standing, so an unsigned caller is refused regardless",
+        ),
+        (
+            group_tasks::SHOW_TYPE,
+            "reads one group the signer may see; the handler authorizes from the signer's own standing, so an unsigned caller is refused regardless",
+        ),
+        (
+            group_tasks::MEMBERS_LIST_TYPE,
+            "reads a group's members as the signer may see them; the handler authorizes from the signer's own standing, so an unsigned caller is refused regardless",
+        ),
+        (
+            group_tasks::REQUESTS_LIST_TYPE,
+            "reads the join requests to groups the signer manages; the handler authorizes from the signer's own entry, so an unsigned caller is refused regardless",
+        ),
+        (
+            group_tasks::BINDINGS_LIST_TYPE,
+            "reads the bindings of a group the signer manages; the handler authorizes from the signer's own entry, so an unsigned caller is refused regardless",
+        ),
+        (
             community_tasks::ENDORSEMENT_TYPES_LIST_TYPE,
             "a community read; the handler refuses an unsigned caller where that read is gated at all",
         ),
@@ -2135,6 +2343,10 @@ mod spine_proof_tests {
             "declares no request-level proof as a specification matter; the handler's own authorization refuses an unsigned caller regardless",
         ),
         (surface_tasks::BRANDING_SHOW_TYPE, "a public read"),
+        (
+            surface_tasks::THEME_SHOW_TYPE,
+            "a public read, answered to an unidentified caller too: the sign-in pages draw the theme before the visitor has an identity",
+        ),
         (surface_tasks::REQUESTED_SHOW_TYPE, "a public read"),
         (surface_tasks::JOIN_DISCOVERY_SHOW_TYPE, "a public read"),
         (surface_tasks::SCHEMAS_LIST_TYPE, "a public read"),
@@ -2157,10 +2369,23 @@ mod spine_proof_tests {
             surface_tasks::JOIN_VETTING_SHOW_TYPE,
             "an admin read; the handler's admin ACL check refuses an unsigned caller regardless",
         ),
-        (surface_tasks::ROOMS_LIST_TYPE, "a public read"),
+        (
+            surface_tasks::ROOMS_LIST_TYPE,
+            "lists the hosted rooms; the handler authorizes vtc.rooms.admin from the signer's own entry, so an unsigned caller is refused regardless",
+        ),
         (
             capability_module_tasks::LIST_TYPE,
             "a member read; `acting_party` refuses an unsigned caller as `proofRequired`",
+        ),
+        #[cfg(feature = "voting")]
+        (
+            election_tasks::LIST_TYPE,
+            "a roll-scoped read; `election_tasks::caller` takes the caller from the proof and refuses an unsigned one as `proofRequired`",
+        ),
+        #[cfg(feature = "voting")]
+        (
+            election_tasks::SHOW_TYPE,
+            "a roll-scoped read; `election_tasks::caller` takes the caller from the proof and refuses an unsigned one as `proofRequired`",
         ),
         (
             auth_tasks::CHALLENGE_TYPE,
@@ -2729,8 +2954,8 @@ fn unsupported_type_or_version(doc: &TrustTask<Value>, type_uri: &str) -> TrustT
 /// not actually serve.
 pub(crate) const DISPATCHED_URIS: &[&str] = &[
     jr::JOIN_REQUEST_SUBMIT_TYPE,
-    // 0.3: every criterion states its admission, in the order the community
-    // decides by.
+    // 0.4: every criterion states its admission, in the order the community
+    // decides by, and the directory's disclosure statement rides beside them.
     jr::JOIN_REQUEST_MANIFEST_TYPE,
     jr::JOIN_REQUEST_STATUS_TYPE,
     // The applicant closing their own request. Paired with `status` above: the
@@ -2766,7 +2991,6 @@ pub(crate) const DISPATCHED_URIS: &[&str] = &[
     vetting_wire::VETTING_VETTER_LIST_TYPE,
     vetting_wire::VETTING_VETTER_SHOW_TYPE,
     vetting_wire::VETTING_VETTER_RESEND_TYPE,
-    vetting_wire::VETTING_VETTER_RESEND_0_2_TYPE,
     // Hidden vetting: enrolment, the drip, event mode, and the applicant's challenge.
     #[cfg(feature = "vetting-pcs")]
     crate::vetting::pcs_tasks::PCS_ROOT_TYPE,
@@ -2784,6 +3008,23 @@ pub(crate) const DISPATCHED_URIS: &[&str] = &[
     crate::vetting::pcs_tasks::HIDDEN_WITHDRAW_TYPE,
     #[cfg(feature = "vetting-pcs")]
     crate::vetting::pcs_tasks::HIDDEN_SHOW_TYPE,
+    // Community elections (VTI-VOT-001 – 100): an administrator creating,
+    // closing and cancelling them, anyone the roll admits reading them and
+    // taking a ticket. No REST route.
+    #[cfg(feature = "voting")]
+    election_tasks::CREATE_TYPE,
+    #[cfg(feature = "voting")]
+    election_tasks::LIST_TYPE,
+    #[cfg(feature = "voting")]
+    election_tasks::SHOW_TYPE,
+    #[cfg(feature = "voting")]
+    election_tasks::CLOSE_TYPE,
+    #[cfg(feature = "voting")]
+    election_tasks::CANCEL_TYPE,
+    #[cfg(feature = "voting")]
+    election_tasks::ISSUE_TYPE,
+    #[cfg(feature = "voting")]
+    election_tasks::CERTIFY_TYPE,
     PERSONHOOD_CHALLENGE_TYPE,
     PERSONHOOD_ASSERT_TYPE,
     // The admin-facing member verbs (#1641 phase 2): the binding that holds the
@@ -2793,8 +3034,8 @@ pub(crate) const DISPATCHED_URIS: &[&str] = &[
     MEMBER_UPDATE_TYPE,
     MEMBER_ADMIN_REMOVE_TYPE,
     MEMBER_PURGE_TYPE,
-    // Direct admission (`crate::ceremony::admission`): no published
-    // specification yet — local wire types, drafts in the pull request.
+    // Direct admission (`crate::ceremony::admission`), on the generated
+    // `vtc/members/{admit,make-membership}` types (trust-tasks-tf #784).
     admission_tasks::ADMIT_TYPE,
     admission_tasks::MAKE_MEMBERSHIP_TYPE,
     // Batch 2: the join decision and the community-profile edit, on the same
@@ -2803,6 +3044,9 @@ pub(crate) const DISPATCHED_URIS: &[&str] = &[
     COMMUNITY_PROFILE_UPDATE_TYPE,
     // Batch 3: the portable-configuration pair, on the same terms.
     CONFIG_EXPORT_TYPE,
+    // Where the community's identities may be published: the hosting servers its
+    // VTA reports (`did_hosting`).
+    DID_HOSTING_LIST_TYPE,
     CONFIG_IMPORT_TYPE,
     // Batch 4: the endorsement-type writes, which have no REST route. `list`
     // declares no proof and stays on its bearer route.
@@ -2860,8 +3104,13 @@ pub(crate) const DISPATCHED_URIS: &[&str] = &[
     action_tasks::ACKNOWLEDGE_V0_2_TYPE,
     // The console's live channel (hints only): its success opens an event
     // stream, which only the HTTPS door can carry — every other transport is
-    // answered `streamUnavailable`.
+    // answered `streamUnavailable`. 0.2 adds the `rooms` topic, 0.3 the
+    // `directory` and `groups` topics and 0.4 the `communityRooms` topic; each
+    // older version is still answered, at its own version.
     event_tasks::SUBSCRIBE_TYPE,
+    event_tasks::SUBSCRIBE_V0_2_TYPE,
+    event_tasks::SUBSCRIBE_V0_3_TYPE,
+    event_tasks::SUBSCRIBE_V0_4_TYPE,
     // Members' step-up passkeys: the invite, its redemption, an
     // administrator's revocation for the member, and an administrator's
     // listing of them. No REST route serves them.
@@ -2886,6 +3135,57 @@ pub(crate) const DISPATCHED_URIS: &[&str] = &[
     role_tasks::LIST_TYPE,
     role_tasks::SHOW_TYPE,
     role_tasks::DELETE_TYPE,
+    // Where room files are stored (`data-rooms-files.md` §7): reads and the probe for
+    // a holder of `vtc.rooms.admin`, changes through the action list. No REST route.
+    storage_tasks::LIST_TYPE,
+    storage_tasks::GET_TYPE,
+    storage_tasks::CREATE_TYPE,
+    storage_tasks::UPDATE_TYPE,
+    storage_tasks::RETIRE_TYPE,
+    storage_tasks::PROBE_TYPE,
+    storage_tasks::ASSIGN_TYPE,
+    storage_tasks::MIGRATE_TYPE,
+    // 0.2 (trust-tasks-tf #866): `roleArn` on ambient auth, `notAllowed`, host gating,
+    // and the sealed credential itself. Each version answered at its own.
+    storage_tasks::LIST_V0_2_TYPE,
+    storage_tasks::GET_V0_2_TYPE,
+    storage_tasks::CREATE_V0_2_TYPE,
+    storage_tasks::UPDATE_V0_2_TYPE,
+    storage_tasks::CREDENTIALS_SET_TYPE,
+    storage_tasks::MIGRATE_V2_TYPE,
+    // What the rooms store and may store (`data-rooms-files.md` §6): reads and limit
+    // overrides for a holder of `vtc.rooms.admin`, overrides audited. No REST route.
+    room_admin_tasks::GET_TYPE,
+    room_admin_tasks::GET_V2_TYPE,
+    room_admin_tasks::USAGE_TYPE,
+    room_admin_tasks::LIMITS_SET_TYPE,
+    // Rooms the community owns (`data-rooms-files.md` §8.4): an administrator's
+    // create, reads and membership changes under `vtc.rooms.manage`, the changes
+    // behind the requester's bound gesture; a member's offers on their own DID. No
+    // REST route. The details administrators keep a room by (`update`, and the 0.2 reads
+    // and create that carry them) take no gesture: they reach no key holder.
+    community_room_tasks::CREATE_TYPE,
+    community_room_tasks::CREATE_V0_2_TYPE,
+    community_room_tasks::CREATE_V0_3_TYPE,
+    community_room_tasks::LIST_TYPE,
+    community_room_tasks::LIST_V0_2_TYPE,
+    community_room_tasks::GET_TYPE,
+    community_room_tasks::GET_V0_2_TYPE,
+    community_room_tasks::UPDATE_TYPE,
+    community_room_tasks::UPDATE_V0_2_TYPE,
+    community_room_tasks::MEMBERS_ADD_TYPE,
+    community_room_tasks::MEMBERS_REMOVE_TYPE,
+    community_room_tasks::MEMBERS_REMOVE_V0_2_TYPE,
+    community_room_tasks::MEMBERS_LIST_TYPE,
+    community_room_tasks::OFFERS_LIST_TYPE,
+    community_room_tasks::OFFERS_LIST_V0_2_TYPE,
+    // 0.3: also the renewals of the admissions the member holds.
+    community_room_tasks::OFFERS_LIST_V0_3_TYPE,
+    community_room_tasks::OFFERS_ACCEPT_TYPE,
+    community_room_tasks::MEMBERSHIPS_LIST_TYPE,
+    // The OpenID4VP verifier identities, as a holder of `vtc.config.admin`
+    // sees them (#1988). A read; no REST route.
+    oid4vp_tasks::IDENTITIES_LIST_TYPE,
     // A subject rolling its own admin entry to a new key (VTI-CLT-025 – 032).
     ACL_SWAP_KEY_TYPE,
     // Capability modules (`vtc-capability-modules.md`): a member's listing of
@@ -2928,6 +3228,7 @@ pub(crate) const DISPATCHED_URIS: &[&str] = &[
     admin_tasks::DIAGNOSTICS_TYPE,
     admin_tasks::SYNC_JOBS_LIST_TYPE,
     admin_tasks::SYNC_JOBS_RETRY_TYPE,
+    admin_tasks::SYNC_JOBS_RETRY_0_2_TYPE,
     admin_tasks::SYNC_JOBS_DISCARD_TYPE,
     admin_tasks::RECORDS_LIST_TYPE,
     admin_tasks::AUDIT_LIST_TYPE,
@@ -2953,6 +3254,10 @@ pub(crate) const DISPATCHED_URIS: &[&str] = &[
     crate::member_portal::oob::types::RESPOND_TYPE,
     crate::member_portal::oob::types::REDEEM_TYPE,
     crate::member_portal::oob::types::CANCEL_TYPE,
+    // 0.2: step 2 may offer `signingScope`, which the grant copies to let the
+    // portal key sign directory documents as the member.
+    crate::member_portal::oob::types::PROVE_V0_2_TYPE,
+    crate::member_portal::oob::types::RESPOND_V0_2_TYPE,
     auth_tasks::CHALLENGE_TYPE,
     auth_tasks::AUTHENTICATE_V0_2_TYPE,
     auth_tasks::AUTHENTICATE_V0_3_TYPE,
@@ -2975,6 +3280,49 @@ pub(crate) const DISPATCHED_URIS: &[&str] = &[
     community_tasks::PROFILE_SHOW_TYPE,
     community_tasks::CEREMONIES_LIST_TYPE,
     community_tasks::DIRECTORY_QUERY_TYPE,
+    // The member directory (`crate::directory`).
+    directory_tasks::FIELDS_LIST_TYPE,
+    directory_tasks::FIELDS_DEFINE_TYPE,
+    directory_tasks::FIELDS_UPDATE_TYPE,
+    directory_tasks::FIELDS_RETIRE_TYPE,
+    directory_tasks::CARD_SHOW_TYPE,
+    directory_tasks::CARD_UPDATE_TYPE,
+    directory_tasks::CARD_ASSERT_TYPE,
+    directory_tasks::ENTRIES_LIST_TYPE,
+    directory_tasks::ENTRIES_SHOW_TYPE,
+    // What the directory discloses, read before applying (VTI-DIR-130).
+    directory_tasks::DISCLOSURE_TYPE,
+    // Pictures, and the external card a member publishes beyond the community.
+    directory_tasks::IMAGES_UPLOAD_TYPE,
+    directory_tasks::IMAGES_GET_TYPE,
+    directory_tasks::CARD_PUBLISH_TYPE,
+    directory_tasks::CARD_PUBLIC_TYPE,
+    // Administrators' notes about members, and the directory's export.
+    directory_tasks::NOTES_APPEND_TYPE,
+    directory_tasks::NOTES_LIST_TYPE,
+    directory_tasks::NOTES_EXPORT_TYPE,
+    directory_tasks::EXPORT_TYPE,
+    // The community's groups.
+    group_tasks::CREATE_TYPE,
+    group_tasks::UPDATE_TYPE,
+    group_tasks::DELETE_TYPE,
+    group_tasks::LIST_TYPE,
+    group_tasks::SHOW_TYPE,
+    group_tasks::MEMBERS_ADD_TYPE,
+    group_tasks::MEMBERS_REMOVE_TYPE,
+    group_tasks::MEMBERS_LIST_TYPE,
+    group_tasks::JOIN_TYPE,
+    group_tasks::LEAVE_TYPE,
+    group_tasks::REQUESTS_LIST_TYPE,
+    group_tasks::REQUESTS_DECIDE_TYPE,
+    group_tasks::MANAGERS_ADD_TYPE,
+    group_tasks::MANAGERS_REMOVE_TYPE,
+    // A group's room bindings: what its members are offered, and renewed.
+    group_tasks::BINDINGS_ADD_TYPE,
+    group_tasks::BINDINGS_REMOVE_TYPE,
+    group_tasks::BINDINGS_LIST_TYPE,
+    // Credential-sourced fields, filled from a presentation.
+    directory_tasks::CARD_PRESENT_TYPE,
     community_tasks::ENDORSEMENT_TYPES_LIST_TYPE,
     community_tasks::RECOGNITION_CHECK_TYPE,
     community_tasks::MEMBERS_LIST_TYPE,
@@ -3001,6 +3349,8 @@ pub(crate) const DISPATCHED_URIS: &[&str] = &[
     // notices keep their routes while `vtc-client` calls them.
     surface_tasks::BRANDING_SHOW_TYPE,
     surface_tasks::BRANDING_UPDATE_TYPE,
+    surface_tasks::THEME_SHOW_TYPE,
+    surface_tasks::THEME_UPDATE_TYPE,
     surface_tasks::REQUESTED_SHOW_TYPE,
     surface_tasks::REQUESTED_UPDATE_TYPE,
     surface_tasks::JOIN_DISCOVERY_SHOW_TYPE,
@@ -3029,6 +3379,21 @@ pub(crate) const DISPATCHED_URIS: &[&str] = &[
     signing_key_tasks::ENROLL_V0_2_TYPE,
     signing_key_tasks::LIST_TYPE,
     signing_key_tasks::REVOKE_TYPE,
+    // An administrator's own login passkeys, which replaced the
+    // `/v1/admin/passkeys/*` bearer routes (#1641). Each change takes a
+    // user-verified assertion of an existing passkey beside the signer's
+    // authority.
+    admin_passkey_tasks::LIST_TYPE,
+    admin_passkey_tasks::ENROLL_START_TYPE,
+    admin_passkey_tasks::ENROLL_FINISH_TYPE,
+    admin_passkey_tasks::REVOKE_START_TYPE,
+    admin_passkey_tasks::REVOKE_FINISH_TYPE,
+    // The console's bearer → cookie bridge, which replaced
+    // `POST /v1/auth/admin-session` (#1641): signed by the token's subject.
+    admin_session_tasks::ADMIN_SESSION_TYPE,
+    // Session introspection, which replaced `GET /v1/auth/whoami` (#1641):
+    // signed by the key bound to the session at sign-in.
+    whoami_tasks::WHOAMI_TYPE,
     // The website's content, which replaced the raw-byte routes.
     #[cfg(feature = "website")]
     website_tasks::BEGIN_TYPE,
@@ -3067,7 +3432,9 @@ pub(crate) const DISPATCHED_URIS: &[&str] = &[
 pub(crate) const PERSONHOOD_CHALLENGE_TYPE: &str =
     <pc::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
-/// `vtc/members/personhood/assert/0.1` — present the evidence.
+/// `vtc/members/personhood/assert/0.2` — present the evidence, with the outcome evidence of
+/// each witnessing session a VWC in it cites (`outcomeEvidence`). 0.1, which had no member for
+/// that evidence, is not served.
 pub(crate) const PERSONHOOD_ASSERT_TYPE: &str = <pa::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
 /// `vtc/members/credentials/0.1` — read one member's credential bodies.
@@ -3097,6 +3464,17 @@ pub(crate) const COMMUNITY_PROFILE_UPDATE_TYPE: &str =
 /// `vtc/config/export/0.1` — the community's portable configuration.
 pub(crate) const CONFIG_EXPORT_TYPE: &str =
     <config_export::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `vtc/config/did-hosting/list/0.1` — the hosting servers the community's VTA
+/// can publish its identities through.
+pub(crate) const DID_HOSTING_LIST_TYPE: &str =
+    <did_hosting_list::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+pub(crate) const DID_HOSTING_ERR_NO_KEY_HOLDER: &str =
+    did_hosting_list::error_codes::NO_KEY_HOLDER.code;
+pub(crate) const DID_HOSTING_ERR_KEY_HOLDER_UNAVAILABLE: &str =
+    did_hosting_list::error_codes::KEY_HOLDER_UNAVAILABLE.code;
+pub(crate) const DID_HOSTING_ERR_KEY_HOLDER_REFUSED: &str =
+    did_hosting_list::error_codes::KEY_HOLDER_REFUSED.code;
 
 /// `vtc/config/import/0.1` — preview or apply a portable configuration.
 pub(crate) const CONFIG_IMPORT_TYPE: &str =
@@ -3208,8 +3586,9 @@ async fn resolve_holder(
         },
     };
     if let Some(issuer) = doc.issuer.as_deref() {
-        let issuer_base = issuer.split('#').next().unwrap_or(issuer);
-        if issuer_base != proven {
+        // By identity, as the holder was authenticated (VTI-KEY-160).
+        let issuer_base = vta_sdk::did_scid::identity(issuer);
+        if issuer_base != vta_sdk::did_scid::identity(&proven) {
             return Err(reject_with(
                 doc,
                 RejectReason::PermissionDenied {
@@ -3602,8 +3981,9 @@ async fn handle_hidden_publish(
     ctx: &JoinAuthCtx,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    // The signer is kept: an event approval it adds must name it (publish/0.1 item 9).
-    let signer = match capable_signer(
+    // The signer is kept: an event approval it adds must name it (publish/0.1 item 9), and the
+    // consent gate (VTI-APV-023) is the signer's.
+    let actor = match capable_signer(
         state,
         ctx,
         &doc,
@@ -3612,7 +3992,7 @@ async fn handle_hidden_publish(
     )
     .await
     {
-        Ok(claims) => claims.did,
+        Ok(claims) => claims,
         Err(reject) => return reject,
     };
     let payload: trust_tasks_rs::specs::vtc::vetting::hidden::publish::v0_1::Payload =
@@ -3645,7 +4025,8 @@ async fn handle_hidden_publish(
     };
     match crate::routes::vetting_hidden::publish_hidden_vetting_core(
         state,
-        &signer,
+        &actor,
+        &doc,
         payload.criterion_id.to_string(),
         if live_periods.is_empty() {
             None
@@ -3664,7 +4045,8 @@ async fn handle_hidden_publish(
     .await
     {
         Ok(response) => success_response(&doc, response),
-        Err(e) => task_error_to_reject(&doc, &e),
+        Err(crate::routes::vetting_hidden::Halted::Refused(e)) => task_error_to_reject(&doc, &e),
+        Err(crate::routes::vetting_hidden::Halted::Gate(outcome)) => outcome,
     }
 }
 
@@ -3676,7 +4058,7 @@ async fn handle_hidden_withdraw(
     ctx: &JoinAuthCtx,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    let signer = match capable_signer(
+    let actor = match capable_signer(
         state,
         ctx,
         &doc,
@@ -3685,7 +4067,7 @@ async fn handle_hidden_withdraw(
     )
     .await
     {
-        Ok(claims) => claims.did,
+        Ok(claims) => claims,
         Err(reject) => return reject,
     };
     let payload: trust_tasks_rs::specs::vtc::vetting::hidden::withdraw::v0_1::Payload =
@@ -3695,13 +4077,15 @@ async fn handle_hidden_withdraw(
         };
     match crate::routes::vetting_hidden::withdraw_hidden_vetting_core(
         state,
-        &signer,
+        &actor,
+        &doc,
         payload.criterion_id.to_string(),
     )
     .await
     {
         Ok(response) => success_response(&doc, response),
-        Err(e) => task_error_to_reject(&doc, &e),
+        Err(crate::routes::vetting_hidden::Halted::Refused(e)) => task_error_to_reject(&doc, &e),
+        Err(crate::routes::vetting_hidden::Halted::Gate(outcome)) => outcome,
     }
 }
 
@@ -3835,54 +4219,11 @@ async fn handle_vetter_show(
     }
 }
 
-/// `vtc/vetting/vetters/resend/0.1` — a vetter asks for their grant credential
-/// again. Always the sender's own grant.
-async fn handle_vetter_resend(
-    state: &AppState,
-    ctx: &JoinAuthCtx,
-    doc: TrustTask<Value>,
-) -> TrustTaskOutcome {
-    use trust_tasks_rs::{StandardCode, TrustTaskCode};
-
-    let vetter_did = match resolve_holder(state, ctx, &doc).await {
-        Ok(did) => did,
-        Err(reject) => return reject,
-    };
-    if let Err(reject) = parse_checked_payload::<vetting_wire::vetters::resend::v0_1::Payload>(&doc)
-    {
-        return reject;
-    }
-    match crate::vetting::vetters::resend(state, &vetter_did, &vetter_did).await {
-        Ok(response) => success_response(&doc, response),
-        // `notGranted` is a `NotFound` underneath, and its local part is not
-        // `notFound`, so #1602's client-side rule does not recover it — the
-        // marker is the only thing that does.
-        Err(AppError::NotFound(reason)) => reject_with_code_because(
-            &doc,
-            extended_code(vetting_wire::VETTING_VETTER_RESEND_ERR_NOT_GRANTED),
-            reason,
-            None,
-            reasons::NOT_FOUND,
-        ),
-        Err(AppError::ServiceError { status, message })
-            if status == axum::http::StatusCode::SERVICE_UNAVAILABLE =>
-        {
-            reject_with_code(
-                &doc,
-                TrustTaskCode::Standard(StandardCode::Unavailable),
-                message,
-                None,
-            )
-        }
-        Err(e) => app_error_to_reject(&doc, &e),
-    }
-}
-
 /// `vtc/vetting/vetters/resend/0.2` — a vetter asks for their grant credential
 /// again, or an administrator asks on a named vetter's behalf.
 ///
-/// Absent `memberDid`, this is exactly `handle_vetter_resend`'s `0.1` behaviour:
-/// the sender identified by the document's own proof (`resolve_holder`),
+/// Absent `memberDid`, this is `0.1`'s behaviour, which it replaces: the
+/// sender identified by the document's own proof (`resolve_holder`),
 /// resending their own grant. Present, [`admin_signer`] establishes the
 /// sender holds the community-administrator capability — refusing with
 /// `permissionDenied` otherwise, per the specification's Conformance item 2 —
@@ -3891,7 +4232,7 @@ async fn handle_vetter_resend(
 /// way the actor recorded on the `VetterGrantResent` audit entry is the
 /// sender, never the subject, so an administrator's resend is attributable to
 /// the administrator who asked for it.
-async fn handle_vetter_resend_v0_2(
+async fn handle_vetter_resend(
     state: &AppState,
     ctx: &JoinAuthCtx,
     doc: TrustTask<Value>,
@@ -3929,8 +4270,7 @@ async fn handle_vetter_resend_v0_2(
     match crate::vetting::vetters::resend(state, &actor_did, &subject_did).await {
         // `notGranted` is a `NotFound` underneath, and its local part is not
         // `notFound`, so #1602's client-side rule does not recover it — the
-        // marker is the only thing that does. `0.1` and `0.2` declare the
-        // identical code text, so `0.1`'s constant witnesses both.
+        // marker is the only thing that does.
         Err(AppError::NotFound(reason)) => reject_with_code_because(
             &doc,
             extended_code(vetting_wire::VETTING_VETTER_RESEND_ERR_NOT_GRANTED),
@@ -3966,53 +4306,72 @@ fn caller_is_identified(ctx: &JoinAuthCtx) -> bool {
     ctx.verified_signer.is_some() || ctx.sender_did.is_some()
 }
 
-/// The join manifest (`vtc/join-requests/manifest/0.3`).
+/// The join manifest (`vtc/join-requests/manifest/0.4`), with the directory's
+/// disclosure statement.
 ///
-/// Public unless the community has turned public discovery off, in which case
-/// an unidentified caller is refused and an identified one is answered exactly
-/// as before — see [`JoinDiscovery`](crate::community::profile::JoinDiscovery).
-/// The refusal is `permissionDenied` with a sentence saying *how* to ask rather
-/// than only that this failed: a client that reads "not public" and stops has
-/// been told the wrong thing, because the same question over an identified
-/// transport still answers.
+/// Public unless the community has turned public discovery off — see
+/// [`discovery_refusal`].
 async fn handle_manifest(
     state: &AppState,
     ctx: &JoinAuthCtx,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    use crate::routes::join_requests::manifest::manifest_v0_3;
-    if !caller_is_identified(ctx) {
-        let public = match crate::community::join_discovery::load_join_discovery(
-            &state.community_ks,
-        )
-        .await
-        {
-            Ok(setting) => setting.public,
-            // A setting that cannot be read is not a reason to stop answering a
-            // question that has always been public: failing open keeps a
-            // storage fault from looking like a closed community, and the
-            // manifest carries nothing that was not already published.
-            Err(e) => {
-                tracing::warn!(error = %e, "join discovery unreadable; answering the manifest");
-                true
-            }
-        };
-        if !public {
-            return reject_with(
-                &doc,
-                RejectReason::PermissionDenied {
-                    reason: "this community does not publish its join requirements to callers \
-                             it cannot identify — ask over DIDComm, or with a signed Trust Task \
-                             document"
-                        .to_string(),
-                },
-            );
-        }
+    use vta_sdk::protocols::join_requests::manifest::v0_4;
+    if let Err(reject) = parse_spec_payload::<v0_4::Payload>(&doc) {
+        return reject;
     }
-    manifest_v0_3(state)
+    if let Some(refusal) = discovery_refusal(state, ctx, &doc).await {
+        return refusal;
+    }
+    crate::routes::join_requests::manifest::manifest(state)
         .await
         .map(|r| success_response(&doc, r))
         .unwrap_or_else(|e| app_error_to_reject(&doc, &e))
+}
+
+/// The refusal for an unidentified caller when the community has turned public
+/// discovery off, else `None`.
+///
+/// Shared by everything an applicant reads before applying — the join manifest
+/// and the directory's disclosure statement — so that a reader who may see the
+/// one may see the other: the statement is part of what an applicant is told
+/// before they apply (VTI-DIR-130). An identified caller is answered exactly as
+/// before — see [`JoinDiscovery`](crate::community::profile::JoinDiscovery).
+/// The refusal is `permissionDenied` with a sentence saying *how* to ask rather
+/// than only that this failed: a client that reads "not public" and stops has
+/// been told the wrong thing, because the same question over an identified
+/// transport still answers.
+pub(super) async fn discovery_refusal(
+    state: &AppState,
+    ctx: &JoinAuthCtx,
+    doc: &TrustTask<Value>,
+) -> Option<TrustTaskOutcome> {
+    if caller_is_identified(ctx) {
+        return None;
+    }
+    let public =
+        match crate::community::join_discovery::load_join_discovery(&state.community_ks).await {
+            Ok(setting) => setting.public,
+            // A setting that cannot be read is not a reason to stop answering a
+            // question that has always been public: failing open keeps a storage
+            // fault from looking like a closed community, and what these reads
+            // carry was already published.
+            Err(e) => {
+                tracing::warn!(error = %e, "join discovery unreadable; answering the read");
+                true
+            }
+        };
+    (!public).then(|| {
+        reject_with(
+            doc,
+            RejectReason::PermissionDenied {
+                reason: "this community does not publish its join requirements to callers \
+                         it cannot identify — ask over DIDComm, or with a signed Trust Task \
+                         document"
+                    .to_string(),
+            },
+        )
+    })
 }
 
 // ─── status ────────────────────────────────────────────────────────────────
@@ -4485,7 +4844,7 @@ async fn resolve_admin_claims(
     // action about itself (VTI-APV-019) — and nothing else, whatever the
     // operation. One refusal here, naming the action and when it lands, for
     // every administrative verb; the capability checks behind it refuse too.
-    if !SUSPENDED_MAY_SEND.contains(&doc.type_uri.to_string().as_str())
+    if !SUSPENDED_MAY_SEND.contains(&doc.type_uri.for_routing().to_string().as_str())
         && let Some(s) = crate::acl::storage::get_suspension(&state.acl_ks, did)
             .await
             .map_err(|e| app_error_to_reject(doc, &e))?
@@ -4665,7 +5024,7 @@ async fn handle_member_admin_remove(
         checked.did.as_str(),
         body,
         crate::acl::admin_consent::Operation {
-            type_uri: &doc.type_uri.to_string(),
+            type_uri: &doc.type_uri.for_routing().to_string(),
             payload: &doc.payload,
         },
     )
@@ -4900,6 +5259,84 @@ async fn handle_config_export(
     }
 }
 
+/// `vtc/config/did-hosting/list/0.1` — the `did:webvh` hosting servers the
+/// community's VTA reports (`vta/webvh/servers/list`), asked as the community
+/// over the link it keeps, for choosing `dids.webvh_server`
+/// ([`crate::did_hosting`]). `vtc.config.admin`. Each server's id, DID and
+/// label only, and one whose id the configuration could not name is left out
+/// (item 2).
+async fn handle_did_hosting_list(
+    state: &AppState,
+    ctx: &JoinAuthCtx,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    if let Err(reject) =
+        capable_signer(state, ctx, &doc, crate::acl::Capability::ConfigAdmin, None).await
+    {
+        return reject;
+    }
+    if let Err(reject) = parse_spec_payload::<did_hosting_list::Payload>(&doc) {
+        return reject;
+    }
+    let Some(holder) = state.community_rooms.key_holder() else {
+        return reject_with_code(
+            &doc,
+            extended_code(DID_HOSTING_ERR_NO_KEY_HOLDER),
+            "this community has no link to a VTA: its identities can only be served here",
+            None,
+        );
+    };
+    let answer = holder
+        .ask(
+            vta_sdk::trust_tasks::TASK_WEBVH_SERVERS_LIST_1_0,
+            serde_json::json!({}),
+            crate::rooms::community::SIGN_TIMEOUT,
+        )
+        .await;
+    let answer = match answer {
+        Ok(a) => a,
+        Err(crate::rooms::community::HolderError::Unavailable(why)) => {
+            return reject_with_code(
+                &doc,
+                extended_code(DID_HOSTING_ERR_KEY_HOLDER_UNAVAILABLE),
+                format!("the community's VTA did not answer: {why}"),
+                None,
+            );
+        }
+        Err(crate::rooms::community::HolderError::Refused { code, message }) => {
+            return reject_with_code(
+                &doc,
+                extended_code(DID_HOSTING_ERR_KEY_HOLDER_REFUSED),
+                format!("the community's VTA refused: {code} {message}"),
+                Some(crate::rooms::community::HolderError::refused_details(
+                    &code, &message,
+                )),
+            );
+        }
+    };
+    let servers: Vec<Value> = answer
+        .get("servers")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|s| {
+            let id = s.get("id")?.as_str()?;
+            crate::did_hosting::validate(&Value::String(id.to_string())).ok()?;
+            if id == crate::did_hosting::LOCAL {
+                return None;
+            }
+            let mut out = serde_json::json!({ "id": id, "did": s.get("did")?.as_str()? });
+            if let Some(label) = s.get("label").and_then(Value::as_str) {
+                out["label"] = Value::String(label.chars().take(256).collect());
+            }
+            Some(out)
+        })
+        .take(256)
+        .collect();
+    success_response(&doc, serde_json::json!({ "servers": servers }))
+}
+
 /// `vtc/config/import/0.1` — preview (`confirm: false`, the default) or apply
 /// a portable configuration.
 ///
@@ -4954,6 +5391,19 @@ async fn handle_config_import(
     if request.confirm
         && request.document.schema_version == crate::routes::admin::config::EXPORT_SCHEMA_VERSION
     {
+        // VTI-CMP-090: an import that changes the trusted-witness list takes
+        // the gesture and the consent `config/patch` does.
+        if let Err(refusal) = acl_tasks::settle_witness_list_gate(
+            state,
+            &actor,
+            &doc,
+            &request.document.config_overrides,
+            ", by configuration import",
+        )
+        .await
+        {
+            return refusal;
+        }
         match crate::routes::admin::config::lowered_threshold(
             state,
             &request.document.config_overrides,
@@ -5099,9 +5549,10 @@ async fn handle_endorsement_type_delete(
 /// of the backup in `accepted_ids` for the acceptance window. The keyspace is
 /// excluded from backup, so a copy never ends up inside a later export.
 ///
-/// Only the export moves. `vtc/backup/import/0.1` carries the whole envelope in
-/// its request, which a 64 KiB document cannot hold — see §6b of the design
-/// note for the chunked transfer that would.
+/// Only the export moved. `vtc/backup/import/0.1` carries the whole envelope in
+/// its request, which a 64 KiB document cannot hold; it is not served, and the
+/// chunked `backup/*` family ([`backup_tasks`]) is the restore — §6b of the
+/// design note.
 async fn handle_backup_export(
     state: &AppState,
     ctx: &JoinAuthCtx,
@@ -5598,10 +6049,10 @@ async fn handle_personhood_challenge(
     }
 }
 
-/// `vtc/members/personhood/assert/0.1` — present the evidence and, if the
+/// `vtc/members/personhood/assert/0.2` — present the evidence and, if the
 /// community's policy accepts it, take the personhood flag.
 ///
-/// The proven sender must be the subject. `assert/0.1` declares
+/// The proven sender must be the subject. `assert/0.2` declares
 /// `exposure.actsAsSubject: true` — "the asserting member is the subject …
 /// exercising their own authority over their own personhood state" — so on
 /// a transport that proves who sent the bytes, the party executing is the
@@ -5650,7 +6101,29 @@ async fn handle_personhood_assert(
         }
     };
 
-    match crate::routes::members::personhood::assert_inner(state, &body.did, &presentation).await {
+    // The outcome evidence of each witnessing session a VWC in the presentation
+    // cites (VTI-CMP-023), in the payload's own `outcomeEvidence`, read as
+    // received: each document's proof and task digest are taken over its members.
+    let evidence = match crate::credentials::witness::outcome_evidence_from_payload(&doc.payload) {
+        Ok(e) => e,
+        Err(e) => {
+            return reject_with(
+                &doc,
+                RejectReason::MalformedRequest {
+                    reason: e.to_string(),
+                },
+            );
+        }
+    };
+
+    match crate::routes::members::personhood::assert_inner(
+        state,
+        &body.did,
+        &presentation,
+        &evidence,
+    )
+    .await
+    {
         Ok(res) => success_response(&doc, res),
         Err(e) => task_error_to_reject(&doc, &e),
     }
@@ -5943,6 +6416,7 @@ mod tests {
                     updated_by: None,
                     expires_at: None,
                     resource_grants: Vec::new(),
+                    group_grants: Vec::new(),
                     label_set_by_subject: false,
                     suspension: None,
                 },
@@ -5960,7 +6434,7 @@ mod tests {
         /// A document issued by `from` and carrying `from`'s Data-Integrity
         /// proof — what a producer sends for a task that declares `proof`
         /// REQUIRED. Both `vtc/members/personhood/challenge/0.1` (since
-        /// trust-tasks 0.23) and `assert/0.1` do.
+        /// trust-tasks 0.23) and `assert/0.2` do.
         ///
         /// `from` is a real `did:key` with the secret behind it, because the
         /// spine verifies the proof against the document's own `issuer`
@@ -6180,14 +6654,14 @@ mod tests {
             assert_eq!(doc["proof"]["proofPurpose"], "authentication", "{doc}");
         }
 
-        /// `assert/0.1` declares `actsAsSubject: true`. On a transport that
+        /// `assert/0.2` declares `actsAsSubject: true`. On a transport that
         /// proves the sender, one member must not be able to assert
         /// personhood in another's name — even though the presentation gate
         /// would also stop them, because a caller should be refused before
         /// the daemon starts verifying someone else's credentials.
         ///
         /// The document is **signed**, and that is the point of the fixture
-        /// change #1672 made here. `assert/0.1` declares `proof` REQUIRED; this
+        /// change #1672 made here. `assert/0.2` declares `proof` REQUIRED; this
         /// test used to send an unsigned one over DIDComm, which reached the
         /// handler only through the transitional allowance the same change
         /// removes. Left alone it would now stop at `proofRequired` and go on
@@ -6330,6 +6804,7 @@ mod members_admin_tests {
                 updated_by: None,
                 expires_at: None,
                 resource_grants: Vec::new(),
+                group_grants: Vec::new(),
                 label_set_by_subject: false,
                 suspension: None,
             },
@@ -6593,6 +7068,7 @@ mod members_admin_tests {
                 updated_by: None,
                 expires_at: Some(1),
                 resource_grants: Vec::new(),
+                group_grants: Vec::new(),
                 label_set_by_subject: false,
                 suspension: None,
             },
@@ -6810,6 +7286,7 @@ mod members_admin_tests {
                 updated_by: None,
                 expires_at: Some(1),
                 resource_grants: Vec::new(),
+                group_grants: Vec::new(),
                 label_set_by_subject: false,
                 suspension: None,
             },
@@ -8933,6 +9410,7 @@ mod vetter_grant_console_key_tests {
                 updated_by: None,
                 expires_at: None,
                 resource_grants: Vec::new(),
+                group_grants: Vec::new(),
                 label_set_by_subject: false,
                 suspension: None,
             },

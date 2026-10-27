@@ -58,6 +58,43 @@ pub(super) const TRANSPORT_TRUST_TASK: &str = "trust-task";
 pub(crate) struct TrustTaskOutcome {
     pub(crate) status: StatusCode,
     pub(crate) body: Vec<u8>,
+    pub(crate) restart: bool,
+}
+
+impl TrustTaskOutcome {
+    pub(crate) fn with_restart(mut self) -> Self {
+        self.restart = true;
+        self
+    }
+}
+
+impl TrustTaskOutcome {
+    /// The response, holding `restart` until the body has been handed to the
+    /// connection — dropped with the body, it fires then, and on a client that
+    /// hangs up too. `Content-Length` is set so the reply stays unchunked.
+    pub(crate) fn into_response_firing(self, restart: crate::server::RestartOnDrop) -> Response {
+        use futures_util::StreamExt;
+        let len = self.body.len();
+        let chunk = axum::body::Bytes::from(self.body);
+        let stream = futures_util::stream::iter([Ok::<_, std::convert::Infallible>(chunk)]).map(
+            move |chunk| {
+                let _held = &restart;
+                chunk
+            },
+        );
+        (
+            self.status,
+            [
+                (
+                    axum::http::header::CONTENT_TYPE,
+                    "application/json".to_string(),
+                ),
+                (axum::http::header::CONTENT_LENGTH, len.to_string()),
+            ],
+            axum::body::Body::from_stream(stream),
+        )
+            .into_response()
+    }
 }
 
 impl IntoResponse for TrustTaskOutcome {
@@ -110,6 +147,8 @@ fn task_failed_because(message: String, reason: &str) -> RejectReason {
 ///   `details.reason` from [`vta_sdk::protocols::trust_task_reject_reasons`]
 /// - `ServiceError` at `502` / `504` → `task_failed`, `details.reason`
 ///   `upstream_unavailable`: a peer failed, not this VTA
+/// - `NoMatchingProtocol` → `task_failed`, `details.reason`
+///   `no_matching_protocol` plus both transport sets
 /// - everything else → `internal_error`
 pub(super) fn app_error_to_reject(doc: &TrustTask<Value>, err: AppError) -> TrustTaskOutcome {
     let message = err.to_string();
@@ -191,6 +230,23 @@ pub(super) fn app_error_to_reject(doc: &TrustTask<Value>, err: AppError) -> Trus
                 reasons::UPSTREAM_UNAVAILABLE,
             )
         }
+        // No transport in common with a peer this VTA had to reach. SPEC §8.3
+        // has no transport code, and none of its codes but `taskFailed` fits:
+        // the document was well formed (not `malformedRequest`, which is what
+        // this used to collapse into through `Validation`), and the peer is
+        // not down (not `unavailable` — a retry meets the same two sets). So
+        // `taskFailed`, with both sets in `details` for the client to name the
+        // transport to add. The sets are public: one is the peer's DID
+        // document, the other what any of this VTA's own documents shows.
+        AppError::NoMatchingProtocol(refusal) => RejectReason::TaskFailed {
+            reason: message,
+            details: Some(serde_json::json!({
+                "reason": reasons::NO_MATCHING_PROTOCOL,
+                "counterpartyDid": refusal.peer,
+                "ours": refusal.ours,
+                "theirs": refusal.theirs,
+            })),
+        },
         AppError::Internal(cause) => {
             tracing::error!(cause = %cause, "trust task failed with an internal error");
             RejectReason::InternalError {
@@ -472,6 +528,7 @@ pub(super) fn success_response<R: serde::Serialize>(
     TrustTaskOutcome {
         status: StatusCode::OK,
         body,
+        restart: false,
     }
 }
 
@@ -493,6 +550,7 @@ pub(super) fn silence() -> TrustTaskOutcome {
     TrustTaskOutcome {
         status: StatusCode::NO_CONTENT,
         body: Vec::new(),
+        restart: false,
     }
 }
 
@@ -620,7 +678,11 @@ pub(super) fn error_response(err_doc: ErrorResponse) -> TrustTaskOutcome {
     let status = StatusCode::from_u16(status_for_code(&err_doc.payload.code))
         .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
     let body = serde_json::to_vec(&err_doc).unwrap_or_else(|_| Vec::new());
-    TrustTaskOutcome { status, body }
+    TrustTaskOutcome {
+        status,
+        body,
+        restart: false,
+    }
 }
 
 /// The framework's error-document Type URI — the one `TrustTask::reject_with`
@@ -1212,6 +1274,45 @@ mod tests {
             assert!(!message.contains("10.0.0.7"), "{message}");
             assert!(!message.contains("QmHost"), "{message}");
             assert!(!message.contains(OPAQUE_INTERNAL_ERROR), "{message}");
+        }
+    }
+
+    /// REGRESSION (data-rooms run, 2026-10): a VTA that shared no transport
+    /// with the room's host answered `malformedRequest`, because the refusal
+    /// rode `AppError::Validation` — telling the client its document was wrong
+    /// and losing both sets. It is `taskFailed`, not retryable, with the sets in
+    /// `details`, and the SDK recovers `VtaError::NoMatchingProtocol` from it.
+    #[test]
+    fn no_matching_protocol_is_task_failed_with_both_sets_and_reads_back_typed() {
+        use vta_sdk::protocol::matching::Protocol;
+        let err = AppError::from(vti_common::error::NoMatchingProtocol {
+            peer: "did:webvh:vtc.example".into(),
+            ours: vec![Protocol::Rest],
+            theirs: vec![Protocol::Didcomm],
+            note: None,
+        });
+        let parsed: Value = serde_json::from_slice(&app_error_to_reject(&doc(), err).body)
+            .expect("error doc parses");
+        let payload = &parsed["payload"];
+        assert_eq!(payload["code"], "taskFailed", "{payload}");
+        assert_ne!(
+            payload["retryable"], true,
+            "the same sets meet a retry: {payload}"
+        );
+        assert_eq!(payload["details"]["reason"], reasons::NO_MATCHING_PROTOCOL);
+        assert_eq!(payload["details"]["ours"], serde_json::json!(["rest"]));
+        assert_eq!(payload["details"]["theirs"], serde_json::json!(["didcomm"]));
+        match vta_sdk::error::VtaError::no_matching_protocol_from(&payload["details"]) {
+            Some(vta_sdk::error::VtaError::NoMatchingProtocol {
+                counterparty_did,
+                ours,
+                theirs,
+            }) => {
+                assert_eq!(counterparty_did, "did:webvh:vtc.example");
+                assert_eq!(ours, vec![Protocol::Rest]);
+                assert_eq!(theirs, vec![Protocol::Didcomm]);
+            }
+            other => panic!("expected the typed variant back, got {other:?}"),
         }
     }
 

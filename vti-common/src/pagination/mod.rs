@@ -10,8 +10,8 @@
 //! → 200 OK
 //! {
 //!   "items":          [...],
-//!   "nextCursor":     "<opaque>" | null,
-//!   "total_estimate": <u64 | null>
+//!   "nextCursor":     "<opaque>",   // absent on the last page, never null
+//!   "totalEstimate":  <u64>          // absent when unknown
 //! }
 //! ```
 //!
@@ -37,12 +37,11 @@
 //!   a single error so the caller can't learn whether the tag check
 //!   or the structure check rejected them.
 //! - **`(last_key, snapshot_id)` payload.** `last_key` is the raw
-//!   storage key of the last item the previous page returned;
-//!   `snapshot_id` is the wall-clock timestamp at mint. The
-//!   snapshot is carried through opaquely (no consistency check
-//!   today — newly-inserted rows may or may not appear in the next
-//!   page). Plumbing for it is in place so a future tightening can
-//!   land without a wire-shape change.
+//!   storage key of the last item the previous page returned; the
+//!   next page resumes strictly beyond that key in the caller's
+//!   traversal direction. `snapshot_id` is opaque metadata supplied
+//!   by the caller. The snapshot has no consistency check today —
+//!   newly-inserted rows may or may not appear in the next page.
 //!
 //! ## Limit bounds
 //!
@@ -55,14 +54,12 @@
 //!
 //! ## Storage iteration model
 //!
-//! For Phase 0, [`paginate`] takes the already-materialised list of
-//! raw key/value pairs from [`crate::store::KeyspaceHandle::prefix_iter_raw`]
-//! and walks them in-memory. That's O(N) per page but bounded by the
-//! community's keyspace size — adequate for the small lists (members,
-//! join requests, policies, audit) that Phase 0 ships. A cursor-aware
-//! `prefix_iter_after` method on `KeyspaceHandle` is the natural
-//! follow-up if community sizes outgrow this; the wire shape doesn't
-//! change.
+//! [`paginate`] remains an in-memory helper for callers that already have a
+//! materialised list. Storage-backed readers that must bound memory and wire
+//! responses should use [`crate::store::KeyspaceHandle::scan_raw`], which
+//! supports prefix, exclusive resume key, limit, and direction in the store
+//! layer. Audit verification and listing use that bounded path; no separate
+//! `prefix_iter_after` operation is needed for them.
 
 use std::io::{Cursor as IoCursor, Read};
 
@@ -128,11 +125,17 @@ impl PaginationParams {
 /// requested page of items, the opaque cursor for the next page
 /// (`None` when the caller has reached the end), and an optional
 /// total-count estimate.
+///
+/// A `None` cursor is **left out**, never sent as `null`: the Trust Task
+/// list specifications' one pagination shape says `nextCursor` is "absent on
+/// the last page — never `null`" (e.g. `vtc/members/list/0.2`), and the older
+/// versions typed it nullable-but-optional, so absence satisfies both.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct Paginated<T> {
     pub items: Vec<T>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub next_cursor: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub total_estimate: Option<u64>,
@@ -165,11 +168,12 @@ impl<T> Paginated<T> {
 /// [`Cursor::decode`] so the HMAC tag gets verified.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Cursor {
-    /// Raw fjall storage key of the last item the previous page
-    /// returned. The next page begins **strictly after** this key.
+    /// Raw storage key of the last item the previous page returned.
+    /// The next page begins strictly beyond this key in the caller's
+    /// traversal direction.
     pub last_key: Vec<u8>,
-    /// Unix-second timestamp at the time of minting. Currently
-    /// opaque metadata — see module docs.
+    /// Opaque caller-supplied metadata; the cursor codec does not
+    /// interpret it. See the module docs.
     pub snapshot_id: u64,
 }
 
@@ -379,9 +383,9 @@ impl CursorKey {
 ///   callers that want resilience against bad rows should do the
 ///   filtering themselves before calling this.
 ///
-/// `audit_key` signs minted cursors; `snapshot_id` is the wall-clock
-/// the new cursor will carry (callers usually pass `Utc::now()` /
-/// `chrono::Utc::now().timestamp().max(0) as u64`).
+/// `audit_key` signs minted cursors; `snapshot_id` is opaque metadata
+/// supplied by the caller. Callers may use a wall-clock timestamp, a
+/// scan count, or another position marker appropriate to their reader.
 pub fn paginate<T, F>(
     pairs: Vec<RawKvPair>,
     cursor: Option<&Cursor>,

@@ -1,0 +1,55 @@
+name: Add swap
+description: >
+  A swap file on Linux runners, so the one compile that does not fit in RAM
+  slows down instead of the kernel killing the runner.
+inputs:
+  size-gb:
+    description: Size of the swap file, in GB.
+    default: "16"
+runs:
+  using: composite
+  steps:
+    # ── Why ───────────────────────────────────────────────────────────────────
+    # `trust-tasks-rs` with every spec family (`all-specs`, which the
+    # workspace needs) is one ~1.4M-line crate. Compiling it peaks at
+    # 12.6 GB for `check`/`clippy` and 14 GB for a dev build on 0.35.3
+    # (12.4 / 13.0 GB on 0.34.1), and a release build higher again. The
+    # ubuntu-latest runner has 16 GB and its ~4 GB of swap, and cargo builds
+    # other crates beside it. 0.35 crossed the line: the runner was killed
+    # mid-compile ("The runner has received a shutdown signal", exit 143) in
+    # Clippy and every Test job, and BuildKit's `cargo chef cook` was
+    # SIGKILLed with "cannot allocate memory" in both Docker images.
+    #
+    # Swap makes that one peak page out instead. It goes on /mnt, the
+    # runner's second disk, when there is one, so it does not take from the
+    # root disk the Test jobs already reclaim space for.
+    #
+    # The lasting fix is not compiling every spec: VTI moving to types
+    # generated for only the versions it uses (trust-tasks-build). Remove this
+    # when a cold `cargo clippy --workspace --all-targets` fits in RAM again.
+    #
+    # Best effort: a runner without room for the file warns and goes on, and
+    # the build then fails the way it would have without this step.
+    - if: runner.os == 'Linux'
+      shell: bash
+      env:
+        SIZE_GB: ${{ inputs.size-gb }}
+      run: |
+        set -uo pipefail
+        dir=/mnt
+        sudo test -d "$dir" || dir=/
+        avail_gb=$(df -BG --output=avail "$dir" | tail -1 | tr -dc '0-9')
+        if [ "$avail_gb" -lt $((SIZE_GB + 4)) ]; then
+          echo "::warning::only ${avail_gb} GB free on ${dir}; no extra swap added"
+          exit 0
+        fi
+        file="${dir%/}/ci-swapfile"
+        if sudo fallocate -l "${SIZE_GB}G" "$file" \
+          && sudo chmod 600 "$file" \
+          && sudo mkswap "$file" >/dev/null \
+          && sudo swapon "$file"; then
+          echo "added ${SIZE_GB} GB of swap at ${file}"
+        else
+          echo "::warning::could not add swap at ${file}"
+        fi
+        free -h

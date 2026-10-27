@@ -50,6 +50,7 @@ pub struct DisableRestResult {
 }
 
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum DisableRestError {
     #[error("REST is not currently enabled — nothing to disable.")]
     ServiceNotPresent,

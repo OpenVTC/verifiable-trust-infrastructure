@@ -5,17 +5,18 @@
 //! 2. Resolve whether the subject has an effective ACL entry —
 //!    which decides what this handler *does*, never what it
 //!    *says*.
-//! 3. Per-DID rate limit for an enrolled subject — bounds
-//!    concurrent `ChallengeSent` sessions at the backend's cap.
-//! 4. Mint 32-byte challenge (OS RNG, hex-encoded).
-//! 5. Optional TEE attestation (backend hook, default
+//! 3. Mint 32-byte challenge (OS RNG, hex-encoded).
+//! 4. Optional TEE attestation (backend hook, default
 //!    not-attested).
-//! 6. For an enrolled subject, persist a `ChallengeSent` session
+//! 5. For an enrolled subject, hold the per-DID cap — its outstanding
+//!    `ChallengeSent` sessions stay at the backend's cap by evicting
+//!    the oldest, never by refusing (see `make_room_for_challenge`) —
+//!    and persist a `ChallengeSent` session
 //!    with `tee_attested` set from the attestation outcome and
 //!    `amr`/`acr` empty — populated when the session transitions
 //!    to `Authenticated` by [`super::handle_authenticate`]. For
 //!    any other subject, persist nothing.
-//! 7. Return the canonical `ChallengeResponse` either way.
+//! 6. Return the canonical `ChallengeResponse` either way.
 //!
 //! # Why an unenrolled subject is answered, not refused
 //!
@@ -46,6 +47,9 @@
 //! Implements VTI-SES-006 and VTI-SES-007 of the VTI
 //! specification (<https://trustoverip.github.io/dtgwg-vti-spec/>).
 
+use std::collections::HashMap;
+use std::sync::{Arc, PoisonError, Weak};
+
 use uuid::Uuid;
 use vta_sdk::protocols::auth::{ChallengeResponse, epoch_to_rfc3339};
 
@@ -58,7 +62,7 @@ pub async fn handle_challenge<B: AuthBackend>(
     backend: &B,
     input: ChallengeInput,
 ) -> Result<ChallengeResponse, B::Error> {
-    // ---- Gates: DID method, ACL, rate limit ----
+    // ---- Gates: DID method, ACL ----
 
     backend.validate_did(&input.did).await?;
 
@@ -66,26 +70,6 @@ pub async fn handle_challenge<B: AuthBackend>(
     // unenrolled subject is answered exactly as an enrolled one is; see the
     // module docs.
     let enrolled = backend.has_effective_entry(&input.did).await;
-
-    // The rate limit counts persisted sessions, so it only bites where there
-    // are any. An unenrolled subject writes nothing to be limited.
-    let limit = backend.max_pending_challenges_per_did();
-    if enrolled && limit > 0 {
-        let pending = backend
-            .sessions()
-            .count_pending_challenges(&input.did)
-            .await
-            .map_err(|e| AuthError::Internal(format!("count_pending_challenges failed: {e:?}")))?;
-        if pending >= limit {
-            tracing::warn!(
-                did = %input.did,
-                pending,
-                limit,
-                "auth challenge rate limited per-DID"
-            );
-            return Err(AuthError::PendingChallengeLimitReached.into());
-        }
-    }
 
     // ---- Mint challenge + optional TEE attestation ----
 
@@ -118,6 +102,23 @@ pub async fn handle_challenge<B: AuthBackend>(
     };
 
     if enrolled {
+        // The cap counts persisted sessions, so it only bites where there
+        // are any: an unenrolled subject writes nothing to be limited. The
+        // lock makes listing, evicting and storing one step per subject, so
+        // two concurrent requests cannot both see room for one more
+        // (VTI-SES-005).
+        let limit = backend.max_pending_challenges_per_did();
+        let cap = cap_lock(&session.did);
+        let _cap = tokio::time::timeout(CAP_LOCK_WAIT, cap.lock())
+            .await
+            .map_err(|_| {
+                AuthError::Internal(format!(
+                    "the per-DID challenge cap stayed busy for {CAP_LOCK_WAIT:?}"
+                ))
+            })?;
+        if limit > 0 {
+            make_room_for_challenge(backend, &session.did, limit).await?;
+        }
         backend
             .sessions()
             .store_session(&session)
@@ -148,10 +149,111 @@ pub async fn handle_challenge<B: AuthBackend>(
     })
 }
 
+/// Locks serialising the per-DID cap, one per subject while it is in use.
+///
+/// One per DID, not striped, so a slow store call for one subject never holds
+/// up another's challenge. The map keeps only weak references: a subject's
+/// lock is dropped with its last holder, and the dead entries are cleared
+/// whenever a new one is made, so the map stays the size of the challenges in
+/// flight.
+///
+/// In-process, so the cap is exact for a session store one process owns, as
+/// VTA and VTC stores are (embedded fjall, or the enclave's vsock store). A
+/// store shared by several processes would need the cap held by the store
+/// itself.
+static CAP_LOCKS: std::sync::LazyLock<
+    std::sync::Mutex<HashMap<String, Weak<tokio::sync::Mutex<()>>>>,
+> = std::sync::LazyLock::new(Default::default);
+
+/// Longest a challenge request waits for the subject's cap lock. The lock is
+/// held across store calls (list, evict, store) — local, but in an enclave a
+/// vsock round trip each — so a waiter gives up rather than queueing behind a
+/// wedged store indefinitely (R1.3).
+const CAP_LOCK_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+
+fn cap_lock(did: &str) -> Arc<tokio::sync::Mutex<()>> {
+    let mut locks = CAP_LOCKS.lock().unwrap_or_else(PoisonError::into_inner);
+    if let Some(lock) = locks.get(did).and_then(Weak::upgrade) {
+        return lock;
+    }
+    locks.retain(|_, lock| lock.strong_count() > 0);
+    let lock = Arc::new(tokio::sync::Mutex::new(()));
+    locks.insert(did.to_owned(), Arc::downgrade(&lock));
+    lock
+}
+
+/// Hold the per-DID cap on outstanding challenges (VTI-SES-005) so that one
+/// more can be issued: discard the subject's expired challenges, which are no
+/// longer outstanding (VTI-SES-003), then evict the oldest live ones.
+///
+/// Evicting rather than refusing is deliberate. Only an enrolled subject has
+/// pending challenges, so refusing at the cap told anyone who asked for
+/// `limit + 1` challenges that the subject is enrolled (VTI-SES-007); and
+/// anyone — the subject retrying a login it could not finish, or a stranger
+/// naming its DID — could lock the DID out of logging in until the rows were
+/// swept.
+///
+/// Eviction has a cost of its own. A challenge request names its subject
+/// without proving anything, so a stranger who asks for `limit` challenges
+/// for someone else's DID evicts that subject's oldest outstanding one, and a
+/// login waiting to redeem it fails and has to start over. That is a cancelled
+/// login, not a lockout: the subject's next challenge is issued at once, and
+/// the stranger pays for every eviction from their own address's budget.
+///
+/// A store that cannot list a subject's challenges keeps the old behaviour:
+/// count them and refuse at the cap.
+async fn make_room_for_challenge<B: AuthBackend>(
+    backend: &B,
+    did: &str,
+    limit: usize,
+) -> Result<(), B::Error> {
+    let sessions = backend.sessions();
+    let Some(pending) = sessions
+        .pending_challenges(did)
+        .await
+        .map_err(|e| AuthError::Internal(format!("pending_challenges failed: {e:?}")))?
+    else {
+        let pending = sessions
+            .count_pending_challenges(did)
+            .await
+            .map_err(|e| AuthError::Internal(format!("count_pending_challenges failed: {e:?}")))?;
+        if pending >= limit {
+            tracing::warn!(did, pending, limit, "auth challenge rate limited per-DID");
+            return Err(AuthError::PendingChallengeLimitReached.into());
+        }
+        return Ok(());
+    };
+
+    let now = now_epoch();
+    let ttl = backend.challenge_ttl();
+    let (expired, live): (Vec<_>, Vec<_>) = pending
+        .into_iter()
+        .partition(|s| now.saturating_sub(s.created_at) > ttl);
+    // `pending` is oldest first, so `live` is too: the excess is its head.
+    let excess = (live.len() + 1).saturating_sub(limit);
+    if excess > 0 {
+        tracing::warn!(
+            did,
+            outstanding = live.len(),
+            limit,
+            evicted = excess,
+            "auth challenge cap reached per-DID — evicting the oldest outstanding challenges"
+        );
+    }
+    for s in expired.iter().chain(live.iter().take(excess)) {
+        sessions
+            .delete_session(&s.session_id)
+            .await
+            .map_err(|e| AuthError::Internal(format!("delete_session failed: {e:?}")))?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::auth::backend::{RoleResolution, SessionStore};
+    use crate::auth::handlers::store::KeyspaceSessionStore;
     use crate::error::AppError;
     use async_trait::async_trait;
     use std::sync::{Arc, Mutex};
@@ -182,7 +284,7 @@ mod tests {
             unreachable!()
         }
         async fn count_pending_challenges(&self, _: &str) -> Result<usize, AppError> {
-            Ok(0)
+            Ok(self.stored.lock().unwrap().len())
         }
     }
 
@@ -195,19 +297,19 @@ mod tests {
         Broken,
     }
 
-    struct MockBackend {
-        store: RecordingStore,
+    struct MockBackend<S = RecordingStore> {
+        store: S,
         acl: Acl,
         audited: Arc<Mutex<Vec<String>>>,
     }
 
     #[async_trait]
-    impl AuthBackend for MockBackend {
-        type Store = RecordingStore;
+    impl<S: SessionStore<Error = AppError> + Send + Sync + 'static> AuthBackend for MockBackend<S> {
+        type Store = S;
         type Error = AppError;
         type Role = String;
 
-        fn sessions(&self) -> &RecordingStore {
+        fn sessions(&self) -> &S {
             &self.store
         }
 
@@ -343,5 +445,187 @@ mod tests {
 
         assert_eq!(resp.challenge.len(), 64);
         assert!(b.store.stored.lock().unwrap().is_empty());
+    }
+
+    // ── Per-DID cap (VTI-SES-003, VTI-SES-005, VTI-SES-007) ─────────
+
+    fn keyspace_backend(acl: Acl) -> (MockBackend<KeyspaceSessionStore>, tempfile::TempDir) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = crate::store::Store::open(&crate::config::StoreConfig {
+            data_dir: dir.path().to_path_buf(),
+        })
+        .expect("open store");
+        let sessions = KeyspaceSessionStore::new(store.keyspace("sessions").expect("keyspace"));
+        let b = MockBackend {
+            store: sessions,
+            acl,
+            audited: Arc::new(Mutex::new(Vec::new())),
+        };
+        (b, dir)
+    }
+
+    fn challenge_row(session_id: &str, did: &str, created_at: u64) -> Session {
+        Session {
+            session_id: session_id.into(),
+            did: did.into(),
+            challenge: "00".into(),
+            state: SessionState::ChallengeSent,
+            created_at,
+            last_seen: created_at,
+            refresh_token: None,
+            refresh_expires_at: None,
+            tee_attested: false,
+            amr: vec![],
+            acr: String::new(),
+            acr_expires_at: None,
+            token_id: None,
+            session_pubkey_b58btc: None,
+            not_after: None,
+        }
+    }
+
+    async fn outstanding(b: &MockBackend<KeyspaceSessionStore>, did: &str) -> Vec<String> {
+        b.store
+            .pending_challenges(did)
+            .await
+            .unwrap()
+            .expect("the keyspace store lists challenges")
+            .into_iter()
+            .map(|s| s.session_id)
+            .collect()
+    }
+
+    /// The livelock: a client that cannot finish a login and retries must
+    /// not lock its own DID out. At the cap the oldest challenge goes and
+    /// the new one is issued.
+    #[tokio::test]
+    async fn at_the_cap_a_challenge_is_evicted_not_refused() {
+        let (b, _dir) = keyspace_backend(Acl::Present);
+        let did = "did:key:zRetrying";
+        let limit = b.max_pending_challenges_per_did();
+        let mut issued = Vec::new();
+        for _ in 0..=limit {
+            let resp = handle_challenge(&b, input(did))
+                .await
+                .expect("a challenge is never refused at the cap");
+            issued.push(resp.session_id);
+        }
+
+        // `created_at` has one-second resolution and these share a second,
+        // so which of them is "oldest" is a tie: assert what holds anyway.
+        let left = outstanding(&b, did).await;
+        assert_eq!(left.len(), limit, "the cap still holds (VTI-SES-005)");
+        assert!(
+            left.contains(&issued[limit]),
+            "the new challenge is never the one evicted"
+        );
+        let evicted: Vec<_> = issued.iter().filter(|id| !left.contains(id)).collect();
+        assert_eq!(evicted.len(), 1, "exactly one was evicted");
+        assert!(
+            b.store.get_session(evicted[0]).await.unwrap().is_none(),
+            "an evicted challenge can no longer be redeemed"
+        );
+    }
+
+    #[tokio::test]
+    async fn eviction_takes_the_oldest_outstanding_challenge() {
+        let (b, _dir) = keyspace_backend(Acl::Present);
+        let did = "did:key:zOrdered";
+        let now = now_epoch();
+        let limit = b.max_pending_challenges_per_did();
+        for i in 0..limit {
+            // Inside the TTL, oldest first: `c-0` was issued earliest.
+            let at = now - (limit - i) as u64;
+            b.store
+                .store_session(&challenge_row(&format!("c-{i}"), did, at))
+                .await
+                .unwrap();
+        }
+
+        handle_challenge(&b, input(did)).await.unwrap();
+
+        let left = outstanding(&b, did).await;
+        assert!(!left.contains(&"c-0".to_string()), "{left:?}");
+        assert!(left.contains(&"c-1".to_string()), "{left:?}");
+    }
+
+    /// An expired challenge is not outstanding (VTI-SES-003), so it neither
+    /// counts against the cap nor survives the next request.
+    #[tokio::test]
+    async fn expired_challenges_are_discarded_and_do_not_count() {
+        let (b, _dir) = keyspace_backend(Acl::Present);
+        let did = "did:key:zStale";
+        let stale_at = now_epoch() - b.challenge_ttl() - 1;
+        for i in 0..b.max_pending_challenges_per_did() {
+            b.store
+                .store_session(&challenge_row(&format!("stale-{i}"), did, stale_at))
+                .await
+                .unwrap();
+        }
+
+        let resp = handle_challenge(&b, input(did)).await.unwrap();
+
+        assert_eq!(outstanding(&b, did).await, [resp.session_id]);
+    }
+
+    /// VTI-SES-007: past the cap, an enrolled subject is answered exactly as
+    /// an unenrolled one is — with a challenge.
+    #[tokio::test]
+    async fn the_cap_does_not_disclose_enrolment() {
+        for acl in [Acl::Present, Acl::Absent] {
+            let (b, _dir) = keyspace_backend(acl);
+            for _ in 0..=b.max_pending_challenges_per_did() {
+                let resp = handle_challenge(&b, input("did:key:zProbed")).await;
+                assert!(resp.is_ok(), "never refused, enrolled or not");
+            }
+        }
+    }
+
+    /// VTI-SES-005 under concurrency: requests that arrive together, one
+    /// below the cap, must not each see room for one more.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_requests_cannot_overshoot_the_cap() {
+        let (b, _dir) = keyspace_backend(Acl::Present);
+        let b = Arc::new(b);
+        let did = "did:key:zConcurrent";
+        let limit = b.max_pending_challenges_per_did();
+        let now = now_epoch();
+        for i in 0..limit - 1 {
+            b.store
+                .store_session(&challenge_row(&format!("seed-{i}"), did, now))
+                .await
+                .unwrap();
+        }
+
+        let requests: Vec<_> = (0..8)
+            .map(|_| {
+                let b = Arc::clone(&b);
+                tokio::spawn(async move { handle_challenge(&*b, input(did)).await })
+            })
+            .collect();
+        for r in requests {
+            r.await.unwrap().expect("never refused at the cap");
+        }
+
+        assert_eq!(outstanding(&b, did).await.len(), limit);
+    }
+
+    /// A store that cannot list a subject's challenges keeps the old
+    /// count-and-refuse behaviour.
+    #[tokio::test]
+    async fn a_store_that_cannot_list_challenges_still_refuses_at_the_cap() {
+        let b = backend(Acl::Present);
+        for _ in 0..b.max_pending_challenges_per_did() {
+            handle_challenge(&b, input("did:key:zLegacy"))
+                .await
+                .unwrap();
+        }
+        let err = handle_challenge(&b, input("did:key:zLegacy"))
+            .await
+            .expect_err("refused at the cap");
+        assert!(
+            matches!(&err, AppError::Validation(m) if m.contains("too many pending challenges")),
+            "{err:?}"
+        );
     }
 }

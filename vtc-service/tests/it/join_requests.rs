@@ -37,11 +37,11 @@ const SUBMIT_TASK: &str = "https://trusttasks.org/spec/vtc/join-requests/submit/
 // `accept` is retired — the join close-the-loop is `members/vmc` with a
 // `requestId` (one credential-delivery path).
 const VMC_TASK: &str = "https://trusttasks.org/spec/vtc/members/vmc/0.1";
-const MANIFEST_TASK: &str = "https://trusttasks.org/spec/vtc/join-requests/manifest/0.3";
+const MANIFEST_TASK: &str = "https://trusttasks.org/spec/vtc/join-requests/manifest/0.4";
 const STATUS_TASK: &str = "https://trusttasks.org/spec/vtc/join-requests/status/0.1";
 // The admin verbs remain header-gated REST routes (unchanged) — flat URIs.
 // The admin GET list shares the submit mount, so it gates on the flat submit URI.
-const LIST_TASK: &str = "https://trusttasks.org/spec/vtc/join-requests/list/0.1";
+const LIST_TASK: &str = "https://trusttasks.org/spec/vtc/join-requests/list/0.2";
 const SHOW_TASK: &str = "https://trusttasks.org/spec/vtc/join-requests/show/0.1";
 const DECIDE_TASK: &str = "https://trusttasks.org/spec/vtc/join-requests/decide/0.1";
 // The vetting admin reads and the community branding + requested-attributes
@@ -136,6 +136,7 @@ async fn build_fixture() -> Fixture {
             updated_by: None,
             expires_at: None,
             resource_grants: Vec::new(),
+            group_grants: Vec::new(),
             label_set_by_subject: false,
             suspension: None,
         },
@@ -673,6 +674,7 @@ async fn approve_409_when_duplicate_acl_exists() {
             updated_by: None,
             expires_at: None,
             resource_grants: Vec::new(),
+            group_grants: Vec::new(),
             label_set_by_subject: false,
             suspension: None,
         },
@@ -2176,6 +2178,7 @@ async fn seed_member(fix: &Fixture, did: &str) {
             updated_by: None,
             expires_at: None,
             resource_grants: Vec::new(),
+            group_grants: Vec::new(),
             label_set_by_subject: false,
             suspension: None,
         },
@@ -2188,6 +2191,11 @@ async fn seed_member(fix: &Fixture, did: &str) {
 /// the community's only way in, so a submission naming no criterion is decided
 /// under it.
 async fn store_vetting_criterion(fix: &Fixture) {
+    store_vetting_criterion_with(fix, None).await;
+}
+
+/// As [`store_vetting_criterion`], publishing `hidden_vetting` parameters.
+async fn store_vetting_criterion_with(fix: &Fixture, hidden_vetting: Option<Value>) {
     use vtc_service::schemas::accepts::{AcceptsCriterion, store_accepts};
     clear_criteria(fix).await;
     store_accepts(
@@ -2200,7 +2208,7 @@ async fn store_vetting_criterion(fix: &Fixture) {
             position: 0,
             query: None,
             description: Some("Two vetters".into()),
-            hidden_vetting: None,
+            hidden_vetting,
             vetting: Some(
                 serde_json::from_value(json!({
                     "version": "0.1",
@@ -2310,6 +2318,66 @@ async fn vetted_applicant_with_two_eligible_vetters_is_admitted() {
             .unwrap()
             .is_some(),
         "an allowed vetted join admits the applicant"
+    );
+}
+
+/// A criterion that publishes hidden-vetting parameters counts vetting from a hidden-vetting
+/// proof only (`vetting-hidden-vetters-pcs.md` §12.1: a criterion is named or hidden, never
+/// both). The same two statements that admit under the named criterion
+/// ([`vetted_applicant_with_two_eligible_vetters_is_admitted`]) admit nobody here, and the
+/// applicant is told a proof is what is missing.
+#[tokio::test]
+async fn named_statements_never_satisfy_a_hidden_vetting_criterion() {
+    let fix = build_fixture().await;
+    // Parameters a hidden community publishes. The keys are never read: a submission with no
+    // proof is refused before anything is verified against them.
+    store_vetting_criterion_with(
+        &fix,
+        Some(json!({
+            "suite": "ps-ddh-bls12381",
+            "hvk": "zUnreadHvk",
+            "tvk": "zUnreadTvk",
+            "livePeriods": ["2026-10"],
+            "liveTokenLabels": ["token/2026-10"],
+        })),
+    )
+    .await;
+    let (applicant, _) = did_key_secret(MEMBER_SEED);
+    let (carol, carol_key) = did_key_secret([0x11; 32]);
+    let (dave, dave_key) = did_key_secret([0x22; 32]);
+    seed_vetter(&fix, &carol).await;
+    seed_vetter(&fix, &dave).await;
+
+    let vp = vetting_vp(
+        &applicant,
+        vec![
+            vetting_statement(&carol_key, &applicant, 1).await,
+            vetting_statement(&dave_key, &applicant, 2).await,
+        ],
+    );
+    let (_did, doc) = submit_doc(&vp).await;
+    let (status, body) = post_tt(&fix.router, doc).await;
+    assert_eq!(status, StatusCode::OK, "got {body}");
+    assert_eq!(verdict_effect(&body), "requestMore", "got {body}");
+    let reason = if cfg!(feature = "vetting-pcs") {
+        vtc_service::vetting::HIDDEN_NO_PROOF
+    } else {
+        vtc_service::vetting::HIDDEN_UNSUPPORTED
+    };
+    assert_eq!(
+        body.pointer("/payload/verdict/with/needs"),
+        Some(&json!([format!(
+            "{}{reason}",
+            vtc_service::vetting::NEED_HIDDEN_PREFIX
+        )])),
+        "a hidden criterion asks for a proof, never for named statements: {body}"
+    );
+    assert!(
+        get_member(&fix.members_ks, &applicant)
+            .await
+            .unwrap()
+            .is_none(),
+        "named statements do not admit under a hidden criterion"
     );
 }
 
@@ -2587,6 +2655,7 @@ async fn the_vetter_role_credential_is_revocable_and_verifies_for_an_applicant()
             updated_by: None,
             expires_at: None,
             resource_grants: Vec::new(),
+            group_grants: Vec::new(),
             label_set_by_subject: false,
             suspension: None,
         },
@@ -2740,8 +2809,7 @@ async fn withdrawal_doc(seed: [u8; 32], statement: &Value) -> Value {
 use vta_sdk::protocols::join_requests::JOIN_REQUEST_MANIFEST_TYPE;
 use vta_sdk::protocols::vetting::{
     VETTING_VETTER_LIST_TYPE, VETTING_VETTER_PROFILE_ERR_NOT_ELIGIBLE, VETTING_VETTER_PROFILE_TYPE,
-    VETTING_VETTER_RESEND_0_2_TYPE, VETTING_VETTER_RESEND_ERR_NOT_GRANTED,
-    VETTING_VETTER_RESEND_TYPE,
+    VETTING_VETTER_RESEND_ERR_NOT_GRANTED, VETTING_VETTER_RESEND_TYPE,
 };
 
 /// An admin verb that is a signed document only (the vetting admin reads and
@@ -3072,11 +3140,10 @@ async fn a_vetter_asks_for_the_grant_credential_again() {
     )
     .await;
     let (status, body) = post_tt(&fix.router, doc).await;
-    assert_eq!(
-        status,
-        StatusCode::BAD_REQUEST,
-        "a resend names nobody: {body}"
-    );
+    // Naming another member is the administrator's route; a vetter who is not
+    // one is refused (`vtc/vetting/vetters/resend/0.2`, Conformance item 2).
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    assert_eq!(tt_error_code(&body), "permissionDenied");
 
     // An administrator, naming the vetter in `memberDid`, answers the same
     // way (`vtc/vetting/vetters/resend/0.2` — what replaced the admin-only
@@ -3084,7 +3151,7 @@ async fn a_vetter_asks_for_the_grant_credential_again() {
     let (status, doc) = crate::common::signed::call(
         &fix._vtc,
         &fix.signer,
-        VETTING_VETTER_RESEND_0_2_TYPE,
+        VETTING_VETTER_RESEND_TYPE,
         json!({ "memberDid": carol }),
     )
     .await;
@@ -3092,7 +3159,7 @@ async fn a_vetter_asks_for_the_grant_credential_again() {
     let (status, doc) = crate::common::signed::call(
         &fix._vtc,
         &fix.signer,
-        VETTING_VETTER_RESEND_0_2_TYPE,
+        VETTING_VETTER_RESEND_TYPE,
         json!({ "memberDid": erin }),
     )
     .await;

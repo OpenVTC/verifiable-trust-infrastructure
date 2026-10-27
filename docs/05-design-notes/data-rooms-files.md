@@ -1,6 +1,6 @@
 # Data rooms — files, blob stores, and working with a room from a VTC
 
-Status: **proposal.** Nothing here is built. It extends
+Status: **in progress** (§12 says which phases have landed). It extends
 [`data-rooms.md`](data-rooms.md) (the design) and
 [`../02-vta/data-rooms.md`](../02-vta/data-rooms.md) (the operator guide), and
 assumes the member portal on `feat/vtc-member-portal`.
@@ -185,14 +185,21 @@ One new Trust Task on the member's VTA:
 
 | Task | Payload | Returns | Gate |
 |---|---|---|---|
-| `rooms/keys/file-key/0.1` | `{ roomId, fileId, purpose: "seal" \| "open", epoch? }` | `{ key, epoch }` | `RoomOpen` capability, as `seal` / `open` |
+| `rooms/keys/file-key/0.2` (and `0.1`) | `{ roomId, fileId, purpose: "seal" \| "open", epoch? }` | `{ key, epoch }` | `RoomOpen` capability, as `seal` / `open` |
 
 - **`purpose: "seal"`** derives under the **current** epoch and returns it. The
   uploader writes that epoch into the manifest.
 - **`purpose: "open"`** takes the manifest's `epoch` and derives through the
-  chain. If the chain does not reach that far, it is refused with the same two
-  messages `rooms/keys/open` uses ("a commit has not been delivered" /
-  "the chain reaches back only to N").
+  chain. An epoch it cannot reach is refused `unknownEpoch`, with
+  `details.reason` saying which of three cases holds, as `rooms/keys/open/0.2`
+  says them: `notDelivered` (`heldEpoch`; a commit has not been delivered —
+  catch up and retry), `beyondChain` (`earliestEpoch`; the chain reaches back
+  only so far) and `removed` (`removedAtEpoch`; a commit this VTA processed
+  removed the member at or before the file's epoch). `removed` takes
+  precedence: no commit will make the key derivable, so the caller is never
+  told to catch up and does not retry. `0.1`, served beside it, has only the
+  first two, and answers a removed member's file `notDelivered` with the
+  removal in the message.
 - **Audited** with `roomId`, `fileId`, purpose and epoch, never the key. That gives
   a member a record of which files their agents and pages opened.
 - **Retry class**: `Idempotent`. The derivation is a pure function, and the census
@@ -229,6 +236,12 @@ This is stricter than "the browser holds the file key", and deliberately so.
 - **With the key held in the extension**, the same compromise discloses what the
   member viewed while it lasted, and nothing after.
 
+The allow-list and consent above were refined when they were built (§8.5): a
+room's DID names no host, so the allow-list is the community's `SignInPortal`
+origin and the rooms are the ones the member shares with it; reads ride that
+share and every write is confirmed; and the page calls the wallet's own room
+methods rather than `rooms/keys/*` tasks, so no task result reaches it as is.
+
 ---
 
 ## 5. The host
@@ -242,11 +255,11 @@ moves a site in chunked Trust Tasks over `vti_common::backup_transfer`.
 
 | Task | Needs | Does |
 |---|---|---|
-| `rooms/blobs/upload/begin/0.1` | `write` chain | Takes the ciphertext manifest. Checks it against every applicable limit (§6.1) and reserves against them. Opens an upload bundle owned by the presenter. Returns `{ uploadId, missing }` |
-| `rooms/blobs/upload/chunk/0.1` | the open bundle | `{ uploadId, index, bytes }`. Idempotent; checked against the manifest digest |
-| `rooms/blobs/upload/commit/0.1` | the open bundle | Verifies the whole digest, hands the blob to the `BlobStore` and returns `{ blobRef }` |
-| `rooms/blobs/upload/abort/0.1` | the open bundle | Discards it |
-| `rooms/blobs/get/0.1` | `read` chain | `{ roomId, blobRef }` → the manifest and a short-lived `downloadId` |
+| `rooms/blobs/upload/begin/0.2` | `write` chain | Takes the ciphertext manifest and the modes the producer accepts — a single-use `uploadKey` (proxied), a part plan (direct), or both. Checks it against every applicable limit (§6.1) and reserves against them. Opens an upload bundle owned by the presenter. Returns `{ uploadId, mode, missing }`, and in direct mode the part targets |
+| `rooms/blobs/upload/chunk/0.2` | the open bundle's upload key | `{ uploadId, index, bytes }`. Idempotent; checked against the manifest digest |
+| `rooms/blobs/upload/commit/0.2` | the upload key (proxied) or the owner (direct) | Verifies the whole digest, hands the blob to the `BlobStore` and returns `{ blobRef }` |
+| `rooms/blobs/upload/abort/0.2` | the upload key (proxied) or the owner (direct) | Discards it |
+| `rooms/blobs/get/0.2` | `read` chain | `{ roomId, blobRef, direct? }` → the manifest and a short-lived `downloadId` (proxied) or storage `target` (direct) |
 | `rooms/blobs/chunk/0.1` | the `downloadId` | `{ downloadId, index }` → `{ bytes }` |
 
 - **Resume** is `begin` with the same manifest. The host answers with the
@@ -265,14 +278,71 @@ moves a site in chunked Trust Tasks over `vti_common::backup_transfer`.
 - **The ceiling** is `backup_transfer`'s: chunks of 16–256 KiB, at most 4096 of
   them, so 1 GiB per blob. A room's limit (§6) may be lower, never higher.
 
-### 5.2 Optional direct-to-store transfer
+### 5.2 Direct-to-store transfer (`rooms/blobs/*` 0.2)
 
-For S3, a later phase can let `begin` and `get` return **presigned URLs** in
-place of chunk tasks, so bulk bytes skip the VTC. The authorization is
-unchanged: the signed task is what mints the URL. The manifest digests let the
-client verify what it fetched without trusting the bucket. Same for Walrus reads
-(§5.4). Not in the first cut. It is an optimisation, and it puts a second origin
-in the browser's path.
+`rooms/blobs/upload/{begin,chunk,commit,abort}/0.2` and `rooms/blobs/get/0.2`
+(trust-tasks-tf #771) are served beside 0.1. Two things change:
+
+- **The upload key.** A `0.2` begin is the member's act, signed through their
+  VTA. A proxied transfer's chunk, commit and abort documents are signed by the
+  `uploadKey` the begin named: a `did:key` minted for that one upload, so the
+  member's key holder never signs over a file's bytes. The host binds the key to
+  the upload (`UploadRecord.uploadKey`, indexed by `upload-signer:` in
+  `room_blobs`), refuses it on any other open upload (`uploadKeyInUse`), and
+  records, charges and rate-limits the **member**: the blob's `chargedTo` is the
+  member, the key appears in no blob entry, usage row or audit line, and its
+  chunks are charged to the member's transfer budget in the room. A resumed
+  begin rebinds the upload to its new key and the old one is refused; a `0.1`
+  document never reaches a `0.2` upload, nor the reverse.
+- **Direct mode.** `get` with `direct: true` answers a presigned `GET` of the one
+  object (`BlobStore::read_target`), expiring within five minutes, where the
+  room's tier and `[rooms.files] direct_transfer` allow (default: not on
+  `private` rooms, where the storage provider would learn which address reads
+  which object) and the store can issue one. A target that is not an HTTPS `GET`
+  within five minutes, or a failure to issue one, answers proxied. The download
+  is counted when the target is issued — one download, the blob's whole size as
+  egress — because no byte passes through the host to be counted later (§6.3).
+
+  **Direct uploads** need what `begin/0.2` item 17 and `commit/0.2` item 3
+  require: each part's target bound by its signature to the part's exact length
+  and SHA-256, and the object verified at storage before anything is recorded.
+  The community's VTA presigns them through `external/credentials/issue/0.3`
+  (trust-tasks-tf #775, #781; `0.2` from a VTA without 0.3): batches of up to 64
+  operations on one object, split on `responseTooLarge` — `put`,
+  `create-multipart`, `upload-part` (with `Content-Length` and
+  `x-amz-checksum-sha256` signed), `list-parts`, `complete-multipart` (with
+  `x-amz-mp-object-size` signed), `head` (with `x-amz-checksum-mode`), `delete`
+  and `abort-multipart` — under the binding's unchanged `put` / `get` /
+  `delete` ceiling, one issuance against the rate per batch. The VTA only
+  presigns; the VTC performs and checks (`BlobStore::direct_*`,
+  `vti_common::blob_store::presigned`):
+
+  - **begin** chooses the object (`BlobKey::for_upload`: the room's prefix, the
+    BlobRef, the upload's id, so two uploads of one blob never touch each other's
+    object), creates the multipart upload for a plan of several parts, reserves,
+    and answers up to 64 part targets; a re-begin answers fresh targets for what
+    storage does not yet hold (`list-parts`).
+  - **commit** asks one batch for the listing, the completion, the head, and the
+    abort and delete a disagreement needs; it checks every part's length and
+    checksum as storage lists them, completes bound to the planned size, and
+    checks the object's length and composite checksum (`SHA-256` of the parts'
+    digests, `-N`). Any difference deletes what storage holds and answers
+    `digestMismatch`; a part not yet held answers `incomplete` and keeps the
+    upload open. A store that ignores a signed checksum is caught here, which is
+    why the check is not left to storage alone (issue/0.3 consumer item 3).
+  - **abort** and the **sweep** (a slot idle for 30 minutes, or 24 hours in all)
+    abort the multipart upload and delete the object; the bucket's
+    `AbortIncompleteMultipartUpload` rule is the backstop for an upload the VTC
+    forgot.
+
+  At most 64 operations go in one batch, not 128: the sealed-transfer encoding
+  carries byte fields as CBOR arrays, so one presigned request is about 2.9 KiB
+  sealed and armored, and the answer's `sealedCredential` is bounded at 256 KiB.
+  The VTA refuses a batch whose sealed answer would not fit (`invalidBatch`)
+  rather than answer out of schema.
+
+The manifest digests let a reader check what it fetched without trusting the
+bucket, in either mode. Walrus reads (§5.4) would answer direct the same way.
 
 ### 5.3 The `BlobStore` trait
 
@@ -460,19 +530,35 @@ hosting to someone who is not a full administrator
 The host already knows everything usage needs: it is the counters §6.1 enforces.
 Reporting adds no new disclosure, only a place to read it.
 
-**Live counters**, updated in the same write as the blob index (§5.5):
+**Live counters**, updated in the same write as the blob index (§5.5), in
+`room_blobs` (`vti_rooms::blobs`):
 
 ```
-room_usage:<roomId>                    →  { files, bytes, reservedBytes, uploads30d, downloads30d, egressBytes30d }
-room_usage:<roomId>:member:<memberDid> →  { files, bytes, reservedBytes, lastUploadAt }
-storage_usage:<configId>               →  { rooms, files, bytes, pendingDeleteBytes }
+usage:room:<room>              →  { files, bytes, reservedBytes, reservedFiles }
+usage:member:<room>:<member>   →  the same, for one member
+usage:config:<configId>        →  { files, bytes, reservedBytes }
+member:<room>:<member>         →  { member DID, lastUploadAt }   (the counters key members by hash)
 ```
 
-**History**: one row per room per day in `room_usage_daily` (files, bytes,
-uploads, downloads, egress bytes), kept 400 days, so a community can see growth
-and cost over a year. **Egress is counted**, because on S3 reads are what cost
-money, and a room whose files are downloaded a thousand times a day is a
-different conversation from one that is merely large.
+**History**: one row per room per UTC day (`daily:<room>:<date>`), and one per
+member per room per day on rooms that are not `private` (`mdaily:…`): holdings
+at the day's close, and uploads committed, downloads begun and chunk bytes
+served (egress) during it. Activity is counted as it happens, under its own
+lock so a download never waits behind a commit; the collection pass writes
+today's row for every room and member that has one, so a quiet day still has a
+level, and drops rows older than 400 days. A year can be compared with the one
+before. **Egress is counted**, because on S3 reads are what cost money, and a
+room whose files are downloaded a thousand times a day is a different
+conversation from one that is merely large. A direct read (§5.2) is counted
+when its target is issued, at the blob's whole size, since its bytes never pass
+through the host; a direct upload would be counted at its verified commit, as a
+proxied one is. "Uploads in the last 30 days" is a
+sum over these rows, not a counter of its own.
+
+Limit overrides (§6.2 item 2) live beside them: `limits:room:<room>` (the
+room's limits, its per-member default and `filesEnabled`) and
+`limits:member:<room>:<member>`. Every key is in `room_blobs`, so a community's
+backup carries the history and the overrides with the index.
 
 **Who sees what:**
 
@@ -559,8 +645,8 @@ with what each kind means for the room in one line each:
 - **`vtc/rooms/storage/assign/0.1`** (`vtc.rooms.admin`) points a room at another
   config. **New uploads go there from that moment.** Existing files stay where
   they are and keep working, because each blob names its own config.
-- **`vtc/rooms/storage/migrate/0.1`** moves a room's existing blobs to its
-  current config:
+- **`vtc/rooms/storage/migrate/0.2`** (0.1 still served) moves a room's existing
+  blobs to its current config:
   1. copy;
   2. verify against the manifest digest (the ciphertext is identical, so no
      key is involved);
@@ -568,7 +654,18 @@ with what each kind means for the room in one line each:
   4. delete from the old config through GC.
 
   It is resumable, rate-limited, reported as progress on the console and
-  audited. On Walrus, the "delete" is a lapse (§5.4).
+  audited. On Walrus, the "delete" is a lapse (§5.4). As built: the old copy
+  is a `moved:` row the collection pass deletes after the orphan grace window,
+  counted against its config (and keeping a `draining` config from retiring)
+  until then; the bytes to move are reserved on the target at start; the switch
+  is one atomic batch, made only while the blob's entry is exactly as it was
+  when the copy began; orphaned blobs are left to collection, and one orphaned
+  mid-migration leaves its plan or its done count at once; one migration runs
+  at a time per destination config, the rest `queued` in approval order; a room
+  reassigned mid-migration keeps the migration's original target (0.2 item 9);
+  the runner is the one retry owner, pausing only after its retries and then
+  retrying by itself at `nextAttemptAt`, with `pausedCause` and `lastError`
+  reported (0.2 items 10–11).
 - **Draining a config** is migrating every room assigned to it, then `retired`.
 
 ### 7.4 Credentials: the VTC holds none
@@ -617,20 +714,38 @@ stolen credential is useless off that network.
 - The console shows both queues in one list.
 
 **Ambient identity** (`auth: ambient`) is allowed where the VTC runs on the
-target cloud, with the VTC applying the same per-room downscoping itself
-(`AssumeRole` with a session policy; a Credential Access Boundary). It is weaker
-in one respect worth stating: issuance is not audited or rate-limited by the
-VTA, and anything on the host that can reach the instance metadata endpoint can
-use the role.
+target cloud, with the VTC applying the same per-room downscoping itself. It is
+weaker in one respect worth stating: issuance is not audited or rate-limited by
+the VTA, and anything on the host that can reach the instance metadata endpoint
+can use the role. So whether it exists at all is the **host operator's** choice,
+not the administrators' (`vtc/storage/configs/create/0.2` item 9):
+`[rooms.files.auth] ambient = true`. Absent, a create or update naming it is
+refused `authNotAllowed` (`details.reason: disabledByHost`), and a config already
+on it reports its credential `notAllowed` and stores nothing until an update moves
+it to a permitted mode (`update/0.2` item 8).
 
 **Fallback, discouraged: `sealed`.** For a VTC with no runtime link to a VTA
-(`vta-external-accounts.md` needs one), an access key can be stored on the VTC:
-- **Set**: sealed in the administrator's browser with `sealed_transfer` to the
-  VTC, sent as `vtc/storage/credentials/set/0.1`.
-- **Store**: re-encrypted at rest under a key derived from the VTC's own secret.
-- **Never returned**: shown only as a fingerprint.
-- **Excluded from backup**: a VTC backup carries the VTC's key bundle.
-- **Re-entered after a restore.**
+(`vta-external-accounts.md` needs one), a long-lived credential can be stored on
+the VTC, again only where the host permits it (`[rooms.files.auth] sealed = true`):
+- **Set**: sealed in the administrator's client with `sealed_transfer` to the
+  VTC's DID (the X25519 derivation of its Ed25519 key), as a
+  `SealedStorageCredential` naming its config, sent as
+  `vtc/storage/credentials/set/0.2` — from the config's console page, which seals in
+  the browser (`admin-ui/src/lib/sealed-transfer.ts`, held to the Rust opener by
+  shared vectors) to the `#key-0` of the DID document the VTC serves, or from
+  `cnm storage credentials set`, which the page offers when it cannot seal.
+- **Checked as received**: against the specification's schema, its `kind` against
+  the config's and its `configId` against the request's (a block sealed for one
+  config cannot be replayed into another).
+- **Store**: encrypted at rest under the VTC's storage key, in its own keyspace
+  (`storage_credentials`).
+- **Never returned**: shown only as a fingerprint, HMAC-SHA-256 under a key
+  derived from the VTC's secret. Never logged or audited; the audit row carries
+  the fingerprint.
+- **Excluded from backup**, and destroyed when a backup is imported: a restored
+  `sealed` config reports `required` until it is set again.
+- **Destroyed** when replaced, and when the config's `auth` leaves `sealed`. The
+  parked action that carried the sealed block drops it when the action closes.
 
 It protects against every administrator, through every surface the VTC offers.
 It does **not** protect against whoever operates the machine, who can
@@ -638,6 +753,28 @@ reconstruct the key, because the process must be able to use it, and the VTC
 has no TEE. The console marks a `sealed` config with that sentence. A deployment
 where administrators and operators are the same people should treat this mode
 as unavailable.
+
+**Room-scoped credentials** (`create/0.2`, the section of that name), as
+`vtc-service/src/rooms/storage_auth/` implements them for `ambient` and `sealed`:
+
+| Backend and mode | How a room's credential is made | Signed by |
+|---|---|---|
+| `s3`, `ambient` | STS `AssumeRole` of the config's `roleArn` (else `[rooms.files.auth] aws_role_arn`, else the ambient identity's own role), `DurationSeconds` 900, an inline session policy written by a JSON encoder | SigV4 presigned requests made in the VTC |
+| `s3`, `sealed`, AWS | STS `GetFederationToken` with the same policy, signed by the stored key | the same |
+| `s3`, `sealed`, R2 / B2 / MinIO (or a temporary pair) | none: the key presigns single objects under the room's prefix, ≤ 15 min | the same |
+| `gcs`, `ambient` | the machine's token (application default credentials; impersonating `[rooms.files.auth] gcs_service_account` with a 900 s lifetime when named) exchanged at Google's STS under a Credential Access Boundary | the downscoped bearer token |
+| `gcs`, `sealed` | a token minted from the service-account key at Google's own token endpoint (never the key file's `token_uri`), exchanged the same way | the same |
+
+Each credential covers one (config, scope, access): a scope is one room's prefix,
+or the probe's `probe/`, never the bucket; an access is read, write (with the two
+multipart actions on S3) or delete, so a download never holds a write. The session
+policy and the access boundary name only object actions and predefined object
+roles. Every credential is dropped 15 minutes after it was obtained whatever the
+provider granted, kept in memory only, and dropped with the config's backend when
+the config changes. When one cannot be had the operation fails; the unscoped
+authority is never used in its place, and a probe says which step failed.
+`aws:SourceIp` is added when the host names its egress
+(`[rooms.files.auth] aws_source_ip`).
 
 **Least privilege at the backend**, which `external/accounts/setup` generates
 and the probe checks:
@@ -653,9 +790,10 @@ For every config: kind, label, health (the last `BlobStore::health` probe and
 the last successful put, get and delete), rooms assigned, files, bytes,
 capacity, pending deletions, and credential state:
 - `vta-account eu-s3-primary · active · 14 rooms holding credentials`;
-- `ambient`;
+- `ambient` (with the room credentials it holds now);
 - `sealed · fingerprint ab12…`, with the operator warning;
-- `credential required`.
+- `credential required`;
+- `notAllowed`: a mode the host no longer permits.
 
 For a VTA account it links to the account's page, with its model, probe
 history, bindings and generated cloud-side setup. On Walrus it also shows the
@@ -672,6 +810,12 @@ everyone else. The VTC's console never holds a room key and never shows a record
 body.
 
 ### 8.1 Admin console: the Data rooms plugin
+
+> **As built:** one **Data rooms** menu entry with three tabs — **Rooms**
+> (`/rooms`), **Usage** (`/rooms/usage`) and **Storage** (`/rooms/storage`,
+> a config at `/rooms/storage/<configId>`) — rather than the separate
+> top-level Storage and Usage pages below; a room's page is
+> `/rooms/r/<roomId>`. See `vtc-service/admin-ui/src/plugins/dataRooms.tsx`.
 
 Extends `plugins/rooms.tsx`. Everything here is about **hosting**. None of it
 needs, or could use, room credentials.
@@ -790,6 +934,293 @@ The plugin's manager panes (`manager/panes/rooms*.tsx`) get the same file
 browse, download and upload. A member then has a way to use a room that never
 puts a file key in a web page. It costs little once §3.3's wasm is shared.
 
+### 8.4 Community-owned rooms
+
+§8.2's rooms are a **member's**: they own it, their VTA holds its keys, and the
+community only hosts it. A community also wants rooms of its **own** — the board
+pack, the working group's drafts, the members' library — owned by the community,
+run by its administrators, and outliving any one of them. Settled with the
+product owner on 2026-10-14: both kinds, each run from where its owner is (a
+member's from their VTA through the wallet and portal, the community's from the
+VTC console).
+
+**The community is the owner, and the community's VTA is the key holder.**
+Nothing new is invented for it. A room is owned by whoever controls its DID and
+issues its credentials, and the parts a key holder does — mint the room's DID,
+sign as the room, hold the group — are exactly the `rooms/owner/*` and
+`rooms/keys/*` tasks a member's VTA serves for them. The VTC sends the same tasks
+to **its own** VTA, over the link it already keeps ([`vta_link`], TSP > DIDComm,
+the VTA reached through its mediator and never inbound), as the community's DID:
+
+| Step | Who | Task |
+|---|---|---|
+| Mint the room's DID | the community's VTA, in a context the VTC's entry may act in | `dids/create`, `room` template, `setPrimary: false` |
+| Register it | the VTC, as host and owner at once | stored directly, `ownerDid` = the community's DID. No network: the host is the owner |
+| Found the group (sealed tiers) | the community's VTA | `rooms/owner/group/create`, `member` = the community's DID |
+| The community's own credentials | the community's VTA | `rooms/owner/issue-{membership,authority}` to the community's DID, kept in **its** vault, so `rooms/keys/present` can mint the community's `admin` presentations |
+| Admit a member | VTA, then the member's agent | below |
+
+**The VTC holds no room key and no group secret**, as everywhere else in this
+note. Its administrators act on the room through the VTC, and the VTC acts
+through its VTA, which applies its own gates (the VTC's ACL entry there, the
+context policy's signing limit) to every one of these calls.
+
+**Admission is pull-shaped**, because a member's VTA has no address the VTC can
+reach and the member's browser is not an inbox ([`data-rooms-joining.md`]):
+
+1. An administrator **adds** a member: a DID, the actions (`read`, `write`,
+   `curate`; `admin` stays the community's), and an expiry. The VTC has its VTA
+   issue the invitation, membership and authority credentials and keeps them as
+   an **offer** to that DID.
+2. The member, signed in to the portal or the extension's manager, **lists
+   their offers**. Their wallet stores the credentials in their own VTA's vault
+   and, on a sealed room, asks their VTA for a KeyPackage against the
+   invitation (`rooms/keys/key-package`).
+3. The member **accepts**, sending the KeyPackage, signed by their own DID. The
+   VTC has its VTA run `rooms/owner/group/add` (the VTC itself is the host) and
+   answers the accept with the Welcome, which the wallet hands to the member's
+   VTA (`rooms/keys/welcome`).
+
+An `open` room skips the KeyPackage and the Welcome; steps 1–2 are all of it.
+
+**The offer list is the owner's record, not the host's.** Invariant I5 keeps a
+*host* from consulting membership state; here the same VTC is also the owner,
+and an owner knows whom it admitted — it signed their credentials. So the offers
+live in their own keyspace, read by the owner's tasks only, and nothing on the
+host path ever reads them: a community room's records are authorised by chains
+exactly as a member's room's are, and the room could move to another host
+tomorrow with nothing re-issued. On a `private` room that record is what the
+community, as owner, knows anyway; the host half still learns nothing new.
+
+**Authority on the community's side.** Creating a community room and adding or
+removing its members are acts of the community, so they need a capability —
+`vtc.rooms.manage`, distinct from `vtc.rooms.admin` (hosting: limits, storage,
+usage), because a community may let someone run its board room without letting
+them reassign every room's storage, and the reverse. Each act takes the
+requester's operation-bound step-up and is audited with its reason. They are
+**not** parked for a second administrator by default: a room's membership is
+reversible by removal, and its contents are the community's own. A community
+that wants a second pair of eyes says so in its approvals rules, which the action
+list already serves.
+
+**Removal** is `rooms/owner/group/remove` (a new epoch sealed to everyone else,
+§11) plus letting the removed member's authority credential lapse. The console
+says what removal means: no access to anything written from now on, and no
+recall of what they already read.
+
+**Specifications** (§10, added): `vtc/rooms/community/{create,list,get}/0.1`
+and `vtc/rooms/community/members/{add,remove,list}/0.1` for administrators;
+`vtc/rooms/offers/{list,accept}/0.1` for members, on the member audience. The
+`rooms/owner/*` and `rooms/keys/*` tasks the VTC sends its VTA are unchanged.
+
+[`vta_link`]: ../../vtc-service/src/vta_link.rs
+[`data-rooms-joining.md`]: data-rooms-joining.md
+
+### 8.5 The portal through the wallet (P7b, P8): settled design
+
+§4.1 and §8.2 sketched this before `rooms/keys/act` existed and before the
+member portal had shipped. This section is what is built, and where it departs
+from the sketch it says why. It covers a **member's** use of rooms from the
+portal: listing, reading, adding notes and files. Running a room as its owner
+(§8.2 *Run a room*) is not in this cut (see *Deferred* below).
+
+Built in OpenVTC/vta-browser-plugin#330 (the file engine acting as the
+persona), #331 (the page channel) and, here, the portal's room pages.
+
+**Pages.** All inside the portal bundle (`admin-ui/src/members/`), behind the
+existing member session; nothing is added to the console.
+
+- **Rooms** (`/members/#/rooms`): the rooms the member has shared with this
+  portal (below), each with its tier, the member's standing (the two epochs,
+  read as the extension's manager reads them), and storage use against the
+  room's and the member's limits (`rooms/info`). A button to share more.
+- **A room** (`/members/#/rooms/<roomId>`): the record listing (`rooms/keys/browse`,
+  its verification verdict shown as a banner when adverse, never as a shorter
+  list), each row opened on demand (`rooms/keys/read`) for its title and file;
+  a record's note rendered as text and its file with **Download**; **Add a
+  note** and **Add a file**, each sized against the limits before anything is
+  sent.
+- **Previews** (`admin-ui/src/members/file-preview.ts`, the wallet manager's
+  rules restated, not imported): chosen from the bytes `getFile` returns,
+  never from the record's claimed type — raster PNG/JPEG/GIF/WebP by
+  signature, drawn in an `<img>` from a `data:` URL (inside the CSP's
+  existing `img-src 'self' data:`, so nothing is widened), and plain UTF-8
+  text without control characters, drawn as text. No SVG, PDF or HTML, never
+  framed: the portal's origin is the community's own, which makes an author's
+  markup worse here than in the extension. The record's claim decides only
+  *whether to fetch*: pictures up to 2 MB get a list thumbnail unasked (two
+  reads in flight at most), anything else a **Preview** button, and one fetch
+  serves preview and download.
+
+The member portal's routes are unchanged. Nothing about a room crosses the
+portal's own server: the page talks to the wallet, and the wallet to the
+member's VTA and to the room's host as any member's client does. The portal's
+session is still re-checked on every `/v1/member/*` request, and the room pages
+render only for an active member.
+
+**The page asks the wallet, through methods that are the wallet's, not
+through the generic relay.** `window.vtaWallet.rooms.{list, choose, info,
+browse, read, putNote, getFile, putFile, forget}`. `requestTask` and
+`signTrustTask` keep refusing the whole `rooms/` family
+(`page-task-policy.ts`): the relay returns the agent's reply to the page as it
+is — presentations, persona-signed documents, the agent's own refusal details —
+and lets the page pick the verb, including the owner verbs, `present`,
+`file-key` and `act`. A dedicated method fixes the verb, runs the whole flow in
+the extension and decides what crosses back. No method takes a key, a DID to
+act as, an endpoint, or a document to sign.
+
+**Which pages: the community's own portal, by its DID document.** Every call
+names `hostDid`, the community the page speaks for. The wallet resolves it
+(verified, through its contact methods, as the trigger-link sign-in does —
+`resolveCommunityDocument`), takes the first usable `SignInPortal` service, and
+refuses unless its origin equals the **browser-attested** origin of the calling
+page, compared exactly (scheme, host, port). The host requests go to that same
+document's `TrustTaskHTTPS` endpoint. So a page can name only the community
+whose portal it is, and nothing the page supplies decides where a request goes.
+
+**Which rooms: the ones the member shares, one by one.** A room's DID names no
+host, deliberately (the `room` template: a room may be registered with more
+than one), and `rooms/keys/list` returns room identifiers only. So nothing
+available to the wallet says "room R is hosted by this community", and a page
+handed the member's whole listing would learn every room they are in — on a
+`private` room, the one fact the tier withholds. Instead:
+
+- `rooms.choose({ hostDid })` opens an extension window that lists the rooms
+  the member's VTA holds. The member ticks the ones that belong to this
+  community. Each ticked room is then confirmed with the host, as the member
+  (`rooms/info` through `act`); a room the host does not hold is reported and
+  not shared. The page learns only the rooms shared.
+- A share is one **grant**: (page origin, `hostDid`, the active VTA, room),
+  and the member it acts as.
+  It lasts 30 days, is listed and revocable in the extension's manager, and
+  `rooms.forget` lets the page drop one. `rooms.list` returns the live grants
+  and never prompts.
+- **A community's own room has a name.** Its administrators labelled it
+  (`vtc/rooms/community/create` / `update`), and the community's offer to the
+  member carries the label. The wallet reads the member's offers
+  (`vtc/rooms/offers/list`, completed as the member by `rooms/keys/act/0.3` and
+  sent to this community only) and returns `label` and `visibility` on a
+  `rooms.list` entry and in the share window; it remembers a name past the days
+  the community keeps listing an accepted offer. The portal shows the name with
+  the DID beneath, and the DID alone for any other room. A label is the
+  community's metadata, not room content, and it reaches the page from the
+  wallet — no `/v1/member/*` route carries it. Rooms a member owns get a name
+  from a sealed in-room profile, later, behind the same lookup.
+- **A `private` room is never shared with a portal.** Its tier hides from the
+  host which member acts; the portal is the host's own page and knows who is
+  signed in, so using the room from it would tell the host exactly what the tier
+  withholds. The window says so and points to the extension's manager.
+- A page may pass `suggest: roomId` to pre-tick a room it links to. A room the
+  member does not hold is simply not in the window; the page cannot tell that
+  from a member who declined.
+- **As whom.** One VTA can hold two members of one room: an administrator whose
+  VTA is also the community's holds the community's own place in a room the
+  community owns *and* their own membership. `rooms/keys/list` lists the room
+  once per member (`ext["org.openvtc.rooms"].held` says whose), and the VTA
+  refuses to pick one (`rooms/keys/act` 0.3 recipient item 2), so a share
+  names its member and every request for the page names it (`issuer` on
+  `act`, `ext["org.openvtc.rooms"].member` on the custody tasks). The window
+  offers one row per (room, member), and only as an identity the member uses
+  at this community — the principals of their `didSelfIssued` vault entries
+  naming `hostDid`, which is how the wallet signs in there — **never as
+  `hostDid` itself**: acting on the portal as the community would hand the
+  page the community's standing in the room. The portal passes the signed-in
+  member as `choose({ hostDid, member })`, which only picks among those; where
+  two remain the member picks, one member per room. A grant made before shares
+  named a member is not in force, and the page asks again.
+
+**Offers: listed through the wallet, accepted in it.** A community's offer of
+one of its rooms (`vtc/rooms/community/members/add`) is taken up with
+`vtc/rooms/offers/list/0.2` (0.1 from a community or VTA without it) and
+`vtc/rooms/offers/accept/0.1`, signed as the identity the offer is addressed to
+by the member's VTA (`rooms/keys/act/0.4`, 0.3 for the 0.1 listing) — `pnm
+rooms offers list|accept`, and the wallet, step for step
+(OpenVTC/vta-browser-plugin, the room-offers PR). The portal shows *Offers from
+this community* through `rooms.offers({ hostDid })`, held to the same
+`SignInPortal` gate and answered for the identities the member uses here only
+(never `hostDid`): label, the room's description when the wallet carries it
+(rendered as text, never markup; never the room's tags), tier, actions and
+dates, never an offer's credentials. *Accept* calls
+`rooms.acceptOffer({ hostDid, roomId, member })`, and the member decides in the
+wallet's window, which names the community, the room and the identity it joins
+as; the wallet stores the credentials in the VTA, has the VTA mint the
+KeyPackage, accepts and joins from the Welcome — none of which crosses to the
+page. An accepted room is then shared here like any other (`choose` with
+`suggest`). No `/v1/member/*` route carries any of it.
+
+**Reads ride the grant; every write is confirmed.** `info`, `browse`, `read`
+and `getFile` on a granted room run without a prompt — the member already
+said this portal may show them this room. `putNote` and `putFile` each open a
+confirmation in the extension window, naming the room, the member identity
+that will sign, and what will be written (the title, the file's name and
+size). There is no "remember" on it. A write is the member's signed statement
+to every other member, and a page that could add one silently could put words
+in their mouth for as long as it was compromised.
+
+**The member is the persona, never the wallet.** Every host-bound request is
+built unsigned and completed by the member's VTA **as the persona**
+(`rooms/keys/act`); a record body is signed as the persona and sealed by the
+VTA (`rooms/keys/seal/0.2`, `signAsPrincipal`); a proxied upload's chunks,
+commit and abort are signed by a single-use upload key minted in the offscreen
+document for that upload (`rooms/blobs/*/0.2`). The wallet's own DID reaches no
+host. The extension's file engine (§8.3, P7) predates `act` and still presents
+for the wallet's DID and signs record bodies with it, so it moves first, for
+the manager too — one engine, one identity.
+
+**Files stay in the offscreen document (§4.1, unchanged).** `file-key` is
+requested there and nowhere else, and the CI guard that bans the URI from every
+other bundle stands. The page sends the bytes it uploads and receives the bytes
+it downloads, and nothing else: an upload is streamed page → content script →
+background → offscreen; a download is held in the offscreen document until the
+whole file has hashed to its author's digest and only then streamed to the page.
+The page never holds a provisional byte, so a file that fails verification
+leaves nothing behind in it.
+
+**What never reaches the page.** Any key (file key, upload key, the wallet's or
+the persona's); a presentation; a persona-signed document; the VTA's or the
+host's reply as such, or a refusal's `details`; a room the member has not
+shared with this origin; a record body before its signature, location and (on
+`attributed`) author check; a file byte before its digest check.
+
+**Transfers from the browser are proxied, for now.** A direct transfer (§5.2)
+reaches the storage provider's origin, for which the extension holds no host
+permission and can ask for none outside a gesture on its own page, and a
+provider's CORS rules are not something a community configures for an
+extension origin. Browser uploads omit `directParts` and downloads ask
+`direct: false`; the CLI keeps direct mode. Lifting it means asking for the
+storage origin in the write confirmation, which needs the target before
+`begin` returns — a follow-up.
+
+**Threat model: a compromised portal page.** An XSS, a malicious dependency,
+or the VTC's operator serving hostile script all amount to the same attacker:
+code running with the portal's origin while the member is signed in.
+
+| It can | It cannot |
+|---|---|
+| read what the member shared with this portal, without a prompt, while the grant lasts (30 days, revocable) | read a room not shared, or learn which other rooms the member is in |
+| ask for writes; each is shown to the member, with the bytes' name and size, in a window the page does not draw | write without the member confirming that write |
+| show the member false text on its own pages | obtain a key, a presentation or a signed document to replay elsewhere |
+| | send a request to any host but the one whose `SignInPortal` it is |
+| | act as another member, or as the wallet's own DID |
+| | drive `present`, `act`, `file-key`, `seal`, `open` or any owner verb |
+
+A member who does not trust the portal uses the extension's manager, which runs
+the same engine and never involves a page. A different site is not on the
+allow-list at all, and a look-alike origin is a different origin.
+
+**Deferred.**
+
+- **Running a room from the portal** (§8.2 *Run a room*): creating, inviting,
+  removing, renewing. Each is an owner verb at the member's VTA
+  (`rooms/owner/*`), and each would be a confirmed write of its own kind. It
+  follows this cut, on the same channel.
+- **Curating** (pin, deprecate, retract): a write; same channel, later.
+- **Direct transfer from the browser** (above).
+- **Titles in the listing without opening each record.** `browse` returns
+  metadata, never bodies, so on a sealed room a title needs a `read`. The
+  portal opens the rows it shows; client-side search over a whole room waits
+  for a batch read.
+
 ---
 
 ## 9. What each party learns
@@ -832,12 +1263,20 @@ bump, per the workspace rule.
 | `rooms/blobs/upload/{begin,chunk,commit,abort}/0.1` | new; `chunk` declares `maxDocumentBytes.request` |
 | `rooms/blobs/{get,chunk}/0.1` | new; `chunk` declares `maxDocumentBytes.response` |
 | `rooms/keys/file-key/0.1` | new |
+| `rooms/keys/file-key/0.1` → **0.2**, `rooms/keys/open/0.1` → **0.2** | `unknownEpoch` reason `removed` with `removedAtEpoch`; `open` declares the same closed `details` (trust-tasks-tf #786, `trust-tasks-rs` 0.31.10). Served beside 0.1 |
+| `rooms/keys/act/0.1` → **0.2** | the member is the subject (`subjectPath: /document/issuer`); a room-less type (`rooms/blobs/chunk/0.1`, `rooms/blobs/upload/{commit,abort}/0.2`) names its member in `issuer`, and the recipient never picks one (trust-tasks-tf #787). Served beside 0.1 |
+| `rooms/keys/act/0.5` → **0.6** | the table gains `vtc/rooms/offers/list/0.3` in the offer row, on its terms: the listing that also carries the renewals of the admissions a member holds |
+| `rooms/keys/act/0.2` → **0.3** | the table gains `vtc/rooms/offers/{list,accept}/0.1` (no presentation, `issuer` required, recipient item 2b), and an acceptance's `keyPackage` must be one the key holder minted and still holds — `keyPackageNotHeld` (trust-tasks-tf #797, `trust-tasks-rs` 0.31.11). Served beside 0.1 and 0.2 |
+| `rooms/owner/group/add/0.1` → **0.2** | a repeat of the last applied admission (same member, same `KeyPackageRef`) is answered with its Welcome, kept until the next advance or 24 hours (trust-tasks-tf #795). Served beside 0.1 |
 | `rooms/usage/0.1` | new: per-member usage for a room's `admin` chain |
 | `vtc/rooms/get/0.1`, `vtc/rooms/limits/set/0.1`, `vtc/rooms/usage/0.1` | new, VTC-only: room detail, limit overrides at all three scopes, usage reports |
 | `vtc/storage/configs/{list,get,create,update,retire}/0.1` | new, VTC-only: storage configs (§7.1) |
 | `vtc/storage/credentials/set/0.1` | new, VTC-only, for the discouraged `sealed` fallback. The payload is a `sealed_transfer` armor block; the response is the fingerprint. **No get or list task returns a value** |
 | `vtc/rooms/storage/{assign,migrate}/0.1` | new, VTC-only (§7.3) |
 | `vtc/storage/configs/probe/0.1` | new, VTC-only: put, get and delete a canary under a test prefix with the config's credentials |
+| `rooms/owner/group/{create,add,remove}/0.1` | new, on the owner's VTA (§11), all three served. `create` and `add` proposed in dtgwg-trust-tasks-tf#763, with `rooms/owner/register` clarified to sign `rooms/create` as the owner; `remove` released with them in `trust-tasks-rs` 0.31.2 |
+| `vtc/rooms/community/{create,list,get}/0.1`, `vtc/rooms/community/members/{add,remove,list}/0.1` | new, VTC-only: community-owned rooms (§8.4), `vtc.rooms.manage` |
+| `vtc/rooms/offers/{list,accept}/0.1` | new, VTC-only, member audience: a member collects and accepts their admission to a community room (§8.4) |
 | the `external/*` family on the VTA | see [`vta-external-accounts.md`](vta-external-accounts.md) §11 |
 | the sealed body's `file` member | documented in the rooms spec's sealed-body section; it is client-to-client, so the host's schemas never see it |
 
@@ -865,20 +1304,22 @@ on their own merit:
 
 | # | Phase | Size | Depends on |
 |---|---|---|---|
-| P0 | Owner MLS tasks + `pnm rooms owner …` + sealed `put` (§11) | L | — |
+| P0 | Owner MLS tasks + `pnm rooms owner …` + sealed `put` (§11). **In progress**: `rooms/owner/group/{create,add,remove,renew}` served on the owner's VTA (`add`, `remove` and `renew` share one pending-advance slot per room, settled through `rooms/info`), with `pnm rooms owner group-{create,add,remove,renew}` — `pnm rooms renew` refuses a sealed room; `rooms/owner/register` signing `rooms/create` as the owner, so a community host accepts it. Sealed `put` follows | L | — |
 | P1 | Specs (§10) | M | — |
 | P2 | `vti-rooms::files`: KDF, STREAM, manifest; wasm build; test vectors | M | P1 |
 | P3 | `BlobStore` trait in `vti-common`; local, S3 and GCS via `object_store`; conformance suite | M | — |
-| P4 | Storage configs (§7): config store, per-room prefixes, ambient auth with self-downscoping, the `sealed` fallback, action-list consent for storage changes, `vtc.rooms.admin` | L | P3 |
-| P4b | `vta-account` auth: a `CredentialProvider` over `external/credentials/issue`, per-room credential cache, presigned-URL path for `s3-static-presign`, and the console's External accounts pages. Needs E0–E3 of the external-accounts note | M | P4, E0–E3 |
+| P4 | Storage configs (§7): config store, per-room prefixes, ambient auth with self-downscoping, the `sealed` fallback, action-list consent for storage changes, `vtc.rooms.admin`. **First part landed**: the config store and room assignment, `vtc.rooms.admin`, the configs and assign tasks with action-list consent, `local` configs confined to operator-allowed bases; ambient and `sealed` follow | L | P3 |
+| P4b | `vta-account` auth: a `CredentialProvider` over `external/credentials/issue`, per-room credential cache, presigned-URL path for `s3-static-presign`, and the console's External accounts pages. Needs E0–E3 of the external-accounts note. **Presigned path landed** (E3's model): `s3` configs through a VTA account, one presigned request per object operation over the VTC's messaging link (the config names the account by context and identifier), the account confirmed with the VTA at create and update; session-credential models wait on E1/E2 | M | P4, E0–E3 |
 | P5 | Host: `room_blobs`, upload/download tasks, `size.rs` bundle gate, limits at three scopes with reservations, usage counters, GC sweeper. In **both** `vtc-service` and `room-host` (one config, set from its command line) | L | P1, P3, P4 |
 | P6 | VTA `rooms/keys/file-key`; `pnm rooms file {put,get}` | M | P2 |
-| P7 | Extension: page allow-list + per-room consent, file crypto in the extension's own context with plaintext streamed over a port (§4.1); manager-pane files (§8.3) | M | P6 |
-| P8 | Member portal Rooms (§8.2), members first, owners after P0 | XL | P5, P7, member portal merged |
+| P7 | Extension: file crypto in the extension's own context with plaintext streamed over a port (§4.1); manager-pane files (§8.3). **Landed** (P7a, the manager only) | M | P6 |
+| P7b | Extension: the file engine acting as the persona (`act`, `seal/0.2`, `blobs/*/0.2`), then the page channel — `window.vtaWallet.rooms`, the `SignInPortal` allow-list, per-room grants, a confirmation per write (§8.5) | M | P7 |
+| P8 | Member portal Rooms (§8.2, §8.5), members first; owners follow on the same channel | XL | P5, P7b, member portal merged |
 | P9 | Console: room detail, Storage, Usage, Settings (§8.1); `room_usage_daily` history and CSV | L | P4, P5 |
-| P10 | Room storage reassignment and migration (§7.3) | M | P5 |
+| P10 | Room storage reassignment and migration (§7.3). **Landed**: `vtc/rooms/storage/migrate/0.1` and `0.2` (with `vtc/rooms/get/0.2`) on the VTC, run by one migration runner (`vtc_service::rooms::migration`) over `vti_rooms::blobs::migrate` — copy, read back and verify, an atomic switch, the old copy collected after the grace window and counted until then; the target's bytes reserved at start; backoff then `paused`; a restored migration comes back `paused`. The console's room page moves a room's files and resumes a paused move. `room-host` has one config and no migration | M | P5 |
 | P11 | Walrus backend: upload relay, transactions signed by the VTA's `sui-signer` (E4), epoch extension in the sweeper | L | P3, P4, P5, E4 |
 | P12 | Direct-to-store presigned transfer (§5.2), if measurements ask for it | M | P5 |
+| P13 | Community-owned rooms (§8.4): the community's VTA as key holder over `vta_link`, the offers keyspace, `vtc.rooms.manage`, the console's create / members pages, and the member's offers in the portal and the extension. **First part landed**: `vtc/rooms/community/*` and `vtc/rooms/offers/*` served (`[rooms.community]`, the `community_rooms` keyspace, `vtc.rooms.manage`, serverless room identities served at `/room-dids/<id>/did.jsonl`), `cnm rooms …` for administrators ([`community-rooms.md`](../03-vtc/community-rooms.md)), and the console's **Data rooms → Community rooms** tab (create, list, a room's members: offer, withdraw, remove). A member who leaves the community is removed from every room it owns (`members/add` item 6: recorded durably at the departure in `community_rooms`, driven by `vtc_service::rooms::departures` with backoff, surfaced in `ext["org.openvtc"].departureRemovals`). `pnm rooms offers` is the member's client; the VTC renews the community's own authority over each room before it lapses (`rooms::community_renewal`); the offers in the portal and the extension and a live-channel topic for the owner's record follow | L | P0, P8 for the portal half |
 
 P0, P2 and P3 run in parallel; P4 follows P3, and P4b follows P4. A member can upload and
 download a file from the CLI after P6, and from the portal after P8.
@@ -891,11 +1332,13 @@ download a file from the CLI after P6, and from the portal after P8.
    console does as the balance runs low. Custody is settled (§7.4: the VTA's key,
    else a sealed credential); funding is an operator decision. It blocks P11 and
    nothing earlier.
-2. **The VTC's runtime link to its VTA.** `vta-account` auth needs the VTC to
-   call its community VTA at runtime, as an integration with a narrow ACL
-   entry. **Proposed:** a VTC that hosts rooms with files must keep that link,
-   and `sealed` stays only for evaluation setups. Confirm it, and decide whether
-   the VTC refuses `sealed` outright in production builds.
+2. **The VTC's runtime link to its VTA.** Settled for `vta-account`: the VTC
+   reaches its VTA as a peer over the messaging socket it already keeps (TSP or
+   DIDComm, chosen from the VTA's DID document), signed with its own key, with
+   an ACL entry holding only `external-auth-use` in the account's context. The
+   VTA is reached through its mediator, so it gains no inbound surface. Still
+   open: whether `sealed` stays only for evaluation setups, and whether the VTC
+   refuses it outright in production builds.
 3. **Rooms bringing their own storage.** A room owner who wants their files in
    *their* bucket. §7.4's sealed credential already keeps it from the VTC's
    administrators. What is open is whether the `rooms` policy should allow an

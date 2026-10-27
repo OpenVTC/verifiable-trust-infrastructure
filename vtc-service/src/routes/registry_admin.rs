@@ -7,7 +7,8 @@
 //! REST route:
 //!
 //! - `sync-jobs/list`    — what is queued, and what failed
-//! - `sync-jobs/retry`   — requeue an abandoned job
+//! - `sync-jobs/retry`   — requeue an abandoned job; at 0.2 also bring one
+//!   waiting out its backoff forward (never an RTBF-held one)
 //! - `sync-jobs/discard` — drop one that should not be
 //! - `records/list`      — enumerate every trust record under our authority
 //!
@@ -290,6 +291,128 @@ pub(crate) async fn sync_jobs_retry(
         .try_into()
         .map_err(|e| AppError::Internal(format!("retry response does not fit its schema: {e}")))?;
     Ok(response)
+}
+
+/// `vtc/registry/sync-jobs/retry/0.2`, by `actor`.
+///
+/// 0.1 plus a pending job waiting out its backoff, by `jobId` or
+/// `allWaiting`: once an operator has fixed what the registry refused, or
+/// added a registry to a community that ran without one, nothing else stops
+/// members waiting up to an hour for the next attempt.
+///
+/// An RTBF-batched job is **held** and never brought forward, whoever names
+/// it: the batch window de-correlates the override audit envelope from the
+/// record's disappearance (spec §8.2), and releasing it early would undo
+/// that.
+pub(crate) async fn sync_jobs_retry_v0_2(
+    state: &AppState,
+    actor: &str,
+    body: retry_spec::v0_2::Payload,
+) -> Result<retry_spec::v0_2::Response, AppError> {
+    use retry_spec::v0_2::{RequeuedFrom, SkippedReason};
+
+    // The schema admits exactly one of the three; the payload type is a
+    // struct of options, so say which one rather than trusting an order.
+    let named = body.job_id.as_ref().map(|id| id.to_string());
+    let targets: Vec<SyncJob> = match (&named, body.all_failed, body.all_waiting) {
+        (Some(job_id), None, None) => {
+            let id = Uuid::parse_str(job_id)
+                .map_err(|_| AppError::Validation("jobId is not an identifier".into()))?;
+            get_sync_job(&state.sync_queue_ks, id)
+                .await?
+                .into_iter()
+                .collect()
+        }
+        (None, Some(true), None) => list_sync_jobs(&state.sync_queue_ks)
+            .await?
+            .into_iter()
+            .filter(|j| j.state == SyncJobState::Failed)
+            .collect(),
+        // Every pending job not already due, held ones included so the answer
+        // says they were held rather than leaving them out silently.
+        (None, None, Some(true)) => {
+            let now = chrono::Utc::now();
+            list_sync_jobs(&state.sync_queue_ks)
+                .await?
+                .into_iter()
+                .filter(|j| j.state == SyncJobState::Pending && j.next_attempt_at > now)
+                .collect()
+        }
+        _ => {
+            return Err(AppError::Validation(
+                "exactly one of jobId, allFailed or allWaiting is required".into(),
+            ));
+        }
+    };
+
+    let skip = |job_id: String, reason: SkippedReason| {
+        retry_spec::v0_2::Skipped::builder()
+            .job_id(job_id)
+            .reason(reason)
+            .try_into()
+            .map_err(|e| AppError::Internal(format!("skip does not fit its schema: {e}")))
+    };
+
+    let now = chrono::Utc::now();
+    let mut requeued = Vec::new();
+    let mut skipped = Vec::new();
+
+    // A named job that no longer exists is `notFound`, not an error: it may
+    // have been dispatched, retried, discarded or swept since the list.
+    if let Some(id) = named.filter(|_| targets.is_empty()) {
+        skipped.push(skip(id, SkippedReason::NotFound)?);
+    }
+
+    for mut job in targets {
+        let from = match job.state {
+            // Being dispatched now: resetting it would send the mutation twice.
+            SyncJobState::InFlight => {
+                skipped.push(skip(job.id.to_string(), SkippedReason::InFlight)?);
+                continue;
+            }
+            SyncJobState::Pending if job.rtbf_batched => {
+                skipped.push(skip(job.id.to_string(), SkippedReason::Held)?);
+                continue;
+            }
+            SyncJobState::Failed => RequeuedFrom::Failed,
+            SyncJobState::Pending => RequeuedFrom::Pending,
+            // Mid-deletion: the job is done, which is what notFound reports.
+            SyncJobState::Complete => {
+                skipped.push(skip(job.id.to_string(), SkippedReason::NotFound)?);
+                continue;
+            }
+        };
+        // The same mutation `vtc sync-jobs retry` applies: attempts reset,
+        // due now, `rtbf_batched` left as it is.
+        requeue(&mut job, now);
+        store_sync_job(&state.sync_queue_ks, &job).await?;
+        info!(
+            job_id = %job.id,
+            did = %job.member_did,
+            kind = job.kind.as_str(),
+            from = %from,
+            %actor,
+            "sync job requeued by an operator",
+        );
+        requeued.push(
+            retry_spec::v0_2::Requeued::builder()
+                .job_id(job.id.to_string())
+                .member_did(Some(
+                    retry_spec::v0_2::RequeuedMemberDid::try_from(job.member_did.clone()).map_err(
+                        |e| AppError::Internal(format!("member did does not fit its schema: {e}")),
+                    )?,
+                ))
+                .from(from)
+                .try_into()
+                .map_err(|e| AppError::Internal(format!("requeue does not fit its schema: {e}")))?,
+        );
+    }
+
+    retry_spec::v0_2::Response::builder()
+        .requeued(requeued)
+        .skipped(skipped)
+        .try_into()
+        .map_err(|e| AppError::Internal(format!("retry response does not fit its schema: {e}")))
 }
 
 // ---------------------------------------------------------------------------
@@ -590,6 +713,7 @@ mod tests {
                 active_from: Utc::now(),
                 active_to: None,
                 last_synced_at: Utc::now(),
+                directory_card: None,
             },
         )
         .await

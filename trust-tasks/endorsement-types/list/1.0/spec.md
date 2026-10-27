@@ -2,7 +2,7 @@
 id: https://trusttasks.org/openvtc/vtc/endorsement-types/list/1.0
 title: VTC — Endorsement Type List
 status: retired
-supersededBy: https://trusttasks.org/spec/vtc/endorsement-types/list/0.1
+supersededBy: https://trusttasks.org/spec/vtc/endorsement-types/list/0.2
 version: "1.0"
 authors:
   - did:webvh:openvtc.org

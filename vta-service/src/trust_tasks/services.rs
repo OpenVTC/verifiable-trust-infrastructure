@@ -390,6 +390,15 @@ fn need_mediator(mediator_did: Option<String>) -> Result<String, AppError> {
     })
 }
 
+fn restarting_ext() -> Result<spec::enable::v1_0::Ext, AppError> {
+    let key = "org.openvtc"
+        .parse()
+        .map_err(|e| AppError::Internal(format!("invalid restart extension namespace: {e}")))?;
+    Ok(spec::enable::v1_0::Ext(std::collections::HashMap::from([
+        (key, serde_json::json!({ "restarting": true })),
+    ])))
+}
+
 /// The shared success shape, stamped with the instant the change took effect.
 ///
 /// The operations return the log-entry id but not the time; the REST routes
@@ -473,6 +482,7 @@ pub(super) async fn handle_enable(
         Ok(value) => value,
         Err(e) => return app_error_to_reject(&doc, e),
     };
+    let restarting = matches!(req.service, K::Didcomm);
 
     let result = match req.service {
         K::Rest => {
@@ -570,7 +580,15 @@ pub(super) async fn handle_enable(
                     TRANSPORT_TRUST_TASK
                 )
             );
-            mutation(r.new_version_id, r.vta_did, r.serverless, None, None)
+            mutation(r.new_version_id, r.vta_did, r.serverless, None, None).and_then(
+                |mut result| match restarting_ext() {
+                    Ok(ext) => {
+                        result.ext = Some(ext);
+                        Ok(result)
+                    }
+                    Err(error) => Err(error),
+                },
+            )
         }
         // `#[non_exhaustive]`: a caller on a newer registry can name a
         // transport this build does not serve. Refusing is the only safe
@@ -591,7 +609,14 @@ pub(super) async fn handle_enable(
         Ok(result) => match built::<spec::enable::v1_0::Response, _>(
             spec::enable::v1_0::Response::builder().result(result),
         ) {
-            Ok(r) => success_response(&doc, r),
+            Ok(r) => {
+                let response = success_response(&doc, r);
+                if restarting {
+                    response.with_restart()
+                } else {
+                    response
+                }
+            }
             Err(e) => app_error_to_reject(&doc, e),
         },
         Err(e) => app_error_to_reject(&doc, e),

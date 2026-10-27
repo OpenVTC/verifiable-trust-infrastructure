@@ -358,6 +358,13 @@ impl RoomGroup {
                 self.group
                     .merge_staged_commit(&self.provider, *staged)
                     .map_err(|e| RoomKeyError::Group(format!("merge staged commit: {e:?}")))?;
+                // A commit removing our own leaf merges cleanly and leaves a group that can
+                // export nothing. Say so here, rather than as the key-export failure the
+                // next step would hit.
+                if !self.group.is_active() {
+                    let epoch = u32::try_from(self.group.epoch().as_u64() + 1).unwrap_or(u32::MAX);
+                    return Err(RoomKeyError::Removed { epoch });
+                }
                 Ok(self.group.epoch().as_u64())
             }
             _ => Err(RoomKeyError::Group(
@@ -522,6 +529,33 @@ mod tests {
             "a member whose authenticator differs from the anchored one has been forked"
         );
         assert!(!alice.epoch_authenticator().is_empty());
+    }
+
+    /// A removed member is told it was removed, not that its group failed to export a key —
+    /// the raw failure read like a fault in the holder (found in a live run).
+    #[test]
+    fn a_member_applying_its_own_removal_is_told_it_was_removed() {
+        let mut alice = RoomGroup::create("did:key:zAlice").expect("alice");
+        let bob_provider = OpenMlsRustCrypto::default();
+        let bob_identity = RoomIdentity::new("did:key:zBob", &bob_provider).expect("bob identity");
+        let bob_kp = bob_identity.key_package(&bob_provider).expect("bob kp");
+        let change = alice.add_member(bob_kp).expect("add bob");
+        let mut bob = RoomGroup::join_with(
+            bob_identity,
+            bob_provider,
+            &change.welcome.expect("welcome"),
+        )
+        .expect("bob joins");
+
+        let leaf = alice.leaf_of("did:key:zBob").expect("bob's leaf");
+        let removal = alice.remove_member(leaf).expect("remove bob");
+
+        match bob.apply_commit(&removal.commit) {
+            Err(RoomKeyError::Removed { epoch }) => {
+                assert_eq!(u64::from(epoch), alice.epoch() + 1, "names the room epoch")
+            }
+            other => panic!("expected Removed, got {other:?}"),
+        }
     }
 
     #[test]
@@ -922,6 +956,59 @@ impl RoomGroup {
         };
 
         Self::join_with(identity, provider, welcome)
+    }
+}
+
+/// The `KeyPackageRef` of a serialized KeyPackage ([RFC 9420 §5.2]): the hash MLS itself
+/// names a KeyPackage by, and what a Welcome is addressed to.
+///
+/// **The only identity of a KeyPackage worth comparing.** Equal references mean
+/// byte-identical KeyPackages, and so the same init key — which is why
+/// `rooms/owner/group/add/0.3` recognises a repeated admission by it, and
+/// `rooms/keys/act/0.3` a KeyPackage its key holder minted. The leaf credential is not
+/// such an identity: it is signed by the leaf's own key, so anybody can make one naming
+/// anybody.
+///
+/// The bytes are parsed and validated against [`ROOM_CIPHERSUITE`] first, as an add would
+/// validate them; a KeyPackage that does not validate has no reference worth trusting.
+///
+/// [RFC 9420 §5.2]: https://www.rfc-editor.org/rfc/rfc9420#section-5.2
+pub fn key_package_ref(key_package: &[u8]) -> Result<Vec<u8>, RoomKeyError> {
+    let provider = OpenMlsRustCrypto::default();
+    let incoming = KeyPackageIn::tls_deserialize_exact(key_package)
+        .map_err(|e| RoomKeyError::Group(format!("parse the key package: {e:?}")))?;
+    let validated = incoming
+        .validate(provider.crypto(), ProtocolVersion::Mls10)
+        .map_err(|e| RoomKeyError::Group(format!("validate the key package: {e:?}")))?;
+    if validated.ciphersuite() != ROOM_CIPHERSUITE {
+        return Err(RoomKeyError::Group(
+            "the key package is for another ciphersuite".into(),
+        ));
+    }
+    validated
+        .hash_ref(provider.crypto())
+        .map(|r| r.as_slice().to_vec())
+        .map_err(|e| RoomKeyError::Group(format!("hash the key package: {e:?}")))
+}
+
+#[cfg(test)]
+mod key_package_ref_tests {
+    use super::*;
+
+    /// Two KeyPackages for one member are two references; one KeyPackage is always the
+    /// same reference; and bytes that are not a KeyPackage have none.
+    #[test]
+    fn a_reference_names_exactly_one_key_package() {
+        let (_, a) = IdentitySnapshot::mint("did:example:alice").expect("mints");
+        let (_, b) = IdentitySnapshot::mint("did:example:alice").expect("mints");
+        let ra = key_package_ref(&a).expect("a reference");
+        assert_eq!(ra, key_package_ref(&a).expect("again"), "deterministic");
+        assert_ne!(
+            ra,
+            key_package_ref(&b).expect("b"),
+            "another KeyPackage for the same member is another reference"
+        );
+        assert!(key_package_ref(b"not a key package").is_err());
     }
 }
 

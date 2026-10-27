@@ -656,6 +656,7 @@ pub struct ExtensionEntry {
 /// where a tightening they believed was in force is not, and the values it was
 /// meant to protect are the ones they would find out about last.
 #[derive(Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ExtensionError {
     /// The file was not the shape a table has.
     Malformed(String),

@@ -11,7 +11,7 @@
 //!   crosses. This is the boundary's rule — secrets do not cross — kept.
 //! - **From a key** ([`FileSealer::with_key`], [`FileOpener::with_key`]): for the wallet
 //!   extension, which holds no group and gets one file's key from the member's VTA
-//!   (`rooms/keys/file-key/0.1`). That key is in the extension's JavaScript by necessity, so
+//!   (`rooms/keys/file-key/0.2`). That key is in the extension's JavaScript by necessity, so
 //!   this path belongs **only** in the extension's own context (its service worker or
 //!   offscreen document), never in a web page: a page that held a file key would hold that
 //!   file's ciphertext open forever. `data-rooms-files.md` §4.1.

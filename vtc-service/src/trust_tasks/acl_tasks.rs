@@ -1066,6 +1066,60 @@ pub(super) async fn settle_consent_gate(
         .map_err(|e| app_error_to_reject(doc, &e))
 }
 
+/// The gate on a `config/patch` or `vtc/config/import` that changes the
+/// trusted-witness list (`witnesses.trusted`) — **VTI-CMP-090**: the
+/// requester's bound gesture and the consent of the other holders of
+/// `vtc.config.admin`, or, in single-administrator mode, the gesture alone at
+/// `Critical` ([`settle_consent_gate`]). `Ok` when the write leaves the list
+/// alone or may proceed; call it before the write.
+///
+/// One parked action is one consent, so a write that also lowers the consent
+/// threshold — a second consent with other approvers — is refused, with the
+/// two to send apart.
+pub(super) async fn settle_witness_list_gate(
+    state: &AppState,
+    actor: &AuthClaims,
+    doc: &TrustTask<Value>,
+    overrides: &std::collections::HashMap<String, Value>,
+    how: &str,
+) -> Result<(), TrustTaskOutcome> {
+    use crate::credentials::trusted_witnesses::{WITNESSES_TRUSTED, change_in, describe};
+    let (from, to) = match change_in(state, overrides).await {
+        Ok(None) => return Ok(()),
+        Ok(Some(change)) => change,
+        Err(e) => return Err(app_error_to_reject(doc, &e)),
+    };
+    match crate::routes::admin::config::lowered_threshold(state, overrides).await {
+        Ok(None) => {}
+        Ok(Some(_)) => {
+            return Err(app_error_to_reject(
+                doc,
+                &AppError::Validation(format!(
+                    "this write both changes `{WITNESSES_TRUSTED}` and lowers \
+                     `{}`, and each needs its own administrators' consent: send them \
+                     as two config/patch documents, one key each",
+                    crate::config_store::UNRESTRICTED_ADMIN_CONSENT_THRESHOLD
+                )),
+            ));
+        }
+        Err(e) => return Err(app_error_to_reject(doc, &e)),
+    }
+    let (from, to) = (describe(&from), describe(&to));
+    settle_consent_gate(
+        state,
+        actor,
+        doc,
+        crate::acl::admin_consent::Act::ChangeTrustedWitnesses,
+        WITNESSES_TRUSTED,
+        &format!("Change the witnesses this community trusts from {from} to {to}{how}"),
+        &format!(
+            "Change the witnesses whose credentials count as evidence in this community \
+             from {from} to {to}{how}"
+        ),
+    )
+    .await
+}
+
 /// How a committed write is answered: the 0.1 envelope, or the 0.2 response of
 /// the task asked.
 #[derive(Clone, Copy)]
@@ -1198,6 +1252,7 @@ mod tests {
                 updated_by: None,
                 expires_at: None,
                 resource_grants: Vec::new(),
+                group_grants: Vec::new(),
                 label_set_by_subject: false,
                 suspension: None,
             },

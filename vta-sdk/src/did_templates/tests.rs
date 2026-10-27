@@ -2300,3 +2300,318 @@ fn an_undeclared_or_shadowed_jwk_placeholder_is_refused() {
     .expect_err("a slot's JWK placeholder declared as a variable");
     assert!(err.to_string().contains("optionalVars"), "{err}");
 }
+
+// ─── dtg-witness built-in ──────────────────────────────────────────────
+//
+// A `vti-witness` identity — the witness of `witness/session/0.2`, named
+// `dtg-witness` so it cannot be confused with the did:webvh log witness
+// (`did-host-didcomm`, which `did-templates init witness` still resolves to).
+// Design: docs/05-design-notes/witness-host-service.md §3.1. One Ed25519 key that both authenticates and asserts (it answers
+// Trust Tasks and signs the VWCs it issues), one X25519 key-agreement key,
+// and TSP + DIDComm through a mediator — and no HTTP endpoint of any kind.
+
+const WITNESS_RENDERED_FIXTURE: &str =
+    include_str!("../../tests/fixtures/dtg-witness.rendered.json");
+const WITNESS_DID: &str = "did:webvh:QmWIT:witness.example.net:w1";
+const WITNESS_MEDIATOR: &str = "did:webvh:QmMED:mediator.example.org:mediator";
+
+fn witness_fixture_vars() -> TemplateVars {
+    let mut vars = TemplateVars::new();
+    vars.insert_string("DID", WITNESS_DID);
+    vars.insert_string("SIGNING_KEY_MB", "z6MkWITsigning");
+    vars.insert_string("KA_KEY_MB", "z6LSWITka");
+    vars.insert_string("MEDIATOR_DID", WITNESS_MEDIATOR);
+    vars
+}
+
+#[test]
+fn dtg_witness_builtin_loads_and_validates() {
+    let tpl = load_embedded("dtg-witness").expect("load_embedded");
+    assert_eq!(tpl.name, "dtg-witness");
+    assert_eq!(
+        tpl.kind, "dtg-witness",
+        "the integration kind is `dtg-witness`"
+    );
+    assert_eq!(tpl.methods, vec!["webvh"]);
+    assert_eq!(tpl.required_vars, vec!["MEDIATOR_DID"]);
+    tpl.validate().expect("validate after load");
+}
+
+#[test]
+fn dtg_witness_builtin_renders_exact_document_shape() {
+    let tpl = load_embedded("dtg-witness").unwrap();
+    let out = tpl.render(&witness_fixture_vars()).unwrap();
+    let expected: Value =
+        serde_json::from_str(WITNESS_RENDERED_FIXTURE).expect("fixture parses as JSON");
+    assert_eq!(
+        out, expected,
+        "rendered document diverged from fixture — if intentional, update tests/fixtures/dtg-witness.rendered.json"
+    );
+}
+
+/// The services, matched by `type` (never by `#id`, which is a label): TSP
+/// first, then DIDComm, both at the mediator — and nothing a client could
+/// reach over HTTP. A witness has no HTTPS door in v1 (design note §3.1, §5
+/// item 2), so a `VTARest` entry would advertise a transport this service
+/// cannot serve.
+#[test]
+fn dtg_witness_builtin_advertises_tsp_and_didcomm_at_the_mediator_and_no_rest() {
+    let doc = load_embedded("dtg-witness")
+        .unwrap()
+        .render(&witness_fixture_vars())
+        .unwrap();
+    let services = doc["service"].as_array().expect("service is array");
+    let types: Vec<&str> = services
+        .iter()
+        .map(|s| s["type"].as_str().expect("a single type string"))
+        .collect();
+    assert_eq!(types, ["TSPTransport", "DIDCommMessaging"]);
+
+    let tsp = &services[0];
+    assert_eq!(tsp["serviceEndpoint"], WITNESS_MEDIATOR);
+    assert_eq!(tsp["id"], format!("{WITNESS_DID}#tsp"));
+    let didcomm = &services[1];
+    assert_eq!(didcomm["serviceEndpoint"][0]["uri"], WITNESS_MEDIATOR);
+    assert_eq!(
+        didcomm["serviceEndpoint"][0]["accept"],
+        json!(["didcomm/v2"])
+    );
+    assert_eq!(didcomm["id"], format!("{WITNESS_DID}#didcomm"));
+
+    for forbidden in [
+        "VTARest",
+        "VTCRest",
+        "TrustTaskHTTPS",
+        "WebVHHosting",
+        "SignInPortal",
+    ] {
+        assert!(
+            !types.contains(&forbidden),
+            "a witness advertises no {forbidden}: {services:#?}"
+        );
+    }
+}
+
+/// `#key-0` (Ed25519) answers Trust Tasks and signs the VWC, so it sits under
+/// both `authentication` and `assertionMethod`; `#key-1` (X25519) is key
+/// agreement only and never signs.
+#[test]
+fn dtg_witness_builtin_puts_the_keys_in_the_right_relationships() {
+    let doc = load_embedded("dtg-witness")
+        .unwrap()
+        .render(&witness_fixture_vars())
+        .unwrap();
+    let signing = format!("{WITNESS_DID}#key-0");
+    let ka = format!("{WITNESS_DID}#key-1");
+    assert_eq!(doc["authentication"], json!([signing]));
+    assert_eq!(doc["assertionMethod"], json!([signing]));
+    assert_eq!(doc["keyAgreement"], json!([ka]));
+    assert_eq!(
+        doc["verificationMethod"][0]["publicKeyMultibase"],
+        "z6MkWITsigning"
+    );
+    assert_eq!(
+        doc["verificationMethod"][1]["publicKeyMultibase"],
+        "z6LSWITka"
+    );
+
+    // The historical pair, nothing more: Ed25519 signs, X25519 agrees.
+    let slots = load_embedded("dtg-witness").unwrap().key_slots();
+    assert_eq!(slots.len(), 2, "{slots:?}");
+    assert_eq!(slots[SLOT_SIGNING].algorithms, vec!["ed25519".to_string()]);
+    assert_eq!(slots[SLOT_KA].algorithms, vec!["x25519".to_string()]);
+}
+
+#[test]
+fn dtg_witness_builtin_missing_mediator_did_errors() {
+    let tpl = load_embedded("dtg-witness").unwrap();
+    let mut vars = TemplateVars::new();
+    vars.insert_string("DID", WITNESS_DID);
+    vars.insert_string("SIGNING_KEY_MB", "z6MkWITsigning");
+    vars.insert_string("KA_KEY_MB", "z6LSWITka");
+    // MEDIATOR_DID deliberately omitted.
+    let err = tpl
+        .render(&vars)
+        .expect_err("missing MEDIATOR_DID must error");
+    assert!(
+        matches!(&err, TemplateError::MissingVars(m) if m.contains("MEDIATOR_DID")),
+        "got: {err}"
+    );
+}
+
+// ─── ballot-box built-in ───────────────────────────────────────────────
+//
+// A `vti-voting-service` identity: the witness's shape (one Ed25519 key that
+// authenticates and asserts — it answers Trust Tasks and signs receipts and
+// board heads — and one X25519 key-agreement key, TSP + DIDComm through a
+// mediator) plus a `TrustTaskHTTPS` door, because a cast from a one-time key
+// MUST be accepted over a binding whose sender holds no session (VTI-VOT-004).
+
+const BALLOT_BOX_DID: &str = "did:webvh:QmBBX:votes.example.net:b1";
+const BALLOT_BOX_MEDIATOR: &str = "did:webvh:QmMED:mediator.example.org:mediator";
+const BALLOT_BOX_HTTPS: &str = "https://votes.example.net";
+
+fn ballot_box_vars() -> TemplateVars {
+    let mut vars = TemplateVars::new();
+    vars.insert_string("DID", BALLOT_BOX_DID);
+    vars.insert_string("SIGNING_KEY_MB", "z6MkBBXsigning");
+    vars.insert_string("KA_KEY_MB", "z6LSBBXka");
+    vars.insert_string("MEDIATOR_DID", BALLOT_BOX_MEDIATOR);
+    vars.insert_string("HTTPS_URL", BALLOT_BOX_HTTPS);
+    vars
+}
+
+#[test]
+fn ballot_box_builtin_loads_and_requires_its_mediator_and_https_door() {
+    let tpl = load_embedded("ballot-box").expect("load_embedded");
+    assert_eq!(tpl.kind, "ballot-box");
+    assert_eq!(tpl.methods, vec!["webvh"]);
+    assert_eq!(tpl.required_vars, vec!["MEDIATOR_DID", "HTTPS_URL"]);
+    tpl.validate().expect("validate after load");
+}
+
+/// TSP, then DIDComm, both at the mediator, then the sessionless cast door —
+/// matched by `type`, never by `#id`.
+#[test]
+fn ballot_box_builtin_advertises_tsp_didcomm_and_the_cast_door() {
+    let doc = load_embedded("ballot-box")
+        .unwrap()
+        .render(&ballot_box_vars())
+        .unwrap();
+    let services = doc["service"].as_array().expect("service is array");
+    let types: Vec<&str> = services
+        .iter()
+        .map(|s| s["type"].as_str().expect("a single type string"))
+        .collect();
+    assert_eq!(
+        types,
+        ["TSPTransport", "DIDCommMessaging", "TrustTaskHTTPS"]
+    );
+    assert_eq!(services[0]["serviceEndpoint"], BALLOT_BOX_MEDIATOR);
+    assert_eq!(
+        services[1]["serviceEndpoint"][0]["uri"],
+        BALLOT_BOX_MEDIATOR
+    );
+    assert_eq!(services[2]["serviceEndpoint"], BALLOT_BOX_HTTPS);
+
+    let signing = format!("{BALLOT_BOX_DID}#key-0");
+    assert_eq!(doc["authentication"], json!([signing]));
+    assert_eq!(doc["assertionMethod"], json!([signing]));
+    assert_eq!(
+        doc["keyAgreement"],
+        json!([format!("{BALLOT_BOX_DID}#key-1")])
+    );
+}
+
+/// A room host advertises its `rooms/*` surface as `TrustTaskHTTPS` at `URL` — the
+/// HTTPS binding's own service type, which every Trust Task client reads — and never
+/// `VTARest`: a room host is not a VTA, and a client looking for the binding's type
+/// (the wallet's console) found none and refused to register rooms with it.
+#[test]
+fn room_host_builtin_advertises_trust_task_https_not_vta_rest() {
+    let mut vars = TemplateVars::new();
+    vars.insert_string("DID", "did:webvh:QmHost:rooms.example.com");
+    vars.insert_string("SIGNING_KEY_MB", "z6MkHOSTsigning");
+    vars.insert_string("KA_KEY_MB", "z6LSHOSTka");
+    vars.insert_string("WEBVH_SERVER", "prod");
+    vars.insert_string("URL", "https://rooms.example.com");
+    vars.insert_string("MEDIATOR_DID", "did:webvh:QmMediator:mediator.example.com");
+    let doc = load_embedded("room-host").unwrap().render(&vars).unwrap();
+    let rest: Vec<&Value> = doc["service"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|s| s["serviceEndpoint"] == "https://rooms.example.com")
+        .collect();
+    assert_eq!(rest.len(), 1, "{doc:#}");
+    assert_eq!(rest[0]["type"], "TrustTaskHTTPS");
+}
+
+// ─── trust-registry built-in ─────────────────────────────────────────
+
+/// The four entries a trust registry's own runtime builder emits, in the
+/// shape it emits them. `{DID}` is the sentinel `didwebvh-rs` resolves after
+/// the SCID is known, as it is for every caller-supplied entry.
+fn trust_registry_entries() -> [(&'static str, Value); 4] {
+    [
+        (DIDCOMM_SERVICE_VAR, didcomm_service(MEDIATOR).unwrap()),
+        (
+            "SERVICE_REST",
+            json!({
+                "id": "{DID}#rest",
+                "type": "TRQPRest",
+                "serviceEndpoint": "https://registry.example.com",
+            }),
+        ),
+        (
+            TRUST_REGISTRY_SERVICE_VAR,
+            json!({
+                "id": "{DID}#trust-registry",
+                "type": TRUST_REGISTRY_SERVICE_TYPE,
+                "serviceEndpoint": {
+                    "uri": "https://registry.example.com",
+                    "profile": TRQP_PROFILE_URI,
+                },
+            }),
+        ),
+        (TSP_SERVICE_VAR, tsp_service(MEDIATOR).unwrap()),
+    ]
+}
+
+#[test]
+fn trust_registry_renders_every_transport_it_is_given() {
+    let tpl = load_embedded("trust-registry").unwrap();
+    assert_eq!(tpl.name, "trust-registry");
+    let mut vars = ambient_vars();
+    vars.insert_string("KA_KEY_MB", "z6LSKeyAgreement");
+    for (var, entry) in trust_registry_entries() {
+        vars.insert(var, entry);
+    }
+
+    let out = tpl.render(&vars).unwrap();
+
+    assert_eq!(out["authentication"][0], "did:webvh:abc:example.com#key-0");
+    assert_eq!(out["assertionMethod"][0], "did:webvh:abc:example.com#key-0");
+    assert_eq!(out["keyAgreement"][0], "did:webvh:abc:example.com#key-1");
+    let types: Vec<&str> = out["service"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["type"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        types,
+        [
+            "DIDCommMessaging",
+            "TRQPRest",
+            TRUST_REGISTRY_SERVICE_TYPE,
+            "TSPTransport"
+        ]
+    );
+    // An endpoint, not a referral: in the registry's own document the
+    // `TrustRegistry` uri is its TRQP URL.
+    assert_eq!(
+        out["service"][2]["serviceEndpoint"]["uri"],
+        "https://registry.example.com"
+    );
+}
+
+/// A registry advertises only what it serves, so each slot has to be
+/// omissible on its own: a REST-only registry has no mediator to name, and a
+/// DIDComm-only one has no public URL.
+#[test]
+fn trust_registry_prunes_every_transport_it_is_not_given() {
+    let tpl = load_embedded("trust-registry").unwrap();
+    for (kept, entry) in trust_registry_entries() {
+        let mut vars = ambient_vars();
+        vars.insert_string("KA_KEY_MB", "z6LSKeyAgreement");
+        let expected_type = entry["type"].clone();
+        vars.insert(kept, entry);
+
+        let out = tpl.render(&vars).unwrap();
+
+        let services = out["service"].as_array().unwrap();
+        assert_eq!(services.len(), 1, "only {kept} was supplied");
+        assert_eq!(services[0]["type"], expected_type);
+    }
+}

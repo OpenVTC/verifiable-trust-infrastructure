@@ -2,7 +2,7 @@
 name = "vta-sdk"
 description = "SDK for Verifiable Trust Agents operating in Verifiable Trust Communities"
 readme = "README.md"
-version = "0.66.0"
+version = "0.73.0"
 edition.workspace = true
 publish.workspace = true
 authors.workspace = true
@@ -44,6 +44,10 @@ proof-verify = [
   # credentials reference, verified against the credential's issuer.
   "dep:affinidi-status-list",
 ]
+# `x509_issuer` — credential issuers known by an X.509 `x5c` chain to a
+# configured trust anchor instead of a DID (EUDI PID and Rulebook credentials,
+# #1988), and their Token Status Lists.
+x509-issuers = ["proof-verify", "dep:x509-parser"]
 didcomm = [
   "dep:affinidi-tdk",
   "dep:affinidi-did-resolver-cache-sdk",
@@ -437,6 +441,8 @@ affinidi-data-integrity = { workspace = true, features = ["bbs-2023"] }
 # assemble synthetic quote chains via its `builder` feature. Production no
 # longer calls into it.
 nitro_attest = { version = "0.2", features = ["builder"] }
+# `x509_issuer` tests build a CA and the issuer certificates it signs.
+rcgen = "0.14"
 # The null-member census (tests/payload_null_census.rs) parses this crate's own
 # `protocols/` source and asserts no wire member can serialize as `null`. Parsed
 # rather than grepped: the attribute it looks for is routinely written across

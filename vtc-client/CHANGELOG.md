@@ -2,6 +2,253 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.28.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vtc-client-v0.27.0...vtc-client-v0.28.0) — 2026-10-26
+
+
+### Added
+
+- **rooms**: Record provenance, record retention and prune, and the epoch floor ([#2272](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2272))
+
+* feat(rooms)!: a record says what kind of claim it is and when it lapses — rooms/records/put 0.3 and provenance in the sealed body
+
+- **rooms**: Pnm rooms prune sends rooms/epoch/prune, and both hosts audit it as a prune ([#2260](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2260))
+
+* feat(rooms)!: pnm rooms prune sends rooms/epoch/prune, and both hosts audit it as a prune
+
+  `rooms/epoch/prune/0.1` was served by both hosts but no client sent it.
+  `pnm rooms prune --room --host --before-epoch --reason [--yes]` now does, the
+  way `pnm rooms renew` sends a mint: the VTA presents `admin` for the CLI
+  (`rooms/keys/present/0.2`) and the CLI signs. It cannot go through
+  `rooms/keys/act`: every act version (0.1-0.6) excludes rooms/epoch/prune on
+  purpose ("warrants a task of its own that states its consequences").
+
+  - vtc-client: `VtcClient::prune_epoch` (payload checked against the
+    generated `rooms::epoch::prune::v0_1::Payload`); never retried.
+  - vta-cli-common: `cmd_rooms_prune` reads the room first (rooms/info),
+    refuses a floor at/above the current epoch locally with the highest floor
+    that works, prints the irreversibility warning the spec's Consent/purpose
+    section asks for (what becomes unreadable; records stay; members' VTAs keep
+    what they derived), and proceeds only on `--yes` or a `y` at a terminal —
+    a pipe without `--yes` is refused with the command to run.
+  - Hosts: a prune was audited as `RoomOperation::MintEpoch`
+    (`room.epoch.mint`) in room-host and vtc-service. New
+    `RoomOperation::PruneEpoch` (`room.epoch.prune`, admin). Hosts also now
+    answer the spec's declared `rooms/epoch/prune:notAhead` with
+    `details.epoch` (vti_rooms::blob_tasks::prune_floor_refused) instead of a
+    generic validation error.
+  - Docs: data-rooms.md (§2 status, §9, new §10.4, §11 refusals), X4.4 done.
+    Prune erases the host's rungs only; members' VTAs keep their copies.
+
+- **voting**: Community voting — polls, surveys and elections with blind tickets, a separate ballot box and trustee-encrypted levels (VTI-VOT-001 – 100) ([#2239](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2239))
+
+* feat(voting): vti-voting, PCS voting tickets, casts and the ballot box
+
+  Phase 0 of community voting (design: community voting, draft VTI-VOT-*):
+  the cryptographic core on the Predicate Credential System, no wire types
+  until the voting/* Trust Task family is specified.
+
+  - registrar: the community's voting helper key, under its own deployment
+    label (`<community>#voting-pcs`) and key-derivation info, so it is never
+    the vetting key. Issues tickets blind under `voter/<election>`,
+    sequentially under one lock.
+  - voter: a fresh key per election, the blinded ticket request, the cast:
+    `attest_in_context` for a hash-to-curve election point, with the
+    community, election, manifest digest and ballot bytes bound into the
+    context (VOT-012).
+  - ballot_box: verifies on the published `hvk` alone (VOT-007); the tag is
+    the per-election nullifier, recorded once under the revote rule
+    (VOT-002) through an atomic NullifierStore.
+
+  Measured (examples/scale.rs, 500 voters, release, M5 Max): issuance
+  2.0 ms (~500/s per VTC), cast 3.2 ms, admit 3.0 ms (~330/s per core),
+  recount 0.21 ms per ballot on 18 threads (~1 min for 300,000); a cast's
+  attestation is 248 bytes compressed.
+
+  publish = false until its first published consumer.
+
+- Growth types in published crates are #[non_exhaustive] ([#2196](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2196))
+
+A new variant on a public enum, or a new field on a public struct a consumer
+  can build with a literal, is a breaking change in a published crate. It kept
+  happening on types that were always going to grow (#1231, #1234, #1244, #1247,
+  #1250); #1262 fixed it for Capability and AuditEvent only.
+
+  This marks the rest once. 143 enums are marked: every error and refusal enum
+  (VtaError, AppError, ...) and the growth vocabularies (kinds, statuses,
+  reasons, codes, transports, SealedPayloadV1). 32 structs are marked: config
+  and response bags that no caller builds with a literal. Adding the attribute
+  is itself breaking, once. After it, additions to these types are minor
+  changes.
+
+  Left exhaustive on purpose, and pinned that way by the census:
+  VerifiedAssertion, AssertionProof, ActScope, ApproveScope, ContextDirection,
+  SigningDomain, TokenStatus and Role. For each of these, every arm must be
+  considered, and a downstream wildcard would be the bug.
+
+  Every downstream match in the workspace gets a `_ =>` arm that takes the most
+  restrictive or most generic reading: an internal error, a hidden or refused
+  entry, a stale attribute. None is unreachable!().
+
+  vta-sdk/tests/non_exhaustive_census.rs fails on a public enum in a published
+  library crate whose name ends in Error, Refusal, Violation, Kind, Event,
+  Status, Capability, Reason or Code and that is not #[non_exhaustive], unless
+  it is listed as deliberately exhaustive with a reason. It also fails when a
+  listed enum gains the attribute or disappears.
+
+
+
+## [0.27.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vtc-client-v0.26.0...vtc-client-v0.27.0) — 2026-10-18
+
+
+## [0.26.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vtc-client-v0.25.0...vtc-client-v0.26.0) — 2026-10-18
+
+
+### Added
+
+- **vtc**: Community-room details administrators can see, edit and track (trust-tasks-tf #805) ([#2170](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2170))
+
+* build: raise the trust-tasks-rs floor to 0.31.14 (trust-tasks-tf #805)
+
+  0.31.14 carries vtc/rooms/community/update/0.1, the 0.2 community-room
+  create/get/list and vtc/rooms/offers/list/0.2.
+
+
+
+### Fixed
+
+- **vtc-client**: Read a bare-origin VTCRest endpoint as the /v1 mount (KR-15) ([#2172](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2172))
+
+DIDs minted from the vtc-host template before #1615 advertise VTCRest as
+  the bare origin. Since #1637 cnm takes its API base from that endpoint, so
+  such a community failed every request unless --url was passed.
+  api_base_from_did_document now reads a pathless endpoint as <origin>/v1,
+  the only mount the VTC serves; an endpoint that names a path is unchanged.
+
+
+
+## [0.25.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vtc-client-v0.24.0...vtc-client-v0.25.0) — 2026-10-16
+
+
+### Added
+
+- **cnm**: Cnm rooms — run the rooms the community owns; docs ([#2142](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2142))
+
+* feat(cnm): cnm rooms — run the rooms the community owns; docs
+
+  `cnm rooms {create,list,get}` and `cnm rooms members {add,remove,list}` over
+  vtc/rooms/community/*, signed as the profile's administrator identity, changes
+  through the bound passkey gesture as `cnm git` changes are. vtc-client
+  re-exports the community_rooms / room_offers spec modules.
+
+- **vtc**: Direct admission on the generated vtc/members types (trust-tasks-rs 0.31.9) ([#2138](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2138))
+
+* build(deps): trust-tasks-rs 0.31.9 — vtc/members/admit and make-membership (trust-tasks-tf #784)
+
+
+
+## [0.24.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vtc-client-v0.23.0...vtc-client-v0.24.0) — 2026-10-15
+
+
+### Added
+
+- **rooms**: Rooms/blobs 0.2 — the single-use upload key, and reads straight from storage (trust-tasks-tf #771) ([#2108](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2108))
+
+* build(deps): trust-tasks-rs 0.31.4 floor — rooms/blobs 0.2 and rooms/keys/act (trust-tasks-tf #771)
+
+- **rooms**: Act as the member's persona — rooms/keys/act, seal 0.2, and read/browse/backfill as the principal ([#2107](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2107))
+
+Implements the member-acts-as-persona half of trustoverip/dtgwg-trust-tasks-tf#771
+  (trust-tasks-rs 0.31.3, now the workspace floor).
+
+- **pnm**: Rooms owner register/invite/issue-* and rooms keys verbs — a sealed room from the CLI end to end ([#2092](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2092))
+
+The owner's credential tasks and the joiner's key-holder tasks had no `pnm`
+  verb, so a sealed room could not be run on a VTC from the command line.
+
+  Owner (`pnm rooms owner …`), each a call to the owner's own VTA:
+  - `register` → rooms/owner/register/0.1 (the VTA signs rooms/create as the
+    owner's persona DID)
+  - `invite` → rooms/owner/invite/0.1, writes the VIC to --out
+  - `issue-membership` → rooms/owner/issue-membership/0.1
+  - `issue-authority` → rooms/owner/issue-authority/0.2 (expiry required)
+    Both issue verbs write to --out and/or --store the credential in this VTA's
+    vault.
+
+  Key holder (`pnm rooms keys …`):
+  - `key-package` → rooms/keys/key-package/0.1, writes the KeyPackage base64url
+  - `welcome` → rooms/keys/welcome/0.1, from the file group-add wrote
+  - `commit` → rooms/keys/commit/0.1, one commit from a file, or every missed
+    commit fetched from the host's relay (rooms/epoch/commits) with --host
+  - `list` → rooms/keys/list/0.1
+
+  Every party these name — owner, subject, member — is a persona DID the VTA
+  holds, never the CLI's session key, so none defaults to the session; that
+  includes `owner group-create --member`, now required. `pnm rooms create` is
+  marked as the client-key path for a standalone room-host or testing.
+
+  The SDK gains typed `VtaClient::room_owner_*`, `room_key_package`,
+  `room_welcome`, `room_commit` and `room_keys_list`, built through the
+  generated `trust_tasks_rs::specs` payloads and read through the generated
+  responses; vtc-client gains `epoch_commits`. The keys tasks speak MLS epochs
+  per their specification; the CLI converts so every number it shows is a room
+  epoch. docs/02-vta/data-rooms.md now uses the verbs.
+
+
+
+### Fixed
+
+- **vtc**: Admit room traffic on what it proves, not the anonymous per-IP governor ([#2102](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2102))
+
+Every `rooms/*` Trust Task reaches the VTC on the unauthenticated chain and
+  was charged to the per-IP `unauth` governor: a burst of 10, then one request
+  every 5 s, shared by everyone behind one address. Two members on one machine
+  were refused within seconds, and `pnm rooms file get` of a 300 KB file 429'd
+  every time. Upload chunks fared worse: above 64 KiB they also took the
+  large-document budget, five a minute per address and sixty across the node.
+
+  A `rooms/*` document (the closed set the rooms dispatcher serves) now leaves
+  the anonymous governor and is charged, in `routing::trust_task_admission`:
+
+  - before anything is verified, to its address's room ceiling
+    (`room-address`, default burst 400 then one every 10 ms). A document that
+    never verifies, or that its room never authorizes, costs that ceiling 25
+    more, so an unverifiable flood from one address is held to about four a
+    second once its burst is spent;
+  - once the room has authorized it and before the work, to the presenter's
+    budget in that room (`room-presenter`, burst 120, one every 100 ms), or for
+    an upload/download chunk, once the presenter is shown to hold the transfer
+    (`BlobHost::transfer_room`), to the transfer budget (`room-transfer`, burst
+    200, one every 20 ms: a 100 MB file at 256 KiB chunks waits ~4 s past the
+    burst). Keys are a hash of (room, presenter) under a per-process secret, and
+    are charged only after the room's chain verifies, so two members behind one
+    NAT have independent budgets and nobody drains a member's by naming them.
+
+  An upload chunk charged to the room ceiling over HTTPS skips the
+  large-document budget (`size::check_for_known_issuer_with`); over DIDComm/TSP
+  it keeps it. Every refusal keeps the 429 contract (x-rate-limit-source: vtc,
+  Retry-After, JSON body naming the limiter); the three limiter names join the
+  table in `routing::rate_limit`.
+
+  The budgets are an optional `[rooms.rate_limits]` section (address_*,
+  presenter_*, transfer_* as `_burst` and `_interval_ms`); absent, the defaults
+  above. Documented in docs/02-vta/data-rooms.md §8.2 and
+  docs/03-vtc/website-and-admin.md.
+
+  vtc-client's room calls now wait out a Retry-After of up to 30 s and retry
+  (up to 5 attempts, re-signed each time) for reads only: records get/list,
+  info, epoch chain/commits, blobs get and download chunks. Writes are never
+  retried.
+
+  vti-rooms gains `BlobHost::transfer_room` (additive).
+
+
+
+## [0.23.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vtc-client-v0.22.0...vtc-client-v0.23.0) — 2026-10-13
+
+
+## [0.22.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vtc-client-v0.21.0...vtc-client-v0.22.0) — 2026-10-12
+
+
 ## [0.21.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vtc-client-v0.20.0...vtc-client-v0.21.0) — 2026-10-11
 
 

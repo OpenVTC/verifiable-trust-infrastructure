@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
 #[derive(utoipa::ToSchema)]
+#[non_exhaustive]
 pub enum TeeType {
     SevSnp,
     Nitro,

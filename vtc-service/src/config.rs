@@ -12,6 +12,13 @@ pub use vti_common::config::{
 pub struct AppConfig {
     pub vtc_did: Option<String>,
     pub vta_did: Option<String>,
+    /// The context at `vta_did` holding this community's own DID — the one `vtc setup`
+    /// provisioned it in. Written by setup; **absent** in a configuration written before
+    /// it was, which changes nothing but the community rooms' fix commands
+    /// ([`crate::rooms::vta_access`]), which then name it by a placeholder. The
+    /// community's entry at its VTA must cover it for the VTA to act as the community.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vta_context: Option<String>,
     #[serde(alias = "community_name")]
     pub vtc_name: Option<String>,
     #[serde(alias = "community_description")]
@@ -108,8 +115,225 @@ pub struct AppConfig {
     /// the largest wallet response accepted. See [`crate::oid4vp::session`].
     #[serde(default)]
     pub oid4vp: Oid4vpConfig,
+    /// The witnesses this community trusts (`[witnesses]`): whose Verifiable
+    /// Witness Credentials count as evidence here. **Absent or empty means
+    /// none does.** Runtime-patchable as `witnesses.trusted`. See
+    /// [`crate::credentials::trusted_witnesses`].
+    #[serde(
+        default,
+        skip_serializing_if = "crate::credentials::trusted_witnesses::WitnessesConfig::is_empty"
+    )]
+    pub witnesses: crate::credentials::trusted_witnesses::WitnessesConfig,
+    /// The member directory (`[directory]`): the listing a new card starts
+    /// with, how long a retired field's values are kept, the facet threshold
+    /// and the per-member read rate. **Absent means the defaults**, which are
+    /// the narrow ones the directory chapter asks for (VTI-DIR-041). See
+    /// [`crate::directory`].
+    #[serde(default, skip_serializing_if = "DirectoryConfig::is_default")]
+    pub directory: DirectoryConfig,
+    /// Community elections (`[voting]`): the voting services this community
+    /// registers elections with (VTI-VOT-082). **Absent means none**, so no
+    /// election can be created. See [`crate::elections`].
+    #[serde(
+        default,
+        skip_serializing_if = "crate::elections::VotingConfig::is_empty"
+    )]
+    pub voting: crate::elections::VotingConfig,
+    /// The community's groups (`[groups]`, the `vtc/groups/*` tasks): where its VTA
+    /// mints each group's identity, and how long the credentials it issues last.
+    ///
+    /// **Absent means off**, as every configuration written before groups existed is:
+    /// such a VTC starts exactly as before, and a create is refused `noKeyHolder`
+    /// naming this section. Writing it is what turns them on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub groups: Option<GroupsConfig>,
+    /// Where the identities this community mints — its groups' and its own
+    /// rooms' — are published (`[dids] webvh_server`): the file layer of the
+    /// runtime key `dids.webvh_server` (`crate::did_hosting`). **Absent means
+    /// each kind's own setting**, as before the key existed.
+    #[serde(
+        default,
+        skip_serializing_if = "crate::did_hosting::DidsConfig::is_empty"
+    )]
+    pub dids: crate::did_hosting::DidsConfig,
     #[serde(skip)]
     pub config_path: PathBuf,
+}
+
+/// Where the community's groups get their identities (`[groups]`).
+///
+/// The community's VTA (`vta_did`) holds every group's keys: it mints each group's
+/// `did:webvh` from the `vtc-group` template and signs, as the group, the membership
+/// credentials the group issues, and as the community, the authority credential the
+/// community issues the group. This community holds no group key. It reaches the VTA
+/// over the messaging link it already keeps, so `vta_did` and `[messaging]` are needed
+/// too, and this community's DID needs an entry at the VTA in `context` with
+/// `key-mint` and `sign-document`.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub struct GroupsConfig {
+    /// The context at the community's VTA the groups' keys are minted in. Absent:
+    /// `[rooms.community] context`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context: Option<String>,
+    /// A `did:webvh` hosting server registered at the VTA, by its id there, that
+    /// publishes each group's log. **Absent**: the groups' identities are minted
+    /// serverless and this community serves each log itself, at
+    /// `<public_url>/group-dids/<id>/did.jsonl`, so `public_url` must be set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub webvh_server: Option<String>,
+    /// How long the community's authority credential to a group lasts, in days.
+    /// Default 365, renewed well before it lapses.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub authority_valid_days: Option<u32>,
+    /// How long a member's group membership credential lasts, in days. Default 30,
+    /// renewed while the member stays; its expiry is its revocation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credential_valid_days: Option<u32>,
+    /// How long before a group's authority credential lapses the community
+    /// renews it, in days. Default: 30, or a member credential's life where
+    /// that is longer, so every member receives the new authority with a
+    /// renewed credential before the old one lapses. Never more than half the
+    /// authority's own life (`groups::renewal`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub authority_renew_within_days: Option<u32>,
+}
+
+impl GroupsConfig {
+    /// [`Self::authority_renew_within_days`], defaulted, and never more than
+    /// half the authority's own life: a renewal due again as soon as it landed
+    /// would renew on every pass.
+    pub fn authority_renew_within(&self) -> chrono::Duration {
+        let days = self
+            .authority_renew_within_days
+            .unwrap_or_else(|| 30.max(self.credential_valid_days()))
+            .min(self.authority_valid_days() / 2)
+            .max(1);
+        chrono::Duration::days(i64::from(days))
+    }
+
+    /// How long before a member's group credential lapses it is renewed: a
+    /// third of its life (ten days of a 30-day credential), at least an hour.
+    pub fn credential_renew_within(&self) -> chrono::Duration {
+        let life = chrono::Duration::days(i64::from(self.credential_valid_days()));
+        (life / 3).max(chrono::Duration::hours(1))
+    }
+
+    /// [`Self::authority_valid_days`], defaulted and at least one day.
+    pub fn authority_valid_days(&self) -> u32 {
+        self.authority_valid_days.unwrap_or(365).max(1)
+    }
+
+    /// [`Self::credential_valid_days`], defaulted and at least one day.
+    pub fn credential_valid_days(&self) -> u32 {
+        self.credential_valid_days.unwrap_or(30).max(1)
+    }
+}
+
+/// The member directory (`[directory]`).
+///
+/// A host setting, written by the operator. Widening any of it — a wider
+/// `default_listing` above all — widens what a new card exposes, so it is not
+/// runtime-patchable: the community's administrators change the schema, never
+/// these.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub struct DirectoryConfig {
+    /// `listed` (the default), `findable` or `hidden`: where a new card
+    /// starts. Every member may always choose `hidden`.
+    #[serde(default = "DirectoryConfig::default_listing")]
+    pub default_listing: String,
+    /// Days a retired field's values are kept before they are erased, so a
+    /// mistaken retirement can be undone by the operator. Default 30.
+    #[serde(default = "DirectoryConfig::default_retention_days")]
+    pub retention_days: u32,
+    /// The facet threshold *k* (VTI-DIR-113): a count below it is shown only as
+    /// "fewer than k". Default 5, at least 2.
+    #[serde(default = "DirectoryConfig::default_facet_threshold")]
+    pub facet_threshold: u32,
+    /// `vtc/directory/entries/list` requests one caller may make per minute
+    /// (VTI-DIR-114). Default 60.
+    #[serde(default = "DirectoryConfig::default_list_rate")]
+    pub list_rate_per_minute: u32,
+    /// Whether a member may publish their card beyond the community with
+    /// `vtc/directory/card/publish` (VTI-DIR-046). Default `true`: publication
+    /// is still the member's own decision, signed with their membership DID,
+    /// and needs their registry-publication consent. `false` refuses it
+    /// (`notAvailable`), and the disclosure statement says no card leaves the
+    /// community.
+    #[serde(default = "DirectoryConfig::default_external_cards")]
+    pub external_cards: bool,
+    /// Pictures one member or administrator may upload per hour
+    /// (`vtc/directory/images/upload`). Default 30.
+    #[serde(default = "DirectoryConfig::default_image_uploads")]
+    pub image_uploads_per_hour: u32,
+}
+
+impl DirectoryConfig {
+    fn default_listing() -> String {
+        "listed".into()
+    }
+    fn default_retention_days() -> u32 {
+        30
+    }
+    fn default_facet_threshold() -> u32 {
+        5
+    }
+    fn default_list_rate() -> u32 {
+        60
+    }
+    fn default_external_cards() -> bool {
+        true
+    }
+    fn default_image_uploads() -> u32 {
+        30
+    }
+
+    pub fn is_default(&self) -> bool {
+        self == &Self::default()
+    }
+
+    /// The settings the directory runs with. A value it cannot use is refused
+    /// at boot rather than read as something wider.
+    pub fn settings(&self) -> Result<crate::directory::model::Settings, String> {
+        let default_listing = crate::directory::model::Listing::parse(&self.default_listing)
+            .ok_or_else(|| {
+                format!(
+                    "[directory] default_listing = {:?}: expected listed, findable or hidden",
+                    self.default_listing
+                )
+            })?;
+        if self.facet_threshold < 2 {
+            return Err("[directory] facet_threshold must be at least 2".into());
+        }
+        if self.list_rate_per_minute == 0 {
+            return Err("[directory] list_rate_per_minute must be at least 1".into());
+        }
+        if self.image_uploads_per_hour == 0 {
+            return Err("[directory] image_uploads_per_hour must be at least 1".into());
+        }
+        Ok(crate::directory::model::Settings {
+            default_listing,
+            retention_days: self.retention_days,
+            facet_threshold: self.facet_threshold,
+            list_rate_per_minute: self.list_rate_per_minute,
+            external_cards: self.external_cards,
+            image_uploads_per_hour: self.image_uploads_per_hour,
+        })
+    }
+}
+
+impl Default for DirectoryConfig {
+    fn default() -> Self {
+        Self {
+            default_listing: Self::default_listing(),
+            retention_days: Self::default_retention_days(),
+            facet_threshold: Self::default_facet_threshold(),
+            list_rate_per_minute: Self::default_list_rate(),
+            external_cards: Self::default_external_cards(),
+            image_uploads_per_hour: Self::default_image_uploads(),
+        }
+    }
 }
 
 /// Data rooms hosted by this community (`[rooms]`).
@@ -117,28 +341,224 @@ pub struct AppConfig {
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct RoomsConfig {
     /// Room files (`[rooms.files]`): the `rooms/blobs/*` tasks and `rooms/records/put/0.2`.
-    #[serde(default)]
-    pub files: RoomFilesConfig,
+    ///
+    /// **Absent means off**, and absent is what every configuration written before room
+    /// files existed has. Such a VTC starts exactly as before: no directory is created,
+    /// no storage config is seeded, uploads are refused and the console says how to turn
+    /// files on. Writing the section is what turns them on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub files: Option<RoomFilesConfig>,
+    /// How much `rooms/*` traffic `POST /v1/trust-tasks` admits (`[rooms.rate_limits]`,
+    /// [`crate::routing::trust_task_admission`]). **Absent means the defaults**, which is
+    /// what every configuration written before this section existed has.
+    #[serde(default, skip_serializing_if = "RoomRateLimitsConfig::is_unset")]
+    pub rate_limits: RoomRateLimitsConfig,
+    /// Rooms the community itself owns (`[rooms.community]`, the
+    /// `vtc/rooms/community/*` tasks): where its VTA mints their identities.
+    ///
+    /// **Absent means off**, as every configuration written before community rooms
+    /// existed is: such a VTC starts exactly as before, and a create is refused
+    /// `noKeyHolder` naming this section. Writing it is what turns them on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub community: Option<CommunityRoomsConfig>,
+}
+
+/// Where the community's own rooms get their identities (`[rooms.community]`).
+///
+/// The community owns these rooms and its VTA (`vta_did`) holds their keys: it mints
+/// each room's `did:webvh` from the `room` template, signs its credentials and holds the
+/// community's place in a sealed room's group. This community holds no room key. It
+/// reaches the VTA over the messaging link it already keeps, so `vta_did` and
+/// `[messaging]` are needed too, and this community's DID needs an entry at the VTA in
+/// `context` with `key-mint`, `credential-write`, `vault-write` and `room-open` (which
+/// writes each room's profile into it), and `vault-read` to renew the authority over a
+/// room created before renewal recorded where it is kept.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub struct CommunityRoomsConfig {
+    /// The context at the community's VTA the rooms' keys are minted in. This
+    /// community's own entry there must act in it.
+    pub context: String,
+    /// A `did:webvh` hosting server registered at the VTA, by its id there, that
+    /// publishes each room's log. **Absent**: the rooms' identities are minted
+    /// serverless and this community serves each log itself, at
+    /// `<public_url>/room-dids/<id>/did.jsonl`, so `public_url` must be set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub webvh_server: Option<String>,
+    /// The mediator each room's DID document names (the `room` template's
+    /// `MEDIATOR_DID`). Absent: `[messaging] mediator_did`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mediator_did: Option<String>,
+    /// How long the community's own `admin` authority over a room it creates lasts,
+    /// in days. Default 365. A room whose owner's authority has lapsed can no longer
+    /// admit or remove anyone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub authority_valid_days: Option<u32>,
+    /// How long before the community's own authority over a room lapses this
+    /// community asks its VTA to renew it, in days. Default 30. Bounded by half of
+    /// [`Self::authority_valid_days`], so a renewal is never due again the moment it
+    /// lands (`rooms::community_renewal`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub authority_renew_within_days: Option<u32>,
+}
+
+impl CommunityRoomsConfig {
+    /// [`Self::authority_valid_days`], defaulted and at least one day.
+    pub fn authority_valid_days(&self) -> u32 {
+        self.authority_valid_days.unwrap_or(365).max(1)
+    }
+
+    /// [`Self::authority_renew_within_days`], defaulted, and never more than half the
+    /// authority's own life: a renewal that was due again as soon as it landed would ask
+    /// the VTA for a fresh credential on every pass.
+    pub fn authority_renew_within(&self) -> chrono::Duration {
+        let configured = chrono::Duration::days(i64::from(
+            self.authority_renew_within_days
+                .unwrap_or(crate::rooms::community_renewal::DEFAULT_RENEW_WITHIN_DAYS),
+        ));
+        let half_life = chrono::Duration::days(i64::from(self.authority_valid_days())) / 2;
+        configured.min(half_life)
+    }
+}
+
+/// The budgets room traffic is charged to on the HTTPS Trust Task door
+/// (`[rooms.rate_limits]`). Every measure is optional; an absent one keeps its default.
+///
+/// Each budget is a token bucket: `*_burst` documents back to back, then one every
+/// `*_interval_ms` **milliseconds per document** — an interval, not a rate, so a
+/// *larger* interval is a *tighter* limit. Zero is read as 1.
+///
+/// Read when the first room document arrives; a change takes a restart.
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub struct RoomRateLimitsConfig {
+    /// Every `rooms/*` document from one address, charged **before** anything in it is
+    /// verified. Default burst 400, then one every 10 ms. A document that does not go on
+    /// to verify and be authorized by its room costs this budget more (see
+    /// [`crate::routing::trust_task_admission`]), so a flood of unverifiable documents
+    /// stops here.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub address_burst: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub address_interval_ms: Option<u64>,
+    /// One presenter's operations in one room, charged **after** the room has
+    /// authorized them. Default burst 120, then one every 100 ms.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub presenter_burst: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub presenter_interval_ms: Option<u64>,
+    /// One presenter's file chunks in one room (`rooms/blobs/upload/chunk`,
+    /// `rooms/blobs/chunk`), charged once the presenter is shown to hold the transfer.
+    /// Default burst 200, then one every 20 ms — a 100 MB file at the default 256 KiB
+    /// chunk is 400 chunks, about four seconds of waiting past the burst.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transfer_burst: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transfer_interval_ms: Option<u64>,
+}
+
+/// One budget: a burst, then one document every `interval`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RoomBudget {
+    pub burst: u32,
+    pub interval: std::time::Duration,
+}
+
+impl RoomBudget {
+    fn from(burst: Option<u32>, interval_ms: Option<u64>, default: RoomBudget) -> Self {
+        Self {
+            burst: burst.map_or(default.burst, |b| b.max(1)),
+            interval: interval_ms.map_or(default.interval, |ms| {
+                std::time::Duration::from_millis(ms.max(1))
+            }),
+        }
+    }
+}
+
+/// The shipped room budgets: the per-address pre-verification ceiling.
+pub const ROOM_ADDRESS_DEFAULT: RoomBudget = RoomBudget {
+    burst: 400,
+    interval: std::time::Duration::from_millis(10),
+};
+/// The shipped per-(room, presenter) budget for ordinary room operations.
+pub const ROOM_PRESENTER_DEFAULT: RoomBudget = RoomBudget {
+    burst: 120,
+    interval: std::time::Duration::from_millis(100),
+};
+/// The shipped per-(room, presenter) budget for file chunks.
+pub const ROOM_TRANSFER_DEFAULT: RoomBudget = RoomBudget {
+    burst: 200,
+    interval: std::time::Duration::from_millis(20),
+};
+
+impl RoomRateLimitsConfig {
+    fn is_unset(&self) -> bool {
+        *self == Self::default()
+    }
+
+    /// The per-address ceiling every room document is charged before verification.
+    pub fn address(&self) -> RoomBudget {
+        RoomBudget::from(
+            self.address_burst,
+            self.address_interval_ms,
+            ROOM_ADDRESS_DEFAULT,
+        )
+    }
+
+    /// The per-(room, presenter) budget for authorized room operations.
+    pub fn presenter(&self) -> RoomBudget {
+        RoomBudget::from(
+            self.presenter_burst,
+            self.presenter_interval_ms,
+            ROOM_PRESENTER_DEFAULT,
+        )
+    }
+
+    /// The per-(room, presenter) budget for file chunks.
+    pub fn transfer(&self) -> RoomBudget {
+        RoomBudget::from(
+            self.transfer_burst,
+            self.transfer_interval_ms,
+            ROOM_TRANSFER_DEFAULT,
+        )
+    }
+}
+
+impl RoomsConfig {
+    /// Whether this community accepts room files: a `[rooms.files]` section, not
+    /// switched off inside it.
+    pub fn files_enabled(&self) -> bool {
+        self.files.as_ref().is_some_and(|f| f.enabled)
+    }
 }
 
 /// Room files (`[rooms.files]`), `docs/05-design-notes/data-rooms-files.md` §5–§6.
 ///
-/// **Off by default.** Until storage configs exist (§7), a file goes to a directory on
-/// this host, under limits that apply to every room alike. An operator turns uploads on
-/// knowing that. Reads of stored files and records without files are served either way.
+/// **Off unless the section is present.** Writing `[rooms.files]` turns uploads on; an
+/// operator does that knowing files will be stored under the directories it names.
+/// Reads of stored files and records without files are served either way.
 /// The limits are the same measures `room-host` takes on its command line. An absent one
 /// keeps the shipped default of §6.2.
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct RoomFilesConfig {
-    /// Accept uploads. Default `false`.
-    #[serde(default)]
+    /// Accept uploads. Default `true` once the section is present; `false` keeps the
+    /// section's settings and refuses uploads.
+    #[serde(default = "default_files_enabled")]
     pub enabled: bool,
-    /// Where committed files are stored. Default `<store.data_dir>/room-blobs`. Not in a
-    /// VTC backup, which carries the index of files (`room_blobs`) and never their bytes:
-    /// back this directory up beside the data directory.
+    /// The root of the `local` storage config seeded on first start. Default
+    /// `<store.data_dir>/room-blobs`. Once seeded the stored config wins, and is changed
+    /// with `vtc/storage/configs/update`. Not in a VTC backup, which carries the index
+    /// of files (`room_blobs`) and never their bytes: back it up beside the data
+    /// directory.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub blob_dir: Option<PathBuf>,
+    /// The directories a `local` storage config's root may be placed beneath. Default
+    /// `[<store.data_dir>/room-storage]`. An administrator's config names a directory
+    /// strictly inside one of these, after symbolic links are resolved, so the console
+    /// can never point this service at the rest of the machine.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub local_storage_bases: Vec<PathBuf>,
     /// The largest single file, at most 1 GiB.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_file_bytes: Option<u64>,
@@ -157,6 +577,99 @@ pub struct RoomFilesConfig {
     /// How often deleted and abandoned files are collected. Default 600.
     #[serde(default = "default_blob_sweep_interval_secs")]
     pub sweep_interval_secs: u64,
+    /// Which rooms a `rooms/blobs/*/0.2` transfer may go straight between the member
+    /// and the room's storage, where that storage can issue time-limited URLs (an
+    /// `s3` config through the community's VTA) and the member asks for it:
+    /// `"not_private"` (the default) for `open` and `attributed` rooms; `"all"` to
+    /// include `private` rooms, whose readers' network addresses the storage
+    /// provider then sees; `"off"` to keep every transfer through this service.
+    /// Browsers need the bucket's CORS set for it (`docs/02-vta/data-rooms.md` §8.2).
+    #[serde(default, skip_serializing_if = "is_default_direct")]
+    pub direct_transfer: vti_rooms::blobs::DirectTransfer,
+    /// The fastest a migration (`vtc/rooms/storage/migrate`) copies a room's files, in
+    /// bytes per second. A request's `maxBytesPerSecond` can only lower it. Default
+    /// 8 MiB/s; never below 64 KiB/s.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub migration_max_bytes_per_second: Option<u64>,
+    /// Which storage authentication modes this host permits beyond `vta-account`
+    /// (`[rooms.files.auth]`, `vtc/storage/configs/create/0.2` item 9). Absent, neither
+    /// `ambient` nor `sealed` is offered: both put backend authority on this machine,
+    /// so whether they exist at all is the host operator's choice, never the
+    /// administrators'.
+    #[serde(default, skip_serializing_if = "StorageAuthHostConfig::is_default")]
+    pub auth: StorageAuthHostConfig,
+}
+
+/// `[rooms.files.auth]`: the storage authentication modes this host permits and how
+/// its ambient identity is used (`vtc/storage/configs/create/0.2` items 9–10,
+/// "Room-scoped credentials"). Every member is optional and off by default, so a
+/// configuration written before these modes existed starts unchanged.
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub struct StorageAuthHostConfig {
+    /// Permit `ambient`: configs that use this machine's own cloud identity (an
+    /// instance role, workload identity), always downscoped to one room's prefix for
+    /// at most 15 minutes. Default `false`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub ambient: bool,
+    /// Permit `sealed`: a long-lived storage credential set with
+    /// `vtc/storage/credentials/set` and kept here, encrypted at rest. It protects the
+    /// credential from every administrator, never from whoever operates this machine.
+    /// Default `false`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub sealed: bool,
+    /// The IAM role an `ambient` `s3` config assumes when it names no `roleArn`.
+    /// Absent, the ambient identity's own role.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub aws_role_arn: Option<String>,
+    /// This host's stable egress address, added to every AWS session policy as an
+    /// `aws:SourceIp` condition (an IP address or CIDR block).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub aws_source_ip: Option<String>,
+    /// The Google service account an `ambient` `gcs` config's source token is minted
+    /// for, through IAM Credentials `generateAccessToken` with a 900-second lifetime.
+    /// Absent, the ambient identity's own token is used, and stops being used 15
+    /// minutes after it was obtained whatever lifetime Google gave it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gcs_service_account: Option<String>,
+}
+
+impl StorageAuthHostConfig {
+    fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+
+    /// Refuse a value that could not be used as written: a role ARN that is not one,
+    /// a source address that does not parse, a service account that is not an email.
+    pub fn validate(&self) -> Result<(), AppError> {
+        if let Some(arn) = &self.aws_role_arn
+            && !crate::rooms::storage_auth::aws::is_role_arn(arn)
+        {
+            return Err(AppError::Config(format!(
+                "[rooms.files.auth] aws_role_arn `{arn}` is not an IAM role ARN \
+                 (arn:aws:iam::<account>:role/<name>)"
+            )));
+        }
+        if let Some(ip) = &self.aws_source_ip
+            && ip.parse::<ipnetwork::IpNetwork>().is_err()
+        {
+            return Err(AppError::Config(format!(
+                "[rooms.files.auth] aws_source_ip `{ip}` is not an IP address or CIDR block"
+            )));
+        }
+        if let Some(sa) = &self.gcs_service_account
+            && !crate::rooms::storage_auth::gcs::is_service_account(sa)
+        {
+            return Err(AppError::Config(format!(
+                "[rooms.files.auth] gcs_service_account `{sa}` is not a service account email"
+            )));
+        }
+        Ok(())
+    }
+}
+
+fn is_default_direct(d: &vti_rooms::blobs::DirectTransfer) -> bool {
+    *d == vti_rooms::blobs::DirectTransfer::default()
 }
 
 /// Limits at one scope; an absent measure keeps its default.
@@ -171,6 +684,10 @@ pub struct RoomFileLimits {
     pub max_bytes: Option<u64>,
 }
 
+fn default_files_enabled() -> bool {
+    true
+}
+
 fn default_orphan_grace_hours() -> u64 {
     vti_rooms::blobs::DEFAULT_ORPHAN_GRACE_SECS / 3600
 }
@@ -182,14 +699,18 @@ fn default_blob_sweep_interval_secs() -> u64 {
 impl Default for RoomFilesConfig {
     fn default() -> Self {
         Self {
-            enabled: false,
+            enabled: default_files_enabled(),
             blob_dir: None,
+            local_storage_bases: Vec::new(),
             max_file_bytes: None,
             room: RoomFileLimits::default(),
             member: RoomFileLimits::default(),
             storage_capacity_bytes: None,
             orphan_grace_hours: default_orphan_grace_hours(),
             sweep_interval_secs: default_blob_sweep_interval_secs(),
+            direct_transfer: Default::default(),
+            migration_max_bytes_per_second: None,
+            auth: StorageAuthHostConfig::default(),
         }
     }
 }
@@ -256,6 +777,46 @@ pub struct Oid4vpConfig {
     /// ecosystem's own (`swiyu-verify` for a swiyu identity).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wallet_uri_scheme: Option<String>,
+    /// PEM files of the certificates this community trusts to certify
+    /// credential issuers that are known by an X.509 chain instead of a DID —
+    /// the EUDI PID providers' list, a Rulebook's anchor. Read at boot; a file
+    /// that does not load stops it. Empty: no such issuer is trusted.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub x509_trust_anchors: Vec<std::path::PathBuf>,
+    /// The swiyu trust registry this community takes issuer trust from: an
+    /// issuer it publishes an Identity Trust Statement about counts as one the
+    /// community recognises (`credentialIssuers: recognised`). Unset: none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub swiyu_trust: Option<SwiyuTrustConfig>,
+}
+
+/// `[oid4vp.swiyu_trust]` — where swiyu issuer trust is read from
+/// ([`crate::oid4vp::swiyu_issuer`]).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub struct SwiyuTrustConfig {
+    /// The trust registry's base URL, `https` — the Sandbox's is
+    /// `https://trust-reg.trust-infra.swiyu-int.admin.ch`.
+    pub registry_url: String,
+    /// The DID that signs its identity trust statements (the ecosystem's trust
+    /// anchor). A statement signed by any other key is refused.
+    pub trust_anchor_did: String,
+}
+
+impl SwiyuTrustConfig {
+    /// Refuse, at boot, a registry that is not `https` or an anchor that is
+    /// not a DID — either would admit nobody, silently.
+    pub fn check(&self) -> Result<(), String> {
+        let url = url::Url::parse(&self.registry_url)
+            .map_err(|e| format!("[oid4vp.swiyu_trust] registry_url: {e}"))?;
+        if url.scheme() != "https" {
+            return Err("[oid4vp.swiyu_trust] registry_url must be https".into());
+        }
+        if !self.trust_anchor_did.starts_with("did:") || self.trust_anchor_did.contains('#') {
+            return Err("[oid4vp.swiyu_trust] trust_anchor_did must be a DID".into());
+        }
+        Ok(())
+    }
 }
 
 fn default_oid4vp_session_ttl() -> u64 {
@@ -281,6 +842,8 @@ impl Default for Oid4vpConfig {
             max_open_sessions: default_oid4vp_max_open_sessions(),
             evidence_hold_secs: default_oid4vp_evidence_hold(),
             max_response_bytes: default_oid4vp_max_response_bytes(),
+            x509_trust_anchors: Vec::new(),
+            swiyu_trust: None,
             default_identity: None,
             wallet_uri_scheme: None,
         }
@@ -1013,6 +1576,7 @@ where
 /// Variant → required field: `vault` → `vault_addr`, `k8s` →
 /// `k8s_secret_name`, `aws` → `aws_secret_name`, `gcp` → `gcp_secret_name`
 /// (+ `gcp_project`), `azure` → `azure_vault_url`, `config` → `secret`.
+/// `encrypted-file` → the `[secrets.encrypted_file]` table.
 /// `keyring` and `plaintext` need no field.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -1033,6 +1597,10 @@ pub enum SecretBackend {
     Config,
     /// Plaintext file under the data dir — NOT secure, dev/test only.
     Plaintext,
+    /// AEAD-encrypted file under the data dir (`secret.enc` by default), keyed
+    /// by the KEK source in `[secrets.encrypted_file]`. Only ever selected
+    /// explicitly. Implemented by `vti_secrets::seed_store::EncryptedFileSeedStore`.
+    EncryptedFile,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -1042,7 +1610,7 @@ pub struct SecretsConfig {
     /// "whichever selector field is set" resolution and `create_secret_store`
     /// validates the chosen backend's required fields. Omit to keep the
     /// legacy priority-chain behaviour. Accepts `keyring` | `vault` | `k8s`
-    /// | `aws` | `gcp` | `azure` | `config` | `plaintext`.
+    /// | `aws` | `gcp` | `azure` | `config` | `plaintext` | `encrypted-file`.
     #[serde(default)]
     pub backend: Option<SecretBackend>,
     /// Hex-encoded VTC key material (config-secret feature)
@@ -1120,6 +1688,11 @@ pub struct SecretsConfig {
     /// key material (k8s-secrets feature). Default `secret`.
     #[serde(default = "default_k8s_secret_key")]
     pub k8s_secret_key: String,
+    /// `[secrets.encrypted_file]`: location and key-encryption key source for
+    /// `backend = "encrypted-file"` (the shape is `vti_secrets`'s, shared with
+    /// the VTA). Never selects the backend by itself.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub encrypted_file: Option<vti_secrets::EncryptedFileConfig>,
 }
 
 fn default_keyring_service() -> String {
@@ -1194,6 +1767,7 @@ impl std::fmt::Debug for SecretsConfig {
             .field("k8s_secret_name", &self.k8s_secret_name)
             .field("k8s_namespace", &self.k8s_namespace)
             .field("k8s_secret_key", &self.k8s_secret_key)
+            .field("encrypted_file", &self.encrypted_file)
             .finish()
     }
 }
@@ -1227,6 +1801,7 @@ impl Default for SecretsConfig {
             k8s_secret_name: None,
             k8s_namespace: None,
             k8s_secret_key: default_k8s_secret_key(),
+            encrypted_file: None,
         }
     }
 }
@@ -1652,6 +2227,10 @@ impl AppConfig {
         validate_website_isolation(&self.routing, self.website.root_dir.is_some())?;
         validate_cors(&self.cors)?;
         self.admin_ui.validate()?;
+        self.witnesses.validate(self.vtc_did.as_deref())?;
+        if let Some(files) = &self.rooms.files {
+            files.auth.validate()?;
+        }
         Ok(())
     }
 
@@ -1695,20 +2274,36 @@ fn unknown_key_message(config_path: &std::path::Path, key: &str) -> String {
 mod tests {
     use super::*;
 
-    /// Room files are off unless a config turns them on, and the documented
-    /// section parses into the limits it says.
+    /// Room files are off with no `[rooms.files]` section — every configuration
+    /// written before they existed — and on once the section is written. The
+    /// documented section parses into the limits it says.
     #[test]
-    fn room_files_are_off_by_default_and_configurable() {
+    fn room_files_are_off_without_the_section_and_on_with_it() {
         let empty: AppConfig = toml::from_str("").expect("empty config");
-        assert!(!empty.rooms.files.enabled);
-        assert!(!empty.rooms.files.limits().files_enabled);
+        assert!(empty.rooms.files.is_none());
+        assert!(!empty.rooms.files_enabled());
+        // And a saved config does not grow a section the operator never wrote.
+        assert!(!toml::to_string(&empty).unwrap().contains("[rooms.files]"));
+
+        let paths: AppConfig = toml::from_str(
+            "[rooms.files]\nlocal_storage_bases = [\"/srv/vtc/room-storage\"]\n\
+             blob_dir = \"/srv/vtc/room-blobs\"\n",
+        )
+        .expect("the section the console suggests");
+        assert!(
+            paths.rooms.files_enabled(),
+            "writing the section turns files on"
+        );
+
+        let off: AppConfig = toml::from_str("[rooms.files]\nenabled = false\n").unwrap();
+        assert!(!off.rooms.files_enabled());
 
         let cfg: AppConfig = toml::from_str(
-            "[rooms.files]\nenabled = true\nmax_file_bytes = 1048576\norphan_grace_hours = 24\n\
+            "[rooms.files]\nmax_file_bytes = 1048576\norphan_grace_hours = 24\n\
              [rooms.files.room]\nmax_files = 50\n[rooms.files.member]\nmax_bytes = 2048\n",
         )
         .expect("a [rooms.files] section");
-        let limits = cfg.rooms.files.limits();
+        let limits = cfg.rooms.files.as_ref().unwrap().limits();
         assert!(limits.files_enabled);
         assert_eq!(limits.max_file_bytes, 1_048_576);
         assert_eq!(limits.orphan_grace_secs, 24 * 3600);
@@ -1797,6 +2392,7 @@ mod tests {
             ("azure", SecretBackend::Azure),
             ("config", SecretBackend::Config),
             ("plaintext", SecretBackend::Plaintext),
+            ("encrypted-file", SecretBackend::EncryptedFile),
         ] {
             let cfg: SecretsConfig =
                 toml::from_str(&format!("backend = \"{wire}\"")).expect("parse backend");
@@ -2128,5 +2724,35 @@ mod tests {
         let written = toml::to_string_pretty(&config).expect("serialize ok");
         let ((_, unknown_keys), _dir) = load(&written);
         assert!(unknown_keys.is_empty(), "{:?}", unknown_keys);
+    }
+}
+
+#[cfg(test)]
+mod room_rate_limit_tests {
+    use super::*;
+
+    /// No `[rooms.rate_limits]` — every configuration written before it existed —
+    /// is the shipped defaults, and is not written back out.
+    #[test]
+    fn an_absent_section_is_the_defaults() {
+        let rooms: RoomsConfig = toml::from_str("").unwrap();
+        assert_eq!(rooms.rate_limits, RoomRateLimitsConfig::default());
+        assert_eq!(rooms.rate_limits.address(), ROOM_ADDRESS_DEFAULT);
+        assert_eq!(rooms.rate_limits.presenter(), ROOM_PRESENTER_DEFAULT);
+        assert_eq!(rooms.rate_limits.transfer(), ROOM_TRANSFER_DEFAULT);
+        assert!(!toml::to_string(&rooms).unwrap().contains("rate_limits"));
+    }
+
+    #[test]
+    fn a_partial_section_keeps_the_rest_and_zero_is_one() {
+        let rooms: RoomsConfig =
+            toml::from_str("[rate_limits]\npresenter_burst = 30\ntransfer_interval_ms = 0\n")
+                .unwrap();
+        let l = &rooms.rate_limits;
+        assert_eq!(l.presenter().burst, 30);
+        assert_eq!(l.presenter().interval, ROOM_PRESENTER_DEFAULT.interval);
+        assert_eq!(l.transfer().interval, std::time::Duration::from_millis(1));
+        assert_eq!(l.address(), ROOM_ADDRESS_DEFAULT);
+        assert!(toml::from_str::<RoomsConfig>("[rate_limits]\nburst = 1\n").is_err());
     }
 }

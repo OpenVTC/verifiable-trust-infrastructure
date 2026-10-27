@@ -9,7 +9,7 @@
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt;
-use serde_json::Value;
+use serde_json::{Value, json};
 use tower::ServiceExt;
 use vti_rooms_dtg::test_support::Party;
 
@@ -45,6 +45,7 @@ pub async fn seed_role(vtc: &TestVtc, did: &str, role: VtcRole, contexts: &[&str
             updated_by: None,
             expires_at: None,
             resource_grants: Vec::new(),
+            group_grants: Vec::new(),
             label_set_by_subject: false,
             suspension: None,
         },
@@ -109,6 +110,37 @@ pub async fn post(vtc: &TestVtc, doc: &Value) -> (StatusCode, Value) {
     let bytes = res.into_body().collect().await.unwrap().to_bytes();
     (
         status,
+        serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+    )
+}
+
+/// As [`post`], also returning the `Set-Cookie` values the reply carries — for
+/// the tasks that set the console's cookie session on the HTTPS door
+/// (`vtc/auth/admin-session/0.2`).
+pub async fn post_for_cookies(vtc: &TestVtc, doc: &Value) -> (StatusCode, Vec<String>, Value) {
+    let mut req = Request::builder()
+        .method("POST")
+        .uri("/v1/trust-tasks")
+        .header("Content-Type", "application/json")
+        .body(Body::from(serde_json::to_vec(doc).unwrap()))
+        .unwrap();
+    req.extensions_mut()
+        .insert(axum::extract::ConnectInfo(std::net::SocketAddr::from((
+            [10, 255, 0, 1],
+            40_000,
+        ))));
+    let res = vtc.router.clone().oneshot(req).await.unwrap();
+    let status = res.status();
+    let cookies = res
+        .headers()
+        .get_all(axum::http::header::SET_COOKIE)
+        .iter()
+        .filter_map(|v| v.to_str().ok().map(str::to_string))
+        .collect();
+    let bytes = res.into_body().collect().await.unwrap().to_bytes();
+    (
+        status,
+        cookies,
         serde_json::from_slice(&bytes).unwrap_or(Value::Null),
     )
 }
@@ -212,4 +244,20 @@ pub async fn bearer_route_served_as(vtc: &TestVtc, method: &str, path: &str, tas
         .get("content-type")
         .and_then(|v| v.to_str().ok())
         .is_some_and(|ct| ct.starts_with("application/json"))
+}
+
+/// Store a join criterion directly, as a suite's setup — for a suite whose
+/// subject is not the criterion's registration. Registering one through
+/// `vtc/schemas/accepts/register` takes the requester's gesture and another
+/// administrator's consent (VTI-APV-023), which `join_criteria_consent` holds;
+/// a suite that only needs a criterion to exist writes it here, through the
+/// store's own checks, as the registration's execution would.
+pub async fn seed_criterion(vtc: &TestVtc, mut criterion: Value) {
+    criterion["createdAt"] = json!("2026-10-16T00:00:00Z");
+    criterion["createdByDid"] = json!("did:key:z6MkSeededCriterion");
+    let criterion: vtc_service::schemas::AcceptsCriterion =
+        serde_json::from_value(criterion).expect("a criterion");
+    vtc_service::schemas::store_accepts(&vtc.state.schemas_ks, &criterion)
+        .await
+        .expect("store the criterion");
 }

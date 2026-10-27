@@ -57,6 +57,7 @@ pub const BBS_SECRET_PROVER_BLIND_TAG: &str = "bbs:secret_prover_blind";
 /// never requires a storage-schema change.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
+#[non_exhaustive]
 pub enum CredentialFormat {
     /// BBS+ Data-Integrity proof (`bbs-2023`) — selective disclosure.
     Bbs2023,
@@ -100,6 +101,7 @@ pub enum CredentialFormat {
 /// present can exclude revoked/expired credentials.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
+#[non_exhaustive]
 pub enum CredentialStatus {
     /// Believed valid (signature/not-expired checks are the caller's job in
     /// later tasks; this layer treats the tag as opaque metadata).

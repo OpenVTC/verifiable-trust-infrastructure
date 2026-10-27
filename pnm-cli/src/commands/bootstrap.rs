@@ -2,8 +2,8 @@
 //!
 //! Bootstrap is split across two main-loop phases:
 //!
-//! - [`run_offline`] handles `request`, `open`, `connect`, and
-//!   `provision-request` — none of which need an authenticated
+//! - [`run_offline`] handles `request`, `open`, `claim-did`, `connect`,
+//!   and `provision-request` — none of which need an authenticated
 //!   `VtaClient`. It returns `None` when the subcommand is the
 //!   authenticated `provision-integration`, signalling the caller
 //!   to fall through to the post-auth dispatch.
@@ -13,7 +13,8 @@
 use vta_sdk::client::VtaClient;
 
 use crate::bootstrap;
-use crate::cli::BootstrapCommands;
+use crate::bootstrap_claim;
+use crate::cli::{BootstrapCommands, ClaimDidCommands};
 use crate::config::PnmConfig;
 
 pub(crate) async fn run_offline(
@@ -40,22 +41,29 @@ pub(crate) async fn run_offline(
             )
             .await,
         ),
+        BootstrapCommands::ClaimDid { command } => Some(match command {
+            ClaimDidCommands::Create { slug } => bootstrap_claim::run_create(slug.as_deref()).await,
+            ClaimDidCommands::Show { slug } => bootstrap_claim::run_show(slug).await,
+            ClaimDidCommands::Discard { claim_did, slug } => {
+                bootstrap_claim::run_discard(claim_did.as_deref(), slug.as_deref()).await
+            }
+        }),
         BootstrapCommands::Connect {
             vta_did,
             vta_url,
-            expect_digest,
-            no_verify_digest,
             expect_pcr0,
+            no_verify_pcr0,
             expect_pcr8,
+            claim_did,
             slug,
         } => Some(
             bootstrap::run_connect(
                 vta_did.clone(),
                 vta_url.clone(),
-                expect_digest.clone(),
-                *no_verify_digest,
+                *no_verify_pcr0,
                 expect_pcr0.clone(),
                 expect_pcr8.clone(),
+                claim_did.clone(),
                 slug.clone(),
                 pnm_config,
             )
@@ -114,6 +122,7 @@ pub(crate) async fn run_authed(
         }
         BootstrapCommands::Request { .. }
         | BootstrapCommands::Open { .. }
+        | BootstrapCommands::ClaimDid { .. }
         | BootstrapCommands::Connect { .. }
         | BootstrapCommands::ProvisionRequest { .. } => unreachable!(
             "offline bootstrap subcommands run via run_offline; reaching run_authed is a bug"

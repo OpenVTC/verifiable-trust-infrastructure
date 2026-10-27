@@ -62,14 +62,38 @@ pub fn oid4vp_test_identity(id: &str, seed: u8) -> crate::oid4vp::VerifierIdenti
     crate::oid4vp::VerifierIdentityRecord {
         id: id.into(),
         kind: crate::oid4vp::VerifierKind::Swiyu,
-        did: TEST_VERIFIER_DID.into(),
-        kid: format!("{TEST_VERIFIER_DID}#verifier-key-1"),
+        did: Some(TEST_VERIFIER_DID.into()),
+        kid: Some(format!("{TEST_VERIFIER_DID}#verifier-key-1")),
         public_jwk: jwk,
-        private_key_multibase: secret
-            .get_private_keymultibase()
-            .expect("private key multibase"),
+        private_key_multibase: Some(
+            secret
+                .get_private_keymultibase()
+                .expect("private key multibase"),
+        ),
+        vta_key_id: None,
+        x5c: None,
+        verifier_info: None,
         installed_at: 0,
     }
+}
+
+/// An EUDI verifier identity over a P-256 key from `seed`, with an access
+/// certificate a test Access CA issued for it — as `vtc oid4vp install` then
+/// `vtc oid4vp certificate` leave one.
+pub fn oid4vp_test_eudi_identity(id: &str, seed: u8) -> crate::oid4vp::VerifierIdentityRecord {
+    let mut record = oid4vp_test_identity(id, seed);
+    record.kind = crate::oid4vp::VerifierKind::Eudi;
+    record.did = None;
+    record.kid = None;
+    let (leaf, ca) = crate::oid4vp::x509::issue_for_test(&record, seed.wrapping_add(1));
+    let checked = crate::oid4vp::x509::check_chain(
+        &record,
+        format!("{leaf}{ca}").as_bytes(),
+        chrono::Utc::now().timestamp(),
+    )
+    .expect("the test chain is accepted");
+    record.x5c = Some(checked.x5c);
+    record
 }
 
 /// Deterministic 32-byte JWT signing seed. Stable across runs so tests
@@ -80,6 +104,13 @@ const JWT_SEED: [u8; 32] = [0x42u8; 32];
 /// install signers when a test opts in. Not the JWT seed — these sign
 /// VMC/VAC/install material, JWT seed signs access tokens.
 const SIGNER_SEED: [u8; 32] = [0xC5u8; 32];
+
+/// The X25519 key a test community opens what is sealed to it with: the derivation of
+/// its signer's Ed25519 seed, as `vtc/storage/credentials/set` seals to (`with_signers`).
+pub fn test_community_x25519_public() -> [u8; 32] {
+    let secret = vta_sdk::sealed_transfer::ed25519_seed_to_x25519_secret(&SIGNER_SEED);
+    x25519_dalek::PublicKey::from(&x25519_dalek::StaticSecret::from(*secret)).to_bytes()
+}
 
 /// Pin jsonwebtoken's default `CryptoProvider` to `aws_lc` once per
 /// process. The workspace compiles `jsonwebtoken` with only the
@@ -105,6 +136,7 @@ pub struct TestVtcBuilder {
     with_audit: bool,
     with_signers: bool,
     with_did_resolver: bool,
+    storage_auth: crate::config::StorageAuthHostConfig,
     credential_signer: Option<Arc<LocalSigner>>,
     install_signer: Option<Arc<InstallTokenSigner>>,
     public_url: Option<String>,
@@ -125,6 +157,29 @@ pub struct TestVtcBuilder {
     /// OpenID4VP verifier identities installed before the router is built,
     /// as `vtc oid4vp install` would leave them.
     oid4vp_identities: Vec<crate::oid4vp::VerifierIdentityRecord>,
+    vta_link: Option<Arc<dyn crate::oid4vp::VtaJwsSigner>>,
+    x509_trust_anchors: vta_sdk::x509_issuer::X509TrustAnchors,
+    /// `[rooms.files] max_file_bytes`: the host-wide ceiling on one file.
+    room_file_ceiling: Option<u64>,
+    /// Build with no `[rooms.files]` section, as a configuration written before room
+    /// files existed.
+    without_room_files: bool,
+    /// `[rooms.rate_limits]`.
+    room_rate_limits: Option<crate::config::RoomRateLimitsConfig>,
+    /// `[rooms.community]`.
+    community_rooms: Option<crate::config::CommunityRoomsConfig>,
+    groups: Option<crate::config::GroupsConfig>,
+    /// The community's VTA, as the key holder of the rooms it owns.
+    community_key_holder: Option<Arc<dyn crate::rooms::vta_storage::VtaChannel>>,
+    /// `[directory]`, as the directory runs with it.
+    directory: crate::directory::model::Settings,
+    /// `[voting]`.
+    voting: crate::elections::VotingConfig,
+    /// The ballot boxes elections are registered with.
+    ballot_boxes: Option<Arc<dyn crate::elections::link::BallotBoxChannel>>,
+    /// Reach ballot boxes over this VTC's own messaging — the production
+    /// [`crate::elections::link::BallotBoxLink`] — rather than through `ballot_boxes`.
+    elections_over_messaging: bool,
 }
 
 impl Default for TestVtcBuilder {
@@ -134,6 +189,7 @@ impl Default for TestVtcBuilder {
             with_audit: false,
             with_signers: false,
             with_did_resolver: false,
+            storage_auth: Default::default(),
             credential_signer: None,
             install_signer: None,
             public_url: None,
@@ -144,6 +200,18 @@ impl Default for TestVtcBuilder {
             git_ns_config: None,
             registry_client: None,
             oid4vp_identities: Vec::new(),
+            vta_link: None,
+            x509_trust_anchors: Default::default(),
+            room_file_ceiling: None,
+            without_room_files: false,
+            room_rate_limits: None,
+            community_rooms: None,
+            groups: None,
+            community_key_holder: None,
+            directory: crate::directory::model::Settings::default(),
+            voting: Default::default(),
+            ballot_boxes: None,
+            elections_over_messaging: false,
         }
     }
 }
@@ -152,6 +220,73 @@ impl TestVtcBuilder {
     /// Override the configured `vtc_did`.
     pub fn vtc_did(mut self, did: impl Into<String>) -> Self {
         self.vtc_did = did.into();
+        self
+    }
+
+    /// Run the member directory with `settings` (`[directory]`).
+    pub fn with_directory(mut self, settings: crate::directory::model::Settings) -> Self {
+        self.directory = settings;
+        self
+    }
+
+    /// Set `[voting]`, and reach ballot boxes through `link`.
+    pub fn with_elections(
+        mut self,
+        voting: crate::elections::VotingConfig,
+        link: Arc<dyn crate::elections::link::BallotBoxChannel>,
+    ) -> Self {
+        self.voting = voting;
+        self.ballot_boxes = Some(link);
+        self
+    }
+
+    /// Set `[voting]`, and reach ballot boxes as the service does: over this VTC's own
+    /// messaging, signed as the community (VTI-VOT-005). Needs signers, a DID resolver and a
+    /// running DIDComm listener — what [`MockVtcTransport`] wires.
+    pub fn with_elections_over_messaging(mut self, voting: crate::elections::VotingConfig) -> Self {
+        self.voting = voting;
+        self.elections_over_messaging = true;
+        self
+    }
+
+    /// Set `[rooms.community]`: the rooms this community owns are on.
+    pub fn with_community_rooms(mut self, config: crate::config::CommunityRoomsConfig) -> Self {
+        self.community_rooms = Some(config);
+        self
+    }
+
+    /// The community's groups (`[groups]`), turned on.
+    pub fn with_groups(mut self, config: crate::config::GroupsConfig) -> Self {
+        self.groups = Some(config);
+        self
+    }
+
+    /// The community's VTA, as the key holder of the rooms it owns — a stand-in a test
+    /// scripts, where a running community has its messaging link.
+    pub fn with_community_key_holder(
+        mut self,
+        vta: Arc<dyn crate::rooms::vta_storage::VtaChannel>,
+    ) -> Self {
+        self.community_key_holder = Some(vta);
+        self
+    }
+
+    /// Set `[rooms.rate_limits]`.
+    pub fn with_room_rate_limits(mut self, limits: crate::config::RoomRateLimitsConfig) -> Self {
+        self.room_rate_limits = Some(limits);
+        self
+    }
+
+    /// Set `[rooms.files] max_file_bytes`, the ceiling every room limit sits under.
+    pub fn with_room_file_ceiling(mut self, bytes: u64) -> Self {
+        self.room_file_ceiling = Some(bytes);
+        self
+    }
+
+    /// No `[rooms.files]` section: room files off, as on every VTC configured before
+    /// they existed.
+    pub fn without_room_files(mut self) -> Self {
+        self.without_room_files = true;
         self
     }
 
@@ -168,6 +303,12 @@ impl TestVtcBuilder {
     /// VTC's signing bundle from a VTA.
     pub fn with_signers(mut self, on: bool) -> Self {
         self.with_signers = on;
+        self
+    }
+
+    /// `[rooms.files.auth]`: which storage authentication modes the host permits.
+    pub fn with_storage_auth(mut self, auth: crate::config::StorageAuthHostConfig) -> Self {
+        self.storage_auth = auth;
         self
     }
 
@@ -200,6 +341,22 @@ impl TestVtcBuilder {
     /// so wallet sessions can be opened against it.
     pub fn with_oid4vp_identity(mut self, record: crate::oid4vp::VerifierIdentityRecord) -> Self {
         self.oid4vp_identities.push(record);
+        self
+    }
+
+    /// Stand `vta` in for the community's VTA, for verifier identities whose
+    /// key it keeps (`keys/sign-jws`).
+    pub fn with_vta_link(mut self, vta: Arc<dyn crate::oid4vp::VtaJwsSigner>) -> Self {
+        self.vta_link = Some(vta);
+        self
+    }
+
+    /// Trust the certificates of a PEM file to certify credential issuers
+    /// known by an X.509 chain (`[oid4vp] x509_trust_anchors`).
+    pub fn with_x509_trust_anchor_pem(mut self, pem: &str) -> Self {
+        self.x509_trust_anchors
+            .add_pem(pem.as_bytes())
+            .expect("a PEM trust anchor");
         self
     }
 
@@ -343,16 +500,31 @@ impl TestVtcBuilder {
         let room_epoch_links_ks = store
             .keyspace("room_epoch_links")
             .expect("room_epoch_links ks");
-        // Uploads on, unlike a deployment's default: tests exercise room files
-        // without writing a `[rooms.files]` section.
+        let room_revocations_ks = store
+            .keyspace("room_revocations")
+            .expect("room_revocations ks");
+        // Room files on, as a `[rooms.files]` section would make them, unless the
+        // test asked for a configuration without one.
+        let files_config = crate::config::RoomFilesConfig {
+            enabled: true,
+            max_file_bytes: self.room_file_ceiling,
+            auth: self.storage_auth.clone(),
+            ..Default::default()
+        };
+        let room_storage = crate::rooms::files::open_room_storage(
+            &store,
+            dir.path(),
+            (!self.without_room_files).then_some(&files_config),
+            Some(&self.vtc_did),
+        )
+        .await
+        .expect("room storage");
         let room_files = Arc::new(
             crate::rooms::files::open_blob_host(
                 &store,
                 dir.path(),
-                &crate::config::RoomFilesConfig {
-                    enabled: true,
-                    ..Default::default()
-                },
+                (!self.without_room_files).then_some(&files_config),
+                room_storage.clone(),
             )
             .expect("room files"),
         );
@@ -423,6 +595,16 @@ impl TestVtcBuilder {
         if let Some(git_ns) = &self.git_ns_config {
             config.git_ns = git_ns.clone();
         }
+        if let Some(limits) = &self.room_rate_limits {
+            config.rooms.rate_limits = limits.clone();
+        }
+        config.voting = self.voting.clone();
+        if let Some(groups) = &self.groups {
+            config.groups = Some(groups.clone());
+        }
+        if let Some(community) = &self.community_rooms {
+            config.rooms.community = Some(community.clone());
+        }
         if let Some(mediator_did) = &self.messaging_mediator {
             config.messaging = Some(vti_common::config::MessagingConfig {
                 mediator_url: String::new(),
@@ -465,6 +647,22 @@ impl TestVtcBuilder {
         }
         if let Some(sig) = self.install_signer.clone() {
             install_signer = Some(sig);
+        }
+        // Sealed storage credentials, as `server::run` attaches them: opened with the
+        // signer's key, encrypted under a fixed test storage key.
+        if let Some(seed) = credential_signer.as_ref().and_then(|s| s.ed25519_seed()) {
+            room_storage
+                .set_sealed_credentials(Arc::new(
+                    crate::rooms::storage_credentials::SealedCredentials::new(
+                        store
+                            .keyspace(crate::store::keyspaces::STORAGE_CREDENTIALS)
+                            .expect("storage_credentials ks"),
+                        [0x5Au8; 32],
+                        &seed,
+                    ),
+                ))
+                .await
+                .expect("sealed credentials");
         }
 
         let webauthn = match &self.public_url {
@@ -517,6 +715,21 @@ impl TestVtcBuilder {
             }),
         };
 
+        let pending_replies = crate::hooks::PendingReplies::new();
+        let ballot_boxes = if self.elections_over_messaging {
+            Some(Arc::new(crate::elections::link::BallotBoxLink {
+                peers: crate::outbound::PeerTasks {
+                    didcomm: didcomm_cell.clone(),
+                    signer: credential_signer.clone(),
+                    replies: pending_replies.clone(),
+                    resolver: did_resolver.clone(),
+                },
+            })
+                as Arc<dyn crate::elections::link::BallotBoxChannel>)
+        } else {
+            self.ballot_boxes
+        };
+
         let state = AppState {
             // Fixed key: a test never needs the counter to be unguessable, and
             // a deterministic one keeps a failure reproducible.
@@ -540,7 +753,7 @@ impl TestVtcBuilder {
             sync_cursor_ks,
             hooks_queue_ks,
             hooks_cursor_ks,
-            pending_replies: crate::hooks::PendingReplies::new(),
+            pending_replies,
             relationships_ks,
             relationships_by_did_ks,
             endorsement_types_ks,
@@ -554,7 +767,27 @@ impl TestVtcBuilder {
             rooms_ks,
             room_records_ks,
             room_epoch_links_ks,
+            room_revocations_ks,
             room_files,
+            room_storage,
+            community_rooms: crate::rooms::community::CommunityRooms::new(
+                store
+                    .keyspace(crate::store::keyspaces::COMMUNITY_ROOMS)
+                    .expect("community_rooms ks"),
+                self.community_key_holder,
+            ),
+            directory: Arc::new(crate::directory::Directory::new(
+                store
+                    .keyspace(crate::store::keyspaces::DIRECTORY)
+                    .expect("directory ks"),
+                self.directory,
+            )),
+            elections: Arc::new(crate::elections::Elections::new(
+                store
+                    .keyspace(crate::store::keyspaces::ELECTIONS)
+                    .expect("elections ks"),
+                ballot_boxes,
+            )),
             audit_ks,
             audit_key_ks,
             audit_checkpoint_ks,
@@ -576,14 +809,19 @@ impl TestVtcBuilder {
                         .await
                         .expect("install oid4vp identity");
                 }
+                let link = crate::oid4vp::VtaLinkCell::default();
+                if let Some(vta) = self.vta_link {
+                    let _ = link.set(vta);
+                }
                 Arc::new(
-                    crate::oid4vp::load_signers(&oid4vp_keys_ks)
+                    crate::oid4vp::load_signers(&oid4vp_keys_ks, &link)
                         .await
                         .expect("load oid4vp signers"),
                 )
             },
             oid4vp_keys_ks,
             oid4vp_sessions_ks,
+            x509_trust_anchors: Arc::new(self.x509_trust_anchors),
             tsp_reach: Arc::new(vti_common::tsp_reach::TspReachability::new()),
             geoip: Arc::new(crate::geoip::GeoIp::disabled()),
             backup_bundles_ks,
@@ -700,6 +938,7 @@ impl TestVtc {
                     updated_by: None,
                     expires_at: None,
                     resource_grants: Vec::new(),
+                    group_grants: Vec::new(),
                     label_set_by_subject: false,
                     suspension: None,
                 },
@@ -2317,7 +2556,17 @@ mod transport_harness {
         /// messaging wired), and a connected applicant. Returns once everything
         /// is bound and the dispatch loop is running.
         pub async fn start() -> MockVtcTransport {
-            MockVtcTransport::start_inner(false).await
+            MockVtcTransport::start_inner(false, None).await
+        }
+
+        /// As [`start`](Self::start), with community elections on: `[voting]` as given, and
+        /// ballot boxes reached over this VTC's own messaging — the production link — so a
+        /// ballot box on the same mediator ([`register_local_did`](Self::register_local_did))
+        /// is registered, closed and read exactly as a deployed one is.
+        pub async fn start_with_elections(
+            voting: crate::elections::VotingConfig,
+        ) -> MockVtcTransport {
+            MockVtcTransport::start_inner(false, Some(voting)).await
         }
 
         /// As [`start`](Self::start), but the VTC's DID additionally advertises
@@ -2330,10 +2579,13 @@ mod transport_harness {
         /// [`TestJoinClient::send_tsp`] for the sending half.
         #[cfg(feature = "tsp")]
         pub async fn start_with_tsp() -> MockVtcTransport {
-            MockVtcTransport::start_inner(true).await
+            MockVtcTransport::start_inner(true, None).await
         }
 
-        async fn start_inner(advertise_tsp: bool) -> MockVtcTransport {
+        async fn start_inner(
+            advertise_tsp: bool,
+            voting: Option<crate::elections::VotingConfig>,
+        ) -> MockVtcTransport {
             // Transport identities. The applicant's is generated up front so it
             // can be registered LOCAL on the mediator (needed to open inbound).
             //
@@ -2398,7 +2650,11 @@ mod transport_harness {
             // (so credential delivery packs from a resolvable sender). The DID
             // resolver is required — `run_didcomm_service` resolves the VTC's
             // document to learn its verification-method ids.
-            let vtc = TestVtc::builder()
+            let mut builder = TestVtc::builder();
+            if let Some(voting) = voting {
+                builder = builder.with_elections_over_messaging(voting);
+            }
+            let vtc = builder
                 .vtc_did(vtc_did.clone())
                 .with_audit(true)
                 .with_signers(true)

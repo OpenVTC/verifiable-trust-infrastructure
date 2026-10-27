@@ -44,8 +44,8 @@ mod validate;
 pub use errors::UpdateDidWebvhError;
 pub use options::{RotateDidWebvhKeysOptions, UpdateDidWebvhOptions, UpdateDidWebvhResult};
 pub use orchestrator::{
-    AgentNameVerb, agent_name_op, check_agent_name, list_agent_names, plan_did_webvh_update,
-    update_did_webvh,
+    AgentNameVerb, Commit, agent_name_op, check_agent_name, list_agent_names,
+    plan_did_webvh_update, update_did_webvh, update_did_webvh_reporting_commit,
 };
 pub use plan::UpdatePlan;
 pub use rotate::{StagedRotationRecovery, recover_staged_rotations, rotate_did_webvh_keys};
@@ -796,6 +796,8 @@ mod pre_rotation_e2e_tests {
                 template_context: None,
                 template_vars: Default::default(),
                 is_vta_identity: false,
+                did_method: None,
+                scid_also_known_as: None,
             },
             "test",
         )

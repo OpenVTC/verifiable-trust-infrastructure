@@ -99,6 +99,7 @@ pub struct PendingResponse {
 pub const MAX_DRAIN_TTL: chrono::Duration = chrono::Duration::days(30);
 
 #[derive(Debug, Error, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum RegistryError {
     #[error("mediator `{0}` is currently active; cannot drain it without a replacement")]
     ActiveMediatorMustBeReplaced(String),

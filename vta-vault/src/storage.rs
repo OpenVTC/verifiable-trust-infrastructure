@@ -13,7 +13,7 @@
 //! (`vti-credential-architecture.md` §14).
 
 use vti_common::error::AppError;
-use vti_common::store::KeyspaceHandle;
+use vti_common::store::{Batch, KeyspaceHandle};
 
 use super::index;
 use super::model::{IndexField, StoredCredential};
@@ -28,12 +28,27 @@ fn record_key(id: &str) -> Vec<u8> {
     format!("{RECORD_PREFIX}{id}").into_bytes()
 }
 
+/// How many times [`put`] and [`delete`] re-read a record that another
+/// writer changed between their read and their write before giving up.
+///
+/// An attempt fails only because another writer's batch on the same record
+/// was applied, so a writer loses at most once per concurrent writer to that
+/// one credential. Concurrent writes to one credential are rare (a status
+/// refresh racing an archive); the bound only stops a pathological stream of
+/// them from holding a caller forever.
+const WRITE_ATTEMPTS: usize = 64;
+
 /// Store (create or overwrite) a credential and (re)build its index entries.
 ///
-/// On overwrite, the *previous* record's index terms are removed first so a
-/// changed `status` / `community_did` / etc. never leaves a stale index row
-/// pointing at this id under its old value. The record value is encrypted
-/// at rest; the index keys carry only routing metadata, never the body.
+/// The record and its index changes are one store batch: the *previous*
+/// record's index terms are removed (so a changed `status` /
+/// `community_did` / etc. never leaves a stale index row pointing at this
+/// id under its old value) and the new ones written, together with the
+/// record, or none of it. The batch applies only while the record is still
+/// what was read, so two concurrent writers cannot interleave their index
+/// changes; the loser re-reads and tries again. The record value is
+/// encrypted at rest; the index keys carry only routing metadata, never the
+/// body.
 ///
 /// The credential `id` must be non-empty (it is the primary key); an empty
 /// id is rejected rather than silently writing to `cred:`.
@@ -43,16 +58,24 @@ pub async fn put(vault: &KeyspaceHandle, cred: &StoredCredential) -> Result<(), 
             "StoredCredential.id must be non-empty".to_string(),
         ));
     }
-
-    // Remove the prior record's index terms before re-indexing, so an
-    // update that changes an indexed field doesn't orphan the old row.
-    if let Some(prev) = get(vault, &cred.id).await? {
-        index::remove_for(vault, &prev).await?;
+    let key = record_key(&cred.id);
+    for _ in 0..WRITE_ATTEMPTS {
+        let (prev_raw, prev) = read_current(vault, &key).await?;
+        let mut batch = Batch::new();
+        match prev_raw {
+            Some(raw) => batch.require_unchanged(key.clone(), raw),
+            None => batch.require_absent(key.clone()),
+        };
+        batch.insert(key.clone(), cred)?;
+        index::stage_reindex(&mut batch, prev.as_ref(), Some(cred));
+        if vault.apply_batch(batch).await?.is_applied() {
+            return Ok(());
+        }
     }
-
-    vault.insert(record_key(&cred.id), cred).await?;
-    index::insert_for(vault, cred).await?;
-    Ok(())
+    Err(AppError::Conflict(format!(
+        "credential {} kept changing while it was being stored",
+        cred.id
+    )))
 }
 
 /// Fetch a credential by its local id. Returns `Ok(None)` for an absent id
@@ -63,14 +86,40 @@ pub async fn get(vault: &KeyspaceHandle, id: &str) -> Result<Option<StoredCreden
     vault.get(record_key(id)).await
 }
 
-/// Delete a credential by id and tear down all of its index entries.
-/// Idempotent: deleting an absent id is a no-op (returns `Ok`).
+/// Delete a credential by id and tear down all of its index entries, as one
+/// store batch (see [`put`]). Idempotent: deleting an absent id is a no-op
+/// (returns `Ok`).
 pub async fn delete(vault: &KeyspaceHandle, id: &str) -> Result<(), AppError> {
-    if let Some(prev) = get(vault, id).await? {
-        index::remove_for(vault, &prev).await?;
+    let key = record_key(id);
+    for _ in 0..WRITE_ATTEMPTS {
+        let (Some(raw), Some(prev)) = read_current(vault, &key).await? else {
+            return Ok(());
+        };
+        let mut batch = Batch::new();
+        batch
+            .require_unchanged(key.clone(), raw)
+            .remove(key.clone());
+        index::stage_reindex(&mut batch, Some(&prev), None);
+        if vault.apply_batch(batch).await?.is_applied() {
+            return Ok(());
+        }
     }
-    vault.remove(record_key(id)).await?;
-    Ok(())
+    Err(AppError::Conflict(format!(
+        "credential {id} kept changing while it was being deleted"
+    )))
+}
+
+/// The record at `key` as stored (plaintext bytes, for a `require_unchanged`
+/// precondition) and as parsed.
+async fn read_current(
+    vault: &KeyspaceHandle,
+    key: &[u8],
+) -> Result<(Option<Vec<u8>>, Option<StoredCredential>), AppError> {
+    let Some(raw) = vault.get_raw(key.to_vec()).await? else {
+        return Ok((None, None));
+    };
+    let parsed = serde_json::from_slice(&raw)?;
+    Ok((Some(raw), Some(parsed)))
 }
 
 /// Resolve every credential indexed under `(field, value)` to its full
@@ -149,6 +198,49 @@ mod tests {
             deleted_at: None,
             grace_until: None,
         }
+    }
+
+    /// Concurrent overwrites of one credential never leave an index row for a
+    /// value the stored record no longer holds: each put's record and index
+    /// changes apply together, and only over the record it read.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_puts_leave_exactly_the_final_records_index() {
+        const WRITERS: usize = 16;
+        let (_dir, _store, vault) = fresh_vault(None);
+        put(&vault, &sample("cred-1")).await.unwrap();
+        let tasks: Vec<_> = (0..WRITERS)
+            .map(|n| {
+                let vault = vault.clone();
+                tokio::spawn(async move {
+                    let mut cred = sample("cred-1");
+                    cred.community_did = Some(format!("did:web:c{n}"));
+                    put(&vault, &cred).await.unwrap();
+                })
+            })
+            .collect();
+        for t in tasks {
+            t.await.unwrap();
+        }
+
+        let final_community = get(&vault, "cred-1")
+            .await
+            .unwrap()
+            .unwrap()
+            .community_did
+            .unwrap();
+        let mut indexed = Vec::new();
+        for community in std::iter::once("did:web:acme".to_string())
+            .chain((0..WRITERS).map(|n| format!("did:web:c{n}")))
+        {
+            if !find_by_index(&vault, IndexField::CommunityDid, &community)
+                .await
+                .unwrap()
+                .is_empty()
+            {
+                indexed.push(community);
+            }
+        }
+        assert_eq!(indexed, vec![final_community], "no stale index rows");
     }
 
     #[tokio::test]

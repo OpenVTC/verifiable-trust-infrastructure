@@ -83,9 +83,10 @@ that branch. See [RELEASES.md](RELEASES.md#what-goes-on-a-release-branch).
 
 ## What gets published
 
-**20 of 26 crates.** The six that stay internal set `publish = false` in their
-own `Cargo.toml`, each with a comment saying why: `vtc-service`, `vta-enclave`,
-`vta-mcp`, `vta-mobile-core`, `didcomm-test`, `vti-fuzz`.
+**26 of 35 crates.** The nine that stay internal set `publish = false` in their
+own `Cargo.toml`, each with a comment saying why: `vta-enclave`, `vta-mcp`,
+`vta-mobile-core`, `didcomm-test`, `vti-fuzz`, `vti-e2e-tests`, `room-host`,
+`vti-rooms-wasm`, `vti-witness`.
 
 | Published | Consumed by |
 |---|---|
@@ -95,8 +96,55 @@ own `Cargo.toml`, each with a comment saying why: `vtc-service`, `vta-enclave`,
 | `vta-cli-common` | enm |
 | `vtc-client` | enm |
 | `pnm-cli`, `cnm-cli` | operator binaries, `cargo install` |
+| `vtc-service` | the VTC binary (`vtc`), `cargo install vtc-service` — see below |
 | `vta-service` | **openvtc-core**, as a dev-dependency — `test_support::MockVta` |
-| the twelve subsystem crates | nothing directly; they are `vta-service`'s closure |
+| the subsystem crates (`vta-*`, `vti-webauthn`, `vti-rooms*`, `vti-vetting-pcs`) | nothing directly; they are `vta-service`'s and `vtc-service`'s closure |
+
+### npm: `@openvtc/vti-rooms-wasm`
+
+`vti-rooms-wasm` is `publish = false` on crates.io and published to npm instead,
+for the wallet extension. release-plz does not publish it. A maintainer does,
+from `main`, when the extension needs a change in it:
+
+```sh
+scripts/build-rooms-wasm-npm.sh            # into target/npm/vti-rooms-wasm
+cd target/npm/vti-rooms-wasm && npm publish --access public
+```
+
+The npm version is the crate's `version`, so publishing again needs that to
+have moved. CI builds and packs the same package on every change to the crate
+(`Feature combos (vti-rooms)`), so what is published is what CI built.
+
+### `vtc-service`: a binary, with its web bundles pre-built
+
+#938 unpublished `vtc-service` because nothing depended on it. Nothing does
+now either; it is published so an operator can `cargo install vtc-service`, the
+way `pnm-cli` and `cnm-cli` are installed. For the same reason it has no semver
+check (`release-plz.toml`, `scripts/semver-report.sh`): its bumps come from
+conventional commits.
+
+The VTC bakes its admin console and member portal into the binary. In a source
+checkout `build.rs` builds them with npm into `OUT_DIR`. A crate built from
+crates.io must not do that — it would need Node and the network on every
+`cargo install`, and it would write `node_modules` into the registry source
+directory, which the verify build of `cargo publish` refuses. So the package
+ships the **built** bundles and not the npm project:
+
+- `scripts/build-vtc-web-bundles.sh` builds them into `admin-ui/dist` and
+  `admin-ui/dist-members`. Both are gitignored, so only the crate's `include`
+  list brings them into the package.
+- `publish.yml` runs that script in the release job, before release-plz (and
+  before the single-crate recovery publish).
+- `build.rs`, finding no `admin-ui/package.json`, bakes the bundles it was
+  given — and fails, naming the script, when they are missing.
+- Cargo counts gitignored files that `include` names as uncommitted changes, so
+  vtc-service publishes with `--allow-dirty` (`publish_allow_dirty` in
+  `release-plz.toml`; the recovery hatch passes it too). The build step in
+  `publish.yml` fails if anything else in the tree differs from the commit.
+
+To package it by hand: `bash scripts/build-vtc-web-bundles.sh && cargo package
+-p vtc-service --allow-dirty`. The package is about 6 MB compressed against crates.io's 10 MB
+limit; most of it is the two bundles.
 
 ### Why `vta-service` publishes again
 

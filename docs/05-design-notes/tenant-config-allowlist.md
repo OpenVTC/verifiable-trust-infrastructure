@@ -196,8 +196,8 @@ pub struct TenantMessagingOverlay {
 
 Note what is **absent** on purpose: `admin_did`, `mode`,
 `attestation_cache_ttl`, `allowed_did_methods`, `storage_key_salt`,
-`admin_context_id`, every `allow_*` bool, `resolver_url`, `server.*`,
-`log.*`, `store.*`, `services.*`, `policy.*`,
+`admin_context_id`, every `allow_*` bool, `resolver_url`, `server.*` (bar
+the operation budget, below), `log.*`, `store.*`, `services.*`, `policy.*`,
 `trusted_presentation_verifiers`. None of these types can carry them —
 `serde(deny_unknown_fields)` turns "operator typos a field name" and "a
 malicious parent injects an unlisted field" into the *same* parse error,
@@ -266,10 +266,21 @@ version of each is fail-*open*:
 | `tee.kms.allow_anchor_init = true` *(only if `anchor.table_name` also baked-required)* | `public_url` |
 | `tee.attestation_cache_ttl`, `tee.allowed_did_methods` | `vta_name` (optional) |
 | `tee.kms.admin_context_id` | `tee.kms.anchor.table_name` |
-| `resolver_url`, `server.*`, `store.*`, `log.*`, `services.*` | `tee.kms.anchor.writer_credential_ciphertext` (self-protecting — KMS-sealed) |
-| `policy.*`, `trusted_presentation_verifiers` | — |
+| `resolver_url`, `server.*` (bar the operation budget), `store.*`, `log.*`, `services.*` | `tee.kms.anchor.writer_credential_ciphertext` (self-protecting — KMS-sealed) |
+| `policy.*`, `trusted_presentation_verifiers` | `messaging.setup_acl` — opens the VTA's *own* account on the chosen mediator; no power beyond choosing `mediator_did` |
+| — | `tee.bootstrap_claim_did` (Ed25519 `did:key`; authorizes who may claim Mode B, grants nothing itself) |
+| — | `server.operation_rate_limit_per_sec`, `_burst`, `_per_subject_per_sec`, `_unauthenticated_per_sec` (1 – 100000) — the operation budgets (VTI-TRN-029), sized for the instance the parent chose; the rest of `server.*` stays baked |
 | **`tee.kms.allowed_accounts`** (new, baked-only — see §3.5) | — |
-| `admin_did` — **never** in the overlay; established at runtime via Mode-B TOFU | — |
+| `admin_did` — **never** in the overlay; established at runtime via Mode B, claimable only by `bootstrap_claim_did` | — |
+
+Why the operation budgets may come from the parent: their right values follow the
+instance size, which the parent chooses and the image does not know, and the
+overlay is delivered on every boot, so the budgets survive an enclave restart
+(a runtime `config/patch` would not). It confers nothing on the parent: a budget
+of 1 starves the VTA, which a parent that carries every packet can do anyway,
+and without the field the baked value, or the default, applies. Zero is refused
+rather than read as "no budget". `trust_xff_cidrs` in particular stays baked: it would let
+the parent choose whose address a request is charged to.
 
 ### 3.4 Envelope wire shape
 

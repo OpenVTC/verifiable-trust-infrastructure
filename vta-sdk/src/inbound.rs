@@ -122,6 +122,24 @@ pub fn classify(document: &Value) -> Inbound {
     }
 }
 
+/// Whether a document is a reply by its **type**: a `…#response` document or
+/// a terminal error, either of which only ever answers something.
+///
+/// Stronger than [`Inbound::Response`], which is threading and so only a
+/// shape: an `approve-response` threads to its request and is still a request.
+/// A `#response` type is not a request whatever its threading, so one that no
+/// waiter claimed (it arrived after its waiter gave up, say on a websocket
+/// reconnect) has nothing to dispatch it to. Drop it: dispatching it gets an
+/// `unsupportedType` error sent back to a peer that asked for nothing (#1949).
+#[must_use]
+pub fn names_a_reply(document: &Value) -> bool {
+    let type_uri = document
+        .get("type")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    type_uri.starts_with(TRUST_TASK_ERROR_PREFIX) || type_uri.ends_with("#response")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -193,5 +211,27 @@ mod tests {
     fn a_future_error_version_is_still_an_error() {
         let doc = json!({"id": "urn:uuid:5", "type": format!("{TRUST_TASK_ERROR_PREFIX}9.9")});
         assert_eq!(classify(&doc), Inbound::Error);
+    }
+
+    /// #1949: a `#response` is a reply whatever its threading; an
+    /// `approve-response` is a request even though it threads.
+    #[test]
+    fn a_reply_is_named_by_its_type_not_its_threading() {
+        let response = json!({
+            "type": "https://trusttasks.org/spec/messaging/message/status/0.1#response",
+            "threadId": "urn:uuid:1"
+        });
+        assert!(names_a_reply(&response));
+        let error =
+            json!({"type": format!("{TRUST_TASK_ERROR_PREFIX}0.5"), "threadId": "urn:uuid:1"});
+        assert!(names_a_reply(&error));
+        let approval = json!({
+            "type": "https://trusttasks.org/spec/auth/step-up/approve-response/0.3",
+            "threadId": "urn:uuid:1"
+        });
+        assert!(!names_a_reply(&approval));
+        assert!(!names_a_reply(
+            &json!({"type": "https://trusttasks.org/spec/keys/create/0.1"})
+        ));
     }
 }

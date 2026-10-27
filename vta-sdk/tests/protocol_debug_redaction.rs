@@ -76,6 +76,10 @@ fn create_did_webvh_result_body_debug_redacts_mnemonic() {
         created_at: Utc::now(),
         did_document: None,
         log_entry: None,
+        did_method: None,
+        scid_also_known_as: None,
+        webvh_did: None,
+        scid_did_url: None,
     };
     assert_redacted(&result, "CreateDidWebvhResultBody");
     assert_serializes_marker(&result, "CreateDidWebvhResultBody");

@@ -163,7 +163,8 @@ impl ChainedKeyspaceAuditSink {
                     env.event_id
                 )
                 .into_bytes()
-            });
+            })
+            .with_key_prefix("log:");
         Self {
             keyspace,
             key_store,

@@ -25,13 +25,13 @@ use vtc_service::test_support::{TEST_VTC_DID, TestVtc};
 const PROFILE_SHOW: &str = "https://trusttasks.org/spec/vtc/community/profile/show/0.1";
 const CEREMONIES_LIST: &str = "https://trusttasks.org/spec/vtc/ceremonies/list/0.1";
 const DIRECTORY_QUERY: &str = "https://trusttasks.org/spec/vtc/directory/query/0.1";
-const ENDORSEMENT_TYPES_LIST: &str = "https://trusttasks.org/spec/vtc/endorsement-types/list/0.1";
+const ENDORSEMENT_TYPES_LIST: &str = "https://trusttasks.org/spec/vtc/endorsement-types/list/0.2";
 const RECOGNITION_CHECK: &str = "https://trusttasks.org/spec/vtc/recognition/check/0.1";
-const MEMBERS_LIST: &str = "https://trusttasks.org/spec/vtc/members/list/0.1";
+const MEMBERS_LIST: &str = "https://trusttasks.org/spec/vtc/members/list/0.2";
 const MEMBERS_REMOVED: &str = "https://trusttasks.org/spec/vtc/members/removed/0.1";
 const MEMBERS_SHOW: &str = "https://trusttasks.org/spec/vtc/members/show/0.1";
 const MEMBERS_SOLICIT_VMC: &str = "https://trusttasks.org/spec/vtc/members/solicit-vmc/0.1";
-const JOIN_REQUESTS_LIST: &str = "https://trusttasks.org/spec/vtc/join-requests/list/0.1";
+const JOIN_REQUESTS_LIST: &str = "https://trusttasks.org/spec/vtc/join-requests/list/0.2";
 const JOIN_REQUESTS_SHOW: &str = "https://trusttasks.org/spec/vtc/join-requests/show/0.1";
 const RELATIONSHIPS_GRAPH: &str = "https://trusttasks.org/spec/vtc/relationships/graph/0.2";
 const INVITATIONS_ISSUE: &str = "https://trusttasks.org/spec/vtc/invitations/issue/0.1";
@@ -201,6 +201,18 @@ async fn the_member_and_inviter_verbs_answer_those_members() {
             _ => continue,
         };
         let (_, doc) = call(&vtc, by, uri, body).await;
+        if uri == DIRECTORY_QUERY {
+            // Answered, not refused: a member addresses another member by DID
+            // only when that member chose to show it to them (VTI-DIR-044),
+            // and otherwise learns nothing — the same `notFound` a DID that is
+            // no member gets.
+            assert_eq!(
+                error_code(&doc),
+                Some("vtc/directory/query:notFound"),
+                "{uri}: {doc}"
+            );
+            continue;
+        }
         assert_eq!(error_code(&doc), None, "{uri}: {doc}");
     }
 }

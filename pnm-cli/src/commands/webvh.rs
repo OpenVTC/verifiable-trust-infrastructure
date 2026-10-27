@@ -37,6 +37,8 @@ pub(crate) async fn run(
             template,
             template_context,
             vars,
+            did_method,
+            scid_also_known_as,
         } => {
             if server.is_none() && did_url.is_none() {
                 Err("either --server or --did-url is required".into())
@@ -80,6 +82,7 @@ pub(crate) async fn run(
                     template,
                     template_context,
                     vars,
+                    presentation(did_method, scid_also_known_as),
                 )
                 .await
             }
@@ -310,4 +313,20 @@ async fn prompt_domain_if_interactive(
         .get(idx.saturating_sub(1))
         .ok_or_else(|| "selection out of range".to_string())?;
     Ok(Some(entry.name.clone()))
+}
+
+/// The `--did-method` / `--scid-also-known-as` flags as the create's 1.2
+/// members; neither stated keeps the create on 1.1.
+fn presentation(
+    did_method: Option<vta_sdk::did_scid::DidMethod>,
+    scid_also_known_as: Option<bool>,
+) -> vta_sdk::client::DidPresentation {
+    let mut p = vta_sdk::client::DidPresentation::default();
+    if let Some(m) = did_method {
+        p = p.did_method(m);
+    }
+    if let Some(a) = scid_also_known_as {
+        p = p.scid_also_known_as(a);
+    }
+    p
 }

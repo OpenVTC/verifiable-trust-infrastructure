@@ -80,6 +80,7 @@ pub struct DisableDidcommResult {
 }
 
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum DisableDidcommError {
     #[error(
         "DIDComm is not currently enabled. Enable it first: \

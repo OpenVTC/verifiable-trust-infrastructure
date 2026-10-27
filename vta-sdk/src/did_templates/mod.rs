@@ -102,6 +102,7 @@ pub const RESERVED_VARS: &[&str] = &[
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[non_exhaustive]
 pub enum KeyPurpose {
     /// Signs. Authentication, assertion, capability invocation/delegation.
     Signing,
@@ -215,6 +216,10 @@ pub struct DidTemplate {
     /// mint the DID non-portable whatever the caller asked, because a profile
     /// that requires it (the Swiss Profile Anchor) cannot rely on every caller
     /// remembering. A template cannot force the other direction.
+    ///
+    /// So is `"scidAlsoKnownAs": false`: a profile that forbids `alsoKnownAs`
+    /// keeps the did:scid alias off its log whatever the VTA's `[dids]` says,
+    /// and the VTA refuses to present such a DID as its did:scid (VTI-KEY-166).
     #[serde(default)]
     pub defaults: serde_json::Map<String, Value>,
 
@@ -414,6 +419,7 @@ pub struct DidTemplateRecord {
 
 /// Errors from template parsing, validation, and rendering.
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum TemplateError {
     #[error("JSON parse error: {0}")]
     Json(#[from] serde_json::Error),

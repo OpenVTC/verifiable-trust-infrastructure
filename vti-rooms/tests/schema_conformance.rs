@@ -33,7 +33,7 @@
 use serde_json::{Value, json};
 use trust_tasks_rs::validate::ValidatedPayload;
 use vti_rooms::wire::*;
-use vti_rooms::{Record, RecordStatus, Visibility, merkle};
+use vti_rooms::{Record, RecordStatus, merkle};
 
 /// Validate `value` against the schema published for `T`.
 fn check<T: ValidatedPayload>(what: &str, value: &Value) {
@@ -57,40 +57,8 @@ fn presentation() -> AuthorityPresentation {
     }
 }
 
-#[test]
-fn create_room_conforms() {
-    use trust_tasks_rs::specs::rooms::create::v0_1::Payload;
-
-    for visibility in [
-        Visibility::Open,
-        Visibility::Attributed,
-        Visibility::Private,
-    ] {
-        let body = CreateRoomBody {
-            room_id: "did:webvh:example.com:rooms:northwind".into(),
-            owner_did: "did:key:z6MkOwner".into(),
-            visibility,
-            retention_days: Some(90),
-            anchor_cadence: Some(vti_rooms::AnchorCadence::Renewal),
-        };
-        check::<Payload>(
-            &format!("CreateRoomBody ({visibility:?})"),
-            &serde_json::to_value(&body).expect("serialise"),
-        );
-    }
-
-    // `retentionDays` is optional, and "absent" must serialise as absent rather than
-    // `null` — a schema typing it `integer` rejects an explicit null.
-    let body = CreateRoomBody {
-        room_id: "did:webvh:example.com:rooms:northwind".into(),
-        owner_did: "did:key:z6MkOwner".into(),
-        visibility: Visibility::Open,
-        retention_days: None,
-        anchor_cadence: Some(vti_rooms::AnchorCadence::Renewal),
-    };
-    let value = serde_json::to_value(&body).expect("serialise");
-    check::<Payload>("CreateRoomBody with no retention", &value);
-}
+// `rooms/create/0.2`'s payload is the generated type itself (`wire::CreateRoomBody`), so
+// there is no copy left to hold to the schema.
 
 #[test]
 fn put_record_conforms_on_both_tiers() {
@@ -104,6 +72,7 @@ fn put_record_conforms_on_both_tiers() {
             ciphertext: "1ep1PJuf8-yNmTndwcuMxA".into(),
             nonce: "AAAAAAAAAAAAAAAA".into(),
             epoch: 1,
+            version: None,
         }),
         cleartext: None,
         expected_version: Some(0),
@@ -134,7 +103,7 @@ fn put_record_conforms_on_both_tiers() {
 
 #[test]
 fn get_and_list_requests_conform() {
-    use trust_tasks_rs::specs::rooms::records::get::v0_1::Payload as GetPayload;
+    use trust_tasks_rs::specs::rooms::records::get::v0_2::Payload as GetPayload;
     use trust_tasks_rs::specs::rooms::records::list::v0_1::Payload as ListPayload;
 
     let get = GetRecordBody {
@@ -254,7 +223,7 @@ fn epoch_chain_conforms() {
 /// serialisation under the name the schema gives it.
 #[test]
 fn a_subject_binding_conforms_under_its_published_name() {
-    use trust_tasks_rs::specs::rooms::records::get::v0_1::Payload;
+    use trust_tasks_rs::specs::rooms::records::get::v0_2::Payload;
 
     let mut p = presentation();
     p.subject_binding = Some("urn:uuid:44444444-4444-4444-4444-444444444444".into());
@@ -275,7 +244,7 @@ fn a_subject_binding_conforms_under_its_published_name() {
 
 #[test]
 fn responses_conform() {
-    use trust_tasks_rs::specs::rooms::create::v0_1::Response as CreateResponse;
+    use trust_tasks_rs::specs::rooms::create::v0_2::Response as CreateResponse;
     use trust_tasks_rs::specs::rooms::epoch::mint::v0_1::Response as MintResponse;
     use trust_tasks_rs::specs::rooms::records::list::v0_1::Response as ListResponse;
     use trust_tasks_rs::specs::rooms::records::put::v0_1::Response as PutResponse;
@@ -327,6 +296,7 @@ fn responses_conform() {
             pinned: false,
             sealed: None,
             nonce: None,
+            sealed_version: None,
             cleartext: Some(json!({
                 "title": "Pricing holds through Q3",
                 "body": "Agreed not to reprice before the renewal closes.",
@@ -343,6 +313,7 @@ fn responses_conform() {
             pinned: false,
             sealed: None,
             nonce: None,
+            sealed_version: None,
             cleartext: None,
             author: None,
             updated_at: 1_756_000_100,
@@ -407,7 +378,7 @@ fn responses_conform() {
 /// with itself.
 #[test]
 fn get_record_response_conforms() {
-    use trust_tasks_rs::specs::rooms::records::get::v0_1::Response as GetResponse;
+    use trust_tasks_rs::specs::rooms::records::get::v0_2::Response as GetResponse;
 
     // A sealed record, as `attributed` and `private` store one, answered with
     // both verification members.
@@ -419,6 +390,7 @@ fn get_record_response_conforms() {
         pinned: true,
         sealed: Some("c2VhbGVkLWJvZHk".into()),
         nonce: Some("bm9uY2UtMTI".into()),
+        sealed_version: None,
         cleartext: None,
         author: None,
         updated_at: 1_756_000_000,
@@ -483,6 +455,7 @@ fn get_record_response_conforms() {
         pinned: false,
         sealed: None,
         nonce: None,
+        sealed_version: None,
         cleartext: Some(json!({ "body": "Agreed not to reprice before the renewal closes." })),
         author: Some("did:key:z6MkAlice".into()),
         updated_at: 1_756_000_100,
@@ -508,6 +481,7 @@ fn get_record_response_conforms() {
         pinned: false,
         sealed: None,
         nonce: None,
+        sealed_version: None,
         cleartext: None,
         author: None,
         updated_at: 1_756_000_200,
@@ -536,6 +510,7 @@ fn a_reader_verifies_a_trace_from_the_response_alone() {
             pinned: false,
             sealed: Some("c2VhbGVkLWJvZHk".into()),
             nonce: Some("bm9uY2UtMTI".into()),
+            sealed_version: None,
             cleartext: None,
             author: None,
             updated_at: 1_756_000_000,
@@ -591,6 +566,7 @@ fn a_record_round_trips_through_its_committed_form() {
         pinned: true,
         sealed: Some("c2VhbGVkLWJvZHk".into()),
         nonce: Some("bm9uY2UtMTI".into()),
+        sealed_version: None,
         cleartext: None,
         author: Some("did:key:z6MkAlice".into()),
         updated_at: 1_756_000_000,
@@ -600,6 +576,23 @@ fn a_record_round_trips_through_its_committed_form() {
         serde_json::to_value(&back).expect("serialise"),
         serde_json::to_value(&sealed).expect("serialise"),
         "a sealed record must survive the wire form unchanged"
+    );
+
+    // A curated record keeps the version its body was sealed at (`SealedRecord.version`).
+    // A mirror has to keep it too: its copy otherwise opens for nobody.
+    let curated = Record {
+        sealed_version: Some(5),
+        ..sealed.clone()
+    };
+    assert_eq!(
+        curated.committed().sealed.as_ref().and_then(|s| s.version),
+        Some(5)
+    );
+    let back = Record::from_wire(&curated.committed()).expect("reads back");
+    assert_eq!(
+        back.sealed_version,
+        Some(5),
+        "a mirror keeps the sealed-at version"
     );
 
     // The one documented loss: a tombstone's epoch has nowhere to live on the
@@ -630,7 +623,7 @@ fn a_record_round_trips_through_its_committed_form() {
 /// a schema without anything going red.
 #[test]
 fn a_trace_without_a_commitment_is_refused() {
-    use trust_tasks_rs::specs::rooms::records::get::v0_1::Response as GetResponse;
+    use trust_tasks_rs::specs::rooms::records::get::v0_2::Response as GetResponse;
 
     let orphan = json!({
         "key": "giXFLTGBdnnQJRoIsktuIg",
@@ -672,7 +665,7 @@ fn prune_and_commits_conform() {
     use trust_tasks_rs::specs::rooms::epoch::commits::v0_1::{
         Payload as CommitsPayload, Response as CommitsResp,
     };
-    use trust_tasks_rs::specs::rooms::epoch::prune::v0_1::{
+    use trust_tasks_rs::specs::rooms::epoch::prune::v0_2::{
         Payload as PrunePayload, Response as PruneResp,
     };
 
@@ -692,6 +685,12 @@ fn prune_and_commits_conform() {
             room_id: "did:webvh:example.com:rooms:northwind".into(),
             pruned: 4,
             earliest_rung: 5,
+        })
+        .map(|mut v| {
+            // 0.2 requires the floor, which a host adds to the stored answer
+            // (`record_tasks::epoch_prune_v2_response`).
+            v["epochFloor"] = json!(4);
+            v
         })
         .expect("serialise"),
     );
@@ -746,6 +745,7 @@ fn a_half_sealed_record_loses_its_body() {
         pinned: false,
         sealed: Some("c2VhbGVkLWJvZHk".into()),
         nonce: Some("bm9uY2UtMTI".into()),
+        sealed_version: None,
         cleartext: None,
         author: None,
         updated_at: 1_756_000_000,
@@ -895,16 +895,8 @@ fn every_dispatched_uri_is_the_published_one() {
 
     let published: Vec<(&str, &str)> = vec![
         (
-            ROOMS_CREATE_TYPE,
-            <rooms::create::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
-        ),
-        (
             ROOMS_RECORDS_PUT_TYPE,
             <rooms::records::put::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
-        ),
-        (
-            ROOMS_RECORDS_GET_TYPE,
-            <rooms::records::get::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
         ),
         (
             ROOMS_RECORDS_LIST_TYPE,
@@ -931,16 +923,44 @@ fn every_dispatched_uri_is_the_published_one() {
             <rooms::owner::claim::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
         ),
         (
-            ROOMS_EPOCH_PRUNE_TYPE,
-            <rooms::epoch::prune::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
-        ),
-        (
             ROOMS_EPOCH_COMMITS_TYPE,
             <rooms::epoch::commits::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
         ),
         (
             ROOMS_RECORDS_PUT_V2_TYPE,
             <rooms::records::put::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+        ),
+        (
+            ROOMS_RECORDS_PUT_V3_TYPE,
+            <rooms::records::put::v0_3::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+        ),
+        (
+            ROOMS_EPOCH_CHAIN_V2_TYPE,
+            <rooms::epoch::chain::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+        ),
+        (
+            ROOMS_EPOCH_PRUNE_V2_TYPE,
+            <rooms::epoch::prune::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+        ),
+        (
+            ROOMS_CREATE_V2_TYPE,
+            <rooms::create::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+        ),
+        (
+            ROOMS_INFO_V2_TYPE,
+            <rooms::info::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+        ),
+        (
+            ROOMS_RECORDS_LIST_V3_TYPE,
+            <rooms::records::list::v0_3::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+        ),
+        (
+            ROOMS_RECORDS_PRUNE_TYPE,
+            <rooms::records::prune::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+        ),
+        (
+            ROOMS_RECORDS_RETENTION_SET_TYPE,
+            <rooms::records::retention::set::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
         ),
         (
             ROOMS_RECORDS_GET_V2_TYPE,
@@ -951,32 +971,44 @@ fn every_dispatched_uri_is_the_published_one() {
             <rooms::records::list::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI,
         ),
         (
-            ROOMS_BLOBS_UPLOAD_BEGIN_TYPE,
-            <rooms::blobs::upload::begin::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
-        ),
-        (
-            ROOMS_BLOBS_UPLOAD_CHUNK_TYPE,
-            <rooms::blobs::upload::chunk::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
-        ),
-        (
-            ROOMS_BLOBS_UPLOAD_COMMIT_TYPE,
-            <rooms::blobs::upload::commit::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
-        ),
-        (
-            ROOMS_BLOBS_UPLOAD_ABORT_TYPE,
-            <rooms::blobs::upload::abort::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
-        ),
-        (
-            ROOMS_BLOBS_GET_TYPE,
-            <rooms::blobs::get::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
-        ),
-        (
             ROOMS_BLOBS_CHUNK_TYPE,
             <rooms::blobs::chunk::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
         ),
         (
             ROOMS_INFO_TYPE,
             <rooms::info::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+        ),
+        (
+            ROOMS_USAGE_TYPE,
+            <rooms::usage::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+        ),
+        (
+            ROOMS_BLOBS_UPLOAD_BEGIN_V2_TYPE,
+            <rooms::blobs::upload::begin::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+        ),
+        (
+            ROOMS_BLOBS_UPLOAD_CHUNK_V2_TYPE,
+            <rooms::blobs::upload::chunk::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+        ),
+        (
+            ROOMS_BLOBS_UPLOAD_COMMIT_V2_TYPE,
+            <rooms::blobs::upload::commit::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+        ),
+        (
+            ROOMS_BLOBS_UPLOAD_ABORT_V2_TYPE,
+            <rooms::blobs::upload::abort::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+        ),
+        (
+            ROOMS_BLOBS_GET_V2_TYPE,
+            <rooms::blobs::get::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+        ),
+        (
+            ROOMS_REVOCATIONS_PUT_TYPE,
+            <rooms::revocations::put::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+        ),
+        (
+            ROOMS_REVOCATIONS_GET_TYPE,
+            <rooms::revocations::get::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
         ),
     ];
 

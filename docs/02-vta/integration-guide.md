@@ -201,6 +201,15 @@ let sig = client
                  SshsigHashAlgorithm::Sha512, &sha512_of_commit)
     .await?;
 
+// A compact JWS — an OpenID4VP request object — from a key that stays in the
+// VTA. The VTA sets `alg` from the key and serialises header and payload
+// itself, so use the returned `jws` as it is. Needs `sign-jws`.
+let signed = client.sign_jws(&key.key_id, header, claims).await?;
+
+// A PKCS#10 request (PEM) for an access certificate, for the same key.
+// Needs `sign-csr`.
+let request = client.sign_csr(&key.key_id, subject, Some(alt_names)).await?;
+
 // Fetch all secrets for a context as a portable bundle
 let bundle = client.fetch_did_secrets_bundle("my-app").await?;
 ```
@@ -220,6 +229,56 @@ capability, `sign-sshsig` (every role that derives `sign` derives it, and `sign`
 is accepted in its place). `did-git-sign` uses it; narrow its credential to it
 with `pnm acl update <did> --capabilities sign-sshsig`. Each signature is audited
 as `keys.sign-sshsig` with the namespace and the digest.
+
+Nor does a verifier whose key stays in the VTA. `keys/sign-jws/0.1`
+returns a compact JWS: the VTA sets `alg` from the key (ES256 for P-256, EdDSA
+for Ed25519), refuses the header members it sets or never signs (`alg`, `crit`,
+`b64`, `jwk`, `jku`, `x5u`), checks that an `x5c` certifies the named key, and
+builds the signing input itself. `keys/sign-csr/0.1` returns a PKCS#10 request
+for a P-256 or Ed25519 key, built from a structured subject and optional
+alternative names, so a CA can certify a key that never leaves. Each is gated on
+its own capability — `sign-jws`, `sign-csr` — and, unlike SSHSIG, **`sign` is not
+accepted in their place**: this VTA frames `keys/sign` payloads under its own
+signing domain, so `sign` cannot yield a JWS or a certificate request, and the
+specifications say such a custodian should not widen it into one. Every role that
+derives `sign` derives both; narrow a verifier's credential with
+`pnm acl update <did> --capabilities sign-jws,sign-csr`. Each signature is audited
+as `keys.sign-jws` (`alg`, `typ`, the SHA-256 of the signing input — never the
+payload) or `keys.sign-csr` (subject, alternative names, the SHA-256 of the
+signed request).
+
+An issuer whose key stays in the VTA uses `keys/sign-document/0.1`: an
+`eddsa-jcs-2022` Data Integrity proof over a JSON document — a credential, or a
+member's external directory card — made **only as the DID the document names**
+in `issuer` or `controller`. The VTA reads that DID's document itself (from the
+identifier for a `did:key` or `did:peer`, from its own log for a `did:webvh` it
+minted, otherwise by resolving it — never from the request), refuses a key that
+is not one of its verification methods (`issuerMismatch`) or not listed under the
+requested purpose (`purposeNotAuthorized`, `assertionMethod` by default), refuses
+a document that already carries a proof, and builds the proof configuration and
+hash data itself. The answer is the document exactly as sent with the proof
+attached; use it as it is. Gated on `sign-document`, and `sign` is not accepted
+in its place. Each proof is audited as `keys.sign-document` (signer, method,
+purpose, the document's `id` and `type`, and the SHA-256 of the hash data —
+never the document).
+
+```rust
+let signed = client.sign_document(&key.key_id, credential, None).await?;
+// signed.document carries the proof; signed.signer_did is the DID it names.
+```
+
+From the command line, `pnm keys sign-csr` writes the request:
+
+```sh
+pnm keys sign-csr <key-id> --country DE --organization "Example e.V." \
+  --organization-identifier VATDE-123456789 --common-name "Example Community" \
+  --dns vtc.example.org --out access.csr
+```
+
+The flags become the subject in encoded order (`C`, `ST`, `L`, `O`, `OU`,
+`organizationIdentifier`, `serialNumber`, `CN`, `emailAddress`) whatever order
+they are given in. Before writing the request, `pnm` checks that the VTA
+certified the key it named.
 
 So an integration that operates its context's DID, and loads that DID's keys
 at startup (a mediator, a room host, anything using

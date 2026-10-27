@@ -107,6 +107,50 @@ pub enum ExternalCredentialPayload {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         provider_request_id: Option<String>,
     },
+    /// `PresignedRequestSet` (`s3-static-presign`, `external/credentials/issue/0.2`+):
+    /// one presigned request per requested operation, all on one object, in the
+    /// order requested. Each is a bearer credential for its one request until it
+    /// expires; `expires_at` is the earliest of them.
+    PresignedRequests {
+        requests: Vec<PresignedEntry>,
+        expires_at: String,
+    },
+}
+
+/// One request of a [`ExternalCredentialPayload::PresignedRequests`] set.
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PresignedEntry {
+    /// The position of the operation in the request's `presign.requests`.
+    pub index: u32,
+    /// The `PresignOperation` it answers (`put`, `upload-part`, …).
+    pub operation: String,
+    /// The HTTP method the signature covers.
+    pub method: String,
+    pub url: String,
+    /// The signed headers the request MUST carry exactly as given.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub headers: BTreeMap<String, String>,
+    pub expires_at: String,
+}
+
+impl Drop for PresignedEntry {
+    fn drop(&mut self) {
+        zeroize::Zeroize::zeroize(&mut self.url);
+    }
+}
+
+/// Written by hand: the URL carries its signature.
+impl std::fmt::Debug for PresignedEntry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PresignedEntry")
+            .field("index", &self.index)
+            .field("operation", &self.operation)
+            .field("method", &self.method)
+            .field("url", &"<redacted>")
+            .field("expires_at", &self.expires_at)
+            .finish()
+    }
 }
 
 impl ExternalCredentialPayload {
@@ -114,9 +158,9 @@ impl ExternalCredentialPayload {
     pub fn expires_at(&self) -> &str {
         match self {
             Self::AwsSession { expiration, .. } => expiration,
-            Self::BearerToken { expires_at, .. } | Self::PresignedRequest { expires_at, .. } => {
-                expires_at
-            }
+            Self::BearerToken { expires_at, .. }
+            | Self::PresignedRequest { expires_at, .. }
+            | Self::PresignedRequests { expires_at, .. } => expires_at,
         }
     }
 }
@@ -136,6 +180,8 @@ impl Drop for ExternalCredentialPayload {
             Self::BearerToken { token, .. } => token.zeroize(),
             // A presigned URL is a bearer credential for one operation.
             Self::PresignedRequest { url, .. } => url.zeroize(),
+            // Each entry zeroizes its own URL.
+            Self::PresignedRequests { .. } => {}
         }
     }
 }
@@ -147,6 +193,7 @@ impl std::fmt::Debug for ExternalCredentialPayload {
             Self::AwsSession { .. } => "awsSession",
             Self::BearerToken { .. } => "bearerToken",
             Self::PresignedRequest { .. } => "presignedRequest",
+            Self::PresignedRequests { .. } => "presignedRequests",
         };
         f.debug_struct("ExternalCredentialPayload")
             .field("kind", &kind)
@@ -160,6 +207,28 @@ impl std::fmt::Debug for ExternalCredentialPayload {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// A `PresignedRequestSet` is the specification's shape, and its URLs never print.
+    #[test]
+    fn a_presigned_request_set_is_the_specifications() {
+        let raw = json!({
+            "kind": "presignedRequests",
+            "requests": [{
+                "index": 0, "operation": "upload-part", "method": "PUT",
+                "url": "https://b.example/k?partNumber=1&X-Amz-Signature=x",
+                "headers": { "Content-Length": "5", "x-amz-checksum-sha256": "c" },
+                "expiresAt": "2026-10-10T09:00:00Z",
+            }],
+            "expiresAt": "2026-10-10T09:00:00Z",
+        });
+        let set: ExternalCredentialPayload = serde_json::from_value(raw.clone()).unwrap();
+        assert_eq!(serde_json::to_value(&set).unwrap(), raw);
+        assert!(!format!("{set:?}").contains("Signature"));
+        let ExternalCredentialPayload::PresignedRequests { requests, .. } = &set else {
+            panic!()
+        };
+        assert!(!format!("{:?}", requests[0]).contains("Signature"));
+    }
 
     /// The JSON form is the specification's, member for member.
     #[test]

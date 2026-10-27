@@ -71,6 +71,8 @@ mod credentials;
 mod device;
 mod did_templates;
 mod discovery;
+#[cfg(test)]
+mod error_code_census;
 mod external;
 mod health;
 mod helpers;
@@ -80,8 +82,10 @@ mod management;
 mod memory;
 mod messaging;
 mod metrics;
+pub mod operation_budget;
 #[cfg(all(feature = "webvh", feature = "didcomm"))]
 mod passkey_vms;
+mod pcs;
 pub mod pending_replies;
 mod persona;
 pub(crate) mod planner;
@@ -93,9 +97,16 @@ mod proofs;
 #[cfg(feature = "webvh")]
 mod provision_integration;
 pub(crate) mod received;
+mod room_act;
+mod room_catch_up;
 mod room_group;
 mod room_keys;
+mod room_label;
+pub(crate) mod room_list_delivery;
 mod room_owner;
+mod room_owner_group;
+mod room_owner_revoke;
+mod room_profile;
 mod seeds;
 // `operations::protocol` — every service operation these handlers call — is
 // `#[cfg(feature = "webvh")]`, because advertising a transport means editing
@@ -114,6 +125,7 @@ mod vault;
 #[cfg(feature = "webvh")]
 pub(crate) mod webvh;
 pub(crate) mod wire_v0_2;
+mod witness;
 
 /// The transport-neutral dispatch result — see [`helpers::TrustTaskOutcome`].
 /// Re-exported so both transports (`routes`-mounted REST handler + DIDComm
@@ -198,6 +210,7 @@ const KNOWN_FEATURE_GATED_URIS: &[&str] = &[
     vta_sdk::trust_tasks::TASK_WEBVH_DIDS_LIST_1_0,
     vta_sdk::trust_tasks::TASK_WEBVH_DIDS_CREATE_1_0,
     vta_sdk::trust_tasks::TASK_WEBVH_DIDS_CREATE_1_1,
+    vta_sdk::trust_tasks::TASK_WEBVH_DIDS_CREATE_1_2,
     vta_sdk::trust_tasks::TASK_WEBVH_DIDS_GET_1_0,
     vta_sdk::trust_tasks::TASK_WEBVH_DIDS_DELETE_1_0,
     vta_sdk::trust_tasks::TASK_WEBVH_DIDS_UPDATE_1_0,
@@ -298,12 +311,11 @@ const UNSPECCED_DISPATCHED_URIS: &[&str] = &[
     //   trust-tasks-rs 0.17.4, so it has a published schema, a conformance
     //   witness, and payload validation on the dispatch spine. Debt discharged
     //   by specification rather than by deletion.
-    // ─ keys/sign-jws/0.1 — a VTA-built compact JWS (a JWT) whose header is
-    //   `typ`-allow-listed, added here for the Agent Gateway signing
-    //   integration ahead of an upstream spec. Dispatched unvalidated like any
-    //   unknown-schema task; author the spec upstream and bump trust-tasks-rs
-    //   to discharge this entry.
-    "https://trusttasks.org/spec/keys/sign-jws/0.1",
+    // (keys/sign-jws/0.1 was here while the Agent Gateway integration carried a
+    //  hand-written, `typ`-allow-listed body ahead of a spec. It was specified
+    //  upstream and shipped in trust-tasks-rs 0.35, so the wire types are the
+    //  generated ones and the spine validates the payload. Debt discharged by
+    //  specification.)
     // ─ vta/credentials/issue-in-context/0.1 — issuing as a *context's* DID
     //   rather than as the VTA. `credentials/issue/0.2` is published but is
     //   instance-super-admin gated by construction (it signs with the VTA's
@@ -380,7 +392,7 @@ macro_rules! dispatch_table {
             auth: &AuthClaims,
             doc: TrustTask<Value>,
         ) -> TrustTaskOutcome {
-            let type_uri = doc.type_uri.to_string();
+            let type_uri = doc.type_uri.for_routing().to_string();
             // Two stack costs live here, and both have bitten (Keyring VTI-08).
             //
             // The *future*: an async fn's future is sized to its largest live
@@ -503,9 +515,25 @@ pub async fn dispatch_trust_task(
     // reaches nothing. A caller who presents a credential has it verified by
     // the extractor, and a bad one is refused there — never downgraded to
     // anonymous. The route sits behind the unauthenticated limiter for exactly
-    // the requests this lets through anonymously (`rate_limit::apply_anonymous`).
+    // the requests this lets through anonymously (`rate_limit::apply_trust_tasks`).
     let auth = match auth {
-        Some(auth) => auth,
+        Some(auth) => {
+            // Charged once the caller is authenticated and before any work, to
+            // its own share and the appliance budget (VTI-TRN-029,
+            // `operation_budget`). Anonymous public tasks are not charged: the
+            // per-IP limiter in front of this route bounds them.
+            let type_uri = ceremony::peek_type_uri(&body).unwrap_or_default();
+            if let Err(refused) = state
+                .operation_budget
+                .charge(operation_budget::Caller::Client(&auth.did), &type_uri)
+            {
+                return Ok(crate::routes::rate_limit::too_many_requests(
+                    refused.scope.name(),
+                    refused.retry_after_secs(),
+                ));
+            }
+            auth
+        }
         None => {
             let type_uri = ceremony::peek_type_uri(&body);
             match type_uri.as_deref() {
@@ -527,7 +555,7 @@ pub async fn dispatch_trust_task(
     };
     // REST is hop-by-hop by construction: TLS terminates at whatever the
     // operator put in front of this process, and the plaintext exists there.
-    Ok(transport::with_binding(
+    let outcome = transport::with_binding(
         "https",
         dispatch_trust_task_core(
             &state,
@@ -536,15 +564,21 @@ pub async fn dispatch_trust_task(
             transport::TransportConfidentiality::HopByHop,
         ),
     )
-    .await
-    .into_response())
+    .await;
+    if outcome.restart {
+        // Released when hyper drops the body — the reply is written by then,
+        // and graceful shutdown lets the connection flush it. Firing here,
+        // before axum has the response at all, raced the teardown it starts.
+        return Ok(outcome.into_response_firing(state.restart_gate.fire_on_drop()));
+    }
+    Ok(outcome.into_response())
 }
 
 /// The largest body an anonymous caller may send: the cap the other
 /// unauthenticated routes carry (`routes::UNAUTH_BODY_SIZE`). The route sits on
 /// the authenticated router, whose cap is the global one, so the public path
 /// enforces its own.
-const PUBLIC_TASK_BODY_LIMIT: usize = 64 * 1024;
+pub(crate) const PUBLIC_TASK_BODY_LIMIT: usize = 64 * 1024;
 
 /// Does this Type URI name a task any caller may send with no identity?
 /// See [`vta_sdk::trust_tasks::PUBLIC_URIS`].
@@ -617,7 +651,15 @@ async fn validate_payload(
     match trust_tasks_rs::validate::against_schema(schema, &doc.payload) {
         Ok(()) => None,
         Err(e) => {
-            tracing::info!(type_uri, error = %e, "payload failed schema validation");
+            // A schema error quotes the offending value. For a task whose payload is text a
+            // person wrote for themselves, that value must not reach a log
+            // (`rooms/keys/label/0.1` recipient item 10); the caller, who wrote it, still
+            // gets the full reason.
+            if carries_personal_text(type_uri) {
+                tracing::info!(type_uri, "payload failed schema validation");
+            } else {
+                tracing::info!(type_uri, error = %e, "payload failed schema validation");
+            }
             Some(helpers::reject_with(
                 doc,
                 RejectReason::MalformedRequest {
@@ -626,6 +668,18 @@ async fn validate_payload(
             ))
         }
     }
+}
+
+/// Whether a task's request or response can carry a member's personal label — text a
+/// person wrote for themselves, which `rooms/keys/label/0.1` keeps with the group state
+/// and nowhere else. Such text is never written to a log, even quoted in an error
+/// (recipient item 10), and such a response is never kept for redelivery: the label would
+/// outlive a change or a removal in the replay record, which is a history of earlier
+/// values the specification forbids (*Retention*).
+fn carries_personal_text(type_uri: &str) -> bool {
+    let bare = type_uri.split('#').next().unwrap_or(type_uri);
+    bare == vta_sdk::trust_tasks::TASK_ROOMS_KEYS_LABEL_0_1
+        || bare == vta_sdk::trust_tasks::TASK_ROOMS_KEYS_LIST_0_2
 }
 
 /// Attach this agent's Data-Integrity proof to a success response.
@@ -706,6 +760,7 @@ pub(crate) async fn sign_response(state: &AppState, outcome: TrustTaskOutcome) -
         Some(body) => TrustTaskOutcome {
             status: outcome.status,
             body,
+            restart: outcome.restart,
         },
         None if is_success => {
             tracing::error!(%vm_id, "the signature would not attach");
@@ -715,6 +770,7 @@ pub(crate) async fn sign_response(state: &AppState, outcome: TrustTaskOutcome) -
                 Some(body) => TrustTaskOutcome {
                     status: refusal.status,
                     body,
+                    restart: refusal.restart,
                 },
                 None => refusal,
             }
@@ -745,6 +801,7 @@ fn cannot_sign(vm_id: &str, why: &str) -> TrustTaskOutcome {
     TrustTaskOutcome {
         status: axum::http::StatusCode::INTERNAL_SERVER_ERROR,
         body: serde_json::to_vec(&body).unwrap_or_else(|_| b"{}".to_vec()),
+        restart: false,
     }
 }
 
@@ -1020,6 +1077,7 @@ pub(crate) async fn accept_from_proven_sender(
     let silent = || TrustTaskOutcome {
         status: axum::http::StatusCode::NO_CONTENT,
         body: Vec::new(),
+        restart: false,
     };
 
     // Classified off a bare `Value`: it reads two fields and must not depend on
@@ -1079,6 +1137,16 @@ pub(crate) async fn accept_from_proven_sender(
             tracing::debug!(sender = %sender_vid, "inbound response delivered to a waiting request");
             silent()
         }
+        // A reply by its *type* that no waiter took (it outlived its waiter)
+        // is not a request either: dispatching it answers a peer that asked
+        // for nothing with an `unsupportedType` error (#1949).
+        Inbound::Response
+            if serde_json::from_slice::<Value>(body)
+                .is_ok_and(|v| vta_sdk::inbound::names_a_reply(&v)) =>
+        {
+            tracing::debug!(sender = %sender_vid, "inbound response had no waiter — dropped");
+            silent()
+        }
         Inbound::Response | Inbound::Request => {
             // The transport's sender is treated as a claim, never as proof of
             // who composed the document (VTI-OPS-021/093: a transport that
@@ -1094,21 +1162,38 @@ pub(crate) async fn accept_from_proven_sender(
                     ?reason,
                     "trust-task document is not bound to its sender by a proof — refused"
                 );
-                return sign_response(state, reject_trust_task(body, reason)).await;
+                return refuse_without_standing(state, body, reason).await;
             }
-            match crate::messaging::auth::auth_for_trust_task_envelope(state, sender_vid, body)
-                .await
-            {
-                Ok(auth) => dispatch_trust_task_core(state, &auth, body, confidentiality).await,
+            use crate::messaging::auth::Standing;
+            use operation_budget::Caller;
+            match crate::messaging::auth::resolve_trust_task_sender(state, sender_vid, body).await {
+                // Charged once the sender is proven and resolved, before any work
+                // (VTI-TRN-029, `operation_budget`): a client with an ACL entry to
+                // its own share and the appliance budget, a sender without
+                // standing to the unauthenticated budget, so a stranger cannot
+                // spend what clients need.
+                Ok((auth, standing)) => {
+                    let caller = match standing {
+                        Standing::Acl => Caller::Client(&auth.did),
+                        Standing::ZeroAuthority => Caller::Unauthenticated,
+                    };
+                    match state
+                        .operation_budget
+                        .charge(caller, &ceremony::peek_type_uri(body).unwrap_or_default())
+                    {
+                        Ok(()) => {
+                            dispatch_trust_task_core(state, &auth, body, confidentiality).await
+                        }
+                        Err(refused) => over_budget(state, body, refused).await,
+                    }
+                }
                 Err(e) => {
-                    sign_response(
+                    refuse_without_standing(
                         state,
-                        reject_trust_task(
-                            body,
-                            trust_tasks_rs::RejectReason::PermissionDenied {
-                                reason: e.to_string(),
-                            },
-                        ),
+                        body,
+                        trust_tasks_rs::RejectReason::PermissionDenied {
+                            reason: e.to_string(),
+                        },
                     )
                     .await
                 }
@@ -1116,6 +1201,69 @@ pub(crate) async fn accept_from_proven_sender(
         }
     }
 }
+
+/// Refuse a DIDComm or TSP document from a sender without standing — unbound to
+/// its sender, unsigned, or from a sender the ACL does not know — charging the
+/// signed refusal to the unauthenticated budget (VTI-TRN-029). Past that
+/// budget the document is dropped with no reply: answering would make a flood
+/// of refusable documents cost a signature each, which is the work the budget
+/// bounds. Below it the refusal is answered as before, so a misconfigured peer
+/// still learns why.
+#[cfg(any(feature = "didcomm", feature = "tsp"))]
+pub(crate) async fn refuse_without_standing(
+    state: &AppState,
+    body: &[u8],
+    reason: trust_tasks_rs::RejectReason,
+) -> TrustTaskOutcome {
+    let type_uri = ceremony::peek_type_uri(body).unwrap_or_default();
+    if state
+        .operation_budget
+        .charge(operation_budget::Caller::Unauthenticated, &type_uri)
+        .is_err()
+    {
+        return TrustTaskOutcome {
+            status: axum::http::StatusCode::NO_CONTENT,
+            body: Vec::new(),
+            restart: false,
+        };
+    }
+    sign_response(state, reject_trust_task(body, reason)).await
+}
+
+/// The answer to a document an operation budget refused, over DIDComm or TSP:
+/// a signed, retryable `unavailable` naming when to come back. The document was
+/// not executed and its `id` not recorded (VTI-OPS-026), so resending it is a
+/// retry. (REST answers the VTA's 429 instead, in `dispatch_trust_task`.)
+///
+/// Past the unauthenticated budget there is no reply, for the reason
+/// [`refuse_without_standing`] gives: a signed answer to each would let
+/// strangers spend a signature per message once their budget is gone.
+#[cfg(any(feature = "didcomm", feature = "tsp"))]
+pub(crate) async fn over_budget(
+    state: &AppState,
+    body: &[u8],
+    refused: operation_budget::Refused,
+) -> TrustTaskOutcome {
+    if refused.scope == operation_budget::Scope::Unauthenticated {
+        return TrustTaskOutcome {
+            status: axum::http::StatusCode::NO_CONTENT,
+            body: Vec::new(),
+            restart: false,
+        };
+    }
+    let retry_after = chrono::Duration::from_std(refused.retry_after)
+        .ok()
+        .and_then(|d| chrono::Utc::now().checked_add_signed(d));
+    sign_response(
+        state,
+        reject_trust_task(
+            body,
+            trust_tasks_rs::RejectReason::Unavailable { retry_after },
+        ),
+    )
+    .await
+}
+
 /// The DID `doc`'s own Data Integrity proof verifies as, when that DID is also
 /// its in-band `issuer` (fragment ignored); `None` otherwise. What a reply
 /// waiter checks against the peer its request went to.
@@ -1174,7 +1322,7 @@ pub(crate) async fn bind_document_to_sender(
         // over DIDComm or TSP would make the requirement depend on the
         // transport, which VTI-OPS-021 forbids. A proof that IS attached is
         // still verified and bound below.
-        if is_public_task(&doc.type_uri.to_string()) {
+        if is_public_task(&doc.type_uri.for_routing().to_string()) {
             return Ok(());
         }
         return Err(RejectReason::ProofRequired);
@@ -1227,10 +1375,36 @@ pub(crate) async fn dispatch_trust_task_core(
             Some(body) => TrustTaskOutcome {
                 status: axum::http::StatusCode::INTERNAL_SERVER_ERROR,
                 body,
+                restart: outcome.restart,
             },
             None => outcome,
         };
+    // The one place a restart is armed, for every transport and for in-process
+    // callers that never send the outcome anywhere (the backstop covers those).
+    // Each transport releases it once its reply is out (`fire_on_drop`).
+    if outcome.restart {
+        state.restart_gate.request();
+    }
     outcome
+}
+
+/// [`dispatch_auth_family`] for a DIDComm or TSP peer, charged first to the
+/// unauthenticated budget (VTI-TRN-029, `operation_budget`). A peer logging in
+/// has no standing yet, and these transports have no per-IP limiter to bound
+/// it; REST does, so its login steps call [`dispatch_auth_family`] directly.
+#[cfg(any(feature = "didcomm", feature = "tsp"))]
+pub(crate) async fn dispatch_auth_family_from_peer(
+    state: &AppState,
+    body: &[u8],
+) -> TrustTaskOutcome {
+    let type_uri = ceremony::peek_type_uri(body).unwrap_or_default();
+    match state
+        .operation_budget
+        .charge(operation_budget::Caller::Unauthenticated, &type_uri)
+    {
+        Ok(()) => dispatch_auth_family(state, body).await,
+        Err(refused) => over_budget(state, body, refused).await,
+    }
 }
 
 /// The pre-session auth family's own tiny "core", parallel to
@@ -1250,9 +1424,16 @@ pub(crate) async fn dispatch_auth_family(state: &AppState, body: &[u8]) -> Trust
             Some(body) => TrustTaskOutcome {
                 status: axum::http::StatusCode::INTERNAL_SERVER_ERROR,
                 body,
+                restart: outcome.restart,
             },
             None => outcome,
         };
+    // The one place a restart is armed, for every transport and for in-process
+    // callers that never send the outcome anywhere (the backstop covers those).
+    // Each transport releases it once its reply is out (`fire_on_drop`).
+    if outcome.restart {
+        state.restart_gate.request();
+    }
     outcome
 }
 
@@ -1312,6 +1493,7 @@ async fn dispatch_trust_task_inner(
         return TrustTaskOutcome {
             status: axum::http::StatusCode::NO_CONTENT,
             body: Vec::new(),
+            restart: false,
         };
     }
 
@@ -1328,7 +1510,7 @@ async fn dispatch_trust_task_inner(
     // `doc.type_uri`: what is being measured is what the client sent, and
     // reading it after the rewrite would count every 0.2 caller as a 0.1 one
     // and hold the metric off zero permanently.
-    let superseded = crate::deprecation::superseded_task(&doc.type_uri.to_string());
+    let superseded = crate::deprecation::superseded_task(&doc.type_uri.for_routing().to_string());
 
     // `Box::pin` rather than a bare `.await`: the callee's state machine
     // inlines every handler's future through `dispatch_typed`, so awaiting it
@@ -1670,6 +1852,7 @@ async fn dispatch_trust_task_validated(
                     Ok(body) => TrustTaskOutcome {
                         status: axum::http::StatusCode::OK,
                         body,
+                        restart: false,
                     },
                     Err(e) => reject_with(
                         &doc,
@@ -1690,6 +1873,7 @@ async fn dispatch_trust_task_validated(
                     // §7.2 forbids reporting for a duplicate.
                     status: axum::http::StatusCode::ACCEPTED,
                     body: Vec::new(),
+                    restart: false,
                 },
                 // Fire-and-forget: the specification defines no success
                 // response, so silence is the correct disposition. Never
@@ -1697,6 +1881,7 @@ async fn dispatch_trust_task_validated(
                 None => TrustTaskOutcome {
                     status: axum::http::StatusCode::NO_CONTENT,
                     body: Vec::new(),
+                    restart: false,
                 },
             };
         }
@@ -1767,7 +1952,7 @@ async fn dispatch_trust_task_validated(
     // casing — the edge transform can't reach inside ciphertext. Every other
     // handler ignores it.
     use wire_v0_2::{WIRE_VERSION, WireVersion};
-    let type_uri = doc.type_uri.to_string();
+    let type_uri = doc.type_uri.for_routing().to_string();
 
     // Name every inbound trust task at the one point all three transports (TSP,
     // DIDComm, REST) converge, after the envelope parses. Without this the
@@ -2009,10 +2194,11 @@ async fn dispatch_trust_task_validated(
             // memory for the whole retention window and hand it to whoever
             // presents the same document again. A duplicate of such a task is
             // absorbed with no body instead. The effect still happened once
-            // and the claim still stands, so §7.2 item 11 holds.
+            // and the claim still stands, so §7.2 item 11 holds. A member's
+            // personal label is not kept either ([`carries_personal_text`]).
             let discloses_secret = class_for(&type_uri)
                 .is_some_and(|class| class.exposure.discloses == crate::policy::Discloses::Secret);
-            let recorded = if discloses_secret {
+            let recorded = if discloses_secret || carries_personal_text(&type_uri) {
                 None
             } else {
                 serde_json::from_slice::<serde_json::Value>(&outcome.body).ok()
@@ -2065,7 +2251,7 @@ struct DispatchAudit {
 
 impl DispatchAudit {
     fn capture(doc: &TrustTask<Value>) -> Self {
-        let type_uri = doc.type_uri.to_string();
+        let type_uri = doc.type_uri.for_routing().to_string();
         let consequential = class_for(&type_uri)
             .map(|class| class.side_effects != crate::policy::SideEffectLevel::None)
             .unwrap_or(true);
@@ -2425,10 +2611,14 @@ dispatch_table! {
     // `keys/sign` beside it does.
     vta_sdk::trust_tasks::TASK_KEYS_SIGN_SSHSIG_0_1 => keys::handle_sign_sshsig
         [ None None true ],
-    // The VTA builds the JWS signing input itself and constrains the header,
-    // so — like `keys/sign-sshsig` — it is not a general oracle (none / none /
-    // actsAsSubject).
+    // Both declare sideEffects none, discloses none, actsAsSubject.
     vta_sdk::trust_tasks::TASK_KEYS_SIGN_JWS_0_1 => keys::handle_sign_jws
+        [ None None true ],
+    vta_sdk::trust_tasks::TASK_KEYS_SIGN_CSR_0_1 => keys::handle_sign_csr
+        [ None None true ],
+    // sideEffects none, discloses none, actsAsSubject — the proof is the
+    // signer DID's own assertion.
+    vta_sdk::trust_tasks::TASK_KEYS_SIGN_DOCUMENT_0_1 => keys::handle_sign_document
         [ None None true ],
     vta_sdk::trust_tasks::TASK_KEYS_DERIVE_AND_SIGN_0_1 => keys::handle_derive_and_sign
         [ Mutating None true ],
@@ -2518,6 +2708,10 @@ dispatch_table! {
         [ None Metadata false ],
     vta_sdk::trust_tasks::TASK_VAULT_CREDENTIALS_GET_0_1 => cred_vault::handle_get
         [ None Metadata false ],
+    // Signs as the credential's subject and records the disclosure (the
+    // specification's `mutating` / `secret` / acts-as-subject).
+    vta_sdk::trust_tasks::TASK_VAULT_CREDENTIALS_PRESENT_0_1 => cred_vault::handle_present
+        [ Mutating Secret true ],
     // Credential archival lifecycle (openvtc extension; CredentialWrite-gated).
     vta_sdk::trust_tasks::TASK_VAULT_CREDENTIALS_ARCHIVE_0_1 => cred_vault::handle_archive
         [ Mutating None false ],
@@ -2595,6 +2789,76 @@ dispatch_table! {
         [ Destructive Metadata false ],
     vta_sdk::trust_tasks::TASK_EXTERNAL_CREDENTIALS_ISSUE_0_1 => external::handle_issue
         [ Mutating Secret true ],
+    vta_sdk::trust_tasks::TASK_EXTERNAL_CREDENTIALS_ISSUE_0_2 => external::handle_issue_v2
+        [ Mutating Secret true ],
+    vta_sdk::trust_tasks::TASK_EXTERNAL_CREDENTIALS_ISSUE_0_3 => external::handle_issue_v3
+        [ Mutating Secret true ],
+    // ─── Hidden-vetting PCS engine (`vta/pcs/*`) ───────────────────
+    // Classes match each specification's own declarations. `actsAsSubject` is
+    // true wherever the engine exercises the member's PCS key.
+    vta_sdk::trust_tasks::TASK_VTA_PCS_APPLICATIONS_CREATE_0_1 => pcs::handle_applications_create
+        [ Mutating Metadata false ],
+    vta_sdk::trust_tasks::TASK_VTA_PCS_APPLICATIONS_SHOW_0_1 => pcs::handle_applications_show
+        [ None Metadata false ],
+    vta_sdk::trust_tasks::TASK_VTA_PCS_APPLICATIONS_DELETE_0_1 => pcs::handle_applications_delete
+        [ Destructive None false ],
+    vta_sdk::trust_tasks::TASK_VTA_PCS_VERIFY_ATTESTATION_0_1 => pcs::handle_verify_attestation
+        [ Mutating Metadata false ],
+    vta_sdk::trust_tasks::TASK_VTA_PCS_PROVE_0_1 => pcs::handle_prove
+        [ None Metadata true ],
+    vta_sdk::trust_tasks::TASK_VTA_PCS_ROOT_REQUEST_0_1 => pcs::handle_root_request
+        [ Mutating Metadata true ],
+    vta_sdk::trust_tasks::TASK_VTA_PCS_ROOT_ACCEPT_0_1 => pcs::handle_root_accept
+        [ Mutating Metadata true ],
+    vta_sdk::trust_tasks::TASK_VTA_PCS_TOKENS_REQUEST_0_1 => pcs::handle_tokens_request
+        [ Mutating Metadata true ],
+    vta_sdk::trust_tasks::TASK_VTA_PCS_TOKENS_ACCEPT_0_1 => pcs::handle_tokens_accept
+        [ Mutating Metadata true ],
+    vta_sdk::trust_tasks::TASK_VTA_PCS_TOKENS_ABANDON_0_1 => pcs::handle_tokens_abandon
+        [ Mutating Metadata false ],
+    vta_sdk::trust_tasks::TASK_VTA_PCS_ATTEST_0_1 => pcs::handle_attest
+        [ Mutating Metadata true ],
+    vta_sdk::trust_tasks::TASK_VTA_PCS_VETTER_SHOW_0_1 => pcs::handle_vetter_show
+        [ None Metadata false ],
+    // The voter role (`vta/pcs/voter/*`, `vta/pcs/vote`, trust-tasks-tf #834).
+    vta_sdk::trust_tasks::TASK_VTA_PCS_VOTER_REGISTER_0_1 => pcs::handle_voter_register
+        [ Mutating Metadata true ],
+    vta_sdk::trust_tasks::TASK_VTA_PCS_VOTER_READ_0_1 => pcs::handle_voter_read
+        [ None Metadata false ],
+    vta_sdk::trust_tasks::TASK_VTA_PCS_VOTER_ACCEPT_0_1 => pcs::handle_voter_accept
+        [ Mutating None true ],
+    vta_sdk::trust_tasks::TASK_VTA_PCS_VOTE_0_1 => pcs::handle_vote
+        [ Mutating Metadata true ],
+    vta_sdk::trust_tasks::TASK_VTA_PCS_VOTER_RECEIPT_0_1 => pcs::handle_voter_receipt
+        [ Mutating Metadata false ],
+    // The encrypted levels (`vta/pcs/vote-encrypted`, `vta/pcs/trustee/*`,
+    // trust-tasks-tf #845): each signs one document as the voter's one-time key or
+    // the trustee persona.
+    vta_sdk::trust_tasks::TASK_VTA_PCS_VOTE_ENCRYPTED_0_2 => pcs::handle_vote_encrypted
+        [ Mutating Metadata true ],
+    vta_sdk::trust_tasks::TASK_VTA_PCS_TRUSTEE_ENROL_0_1 => pcs::handle_trustee_enrol
+        [ Mutating Metadata true ],
+    vta_sdk::trust_tasks::TASK_VTA_PCS_TRUSTEE_DEAL_0_2 => pcs::handle_trustee_deal
+        [ Mutating Metadata true ],
+    vta_sdk::trust_tasks::TASK_VTA_PCS_TRUSTEE_KEYS_0_2 => pcs::handle_trustee_keys
+        [ Mutating Metadata true ],
+    vta_sdk::trust_tasks::TASK_VTA_PCS_TRUSTEE_JUSTIFY_0_2 => pcs::handle_trustee_justify
+        [ None Metadata true ],
+    vta_sdk::trust_tasks::TASK_VTA_PCS_TRUSTEE_DECRYPT_0_2 => pcs::handle_trustee_decrypt
+        [ None Metadata true ],
+    vta_sdk::trust_tasks::TASK_VTA_PCS_TRUSTEE_READ_0_1 => pcs::handle_trustee_read
+        [ None Metadata true ],
+    // ─── Witnessed party (`vta/witness/*`) ─────────────────────────
+    // Classes match each specification's own declarations: the VTA acts as the
+    // relationship DID at open and present; accept stores what the witness said.
+    vta_sdk::trust_tasks::TASK_VTA_WITNESS_OPEN_0_2 => witness::handle_open
+        [ Mutating Metadata true ],
+    vta_sdk::trust_tasks::TASK_VTA_WITNESS_PRESENT_0_2 => witness::handle_present
+        [ Mutating Metadata true ],
+    vta_sdk::trust_tasks::TASK_VTA_WITNESS_ACCEPT_0_2 => witness::handle_accept
+        [ Mutating Metadata false ],
+    vta_sdk::trust_tasks::TASK_VTA_WITNESS_LIST_0_1 => witness::handle_list
+        [ None Metadata false ],
     vta_sdk::trust_tasks::TASK_VTA_MEMORY_PUT_0_1 => memory::handle_put
         [ Mutating None false ],
     vta_sdk::trust_tasks::TASK_VTA_MEMORY_LIST_0_1 => memory::handle_list
@@ -2610,24 +2874,30 @@ dispatch_table! {
     // Group custody: how a group reaches this VTA, and what it does with one.
     // Three inbound (a room's owner reaching us) and one outbound-facing; only
     // `open` is capability-gated, because only it is our own principal asking.
-    vta_sdk::trust_tasks::TASK_ROOMS_KEYS_KEY_PACKAGE_0_1 => room_group::handle_key_package
+    // 0.2: the outstanding KeyPackage for the same room, member and invitation is
+    // returned rather than replaced, so any surface can finish an acceptance.
+    vta_sdk::trust_tasks::TASK_ROOMS_KEYS_KEY_PACKAGE_0_2 => room_group::handle_key_package_v0_2
         [ Mutating None false ],
     vta_sdk::trust_tasks::TASK_ROOMS_KEYS_WELCOME_0_1 => room_group::handle_welcome
         [ Mutating None false ],
     vta_sdk::trust_tasks::TASK_ROOMS_KEYS_COMMIT_0_1 => room_group::handle_commit
         [ Mutating None false ],
-    vta_sdk::trust_tasks::TASK_ROOMS_KEYS_OPEN_0_1 => room_group::handle_open
+    // 0.2: `unknownEpoch` says why — `notDelivered`, `beyondChain` or `removed`.
+    vta_sdk::trust_tasks::TASK_ROOMS_KEYS_OPEN_0_2 => room_group::handle_open_v0_2
         [ None Metadata false ],
     // Releases one file's key — `None Secret false`: a pure derivation that
     // stores nothing, returning key material for one file and nothing else.
-    vta_sdk::trust_tasks::TASK_ROOMS_KEYS_FILE_KEY_0_1 => room_group::handle_file_key
+    // 0.2: a removed member's file is `unknownEpoch` reason `removed`, never
+    // `notDelivered`.
+    vta_sdk::trust_tasks::TASK_ROOMS_KEYS_FILE_KEY_0_2 => room_group::handle_file_key_v0_2
         [ None Secret false ],
-    vta_sdk::trust_tasks::TASK_ROOMS_KEYS_CHAIN_0_1 => room_group::handle_chain
+    // 0.2: and the room's epoch floor, applied — this VTA forgets what it holds below it.
+    vta_sdk::trust_tasks::TASK_ROOMS_KEYS_CHAIN_0_2 => room_group::handle_chain_v0_2
         [ Mutating None false ],
     // `actsAsSubject`, unlike every other `rooms/keys/*`: this one presents the
     // principal's credentials to a third party as them. The response discloses
     // only how far back the agent can now read.
-    vta_sdk::trust_tasks::TASK_ROOMS_KEYS_BACKFILL_0_1 => room_group::handle_backfill
+    vta_sdk::trust_tasks::TASK_ROOMS_KEYS_BACKFILL_0_2 => room_group::handle_backfill_v0_2
         [ Mutating Metadata true ],
     // Returns a record's plaintext — on a sealed tier, material the room
     // withholds from its own host — after presenting the principal's
@@ -2643,10 +2913,48 @@ dispatch_table! {
     // of the room to the host it is shown to.
     vta_sdk::trust_tasks::TASK_ROOMS_KEYS_BROWSE_0_1 => room_group::handle_browse
         [ None Metadata true ],
-    vta_sdk::trust_tasks::TASK_ROOMS_KEYS_SEAL_0_1 => room_group::handle_seal
+    // 0.2 adds the room's `lastPrune`, passed through from list 0.3 (trust-tasks-tf #868).
+    vta_sdk::trust_tasks::TASK_ROOMS_KEYS_BROWSE_0_2 => room_group::handle_browse_v0_2
+        [ None Metadata true ],
+    // `actsAsSubject`: under `signAsPrincipal` it signs the record body as the member.
+    vta_sdk::trust_tasks::TASK_ROOMS_KEYS_SEAL_0_2 => room_act::handle_seal_v0_2
+        [ None Metadata true ],
+    // Signs a host-bound document as the member and presents their authority; stores
+    // nothing and sends nothing — the caller sends what comes back.
+    vta_sdk::trust_tasks::TASK_ROOMS_KEYS_ACT_0_1 => room_act::handle_act
+        [ None Metadata true ],
+    // 0.2: the member is the subject (`/document/issuer`), for policy and audit.
+    vta_sdk::trust_tasks::TASK_ROOMS_KEYS_ACT_0_2 => room_act::handle_act_v0_2
+        [ None Metadata true ],
+    // 0.3: a member's reply to a community's offer of a room, as the DID it is
+    // addressed to; an acceptance only with a KeyPackage this VTA minted.
+    vta_sdk::trust_tasks::TASK_ROOMS_KEYS_ACT_0_3 => room_act::handle_act_v0_3
+        [ None Metadata true ],
+    // 0.4: 0.3, and `vtc/rooms/offers/list/0.2` — the offer listing with each room's
+    // description — on the same terms as 0.1 (trust-tasks-tf #810).
+    vta_sdk::trust_tasks::TASK_ROOMS_KEYS_ACT_0_4 => room_act::handle_act_v0_4
+        [ None Metadata true ],
+    // 0.5: also `vtc/rooms/memberships/list/0.1`.
+    vta_sdk::trust_tasks::TASK_ROOMS_KEYS_ACT_0_5 => room_act::handle_act_v0_5
+        [ None Metadata true ],
+    // 0.6: also `vtc/rooms/offers/list/0.3`, which carries the renewals of the admissions
+    // a member holds (trust-tasks-tf #843).
+    vta_sdk::trust_tasks::TASK_ROOMS_KEYS_ACT_0_6 => room_act::handle_act_v0_6
+        [ None Metadata true ],
+    // 0.2: each entry names its member; `includePersonal` adds the member's own label.
+    vta_sdk::trust_tasks::TASK_ROOMS_KEYS_LIST_0_2 => room_label::handle_list_v0_2
         [ None Metadata false ],
-    vta_sdk::trust_tasks::TASK_ROOMS_KEYS_LIST_0_1 => room_group::handle_list
-        [ None Metadata false ],
+    // The member's own label for a room: written to this VTA's storage only, sent
+    // nowhere, its text never logged or audited (`rooms/keys/label/0.1` items 9–10).
+    vta_sdk::trust_tasks::TASK_ROOMS_KEYS_LABEL_0_1 => room_label::handle_label
+        [ Mutating Metadata false ],
+    // The room's own profile. `actsAsSubject` both ways: the reads and writes reach the
+    // room's host as the member, presenting their grant. `read` returns what a sealed room
+    // withholds from its host, so `Secret`, as `rooms/keys/read` is.
+    vta_sdk::trust_tasks::TASK_ROOMS_KEYS_PROFILE_READ_0_1 => room_profile::handle_read
+        [ None Secret true ],
+    vta_sdk::trust_tasks::TASK_ROOMS_KEYS_PROFILE_WRITE_0_1 => room_profile::handle_write
+        [ Mutating Metadata true ],
     vta_sdk::trust_tasks::TASK_ROOMS_OWNER_INVITE_0_1 => room_owner::handle_invite
         [ Mutating Metadata false ],
     // `actsAsSubject`, unlike the issuance verbs beside it: those sign as the
@@ -2654,10 +2962,42 @@ dispatch_table! {
     // third party as its principal.
     vta_sdk::trust_tasks::TASK_ROOMS_OWNER_REGISTER_0_1 => room_owner::handle_register
         [ Mutating Metadata true ],
+    // 0.2: a registration the host accepted answers success whatever became of the room's
+    // revocation list, which `revocation` reports; a `pending` list is redelivered by
+    // `room_list_delivery`, the one retry owner (trust-tasks-tf #821).
+    vta_sdk::trust_tasks::TASK_ROOMS_OWNER_REGISTER_0_2 => room_owner::handle_register_v0_2
+        [ Mutating Metadata true ],
     vta_sdk::trust_tasks::TASK_ROOMS_OWNER_ISSUE_MEMBERSHIP_0_1 => room_owner::handle_issue_membership
         [ Mutating Metadata false ],
     vta_sdk::trust_tasks::TASK_ROOMS_OWNER_ISSUE_AUTHORITY_0_2 => room_owner::handle_issue_authority
         [ Mutating Metadata false ],
+    // Founding a room's group keeps everything inside this agent.
+    vta_sdk::trust_tasks::TASK_ROOMS_OWNER_GROUP_CREATE_0_1 => room_owner_group::handle_create
+        [ Mutating Metadata false ],
+    // `actsAsSubject`, like register: it advances the room at its host in the
+    // principal's name, presenting their `admin` authority.
+    // 0.2: a repeated admission is answered with its kept Welcome (item 8).
+    // 0.3: an earlier removal it settles is reported as its own `earlierRemovalRefused`,
+    // `hostUnreachable` carries its `stage` (trust-tasks-tf #824).
+    vta_sdk::trust_tasks::TASK_ROOMS_OWNER_GROUP_ADD_0_3 => room_owner_group::handle_add_v0_3
+        [ Mutating Metadata true ],
+    // The mirror of add: same host, same authority, the other direction.
+    vta_sdk::trust_tasks::TASK_ROOMS_OWNER_GROUP_REMOVE_0_1 => room_owner_group::handle_remove
+        [ Mutating Metadata true ],
+    // 0.2: the member's credentials are withdrawn at the host first, then the room
+    // advances (trust-tasks-tf #804). Same host, same authority, and the room's key.
+    // 0.3: a pending removal whose redelivered list the host refuses is settled by what the
+    // refusal shows, and the request refused `earlierRemovalRefused` (trust-tasks-tf #821).
+    vta_sdk::trust_tasks::TASK_ROOMS_OWNER_GROUP_REMOVE_0_3 => room_owner_group::handle_remove_v0_3
+        [ Mutating Metadata true ],
+    // Signs as the room and delivers to every host serving it, presenting the
+    // principal's `admin` authority — `actsAsSubject`, like the group verbs.
+    vta_sdk::trust_tasks::TASK_ROOMS_OWNER_REVOKE_0_1 => room_owner_revoke::handle_revoke
+        [ Mutating Metadata true ],
+    // And renewal: same host, same authority, no membership change.
+    // 0.2: settles an earlier removal as add 0.3 does (trust-tasks-tf #824).
+    vta_sdk::trust_tasks::TASK_ROOMS_OWNER_GROUP_RENEW_0_2 => room_owner_group::handle_renew_v0_2
+        [ Mutating Metadata true ],
     // ─── Application-state slice (spec/vta/app-state/*) ──────────
     // Versioned, namespaced per-context JSON the VTA stores but never
     // interprets. Gated on context access (require_context), NOT operator
@@ -2685,7 +3025,7 @@ dispatch_table! {
     // census pins it. `attribute/put` is Mutating and `delete` Destructive;
     // both reads disclose Metadata because they return the holder's own data
     // to the holder.
-    vta_sdk::trust_tasks::TASK_PERSONA_ATTRIBUTE_PUT_1_0 => persona::handle_attribute_put
+    vta_sdk::trust_tasks::TASK_PERSONA_ATTRIBUTE_PUT_1_1 => persona::handle_attribute_put
         [ Mutating Metadata false ],
     vta_sdk::trust_tasks::TASK_PERSONA_ATTRIBUTE_LIST_1_0 => persona::handle_attribute_list
         [ None Metadata false ],
@@ -2696,10 +3036,10 @@ dispatch_table! {
         [ Destructive None false ],
     // Moves a local face into the pool: creates attributes, replaces the face,
     // rebinds. Identifiers and positions only on the wire.
-    vta_sdk::trust_tasks::TASK_PERSONA_ATTRIBUTE_PROMOTE_1_0 => persona::handle_attribute_promote
+    vta_sdk::trust_tasks::TASK_PERSONA_ATTRIBUTE_PROMOTE_1_1 => persona::handle_attribute_promote
         [ Mutating None false ],
     // Values arrive in new claims; the response is identifiers and counts.
-    vta_sdk::trust_tasks::TASK_PERSONA_PROFILE_COMPOSE_1_0 => persona::handle_profile_compose
+    vta_sdk::trust_tasks::TASK_PERSONA_PROFILE_COMPOSE_1_1 => persona::handle_profile_compose
         [ Mutating None false ],
     // Clears every binding to a face and marks it retired; reversible, and
     // nothing is removed. Identifiers only.
@@ -2712,7 +3052,7 @@ dispatch_table! {
         [ None Metadata false ],
     vta_sdk::trust_tasks::TASK_PERSONA_PROFILE_TIMELINE_1_0 => persona::handle_profile_timeline
         [ None Metadata false ],
-    vta_sdk::trust_tasks::TASK_PERSONA_PROFILE_PUT_1_0 => persona::handle_profile_put
+    vta_sdk::trust_tasks::TASK_PERSONA_PROFILE_PUT_1_1 => persona::handle_profile_put
         [ Mutating None false ],
     vta_sdk::trust_tasks::TASK_PERSONA_PROFILE_GET_1_0 => persona::handle_profile_get
         [ None Metadata false ],
@@ -2722,7 +3062,7 @@ dispatch_table! {
     // it writes a record of its own, and `delete` Destructive for the same
     // reason — neither reaches a profile or an attribute, which is the property
     // `deleting_a_world_deletes_nothing_it_named` pins in vta-persona.
-    vta_sdk::trust_tasks::TASK_PERSONA_WORLD_PUT_1_0 => persona::handle_world_put
+    vta_sdk::trust_tasks::TASK_PERSONA_WORLD_PUT_1_1 => persona::handle_world_put
         [ Mutating None false ],
     vta_sdk::trust_tasks::TASK_PERSONA_WORLD_LIST_1_0 => persona::handle_world_list
         [ None Metadata false ],
@@ -2756,13 +3096,22 @@ dispatch_table! {
     vta_sdk::trust_tasks::TASK_PERSONA_BINDING_LIST_1_0 => persona::handle_binding_list
         [ None Metadata false ],
     // Contacts are a third party's disclosed data held for the holder.
-    vta_sdk::trust_tasks::TASK_PERSONA_CONTACT_PUT_1_0 => persona::handle_contact_put
+    // With the holder's own annotations, and their lists. Never sent anywhere.
+    vta_sdk::trust_tasks::TASK_PERSONA_CONTACT_PUT_1_2 => persona::handle_contact_put
         [ Mutating None false ],
-    vta_sdk::trust_tasks::TASK_PERSONA_CONTACT_GET_1_0 => persona::handle_contact_get
+    vta_sdk::trust_tasks::TASK_PERSONA_CONTACT_GET_1_1 => persona::handle_contact_get
         [ None Metadata false ],
-    vta_sdk::trust_tasks::TASK_PERSONA_CONTACT_LIST_1_0 => persona::handle_contact_list
+    vta_sdk::trust_tasks::TASK_PERSONA_CONTACT_LIST_1_1 => persona::handle_contact_list
         [ None Metadata false ],
     vta_sdk::trust_tasks::TASK_PERSONA_CONTACT_DELETE_1_0 => persona::handle_contact_delete
+        [ Destructive None false ],
+    vta_sdk::trust_tasks::TASK_PERSONA_CONTACT_LISTS_PUT_1_1 => persona::handle_contact_lists_put
+        [ Mutating None false ],
+    vta_sdk::trust_tasks::TASK_PERSONA_CONTACT_LISTS_LIST_1_0 => persona::handle_contact_lists_list
+        [ None Metadata false ],
+    vta_sdk::trust_tasks::TASK_PERSONA_CONTACT_LISTS_SHOW_1_0 => persona::handle_contact_lists_show
+        [ None Metadata false ],
+    vta_sdk::trust_tasks::TASK_PERSONA_CONTACT_LISTS_DELETE_1_0 => persona::handle_contact_lists_delete
         [ Destructive None false ],
     // Holder-only: both span every context, which is the view a context-scoped
     // caller must not have.
@@ -2791,7 +3140,7 @@ dispatch_table! {
         [ None None false ],
     // The context-local surface. Context-callable because authoring below the
     // boundary is safe; the rule exists to stop reading across it.
-    vta_sdk::trust_tasks::TASK_PERSONA_LOCAL_PROFILE_PUT_1_0 => persona::handle_local_profile_put
+    vta_sdk::trust_tasks::TASK_PERSONA_LOCAL_PROFILE_PUT_1_1 => persona::handle_local_profile_put
         [ Mutating Metadata false ],
     vta_sdk::trust_tasks::TASK_PERSONA_LOCAL_PROFILE_GET_1_0 => persona::handle_local_profile_get
         [ None Metadata false ],
@@ -2922,7 +3271,10 @@ dispatch_table! {
     vta_sdk::trust_tasks::TASK_WEBVH_DIDS_CREATE_1_0 => webvh::handle_dids_create_1_0
         [ Mutating None false ],
     #[cfg(feature = "webvh")]
-    vta_sdk::trust_tasks::TASK_WEBVH_DIDS_CREATE_1_1 => webvh::handle_dids_create
+    vta_sdk::trust_tasks::TASK_WEBVH_DIDS_CREATE_1_1 => webvh::handle_dids_create_1_1
+        [ Mutating None false ],
+    #[cfg(feature = "webvh")]
+    vta_sdk::trust_tasks::TASK_WEBVH_DIDS_CREATE_1_2 => webvh::handle_dids_create
         [ Mutating None false ],
     #[cfg(feature = "webvh")]
     vta_sdk::trust_tasks::TASK_WEBVH_DIDS_GET_1_0 => webvh::handle_dids_get
@@ -3277,6 +3629,7 @@ mod tests {
             status: axum::http::StatusCode::OK,
             body: br#"{"id":"urn:uuid:x","type":"https://example.org/t#response","payload":{}}"#
                 .to_vec(),
+            restart: false,
         };
 
         // No resident secret: the answer still goes out, unsigned. Cleared
@@ -3342,6 +3695,7 @@ mod tests {
                 body:
                     br#"{"id":"urn:uuid:z","type":"https://example.org/t#response","payload":{}}"#
                         .to_vec(),
+                restart: false,
             },
         )
         .await;
@@ -4372,14 +4726,15 @@ mod record_retention {
     }
 
     /// With no `expiresAt` the retention is the window itself, unchanged by
-    /// the cap.
+    /// the cap: since trust-tasks-rs 0.33.2 `record_expiry` already includes
+    /// the skew allowance the document is accepted inside.
     #[test]
     fn without_an_expiry_the_window_is_the_retention() {
         let now = now();
         assert_eq!(
             retain_until(&doc(now, None), now).expect("a bounded policy always yields one"),
-            now + TimeDelta::minutes(10),
-            "`issuedAt + max_age`, and the cap adds only the skew allowance"
+            now + TimeDelta::minutes(10) + trust_tasks_rs::DEFAULT_SKEW,
+            "`issuedAt + max_age + skew`, the bound acceptance runs to"
         );
     }
 }
@@ -5755,6 +6110,61 @@ mod response_coverage {
         .await;
     }
 
+    /// `acl/grant` with `ext["org.openvtc"].handoffRollover` — a hand-off
+    /// marked caller writes its own long-term successor (VTI-CLT-017), which
+    /// outlives the caller's expiring entry and replaces it. This is the step
+    /// `pnm bootstrap connect` takes as the TEE claim DID (#2066).
+    #[tokio::test]
+    async fn acl_grant_handoff_rollover_replaces_the_marked_caller() {
+        let (state, _dir) = build_signing_test_app_state().await;
+        let claims = crate::test_support::super_admin_claims();
+        let now = crate::auth::session::now_epoch();
+        let marked = crate::acl::AclEntry::new(&claims.did, crate::acl::Role::Admin, "test")
+            .with_expires_at(Some(now + 3600))
+            .with_handoff(Some(crate::acl::HandOff {
+                granted_by: "did:key:z6MkFirstBootAuthority".into(),
+                granted_at: now,
+                bound: crate::acl::HandOffBound {
+                    role: crate::acl::Role::Admin,
+                    allowed_contexts: Vec::new(),
+                    capabilities: Vec::new(),
+                    approve_scope: crate::acl::ApproveScope::None,
+                    allowed_keys: None,
+                    expires_at: None,
+                },
+            }));
+        crate::acl::store_acl_entry(&state.acl_ks, &marked)
+            .await
+            .unwrap();
+        let (successor, _vm) = crate::test_support::did_for_seed(0xD2);
+
+        ok(
+            &state,
+            t::TASK_ACL_GRANT_0_1,
+            json!({
+                "entry": { "subject": successor, "role": "admin" },
+                "ext": { "org.openvtc": { "handoffRollover": true } },
+            }),
+        )
+        .await;
+
+        let written = crate::acl::get_acl_entry(&state.acl_ks, &successor)
+            .await
+            .unwrap()
+            .expect("successor written");
+        assert_eq!(
+            written.expires_at, None,
+            "bounded by the marker, not the caller"
+        );
+        assert!(
+            crate::acl::get_acl_entry(&state.acl_ks, &claims.did)
+                .await
+                .unwrap()
+                .is_none(),
+            "the marked entry is removed in the same step"
+        );
+    }
+
     /// `services/drain/cancel` — call off a drain before its deadline.
     ///
     /// Needs an active drain to cancel, which is a registry record rather than
@@ -6305,109 +6715,6 @@ mod response_coverage {
         .await;
     }
 
-    /// `keys/sign-jws/0.1` builds a real compact JWS: the VTA assembles the
-    /// signing input, sets `alg` from the key, and the three parts round-trip.
-    #[tokio::test]
-    async fn keys_sign_jws_builds_a_compact_jwt() {
-        use base64::Engine as _;
-        let (state, _dir) = build_signing_test_app_state().await;
-        let key_id = a_key(&state, "coverage-sign-jws").await;
-
-        let p = ok(
-            &state,
-            t::TASK_KEYS_SIGN_JWS_0_1,
-            json!({
-                "keyId": key_id,
-                "header": { "typ": "JWT" },
-                "payload": { "sub": "urn:example:agent", "scope": "a b" },
-                "algorithm": "EdDSA",
-            }),
-        )
-        .await;
-
-        let jws = p["jws"].as_str().expect("a jws string");
-        let parts: Vec<&str> = jws.split('.').collect();
-        assert_eq!(parts.len(), 3, "compact JWS has three parts: {jws}");
-
-        let decode = |s: &str| {
-            let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
-                .decode(s)
-                .expect("base64url part");
-            serde_json::from_slice::<Value>(&bytes).expect("json part")
-        };
-        let header = decode(parts[0]);
-        assert_eq!(header["typ"], "JWT");
-        assert_eq!(header["alg"], "EdDSA", "the VTA sets alg from the key");
-        let claims = decode(parts[1]);
-        assert_eq!(claims["sub"], "urn:example:agent");
-        assert!(!parts[2].is_empty(), "the signature part is present");
-    }
-
-    /// The wall-off: a `typ` that is not an allow-listed JWT profile — such as
-    /// a Verifiable Credential media type — is refused before anything is
-    /// signed, so the task can never be pointed at producing a credential.
-    #[tokio::test]
-    async fn keys_sign_jws_refuses_a_non_jwt_typ() {
-        let (state, _dir) = build_signing_test_app_state().await;
-        let key_id = a_key(&state, "coverage-sign-jws-typ").await;
-        let vta_did = state.config.read().await.vta_did.clone().expect("vta_did");
-
-        let body = signed_body(
-            t::TASK_KEYS_SIGN_JWS_0_1,
-            &vta_did,
-            json!({
-                "keyId": key_id,
-                "header": { "typ": "vc+ld+json" },
-                "payload": { "sub": "urn:example:agent" },
-                "algorithm": "EdDSA",
-            }),
-        );
-        let outcome = super::dispatch_trust_task_core(
-            &state,
-            &crate::test_support::super_admin_claims(),
-            &body,
-            transport::TransportConfidentiality::HopByHop,
-        )
-        .await;
-        let doc: Value = serde_json::from_slice(&outcome.body).expect("a response document");
-        assert_eq!(
-            doc["payload"]["code"], "malformedRequest",
-            "a non-JWT typ must be refused: {doc}"
-        );
-    }
-
-    /// The payload must be a JWT claims set — a bare string (what the opaque
-    /// oracle takes) is refused here.
-    #[tokio::test]
-    async fn keys_sign_jws_refuses_a_non_object_payload() {
-        let (state, _dir) = build_signing_test_app_state().await;
-        let key_id = a_key(&state, "coverage-sign-jws-payload").await;
-        let vta_did = state.config.read().await.vta_did.clone().expect("vta_did");
-
-        let body = signed_body(
-            t::TASK_KEYS_SIGN_JWS_0_1,
-            &vta_did,
-            json!({
-                "keyId": key_id,
-                "header": { "typ": "JWT" },
-                "payload": "not-a-claims-set",
-                "algorithm": "EdDSA",
-            }),
-        );
-        let outcome = super::dispatch_trust_task_core(
-            &state,
-            &crate::test_support::super_admin_claims(),
-            &body,
-            transport::TransportConfidentiality::HopByHop,
-        )
-        .await;
-        let doc: Value = serde_json::from_slice(&outcome.body).expect("a response document");
-        assert_eq!(
-            doc["payload"]["code"], "malformedRequest",
-            "a non-object payload must be refused: {doc}"
-        );
-    }
-
     /// An internal key is actually internal.
     ///
     /// This is the assertion whose absence let `pnm keys create --internal`
@@ -6598,6 +6905,143 @@ mod didcomm_sender_binding {
 
     fn code(reply: &Value) -> Option<&str> {
         reply.pointer("/payload/code").and_then(Value::as_str)
+    }
+
+    /// #1949: a `#response` no waiter claimed is dropped in silence — it is a
+    /// reply by its type, so dispatching it answered a peer that asked for
+    /// nothing with an error.
+    #[tokio::test]
+    async fn a_response_with_no_waiter_is_dropped_not_answered() {
+        let (state, _dir, victim, _attacker, _vta_did) = setup().await;
+        let body = serde_json::to_vec(&serde_json::json!({
+            "id": "urn:uuid:stray",
+            "type": "https://trusttasks.org/spec/messaging/message/status/0.1#response",
+            "threadId": "urn:uuid:long-gone",
+            "payload": {},
+        }))
+        .unwrap();
+        let outcome = accept_from_proven_sender(
+            &state,
+            &victim.did,
+            &body,
+            transport::TransportConfidentiality::EndToEnd,
+        )
+        .await;
+        assert!(
+            outcome.body.is_empty(),
+            "{}",
+            String::from_utf8_lossy(&outcome.body)
+        );
+    }
+
+    fn public_task(issuer: &str, vta_did: &str) -> Vec<u8> {
+        serde_json::to_vec(&serde_json::json!({
+            "id": format!("urn:uuid:{}", uuid::Uuid::new_v4()),
+            "type": vta_sdk::trust_tasks::TASK_ATTESTATION_STATUS_0_1,
+            "issuer": issuer,
+            "recipient": vta_did,
+            "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+            "payload": {},
+        }))
+        .unwrap()
+    }
+
+    fn assert_unavailable(reply: &Value) {
+        assert_eq!(code(reply), Some("unavailable"), "{reply}");
+        assert_eq!(
+            reply.pointer("/payload/retryable"),
+            Some(&Value::Bool(true))
+        );
+        assert!(
+            reply.pointer("/payload/retryAfter").is_some(),
+            "a refusal names when to come back: {reply}"
+        );
+    }
+
+    /// VTI-TRN-029 over DIDComm / TSP: a client with an ACL entry is bounded by
+    /// the operation budget, and a sender without standing by the separate
+    /// unauthenticated budget, which never spends the clients'. A client's
+    /// refusal is a retryable `unavailable`, sent before the task runs.
+    #[tokio::test]
+    async fn clients_and_strangers_are_bounded_separately() {
+        let (mut state, _dir, victim, attacker, vta_did) = setup().await;
+        let mut server = vta_config::ServerConfig::default();
+        server.operation_rate_limit_per_sec = Some(1);
+        server.operation_rate_limit_unauthenticated_per_sec = Some(1);
+        state.operation_budget =
+            std::sync::Arc::new(operation_budget::OperationBudget::with_clock(
+                &server,
+                operation_budget::BudgetClock::manual(),
+            ));
+
+        // A stranger's refusals are charged to the unauthenticated budget: its
+        // burst (raised to the heaviest weight, 10) is answered, then dropped
+        // with no reply, so a flood does not cost a signature per message.
+        for i in 0..10 {
+            let body = document(&attacker.did, Some(&attacker), &vta_did).await;
+            let reply = over_didcomm(&state, &attacker.did, &body).await;
+            assert_eq!(
+                code(&reply),
+                Some("permissionDenied"),
+                "refusal {i}: {reply}"
+            );
+        }
+        let body = document(&attacker.did, Some(&attacker), &vta_did).await;
+        assert_eq!(
+            over_didcomm(&state, &attacker.did, &body).await,
+            Value::Null
+        );
+        // The budget is shared by everything without standing: a public task
+        // is dropped too.
+        assert_eq!(
+            over_didcomm(&state, &attacker.did, &public_task(&attacker.did, &vta_did)).await,
+            Value::Null
+        );
+        // None of that spent the client's budget.
+        for i in 0..10 {
+            let body = document(&victim.did, Some(&victim), &vta_did).await;
+            let reply = over_didcomm(&state, &victim.did, &body).await;
+            assert_ne!(code(&reply), Some("unavailable"), "request {i}: {reply}");
+        }
+        let body = document(&victim.did, Some(&victim), &vta_did).await;
+        assert_unavailable(&over_didcomm(&state, &victim.did, &body).await);
+    }
+
+    /// The login steps reach a DIDComm / TSP peer with no standing yet, and
+    /// these transports have no per-IP limiter: they draw on the
+    /// unauthenticated budget (VTI-TRN-029).
+    #[tokio::test]
+    async fn login_steps_from_a_peer_draw_on_the_unauthenticated_budget() {
+        let (mut state, _dir, victim, _attacker, vta_did) = setup().await;
+        let mut server = vta_config::ServerConfig::default();
+        server.operation_rate_limit_unauthenticated_per_sec = Some(1);
+        state.operation_budget =
+            std::sync::Arc::new(operation_budget::OperationBudget::with_clock(
+                &server,
+                operation_budget::BudgetClock::manual(),
+            ));
+        let challenge = || {
+            serde_json::to_vec(&serde_json::json!({
+                "id": format!("urn:uuid:{}", uuid::Uuid::new_v4()),
+                "type": vta_sdk::trust_tasks::TASK_AUTH_CHALLENGE_0_1,
+                "issuer": victim.did,
+                "recipient": vta_did,
+                "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+                "payload": { "subject": victim.did },
+            }))
+            .unwrap()
+        };
+        for i in 0..10 {
+            let out = dispatch_auth_family_from_peer(&state, &challenge()).await;
+            let reply: Value = serde_json::from_slice(&out.body).unwrap_or(Value::Null);
+            assert_ne!(code(&reply), Some("unavailable"), "challenge {i}: {reply}");
+        }
+        let out = dispatch_auth_family_from_peer(&state, &challenge()).await;
+        assert!(
+            out.body.is_empty(),
+            "past the unauthenticated budget there is no reply: {}",
+            String::from_utf8_lossy(&out.body)
+        );
     }
 
     #[tokio::test]

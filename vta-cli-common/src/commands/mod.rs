@@ -10,6 +10,8 @@ pub mod cred_vault;
 pub mod credentials;
 pub mod device;
 pub mod did_templates;
+pub mod elections;
+pub mod elections_trustee;
 pub mod external;
 pub mod keys;
 pub mod memory;
@@ -17,6 +19,8 @@ pub mod memory;
 pub mod persona;
 pub mod policy;
 pub mod rooms;
+/// The room's credentials (`rooms owner …`) and the joiner's key holder (`rooms keys …`).
+pub mod rooms_custody;
 pub mod services;
 pub mod vault;
 pub mod webvh;

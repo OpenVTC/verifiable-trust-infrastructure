@@ -113,9 +113,24 @@ const SLUG_OVERRIDES: &[(&str, Risk)] = &[
     ("external/accounts/suspend", Risk::Destructive),
     ("external/accounts/archive", Risk::Destructive),
     ("external/accounts/restore", Risk::Mutating),
+    // The witnessed party (`vta/witness/*`). `open` and `present` sign as the
+    // principal's relationship DID, and `present` puts the principal's
+    // credentials — under the member link, its member DID too — in a document
+    // addressed to a third party: disclosure on the principal's behalf, so a
+    // blanket `vta_call` approval must not cover it. `accept` stores a VWC the
+    // session's own witness issued, and discloses nothing.
+    ("vta/witness/open", Risk::Sensitive),
+    ("vta/witness/present", Risk::Sensitive),
+    // A held credential presented to a verifier the caller names, signed as its
+    // subject: a disclosure to a third party, so approved per call.
+    ("vault/credentials/present", Risk::Sensitive),
+    ("vta/witness/accept", Risk::Mutating),
     // Key authority, exercised.
     ("keys/sign", Risk::Sensitive),
     ("keys/sign-sshsig", Risk::Sensitive),
+    ("keys/sign-jws", Risk::Sensitive),
+    ("keys/sign-csr", Risk::Sensitive),
+    ("keys/sign-document", Risk::Sensitive),
     ("keys/derive-and-sign", Risk::Sensitive),
     ("keys/derive-and-sign-document", Risk::Sensitive),
     ("keys/import", Risk::Sensitive),
@@ -158,6 +173,23 @@ const SLUG_OVERRIDES: &[(&str, Risk)] = &[
     ("policy/upsert", Risk::Sensitive),
     ("config/patch", Risk::Sensitive),
     ("vta/credentials/issue", Risk::Sensitive),
+    // Beside `vta/credentials/issue`, and for the same reason: it signs a
+    // credential. That it signs as a *context's* DID with the context's own
+    // key rather than as the VTA narrows who may call it, not what one call
+    // does — an MCP host that got a blanket `vta_call` approval would still be
+    // minting a credential a verifier accepts.
+    ("vta/credentials/issue-in-context", Risk::Sensitive),
+    // A Data-Integrity proof signed as the context's DID. It writes nothing
+    // durable, which is exactly why the verb rule would read `attach` as an
+    // ordinary mutation; what one call costs is a signature attributable to
+    // the principal, so it is `Sensitive` for the reason `rooms/keys/present`
+    // below is.
+    ("vta/proofs/attach", Risk::Sensitive),
+    // Authority, moved: this designates which key a context signs credentials
+    // and proofs with, so it decides what the two entries above reach. The
+    // verb rule would read `set-issuer-key` as an ordinary mutation; it sits
+    // with `keys/set-exportability` instead, as a custody rule being changed.
+    ("vta/contexts/set-issuer-key", Risk::Sensitive),
     ("vta/passkey-vms/enroll-submit", Risk::Sensitive),
     ("did-management/registry/admin-register", Risk::Sensitive),
     ("did-management/domain/set-default", Risk::Sensitive),
@@ -210,6 +242,16 @@ const SLUG_OVERRIDES: &[(&str, Risk)] = &[
     // single room operation discloses. Named here so that is a decision rather
     // than a default.
     ("rooms/keys/list", Risk::ReadOnly),
+    // Writes only the member's own private name for a room, in their VTA, reversibly. The
+    // VTA refuses it from a delegate — an agent is never the member — so a host approving
+    // `vta_call` gains nothing here; named so the class is a decision.
+    ("rooms/keys/label", Risk::Mutating),
+    // The room's own profile. `read` returns what a sealed room withholds from its host
+    // after an outbound call to a host the caller names, as `rooms/keys/read` does.
+    // `write` signs, as the member, what every member of the room is shown the room is
+    // called — and an agent reading it back must treat it as text, never instructions.
+    ("rooms/keys/profile/read", Risk::Sensitive),
+    ("rooms/keys/profile/write", Risk::Sensitive),
     // Issuance, signed as the room. `invite` and `issue-membership` decide who
     // may enter and remain; `issue-authority` decides what they may do, and an
     // `admin` grant is the authority to mint epochs and transfer the room. The
@@ -223,6 +265,21 @@ const SLUG_OVERRIDES: &[(&str, Risk)] = &[
     // secret leaves — the disclosure is the room's existence and who answers for
     // it — but it creates durable state at a third party.
     ("rooms/owner/register", Risk::Sensitive),
+    // The owner's half of a sealed room's group. `create` founds the key
+    // schedule every record will be sealed under; `add` admits a reader to all
+    // of it from now on and advances the room at its host. Both decide who can
+    // read the room — the same decision issuance makes, so the same tier.
+    ("rooms/owner/group/create", Risk::Sensitive),
+    ("rooms/owner/group/add", Risk::Sensitive),
+    // `remove` ends a member's reading from now on and advances the room at
+    // its host in the owner's name: the same decision, the other way.
+    ("rooms/owner/group/remove", Risk::Sensitive),
+    // `revoke` withdraws credentials the room issued, signed as the room and enforced at
+    // every host at once: the inverse of issuance, the same tier.
+    ("rooms/owner/revoke", Risk::Sensitive),
+    // `renew` advances the room at its host in the owner's name, and every
+    // member's key holder must then follow it: the owner's decision, not a read.
+    ("rooms/owner/group/renew", Risk::Sensitive),
     // The holder's own identity, emitted. `disclosure/present` is the one
     // persona task that hands claims to a named verifier, under a persona DID,
     // and writes the record saying it did. It sits beside `rooms/keys/present`
@@ -322,6 +379,25 @@ const DESTRUCTIVE_VERBS: &[&str] = &[
     "initiate-import",
     "finalize-import",
     "reload-services",
+    // `vta/pcs/attest`: spends an attestation token for good and is the
+    // vetter's word that a person was checked — the act a host must confirm.
+    "attest",
+    // `vta/pcs/tokens/abandon`: discards a draw's serials, so an answer the
+    // community sends later can never be taken.
+    "abandon",
+    // `vta/pcs/vote`: builds a signed cast of the principal's ballot. The
+    // client sends it, but the document is the vote — the act a host must
+    // confirm, every time, whatever was approved before.
+    "vote",
+    // `vta/pcs/vote-encrypted`: the same, for a sealed or tallied-encrypted ballot.
+    "vote-encrypted",
+    // `vta/pcs/trustee/justify`: reveals a share of the election key the trustee
+    // dealt, for good — the act a host must confirm.
+    "justify",
+    // `vta/pcs/trustee/decrypt`: the trustee's share of decrypting the result. With
+    // enough others it decides what the election says — a trustee's word, like
+    // `attest`.
+    "decrypt",
 ];
 
 /// The slug of a Trust Task URI — the part after [`SPEC_PREFIX`], with the
@@ -626,6 +702,10 @@ mod tests {
     /// this — `classify` defaults to `Mutating` without consulting it, so a
     /// runtime miss is safe and a compile-time miss is loud.
     const MUTATING_VERBS: &[&str] = &[
+        // `rooms/keys/act`: signs a host-bound room request as the member — a write or a
+        // curation as readily as a read. It changes nothing here itself, but what it signs
+        // can change a room, so it is never a read.
+        "act",
         // `persona/profile/compose`: makes a face, may pool a value and bind
         // it. Creates; removes nothing.
         "compose",
@@ -647,6 +727,28 @@ mod tests {
         // permit it. Nothing leaves the agent, which is why it stops here and
         // does not join `present` among the sensitive slugs.
         "preview",
+        // `vta/pcs/*` (the hidden-vetting engine): each stores engine state —
+        // an attestation kept, an enrolment or a draw in flight, tokens or a
+        // class credential taken in — and none removes anything. `prove`
+        // stores nothing, but it exercises the applicant's key to build the
+        // proof a join is decided on, so `--read-only` must not permit it.
+        "verify-attestation",
+        "prove",
+        "root-request",
+        "root-accept",
+        // `vta/pcs/voter/receipt`: keeps a receipt and checks its inclusion;
+        // stores, removes nothing.
+        "receipt",
+        // `vta/pcs/voter/read`: stores nothing, but signs as the member's
+        // membership DID, so `--read-only` must not permit it — as `prove`.
+        "read",
+        // `vta/pcs/trustee/{enrol,deal,keys}`: the trustee's transport key, its
+        // dealing and its key share — each kept, each published or confirmed as
+        // the trustee persona.
+        "enrol",
+        "deal",
+        "keys",
+        "accept",
         "create",
         "update",
         "update-did",

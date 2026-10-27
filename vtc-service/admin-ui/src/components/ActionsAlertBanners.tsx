@@ -20,11 +20,12 @@ import { landsIn, type CoolingOffAgainstMe } from "@/lib/actions-api";
 import { actionPath } from "@/lib/parked-action";
 import { formatIso, shortenDid } from "@/lib/format";
 import { useNameBook } from "@/lib/names";
+import { Protected } from "@/components/Protected";
 
 export const OPERATOR_WRITE_SENTENCE =
   "The operator changed this community's access control offline. Acknowledge it in Actions.";
 
-export function OperatorWriteBanner({ actionIds }: { actionIds: readonly string[] }) {
+function OperatorWriteBannerSurface({ actionIds }: { actionIds: readonly string[] }) {
   if (actionIds.length === 0) return null;
   const target = actionIds.length === 1 ? actionPath(actionIds[0]!) : "/actions";
   return (
@@ -46,7 +47,7 @@ export function OperatorWriteBanner({ actionIds }: { actionIds: readonly string[
   );
 }
 
-export function CoolingOffBanner({ items }: { items: readonly CoolingOffAgainstMe[] }) {
+function CoolingOffBannerSurface({ items }: { items: readonly CoolingOffAgainstMe[] }) {
   if (items.length === 0) return null;
   return (
     <>
@@ -58,7 +59,7 @@ export function CoolingOffBanner({ items }: { items: readonly CoolingOffAgainstM
 }
 
 /** One cooling-off against this administrator: one banner each. */
-export function CoolingOffNotice({ item: c }: { item: CoolingOffAgainstMe }) {
+function CoolingOffNoticeSurface({ item: c }: { item: CoolingOffAgainstMe }) {
   const book = useNameBook();
   const who = book.nameOf(c.requester) ?? shortenDid(c.requester);
   return (
@@ -95,7 +96,7 @@ export const SINGLE_ADMIN_MODE_SENTENCE =
  * A standing condition rather than an event, so `role="status"`: announced
  * politely, not as an interrupting alert on every navigation.
  */
-export function SingleAdminModeBanner({ on }: { on: boolean }) {
+function SingleAdminModeBannerSurface({ on }: { on: boolean }) {
   if (!on) return null;
   return (
     <div
@@ -114,5 +115,41 @@ export function SingleAdminModeBanner({ on }: { on: boolean }) {
         consent is audited at the highest severity.
       </span>
     </div>
+  );
+}
+
+/** OperatorWriteBanner, out of the community theme's reach (`vtc/community/theme/show/0.1`, client item 2). */
+export function OperatorWriteBanner(props: Parameters<typeof OperatorWriteBannerSurface>[0]) {
+  return (
+    <Protected>
+      <OperatorWriteBannerSurface {...props} />
+    </Protected>
+  );
+}
+
+/** CoolingOffBanner, out of the community theme's reach (`vtc/community/theme/show/0.1`, client item 2). */
+export function CoolingOffBanner(props: Parameters<typeof CoolingOffBannerSurface>[0]) {
+  return (
+    <Protected>
+      <CoolingOffBannerSurface {...props} />
+    </Protected>
+  );
+}
+
+/** CoolingOffNotice, out of the community theme's reach (`vtc/community/theme/show/0.1`, client item 2). */
+export function CoolingOffNotice(props: Parameters<typeof CoolingOffNoticeSurface>[0]) {
+  return (
+    <Protected>
+      <CoolingOffNoticeSurface {...props} />
+    </Protected>
+  );
+}
+
+/** SingleAdminModeBanner, out of the community theme's reach (`vtc/community/theme/show/0.1`, client item 2). */
+export function SingleAdminModeBanner(props: Parameters<typeof SingleAdminModeBannerSurface>[0]) {
+  return (
+    <Protected>
+      <SingleAdminModeBannerSurface {...props} />
+    </Protected>
   );
 }

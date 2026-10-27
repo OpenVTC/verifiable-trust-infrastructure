@@ -339,9 +339,9 @@ const AWAITING_CANONICAL_FOLD: &[(&str, &str)] = &[
     // Its recorded blocker ("the cookie side-effect moves to a binding/ext")
     // assumed the endpoint had to survive. It did not: it ran the same
     // `authenticate_and_mint` as `POST /v1/auth/` and only appended the
-    // `Set-Cookie` pair, which `spec/vtc/auth/admin-session/0.1` already mints
+    // `Set-Cookie` pair, which `spec/vtc/auth/admin-session/0.2` already mints
     // from an access token the caller holds. Login is
-    // `spec/auth/authenticate/0.1` then `spec/vtc/auth/admin-session/0.1` —
+    // `spec/auth/authenticate/0.1` then `spec/vtc/auth/admin-session/0.2` —
     // the path the admin SPA already used. Nothing called `admin-login`.
     //
     // `config/legacy/manage/1.0` is GONE — `GET, PATCH /v1/config` deleted.
@@ -421,6 +421,11 @@ const UNPUBLISHED_CANONICAL_OK: &[(&str, usize, &str)] = &[
     // and served ahead of their release here, and went back to zero with
     // trust-tasks-rs 0.23, which generates both.
     //
+    // Direct admission's `vtc/members/admit/0.1` and
+    // `vtc/members/make-membership/0.1` were bound here ahead of their
+    // specifications, on local wire types, and went back to zero with
+    // trust-tasks-rs 0.31.9 (trust-tasks-tf #784), which generates both.
+    //
     // Hidden vetting's four tasks (`zkp-pcs`) were bound ahead of the 0.22 line reaching this
     // graph, and went back to zero with it: trust-tasks-rs 0.22.2 serves all four.
     //
@@ -436,23 +441,6 @@ const UNPUBLISHED_CANONICAL_OK: &[(&str, usize, &str)] = &[
         "https://trusttasks.org/spec/trust-task-error/",
         1,
         "framework error envelope — a response type, not a task; absent from the task index by design",
-    ),
-    // Direct admission (`ceremony::admission`): adding a member without a join
-    // request, and making an existing ACL entry a membership. Bound ahead of
-    // their specifications, on local wire types marked for replacement
-    // (`trust_tasks::admission_tasks`); the drafts are in the pull request
-    // that added them. Debt, to fall back to zero when trust-tasks-rs serves
-    // them — the same round trip `webvh/servers/reconcile` made.
-    (
-        "https://trusttasks.org/spec/vtc/members/admit/",
-        1,
-        "direct admission — specification drafted, not yet published upstream",
-    ),
-    (
-        "https://trusttasks.org/spec/vtc/members/make-membership/",
-        1,
-        "direct admission of an existing ACL entry — specification drafted, not yet published \
-         upstream",
     ),
     // The vault archival lifecycle (PR #540): archive, unarchive, restore,
     // purge. Authored as local "openvtc 0.1 extensions" and never taken
@@ -729,6 +717,9 @@ const SIGNED_DOCUMENT_TYPES: &[&str] = &[
     "https://trusttasks.org/spec/git-ns/projection/show/0.1",
     "https://trusttasks.org/spec/git-ns/account/list/0.1",
     "https://trusttasks.org/spec/git-ns/activity/list/0.1",
+    // The member portal's Repositories page, signed by its sign-in key.
+    "https://trusttasks.org/spec/git-ns/view/0.4",
+    "https://trusttasks.org/spec/git-ns/account/link-status/0.1",
 ];
 
 /// Not a `Trust-Task` header, and not a document posted to `/trust-tasks`
@@ -768,6 +759,12 @@ const EMBEDDED_DOCUMENT_TYPES: &[&str] = &[
     // (`crate::admin_events`). A document of this type answers
     // `unsupportedType`.
     "https://trusttasks.org/spec/vtc/admin/events/event/0.1",
+    // …and at 0.2, on a stream opened at 0.2 (the `rooms` topic).
+    "https://trusttasks.org/spec/vtc/admin/events/event/0.2",
+    // …and at 0.3, on a stream opened at 0.3 (`directory`, `groups`).
+    "https://trusttasks.org/spec/vtc/admin/events/event/0.3",
+    // …and at 0.4, on a stream opened at 0.4 (`communityRooms`).
+    "https://trusttasks.org/spec/vtc/admin/events/event/0.4",
 ];
 
 /// Document types the console sends that the spine dispatches only in a build
@@ -788,6 +785,32 @@ const FEATURE_GATED_DOCUMENT_TYPES: &[(&str, bool)] = &[
         "https://trusttasks.org/spec/vtc/vetting/hidden/show/0.1",
         cfg!(feature = "vetting-pcs"),
     ),
+    // Community elections (`voting`): the Elections page, shown only once
+    // discovery lists `vtc/elections/list` (`lib/elections-api.ts`).
+    (
+        "https://trusttasks.org/spec/vtc/elections/create/0.1",
+        cfg!(feature = "voting"),
+    ),
+    (
+        "https://trusttasks.org/spec/vtc/elections/list/0.1",
+        cfg!(feature = "voting"),
+    ),
+    (
+        "https://trusttasks.org/spec/vtc/elections/show/0.1",
+        cfg!(feature = "voting"),
+    ),
+    (
+        "https://trusttasks.org/spec/vtc/elections/close/0.1",
+        cfg!(feature = "voting"),
+    ),
+    (
+        "https://trusttasks.org/spec/vtc/elections/cancel/0.1",
+        cfg!(feature = "voting"),
+    ),
+    (
+        "https://trusttasks.org/spec/vtc/elections/certify/0.1",
+        cfg!(feature = "voting"),
+    ),
 ];
 
 /// Document types the console sends that the *spine* dispatches rather than
@@ -799,6 +822,20 @@ const FEATURE_GATED_DOCUMENT_TYPES: &[(&str, bool)] = &[
 /// of a redemption the member's `cnm` started; and the admin verbs whose REST
 /// routes are gone.
 const SPINE_DOCUMENT_TYPES: &[&str] = &[
+    // An administrator's own passkeys (`trust_tasks::admin_passkey_tasks`),
+    // signed by the console key (`admin-ui/src/lib/my-passkeys-api.ts`), and
+    // the SIOPv2 sign-in's cookie bridge (`trust_tasks::admin_session_tasks`),
+    // signed by the wallet or the console key (`lib/admin-session.ts`). Their
+    // bearer routes went with #1641's last batch.
+    "https://trusttasks.org/spec/auth/passkey/list/0.1",
+    "https://trusttasks.org/spec/auth/passkey/enroll/start/0.2",
+    "https://trusttasks.org/spec/auth/passkey/enroll/finish/0.2",
+    "https://trusttasks.org/spec/auth/passkey/revoke/start/0.1",
+    "https://trusttasks.org/spec/auth/passkey/revoke/finish/0.1",
+    "https://trusttasks.org/spec/vtc/auth/admin-session/0.2",
+    // Session introspection, signed by the browser key a sign-in bound to the
+    // session (`trust_tasks::whoami_tasks`, `admin-ui/src/lib/api.ts`).
+    "https://trusttasks.org/spec/auth/whoami/0.1",
     // The member portal's wallet sign-in (`trust_tasks::oob_tasks`): the
     // starter's request, long-poll redeem and cancel, signed by the browser's
     // `K_b` (`admin-ui/src/members/oob.ts`).
@@ -821,6 +858,12 @@ const SPINE_DOCUMENT_TYPES: &[&str] = &[
     // The console's live channel (`trust_tasks::event_tasks`): its success is
     // a streamed response on this door (HTTPS binding 0.3 §2.1).
     "https://trusttasks.org/spec/vtc/admin/events/subscribe/0.1",
+    // At 0.2 (adds `rooms`) when `trust-task-discovery` lists it.
+    "https://trusttasks.org/spec/vtc/admin/events/subscribe/0.2",
+    // At 0.3 (adds `directory` and `groups`) when discovery lists it.
+    "https://trusttasks.org/spec/vtc/admin/events/subscribe/0.3",
+    // At 0.4 (adds `communityRooms`) when discovery lists it.
+    "https://trusttasks.org/spec/vtc/admin/events/subscribe/0.4",
     // Custom administrative roles (`trust_tasks::role_tasks`): the Roles
     // page's reads, and the definitions it sends for approval.
     "https://trusttasks.org/spec/vtc/roles/list/0.1",
@@ -869,11 +912,11 @@ const SPINE_DOCUMENT_TYPES: &[&str] = &[
     "https://trusttasks.org/spec/vtc/endorsement-types/register/0.1",
     "https://trusttasks.org/spec/vtc/endorsement-types/delete/0.1",
     "https://trusttasks.org/spec/vtc/vetting/vetters/list/0.1",
-    "https://trusttasks.org/spec/vtc/join-requests/manifest/0.3",
+    "https://trusttasks.org/spec/vtc/join-requests/manifest/0.4",
     // The administrator's operational verbs (`trust_tasks::admin_tasks`).
     "https://trusttasks.org/spec/vtc/registry/diagnostics/0.1",
     "https://trusttasks.org/spec/vtc/registry/sync-jobs/list/0.1",
-    "https://trusttasks.org/spec/vtc/registry/sync-jobs/retry/0.1",
+    "https://trusttasks.org/spec/vtc/registry/sync-jobs/retry/0.2",
     "https://trusttasks.org/spec/vtc/registry/sync-jobs/discard/0.1",
     "https://trusttasks.org/spec/vtc/registry/records/list/0.1",
     "https://trusttasks.org/spec/audit/list/0.1",
@@ -888,13 +931,13 @@ const SPINE_DOCUMENT_TYPES: &[&str] = &[
     // The administrator's community verbs (`trust_tasks::community_tasks`).
     "https://trusttasks.org/spec/vtc/community/profile/show/0.1",
     "https://trusttasks.org/spec/vtc/ceremonies/list/0.1",
-    "https://trusttasks.org/spec/vtc/endorsement-types/list/0.1",
+    "https://trusttasks.org/spec/vtc/endorsement-types/list/0.2",
     "https://trusttasks.org/spec/vtc/recognition/check/0.1",
-    "https://trusttasks.org/spec/vtc/members/list/0.1",
+    "https://trusttasks.org/spec/vtc/members/list/0.2",
     "https://trusttasks.org/spec/vtc/members/removed/0.1",
     "https://trusttasks.org/spec/vtc/members/show/0.1",
     "https://trusttasks.org/spec/vtc/members/solicit-vmc/0.1",
-    "https://trusttasks.org/spec/vtc/join-requests/list/0.1",
+    "https://trusttasks.org/spec/vtc/join-requests/list/0.2",
     "https://trusttasks.org/spec/vtc/join-requests/show/0.1",
     "https://trusttasks.org/spec/vtc/relationships/graph/0.2",
     "https://trusttasks.org/spec/vtc/invitations/issue/0.1",
@@ -911,6 +954,54 @@ const SPINE_DOCUMENT_TYPES: &[&str] = &[
     // (`trust_tasks::surface_tasks`).
     "https://trusttasks.org/spec/vtc/community/branding/show/0.1",
     "https://trusttasks.org/spec/vtc/community/branding/update/0.1",
+    // The community theme: show unsigned and issuer-less from every page
+    // (`lib/community-theme.ts`), update signed from the Theme card.
+    "https://trusttasks.org/spec/vtc/community/theme/show/0.1",
+    "https://trusttasks.org/spec/vtc/community/theme/update/0.1",
+    // The member directory's Directory page (`admin-ui/src/lib/directory.ts`):
+    // the schema, every entry as an administrator reads it, and asserted values.
+    "https://trusttasks.org/spec/vtc/directory/fields/list/0.1",
+    "https://trusttasks.org/spec/vtc/directory/fields/define/0.1",
+    "https://trusttasks.org/spec/vtc/directory/fields/update/0.1",
+    "https://trusttasks.org/spec/vtc/directory/fields/retire/0.1",
+    "https://trusttasks.org/spec/vtc/directory/card/assert/0.1",
+    "https://trusttasks.org/spec/vtc/directory/entries/list/0.1",
+    "https://trusttasks.org/spec/vtc/directory/entries/show/0.1",
+    // Its "What applicants see" tab: the disclosure statement, read back.
+    "https://trusttasks.org/spec/vtc/directory/disclosure/0.1",
+    // The member portal's directory (`admin-ui/src/members/directory-api.ts`),
+    // signed by the portal key the member delegated `vtc/directory` to.
+    "https://trusttasks.org/spec/vtc/directory/card/show/0.1",
+    "https://trusttasks.org/spec/vtc/directory/card/update/0.1",
+    // Its pictures: a member's own upload, and every picture read through the
+    // projection.
+    "https://trusttasks.org/spec/vtc/directory/images/upload/0.1",
+    "https://trusttasks.org/spec/vtc/directory/images/get/0.1",
+    // The console's member page (administrators' notes) and the directory export.
+    "https://trusttasks.org/spec/vtc/groups/create/0.1",
+    "https://trusttasks.org/spec/vtc/groups/delete/0.1",
+    "https://trusttasks.org/spec/vtc/groups/join/0.1",
+    "https://trusttasks.org/spec/vtc/groups/leave/0.1",
+    "https://trusttasks.org/spec/vtc/groups/list/0.1",
+    "https://trusttasks.org/spec/vtc/groups/managers/add/0.1",
+    "https://trusttasks.org/spec/vtc/groups/managers/remove/0.1",
+    "https://trusttasks.org/spec/vtc/groups/bindings/add/0.1",
+    "https://trusttasks.org/spec/vtc/groups/bindings/remove/0.1",
+    "https://trusttasks.org/spec/vtc/groups/bindings/list/0.1",
+    // The hosting servers the community's VTA reports, for choosing
+    // `dids.webvh_server` on the Groups page.
+    "https://trusttasks.org/spec/vtc/config/did-hosting/list/0.1",
+    "https://trusttasks.org/spec/vtc/groups/members/add/0.1",
+    "https://trusttasks.org/spec/vtc/groups/members/list/0.1",
+    "https://trusttasks.org/spec/vtc/groups/members/remove/0.1",
+    "https://trusttasks.org/spec/vtc/groups/requests/decide/0.1",
+    "https://trusttasks.org/spec/vtc/groups/requests/list/0.1",
+    "https://trusttasks.org/spec/vtc/groups/show/0.1",
+    "https://trusttasks.org/spec/vtc/groups/update/0.1",
+    "https://trusttasks.org/spec/vtc/directory/notes/append/0.1",
+    "https://trusttasks.org/spec/vtc/directory/notes/list/0.1",
+    "https://trusttasks.org/spec/vtc/directory/notes/export/0.1",
+    "https://trusttasks.org/spec/vtc/directory/export/0.1",
     "https://trusttasks.org/spec/vtc/community/join-discovery/show/0.1",
     "https://trusttasks.org/spec/vtc/community/join-discovery/update/0.1",
     "https://trusttasks.org/spec/vtc/schemas/accepts/list/0.2",
@@ -922,6 +1013,32 @@ const SPINE_DOCUMENT_TYPES: &[&str] = &[
     "https://trusttasks.org/spec/vtc/vetting/revocations/list/0.1",
     "https://trusttasks.org/spec/vtc/join-requests/vetting/show/0.1",
     "https://trusttasks.org/spec/vtc/rooms/list/0.1",
+    // A room's detail page and Room usage (`trust_tasks::room_admin_tasks`). The page
+    // reads at 0.2, whose migration names its target and says why it is paused.
+    "https://trusttasks.org/spec/vtc/rooms/get/0.2",
+    "https://trusttasks.org/spec/vtc/rooms/usage/0.1",
+    "https://trusttasks.org/spec/vtc/rooms/limits/set/0.1",
+    // Storage, and a room's "other storage" (`trust_tasks::storage_tasks`).
+    "https://trusttasks.org/spec/vtc/storage/configs/list/0.2",
+    "https://trusttasks.org/spec/vtc/storage/configs/get/0.2",
+    "https://trusttasks.org/spec/vtc/storage/configs/create/0.2",
+    "https://trusttasks.org/spec/vtc/storage/configs/update/0.2",
+    "https://trusttasks.org/spec/vtc/storage/configs/retire/0.1",
+    "https://trusttasks.org/spec/vtc/storage/configs/probe/0.1",
+    "https://trusttasks.org/spec/vtc/storage/credentials/set/0.2",
+    "https://trusttasks.org/spec/vtc/rooms/storage/assign/0.1",
+    "https://trusttasks.org/spec/vtc/rooms/storage/migrate/0.2",
+    // Community rooms, the Community rooms tab (`trust_tasks::community_room_tasks`).
+    // The console is baked into this binary, so it reads at 0.2 only — the shape with each
+    // room's description, tags and who last changed them — and creates at 0.3 and updates
+    // at 0.2, which also write the label and description into the room as its profile.
+    "https://trusttasks.org/spec/vtc/rooms/community/create/0.3",
+    "https://trusttasks.org/spec/vtc/rooms/community/get/0.2",
+    "https://trusttasks.org/spec/vtc/rooms/community/list/0.2",
+    "https://trusttasks.org/spec/vtc/rooms/community/update/0.2",
+    "https://trusttasks.org/spec/vtc/rooms/community/members/add/0.1",
+    "https://trusttasks.org/spec/vtc/rooms/community/members/list/0.1",
+    "https://trusttasks.org/spec/vtc/rooms/community/members/remove/0.2",
     // The console's signing keys (`trust_tasks::signing_key_tasks`).
     "https://trusttasks.org/spec/auth/signing-key/enroll/0.2",
     "https://trusttasks.org/spec/auth/signing-key/list/0.1",
@@ -930,7 +1047,7 @@ const SPINE_DOCUMENT_TYPES: &[&str] = &[
     // bearer REST routes had no caller once the spine dispatched them
     // (tt-tf#689) — `member_tasks`'s endorsement handlers, and `mod.rs`'s
     // `handle_vetter_resend_v0_2`.
-    "https://trusttasks.org/spec/vtc/endorsements/list/0.1",
+    "https://trusttasks.org/spec/vtc/endorsements/list/0.2",
     "https://trusttasks.org/spec/vtc/endorsements/revoke/0.1",
     "https://trusttasks.org/spec/vtc/vetting/vetters/resend/0.2",
     // First-admin onboarding (`trust_tasks::install_tasks`): the dedicated,
@@ -945,6 +1062,8 @@ const SPINE_DOCUMENT_TYPES: &[&str] = &[
     "https://trusttasks.org/spec/vtc/install/claim/start/0.3",
     "https://trusttasks.org/spec/vtc/install/claim/finish/0.3",
     "https://trusttasks.org/spec/vtc/admin/bootstrap/0.1",
+    // The Wallet verifier page (`trust_tasks::oid4vp_tasks`, #1988).
+    "https://trusttasks.org/spec/vtc/oid4vp/identities/list/0.1",
 ];
 
 #[test]
@@ -984,9 +1103,13 @@ fn every_admin_ui_task_is_enforced_by_a_route() {
     // signed-document spine (`trust_tasks::{auth_tasks,install_tasks,
     // recognise_tasks,website_tasks}` / `member_tasks`); `auth/challenge` and
     // `auth/authenticate/0.1` keep theirs (see `routes/mod.rs`'s comment on
-    // those mounts).
+    // those mounts). It fell again with #1641's last batch, which moved an
+    // administrator's own passkeys and `vtc/auth/admin-session` to the
+    // spine: what is left is `auth/passkey/login/{start,finish}`
+    // and `auth/refresh/0.1` (`auth/whoami/0.1` went to the spine with the
+    // browser key a sign-in binds).
     assert!(
-        enforced.len() >= 10,
+        enforced.len() >= 3,
         "found only {} Trust-Task URIs in routes/mod.rs — the scan path is wrong",
         enforced.len()
     );

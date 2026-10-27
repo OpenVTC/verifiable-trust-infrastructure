@@ -147,9 +147,23 @@ every admission writes. The credentials are pushed to the member's
 wallet as on a join approval, best-effort, and returned in the
 response.
 
-Both tasks are bound ahead of their specifications in
-dtgwg-trust-tasks-tf: the payloads are this service's own until the
-generated types replace them.
+Both tasks are specified in dtgwg-trust-tasks-tf (#784) and served on
+the types `trust-tasks-rs` generates from them. A payload is read
+against its schema first: a `subject` that is not a DID or is over 2048
+characters, a `role` over 128, a blank `label` or a `reason` over 1024
+is `malformedRequest`, before any role is considered.
+
+From the command line, as an administrator's `cnm` profile:
+
+```bash
+cnm members admit did:key:z6Mk… --role member --label "Ada" --reason "…"
+cnm members make-membership did:key:z6Mk… --reason "the founder is a member too"
+```
+
+A refusal that means the other command — `hasEntry` from `admit`,
+`noEntry` or `applicationEntry` from `make-membership` — prints the
+command to run instead; a referral prints the action to follow with
+`cnm actions show`.
 
 ## Removal dispositions
 
@@ -370,7 +384,33 @@ vtc status        # on the VTC host: "Transports" compares document and build
 
 The same three steps publish any other change to the community's
 document after mint, such as a `TrustRegistry` referral added or
-changed, or a key rotated. That includes the two entries wallet sign-in
+changed, or a key rotated. For the referral the entry is:
+
+```json
+{
+  "id": "<community-did>#trust-registry",
+  "type": "TrustRegistry",
+  "serviceEndpoint": {
+    "uri": "<registry-did>",
+    "profile": "https://trustoverip.org/profiles/trqp/v2"
+  }
+}
+```
+
+`serviceEndpoint.uri` is the registry's DID. The referral is what other
+parties use to find the registry; the VTC's own connection to it is the
+separate `[registry] did` setting in its `config.toml`
+([trust registry](trust-registry.md)), which the edit does not touch.
+
+Make the edit with `pnm` against the running VTA. The offline
+`vta did-mgmt dids edit` on the VTA host builds the same entry, but it
+holds no mediator session, so it can publish only to a DID host whose
+document advertises `TrustTaskHTTPS` or `WebVHHosting` at an `https://`
+origin. Against a host that advertises TSP or DIDComm alone it stops
+with `no transport in common`, and the entry stays pending in the VTA's
+store until the running VTA's next edit of that DID publishes it.
+
+Two more entries go the same way, the ones wallet sign-in
 needs, `TrustTaskHTTPS` (`<public_url>/v1`) and `SignInPortal`
 (`<public_url>/members/`): a running VTC that finds either missing from its
 published document logs a warning with the exact entries to add, and its

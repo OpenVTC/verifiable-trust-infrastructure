@@ -33,6 +33,7 @@ const EVERYTHING = viewer([
   "vtc.sessions.revoke",
   "vtc.surface.admin",
   "vtc.registry.admin",
+  "vtc.rooms.admin",
   "git.ns.admin",
 ]);
 
@@ -82,13 +83,20 @@ describe("the grouped sidebar", () => {
     expect(ids(byId.membership!.plugins)).toEqual([
       "join-requests",
       "members",
+      "directory",
+      "groups",
       "invitations",
       "vetting",
       "relationships",
       "grouped",
     ]);
     expect(ids(byId.governance!.plugins)).toEqual(["ceremonies", "roles", "acl", "sessions"]);
-    expect(ids(byId.community!.plugins)).toEqual(["profile", "recognition", "rooms", "repos"]);
+    expect(ids(byId.community!.plugins)).toEqual([
+      "profile",
+      "recognition",
+      "rooms",
+      "repos",
+    ]);
   });
 
   it("relabels Ceremonies as Policies and Community profile as Profile, on the same routes", () => {
@@ -136,9 +144,9 @@ describe("the grouped sidebar", () => {
     expect(labels).toContain("Overview");
     expect(labels).not.toContain("More");
     const membership = nav.sections.find((s) => s.id === "membership");
-    // Relationships is readable by every administrator, so the group stays,
-    // holding only that.
-    expect(ids(membership!.plugins)).toEqual(["relationships"]);
+    // The directory, Groups and Relationships are readable by every
+    // administrator, so the group stays, holding only those.
+    expect(ids(membership!.plugins)).toEqual(["directory", "groups", "relationships"]);
 
     expect(arrangeNav([]).sections).toEqual([]);
     const onlyCommunity = arrangeNav(getPlugins().filter((p) => p.id === "rooms"));

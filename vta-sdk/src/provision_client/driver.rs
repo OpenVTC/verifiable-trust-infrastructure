@@ -37,6 +37,7 @@ use super::{ProvisionAsk, run_provision};
 /// in the `Err` variant of [`HeadlessVtaError`] so the calling binary
 /// can pick a fixed exit code without re-parsing the error string.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum HeadlessFailureKind {
     /// VTA advertises no usable transport (no `#tsp`, no DIDComm mediator,
     /// no REST endpoint), OR every advertised transport's auth attempt

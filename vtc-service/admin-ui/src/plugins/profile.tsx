@@ -14,6 +14,7 @@ import { PageHeader } from "@/components/PageHeader";
 import { postSignedRead, postSignedTrustTask } from "@/lib/api";
 import { CommunityBrandingCard } from "@/plugins/vetting/BrandingCard";
 import { JoinDiscoveryCard } from "@/plugins/community/JoinDiscoveryCard";
+import { CommunityThemeCard } from "@/plugins/community/ThemeCard";
 
 const TRUST_TASK =
   "https://trusttasks.org/spec/vtc/community/profile/show/0.1";
@@ -244,6 +245,7 @@ export function Profile() {
 
       <JoinDiscoveryCard />
       <CommunityBrandingCard />
+      <CommunityThemeCard />
     </section>
   );
 }

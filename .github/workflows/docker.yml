@@ -24,6 +24,7 @@ on:
       - "**/Cargo.toml"
       - "Cargo.lock"
       - ".github/workflows/docker.yml"
+      - ".github/actions/add-swap/**"
   pull_request:
     branches: [main]
     paths:
@@ -34,6 +35,7 @@ on:
       - "**/Cargo.toml"
       - "Cargo.lock"
       - ".github/workflows/docker.yml"
+      - ".github/actions/add-swap/**"
 
 # Read-only: both images are built with `push: false` and this workflow logs
 # in to no registry, so reading the tree is all it needs. Without a block it
@@ -44,6 +46,9 @@ permissions:
 jobs:
   image:
     name: Docker image (${{ matrix.name }})
+    # Not on the Release PR: it changes only versions and changelogs, and its
+    # merge is a push to main, which builds both images.
+    if: ${{ !startsWith(github.head_ref, 'release-plz-') }}
     runs-on: ubuntu-latest
     # A cold release build of the workspace runs ~15 min for the non-TEE image;
     # the enclave build pulls the whole AWS SDK / TEE stack on top. The cap is
@@ -78,6 +83,11 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+
+      # BuildKit compiles inside this runner's memory, and trust-tasks-rs with
+      # every spec does not fit in it at release settings; see
+      # .github/actions/add-swap.
+      - uses: ./.github/actions/add-swap
 
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 

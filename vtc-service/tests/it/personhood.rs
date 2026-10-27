@@ -40,7 +40,7 @@ use vtc_service::test_support::TestVtc;
 
 const PUBLIC_URL: &str = "https://vtc.example.com";
 const CHALLENGE_TASK: &str = "https://trusttasks.org/spec/vtc/members/personhood/challenge/0.1";
-const ASSERT_TASK: &str = "https://trusttasks.org/spec/vtc/members/personhood/assert/0.1";
+const ASSERT_TASK: &str = "https://trusttasks.org/spec/vtc/members/personhood/assert/0.2";
 const REVOKE_TASK: &str = "https://trusttasks.org/spec/vtc/members/personhood/revoke/0.1";
 /// A data-only subject: seeded as a member, but never a document signer —
 /// stands in for "some other member" wherever a test names a subject it
@@ -99,6 +99,7 @@ async fn build_fixture() -> Fixture {
             updated_by: None,
             expires_at: None,
             resource_grants: Vec::new(),
+            group_grants: Vec::new(),
             label_set_by_subject: false,
             suspension: None,
         },
@@ -124,6 +125,7 @@ async fn build_fixture() -> Fixture {
             updated_by: None,
             expires_at: None,
             resource_grants: Vec::new(),
+            group_grants: Vec::new(),
             label_set_by_subject: false,
             suspension: None,
         },
@@ -149,6 +151,7 @@ async fn build_fixture() -> Fixture {
             updated_by: None,
             expires_at: None,
             resource_grants: Vec::new(),
+            group_grants: Vec::new(),
             label_set_by_subject: false,
             suspension: None,
         },

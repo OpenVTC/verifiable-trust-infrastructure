@@ -22,7 +22,6 @@
 //! and then records the evidence on the session.
 
 use std::collections::BTreeMap;
-use std::sync::Arc;
 
 use affinidi_oid4vc_core::jwe::{ContentEncryption, EcdhEsDecryptionKey};
 use affinidi_openid4vp::dcql::CandidateCredential;
@@ -37,7 +36,6 @@ use chrono::{DateTime, Duration, Utc};
 use serde_json::{Map, Value, json};
 use tracing::{info, warn};
 use uuid::Uuid;
-use vti_common::auth::PurposeVmResolver;
 use vti_common::error::AppError;
 
 use super::session::{
@@ -45,14 +43,18 @@ use super::session::{
 };
 use super::{VerifierIdentityRecord, VerifierKind, list_identities};
 use crate::ceremony::CredentialStatus;
-use crate::credentials::vm_resolver::DidVmResolver;
 use crate::join::JoinStatus;
 use crate::join::criteria::{LDP_VC_FORMAT, SD_JWT_VC_FORMAT};
-use crate::recognition::HttpStatusListFetcher;
 use crate::server::AppState;
 
 /// The swiyu Verification Profile a request object declares in its header.
 pub const SWIYU_PROFILE_VERSION: &str = "swiss-profile-verification:1.0.0";
+
+/// One wallet answer at a time is handed to the join: two sessions bound to the
+/// same deferred request must not decide it twice from the same starting
+/// state.
+static JOIN_HANDOFF: std::sync::LazyLock<tokio::sync::Mutex<()>> =
+    std::sync::LazyLock::new(|| tokio::sync::Mutex::new(()));
 
 /// The `kid` of a session's response-encryption key in `client_metadata.jwks`.
 const RESPONSE_KEY_ID: &str = "response-encryption";
@@ -88,6 +90,7 @@ pub struct Started {
 fn prefix_of(kind: VerifierKind) -> &'static str {
     match kind {
         VerifierKind::Swiyu => "decentralized_identifier",
+        VerifierKind::Eudi => "x509_hash",
     }
 }
 
@@ -95,26 +98,38 @@ fn prefix_of(kind: VerifierKind) -> &'static str {
 fn scheme_of(kind: VerifierKind) -> &'static str {
     match kind {
         VerifierKind::Swiyu => "swiyu-verify",
+        // HAIP's own scheme, which EUDI wallets register.
+        VerifierKind::Eudi => "haip-vp",
     }
 }
 
 /// The JWE `enc` values a response to an identity may use. swiyu requires
-/// `A256GCM`.
+/// `A256GCM`; HAIP has wallets support both `A128GCM` and `A256GCM`.
 fn enc_values_of(kind: VerifierKind) -> Vec<ContentEncryption> {
     match kind {
         VerifierKind::Swiyu => vec![ContentEncryption::A256Gcm],
+        VerifierKind::Eudi => vec![ContentEncryption::A128Gcm, ContentEncryption::A256Gcm],
     }
 }
 
-/// Header members an identity's ecosystem requires beyond `alg`, `typ`, `kid`.
-fn extra_header_of(kind: VerifierKind) -> Map<String, Value> {
-    let mut extra = Map::new();
-    match kind {
+/// Header members an identity's ecosystem requires beyond `alg` and `typ`:
+/// how the key is named (a swiyu DID URL as `kid`, an EUDI access
+/// certificate chain as `x5c`) and any profile marker.
+fn identity_header_of(
+    identity: &VerifierIdentityRecord,
+    signer: &dyn super::VerifierSigner,
+) -> Map<String, Value> {
+    let mut header = Map::new();
+    match identity.kind {
         VerifierKind::Swiyu => {
-            extra.insert("profile_version".into(), json!(SWIYU_PROFILE_VERSION));
+            header.insert("kid".into(), json!(signer.kid()));
+            header.insert("profile_version".into(), json!(SWIYU_PROFILE_VERSION));
+        }
+        VerifierKind::Eudi => {
+            header.insert("x5c".into(), json!(identity.x5c));
         }
     }
-    extra
+    header
 }
 
 /// Choose the verifier identity a session presents itself as: the first
@@ -129,6 +144,8 @@ async fn choose_identity(
         .await?
         .into_iter()
         .filter(|r| state.oid4vp_signers.contains_key(&r.id))
+        // An EUDI identity is not usable until its certificate is installed.
+        .filter(|r| r.client_id().is_some())
         .collect();
     let chosen = match prefix {
         Some(p) => installed.into_iter().find(|r| prefix_of(r.kind) == p),
@@ -234,7 +251,10 @@ pub async fn start(
     let encs = enc_values_of(identity.kind);
     let expires_at = now + Duration::seconds(cfg.session_ttl_secs as i64);
 
-    let client_id = ClientId::parse(&identity.client_id())
+    let client_id = identity
+        .client_id()
+        .ok_or_else(|| StartRefusal::VerifierNotConfigured(identity.id.clone()))?;
+    let client_id = ClientId::parse(&client_id)
         .map_err(|e| AppError::Internal(format!("verifier identity client_id: {e}")))?;
     let request_uri = format!("{public_url}/v1/oid4vp/request/{id}");
     let response_uri = format!("{public_url}/v1/oid4vp/response/{id}");
@@ -262,6 +282,19 @@ pub async fn start(
         },
     );
     request.state = Some(wallet_state.clone());
+    // What the identity's ecosystem has said about it — an EUDI registration
+    // certificate, which the wallet checks the requested claims against, or
+    // swiyu trust statements. One that has expired is left out: the wallet
+    // would refuse it, and it says nothing a missing one does not.
+    request.verifier_info = identity.verifier_info.as_deref().and_then(|entries| {
+        let (kept, expired) = super::trust_statement::current(entries, now.timestamp());
+        for s in &expired {
+            warn!(identity = %identity.id, expired_at = %super::trust_statement::timestamp(s.exp),
+                "verifier identity's {} has expired and is left out of the request; install a \
+                 new one with `vtc oid4vp trust-statement`", s.kind.label());
+        }
+        (!kept.is_empty()).then_some(kept)
+    });
     request.iat = Some(now.timestamp());
     request.exp = Some(expires_at.timestamp());
     let jar = sign_request_object(&request, &identity, signer.as_ref()).await?;
@@ -319,8 +352,8 @@ pub async fn start(
 }
 
 /// Sign a request object as a JAR through the identity's [`super::VerifierSigner`]
-/// — `typ: oauth-authz-req+jwt`, `kid` the identity's verification method,
-/// plus the header members its ecosystem requires.
+/// — `typ: oauth-authz-req+jwt`, plus the header members its ecosystem
+/// requires ([`identity_header_of`]).
 async fn sign_request_object(
     request: &RequestObject,
     identity: &VerifierIdentityRecord,
@@ -329,24 +362,16 @@ async fn sign_request_object(
     request
         .validate()
         .map_err(|e| AppError::Internal(format!("request object: {e}")))?;
-    let mut header = extra_header_of(identity.kind);
-    header.insert("alg".into(), json!(signer.alg()));
+    let mut header = identity_header_of(identity, signer);
     header.insert("typ".into(), json!(REQUEST_OBJECT_TYP));
-    header.insert("kid".into(), json!(signer.kid()));
-    let claims = serde_json::to_vec(request)
-        .map_err(|e| AppError::Internal(format!("request object: {e}")))?;
-    let header = serde_json::to_vec(&Value::Object(header))
-        .map_err(|e| AppError::Internal(format!("request object header: {e}")))?;
-    let signing_input = format!(
-        "{}.{}",
-        URL_SAFE_NO_PAD.encode(header),
-        URL_SAFE_NO_PAD.encode(claims)
-    );
-    let signature = signer.sign(signing_input.as_bytes()).await?;
-    Ok(format!(
-        "{signing_input}.{}",
-        URL_SAFE_NO_PAD.encode(signature)
-    ))
+    let Value::Object(claims) = serde_json::to_value(request)
+        .map_err(|e| AppError::Internal(format!("request object: {e}")))?
+    else {
+        return Err(AppError::Internal(
+            "request object: not a JSON object".into(),
+        ));
+    };
+    signer.sign_jws(header, claims).await
 }
 
 /// What became of a wallet's post to `response_uri`.
@@ -382,6 +407,25 @@ pub async fn receive(
         Err(reason) => WalletAnswer::Refused(*reason),
     };
     let finished = session::finish(&state.oid4vp_sessions_ks, id, outcome, hold, now).await?;
+    if finished.phase == SessionPhase::Presented && finished.request_id.is_some() {
+        // The wallet's answer is accepted whatever the join does next; a
+        // failure here is the community's to see, not the wallet's.
+        let _serial = JOIN_HANDOFF.lock().await;
+        match crate::join::orchestrate::wallet_evidence_arrived(state, &finished).await {
+            Ok(Some(outcome)) => info!(
+                session = %finished.id,
+                request = %outcome.request.id,
+                status = %outcome.request.status,
+                "join request decided again on wallet evidence"
+            ),
+            Ok(None) => {}
+            Err(e) => warn!(
+                session = %finished.id,
+                error = %e,
+                "wallet evidence could not be applied to its join request"
+            ),
+        }
+    }
     match &finished.evidence {
         Some(evidence) => info!(
             session = %finished.id,
@@ -453,11 +497,12 @@ async fn verify_answer(
     let mut verified = Vec::new();
     for (query_id, presentations) in &response.vp_token {
         for presentation in presentations {
-            let set = crate::credentials::verify_vp_token(
+            let set = crate::credentials::verify_vp_token_with_anchors(
                 presentation,
                 &session.client_id,
                 &session.nonce,
                 state.did_resolver.as_ref(),
+                &state.x509_trust_anchors,
                 now,
             )
             .await
@@ -484,14 +529,7 @@ async fn verify_answer(
     }
 
     // 4. Status, never assumed.
-    let fetcher = match state.did_resolver.clone() {
-        Some(resolver) => {
-            let key_resolver: Arc<dyn PurposeVmResolver> =
-                Arc::new(DidVmResolver::new(Some(resolver)));
-            HttpStatusListFetcher::with_issuer_verification(key_resolver)
-        }
-        None => HttpStatusListFetcher::new(),
-    };
+    let fetcher = crate::routes::join_requests::present::credential_status_fetcher(state);
     for (_, _, p) in &verified {
         let status = crate::routes::join_requests::present::resolve_presented_status(
             p.credential_status.as_ref(),
@@ -523,9 +561,28 @@ async fn verify_answer(
         }
     }
 
-    // 6. The criterion's query, satisfied by what verified.
+    // 6. The criterion's query, satisfied by what verified — each credential
+    //    certified by an authority its query's `trusted_authorities` names,
+    //    which the matcher does not read.
     let query =
         DcqlQuery::from_json(&session.dcql_query).map_err(|e| invalid("stored query", &e))?;
+    for (query_id, _, p) in &verified {
+        let authorities = query
+            .credentials
+            .iter()
+            .find(|cq| cq.id == *query_id)
+            .and_then(|cq| cq.trusted_authorities.as_deref());
+        if let Some(authorities) = authorities
+            && !crate::join::criteria::meets_trusted_authorities(
+                authorities,
+                &p.issuer_authority_key_ids,
+            )
+        {
+            warn!(session = %session.id, issuer = %p.issuer_did,
+                "wallet response refused: no authority the query trusts certifies its issuer");
+            return Err(RefusalReason::IssuerNotTrusted);
+        }
+    }
     let mut answered: BTreeMap<String, Vec<CandidateCredential>> = BTreeMap::new();
     for (n, (query_id, format, p)) in verified.iter().enumerate() {
         answered
@@ -557,6 +614,7 @@ async fn verify_answer(
                 issuer: p.issuer_did,
                 vct: p.vct,
                 claims: p.claims,
+                issuer_authority_key_ids: p.issuer_authority_key_ids,
             })
             .collect(),
     })

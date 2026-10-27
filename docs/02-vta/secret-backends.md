@@ -38,7 +38,7 @@ fields validated:
 
 ```toml
 [secrets]
-backend = "vault"          # keyring | config_seed | aws | gcp | azure | vault | kubernetes | plaintext
+backend = "vault"          # keyring | config_seed | aws | gcp | azure | vault | kubernetes | encrypted_file | plaintext
 addr        = "https://vault.example.com:8200"
 secret_path = "vta/master-seed"
 ```
@@ -65,6 +65,9 @@ selector field is populated:
 | 6 | Config-seed | `config-seed` | `secrets.seed` is set |
 | 7 | OS keyring | `keyring` | always (the default) |
 | 8 | Plaintext file | always available | unconditional fallback |
+
+`encrypted_file` is not in this chain: it is reached only through
+`backend = "encrypted_file"`.
 
 Note what this chain **cannot** express: plaintext has no selector field
 of its own and the keyring arm matches unconditionally, so on any build
@@ -577,6 +580,103 @@ the seed sits on disk in plaintext.
 If you find yourself reaching for this in production, use Vault or a
 cloud secret manager instead.
 
+### Encrypted file (`encrypted_file`)
+
+File: `vti-secrets/src/seed_store/encrypted_file/`
+
+The secure local option for a host with no OS keyring — a headless Linux
+server with no Secret Service, where the alternative would be `plaintext`.
+Always compiled in (the TPM key source needs the `tpm` feature, below). The
+seed is kept in one file, `<data_dir>/seed.enc` by default (`secret.enc` for
+the VTC), under AES-256-GCM, and the key that encrypts it comes from a
+**key-encryption key (KEK) source you name**. It is only ever selected
+explicitly: implicit resolution never picks it, and a
+`[secrets.encrypted_file]` table without `backend = "encrypted_file"` is a
+config error rather than being ignored.
+
+```toml
+[secrets]
+backend = "encrypted_file"        # the VTC spells it "encrypted-file"
+
+[secrets.encrypted_file]
+path = "/var/lib/vta/seed.enc"    # optional; default <data_dir>/seed.enc
+# exactly one KEK source:
+kek = { source = "passphrase", file = "/etc/vta/seed-passphrase" }
+```
+
+| `kek.source` | Fields | Where the key comes from | Unattended boot |
+|---|---|---|---|
+| `passphrase` | `file` **or** `credential` | A passphrase, stretched with Argon2id (m = 64 MiB, t = 3, p = 4; salt and parameters in the file header). `file` is a path; `credential` is a systemd credential name, read from `$CREDENTIALS_DIRECTORY/<name>`. One trailing newline is ignored. | Yes, if the file or credential is present at boot |
+| `systemd_creds` | `credential` | A 32-byte KEK from `$CREDENTIALS_DIRECTORY/<credential>` — 32 raw bytes, or 64 hex characters. systemd seals the credential to the TPM and/or the host key. | Yes |
+| `tpm` | `pcrs` (optional, SHA-256 PCR indexes 0–23), `tcti` (optional, default `device:/dev/tpmrm0`) | A random KEK sealed by the TPM 2.0 under the owner hierarchy's storage key, stored sealed in the file header, optionally bound to PCRs. Needs a Linux build with the `tpm` feature (`vta-service/tpm`, `vtc-service/tpm`, or `vti-secrets/tpm`), which links the native tss2 libraries (`libtss2-dev` on Debian/Ubuntu). | Yes |
+
+A passphrase is **never** read from the config file or from an environment
+variable — there is no field for it. Use a root-provisioned file readable by
+the service user only (the service warns if it is group- or world-readable),
+or a systemd credential.
+
+**systemd examples.** A KEK sealed by systemd (TPM2 if present, else the
+host key):
+
+```sh
+openssl rand 32 | sudo systemd-creds encrypt --name=vta-seed-kek - /etc/credstore.encrypted/vta-seed-kek
+```
+
+```ini
+# vta.service
+[Service]
+LoadCredentialEncrypted=vta-seed-kek
+```
+
+```toml
+[secrets.encrypted_file]
+kek = { source = "systemd_creds", credential = "vta-seed-kek" }
+```
+
+`vta setup` writes the seed, so the KEK must be readable when setup runs:
+run setup under the same credential, e.g.
+`sudo systemd-run --pty --wait -p LoadCredentialEncrypted=vta-seed-kek vta setup --from setup.toml`.
+`$CREDENTIALS_DIRECTORY` unset at runtime is an error naming the credential.
+
+**TPM notes.** The storage key is re-derived from the owner hierarchy on each
+use (the owner hierarchy must have an empty auth value, the default), so
+nothing is made persistent in the TPM. `tpm2_clear`, or moving the disk to
+another machine, makes the file unreadable — keep the mnemonic. With `pcrs`
+set, the KEK unseals only while those PCRs hold the values they had when the
+file was last written; a firmware or bootloader update that changes them
+locks the file until you restore them. Every write seals a fresh KEK to the
+PCR values current at that moment.
+
+**What it protects against** — a copy of the file taken away from the
+running host: a stolen disk or disk image, a backup or snapshot, a
+misdirected sync. That holds as long as the KEK does not travel with the
+file: a TPM-sealed KEK, or a systemd credential sealed to the TPM, stays
+behind; a passphrase file on the same disk does not (use `credential`, or
+keep the file on other storage).
+
+**What it does not protect against** — root, or the service user, on the
+running host. Whoever can read the passphrase file or credential, use the TPM
+as this host, or read the process's memory can decrypt the seed. It is an
+at-rest control, not an isolation boundary; for that, use a remote backend
+(Vault, a cloud secret manager) or a TEE.
+
+**Failure semantics.** It fails closed. A missing file means "no seed yet",
+as for every backend; anything else — an unreadable KEK, a wrong passphrase,
+a modified file (any byte, header included), an unknown format version, a
+malformed header, or a file written with a different KEK source than the one
+configured — is an error, never "no secret". Writes go to a temporary file
+created at `0600`, are fsynced, and are renamed over the old file, so a crash
+leaves the old seed or the new one.
+
+**File format** (version 1): magic `VTISECF\0`, format version, AEAD id
+(AES-256-GCM), KEK source id, a 32-byte salt, a 12-byte nonce, and a
+length-prefixed descriptor (the Argon2id parameters, or the sealed TPM
+object and its PCR list), followed by the ciphertext. The whole header is the
+AEAD's associated data. For the systemd-creds and TPM sources the file key is
+HKDF-SHA256 of the KEK with the per-write salt. Argon2id parameters below the
+floors (m < 64 MiB, t < 3) are refused on read. The layout is documented in
+`vti-secrets/src/seed_store/encrypted_file/envelope.rs`.
+
 ### Plaintext file
 
 File: `vti-secrets/src/seed_store/plaintext.rs`
@@ -627,21 +727,29 @@ Do you have HashiCorp Vault deployed (any auth method)?
 
 Is this a developer workstation?
 ├── Yes → OS keyring
-└── No  → Stand up Vault before going to production. Use config-seed
-         only as a sealed-image / CI bridge.
+└── No  ↓
+
+Is this a single host with no OS keyring (headless Linux)?
+├── Has a TPM 2.0 → encrypted_file, kek = tpm or systemd_creds
+├── Runs under systemd → encrypted_file, kek = systemd_creds
+└── Otherwise → encrypted_file, kek = passphrase (credential or a file
+               kept off the data disk)
+
+Otherwise: stand up Vault before going to production. Use config-seed
+only as a sealed-image / CI bridge.
 ```
 
 ### Trade-offs
 
-| | AWS SM | GCP SM | Azure KV | Vault | K8s Secret | KMS-TEE | Keyring | Config | Plaintext |
-|---|---|---|---|---|---|---|---|---|---|
-| Encrypted at rest | ✅ | ✅ | ✅ | ✅ (Vault internal) | ⚠️ only if etcd encryption on | ✅ (KMS) | ✅ (OS) | ❌ | ❌ |
-| Auto rotation friendly | ✅ | ✅ | ✅ | ✅ | ✅ | n/a | ❌ | ❌ | ❌ |
-| Works in TEE | via parent | via parent | via parent | via parent | via parent | ✅ native | ❌ | ❌ | ❌ |
-| Works headless / CI | ✅ | ✅ | ✅ | ✅ | ✅ | n/a | ⚠️ macOS prompts | ✅ | ✅ |
-| In-process auto-renewal | implicit (IAM) | implicit (ADC) | implicit (MI) | ✅ explicit | implicit (SA token) | implicit (KMS) | n/a | n/a | n/a |
-| Extra infra required | cloud SM | cloud SM | cloud KV | Vault | none (in-cluster) | KMS | none | none | none |
-| Production-ready | ✅ | ✅ | ✅ | ✅ | ✅ (with etcd enc.) | ✅ | dev only | dev only | never |
+| | AWS SM | GCP SM | Azure KV | Vault | K8s Secret | KMS-TEE | Keyring | Encrypted file | Config | Plaintext |
+|---|---|---|---|---|---|---|---|---|---|---|
+| Encrypted at rest | ✅ | ✅ | ✅ | ✅ (Vault internal) | ⚠️ only if etcd encryption on | ✅ (KMS) | ✅ (OS) | ✅ (AES-256-GCM) | ❌ | ❌ |
+| Auto rotation friendly | ✅ | ✅ | ✅ | ✅ | ✅ | n/a | ❌ | ❌ | ❌ | ❌ |
+| Works in TEE | via parent | via parent | via parent | via parent | via parent | ✅ native | ❌ | ❌ | ❌ | ❌ |
+| Works headless / CI | ✅ | ✅ | ✅ | ✅ | ✅ | n/a | ⚠️ macOS prompts | ✅ | ✅ | ✅ |
+| In-process auto-renewal | implicit (IAM) | implicit (ADC) | implicit (MI) | ✅ explicit | implicit (SA token) | implicit (KMS) | n/a | n/a | n/a | n/a |
+| Extra infra required | cloud SM | cloud SM | cloud KV | Vault | none (in-cluster) | KMS | none | none (TPM optional) | none | none |
+| Production-ready | ✅ | ✅ | ✅ | ✅ | ✅ (with etcd enc.) | ✅ | dev only | single host | dev only | never |
 
 > **Hardened configuration and secret-store backends.** When
 > `[hardened] enabled = true`, the same secret backend that holds the
@@ -649,7 +757,7 @@ Is this a developer workstation?
 > HKDF-SHA256) and to unseal the **JWT signing key** on every daemon
 > boot. This means the backend you choose here determines the trust anchor
 > for all at-rest encryption — pick a production-grade backend (AWS SM,
-> GCP SM, Azure KV, Vault, OS keyring) rather than `plaintext` or
+> GCP SM, Azure KV, Vault, OS keyring, encrypted file) rather than `plaintext` or
 > `config_seed` if you enable hardened configuration. See
 > [hardened configuration](non-interactive-setup.md#hardened-configuration) for the full details.
 
@@ -685,6 +793,7 @@ migrating is a copy operation between two trusted CLIs.
    | Kubernetes Secret | `kubectl -n vta-prod get secret vta-master-seed -o jsonpath='{.data.seed}' \| base64 -d` |
    | Config-seed | `awk '/^seed/ {print $3}' config.toml` (already plaintext) |
    | Plaintext file | `cat <data_dir>/seed.hex` |
+   | Encrypted file | no external reader — restore the mnemonic into the new backend with the setup wizard instead |
 
    Sanity-check the length: 64 chars for a 24-word mnemonic, 32 for
    a 12-word. Anything else is wrong and you should stop here.

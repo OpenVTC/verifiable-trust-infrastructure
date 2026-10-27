@@ -89,6 +89,16 @@ true at the VTA:
 3. **The calling operator has admin role in the target context.** ACL
    check is `require_admin` with `allowed_contexts` containing the
    target. Super-admin passes through.
+4. **A webvh template has the shape a bundle carries.** The sealed bundle
+   gives the integration its signing key and its key-agreement key, each
+   under the `verificationMethod` id its published DID document uses. A
+   template whose signing key is kept out of the document (`publish: false`),
+   or that has no `ka` slot, is refused before anything is minted, with the
+   commands that do mint it. `swiyu-verifier` is one: the Swiss Profile Anchor
+   forbids both, and a verifier identity is not an integration with an admin.
+   Mint it with `pnm did-mgmt dids create --template swiyu-verifier` and hand
+   it to the VTC with `pnm keys bundle` → `vtc oid4vp install`, or keep its key
+   in the VTA with `vtc oid4vp attach` (`docs/03-vtc/oid4vp-verifier.md`).
 
 Integrations do not rotate keys on their own. The VTA mints the
 integration's signing and key-agreement keys once, at provisioning

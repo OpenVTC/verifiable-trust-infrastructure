@@ -2,6 +2,58 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.21.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-audit-v0.20.0...vta-audit-v0.21.0) — 2026-10-26
+
+
+### Fixed
+
+- **audit**: Bounded chain-head recovery and paged audit readers ([#2229](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2229))
+
+* fix(audit): bounded chain-head recovery and paged audit readers
+
+  Chain-head recovery read the whole audit keyspace to find one row, which
+  cannot work over vsock where the result must fit a single 16 MiB frame.
+  Recovery now scans the newest rows under the writer's own prefix, falling
+  back to a bounded deep scan only while a legacy log is being migrated, and
+  failing closed rather than silently re-anchoring.
+
+  Adds `ScanOpts` / `KeyspaceHandle::scan_raw` (a bounded, directional read
+  with an exclusive resume key) across both backends, and `OP_SCAN` on the
+  enclave proxy with the usual capability negotiation. `ScanPager` decides its
+  strategy once per walk, so a proxy that cannot bound a read is asked for the
+  range once rather than once per page.
+
+  Audit verification and listing walk through the pager instead of
+  materialising the keyspace.
+
+
+
+## [0.20.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-audit-v0.19.0...vta-audit-v0.20.0) — 2026-10-18
+
+
+## [0.19.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-audit-v0.18.0...vta-audit-v0.19.0) — 2026-10-18
+
+
+## [0.18.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-audit-v0.17.0...vta-audit-v0.18.0) — 2026-10-16
+
+
+## [0.17.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-audit-v0.16.0...vta-audit-v0.17.0) — 2026-10-15
+
+
+### Fixed
+
+- **store**: Make VTA/VTC multi-step store writes atomic ([#2109](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2109))
+
+* test(store): expose the local journal sequence number to atomicity tests
+
+
+
+## [0.16.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-audit-v0.15.0...vta-audit-v0.16.0) — 2026-10-13
+
+
+## [0.15.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-audit-v0.14.0...vta-audit-v0.15.0) — 2026-10-12
+
+
 ## [0.14.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-audit-v0.13.0...vta-audit-v0.14.0) — 2026-10-11
 
 

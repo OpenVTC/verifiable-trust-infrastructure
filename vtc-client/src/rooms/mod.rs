@@ -48,11 +48,12 @@ use crate::{VtcClient, VtcError};
 pub use vti_rooms::Visibility;
 pub use vti_rooms::authz::MAX_CHAIN_DEPTH;
 pub use vti_rooms::wire::{
-    AuthorityPresentation, ChainResponse, CleartextContent, CurateRecordResponse, EpochLink,
-    ListRecordsResponse, MintEpochResponse, OwnerResponse, PutRecordResponse, ROOMS_CREATE_TYPE,
-    ROOMS_EPOCH_CHAIN_TYPE, ROOMS_EPOCH_MINT_TYPE, ROOMS_OWNER_CLAIM_TYPE,
-    ROOMS_OWNER_TRANSFER_TYPE, ROOMS_RECORDS_CURATE_TYPE, ROOMS_RECORDS_GET_TYPE,
-    ROOMS_RECORDS_LIST_TYPE, ROOMS_RECORDS_PUT_TYPE, SealedContent,
+    AuthorityPresentation, ChainResponse, CleartextContent, CommitsResponse, CurateRecordResponse,
+    EpochLink, ListRecordsResponse, MintEpochResponse, OwnerResponse, PruneResponse,
+    PutRecordResponse, ROOMS_CREATE_V2_TYPE, ROOMS_EPOCH_CHAIN_V2_TYPE, ROOMS_EPOCH_COMMITS_TYPE,
+    ROOMS_EPOCH_MINT_TYPE, ROOMS_EPOCH_PRUNE_V2_TYPE, ROOMS_OWNER_CLAIM_TYPE,
+    ROOMS_OWNER_TRANSFER_TYPE, ROOMS_RECORDS_CURATE_TYPE, ROOMS_RECORDS_GET_V2_TYPE,
+    ROOMS_RECORDS_LIST_TYPE, ROOMS_RECORDS_PUT_V3_TYPE, RelayedCommit, SealedContent,
 };
 
 /// A caller's standing in one room.
@@ -123,7 +124,7 @@ impl RoomSession {
 }
 
 impl VtcClient {
-    /// Register a room with this host.
+    /// Register a room with this host (`rooms/create/0.2`).
     ///
     /// The caller brings `room_id`: a room identified by something its host chose could not
     /// move to another host without changing identity.
@@ -143,7 +144,7 @@ impl VtcClient {
             "retentionDays": retention_days,
         });
         self.room_task(
-            ROOMS_CREATE_TYPE,
+            ROOMS_CREATE_V2_TYPE,
             payload,
             signer_did,
             private_key_multibase,
@@ -189,7 +190,7 @@ impl VtcClient {
         }
         let value = self
             .room_task(
-                ROOMS_RECORDS_PUT_TYPE,
+                ROOMS_RECORDS_PUT_V3_TYPE,
                 payload,
                 signer_did,
                 private_key_multibase,
@@ -219,7 +220,7 @@ impl VtcClient {
             "presentation": session.presentation,
         });
         self.room_task(
-            ROOMS_RECORDS_GET_TYPE,
+            ROOMS_RECORDS_GET_V2_TYPE,
             payload,
             signer_did,
             private_key_multibase,
@@ -343,7 +344,49 @@ impl VtcClient {
         })
     }
 
-    /// Fetch the room's epoch key chain, highest epoch first.
+    /// Drop the room's epoch key chain below `before_epoch` (`rooms/epoch/prune/0.2`).
+    ///
+    /// **Irreversible, for every member.** The host erases the rungs below that epoch, so
+    /// nobody who has not already derived those epochs' keys — a member restarting, on a
+    /// new device, or joining later — can ever open what was sealed under them again. The
+    /// records stay; the ability to open them goes.
+    ///
+    /// The host also keeps the room's **epoch floor** — `beforeEpoch − 1`, or higher if it
+    /// already held one — and returns it as `epochFloor`. It serves the floor from then on
+    /// (`rooms/epoch/chain/0.2`), and every member's key holder that learns it forgets what
+    /// it holds below it: the prune reaches members, as far as they conform. What anybody
+    /// already read is not recalled.
+    ///
+    /// Gated on `admin` at the host. `before_epoch` must be below the room's current
+    /// epoch (`notAhead` otherwise). `pruned: 0` in the answer is a success — the chain
+    /// already went back no further — and `earliestRung` is how far back it now reaches,
+    /// which is not necessarily `before_epoch`.
+    ///
+    /// Never retried here: it is not a read, and a second prune arriving after the room
+    /// advanced names a different span than the first.
+    pub async fn prune_epoch_v2(
+        &self,
+        session: &RoomSession,
+        before_epoch: u32,
+        reason: Option<&str>,
+        signer_did: &str,
+        private_key_multibase: &str,
+    ) -> Result<trust_tasks_rs::specs::rooms::epoch::prune::v0_2::Response, VtcError> {
+        let value = self
+            .room_task(
+                ROOMS_EPOCH_PRUNE_V2_TYPE,
+                prune_payload(session, before_epoch, reason),
+                signer_did,
+                private_key_multibase,
+            )
+            .await?;
+        serde_json::from_value(value).map_err(|e| VtcError::Http {
+            status: 200,
+            body: format!("prune response is not a rooms/epoch/prune/0.2 response: {e}"),
+        })
+    }
+
+    /// Fetch the room's epoch key chain, highest epoch first (`rooms/epoch/chain/0.2`).
     ///
     /// What a member calls after joining, or after restoring their group state, so that
     /// records sealed before then still open. Feed the result to
@@ -355,14 +398,19 @@ impl VtcClient {
     ///
     /// `from_epoch` returns only rungs at or below that epoch, which is how a member who
     /// already holds the top of the chain asks for the rest.
-    pub async fn epoch_chain(
+    ///
+    /// Once the room's chain has been pruned the answer carries its epoch floor
+    /// (`epochFloor`). A caller keeping rungs or keys applies it — discards what it holds
+    /// below it — and one relaying rungs to a key holder relays the floor with them
+    /// (`rooms/keys/chain/0.2`).
+    pub async fn epoch_chain_v2(
         &self,
         session: &RoomSession,
         from_epoch: Option<u32>,
         limit: Option<u32>,
         signer_did: &str,
         private_key_multibase: &str,
-    ) -> Result<ChainResponse, VtcError> {
+    ) -> Result<trust_tasks_rs::specs::rooms::epoch::chain::v0_2::Response, VtcError> {
         let mut payload = serde_json::json!({
             "roomId": session.room_id,
             "presentation": session.presentation,
@@ -375,7 +423,7 @@ impl VtcClient {
         }
         let value = self
             .room_task(
-                ROOMS_EPOCH_CHAIN_TYPE,
+                ROOMS_EPOCH_CHAIN_V2_TYPE,
                 payload,
                 signer_did,
                 private_key_multibase,
@@ -383,7 +431,48 @@ impl VtcClient {
             .await?;
         serde_json::from_value(value).map_err(|e| VtcError::Http {
             status: 200,
-            body: format!("chain response is not a ChainResponse: {e}"),
+            body: format!("chain response is not a rooms/epoch/chain/0.2 response: {e}"),
+        })
+    }
+
+    /// Fetch the commits a member missed, from the host's relay.
+    ///
+    /// `since_epoch` is the **room** epoch this member's key holder is at; the host
+    /// returns the commits above it, in ascending order and with no gaps, each
+    /// tagged with the room epoch it produced. Apply them in order to the key
+    /// holder's group (`rooms/keys/commit`, whose `epoch` is the MLS epoch — one
+    /// less). The response's `room_epoch` is where the room is now: a member who
+    /// applies everything served and is still behind knows a delivery is missing.
+    ///
+    /// Gated on `read` at the host. Relaying commits is safe on every tier: a
+    /// commit opens nothing for a party outside the group.
+    pub async fn epoch_commits(
+        &self,
+        session: &RoomSession,
+        since_epoch: u32,
+        limit: Option<u32>,
+        signer_did: &str,
+        private_key_multibase: &str,
+    ) -> Result<CommitsResponse, VtcError> {
+        let mut payload = serde_json::json!({
+            "roomId": session.room_id,
+            "sinceEpoch": since_epoch,
+            "presentation": session.presentation,
+        });
+        if let Some(l) = limit {
+            payload["limit"] = serde_json::json!(l);
+        }
+        let value = self
+            .room_task(
+                ROOMS_EPOCH_COMMITS_TYPE,
+                payload,
+                signer_did,
+                private_key_multibase,
+            )
+            .await?;
+        serde_json::from_value(value).map_err(|e| VtcError::Http {
+            status: 200,
+            body: format!("commits response is not a CommitsResponse: {e}"),
         })
     }
 
@@ -540,23 +629,86 @@ impl VtcClient {
         signer_did: &str,
         private_key_multibase: &str,
     ) -> Result<serde_json::Value, VtcError> {
-        let doc = vta_sdk::trust_task_sign::build_signed(
-            type_uri,
-            payload,
-            signer_did,
-            private_key_multibase,
-            &self.vtc_did,
-        )
-        .await
-        .map_err(|e| VtcError::Signing(e.to_string()))?;
+        let retries = if is_room_read(type_uri) {
+            READ_RATE_LIMIT_ATTEMPTS - 1
+        } else {
+            0
+        };
+        let mut attempt = 0;
+        let resp = loop {
+            // Signed afresh for every attempt: a document's `id` is spent once it runs, and
+            // a read is only ever retried because the host refused it before it ran.
+            let doc = vta_sdk::trust_task_sign::build_signed(
+                type_uri,
+                payload.clone(),
+                signer_did,
+                private_key_multibase,
+                &self.vtc_did,
+            )
+            .await
+            .map_err(|e| VtcError::Signing(e.to_string()))?;
 
-        let resp = self
+            let resp = self.post_room_document(doc).await?;
+            if resp.status() == reqwest::StatusCode::TOO_MANY_REQUESTS
+                && attempt < retries
+                && let Some(wait) = rate_limit_wait(resp.headers())
+            {
+                attempt += 1;
+                tokio::time::sleep(wait).await;
+                continue;
+            }
+            break resp;
+        };
+        Self::room_response_payload(resp).await
+    }
+
+    /// Send a `rooms/*` document that is **already signed** — one the member's own VTA
+    /// completed as the member with `rooms/keys/act` — and return its response payload.
+    ///
+    /// The document goes as it is: nothing here signs, and nothing here adds a credential.
+    /// A read refused for its rate is sent again unchanged, which is sound because the host
+    /// refused it before it ran, so its `id` is not spent.
+    pub async fn send_signed_room_document(
+        &self,
+        document: &serde_json::Value,
+    ) -> Result<serde_json::Value, VtcError> {
+        let type_uri = document
+            .get("type")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default();
+        let retries = if is_room_read(type_uri) {
+            READ_RATE_LIMIT_ATTEMPTS - 1
+        } else {
+            0
+        };
+        let body = serde_json::to_string(document).map_err(|e| VtcError::Url(e.to_string()))?;
+        let mut attempt = 0;
+        let resp = loop {
+            let resp = self.post_room_document(body.clone()).await?;
+            if resp.status() == reqwest::StatusCode::TOO_MANY_REQUESTS
+                && attempt < retries
+                && let Some(wait) = rate_limit_wait(resp.headers())
+            {
+                attempt += 1;
+                tokio::time::sleep(wait).await;
+                continue;
+            }
+            break resp;
+        };
+        Self::room_response_payload(resp).await
+    }
+
+    async fn post_room_document(&self, body: String) -> Result<reqwest::Response, VtcError> {
+        Ok(self
             .http
             .post(format!("{}/trust-tasks", self.base_url))
             .header("content-type", "application/json")
-            .body(doc)
+            .body(body)
             .send()
-            .await?;
+            .await?)
+    }
+
+    async fn room_response_payload(resp: reqwest::Response) -> Result<serde_json::Value, VtcError> {
         if !resp.status().is_success() {
             let status = resp.status().as_u16();
             let body = resp.text().await.unwrap_or_default();
@@ -573,9 +725,129 @@ impl VtcClient {
     }
 }
 
+/// Attempts a room read makes, the first included, when the host answers `429`.
+const READ_RATE_LIMIT_ATTEMPTS: usize = 5;
+
+/// The longest `Retry-After` a room read waits out. A longer one is returned to the
+/// caller as the `429` it is, rather than turned into a stall the host chooses.
+const MAX_READ_RETRY_AFTER: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Whether `type_uri` is a room task that only reads, so repeating it after a `429` cannot
+/// do anything twice. Writes are never retried here: retry has one owner per failure
+/// domain, and a write's is the caller.
+///
+/// `rooms/blobs/get` is here although it opens a download: repeating it opens a second,
+/// which expires unused, and a refused attempt opened nothing.
+/// The `rooms/epoch/prune/0.2` payload: room, floor, the session's presentation, and the
+/// reason when one is given (the only record of intent a prune leaves).
+fn prune_payload(
+    session: &RoomSession,
+    before_epoch: u32,
+    reason: Option<&str>,
+) -> serde_json::Value {
+    let mut payload = serde_json::json!({
+        "roomId": session.room_id,
+        "beforeEpoch": before_epoch,
+        "presentation": session.presentation,
+    });
+    if let Some(r) = reason {
+        payload["reason"] = serde_json::json!(r);
+    }
+    payload
+}
+
+fn is_room_read(type_uri: &str) -> bool {
+    use trust_tasks_rs::Payload as _;
+    use trust_tasks_rs::specs::rooms;
+    [
+        ROOMS_RECORDS_GET_V2_TYPE,
+        ROOMS_RECORDS_LIST_TYPE,
+        ROOMS_EPOCH_CHAIN_V2_TYPE,
+        ROOMS_EPOCH_COMMITS_TYPE,
+        rooms::records::list::v0_2::Payload::TYPE_URI,
+        rooms::blobs::get::v0_2::Payload::TYPE_URI,
+        rooms::blobs::chunk::v0_1::Payload::TYPE_URI,
+        rooms::info::v0_1::Payload::TYPE_URI,
+        rooms::info::v0_2::Payload::TYPE_URI,
+        rooms::records::list::v0_3::Payload::TYPE_URI,
+    ]
+    .contains(&type_uri)
+}
+
+/// How long a `429` asks to be waited out, when that is short enough to wait: its
+/// `Retry-After` (`vta_sdk::rate_limit`'s parse, so both forms are read), at least a
+/// second when it names none. `None` past [`MAX_READ_RETRY_AFTER`].
+fn rate_limit_wait(headers: &reqwest::header::HeaderMap) -> Option<std::time::Duration> {
+    let now = chrono::Utc::now();
+    let wait = headers
+        .get(vta_sdk::rate_limit::RETRY_AFTER_HEADER)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| vta_sdk::rate_limit::parse_retry_after(v, now))
+        .map_or(std::time::Duration::from_secs(1), |at| {
+            (at - now).to_std().unwrap_or_default()
+        });
+    (wait <= MAX_READ_RETRY_AFTER).then_some(wait)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_room_reads_are_retried() {
+        use trust_tasks_rs::Payload as _;
+        use trust_tasks_rs::specs::rooms;
+        assert!(is_room_read(ROOMS_RECORDS_GET_V2_TYPE));
+        assert!(is_room_read(rooms::blobs::chunk::v0_1::Payload::TYPE_URI));
+        for write in [
+            ROOMS_CREATE_V2_TYPE,
+            ROOMS_RECORDS_PUT_V3_TYPE,
+            ROOMS_EPOCH_MINT_TYPE,
+            ROOMS_EPOCH_PRUNE_V2_TYPE,
+            ROOMS_RECORDS_CURATE_TYPE,
+            rooms::blobs::upload::chunk::v0_2::Payload::TYPE_URI,
+            rooms::blobs::upload::commit::v0_2::Payload::TYPE_URI,
+        ] {
+            assert!(!is_room_read(write), "{write} is a write");
+        }
+    }
+
+    /// The prune payload is exactly what the published schema reads: the generated
+    /// type parses it, with the floor, the reason and the presentation intact.
+    #[test]
+    fn a_prune_payload_is_the_generated_wire_type() {
+        use trust_tasks_rs::specs::rooms::epoch::prune::v0_2 as prune;
+        let session = RoomSession::new("did:key:zRoom", "vmc", vec!["vac".into()]).unwrap();
+
+        let with = prune_payload(&session, 5, Some("retention window"));
+        let parsed: prune::Payload = serde_json::from_value(with.clone()).expect("schema-valid");
+        assert_eq!(parsed.before_epoch, 5);
+        assert_eq!(parsed.room_id, "did:key:zRoom");
+        assert_eq!(parsed.presentation.membership, "vmc");
+        assert_eq!(parsed.presentation.authority, vec!["vac".to_string()]);
+        assert_eq!(with["reason"], "retention window");
+
+        let without = prune_payload(&session, 2, None);
+        assert!(
+            without.get("reason").is_none(),
+            "absent, not null: {without}"
+        );
+        serde_json::from_value::<prune::Payload>(without).expect("reason is optional");
+    }
+
+    #[test]
+    fn a_short_retry_after_is_waited_and_a_long_one_is_not() {
+        let mut h = reqwest::header::HeaderMap::new();
+        h.insert("retry-after", "3".parse().unwrap());
+        let wait = rate_limit_wait(&h).unwrap();
+        assert!((2..=3).contains(&wait.as_secs()), "{wait:?}");
+        h.insert("retry-after", "3600".parse().unwrap());
+        assert_eq!(rate_limit_wait(&h), None);
+        assert_eq!(
+            rate_limit_wait(&reqwest::header::HeaderMap::new()),
+            Some(std::time::Duration::from_secs(1))
+        );
+    }
 
     #[test]
     fn a_session_requires_a_chain() {

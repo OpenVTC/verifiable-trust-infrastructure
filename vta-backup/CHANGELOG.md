@@ -2,6 +2,84 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.25.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-backup-v0.24.0...vta-backup-v0.25.0) — 2026-10-26
+
+
+### Added
+
+- **vta**: Did:scid:vh:1 identities, create/1.2, and VTA/VTC presentation config ([#2257](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2257))
+
+* feat(vta-sdk): did:scid:vh:1 identity rules and did:scid secret kids (VTI-KEY-160 to VTI-KEY-164)
+
+
+
+## [0.24.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-backup-v0.23.0...vta-backup-v0.24.0) — 2026-10-18
+
+
+## [0.23.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-backup-v0.22.0...vta-backup-v0.23.0) — 2026-10-18
+
+
+## [0.22.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-backup-v0.21.0...vta-backup-v0.22.0) — 2026-10-16
+
+
+## [0.21.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-backup-v0.20.0...vta-backup-v0.21.0) — 2026-10-15
+
+
+### Added
+
+- **vta**: Vta/witness/{open,present,accept} — the VTA is its principal's witnessed party, the client carries the documents ([#1068](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1068)) ([#2123](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2123))
+
+The VTA side of witnessing (P3), per trustoverip/dtgwg-trust-tasks-tf#779
+  (rules in vta/_shared/0.5/CONVENTIONS.md). A witness checks that each
+  document's transport-proven sender is its issuer and replies to that sender,
+  and the relationship DID's one mediator socket belongs to the client holding
+  the relationship, so the VTA builds, signs and verifies while the client
+  carries every document. The VTA never contacts the witness and never signs as
+  itself. vta/witness/request/0.1 is retired upstream and not implemented.
+
+  - open: key custody for the relationship DID (and the member DID) in the
+    caller's contexts, distinct DIDs, the VRC/VMC by vault handle, the
+    member-link carriage and witness resolution, all checked before anything is
+    disclosed. Returns the witness/session document signed as the relationship
+    DID and opens a session record.
+  - present: checks the handed-back session #response against the record (type,
+    issuer = witness, recipient = relationship DID, thread, witness proof)
+    through VerifiedWitnessAnswer, re-reads the bound credentials, and returns
+    the signed witness/session/submit. Under the member link that carries a
+    member presentation in ext["org.openvtc.witness"].memberPresentation.
+  - accept: checks the submit #response the same way, then verifies the VWC as
+    a VerifiedWitnessOutcome: witness issuer and assertionMethod proof,
+    taskContext and task digest over the session document, subject and object
+    digest, vwcDigestMultibase. Stores the VWC in the relationship key's context
+    with both evidence documents (vault tags witness:session / witness:outcome).
+    A repeated accept of the same outcome is answered again and stores nothing.
+
+  The session record lives in a new keyspace, witness_sessions: encrypted,
+  excluded from backup, cascades on DID delete, swept by the storage thread. It
+  moves opened -> presented -> accepted with compare-and-set transitions.
+  sessionUnknown is one answer for unknown, expired, out-of-scope and
+  wrong-state sessions.
+
+  Supporting changes:
+
+  - Capability::WitnessRequest (witness-request) is derived by admin and
+    initiator, never by application, and is not satisfied by sign.
+  - persona_key_for gains a did:peer arm: the document is derived with no I/O,
+    and its methods are matched against key records in the caller's contexts.
+  - New [witness] config: session_ttl_secs and member_link_witnesses.
+  - retry_safety: all three RetrySafe.
+  - vta-mcp guard: open and present are Sensitive, accept is Mutating.
+  - SDK: VtaClient::witness_{open,present,accept}.
+  - trust-tasks-rs floor raised to 0.31.7.
+
+
+
+## [0.20.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-backup-v0.19.0...vta-backup-v0.20.0) — 2026-10-13
+
+
+## [0.19.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-backup-v0.18.0...vta-backup-v0.19.0) — 2026-10-12
+
+
 ## [0.18.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-backup-v0.17.0...vta-backup-v0.18.0) — 2026-10-11
 
 

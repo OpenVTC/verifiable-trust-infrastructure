@@ -1,0 +1,35 @@
+{
+  "schemaVersion": 1,
+  "name": "vtc-group",
+  "kind": "group",
+  "description": "A community group's own identity (vtc/groups/create). The community's VTA mints and holds it; the community never does. The group's DID issues its members' membership credentials, under an authorization credential the community issues it, so a verifier chains member → group → community. The document carries a signing key (assertion and authentication) and a key-agreement key, and nothing else: no service, because nothing delivers messages to a group yet (group messaging adds one by a DID update), and no name, description or label, so resolving the DID reveals nothing about the group. did:webvh rather than did:peer, so the group's keys can rotate and a DID update can add a service. WITNESSES is recommended where the DID host is not fully trusted.",
+  "methods": ["webvh"],
+  "requiredVars": ["WEBVH_SERVER"],
+  "optionalVars": {
+    "WITNESSES": []
+  },
+  "document": {
+    "@context": [
+      "https://www.w3.org/ns/did/v1",
+      "https://www.w3.org/ns/cid/v1"
+    ],
+    "id": "{DID}",
+    "verificationMethod": [
+      {
+        "id": "{DID}#key-1",
+        "type": "Multikey",
+        "controller": "{DID}",
+        "publicKeyMultibase": "{SIGNING_KEY_MB}"
+      },
+      {
+        "id": "{DID}#key-2",
+        "type": "Multikey",
+        "controller": "{DID}",
+        "publicKeyMultibase": "{KA_KEY_MB}"
+      }
+    ],
+    "assertionMethod": ["{DID}#key-1"],
+    "authentication": ["{DID}#key-1"],
+    "keyAgreement": ["{DID}#key-2"]
+  }
+}

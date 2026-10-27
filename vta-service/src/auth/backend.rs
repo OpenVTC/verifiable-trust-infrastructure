@@ -141,7 +141,7 @@ impl AuthBackend for VtaAuthBackend {
         {
             let config = self.state.config.read().await;
             if let Some(ref allowed) = config.tee.allowed_did_methods {
-                let did_ok = allowed.iter().any(|prefix| did.starts_with(prefix));
+                let did_ok = did_method_allowed(allowed, did);
                 if !did_ok {
                     tracing::warn!(%did, "auth rejected: DID method not in allowed_did_methods");
                     return Err(AuthError::DidMethodRejected.into());
@@ -283,6 +283,57 @@ mod tests {
         assert!(matches!(
             device_access_gate(&entry),
             Err(AppError::Forbidden(_))
+        ));
+    }
+}
+
+/// Whether `did` passes a TEE `allowed_did_methods` prefix list.
+///
+/// A `did:scid:vh:1` identity is verified by a `did:webvh` log (VTI-KEY-001,
+/// VTI-KEY-161), so a list admitting `did:webvh` admits it too; a list naming
+/// `did:scid` admits it by its own prefix. Nothing else widens.
+#[cfg_attr(not(feature = "tee"), allow(dead_code))]
+fn did_method_allowed(allowed: &[String], did: &str) -> bool {
+    allowed.iter().any(|prefix| {
+        did.starts_with(prefix.as_str())
+            || (did.starts_with(vta_sdk::did_scid::SCID_VH_PREFIX)
+                && prefix.trim_end_matches(':') == "did:webvh")
+    })
+}
+
+#[cfg(test)]
+mod did_method_allowlist_tests {
+    use super::did_method_allowed;
+
+    #[test]
+    fn webvh_admits_its_scid_form() {
+        let allowed = vec!["did:key".to_string(), "did:webvh".to_string()];
+        assert!(did_method_allowed(&allowed, "did:webvh:Qm:example.com"));
+        assert!(did_method_allowed(&allowed, "did:scid:vh:1:Qm"));
+        assert!(did_method_allowed(
+            &allowed,
+            "did:scid:vh:1:Qm?src=example.com"
+        ));
+        assert!(!did_method_allowed(
+            &allowed,
+            "did:scid:ke:1:Qm?src=example.com"
+        ));
+        assert!(!did_method_allowed(&allowed, "did:peer:2.Ez"));
+    }
+
+    #[test]
+    fn without_webvh_scid_is_not_admitted() {
+        let allowed = vec!["did:key".to_string()];
+        assert!(!did_method_allowed(&allowed, "did:scid:vh:1:Qm"));
+        // A bare "did:" list admits everything already; "did:web" does not
+        // reach did:webvh's form by being shorter.
+        assert!(!did_method_allowed(
+            &["did:web:".to_string()],
+            "did:scid:vh:1:Qm"
+        ));
+        assert!(did_method_allowed(
+            &["did:scid".to_string()],
+            "did:scid:vh:1:Qm"
         ));
     }
 }

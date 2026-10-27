@@ -29,7 +29,7 @@ use crate::ceremony::{
     Presentation, Purpose, Verdict, VerifiedFacts, assemble_facts,
 };
 use crate::credentials::invitation_verify::{
-    ConsumedInvitation, mark_consumed, verify_presented_invitation,
+    ConsumedInvitation, mark_consumed, release_consumed, verify_presented_invitation,
 };
 use crate::credentials::vac::VAC_TYPE;
 use crate::credentials::vmc::VMC_TYPE;
@@ -150,7 +150,7 @@ impl From<SubmitRefusal> for AppError {
             ),
             SubmitRefusal::CriterionUnknown(digest) => AppError::Validation(format!(
                 "criterion {digest} names no join criterion this community publishes; read \
-                 vtc/join-requests/manifest/0.3 again and resubmit under a current one"
+                 vtc/join-requests/manifest/0.4 again and resubmit under a current one"
             )),
             SubmitRefusal::Challenge(r) => r.into(),
             SubmitRefusal::Other(e) => e,
@@ -369,8 +369,23 @@ pub async fn submit_inner(
     // carries them unverified — and every criterion reads the same result.
     // Peer vetting is counted under each criterion that asks for it.
     let now = chrono::Utc::now();
+    // Evidence a wallet presented into a session the applicant opened without a
+    // request is held for this submission (`wallet-session/start/0.1` consumer
+    // rule 11); each credential counts only toward its session's criterion.
+    let held =
+        crate::oid4vp::session::held_for(&state.oid4vp_sessions_ks, &applicant_did, now).await?;
+    let mut credentials =
+        criteria::verify_embedded_credentials(state, &applicant_did, &vp, now).await?;
+    for session in &held {
+        if let Some(evidence) = &session.evidence {
+            credentials.extend(criteria::presented_from_wallet(
+                &session.requirements_digest,
+                &evidence.credentials,
+            ));
+        }
+    }
     let presented = Presented {
-        credentials: criteria::verify_embedded_credentials(state, &applicant_did, &vp, now).await?,
+        credentials,
         invitation: invitation.clone(),
         vp: Some(vp.clone()),
         extensions: extensions.clone(),
@@ -434,7 +449,51 @@ pub async fn submit_inner(
             "vetting facts not recorded for a decided join request"
         );
     }
+    // The held evidence for the criterion this was decided under is now this
+    // request's: recorded on it, and its sessions bound to it. Evidence for
+    // other criteria stays held.
+    let claimed: Vec<String> = held
+        .iter()
+        .filter(|s| s.requirements_digest == governing.fact.requirements_digest)
+        .map(|s| s.id.clone())
+        .collect();
+    if !claimed.is_empty() {
+        record_wallet_evidence(state, outcome.request.id, &claimed, now).await;
+    }
     Ok(outcome)
+}
+
+/// Bind held wallet sessions to `request_id` and record their evidence on it.
+/// After the request is durable, and best effort, as the criterion record is:
+/// the decision already stands on this evidence.
+async fn record_wallet_evidence(
+    state: &AppState,
+    request_id: Uuid,
+    session_ids: &[String],
+    now: chrono::DateTime<chrono::Utc>,
+) {
+    let bound = match crate::oid4vp::session::bind_to_request(
+        &state.oid4vp_sessions_ks,
+        session_ids,
+        request_id,
+        now,
+    )
+    .await
+    {
+        Ok(bound) => bound,
+        Err(e) => {
+            warn!(request = %request_id, error = %e, "wallet sessions not bound to a join request");
+            return;
+        }
+    };
+    for session in bound {
+        if let Some(item) = session.evidence_item()
+            && let Err(e) =
+                super::storage::add_wallet_evidence(&state.join_requests_ks, request_id, item).await
+        {
+            warn!(request = %request_id, error = %e, "wallet evidence not recorded on a join request");
+        }
+    }
 }
 
 /// Assemble verified join [`Facts`] from a `presentation` and run the active
@@ -571,9 +630,48 @@ async fn apply_verdict_to_request(
                 publish_consent: request.registry_consent,
                 label: None,
             };
-            if let EffectOutcome::Admitted(creds) =
-                execute::apply(state, plan, applicant_did).await?
+            // Claim a single-use invitation *before* admitting on it. The
+            // verdict was decided over an `invitation.consumed` read earlier,
+            // so two redeems of one invitation racing here both saw it
+            // unconsumed; burning it only after the admission let both be
+            // admitted. `mark_consumed` is an atomic insert-if-absent, so
+            // exactly one wins, and the loser is admitted on nothing. A failed
+            // admission gives the claim back, so the invitee can retry.
+            let claimed = match consume_invitation_id.as_deref() {
+                Some(vic_id) => {
+                    let record = ConsumedInvitation {
+                        applicant: applicant_did.to_string(),
+                        consumed_at: chrono::Utc::now(),
+                        via_join_request_id: request.id.to_string(),
+                    };
+                    if !mark_consumed(&state.consumed_invitations_ks, vic_id, &record).await? {
+                        warn!(
+                            vic_id = %vic_id,
+                            applicant = %applicant_did,
+                            "invitation consumed by a concurrent redeem; not admitting on it",
+                        );
+                        return Err(AppError::Conflict(
+                            "this invitation has already been redeemed".into(),
+                        ));
+                    }
+                    Some((vic_id, record))
+                }
+                None => None,
+            };
+            let applied = execute::apply(state, plan, applicant_did).await;
+            if !matches!(applied, Ok(EffectOutcome::Admitted(_)))
+                && let Some((vic_id, record)) = &claimed
             {
+                match release_consumed(&state.consumed_invitations_ks, vic_id, record).await {
+                    Ok(_) => {}
+                    Err(e) => warn!(
+                        vic_id = %vic_id,
+                        error = %e,
+                        "admission failed and the invitation claim could not be released",
+                    ),
+                }
+            }
+            if let EffectOutcome::Admitted(creds) = applied? {
                 // Deliver the issued VMC + role VAC to the applicant's wallet
                 // over DIDComm — mirrors the approve path. Best-effort: the
                 // credentials are already issued (and returned inline on the
@@ -611,30 +709,10 @@ async fn apply_verdict_to_request(
                 .await?;
                 admit = Some(creds);
 
-                // Burn a single-use invitation now that the admit succeeded. The
+                // The invitation was burned before the admission (above); the
                 // `consumed` ledger row blocks a later re-redeem (e.g. re-join
-                // after leaving); best-effort — the member is already admitted,
-                // so a ledger write failure is logged, not fatal.
-                if let Some(vic_id) = consume_invitation_id.as_deref() {
-                    let record = ConsumedInvitation {
-                        applicant: applicant_did.to_string(),
-                        consumed_at: chrono::Utc::now(),
-                        via_join_request_id: request.id.to_string(),
-                    };
-                    match mark_consumed(&state.consumed_invitations_ks, vic_id, &record).await {
-                        Ok(true) => {}
-                        Ok(false) => warn!(
-                            vic_id = %vic_id,
-                            applicant = %applicant_did,
-                            "invitation was already consumed at admit time (concurrent redeem)",
-                        ),
-                        Err(e) => warn!(
-                            vic_id = %vic_id,
-                            error = %e,
-                            "failed to record invitation consumption; member admitted",
-                        ),
-                    }
-
+                // after leaving).
+                if claimed.is_some() {
                     // Flag the freshly-admitted member as invitation-joined so
                     // the admin UI can badge them. Best-effort metadata patch —
                     // the member + credentials already exist.
@@ -1191,7 +1269,7 @@ pub async fn supplement_inner(
             .await?
             .ok_or_else(not_found)?,
     };
-    let mut request = crate::join::storage::get_join_request(ks, id)
+    let request = crate::join::storage::get_join_request(ks, id)
         .await?
         .ok_or_else(not_found)?;
     if request.applicant_did != applicant_did {
@@ -1215,6 +1293,23 @@ pub async fn supplement_inner(
         }
     }
 
+    redecide(state, request, applicant_did, vp, extensions, transport).await
+}
+
+/// Re-decide a `Deferred` request on `vp` and `extensions`, which become its
+/// presentation, plus the wallet evidence recorded on it — the shared second
+/// half of [`supplement_inner`] and [`wallet_evidence_arrived`].
+async fn redecide(
+    state: &AppState,
+    mut request: JoinRequest,
+    applicant_did: &str,
+    vp: JsonValue,
+    extensions: JsonValue,
+    transport: JoinTransport,
+) -> Result<JoinSubmitOutcome, SupplementRefusal> {
+    let ks = &state.join_requests_ks;
+    let id = request.id;
+    let previous_status = request.status;
     let audit_writer = state
         .audit_writer
         .as_ref()
@@ -1251,8 +1346,17 @@ pub async fn supplement_inner(
     // supplement answers what that criterion still lacked.
     let now = chrono::Utc::now();
     let recorded = super::storage::get_criterion(ks, id).await?;
+    // Wallet evidence recorded on the request stays with it: it is not part of
+    // the presentation a supplement replaces.
+    let mut credentials =
+        criteria::verify_embedded_credentials(state, applicant_did, &vp, now).await?;
+    credentials.extend(
+        super::storage::get_wallet_evidence(ks, id)
+            .await?
+            .presented(),
+    );
     let presented = Presented {
-        credentials: criteria::verify_embedded_credentials(state, applicant_did, &vp, now).await?,
+        credentials,
         invitation: invitation.clone(),
         vp: Some(vp.clone()),
         extensions: extensions.clone(),
@@ -1369,6 +1473,61 @@ pub async fn supplement_inner(
         "join request supplemented"
     );
     Ok(JoinSubmitOutcome { request, admit })
+}
+
+/// A wallet answered a session bound to a join request: record its evidence on
+/// the request, and decide again if the request is waiting on the applicant
+/// (`wallet-session/start/0.1` consumer rule 11).
+///
+/// - `Deferred`: re-decided as a supplement is, on the request's own
+///   presentation plus every wallet evidence recorded on it, under the
+///   criterion it was decided under. The wallet evidence is what the request
+///   was deferred for, so this is the step that can admit it.
+/// - `Pending`: recorded for the reviewer, not decided. A maintainer is
+///   reviewing what is there, and is not overruled underneath (the reason
+///   `supplement` refuses a pending request).
+/// - Decided or withdrawn, or no longer the applicant's: nothing is recorded.
+///   The session keeps its outcome for the status poll.
+///
+/// The session was bound to the request, and the request checked as the
+/// applicant's, when it opened; both are checked again here, against the
+/// request as it is now.
+pub async fn wallet_evidence_arrived(
+    state: &AppState,
+    session: &crate::oid4vp::session::WalletSession,
+) -> Result<Option<JoinSubmitOutcome>, AppError> {
+    let (Some(request_id), Some(item)) = (session.request_id, session.evidence_item()) else {
+        return Ok(None);
+    };
+    let ks = &state.join_requests_ks;
+    let Some(request) = super::storage::get_join_request(ks, request_id).await? else {
+        return Ok(None);
+    };
+    if request.applicant_did != session.applicant_did
+        || !matches!(request.status, JoinStatus::Pending | JoinStatus::Deferred)
+    {
+        return Ok(None);
+    }
+    super::storage::add_wallet_evidence(ks, request_id, item).await?;
+    if request.status != JoinStatus::Deferred {
+        info!(request = %request_id, session = %session.id,
+            "wallet evidence recorded on a pending join request for its reviewer");
+        return Ok(None);
+    }
+    let applicant = request.applicant_did.clone();
+    let vp = request.vp.clone();
+    let extensions = request.extensions.clone();
+    redecide(
+        state,
+        request,
+        &applicant,
+        vp,
+        extensions,
+        JoinTransport::Rest,
+    )
+    .await
+    .map(Some)
+    .map_err(AppError::from)
 }
 
 /// Close an applicant's own open join request.

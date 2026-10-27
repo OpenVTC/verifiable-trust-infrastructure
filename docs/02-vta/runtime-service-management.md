@@ -111,6 +111,76 @@ After first enable succeeds, the VTA sends the Trust Task response and performs
 a delayed soft restart to replace the transient handshake socket with the
 persistent messaging runtime.
 
+### DIDComm enable restart and readiness
+
+`services didcomm enable` is the one service-management operation that starts a
+new persistent messaging runtime. The operation first writes and publishes the
+DID document change, then returns its response with
+`ext["org.openvtc"].restarting = true`. The VTA requests its restart only after
+the response has reached the transport send boundary, so the response is not
+normally lost when the old generation shuts down.
+
+There are two deliberate timeout layers:
+
+- **Server restart backstop: 30 seconds.** The restart gate fires immediately
+  after the reply send completes. The 30-second backstop is only a safety net
+  for a handler or transport path that requests a restart but never reaches
+  its normal send completion. Its current value matches the TSP reply budget:
+  10 seconds for peer-mediator lookup plus 20 seconds for rate-limit retries.
+  It is a failsafe, not a strict guarantee that every unusually slow DIDComm
+  send will finish before teardown. The backstop is cancelled when the normal
+  send path fires the gate.
+- **PNM readiness wait: 300 seconds by default.** When the response says the
+  VTA is restarting, `pnm services didcomm enable` sends trust-pings until the
+  restarted listener answers or the client deadline expires. Use
+  `--wait-secs <seconds>` to choose another client deadline, or `--no-wait` to
+  return after the enable response without polling:
+
+  ```bash
+  pnm services didcomm enable --mediator-did <did> --wait-secs 120
+  pnm services didcomm enable --mediator-did <did> --no-wait
+  ```
+
+  The PNM default is intentionally fixed at 300 seconds and is not read from
+  the VTA's `[mediator_readiness].max_wait_secs`. Deployments that configure a
+  longer server readiness horizon must use `--wait-secs` or `--no-wait` and
+  check readiness separately. When the wait expires, the likely cause is that
+  the VTA's self-DID readiness gate still cannot resolve the VTA DID over the
+  network.
+
+The readiness probe opens **one** trust-ping session for the whole wait and
+pings the VTA through it until a pong arrives or the deadline expires, closing
+it on every exit path. A successful pong confirms that the new listener is
+reachable through the configured mediator; it does not prove that unrelated
+Trust Tasks already in flight completed.
+
+Opening that session also opens **PNM's own** allow-all account on the
+mediator. `--setup-acl` provisions the *VTA's* account, which is what lets the
+VTA receive; the pong travels the other way as a forwarded delivery, and a
+mediator that refuses those by default drops it unless the client's account
+accepts it too. Without this the readiness poll against a closed-ACL mediator
+runs the full deadline and fails, while `pnm health` — which has always
+provisioned its own account before pinging — succeeds immediately afterwards.
+
+Reusing one session is also what keeps the probe windows honest: a session
+costs roughly four seconds of TDK, ATM, profile and websocket setup, which a
+per-probe session would spend out of each ten-second window rather than once
+per wait. It avoids repeatedly reclaiming the client DID's single mediator
+socket, and it means a timed-out probe cancels only the ping, never the
+session that owns the connection.
+
+The restart is intentionally soft and scoped. It reloads the next generation's
+configuration and recreates the persistent messaging runtime, but it does not
+drain every unrelated in-flight Trust Task before tearing down the old
+generation. The Trust Task that requested the restart is protected by the
+reply ordering above; other in-flight work may still be interrupted and must
+be retried according to its normal idempotency and delivery semantics.
+
+`services tsp enable` and REST/WebAuthn service mutations do not trigger this
+DIDComm-enable restart flow. Runtime REST listener changes remain process-life
+time, and TSP enablement is intentionally outside this first-enable restart
+scope.
+
 ## Recovery: the mediator is unreachable
 
 DIDComm is the preferred transport, so `pnm` picks it whenever the

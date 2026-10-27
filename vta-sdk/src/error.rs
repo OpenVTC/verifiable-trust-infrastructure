@@ -4,6 +4,7 @@ pub use crate::rate_limit::RateLimitSource;
 
 /// Errors returned by VTA SDK client operations.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum VtaError {
     /// Network-level error (connection refused, timeout, DNS failure).
     #[cfg(feature = "client")]
@@ -101,6 +102,27 @@ pub enum VtaError {
     #[error("protocol error: {0}")]
     Protocol(String),
 
+    /// The peer refused a Trust Task with a code no more specific variant
+    /// covers — a task's own declared error (`persona/profile/delete:bound`,
+    /// `…:versionConflict`) or a framework code such as `taskFailed` with no
+    /// recognised `details.reason`.
+    ///
+    /// Kept as data rather than folded into [`Self::Protocol`]: `code` is
+    /// what a caller matches on, and `details` is what the peer sent with it
+    /// (the DIDs wearing a bound face, the current version of a record), which
+    /// a caller may need to act on and could not recover from a sentence.
+    /// `Display` is the text this case rendered as when it was a `Protocol`,
+    /// so logs and CLI output are unchanged.
+    #[error("trust task failed [{code}]: {message}")]
+    Rejected {
+        /// The rejection's `code`, as sent.
+        code: String,
+        /// The rejection's `message`, as sent.
+        message: String,
+        /// The rejection's `details`, as sent; `None` when it carried none.
+        details: Option<serde_json::Value>,
+    },
+
     /// The task needs a human approval that has not been given yet.
     ///
     /// Structured rather than folded into [`Self::Protocol`] because a caller
@@ -188,7 +210,10 @@ pub enum VtaError {
     /// advertised set (in preference order) so the CLI can show the operator
     /// what each offers and which transport to enable. Determined locally by
     /// [`crate::protocol::matching::select_protocol`] after resolving the
-    /// peer's DID document — never a server-returned wire error.
+    /// peer's DID document — or returned by a VTA that could not reach a peer
+    /// of its own on the client's behalf (`details.reason`
+    /// `no_matching_protocol`, or a REST 502 carrying it), in which case
+    /// `ours` is what that VTA can initiate and `counterparty_did` its peer.
     #[error(
         "no transport protocol in common with {counterparty_did}: \
          we advertise {ours:?}, they advertise {theirs:?}"
@@ -321,6 +346,7 @@ pub enum VtaError {
 /// channel carries every typed-error wire form.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "code", rename_all = "kebab-case")]
+#[non_exhaustive]
 pub enum TypedErrorPayload {
     LastServiceRefused,
     ServiceNotPresent,
@@ -341,6 +367,34 @@ pub enum TypedErrorPayload {
 pub(crate) const TSP_REPLY_TIMEOUT_PREFIX: &str = "timed out waiting for the TSP reply";
 
 impl VtaError {
+    /// [`Self::NoMatchingProtocol`] from the members a VTA puts beside
+    /// `no_matching_protocol` — a Trust Task rejection's `details`, or a REST
+    /// 502 body: `counterpartyDid`, `ours`, `theirs`.
+    ///
+    /// `None` when `counterpartyDid` is absent. An unknown protocol name is
+    /// skipped rather than refusing the whole: a newer peer naming a transport
+    /// this SDK does not know still tells the operator about the ones it does.
+    pub fn no_matching_protocol_from(fields: &serde_json::Value) -> Option<Self> {
+        let counterparty_did = fields.get("counterpartyDid")?.as_str()?.to_string();
+        let set = |k: &str| -> Vec<crate::protocol::matching::Protocol> {
+            fields
+                .get(k)
+                .and_then(|v| v.as_array())
+                .map(|items| {
+                    items
+                        .iter()
+                        .filter_map(|p| serde_json::from_value(p.clone()).ok())
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+        Some(Self::NoMatchingProtocol {
+            counterparty_did,
+            ours: set("ours"),
+            theirs: set("theirs"),
+        })
+    }
+
     /// True for a TSP request that timed out waiting for its reply — the
     /// signature of a §7.2.2 silent drop (the peer dropped our frame because it
     /// holds no relationship with us). The self-repair path in
@@ -362,6 +416,17 @@ impl VtaError {
     /// should call [`Self::from_http_with_headers`].
     #[cfg(feature = "client")]
     pub fn from_http(status: reqwest::StatusCode, body: String) -> Self {
+        // A VTA that could not reach a peer on any shared transport answers
+        // 502 with the two sets in the body; the status alone would read as
+        // "the VTA broke".
+        if status == reqwest::StatusCode::BAD_GATEWAY
+            && let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&body)
+            && parsed.get("error").and_then(|e| e.as_str())
+                == Some(crate::protocols::trust_task_reject_reasons::NO_MATCHING_PROTOCOL)
+            && let Some(e) = Self::no_matching_protocol_from(&parsed)
+        {
+            return e;
+        }
         match status.as_u16() {
             429 => Self::RateLimited {
                 limited_by: RateLimitSource::Upstream,
@@ -567,6 +632,24 @@ impl VtaError {
         matches!(self, Self::NotFound(_))
     }
 
+    /// The code of a Trust Task rejection ([`Self::Rejected`]), as sent.
+    #[must_use]
+    pub fn rejection_code(&self) -> Option<&str> {
+        match self {
+            Self::Rejected { code, .. } => Some(code),
+            _ => None,
+        }
+    }
+
+    /// The `details` of a Trust Task rejection ([`Self::Rejected`]), as sent.
+    #[must_use]
+    pub fn rejection_details(&self) -> Option<&serde_json::Value> {
+        match self {
+            Self::Rejected { details, .. } => details.as_ref(),
+            _ => None,
+        }
+    }
+
     /// Operator-actionable hint matching this error variant.
     ///
     /// `None` for variants where no generic guidance applies (the message
@@ -602,10 +685,12 @@ impl VtaError {
                  `delete-then-create` flow rather than `create`.",
             ),
             Self::Unavailable { .. } => Some(
-                "The VTA is temporarily busy — this is a wait, not a failure. If the \
-                 request carried an idempotency key, an earlier attempt on that key is \
-                 still running: retry with the same key and the original result will be \
-                 returned rather than the operation repeated.",
+                "The VTA is temporarily busy — this is a wait, not a failure: the request \
+                 did not run. Over DIDComm or TSP the VTA may be at its operation budget \
+                 (`[server] operation_rate_limit_*`); retry after the wait. If the request \
+                 carried an idempotency key, an earlier attempt on that key may still be \
+                 running: retry with the same key and the original result will be returned \
+                 rather than the operation repeated.",
             ),
             Self::RateLimited { limited_by, .. } => {
                 Some(crate::rate_limit::suggested_fix(*limited_by))
@@ -695,6 +780,7 @@ impl VtaError {
             Self::NotFound(_)
             | Self::DidcommRemote { .. }
             | Self::Protocol(_)
+            | Self::Rejected { .. }
             | Self::Serialization(_)
             | Self::Other(_) => None,
         }

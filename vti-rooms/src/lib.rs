@@ -106,9 +106,33 @@ pub mod merkle;
 /// substantial dependency to make it carry.
 #[cfg(feature = "mls")]
 pub mod mls;
+/// A host's hook for "what a rooms administrator's reads show may have changed",
+/// behind the `host` feature.
+#[cfg(feature = "host")]
+pub mod observe;
+/// A room's own profile — where it is stored (`profile_key(E)`), how it is padded and the
+/// window its `issuedAt` must fall in (`rooms/_shared/0.1` `RoomProfileStatement`).
+pub mod profile;
+/// A record's provenance and expiry — what kind of claim it is, what it cites, what it may
+/// be used for, and when it lapses (trust-tasks-tf #865). Display and weighting, never
+/// authority; expiry is a reader's rule.
+pub mod provenance;
+/// A room's record retention, what it makes eligible, and the mark a prune leaves
+/// (trust-tasks-tf #868).
+pub mod record_retention;
+/// The record-retention tasks, host-neutral: `rooms/records/{prune,retention/set}` and what
+/// `rooms/create` 0.2, `rooms/info` 0.2 and `rooms/records/list` 0.3 add, behind `host`.
+#[cfg(feature = "host")]
+pub mod record_tasks;
 /// The epoch key chain that keeps a room readable across a membership change.
 #[cfg(feature = "mls")]
 pub mod retention;
+/// A room's revocation list: the room's signed withdrawals, how a host accepts one, and
+/// which presented credentials it refuses (`rooms/revocations/*`).
+pub mod revocation;
+/// The `rooms/revocations/{put,get}` tasks, host-neutral, behind the `host` feature.
+#[cfg(feature = "host")]
+pub mod revocation_tasks;
 #[cfg(feature = "mls")]
 pub mod sealed;
 /// The room and record keyspaces, behind the `host` feature.
@@ -131,6 +155,13 @@ pub const ROOM_RECORDS_KEYSPACE: &str = "room_records";
 ///
 /// Held by the host as opaque ciphertext it cannot read. See [`wire::EpochLink`].
 pub const ROOM_EPOCH_LINKS_KEYSPACE: &str = "room_epoch_links";
+
+/// Keyspace holding each room's revocation list — the latest one the room signed and an
+/// administrator delivered (`rooms/revocations/put`), with when this host began enforcing it.
+///
+/// Room state rather than host state, and it moves with the room: a host that loses it
+/// honours what the room withdrew. Back it up with the rooms it governs.
+pub const ROOM_REVOCATIONS_KEYSPACE: &str = "room_revocations";
 
 /// Whether a room keeps its history readable across a membership change.
 ///
@@ -171,10 +202,9 @@ pub enum RetentionPolicy {
     /// because a key they have read is a key they have. What this policy withholds is the
     /// means to derive one again — after a restart, on another device, or on joining.
     ///
-    /// Never reached by deserialisation, and not yet reachable over the wire: choosing it
-    /// needs a member on `rooms/create`, which is a spec change. It exists so that
-    /// [`links_epochs`](Self::links_epochs) has something to mean, and so a host that is one
-    /// day told a room does not chain refuses rungs for it rather than storing them anyway.
+    /// Never the default. Chosen at creation with `rooms/create`'s `retentionPolicy`
+    /// (`rooms/owner/register/0.2` passes it on), and a host then refuses rungs for the
+    /// room rather than storing ones it said it would not have.
     FromJoin,
 }
 
@@ -322,6 +352,30 @@ pub struct Room {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mirror_of: Option<String>,
 
+    /// How long the room keeps its records, by age — which records `rooms/records/prune`
+    /// may remove ([`record_retention::RecordRetention`]). Set at `rooms/create` 0.2,
+    /// replaced by `rooms/records/retention/set`; served by `rooms/info` 0.2.
+    ///
+    /// `None` — every room stored before this existed — means **no record is ever
+    /// eligible by age**, the reading a host must apply whenever it states none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub record_retention: Option<record_retention::RecordRetention>,
+
+    /// The room's latest record prune ([`record_retention::RecordPrune`]): served as
+    /// `lastPrune` on every listing page from `rooms/records/list` 0.3, and folded into
+    /// `headVersion` so a root before a prune and a root after it are never labelled alike.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_prune: Option<record_retention::RecordPrune>,
+
+    /// The room's **epoch floor** (`rooms/_shared/0.1` `EpochFloor`; trust-tasks-tf #869):
+    /// the earliest epoch whose key the room still lets anybody derive. Raised by every
+    /// `rooms/epoch/prune` (to `beforeEpoch − 1`, never lowered), served by
+    /// `rooms/epoch/chain` 0.2 so members' key holders forget what they hold below it, and
+    /// the reason this host never stores or serves a rung at or below it. `None` — every
+    /// room never pruned — is no floor.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub epoch_floor: Option<u32>,
+
     /// Unix-epoch seconds.
     pub created_at: u64,
     /// Unix-epoch seconds; bumped on epoch advance and on record writes.
@@ -368,6 +422,7 @@ pub enum AnchorCadence {
 /// Curation state of a record.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
+#[non_exhaustive]
 pub enum RecordStatus {
     /// Normal.
     Active,
@@ -422,6 +477,26 @@ pub struct Record {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub nonce: Option<String>,
 
+    /// The version `sealed` was sealed at — served as `sealed.version` where a curation has
+    /// since moved the record past it (rooms `_shared/0.1` `SealedRecord`).
+    ///
+    /// A curation MUST assign a new version (`rooms/records/curate/0.1`) and keeps the body
+    /// unless it retracts, but the body is bound — by the AEAD and by its author's signed
+    /// location — to the version it was written at. Without this, every curated sealed
+    /// record opened for nobody.
+    ///
+    /// Recorded when the body is **stored** ([`storage::put_record`]), never inferred later:
+    /// `None` means *not known*, not *equal to `version`*. A record a host stored before this
+    /// field existed carries `None`, and if that host had already curated it, its version
+    /// has moved past the body with nothing to say so — a curation stamping its version then
+    /// would name a version the body was never sealed at, and the record would open for
+    /// nobody again, this time with a host asserting the wrong answer. Left `None`, it is
+    /// served without `sealed.version` and readers search earlier versions for it. Also
+    /// `None` on a tombstone, on an `Open` room, and on a record read from the wire without
+    /// one ([`Record::from_wire`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sealed_version: Option<u64>,
+
     /// Cleartext content. Present only on an `Open` room.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cleartext: Option<serde_json::Value>,
@@ -441,7 +516,7 @@ pub struct Record {
 ///
 /// A value beyond what a timestamp can express renders as the epoch rather than panicking:
 /// a listing is a read path, and a corrupt stored time should not take the room down.
-fn rfc3339(unix_seconds: u64) -> String {
+pub(crate) fn rfc3339(unix_seconds: u64) -> String {
     chrono::DateTime::from_timestamp(unix_seconds as i64, 0)
         .unwrap_or_else(|| chrono::DateTime::from_timestamp(0, 0).expect("epoch is in range"))
         .to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
@@ -510,6 +585,9 @@ impl Record {
                 ciphertext: ciphertext.clone(),
                 nonce: nonce.clone(),
                 epoch,
+                // Only where it differs from the record's own: absent is "sealed here", so an
+                // uncurated record's commitment is the same as before this field existed.
+                version: self.sealed_version.filter(|v| *v != self.version),
             }),
             _ => None,
         };
@@ -570,6 +648,7 @@ impl Record {
             pinned: record.pinned,
             sealed: record.sealed.as_ref().map(|s| s.ciphertext.clone()),
             nonce: record.sealed.as_ref().map(|s| s.nonce.clone()),
+            sealed_version: record.sealed.as_ref().and_then(|s| s.version),
             cleartext: record.cleartext.clone(),
             author: record.author.clone(),
             updated_at,
@@ -579,6 +658,7 @@ impl Record {
 
 /// A wire record that could not be read back into a storage record.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum FromWireError {
     /// `updatedAt` was not an RFC 3339 timestamp, or named an instant before
     /// the epoch. Either way the record cannot be stored: a mirror that guessed

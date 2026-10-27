@@ -98,6 +98,12 @@ impl SessionStore for KeyspaceSessionStore {
         session::get_refresh_tombstone(&self.inner, refresh_token).await
     }
 
+    async fn pending_challenges(&self, did: &str) -> Result<Option<Vec<Session>>, Self::Error> {
+        session::list_pending_challenges(&self.inner, did)
+            .await
+            .map(Some)
+    }
+
     async fn count_pending_challenges(&self, did: &str) -> Result<usize, Self::Error> {
         session::count_pending_challenges(&self.inner, did).await
     }

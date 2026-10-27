@@ -140,9 +140,626 @@ body {
   color: var(--text-muted);
 }
 
+/* ── Data rooms ──────────────────────────────────────────── */
+
+.back {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  color: var(--text-muted);
+  text-decoration: none;
+  font-size: 0.9rem;
+}
+.back:hover {
+  color: var(--brand);
+}
+.room-title {
+  font-family: var(--font-mono, monospace);
+  font-size: clamp(1rem, 3vw, 1.4rem);
+}
+.small {
+  font-size: 0.85rem;
+}
+.error {
+  color: var(--danger);
+}
+.push {
+  margin-left: auto;
+}
+.actions {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  margin-top: 0.75rem;
+}
+.room-list,
+.record-list {
+  list-style: none;
+  margin: 0.75rem 0;
+  padding: 0;
+  display: grid;
+  gap: 0.4rem;
+}
+.room-list li,
+.record-list li {
+  display: grid;
+  gap: 0.15rem;
+  padding: 0.55rem 0.75rem;
+  background: var(--bg-subtle);
+  border-radius: var(--radius-md);
+  min-width: 0;
+}
+.record-list li.selected {
+  outline: 2px solid var(--brand);
+}
+.room-link {
+  color: var(--text);
+  text-decoration: none;
+}
+.room-name {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.room-link:hover {
+  color: var(--brand);
+}
+.record-link {
+  all: unset;
+  cursor: pointer;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+.record-link:focus-visible {
+  outline: 2px solid var(--brand);
+  outline-offset: 2px;
+}
+.field {
+  display: grid;
+  gap: 0.25rem;
+  margin-top: 0.75rem;
+}
+.field span {
+  color: var(--text-muted);
+  font-size: 0.9rem;
+}
+.field input:not([type="file"]),
+.field textarea {
+  font: inherit;
+  padding: 0.5rem 0.75rem;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+  min-width: 0;
+}
+.note-body {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  padding: 0.75rem;
+  margin: 0.75rem 0;
+  background: var(--bg-subtle);
+  border-radius: var(--radius-md);
+}
+.file-box {
+  margin-top: 0.75rem;
+  display: grid;
+  gap: 0.4rem;
+}
+.file-box p {
+  margin: 0;
+}
+/* Previews of verified room files: pictures in an <img>, text in a <pre>. */
+.thumb {
+  all: unset;
+  cursor: zoom-in;
+  justify-self: start;
+  margin-top: 0.35rem;
+}
+.thumb:focus-visible {
+  outline: 2px solid var(--brand);
+  outline-offset: 2px;
+}
+.thumb-img,
+.file-preview-img {
+  display: block;
+  object-fit: contain;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border);
+  background: var(--bg);
+}
+.thumb-img {
+  max-width: min(100%, 240px);
+  max-height: 140px;
+}
+.file-preview-img {
+  max-width: 100%;
+  max-height: 420px;
+  justify-self: start;
+}
+.thumb-loading {
+  display: grid;
+  place-items: center;
+  width: min(100%, 240px);
+  height: 100px;
+  margin-top: 0.35rem;
+  border-radius: var(--radius-md);
+  border: 1px dashed var(--border);
+  color: var(--text-muted);
+  font-size: 0.8rem;
+}
+.file-text {
+  margin: 0;
+  max-height: 320px;
+  overflow: auto;
+  padding: 0.75rem;
+  background: var(--bg-subtle);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  font-size: 0.85rem;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 @media (max-width: 30rem) {
   .facts div {
     grid-template-columns: 1fr;
     gap: 0.1rem;
   }
+}
+
+/* ── Directory ─────────────────────────────────────────────────────────── */
+.search {
+  display: flex;
+  gap: 0.5rem;
+  margin: 0 0 1.25rem;
+  flex-wrap: wrap;
+}
+.search input {
+  flex: 1 1 14rem;
+  min-width: 0;
+}
+.directory-grid {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0.75rem;
+  grid-template-columns: repeat(auto-fill, minmax(14rem, 1fr));
+}
+.directory-entry {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0.6rem;
+  color: var(--text);
+  text-decoration: none;
+  height: 100%;
+  transition:
+    border-color 120ms ease,
+    box-shadow 120ms ease,
+    transform 120ms ease;
+}
+.directory-entry:hover,
+.directory-entry:focus-visible {
+  border-color: var(--brand);
+  box-shadow: var(--shadow-card);
+  transform: translateY(-1px);
+}
+@media (prefers-reduced-motion: reduce) {
+  .directory-entry,
+  .directory-entry:hover {
+    transition: none;
+    transform: none;
+  }
+}
+.directory-entry-head {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  min-width: 0;
+}
+.directory-entry-names {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.directory-sub {
+  font-size: 0.875rem;
+}
+/* Two lines of a member's own words, never more. */
+.directory-bio {
+  color: var(--text-muted);
+  font-size: 0.9rem;
+  line-height: 1.4;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+.pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  margin-top: auto;
+}
+.nameless {
+  margin-top: 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  align-items: flex-start;
+}
+/* Initials on the member's own colour, when they show no picture. */
+.avatar-initials {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: #fff;
+  background: hsl(var(--avatar-hue, 250) 55% 45%);
+  user-select: none;
+}
+.field-picture {
+  border-radius: var(--radius-md);
+  object-fit: cover;
+}
+/* The way back. */
+.crumbs ol {
+  list-style: none;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  padding: 0;
+  margin: 0 0 1rem;
+  font-size: 0.9rem;
+}
+.crumbs li + li::before {
+  content: "›";
+  margin-right: 0.35rem;
+  color: var(--text-muted);
+}
+.crumbs [aria-current="page"] {
+  color: var(--text-muted);
+}
+/* One member's page. */
+.profile {
+  padding: 0;
+  overflow: hidden;
+}
+.profile-head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 1.25rem;
+  padding: 1.5rem;
+  background: linear-gradient(
+    135deg,
+    hsl(var(--avatar-hue, 250) 60% 50% / 0.16),
+    transparent 70%
+  );
+  border-bottom: 1px solid var(--border);
+}
+.profile-head .avatar {
+  box-shadow: 0 0 0 4px var(--bg-elev);
+}
+.profile-names {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  min-width: 0;
+  flex: 1;
+}
+.profile-names h1 {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.profile-sub,
+.profile-since {
+  margin: 0;
+}
+.profile-actions {
+  align-self: flex-start;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  justify-content: flex-end;
+}
+.profile-section {
+  padding: 1rem 1.5rem;
+}
+.profile-section + .profile-section {
+  border-top: 1px solid var(--border);
+}
+.profile-section h2 {
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+  margin: 0 0 0.5rem;
+}
+.profile-bio {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  line-height: 1.5;
+}
+.profile-links {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+.profile-links a {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  overflow-wrap: anywhere;
+}
+.did-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+}
+/* The member's own card, on the portal's home page. */
+.me-card {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+}
+.me-card-names {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  min-width: 0;
+}
+/* A member's picture: always a circle, never stretched. */
+.avatar {
+  border-radius: 50%;
+  object-fit: cover;
+  flex: none;
+}
+.picture-field {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+}
+.picture-field > p {
+  flex-basis: 100%;
+  margin: 0;
+}
+.directory-name {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.card-form {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+/* "Show every field to": a baseline set apart from the fields it sets. */
+.baseline-field {
+  padding-bottom: 0.75rem;
+  border-bottom: 1px solid var(--border);
+}
+.baseline-field .btn {
+  align-self: flex-start;
+}
+
+.card-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  border: 0;
+  margin: 0;
+  padding: 0;
+}
+.card-field legend {
+  font-weight: 600;
+  margin-bottom: 0.25rem;
+}
+.card-field textarea {
+  min-height: 5rem;
+}
+
+/* The home page greets the member by name, with their picture. */
+.welcome-personal {
+  display: flex;
+  align-items: center;
+  gap: 1.25rem;
+}
+
+/* Groups. */
+.group-tile {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  text-decoration: none;
+  color: inherit;
+}
+.group-tile-name {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+  font-size: 1.05rem;
+}
+.group-actions {
+  margin: 16px 0;
+}
+
+/* Repositories. */
+.pill-warn {
+  color: var(--warning);
+  background: color-mix(in srgb, var(--warning) 12%, transparent);
+}
+.repo-list {
+  list-style: none;
+  padding: 0;
+  margin: 0 0 1.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.repo-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 16px;
+}
+.repo-row > .btn {
+  margin-left: auto;
+}
+.repo-name {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  overflow-wrap: anywhere;
+}
+.repo-grants {
+  flex-basis: 100%;
+  margin: 0;
+  padding-left: 1.25rem;
+}
+
+/* A notice, not a failure: what happened and what to do next, in the brand's
+   colour rather than `.alert`'s danger. */
+.vtc-signin .alert.alert-info {
+  border-color: color-mix(in srgb, var(--brand) 40%, var(--border));
+  background: color-mix(in srgb, var(--brand) 8%, var(--bg-elev));
+}
+
+/* ── A room: the list on the left, what you are working on beside it ──────── */
+
+/* The room page uses the width a list-and-detail view needs. */
+.home-wide {
+  max-width: 84rem;
+}
+.welcome-tight {
+  margin-bottom: 0.5rem;
+}
+.welcome-tight h1 {
+  margin: 0.15rem 0;
+}
+.welcome-tight p {
+  margin: 0;
+}
+
+/* The room's facts: one line, not a card. */
+.room-facts {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.35rem 1.25rem;
+  margin: 0 0 1rem;
+  color: var(--text-muted);
+  font-size: 0.9rem;
+}
+.room-facts b {
+  color: var(--text);
+  font-weight: 500;
+}
+.room-facts .tier {
+  color: var(--brand);
+  font-weight: 600;
+}
+.room-facts-note {
+  flex-basis: 100%;
+  font-size: 0.85rem;
+}
+
+.room-layout {
+  display: grid;
+  grid-template-columns: minmax(18rem, 2fr) minmax(0, 3fr);
+  gap: 1rem;
+  align-items: start;
+}
+/* Stays in view while the list scrolls, below the sticky top bar. */
+.room-pane {
+  position: sticky;
+  top: calc(var(--topbar-h, 4.5rem) + 1rem);
+  max-height: calc(100vh - var(--topbar-h, 4.5rem) - 2rem);
+  overflow: auto;
+  min-width: 0;
+  border-radius: var(--radius-xl);
+}
+@media (max-width: 56rem) {
+  .room-layout {
+    grid-template-columns: 1fr;
+  }
+  .room-pane {
+    position: static;
+    max-height: none;
+    overflow: visible;
+    scroll-margin-top: calc(var(--topbar-h, 4.5rem) + 0.5rem);
+  }
+  /* An open record goes above the list, where the member's eye already is. */
+  .room-layout.has-open .room-pane {
+    order: -1;
+  }
+}
+
+.record-list li {
+  padding: 0.45rem 0.7rem;
+  gap: 0.1rem;
+}
+.record-list li:hover {
+  background: color-mix(in srgb, var(--brand) 6%, var(--bg-subtle));
+}
+.record-meta {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.record-list .thumb-img {
+  max-width: min(100%, 160px);
+  max-height: 72px;
+}
+.retracted {
+  margin-top: 0.25rem;
+}
+.retracted summary {
+  cursor: pointer;
+}
+.retracted .record-list li {
+  opacity: 0.7;
+}
+.did-under {
+  display: block;
+  font-size: 0.75rem;
+}
+
+/* The member's own star on an entry: theirs alone (wallet-marks.ts). */
+.directory-tile {
+  position: relative;
+  height: 100%;
+}
+.directory-tile .star-toggle {
+  position: absolute;
+  top: 0.6rem;
+  right: 0.6rem;
+}
+.star-toggle {
+  align-self: flex-start;
+  background: none;
+  border: none;
+  padding: 0.25rem;
+  color: var(--text-muted);
+  cursor: pointer;
+  border-radius: 999px;
+}
+.star-toggle:hover,
+.star-toggle:focus-visible {
+  color: var(--brand);
+}
+.star-toggle.star-on {
+  color: var(--brand);
+}
+.petname {
+  font-style: italic;
 }

@@ -67,7 +67,7 @@ fn translate(
     };
     Some(match (method, seg.as_slice()) {
         ("GET", ["members"]) => (
-            t("members/list/0.1"),
+            t("members/list/0.2"),
             with(page(), "role", q("role").unwrap_or(Value::Null)),
             ok,
         ),
@@ -87,7 +87,7 @@ fn translate(
             ok,
         ),
         ("GET", ["join-requests"]) => (
-            t("join-requests/list/0.1"),
+            t("join-requests/list/0.2"),
             with(page(), "status", q("status").unwrap_or(Value::Null)),
             ok,
         ),
@@ -133,7 +133,7 @@ fn translate(
             ok,
         ),
         ("GET", ["endorsement-types"]) => (
-            t("endorsement-types/list/0.1"),
+            t("endorsement-types/list/0.2"),
             obj(vec![
                 ("cursor", q("cursor")),
                 ("limit", q("limit").map(number)),
@@ -178,7 +178,7 @@ fn translate(
             with(body.clone(), "id", json!(decode(id))),
             ok,
         ),
-        ("GET", ["credentials", "endorsements"]) => (t("endorsements/list/0.1"), page(), ok),
+        ("GET", ["credentials", "endorsements"]) => (t("endorsements/list/0.2"), page(), ok),
         ("GET", ["credentials", "endorsements", id]) => (
             t("endorsements/show/0.1"),
             json!({ "endorsementId": decode(id) }),

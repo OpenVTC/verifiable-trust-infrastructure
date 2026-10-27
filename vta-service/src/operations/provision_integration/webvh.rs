@@ -158,10 +158,60 @@ pub(super) fn take_webvh_domain(
     Ok(Some(trimmed.to_string()))
 }
 
+/// Optional `DID_METHOD` (`webvh` | `scid`) and `SCID_ALSO_KNOWN_AS`
+/// (`true` | `false`) vars: how the minted DID is presented and whether it lists
+/// its did:scid alias (VTI-VTA-036). Removed from the map like `WEBVH_DOMAIN` —
+/// they shape the log, not the document's content. Absent → the VTA's `[dids]`.
+pub(super) fn take_did_presentation(
+    template_vars: &mut BTreeMap<String, Value>,
+) -> Result<(Option<vta_sdk::did_scid::DidMethod>, Option<bool>), AppError> {
+    let method = match template_vars.remove("DID_METHOD") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(s)) => Some(
+            s.parse()
+                .map_err(|e: String| AppError::Validation(format!("DID_METHOD: {e}")))?,
+        ),
+        Some(_) => {
+            return Err(AppError::Validation(
+                "DID_METHOD must be 'webvh' or 'scid'".into(),
+            ));
+        }
+    };
+    let alias = match template_vars.remove("SCID_ALSO_KNOWN_AS") {
+        None | Some(Value::Null) => None,
+        Some(Value::Bool(b)) => Some(b),
+        Some(Value::String(s)) if s == "true" => Some(true),
+        Some(Value::String(s)) if s == "false" => Some(false),
+        Some(_) => {
+            return Err(AppError::Validation(
+                "SCID_ALSO_KNOWN_AS must be true or false".into(),
+            ));
+        }
+    };
+    Ok((method, alias))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn did_presentation_vars_are_taken() {
+        let mut v = vars(&[
+            ("DID_METHOD", json!("scid")),
+            ("SCID_ALSO_KNOWN_AS", json!("true")),
+            ("OTHER", json!("x")),
+        ]);
+        assert_eq!(
+            take_did_presentation(&mut v).unwrap(),
+            (Some(vta_sdk::did_scid::DidMethod::Scid), Some(true))
+        );
+        assert!(!v.contains_key("DID_METHOD") && !v.contains_key("SCID_ALSO_KNOWN_AS"));
+        assert!(v.contains_key("OTHER"));
+        assert_eq!(take_did_presentation(&mut vars(&[])).unwrap(), (None, None));
+        assert!(take_did_presentation(&mut vars(&[("DID_METHOD", json!("key"))])).is_err());
+    }
 
     fn vars(pairs: &[(&str, Value)]) -> BTreeMap<String, Value> {
         pairs

@@ -42,7 +42,8 @@
 #    }
 #
 #    Every `witnessed/1` statement entry also carries the host-computed
-#    `"witness_binding": { "state": "bound" | "subjectMismatch" |
+#    `"witness_binding": { "state": "untrustedWitness" |
+#    "noOutcomeEvidence" | "outcomeInvalid" | "bound" | "subjectMismatch" |
 #    "unresolved" | "absent" | "malformed", "relationship_id": "<uuid>"
 #    (bound and subjectMismatch only) }`. A statement under a predicate
 #    the community does not accept never reaches this policy: the host
@@ -80,9 +81,14 @@ asserted if allow
 # predicate, never by a type string) from a non-empty issuer **whose
 # digest binds to an edge this community holds**.
 #
-# `witness_binding` is the host's verdict, not the presenter's: the
-# daemon recomputes the VWC's `credentialSubject.object.digestMultibase`
-# against every relationship credential it stores, comparing decoded
+# `witness_binding` is the host's verdict, not the presenter's. First the
+# daemon refuses a witness the community has not listed as trusted
+# (`untrustedWitness` — the list is empty by default) and one whose
+# session's outcome evidence did not travel with it or does not pair
+# (`noOutcomeEvidence`, `outcomeInvalid`; VTI-CMP-023). Every state below
+# implies both checks passed. Then it recomputes the VWC's
+# `credentialSubject.object.digestMultibase` against every
+# relationship credential it stores, comparing decoded
 # digest bytes, checks the `witnessed/1` subject–object rule (the
 # statement's subject is the issuer of the edge), and writes one of five
 # states onto each witness entry (DTG Credentials Security

@@ -33,6 +33,7 @@ use vti_common::error::AppError;
 use vti_common::store::KeyspaceHandle;
 
 use crate::config::AppConfig;
+use crate::credentials::trusted_witnesses::WITNESSES_TRUSTED;
 
 const STORAGE_PREFIX: &[u8] = b"config:override:";
 
@@ -89,6 +90,9 @@ pub enum ConfigKeyKind {
     /// `storage.path` (plan §14.6 — sensitive paths can't be
     /// pointed at arbitrary filesystem locations via the UX).
     PathAllowlist(&'static [&'static str]),
+    /// A list of trusted witnesses: an array of `{ "did": "...", "label":
+    /// "..." }` objects ([`crate::credentials::trusted_witnesses::parse_list`]).
+    TrustedWitnessList,
 }
 
 /// Static metadata for one overlayable config key.
@@ -108,6 +112,12 @@ pub struct ConfigKeyDef {
     /// Phase 0 has no sensitive keys yet — TLS paths land later
     /// alongside the actual `server.tls.*` config fields.
     pub sensitive: bool,
+    /// `true` when the key alters trust, privacy, authority or security
+    /// semantics — whose evidence counts, who is admitted, who may approve.
+    /// VTI-CMP-090 treats such a change as materially an implementation change
+    /// and VTI-CMP-092 requires it to be identifiable as one: a patch to one is
+    /// logged at `warn` as a trust-semantics change beside its audit row.
+    pub trust_semantics: bool,
 }
 
 /// Mirrors `vti_common::config`'s compiled-in default for
@@ -239,18 +249,21 @@ pub const REGISTRY: &[ConfigKeyDef] = &[
         kind: ConfigKeyKind::String,
         requires_restart: true,
         sensitive: false,
+        trust_semantics: false,
     },
     ConfigKeyDef {
         key: "server.port",
         kind: ConfigKeyKind::U64,
         requires_restart: true,
         sensitive: false,
+        trust_semantics: false,
     },
     ConfigKeyDef {
         key: "log.level",
         kind: ConfigKeyKind::StringEnum(&["trace", "debug", "info", "warn", "error"]),
         requires_restart: false,
         sensitive: false,
+        trust_semantics: false,
     },
     // The operational RP origin: the WebAuthn relying-party handle +
     // every VMC's `credentialStatus` status-list URL derive from it at
@@ -261,6 +274,7 @@ pub const REGISTRY: &[ConfigKeyDef] = &[
         kind: ConfigKeyKind::String,
         requires_restart: true,
         sensitive: false,
+        trust_semantics: false,
     },
     // How long an admin console session may sit without user activity
     // before it stops being renewable. Hot-reloadable: `VtcAuthBackend`
@@ -278,6 +292,7 @@ pub const REGISTRY: &[ConfigKeyDef] = &[
         },
         requires_restart: false,
         sensitive: false,
+        trust_semantics: false,
     },
     // How many other unrestricted admins must consent to making someone an
     // unrestricted admin (VTI-APV-014). Read live by the gate, so no restart.
@@ -291,6 +306,7 @@ pub const REGISTRY: &[ConfigKeyDef] = &[
         kind: ConfigKeyKind::CountRange { min: 1, max: 16 },
         requires_restart: false,
         sensitive: false,
+        trust_semantics: true,
     },
     // The action list (`vtc-action-list.md` §5, §7a.1). Each is read live by
     // `crate::admin_actions` when an action is raised, so none needs a restart,
@@ -308,6 +324,7 @@ pub const REGISTRY: &[ConfigKeyDef] = &[
         },
         requires_restart: false,
         sensitive: false,
+        trust_semantics: false,
     },
     // Approval fatigue (§7a.1): a compromised administrator raising requests
     // until a tired approver clicks Approve.
@@ -316,12 +333,14 @@ pub const REGISTRY: &[ConfigKeyDef] = &[
         kind: ConfigKeyKind::CountRange { min: 1, max: 20 },
         requires_restart: false,
         sensitive: false,
+        trust_semantics: false,
     },
     ConfigKeyDef {
         key: ACTION_MAX_OPEN,
         kind: ConfigKeyKind::CountRange { min: 10, max: 500 },
         requires_restart: false,
         sensitive: false,
+        trust_semantics: false,
     },
     ConfigKeyDef {
         key: ACTION_DECLINE_COOLDOWN,
@@ -331,6 +350,7 @@ pub const REGISTRY: &[ConfigKeyDef] = &[
         },
         requires_restart: false,
         sensitive: false,
+        trust_semantics: false,
     },
     // The two-administrator cooling-off (VTI-APV-019, §8.2): how long an
     // unopposed reduction of an unrestricted administrator waits before it
@@ -344,6 +364,7 @@ pub const REGISTRY: &[ConfigKeyDef] = &[
         },
         requires_restart: false,
         sensitive: false,
+        trust_semantics: false,
     },
     // Whether a raised action is also pushed to approvers' devices (§11.6).
     // Off by default: the action list is the source of truth.
@@ -352,6 +373,43 @@ pub const REGISTRY: &[ConfigKeyDef] = &[
         kind: ConfigKeyKind::Bool,
         requires_restart: false,
         sensitive: false,
+        trust_semantics: false,
+    },
+    // The witnesses whose VWCs count here
+    // (`crate::credentials::trusted_witnesses`). Read live on every VWC, so no
+    // restart. Empty — the default — trusts none.
+    ConfigKeyDef {
+        key: WITNESSES_TRUSTED,
+        kind: ConfigKeyKind::TrustedWitnessList,
+        requires_restart: false,
+        sensitive: false,
+        trust_semantics: true,
+    },
+    // Where the identities this community mints are published
+    // (`crate::did_hosting`): a hosting server at its VTA, or `local`. Read
+    // live at every mint, so no restart; never moves one already minted.
+    ConfigKeyDef {
+        key: crate::did_hosting::DIDS_WEBVH_SERVER,
+        kind: ConfigKeyKind::String,
+        requires_restart: false,
+        sensitive: false,
+        trust_semantics: false,
+    },
+    // How those identities are presented, as the community states it to its
+    // VTA (VTI-VTC-004). Unset: the VTA's own `[dids]`. Read live at every mint.
+    ConfigKeyDef {
+        key: crate::did_hosting::DIDS_DEFAULT_DID_METHOD,
+        kind: ConfigKeyKind::StringEnum(&["webvh", "scid"]),
+        requires_restart: false,
+        sensitive: false,
+        trust_semantics: false,
+    },
+    ConfigKeyDef {
+        key: crate::did_hosting::DIDS_SCID_ALSO_KNOWN_AS,
+        kind: ConfigKeyKind::Bool,
+        requires_restart: false,
+        sensitive: false,
+        trust_semantics: false,
     },
 ];
 
@@ -508,6 +566,14 @@ fn toml_layer_value(key: &str, cfg: &AppConfig) -> Option<Value> {
                 .then(|| Value::Number(serde_json::Number::from(n)))
         }
         CONSENT_REQUEST_PUSH => cfg.acl.consent_request_push.then_some(Value::Bool(true)),
+        crate::did_hosting::DIDS_WEBVH_SERVER => cfg.dids.webvh_server.clone().map(Value::String),
+        crate::did_hosting::DIDS_DEFAULT_DID_METHOD => cfg
+            .dids
+            .default_did_method
+            .map(|m| Value::String(m.as_str().to_string())),
+        crate::did_hosting::DIDS_SCID_ALSO_KNOWN_AS => cfg.dids.scid_also_known_as.map(Value::Bool),
+        WITNESSES_TRUSTED => (!cfg.witnesses.is_empty())
+            .then(|| serde_json::to_value(&cfg.witnesses.trusted).unwrap_or(Value::Null)),
         "auth.admin_idle_timeout" => {
             if cfg.auth.admin_idle_timeout == DEFAULT_ADMIN_IDLE_TIMEOUT {
                 None
@@ -543,6 +609,12 @@ fn default_layer_value(key: &str) -> Value {
             Value::Number(serde_json::Number::from(DEFAULT_ADMIN_IDLE_TIMEOUT))
         }
         CONSENT_REQUEST_PUSH => Value::Bool(false),
+        WITNESSES_TRUSTED => Value::Array(Vec::new()),
+        // Unset: each kind's own `config.toml` setting decides.
+        crate::did_hosting::DIDS_WEBVH_SERVER => Value::Null,
+        // Unset: the VTA's own `[dids]` decides.
+        crate::did_hosting::DIDS_DEFAULT_DID_METHOD => Value::Null,
+        crate::did_hosting::DIDS_SCID_ALSO_KNOWN_AS => Value::Null,
         other => match action_key_default(other) {
             Some(n) => Value::Number(n.into()),
             None => Value::Null, // unreachable for registry keys
@@ -573,6 +645,22 @@ fn env_layer_value(key: &str) -> Option<Value> {
             .ok()
             .and_then(|s| s.parse::<bool>().ok())
             .map(Value::Bool),
+        // A list has no environment form; it is set in TOML or patched.
+        WITNESSES_TRUSTED => None,
+        crate::did_hosting::DIDS_WEBVH_SERVER => std::env::var(crate::did_hosting::ENV)
+            .ok()
+            .map(Value::String),
+        crate::did_hosting::DIDS_DEFAULT_DID_METHOD => {
+            std::env::var(crate::did_hosting::ENV_DID_METHOD)
+                .ok()
+                .map(Value::String)
+        }
+        crate::did_hosting::DIDS_SCID_ALSO_KNOWN_AS => {
+            std::env::var(crate::did_hosting::ENV_SCID_ALSO_KNOWN_AS)
+                .ok()
+                .and_then(|s| s.parse::<bool>().ok())
+                .map(Value::Bool)
+        }
         "auth.admin_idle_timeout" => std::env::var("VTC_AUTH_ADMIN_IDLE_TIMEOUT")
             .ok()
             .and_then(|s| s.parse::<u64>().ok())
@@ -699,6 +787,33 @@ fn set_app_config_field(cfg: &mut AppConfig, key: &str, value: &Value) {
                 "config override `{CONSENT_REQUEST_PUSH}` is not a boolean — ignored"
             ),
         },
+        // A row that does not parse is ignored here, and the live reader
+        // (`trusted_witnesses::live`) reads the same row as trusting nobody.
+        WITNESSES_TRUSTED => {
+            match crate::credentials::trusted_witnesses::parse_list(value, cfg.vtc_did.as_deref()) {
+                Ok(list) => cfg.witnesses.trusted = list,
+                Err(e) => tracing::warn!(
+                    error = %e,
+                    "config override `{WITNESSES_TRUSTED}` is not a valid witness list — ignored"
+                ),
+            }
+        }
+        // The live reader (`did_hosting::live`) ignores a malformed row too.
+        crate::did_hosting::DIDS_WEBVH_SERVER => {
+            if crate::did_hosting::validate(value).is_ok() {
+                cfg.dids.webvh_server = value.as_str().map(str::to_string);
+            }
+        }
+        crate::did_hosting::DIDS_DEFAULT_DID_METHOD => {
+            if let Ok(method) = crate::did_hosting::validate_did_method(value) {
+                cfg.dids.default_did_method = Some(method);
+            }
+        }
+        crate::did_hosting::DIDS_SCID_ALSO_KNOWN_AS => {
+            if let Some(b) = value.as_bool() {
+                cfg.dids.scid_also_known_as = Some(b);
+            }
+        }
         "auth.admin_idle_timeout" => match value.as_u64() {
             Some(n) => cfg.auth.admin_idle_timeout = n,
             None => tracing::warn!(
@@ -826,6 +941,13 @@ pub fn validate_value(def: &ConfigKeyDef, value: &Value) -> Result<(), AppError>
                     def.key, prefixes
                 )))
             }
+        }
+        // The community's own DID is refused by the caller, which knows it
+        // (`routes::admin::config::check_against_community`).
+        ConfigKeyKind::TrustedWitnessList => {
+            crate::credentials::trusted_witnesses::parse_list(value, None)
+                .map(|_| ())
+                .map_err(|e| AppError::Validation(format!("{}: {e}", def.key)))
         }
     }
 }

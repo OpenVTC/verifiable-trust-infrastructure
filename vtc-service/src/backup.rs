@@ -377,12 +377,43 @@ pub async fn import_backup(
     )
     .await?;
 
+    // A restored election issues no more tickets: those issued after the backup are not in it,
+    // and their holders could take a second (VTI-VOT-022). Before the sentinel goes, so an
+    // import that fails here is still an interrupted one.
+    close_issuance_after_restore(state).await?;
+
     // Done — clear the sentinel + flush.
     state
         .config_ks
         .remove(IMPORT_IN_PROGRESS_KEY.to_vec())
         .await?;
     state.config_ks.persist().await?;
+
+    // A restore never carries a sealed storage credential: every one held is destroyed,
+    // and a restored `sealed` config reports `required` until an administrator sets it
+    // again (`vtc/storage/credentials/set/0.2` item 7). Before the reload, so no store
+    // is built over a credential that was set for the community as it was.
+    if let Some(sealed) = state.room_storage.sealed_credentials() {
+        match sealed.clear().await {
+            Ok(0) => {}
+            Ok(n) => tracing::warn!(
+                cleared = n,
+                "backup import: sealed storage credentials destroyed; set each again"
+            ),
+            Err(e) => {
+                return Err(TaskError::App(AppError::Internal(format!(
+                    "backup import: the sealed storage credentials could not be destroyed: {e}"
+                ))));
+            }
+        }
+    }
+    // The restored configs, not the ones this process opened with.
+    if let Err(e) = state.room_storage.reload_stores().await {
+        tracing::warn!(error = %e, "backup import: storage configs not reloaded; the restart reloads them");
+    }
+    // A restored migration comes back paused: the bytes were never in the backup, so its
+    // copy in flight is verified again when an administrator resumes it.
+    crate::rooms::migration::pause_after_restore(state).await;
 
     // A backup taken before phase C3 carries its git rights in the old rights
     // store: move them onto the restored ACL entries now (`vtc-admin-roles.md`
@@ -403,6 +434,45 @@ pub async fn import_backup(
             "Import complete. Restart the daemon to serve the restored identity.{regrant}"
         ),
     })
+}
+
+/// Close ticket issuance on every restored election that could have issued a ticket since the
+/// backup was taken, auditing each ([`crate::elections::Elections::close_issuance_after_restore`]).
+async fn close_issuance_after_restore(state: &AppState) -> Result<(), AppError> {
+    use vti_common::audit::{AuditEvent, ElectionChangedData};
+    let closed = state
+        .elections
+        .close_issuance_after_restore(Utc::now())
+        .await?;
+    for election_id in closed {
+        tracing::warn!(
+            election = %election_id,
+            "backup import: ticket issuance closed for good; members who took no ticket before \
+             the backup cannot take one — cancel the election and create it again to hold the vote"
+        );
+        let Some(writer) = state.audit_writer.as_ref() else {
+            continue;
+        };
+        let event = AuditEvent::ElectionChanged(ElectionChangedData {
+            election_id,
+            change: "issuanceClosedByRestore".into(),
+            manifest_digest: None,
+            binding: None,
+            action_id: None,
+            ballot_box_answer: None,
+            reason: Some(
+                "restored from a backup: tickets issued after it was taken are not in it".into(),
+            ),
+            head_tree_size: None,
+            head_root_hash: None,
+            result_digest: None,
+            attestation_issuers: Vec::new(),
+        });
+        if let Err(e) = writer.write("system:backup-import", None, event).await {
+            tracing::warn!(error = %e, "backup import: could not audit an election's issuance closing");
+        }
+    }
+    Ok(())
 }
 
 /// Every `acl:` row of the backup's ACL keyspace, mapped onto the role-based
@@ -603,7 +673,12 @@ fn backed_up_handle<'a>(state: &'a AppState, name: &str) -> Option<&'a KeyspaceH
         x if x == ROOMS => &state.rooms_ks,
         x if x == ROOM_RECORDS => &state.room_records_ks,
         x if x == ROOM_EPOCH_LINKS => &state.room_epoch_links_ks,
+        x if x == ROOM_REVOCATIONS => &state.room_revocations_ks,
         x if x == ROOM_BLOBS => state.room_files.index_keyspace(),
+        x if x == STORAGE_CONFIGS => state.room_storage.keyspace(),
+        x if x == COMMUNITY_ROOMS => state.community_rooms.keyspace(),
+        x if x == DIRECTORY => state.directory.ks(),
+        x if x == ELECTIONS => state.elections.ks(),
         x if x == INVITATIONS => &state.invitations_ks,
         x if x == CONSUMED_INVITATIONS => &state.consumed_invitations_ks,
         x if x == AUDIT => &state.audit_ks,

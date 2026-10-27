@@ -257,6 +257,7 @@ async fn admit(
         updated_by: None,
         expires_at: None,
         resource_grants: prior_grants,
+        group_grants: Vec::new(),
         label_set_by_subject: false,
         suspension: None,
     };
@@ -561,7 +562,36 @@ async fn depart(
     // (purge deletes the row) or clears it.
     let slot = member.as_ref().and_then(|m| m.status_list_index);
 
+    // Before anything else, their external card stops being served and its
+    // registry pointer goes (VTI-DIR-120): what a third party copies while it
+    // is public cannot be recalled.
+    if let Some(entry_id) =
+        crate::directory::cards::entry_of(state.directory.ks(), subject_did).await?
+    {
+        crate::directory::external::withdraw(
+            state,
+            &entry_id,
+            crate::directory::external::Withdrawal::Departure,
+        )
+        .await?;
+    }
+
     delete_acl_entry(&state.acl_ks, subject_did).await?;
+    // They leave the rooms the community owns too (`vtc/rooms/community/members/add` item
+    // 6). Recorded now, durably, and driven by `rooms::departures` — never waiting on the
+    // community's VTA. Here, before the member row changes, so a crash between the two
+    // leaves an entry gone and a row in place, which the departure reconciler reads as a
+    // departure.
+    crate::rooms::departures::on_departure(
+        state,
+        subject_did,
+        if actor_did == subject_did {
+            crate::rooms::community::DepartureCause::Left
+        } else {
+            crate::rooms::community::DepartureCause::Removed
+        },
+    )
+    .await?;
     // The departed member's own grants go to review (vtc-admin-roles.md §6.3).
     crate::acl::delegation::clear(state, subject_did).await?;
     crate::acl::delegation::on_granter_changed(state, subject_did, None).await?;
@@ -632,6 +662,38 @@ async fn depart(
             unreachable!("disposition must be concrete before depart");
         }
     }
+
+    // Their directory card follows the disposition (VTI-DIR-121): erased with
+    // a purge or a tombstone, kept with a historical record — and, kept, never
+    // read again by anyone but an administrator, because the member is no
+    // longer active (VTI-DIR-111). Its external card was withdrawn first, above
+    // (VTI-DIR-120).
+    // Administrators' notes follow it too: a purge erases them, and anything
+    // else keeps them for the directory's retention period (VTI-DIR-121).
+    if let Some(entry_id) =
+        crate::directory::cards::entry_of(state.directory.ks(), subject_did).await?
+    {
+        // Every group membership ends, so its credentials stop renewing, and
+        // every pending request to join is withdrawn.
+        crate::groups::on_departure(state.directory.ks(), &entry_id).await?;
+        crate::directory::notes::on_departure(
+            state.directory.ks(),
+            &entry_id,
+            disposition == Disposition::Purge,
+            state.directory.settings().retention_days,
+            chrono::Utc::now(),
+        )
+        .await?;
+    }
+    crate::directory::cards::on_departure(
+        state.directory.ks(),
+        subject_did,
+        match disposition {
+            Disposition::Historical => crate::directory::cards::Departure::Keep,
+            _ => crate::directory::cards::Departure::Erase,
+        },
+    )
+    .await?;
 
     // Revoke the member's credentials by flipping the revocation bit.
     // Best-effort: the ACL + Member rows are already gone, so a flip
