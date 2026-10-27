@@ -1476,7 +1476,11 @@ jobs:
     needs: [clippy, affects]
     if: ${{ !cancelled() && !failure() && needs.affects.outputs.enclave != 'false' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # 3-19 minutes on trust-tasks-rs 0.34. Since 0.35 (#2300) it compiles that
+    # crate with every spec on swap (see .github/actions/add-swap) and was
+    # cancelled at 20 on every main run. Back toward 20 once VTI compiles only
+    # the spec versions it uses (trust-tasks-build).
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
