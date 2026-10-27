@@ -948,6 +948,12 @@ code {
   margin-bottom: 1.1rem;
 }
 
+/* The summary says what a tap will do. */
+.pass-fold[open] .pass-fold-show,
+.pass-fold:not([open]) .pass-fold-hide {
+  display: none;
+}
+
 /* The same DID as a link, for the wallet on this device. site.js unhides it
  * only on a touch device; `.btn` sets a display, so `[hidden]` alone would
  * not hide it. */

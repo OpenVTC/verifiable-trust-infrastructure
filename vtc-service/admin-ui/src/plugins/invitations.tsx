@@ -8,7 +8,7 @@
 
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Download, QrCode, Send, Ticket, Trash2, Wallet } from "lucide-react";
+import { Download, QrCode, Send, Ticket, Trash2 } from "lucide-react";
 
 import {
   deliverInvitation,
@@ -217,18 +217,12 @@ export function Invitations() {
         <section className="card">
           <h3>Offer for {nameBook.nameOrDid(offerShown.subjectDid)}</h3>
           <p className="muted">
-            Scan with the invitee&rsquo;s wallet, or open it in a wallet on this
-            device. It redeems only with a key of the invited DID, so a
-            photographed code admits no one else. Expires{" "}
+            Scan with the invitee&rsquo;s wallet. It redeems only with a key of the
+            invited DID, so a photographed code admits no one else. Expires{" "}
             <code>{offerShown.expiresAt}</code>.
           </p>
           <div className="invitation-handoff">
             <CopyButton value={offerShown.link} label="Copy offer link" successMessage="Offer link copied" />
-            {/* The same link as the code: the wallet on this device that
-                registers `openid-credential-offer` takes the tap as a scan. */}
-            <a className="btn" href={offerShown.link}>
-              <Wallet size={16} strokeWidth={1.75} /> Open in wallet
-            </a>
           </div>
           <VicQr text={offerShown.link} />
         </section>
