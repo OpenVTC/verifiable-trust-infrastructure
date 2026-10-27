@@ -49,3 +49,4 @@ Thumbs.db
 # files are unaffected, and so a `git add -A` cannot sweep a home directory
 # into the history the way #888 swept a CI log.
 /local-dev/vta-local-*.toml
+.vscode
