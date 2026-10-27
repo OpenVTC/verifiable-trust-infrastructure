@@ -259,7 +259,7 @@ function CommunityRoomsTable({
             <AuthorityExpiry until={r.ownerAuthorityValidUntil} />
             <RenewalFailing renewal={renewal[r.room.roomId]} />
           </td>
-          <td>{new Date(r.room.createdAt * 1000).toLocaleDateString()}</td>
+          <td>{new Date(r.room.createdAt).toLocaleDateString()}</td>
         </tr>
       ))}
     </DataTable>

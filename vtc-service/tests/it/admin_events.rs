@@ -897,7 +897,7 @@ async fn rooms_is_effective_only_for_a_rooms_administrator() {
     let (_, refused) = crate::common::signed::call(
         &vtc,
         &moderator,
-        "https://trusttasks.org/spec/vtc/rooms/list/0.1",
+        "https://trusttasks.org/spec/vtc/rooms/list/0.2",
         json!({}),
     )
     .await;

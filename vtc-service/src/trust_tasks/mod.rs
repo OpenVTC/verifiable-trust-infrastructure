@@ -2099,39 +2099,19 @@ mod spine_proof_tests {
             "reads one storage config; the handler authorizes vtc.rooms.admin from the signer's own entry, so an unsigned caller is refused regardless",
         ),
         (
-            storage_tasks::LIST_V0_2_TYPE,
-            "reads the storage configs at 0.2; the handler authorizes vtc.rooms.admin from the signer's own entry, so an unsigned caller is refused regardless",
-        ),
-        (
-            storage_tasks::GET_V0_2_TYPE,
-            "reads one storage config at 0.2; the handler authorizes vtc.rooms.admin from the signer's own entry, so an unsigned caller is refused regardless",
-        ),
-        (
             storage_tasks::PROBE_TYPE,
             "probes one storage config; the handler authorizes vtc.rooms.admin from the signer's own entry, so an unsigned caller is refused regardless",
         ),
         (
             room_admin_tasks::GET_TYPE,
-            "reads one room's storage, limits and usage; the handler authorizes vtc.rooms.admin from the signer's own entry, so an unsigned caller is refused regardless",
-        ),
-        (
-            room_admin_tasks::GET_V2_TYPE,
             "reads one room's storage, limits, usage and migration; the handler authorizes vtc.rooms.admin from the signer's own entry, so an unsigned caller is refused regardless",
         ),
         (
             community_room_tasks::LIST_TYPE,
-            "lists the rooms the community owns; the handler authorizes vtc.rooms.manage from the signer's own entry, so an unsigned caller is refused regardless",
-        ),
-        (
-            community_room_tasks::GET_TYPE,
-            "reads one room the community owns; the handler authorizes vtc.rooms.manage from the signer's own entry, so an unsigned caller is refused regardless",
-        ),
-        (
-            community_room_tasks::LIST_V0_2_TYPE,
             "lists the rooms the community owns, with their details; the handler authorizes vtc.rooms.manage from the signer's own entry, so an unsigned caller is refused regardless",
         ),
         (
-            community_room_tasks::GET_V0_2_TYPE,
+            community_room_tasks::GET_TYPE,
             "reads one room the community owns, with its details; the handler authorizes vtc.rooms.manage from the signer's own entry, so an unsigned caller is refused regardless",
         ),
         (
@@ -3147,8 +3127,6 @@ pub(crate) const DISPATCHED_URIS: &[&str] = &[
     storage_tasks::MIGRATE_TYPE,
     // 0.2 (trust-tasks-tf #866): `roleArn` on ambient auth, `notAllowed`, host gating,
     // and the sealed credential itself. Each version answered at its own.
-    storage_tasks::LIST_V0_2_TYPE,
-    storage_tasks::GET_V0_2_TYPE,
     storage_tasks::CREATE_V0_2_TYPE,
     storage_tasks::UPDATE_V0_2_TYPE,
     storage_tasks::CREDENTIALS_SET_TYPE,
@@ -3156,26 +3134,19 @@ pub(crate) const DISPATCHED_URIS: &[&str] = &[
     // What the rooms store and may store (`data-rooms-files.md` §6): reads and limit
     // overrides for a holder of `vtc.rooms.admin`, overrides audited. No REST route.
     room_admin_tasks::GET_TYPE,
-    room_admin_tasks::GET_V2_TYPE,
     room_admin_tasks::USAGE_TYPE,
     room_admin_tasks::LIMITS_SET_TYPE,
     // Rooms the community owns (`data-rooms-files.md` §8.4): an administrator's
     // create, reads and membership changes under `vtc.rooms.manage`, the changes
     // behind the requester's bound gesture; a member's offers on their own DID. No
-    // REST route. The details administrators keep a room by (`update`, and the 0.2 reads
-    // and create that carry them) take no gesture: they reach no key holder.
+    // REST route. The details administrators keep a room by (`update`, and the reads and
+    // create that carry them) take no gesture: they reach no key holder.
     community_room_tasks::CREATE_TYPE,
-    community_room_tasks::CREATE_V0_2_TYPE,
-    community_room_tasks::CREATE_V0_3_TYPE,
     community_room_tasks::LIST_TYPE,
-    community_room_tasks::LIST_V0_2_TYPE,
     community_room_tasks::GET_TYPE,
-    community_room_tasks::GET_V0_2_TYPE,
     community_room_tasks::UPDATE_TYPE,
-    community_room_tasks::UPDATE_V0_2_TYPE,
     community_room_tasks::MEMBERS_ADD_TYPE,
     community_room_tasks::MEMBERS_REMOVE_TYPE,
-    community_room_tasks::MEMBERS_REMOVE_V0_2_TYPE,
     community_room_tasks::MEMBERS_LIST_TYPE,
     community_room_tasks::OFFERS_LIST_TYPE,
     community_room_tasks::OFFERS_LIST_V0_2_TYPE,
@@ -3206,10 +3177,10 @@ pub(crate) const DISPATCHED_URIS: &[&str] = &[
     backup_tasks::ABORT_TYPE,
     // The member-facing verbs: renewal and DID rotation (the member's own),
     // personhood revocation (the subject or an admin), the relationship
-    // graph's list / publish / revoke (`0.1` direct-issuer-or-admin, `0.2`
-    // adding the pairwise `pop` route), and the endorsement verbs an Admin or
-    // Issuer performs. None has a REST route any more. Before these, a member
-    // on TSP or DIDComm could join and then do none of this.
+    // graph's list / publish / revoke (issuer, admin, or the pairwise `pop`
+    // route), and the endorsement verbs an Admin or Issuer performs. None has
+    // a REST route any more. Before these, a member on TSP or DIDComm could
+    // join and then do none of this.
     member_tasks::RENEW_TYPE,
     member_tasks::ROTATE_CHALLENGE_TYPE,
     member_tasks::ROTATE_TYPE,
@@ -3217,7 +3188,6 @@ pub(crate) const DISPATCHED_URIS: &[&str] = &[
     member_tasks::RELATIONSHIPS_LIST_TYPE,
     member_tasks::RELATIONSHIPS_PUBLISH_TYPE,
     member_tasks::RELATIONSHIPS_REVOKE_TYPE,
-    member_tasks::RELATIONSHIPS_REVOKE_0_2_TYPE,
     member_tasks::ENDORSEMENTS_ISSUE_TYPE,
     member_tasks::ENDORSEMENTS_LIST_TYPE,
     member_tasks::ENDORSEMENTS_SHOW_TYPE,
@@ -3228,7 +3198,6 @@ pub(crate) const DISPATCHED_URIS: &[&str] = &[
     admin_tasks::DIAGNOSTICS_TYPE,
     admin_tasks::SYNC_JOBS_LIST_TYPE,
     admin_tasks::SYNC_JOBS_RETRY_TYPE,
-    admin_tasks::SYNC_JOBS_RETRY_0_2_TYPE,
     admin_tasks::SYNC_JOBS_DISCARD_TYPE,
     admin_tasks::RECORDS_LIST_TYPE,
     admin_tasks::AUDIT_LIST_TYPE,

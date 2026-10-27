@@ -386,7 +386,7 @@
       "status": "retired",
       "path": "relationships/list/1.0",
       "rest": "GET /v1/members/{did}/relationships",
-      "supersededBy": "https://trusttasks.org/spec/vtc/relationships/list/0.2"
+      "supersededBy": "https://trusttasks.org/spec/vtc/relationships/list/0.3"
     },
     {
       "id": "https://trusttasks.org/openvtc/vtc/relationships/revoke/1.0",

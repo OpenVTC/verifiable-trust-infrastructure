@@ -138,12 +138,10 @@ pub mod task {
     pub const MEMBERS_ROTATE: &str = "https://trusttasks.org/spec/vtc/members/rotate/0.1";
     pub const MEMBERS_PERSONHOOD_REVOKE: &str =
         "https://trusttasks.org/spec/vtc/members/personhood/revoke/0.1";
-    pub const RELATIONSHIPS_LIST: &str = "https://trusttasks.org/spec/vtc/relationships/list/0.2";
+    pub const RELATIONSHIPS_LIST: &str = "https://trusttasks.org/spec/vtc/relationships/list/0.3";
     pub const RELATIONSHIPS_PUBLISH: &str =
         "https://trusttasks.org/spec/vtc/relationships/publish/0.2";
     pub const RELATIONSHIPS_REVOKE: &str =
-        "https://trusttasks.org/spec/vtc/relationships/revoke/0.1";
-    pub const RELATIONSHIPS_REVOKE_0_2: &str =
         "https://trusttasks.org/spec/vtc/relationships/revoke/0.2";
     pub const AUDIT_VERIFY: &str = "https://trusttasks.org/spec/audit/verify/0.1";
     pub const MEMBERS_CREDENTIALS: &str =
@@ -635,7 +633,7 @@ pub struct PersonhoodRevocation {
 }
 
 /// One Verifiable Relationship Credential recorded for a member
-/// (`vtc/relationships/list/0.2`).
+/// (`vtc/relationships/list/0.3`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 #[non_exhaustive]
@@ -662,7 +660,7 @@ pub struct RelationshipPublished {
 }
 
 /// The result of revoking a Verifiable Relationship Credential
-/// (`vtc/relationships/revoke/0.1`).
+/// (`vtc/relationships/revoke/0.2`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 #[non_exhaustive]
@@ -1815,7 +1813,7 @@ impl VtcClient {
 
     /// List the Verifiable Relationship Credentials recorded for member
     /// `did`, following the cursor to completion
-    /// (`vtc/relationships/list/0.2`). Any current member or administrator.
+    /// (`vtc/relationships/list/0.3`). Any current member or administrator.
     pub async fn list_relationships(&self, did: &str) -> Result<Vec<RelationshipRecord>, VtcError> {
         self.document_pages(
             task::RELATIONSHIPS_LIST,
@@ -1873,7 +1871,7 @@ impl VtcClient {
         }
         let reply = self
             .document(
-                task::RELATIONSHIPS_REVOKE_0_2,
+                task::RELATIONSHIPS_REVOKE,
                 payload,
                 &[],
                 MAX_DOCUMENT_RESPONSE_BYTES,

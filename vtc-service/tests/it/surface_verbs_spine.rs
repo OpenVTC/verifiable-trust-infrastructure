@@ -68,7 +68,7 @@ fn verbs() -> Vec<(String, Value, bool)> {
             false,
         ),
         (t("vetting/revocations/list/0.1"), json!({}), false),
-        (t("rooms/list/0.1"), json!({}), false),
+        (t("rooms/list/0.2"), json!({}), false),
     ]
 }
 

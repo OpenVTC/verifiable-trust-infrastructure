@@ -1,5 +1,5 @@
 // One room the community owns, `/rooms/community/<roomId>` — the owner's view
-// (`vtc/rooms/community/get/0.2`), its details (`…/update/0.1`) and its members
+// (`vtc/rooms/community/get/0.3`), its details (`…/update/0.3`) and its members
 // (`…/members/{list,add,remove}`).
 //
 // **Its details** — label, description, tags — are how administrators tell the
@@ -236,7 +236,7 @@ function RoomFacts({
         )}
         <dt>Created</dt>
         <dd>
-          {new Date(r.createdAt * 1000).toLocaleString()}
+          {new Date(r.createdAt).toLocaleString()}
           {room.createdBy && (
             <>
               {" "}

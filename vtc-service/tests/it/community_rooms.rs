@@ -1,6 +1,6 @@
 //! Rooms the community owns (`docs/05-design-notes/data-rooms-files.md` §8.4):
-//! `vtc/rooms/community/{create,list,get}/{0.1,0.2}`, `vtc/rooms/community/update/0.1`,
-//! `vtc/rooms/community/members/{add,remove,list}/0.1` and `vtc/rooms/offers/list/{0.1,0.2}`
+//! `vtc/rooms/community/create/0.4`, `vtc/rooms/community/{list,get,update}/0.3`,
+//! `vtc/rooms/community/members/{add,list}/0.1`, `vtc/rooms/community/members/remove/0.2` and `vtc/rooms/offers/list/{0.1,0.2}`
 //! and `vtc/rooms/offers/accept/0.1`, driven through the signed-document door as an
 //! administrator's and a member's clients do.
 //!
@@ -36,17 +36,14 @@ use crate::common::second_party::Gesturer;
 use crate::common::signed::{error_code, post, seed_role, signed};
 
 const RP_ORIGIN: &str = "https://vtc.example.com";
-const CREATE: &str = "https://trusttasks.org/spec/vtc/rooms/community/create/0.1";
-const LIST: &str = "https://trusttasks.org/spec/vtc/rooms/community/list/0.1";
-const GET: &str = "https://trusttasks.org/spec/vtc/rooms/community/get/0.1";
+const CREATE: &str = "https://trusttasks.org/spec/vtc/rooms/community/create/0.4";
+const LIST: &str = "https://trusttasks.org/spec/vtc/rooms/community/list/0.3";
+const GET: &str = "https://trusttasks.org/spec/vtc/rooms/community/get/0.3";
 const ADD: &str = "https://trusttasks.org/spec/vtc/rooms/community/members/add/0.1";
-const REMOVE: &str = "https://trusttasks.org/spec/vtc/rooms/community/members/remove/0.1";
+const REMOVE: &str = "https://trusttasks.org/spec/vtc/rooms/community/members/remove/0.2";
 const MEMBERS: &str = "https://trusttasks.org/spec/vtc/rooms/community/members/list/0.1";
 const OFFERS: &str = "https://trusttasks.org/spec/vtc/rooms/offers/list/0.1";
-const CREATE_V0_2: &str = "https://trusttasks.org/spec/vtc/rooms/community/create/0.2";
-const LIST_V0_2: &str = "https://trusttasks.org/spec/vtc/rooms/community/list/0.2";
-const GET_V0_2: &str = "https://trusttasks.org/spec/vtc/rooms/community/get/0.2";
-const UPDATE: &str = "https://trusttasks.org/spec/vtc/rooms/community/update/0.1";
+const UPDATE: &str = "https://trusttasks.org/spec/vtc/rooms/community/update/0.3";
 const OFFERS_V0_2: &str = "https://trusttasks.org/spec/vtc/rooms/offers/list/0.2";
 const ACCEPT: &str = "https://trusttasks.org/spec/vtc/rooms/offers/accept/0.1";
 const MEMBERSHIPS: &str = "https://trusttasks.org/spec/vtc/rooms/memberships/list/0.1";
@@ -57,13 +54,10 @@ const GROUP_ADD: &str = "https://trusttasks.org/spec/rooms/owner/group/add/0.3";
 const GROUP_REMOVE: &str = "https://trusttasks.org/spec/rooms/owner/group/remove/0.1";
 const GROUP_REMOVE_V0_3: &str = "https://trusttasks.org/spec/rooms/owner/group/remove/0.3";
 const OWNER_REVOKE: &str = "https://trusttasks.org/spec/rooms/owner/revoke/0.1";
-const REMOVE_V0_2: &str = "https://trusttasks.org/spec/vtc/rooms/community/members/remove/0.2";
 const INVITE: &str = "https://trusttasks.org/spec/rooms/owner/invite/0.1";
 const ISSUE_MEMBERSHIP: &str = "https://trusttasks.org/spec/rooms/owner/issue-membership/0.1";
 const ISSUE_AUTHORITY: &str = "https://trusttasks.org/spec/rooms/owner/issue-authority/0.2";
 const RECEIVE: &str = "https://trusttasks.org/spec/vault/credentials/receive/0.1";
-const CREATE_V0_3: &str = "https://trusttasks.org/spec/vtc/rooms/community/create/0.3";
-const UPDATE_V0_2: &str = "https://trusttasks.org/spec/vtc/rooms/community/update/0.2";
 const PROFILE_READ: &str = "https://trusttasks.org/spec/rooms/keys/profile/read/0.1";
 const PROFILE_WRITE: &str = "https://trusttasks.org/spec/rooms/keys/profile/write/0.1";
 
@@ -635,7 +629,15 @@ async fn an_open_community_room_from_creation_to_use_to_removal() {
     // Steps 1–3 at the VTA, in order; an open room has no group.
     assert_eq!(
         fix.vta.types_called(),
-        vec![MINT, ISSUE_MEMBERSHIP, RECEIVE, ISSUE_AUTHORITY, RECEIVE],
+        vec![
+            MINT,
+            ISSUE_MEMBERSHIP,
+            RECEIVE,
+            ISSUE_AUTHORITY,
+            RECEIVE,
+            PROFILE_READ,
+            PROFILE_WRITE
+        ],
     );
     let calls = fix.vta.calls();
     assert_eq!(calls[0].1["template"], "room");
@@ -782,7 +784,9 @@ async fn a_sealed_community_room_admits_and_removes_through_the_vta() {
             ISSUE_MEMBERSHIP,
             RECEIVE,
             ISSUE_AUTHORITY,
-            RECEIVE
+            RECEIVE,
+            PROFILE_READ,
+            PROFILE_WRITE
         ],
     );
     assert_eq!(fix.vta.calls()[1].1["member"], TEST_VTC_DID);
@@ -855,7 +859,7 @@ async fn a_sealed_community_room_admits_and_removes_through_the_vta() {
         .vta
         .calls()
         .into_iter()
-        .find(|(t, _)| t == GROUP_REMOVE)
+        .find(|(t, _)| t == GROUP_REMOVE_V0_3)
         .unwrap();
     assert_eq!(remove_call.1["host"], TEST_VTC_DID);
 }
@@ -1337,7 +1341,7 @@ async fn vtc_rooms_community_members_refuse_with_their_declared_codes() {
     )
     .await;
     assert_eq!(accepted["payload"]["state"], "admitted", "{accepted}");
-    fix.vta.script(GROUP_REMOVE, Script::Silent);
+    fix.vta.script(GROUP_REMOVE_V0_3, Script::Silent);
     let (_, r) = admin_call(&mut fix, REMOVE, remove(&room, &alice.did)).await;
     assert_eq!(
         tt_error_code(&r),
@@ -1345,7 +1349,7 @@ async fn vtc_rooms_community_members_refuse_with_their_declared_codes() {
         "{r}"
     );
     fix.vta.script(
-        GROUP_REMOVE,
+        GROUP_REMOVE_V0_3,
         Script::Refuse("rooms/owner/group/remove:noAuthority"),
     );
     let (_, r) = admin_call(&mut fix, REMOVE, remove(&room, &alice.did)).await;
@@ -1362,13 +1366,14 @@ async fn vtc_rooms_community_members_refuse_with_their_declared_codes() {
         "{members}"
     );
 
-    // An open offer is withdrawn without the VTA.
+    // An open offer is withdrawn, its credentials at the host too: the VTA revokes them
+    // and nothing else (`members/remove/0.2`).
     let bob = member(&fix).await;
     add_member(&mut fix, &room, &bob.did, &in_a_year()).await;
     fix.vta.clear_calls();
     let (_, r) = admin_call(&mut fix, REMOVE, remove(&room, &bob.did)).await;
     assert_eq!(r["payload"]["member"]["state"], "removed", "{r}");
-    assert!(fix.vta.calls().is_empty());
+    assert_eq!(fix.vta.types_called(), vec![OWNER_REVOKE]);
     let accept = call_as(
         &fix,
         &bob,
@@ -1942,7 +1947,7 @@ async fn host_admin_only(fix: &Fixture) -> Party {
 async fn create_described(fix: &mut Fixture, label: &str, tags: Value) -> String {
     let (status, reply) = admin_call(
         fix,
-        CREATE_V0_2,
+        CREATE,
         json!({
             "label": label, "visibility": "open", "reason": "the board's papers",
             "description": "Papers for the board's meetings.", "tags": tags,
@@ -1997,7 +2002,7 @@ fn row_details(row: &Value) -> Value {
     find(row).expect("a detailsUpdated event")
 }
 
-/// `vtc/rooms/community/update/0.1` items 3–6: each detail given replaces the stored one
+/// `vtc/rooms/community/update/0.3` items 3–6: each detail given replaces the stored one
 /// and the rest are left alone, `tags: []` clears, `removeDescription` removes, a request
 /// that changes nothing writes nothing — no details, no `detailsUpdated*`, no audit row —
 /// and every change is one audit row with each changed detail's previous and new value.
@@ -2028,8 +2033,19 @@ async fn vtc_rooms_community_update_replaces_what_it_names_and_nothing_else() {
     let first_change = after["detailsUpdatedAt"].clone();
     assert!(first_change.is_string());
 
-    // Item 8: nothing reached the VTA, and the host record did not move.
-    assert!(fix.vta.calls().is_empty(), "{:?}", fix.vta.types_called());
+    // Item 8: only the profile — the label and description — reached the VTA (item 10),
+    // never the tags, and the host record did not move.
+    assert_eq!(
+        fix.vta.types_called(),
+        vec![PROFILE_READ, PROFILE_WRITE],
+        "{:?}",
+        fix.vta.calls()
+    );
+    assert!(
+        !fix.vta.calls()[1].1.to_string().contains("finance"),
+        "{:?}",
+        fix.vta.calls()
+    );
     let hosted_after = vti_rooms::storage::get_room(&fix.vtc.state.rooms_ks, &room)
         .await
         .unwrap();
@@ -2199,42 +2215,29 @@ async fn vtc_rooms_community_update_answers_not_found_for_a_room_it_only_hosts()
     assert_eq!(got["payload"]["room"]["label"], "Board pack");
 }
 
-/// 0.1 keeps exactly the shape it published; 0.2 carries the details. `list/0.2`'s `tag`
-/// lists only the rooms carrying it, paged within the filter.
+/// The reads carry each room's details, and its host record's instants as RFC 3339
+/// strings (`vtc/_shared/0.3/community-room`). `list`'s `tag` lists only the rooms carrying
+/// it, paged within the filter.
 #[tokio::test]
-async fn vtc_rooms_community_reads_answer_each_version_in_its_shape() {
+async fn vtc_rooms_community_reads_carry_the_details_and_rfc3339_instants() {
     let mut fix = fixture().await;
     let board = create_described(&mut fix, "Board pack", json!(["board"])).await;
     let library = create_described(&mut fix, "Library", json!(["library"])).await;
     let plain = create_room(&mut fix, "open").await;
 
-    // 0.1: no description, tags or `detailsUpdated*`, whatever the room has.
     let got = call_as(&fix, &fix.admin, GET, json!({ "roomId": board })).await;
-    for absent in [
-        "description",
-        "tags",
-        "detailsUpdatedAt",
-        "detailsUpdatedBy",
-    ] {
+    for instant in ["createdAt", "updatedAt", "epochExpiresAt"] {
+        let at = got["payload"]["room"]["room"][instant]
+            .as_str()
+            .unwrap_or_else(|| panic!("{instant} is a string: {got}"));
         assert!(
-            got["payload"]["room"].get(absent).is_none(),
-            "{absent}: {got}"
+            chrono::DateTime::parse_from_rfc3339(at).is_ok(),
+            "{instant}: {got}"
         );
     }
-    let listed = call_as(&fix, &fix.admin, LIST, json!({})).await;
-    assert_eq!(listed["payload"]["items"].as_array().unwrap().len(), 3);
-    assert!(
-        listed["payload"]["items"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .all(|i| i.get("tags").is_none())
-    );
-
-    // 0.2.
-    let got = call_as(&fix, &fix.admin, GET_V0_2, json!({ "roomId": board })).await;
+    let got = call_as(&fix, &fix.admin, GET, json!({ "roomId": board })).await;
     assert_eq!(got["payload"]["room"]["tags"], json!(["board"]), "{got}");
-    let got = call_as(&fix, &fix.admin, GET_V0_2, json!({ "roomId": plain })).await;
+    let got = call_as(&fix, &fix.admin, GET, json!({ "roomId": plain })).await;
     assert!(got["payload"]["room"].get("tags").is_none(), "{got}");
     assert!(got["payload"]["room"].get("description").is_none(), "{got}");
 
@@ -2246,11 +2249,11 @@ async fn vtc_rooms_community_reads_answer_each_version_in_its_shape() {
             .map(|i| i["room"]["roomId"].as_str().unwrap().to_string())
             .collect()
     };
-    let all = call_as(&fix, &fix.admin, LIST_V0_2, json!({})).await;
+    let all = call_as(&fix, &fix.admin, LIST, json!({})).await;
     assert_eq!(ids(&all).len(), 3, "{all}");
-    let tagged = call_as(&fix, &fix.admin, LIST_V0_2, json!({ "tag": "board" })).await;
+    let tagged = call_as(&fix, &fix.admin, LIST, json!({ "tag": "board" })).await;
     assert_eq!(ids(&tagged), vec![board.clone()], "{tagged}");
-    let none = call_as(&fix, &fix.admin, LIST_V0_2, json!({ "tag": "nothing" })).await;
+    let none = call_as(&fix, &fix.admin, LIST, json!({ "tag": "nothing" })).await;
     assert_eq!(none["payload"]["items"], json!([]), "{none}");
 
     // Paging within the filter: tag both, one per page.
@@ -2266,7 +2269,7 @@ async fn vtc_rooms_community_reads_answer_each_version_in_its_shape() {
     let page1 = call_as(
         &fix,
         &fix.admin,
-        LIST_V0_2,
+        LIST,
         json!({ "tag": "shared", "limit": 1 }),
     )
     .await;
@@ -2275,7 +2278,7 @@ async fn vtc_rooms_community_reads_answer_each_version_in_its_shape() {
     let page2 = call_as(
         &fix,
         &fix.admin,
-        LIST_V0_2,
+        LIST,
         json!({ "tag": "shared", "cursor": next, "limit": 1 }),
     )
     .await;
@@ -2323,7 +2326,7 @@ async fn vtc_rooms_offers_list_shows_the_rooms_description_and_never_its_tags() 
     assert!(offer.get("description").is_none(), "{offer}");
 }
 
-// ─── the room's own profile (create 0.3, update 0.2) ────────────────────
+// ─── the room's own profile (create, update) ─────────────────────────
 
 /// The `rooms/keys/profile/write` requests the stand-in received, in order.
 fn profile_writes(fix: &Fixture) -> Vec<Value> {
@@ -2338,7 +2341,7 @@ fn profile_writes(fix: &Fixture) -> Vec<Value> {
 async fn create_v0_3(fix: &mut Fixture, label: &str, visibility: &str) -> Value {
     let (status, reply) = admin_call(
         fix,
-        CREATE_V0_3,
+        CREATE,
         json!({
             "label": label, "visibility": visibility, "reason": "the board's papers",
             "description": "Papers for the board's meetings.", "tags": ["board", "finance"],
@@ -2349,7 +2352,7 @@ async fn create_v0_3(fix: &mut Fixture, label: &str, visibility: &str) -> Value 
     reply
 }
 
-/// `vtc/rooms/community/create/0.3` step 5 and items 8–9: once the room is stored, the
+/// `vtc/rooms/community/create/0.4` step 5 and items 8–9: once the room is stored, the
 /// community's own VTA is asked to write the label as the profile's `name` and the
 /// description as its `description` — **never the tags** — as the community, with this
 /// community as the host; the answer is `written`, and the room's `get` says so.
@@ -2385,7 +2388,7 @@ async fn vtc_rooms_community_create_0_3_writes_label_and_description_as_the_room
         "{types:?}"
     );
 
-    let (_, got) = admin_call(&mut fix, GET_V0_2, json!({ "roomId": room })).await;
+    let (_, got) = admin_call(&mut fix, GET, json!({ "roomId": room })).await;
     assert_eq!(
         got["payload"]["ext"]["org.openvtc"]["roomProfile"]["state"], "written",
         "{got}"
@@ -2426,7 +2429,7 @@ async fn vtc_rooms_community_create_0_3_answers_pending_and_the_sweeper_writes_i
             .unwrap()
             .is_some()
     );
-    let (_, got) = admin_call(&mut fix, GET_V0_2, json!({ "roomId": room })).await;
+    let (_, got) = admin_call(&mut fix, GET, json!({ "roomId": room })).await;
     let state = &got["payload"]["ext"]["org.openvtc"]["roomProfile"];
     assert_eq!(state["state"], "pending", "{got}");
     assert_eq!(state["attempts"], 1);
@@ -2448,7 +2451,7 @@ async fn vtc_rooms_community_create_0_3_answers_pending_and_the_sweeper_writes_i
         .unwrap();
     assert_eq!(report.written, vec![room.clone()]);
     assert_eq!(fix.vta.profile(&room).unwrap()["name"], "Board pack");
-    let (_, got) = admin_call(&mut fix, GET_V0_2, json!({ "roomId": room })).await;
+    let (_, got) = admin_call(&mut fix, GET, json!({ "roomId": room })).await;
     assert_eq!(
         got["payload"]["ext"]["org.openvtc"]["roomProfile"]["state"], "written",
         "{got}"
@@ -2461,7 +2464,7 @@ async fn vtc_rooms_community_create_0_3_answers_pending_and_the_sweeper_writes_i
     assert!(report.written.is_empty() && profile_writes(&fix).is_empty());
 }
 
-/// `vtc/rooms/community/update/0.2` items 10–11: a rename writes the profile again,
+/// `vtc/rooms/community/update/0.3` items 10–11: a rename writes the profile again,
 /// carrying over the tags and emoji a curator set in the room; a change of the
 /// administrators' tags alone writes nothing (`unchanged`); and the change to the
 /// community's own record stands whatever the VTA answers.
@@ -2484,7 +2487,7 @@ async fn vtc_rooms_community_update_0_2_rewrites_the_profile_on_a_rename_only() 
     let r = call_as(
         &fix,
         &fix.admin,
-        UPDATE_V0_2,
+        UPDATE,
         json!({ "roomId": room, "label": "Board pack — 2027", "reason": "the 2027 cycle" }),
     )
     .await;
@@ -2502,7 +2505,7 @@ async fn vtc_rooms_community_update_0_2_rewrites_the_profile_on_a_rename_only() 
     let r = call_as(
         &fix,
         &fix.admin,
-        UPDATE_V0_2,
+        UPDATE,
         json!({ "roomId": room, "tags": ["archive"], "reason": "filed" }),
     )
     .await;
@@ -2514,7 +2517,7 @@ async fn vtc_rooms_community_update_0_2_rewrites_the_profile_on_a_rename_only() 
     let r = call_as(
         &fix,
         &fix.admin,
-        UPDATE_V0_2,
+        UPDATE,
         json!({ "roomId": room, "label": "Board pack — 2027", "reason": "again" }),
     )
     .await;
@@ -2530,7 +2533,7 @@ async fn vtc_rooms_community_update_0_2_rewrites_the_profile_on_a_rename_only() 
     let r = call_as(
         &fix,
         &fix.admin,
-        UPDATE_V0_2,
+        UPDATE,
         json!({ "roomId": room, "removeDescription": true, "reason": "named a supplier" }),
     )
     .await;
@@ -2541,7 +2544,7 @@ async fn vtc_rooms_community_update_0_2_rewrites_the_profile_on_a_rename_only() 
     let r = call_as(
         &fix,
         &fix.admin,
-        UPDATE_V0_2,
+        UPDATE,
         json!({ "roomId": room, "tags": ["archive", "minutes"], "reason": "refiled" }),
     )
     .await;
@@ -2551,33 +2554,28 @@ async fn vtc_rooms_community_update_0_2_rewrites_the_profile_on_a_rename_only() 
     assert!(written.get("description").is_none(), "{written}");
 }
 
-/// Item 10: a room made before create 0.3 has never had its profile written, so the first
-/// update 0.2 writes it even when it changes nothing — and audits no change. Update 0.1
-/// never reaches the VTA.
+/// Item 10: a room made before create 0.3 (by an older VTC) has never had its profile
+/// written, so the first update writes it even when it changes nothing — and audits no
+/// change.
 #[tokio::test]
-async fn vtc_rooms_community_update_0_2_writes_the_profile_of_a_room_made_before_create_0_3() {
+async fn vtc_rooms_community_update_writes_the_profile_of_a_room_made_before_create_0_3() {
     let mut fix = fixture().await;
     let room = create_described(&mut fix, "Board pack", json!(["board"])).await;
+    // As an older VTC left it: no profile record at all.
+    fix.vtc
+        .state
+        .community_rooms
+        .keyspace()
+        .remove(format!("room-profile:{room}").into_bytes())
+        .await
+        .unwrap();
     fix.vta.clear_calls();
-
-    let r = call_as(
-        &fix,
-        &fix.admin,
-        UPDATE,
-        json!({ "roomId": room, "label": "Board pack", "reason": "nothing" }),
-    )
-    .await;
-    assert!(r["payload"].get("roomProfile").is_none(), "{r}");
-    assert!(
-        fix.vta.calls().is_empty(),
-        "0.1 keeps the details out of the VTA"
-    );
 
     let audited = details_rows(&fix).await.len();
     let r = call_as(
         &fix,
         &fix.admin,
-        UPDATE_V0_2,
+        UPDATE,
         json!({ "roomId": room, "label": "Board pack", "reason": "nothing" }),
     )
     .await;
@@ -2594,7 +2592,7 @@ async fn vtc_rooms_community_update_0_2_writes_the_profile_of_a_room_made_before
     let r = call_as(
         &fix,
         &fix.admin,
-        UPDATE_V0_2,
+        UPDATE,
         json!({ "roomId": room, "label": "Board pack", "reason": "nothing" }),
     )
     .await;
@@ -2646,7 +2644,7 @@ async fn removal_0_2_on_an_open_room_withdraws_the_member_at_the_host() {
     fix.vta.clear_calls();
     let (status, removed) = admin_call(
         &mut fix,
-        REMOVE_V0_2,
+        REMOVE,
         json!({ "roomId": room, "member": alice.did, "reason": "left the board" }),
     )
     .await;
@@ -2685,7 +2683,7 @@ async fn removal_0_2_on_an_attributed_room_withdraws_then_advances() {
     fix.vta.clear_calls();
     let (_, removed) = admin_call(
         &mut fix,
-        REMOVE_V0_2,
+        REMOVE,
         json!({ "roomId": room, "member": alice.did, "reason": "left the board" }),
     )
     .await;
@@ -2714,7 +2712,7 @@ async fn removal_0_2_withdraws_an_open_offers_credentials() {
     fix.vta.clear_calls();
     let (_, removed) = admin_call(
         &mut fix,
-        REMOVE_V0_2,
+        REMOVE,
         json!({ "roomId": room, "member": alice.did, "reason": "changed our minds" }),
     )
     .await;
@@ -2740,7 +2738,7 @@ async fn removal_0_2_records_nothing_until_the_withdrawal_is_accepted() {
     );
     let (_, refused) = admin_call(
         &mut fix,
-        REMOVE_V0_2,
+        REMOVE,
         json!({ "roomId": room, "member": alice.did, "reason": "left the board" }),
     )
     .await;
@@ -2753,7 +2751,7 @@ async fn removal_0_2_records_nothing_until_the_withdrawal_is_accepted() {
     fix.vta.script(OWNER_REVOKE, Script::Silent);
     let (_, silent) = admin_call(
         &mut fix,
-        REMOVE_V0_2,
+        REMOVE,
         json!({ "roomId": room, "member": alice.did, "reason": "left the board" }),
     )
     .await;
@@ -2774,7 +2772,7 @@ async fn a_member_removed_at_0_2_can_be_admitted_again() {
     let (room, alice, _) = admitted_on_open_room(&mut fix).await;
     admin_call(
         &mut fix,
-        REMOVE_V0_2,
+        REMOVE,
         json!({ "roomId": room, "member": alice.did, "reason": "left the board" }),
     )
     .await;
@@ -2824,7 +2822,7 @@ async fn an_earlier_removal_the_vta_gave_up_is_surfaced_and_nothing_is_recorded(
     );
     let (_, refused) = admin_call(
         &mut fix,
-        REMOVE_V0_2,
+        REMOVE,
         json!({ "roomId": room, "member": alice.did, "reason": "left the board" }),
     )
     .await;
@@ -2846,7 +2844,7 @@ async fn an_earlier_removal_the_vta_gave_up_is_surfaced_and_nothing_is_recorded(
 
     let (_, removed) = admin_call(
         &mut fix,
-        REMOVE_V0_2,
+        REMOVE,
         json!({ "roomId": room, "member": alice.did, "reason": "left the board" }),
     )
     .await;

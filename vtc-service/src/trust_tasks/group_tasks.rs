@@ -5,11 +5,11 @@
 //! |---|---|
 //! | `create/0.1` | `vtc.groups.manage` unqualified, then the `groups` policy |
 //! | `update/0.1`, `delete/0.1` | `vtc.groups.manage` for the group, unqualified or `group:<groupId>` |
-//! | `list/0.1`, `show/0.1` | an active member or an administrator, each group as their standing lets them see it |
+//! | `list/0.2`, `show/0.1` | an active member or an administrator, each group as their standing lets them see it |
 //! | `members/{add,remove}/0.1` | a manager of the group |
-//! | `members/list/0.1` | anyone the group shows its members to |
+//! | `members/list/0.2` | anyone the group shows its members to |
 //! | `join/0.1`, `leave/0.1` | an active member, for themselves |
-//! | `requests/list/0.1`, `requests/decide/0.1` | a manager of the request's group; nobody decides their own |
+//! | `requests/list/0.2`, `requests/decide/0.1` | a manager of the request's group; nobody decides their own |
 //! | `managers/add/0.1` | a manager of the group, who covers the grant they write |
 //! | `managers/remove/0.1` | the manager themselves, or `vtc.groups.manage` unqualified |
 //! | `bindings/{add,remove}/0.1` | a manager of the group, after their bound gesture: holding `vtc.rooms.manage` for a room; for grants, holding what it confers, and with consent where that confers authority (VTI-DIR-104) |
@@ -31,12 +31,12 @@ use trust_tasks_rs::specs::vtc::groups::{
     delete::v0_1 as group_delete,
     join::v0_1 as group_join,
     leave::v0_1 as group_leave,
-    list::v0_1 as group_list,
+    list::v0_2 as group_list,
     managers::{add::v0_1 as managers_add, remove::v0_1 as managers_remove},
     members::{
-        add::v0_1 as members_add, list::v0_1 as members_list, remove::v0_1 as members_remove,
+        add::v0_1 as members_add, list::v0_2 as members_list, remove::v0_1 as members_remove,
     },
-    requests::{decide::v0_1 as requests_decide, list::v0_1 as requests_list},
+    requests::{decide::v0_1 as requests_decide, list::v0_2 as requests_list},
     show::v0_1 as group_show,
     update::v0_1 as group_update,
 };
@@ -998,7 +998,7 @@ async fn cursor_key(state: &AppState) -> Result<Option<[u8; 32]>, AppError> {
     })
 }
 
-/// `list/0.1` (items 1 – 4).
+/// `list/0.2` (items 1 – 4).
 async fn handle_list(
     state: &AppState,
     ctx: &JoinAuthCtx,
@@ -1641,7 +1641,7 @@ async fn cursor_start<T>(
     Ok((start, key))
 }
 
-/// `members/list/0.1` (items 1 – 4).
+/// `members/list/0.2` (items 1 – 4).
 async fn handle_members_list(
     state: &AppState,
     ctx: &JoinAuthCtx,
@@ -2145,7 +2145,7 @@ async fn handle_leave(
     .await
 }
 
-/// `requests/list/0.1` (items 1 – 3).
+/// `requests/list/0.2` (items 1 – 3).
 async fn handle_requests_list(
     state: &AppState,
     ctx: &JoinAuthCtx,

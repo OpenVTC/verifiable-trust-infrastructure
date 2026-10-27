@@ -15,13 +15,13 @@ This page says what this build serves.
 | `vtc/groups/create/0.1` | `vtc.groups.manage` at the community | Create a static group: mint its identity at the community's VTA and issue it the community's authority |
 | `vtc/groups/update/0.1` | a manager of the group | Change its name, description, join policy, who sees it and its member list, and whether it issues credentials |
 | `vtc/groups/delete/0.1` | a manager of the group | Delete it: its authority revoked, its memberships ended |
-| `vtc/groups/list/0.1` | an active member or an administrator | The groups the caller may see, each as they may see it |
+| `vtc/groups/list/0.2` | an active member or an administrator | The groups the caller may see, each as they may see it |
 | `vtc/groups/show/0.1` | an active member or an administrator | One group the caller may see |
 | `vtc/groups/members/{add,remove}/0.1` | a manager of the group | Add an active member, or remove one |
-| `vtc/groups/members/list/0.1` | anyone the group shows its members to | The members, each with their directory fields as `entries/show` projects them for the caller |
+| `vtc/groups/members/list/0.2` | anyone the group shows its members to | The members, each with their directory fields as `entries/show` projects them for the caller |
 | `vtc/groups/join/0.1` | an active member, for themselves | Join an `open` group, or ask to join a `request` one |
 | `vtc/groups/leave/0.1` | an active member, for themselves | Leave a group, or withdraw a request |
-| `vtc/groups/requests/list/0.1` | a manager | The requests to the groups the caller manages |
+| `vtc/groups/requests/list/0.2` | a manager | The requests to the groups the caller manages |
 | `vtc/groups/requests/decide/0.1` | a manager, never the requester | Approve or decline a request |
 | `vtc/groups/managers/add/0.1` | a manager of the group | Appoint an active member a manager of it |
 | `vtc/groups/managers/remove/0.1` | the manager, or `vtc.groups.manage` unqualified | End an appointment; a manager may step down |

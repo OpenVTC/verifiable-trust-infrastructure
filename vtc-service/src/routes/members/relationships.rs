@@ -1,4 +1,4 @@
-//! `vtc/relationships/list/0.2` — paginated VRC list per member. Phase 4
+//! `vtc/relationships/list/0.3` — paginated VRC list per member. Phase 4
 //! M4.6.2. Spec §6.1 + §12.3. Signed document only
 //! (`trust_tasks::member_tasks`); the bearer REST route it once also served
 //! (`GET /v1/members/{did}/relationships`) had no caller once the admin
@@ -31,10 +31,10 @@ const MAX_LIMIT: usize = 200;
 
 /// `vtc/relationships/list:notFound` — no member with the supplied DID.
 pub const LIST_ERR_NOT_FOUND: &str =
-    trust_tasks_rs::specs::vtc::relationships::list::v0_2::error_codes::NOT_FOUND.code;
+    trust_tasks_rs::specs::vtc::relationships::list::v0_3::error_codes::NOT_FOUND.code;
 
 /// One page of `did`'s relationships — the operation behind the
-/// `vtc/relationships/list/0.2` Trust Task. Who may read is the door's
+/// `vtc/relationships/list/0.3` Trust Task. Who may read is the door's
 /// decision; this validates the subject, resolves it (`notFound`) and
 /// applies the §12.3 strip.
 pub(crate) async fn list_inner(

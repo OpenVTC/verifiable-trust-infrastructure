@@ -130,7 +130,7 @@ pub const PUBLISH_ERR_SUBJECT_NOT_MEMBER: &str =
     relationships_spec::publish::v0_2::error_codes::SUBJECT_NOT_MEMBER.code;
 /// `vtc/relationships/revoke:notFound` — no relationship with that id.
 pub const REVOKE_ERR_NOT_FOUND: &str =
-    relationships_spec::revoke::v0_1::error_codes::NOT_FOUND.code;
+    relationships_spec::revoke::v0_2::error_codes::NOT_FOUND.code;
 
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct PublishBody {

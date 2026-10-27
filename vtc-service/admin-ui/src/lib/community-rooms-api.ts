@@ -49,10 +49,10 @@ import type {
   CommunityRoomUpdateResponse,
 } from "./wire-types";
 
-export const COMMUNITY_ROOMS_CREATE_TASK = "https://trusttasks.org/spec/vtc/rooms/community/create/0.3";
-export const COMMUNITY_ROOMS_LIST_TASK = "https://trusttasks.org/spec/vtc/rooms/community/list/0.2";
-export const COMMUNITY_ROOMS_GET_TASK = "https://trusttasks.org/spec/vtc/rooms/community/get/0.2";
-export const COMMUNITY_ROOMS_UPDATE_TASK = "https://trusttasks.org/spec/vtc/rooms/community/update/0.2";
+export const COMMUNITY_ROOMS_CREATE_TASK = "https://trusttasks.org/spec/vtc/rooms/community/create/0.4";
+export const COMMUNITY_ROOMS_LIST_TASK = "https://trusttasks.org/spec/vtc/rooms/community/list/0.3";
+export const COMMUNITY_ROOMS_GET_TASK = "https://trusttasks.org/spec/vtc/rooms/community/get/0.3";
+export const COMMUNITY_ROOMS_UPDATE_TASK = "https://trusttasks.org/spec/vtc/rooms/community/update/0.3";
 export const COMMUNITY_ROOMS_MEMBERS_ADD_TASK =
   "https://trusttasks.org/spec/vtc/rooms/community/members/add/0.1";
 export const COMMUNITY_ROOMS_MEMBERS_REMOVE_TASK =
@@ -336,7 +336,7 @@ export async function fetchCommunityRoomMembers(
   return { items, truncated: true, departures: departures ?? [] };
 }
 
-/** `vtc/rooms/community/create/0.3`, after the requester's bound gesture: the
+/** `vtc/rooms/community/create/0.4`, after the requester's bound gesture: the
  *  community's VTA also writes the label and description into the room as its
  *  profile (`roomProfile` says whether it did yet). */
 export function createCommunityRoom(
@@ -350,7 +350,7 @@ export function createCommunityRoom(
   );
 }
 
-/** `vtc/rooms/community/update/0.2` — and a new label or description is written
+/** `vtc/rooms/community/update/0.3` — and a new label or description is written
  *  into the room as its profile. It asks for no gesture; one is given only
  *  if the community's policy asks for it all the same. */
 export function updateCommunityRoom(

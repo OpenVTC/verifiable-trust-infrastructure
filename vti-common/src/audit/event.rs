@@ -1032,7 +1032,7 @@ pub struct CommunityRoomChangedData {
     /// The room's details that changed — `field` is `label`, `description` or
     /// `tags` — each with its value before (`old`, absent when it had none)
     /// and after (`new`, absent when removed): on `detailsUpdated`
-    /// (`vtc/rooms/community/update/0.1` item 6), and on `created` the details
+    /// (`vtc/rooms/community/update/0.3` item 6), and on `created` the details
     /// it was created with. The earlier values are kept here and nowhere on
     /// the wire.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

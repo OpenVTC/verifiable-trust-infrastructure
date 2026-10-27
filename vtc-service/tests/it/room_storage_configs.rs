@@ -18,8 +18,8 @@ use crate::common::second_party::Gesturer;
 use crate::common::signed::{error_code, post, signed};
 
 const RP_ORIGIN: &str = "https://vtc.example.com";
-const LIST: &str = "https://trusttasks.org/spec/vtc/storage/configs/list/0.1";
-const GET: &str = "https://trusttasks.org/spec/vtc/storage/configs/get/0.1";
+const LIST: &str = "https://trusttasks.org/spec/vtc/storage/configs/list/0.2";
+const GET: &str = "https://trusttasks.org/spec/vtc/storage/configs/get/0.2";
 const CREATE: &str = "https://trusttasks.org/spec/vtc/storage/configs/create/0.1";
 const UPDATE: &str = "https://trusttasks.org/spec/vtc/storage/configs/update/0.1";
 const RETIRE: &str = "https://trusttasks.org/spec/vtc/storage/configs/retire/0.1";
@@ -689,8 +689,7 @@ async fn vtc_rooms_storage_assign_refuses_with_its_declared_codes() {
 
 const MIGRATE: &str = "https://trusttasks.org/spec/vtc/rooms/storage/migrate/0.1";
 const MIGRATE_V2: &str = "https://trusttasks.org/spec/vtc/rooms/storage/migrate/0.2";
-const ROOM_GET: &str = "https://trusttasks.org/spec/vtc/rooms/get/0.1";
-const ROOM_GET_V2: &str = "https://trusttasks.org/spec/vtc/rooms/get/0.2";
+const ROOM_GET: &str = "https://trusttasks.org/spec/vtc/rooms/get/0.3";
 
 /// A file of `len` bytes uploaded to `room_id`, as a member's commit leaves it: on the
 /// config the room is assigned to now. Its blob reference.
@@ -934,9 +933,9 @@ async fn vtc_rooms_storage_migrate_refuses_with_its_declared_codes() {
     }
 }
 
-/// `migrate/0.2` items 5, 9 and 11, and `rooms/get/0.2` item 5: a migration approved
+/// `migrate/0.2` items 5, 9 and 11, and `rooms/get/0.3` item 5: a migration approved
 /// once is the community's. Reassigned meanwhile, it keeps its target, which
-/// `rooms/get/0.2` names beside the new assignment; paused, it reports why; issued
+/// `rooms/get/0.3` names beside the new assignment; paused, it reports why; issued
 /// again, it is resumed at once — not parked for consent — keeping its target and
 /// reason, and the resumption is audited with its requester.
 #[tokio::test]
@@ -969,23 +968,15 @@ async fn a_migration_at_0_2_keeps_its_target_and_resumes_without_consent() {
 
     // Reassigned while it is open: it keeps moving to `eu`.
     assign_directly(&fix, &room, "us").await;
-    let got = send(&fix, &a, ROOM_GET_V2, json!({ "roomId": room })).await;
+    let got = send(&fix, &a, ROOM_GET, json!({ "roomId": room })).await;
     let storage = &got["payload"]["storage"];
     assert_eq!(storage["configId"], "us", "{got}");
     assert_eq!(storage["migration"]["toConfig"], "eu", "{got}");
     assert_eq!(storage["migration"]["state"], "running", "{got}");
-    // 0.1 carries no `toConfig` in `rooms/get`.
-    let got = send(&fix, &a, ROOM_GET, json!({ "roomId": room })).await;
-    assert!(
-        got["payload"]["storage"]["migration"]
-            .get("toConfig")
-            .is_none(),
-        "{got}"
-    );
 
-    // Paused (as a restore pauses it): `rooms/get/0.2` and `migrate/0.2` say why.
+    // Paused (as a restore pauses it): `rooms/get/0.3` and `migrate/0.2` say why.
     vtc_service::rooms::migration::pause_after_restore(&fix.vtc.state).await;
-    let got = send(&fix, &a, ROOM_GET_V2, json!({ "roomId": room })).await;
+    let got = send(&fix, &a, ROOM_GET, json!({ "roomId": room })).await;
     let m = &got["payload"]["storage"]["migration"];
     assert_eq!(m["state"], "paused", "{got}");
     assert_eq!(m["pausedCause"], "destination", "{got}");
@@ -1017,7 +1008,7 @@ async fn a_migration_at_0_2_keeps_its_target_and_resumes_without_consent() {
     );
 
     vtc_service::rooms::migration::run(&fix.vtc.state, 1 << 40).await;
-    let got = send(&fix, &a, ROOM_GET_V2, json!({ "roomId": room })).await;
+    let got = send(&fix, &a, ROOM_GET, json!({ "roomId": room })).await;
     let m = &got["payload"]["storage"]["migration"];
     assert_eq!(m["state"], "complete", "{got}");
     assert_eq!(m["toConfig"], "eu");
@@ -1089,7 +1080,7 @@ async fn a_second_migration_to_one_config_is_queued() {
 
     vtc_service::rooms::migration::run(&fix.vtc.state, 1 << 40).await;
     for room in [&first, &second] {
-        let got = send(&fix, &a, ROOM_GET_V2, json!({ "roomId": room })).await;
+        let got = send(&fix, &a, ROOM_GET, json!({ "roomId": room })).await;
         assert_eq!(
             got["payload"]["storage"]["migration"]["state"], "complete",
             "{got}"
@@ -1124,7 +1115,7 @@ async fn a_target_no_longer_active_is_retried_by_the_community() {
     // `eu` drains before the runner reaches the room.
     stored(&fix, "eu", "draining").await;
     vtc_service::rooms::migration::run(&fix.vtc.state, 1 << 40).await;
-    let got = send(&fix, &a, ROOM_GET_V2, json!({ "roomId": room })).await;
+    let got = send(&fix, &a, ROOM_GET, json!({ "roomId": room })).await;
     let m = &got["payload"]["storage"]["migration"];
     assert_eq!(m["state"], "running", "{got}");
     assert_eq!(m["lastError"], "put to eu: the config is draining", "{got}");
@@ -1500,7 +1491,7 @@ mod vta_account {
 /// so it can say how to turn them on rather than offer uploads that would be refused.
 #[tokio::test]
 async fn the_room_list_says_whether_room_files_are_on() {
-    const ROOMS_LIST: &str = "https://trusttasks.org/spec/vtc/rooms/list/0.1";
+    const ROOMS_LIST: &str = "https://trusttasks.org/spec/vtc/rooms/list/0.2";
     let on = fixture().await;
     let a = seed(&on, AdminAuthority::community_admin()).await;
     let reply = send(&on, &a, ROOMS_LIST, json!({})).await;

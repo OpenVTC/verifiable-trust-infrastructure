@@ -27,10 +27,10 @@ use vtc_service::registry::{
 use vtc_service::test_support::TestVtc;
 
 const DIAGNOSTICS: &str = "https://trusttasks.org/spec/vtc/registry/diagnostics/0.1";
-const SYNC_LIST: &str = "https://trusttasks.org/spec/vtc/registry/sync-jobs/list/0.1";
-const SYNC_RETRY: &str = "https://trusttasks.org/spec/vtc/registry/sync-jobs/retry/0.1";
+const SYNC_LIST: &str = "https://trusttasks.org/spec/vtc/registry/sync-jobs/list/0.2";
+const SYNC_RETRY: &str = "https://trusttasks.org/spec/vtc/registry/sync-jobs/retry/0.2";
 const SYNC_DISCARD: &str = "https://trusttasks.org/spec/vtc/registry/sync-jobs/discard/0.1";
-const RECORDS: &str = "https://trusttasks.org/spec/vtc/registry/records/list/0.1";
+const RECORDS: &str = "https://trusttasks.org/spec/vtc/registry/records/list/0.2";
 const AUDIT_LIST: &str = "https://trusttasks.org/spec/audit/list/0.1";
 const AUDIT_VERIFY: &str = "https://trusttasks.org/spec/audit/verify/0.1";
 const CONFIG_SHOW: &str = "https://trusttasks.org/spec/config/show/0.1";

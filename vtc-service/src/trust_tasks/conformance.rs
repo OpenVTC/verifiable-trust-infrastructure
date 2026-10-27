@@ -543,12 +543,14 @@ fn sample_cooling_off(open: bool, caller_role: &str) -> serde_json::Value {
 }
 
 /// A room the community owns, as `vtc/rooms/community/*` answers it.
-fn sample_community_room() -> serde_json::Value {
+fn sample_community_room_v2() -> serde_json::Value {
     json!({
         "room": {
             "roomId": "did:key:z6MkRoom", "ownerDid": "did:example:community",
             "visibility": "attributed", "retentionPolicy": "chained", "epoch": 1,
-            "lifecycle": "live", "retentionDays": 90, "createdAt": 0, "updatedAt": 0,
+            "lifecycle": "live", "retentionDays": 90,
+            "epochExpiresAt": "2027-01-12T10:00:00Z",
+            "createdAt": "2026-10-14T10:00:00Z", "updatedAt": "2026-10-14T10:00:00Z",
         },
         "label": "Board pack",
         "storageConfig": "local",
@@ -556,17 +558,11 @@ fn sample_community_room() -> serde_json::Value {
         "offered": 1,
         "ownerAuthorityValidUntil": "2027-10-14T10:00:00Z",
         "createdBy": "did:key:z6MkAdmin",
+        "description": "Papers for the board's meetings.",
+        "tags": ["board", "finance"],
+        "detailsUpdatedAt": "2026-10-15T09:30:01Z",
+        "detailsUpdatedBy": "did:key:z6MkAdmin",
     })
-}
-
-/// The same room as `vtc/rooms/community/*` 0.2 answers it: with its details.
-fn sample_community_room_v2() -> serde_json::Value {
-    let mut room = sample_community_room();
-    room["description"] = json!("Papers for the board's meetings.");
-    room["tags"] = json!(["board", "finance"]);
-    room["detailsUpdatedAt"] = json!("2026-10-15T09:30:01Z");
-    room["detailsUpdatedBy"] = json!("did:key:z6MkAdmin");
-    room
 }
 
 /// A room's migration as `vti_rooms::blobs` records it.
@@ -612,18 +608,6 @@ fn sample_storage_config() -> serde_json::Value {
         "createdAt": "2026-10-12T09:00:00Z",
         "updatedBy": "did:key:z6MkAdmin",
         "updatedAt": "2026-10-12T10:00:00Z",
-    })
-}
-
-/// Its facts, as `RoomStorage::facts` renders them.
-fn sample_storage_facts() -> serde_json::Value {
-    json!({
-        "rooms": 1,
-        "files": 3,
-        "bytes": 1024,
-        "pendingDeleteBytes": 0,
-        "credential": { "status": "none" },
-        "health": { "lastProbeAt": "2026-10-12T10:00:00Z", "lastProbeOk": true },
     })
 }
 
@@ -1306,51 +1290,18 @@ fn table() -> Vec<Conformance> {
             })
         ),
         // ─── what rooms store and may store (`room_admin_tasks`) ─────
+        // The migration names its target, a paused one says why and when, and the host
+        // record's instants are RFC 3339 strings (0.3).
         checked!(
-            s::rooms::get::v0_1::Payload,
-            s::rooms::get::v0_1::Response,
+            s::rooms::get::v0_3::Payload,
+            s::rooms::get::v0_3::Response,
             json!({ "roomId": "did:key:z6MkRoom" }),
             json!({
                 "room": {
                     "roomId": "did:key:z6MkRoom", "ownerDid": "did:key:zOwner",
                     "visibility": "attributed", "retentionPolicy": "chained", "epoch": 1,
-                    "lifecycle": "live", "retentionDays": 30, "createdAt": 0, "updatedAt": 0,
-                },
-                "storage": {
-                    "configId": "local",
-                    "earlierConfigs": [{ "configId": "old", "files": 1, "bytes": 10 }],
-                    "migration": crate::rooms::migration::progress_json(
-                        &sample_migration(),
-                        crate::rooms::migration::Wire::V0_1,
-                    ),
-                },
-                "limits": {
-                    "limits": {
-                        "filesEnabled": true,
-                        "room": { "maxFiles": 10000, "maxFileBytes": 104857600, "maxBytes": 5368709120u64 },
-                        "member": { "maxFiles": 2000, "maxFileBytes": 104857600, "maxBytes": 1073741824 },
-                    },
-                    "roomSource": "override", "memberSource": "default",
-                    "hostCeilingBytes": 1073741824,
-                },
-                "usage": {
-                    "room": { "files": 3, "bytes": 1800, "reservedBytes": 0, "reservedFiles": 0 },
-                    "orphans": { "files": 1, "bytes": 5, "oldestOrphanedAt": "2026-10-10T10:00:00+00:00" },
-                },
-                "largestBlobs": [{ "size": 900, "configId": "local", "createdAt": "2026-10-10T10:00:00+00:00" }],
-                "membersWithUsage": 1,
-            })
-        ),
-        // 0.2: the migration names its target, and a paused one says why and when.
-        checked!(
-            s::rooms::get::v0_2::Payload,
-            s::rooms::get::v0_2::Response,
-            json!({ "roomId": "did:key:z6MkRoom" }),
-            json!({
-                "room": {
-                    "roomId": "did:key:z6MkRoom", "ownerDid": "did:key:zOwner",
-                    "visibility": "attributed", "retentionPolicy": "chained", "epoch": 1,
-                    "lifecycle": "live", "retentionDays": 30, "createdAt": 0, "updatedAt": 0,
+                    "lifecycle": "live", "retentionDays": 30,
+                    "createdAt": "2026-10-01T00:00:00Z", "updatedAt": "2026-10-10T10:00:00Z",
                 },
                 "storage": {
                     "configId": "local",
@@ -1424,65 +1375,11 @@ fn table() -> Vec<Conformance> {
             })
         ),
         // ─── rooms the community owns (`community_room_tasks`) ───────
+        // The community's VTA writes the label and description into the room as its
+        // profile — here it did not answer yet, so `pending`.
         checked!(
-            s::rooms::community::create::v0_1::Payload,
-            s::rooms::community::create::v0_1::Response,
-            json!({ "label": "Board pack", "visibility": "attributed", "reason": "the board" }),
-            json!({ "room": sample_community_room() })
-        ),
-        checked!(
-            s::rooms::community::list::v0_1::Payload,
-            s::rooms::community::list::v0_1::Response,
-            json!({ "limit": 10 }),
-            json!({
-                "items": [sample_community_room()],
-                "nextCursor": "community-rooms:did:key:z6MkRoom",
-            })
-        ),
-        checked!(
-            s::rooms::community::get::v0_1::Payload,
-            s::rooms::community::get::v0_1::Response,
-            json!({ "roomId": "did:key:z6MkRoom" }),
-            json!({ "room": sample_community_room() })
-        ),
-        checked!(
-            s::rooms::community::create::v0_2::Payload,
-            s::rooms::community::create::v0_2::Response,
-            json!({
-                "label": "Board pack", "visibility": "attributed", "reason": "the board",
-                "description": "Papers for the board's meetings.", "tags": ["board", "finance"],
-            }),
-            json!({ "room": sample_community_room_v2() })
-        ),
-        checked!(
-            s::rooms::community::list::v0_2::Payload,
-            s::rooms::community::list::v0_2::Response,
-            json!({ "limit": 10, "tag": "board" }),
-            json!({
-                "items": [sample_community_room_v2()],
-                "nextCursor": "community-rooms:did:key:z6MkRoom",
-            })
-        ),
-        checked!(
-            s::rooms::community::get::v0_2::Payload,
-            s::rooms::community::get::v0_2::Response,
-            json!({ "roomId": "did:key:z6MkRoom" }),
-            json!({ "room": sample_community_room_v2() })
-        ),
-        checked!(
-            s::rooms::community::update::v0_1::Payload,
-            s::rooms::community::update::v0_1::Response,
-            json!({
-                "roomId": "did:key:z6MkRoom", "label": "Board pack — 2027",
-                "tags": [], "reason": "the 2027 cycle",
-            }),
-            json!({ "room": sample_community_room_v2(), "changed": true })
-        ),
-        // 0.3: as 0.2, and the community's VTA writes the label and description into the
-        // room as its profile — here it did not answer yet, so `pending`.
-        checked!(
-            s::rooms::community::create::v0_3::Payload,
-            s::rooms::community::create::v0_3::Response,
+            s::rooms::community::create::v0_4::Payload,
+            s::rooms::community::create::v0_4::Response,
             json!({
                 "label": "Board pack", "visibility": "attributed", "reason": "the board",
                 "description": "Papers for the board's meetings.", "tags": ["board"],
@@ -1490,11 +1387,26 @@ fn table() -> Vec<Conformance> {
             json!({ "room": sample_community_room_v2(), "roomProfile": "pending" })
         ),
         checked!(
-            s::rooms::community::update::v0_2::Payload,
-            s::rooms::community::update::v0_2::Response,
+            s::rooms::community::list::v0_3::Payload,
+            s::rooms::community::list::v0_3::Response,
+            json!({ "limit": 10, "tag": "board" }),
+            json!({
+                "items": [sample_community_room_v2()],
+                "nextCursor": "community-rooms:did:key:z6MkRoom",
+            })
+        ),
+        checked!(
+            s::rooms::community::get::v0_3::Payload,
+            s::rooms::community::get::v0_3::Response,
+            json!({ "roomId": "did:key:z6MkRoom" }),
+            json!({ "room": sample_community_room_v2() })
+        ),
+        checked!(
+            s::rooms::community::update::v0_3::Payload,
+            s::rooms::community::update::v0_3::Response,
             json!({
                 "roomId": "did:key:z6MkRoom", "label": "Board pack — 2027",
-                "reason": "the 2027 cycle",
+                "tags": [], "reason": "the 2027 cycle",
             }),
             json!({ "room": sample_community_room_v2(), "changed": true, "roomProfile": "written" })
         ),
@@ -1511,21 +1423,6 @@ fn table() -> Vec<Conformance> {
                 "validUntil": "2027-10-01T00:00:00Z", "state": "offered",
                 "offeredAt": "2026-10-14T10:00:00Z",
             } })
-        ),
-        checked!(
-            s::rooms::community::members::remove::v0_1::Payload,
-            s::rooms::community::members::remove::v0_1::Response,
-            json!({ "roomId": "did:key:z6MkRoom", "member": "did:key:z6MkMember", "reason": "left" }),
-            json!({
-                "member": {
-                    "member": "did:key:z6MkMember", "actions": ["read"],
-                    "validUntil": "2027-10-01T00:00:00Z", "state": "removed",
-                    "offeredAt": "2026-10-14T10:00:00Z", "admittedAt": "2026-10-14T11:00:00Z",
-                    "removedAt": "2026-11-02T09:00:00Z",
-                },
-                "epoch": 3,
-                "ext": { "org.openvtc": { "notice": "Removal recalls nothing already read." } },
-            })
         ),
         checked!(
             s::rooms::community::members::remove::v0_2::Payload,
@@ -1615,26 +1512,6 @@ fn table() -> Vec<Conformance> {
             json!({ "roomId": "did:key:z6MkRoom", "state": "admitted", "epoch": 2, "welcome": "AAEAAgADAAQ" })
         ),
         // ─── storage configs (`storage_tasks`) ───────────────────────
-        checked!(
-            s::storage::configs::list::v0_1::Payload,
-            s::storage::configs::list::v0_1::Response,
-            json!({ "state": "active", "limit": 10 }),
-            json!({
-                "items": [{ "config": sample_storage_config(), "facts": sample_storage_facts() }],
-                "nextCursor": "storage-configs:local",
-            })
-        ),
-        checked!(
-            s::storage::configs::get::v0_1::Payload,
-            s::storage::configs::get::v0_1::Response,
-            json!({ "configId": "local" }),
-            json!({
-                "config": sample_storage_config(),
-                "facts": sample_storage_facts(),
-                "assignedRooms": ["did:key:z6MkRoom"],
-                "assignedRoomsTruncated": false,
-            })
-        ),
         checked!(
             s::storage::configs::create::v0_1::Payload,
             s::storage::configs::create::v0_1::Response,
@@ -2049,8 +1926,8 @@ fn table() -> Vec<Conformance> {
             json!({ "entryId": DIRECTORY_ENTRY, "written": ["org.example.chapter"], "revision": 5 })
         ),
         checked!(
-            s::directory::entries::list::v0_1::Payload,
-            s::directory::entries::list::v0_1::Response,
+            s::directory::entries::list::v0_2::Payload,
+            s::directory::entries::list::v0_2::Response,
             json!({
                 "query": "caro",
                 "filters": [{ "field": "org.example.chapter", "values": ["sydney"] }],
@@ -2066,7 +1943,6 @@ fn table() -> Vec<Conformance> {
                     { "value": "sydney", "count": 12 },
                     { "value": "berlin", "fewerThan": 5 },
                 ]}],
-                "nextCursor": null,
             })
         ),
         checked!(
@@ -2677,8 +2553,8 @@ fn table() -> Vec<Conformance> {
         // the registry's verbatim error, and the attempt count that separates
         // "answered and refused" from "never answered".
         checked!(
-            s::registry::sync_jobs::list::v0_1::Payload,
-            s::registry::sync_jobs::list::v0_1::Response,
+            s::registry::sync_jobs::list::v0_2::Payload,
+            s::registry::sync_jobs::list::v0_2::Response,
             json!({ "state": "failed", "limit": 50 }),
             // `job_wire` — routes/registry_admin.rs. A failed row carries no
             // `nextAttemptAt`: it has no schedule, and claiming one would be
@@ -2697,26 +2573,11 @@ fn table() -> Vec<Conformance> {
                 }],
             })
         ),
-        checked!(
-            s::registry::sync_jobs::retry::v0_1::Payload,
-            s::registry::sync_jobs::retry::v0_1::Response,
-            json!({ "jobId": "07c6c189-8272-4761-96e9-0ef869380665" }),
-            // Both halves are always present, including when one is empty:
-            // "requeued nothing" and "declined nothing" are distinct answers
-            // and a consumer must not have to infer either from absence.
-            json!({
-                "requeued": [{
-                    "jobId": "07c6c189-8272-4761-96e9-0ef869380665",
-                    "memberDid": "did:web:member.example",
-                }],
-                "skipped": [{
-                    "jobId": "1f2e3d4c-5b6a-4798-8765-43210fedcba9",
-                    "reason": "notFailed",
-                }],
-            })
-        ),
-        // `sync_jobs_retry_v0_2`: a pending job brought forward says so, and
-        // an RTBF-batched one is `held`.
+        // `sync_jobs_retry`: a pending job brought forward says so, and an
+        // RTBF-batched one is `held`. Both halves are always present,
+        // including when one is empty: "requeued nothing" and "declined
+        // nothing" are distinct answers and a consumer must not have to
+        // infer either from absence.
         checked!(
             s::registry::sync_jobs::retry::v0_2::Payload,
             s::registry::sync_jobs::retry::v0_2::Response,
@@ -2743,8 +2604,8 @@ fn table() -> Vec<Conformance> {
             })
         ),
         checked!(
-            s::registry::records::list::v0_1::Payload,
-            s::registry::records::list::v0_1::Response,
+            s::registry::records::list::v0_2::Payload,
+            s::registry::records::list::v0_2::Response,
             json!({ "source": "registry", "limit": 50 }),
             // `source` is echoed, so a consumer never infers which view it
             // received from the request it believes it sent.
@@ -2762,8 +2623,8 @@ fn table() -> Vec<Conformance> {
         ),
         // ─── relationships ───────────────────────────────────────────
         checked!(
-            s::relationships::list::v0_2::Payload,
-            s::relationships::list::v0_2::Response,
+            s::relationships::list::v0_3::Payload,
+            s::relationships::list::v0_3::Response,
             json!({ "did": DID, "cursor": "eyJsYXN0S2V5Ijoi", "limit": 50 }),
             // This fixture said `vrcSha256` — the `0.1` member — while the
             // service had already moved to a multibase digest. The table
@@ -2831,13 +2692,6 @@ fn table() -> Vec<Conformance> {
             // service no longer computes.
             json!({ "id": REQUEST_ID, "issuerDid": DID, "subjectDid": OTHER_DID,
                     "vrcDigestMultibase": "zQmbGXRT3v1RmfWkQ7Y3Z5Uj9pKq2NcXhLd8sVtA4eB6nMw" })
-        ),
-        checked!(
-            s::relationships::revoke::v0_1::Payload,
-            s::relationships::revoke::v0_1::Response,
-            json!({ "id": REQUEST_ID }),
-            // `RevokeResponse` — routes/relationships.rs:423.
-            json!({ "id": REQUEST_ID })
         ),
         checked!(
             s::relationships::revoke::v0_2::Payload,
@@ -3105,8 +2959,8 @@ fn table() -> Vec<Conformance> {
             })
         ),
         checked!(
-            s::groups::list::v0_1::Payload,
-            s::groups::list::v0_1::Response,
+            s::groups::list::v0_2::Payload,
+            s::groups::list::v0_2::Response,
             json!({ "joinable": true, "limit": 50 }),
             json!({ "items": [{ "group": group_wire(), "myMembership": "none" }] })
         ),
@@ -3129,8 +2983,8 @@ fn table() -> Vec<Conformance> {
             json!({ "groupId": "grp_W5k2N8xRb3Qz7TpLAAAAAA", "entryId": DIRECTORY_ENTRY, "state": "removed", "credentialValidUntil": "2026-11-18T09:00:00Z" })
         ),
         checked!(
-            s::groups::members::list::v0_1::Payload,
-            s::groups::members::list::v0_1::Response,
+            s::groups::members::list::v0_2::Payload,
+            s::groups::members::list::v0_2::Response,
             json!({ "groupId": "grp_W5k2N8xRb3Qz7TpLAAAAAA", "limit": 50 }),
             json!({ "items": [{ "entryId": DIRECTORY_ENTRY, "source": "added", "since": "2026-10-19T09:00:00Z", "state": "active", "credentialId": "urn:uuid:5a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d", "credentialValidUntil": "2026-11-18T09:00:00Z" }] })
         ),
@@ -3147,8 +3001,8 @@ fn table() -> Vec<Conformance> {
             json!({ "groupId": "grp_W5k2N8xRb3Qz7TpLAAAAAA", "state": "left", "credentialValidUntil": "2026-11-18T09:00:00Z" })
         ),
         checked!(
-            s::groups::requests::list::v0_1::Payload,
-            s::groups::requests::list::v0_1::Response,
+            s::groups::requests::list::v0_2::Payload,
+            s::groups::requests::list::v0_2::Response,
             json!({ "groupId": "grp_W5k2N8xRb3Qz7TpLAAAAAA", "state": "pending" }),
             json!({ "items": [{ "request": { "requestId": "greq_W5k2N8xRb3Qz7TpLAAAAAA", "groupId": "grp_W5k2N8xRb3Qz7TpLAAAAAA", "entryId": DIRECTORY_ENTRY, "message": "I work on identity.", "createdAt": "2026-10-19T09:00:00Z", "state": "pending" } }] })
         ),
@@ -3205,10 +3059,10 @@ fn table() -> Vec<Conformance> {
             json!({ "note": admin_note().wire() })
         ),
         checked!(
-            s::directory::notes::list::v0_1::Payload,
-            s::directory::notes::list::v0_1::Response,
+            s::directory::notes::list::v0_2::Payload,
+            s::directory::notes::list::v0_2::Response,
             json!({ "entryId": DIRECTORY_ENTRY, "limit": 20 }),
-            json!({ "items": [admin_note().wire()], "nextCursor": null })
+            json!({ "items": [admin_note().wire()] })
         ),
         checked!(
             s::directory::notes::export::v0_1::Payload,
@@ -3221,8 +3075,8 @@ fn table() -> Vec<Conformance> {
             })
         ),
         checked!(
-            s::directory::export::v0_1::Payload,
-            s::directory::export::v0_1::Response,
+            s::directory::export::v0_2::Payload,
+            s::directory::export::v0_2::Response,
             json!({ "format": "jscontact", "reason": "Annual archive.", "limit": 200 }),
             json!({
                 "items": [{
@@ -3232,7 +3086,6 @@ fn table() -> Vec<Conformance> {
                     "name": { "full": "Carol Example" },
                     "role": "member",
                 }],
-                "nextCursor": null,
                 "exportedAt": "2026-10-19T09:00:00Z",
             })
         ),
@@ -3656,8 +3509,8 @@ fn table() -> Vec<Conformance> {
             })
         ),
         checked!(
-            s::rooms::list::v0_1::Payload,
-            s::rooms::list::v0_1::Response,
+            s::rooms::list::v0_2::Payload,
+            s::rooms::list::v0_2::Response,
             json!({ "lifecycle": "live", "cursor": "o0", "limit": 50 }),
             json!({
                 "items": [to_v(crate::routes::rooms::HostedRoom {
@@ -3667,11 +3520,11 @@ fn table() -> Vec<Conformance> {
                     retention_policy: "chained".into(),
                     epoch: 3,
                     lifecycle: "live".into(),
-                    epoch_expires_at: Some(1_787_654_400),
+                    epoch_expires_at: Some("2026-08-25T00:00:00Z".into()),
                     retention_days: 30,
                     mirror_of: None,
-                    created_at: 1_787_000_000,
-                    updated_at: 1_787_500_000,
+                    created_at: "2026-08-17T20:53:20Z".into(),
+                    updated_at: "2026-08-23T15:46:40Z".into(),
                 })],
             })
         ),

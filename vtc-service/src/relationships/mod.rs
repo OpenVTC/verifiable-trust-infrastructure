@@ -146,7 +146,7 @@ pub struct Relationship {
     /// [`crate::credentials::lifecycle`].
     ///
     /// **Known spec lag.** `Relationship` is both the stored row and the item
-    /// shape of `spec/vtc/relationships/list/0.2`, whose response schema is
+    /// shape of `spec/vtc/relationships/list/0.3`, whose response schema is
     /// `additionalProperties: false` and predates this member — as it predates
     /// [`Relationship::persona`], added the same way in #1067. A listed edge
     /// that has had a lifecycle event therefore carries a member the published

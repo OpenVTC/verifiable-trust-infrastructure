@@ -502,7 +502,7 @@ answers it ([approver step-up](../05-design-notes/vtc-approver-step-up.md)).
 There is no CLI for either side of that yet.
 
 Creating the config asks VTA C once and probes the bucket through it;
-`vtc/storage/configs/get/0.1` (`{"configId": "localstack"}`) then shows
+`vtc/storage/configs/get/0.2` (`{"configId": "localstack"}`) then shows
 `"lastProbeOk": true`. Files already in the room stay where they were written;
 **Move existing files** on the room's page moves them too (parked like the
 assignment, then run in the background):
@@ -512,7 +512,7 @@ assignment, then run in the background):
 {"roomId": "$ROOM", "reason": "…", "maxBytesPerSecond": 1048576}
 ```
 
-`vtc/rooms/get/0.2` reports its progress as `storage.migration` — its destination,
+`vtc/rooms/get/0.3` reports its progress as `storage.migration` — its destination,
 its state (`queued`, `running`, `paused`, `complete`, `failed`) and, when paused,
 why and when the community tries again by itself.
 

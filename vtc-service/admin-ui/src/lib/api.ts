@@ -800,7 +800,7 @@ export const fetchDiagnostics = (): Promise<DiagnosticsResponse> =>
 // these are the online half, and they share the daemon's eligibility rule
 // rather than re-deriving it.
 const SYNC_JOBS_LIST_TASK =
-  "https://trusttasks.org/spec/vtc/registry/sync-jobs/list/0.1";
+  "https://trusttasks.org/spec/vtc/registry/sync-jobs/list/0.2";
 const SYNC_JOBS_RETRY_TASK =
   "https://trusttasks.org/spec/vtc/registry/sync-jobs/retry/0.2";
 const SYNC_JOBS_DISCARD_TASK =
@@ -1098,7 +1098,7 @@ export const fetchRelationshipsGraph = (): Promise<RelationshipsGraph> =>
   postSignedRead<RelationshipsGraph>(RELATIONSHIPS_GRAPH_TASK, {});
 
 const MEMBER_RELATIONSHIPS_TASK =
-  "https://trusttasks.org/spec/vtc/relationships/list/0.2";
+  "https://trusttasks.org/spec/vtc/relationships/list/0.3";
 
 /** One relationship row as the community stored it, credential body included.
  *  Unlike `GraphHalf` — which is body-free by design, because the graph shows

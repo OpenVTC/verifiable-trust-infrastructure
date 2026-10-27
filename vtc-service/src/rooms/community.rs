@@ -49,9 +49,9 @@ use crate::server::AppState;
 /// the error-code census.
 pub mod codes {
     use trust_tasks_rs::specs::vtc::rooms::community::{
-        create::v0_1 as create, get::v0_1 as get, members::add::v0_1 as add,
-        members::list::v0_1 as members_list, members::remove::v0_1 as remove,
-        update::v0_1 as update,
+        create::v0_4 as create, get::v0_3 as get, members::add::v0_1 as add,
+        members::list::v0_1 as members_list, members::remove::v0_2 as remove,
+        update::v0_3 as update,
     };
     use trust_tasks_rs::specs::vtc::rooms::memberships::list::v0_1 as memberships_list;
     use trust_tasks_rs::specs::vtc::rooms::offers::{accept::v0_1 as accept, list::v0_1 as list};
@@ -130,8 +130,9 @@ pub struct OwnedRoom {
     /// The `<id>` this service serves the room's log under, for a serverless identity.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub did_path: Option<String>,
-    /// What the room is for (`vtc/rooms/community/update/0.1`). Like [`Self::label`], the
-    /// owner's record only: never in the host record, the room or anything sent to its VTA.
+    /// What the room is for (`vtc/rooms/community/update/0.3`). Like [`Self::label`], the
+    /// owner's record: never in the host record, and in the room only as its profile,
+    /// written by its VTA ([`crate::rooms::community_profile`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
     /// What administrators file the room under, as a set kept sorted. Shown to holders of
@@ -570,7 +571,7 @@ impl CommunityRooms {
 
     /// Store a change to a room's details only. The `rooms` topic covers the host's view,
     /// which carries no room's details, so this is the `communityRooms` topic's alone
-    /// (`vtc/rooms/community/update/0.2` *Live updates*).
+    /// (`vtc/rooms/community/update/0.3` *Live updates*).
     pub async fn put_room_details(&self, room: &OwnedRoom) -> Result<(), AppError> {
         self.ks.insert(room_key(&room.room_id), room).await?;
         changed();

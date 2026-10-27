@@ -233,7 +233,7 @@ When adding a flow, add it here and a line to the root index.
   the only retry owner (capped backoff + jitter); failures are `warn`ed,
   audited at the start of a run, and shown in `get`/`list`'s
   `ext["org.openvtc"].authorityRenewal`. No "renew now" task exists.
-- **The room's profile** (create 0.3 / update 0.2, `rooms::community_profile`): the label
+- **The room's profile** (create 0.4 / update 0.3, `rooms::community_profile`): the label
   and description — never the tags — go only to the community's own VTA in
   `rooms/keys/profile/write`, as the community, and into the room sealed; never the host
   record, a credential or `register`. A write that did not land is `pending`, never a failed
@@ -247,7 +247,7 @@ When adding a flow, add it here and a line to the root index.
 ### VTC room file migration (`vtc/rooms/storage/migrate`)
 - **What**: Moves a hosted room's existing blobs onto the storage config it is
   assigned to (`data-rooms-files.md` §7.3; 0.2 served beside 0.1, each answered
-  at its own version, one engine; `vtc/rooms/get/0.2` reports the migration through
+  at its own version, one engine; `vtc/rooms/get/0.3` reports the migration through
   `vtc/_shared/0.1/room-migration`): copy, read back and verify against
   every chunk digest and the whole-blob digest of the committed manifest, switch,
   and the old copy deleted by collection after the orphan grace window. No key.
