@@ -119,27 +119,46 @@
           and nothing on this card is secret. The image is rendered by the
           daemon at /v1/community/did-qr.svg; it stays hidden until it
           loads, so a VTC with no profile yet shows only the text.
+
+          A phone cannot scan its own screen, so on a device with a touch
+          screen "Join in Keyring" links to the same bare DID: a DID is a
+          URI (scheme `did`), and the wallet that registers that scheme
+          takes the tap exactly as it takes a scan of the code. It opens the
+          wallet's join flow, not sign-in, hence the label. It shows as
+          soon as the DID is known, whether or not the image loads. On a
+          phone it comes first and the code is folded away, since the code
+          only helps another device.
         -->
         <section class="pass" aria-labelledby="pass-heading">
           <div class="pass-head">
             <h2 id="pass-heading">Community DID</h2>
             <span class="pass-public">Public, nothing secret</span>
           </div>
-          <div class="pass-qr" id="pass-qr" hidden>
-            <img
-              id="pass-qr-img"
-              alt="QR code of the community DID"
-              width="264"
-              height="264"
-              decoding="async"
-            />
-          </div>
-          <p class="pass-caption" id="pass-caption" hidden>
-            <span class="pass-caption-scan">Scan with Keyring</span>
-            <span class="pass-caption-touch">
-              On this phone? Copy the DID into Keyring instead.
-            </span>
+          <a id="pass-open" class="btn btn-primary pass-open" hidden>
+            Join in Keyring
+          </a>
+          <p class="pass-open-note" id="pass-open-note" hidden>
+            New here? Join in Keyring, or copy the DID. Already a member?
+            Use Member sign-in above.
           </p>
+          <details class="pass-fold" id="pass-fold" open hidden>
+            <summary>
+              <span class="pass-fold-show">Show the code for another device</span>
+              <span class="pass-fold-hide">Hide the code</span>
+            </summary>
+            <div class="pass-fold-body">
+              <div class="pass-qr">
+                <img
+                  id="pass-qr-img"
+                  alt="QR code of the community DID"
+                  width="264"
+                  height="264"
+                  decoding="async"
+                />
+              </div>
+              <p class="pass-caption">Scan with Keyring</p>
+            </div>
+          </details>
           <div class="did-cell">
             <code id="community-did" class="did-value">…</code>
             <button
