@@ -120,16 +120,21 @@ function showTransports(transports) {
  * image, its caption and the hero hint stay hidden until it has loaded, so
  * a VTC whose profile is not initialised yet (404) shows the text alone
  * rather than a broken image.
+ *
+ * "Open in Keyring" (shown on touch devices only, by the stylesheet) links
+ * to the same DID, so a tap on the phone does what a scan would.
  */
-function showDidQr() {
+function showDidQr(did) {
   const frame = document.getElementById("pass-qr");
   const img = document.getElementById("pass-qr-img");
   if (!frame || !img || img.getAttribute("src")) return;
+  const open = document.getElementById("pass-open");
+  if (open) open.href = did;
   img.addEventListener(
     "load",
     () => {
       frame.hidden = false;
-      for (const id of ["pass-caption", "pass-hint"]) {
+      for (const id of ["pass-caption", "pass-hint", "pass-open"]) {
         const el = document.getElementById(id);
         if (el) el.hidden = false;
       }
@@ -289,7 +294,7 @@ async function refresh() {
       // window before the profile is initialised.
       if (profile.communityDid) {
         setText("community-did", profile.communityDid);
-        showDidQr();
+        showDidQr(profile.communityDid);
       }
       if (profile.description) {
         setText("community-description", profile.description);

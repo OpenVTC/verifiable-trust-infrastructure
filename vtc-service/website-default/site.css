@@ -936,10 +936,20 @@ code {
   color: var(--text-muted);
 }
 
+/* The same DID as a link, for the wallet on this phone. `.btn` sets a
+ * display, so `[hidden]` alone would not hide it. */
+.pass-open {
+  display: none;
+}
+
 @media (hover: none) and (pointer: coarse) {
   .pass-caption-touch {
     display: block;
     margin-top: 0.25rem;
+  }
+
+  .pass-open:not([hidden]) {
+    display: flex;
   }
 
   .hero-hint {

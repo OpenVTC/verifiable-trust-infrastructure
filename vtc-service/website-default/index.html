@@ -119,6 +119,11 @@
           and nothing on this card is secret. The image is rendered by the
           daemon at /v1/community/did-qr.svg; it stays hidden until it
           loads, so a VTC with no profile yet shows only the text.
+
+          A phone cannot scan its own screen, so there "Open in Keyring"
+          links to the same bare DID: a DID is a URI (scheme `did`), and
+          the wallet that registers that scheme takes the tap exactly as
+          it takes a scan of the code.
         -->
         <section class="pass" aria-labelledby="pass-heading">
           <div class="pass-head">
@@ -137,9 +142,12 @@
           <p class="pass-caption" id="pass-caption" hidden>
             <span class="pass-caption-scan">Scan with Keyring</span>
             <span class="pass-caption-touch">
-              On this phone? Copy the DID into Keyring instead.
+              On this phone? Open it in Keyring, or copy the DID.
             </span>
           </p>
+          <a id="pass-open" class="btn btn-primary pass-open" hidden>
+            Open in Keyring
+          </a>
           <div class="did-cell">
             <code id="community-did" class="did-value">…</code>
             <button
