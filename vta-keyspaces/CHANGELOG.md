@@ -2,6 +2,28 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.23.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-keyspaces-v0.22.0...vta-keyspaces-v0.23.0) — 2026-10-27
+
+
+### Added
+
+- **rooms**: Serve and send only the current rooms/keys and rooms/owner/group versions ([#2295](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2295))
+
+The VTA stops serving the superseded member-key-holder and owner-group versions,
+  and every sender (vta-sdk, vta-cli-common/pnm, the VTC as a community's owner)
+  sends the current one with no fallback:
+
+  - rooms/keys/open 0.1 -> 0.2, file-key 0.1 -> 0.2, seal 0.1 -> 0.2,
+    key-package 0.1 -> 0.2, list 0.1 -> 0.2, chain 0.1 -> 0.2,
+    backfill 0.1 -> 0.2 (fetching with rooms/epoch/chain/0.2 only)
+  - rooms/owner/group/add 0.1, 0.2 -> 0.3; remove 0.2 -> 0.3; renew 0.1 -> 0.2
+
+  rooms/owner/group/remove/0.1 is kept, served and sent: 0.3 refuses a private
+  room (privateRoom) and names 0.1 as that tier's removal, so withdrawing 0.1
+  would leave no way to remove a member of a private room.
+
+
+
 ## [0.22.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-keyspaces-v0.21.0...vta-keyspaces-v0.22.0) — 2026-10-26
 
 

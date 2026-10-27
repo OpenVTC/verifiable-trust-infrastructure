@@ -2,6 +2,117 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.74.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-sdk-v0.73.0...vta-sdk-v0.74.0) — 2026-10-27
+
+
+### Added
+
+- **vtc**: Serve the current vtc/auth, list, manifest and resend versions only ([#2298](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2298))
+
+The VTC stops serving superseded Trust Task versions in the vtc/auth,
+  join-requests, members, endorsements, endorsement-types and vetting
+  families, and every in-repo sender (admin console, member portal,
+  vtc-client, cnm-cli) moves to the current version:
+
+  - vtc/auth/admin-session 0.1 -> 0.2: `expiresAt` is an RFC 3339
+    date-time, not Unix seconds.
+  - vtc/auth/recognise/challenge 0.1 -> 0.2: `expiresAt` RFC 3339.
+  - vtc/auth/recognise 0.2 -> 0.3: `data.accessExpiresAt` RFC 3339.
+  - vtc/{members,join-requests,endorsements,endorsement-types}/list
+    0.1 -> 0.2: `nextCursor` is absent on the last page, never `null`.
+    Fixed at the cause: `vti_common::pagination::Paginated` now omits a
+    `None` cursor (no list schema requires the member, so 0.1 lists
+    still conform).
+  - vtc/join-requests/manifest: 0.3 no longer served (0.4 only); the
+    0.2/0.3 generated vocabulary types (VettingRequirements,
+    CommunityBranding, RequestedAttribute, Criterion) are replaced by
+    0.4's throughout, including vta_sdk::openapi wrappers
+    (JoinManifest04*), vtc-client and cnm-cli.
+  - vtc/vetting/vetters/resend 0.1 no longer served (0.2 only);
+    VETTING_VETTER_RESEND_TYPE now names 0.2 and the *_0_2_* constants
+    are removed. A non-administrator naming `memberDid` is refused
+    permissionDenied (0.2 Conformance item 2).
+
+  vtc/install/claim/{start,finish} 0.2 is deliberately left served: 0.3
+  is a different ceremony (claim under a DID the founder already holds,
+  with a step-up approver), and its own specification says "a passkey
+  install keeps using 0.2". Retiring 0.2 would remove passkey install.
+
+  admin-ui openapi.json and wire.ts regenerated.
+
+- **rooms**: Room hosts serve only the current create, records/get, epoch/prune and blobs versions ([#2297](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2297))
+
+Room hosts (vtc-service, room-host) stop serving rooms/create/0.1,
+  rooms/records/get/0.1, rooms/epoch/prune/0.1, rooms/blobs/get/0.1 and
+  rooms/blobs/upload/{begin,chunk,commit,abort}/0.1, and every sender in the
+  workspace moves to the current version (trust-tasks-tf#921).
+
+  A proxied upload's chunk, commit and abort are now always signed by the
+  single-use uploadKey the begin names, never by the member
+  (rooms/blobs/upload/begin/0.2 items 3, 14-15).
+
+  rooms/records/put 0.1/0.2 and rooms/epoch/chain 0.1 stay served: rooms/keys/act
+  0.6, the newest act VTI serves, completes no later version of either, so
+  removing them would break every member write and chain read made through a
+  VTA. Direct senders move to put 0.3 and chain 0.2 now.
+
+- **persona**: Serve only the current attribute/profile/world/contact task versions ([#2296](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2296))
+
+* feat(persona)!: serve only the current persona attribute/profile/world/contact versions
+
+  attribute/put, attribute/promote, profile/put, profile/compose,
+  local/profile/put, world/put and contact/lists/put move 1.0 -> 1.1;
+  contact/put 1.0 and 1.1 -> 1.2; contact/get and contact/list 1.0 -> 1.1.
+  The old versions are no longer served. On the wire the create-or-replace
+  responses rename created -> wasCreated; contact get/list answer the
+  holder's annotations.
+
+- **rooms**: Serve and send only the current rooms/keys and rooms/owner/group versions ([#2295](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2295))
+
+The VTA stops serving the superseded member-key-holder and owner-group versions,
+  and every sender (vta-sdk, vta-cli-common/pnm, the VTC as a community's owner)
+  sends the current one with no fallback:
+
+  - rooms/keys/open 0.1 -> 0.2, file-key 0.1 -> 0.2, seal 0.1 -> 0.2,
+    key-package 0.1 -> 0.2, list 0.1 -> 0.2, chain 0.1 -> 0.2,
+    backfill 0.1 -> 0.2 (fetching with rooms/epoch/chain/0.2 only)
+  - rooms/owner/group/add 0.1, 0.2 -> 0.3; remove 0.2 -> 0.3; renew 0.1 -> 0.2
+
+  rooms/owner/group/remove/0.1 is kept, served and sent: 0.3 refuses a private
+  room (privateRoom) and names 0.1 as that tier's removal, so withdrawing 0.1
+  would leave no way to remove a member of a private room.
+
+
+
+### Chore
+
+- **deps**: Trust-tasks-rs 0.35 (affinidi-messaging-sdk 0.41, affinidi-tdk 0.33, mediator 0.46) ([#2300](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2300))
+
+* chore(deps)!: trust-tasks-rs 0.35 (affinidi-messaging-sdk 0.41, affinidi-tdk 0.33, mediator 0.46)
+
+  trust-tasks-rs, -proof, -https, -didcomm, -tsp and -capability-client
+  0.34 -> 0.35 (0.35.3), in lockstep with affinidi-messaging-sdk 0.41,
+  affinidi-tdk 0.33 (affinidi-tdk-rs #975) and the mediator crates 0.46,
+  which are built on them. One trust-tasks-rs in the graph.
+
+  0.35 brings the lowerCamelCase registry/* versions with record validity
+  windows (trust-tasks-tf #925), which the VTC's registry client needs
+  ([#2287](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2287)), and marks every superseded spec version deprecated
+  (trust-tasks-tf #921). VTI still names many superseded versions while it
+  moves to the current ones, so `deprecated` is allowed for the workspace
+  (and in room-host, vti-rooms, vti-voting and vti-witness, which do not
+  inherit its lints), with a note to remove it when that move is done and
+  before those versions are withdrawn.
+
+  0.35's Type URI parser accepts any scheme but `http`, case-insensitively,
+  for third-party registries (trust-tasks-tf #922, #934), and keeps the
+  authority as written. `HTTPS://trusttasks.org/...` now parses, as a
+  lookalike authority rather than an unparseable string; the proof-purpose
+  classifier still gives it Authentication, never the attestation purpose.
+  The classifier test moves it to the lookalike list.
+
+
+
 ## [0.73.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-sdk-v0.72.0...vta-sdk-v0.73.0) — 2026-10-26
 
 

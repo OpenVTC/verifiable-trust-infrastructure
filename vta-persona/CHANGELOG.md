@@ -2,6 +2,24 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.27.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-persona-v0.26.0...vta-persona-v0.27.0) — 2026-10-27
+
+
+### Added
+
+- **persona**: Serve only the current attribute/profile/world/contact task versions ([#2296](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2296))
+
+* feat(persona)!: serve only the current persona attribute/profile/world/contact versions
+
+  attribute/put, attribute/promote, profile/put, profile/compose,
+  local/profile/put, world/put and contact/lists/put move 1.0 -> 1.1;
+  contact/put 1.0 and 1.1 -> 1.2; contact/get and contact/list 1.0 -> 1.1.
+  The old versions are no longer served. On the wire the create-or-replace
+  responses rename created -> wasCreated; contact get/list answer the
+  holder's annotations.
+
+
+
 ## [0.26.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-persona-v0.25.0...vta-persona-v0.26.0) — 2026-10-26
 
 
