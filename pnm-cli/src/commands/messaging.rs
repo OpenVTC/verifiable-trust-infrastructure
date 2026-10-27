@@ -25,7 +25,7 @@ use vta_sdk::client::VtaClient;
 use vta_sdk::did_secrets::select_secret_kid;
 
 use affinidi_messaging_mediator_admin::account_hash;
-use affinidi_messaging_mediator_admin::specs::account::update::v0_1::AccountType;
+use affinidi_messaging_mediator_admin::specs::account::update::v0_2::AccountType;
 
 use crate::cli::{GrantRole, MessagingCommands};
 

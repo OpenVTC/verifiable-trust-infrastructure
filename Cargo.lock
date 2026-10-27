@@ -392,9 +392,9 @@ dependencies = [
 
 [[package]]
 name = "affinidi-messaging-mediator"
-version = "0.46.0"
+version = "0.47.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d0405a488cffdccba56525f3cc99c4966e05c94a5822e587c76551b0751c93d1"
+checksum = "bf1fa8e69f33268356e6beb281504ca61f392f01b33de97d2d0af6e968b69134"
 dependencies = [
  "affinidi-crypto",
  "affinidi-data-integrity",
@@ -450,6 +450,7 @@ dependencies = [
  "tower-http 0.7.1",
  "tracing",
  "tracing-subscriber",
+ "trust-tasks-build",
  "trust-tasks-proof",
  "trust-tasks-rs",
  "url",
@@ -458,9 +459,9 @@ dependencies = [
 
 [[package]]
 name = "affinidi-messaging-mediator-admin"
-version = "0.46.0"
+version = "0.47.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cbe46024c6b40a96049b595c18608b919148f8457b1bd0933e7409e0c810e996"
+checksum = "171f7186103fa0f9d5f70d4c6e32c5381c1e03ab0a1afdfe1b3cd91cac2e1e33"
 dependencies = [
  "affinidi-did-common",
  "affinidi-messaging-didcomm",
@@ -480,9 +481,9 @@ dependencies = [
 
 [[package]]
 name = "affinidi-messaging-mediator-common"
-version = "0.46.0"
+version = "0.47.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "83746196e2a80ad10a778d1b7b143b356c2ccc34fc0c7c01a84ca61b3930132e"
+checksum = "39fcf5f8683e507210d53fefc22682eb9b1ffa28b9155ed624f35993dbdb18d5"
 dependencies = [
  "aes-gcm 0.11.1",
  "affinidi-did-common",
@@ -519,9 +520,9 @@ dependencies = [
 
 [[package]]
 name = "affinidi-messaging-mediator-config"
-version = "0.46.0"
+version = "0.47.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cf593be74cec0c294514a893fd6ad7e4c46928553be5624b55b4896bcb19c97c"
+checksum = "59c1d71d424bfac8dcbe0c149497e8845748839ecb61b6958a6a63ede23d6daf"
 dependencies = [
  "affinidi-messaging-mediator-common",
  "serde",
@@ -533,9 +534,9 @@ dependencies = [
 
 [[package]]
 name = "affinidi-messaging-mediator-tui"
-version = "0.46.0"
+version = "0.47.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "795e4aec7cf4c3e37db6753a070b6d8abdf71a85781924b2614ce61ce6449351"
+checksum = "e63ddb37d7247ca635638f67e5d77627d337e8ca664b01918f1c13d469a2cbbf"
 dependencies = [
  "affinidi-messaging-mediator-admin",
  "chrono",
@@ -566,9 +567,9 @@ dependencies = [
 
 [[package]]
 name = "affinidi-messaging-sdk"
-version = "0.41.0"
+version = "0.43.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a35e9501eca35be2b057945970a8b87429e8c98e17e49986c094e7008cb1a22d"
+checksum = "36ae36daba1610ae26bc107a9bf00dda66f69e0ab73cd832280ad62842a2186f"
 dependencies = [
  "affinidi-crypto",
  "affinidi-did-authentication",
@@ -598,6 +599,7 @@ dependencies = [
  "tokio",
  "tokio-tungstenite 0.30.0",
  "tracing",
+ "trust-tasks-build",
  "trust-tasks-proof",
  "trust-tasks-rs",
  "uuid",
@@ -605,9 +607,9 @@ dependencies = [
 
 [[package]]
 name = "affinidi-messaging-test-mediator"
-version = "0.46.0"
+version = "0.47.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "610bcc07eb8abb5dc680d526186a7998c4a5d42cdc9d7f374754854af0340c43"
+checksum = "c28e8512090471274ed5bc4cc3319664572c4e2002bb83e49b8da0dd105f14dc"
 dependencies = [
  "affinidi-did-resolver-cache-sdk",
  "affinidi-messaging-didcomm",
@@ -801,9 +803,9 @@ dependencies = [
 
 [[package]]
 name = "affinidi-tdk"
-version = "0.33.0"
+version = "0.35.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "040e9136dab935bac0fccd8e23a6e7f3b9255ee70888baf096259de6ef0e32cd"
+checksum = "e095a99362ccd8178c2208ae5dbcf23685febd64854c43f40705a33b5990048d"
 dependencies = [
  "affinidi-crypto",
  "affinidi-data-integrity",
@@ -9398,6 +9400,18 @@ dependencies = [
 
 [[package]]
 name = "schemars"
+version = "0.8.22"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3fbf2ae1b8bc8e02df939598064d22402220cd5bbcca1c76f7d6a310974d5615"
+dependencies = [
+ "dyn-clone",
+ "schemars_derive 0.8.22",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "schemars"
 version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4cd191f9397d57d581cddd31014772520aa448f65ef991055d7f61582c65165f"
@@ -9417,9 +9431,21 @@ dependencies = [
  "chrono",
  "dyn-clone",
  "ref-cast",
- "schemars_derive",
+ "schemars_derive 1.2.3",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "schemars_derive"
+version = "0.8.22"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "32e265784ad618884abaea0600a9adf15393368d840e0222d101a072f3f7534d"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "serde_derive_internals 0.29.1",
+ "syn 2.0.119",
 ]
 
 [[package]]
@@ -9430,7 +9456,7 @@ checksum = "e1c3a92094fa7d61aa124645844facb6b554dfc797136d0f5fd1f890e2bffc69"
 dependencies = [
  "proc-macro2",
  "quote",
- "serde_derive_internals",
+ "serde_derive_internals 0.30.0",
  "syn 3.0.9",
 ]
 
@@ -9645,6 +9671,17 @@ dependencies = [
 
 [[package]]
 name = "serde_derive_internals"
+version = "0.29.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "18d26a20a969b9e3fdf2fc2d9f21eda6c40e2de84c9408bb5d3b05d499aae711"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
+]
+
+[[package]]
+name = "serde_derive_internals"
 version = "0.30.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f852137cce035d6a4df67ccce505ff6b3e9fd3a10e3e52b24dc71e650bb1a9bd"
@@ -9717,6 +9754,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4e7523beb55eece201a2356bee0bbca0d1ab466c14c07703b2e0ee6d42cb0c2c"
 dependencies = [
  "serde_core",
+]
+
+[[package]]
+name = "serde_tokenstream"
+version = "0.2.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d7c49585c52c01f13c5c2ebb333f14f6885d76daa768d8a037d28017ec538c69"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "serde",
+ "syn 2.0.119",
 ]
 
 [[package]]
@@ -10901,6 +10950,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "trust-tasks-build"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c9b7c7c19d0bf6b8d8069a61bfe116a5b5de58d752e93d1f7ef02f7757b7861e"
+dependencies = [
+ "anyhow",
+ "heck",
+ "prettyplease",
+ "proc-macro2",
+ "quote",
+ "schemars 0.8.22",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "syn 2.0.119",
+ "toml",
+ "typify",
+]
+
+[[package]]
 name = "trust-tasks-capability-client"
 version = "0.35.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -11157,6 +11226,53 @@ dependencies = [
  "quote",
  "rustc_version",
  "syn 2.0.119",
+]
+
+[[package]]
+name = "typify"
+version = "0.6.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bc0b89f47309feaeb23c4509c15c9a04234f7deccef6f96c3bfe95319819a304"
+dependencies = [
+ "typify-impl",
+ "typify-macro",
+]
+
+[[package]]
+name = "typify-impl"
+version = "0.6.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fa7b026f540b148b81043c720889dbb942b08659aa8a43f624ac4f04dbfc1861"
+dependencies = [
+ "heck",
+ "log",
+ "proc-macro2",
+ "quote",
+ "regress 0.11.1",
+ "schemars 0.8.22",
+ "semver",
+ "serde",
+ "serde_json",
+ "syn 2.0.119",
+ "thiserror 2.0.21",
+ "unicode-ident",
+]
+
+[[package]]
+name = "typify-macro"
+version = "0.6.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "39ed96c57f06ae0839416b986921a98f18b220da63bbb243a8570a00c8492183"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "schemars 0.8.22",
+ "semver",
+ "serde",
+ "serde_json",
+ "serde_tokenstream",
+ "syn 2.0.119",
+ "typify-impl",
 ]
 
 [[package]]

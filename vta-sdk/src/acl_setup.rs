@@ -74,7 +74,9 @@ use affinidi_tdk::messaging::ATM;
 use affinidi_tdk::messaging::profiles::ATMProfile;
 use sha2::{Digest, Sha256};
 use tracing::{debug, info, warn};
-use trust_tasks_rs::specs::messaging::account;
+// The SDK generates its own messaging/* types (affinidi-messaging-sdk 0.42+);
+// its `account_update` takes those, not `trust_tasks_rs::specs`.
+use affinidi_tdk::messaging::tasks::messaging::account;
 
 /// Set a client's own ACL on the mediator to accept all messages.
 ///
@@ -332,7 +334,7 @@ fn build_account_update_document(
 ) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
     use trust_tasks_rs::TrustTask;
 
-    let payload: account::update::v0_1::Payload = account::update::v0_1::Payload::builder()
+    let payload: account::update::v0_2::Payload = account::update::v0_2::Payload::builder()
         .did(client_acl_hash(client_did))
         .acl(Some(build_allow_all_acl()))
         .try_into()
@@ -368,11 +370,11 @@ fn client_acl_hash(did: &str) -> String {
 /// permits sending, receiving, forwarding, and anonymous messages. The
 /// access-list mode is set to ExplicitDeny (denylist semantics), allowing all
 /// except explicitly denied entries.
-fn build_allow_all_acl() -> account::update::v0_1::MediatorAcl {
+fn build_allow_all_acl() -> account::update::v0_2::MediatorAcl {
     // The self-manage flags are deliberately left unset so the mediator's
     // defaults apply — which is what the builder does with a member never
     // named, exactly as `..Default::default()` did.
-    account::update::v0_1::MediatorAcl::builder()
+    account::update::v0_2::MediatorAcl::builder()
         .blocked(Some(false))
         .local(Some(true))
         .send_messages(Some(true))
@@ -382,7 +384,7 @@ fn build_allow_all_acl() -> account::update::v0_1::MediatorAcl {
         .create_invites(Some(true))
         .anon_receive(Some(true))
         .access_list_mode(Some(
-            account::update::v0_1::MediatorAclAccessListMode::ExplicitDeny,
+            account::update::v0_2::MediatorAclAccessListMode::ExplicitDeny,
         ))
         .try_into()
         .expect("MediatorAcl has no required member")
