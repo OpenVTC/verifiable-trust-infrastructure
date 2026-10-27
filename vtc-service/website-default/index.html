@@ -120,7 +120,7 @@
           daemon at /v1/community/did-qr.svg; it stays hidden until it
           loads, so a VTC with no profile yet shows only the text.
 
-          A phone cannot scan its own screen, so there "Open in Keyring"
+          A phone cannot scan its own screen, so there "Join in Keyring"
           links to the same bare DID: a DID is a URI (scheme `did`), and
           the wallet that registers that scheme takes the tap exactly as
           it takes a scan of the code.
@@ -142,11 +142,12 @@
           <p class="pass-caption" id="pass-caption" hidden>
             <span class="pass-caption-scan">Scan with Keyring</span>
             <span class="pass-caption-touch">
-              On this phone? Open it in Keyring, or copy the DID.
+              New here? Join in Keyring, or copy the DID. Already a
+              member? Use Member sign-in above.
             </span>
           </p>
           <a id="pass-open" class="btn btn-primary pass-open" hidden>
-            Open in Keyring
+            Join in Keyring
           </a>
           <div class="did-cell">
             <code id="community-did" class="did-value">…</code>

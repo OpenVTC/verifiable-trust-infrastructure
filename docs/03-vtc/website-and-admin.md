@@ -307,10 +307,13 @@ community profile is initialised. An operator site under
 `<img src="/v1/community/did-qr.svg" alt="QR code of the community DID">`.
 
 A phone cannot scan its own screen, so on a touch device the page also
-shows **Open in Keyring**: a link to the same bare DID
+shows **Join in Keyring**: a link to the same bare DID
 (`<a href="did:webvh:…">`). The phone hands the tap to the app that
 registers the `did` scheme, and Keyring routes it exactly as it routes a
-scan, into joining the community. Without such an app installed, the
+scan, into joining the community. It is labelled *Join* so a member
+does not take it for sign-in, and the caption points members to
+**Member sign-in**. The page sets the link only for a value of the
+form `did:<method>:…`. Without such an app installed, the
 tap does nothing (Android) or reports an invalid address (iOS), so the
 Copy button stays beside it. An operator site can offer the same link
 with the DID from `public-profile`'s `communityDid`.

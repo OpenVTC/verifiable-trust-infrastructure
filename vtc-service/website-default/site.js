@@ -121,20 +121,26 @@ function showTransports(transports) {
  * a VTC whose profile is not initialised yet (404) shows the text alone
  * rather than a broken image.
  *
- * "Open in Keyring" (shown on touch devices only, by the stylesheet) links
- * to the same DID, so a tap on the phone does what a scan would.
+ * "Join in Keyring" (shown on touch devices only, by the stylesheet) links
+ * to the same DID, so a tap on the phone does what a scan would. It opens
+ * the wallet's join flow, not sign-in, hence the label. The link is set
+ * only for a value that is a DID, so the page never puts another scheme
+ * (`javascript:`, `https:`) behind a button that says it opens a wallet.
  */
 function showDidQr(did) {
   const frame = document.getElementById("pass-qr");
   const img = document.getElementById("pass-qr-img");
   if (!frame || !img || img.getAttribute("src")) return;
   const open = document.getElementById("pass-open");
-  if (open) open.href = did;
+  const linkable = typeof did === "string" && /^did:[a-z0-9]+:\S+$/.test(did);
+  if (open && linkable) open.href = did;
   img.addEventListener(
     "load",
     () => {
       frame.hidden = false;
-      for (const id of ["pass-caption", "pass-hint", "pass-open"]) {
+      const shown = ["pass-caption", "pass-hint"];
+      if (linkable) shown.push("pass-open");
+      for (const id of shown) {
         const el = document.getElementById(id);
         if (el) el.hidden = false;
       }
