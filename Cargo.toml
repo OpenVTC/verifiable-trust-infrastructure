@@ -130,7 +130,8 @@ uniffi = "0.32"
 # rely on.
 # 0.33 moves in lockstep with `trust-tasks-rs` 0.35 and `affinidi-messaging-sdk`
 # 0.41 (affinidi-tdk-rs #975), and with mediator 0.46.
-affinidi-tdk = "0.33"
+# 0.35 goes with `affinidi-messaging-sdk` 0.43 and mediator 0.47.
+affinidi-tdk = "0.35"
 # Raw crypto primitives (ed25519↔x25519 conversion, did:key helpers). Pulled
 # directly so sealed-transfer can use `affinidi_crypto::did_key::*` without
 # going through the higher-level Secret wrapper in secrets-resolver.
@@ -279,7 +280,12 @@ affinidi-messaging-core = "0.1"
 # (affinidi-tdk-rs #965, VTI-KEY-163).
 # 0.41 is the `trust-tasks-rs` 0.35 release (affinidi-tdk-rs #975), the one
 # mediator 0.46 is built on.
-affinidi-messaging-sdk = { version = "0.41", default-features = false }
+# 0.43 speaks the `messaging/*` 0.2 tasks (ping, account/*, audit/list,
+# message/status), falling back to 0.1 for a mediator before 0.47
+# (affinidi-tdk-rs #977), and takes and returns its own generated types:
+# `affinidi_tdk::messaging::tasks`, not `trust_tasks_rs::specs::messaging`.
+# Mediator 0.47 serves 0.2 (affinidi-messaging-mediator #40).
+affinidi-messaging-sdk = { version = "0.43", default-features = false }
 # Async `Stream` combinators (`StreamExt`, `BoxStream`) for draining the
 # delivery layer's `subscribe()` inbound. Matches the `= "0.3"` pin the
 # services already use directly.
