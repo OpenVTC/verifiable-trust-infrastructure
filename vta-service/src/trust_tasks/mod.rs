@@ -93,6 +93,7 @@ mod policy;
 mod policy_gate;
 #[cfg(test)]
 mod produced_census;
+mod proofs;
 #[cfg(feature = "webvh")]
 mod provision_integration;
 pub(crate) mod received;
@@ -306,11 +307,33 @@ const UNSPECCED_DISPATCHED_URIS: &[&str] = &[
     "https://trusttasks.org/spec/vault/unarchive/0.1",
     "https://trusttasks.org/spec/vault/restore/0.1",
     "https://trusttasks.org/spec/vault/purge/0.1",
-    //   The eight `vault/credentials/*` entries that sat here are gone: the
     //   family was specified upstream (trust-tasks-tf#338) and shipped in
     //   trust-tasks-rs 0.17.4, so it has a published schema, a conformance
     //   witness, and payload validation on the dispatch spine. Debt discharged
     //   by specification rather than by deletion.
+    // (keys/sign-jws/0.1 was here while the Agent Gateway integration carried a
+    //  hand-written, `typ`-allow-listed body ahead of a spec. It was specified
+    //  upstream and shipped in trust-tasks-rs 0.35, so the wire types are the
+    //  generated ones and the spine validates the payload. Debt discharged by
+    //  specification.)
+    // ─ vta/credentials/issue-in-context/0.1 — issuing as a *context's* DID
+    //   rather than as the VTA. `credentials/issue/0.2` is published but is
+    //   instance-super-admin gated by construction (it signs with the VTA's
+    //   own key), so it cannot serve an agent that delegates its own
+    //   credential signing. Added ahead of an upstream spec for the Agent
+    //   Gateway integration; author the spec upstream and bump trust-tasks-rs
+    //   to discharge this entry.
+    "https://trusttasks.org/spec/vta/credentials/issue-in-context/0.1",
+    // ─ vta/contexts/set-issuer-key/0.1 — the designation the task above
+    //   resolves. Not a member on the published `contexts/update/1.0`, whose
+    //   schema forbids additional properties. Spec both upstream together.
+    "https://trusttasks.org/spec/vta/contexts/set-issuer-key/0.1",
+    // ─ vta/proofs/attach/0.1 — a server-built Data-Integrity proof signed by a
+    //   persisted context key. `keys/derive-and-sign-document` is published but
+    //   is super-admin and signs with an ephemeral derived key, so its
+    //   verification method resolves to nothing. Spec upstream alongside the
+    //   two entries above.
+    "https://trusttasks.org/spec/vta/proofs/attach/0.1",
 ];
 
 /// A dispatched handler's future, on the heap. See `dispatch_typed`.
@@ -2712,6 +2735,22 @@ dispatch_table! {
     // holder set rather than any one credential's claims — bodies are never
     // returned — so the exposure class stays `None` too.
     vta_sdk::trust_tasks::TASK_VTA_CREDENTIALS_LIST_0_1 => credentials::handle_list
+        [ None None false ],
+    // Issues as a *context's* DID with that context's own key, so the
+    // authority it needs is over the context rather than over the instance —
+    // no step-up, unlike `issue/0.2` which signs as the VTA itself. The gate
+    // lives in `operations::credentials::issue_in_context`.
+    vta_sdk::trust_tasks::TASK_VTA_CREDENTIALS_ISSUE_IN_CONTEXT_0_1 => credentials::handle_issue_in_context
+        [ Mutating None false ],
+    // Designating a context's issuer key decides which key a context-scoped
+    // caller reaches through the task above, so it is super-admin like every
+    // other context mutation.
+    vta_sdk::trust_tasks::TASK_CONTEXTS_SET_ISSUER_KEY_0_1 => contexts::handle_set_issuer_key
+        [ Mutating None false ],
+    // Server-built DI proofs. `None` side-effect: nothing durable is written
+    // beyond the audit row — the proof goes back to the caller and the VTA
+    // keeps no copy, the same shape as `keys/derive-and-sign-document`.
+    vta_sdk::trust_tasks::TASK_PROOFS_ATTACH_0_1 => proofs::handle_attach
         [ None None false ],
     // ─── Agent-memory slice (spec/vta/memory/*) ──────────────────
     // Per-context key/value store; gated on context access (require_context),
@@ -5145,6 +5184,157 @@ mod response_coverage {
             json!({ "credentialId": id, "reason": "coverage" }),
         )
         .await;
+    }
+
+    /// `credentials/issue-in-context/0.1` over the spine, driven by a caller
+    /// holding **only** the target context — the authority the task exists to
+    /// be reachable by, and the one the dispatch spine must therefore let
+    /// through without instance authority or step-up.
+    #[tokio::test]
+    async fn credentials_issue_in_context_over_the_spine() {
+        let (state, _dir) = build_signing_test_app_state().await;
+        const CTX: &str = "cov-issue-in-ctx";
+        a_context(&state, CTX).await;
+
+        // Mint the context's issuer key and designate it. Both are
+        // administrative acts, so they run as super-admin; issuance below
+        // does not.
+        let key = ok(
+            &state,
+            t::TASK_KEYS_CREATE_0_1,
+            json!({ "keyType": "ed25519", "contextId": CTX }),
+        )
+        .await;
+        let created = &key["key"];
+        let key_id = created["keyId"]
+            .as_str()
+            .unwrap_or_else(|| panic!("keys/create must name the key: {key}"))
+            .to_owned();
+        let public_key = created["publicKey"]
+            .as_str()
+            .unwrap_or_else(|| panic!("keys/create must return the public key: {key}"))
+            .to_owned();
+        ok(
+            &state,
+            t::TASK_CONTEXTS_UPDATE_1_0,
+            json!({
+                "id": CTX,
+                "did": format!("did:key:{public_key}"),
+            }),
+        )
+        .await;
+        ok(
+            &state,
+            t::TASK_CONTEXTS_SET_ISSUER_KEY_0_1,
+            json!({ "id": CTX, "keyId": key_id }),
+        )
+        .await;
+
+        let vta_did = state.config.read().await.vta_did.clone().expect("vta_did");
+        let body = signed_body(
+            t::TASK_VTA_CREDENTIALS_ISSUE_IN_CONTEXT_0_1,
+            &vta_did,
+            json!({
+                "contextId": CTX,
+                "holder": "did:key:zSpineHolder",
+                "claims": { "role": "agent" },
+                "validitySeconds": 3600u64,
+            }),
+        );
+        let outcome = super::dispatch_trust_task_core(
+            &state,
+            &crate::test_support::admin_claims_for_context(CTX),
+            &body,
+            transport::TransportConfidentiality::HopByHop,
+        )
+        .await;
+        let doc: Value = serde_json::from_slice(&outcome.body).expect("a response document");
+        assert_eq!(
+            doc["type"],
+            format!("{}#response", t::TASK_VTA_CREDENTIALS_ISSUE_IN_CONTEXT_0_1),
+            "a context-scoped caller must get a success response: {doc}"
+        );
+        assert_eq!(
+            doc["payload"]["credential"]["issuer"],
+            format!("did:key:{public_key}"),
+            "the credential must be issued as the context's DID: {doc}"
+        );
+        assert_eq!(
+            doc["payload"]["verificationMethod"],
+            format!("did:key:{public_key}#{public_key}"),
+            "the resolved verification method must be echoed: {doc}"
+        );
+    }
+
+    /// `proofs/attach/0.1` over the spine, driven by a caller holding only the
+    /// target context — the authority this task exists to be reachable by.
+    #[tokio::test]
+    async fn proofs_attach_over_the_spine() {
+        let (state, _dir) = build_signing_test_app_state().await;
+        const CTX: &str = "cov-attach-proof";
+        a_context(&state, CTX).await;
+
+        let key = ok(
+            &state,
+            t::TASK_KEYS_CREATE_0_1,
+            json!({ "keyType": "ed25519", "contextId": CTX }),
+        )
+        .await;
+        let created = &key["key"];
+        let key_id = created["keyId"].as_str().expect("key id").to_owned();
+        let public_key = created["publicKey"]
+            .as_str()
+            .expect("public key")
+            .to_owned();
+        ok(
+            &state,
+            t::TASK_CONTEXTS_UPDATE_1_0,
+            json!({ "id": CTX, "did": format!("did:key:{public_key}") }),
+        )
+        .await;
+        ok(
+            &state,
+            t::TASK_CONTEXTS_SET_ISSUER_KEY_0_1,
+            json!({ "id": CTX, "keyId": key_id, "proofPurpose": "authentication" }),
+        )
+        .await;
+
+        let vta_did = state.config.read().await.vta_did.clone().expect("vta_did");
+        let body = signed_body(
+            t::TASK_PROOFS_ATTACH_0_1,
+            &vta_did,
+            json!({
+                "contextId": CTX,
+                "document": {
+                    "@context": ["https://www.w3.org/ns/credentials/v2"],
+                    "type": ["VerifiablePresentation"],
+                    "holder": "did:key:zSpineHolder",
+                },
+                "proofPurpose": "authentication",
+            }),
+        );
+        let outcome = super::dispatch_trust_task_core(
+            &state,
+            &crate::test_support::admin_claims_for_context(CTX),
+            &body,
+            transport::TransportConfidentiality::HopByHop,
+        )
+        .await;
+        let doc: Value = serde_json::from_slice(&outcome.body).expect("a response document");
+        assert_eq!(
+            doc["type"],
+            format!("{}#response", t::TASK_PROOFS_ATTACH_0_1),
+            "a context-scoped caller must get a success response: {doc}"
+        );
+        assert_eq!(
+            doc["payload"]["document"]["proof"]["verificationMethod"],
+            format!("did:key:{public_key}#{public_key}"),
+            "the proof must be signed by the context's designated key: {doc}"
+        );
+        assert_eq!(
+            doc["payload"]["document"]["proof"]["proofPurpose"],
+            "authentication"
+        );
     }
 
     /// A context's DID can be repointed after creation.

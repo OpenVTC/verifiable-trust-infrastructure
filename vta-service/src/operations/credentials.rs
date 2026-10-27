@@ -23,8 +23,11 @@ use affinidi_secrets_resolver::secrets::Secret;
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use tracing::info;
 
+use crate::auth::AuthClaims;
 use crate::error::AppError;
+use crate::operations::context_signing;
 use crate::operations::internal_authority::InternalAuthority;
 use crate::server::AppState;
 use crate::store::KeyspaceHandle;
@@ -32,6 +35,9 @@ use vta_sdk::did_key::decode_private_key_multibase;
 use vta_sdk::protocols::credentials_issuance::{
     IssuedCredentialStatus, IssuedCredentialSummary, ListCredentialsBody, ListCredentialsResponse,
 };
+
+/// The audit action `issue_in_context` records refusals under.
+const ISSUE_IN_CONTEXT_ACTION: &str = "credentials.issue-in-context";
 
 /// VC Data Model 2.0 base context — every issued VC carries this.
 const VC_V2_CONTEXT: &str = "https://www.w3.org/ns/credentials/v2";
@@ -169,6 +175,156 @@ pub async fn issue_credential(
 
     store_put(&state.issued_credentials_ks, &record).await?;
     Ok(record)
+}
+
+/// Parameters for [`issue_in_context`].
+pub struct IssueInContextParams<'a> {
+    pub context_id: &'a str,
+    pub holder: &'a str,
+    pub claims: &'a Value,
+    pub credential_type: Option<&'a str>,
+    pub validity_seconds: u64,
+    /// Extra JSON-LD context URLs appended after the VC Data Model 2.0 base.
+    ///
+    /// A credential whose type defines its own terms needs the context that
+    /// declares them, and the issuer — not the VTA — is what knows which one.
+    /// The VTA does not resolve or interpret them; they travel with the
+    /// credential for its verifier.
+    pub additional_contexts: &'a [String],
+    /// The verification method the caller asserts will sign. Never selects a
+    /// key — a disagreement is refused.
+    pub expected_verification_method: Option<&'a str>,
+}
+
+/// What [`issue_in_context`] produced: the stored record plus the verification
+/// method that actually signed, which the caller did not choose and otherwise
+/// could only recover by parsing the proof back out.
+pub struct IssuedInContext {
+    pub record: IssuedCredentialRecord,
+    pub verification_method: String,
+}
+
+/// Mint a VC **as `context_id`'s own DID**, signed by that context's designated
+/// issuer key.
+///
+/// Unlike [`issue_credential`], this needs no instance authority: the authority
+/// it needs is over the context, which `sign_payload` enforces on the resolved
+/// key and which this function re-states up front so a refusal names the
+/// context rather than a key the caller never mentioned.
+///
+/// The key is resolved, never supplied. Three things then hold by construction:
+/// the credential's `issuer` is the DID whose verification method signed it
+/// (what a verifier checks); the VTA's own `#key-0` is unreachable, because it
+/// is not designated by any context; and rotating a context's issuer key is
+/// invisible to callers.
+///
+/// Private key material is never held here. The proof's signing input is built
+/// with `prepare_sign_input` and handed to the signing oracle, so an
+/// **internal** (non-exportable) key — the right custody for an issuer key —
+/// works exactly like any other.
+pub async fn issue_in_context(
+    state: &AppState,
+    auth: &AuthClaims,
+    params: IssueInContextParams<'_>,
+    channel: &str,
+) -> Result<IssuedInContext, AppError> {
+    let claims_obj = params
+        .claims
+        .as_object()
+        .ok_or_else(|| AppError::Validation("claims must be a JSON object".to_string()))?;
+    if claims_obj.is_empty() {
+        return Err(AppError::Validation(
+            "claims must be a non-empty object".to_string(),
+        ));
+    }
+    if params.validity_seconds == 0 {
+        return Err(AppError::Validation(
+            "validitySeconds must be greater than zero".to_string(),
+        ));
+    }
+
+    let context_id = params.context_id;
+    let signer = context_signing::resolve_signer(
+        state,
+        auth,
+        channel,
+        context_signing::SignerRequest {
+            context_id,
+            // The issuer designation, not a proof-purpose one: a credential's
+            // `issuer` is a single DID with a single assertion key.
+            proof_purpose: None,
+            expected_verification_method: params.expected_verification_method,
+            action: ISSUE_IN_CONTEXT_ACTION,
+        },
+    )
+    .await?;
+
+    let now = Utc::now();
+    let expires = now + Duration::seconds(params.validity_seconds as i64);
+    let id = format!("urn:uuid:{}", uuid::Uuid::new_v4());
+
+    let mut subject = claims_obj.clone();
+    subject.insert("id".to_string(), Value::String(params.holder.to_string()));
+
+    let mut types = vec![Value::String("VerifiableCredential".to_string())];
+    if let Some(ct) = params.credential_type {
+        types.push(Value::String(ct.to_string()));
+    }
+
+    let mut contexts = vec![Value::String(VC_V2_CONTEXT.to_string())];
+    for context in params.additional_contexts {
+        // The base context is already first; a caller repeating it would make
+        // the credential non-conformant rather than more correct.
+        if context != VC_V2_CONTEXT {
+            contexts.push(Value::String(context.clone()));
+        }
+    }
+
+    let mut vc = json!({
+        "@context": contexts,
+        "id": id,
+        "type": types,
+        "issuer": signer.issuer_did,
+        "validFrom": rfc3339(now),
+        "validUntil": rfc3339(expires),
+        "credentialSubject": Value::Object(subject),
+    });
+
+    let proof = context_signing::sign_data_integrity_proof(
+        state,
+        auth,
+        channel,
+        &vc,
+        &signer,
+        "assertionMethod",
+    )
+    .await?;
+    context_signing::attach_proof(&mut vc, &proof)?;
+
+    let record = IssuedCredentialRecord {
+        id: id.clone(),
+        holder: params.holder.to_string(),
+        credential: vc,
+        issued_at: rfc3339(now),
+        expires_at: rfc3339(expires),
+        revoked_at: None,
+        revocation_reason: None,
+    };
+
+    store_put(&state.issued_credentials_ks, &record).await?;
+
+    info!(
+        channel,
+        context_id,
+        credential_id = %id,
+        verification_method = %signer.verification_method,
+        "credential issued in context"
+    );
+
+    Ok(IssuedInContext {
+        record,
+        verification_method: signer.verification_method,
+    })
 }
 
 /// Revoke a previously-issued credential by id.

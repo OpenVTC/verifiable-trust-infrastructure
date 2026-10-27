@@ -467,7 +467,7 @@ const UNPUBLISHED_CANONICAL_OK: &[(&str, usize, &str)] = &[
     // 77.
     (
         "https://trusttasks.org/spec/vta/",
-        4,
+        7,
         "VTA Trust Task surface at 1.0 — predates the registry and was never reconciled with it. \
          Down from 55 via #840 phase A: config/{get,update} onto config/{show,patch}, \
          provision-integration/request onto provision/integration/0.2, acl/* onto the \
@@ -518,7 +518,20 @@ const UNPUBLISHED_CANONICAL_OK: &[(&str, usize, &str)] = &[
          list and rotate, and the note still holds for them. \
          6 -> 4 is the retirement of `vta/attestation/{status,report}/1.0`: the attestation \
          reads are the canonical public `vta/attestation/{status,report}/0.1` tasks \
-         (dtgwg-trust-tasks-tf#654), and the unspecced 1.0 URIs are no longer bound",
+         (dtgwg-trust-tasks-tf#654), and the unspecced 1.0 URIs are no longer bound. \
+         4 -> 7 is a RISE, and the second one this list has taken — the same mechanism as \
+         `vta/webvh/servers/reconcile/0.1` above, which went up and came back down inside a \
+         day. The Agent Gateway integration binds three URIs ahead of their specs: \
+         `vta/credentials/issue-in-context/0.1` (issuing as a context's own DID, where the \
+         published `credentials/issue/0.2` signs as the VTA and is instance-gated by \
+         construction), `vta/contexts/set-issuer-key/0.1` (the designation it resolves, which \
+         cannot be a member on `contexts/update/1.0` because that schema forbids additional \
+         properties), and `vta/proofs/attach/0.1` (a Data-Integrity proof from a persisted \
+         context key, where the published `keys/derive-and-sign-document` signs with an \
+         ephemeral key whose verification method resolves to nothing). All three are tracked \
+         in the VTA's own `UNSPECCED_DISPATCHED_URIS` as the same debt. Author them in \
+         dtgwg-trust-tasks-tf and bump trust-tasks-rs to bring this back to 4 — lowering it \
+         any other way means a URI stopped being bound, which is a different fact",
     ),
 ];
 

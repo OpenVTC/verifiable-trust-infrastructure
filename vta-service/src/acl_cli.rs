@@ -39,8 +39,10 @@ pub async fn run_acl_create(
     step_up_require: Option<String>,
     approve_all: bool,
     approve_contexts: Vec<String>,
+    capabilities: Vec<String>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let role = Role::parse(&role)?;
+    let capabilities = parse_capabilities(&capabilities)?;
     let expires_at = expires
         .as_deref()
         .map(parse_duration_to_expiry)
@@ -83,7 +85,8 @@ pub async fn run_acl_create(
         .with_expires_at(expires_at)
         .with_step_up_approver(step_up_approver)
         .with_step_up_require(step_up_require)
-        .with_approve_scope(approve_scope);
+        .with_approve_scope(approve_scope)
+        .with_capabilities(capabilities);
 
     store_acl_entry(&acl_ks, &entry).await?;
     cs.persist().await?;
@@ -91,6 +94,28 @@ pub async fn run_acl_create(
     eprintln!("ACL entry created:\n");
     print_entry_details(&entry);
     Ok(())
+}
+
+/// Parse `--capabilities` values into the enum, by their wire (kebab-case)
+/// spelling.
+///
+/// An unknown name is an error rather than something to skip: silently dropping
+/// one stores an entry that holds less than the operator asked for and reports
+/// success, which is how an entry ends up missing a capability nobody can see
+/// is missing.
+fn parse_capabilities(
+    names: &[String],
+) -> Result<Vec<vti_common::acl::Capability>, Box<dyn std::error::Error>> {
+    names
+        .iter()
+        .map(|name| {
+            let trimmed = name.trim();
+            serde_json::from_value::<vti_common::acl::Capability>(serde_json::Value::String(
+                trimmed.to_string(),
+            ))
+            .map_err(|_| format!("unknown capability '{trimmed}'").into())
+        })
+        .collect()
 }
 
 /// `N[s|m|h|d|w]` (or bare seconds) from now, as an absolute epoch. Mirrors
@@ -221,6 +246,7 @@ pub async fn run_acl_update(
     approve_all: bool,
     approve_contexts: Option<Vec<String>>,
     approve_none: bool,
+    capabilities: Option<Vec<String>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let approve_scope = approve_scope_from_flags(approve_all, approve_contexts, approve_none);
     if role.is_none()
@@ -229,10 +255,11 @@ pub async fn run_acl_update(
         && step_up_approver.is_none()
         && step_up_require.is_none()
         && approve_scope.is_none()
+        && capabilities.is_none()
     {
         return Err("nothing to update — specify --role, --label, --contexts, \
              --step-up-approver, --step-up-require, --approve-all, \
-             --approve-contexts, or --approve-none"
+             --approve-contexts, --approve-none, or --capabilities"
             .into());
     }
 
@@ -274,6 +301,13 @@ pub async fn run_acl_update(
 
     if let Some(scope) = approve_scope {
         entry.approve_scope = scope;
+    }
+
+    if let Some(names) = capabilities {
+        // Replaces rather than merges, so an operator can narrow as well as
+        // widen; an empty list means "whatever the role implies", which is what
+        // an entry written before capabilities existed already meant.
+        entry.capabilities = parse_capabilities(&names)?;
     }
 
     store_acl_entry(&acl_ks, &entry).await?;

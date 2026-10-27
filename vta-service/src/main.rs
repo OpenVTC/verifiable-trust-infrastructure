@@ -1441,6 +1441,16 @@ enum AclCommands {
         /// Grant approve-authority scoped to these contexts (comma-separated).
         #[arg(long, value_delimiter = ',')]
         approve_contexts: Vec<String>,
+        /// Capabilities to grant, by their wire name (comma-separated), e.g.
+        /// `context-create`. Omit to leave the entry at whatever its role
+        /// implies.
+        ///
+        /// A role-derived capability only ever narrows; an additive one (see
+        /// `ADDITIVE_CAPABILITIES`) is how an entry holds something its role
+        /// does not, which is the only way to grant a non-admin the ability to
+        /// provision sub-contexts.
+        #[arg(long, value_delimiter = ',')]
+        capabilities: Vec<String>,
     },
     /// List all ACL entries
     List {
@@ -1496,6 +1506,10 @@ enum AclCommands {
         /// unchanged".
         #[arg(long)]
         approve_none: bool,
+        /// Replace the entry's capabilities (comma-separated wire names), e.g.
+        /// `context-create`. Omitted leaves them unchanged.
+        #[arg(long, value_delimiter = ',')]
+        capabilities: Option<Vec<String>>,
     },
     /// Delete an ACL entry
     Delete {
@@ -2180,6 +2194,7 @@ async fn main() {
                     step_up_require,
                     approve_all,
                     approve_contexts,
+                    capabilities,
                 } => {
                     acl_cli::run_acl_create(
                         cli.config,
@@ -2192,6 +2207,7 @@ async fn main() {
                         step_up_require,
                         approve_all,
                         approve_contexts,
+                        capabilities,
                     )
                     .await
                 }
@@ -2205,6 +2221,7 @@ async fn main() {
                     approve_all,
                     approve_contexts,
                     approve_none,
+                    capabilities,
                 } => {
                     acl_cli::run_acl_update(
                         cli.config,
@@ -2217,6 +2234,7 @@ async fn main() {
                         approve_all,
                         approve_contexts,
                         approve_none,
+                        capabilities,
                     )
                     .await
                 }

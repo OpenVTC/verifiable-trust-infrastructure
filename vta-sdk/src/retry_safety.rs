@@ -161,6 +161,12 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     (trust_tasks::TASK_CONTEXTS_CREATE_1_0, Keyed),
     (trust_tasks::TASK_CONTEXTS_GET_1_0, ReadOnly),
     (trust_tasks::TASK_CONTEXTS_UPDATE_1_0, RetrySafe),
+    // Designating the same key twice converges on the same record: the second
+    // write sets the field to the value it already holds.
+    (trust_tasks::TASK_CONTEXTS_SET_ISSUER_KEY_0_1, RetrySafe),
+    // Returns a proof to the caller and keeps no copy: nothing durable beyond
+    // the audit row, so a retry costs a second signature and nothing else.
+    (trust_tasks::TASK_PROOFS_ATTACH_0_1, ReadOnly),
     (trust_tasks::TASK_CONTEXTS_UPDATE_DID_1_0, RetrySafe),
     // Clearing is a set-to-absent: repeating it leaves the same state.
     (trust_tasks::TASK_CONTEXTS_UPDATE_DID_1_1, RetrySafe),
@@ -487,6 +493,14 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     // Every issuance mints a new credential id; a lost reply leaves one issued
     // and unknown to the holder.
     (trust_tasks::TASK_VTA_CREDENTIALS_ISSUE_0_2, Keyed),
+    // Each call mints a *new* credential with a fresh id and stores it, so a
+    // retry after a lost reply leaves a second live credential the caller does
+    // not know about. Same non-convergence as `issue/0.2`, and the response
+    // carries no secret — a VC is meant to be handed out — so it is cacheable.
+    (
+        trust_tasks::TASK_VTA_CREDENTIALS_ISSUE_IN_CONTEXT_0_1,
+        Keyed,
+    ),
     (trust_tasks::TASK_VTA_CREDENTIALS_REVOKE_0_1, RetrySafe),
     // A read, like `acl/list` and `policy/list`. No durable effect, nothing to
     // dedup, and `status` is derived at read time — so a retry is not merely

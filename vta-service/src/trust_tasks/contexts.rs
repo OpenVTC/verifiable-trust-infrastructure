@@ -118,9 +118,13 @@ pub(super) async fn handle_create(
     auth: &AuthClaims,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    // Admin role required; `create_context` enforces the finer gate (super-admin
-    // for a top-level context, admin-of-parent for a sub-context).
-    if let Err(e) = auth.require_admin() {
+    // Admin role, **or** the narrow context-create capability. `create_context`
+    // enforces the finer gate either way: super-admin for a top-level context,
+    // reach-the-parent for a sub-context. So a capability holder can branch
+    // under what it already administers and nothing more — which is what lets
+    // an automated provisioner exist without being an admin of the context it
+    // provisions into.
+    if let Err(e) = operations::contexts::ensure_may_create_context(&state.acl_ks, auth).await {
         return app_error_to_reject(&doc, e);
     }
     let req: CreateContextBody = match parse_payload(&doc) {
@@ -254,6 +258,7 @@ pub(super) async fn handle_update(
             did: req.did,
             description: req.description,
             context_policy: req.context_policy,
+            issuer_key_id: None,
         },
         TRANSPORT_TRUST_TASK,
     )
@@ -264,7 +269,39 @@ pub(super) async fn handle_update(
     }
 }
 
-/// Handler for `spec/vta/contexts/update-did/1.0` and `/1.1`. Admin only.
+/// Handler for `spec/vta/contexts/set-issuer-key/0.1`.
+///
+/// The gate lives in the operation, not here: super-admin **or** a provisioner
+/// filling a designation that is unset. Pre-gating on super-admin would make
+/// the provisioning path unreachable through this surface.
+pub(super) async fn handle_set_issuer_key(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    let req: vta_sdk::protocols::context_management::set_issuer_key::SetContextIssuerKeyBody =
+        match parse_payload(&doc) {
+            Ok(r) => r,
+            Err(resp) => return resp,
+        };
+    match operations::contexts::set_context_issuer_key(
+        &state.contexts_ks,
+        &state.keys_ks,
+        &state.acl_ks,
+        auth,
+        &req.id,
+        req.key_id,
+        req.proof_purpose.as_deref(),
+        TRANSPORT_TRUST_TASK,
+    )
+    .await
+    {
+        Ok(body) => success_response(&doc, body),
+        Err(e) => reject_context_error(&doc, e),
+    }
+}
+
+/// Handler for `spec/vta/contexts/update-did/1.0` and `/1.1`.
 ///
 /// One handler, two payload types: 1.1 differs only in that `did` may be
 /// `null` (clear it) and must otherwise be a DID. 1.0 keeps parsing into
@@ -272,14 +309,14 @@ pub(super) async fn handle_update(
 /// holds the pattern. The member is REQUIRED in both — serde would read a
 /// missing `Option` as `None`, i.e. as a clear, but the dispatch spine has
 /// already refused a document without it against the 1.1 schema.
+///
+/// The gate lives in the operation, not here: admin **or** a provisioner
+/// naming a context that has no DID yet.
 pub(super) async fn handle_update_did(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    if let Err(e) = auth.require_admin() {
-        return app_error_to_reject(&doc, e);
-    }
     let (id, did) =
         if doc.type_uri.to_string() == vta_sdk::trust_tasks::TASK_CONTEXTS_UPDATE_DID_1_1 {
             let req: UpdateDidPayload = match parse_payload(&doc) {
@@ -296,6 +333,7 @@ pub(super) async fn handle_update_did(
         };
     match operations::contexts::update_context_did(
         &state.contexts_ks,
+        &state.acl_ks,
         auth,
         &id,
         did,

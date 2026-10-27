@@ -962,6 +962,50 @@ pub const TASK_VTA_CREDENTIALS_REVOKE_0_1: &str =
 pub const TASK_VTA_CREDENTIALS_LIST_0_1: &str =
     "https://trusttasks.org/spec/vta/credentials/list/0.1";
 
+/// `vta/credentials/issue-in-context/0.1` — issue a VC **as a context's own
+/// DID**, reachable by a caller holding only that context.
+///
+/// Distinct from [`TASK_VTA_CREDENTIALS_ISSUE_0_2`], which issues as the VTA
+/// itself and is therefore instance-super-admin gated: an agent delegating its
+/// credential signing to a VTA needs to issue as *itself*, and granting it
+/// authority over the whole instance to do so would be a far larger grant than
+/// the operation warrants.
+///
+/// The caller supplies **no key id**. A credential's `issuer` must be the DID
+/// whose verification method produced the proof, so for a given context
+/// exactly one key is valid and the VTA resolves it from the context's
+/// designation (`ContextRecord::issuer_key_id`). A caller may *assert* which
+/// verification method it expects; a mismatch is refused rather than silently
+/// signed with the other key.
+pub const TASK_VTA_CREDENTIALS_ISSUE_IN_CONTEXT_0_1: &str =
+    "https://trusttasks.org/spec/vta/credentials/issue-in-context/0.1";
+
+/// `vta/contexts/set-issuer-key/0.1` — designate the key that signs
+/// credentials issued as a context's own DID.
+///
+/// Separate from [`TASK_CONTEXTS_UPDATE_1_0`] because that task's published
+/// schema forbids additional properties: a designation sent there is refused
+/// on the wire before a handler sees it.
+///
+/// Super-admin, like every other context mutation that changes what a
+/// context-scoped caller can do.
+pub const TASK_CONTEXTS_SET_ISSUER_KEY_0_1: &str =
+    "https://trusttasks.org/spec/vta/contexts/set-issuer-key/0.1";
+
+/// `vta/proofs/attach/0.1` — attach an `eddsa-jcs-2022` Data-Integrity proof to
+/// a document, signed with a **persisted key in a context**, authorized by that
+/// context.
+///
+/// The VTA frames the signed bytes itself, so this is a proof *producer* rather
+/// than a signing oracle: a caller obtains a proof it is authorized to obtain
+/// and cannot obtain a signature over anything else. That is what lets a holder
+/// proof be produced without anyone but the VTA holding the key.
+///
+/// Distinct from `keys/derive-and-sign-document`, which is super-admin and
+/// signs with an **ephemeral** derived key — nothing to publish, rotate or
+/// revoke, so its verification method does not resolve.
+pub const TASK_PROOFS_ATTACH_0_1: &str = "https://trusttasks.org/spec/vta/proofs/attach/0.1";
+
 // ─── Agent-memory slice (spec/vta/memory/*) ──────────────────────────────
 //
 // A per-context key/value store for AI-agent memory. Dispatcher-routed like
@@ -2792,6 +2836,9 @@ pub const ALL_URIS: &[&str] = &[
     TASK_VTA_CREDENTIALS_ISSUE_0_2,
     TASK_VTA_CREDENTIALS_REVOKE_0_1,
     TASK_VTA_CREDENTIALS_LIST_0_1,
+    TASK_VTA_CREDENTIALS_ISSUE_IN_CONTEXT_0_1,
+    TASK_CONTEXTS_SET_ISSUER_KEY_0_1,
+    TASK_PROOFS_ATTACH_0_1,
     TASK_VAULT_CREDENTIALS_PRESENT_0_1,
     // Agent-memory slice (spec/vta/memory/*)
     TASK_VTA_MEMORY_PUT_0_1,

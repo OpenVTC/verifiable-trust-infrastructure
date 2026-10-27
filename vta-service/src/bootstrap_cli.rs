@@ -1016,6 +1016,7 @@ pub async fn run_context_update(
         did,
         description,
         context_policy: None,
+        issuer_key_id: None,
     };
     let mut record = crate::operations::contexts::update_context(
         &contexts_ks,
@@ -1030,6 +1031,7 @@ pub async fn run_context_update(
     if clear_did {
         record = crate::operations::contexts::update_context_did(
             &contexts_ks,
+            &cs.keyspace(crate::keyspaces::ACL)?,
             &auth,
             &id,
             None,

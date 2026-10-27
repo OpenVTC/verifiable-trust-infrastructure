@@ -17,6 +17,7 @@ pub mod audit;
 /// restored seed is committed — in `crate::restore`.
 pub use vta_backup::ops as backup;
 pub mod config;
+pub mod context_signing;
 pub mod contexts;
 pub mod credential_exchange;
 pub mod credentials;
@@ -62,16 +63,17 @@ pub mod pcs_voter;
 /// Personas: the DIDs this agent holds for a person, and the key it signs with as each.
 pub mod persona;
 pub mod policy;
-/// DIDComm protocol management: enable/disable/migrate operations that
-/// patch the VTA's own DID document service array. See
-/// `docs/05-design-notes/didcomm-protocol-management.md`.
-#[cfg(feature = "webvh")]
-pub mod protocol;
 /// Generic template-driven integration bootstrap. See
 /// `docs/02-vta/provision-integration.md`. Feature-gated on `webvh`
 /// because the phase-1 implementation delegates minting to
 /// `create_did_webvh`.
 #[cfg(feature = "webvh")]
+pub mod proofs;
+/// DIDComm protocol management: enable/disable/migrate operations that
+/// patch the VTA's own DID document service array. See
+/// `docs/05-design-notes/didcomm-protocol-management.md`.
+#[cfg(feature = "webvh")]
+pub mod protocol;
 pub mod provision_integration;
 pub mod room_act;
 pub mod room_anchor;

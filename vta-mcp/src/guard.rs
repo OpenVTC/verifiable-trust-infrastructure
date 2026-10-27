@@ -173,6 +173,23 @@ const SLUG_OVERRIDES: &[(&str, Risk)] = &[
     ("policy/upsert", Risk::Sensitive),
     ("config/patch", Risk::Sensitive),
     ("vta/credentials/issue", Risk::Sensitive),
+    // Beside `vta/credentials/issue`, and for the same reason: it signs a
+    // credential. That it signs as a *context's* DID with the context's own
+    // key rather than as the VTA narrows who may call it, not what one call
+    // does — an MCP host that got a blanket `vta_call` approval would still be
+    // minting a credential a verifier accepts.
+    ("vta/credentials/issue-in-context", Risk::Sensitive),
+    // A Data-Integrity proof signed as the context's DID. It writes nothing
+    // durable, which is exactly why the verb rule would read `attach` as an
+    // ordinary mutation; what one call costs is a signature attributable to
+    // the principal, so it is `Sensitive` for the reason `rooms/keys/present`
+    // below is.
+    ("vta/proofs/attach", Risk::Sensitive),
+    // Authority, moved: this designates which key a context signs credentials
+    // and proofs with, so it decides what the two entries above reach. The
+    // verb rule would read `set-issuer-key` as an ordinary mutation; it sits
+    // with `keys/set-exportability` instead, as a custody rule being changed.
+    ("vta/contexts/set-issuer-key", Risk::Sensitive),
     ("vta/passkey-vms/enroll-submit", Risk::Sensitive),
     ("did-management/registry/admin-register", Risk::Sensitive),
     ("did-management/domain/set-default", Risk::Sensitive),

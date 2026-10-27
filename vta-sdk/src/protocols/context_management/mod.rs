@@ -3,6 +3,7 @@ pub mod delete;
 pub mod get;
 pub mod list;
 pub mod secrets;
+pub mod set_issuer_key;
 pub mod update;
 pub mod update_did;
 
