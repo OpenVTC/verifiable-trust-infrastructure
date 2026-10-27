@@ -1663,8 +1663,13 @@ jobs:
             targets: aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android
     runs-on: ${{ matrix.os }}
     # Each leg is about half the old single job, which a busy runner pushed
-    # past 45 minutes (#1807). Same limit, now with room.
-    timeout-minutes: 60
+    # past 45 minutes (#1807). It was 60 until trust-tasks-rs 0.35: with every
+    # spec it needs ~14 GB to compile, twice the macOS runner's RAM, and the
+    # paging took the iOS legs from 31-34 minutes on 0.34 to 46 (device) and
+    # past 60 (simulator, cancelled). Swap cannot help there; macOS already
+    # pages. Back to 60 once VTI compiles only the spec versions it uses
+    # (trust-tasks-build); see .github/actions/add-swap.
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
