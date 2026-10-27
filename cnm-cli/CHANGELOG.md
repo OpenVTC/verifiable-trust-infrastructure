@@ -2,6 +2,46 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.40.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/cnm-cli-v0.39.0...cnm-cli-v0.40.0) — 2026-10-27
+
+
+### Added
+
+- **vtc**: Serve the current vtc/auth, list, manifest and resend versions only ([#2298](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2298))
+
+The VTC stops serving superseded Trust Task versions in the vtc/auth,
+  join-requests, members, endorsements, endorsement-types and vetting
+  families, and every in-repo sender (admin console, member portal,
+  vtc-client, cnm-cli) moves to the current version:
+
+  - vtc/auth/admin-session 0.1 -> 0.2: `expiresAt` is an RFC 3339
+    date-time, not Unix seconds.
+  - vtc/auth/recognise/challenge 0.1 -> 0.2: `expiresAt` RFC 3339.
+  - vtc/auth/recognise 0.2 -> 0.3: `data.accessExpiresAt` RFC 3339.
+  - vtc/{members,join-requests,endorsements,endorsement-types}/list
+    0.1 -> 0.2: `nextCursor` is absent on the last page, never `null`.
+    Fixed at the cause: `vti_common::pagination::Paginated` now omits a
+    `None` cursor (no list schema requires the member, so 0.1 lists
+    still conform).
+  - vtc/join-requests/manifest: 0.3 no longer served (0.4 only); the
+    0.2/0.3 generated vocabulary types (VettingRequirements,
+    CommunityBranding, RequestedAttribute, Criterion) are replaced by
+    0.4's throughout, including vta_sdk::openapi wrappers
+    (JoinManifest04*), vtc-client and cnm-cli.
+  - vtc/vetting/vetters/resend 0.1 no longer served (0.2 only);
+    VETTING_VETTER_RESEND_TYPE now names 0.2 and the *_0_2_* constants
+    are removed. A non-administrator naming `memberDid` is refused
+    permissionDenied (0.2 Conformance item 2).
+
+  vtc/install/claim/{start,finish} 0.2 is deliberately left served: 0.3
+  is a different ceremony (claim under a DID the founder already holds,
+  with a step-up approver), and its own specification says "a passkey
+  install keeps using 0.2". Retiring 0.2 would remove passkey install.
+
+  admin-ui openapi.json and wire.ts regenerated.
+
+
+
 ## [0.39.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/cnm-cli-v0.38.0...cnm-cli-v0.39.0) — 2026-10-26
 
 
