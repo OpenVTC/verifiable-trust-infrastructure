@@ -624,8 +624,8 @@ async fn ensure_authenticated_runs_full_rotation_flow() {
                             "role": "admin",
                             "label": "ops",
                             "scopes": ["primary"],
-                            "created_at": 1_700_000_000_u64,
-                            "created_by": "did:web:vta",
+                            "createdAt": "2023-11-14T22:13:20Z",
+                            "createdBy": "did:web:vta",
                         }
                     }),
                 )

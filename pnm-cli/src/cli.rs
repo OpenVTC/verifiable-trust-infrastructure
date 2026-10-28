@@ -3731,7 +3731,7 @@ pub(crate) enum ApprovalsCommands {
     /// Require approval for a task type (replaces any existing rule for it).
     Require {
         /// Trust Task Type URI, e.g.
-        /// `https://trusttasks.org/spec/acl/grant/0.1`.
+        /// `https://trusttasks.org/spec/acl/grant/0.2`.
         task_type: String,
         /// Require the caller to re-authenticate (AAL2) — no third party.
         #[arg(long, conflicts_with = "consent")]

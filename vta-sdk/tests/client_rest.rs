@@ -31,7 +31,7 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 // envelope `type` and the `payload` — which is strictly more precise, because
 // the payload is what the VTA actually acts on.
 
-const TASK_ACL_LIST: &str = "https://trusttasks.org/spec/acl/list/0.1";
+const TASK_ACL_LIST: &str = "https://trusttasks.org/spec/acl/list/0.3";
 const TASK_KEYS_LIST: &str = "https://trusttasks.org/spec/keys/list/0.2";
 const TASK_AUDIT_LIST: &str = "https://trusttasks.org/spec/audit/list/0.2";
 /// `get_key_secret` dispatches this: the operation moved to the seeds slice
@@ -274,8 +274,8 @@ async fn supported_trust_tasks_decodes_without_a_framework_version() {
         // supplied here is the payload, not the whole document.
         json!({
             "supportedTypes": [
-                "https://trusttasks.org/spec/acl/grant/0.1",
-                "https://trusttasks.org/spec/acl/revoke/0.1"
+                "https://trusttasks.org/spec/acl/grant/0.2",
+                "https://trusttasks.org/spec/acl/revoke/0.2"
             ]
         }),
     )
@@ -716,14 +716,16 @@ async fn rotate_seed_with_mnemonic() {
 
 // ── ACL ─────────────────────────────────────────────────────────────
 
-/// One entry in the canonical `acl/_shared/0.1/acl-entry` wire shape:
-/// `subject`/`scopes`, RFC 3339 timestamps, nested `stepUp`/`approve`.
+/// One entry in the canonical `acl/_shared/0.2/acl-entry` wire shape: every
+/// authority axis explicit, RFC 3339 timestamps.
 fn acl_entry_json(did: &str) -> Value {
     json!({
         "subject": did,
         "role": "admin",
         "label": "ops",
-        "scopes": ["ctx-a"],
+        "act": {"scope": "contexts", "contexts": ["ctx-a"]},
+        "keys": {"scope": "all"},
+        "capabilities": {"scope": "ceiling"},
         "createdAt": "2023-11-14T22:13:20Z",
         "createdBy": "did:web:vta",
     })
@@ -742,7 +744,7 @@ async fn list_acl_no_filter() {
         "GET",
         "/acl",
         200,
-        json!({"entries": [acl_entry_json("did:key:zAdmin")], "truncated": false}),
+        json!({"entries": [acl_entry_json("did:key:zAdmin")]}),
     )
     .await;
     let c = client(&server).await;
@@ -756,11 +758,11 @@ async fn list_acl_with_context_query() {
     Mock::given(method("POST"))
         .and(path("/trust-tasks"))
         .and(auth_match())
-        // `scope`, not `context`: the task payload names the filter
-        // differently from the query string it replaced.
+        // 0.3 requires the direction with a context, so the default one is
+        // spelled out.
         .and(body_partial_json(json!({
             "type": TASK_ACL_LIST,
-            "payload": {"scope": "ctx-a"}
+            "payload": {"context": "ctx-a", "direction": "actingIn"}
         })))
         .respond_with(tt_ok(json!({"entries": []})).await)
         .expect(1)
@@ -771,11 +773,10 @@ async fn list_acl_with_context_query() {
     assert!(resp.entries.is_empty());
 }
 
-/// A non-default direction rides the query string; `list_acl` and an explicit
-/// `acting-in` must stay byte-identical to the historical request, so an older
-/// VTA keeps answering them.
+/// `acl/list/0.3` names the direction whenever it names a context (and never
+/// otherwise), in its lowerCamelCase spelling.
 #[tokio::test]
-async fn list_acl_sends_the_direction_only_when_it_is_not_the_default() {
+async fn list_acl_states_the_direction_with_a_context() {
     use vta_sdk::acl::ContextDirection;
 
     let server = MockServer::start().await;
@@ -783,7 +784,7 @@ async fn list_acl_sends_the_direction_only_when_it_is_not_the_default() {
         .and(path("/trust-tasks"))
         .and(auth_match())
         .and(body_partial_json(json!({
-            "payload": {"scope": "acme/eng", "direction": "subtree"}
+            "payload": {"context": "acme/eng", "direction": "subtree"}
         })))
         .respond_with(tt_ok(json!({"entries": []})).await)
         .expect(1)
@@ -798,18 +799,46 @@ async fn list_acl_sends_the_direction_only_when_it_is_not_the_default() {
     Mock::given(method("POST"))
         .and(path("/trust-tasks"))
         .and(auth_match())
-        .and(body_partial_json(json!({"payload": {"scope": "acme/eng"}})))
-        // An old VTA rejects an unknown field, so the default direction must
-        // be omitted rather than spelled out.
         .and(no_payload_key("direction"))
+        .and(no_payload_key("context"))
         .respond_with(tt_ok(json!({"entries": []})).await)
-        .expect(2)
+        .expect(1)
         .mount(&server)
         .await;
-    c.list_acl(Some("acme/eng")).await.unwrap();
-    c.list_acl_in_direction(Some("acme/eng"), ContextDirection::ActingIn)
-        .await
-        .unwrap();
+    c.list_acl(None).await.unwrap();
+}
+
+/// A page with a `nextCursor` is followed: the client returns every entry, and
+/// re-sends the cursor it was given.
+#[tokio::test]
+async fn list_acl_follows_next_cursor_to_the_last_page() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/trust-tasks"))
+        .and(auth_match())
+        .and(body_partial_json(json!({"payload": {"cursor": "page-2"}})))
+        .respond_with(tt_ok(json!({"entries": [acl_entry_json("did:key:zTwo")]})).await)
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/trust-tasks"))
+        .and(auth_match())
+        .and(no_payload_key("cursor"))
+        .respond_with(
+            tt_ok(json!({
+                "entries": [acl_entry_json("did:key:zOne")],
+                "nextCursor": "page-2"
+            }))
+            .await,
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+    let c = client(&server).await;
+    let all = c.list_acl(None).await.unwrap();
+    let dids: Vec<&str> = all.entries.iter().map(|e| e.did.as_str()).collect();
+    assert_eq!(dids, ["did:key:zOne", "did:key:zTwo"]);
 }
 
 /// Self-service key rotation is the one ACL verb whose REST route answers the
@@ -937,14 +966,67 @@ async fn create_acl_409_maps_to_conflict() {
 #[tokio::test]
 async fn update_acl_patches() {
     let server = MockServer::start().await;
-    let _g = mount_json(
-        &server,
-        "PATCH",
-        "/acl/did:key:zAdmin",
-        200,
-        acl_entry_envelope("did:key:zAdmin"),
-    )
-    .await;
+    Mock::given(method("POST"))
+        .and(path("/trust-tasks"))
+        .and(auth_match())
+        .and(body_partial_json(json!({
+            "type": "https://trusttasks.org/spec/acl/update/0.2",
+            "payload": {"subject": "did:key:zAdmin", "label": "ops"}
+        })))
+        .respond_with(tt_ok(acl_entry_envelope("did:key:zAdmin")).await)
+        .expect(1)
+        .mount(&server)
+        .await;
+    let c = client(&server).await;
+    let req = UpdateAclRequest {
+        label: Some("ops".into()),
+        allowed_contexts: None,
+        step_up_approver: None,
+        step_up_require: None,
+        approve_scope: None,
+        allowed_keys: None,
+        capabilities: None,
+    };
+    let resp = c.update_acl("did:key:zAdmin", req).await.unwrap();
+    assert_eq!(resp.did, "did:key:zAdmin");
+}
+
+/// 0.2 puts every narrowing of `act` in `acl/revoke`: moving an entry from
+/// `ctx-a` to `ctx-b` reads the stored entry, widens to the union with
+/// `acl/update`, then narrows with `acl/revoke {kind: act}` — the subject never
+/// holds a context it neither had nor was meant to get.
+#[tokio::test]
+async fn update_acl_moves_contexts_by_widening_then_narrowing() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/trust-tasks"))
+        .and(body_partial_json(json!({
+            "type": "https://trusttasks.org/spec/acl/show/0.2"
+        })))
+        .respond_with(tt_ok(acl_entry_envelope("did:key:zAdmin")).await)
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/trust-tasks"))
+        .and(body_partial_json(json!({
+            "type": "https://trusttasks.org/spec/acl/update/0.2",
+            "payload": {"act": {"scope": "contexts", "contexts": ["ctx-a", "ctx-b"]}}
+        })))
+        .respond_with(tt_ok(acl_entry_envelope("did:key:zAdmin")).await)
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/trust-tasks"))
+        .and(body_partial_json(json!({
+            "type": "https://trusttasks.org/spec/acl/revoke/0.2",
+            "payload": {"revocation": {"kind": "act", "act": {"scope": "contexts", "contexts": ["ctx-b"]}}}
+        })))
+        .respond_with(tt_ok(acl_entry_envelope("did:key:zAdmin")).await)
+        .expect(1)
+        .mount(&server)
+        .await;
     let c = client(&server).await;
     let req = UpdateAclRequest {
         label: None,
@@ -955,8 +1037,7 @@ async fn update_acl_patches() {
         allowed_keys: None,
         capabilities: None,
     };
-    let resp = c.update_acl("did:key:zAdmin", req).await.unwrap();
-    assert_eq!(resp.did, "did:key:zAdmin");
+    c.update_acl("did:key:zAdmin", req).await.unwrap();
 }
 
 #[tokio::test]

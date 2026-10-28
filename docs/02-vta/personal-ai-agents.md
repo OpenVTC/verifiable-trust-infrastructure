@@ -244,7 +244,7 @@ human passkey approval.
 ```bash
 pnm services webauthn enable --url https://vta.example.com
 pnm approvals list
-pnm approvals require https://trusttasks.org/spec/acl/grant/0.1 --reauth
+pnm approvals require https://trusttasks.org/spec/acl/grant/0.2 --reauth
 ```
 
 When a gated op is initiated, the agent's request returns a step-up challenge;

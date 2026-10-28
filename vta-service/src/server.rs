@@ -4389,7 +4389,7 @@ mod unenforced_policy_tests {
         vta_policy::seed_declarative_approvals(
             &ks,
             &[vta_sdk::approvals::ApprovalRule::reauth(
-                "https://trusttasks.org/spec/acl/grant/0.1",
+                "https://trusttasks.org/spec/acl/grant/0.2",
             )],
             &Default::default(),
             now,

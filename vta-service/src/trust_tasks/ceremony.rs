@@ -180,7 +180,7 @@ mod tests {
         assert!(is_ceremony_task(t::TASK_AUTH_STEP_UP_APPROVE_RESPONSE_0_6));
 
         // The operations a ceremony authorizes are emphatically not ceremonies.
-        assert!(!is_ceremony_task(t::TASK_ACL_GRANT_0_1));
+        assert!(!is_ceremony_task(t::TASK_ACL_GRANT_0_2));
         assert!(!is_ceremony_task(t::TASK_KEYS_REVOKE_0_1));
         assert!(!is_ceremony_task(
             "https://trusttasks.org/spec/vta/webvh/dids/update/1.0"

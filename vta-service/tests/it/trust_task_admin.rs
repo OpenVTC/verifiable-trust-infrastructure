@@ -247,13 +247,15 @@ async fn acl_create_and_list() {
         .task(
             &ctx,
             &admin,
-            vta_sdk::trust_tasks::TASK_ACL_GRANT_0_1,
+            vta_sdk::trust_tasks::TASK_ACL_GRANT_0_2,
             json!({
                 "entry": {
                     "subject": "did:key:z6MkNew",
                     "role": "application",
                     "label": "test app",
-                    "scopes": ["ctx1"]
+                    "act": {"scope": "contexts", "contexts": ["ctx1"]},
+                    "keys": {"scope": "all"},
+                    "capabilities": {"scope": "ceiling"}
                 }
             }),
         )
@@ -264,7 +266,7 @@ async fn acl_create_and_list() {
         .task(
             &ctx,
             &admin,
-            vta_sdk::trust_tasks::TASK_ACL_LIST_0_1,
+            vta_sdk::trust_tasks::TASK_ACL_LIST_0_3,
             json!({}),
         )
         .await;
@@ -315,8 +317,12 @@ async fn acl_list_filters_a_scope_in_both_directions() {
             .task(
                 &ctx,
                 &admin,
-                vta_sdk::trust_tasks::TASK_ACL_GRANT_0_1,
-                json!({"entry": {"subject": did, "role": "application", "scopes": [scope]}}),
+                vta_sdk::trust_tasks::TASK_ACL_GRANT_0_2,
+                json!({"entry": {
+                    "subject": did, "role": "application",
+                    "act": {"scope": "contexts", "contexts": [scope]},
+                    "keys": {"scope": "all"}, "capabilities": {"scope": "ceiling"},
+                }}),
             )
             .await;
         assert!(status.is_success(), "create {did}: {body}");
@@ -333,31 +339,32 @@ async fn acl_list_filters_a_scope_in_both_directions() {
         v
     };
 
-    // Default (absent direction) == acting-in: the unit's own admin, not the
-    // leaf under it.
+    // 0.3 has no default direction: a context without one is refused rather
+    // than read as acting-in (list item 2).
     let (status, body) = app
         .task(
             &ctx,
             &admin,
-            vta_sdk::trust_tasks::TASK_ACL_LIST_0_1,
-            json!({"scope": "acme/eng"}),
+            vta_sdk::trust_tasks::TASK_ACL_LIST_0_3,
+            json!({"context": "acme/eng"}),
         )
         .await;
-    assert_eq!(status, StatusCode::OK);
-    let default_dids = dids(&body);
-    assert!(default_dids.contains(&"did:key:z6MkUnitAdmin".to_string()));
-    assert!(!default_dids.contains(&"did:key:z6MkGateway".to_string()));
+    assert!(!status.is_success(), "a context needs a direction: {body}");
+    assert_eq!(body["code"], "malformedRequest", "{body}");
 
+    // actingIn: the unit's own admin, not the leaf under it.
     let (status, body) = app
         .task(
             &ctx,
             &admin,
-            vta_sdk::trust_tasks::TASK_ACL_LIST_0_1,
-            json!({"scope": "acme/eng", "direction": "acting-in"}),
+            vta_sdk::trust_tasks::TASK_ACL_LIST_0_3,
+            json!({"context": "acme/eng", "direction": "actingIn"}),
         )
         .await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(dids(&body), default_dids, "explicit acting-in == absent");
+    let acting_in = dids(&body);
+    assert!(acting_in.contains(&"did:key:z6MkUnitAdmin".to_string()));
+    assert!(!acting_in.contains(&"did:key:z6MkGateway".to_string()));
 
     // subtree: the leaf grant a revocation sweep must cut, and nothing from
     // the sibling unit.
@@ -365,8 +372,8 @@ async fn acl_list_filters_a_scope_in_both_directions() {
         .task(
             &ctx,
             &admin,
-            vta_sdk::trust_tasks::TASK_ACL_LIST_0_1,
-            json!({"scope": "acme/eng", "direction": "subtree"}),
+            vta_sdk::trust_tasks::TASK_ACL_LIST_0_3,
+            json!({"context": "acme/eng", "direction": "subtree"}),
         )
         .await;
     assert_eq!(status, StatusCode::OK);
@@ -385,8 +392,12 @@ async fn acl_update_sets_step_up_approver() {
         .task(
             &ctx,
             &admin,
-            vta_sdk::trust_tasks::TASK_ACL_GRANT_0_1,
-            json!({"entry": {"subject": "did:key:z6MkGrantee2", "role": "application", "scopes": ["ctx1"]}}),
+            vta_sdk::trust_tasks::TASK_ACL_GRANT_0_2,
+            json!({"entry": {
+                "subject": "did:key:z6MkGrantee2", "role": "application",
+                "act": {"scope": "contexts", "contexts": ["ctx1"]},
+                "keys": {"scope": "all"}, "capabilities": {"scope": "ceiling"},
+            }}),
         )
         .await;
     assert!(status.is_success());
@@ -395,7 +406,7 @@ async fn acl_update_sets_step_up_approver() {
         .task(
             &ctx,
             &admin,
-            vta_sdk::trust_tasks::TASK_ACL_UPDATE_0_1,
+            vta_sdk::trust_tasks::TASK_ACL_UPDATE_0_2,
             json!({"subject": "did:key:z6MkGrantee2", "stepUp": {"approver": "did:key:z6MkApprover"}}),
         )
         .await;
@@ -418,12 +429,14 @@ async fn acl_grant_persists_step_up_approver() {
         .task(
             &ctx,
             &admin,
-            vta_sdk::trust_tasks::TASK_ACL_GRANT_0_1,
+            vta_sdk::trust_tasks::TASK_ACL_GRANT_0_2,
             json!({
                 "entry": {
                     "subject": "did:key:z6MkGrantee",
                     "role": "application",
-                    "scopes": ["ctx1"],
+                    "act": {"scope": "contexts", "contexts": ["ctx1"]},
+                    "keys": {"scope": "all"},
+                    "capabilities": {"scope": "ceiling"},
                     "stepUp": {"approver": "did:key:z6MkApprover"}
                 }
             }),
@@ -446,7 +459,7 @@ async fn acl_application_cannot_manage() {
         .task(
             &ctx,
             &application,
-            vta_sdk::trust_tasks::TASK_ACL_LIST_0_1,
+            vta_sdk::trust_tasks::TASK_ACL_LIST_0_3,
             json!({}),
         )
         .await;
@@ -465,8 +478,12 @@ async fn acl_show_update_change_role_revoke_lifecycle() {
     app.task(
         &ctx,
         &admin,
-        vta_sdk::trust_tasks::TASK_ACL_GRANT_0_1,
-        json!({"entry": {"subject": "did:key:z6MkTarget", "role": "application", "label": "test", "scopes": ["ctx1"]}}),
+        vta_sdk::trust_tasks::TASK_ACL_GRANT_0_2,
+        json!({"entry": {
+            "subject": "did:key:z6MkTarget", "role": "application", "label": "test",
+            "act": {"scope": "contexts", "contexts": ["ctx1"]},
+            "keys": {"scope": "all"}, "capabilities": {"scope": "ceiling"},
+        }}),
     )
     .await;
 
@@ -474,7 +491,7 @@ async fn acl_show_update_change_role_revoke_lifecycle() {
         .task(
             &ctx,
             &admin,
-            vta_sdk::trust_tasks::TASK_ACL_SHOW_0_1,
+            vta_sdk::trust_tasks::TASK_ACL_SHOW_0_2,
             json!({"subject": "did:key:z6MkTarget"}),
         )
         .await;
@@ -485,7 +502,7 @@ async fn acl_show_update_change_role_revoke_lifecycle() {
         .task(
             &ctx,
             &admin,
-            vta_sdk::trust_tasks::TASK_ACL_UPDATE_0_1,
+            vta_sdk::trust_tasks::TASK_ACL_UPDATE_0_2,
             json!({"subject": "did:key:z6MkTarget", "label": "updated"}),
         )
         .await;
@@ -499,7 +516,7 @@ async fn acl_show_update_change_role_revoke_lifecycle() {
         .task(
             &ctx,
             &admin,
-            vta_sdk::trust_tasks::TASK_ACL_CHANGE_ROLE_0_1,
+            vta_sdk::trust_tasks::TASK_ACL_CHANGE_ROLE_0_2,
             json!({"subject": "did:key:z6MkTarget", "fromRole": "application", "toRole": "initiator"}),
         )
         .await;
@@ -511,30 +528,23 @@ async fn acl_show_update_change_role_revoke_lifecycle() {
         .task(
             &ctx,
             &admin,
-            vta_sdk::trust_tasks::TASK_ACL_CHANGE_ROLE_0_1,
+            vta_sdk::trust_tasks::TASK_ACL_CHANGE_ROLE_0_2,
             json!({"subject": "did:key:z6MkTarget", "fromRole": "application", "toRole": "admin"}),
         )
         .await;
-    // `AppError::Conflict` rides out as `taskFailed`/`details.reason: conflict`
-    // (422) — the framework defines no standard `conflict` code (only
-    // `idConflict`, for a *document* replay, not an application-level state
-    // conflict), so this family's compare-and-swap refusal uses the same
-    // `taskFailed` discriminator every `NotFound`/`Conflict`/`Gone` app error
-    // does (see `app_error_to_reject`).
-    assert_eq!(
-        status,
-        StatusCode::UNPROCESSABLE_ENTITY,
+    // `acl/change-role/0.2` declares the compare-and-swap refusal.
+    assert!(
+        !status.is_success(),
         "a stale fromRole must conflict: {body}"
     );
-    assert_eq!(body["code"], "taskFailed", "{body}");
-    assert_eq!(body["details"]["reason"], "conflict", "{body}");
+    assert_eq!(body["code"], "acl/change-role:stateMismatch", "{body}");
 
     let (status, body) = app
         .task(
             &ctx,
             &admin,
-            vta_sdk::trust_tasks::TASK_ACL_REVOKE_0_1,
-            json!({"subject": "did:key:z6MkTarget"}),
+            vta_sdk::trust_tasks::TASK_ACL_REVOKE_0_2,
+            json!({"subject": "did:key:z6MkTarget", "revocation": {"kind": "entry"}}),
         )
         .await;
     assert!(status.is_success(), "{status} {body}");
@@ -543,16 +553,303 @@ async fn acl_show_update_change_role_revoke_lifecycle() {
         .task(
             &ctx,
             &admin,
-            vta_sdk::trust_tasks::TASK_ACL_SHOW_0_1,
+            vta_sdk::trust_tasks::TASK_ACL_SHOW_0_2,
             json!({"subject": "did:key:z6MkTarget"}),
         )
         .await;
-    assert!(!status.is_success(), "{status} {body}");
-    assert_eq!(body["code"], "taskFailed", "{body}");
-    assert_eq!(
-        body["details"]["reason"], "not_found",
+    // "No such entry" is a successful answer in 0.2, not an error.
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(
+        body["entry"].is_null(),
         "revoked entry must read as gone: {body}"
     );
+}
+
+/// The codes AclEntry 0.2's tasks declare, each answered by the VTA where
+/// the task's own conformance items say so (and named under the task being
+/// processed, never another slug's).
+#[tokio::test]
+async fn acl_0_2_refusals_carry_their_declared_codes() {
+    use vta_sdk::trust_tasks::{
+        TASK_ACL_CHANGE_ROLE_0_2, TASK_ACL_GRANT_0_2, TASK_ACL_LIST_0_3, TASK_ACL_REVOKE_0_2,
+        TASK_ACL_UPDATE_0_2,
+    };
+    let (app, ctx) = TestApp::new().await;
+    let admin = ctx.login(SEED_ADMIN, "admin", vec![]).await;
+    // `ctx1` is provisioned by the test app.
+
+    let entry = |subject: &str, role: &str, act: Value, caps: Value| {
+        json!({"entry": {
+            "subject": subject, "role": role, "act": act,
+            "keys": {"scope": "all"}, "capabilities": caps,
+        }})
+    };
+    let ctx1 = json!({"scope": "contexts", "contexts": ["ctx1"]});
+    let ceiling = json!({"scope": "ceiling"});
+    let code = |body: &Value| body["code"].as_str().unwrap_or_default().to_string();
+
+    // grant: roleNotRecognized, invalidActScope (both directions),
+    // unknownCapability, capabilityOutsideCeiling, additiveWithinCeiling.
+    let (_, b) = app
+        .task(
+            &ctx,
+            &admin,
+            TASK_ACL_GRANT_0_2,
+            entry("did:key:z6MkG1", "overlord", ctx1.clone(), ceiling.clone()),
+        )
+        .await;
+    assert_eq!(code(&b), "acl/grant:roleNotRecognized", "{b}");
+    let (_, b) = app
+        .task(
+            &ctx,
+            &admin,
+            TASK_ACL_GRANT_0_2,
+            entry(
+                "did:key:z6MkG2",
+                "reader",
+                json!({"scope": "all"}),
+                ceiling.clone(),
+            ),
+        )
+        .await;
+    assert_eq!(
+        code(&b),
+        "acl/grant:invalidActScope",
+        "reader acting everywhere: {b}"
+    );
+    let (_, b) = app
+        .task(
+            &ctx,
+            &admin,
+            TASK_ACL_GRANT_0_2,
+            entry(
+                "did:key:z6MkG3",
+                "admin",
+                json!({"scope": "none"}),
+                ceiling.clone(),
+            ),
+        )
+        .await;
+    assert_eq!(
+        code(&b),
+        "acl/grant:invalidActScope",
+        "admin acting nowhere: {b}"
+    );
+    let (_, b) = app
+        .task(
+            &ctx,
+            &admin,
+            TASK_ACL_GRANT_0_2,
+            entry(
+                "did:key:z6MkG4",
+                "reader",
+                ctx1.clone(),
+                json!({"scope": "listed", "grants": [{"capability": "teleport"}]}),
+            ),
+        )
+        .await;
+    assert_eq!(code(&b), "acl/grant:unknownCapability", "{b}");
+    let (_, b) = app
+        .task(
+            &ctx,
+            &admin,
+            TASK_ACL_GRANT_0_2,
+            entry(
+                "did:key:z6MkG5",
+                "reader",
+                ctx1.clone(),
+                json!({"scope": "listed", "grants": [{"capability": "key-mint"}]}),
+            ),
+        )
+        .await;
+    assert_eq!(code(&b), "acl/grant:capabilityOutsideCeiling", "{b}");
+    let (_, b) = app
+        .task(&ctx, &admin, TASK_ACL_GRANT_0_2,
+            entry("did:key:z6MkG6", "reader", ctx1.clone(),
+                json!({"scope": "listed", "grants": [{"capability": "vault-read", "additive": true}]})))
+        .await;
+    assert_eq!(code(&b), "acl/grant:additiveWithinCeiling", "{b}");
+
+    // A subject to amend, move and revoke.
+    let (status, b) = app
+        .task(
+            &ctx,
+            &admin,
+            TASK_ACL_GRANT_0_2,
+            entry(
+                "did:key:z6MkT",
+                "application",
+                ctx1.clone(),
+                ceiling.clone(),
+            ),
+        )
+        .await;
+    assert!(status.is_success(), "{b}");
+
+    // update: notFound, roleChangeNotPermitted, narrowingNotPermitted,
+    // invalidActScope, unknownCapability, capabilityOutsideCeiling,
+    // additiveWithinCeiling.
+    let upd = |extra: Value| {
+        let mut p = json!({"subject": "did:key:z6MkT"});
+        for (k, v) in extra.as_object().unwrap() {
+            p[k] = v.clone();
+        }
+        p
+    };
+    let (_, b) = app
+        .task(
+            &ctx,
+            &admin,
+            TASK_ACL_UPDATE_0_2,
+            json!({"subject": "did:key:z6MkNobody", "label": "x"}),
+        )
+        .await;
+    assert_eq!(code(&b), "acl/update:notFound", "{b}");
+    let (_, b) = app
+        .task(
+            &ctx,
+            &admin,
+            TASK_ACL_UPDATE_0_2,
+            upd(json!({"role": "admin"})),
+        )
+        .await;
+    // The schema refuses a `role` member before the handler sees it (update
+    // item 2: the declared code is for a consumer that reached the payload
+    // another way).
+    assert_eq!(code(&b), "malformedRequest", "{b}");
+    let (_, b) = app
+        .task(
+            &ctx,
+            &admin,
+            TASK_ACL_UPDATE_0_2,
+            upd(json!({"act": {"scope": "none"}})),
+        )
+        .await;
+    assert_eq!(code(&b), "acl/update:narrowingNotPermitted", "{b}");
+    let (_, b) = app
+        .task(
+            &ctx,
+            &admin,
+            TASK_ACL_UPDATE_0_2,
+            upd(json!({"act": {"scope": "all"}})),
+        )
+        .await;
+    assert_eq!(code(&b), "acl/update:invalidActScope", "{b}");
+    let (_, b) = app
+        .task(&ctx, &admin, TASK_ACL_UPDATE_0_2,
+            upd(json!({"capabilities": {"scope": "listed", "grants": [{"capability": "teleport"}]}})))
+        .await;
+    assert_eq!(code(&b), "acl/update:unknownCapability", "{b}");
+    let (_, b) = app
+        .task(&ctx, &admin, TASK_ACL_UPDATE_0_2,
+            upd(json!({"capabilities": {"scope": "listed", "grants": [{"capability": "key-mint"}]}})))
+        .await;
+    assert_eq!(code(&b), "acl/update:capabilityOutsideCeiling", "{b}");
+    let (_, b) = app
+        .task(&ctx, &admin, TASK_ACL_UPDATE_0_2,
+            upd(json!({"capabilities": {"scope": "listed", "grants": [{"capability": "sign", "additive": true}]}})))
+        .await;
+    assert_eq!(code(&b), "acl/update:additiveWithinCeiling", "{b}");
+
+    // change-role: roleNotRecognized, stateMismatch, capabilityOutsideCeiling.
+    let (_, b) = app
+        .task(
+            &ctx,
+            &admin,
+            TASK_ACL_CHANGE_ROLE_0_2,
+            json!({"subject": "did:key:z6MkT", "fromRole": "application", "toRole": "overlord"}),
+        )
+        .await;
+    assert_eq!(code(&b), "acl/change-role:roleNotRecognized", "{b}");
+    let (_, b) = app
+        .task(
+            &ctx,
+            &admin,
+            TASK_ACL_CHANGE_ROLE_0_2,
+            json!({"subject": "did:key:z6MkT", "fromRole": "reader", "toRole": "initiator"}),
+        )
+        .await;
+    assert_eq!(code(&b), "acl/change-role:stateMismatch", "{b}");
+    let (status, b) = app
+        .task(
+            &ctx,
+            &admin,
+            TASK_ACL_UPDATE_0_2,
+            upd(json!({"capabilities": {"scope": "listed", "grants": [{"capability": "sign"}]}})),
+        )
+        .await;
+    assert!(status.is_success(), "narrow to sign: {b}");
+    let (_, b) = app
+        .task(
+            &ctx,
+            &admin,
+            TASK_ACL_CHANGE_ROLE_0_2,
+            json!({"subject": "did:key:z6MkT", "fromRole": "application", "toRole": "reader"}),
+        )
+        .await;
+    assert_eq!(
+        code(&b),
+        "acl/change-role:capabilityOutsideCeiling",
+        "a reader holds no sign: {b}"
+    );
+
+    // revoke: subjectNotPresent, notNarrowing, invalidActScope.
+    let (_, b) = app
+        .task(
+            &ctx,
+            &admin,
+            TASK_ACL_REVOKE_0_2,
+            json!({"subject": "did:key:z6MkNobody", "revocation": {"kind": "entry"}}),
+        )
+        .await;
+    assert_eq!(code(&b), "acl/revoke:subjectNotPresent", "{b}");
+    let (_, b) = app
+        .task(
+            &ctx,
+            &admin,
+            TASK_ACL_REVOKE_0_2,
+            json!({"subject": "did:key:z6MkT", "revocation": {"kind": "act", "act": ctx1}}),
+        )
+        .await;
+    assert_eq!(code(&b), "acl/revoke:notNarrowing", "{b}");
+    let (status, b) = app
+        .task(
+            &ctx,
+            &admin,
+            TASK_ACL_GRANT_0_2,
+            entry("did:key:z6MkA", "admin", ctx1.clone(), ceiling.clone()),
+        )
+        .await;
+    assert!(status.is_success(), "{b}");
+    let (_, b) = app
+        .task(&ctx, &admin, TASK_ACL_REVOKE_0_2,
+            json!({"subject": "did:key:z6MkA", "revocation": {"kind": "act", "act": {"scope": "none"}}}))
+        .await;
+    assert_eq!(
+        code(&b),
+        "acl/revoke:invalidActScope",
+        "an admin acting nowhere: {b}"
+    );
+
+    // list: cursorMismatch — a cursor minted under one filter, resumed under
+    // another.
+    let (status, b) = app
+        .task(&ctx, &admin, TASK_ACL_LIST_0_3, json!({"limit": 1}))
+        .await;
+    assert!(status.is_success(), "{b}");
+    let cursor = b["nextCursor"]
+        .as_str()
+        .expect("more than one entry: a cursor")
+        .to_string();
+    let (_, b) = app
+        .task(
+            &ctx,
+            &admin,
+            TASK_ACL_LIST_0_3,
+            json!({"limit": 1, "role": "admin", "cursor": cursor}),
+        )
+        .await;
+    assert_eq!(code(&b), "acl/list:cursorMismatch", "{b}");
 }
 
 // ── Context CRUD ───────────────────────────────────────────────────

@@ -3301,7 +3301,7 @@ mod transport_harness_tests {
                 &orphan,
                 "thread-d6-1",
                 &framed,
-                vta_sdk::trust_tasks::TASK_ACL_GRANT_0_1,
+                vta_sdk::trust_tasks::TASK_ACL_GRANT_0_2,
             )
             .await;
 
@@ -3341,13 +3341,13 @@ mod transport_harness_tests {
                 &orphan,
                 "t-a",
                 &framed,
-                vta_sdk::trust_tasks::TASK_ACL_GRANT_0_1
+                vta_sdk::trust_tasks::TASK_ACL_GRANT_0_2
             ),
             b.recover_for_test(
                 &orphan,
                 "t-b",
                 &framed,
-                vta_sdk::trust_tasks::TASK_ACL_GRANT_0_1
+                vta_sdk::trust_tasks::TASK_ACL_GRANT_0_2
             ),
         );
 
@@ -3408,7 +3408,7 @@ mod transport_harness_tests {
         let thread = "urn:uuid:d6-success-req-1";
         let request = trust_tasks_rs::TrustTask::new(
             thread,
-            vta_sdk::trust_tasks::TASK_ACL_GRANT_0_1
+            vta_sdk::trust_tasks::TASK_ACL_GRANT_0_2
                 .parse::<trust_tasks_rs::TypeUri>()
                 .expect("acl/grant/0.1 is a valid Type URI"),
             serde_json::json!({}),
@@ -3422,7 +3422,7 @@ mod transport_harness_tests {
                 peer.did(),
                 thread,
                 &framed,
-                vta_sdk::trust_tasks::TASK_ACL_GRANT_0_1,
+                vta_sdk::trust_tasks::TASK_ACL_GRANT_0_2,
             )
             .await;
 
@@ -3513,7 +3513,7 @@ mod transport_harness_tests {
         let thread = "urn:uuid:idle-reinvite-req-1";
         let request = trust_tasks_rs::TrustTask::new(
             thread,
-            vta_sdk::trust_tasks::TASK_ACL_GRANT_0_1
+            vta_sdk::trust_tasks::TASK_ACL_GRANT_0_2
                 .parse::<trust_tasks_rs::TypeUri>()
                 .expect("acl/grant/0.1 is a valid Type URI"),
             serde_json::json!({}),

@@ -60,7 +60,7 @@
 // trusttasks-tf registry. VTA was the first implementer. The long-pending
 // `_1_0` → actual-version rename pass landed with #854: every constant's
 // suffix now matches its URI's version, and the constant's verb stem matches
-// the canonical slug (`TASK_ACL_GRANT_0_1` for `acl/grant/0.1`, not the old
+// the canonical slug (`TASK_ACL_GRANT_0_2` for `acl/grant/0.2`, not the old
 // `TASK_ACL_CREATE_1_0`). A `tests::constant_suffix_matches_uri_version`
 // guard keeps it that way.
 
@@ -182,47 +182,47 @@ pub const TASK_DEVICE_SET_WAKE_0_2: &str = "https://trusttasks.org/spec/device/s
 
 // ─── ACL slice (canonical spec/acl/*) ────────────────────────────────────
 
-/// `acl/list/0.1` — list ACL entries, optionally filtered by
-/// context. Payload: [`crate::protocols::acl_management::list::ListAclBody`].
-pub const TASK_ACL_LIST_0_1: &str = "https://trusttasks.org/spec/acl/list/0.1";
+/// `acl/list/0.3` — list ACL entries (AclEntry 0.2), filtered by role,
+/// context (with an explicit `direction`), capability or subject prefix, and
+/// paged by `limit` / `nextCursor`. Payload:
+/// [`crate::protocols::acl_management::v0_2::ListBody`].
+pub const TASK_ACL_LIST_0_3: &str = "https://trusttasks.org/spec/acl/list/0.3";
 
-/// `acl/grant/0.1` — add an ACL entry. Payload:
-/// [`crate::protocols::acl_management::create::CreateAclBody`].
+/// `acl/grant/0.2` — add an ACL entry, every authority axis stated
+/// explicitly. Payload: [`crate::protocols::acl_management::v0_2::GrantBody`].
 /// Auth: Admin or Initiator.
-pub const TASK_ACL_GRANT_0_1: &str = "https://trusttasks.org/spec/acl/grant/0.1";
+pub const TASK_ACL_GRANT_0_2: &str = "https://trusttasks.org/spec/acl/grant/0.2";
 
-/// `acl/show/0.1` — retrieve a single entry. Payload:
-/// [`crate::protocols::acl_management::get::GetAclBody`].
-pub const TASK_ACL_SHOW_0_1: &str = "https://trusttasks.org/spec/acl/show/0.1";
+/// `acl/show/0.2` — retrieve a single entry, or `entry: null`. Payload:
+/// [`crate::protocols::acl_management::v0_2::ShowBody`].
+pub const TASK_ACL_SHOW_0_2: &str = "https://trusttasks.org/spec/acl/show/0.2";
 
-/// `acl/update/0.1` — patch label, scopes, expiry, step-up or approve
-/// authority on an existing entry. Payload:
-/// [`crate::protocols::acl_management::update::UpdateAclBody`].
-/// Auth: Admin only.
+/// `acl/update/0.2` — replace axes of an existing entry. Payload:
+/// [`crate::protocols::acl_management::v0_2::UpdateBody`]. Auth: Admin only.
 ///
-/// **Does not change roles.** Canonical gives that transition its own
-/// task so it can carry a compare-and-swap — see
-/// [`TASK_ACL_CHANGE_ROLE_0_1`]. A request naming a role here is
-/// refused rather than applied.
-pub const TASK_ACL_UPDATE_0_1: &str = "https://trusttasks.org/spec/acl/update/0.1";
+/// **Does not change roles** ([`TASK_ACL_CHANGE_ROLE_0_2`]) and **does not
+/// narrow `act`** ([`TASK_ACL_REVOKE_0_2`]); it does narrow capabilities,
+/// keys and approve authority, each audited as a reduction.
+pub const TASK_ACL_UPDATE_0_2: &str = "https://trusttasks.org/spec/acl/update/0.2";
 
-/// `acl/change-role/0.1` — transition a subject's role, guarded by a
+/// `acl/change-role/0.2` — transition a subject's role, guarded by a
 /// compare-and-swap on their current one. Payload:
 /// [`crate::protocols::acl_management::change_role::ChangeRoleBody`].
 /// Auth: Admin only.
 ///
-/// Separate from [`TASK_ACL_UPDATE_0_1`] because role is the one
+/// Separate from [`TASK_ACL_UPDATE_0_2`] because role is the one
 /// attribute where losing an update is a privilege change: two admins
 /// editing concurrently could otherwise silently overwrite each other,
 /// and the loser's intent — say a demotion — would vanish with no
 /// error. The producer declares `fromRole`; a mismatch against the
 /// stored role is rejected instead of applied.
-pub const TASK_ACL_CHANGE_ROLE_0_1: &str = "https://trusttasks.org/spec/acl/change-role/0.1";
+pub const TASK_ACL_CHANGE_ROLE_0_2: &str = "https://trusttasks.org/spec/acl/change-role/0.2";
 
-/// `acl/revoke/0.1` — remove an entry. Payload:
-/// [`crate::protocols::acl_management::delete::DeleteAclBody`].
+/// `acl/revoke/0.2` — remove an entry (`{kind: entry}`) or narrow its act
+/// scope (`{kind: act}`). Payload:
+/// [`crate::protocols::acl_management::v0_2::RevokeBody`].
 /// Auth: Admin or Initiator.
-pub const TASK_ACL_REVOKE_0_1: &str = "https://trusttasks.org/spec/acl/revoke/0.1";
+pub const TASK_ACL_REVOKE_0_2: &str = "https://trusttasks.org/spec/acl/revoke/0.2";
 
 /// `spec/acl/swap-key/0.1` — self-service rotation of the caller's own ACL
 /// entry onto a new subject DID, proven by a `link_proof` VP-JWT. Payload:
@@ -2332,12 +2332,12 @@ pub const ALL_URIS: &[&str] = &[
     // Messaging slice
     TASK_MESSAGING_PING_0_2,
     // ACL slice
-    TASK_ACL_LIST_0_1,
-    TASK_ACL_GRANT_0_1,
-    TASK_ACL_SHOW_0_1,
-    TASK_ACL_UPDATE_0_1,
-    TASK_ACL_CHANGE_ROLE_0_1,
-    TASK_ACL_REVOKE_0_1,
+    TASK_ACL_LIST_0_3,
+    TASK_ACL_GRANT_0_2,
+    TASK_ACL_SHOW_0_2,
+    TASK_ACL_UPDATE_0_2,
+    TASK_ACL_CHANGE_ROLE_0_2,
+    TASK_ACL_REVOKE_0_2,
     TASK_ACL_SWAP_KEY_0_1,
     // Contexts slice
     TASK_CONTEXTS_LIST_1_0,

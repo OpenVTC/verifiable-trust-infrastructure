@@ -430,15 +430,20 @@ pub use crate::protocols::seed_management::rotate::RotateSeedResultBody as Rotat
 
 // ── ACL types ───────────────────────────────────────────────────────
 
-/// One ACL entry as the REST surface returns it.
+/// One ACL entry as a VTA returns it.
 ///
-/// The **wire** names are canonical (`acl/_shared/0.1/acl-entry`); the Rust
-/// field names are the maintainer's historical ones, kept so the CLI and the
-/// VTC's own ACL routes did not have to move in the same change. The mapping
-/// is `subject`↔`did` and `scopes`↔`allowed_contexts`, and the step-up and
-/// approve members are flattened back out of their canonical nesting.
+/// Read from the canonical **AclEntry 0.2** wire (`acl/_shared/0.2`), where
+/// every authority axis is explicit, into the VTA's own model: `act` becomes
+/// `allowed_contexts` read through the role (empty is unrestricted for
+/// `admin`, nowhere for every other role), `keys` becomes `allowed_keys`, a
+/// `listed` capability scope becomes the narrowing. An entry the VTA model has
+/// no form for — `act: all` on a non-admin, `act: none` on an admin — is a
+/// decode error rather than the empty list that would mean its opposite.
+/// [`act`](Self::act) gives the explicit scope.
+///
+/// It serialises (for CLI `--json` output) in that flattened form, not as 0.2.
 #[derive(Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", try_from = "WireAclEntry")]
 pub struct AclEntryResponse {
     #[serde(rename = "subject")]
     pub did: String,
@@ -447,21 +452,13 @@ pub struct AclEntryResponse {
     pub label: Option<String>,
     #[serde(rename = "scopes", default)]
     pub allowed_contexts: Vec<String>,
-    #[serde(
-        default,
-        deserialize_with = "de_epoch_opt",
-        serialize_with = "ser_epoch"
-    )]
+    #[serde(default, serialize_with = "ser_epoch")]
     pub created_at: u64,
     #[serde(default)]
     pub created_by: String,
     /// When the entry expires. Canonical sends RFC 3339; this is the epoch
     /// seconds the rest of the code already speaks.
-    #[serde(
-        default,
-        deserialize_with = "de_epoch_opt_option",
-        serialize_with = "ser_epoch_opt"
-    )]
+    #[serde(default, serialize_with = "ser_epoch_opt")]
     pub expires_at: Option<u64>,
     /// Signing-oracle key filter (#818). `None` = no filter; `Some([])` =
     /// authorized on no keys — keep the distinction when rendering.
@@ -482,9 +479,138 @@ pub struct AclEntryResponse {
     /// [`AclEntryResponse::capabilities`] rather than indexing.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     ext: Option<serde_json::Value>,
+    /// The explicit act scope, as the wire stated it.
+    #[serde(skip)]
+    act: crate::acl::ActScope,
+}
+
+/// The two AclEntry versions a VTA answers in: 0.2 from `acl/*`, and 0.1 from
+/// `acl/swap-key/0.1`, which has no later version. They cannot be confused:
+/// both deny unknown members, 0.2 requires `act`/`keys`/`capabilities`, and
+/// 0.1 has none of them.
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum WireAclEntry {
+    V02(crate::protocols::acl_management::v0_2::AclEntry),
+    V01(crate::protocols::acl_management::entry::AclEntry),
+}
+
+impl TryFrom<WireAclEntry> for AclEntryResponse {
+    type Error = String;
+
+    fn try_from(e: WireAclEntry) -> Result<Self, String> {
+        match e {
+            WireAclEntry::V02(e) => Self::try_from(e),
+            WireAclEntry::V01(e) => {
+                let admin = e.role == "admin";
+                let act = if !e.scopes.is_empty() {
+                    crate::acl::ActScope::Contexts(e.scopes.clone())
+                } else if admin {
+                    crate::acl::ActScope::All
+                } else {
+                    crate::acl::ActScope::None
+                };
+                let epoch =
+                    |t: chrono::DateTime<chrono::Utc>| u64::try_from(t.timestamp()).unwrap_or(0);
+                Ok(Self {
+                    did: e.subject,
+                    role: e.role,
+                    label: e.label,
+                    allowed_contexts: e.scopes,
+                    created_at: e.created_at.map(epoch).unwrap_or(0),
+                    created_by: e.created_by.unwrap_or_default(),
+                    expires_at: e.expires_at.map(epoch),
+                    allowed_keys: e.allowed_keys,
+                    step_up: e.step_up.map(|s| StepUpWire {
+                        approver: s.approver,
+                        require: s.require,
+                    }),
+                    approve: e.approve.map(|a| ApproveWire {
+                        all: a.all,
+                        scopes: a.scopes,
+                    }),
+                    ext: e.ext,
+                    act,
+                })
+            }
+        }
+    }
+}
+
+impl TryFrom<crate::protocols::acl_management::v0_2::AclEntry> for AclEntryResponse {
+    type Error = String;
+
+    fn try_from(e: crate::protocols::acl_management::v0_2::AclEntry) -> Result<Self, String> {
+        use crate::protocols::acl_management::entry::capabilities_into_ext;
+        use crate::protocols::acl_management::v0_2::{
+            ApproveCapabilityScope, AuthorityScope, CapabilityScope,
+        };
+        let admin = e.role == "admin";
+        let allowed_contexts = match &e.act {
+            AuthorityScope::Contexts { contexts } => contexts.clone(),
+            AuthorityScope::All if admin => Vec::new(),
+            AuthorityScope::None if !admin => Vec::new(),
+            other => {
+                return Err(format!(
+                    "{}: act {other:?} on role {} has no form in a VTA's ACL model",
+                    e.subject, e.role
+                ));
+            }
+        };
+        let capabilities: Vec<String> = match &e.capabilities {
+            CapabilityScope::Ceiling => Vec::new(),
+            CapabilityScope::Listed { grants } => {
+                grants.iter().map(|g| g.capability.clone()).collect()
+            }
+            CapabilityScope::None => {
+                return Err(format!(
+                    "{}: `capabilities: none` has no form in a VTA's ACL model",
+                    e.subject
+                ));
+            }
+        };
+        let approve_scope = match e.approve_capabilities {
+            Some(ApproveCapabilityScope::Ceiling) => e.approve_scope(),
+            _ => crate::acl::ApproveScope::None,
+        };
+        let approve = match &approve_scope {
+            crate::acl::ApproveScope::None => None,
+            crate::acl::ApproveScope::All => Some(ApproveWire {
+                all: true,
+                scopes: Vec::new(),
+            }),
+            crate::acl::ApproveScope::Contexts(cs) => Some(ApproveWire {
+                all: false,
+                scopes: cs.clone(),
+            }),
+        };
+        let epoch = |t: chrono::DateTime<chrono::Utc>| u64::try_from(t.timestamp()).unwrap_or(0);
+        Ok(Self {
+            did: e.subject,
+            role: e.role,
+            label: e.label,
+            allowed_contexts,
+            created_at: e.created_at.map(epoch).unwrap_or(0),
+            created_by: e.created_by.unwrap_or_default(),
+            expires_at: e.expires_at.map(epoch),
+            allowed_keys: e.keys.to_allowed_keys(),
+            step_up: e.step_up.map(|s| StepUpWire {
+                approver: s.approver,
+                require: s.require,
+            }),
+            approve,
+            ext: capabilities_into_ext(e.ext, &capabilities),
+            act: e.act.to_act_scope(),
+        })
+    }
 }
 
 impl AclEntryResponse {
+    /// The explicit act scope the VTA stated for this entry.
+    pub fn act(&self) -> &crate::acl::ActScope {
+        &self.act
+    }
+
     /// The entry's capability narrowing, as kebab-case names.
     ///
     /// Empty means the entry is not narrowed and holds everything its role
@@ -563,29 +689,6 @@ fn ser_epoch_opt<S: serde::Serializer>(v: &Option<u64>, s: S) -> Result<S::Ok, S
     }
 }
 
-/// RFC 3339 → epoch seconds, defaulting to 0 when absent.
-fn de_epoch_opt<'de, D>(d: D) -> Result<u64, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    Ok(de_epoch_opt_option(d)?.unwrap_or(0))
-}
-
-/// RFC 3339 → epoch seconds. A pre-epoch instant clamps to 0, which for an
-/// expiry reads as "already expired" — the safe direction for a timestamp that
-/// gates authority.
-fn de_epoch_opt_option<'de, D>(d: D) -> Result<Option<u64>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    let raw = Option::<String>::deserialize(d)?;
-    Ok(raw.and_then(|s| {
-        chrono::DateTime::parse_from_rfc3339(&s)
-            .ok()
-            .map(|t| u64::try_from(t.timestamp()).unwrap_or(0))
-    }))
-}
-
 /// The `{ entry }` envelope canonical `acl/*` responses carry.
 ///
 /// Internal: the client unwraps it so callers keep receiving the entry itself
@@ -595,16 +698,34 @@ pub(crate) struct AclEntryEnvelope {
     pub entry: AclEntryResponse,
 }
 
+/// Every entry `acl/list/0.3` returned, the client having followed
+/// `nextCursor` to the last page.
 #[derive(Debug, Deserialize)]
 pub struct AclListResponse {
     pub entries: Vec<AclEntryResponse>,
 }
 
-/// Builder for `acl/grant/0.1`.
+/// One page of an ACL listing, as `acl/list/0.3` answers it.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct AclListPage {
+    pub entries: Vec<AclEntryResponse>,
+    #[serde(default)]
+    pub next_cursor: Option<String>,
+}
+
+/// An `{ entry }` that may be `null` — `acl/show/0.2`'s "no such entry", and
+/// `acl/revoke/0.2`'s removal.
+#[derive(Debug, Deserialize)]
+pub(crate) struct AclShowResponse {
+    pub entry: Option<AclEntryResponse>,
+}
+
+/// Builder for `acl/grant/0.2`.
 ///
-/// The builder API is unchanged by the canonical fold; only what it serialises
-/// moved. Callers keep writing `CreateAclRequest::new(did, role).contexts(..)`
-/// and the wire carries `{entry: {subject, role, scopes, ...}}`.
+/// Callers keep writing `CreateAclRequest::new(did, role).contexts(..)`; the
+/// wire carries an AclEntry 0.2 with every axis explicit
+/// ([`to_entry_v0_2`](Self::to_entry_v0_2)).
 #[derive(Debug)]
 #[must_use]
 pub struct CreateAclRequest {
@@ -642,55 +763,112 @@ pub struct CreateAclRequest {
     pub handoff: bool,
 }
 
-impl serde::Serialize for CreateAclRequest {
-    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
-        use crate::protocols::acl_management::create::CreateAclBody;
-        use crate::protocols::acl_management::entry::{AclEntry, Approve, StepUp};
+impl CreateAclRequest {
+    /// The AclEntry 0.2 this request describes, every axis stated: `act` is
+    /// the contexts if any are named, else `all` for `admin` and `none` for
+    /// every other role — the VTA's documented reading of an empty list
+    /// (`acl/_shared/0.2` CONVENTIONS §8), now sent explicitly.
+    pub fn to_entry_v0_2(&self) -> crate::protocols::acl_management::v0_2::AclEntry {
+        use crate::protocols::acl_management::entry::StepUp;
+        use crate::protocols::acl_management::v0_2::{
+            AclEntry, ApproveCapabilityScope, AuthorityScope, KeyScope,
+        };
         use chrono::{TimeZone, Utc};
 
-        let step_up = StepUp {
-            approver: self.step_up_approver.clone(),
-            require: self.step_up_require.clone(),
+        let act = act_for(&self.role, &self.allowed_contexts);
+        let mut entry = AclEntry::new(
+            self.did.clone(),
+            self.role.clone(),
+            act,
+            KeyScope::from_allowed_keys(self.allowed_keys.as_deref()),
+            capability_scope_for(&self.role, &self.capabilities),
+        );
+        entry.label = self.label.clone();
+        entry.expires_at = self.expires_at.and_then(|e| {
+            i64::try_from(e)
+                .ok()
+                .and_then(|s| Utc.timestamp_opt(s, 0).single())
+        });
+        let approve = if self.approve_all_contexts {
+            AuthorityScope::All
+        } else if self.approve_contexts.is_empty() {
+            AuthorityScope::None
+        } else {
+            AuthorityScope::Contexts {
+                contexts: self.approve_contexts.clone(),
+            }
         };
-        let approve = Approve {
-            all: self.approve_all_contexts,
-            scopes: self.approve_contexts.clone(),
-        };
-        let has_step_up = step_up.approver.is_some() || step_up.require.is_some();
-        let has_approve = approve.all || !approve.scopes.is_empty();
-        let body = CreateAclBody {
-            entry: AclEntry {
-                subject: self.did.clone(),
-                role: self.role.clone(),
-                scopes: self.allowed_contexts.clone(),
-                allowed_keys: self.allowed_keys.clone(),
-                label: self.label.clone(),
-                created_at: None,
-                created_by: None,
-                updated_at: None,
-                updated_by: None,
-                expires_at: self.expires_at.and_then(|e| {
-                    i64::try_from(e)
-                        .ok()
-                        .and_then(|s| Utc.timestamp_opt(s, 0).single())
-                }),
-                step_up: has_step_up.then_some(step_up),
-                approve: has_approve.then_some(approve),
-                // The narrowing is ecosystem-local, so it rides the entry's
-                // `ext` slot — the same member the update path and the
-                // response use, so one spelling serves all three.
-                ext: crate::protocols::acl_management::entry::handoff_into_ext(
-                    crate::protocols::acl_management::entry::capabilities_into_ext(
-                        None,
-                        &self.capabilities,
-                    ),
-                    self.handoff,
-                ),
-            },
-            reason: None,
-            ext: None,
-        };
-        body.serialize(s)
+        if approve != AuthorityScope::None {
+            entry.approve_capabilities = Some(ApproveCapabilityScope::Ceiling);
+        }
+        entry.approve = Some(approve);
+        if self.step_up_approver.is_some() || self.step_up_require.is_some() {
+            entry.step_up = Some(StepUp {
+                approver: self.step_up_approver.clone(),
+                require: self.step_up_require.clone(),
+            });
+        }
+        entry.ext = crate::protocols::acl_management::entry::handoff_into_ext(None, self.handoff);
+        entry
+    }
+}
+
+/// The explicit act scope of a VTA entry stated as `(role, contexts)`.
+pub(crate) fn act_for(
+    role: &str,
+    contexts: &[String],
+) -> crate::protocols::acl_management::v0_2::AuthorityScope {
+    use crate::protocols::acl_management::v0_2::AuthorityScope;
+    if !contexts.is_empty() {
+        AuthorityScope::Contexts {
+            contexts: contexts.to_vec(),
+        }
+    } else if role == "admin" {
+        AuthorityScope::All
+    } else {
+        AuthorityScope::None
+    }
+}
+
+/// The explicit capability scope of a VTA narrowing (kebab-case names; empty
+/// is the whole role). A list naming only additive capabilities means "the
+/// whole role plus these", which 0.2 spells as the role's ceiling enumerated
+/// plus the additive grants ([`crate::acl::role_capability_ceiling`]).
+pub(crate) fn capability_scope_for(
+    role: &str,
+    names: &[String],
+) -> crate::protocols::acl_management::v0_2::CapabilityScope {
+    use crate::protocols::acl_management::v0_2::{CapabilityGrant, CapabilityScope};
+    if names.is_empty() {
+        return CapabilityScope::Ceiling;
+    }
+    let additive = |n: &str| crate::acl::ADDITIVE_CAPABILITIES.contains(&n);
+    let mut grants: Vec<CapabilityGrant> = names
+        .iter()
+        .filter(|n| !additive(n))
+        .map(|n| CapabilityGrant::new(n.clone(), false))
+        .collect();
+    if grants.is_empty() {
+        grants = crate::acl::role_capability_ceiling(role)
+            .unwrap_or_default()
+            .iter()
+            .map(|n| CapabilityGrant::new(*n, false))
+            .collect();
+    }
+    grants.extend(
+        names
+            .iter()
+            .filter(|n| additive(n))
+            .map(|n| CapabilityGrant::new(n.clone(), true)),
+    );
+    CapabilityScope::Listed { grants }
+}
+
+impl serde::Serialize for CreateAclRequest {
+    /// The `acl/grant/0.2` payload.
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        crate::protocols::acl_management::v0_2::grant_payload(&self.to_entry_v0_2(), None, false)
+            .serialize(s)
     }
 }
 

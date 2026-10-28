@@ -381,7 +381,7 @@ mod tests {
     use vta_sdk::approvals::{ApprovalRule, DECLARATIVE_POLICY_ID, synthesize_rego};
     use vti_common::config::StoreConfig;
 
-    const ACL_GRANT: &str = "https://trusttasks.org/spec/acl/grant/0.1";
+    const ACL_GRANT: &str = "https://trusttasks.org/spec/acl/grant/0.2";
     const HAND_REGO: &str =
         "package vta.policy\nimport rego.v1\ndecision := {\"decision\": \"allow\"}";
 
