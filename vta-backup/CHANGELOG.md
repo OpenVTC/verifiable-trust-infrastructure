@@ -2,6 +2,36 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.27.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-backup-v0.26.0...vta-backup-v0.27.0) — 2026-10-28
+
+
+### Added
+
+- **vta**: Serve only the current vta/* and messaging/ping versions ([#2316](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2316))
+
+The VTA and its clients move off superseded `vta/*` versions, and the VTA
+  stops serving the old ones:
+
+  - vta/did-templates/{list,create,get,update} 2.0/3.0 -> 3.1: the record's
+    `createdAt`/`updatedAt` are RFC 3339 instants (`vta/_shared/0.7`). A record
+    stored with integer seconds still reads.
+  - vta/app-state/{put,put-many} 1.0 -> 1.1 (`created` -> `wasCreated`),
+    vta/app-state/list 1.0 -> 1.1 (`limit`/`nextCursor`).
+  - vta/attestation/mnemonic-export 1.0 -> 1.1, mnemonic-status 0.1 -> 0.2
+    (`windowRemainingSecs` -> `windowRemainingSeconds`).
+  - vta/credentials/list 0.1 -> 0.2 (`limit`/`nextCursor`).
+  - vta/passkey-vms/enroll-submit 0.1 -> 0.2 (`clientDataJSON`; the REST twin
+    still reads `clientDataJson`).
+  - vta/services/{list,get,enable,disable,drain/list} 1.0 -> 1.1,
+    {update,rollback} 1.0/1.1 -> 1.2, report 0.1 -> 0.2 (`drainTtlSeconds`,
+    `handshakeTimeoutSeconds`, `drainEndsAt`, `firstSeenAt`/`lastSeenAt`).
+  - vta/backup/{initiate-export,initiate-import,finalize-import} 1.0 -> 1.1,
+    vta/contexts/update-did 1.0 -> 1.1, vta/webvh/dids/create 1.0/1.1 -> 1.2,
+    vta/webvh/agent-name/list 1.0 -> 1.1, vta/witness/list 0.1 -> 0.2.
+  - messaging/ping 0.1 -> 0.2 (`serverTime` -> `respondedAt`).
+
+
+
 ## [0.26.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-backup-v0.25.0...vta-backup-v0.26.0) — 2026-10-27
 
 

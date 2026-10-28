@@ -2,6 +2,88 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.28.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-persona-v0.27.0...vta-persona-v0.28.0) — 2026-10-28
+
+
+### Added
+
+- **vta**: Serve only the current keys/list, consent/list, persona and did-management versions ([#2318](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2318))
+
+The VTA and its clients move off these superseded versions, and the VTA stops
+  serving the old ones:
+
+  - keys/list 0.1 -> 0.2: paging moves from `offset`/`total` to `cursor` +
+    `limit` -> `nextCursor`. The VTA pages by key id under a cursor bound to the
+    filters it was minted for, and refuses one it did not issue. The did-secrets
+    bundle export, `fetch_context_secrets` and pnm's mediator console follow the
+    cursor; `pnm`/`cnm keys list` take `--cursor` in place of `--offset` and print
+    the next one.
+  - consent/list 1.0 -> 1.1 (`since` -> `syncToken`, `cursor` ->
+    `nextSyncToken`; the VTA offers neither yet, so only the version moves).
+  - persona/correlation/analyze 1.0 (retired) and 1.1 -> 1.2 (a finding's `why`
+    -> `reason`), persona/profile/timeline 1.0 -> 1.1 (an event's `at` ->
+    `occurredAt`; an event stored as `at` still reads). The retired
+    persona/facet/{put,list,delete}/1.0 aliases are no longer routed: use
+    persona/world/*.
+  - The VTA's outbound did-management vocabulary: did/list 0.1 -> 0.2, which the
+    hosting service already serves (`cursor`/`nextCursor` in place of
+    `offset`/`total`; the reconcile reads until no cursor is offered),
+    server/register and registry/admin-register 0.1 -> 0.2, and the retired
+    did/{publish,enable,disable} and domain/disable replaced by did/set-state and
+    domain/set-state.
+
+
+
+### Build & CI
+
+- **deps**: Compile only the trust-tasks-rs spec families each crate uses ([#2326](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2326))
+
+The workspace `trust-tasks-rs` entry enabled `all-specs`, so every crate that
+  depends on it, and every consumer of a published VTI crate, compiled all 34
+  generated spec families (~70 MB of Rust, 14 GB peak rustc RSS). The workspace
+  entry now enables `validate` only, and each crate lists the families it names:
+  a `trust_tasks_rs::specs::<family>` path, or a Type URI it sends, serves or
+  looks up in `schema_index`.
+
+  The workspace union is 29 families. The five dropped (chat, process-attestation,
+  sync, vrc, webvh) appear nowhere in VTI: no path, no Type URI, no handler. A
+  received document of one of those types was already refused as unsupported;
+  it is now dispatched to that refusal without a schema check first.
+
+  What shrinks: `vti-rooms-wasm` compiles `rooms` alone (trust-tasks-rs dev
+  build 14.2 GB / 174 s -> 1.5 GB / 7 s). Everything that depends on vta-sdk
+  still needs 23-29 families, so the workspace, service and mobile builds are
+  roughly unchanged (mobile `check` 12.9 -> 11.1 GB); the swap safety nets stay.
+
+
+
+### Chore
+
+- **deps**: Trust-tasks-rs 0.36, affinidi-tdk 0.36, affinidi-messaging-sdk 0.44, mediator 0.48 ([#2319](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2319))
+
+One trust-tasks-rs in the graph again, at 0.36.1 — the first release
+  carrying vta/contexts/delete/1.1 (trust-tasks-tf #967). TDK moved in
+  lockstep (affinidi-tdk-rs #978: affinidi-tdk 0.36, affinidi-messaging-sdk
+  0.44) and so did the mediator (affinidi-messaging-mediator #46, released as
+  0.48.0: test-mediator, mediator-admin, mediator-tui).
+
+  trust-tasks-rs 0.36 emits trust-task-error/0.6, which adds the
+  unsupportedExtension and indeterminate standard codes (framework 0.7,
+  SPEC §8.3). Both services' framework_error_type_uri() move to 0.6 so an
+  unrouted refusal speaks the same version as a routed one — the drift
+  unrouted_and_routed_errors_agree_on_the_type_uri exists to catch — and the
+  fixtures standing in for this workspace's own refusals follow, keeping
+  one error version in vtc-service's binding census. Fixtures for foreign
+  peers (a DID host) keep 0.5: a consumer still accepts it (SPEC §5.2).
+  vta-sdk and the admin console recognise any trust-task-error/ version.
+
+  0.36 also marks every prebuilt spec module deprecated in favour of
+  trust-tasks-build. The workspace already allows `deprecated`;
+  vta-external, vti-vetting-pcs and vta-persona did not inherit the
+  workspace lints, and now do.
+
+
+
 ## [0.27.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-persona-v0.26.0...vta-persona-v0.27.0) — 2026-10-27
 
 

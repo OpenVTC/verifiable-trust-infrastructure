@@ -2,6 +2,36 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.8.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-vetting-pcs-v0.7.0...vti-vetting-pcs-v0.8.0) — 2026-10-28
+
+
+### Chore
+
+- **deps**: Trust-tasks-rs 0.36, affinidi-tdk 0.36, affinidi-messaging-sdk 0.44, mediator 0.48 ([#2319](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2319))
+
+One trust-tasks-rs in the graph again, at 0.36.1 — the first release
+  carrying vta/contexts/delete/1.1 (trust-tasks-tf #967). TDK moved in
+  lockstep (affinidi-tdk-rs #978: affinidi-tdk 0.36, affinidi-messaging-sdk
+  0.44) and so did the mediator (affinidi-messaging-mediator #46, released as
+  0.48.0: test-mediator, mediator-admin, mediator-tui).
+
+  trust-tasks-rs 0.36 emits trust-task-error/0.6, which adds the
+  unsupportedExtension and indeterminate standard codes (framework 0.7,
+  SPEC §8.3). Both services' framework_error_type_uri() move to 0.6 so an
+  unrouted refusal speaks the same version as a routed one — the drift
+  unrouted_and_routed_errors_agree_on_the_type_uri exists to catch — and the
+  fixtures standing in for this workspace's own refusals follow, keeping
+  one error version in vtc-service's binding census. Fixtures for foreign
+  peers (a DID host) keep 0.5: a consumer still accepts it (SPEC §5.2).
+  vta-sdk and the admin console recognise any trust-task-error/ version.
+
+  0.36 also marks every prebuilt spec module deprecated in favour of
+  trust-tasks-build. The workspace already allows `deprecated`;
+  vta-external, vti-vetting-pcs and vta-persona did not inherit the
+  workspace lints, and now do.
+
+
+
 ## [0.7.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-vetting-pcs-v0.6.0...vti-vetting-pcs-v0.7.0) — 2026-10-27
 
 
