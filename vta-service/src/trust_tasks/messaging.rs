@@ -14,14 +14,14 @@ use crate::server::AppState;
 
 use super::helpers::{TrustTaskOutcome, success_response};
 
-/// Handler for `messaging/ping/0.1`.
+/// Handler for `messaging/ping/0.2`.
 ///
 /// Side-effect-free and **session-less**: the spec requires no capability
 /// beyond reachability ("a ping MUST NOT require the requester to hold any
 /// capability beyond reachability"), so there is no role or session gate — the
 /// caller is already authenticated by the transport (JWT / DIDComm authcrypt /
 /// TSP unpack) to have reached the dispatcher at all. Returns the VTA's
-/// `serverTime`, a coarse `status`, the transport `protocols` it serves, and
+/// `respondedAt`, a coarse `status`, the transport `protocols` it serves, and
 /// echoes an optional request `nonce` for correlation.
 pub(super) async fn handle_ping(
     state: &AppState,
@@ -45,7 +45,7 @@ pub(super) async fn handle_ping(
     };
 
     let mut body = json!({
-        "serverTime": chrono::Utc::now().to_rfc3339(),
+        "respondedAt": chrono::Utc::now().to_rfc3339(),
         "status": "ok",
         "protocols": protocols,
     });
@@ -70,7 +70,7 @@ mod tests {
         };
         TrustTask::new(
             "urn:uuid:test-ping".to_string(),
-            vta_sdk::trust_tasks::TASK_MESSAGING_PING_0_1
+            vta_sdk::trust_tasks::TASK_MESSAGING_PING_0_2
                 .parse()
                 .unwrap(),
             payload,
@@ -100,6 +100,6 @@ mod tests {
         let doc: Value = serde_json::from_slice(&out.body).expect("reply is JSON");
         assert_eq!(doc["payload"]["status"], "ok");
         assert_eq!(doc["payload"]["nonce"], "abc123");
-        assert!(doc["payload"]["serverTime"].is_string());
+        assert!(doc["payload"]["respondedAt"].is_string());
     }
 }

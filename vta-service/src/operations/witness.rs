@@ -1303,7 +1303,7 @@ async fn accepted_again(
 /// default when the caller names none.
 pub const LIST_MAX_PAGE: usize = 100;
 
-/// The cursor's version prefix. The cursor is opaque to the caller (`vta/witness/list/0.1`,
+/// The cursor's version prefix. The cursor is opaque to the caller (`vta/witness/list/0.2`,
 /// producer conformance): the position after which the next page starts, `acceptedAt` then
 /// `credentialId`, base64url-encoded behind this prefix so a changed encoding is refused as
 /// `cursorInvalid` rather than misread.
@@ -1400,7 +1400,7 @@ fn stored_witnessing(c: &StoredCredential) -> Option<StoredWitnessing> {
     })
 }
 
-/// `vta/witness/list/0.1`: the VWCs `vta/witness/accept` stored, active, in a context the caller
+/// `vta/witness/list/0.2`: the VWCs `vta/witness/accept` stored, active, in a context the caller
 /// may act in, matching every filter, oldest first.
 ///
 /// A filter naming a DID this agent does not hold, or holds where the caller cannot act, simply

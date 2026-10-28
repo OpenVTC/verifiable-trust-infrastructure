@@ -345,8 +345,8 @@ fn build_api_router(trust_xff_cidrs: &[IpNetwork], quotas: QuotaSource) -> OpenA
     // (`status`, `report`, `did-log`) live on the rate-limited `unauth`
     // branch above. `GET /attestation/mnemonic` (status-check read) and
     // `POST /attestation/mnemonic` (always 403 over REST) are both gone: the
-    // status check is `vta/attestation/mnemonic-status/0.1` now, and the
-    // export is `vta/attestation/mnemonic-export/1.0` over DIDComm/TSP, or at
+    // status check is `vta/attestation/mnemonic-status/0.2` now, and the
+    // export is `vta/attestation/mnemonic-export/1.1` over DIDComm/TSP, or at
     // first boot as a Trust Task over HTTPS — both dispatched on
     // `/trust-tasks` (merged above).
     // `GET /attestation/admin-credential` retired in Phase 3 —

@@ -182,7 +182,7 @@ pub async fn generate_config_attestation(
 static MNEMONIC_EXPORT_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 /// Release the TEE VTA's BIP-39 mnemonic **sealed** to the requester
-/// (`spec/vta/attestation/mnemonic-export/1.0`): super admin holding
+/// (`spec/vta/attestation/mnemonic-export/1.1`): super admin holding
 /// `key-export`, inside the first-boot export window, one time.
 ///
 /// `channel` is the audit channel of an end-to-end transport (DIDComm authcrypt
@@ -317,7 +317,7 @@ pub async fn export_mnemonic_sealed(
         vta_sdk::protocols::attestation_management::MnemonicExportResultBody {
             bundle: armor::encode(&bundle),
             digest,
-            window_remaining_secs,
+            window_remaining_seconds: window_remaining_secs,
         },
     )
 }

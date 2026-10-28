@@ -218,7 +218,7 @@ mod tests {
     #[test]
     fn a_reply_is_named_by_its_type_not_its_threading() {
         let response = json!({
-            "type": "https://trusttasks.org/spec/messaging/message/status/0.1#response",
+            "type": "https://trusttasks.org/spec/messaging/message/status/0.2#response",
             "threadId": "urn:uuid:1"
         });
         assert!(names_a_reply(&response));

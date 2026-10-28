@@ -1056,9 +1056,9 @@ async fn list_did_templates_via_didcomm() {
     // A responder still scripted for 2.0 answers `no handler`, which is this
     // test noticing the client moved.
     let (mediator, responder, client) = build_didcomm(|msg_type, body| {
-        if is_tt(msg_type, body, trust_tasks::TASK_DID_TEMPLATES_LIST_3_0) {
+        if is_tt(msg_type, body, trust_tasks::TASK_DID_TEMPLATES_LIST_3_1) {
             tt_ok(
-                trust_tasks::TASK_DID_TEMPLATES_LIST_3_0,
+                trust_tasks::TASK_DID_TEMPLATES_LIST_3_1,
                 json!({"templates": [template_record_json("custom-1")]}),
             )
         } else {

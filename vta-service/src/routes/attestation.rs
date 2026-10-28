@@ -52,7 +52,7 @@ pub async fn did_log(
 
 // `GET /attestation/mnemonic` (status check) and `POST /attestation/mnemonic`
 // (always refused, 403) were REST routes here. They are
-// `vta/attestation/mnemonic-status/0.1` (super-admin only) and
-// `vta/attestation/mnemonic-export/1.0` (end-to-end only, or signed at first
+// `vta/attestation/mnemonic-status/0.2` (super-admin only) and
+// `vta/attestation/mnemonic-export/1.1` (end-to-end only, or signed at first
 // boot) now, both served on `/trust-tasks`
 // (`crate::trust_tasks::attestation`).

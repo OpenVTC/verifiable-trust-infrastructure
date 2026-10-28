@@ -369,7 +369,7 @@
           publicKeyMultibase,
           coseAlgorithm: alg,
           attestationObject: b64urlEncode(new Uint8Array(credential.response.attestationObject)),
-          clientDataJson: b64urlEncode(new Uint8Array(credential.response.clientDataJSON)),
+          clientDataJSON: b64urlEncode(new Uint8Array(credential.response.clientDataJSON)),
           authenticatorData: b64urlEncode(new Uint8Array(credential.response.getAuthenticatorData())),
           transports:
             typeof credential.response.getTransports === "function"

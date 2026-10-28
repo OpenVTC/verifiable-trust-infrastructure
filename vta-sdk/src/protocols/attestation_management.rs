@@ -7,8 +7,8 @@
 //! DIDComm messages that used to sit here are gone: nothing sent them, and a
 //! bare protocol message is not a carriage the Trust Task bindings allow.
 
-/// Response to `spec/vta/attestation/mnemonic-export/1.0`
-/// ([`crate::trust_tasks::TASK_ATTESTATION_MNEMONIC_EXPORT_1_0`]): a TEE VTA's
+/// Response to `spec/vta/attestation/mnemonic-export/1.1`
+/// ([`crate::trust_tasks::TASK_ATTESTATION_MNEMONIC_EXPORT_1_1`]): a TEE VTA's
 /// BIP-39 seed mnemonic, sealed to the requester.
 ///
 /// The request is a sealed-transfer `BootstrapRequest` (`pnm bootstrap request`):
@@ -23,5 +23,5 @@ pub struct MnemonicExportResultBody {
     /// SHA-256 of the bundle — confirm it out of band before opening.
     pub digest: String,
     /// Seconds that were left in the export window.
-    pub window_remaining_secs: u64,
+    pub window_remaining_seconds: u64,
 }

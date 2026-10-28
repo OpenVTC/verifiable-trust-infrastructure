@@ -88,7 +88,7 @@ const REST_EXCEPTIONS: &[RestException] = &[
         method: "POST",
         path: "/did/verification-methods/passkey",
         protocol: "WebAuthn",
-        twin: Some(trust_tasks::TASK_PASSKEY_VMS_ENROLL_SUBMIT_0_1),
+        twin: Some(trust_tasks::TASK_PASSKEY_VMS_ENROLL_SUBMIT_0_2),
         reason: PASSKEY_VM_REASON,
     },
     RestException {
@@ -219,64 +219,47 @@ pub struct SupersededTask {
 /// from 0.2 anyway — one path serves both and the only difference is the
 /// casing of a `purpose` value inside the body. Distinguishing them needs a
 /// counter inside those two handlers, which is its own change.
-#[allow(deprecated)] // names the deprecated 0.1 URIs on purpose — that is the point
-const SUPERSEDED_TASKS: &[SupersededTask] = &[
-    // ── did-templates ───────────────────────────────────────────────────
-    //
-    // 3.0 exists because 2.0's template schema pins `schemaVersion` to
-    // `const: 1` and so cannot express a `keys` block at all. 2.0 has no
-    // defect and stays dispatched: it remains a correct way to manage a v1
-    // template, and the service holds a 2.0 caller to exactly that (see
-    // `did_templates::max_template_schema_version`). These rows are what tell
-    // such a caller where to go, and let removal wait on the usage counter
-    // reaching zero rather than a guessed date.
-    //
-    // `delete` and `render` are absent deliberately — neither carries a
-    // template shape, so neither gained a 3.0.
+///
+/// Empty since every superseded version this VTA served was retired outright
+/// (the `trust-tasks-rs` 0.35 sweep). The machinery stays, because the next
+/// supersession needs it: a row here is how a client still on an old version
+/// is told its successor and counted. Unit tests run against
+/// [`TEST_SUPERSEDED_TASKS`] instead, so the notice path is exercised while
+/// the production table is empty.
+const SUPERSEDED_TASKS: &[SupersededTask] = &[];
+
+/// A stand-in table for the unit tests: real, dispatched URIs posing as a
+/// superseded task and its successor, so the spine's notice path has something
+/// to annotate. `list` answers `{}`; `create` refuses it, which is the
+/// rejection case.
+#[cfg(test)]
+const TEST_SUPERSEDED_TASKS: &[SupersededTask] = &[
     SupersededTask {
-        uri: trust_tasks::TASK_DID_TEMPLATES_LIST_2_0,
-        successor: trust_tasks::TASK_DID_TEMPLATES_LIST_3_0,
-        reason: "3.0 returns records that may carry a `keys` block; 2.0's schema cannot \
-                 express one, so a post-quantum template is unreadable through it",
+        uri: trust_tasks::TASK_DID_TEMPLATES_LIST_3_1,
+        successor: trust_tasks::TASK_DID_TEMPLATES_GET_3_1,
+        reason: "test fixture: a dispatched task standing in for a superseded one",
     },
     SupersededTask {
-        uri: trust_tasks::TASK_DID_TEMPLATES_CREATE_2_0,
-        successor: trust_tasks::TASK_DID_TEMPLATES_CREATE_3_0,
-        reason: "3.0 accepts a template declaring `schemaVersion` 2 and a `keys` block, \
-                 which names each key slot's algorithms",
-    },
-    SupersededTask {
-        uri: trust_tasks::TASK_DID_TEMPLATES_GET_2_0,
-        successor: trust_tasks::TASK_DID_TEMPLATES_GET_3_0,
-        reason: "3.0 returns a record that may carry a `keys` block; 2.0's schema cannot \
-                 express one, so a post-quantum template is unreadable through it",
-    },
-    SupersededTask {
-        uri: trust_tasks::TASK_DID_TEMPLATES_UPDATE_2_0,
-        successor: trust_tasks::TASK_DID_TEMPLATES_UPDATE_3_0,
-        reason: "3.0 accepts a template declaring `schemaVersion` 2 and a `keys` block, \
-                 which names each key slot's algorithms",
-    },
-    // ── contexts ────────────────────────────────────────────────────────
-    //
-    // 1.0 has no defect for what it expresses and stays dispatched through the
-    // same handler; it simply cannot say "no DID".
-    SupersededTask {
-        uri: trust_tasks::TASK_CONTEXTS_UPDATE_DID_1_0,
-        successor: trust_tasks::TASK_CONTEXTS_UPDATE_DID_1_1,
-        reason: "1.1 accepts `did: null`, which clears the context's DID, and requires a \
-                 string `did` to be a DID; 1.0 can only replace one",
+        uri: trust_tasks::TASK_DID_TEMPLATES_CREATE_3_1,
+        successor: trust_tasks::TASK_DID_TEMPLATES_UPDATE_3_1,
+        reason: "test fixture: a dispatched task standing in for a superseded one",
     },
 ];
 
 /// The table, for the dispatch spine and for tests that assert on its contents.
 pub fn superseded_tasks_table() -> &'static [SupersededTask] {
+    #[cfg(test)]
+    {
+        let _ = SUPERSEDED_TASKS;
+        TEST_SUPERSEDED_TASKS
+    }
+    #[cfg(not(test))]
     SUPERSEDED_TASKS
 }
 
 /// The row for `type_uri`, or `None` when the task is not superseded.
 pub fn superseded_task(type_uri: &str) -> Option<&'static SupersededTask> {
-    SUPERSEDED_TASKS.iter().find(|t| t.uri == type_uri)
+    superseded_tasks_table().iter().find(|t| t.uri == type_uri)
 }
 
 /// Top-level document member carrying the deprecation notice.
@@ -345,7 +328,7 @@ mod superseded_task_tests {
 
     #[test]
     fn a_notice_rides_the_document_top_level_not_the_payload() {
-        let task = &SUPERSEDED_TASKS[0];
+        let task = &superseded_tasks_table()[0];
         let mut body = serde_json::to_vec(&serde_json::json!({
             "id": "urn:uuid:1",
             "type": "https://trusttasks.org/spec/device/list/0.3#response",
@@ -369,7 +352,7 @@ mod superseded_task_tests {
     fn a_signed_document_is_left_alone() {
         // Stamping a member into a signed document voids the proof over it. A
         // notice is worth less than a verifiable signature, so the notice loses.
-        let task = &SUPERSEDED_TASKS[0];
+        let task = &superseded_tasks_table()[0];
         let original = serde_json::json!({
             "id": "urn:uuid:1",
             "type": "https://trusttasks.org/spec/device/list/0.3#response",
@@ -395,7 +378,7 @@ mod superseded_task_tests {
         // way out like any other. This pins the helper against a future caller
         // that does not preserve that ordering: a second stamp must be a no-op,
         // not a nested or duplicated notice.
-        let task = &SUPERSEDED_TASKS[0];
+        let task = &superseded_tasks_table()[0];
         let mut body = serde_json::to_vec(&serde_json::json!({
             "id": "urn:uuid:1",
             "type": "x",
@@ -415,7 +398,7 @@ mod superseded_task_tests {
     fn a_body_that_is_not_a_document_is_left_alone() {
         // `error_response` falls back to an empty body when serialisation
         // fails. Annotation must not turn that into a panic or a fake document.
-        let task = &SUPERSEDED_TASKS[0];
+        let task = &superseded_tasks_table()[0];
         let mut empty: Vec<u8> = Vec::new();
         annotate_superseded(&mut empty, task);
         assert!(empty.is_empty());
@@ -429,7 +412,7 @@ mod superseded_task_tests {
     fn every_row_names_a_different_successor() {
         // A row whose successor is itself would advertise "migrate to where you
         // already are" and could never be retired.
-        for t in SUPERSEDED_TASKS {
+        for t in superseded_tasks_table() {
             assert_ne!(
                 t.uri, t.successor,
                 "{} is listed as its own successor",
@@ -444,7 +427,7 @@ mod superseded_task_tests {
         // `superseded_task` returns the first match, so a duplicate would make
         // one of the two rows unreachable — and unreachable is exactly what a
         // zero reading means.
-        let mut seen: Vec<&str> = SUPERSEDED_TASKS.iter().map(|t| t.uri).collect();
+        let mut seen: Vec<&str> = superseded_tasks_table().iter().map(|t| t.uri).collect();
         seen.sort_unstable();
         let before = seen.len();
         seen.dedup();

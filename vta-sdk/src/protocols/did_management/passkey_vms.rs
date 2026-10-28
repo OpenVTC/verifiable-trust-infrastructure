@@ -157,7 +157,11 @@ pub struct EnrollPasskeySubmitBody {
     pub attestation_object: String,
 
     /// Raw WebAuthn clientDataJSON (base64url).
-    #[serde(rename = "clientDataJson", alias = "client_data_json")]
+    #[serde(
+        rename = "clientDataJSON",
+        alias = "clientDataJson",
+        alias = "client_data_json"
+    )]
     pub client_data_json: String,
 
     /// Raw WebAuthn authenticatorData (base64url).

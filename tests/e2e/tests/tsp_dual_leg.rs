@@ -62,7 +62,7 @@ fn did_key_from_seed(seed_byte: u8) -> (String, String) {
 fn request_doc(id: &str) -> Vec<u8> {
     serde_json::to_vec(&serde_json::json!({
         "id": id,
-        "type": "https://trusttasks.org/spec/messaging/ping/0.1",
+        "type": "https://trusttasks.org/spec/messaging/ping/0.2",
         "payload": { "nonce": id },
     }))
     .expect("serialize request document")
@@ -73,7 +73,7 @@ fn request_doc(id: &str) -> Vec<u8> {
 fn response_doc(thread_id: &str) -> Vec<u8> {
     serde_json::to_vec(&serde_json::json!({
         "id": format!("{thread_id}-reply"),
-        "type": "https://trusttasks.org/spec/messaging/ping/0.1#response",
+        "type": "https://trusttasks.org/spec/messaging/ping/0.2#response",
         "threadId": thread_id,
         "payload": { "pong": true },
     }))

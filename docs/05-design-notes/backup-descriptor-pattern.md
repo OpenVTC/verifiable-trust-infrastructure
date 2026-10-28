@@ -67,10 +67,10 @@ endpoints for the actual byte transport:
 
 | URI / endpoint                          | Type        | Purpose                                                |
 |-----------------------------------------|-------------|--------------------------------------------------------|
-| `spec/vta/backup/initiate-export/1.0`   | trust-task  | Mint export bundle; return descriptor (URL + token)    |
+| `spec/vta/backup/initiate-export/1.1`   | trust-task  | Mint export bundle; return descriptor (URL + token)    |
 | `spec/vta/backup/complete-export/1.0`   | trust-task  | Optional client ack; closes the audit loop             |
-| `spec/vta/backup/initiate-import/1.0`   | trust-task  | Mint upload slot; return descriptor (URL + token)      |
-| `spec/vta/backup/finalize-import/1.0`   | trust-task  | Apply uploaded bytes; return `ImportResult`            |
+| `spec/vta/backup/initiate-import/1.1`   | trust-task  | Mint upload slot; return descriptor (URL + token)      |
+| `spec/vta/backup/finalize-import/1.1`   | trust-task  | Apply uploaded bytes; return `ImportResult`            |
 | `spec/vta/backup/abort/1.0`             | trust-task  | Cancel an in-flight bundle by `bundle_id`              |
 | `GET /backup/blob/{bundle_id}`          | REST-only   | Download exported bytes (one-shot, token-gated)        |
 | `POST /backup/blob/{bundle_id}`         | REST-only   | Upload import bytes (token-gated)                      |
@@ -411,10 +411,10 @@ re-issues `initiate-*` with a fresh bundle.
 
 | URI / endpoint                          | Auth                  | Notes                                                  |
 |-----------------------------------------|-----------------------|--------------------------------------------------------|
-| `spec/vta/backup/initiate-export/1.0`   | super-admin           | Same gate as legacy `/backup/export`                   |
+| `spec/vta/backup/initiate-export/1.1`   | super-admin           | Same gate as legacy `/backup/export`                   |
 | `spec/vta/backup/complete-export/1.0`   | super-admin           | Caller must own the bundle (DID match)                 |
-| `spec/vta/backup/initiate-import/1.0`   | super-admin           | Same gate as legacy `/backup/import`                   |
-| `spec/vta/backup/finalize-import/1.0`   | super-admin           | Caller must own the bundle (DID match)                 |
+| `spec/vta/backup/initiate-import/1.1`   | super-admin           | Same gate as legacy `/backup/import`                   |
+| `spec/vta/backup/finalize-import/1.1`   | super-admin           | Caller must own the bundle (DID match)                 |
 | `spec/vta/backup/abort/1.0`             | super-admin           | Caller must own the bundle (DID match)                 |
 | `GET /backup/blob/{bundle_id}`          | bearer token          | `X-Backup-Token`; constant-time compare; one-shot      |
 | `POST /backup/blob/{bundle_id}`         | bearer token          | `X-Backup-Token`; multi-shot until first successful PUT-equivalent then locked |
@@ -498,7 +498,7 @@ Internal flow during transition:
 
 ```
 v1.X  pnm backup export   → legacy /backup/export (inline envelope)
-v1.Y  pnm backup export   → spec/vta/backup/initiate-export/1.0 then GET /backup/blob/...
+v1.Y  pnm backup export   → spec/vta/backup/initiate-export/1.1 then GET /backup/blob/...
       pnm backup export --use-rest-legacy → legacy route (REST client), or the
                             legacy protocol message on a DIDComm client (warned)
 ```

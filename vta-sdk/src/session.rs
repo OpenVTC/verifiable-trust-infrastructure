@@ -2873,7 +2873,7 @@ impl TspPingSession {
     /// Send a Trust Task to `vta_did` over TSP and await the response envelope.
     /// Returns latency in milliseconds.
     ///
-    /// The probe sends a `messaging/ping/0.1` Trust Task — the canonical,
+    /// The probe sends a `messaging/ping/0.2` Trust Task — the canonical,
     /// session-less liveness + capability probe (ToIP Trust Tasks). It's
     /// authenticated intrinsically by the TSP unpack's proven sender VID (no
     /// holder proof needed on TSP, like DIDComm authcrypt) and requires no
@@ -3237,7 +3237,7 @@ impl TspSession {
     }
 
     /// Announce this client's TSP reachability to `vta_did` by sending a
-    /// session-less `messaging/ping/0.1` frame (routed through `mediator_did`).
+    /// session-less `messaging/ping/0.2` frame (routed through `mediator_did`).
     /// The point is not the pong — it's that the VTA's inbound dispatcher records
     /// our **proven** `sender_vid` as TSP-reachable (learn-from-inbound), so its
     /// device-push prefers TSP for us. The VTA's pong arrives on
@@ -3343,7 +3343,7 @@ impl TspSession {
     /// document; carriage is this layer's business.
     ///
     /// This is the generalisation of [`announce`](Self::announce), which is
-    /// just this with a `messaging/ping/0.1` body. The same properties hold:
+    /// just this with a `messaging/ping/0.2` body. The same properties hold:
     ///
     /// - **Send-only, lock-free.** It never touches `ws`, so it is safe to call
     ///   while a `receive_next` is blocked holding that lock — which is the
@@ -3815,7 +3815,7 @@ fn now_epoch() -> u64 {
         .as_secs()
 }
 
-/// Build a `messaging/ping/0.1` document addressed to `vta_did`.
+/// Build a `messaging/ping/0.2` document addressed to `vta_did`.
 ///
 /// One builder for all three senders — [`TspPingSession::ping`],
 /// [`TspPingSession::probe_send`] and [`TspSession::announce`] — because the
@@ -3843,7 +3843,7 @@ fn ping_document(
     client_did: &str,
     vta_did: &str,
 ) -> Result<trust_tasks_rs::TrustTask<serde_json::Value>, Box<dyn std::error::Error>> {
-    let type_uri = crate::trust_tasks::TASK_MESSAGING_PING_0_1
+    let type_uri = crate::trust_tasks::TASK_MESSAGING_PING_0_2
         .parse()
         .map_err(|e| format!("messaging/ping type URI parse: {e}"))?;
     let mut doc: trust_tasks_rs::TrustTask<serde_json::Value> = trust_tasks_rs::TrustTask::new(

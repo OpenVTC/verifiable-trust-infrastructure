@@ -7,15 +7,15 @@
 //!   verifier's own, and the spine signs every response with this agent's
 //!   `authentication` key. They were REST-only routes and a DIDComm arm nothing
 //!   sent to; on the spine they are reachable over TSP, DIDComm and HTTPS alike.
-//! - `spec/vta/attestation/mnemonic-export/1.0` — authenticated, end-to-end
+//! - `spec/vta/attestation/mnemonic-export/1.1` — authenticated, end-to-end
 //!   only (or a signed first-boot request); see [`handle_mnemonic_export`].
-//! - `spec/vta/attestation/mnemonic-status/0.1` — the export window's current
+//! - `spec/vta/attestation/mnemonic-status/0.2` — the export window's current
 //!   state. Super-admin only; see [`handle_mnemonic_status`]. Was
 //!   `GET /attestation/mnemonic`, a documented `REST_EXCEPTIONS` keep until
 //!   this spec landed.
 
 use serde_json::Value;
-use trust_tasks_rs::specs::vta::attestation::mnemonic_export::v1_0 as mnemonic_export_spec;
+use trust_tasks_rs::specs::vta::attestation::mnemonic_export::v1_1 as mnemonic_export_spec;
 use trust_tasks_rs::{RejectReason, TrustTask};
 use vta_sdk::sealed_transfer::BootstrapRequest;
 use vti_common::error::AppError;
@@ -29,7 +29,7 @@ use crate::auth::AuthClaims;
 use crate::operations;
 use crate::server::AppState;
 use trust_tasks_rs::specs::vta::attestation::{
-    config_report::v0_1 as config_report_spec, mnemonic_status::v0_1 as mnemonic_status_spec,
+    config_report::v0_1 as config_report_spec, mnemonic_status::v0_2 as mnemonic_status_spec,
     report::v0_1 as report_spec, status::v0_1 as status_spec,
 };
 
@@ -205,7 +205,7 @@ pub(super) async fn handle_config_report(
     typed_response::<config_report_spec::Response>(&doc, body)
 }
 
-/// `spec/vta/attestation/mnemonic-status/0.1` — the export window's current
+/// `spec/vta/attestation/mnemonic-status/0.2` — the export window's current
 /// state (active?, already exported?, entropy still held?, seconds
 /// remaining). Super-admin only, same as the export itself; unlike the
 /// export it carries no secret, but who is watching the window is still not
@@ -233,12 +233,12 @@ pub(super) async fn handle_mnemonic_status(
         "windowActive": status.window_active,
         "alreadyExported": status.already_exported,
         "entropyAvailable": status.entropy_available,
-        "windowRemainingSecs": status.window_remaining_secs,
+        "windowRemainingSeconds": status.window_remaining_secs,
     });
     typed_response::<mnemonic_status_spec::Response>(&doc, body)
 }
 
-/// `spec/vta/attestation/mnemonic-export/1.0` — release the TEE VTA's seed
+/// `spec/vta/attestation/mnemonic-export/1.1` — release the TEE VTA's seed
 /// mnemonic, sealed to the requester, over one of the two paths the
 /// specification's *Channel* section defines.
 ///
@@ -463,7 +463,7 @@ mod tests {
     }
 
     async fn request_doc(state: &crate::server::AppState, req: &Request) -> TrustTask<Value> {
-        let uri: TypeUri = vta_sdk::trust_tasks::TASK_ATTESTATION_MNEMONIC_EXPORT_1_0
+        let uri: TypeUri = vta_sdk::trust_tasks::TASK_ATTESTATION_MNEMONIC_EXPORT_1_1
             .parse()
             .unwrap();
         let nonce =

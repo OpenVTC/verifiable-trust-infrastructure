@@ -456,7 +456,7 @@ mod tests {
             None,
         );
         let b = doc_with(
-            trust_tasks::TASK_WEBVH_DIDS_CREATE_1_0,
+            trust_tasks::TASK_WEBVH_DIDS_CREATE_1_2,
             serde_json::json!({}),
             None,
         );
@@ -468,7 +468,7 @@ mod tests {
     #[test]
     fn only_keyed_tasks_are_worth_a_record() {
         assert!(
-            retry_safety(trust_tasks::TASK_WEBVH_DIDS_CREATE_1_0)
+            retry_safety(trust_tasks::TASK_WEBVH_DIDS_CREATE_1_2)
                 .expect("classified")
                 .needs_key()
         );

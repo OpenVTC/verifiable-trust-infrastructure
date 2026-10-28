@@ -294,7 +294,7 @@ async fn the_same_key_on_a_different_task_is_refused() {
     // claim path rather than being skipped before the key is examined.
     let other = json!({
         "id": "urn:uuid:e2",
-        "type": "https://trusttasks.org/spec/vta/webvh/dids/create/1.0",
+        "type": "https://trusttasks.org/spec/vta/webvh/dids/create/1.2",
         "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
         "issuer": caller(),
         "recipient": "did:key:z6MkfMo6gxqdBhaHMNnmfhgZFBjpCDTkmJMJLoypsBZS9PwD",

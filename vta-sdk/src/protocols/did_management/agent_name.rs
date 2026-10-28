@@ -38,41 +38,8 @@ pub struct AgentNameResultBody {
     pub enabled: bool,
 }
 
-/// One name in a DID's agent-name registry.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
-pub struct AgentNameEntry {
-    /// The local part, without the `@`.
-    pub name: String,
-    /// Whether the name currently resolves.
-    ///
-    /// `false` means **parked, not gone**: the name is still reserved to this
-    /// DID and nobody else can claim it.
-    pub enabled: bool,
-    /// Unix seconds when the name was first bound to this DID.
-    pub created_at: u64,
-}
-
-/// Body for `spec/vta/webvh/agent-name/list/1.0`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
-pub struct AgentNameListBody {
-    /// The hosted DID — a full `did:webvh:…` or a bare SCID.
-    pub did: String,
-}
-
-/// Result of `spec/vta/webvh/agent-name/list/1.0` — the DID's registry as the
-/// hosting control plane holds it.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
-pub struct AgentNameListResultBody {
-    pub did: String,
-    /// Every name bound to this DID, parked ones included.
-    pub names: Vec<AgentNameEntry>,
-}
+// `vta/webvh/agent-name/list/1.1` has no hand-written type: its payload and
+// response are `trust_tasks_rs::specs::vta::webvh::agent_name::list::v1_1`.
 
 /// Body for `spec/vta/webvh/agent-name/check/1.0`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -132,39 +99,6 @@ mod tests {
     }
 
     #[test]
-    fn created_at_is_camel_case_on_the_wire() {
-        // The one multi-word field in the family, and therefore the only one
-        // where a missing `rename_all` would show up.
-        let v = serde_json::to_value(AgentNameEntry {
-            name: "ops".into(),
-            enabled: true,
-            created_at: 1_700_000_000,
-        })
-        .unwrap();
-        assert!(
-            v.get("createdAt").is_some(),
-            "expected camelCase `createdAt`, got {v}"
-        );
-        assert!(v.get("created_at").is_none(), "snake_case leaked: {v}");
-    }
-
-    #[test]
-    fn a_parked_entry_deserialises_from_the_host_shape() {
-        // Exactly what did-hosting emits in `agentNames`.
-        let entry: AgentNameEntry = serde_json::from_value(serde_json::json!({
-            "name": "ops",
-            "enabled": false,
-            "createdAt": 1_700_000_000_u64,
-        }))
-        .unwrap();
-        assert!(
-            !entry.enabled,
-            "parked must survive the round trip — it is the difference \
-             between a name being reserved and being free"
-        );
-    }
-
-    #[test]
     fn check_result_distinguishes_reserved_from_taken() {
         // Three distinct outcomes share two booleans, so the combination
         // carries the meaning: reserved names are unavailable but well-formed.
@@ -181,18 +115,6 @@ mod tests {
         }))
         .unwrap();
         assert!(!taken.reserved && !taken.available);
-    }
-
-    #[test]
-    fn list_result_carries_an_empty_registry() {
-        // A DID with no names is a normal answer, not an error — the DIDComm
-        // and REST read paths both have to render it the same way.
-        let r: AgentNameListResultBody = serde_json::from_value(serde_json::json!({
-            "did": "did:webvh:QmScid:example.com",
-            "names": [],
-        }))
-        .unwrap();
-        assert!(r.names.is_empty());
     }
 
     #[test]

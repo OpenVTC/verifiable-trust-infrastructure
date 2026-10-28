@@ -92,7 +92,7 @@ impl std::fmt::Debug for AgentConfig {
 }
 
 impl AgentConfig {
-    /// New config with defaults: `service_kind = "ai-agent"`,
+    /// New config with defaults: `service_kind = "aiAgent"`,
     /// `display_name = "agent"`, `heartbeat_secs = 300`.
     pub fn new(
         client_did: impl Into<String>,
@@ -107,7 +107,7 @@ impl AgentConfig {
             mediator_did: mediator_did.into(),
             rest_url: None,
             display_name: "agent".to_string(),
-            service_kind: "ai-agent".to_string(),
+            service_kind: "aiAgent".to_string(),
             platform: None,
             hpke_public_key: None,
             heartbeat_secs: DEFAULT_HEARTBEAT_SECS,
@@ -120,7 +120,9 @@ impl AgentConfig {
         self
     }
 
-    /// Override the Service kind (defaults to `ai-agent`).
+    /// Override the Service kind (defaults to `aiAgent`). The wire value of
+    /// `device/register/0.2`'s `serviceKind` (`mediator`, `aiAgent`, `daemon`);
+    /// a kebab-case spelling (`ai-agent`) is sent camel-cased.
     pub fn service_kind(mut self, v: impl Into<String>) -> Self {
         self.service_kind = v.into();
         self
@@ -290,7 +292,10 @@ impl AgentSession {
     /// device reuses its binding). Safe to call once at startup; do **not** call
     /// it concurrently with in-flight RPCs on a DIDComm session.
     pub async fn ensure_enrolled(&self) -> Result<(), VtaError> {
-        let consumer_kind = json!({ "kind": "service", "serviceKind": self.config.service_kind });
+        let consumer_kind = json!({
+            "kind": "service",
+            "serviceKind": camel_service_kind(&self.config.service_kind),
+        });
         match self
             .client
             .device_register(
@@ -403,9 +408,35 @@ fn is_already_registered(e: &VtaError) -> bool {
     msg.contains("alreadyRegistered") || msg.contains("already_registered")
 }
 
+/// `device/register/0.2` spells `serviceKind` values in camelCase
+/// (`device/_shared/0.2`); a configuration written for 0.1 (`ai-agent`) is
+/// read in that spelling rather than refused by the VTA's schema.
+fn camel_service_kind(kind: &str) -> String {
+    let mut out = String::with_capacity(kind.len());
+    let mut upper = false;
+    for ch in kind.chars() {
+        match ch {
+            '-' => upper = true,
+            c if upper => {
+                out.extend(c.to_uppercase());
+                upper = false;
+            }
+            c => out.push(c),
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_kebab_service_kind_is_sent_camel_cased() {
+        assert_eq!(camel_service_kind("ai-agent"), "aiAgent");
+        assert_eq!(camel_service_kind("aiAgent"), "aiAgent");
+        assert_eq!(camel_service_kind("daemon"), "daemon");
+    }
 
     #[test]
     fn config_defaults_then_builders() {
@@ -413,7 +444,7 @@ mod tests {
             .display_name("nano-claw")
             .platform("linux")
             .heartbeat_secs(0); // clamps to 1
-        assert_eq!(cfg.service_kind, "ai-agent");
+        assert_eq!(cfg.service_kind, "aiAgent");
         assert_eq!(cfg.display_name, "nano-claw");
         assert_eq!(cfg.platform.as_deref(), Some("linux"));
         assert_eq!(cfg.heartbeat_secs, 1, "heartbeat clamps to >= 1");

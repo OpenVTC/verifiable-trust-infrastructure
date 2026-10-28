@@ -91,7 +91,7 @@ const MANAGERS_REMOVE_ERR_NOT_MANAGER: &str =
 const UNKNOWN_ENTRY: &str = "dir_UnknownUnknownUnknown";
 
 const SPEC: &str = "https://trusttasks.org/spec/vtc/groups";
-const MINT: &str = "https://trusttasks.org/spec/vta/webvh/dids/create/1.1";
+const MINT: &str = "https://trusttasks.org/spec/vta/webvh/dids/create/1.2";
 const SIGN_DOCUMENT: &str = "https://trusttasks.org/spec/keys/sign-document/0.1";
 const WEBVH_SERVERS_LIST: &str = "https://trusttasks.org/spec/vta/webvh/servers/list/1.0";
 const DID_HOSTING_LIST: &str = "https://trusttasks.org/spec/vtc/config/did-hosting/list/0.1";

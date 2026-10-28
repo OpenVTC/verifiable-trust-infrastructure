@@ -64,7 +64,7 @@ pub enum WitnessTask {
     Present,
     /// `vta/witness/accept/0.2` — hand back the submit answer; the stored VWC.
     Accept,
-    /// `vta/witness/list/0.1` — read back the stored VWCs, each with its outcome evidence as
+    /// `vta/witness/list/0.2` — read back the stored VWCs, each with its outcome evidence as
     /// stored: how a wallet that lost `accept`'s answer, or a second device, rebuilds its record.
     List,
 }
@@ -203,7 +203,7 @@ pub fn build_witness_task(
         WitnessTask::Open => signed::<vta_witness::open::v0_2::Payload>(&env, p, s),
         WitnessTask::Present => signed::<vta_witness::present::v0_2::Payload>(&env, p, s),
         WitnessTask::Accept => signed::<vta_witness::accept::v0_2::Payload>(&env, p, s),
-        WitnessTask::List => signed::<vta_witness::list::v0_1::Payload>(&env, p, s),
+        WitnessTask::List => signed::<vta_witness::list::v0_2::Payload>(&env, p, s),
     }
 }
 
@@ -218,7 +218,7 @@ pub fn parse_witness_response(task: WitnessTask, json: String) -> Result<String,
         WitnessTask::Open => response::<vta_witness::open::v0_2::Response>(j),
         WitnessTask::Present => response::<vta_witness::present::v0_2::Response>(j),
         WitnessTask::Accept => response::<vta_witness::accept::v0_2::Response>(j),
-        WitnessTask::List => response::<vta_witness::list::v0_1::Response>(j),
+        WitnessTask::List => response::<vta_witness::list::v0_2::Response>(j),
     }
 }
 
@@ -647,23 +647,23 @@ mod tests {
         let err = build_witness_task(
             env,
             WitnessTask::List,
-            r#"{"pageSize":101}"#.into(),
+            r#"{"limit":101}"#.into(),
             Box::new(Refuse),
         )
         .unwrap_err();
         assert!(matches!(err, FfiError::InvalidInput { .. }), "{err:?}");
 
-        let list_type = <vta_witness::list::v0_1::Payload as Payload>::TYPE_URI;
+        let list_type = <vta_witness::list::v0_2::Payload as Payload>::TYPE_URI;
         let page = serde_json::json!({
             "id": "urn:uuid:r",
             "type": format!("{list_type}#response"),
             "threadId": "urn:uuid:2",
-            "payload": { "witnessings": [], "truncated": false },
+            "payload": { "witnessings": [] },
         });
         let parsed = parse_witness_response(WitnessTask::List, page.to_string()).unwrap();
         assert_eq!(
             serde_json::from_str::<Value>(&parsed).unwrap(),
-            serde_json::json!({ "witnessings": [], "truncated": false })
+            serde_json::json!({ "witnessings": [] })
         );
         let bad = serde_json::json!({ "payload": { "witnessings": [] } });
         assert!(parse_witness_response(WitnessTask::List, bad.to_string()).is_err());

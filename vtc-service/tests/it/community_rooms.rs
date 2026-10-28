@@ -48,7 +48,7 @@ const OFFERS_V0_2: &str = "https://trusttasks.org/spec/vtc/rooms/offers/list/0.2
 const ACCEPT: &str = "https://trusttasks.org/spec/vtc/rooms/offers/accept/0.1";
 const MEMBERSHIPS: &str = "https://trusttasks.org/spec/vtc/rooms/memberships/list/0.1";
 
-const MINT: &str = "https://trusttasks.org/spec/vta/webvh/dids/create/1.1";
+const MINT: &str = "https://trusttasks.org/spec/vta/webvh/dids/create/1.2";
 const GROUP_CREATE: &str = "https://trusttasks.org/spec/rooms/owner/group/create/0.1";
 const GROUP_ADD: &str = "https://trusttasks.org/spec/rooms/owner/group/add/0.3";
 const GROUP_REMOVE: &str = "https://trusttasks.org/spec/rooms/owner/group/remove/0.1";

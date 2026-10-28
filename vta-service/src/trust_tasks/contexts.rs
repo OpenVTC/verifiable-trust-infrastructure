@@ -13,7 +13,6 @@ use vta_sdk::protocols::context_management::delete::{DeleteContextBody, DeleteCo
 use vta_sdk::protocols::context_management::get::GetContextBody;
 use vta_sdk::protocols::context_management::list::ListContextsBody;
 use vta_sdk::protocols::context_management::update::UpdateContextBody;
-use vta_sdk::protocols::context_management::update_did::UpdateContextDidBody;
 
 use crate::auth::AuthClaims;
 use crate::operations;
@@ -264,14 +263,12 @@ pub(super) async fn handle_update(
     }
 }
 
-/// Handler for `spec/vta/contexts/update-did/1.0` and `/1.1`. Admin only.
+/// Handler for `spec/vta/contexts/update-did/1.1`. Admin only.
 ///
-/// One handler, two payload types: 1.1 differs only in that `did` may be
-/// `null` (clear it) and must otherwise be a DID. 1.0 keeps parsing into
-/// its original body; 1.1 parses into the generated type, whose `PayloadDid`
-/// holds the pattern. The member is REQUIRED in both — serde would read a
+/// `did` may be `null` (clear it) and must otherwise be a DID; the generated
+/// `PayloadDid` holds the pattern. The member is REQUIRED — serde would read a
 /// missing `Option` as `None`, i.e. as a clear, but the dispatch spine has
-/// already refused a document without it against the 1.1 schema.
+/// already refused a document without it against the schema.
 pub(super) async fn handle_update_did(
     state: &AppState,
     auth: &AuthClaims,
@@ -280,20 +277,11 @@ pub(super) async fn handle_update_did(
     if let Err(e) = auth.require_admin() {
         return app_error_to_reject(&doc, e);
     }
-    let (id, did) =
-        if doc.type_uri.to_string() == vta_sdk::trust_tasks::TASK_CONTEXTS_UPDATE_DID_1_1 {
-            let req: UpdateDidPayload = match parse_payload(&doc) {
-                Ok(r) => r,
-                Err(resp) => return resp,
-            };
-            (req.id.to_string(), req.did.map(String::from))
-        } else {
-            let req: UpdateContextDidBody = match parse_payload(&doc) {
-                Ok(r) => r,
-                Err(resp) => return resp,
-            };
-            (req.id, Some(req.did))
-        };
+    let req: UpdateDidPayload = match parse_payload(&doc) {
+        Ok(r) => r,
+        Err(resp) => return resp,
+    };
+    let (id, did) = (req.id.to_string(), req.did.map(String::from));
     match operations::contexts::update_context_did(
         &state.contexts_ks,
         auth,

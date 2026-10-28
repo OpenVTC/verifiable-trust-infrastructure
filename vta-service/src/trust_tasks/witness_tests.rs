@@ -728,7 +728,7 @@ impl World {
         handle_list(
             &self.state,
             auth,
-            doc(uris::TASK_VTA_WITNESS_LIST_0_1, payload),
+            doc(uris::TASK_VTA_WITNESS_LIST_0_2, payload),
         )
         .await
     }
@@ -763,8 +763,7 @@ async fn list_reads_back_what_accept_stored_byte_for_byte() {
             "evidence.{part} is returned exactly as stored"
         );
     }
-    assert_eq!(listed["truncated"], false);
-    assert!(listed.get("cursor").is_none(), "{listed:#}");
+    assert!(listed.get("nextCursor").is_none(), "{listed:#}");
 }
 
 /// Both filters apply, and a filter that matches nothing is an empty page.
@@ -808,16 +807,11 @@ async fn list_answers_unreachable_and_unknown_alike() {
         .await;
     let everything_elsewhere = w.list_as(&elsewhere, json!({})).await;
     for out in [&unreachable, &unknown, &everything_elsewhere] {
-        assert_eq!(
-            ok(out),
-            json!({ "witnessings": [], "truncated": false }),
-            "{:#}",
-            body(out)
-        );
+        assert_eq!(ok(out), json!({ "witnessings": [] }), "{:#}", body(out));
     }
 }
 
-/// Oldest first, `pageSize` honoured, a cursor that continues without repeating, and one it
+/// Oldest first, `limit` honoured, a cursor that continues without repeating, and one it
 /// cannot honour is `cursorInvalid`.
 #[tokio::test]
 async fn list_pages_oldest_first_with_an_opaque_cursor() {
@@ -827,17 +821,15 @@ async fn list_pages_oldest_first_with_an_opaque_cursor() {
         ids.push(w.witnessed().await["credentialId"].clone());
     }
 
-    let first = ok(&w.list_as(&w.auth, json!({ "pageSize": 2 })).await);
-    assert_eq!(first["truncated"], true, "{first:#}");
-    let cursor = first["cursor"]
+    let first = ok(&w.list_as(&w.auth, json!({ "limit": 2 })).await);
+    let cursor = first["nextCursor"]
         .as_str()
         .expect("a cursor to continue")
         .to_string();
     let second = ok(&w
-        .list_as(&w.auth, json!({ "pageSize": 2, "cursor": cursor }))
+        .list_as(&w.auth, json!({ "limit": 2, "cursor": cursor }))
         .await);
-    assert_eq!(second["truncated"], false, "{second:#}");
-    assert!(second.get("cursor").is_none());
+    assert!(second.get("nextCursor").is_none(), "{second:#}");
 
     let seen: Vec<Value> = first["witnessings"]
         .as_array()

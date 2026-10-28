@@ -146,8 +146,6 @@ pub const RELAYS_ONWARD: &[&str] = &[
     // Each of these publishes to, or reads from, the DID hosting server that
     // holds the log. `create` is the one that failed in the field; the rest
     // share its path and were latent behind the same arithmetic.
-    trust_tasks::TASK_WEBVH_DIDS_CREATE_1_0,
-    trust_tasks::TASK_WEBVH_DIDS_CREATE_1_1,
     trust_tasks::TASK_WEBVH_DIDS_CREATE_1_2,
     trust_tasks::TASK_WEBVH_DIDS_DELETE_1_0,
     trust_tasks::TASK_WEBVH_DIDS_UPDATE_1_0,
@@ -155,7 +153,7 @@ pub const RELAYS_ONWARD: &[&str] = &[
     trust_tasks::TASK_WEBVH_DIDS_REGISTER_WITH_SERVER_1_0,
     // Agent names live on the hosting server, so every verb is a round trip —
     // including the two reads.
-    trust_tasks::TASK_WEBVH_AGENT_NAME_LIST_1_0,
+    trust_tasks::TASK_WEBVH_AGENT_NAME_LIST_1_1,
     trust_tasks::TASK_WEBVH_AGENT_NAME_CHECK_1_0,
     trust_tasks::TASK_WEBVH_AGENT_NAME_SET_1_0,
     trust_tasks::TASK_WEBVH_AGENT_NAME_REMOVE_1_0,
@@ -197,9 +195,8 @@ pub const RELAYS_ONWARD: &[&str] = &[
     // Enabling or updating `didcomm` runs the mediator handshake and awaits the
     // pong. TSP has no handshake and REST none either, but again: not from the
     // URI.
-    trust_tasks::TASK_SERVICES_ENABLE_1_0,
-    trust_tasks::TASK_SERVICES_UPDATE_1_0,
-    trust_tasks::TASK_SERVICES_UPDATE_1_1,
+    trust_tasks::TASK_SERVICES_ENABLE_1_1,
+    trust_tasks::TASK_SERVICES_UPDATE_1_2,
     // ── Provisioning ────────────────────────────────────────────────────
     // A template naming a `WEBVH_SERVER` mints through the very same
     // server-managed path as `dids/create`.
@@ -251,7 +248,7 @@ mod tests {
     /// would have failed before the fix.
     #[test]
     fn the_task_that_failed_now_outlasts_the_vta() {
-        let budget = client_budget_secs(trust_tasks::TASK_WEBVH_DIDS_CREATE_1_0, 60);
+        let budget = client_budget_secs(trust_tasks::TASK_WEBVH_DIDS_CREATE_1_2, 60);
         assert!(
             budget > relay_worst_case_secs(),
             "a relayed mint must outlast the VTA ({budget}s vs {}s)",
@@ -279,7 +276,7 @@ mod tests {
     fn the_clamp_never_shortens_a_budget() {
         let generous = min_relay_budget_secs() + 600;
         assert_eq!(
-            client_budget_secs(trust_tasks::TASK_WEBVH_DIDS_CREATE_1_0, generous),
+            client_budget_secs(trust_tasks::TASK_WEBVH_DIDS_CREATE_1_2, generous),
             generous
         );
         // And a task served from the VTA's own storage keeps the caller's

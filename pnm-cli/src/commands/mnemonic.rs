@@ -1,4 +1,4 @@
-//! `pnm vta mnemonic open` — decrypt a sealed `vta/attestation/mnemonic-export/1.0`
+//! `pnm vta mnemonic open` — decrypt a sealed `vta/attestation/mnemonic-export/1.1`
 //! bundle locally, with the key that requested it.
 //!
 //! Thin, payload-specific wrapper over [`vta_cli_common::sealed_consumer`] (the
@@ -63,7 +63,7 @@ async fn run_open_in(
         SealedPayloadV1::SeedMnemonic(m) => m,
         other => {
             return Err(format!(
-                "expected a mnemonic-export bundle (vta/attestation/mnemonic-export/1.0), got {}; \
+                "expected a mnemonic-export bundle (vta/attestation/mnemonic-export/1.1), got {}; \
                  use `pnm bootstrap open` for other sealed-bundle kinds",
                 payload_kind(&other)
             )

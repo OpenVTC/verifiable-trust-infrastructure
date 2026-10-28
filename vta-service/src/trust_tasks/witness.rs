@@ -2,7 +2,7 @@
 //! `vta/witness/accept/0.2` (trust-tasks-tf #779, #799; rules in `vta/_shared/0.6/CONVENTIONS.md`).
 //! The 0.1 versions are not served: they conducted the session under `witness/session/0.1` and
 //! carried the member presentation in a vendor extension, which 0.2 replaces.
-//! `vta/witness/list/0.1` (trust-tasks-tf #800) reads back what `accept` stored.
+//! `vta/witness/list/0.2` (trust-tasks-tf #800) reads back what `accept` stored.
 //!
 //! The engine is [`crate::operations::witness`]; this slice is the dispatch surface over it:
 //!
@@ -310,7 +310,7 @@ pub(super) async fn handle_accept(
     }
 }
 
-/// `vta/witness/list/0.1` — the VWCs `accept` stored, each with its evidence as stored.
+/// `vta/witness/list/0.2` — the VWCs `accept` stored, each with its evidence as stored.
 ///
 /// Gated like the rest of the family (`witness-request`, never `sign`). The engine confines a
 /// page to contexts the caller may act in, so a filter naming a DID the caller cannot reach
@@ -321,7 +321,7 @@ pub(super) async fn handle_list(
     auth: &AuthClaims,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    use spec::list::v0_1 as t;
+    use spec::list::v0_2 as t;
     if let Err(r) = gate(state, auth, &doc).await {
         return r;
     }
@@ -332,10 +332,7 @@ pub(super) async fn handle_list(
     let req = engine::ListRequest {
         relationship_did: str_of(p, "relationshipDid"),
         witness: str_of(p, "witness"),
-        page_size: p
-            .get("pageSize")
-            .and_then(Value::as_u64)
-            .map(|n| n as usize),
+        page_size: p.get("limit").and_then(Value::as_u64).map(|n| n as usize),
         cursor: str_of(p, "cursor"),
     };
     match engine::list(state, auth, req).await {
@@ -368,9 +365,11 @@ pub(super) async fn handle_list(
                     })
                 })
                 .collect();
-            let mut body = json!({ "witnessings": witnessings, "truncated": page.truncated });
+            // `nextCursor` is present exactly when the VTA stopped before the
+            // last match: a page carrying one is not a complete account.
+            let mut body = json!({ "witnessings": witnessings });
             if let Some(c) = page.cursor {
-                body["cursor"] = json!(c);
+                body["nextCursor"] = json!(c);
             }
             respond::<t::Response>(&doc, body)
         }

@@ -102,7 +102,7 @@ impl VtaClient {
             algorithm: "stream".into(),
         };
         let result: InitiateExportResultBody = self
-            .post_trust_task(crate::trust_tasks::TASK_BACKUP_INITIATE_EXPORT_1_0, req)
+            .post_trust_task(crate::trust_tasks::TASK_BACKUP_INITIATE_EXPORT_1_1, req)
             .await?;
 
         // Download the bytes from the descriptor's transport URL.
@@ -205,7 +205,7 @@ impl VtaClient {
         };
         let result: InitiateImportResultBody = self
             .post_trust_task(
-                crate::trust_tasks::TASK_BACKUP_INITIATE_IMPORT_1_0,
+                crate::trust_tasks::TASK_BACKUP_INITIATE_IMPORT_1_1,
                 init_req,
             )
             .await?;
@@ -224,7 +224,7 @@ impl VtaClient {
             ext: FinalizeImportBody::replace_identity_ext(replace_identity),
         };
         self.post_trust_task(
-            crate::trust_tasks::TASK_BACKUP_FINALIZE_IMPORT_1_0,
+            crate::trust_tasks::TASK_BACKUP_FINALIZE_IMPORT_1_1,
             finalize_req,
         )
         .await
@@ -276,16 +276,8 @@ impl VtaClient {
             confirm,
             ext: FinalizeImportBody::replace_identity_ext(replace_identity),
         };
-        // 1.1 on a mediator transport, where the bundle is chunked and 1.1 is
-        // what names a missing chunk; 1.0 on REST, so a VTA that predates the
-        // chunked algorithm keeps finalizing stream bundles. The payloads and
-        // responses are identical.
-        let uri = if self.trust_task_transport() == SurfaceTransport::Rest {
-            crate::trust_tasks::TASK_BACKUP_FINALIZE_IMPORT_1_0
-        } else {
-            crate::trust_tasks::TASK_BACKUP_FINALIZE_IMPORT_1_1
-        };
-        self.post_trust_task(uri, req).await
+        self.post_trust_task(crate::trust_tasks::TASK_BACKUP_FINALIZE_IMPORT_1_1, req)
+            .await
     }
 
     // ─── Low-level: building blocks ─────────────────────────────────────
@@ -530,7 +522,7 @@ mod descriptor_envelope_tests {
             algorithm: "stream".into(),
         };
         assert_conforming_request(
-            trust_tasks::TASK_BACKUP_INITIATE_EXPORT_1_0,
+            trust_tasks::TASK_BACKUP_INITIATE_EXPORT_1_1,
             serde_json::to_value(body).unwrap(),
         )
         .await;
@@ -544,7 +536,7 @@ mod descriptor_envelope_tests {
             algorithm: "stream".into(),
         };
         assert_conforming_request(
-            trust_tasks::TASK_BACKUP_INITIATE_IMPORT_1_0,
+            trust_tasks::TASK_BACKUP_INITIATE_IMPORT_1_1,
             serde_json::to_value(body).unwrap(),
         )
         .await;

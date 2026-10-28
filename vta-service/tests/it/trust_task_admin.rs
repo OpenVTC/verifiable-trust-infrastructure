@@ -665,7 +665,7 @@ async fn context_admin_can_update_own_context_did() {
         .task(
             &ctx,
             &scoped,
-            vta_sdk::trust_tasks::TASK_CONTEXTS_UPDATE_DID_1_0,
+            vta_sdk::trust_tasks::TASK_CONTEXTS_UPDATE_DID_1_1,
             json!({"id": "myctx", "did": "did:webvh:abc:example.com"}),
         )
         .await;
@@ -698,7 +698,7 @@ async fn context_admin_cannot_update_other_context_did() {
         .task(
             &ctx,
             &scoped,
-            vta_sdk::trust_tasks::TASK_CONTEXTS_UPDATE_DID_1_0,
+            vta_sdk::trust_tasks::TASK_CONTEXTS_UPDATE_DID_1_1,
             json!({"id": "ctx-b", "did": "did:webvh:nope:example.com"}),
         )
         .await;
@@ -711,7 +711,7 @@ async fn context_admin_cannot_update_other_context_did() {
         .task(
             &ctx,
             &scoped,
-            vta_sdk::trust_tasks::TASK_CONTEXTS_UPDATE_DID_1_0,
+            vta_sdk::trust_tasks::TASK_CONTEXTS_UPDATE_DID_1_1,
             json!({"id": "ctx-ghost", "did": "did:webvh:nope:example.com"}),
         )
         .await;
@@ -749,7 +749,7 @@ async fn super_admin_can_update_any_context_did() {
         .task(
             &ctx,
             &super_admin,
-            vta_sdk::trust_tasks::TASK_CONTEXTS_UPDATE_DID_1_0,
+            vta_sdk::trust_tasks::TASK_CONTEXTS_UPDATE_DID_1_1,
             json!({"id": "anyctx", "did": "did:webvh:xyz:example.com"}),
         )
         .await;
@@ -777,7 +777,7 @@ async fn non_admin_cannot_update_context_did() {
         .task(
             &ctx,
             &application,
-            vta_sdk::trust_tasks::TASK_CONTEXTS_UPDATE_DID_1_0,
+            vta_sdk::trust_tasks::TASK_CONTEXTS_UPDATE_DID_1_1,
             json!({"id": "restricted", "did": "did:webvh:bad:example.com"}),
         )
         .await;

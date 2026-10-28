@@ -168,7 +168,7 @@ pub(super) async fn handle_revoke(
     )
 }
 
-/// Handler for `spec/vta/credentials/list/0.1`.
+/// Handler for `spec/vta/credentials/list/0.2`.
 ///
 /// ## Why this is gated differently from its siblings
 ///

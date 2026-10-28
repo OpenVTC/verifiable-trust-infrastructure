@@ -211,7 +211,7 @@ pub(super) async fn handle_get(
     success_response(&doc, AppStateGetResponse { record })
 }
 
-/// Handler for `spec/vta/app-state/put/1.0`.
+/// Handler for `spec/vta/app-state/put/1.1`.
 pub(super) async fn handle_put(
     state: &AppState,
     auth: &AuthClaims,
@@ -247,14 +247,14 @@ pub(super) async fn handle_put(
             namespace: req.namespace,
             key: req.key,
             version: outcome.version,
-            created: outcome.created,
+            was_created: outcome.created,
             updated_at: outcome.updated_at,
             value_bytes: Some(outcome.value_bytes),
         },
     )
 }
 
-/// Handler for `spec/vta/app-state/list/1.0`.
+/// Handler for `spec/vta/app-state/list/1.1`.
 pub(super) async fn handle_list(
     state: &AppState,
     auth: &AuthClaims,
@@ -283,7 +283,7 @@ pub(super) async fn handle_list(
         req.since_version,
         req.include_values.unwrap_or(false),
         req.include_deleted,
-        req.page_size,
+        req.limit,
         req.cursor.as_deref(),
         retention_seconds,
     )
@@ -304,8 +304,7 @@ pub(super) async fn handle_list(
         &doc,
         AppStateListResponse {
             records: page.records,
-            truncated: page.truncated,
-            cursor: page.cursor,
+            next_cursor: page.cursor,
             high_watermark: page.high_watermark,
             tombstone_retention_seconds: page.tombstone_retention_seconds,
         },
@@ -397,7 +396,7 @@ pub(super) async fn handle_get_many(
     )
 }
 
-/// Handler for `spec/vta/app-state/put-many/1.0`.
+/// Handler for `spec/vta/app-state/put-many/1.1`.
 pub(super) async fn handle_put_many(
     state: &AppState,
     auth: &AuthClaims,
@@ -476,7 +475,7 @@ mod tests {
     use trust_tasks_rs::TypeUri;
     use vta_sdk::trust_tasks::{
         TASK_VTA_APP_STATE_DELETE_1_0, TASK_VTA_APP_STATE_GET_1_0, TASK_VTA_APP_STATE_GET_MANY_1_0,
-        TASK_VTA_APP_STATE_LIST_1_0, TASK_VTA_APP_STATE_PUT_1_0, TASK_VTA_APP_STATE_PUT_MANY_1_0,
+        TASK_VTA_APP_STATE_LIST_1_1, TASK_VTA_APP_STATE_PUT_1_1, TASK_VTA_APP_STATE_PUT_MANY_1_1,
     };
 
     /// An admin whose ACL grants exactly `ctx` — not a super-admin, whose empty
@@ -513,7 +512,7 @@ mod tests {
             &state,
             &auth,
             doc(
-                TASK_VTA_APP_STATE_PUT_1_0,
+                TASK_VTA_APP_STATE_PUT_1_1,
                 json!({
                     "contextId": "acme", "namespace": "openvtc", "key": "community/a",
                     "value": { "label": "Acme" }
@@ -532,7 +531,7 @@ mod tests {
             .expect("version");
         assert_eq!(version, 1);
         assert_eq!(
-            payload_of(&put).get("created").and_then(Value::as_bool),
+            payload_of(&put).get("wasCreated").and_then(Value::as_bool),
             Some(true)
         );
 
@@ -561,16 +560,16 @@ mod tests {
 
         let mut first = base.clone();
         first["value"] = json!("original");
-        handle_put(&state, &auth, doc(TASK_VTA_APP_STATE_PUT_1_0, first)).await;
+        handle_put(&state, &auth, doc(TASK_VTA_APP_STATE_PUT_1_1, first)).await;
 
         let mut second = base.clone();
         second["value"] = json!("winner");
-        handle_put(&state, &auth, doc(TASK_VTA_APP_STATE_PUT_1_0, second)).await;
+        handle_put(&state, &auth, doc(TASK_VTA_APP_STATE_PUT_1_1, second)).await;
 
         let mut stale = base.clone();
         stale["value"] = json!("loser");
         stale["expectedVersion"] = json!(1);
-        let out = handle_put(&state, &auth, doc(TASK_VTA_APP_STATE_PUT_1_0, stale)).await;
+        let out = handle_put(&state, &auth, doc(TASK_VTA_APP_STATE_PUT_1_1, stale)).await;
 
         assert!(!out.status.is_success());
         let p = payload_of(&out);
@@ -598,7 +597,7 @@ mod tests {
             &state,
             &auth,
             doc(
-                TASK_VTA_APP_STATE_PUT_1_0,
+                TASK_VTA_APP_STATE_PUT_1_1,
                 json!({ "contextId": "acme", "namespace": "openvtc", "key": "gone", "value": 1 }),
             ),
         )
@@ -622,7 +621,7 @@ mod tests {
             &state,
             &auth,
             doc(
-                TASK_VTA_APP_STATE_LIST_1_0,
+                TASK_VTA_APP_STATE_LIST_1_1,
                 json!({
                     "contextId": "acme", "namespace": "openvtc", "sinceVersion": 1
                 }),
@@ -650,7 +649,7 @@ mod tests {
             &state,
             &admin_of("acme"),
             doc(
-                TASK_VTA_APP_STATE_LIST_1_0,
+                TASK_VTA_APP_STATE_LIST_1_1,
                 json!({ "contextId": "acme", "sinceVersion": 0 }),
             ),
         )
@@ -677,7 +676,7 @@ mod tests {
             &state,
             &auth,
             doc(
-                TASK_VTA_APP_STATE_PUT_1_0,
+                TASK_VTA_APP_STATE_PUT_1_1,
                 json!({ "contextId": "acme", "namespace": "openvtc", "key": "b", "value": 1 }),
             ),
         )
@@ -687,7 +686,7 @@ mod tests {
             &state,
             &auth,
             doc(
-                TASK_VTA_APP_STATE_PUT_MANY_1_0,
+                TASK_VTA_APP_STATE_PUT_MANY_1_1,
                 json!({
                     "contextId": "acme", "namespace": "openvtc",
                     "writes": [
@@ -730,7 +729,7 @@ mod tests {
             &state,
             &auth,
             doc(
-                TASK_VTA_APP_STATE_PUT_1_0,
+                TASK_VTA_APP_STATE_PUT_1_1,
                 json!({ "contextId": "acme", "namespace": "openvtc", "key": "index", "value": [] }),
             ),
         )
@@ -740,7 +739,7 @@ mod tests {
             &state,
             &auth,
             doc(
-                TASK_VTA_APP_STATE_PUT_MANY_1_0,
+                TASK_VTA_APP_STATE_PUT_MANY_1_1,
                 json!({
                     "contextId": "acme", "namespace": "openvtc", "mode": "atomic",
                     "writes": [
@@ -794,7 +793,7 @@ mod tests {
             &state,
             &auth,
             doc(
-                TASK_VTA_APP_STATE_PUT_1_0,
+                TASK_VTA_APP_STATE_PUT_1_1,
                 json!({ "contextId": "acme", "namespace": "openvtc", "key": "a", "value": 1 }),
             ),
         )
@@ -828,7 +827,7 @@ mod tests {
             &state,
             &intruder,
             doc(
-                TASK_VTA_APP_STATE_PUT_1_0,
+                TASK_VTA_APP_STATE_PUT_1_1,
                 json!({ "contextId": "acme", "namespace": "openvtc", "key": "k", "value": 1 }),
             ),
         )
@@ -843,7 +842,7 @@ mod tests {
             &state,
             &admin_of("acme"),
             doc(
-                TASK_VTA_APP_STATE_LIST_1_0,
+                TASK_VTA_APP_STATE_LIST_1_1,
                 json!({ "contextId": "acme", "namespace": "openvtc" }),
             ),
         )
@@ -866,7 +865,7 @@ mod tests {
                 &state,
                 &admin_of(ctx),
                 doc(
-                    TASK_VTA_APP_STATE_PUT_1_0,
+                    TASK_VTA_APP_STATE_PUT_1_1,
                     json!({ "contextId": ctx, "namespace": "openvtc", "key": "k", "value": ctx }),
                 ),
             )
@@ -876,7 +875,7 @@ mod tests {
             &state,
             &admin_of("ctx-a"),
             doc(
-                TASK_VTA_APP_STATE_LIST_1_0,
+                TASK_VTA_APP_STATE_LIST_1_1,
                 json!({ "contextId": "ctx-a", "namespace": "openvtc", "includeValues": true }),
             ),
         )

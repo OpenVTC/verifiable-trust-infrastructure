@@ -1616,12 +1616,12 @@ fn table() -> Vec<(&'static str, Conformance)> {
         ),
         // ─── messaging ───────────────────────────────────────────
         (
-            uris::TASK_MESSAGING_PING_0_1,
+            uris::TASK_MESSAGING_PING_0_2,
             checked!(
-                specs::messaging::ping::v0_1::Payload,
-                specs::messaging::ping::v0_1::Response,
+                specs::messaging::ping::v0_2::Payload,
+                specs::messaging::ping::v0_2::Response,
                 json!({ "nonce": "n-1" }),
-                json!({ "serverTime": TS, "status": "ok", "protocols": ["didcomm/v2"], "nonce": "n-1" })
+                json!({ "respondedAt": TS, "status": "ok", "protocols": ["didcomm/v2"], "nonce": "n-1" })
             ),
         ),
         // ─── audit ───────────────────────────────────────────────
@@ -1924,7 +1924,7 @@ fn table() -> Vec<(&'static str, Conformance)> {
                     "entryId": "01HVAULTENTRY",
                     "unsignedEnvelope": {
                         "id": "urn:uuid:7c11",
-                        "type": "https://trusttasks.org/spec/messaging/ping/0.1",
+                        "type": "https://trusttasks.org/spec/messaging/ping/0.2",
                         "issuer": SUBJECT,
                         "recipient": "did:web:vta.example",
                         "issuedAt": TS,
@@ -1933,7 +1933,7 @@ fn table() -> Vec<(&'static str, Conformance)> {
                 }),
                 json!({ "signedEnvelope": {
                     "id": "urn:uuid:7c11",
-                    "type": "https://trusttasks.org/spec/messaging/ping/0.1",
+                    "type": "https://trusttasks.org/spec/messaging/ping/0.2",
                     "issuer": SUBJECT,
                     "recipient": "did:web:vta.example",
                     "issuedAt": TS,
@@ -1982,10 +1982,10 @@ fn table() -> Vec<(&'static str, Conformance)> {
             ),
         ),
         (
-            uris::TASK_VTA_CREDENTIALS_LIST_0_1,
+            uris::TASK_VTA_CREDENTIALS_LIST_0_2,
             checked!(
-                specs::vta::credentials::list::v0_1::Payload,
-                specs::vta::credentials::list::v0_1::Response,
+                specs::vta::credentials::list::v0_2::Payload,
+                specs::vta::credentials::list::v0_2::Response,
                 // Every filter set at once: the members are AND-combined, and a
                 // witness that set one would not prove the others reach the
                 // wire under their canonical spellings.
@@ -1993,7 +1993,7 @@ fn table() -> Vec<(&'static str, Conformance)> {
                     holder: Some("did:key:z6MkSubject".into()),
                     credential_type: Some("MembershipCredential".into()),
                     status: Some(IssuedCredentialStatus::Active),
-                    page_size: Some(50),
+                    limit: Some(50),
                     cursor: Some("cred:cred-1".into()),
                     ext: None,
                 }),
@@ -2024,8 +2024,7 @@ fn table() -> Vec<(&'static str, Conformance)> {
                             revocation_reason: Some("role ended".into()),
                         },
                     ],
-                    truncated: true,
-                    cursor: Some("cred:cred-2".into()),
+                    next_cursor: Some("cred:cred-2".into()),
                     ext: None,
                 })
             ),
@@ -2655,11 +2654,11 @@ fn table() -> Vec<(&'static str, Conformance)> {
             ),
         ),
         (
-            uris::TASK_VTA_WITNESS_LIST_0_1,
+            uris::TASK_VTA_WITNESS_LIST_0_2,
             checked!(
-                specs::vta::witness::list::v0_1::Payload,
-                specs::vta::witness::list::v0_1::Response,
-                json!({ "relationshipDid": SUBJECT, "pageSize": 20 }),
+                specs::vta::witness::list::v0_2::Payload,
+                specs::vta::witness::list::v0_2::Response,
+                json!({ "relationshipDid": SUBJECT, "limit": 20 }),
                 json!({
                     "witnessings": [{
                         "credentialId": "vwc-1", "witness": WITNESS_DID,
@@ -2668,8 +2667,7 @@ fn table() -> Vec<(&'static str, Conformance)> {
                         "acceptedAt": TS,
                         "evidence": { "session": witness_session_doc(), "outcome": witness_answer() },
                     }],
-                    "truncated": true,
-                    "cursor": "w1.opaque",
+                    "nextCursor": "w1.opaque",
                 })
             ),
         ),
@@ -2736,10 +2734,10 @@ fn table() -> Vec<(&'static str, Conformance)> {
             ),
         ),
         (
-            uris::TASK_VTA_APP_STATE_PUT_1_0,
+            uris::TASK_VTA_APP_STATE_PUT_1_1,
             checked!(
-                specs::vta::app_state::put::v1_0::Payload,
-                specs::vta::app_state::put::v1_0::Response,
+                specs::vta::app_state::put::v1_1::Payload,
+                specs::vta::app_state::put::v1_1::Response,
                 to_v(AppStatePutBody {
                     context_id: "ctx-a".into(),
                     namespace: "openvtc".into(),
@@ -2754,17 +2752,17 @@ fn table() -> Vec<(&'static str, Conformance)> {
                     namespace: "openvtc".into(),
                     key: "community/acme".into(),
                     version: 52,
-                    created: false,
+                    was_created: false,
                     updated_at: TS.into(),
                     value_bytes: Some(95),
                 })
             ),
         ),
         (
-            uris::TASK_VTA_APP_STATE_LIST_1_0,
+            uris::TASK_VTA_APP_STATE_LIST_1_1,
             checked!(
-                specs::vta::app_state::list::v1_0::Payload,
-                specs::vta::app_state::list::v1_0::Response,
+                specs::vta::app_state::list::v1_1::Payload,
+                specs::vta::app_state::list::v1_1::Response,
                 to_v(AppStateListBody {
                     context_id: "ctx-a".into(),
                     namespace: Some("openvtc".into()),
@@ -2772,14 +2770,13 @@ fn table() -> Vec<(&'static str, Conformance)> {
                     since_version: Some(40),
                     include_values: Some(true),
                     include_deleted: None,
-                    page_size: Some(50),
+                    limit: Some(50),
                     cursor: None,
                     ext: None,
                 }),
                 to_v(AppStateListResponse {
                     records: vec![app_state_record(), app_state_tombstone()],
-                    truncated: false,
-                    cursor: None,
+                    next_cursor: Some("opaque-page-2".into()),
                     high_watermark: Some(52),
                     tombstone_retention_seconds: Some(2_592_000),
                 })
@@ -2827,10 +2824,10 @@ fn table() -> Vec<(&'static str, Conformance)> {
             ),
         ),
         (
-            uris::TASK_VTA_APP_STATE_PUT_MANY_1_0,
+            uris::TASK_VTA_APP_STATE_PUT_MANY_1_1,
             checked!(
-                specs::vta::app_state::put_many::v1_0::Payload,
-                specs::vta::app_state::put_many::v1_0::Response,
+                specs::vta::app_state::put_many::v1_1::Payload,
+                specs::vta::app_state::put_many::v1_1::Response,
                 to_v(AppStatePutManyBody {
                     context_id: "ctx-a".into(),
                     namespace: "openvtc".into(),
@@ -2860,7 +2857,7 @@ fn table() -> Vec<(&'static str, Conformance)> {
                             key: "community/acme".into(),
                             outcome: WriteOutcome::Written,
                             version: Some(59),
-                            created: Some(false),
+                            was_created: Some(false),
                             current_version: None,
                             current_value: None,
                             current_deleted: None,
@@ -2874,7 +2871,7 @@ fn table() -> Vec<(&'static str, Conformance)> {
                             key: "profile/labels".into(),
                             outcome: WriteOutcome::Conflict,
                             version: None,
-                            created: None,
+                            was_created: None,
                             current_version: Some(57),
                             current_value: Some(serde_json::json!({ "colours": {} })),
                             current_deleted: None,
@@ -3796,21 +3793,6 @@ fn table() -> Vec<(&'static str, Conformance)> {
             }
         }
 
-        /// The persisted record `create`/`get`/`update` return — the
-        /// authored template flattened under the resolved scope and
-        /// provenance metadata.
-        fn record() -> DidTemplateRecord {
-            DidTemplateRecord {
-                template: template(),
-                scope: Scope::Context {
-                    context_id: CTX.into(),
-                },
-                created_at: EPOCH,
-                updated_at: EPOCH,
-                created_by: "did:key:z6MkAdmin".into(),
-            }
-        }
-
         fn rendered() -> Value {
             json!({
                 "id": "did:webvh:scid:vta.example",
@@ -3829,12 +3811,12 @@ fn table() -> Vec<(&'static str, Conformance)> {
         for (what, parse, global) in [
             (
                 "list",
-                parses::<specs::vta::did_templates::list::v2_0::Payload> as ParseFn,
+                parses::<specs::vta::did_templates::list::v3_1::Payload> as ParseFn,
                 to_v(tpl::list::ListDidTemplatesBody { context_id: None }),
             ),
             (
                 "create",
-                parses::<specs::vta::did_templates::create::v2_0::Payload> as ParseFn,
+                parses::<specs::vta::did_templates::create::v3_1::Payload> as ParseFn,
                 to_v(tpl::create::CreateDidTemplateBody {
                     context_id: None,
                     template: template(),
@@ -3842,7 +3824,7 @@ fn table() -> Vec<(&'static str, Conformance)> {
             ),
             (
                 "get",
-                parses::<specs::vta::did_templates::get::v2_0::Payload> as ParseFn,
+                parses::<specs::vta::did_templates::get::v3_1::Payload> as ParseFn,
                 to_v(tpl::get::GetDidTemplateBody {
                     context_id: None,
                     name: TPL_NAME.into(),
@@ -3850,7 +3832,7 @@ fn table() -> Vec<(&'static str, Conformance)> {
             ),
             (
                 "update",
-                parses::<specs::vta::did_templates::update::v2_0::Payload> as ParseFn,
+                parses::<specs::vta::did_templates::update::v3_1::Payload> as ParseFn,
                 to_v(tpl::update::UpdateDidTemplateBody {
                     context_id: None,
                     name: TPL_NAME.into(),
@@ -3887,69 +3869,18 @@ fn table() -> Vec<(&'static str, Conformance)> {
         }
 
         t.extend([
-            (
-                uris::TASK_DID_TEMPLATES_LIST_2_0,
-                checked!(
-                    specs::vta::did_templates::list::v2_0::Payload,
-                    specs::vta::did_templates::list::v2_0::Response,
-                    to_v(tpl::list::ListDidTemplatesBody {
-                        context_id: Some(CTX.into()),
-                    }),
-                    to_v(tpl::list::ListDidTemplatesResultBody {
-                        templates: vec![record()],
-                    })
-                ),
-            ),
-            (
-                uris::TASK_DID_TEMPLATES_CREATE_2_0,
-                checked!(
-                    specs::vta::did_templates::create::v2_0::Payload,
-                    specs::vta::did_templates::create::v2_0::Response,
-                    to_v(tpl::create::CreateDidTemplateBody {
-                        context_id: Some(CTX.into()),
-                        template: template(),
-                    }),
-                    // `handle_create` returns the persisted record itself.
-                    to_v(record())
-                ),
-            ),
-            (
-                uris::TASK_DID_TEMPLATES_GET_2_0,
-                checked!(
-                    specs::vta::did_templates::get::v2_0::Payload,
-                    specs::vta::did_templates::get::v2_0::Response,
-                    to_v(tpl::get::GetDidTemplateBody {
-                        context_id: Some(CTX.into()),
-                        name: TPL_NAME.into(),
-                    }),
-                    to_v(record())
-                ),
-            ),
-            (
-                uris::TASK_DID_TEMPLATES_UPDATE_2_0,
-                checked!(
-                    specs::vta::did_templates::update::v2_0::Payload,
-                    specs::vta::did_templates::update::v2_0::Response,
-                    to_v(tpl::update::UpdateDidTemplateBody {
-                        context_id: Some(CTX.into()),
-                        name: TPL_NAME.into(),
-                        template: template(),
-                    }),
-                    to_v(record())
-                ),
-            ),
-            // ── 3.0: the same four ops carrying a `schemaVersion` 2 template ──
+            // ── 3.1: the four ops carrying a template, at `schemaVersion` 2 ──
             //
             // Each witness uses `template_v2()` / `record_v2()` rather than the
-            // v1 fixtures. That is the point: a 3.0 witness carrying a v1
-            // template would pass while proving nothing about the `keys` block
-            // 3.0 exists to carry, and would go on passing if that block were
-            // removed from the published schema.
+            // v1 fixtures. That is the point: a witness carrying a v1 template
+            // would pass while proving nothing about the `keys` block, and would
+            // go on passing if that block were removed from the published
+            // schema. The record's `createdAt` / `updatedAt` are RFC 3339.
             (
-                uris::TASK_DID_TEMPLATES_LIST_3_0,
+                uris::TASK_DID_TEMPLATES_LIST_3_1,
                 checked!(
-                    specs::vta::did_templates::list::v3_0::Payload,
-                    specs::vta::did_templates::list::v3_0::Response,
+                    specs::vta::did_templates::list::v3_1::Payload,
+                    specs::vta::did_templates::list::v3_1::Response,
                     to_v(tpl::list::ListDidTemplatesBody {
                         context_id: Some(CTX.into()),
                     }),
@@ -3959,10 +3890,10 @@ fn table() -> Vec<(&'static str, Conformance)> {
                 ),
             ),
             (
-                uris::TASK_DID_TEMPLATES_CREATE_3_0,
+                uris::TASK_DID_TEMPLATES_CREATE_3_1,
                 checked!(
-                    specs::vta::did_templates::create::v3_0::Payload,
-                    specs::vta::did_templates::create::v3_0::Response,
+                    specs::vta::did_templates::create::v3_1::Payload,
+                    specs::vta::did_templates::create::v3_1::Response,
                     to_v(tpl::create::CreateDidTemplateBody {
                         context_id: Some(CTX.into()),
                         template: template_v2(),
@@ -3971,10 +3902,10 @@ fn table() -> Vec<(&'static str, Conformance)> {
                 ),
             ),
             (
-                uris::TASK_DID_TEMPLATES_GET_3_0,
+                uris::TASK_DID_TEMPLATES_GET_3_1,
                 checked!(
-                    specs::vta::did_templates::get::v3_0::Payload,
-                    specs::vta::did_templates::get::v3_0::Response,
+                    specs::vta::did_templates::get::v3_1::Payload,
+                    specs::vta::did_templates::get::v3_1::Response,
                     to_v(tpl::get::GetDidTemplateBody {
                         context_id: Some(CTX.into()),
                         name: TPL_NAME.into(),
@@ -3983,10 +3914,10 @@ fn table() -> Vec<(&'static str, Conformance)> {
                 ),
             ),
             (
-                uris::TASK_DID_TEMPLATES_UPDATE_3_0,
+                uris::TASK_DID_TEMPLATES_UPDATE_3_1,
                 checked!(
-                    specs::vta::did_templates::update::v3_0::Payload,
-                    specs::vta::did_templates::update::v3_0::Response,
+                    specs::vta::did_templates::update::v3_1::Payload,
+                    specs::vta::did_templates::update::v3_1::Response,
                     to_v(tpl::update::UpdateDidTemplateBody {
                         context_id: Some(CTX.into()),
                         name: TPL_NAME.into(),
@@ -4071,10 +4002,10 @@ fn table() -> Vec<(&'static str, Conformance)> {
                 ),
             ),
             (
-                uris::TASK_PASSKEY_VMS_ENROLL_SUBMIT_0_1,
+                uris::TASK_PASSKEY_VMS_ENROLL_SUBMIT_0_2,
                 checked!(
-                    specs::vta::passkey_vms::enroll_submit::v0_1::Payload,
-                    specs::vta::passkey_vms::enroll_submit::v0_1::Response,
+                    specs::vta::passkey_vms::enroll_submit::v0_2::Payload,
+                    specs::vta::passkey_vms::enroll_submit::v0_2::Response,
                     to_v(pk::EnrollPasskeySubmitBody {
                         did: "did:webvh:scid:vta.example".into(),
                         ceremony_id: "cer-1".into(),
@@ -4208,10 +4139,10 @@ fn table() -> Vec<(&'static str, Conformance)> {
         // response carries the root seed sealed to the caller, so what this
         // pins is that the sealed shape matches the published schema exactly.
         t.push((
-            uris::TASK_ATTESTATION_MNEMONIC_EXPORT_1_0,
+            uris::TASK_ATTESTATION_MNEMONIC_EXPORT_1_1,
             checked!(
-                specs::vta::attestation::mnemonic_export::v1_0::Payload,
-                specs::vta::attestation::mnemonic_export::v1_0::Response,
+                specs::vta::attestation::mnemonic_export::v1_1::Payload,
+                specs::vta::attestation::mnemonic_export::v1_1::Response,
                 json!({
                     "clientDid": "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
                     "nonce": "AAAAAAAAAAAAAAAAAAAAAA",
@@ -4220,7 +4151,7 @@ fn table() -> Vec<(&'static str, Conformance)> {
                 to_v(MnemonicExportResultBody {
                     bundle: "-----BEGIN VTA SEALED BUNDLE-----".into(),
                     digest: "0".repeat(64),
-                    window_remaining_secs: 42,
+                    window_remaining_seconds: 42,
                 })
             ),
         ));
@@ -4245,12 +4176,12 @@ fn table() -> Vec<(&'static str, Conformance)> {
     // Dispatched only with `tee`, like the export it reports on.
     #[cfg(feature = "tee")]
     t.push((
-        uris::TASK_ATTESTATION_MNEMONIC_STATUS_0_1,
+        uris::TASK_ATTESTATION_MNEMONIC_STATUS_0_2,
         checked!(
-            specs::vta::attestation::mnemonic_status::v0_1::Payload,
-            specs::vta::attestation::mnemonic_status::v0_1::Response,
+            specs::vta::attestation::mnemonic_status::v0_2::Payload,
+            specs::vta::attestation::mnemonic_status::v0_2::Response,
             json!({}),
-            json!({ "windowActive": false, "windowRemainingSecs": 0, "alreadyExported": false, "entropyAvailable": true })
+            json!({ "windowActive": false, "windowRemainingSeconds": 0, "alreadyExported": false, "entropyAvailable": true })
         ),
     ));
 
@@ -5171,7 +5102,6 @@ fn persona_witnesses() -> Vec<(&'static str, ReqParts, RespParts)> {
 
 fn backup_and_management_witnesses() -> Vec<(&'static str, ReqParts, RespParts)> {
     const BUNDLE: &str = "3f2504e0-4f89-41d3-9a0c-0305e82c3301";
-    const SHA256: &str = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
     // Not a password. Long enough to clear the schema's minLength, and shaped
     // so that anyone copying it out of here has copied something inert.
     const NOT_A_PASSWORD: &str = "fixture-value-not-a-password";
@@ -5197,32 +5127,7 @@ fn backup_and_management_witnesses() -> Vec<(&'static str, ReqParts, RespParts)>
         })
     };
 
-    let descriptor = json!({
-        "bundleId": BUNDLE,
-        "algorithm": "stream",
-        "transportUrl": format!("https://vta.test/backup/blob/{BUNDLE}"),
-        "transportToken": "fixture-token-not-a-credential",
-        "expectedSha256": SHA256,
-        "expectedSizeBytes": 1_048_576,
-        "expiresAt": "2026-01-01T00:05:01Z",
-    });
-
     vec![
-        (
-            vta_sdk::trust_tasks::TASK_BACKUP_INITIATE_EXPORT_1_0,
-            (
-                json!({ "password": NOT_A_PASSWORD, "includeAudit": true }),
-                parses::<specs::vta::backup::initiate_export::v1_0::Payload>,
-                validates::<specs::vta::backup::initiate_export::v1_0::Payload>,
-            ),
-            (
-                json!({
-                    "descriptor": descriptor,
-                    "completionHint": "GET the transportUrl with header X-Backup-Token, then send complete-export."
-                }),
-                parses::<specs::vta::backup::initiate_export::v1_0::Response>,
-            ),
-        ),
         (
             vta_sdk::trust_tasks::TASK_BACKUP_COMPLETE_EXPORT_1_0,
             (
@@ -5233,46 +5138,6 @@ fn backup_and_management_witnesses() -> Vec<(&'static str, ReqParts, RespParts)>
             (
                 json!({ "bundleId": BUNDLE, "downloaded": true }),
                 parses::<specs::vta::backup::complete_export::v1_0::Response>,
-            ),
-        ),
-        (
-            vta_sdk::trust_tasks::TASK_BACKUP_INITIATE_IMPORT_1_0,
-            (
-                json!({ "expectedSha256": SHA256, "expectedSizeBytes": 1_048_576 }),
-                parses::<specs::vta::backup::initiate_import::v1_0::Payload>,
-                validates::<specs::vta::backup::initiate_import::v1_0::Payload>,
-            ),
-            (
-                json!({
-                    "descriptor": descriptor,
-                    "completionHint": "POST the bundle to the transportUrl with header X-Backup-Token, then send finalize-import."
-                }),
-                parses::<specs::vta::backup::initiate_import::v1_0::Response>,
-            ),
-        ),
-        (
-            vta_sdk::trust_tasks::TASK_BACKUP_FINALIZE_IMPORT_1_0,
-            (
-                // `confirm: false` — the preview arm. A witness that committed
-                // would be the one shape in this table whose meaning is "replace
-                // the agent", and a fixture is the wrong place to spell that.
-                json!({ "bundleId": BUNDLE, "password": NOT_A_PASSWORD, "confirm": false }),
-                parses::<specs::vta::backup::finalize_import::v1_0::Payload>,
-                validates::<specs::vta::backup::finalize_import::v1_0::Payload>,
-            ),
-            (
-                json!({
-                    "bundleId": BUNDLE,
-                    "status": "preview",
-                    "sourceDid": "did:key:z6MkSubject",
-                    "keyCount": 12,
-                    "aclCount": 34,
-                    "contextCount": 3,
-                    "auditCount": 0,
-                    "importedSecretCount": 12,
-                    "message": "Bundle is readable. Nothing has been changed."
-                }),
-                parses::<specs::vta::backup::finalize_import::v1_0::Response>,
             ),
         ),
         (
@@ -5288,8 +5153,7 @@ fn backup_and_management_witnesses() -> Vec<(&'static str, ReqParts, RespParts)>
             ),
         ),
         // ── `chunkedTrustTask` ─────────────────────────────────────────
-        // The 1.1 initiators' chunked shapes — the stream shapes are the 1.0
-        // witnesses above, wire-identical — and the two chunk tasks. The manifest
+        // The 1.1 initiators' chunked shapes and the two chunk tasks. The manifest
         // is the specification's own example bundle: 524300 bytes in 256 KiB
         // chunks, the last a 12-byte remainder.
         (
@@ -5474,15 +5338,6 @@ fn webvh_and_context_witnesses() -> Vec<(&'static str, ReqParts, RespParts)> {
             (context_record(), parses::<ctx::update::v1_0::Response>),
         ),
         (
-            uris::TASK_CONTEXTS_UPDATE_DID_1_0,
-            (
-                json!({ "id": "personal", "did": did }),
-                parses::<ctx::update_did::v1_0::Payload>,
-                validates::<ctx::update_did::v1_0::Payload>,
-            ),
-            (context_record(), parses::<ctx::update_did::v1_0::Response>),
-        ),
-        (
             // 1.1: `did` may be `null`, which clears the context's DID.
             uris::TASK_CONTEXTS_UPDATE_DID_1_1,
             (
@@ -5574,35 +5429,6 @@ fn webvh_and_context_witnesses() -> Vec<(&'static str, ReqParts, RespParts)> {
             (
                 json!({ "record": did_record() }),
                 parses::<wv::dids::get::v1_0::Response>,
-            ),
-        ),
-        (
-            uris::TASK_WEBVH_DIDS_CREATE_1_0,
-            (
-                json!({ "contextId": "personal" }),
-                parses::<wv::dids::create::v1_0::Payload>,
-                validates::<wv::dids::create::v1_0::Payload>,
-            ),
-            (
-                json!({ "did": did, "contextId": "personal", "scid": "QmScid", "portable": true,
-                  "signingKeyId": "k-sign", "kaKeyId": "k-ka", "preRotationKeyCount": 2,
-                  "createdAt": "2026-08-19T09:00:00Z" }),
-                parses::<wv::dids::create::v1_0::Response>,
-            ),
-        ),
-        (
-            uris::TASK_WEBVH_DIDS_CREATE_1_1,
-            (
-                json!({ "contextId": "personal" }),
-                parses::<wv::dids::create::v1_1::Payload>,
-                validates::<wv::dids::create::v1_1::Payload>,
-            ),
-            (
-                json!({ "did": did, "contextId": "personal", "serverless": true, "scid": "QmScid",
-                  "portable": true, "signingKeyId": "k-sign", "kaKeyId": "k-ka",
-                  "preRotationKeyCount": 2, "createdAt": "2026-08-19T09:00:00Z",
-                  "logEntry": "{}" }),
-                parses::<wv::dids::create::v1_1::Response>,
             ),
         ),
         (
@@ -5773,15 +5599,16 @@ fn webvh_and_context_witnesses() -> Vec<(&'static str, ReqParts, RespParts)> {
             ),
         ),
         (
-            uris::TASK_WEBVH_AGENT_NAME_LIST_1_0,
+            uris::TASK_WEBVH_AGENT_NAME_LIST_1_1,
             (
                 json!({ "did": did }),
-                parses::<wv::agent_name::list::v1_0::Payload>,
-                validates::<wv::agent_name::list::v1_0::Payload>,
+                parses::<wv::agent_name::list::v1_1::Payload>,
+                validates::<wv::agent_name::list::v1_1::Payload>,
             ),
             (
-                json!({ "did": did, "names": [{ "name": "alice", "enabled": true }] }),
-                parses::<wv::agent_name::list::v1_0::Response>,
+                json!({ "did": did, "names": [{ "name": "alice", "enabled": true,
+                  "createdAt": "2026-01-01T00:00:00Z" }] }),
+                parses::<wv::agent_name::list::v1_1::Response>,
             ),
         ),
         (
@@ -5833,91 +5660,67 @@ fn webvh_and_context_witnesses() -> Vec<(&'static str, ReqParts, RespParts)> {
         // Typed explicitly: without it the array literal takes its element type
         // from the first entry, and each `parses::<T>` is a distinct fn item
         // rather than the `ParseFn` pointer the alias expects.
-        let services: [(&'static str, ReqParts, RespParts); 11] = [
+        let services: [(&'static str, ReqParts, RespParts); 9] = [
             (
-                uris::TASK_SERVICES_LIST_1_0,
+                uris::TASK_SERVICES_LIST_1_1,
                 (
                     json!({}),
-                    parses::<svc::list::v1_0::Payload>,
-                    validates::<svc::list::v1_0::Payload>,
+                    parses::<svc::list::v1_1::Payload>,
+                    validates::<svc::list::v1_1::Payload>,
                 ),
                 (
                     json!({ "services": [{ "kind": "rest", "enabled": true, "url": "https://vta.example/api" }] }),
-                    parses::<svc::list::v1_0::Response>,
+                    parses::<svc::list::v1_1::Response>,
                 ),
             ),
             (
-                uris::TASK_SERVICES_GET_1_0,
+                uris::TASK_SERVICES_GET_1_1,
                 (
                     json!({ "service": "didcomm" }),
-                    parses::<svc::get::v1_0::Payload>,
-                    validates::<svc::get::v1_0::Payload>,
+                    parses::<svc::get::v1_1::Payload>,
+                    validates::<svc::get::v1_1::Payload>,
                 ),
                 (
                     json!({ "state": { "kind": "didcomm", "enabled": true, "mediatorDid": "did:web:mediator.example" } }),
-                    parses::<svc::get::v1_0::Response>,
+                    parses::<svc::get::v1_1::Response>,
                 ),
             ),
             (
-                uris::TASK_SERVICES_ENABLE_1_0,
+                uris::TASK_SERVICES_ENABLE_1_1,
                 (
                     json!({ "service": "rest", "config": { "url": "https://vta.example/api" } }),
-                    parses::<svc::enable::v1_0::Payload>,
-                    validates::<svc::enable::v1_0::Payload>,
+                    parses::<svc::enable::v1_1::Payload>,
+                    validates::<svc::enable::v1_1::Payload>,
                 ),
                 (
                     json!({ "result": mutation_result() }),
-                    parses::<svc::enable::v1_0::Response>,
+                    parses::<svc::enable::v1_1::Response>,
                 ),
             ),
             (
-                uris::TASK_SERVICES_UPDATE_1_0,
-                (
-                    json!({ "service": "tsp", "config": { "mediatorDid": "did:web:mediator.example" } }),
-                    parses::<svc::update::v1_0::Payload>,
-                    validates::<svc::update::v1_0::Payload>,
-                ),
-                (
-                    json!({ "result": mutation_result() }),
-                    parses::<svc::update::v1_0::Response>,
-                ),
-            ),
-            (
-                uris::TASK_SERVICES_DISABLE_1_0,
+                uris::TASK_SERVICES_DISABLE_1_1,
                 (
                     json!({ "service": "didcomm" }),
-                    parses::<svc::disable::v1_0::Payload>,
-                    validates::<svc::disable::v1_0::Payload>,
+                    parses::<svc::disable::v1_1::Payload>,
+                    validates::<svc::disable::v1_1::Payload>,
                 ),
                 (
                     json!({ "result": mutation_result() }),
-                    parses::<svc::disable::v1_0::Response>,
+                    parses::<svc::disable::v1_1::Response>,
                 ),
             ),
             (
-                uris::TASK_SERVICES_ROLLBACK_1_0,
-                (
-                    json!({ "service": "rest" }),
-                    parses::<svc::rollback::v1_0::Payload>,
-                    validates::<svc::rollback::v1_0::Payload>,
-                ),
-                (
-                    json!({ "result": { "kind": "noOp", "serverless": false } }),
-                    parses::<svc::rollback::v1_0::Response>,
-                ),
-            ),
-            (
-                uris::TASK_SERVICES_DRAIN_LIST_1_0,
+                uris::TASK_SERVICES_DRAIN_LIST_1_1,
                 (
                     json!({}),
-                    parses::<svc::drain::list::v1_0::Payload>,
-                    validates::<svc::drain::list::v1_0::Payload>,
+                    parses::<svc::drain::list::v1_1::Payload>,
+                    validates::<svc::drain::list::v1_1::Payload>,
                 ),
                 (
                     json!({ "entries": [{ "mediatorDid": "did:web:old-mediator.example",
                                     "endpoint": "https://old-mediator.example/didcomm",
-                                    "drainsUntil": "2026-08-20T21:00:00Z" }] }),
-                    parses::<svc::drain::list::v1_0::Response>,
+                                    "drainEndsAt": "2026-08-20T21:00:00Z" }] }),
+                    parses::<svc::drain::list::v1_1::Response>,
                 ),
             ),
             (
@@ -5933,50 +5736,50 @@ fn webvh_and_context_witnesses() -> Vec<(&'static str, ReqParts, RespParts)> {
                 ),
             ),
             (
-                // 1.1 adds the drain window to rollback: a DIDComm rollback that
+                // The drain window on rollback: a DIDComm rollback that
                 // leaves the superseded mediator draining for a day.
-                uris::TASK_SERVICES_ROLLBACK_1_1,
+                uris::TASK_SERVICES_ROLLBACK_1_2,
                 (
-                    json!({ "service": "didcomm", "drainTtlSecs": 86_400 }),
-                    parses::<svc::rollback::v1_1::Payload>,
-                    validates::<svc::rollback::v1_1::Payload>,
+                    json!({ "service": "didcomm", "drainTtlSeconds": 86_400 }),
+                    parses::<svc::rollback::v1_2::Payload>,
+                    validates::<svc::rollback::v1_2::Payload>,
                 ),
                 (
                     json!({ "result": { "kind": "updated", "serverless": false,
                                         "drainingMediator": "did:web:old-mediator.example",
-                                        "drainUntil": "2026-08-20T21:00:00Z" } }),
-                    parses::<svc::rollback::v1_1::Response>,
+                                        "drainEndsAt": "2026-08-20T21:00:00Z" } }),
+                    parses::<svc::rollback::v1_2::Response>,
                 ),
             ),
             (
-                // 1.1 adds the mediator drain window: a DIDComm replacement
+                // The mediator drain window: a DIDComm replacement
                 // held open two days for correspondents on the old route.
-                uris::TASK_SERVICES_UPDATE_1_1,
+                uris::TASK_SERVICES_UPDATE_1_2,
                 (
                     json!({ "service": "didcomm", "config": { "mediatorDid": "did:web:mediator.example" },
-                            "drainTtlSecs": 172_800 }),
-                    parses::<svc::update::v1_1::Payload>,
-                    validates::<svc::update::v1_1::Payload>,
+                            "drainTtlSeconds": 172_800 }),
+                    parses::<svc::update::v1_2::Payload>,
+                    validates::<svc::update::v1_2::Payload>,
                 ),
                 (
                     json!({ "result": mutation_result() }),
-                    parses::<svc::update::v1_1::Response>,
+                    parses::<svc::update::v1_2::Response>,
                 ),
             ),
             (
-                uris::TASK_SERVICES_REPORT_0_1,
+                uris::TASK_SERVICES_REPORT_0_2,
                 (
                     json!({ "since": "2026-09-19T00:00:00Z" }),
-                    parses::<svc::report::v0_1::Payload>,
-                    validates::<svc::report::v0_1::Payload>,
+                    parses::<svc::report::v0_2::Payload>,
+                    validates::<svc::report::v0_2::Payload>,
                 ),
                 (
                     json!({ "since": "2026-09-19T00:00:00Z", "until": "2026-09-26T12:00:00Z",
                             "mediators": [{ "mediatorDid": "did:web:old-mediator.example", "inboundCount": 3,
-                                            "firstSeen": "2026-09-19T08:00:00Z", "lastSeen": "2026-09-24T17:40:00Z" }],
+                                            "firstSeenAt": "2026-09-19T08:00:00Z", "lastSeenAt": "2026-09-24T17:40:00Z" }],
                             "senders": [{ "senderDid": "did:key:z6MkLagging", "lastSeenMediator": "did:web:old-mediator.example",
                                           "lastSeenAt": "2026-09-24T17:40:00Z" }] }),
-                    parses::<svc::report::v0_1::Response>,
+                    parses::<svc::report::v0_2::Response>,
                 ),
             ),
         ];

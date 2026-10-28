@@ -305,7 +305,7 @@ async fn every_optional_argument_unset_still_builds_a_conforming_payload() {
     // ── services (vta/services/*) ────────────────────────────────────
     //
     // These were bespoke REST routes until the SDK moved onto the Trust Tasks;
-    // each builds its `config` by hand and inserts `drainTtlSecs` only when
+    // each builds its `config` by hand and inserts `drainTtlSeconds` only when
     // asked, which is exactly the shape this census exists for.
     use vta_sdk::protocol::services as svc;
     use vta_sdk::protocol::{

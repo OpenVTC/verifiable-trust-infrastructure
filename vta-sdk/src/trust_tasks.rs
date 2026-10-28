@@ -287,17 +287,10 @@ pub const TASK_CONTEXTS_SECRETS_1_0: &str = "https://trusttasks.org/spec/vta/con
 /// Auth: Super Admin only.
 pub const TASK_CONTEXTS_UPDATE_1_0: &str = "https://trusttasks.org/spec/vta/contexts/update/1.0";
 
-/// `spec/vta/contexts/update-did/1.0` — set the context's bound DID.
-/// Payload:
-/// [`crate::protocols::context_management::update_did::UpdateContextDidBody`].
-/// Auth: Admin with context access.
-pub const TASK_CONTEXTS_UPDATE_DID_1_0: &str =
-    "https://trusttasks.org/spec/vta/contexts/update-did/1.0";
-
-/// `spec/vta/contexts/update-did/1.1` — as 1.0, except `did` may be `null`,
-/// which clears the context's DID, and a string `did` must be a DID (DID Core
-/// §3.1). The only way to retire a context's last DID: `webvh/dids/delete`
-/// refuses a DID a context still acts as. Same payload type and handler as 1.0.
+/// `spec/vta/contexts/update-did/1.1` — set the context's bound DID, or clear
+/// it with `did: null`; a string `did` must be a DID (DID Core §3.1). The only
+/// way to retire a context's last DID: `webvh/dids/delete` refuses a DID a
+/// context still acts as. Auth: Admin with context access.
 pub const TASK_CONTEXTS_UPDATE_DID_1_1: &str =
     <trust_tasks_rs::specs::vta::contexts::update_did::v1_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
@@ -520,64 +513,62 @@ pub const TASK_SEEDS_ROTATE_1_0: &str = "https://trusttasks.org/spec/vta/seeds/r
 // carrying a harmlessly ignored field. That is what keeps a fifth transport to
 // a config variant instead of four new specs.
 
-/// `spec/vta/services/list/1.0` — every transport the agent knows about,
+/// `spec/vta/services/list/1.1` — every transport the agent knows about,
 /// advertised or not. Payload: empty. Auth: super-admin.
 ///
 /// A kind absent from the answer has never been configured; a kind present
 /// with `enabled: false` is known and deliberately not advertised.
-pub const TASK_SERVICES_LIST_1_0: &str = "https://trusttasks.org/spec/vta/services/list/1.0";
+pub const TASK_SERVICES_LIST_1_1: &str =
+    <trust_tasks_rs::specs::vta::services::list::v1_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
-/// `spec/vta/services/get/1.0` — one transport's current state.
+/// `spec/vta/services/get/1.1` — one transport's current state.
 /// Payload: `{ service }`. Auth: super-admin.
-pub const TASK_SERVICES_GET_1_0: &str = "https://trusttasks.org/spec/vta/services/get/1.0";
+pub const TASK_SERVICES_GET_1_1: &str =
+    <trust_tasks_rs::specs::vta::services::get::v1_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
-/// `spec/vta/services/enable/1.0` — advertise a transport.
+/// `spec/vta/services/enable/1.1` — advertise a transport.
 /// Payload: `{ service, config }`. Auth: super-admin.
 ///
 /// Not idempotent on purpose: enabling one already enabled is a conflict, so a
 /// typo cannot quietly re-point a working transport.
-pub const TASK_SERVICES_ENABLE_1_0: &str = "https://trusttasks.org/spec/vta/services/enable/1.0";
+pub const TASK_SERVICES_ENABLE_1_1: &str =
+    <trust_tasks_rs::specs::vta::services::enable::v1_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
-/// `spec/vta/services/update/1.0` — replace the settings on a transport that
-/// is already advertised. Payload: `{ service, config }`. Auth: super-admin.
+/// `spec/vta/services/update/1.2` — replace the settings on a transport that
+/// is already advertised. Payload: `{ service, config, drainTtlSeconds? }`.
+/// Auth: super-admin. `drainTtlSeconds`, for the mediated transports
+/// (`didcomm`, `tsp`), is how long the replaced mediator keeps accepting
+/// delivery; one mediator carrying both drains once for both.
 ///
 /// Refused when the transport is not enabled — that case is `enable`.
-pub const TASK_SERVICES_UPDATE_1_0: &str = "https://trusttasks.org/spec/vta/services/update/1.0";
+pub const TASK_SERVICES_UPDATE_1_2: &str =
+    <trust_tasks_rs::specs::vta::services::update::v1_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
-/// `spec/vta/services/update/1.1` — as 1.0, plus an optional `drainTtlSecs` for
-/// the mediated transports (`didcomm`, `tsp`): how long the replaced mediator
-/// keeps accepting delivery. One mediator carrying both drains once for both.
-pub const TASK_SERVICES_UPDATE_1_1: &str =
-    <trust_tasks_rs::specs::vta::services::update::v1_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
-
-/// `spec/vta/services/disable/1.0` — stop advertising a transport.
-/// Payload: `{ service, drainTtlSecs? }`. Auth: super-admin.
+/// `spec/vta/services/disable/1.1` — stop advertising a transport.
+/// Payload: `{ service, drainTtlSeconds? }`. Auth: super-admin.
 ///
 /// For `didcomm` this schedules a drain rather than cutting delivery, and the
 /// TTL is a request rather than an instruction: over a DIDComm-carried task the
 /// agent enforces a floor, because tearing down the mediator the request
-/// arrived through would discard the reply. Read `drainUntil` in the result.
-pub const TASK_SERVICES_DISABLE_1_0: &str = "https://trusttasks.org/spec/vta/services/disable/1.0";
+/// arrived through would discard the reply. Read `drainEndsAt` in the result.
+pub const TASK_SERVICES_DISABLE_1_1: &str =
+    <trust_tasks_rs::specs::vta::services::disable::v1_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
-/// `spec/vta/services/rollback/1.0` — restore a transport's previous settings
-/// by writing a NEW log entry. Payload: `{ service }`. Auth: super-admin.
+/// `spec/vta/services/rollback/1.2` — restore a transport's previous settings
+/// by writing a NEW log entry. Payload: `{ service, drainTtlSeconds? }`. Auth:
+/// super-admin.
 ///
 /// May legitimately write nothing: if the previous state already equals the
 /// current one it answers `kind: noOp` with no `logEntryVersionId`, which is a
 /// success — the requested state holds.
-pub const TASK_SERVICES_ROLLBACK_1_0: &str =
-    "https://trusttasks.org/spec/vta/services/rollback/1.0";
+pub const TASK_SERVICES_ROLLBACK_1_2: &str =
+    <trust_tasks_rs::specs::vta::services::rollback::v1_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
-/// `spec/vta/services/rollback/1.1` — as 1.0, plus an optional `drainTtlSecs`
-/// for the mediated transports: how long a mediator the rollback leaves
-/// draining keeps accepting delivery. Same rules as `update/1.1`'s.
-pub const TASK_SERVICES_ROLLBACK_1_1: &str =
-    <trust_tasks_rs::specs::vta::services::rollback::v1_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
-
-/// `spec/vta/services/drain/list/1.0` — DIDComm mediators still accepting
-/// delivery after being unadvertised. Payload: empty. Auth: super-admin.
-pub const TASK_SERVICES_DRAIN_LIST_1_0: &str =
-    "https://trusttasks.org/spec/vta/services/drain/list/1.0";
+/// `spec/vta/services/drain/list/1.1` — DIDComm mediators still accepting
+/// delivery after being unadvertised, each with its `drainEndsAt`. Payload:
+/// empty. Auth: super-admin.
+pub const TASK_SERVICES_DRAIN_LIST_1_1: &str =
+    <trust_tasks_rs::specs::vta::services::drain::list::v1_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
 /// `spec/vta/services/drain/cancel/1.0` — end a drain early.
 /// Payload: `{ mediatorDid }`. Auth: super-admin.
@@ -587,12 +578,12 @@ pub const TASK_SERVICES_DRAIN_LIST_1_0: &str =
 pub const TASK_SERVICES_DRAIN_CANCEL_1_0: &str =
     "https://trusttasks.org/spec/vta/services/drain/cancel/1.0";
 
-/// `spec/vta/services/report/0.1` — per-mediator inbound counts and each
+/// `spec/vta/services/report/0.2` — per-mediator inbound counts and each
 /// sender's last-seen mediator over a window, across every mediated transport.
 /// Payload: `{ since?, until? }`. Auth: super-admin — it is a contact log of
 /// other parties' DIDs.
-pub const TASK_SERVICES_REPORT_0_1: &str =
-    <trust_tasks_rs::specs::vta::services::report::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+pub const TASK_SERVICES_REPORT_0_2: &str =
+    <trust_tasks_rs::specs::vta::services::report::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
 // ─── Audit slice (canonical spec/audit/*, plus spec/vta/audit/*) ─────────
 
@@ -819,7 +810,7 @@ pub const TASK_VTA_CREDENTIALS_ISSUE_0_2: &str =
 pub const TASK_VTA_CREDENTIALS_REVOKE_0_1: &str =
     "https://trusttasks.org/spec/vta/credentials/revoke/0.1";
 
-/// `vta/credentials/list/0.1` — enumerate what this agent has issued, as
+/// `vta/credentials/list/0.2` — enumerate what this agent has issued, as
 /// metadata.
 ///
 /// Bodies are not returned: `vault/list/0.1` states the rule this follows —
@@ -829,8 +820,8 @@ pub const TASK_VTA_CREDENTIALS_REVOKE_0_1: &str =
 /// Exists because `revoke` is keyed on a `credentialId` that `issue` returns
 /// exactly once. Before this, a caller that did not record it at that moment
 /// could not recover it from the agent at all.
-pub const TASK_VTA_CREDENTIALS_LIST_0_1: &str =
-    "https://trusttasks.org/spec/vta/credentials/list/0.1";
+pub const TASK_VTA_CREDENTIALS_LIST_0_2: &str =
+    "https://trusttasks.org/spec/vta/credentials/list/0.2";
 
 // ─── Agent-memory slice (spec/vta/memory/*) ──────────────────────────────
 //
@@ -1277,18 +1268,18 @@ pub const TASK_PERSONA_LOCAL_BINDING_SET_1_0: &str =
 /// [`crate::protocols::app_state::AppStateGetBody`].
 pub const TASK_VTA_APP_STATE_GET_1_0: &str = "https://trusttasks.org/spec/vta/app-state/get/1.0";
 
-/// `spec/vta/app-state/put/1.0` — write one record, optionally conditional on
+/// `spec/vta/app-state/put/1.1` — write one record, optionally conditional on
 /// `expectedVersion` (`0` = create only). A failed precondition returns the
 /// VTA's current version *and value*, so the caller resolves without a re-read.
 /// Auth: context access. Payload:
 /// [`crate::protocols::app_state::AppStatePutBody`].
-pub const TASK_VTA_APP_STATE_PUT_1_0: &str = "https://trusttasks.org/spec/vta/app-state/put/1.0";
+pub const TASK_VTA_APP_STATE_PUT_1_1: &str = "https://trusttasks.org/spec/vta/app-state/put/1.1";
 
-/// `spec/vta/app-state/list/1.0` — key-ordered snapshot, or (with
+/// `spec/vta/app-state/list/1.1` — key-ordered snapshot, or (with
 /// `sinceVersion`) a version-ordered change feed that always includes
 /// tombstones. Auth: context access. Payload:
 /// [`crate::protocols::app_state::AppStateListBody`].
-pub const TASK_VTA_APP_STATE_LIST_1_0: &str = "https://trusttasks.org/spec/vta/app-state/list/1.0";
+pub const TASK_VTA_APP_STATE_LIST_1_1: &str = "https://trusttasks.org/spec/vta/app-state/list/1.1";
 
 /// `spec/vta/app-state/delete/1.0` — remove one record, leaving a versioned
 /// tombstone so an incremental consumer learns of the deletion. Deleting an
@@ -1304,12 +1295,12 @@ pub const TASK_VTA_APP_STATE_DELETE_1_0: &str =
 pub const TASK_VTA_APP_STATE_GET_MANY_1_0: &str =
     "https://trusttasks.org/spec/vta/app-state/get-many/1.0";
 
-/// `spec/vta/app-state/put-many/1.0` — up to 64 writes in one round trip, each
+/// `spec/vta/app-state/put-many/1.1` — up to 64 writes in one round trip, each
 /// with its own precondition, applied `independent` (default) or `atomic`.
 /// Auth: context access. Payload:
 /// [`crate::protocols::app_state::AppStatePutManyBody`].
-pub const TASK_VTA_APP_STATE_PUT_MANY_1_0: &str =
-    "https://trusttasks.org/spec/vta/app-state/put-many/1.0";
+pub const TASK_VTA_APP_STATE_PUT_MANY_1_1: &str =
+    "https://trusttasks.org/spec/vta/app-state/put-many/1.1";
 
 // ─── DID-management slice (spec/did-management/*) ────────────────────────
 //
@@ -1523,12 +1514,12 @@ pub const TASK_METRICS_SHOW_0_1: &str =
 pub const TASK_PASSKEY_VMS_ENROLL_CHALLENGE_0_1: &str =
     "https://trusttasks.org/spec/vta/passkey-vms/enroll-challenge/0.1";
 
-/// `spec/vta/passkey-vms/enroll-submit/0.1` — finalise enrolment with
+/// `spec/vta/passkey-vms/enroll-submit/0.2` — finalise enrolment with
 /// the browser-supplied attestation bundle (canonical version).
 /// Payload:
 /// [`crate::protocols::did_management::passkey_vms::EnrollPasskeySubmitBody`].
-pub const TASK_PASSKEY_VMS_ENROLL_SUBMIT_0_1: &str =
-    "https://trusttasks.org/spec/vta/passkey-vms/enroll-submit/0.1";
+pub const TASK_PASSKEY_VMS_ENROLL_SUBMIT_0_2: &str =
+    "https://trusttasks.org/spec/vta/passkey-vms/enroll-submit/0.2";
 
 /// `spec/vta/passkey-vms/list/0.1` — list every passkey VM currently
 /// published on a DID (canonical version). Payload:
@@ -1634,24 +1625,13 @@ pub const TASK_WEBVH_SERVERS_REMOVE_1_0: &str =
 /// Auth: any authenticated user.
 pub const TASK_WEBVH_DIDS_LIST_1_0: &str = "https://trusttasks.org/spec/vta/webvh/dids/list/1.0";
 
-/// `spec/vta/webvh/dids/create/1.0` — mint a new DID via a DID
-/// template and (optionally) register it with a webvh host. Payload:
+/// `spec/vta/webvh/dids/create/1.2` — mint a new DID via a DID template and
+/// (optionally) register it with a webvh host. The request may name
+/// `didMethod` and `scidAlsoKnownAs`; the response states `serverless` (Keyring
+/// VTI-20), the form applied, the log's `webvhDid` and its `scidDidUrl`
+/// (VTI-KEY-165, VTI-KEY-166, VTI-VTA-036). Payload:
 /// [`crate::protocols::did_management::create::CreateDidWebvhBody`].
-/// Auth: Admin role on the target context.
-pub const TASK_WEBVH_DIDS_CREATE_1_0: &str =
-    "https://trusttasks.org/spec/vta/webvh/dids/create/1.0";
-
-/// `spec/vta/webvh/dids/create/1.1` — [`TASK_WEBVH_DIDS_CREATE_1_0`] whose
-/// response states `serverless`, so a client does not have to infer it from an
-/// absent `serverId` (Keyring VTI-20). Same payload and authorization. What
-/// [`crate::client::VtaClient::create_did_webvh`] sends.
-pub const TASK_WEBVH_DIDS_CREATE_1_1: &str =
-    "https://trusttasks.org/spec/vta/webvh/dids/create/1.1";
-
-/// `spec/vta/webvh/dids/create/1.2` — [`TASK_WEBVH_DIDS_CREATE_1_1`] whose
-/// request may name `didMethod` and `scidAlsoKnownAs`, and whose response states
-/// the form applied, the log's `webvhDid` and its `scidDidUrl` (VTI-KEY-165,
-/// VTI-KEY-166, VTI-VTA-036). Same authorization. What
+/// Auth: the `key-mint` capability on the target context. What
 /// [`crate::client::VtaClient::create_did_webvh`] sends.
 pub const TASK_WEBVH_DIDS_CREATE_1_2: &str =
     "https://trusttasks.org/spec/vta/webvh/dids/create/1.2";
@@ -1723,9 +1703,10 @@ pub const TASK_WEBVH_DIDS_REALIGN_KEYS_1_0: &str =
 pub const TASK_WEBVH_DIDS_REGISTER_WITH_SERVER_1_0: &str =
     "https://trusttasks.org/spec/vta/webvh/dids/register-with-server/1.0";
 
-/// `spec/vta/webvh/agent-name/list/1.0` — read a hosted DID's
-/// agent-name registry as the control plane holds it. Payload:
-/// [`crate::protocols::did_management::agent_name::AgentNameListBody`].
+/// `spec/vta/webvh/agent-name/list/1.1` — read a hosted DID's
+/// agent-name registry as the control plane holds it, each entry's
+/// `createdAt` in RFC 3339. Payload and response:
+/// `trust_tasks_rs::specs::vta::webvh::agent_name::list::v1_1`.
 ///
 /// Needed because a **parked** name is deliberately absent from the DID
 /// document — that absence is how parking stops it resolving — so a
@@ -1733,8 +1714,8 @@ pub const TASK_WEBVH_DIDS_REGISTER_WITH_SERVER_1_0: &str =
 /// cannot offer "resume" without making the user retype the name from
 /// memory. Read-only. Auth: any authenticated caller on the DID's
 /// context.
-pub const TASK_WEBVH_AGENT_NAME_LIST_1_0: &str =
-    "https://trusttasks.org/spec/vta/webvh/agent-name/list/1.0";
+pub const TASK_WEBVH_AGENT_NAME_LIST_1_1: &str =
+    <trust_tasks_rs::specs::vta::webvh::agent_name::list::v1_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
 /// `spec/vta/webvh/agent-name/check/1.0` — ask whether a name is free
 /// on the DID's host before signing anything. Payload:
@@ -1809,70 +1790,37 @@ pub const TASK_WEBVH_AGENT_NAME_ENABLE_1_0: &str =
 // retired 1.0 URIs are no longer accepted — clean cutover, both
 // hierarchies dropped in the same change that introduced 2.0.
 
-/// `spec/vta/did-templates/list/2.0` — list the templates in one
+/// `spec/vta/did-templates/list/3.1` — list the templates in one
 /// scope: global when `contextId` is absent, that context's when
 /// present. Payload:
 /// [`crate::protocols::did_template_management::list::ListDidTemplatesBody`].
-/// Auth: any authenticated user; context access when scoped.
-pub const TASK_DID_TEMPLATES_LIST_2_0: &str =
-    "https://trusttasks.org/spec/vta/did-templates/list/2.0";
+/// Auth: any authenticated user; context access when scoped. A record may
+/// carry a `keys` block (`vta/_shared/0.7`), and names its `createdAt` /
+/// `updatedAt` as RFC 3339 instants.
+pub const TASK_DID_TEMPLATES_LIST_3_1: &str =
+    "https://trusttasks.org/spec/vta/did-templates/list/3.1";
 
-/// `spec/vta/did-templates/create/2.0` — create a template in one
-/// scope. Payload:
+/// `spec/vta/did-templates/create/3.1` — create a template in one
+/// scope; the template may declare `schemaVersion` 2 and a `keys` block.
+/// Payload:
 /// [`crate::protocols::did_template_management::create::CreateDidTemplateBody`].
 /// Auth: Super Admin (global) OR Admin-with-context (`contextId` set).
-pub const TASK_DID_TEMPLATES_CREATE_2_0: &str =
-    "https://trusttasks.org/spec/vta/did-templates/create/2.0";
+pub const TASK_DID_TEMPLATES_CREATE_3_1: &str =
+    "https://trusttasks.org/spec/vta/did-templates/create/3.1";
 
-/// `spec/vta/did-templates/get/2.0` — fetch one template by name from
+/// `spec/vta/did-templates/get/3.1` — fetch one template by name from
 /// one scope. Payload:
 /// [`crate::protocols::did_template_management::get::GetDidTemplateBody`].
 /// Auth: any authenticated user; context access when scoped.
-pub const TASK_DID_TEMPLATES_GET_2_0: &str =
-    "https://trusttasks.org/spec/vta/did-templates/get/2.0";
+pub const TASK_DID_TEMPLATES_GET_3_1: &str =
+    "https://trusttasks.org/spec/vta/did-templates/get/3.1";
 
-/// `spec/vta/did-templates/update/2.0` — replace a template in one
+/// `spec/vta/did-templates/update/3.1` — replace a template in one
 /// scope. Payload:
 /// [`crate::protocols::did_template_management::update::UpdateDidTemplateBody`].
 /// Auth: Super Admin (global) OR Admin-with-context (`contextId` set).
-pub const TASK_DID_TEMPLATES_UPDATE_2_0: &str =
-    "https://trusttasks.org/spec/vta/did-templates/update/2.0";
-
-// ─── did-templates 3.0 ────────────────────────────────────────────────
-//
-// 3.0 differs from 2.0 in exactly one way: its `DidTemplate` comes from
-// `vta/_shared/0.2`, which allows `schemaVersion` 2 and the `keys` block
-// that declares each key slot's algorithms. Everything else — the scope
-// selector, the authorization, the response shape — is unchanged.
-//
-// 2.0 is NOT retired here. It has no defect; it is simply unable to
-// express a post-quantum template, and remains a correct way to manage a
-// v1 one. It is registered in `SUPERSEDED_TASKS` so a 2.0 caller is told
-// its successor and the usage counter can gate removal on an observed
-// zero — the same evidence rule the rest of that table uses, rather than
-// a guessed date. (The 1.0 URIs were cut over instead, because they
-// carried two competing scope hierarchies and keeping them meant keeping
-// the ambiguity.)
-
-/// `spec/vta/did-templates/list/3.0` — as 2.0, but the returned records
-/// may carry a `keys` block.
-pub const TASK_DID_TEMPLATES_LIST_3_0: &str =
-    "https://trusttasks.org/spec/vta/did-templates/list/3.0";
-
-/// `spec/vta/did-templates/create/3.0` — as 2.0, but the template may
-/// declare `schemaVersion` 2 and a `keys` block.
-pub const TASK_DID_TEMPLATES_CREATE_3_0: &str =
-    "https://trusttasks.org/spec/vta/did-templates/create/3.0";
-
-/// `spec/vta/did-templates/get/3.0` — as 2.0, but the returned record may
-/// carry a `keys` block.
-pub const TASK_DID_TEMPLATES_GET_3_0: &str =
-    "https://trusttasks.org/spec/vta/did-templates/get/3.0";
-
-/// `spec/vta/did-templates/update/3.0` — as 2.0, but the template may
-/// declare `schemaVersion` 2 and a `keys` block.
-pub const TASK_DID_TEMPLATES_UPDATE_3_0: &str =
-    "https://trusttasks.org/spec/vta/did-templates/update/3.0";
+pub const TASK_DID_TEMPLATES_UPDATE_3_1: &str =
+    "https://trusttasks.org/spec/vta/did-templates/update/3.1";
 
 /// `spec/vta/did-templates/delete/2.0` — delete a template from one
 /// scope. Payload:
@@ -1912,14 +1860,6 @@ pub const TASK_DID_TEMPLATES_RENDER_2_0: &str =
 // `KNOWN_FEATURE_GATED_URIS` allowlist will track them until the
 // slice ships.
 
-/// `spec/vta/backup/initiate-export/1.0` — mint an export bundle;
-/// return a [`BundleDescriptor`](crate::protocols::backup_management::descriptors::BundleDescriptor)
-/// pointing at the blob endpoint. Payload:
-/// [`crate::protocols::backup_management::descriptors::InitiateExportBody`].
-/// Auth: super-admin.
-pub const TASK_BACKUP_INITIATE_EXPORT_1_0: &str =
-    "https://trusttasks.org/spec/vta/backup/initiate-export/1.0";
-
 /// `spec/vta/backup/complete-export/1.0` — optional ack from the
 /// client after a successful download. Payload:
 /// [`crate::protocols::backup_management::descriptors::CompleteExportBody`].
@@ -1927,45 +1867,34 @@ pub const TASK_BACKUP_INITIATE_EXPORT_1_0: &str =
 pub const TASK_BACKUP_COMPLETE_EXPORT_1_0: &str =
     "https://trusttasks.org/spec/vta/backup/complete-export/1.0";
 
-/// `spec/vta/backup/initiate-import/1.0` — mint an upload slot;
-/// return a descriptor for the client to POST bytes to. Payload:
-/// [`crate::protocols::backup_management::descriptors::InitiateImportBody`].
-/// Auth: super-admin.
-pub const TASK_BACKUP_INITIATE_IMPORT_1_0: &str =
-    "https://trusttasks.org/spec/vta/backup/initiate-import/1.0";
-
-/// `spec/vta/backup/finalize-import/1.0` — apply uploaded bytes
-/// (or run in preview mode). Payload:
-/// [`crate::protocols::backup_management::descriptors::FinalizeImportBody`].
-/// Auth: super-admin (must match the initiator's DID).
-pub const TASK_BACKUP_FINALIZE_IMPORT_1_0: &str =
-    "https://trusttasks.org/spec/vta/backup/finalize-import/1.0";
-
 /// `spec/vta/backup/abort/1.0` — cancel an in-flight bundle in
 /// any non-terminal state. Payload:
 /// [`crate::protocols::backup_management::descriptors::AbortBundleBody`].
 /// Auth: super-admin (must match the initiator's DID).
 pub const TASK_BACKUP_ABORT_1_0: &str = "https://trusttasks.org/spec/vta/backup/abort/1.0";
 
-/// `spec/vta/backup/initiate-export/1.1` — as 1.0, plus the
-/// `chunkedTrustTask` algorithm: a descriptor carrying a chunk manifest instead
-/// of a blob URL and token, for a VTA reachable only over DIDComm or TSP. A
-/// `stream` request is wire-identical to 1.0. Payload:
+/// `spec/vta/backup/initiate-export/1.1` — mint an export bundle: `stream`, a
+/// [`BundleDescriptor`](crate::protocols::backup_management::descriptors::BundleDescriptor)
+/// pointing at the blob endpoint
+/// ([`crate::protocols::backup_management::descriptors::InitiateExportBody`]),
+/// or `chunkedTrustTask`, a descriptor carrying a chunk manifest instead of a
+/// blob URL and token, for a VTA reachable only over DIDComm or TSP. Payload:
 /// [`crate::protocols::backup_management::chunked::initiate_export_1_1::Payload`].
 /// Auth: super-admin.
 pub const TASK_BACKUP_INITIATE_EXPORT_1_1: &str =
     "https://trusttasks.org/spec/vta/backup/initiate-export/1.1";
 
-/// `spec/vta/backup/initiate-import/1.1` — as 1.0, plus `chunkedTrustTask`: the
+/// `spec/vta/backup/initiate-import/1.1` — mint an upload slot: `stream`, a
+/// descriptor for the client to POST bytes to, or `chunkedTrustTask`, where the
 /// request pre-commits a chunk manifest. Payload:
 /// [`crate::protocols::backup_management::chunked::initiate_import_1_1::Payload`].
 /// Auth: super-admin.
 pub const TASK_BACKUP_INITIATE_IMPORT_1_1: &str =
     "https://trusttasks.org/spec/vta/backup/initiate-import/1.1";
 
-/// `spec/vta/backup/finalize-import/1.1` — as 1.0, and also finalizes a
-/// chunked upload, refusing an incomplete one with the missing indices before
-/// the password is used. Payload:
+/// `spec/vta/backup/finalize-import/1.1` — apply uploaded bytes (or run in
+/// preview mode), refusing an incomplete chunked upload with the missing
+/// indices before the password is used. Payload:
 /// [`crate::protocols::backup_management::chunked::finalize_import_1_1::Payload`].
 /// Auth: super-admin (must match the initiator's DID).
 pub const TASK_BACKUP_FINALIZE_IMPORT_1_1: &str =
@@ -2011,13 +1940,13 @@ pub const TASK_ATTESTATION_REPORT_0_1: &str =
 pub const TASK_ATTESTATION_CONFIG_REPORT_0_1: &str =
     <trust_tasks_rs::specs::vta::attestation::config_report::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
-/// `spec/vta/attestation/mnemonic-status/0.1` — the export window's current
+/// `spec/vta/attestation/mnemonic-status/0.2` — the export window's current
 /// state: active?, already exported?, entropy still held?, seconds
 /// remaining. Super-admin only, same as the export it watches over; carries
 /// no secret. TEE-feature-gated. Was `GET /attestation/mnemonic`, a
 /// documented `REST_EXCEPTIONS` keep until this spec landed.
-pub const TASK_ATTESTATION_MNEMONIC_STATUS_0_1: &str =
-    <trust_tasks_rs::specs::vta::attestation::mnemonic_status::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+pub const TASK_ATTESTATION_MNEMONIC_STATUS_0_2: &str =
+    <trust_tasks_rs::specs::vta::attestation::mnemonic_status::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
 // ─── Health + restore slice (spec/vta/{health,restore}/*) ──────────────
 //
@@ -2041,7 +1970,7 @@ pub const TASK_VTA_HEALTH_DETAILS_0_1: &str =
 pub const TASK_VTA_RESTORE_STATUS_0_1: &str =
     <trust_tasks_rs::specs::vta::restore::status::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
-/// `spec/vta/attestation/mnemonic-export/1.0` — release a TEE VTA's BIP-39 seed
+/// `spec/vta/attestation/mnemonic-export/1.1` — release a TEE VTA's BIP-39 seed
 /// mnemonic once, inside the first-boot export window, **sealed** to the
 /// requester's ephemeral `did:key` (payload: a sealed-transfer
 /// `BootstrapRequest`; response:
@@ -2054,8 +1983,8 @@ pub const TASK_VTA_RESTORE_STATUS_0_1: &str =
 /// `permissionDenied`: the mnemonic is the VTA's root derivation material, and
 /// the seal alone does not keep the request and its sealed answer off an
 /// intermediary that terminates TLS. TEE-feature-gated.
-pub const TASK_ATTESTATION_MNEMONIC_EXPORT_1_0: &str =
-    "https://trusttasks.org/spec/vta/attestation/mnemonic-export/1.0";
+pub const TASK_ATTESTATION_MNEMONIC_EXPORT_1_1: &str =
+    "https://trusttasks.org/spec/vta/attestation/mnemonic-export/1.1";
 
 // ─── Consent slice (spec/consent/*) ──────────────────────────────────────
 //
@@ -2161,13 +2090,13 @@ pub const TASK_POLICY_DELETE_0_1: &str = "https://trusttasks.org/spec/policy/del
 // in docs/05-design-notes/trust-task-uri-registry.md enumerates the
 // full target surface (~75 URIs).
 
-/// `messaging/ping/0.1` — transport-agnostic liveness + capability probe
+/// `messaging/ping/0.2` — transport-agnostic liveness + capability probe
 /// (ToIP Trust Tasks `messaging/ping`). Session-less by spec: any authenticated
-/// caller gets back `serverTime` / `status` / `protocols` (the transports the
+/// caller gets back `respondedAt` / `status` / `protocols` (the transports the
 /// VTA serves), echoing an optional `nonce`. Side-effect-free. This is the
 /// canonical health ping the `pnm health` TSP/DIDComm probes use — see
-/// <https://trusttasks.org/spec/messaging/ping/0.1>.
-pub const TASK_MESSAGING_PING_0_1: &str = "https://trusttasks.org/spec/messaging/ping/0.1";
+/// <https://trusttasks.org/spec/messaging/ping/0.2>.
+pub const TASK_MESSAGING_PING_0_2: &str = "https://trusttasks.org/spec/messaging/ping/0.2";
 
 // ─── External accounts (`external/*`, trust-tasks-tf #740) ─────────────────
 // The VTA as the key authority for cloud and third-party accounts:
@@ -2367,9 +2296,9 @@ pub const TASK_VTA_WITNESS_PRESENT_0_2: &str =
 pub const TASK_VTA_WITNESS_ACCEPT_0_2: &str =
     <trust_tasks_rs::specs::vta::witness::accept::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
-/// `vta/witness/list/0.1` — read back the stored Verifiable Witness Credentials, each with its outcome evidence exactly as stored.
-pub const TASK_VTA_WITNESS_LIST_0_1: &str =
-    <trust_tasks_rs::specs::vta::witness::list::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+/// `vta/witness/list/0.2` — read back the stored Verifiable Witness Credentials, each with its outcome evidence exactly as stored; paged by `limit` and `nextCursor`.
+pub const TASK_VTA_WITNESS_LIST_0_2: &str =
+    <trust_tasks_rs::specs::vta::witness::list::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
 /// Every URI registered in this module — handy for the dispatcher's
 /// parity harness and for operator tooling that wants to enumerate
@@ -2401,7 +2330,7 @@ pub const ALL_URIS: &[&str] = &[
     TASK_DEVICE_WIPE_0_2,
     TASK_DEVICE_SET_WAKE_0_2,
     // Messaging slice
-    TASK_MESSAGING_PING_0_1,
+    TASK_MESSAGING_PING_0_2,
     // ACL slice
     TASK_ACL_LIST_0_1,
     TASK_ACL_GRANT_0_1,
@@ -2415,7 +2344,6 @@ pub const ALL_URIS: &[&str] = &[
     TASK_CONTEXTS_CREATE_1_0,
     TASK_CONTEXTS_GET_1_0,
     TASK_CONTEXTS_UPDATE_1_0,
-    TASK_CONTEXTS_UPDATE_DID_1_0,
     TASK_CONTEXTS_UPDATE_DID_1_1,
     TASK_CONTEXTS_SECRETS_1_0,
     TASK_CONTEXTS_PREVIEW_DELETE_1_0,
@@ -2441,17 +2369,15 @@ pub const ALL_URIS: &[&str] = &[
     TASK_SEEDS_LIST_1_0,
     TASK_SEEDS_ROTATE_1_0,
     // Services slice
-    TASK_SERVICES_LIST_1_0,
-    TASK_SERVICES_GET_1_0,
-    TASK_SERVICES_ENABLE_1_0,
-    TASK_SERVICES_UPDATE_1_0,
-    TASK_SERVICES_UPDATE_1_1,
-    TASK_SERVICES_DISABLE_1_0,
-    TASK_SERVICES_ROLLBACK_1_0,
-    TASK_SERVICES_ROLLBACK_1_1,
-    TASK_SERVICES_DRAIN_LIST_1_0,
+    TASK_SERVICES_LIST_1_1,
+    TASK_SERVICES_GET_1_1,
+    TASK_SERVICES_ENABLE_1_1,
+    TASK_SERVICES_UPDATE_1_2,
+    TASK_SERVICES_DISABLE_1_1,
+    TASK_SERVICES_ROLLBACK_1_2,
+    TASK_SERVICES_DRAIN_LIST_1_1,
     TASK_SERVICES_DRAIN_CANCEL_1_0,
-    TASK_SERVICES_REPORT_0_1,
+    TASK_SERVICES_REPORT_0_2,
     // Audit slice
     TASK_AUDIT_LIST_0_2,
     TASK_AUDIT_VERIFY_0_1,
@@ -2504,7 +2430,7 @@ pub const ALL_URIS: &[&str] = &[
     // Passkey-VMs slice (feature-gated: webvh + didcomm). Dual-accept
     // canonical 0.1 + retained pre-spec 1.0.
     TASK_PASSKEY_VMS_ENROLL_CHALLENGE_0_1,
-    TASK_PASSKEY_VMS_ENROLL_SUBMIT_0_1,
+    TASK_PASSKEY_VMS_ENROLL_SUBMIT_0_2,
     TASK_PASSKEY_VMS_LIST_0_1,
     TASK_PASSKEY_VMS_REVOKE_0_1,
     // Provision-integration (feature-gated: webvh)
@@ -2517,8 +2443,6 @@ pub const ALL_URIS: &[&str] = &[
     TASK_WEBVH_SERVERS_RECONCILE_0_1,
     TASK_WEBVH_SERVERS_RETIRE_ORPHAN_0_1,
     TASK_WEBVH_DIDS_LIST_1_0,
-    TASK_WEBVH_DIDS_CREATE_1_0,
-    TASK_WEBVH_DIDS_CREATE_1_1,
     TASK_WEBVH_DIDS_CREATE_1_2,
     TASK_WEBVH_DIDS_GET_1_0,
     TASK_WEBVH_DIDS_DELETE_1_0,
@@ -2526,7 +2450,7 @@ pub const ALL_URIS: &[&str] = &[
     TASK_WEBVH_DIDS_ROTATE_KEYS_1_0,
     TASK_WEBVH_DIDS_REALIGN_KEYS_1_0,
     TASK_WEBVH_DIDS_REGISTER_WITH_SERVER_1_0,
-    TASK_WEBVH_AGENT_NAME_LIST_1_0,
+    TASK_WEBVH_AGENT_NAME_LIST_1_1,
     TASK_WEBVH_AGENT_NAME_CHECK_1_0,
     TASK_WEBVH_AGENT_NAME_SET_1_0,
     TASK_WEBVH_AGENT_NAME_REMOVE_1_0,
@@ -2534,29 +2458,22 @@ pub const ALL_URIS: &[&str] = &[
     TASK_WEBVH_AGENT_NAME_ENABLE_1_0,
     // DID-templates slice (2.0 — one URI per op, optional contextId
     // selects global vs context scope; the twelve 1.0 URIs are retired)
-    TASK_DID_TEMPLATES_LIST_2_0,
-    TASK_DID_TEMPLATES_CREATE_2_0,
-    TASK_DID_TEMPLATES_GET_2_0,
-    TASK_DID_TEMPLATES_UPDATE_2_0,
+    TASK_DID_TEMPLATES_LIST_3_1,
+    TASK_DID_TEMPLATES_CREATE_3_1,
+    TASK_DID_TEMPLATES_GET_3_1,
+    TASK_DID_TEMPLATES_UPDATE_3_1,
     TASK_DID_TEMPLATES_DELETE_2_0,
     TASK_DID_TEMPLATES_RENDER_2_0,
     // 3.0: the four that carry a template shape, widened for the `keys`
     // block. `delete` and `render` carry none, so neither gained one.
-    TASK_DID_TEMPLATES_LIST_3_0,
-    TASK_DID_TEMPLATES_CREATE_3_0,
-    TASK_DID_TEMPLATES_GET_3_0,
-    TASK_DID_TEMPLATES_UPDATE_3_0,
     // Backup slice (descriptor pattern). URIs land in ALL_URIS now
     // that the trust-task slice is wired in vta-service.
-    TASK_BACKUP_INITIATE_EXPORT_1_0,
-    TASK_BACKUP_COMPLETE_EXPORT_1_0,
-    TASK_BACKUP_INITIATE_IMPORT_1_0,
-    TASK_BACKUP_FINALIZE_IMPORT_1_0,
-    TASK_BACKUP_ABORT_1_0,
-    // The `chunkedTrustTask` algorithm (1.1 initiators, the two chunk tasks)
     TASK_BACKUP_INITIATE_EXPORT_1_1,
+    TASK_BACKUP_COMPLETE_EXPORT_1_0,
     TASK_BACKUP_INITIATE_IMPORT_1_1,
     TASK_BACKUP_FINALIZE_IMPORT_1_1,
+    TASK_BACKUP_ABORT_1_0,
+    // The two chunk tasks of the `chunkedTrustTask` algorithm
     TASK_BACKUP_GET_CHUNK_1_0,
     TASK_BACKUP_PUT_CHUNK_1_0,
     // Health + restore slice
@@ -2567,9 +2484,9 @@ pub const ALL_URIS: &[&str] = &[
     TASK_ATTESTATION_REPORT_0_1,
     TASK_ATTESTATION_CONFIG_REPORT_0_1,
     // … and the authenticated, end-to-end-only mnemonic export
-    TASK_ATTESTATION_MNEMONIC_EXPORT_1_0,
+    TASK_ATTESTATION_MNEMONIC_EXPORT_1_1,
     // … and its super-admin-only status read
-    TASK_ATTESTATION_MNEMONIC_STATUS_0_1,
+    TASK_ATTESTATION_MNEMONIC_STATUS_0_2,
     // Consent slice
     TASK_CONSENT_REQUEST_1_0,
     TASK_CONSENT_DECISION_1_0,
@@ -2581,7 +2498,7 @@ pub const ALL_URIS: &[&str] = &[
     // Issued-credential lifecycle (spec/vta/credentials/*)
     TASK_VTA_CREDENTIALS_ISSUE_0_2,
     TASK_VTA_CREDENTIALS_REVOKE_0_1,
-    TASK_VTA_CREDENTIALS_LIST_0_1,
+    TASK_VTA_CREDENTIALS_LIST_0_2,
     TASK_VAULT_CREDENTIALS_GET_0_2,
     TASK_VAULT_CREDENTIALS_PRESENT_0_1,
     // Agent-memory slice (spec/vta/memory/*)
@@ -2663,14 +2580,14 @@ pub const ALL_URIS: &[&str] = &[
     TASK_VTA_WITNESS_OPEN_0_2,
     TASK_VTA_WITNESS_PRESENT_0_2,
     TASK_VTA_WITNESS_ACCEPT_0_2,
-    TASK_VTA_WITNESS_LIST_0_1,
+    TASK_VTA_WITNESS_LIST_0_2,
     // Application-state slice (spec/vta/app-state/*)
     TASK_VTA_APP_STATE_GET_1_0,
-    TASK_VTA_APP_STATE_PUT_1_0,
-    TASK_VTA_APP_STATE_LIST_1_0,
+    TASK_VTA_APP_STATE_PUT_1_1,
+    TASK_VTA_APP_STATE_LIST_1_1,
     TASK_VTA_APP_STATE_DELETE_1_0,
     TASK_VTA_APP_STATE_GET_MANY_1_0,
-    TASK_VTA_APP_STATE_PUT_MANY_1_0,
+    TASK_VTA_APP_STATE_PUT_MANY_1_1,
     // Persona slice — the holder's own identity.
     TASK_PERSONA_ATTRIBUTE_PUT_1_1,
     TASK_PERSONA_ATTRIBUTE_GET_1_0,
@@ -2856,7 +2773,7 @@ mod tests {
             // rotation task (`TASK_ACL_SWAP_KEY_0_1`), now dispatcher-routed.
             "https://trusttasks.org/spec/acl/",
             // ToIP messaging protocol — the transport-agnostic `messaging/ping`
-            // liveness/capability probe (`TASK_MESSAGING_PING_0_1`).
+            // liveness/capability probe (`TASK_MESSAGING_PING_0_2`).
             "https://trusttasks.org/spec/messaging/",
             // Delegated task-execution consent. A separate family from
             // `consent/*`, which gates an inbound messaging conversation for an
