@@ -170,7 +170,7 @@ describe("operator console login", () => {
         });
       }
       return json(422, {
-        type: "https://trusttasks.org/spec/trust-task-error/0.5",
+        type: "https://trusttasks.org/spec/trust-task-error/0.6",
         payload: {
           code: "auth/oob/redeem:declined",
           message: "This identity isn't an administrator of this community.",

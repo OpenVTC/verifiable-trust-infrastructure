@@ -270,7 +270,7 @@ describe("sendTask and a bound step-up", () => {
         body: () => {
           calls += 1;
           return {
-            type: "https://trusttasks.org/spec/trust-task-error/0.5",
+            type: "https://trusttasks.org/spec/trust-task-error/0.6",
             payload: {
               code: "permissionDenied",
               message: "a passkey gesture bound to this operation is required",

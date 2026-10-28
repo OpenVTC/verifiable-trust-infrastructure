@@ -47,3 +47,6 @@ vta-sdk = { path = "../vta-sdk", version = "0.74", features = ["vetting"] }
 rand = { version = "0.8", features = ["std", "std_rng"] }
 # The end-to-end tests drive the member-side engines against `vtc::Vtc`.
 vti-vetting-pcs = { path = ".", features = ["harness"] }
+
+[lints]
+workspace = true

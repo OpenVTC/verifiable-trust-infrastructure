@@ -664,7 +664,7 @@ mod tests {
                 .push((type_uri.to_string(), ops.len()));
             let error = |code: &str, details: Value| {
                 Ok(doc(
-                    "https://trusttasks.org/spec/trust-task-error/0.5",
+                    "https://trusttasks.org/spec/trust-task-error/0.6",
                     json!({ "code": code, "message": "no", "retryable": false, "details": details }),
                 ))
             };

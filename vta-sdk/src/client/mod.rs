@@ -3517,7 +3517,7 @@ mod tests {
     async fn an_error_document_needs_no_proof() {
         let client = signed_reply_client();
         let doc = serde_json::json!({
-            "type": "https://trusttasks.org/spec/trust-task-error/0.5",
+            "type": "https://trusttasks.org/spec/trust-task-error/0.6",
             "payload": { "code": "taskFailed", "message": "no" }
         });
         client

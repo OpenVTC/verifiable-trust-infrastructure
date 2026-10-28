@@ -89,7 +89,7 @@ function streamResponse(stream: ReadableStream<Uint8Array>): Response {
 
 function jsonRefusal(code: string, status = 422): Response {
   return new Response(
-    JSON.stringify({ type: "https://trusttasks.org/spec/trust-task-error/0.5", payload: { code } }),
+    JSON.stringify({ type: "https://trusttasks.org/spec/trust-task-error/0.6", payload: { code } }),
     { status, headers: { "Content-Type": "application/json" } },
   );
 }

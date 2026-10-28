@@ -117,7 +117,7 @@ mod tests {
             }
         );
         let refused = classify(
-            "https://trusttasks.org/spec/trust-task-error/0.5",
+            "https://trusttasks.org/spec/trust-task-error/0.6",
             json!({ "code": "voting/election/register:alreadyRegistered", "message": "no" }),
             Value::Null,
         );

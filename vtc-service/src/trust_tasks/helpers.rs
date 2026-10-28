@@ -467,7 +467,9 @@ pub(crate) fn error_response(err_doc: ErrorResponse) -> TrustTaskOutcome {
 /// same reason it moved to `0.3`: a new standard code the older payload
 /// schema's `code` enum does not list and whose extended-code pattern does not
 /// match, so a document carrying it would fail to validate as the older
-/// version. `0.4` carries `idConflict`, `0.5` carries `cancelled` (SPEC §8.3).
+/// version. `0.4` carries `idConflict`, `0.5` carries `cancelled`, `0.6`
+/// carries `unsupportedExtension` and `indeterminate` (SPEC §8.3; `0.6` with
+/// `trust-tasks-rs` 0.36).
 /// SPEC §5.2 forward-minor compatibility means a consumer pinned to `0.3`
 /// SHOULD still accept these.
 ///
@@ -476,7 +478,7 @@ pub(crate) fn error_response(err_doc: ErrorResponse) -> TrustTaskOutcome {
 /// rather than splitting this service into two dialects — which is exactly how
 /// this bump was caught.
 pub(crate) fn framework_error_type_uri() -> TypeUri {
-    "https://trusttasks.org/spec/trust-task-error/0.5"
+    "https://trusttasks.org/spec/trust-task-error/0.6"
         .parse()
         .expect("framework error Type URI parses")
 }

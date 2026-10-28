@@ -205,7 +205,7 @@ mod tests {
         assert_eq!(sign_jws_answer(&ok, "k").unwrap(), "a.b.c");
 
         let denied = reply(
-            "https://trusttasks.org/spec/trust-task-error/0.5",
+            "https://trusttasks.org/spec/trust-task-error/0.6",
             json!({ "code": "permissionDenied", "message": "no sign-jws" }),
         );
         let err = sign_jws_answer(&denied, "k").unwrap_err().to_string();

@@ -176,7 +176,7 @@ mod tests {
         let doc = json!({
             "id": "urn:uuid:3",
             "threadId": "urn:uuid:1",
-            "type": "https://trusttasks.org/spec/trust-task-error/0.5",
+            "type": "https://trusttasks.org/spec/trust-task-error/0.6",
             "payload": {"code": "malformed_request"},
         });
         assert_eq!(
@@ -192,7 +192,7 @@ mod tests {
     #[test]
     fn an_unthreaded_error_is_still_never_answered() {
         let doc =
-            json!({"id": "urn:uuid:4", "type": "https://trusttasks.org/spec/trust-task-error/0.5"});
+            json!({"id": "urn:uuid:4", "type": "https://trusttasks.org/spec/trust-task-error/0.6"});
         assert_eq!(classify(&doc), Inbound::Error);
         assert!(!classify(&doc).may_answer());
     }
