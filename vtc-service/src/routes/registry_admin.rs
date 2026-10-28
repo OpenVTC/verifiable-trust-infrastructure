@@ -7,8 +7,8 @@
 //! REST route:
 //!
 //! - `sync-jobs/list`    — what is queued, and what failed
-//! - `sync-jobs/retry`   — requeue an abandoned job; at 0.2 also bring one
-//!   waiting out its backoff forward (never an RTBF-held one)
+//! - `sync-jobs/retry`   — requeue an abandoned job, or bring one waiting out
+//!   its backoff forward (never an RTBF-held one)
 //! - `sync-jobs/discard` — drop one that should not be
 //! - `records/list`      — enumerate every trust record under our authority
 //!
@@ -23,7 +23,7 @@
 //!
 //! The two must not drift. `retry` and `discard` both go through
 //! [`crate::sync_jobs_cli::requeue`] and the same eligibility rule the CLI
-//! applies, so "only a `Failed` row may move" is written once.
+//! applies, so which rows may move is written once.
 
 use tracing::info;
 use uuid::Uuid;
@@ -54,11 +54,11 @@ fn clamp(limit: Option<std::num::NonZeroU64>) -> usize {
 // sync-jobs/list
 // ---------------------------------------------------------------------------
 
-fn state_wire(state: SyncJobState) -> Option<list_spec::v0_1::State> {
+fn state_wire(state: SyncJobState) -> Option<list_spec::v0_2::State> {
     match state {
-        SyncJobState::Pending => Some(list_spec::v0_1::State::Pending),
-        SyncJobState::InFlight => Some(list_spec::v0_1::State::InFlight),
-        SyncJobState::Failed => Some(list_spec::v0_1::State::Failed),
+        SyncJobState::Pending => Some(list_spec::v0_2::State::Pending),
+        SyncJobState::InFlight => Some(list_spec::v0_2::State::InFlight),
+        SyncJobState::Failed => Some(list_spec::v0_2::State::Failed),
         // `Complete` rows are deleted rather than listed, so the published
         // vocabulary has no word for one. A row seen in this state is
         // mid-deletion; omitting it is honest, and inventing a fourth enum
@@ -75,7 +75,7 @@ fn state_wire(state: SyncJobState) -> Option<list_spec::v0_1::State> {
 /// a diagnostic costs an operator a little context, while failing the whole
 /// response costs them the queue. The marker says which happened, so nobody
 /// reads a cut-off message as the registry's complete answer.
-fn last_error_wire(err: &str) -> Result<list_spec::v0_1::JobLastError, AppError> {
+fn last_error_wire(err: &str) -> Result<list_spec::v0_2::JobLastError, AppError> {
     const MAX: usize = 1024;
     const MARKER: &str = "… (truncated)";
     let fitted = if err.chars().count() <= MAX {
@@ -84,16 +84,16 @@ fn last_error_wire(err: &str) -> Result<list_spec::v0_1::JobLastError, AppError>
         let keep = MAX - MARKER.chars().count();
         err.chars().take(keep).collect::<String>() + MARKER
     };
-    list_spec::v0_1::JobLastError::try_from(fitted)
+    list_spec::v0_2::JobLastError::try_from(fitted)
         .map_err(|e| AppError::Internal(format!("last error does not fit its schema: {e}")))
 }
 
-fn kind_wire(kind: SyncJobKind) -> list_spec::v0_1::Kind {
+fn kind_wire(kind: SyncJobKind) -> list_spec::v0_2::Kind {
     match kind {
-        SyncJobKind::PublishMember => list_spec::v0_1::Kind::PublishMember,
-        SyncJobKind::UpdateMember => list_spec::v0_1::Kind::UpdateMember,
-        SyncJobKind::DeleteMember => list_spec::v0_1::Kind::DeleteMember,
-        SyncJobKind::MarkDeparted => list_spec::v0_1::Kind::MarkDeparted,
+        SyncJobKind::PublishMember => list_spec::v0_2::Kind::PublishMember,
+        SyncJobKind::UpdateMember => list_spec::v0_2::Kind::UpdateMember,
+        SyncJobKind::DeleteMember => list_spec::v0_2::Kind::DeleteMember,
+        SyncJobKind::MarkDeparted => list_spec::v0_2::Kind::MarkDeparted,
     }
 }
 
@@ -102,11 +102,11 @@ fn kind_wire(kind: SyncJobKind) -> list_spec::v0_1::Kind {
 /// `nextAttemptAt` is omitted on a failed job: the spec forbids giving one a
 /// schedule it does not have, and the stored row keeps a stale value from its
 /// last backoff.
-fn job_wire(job: &SyncJob, retention_days: u32) -> Result<list_spec::v0_1::Job, AppError> {
+fn job_wire(job: &SyncJob, retention_days: u32) -> Result<list_spec::v0_2::Job, AppError> {
     let state = state_wire(job.state)
         .ok_or_else(|| AppError::Internal("a Complete sync job reached the list surface".into()))?;
     let gave_up = job.last_attempted_at.unwrap_or(job.created_at);
-    let mut builder = list_spec::v0_1::Job::builder()
+    let mut builder = list_spec::v0_2::Job::builder()
         .job_id(job.id.to_string())
         .kind(kind_wire(job.kind))
         .member_did(job.member_did.clone())
@@ -128,16 +128,16 @@ fn job_wire(job: &SyncJob, retention_days: u32) -> Result<list_spec::v0_1::Job, 
         .map_err(|e| AppError::Internal(format!("sync job does not fit its schema: {e}")))
 }
 
-/// `vtc/registry/sync-jobs/list/0.1`.
+/// `vtc/registry/sync-jobs/list/0.2`.
 pub(crate) async fn sync_jobs_list(
     state: &AppState,
-    q: list_spec::v0_1::Payload,
-) -> Result<list_spec::v0_1::Response, AppError> {
+    q: list_spec::v0_2::Payload,
+) -> Result<list_spec::v0_2::Response, AppError> {
     let want = match q.state {
         None => None,
-        Some(list_spec::v0_1::State::Pending) => Some(SyncJobState::Pending),
-        Some(list_spec::v0_1::State::InFlight) => Some(SyncJobState::InFlight),
-        Some(list_spec::v0_1::State::Failed) => Some(SyncJobState::Failed),
+        Some(list_spec::v0_2::State::Pending) => Some(SyncJobState::Pending),
+        Some(list_spec::v0_2::State::InFlight) => Some(SyncJobState::InFlight),
+        Some(list_spec::v0_2::State::Failed) => Some(SyncJobState::Failed),
         // `#[non_exhaustive]`: a later spec release may name a state this
         // build cannot map onto a stored row. Refusing names it rather than
         // silently returning the wrong page.
@@ -178,7 +178,7 @@ pub(crate) async fn sync_jobs_list(
         .map(|j| job_wire(j, retention_days))
         .collect::<Result<Vec<_>, _>>()?;
 
-    let response: list_spec::v0_1::Response = list_spec::v0_1::Response::builder()
+    let response: list_spec::v0_2::Response = list_spec::v0_2::Response::builder()
         .items(items)
         .next_cursor(next_cursor)
         .try_into()
@@ -190,113 +190,10 @@ pub(crate) async fn sync_jobs_list(
 // sync-jobs/retry
 // ---------------------------------------------------------------------------
 
-/// `vtc/registry/sync-jobs/retry/0.1`, by `actor`.
-pub(crate) async fn sync_jobs_retry(
-    state: &AppState,
-    actor: &str,
-    body: retry_spec::v0_1::Payload,
-) -> Result<retry_spec::v0_1::Response, AppError> {
-    // The payload is an untagged enum admitting exactly one of the two
-    // members, so the discriminator is decided by serde rather than by a
-    // branch here that could get it wrong.
-    let targets: Vec<SyncJob> = match &body {
-        retry_spec::v0_1::Payload::Variant0 { job_id, .. } => {
-            let id = Uuid::parse_str(job_id)
-                .map_err(|_| AppError::Validation("jobId is not an identifier".into()))?;
-            get_sync_job(&state.sync_queue_ks, id)
-                .await?
-                .into_iter()
-                .collect()
-        }
-        retry_spec::v0_1::Payload::Variant1 { .. } => list_sync_jobs(&state.sync_queue_ks)
-            .await?
-            .into_iter()
-            .filter(|j| j.state == SyncJobState::Failed)
-            .collect(),
-        // `#[non_exhaustive]`: a future spec release could add a third way to
-        // name what to retry. Refusing is the only safe default — guessing
-        // which of the existing two it resembles could turn a narrow request
-        // into a bulk requeue.
-        _ => {
-            return Err(AppError::Validation(
-                "this retry payload is in the specification but not served by this build".into(),
-            ));
-        }
-    };
-
-    // A named job that no longer exists is `notFound`, not an error: it may
-    // have been retried, discarded, or swept between the operator reading the
-    // list and pressing the button, and that race is ordinary.
-    let named_missing = match &body {
-        retry_spec::v0_1::Payload::Variant0 { job_id, .. } if targets.is_empty() => {
-            Some(job_id.to_string())
-        }
-        _ => None,
-    };
-
-    let now = chrono::Utc::now();
-    let mut requeued = Vec::new();
-    let mut skipped = Vec::new();
-
-    if let Some(id) = named_missing {
-        skipped.push(
-            retry_spec::v0_1::Skipped::builder()
-                .job_id(id)
-                .reason(retry_spec::v0_1::SkippedReason::NotFound)
-                .try_into()
-                .map_err(|e| AppError::Internal(format!("skip does not fit its schema: {e}")))?,
-        );
-    }
-
-    for mut job in targets {
-        if job.state != SyncJobState::Failed {
-            skipped.push(
-                retry_spec::v0_1::Skipped::builder()
-                    .job_id(job.id.to_string())
-                    .reason(retry_spec::v0_1::SkippedReason::NotFailed)
-                    .try_into()
-                    .map_err(|e| {
-                        AppError::Internal(format!("skip does not fit its schema: {e}"))
-                    })?,
-            );
-            continue;
-        }
-        // The same mutation `vtc sync-jobs retry` applies, so the two surfaces
-        // cannot disagree about what a retry does.
-        requeue(&mut job, now);
-        store_sync_job(&state.sync_queue_ks, &job).await?;
-        info!(
-            job_id = %job.id,
-            did = %job.member_did,
-            kind = job.kind.as_str(),
-            %actor,
-            "sync job requeued by an operator",
-        );
-        requeued.push(
-            retry_spec::v0_1::Requeued::builder()
-                .job_id(job.id.to_string())
-                .member_did(Some(
-                    retry_spec::v0_1::RequeuedMemberDid::try_from(job.member_did.clone()).map_err(
-                        |e| AppError::Internal(format!("member did does not fit its schema: {e}")),
-                    )?,
-                ))
-                .try_into()
-                .map_err(|e| AppError::Internal(format!("requeue does not fit its schema: {e}")))?,
-        );
-    }
-
-    let response: retry_spec::v0_1::Response = retry_spec::v0_1::Response::builder()
-        .requeued(requeued)
-        .skipped(skipped)
-        .try_into()
-        .map_err(|e| AppError::Internal(format!("retry response does not fit its schema: {e}")))?;
-    Ok(response)
-}
-
 /// `vtc/registry/sync-jobs/retry/0.2`, by `actor`.
 ///
-/// 0.1 plus a pending job waiting out its backoff, by `jobId` or
-/// `allWaiting`: once an operator has fixed what the registry refused, or
+/// Requeues a failed job (`jobId` or `allFailed`), or brings a pending job
+/// waiting out its backoff forward (`jobId` or `allWaiting`): once an operator has fixed what the registry refused, or
 /// added a registry to a community that ran without one, nothing else stops
 /// members waiting up to an hour for the next attempt.
 ///
@@ -304,7 +201,7 @@ pub(crate) async fn sync_jobs_retry(
 /// it: the batch window de-correlates the override audit envelope from the
 /// record's disappearance (spec §8.2), and releasing it early would undo
 /// that.
-pub(crate) async fn sync_jobs_retry_v0_2(
+pub(crate) async fn sync_jobs_retry(
     state: &AppState,
     actor: &str,
     body: retry_spec::v0_2::Payload,
@@ -524,8 +421,8 @@ impl RecordRow {
         (&self.entity_id, &self.action, &self.resource)
     }
 
-    fn wire(&self) -> Result<records_list::v0_1::Record, AppError> {
-        records_list::v0_1::Record::builder()
+    fn wire(&self) -> Result<records_list::v0_2::Record, AppError> {
+        records_list::v0_2::Record::builder()
             .entity_id(self.entity_id.clone())
             .authority_id(self.authority_id.clone())
             .action(self.action.clone())
@@ -559,14 +456,14 @@ fn decode_cursor(cursor: &str) -> Result<(String, String, String), AppError> {
     Ok((e, a, r))
 }
 
-/// `vtc/registry/records/list/0.1`.
+/// `vtc/registry/records/list/0.2`.
 pub(crate) async fn records_list(
     state: &AppState,
-    q: records_list::v0_1::Payload,
-) -> Result<records_list::v0_1::Response, AppError> {
+    q: records_list::v0_2::Payload,
+) -> Result<records_list::v0_2::Response, AppError> {
     // The specification's default: a caller who did not think about it gets
     // the authoritative view, not the community's own belief about it.
-    let source = q.source.unwrap_or(records_list::v0_1::Source::Registry);
+    let source = q.source.unwrap_or(records_list::v0_2::Source::Registry);
 
     let client = state
         .registry_client
@@ -587,7 +484,7 @@ pub(crate) async fn records_list(
         // Never served from the mirrors. A stale local answer presented as
         // the registry's is the exact fault this surface exists to detect, so
         // an unreachable registry is an error rather than a substitution.
-        records_list::v0_1::Source::Registry => client
+        records_list::v0_2::Source::Registry => client
             .list_all_trust_records()
             .await?
             .iter()
@@ -596,7 +493,7 @@ pub(crate) async fn records_list(
         // What this community believes it published: the membership mirror
         // and the git-namespace projection's mirror, each rendered as the
         // record its writer puts.
-        records_list::v0_1::Source::Local => {
+        records_list::v0_2::Source::Local => {
             let mut rows: Vec<RecordRow> = list_records(&state.registry_records_ks)
                 .await?
                 .iter()
@@ -655,7 +552,7 @@ pub(crate) async fn records_list(
         .map(|r| r.wire())
         .collect::<Result<Vec<_>, _>>()?;
 
-    let response: records_list::v0_1::Response = records_list::v0_1::Response::builder()
+    let response: records_list::v0_2::Response = records_list::v0_2::Response::builder()
         .source(source)
         .items(items)
         .next_cursor(next_cursor)
@@ -682,7 +579,7 @@ mod tests {
     const OWNER: &str = "did:key:z6MkOwner";
     const REPO: &str = "github.com/acme/widgets";
 
-    fn payload(v: serde_json::Value) -> records_list::v0_1::Payload {
+    fn payload(v: serde_json::Value) -> records_list::v0_2::Payload {
         serde_json::from_value(v).expect("payload fits its schema")
     }
 
@@ -750,7 +647,7 @@ mod tests {
         vtc
     }
 
-    fn keys(r: &records_list::v0_1::Response) -> Vec<(String, String)> {
+    fn keys(r: &records_list::v0_2::Response) -> Vec<(String, String)> {
         r.items
             .iter()
             .map(|i| (i.entity_id.to_string(), i.action.to_string()))

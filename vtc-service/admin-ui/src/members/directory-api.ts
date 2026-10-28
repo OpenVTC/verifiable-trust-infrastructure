@@ -39,7 +39,7 @@ import { vtcDid } from "./api";
 export const FIELDS_LIST_TASK = "https://trusttasks.org/spec/vtc/directory/fields/list/0.1";
 export const CARD_SHOW_TASK = "https://trusttasks.org/spec/vtc/directory/card/show/0.1";
 export const CARD_UPDATE_TASK = "https://trusttasks.org/spec/vtc/directory/card/update/0.1";
-export const ENTRIES_LIST_TASK = "https://trusttasks.org/spec/vtc/directory/entries/list/0.1";
+export const ENTRIES_LIST_TASK = "https://trusttasks.org/spec/vtc/directory/entries/list/0.2";
 export const ENTRIES_SHOW_TASK = "https://trusttasks.org/spec/vtc/directory/entries/show/0.1";
 export const IMAGES_UPLOAD_TASK = "https://trusttasks.org/spec/vtc/directory/images/upload/0.1";
 export const IMAGES_GET_TASK = "https://trusttasks.org/spec/vtc/directory/images/get/0.1";

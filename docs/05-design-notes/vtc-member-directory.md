@@ -480,7 +480,7 @@ The badge on an entry has two sources:
 "Mutual connections" are shown only when the viewer could see every edge
 involved anyway, which in practice means attributed edges whose parties
 opted in. The directory never walks the graph for a member
-(`relationships/list/0.2` warns about exactly this).
+(`relationships/list/0.3` warns about exactly this).
 
 ## 8. Policy
 

@@ -5,8 +5,8 @@
 //! | task | signed by | authority (the signer's ACL row, read now) |
 //! |---|---|---|
 //! | `vtc/registry/diagnostics/0.1` | an administrator | `Admin` |
-//! | `vtc/registry/sync-jobs/{list,retry,discard}/0.1` | an administrator | `Admin` |
-//! | `vtc/registry/records/list/0.1` | an administrator | `Admin` |
+//! | `vtc/registry/sync-jobs/{list,retry}/0.2`, `vtc/registry/sync-jobs/discard/0.1` | an administrator | `Admin` |
+//! | `vtc/registry/records/list/0.2` | an administrator | `Admin` |
 //! | `audit/list/0.1`, `audit/verify/0.1` | an unrestricted administrator | `Admin`, no context scope |
 //! | `config/show/0.1` | an administrator | `Admin` |
 //! | `config/{patch,reload,restart}/0.1` | an unrestricted administrator | `Admin`, no context scope: the configuration is the whole community's, and it holds the unrestricted-admin consent threshold |
@@ -40,9 +40,9 @@ use trust_tasks_rs::specs::vtc::admin::invites::{
     create::v0_1 as invite_create, list::v0_1 as invite_list, revoke::v0_1 as invite_revoke,
 };
 use trust_tasks_rs::specs::vtc::registry::{
-    diagnostics::v0_1 as diagnostics, records::list::v0_1 as records_list,
-    sync_jobs::discard::v0_1 as sync_discard, sync_jobs::list::v0_1 as sync_list,
-    sync_jobs::retry::v0_1 as sync_retry, sync_jobs::retry::v0_2 as sync_retry_0_2,
+    diagnostics::v0_1 as diagnostics, records::list::v0_2 as records_list,
+    sync_jobs::discard::v0_1 as sync_discard, sync_jobs::list::v0_2 as sync_list,
+    sync_jobs::retry::v0_2 as sync_retry,
 };
 use trust_tasks_rs::{Payload, RejectReason, StandardCode, TrustTask, TrustTaskCode};
 use vti_common::auth::extractor::AuthClaims;
@@ -59,7 +59,6 @@ use crate::server::AppState;
 pub(crate) const DIAGNOSTICS_TYPE: &str = <diagnostics::Payload as Payload>::TYPE_URI;
 pub(crate) const SYNC_JOBS_LIST_TYPE: &str = <sync_list::Payload as Payload>::TYPE_URI;
 pub(crate) const SYNC_JOBS_RETRY_TYPE: &str = <sync_retry::Payload as Payload>::TYPE_URI;
-pub(crate) const SYNC_JOBS_RETRY_0_2_TYPE: &str = <sync_retry_0_2::Payload as Payload>::TYPE_URI;
 pub(crate) const SYNC_JOBS_DISCARD_TYPE: &str = <sync_discard::Payload as Payload>::TYPE_URI;
 pub(crate) const RECORDS_LIST_TYPE: &str = <records_list::Payload as Payload>::TYPE_URI;
 pub(crate) const AUDIT_LIST_TYPE: &str = <audit_list::Payload as Payload>::TYPE_URI;
@@ -79,7 +78,6 @@ pub(crate) const URIS: &[&str] = &[
     DIAGNOSTICS_TYPE,
     SYNC_JOBS_LIST_TYPE,
     SYNC_JOBS_RETRY_TYPE,
-    SYNC_JOBS_RETRY_0_2_TYPE,
     SYNC_JOBS_DISCARD_TYPE,
     RECORDS_LIST_TYPE,
     AUDIT_LIST_TYPE,
@@ -110,7 +108,6 @@ pub(super) async fn dispatch(
         DIAGNOSTICS_TYPE => handle_diagnostics(state, ctx, doc).await,
         SYNC_JOBS_LIST_TYPE => handle_sync_jobs_list(state, ctx, doc).await,
         SYNC_JOBS_RETRY_TYPE => handle_sync_jobs_retry(state, ctx, doc).await,
-        SYNC_JOBS_RETRY_0_2_TYPE => handle_sync_jobs_retry_0_2(state, ctx, doc).await,
         SYNC_JOBS_DISCARD_TYPE => handle_sync_jobs_discard(state, ctx, doc).await,
         RECORDS_LIST_TYPE => handle_records_list(state, ctx, doc).await,
         AUDIT_LIST_TYPE => handle_audit_list(state, ctx, doc).await,
@@ -227,24 +224,6 @@ async fn handle_sync_jobs_retry(
         Err(reject) => return reject,
     };
     match crate::routes::registry_admin::sync_jobs_retry(state, &actor.did, payload).await {
-        Ok(response) => success_response(&doc, response),
-        Err(e) => app_error_to_reject(&doc, &e),
-    }
-}
-
-async fn handle_sync_jobs_retry_0_2(
-    state: &AppState,
-    ctx: &JoinAuthCtx,
-    doc: TrustTask<Value>,
-) -> TrustTaskOutcome {
-    let (actor, payload) =
-        match capable_with::<sync_retry_0_2::Payload>(state, ctx, &doc, Capability::RegistryAdmin)
-            .await
-        {
-            Ok(p) => p,
-            Err(reject) => return reject,
-        };
-    match crate::routes::registry_admin::sync_jobs_retry_v0_2(state, &actor.did, payload).await {
         Ok(response) => success_response(&doc, response),
         Err(e) => app_error_to_reject(&doc, &e),
     }

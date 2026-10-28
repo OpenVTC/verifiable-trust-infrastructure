@@ -213,7 +213,7 @@ pub trait TrustRegistryClient: Send + Sync {
     /// any action (`registry/record/query/0.1` keyed by `authority_id` alone,
     /// paged to the end) — membership recognitions and git-namespace
     /// authorizations alike, as the registry states them. What the operator's
-    /// records list (`vtc/registry/records/list/0.1`, `source: registry`)
+    /// records list (`vtc/registry/records/list/0.2`, `source: registry`)
     /// shows.
     ///
     /// Defaults to [`super::drift::unsupported`], as [`Self::list_records`]

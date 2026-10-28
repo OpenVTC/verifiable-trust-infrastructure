@@ -52,7 +52,7 @@ vi.mock("@/lib/signed-act", async (original) => {
 });
 
 const T = "https://trusttasks.org/spec";
-const ROOMS_LIST = `${T}/vtc/rooms/list/0.1`;
+const ROOMS_LIST = `${T}/vtc/rooms/list/0.2`;
 const ROOM = "did:webvh:QmScid:vtc.example.com:room-dids:abc";
 const MEMBER = "did:webvh:QmAlice:alice.example.com";
 const MANAGER = whoamiWith(["vtc.rooms.manage"]);
@@ -117,8 +117,8 @@ const hosted = (visibility = "attributed") => ({
   retentionDays: 90,
   epoch: 1,
   lifecycle: "live",
-  createdAt: 1_760_000_000,
-  updatedAt: 1_760_000_000,
+  createdAt: "2025-10-09T08:53:20Z",
+  updatedAt: "2025-10-09T08:53:20Z",
 });
 
 const communityRoom = (visibility = "attributed") => ({

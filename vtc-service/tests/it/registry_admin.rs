@@ -1,6 +1,7 @@
 //! Integration coverage for the trust-registry operator surface.
 //!
-//! `vtc/registry/sync-jobs/{list,retry,discard}/0.1` as signed documents
+//! `vtc/registry/sync-jobs/{list,retry}/0.2` and `vtc/registry/sync-jobs/discard/0.1`
+//! as signed documents
 //! through the full router stack — the document endpoint, the spine, the
 //! signer's ACL row, handler, fjall.
 //!
@@ -19,9 +20,8 @@ use vtc_service::acl::VtcRole;
 use vtc_service::registry::{SyncJob, SyncJobKind, SyncJobState, get_sync_job, store_sync_job};
 use vtc_service::test_support::TestVtc;
 
-const LIST: &str = "https://trusttasks.org/spec/vtc/registry/sync-jobs/list/0.1";
-const RETRY: &str = "https://trusttasks.org/spec/vtc/registry/sync-jobs/retry/0.1";
-const RETRY_0_2: &str = "https://trusttasks.org/spec/vtc/registry/sync-jobs/retry/0.2";
+const LIST: &str = "https://trusttasks.org/spec/vtc/registry/sync-jobs/list/0.2";
+const RETRY: &str = "https://trusttasks.org/spec/vtc/registry/sync-jobs/retry/0.2";
 const DISCARD: &str = "https://trusttasks.org/spec/vtc/registry/sync-jobs/discard/0.1";
 
 /// `task` signed by an unrestricted administrator: the reply's status and
@@ -111,7 +111,7 @@ async fn retry_reports_a_live_job_as_skipped_rather_than_failing() {
     let (status, v) = send(&vtc, RETRY, json!({ "jobId": live.id.to_string() })).await;
     assert_eq!(status, StatusCode::OK, "reported, not an error: {v}");
     assert!(v["requeued"].as_array().unwrap().is_empty(), "{v}");
-    assert_eq!(v["skipped"][0]["reason"], "notFailed", "{v}");
+    assert_eq!(v["skipped"][0]["reason"], "inFlight", "{v}");
 
     let back = get_sync_job(&vtc.state.sync_queue_ks, live.id)
         .await
@@ -249,7 +249,7 @@ async fn the_surface_requires_an_admin() {
     for (task, payload) in [
         (LIST, json!({})),
         (RETRY, json!({ "allFailed": true })),
-        (RETRY_0_2, json!({ "allWaiting": true })),
+        (RETRY, json!({ "allWaiting": true })),
     ] {
         let (_, doc) = call(&vtc, &member, task, payload).await;
         assert_eq!(error_code(&doc), Some("permissionDenied"), "{doc}");
@@ -268,7 +268,7 @@ fn backing_off(did: &str) -> SyncJob {
 /// budget reset, reported `from: pending`. A failed job and an in-flight one
 /// are not "waiting" and are left alone.
 #[tokio::test]
-async fn retry_0_2_all_waiting_brings_backing_off_jobs_forward() {
+async fn retry_all_waiting_brings_backing_off_jobs_forward() {
     let vtc = TestVtc::builder().build().await;
 
     let waiting = backing_off("did:key:z6MkWaiting");
@@ -279,7 +279,7 @@ async fn retry_0_2_all_waiting_brings_backing_off_jobs_forward() {
         store_sync_job(&vtc.state.sync_queue_ks, job).await.unwrap();
     }
 
-    let (status, v) = send(&vtc, RETRY_0_2, json!({ "allWaiting": true })).await;
+    let (status, v) = send(&vtc, RETRY, json!({ "allWaiting": true })).await;
     assert_eq!(status, StatusCode::OK, "{v}");
     assert_eq!(
         v["requeued"],
@@ -317,7 +317,7 @@ async fn retry_0_2_all_waiting_brings_backing_off_jobs_forward() {
 /// An RTBF-batched job is held: no member of 0.2 releases it, and the answer
 /// says why rather than leaving it out.
 #[tokio::test]
-async fn retry_0_2_never_releases_a_held_job() {
+async fn retry_never_releases_a_held_job() {
     let vtc = TestVtc::builder().build().await;
 
     let mut held = SyncJob::fresh(SyncJobKind::DeleteMember, "did:key:z6MkForgotten");
@@ -331,7 +331,7 @@ async fn retry_0_2_never_releases_a_held_job() {
         json!({ "allWaiting": true }),
         json!({ "jobId": held.id.to_string() }),
     ] {
-        let (status, v) = send(&vtc, RETRY_0_2, payload).await;
+        let (status, v) = send(&vtc, RETRY, payload).await;
         assert_eq!(status, StatusCode::OK, "{v}");
         assert_eq!(v["requeued"], json!([]), "{v}");
         assert_eq!(
@@ -351,7 +351,7 @@ async fn retry_0_2_never_releases_a_held_job() {
 /// By `jobId`, 0.2 takes a pending job and a failed one alike, says which each
 /// was, and reports an in-flight or unknown job instead of failing.
 #[tokio::test]
-async fn retry_0_2_by_job_id_names_where_each_job_came_from() {
+async fn retry_by_job_id_names_where_each_job_came_from() {
     let vtc = TestVtc::builder().build().await;
 
     let waiting = backing_off("did:key:z6MkWaiting");
@@ -362,35 +362,25 @@ async fn retry_0_2_by_job_id_names_where_each_job_came_from() {
         store_sync_job(&vtc.state.sync_queue_ks, job).await.unwrap();
     }
 
-    let (_, v) = send(&vtc, RETRY_0_2, json!({ "jobId": waiting.id.to_string() })).await;
+    let (_, v) = send(&vtc, RETRY, json!({ "jobId": waiting.id.to_string() })).await;
     assert_eq!(v["requeued"][0]["from"], "pending", "{v}");
-    let (_, v) = send(
-        &vtc,
-        RETRY_0_2,
-        json!({ "jobId": failed_job.id.to_string() }),
-    )
-    .await;
+    let (_, v) = send(&vtc, RETRY, json!({ "jobId": failed_job.id.to_string() })).await;
     assert_eq!(v["requeued"][0]["from"], "failed", "{v}");
-    let (_, v) = send(
-        &vtc,
-        RETRY_0_2,
-        json!({ "jobId": in_flight.id.to_string() }),
-    )
-    .await;
+    let (_, v) = send(&vtc, RETRY, json!({ "jobId": in_flight.id.to_string() })).await;
     assert_eq!(v["skipped"][0]["reason"], "inFlight", "{v}");
     let unknown = "0d5b5c1e-3f0a-4a5e-9c1d-2b3a4c5d6e7f";
-    let (_, v) = send(&vtc, RETRY_0_2, json!({ "jobId": unknown })).await;
+    let (_, v) = send(&vtc, RETRY, json!({ "jobId": unknown })).await;
     assert_eq!(v["skipped"][0]["reason"], "notFound", "{v}");
 }
 
 /// Two targets at once is ambiguous, so the schema refuses it before the
 /// handler sees it.
 #[tokio::test]
-async fn retry_0_2_refuses_two_targets() {
+async fn retry_refuses_two_targets() {
     let vtc = TestVtc::builder().build().await;
     let (_, v) = send(
         &vtc,
-        RETRY_0_2,
+        RETRY,
         json!({ "allFailed": true, "allWaiting": true }),
     )
     .await;

@@ -1,5 +1,5 @@
-//! Where this community keeps its rooms' files — `vtc/storage/configs/{list,get,create,
-//! update,retire,probe}/0.1`, `vtc/storage/configs/{list,get,create,update}/0.2`,
+//! Where this community keeps its rooms' files — `vtc/storage/configs/{create,update,
+//! retire,probe}/0.1`, `vtc/storage/configs/{list,get,create,update}/0.2`,
 //! `vtc/storage/credentials/set/0.2`, `vtc/rooms/storage/assign/0.1` and
 //! `vtc/rooms/storage/migrate/{0.1,0.2}`
 //! (`docs/05-design-notes/data-rooms-files.md` §7; [`crate::rooms::storage_configs`]).
@@ -36,9 +36,8 @@ use trust_tasks_rs::specs::vtc::rooms::storage::assign::v0_1 as assign;
 use trust_tasks_rs::specs::vtc::rooms::storage::migrate::v0_1 as migrate;
 use trust_tasks_rs::specs::vtc::rooms::storage::migrate::v0_2 as migrate_v2;
 use trust_tasks_rs::specs::vtc::storage::configs::{
-    create::v0_1 as create, create::v0_2 as create2, get::v0_1 as get, get::v0_2 as get2,
-    list::v0_1 as list, list::v0_2 as list2, probe::v0_1 as probe, retire::v0_1 as retire,
-    update::v0_1 as update, update::v0_2 as update2,
+    create::v0_1 as create, create::v0_2 as create2, get::v0_2 as get, list::v0_2 as list,
+    probe::v0_1 as probe, retire::v0_1 as retire, update::v0_1 as update, update::v0_2 as update2,
 };
 use trust_tasks_rs::specs::vtc::storage::credentials::set::v0_2 as set;
 use trust_tasks_rs::{Payload, RejectReason, TrustTask};
@@ -69,8 +68,6 @@ pub(crate) const RETIRE_TYPE: &str = <retire::Payload as Payload>::TYPE_URI;
 pub(crate) const PROBE_TYPE: &str = <probe::Payload as Payload>::TYPE_URI;
 pub(crate) const ASSIGN_TYPE: &str = <assign::Payload as Payload>::TYPE_URI;
 pub(crate) const MIGRATE_TYPE: &str = <migrate::Payload as Payload>::TYPE_URI;
-pub(crate) const LIST_V0_2_TYPE: &str = <list2::Payload as Payload>::TYPE_URI;
-pub(crate) const GET_V0_2_TYPE: &str = <get2::Payload as Payload>::TYPE_URI;
 pub(crate) const CREATE_V0_2_TYPE: &str = <create2::Payload as Payload>::TYPE_URI;
 pub(crate) const UPDATE_V0_2_TYPE: &str = <update2::Payload as Payload>::TYPE_URI;
 pub(crate) const CREDENTIALS_SET_TYPE: &str = <set::Payload as Payload>::TYPE_URI;
@@ -82,8 +79,6 @@ pub(crate) const URIS: &[&str] = &[
     GET_TYPE,
     CREATE_TYPE,
     UPDATE_TYPE,
-    LIST_V0_2_TYPE,
-    GET_V0_2_TYPE,
     CREATE_V0_2_TYPE,
     UPDATE_V0_2_TYPE,
     CREDENTIALS_SET_TYPE,
@@ -110,12 +105,10 @@ pub(super) async fn dispatch(
     type_uri: &str,
 ) -> Option<TrustTaskOutcome> {
     Some(match type_uri {
-        LIST_TYPE => handle_list(state, ctx, doc, V::One).await,
-        GET_TYPE => handle_get(state, ctx, doc, V::One).await,
+        LIST_TYPE => handle_list(state, ctx, doc).await,
+        GET_TYPE => handle_get(state, ctx, doc).await,
         CREATE_TYPE => handle_create(state, ctx, doc, V::One).await,
         UPDATE_TYPE => handle_update(state, ctx, doc, V::One).await,
-        LIST_V0_2_TYPE => handle_list(state, ctx, doc, V::Two).await,
-        GET_V0_2_TYPE => handle_get(state, ctx, doc, V::Two).await,
         CREATE_V0_2_TYPE => handle_create(state, ctx, doc, V::Two).await,
         UPDATE_V0_2_TYPE => handle_update(state, ctx, doc, V::Two).await,
         CREDENTIALS_SET_TYPE => handle_credentials_set(state, ctx, doc).await,
@@ -270,41 +263,26 @@ struct ListAsk {
     kind: Option<String>,
 }
 
-/// `vtc/storage/configs/list/{0.1,0.2}` — every config, `retired` ones included, with
+/// `vtc/storage/configs/list/0.2` — every config, `retired` ones included, with
 /// its facts computed now.
 async fn handle_list(
     state: &AppState,
     ctx: &JoinAuthCtx,
     doc: TrustTask<Value>,
-    v: V,
 ) -> TrustTaskOutcome {
     if let Err(reject) = rooms_admin(state, ctx, &doc).await {
         return reject;
     }
-    let checked = match v {
-        V::One => match parse_spec_payload::<list::Payload>(&doc) {
-            Ok(p) => ListAsk {
-                cursor: p.cursor.map(|c| c.to_string()),
-                limit: p.limit.map(|l| l.get()),
-                state: p.state.map(|s| s.to_string()),
-                kind: p.kind.map(|k| k.to_string()),
-            },
-            Err(reject) => return reject,
+    let checked = match parse_spec_payload::<list::Payload>(&doc) {
+        Ok(p) => ListAsk {
+            cursor: p.cursor.map(|c| c.to_string()),
+            limit: p.limit.map(|l| l.get()),
+            state: p.state.map(|s| s.to_string()),
+            kind: p.kind.map(|k| k.to_string()),
         },
-        V::Two => match parse_spec_payload::<list2::Payload>(&doc) {
-            Ok(p) => ListAsk {
-                cursor: p.cursor.map(|c| c.to_string()),
-                limit: p.limit.map(|l| l.get()),
-                state: p.state.map(|s| s.to_string()),
-                kind: p.kind.map(|k| k.to_string()),
-            },
-            Err(reject) => return reject,
-        },
+        Err(reject) => return reject,
     };
-    let invalid_cursor = match v {
-        V::One => list::error_codes::INVALID_CURSOR.code,
-        V::Two => list2::error_codes::INVALID_CURSOR.code,
-    };
+    let invalid_cursor = list::error_codes::INVALID_CURSOR.code;
     let after = match checked.cursor.as_deref() {
         None => None,
         Some(c) => match c.strip_prefix(CURSOR_PREFIX) {
@@ -357,7 +335,10 @@ async fn handle_list(
             Ok(f) => f,
             Err(e) => return app_error_to_reject(&doc, &e),
         };
-        items.push(json!({ "config": config_at(v, config), "facts": facts_at(v, facts) }));
+        items.push(json!({
+            "config": config_at(V::Two, config),
+            "facts": facts_at(V::Two, facts),
+        }));
     }
     let mut body = json!({ "items": items });
     if more && let Some(last) = body["items"].as_array().and_then(|i| i.last()) {
@@ -366,31 +347,21 @@ async fn handle_list(
             last["config"]["id"].as_str().unwrap_or_default()
         ));
     }
-    match v {
-        V::One => respond::<list::Response>(&doc, body),
-        V::Two => respond::<list2::Response>(&doc, body),
-    }
+    respond::<list::Response>(&doc, body)
 }
 
-/// `vtc/storage/configs/get/{0.1,0.2}` — one config, its facts and the rooms on it.
+/// `vtc/storage/configs/get/0.2` — one config, its facts and the rooms on it.
 async fn handle_get(
     state: &AppState,
     ctx: &JoinAuthCtx,
     doc: TrustTask<Value>,
-    v: V,
 ) -> TrustTaskOutcome {
     if let Err(reject) = rooms_admin(state, ctx, &doc).await {
         return reject;
     }
-    let (id, not_found) = match v {
-        V::One => match parse_spec_payload::<get::Payload>(&doc) {
-            Ok(p) => (p.config_id.to_string(), get::error_codes::NOT_FOUND.code),
-            Err(reject) => return reject,
-        },
-        V::Two => match parse_spec_payload::<get2::Payload>(&doc) {
-            Ok(p) => (p.config_id.to_string(), get2::error_codes::NOT_FOUND.code),
-            Err(reject) => return reject,
-        },
+    let (id, not_found) = match parse_spec_payload::<get::Payload>(&doc) {
+        Ok(p) => (p.config_id.to_string(), get::error_codes::NOT_FOUND.code),
+        Err(reject) => return reject,
     };
     let id = id.as_str();
     let config = match state.room_storage.config(id).await {
@@ -417,15 +388,12 @@ async fn handle_get(
         Err(e) => return app_error_to_reject(&doc, &e),
     };
     let body = json!({
-        "config": config_at(v, config),
-        "facts": facts_at(v, facts),
+        "config": config_at(V::Two, config),
+        "facts": facts_at(V::Two, facts),
         "assignedRoomsTruncated": rooms.len() > ASSIGNED_ROOMS_SHOWN,
         "assignedRooms": rooms.into_iter().take(ASSIGNED_ROOMS_SHOWN).collect::<Vec<_>>(),
     });
-    match v {
-        V::One => respond::<get::Response>(&doc, body),
-        V::Two => respond::<get2::Response>(&doc, body),
-    }
+    respond::<get::Response>(&doc, body)
 }
 
 // ─── create ──────────────────────────────────────────────────────────────

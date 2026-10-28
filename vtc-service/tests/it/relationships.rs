@@ -32,10 +32,9 @@ use vtc_service::test_support::TestVtc;
 
 const PUBLIC_URL: &str = "https://vtc.example.com";
 const PUBLISH_TASK: &str = "https://trusttasks.org/spec/vtc/relationships/publish/0.2";
-const LIST_TASK: &str = "https://trusttasks.org/spec/vtc/relationships/list/0.2";
+const LIST_TASK: &str = "https://trusttasks.org/spec/vtc/relationships/list/0.3";
 const GRAPH_TASK: &str = "https://trusttasks.org/spec/vtc/relationships/graph/0.2";
-const REVOKE_TASK: &str = "https://trusttasks.org/spec/vtc/relationships/revoke/0.1";
-const REVOKE_TASK_0_2: &str = "https://trusttasks.org/spec/vtc/relationships/revoke/0.2";
+const REVOKE_TASK: &str = "https://trusttasks.org/spec/vtc/relationships/revoke/0.2";
 const ISSUER_DID: &str = "did:key:zVrcIssuer";
 const SUBJECT_DID: &str = "did:key:zVrcSubject";
 const STRANGER_DID: &str = "did:key:zStranger";
@@ -44,9 +43,9 @@ const ADMIN_DID: &str = "did:key:zVrcAdmin";
 // The codes the relationship tasks declare (#1600), read from the generated
 // bindings rather than spelled here.
 const LIST_ERR_NOT_FOUND: &str =
-    trust_tasks_rs::specs::vtc::relationships::list::v0_2::error_codes::NOT_FOUND.code;
+    trust_tasks_rs::specs::vtc::relationships::list::v0_3::error_codes::NOT_FOUND.code;
 const REVOKE_ERR_NOT_FOUND: &str =
-    trust_tasks_rs::specs::vtc::relationships::revoke::v0_1::error_codes::NOT_FOUND.code;
+    trust_tasks_rs::specs::vtc::relationships::revoke::v0_2::error_codes::NOT_FOUND.code;
 const PUBLISH_ERR_VRC_INVALID: &str =
     trust_tasks_rs::specs::vtc::relationships::publish::v0_2::error_codes::VRC_INVALID.code;
 const PUBLISH_ERR_SUBJECT_NOT_MEMBER: &str =
@@ -238,7 +237,7 @@ async fn revoke_verb(
     if let Some(p) = pop {
         payload["pop"] = p;
     }
-    crate::common::signed::call(&fix._vtc, by, REVOKE_TASK_0_2, payload).await
+    crate::common::signed::call(&fix._vtc, by, REVOKE_TASK, payload).await
 }
 
 #[tokio::test]
@@ -313,11 +312,10 @@ async fn revoke_404_on_unknown() {
     assert_eq!(tt_error_code(&v), Some(REVOKE_ERR_NOT_FOUND), "{v}");
 }
 
-/// `revoke/0.1` is not retired: the direct-issuer and administrator routes
-/// still answer on it, unchanged, for a caller with no need of `0.2`'s
-/// pairwise `pop`.
+/// The edge's own issuer revokes with `{id}` alone: `pop` is needed only for
+/// an edge published under a pairwise relationship DID.
 #[tokio::test]
-async fn revoke_0_1_still_serves_the_direct_and_admin_routes() {
+async fn revoke_by_the_direct_issuer_needs_no_pop() {
     let fix = build_fixture().await;
     let issuer = member_party(&fix).await;
     let id = seed_relationship(&fix, &issuer.did, SUBJECT_DID).await;
@@ -377,7 +375,7 @@ async fn graph_as_admin(vtc: &TestVtc) -> (StatusCode, Value) {
     (status, doc["payload"].clone())
 }
 
-/// `vtc/relationships/list/0.2` for `did`, signed by a fresh unrestricted
+/// `vtc/relationships/list/0.3` for `did`, signed by a fresh unrestricted
 /// administrator — any current member or administrator may read it, so who
 /// signs is unrelated to whose edges are being listed.
 async fn list_relationships(fix: &Fixture, did: &str) -> (StatusCode, Value) {
@@ -1665,7 +1663,7 @@ mod pairwise {
             if let Some(p) = pop {
                 payload["pop"] = p;
             }
-            let doc = document(REVOKE_TASK_0_2, MEMBER, doc_id, payload).await;
+            let doc = document(REVOKE_TASK, MEMBER, doc_id, payload).await;
             body_value(post_trust_task(fix, doc).await).await
         }
 

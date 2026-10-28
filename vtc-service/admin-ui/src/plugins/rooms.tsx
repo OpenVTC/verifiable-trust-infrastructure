@@ -66,7 +66,7 @@ import { DoorOpen, RefreshCw } from "lucide-react";
 
 import { postSignedRead } from "@/lib/api";
 import { fetchActivePolicy } from "@/lib/policies-api";
-import { formatEpoch, shorten } from "@/lib/format";
+import { formatIso, shorten } from "@/lib/format";
 import { CopyButton } from "@/components/CopyButton";
 import { NamedDid } from "@/components/NamedDid";
 import { DataTable, useSortedRows } from "@/components/DataTable";
@@ -85,9 +85,9 @@ import {
 } from "./rooms/useRoomNames";
 
 const TRUST_TASK_TEST = "https://trusttasks.org/spec/vtc/policies/test/0.1";
-/** `vtc/rooms/list/0.1` — under `vtc/`, not `rooms/`: it is answered from the
+/** `vtc/rooms/list/0.2` — under `vtc/`, not `rooms/`: it is answered from the
  *  host's own admin authority, which invariant I5 forbids any `rooms/*` task. */
-const TRUST_TASK_ROOMS_LIST = "https://trusttasks.org/spec/vtc/rooms/list/0.1";
+const TRUST_TASK_ROOMS_LIST = "https://trusttasks.org/spec/vtc/rooms/list/0.2";
 
 /** The query the real creation path evaluates. Anything else probes a different rule. */
 const DECISION_QUERY = "data.vtc.rooms.decision";
@@ -95,7 +95,7 @@ const DECISION_QUERY = "data.vtc.rooms.decision";
 /**
  * The rooms this community hosts.
  *
- * A signed read of the host's own admin view: `vtc/rooms/list/0.1`, not a
+ * A signed read of the host's own admin view: `vtc/rooms/list/0.2`, not a
  * `rooms/*` task. Every `rooms/*` task is authorised by a credential the ROOM
  * issued, checked against the room's own identifier (invariant I5); this asks
  * the opposite question — what is this *operator* storing — from the host's
@@ -408,7 +408,7 @@ function RoomsTable({ rooms }: { rooms: HostedRoom[] }) {
               <td>
                 {r.epoch}
                 {r.epochExpiresAt ? (
-                  <div className="muted rooms-sub">expires {formatEpoch(r.epochExpiresAt)}</div>
+                  <div className="muted rooms-sub">expires {formatIso(r.epochExpiresAt)}</div>
                 ) : null}
               </td>
               <td>
@@ -420,7 +420,7 @@ function RoomsTable({ rooms }: { rooms: HostedRoom[] }) {
                   {r.retentionPolicy === "chained" ? "history kept" : "from join"}
                 </div>
               </td>
-              <td>{formatEpoch(r.createdAt)}</td>
+              <td>{formatIso(r.createdAt)}</td>
             </tr>
           ))}
         </DataTable>

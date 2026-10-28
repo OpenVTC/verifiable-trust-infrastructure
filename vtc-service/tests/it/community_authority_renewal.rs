@@ -28,9 +28,9 @@ use vtc_service::test_support::{TEST_VTC_DID, TestVtc};
 use crate::common::second_party::Gesturer;
 use crate::common::signed::{post, signed};
 
-const CREATE: &str = "https://trusttasks.org/spec/vtc/rooms/community/create/0.1";
-const GET: &str = "https://trusttasks.org/spec/vtc/rooms/community/get/0.1";
-const LIST: &str = "https://trusttasks.org/spec/vtc/rooms/community/list/0.1";
+const CREATE: &str = "https://trusttasks.org/spec/vtc/rooms/community/create/0.4";
+const GET: &str = "https://trusttasks.org/spec/vtc/rooms/community/get/0.3";
+const LIST: &str = "https://trusttasks.org/spec/vtc/rooms/community/list/0.3";
 
 const MINT: &str = "https://trusttasks.org/spec/vta/webvh/dids/create/1.1";
 const GROUP_CREATE: &str = "https://trusttasks.org/spec/rooms/owner/group/create/0.1";

@@ -40,7 +40,7 @@ const UPDATE_ERR_NOT_FOUND: &str = g::update::v0_1::error_codes::NOT_FOUND.code;
 const UPDATE_ERR_RULE_INVALID: &str = g::update::v0_1::error_codes::RULE_INVALID.code;
 const UPDATE_ERR_SETTINGS_INVALID: &str = g::update::v0_1::error_codes::SETTINGS_INVALID.code;
 const DELETE_ERR_NOT_FOUND: &str = g::delete::v0_1::error_codes::NOT_FOUND.code;
-const LIST_ERR_CURSOR_INVALID: &str = g::list::v0_1::error_codes::CURSOR_INVALID.code;
+const LIST_ERR_CURSOR_INVALID: &str = g::list::v0_2::error_codes::CURSOR_INVALID.code;
 const SHOW_ERR_NOT_FOUND: &str = g::show::v0_1::error_codes::NOT_FOUND.code;
 const ADD_ERR_NOT_FOUND: &str = g::members::add::v0_1::error_codes::NOT_FOUND.code;
 const ADD_ERR_ENTRY_NOT_FOUND: &str = g::members::add::v0_1::error_codes::ENTRY_NOT_FOUND.code;
@@ -56,9 +56,9 @@ const REMOVE_ERR_DYNAMIC_GROUP: &str = g::members::remove::v0_1::error_codes::DY
 const LEAVE_ERR_ALREADY_OPTED_OUT: &str = g::leave::v0_1::error_codes::ALREADY_OPTED_OUT.code;
 const BINDINGS_ADD_ERR_GROUP_NOT_ELIGIBLE: &str =
     g::bindings::add::v0_1::error_codes::GROUP_NOT_ELIGIBLE.code;
-const MEMBERS_LIST_ERR_NOT_FOUND: &str = g::members::list::v0_1::error_codes::NOT_FOUND.code;
+const MEMBERS_LIST_ERR_NOT_FOUND: &str = g::members::list::v0_2::error_codes::NOT_FOUND.code;
 const MEMBERS_LIST_ERR_CURSOR_INVALID: &str =
-    g::members::list::v0_1::error_codes::CURSOR_INVALID.code;
+    g::members::list::v0_2::error_codes::CURSOR_INVALID.code;
 const JOIN_ERR_NOT_FOUND: &str = g::join::v0_1::error_codes::NOT_FOUND.code;
 const JOIN_ERR_NOT_JOINABLE: &str = g::join::v0_1::error_codes::NOT_JOINABLE.code;
 const JOIN_ERR_ALREADY_MEMBER: &str = g::join::v0_1::error_codes::ALREADY_MEMBER.code;
@@ -69,9 +69,9 @@ const JOIN_ERR_KEY_HOLDER_UNAVAILABLE: &str =
 const JOIN_ERR_KEY_HOLDER_REFUSED: &str = g::join::v0_1::error_codes::KEY_HOLDER_REFUSED.code;
 const LEAVE_ERR_NOT_FOUND: &str = g::leave::v0_1::error_codes::NOT_FOUND.code;
 const LEAVE_ERR_NOT_IN_GROUP: &str = g::leave::v0_1::error_codes::NOT_IN_GROUP.code;
-const REQUESTS_LIST_ERR_NOT_FOUND: &str = g::requests::list::v0_1::error_codes::NOT_FOUND.code;
+const REQUESTS_LIST_ERR_NOT_FOUND: &str = g::requests::list::v0_2::error_codes::NOT_FOUND.code;
 const REQUESTS_LIST_ERR_CURSOR_INVALID: &str =
-    g::requests::list::v0_1::error_codes::CURSOR_INVALID.code;
+    g::requests::list::v0_2::error_codes::CURSOR_INVALID.code;
 const DECIDE_ERR_NOT_FOUND: &str = g::requests::decide::v0_1::error_codes::NOT_FOUND.code;
 const DECIDE_ERR_ALREADY_DECIDED: &str =
     g::requests::decide::v0_1::error_codes::ALREADY_DECIDED.code;
@@ -106,7 +106,12 @@ const DID_HOSTING_ERR_KEY_HOLDER_REFUSED: &str =
 const UNKNOWN_GROUP: &str = "grp_UnknownUnknownUnknown";
 
 fn task(name: &str) -> String {
-    format!("{SPEC}/{name}/0.1")
+    // The paged reads moved to 0.2 (`nextCursor` absent on the last page).
+    let version = match name {
+        "list" | "members/list" | "requests/list" => "0.2",
+        _ => "0.1",
+    };
+    format!("{SPEC}/{name}/{version}")
 }
 
 /// A `trust-task-error` reply's code — the census reads witnesses by this name.

@@ -24,7 +24,7 @@ Specification: *Community Directory and Groups* in the VTI specification
 | `vtc/directory/card/show/0.1` | the member | Their own card, whole |
 | `vtc/directory/card/update/0.1` | the member | Their values, visibilities, listing, search and introductions settings |
 | `vtc/directory/card/assert/0.1` | `vtc.directory.admin` | Values of `admin`-sourced fields (a chapter, a grade); the member sees them and cannot change them |
-| `vtc/directory/entries/list/0.1` | members, administrators | Browse, search and filter, each entry projected for the caller |
+| `vtc/directory/entries/list/0.2` | members, administrators | Browse, search and filter, each entry projected for the caller |
 | `vtc/directory/entries/show/0.1` | members, administrators | One entry by entry identifier; by DID only for `vtc.directory.admin` or `vtc.members.manage` |
 | `vtc/directory/query/0.1` | members, administrators | The older lookup by DID, answered through the same projection |
 | `vtc/directory/disclosure/0.1` | anyone the join manifest answers | The disclosure statement (below) |
@@ -35,7 +35,7 @@ Specification: *Community Directory and Groups* in the VTI specification
 | `vtc/directory/card/present/0.1` | the member, holding the credential | Fill `credential`-sourced fields from a presentation; the community keeps only the claims (below) |
 | `vtc/directory/notes/{append,list}/0.1` | `vtc.directory.notes` | Administrators' notes about a member (below) |
 | `vtc/directory/notes/export/0.1` | `vtc.directory.notes`, with a bound passkey | Every note about a member, to answer their request for the data held about them |
-| `vtc/directory/export/0.1` | `vtc.directory.admin`, with a bound passkey | Every active member's card as JSContact |
+| `vtc/directory/export/0.2` | `vtc.directory.admin`, with a bound passkey | Every active member's card as JSContact |
 | `vtc/join-requests/manifest/0.4` | anyone, unless join discovery is closed | The join criteria **and** the disclosure statement, as `directoryDisclosure`; 0.3 is still served without it |
 
 ## What applicants are told

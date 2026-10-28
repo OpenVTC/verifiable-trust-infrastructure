@@ -156,43 +156,43 @@ fn witnesses() -> Vec<Witness> {
             "a_refused_supplement_challenge_says_which_way"
         ),
         witness!(
-            s::rooms::community::create::v0_1::error_codes::VISIBILITY_NOT_PERMITTED,
+            s::rooms::community::create::v0_4::error_codes::VISIBILITY_NOT_PERMITTED,
             crate::rooms::community::codes::CREATE_VISIBILITY_NOT_PERMITTED,
             "community_rooms.rs",
             "vtc_rooms_community_create_refuses_with_its_declared_codes"
         ),
         witness!(
-            s::rooms::community::create::v0_1::error_codes::UNKNOWN_STORAGE_CONFIG,
+            s::rooms::community::create::v0_4::error_codes::UNKNOWN_STORAGE_CONFIG,
             crate::rooms::community::codes::CREATE_UNKNOWN_STORAGE_CONFIG,
             "community_rooms.rs",
             "vtc_rooms_community_create_refuses_with_its_declared_codes"
         ),
         witness!(
-            s::rooms::community::create::v0_1::error_codes::NO_KEY_HOLDER,
+            s::rooms::community::create::v0_4::error_codes::NO_KEY_HOLDER,
             crate::rooms::community::codes::CREATE_NO_KEY_HOLDER,
             "community_rooms.rs",
             "vtc_rooms_community_create_refuses_with_its_declared_codes"
         ),
         witness!(
-            s::rooms::community::create::v0_1::error_codes::KEY_HOLDER_UNAVAILABLE,
+            s::rooms::community::create::v0_4::error_codes::KEY_HOLDER_UNAVAILABLE,
             crate::rooms::community::codes::CREATE_KEY_HOLDER_UNAVAILABLE,
             "community_rooms.rs",
             "vtc_rooms_community_create_refuses_with_its_declared_codes"
         ),
         witness!(
-            s::rooms::community::create::v0_1::error_codes::KEY_HOLDER_REFUSED,
+            s::rooms::community::create::v0_4::error_codes::KEY_HOLDER_REFUSED,
             crate::rooms::community::codes::CREATE_KEY_HOLDER_REFUSED,
             "community_rooms.rs",
             "vtc_rooms_community_create_refuses_with_its_declared_codes"
         ),
         witness!(
-            s::rooms::community::get::v0_1::error_codes::NOT_FOUND,
+            s::rooms::community::get::v0_3::error_codes::NOT_FOUND,
             crate::rooms::community::codes::GET_NOT_FOUND,
             "community_rooms.rs",
             "vtc_rooms_community_reads_answer_not_found"
         ),
         witness!(
-            s::rooms::community::update::v0_1::error_codes::NOT_FOUND,
+            s::rooms::community::update::v0_3::error_codes::NOT_FOUND,
             crate::rooms::community::codes::UPDATE_NOT_FOUND,
             "community_rooms.rs",
             "vtc_rooms_community_update_answers_not_found_for_a_room_it_only_hosts"
@@ -234,25 +234,25 @@ fn witnesses() -> Vec<Witness> {
             "vtc_rooms_community_members_refuse_with_their_declared_codes"
         ),
         witness!(
-            s::rooms::community::members::remove::v0_1::error_codes::NOT_FOUND,
+            s::rooms::community::members::remove::v0_2::error_codes::NOT_FOUND,
             crate::rooms::community::codes::REMOVE_NOT_FOUND,
             "community_rooms.rs",
             "vtc_rooms_community_members_refuse_with_their_declared_codes"
         ),
         witness!(
-            s::rooms::community::members::remove::v0_1::error_codes::NOT_IN_ROOM,
+            s::rooms::community::members::remove::v0_2::error_codes::NOT_IN_ROOM,
             crate::rooms::community::codes::REMOVE_NOT_IN_ROOM,
             "community_rooms.rs",
             "vtc_rooms_community_members_refuse_with_their_declared_codes"
         ),
         witness!(
-            s::rooms::community::members::remove::v0_1::error_codes::KEY_HOLDER_UNAVAILABLE,
+            s::rooms::community::members::remove::v0_2::error_codes::KEY_HOLDER_UNAVAILABLE,
             crate::rooms::community::codes::REMOVE_KEY_HOLDER_UNAVAILABLE,
             "community_rooms.rs",
             "vtc_rooms_community_members_refuse_with_their_declared_codes"
         ),
         witness!(
-            s::rooms::community::members::remove::v0_1::error_codes::KEY_HOLDER_REFUSED,
+            s::rooms::community::members::remove::v0_2::error_codes::KEY_HOLDER_REFUSED,
             crate::rooms::community::codes::REMOVE_KEY_HOLDER_REFUSED,
             "community_rooms.rs",
             "vtc_rooms_community_members_refuse_with_their_declared_codes"
@@ -324,7 +324,7 @@ fn witnesses() -> Vec<Witness> {
             "vtc_rooms_offers_refuse_with_their_declared_codes"
         ),
         witness!(
-            s::rooms::get::v0_1::error_codes::NOT_FOUND,
+            s::rooms::get::v0_3::error_codes::NOT_FOUND,
             crate::rooms::storage_configs::codes::ROOM_GET_NOT_FOUND,
             "room_usage_reports.rs",
             "vtc_rooms_get_answers_not_found"
@@ -372,13 +372,13 @@ fn witnesses() -> Vec<Witness> {
             "vtc_rooms_limits_set_refuses_with_its_declared_codes"
         ),
         witness!(
-            s::storage::configs::list::v0_1::error_codes::INVALID_CURSOR,
+            s::storage::configs::list::v0_2::error_codes::INVALID_CURSOR,
             crate::rooms::storage_configs::codes::LIST_INVALID_CURSOR,
             "room_storage_configs.rs",
             "vtc_storage_configs_list_refuses_a_foreign_cursor"
         ),
         witness!(
-            s::storage::configs::get::v0_1::error_codes::NOT_FOUND,
+            s::storage::configs::get::v0_2::error_codes::NOT_FOUND,
             crate::rooms::storage_configs::codes::GET_NOT_FOUND,
             "room_storage_configs.rs",
             "vtc_storage_configs_get_answers_not_found"
@@ -875,13 +875,13 @@ fn witnesses() -> Vec<Witness> {
             "the_personhood_assert_task_answers_with_the_codes_its_spec_declares"
         ),
         witness!(
-            s::relationships::list::v0_2::error_codes::NOT_FOUND,
+            s::relationships::list::v0_3::error_codes::NOT_FOUND,
             crate::routes::members::relationships::LIST_ERR_NOT_FOUND,
             "relationships.rs",
             "list_for_a_did_that_is_not_a_member_is_the_declared_not_found"
         ),
         witness!(
-            s::relationships::revoke::v0_1::error_codes::NOT_FOUND,
+            s::relationships::revoke::v0_2::error_codes::NOT_FOUND,
             crate::routes::relationships::REVOKE_ERR_NOT_FOUND,
             "relationships.rs",
             "revoke_404_on_unknown"
@@ -1159,25 +1159,25 @@ fn witnesses() -> Vec<Witness> {
             "card_assert_refuses_what_its_specification_declares"
         ),
         witness!(
-            s::directory::entries::list::v0_1::error_codes::QUERY_TOO_SHORT,
+            s::directory::entries::list::v0_2::error_codes::QUERY_TOO_SHORT,
             crate::trust_tasks::directory_tasks::LIST_ERR_QUERY_TOO_SHORT,
             "directory.rs",
             "list_refuses_what_its_specification_declares"
         ),
         witness!(
-            s::directory::entries::list::v0_1::error_codes::CURSOR_INVALID,
+            s::directory::entries::list::v0_2::error_codes::CURSOR_INVALID,
             crate::trust_tasks::directory_tasks::LIST_ERR_CURSOR_INVALID,
             "directory.rs",
             "a_cursor_is_bound_to_its_question_and_caller"
         ),
         witness!(
-            s::directory::entries::list::v0_1::error_codes::NOT_FOUND,
+            s::directory::entries::list::v0_2::error_codes::NOT_FOUND,
             crate::trust_tasks::directory_tasks::LIST_ERR_NOT_FOUND,
             "directory.rs",
             "list_refuses_what_its_specification_declares"
         ),
         witness!(
-            s::directory::entries::list::v0_1::error_codes::RATE_LIMITED,
+            s::directory::entries::list::v0_2::error_codes::RATE_LIMITED,
             crate::trust_tasks::directory_tasks::LIST_ERR_RATE_LIMITED,
             "directory.rs",
             "reading_too_often_is_rate_limited"
@@ -1375,7 +1375,7 @@ fn witnesses() -> Vec<Witness> {
             "delete_refuses_what_its_specification_declares"
         ),
         witness!(
-            s::groups::list::v0_1::error_codes::CURSOR_INVALID,
+            s::groups::list::v0_2::error_codes::CURSOR_INVALID,
             crate::trust_tasks::group_tasks::LIST_ERR_CURSOR_INVALID,
             "groups.rs",
             "list_pages_with_a_cursor_bound_to_its_caller"
@@ -1429,13 +1429,13 @@ fn witnesses() -> Vec<Witness> {
             "members_remove_refuses_what_its_specification_declares"
         ),
         witness!(
-            s::groups::members::list::v0_1::error_codes::NOT_FOUND,
+            s::groups::members::list::v0_2::error_codes::NOT_FOUND,
             crate::trust_tasks::group_tasks::MEMBERS_LIST_ERR_NOT_FOUND,
             "groups.rs",
             "members_list_refuses_what_its_specification_declares"
         ),
         witness!(
-            s::groups::members::list::v0_1::error_codes::CURSOR_INVALID,
+            s::groups::members::list::v0_2::error_codes::CURSOR_INVALID,
             crate::trust_tasks::group_tasks::MEMBERS_LIST_ERR_CURSOR_INVALID,
             "groups.rs",
             "members_list_refuses_what_its_specification_declares"
@@ -1495,13 +1495,13 @@ fn witnesses() -> Vec<Witness> {
             "leave_refuses_what_its_specification_declares"
         ),
         witness!(
-            s::groups::requests::list::v0_1::error_codes::NOT_FOUND,
+            s::groups::requests::list::v0_2::error_codes::NOT_FOUND,
             crate::trust_tasks::group_tasks::REQUESTS_LIST_ERR_NOT_FOUND,
             "groups.rs",
             "requests_list_refuses_what_its_specification_declares"
         ),
         witness!(
-            s::groups::requests::list::v0_1::error_codes::CURSOR_INVALID,
+            s::groups::requests::list::v0_2::error_codes::CURSOR_INVALID,
             crate::trust_tasks::group_tasks::REQUESTS_LIST_ERR_CURSOR_INVALID,
             "groups.rs",
             "requests_list_refuses_what_its_specification_declares"
@@ -1681,13 +1681,13 @@ fn witnesses() -> Vec<Witness> {
             "notes_append_refuses_what_its_specification_declares"
         ),
         witness!(
-            s::directory::notes::list::v0_1::error_codes::NOT_FOUND,
+            s::directory::notes::list::v0_2::error_codes::NOT_FOUND,
             crate::trust_tasks::directory_tasks::NOTES_LIST_ERR_NOT_FOUND,
             "directory_notes.rs",
             "notes_list_refuses_what_its_specification_declares"
         ),
         witness!(
-            s::directory::notes::list::v0_1::error_codes::CURSOR_INVALID,
+            s::directory::notes::list::v0_2::error_codes::CURSOR_INVALID,
             crate::trust_tasks::directory_tasks::NOTES_LIST_ERR_CURSOR_INVALID,
             "directory_notes.rs",
             "notes_list_refuses_what_its_specification_declares"
@@ -1699,7 +1699,7 @@ fn witnesses() -> Vec<Witness> {
             "notes_export_refuses_what_its_specification_declares"
         ),
         witness!(
-            s::directory::export::v0_1::error_codes::CURSOR_INVALID,
+            s::directory::export::v0_2::error_codes::CURSOR_INVALID,
             crate::trust_tasks::directory_tasks::EXPORT_ERR_CURSOR_INVALID,
             "directory_notes.rs",
             "export_refuses_what_its_specification_declares"

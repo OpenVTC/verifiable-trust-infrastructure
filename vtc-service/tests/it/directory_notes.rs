@@ -18,7 +18,12 @@ use vtc_service::test_support::TestVtc;
 const SPEC: &str = "https://trusttasks.org/spec/vtc/directory";
 
 fn task(name: &str) -> String {
-    format!("{SPEC}/{name}/0.1")
+    // The paged reads moved to 0.2 (`nextCursor` absent on the last page).
+    let version = match name {
+        "export" | "notes/list" => "0.2",
+        _ => "0.1",
+    };
+    format!("{SPEC}/{name}/{version}")
 }
 
 use trust_tasks_rs::specs::vtc::directory as d;
@@ -28,10 +33,10 @@ const NOTES_APPEND_ERR_NOTE_NOT_FOUND: &str =
     d::notes::append::v0_1::error_codes::NOTE_NOT_FOUND.code;
 const NOTES_APPEND_ERR_ALREADY_REDACTED: &str =
     d::notes::append::v0_1::error_codes::ALREADY_REDACTED.code;
-const NOTES_LIST_ERR_NOT_FOUND: &str = d::notes::list::v0_1::error_codes::NOT_FOUND.code;
-const NOTES_LIST_ERR_CURSOR_INVALID: &str = d::notes::list::v0_1::error_codes::CURSOR_INVALID.code;
+const NOTES_LIST_ERR_NOT_FOUND: &str = d::notes::list::v0_2::error_codes::NOT_FOUND.code;
+const NOTES_LIST_ERR_CURSOR_INVALID: &str = d::notes::list::v0_2::error_codes::CURSOR_INVALID.code;
 const NOTES_EXPORT_ERR_NOT_FOUND: &str = d::notes::export::v0_1::error_codes::NOT_FOUND.code;
-const EXPORT_ERR_CURSOR_INVALID: &str = d::export::v0_1::error_codes::CURSOR_INVALID.code;
+const EXPORT_ERR_CURSOR_INVALID: &str = d::export::v0_2::error_codes::CURSOR_INVALID.code;
 
 fn tt_error_code(body: &Value) -> &str {
     body["code"].as_str().unwrap_or_default()

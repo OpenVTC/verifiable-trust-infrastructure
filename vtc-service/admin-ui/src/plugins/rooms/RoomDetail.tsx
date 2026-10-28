@@ -1,5 +1,5 @@
 // One hosted room, as its host holds it (docs/05-design-notes/data-rooms-files.md
-// §8.1 "Room detail") — `vtc/rooms/get/0.2`, per-member usage and daily
+// §8.1 "Room detail") — `vtc/rooms/get/0.3`, per-member usage and daily
 // activity from `vtc/rooms/usage/0.1`, and limit overrides through
 // `vtc/rooms/limits/set/0.1`.
 //
@@ -22,7 +22,7 @@ import { ErrorOrParked } from "@/components/ParkedNotice";
 import { PageHeader } from "@/components/PageHeader";
 import { Tabs } from "@/components/Tabs";
 import type { ApiError } from "@/lib/api";
-import { formatEpoch, formatIso, shorten } from "@/lib/format";
+import { formatIso, shorten } from "@/lib/format";
 import { useNameBook } from "@/lib/names";
 import {
   MEMBER_USAGE_UNAVAILABLE,
@@ -179,14 +179,14 @@ function Identity({ data, name }: { data: RoomGetResponse; name: RoomName }) {
         <dt>Lifecycle</dt>
         <dd>
           <LifecyclePill value={r.lifecycle} /> epoch {r.epoch}
-          {r.epochExpiresAt ? `, expires ${formatEpoch(r.epochExpiresAt)}` : ""}
+          {r.epochExpiresAt ? `, expires ${formatIso(r.epochExpiresAt)}` : ""}
         </dd>
         <dt>Retention</dt>
         <dd>
           {r.retentionDays} days, {r.retentionPolicy === "chained" ? "history kept" : "from join"}
         </dd>
         <dt>Created</dt>
-        <dd>{formatEpoch(r.createdAt)}</dd>
+        <dd>{formatIso(r.createdAt)}</dd>
         {r.mirrorOf && (
           <>
             <dt>Copy of</dt>

@@ -12,7 +12,7 @@
 //     membership edge is complete. The graph already computes it, so reading it
 //     here keeps one definition of "complete" rather than a second one drifting
 //     alongside the first.
-//   - `relationships/list/0.2` for the relationship credentials naming this
+//   - `relationships/list/0.3` for the relationship credentials naming this
 //     member, bodies included.
 //
 // The membership credential, role VAC and member-issued VMC *bodies* come from

@@ -1058,7 +1058,7 @@ community's ACL or a session.
   neither its destination nor its reason. A file orphaned (no record names it) is
   never moved or counted, and one orphaned during the move leaves it, whether or
   not it had been moved yet. A copy that does not verify stops it `failed`, leaving
-  that file where it was. Progress is `vtc/rooms/get/0.2`'s `storage.migration`,
+  that file where it was. Progress is `vtc/rooms/get/0.3`'s `storage.migration`,
   which names the destination (it differs from `storage.configId` after a
   reassignment); each start, resume, completion, pause and failure is a
   `RoomStorageChanged` audit row naming the requester, the approvers, the room,
@@ -1204,7 +1204,7 @@ community's ACL or a session.
   room per UTC day (and one per member per room, on rooms that are not
   `private`) for 400 days: space held at the day's close, uploads, downloads
   begun and bytes served. A holder of `vtc.rooms.admin` reads them with
-  `vtc/rooms/usage/0.1` and one room in full with `vtc/rooms/get/0.1`, and
+  `vtc/rooms/usage/0.1` and one room in full with `vtc/rooms/get/0.3`, and
   overrides a room's limits, its members' default or one member's with
   `vtc/rooms/limits/set/0.1` (a reason is required and audited; it is not
   parked, since an allowance can be reversed and loses nothing, and a lower

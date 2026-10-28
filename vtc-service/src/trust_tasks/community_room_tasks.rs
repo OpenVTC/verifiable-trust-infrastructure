@@ -1,6 +1,6 @@
-//! Rooms the community itself owns — `vtc/rooms/community/{create,list,get}/{0.1,0.2}`,
-//! `vtc/rooms/community/update/0.1` and `vtc/rooms/community/members/{add,remove,list}/0.1`
-//! for its administrators, and `vtc/rooms/offers/list/{0.1,0.2}`,
+//! Rooms the community itself owns — `vtc/rooms/community/create/0.4`,
+//! `vtc/rooms/community/{list,get,update}/0.3`, `vtc/rooms/community/members/{add,list}/0.1`
+//! and `vtc/rooms/community/members/remove/0.2` for its administrators, and `vtc/rooms/offers/list/{0.1,0.2}`,
 //! `vtc/rooms/offers/accept/0.1` and `vtc/rooms/memberships/list/0.1` for its members
 //! (`docs/05-design-notes/data-rooms-files.md` §8.4; [`crate::rooms::community`]).
 //!
@@ -46,11 +46,8 @@ use trust_tasks_rs::specs::rooms::owner::{
 };
 use trust_tasks_rs::specs::vault::credentials::receive::v0_1 as vault_receive;
 use trust_tasks_rs::specs::vtc::rooms::community::{
-    create::v0_1 as create, create::v0_2 as create_v0_2, create::v0_3 as create_v0_3,
-    get::v0_1 as get, get::v0_2 as get_v0_2, list::v0_1 as list, list::v0_2 as list_v0_2,
-    members::add::v0_1 as add, members::list::v0_1 as members_list,
-    members::remove::v0_1 as remove, members::remove::v0_2 as remove_v0_2, update::v0_1 as update,
-    update::v0_2 as update_v0_2,
+    create::v0_4 as create, get::v0_3 as get, list::v0_3 as list, members::add::v0_1 as add,
+    members::list::v0_1 as members_list, members::remove::v0_2 as remove, update::v0_3 as update,
 };
 use trust_tasks_rs::specs::vtc::rooms::memberships::list::v0_1 as memberships_list;
 use trust_tasks_rs::specs::vtc::rooms::offers::{
@@ -73,20 +70,16 @@ use crate::rooms::community::{
 use crate::rooms::vta_access;
 use crate::server::AppState;
 
+/// 0.4: the room's description and tags, its profile written into it (0.3), and the host
+/// record's instants as RFC 3339 strings (`vtc/_shared/0.3/community-room`).
 pub(crate) const CREATE_TYPE: &str = <create::Payload as Payload>::TYPE_URI;
-pub(crate) const CREATE_V0_2_TYPE: &str = <create_v0_2::Payload as Payload>::TYPE_URI;
-pub(crate) const CREATE_V0_3_TYPE: &str = <create_v0_3::Payload as Payload>::TYPE_URI;
 pub(crate) const LIST_TYPE: &str = <list::Payload as Payload>::TYPE_URI;
-pub(crate) const LIST_V0_2_TYPE: &str = <list_v0_2::Payload as Payload>::TYPE_URI;
 pub(crate) const GET_TYPE: &str = <get::Payload as Payload>::TYPE_URI;
-pub(crate) const GET_V0_2_TYPE: &str = <get_v0_2::Payload as Payload>::TYPE_URI;
 pub(crate) const UPDATE_TYPE: &str = <update::Payload as Payload>::TYPE_URI;
-pub(crate) const UPDATE_V0_2_TYPE: &str = <update_v0_2::Payload as Payload>::TYPE_URI;
 pub(crate) const MEMBERS_ADD_TYPE: &str = <add::Payload as Payload>::TYPE_URI;
-pub(crate) const MEMBERS_REMOVE_TYPE: &str = <remove::Payload as Payload>::TYPE_URI;
 /// 0.2: on `open` and `attributed` rooms the member's credentials are withdrawn at the
 /// room's host too (trust-tasks-tf #804).
-pub(crate) const MEMBERS_REMOVE_V0_2_TYPE: &str = <remove_v0_2::Payload as Payload>::TYPE_URI;
+pub(crate) const MEMBERS_REMOVE_TYPE: &str = <remove::Payload as Payload>::TYPE_URI;
 
 /// The VTA's refusal when an earlier removal it was settling did not take effect
 /// (`rooms/owner/group/remove/0.3` item 8.2).
@@ -106,17 +99,11 @@ pub(crate) const MEMBERSHIPS_LIST_TYPE: &str = <memberships_list::Payload as Pay
 /// Every URI [`dispatch`] routes.
 pub(crate) const URIS: &[&str] = &[
     CREATE_TYPE,
-    CREATE_V0_2_TYPE,
-    CREATE_V0_3_TYPE,
     LIST_TYPE,
-    LIST_V0_2_TYPE,
     GET_TYPE,
-    GET_V0_2_TYPE,
     UPDATE_TYPE,
-    UPDATE_V0_2_TYPE,
     MEMBERS_ADD_TYPE,
     MEMBERS_REMOVE_TYPE,
-    MEMBERS_REMOVE_V0_2_TYPE,
     MEMBERS_LIST_TYPE,
     OFFERS_LIST_TYPE,
     OFFERS_LIST_V0_2_TYPE,
@@ -142,17 +129,6 @@ const MEMBERS_CURSOR: &str = "community-room-members:";
 const OFFERS_CURSOR: &str = "community-room-offers:";
 const MEMBERSHIPS_CURSOR: &str = "community-room-memberships:";
 
-use crate::rooms::departures::REMOVAL_NOTICE;
-
-/// Which `vtc/rooms/community/members/remove` is being answered.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum RemoveVersion {
-    /// The group alone, on a sealed tier; nothing withdrawn at the host.
-    V0_1,
-    /// Withdrawn at the host on `open` and `attributed`; the group too where sealed.
-    V0_2,
-}
-
 pub(super) async fn dispatch(
     state: &AppState,
     ctx: &JoinAuthCtx,
@@ -160,20 +136,12 @@ pub(super) async fn dispatch(
     type_uri: &str,
 ) -> Option<TrustTaskOutcome> {
     Some(match type_uri {
-        CREATE_TYPE => handle_create(state, ctx, doc, CreateAt::V0_1).await,
-        CREATE_V0_2_TYPE => handle_create(state, ctx, doc, CreateAt::V0_2).await,
-        CREATE_V0_3_TYPE => handle_create(state, ctx, doc, CreateAt::V0_3).await,
-        LIST_TYPE => handle_list(state, ctx, doc, Shape::V0_1).await,
-        LIST_V0_2_TYPE => handle_list(state, ctx, doc, Shape::V0_2).await,
-        GET_TYPE => handle_get(state, ctx, doc, Shape::V0_1).await,
-        GET_V0_2_TYPE => handle_get(state, ctx, doc, Shape::V0_2).await,
-        UPDATE_TYPE => handle_update(state, ctx, doc, false).await,
-        UPDATE_V0_2_TYPE => handle_update(state, ctx, doc, true).await,
+        CREATE_TYPE => handle_create(state, ctx, doc).await,
+        LIST_TYPE => handle_list(state, ctx, doc).await,
+        GET_TYPE => handle_get(state, ctx, doc).await,
+        UPDATE_TYPE => handle_update(state, ctx, doc).await,
         MEMBERS_ADD_TYPE => handle_members_add(state, ctx, doc).await,
-        MEMBERS_REMOVE_TYPE => handle_members_remove(state, ctx, doc, RemoveVersion::V0_1).await,
-        MEMBERS_REMOVE_V0_2_TYPE => {
-            handle_members_remove(state, ctx, doc, RemoveVersion::V0_2).await
-        }
+        MEMBERS_REMOVE_TYPE => handle_members_remove(state, ctx, doc).await,
         MEMBERS_LIST_TYPE => handle_members_list(state, ctx, doc).await,
         OFFERS_LIST_TYPE => handle_offers_list(state, ctx, doc, OffersShape::V0_1).await,
         OFFERS_LIST_V0_2_TYPE => handle_offers_list(state, ctx, doc, OffersShape::V0_2).await,
@@ -185,15 +153,6 @@ pub(super) async fn dispatch(
 }
 
 // ─── shared ──────────────────────────────────────────────────────────────
-
-/// Which published shape a read or create answers in. `0.1` keeps exactly the shape it
-/// published (`CommunityRoom`, `Offer`); `0.2` adds the details administrators keep a room
-/// by (`CommunityRoomV2`, `OfferV2`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Shape {
-    V0_1,
-    V0_2,
-}
 
 /// The version of `vtc/rooms/offers/list` being answered: 0.2 adds each room's
 /// description, 0.3 the renewals of the admissions the member holds.
@@ -359,13 +318,10 @@ async fn owned(
     }
 }
 
-/// The `CommunityRoom` of `vtc/_shared/0.1/community-room` — or, at 0.2, its
-/// `CommunityRoomV2`, which adds the room's description, tags and who last changed them.
-async fn community_room(
-    state: &AppState,
-    room: &OwnedRoom,
-    shape: Shape,
-) -> Result<Value, AppError> {
+/// The `CommunityRoomV2` of `vtc/_shared/0.3/community-room`: the room as its host
+/// records it (instants as RFC 3339 strings), its label, description and tags, and who
+/// last changed them.
+async fn community_room(state: &AppState, room: &OwnedRoom) -> Result<Value, AppError> {
     let hosted = crate::routes::rooms::hosted_room(state, &room.room_id).await?;
     let (admitted, offered) = state.community_rooms.counts(&room.room_id).await?;
     let config = match state.room_storage.assignment(&room.room_id).await? {
@@ -383,18 +339,16 @@ async fn community_room(
     if let Some(c) = config.filter(|c| !c.is_empty()) {
         v["storageConfig"] = json!(c);
     }
-    if shape == Shape::V0_2 {
-        if let Some(d) = &room.description {
-            v["description"] = json!(d);
-        }
-        if !room.tags.is_empty() {
-            v["tags"] = json!(room.tags);
-        }
-        // Present together or not at all (`CommunityRoomV2`).
-        if let (Some(at), Some(by)) = (&room.details_updated_at, &room.details_updated_by) {
-            v["detailsUpdatedAt"] = json!(at);
-            v["detailsUpdatedBy"] = json!(by);
-        }
+    if let Some(d) = &room.description {
+        v["description"] = json!(d);
+    }
+    if !room.tags.is_empty() {
+        v["tags"] = json!(room.tags);
+    }
+    // Present together or not at all (`CommunityRoomV2`).
+    if let (Some(at), Some(by)) = (&room.details_updated_at, &room.details_updated_by) {
+        v["detailsUpdatedAt"] = json!(at);
+        v["detailsUpdatedBy"] = json!(by);
     }
     Ok(v)
 }
@@ -579,7 +533,7 @@ enum CreateFailure {
     Local(AppError),
 }
 
-/// A create, read from whichever version was sent. 0.1 carries no description or tags.
+/// A create, read from its payload.
 struct CreateRequest {
     label: String,
     description: Option<String>,
@@ -595,8 +549,8 @@ impl From<create::Payload> for CreateRequest {
     fn from(p: create::Payload) -> Self {
         Self {
             label: p.label.to_string(),
-            description: None,
-            tags: Vec::new(),
+            description: p.description.map(|d| d.to_string()),
+            tags: tag_set(p.tags.into_iter().flat_map(|t| t.0).map(|t| t.to_string())),
             visibility: p.visibility.to_string(),
             from_join: matches!(p.retention_policy, Some(create::RetentionPolicy::FromJoin)),
             retention_days: p.retention_days,
@@ -606,73 +560,18 @@ impl From<create::Payload> for CreateRequest {
     }
 }
 
-impl From<create_v0_2::Payload> for CreateRequest {
-    fn from(p: create_v0_2::Payload) -> Self {
-        Self {
-            label: p.label.to_string(),
-            description: p.description.map(|d| d.to_string()),
-            tags: tag_set(p.tags.into_iter().flat_map(|t| t.0).map(|t| t.to_string())),
-            visibility: p.visibility.to_string(),
-            from_join: matches!(
-                p.retention_policy,
-                Some(create_v0_2::RetentionPolicy::FromJoin)
-            ),
-            retention_days: p.retention_days,
-            storage_config: p.storage_config.map(|s| s.to_string()),
-            reason: p.reason.to_string(),
-        }
-    }
-}
-
-impl From<create_v0_3::Payload> for CreateRequest {
-    fn from(p: create_v0_3::Payload) -> Self {
-        Self {
-            label: p.label.to_string(),
-            description: p.description.map(|d| d.to_string()),
-            tags: tag_set(p.tags.into_iter().flat_map(|t| t.0).map(|t| t.to_string())),
-            visibility: p.visibility.to_string(),
-            from_join: matches!(
-                p.retention_policy,
-                Some(create_v0_3::RetentionPolicy::FromJoin)
-            ),
-            retention_days: p.retention_days,
-            storage_config: p.storage_config.map(|s| s.to_string()),
-            reason: p.reason.to_string(),
-        }
-    }
-}
-
-/// Which `vtc/rooms/community/create` is answered. 0.2 and 0.3 answer the same room shape;
-/// 0.3 also has the community's VTA write the label and description into the room as its
-/// profile (step 5) and says how that went (`roomProfile`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum CreateAt {
-    V0_1,
-    V0_2,
-    V0_3,
-}
-
+/// `vtc/rooms/community/create/0.4`.
 async fn handle_create(
     state: &AppState,
     ctx: &JoinAuthCtx,
     doc: TrustTask<Value>,
-    version: CreateAt,
 ) -> TrustTaskOutcome {
-    let shape = match version {
-        CreateAt::V0_1 => Shape::V0_1,
-        CreateAt::V0_2 | CreateAt::V0_3 => Shape::V0_2,
-    };
     use crate::rooms::community::codes as c;
     let actor = match capable_signer(state, ctx, &doc, Capability::RoomsManage, None).await {
         Ok(a) => a,
         Err(reject) => return reject,
     };
-    let parsed = match version {
-        CreateAt::V0_1 => parse_spec_payload::<create::Payload>(&doc).map(CreateRequest::from),
-        CreateAt::V0_2 => parse_spec_payload::<create_v0_2::Payload>(&doc).map(CreateRequest::from),
-        CreateAt::V0_3 => parse_spec_payload::<create_v0_3::Payload>(&doc).map(CreateRequest::from),
-    };
-    let checked = match parsed {
+    let checked = match parse_spec_payload::<create::Payload>(&doc).map(CreateRequest::from) {
         Ok(p) => p,
         Err(reject) => return reject,
     };
@@ -851,27 +750,17 @@ async fn handle_create(
     audit(state, &actor.did, row).await;
     tracing::info!(room = %room_id, by = %actor.did, "community room created");
 
-    // 0.3 step 5, after the room is stored: the label and description go to the community's
+    // Step 5, after the room is stored: the label and description go to the community's
     // own VTA, which seals them into the room as its profile. Never the request's to fail
     // (item 9): `pending` is retried by the profile sweeper.
-    let room_profile = match version {
-        CreateAt::V0_3 => Some(
-            crate::rooms::community_profile::write_now(state, &owned, now())
-                .await
-                .as_str(),
-        ),
-        _ => None,
-    };
+    let room_profile = crate::rooms::community_profile::write_now(state, &owned, now())
+        .await
+        .as_str();
 
-    match community_room(state, &owned, shape).await {
-        Ok(room) => match version {
-            CreateAt::V0_1 => respond::<create::Response>(&doc, json!({ "room": room })),
-            CreateAt::V0_2 => respond::<create_v0_2::Response>(&doc, json!({ "room": room })),
-            CreateAt::V0_3 => respond::<create_v0_3::Response>(
-                &doc,
-                json!({ "room": room, "roomProfile": room_profile }),
-            ),
-        },
+    match community_room(state, &owned).await {
+        Ok(room) => {
+            respond::<create::Response>(&doc, json!({ "room": room, "roomProfile": room_profile }))
+        }
         Err(e) => app_error_to_reject(&doc, &e),
     }
 }
@@ -1043,29 +932,23 @@ async fn handle_list(
     state: &AppState,
     ctx: &JoinAuthCtx,
     doc: TrustTask<Value>,
-    shape: Shape,
 ) -> TrustTaskOutcome {
     if let Err(reject) = capable_signer(state, ctx, &doc, Capability::RoomsManage, None).await {
         return reject;
     }
-    // `(cursor, limit, tag)`; 0.1 has no `tag`.
-    let parsed = match shape {
-        Shape::V0_1 => parse_spec_payload::<list::Payload>(&doc)
-            .map(|p| (p.cursor.map(|c| c.to_string()), p.limit, None)),
-        Shape::V0_2 => parse_spec_payload::<list_v0_2::Payload>(&doc).map(|p| {
-            (
-                p.cursor.map(|c| c.to_string()),
-                p.limit,
-                p.tag.map(|t| t.to_string()),
-            )
-        }),
-    };
+    let parsed = parse_spec_payload::<list::Payload>(&doc).map(|p| {
+        (
+            p.cursor.map(|c| c.to_string()),
+            p.limit,
+            p.tag.map(|t| t.to_string()),
+        )
+    });
     let (cursor, limit, tag) = match parsed {
         Ok(p) => p,
         Err(reject) => return reject,
     };
     let rooms = match state.community_rooms.rooms().await {
-        // 0.2 item 4: only the rooms carrying `tag`, exact strings, paged within the filter.
+        // Item 4: only the rooms carrying `tag`, exact strings, paged within the filter.
         Ok(r) => r
             .into_iter()
             .filter(|r| tag.as_ref().is_none_or(|t| r.tags.contains(t)))
@@ -1086,7 +969,7 @@ async fn handle_list(
     let listed: Vec<String> = rooms.iter().map(|r| r.room_id.clone()).collect();
     let mut items = Vec::with_capacity(rooms.len());
     for room in &rooms {
-        match community_room(state, room, shape).await {
+        match community_room(state, room).await {
             Ok(v) => items.push(v),
             Err(e) => return app_error_to_reject(&doc, &e),
         }
@@ -1132,27 +1015,19 @@ async fn handle_list(
         Ok(profiles) => body["ext"]["org.openvtc"]["roomProfile"] = profiles,
         Err(e) => return app_error_to_reject(&doc, &e),
     }
-    match shape {
-        Shape::V0_1 => respond::<list::Response>(&doc, body),
-        Shape::V0_2 => respond::<list_v0_2::Response>(&doc, body),
-    }
+    respond::<list::Response>(&doc, body)
 }
 
 async fn handle_get(
     state: &AppState,
     ctx: &JoinAuthCtx,
     doc: TrustTask<Value>,
-    shape: Shape,
 ) -> TrustTaskOutcome {
     use crate::rooms::community::codes as c;
     if let Err(reject) = capable_signer(state, ctx, &doc, Capability::RoomsManage, None).await {
         return reject;
     }
-    let parsed = match shape {
-        Shape::V0_1 => parse_spec_payload::<get::Payload>(&doc).map(|p| p.room_id.to_string()),
-        Shape::V0_2 => parse_spec_payload::<get_v0_2::Payload>(&doc).map(|p| p.room_id.to_string()),
-    };
-    let room_id = match parsed {
+    let room_id = match parse_spec_payload::<get::Payload>(&doc).map(|p| p.room_id.to_string()) {
         Ok(r) => r,
         Err(reject) => return reject,
     };
@@ -1160,7 +1035,7 @@ async fn handle_get(
         Ok(r) => r,
         Err(reject) => return reject,
     };
-    let mut body = match community_room(state, &room, shape).await {
+    let mut body = match community_room(state, &room).await {
         Ok(room) => json!({ "room": room }),
         Err(e) => return app_error_to_reject(&doc, &e),
     };
@@ -1180,15 +1055,12 @@ async fn handle_get(
         Ok(None) => {}
         Err(e) => return app_error_to_reject(&doc, &e),
     }
-    match shape {
-        Shape::V0_1 => respond::<get::Response>(&doc, body),
-        Shape::V0_2 => respond::<get_v0_2::Response>(&doc, body),
-    }
+    respond::<get::Response>(&doc, body)
 }
 
 // ─── vtc/rooms/community/update ──────────────────────────────────────────
 
-/// `vtc/rooms/community/update/0.1` — an administrator renames a room the community owns,
+/// `vtc/rooms/community/update/0.3` — an administrator renames a room the community owns,
 /// or changes its description or tags.
 ///
 /// No operation-bound step-up and no parking: it reaches no key holder, confers nothing
@@ -1204,7 +1076,6 @@ async fn handle_update(
     state: &AppState,
     ctx: &JoinAuthCtx,
     doc: TrustTask<Value>,
-    writes_profile: bool,
 ) -> TrustTaskOutcome {
     use crate::rooms::community::codes as c;
     // Item 1.
@@ -1212,32 +1083,17 @@ async fn handle_update(
         Ok(a) => a,
         Err(reject) => return reject,
     };
-    // 0.1 and 0.2 carry the same request; 0.2 also writes the room's profile (items 10-12).
-    let parsed = if writes_profile {
-        parse_spec_payload::<update_v0_2::Payload>(&doc).map(|p| {
-            (
-                p.room_id.to_string(),
-                p.label.map(|l| l.to_string()),
-                p.description.map(|d| d.to_string()),
-                p.remove_description == Some(true),
-                p.tags
-                    .map(|t| tag_set(t.0.into_iter().map(|t| t.to_string()))),
-                p.reason.to_string(),
-            )
-        })
-    } else {
-        parse_spec_payload::<update::Payload>(&doc).map(|p| {
-            (
-                p.room_id.to_string(),
-                p.label.map(|l| l.to_string()),
-                p.description.map(|d| d.to_string()),
-                p.remove_description == Some(true),
-                p.tags
-                    .map(|t| tag_set(t.0.into_iter().map(|t| t.to_string()))),
-                p.reason.to_string(),
-            )
-        })
-    };
+    let parsed = parse_spec_payload::<update::Payload>(&doc).map(|p| {
+        (
+            p.room_id.to_string(),
+            p.label.map(|l| l.to_string()),
+            p.description.map(|d| d.to_string()),
+            p.remove_description == Some(true),
+            p.tags
+                .map(|t| tag_set(t.0.into_iter().map(|t| t.to_string()))),
+            p.reason.to_string(),
+        )
+    });
     let (room_id, new_label, new_description, remove_description, new_tags, reason) = match parsed {
         Ok(p) => p,
         Err(reject) => return reject,
@@ -1316,38 +1172,30 @@ async fn handle_update(
         tracing::info!(room = %room_id, by = %actor.did, "community room details changed");
     }
 
-    // 0.2 items 10 and 11: write the profile when the label or description changed, or
-    // when the community has never written it (a room made before create 0.3) or an
-    // earlier write is still pending; `unchanged` when nothing asked for a write. A failure
-    // is `pending`, never a failed update.
-    let room_profile = if writes_profile {
+    // Items 10 and 11: write the profile when the label or description changed, or when
+    // the community has never written it (a room made before create 0.3) or an earlier
+    // write is still pending; `unchanged` when nothing asked for a write. A failure is
+    // `pending`, never a failed update.
+    let room_profile =
         match crate::rooms::community_profile::update_needs_write(state, &room_id, profile_changed)
             .await
         {
-            Ok(true) => Some(
-                crate::rooms::community_profile::write_now(state, &room, now())
-                    .await
-                    .as_str(),
-            ),
-            Ok(false) => Some("unchanged"),
+            Ok(true) => crate::rooms::community_profile::write_now(state, &room, now())
+                .await
+                .as_str(),
+            Ok(false) => "unchanged",
             Err(e) => {
                 tracing::warn!(room = %room_id, error = %e,
                     "could not read a community room's profile state; answering pending");
-                Some("pending")
+                "pending"
             }
-        }
-    } else {
-        None
-    };
+        };
 
-    match community_room(state, &room, Shape::V0_2).await {
-        Ok(v) => match room_profile {
-            None => respond::<update::Response>(&doc, json!({ "room": v, "changed": changed })),
-            Some(p) => respond::<update_v0_2::Response>(
-                &doc,
-                json!({ "room": v, "changed": changed, "roomProfile": p }),
-            ),
-        },
+    match community_room(state, &room).await {
+        Ok(v) => respond::<update::Response>(
+            &doc,
+            json!({ "room": v, "changed": changed, "roomProfile": room_profile }),
+        ),
         Err(e) => app_error_to_reject(&doc, &e),
     }
 }
@@ -1550,11 +1398,11 @@ pub(crate) async fn issue_renewal(
     Ok((membership, authority))
 }
 
+/// `vtc/rooms/community/members/remove/0.2`.
 async fn handle_members_remove(
     state: &AppState,
     ctx: &JoinAuthCtx,
     doc: TrustTask<Value>,
-    version: RemoveVersion,
 ) -> TrustTaskOutcome {
     use crate::rooms::community::codes as c;
     let actor = match capable_signer(state, ctx, &doc, Capability::RoomsManage, None).await {
@@ -1598,19 +1446,14 @@ async fn handle_members_remove(
         return reject;
     }
 
-    // Item 2. At 0.1 an admitted member of a sealed room leaves the group and the room
-    // advances. At 0.2 (trust-tasks-tf #804) the member is withdrawn at the host too on
-    // `open` and `attributed` rooms, and an open offer's credentials with them
-    // ([`crate::rooms::departures::remove_member`]). Either way, before anything is
-    // recorded here.
+    // Item 2: an admitted member of a sealed room leaves the group and the room advances,
+    // and (trust-tasks-tf #804) the member is withdrawn at the host too on `open` and
+    // `attributed` rooms, and an open offer's credentials with them
+    // ([`crate::rooms::departures::remove_member`]) — before anything is recorded here.
     let withdrawn = record.state == MemberRecord::OFFERED;
     let mut epoch = None;
     let mut revocation: Option<(Value, String)> = None;
-    let asks_vta = match version {
-        RemoveVersion::V0_1 => !withdrawn && sealed(&room),
-        RemoveVersion::V0_2 => !(withdrawn && room.visibility == "private"),
-    };
-    if asks_vta {
+    if !(withdrawn && room.visibility == "private") {
         let Some(holder) = state.community_rooms.key_holder() else {
             return refuse(
                 &doc,
@@ -1626,31 +1469,15 @@ async fn handle_members_remove(
             .vtc_did
             .clone()
             .unwrap_or_default();
-        let outcome = match version {
-            RemoveVersion::V0_1 => crate::rooms::departures::remove_from_group(
-                &holder,
-                &room_id,
-                &community_did,
-                &member,
-                &reason,
-            )
-            .await
-            .map(|epoch| crate::rooms::departures::Removed {
-                epoch,
-                revocation: None,
-            }),
-            RemoveVersion::V0_2 => {
-                crate::rooms::departures::remove_member(
-                    &holder,
-                    &room,
-                    &community_did,
-                    &member,
-                    withdrawn,
-                    &reason,
-                )
-                .await
-            }
-        };
+        let outcome = crate::rooms::departures::remove_member(
+            &holder,
+            &room,
+            &community_did,
+            &member,
+            withdrawn,
+            &reason,
+        )
+        .await;
         match outcome {
             Ok(r) => {
                 epoch = r.epoch;
@@ -1710,10 +1537,7 @@ async fn handle_members_remove(
         },
         &room,
     );
-    let notice = match version {
-        RemoveVersion::V0_1 => REMOVAL_NOTICE,
-        RemoveVersion::V0_2 => crate::rooms::departures::removal_notice(revocation.is_some()),
-    };
+    let notice = crate::rooms::departures::removal_notice(revocation.is_some());
     row.member = Some(member);
     row.epoch = epoch;
     row.reason = Some(reason);
@@ -1722,7 +1546,7 @@ async fn handle_members_remove(
     }
     audit(state, &actor.did, row).await;
 
-    // Item 4: the structured members say what removal did — at 0.2 `revocation` and
+    // Item 4: the structured members say what removal did — `revocation` and
     // `revokedAt` where the host refuses the member's credentials from then on; the notice
     // beside them in `ext` is a courtesy a caller must not depend on (#796).
     let mut body = json!({
@@ -1736,10 +1560,7 @@ async fn handle_members_remove(
     if let Some(e) = epoch.filter(|e| *e >= 2 && !withdrawn) {
         body["epoch"] = json!(e);
     }
-    match version {
-        RemoveVersion::V0_1 => respond::<remove::Response>(&doc, body),
-        RemoveVersion::V0_2 => respond::<remove_v0_2::Response>(&doc, body),
-    }
+    respond::<remove::Response>(&doc, body)
 }
 
 async fn handle_members_list(

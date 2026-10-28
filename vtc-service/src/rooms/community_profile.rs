@@ -1,6 +1,6 @@
 //! The profile of every room the community owns — its label and description, written
 //! **into the room** by the community's VTA, so the room's members can read what the room
-//! is (`vtc/rooms/community/create/0.3` step 5, `vtc/rooms/community/update/0.2` items
+//! is (`vtc/rooms/community/create/0.4` step 5, `vtc/rooms/community/update/0.3` items
 //! 10–12, `rooms/keys/profile/write/0.1`).
 //!
 //! # What goes where

@@ -192,16 +192,10 @@ spec_types! {
     JoinManifest04RequestedAttribute(manifest::v0_4::ResponseRequestedAttributesItem)
         in manifest::v0_4::Response
         as "RequestedAttribute@/$defs/Response/properties/requestedAttributes/items";
-    /// `vtc/registry/sync-jobs/list/0.1` payload.
-    RegistrySyncJobsList01Payload(sync_jobs::list::v0_1::Payload);
-    /// `vtc/registry/sync-jobs/list/0.1#response`.
-    RegistrySyncJobsList01Response(sync_jobs::list::v0_1::Response);
-    /// `vtc/registry/sync-jobs/retry/0.1` payload. An untagged enum: exactly one
-    /// of `jobId` or `allFailed`, which is what stops a dropped identifier
-    /// becoming a bulk retry.
-    RegistrySyncJobsRetry01Payload(sync_jobs::retry::v0_1::Payload);
-    /// `vtc/registry/sync-jobs/retry/0.1#response`.
-    RegistrySyncJobsRetry01Response(sync_jobs::retry::v0_1::Response);
+    /// `vtc/registry/sync-jobs/list/0.2` payload.
+    RegistrySyncJobsList02Payload(sync_jobs::list::v0_2::Payload);
+    /// `vtc/registry/sync-jobs/list/0.2#response`.
+    RegistrySyncJobsList02Response(sync_jobs::list::v0_2::Response);
     /// `vtc/registry/sync-jobs/retry/0.2` payload: exactly one of `jobId`,
     /// `allFailed` or `allWaiting`; a pending job waiting out its backoff is
     /// eligible, a held one never.
@@ -212,19 +206,17 @@ spec_types! {
     RegistrySyncJobsDiscard01Payload(sync_jobs::discard::v0_1::Payload);
     /// `vtc/registry/sync-jobs/discard/0.1#response`.
     RegistrySyncJobsDiscard01Response(sync_jobs::discard::v0_1::Response);
-    /// `vtc/registry/records/list/0.1` payload.
-    RegistryRecordsList01Payload(records::list::v0_1::Payload);
-    /// `vtc/registry/records/list/0.1#response`.
-    RegistryRecordsList01Response(records::list::v0_1::Response);
+    /// `vtc/registry/records/list/0.2` payload.
+    RegistryRecordsList02Payload(records::list::v0_2::Payload);
+    /// `vtc/registry/records/list/0.2#response`.
+    RegistryRecordsList02Response(records::list::v0_2::Response);
     /// `vtc/members/credentials/0.1#response` — the membership pair's bodies
     /// for one member, plus whether the acknowledgement is bound to the grant.
     MemberCredentials01Response(member_credentials::v0_1::Response);
-    /// `vtc/rooms/get/0.1#response` — one hosted room's host record, storage
-    /// placement, limits and usage.
-    RoomsGet01Response(rooms_get::v0_1::Response);
-    /// `vtc/rooms/get/0.2#response` — as 0.1, with the room's migration as
-    /// `vtc/rooms/storage/migrate/0.2` reports it (its target, `queued`, why paused).
-    RoomsGet02Response(rooms_get::v0_2::Response);
+    /// `vtc/rooms/get/0.3#response` — one hosted room's host record (instants as
+    /// RFC 3339 strings), storage placement, limits and usage, with the room's
+    /// migration as `vtc/rooms/storage/migrate/0.2` reports it.
+    RoomsGet03Response(rooms_get::v0_3::Response);
     /// `vtc/rooms/usage/0.1` payload — grouping, filter, sort and page.
     RoomsUsage01Payload(rooms_usage::v0_1::Payload);
     /// `vtc/rooms/usage/0.1#response` — one page of usage rows.
@@ -247,60 +239,34 @@ spec_types! {
     /// `vtc/rooms/storage/migrate/0.2#response` — the migration, its progress, and
     /// why and until when it is paused or waiting.
     RoomsStorageMigrate02Response(rooms_storage_migrate::v0_2::Response);
-    /// `vtc/rooms/community/create/0.1` payload — a room the community itself
-    /// owns: its label, tier, retention and the reason recorded with it.
-    RoomsCommunityCreate01Payload(rooms_community::create::v0_1::Payload);
-    /// `vtc/rooms/community/create/0.1#response` — the room as the community
-    /// owns it.
-    RoomsCommunityCreate01Response(rooms_community::create::v0_1::Response);
-    /// `vtc/rooms/community/list/0.1#response` — one page of the rooms the
-    /// community owns.
-    RoomsCommunityList01Response(rooms_community::list::v0_1::Response);
-    /// `vtc/rooms/community/get/0.1#response` — one room the community owns.
-    RoomsCommunityGet01Response(rooms_community::get::v0_1::Response);
-    /// `vtc/rooms/community/create/0.2` payload — as 0.1, plus the room's
-    /// description and tags.
-    RoomsCommunityCreate02Payload(rooms_community::create::v0_2::Payload);
-    /// `vtc/rooms/community/create/0.2#response` — the room as the community
-    /// owns it, with its details.
-    RoomsCommunityCreate02Response(rooms_community::create::v0_2::Response);
-    /// `vtc/rooms/community/list/0.2` payload — a page, optionally only the
-    /// rooms carrying one tag.
-    RoomsCommunityList02Payload(rooms_community::list::v0_2::Payload);
-    /// `vtc/rooms/community/list/0.2#response` — one page of the rooms the
+    /// `vtc/rooms/community/create/0.4` payload — a room the community itself
+    /// owns: its label, description, tags, tier, retention and the reason recorded
+    /// with it.
+    RoomsCommunityCreate04Payload(rooms_community::create::v0_4::Payload);
+    /// `vtc/rooms/community/create/0.4#response` — the room as the community owns
+    /// it, with its details, and whether its profile was written (`roomProfile`).
+    RoomsCommunityCreate04Response(rooms_community::create::v0_4::Response);
+    /// `vtc/rooms/community/list/0.3` payload — a page, optionally only the rooms
+    /// carrying one tag.
+    RoomsCommunityList03Payload(rooms_community::list::v0_3::Payload);
+    /// `vtc/rooms/community/list/0.3#response` — one page of the rooms the
     /// community owns, with their details.
-    RoomsCommunityList02Response(rooms_community::list::v0_2::Response);
-    /// `vtc/rooms/community/get/0.2#response` — one room the community owns,
-    /// with its details.
-    RoomsCommunityGet02Response(rooms_community::get::v0_2::Response);
-    /// `vtc/rooms/community/update/0.1` payload — a room's new label,
-    /// description or tags, and the reason recorded with them.
-    RoomsCommunityUpdate01Payload(rooms_community::update::v0_1::Payload);
-    /// `vtc/rooms/community/update/0.1#response` — the room as it now stands,
-    /// and whether the request changed it.
-    RoomsCommunityUpdate01Response(rooms_community::update::v0_1::Response);
-    /// `vtc/rooms/community/create/0.3` payload — as 0.2; the label and
-    /// description are also written into the room as its profile.
-    RoomsCommunityCreate03Payload(rooms_community::create::v0_3::Payload);
-    /// `vtc/rooms/community/create/0.3#response` — the room, and whether its
-    /// profile was written (`roomProfile`).
-    RoomsCommunityCreate03Response(rooms_community::create::v0_3::Response);
-    /// `vtc/rooms/community/update/0.2` payload — as 0.1; a new label or
-    /// description is also written into the room as its profile.
-    RoomsCommunityUpdate02Payload(rooms_community::update::v0_2::Payload);
-    /// `vtc/rooms/community/update/0.2#response` — the room, whether the
-    /// request changed it, and its profile's state (`roomProfile`).
-    RoomsCommunityUpdate02Response(rooms_community::update::v0_2::Response);
+    RoomsCommunityList03Response(rooms_community::list::v0_3::Response);
+    /// `vtc/rooms/community/get/0.3#response` — one room the community owns, with
+    /// its details.
+    RoomsCommunityGet03Response(rooms_community::get::v0_3::Response);
+    /// `vtc/rooms/community/update/0.3` payload — a room's new label, description
+    /// or tags, and the reason recorded with them; a new label or description is
+    /// also written into the room as its profile.
+    RoomsCommunityUpdate03Payload(rooms_community::update::v0_3::Payload);
+    /// `vtc/rooms/community/update/0.3#response` — the room, whether the request
+    /// changed it, and its profile's state (`roomProfile`).
+    RoomsCommunityUpdate03Response(rooms_community::update::v0_3::Response);
     /// `vtc/rooms/community/members/add/0.1` payload — admit an active member
     /// with actions, an expiry and a reason.
     RoomsCommunityMembersAdd01Payload(rooms_community::members::add::v0_1::Payload);
     /// `vtc/rooms/community/members/add/0.1#response` — the member's record.
     RoomsCommunityMembersAdd01Response(rooms_community::members::add::v0_1::Response);
-    /// `vtc/rooms/community/members/remove/0.1` payload.
-    RoomsCommunityMembersRemove01Payload(rooms_community::members::remove::v0_1::Payload);
-    /// `vtc/rooms/community/members/remove/0.1#response` — the member's record,
-    /// and on a sealed tier the first epoch sealed without them.
-    RoomsCommunityMembersRemove01Response(rooms_community::members::remove::v0_1::Response);
     /// `vtc/rooms/community/members/remove/0.2` payload.
     RoomsCommunityMembersRemove02Payload(rooms_community::members::remove::v0_2::Payload);
     /// `vtc/rooms/community/members/remove/0.2#response` — the member's record; on
@@ -327,10 +293,10 @@ spec_types! {
     DirectoryCardAssert01Payload(directory::card::assert::v0_1::Payload);
     /// `vtc/directory/card/assert/0.1#response` — which fields were written.
     DirectoryCardAssert01Response(directory::card::assert::v0_1::Response);
-    /// `vtc/directory/entries/list/0.1` payload — browse, search and filter.
-    DirectoryEntriesList01Payload(directory::entries::list::v0_1::Payload);
-    /// `vtc/directory/entries/list/0.1#response` — one page of projected entries and facets.
-    DirectoryEntriesList01Response(directory::entries::list::v0_1::Response);
+    /// `vtc/directory/entries/list/0.2` payload — browse, search and filter.
+    DirectoryEntriesList02Payload(directory::entries::list::v0_2::Payload);
+    /// `vtc/directory/entries/list/0.2#response` — one page of projected entries and facets.
+    DirectoryEntriesList02Response(directory::entries::list::v0_2::Response);
     /// `vtc/directory/entries/show/0.1` payload — by entry or, for administrators, by DID.
     DirectoryEntriesShow01Payload(directory::entries::show::v0_1::Payload);
     /// `vtc/directory/entries/show/0.1#response` — one projected entry.
@@ -376,10 +342,10 @@ spec_types! {
     GroupsDelete01Payload(groups::delete::v0_1::Payload);
     /// `vtc/groups/delete/0.1#response` — whether the group is gone.
     GroupsDelete01Response(groups::delete::v0_1::Response);
-    /// `vtc/groups/list/0.1` payload — which groups to list.
-    GroupsList01Payload(groups::list::v0_1::Payload);
-    /// `vtc/groups/list/0.1#response` — the groups the caller may see.
-    GroupsList01Response(groups::list::v0_1::Response);
+    /// `vtc/groups/list/0.2` payload — which groups to list.
+    GroupsList02Payload(groups::list::v0_2::Payload);
+    /// `vtc/groups/list/0.2#response` — the groups the caller may see.
+    GroupsList02Response(groups::list::v0_2::Response);
     /// `vtc/groups/show/0.1` payload — one group.
     GroupsShow01Payload(groups::show::v0_1::Payload);
     /// `vtc/groups/show/0.1#response` — the group as the caller may see it.
@@ -392,10 +358,10 @@ spec_types! {
     GroupsMembersRemove01Payload(groups::members::remove::v0_1::Payload);
     /// `vtc/groups/members/remove/0.1#response` — the membership ended.
     GroupsMembersRemove01Response(groups::members::remove::v0_1::Response);
-    /// `vtc/groups/members/list/0.1` payload — one group's members.
-    GroupsMembersList01Payload(groups::members::list::v0_1::Payload);
-    /// `vtc/groups/members/list/0.1#response` — the members the caller may see.
-    GroupsMembersList01Response(groups::members::list::v0_1::Response);
+    /// `vtc/groups/members/list/0.2` payload — one group's members.
+    GroupsMembersList02Payload(groups::members::list::v0_2::Payload);
+    /// `vtc/groups/members/list/0.2#response` — the members the caller may see.
+    GroupsMembersList02Response(groups::members::list::v0_2::Response);
     /// `vtc/groups/join/0.1` payload — joining or asking to.
     GroupsJoin01Payload(groups::join::v0_1::Payload);
     /// `vtc/groups/join/0.1#response` — what came of it.
@@ -404,10 +370,10 @@ spec_types! {
     GroupsLeave01Payload(groups::leave::v0_1::Payload);
     /// `vtc/groups/leave/0.1#response` — what came of it.
     GroupsLeave01Response(groups::leave::v0_1::Response);
-    /// `vtc/groups/requests/list/0.1` payload — requests to the caller's groups.
-    GroupsRequestsList01Payload(groups::requests::list::v0_1::Payload);
-    /// `vtc/groups/requests/list/0.1#response` — the requests.
-    GroupsRequestsList01Response(groups::requests::list::v0_1::Response);
+    /// `vtc/groups/requests/list/0.2` payload — requests to the caller's groups.
+    GroupsRequestsList02Payload(groups::requests::list::v0_2::Payload);
+    /// `vtc/groups/requests/list/0.2#response` — the requests.
+    GroupsRequestsList02Response(groups::requests::list::v0_2::Response);
     /// `vtc/groups/requests/decide/0.1` payload — a decision on a request.
     GroupsRequestsDecide01Payload(groups::requests::decide::v0_1::Payload);
     /// `vtc/groups/requests/decide/0.1#response` — the request, and the membership it made.
@@ -445,27 +411,23 @@ spec_types! {
     DirectoryNotesAppend01Payload(directory::notes::append::v0_1::Payload);
     /// `vtc/directory/notes/append/0.1#response` — the note as stored.
     DirectoryNotesAppend01Response(directory::notes::append::v0_1::Response);
-    /// `vtc/directory/notes/list/0.1` payload — one member's notes, a page at a time.
-    DirectoryNotesList01Payload(directory::notes::list::v0_1::Payload);
-    /// `vtc/directory/notes/list/0.1#response` — notes newest first, redacted text withheld.
-    DirectoryNotesList01Response(directory::notes::list::v0_1::Response);
+    /// `vtc/directory/notes/list/0.2` payload — one member's notes, a page at a time.
+    DirectoryNotesList02Payload(directory::notes::list::v0_2::Payload);
+    /// `vtc/directory/notes/list/0.2#response` — notes newest first, redacted text withheld.
+    DirectoryNotesList02Response(directory::notes::list::v0_2::Response);
     /// `vtc/directory/notes/export/0.1` payload — one member's notes, and why.
     DirectoryNotesExport01Payload(directory::notes::export::v0_1::Payload);
     /// `vtc/directory/notes/export/0.1#response` — every note as written.
     DirectoryNotesExport01Response(directory::notes::export::v0_1::Response);
-    /// `vtc/directory/export/0.1` payload — the whole directory, and why.
-    DirectoryExport01Payload(directory::export::v0_1::Payload);
-    /// `vtc/directory/export/0.1#response` — one page of JSContact cards.
-    DirectoryExport01Response(directory::export::v0_1::Response);
+    /// `vtc/directory/export/0.2` payload — the whole directory, and why.
+    DirectoryExport02Payload(directory::export::v0_2::Payload);
+    /// `vtc/directory/export/0.2#response` — one page of JSContact cards.
+    DirectoryExport02Response(directory::export::v0_2::Response);
     /// `vtc/rooms/community/members/list/0.1` payload.
     RoomsCommunityMembersList01Payload(rooms_community::members::list::v0_1::Payload);
     /// `vtc/rooms/community/members/list/0.1#response` — one page of a room's
     /// members, offered, admitted or removed.
     RoomsCommunityMembersList01Response(rooms_community::members::list::v0_1::Response);
-    /// `vtc/storage/configs/list/0.1#response` — each config and what it holds.
-    StorageConfigsList01Response(storage_configs::list::v0_1::Response);
-    /// `vtc/storage/configs/get/0.1#response` — one config, its facts and rooms.
-    StorageConfigsGet01Response(storage_configs::get::v0_1::Response);
     /// `vtc/storage/configs/create/0.1` payload. Carries no secret.
     StorageConfigsCreate01Payload(storage_configs::create::v0_1::Payload);
     /// `vtc/storage/configs/create/0.1#response`.
@@ -829,16 +791,14 @@ mod tests {
         check::<JoinManifest04VettingRequirements>();
         check::<JoinManifest04CommunityBranding>();
         check::<JoinManifest04RequestedAttribute>();
-        check::<RegistrySyncJobsList01Payload>();
-        check::<RegistrySyncJobsList01Response>();
-        check::<RegistrySyncJobsRetry01Payload>();
-        check::<RegistrySyncJobsRetry01Response>();
+        check::<RegistrySyncJobsList02Payload>();
+        check::<RegistrySyncJobsList02Response>();
         check::<RegistrySyncJobsRetry02Payload>();
         check::<RegistrySyncJobsRetry02Response>();
         check::<RegistrySyncJobsDiscard01Payload>();
         check::<RegistrySyncJobsDiscard01Response>();
-        check::<RegistryRecordsList01Payload>();
-        check::<RegistryRecordsList01Response>();
+        check::<RegistryRecordsList02Payload>();
+        check::<RegistryRecordsList02Response>();
         check::<DirectoryFieldsList01Payload>();
         check::<DirectoryFieldsList01Response>();
         check::<DirectoryFieldsDefine01Payload>();
@@ -849,8 +809,8 @@ mod tests {
         check::<DirectoryFieldsRetire01Response>();
         check::<DirectoryCardAssert01Payload>();
         check::<DirectoryCardAssert01Response>();
-        check::<DirectoryEntriesList01Payload>();
-        check::<DirectoryEntriesList01Response>();
+        check::<DirectoryEntriesList02Payload>();
+        check::<DirectoryEntriesList02Response>();
         check::<DirectoryEntriesShow01Payload>();
         check::<DirectoryEntriesShow01Response>();
         check::<DirectoryCardShow01Payload>();
@@ -873,22 +833,22 @@ mod tests {
         check::<GroupsUpdate01Response>();
         check::<GroupsDelete01Payload>();
         check::<GroupsDelete01Response>();
-        check::<GroupsList01Payload>();
-        check::<GroupsList01Response>();
+        check::<GroupsList02Payload>();
+        check::<GroupsList02Response>();
         check::<GroupsShow01Payload>();
         check::<GroupsShow01Response>();
         check::<GroupsMembersAdd01Payload>();
         check::<GroupsMembersAdd01Response>();
         check::<GroupsMembersRemove01Payload>();
         check::<GroupsMembersRemove01Response>();
-        check::<GroupsMembersList01Payload>();
-        check::<GroupsMembersList01Response>();
+        check::<GroupsMembersList02Payload>();
+        check::<GroupsMembersList02Response>();
         check::<GroupsJoin01Payload>();
         check::<GroupsJoin01Response>();
         check::<GroupsLeave01Payload>();
         check::<GroupsLeave01Response>();
-        check::<GroupsRequestsList01Payload>();
-        check::<GroupsRequestsList01Response>();
+        check::<GroupsRequestsList02Payload>();
+        check::<GroupsRequestsList02Response>();
         check::<GroupsRequestsDecide01Payload>();
         check::<GroupsRequestsDecide01Response>();
         check::<GroupsManagersAdd01Payload>();
@@ -899,12 +859,12 @@ mod tests {
         check::<DirectoryCardPresent01Response>();
         check::<DirectoryNotesAppend01Payload>();
         check::<DirectoryNotesAppend01Response>();
-        check::<DirectoryNotesList01Payload>();
-        check::<DirectoryNotesList01Response>();
+        check::<DirectoryNotesList02Payload>();
+        check::<DirectoryNotesList02Response>();
         check::<DirectoryNotesExport01Payload>();
         check::<DirectoryNotesExport01Response>();
-        check::<DirectoryExport01Payload>();
-        check::<DirectoryExport01Response>();
+        check::<DirectoryExport02Payload>();
+        check::<DirectoryExport02Response>();
     }
 
     #[test]

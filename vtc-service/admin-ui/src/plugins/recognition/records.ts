@@ -6,7 +6,7 @@ import type { RegistryRecordRow, RegistryRecordsResponse } from "@/lib/wire-type
 
 import { rightLabel } from "../repos/model";
 
-const REGISTRY_RECORDS_TASK = "https://trusttasks.org/spec/vtc/registry/records/list/0.1";
+const REGISTRY_RECORDS_TASK = "https://trusttasks.org/spec/vtc/registry/records/list/0.2";
 
 /** Records read per page, and the most pages read, by `fetchAllRegistryRecords`. */
 const REGISTRY_RECORDS_PAGE = 200;

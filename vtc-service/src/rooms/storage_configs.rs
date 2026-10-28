@@ -68,7 +68,7 @@ pub mod codes {
     use trust_tasks_rs::specs::vtc::rooms::storage::assign::v0_1 as assign;
     use trust_tasks_rs::specs::vtc::rooms::storage::migrate::v0_1 as migrate;
     use trust_tasks_rs::specs::vtc::storage::configs::{
-        create::v0_1 as create, get::v0_1 as get, list::v0_1 as list, probe::v0_1 as probe,
+        create::v0_1 as create, get::v0_2 as get, list::v0_2 as list, probe::v0_1 as probe,
         retire::v0_1 as retire, update::v0_1 as update,
     };
 
@@ -124,7 +124,7 @@ pub mod codes {
 
     // What rooms store and may store (`vtc/rooms/{get,usage,limits/set}`).
     use trust_tasks_rs::specs::vtc::rooms::{
-        get::v0_1 as room_get, limits::set::v0_1 as limits_set, usage::v0_1 as usage,
+        get::v0_3 as room_get, limits::set::v0_1 as limits_set, usage::v0_1 as usage,
     };
     pub const ROOM_GET_NOT_FOUND: &str = room_get::error_codes::NOT_FOUND.code;
     pub const USAGE_INVALID_RANGE: &str = usage::error_codes::INVALID_RANGE.code;

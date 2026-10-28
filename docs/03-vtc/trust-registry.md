@@ -527,7 +527,7 @@ absent one means the record makes no such assertion. It is not `false`:
 showing "not authorised" against a recognition record would invent a refusal
 the registry never made.
 
-`vtc/registry/records/list/0.1`, admin-gated. The API takes the full filter
+`vtc/registry/records/list/0.2`, admin-gated. The API takes the full filter
 set (`entityId`, `authorityId`, `action`, `resource`) and a cursor; the card
 shows the first page unfiltered, which is the whole graph for any community
 that has not outgrown one page.

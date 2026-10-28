@@ -8,9 +8,8 @@
 //! | `vtc/members/rotate-challenge/0.1` | the signer opens a rotation of **their own** DID |
 //! | `vtc/members/rotate/0.1` | the signer is `oldDid`; both in-payload signatures authorize the swap |
 //! | `vtc/members/personhood/revoke/0.1` | the subject, or an administrator |
-//! | `vtc/relationships/list/0.2` | any current member or administrator |
+//! | `vtc/relationships/list/0.3` | any current member or administrator |
 //! | `vtc/relationships/publish/0.2` | the signer, exactly as the bearer-less REST route |
-//! | `vtc/relationships/revoke/0.1` | the edge's issuer, or an administrator |
 //! | `vtc/relationships/revoke/0.2` | the edge's issuer (directly, or via `pop`), or an administrator |
 //! | `vtc/endorsements/{issue,list,show,revoke}/0.1` | an `Admin` or `Issuer` ACL row |
 //!
@@ -26,7 +25,7 @@
 //! two of the three capacities the REST route did — the edge's own issuer, or
 //! an administrator — and not a `VrcRevokeAuthorization` proving control of a
 //! pairwise relationship DID; `0.2` adds that as a `pop` bound to the document
-//! rather than a REST session (see `handle_relationships_revoke_v0_2`).
+//! rather than a REST session (see `handle_relationships_revoke`).
 //!
 //! # Where the authority comes from
 //!
@@ -70,8 +69,7 @@ use trust_tasks_rs::specs::vtc::members::{
     rotate_challenge::v0_1 as rotate_challenge,
 };
 use trust_tasks_rs::specs::vtc::relationships::{
-    list::v0_2 as rel_list, publish::v0_2 as rel_publish, revoke::v0_1 as rel_revoke,
-    revoke::v0_2 as rel_revoke_v0_2,
+    list::v0_3 as rel_list, publish::v0_2 as rel_publish, revoke::v0_2 as rel_revoke,
 };
 use trust_tasks_rs::validate::ValidatedPayload;
 use trust_tasks_rs::{RejectReason, StandardCode, TrustTask, TrustTaskCode};
@@ -96,18 +94,15 @@ pub(crate) const ROTATE_TYPE: &str = <rotate::Payload as trust_tasks_rs::Payload
 /// `vtc/members/personhood/revoke/0.1`.
 pub(crate) const PERSONHOOD_REVOKE_TYPE: &str =
     <personhood_revoke::Payload as trust_tasks_rs::Payload>::TYPE_URI;
-/// `vtc/relationships/list/0.2`.
+/// `vtc/relationships/list/0.3`.
 pub(crate) const RELATIONSHIPS_LIST_TYPE: &str =
     <rel_list::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 /// `vtc/relationships/publish/0.2`.
 pub(crate) const RELATIONSHIPS_PUBLISH_TYPE: &str =
     <rel_publish::Payload as trust_tasks_rs::Payload>::TYPE_URI;
-/// `vtc/relationships/revoke/0.1`.
+/// `vtc/relationships/revoke/0.2`.
 pub(crate) const RELATIONSHIPS_REVOKE_TYPE: &str =
     <rel_revoke::Payload as trust_tasks_rs::Payload>::TYPE_URI;
-/// `vtc/relationships/revoke/0.2` — adds the pairwise `pop` route.
-pub(crate) const RELATIONSHIPS_REVOKE_0_2_TYPE: &str =
-    <rel_revoke_v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 /// `vtc/endorsements/issue/0.1`.
 pub(crate) const ENDORSEMENTS_ISSUE_TYPE: &str =
     <end_issue::Payload as trust_tasks_rs::Payload>::TYPE_URI;
@@ -131,7 +126,6 @@ pub(crate) const URIS: &[&str] = &[
     RELATIONSHIPS_LIST_TYPE,
     RELATIONSHIPS_PUBLISH_TYPE,
     RELATIONSHIPS_REVOKE_TYPE,
-    RELATIONSHIPS_REVOKE_0_2_TYPE,
     ENDORSEMENTS_ISSUE_TYPE,
     ENDORSEMENTS_LIST_TYPE,
     ENDORSEMENTS_SHOW_TYPE,
@@ -153,7 +147,6 @@ pub(super) async fn dispatch(
         RELATIONSHIPS_LIST_TYPE => handle_relationships_list(state, ctx, doc).await,
         RELATIONSHIPS_PUBLISH_TYPE => handle_relationships_publish(state, ctx, doc).await,
         RELATIONSHIPS_REVOKE_TYPE => handle_relationships_revoke(state, ctx, doc).await,
-        RELATIONSHIPS_REVOKE_0_2_TYPE => handle_relationships_revoke_v0_2(state, ctx, doc).await,
         ENDORSEMENTS_ISSUE_TYPE => handle_endorsements_issue(state, ctx, doc).await,
         ENDORSEMENTS_LIST_TYPE => handle_endorsements_list(state, ctx, doc).await,
         ENDORSEMENTS_SHOW_TYPE => handle_endorsements_show(state, ctx, doc).await,
@@ -474,7 +467,7 @@ fn not_permitted(doc: &TrustTask<Value>) -> TrustTaskOutcome {
 
 // ─── relationships ───────────────────────────────────────────────────────
 
-/// `vtc/relationships/list/0.2` — one member's edges, paged.
+/// `vtc/relationships/list/0.3` — one member's edges, paged.
 ///
 /// Readable by any current member or administrator, the parties the
 /// specification's *Consent/purpose* names ("members and administrators can
@@ -521,14 +514,15 @@ async fn handle_relationships_list(
             })
         })
         .collect();
-    respond_as::<rel_list::Response>(
-        &doc,
-        vti_common::pagination::Paginated {
-            items,
-            next_cursor: page.next_cursor,
-            total_estimate: page.total_estimate,
-        },
-    )
+    // On the last page `nextCursor` is absent, never `null` (0.3).
+    let mut body = serde_json::json!({ "items": items });
+    if let Some(cursor) = page.next_cursor {
+        body["nextCursor"] = cursor.into();
+    }
+    if let Some(estimate) = page.total_estimate {
+        body["totalEstimate"] = estimate.into();
+    }
+    respond_as::<rel_list::Response>(&doc, body)
 }
 
 /// `vtc/relationships/publish/0.2` — lodge a VRC in the community graph.
@@ -573,75 +567,18 @@ async fn handle_relationships_publish(
     }
 }
 
-/// `vtc/relationships/revoke/0.1` — retract an edge.
-///
-/// Two capacities: the edge's **issuer**, or an **administrator**
-/// (moderation). A current member who is neither gets the task's `notFound`,
-/// as the specification requires — "the same code as for a relationship that
-/// does not exist … an anti-probing measure". A signer who is not a current
-/// member at all is refused before any lookup.
-///
-/// `0.1`'s payload is `{id}` alone, so an edge issued under a pairwise
-/// relationship DID cannot be retracted through this door — the signer is the
-/// member's own DID, never the R-DID, and there is no authorization member to
-/// carry a proof of control. [`handle_relationships_revoke_v0_2`] adds it.
-async fn handle_relationships_revoke(
-    state: &AppState,
-    ctx: &JoinAuthCtx,
-    doc: TrustTask<Value>,
-) -> TrustTaskOutcome {
-    use crate::routes::relationships::{REVOKE_ERR_NOT_FOUND, revoke_authorized};
-
-    let actor = match acting_party(state, ctx, &doc).await {
-        Ok(a) => a,
-        Err(reject) => return reject,
-    };
-    let body: rel_revoke::Payload = match parse_spec_payload(&doc) {
-        Ok(b) => b,
-        Err(reject) => return reject,
-    };
-    let not_found = |doc: &TrustTask<Value>| {
-        task_error_to_reject(
-            doc,
-            &TaskError::declared(
-                REVOKE_ERR_NOT_FOUND,
-                AppError::NotFound(format!("VRC {} not found", body.id.as_str())),
-            ),
-        )
-    };
-    let id = match row_id(&doc, body.id.as_str(), REVOKE_ERR_NOT_FOUND) {
-        Ok(id) => id,
-        Err(reject) => return reject,
-    };
-    let rel = match crate::relationships::get_relationship(&state.relationships_ks, id).await {
-        Ok(Some(rel)) => rel,
-        Ok(None) => return not_found(&doc),
-        Err(e) => return app_error_to_reject(&doc, &e),
-    };
-    let revoked_by = if actor.did == rel.issuer_did {
-        "issuer"
-    } else if actor.can(crate::acl::Capability::MembersManage) {
-        "admin"
-    } else {
-        return not_found(&doc);
-    };
-    match revoke_authorized(state, &actor.did, &rel, revoked_by).await {
-        Ok(res) => respond_as::<rel_revoke::Response>(&doc, res),
-        Err(e) => app_error_to_reject(&doc, &e),
-    }
-}
-
-/// `vtc/relationships/revoke/0.2` — retract an edge, adding the pairwise route
-/// `0.1` cannot reach: an edge published under a relationship DID, authorized
-/// by a `pop` (`VrcRevokeAuthorization`) proving control of it, bound to this
-/// document and to the edge.
+/// `vtc/relationships/revoke/0.2` — retract an edge, as its issuer, as an
+/// administrator (moderation), or through the pairwise route: an edge
+/// published under a relationship DID, authorized by a `pop`
+/// (`VrcRevokeAuthorization`) proving control of it, bound to this document
+/// and to the edge.
 ///
 /// Checked in the order the specification requires — issuer, administrator,
 /// pairwise — so a caller who is none of the three, or whose `pop` fails to
 /// verify, gets the same `notFound` an unknown id would (Security & Privacy
 /// §Correlation: "not an oracle over others' relationships, nor over which
 /// pairwise DIDs a member controls").
-async fn handle_relationships_revoke_v0_2(
+async fn handle_relationships_revoke(
     state: &AppState,
     ctx: &JoinAuthCtx,
     doc: TrustTask<Value>,
@@ -654,7 +591,7 @@ async fn handle_relationships_revoke_v0_2(
         Ok(a) => a,
         Err(reject) => return reject,
     };
-    let body: rel_revoke_v0_2::Payload = match parse_spec_payload(&doc) {
+    let body: rel_revoke::Payload = match parse_spec_payload(&doc) {
         Ok(b) => b,
         Err(reject) => return reject,
     };
@@ -712,7 +649,7 @@ async fn handle_relationships_revoke_v0_2(
     };
 
     match revoke_authorized(state, &actor.did, &rel, revoked_by).await {
-        Ok(res) => respond_as::<rel_revoke_v0_2::Response>(&doc, res),
+        Ok(res) => respond_as::<rel_revoke::Response>(&doc, res),
         Err(e) => app_error_to_reject(&doc, &e),
     }
 }

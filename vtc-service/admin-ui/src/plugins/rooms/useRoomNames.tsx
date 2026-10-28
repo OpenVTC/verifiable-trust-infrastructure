@@ -5,7 +5,7 @@
 // member-owned room's never reaches this community. The one exception is a room
 // the community owns itself, whose label it chose at `vtc/rooms/community/create`
 // and keeps in its own record. So for a viewer who may read that record
-// (`vtc.rooms.manage`), the owner's list (`vtc/rooms/community/list/0.2`) is
+// (`vtc.rooms.manage`), the owner's list (`vtc/rooms/community/list/0.3`) is
 // joined on room DID and the host pages show the label and description (never
 // the tags, which are the Community rooms tab's filing); a viewer with only the
 // host's authority (`vtc.rooms.admin`) sees the DID, as before, and is not

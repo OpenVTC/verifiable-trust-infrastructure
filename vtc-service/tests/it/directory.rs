@@ -18,7 +18,12 @@ use vtc_service::test_support::{TEST_VTC_DID, TestVtc};
 const SPEC: &str = "https://trusttasks.org/spec/vtc/directory";
 
 fn task(name: &str) -> String {
-    format!("{SPEC}/{name}/0.1")
+    // The paged reads moved to 0.2 (`nextCursor` absent on the last page).
+    let version = match name {
+        "entries/list" | "export" | "notes/list" => "0.2",
+        _ => "0.1",
+    };
+    format!("{SPEC}/{name}/{version}")
 }
 
 use trust_tasks_rs::specs::vtc::directory as d;
@@ -55,10 +60,10 @@ const ASSERT_ERR_FIELD_NOT_WRITABLE: &str =
     d::card::assert::v0_1::error_codes::FIELD_NOT_WRITABLE.code;
 const ASSERT_ERR_VALUE_INVALID: &str = d::card::assert::v0_1::error_codes::VALUE_INVALID.code;
 const ASSERT_ERR_VALUE_REFUSED: &str = d::card::assert::v0_1::error_codes::VALUE_REFUSED.code;
-const LIST_ERR_QUERY_TOO_SHORT: &str = d::entries::list::v0_1::error_codes::QUERY_TOO_SHORT.code;
-const LIST_ERR_CURSOR_INVALID: &str = d::entries::list::v0_1::error_codes::CURSOR_INVALID.code;
-const LIST_ERR_NOT_FOUND: &str = d::entries::list::v0_1::error_codes::NOT_FOUND.code;
-const LIST_ERR_RATE_LIMITED: &str = d::entries::list::v0_1::error_codes::RATE_LIMITED.code;
+const LIST_ERR_QUERY_TOO_SHORT: &str = d::entries::list::v0_2::error_codes::QUERY_TOO_SHORT.code;
+const LIST_ERR_CURSOR_INVALID: &str = d::entries::list::v0_2::error_codes::CURSOR_INVALID.code;
+const LIST_ERR_NOT_FOUND: &str = d::entries::list::v0_2::error_codes::NOT_FOUND.code;
+const LIST_ERR_RATE_LIMITED: &str = d::entries::list::v0_2::error_codes::RATE_LIMITED.code;
 const SHOW_ERR_NOT_FOUND: &str = d::entries::show::v0_1::error_codes::NOT_FOUND.code;
 
 /// The error code carried by a `trust-task-error` payload.

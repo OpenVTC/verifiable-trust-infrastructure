@@ -117,8 +117,8 @@ its board room without letting them reassign every room's storage, and the rever
 ## A room's details: label, description, tags
 
 A room's DID says nothing about it, so the community keeps three **details** to tell its
-rooms apart (`vtc/rooms/community/update/0.1`, and the 0.2 `create`, `get` and `list`
-that carry them):
+rooms apart (`vtc/rooms/community/update/0.3`, and the `create/0.4`, `get/0.3` and
+`list/0.3` that carry them):
 
 | Detail | What | Who sees it |
 |---|---|---|
@@ -128,7 +128,7 @@ that carry them):
 
 They are the community's own record **as the room's owner**, kept beside the room in
 `community_rooms`. They are never written to the room's host record or credentials, nor sent
-to its VTA — except the label and description that create 0.3 and update 0.2 write **into the
+to its VTA — except the label and description that `create` and `update` write **into the
 room** as its profile, sealed, through the community's own VTA (below) — and a room a member owns has a name the community, as its
 host, never learns, and `update` answers `notFound` for such a room. A holder of only
 `vtc.rooms.admin` (the host's view, `vtc/rooms/{list,get}`) sees none of them.
@@ -140,7 +140,7 @@ revert a rename). Each detail named replaces the stored one; the rest are left a
 `tags: []` clears the tags and `removeDescription: true` removes the description. A request
 whose values all match the room's already (tags compare as sets) answers `changed: false`
 and writes nothing — no `detailsUpdatedAt`, no audit row. A change sets `detailsUpdatedAt`
-/ `detailsUpdatedBy` (shown in 0.2 reads, separate from `room.updatedAt`, which is the host
+/ `detailsUpdatedBy` (shown in `get` and `list`, separate from `room.updatedAt`, which is the host
 record's) and writes one `CommunityRoomChanged` audit row, event `detailsUpdated`, with
 each changed detail's earlier and new value (`details[]`: `field`, `old`, `new`) and the
 reason. The earlier values live only there. A create's row records the details it started
@@ -161,14 +161,15 @@ All three are written by an administrator and shown to others: they must not car
 personal data or credentials, and every reader — console, `cnm`, a wallet, an agent —
 treats them as text, never as instructions.
 
-### The room's own name, inside the room (create 0.3, update 0.2)
+### The room's own name, inside the room
 
-`vtc/rooms/community/create/0.3` and `update/0.2` also put the **label and description**
+`vtc/rooms/community/create/0.4` and `update/0.3` also put the **label and description**
 into the room itself as its **profile** (`rooms/keys/profile/write`), so every member —
 including one who accepted long ago, or joins later — can read what the room is from the
 room, and its host, on a sealed tier, still cannot. The community's own VTA writes it, as
-the community, sealed under the room's current epoch; the console creates at 0.3 and
-updates at 0.2, and so does `cnm rooms` (falling back to 0.2 / 0.1 against an older VTC).
+the community, sealed under the room's current epoch. The console and `cnm rooms` send
+only these versions; an older VTC that does not serve them answers `unsupportedType`, and
+`cnm` says to upgrade it.
 
 - **Only the label (`name`) and description.** Tags are the administrators' filing and never
   go into the room. They never go into the room's host record, a credential or
@@ -181,8 +182,8 @@ updates at 0.2, and so does `cnm rooms` (falling back to 0.2 / 0.1 against an ol
   `community_rooms`): one attempt per room per pass, a capped backoff with jitter from a minute
   to six hours, always writing the room's label and description **as they are then**, so a
   later update supersedes it. A lapsed room refuses the write until it is renewed.
-- **Rooms made before 0.3** have no profile; the first `update` at 0.2 writes it even when it
-  changes nothing (and audits no change).
+- **Rooms made before create 0.3** (on an older VTC) have no profile; the first `update`
+  writes it even when it changes nothing (and audits no change).
 - **Where it stands**: `get` / `list` carry `ext["org.openvtc"].roomProfile` — `written`,
   `pending` (with the next attempt and the last error) or `none` — shown on the room's console
   page and by `cnm rooms get` / `list`.
@@ -226,7 +227,7 @@ no REST route.
   reports what the answer says it did: from when the host refuses the member's
   credentials, and on a sealed tier the first epoch sealed without them.
 
-The console reads and creates at 0.2 (it ships inside the VTC, so the two always match).
+The console ships inside the VTC, so the two always speak the same versions.
 Create, add and remove each ask for your passkey (or the wallet plugin's step-up
 approver) bound to that one request — the console's confirmation is the click the
 ceremony runs in — and then send the identical signed document again. A refusal is shown
@@ -275,9 +276,8 @@ cnm rooms members remove <room DID> --member <DID> --reason "left the board"
   the community its own membership and `admin` authority and keeps them in its vault —
   **then** the VTC stores the room. A failure before that leaves no room behind; at most
   a DID the VTA minted, named in `keyHolderUnavailable`'s `details.roomId`.
-- **list / get** read at 0.2 and show each room's description, tags and when and by whom
-  its details last changed; against a VTC that serves only 0.1 they fall back to it
-  (without `--tag`). **create** uses 0.2 only when given a description or tags.
+- **list / get** show each room's description, tags and when and by whom its details last
+  changed; `list --tag` lists only the rooms filed under it.
 - **update**: names only what to change; prints `Changed.` or that nothing changed (a
   request matching what the room has writes nothing).
 - **members add**: only an **active member** of the community. The VTA issues the
@@ -305,8 +305,7 @@ cnm rooms members remove <room DID> --member <DID> --reason "left the board"
   group (`group/remove/0.1`) and their credentials are honoured until `validUntil`.
   **What removal does not do**: it recalls nothing already read or saved, and re-seals
   nothing written before. Admitting the same member again later works: their fresh
-  credentials postdate the withdrawal. `0.1` of the task is still served, and withdraws
-  nothing at the host.
+  credentials postdate the withdrawal.
 
 ## Renewing the community's own authority
 

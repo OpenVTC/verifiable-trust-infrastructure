@@ -884,7 +884,7 @@ const SPINE_DOCUMENT_TYPES: &[&str] = &[
     // The member relationships list (a member's detail view): its bearer REST
     // route had no other caller and was retired once the console moved onto
     // the signed door.
-    "https://trusttasks.org/spec/vtc/relationships/list/0.2",
+    "https://trusttasks.org/spec/vtc/relationships/list/0.3",
     "https://trusttasks.org/spec/auth/step-up/approve-response/0.4",
     // 0.6: the wallet-signed answer carrying a step-up approver's statement.
     "https://trusttasks.org/spec/auth/step-up/approve-response/0.6",
@@ -915,10 +915,10 @@ const SPINE_DOCUMENT_TYPES: &[&str] = &[
     "https://trusttasks.org/spec/vtc/join-requests/manifest/0.4",
     // The administrator's operational verbs (`trust_tasks::admin_tasks`).
     "https://trusttasks.org/spec/vtc/registry/diagnostics/0.1",
-    "https://trusttasks.org/spec/vtc/registry/sync-jobs/list/0.1",
+    "https://trusttasks.org/spec/vtc/registry/sync-jobs/list/0.2",
     "https://trusttasks.org/spec/vtc/registry/sync-jobs/retry/0.2",
     "https://trusttasks.org/spec/vtc/registry/sync-jobs/discard/0.1",
-    "https://trusttasks.org/spec/vtc/registry/records/list/0.1",
+    "https://trusttasks.org/spec/vtc/registry/records/list/0.2",
     "https://trusttasks.org/spec/audit/list/0.1",
     "https://trusttasks.org/spec/config/show/0.1",
     "https://trusttasks.org/spec/config/patch/0.1",
@@ -965,7 +965,7 @@ const SPINE_DOCUMENT_TYPES: &[&str] = &[
     "https://trusttasks.org/spec/vtc/directory/fields/update/0.1",
     "https://trusttasks.org/spec/vtc/directory/fields/retire/0.1",
     "https://trusttasks.org/spec/vtc/directory/card/assert/0.1",
-    "https://trusttasks.org/spec/vtc/directory/entries/list/0.1",
+    "https://trusttasks.org/spec/vtc/directory/entries/list/0.2",
     "https://trusttasks.org/spec/vtc/directory/entries/show/0.1",
     // Its "What applicants see" tab: the disclosure statement, read back.
     "https://trusttasks.org/spec/vtc/directory/disclosure/0.1",
@@ -982,7 +982,7 @@ const SPINE_DOCUMENT_TYPES: &[&str] = &[
     "https://trusttasks.org/spec/vtc/groups/delete/0.1",
     "https://trusttasks.org/spec/vtc/groups/join/0.1",
     "https://trusttasks.org/spec/vtc/groups/leave/0.1",
-    "https://trusttasks.org/spec/vtc/groups/list/0.1",
+    "https://trusttasks.org/spec/vtc/groups/list/0.2",
     "https://trusttasks.org/spec/vtc/groups/managers/add/0.1",
     "https://trusttasks.org/spec/vtc/groups/managers/remove/0.1",
     "https://trusttasks.org/spec/vtc/groups/bindings/add/0.1",
@@ -992,16 +992,16 @@ const SPINE_DOCUMENT_TYPES: &[&str] = &[
     // `dids.webvh_server` on the Groups page.
     "https://trusttasks.org/spec/vtc/config/did-hosting/list/0.1",
     "https://trusttasks.org/spec/vtc/groups/members/add/0.1",
-    "https://trusttasks.org/spec/vtc/groups/members/list/0.1",
+    "https://trusttasks.org/spec/vtc/groups/members/list/0.2",
     "https://trusttasks.org/spec/vtc/groups/members/remove/0.1",
     "https://trusttasks.org/spec/vtc/groups/requests/decide/0.1",
-    "https://trusttasks.org/spec/vtc/groups/requests/list/0.1",
+    "https://trusttasks.org/spec/vtc/groups/requests/list/0.2",
     "https://trusttasks.org/spec/vtc/groups/show/0.1",
     "https://trusttasks.org/spec/vtc/groups/update/0.1",
     "https://trusttasks.org/spec/vtc/directory/notes/append/0.1",
-    "https://trusttasks.org/spec/vtc/directory/notes/list/0.1",
+    "https://trusttasks.org/spec/vtc/directory/notes/list/0.2",
     "https://trusttasks.org/spec/vtc/directory/notes/export/0.1",
-    "https://trusttasks.org/spec/vtc/directory/export/0.1",
+    "https://trusttasks.org/spec/vtc/directory/export/0.2",
     "https://trusttasks.org/spec/vtc/community/join-discovery/show/0.1",
     "https://trusttasks.org/spec/vtc/community/join-discovery/update/0.1",
     "https://trusttasks.org/spec/vtc/schemas/accepts/list/0.2",
@@ -1012,10 +1012,10 @@ const SPINE_DOCUMENT_TYPES: &[&str] = &[
     "https://trusttasks.org/spec/vtc/vetting/auto-grant/update/0.1",
     "https://trusttasks.org/spec/vtc/vetting/revocations/list/0.1",
     "https://trusttasks.org/spec/vtc/join-requests/vetting/show/0.1",
-    "https://trusttasks.org/spec/vtc/rooms/list/0.1",
-    // A room's detail page and Room usage (`trust_tasks::room_admin_tasks`). The page
-    // reads at 0.2, whose migration names its target and says why it is paused.
-    "https://trusttasks.org/spec/vtc/rooms/get/0.2",
+    "https://trusttasks.org/spec/vtc/rooms/list/0.2",
+    // A room's detail page and Room usage (`trust_tasks::room_admin_tasks`). The page's
+    // migration names its target and says why it is paused.
+    "https://trusttasks.org/spec/vtc/rooms/get/0.3",
     "https://trusttasks.org/spec/vtc/rooms/usage/0.1",
     "https://trusttasks.org/spec/vtc/rooms/limits/set/0.1",
     // Storage, and a room's "other storage" (`trust_tasks::storage_tasks`).
@@ -1029,13 +1029,12 @@ const SPINE_DOCUMENT_TYPES: &[&str] = &[
     "https://trusttasks.org/spec/vtc/rooms/storage/assign/0.1",
     "https://trusttasks.org/spec/vtc/rooms/storage/migrate/0.2",
     // Community rooms, the Community rooms tab (`trust_tasks::community_room_tasks`).
-    // The console is baked into this binary, so it reads at 0.2 only — the shape with each
-    // room's description, tags and who last changed them — and creates at 0.3 and updates
-    // at 0.2, which also write the label and description into the room as its profile.
-    "https://trusttasks.org/spec/vtc/rooms/community/create/0.3",
-    "https://trusttasks.org/spec/vtc/rooms/community/get/0.2",
-    "https://trusttasks.org/spec/vtc/rooms/community/list/0.2",
-    "https://trusttasks.org/spec/vtc/rooms/community/update/0.2",
+    // Each room with its description, tags and who last changed them; a create or update
+    // also writes the label and description into the room as its profile.
+    "https://trusttasks.org/spec/vtc/rooms/community/create/0.4",
+    "https://trusttasks.org/spec/vtc/rooms/community/get/0.3",
+    "https://trusttasks.org/spec/vtc/rooms/community/list/0.3",
+    "https://trusttasks.org/spec/vtc/rooms/community/update/0.3",
     "https://trusttasks.org/spec/vtc/rooms/community/members/add/0.1",
     "https://trusttasks.org/spec/vtc/rooms/community/members/list/0.1",
     "https://trusttasks.org/spec/vtc/rooms/community/members/remove/0.2",

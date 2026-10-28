@@ -2418,7 +2418,7 @@ async fn every_document_the_portal_key_signs_is_audited_with_its_grant() {
     let groups = as_portal(
         &f,
         &b,
-        "https://trusttasks.org/spec/vtc/groups/list/0.1",
+        "https://trusttasks.org/spec/vtc/groups/list/0.2",
         json!({ "limit": 10 }),
     )
     .await;
@@ -2461,7 +2461,7 @@ async fn every_document_the_portal_key_signs_is_audited_with_its_grant() {
         [
             "https://trusttasks.org/spec/git-ns/view/0.4",
             "https://trusttasks.org/spec/vtc/directory/card/show/0.1",
-            "https://trusttasks.org/spec/vtc/groups/list/0.1",
+            "https://trusttasks.org/spec/vtc/groups/list/0.2",
         ],
         "one row per accepted document, none for the refused one"
     );

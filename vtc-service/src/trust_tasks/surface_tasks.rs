@@ -16,7 +16,7 @@
 //! | `vtc/relationships/{suspend,restore}/0.1` | the edge's issuer, or `Admin` |
 //! | `vtc/join-requests/vetting/show/0.1` | `Admin` |
 //! | `vtc/join-requests/query/0.1` | `Admin` |
-//! | `vtc/rooms/list/0.1` | `Admin` |
+//! | `vtc/rooms/list/0.2` | `Admin` |
 //!
 //! Each is the question its bearer route asked: `AuthClaims` (any session —
 //! which the VTC minted for an administrator only) for the presentation reads,
@@ -48,7 +48,7 @@ use trust_tasks_rs::specs::vtc::join_requests::{
 use trust_tasks_rs::specs::vtc::relationships::{
     restore::v0_1 as rel_restore, suspend::v0_1 as rel_suspend,
 };
-use trust_tasks_rs::specs::vtc::rooms::list::v0_1 as rooms_list;
+use trust_tasks_rs::specs::vtc::rooms::list::v0_2 as rooms_list;
 use trust_tasks_rs::specs::vtc::schemas::{
     accepts::{
         delete::v0_1 as accepts_delete, list::v0_2 as accepts_list,

@@ -1,4 +1,4 @@
-//! What this community's rooms store and may store — `vtc/rooms/get/{0.1,0.2}`,
+//! What this community's rooms store and may store — `vtc/rooms/get/0.3`,
 //! `vtc/rooms/usage/0.1` and `vtc/rooms/limits/set/0.1`
 //! (`docs/05-design-notes/data-rooms-files.md` §6.2–6.3, §8.1).
 //!
@@ -20,8 +20,7 @@ use std::collections::BTreeMap;
 use chrono::{Days, NaiveDate, Utc};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
-use trust_tasks_rs::specs::vtc::rooms::get::v0_1 as get;
-use trust_tasks_rs::specs::vtc::rooms::get::v0_2 as get_v2;
+use trust_tasks_rs::specs::vtc::rooms::get::v0_3 as get;
 use trust_tasks_rs::specs::vtc::rooms::limits::set::v0_1 as set;
 use trust_tasks_rs::specs::vtc::rooms::usage::v0_1 as usage;
 use trust_tasks_rs::{Payload, TrustTask};
@@ -39,12 +38,11 @@ use crate::rooms::migration::Wire;
 use crate::server::AppState;
 
 pub(crate) const GET_TYPE: &str = <get::Payload as Payload>::TYPE_URI;
-pub(crate) const GET_V2_TYPE: &str = <get_v2::Payload as Payload>::TYPE_URI;
 pub(crate) const USAGE_TYPE: &str = <usage::Payload as Payload>::TYPE_URI;
 pub(crate) const LIMITS_SET_TYPE: &str = <set::Payload as Payload>::TYPE_URI;
 
 /// Every URI this module routes.
-pub(crate) const URIS: &[&str] = &[GET_TYPE, GET_V2_TYPE, USAGE_TYPE, LIMITS_SET_TYPE];
+pub(crate) const URIS: &[&str] = &[GET_TYPE, USAGE_TYPE, LIMITS_SET_TYPE];
 
 /// `largestBlobs` holds at most this many (`vtc/rooms/get`).
 const LARGEST_BLOBS: usize = 10;
@@ -65,8 +63,7 @@ pub(super) async fn dispatch(
     type_uri: &str,
 ) -> Option<TrustTaskOutcome> {
     Some(match type_uri {
-        GET_TYPE => handle_get(state, ctx, doc, Wire::V0_1).await,
-        GET_V2_TYPE => handle_get(state, ctx, doc, Wire::V0_2).await,
+        GET_TYPE => handle_get(state, ctx, doc).await,
         USAGE_TYPE => handle_usage(state, ctx, doc).await,
         LIMITS_SET_TYPE => handle_limits_set(state, ctx, doc).await,
         _ => return None,
@@ -127,33 +124,23 @@ pub(super) async fn assigned_config(state: &AppState, room_id: &str) -> Result<S
 
 // ─── vtc/rooms/get ───────────────────────────────────────────────────────
 
-/// `vtc/rooms/get/0.1` and `/0.2`, each answered at its own version: 0.2's
-/// `storage.migration` is the migration as `vtc/rooms/storage/migrate/0.2` reports it
-/// (`toConfig`, `queued`, the pause members); 0.1's is the shape 0.1 knows.
+/// `vtc/rooms/get/0.3`: `storage.migration` is the migration as
+/// `vtc/rooms/storage/migrate/0.2` reports it (`toConfig`, `queued`, the pause
+/// members), and the host record's instants are RFC 3339 strings.
 async fn handle_get(
     state: &AppState,
     ctx: &JoinAuthCtx,
     doc: TrustTask<Value>,
-    wire: Wire,
 ) -> TrustTaskOutcome {
     if let Err(reject) = rooms_admin(state, ctx, &doc).await {
         return reject;
     }
-    let room_id = match wire {
-        Wire::V0_1 => match parse_spec_payload::<get::Payload>(&doc) {
-            Ok(p) => p.room_id.as_str().to_string(),
-            Err(reject) => return reject,
-        },
-        Wire::V0_2 => match parse_spec_payload::<get_v2::Payload>(&doc) {
-            Ok(p) => p.room_id.as_str().to_string(),
-            Err(reject) => return reject,
-        },
+    let room_id = match parse_spec_payload::<get::Payload>(&doc) {
+        Ok(p) => p.room_id.as_str().to_string(),
+        Err(reject) => return reject,
     };
-    match get_body(state, &doc, &room_id, wire).await {
-        Ok(body) => match wire {
-            Wire::V0_1 => respond::<get::Response>(&doc, body),
-            Wire::V0_2 => respond::<get_v2::Response>(&doc, body),
-        },
+    match get_body(state, &doc, &room_id, Wire::V0_2).await {
+        Ok(body) => respond::<get::Response>(&doc, body),
         Err(reject) => reject,
     }
 }

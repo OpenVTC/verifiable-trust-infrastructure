@@ -60,8 +60,8 @@ const RETIRE = `${T}/vtc/storage/configs/retire/0.1`;
 const PROBE = `${T}/vtc/storage/configs/probe/0.1`;
 const ASSIGN = `${T}/vtc/rooms/storage/assign/0.1`;
 const MIGRATE = `${T}/vtc/rooms/storage/migrate/0.2`;
-const ROOMS_GET = `${T}/vtc/rooms/get/0.2`;
-const ROOMS_LIST = `${T}/vtc/rooms/list/0.1`;
+const ROOMS_GET = `${T}/vtc/rooms/get/0.3`;
+const ROOMS_LIST = `${T}/vtc/rooms/list/0.2`;
 const CREDENTIALS_SET = `${T}/vtc/storage/credentials/set/0.2`;
 const USAGE = `${T}/vtc/rooms/usage/0.1`;
 
@@ -348,8 +348,8 @@ describe("a room's storage", () => {
       epoch: 1,
       lifecycle: "live",
       retentionDays: 30,
-      createdAt: 1_760_000_000,
-      updatedAt: 1_760_000_000,
+      createdAt: "2025-10-09T08:53:20Z",
+      updatedAt: "2025-10-09T08:53:20Z",
     },
     storage: { configId: "local", earlierConfigs: [] },
     limits: { limits: { filesEnabled: true }, roomSource: "default", memberSource: "default" },

@@ -287,30 +287,6 @@ fn unsupported(err: &VtcError) -> bool {
         .is_some_and(|(code, _)| matches!(code.as_str(), "unsupportedType" | "unsupportedVersion"))
 }
 
-/// A signed read at 0.2, the version that carries each room's description and tags — and,
-/// from a VTC that does not serve it yet, the same read at 0.1 when `fallback` is given.
-async fn read_v0_2(
-    client: &VtcClient,
-    type_uri: &str,
-    payload: Value,
-    fallback: Option<(&str, Value)>,
-    key: &HolderKey,
-) -> CliResult<Value> {
-    let doc = client.git_ns_sign(type_uri, &payload, key).await?;
-    match client.git_ns_send_signed::<Value>(type_uri, &doc).await {
-        Ok(v) => Ok(v),
-        Err(e) if unsupported(&e) => match fallback {
-            Some((uri, p)) => read(client, uri, p, key).await,
-            None => Err(format!(
-                "{}\nThis VTC does not serve {type_uri} yet: upgrade it to filter by tag.",
-                explain(e)
-            )
-            .into()),
-        },
-        Err(e) => Err(explain(e)),
-    }
-}
-
 /// A signed read: no step-up.
 async fn read(
     client: &VtcClient,
@@ -319,10 +295,15 @@ async fn read(
     key: &HolderKey,
 ) -> CliResult<Value> {
     let doc = client.git_ns_sign(type_uri, &payload, key).await?;
-    client
-        .git_ns_send_signed::<Value>(type_uri, &doc)
-        .await
-        .map_err(explain)
+    match client.git_ns_send_signed::<Value>(type_uri, &doc).await {
+        Ok(v) => Ok(v),
+        Err(e) if unsupported(&e) => Err(format!(
+            "{}\nThis VTC does not serve {type_uri}: upgrade it.",
+            explain(e)
+        )
+        .into()),
+        Err(e) => Err(explain(e)),
+    }
 }
 
 /// A change: through the passkey gesture it asks for. A refusal is rewritten with its fix
@@ -349,33 +330,8 @@ async fn change(
     }
 }
 
-/// [`change`] at the newest of `versions` (task URI and payload, newest first) the VTC
-/// serves: a refusal saying it does not serve one (`unsupportedType` /
-/// `unsupportedVersion`) asks again at the next. The first was never routed, so asking
-/// again is not a retry of the change.
-async fn change_at_newest(
-    client: &VtcClient,
-    base: &str,
-    versions: Vec<(&str, Value)>,
-    did: &str,
-    key: &HolderKey,
-) -> CliResult<Value> {
-    let last = versions.len().saturating_sub(1);
-    for (i, (type_uri, payload)) in versions.into_iter().enumerate() {
-        match change(client, base, type_uri, payload, did, key).await {
-            Err(e)
-                if i < last
-                    && refused_code(&e.to_string())
-                        .is_some_and(|c| matches!(c, "unsupportedType" | "unsupportedVersion")) => {
-            }
-            other => return other,
-        }
-    }
-    Err("no version of this task to send".into())
-}
-
-/// What `roomProfile` in a create 0.3 / update 0.2 answer means, in words — `None` when it
-/// was not sent (an older VTC) or needs no comment.
+/// What `roomProfile` in a create or update answer means, in words — `None` when it needs
+/// no comment.
 fn room_profile_said(v: &Value) -> Option<&'static str> {
     match v["roomProfile"].as_str()? {
         "written" => Some(
@@ -401,8 +357,8 @@ async fn vta_fix(client: &VtcClient, key: &HolderKey, code: &str, message: &str)
     if !may_be_vta_permission(code) {
         return None;
     }
-    let type_uri = <spec::list::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
-    let payload = typed::<spec::list::v0_1::Payload>(json!({ "limit": 1 })).ok()?;
+    let type_uri = <spec::list::v0_3::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+    let payload = typed::<spec::list::v0_3::Payload>(json!({ "limit": 1 })).ok()?;
     let listed = read(client, type_uri, payload, key).await.ok()?;
     let access = listed.pointer("/ext/org.openvtc/communityRooms/vtaAccess")?;
     pick_fix(access, code, message).map(render_fix)
@@ -546,7 +502,7 @@ fn room_tags(room: &Value) -> Vec<&str> {
         .collect()
 }
 
-/// `vtc/rooms/community/update/0.1`'s payload. `None` when nothing would change.
+/// `vtc/rooms/community/update/0.3`'s payload; an error when it would name no change.
 #[allow(clippy::too_many_arguments)]
 fn update_payload(
     room: &str,
@@ -578,7 +534,7 @@ fn update_payload(
                 .into(),
         );
     }
-    typed::<spec::update::v0_1::Payload>(payload)
+    typed::<spec::update::v0_3::Payload>(payload)
 }
 
 /// Tags as a set, in the order first given.
@@ -649,33 +605,16 @@ async fn run_task(
             if let Some(c) = storage_config {
                 payload["storageConfig"] = json!(c);
             }
-            // 0.3, which also writes the label and description into the room as its profile;
-            // a VTC that predates it gets 0.2 — and 0.1 when there is nothing only 0.2 carries.
-            let v0_1 = typed::<spec::create::v0_1::Payload>(payload.clone())?;
-            let plain = description.is_none() && tags.is_empty();
             if let Some(d) = description {
                 payload["description"] = json!(d);
             }
             if !tags.is_empty() {
                 payload["tags"] = json!(dedup(tags));
             }
-            let mut versions = vec![
-                (
-                    <spec::create::v0_3::Payload as trust_tasks_rs::Payload>::TYPE_URI,
-                    typed::<spec::create::v0_3::Payload>(payload.clone())?,
-                ),
-                (
-                    <spec::create::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI,
-                    typed::<spec::create::v0_2::Payload>(payload)?,
-                ),
-            ];
-            if plain {
-                versions.push((
-                    <spec::create::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
-                    v0_1,
-                ));
-            }
-            let v = change_at_newest(client, &target.base, versions, &did, &key).await?;
+            // 0.4: the label and description are also written into the room as its profile.
+            let type_uri = <spec::create::v0_4::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+            let payload = typed::<spec::create::v0_4::Payload>(payload)?;
+            let v = change(client, &target.base, type_uri, payload, &did, &key).await?;
             if is_json_output() {
                 return Ok(print_json(&v)?);
             }
@@ -699,20 +638,12 @@ async fn run_task(
             if let Some(c) = cursor {
                 payload["cursor"] = json!(c);
             }
-            // Without a tag, a VTC that serves only 0.1 still lists its rooms.
-            let fallback = match &tag {
-                Some(_) => None,
-                None => Some((
-                    <spec::list::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
-                    typed::<spec::list::v0_1::Payload>(payload.clone())?,
-                )),
-            };
             if let Some(t) = &tag {
                 payload["tag"] = json!(t);
             }
-            let payload = typed::<spec::list::v0_2::Payload>(payload)?;
-            let type_uri = <spec::list::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
-            let v = read_v0_2(client, type_uri, payload, fallback, &key).await?;
+            let payload = typed::<spec::list::v0_3::Payload>(payload)?;
+            let type_uri = <spec::list::v0_3::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+            let v = read(client, type_uri, payload, &key).await?;
             if is_json_output() {
                 return Ok(print_json(&v)?);
             }
@@ -762,13 +693,9 @@ async fn run_task(
             Ok(())
         }
         RoomsCommands::Get { room } => {
-            let payload = typed::<spec::get::v0_2::Payload>(json!({ "roomId": room }))?;
-            let type_uri = <spec::get::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
-            let fallback = (
-                <spec::get::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
-                typed::<spec::get::v0_1::Payload>(json!({ "roomId": room }))?,
-            );
-            let v = read_v0_2(client, type_uri, payload, Some(fallback), &key).await?;
+            let payload = typed::<spec::get::v0_3::Payload>(json!({ "roomId": room }))?;
+            let type_uri = <spec::get::v0_3::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+            let v = read(client, type_uri, payload, &key).await?;
             if is_json_output() {
                 return Ok(print_json(&v)?);
             }
@@ -796,19 +723,9 @@ async fn run_task(
                 clear_tags,
                 reason,
             )?;
-            // 0.2 writes a new label or description into the room as its profile too; a VTC
-            // that predates it gets 0.1, which takes the same request.
-            let versions = vec![
-                (
-                    <spec::update::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI,
-                    typed::<spec::update::v0_2::Payload>(payload.clone())?,
-                ),
-                (
-                    <spec::update::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
-                    payload,
-                ),
-            ];
-            let v = change_at_newest(client, &target.base, versions, &did, &key).await?;
+            // A new label or description is written into the room as its profile too.
+            let type_uri = <spec::update::v0_3::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+            let v = change(client, &target.base, type_uri, payload, &did, &key).await?;
             if is_json_output() {
                 return Ok(print_json(&v)?);
             }

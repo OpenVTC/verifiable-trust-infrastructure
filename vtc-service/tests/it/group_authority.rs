@@ -40,7 +40,12 @@ const RP_ORIGIN: &str = "https://vtc.example.com";
 const SPEC: &str = "https://trusttasks.org/spec/vtc/groups";
 
 fn task(name: &str) -> String {
-    format!("{SPEC}/{name}/0.1")
+    // The paged reads moved to 0.2 (`nextCursor` absent on the last page).
+    let version = match name {
+        "list" | "members/list" | "requests/list" => "0.2",
+        _ => "0.1",
+    };
+    format!("{SPEC}/{name}/{version}")
 }
 
 /// A `trust-task-error` reply's code — the census reads witnesses by this name.

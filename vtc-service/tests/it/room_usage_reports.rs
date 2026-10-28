@@ -1,5 +1,5 @@
 //! What rooms store and may store (`docs/05-design-notes/data-rooms-files.md` §6.2–6.3):
-//! `vtc/rooms/get/0.1`, `vtc/rooms/usage/0.1` and `vtc/rooms/limits/set/0.1`, driven
+//! `vtc/rooms/get/0.3`, `vtc/rooms/usage/0.1` and `vtc/rooms/limits/set/0.1`, driven
 //! through the signed-document door as the console does. Files are put through the
 //! community's blob host directly, as a member's upload would leave them.
 
@@ -17,10 +17,10 @@ use vtc_service::test_support::{TEST_VTC_DID, TestVtc};
 
 use crate::common::signed::{error_code, post, signed};
 
-const GET: &str = "https://trusttasks.org/spec/vtc/rooms/get/0.1";
+const GET: &str = "https://trusttasks.org/spec/vtc/rooms/get/0.3";
 const USAGE: &str = "https://trusttasks.org/spec/vtc/rooms/usage/0.1";
 const LIMITS: &str = "https://trusttasks.org/spec/vtc/rooms/limits/set/0.1";
-const LIST: &str = "https://trusttasks.org/spec/vtc/rooms/list/0.1";
+const LIST: &str = "https://trusttasks.org/spec/vtc/rooms/list/0.2";
 
 const CHUNK: usize = 16_384;
 const MEMBER: &str = "did:key:z6MkMemberOfTheRoom";

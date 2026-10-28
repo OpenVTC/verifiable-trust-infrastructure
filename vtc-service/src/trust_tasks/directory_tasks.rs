@@ -7,7 +7,7 @@
 //! | `fields/{define,update,retire}/0.1` | `vtc.directory.admin` (a console key acts for its administrator); a widening update parks for the other holders (VTI-DIR-024) |
 //! | `card/{show,update}/0.1` | being the member: the signer's own active membership, never a console key |
 //! | `card/assert/0.1` | `vtc.directory.admin` |
-//! | `entries/{list,show}/0.1` | an active member or an administrator, each entry projected for them |
+//! | `entries/list/0.2`, `entries/show/0.1` | an active member or an administrator, each entry projected for them |
 //! | `query/0.1` | as `entries/show`, answered through the same projection (`community_tasks`) |
 //! | `disclosure/0.1` | anyone the join manifest answers: the statement is what an applicant reads before applying (VTI-DIR-130) |
 //! | `images/upload/0.1` | an active member, or `vtc.directory.admin`; the picture belongs to whoever uploaded it |
@@ -15,9 +15,9 @@
 //! | `card/publish/0.1` | being the member, signing with their membership DID — never a delegated key, never an administrator |
 //! | `card/public/0.1` | anyone, with or without a proof: a card its member published |
 //! | `card/present/0.1` | being the member; the presentation's holder must be the member too (item 3) |
-//! | `notes/{append,list}/0.1` | `vtc.directory.notes` |
+//! | `notes/append/0.1`, `notes/list/0.2` | `vtc.directory.notes` |
 //! | `notes/export/0.1` | `vtc.directory.notes`, and the exporter's gesture bound to the document (VTI-DIR-033) |
-//! | `export/0.1` | `vtc.directory.admin`, and the exporter's gesture bound to its first page |
+//! | `export/0.2` | `vtc.directory.admin`, and the exporter's gesture bound to its first page |
 //!
 //! None has a REST route. Each arrives the same way over TSP, DIDComm or
 //! HTTPS.
@@ -43,14 +43,14 @@ use trust_tasks_rs::specs::vtc::directory::{
         publish::v0_1 as card_publish, show::v0_1 as card_show, update::v0_1 as card_update,
     },
     disclosure::v0_1 as disclosure,
-    entries::{list::v0_1 as entries_list, show::v0_1 as entries_show},
-    export::v0_1 as directory_export,
+    entries::{list::v0_2 as entries_list, show::v0_1 as entries_show},
+    export::v0_2 as directory_export,
     fields::{
         define::v0_1 as fields_define, list::v0_1 as fields_list, retire::v0_1 as fields_retire,
         update::v0_1 as fields_update,
     },
     images::{get::v0_1 as images_get, upload::v0_1 as images_upload},
-    notes::{append::v0_1 as notes_append, export::v0_1 as notes_export, list::v0_1 as notes_list},
+    notes::{append::v0_1 as notes_append, export::v0_1 as notes_export, list::v0_2 as notes_list},
 };
 use trust_tasks_rs::{Payload, RejectReason, TrustTask};
 use vti_common::audit::{
@@ -1350,7 +1350,7 @@ fn assert_error(doc: &TrustTask<Value>, e: CardError) -> TrustTaskOutcome {
 
 // ─── entries ──────────────────────────────────────────────────────────────
 
-/// `entries/list/0.1` (items 1 – 9).
+/// `entries/list/0.2` (items 1 – 9).
 async fn handle_entries_list(
     state: &AppState,
     ctx: &JoinAuthCtx,
@@ -2034,7 +2034,7 @@ async fn handle_notes_append(
     }
 }
 
-/// `notes/list/0.1` (items 1 – 5): newest first, a redacted note's text
+/// `notes/list/0.2` (items 1 – 5): newest first, a redacted note's text
 /// withheld.
 async fn handle_notes_list(
     state: &AppState,
@@ -2114,7 +2114,12 @@ async fn handle_notes_list(
         return app_error_to_reject(&doc, &e);
     }
     let items: Vec<Value> = page.iter().map(|(_, n)| n.wire()).collect();
-    success_response(&doc, json!({ "items": items, "nextCursor": next }))
+    // On the last page `nextCursor` is absent, never `null` (0.2).
+    let mut body = json!({ "items": items });
+    if let Some(next) = next {
+        body["nextCursor"] = json!(next);
+    }
+    success_response(&doc, body)
 }
 
 /// `notes/export/0.1` (items 1 – 3): every note about a member, redacted ones
@@ -2175,7 +2180,7 @@ async fn handle_notes_export(
     )
 }
 
-/// `export/0.1` (items 1 – 4): every active member's card as JSContact, a page
+/// `export/0.2` (items 1 – 4): every active member's card as JSContact, a page
 /// at a time. The first page takes the exporter's gesture bound to it and is
 /// audited with the count; later pages are bound to it by their cursor.
 async fn handle_export(
@@ -2300,8 +2305,10 @@ async fn handle_export(
             Value::Object(card)
         })
         .collect();
-    success_response(
-        &doc,
-        json!({ "items": items, "nextCursor": next, "exportedAt": Utc::now() }),
-    )
+    // On the last page `nextCursor` is absent, never `null` (0.2).
+    let mut body = json!({ "items": items, "exportedAt": Utc::now() });
+    if let Some(next) = next {
+        body["nextCursor"] = json!(next);
+    }
+    success_response(&doc, body)
 }

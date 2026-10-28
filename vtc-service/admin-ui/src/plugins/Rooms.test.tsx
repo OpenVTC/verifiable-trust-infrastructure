@@ -19,8 +19,8 @@ vi.mock("@/lib/api", async (original) => ({
   postSignedTrustTask: (await import("@/test/signed-read")).unsignedTask,
 }));
 
-const LIST = "https://trusttasks.org/spec/vtc/rooms/list/0.1";
-const GET = "https://trusttasks.org/spec/vtc/rooms/get/0.2";
+const LIST = "https://trusttasks.org/spec/vtc/rooms/list/0.2";
+const GET = "https://trusttasks.org/spec/vtc/rooms/get/0.3";
 const USAGE = "https://trusttasks.org/spec/vtc/rooms/usage/0.1";
 const LIMITS_SET = "https://trusttasks.org/spec/vtc/rooms/limits/set/0.1";
 
@@ -37,8 +37,8 @@ const hostedRoom = (visibility: "open" | "attributed" | "private") => ({
   epoch: 3,
   lifecycle: "live",
   retentionDays: 30,
-  createdAt: 1_760_000_000,
-  updatedAt: 1_760_000_000,
+  createdAt: "2025-10-09T08:53:20Z",
+  updatedAt: "2025-10-09T08:53:20Z",
 });
 
 const roomGet = (visibility: "open" | "attributed" | "private" = "attributed") => ({
@@ -291,8 +291,8 @@ describe("Room usage", () => {
 // read the community's rooms (`rooms/useRoomNames.tsx`); nobody else is shown
 // a name, or an error for not being allowed to read one.
 describe("Room names on the host pages", () => {
-  const COMMUNITY_LIST = "https://trusttasks.org/spec/vtc/rooms/community/list/0.2";
-  const COMMUNITY_GET = "https://trusttasks.org/spec/vtc/rooms/community/get/0.2";
+  const COMMUNITY_LIST = "https://trusttasks.org/spec/vtc/rooms/community/list/0.3";
+  const COMMUNITY_GET = "https://trusttasks.org/spec/vtc/rooms/community/get/0.3";
   const COMMUNITY_MEMBERS = "https://trusttasks.org/spec/vtc/rooms/community/members/list/0.1";
   const OTHER_ROOM = "did:webvh:QmOther:alice.example.com:notes";
   const BOTH = whoamiWith(["vtc.rooms.admin", "vtc.rooms.manage"]);
