@@ -2,6 +2,113 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.23.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-policy-v0.22.0...vta-policy-v0.23.0) — 2026-10-28
+
+
+### Added
+
+- **vta**: Speak AclEntry 0.2 — acl/*/0.2 and acl/list/0.3 ([#2324](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2324))
+
+The VTA moves its ACL surface to AclEntry 0.2 (`acl/_shared/0.2`), where every
+  authority axis is explicit, and stops serving acl/{grant,show,update,
+  change-role,revoke}/0.1 and acl/list/0.1. `operations::acl_v0_2` maps each
+  0.2 value onto the stored (role, contexts) model and refuses the ones the
+  store cannot hold (`act: all` on a non-admin, `act: none` on admin →
+  invalidActScope) rather than approximating them. change-role carries the act
+  scope across unchanged; update never narrows act (revoke {kind: act} does);
+  list/0.3 pages with signed, filter-bound cursors and honours role,
+  subjectPrefix and capability. RETIRED_TASK_TYPES moves approval rules naming
+  the 0.1 URIs to their successors at boot.
+
+- **policy**: A requireConsent decision states its quorum and requester exclusion (policy/_shared 0.4) ([#2322](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2322))
+
+trust-tasks-rs 0.36 publishes policy/_shared/0.4 and policy/evaluate/0.4,
+  which make requireConsent.minApprovals and excludeRequester REQUIRED with no
+  default (SPEC §6.6 rule 5: a shared component supplies no governance
+  default). Under 0.3 a decision omitting either meant a quorum of one, or a
+  requester allowed to approve itself, with nothing on the wire to show it.
+
+  vta-policy's mirror of the schema moves to 0.4: RequireConsent no longer
+  defaults either member, so a policy whose decision omits one no longer
+  deserialises and the PDP fails closed (deny), as for any other malformed
+  decision. The declarative approvals generator (vta-sdk::approvals) and the
+  VTC already emit both members; hand-written operator policies that omit
+  them must add them.
+
+  policy/evaluate is still not served (its PolicyInput.site remains required
+  in 0.4), so there is no wire version to move.
+
+- **auth**: Serve only the current auth, audit/list, policy, task-consent and discovery versions ([#2313](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2313))
+
+The VTA, the VTC and every client in the workspace move off superseded Trust
+  Task versions of these families, and the services stop serving the old ones:
+
+  - auth/authenticate 0.1/0.2 -> 0.3 (proxied-login members; a `principal` that
+    is not the signer is refused `delegationNotRecognized`), auth/refresh 0.1 ->
+    0.2, auth/revoke-session -> 0.2, auth/signing-key/enroll 0.1 -> 0.2.
+  - auth/step-up/approve-response 0.1/0.2/0.3 -> 0.6 on the VTA (one typed
+    handler; vta-mobile-core builds 0.6, a bound approval may carry no
+    `sessionId`).
+  - auth/oob/{request,redeem,claim} 0.1 -> 0.2, grant 0.1/0.2 -> 0.3, respond
+    0.1 -> 0.3 (`claimClosesAt`, `decisionClosesAt`, `sessionEndsAt` as RFC 3339
+    instants rather than epoch seconds), on the VTC and the member portal.
+  - audit/list 0.1 -> 0.2 and policy/list 0.2 -> 0.3 (`limit`/`nextCursor`),
+    policy/upsert 0.1/0.2 -> 0.3 (`created` -> `wasCreated`), on both services
+    and their clients.
+  - task-consent/decision 0.1 -> 0.2, trust-task-discovery 0.1 -> 0.3.
+
+  An approval rule names its task by exact versioned Type URI, so a stored rule
+  naming a version the VTA no longer serves would never match again and the task
+  it gated would run ungated. `vta_policy::approvals::RETIRED_TASK_TYPES` maps
+  each retired version to its successor; boot moves stored rules onto it, and the
+  policy write path refuses a new rule naming a retired type.
+
+  Deliberately not moved, because a peer outside this workspace pins them:
+
+  - auth/step-up/approve-request stays at 0.2 on the VTA: the fielded approvers
+    (vta-mobile-agent-ios, which routes by a hard-coded 0.1/0.2 type list, and the
+    browser plugin) accept only 0.1 and 0.2.
+  - the VTC still serves auth/step-up/approve-response/0.4 beside 0.6, for the
+    console's unsigned session-passkey answer, which 0.5 onward forbids.
+
+- **vta**: Serve only the current vault/* and device/* versions ([#2309](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2309))
+
+The VTA, its SDK, CLI and MCP bridge move off the superseded vault and device
+  Trust Task versions, and the VTA stops serving the old ones:
+
+  - vault/list 0.1/0.2/0.3 -> 0.4: request `pageSize` -> `limit`, response
+    `truncated`/`cursor` -> `nextCursor`. The VTA now pages for real (keyset on
+    entry id, the cursor bound to the filters it was minted for) and answers a
+    foreign cursor `vault/list:cursorInvalid`, since 0.4 requires a `nextCursor`
+    whenever more entries match.
+  - vault/get 0.1/0.2 -> 0.3, vault/upsert 0.1/0.2/0.3 -> 0.4 (`created` ->
+    `wasCreated`), vault/release, proxy-login and sign-trust-task 0.1 -> 0.2.
+  - vault/credentials/get 0.1 (retired) -> 0.2, which carries the body as stored
+    in the member its format calls for: `credential` for a Data Integrity
+    credential, `credentialBase64` for an SD-JWT or an mdoc (dtgwg-trust-tasks-tf
+    #919). 0.1 could only answer with a JSON object, so every SD-JWT VC in the
+    vault failed to fetch.
+  - device/register, wipe, set-wake 0.1 -> 0.2, device/list 0.1/0.2 -> 0.3
+    (`limit`/`nextCursor`, keyset paging), device/heartbeat 0.1/0.2 -> 0.3
+    (`serverTime` -> `respondedAt`). The device handlers parse the generated
+    payloads and emit camelCase enum values themselves.
+
+  The `wire_v0_2` edge transform no longer retypes a request to a 0.1 URI and
+  dispatches it through a 0.1 handler: the dispatch table registers the served
+  version, and the transform only rewrites the vault enum values between the
+  wire's camelCase and the storage types' kebab-case. The JWE-sealing handlers
+  always seal camelCase cleartext, so the task-local wire version is gone. The
+  vault and device rows leave `deprecation::SUPERSEDED_TASKS`.
+
+  `vault/_shared/0.3`'s `VaultEntry` no longer declares the archival-lifecycle
+  members `vault/_shared/0.1` carried (`status`, `archivedAt`, `deletedAt`,
+  `graceUntil`) and is `additionalProperties: false`, so an archived or deleted
+  entry now carries them in `ext["org.openvtc.vault-lifecycle"]` (SPEC §4.5.1);
+  an active entry carries none, as before. Restoring them to the shared
+  component is a registry change.
+
+
+
 ## [0.22.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-policy-v0.21.0...vta-policy-v0.22.0) — 2026-10-27
 
 

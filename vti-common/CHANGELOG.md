@@ -2,6 +2,225 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.51.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-common-v0.50.0...vti-common-v0.51.0) — 2026-10-28
+
+
+### Added
+
+- **vta**: Speak AclEntry 0.2 — acl/*/0.2 and acl/list/0.3 ([#2324](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2324))
+
+The VTA moves its ACL surface to AclEntry 0.2 (`acl/_shared/0.2`), where every
+  authority axis is explicit, and stops serving acl/{grant,show,update,
+  change-role,revoke}/0.1 and acl/list/0.1. `operations::acl_v0_2` maps each
+  0.2 value onto the stored (role, contexts) model and refuses the ones the
+  store cannot hold (`act: all` on a non-admin, `act: none` on admin →
+  invalidActScope) rather than approximating them. change-role carries the act
+  scope across unchanged; update never narrows act (revoke {kind: act} does);
+  list/0.3 pages with signed, filter-bound cursors and honours role,
+  subjectPrefix and capability. RETIRED_TASK_TYPES moves approval rules naming
+  the 0.1 URIs to their successors at boot.
+
+- **auth**: Serve only the current passkey invite, approver invite, passkey revoke and login versions ([#2321](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2321))
+
+The VTC now serves:
+
+  - auth/passkey/enroll/invite/0.3 (was 0.2) and
+    auth/step-up/approver/invite/0.2 (was 0.1): the invite lifetime is
+    `ttlSeconds`, not `ttl`. Nothing else in either payload moved.
+  - auth/passkey/revoke/{start,finish}/0.2 for an administrator's own
+    session (login) passkeys too, which were still on 0.1. One Type URI
+    now serves both purposes: start resolves the credential among the
+    subject's session and step-up credentials, and finish routes the
+    handle back to whichever started it. For a session credential, per
+    0.2: lastCredential is refused at start before a challenge is issued
+    (and re-checked at finish), the handle is bound to its producer
+    (another producer's handle is revocationNotFound), the assertion must
+    carry the UV flag, and the response carries `subject` and
+    `purpose: "session"`. An administrator naming another administrator's
+    session passkey as `subject` is notAuthorized: a login passkey is
+    revoked only by its owner on this door.
+
+  The VTA's REST passkey-login routes declare only
+  auth/passkey/login/{start,finish}/0.2; the 0.1 constants are removed
+  from vta-sdk (TASK_AUTH_PASSKEY_LOGIN_{START,FINISH}_0_1). The routes
+  never read `purpose`, the only member 0.1 spelt differently
+  (`step-up` vs `stepUp`), so no wire behaviour changes there. The VTC
+  already served login 0.2.
+
+  The admin console sends ttlSeconds and the 0.2 revoke URIs; openapi.json
+  and wire.ts are regenerated for the revoke/finish response.
+
+- **auth**: Serve only the current auth, audit/list, policy, task-consent and discovery versions ([#2313](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2313))
+
+The VTA, the VTC and every client in the workspace move off superseded Trust
+  Task versions of these families, and the services stop serving the old ones:
+
+  - auth/authenticate 0.1/0.2 -> 0.3 (proxied-login members; a `principal` that
+    is not the signer is refused `delegationNotRecognized`), auth/refresh 0.1 ->
+    0.2, auth/revoke-session -> 0.2, auth/signing-key/enroll 0.1 -> 0.2.
+  - auth/step-up/approve-response 0.1/0.2/0.3 -> 0.6 on the VTA (one typed
+    handler; vta-mobile-core builds 0.6, a bound approval may carry no
+    `sessionId`).
+  - auth/oob/{request,redeem,claim} 0.1 -> 0.2, grant 0.1/0.2 -> 0.3, respond
+    0.1 -> 0.3 (`claimClosesAt`, `decisionClosesAt`, `sessionEndsAt` as RFC 3339
+    instants rather than epoch seconds), on the VTC and the member portal.
+  - audit/list 0.1 -> 0.2 and policy/list 0.2 -> 0.3 (`limit`/`nextCursor`),
+    policy/upsert 0.1/0.2 -> 0.3 (`created` -> `wasCreated`), on both services
+    and their clients.
+  - task-consent/decision 0.1 -> 0.2, trust-task-discovery 0.1 -> 0.3.
+
+  An approval rule names its task by exact versioned Type URI, so a stored rule
+  naming a version the VTA no longer serves would never match again and the task
+  it gated would run ungated. `vta_policy::approvals::RETIRED_TASK_TYPES` maps
+  each retired version to its successor; boot moves stored rules onto it, and the
+  policy write path refuses a new rule naming a retired type.
+
+  Deliberately not moved, because a peer outside this workspace pins them:
+
+  - auth/step-up/approve-request stays at 0.2 on the VTA: the fielded approvers
+    (vta-mobile-agent-ios, which routes by a hard-coded 0.1/0.2 type list, and the
+    browser plugin) accept only 0.1 and 0.2.
+  - the VTC still serves auth/step-up/approve-response/0.4 beside 0.6, for the
+    console's unsigned session-passkey answer, which 0.5 onward forbids.
+
+- **external**: Serve and send only the current external/* versions ([#2311](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2311))
+
+trust-tasks-rs 0.35 deprecates every superseded Trust Task version and withdraws each about 90 days later. Every current `external/*` version is already in 0.35, so the VTA serves it now and stops serving the old one, and every client in the workspace sends it.
+
+  Served now (the old versions are refused `unsupportedVersion`/`unsupportedType`):
+
+  - `external/accounts/{list,get,create,update,bindings/grant,bindings/revoke,probe,keys/rotate,suspend,resume,archive,restore}` 0.2 (from 0.1). `secret/set`, `setup` and `delete` stay at 0.1, their current version.
+  - `external/credentials/issue` 0.3 only (0.1 and 0.2 are no longer served).
+
+  On the wire:
+
+  - An account's `lastProbe` (`AccountProbeReport`, `external/_shared/0.2`) names when the probe ran `probedAt`, not `at`. A report stored by an earlier VTA is answered under the new name; nothing is rewritten.
+  - Issuance is 0.3's: a `scope` for every brokered model but `s3-static-presign`, which takes a `presign` batch of at most 64 operations (a 65th is `malformedRequest`); a batch whose sealed answer would not fit is `responseTooLarge` and costs none of the binding's rate. 0.1's single, unbound presigned request is gone with it.
+
+  Clients move with it:
+
+  - `vta-sdk`: `TASK_EXTERNAL_ACCOUNTS_*_0_1` become `_0_2`; `TASK_EXTERNAL_CREDENTIALS_ISSUE_0_1`/`_0_2` are removed. `VtaClient::external_credentials_issue` sends 0.3 (it took the 0.1 payload); `external_credentials_issue_v2`/`_v3` are removed, and `external_credentials_issue_presign` no longer falls back to 0.2.
+  - `vta-external`: `batch::PresignBatch`/`PresignRequest` are 0.3's types and `MAX_OPERATIONS` is 64; `MAX_OPERATIONS_0_3` is removed.
+  - `pnm external issue` drops `--object-key` (0.3's `scope` takes none; an `s3-static-presign` account is asked with `--presign`).
+  - The VTC (`auth: vta-account` storage) asks its VTA only at 0.3: the account check is a one-`get` batch on the canary, reads and deletes are batches of one, and a write the VTC makes itself is presigned as a `put` bound to its length and SHA-256 (`PresignedBlobs::put` hashes the staged file whenever its presigner `presigns_ops`). It no longer falls back to 0.2 for a VTA without 0.3.
+
+- **git-ns**: Serve and send only the current git-ns/* versions ([#2314](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2314))
+
+trust-tasks-rs 0.35 deprecates every superseded Trust Task version and
+  withdraws each about 90 days later. Every current git-ns version is already
+  in 0.35, so the VTC moves to it and stops serving the old ones (refused
+  `unsupportedVersion`).
+
+  Served now, at the current version only:
+  - git-ns/namespace/bind 0.2 (from 0.1), namespace/reseat 0.4 (from 0.3)
+  - git-ns/repo/adopt 0.3, repo/archive 0.3, repo/transfer 0.3 (from 0.1),
+    repo/create 0.4 (from 0.3)
+  - git-ns/right/grant 0.4 and right/revoke 0.4 (from 0.3),
+    right/break-glass 0.2 and right/ratify 0.2 (from 0.1)
+  - git-ns/drift/resolve 0.4 (from 0.1 revert-only and 0.3)
+  - git-ns/roles/reproject 0.2 (from 0.1)
+  - git-ns/view 0.6 (from 0.1, 0.2, 0.4 and 0.5): one handler for the member's
+    view and `scope: administrator`
+  - the administrator's reads: namespace/list 0.2, repo/list 0.2,
+    right/list 0.3, right/issued-by-departed 0.3, bridge/job/list 0.4 (from
+    0.1 and 0.2), projection/show 0.3, account/list 0.2, activity/list 0.3
+  - git-ns/right/break-glass-notice is sent at 0.2 (from 0.1)
+
+  On the wire: a record's `breakGlass.at` is `recordedAt`
+  (git-ns/_shared/0.6), a break-glass notice's `at` is `occurredAt`, an
+  activity item's `at` is `occurredAt`, and a repository's `lastCheck.at` is
+  `concludedAt`. Ratifying names `breakGlassAt` as before, read from
+  `breakGlass.recordedAt`.
+
+  Nested repository paths (git-ns/_shared/0.6): a repository resource is
+  `<forge-host>/<owner>/<repo-path>` with 1 to 21 path segments of up to 255
+  characters, so `gitlab.com/acme/platform/tools/cli` is one repository of the
+  namespace `gitlab.com/acme`. A repository contains only itself: a right on
+  `gitlab.com/acme/platform` is no right on `gitlab.com/acme/platform/tools/cli`.
+
+  The bridge's own tasks keep their older versions beside the current ones,
+  because the released bridge (OpenVTC/verifiable-git-infrastructure
+  `vgi-bridge` v0.25.0) still speaks only them: it sends `git-ns/bridge/event`
+  0.3 by default (0.1, 0.2 or 0.4 as configured) and `git-ns/bridge/result`
+  0.1, and takes `git-ns/bridge/job` 0.4 and 0.5. So the VTC now accepts
+  bridge/event 0.1 to 0.5 and bridge/result 0.1 and 0.2, and sends each job
+  as the newest bridge/job version the bridge lists in `trust-task-discovery`
+  — 0.6, else 0.5, else 0.4 — and a job naming a repository only 0.6 can
+  carry to no bridge without 0.6 (bridge/job 0.6, *Changes from 0.5*). Those
+  older bridge versions go once a bridge release speaking the current ones is
+  deployed.
+
+  One divergence kept, not introduced here: git-ns/drift/resolve 0.3 and 0.4
+  read an unreported role map as the default one; this VTC still refuses an
+  adopt with `git-ns:roleMapUnknown` until the bridge reports its map,
+  failing closed.
+
+  Clients move with it: the admin console (Repos plugin, member portal,
+  openapi.json and wire.ts regenerated, list-limits.json), `cnm git`, and
+  vtc-client, whose `git_ns_view` now takes `administrator` and `break_glass`
+  and replaces `git_ns_view_v2`, `git_ns_view_v4` and `git_ns_view_v5`;
+  `git_ns_drift_resolve` (0.4) replaces `git_ns_drift_resolve_v3` and the
+  deprecated 0.1 form, and `GIT_NS_DRIFT_RESOLVE_TYPE` replaces
+  `GIT_NS_DRIFT_RESOLVE_V3_TYPE`. vta_sdk::openapi's `GitNsView01*` wrappers
+  are `GitNsView06*`.
+
+- **vtc**: Serve only the current vtc/rooms, storage, groups, directory, registry and relationships tasks ([#2308](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2308))
+
+trust-tasks-rs 0.35 deprecates every superseded Trust Task version and
+  withdraws each about 90 days later. Every current version below is already
+  in 0.34, so the VTC moves to it now and stops serving the old one.
+
+  Served now (old versions refused `unsupportedVersion`):
+  - vtc/directory/entries/list 0.2, vtc/directory/export 0.2,
+    vtc/directory/notes/list 0.2 (from 0.1)
+  - vtc/groups/list, vtc/groups/members/list, vtc/groups/requests/list 0.2
+    (from 0.1)
+  - vtc/registry/records/list 0.2, vtc/registry/sync-jobs/list 0.2,
+    vtc/registry/sync-jobs/retry 0.2 (from 0.1)
+  - vtc/relationships/list 0.3 (from 0.2), vtc/relationships/revoke 0.2
+    (from 0.1)
+  - vtc/rooms/community/create 0.4 (from 0.1-0.3), get 0.3 and list 0.3
+    (from 0.1-0.2), update 0.3 (from 0.1-0.2), members/remove 0.2 (from 0.1)
+  - vtc/rooms/get 0.3 (from 0.1-0.2), vtc/rooms/list 0.2 (from 0.1)
+  - vtc/storage/configs/get and list 0.2 (from 0.1)
+
+  On the wire: a paged response's `nextCursor` is absent on the last page,
+  never null; a hosted room's `createdAt`, `updatedAt` and `epochExpiresAt`
+  are RFC 3339 strings (vtc/_shared/0.3/room-storage); sync-jobs/retry
+  reports an in-flight job `inFlight` (was `notFailed`). A community room is
+  always created with its profile written into it, and a removal always
+  withdraws the member at an open or attributed room's host.
+
+  Clients move with it: the admin console (openapi.json and wire.ts
+  regenerated), vtc-client, and `cnm rooms`, which no longer falls back to
+  older versions and tells the operator to upgrade a VTC that does not
+  serve the current one. vta_sdk::openapi drops the superseded wrappers.
+
+
+
+### Build & CI
+
+- **deps**: Compile only the trust-tasks-rs spec families each crate uses ([#2326](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2326))
+
+The workspace `trust-tasks-rs` entry enabled `all-specs`, so every crate that
+  depends on it, and every consumer of a published VTI crate, compiled all 34
+  generated spec families (~70 MB of Rust, 14 GB peak rustc RSS). The workspace
+  entry now enables `validate` only, and each crate lists the families it names:
+  a `trust_tasks_rs::specs::<family>` path, or a Type URI it sends, serves or
+  looks up in `schema_index`.
+
+  The workspace union is 29 families. The five dropped (chat, process-attestation,
+  sync, vrc, webvh) appear nowhere in VTI: no path, no Type URI, no handler. A
+  received document of one of those types was already refused as unsupported;
+  it is now dispatched to that refusal without a schema check first.
+
+  What shrinks: `vti-rooms-wasm` compiles `rooms` alone (trust-tasks-rs dev
+  build 14.2 GB / 174 s -> 1.5 GB / 7 s). Everything that depends on vta-sdk
+  still needs 23-29 families, so the workspace, service and mobile builds are
+  roughly unchanged (mobile `check` 12.9 -> 11.1 GB); the swap safety nets stay.
+
+
+
 ## [0.50.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-common-v0.49.0...vti-common-v0.50.0) — 2026-10-27
 
 

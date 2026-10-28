@@ -2,6 +2,49 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.26.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-vault-v0.25.0...vta-vault-v0.26.0) — 2026-10-28
+
+
+### Added
+
+- **vta**: Serve only the current vault/* and device/* versions ([#2309](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2309))
+
+The VTA, its SDK, CLI and MCP bridge move off the superseded vault and device
+  Trust Task versions, and the VTA stops serving the old ones:
+
+  - vault/list 0.1/0.2/0.3 -> 0.4: request `pageSize` -> `limit`, response
+    `truncated`/`cursor` -> `nextCursor`. The VTA now pages for real (keyset on
+    entry id, the cursor bound to the filters it was minted for) and answers a
+    foreign cursor `vault/list:cursorInvalid`, since 0.4 requires a `nextCursor`
+    whenever more entries match.
+  - vault/get 0.1/0.2 -> 0.3, vault/upsert 0.1/0.2/0.3 -> 0.4 (`created` ->
+    `wasCreated`), vault/release, proxy-login and sign-trust-task 0.1 -> 0.2.
+  - vault/credentials/get 0.1 (retired) -> 0.2, which carries the body as stored
+    in the member its format calls for: `credential` for a Data Integrity
+    credential, `credentialBase64` for an SD-JWT or an mdoc (dtgwg-trust-tasks-tf
+    #919). 0.1 could only answer with a JSON object, so every SD-JWT VC in the
+    vault failed to fetch.
+  - device/register, wipe, set-wake 0.1 -> 0.2, device/list 0.1/0.2 -> 0.3
+    (`limit`/`nextCursor`, keyset paging), device/heartbeat 0.1/0.2 -> 0.3
+    (`serverTime` -> `respondedAt`). The device handlers parse the generated
+    payloads and emit camelCase enum values themselves.
+
+  The `wire_v0_2` edge transform no longer retypes a request to a 0.1 URI and
+  dispatches it through a 0.1 handler: the dispatch table registers the served
+  version, and the transform only rewrites the vault enum values between the
+  wire's camelCase and the storage types' kebab-case. The JWE-sealing handlers
+  always seal camelCase cleartext, so the task-local wire version is gone. The
+  vault and device rows leave `deprecation::SUPERSEDED_TASKS`.
+
+  `vault/_shared/0.3`'s `VaultEntry` no longer declares the archival-lifecycle
+  members `vault/_shared/0.1` carried (`status`, `archivedAt`, `deletedAt`,
+  `graceUntil`) and is `additionalProperties: false`, so an archived or deleted
+  entry now carries them in `ext["org.openvtc.vault-lifecycle"]` (SPEC §4.5.1);
+  an active entry carries none, as before. Restoring them to the shared
+  component is a registry change.
+
+
+
 ## [0.25.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-vault-v0.24.0...vta-vault-v0.25.0) — 2026-10-27
 
 

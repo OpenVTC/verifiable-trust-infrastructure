@@ -2,6 +2,84 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.22.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-rooms-v0.21.0...vti-rooms-v0.22.0) — 2026-10-28
+
+
+### Added
+
+- **rooms**: Serve and send only the current rooms tasks, keeping what pnm-browser-plugin sends ([#2315](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2315))
+
+The rest of the `rooms` family, and `vtc/rooms/offers/list`, move off their superseded versions (part of the migration off the versions trust-tasks-rs 0.35 deprecates, trust-tasks-tf #921). Every sender in this workspace goes at the current version with no fallback. The versions `pnm-browser-plugin` still sends stay served (below).
+
+  ## Old → current
+
+  | Task | Was served | Now served | What changed on the wire |
+  |---|---|---|---|
+  | `rooms/keys/act` (VTA) | 0.1–0.6 | **0.8**, and 0.1 and 0.5 (kept) | 0.8's request and response schemas are 0.6's. Its closed table adds, from 0.7, `vtc/rooms/offers/list/0.4`, `rooms/records/put/0.3`, `rooms/records/list/0.3`–`0.5`, `rooms/info/0.2`–`0.3` and `rooms/epoch/chain/0.2`, and from 0.8 `rooms/records/prune/0.1`/`0.2` and `rooms/records/retention/set/0.1` as `admin`, with a presentation. 0.1 and 0.5 keep their own tables and refuse those `typeNotActable`. |
+  | `rooms/keys/browse` (VTA) | 0.1, 0.2 | **0.3**, and 0.1 (kept) | `lastPrune` passed through from `rooms/records/list/0.5`, its instant named `prunedAt`. |
+  | `rooms/owner/register` (VTA) | 0.1, 0.2 | **0.2** | Unchanged. The 0.1 refusal of a failed list delivery is gone. |
+  | `rooms/info` (hosts) | 0.1, 0.2 | **0.3**, and 0.1 (kept) | `lastPrune.at` → `prunedAt` (`rooms/_shared/0.2`). |
+  | `rooms/records/list` (hosts) | 0.1–0.3 | **0.5**, and 0.1 (kept) | `cursor` → `nextCursor` (0.4); `lastPrune.at` → `prunedAt` (0.5). |
+  | `rooms/records/prune` (hosts) | 0.1 | **0.2** | `prune.at` → `prunedAt`. |
+  | `vtc/rooms/offers/list` (VTC) | 0.1–0.3 | **0.4**, and 0.2 (kept) | `renewals[].renews` → `renewsAt`. |
+
+  Hosts are `vtc-service` and `room-host` (through `vti-rooms`); the act and browse key holder is `vta-service`.
+
+  Senders moved:
+  - **vta-sdk:** `room_act` and `room_act_community` send `rooms/keys/act/0.8` only and return its types; `room_owner_register` sends 0.2 only. `is_offer_type` / `is_community_type` include `vtc/rooms/offers/list/0.4`. `TASK_ROOMS_KEYS_ACT_0_{2,3,4,6}`, `TASK_ROOMS_KEYS_BROWSE_0_2` and `TASK_ROOMS_OWNER_REGISTER_0_1` are removed; `TASK_ROOMS_KEYS_ACT_0_8` and `TASK_ROOMS_KEYS_BROWSE_0_3` are added.
+  - **vtc-client:** `room_info` sends `rooms/info/0.3` (`room_info_v2` and `RoomInfoV2Response` are gone); `prune_records` sends `rooms/records/prune/0.2`; `list_records` sends `rooms/records/list/0.5`.
+  - **pnm (vta-cli-common):** `rooms list`, `put` and the tier read go through act 0.8 at `records/list/0.5`, `records/put/0.3` and `info/0.3`; `rooms offers list|renew|accept` list at `vtc/rooms/offers/list/0.4` only.
+  - **vti-rooms:** `RecordPrune::to_wire` writes `prunedAt`; `ROOMS_INFO_V3_TYPE`, `ROOMS_RECORDS_LIST_V5_TYPE`, `ROOMS_RECORDS_PRUNE_V2_TYPE` replace `ROOMS_INFO_V2_TYPE`, `ROOMS_RECORDS_LIST_V3_TYPE`, `ROOMS_RECORDS_PRUNE_TYPE`; `ROOMS_RECORDS_LIST_V2_TYPE`, `record_tasks::list_v3_response` and `blob_tasks::list_v2_response` are gone.
+
+  `retry_safety`, `budget`, `ALL_URIS`, the policy gate's subject rule, both services' conformance tables and error-code censuses are updated. Docs are updated, except design-note version histories.
+
+  ## Kept for a deployed peer
+
+  `pnm-browser-plugin` (`@openvtc/pnm-core`, outside this workspace) sends these today, so they stay served until it moves:
+  - `rooms/keys/act/0.1` and `rooms/keys/act/0.5`
+  - act-wrapped `rooms/info/0.1`, `rooms/records/list/0.1`, `rooms/records/put/0.1` and `0.2`, `rooms/epoch/chain/0.1`
+  - `rooms/keys/browse/0.1`
+  - `vtc/rooms/offers/list/0.2`
+
+  `rooms/owner/register/0.2`, which it also sends, is current.
+
+  Also kept: `rooms/owner/group/remove/0.1`, the only task that removes a member of a `private` room from its group (the specification problem recorded in #2295).
+
+  ## Breaking changes
+
+  - **API:** the public `vta-sdk`, `vtc-client` and `vti-rooms` surfaces above change.
+  - **Wire:** a client sending a dropped version gets `unsupportedType` / `unsupportedVersion`. The SDK and `pnm` no longer fall back: an agent or community that does not serve the current version is reported for upgrade.
+
+  ## Not done here
+
+  - `pnm rooms put` still refuses provenance on an `open` room. Act 0.8 now completes `rooms/records/put/0.3`, which `pnm` sends, but it does not yet write the provenance members into the cleartext.
+  - `pnm-browser-plugin` needs a follow-up there to move to act 0.8, and the versions above can then go.
+
+
+
+### Build & CI
+
+- **deps**: Compile only the trust-tasks-rs spec families each crate uses ([#2326](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2326))
+
+The workspace `trust-tasks-rs` entry enabled `all-specs`, so every crate that
+  depends on it, and every consumer of a published VTI crate, compiled all 34
+  generated spec families (~70 MB of Rust, 14 GB peak rustc RSS). The workspace
+  entry now enables `validate` only, and each crate lists the families it names:
+  a `trust_tasks_rs::specs::<family>` path, or a Type URI it sends, serves or
+  looks up in `schema_index`.
+
+  The workspace union is 29 families. The five dropped (chat, process-attestation,
+  sync, vrc, webvh) appear nowhere in VTI: no path, no Type URI, no handler. A
+  received document of one of those types was already refused as unsupported;
+  it is now dispatched to that refusal without a schema check first.
+
+  What shrinks: `vti-rooms-wasm` compiles `rooms` alone (trust-tasks-rs dev
+  build 14.2 GB / 174 s -> 1.5 GB / 7 s). Everything that depends on vta-sdk
+  still needs 23-29 families, so the workspace, service and mobile builds are
+  roughly unchanged (mobile `check` 12.9 -> 11.1 GB); the swap safety nets stay.
+
+
+
 ## [0.21.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-rooms-v0.20.0...vti-rooms-v0.21.0) — 2026-10-27
 
 

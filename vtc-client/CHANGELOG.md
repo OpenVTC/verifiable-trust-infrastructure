@@ -2,6 +2,340 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.30.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vtc-client-v0.29.0...vtc-client-v0.30.0) — 2026-10-28
+
+
+### Added
+
+- **vtc**: Serve acl/*/0.2 and acl/list/0.3, keeping change-role/0.1 for the community role ([#2323](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2323))
+
+* feat(vtc)!: serve acl/*/0.2 and acl/list/0.3, keeping change-role/0.1 for the community role
+
+  The VTC stops serving the superseded `acl/*` versions:
+
+  - `acl/{grant,show,update,revoke}/0.1` are gone; `acl/*/0.2` (AclEntry 0.2, every authority axis explicit) is the only form.
+  - `acl/list/0.2` → `acl/list/0.3`: `pageSize` → `limit`, response `cursor` → `nextCursor` (absent on the last page), `truncated` removed. The cursor stays bound to the filters and direction it was minted under (`acl/list:cursorMismatch`).
+  - `acl/change-role/0.2` moves the **administrative** role.
+
+  **Kept on 0.1: `acl/change-role/0.1`.** It is still the only door onto the **community**-role ceremony (member ↔ admin, role-VAC re-mint, promotion serialisation, the bound step-up and VTI-APV-018/019 consent). `acl/change-role/0.2` moves the administrative role only, and the community role has no 0.2 task of its own, so dropping 0.1 would remove the operation outright. It is served beside 0.2 as `ACL_CHANGE_COMMUNITY_ROLE_TYPE`; the consent gate, the summary templates and the bound step-up now name it explicitly rather than through the 0.2 constant.
+
+- **voting**: Register and show elections at voting/election 0.2, and serve vtc/elections create 0.3, list 0.3, show 0.2 ([#2317](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2317))
+
+* feat(voting)!: register and show elections at voting/election 0.2, and serve vtc/elections create 0.3, list 0.3, show 0.2
+
+  trust-tasks-rs 0.35 deprecates every superseded Trust Task version and
+  withdraws each about 90 days later. Every party to an election is in this
+  workspace, so all of them move to the current versions together, and the old
+  ones are refused `unsupportedVersion`. Every current version is already in
+  trust-tasks-rs 0.35.3.
+
+  | Task | Was | Now | What changed on the wire |
+  |---|---|---|---|
+  | voting/election/register | 0.1 | 0.2 | the manifest (voting/_shared/0.2) names its instants `registrationOpensAt`, `votingOpensAt`, `votingClosesAt` |
+  | voting/election/show | 0.1 | 0.2 | the same manifest in the answer |
+  | vtc/elections/create | 0.1 | 0.3 | the 0.2 manifest; a parked binding election's next step expects `vtc/admin/actions/show/0.3` |
+  | vtc/elections/list | 0.1 | 0.3 | `next` is `nextCursor` (0.2); items' `votingOpens`/`votingCloses` are `votingOpensAt`/`votingClosesAt` (0.3) |
+  | vtc/elections/show | 0.1 | 0.2 | the 0.2 manifest |
+  | vta/pcs/voter/register | 0.1 | 0.2 | the 0.2 manifest |
+  | vta/pcs/voter/read | 0.1 | 0.2 | signs `vtc/elections/list/0.3` or `show/0.2` |
+  | vta/pcs/vote | 0.1 | 0.2 | the 0.2 manifest |
+  | vta/pcs/vote-encrypted | 0.2 | 0.3 | the 0.2 manifest |
+  | vta/pcs/trustee/enrol | 0.1 | 0.2 | the 0.2 manifest |
+  | vta/pcs/trustee/{deal,keys,justify} | 0.2 | 0.3 | the 0.2 manifest |
+  | vta/pcs/trustee/read | 0.1 | 0.2 | an `election` read signs `voting/election/show/0.2` |
+
+  - vti-voting reads the 0.2 manifest throughout (rules, tally, audit, the
+    encrypted levels, the voter's checks).
+  - vti-voting-service (the ballot box) dispatches by version: register and show
+    at 0.2, every other voting/* task at 0.1, its current version. A known task
+    at another version is refused `unsupportedVersion` naming the one served
+    (was `unsupportedType`).
+  - The VTC sends register 0.2 and serves the elections tasks above. The VTA's
+    voter and trustee tasks (`vta/pcs/*`) carry the manifest too, so they move
+    in the same change: a 0.2 manifest does not parse in the 0.1 task. `cnm`,
+    `pnm`, vta-sdk, vta-mobile-core, vtc-client and the admin console move with
+    them.
+  - Action summaries: a template for `vtc/elections/create/0.3` (pointers
+    `/manifest/votingOpensAt` and `/manifest/votingClosesAt`), pinned in the
+    build and in the console. The 0.1 template stays so a binding election
+    parked under it still renders in the history.
+
+  **Elections registered before this build are not carried over.** A manifest's
+  digest — which every ticket, cast and certification is bound to — is over its
+  member names, so a 0.1 manifest cannot be re-read as 0.2 without becoming a
+  different election. Rather than fail as a manifest "missing
+  registrationOpensAt", every reader refuses it by name with
+  `vti_voting::rules::require_current_manifest`:
+
+  - the ballot box will not start while its journal holds such an election
+    (restore fails, as for any journal entry that no longer parses), with
+    "election <id> was registered under voting/election/register/0.1 … this
+    build reads only the 0.2 manifest and cannot carry it over. Finish or cancel
+    it on the previous release, or remove it";
+  - the VTC's `vtc/elections/show` answers that election with the same message
+    and its audit and decryption steps fail it the same way.
+    `vtc/elections/list` still lists it.
+
+  Finish or cancel open elections before upgrading.
+
+- **auth**: Serve only the current auth, audit/list, policy, task-consent and discovery versions ([#2313](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2313))
+
+The VTA, the VTC and every client in the workspace move off superseded Trust
+  Task versions of these families, and the services stop serving the old ones:
+
+  - auth/authenticate 0.1/0.2 -> 0.3 (proxied-login members; a `principal` that
+    is not the signer is refused `delegationNotRecognized`), auth/refresh 0.1 ->
+    0.2, auth/revoke-session -> 0.2, auth/signing-key/enroll 0.1 -> 0.2.
+  - auth/step-up/approve-response 0.1/0.2/0.3 -> 0.6 on the VTA (one typed
+    handler; vta-mobile-core builds 0.6, a bound approval may carry no
+    `sessionId`).
+  - auth/oob/{request,redeem,claim} 0.1 -> 0.2, grant 0.1/0.2 -> 0.3, respond
+    0.1 -> 0.3 (`claimClosesAt`, `decisionClosesAt`, `sessionEndsAt` as RFC 3339
+    instants rather than epoch seconds), on the VTC and the member portal.
+  - audit/list 0.1 -> 0.2 and policy/list 0.2 -> 0.3 (`limit`/`nextCursor`),
+    policy/upsert 0.1/0.2 -> 0.3 (`created` -> `wasCreated`), on both services
+    and their clients.
+  - task-consent/decision 0.1 -> 0.2, trust-task-discovery 0.1 -> 0.3.
+
+  An approval rule names its task by exact versioned Type URI, so a stored rule
+  naming a version the VTA no longer serves would never match again and the task
+  it gated would run ungated. `vta_policy::approvals::RETIRED_TASK_TYPES` maps
+  each retired version to its successor; boot moves stored rules onto it, and the
+  policy write path refuses a new rule naming a retired type.
+
+  Deliberately not moved, because a peer outside this workspace pins them:
+
+  - auth/step-up/approve-request stays at 0.2 on the VTA: the fielded approvers
+    (vta-mobile-agent-ios, which routes by a hard-coded 0.1/0.2 type list, and the
+    browser plugin) accept only 0.1 and 0.2.
+  - the VTC still serves auth/step-up/approve-response/0.4 beside 0.6, for the
+    console's unsigned session-passkey answer, which 0.5 onward forbids.
+
+- **git-ns**: Serve and send only the current git-ns/* versions ([#2314](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2314))
+
+trust-tasks-rs 0.35 deprecates every superseded Trust Task version and
+  withdraws each about 90 days later. Every current git-ns version is already
+  in 0.35, so the VTC moves to it and stops serving the old ones (refused
+  `unsupportedVersion`).
+
+  Served now, at the current version only:
+  - git-ns/namespace/bind 0.2 (from 0.1), namespace/reseat 0.4 (from 0.3)
+  - git-ns/repo/adopt 0.3, repo/archive 0.3, repo/transfer 0.3 (from 0.1),
+    repo/create 0.4 (from 0.3)
+  - git-ns/right/grant 0.4 and right/revoke 0.4 (from 0.3),
+    right/break-glass 0.2 and right/ratify 0.2 (from 0.1)
+  - git-ns/drift/resolve 0.4 (from 0.1 revert-only and 0.3)
+  - git-ns/roles/reproject 0.2 (from 0.1)
+  - git-ns/view 0.6 (from 0.1, 0.2, 0.4 and 0.5): one handler for the member's
+    view and `scope: administrator`
+  - the administrator's reads: namespace/list 0.2, repo/list 0.2,
+    right/list 0.3, right/issued-by-departed 0.3, bridge/job/list 0.4 (from
+    0.1 and 0.2), projection/show 0.3, account/list 0.2, activity/list 0.3
+  - git-ns/right/break-glass-notice is sent at 0.2 (from 0.1)
+
+  On the wire: a record's `breakGlass.at` is `recordedAt`
+  (git-ns/_shared/0.6), a break-glass notice's `at` is `occurredAt`, an
+  activity item's `at` is `occurredAt`, and a repository's `lastCheck.at` is
+  `concludedAt`. Ratifying names `breakGlassAt` as before, read from
+  `breakGlass.recordedAt`.
+
+  Nested repository paths (git-ns/_shared/0.6): a repository resource is
+  `<forge-host>/<owner>/<repo-path>` with 1 to 21 path segments of up to 255
+  characters, so `gitlab.com/acme/platform/tools/cli` is one repository of the
+  namespace `gitlab.com/acme`. A repository contains only itself: a right on
+  `gitlab.com/acme/platform` is no right on `gitlab.com/acme/platform/tools/cli`.
+
+  The bridge's own tasks keep their older versions beside the current ones,
+  because the released bridge (OpenVTC/verifiable-git-infrastructure
+  `vgi-bridge` v0.25.0) still speaks only them: it sends `git-ns/bridge/event`
+  0.3 by default (0.1, 0.2 or 0.4 as configured) and `git-ns/bridge/result`
+  0.1, and takes `git-ns/bridge/job` 0.4 and 0.5. So the VTC now accepts
+  bridge/event 0.1 to 0.5 and bridge/result 0.1 and 0.2, and sends each job
+  as the newest bridge/job version the bridge lists in `trust-task-discovery`
+  — 0.6, else 0.5, else 0.4 — and a job naming a repository only 0.6 can
+  carry to no bridge without 0.6 (bridge/job 0.6, *Changes from 0.5*). Those
+  older bridge versions go once a bridge release speaking the current ones is
+  deployed.
+
+  One divergence kept, not introduced here: git-ns/drift/resolve 0.3 and 0.4
+  read an unreported role map as the default one; this VTC still refuses an
+  adopt with `git-ns:roleMapUnknown` until the bridge reports its map,
+  failing closed.
+
+  Clients move with it: the admin console (Repos plugin, member portal,
+  openapi.json and wire.ts regenerated, list-limits.json), `cnm git`, and
+  vtc-client, whose `git_ns_view` now takes `administrator` and `break_glass`
+  and replaces `git_ns_view_v2`, `git_ns_view_v4` and `git_ns_view_v5`;
+  `git_ns_drift_resolve` (0.4) replaces `git_ns_drift_resolve_v3` and the
+  deprecated 0.1 form, and `GIT_NS_DRIFT_RESOLVE_TYPE` replaces
+  `GIT_NS_DRIFT_RESOLVE_V3_TYPE`. vta_sdk::openapi's `GitNsView01*` wrappers
+  are `GitNsView06*`.
+
+- **rooms**: Serve and send only the current rooms tasks, keeping what pnm-browser-plugin sends ([#2315](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2315))
+
+The rest of the `rooms` family, and `vtc/rooms/offers/list`, move off their superseded versions (part of the migration off the versions trust-tasks-rs 0.35 deprecates, trust-tasks-tf #921). Every sender in this workspace goes at the current version with no fallback. The versions `pnm-browser-plugin` still sends stay served (below).
+
+  ## Old → current
+
+  | Task | Was served | Now served | What changed on the wire |
+  |---|---|---|---|
+  | `rooms/keys/act` (VTA) | 0.1–0.6 | **0.8**, and 0.1 and 0.5 (kept) | 0.8's request and response schemas are 0.6's. Its closed table adds, from 0.7, `vtc/rooms/offers/list/0.4`, `rooms/records/put/0.3`, `rooms/records/list/0.3`–`0.5`, `rooms/info/0.2`–`0.3` and `rooms/epoch/chain/0.2`, and from 0.8 `rooms/records/prune/0.1`/`0.2` and `rooms/records/retention/set/0.1` as `admin`, with a presentation. 0.1 and 0.5 keep their own tables and refuse those `typeNotActable`. |
+  | `rooms/keys/browse` (VTA) | 0.1, 0.2 | **0.3**, and 0.1 (kept) | `lastPrune` passed through from `rooms/records/list/0.5`, its instant named `prunedAt`. |
+  | `rooms/owner/register` (VTA) | 0.1, 0.2 | **0.2** | Unchanged. The 0.1 refusal of a failed list delivery is gone. |
+  | `rooms/info` (hosts) | 0.1, 0.2 | **0.3**, and 0.1 (kept) | `lastPrune.at` → `prunedAt` (`rooms/_shared/0.2`). |
+  | `rooms/records/list` (hosts) | 0.1–0.3 | **0.5**, and 0.1 (kept) | `cursor` → `nextCursor` (0.4); `lastPrune.at` → `prunedAt` (0.5). |
+  | `rooms/records/prune` (hosts) | 0.1 | **0.2** | `prune.at` → `prunedAt`. |
+  | `vtc/rooms/offers/list` (VTC) | 0.1–0.3 | **0.4**, and 0.2 (kept) | `renewals[].renews` → `renewsAt`. |
+
+  Hosts are `vtc-service` and `room-host` (through `vti-rooms`); the act and browse key holder is `vta-service`.
+
+  Senders moved:
+  - **vta-sdk:** `room_act` and `room_act_community` send `rooms/keys/act/0.8` only and return its types; `room_owner_register` sends 0.2 only. `is_offer_type` / `is_community_type` include `vtc/rooms/offers/list/0.4`. `TASK_ROOMS_KEYS_ACT_0_{2,3,4,6}`, `TASK_ROOMS_KEYS_BROWSE_0_2` and `TASK_ROOMS_OWNER_REGISTER_0_1` are removed; `TASK_ROOMS_KEYS_ACT_0_8` and `TASK_ROOMS_KEYS_BROWSE_0_3` are added.
+  - **vtc-client:** `room_info` sends `rooms/info/0.3` (`room_info_v2` and `RoomInfoV2Response` are gone); `prune_records` sends `rooms/records/prune/0.2`; `list_records` sends `rooms/records/list/0.5`.
+  - **pnm (vta-cli-common):** `rooms list`, `put` and the tier read go through act 0.8 at `records/list/0.5`, `records/put/0.3` and `info/0.3`; `rooms offers list|renew|accept` list at `vtc/rooms/offers/list/0.4` only.
+  - **vti-rooms:** `RecordPrune::to_wire` writes `prunedAt`; `ROOMS_INFO_V3_TYPE`, `ROOMS_RECORDS_LIST_V5_TYPE`, `ROOMS_RECORDS_PRUNE_V2_TYPE` replace `ROOMS_INFO_V2_TYPE`, `ROOMS_RECORDS_LIST_V3_TYPE`, `ROOMS_RECORDS_PRUNE_TYPE`; `ROOMS_RECORDS_LIST_V2_TYPE`, `record_tasks::list_v3_response` and `blob_tasks::list_v2_response` are gone.
+
+  `retry_safety`, `budget`, `ALL_URIS`, the policy gate's subject rule, both services' conformance tables and error-code censuses are updated. Docs are updated, except design-note version histories.
+
+  ## Kept for a deployed peer
+
+  `pnm-browser-plugin` (`@openvtc/pnm-core`, outside this workspace) sends these today, so they stay served until it moves:
+  - `rooms/keys/act/0.1` and `rooms/keys/act/0.5`
+  - act-wrapped `rooms/info/0.1`, `rooms/records/list/0.1`, `rooms/records/put/0.1` and `0.2`, `rooms/epoch/chain/0.1`
+  - `rooms/keys/browse/0.1`
+  - `vtc/rooms/offers/list/0.2`
+
+  `rooms/owner/register/0.2`, which it also sends, is current.
+
+  Also kept: `rooms/owner/group/remove/0.1`, the only task that removes a member of a `private` room from its group (the specification problem recorded in #2295).
+
+  ## Breaking changes
+
+  - **API:** the public `vta-sdk`, `vtc-client` and `vti-rooms` surfaces above change.
+  - **Wire:** a client sending a dropped version gets `unsupportedType` / `unsupportedVersion`. The SDK and `pnm` no longer fall back: an agent or community that does not serve the current version is reported for upgrade.
+
+  ## Not done here
+
+  - `pnm rooms put` still refuses provenance on an `open` room. Act 0.8 now completes `rooms/records/put/0.3`, which `pnm` sends, but it does not yet write the provenance members into the cleartext.
+  - `pnm-browser-plugin` needs a follow-up there to move to act 0.8, and the versions above can then go.
+
+- **vtc**: Serve only the current action list, live channel, storage, website, relationship-lifecycle and step-up notice versions ([#2310](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2310))
+
+trust-tasks-rs 0.35 deprecates every superseded Trust Task version and
+  withdraws each about 90 days later. The VTC moves to the current version of
+  each task below and stops serving the old ones, which are now refused
+  `unsupportedVersion`. Every current version is already in trust-tasks-rs
+  0.35.3.
+
+  | Task | Was served | Now |
+  |---|---|---|
+  | vtc/admin/actions/{list,show,cancel,acknowledge} | 0.1, 0.2 | 0.3 |
+  | vtc/admin/events/subscribe (stream of event) | 0.1–0.4 (event 0.1–0.4) | 0.6 (event 0.5) |
+  | vtc/operator/offline-write (record type) | 0.1 | 0.2 |
+  | vtc/storage/configs/{create,update} | 0.1, 0.2 | 0.3 |
+  | vtc/storage/configs/retire | 0.1 | 0.3 |
+  | vtc/storage/credentials/set | 0.2 | 0.3 |
+  | vtc/rooms/storage/assign | 0.1 | 0.2 |
+  | vtc/rooms/storage/migrate | 0.1, 0.2 | 0.3 |
+  | vtc/website/files/list | 0.1 | 0.3 |
+  | vtc/relationships/{suspend,restore} | 0.1 | 0.2 |
+  | vtc/members/step-up-passkey-notice (sent) | 0.1 | 0.2 |
+
+  On the wire:
+  - An action's approvals name their instant `decidedAt` (was `at`,
+    actions/_shared/0.3). A cooling-off is always category `coolingOff` with
+    `landsAt` and `cancellableBy`; 0.1's `ext.coolingOff` rendering is gone.
+  - An operator's offline write is raised under `offline-write/0.2`, its record
+    naming the instant `writtenAt`. Items raised before this build are stored
+    under 0.1 and shown as 0.2 (`at` read as `writtenAt`), so no stored action
+    needs a migration.
+  - The live channel's request names its resume token `resumeToken` (was
+    `since`), and its hints name their instant `observedAt` (was `at`). The
+    topic set is 0.4's; there is no per-version topic set any more.
+  - Every parked storage operation's next step expects
+    `vtc/admin/actions/show/0.3`.
+  - storage/configs/retire 0.3 item 3: a config is refused `migrationsInbound`
+    (with `details.migrations`) while a migration of room files onto it is
+    queued, running or paused — including one that kept its target after the
+    room was reassigned. The check is made again when a parked retirement
+    executes, under the storage lock, and a fresh migration's target is
+    re-checked under the same lock, so no migration onto a config starts between
+    the check and the config leaving `active`. 0.1 had no such refusal.
+  - website/files/list 0.3: an item's `modifiedAt` is `updatedAt`, and
+    `nextCursor` is absent on the last page, never `null`.
+  - relationships suspend/restore 0.2: a superseded or withdrawn edge's
+    `state.at` is `endedAt` (vtc/_shared/0.4/relationship-lifecycle).
+  - step-up-passkey-notice 0.2: the notice names its instant `occurredAt`.
+
+  Action summaries: templates are added for the current storage task versions
+  (pinned in the build and in the console). The templates for the versions no
+  longer served stay, so an action recorded under one still renders in the
+  history. A parked storage operation recorded under a version no longer served
+  cannot execute after an upgrade; it fails its recheck and must be asked again.
+
+  Clients move with it: the admin console (live channel at 0.6 with no
+  discovery-based version choice, the action list and storage at the current
+  versions; openapi.json and wire.ts regenerated), vtc-client (`list_actions`,
+  `show_action`, `cancel_action` at 0.3) and `cnm actions watch` (subscribe
+  0.6, event 0.5), `cnm storage` (credentials/set 0.3).
+
+- **vtc**: Serve only the current vtc/rooms, storage, groups, directory, registry and relationships tasks ([#2308](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2308))
+
+trust-tasks-rs 0.35 deprecates every superseded Trust Task version and
+  withdraws each about 90 days later. Every current version below is already
+  in 0.34, so the VTC moves to it now and stops serving the old one.
+
+  Served now (old versions refused `unsupportedVersion`):
+  - vtc/directory/entries/list 0.2, vtc/directory/export 0.2,
+    vtc/directory/notes/list 0.2 (from 0.1)
+  - vtc/groups/list, vtc/groups/members/list, vtc/groups/requests/list 0.2
+    (from 0.1)
+  - vtc/registry/records/list 0.2, vtc/registry/sync-jobs/list 0.2,
+    vtc/registry/sync-jobs/retry 0.2 (from 0.1)
+  - vtc/relationships/list 0.3 (from 0.2), vtc/relationships/revoke 0.2
+    (from 0.1)
+  - vtc/rooms/community/create 0.4 (from 0.1-0.3), get 0.3 and list 0.3
+    (from 0.1-0.2), update 0.3 (from 0.1-0.2), members/remove 0.2 (from 0.1)
+  - vtc/rooms/get 0.3 (from 0.1-0.2), vtc/rooms/list 0.2 (from 0.1)
+  - vtc/storage/configs/get and list 0.2 (from 0.1)
+
+  On the wire: a paged response's `nextCursor` is absent on the last page,
+  never null; a hosted room's `createdAt`, `updatedAt` and `epochExpiresAt`
+  are RFC 3339 strings (vtc/_shared/0.3/room-storage); sync-jobs/retry
+  reports an in-flight job `inFlight` (was `notFailed`). A community room is
+  always created with its profile written into it, and a removal always
+  withdraws the member at an open or attributed room's host.
+
+  Clients move with it: the admin console (openapi.json and wire.ts
+  regenerated), vtc-client, and `cnm rooms`, which no longer falls back to
+  older versions and tells the operator to upgrade a VTC that does not
+  serve the current one. vta_sdk::openapi drops the superseded wrappers.
+
+
+
+### Build & CI
+
+- **deps**: Compile only the trust-tasks-rs spec families each crate uses ([#2326](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2326))
+
+The workspace `trust-tasks-rs` entry enabled `all-specs`, so every crate that
+  depends on it, and every consumer of a published VTI crate, compiled all 34
+  generated spec families (~70 MB of Rust, 14 GB peak rustc RSS). The workspace
+  entry now enables `validate` only, and each crate lists the families it names:
+  a `trust_tasks_rs::specs::<family>` path, or a Type URI it sends, serves or
+  looks up in `schema_index`.
+
+  The workspace union is 29 families. The five dropped (chat, process-attestation,
+  sync, vrc, webvh) appear nowhere in VTI: no path, no Type URI, no handler. A
+  received document of one of those types was already refused as unsupported;
+  it is now dispatched to that refusal without a schema check first.
+
+  What shrinks: `vti-rooms-wasm` compiles `rooms` alone (trust-tasks-rs dev
+  build 14.2 GB / 174 s -> 1.5 GB / 7 s). Everything that depends on vta-sdk
+  still needs 23-29 families, so the workspace, service and mobile builds are
+  roughly unchanged (mobile `check` 12.9 -> 11.1 GB); the swap safety nets stay.
+
+
+
 ## [0.29.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vtc-client-v0.28.0...vtc-client-v0.29.0) — 2026-10-27
 
 
