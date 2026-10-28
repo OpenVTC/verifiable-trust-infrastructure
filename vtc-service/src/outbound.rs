@@ -311,7 +311,7 @@ mod tests {
     fn the_tsp_seal_is_the_published_envelope() {
         let doc: TrustTask<Value> = TrustTask::new(
             "urn:uuid:1".to_string(),
-            "https://trusttasks.org/spec/registry/record/put/0.1"
+            "https://trusttasks.org/spec/registry/record/put/0.3"
                 .parse()
                 .expect("valid type URI"),
             serde_json::json!({}),

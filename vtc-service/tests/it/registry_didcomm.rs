@@ -86,7 +86,6 @@ async fn serve_once(
 }
 
 const RECORD_PUT: &str = "https://trusttasks.org/spec/registry/record/put/0.1";
-const RECORD_QUERY: &str = "https://trusttasks.org/spec/registry/record/query/0.1";
 /// The lowerCamelCase versions membership records are written and read with.
 const RECORD_PUT_0_3: &str = "https://trusttasks.org/spec/registry/record/put/0.3";
 const RECORD_QUERY_0_3: &str = "https://trusttasks.org/spec/registry/record/query/0.3";
@@ -339,15 +338,12 @@ async fn health_follows_the_round_trip_not_a_url() {
     let (result, request) = tokio::join!(
         client.health(),
         serve_once(&registry, mock.vtc_did(), |_| response(
-            RECORD_QUERY,
+            RECORD_QUERY_0_3,
             json!({ "records": [] }),
         )),
     );
     result.expect("a registry that answers is healthy");
-    assert_eq!(
-        request["type"],
-        "https://trusttasks.org/spec/registry/record/query/0.1"
-    );
+    assert_eq!(request["type"], RECORD_QUERY_0_3);
     assert_eq!(
         request["proof"]["proofPurpose"], "authentication",
         "the health probe is signed with the operational key: {request}",

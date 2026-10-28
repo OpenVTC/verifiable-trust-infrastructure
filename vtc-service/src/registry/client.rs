@@ -179,7 +179,7 @@ pub trait TrustRegistryClient: Send + Sync {
     }
 
     /// Write one TRQP authorization record under this community's authority
-    /// (`registry/record/put/0.1`) — the git-namespace projection's write.
+    /// (`registry/record/put/0.3`, 0.1 to an older registry) — the git-namespace projection's write.
     ///
     /// Distinct from [`Self::publish_member`], which writes the one
     /// recognition record a member has, and from the `git-trust/grant`
@@ -197,7 +197,7 @@ pub trait TrustRegistryClient: Send + Sync {
     }
 
     /// Every record the registry holds under this community's authority for
-    /// one `action` (`registry/record/query/0.1`, paged to the end) — what the
+    /// one `action` (`registry/record/query/0.3`, paged to the end) — what the
     /// git-namespace projection verifies itself against. Defaults to a
     /// `Permanent` refusal: a transport that cannot enumerate says so.
     async fn list_trust_records(
@@ -210,7 +210,7 @@ pub trait TrustRegistryClient: Send + Sync {
     }
 
     /// Every record the registry holds under this community's authority, of
-    /// any action (`registry/record/query/0.1` keyed by `authority_id` alone,
+    /// any action (`registry/record/query/0.3` keyed by `authorityId` alone,
     /// paged to the end) — membership recognitions and git-namespace
     /// authorizations alike, as the registry states them. What the operator's
     /// records list (`vtc/registry/records/list/0.2`, `source: registry`)
@@ -222,7 +222,7 @@ pub trait TrustRegistryClient: Send + Sync {
         Err(super::drift::unsupported())
     }
 
-    /// Delete one record by its TRQP key (`registry/record/delete/0.1`),
+    /// Delete one record by its TRQP key (`registry/record/delete/0.2`),
     /// under this community's authority. A record that is already absent is
     /// success: the effect wanted is its absence.
     async fn delete_trust_record(
