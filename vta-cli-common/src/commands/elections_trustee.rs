@@ -314,7 +314,7 @@ async fn pass(
         }
         "failed" => {
             return Err(
-                "the ceremony failed: no election key formed by votingOpens, so the community \
+                "the ceremony failed: no election key formed by votingOpensAt, so the community \
                  cancels the election"
                     .into(),
             );

@@ -105,7 +105,7 @@ mod tests {
     #[test]
     fn a_response_is_success_and_anything_else_a_refusal() {
         let ok = classify(
-            "https://trusttasks.org/spec/voting/election/register/0.1#response",
+            "https://trusttasks.org/spec/voting/election/register/0.2#response",
             json!({ "state": "registration" }),
             json!({ "signed": true }),
         );

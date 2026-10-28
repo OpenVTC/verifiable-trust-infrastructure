@@ -118,7 +118,7 @@ casts and receipts 30 days later (`pcs_voter::RECEIPT_RETENTION`), with the vote
 CONVENTIONS §5 item 3.
 
 In a **sealed** or **tallied-encrypted** election (VTI-VOT-060 – 064, conventions §9) step 4
-is `vta/pcs/vote-encrypted/0.2`, given the ceremony `vtc/elections/show` carries — the
+is `vta/pcs/vote-encrypted/0.3`, given the ceremony `vtc/elections/show` carries — the
 trustees' signed steps, from which the VTA forms the election key itself (at least `threshold`
 qualified dealers and confirmations), never a key the ballot box or the community merely
 reports: the ballot is sealed to that key whole, or encrypted option

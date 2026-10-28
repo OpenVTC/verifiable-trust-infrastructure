@@ -95,8 +95,8 @@ pub async fn cmd_list(client: &VtaClient, t: VoteTarget<'_>) -> CliResult {
             "{BOLD}{}{RESET}  {}  {} → {}{}  {DIM}{}{RESET}",
             e["electionId"].as_str().unwrap_or_default(),
             e["state"].as_str().unwrap_or_default(),
-            e["votingOpens"].as_str().unwrap_or_default(),
-            e["votingCloses"].as_str().unwrap_or_default(),
+            e["votingOpensAt"].as_str().unwrap_or_default(),
+            e["votingClosesAt"].as_str().unwrap_or_default(),
             if e["ticketHeld"] == true {
                 "  (ticket held)"
             } else {
@@ -121,8 +121,8 @@ fn print_disclosure(shown: &Value) {
     );
     println!(
         "  voting      {} → {}",
-        m["votingOpens"].as_str().unwrap_or_default(),
-        m["votingCloses"].as_str().unwrap_or_default()
+        m["votingOpensAt"].as_str().unwrap_or_default(),
+        m["votingClosesAt"].as_str().unwrap_or_default()
     );
     println!(
         "  ballot box  {} (run by {})",

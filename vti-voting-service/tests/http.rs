@@ -54,9 +54,9 @@ fn registration(community: &Identity, service_did: &str, id: &str) -> Value {
             "minSelections": 1, "maxSelections": 1, "optional": false }],
         "secrecy": "open",
         "roll": { "rule": "members" },
-        "registrationOpens": t(now - Duration::days(2)),
-        "votingOpens": t(now - Duration::hours(1)),
-        "votingCloses": t(now + Duration::days(1)),
+        "registrationOpensAt": t(now - Duration::days(2)),
+        "votingOpensAt": t(now - Duration::hours(1)),
+        "votingClosesAt": t(now + Duration::days(1)),
         "revote": "replace",
         "board": { "visibility": "public", "auditors": [] },
         "ballotBox": service_did,
@@ -137,6 +137,46 @@ async fn only_a_served_community_registers_and_within_its_quota() {
     assert_eq!(answer["payload"]["code"], "unavailable");
 }
 
+/// The box serves `voting/election/{register,show}` at 0.2 only — the manifest names its
+/// instants `…At` (voting/_shared/0.2) — and says so to a 0.1 request rather than reading
+/// one it cannot.
+#[tokio::test]
+async fn a_0_1_registration_or_show_is_unsupported_version() {
+    let dir = std::env::temp_dir().join(format!("vti-voting-service-{}", Uuid::new_v4()));
+    let community = Identity::from_seed(&[0x33; 32]).unwrap();
+    let svc = state_serving(
+        &dir,
+        CommunitiesConfig {
+            allowed: vec![community.did.clone()],
+            ..Default::default()
+        },
+    );
+    let box_did = svc.identity.did.clone();
+    for (task, payload) in [
+        ("register", registration(&community, &box_did, "agm")),
+        (
+            "show",
+            json!({ "community": community.did, "electionId": "agm" }),
+        ),
+    ] {
+        let mut d = doc(&format!("election/{task}"), &box_did, None, payload).await;
+        d["type"] = json!(format!(
+            "https://trusttasks.org/spec/voting/election/{task}/0.1#request"
+        ));
+        d["issuer"] = json!(community.did);
+        let mut typed: TrustTask<Value> = serde_json::from_value(d).unwrap();
+        vta_sdk::trust_task_sign::sign_in_place_with(&mut typed, &community.key)
+            .await
+            .unwrap();
+        let (status, answer) = send(&svc, serde_json::to_value(&typed).unwrap()).await;
+        assert_ne!(status, StatusCode::OK, "{answer}");
+        assert_eq!(
+            answer["payload"]["code"], "unsupportedVersion",
+            "{task}: {answer}"
+        );
+    }
+}
+
 async fn send(state: &Arc<AppState>, doc: Value) -> (StatusCode, Value) {
     let res = router(state.clone())
         .oneshot(
@@ -156,7 +196,10 @@ async fn send(state: &Arc<AppState>, doc: Value) -> (StatusCode, Value) {
 async fn doc(task: &str, to: &str, signer: Option<&Identity>, payload: Value) -> Value {
     let mut d = json!({
         "id": format!("urn:uuid:{}", Uuid::new_v4()),
-        "type": format!("https://trusttasks.org/spec/voting/{task}/0.1#request"),
+        "type": format!(
+            "https://trusttasks.org/spec/voting/{task}/{}#request",
+            if matches!(task, "election/register" | "election/show") { "0.2" } else { "0.1" }
+        ),
         "recipient": to,
         "issuedAt": Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
         "payload": payload,
@@ -198,9 +241,9 @@ async fn an_election_over_http_with_a_restart() {
             "minSelections": 1, "maxSelections": 1, "optional": false }],
         "secrecy": "open",
         "roll": { "rule": "members" },
-        "registrationOpens": (now - Duration::days(2)).to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
-        "votingOpens": (now - Duration::hours(1)).to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
-        "votingCloses": (now + Duration::days(1)).to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+        "registrationOpensAt": (now - Duration::days(2)).to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+        "votingOpensAt": (now - Duration::hours(1)).to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+        "votingClosesAt": (now + Duration::days(1)).to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
         "revote": "replace",
         "board": { "visibility": "public", "auditors": [] },
         "ballotBox": service_did,
@@ -422,9 +465,9 @@ async fn trustees_enrol_over_http() {
         "secrecy": "sealed",
         "trustees": { "dids": trustees.iter().map(|t| t.did.clone()).collect::<Vec<_>>(), "threshold": 2 },
         "roll": { "rule": "members" },
-        "registrationOpens": (now - Duration::days(1)).to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
-        "votingOpens": (now + Duration::days(1)).to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
-        "votingCloses": (now + Duration::days(2)).to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+        "registrationOpensAt": (now - Duration::days(1)).to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+        "votingOpensAt": (now + Duration::days(1)).to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+        "votingClosesAt": (now + Duration::days(2)).to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
         "revote": "replace",
         "board": { "visibility": "public", "auditors": [] },
         "ballotBox": service_did,

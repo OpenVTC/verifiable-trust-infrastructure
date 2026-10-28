@@ -743,14 +743,14 @@ async fn voter_preamble<P: DeserializeOwned>(
     Ok((context, str_of(doc, "community").to_string()))
 }
 
-/// `vta/pcs/voter/read/0.1`: `vtc/elections/list` or `show`, signed as the member (items 3 – 6).
+/// `vta/pcs/voter/read/0.2`: `vtc/elections/list` or `show`, signed as the member (items 3 – 6).
 pub(super) async fn handle_voter_read(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    use spec::voter::read::v0_1 as t;
-    use trust_tasks_rs::specs::vtc::elections::{list::v0_1 as list, show::v0_1 as show};
+    use spec::voter::read::v0_2 as t;
+    use trust_tasks_rs::specs::vtc::elections::{list::v0_3 as list, show::v0_2 as show};
     use trust_tasks_rs::validate::ValidatedPayload as _;
     let (_context, community) = match voter_preamble::<t::Payload>(state, auth, &doc).await {
         Ok(v) => v,
@@ -792,13 +792,13 @@ pub(super) async fn handle_voter_read(
     }
 }
 
-/// `vta/pcs/voter/register/0.1`.
+/// `vta/pcs/voter/register/0.2`.
 pub(super) async fn handle_voter_register(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    use spec::voter::register::v0_1 as t;
+    use spec::voter::register::v0_2 as t;
     let (context, community) = match voter_preamble::<t::Payload>(state, auth, &doc).await {
         Ok(v) => v,
         Err(r) => return r,
@@ -907,13 +907,13 @@ pub(super) async fn handle_voter_accept(
     }
 }
 
-/// `vta/pcs/vote/0.1`.
+/// `vta/pcs/vote/0.2`.
 pub(super) async fn handle_vote(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    use spec::vote::v0_1 as t;
+    use spec::vote::v0_2 as t;
     let (context, community) = match voter_preamble::<t::Payload>(state, auth, &doc).await {
         Ok(v) => v,
         Err(r) => return r,
@@ -1005,13 +1005,13 @@ pub(super) async fn handle_voter_receipt(
     }
 }
 
-/// `vta/pcs/vote-encrypted/0.2`: the key formed here from the trustees' signed steps.
+/// `vta/pcs/vote-encrypted/0.3`: the key formed here from the trustees' signed steps.
 pub(super) async fn handle_vote_encrypted(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    use spec::vote_encrypted::v0_2 as t;
+    use spec::vote_encrypted::v0_3 as t;
     let (context, community) = match voter_preamble::<t::Payload>(state, auth, &doc).await {
         Ok(v) => v,
         Err(r) => return r,
@@ -1090,13 +1090,13 @@ async fn trustee_audit(
     audit(state, action, auth, community, context, Some(&election)).await;
 }
 
-/// `vta/pcs/trustee/enrol/0.1`.
+/// `vta/pcs/trustee/enrol/0.2`.
 pub(super) async fn handle_trustee_enrol(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    use spec::trustee::enrol::v0_1 as t;
+    use spec::trustee::enrol::v0_2 as t;
     let (context, community, trustee) =
         match trustee_preamble::<t::Payload>(state, auth, &doc).await {
             Ok(v) => v,
@@ -1125,13 +1125,13 @@ pub(super) async fn handle_trustee_enrol(
     }
 }
 
-/// `vta/pcs/trustee/deal/0.2`.
+/// `vta/pcs/trustee/deal/0.3`.
 pub(super) async fn handle_trustee_deal(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    use spec::trustee::deal::v0_2 as t;
+    use spec::trustee::deal::v0_3 as t;
     let (context, community, trustee) =
         match trustee_preamble::<t::Payload>(state, auth, &doc).await {
             Ok(v) => v,
@@ -1164,13 +1164,13 @@ pub(super) async fn handle_trustee_deal(
     }
 }
 
-/// `vta/pcs/trustee/keys/0.2`.
+/// `vta/pcs/trustee/keys/0.3`.
 pub(super) async fn handle_trustee_keys(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    use spec::trustee::keys::v0_2 as t;
+    use spec::trustee::keys::v0_3 as t;
     let (context, community, trustee) =
         match trustee_preamble::<t::Payload>(state, auth, &doc).await {
             Ok(v) => v,
@@ -1203,13 +1203,13 @@ pub(super) async fn handle_trustee_keys(
     }
 }
 
-/// `vta/pcs/trustee/justify/0.2`.
+/// `vta/pcs/trustee/justify/0.3`.
 pub(super) async fn handle_trustee_justify(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    use spec::trustee::justify::v0_2 as t;
+    use spec::trustee::justify::v0_3 as t;
     let (context, community, trustee) =
         match trustee_preamble::<t::Payload>(state, auth, &doc).await {
             Ok(v) => v,
@@ -1252,14 +1252,14 @@ pub(super) async fn handle_trustee_justify(
     }
 }
 
-/// `vta/pcs/trustee/read/0.1`: `voting/trustees/status` or `voting/election/show`, signed as
+/// `vta/pcs/trustee/read/0.2`: `voting/trustees/status` or `voting/election/show`, signed as
 /// the trustee (items 3 – 5). Keeps nothing, so it is not audited, as `voter/read` is not.
 pub(super) async fn handle_trustee_read(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    use spec::trustee::read::v0_1 as t;
+    use spec::trustee::read::v0_2 as t;
     let (_context, community, trustee) =
         match trustee_preamble::<t::Payload>(state, auth, &doc).await {
             Ok(v) => v,

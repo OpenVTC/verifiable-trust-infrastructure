@@ -30,8 +30,8 @@ use chrono::{DateTime, Utc};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use trust_tasks_rs::specs::vtc::elections::{
-    cancel::v0_1 as cancel, certify::v0_1 as certify, close::v0_1 as close, create::v0_1 as create,
-    list::v0_1 as list, show::v0_1 as show, tickets::issue::v0_1 as issue,
+    cancel::v0_1 as cancel, certify::v0_1 as certify, close::v0_1 as close, create::v0_3 as create,
+    list::v0_3 as list, show::v0_2 as show, tickets::issue::v0_1 as issue,
 };
 use trust_tasks_rs::{Payload, RejectReason, TrustTask};
 use vti_common::audit::{AuditEvent, ElectionChangedData, ElectionTicketIssuedData};
@@ -222,7 +222,7 @@ fn changed(election_id: &str, change: &str) -> ElectionChangedData {
 
 // ─── create ──────────────────────────────────────────────────────────────
 
-/// `vtc/elections/create/0.1` (items 1 – 10).
+/// `vtc/elections/create/0.3` (items 1 – 10).
 async fn handle_create(
     state: &AppState,
     ctx: &JoinAuthCtx,
@@ -405,7 +405,7 @@ fn offset_of(cursor: &str, caller: &str, filter: Option<&str>) -> Option<usize> 
     (cursor_mac(caller, filter, offset) == mac).then_some(offset)
 }
 
-/// `vtc/elections/list/0.1` (items 1 – 5).
+/// `vtc/elections/list/0.3` (items 1 – 5).
 async fn handle_list(
     state: &AppState,
     ctx: &JoinAuthCtx,
@@ -453,7 +453,7 @@ async fn handle_list(
         }
         seen.push(rec);
     }
-    // The reference order: votingOpens, most recent first.
+    // The reference order: votingOpensAt, most recent first.
     seen.sort_by(|a, b| {
         b.voting_opens
             .cmp(&a.voting_opens)
@@ -468,8 +468,8 @@ async fn handle_list(
         let mut item = json!({
             "electionId": rec.election_id,
             "state": rec.state(now),
-            "votingOpens": rfc3339(rec.voting_opens),
-            "votingCloses": rfc3339(rec.voting_closes),
+            "votingOpensAt": rfc3339(rec.voting_opens),
+            "votingClosesAt": rfc3339(rec.voting_closes),
             "binding": rec.binding,
             "ticketHeld": held,
         });
@@ -480,7 +480,7 @@ async fn handle_list(
     }
     let mut body = json!({ "elections": items });
     if offset + limit < seen.len() {
-        body["next"] = json!(cursor_for(&who, filter, offset + limit));
+        body["nextCursor"] = json!(cursor_for(&who, filter, offset + limit));
     }
     success_response(&doc, body)
 }
@@ -491,7 +491,7 @@ fn rfc3339(t: DateTime<Utc>) -> String {
 
 // ─── show ────────────────────────────────────────────────────────────────
 
-/// `vtc/elections/show/0.1` (items 1 – 6).
+/// `vtc/elections/show/0.2` (items 1 – 6).
 async fn handle_show(
     state: &AppState,
     ctx: &JoinAuthCtx,
@@ -510,6 +510,11 @@ async fn handle_show(
         Ok(None) => return unknown(&doc, SHOW_ERR_ELECTION_UNKNOWN),
         Err(e) => return app_error_to_reject(&doc, &e),
     };
+    // An election registered under voting/election/register/0.1 holds a manifest 0.2
+    // cannot carry, and its digest binds the old member names: refused by name.
+    if let Err(e) = vti_voting::rules::require_current_manifest(&rec.manifest) {
+        return app_error_to_reject(&doc, &AppError::Conflict(e.to_string()));
+    }
     let parameters = match ops::parameters(state).await {
         Ok(p) => p,
         Err(e) => return app_error_to_reject(&doc, &e),

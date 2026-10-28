@@ -16,9 +16,9 @@
 import { postSignedRead } from "./api";
 import { postSignedWithStepUp, type ConfirmGesture } from "./signed-act";
 
-export const ELECTIONS_CREATE_TASK = "https://trusttasks.org/spec/vtc/elections/create/0.1";
-export const ELECTIONS_LIST_TASK = "https://trusttasks.org/spec/vtc/elections/list/0.1";
-export const ELECTIONS_SHOW_TASK = "https://trusttasks.org/spec/vtc/elections/show/0.1";
+export const ELECTIONS_CREATE_TASK = "https://trusttasks.org/spec/vtc/elections/create/0.3";
+export const ELECTIONS_LIST_TASK = "https://trusttasks.org/spec/vtc/elections/list/0.3";
+export const ELECTIONS_SHOW_TASK = "https://trusttasks.org/spec/vtc/elections/show/0.2";
 export const ELECTIONS_CLOSE_TASK = "https://trusttasks.org/spec/vtc/elections/close/0.1";
 export const ELECTIONS_CANCEL_TASK = "https://trusttasks.org/spec/vtc/elections/cancel/0.1";
 export const ELECTIONS_CERTIFY_TASK = "https://trusttasks.org/spec/vtc/elections/certify/0.1";
@@ -56,8 +56,8 @@ export interface ElectionListItem {
   electionId: string;
   title?: string;
   state: ElectionState;
-  votingOpens: string;
-  votingCloses: string;
+  votingOpensAt: string;
+  votingClosesAt: string;
   binding: boolean;
   ticketHeld: boolean;
 }
@@ -96,14 +96,14 @@ export interface Disclosure {
   coercionResistance: false;
 }
 
-/** `vtc/elections/show/0.1`'s answer. The manifest is carried as received. */
+/** `vtc/elections/show/0.2`'s answer. The manifest is carried as received. */
 export interface Election {
   manifest: Record<string, unknown> & {
     electionId: string;
     title?: string;
-    votingOpens: string;
-    votingCloses: string;
-    registrationOpens: string;
+    votingOpensAt: string;
+    votingClosesAt: string;
+    registrationOpensAt: string;
     binding: boolean;
     allowEarlyClose: boolean;
     questions: { key: string; type: string; text?: string }[];
@@ -146,13 +146,13 @@ export async function fetchElections(): Promise<ElectionListItem[]> {
   const out: ElectionListItem[] = [];
   let cursor: string | undefined;
   for (let i = 0; i < MAX_PAGES; i++) {
-    const page = await postSignedRead<{ elections: ElectionListItem[]; next?: string }>(
+    const page = await postSignedRead<{ elections: ElectionListItem[]; nextCursor?: string }>(
       ELECTIONS_LIST_TASK,
       { limit: PAGE, ...(cursor ? { cursor } : {}) },
     );
     out.push(...page.elections);
-    if (!page.next) break;
-    cursor = page.next;
+    if (!page.nextCursor) break;
+    cursor = page.nextCursor;
   }
   return out;
 }
@@ -161,7 +161,7 @@ export function fetchElection(electionId: string): Promise<Election> {
   return postSignedRead<Election>(ELECTIONS_SHOW_TASK, { electionId });
 }
 
-/** `vtc/elections/create/0.1`. Throws a `ParkedAction` for a binding election. */
+/** `vtc/elections/create/0.3`. Throws a `ParkedAction` for a binding election. */
 export function createElection(
   manifest: Record<string, unknown>,
   confirmGesture: ConfirmGesture,
@@ -231,9 +231,9 @@ export function sampleManifest(community: string, ballotBox: string, now = new D
       ],
       secrecy: "open",
       roll: { rule: "members" },
-      registrationOpens: iso(now.getTime()),
-      votingOpens: iso(start),
-      votingCloses: iso(start + 7 * day),
+      registrationOpensAt: iso(now.getTime()),
+      votingOpensAt: iso(start),
+      votingClosesAt: iso(start + 7 * day),
       revote: "replace",
       board: { visibility: "public", auditors: [] },
       ballotBox,

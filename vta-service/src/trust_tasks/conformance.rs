@@ -660,8 +660,8 @@ fn voting_manifest() -> Value {
             "options": [{ "key": "yes" }, { "key": "no" }],
             "minSelections": 1, "maxSelections": 1, "optional": false }],
         "secrecy": "open", "roll": { "rule": "members" },
-        "registrationOpens": "2026-11-01T00:00:00Z", "votingOpens": "2026-11-03T00:00:00Z",
-        "votingCloses": "2026-11-07T18:00:00Z", "revote": "replace",
+        "registrationOpensAt": "2026-11-01T00:00:00Z", "votingOpensAt": "2026-11-03T00:00:00Z",
+        "votingClosesAt": "2026-11-07T18:00:00Z", "revote": "replace",
         "board": { "visibility": "public", "auditors": [] }, "ballotBox": VOTING_BOX,
         "binding": false, "allowEarlyClose": false, "resultsBeforeClose": false,
         "textReleaseThreshold": 10,
@@ -2465,26 +2465,26 @@ fn table() -> Vec<(&'static str, Conformance)> {
         ),
         // ─── vta/pcs voter role ──────────────────────────────────
         (
-            uris::TASK_VTA_PCS_VOTER_REGISTER_0_1,
+            uris::TASK_VTA_PCS_VOTER_REGISTER_0_2,
             checked!(
-                specs::vta::pcs::voter::register::v0_1::Payload,
-                specs::vta::pcs::voter::register::v0_1::Response,
+                specs::vta::pcs::voter::register::v0_2::Payload,
+                specs::vta::pcs::voter::register::v0_2::Response,
                 json!({ "contextId": "personal", "community": PCS_COMMUNITY, "parameters": voting_params(), "manifest": voting_manifest() }),
                 json!({ "electionId": "agm-2027", "manifestDigest": VOTING_DIGEST,
                     "request": { "label": "voter/agm-2027", "id": PCS_B58, "request": { "encoding": PCS_B58, "t0": PCS_B58, "proof": PCS_B58 } } })
             ),
         ),
         (
-            uris::TASK_VTA_PCS_VOTER_READ_0_1,
+            uris::TASK_VTA_PCS_VOTER_READ_0_2,
             checked!(
-                specs::vta::pcs::voter::read::v0_1::Payload,
-                specs::vta::pcs::voter::read::v0_1::Response,
+                specs::vta::pcs::voter::read::v0_2::Payload,
+                specs::vta::pcs::voter::read::v0_2::Response,
                 json!({ "contextId": "personal", "community": PCS_COMMUNITY,
                     "member": "did:key:z6MkpVoteCastKey2222222222222222222222222222222",
                     "read": "show", "payload": { "electionId": "agm-2027" } }),
                 json!({ "document": {
                     "id": "urn:uuid:3f6b9d2e-81c4-4a7f-9e05-6d1c2b8a4f71",
-                    "type": "https://trusttasks.org/spec/vtc/elections/show/0.1",
+                    "type": "https://trusttasks.org/spec/vtc/elections/show/0.2",
                     "issuer": "did:key:z6MkpVoteCastKey2222222222222222222222222222222",
                     "recipient": PCS_COMMUNITY, "issuedAt": TS,
                     "payload": { "electionId": "agm-2027" },
@@ -2504,10 +2504,10 @@ fn table() -> Vec<(&'static str, Conformance)> {
             ),
         ),
         (
-            uris::TASK_VTA_PCS_VOTE_0_1,
+            uris::TASK_VTA_PCS_VOTE_0_2,
             checked!(
-                specs::vta::pcs::vote::v0_1::Payload,
-                specs::vta::pcs::vote::v0_1::Response,
+                specs::vta::pcs::vote::v0_2::Payload,
+                specs::vta::pcs::vote::v0_2::Response,
                 json!({ "contextId": "personal", "community": PCS_COMMUNITY, "parameters": voting_params(), "manifest": voting_manifest(), "ballot": voting_ballot() }),
                 json!({ "tag": PCS_B58, "castDocument": {
                     "id": "urn:uuid:3f6b9d2e-81c4-4a7f-9e05-6d1c2b8a4f70",
@@ -2535,10 +2535,10 @@ fn table() -> Vec<(&'static str, Conformance)> {
         ),
         // ─── vta/pcs — the encrypted levels ─────────────────────
         (
-            uris::TASK_VTA_PCS_VOTE_ENCRYPTED_0_2,
+            uris::TASK_VTA_PCS_VOTE_ENCRYPTED_0_3,
             checked!(
-                specs::vta::pcs::vote_encrypted::v0_2::Payload,
-                specs::vta::pcs::vote_encrypted::v0_2::Response,
+                specs::vta::pcs::vote_encrypted::v0_3::Payload,
+                specs::vta::pcs::vote_encrypted::v0_3::Response,
                 json!({ "contextId": "personal", "community": PCS_COMMUNITY, "parameters": voting_params(),
                     "manifest": sealed_manifest(), "ceremony": ceremony(), "ballot": voting_ballot() }),
                 json!({ "tag": PCS_B58, "castDocument": {
@@ -2554,20 +2554,20 @@ fn table() -> Vec<(&'static str, Conformance)> {
             ),
         ),
         (
-            uris::TASK_VTA_PCS_TRUSTEE_ENROL_0_1,
+            uris::TASK_VTA_PCS_TRUSTEE_ENROL_0_2,
             checked!(
-                specs::vta::pcs::trustee::enrol::v0_1::Payload,
-                specs::vta::pcs::trustee::enrol::v0_1::Response,
+                specs::vta::pcs::trustee::enrol::v0_2::Payload,
+                specs::vta::pcs::trustee::enrol::v0_2::Response,
                 trustee_payload(json!({ "manifest": sealed_manifest() })),
                 trustee_document("enrol", json!({ "community": PCS_COMMUNITY, "electionId": "agm-2027",
                     "transportKey": { "trustee": 1, "key": PCS_B58, "pok": sigma() } }))
             ),
         ),
         (
-            uris::TASK_VTA_PCS_TRUSTEE_DEAL_0_2,
+            uris::TASK_VTA_PCS_TRUSTEE_DEAL_0_3,
             checked!(
-                specs::vta::pcs::trustee::deal::v0_2::Payload,
-                specs::vta::pcs::trustee::deal::v0_2::Response,
+                specs::vta::pcs::trustee::deal::v0_3::Payload,
+                specs::vta::pcs::trustee::deal::v0_3::Response,
                 trustee_payload(json!({ "manifest": sealed_manifest(), "ceremony": ceremony() })),
                 trustee_document("deal", json!({ "community": PCS_COMMUNITY, "electionId": "agm-2027",
                     "dealing": { "dealer": 1, "commitments": [PCS_B58, PCS_B58], "pok": sigma(),
@@ -2575,19 +2575,19 @@ fn table() -> Vec<(&'static str, Conformance)> {
             ),
         ),
         (
-            uris::TASK_VTA_PCS_TRUSTEE_KEYS_0_2,
+            uris::TASK_VTA_PCS_TRUSTEE_KEYS_0_3,
             checked!(
-                specs::vta::pcs::trustee::keys::v0_2::Payload,
-                specs::vta::pcs::trustee::keys::v0_2::Response,
+                specs::vta::pcs::trustee::keys::v0_3::Payload,
+                specs::vta::pcs::trustee::keys::v0_3::Response,
                 trustee_payload(json!({ "manifest": sealed_manifest(), "ceremony": ceremony() })),
                 json!({ "complaints": [], "keyHeld": true })
             ),
         ),
         (
-            uris::TASK_VTA_PCS_TRUSTEE_JUSTIFY_0_2,
+            uris::TASK_VTA_PCS_TRUSTEE_JUSTIFY_0_3,
             checked!(
-                specs::vta::pcs::trustee::justify::v0_2::Payload,
-                specs::vta::pcs::trustee::justify::v0_2::Response,
+                specs::vta::pcs::trustee::justify::v0_3::Payload,
+                specs::vta::pcs::trustee::justify::v0_3::Response,
                 trustee_payload(json!({ "manifest": sealed_manifest(), "ceremony": ceremony(), "recipient": 2 })),
                 trustee_document("justify", json!({ "community": PCS_COMMUNITY, "electionId": "agm-2027",
                     "dealer": 1, "recipient": 2, "share": PCS_B58 }))
@@ -2607,10 +2607,10 @@ fn table() -> Vec<(&'static str, Conformance)> {
             ),
         ),
         (
-            uris::TASK_VTA_PCS_TRUSTEE_READ_0_1,
+            uris::TASK_VTA_PCS_TRUSTEE_READ_0_2,
             checked!(
-                specs::vta::pcs::trustee::read::v0_1::Payload,
-                specs::vta::pcs::trustee::read::v0_1::Response,
+                specs::vta::pcs::trustee::read::v0_2::Payload,
+                specs::vta::pcs::trustee::read::v0_2::Response,
                 trustee_payload(json!({ "ballotBox": VOTING_BOX, "read": "status" })),
                 trustee_document("status", json!({ "community": PCS_COMMUNITY, "electionId": "agm-2027" }))
             ),

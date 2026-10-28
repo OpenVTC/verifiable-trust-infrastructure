@@ -8,7 +8,7 @@ use chrono::{DateTime, Utc};
 use rand::{SeedableRng, rngs::StdRng};
 use serde_json::{Value, json};
 use trust_tasks_rs::specs::voting::{
-    election::register::v0_1::Manifest,
+    election::register::v0_2::Manifest,
     trustees::{
         authorize::v0_1 as authorize, confirm::v0_1 as confirm, deal::v0_1 as deal_task,
         decrypt::v0_1 as decrypt, enrol::v0_1 as enrol,
@@ -87,9 +87,9 @@ fn manifest(secrecy: &str, visibility: &str) -> Value {
         "secrecy": secrecy,
         "trustees": { "dids": TRUSTEES, "threshold": 2 },
         "roll": { "rule": "members" },
-        "registrationOpens": "2026-11-01T00:00:00Z",
-        "votingOpens": "2026-11-03T00:00:00Z",
-        "votingCloses": "2026-11-07T18:00:00Z",
+        "registrationOpensAt": "2026-11-01T00:00:00Z",
+        "votingOpensAt": "2026-11-03T00:00:00Z",
+        "votingClosesAt": "2026-11-07T18:00:00Z",
         "revote": "replace",
         "board": { "visibility": visibility, "auditors": [] },
         "ballotBox": BOX,
@@ -674,7 +674,7 @@ fn vot_063_a_sealed_election_opens_each_ballot_after_close() {
 #[test]
 fn vot_062_casts_need_a_formed_key_and_the_elections_own_form() {
     let mut run = Run::new("sealed");
-    // The ceremony never completes: at votingOpens it fails, and no cast is admitted.
+    // The ceremony never completes: at votingOpensAt it fails, and no cast is admitted.
     let ctx = run.election().trustee_context();
     let tk = run.trustees[0].transport.publish(&ctx, &mut run.rng);
     let p = request::<enrol::Payload>(

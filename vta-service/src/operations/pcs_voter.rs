@@ -33,7 +33,7 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use trust_tasks_rs::TrustTask;
 use trust_tasks_rs::specs::voting::{
-    ballot::cast::v0_1 as cast, election::register::v0_1 as register,
+    ballot::cast::v0_1 as cast, election::register::v0_2 as register,
 };
 use vti_voting::{
     board,
@@ -464,7 +464,7 @@ pub async fn register(
         manifest_digest: digest_text.clone(),
         voting_key,
         ballot_box: manifest.ballot_box.as_str().to_string(),
-        voting_closes: manifest.voting_closes,
+        voting_closes: manifest.voting_closes_at,
         suite: SUITE.to_string(),
         path,
         seed_id,
@@ -590,7 +590,7 @@ pub async fn vote(
             "a sealed or tallied-encrypted election is cast with vta/pcs/vote-encrypted",
         ));
     }
-    if now < manifest.voting_opens || now >= manifest.voting_closes {
+    if now < manifest.voting_opens_at || now >= manifest.voting_closes_at {
         return Err(PcsError::NotOpen);
     }
     let st: VoterState = load_secret_json(state, &key, VOTER_STATE_TYPE, rec.seed_id).await?;
@@ -683,7 +683,7 @@ pub async fn vote_encrypted(
         return Err(PcsError::ManifestMismatch);
     }
     rules::check_ballot(&manifest, &digest, &ballot).map_err(rule)?;
-    if now < manifest.voting_opens || now >= manifest.voting_closes {
+    if now < manifest.voting_opens_at || now >= manifest.voting_closes_at {
         return Err(PcsError::NotOpen);
     }
     let st: VoterState = load_secret_json(state, &key, VOTER_STATE_TYPE, rec.seed_id).await?;
@@ -715,7 +715,7 @@ pub async fn vote_encrypted(
         th,
         election.trustee_context(),
         &proven,
-        now >= manifest.voting_opens,
+        now >= manifest.voting_opens_at,
     )
     .map_err(PcsError::ElectionKeyInvalid)?;
     let ek = c

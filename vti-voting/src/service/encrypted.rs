@@ -160,7 +160,7 @@ impl ElectionRecord {
         Ok(())
     }
 
-    /// `votingOpens`: the ceremony forms its key from whoever qualifies, or fails.
+    /// `votingOpensAt`: the ceremony forms its key from whoever qualifies, or fails.
     pub(super) fn ceremony_deadline(&mut self) -> Result<(), Failure> {
         let Some(c) = &mut self.ceremony else {
             return Ok(());

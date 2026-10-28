@@ -59,7 +59,7 @@ const DIRECTORY_EXPORT = `${T}/vtc/directory/export/0.2`;
 const GROUPS_LIST = `${T}/vtc/groups/list/0.2`;
 const GROUPS_MEMBERS = `${T}/vtc/groups/members/list/0.2`;
 const GROUPS_REQUESTS = `${T}/vtc/groups/requests/list/0.2`;
-const ELECTIONS = `${T}/vtc/elections/list/0.1`;
+const ELECTIONS = `${T}/vtc/elections/list/0.3`;
 const AUDIT = `${T}/audit/list/0.2`;
 const POLICIES = `${T}/policy/list/0.3`;
 

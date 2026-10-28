@@ -154,10 +154,16 @@ pub(crate) const HIDDEN_PUBLISH: &str =
 pub(crate) const HIDDEN_WITHDRAW: &str =
     <trust_tasks_rs::specs::vtc::vetting::hidden::withdraw::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 const DIRECTORY_FIELDS_UPDATE: &str = crate::trust_tasks::directory_tasks::FIELDS_UPDATE_TYPE;
-/// `vtc/elections/create/0.1`, off the generated type: a build without `voting`
+/// `vtc/elections/create/0.3`, off the generated type: a build without `voting`
 /// still pins the template the console holds.
 pub(crate) const ELECTIONS_CREATE: &str =
-    <trust_tasks_rs::specs::vtc::elections::create::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+    <trust_tasks_rs::specs::vtc::elections::create::v0_3::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+/// `vtc/elections/create/0.1`, no longer served. Its template stays so a binding
+/// election parked under it still renders in the history. Spelled with `concat!` so the
+/// conformance sweep, which reads whole `spec/vtc/…` literals as bindings, does not count
+/// a history-only URI as one this service serves.
+const ELECTIONS_CREATE_V0_1: &str =
+    concat!("https://trusttasks.org/spec/", "vtc/elections/create/0.1");
 const ROLES_DEFINE: &str = "https://trusttasks.org/spec/vtc/roles/define/0.1";
 const ROLES_DELETE: &str = "https://trusttasks.org/spec/vtc/roles/delete/0.1";
 const BACKUP_FINALIZE_IMPORT: &str = "https://trusttasks.org/spec/backup/finalize-import/0.1";
@@ -623,6 +629,20 @@ pub const TEMPLATES: &[Template] = &[
     Template {
         kind: KIND_ELECTION_BINDING_CREATE,
         type_uri: ELECTIONS_CREATE,
+        title: "Create the binding election {electionId}",
+        effect: ELECTION_CREATE_EFFECT,
+        fields: &[
+            f("electionId", "/manifest/electionId", "text"),
+            f("title", "/manifest/title", "text"),
+            f("ballotBox", "/manifest/ballotBox", "did"),
+            f("roll", "/manifest/roll/rule", "text"),
+            f("votingOpens", "/manifest/votingOpensAt", "datetime"),
+            f("votingCloses", "/manifest/votingClosesAt", "datetime"),
+        ],
+    },
+    Template {
+        kind: KIND_ELECTION_BINDING_CREATE,
+        type_uri: ELECTIONS_CREATE_V0_1,
         title: "Create the binding election {electionId}",
         effect: ELECTION_CREATE_EFFECT,
         fields: &[
@@ -1164,8 +1184,13 @@ pub const PINNED: &[(&str, &str, &str)] = &[
     ),
     (
         KIND_ELECTION_BINDING_CREATE,
-        ELECTIONS_CREATE,
+        ELECTIONS_CREATE_V0_1,
         "zQmRruPSiJx9JHEBJCdQiH1qXMTdqf2Dy6yL1WmUJqTU8mX",
+    ),
+    (
+        KIND_ELECTION_BINDING_CREATE,
+        ELECTIONS_CREATE,
+        "zQmSCbudt2Arz4PCwpWmzhMhA4gLfVjxmAd5UMZi8bef7hq",
     ),
     (
         KIND_DIRECTORY_FIELD_WIDEN,
