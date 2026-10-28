@@ -21,7 +21,7 @@ use vti_common::config::StoreConfig;
 use vti_common::store::Store;
 
 const POLICY_UPSERT: &str = "https://trusttasks.org/spec/policy/upsert/0.3";
-const ACL_GRANT: &str = "https://trusttasks.org/spec/acl/grant/0.1";
+const ACL_GRANT: &str = "https://trusttasks.org/spec/acl/grant/0.2";
 
 /// Write the config file the `vta` binary will read.
 fn write_config(dir: &Path) -> std::path::PathBuf {

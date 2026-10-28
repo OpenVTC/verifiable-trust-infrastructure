@@ -1,6 +1,6 @@
 //! ACL methods on [`VtaClient`].
 
-use super::types::AclEntryEnvelope;
+use super::types::{AclEntryEnvelope, AclListPage, AclShowResponse, act_for, capability_scope_for};
 use super::{
     AclEntryResponse, AclListResponse, ChangeAclRoleRequest, CreateAclRequest, SwapAclRequest,
     UpdateAclRequest, VtaClient,
@@ -26,64 +26,70 @@ impl VtaClient {
             .await
     }
 
-    /// List ACL entries, filtering `context` in an explicit
-    /// [`ContextDirection`].
+    /// List ACL entries (`acl/list/0.3`), filtering `context` in an explicit
+    /// [`ContextDirection`], following `nextCursor` to the last page.
     ///
-    /// A context id names a subtree, so `?context=X` is two questions:
+    /// A context id names a subtree, so a context filter is two questions:
     /// [`ActingIn`](ContextDirection::ActingIn) (who holds authority over X)
     /// and [`Subtree`](ContextDirection::Subtree) (what is granted inside X).
     /// Sweeping a subtree with the first returns precisely the entries the
     /// sweep is *not* revoking, so a caller cutting a branch must ask for the
     /// second (#822). [`Any`](ContextDirection::Any) is the auditor's union.
     ///
-    /// The direction is inert without a context and the VTA refuses that
-    /// combination rather than silently listing everything.
+    /// 0.3 requires the direction whenever a context is given and refuses one
+    /// without, so it is sent exactly then.
     pub async fn list_acl_in_direction(
         &self,
         context: Option<&str>,
         direction: ContextDirection,
     ) -> Result<AclListResponse, VtaError> {
-        // Omitted when it is the default, so an old VTA — which would reject
-        // the unknown field — keeps serving the calls that mean what it
-        // already does.
-        let direction_field = (direction != ContextDirection::default())
-            .then(|| serde_json::Value::String(direction.to_string()));
-        let mut payload = serde_json::Map::new();
-        if let Some(ctx) = context {
-            payload.insert("scope".into(), serde_json::Value::String(ctx.to_string()));
+        let mut entries = Vec::new();
+        let mut cursor: Option<String> = None;
+        // A bound on the walk, so a maintainer that kept answering with a
+        // cursor cannot hold the client forever; an ACL longer than this is
+        // an error rather than a partial list that reads as complete.
+        for _ in 0..1000 {
+            let payload = acl_management::v0_2::list_payload(
+                context.map(|c| (c, direction.into())),
+                cursor.take().as_deref(),
+                Some(500),
+            );
+            let page: AclListPage = self
+                .rpc_tt(crate::trust_tasks::TASK_ACL_LIST_0_3, payload, 30)
+                .await?;
+            entries.extend(page.entries);
+            match page.next_cursor {
+                None => return Ok(AclListResponse { entries }),
+                Some(next) => cursor = Some(next),
+            }
         }
-        if let Some(d) = direction_field {
-            payload.insert("direction".into(), d);
-        }
-        self.rpc_tt(
-            crate::trust_tasks::TASK_ACL_LIST_0_1,
-            serde_json::Value::Object(payload),
-            30,
-        )
-        .await
+        Err(VtaError::Protocol(
+            "acl/list kept returning a nextCursor after 1000 pages".into(),
+        ))
     }
 
+    /// The entry for `did` (`acl/show/0.2`). An absent entry — or one this
+    /// caller may not see, which the VTA answers the same way — is
+    /// [`VtaError::NotFound`].
     pub async fn get_acl(&self, did: &str) -> Result<AclEntryResponse, VtaError> {
-        // Canonical `acl/show/0.1` wraps the entry (alongside `redactedFields`);
-        // unwrap so callers keep working with the entry itself.
-        let wrapped: AclEntryEnvelope = self
+        let shown: AclShowResponse = self
             .rpc_tt(
-                crate::trust_tasks::TASK_ACL_SHOW_0_1,
-                serde_json::json!({ "subject": did }),
+                crate::trust_tasks::TASK_ACL_SHOW_0_2,
+                acl_management::v0_2::show_payload(did),
                 30,
             )
             .await?;
-        Ok(wrapped.entry)
+        shown
+            .entry
+            .ok_or_else(|| VtaError::NotFound(format!("ACL entry not found for DID: {did}")))
     }
 
+    /// Grant an entry (`acl/grant/0.2`). The request is sent with every axis
+    /// explicit — see [`CreateAclRequest::to_entry_v0_2`].
     pub async fn create_acl(&self, req: CreateAclRequest) -> Result<AclEntryResponse, VtaError> {
-        // Canonical `acl/grant/0.1` returns the realized entry under `entry`.
-        // `CreateAclRequest` serializes to the canonical `{ entry, … }`
-        // request, so the same body serves the REST route and the trust-task
-        // dispatcher (which schema-validates it against the published spec).
         let wrapped: AclEntryEnvelope = self
             .rpc_tt(
-                crate::trust_tasks::TASK_ACL_GRANT_0_1,
+                crate::trust_tasks::TASK_ACL_GRANT_0_2,
                 serde_json::to_value(&req)?,
                 30,
             )
@@ -93,7 +99,7 @@ impl VtaClient {
 
     /// Exercise the caller's hand-off marker (VTI-ACL-054 – VTI-ACL-057): write
     /// `successor_did` as the caller's one successor and remove the caller's
-    /// own entry, atomically. `acl/grant/0.1` with
+    /// own entry, atomically. `acl/grant/0.2` with
     /// [`HANDOFF_ROLLOVER_EXT_MEMBER`](acl_management::create::HANDOFF_ROLLOVER_EXT_MEMBER).
     ///
     /// The successor's expiry is the one the granter recorded with the marker,
@@ -108,78 +114,173 @@ impl VtaClient {
         scopes: Vec<String>,
         label: Option<String>,
     ) -> Result<AclEntryResponse, VtaError> {
-        let mut entry = acl_management::entry::AclEntry::new(
-            successor_did.to_string(),
-            role.to_string(),
-            scopes,
+        let mut entry = acl_management::v0_2::AclEntry::new(
+            successor_did,
+            role,
+            act_for(role, &scopes),
+            acl_management::v0_2::KeyScope::All,
+            acl_management::v0_2::CapabilityScope::Ceiling,
         );
         entry.label = label;
-        let body = acl_management::create::CreateAclBody::handoff_rollover(entry);
         let wrapped: AclEntryEnvelope = self
             .rpc_tt(
-                crate::trust_tasks::TASK_ACL_GRANT_0_1,
-                serde_json::to_value(&body)?,
+                crate::trust_tasks::TASK_ACL_GRANT_0_2,
+                acl_management::v0_2::grant_payload(&entry, None, true),
                 30,
             )
             .await?;
         Ok(wrapped.entry)
     }
 
+    /// Amend an entry (`acl/update/0.2`, and `acl/revoke/0.2` for a narrowing
+    /// of where it may act).
+    ///
+    /// 0.2 puts every narrowing of `act` in `acl/revoke`, so a context change
+    /// is read against the stored entry first: a pure widening is an update; a
+    /// pure narrowing is a revoke `{kind: act}`; a lateral move (some contexts
+    /// added, some removed) widens to the union and then narrows to the
+    /// target, so at no point does the subject hold a context it neither had
+    /// nor was meant to get. Every other member travels in the one update.
     pub async fn update_acl(
         &self,
         did: &str,
         req: UpdateAclRequest,
     ) -> Result<AclEntryResponse, VtaError> {
-        // Canonical `acl/update/0.1` returns the realized entry under `entry`,
-        // like grant and show.
-        //
-        // The task payload is the full canonical body. Hand-rolling three of
-        // its members here — as this did before #884 — silently dropped the
-        // step-up, approve-authority, expiry, `allowedKeys` and `reason` the
-        // caller asked for the moment the client was on DIDComm rather than
-        // REST: a narrowing the operator believed they had applied.
-        let body = acl_management::update::UpdateAclBody {
-            did: did.to_string(),
-            label: req.label.clone(),
-            allowed_contexts: req.allowed_contexts.clone(),
-            expires_at: None,
-            reason: None,
-            step_up: (req.step_up_approver.is_some() || req.step_up_require.is_some()).then(|| {
-                acl_management::entry::StepUp {
-                    approver: req.step_up_approver.clone(),
-                    require: req.step_up_require.clone(),
-                }
-            }),
-            approve: req
-                .approve_scope
-                .as_ref()
-                .map(acl_management::entry::Approve::from_scope),
-            allowed_keys: req.allowed_keys.clone(),
-            // The capability narrowing is ecosystem-local, so it rides `ext`
-            // rather than a member the published schema does not declare.
-            ext: req.capabilities.as_ref().map(|caps| {
-                serde_json::json!({
-                    acl_management::entry::CAPABILITIES_EXT_MEMBER: caps,
-                })
-            }),
+        use acl_management::v0_2::{
+            ApproveCapabilityScope, AuthorityScope, KeyScope, Revocation, StepUpReplacement,
+            revoke_payload,
         };
-        let wrapped: AclEntryEnvelope = self
-            .rpc_tt(
-                crate::trust_tasks::TASK_ACL_UPDATE_0_1,
-                serde_json::to_value(&body)?,
-                30,
-            )
-            .await?;
-        Ok(wrapped.entry)
+
+        // The payload, member by member: each present member replaces the
+        // stored one, each absent one leaves it unchanged.
+        let mut body = serde_json::Map::new();
+        body.insert("subject".into(), serde_json::Value::String(did.to_string()));
+        let put =
+            |b: &mut serde_json::Map<String, serde_json::Value>, k: &str, v: serde_json::Value| {
+                b.insert(k.to_string(), v);
+            };
+        let mut narrow_to: Option<AuthorityScope> = None;
+        // Read the stored entry whenever the change depends on it: the act
+        // comparison, and the role a capability narrowing is spelled against.
+        let current = if req.allowed_contexts.is_some() || req.capabilities.is_some() {
+            Some(self.get_acl(did).await?)
+        } else {
+            None
+        };
+        if let (Some(contexts), Some(cur)) = (&req.allowed_contexts, &current) {
+            let held = AuthorityScope::from_act_scope(cur.act());
+            let target = act_for(&cur.role, contexts);
+            if target != held {
+                if target.includes(&held) {
+                    put(&mut body, "act", serde_json::to_value(&target)?);
+                } else if held.includes(&target) {
+                    narrow_to = Some(target);
+                } else {
+                    // Lateral: widen to the union, then narrow.
+                    let mut union: Vec<String> = held.contexts().to_vec();
+                    for c in target.contexts() {
+                        if !union.contains(c) {
+                            union.push(c.clone());
+                        }
+                    }
+                    put(
+                        &mut body,
+                        "act",
+                        serde_json::to_value(AuthorityScope::Contexts { contexts: union })?,
+                    );
+                    narrow_to = Some(target);
+                }
+            }
+        }
+        if let Some(label) = &req.label {
+            put(&mut body, "label", serde_json::Value::String(label.clone()));
+        }
+        if let (Some(names), Some(cur)) = (&req.capabilities, &current) {
+            put(
+                &mut body,
+                "capabilities",
+                serde_json::to_value(capability_scope_for(&cur.role, names))?,
+            );
+        }
+        if let Some(scope) = &req.approve_scope {
+            let approve = match scope {
+                crate::acl::ApproveScope::None => AuthorityScope::None,
+                crate::acl::ApproveScope::All => AuthorityScope::All,
+                crate::acl::ApproveScope::Contexts(cs) => AuthorityScope::Contexts {
+                    contexts: cs.clone(),
+                },
+            };
+            let caps = if approve == AuthorityScope::None {
+                ApproveCapabilityScope::None
+            } else {
+                ApproveCapabilityScope::Ceiling
+            };
+            put(
+                &mut body,
+                "approveCapabilities",
+                serde_json::to_value(caps)?,
+            );
+            put(&mut body, "approve", serde_json::to_value(approve)?);
+        }
+        if let Some(keys) = &req.allowed_keys {
+            put(
+                &mut body,
+                "keys",
+                serde_json::to_value(KeyScope::from_allowed_keys(keys.as_deref()))?,
+            );
+        }
+        if req.step_up_approver.is_some() || req.step_up_require.is_some() {
+            // An empty string clears, as the builder documents.
+            let clear_or =
+                |v: &Option<String>| v.as_ref().map(|s| (!s.is_empty()).then(|| s.clone()));
+            put(
+                &mut body,
+                "stepUp",
+                serde_json::to_value(StepUpReplacement {
+                    approver: clear_or(&req.step_up_approver),
+                    require: clear_or(&req.step_up_require),
+                })?,
+            );
+        }
+
+        let changes_beyond_narrowing = body.len() > 1;
+        let mut result: Option<AclEntryResponse> = None;
+        if changes_beyond_narrowing || narrow_to.is_none() {
+            let wrapped: AclEntryEnvelope = self
+                .rpc_tt(
+                    crate::trust_tasks::TASK_ACL_UPDATE_0_2,
+                    serde_json::Value::Object(body),
+                    30,
+                )
+                .await?;
+            result = Some(wrapped.entry);
+        }
+        if let Some(act) = narrow_to {
+            let revoked: AclShowResponse = self
+                .rpc_tt(
+                    crate::trust_tasks::TASK_ACL_REVOKE_0_2,
+                    revoke_payload(did, &Revocation::Act { act }, None),
+                    30,
+                )
+                .await?;
+            result = revoked.entry;
+        }
+        result.ok_or_else(|| {
+            VtaError::Protocol("acl/revoke narrowed the entry but returned none".into())
+        })
     }
 
-    /// Transition a subject's role, compare-and-swapped against the role
-    /// they currently hold.
+    /// Transition a subject's role (`acl/change-role/0.2`), compare-and-swapped
+    /// against the role they currently hold.
     ///
     /// Separate from [`Self::update_acl`] because role is the one ACL
     /// attribute where a lost update is a privilege change. If another
     /// admin has moved the subject since you read them, this fails
     /// rather than overwriting their change — re-read and retry.
+    ///
+    /// The act scope is carried across unchanged, so a move the VTA cannot
+    /// hold with the same act scope — `reader` acting nowhere to `admin`, which
+    /// under the old reading would have made it unrestricted — is refused.
     pub async fn change_acl_role(
         &self,
         did: &str,
@@ -187,14 +288,7 @@ impl VtaClient {
     ) -> Result<AclEntryResponse, VtaError> {
         let wrapped: AclEntryEnvelope = self
             .rpc_tt(
-                crate::trust_tasks::TASK_ACL_CHANGE_ROLE_0_1,
-                // Built from the canonical body, not a hand-rolled map. The
-                // map interpolated `req.reason` — an `Option` — directly, so a
-                // change with no rationale sent `"reason": null` and
-                // `acl/change-role/0.1` types it `"string"`. `ChangeRoleBody`
-                // already carried the right `skip_serializing_if`; this call
-                // simply did not use it. Same defect as #919's `keys/create`
-                // and #921's `derive_and_sign_document`.
+                crate::trust_tasks::TASK_ACL_CHANGE_ROLE_0_2,
                 serde_json::to_value(ChangeRoleBody {
                     subject: did.to_string(),
                     from_role: req.from_role.clone(),
@@ -207,10 +301,15 @@ impl VtaClient {
         Ok(wrapped.entry)
     }
 
+    /// Remove an entry (`acl/revoke/0.2` `{kind: entry}`).
     pub async fn delete_acl(&self, did: &str) -> Result<(), VtaError> {
         self.rpc_tt_void(
-            crate::trust_tasks::TASK_ACL_REVOKE_0_1,
-            serde_json::json!({ "subject": did }),
+            crate::trust_tasks::TASK_ACL_REVOKE_0_2,
+            acl_management::v0_2::revoke_payload(
+                did,
+                &acl_management::v0_2::Revocation::Entry,
+                None,
+            ),
             30,
         )
         .await

@@ -2243,7 +2243,7 @@ impl DispatchAudit {
         // rather than convenience.
         //
         // The handlers' action vocabulary is hand-chosen and does not follow
-        // the URI: `acl/grant/0.1` audits as `acl.create`, `keys/create/0.1` as
+        // the URI: `acl/grant/0.2` audits as `acl.create`, `keys/create/0.1` as
         // `key.create`, `auth/revoke-session/0.2` as `session.revoke`. There is
         // no derivation, so matching it would need a table keyed by URI — 84
         // entries that go stale invisibly the first time someone adds a task.
@@ -2406,17 +2406,17 @@ dispatch_table! {
     vta_sdk::trust_tasks::TASK_TASK_CONSENT_DECISION_0_2 => task_consent::handle_decision
         [ Mutating None false ],
     // ─── ACL slice ────────────────────────────────────────────────
-    vta_sdk::trust_tasks::TASK_ACL_LIST_0_1 => acl::handle_list
+    vta_sdk::trust_tasks::TASK_ACL_LIST_0_3 => acl::handle_list
         [ None Metadata false ],
-    vta_sdk::trust_tasks::TASK_ACL_GRANT_0_1 => acl::handle_create
+    vta_sdk::trust_tasks::TASK_ACL_GRANT_0_2 => acl::handle_create
         [ Mutating None false ],
-    vta_sdk::trust_tasks::TASK_ACL_SHOW_0_1 => acl::handle_get
+    vta_sdk::trust_tasks::TASK_ACL_SHOW_0_2 => acl::handle_get
         [ None Metadata false ],
-    vta_sdk::trust_tasks::TASK_ACL_UPDATE_0_1 => acl::handle_update
+    vta_sdk::trust_tasks::TASK_ACL_UPDATE_0_2 => acl::handle_update
         [ Mutating None false ],
-    vta_sdk::trust_tasks::TASK_ACL_CHANGE_ROLE_0_1 => acl::handle_change_role
+    vta_sdk::trust_tasks::TASK_ACL_CHANGE_ROLE_0_2 => acl::handle_change_role
         [ Mutating None false ],
-    vta_sdk::trust_tasks::TASK_ACL_REVOKE_0_1 => acl::handle_delete
+    vta_sdk::trust_tasks::TASK_ACL_REVOKE_0_2 => acl::handle_delete
         [ Mutating None false ],
     vta_sdk::trust_tasks::TASK_ACL_SWAP_KEY_0_1 => acl::handle_swap_key
         [ Destructive None false ],
@@ -5805,9 +5805,13 @@ mod response_coverage {
 
         ok(
             &state,
-            t::TASK_ACL_GRANT_0_1,
+            t::TASK_ACL_GRANT_0_2,
             json!({
-                "entry": { "subject": successor, "role": "admin" },
+                "entry": {
+                    "subject": successor, "role": "admin",
+                    "act": {"scope": "all"}, "keys": {"scope": "all"},
+                    "capabilities": {"scope": "ceiling"},
+                },
                 "ext": { "org.openvtc": { "handoffRollover": true } },
             }),
         )

@@ -1,4 +1,5 @@
 pub mod acl;
+pub mod acl_v0_2;
 /// Versioned, namespaced application state. Backs the
 /// `vta/app-state/{get,put,list,delete,get-many,put-many}/1.0` Trust Tasks.
 /// Records are keyed `app:<contextId>:<namespace>:<key>` in the

@@ -504,7 +504,7 @@ mod tests {
         CallRecord {
             seq,
             tool: "vta_call",
-            operation: Some("https://trusttasks.org/spec/acl/list/0.1".into()),
+            operation: Some("https://trusttasks.org/spec/acl/list/0.3".into()),
             risk: "read-only",
             decision: "allow",
             outcome: "ok",

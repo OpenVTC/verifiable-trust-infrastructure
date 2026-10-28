@@ -102,16 +102,11 @@ use vta_sdk::trust_tasks as uris;
 use crate::trust_tasks::cred_vault;
 use crate::vault::model::{CredentialPurpose, CredentialStatus};
 use crate::vault::query::{CredentialDescriptor, CredentialQuery};
-use vta_sdk::acl::ContextDirection;
 use vta_sdk::keys::{KeyOrigin, KeyRecord, KeyStatus, KeyType};
 use vta_sdk::protocols::acl_management::change_role::ChangeRoleBody;
-use vta_sdk::protocols::acl_management::create::{CreateAclBody, CreateAclResponseBody};
-use vta_sdk::protocols::acl_management::delete::{DeleteAclBody, DeleteAclResultBody};
 use vta_sdk::protocols::acl_management::entry::{AclEntry, Approve, StepUp};
-use vta_sdk::protocols::acl_management::get::{GetAclBody, GetAclResultBody};
-use vta_sdk::protocols::acl_management::list::{ListAclBody, ListAclResultBody};
 use vta_sdk::protocols::acl_management::swap::{SwapKeyBody, SwapKeyResultBody};
-use vta_sdk::protocols::acl_management::update::UpdateAclBody;
+use vta_sdk::protocols::acl_management::v0_2;
 use vta_sdk::protocols::app_state::{
     AppStateDeleteBody, AppStateDeleteResponse, AppStateGetBody, AppStateGetManyBody,
     AppStateGetManyResponse, AppStateGetResponse, AppStateListBody, AppStateListResponse,
@@ -357,7 +352,7 @@ fn app_state_tombstone() -> AppStateRecord {
 /// witness would stop testing the shape the VTA actually stores.
 fn declarative_module() -> String {
     vta_sdk::approvals::synthesize_rego(&[vta_sdk::approvals::ApprovalRule::reauth(
-        uris::TASK_ACL_GRANT_0_1,
+        uris::TASK_ACL_GRANT_0_2,
     )])
 }
 
@@ -365,7 +360,7 @@ fn declarative_module() -> String {
 fn declarative_ext() -> Value {
     json!({
         vta_sdk::approvals::EXT_KEY_RULES: [
-            { "taskType": uris::TASK_ACL_GRANT_0_1, "requires": "reauth" }
+            { "taskType": uris::TASK_ACL_GRANT_0_2, "requires": "reauth" }
         ],
         vta_sdk::approvals::EXT_KEY_APPROVER_SETS: {},
     })
@@ -445,6 +440,37 @@ fn acl_entry() -> AclEntry {
     // the wire under its canonical `allowedKeys` spelling.
     entry.allowed_keys = Some(vec!["tenant-key-a".into()]);
     entry
+}
+
+/// A fully-populated AclEntry 0.2, every axis explicit.
+fn acl_entry_v0_2() -> v0_2::AclEntry {
+    let mut e = v0_2::AclEntry::new(
+        SUBJECT,
+        "reader",
+        v0_2::AuthorityScope::Contexts {
+            contexts: vec!["ctx-a".into()],
+        },
+        v0_2::KeyScope::Listed {
+            keys: vec!["tenant-key-a".into()],
+        },
+        v0_2::CapabilityScope::Ceiling,
+    );
+    e.approve = Some(v0_2::AuthorityScope::Contexts {
+        contexts: vec!["ctx-a".into()],
+    });
+    e.approve_capabilities = Some(v0_2::ApproveCapabilityScope::Ceiling);
+    e.delegated_by = Some("did:key:z6MkAdmin".into());
+    e.label = Some("build agent".into());
+    e.created_at = Some(dt());
+    e.created_by = Some("did:key:z6MkAdmin".into());
+    e.updated_at = Some(dt());
+    e.updated_by = Some("did:key:z6MkAdmin".into());
+    e.expires_at = Some(dt());
+    e.step_up = Some(StepUp {
+        approver: Some("did:key:z6MkApprover".into()),
+        require: Some("delegated".into()),
+    });
+    e
 }
 
 fn to_v<T: serde::Serialize>(t: T) -> Value {
@@ -960,116 +986,104 @@ fn table() -> Vec<(&'static str, Conformance)> {
         ),
         // ─── acl ─────────────────────────────────────────────────
         (
-            uris::TASK_ACL_LIST_0_1,
+            uris::TASK_ACL_LIST_0_3,
             checked!(
-                specs::acl::list::v0_1::Payload,
-                specs::acl::list::v0_1::Response,
-                to_v({
-            let mut b = ListAclBody::new();
-            b.role = Some("reader".into());
-            b.scope = Some("ctx-a".into());
-            b.direction = Some(ContextDirection::Subtree);
-            b.subject_prefix = Some("did:key:z6Mk".into());
-            b.page_size = Some(50);
-            b.cursor = Some("cur-1".into());
-            b
-        }),
-                to_v(ListAclResultBody {
-                    entries: vec![acl_entry()],
-                    truncated: false,
-                    cursor: None,
-                    redacted_fields: Vec::new(),
-                })
-            ),
-        ),
-        (
-            uris::TASK_ACL_GRANT_0_1,
-            checked!(
-                specs::acl::grant::v0_1::Payload,
-                specs::acl::grant::v0_1::Response,
-                to_v({
-            let mut b = CreateAclBody::new(acl_entry());
-            b.reason = Some("onboarding".into());
-            b
-        }),
-                to_v(CreateAclResponseBody { entry: acl_entry() })
-            ),
-        ),
-        (
-            uris::TASK_ACL_SHOW_0_1,
-            checked!(
-                specs::acl::show::v0_1::Payload,
-                specs::acl::show::v0_1::Response,
-                to_v(GetAclBody::new(SUBJECT.into())),
-                to_v(GetAclResultBody {
-                    entry: acl_entry(),
-                    redacted_fields: Vec::new(),
-                })
-            ),
-        ),
-        (
-            uris::TASK_ACL_UPDATE_0_1,
-            checked!(
-                specs::acl::update::v0_1::Payload,
-                specs::acl::update::v0_1::Response,
-                to_v(UpdateAclBody {
-                    did: SUBJECT.into(),
-                    label: Some("renamed".into()),
-                    allowed_contexts: Some(vec!["ctx-a".into(), "ctx-b".into()]),
-                    expires_at: Some(dt()),
-                    reason: Some("access review".into()),
-                    step_up: Some(StepUp {
-                        approver: Some("did:key:z6MkApprover".into()),
-                        require: Some("delegated".into()),
-                    }),
-                    approve: Some(Approve {
-                        all: false,
-                        scopes: vec!["ctx-a".into()],
-                    }),
-                    // `allowedKeys` (#818) is in the published
-                    // `acl/update/0.1` schema as of `trust-tasks-rs` 0.2.51.
-                    // `Some(Some(..))` is the narrowing replacement — the
-                    // arm that actually emits an array; `Some(None)` emits
-                    // an explicit `null` (clear) and `None` emits nothing,
-                    // and `update.rs`'s own tests pin all three.
-                    allowed_keys: Some(Some(vec!["tenant-key-a".into()])),
-                    // The capability narrowing rides the schema's `ext` slot,
-                    // so the sample carries one — this is what proves the
-                    // namespaced member validates against the published
-                    // schema rather than merely round-tripping through serde.
-                    ext: Some(serde_json::json!({
-                        "org.openvtc.capabilities": ["memory-read", "room-present"],
-                    })),
+                specs::acl::list::v0_3::Payload,
+                specs::acl::list::v0_3::Response,
+                json!({
+                    "role": "reader",
+                    "context": "ctx-a",
+                    "direction": "subtree",
+                    "capability": "vault-read",
+                    "subjectPrefix": "did:key:z6Mk",
+                    "limit": 50,
+                    "cursor": "cur-1",
                 }),
-                to_v(CreateAclResponseBody { entry: acl_entry() })
+                json!({
+                    "entries": [acl_entry_v0_2()],
+                    "nextCursor": "cur-2",
+                })
             ),
         ),
         (
-            uris::TASK_ACL_CHANGE_ROLE_0_1,
+            uris::TASK_ACL_GRANT_0_2,
             checked!(
-                specs::acl::change_role::v0_1::Payload,
-                specs::acl::change_role::v0_1::Response,
+                specs::acl::grant::v0_2::Payload,
+                specs::acl::grant::v0_2::Response,
+                v0_2::grant_payload(&acl_entry_v0_2(), Some("onboarding"), false),
+                json!({ "entry": acl_entry_v0_2() })
+            ),
+        ),
+        (
+            uris::TASK_ACL_SHOW_0_2,
+            checked!(
+                specs::acl::show::v0_2::Payload,
+                specs::acl::show::v0_2::Response,
+                v0_2::show_payload(SUBJECT),
+                json!({ "entry": acl_entry_v0_2() })
+            ),
+        ),
+        (
+            uris::TASK_ACL_UPDATE_0_2,
+            checked!(
+                specs::acl::update::v0_2::Payload,
+                specs::acl::update::v0_2::Response,
+                json!({
+                    "subject": SUBJECT,
+                    "act": v0_2::AuthorityScope::Contexts {
+                        contexts: vec!["ctx-a".into(), "ctx-b".into()],
+                    },
+                    "approve": v0_2::AuthorityScope::Contexts {
+                        contexts: vec!["ctx-a".into()],
+                    },
+                    "approveCapabilities": v0_2::ApproveCapabilityScope::Ceiling,
+                    "capabilities": v0_2::CapabilityScope::Listed {
+                        grants: vec![
+                            v0_2::CapabilityGrant::new("memory-read", false),
+                            v0_2::CapabilityGrant::new("room-present", false),
+                        ],
+                    },
+                    "keys": v0_2::KeyScope::Listed {
+                        keys: vec!["tenant-key-a".into()],
+                    },
+                    "label": "renamed",
+                    "expiresAt": dt(),
+                    "stepUp": v0_2::StepUpReplacement {
+                        approver: Some(Some("did:key:z6MkApprover".into())),
+                        require: Some(None),
+                    },
+                    "reason": "access review",
+                }),
+                json!({ "entry": acl_entry_v0_2() })
+            ),
+        ),
+        (
+            uris::TASK_ACL_CHANGE_ROLE_0_2,
+            checked!(
+                specs::acl::change_role::v0_2::Payload,
+                specs::acl::change_role::v0_2::Response,
                 to_v(ChangeRoleBody {
                     subject: SUBJECT.into(),
                     from_role: "reader".into(),
                     to_role: "application".into(),
                     reason: Some("promoted".into()),
                 }),
-                to_v(CreateAclResponseBody { entry: acl_entry() })
+                json!({ "entry": acl_entry_v0_2() })
             ),
         ),
         (
-            uris::TASK_ACL_REVOKE_0_1,
+            uris::TASK_ACL_REVOKE_0_2,
             checked!(
-                specs::acl::revoke::v0_1::Payload,
-                specs::acl::revoke::v0_1::Response,
-                to_v({
-            let mut b = DeleteAclBody::new(SUBJECT.into());
-            b.scopes = Some(vec!["ctx-a".into()]);
-            b.reason = Some("offboarding".into());
-            b
-        }),
-                to_v(DeleteAclResultBody { entry: acl_entry() })
+                specs::acl::revoke::v0_2::Payload,
+                specs::acl::revoke::v0_2::Response,
+                v0_2::revoke_payload(
+                    SUBJECT,
+                    &v0_2::Revocation::Act {
+                        act: v0_2::AuthorityScope::None,
+                    },
+                    Some("offboarding"),
+                ),
+                json!({ "entry": acl_entry_v0_2() })
             ),
         ),
         (

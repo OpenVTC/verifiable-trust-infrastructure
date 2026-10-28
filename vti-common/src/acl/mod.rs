@@ -1804,6 +1804,48 @@ mod delegated_any_tests {
 
 #[cfg(test)]
 mod tests {
+    /// The SDK carries the role ceilings and the additive set so a client can
+    /// spell AclEntry 0.2's "ceiling plus an additive grant"; the copies must
+    /// not drift from the ones this crate enforces.
+    #[test]
+    fn sdk_capability_tables_match_the_enforced_ones() {
+        let name = |c: &Capability| {
+            serde_json::to_value(c)
+                .unwrap()
+                .as_str()
+                .unwrap()
+                .to_string()
+        };
+        for role in [
+            Role::Admin,
+            Role::Initiator,
+            Role::Application,
+            Role::Reader,
+            Role::Monitor,
+        ] {
+            let mut ours: Vec<String> = derived_capabilities_for_role(&role)
+                .iter()
+                .map(name)
+                .collect();
+            let mut sdk: Vec<String> = vta_sdk::acl::role_capability_ceiling(&role.to_string())
+                .expect("every role has an SDK ceiling")
+                .iter()
+                .map(|s| s.to_string())
+                .collect();
+            ours.sort();
+            sdk.sort();
+            assert_eq!(ours, sdk, "{role} ceiling drifted from vta_sdk's copy");
+        }
+        let mut ours: Vec<String> = ADDITIVE_CAPABILITIES.iter().map(name).collect();
+        let mut sdk: Vec<String> = vta_sdk::acl::ADDITIVE_CAPABILITIES
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        ours.sort();
+        sdk.sort();
+        assert_eq!(ours, sdk, "the additive set drifted from vta_sdk's copy");
+    }
+
     use super::*;
     use crate::config::StoreConfig;
     use crate::store::Store;

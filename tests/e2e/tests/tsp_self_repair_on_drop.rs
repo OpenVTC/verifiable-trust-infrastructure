@@ -30,7 +30,7 @@ use ed25519_dalek::SigningKey;
 use serde_json::Value;
 use vta_sdk::client::{CreateAclRequest, VtaClient};
 use vta_sdk::did_key::ed25519_multibase_pubkey;
-use vta_sdk::trust_tasks::TASK_ACL_GRANT_0_1;
+use vta_sdk::trust_tasks::TASK_ACL_GRANT_0_2;
 use vta_service::test_support::MockVta;
 
 mod common;
@@ -92,7 +92,7 @@ async fn a_retry_safe_task_recovers_when_the_vta_forgets_the_relationship() {
         serde_json::to_value(CreateAclRequest::new("did:example:heal-recovered", "admin"))
             .expect("serialize the grant body");
     let reply: Value = client
-        .dispatch_trust_task(TASK_ACL_GRANT_0_1, payload, 3)
+        .dispatch_trust_task(TASK_ACL_GRANT_0_2, payload, 3)
         .await
         .expect(
             "the grant must recover: on the reply-timeout the client resets its stale \

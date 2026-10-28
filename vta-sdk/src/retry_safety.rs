@@ -132,14 +132,14 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     // ── Messaging ───────────────────────────────────────────────────────
     (trust_tasks::TASK_MESSAGING_PING_0_2, ReadOnly),
     // ── ACL ─────────────────────────────────────────────────────────────
-    (trust_tasks::TASK_ACL_LIST_0_1, ReadOnly),
+    (trust_tasks::TASK_ACL_LIST_0_3, ReadOnly),
     // Grant is addressed by subject DID + context, so a repeat overwrites the
     // same entry rather than adding a second.
-    (trust_tasks::TASK_ACL_GRANT_0_1, RetrySafe),
-    (trust_tasks::TASK_ACL_SHOW_0_1, ReadOnly),
-    (trust_tasks::TASK_ACL_UPDATE_0_1, RetrySafe),
-    (trust_tasks::TASK_ACL_CHANGE_ROLE_0_1, RetrySafe),
-    (trust_tasks::TASK_ACL_REVOKE_0_1, RetrySafe),
+    (trust_tasks::TASK_ACL_GRANT_0_2, RetrySafe),
+    (trust_tasks::TASK_ACL_SHOW_0_2, ReadOnly),
+    (trust_tasks::TASK_ACL_UPDATE_0_2, RetrySafe),
+    (trust_tasks::TASK_ACL_CHANGE_ROLE_0_2, RetrySafe),
+    (trust_tasks::TASK_ACL_REVOKE_0_2, RetrySafe),
     // Swap deletes the current subject's entry as it creates the new one. A lost
     // reply strands the caller: old entry gone, new one unknown to them. This is
     // remediation-plan F6 seen from the wire.

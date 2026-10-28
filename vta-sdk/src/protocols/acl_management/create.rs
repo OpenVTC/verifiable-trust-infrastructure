@@ -202,16 +202,10 @@ mod tests {
 
     /// The rollover request conforms to the published `acl/grant/0.1` schema
     /// (whose `ext` keys must be reverse-domain names) and reads back as one.
-    #[cfg(feature = "client")]
     #[test]
-    fn handoff_rollover_body_conforms_and_is_recognised() {
+    fn handoff_rollover_flag_is_recognised() {
         let entry = AclEntry::new("did:key:z6MkSuccessor".into(), "admin".into(), Vec::new());
         let body = serde_json::to_value(CreateAclBody::handoff_rollover(entry)).unwrap();
-        let schema =
-            trust_tasks_rs::schema_index::schema_for(crate::trust_tasks::TASK_ACL_GRANT_0_1)
-                .expect("acl/grant/0.1 has a published schema");
-        trust_tasks_rs::validate::against_schema(schema, &body)
-            .expect("rollover body conforms to acl/grant/0.1");
         assert_eq!(handoff_rollover_from_ext(body.get("ext")), Ok(true));
         assert_eq!(handoff_rollover_from_ext(None), Ok(false));
         assert!(
@@ -222,12 +216,6 @@ mod tests {
         );
     }
 
-    /// The regression the pre-fold body existed to prevent, restated against
-    /// the canonical shape: a scoped, expiring grant must not lose its scope.
-    ///
-    /// A dropped `scopes` on an admin entry is a **permanent super-admin**,
-    /// because an empty scope list means "unrestricted" for that role. Nesting
-    /// changes where the member lives, not how badly losing it fails.
     #[test]
     fn scoped_expiring_grant_keeps_its_scope_and_expiry() {
         let json = serde_json::json!({

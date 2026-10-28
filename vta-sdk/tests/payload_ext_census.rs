@@ -114,6 +114,25 @@ const NO_EXT_BY_DESIGN: &[(&str, &str)] = &[
          An `ext` slot the schema does not declare would be the first crack \
          in it.",
     ),
+    (
+        "CapabilityRef",
+        "A member of `acl/_shared/0.2`'s AclEntry (`approveCapabilities` grants), \
+         not a payload root. The shared schema closes it with \
+         `additionalProperties: false` over `capability` / `resource` and no \
+         `ext` slot — SPEC §4.5.1 gives the slot to the entry, which has one.",
+    ),
+    (
+        "CapabilityGrant",
+        "A member of `acl/_shared/0.2`'s AclEntry (`capabilities` grants), closed \
+         by the shared schema over `capability` / `resource` / `additive` with \
+         no `ext` slot, as `CapabilityRef` above.",
+    ),
+    (
+        "StepUpReplacement",
+        "The `stepUp` member of an `acl/update/0.2` payload, which the published \
+         schema closes over `approver` / `require` with no `ext` slot; the \
+         payload itself carries `ext`.",
+    ),
 ];
 
 /// One `deny_unknown_fields` type that would reject a conforming `ext`.

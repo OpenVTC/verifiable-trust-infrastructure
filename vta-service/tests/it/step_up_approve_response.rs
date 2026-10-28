@@ -360,7 +360,7 @@ async fn trust_task_acl_mutation_requires_step_up() {
     // are the only trigger now.
     require_step_up_for_everything(&ctx).await;
 
-    // Seeded so the issuer has a key: `acl/grant/0.1` declares `proof` REQUIRED,
+    // Seeded so the issuer has a key: `acl/grant/0.2` declares `proof` REQUIRED,
     // and the step-up gate this test is about fires *after* that check.
     const AAL1_SEED: u8 = 0xA1;
     let did = vta_service::test_support::did_for_seed(AAL1_SEED).0;
@@ -399,7 +399,7 @@ async fn trust_task_acl_mutation_requires_step_up() {
     // before payload parsing, so the body need only route + pass the role check.
     let mut typed: trust_tasks_rs::TrustTask<Value> = serde_json::from_value(json!({
         "id": "acl-create-itest-1",
-        "type": "https://trusttasks.org/spec/acl/grant/0.1",
+        "type": "https://trusttasks.org/spec/acl/grant/0.2",
         "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
         "issuer": did,
         "recipient": ctx.vta_did,
@@ -407,7 +407,9 @@ async fn trust_task_acl_mutation_requires_step_up() {
             "entry": {
                 "subject": "did:key:z6MkSomeNewEntry",
                 "role": "application",
-                "scopes": ["ctx1"]
+                "act": {"scope": "contexts", "contexts": ["ctx1"]},
+                "keys": {"scope": "all"},
+                "capabilities": {"scope": "ceiling"}
             }
         },
     }))
@@ -512,12 +514,12 @@ async fn v0_2_minted_request_completes_with_a_0_6_response() {
 
     // 1. An AAL2-gated trust-task mutation → rejected with the minted
     //    approve-request in `details`.
-    // Signed with the same seed the DID is derived from (57): `acl/grant/0.1`
+    // Signed with the same seed the DID is derived from (57): `acl/grant/0.2`
     // declares `proof` REQUIRED, and the step-up gate this test exercises runs
     // after that check.
     let mut gated_doc: trust_tasks_rs::TrustTask<Value> = serde_json::from_value(json!({
         "id": "acl-create-roundtrip-1",
-        "type": "https://trusttasks.org/spec/acl/grant/0.1",
+        "type": "https://trusttasks.org/spec/acl/grant/0.2",
         "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
         "issuer": did,
         "recipient": ctx.vta_did,
@@ -525,7 +527,9 @@ async fn v0_2_minted_request_completes_with_a_0_6_response() {
             "entry": {
                 "subject": "did:key:z6MkRoundTripEntry",
                 "role": "application",
-                "scopes": ["ctx1"]
+                "act": {"scope": "contexts", "contexts": ["ctx1"]},
+                "keys": {"scope": "all"},
+                "capabilities": {"scope": "ceiling"}
             }
         },
     }))

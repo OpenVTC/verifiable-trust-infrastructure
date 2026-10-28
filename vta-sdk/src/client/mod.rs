@@ -3831,11 +3831,25 @@ mod tests {
         };
         let json = serde_json::to_value(&req).unwrap();
         // The builder API is unchanged; only what it serialises moved. The wire
-        // is canonical `acl/grant/0.1`: the entry is nested and uses `subject`
-        // and `scopes`.
+        // is canonical `acl/grant/0.2`: the entry is nested, uses `subject`, and
+        // states every authority axis explicitly.
         assert_eq!(json["entry"]["subject"], "did:key:z6Mk123");
         assert_eq!(json["entry"]["role"], "admin");
-        assert_eq!(json["entry"]["scopes"][0], "vta");
+        assert_eq!(
+            json["entry"]["act"],
+            serde_json::json!({"scope": "contexts", "contexts": ["vta"]})
+        );
+        assert_eq!(json["entry"]["keys"], serde_json::json!({"scope": "all"}));
+        assert_eq!(
+            json["entry"]["capabilities"],
+            serde_json::json!({"scope": "ceiling"})
+        );
+        // Approve authority is stated as none rather than left to absence.
+        assert_eq!(
+            json["entry"]["approve"],
+            serde_json::json!({"scope": "none"})
+        );
+        assert!(json["entry"].get("approveCapabilities").is_none());
         assert!(
             json.get("did").is_none(),
             "pre-fold flat shape is gone: {json}"
@@ -3843,12 +3857,33 @@ mod tests {
         // An omitted approver must not appear at all — an empty `stepUp` object
         // would read as a configured-but-blank override rather than absence.
         assert!(json["entry"].get("stepUp").is_none());
-        assert!(json["entry"].get("approve").is_none());
         // An unset label is omitted rather than emitted as null.
         assert!(!json["entry"].as_object().unwrap().contains_key("label"));
-        assert_eq!(json["entry"]["scopes"], serde_json::json!(["vta"]));
-        // And the pre-fold member name is not emitted alongside the new one.
-        assert!(json["entry"].get("allowedContexts").is_none(), "{json}");
+        // And no 0.1 member is emitted alongside the 0.2 ones.
+        for legacy in ["scopes", "allowedKeys", "allowedContexts"] {
+            assert!(json["entry"].get(legacy).is_none(), "{legacy}: {json}");
+        }
+
+        // The empty-list reading is the role's, stated explicitly: an admin
+        // with no contexts acts everywhere, any other role nowhere.
+        let admin = serde_json::to_value(CreateAclRequest::new("did:key:zA", "admin")).unwrap();
+        assert_eq!(admin["entry"]["act"], serde_json::json!({"scope": "all"}));
+        let reader = serde_json::to_value(CreateAclRequest::new("did:key:zB", "reader")).unwrap();
+        assert_eq!(reader["entry"]["act"], serde_json::json!({"scope": "none"}));
+        // "The whole role plus an additive grant" is the ceiling enumerated.
+        let holder = serde_json::to_value(
+            CreateAclRequest::new("did:key:zC", "reader")
+                .capabilities(vec!["persona-holder".into()]),
+        )
+        .unwrap();
+        assert_eq!(
+            holder["entry"]["capabilities"],
+            serde_json::json!({"scope": "listed", "grants": [
+                {"capability": "vault-read"},
+                {"capability": "memory-read"},
+                {"capability": "persona-holder", "additive": true},
+            ]})
+        );
     }
 
     #[test]
@@ -4361,7 +4396,7 @@ mod client_identity_tests {
         // wrong.
         const URIS: [&str; 3] = [
             trust_tasks::TASK_CONTEXTS_CREATE_1_0,
-            trust_tasks::TASK_ACL_GRANT_0_1,
+            trust_tasks::TASK_ACL_GRANT_0_2,
             trust_tasks::TASK_CONTEXTS_LIST_1_0,
         ];
 

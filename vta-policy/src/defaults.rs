@@ -417,7 +417,7 @@ mod tests {
 
     fn seed_rules() -> Vec<vta_sdk::approvals::ApprovalRule> {
         vec![vta_sdk::approvals::ApprovalRule::reauth(
-            "https://trusttasks.org/spec/acl/grant/0.1",
+            "https://trusttasks.org/spec/acl/grant/0.2",
         )]
     }
 
@@ -495,7 +495,7 @@ mod tests {
     async fn an_unsatisfiable_seed_fails_at_boot() {
         let (ks, _d) = temp_ks().await;
         let rules = vec![vta_sdk::approvals::ApprovalRule::consent(
-            "https://trusttasks.org/spec/acl/grant/0.1",
+            "https://trusttasks.org/spec/acl/grant/0.2",
             "nobody",
         )];
         let err =
