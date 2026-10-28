@@ -1,7 +1,7 @@
 //! `policy/*` — runtime management of the VTA's Policy Decision Point.
 //!
-//! The canonical family (`policy/list/0.2`, `policy/get/0.1`,
-//! `policy/upsert/0.2`, `policy/delete/0.1`, `policy/evaluate/0.3`). Before
+//! The canonical family (`policy/list/0.3`, `policy/get/0.1`,
+//! `policy/upsert/0.3`, `policy/delete/0.1`, `policy/evaluate/0.3`). Before
 //! this, the VTA had **no** runtime policy surface at all: the only way to
 //! change what the PDP enforced was to edit `config.toml` and restart, which is
 //! why the declarative approvals model now lives in a policy row instead of a
@@ -55,7 +55,7 @@ pub struct PolicyModuleView {
     pub ext: serde_json::Value,
 }
 
-/// `policy/list/0.2` request.
+/// `policy/list/0.3` request.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
@@ -69,8 +69,9 @@ pub struct ListPoliciesBody {
     pub enabled_only: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cursor: Option<String>,
+    /// The most modules to return (`limit`; 0.2's `pageSize`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub page_size: Option<u64>,
+    pub limit: Option<u64>,
     /// Ecosystem-defined extension members (SPEC §4.5.1).
     ///
     /// Carried explicitly rather than swept up by relaxing
@@ -99,22 +100,22 @@ impl ListPoliciesBody {
             enabled_only,
             context_id: None,
             cursor: None,
-            page_size: None,
+            limit: None,
             ext: None,
         }
     }
 }
 
-/// `policy/list/0.2` response.
+/// `policy/list/0.3` response.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct ListPoliciesResultBody {
     pub policies: Vec<PolicyModuleView>,
-    /// Canonical-required: more matching modules exist beyond this page.
-    pub truncated: bool,
+    /// Continuation token, present iff more matching modules exist beyond
+    /// this page (0.2's `truncated` + `cursor`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cursor: Option<String>,
+    pub next_cursor: Option<String>,
 }
 
 /// `policy/get/0.1` request.
@@ -160,7 +161,7 @@ pub struct GetPolicyResultBody {
     pub policy: PolicyModuleView,
 }
 
-/// `policy/upsert/0.2` request.
+/// `policy/upsert/0.3` request.
 ///
 /// `module` is the Rego source and is **authoritative** — the maintainer
 /// validates it, never invents it. A declarative approvals row additionally
@@ -182,7 +183,7 @@ pub struct UpsertPolicyBody {
     pub applies_to: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub priority: Option<i32>,
-    /// Optional on the wire, defaulting to `true`, as `policy/upsert/0.2`
+    /// Optional on the wire, defaulting to `true`, as `policy/upsert/0.3`
     /// declares (`"enabled": {"type": "boolean", "default": true}`).
     ///
     /// It was a bare `bool` here, so a conforming client that omitted it got
@@ -201,14 +202,15 @@ pub struct UpsertPolicyBody {
     pub ext: serde_json::Value,
 }
 
-/// `policy/upsert/0.2` response.
+/// `policy/upsert/0.3` response.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct UpsertPolicyResultBody {
     pub policy: PolicyModuleView,
-    /// True when this call created a new row rather than revising one.
-    pub created: bool,
+    /// True when this call created a new row rather than revising one
+    /// (`wasCreated`; 0.2's `created`).
+    pub was_created: bool,
 }
 
 /// `policy/delete/0.1` request.
@@ -267,7 +269,7 @@ pub struct DeletePolicyResultBody {
     pub deleted_at: String,
 }
 
-/// `policy/upsert/0.2` declares `enabled` with `"default": true`.
+/// `policy/upsert/0.3` declares `enabled` with `"default": true`.
 fn enabled_by_default() -> bool {
     true
 }

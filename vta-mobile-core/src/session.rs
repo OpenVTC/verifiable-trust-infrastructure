@@ -46,7 +46,7 @@
 
 use chrono::DateTime;
 use trust_tasks_rs::specs::auth::{
-    authenticate::v0_2 as authenticate, challenge::v0_1 as challenge, refresh::v0_2 as refresh,
+    authenticate::v0_3 as authenticate, challenge::v0_1 as challenge, refresh::v0_2 as refresh,
     revoke_session::v0_2 as revoke_session, whoami::v0_1 as whoami,
 };
 use trust_tasks_rs::specs::messaging::ping::v0_1 as ping;
@@ -173,7 +173,7 @@ pub fn parse_auth_challenge_response(json: String) -> Result<AuthChallenge, FfiE
     })
 }
 
-/// Build a signed `auth/authenticate/0.2`. The framework Data Integrity proof —
+/// Build a signed `auth/authenticate/0.3`. The framework Data Integrity proof —
 /// signed by the holder via `signer` — IS the authentication; `challenge` and
 /// `session_id` are echoed from the challenge response.
 #[uniffi::export]
@@ -201,7 +201,7 @@ pub fn build_authenticate(
     serialize(&doc)
 }
 
-/// Parse an `auth/authenticate/0.2#response` — the issued tokens + session.
+/// Parse an `auth/authenticate/0.3#response` — the issued tokens + session.
 #[uniffi::export]
 pub fn parse_authenticate_response(json: String) -> Result<AuthTokens, FfiError> {
     let doc: TrustTask<authenticate::Response> = serde_json::from_str(&json).map_err(decode)?;
@@ -579,7 +579,7 @@ mod tests {
     fn parses_authenticate_response_tokens() {
         let json = r#"{
           "id": "r-1",
-          "type": "https://trusttasks.org/spec/auth/authenticate/0.2#response",
+          "type": "https://trusttasks.org/spec/auth/authenticate/0.3#response",
           "issuer": "did:web:vta.example",
           "recipient": "did:key:zHolder",
           "payload": {

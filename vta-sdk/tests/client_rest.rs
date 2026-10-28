@@ -33,7 +33,7 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 
 const TASK_ACL_LIST: &str = "https://trusttasks.org/spec/acl/list/0.1";
 const TASK_KEYS_LIST: &str = "https://trusttasks.org/spec/keys/list/0.2";
-const TASK_AUDIT_LIST: &str = "https://trusttasks.org/spec/audit/list/0.1";
+const TASK_AUDIT_LIST: &str = "https://trusttasks.org/spec/audit/list/0.2";
 /// `get_key_secret` dispatches this: the operation moved to the seeds slice
 /// because it acts on the seed behind the key, not the key itself.
 const TASK_KEYS_EXPORT_SECRET: &str = "https://trusttasks.org/spec/keys/export-secret/0.1";
@@ -257,10 +257,10 @@ async fn health_500_maps_to_server_error() {
 
 // ── Discovery + VTA management ──────────────────────────────────────
 
-/// `trust-task-discovery/0.1` replaces the retired `capabilities` task (#1043).
+/// `trust-task-discovery/0.3` replaces the retired `capabilities` task (#1043).
 ///
 /// Asserts the decode, not the transport: the response is a bare list plus an
-/// optional framework version, and `frameworkVersion` is OPTIONAL in 0.1, so a
+/// optional framework version, and `frameworkVersion` is OPTIONAL, so a
 /// responder that omits it must still decode rather than erroring.
 #[tokio::test]
 async fn supported_trust_tasks_decodes_without_a_framework_version() {
@@ -285,7 +285,7 @@ async fn supported_trust_tasks_decodes_without_a_framework_version() {
     assert_eq!(tasks.supported_types.len(), 2);
     assert!(
         tasks.framework_version.is_none(),
-        "an omitted frameworkVersion is legitimate in 0.1, not an error"
+        "an omitted frameworkVersion is legitimate, not an error"
     );
 }
 
@@ -1565,13 +1565,13 @@ async fn list_audit_logs_paginates() {
     Mock::given(method("POST"))
         .and(path("/trust-tasks"))
         .and(auth_match())
-        // camelCase, per canonical `audit/list/0.1`. A snake_case key
+        // camelCase, per canonical `audit/list/0.2`. A snake_case key
         // here would be dropped by the handler's serde binding and the
         // filter would silently not apply.
         .and(body_partial_json(json!({
             "type": TASK_AUDIT_LIST,
             "payload": {
-                "pageSize": 25,
+                "limit": 25,
                 "action": "key.create",
                 "cursor": "opaque-token"
             }
@@ -1585,8 +1585,7 @@ async fn list_audit_logs_paginates() {
                     "outcome": "success",
                     "actor": "did:key:zActor",
                 }],
-                "truncated": true,
-                "cursor": "next-token"
+                "nextCursor": "next-token"
             }))
             .await,
         )
@@ -1595,14 +1594,13 @@ async fn list_audit_logs_paginates() {
         .await;
     let c = client(&server).await;
     let params = vta_sdk::protocols::audit_management::list::ListAuditLogsBody {
-        page_size: Some(25),
+        limit: Some(25),
         action: Some("key.create".into()),
         cursor: Some("opaque-token".into()),
         ..Default::default()
     };
     let r = c.list_audit_logs(&params).await.unwrap();
-    assert!(r.truncated);
-    assert_eq!(r.cursor.as_deref(), Some("next-token"));
+    assert_eq!(r.next_cursor.as_deref(), Some("next-token"));
     assert_eq!(r.entries[0].event_id, "e1");
     assert_eq!(r.entries[0].action, "key.create");
 }
@@ -1620,7 +1618,7 @@ async fn audit_list_percent_encodes_rfc3339_bounds() {
         .and(body_partial_json(json!({
             "payload": {"from": "2026-07-01T00:00:00Z"}
         })))
-        .respond_with(tt_ok(json!({"entries": [], "truncated": false})).await)
+        .respond_with(tt_ok(json!({"entries": []})).await)
         .expect(1)
         .mount(&server)
         .await;
@@ -1630,7 +1628,7 @@ async fn audit_list_percent_encodes_rfc3339_bounds() {
         ..Default::default()
     };
     let r = c.list_audit_logs(&params).await.unwrap();
-    assert!(!r.truncated);
+    assert!(r.next_cursor.is_none());
 }
 
 #[tokio::test]

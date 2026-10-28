@@ -1865,8 +1865,7 @@ async fn a_correlation_finding_names_where_the_shared_value_went() {
 // 5. `release: stepUp` — a fresh approval per disclosure
 // ---------------------------------------------------------------------------
 
-const APPROVE_RESPONSE: &str = "https://trusttasks.org/spec/auth/step-up/approve-response/0.2";
-const APPROVE_RESPONSE_0_3: &str = "https://trusttasks.org/spec/auth/step-up/approve-response/0.3";
+const APPROVE_RESPONSE: &str = "https://trusttasks.org/spec/auth/step-up/approve-response/0.6";
 
 /// Build the face, bind it, preview it, and return `(scoped token, previewId)`.
 ///
@@ -2080,12 +2079,10 @@ async fn a_step_up_claim_needs_an_approval_bound_to_that_preview() {
 /// preview of the same face is gated exactly as the first was, with no memory
 /// of the approval the holder just gave.
 ///
-/// And it asserts it **against an elevated session**, which is the sharp part.
-/// The step-up ceremony raises the session to `aal2` as it does for every
-/// other caller, so a gate that read `acr` — the obvious way to write one, and
-/// the way every other step-up-gated operation in this service works — would
-/// wave this second disclosure straight through. "Each time" survives only
-/// because the gate reads the preview.
+/// A bound approval (`auth/step-up/approve-response/0.6`) is acknowledged
+/// `recorded` and raises no session, so a gate that read `acr` would refuse the
+/// second disclosure here too; the property this pins is that the approval is
+/// spent with its preview rather than remembered anywhere else.
 #[tokio::test]
 async fn an_approval_does_not_carry_to_the_next_disclosure() {
     let (router, ctx) = build_provisionable_test_app().await;
@@ -2122,7 +2119,7 @@ async fn an_approval_does_not_carry_to_the_next_disclosure() {
     assert!(!refused(status, &body), "approve-response: {status} {body}");
     assert_eq!(
         payload_of(&body)["status"],
-        "elevated",
+        "recorded",
         "the ceremony did not complete, so nothing below tests what it means to: {body}"
     );
 
@@ -2156,14 +2153,17 @@ async fn an_approval_does_not_carry_to_the_next_disclosure() {
         .expect("previewId")
         .to_string();
 
-    let stored = vti_common::auth::session::get_session(&ctx.sessions_ks, &session_id)
-        .await
-        .unwrap()
-        .expect("the session is still there");
-    assert_eq!(
-        stored.acr, "aal2",
-        "the session is not elevated, so the refusal below would prove nothing: {stored:?}"
-    );
+    // Elevate the session as any other step-up would, so the refusal below
+    // proves the gate reads the preview and never `acr`: a gate that read the
+    // session would wave this second disclosure straight through.
+    vti_common::auth::session::update_session_with(&ctx.sessions_ks, &session_id, |session| {
+        session.acr = "aal2".to_string();
+        session.acr_expires_at = Some(u64::MAX);
+        true
+    })
+    .await
+    .unwrap()
+    .expect("the session is still there");
 
     let (status, body) = post_to(
         &router,
@@ -2523,16 +2523,16 @@ async fn the_registry_is_readable_by_scoped_and_unscoped_callers_alike() {
     }
 }
 
-/// A 0.3 bound approval authorises the disclosure and elevates **nothing**.
+/// A bound approval authorises the disclosure and elevates **nothing**.
 ///
-/// This is what `auth/step-up/approve-response/0.3` was added for, and the
-/// close of #1304's one stated compromise. The two halves both matter:
+/// This is what `auth/step-up/approve-response/0.3` added (carried into 0.6),
+/// and the close of #1304's one stated compromise. The two halves both matter:
 ///
 /// - the disclosure goes through, so the approval was really applied;
 /// - the session stays at `aal1`, so an approval taken to release a card
 ///   number buys nothing else in the assurance window.
 #[tokio::test]
-async fn a_bound_approval_asked_in_0_3_records_without_elevating() {
+async fn a_bound_approval_records_without_elevating() {
     let (router, ctx) = build_provisionable_test_app().await;
     let (scoped, preview_id) =
         preview_a_face_holding(&router, &ctx, "rec", "payment.card", "4242424242424242").await;
@@ -2555,7 +2555,7 @@ async fn a_bound_approval_asked_in_0_3_records_without_elevating() {
         &router,
         &scoped,
         &ctx.vta_did,
-        APPROVE_RESPONSE_0_3,
+        APPROVE_RESPONSE,
         json!({
             "subject": holder_did(),
             "sessionId": session_id,
@@ -2567,12 +2567,12 @@ async fn a_bound_approval_asked_in_0_3_records_without_elevating() {
     .await;
     assert!(
         !refused(status, &body),
-        "approve-response/0.3: {status} {body}"
+        "approve-response/0.6: {status} {body}"
     );
     let p = payload_of(&body);
     assert_eq!(
         p["status"], "recorded",
-        "a bound approval asked in 0.3 must be acknowledged `recorded`: {body}"
+        "a bound approval must be acknowledged `recorded`: {body}"
     );
     assert_eq!(p["boundTo"], preview_id, "{body}");
     assert!(
@@ -2605,73 +2605,6 @@ async fn a_bound_approval_asked_in_0_3_records_without_elevating() {
         !refused(status, &body),
         "recorded, but the disclosure it authorised was still refused: {status} {body}"
     );
-}
-
-/// A 0.2 approver still gets the old behaviour, and that is deliberate.
-///
-/// The cutover moves per approver, not per deployment: a response's type is the
-/// request's type plus `#response`, so an approver that minted 0.2 must be
-/// answered in 0.2 — which has no word for "applied, nothing elevated". Until
-/// that approver moves, elevating is the only honest thing left.
-///
-/// Asserted so the fallback is a decision rather than an accident: if this
-/// starts returning `recorded` to a 0.2 request, the response no longer
-/// validates against the version the approver asked in.
-#[tokio::test]
-async fn a_bound_approval_asked_in_0_2_still_elevates() {
-    let (router, ctx) = build_provisionable_test_app().await;
-    let (scoped, preview_id) =
-        preview_a_face_holding(&router, &ctx, "old", "payment.card", "4242424242424242").await;
-
-    let (_, body) = post_to(
-        &router,
-        &scoped,
-        &ctx.vta_did,
-        PRESENT,
-        json!({ "contextId": CTX, "previewId": preview_id }),
-    )
-    .await;
-    let ar = payload_of(&body)["details"]["approveRequest"].clone();
-    let session_id = ar["payload"]["sessionId"]
-        .as_str()
-        .expect("sessionId")
-        .to_string();
-
-    let (status, body) = post_to(
-        &router,
-        &scoped,
-        &ctx.vta_did,
-        APPROVE_RESPONSE,
-        json!({
-            "subject": holder_did(),
-            "sessionId": session_id,
-            "challenge": ar["payload"]["challenge"],
-            "decision": "approved",
-            "grantedAcr": "aal2",
-        }),
-    )
-    .await;
-    assert!(
-        !refused(status, &body),
-        "approve-response/0.2: {status} {body}"
-    );
-    assert_eq!(
-        payload_of(&body)["status"],
-        "elevated",
-        "0.2 has no `recorded`, so answering with one would not validate against the version \
-         the approver asked in: {body}"
-    );
-
-    // "Each time" survives the elevation regardless — a second preview of the
-    // same face is still gated, because the gate reads the preview and never
-    // the session. That is asserted at length in
-    // `an_approval_does_not_carry_to_the_next_disclosure`; this is the version
-    // that still elevates, so it is worth knowing the property holds here too.
-    let stored = vti_common::auth::session::get_session(&ctx.sessions_ks, &session_id)
-        .await
-        .unwrap()
-        .expect("session still there");
-    assert_eq!(stored.acr, "aal2", "{stored:?}");
 }
 
 /// Two context-local faces typing the same value are one finding, and

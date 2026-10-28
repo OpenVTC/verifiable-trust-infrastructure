@@ -3,7 +3,7 @@
 //!
 //! The decision on #1641 (2026-10-17): every console sign-in binds a browser
 //! key to the session it mints (`Session::session_pubkey_b58btc` — the field
-//! `auth/authenticate/0.2`'s `sessionKey` and `auth/oob/redeem`'s `K_b`
+//! `auth/authenticate/0.3`'s `sessionKey` and `auth/oob/redeem`'s `K_b`
 //! already fill), and whoami is answered for the key, never for a cookie.
 //! The bearer route `GET /v1/auth/whoami` is gone.
 //!

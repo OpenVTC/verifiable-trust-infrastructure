@@ -418,7 +418,7 @@ mod approval_tests {
     async fn decision(issuer: &str, secret: &Secret, purpose: &str) -> TrustTask<Value> {
         let mut doc = json!({
             "id": "urn:uuid:decision-1",
-            "type": "https://trusttasks.org/spec/task-consent/decision/0.1",
+            "type": "https://trusttasks.org/spec/task-consent/decision/0.2",
             "issuer": issuer,
             "recipient": "did:web:vta.example",
             "issuedAt": "2026-09-25T10:00:00Z",

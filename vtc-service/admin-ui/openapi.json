@@ -87,7 +87,7 @@
           "auth"
         ],
         "summary": "`POST /v1/auth/refresh` — exchange the presented refresh\ntoken for a new access + refresh pair.",
-        "description": "Returns the canonical `AuthenticateResponse { session, tokens }`\nshape (replaces the legacy `{ sessionId, data: { accessToken,\naccessExpiresAt } }`). The full token-rotation logic — atomic\nclaim, refresh-expiry check, ACL re-look-up, AAL preservation\nacross rotation, RFC 6749 §10.4 rotation semantics — lives in\nthe canonical handler in vti-common.\n\nTwo request shapes, tried in order:\n\n1. **Trust-Task `auth/refresh/0.1` document** (canonical REST) — no\n   mediator, no DIDComm stack. See [`try_refresh_trust_task`].\n2. **DIDComm authcrypt envelope** — for clients already on a mediator.\n   Unchanged, and still gated by `bind_authcrypt_sender`.",
+        "description": "Returns the canonical `AuthenticateResponse { session, tokens }`\nshape (replaces the legacy `{ sessionId, data: { accessToken,\naccessExpiresAt } }`). The full token-rotation logic — atomic\nclaim, refresh-expiry check, ACL re-look-up, AAL preservation\nacross rotation, RFC 6749 §10.4 rotation semantics — lives in\nthe canonical handler in vti-common.\n\nTwo request shapes, tried in order:\n\n1. **Trust-Task `auth/refresh/0.2` document** (canonical REST) — no\n   mediator, no DIDComm stack. See [`try_refresh_trust_task`].\n2. **DIDComm authcrypt envelope** — for clients already on a mediator.\n   Unchanged, and still gated by `bind_authcrypt_sender`.",
         "operationId": "refresh",
         "requestBody": {
           "description": "DIDComm envelope or Trust-Task refresh document",
@@ -601,31 +601,27 @@
         "type": "object",
         "description": "Canonical `audit/list` response.",
         "required": [
-          "entries",
-          "truncated"
+          "entries"
         ],
         "properties": {
-          "cursor": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
           "entries": {
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/AuditEntry"
             }
           },
-          "truncated": {
-            "type": "boolean",
-            "description": "True when more entries match beyond this page; `cursor` is then\npresent."
+          "nextCursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Continuation token, present iff more entries match beyond this page."
           }
         }
       },
       "AuthenticateResponse": {
         "type": "object",
-        "description": "Server responds from `POST /auth/`. Conforms to\n`spec/auth/authenticate/0.1#response`: `{ session, tokens }`.",
+        "description": "Server responds from `POST /auth/`. Conforms to\n`spec/auth/authenticate/0.3#response`: `{ session, tokens }`.",
         "required": [
           "session",
           "tokens"
@@ -4444,25 +4440,21 @@
         "type": "object",
         "description": "Canonical `policy/list` response.",
         "required": [
-          "policies",
-          "truncated"
+          "policies"
         ],
         "properties": {
-          "cursor": {
+          "nextCursor": {
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "description": "Continuation token, present iff more matching modules exist beyond\nthis page."
           },
           "policies": {
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/PolicyModuleResponse"
             }
-          },
-          "truncated": {
-            "type": "boolean",
-            "description": "Canonical-required: more matching modules exist beyond this page."
           }
         }
       },
@@ -5344,15 +5336,15 @@
         "type": "object",
         "required": [
           "policy",
-          "created"
+          "wasCreated"
         ],
         "properties": {
-          "created": {
-            "type": "boolean",
-            "description": "Canonical-required: true when this call created a new module\nlineage rather than revising an existing one. VTC's first\nrevision for a purpose is a creation."
-          },
           "policy": {
             "$ref": "#/components/schemas/PolicyModuleResponse"
+          },
+          "wasCreated": {
+            "type": "boolean",
+            "description": "Canonical-required (`wasCreated`): true when this call created a new\nmodule lineage rather than revising an existing one. VTC's first\nrevision for a purpose is a creation."
           }
         }
       },

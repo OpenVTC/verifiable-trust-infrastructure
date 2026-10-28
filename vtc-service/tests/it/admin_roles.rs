@@ -134,7 +134,7 @@ const GATES: &[Gate] = &[
         cap: Capability::ConfigAdmin,
     },
     Gate {
-        task: "https://trusttasks.org/spec/audit/list/0.1",
+        task: "https://trusttasks.org/spec/audit/list/0.2",
         cap: Capability::AuditRead,
     },
     Gate {

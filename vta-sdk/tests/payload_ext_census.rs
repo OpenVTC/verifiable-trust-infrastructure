@@ -4,7 +4,7 @@
 //!
 //! SPEC.md §4.5.1 gives every Trust Task payload an `ext` slot for
 //! ecosystem-defined extension members, and the published schemas declare it —
-//! `acl/list/0.1`, `policy/list/0.2` and the rest all list `ext` among their
+//! `acl/list/0.1`, `policy/list/0.3` and the rest all list `ext` among their
 //! properties. So a conforming producer may send one.
 //!
 //! `#[serde(deny_unknown_fields)]` on a struct that has no `ext` field turns

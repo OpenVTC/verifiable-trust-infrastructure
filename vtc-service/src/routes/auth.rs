@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use trust_tasks_rs::TrustTask;
 use trust_tasks_rs::specs::auth::passkey::login::start::v0_2 as start_spec;
-use trust_tasks_rs::specs::auth::refresh::v0_1 as refresh;
+use trust_tasks_rs::specs::auth::refresh::v0_2 as refresh;
 use uuid::Uuid;
 use vti_common::auth::extractor::ADMIN_REFRESH_COOKIE;
 
@@ -268,7 +268,7 @@ async fn authenticate_and_mint(
         return Ok(resp);
     }
 
-    // Canonical REST login: a DI-signed `auth/authenticate/0.1` Trust Task,
+    // Canonical REST login: a DI-signed `auth/authenticate/0.3` Trust Task,
     // the same document the VTA accepts. Returns `None` for any other body.
     if let Some(resp) = authenticate_trust_task(state, body).await? {
         return Ok(resp);
@@ -325,12 +325,12 @@ async fn authenticate_and_mint(
     .await
 }
 
-/// The canonical `auth/authenticate/0.1` Type URI, shared by all three request
+/// The canonical `auth/authenticate/0.3` Type URI, shared by all three request
 /// shapes — the DIDComm envelope's `msg.typ`, the SIOP envelope's `type`, and
-/// the REST Trust Task's `type`.
-const AUTHENTICATE_TASK_URI: &str = "https://trusttasks.org/spec/auth/authenticate/0.1";
+/// the REST Trust Task's `type`. 0.1 and 0.2 are no longer served.
+const AUTHENTICATE_TASK_URI: &str = crate::trust_tasks::auth_tasks::AUTHENTICATE_V0_3_TYPE;
 
-/// Try to authenticate from a DI-signed `auth/authenticate/0.1` Trust Task —
+/// Try to authenticate from a DI-signed `auth/authenticate/0.3` Trust Task —
 /// the canonical REST login, and the VTC counterpart of the VTA's
 /// `try_authenticate_trust_task`.
 ///
@@ -360,7 +360,7 @@ async fn authenticate_trust_task(
     state: &AppState,
     body: &str,
 ) -> Result<Option<AuthenticateResponse>, AppError> {
-    use trust_tasks_rs::specs::auth::authenticate::v0_1 as authenticate;
+    use trust_tasks_rs::specs::auth::authenticate::v0_3 as authenticate;
 
     let doc: TrustTask<serde_json::Value> = match serde_json::from_str(body) {
         Ok(doc) => doc,
@@ -383,6 +383,25 @@ async fn authenticate_trust_task(
             .map_err(|e| AppError::Authentication(e.to_string()))?;
     let payload: authenticate::Payload = serde_json::from_value(doc.payload.clone())
         .map_err(|e| AppError::Authentication(format!("invalid authenticate payload: {e}")))?;
+    // A proxied login (`principal` unequal to the signer) is refused: this
+    // service verifies no delegation evidence (see `trust_tasks::auth_tasks`).
+    if let Some(principal) = payload.principal.as_ref()
+        && principal.as_str() != signer_did
+    {
+        return Err(AppError::Authentication(format!(
+            "{}: this service does not verify delegation evidence; authenticate with the \
+             principal's own key",
+            crate::trust_tasks::auth_tasks::AUTHENTICATE_V0_3_ERR_DELEGATION_NOT_RECOGNIZED
+        )));
+    }
+    // The session key binding lives on the signed-document door
+    // (`trust_tasks::auth_tasks`); this REST shape never bound one.
+    if payload.session_key.is_some() {
+        return Err(AppError::Authentication(format!(
+            "{}: bind a session key through the signed-document door (`POST /v1/trust-tasks`)",
+            crate::trust_tasks::auth_tasks::AUTHENTICATE_ERR_SESSION_KEY_UNSUPPORTED
+        )));
+    }
 
     let backend = crate::auth::VtcAuthBackend::from_state(state).await?;
     let resp = vti_common::auth::handlers::handle_authenticate(
@@ -1000,7 +1019,7 @@ const STEP_UP_ELEVATION_TTL_SECS: u64 = 900; // 15m
 /// `purpose: login` response — a new session plus its tokens.
 ///
 /// Not `AuthenticateResponse`, which this handler used to reuse: that type
-/// serves `auth/authenticate/0.1`, whose schema is closed and has no `purpose`.
+/// serves `auth/authenticate/0.3`, whose schema is closed and has no `purpose`.
 /// One struct cannot satisfy both tasks, and reusing it here is what left
 /// `login/finish/0.2` short of a required member — the two responses look alike
 /// but answer different questions.
@@ -1248,7 +1267,7 @@ mod cookie_format_tests {
 
 // ---------- POST /auth/refresh ----------
 
-/// The canonical `auth/refresh/0.1` Type URI, shared by both request shapes —
+/// The canonical `auth/refresh/0.2` Type URI, shared by both request shapes —
 /// the DIDComm envelope's `msg.typ` and the REST Trust Task's `type`. The
 /// legacy `affinidi.com/atm/1.0/authenticate/refresh` alias was removed.
 const REFRESH_TASK_URI: &str = <refresh::Payload as trust_tasks_rs::Payload>::TYPE_URI;
@@ -1265,7 +1284,7 @@ const REFRESH_TASK_URI: &str = <refresh::Payload as trust_tasks_rs::Payload>::TY
 ///
 /// Two request shapes, tried in order:
 ///
-/// 1. **Trust-Task `auth/refresh/0.1` document** (canonical REST) — no
+/// 1. **Trust-Task `auth/refresh/0.2` document** (canonical REST) — no
 ///    mediator, no DIDComm stack. See [`try_refresh_trust_task`].
 /// 2. **DIDComm authcrypt envelope** — for clients already on a mediator.
 ///    Unchanged, and still gated by `bind_authcrypt_sender`.
@@ -1418,7 +1437,7 @@ async fn reissue_session_cookies(
     Ok(response)
 }
 
-/// Try to refresh from an `auth/refresh/0.1` Trust Task document — the
+/// Try to refresh from an `auth/refresh/0.2` Trust Task document — the
 /// canonical REST transport, and the VTC counterpart of the VTA's
 /// `try_refresh_trust_task`.
 ///
@@ -1445,7 +1464,7 @@ async fn reissue_session_cookies(
 /// path's snake_case `refresh_token` body — so one REST client speaks to both
 /// services with one document builder.
 ///
-/// Returns `Ok(None)` when the body isn't an `auth/refresh/0.1` Trust Task (→
+/// Returns `Ok(None)` when the body isn't an `auth/refresh/0.2` Trust Task (→
 /// fall through to the DIDComm path); `Err` when it *is* one but is invalid.
 async fn try_refresh_trust_task(
     state: &AppState,
@@ -1544,7 +1563,7 @@ pub struct SessionView {
 /// `session.expiresAt` is when the **session** ends — its refresh expiry,
 /// clamped to any absolute end — which is what the published member means
 /// ("when the session ceases to be valid"). The console's access cookie is
-/// shorter-lived and renewed through `auth/refresh/0.1`, which reports its
+/// shorter-lived and renewed through `auth/refresh/0.2`, which reports its
 /// own expiry.
 pub(crate) async fn whoami_for(
     state: &AppState,
@@ -1604,7 +1623,7 @@ pub(crate) async fn whoami_for(
 /// session it mints, as the Ed25519 multikey `Session::session_pubkey_b58btc`
 /// stores (`z6Mk…`).
 ///
-/// The same binding `auth/authenticate/0.2`'s `sessionKey` makes and
+/// The same binding `auth/authenticate/0.3`'s `sessionKey` makes and
 /// `auth/oob/redeem` makes for its `K_b`: a browser key, non-extractable on
 /// the console's side, that later signs `auth/whoami/0.1` for this session.
 /// Absent is `Ok(None)`; anything but an Ed25519 `did:key` is refused, before

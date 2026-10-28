@@ -6,7 +6,7 @@
 // sign-in, as the directory pages are. Nothing else under `git-ns` is: linking
 // or unlinking an account binds what the forge then relies on as the member's,
 // and every right change confers or withdraws authority, so the portal key may
-// sign neither (`auth/oob/grant/0.2` consumer item 6). Linking and unlinking go
+// sign neither (`auth/oob/grant/0.3` consumer item 6). Linking and unlinking go
 // through the member's wallet (`window.vtaWallet.git`), which signs as the
 // member after asking them, and shows the forge's authorisation page and code
 // in its own window — the page never sees the code. A member without it is

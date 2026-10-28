@@ -126,14 +126,20 @@ async fn discovery_is_answered_with_this_identitys_task_list_and_signed_by_it() 
     );
 }
 
+/// Discovery 0.1 is superseded and no longer served: a 0.1 party is told to
+/// re-ask at a version discovery lists.
 #[tokio::test]
-async fn discovery_0_1_is_answered_too() {
+async fn discovery_0_1_is_refused_as_unsupported_version() {
     let identity = witness();
     let party = party();
-    let doc = request(DISCOVERY_V0_1, &party.did, identity.did(), json!({}));
+    let doc = request(
+        "https://trusttasks.org/spec/trust-task-discovery/0.1",
+        &party.did,
+        identity.did(),
+        json!({}),
+    );
     let reply = signed_reply(&identity, &party.did, &doc).await;
-    assert_eq!(reply["type"], format!("{DISCOVERY_V0_1}#response"));
-    v0_1::Response::validate_value(&reply["payload"]).expect("a schema-valid 0.1 response");
+    assert_eq!(error_code(&reply), "unsupportedVersion", "{reply:#}");
 }
 
 /// A request signed by its issuer is verified and answered.

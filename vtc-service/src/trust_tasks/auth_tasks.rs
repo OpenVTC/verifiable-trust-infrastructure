@@ -1,5 +1,5 @@
 //! Pre-session authentication on the signed-document spine:
-//! `auth/challenge/0.1`, `auth/authenticate/{0.2,0.3}` and `auth/refresh/0.2`.
+//! `auth/challenge/0.1`, `auth/authenticate/0.3` and `auth/refresh/0.2`.
 //!
 //! These replace the dedicated, `Trust-Task`-header-gated REST mounts at
 //! `POST /v1/auth/{challenge,,refresh}` (the third being the bare `/auth/`
@@ -44,11 +44,9 @@
 //!   `routes::auth::{challenge,authenticate,refresh}` functions this module
 //!   does not touch, over a transport (a bare fetch with no Trust-Task
 //!   header) this spine does not carry.
-//! - `auth/authenticate/0.1` and `auth/refresh/0.1` (the versions the REST
-//!   handlers already sniff out of an otherwise-DIDComm-shaped body) are
-//!   unchanged and un-migrated: nothing in this repository emits them over a
-//!   transport this spine would otherwise refuse, and the task that asked for
-//!   this migration named `0.2`/`0.3`/`0.2` specifically.
+//! - The REST handlers sniff `auth/authenticate/0.3` and `auth/refresh/0.2`
+//!   out of an otherwise-DIDComm-shaped body too; 0.1 (and authenticate 0.2)
+//!   are no longer served on either door.
 //!
 //! # `authenticate/0.3`'s proxied login is not implemented
 //!
@@ -60,14 +58,11 @@
 //! (`principal` present and unequal to the signer) is refused with
 //! `delegationNotRecognized` — fail closed, not a silent accept of an
 //! unverified claim. `principal` absent, or equal to the signer, is the
-//! ordinary case and behaves exactly as `0.2` — which is what the spec's own
-//! backward-compatibility guarantee requires ("every `0.2` document is
-//! processed identically").
+//! ordinary case: self-authentication, as every `0.2` document was.
 
 use serde_json::Value;
 use trust_tasks_rs::specs::auth::{
-    authenticate::v0_2 as authenticate_v0_2, authenticate::v0_3 as authenticate_v0_3,
-    challenge::v0_1 as challenge, refresh::v0_2 as refresh,
+    authenticate::v0_3 as authenticate_v0_3, challenge::v0_1 as challenge, refresh::v0_2 as refresh,
 };
 use trust_tasks_rs::{Payload, RejectReason, TrustTask};
 use vti_common::auth::{AudienceBinding, AuthenticateInput, ChallengeInput, RefreshInput};
@@ -80,20 +75,14 @@ use super::{JoinAuthCtx, parse_spec_payload};
 use crate::server::AppState;
 
 pub(crate) const CHALLENGE_TYPE: &str = <challenge::Payload as Payload>::TYPE_URI;
-pub(crate) const AUTHENTICATE_V0_2_TYPE: &str = <authenticate_v0_2::Payload as Payload>::TYPE_URI;
 pub(crate) const AUTHENTICATE_V0_3_TYPE: &str = <authenticate_v0_3::Payload as Payload>::TYPE_URI;
 pub(crate) const REFRESH_V0_2_TYPE: &str = <refresh::Payload as Payload>::TYPE_URI;
 
 /// Exactly what [`dispatch`] routes.
-pub(crate) const URIS: &[&str] = &[
-    CHALLENGE_TYPE,
-    AUTHENTICATE_V0_2_TYPE,
-    AUTHENTICATE_V0_3_TYPE,
-    REFRESH_V0_2_TYPE,
-];
+pub(crate) const URIS: &[&str] = &[CHALLENGE_TYPE, AUTHENTICATE_V0_3_TYPE, REFRESH_V0_2_TYPE];
 
 pub(crate) const AUTHENTICATE_ERR_SESSION_KEY_UNSUPPORTED: &str =
-    authenticate_v0_2::error_codes::SESSION_KEY_UNSUPPORTED.code;
+    authenticate_v0_3::error_codes::SESSION_KEY_UNSUPPORTED.code;
 pub(crate) const AUTHENTICATE_V0_3_ERR_DELEGATION_NOT_RECOGNIZED: &str =
     authenticate_v0_3::error_codes::DELEGATION_NOT_RECOGNIZED.code;
 
@@ -105,7 +94,6 @@ pub(super) async fn dispatch(
 ) -> Option<TrustTaskOutcome> {
     Some(match type_uri {
         CHALLENGE_TYPE => handle_challenge(state, doc).await,
-        AUTHENTICATE_V0_2_TYPE => handle_authenticate_v0_2(state, ctx, doc).await,
         AUTHENTICATE_V0_3_TYPE => handle_authenticate_v0_3(state, ctx, doc).await,
         REFRESH_V0_2_TYPE => handle_refresh_v0_2(state, ctx, doc).await,
         _ => return None,
@@ -161,7 +149,7 @@ async fn handle_challenge(state: &AppState, doc: TrustTask<Value>) -> TrustTaskO
     success_response(&doc, resp)
 }
 
-/// `handle_authenticate`'s input, common to `0.2` and `0.3`: the session key
+/// `handle_authenticate`'s input: the session key
 /// (validated + refused before the challenge is spent, same as
 /// did-hosting-control) and the framework-verified signer as `signer_did`.
 ///
@@ -198,49 +186,6 @@ fn resolve_session_key<P>(
             }
         },
     }
-}
-
-async fn handle_authenticate_v0_2(
-    state: &AppState,
-    ctx: &JoinAuthCtx,
-    doc: TrustTask<Value>,
-) -> TrustTaskOutcome {
-    let Some(signer_did) = ctx.verified_signer.clone() else {
-        return reject_with(&doc, RejectReason::ProofRequired);
-    };
-    let payload: authenticate_v0_2::Payload = match parse_spec_payload(&doc) {
-        Ok(p) => p,
-        Err(reject) => return reject,
-    };
-    let session_key = match resolve_session_key(
-        &doc,
-        payload.session_key.as_ref().map(|k| k.as_str()),
-        AUTHENTICATE_ERR_SESSION_KEY_UNSUPPORTED,
-    ) {
-        Ok(k) => k,
-        Err(reject) => return reject,
-    };
-    let backend = match crate::auth::VtcAuthBackend::from_state(state).await {
-        Ok(b) => b,
-        Err(e) => return app_error_to_reject(&doc, &e),
-    };
-    let resp = match vti_common::auth::handlers::handle_authenticate(
-        &backend,
-        AuthenticateInput {
-            session_id: payload.session_id.to_string(),
-            challenge: payload.challenge.to_string(),
-            signer_did,
-            created_time: None,
-            session_pubkey_b58btc: session_key.session_pubkey_b58btc,
-            audience: AudienceBinding::Transport,
-        },
-    )
-    .await
-    {
-        Ok(r) => r,
-        Err(e) => return app_error_to_reject(&doc, &e),
-    };
-    success_response(&doc, resp)
 }
 
 async fn handle_authenticate_v0_3(

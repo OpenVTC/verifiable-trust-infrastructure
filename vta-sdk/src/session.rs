@@ -1674,7 +1674,7 @@ fn url_origin(base_url: &str) -> Option<String> {
 
 /// Perform challenge-response authentication against a VTA.
 ///
-/// Every step (`auth/challenge`, the DI-signed `auth/authenticate/0.2`) is a
+/// Every step (`auth/challenge`, the DI-signed `auth/authenticate/0.3`) is a
 /// Trust-Task document POSTed to `/trust-tasks` — see
 /// `crate::auth_light::challenge_response_light`, which this delegates to.
 ///

@@ -153,10 +153,10 @@ impl UploadBody {
 #[derive(utoipa::ToSchema)]
 pub struct UploadResponse {
     pub policy: crate::routes::policies::read::PolicyModuleResponse,
-    /// Canonical-required: true when this call created a new module
-    /// lineage rather than revising an existing one. VTC's first
+    /// Canonical-required (`wasCreated`): true when this call created a new
+    /// module lineage rather than revising an existing one. VTC's first
     /// revision for a purpose is a creation.
-    pub created: bool,
+    pub was_created: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -306,7 +306,7 @@ pub(crate) async fn check_upload(state: &AppState, body: &UploadBody) -> Result<
     Ok(())
 }
 
-/// Compile, check and store a revision as `actor` — `policy/upsert/0.2`, on the
+/// Compile, check and store a revision as `actor` — `policy/upsert/0.3`, on the
 /// route and the spine alike.
 pub(crate) async fn upload_inner(
     state: &AppState,
@@ -367,7 +367,7 @@ pub(crate) async fn upload_inner(
         )));
     }
     let version = current_version + 1;
-    let created = current_version == 0;
+    let was_created = current_version == 0;
 
     let mut policy = new_policy(purpose, body.module, sha256, actor.to_string(), version);
     policy.id = id;
@@ -401,7 +401,7 @@ pub(crate) async fn upload_inner(
 
     Ok(UploadResponse {
         policy: (&policy).into(),
-        created,
+        was_created,
     })
 }
 

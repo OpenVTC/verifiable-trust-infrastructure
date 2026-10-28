@@ -330,7 +330,7 @@ pub async fn dispatch(
 
     // The `discovery/1.0/*` DIDComm protocol was routed here — unauthenticated
     // — until #1043 retired it with the task behind it. Capability discovery is
-    // `trust-task-discovery/0.1` on the Trust-Task spine, which is authenticated
+    // `trust-task-discovery/0.3` on the Trust-Task spine, which is authenticated
     // like everything else there.
 
     // ── Fallback ─────────────────────────────────────────────────────

@@ -304,7 +304,7 @@ fn signed_doc(
     serde_json::to_value(&doc).expect("envelope serialises")
 }
 
-/// `trust-task-discovery/0.1` answers from the dispatch table.
+/// `trust-task-discovery/0.3` answers from the dispatch table.
 ///
 /// The property worth pinning is not that it returns *something* but that it
 /// returns the tasks this service actually routes — a discovery response
@@ -327,7 +327,7 @@ async fn trust_task_discovery_reports_dispatched_tasks() {
             signed_doc(
                 &ctx,
                 "urn:uuid:4c3d5e6f-7081-4293-a4b5-c6d7e8f90123",
-                "https://trusttasks.org/spec/trust-task-discovery/0.1",
+                "https://trusttasks.org/spec/trust-task-discovery/0.3",
                 json!({ "patterns": ["acl/*"] }),
             ),
         ))
@@ -348,7 +348,7 @@ async fn trust_task_discovery_reports_dispatched_tasks() {
     // admits no PATCH.
     assert_eq!(
         body["payload"]["frameworkVersion"],
-        vti_common::trust_task::discovery::FRAMEWORK_VERSION_MAJOR_MINOR
+        vti_common::trust_task::discovery::FRAMEWORK_VERSION
     );
 }
 
@@ -393,10 +393,19 @@ async fn vti_trn_047_discovery_0_3_advertises_the_window_the_vta_enforces() {
         vti_common::trust_task::discovery::FRAMEWORK_VERSION
     );
     let types = payload["supportedTypes"].as_array().expect("an array");
-    for version in ["0.1", "0.3"] {
-        let uri = format!("https://trusttasks.org/spec/trust-task-discovery/{version}");
-        assert!(types.iter().any(|t| *t == uri), "{uri} listed: {types:?}");
-    }
+    // Only the current version is served (0.1 is retired), and discovery
+    // lists itself.
+    let current = "https://trusttasks.org/spec/trust-task-discovery/0.3";
+    assert!(
+        types.iter().any(|t| *t == current),
+        "{current} listed: {types:?}"
+    );
+    assert!(
+        !types.iter().any(|t| t
+            .as_str()
+            .is_some_and(|s| s.ends_with("/trust-task-discovery/0.1"))),
+        "a retired version is not listed: {types:?}"
+    );
     let max_age = payload["acceptanceWindow"]["maxAgeSeconds"]
         .as_i64()
         .unwrap_or_else(|| panic!("a response-level window: {body}"));
@@ -475,7 +484,7 @@ async fn trust_task_discovery_defaults_to_everything() {
             signed_doc(
                 &ctx,
                 "urn:uuid:5d4e6f70-8192-43a4-b5c6-d7e8f9012345",
-                "https://trusttasks.org/spec/trust-task-discovery/0.1",
+                "https://trusttasks.org/spec/trust-task-discovery/0.3",
                 json!({}),
             ),
         ))
@@ -490,7 +499,7 @@ async fn trust_task_discovery_defaults_to_everything() {
     assert!(
         types
             .iter()
-            .any(|t| t == "https://trusttasks.org/spec/trust-task-discovery/0.1"),
+            .any(|t| t == "https://trusttasks.org/spec/trust-task-discovery/0.3"),
         "discovery must advertise itself"
     );
 }

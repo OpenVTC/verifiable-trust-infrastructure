@@ -362,8 +362,8 @@ mod tests {
     // written to accommodate it could run, and the operator saw an approval that
     // a human gave, the wallet sent, and the VTA silently discarded.
 
-    const DECISION: &str = vta_sdk::trust_tasks::TASK_TASK_CONSENT_DECISION_0_1;
-    const STEP_UP: &str = vta_sdk::trust_tasks::TASK_AUTH_STEP_UP_APPROVE_RESPONSE_0_2;
+    const DECISION: &str = vta_sdk::trust_tasks::TASK_TASK_CONSENT_DECISION_0_2;
+    const STEP_UP: &str = vta_sdk::trust_tasks::TASK_AUTH_STEP_UP_APPROVE_RESPONSE_0_6;
     const ORDINARY: &str = "https://trusttasks.org/spec/vta/webvh/dids/update/1.0";
     const APPROVER: &str = "did:key:zApproverNotInAcl";
 

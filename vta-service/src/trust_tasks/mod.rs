@@ -431,7 +431,7 @@ macro_rules! dispatch_table {
         /// contribute only when their cfg is active.
         ///
         /// Available at runtime, not just under `cfg(test)`, because
-        /// `trust-task-discovery/0.1` answers with exactly this set. Deriving
+        /// `trust-task-discovery/0.3` answers with exactly this set. Deriving
         /// the answer from the dispatch table is the whole point: a
         /// hand-maintained list of "what we support" is a second source of
         /// truth, and it goes stale the first time someone adds a handler
@@ -2371,14 +2371,8 @@ dispatch_table! {
     // mutated). Not edge-transformed in `wire_v0_2` because the payload carries
     // the approver's signature.
     //
-    // The REQUEST payloads are field-for-field identical across 0.1/0.2/0.3 —
-    // 0.3 changed only the acknowledgement, adding `recorded`. What differs is
-    // what the handler may ANSWER, and it reads `doc.type_uri` to decide: a
-    // bound approval can be acknowledged honestly only to a 0.3 request,
-    // because a response's type is the request's type plus `#response`.
-    vta_sdk::trust_tasks::TASK_AUTH_STEP_UP_APPROVE_RESPONSE_0_1
-        | vta_sdk::trust_tasks::TASK_AUTH_STEP_UP_APPROVE_RESPONSE_0_2
-        | vta_sdk::trust_tasks::TASK_AUTH_STEP_UP_APPROVE_RESPONSE_0_3
+    // A bound approval is acknowledged `recorded` and elevates nothing.
+    vta_sdk::trust_tasks::TASK_AUTH_STEP_UP_APPROVE_RESPONSE_0_6
         => step_up::handle_approve_response
         [ Mutating None false ],
     // ─── Policy slice (runtime PDP management) ────────────────────
@@ -2386,12 +2380,12 @@ dispatch_table! {
     // control over changes to the gate itself writes a consent rule for
     // `policy/upsert`. The lockout that risks is answered by the offline
     // break-glass, not by making this surface ungateable.
-    vta_sdk::trust_tasks::TASK_POLICY_LIST_0_2 => policy::handle_list
+    vta_sdk::trust_tasks::TASK_POLICY_LIST_0_3 => policy::handle_list
         [ None Metadata false ],
     vta_sdk::trust_tasks::TASK_POLICY_GET_0_1 => policy::handle_get
         [ None Metadata false ],
     // Destructive: rewriting policy can remove every gate on this VTA.
-    vta_sdk::trust_tasks::TASK_POLICY_UPSERT_0_2 => policy::handle_upsert
+    vta_sdk::trust_tasks::TASK_POLICY_UPSERT_0_3 => policy::handle_upsert
         [ Destructive None false ],
     vta_sdk::trust_tasks::TASK_POLICY_DELETE_0_1 => policy::handle_delete
         [ Destructive None false ],
@@ -2411,7 +2405,7 @@ dispatch_table! {
     // Task-execution consent decision (PDP requireConsent). Records approver
     // signatures; the gate exempts it from re-gating (see policy_gate) so
     // approving a task can't itself require consent.
-    vta_sdk::trust_tasks::TASK_TASK_CONSENT_DECISION_0_1 => task_consent::handle_decision
+    vta_sdk::trust_tasks::TASK_TASK_CONSENT_DECISION_0_2 => task_consent::handle_decision
         [ Mutating None false ],
     // ─── ACL slice ────────────────────────────────────────────────
     vta_sdk::trust_tasks::TASK_ACL_LIST_0_1 => acl::handle_list
@@ -2591,7 +2585,7 @@ dispatch_table! {
     vta_sdk::trust_tasks::TASK_SEEDS_ROTATE_1_0 => seeds::handle_rotate
         [ Destructive None false ],
     // ─── Audit slice ─────────────────────────────────────────────
-    vta_sdk::trust_tasks::TASK_AUDIT_LIST_0_1 => audit::handle_list_logs
+    vta_sdk::trust_tasks::TASK_AUDIT_LIST_0_2 => audit::handle_list_logs
         [ None Metadata false ],
     vta_sdk::trust_tasks::TASK_AUDIT_VERIFY_0_1 => audit::handle_verify_chain
         [ None Metadata false ],
@@ -2600,10 +2594,8 @@ dispatch_table! {
     vta_sdk::trust_tasks::TASK_AUDIT_UPDATE_RETENTION_1_0 => audit::handle_update_retention
         [ Mutating None false ],
     // ─── Discovery ───────────────────────────────────────────────
-    vta_sdk::trust_tasks::TASK_TRUST_TASK_DISCOVERY_0_1 => discovery::handle_trust_task_discovery
-        [ None None false ],
-    // 0.3 adds the acceptance window this VTA applies (VTI-TRN-047).
-    vta_sdk::trust_tasks::TASK_TRUST_TASK_DISCOVERY_0_3 => discovery::handle_trust_task_discovery_v0_3
+    // Carries the acceptance window this VTA applies (VTI-TRN-047).
+    vta_sdk::trust_tasks::TASK_TRUST_TASK_DISCOVERY_0_3 => discovery::handle_trust_task_discovery
         [ None None false ],
     // ─── Credential-exchange: the holder's steps ─────────────────
     //
@@ -3733,7 +3725,6 @@ mod tests {
         // is declared in `vta-sdk::trust_tasks`. If a URI gets renamed
         // or removed in vta-sdk, this stops compiling.
         let _ = vta_sdk::trust_tasks::TASK_AUTH_CHALLENGE_0_1;
-        let _ = vta_sdk::trust_tasks::TASK_AUTH_AUTHENTICATE_0_2;
         let _ = vta_sdk::trust_tasks::TASK_AUTH_AUTHENTICATE_0_3;
         let _ = vta_sdk::trust_tasks::TASK_AUTH_REFRESH_0_2;
         let _ = vta_sdk::trust_tasks::TASK_AUTH_REVOKE_SESSION_0_2;
@@ -3823,7 +3814,7 @@ mod tests {
     fn the_spec_index_is_populated() {
         for uri in [
             "https://trusttasks.org/spec/acl/grant/0.1",
-            "https://trusttasks.org/spec/auth/authenticate/0.1",
+            "https://trusttasks.org/spec/auth/authenticate/0.3",
             "https://trusttasks.org/spec/vault/list/0.4",
         ] {
             assert!(
@@ -5312,7 +5303,7 @@ mod response_coverage {
         let now = crate::test_support::javascript_whole_second_now();
         let mut doc = json!({
             "id": format!("urn:uuid:{}", uuid::Uuid::new_v4()),
-            "type": vta_sdk::trust_tasks::TASK_TASK_CONSENT_DECISION_0_1,
+            "type": vta_sdk::trust_tasks::TASK_TASK_CONSENT_DECISION_0_2,
             "issuer": crate::test_support::test_admin_did().0,
             "recipient": vta_did,
             "issuedAt": now,
@@ -5381,7 +5372,7 @@ mod response_coverage {
         let now = crate::test_support::javascript_whole_second_now();
         let mut doc = json!({
             "id": format!("urn:uuid:{}", uuid::Uuid::new_v4()),
-            "type": vta_sdk::trust_tasks::TASK_AUTH_AUTHENTICATE_0_2,
+            "type": vta_sdk::trust_tasks::TASK_AUTH_AUTHENTICATE_0_3,
             "issuer": crate::test_support::test_admin_did().0,
             "recipient": vta_did,
             "issuedAt": now,
@@ -5657,7 +5648,7 @@ mod response_coverage {
                 "keyType": "ed25519",
                 "derivationPath": "m/26'/9'/0'",
                 "document": {
-                    "type": "https://trusttasks.org/spec/auth/authenticate/0.1",
+                    "type": "https://trusttasks.org/spec/auth/authenticate/0.3",
                     "payload": { "challenge": "abc", "sessionId": "s1" },
                 },
             }),
@@ -6109,7 +6100,7 @@ mod response_coverage {
 
         let created = ok(
             &state,
-            t::TASK_POLICY_UPSERT_0_2,
+            t::TASK_POLICY_UPSERT_0_3,
             json!({
                 "name": "cov-policy",
                 // The smallest Rego module that loads: a package and one rule.
@@ -6123,7 +6114,7 @@ mod response_coverage {
             .unwrap_or_else(|| panic!("upsert must name the policy it stored: {created}"))
             .to_owned();
 
-        ok(&state, t::TASK_POLICY_LIST_0_2, json!({})).await;
+        ok(&state, t::TASK_POLICY_LIST_0_3, json!({})).await;
         ok(&state, t::TASK_POLICY_GET_0_1, json!({ "id": id })).await;
         ok(
             &state,

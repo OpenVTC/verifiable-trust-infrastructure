@@ -12,7 +12,7 @@
 //! Whoever can write policy can delete the rule that gates them, so `upsert` and
 //! `delete` are super-admin. They are deliberately **not** exempt from the PDP
 //! gate: an operator who wants two-person control over changes to the gate
-//! itself gets it by writing a `consent` rule for `policy/upsert/0.2`, and that
+//! itself gets it by writing a `consent` rule for `policy/upsert/0.3`, and that
 //! is a feature worth having.
 //!
 //! The lockout that arrangement risks — approvers whose keys are gone — is
@@ -36,7 +36,7 @@ use crate::store::KeyspaceHandle;
 
 /// Default page size for `policy/list` when the caller names none.
 const DEFAULT_PAGE_SIZE: usize = 50;
-/// Ceiling on `pageSize`, so one call can't be asked to serialize the world.
+/// Ceiling on `limit`, so one call can't be asked to serialize the world.
 const MAX_PAGE_SIZE: usize = 200;
 
 fn now_rfc3339() -> String {
@@ -71,17 +71,63 @@ fn policy_visible_to(auth: &AuthClaims, applies_to: &[String]) -> bool {
         || applies_to.iter().any(|c| auth.has_context_access(c))
 }
 
-/// `policy/list/0.2`. Auth: admin (reading policy is not a secret-bearing act,
+/// The bytes a `policy/list` cursor is bound to: the caller and the filters.
+///
+/// A cursor names a position in one caller's view of one filtered listing, so
+/// resuming it under another filter set, or as another caller, is refused as a
+/// cursor this maintainer did not issue (`policy/list/0.3`). Length-prefixed so
+/// that no two filter sets serialise to the same bytes.
+fn list_cursor_binding(caller_did: &str, context_id: Option<&str>, enabled_only: bool) -> Vec<u8> {
+    let mut out = b"policy/list".to_vec();
+    for field in [
+        caller_did,
+        context_id.unwrap_or(""),
+        if enabled_only { "1" } else { "0" },
+    ] {
+        out.extend_from_slice(&(field.len() as u32).to_be_bytes());
+        out.extend_from_slice(field.as_bytes());
+    }
+    out
+}
+
+/// A row's position in the listing order (priority descending, then id), as
+/// the bytes a cursor carries: the priority with its sign bit flipped and
+/// inverted, so a byte-wise ascending comparison is priority descending, then
+/// the id.
+fn list_position(priority: i32, id: &str) -> Vec<u8> {
+    let mut out = (!((priority as u32) ^ 0x8000_0000)).to_be_bytes().to_vec();
+    out.extend_from_slice(id.as_bytes());
+    out
+}
+
+/// `policy/list/0.3`. Auth: admin (reading policy is not a secret-bearing act,
 /// but it does disclose the shape of the VTA's defences).
+///
+/// Pages by an opaque cursor signed under this keyspace's
+/// [`vti_common::pagination::CursorKey`] and bound to the caller and filters:
+/// `nextCursor` is present iff more matching rows remain, and a cursor this
+/// maintainer did not issue for this listing is refused.
 pub async fn list_policies(
     policy_ks: &KeyspaceHandle,
     auth: &AuthClaims,
     context_id: Option<&str>,
     enabled_only: bool,
-    page_size: Option<u64>,
+    cursor: Option<&str>,
+    limit: Option<u64>,
     channel: &str,
 ) -> Result<ListPoliciesResultBody, AppError> {
     auth.require_manage()?;
+
+    let cursor_key = vti_common::pagination::CursorKey::new(policy_ks.clone())
+        .get()
+        .await?;
+    let binding = list_cursor_binding(&auth.did, context_id, enabled_only);
+    let resume_after = match cursor {
+        Some(wire) => Some(
+            vti_common::pagination::Cursor::decode_bound(wire, &cursor_key, &binding)?.last_key,
+        ),
+        None => None,
+    };
 
     let mut rows = storage::list_policies(policy_ks).await?;
     // Deterministic order: priority desc (the order they actually evaluate in),
@@ -101,26 +147,34 @@ pub async fn list_policies(
         })
         .collect();
 
-    let limit = page_size
+    if let Some(after) = &resume_after {
+        matching.retain(|r| list_position(r.priority, &r.id).as_slice() > after.as_slice());
+    }
+
+    let limit = limit
         .map(|n| (n as usize).clamp(1, MAX_PAGE_SIZE))
         .unwrap_or(DEFAULT_PAGE_SIZE);
-    let truncated = matching.len() > limit;
+    let more = matching.len() > limit;
     matching.truncate(limit);
+    let next_cursor = if more {
+        matching.last().map(|r| {
+            vti_common::pagination::Cursor::new(list_position(r.priority, &r.id), 0)
+                .encode_bound(&cursor_key, &binding)
+        })
+    } else {
+        None
+    };
 
     tracing::info!(
         channel,
         caller = %auth.did,
         count = matching.len(),
-        truncated,
+        more,
         "policy list"
     );
     Ok(ListPoliciesResultBody {
         policies: matching.into_iter().map(view).collect(),
-        truncated,
-        // Cursor paging is not implemented: the policy set is operator-authored
-        // and small (single digits). `truncated` tells a caller to raise
-        // `pageSize` rather than promising a cursor that does nothing.
-        cursor: None,
+        next_cursor,
     })
 }
 
@@ -143,7 +197,7 @@ pub async fn get_policy(
     Ok(GetPolicyResultBody { policy: view(row) })
 }
 
-/// `policy/upsert/0.2`. Auth: super-admin.
+/// `policy/upsert/0.3`. Auth: super-admin.
 ///
 /// Order of checks is deliberate: authorize, then validate the *content*, then
 /// take the optimistic-concurrency decision, then write. A caller with a stale
@@ -177,7 +231,17 @@ pub async fn upsert_policy(
     let is_reserved = id == vta_sdk::approvals::DECLARATIVE_POLICY_ID;
     match (is_reserved, declares) {
         (true, true) => {
-            approvals::verify_declarative_row(&req.ext, &req.module)?;
+            let model = approvals::verify_declarative_row(&req.ext, &req.module)?;
+            // A rule naming a retired version would never match: refuse it and
+            // name the version that replaced it, rather than store a gate that
+            // cannot fire.
+            if let Some((old, new)) = approvals::retired_task_type_in(&model) {
+                return Err(AppError::Validation(format!(
+                    "rule names `{old}`, which this VTA no longer serves, so it would never \
+                     match. Name `{new}` instead: `pnm approvals remove {old}` then \
+                     `pnm approvals require {new} …`"
+                )));
+            }
         }
         (true, false) => {
             return Err(AppError::Validation(format!(
@@ -210,7 +274,7 @@ pub async fn upsert_policy(
     }
 
     let now = now_rfc3339();
-    let created = existing.is_none();
+    let was_created = existing.is_none();
     let row = PolicyModule {
         id: id.clone(),
         name: req.name,
@@ -240,13 +304,13 @@ pub async fn upsert_policy(
     .await
     .ok();
     tracing::info!(
-        channel, caller = %auth.did, policy = %id, version = row.version, created,
+        channel, caller = %auth.did, policy = %id, version = row.version, was_created,
         "policy upserted"
     );
 
     Ok(UpsertPolicyResultBody {
         policy: view(row),
-        created,
+        was_created,
     })
 }
 
@@ -388,8 +452,33 @@ mod tests {
         )
         .await
         .expect("matching row accepted");
-        assert!(out.created);
+        assert!(out.was_created);
         assert_eq!(out.policy.version, 1);
+    }
+
+    /// A rule naming a task version this VTA no longer serves would never match,
+    /// so storing it would be a gate that cannot fire. Refused, naming the
+    /// version that replaced it.
+    #[tokio::test]
+    async fn a_rule_naming_a_retired_task_version_is_refused() {
+        let (policy_ks, audit, _d) = keyspaces().await;
+        let rules = vec![ApprovalRule::reauth(
+            "https://trusttasks.org/spec/policy/upsert/0.2",
+        )];
+        let err = upsert_policy(
+            &policy_ks,
+            &audit,
+            &super_admin(),
+            declarative_body(&rules, None),
+            "test",
+        )
+        .await
+        .expect_err("a retired task version must be refused");
+        assert!(
+            matches!(err, AppError::Validation(ref m)
+                if m.contains("no longer serves") && m.contains("policy/upsert/0.3")),
+            "{err:?}"
+        );
     }
 
     /// The check the whole declarative design rests on: rules that say one
@@ -517,13 +606,14 @@ mod tests {
         }
 
         let ids = async |auth: &AuthClaims| {
-            let mut v: Vec<String> = list_policies(&policy_ks, auth, None, false, None, "test")
-                .await
-                .unwrap()
-                .policies
-                .into_iter()
-                .map(|p| p.id)
-                .collect();
+            let mut v: Vec<String> =
+                list_policies(&policy_ks, auth, None, false, None, None, "test")
+                    .await
+                    .unwrap()
+                    .policies
+                    .into_iter()
+                    .map(|p| p.id)
+                    .collect();
             v.sort();
             v
         };
@@ -542,6 +632,112 @@ mod tests {
                 .await
                 .is_ok()
         );
+    }
+
+    /// `policy/list/0.3` pages by cursor: `nextCursor` is present iff more
+    /// matching rows remain, the pages partition the listing in its order
+    /// (priority descending, then id), and a cursor is refused under other
+    /// filters or another caller — "refuse a cursor it did not issue".
+    #[tokio::test]
+    async fn list_pages_by_a_cursor_bound_to_its_filters() {
+        let (policy_ks, audit, _d) = keyspaces().await;
+        for (id, priority) in [("a", 5), ("b", 20), ("c", 5), ("d", -3), ("e", 20)] {
+            upsert_policy(
+                &policy_ks,
+                &audit,
+                &super_admin(),
+                UpsertPolicyBody {
+                    id: Some(id.into()),
+                    name: id.into(),
+                    description: None,
+                    module: HAND_REGO.into(),
+                    applies_to: vec![],
+                    priority: Some(priority),
+                    enabled: true,
+                    expected_version: None,
+                    ext: serde_json::json!({}),
+                },
+                "test",
+            )
+            .await
+            .expect("seed policy");
+        }
+
+        let mut seen = Vec::new();
+        let mut cursor: Option<String> = None;
+        loop {
+            let page = list_policies(
+                &policy_ks,
+                &super_admin(),
+                None,
+                false,
+                cursor.as_deref(),
+                Some(2),
+                "test",
+            )
+            .await
+            .expect("page");
+            assert!(page.policies.len() <= 2);
+            seen.extend(page.policies.into_iter().map(|p| p.id));
+            match page.next_cursor {
+                Some(next) => cursor = Some(next),
+                None => break,
+            }
+        }
+        // Includes the baseline row the installer may have left, so compare
+        // only the order of the rows seeded here.
+        let ours: Vec<&str> = seen
+            .iter()
+            .map(String::as_str)
+            .filter(|id| ["a", "b", "c", "d", "e"].contains(id))
+            .collect();
+        assert_eq!(ours, ["b", "e", "a", "c", "d"], "{seen:?}");
+        let unique: std::collections::BTreeSet<_> = seen.iter().collect();
+        assert_eq!(unique.len(), seen.len(), "no row repeats across pages");
+
+        let first = list_policies(
+            &policy_ks,
+            &super_admin(),
+            None,
+            false,
+            None,
+            Some(1),
+            "test",
+        )
+        .await
+        .unwrap();
+        let next = first.next_cursor.expect("more rows remain");
+        let err = list_policies(
+            &policy_ks,
+            &super_admin(),
+            None,
+            true,
+            Some(&next),
+            Some(1),
+            "test",
+        )
+        .await
+        .expect_err("a cursor must not carry across a filter change");
+        assert!(matches!(err, AppError::InvalidCursor), "{err:?}");
+        let err = list_policies(
+            &policy_ks,
+            &admin_only_as("did:key:zSomeoneElse"),
+            None,
+            false,
+            Some(&next),
+            Some(1),
+            "test",
+        )
+        .await
+        .expect_err("a cursor is not another caller's");
+        assert!(matches!(err, AppError::InvalidCursor), "{err:?}");
+    }
+
+    fn admin_only_as(did: &str) -> AuthClaims {
+        AuthClaims {
+            did: did.into(),
+            ..super_admin()
+        }
     }
 
     #[tokio::test]

@@ -118,7 +118,7 @@ client = [
   "dep:affinidi-messaging-didcomm",
   # `auth_di` — the canonical REST auth transport. The VTA requires an
   # *authenticated* sender on `/auth/*` (VTI #771), so the client signs an
-  # `auth/authenticate/0.1` Trust Task with the holder key: the DI suite
+  # `auth/authenticate/0.3` Trust Task with the holder key: the DI suite
   # signs, `Secret` carries the key.
   "dep:affinidi-data-integrity",
   "dep:affinidi-secrets-resolver",

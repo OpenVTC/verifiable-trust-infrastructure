@@ -240,7 +240,7 @@ async fn mount_authenticate(server: &MockServer, expires_at: u64) {
         .and(path("/trust-tasks"))
         .and(header(
             "Trust-Task",
-            vta_sdk::trust_tasks::TASK_AUTH_AUTHENTICATE_0_2,
+            vta_sdk::trust_tasks::TASK_AUTH_AUTHENTICATE_0_3,
         ))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "session": {
@@ -431,7 +431,7 @@ async fn ensure_authenticated_re_authenticates_when_token_expired() {
         .and(path("/trust-tasks"))
         .and(header(
             "Trust-Task",
-            vta_sdk::trust_tasks::TASK_AUTH_AUTHENTICATE_0_2,
+            vta_sdk::trust_tasks::TASK_AUTH_AUTHENTICATE_0_3,
         ))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "session": {
@@ -456,7 +456,7 @@ async fn ensure_authenticated_re_authenticates_when_token_expired() {
         .and(path("/trust-tasks"))
         .and(header(
             "Trust-Task",
-            vta_sdk::trust_tasks::TASK_AUTH_AUTHENTICATE_0_2,
+            vta_sdk::trust_tasks::TASK_AUTH_AUTHENTICATE_0_3,
         ))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "session": {
@@ -539,7 +539,7 @@ async fn ensure_authenticated_runs_full_rotation_flow() {
         .and(path("/trust-tasks"))
         .and(header(
             "Trust-Task",
-            vta_sdk::trust_tasks::TASK_AUTH_AUTHENTICATE_0_2,
+            vta_sdk::trust_tasks::TASK_AUTH_AUTHENTICATE_0_3,
         ))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "session": {
@@ -563,7 +563,7 @@ async fn ensure_authenticated_runs_full_rotation_flow() {
         .and(path("/trust-tasks"))
         .and(header(
             "Trust-Task",
-            vta_sdk::trust_tasks::TASK_AUTH_AUTHENTICATE_0_2,
+            vta_sdk::trust_tasks::TASK_AUTH_AUTHENTICATE_0_3,
         ))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "session": {
@@ -712,7 +712,7 @@ async fn connect_with_url_override_uses_rest_and_attaches_token() {
         .and(path("/trust-tasks"))
         .and(header(
             "Trust-Task",
-            vta_sdk::trust_tasks::TASK_AUTH_AUTHENTICATE_0_2,
+            vta_sdk::trust_tasks::TASK_AUTH_AUTHENTICATE_0_3,
         ))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "session": {

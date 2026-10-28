@@ -141,7 +141,7 @@ const INVITES_CREATE: &str = "https://trusttasks.org/spec/vtc/admin/invites/crea
 const ADMIN_REMOVE: &str = "https://trusttasks.org/spec/vtc/members/admin-remove/0.1";
 const CONFIG_PATCH: &str = "https://trusttasks.org/spec/config/patch/0.1";
 const CONFIG_IMPORT: &str = "https://trusttasks.org/spec/vtc/config/import/0.1";
-const POLICY_UPSERT: &str = "https://trusttasks.org/spec/policy/upsert/0.2";
+const POLICY_UPSERT: &str = "https://trusttasks.org/spec/policy/upsert/0.3";
 const POLICY_ACTIVATE: &str = "https://trusttasks.org/spec/policy/activate/0.1";
 const ACCEPTS_REGISTER: &str = crate::trust_tasks::surface_tasks::ACCEPTS_REGISTER_TYPE;
 const ACCEPTS_DELETE: &str = crate::trust_tasks::surface_tasks::ACCEPTS_DELETE_TYPE;
@@ -1175,7 +1175,7 @@ pub const PINNED: &[(&str, &str, &str)] = &[
     (
         KIND_POLICY_RECOGNITION,
         POLICY_UPSERT,
-        "zQmT4hA8bE6Z1G2PDPPTvzH9ZTGrKdnyS3UBhhEXZkeDLhm",
+        "zQmbvZxPwfxKg7j3MNguVQNJXVwVcfrRbBQZiWrWyfszTm3",
     ),
     (
         KIND_POLICY_RECOGNITION,
@@ -1205,7 +1205,7 @@ pub const PINNED: &[(&str, &str, &str)] = &[
     (
         KIND_POLICY_AUTHORITY,
         POLICY_UPSERT,
-        "zQma1zFb7cvRpSH7erp14W83wYZW5vP7cke1yLwcwQZdEie",
+        "zQmTE3m6nY2PUjccPc1kXE8E3qUg1B44XhN2Tvgy5JHNPLv",
     ),
     (
         KIND_POLICY_AUTHORITY,

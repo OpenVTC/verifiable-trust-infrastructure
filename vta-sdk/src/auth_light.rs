@@ -3,7 +3,7 @@
 //! Same challenge-response flow as `session::challenge_response()`, but with no
 //! ATM/TDK runtime and no mediator: every step is a Trust-Task document
 //! POSTed to `/trust-tasks` (see [`crate::auth_di`]), and the authenticate
-//! step's DI-signed `auth/authenticate/0.2` document *is* the authentication —
+//! step's DI-signed `auth/authenticate/0.3` document *is* the authentication —
 //! the canonical transport the VTA tries before its DIDComm-envelope path.
 //!
 //! **This module used to pack an anoncrypt DIDComm envelope** via
@@ -70,7 +70,7 @@ impl std::fmt::Debug for AuthResult {
 ///
 /// The lightweight equivalent of `session::challenge_response()`: every step
 /// is a Trust-Task document POSTed to `/trust-tasks`, and the authenticate
-/// step is a DI-signed `auth/authenticate/0.2` document, so the holder key
+/// step is a DI-signed `auth/authenticate/0.3` document, so the holder key
 /// proves the sender and no mediator is involved.
 ///
 /// `client_did` must be a `did:key` — see the module docs.
@@ -143,7 +143,7 @@ pub async fn challenge_response_light(
     })
 }
 
-/// Redeem `challenge`: sign and send the `auth/authenticate/0.2` Trust Task,
+/// Redeem `challenge`: sign and send the `auth/authenticate/0.3` Trust Task,
 /// and return the body of the response that accepted it.
 ///
 /// Repeated while the authenticate step is rate limited. The challenge stays
@@ -182,7 +182,7 @@ pub(crate) async fn redeem_challenge(
             .header("content-type", "application/json")
             .header(
                 TRUST_TASK_HEADER,
-                crate::trust_tasks::TASK_AUTH_AUTHENTICATE_0_2,
+                crate::trust_tasks::TASK_AUTH_AUTHENTICATE_0_3,
             )
             .body(body)
             .send()

@@ -68,7 +68,7 @@ export interface paths {
          *
          *     Two request shapes, tried in order:
          *
-         *     1. **Trust-Task `auth/refresh/0.1` document** (canonical REST) — no
+         *     1. **Trust-Task `auth/refresh/0.2` document** (canonical REST) — no
          *        mediator, no DIDComm stack. See [`try_refresh_trust_task`].
          *     2. **DIDComm authcrypt envelope** — for clients already on a mediator.
          *        Unchanged, and still gated by `bind_authcrypt_sender`.
@@ -465,17 +465,13 @@ export interface components {
         };
         /** @description Canonical `audit/list` response. */
         AuditListResponse: {
-            cursor?: string | null;
             entries: components["schemas"]["AuditEntry"][];
-            /**
-             * @description True when more entries match beyond this page; `cursor` is then
-             *     present.
-             */
-            truncated: boolean;
+            /** @description Continuation token, present iff more entries match beyond this page. */
+            nextCursor?: string | null;
         };
         /**
          * @description Server responds from `POST /auth/`. Conforms to
-         *     `spec/auth/authenticate/0.1#response`: `{ session, tokens }`.
+         *     `spec/auth/authenticate/0.3#response`: `{ session, tokens }`.
          */
         AuthenticateResponse: {
             session: components["schemas"]["Session"];
@@ -2550,10 +2546,12 @@ export interface components {
         };
         /** @description Canonical `policy/list` response. */
         PolicyListResponse: {
-            cursor?: string | null;
+            /**
+             * @description Continuation token, present iff more matching modules exist beyond
+             *     this page.
+             */
+            nextCursor?: string | null;
             policies: components["schemas"]["PolicyModuleResponse"][];
-            /** @description Canonical-required: more matching modules exist beyond this page. */
-            truncated: boolean;
         };
         /**
          * @description Canonical `policy/_shared` **PolicyModule**.
@@ -3133,13 +3131,13 @@ export interface components {
             serviceable: boolean;
         };
         UploadResponse: {
+            policy: components["schemas"]["PolicyModuleResponse"];
             /**
-             * @description Canonical-required: true when this call created a new module
-             *     lineage rather than revising an existing one. VTC's first
+             * @description Canonical-required (`wasCreated`): true when this call created a new
+             *     module lineage rather than revising an existing one. VTC's first
              *     revision for a purpose is a creation.
              */
-            created: boolean;
-            policy: components["schemas"]["PolicyModuleResponse"];
+            wasCreated: boolean;
         };
         Value: unknown;
         /** @description One vetter grant, as `GET /v1/vetting/vetters` reports it. */

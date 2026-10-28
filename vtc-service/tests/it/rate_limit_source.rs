@@ -121,7 +121,7 @@ async fn unauth_governor_refusal_on_trust_tasks_carries_the_contract() {
 // (`vta_sdk::auth_light` signs `auth/challenge/0.1` against
 // `POST /v1/trust-tasks` instead, dispatched through the
 // `unauth_governor_refusal_on_trust_tasks_carries_the_contract` path above).
-// `auth/refresh/0.1`'s mount stays — it also renews the admin console's
+// `auth/refresh/0.2`'s mount stays — it also renews the admin console's
 // cookie session, which has no signed-document equivalent — so its own
 // governor regression check moves here instead.
 #[tokio::test]
@@ -130,7 +130,7 @@ async fn unauth_governor_refusal_on_auth_challenge_carries_the_contract() {
     let res = flood_until_refused(
         &vtc.router,
         "/v1/auth/refresh",
-        "https://trusttasks.org/spec/auth/refresh/0.1",
+        "https://trusttasks.org/spec/auth/refresh/0.2",
     )
     .await;
     assert_unauth_contract(res).await;

@@ -186,12 +186,12 @@ fn acl_entry_envelope(did: &str) -> Value {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn supported_trust_tasks_via_didcomm() {
     let (mediator, responder, client) = build_didcomm(|msg_type, body| {
-        if is_tt(msg_type, body, trust_tasks::TASK_TRUST_TASK_DISCOVERY_0_1) {
+        if is_tt(msg_type, body, trust_tasks::TASK_TRUST_TASK_DISCOVERY_0_3) {
             tt_ok(
-                trust_tasks::TASK_TRUST_TASK_DISCOVERY_0_1,
+                trust_tasks::TASK_TRUST_TASK_DISCOVERY_0_3,
                 json!({
-                    "frameworkVersion": "0.2",
-                    "supportedTypes": ["https://trusttasks.org/spec/acl/grant/0.1"]
+                    "frameworkVersion": "0.6.0",
+                    "supportedTypes": ["https://trusttasks.org/spec/acl/grant/0.2"]
                 }),
             )
         } else {
@@ -204,7 +204,7 @@ async fn supported_trust_tasks_via_didcomm() {
     // there — a discovery answer survives the DIDComm round trip — is unchanged;
     // the question being asked is the one with a canonical answer.
     let tasks = client.supported_trust_tasks(&["acl/*"]).await.unwrap();
-    assert_eq!(tasks.framework_version.as_deref(), Some("0.2"));
+    assert_eq!(tasks.framework_version.as_deref(), Some("0.6.0"));
     assert_eq!(tasks.supported_types.len(), 1);
 
     shutdown_all(client, responder, mediator).await;
@@ -1240,12 +1240,12 @@ async fn with_didcomm_sequential_cycles_for_same_did_do_not_duel() {
             // Any round-tripping task will do — this test is about session
             // lifecycle, not about what was asked. Discovery is used because it
             // needs no state on the responder.
-            if is_tt(msg_type, body, trust_tasks::TASK_TRUST_TASK_DISCOVERY_0_1) {
+            if is_tt(msg_type, body, trust_tasks::TASK_TRUST_TASK_DISCOVERY_0_3) {
                 tt_ok(
-                    trust_tasks::TASK_TRUST_TASK_DISCOVERY_0_1,
+                    trust_tasks::TASK_TRUST_TASK_DISCOVERY_0_3,
                     json!({
-                        "frameworkVersion": "0.2",
-                        "supportedTypes": ["https://trusttasks.org/spec/acl/grant/0.1"]
+                        "frameworkVersion": "0.6.0",
+                        "supportedTypes": ["https://trusttasks.org/spec/acl/grant/0.2"]
                     }),
                 )
             } else {

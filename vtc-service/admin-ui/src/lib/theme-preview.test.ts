@@ -42,7 +42,7 @@ describe("read classification", () => {
   it.each([
     "https://trusttasks.org/spec/vtc/community/profile/show/0.1",
     "https://trusttasks.org/spec/vtc/members/list/0.2#request",
-    "https://trusttasks.org/spec/trust-task-discovery/0.1",
+    "https://trusttasks.org/spec/trust-task-discovery/0.3",
   ])("%s is a read", (uri) => expect(isReadTask(uri)).toBe(true));
 
   it.each([

@@ -1,4 +1,4 @@
-//! Delegated signing for the member portal (`auth/oob/grant/0.2`, consumer
+//! Delegated signing for the member portal (`auth/oob/grant/0.3`, consumer
 //! item 4).
 //!
 //! A member who approves a portal sign-in with a 0.2 grant carrying
@@ -196,8 +196,8 @@ mod tests {
             "acl".to_string(),
             "task-consent".to_string(),
         ];
-        assert!(!covers(&scope, &format!("{S}/auth/oob/grant/0.2")));
+        assert!(!covers(&scope, &format!("{S}/auth/oob/grant/0.3")));
         assert!(!covers(&scope, &format!("{S}/acl/grant/0.2")));
-        assert!(!covers(&scope, &format!("{S}/task-consent/decision/0.1")));
+        assert!(!covers(&scope, &format!("{S}/task-consent/decision/0.2")));
     }
 }

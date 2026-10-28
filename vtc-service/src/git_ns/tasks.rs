@@ -282,7 +282,7 @@ async fn acting_as_unchecked(state: &AppState, signer: &str) -> Result<String, O
 /// The member a **member-portal sign-in key** reads `type_uri` as, else
 /// [`acting_as`]: `(actor, delegated)`.
 ///
-/// A portal sign-in under `auth/oob/grant/0.2` lets the browser's key sign the
+/// A portal sign-in under `auth/oob/grant/0.3` lets the browser's key sign the
 /// families in `PORTAL_SIGNING_SCOPE` as the member for that session (consumer
 /// item 4, `member_portal::delegation`). Only the member's reads call this —
 /// `view/0.4` and `account/link-status` — so whatever the scope names, no

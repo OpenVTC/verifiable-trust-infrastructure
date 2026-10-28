@@ -431,7 +431,7 @@ export async function loginWithWallet(): Promise<VtaWalletLoginResult> {
 }
 
 const AUTH_AUTHENTICATE_TYPE =
-  "https://trusttasks.org/spec/auth/authenticate/0.1";
+  "https://trusttasks.org/spec/auth/authenticate/0.3";
 
 /** Extract the compact JWS id_token from a SessionBlob's Authorization
  *  header. */

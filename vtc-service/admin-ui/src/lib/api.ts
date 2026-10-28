@@ -128,7 +128,7 @@ function csrfTokenFromCookie(): string | null {
   return match?.[1] ?? null;
 }
 
-const REFRESH_TASK = "https://trusttasks.org/spec/auth/refresh/0.1";
+const REFRESH_TASK = "https://trusttasks.org/spec/auth/refresh/0.2";
 
 /**
  * The renewal call itself, kept out of `request` so it cannot recurse
@@ -906,7 +906,7 @@ export async function fetchWhoami(): Promise<WhoamiResponse> {
     }),
     key,
     // A session key speaks as the subject for this session, with
-    // `proofPurpose: authentication` (`auth/authenticate/0.2`).
+    // `proofPurpose: authentication` (`auth/authenticate/0.3`).
     { proofPurpose: "authentication" },
   );
   const who = await postDocument<WhoamiResponse>(signed);

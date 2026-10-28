@@ -409,13 +409,9 @@ struct TrustTaskLimiters {
 
 impl TrustTaskLimiters {
     fn for_type(&self, type_uri: Option<&str>) -> &LimiterState {
-        use vta_sdk::trust_tasks::{
-            TASK_AUTH_AUTHENTICATE_0_2, TASK_AUTH_AUTHENTICATE_0_3, TASK_AUTH_REFRESH_0_2,
-        };
+        use vta_sdk::trust_tasks::{TASK_AUTH_AUTHENTICATE_0_3, TASK_AUTH_REFRESH_0_2};
         match type_uri {
-            Some(t) if t == TASK_AUTH_AUTHENTICATE_0_2 || t == TASK_AUTH_AUTHENTICATE_0_3 => {
-                &self.authenticate
-            }
+            Some(t) if t == TASK_AUTH_AUTHENTICATE_0_3 => &self.authenticate,
             Some(t) if t == TASK_AUTH_REFRESH_0_2 => &self.refresh,
             _ => &self.auth,
         }
@@ -869,8 +865,7 @@ mod tests {
     // ── /trust-tasks: one bucket per pre-session step ───────────────
 
     use vta_sdk::trust_tasks::{
-        TASK_AUTH_AUTHENTICATE_0_2, TASK_AUTH_AUTHENTICATE_0_3, TASK_AUTH_CHALLENGE_0_1,
-        TASK_AUTH_REFRESH_0_2,
+        TASK_AUTH_AUTHENTICATE_0_3, TASK_AUTH_CHALLENGE_0_1, TASK_AUTH_REFRESH_0_2,
     };
 
     fn trust_tasks_router() -> axum::Router {
@@ -916,15 +911,15 @@ mod tests {
         assert_eq!(refused.headers()[RATE_LIMIT_SCOPE_HEADER], "auth");
 
         for type_uri in [
-            TASK_AUTH_AUTHENTICATE_0_2,
+            TASK_AUTH_AUTHENTICATE_0_3,
             TASK_AUTH_AUTHENTICATE_0_3,
             TASK_AUTH_REFRESH_0_2,
         ] {
             let r = send(&app, task_request(type_uri, ip)).await;
             assert_eq!(r.status(), StatusCode::OK, "{type_uri} has its own budget");
         }
-        // Both authenticate versions share one bucket: its burst is now spent.
-        let r = send(&app, task_request(TASK_AUTH_AUTHENTICATE_0_2, ip)).await;
+        // The authenticate bucket's burst is now spent.
+        let r = send(&app, task_request(TASK_AUTH_AUTHENTICATE_0_3, ip)).await;
         assert_eq!(r.status(), StatusCode::TOO_MANY_REQUESTS);
         assert_eq!(r.headers()[RATE_LIMIT_SCOPE_HEADER], "auth-authenticate");
     }
@@ -941,7 +936,7 @@ mod tests {
             let mut req = task_request(TASK_AUTH_CHALLENGE_0_1, ip);
             req.headers_mut().insert(
                 "trust-task",
-                HeaderValue::from_static(TASK_AUTH_AUTHENTICATE_0_2),
+                HeaderValue::from_static(TASK_AUTH_AUTHENTICATE_0_3),
             );
             let r = send(&app, req).await;
             statuses.push(r.status());
@@ -989,10 +984,10 @@ mod tests {
         let app = trust_tasks_router();
         let ip = "198.51.100.24";
         for _ in 0..2 {
-            let mut req = task_request(TASK_AUTH_AUTHENTICATE_0_2, ip);
+            let mut req = task_request(TASK_AUTH_AUTHENTICATE_0_3, ip);
             req.headers_mut().insert(
                 "trust-task",
-                HeaderValue::from_static(TASK_AUTH_AUTHENTICATE_0_2),
+                HeaderValue::from_static(TASK_AUTH_AUTHENTICATE_0_3),
             );
             assert_eq!(send(&app, req).await.status(), StatusCode::OK);
         }
@@ -1003,7 +998,7 @@ mod tests {
             .method("POST")
             .uri("/trust-tasks")
             .header("x-forwarded-for", ip)
-            .header("trust-task", TASK_AUTH_AUTHENTICATE_0_2)
+            .header("trust-task", TASK_AUTH_AUTHENTICATE_0_3)
             .body(unreadable)
             .unwrap();
         let r = send(&app, req).await;

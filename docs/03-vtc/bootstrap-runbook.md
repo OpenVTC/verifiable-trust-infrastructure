@@ -141,8 +141,8 @@ the install claim, or it trips the `409` rule above.
 - **On the wire**: `POST /v1/auth/challenge` with header
   `Trust-Task: https://trusttasks.org/spec/auth/challenge/0.1` and body
   `{"did": "<did>"}`. Then `POST /v1/auth/` with header
-  `Trust-Task: https://trusttasks.org/spec/auth/authenticate/0.1` and a
-  Data-Integrity-signed `auth/authenticate/0.1` document
+  `Trust-Task: https://trusttasks.org/spec/auth/authenticate/0.3` and a
+  Data-Integrity-signed `auth/authenticate/0.3` document
   (`vta_sdk::auth_di::sign_authenticate_doc`). The response carries the bearer
   token.
 

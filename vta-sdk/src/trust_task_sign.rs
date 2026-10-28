@@ -91,7 +91,7 @@ pub fn did_key_to_vm(did: &str) -> Option<String> {
 /// `urn:uuid:` id and `issuedAt` stamped now.
 ///
 /// Split out from [`build_signed`] because the unsigned form is a legitimate
-/// wire shape for bearer specifications — `auth/refresh/0.1` carries no proof,
+/// wire shape for bearer specifications — `auth/refresh/0.2` carries no proof,
 /// its opaque token being the credential.
 pub fn build_unsigned(
     type_uri: &str,
@@ -548,8 +548,8 @@ mod tests {
     #[tokio::test]
     async fn attestation_types_are_signed_for_assertion_method() {
         for uri in [
-            "https://trusttasks.org/spec/task-consent/decision/0.1",
-            "https://trusttasks.org/spec/auth/step-up/approve-response/0.3",
+            "https://trusttasks.org/spec/task-consent/decision/0.2",
+            "https://trusttasks.org/spec/auth/step-up/approve-response/0.6",
             "https://trusttasks.org/spec/confirm/response/0.1",
         ] {
             let (did, pk) = did_key_from_seed(0xc2);
@@ -573,7 +573,7 @@ mod tests {
         for bad in [
             "not-a-uri-at-all",
             "https://trusttasks.org/spec/task-consent/decision", // no version
-            "http://trusttasks.org/spec/task-consent/decision/0.1", // not https
+            "http://trusttasks.org/spec/task-consent/decision/0.2", // not https
         ] {
             let err = build_signed(bad, json!({}), &did, &pk, "did:key:z6MkVtc")
                 .await

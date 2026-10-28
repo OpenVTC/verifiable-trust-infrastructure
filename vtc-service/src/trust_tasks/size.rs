@@ -85,7 +85,7 @@ use crate::server::AppState;
 /// small enough that an unauthenticated flood of them is cheap to refuse.
 pub(crate) const DEFAULT_MAX_DOCUMENT_BYTES: usize = 64 * 1024;
 
-/// `policy/upsert/0.2`: 192 KiB.
+/// `policy/upsert/0.3`: 192 KiB.
 ///
 /// The payload's `module` is a Rego source of up to
 /// [`crate::policy::POLICY_SOURCE_MAX_BYTES`] (64 KiB). JSON escaping of
@@ -111,7 +111,7 @@ pub(crate) const DID_REGISTER_MAX_DOCUMENT_BYTES: usize = 1024 * 1024;
 /// (`every_awaiting_entry_is_still_undeclared_upstream`).
 pub(crate) const AWAITING_DECLARATION: &[(&str, usize)] = &[
     (
-        <trust_tasks_rs::specs::policy::upsert::v0_2::Payload as Payload>::TYPE_URI,
+        <trust_tasks_rs::specs::policy::upsert::v0_3::Payload as Payload>::TYPE_URI,
         POLICY_UPSERT_MAX_DOCUMENT_BYTES,
     ),
     (
@@ -447,7 +447,7 @@ async fn has_standing(state: &AppState, body: &[u8], issuer: &str) -> bool {
         return true;
     }
     // A member-portal sign-in key the member delegated this type's family to
-    // (`auth/oob/grant/0.2`) stands in for the member: the portal uploads a
+    // (`auth/oob/grant/0.3`) stands in for the member: the portal uploads a
     // member's picture (`vtc/directory/images/upload`, up to 360 KiB) signed by
     // it. Only while that delegation is live, and only for a type it covers.
     if let Some(type_uri) = peek_type(body)
@@ -593,7 +593,7 @@ mod tests {
     use super::*;
 
     const POLICY_UPSERT: &str =
-        <trust_tasks_rs::specs::policy::upsert::v0_2::Payload as Payload>::TYPE_URI;
+        <trust_tasks_rs::specs::policy::upsert::v0_3::Payload as Payload>::TYPE_URI;
     const MEMBERS_UPDATE: &str =
         <trust_tasks_rs::specs::vtc::members::update::v0_1::Payload as Payload>::TYPE_URI;
     const WEBSITE_CHUNK: &str =

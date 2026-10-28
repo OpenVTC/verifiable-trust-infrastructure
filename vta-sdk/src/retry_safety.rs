@@ -101,7 +101,6 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     (trust_tasks::TASK_AUTH_CHALLENGE_0_1, RetrySafe),
     // Consumes the challenge, mints a session. A repeat fails deterministically
     // (challenge spent) or leaves a spare expiring session.
-    (trust_tasks::TASK_AUTH_AUTHENTICATE_0_2, RetrySafe),
     (trust_tasks::TASK_AUTH_AUTHENTICATE_0_3, RetrySafe),
     // Refresh-token *rotation*: the old token is consumed as the new one is
     // issued, so a lost reply leaves the caller holding a spent token and no
@@ -119,11 +118,9 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     (trust_tasks::TASK_AUTH_PASSKEY_LOGIN_FINISH_0_2, RetrySafe),
     // Consumes a one-shot step-up approval. A lost reply spends the approval
     // without the caller learning it was granted.
-    (trust_tasks::TASK_AUTH_STEP_UP_APPROVE_RESPONSE_0_1, Keyed),
-    (trust_tasks::TASK_AUTH_STEP_UP_APPROVE_RESPONSE_0_2, Keyed),
-    // Same, and no looser for being answerable with `recorded`: a bound
-    // approval is still a one-shot, and a lost reply still spends it.
-    (trust_tasks::TASK_AUTH_STEP_UP_APPROVE_RESPONSE_0_3, Keyed),
+    // No looser for being answerable with `recorded`: a bound approval is
+    // still a one-shot, and a lost reply still spends it.
+    (trust_tasks::TASK_AUTH_STEP_UP_APPROVE_RESPONSE_0_6, Keyed),
     // ── Device ──────────────────────────────────────────────────────────
     // Registration is keyed by a caller-supplied device identity, so a repeat
     // lands on the same record — but it also mints device credentials, and
@@ -249,12 +246,11 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     // classification actually being true rather than by a stronger one.
     (trust_tasks::TASK_CONTEXTS_SECRETS_1_0, ReadOnly),
     // ── Audit ───────────────────────────────────────────────────────────
-    (trust_tasks::TASK_AUDIT_LIST_0_1, ReadOnly),
+    (trust_tasks::TASK_AUDIT_LIST_0_2, ReadOnly),
     (trust_tasks::TASK_AUDIT_VERIFY_0_1, ReadOnly),
     (trust_tasks::TASK_AUDIT_GET_RETENTION_1_0, ReadOnly),
     (trust_tasks::TASK_AUDIT_UPDATE_RETENTION_1_0, RetrySafe),
     // ── Discovery ───────────────────────────────────────────────────────
-    (trust_tasks::TASK_TRUST_TASK_DISCOVERY_0_1, ReadOnly),
     (trust_tasks::TASK_TRUST_TASK_DISCOVERY_0_3, ReadOnly),
     // ── Metrics ─────────────────────────────────────────────────────────
     // A snapshot read: no durable effect, nothing to dedup.
@@ -465,7 +461,7 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     // repeat lands on the same pending request.
     (trust_tasks::TASK_CONSENT_REQUEST_1_0, RetrySafe),
     (trust_tasks::TASK_CONSENT_DECISION_1_0, RetrySafe),
-    (trust_tasks::TASK_TASK_CONSENT_DECISION_0_1, RetrySafe),
+    (trust_tasks::TASK_TASK_CONSENT_DECISION_0_2, RetrySafe),
     (trust_tasks::TASK_CONSENT_REVOKE_1_0, RetrySafe),
     (trust_tasks::TASK_CONSENT_LIST_1_1, ReadOnly),
     (trust_tasks::TASK_CONSENT_APPROVER_SET_1_0, RetrySafe),
@@ -787,9 +783,9 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     (trust_tasks::TASK_VTA_APP_STATE_GET_MANY_1_0, ReadOnly),
     (trust_tasks::TASK_VTA_APP_STATE_PUT_MANY_1_0, Keyed),
     // ── Policy ──────────────────────────────────────────────────────────
-    (trust_tasks::TASK_POLICY_LIST_0_2, ReadOnly),
+    (trust_tasks::TASK_POLICY_LIST_0_3, ReadOnly),
     (trust_tasks::TASK_POLICY_GET_0_1, ReadOnly),
-    (trust_tasks::TASK_POLICY_UPSERT_0_2, RetrySafe),
+    (trust_tasks::TASK_POLICY_UPSERT_0_3, RetrySafe),
     (trust_tasks::TASK_POLICY_DELETE_0_1, RetrySafe),
     // ─── Persona slice ───────────────────────────────────────────────────
     //

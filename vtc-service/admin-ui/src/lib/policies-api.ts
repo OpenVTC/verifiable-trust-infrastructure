@@ -11,8 +11,8 @@ import type { PolicyPurpose } from "@/lib/wire-types";
 
 // One canonical task per verb (the shared upload/1.0 mount was retired
 // in phase 2a).
-const TRUST_TASK_LIST = "https://trusttasks.org/spec/policy/list/0.2";
-const TRUST_TASK_UPSERT = "https://trusttasks.org/spec/policy/upsert/0.2";
+const TRUST_TASK_LIST = "https://trusttasks.org/spec/policy/list/0.3";
+const TRUST_TASK_UPSERT = "https://trusttasks.org/spec/policy/upsert/0.3";
 const TRUST_TASK_ACTIVE = "https://trusttasks.org/spec/policy/active/0.1";
 const TRUST_TASK_ACTIVATE = "https://trusttasks.org/spec/policy/activate/0.1";
 
@@ -107,8 +107,7 @@ export interface PolicyRow {
 
 export interface PoliciesPage {
   policies: PolicyRow[];
-  truncated: boolean;
-  cursor?: string | null;
+  nextCursor?: string | null;
 }
 
 /// The purpose a module serves, read from its `ext`.
@@ -117,10 +116,10 @@ export function policyPurpose(p: PolicyRow): Purpose | undefined {
 }
 
 export async function fetchPolicies(purpose: Purpose): Promise<PoliciesPage> {
-  // `policy/list/0.2` has no purpose filter; the VTC narrows by the same `ext`
+  // `policy/list/0.3` has no purpose filter; the VTC narrows by the same `ext`
   // key a revision names its purpose by.
   return postSignedRead<PoliciesPage>(TRUST_TASK_LIST, {
-    pageSize: 100,
+    limit: 100,
     ext: { [PURPOSE_EXT]: purpose },
   });
 }
@@ -140,7 +139,7 @@ export async function fetchActivePolicy(
 
 interface UpsertResponse {
   policy: PolicyRow;
-  created: boolean;
+  wasCreated: boolean;
 }
 
 /**

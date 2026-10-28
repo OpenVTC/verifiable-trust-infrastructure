@@ -37,7 +37,7 @@ const ADMIN_REMOVE: &str = "https://trusttasks.org/spec/vtc/members/admin-remove
 const PATCH: &str = "https://trusttasks.org/spec/config/patch/0.1";
 const IMPORT: &str = "https://trusttasks.org/spec/vtc/config/import/0.1";
 const EXPORT: &str = "https://trusttasks.org/spec/vtc/config/export/0.1";
-const UPSERT: &str = "https://trusttasks.org/spec/policy/upsert/0.2";
+const UPSERT: &str = "https://trusttasks.org/spec/policy/upsert/0.3";
 const ACTIVATE: &str = "https://trusttasks.org/spec/policy/activate/0.1";
 const THRESHOLD_KEY: &str = "acl.unrestricted_admin_consent_threshold";
 

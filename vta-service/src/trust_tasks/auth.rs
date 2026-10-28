@@ -7,7 +7,7 @@
 //!
 //! The **pre-session family** — [`owns`] / [`dispatch_pre_session`] — is
 //! different in kind, not just in operation. `auth/challenge/0.1`,
-//! `auth/authenticate/{0.2,0.3}` and `auth/refresh/0.2` carry no prior
+//! `auth/authenticate/0.3` and `auth/refresh/0.2` carry no prior
 //! session, so they cannot pass `AuthClaims` through the dispatcher's
 //! extractor, and they must not be routed through the ACL/issuer-consistency
 //! gates `dispatch_trust_task_core` applies to everything else — those gates
@@ -33,7 +33,7 @@
 
 use super::helpers::TrustTaskOutcome;
 use serde_json::{Value, json};
-use trust_tasks_rs::specs::auth::authenticate::{v0_2 as authenticate_v2, v0_3 as authenticate_v3};
+use trust_tasks_rs::specs::auth::authenticate::v0_3 as authenticate_v3;
 use trust_tasks_rs::specs::auth::refresh::v0_2 as refresh_v2;
 use trust_tasks_rs::specs::auth::revoke_session::v0_2 as revoke_session_spec;
 use trust_tasks_rs::{RejectReason, TrustTask};
@@ -55,7 +55,6 @@ use super::helpers::{
 /// Does `type_uri` belong to the pre-session auth family?
 pub(crate) fn owns(type_uri: &str) -> bool {
     type_uri == vta_sdk::trust_tasks::TASK_AUTH_CHALLENGE_0_1
-        || type_uri == vta_sdk::trust_tasks::TASK_AUTH_AUTHENTICATE_0_2
         || type_uri == vta_sdk::trust_tasks::TASK_AUTH_AUTHENTICATE_0_3
         || type_uri == vta_sdk::trust_tasks::TASK_AUTH_REFRESH_0_2
 }
@@ -95,9 +94,6 @@ pub(crate) async fn dispatch_pre_session(state: &AppState, body: &[u8]) -> Trust
     match type_uri.as_str() {
         t if t == vta_sdk::trust_tasks::TASK_AUTH_CHALLENGE_0_1 => {
             dispatch_challenge(state, doc).await
-        }
-        t if t == vta_sdk::trust_tasks::TASK_AUTH_AUTHENTICATE_0_2 => {
-            dispatch_authenticate_v2(state, &received, doc).await
         }
         t if t == vta_sdk::trust_tasks::TASK_AUTH_AUTHENTICATE_0_3 => {
             dispatch_authenticate_v3(state, &received, doc).await
@@ -160,64 +156,12 @@ async fn dispatch_challenge(state: &AppState, doc: TrustTask<Value>) -> TrustTas
     )
 }
 
-/// Handler for `spec/auth/authenticate/0.2`. The holder's Data-Integrity
-/// proof IS the authentication; `sessionKey` is not yet honoured.
-///
-/// `received` is the document's JSON as it arrived, of which `doc` is the
-/// parse; the proof is verified over it (VTI-45).
-async fn dispatch_authenticate_v2(
-    state: &AppState,
-    received: &Value,
-    doc: TrustTask<Value>,
-) -> TrustTaskOutcome {
-    let signer_did = match vti_common::auth::verify_trust_task_proof_value(
-        received,
-        &state.trust_task_vm_resolver(),
-    )
-    .await
-    {
-        Ok(s) => s,
-        Err(e) => {
-            return reject_with(
-                &doc,
-                RejectReason::ProofInvalid {
-                    reason: e.to_string(),
-                },
-            );
-        }
-    };
-    let payload: authenticate_v2::Payload = match serde_json::from_value(doc.payload.clone()) {
-        Ok(p) => p,
-        Err(e) => {
-            return reject_with(
-                &doc,
-                RejectReason::MalformedRequest {
-                    reason: format!("invalid authenticate payload: {e}"),
-                },
-            );
-        }
-    };
-    if payload.session_key.is_some() {
-        return reject_declared(
-            &doc,
-            authenticate_v2::error_codes::SESSION_KEY_UNSUPPORTED,
-            "this VTA does not yet bind a session key from an authenticate document",
-        );
-    }
-    complete_authenticate(
-        state,
-        &doc,
-        signer_did,
-        payload.session_id.to_string(),
-        payload.challenge.to_string(),
-    )
-    .await
-}
-
-/// Handler for `spec/auth/authenticate/0.3`. Same as 0.2, plus the proxied
-/// (`principal` + `delegationEvidence`) shape — refused, since this VTA
+/// Handler for `spec/auth/authenticate/0.3`. The holder's Data-Integrity
+/// proof IS the authentication; `sessionKey` is not yet honoured. The proxied
+/// (`principal` + `delegationEvidence`) shape is refused, since this VTA
 /// recognizes no delegation-evidence kind; the ordinary case (no `principal`,
-/// or one equal to the document's own signer) behaves exactly like 0.2.
+/// or one equal to the document's own signer) is self-authentication. 0.2 is
+/// no longer served.
 ///
 /// `received` is the document's JSON as it arrived, of which `doc` is the
 /// parse; the proof is verified over it (VTI-45).
@@ -280,8 +224,7 @@ async fn dispatch_authenticate_v3(
     .await
 }
 
-/// The self-authentication path shared by 0.2 and 0.3 once each has narrowed
-/// its own payload shape: mint tokens for `signer_did` against the challenged
+/// The self-authentication path, once 0.3 has narrowed its payload shape: mint tokens for `signer_did` against the challenged
 /// session, addressed by the document's own `recipient` (SPEC §7.2 item 5,
 /// #1638) — there is no transport binding to lean on instead, since this
 /// bypass runs ahead of any transport-specific scope.
@@ -357,7 +300,7 @@ async fn dispatch_refresh_v2(state: &AppState, doc: TrustTask<Value>) -> TrustTa
         vti_common::auth::RefreshInput {
             refresh_token,
             // No proven signer: the token alone is sufficient, exactly as
-            // the retired REST route treated an `auth/refresh/0.1` document.
+            // the retired REST route treated an `auth/refresh/0.2` document.
             signer_did: None,
         },
     )

@@ -1,4 +1,4 @@
-//! Inbound `task-consent/decision/0.1` — an approver signs off on a specific
+//! Inbound `task-consent/decision/0.2` — an approver signs off on a specific
 //! privileged task execution, bound to the payload digest they were shown.
 //!
 //! This is the decision half of the PDP's `requireConsent` flow (the gate mints
@@ -8,7 +8,6 @@
 //! set. At the required threshold the VTA issues a single-use grant the
 //! requester's re-submit consumes.
 
-use serde::Deserialize;
 use serde_json::{Value, json};
 use trust_tasks_rs::{RejectReason, TrustTask};
 
@@ -22,33 +21,11 @@ use crate::server::AppState;
 /// How long a completed grant stays valid for the requester's re-submit.
 const GRANT_TTL_SECS: u64 = 600;
 
-/// `task-consent/decision/0.1`.
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct DecisionPayload {
-    /// Nonce echoed from the request — binds this decision to it.
-    challenge: String,
-    /// The **salted** digest the approver was shown and signed. This is the only
-    /// digest that ever leaves the executor; the internal one it indexes is
-    /// resolved from it.
-    payload_digest: String,
-    /// The human's answer. An explicit enum rather than a bool, so that a missing
-    /// or falsy value can never read as assent — silence, timeouts and dismissals
-    /// are denials, and a wire form that lets them decode as approval is a bug
-    /// waiting for a serializer change.
-    decision: Decision,
-    /// Optional note, most useful on a denial.
-    #[allow(dead_code)]
-    #[serde(default)]
-    reason: Option<String>,
-}
-
-#[derive(Deserialize, PartialEq)]
-#[serde(rename_all = "lowercase")]
-enum Decision {
-    Approve,
-    Deny,
-}
+// The generated `task-consent/decision/0.2` types — the payload is read with
+// them, never a local mirror. The decision is an explicit two-valued enum
+// rather than a bool, so a missing or falsy value can never read as assent:
+// silence, timeouts and dismissals are denials.
+use trust_tasks_rs::specs::task_consent::decision::v0_2 as decision;
 
 fn now_secs() -> u64 {
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -143,7 +120,7 @@ pub(super) async fn handle_decision(
     _auth: &AuthClaims,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    let payload: DecisionPayload = match parse_payload(&doc) {
+    let payload: decision::Payload = match parse_payload(&doc) {
         Ok(p) => p,
         Err(o) => return o,
     };
@@ -188,34 +165,35 @@ pub(super) async fn handle_decision(
 
     let ks = &state.task_consent_ks;
     // An expired pending reads as absent, so a lapsed request can't be approved.
-    let pending = match consent::pending_by_wire_digest(ks, &payload.payload_digest, now).await {
-        Ok(Some(p)) => p,
-        Ok(None) => {
-            crate::audit::record_consent(
-                &state.audit_sink,
-                "consent.decision",
-                &approver,
-                &payload.payload_digest,
-                "denied:no_pending",
-                Some(
-                    "approver decided on a request that no longer exists (expired, \
+    let pending =
+        match consent::pending_by_wire_digest(ks, payload.payload_digest.as_str(), now).await {
+            Ok(Some(p)) => p,
+            Ok(None) => {
+                crate::audit::record_consent(
+                    &state.audit_sink,
+                    "consent.decision",
+                    &approver,
+                    payload.payload_digest.as_str(),
+                    "denied:no_pending",
+                    Some(
+                        "approver decided on a request that no longer exists (expired, \
                       already resolved, or re-minted under a new challenge)",
-                ),
-            )
-            .await;
-            return reject_with(
-                &doc,
-                RejectReason::TaskFailed {
-                    reason: "task-consent/decision:noPending".into(),
-                    details: Some(json!({ "payloadDigest": payload.payload_digest })),
-                },
-            );
-        }
-        Err(e) => return app_error_to_reject(&doc, e),
-    };
+                    ),
+                )
+                .await;
+                return reject_with(
+                    &doc,
+                    RejectReason::TaskFailed {
+                        reason: "task-consent/decision:noPending".into(),
+                        details: Some(json!({ "payloadDigest": payload.payload_digest })),
+                    },
+                );
+            }
+            Err(e) => return app_error_to_reject(&doc, e),
+        };
 
     // Bind the decision to this exact request.
-    if payload.challenge != pending.challenge {
+    if *payload.challenge != pending.challenge {
         crate::audit::record_consent(
             &state.audit_sink,
             "consent.decision",
@@ -229,6 +207,29 @@ pub(super) async fn handle_decision(
             &doc,
             RejectReason::PermissionDenied {
                 reason: "challenge does not match the pending request".into(),
+            },
+        );
+    }
+
+    // `actionId` links a decision to a VTC action. A VTA's pending requests
+    // belong to no action, so a decision naming one names a different action
+    // from the request `payloadDigest` and `challenge` resolve to
+    // (`task-consent/decision/0.2`, consumer step 4).
+    if let Some(action_id) = &payload.action_id {
+        crate::audit::record_consent(
+            &state.audit_sink,
+            "consent.decision",
+            &approver,
+            &pending.type_uri,
+            "denied:action_mismatch",
+            Some(&format!("actionId={}", action_id.as_str())),
+        )
+        .await;
+        return reject_with(
+            &doc,
+            RejectReason::TaskFailed {
+                reason: decision::error_codes::ACTION_MISMATCH.code.into(),
+                details: None,
             },
         );
     }
@@ -292,8 +293,32 @@ pub(super) async fn handle_decision(
         );
     }
 
+    // `evidence` is a factor on top of the proof, and present evidence MUST be
+    // verified (`task-consent/decision/0.2`, consumer step 7). This VTA
+    // verifies no evidence kind, so a decision carrying one is refused rather
+    // than accepted with the factor unchecked: recording it would let the
+    // decision document claim an assurance nobody established.
+    if payload.evidence.is_some() {
+        crate::audit::record_consent(
+            &state.audit_sink,
+            "consent.decision",
+            &approver,
+            &pending.type_uri,
+            "denied:evidence_invalid",
+            Some("this VTA verifies no task-consent evidence kind"),
+        )
+        .await;
+        return reject_with(
+            &doc,
+            RejectReason::TaskFailed {
+                reason: decision::error_codes::EVIDENCE_INVALID.code.into(),
+                details: None,
+            },
+        );
+    }
+
     // A denial aborts the request.
-    if payload.decision == Decision::Deny {
+    if payload.decision == decision::Decision::Deny {
         // Conditional on the pending still being there: if a concurrent
         // approval already minted its grant, this denial came too late and
         // must not be reported as having refused anything.
@@ -541,7 +566,7 @@ mod tests {
         let vta_did = state.config.read().await.vta_did.clone().unwrap();
         let mut doc = json!({
             "id": format!("urn:uuid:{}", uuid::Uuid::new_v4()),
-            "type": vta_sdk::trust_tasks::TASK_TASK_CONSENT_DECISION_0_1,
+            "type": vta_sdk::trust_tasks::TASK_TASK_CONSENT_DECISION_0_2,
             "issuer": approver,
             "recipient": vta_did,
             "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
@@ -623,7 +648,7 @@ mod tests {
             async move {
                 let mut doc = json!({
                     "id": format!("urn:uuid:{}", uuid::Uuid::new_v4()),
-                    "type": vta_sdk::trust_tasks::TASK_TASK_CONSENT_DECISION_0_1,
+                    "type": vta_sdk::trust_tasks::TASK_TASK_CONSENT_DECISION_0_2,
                     "issuer": approver,
                     "recipient": vta_did,
                     "issuedAt": chrono::Utc::now()
@@ -679,6 +704,112 @@ mod tests {
             !reply.to_string().contains("valid proof"),
             "an assertionMethod decision passes the proof check: {reply}"
         );
+    }
+
+    /// `task-consent/decision/0.2`'s two members this VTA cannot honour are
+    /// refused under their own codes rather than ignored: an `actionId` names a
+    /// VTC action, which no VTA request belongs to (`actionMismatch`), and
+    /// present `evidence` must be verified, which this VTA cannot do for any
+    /// kind (`evidenceInvalid`). Neither decision is recorded.
+    #[tokio::test]
+    async fn a_decision_naming_an_action_or_carrying_evidence_is_refused() {
+        use affinidi_data_integrity::{DataIntegrityProof, SignOptions};
+        use affinidi_secrets_resolver::secrets::Secret;
+
+        let (state, _dir) = build_signing_test_app_state().await;
+        let mut secret = Secret::generate_ed25519(None, Some(&[0xC5; 32]));
+        let pub_mb = secret.get_public_keymultibase().expect("approver pubkey");
+        let approver = format!("did:key:{pub_mb}");
+        secret.id = format!("{approver}#{pub_mb}");
+        crate::policy::seed_declarative_approvals(
+            &state.policy_ks,
+            &[],
+            &std::collections::HashMap::from([("ops".to_string(), vec![approver.clone()])]),
+            &chrono::Utc::now().to_rfc3339(),
+        )
+        .await
+        .unwrap();
+
+        const TYPE_URI: &str = "https://trusttasks.org/spec/vta/webvh/dids/update/1.0";
+        let task_payload = json!({ "did": "did:webvh:zScid:example.com:thing" });
+        let challenge = "0123456789abcdef0123456789abcdef";
+        let wire_digest = consent::wire_digest(TYPE_URI, &task_payload, challenge).unwrap();
+        let now = now_secs();
+        consent::store_pending(
+            &state.task_consent_ks,
+            &consent::PendingTaskConsent {
+                digest: consent::payload_digest(TYPE_URI, &task_payload).unwrap(),
+                wire_digest: wire_digest.clone(),
+                correlator: "urn:uuid:test-correlator".into(),
+                type_uri: TYPE_URI.into(),
+                requester_did: "did:key:zRequestingAgent".into(),
+                approver_set: "ops".into(),
+                min_approvals: 1,
+                exclude_requester: true,
+                challenge: challenge.into(),
+                approvals: vec![],
+                state_pin: None,
+                guards: Default::default(),
+                subject_context: None,
+                requester_authorized: true,
+                bound_approver: None,
+                created_at: now,
+                expires_at: now + 900,
+            },
+        )
+        .await
+        .unwrap();
+        let vta_did = state.config.read().await.vta_did.clone().unwrap();
+        let claims = crate::test_support::super_admin_claims();
+
+        let mut replies = Vec::new();
+        for extra in [
+            json!({ "actionId": "act-1" }),
+            json!({ "evidence": { "kind": "approverSigned", "statement": {} } }),
+        ] {
+            let mut payload = json!({
+                "challenge": challenge,
+                "payloadDigest": wire_digest,
+                "decision": "approve",
+            });
+            for (k, v) in extra.as_object().unwrap() {
+                payload[k] = v.clone();
+            }
+            let mut doc = json!({
+                "id": format!("urn:uuid:{}", uuid::Uuid::new_v4()),
+                "type": vta_sdk::trust_tasks::TASK_TASK_CONSENT_DECISION_0_2,
+                "issuer": approver,
+                "recipient": vta_did,
+                "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+                "payload": payload,
+            });
+            let proof = DataIntegrityProof::sign(
+                &doc,
+                &secret,
+                SignOptions::new().with_proof_purpose("assertionMethod"),
+            )
+            .await
+            .expect("sign the decision");
+            doc["proof"] = serde_json::to_value(proof).unwrap();
+            let doc: TrustTask<Value> = serde_json::from_value(doc).unwrap();
+            let outcome = handle_decision(&state, &claims, doc).await;
+            replies.push(String::from_utf8_lossy(&outcome.body).into_owned());
+        }
+        assert!(
+            replies[0].contains("task-consent/decision:actionMismatch"),
+            "{}",
+            replies[0]
+        );
+        assert!(
+            replies[1].contains("task-consent/decision:evidenceInvalid"),
+            "{}",
+            replies[1]
+        );
+        let pending = consent::pending_by_wire_digest(&state.task_consent_ks, &wire_digest, now)
+            .await
+            .unwrap()
+            .expect("the pending is still open");
+        assert!(pending.approvals.is_empty(), "nothing was recorded");
     }
 
     const OPENVTC: &str = "openvtc";

@@ -4,7 +4,7 @@
 //! pushes a signed `task-consent/request/0.1` over the mediator, the native app
 //! shows the operator what executing the task would do (the VTA's dry-run
 //! `effects`) plus a human-checkable match code, and — behind a biometric — the
-//! operator returns a DID-signed `task-consent/decision/0.1`.
+//! operator returns a DID-signed `task-consent/decision/0.2`.
 //!
 //! Two exports:
 //! - [`parse_task_consent_request`] **verifies** the request's own
@@ -38,7 +38,7 @@
 
 use chrono::DateTime;
 use trust_tasks_rs::TrustTask;
-use trust_tasks_rs::specs::task_consent::decision::v0_1 as decision;
+use trust_tasks_rs::specs::task_consent::decision::v0_2 as decision;
 
 use crate::error::FfiError;
 use crate::keys::Signer;
@@ -249,7 +249,7 @@ pub struct TaskConsentDecisionDraft {
     pub payload_digest: String,
 }
 
-/// Build a DID-signed **approval** `task-consent/decision/0.1`, gated by an
+/// Build a DID-signed **approval** `task-consent/decision/0.2`, gated by an
 /// `eddsa-jcs-2022` Data Integrity proof over the document. `signer` is the
 /// native enclave key; its private material never enters this crate.
 #[uniffi::export]
@@ -262,7 +262,7 @@ pub fn build_task_consent_decision_did_signed(
     serialize(&doc)
 }
 
-/// Build a DID-signed **denial** `task-consent/decision/0.1`, carrying the human
+/// Build a DID-signed **denial** `task-consent/decision/0.2`, carrying the human
 /// `reason`, gated by the same proof. A denial is a signed refusal the executor
 /// records; nothing executes.
 #[uniffi::export]
@@ -566,7 +566,7 @@ mod tests {
         let v: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(
             v["type"],
-            "https://trusttasks.org/spec/task-consent/decision/0.1"
+            "https://trusttasks.org/spec/task-consent/decision/0.2"
         );
         assert_eq!(v["payload"]["decision"], "approve");
         assert_eq!(v["payload"]["challenge"], "VHJhbnNmZXJDb25maXJtTm9uY2VYWQ");

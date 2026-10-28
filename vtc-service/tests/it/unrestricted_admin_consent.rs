@@ -33,12 +33,11 @@ const CHANGE_ROLE: &str = "https://trusttasks.org/spec/acl/change-role/0.1";
 const REVOKE: &str = "https://trusttasks.org/spec/acl/revoke/0.1";
 const PATCH: &str = "https://trusttasks.org/spec/config/patch/0.1";
 const ACTIVATE: &str = "https://trusttasks.org/spec/policy/activate/0.1";
-const UPSERT: &str = "https://trusttasks.org/spec/policy/upsert/0.2";
+const UPSERT: &str = "https://trusttasks.org/spec/policy/upsert/0.3";
 const CREATE_INVITE: &str = "https://trusttasks.org/spec/vtc/admin/invites/create/0.1";
 const LIST: &str = "https://trusttasks.org/spec/vtc/admin/actions/list/0.3";
 const CANCEL: &str = "https://trusttasks.org/spec/vtc/admin/actions/cancel/0.3";
 const ACKNOWLEDGE: &str = "https://trusttasks.org/spec/vtc/admin/actions/acknowledge/0.3";
-const DECISION_V0_1: &str = "https://trusttasks.org/spec/task-consent/decision/0.1";
 const DECISION_V0_2: &str = "https://trusttasks.org/spec/task-consent/decision/0.2";
 const NEXT_STEP: &str = "https://trusttasks.org/spec/trust-task-next-step/0.1";
 const SHOW: &str = "https://trusttasks.org/spec/vtc/admin/actions/show/0.3";
@@ -1417,13 +1416,13 @@ async fn vti_apv_014_a_signed_request_is_answered_through_the_sdk() {
     let decision = verified.decision(true, Some("checked")).unwrap();
     let (status, ack) = post(
         &fix.vtc,
-        &signed(&b, DECISION_V0_1, serde_json::to_value(&decision).unwrap()).await,
+        &signed(&b, DECISION_V0_2, serde_json::to_value(&decision).unwrap()).await,
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{ack}");
     assert_eq!(ack["payload"]["status"], "granted", "{ack}");
     let _: vta_sdk::task_consent::decision::Response =
-        serde_json::from_value(ack["payload"].clone()).expect("the 0.1 response type");
+        serde_json::from_value(ack["payload"].clone()).expect("the 0.2 response type");
     assert!(entry(&fix, &subject.did).await.is_some());
 }
 

@@ -137,7 +137,7 @@ async fn seeded_webvh_server_is_listed_over_http() {
 
 /// Full URL-direct provision against a **REST-only** MockVta, end to end:
 /// `provision_admin_rotated_via_rest` authenticates via the DI-signed
-/// `auth/authenticate/0.1` Trust Task (no DIDComm / ATM — the mock has none),
+/// `auth/authenticate/0.3` Trust Task (no DIDComm / ATM — the mock has none),
 /// the VTA mints a fresh admin DID + issues the authorization VC + seals the
 /// rotation bundle, and the client opens it. This is the round-trip that
 /// failed with "ATM not configured" before the DI-signed REST auth path

@@ -148,7 +148,7 @@ async fn authenticate_endpoint_429_without_a_source_header_is_upstream() {
         .and(path("/trust-tasks"))
         .and(header(
             "Trust-Task",
-            vta_sdk::trust_tasks::TASK_AUTH_AUTHENTICATE_0_2,
+            vta_sdk::trust_tasks::TASK_AUTH_AUTHENTICATE_0_3,
         ))
         .respond_with(
             ResponseTemplate::new(429)
@@ -262,7 +262,7 @@ async fn mount_authenticate(server: &MockServer, expires_at: u64) {
         .and(path("/trust-tasks"))
         .and(header(
             "Trust-Task",
-            vta_sdk::trust_tasks::TASK_AUTH_AUTHENTICATE_0_2,
+            vta_sdk::trust_tasks::TASK_AUTH_AUTHENTICATE_0_3,
         ))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "session": {
@@ -312,7 +312,7 @@ async fn a_rate_limited_authenticate_is_retried_with_the_same_challenge() {
         .and(path("/trust-tasks"))
         .and(header(
             "Trust-Task",
-            vta_sdk::trust_tasks::TASK_AUTH_AUTHENTICATE_0_2,
+            vta_sdk::trust_tasks::TASK_AUTH_AUTHENTICATE_0_3,
         ))
         .respond_with(
             ResponseTemplate::new(429)
@@ -411,7 +411,7 @@ async fn authenticate_endpoint_401_maps_to_auth() {
         .and(path("/trust-tasks"))
         .and(header(
             "Trust-Task",
-            vta_sdk::trust_tasks::TASK_AUTH_AUTHENTICATE_0_2,
+            vta_sdk::trust_tasks::TASK_AUTH_AUTHENTICATE_0_3,
         ))
         .respond_with(ResponseTemplate::new(401).set_body_string("bad challenge"))
         .mount(&server)
@@ -470,7 +470,7 @@ async fn non_key_vta_did_still_authenticates() {
     assert_eq!(result.access_token, "access-jwt");
 }
 
-/// The request body must be a DI-signed `auth/authenticate/0.2` Trust Task —
+/// The request body must be a DI-signed `auth/authenticate/0.3` Trust Task —
 /// **not** an anoncrypt DIDComm envelope, which the VTA rejects outright since
 /// it began requiring an authenticated sender (VTI #771).
 #[tokio::test]
@@ -494,14 +494,14 @@ async fn authenticate_body_is_a_signed_trust_task() {
         .find(|r| {
             r.url.path() == "/trust-tasks" && {
                 let body: serde_json::Value = serde_json::from_slice(&r.body).unwrap_or_default();
-                body["type"] == vta_sdk::trust_tasks::TASK_AUTH_AUTHENTICATE_0_2
+                body["type"] == vta_sdk::trust_tasks::TASK_AUTH_AUTHENTICATE_0_3
             }
         })
         .expect("an authenticate /trust-tasks request was made");
     let body: serde_json::Value = serde_json::from_slice(&req.body).expect("body is JSON");
 
     assert_eq!(
-        body["type"], "https://trusttasks.org/spec/auth/authenticate/0.2",
+        body["type"], "https://trusttasks.org/spec/auth/authenticate/0.3",
         "body must be an authenticate Trust Task"
     );
     assert_eq!(body["payload"]["challenge"], CHALLENGE);
@@ -521,11 +521,11 @@ async fn trust_task_wrapped_response_is_unwrapped() {
         .and(path("/trust-tasks"))
         .and(header(
             "Trust-Task",
-            vta_sdk::trust_tasks::TASK_AUTH_AUTHENTICATE_0_2,
+            vta_sdk::trust_tasks::TASK_AUTH_AUTHENTICATE_0_3,
         ))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "id": "urn:uuid:resp-1",
-            "type": "https://trusttasks.org/spec/auth/authenticate/0.2#response",
+            "type": "https://trusttasks.org/spec/auth/authenticate/0.3#response",
             "threadId": "urn:uuid:req-1",
             "payload": {
                 "session": {
@@ -775,7 +775,7 @@ async fn ensure_token_valid_refreshes_expired_access_token() {
         .and(path("/trust-tasks"))
         .and(header(
             "Trust-Task",
-            vta_sdk::trust_tasks::TASK_AUTH_AUTHENTICATE_0_2,
+            vta_sdk::trust_tasks::TASK_AUTH_AUTHENTICATE_0_3,
         ))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "session": {
@@ -887,7 +887,7 @@ async fn ensure_token_valid_full_reauth_when_refresh_expired() {
         .and(path("/trust-tasks"))
         .and(header(
             "Trust-Task",
-            vta_sdk::trust_tasks::TASK_AUTH_AUTHENTICATE_0_2,
+            vta_sdk::trust_tasks::TASK_AUTH_AUTHENTICATE_0_3,
         ))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "session": {
@@ -914,7 +914,7 @@ async fn ensure_token_valid_full_reauth_when_refresh_expired() {
         .and(path("/trust-tasks"))
         .and(header(
             "Trust-Task",
-            vta_sdk::trust_tasks::TASK_AUTH_AUTHENTICATE_0_2,
+            vta_sdk::trust_tasks::TASK_AUTH_AUTHENTICATE_0_3,
         ))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "session": {
@@ -988,7 +988,7 @@ async fn ensure_token_valid_falls_through_when_refresh_fails() {
         .and(path("/trust-tasks"))
         .and(header(
             "Trust-Task",
-            vta_sdk::trust_tasks::TASK_AUTH_AUTHENTICATE_0_2,
+            vta_sdk::trust_tasks::TASK_AUTH_AUTHENTICATE_0_3,
         ))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "session": {
@@ -1015,7 +1015,7 @@ async fn ensure_token_valid_falls_through_when_refresh_fails() {
         .and(path("/trust-tasks"))
         .and(header(
             "Trust-Task",
-            vta_sdk::trust_tasks::TASK_AUTH_AUTHENTICATE_0_2,
+            vta_sdk::trust_tasks::TASK_AUTH_AUTHENTICATE_0_3,
         ))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "session": {

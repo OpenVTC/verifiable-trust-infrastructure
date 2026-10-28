@@ -47,10 +47,10 @@ use vtc_service::acl::VtcRole;
 use vtc_service::policy::{PolicyPurpose, get_active_policy_id, get_policy};
 use vtc_service::test_support::TestVtc;
 
-const LIST: &str = "https://trusttasks.org/spec/policy/list/0.2";
+const LIST: &str = "https://trusttasks.org/spec/policy/list/0.3";
 const GET: &str = "https://trusttasks.org/spec/policy/get/0.1";
 const ACTIVE: &str = "https://trusttasks.org/spec/policy/active/0.1";
-const UPSERT: &str = "https://trusttasks.org/spec/policy/upsert/0.2";
+const UPSERT: &str = "https://trusttasks.org/spec/policy/upsert/0.3";
 const ACTIVATE: &str = "https://trusttasks.org/spec/policy/activate/0.1";
 const TEST: &str = "https://trusttasks.org/spec/vtc/policies/test/0.1";
 const DID_REGISTER: &str = "https://trusttasks.org/spec/did-management/did/register/0.1";

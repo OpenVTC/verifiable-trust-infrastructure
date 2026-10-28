@@ -48,7 +48,7 @@ Three Trust Task URIs. Only one of them is dispatched.
 | URI | Direction | Notes |
 |---|---|---|
 | `…/spec/task-consent/request/0.1` | VTA → approver | Pushed, VTA-signed. Outbound only — no handler. |
-| `…/spec/task-consent/decision/0.1` | approver → VTA | **The only dispatched one.** DI-signed by the approver. |
+| `…/spec/task-consent/decision/0.2` | approver → VTA | **The only dispatched one.** DI-signed by the approver. |
 | `…/spec/task-consent/granted/0.1` | VTA → requester | Fire-and-forget notice. |
 
 There are **no DTTE-specific REST endpoints**. The gate runs on both transports
@@ -68,7 +68,7 @@ sequenceDiagram
     V-->>R: rejected — auth:consent_required (+ challenge, digest, set, threshold)
     V->>A: task-consent/request/0.1 (VTA-signed, pushed)
     A->>A: human compares match code, reads effects
-    A->>V: task-consent/decision/0.1 (DI-signed, echoes challenge)
+    A->>V: task-consent/decision/0.2 (DI-signed, echoes challenge)
     V->>V: verify proof, check set membership, count threshold
     V->>V: mint single-use grant
     V-->>R: task-consent/granted/0.1 (notice)
@@ -170,7 +170,7 @@ browser whose UV key is a `remoteApprover` asks for a sign-in grant (see
 member's phone, and the decision handler accepts that DID's decision and no
 other, whatever any approver set says. Everything else is the ordinary
 ceremony — the same signed `task-consent/request/0.1`, the same push, the same
-`task-consent/decision/0.1`, the same single-use grant — so the phone app needs
+`task-consent/decision/0.2`, the same single-use grant — so the phone app needs
 nothing new. A bound request also leaves a mark that outlives it
 (`BoundRequestMark`), so its requester can read "declined" or "expired" instead
 of raising the question again.

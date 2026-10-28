@@ -122,9 +122,9 @@ pub mod task {
     pub const JOIN_REQUESTS_LIST: &str = "https://trusttasks.org/spec/vtc/join-requests/list/0.2";
     pub const JOIN_REQUESTS_DECIDE: &str =
         "https://trusttasks.org/spec/vtc/join-requests/decide/0.1";
-    pub const POLICY_LIST: &str = "https://trusttasks.org/spec/policy/list/0.2";
+    pub const POLICY_LIST: &str = "https://trusttasks.org/spec/policy/list/0.3";
     pub const POLICY_GET: &str = "https://trusttasks.org/spec/policy/get/0.1";
-    pub const POLICY_UPSERT: &str = "https://trusttasks.org/spec/policy/upsert/0.2";
+    pub const POLICY_UPSERT: &str = "https://trusttasks.org/spec/policy/upsert/0.3";
     pub const POLICY_ACTIVATE: &str = "https://trusttasks.org/spec/policy/activate/0.1";
     pub const VETTING_VETTERS_GRANT: &str =
         "https://trusttasks.org/spec/vtc/vetting/vetters/grant/0.1";
@@ -280,8 +280,8 @@ pub use trust_tasks_rs::specs::did_management::did::register as did_register;
 /// admin verbs send and return.
 pub use vta_sdk::protocols::vetting;
 
-/// `policy/upsert/0.2` — the body [`VtcClient::upload_policy`] sends.
-pub use trust_tasks_rs::specs::policy::upsert::v0_2 as policy_upsert;
+/// `policy/upsert/0.3` — the body [`VtcClient::upload_policy`] sends.
+pub use trust_tasks_rs::specs::policy::upsert::v0_3 as policy_upsert;
 
 /// `vtc/members/credentials/0.1` — what [`VtcClient::member_credentials`]
 /// returns, and the error code it maps to [`VtcError::NotFound`].
@@ -1233,9 +1233,9 @@ impl VtcClient {
     /// approver's authority.
     pub async fn decide_task_consent(
         &self,
-        decision: &trust_tasks_rs::specs::task_consent::decision::v0_1::Payload,
-    ) -> Result<trust_tasks_rs::specs::task_consent::decision::v0_1::Response, VtcError> {
-        use trust_tasks_rs::specs::task_consent::decision::v0_1 as spec;
+        decision: &trust_tasks_rs::specs::task_consent::decision::v0_2::Payload,
+    ) -> Result<trust_tasks_rs::specs::task_consent::decision::v0_2::Response, VtcError> {
+        use trust_tasks_rs::specs::task_consent::decision::v0_2 as spec;
         let payload =
             serde_json::to_value(decision).map_err(|e| VtcError::InvalidPayload(e.to_string()))?;
         let reply = self
@@ -1491,10 +1491,35 @@ impl VtcClient {
     }
 
     /// List the community's policies (opaque JSON descriptors,
-    /// `policy/list/0.2`), following the cursor to completion. Administrator.
+    /// `policy/list/0.3`), following the cursor to completion. Administrator.
+    ///
+    /// Not [`Self::document_pages`]: `policy/list` names its rows `policies`,
+    /// not `items`.
     pub async fn list_policies(&self) -> Result<Vec<serde_json::Value>, VtcError> {
-        self.document_pages(task::POLICY_LIST, serde_json::json!({}), "policy/list")
-            .await
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct PoliciesPage {
+            policies: Vec<serde_json::Value>,
+            next_cursor: Option<String>,
+        }
+        let mut out = Vec::new();
+        let mut cursor: Option<String> = None;
+        loop {
+            let mut payload = serde_json::json!({});
+            if let Some(cursor) = &cursor {
+                payload["cursor"] = serde_json::json!(cursor);
+            }
+            let reply = self
+                .document(task::POLICY_LIST, payload, &[], MAX_DOCUMENT_RESPONSE_BYTES)
+                .await?;
+            let page: PoliciesPage = decode_payload(reply, "policy/list")?;
+            out.extend(page.policies);
+            match page.next_cursor {
+                Some(next) => cursor = Some(next),
+                None => break,
+            }
+        }
+        Ok(out)
     }
 
     /// The membership pair's **bodies** for one member
@@ -1541,7 +1566,7 @@ impl VtcClient {
     }
 
     /// Upload a new Rego policy module for `purpose` (`"join"`, `"removal"`,
-    /// …) — `policy/upsert/0.2`. Returns the `policy/upsert` response
+    /// …) — `policy/upsert/0.3`. Returns the `policy/upsert` response
     /// (`{ policy, created }`, with the id, version and source hash on
     /// `policy`). Administrator. Upload alone does not activate it — call
     /// [`activate_policy`](Self::activate_policy).
@@ -2324,7 +2349,7 @@ fn document_error(
     VtcError::Http { status, body }
 }
 
-/// The `policy/upsert/0.2` payload for a module serving `purpose`, built on
+/// The `policy/upsert/0.3` payload for a module serving `purpose`, built on
 /// the generated type so the schema's bounds are checked before sending.
 fn policy_upload_payload(
     purpose: &str,
@@ -2735,7 +2760,7 @@ mod tests {
         ));
     }
 
-    /// The upload body is the canonical `policy/upsert/0.2` shape, asserted on
+    /// The upload body is the canonical `policy/upsert/0.3` shape, asserted on
     /// the serialised JSON — what the VTC's `deny_unknown_fields` body sees.
     #[test]
     fn policy_upload_sends_the_canonical_upsert_shape() {

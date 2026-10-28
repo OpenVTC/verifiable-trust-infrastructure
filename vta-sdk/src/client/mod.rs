@@ -2978,7 +2978,7 @@ impl VtaClient {
     // and `features`/`services` at the DID document, which is authoritative for
     // what a party speaks. `didCreationModes` had no consumer at all.
 
-    /// Ask which Trust Task types this agent serves — `trust-task-discovery/0.1`.
+    /// Ask which Trust Task types this agent serves — `trust-task-discovery/0.3`.
     ///
     /// `patterns` are slug globs matched against the URI's slug (everything
     /// after `https://trusttasks.org/spec/`): `*` for everything, `vta/acl/*`
@@ -3001,7 +3001,7 @@ impl VtaClient {
         patterns: &[&str],
     ) -> Result<crate::protocols::discovery::SupportedTasksResponse, VtaError> {
         self.rpc_tt(
-            crate::trust_tasks::TASK_TRUST_TASK_DISCOVERY_0_1,
+            crate::trust_tasks::TASK_TRUST_TASK_DISCOVERY_0_3,
             serde_json::json!({ "patterns": patterns }),
             30,
         )

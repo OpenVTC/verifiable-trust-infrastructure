@@ -1095,7 +1095,7 @@ async fn audit_list_requires_admin() {
         .task(
             &ctx,
             &application,
-            vta_sdk::trust_tasks::TASK_AUDIT_LIST_0_1,
+            vta_sdk::trust_tasks::TASK_AUDIT_LIST_0_2,
             json!({}),
         )
         .await;
@@ -1106,7 +1106,7 @@ async fn audit_list_requires_admin() {
         .task(
             &ctx,
             &admin,
-            vta_sdk::trust_tasks::TASK_AUDIT_LIST_0_1,
+            vta_sdk::trust_tasks::TASK_AUDIT_LIST_0_2,
             json!({}),
         )
         .await;
@@ -1132,7 +1132,7 @@ async fn audit_time_bounds_are_parsed_and_applied() {
         .task(
             &ctx,
             &admin,
-            vta_sdk::trust_tasks::TASK_AUDIT_LIST_0_1,
+            vta_sdk::trust_tasks::TASK_AUDIT_LIST_0_2,
             json!({}),
         )
         .await;
@@ -1146,7 +1146,7 @@ async fn audit_time_bounds_are_parsed_and_applied() {
         .task(
             &ctx,
             &admin,
-            vta_sdk::trust_tasks::TASK_AUDIT_LIST_0_1,
+            vta_sdk::trust_tasks::TASK_AUDIT_LIST_0_2,
             json!({"from": "2999-01-01T00:00:00Z"}),
         )
         .await;
@@ -1161,7 +1161,7 @@ async fn audit_time_bounds_are_parsed_and_applied() {
         .task(
             &ctx,
             &admin,
-            vta_sdk::trust_tasks::TASK_AUDIT_LIST_0_1,
+            vta_sdk::trust_tasks::TASK_AUDIT_LIST_0_2,
             json!({"to": "2000-01-01T00:00:00Z"}),
         )
         .await;
@@ -1184,7 +1184,7 @@ async fn scoped_admin_cannot_read_the_whole_audit_log() {
         .task(
             &ctx,
             &scoped,
-            vta_sdk::trust_tasks::TASK_AUDIT_LIST_0_1,
+            vta_sdk::trust_tasks::TASK_AUDIT_LIST_0_2,
             json!({}),
         )
         .await;
@@ -1198,7 +1198,7 @@ async fn scoped_admin_cannot_read_the_whole_audit_log() {
         .task(
             &ctx,
             &scoped,
-            vta_sdk::trust_tasks::TASK_AUDIT_LIST_0_1,
+            vta_sdk::trust_tasks::TASK_AUDIT_LIST_0_2,
             json!({"contextId": "ctx2"}),
         )
         .await;
@@ -1208,7 +1208,7 @@ async fn scoped_admin_cannot_read_the_whole_audit_log() {
         .task(
             &ctx,
             &scoped,
-            vta_sdk::trust_tasks::TASK_AUDIT_LIST_0_1,
+            vta_sdk::trust_tasks::TASK_AUDIT_LIST_0_2,
             json!({"contextId": "ctx1"}),
         )
         .await;
@@ -1220,7 +1220,7 @@ async fn scoped_admin_cannot_read_the_whole_audit_log() {
         .task(
             &ctx,
             &super_admin,
-            vta_sdk::trust_tasks::TASK_AUDIT_LIST_0_1,
+            vta_sdk::trust_tasks::TASK_AUDIT_LIST_0_2,
             json!({}),
         )
         .await;
@@ -1243,7 +1243,7 @@ async fn operations_create_audit_entries() {
         .task(
             &ctx,
             &admin,
-            vta_sdk::trust_tasks::TASK_AUDIT_LIST_0_1,
+            vta_sdk::trust_tasks::TASK_AUDIT_LIST_0_2,
             json!({}),
         )
         .await;

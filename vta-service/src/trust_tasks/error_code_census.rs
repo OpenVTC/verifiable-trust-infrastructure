@@ -70,15 +70,17 @@ fn unwitnessed() -> Vec<DeclaredErrorCode> {
         s::acl::update::v0_1::error_codes::NARROWING_NOT_PERMITTED,
         s::acl::update::v0_1::error_codes::NOT_FOUND,
         s::acl::update::v0_1::error_codes::ROLE_CHANGE_NOT_PERMITTED,
-        s::audit::list::v0_1::error_codes::INVALID_CURSOR,
+        s::audit::list::v0_2::error_codes::INVALID_CURSOR,
         s::auth::revoke_session::v0_2::error_codes::SESSION_NOT_FOUND,
-        s::auth::step_up::approve_response::v0_3::error_codes::ACR_UNSATISFIED,
-        s::auth::step_up::approve_response::v0_3::error_codes::APPROVER_UNAUTHORIZED,
-        s::auth::step_up::approve_response::v0_3::error_codes::ASSERTION_INVALID,
-        s::auth::step_up::approve_response::v0_3::error_codes::CHALLENGE_EXPIRED,
-        s::auth::step_up::approve_response::v0_3::error_codes::CHALLENGE_UNKNOWN,
-        s::auth::step_up::approve_response::v0_3::error_codes::NO_GATE,
-        s::auth::step_up::approve_response::v0_3::error_codes::SUBJECT_MISMATCH,
+        s::auth::step_up::approve_response::v0_6::error_codes::ACR_UNSATISFIED,
+        s::auth::step_up::approve_response::v0_6::error_codes::APPROVER_NOT_BOUND,
+        s::auth::step_up::approve_response::v0_6::error_codes::APPROVER_UNAUTHORIZED,
+        s::auth::step_up::approve_response::v0_6::error_codes::ASSERTION_INVALID,
+        s::auth::step_up::approve_response::v0_6::error_codes::CHALLENGE_EXPIRED,
+        s::auth::step_up::approve_response::v0_6::error_codes::CHALLENGE_UNKNOWN,
+        s::auth::step_up::approve_response::v0_6::error_codes::NO_GATE,
+        s::auth::step_up::approve_response::v0_6::error_codes::STATEMENT_INVALID,
+        s::auth::step_up::approve_response::v0_6::error_codes::SUBJECT_MISMATCH,
         s::auth::whoami::v0_1::error_codes::NO_SESSION,
         s::consent::approver_list::v1_0::error_codes::NOT_AUTHORIZED,
         s::consent::approver_set::v1_0::error_codes::INVALID_BINDING,
@@ -187,10 +189,10 @@ fn unwitnessed() -> Vec<DeclaredErrorCode> {
         s::policy::delete::v0_1::error_codes::VERSION_CONFLICT,
         s::policy::delete::v0_1::error_codes::WOULD_ORPHAN_CONTEXTS,
         s::policy::get::v0_1::error_codes::NOT_FOUND,
-        s::policy::upsert::v0_2::error_codes::CONTEXT_NOT_FOUND,
-        s::policy::upsert::v0_2::error_codes::NOT_FOUND,
-        s::policy::upsert::v0_2::error_codes::REGO_INVALID,
-        s::policy::upsert::v0_2::error_codes::VERSION_CONFLICT,
+        s::policy::upsert::v0_3::error_codes::CONTEXT_NOT_FOUND,
+        s::policy::upsert::v0_3::error_codes::NOT_FOUND,
+        s::policy::upsert::v0_3::error_codes::REGO_INVALID,
+        s::policy::upsert::v0_3::error_codes::VERSION_CONFLICT,
         s::provision::integration::v0_3::error_codes::ASSERTION_UNSUPPORTED,
         s::provision::integration::v0_3::error_codes::CONTEXT_NOT_FOUND,
         s::provision::integration::v0_3::error_codes::ENVELOPE_UNSUPPORTED,
@@ -219,10 +221,14 @@ fn unwitnessed() -> Vec<DeclaredErrorCode> {
         s::rooms::owner::issue_authority::v0_2::error_codes::EMPTY_ACTIONS,
         s::rooms::owner::issue_authority::v0_2::error_codes::NO_SIGNING_KEY,
         s::rooms::owner::issue_membership::v0_1::error_codes::NO_SIGNING_KEY,
-        s::task_consent::decision::v0_1::error_codes::CHALLENGE_MISMATCH,
-        s::task_consent::decision::v0_1::error_codes::NO_PENDING,
-        s::task_consent::decision::v0_1::error_codes::NOT_AN_APPROVER,
-        s::task_consent::decision::v0_1::error_codes::REQUESTER_EXCLUDED,
+        s::task_consent::decision::v0_2::error_codes::CHALLENGE_MISMATCH,
+        // This VTA states no evidence policy, so it never asks for a kind
+        // (`evidenceRequired`); and it offers no `approverSigned` gate, so the
+        // two approver-statement codes above are unreachable here.
+        s::task_consent::decision::v0_2::error_codes::EVIDENCE_REQUIRED,
+        s::task_consent::decision::v0_2::error_codes::NO_PENDING,
+        s::task_consent::decision::v0_2::error_codes::NOT_AN_APPROVER,
+        s::task_consent::decision::v0_2::error_codes::REQUESTER_EXCLUDED,
         s::vault::credentials::archive::v0_1::error_codes::NOT_ACTIVE,
         s::vault::credentials::archive::v0_1::error_codes::NOT_FOUND,
         s::vault::credentials::delete::v0_1::error_codes::ALREADY_DELETED,
@@ -428,7 +434,7 @@ fn unwitnessed() -> Vec<DeclaredErrorCode> {
 /// The ceiling [`unwitnessed`]'s length may never exceed — a ratchet, not a
 /// count. Only *growing* the baseline past it needs an edit, which always
 /// wants a human decision.
-const UNWITNESSED_CEILING: usize = 371;
+const UNWITNESSED_CEILING: usize = 374;
 
 /// Every declared code in scope, keyed by code, with the URI declaring it.
 fn declared_in_scope() -> BTreeMap<&'static str, (&'static str, DeclaredErrorCode)> {

@@ -3,10 +3,10 @@
 //!
 //! | task | authority (the signer's ACL row, read now) |
 //! |---|---|
-//! | `policy/list/0.2` | `Admin` |
+//! | `policy/list/0.3` | `Admin` |
 //! | `policy/get/0.1` | `Admin` |
 //! | `policy/active/0.1` | `Admin` |
-//! | `policy/upsert/0.2` | `Admin`, no context scope; for an authority purpose also a bound gesture + consent (VTI-VTC-022) |
+//! | `policy/upsert/0.3` | `Admin`, no context scope; for an authority purpose also a bound gesture + consent (VTI-VTC-022) |
 //! | `policy/activate/0.1` | `Admin`, no context scope; for an authority purpose also a bound gesture + consent (VTI-VTC-022) |
 //! | `vtc/policies/test/0.1` | `Admin` |
 //! | `did-management/did/register/0.1` | `Admin`, no context scope |
@@ -21,7 +21,7 @@
 //!
 //! None of them has a REST route.
 //!
-//! `policy/list/0.2` has no purpose filter. The console asks for one purpose's
+//! `policy/list/0.3` has no purpose filter. The console asks for one purpose's
 //! revisions, so an `ext` member `org.openvtc.purpose` narrows the listing to
 //! it — the same key a revision's own `ext` names its purpose by.
 
@@ -29,7 +29,7 @@ use serde_json::Value;
 use trust_tasks_rs::specs::did_management::did::register::v0_1 as did_register;
 use trust_tasks_rs::specs::policy::{
     activate::v0_1 as policy_activate, active::v0_1 as policy_active, get::v0_1 as policy_get,
-    list::v0_2 as policy_list, upsert::v0_2 as policy_upsert,
+    list::v0_3 as policy_list, upsert::v0_3 as policy_upsert,
 };
 use trust_tasks_rs::specs::vtc::policies::test::v0_1 as policy_test;
 use trust_tasks_rs::{Payload, TrustTask};
@@ -186,7 +186,7 @@ async fn handle_active(
     }
 }
 
-/// `policy/upsert/0.2` — store a new revision.
+/// `policy/upsert/0.3` — store a new revision.
 ///
 /// **Unrestricted administrator** only, where it used to be any admin: a
 /// revision replaces the Rego that decides role changes, removal, joins,

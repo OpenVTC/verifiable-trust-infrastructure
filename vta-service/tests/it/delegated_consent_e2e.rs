@@ -44,7 +44,7 @@ use vta_service::test_support::{TestAppContext, TestAppOptions, build_test_app_w
 /// client resolves — a literal here would only re-encode one author's belief, and
 /// that belief was wrong once already.
 const WEBVH_UPDATE: &str = vta_sdk::trust_tasks::TASK_WEBVH_DIDS_UPDATE_1_0;
-const TASK_CONSENT_DECISION: &str = vta_sdk::trust_tasks::TASK_TASK_CONSENT_DECISION_0_1;
+const TASK_CONSENT_DECISION: &str = vta_sdk::trust_tasks::TASK_TASK_CONSENT_DECISION_0_2;
 
 /// Policy: this task needs a human, and it must not be the requester.
 const REQUIRE_CONSENT: &str = r#"package vta.policy

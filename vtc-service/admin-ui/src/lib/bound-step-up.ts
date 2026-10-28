@@ -32,7 +32,7 @@
 //
 // A console user's browser holds a session passkey of the operator's and no
 // key of theirs — its console key is a delegation, and a delegated key is
-// never accepted as an approver's attestation (`auth/signing-key/enroll/0.1`
+// never accepted as an approver's attestation (`auth/signing-key/enroll/0.2`
 // item 7). So it answers **unsigned**, with the passkey assertion as the gate
 // (approve-response 0.4 `evidence.kind = webauthn`). A member who is no
 // console user answers with a step-up passkey, which is only ever beside the

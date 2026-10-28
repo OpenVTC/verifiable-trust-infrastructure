@@ -23,9 +23,9 @@ use axum::http::StatusCode;
 use vtc_service::policy::{PolicyPurpose, get_active_policy_id, get_policy};
 use vtc_service::test_support::TestVtc;
 
-const UPLOAD_TASK: &str = "https://trusttasks.org/spec/policy/upsert/0.2";
+const UPLOAD_TASK: &str = "https://trusttasks.org/spec/policy/upsert/0.3";
 const ACTIVATE_TASK: &str = "https://trusttasks.org/spec/policy/activate/0.1";
-const LIST_TASK: &str = "https://trusttasks.org/spec/policy/list/0.2";
+const LIST_TASK: &str = "https://trusttasks.org/spec/policy/list/0.3";
 const SHOW_TASK: &str = "https://trusttasks.org/spec/policy/get/0.1";
 /// Replaces the old REST simulator's `?purpose=X&status=active` lookup: the
 /// per-purpose active binding, read directly off the active pointers rather
@@ -134,7 +134,7 @@ fn reply(doc: &Value, success: StatusCode) -> (StatusCode, Value) {
 
 async fn upsert(fix: &Fixture, body: Value) -> (StatusCode, Value) {
     let (_, doc) = fix.signer.call(&fix._vtc, UPLOAD_TASK, body).await;
-    let success = if doc["payload"]["created"] == false {
+    let success = if doc["payload"]["wasCreated"] == false {
         StatusCode::OK
     } else {
         StatusCode::CREATED
@@ -171,7 +171,7 @@ async fn activate(fix: &Fixture, id: &str, purpose: Option<&str>) -> (StatusCode
 }
 
 /// List policies, optionally narrowed by purpose (`ext.org.openvtc.purpose`
-/// — canonical `policy/list/0.2` has no purpose field of its own).
+/// — canonical `policy/list/0.3` has no purpose field of its own).
 async fn list(fix: &Fixture, purpose: Option<&str>) -> (StatusCode, Value) {
     let mut payload = json!({});
     if let Some(p) = purpose {
@@ -463,7 +463,7 @@ async fn list_filters_by_purpose() {
 /// now: `policy/active/0.1` for "what is active for this purpose", and a
 /// purpose-scoped listing for everything else that purpose has on file. The
 /// retired route's own `status=active`/`status=archived` filters had no
-/// canonical equivalent (`policy/list/0.2` carries no `status` field) and are
+/// canonical equivalent (`policy/list/0.3` carries no `status` field) and are
 /// gone with it.
 #[tokio::test]
 async fn list_filters_by_status() {

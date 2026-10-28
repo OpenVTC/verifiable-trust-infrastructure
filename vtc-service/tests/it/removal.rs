@@ -26,7 +26,7 @@ use vtc_service::test_support::TestVtc;
 const RP_ORIGIN: &str = "https://vtc.example.com";
 const SELF_REMOVE_TASK: &str = "https://trusttasks.org/spec/vtc/members/self-remove/0.1";
 const ADMIN_REMOVE_TASK: &str = "https://trusttasks.org/spec/vtc/members/admin-remove/0.1";
-const POLICY_UPLOAD_TASK: &str = "https://trusttasks.org/spec/policy/upsert/0.2";
+const POLICY_UPLOAD_TASK: &str = "https://trusttasks.org/spec/policy/upsert/0.3";
 const POLICY_ACTIVATE_TASK: &str = "https://trusttasks.org/spec/policy/activate/0.1";
 
 struct Fixture {
@@ -546,7 +546,7 @@ async fn admin_remove_overlong_reason_rejected() {
 // ---------------------------------------------------------------------------
 
 /// Upload + activate a removal policy, signed by the fixture's admin
-/// (`policy/upsert/0.2` + `policy/activate/0.1` — no REST route either).
+/// (`policy/upsert/0.3` + `policy/activate/0.1` — no REST route either).
 /// `source` is the full Rego module body.
 ///
 /// The removal policy decides authority, so changing it takes an unrestricted

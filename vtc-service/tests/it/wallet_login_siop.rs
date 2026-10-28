@@ -31,7 +31,7 @@ use crate::common::signed::{assert_conforms, error_code, post_for_cookies, signe
 /// The RP (this VTC's) DID — only ever string-compared as the id_token
 /// `aud`, so it need not be resolvable.
 const VTC_DID: &str = "did:webvh:scidvtc:vtc.example.com";
-const AUTH_TYPE: &str = "https://trusttasks.org/spec/auth/authenticate/0.1";
+const AUTH_TYPE: &str = "https://trusttasks.org/spec/auth/authenticate/0.3";
 
 struct Fixture {
     router: axum::Router,
@@ -598,9 +598,9 @@ async fn wallet_login_rejects_iss_not_matching_session() {
 // mediator but could not spend the refresh token it was handed — so it re-ran
 // the whole SIOP round-trip on each access-token expiry.
 
-const REFRESH_TYPE: &str = "https://trusttasks.org/spec/auth/refresh/0.1";
+const REFRESH_TYPE: &str = "https://trusttasks.org/spec/auth/refresh/0.2";
 
-/// A canonical `auth/refresh/0.1` Trust Task document. `refreshToken` is
+/// A canonical `auth/refresh/0.2` Trust Task document. `refreshToken` is
 /// camelCase per the generated spec payload (R3.1) — deliberately *not* the
 /// DIDComm body's snake_case `refresh_token`, so one document builder serves
 /// both the VTA and the VTC over REST.
@@ -906,7 +906,7 @@ async fn rest_refresh_rejects_an_unknown_token() {
 
 #[tokio::test]
 async fn rest_refresh_rejects_a_malformed_payload() {
-    // The document *is* an `auth/refresh/0.1` Trust Task, so the fast-path
+    // The document *is* an `auth/refresh/0.2` Trust Task, so the fast-path
     // owns it and must fail loudly rather than fall through to the DIDComm
     // path and report the misleading "ATM not configured" / "failed to unpack".
     // `refresh::Payload` is `deny_unknown_fields`, so the snake_case spelling
