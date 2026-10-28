@@ -5,7 +5,7 @@ nano-claw, hermes, and the like — operate against an operator's VTA.
 
 A personal AI agent is **not** a community and **not** a hand-rolled
 integration. It maps onto the existing **Trust Tasks consumer model** as a
-*Service* consumer with `consumerKind.serviceKind = "ai-agent"` (see
+*Service* consumer with `consumerKind.serviceKind = "aiAgent"` (see
 `vta-service/src/trust_tasks/wire_v0_2.rs`, `operations/device.rs`). The agent
 gets a VTA-minted DID, is enrolled as a device, granted a least-privilege
 capability set, reached over DIDComm through the operator's mediator, and woken
@@ -117,7 +117,7 @@ minimum:
 
 | Capability        | Why an agent needs it                                              |
 |-------------------|-------------------------------------------------------------------|
-| `SignTrustTask`   | Per-envelope signing via `vault/sign-trust-task/0.1`. Smaller blast radius than `Sign`/`ProxyLogin`. Usually the only signing cap an agent needs. |
+| `SignTrustTask`   | Per-envelope signing via `vault/sign-trust-task/0.2`. Smaller blast radius than `Sign`/`ProxyLogin`. Usually the only signing cap an agent needs. |
 | `VaultRead`       | Read the specific secrets/API keys it needs (`vault/get`).        |
 | `FillRelease`     | Release a stored secret into a sealed envelope (`vault/release`). |
 | `ProxyLogin`      | *Only if* the agent must act **as the user** (mints a session).   |

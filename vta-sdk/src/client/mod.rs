@@ -3973,15 +3973,12 @@ mod tests {
         // A framework success document carries `payload`; dispatch returns it.
         let doc = serde_json::json!({
             "id": "urn:uuid:abc",
-            "type": "https://trusttasks.org/spec/device/list/0.1#response",
+            "type": "https://trusttasks.org/spec/device/list/0.3#response",
             "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
-            "payload": { "devices": [], "truncated": false }
+            "payload": { "devices": [] }
         });
         let out = VtaClient::extract_trust_task_payload(doc).unwrap();
-        assert_eq!(
-            out,
-            serde_json::json!({ "devices": [], "truncated": false })
-        );
+        assert_eq!(out, serde_json::json!({ "devices": [] }));
     }
 
     #[test]
@@ -3991,7 +3988,7 @@ mod tests {
         // reject reason rather than a silent empty success.
         let doc = serde_json::json!({
             "id": "urn:uuid:def",
-            "type": "https://trusttasks.org/spec/vault/get/0.1#reject",
+            "type": "https://trusttasks.org/spec/vault/get/0.3#reject",
             "reason": "vault/get:notFound — no such entry"
         });
         let err = VtaClient::extract_trust_task_payload(doc).unwrap_err();

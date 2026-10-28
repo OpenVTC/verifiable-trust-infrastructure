@@ -38,7 +38,7 @@ const ISSUE_MEMBERSHIP: &str = "https://trusttasks.org/spec/rooms/owner/issue-me
 const ISSUE_AUTHORITY: &str = "https://trusttasks.org/spec/rooms/owner/issue-authority/0.2";
 const RECEIVE: &str = "https://trusttasks.org/spec/vault/credentials/receive/0.1";
 const QUERY: &str = "https://trusttasks.org/spec/vault/credentials/query/0.1";
-const VAULT_GET: &str = "https://trusttasks.org/spec/vault/credentials/get/0.1";
+const VAULT_GET: &str = "https://trusttasks.org/spec/vault/credentials/get/0.2";
 
 // ─── the community's VTA, standing in ───────────────────────────────────
 
@@ -167,7 +167,7 @@ impl FakeVta {
             VAULT_GET => {
                 let st = self.0.lock().unwrap();
                 match st.vault.get(p["id"].as_str().unwrap()) {
-                    Some(c) => Ok(json!({ "credential": c })),
+                    Some(c) => Ok(json!({ "format": "ldp_vc", "credential": c })),
                     None => Err(("vault/credentials/get:notFound", "no such id".into())),
                 }
             }

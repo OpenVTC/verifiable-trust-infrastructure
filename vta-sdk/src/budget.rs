@@ -193,7 +193,6 @@ pub const RELAYS_ONWARD: &[&str] = &[
     // ── Vault ───────────────────────────────────────────────────────────
     // A `password` entry logs in to the third-party site and waits on it. The
     // `did-self-issued` driver mints locally, but the URI cannot say which.
-    trust_tasks::TASK_VAULT_PROXY_LOGIN_0_1,
     trust_tasks::TASK_VAULT_PROXY_LOGIN_0_2,
     // ── Services ────────────────────────────────────────────────────────
     // Enabling or updating `didcomm` runs the mediator handshake and awaits the

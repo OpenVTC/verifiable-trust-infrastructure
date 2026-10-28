@@ -45,6 +45,7 @@
 //! calls to the VTA holding that key.
 
 use serde_json::Value;
+use trust_tasks_rs::specs::vault::credentials::get::v0_2 as vault_get;
 use vta_sdk::prelude::*;
 use vtc_client::VtcClient;
 pub use vtc_client::rooms::body::RecordBasis;
@@ -2878,7 +2879,16 @@ async fn held_room_credential(
             .cred_vault_get(id)
             .await
             .map_err(|e| format!("your VTA's credential vault did not return {id}: {e}"))?;
-        if got["credential"]["credentialSubject"]["id"].as_str() == Some(member) {
+        // A room's membership is a Data Integrity credential, so its body is a
+        // JSON object; a body carried as bytes is some other credential.
+        let subject = match &got {
+            vault_get::Response::Variant0 { credential, .. } => credential
+                .get("credentialSubject")
+                .and_then(|s| s.get("id"))
+                .and_then(Value::as_str),
+            _ => None,
+        };
+        if subject == Some(member) {
             mine.push(id.to_string());
         }
     }

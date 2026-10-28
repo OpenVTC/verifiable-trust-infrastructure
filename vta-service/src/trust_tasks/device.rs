@@ -10,11 +10,11 @@ use super::helpers::TrustTaskOutcome;
 use serde_json::Value;
 use trust_tasks_rs::TrustTask;
 use trust_tasks_rs::specs::device::disable::v0_1 as disable_spec;
-use trust_tasks_rs::specs::device::heartbeat::v0_1 as heartbeat_spec;
-use trust_tasks_rs::specs::device::list::v0_1 as list_spec;
-use trust_tasks_rs::specs::device::register::v0_1 as register_spec;
-use trust_tasks_rs::specs::device::set_wake::v0_1 as set_wake_spec;
-use trust_tasks_rs::specs::device::wipe::v0_1 as wipe_spec;
+use trust_tasks_rs::specs::device::heartbeat::v0_3 as heartbeat_spec;
+use trust_tasks_rs::specs::device::list::v0_3 as list_spec;
+use trust_tasks_rs::specs::device::register::v0_2 as register_spec;
+use trust_tasks_rs::specs::device::set_wake::v0_2 as set_wake_spec;
+use trust_tasks_rs::specs::device::wipe::v0_2 as wipe_spec;
 
 use crate::auth::AuthClaims;
 use crate::operations;
@@ -25,7 +25,7 @@ use super::helpers::{
 };
 use trust_tasks_rs::RejectReason;
 
-/// `device/register/0.1` — the caller claims its DeviceBinding. The DID must
+/// `device/register/0.2` — the caller claims its DeviceBinding. The DID must
 /// already be in the ACL; re-registration is refused.
 pub(super) async fn handle_register(
     state: &AppState,
@@ -109,7 +109,7 @@ fn now_unix() -> u64 {
     u64::try_from(chrono::Utc::now().timestamp()).unwrap_or(0)
 }
 
-/// `device/heartbeat/0.1` — periodic check-in; refreshes `lastSeenAt` (and
+/// `device/heartbeat/0.3` — periodic check-in; refreshes `lastSeenAt` (and
 /// `platform` or `displayName` if changed) and returns server time + queued
 /// operations.
 ///
@@ -193,7 +193,8 @@ pub(super) async fn handle_heartbeat(
     success_response(&doc, body)
 }
 
-/// `device/list/0.1` — list the maintainer's registered devices (filtered).
+/// `device/list/0.3` — list the maintainer's registered devices (filtered,
+/// paged by `limit` and `nextCursor`).
 pub(super) async fn handle_list(
     state: &AppState,
     auth: &AuthClaims,
@@ -228,7 +229,7 @@ pub(super) async fn handle_disable(
     }
 }
 
-/// `device/wipe/0.1` — issue a remote wipe for a device by `deviceId`. Marks the
+/// `device/wipe/0.2` — issue a remote wipe for a device by `deviceId`. Marks the
 /// binding wiped + disabled and records the `reason`/`scope`.
 pub(super) async fn handle_wipe(
     state: &AppState,
@@ -257,7 +258,7 @@ pub(super) async fn handle_wipe(
     }
 }
 
-/// `device/set-wake/0.1` — the device conveys its opaque push WakeHandle; the
+/// `device/set-wake/0.2` — the device conveys its opaque push WakeHandle; the
 /// VTA records it and computes/returns the trigger allowlist.
 pub(super) async fn handle_set_wake(
     state: &AppState,

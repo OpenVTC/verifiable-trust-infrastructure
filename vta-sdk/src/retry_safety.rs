@@ -128,16 +128,11 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     // Registration is keyed by a caller-supplied device identity, so a repeat
     // lands on the same record — but it also mints device credentials, and
     // whether those are re-minted is not visible from the contract. Conservative.
-    (trust_tasks::TASK_DEVICE_REGISTER_0_1, Keyed),
     (trust_tasks::TASK_DEVICE_REGISTER_0_2, Keyed),
-    (trust_tasks::TASK_DEVICE_HEARTBEAT_0_1, RetrySafe),
-    (trust_tasks::TASK_DEVICE_HEARTBEAT_0_2, RetrySafe),
-    (trust_tasks::TASK_DEVICE_LIST_0_1, ReadOnly),
-    (trust_tasks::TASK_DEVICE_LIST_0_2, ReadOnly),
+    (trust_tasks::TASK_DEVICE_HEARTBEAT_0_3, RetrySafe),
+    (trust_tasks::TASK_DEVICE_LIST_0_3, ReadOnly),
     (trust_tasks::TASK_DEVICE_DISABLE_0_1, RetrySafe),
-    (trust_tasks::TASK_DEVICE_WIPE_0_1, RetrySafe),
     (trust_tasks::TASK_DEVICE_WIPE_0_2, RetrySafe),
-    (trust_tasks::TASK_DEVICE_SET_WAKE_0_1, RetrySafe),
     (trust_tasks::TASK_DEVICE_SET_WAKE_0_2, RetrySafe),
     // ── Messaging ───────────────────────────────────────────────────────
     (trust_tasks::TASK_MESSAGING_PING_0_1, ReadOnly),
@@ -265,16 +260,10 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     // A snapshot read: no durable effect, nothing to dedup.
     (trust_tasks::TASK_METRICS_SHOW_0_1, ReadOnly),
     // ── Password vault ──────────────────────────────────────────────────
-    (trust_tasks::TASK_VAULT_LIST_0_1, ReadOnly),
-    (trust_tasks::TASK_VAULT_LIST_0_2, ReadOnly),
-    (trust_tasks::TASK_VAULT_LIST_0_3, ReadOnly),
-    (trust_tasks::TASK_VAULT_GET_0_1, ReadOnly),
-    (trust_tasks::TASK_VAULT_GET_0_2, ReadOnly),
+    (trust_tasks::TASK_VAULT_LIST_0_4, ReadOnly),
     (trust_tasks::TASK_VAULT_GET_0_3, ReadOnly),
     // Upsert is addressed by entry id — a repeat writes the same value.
-    (trust_tasks::TASK_VAULT_UPSERT_0_1, RetrySafe),
-    (trust_tasks::TASK_VAULT_UPSERT_0_2, RetrySafe),
-    (trust_tasks::TASK_VAULT_UPSERT_0_3, RetrySafe),
+    (trust_tasks::TASK_VAULT_UPSERT_0_4, RetrySafe),
     (trust_tasks::TASK_VAULT_DELETE_0_1, RetrySafe),
     (trust_tasks::TASK_VAULT_ARCHIVE_0_1, RetrySafe),
     (trust_tasks::TASK_VAULT_UNARCHIVE_0_1, RetrySafe),
@@ -283,11 +272,8 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     // Release and proxy-login read stored secrets and seal them to the caller.
     // No durable mutation, so a repeat is a repeat read — but the *response* is
     // secret-bearing, which matters to anything that would cache it.
-    (trust_tasks::TASK_VAULT_RELEASE_0_1, ReadOnly),
     (trust_tasks::TASK_VAULT_RELEASE_0_2, ReadOnly),
-    (trust_tasks::TASK_VAULT_PROXY_LOGIN_0_1, ReadOnly),
     (trust_tasks::TASK_VAULT_PROXY_LOGIN_0_2, ReadOnly),
-    (trust_tasks::TASK_VAULT_SIGN_TRUST_TASK_0_1, ReadOnly),
     (trust_tasks::TASK_VAULT_SIGN_TRUST_TASK_0_2, ReadOnly),
     // ── did-management (remote DID-hosting control plane) ───────────────
     // Register/publish create a hosted record and a log entry respectively.
@@ -623,6 +609,8 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     // which the verifier accepts at most once, and a second record of a
     // disclosure that happened. Nothing a duplicate confers is new.
     (trust_tasks::TASK_VAULT_CREDENTIALS_PRESENT_0_1, RetrySafe),
+    // Reads one stored credential and returns its body. Nothing is written.
+    (trust_tasks::TASK_VAULT_CREDENTIALS_GET_0_2, ReadOnly),
     // Reads group state and returns plaintext. Nothing is written, and a second
     // execution is indistinguishable from one.
     (trust_tasks::TASK_ROOMS_KEYS_OPEN_0_2, ReadOnly),

@@ -360,9 +360,9 @@ macro_rules! dispatch_table {
         /// serve when it knows the family, and `unsupported_type` when it does
         /// not.
         ///
-        /// `#[allow(deprecated)]`: arms match deprecated `*_0_1` URI constants
-        /// on purpose — the VTA keeps serving 0.1 during the migration; 0.2
-        /// counterparts arrive pre-down-converted (see `wire_v0_2`).
+        /// `#[allow(deprecated)]`: some arms still match a deprecated URI
+        /// constant on purpose (a version kept for a peer outside this
+        /// workspace).
         #[allow(deprecated)]
         async fn dispatch_typed(
             state: &AppState,
@@ -1918,17 +1918,10 @@ async fn dispatch_trust_task_validated(
 
     // 4. Dispatch by type URI.
     //
-    // 0.2 dual-accept: bearer-authed specs whose only 0.1→0.2 delta is
-    // enum-value casing are down-converted to their canonical 0.1 form,
-    // dispatched through the existing 0.1 handler, and the response
-    // up-converted back to 0.2 (see `wire_v0_2`). Signed-payload specs are NOT
-    // routed here — they have typed 0.2 arms in `dispatch_typed`.
-    // The negotiated wire version is scoped around `dispatch_typed` via a
-    // `task_local` so the two JWE-sealing handlers (`vault/release`,
-    // `vault/proxy-login`) can serialise the *sealed* cleartext in the right
-    // casing — the edge transform can't reach inside ciphertext. Every other
-    // handler ignores it.
-    use wire_v0_2::{WIRE_VERSION, WireVersion};
+    // The bearer-authed `vault/*` specs whose handlers model the wire with the
+    // kebab-cased storage types have their enum values rewritten at the
+    // declared paths on the way in and out (see `wire_v0_2`). The Type URI is
+    // not rewritten: the dispatch table registers the served version.
     let type_uri = doc.type_uri.for_routing().to_string();
 
     // Name every inbound trust task at the one point all three transports (TSP,
@@ -2129,17 +2122,10 @@ async fn dispatch_trust_task_validated(
                 if let Some(spec) = wire_v0_2::lookup_0_2(&type_uri) {
                     let mut doc = doc;
                     wire_v0_2::downconvert_request(&mut doc.payload, spec);
-                    if let Ok(uri_0_1) = spec.uri_0_1.parse() {
-                        doc.type_uri = uri_0_1;
-                    }
-                    let outcome = WIRE_VERSION
-                        .scope(WireVersion::V0_2, dispatch_typed(state, auth, doc))
-                        .await;
-                    wire_v0_2::upconvert_response(outcome, spec, &type_uri)
+                    let outcome = dispatch_typed(state, auth, doc).await;
+                    wire_v0_2::upconvert_response(outcome, spec)
                 } else {
-                    WIRE_VERSION
-                        .scope(WireVersion::V0_1, dispatch_typed(state, auth, doc))
-                        .await
+                    dispatch_typed(state, auth, doc).await
                 }
             }
         };
@@ -2445,17 +2431,17 @@ dispatch_table! {
     vta_sdk::trust_tasks::TASK_ACL_SWAP_KEY_0_1 => acl::handle_swap_key
         [ Destructive None false ],
     // ─── Device slice ─────────────────────────────────────────────
-    vta_sdk::trust_tasks::TASK_DEVICE_REGISTER_0_1 => device::handle_register
+    vta_sdk::trust_tasks::TASK_DEVICE_REGISTER_0_2 => device::handle_register
         [ Mutating None false ],
-    vta_sdk::trust_tasks::TASK_DEVICE_HEARTBEAT_0_1 => device::handle_heartbeat
+    vta_sdk::trust_tasks::TASK_DEVICE_HEARTBEAT_0_3 => device::handle_heartbeat
         [ None None false ],
-    vta_sdk::trust_tasks::TASK_DEVICE_LIST_0_1 => device::handle_list
+    vta_sdk::trust_tasks::TASK_DEVICE_LIST_0_3 => device::handle_list
         [ None Metadata false ],
     vta_sdk::trust_tasks::TASK_DEVICE_DISABLE_0_1 => device::handle_disable
         [ Mutating None false ],
-    vta_sdk::trust_tasks::TASK_DEVICE_WIPE_0_1 => device::handle_wipe
+    vta_sdk::trust_tasks::TASK_DEVICE_WIPE_0_2 => device::handle_wipe
         [ Destructive None false ],
-    vta_sdk::trust_tasks::TASK_DEVICE_SET_WAKE_0_1 => device::handle_set_wake
+    vta_sdk::trust_tasks::TASK_DEVICE_SET_WAKE_0_2 => device::handle_set_wake
         [ Mutating None false ],
     // ─── Messaging slice ──────────────────────────────────────────
     vta_sdk::trust_tasks::TASK_MESSAGING_PING_0_1 => messaging::handle_ping
@@ -2654,20 +2640,20 @@ dispatch_table! {
     vta_sdk::protocols::credential_exchange::PENDING_DENY
         => credential_exchange::handle_pending_deny
         [ Mutating None false ],
-    // ─── Vault slice (public 0.1 spec) ──────────────────────────
-    vta_sdk::trust_tasks::TASK_VAULT_LIST_0_1 => vault::handle_list
+    // ─── Vault slice ───────────────────────────────────────────
+    vta_sdk::trust_tasks::TASK_VAULT_LIST_0_4 => vault::handle_list
         [ None Metadata false ],
-    vta_sdk::trust_tasks::TASK_VAULT_GET_0_1 => vault::handle_get
+    vta_sdk::trust_tasks::TASK_VAULT_GET_0_3 => vault::handle_get
         [ None Metadata false ],
-    vta_sdk::trust_tasks::TASK_VAULT_UPSERT_0_1 => vault::handle_upsert
+    vta_sdk::trust_tasks::TASK_VAULT_UPSERT_0_4 => vault::handle_upsert
         [ Mutating None false ],
     vta_sdk::trust_tasks::TASK_VAULT_DELETE_0_1 => vault::handle_delete
         [ Destructive None false ],
-    vta_sdk::trust_tasks::TASK_VAULT_RELEASE_0_1 => vault::handle_release
+    vta_sdk::trust_tasks::TASK_VAULT_RELEASE_0_2 => vault::handle_release
         [ Mutating Secret false ],
-    vta_sdk::trust_tasks::TASK_VAULT_PROXY_LOGIN_0_1 => vault::handle_proxy_login
+    vta_sdk::trust_tasks::TASK_VAULT_PROXY_LOGIN_0_2 => vault::handle_proxy_login
         [ Mutating Secret true ],
-    vta_sdk::trust_tasks::TASK_VAULT_SIGN_TRUST_TASK_0_1 => vault::handle_sign_trust_task
+    vta_sdk::trust_tasks::TASK_VAULT_SIGN_TRUST_TASK_0_2 => vault::handle_sign_trust_task
         [ Mutating None true ],
     // Vault archival lifecycle (openvtc extension). `delete` above is now soft.
     vta_sdk::trust_tasks::TASK_VAULT_ARCHIVE_0_1 => vault::handle_archive
@@ -2683,8 +2669,8 @@ dispatch_table! {
         [ Mutating None false ],
     vta_sdk::trust_tasks::TASK_VAULT_CREDENTIALS_QUERY_0_1 => cred_vault::handle_query
         [ None Metadata false ],
-    vta_sdk::trust_tasks::TASK_VAULT_CREDENTIALS_GET_0_1 => cred_vault::handle_get
-        [ None Metadata false ],
+    vta_sdk::trust_tasks::TASK_VAULT_CREDENTIALS_GET_0_2 => cred_vault::handle_get
+        [ None Secret false ],
     // Signs as the credential's subject and records the disclosure (the
     // specification's `mutating` / `secret` / acts-as-subject).
     vta_sdk::trust_tasks::TASK_VAULT_CREDENTIALS_PRESENT_0_1 => cred_vault::handle_present
@@ -3689,13 +3675,13 @@ mod tests {
     fn class_for_carries_authoritative_classification() {
         use crate::policy::{Discloses, SideEffectLevel};
 
-        let release = class_for(vta_sdk::trust_tasks::TASK_VAULT_RELEASE_0_1)
+        let release = class_for(vta_sdk::trust_tasks::TASK_VAULT_RELEASE_0_2)
             .expect("vault/release is classified");
         assert_eq!(release.side_effects, SideEffectLevel::Mutating);
         assert_eq!(release.exposure.discloses, Discloses::Secret);
         assert!(!release.exposure.acts_as_subject);
 
-        let proxy = class_for(vta_sdk::trust_tasks::TASK_VAULT_PROXY_LOGIN_0_1)
+        let proxy = class_for(vta_sdk::trust_tasks::TASK_VAULT_PROXY_LOGIN_0_2)
             .expect("proxy-login is classified");
         assert!(
             proxy.exposure.acts_as_subject,
@@ -3819,18 +3805,13 @@ mod tests {
             let in_dispatched = dispatched.contains(declared);
             let in_rest_routed = REST_ROUTED.contains(declared);
             let in_feature_gated = KNOWN_FEATURE_GATED_URIS.contains(declared);
-            // 0.2 dual-accept URIs are served via the `wire_v0_2` edge
-            // transform (down-convert → 0.1 handler → up-convert), not a
-            // dedicated `dispatch_typed` arm, so they're tracked here.
-            let in_wire_v0_2 = wire_v0_2::WIRE_V0_2_URIS.contains(declared);
 
             assert!(
-                in_dispatched || in_rest_routed || in_feature_gated || in_wire_v0_2,
+                in_dispatched || in_rest_routed || in_feature_gated,
                 "vta-sdk declares URI `{declared}` but it is not tracked in this dispatcher — \
                  either (a) add a `dispatch_table!` entry (`URI => slice::handler`), \
                  (b) add it to `REST_ROUTED` if it lives on a dedicated REST route, \
-                 (c) add it to `KNOWN_FEATURE_GATED_URIS` with a comment explaining the gating, or \
-                 (d) register it in `wire_v0_2::WIRE_V0_2_URIS` if it's an edge-transformed 0.2 URI"
+                 or (c) add it to `KNOWN_FEATURE_GATED_URIS` with a comment explaining the gating"
             );
         }
     }
@@ -3877,7 +3858,7 @@ mod tests {
         for uri in [
             "https://trusttasks.org/spec/acl/grant/0.1",
             "https://trusttasks.org/spec/auth/authenticate/0.1",
-            "https://trusttasks.org/spec/vault/list/0.3",
+            "https://trusttasks.org/spec/vault/list/0.4",
         ] {
             assert!(
                 trust_tasks_rs::schema_index::schema_for(uri).is_some(),
@@ -3901,15 +3882,7 @@ mod tests {
                 // Feature-gated arms drop out of `dispatched_uris()` when their
                 // cfg is off; the allowlist is where the parity harness tracks
                 // them, so it is the right second source here too.
-                || KNOWN_FEATURE_GATED_URIS.contains(&task.uri)
-                // An edge-transformed URI never reaches the dispatch table —
-                // it is rewritten to the canonical form first — but it is
-                // served, and its counter does fire: `dispatch_trust_task_core`
-                // reads the superseded row from the URI *as it arrived*,
-                // before the down-convert. So the premise of this test (a row
-                // whose counter can never move) does not apply to it. The
-                // successor half of this pair already accepts them.
-                || wire_v0_2::WIRE_V0_2_URIS.contains(&task.uri);
+                || KNOWN_FEATURE_GATED_URIS.contains(&task.uri);
             assert!(
                 served,
                 "`{}` is marked superseded but nothing dispatches it, so its counter \
@@ -3935,8 +3908,7 @@ mod tests {
         for task in crate::deprecation::superseded_tasks_table() {
             let served = dispatched.contains(&task.successor)
                 || KNOWN_FEATURE_GATED_URIS.contains(&task.successor)
-                || REST_ROUTED.contains(&task.successor)
-                || wire_v0_2::WIRE_V0_2_URIS.contains(&task.successor);
+                || REST_ROUTED.contains(&task.successor);
             assert!(
                 served,
                 "`{}` is advertised as the successor to `{}`, but this VTA does not \
@@ -3947,52 +3919,9 @@ mod tests {
         }
     }
 
-    /// The two tables must agree.
-    ///
-    /// `wire_v0_2::WIRE_SPECS_V0_2` is where a spec is declared dual-accepted;
-    /// `deprecation::SUPERSEDED_TASKS` is where the older form is declared on
-    /// its way out. They are separate because only the second carries a reason
-    /// and only the first carries the enum paths — but a newer form added
-    /// without the matching deprecation row is a task nothing is measuring,
-    /// which is the state #1045 exists to end. Adding one entry now requires
-    /// the other.
-    ///
-    /// Checked per hop, not just for 0.1: a spec accepting 0.1, 0.2 and 0.3
-    /// needs a row for each superseded version, or the middle one is retired
-    /// on no evidence at all.
-    #[test]
-    fn every_dual_accepted_spec_marks_its_older_forms_superseded() {
-        for spec in wire_v0_2::WIRE_SPECS_V0_2 {
-            // Oldest first: the canonical form, then each wire form except the
-            // newest, which is the one nothing supersedes yet.
-            let mut chain = vec![spec.uri_0_1];
-            chain.extend(spec.uris_wire.iter().rev());
-            let newest = chain.pop().expect("a spec has at least one wire form");
-
-            for superseded in chain {
-                let row = crate::deprecation::superseded_task(superseded).unwrap_or_else(|| {
-                    panic!(
-                        "`{superseded}` is superseded (this spec also accepts \
-                             `{newest}`) but it is not in \
-                             `deprecation::SUPERSEDED_TASKS`, so nothing counts the \
-                             callers still on it and it can never be retired on \
-                             evidence"
-                    )
-                });
-                assert!(
-                    spec.uris_wire.contains(&row.successor),
-                    "`{superseded}`'s deprecation row points at `{}`, which this \
-                     spec does not accept on the wire",
-                    row.successor
-                );
-            }
-        }
-    }
-
     /// Reverse parity harness (#854) — the opposite direction of
     /// [`dispatcher_handles_every_vta_sdk_uri`]. Every URI this service
-    /// *serves* — dispatched, REST-routed, feature-gated, or accepted via the
-    /// `wire_v0_2` edge transform — must resolve to a published spec in the
+    /// *serves* — dispatched, REST-routed or feature-gated — must resolve to a published spec in the
     /// Trust-Tasks registry, as vendored by the generated
     /// `trust_tasks_rs::schema_index` this build validates payloads against.
     ///
@@ -4012,7 +3941,6 @@ mod tests {
         let mut served: std::collections::BTreeSet<&str> = dispatched_uris().into_iter().collect();
         served.extend(REST_ROUTED);
         served.extend(KNOWN_FEATURE_GATED_URIS);
-        served.extend(wire_v0_2::WIRE_V0_2_URIS);
 
         let unspecced: Vec<&&str> = served
             .iter()
@@ -4388,7 +4316,7 @@ mod superseded_task_dispatch_tests {
     #[tokio::test]
     #[allow(deprecated)] // sends a deprecated URI on purpose — that is the subject
     async fn a_superseded_task_names_its_successor_in_the_response() {
-        let uri = vta_sdk::trust_tasks::TASK_DEVICE_LIST_0_1;
+        let uri = vta_sdk::trust_tasks::TASK_DID_TEMPLATES_LIST_2_0;
         let doc = dispatch(uri, json!({})).await;
 
         // Non-vacuity: a rejection document would also carry the notice (that
@@ -4404,7 +4332,7 @@ mod superseded_task_dispatch_tests {
         let notice = &doc[DEPRECATION_MEMBER];
         assert_eq!(
             notice["supersededBy"],
-            vta_sdk::trust_tasks::TASK_DEVICE_LIST_0_2,
+            vta_sdk::trust_tasks::TASK_DID_TEMPLATES_LIST_3_0,
             "the response must name what to send instead, so a client can act \
              rather than guess; got document: {doc}"
         );
@@ -4419,9 +4347,9 @@ mod superseded_task_dispatch_tests {
     async fn a_rejected_superseded_task_still_names_its_successor() {
         // A client whose request was refused is the client most in need of the
         // successor: it is about to retry, and it can retry onto the right URI.
-        // `device/register/0.1` requires members an empty payload does not
-        // carry, so this is a schema rejection, not a handler failure.
-        let uri = vta_sdk::trust_tasks::TASK_DEVICE_REGISTER_0_1;
+        // `vta/did-templates/create/2.0` requires members an empty payload
+        // does not carry, so this is a schema rejection, not a handler failure.
+        let uri = vta_sdk::trust_tasks::TASK_DID_TEMPLATES_CREATE_2_0;
         let doc = dispatch(uri, json!({})).await;
 
         assert_eq!(
@@ -4430,7 +4358,7 @@ mod superseded_task_dispatch_tests {
         );
         assert_eq!(
             doc[DEPRECATION_MEMBER]["supersededBy"],
-            vta_sdk::trust_tasks::TASK_DEVICE_REGISTER_0_2,
+            vta_sdk::trust_tasks::TASK_DID_TEMPLATES_CREATE_3_0,
             "a rejection must carry the successor too: {doc}"
         );
     }
@@ -4454,7 +4382,7 @@ mod superseded_task_dispatch_tests {
         // types are `deny_unknown_fields`. Assert it on a real dispatch, not
         // just on the annotation helper.
         #[allow(deprecated)]
-        let uri = vta_sdk::trust_tasks::TASK_DEVICE_LIST_0_1;
+        let uri = vta_sdk::trust_tasks::TASK_DID_TEMPLATES_LIST_2_0;
         let doc = dispatch(uri, json!({})).await;
 
         let payload = doc.get("payload").expect("a response carries a payload");
@@ -5298,7 +5226,7 @@ mod response_coverage {
             }),
         )
         .await;
-        ok(&state, t::TASK_DEVICE_HEARTBEAT_0_2, json!({})).await;
+        ok(&state, t::TASK_DEVICE_HEARTBEAT_0_3, json!({})).await;
         ok(&state, t::TASK_DEVICE_SET_WAKE_0_2, json!({})).await;
     }
 
@@ -5514,22 +5442,13 @@ mod response_coverage {
         assert_eq!(v["payload"]["code"], "proofInvalid", "{v}");
     }
 
-    /// The same family at its **canonical** 0.1 URIs, plus the two ends of the
-    /// lifecycle that have no 0.2 form.
-    ///
-    /// Not a duplicate of the 0.2 walk above. A 0.2 request is down-converted
-    /// to the 0.1 handler and its response up-converted back, so driving 0.2
-    /// never produces a `…/0.1#response` and never exercises the branch that
-    /// answers a caller who asked in the canonical form. Those are two
-    /// different paths through the spine, and only one of them was tested.
+    /// The whole device lifecycle, through to the wipe and the disable the
+    /// walk above stops short of.
     ///
     /// Its own `AppState` because `device/register` refuses a second binding
     /// for the same DID, and both walks register as the super-admin.
-    // Names the deprecated 0.1 URIs on purpose: they are what this test exists
-    // to cover, and they are still dispatched.
-    #[allow(deprecated)]
     #[tokio::test]
-    async fn device_lifecycle_canonical() {
+    async fn device_lifecycle_to_wipe_and_disable() {
         let (state, _dir) = build_signing_test_app_state().await;
         let claims = crate::test_support::super_admin_claims();
         crate::test_support::seed_acl_entry(
@@ -5542,11 +5461,8 @@ mod response_coverage {
 
         let registered = ok(
             &state,
-            t::TASK_DEVICE_REGISTER_0_1,
+            t::TASK_DEVICE_REGISTER_0_2,
             json!({
-                // `formFactor`, not `form-factor`: the 0.1 → 0.2 difference is
-                // in the enum *values*, never the member names, and the edge
-                // transform only ever rewrites values at declared enum paths.
                 "consumerKind": { "kind": "companion", "formFactor": "mobile" },
                 "displayName": "Coverage Phone (canonical)",
             }),
@@ -5560,17 +5476,17 @@ mod response_coverage {
             .expect("register returns the binding's deviceId")
             .to_string();
 
-        ok(&state, t::TASK_DEVICE_HEARTBEAT_0_1, json!({})).await;
-        ok(&state, t::TASK_DEVICE_SET_WAKE_0_1, json!({})).await;
+        ok(&state, t::TASK_DEVICE_HEARTBEAT_0_3, json!({})).await;
+        ok(&state, t::TASK_DEVICE_SET_WAKE_0_2, json!({})).await;
 
         // Wipe before disable: a wipe instruction is issued *to* a device, and
         // a disabled one has nothing to collect it. The operator's order.
         ok(
             &state,
-            t::TASK_DEVICE_WIPE_0_1,
+            t::TASK_DEVICE_WIPE_0_2,
             json!({
                 "deviceId": device_id,
-                "scope": "cache-and-keys",
+                "scope": "cacheAndKeys",
                 "reason": "coverage",
             }),
         )
@@ -5856,11 +5772,11 @@ mod response_coverage {
         // forward. A create with none is refused, and correctly.
         ok(
             &state,
-            t::TASK_VAULT_UPSERT_0_1,
+            t::TASK_VAULT_UPSERT_0_4,
             json!({
                 "id": entry_id,
                 "contextId": "vault-ctx",
-                "targets": [{ "kind": "web-origin", "origin": "https://example.com" }],
+                "targets": [{ "kind": "webOrigin", "origin": "https://example.com" }],
                 "label": "Coverage entry (renamed)",
                 "secretKind": "password",
             }),

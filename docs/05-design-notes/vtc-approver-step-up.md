@@ -127,7 +127,7 @@ user's approver device. Rejected as the end state because the VTC cannot see
 that the VTA enforced anything — it sees one signature, by a key the caller
 already holds, which is the case APV-015 names as not satisfying the step-up.
 It would also need the VTA's rules to match on the type of the document being
-signed rather than on `vault/sign-trust-task/0.1`, or every console signature
+signed rather than on `vault/sign-trust-task/0.2`, or every console signature
 would need approval.
 
 **(c) Route the step-up through `task-consent/*` with the requester's devices

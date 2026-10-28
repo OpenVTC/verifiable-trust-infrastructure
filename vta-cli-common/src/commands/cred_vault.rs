@@ -52,7 +52,7 @@ pub async fn cmd_cred_get(
     client: &VtaClient,
     id: String,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let result = client.cred_vault_get(&id).await?;
+    let result = serde_json::to_value(client.cred_vault_get(&id).await?)?;
     print_result("Credential:", &result)
 }
 

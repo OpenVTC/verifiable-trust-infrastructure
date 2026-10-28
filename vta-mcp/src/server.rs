@@ -68,14 +68,14 @@ mod wire {
     pub const KEYS_LIST: &str = t::TASK_KEYS_LIST_0_1;
     /// `keys/sign/0.1` — the signing oracle.
     pub const KEYS_SIGN: &str = t::TASK_KEYS_SIGN_0_1;
-    /// `vault/list/0.1`.
-    pub const VAULT_LIST: &str = t::TASK_VAULT_LIST_0_1;
-    /// `vault/get/0.1`.
-    pub const VAULT_GET: &str = t::TASK_VAULT_GET_0_1;
-    /// `vault/release/0.1`.
-    pub const VAULT_RELEASE: &str = t::TASK_VAULT_RELEASE_0_1;
-    /// `device/heartbeat/0.1`.
-    pub const DEVICE_HEARTBEAT: &str = t::TASK_DEVICE_HEARTBEAT_0_1;
+    /// `vault/list/0.4`.
+    pub const VAULT_LIST: &str = t::TASK_VAULT_LIST_0_4;
+    /// `vault/get/0.3`.
+    pub const VAULT_GET: &str = t::TASK_VAULT_GET_0_3;
+    /// `vault/release/0.2`.
+    pub const VAULT_RELEASE: &str = t::TASK_VAULT_RELEASE_0_2;
+    /// `device/heartbeat/0.3`.
+    pub const DEVICE_HEARTBEAT: &str = t::TASK_DEVICE_HEARTBEAT_0_3;
 }
 
 /// Resource URI for the bridge's own state.

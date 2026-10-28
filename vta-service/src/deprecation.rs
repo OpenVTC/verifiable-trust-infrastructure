@@ -275,84 +275,6 @@ const SUPERSEDED_TASKS: &[SupersededTask] = &[
                  signed, so the two versions have separate typed handlers rather than \
                  an edge transform",
     },
-    // ── device ──────────────────────────────────────────────────────────
-    SupersededTask {
-        uri: trust_tasks::TASK_DEVICE_REGISTER_0_1,
-        successor: trust_tasks::TASK_DEVICE_REGISTER_0_2,
-        reason: "0.2 spells the enum values in camelCase",
-    },
-    SupersededTask {
-        uri: trust_tasks::TASK_DEVICE_HEARTBEAT_0_1,
-        successor: trust_tasks::TASK_DEVICE_HEARTBEAT_0_2,
-        reason: "0.2 spells the enum values in camelCase",
-    },
-    SupersededTask {
-        uri: trust_tasks::TASK_DEVICE_LIST_0_1,
-        successor: trust_tasks::TASK_DEVICE_LIST_0_2,
-        reason: "0.2 spells the enum values in camelCase",
-    },
-    SupersededTask {
-        uri: trust_tasks::TASK_DEVICE_SET_WAKE_0_1,
-        successor: trust_tasks::TASK_DEVICE_SET_WAKE_0_2,
-        reason: "no enum values changed; the bump is canonical-version alignment, so \
-                 the whole device slice sits on one version",
-    },
-    SupersededTask {
-        uri: trust_tasks::TASK_DEVICE_WIPE_0_1,
-        successor: trust_tasks::TASK_DEVICE_WIPE_0_2,
-        reason: "0.2 spells the `scope` enum value `cacheAndKeys` in camelCase",
-    },
-    // ── vault ───────────────────────────────────────────────────────────
-    SupersededTask {
-        uri: trust_tasks::TASK_VAULT_LIST_0_1,
-        successor: trust_tasks::TASK_VAULT_LIST_0_2,
-        reason: "0.2 spells secretKind and the related enums in camelCase",
-    },
-    SupersededTask {
-        uri: trust_tasks::TASK_VAULT_LIST_0_2,
-        successor: trust_tasks::TASK_VAULT_LIST_0_3,
-        reason: "0.3 replaces AttachmentRef's bare-hex `sha256` with a multibase \
-                 `digestMultibase`, which names its own hash algorithm",
-    },
-    SupersededTask {
-        uri: trust_tasks::TASK_VAULT_GET_0_1,
-        successor: trust_tasks::TASK_VAULT_GET_0_2,
-        reason: "0.2 spells the response enums in camelCase",
-    },
-    SupersededTask {
-        uri: trust_tasks::TASK_VAULT_GET_0_2,
-        successor: trust_tasks::TASK_VAULT_GET_0_3,
-        reason: "0.3 replaces AttachmentRef's bare-hex `sha256` with a multibase \
-                 `digestMultibase`, which names its own hash algorithm",
-    },
-    SupersededTask {
-        uri: trust_tasks::TASK_VAULT_UPSERT_0_1,
-        successor: trust_tasks::TASK_VAULT_UPSERT_0_2,
-        reason: "0.2 spells the secretKind / sealed-envelope / target enums in camelCase",
-    },
-    SupersededTask {
-        uri: trust_tasks::TASK_VAULT_UPSERT_0_2,
-        successor: trust_tasks::TASK_VAULT_UPSERT_0_3,
-        reason: "0.3 replaces AttachmentRef's bare-hex `sha256` with a multibase \
-                 `digestMultibase`, which names its own hash algorithm",
-    },
-    SupersededTask {
-        uri: trust_tasks::TASK_VAULT_RELEASE_0_1,
-        successor: trust_tasks::TASK_VAULT_RELEASE_0_2,
-        reason: "0.2 spells the secretKind / sealed-envelope / step-up-proof enums in \
-                 camelCase, inside the sealed cleartext as well as around it",
-    },
-    SupersededTask {
-        uri: trust_tasks::TASK_VAULT_PROXY_LOGIN_0_1,
-        successor: trust_tasks::TASK_VAULT_PROXY_LOGIN_0_2,
-        reason: "0.2 spells the site-target / step-up-proof enums in camelCase, inside \
-                 the sealed cleartext as well as around it",
-    },
-    SupersededTask {
-        uri: trust_tasks::TASK_VAULT_SIGN_TRUST_TASK_0_1,
-        successor: trust_tasks::TASK_VAULT_SIGN_TRUST_TASK_0_2,
-        reason: "0.2 spells the step-up-proof enums in camelCase",
-    },
 ];
 
 /// The table, for the dispatch spine and for tests that assert on its contents.
@@ -434,7 +356,7 @@ mod superseded_task_tests {
         let task = &SUPERSEDED_TASKS[0];
         let mut body = serde_json::to_vec(&serde_json::json!({
             "id": "urn:uuid:1",
-            "type": "https://trusttasks.org/spec/device/list/0.1#response",
+            "type": "https://trusttasks.org/spec/device/list/0.3#response",
             "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
             "payload": { "devices": [] },
         }))
@@ -458,7 +380,7 @@ mod superseded_task_tests {
         let task = &SUPERSEDED_TASKS[0];
         let original = serde_json::json!({
             "id": "urn:uuid:1",
-            "type": "https://trusttasks.org/spec/device/list/0.1#response",
+            "type": "https://trusttasks.org/spec/device/list/0.3#response",
             "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
             "payload": {},
             "proof": { "type": "DataIntegrityProof" },

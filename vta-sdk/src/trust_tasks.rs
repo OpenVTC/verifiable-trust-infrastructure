@@ -176,66 +176,28 @@ pub const TASK_AUTH_STEP_UP_APPROVE_RESPONSE_0_3: &str =
 // lifecycle on the VTA: register a device, heartbeat, list, disable, wipe, and
 // set the push wake channel (the opaque gateway handle conveyed by the device).
 
-/// `device/register/0.1` — a Companion/Service claims its DeviceBinding after
+/// `device/register/0.2` — a Companion/Service claims its DeviceBinding after
 /// the provision-integration + acl/swap-key bootstrap.
-#[deprecated(note = "0.1 is superseded by the 0.2 wire form (camelCase enum \
-    values). The VTA still accepts 0.1 during the migration window but it will \
-    be removed in a future release — prefer TASK_DEVICE_REGISTER_0_2.")]
-pub const TASK_DEVICE_REGISTER_0_1: &str = "https://trusttasks.org/spec/device/register/0.1";
-
-/// `device/register/0.2` — successor to [`TASK_DEVICE_REGISTER_0_1`]; identical
-/// Rust shape, camelCase enum values on the wire.
 pub const TASK_DEVICE_REGISTER_0_2: &str = "https://trusttasks.org/spec/device/register/0.2";
 
-/// `device/heartbeat/0.1` — periodic check-in; refreshes `lastSeenAt` and
-/// delivers queued operations.
-#[deprecated(note = "0.1 is superseded by the 0.2 wire form (camelCase enum \
-    values). The VTA still accepts 0.1 during the migration window but it will \
-    be removed in a future release — prefer TASK_DEVICE_HEARTBEAT_0_2.")]
-pub const TASK_DEVICE_HEARTBEAT_0_1: &str = "https://trusttasks.org/spec/device/heartbeat/0.1";
+/// `device/heartbeat/0.3` — periodic check-in; refreshes `lastSeenAt` and
+/// delivers queued operations. The response names the maintainer's clock
+/// `respondedAt`.
+pub const TASK_DEVICE_HEARTBEAT_0_3: &str = "https://trusttasks.org/spec/device/heartbeat/0.3";
 
-/// `device/heartbeat/0.2` — successor to [`TASK_DEVICE_HEARTBEAT_0_1`].
-pub const TASK_DEVICE_HEARTBEAT_0_2: &str = "https://trusttasks.org/spec/device/heartbeat/0.2";
-
-/// `device/list/0.1` — list the maintainer's registered devices.
-#[deprecated(note = "0.1 is superseded by the 0.2 wire form (camelCase enum \
-    values). The VTA still accepts 0.1 during the migration window but it will \
-    be removed in a future release — prefer TASK_DEVICE_LIST_0_2.")]
-pub const TASK_DEVICE_LIST_0_1: &str = "https://trusttasks.org/spec/device/list/0.1";
-
-/// `device/list/0.2` — successor to [`TASK_DEVICE_LIST_0_1`]. The `capabilityFilter`
-/// (`Capability`) enum carries camelCase values on the wire.
-pub const TASK_DEVICE_LIST_0_2: &str = "https://trusttasks.org/spec/device/list/0.2";
+/// `device/list/0.3` — list the maintainer's registered devices, paged by
+/// `cursor` + `limit` → `nextCursor`.
+pub const TASK_DEVICE_LIST_0_3: &str = "https://trusttasks.org/spec/device/list/0.3";
 
 /// `device/disable/0.1` — disable a device (cannot authenticate; record kept).
-/// No 0.2 spec exists upstream; this stays on 0.1.
 pub const TASK_DEVICE_DISABLE_0_1: &str = "https://trusttasks.org/spec/device/disable/0.1";
 
-/// `device/wipe/0.1` — issue a wipe instruction for a device.
-#[deprecated(note = "0.1 is superseded by the 0.2 wire form: the `scope` enum \
-    spells `cacheAndKeys` in camelCase. The VTA still accepts 0.1 during the \
-    migration window but it will be removed in a future release — prefer \
-    TASK_DEVICE_WIPE_0_2.")]
-pub const TASK_DEVICE_WIPE_0_1: &str = "https://trusttasks.org/spec/device/wipe/0.1";
-
-/// `device/wipe/0.2` — successor to [`TASK_DEVICE_WIPE_0_1`]. The `scope` enum
-/// value `cache-and-keys` becomes `cacheAndKeys`; nothing else changes.
-///
-/// This constant's predecessor carried "No 0.2 spec exists upstream; this stays
-/// on 0.1" until #1145. `specs/device/wipe/0.2` had been published for some
-/// time — a comment asserting an absence is a claim about the registry that
-/// nothing re-checks, and it kept anyone from looking.
+/// `device/wipe/0.2` — issue a wipe instruction for a device. The `scope` is
+/// `cache`, `cacheAndKeys` or `full`.
 pub const TASK_DEVICE_WIPE_0_2: &str = "https://trusttasks.org/spec/device/wipe/0.2";
 
-/// `device/set-wake/0.1` — the device conveys its opaque push `WakeHandle` to
+/// `device/set-wake/0.2` — the device conveys its opaque push `WakeHandle` to
 /// the VTA, which owns the trigger allowlist and provisions the push gateway.
-#[deprecated(note = "0.1 is superseded by the 0.2 wire form. The VTA still \
-    accepts 0.1 during the migration window but it will be removed in a future \
-    release — prefer TASK_DEVICE_SET_WAKE_0_2.")]
-pub const TASK_DEVICE_SET_WAKE_0_1: &str = "https://trusttasks.org/spec/device/set-wake/0.1";
-
-/// `device/set-wake/0.2` — successor to [`TASK_DEVICE_SET_WAKE_0_1`]. No enum
-/// values changed; the bump is the canonical-version alignment.
 pub const TASK_DEVICE_SET_WAKE_0_2: &str = "https://trusttasks.org/spec/device/set-wake/0.2";
 
 // ─── ACL slice (canonical spec/acl/*) ────────────────────────────────────
@@ -728,69 +690,21 @@ pub const TASK_TRUST_TASK_DISCOVERY_0_3: &str =
 // M1 ships the two read-only tasks (list + get); upsert, delete, sync,
 // proxy-login, release, usage land in M2+.
 
-/// `spec/vault/list/0.1` — query the metadata view of stored vault
-/// entries, filtered by context, target, secret-kind, tag, etc. Secret
-/// material is never returned by this task. Auth: any caller with the
-/// derived `VaultRead` capability (i.e. role ∈ {Admin, Initiator,
-/// Application, Reader}).
-#[deprecated(note = "0.1 is superseded by the 0.2 wire form (secretKind and \
-    related enums use camelCase values). The VTA still accepts 0.1 during the \
-    migration window but it will be removed in a future release — prefer \
-    TASK_VAULT_LIST_0_2.")]
-pub const TASK_VAULT_LIST_0_1: &str = "https://trusttasks.org/spec/vault/list/0.1";
+/// `spec/vault/list/0.4` — query the metadata view of stored vault
+/// entries (filtered by context, target, secret kind, tag, …), paged by
+/// `cursor` + `limit` → `nextCursor`. Secrets are never returned. Auth:
+/// VaultRead.
+pub const TASK_VAULT_LIST_0_4: &str = "https://trusttasks.org/spec/vault/list/0.4";
 
-/// `spec/vault/list/0.2` — successor to [`TASK_VAULT_LIST_0_1`]; camelCase
-/// enum values (e.g. `secretKind: oauthTokens`).
-pub const TASK_VAULT_LIST_0_2: &str = "https://trusttasks.org/spec/vault/list/0.2";
-
-/// `spec/vault/list/0.3` — successor to [`TASK_VAULT_LIST_0_2`].
-///
-/// The only change from 0.2 is in the shared `VaultEntry` component:
-/// `AttachmentRef.sha256` (hex, SHA-256 pinned by the pattern) becomes
-/// `AttachmentRef.digestMultibase`, a multibase-encoded multihash that
-/// names its own algorithm. Nothing else moves — the enum casing is the
-/// same as 0.2.
-pub const TASK_VAULT_LIST_0_3: &str = "https://trusttasks.org/spec/vault/list/0.3";
-
-/// `spec/vault/get/0.1` — fetch the metadata view of a single entry by
+/// `spec/vault/get/0.3` — fetch the metadata view of a single entry by
 /// id. Same auth as vault/list.
-#[deprecated(note = "0.1 is superseded by the 0.2 wire form (response enums \
-    use camelCase values). The VTA still accepts 0.1 during the migration \
-    window but it will be removed in a future release — prefer TASK_VAULT_GET_0_2.")]
-pub const TASK_VAULT_GET_0_1: &str = "https://trusttasks.org/spec/vault/get/0.1";
-
-/// `spec/vault/get/0.2` — successor to [`TASK_VAULT_GET_0_1`].
-pub const TASK_VAULT_GET_0_2: &str = "https://trusttasks.org/spec/vault/get/0.2";
-
-/// `spec/vault/get/0.3` — successor to [`TASK_VAULT_GET_0_2`].
-///
-/// The only change from 0.2 is in the shared `VaultEntry` component:
-/// `AttachmentRef.sha256` (hex, SHA-256 pinned by the pattern) becomes
-/// `AttachmentRef.digestMultibase`, a multibase-encoded multihash that
-/// names its own algorithm. Nothing else moves — the enum casing is the
-/// same as 0.2.
 pub const TASK_VAULT_GET_0_3: &str = "https://trusttasks.org/spec/vault/get/0.3";
 
-/// `spec/vault/upsert/0.1` — create a new vault entry or update an
+/// `spec/vault/upsert/0.4` — create a new vault entry or update an
 /// existing one. Secret material rides inside a pluggable cipher
-/// envelope (see vault/_shared/0.1/sealed-envelope). Auth: VaultWrite.
-#[deprecated(note = "0.1 is superseded by the 0.2 wire form (secretKind / \
-    sealed-envelope / target enums use camelCase values). The VTA still \
-    accepts 0.1 during the migration window but it will be removed in a future \
-    release — prefer TASK_VAULT_UPSERT_0_2.")]
-pub const TASK_VAULT_UPSERT_0_1: &str = "https://trusttasks.org/spec/vault/upsert/0.1";
-
-/// `spec/vault/upsert/0.2` — successor to [`TASK_VAULT_UPSERT_0_1`].
-pub const TASK_VAULT_UPSERT_0_2: &str = "https://trusttasks.org/spec/vault/upsert/0.2";
-
-/// `spec/vault/upsert/0.3` — successor to [`TASK_VAULT_UPSERT_0_2`].
-///
-/// The only change from 0.2 is in the shared `VaultEntry` component:
-/// `AttachmentRef.sha256` (hex, SHA-256 pinned by the pattern) becomes
-/// `AttachmentRef.digestMultibase`, a multibase-encoded multihash that
-/// names its own algorithm. Nothing else moves — the enum casing is the
-/// same as 0.2.
-pub const TASK_VAULT_UPSERT_0_3: &str = "https://trusttasks.org/spec/vault/upsert/0.3";
+/// envelope (see vault/_shared/0.3/sealed-envelope); the response's
+/// `wasCreated` says which happened. Auth: VaultWrite.
+pub const TASK_VAULT_UPSERT_0_4: &str = "https://trusttasks.org/spec/vault/upsert/0.4";
 
 /// `spec/vault/delete/0.1` — soft-delete (tombstone) an entry with a
 /// maintainer-defined grace window; the entry stays recoverable via
@@ -821,34 +735,20 @@ pub const TASK_VAULT_RESTORE_0_1: &str = "https://trusttasks.org/spec/vault/rest
 /// VaultWrite. openvtc lifecycle extension.
 pub const TASK_VAULT_PURGE_0_1: &str = "https://trusttasks.org/spec/vault/purge/0.1";
 
-/// `spec/vault/release/0.1` — release the cleartext secret material of an
+/// `spec/vault/release/0.2` — release the cleartext secret material of an
 /// entry inside a pluggable cipher envelope sealed to the requesting
 /// consumer. Auth: FillRelease.
-#[deprecated(note = "0.1 is superseded by the 0.2 wire form (secretKind / \
-    sealed-envelope / step-up-proof enums use camelCase values). The VTA still \
-    accepts 0.1 during the migration window but it will be removed in a future \
-    release — prefer TASK_VAULT_RELEASE_0_2.")]
-pub const TASK_VAULT_RELEASE_0_1: &str = "https://trusttasks.org/spec/vault/release/0.1";
-
-/// `spec/vault/release/0.2` — successor to [`TASK_VAULT_RELEASE_0_1`].
 pub const TASK_VAULT_RELEASE_0_2: &str = "https://trusttasks.org/spec/vault/release/0.2";
 
-/// `spec/vault/proxy-login/0.1` — the VTA performs an authentication at
+/// `spec/vault/proxy-login/0.2` — the VTA performs an authentication at
 /// the third-party site on the holder's behalf using the entry's secret
 /// material and returns a SessionBlob (cookies + headers + optional
 /// localStorage) wrapped in a pluggable cipher envelope sealed to the
 /// requesting consumer. The long-term credential never leaves the VTA.
 /// Auth: ProxyLogin.
-#[deprecated(note = "0.1 is superseded by the 0.2 wire form (site-target / \
-    step-up-proof enums use camelCase values). The VTA still accepts 0.1 \
-    during the migration window but it will be removed in a future release — \
-    prefer TASK_VAULT_PROXY_LOGIN_0_2.")]
-pub const TASK_VAULT_PROXY_LOGIN_0_1: &str = "https://trusttasks.org/spec/vault/proxy-login/0.1";
-
-/// `spec/vault/proxy-login/0.2` — successor to [`TASK_VAULT_PROXY_LOGIN_0_1`].
 pub const TASK_VAULT_PROXY_LOGIN_0_2: &str = "https://trusttasks.org/spec/vault/proxy-login/0.2";
 
-/// `spec/vault/sign-trust-task/0.1` — the VTA attaches an eddsa-jcs-2022
+/// `spec/vault/sign-trust-task/0.2` — the VTA attaches an eddsa-jcs-2022
 /// Data Integrity proof to a Trust Task envelope, signing as the
 /// principal DID of a `did-self-issued` or `didcomm-peer` vault entry.
 /// The long-term signing key never leaves the VTA. Per-envelope signing
@@ -856,15 +756,6 @@ pub const TASK_VAULT_PROXY_LOGIN_0_2: &str = "https://trusttasks.org/spec/vault/
 /// consumer needs to issue follow-up tasks during a proxy-login'd
 /// session and the RP expects them signed by the session DID.
 /// Auth: SignTrustTask capability.
-#[deprecated(note = "0.1 is superseded by the 0.2 wire form (step-up-proof \
-    enums use camelCase values). The VTA still accepts 0.1 during the \
-    migration window but it will be removed in a future release — prefer \
-    TASK_VAULT_SIGN_TRUST_TASK_0_2.")]
-pub const TASK_VAULT_SIGN_TRUST_TASK_0_1: &str =
-    "https://trusttasks.org/spec/vault/sign-trust-task/0.1";
-
-/// `spec/vault/sign-trust-task/0.2` — successor to
-/// [`TASK_VAULT_SIGN_TRUST_TASK_0_1`].
 pub const TASK_VAULT_SIGN_TRUST_TASK_0_2: &str =
     "https://trusttasks.org/spec/vault/sign-trust-task/0.2";
 
@@ -886,10 +777,11 @@ pub const TASK_VAULT_CREDENTIALS_RECEIVE_0_1: &str =
 pub const TASK_VAULT_CREDENTIALS_QUERY_0_1: &str =
     "https://trusttasks.org/spec/vault/credentials/query/0.1";
 
-/// `spec/vault/credentials/get/0.1` — fetch one stored credential's full body by
-/// id, for presentation (requires `VaultRead`).
-pub const TASK_VAULT_CREDENTIALS_GET_0_1: &str =
-    "https://trusttasks.org/spec/vault/credentials/get/0.1";
+/// `spec/vault/credentials/get/0.2` — fetch one stored credential's full body
+/// by id, for presentation (requires `VaultRead`): `credential` (a JSON object)
+/// or `credentialBase64` (an SD-JWT, an mdoc), with its `format`.
+pub const TASK_VAULT_CREDENTIALS_GET_0_2: &str =
+    "https://trusttasks.org/spec/vault/credentials/get/0.2";
 
 /// `spec/vault/credentials/present/0.1` — present one stored credential to a
 /// verifier the caller names, bound to its nonce, disclosing only the named
@@ -2587,16 +2479,11 @@ pub const ALL_URIS: &[&str] = &[
     TASK_AUTH_STEP_UP_APPROVE_RESPONSE_0_2,
     TASK_AUTH_STEP_UP_APPROVE_RESPONSE_0_3,
     // Device slice
-    TASK_DEVICE_REGISTER_0_1,
     TASK_DEVICE_REGISTER_0_2,
-    TASK_DEVICE_HEARTBEAT_0_1,
-    TASK_DEVICE_HEARTBEAT_0_2,
-    TASK_DEVICE_LIST_0_1,
-    TASK_DEVICE_LIST_0_2,
+    TASK_DEVICE_HEARTBEAT_0_3,
+    TASK_DEVICE_LIST_0_3,
     TASK_DEVICE_DISABLE_0_1,
-    TASK_DEVICE_WIPE_0_1,
     TASK_DEVICE_WIPE_0_2,
-    TASK_DEVICE_SET_WAKE_0_1,
     TASK_DEVICE_SET_WAKE_0_2,
     // Messaging slice
     TASK_MESSAGING_PING_0_1,
@@ -2659,26 +2546,17 @@ pub const ALL_URIS: &[&str] = &[
     TASK_TRUST_TASK_DISCOVERY_0_1,
     TASK_TRUST_TASK_DISCOVERY_0_3,
     // Vault slice (0.1 + 0.2 + 0.3 dual-accept; delete is 0.1-only upstream)
-    TASK_VAULT_LIST_0_1,
-    TASK_VAULT_LIST_0_2,
-    TASK_VAULT_LIST_0_3,
-    TASK_VAULT_GET_0_1,
-    TASK_VAULT_GET_0_2,
+    TASK_VAULT_LIST_0_4,
     TASK_VAULT_GET_0_3,
-    TASK_VAULT_UPSERT_0_1,
-    TASK_VAULT_UPSERT_0_2,
-    TASK_VAULT_UPSERT_0_3,
+    TASK_VAULT_UPSERT_0_4,
     TASK_VAULT_DELETE_0_1,
     // Vault archival lifecycle (openvtc 0.1 extension).
     TASK_VAULT_ARCHIVE_0_1,
     TASK_VAULT_UNARCHIVE_0_1,
     TASK_VAULT_RESTORE_0_1,
     TASK_VAULT_PURGE_0_1,
-    TASK_VAULT_RELEASE_0_1,
     TASK_VAULT_RELEASE_0_2,
-    TASK_VAULT_PROXY_LOGIN_0_1,
     TASK_VAULT_PROXY_LOGIN_0_2,
-    TASK_VAULT_SIGN_TRUST_TASK_0_1,
     TASK_VAULT_SIGN_TRUST_TASK_0_2,
     // DID-management slice (canonical spec/did-management/*)
     TASK_DID_MANAGEMENT_DID_REGISTER_0_1,
@@ -2792,6 +2670,7 @@ pub const ALL_URIS: &[&str] = &[
     TASK_VTA_CREDENTIALS_ISSUE_0_2,
     TASK_VTA_CREDENTIALS_REVOKE_0_1,
     TASK_VTA_CREDENTIALS_LIST_0_1,
+    TASK_VAULT_CREDENTIALS_GET_0_2,
     TASK_VAULT_CREDENTIALS_PRESENT_0_1,
     // Agent-memory slice (spec/vta/memory/*)
     TASK_VTA_MEMORY_PUT_0_1,
