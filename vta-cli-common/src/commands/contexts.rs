@@ -750,7 +750,9 @@ pub async fn cmd_context_reprovision(
         credential_from_key(client, kid, vta_did, config.public_url()).await?
     } else {
         // Interactive: list existing Ed25519 keys and let user choose
-        let keys_resp = client.list_keys(0, 10000, Some("active"), Some(id)).await?;
+        let keys_resp = client
+            .list_keys(None, 10000, Some("active"), Some(id))
+            .await?;
         let ed25519_keys: Vec<_> = keys_resp
             .keys
             .iter()

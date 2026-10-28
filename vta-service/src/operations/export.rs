@@ -141,13 +141,13 @@ pub async fn build_did_secrets_bundle(
     // what the caller is allowed to see.
     let mut secrets = Vec::new();
     let page_size = 100u64;
-    let mut offset = 0u64;
+    let mut cursor: Option<String> = None;
     loop {
         let page = super::keys::list_keys(
             deps.keys_ks,
             auth,
             super::keys::ListKeysParams {
-                offset: Some(offset),
+                cursor: cursor.take(),
                 limit: Some(page_size),
                 status: Some(KeyStatus::Active),
                 context_id: Some(context_id.to_string()),
@@ -199,9 +199,9 @@ pub async fn build_did_secrets_bundle(
                 }
             }
         }
-        offset += page.keys.len() as u64;
-        if offset >= page.total {
-            break;
+        match page.next_cursor {
+            Some(next) => cursor = Some(next),
+            None => break,
         }
     }
 

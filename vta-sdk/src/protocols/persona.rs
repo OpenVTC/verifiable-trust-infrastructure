@@ -775,7 +775,7 @@ pub struct PersonaDisclosureHistoryBody {
 // Correlation and renderers — agent-scoped.
 // ---------------------------------------------------------------------------
 
-/// `spec/persona/correlation/analyze/1.0` — how linkable would this make me?
+/// `spec/persona/correlation/analyze/1.2` — how linkable would this make me?
 ///
 /// Reads the pool and writes nothing. Note the inversion that is easy to get
 /// backwards: a credential presented **whole** correlates *more* than a

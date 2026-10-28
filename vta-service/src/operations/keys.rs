@@ -54,7 +54,8 @@ pub struct CreateKeyParams {
 }
 
 pub struct ListKeysParams {
-    pub offset: Option<u64>,
+    /// The previous page's `nextCursor`.
+    pub cursor: Option<String>,
     pub limit: Option<u64>,
     pub status: Option<KeyStatus>,
     pub context_id: Option<String>,
@@ -627,24 +628,75 @@ pub async fn list_keys(
         tracing::warn!(channel, skipped, "list_keys skipped corrupt rows");
     }
 
-    let total = records.len() as u64;
-    let offset = params.offset.unwrap_or(0);
-    let limit = params.limit.unwrap_or(50);
+    // Keyset pagination (`keys/list/0.2`): records in `key_id` order, a page
+    // resuming strictly after the last id the previous one returned, under the
+    // filters its cursor was minted for. A cursor this VTA did not issue for
+    // these filters is refused rather than guessed at.
+    records.sort_by(|a, b| a.key_id.cmp(&b.key_id));
+    let filters = list_cursor_filters(&params);
+    if let Some(cursor) = params.cursor.as_deref() {
+        let after = open_list_cursor(cursor, &filters).ok_or_else(|| {
+            AppError::Validation(
+                "keys/list: the cursor was not issued by this VTA for these filters; list \
+                 again from the first page"
+                    .into(),
+            )
+        })?;
+        records.retain(|r| r.key_id > after);
+    }
+    let limit = usize::try_from(params.limit.unwrap_or(50)).unwrap_or(usize::MAX);
+    let more = records.len() > limit;
+    records.truncate(limit);
+    let next_cursor = more
+        .then(|| records.last().map(|r| list_cursor(&filters, &r.key_id)))
+        .flatten();
 
-    let page: Vec<KeyRecord> = records
-        .into_iter()
-        .skip(offset as usize)
-        .take(limit as usize)
-        .collect();
-
-    info!(channel, caller = %auth.did, count = page.len(), total, "keys listed");
+    info!(channel, caller = %auth.did, count = records.len(), more, "keys listed");
 
     Ok(ListKeysResultBody {
-        keys: page,
-        total,
-        offset,
-        limit,
+        keys: records,
+        next_cursor,
     })
+}
+
+/// The filters of a `keys/list` request, as its cursor binds them.
+fn list_cursor_filters(params: &ListKeysParams) -> String {
+    let status = params
+        .status
+        .as_ref()
+        .and_then(|s| serde_json::to_value(s).ok())
+        .unwrap_or(serde_json::Value::Null);
+    serde_json::json!({ "status": status, "contextId": params.context_id }).to_string()
+}
+
+fn list_filter_digest(filters: &str) -> String {
+    use sha2::{Digest, Sha256};
+    hex::encode(&Sha256::digest(filters.as_bytes())[..8])
+}
+
+/// `k1.<filter digest>.<base64url of the last key id returned>`.
+fn list_cursor(filters: &str, last_key_id: &str) -> String {
+    use base64::Engine as _;
+    format!(
+        "k1.{}.{}",
+        list_filter_digest(filters),
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(last_key_id)
+    )
+}
+
+/// The key id a cursor resumes after, or `None` for one these filters were
+/// not given.
+fn open_list_cursor(cursor: &str, filters: &str) -> Option<String> {
+    use base64::Engine as _;
+    let rest = cursor.strip_prefix("k1.")?;
+    let (digest, id) = rest.split_once('.')?;
+    if digest != list_filter_digest(filters) {
+        return None;
+    }
+    let raw = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(id)
+        .ok()?;
+    String::from_utf8(raw).ok().filter(|s| !s.is_empty())
 }
 
 pub async fn rename_key(
@@ -3535,7 +3587,7 @@ mod tests {
             &h.keys_ks,
             &auth,
             ListKeysParams {
-                offset: None,
+                cursor: None,
                 limit: None,
                 status: None,
                 context_id: None,
@@ -4456,7 +4508,7 @@ mod tests {
             ListKeysParams {
                 status: None,
                 context_id: None,
-                offset: None,
+                cursor: None,
                 limit: None,
             },
             "test",

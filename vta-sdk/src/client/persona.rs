@@ -425,7 +425,7 @@ impl VtaClient {
         .await
     }
 
-    /// `persona/profile/timeline/1.0` — one page of a face's history, oldest
+    /// `persona/profile/timeline/1.1` — one page of a face's history, oldest
     /// first. No value and no private label is in it.
     pub async fn persona_profile_timeline(
         &self,
@@ -449,7 +449,7 @@ impl VtaClient {
             payload["limit"] = l.into();
         }
         self.rpc_tt(
-            trust_tasks::TASK_PERSONA_PROFILE_TIMELINE_1_0,
+            trust_tasks::TASK_PERSONA_PROFILE_TIMELINE_1_1,
             payload,
             PERSONA_TT_TIMEOUT,
         )
@@ -791,7 +791,7 @@ impl VtaClient {
     // Correlation and renderers — holder-scoped
     // -----------------------------------------------------------------------
 
-    /// `persona/correlation/analyze/1.0` — how linkable would this make me?
+    /// `persona/correlation/analyze/1.2` — how linkable would this make me?
     ///
     /// Pass a `candidate` to ask before disclosing rather than after — the
     /// answer is worth more then. Note the inversion the response encodes: a
@@ -812,7 +812,7 @@ impl VtaClient {
             ext: None,
         })?;
         self.dispatch_trust_task(
-            trust_tasks::TASK_PERSONA_CORRELATION_ANALYZE_1_0,
+            trust_tasks::TASK_PERSONA_CORRELATION_ANALYZE_1_2,
             payload,
             PERSONA_TT_TIMEOUT,
         )

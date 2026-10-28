@@ -3936,10 +3936,10 @@ mod tests {
 
     #[test]
     fn test_list_keys_response_deserialization() {
-        let json = r#"{"keys":[],"total":0}"#;
+        let json = r#"{"keys":[]}"#;
         let resp: ListKeysResponse = serde_json::from_str(json).unwrap();
         assert!(resp.keys.is_empty());
-        assert_eq!(resp.total, 0);
+        assert!(resp.next_cursor.is_none());
     }
 
     #[test]

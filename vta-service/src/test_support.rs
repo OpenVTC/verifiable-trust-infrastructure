@@ -2038,8 +2038,8 @@ async fn stub_host_answer(
         // has **no** record of, so a reconcile against it reports both arms
         // (the slot is host-only; the DID a test mints is agent-only), and
         // `servers/retire-orphan` has something retireable.
-        "did/list/0.1" => (
-            conforms::<dm::did::list::v0_1::Payload>(&payload),
+        "did/list/0.2" => (
+            conforms::<dm::did::list::v0_2::Payload>(&payload),
             json!({
                 "records": [{
                     "mnemonic": "cov-orphan-slot",
@@ -2050,7 +2050,6 @@ async fn stub_host_answer(
                     "updatedAt": CREATED,
                     "versionCount": 0,
                 }],
-                "total": 1,
             }),
         ),
         "me/domains/0.1" => (

@@ -54,6 +54,9 @@ pub enum FaceEventKind {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FaceEvent {
+    /// When it happened. `occurredAt` on the wire (`persona/profile/timeline`
+    /// 1.1); an event stored under 1.0's `at` still reads.
+    #[serde(rename = "occurredAt", alias = "at")]
     pub at: String,
     pub kind: FaceEventKind,
     #[serde(default, skip_serializing_if = "Option::is_none")]

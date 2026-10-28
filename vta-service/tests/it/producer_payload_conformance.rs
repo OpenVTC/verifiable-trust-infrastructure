@@ -130,7 +130,9 @@ fn assert_conforms(captured: &[(String, Value)]) {
 #[tokio::test]
 async fn every_optional_argument_unset_still_builds_a_conforming_payload() {
     // ── keys ─────────────────────────────────────────────────────────
-    assert_conforms(&captured(|c| async move { drop(c.list_keys(0, 50, None, None).await) }).await);
+    assert_conforms(
+        &captured(|c| async move { drop(c.list_keys(None, 50, None, None).await) }).await,
+    );
     assert_conforms(
         &captured(|c| async move {
             drop(

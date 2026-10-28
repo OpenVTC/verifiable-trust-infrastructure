@@ -37,10 +37,8 @@ use vti_common::auth::session::{Session, SessionState, now_epoch, store_session}
 const ATTR_PUT: &str = "https://trusttasks.org/spec/persona/attribute/put/1.1";
 const ATTR_LIST: &str = "https://trusttasks.org/spec/persona/attribute/list/1.0";
 const ATTR_GET: &str = "https://trusttasks.org/spec/persona/attribute/get/1.0";
-const WORLD_PUT: &str = "https://trusttasks.org/spec/persona/world/put/1.1";
 const WORLD_LIST: &str = "https://trusttasks.org/spec/persona/world/list/1.0";
 const FACET_PUT: &str = "https://trusttasks.org/spec/persona/facet/put/1.0";
-const FACET_LIST: &str = "https://trusttasks.org/spec/persona/facet/list/1.0";
 const ATTR_DELETE: &str = "https://trusttasks.org/spec/persona/attribute/delete/1.0";
 const ATTR_PURGE_VERSION: &str = "https://trusttasks.org/spec/persona/attribute/purge-version/1.0";
 const ATTR_PROMOTE: &str = "https://trusttasks.org/spec/persona/attribute/promote/1.1";
@@ -48,7 +46,7 @@ const PROFILE_COMPOSE: &str = "https://trusttasks.org/spec/persona/profile/compo
 const PROFILE_RETIRE: &str = "https://trusttasks.org/spec/persona/profile/retire/1.0";
 const PROFILE_REINSTATE: &str = "https://trusttasks.org/spec/persona/profile/reinstate/1.0";
 const PROFILE_USAGE: &str = "https://trusttasks.org/spec/persona/profile/usage/1.0";
-const PROFILE_TIMELINE: &str = "https://trusttasks.org/spec/persona/profile/timeline/1.0";
+const PROFILE_TIMELINE: &str = "https://trusttasks.org/spec/persona/profile/timeline/1.1";
 const PROFILE_PUT: &str = "https://trusttasks.org/spec/persona/profile/put/1.1";
 const PROFILE_GET: &str = "https://trusttasks.org/spec/persona/profile/get/1.0";
 const PROFILE_LIST: &str = "https://trusttasks.org/spec/persona/profile/list/1.0";
@@ -56,7 +54,7 @@ const PROFILE_DELETE: &str = "https://trusttasks.org/spec/persona/profile/delete
 const BINDING_SET: &str = "https://trusttasks.org/spec/persona/binding/set/1.0";
 const BINDING_GET: &str = "https://trusttasks.org/spec/persona/binding/get/1.0";
 const BINDING_LIST: &str = "https://trusttasks.org/spec/persona/binding/list/1.0";
-const CORRELATION: &str = "https://trusttasks.org/spec/persona/correlation/analyze/1.0";
+const CORRELATION: &str = "https://trusttasks.org/spec/persona/correlation/analyze/1.2";
 const RENDERERS: &str = "https://trusttasks.org/spec/persona/renderers/list/1.0";
 const CLAIM_TYPES: &str = "https://trusttasks.org/spec/persona/claim-types/list/1.0";
 const DISCLOSURE_HISTORY: &str = "https://trusttasks.org/spec/persona/disclosure/history/1.0";
@@ -1819,7 +1817,7 @@ async fn a_correlation_finding_names_where_the_shared_value_went() {
     // exactly what `sharedWithProfileCount` was) fails here with the offending
     // name in the message.
     let payload = payload_of(&body).clone();
-    let typed: trust_tasks_rs::specs::persona::correlation::analyze::v1_0::Response =
+    let typed: trust_tasks_rs::specs::persona::correlation::analyze::v1_2::Response =
         serde_json::from_value(payload.clone()).unwrap_or_else(|e| {
             panic!("the response does not match the published schema: {e}\n{payload:#}")
         });
@@ -1834,9 +1832,9 @@ async fn a_correlation_finding_names_where_the_shared_value_went() {
     // holder reads it. `sharedWith` is keyed on profiles and bindings, so it
     // cannot restate a count of attributes.
     assert!(
-        finding.why.contains("1 other attribute"),
+        finding.reason.contains("1 other attribute"),
         "the finding no longer says how many other attributes hold the value: {}",
-        finding.why.as_str()
+        finding.reason.as_str()
     );
 
     let reached = finding
@@ -2755,7 +2753,7 @@ async fn two_local_faces_sharing_a_value_are_a_finding_and_profile_id_narrows() 
             );
             let payload = payload_of(&body).clone();
             serde_json::from_value::<
-                trust_tasks_rs::specs::persona::correlation::analyze::v1_0::Response,
+                trust_tasks_rs::specs::persona::correlation::analyze::v1_2::Response,
             >(payload.clone())
             .unwrap_or_else(|e| panic!("does not match the published schema: {e}\n{payload:#}"))
         }
@@ -3735,7 +3733,7 @@ async fn a_face_goes_only_where_its_reach_allows_and_its_timeline_says_what_it_d
     .await;
     assert!(!refused(status, &body), "timeline: {status} {body}");
     let out = payload_of(&body).clone();
-    serde_json::from_value::<timeline::v1_0::Response>(out.clone())
+    serde_json::from_value::<timeline::v1_1::Response>(out.clone())
         .unwrap_or_else(|e| panic!("does not match the published schema: {e}\n{out:#}"));
     let kinds: Vec<&str> = out["events"]
         .as_array()
@@ -4282,20 +4280,14 @@ async fn one_attribute_is_read_by_name_and_says_what_it_withheld() {
     );
 }
 
-/// A world is the same record whichever spelling asks for it, and each response
-/// answers in the words of the task that was sent.
-///
-/// `persona/facet/*` is retired in favour of `persona/world/*` and kept routable
-/// for a release: a document already issued against the old specification still
-/// validates, and refusing it would break a client for a rename that costs it
-/// nothing. This is what the alias window has to hold — one store, two
-/// spellings, no translation the caller can see.
+/// `persona/facet/*` is retired in favour of `persona/world/*`, and its alias
+/// window has closed: the old spelling is refused rather than routed, so a
+/// client still sending it learns to move instead of being answered in words
+/// the registry no longer uses.
 #[tokio::test]
-async fn a_world_answers_to_its_retired_name_in_that_names_words() {
+async fn the_retired_world_spelling_is_refused() {
     let (router, ctx) = build_test_app().await;
     let holder = authed_holder(&ctx, "alias", &[]).await;
-
-    // Made under the retired spelling, which answers with `facetId`.
     let (status, body) = post(
         &router,
         &holder,
@@ -4303,45 +4295,16 @@ async fn a_world_answers_to_its_retired_name_in_that_names_words() {
         json!({ "name": "Work", "colour": "teal" }),
     )
     .await;
-    assert!(!refused(status, &body), "facet/put: {status} {body}");
-    let made = payload_of(&body);
     assert!(
-        made.get("worldId").is_none(),
-        "the retired spelling was answered in the new words: {made}"
+        refused(status, &body),
+        "facet/put was served: {status} {body}"
     );
-    let id = made["facetId"].as_str().expect("facetId").to_string();
-
-    // The same record, read under the new spelling, in the new words.
-    let (status, body) = post(&router, &holder, WORLD_LIST, json!({})).await;
-    assert!(!refused(status, &body), "world/list: {status} {body}");
-    let worlds = payload_of(&body)["worlds"].as_array().unwrap().clone();
-    assert_eq!(worlds.len(), 1, "{body}");
-    assert_eq!(worlds[0]["worldId"], id.as_str());
-    assert_eq!(worlds[0]["name"], "Work");
-
-    // And under the retired one, in its words.
-    let (status, body) = post(&router, &holder, FACET_LIST, json!({})).await;
-    assert!(!refused(status, &body), "facet/list: {status} {body}");
-    let facets = payload_of(&body)["facets"].as_array().unwrap().clone();
-    assert_eq!(facets.len(), 1, "{body}");
-    assert_eq!(facets[0]["facetId"], id.as_str());
-    assert!(
-        facets[0].get("worldId").is_none(),
-        "a retired listing carried the new member: {body}"
-    );
-
-    // A world put replaces the same record rather than making a second.
-    let (status, body) = post(
-        &router,
-        &holder,
-        WORLD_PUT,
-        json!({ "worldId": id, "name": "Work", "colour": "moss" }),
-    )
-    .await;
-    assert!(!refused(status, &body), "world/put: {status} {body}");
     let (_, body) = post(&router, &holder, WORLD_LIST, json!({})).await;
-    assert_eq!(payload_of(&body)["worlds"].as_array().unwrap().len(), 1);
-    assert_eq!(payload_of(&body)["worlds"][0]["colour"], "moss");
+    assert_eq!(
+        payload_of(&body)["worlds"].as_array().map(Vec::len),
+        Some(0),
+        "the refused write made a world: {body}"
+    );
 }
 
 // ─── Contacts 1.1: the holder's annotations, and their lists ─────────────

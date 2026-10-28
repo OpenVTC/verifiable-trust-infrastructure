@@ -780,7 +780,7 @@ pub(super) async fn handle_revoke(
     )
 }
 
-/// `consent/list/1.0` — a bridge syncs the grants it enforces. Auth: read.
+/// `consent/list/1.1` — a bridge syncs the grants it enforces. Auth: read.
 pub(super) async fn handle_list(
     state: &AppState,
     auth: &AuthClaims,

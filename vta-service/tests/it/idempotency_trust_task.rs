@@ -27,7 +27,7 @@ use tower::ServiceExt;
 use vta_service::test_support::build_test_app;
 
 const KEYS_CREATE: &str = "https://trusttasks.org/spec/keys/create/0.1";
-const KEYS_LIST: &str = "https://trusttasks.org/spec/keys/list/0.1";
+const KEYS_LIST: &str = "https://trusttasks.org/spec/keys/list/0.2";
 /// The caller's signing seed. A `did:key` derived from it, rather than a
 /// hand-written DID, because SPEC §7.2 item 7a wants a proof on `keys/create`
 /// and item 6 wants the in-band issuer to be the identity the token

@@ -417,30 +417,26 @@ impl<'a> WebvhHostClient<'a> {
         self.call(&request).await
     }
 
-    /// Every slot the host holds for `owner` (`did/list/0.1`), read page by
-    /// page until the host's `total` is reached.
+    /// Every slot the host holds for `owner` (`did/list/0.2`), read page by
+    /// page until the host stops returning a `nextCursor`.
     ///
     /// Complete or an error, never a partial list: the reconcile reports what
     /// is missing from one side, so a short read would name live DIDs as
-    /// orphans. A host whose pages stop short of its `total`, overrun it, or
-    /// never end, is refused.
+    /// orphans. A host whose pages never end, or that lists a slot twice, is
+    /// refused.
     pub async fn list_dids(&self, owner: &str) -> Result<Vec<HostedDidEntry>, AppError> {
         let mut out = Vec::new();
+        let mut cursor: Option<String> = None;
         for _ in 0..DID_LIST_MAX_PAGES {
-            // The next page starts after what was read, not at `page * limit`:
-            // a host may return fewer than `limit` records a page, and a fixed
-            // stride would skip the rest.
-            let request: dm::did::list::v0_1::Payload = payload(
-                "did/list",
-                serde_json::json!({
-                    "owner": owner,
-                    "limit": DID_LIST_PAGE,
-                    "offset": out.len() as u64,
-                }),
-            )?;
+            let mut body = serde_json::json!({ "owner": owner, "limit": DID_LIST_PAGE });
+            if let Some(c) = cursor.take() {
+                body["cursor"] = serde_json::json!(c);
+            }
+            let request: dm::did::list::v0_2::Payload = payload("did/list", body)?;
             let response = self.call(&request).await?;
-            if accumulate_did_page(&mut out, response)? {
-                return Ok(out);
+            match accumulate_did_page(&mut out, response)? {
+                Some(next) => cursor = Some(next),
+                None => return Ok(out),
             }
         }
         Err(bad_gateway_error(format!(
@@ -449,14 +445,14 @@ impl<'a> WebvhHostClient<'a> {
     }
 }
 
-/// Add one `did/list` page to `out`. `Ok(true)` when the listing is complete,
-/// `Ok(false)` when there is more to read, and an error when the host's pages
-/// and its `total` disagree, or a slot is listed twice (overlapping pages that
-/// add up to `total` would otherwise hide the slots they displaced).
+/// Add one `did/list` page to `out`. `Ok(None)` when the listing is complete,
+/// `Ok(Some(cursor))` when there is more to read, and an error when a slot is
+/// listed twice (overlapping pages would otherwise hide the slots they
+/// displaced) or a page promising more returned nothing.
 fn accumulate_did_page(
     out: &mut Vec<HostedDidEntry>,
-    response: dm::did::list::v0_1::Response,
-) -> Result<bool, AppError> {
+    response: dm::did::list::v0_2::Response,
+) -> Result<Option<String>, AppError> {
     let got = response.records.len();
     let mut seen: std::collections::HashSet<(String, Option<String>)> = out
         .iter()
@@ -476,23 +472,14 @@ fn accumulate_did_page(
             disabled: r.disabled.unwrap_or(false),
         });
     }
-    let read = out.len() as u64;
-    if read > response.total {
-        return Err(bad_gateway_error(format!(
-            "the DID hosting service listed {read} slots but reported a total of {}",
-            response.total
-        )));
+    match response.next_cursor {
+        None => Ok(None),
+        Some(_) if got == 0 => Err(bad_gateway_error(format!(
+            "the DID hosting service returned an empty page with more to come, after {} slots",
+            out.len()
+        ))),
+        Some(next) => Ok(Some(next.to_string())),
     }
-    if read == response.total {
-        return Ok(true);
-    }
-    if got == 0 {
-        return Err(bad_gateway_error(format!(
-            "the DID hosting service stopped listing at {read} of the {} slots it reported",
-            response.total
-        )));
-    }
-    Ok(false)
 }
 
 /// Project a `did/check-name/0.1#response` into the reserved slot.
@@ -744,28 +731,25 @@ mod tests {
         assert!(format!("{err:?}").contains("schema"), "{err:?}");
     }
 
-    const LIST: &str = "https://trusttasks.org/spec/did-management/did/list/0.1#response";
+    const LIST: &str = "https://trusttasks.org/spec/did-management/did/list/0.2#response";
 
-    fn list_page(mnemonics: &[&str], total: u64) -> dm::did::list::v0_1::Response {
+    fn list_page(mnemonics: &[&str], next: Option<&str>) -> dm::did::list::v0_2::Response {
         let records: Vec<Value> = mnemonics.iter().map(|m| record(m)).collect();
-        read_reply(
-            &reply(LIST, json!({ "records": records, "total": total })),
-            REQ,
-            VTA,
-            LIST,
-        )
-        .expect("a did/list page")
+        let mut body = json!({ "records": records });
+        if let Some(n) = next {
+            body["nextCursor"] = json!(n);
+        }
+        read_reply(&reply(LIST, body), REQ, VTA, LIST).expect("a did/list page")
     }
 
-    /// The `did/list` response is `{records, total}`; the old `{dids}` shape is
-    /// refused.
+    /// The `did/list` response is `{records, nextCursor?}`; the old `{dids}`
+    /// shape is refused.
     #[test]
-    fn a_did_list_reads_records_and_total_not_dids() {
-        let ok = list_page(&["bob"], 1);
-        assert_eq!(ok.total, 1);
+    fn a_did_list_reads_records_not_dids() {
+        let ok = list_page(&["bob"], None);
         assert_eq!(ok.records[0].mnemonic, "bob");
         assert!(
-            read_reply::<dm::did::list::v0_1::Response>(
+            read_reply::<dm::did::list::v0_2::Response>(
                 &reply(LIST, json!({ "dids": [record("bob")] })),
                 REQ,
                 VTA,
@@ -776,28 +760,38 @@ mod tests {
     }
 
     #[test]
-    fn a_did_listing_is_read_to_its_total() {
+    fn a_did_listing_is_read_until_it_stops_offering_a_cursor() {
         let mut out = Vec::new();
-        assert!(!accumulate_did_page(&mut out, list_page(&["a", "b"], 3)).unwrap());
-        assert!(accumulate_did_page(&mut out, list_page(&["c"], 3)).unwrap());
+        assert_eq!(
+            accumulate_did_page(&mut out, list_page(&["a", "b"], Some("c1"))).unwrap(),
+            Some("c1".to_string())
+        );
+        assert_eq!(
+            accumulate_did_page(&mut out, list_page(&["c"], None)).unwrap(),
+            None
+        );
         let slots: Vec<_> = out.iter().map(|e| e.mnemonic.as_str()).collect();
         assert_eq!(slots, ["a", "b", "c"]);
         // An empty host is complete at once.
-        assert!(accumulate_did_page(&mut Vec::new(), list_page(&[], 0)).unwrap());
+        assert!(
+            accumulate_did_page(&mut Vec::new(), list_page(&[], None))
+                .unwrap()
+                .is_none()
+        );
     }
 
-    /// A short or overlong listing is refused, never passed off as complete:
-    /// the reconcile would name the missing DIDs as orphans.
+    /// A page that promises more but returned nothing, or a slot listed twice,
+    /// is refused, never passed off as complete: the reconcile would name the
+    /// missing DIDs as orphans.
     #[test]
-    fn a_listing_that_disagrees_with_its_total_is_refused() {
+    fn a_listing_that_cannot_be_trusted_is_refused() {
         let mut out = Vec::new();
-        assert!(!accumulate_did_page(&mut out, list_page(&["a"], 2)).unwrap());
-        assert!(accumulate_did_page(&mut out, list_page(&[], 2)).is_err());
-        assert!(accumulate_did_page(&mut Vec::new(), list_page(&["a", "b"], 1)).is_err());
-        // Overlapping pages that add up to the total still hide a slot.
+        assert!(accumulate_did_page(&mut out, list_page(&["a"], Some("c1"))).is_ok());
+        assert!(accumulate_did_page(&mut out, list_page(&[], Some("c2"))).is_err());
+        // Overlapping pages still hide a slot.
         let mut out = Vec::new();
-        assert!(!accumulate_did_page(&mut out, list_page(&["a", "b"], 3)).unwrap());
-        assert!(accumulate_did_page(&mut out, list_page(&["b"], 3)).is_err());
+        assert!(accumulate_did_page(&mut out, list_page(&["a", "b"], Some("c1"))).is_ok());
+        assert!(accumulate_did_page(&mut out, list_page(&["b"], None)).is_err());
     }
 
     /// What goes on the wire is signed by the VTA's operational key.

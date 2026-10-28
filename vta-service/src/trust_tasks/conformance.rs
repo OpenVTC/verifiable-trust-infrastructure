@@ -948,10 +948,10 @@ fn table() -> Vec<(&'static str, Conformance)> {
             ),
         ),
         (
-            uris::TASK_CONSENT_LIST_1_0,
+            uris::TASK_CONSENT_LIST_1_1,
             checked!(
-                specs::consent::list::v1_0::Payload,
-                specs::consent::list::v1_0::Response,
+                specs::consent::list::v1_1::Payload,
+                specs::consent::list::v1_1::Response,
                 // An unfiltered list — every member unset, which must
                 // serialize to `{}` rather than a map of nulls.
                 to_v(ConsentListBody::default()),
@@ -1217,21 +1217,19 @@ fn table() -> Vec<(&'static str, Conformance)> {
         ),
         // ─── keys (the signing-oracle + custody family, #167) ────
         (
-            uris::TASK_KEYS_LIST_0_1,
+            uris::TASK_KEYS_LIST_0_2,
             checked!(
-                specs::keys::list::v0_1::Payload,
-                specs::keys::list::v0_1::Response,
+                specs::keys::list::v0_2::Payload,
+                specs::keys::list::v0_2::Response,
                 to_v(ListKeysBody {
-                    offset: Some(0),
+                    cursor: Some("k1.0011223344556677.a2V5LTE".into()),
                     limit: Some(50),
                     status: Some(KeyStatus::Active),
                     context_id: Some("app".into()),
                 }),
                 to_v(ListKeysResultBody {
                     keys: vec![key_record()],
-                    total: 1,
-                    offset: 0,
-                    limit: 50,
+                    next_cursor: Some("k1.0011223344556677.a2V5LTI".into()),
                 })
             ),
         ),
@@ -4687,27 +4685,27 @@ fn persona_witnesses() -> Vec<(&'static str, ReqParts, RespParts)> {
             ),
         ),
         (
-            u::TASK_PERSONA_PROFILE_TIMELINE_1_0,
+            u::TASK_PERSONA_PROFILE_TIMELINE_1_1,
             (
                 json!({ "profileId": PROFILE, "limit": 50 }),
-                parses::<specs::persona::profile::timeline::v1_0::Payload>,
-                validates::<specs::persona::profile::timeline::v1_0::Payload>,
+                parses::<specs::persona::profile::timeline::v1_1::Payload>,
+                validates::<specs::persona::profile::timeline::v1_1::Payload>,
             ),
             (
                 json!({
                     "profileId": PROFILE,
                     "events": [
-                        { "at": NOW, "kind": "composed" },
-                        { "at": NOW, "kind": "worn", "contextId": CTX, "personaDid": PERSONA_DID },
-                        { "at": NOW, "kind": "disclosed", "contextId": CTX,
+                        { "occurredAt": NOW, "kind": "composed" },
+                        { "occurredAt": NOW, "kind": "worn", "contextId": CTX, "personaDid": PERSONA_DID },
+                        { "occurredAt": NOW, "kind": "disclosed", "contextId": CTX,
                           "personaDid": PERSONA_DID, "verifierDid": VERIFIER,
                           "claimTypes": ["name.display"] },
-                        { "at": NOW, "kind": "valueChanged", "claimTypes": ["name.display"],
+                        { "occurredAt": NOW, "kind": "valueChanged", "claimTypes": ["name.display"],
                           "version": 7 }
                     ],
                     "nextCursor": "t:4"
                 }),
-                parses::<specs::persona::profile::timeline::v1_0::Response>,
+                parses::<specs::persona::profile::timeline::v1_1::Response>,
             ),
         ),
         (
@@ -4840,58 +4838,6 @@ fn persona_witnesses() -> Vec<(&'static str, ReqParts, RespParts)> {
                     "retainedVersions": [1, 2]
                 }),
                 parses::<specs::persona::attribute::get::v1_0::Response>,
-            ),
-        ),
-        (
-            u::TASK_PERSONA_FACET_PUT_1_0,
-            (
-                // Both membership lists populated and an icon present, so the
-                // witness covers every optional member rather than the shape a
-                // minimal create happens to take.
-                json!({
-                    "name": "Work",
-                    "colour": "teal",
-                    "icon": "\u{1F4BC}",
-                    "faceIds": [PROFILE],
-                    "attributeIds": [ATTR],
-                    "expectedVersion": 0
-                }),
-                parses::<specs::persona::facet::put::v1_0::Payload>,
-                validates::<specs::persona::facet::put::v1_0::Payload>,
-            ),
-            (
-                json!({ "facetId": FACET, "version": 2, "created": true, "updatedAt": NOW }),
-                parses::<specs::persona::facet::put::v1_0::Response>,
-            ),
-        ),
-        (
-            u::TASK_PERSONA_FACET_LIST_1_0,
-            (
-                json!({}),
-                parses::<specs::persona::facet::list::v1_0::Payload>,
-                validates::<specs::persona::facet::list::v1_0::Payload>,
-            ),
-            (
-                // No `nextCursor`: its absence is what says a listing is
-                // complete, so the witness is the complete-page shape.
-                json!({ "facets": [{
-                    "facetId": FACET, "name": "Work", "colour": "teal",
-                    "faceIds": [PROFILE], "attributeIds": [ATTR],
-                    "version": 2, "updatedAt": NOW
-                }]}),
-                parses::<specs::persona::facet::list::v1_0::Response>,
-            ),
-        ),
-        (
-            u::TASK_PERSONA_FACET_DELETE_1_0,
-            (
-                json!({ "facetId": FACET }),
-                parses::<specs::persona::facet::delete::v1_0::Payload>,
-                validates::<specs::persona::facet::delete::v1_0::Payload>,
-            ),
-            (
-                json!({ "existed": true, "releasedFaces": 1 }),
-                parses::<specs::persona::facet::delete::v1_0::Response>,
             ),
         ),
         (
@@ -5137,57 +5083,29 @@ fn persona_witnesses() -> Vec<(&'static str, ReqParts, RespParts)> {
             ),
         ),
         (
-            u::TASK_PERSONA_CORRELATION_ANALYZE_1_0,
-            (
-                // A candidate the holder is CONSIDERING — the difference
-                // between a guard and a report.
-                json!({ "candidate": {
-                    "type": "phone.mobile", "valueType": "string", "value": "+00 0000 0000"
-                }}),
-                parses::<specs::persona::correlation::analyze::v1_0::Payload>,
-                validates::<specs::persona::correlation::analyze::v1_0::Payload>,
-            ),
-            (
-                // The crossing members are exercised, not merely allowed: they
-                // are the ones added last and the dispatch spine validates
-                // OUTGOING responses, so a member the schema has not caught up
-                // with is a 500 on a call that fully succeeded.
-                json!({ "findings": [{
-                    "attributeId": ATTR, "severity": "high",
-                    "why": "this value is already presented by another profile",
-                    "crossesFacets": true,
-                    "facetIds": [FACET],
-                    "sharedWith": [{ "profileId": PROFILE, "facetId": FACET }],
-                    "remedies": ["useDifferentValue", "reissueCredentialToThisDid",
-                                 "correlateDeliberately", "proceedAndRecord"]
-                }]}),
-                parses::<specs::persona::correlation::analyze::v1_0::Response>,
-            ),
-        ),
-        (
-            u::TASK_PERSONA_CORRELATION_ANALYZE_1_1,
+            u::TASK_PERSONA_CORRELATION_ANALYZE_1_2,
             (
                 json!({ "candidate": {
                     "type": "phone.mobile", "valueType": "string", "value": "+00 0000 0000"
                 }}),
-                parses::<specs::persona::correlation::analyze::v1_1::Payload>,
-                validates::<specs::persona::correlation::analyze::v1_1::Payload>,
+                parses::<specs::persona::correlation::analyze::v1_2::Payload>,
+                validates::<specs::persona::correlation::analyze::v1_2::Payload>,
             ),
             (
-                // The three renamed members, exercised for the same reason the
-                // 1.0 witness exercises their old spellings: the dispatch spine
-                // validates outgoing responses, so a member the schema has not
-                // caught up with is a 500 on a call that fully succeeded.
+                // The crossing members are exercised, not merely allowed: the
+                // dispatch spine validates OUTGOING responses, so a member the
+                // schema has not caught up with is a 500 on a call that fully
+                // succeeded.
                 json!({ "findings": [{
                     "attributeId": ATTR, "severity": "high",
-                    "why": "this value is already presented by another profile",
+                    "reason": "this value is already presented by another profile",
                     "crossesWorlds": true,
                     "worldIds": [FACET],
                     "sharedWith": [{ "profileId": PROFILE, "worldId": FACET }],
                     "remedies": ["useDifferentValue", "reissueCredentialToThisDid",
                                  "correlateDeliberately", "proceedAndRecord"]
                 }]}),
-                parses::<specs::persona::correlation::analyze::v1_1::Response>,
+                parses::<specs::persona::correlation::analyze::v1_2::Response>,
             ),
         ),
         (
