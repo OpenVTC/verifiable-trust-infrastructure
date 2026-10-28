@@ -3691,7 +3691,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(deprecated)] // names the dual-accepted passkey-login 0.1 URIs on purpose
     fn phase_2_uri_registry_present() {
         // Compile-time check: every URI we route in `dispatch_typed`
         // is declared in `vta-sdk::trust_tasks`. If a URI gets renamed
@@ -3702,8 +3701,8 @@ mod tests {
         let _ = vta_sdk::trust_tasks::TASK_AUTH_REVOKE_SESSION_0_2;
         let _ = vta_sdk::trust_tasks::TASK_AUTH_WHOAMI_0_1;
         let _ = vta_sdk::trust_tasks::TASK_AUTH_SESSIONS_LIST_0_1;
-        let _ = vta_sdk::trust_tasks::TASK_AUTH_PASSKEY_LOGIN_START_0_1;
-        let _ = vta_sdk::trust_tasks::TASK_AUTH_PASSKEY_LOGIN_FINISH_0_1;
+        let _ = vta_sdk::trust_tasks::TASK_AUTH_PASSKEY_LOGIN_START_0_2;
+        let _ = vta_sdk::trust_tasks::TASK_AUTH_PASSKEY_LOGIN_FINISH_0_2;
     }
 
     /// Cross-crate URI parity harness (mirrors webvh-service's T9

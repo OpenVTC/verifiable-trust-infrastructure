@@ -1,5 +1,5 @@
 //! Members' step-up passkeys on the signed-document spine —
-//! `auth/passkey/enroll/invite/0.2` (`purpose: stepUp`),
+//! `auth/passkey/enroll/invite/0.3` (`purpose: stepUp`),
 //! `auth/passkey/enroll/redeem/{start,finish}/0.1` and
 //! `auth/passkey/revoke/{start,finish}/0.2` for a member revoking their own,
 //! or an administrator revoking one on a member's behalf, and
@@ -15,12 +15,12 @@
 //! | `enroll/invite` | a community administrator ([`admin_signer`]) | their ACL row, **and** a passkey gesture of theirs bound to this document ([`crate::acl::bound_step_up`]) |
 //! | `enroll/redeem/start` | the member the invite names — required here, although the specification makes the proof optional | the invite token, the claim code and the signer, together |
 //! | `enroll/redeem/finish` | the member, or nobody (the browser that ran the ceremony) | the ceremony a signed start opened |
-//! | `revoke/start`, `revoke/finish` | the member revoking their own step-up passkey, or a community administrator revoking one for a member | a user-verified assertion from the producer's own passkeys — the subject's remaining step-up passkeys for a self-revoke, the administrator's session passkeys otherwise — plus, for an administrator, their ACL row |
+//! | `revoke/start`, `revoke/finish` | the member revoking their own step-up passkey, a community administrator revoking one for a member, or an administrator revoking their own session passkey (which `start` refuses below their last) | a user-verified assertion from the producer's own passkeys — the subject's remaining step-up passkeys for a self-revoke, the administrator's session passkeys otherwise — plus, for an administrator, their ACL row |
 //! | `admin-list` | an administrator with authority over the member — community-wide, or scoped to a context the member's entry names | their ACL row |
 
 use serde_json::Value;
 use trust_tasks_rs::specs::auth::passkey::admin_list::v0_1 as admin_list;
-use trust_tasks_rs::specs::auth::passkey::enroll::invite::v0_2 as invite;
+use trust_tasks_rs::specs::auth::passkey::enroll::invite::v0_3 as invite;
 use trust_tasks_rs::specs::auth::passkey::enroll::redeem::finish::v0_1 as redeem_finish;
 use trust_tasks_rs::specs::auth::passkey::enroll::redeem::start::v0_1 as redeem_start;
 use trust_tasks_rs::specs::auth::passkey::revoke::finish::v0_2 as revoke_finish;
@@ -79,7 +79,7 @@ pub(super) async fn dispatch(
     })
 }
 
-/// `auth/passkey/enroll/invite/0.2`. Letting a member bind a second factor is
+/// `auth/passkey/enroll/invite/0.3`. Letting a member bind a second factor is
 /// an act of authority, so beyond the administrator's signature it takes a
 /// passkey gesture of theirs **bound to this document**: without one the
 /// answer is `permissionDenied` with the ceremony inline as
@@ -219,8 +219,9 @@ async fn revoke_producer(
 }
 
 /// `auth/passkey/revoke/start/0.2`: the member revoking their own step-up
-/// passkey (`payload.subject` absent), or a community administrator revoking
-/// one for a member (`payload.subject` present, naming someone else).
+/// passkey (`payload.subject` absent), a community administrator revoking
+/// one for a member (`payload.subject` present, naming someone else), or an
+/// administrator revoking one of their own session (login) passkeys.
 async fn handle_revoke_start(
     state: &AppState,
     ctx: &JoinAuthCtx,
@@ -234,6 +235,48 @@ async fn handle_revoke_start(
         Ok(p) => p,
         Err(reject) => return reject,
     };
+    // 0.2 resolves the credential across both purposes. A session (login)
+    // credential is an administrator's, revoked by its owner on their own
+    // administrator standing; everything else is a step-up credential.
+    let credential_id = payload.credential_id.as_str();
+    let subject = payload
+        .subject
+        .as_ref()
+        .map_or(producer.as_str(), |s| s.as_str());
+    let session = match crate::routes::admin::passkeys::is_session_credential_of(
+        state,
+        subject,
+        credential_id,
+    )
+    .await
+    {
+        Ok(s) => s,
+        Err(e) => return app_error_to_reject(&doc, &e),
+    };
+    if session {
+        if subject != producer {
+            // An administrator's login passkey is theirs to remove: no
+            // other administrator revokes it on this door.
+            return task_error_to_reject(
+                &doc,
+                &crate::error::TaskError::declared(
+                    revoke_start::error_codes::NOT_AUTHORIZED.code,
+                    crate::error::AppError::Forbidden(
+                        "a session passkey is revoked only by its owner".into(),
+                    ),
+                ),
+            );
+        }
+        let actor = match admin_signer(state, ctx, &doc).await {
+            Ok(a) => a,
+            Err(reject) => return reject,
+        };
+        return match crate::routes::admin::passkeys::revoke_start(state, &actor.did, &payload).await
+        {
+            Ok(response) => success_response(&doc, response),
+            Err(e) => task_error_to_reject(&doc, &e),
+        };
+    }
     match crate::step_up_passkey::revoke_start(state, &producer, &payload).await {
         Ok(response) => success_response(&doc, response),
         Err(e) => task_error_to_reject(&doc, &e),
@@ -254,6 +297,26 @@ async fn handle_revoke_finish(
         Ok(p) => p,
         Err(reject) => return reject,
     };
+    // A handle `revoke/start` minted for a session credential is finished
+    // where it was started.
+    match crate::routes::admin::passkeys::owns_revocation(state, payload.revocation_id.as_str())
+        .await
+    {
+        Ok(false) => {}
+        Ok(true) => {
+            let actor = match admin_signer(state, ctx, &doc).await {
+                Ok(a) => a,
+                Err(reject) => return reject,
+            };
+            return match crate::routes::admin::passkeys::revoke_finish(state, &actor.did, &payload)
+                .await
+            {
+                Ok(response) => success_response(&doc, response),
+                Err(e) => task_error_to_reject(&doc, &e),
+            };
+        }
+        Err(e) => return app_error_to_reject(&doc, &e),
+    }
     match crate::step_up_passkey::revoke_finish(state, &producer, &payload).await {
         Ok(response) => success_response(&doc, response),
         Err(e) => task_error_to_reject(&doc, &e),
@@ -730,7 +793,7 @@ mod tests {
                 ),
                 (
                     &fix.admin,
-                    json!({ "subject": fix.member.did, "purpose": "stepUp", "ttl": 86401 }),
+                    json!({ "subject": fix.member.did, "purpose": "stepUp", "ttlSeconds": 86401 }),
                     "malformedRequest",
                     "an invite lives at most a day",
                 ),

@@ -191,7 +191,7 @@ fn break_glass() -> Value {
 /// gesture gate is the spine's, driven in the unit tests; here it is issued
 /// directly. `(token, claimCode)`.
 async fn invite(h: &Harness, did: &str) -> (String, String) {
-    let payload: trust_tasks_rs::specs::auth::passkey::enroll::invite::v0_2::Payload =
+    let payload: trust_tasks_rs::specs::auth::passkey::enroll::invite::v0_3::Payload =
         serde_json::from_value(json!({ "subject": did, "purpose": "stepUp" })).unwrap();
     let issued =
         vtc_service::step_up_passkey::issue_invite(&h.mock.vtc.state, &h.admin.did, &payload)

@@ -1,7 +1,8 @@
 //! An administrator's own login passkeys on the signed-document spine —
-//! `auth/passkey/list/0.1`, `auth/passkey/enroll/{start,finish}/0.2` and
-//! `auth/passkey/revoke/{start,finish}/0.1`. The operations are
-//! [`crate::routes::admin::passkeys`]'s; this file decides only who is asking.
+//! `auth/passkey/list/0.1` and `auth/passkey/enroll/{start,finish}/0.2`. The
+//! operations are [`crate::routes::admin::passkeys`]'s; this file decides only
+//! who is asking. Revoking one is `auth/passkey/revoke/{start,finish}/0.2`,
+//! one Type URI for both purposes, routed in [`super::step_up_passkey_tasks`].
 //!
 //! Each specification declares `proof` REQUIRED, so the spine refuses an
 //! unsigned document before anything here runs (VTI-OPS-020). They were served
@@ -12,7 +13,6 @@
 //! |---|---|---|
 //! | `list` | an administrator, or a console key acting for one ([`admin_signer`]) | their ACL row |
 //! | `enroll/start`, `enroll/finish` | the same | their ACL row, **and** a user-verified assertion from one of their existing passkeys, in the same ceremony |
-//! | `revoke/start`, `revoke/finish` | the same | their ACL row, **and** a user-verified assertion from one of their existing passkeys |
 //!
 //! [`admin_signer`] admits exactly what the bearer routes' `AdminAuth` did — a
 //! DID whose live ACL row makes it an administrator — read when the document
@@ -23,13 +23,13 @@
 //! profile, not a second factor (`vtc-console-signing.md` §6f) — from binding
 //! or removing an authenticator by itself.
 //!
-//! Members' step-up passkeys are a different store with a different door
-//! (`auth/passkey/revoke/{start,finish}/0.2`, [`super::step_up_passkey_tasks`]).
+//! Members' step-up passkeys are a different store; `revoke/{start,finish}/0.2`
+//! covers both purposes and is dispatched by [`super::step_up_passkey_tasks`],
+//! which hands a session credential back to [`crate::routes::admin::passkeys`].
 
 use serde_json::Value;
 use trust_tasks_rs::specs::auth::passkey::{
     enroll::finish::v0_2 as enroll_finish, enroll::start::v0_2 as enroll_start, list::v0_1 as list,
-    revoke::finish::v0_1 as revoke_finish, revoke::start::v0_1 as revoke_start,
 };
 use trust_tasks_rs::{Payload, TrustTask};
 
@@ -41,17 +41,9 @@ use crate::server::AppState;
 pub(crate) const LIST_TYPE: &str = <list::Payload as Payload>::TYPE_URI;
 pub(crate) const ENROLL_START_TYPE: &str = <enroll_start::Payload as Payload>::TYPE_URI;
 pub(crate) const ENROLL_FINISH_TYPE: &str = <enroll_finish::Payload as Payload>::TYPE_URI;
-pub(crate) const REVOKE_START_TYPE: &str = <revoke_start::Payload as Payload>::TYPE_URI;
-pub(crate) const REVOKE_FINISH_TYPE: &str = <revoke_finish::Payload as Payload>::TYPE_URI;
 
 /// Exactly what [`dispatch`] routes.
-pub(crate) const URIS: &[&str] = &[
-    LIST_TYPE,
-    ENROLL_START_TYPE,
-    ENROLL_FINISH_TYPE,
-    REVOKE_START_TYPE,
-    REVOKE_FINISH_TYPE,
-];
+pub(crate) const URIS: &[&str] = &[LIST_TYPE, ENROLL_START_TYPE, ENROLL_FINISH_TYPE];
 
 pub(super) async fn dispatch(
     state: &AppState,
@@ -78,14 +70,6 @@ pub(super) async fn dispatch(
         ENROLL_FINISH_TYPE => match parse_spec_payload::<enroll_finish::Payload>(&doc) {
             Err(reject) => reject,
             Ok(p) => answer(&doc, passkeys::register_finish(state, did, &p).await),
-        },
-        REVOKE_START_TYPE => match parse_spec_payload::<revoke_start::Payload>(&doc) {
-            Err(reject) => reject,
-            Ok(p) => answer(&doc, passkeys::revoke_start(state, did, &p).await),
-        },
-        REVOKE_FINISH_TYPE => match parse_spec_payload::<revoke_finish::Payload>(&doc) {
-            Err(reject) => reject,
-            Ok(p) => answer(&doc, passkeys::revoke_finish(state, did, &p).await),
         },
         _ => return None,
     })

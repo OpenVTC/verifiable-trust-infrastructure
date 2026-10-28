@@ -62,8 +62,8 @@ const RP_ORIGIN: &str = "https://vtc.example.com";
 const LIST_TASK: &str = "https://trusttasks.org/spec/auth/passkey/list/0.1";
 const ENROLL_START_TASK: &str = "https://trusttasks.org/spec/auth/passkey/enroll/start/0.2";
 const ENROLL_FINISH_TASK: &str = "https://trusttasks.org/spec/auth/passkey/enroll/finish/0.2";
-const REVOKE_START_TASK: &str = "https://trusttasks.org/spec/auth/passkey/revoke/start/0.1";
-const REVOKE_FINISH_TASK: &str = "https://trusttasks.org/spec/auth/passkey/revoke/finish/0.1";
+const REVOKE_START_TASK: &str = "https://trusttasks.org/spec/auth/passkey/revoke/start/0.2";
+const REVOKE_FINISH_TASK: &str = "https://trusttasks.org/spec/auth/passkey/revoke/finish/0.2";
 
 struct Fixture {
     vtc: TestVtc,
@@ -535,19 +535,54 @@ async fn revoke(fix: &mut Fixture, cred_id: &str) -> (StatusCode, Value) {
 
 #[tokio::test]
 async fn revoke_last_passkey_is_refused_last_credential() {
-    let mut fix = build_fixture(true).await;
+    let fix = build_fixture(true).await;
     let entry = get_admin_entry(&fix.vtc.state.passkey_ks, &fix.admin.did)
         .await
         .unwrap()
         .unwrap();
     let cred_id = entry.passkeys[0].credential_id.clone();
 
-    // Refused because this would leave 0 passkeys.
-    let (status, doc) = revoke(&mut fix, &cred_id).await;
-    assert_ne!(status, StatusCode::OK, "revoke finish: {doc}");
+    // Refused because this would leave 0 session passkeys — at start, before
+    // any challenge is issued (revoke/start 0.2 step 4).
+    let (status, doc) = call(
+        &fix.vtc,
+        &fix.admin,
+        REVOKE_START_TASK,
+        json!({ "credentialId": cred_id }),
+    )
+    .await;
+    assert_ne!(status, StatusCode::OK, "revoke start: {doc}");
     assert_eq!(
         error_code(&doc),
-        Some("auth/passkey/revoke/finish:lastCredential"),
+        Some("auth/passkey/revoke/start:lastCredential"),
+        "{doc}"
+    );
+}
+
+/// revoke/start 0.2: an administrator's session passkey is its owner's to
+/// remove. Another administrator naming them as `subject` is refused.
+#[tokio::test]
+async fn revoke_of_another_administrators_session_passkey_is_not_authorized() {
+    let fix = build_fixture(true).await;
+    let entry = get_admin_entry(&fix.vtc.state.passkey_ks, &fix.admin.did)
+        .await
+        .unwrap()
+        .unwrap();
+    let other = party_with_role(&fix.vtc, VtcRole::Admin, &[]).await;
+    let (status, doc) = call(
+        &fix.vtc,
+        &other,
+        REVOKE_START_TASK,
+        json!({
+            "credentialId": entry.passkeys[0].credential_id,
+            "subject": fix.admin.did,
+        }),
+    )
+    .await;
+    assert_ne!(status, StatusCode::OK, "{doc}");
+    assert_eq!(
+        error_code(&doc),
+        Some("auth/passkey/revoke/start:notAuthorized"),
         "{doc}"
     );
 }
@@ -576,6 +611,8 @@ async fn revoke_after_register_succeeds_and_emits_audit_event() {
     let (status, doc) = revoke(&mut fix, &bootstrap_id).await;
     assert_eq!(status, StatusCode::OK, "revoke: {doc}");
     assert_eq!(payload(&doc)["remaining"], 1);
+    assert_eq!(payload(&doc)["subject"], fix.admin.did.as_str());
+    assert_eq!(payload(&doc)["purpose"], "session");
 
     // Verify AdminEntry now has exactly one passkey.
     let entry = get_admin_entry(&fix.vtc.state.passkey_ks, &fix.admin.did)

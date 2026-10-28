@@ -750,7 +750,7 @@ When adding a flow, add it here and a line to the root index.
   `right_ratify`/`right_revoke` as the decider, it never expires into
   acceptance, nobody cancels it, and it closes however the record ends.
   A member who is no console user answers that step-up with a **step-up
-  passkey** (`step_up_passkey`, `auth/passkey/enroll/invite/0.2` `purpose:
+  passkey** (`step_up_passkey`, `auth/passkey/enroll/invite/0.3` `purpose:
   stepUp`), served only as Trust Tasks on the spine
   (`trust_tasks::step_up_passkey_tasks`). It is enrolled only through a
   community admin's single-use invite (signed, with a bound gesture) plus its

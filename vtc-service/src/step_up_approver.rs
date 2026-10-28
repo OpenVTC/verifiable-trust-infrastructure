@@ -45,7 +45,7 @@ use sha2::{Digest, Sha256};
 use tracing::{info, warn};
 use trust_tasks_rs::specs::auth::step_up::approver::attest::v0_1 as attest;
 use trust_tasks_rs::specs::auth::step_up::approver::enroll::v0_1 as enroll;
-use trust_tasks_rs::specs::auth::step_up::approver::invite::v0_1 as invite;
+use trust_tasks_rs::specs::auth::step_up::approver::invite::v0_2 as invite;
 use trust_tasks_rs::specs::auth::step_up::approver::list::v0_1 as list;
 use trust_tasks_rs::specs::auth::step_up::approver::redeem::finish::v0_1 as redeem_finish;
 use trust_tasks_rs::specs::auth::step_up::approver::redeem::start::v0_1 as redeem_start;
@@ -411,7 +411,9 @@ pub async fn check_invite(
             "the subject is not a current member of this community",
         ));
     }
-    let ttl = payload.ttl.map_or(DEFAULT_INVITE_TTL_SECS, |t| t.get());
+    let ttl = payload
+        .ttl_seconds
+        .map_or(DEFAULT_INVITE_TTL_SECS, |t| t.get());
     if ttl > MAX_INVITE_TTL_SECS {
         return Err(ApproverTaskError::Refused {
             code: codes::TTL_TOO_LONG.code,
@@ -484,7 +486,7 @@ async fn mint_invite(
     })
 }
 
-/// `auth/step-up/approver/invite/0.1`, issued by `admin_did`. The caller has
+/// `auth/step-up/approver/invite/0.2`, issued by `admin_did`. The caller has
 /// verified the administrator's proof and spent the step-up bound to this
 /// document.
 pub async fn issue_invite(
@@ -495,7 +497,9 @@ pub async fn issue_invite(
     check_invite(state, admin_did, payload).await?;
     let public_url = state.public_url.as_deref().unwrap_or_default();
     let subject = payload.subject.to_string();
-    let ttl = payload.ttl.map_or(DEFAULT_INVITE_TTL_SECS, |t| t.get());
+    let ttl = payload
+        .ttl_seconds
+        .map_or(DEFAULT_INVITE_TTL_SECS, |t| t.get());
     let minted = mint_invite(
         &state.step_up_approvers_ks,
         public_url,

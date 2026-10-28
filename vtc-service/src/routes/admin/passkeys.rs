@@ -41,7 +41,7 @@ use tokio::sync::Mutex;
 use tracing::info;
 use trust_tasks_rs::specs::auth::passkey::{
     enroll::finish::v0_2 as enroll_finish, enroll::start::v0_2 as enroll_start,
-    revoke::finish::v0_1 as revoke_finish, revoke::start::v0_1 as revoke_start,
+    revoke::finish::v0_2 as revoke_finish, revoke::start::v0_2 as revoke_start,
 };
 use uuid::Uuid;
 use vti_common::audit::{AdminPasskeyData, AuditEvent, AuditWriter};
@@ -188,11 +188,18 @@ pub struct RevokeStartResponse {
 #[derive(utoipa::ToSchema)]
 pub struct RevokeFinishResponse {
     pub credential_id: String,
+    /// Whose credential it was — always the producer's own here: a session
+    /// credential is revoked only by its owner on this door.
+    pub subject: String,
+    /// Always `session`: these are an administrator's login passkeys.
+    /// Step-up credentials are [`crate::step_up_passkey`]'s.
+    pub purpose: &'static str,
     /// When the credential was revoked.
     pub revoked_at: DateTime<Utc>,
-    /// How many passkeys the subject has left.
+    /// How many **session** passkeys the subject has left
+    /// (`auth/passkey/revoke/finish/0.2` counts per purpose).
     ///
-    /// Required by `auth/passkey/revoke/finish/0.1` and absent until #1112.
+    /// Required since `auth/passkey/revoke/finish/0.1`, and absent until #1112.
     /// It is the number the caller most needs and the one this endpoint is
     /// uniquely placed to give: the last-passkey guard refuses to leave an
     /// admin at zero, so a client that cannot see the count cannot tell
@@ -413,8 +420,11 @@ pub(crate) async fn register_finish(
 // revoke start + finish
 // ---------------------------------------------------------------------------
 
-/// `auth/passkey/revoke/start/0.1` — a step-up UV challenge against `did`'s
-/// credentials, pinned to the credential being revoked.
+/// `auth/passkey/revoke/start/0.2` for a **session** credential its owner
+/// revokes — a UV challenge against `did`'s session credentials, pinned to the
+/// credential being revoked. The caller has already resolved the target as
+/// one of `did`'s own session credentials
+/// ([`crate::trust_tasks::step_up_passkey_tasks`] routes both purposes).
 pub(crate) async fn revoke_start(
     state: &AppState,
     did: &str,
@@ -439,6 +449,17 @@ pub(crate) async fn revoke_start(
     {
         return Err(not_found());
     }
+    // 0.2 step 4: refuse before issuing any challenge when this would leave
+    // the subject with no session credential. Re-checked at finish under
+    // the lock, which is what serializes it.
+    if admin_entry.passkeys.len() <= 1 {
+        return Err(TaskError::declared(
+            revoke_start::error_codes::LAST_CREDENTIAL.code,
+            AppError::Conflict(
+                "LastPasskeyProtected: refusing to leave admin with zero passkeys".into(),
+            ),
+        ));
+    }
 
     let pk_user = get_passkey_user_by_did(&state.passkey_ks, did)
         .await?
@@ -449,14 +470,15 @@ pub(crate) async fn revoke_start(
 
     let revocation_id = Uuid::new_v4().to_string();
     store_auth_state(&state.passkey_ks, &revocation_id, &uv_state).await?;
-    // Pin the target credential to the revocation id so finish can
-    // verify the operator didn't substitute a different credential
-    // after seeing the UV challenge.
+    // Pin the producer and the target credential to the revocation id so
+    // finish can refuse another producer's handle (0.2 step 2) and verify
+    // the operator didn't substitute a different credential after seeing
+    // the UV challenge.
     state
         .passkey_ks
         .insert_raw(
             revoke_target_key(&revocation_id),
-            credential_id.into_bytes(),
+            format!("{did}\n{credential_id}").into_bytes(),
         )
         .await?;
 
@@ -468,8 +490,9 @@ pub(crate) async fn revoke_start(
     })
 }
 
-/// `auth/passkey/revoke/finish/0.1` — verify the step-up UV and remove the
-/// pinned credential, refusing to leave `did` with none.
+/// `auth/passkey/revoke/finish/0.2` for a session credential — verify the
+/// user-verified assertion and remove the pinned credential, refusing to leave
+/// `did` with none.
 pub(crate) async fn revoke_finish(
     state: &AppState,
     did: &str,
@@ -491,27 +514,42 @@ pub(crate) async fn revoke_finish(
 
     let _guard = ADMIN_PASSKEY_LOCK.lock().await;
 
-    // Take UV state. As with enroll/finish, a failed UV leaves the
-    // pinned target intact so the legitimate operator can retry.
-    let uv_state = take_auth_state(&state.passkey_ks, revocation_id)
-        .await?
-        .ok_or_else(|| {
-            TaskError::declared(
-                codes::REVOCATION_NOT_FOUND.code,
-                AppError::NotFound("no revocation in progress with this id".into()),
-            )
-        })?;
-    webauthn
-        .finish_passkey_authentication(&uv_response, &uv_state)
-        .map_err(|_| uv_failed())?;
-
+    let not_found = || {
+        TaskError::declared(
+            codes::REVOCATION_NOT_FOUND.code,
+            AppError::NotFound("no revocation in progress with this id".into()),
+        )
+    };
+    // The pinned producer and target, read before anything is consumed: a
+    // handle bound to another producer is `revocationNotFound` (0.2 step 2)
+    // and stays intact for the producer it belongs to.
     let target_bytes = state
         .passkey_ks
         .get_raw(revoke_target_key(revocation_id))
         .await?
-        .ok_or_else(|| AppError::Internal("revocation target missing".into()))?;
-    let target_cred_id = String::from_utf8(target_bytes)
+        .ok_or_else(not_found)?;
+    let pinned = String::from_utf8(target_bytes)
         .map_err(|_| AppError::Internal("revocation target malformed".into()))?;
+    let Some((pinned_did, target_cred_id)) = pinned.split_once('\n') else {
+        return Err(not_found());
+    };
+    if pinned_did != did {
+        return Err(not_found());
+    }
+    let target_cred_id = target_cred_id.to_string();
+
+    // Take UV state. As with enroll/finish, a failed UV leaves the
+    // pinned target intact so the legitimate operator can retry.
+    let uv_state = take_auth_state(&state.passkey_ks, revocation_id)
+        .await?
+        .ok_or_else(not_found)?;
+    let verified = webauthn
+        .finish_passkey_authentication(&uv_response, &uv_state)
+        .map_err(|_| uv_failed())?;
+    // 0.2 step 3: the UV flag, not only a valid signature.
+    if !verified.user_verified() {
+        return Err(uv_failed());
+    }
     state
         .passkey_ks
         .remove(revoke_target_key(revocation_id))
@@ -579,6 +617,8 @@ pub(crate) async fn revoke_finish(
 
     Ok(RevokeFinishResponse {
         credential_id: target_cred_id,
+        subject: did.to_string(),
+        purpose: "session",
         revoked_at: Utc::now(),
         remaining: admin_entry.passkeys.len(),
     })
@@ -587,6 +627,32 @@ pub(crate) async fn revoke_finish(
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/// Whether `credential_id` is one of `did`'s own **session** (login)
+/// passkeys — how `auth/passkey/revoke/start/0.2` tells the two purposes
+/// apart.
+pub(crate) async fn is_session_credential_of(
+    state: &AppState,
+    did: &str,
+    credential_id: &str,
+) -> Result<bool, AppError> {
+    Ok(get_admin_entry(&state.passkey_ks, did)
+        .await?
+        .is_some_and(|e| e.passkeys.iter().any(|p| p.credential_id == credential_id)))
+}
+
+/// Whether `revocation_id` is a session-credential revocation this module
+/// started (`auth/passkey/revoke/finish/0.2` routing).
+pub(crate) async fn owns_revocation(
+    state: &AppState,
+    revocation_id: &str,
+) -> Result<bool, AppError> {
+    Ok(state
+        .passkey_ks
+        .get_raw(revoke_target_key(revocation_id))
+        .await?
+        .is_some())
+}
 
 fn require_webauthn(state: &AppState) -> Result<&Webauthn, AppError> {
     state

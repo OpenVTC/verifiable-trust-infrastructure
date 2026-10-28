@@ -29,9 +29,9 @@ export const TRUST_TASK_ENROLL_START =
 export const TRUST_TASK_ENROLL_FINISH =
   "https://trusttasks.org/spec/auth/passkey/enroll/finish/0.2";
 export const TRUST_TASK_REVOKE_START =
-  "https://trusttasks.org/spec/auth/passkey/revoke/start/0.1";
+  "https://trusttasks.org/spec/auth/passkey/revoke/start/0.2";
 export const TRUST_TASK_REVOKE_FINISH =
-  "https://trusttasks.org/spec/auth/passkey/revoke/finish/0.1";
+  "https://trusttasks.org/spec/auth/passkey/revoke/finish/0.2";
 
 // The list and its rows are the generated wire types, not local interfaces: a
 // local copy is what let `GET /v1/admin/passkeys` be documented with another

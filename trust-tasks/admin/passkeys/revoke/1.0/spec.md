@@ -2,7 +2,7 @@
 id: https://trusttasks.org/openvtc/vtc/admin/passkeys/revoke/1.0
 title: VTC Admin — Revoke Passkey
 status: retired
-supersededBy: https://trusttasks.org/spec/auth/passkey/revoke/start/0.1
+supersededBy: https://trusttasks.org/spec/auth/passkey/revoke/start/0.2
 version: "1.0"
 authors:
   - did:webvh:openvtc.org
@@ -17,8 +17,8 @@ applies_to:
 > (trust-tasks-tf#145); each ceremony leg now carries its own task,
 > where this one covered a whole family:
 >
->   - `POST /v1/admin/passkeys/revoke/start` -> `https://trusttasks.org/spec/auth/passkey/revoke/start/0.1`
->   - `POST /v1/admin/passkeys/revoke/finish` -> `https://trusttasks.org/spec/auth/passkey/revoke/finish/0.1`
+>   - `POST /v1/admin/passkeys/revoke/start` -> `https://trusttasks.org/spec/auth/passkey/revoke/start/0.2`
+>   - `POST /v1/admin/passkeys/revoke/finish` -> `https://trusttasks.org/spec/auth/passkey/revoke/finish/0.2`
 >
 > No wire change — the canonical specs were written from this
 > implementation. Only the task URIs moved.

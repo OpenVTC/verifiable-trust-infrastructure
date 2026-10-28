@@ -303,7 +303,7 @@ choice when they claim.
 
 ### 6c. R2 — invited by another administrator
 
-The step-up passkey invite (`auth/passkey/enroll/invite/0.2`, `purpose:
+The step-up passkey invite (`auth/passkey/enroll/invite/0.3`, `purpose:
 stepUp`) already has every property needed: issued only by a community
 administrator behind their own bound step-up, never to themselves, single use,
 TTL-capped, token in the URL and claim code delivered separately, hashes only,

@@ -16,7 +16,7 @@
 use std::time::Duration;
 
 use serde_json::{Value, json};
-use trust_tasks_rs::specs::auth::passkey::enroll::invite::v0_2 as invite;
+use trust_tasks_rs::specs::auth::passkey::enroll::invite::v0_3 as invite;
 use trust_tasks_rs::specs::auth::passkey::enroll::redeem::finish::v0_1 as redeem_finish;
 use trust_tasks_rs::specs::auth::passkey::enroll::redeem::start::v0_1 as redeem_start;
 use trust_tasks_rs::specs::auth::passkey::revoke::finish::v0_2 as revoke_finish;

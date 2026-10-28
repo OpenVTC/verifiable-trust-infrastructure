@@ -150,7 +150,7 @@
       "status": "retired",
       "path": "admin/passkeys/revoke/1.0",
       "rest": "POST /v1/admin/passkeys/revoke/{start,finish}",
-      "supersededBy": "https://trusttasks.org/spec/auth/passkey/revoke/start/0.1"
+      "supersededBy": "https://trusttasks.org/spec/auth/passkey/revoke/start/0.2"
     },
     {
       "id": "https://trusttasks.org/openvtc/vtc/admin/config/reload/1.0",

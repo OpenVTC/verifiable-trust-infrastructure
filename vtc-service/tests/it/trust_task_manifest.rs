@@ -823,8 +823,8 @@ const SPINE_DOCUMENT_TYPES: &[&str] = &[
     "https://trusttasks.org/spec/auth/passkey/list/0.1",
     "https://trusttasks.org/spec/auth/passkey/enroll/start/0.2",
     "https://trusttasks.org/spec/auth/passkey/enroll/finish/0.2",
-    "https://trusttasks.org/spec/auth/passkey/revoke/start/0.1",
-    "https://trusttasks.org/spec/auth/passkey/revoke/finish/0.1",
+    // Revoking one is `auth/passkey/revoke/{start,finish}/0.2`, listed with the
+    // step-up passkeys below: one Type URI for both purposes.
     "https://trusttasks.org/spec/vtc/auth/admin-session/0.2",
     // Session introspection, signed by the browser key a sign-in bound to the
     // session (`trust_tasks::whoami_tasks`, `admin-ui/src/lib/api.ts`).
@@ -877,11 +877,11 @@ const SPINE_DOCUMENT_TYPES: &[&str] = &[
     // Step-up approvers (`trust_tasks::step_up_approver_tasks`).
     "https://trusttasks.org/spec/auth/step-up/approver/list/0.1",
     "https://trusttasks.org/spec/auth/step-up/approver/revoke/0.1",
-    "https://trusttasks.org/spec/auth/step-up/approver/invite/0.1",
+    "https://trusttasks.org/spec/auth/step-up/approver/invite/0.2",
     "https://trusttasks.org/spec/auth/step-up/approver/enroll/0.1",
     "https://trusttasks.org/spec/auth/step-up/approver/redeem/start/0.1",
     "https://trusttasks.org/spec/auth/step-up/approver/redeem/finish/0.1",
-    "https://trusttasks.org/spec/auth/passkey/enroll/invite/0.2",
+    "https://trusttasks.org/spec/auth/passkey/enroll/invite/0.3",
     "https://trusttasks.org/spec/auth/passkey/enroll/redeem/finish/0.1",
     "https://trusttasks.org/spec/auth/passkey/revoke/start/0.2",
     "https://trusttasks.org/spec/auth/passkey/revoke/finish/0.2",

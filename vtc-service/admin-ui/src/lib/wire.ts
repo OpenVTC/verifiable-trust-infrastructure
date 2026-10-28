@@ -2976,9 +2976,15 @@ export interface components {
         RevokeFinishResponse: {
             credentialId: string;
             /**
-             * @description How many passkeys the subject has left.
+             * @description Always `session`: these are an administrator's login passkeys.
+             *     Step-up credentials are [`crate::step_up_passkey`]'s.
+             */
+            purpose: string;
+            /**
+             * @description How many **session** passkeys the subject has left
+             *     (`auth/passkey/revoke/finish/0.2` counts per purpose).
              *
-             *     Required by `auth/passkey/revoke/finish/0.1` and absent until #1112.
+             *     Required since `auth/passkey/revoke/finish/0.1`, and absent until #1112.
              *     It is the number the caller most needs and the one this endpoint is
              *     uniquely placed to give: the last-passkey guard refuses to leave an
              *     admin at zero, so a client that cannot see the count cannot tell
@@ -2990,6 +2996,11 @@ export interface components {
              * @description When the credential was revoked.
              */
             revokedAt: string;
+            /**
+             * @description Whose credential it was — always the producer's own here: a session
+             *     credential is revoked only by its owner on this door.
+             */
+            subject: string;
         };
         RevokeInviteResponse: {
             jti: string;

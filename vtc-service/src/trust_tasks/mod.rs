@@ -142,7 +142,7 @@ mod wallet_session_tasks;
 // retention sweeper needs.
 pub(crate) mod backup_tasks;
 
-// Members' step-up passkeys: `auth/passkey/enroll/invite/0.2` (`purpose:
+// Members' step-up passkeys: `auth/passkey/enroll/invite/0.3` (`purpose:
 // stepUp`), `enroll/redeem/{start,finish}/0.1` and `revoke/{start,finish}/0.2`.
 // The operations are `crate::step_up_passkey`'s; this is their only door.
 pub(crate) mod step_up_passkey_tasks;
@@ -3277,8 +3277,8 @@ pub(crate) const DISPATCHED_URIS: &[&str] = &[
     admin_passkey_tasks::LIST_TYPE,
     admin_passkey_tasks::ENROLL_START_TYPE,
     admin_passkey_tasks::ENROLL_FINISH_TYPE,
-    admin_passkey_tasks::REVOKE_START_TYPE,
-    admin_passkey_tasks::REVOKE_FINISH_TYPE,
+    // Revoking one is `auth/passkey/revoke/{start,finish}/0.2`, listed with
+    // the step-up passkeys' tasks: one Type URI serves both purposes.
     // The console's bearer → cookie bridge, which replaced
     // `POST /v1/auth/admin-session` (#1641): signed by the token's subject.
     admin_session_tasks::ADMIN_SESSION_TYPE,

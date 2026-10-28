@@ -112,9 +112,7 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     (trust_tasks::TASK_AUTH_REVOKE_SESSION_0_2, RetrySafe),
     (trust_tasks::TASK_AUTH_WHOAMI_0_1, ReadOnly),
     (trust_tasks::TASK_AUTH_SESSIONS_LIST_0_1, ReadOnly),
-    (trust_tasks::TASK_AUTH_PASSKEY_LOGIN_START_0_1, RetrySafe),
     (trust_tasks::TASK_AUTH_PASSKEY_LOGIN_START_0_2, RetrySafe),
-    (trust_tasks::TASK_AUTH_PASSKEY_LOGIN_FINISH_0_1, RetrySafe),
     (trust_tasks::TASK_AUTH_PASSKEY_LOGIN_FINISH_0_2, RetrySafe),
     // Consumes a one-shot step-up approval. A lost reply spends the approval
     // without the caller learning it was granted.

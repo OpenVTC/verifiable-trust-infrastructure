@@ -108,32 +108,16 @@ pub const TASK_AUTH_WHOAMI_0_1: &str = "https://trusttasks.org/spec/auth/whoami/
 /// whoami (single-session). Authenticated (bearer JWT); read-only.
 pub const TASK_AUTH_SESSIONS_LIST_0_1: &str = "https://trusttasks.org/spec/auth/sessions/list/0.1";
 
-/// `spec/auth/passkey/login/start/0.1` — begin a WebAuthn assertion
+/// `spec/auth/passkey/login/start/0.2` — begin a WebAuthn assertion
 /// ceremony. Same wire form serves initial login AND AAL step-up via the
-/// payload's `purpose` field.
-#[deprecated(note = "0.1 is superseded by the 0.2 wire form (the `purpose` \
-    enum uses the camelCase `stepUp` value). The VTA still accepts 0.1 during \
-    the migration window but it will be removed in a future release — prefer \
-    TASK_AUTH_PASSKEY_LOGIN_START_0_2.")]
-pub const TASK_AUTH_PASSKEY_LOGIN_START_0_1: &str =
-    "https://trusttasks.org/spec/auth/passkey/login/start/0.1";
-
-/// `spec/auth/passkey/login/start/0.2` — successor to
-/// [`TASK_AUTH_PASSKEY_LOGIN_START_0_1`]; `purpose: stepUp` (camelCase).
+/// payload's `purpose` field (`login` / `stepUp`). Supersedes 0.1, whose
+/// `purpose` spelt `step-up`; the 0.1 constant is gone.
 pub const TASK_AUTH_PASSKEY_LOGIN_START_0_2: &str =
     "https://trusttasks.org/spec/auth/passkey/login/start/0.2";
 
-/// `spec/auth/passkey/login/finish/0.1` — submit the WebAuthn assertion.
-/// On success the consumer issues a session (for `purpose: login`) or
-/// elevates an existing session's acr (for `purpose: step-up`).
-#[deprecated(note = "0.1 is superseded by the 0.2 wire form. The VTA still \
-    accepts 0.1 during the migration window but it will be removed in a future \
-    release — prefer TASK_AUTH_PASSKEY_LOGIN_FINISH_0_2.")]
-pub const TASK_AUTH_PASSKEY_LOGIN_FINISH_0_1: &str =
-    "https://trusttasks.org/spec/auth/passkey/login/finish/0.1";
-
-/// `spec/auth/passkey/login/finish/0.2` — successor to
-/// [`TASK_AUTH_PASSKEY_LOGIN_FINISH_0_1`].
+/// `spec/auth/passkey/login/finish/0.2` — submit the WebAuthn assertion.
+/// On success the consumer issues a session (`purpose: login`) or elevates
+/// an existing session's acr (`purpose: stepUp`). Supersedes 0.1.
 pub const TASK_AUTH_PASSKEY_LOGIN_FINISH_0_2: &str =
     "https://trusttasks.org/spec/auth/passkey/login/finish/0.2";
 
@@ -2317,9 +2301,7 @@ pub const ALL_URIS: &[&str] = &[
     TASK_AUTH_REVOKE_SESSION_0_2,
     TASK_AUTH_WHOAMI_0_1,
     TASK_AUTH_SESSIONS_LIST_0_1,
-    TASK_AUTH_PASSKEY_LOGIN_START_0_1,
     TASK_AUTH_PASSKEY_LOGIN_START_0_2,
-    TASK_AUTH_PASSKEY_LOGIN_FINISH_0_1,
     TASK_AUTH_PASSKEY_LOGIN_FINISH_0_2,
     TASK_AUTH_STEP_UP_APPROVE_RESPONSE_0_6,
     // Device slice
@@ -2666,8 +2648,6 @@ pub const REST_ROUTED_URIS: &[&str] = &[
     TASK_AUTH_CHALLENGE_0_1,
     TASK_AUTH_AUTHENTICATE_0_3,
     TASK_AUTH_REFRESH_0_2,
-    TASK_AUTH_PASSKEY_LOGIN_START_0_1,
-    TASK_AUTH_PASSKEY_LOGIN_FINISH_0_1,
     TASK_AUTH_PASSKEY_LOGIN_START_0_2,
     TASK_AUTH_PASSKEY_LOGIN_FINISH_0_2,
 ];
