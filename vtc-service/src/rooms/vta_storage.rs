@@ -2,17 +2,16 @@
 //! (`data-rooms-files.md` §7.4).
 //!
 //! The community holds no storage credential. For each object operation it asks
-//! its VTA, over the messaging channel it already keeps, for one presigned
-//! request (`external/credentials/issue/0.1` against an `s3-static-presign`
-//! account): one method on one object, for minutes, every issuance checked
-//! against the community's binding and audited at the VTA. A direct upload's
-//! requests come in batches (`issue/0.3`, 0.2 from a VTA that does not serve
-//! it), each write bound to its length and checksum; a batch whose sealed answer
-//! would not fit is refused `responseTooLarge` and asked for again in parts. The VTA seals the
-//! request to this community's key-agreement key, inside a `#response` whose
+//! its VTA, over the messaging channel it already keeps, for presigned requests
+//! (`external/credentials/issue/0.3` against an `s3-static-presign` account): a
+//! batch of operations on one object, for minutes, every issuance checked
+//! against the community's binding and audited at the VTA, each write bound to
+//! its length and checksum. A batch whose sealed answer would not fit is
+//! refused `responseTooLarge` and asked for again in parts. The VTA seals the
+//! requests to this community's key-agreement key, inside a `#response` whose
 //! proof the inbound demux has verified as the VTA's before it reaches here.
 //!
-//! The scope asked for is always one room's prefix and one object, built from
+//! What is asked for is always one room's prefix and one object, built from
 //! the blob key, so what the VTA signs reaches one blob of one room.
 //!
 //! # What the community needs at its VTA
@@ -30,9 +29,7 @@ use affinidi_secrets_resolver::{SecretsResolver, ThreadedSecretsResolver};
 use async_trait::async_trait;
 use axum::http::StatusCode;
 use serde_json::{Value, json};
-use trust_tasks_rs::specs::external::credentials::issue::v0_1 as issue;
-use trust_tasks_rs::specs::external::credentials::issue::v0_2 as issue_v2;
-use trust_tasks_rs::specs::external::credentials::issue::v0_3 as issue_v3;
+use trust_tasks_rs::specs::external::credentials::issue::v0_3 as issue;
 use vta_sdk::sealed_transfer::ExternalCredentialPayload;
 use vti_common::blob_store::StorageOp;
 use vti_common::blob_store::presigned::{PresignAction, PresignedRequest, Presigner, checksum_b64};
@@ -51,8 +48,6 @@ pub const TTL_SECONDS: i64 = 300;
 const REPLY_TIMEOUT: Duration = Duration::from_secs(30);
 
 const ISSUE: &str = <issue::Payload as trust_tasks_rs::Payload>::TYPE_URI;
-const ISSUE_V2: &str = <issue_v2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
-const ISSUE_V3: &str = <issue_v3::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
 /// The VTA's refusal of an issuance: its code, message and `details`.
 struct Refusal {
@@ -125,24 +120,11 @@ impl VtaStorage {
         })
     }
 
-    /// Ask for one presigned request; the VTA's refusal as `Ok(Err((code, message)))`.
-    async fn issue(&self, asked: &Value) -> Result<Result<String, (String, String)>, AppError> {
-        Ok(self
-            .issue_at(ISSUE, asked)
-            .await?
-            .map_err(|r| (r.code, r.message)))
-    }
-
-    /// Ask at `type_uri` (`issue/0.1`, `0.2` or `0.3`); the sealed answer, or the
-    /// VTA's refusal.
-    async fn issue_at(
-        &self,
-        type_uri: &str,
-        asked: &Value,
-    ) -> Result<Result<String, Refusal>, AppError> {
+    /// Ask for the batch `asked`; the sealed answer, or the VTA's refusal.
+    async fn issue(&self, asked: &Value) -> Result<Result<String, Refusal>, AppError> {
         let reply = self
             .vta
-            .exchange(type_uri, asked, REPLY_TIMEOUT)
+            .exchange(ISSUE, asked, REPLY_TIMEOUT)
             .await
             .map_err(|e| match e {
                 PeerError::Transient(m) => {
@@ -162,11 +144,7 @@ impl VtaStorage {
                 details: reply.payload.get("details").cloned(),
             }));
         }
-        if type_uri == ISSUE {
-            read_answer(&reply, asked).map(Ok)
-        } else {
-            read_batch_answer(type_uri, &reply, asked).map(Ok)
-        }
+        read_batch_answer(&reply, asked).map(Ok)
     }
 
     /// What the VTA says of `account` in `context` for objects under `prefix`
@@ -178,10 +156,10 @@ impl VtaStorage {
         rand::fill(&mut nonce);
         let object: String = nonce.iter().map(|b| format!("{b:02x}")).collect();
         let probe = format!("{prefix}{}", vti_common::blob_store::PROBE_PREFIX);
-        let asked = request(account, context, PresignAction::Get, &probe, &object);
+        let asked = batch_request(account, context, &probe, &object, None, &[StorageOp::Get]);
         match self.issue(&asked).await {
             Ok(Ok(_)) => AccountCheck::Usable,
-            Ok(Err((code, message))) => AccountCheck::from_refusal(&code, message),
+            Ok(Err(r)) => AccountCheck::from_refusal(&r.code, r.message),
             Err(e) => AccountCheck::Unconfirmed(e.to_string()),
         }
     }
@@ -337,23 +315,7 @@ fn unavailable(message: String) -> AppError {
     }
 }
 
-/// The issue request for one object operation.
-fn request(
-    account: &str,
-    context: &str,
-    action: PresignAction,
-    prefix: &str,
-    object: &str,
-) -> Value {
-    json!({
-        "account": account,
-        "context": context,
-        "scope": { "prefix": prefix, "actions": [action.as_str()], "objectKey": object },
-        "ttlSeconds": TTL_SECONDS,
-    })
-}
-
-/// The `issue/0.2`/`0.3` request (one payload shape) presigning `ops` on one object of one room.
+/// The `issue/0.3` request presigning `ops` on one object of one room.
 fn batch_request(
     account: &str,
     context: &str,
@@ -397,15 +359,13 @@ fn batch_request(
     json!({ "account": account, "context": context, "presign": presign, "ttlSeconds": TTL_SECONDS })
 }
 
-/// Read an `issue/0.2` or `0.3` answer (`type_uri` is the version asked) as the
-/// sealed set, after checking it is that task's answer, for exactly the batch
-/// asked.
+/// Read an `issue/0.3` answer as the sealed set, after checking it is that
+/// task's answer, for exactly the batch asked.
 fn read_batch_answer(
-    type_uri: &str,
     reply: &trust_tasks_rs::TrustTask<Value>,
     asked: &Value,
 ) -> Result<String, AppError> {
-    if reply.type_uri.to_string() != format!("{type_uri}#response") {
+    if reply.type_uri.to_string() != format!("{ISSUE}#response") {
         return Err(unavailable(
             "the community's VTA answered a storage request with something else".into(),
         ));
@@ -415,30 +375,16 @@ fn read_batch_answer(
             "the community's VTA answered with a malformed credential: {e}"
         ))
     };
-    let presigned = if type_uri == ISSUE_V3 {
-        match serde_json::from_value(reply.payload.clone()).map_err(malformed)? {
-            issue_v3::Response::Variant1 {
-                presign,
-                sealed_credential,
-                ..
-            } => Some((
-                serde_json::to_value(&presign).unwrap_or(Value::Null),
-                sealed_credential.to_string(),
-            )),
-            _ => None,
-        }
-    } else {
-        match serde_json::from_value(reply.payload.clone()).map_err(malformed)? {
-            issue_v2::Response::Variant1 {
-                presign,
-                sealed_credential,
-                ..
-            } => Some((
-                serde_json::to_value(&presign).unwrap_or(Value::Null),
-                sealed_credential.to_string(),
-            )),
-            _ => None,
-        }
+    let presigned = match serde_json::from_value(reply.payload.clone()).map_err(malformed)? {
+        issue::Response::Variant1 {
+            presign,
+            sealed_credential,
+            ..
+        } => Some((
+            serde_json::to_value(&presign).unwrap_or(Value::Null),
+            sealed_credential.to_string(),
+        )),
+        _ => None,
     };
     let Some((presign, sealed)) = presigned else {
         return Err(unavailable(
@@ -451,31 +397,6 @@ fn read_batch_answer(
         ));
     }
     Ok(sealed)
-}
-
-/// Read the VTA's answer as the sealed credential, after checking it is the
-/// issue task's answer, for exactly the scope asked.
-fn read_answer(
-    reply: &trust_tasks_rs::TrustTask<Value>,
-    asked: &Value,
-) -> Result<String, AppError> {
-    if reply.type_uri.to_string() != format!("{ISSUE}#response") {
-        return Err(unavailable(
-            "the community's VTA answered a storage credential request with something else".into(),
-        ));
-    }
-    let answer: issue::Response = serde_json::from_value(reply.payload.clone()).map_err(|e| {
-        unavailable(format!(
-            "the community's VTA answered with a malformed credential: {e}"
-        ))
-    })?;
-    let echoed = serde_json::to_value(&answer.scope).unwrap_or(Value::Null);
-    if echoed != asked["scope"] {
-        return Err(unavailable(
-            "the community's VTA issued a credential for a different scope than asked".into(),
-        ));
-    }
-    Ok(answer.sealed_credential.to_string())
 }
 
 #[async_trait]
@@ -493,9 +414,7 @@ impl Presigner for AccountPresigner {
     /// consumer item 5): the first `details.maxOperations` operations when the
     /// VTA names it, else the first half, then the rest. Each part is a new,
     /// smaller request, so this is a split, not a retry; it ends when every
-    /// operation is answered or one alone does not fit. A VTA that does not
-    /// serve 0.3 (`unsupportedType` / `unsupportedVersion`, as the SDK and the
-    /// git bridge read it) is asked at 0.2, which takes the same batch.
+    /// operation is answered or one alone does not fit.
     async fn presign_ops(
         &self,
         prefix: &str,
@@ -503,11 +422,10 @@ impl Presigner for AccountPresigner {
         upload_id: Option<&str>,
         ops: &[StorageOp],
     ) -> Result<Vec<PresignedRequest>, AppError> {
-        let too_large = issue_v3::error_codes::RESPONSE_TOO_LARGE.code;
+        let too_large = issue::error_codes::RESPONSE_TOO_LARGE.code;
         let mut out = Vec::with_capacity(ops.len());
         let mut rest = ops;
         let mut take = rest.len();
-        let mut type_uri = ISSUE_V3;
         while !rest.is_empty() {
             let n = take.min(rest.len());
             let part = &rest[..n];
@@ -519,17 +437,11 @@ impl Presigner for AccountPresigner {
                 upload_id,
                 part,
             );
-            match self.link.issue_at(type_uri, &asked).await? {
+            match self.link.issue(&asked).await? {
                 Ok(armored) => {
                     out.extend(self.open_set(&armored, part.len()).await?);
                     rest = &rest[n..];
                     take = n;
-                }
-                Err(r)
-                    if type_uri == ISSUE_V3
-                        && matches!(r.code.as_str(), "unsupportedType" | "unsupportedVersion") =>
-                {
-                    type_uri = ISSUE_V2;
                 }
                 Err(r) if r.code == too_large => {
                     match vta_sdk::client::presign_split_at(n, r.details.as_ref()) {
@@ -560,46 +472,22 @@ impl Presigner for AccountPresigner {
         prefix: &str,
         object_key: &str,
     ) -> Result<PresignedRequest, AppError> {
-        let link = &self.link;
-        let asked = request(&self.account, &self.context, action, prefix, object_key);
-        let armored = link.issue(&asked).await?.map_err(|(code, message)| {
-            unavailable(format!(
-                "the community's VTA refused a storage credential ({code}): {message}"
-            ))
-        })?;
-        let secret = link.key_agreement_secret().await?;
-        let credential = vta_sdk::client::open_external_credential(&armored, &secret)
-            .map_err(|e| unavailable(format!("the storage credential did not open: {e}")))?;
-        let ExternalCredentialPayload::PresignedRequest {
-            method,
-            url,
-            headers,
-            expires_at,
-            ..
-        } = &credential
-        else {
-            return Err(unavailable(format!(
-                "external account `{}` does not issue presigned requests (this community uses \
-                 `s3-static-presign` accounts)",
-                self.account
-            )));
+        // `issue/0.3` presigns only a write bound to its length and SHA-256, so
+        // a write is asked for through `presign_ops`, which the presigned store
+        // uses for every write when `presigns_ops` holds.
+        let op = match action {
+            PresignAction::Get => StorageOp::Get,
+            PresignAction::Delete => StorageOp::Delete,
+            PresignAction::Put => {
+                return Err(AppError::Internal(
+                    "a VTA-held account presigns only writes bound to their length and \
+                     checksum"
+                        .into(),
+                ));
+            }
         };
-        if !self.addresses(url) {
-            return Err(unavailable(format!(
-                "external account `{}` presigns for a different bucket or endpoint than this \
-                 config's `{}`",
-                self.account, self.bucket
-            )));
-        }
-        let expires_at = chrono::DateTime::parse_from_rfc3339(expires_at)
-            .map(|t| t.with_timezone(&chrono::Utc))
-            .map_err(|_| unavailable("the storage credential has no readable expiry".into()))?;
-        Ok(PresignedRequest {
-            method: method.clone(),
-            url: url.clone(),
-            headers: headers.clone(),
-            expires_at,
-        })
+        let mut reqs = self.presign_ops(prefix, object_key, None, &[op]).await?;
+        Ok(reqs.remove(0))
     }
 }
 
@@ -613,12 +501,13 @@ mod tests {
     }
 
     fn asked() -> Value {
-        request(
+        batch_request(
             "eu-r2",
             "community",
-            PresignAction::Get,
             "rooms/0123456789abcdef0123456789abcdef/",
             "zObject",
+            None,
+            &[StorageOp::Get],
         )
     }
 
@@ -693,31 +582,12 @@ mod tests {
     }
 
     #[test]
-    fn an_answer_for_another_scope_is_refused() {
-        let mut scope = asked()["scope"].clone();
-        scope["objectKey"] = json!("zOther");
-        let reply = doc(
-            &format!("{ISSUE}#response"),
-            json!({
-                "sealedCredential": format!(
-                    "-----BEGIN VTA SEALED BUNDLE-----\n{}\n-----END VTA SEALED BUNDLE-----\n",
-                    "x".repeat(64)
-                ),
-                "expiresAt": "2030-01-01T00:00:00Z",
-                "scope": scope,
-            }),
-        );
-        let err = read_answer(&reply, &asked()).unwrap_err().to_string();
-        assert!(err.contains("different scope"), "{err}");
-    }
-
-    #[test]
     fn another_task_is_not_an_answer() {
         let reply = doc(
-            "https://trusttasks.org/spec/external/accounts/get/0.1#response",
+            "https://trusttasks.org/spec/external/accounts/get/0.2#response",
             json!({}),
         );
-        assert!(read_answer(&reply, &asked()).is_err());
+        assert!(read_batch_answer(&reply, &asked()).is_err());
     }
 
     /// A direct upload's batch is the specification's payload, each write carrying
@@ -746,13 +616,12 @@ mod tests {
             checksum_b64(&[9; 32])
         );
         assert_eq!(v["ttlSeconds"], TTL_SECONDS);
-        serde_json::from_value::<issue_v2::Payload>(v.clone()).expect("conforms to issue 0.2");
-        serde_json::from_value::<issue_v3::Payload>(v.clone()).expect("conforms to issue 0.3");
+        serde_json::from_value::<issue::Payload>(v.clone()).expect("conforms to issue 0.3");
 
         let mut other = v["presign"].clone();
         other["objectKey"] = json!("zOther");
         let reply = doc(
-            &format!("{ISSUE_V2}#response"),
+            &format!("{ISSUE}#response"),
             json!({
                 "sealedCredential": format!(
                     "-----BEGIN VTA SEALED BUNDLE-----\n{}\n-----END VTA SEALED BUNDLE-----\n",
@@ -762,21 +631,17 @@ mod tests {
                 "presign": other,
             }),
         );
-        let err = read_batch_answer(ISSUE_V2, &reply, &v)
-            .unwrap_err()
-            .to_string();
+        let err = read_batch_answer(&reply, &v).unwrap_err().to_string();
         assert!(err.contains("different batch"), "{err}");
     }
 
-    /// A stand-in VTA answering presign batches. At 0.3 it refuses a batch of
-    /// more than `fits` operations `responseTooLarge` (naming `fits` when
-    /// `names_max`), or every 0.3 request `unsupportedType` when `serves_0_3` is
-    /// off. It records each request's version and size.
+    /// A stand-in VTA answering presign batches. It refuses a batch of more than
+    /// `fits` operations `responseTooLarge` (naming `fits` when `names_max`). It
+    /// records each request's version and size.
     struct BatchVta {
         community_x25519: [u8; 32],
         fits: usize,
         names_max: bool,
-        serves_0_3: bool,
         asked: std::sync::Mutex<Vec<(String, usize)>>,
     }
 
@@ -803,9 +668,6 @@ mod tests {
                     json!({ "code": code, "message": "no", "retryable": false, "details": details }),
                 ))
             };
-            if type_uri == ISSUE_V3 && !self.serves_0_3 {
-                return error("unsupportedType", json!({}));
-            }
             // Conformance item 4, as `vta_external::batch::check_batch` holds it.
             let needs = ops.iter().any(|op| {
                 matches!(
@@ -816,7 +678,7 @@ mod tests {
             if payload["presign"].get("uploadId").is_some() != needs {
                 return error("external/credentials/issue:invalidBatch", json!({}));
             }
-            if type_uri == ISSUE_V3 && ops.len() > self.fits {
+            if ops.len() > self.fits {
                 let details = if self.names_max {
                     json!({ "maxOperations": self.fits })
                 } else {
@@ -902,10 +764,9 @@ mod tests {
 
     /// `issue/0.3` consumer item 5: a batch refused `responseTooLarge` is asked
     /// for again in parts — of `maxOperations` when given, else halves — and
-    /// every operation is answered, in order. A VTA serving only 0.2 is asked at
-    /// 0.2.
+    /// every operation is answered, in order.
     #[tokio::test]
-    async fn a_batch_too_large_to_seal_is_split_and_an_old_vta_is_asked_at_0_2() {
+    async fn a_batch_too_large_to_seal_is_split() {
         let mut bytes = [0u8; 32];
         rand::fill(&mut bytes);
         let public = {
@@ -914,12 +775,11 @@ mod tests {
             let p: [u8; 32] = s.get_public_bytes().try_into().unwrap();
             p
         };
-        let vta = |fits, names_max, serves_0_3| {
+        let vta = |fits, names_max| {
             Arc::new(BatchVta {
                 community_x25519: public,
                 fits,
                 names_max,
-                serves_0_3,
                 asked: Default::default(),
             })
         };
@@ -931,7 +791,7 @@ mod tests {
             .collect();
 
         // Named: 64 → 10, 10, …, 4 after one refusal.
-        let named = vta(10, true, true);
+        let named = vta(10, true);
         let p = batch_presigner(named.clone(), bytes).await;
         let out = p
             .presign_ops("rooms/", "o", Some("U"), &parts(64))
@@ -939,12 +799,12 @@ mod tests {
             .unwrap();
         assert_eq!(urls(&out), expected);
         let asked = named.asked.lock().unwrap().clone();
-        assert!(asked.iter().all(|(uri, _)| uri == ISSUE_V3));
+        assert!(asked.iter().all(|(uri, _)| uri == ISSUE));
         let sizes: Vec<usize> = asked.iter().map(|(_, n)| *n).collect();
         assert_eq!(sizes, [64, 10, 10, 10, 10, 10, 10, 4]);
 
         // Unnamed: halves — 64, 32, 16, then 16-wide parts.
-        let halves = vta(20, false, true);
+        let halves = vta(20, false);
         let p = batch_presigner(halves.clone(), bytes).await;
         let out = p
             .presign_ops("rooms/", "o", Some("U"), &parts(64))
@@ -961,7 +821,7 @@ mod tests {
         assert_eq!(sizes, [64, 32, 16, 16, 16, 16]);
 
         // One operation alone that does not fit is an error, not a loop.
-        let none = vta(0, false, true);
+        let none = vta(0, false);
         let p = batch_presigner(none.clone(), bytes).await;
         assert!(
             p.presign_ops("rooms/", "o", Some("U"), &parts(4))
@@ -972,7 +832,7 @@ mod tests {
 
         // The checks and the completion, split: the `head` cut away from the
         // multipart operations is asked for without `uploadId`.
-        let checks = vta(2, true, true);
+        let checks = vta(2, true);
         let p = batch_presigner(checks.clone(), bytes).await;
         let ops = [
             StorageOp::ListParts { marker: None },
@@ -989,26 +849,12 @@ mod tests {
             .map(|(_, n)| *n)
             .collect();
         assert_eq!(sizes, [3, 2, 1]);
-
-        // A VTA that does not serve 0.3 is asked the same batch at 0.2.
-        let old = vta(64, true, false);
-        let p = batch_presigner(old.clone(), bytes).await;
-        let out = p
-            .presign_ops("rooms/", "o", Some("U"), &parts(64))
-            .await
-            .unwrap();
-        assert_eq!(urls(&out), expected);
-        let asked = old.asked.lock().unwrap().clone();
-        assert_eq!(
-            asked,
-            [(ISSUE_V3.to_string(), 64), (ISSUE_V2.to_string(), 64)]
-        );
     }
 
     #[test]
     fn the_request_is_one_room_one_object_one_action() {
         let v = asked();
-        assert_eq!(v["scope"]["actions"], json!(["get"]));
+        assert_eq!(v["presign"]["requests"], json!([{ "operation": "get" }]));
         assert_eq!(v["ttlSeconds"], TTL_SECONDS);
         serde_json::from_value::<issue::Payload>(v).expect("conforms to the issue payload");
     }

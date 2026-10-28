@@ -173,7 +173,7 @@ rests on the cloud's own host isolation instead.
     `ProtocolDefined` again.
   - **It only certifies** the VTA's own account keys. Its issuance is never
     exposed as a task.
-- **Rotation**: `external/accounts/keys/rotate/0.1`.
+- **Rotation**: `external/accounts/keys/rotate/0.2`.
   - **Pinned models** stage the new key beside the old one: both in the uploaded
     JWKS (GCP), or a second end-entity certificate under the same anchor (AWS).
   - **The old key retires** after the administrator confirms the cloud side was
@@ -187,7 +187,7 @@ Two consumer tasks, and only two.
 
 | Task | Models | Returns |
 |---|---|---|
-| `external/credentials/issue/0.1` (`0.2`, `0.3`) | every brokered model | cloud credentials or a presigned URL, **sealed** (§6), with an expiry; from `0.2`, a batch of presigned requests on one object for `s3-static-presign` (at most 64 at `0.3`) |
+| `external/credentials/issue/0.3` | every brokered model | cloud credentials under `scope`, or for `s3-static-presign` a batch of at most 64 presigned requests on one object under `presign`, **sealed** (§6), with an expiry (0.1 presigned one request; 0.2 allowed 128) |
 | `external/sign/0.1` | `sui-signer` | a signature over a transaction the VTA validated |
 
 **The VTA does the exchange.** For brokered models the consumer never sees the
@@ -200,7 +200,7 @@ the VTA's enforcement.
 **Every issuance is downscoped** to the request, inside the binding's ceiling:
 
 ```jsonc
-// external/credentials/issue/0.1
+// external/credentials/issue/0.3
 { "account": "eu-s3-primary",
   "scope":   { "prefix": "rooms/3f9a…/", "actions": ["put", "get", "delete"] },
   "ttl":     "15m" }
@@ -280,13 +280,13 @@ console all drive the same surface:
 | Task | Does |
 |---|---|
 | `external/accounts/{list,get}/0.1` | Read. Never a secret or private key; fingerprints and public material only |
-| `external/accounts/create/0.1` | Creates an account and derives or generates its key |
-| `external/accounts/update/0.1` | Changes settings (bucket, role ARN, pool provider) |
+| `external/accounts/create/0.2` | Creates an account and derives or generates its key |
+| `external/accounts/update/0.2` | Changes settings (bucket, role ARN, pool provider) |
 | `external/accounts/secret/set/0.1` | Static models only. The payload is a `sealed_transfer` armor block sealed **in the administrator's browser** to the VTA. Write-only |
 | `external/accounts/bindings/{grant,revoke}/0.1` | Who may use it, with what ceiling |
 | `external/accounts/setup/0.1` | §8's cloud-side setup, regenerated on demand |
-| `external/accounts/probe/0.1` | §8's check |
-| `external/accounts/keys/rotate/0.1` | §4 |
+| `external/accounts/probe/0.2` | §8's check |
+| `external/accounts/keys/rotate/0.2` | §4 |
 | `external/accounts/{suspend,resume,archive,restore,delete}/0.1` | Lifecycle. **Suspend is the kill switch**: one task, immediate, refusing every issuance |
 
 **Authorization**: a new capability, `external-accounts-manage`, in the owning

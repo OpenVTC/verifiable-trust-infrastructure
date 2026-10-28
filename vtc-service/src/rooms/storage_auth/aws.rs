@@ -657,7 +657,7 @@ fn op_access(op: &StorageOp) -> Access {
 type Signed = Vec<(&'static str, String)>;
 
 /// Method, signed query and signed headers of one operation — the table of
-/// `external/credentials/issue/0.2` item 10, which [`PresignedBlobs`] sends.
+/// `external/credentials/issue/0.3` item 10, which [`PresignedBlobs`] sends.
 fn op_parts(op: &StorageOp, upload_id: Option<&str>) -> (&'static str, Signed, Signed) {
     let id = || upload_id.unwrap_or_default().to_string();
     match *op {

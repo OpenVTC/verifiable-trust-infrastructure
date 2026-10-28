@@ -38,53 +38,53 @@ impl VtaClient {
         })
     }
 
-    /// `external/accounts/list/0.1`.
+    /// `external/accounts/list/0.2`.
     pub async fn external_accounts_list(
         &self,
-        req: &ext::accounts::list::v0_1::Payload,
-    ) -> Result<ext::accounts::list::v0_1::Response, VtaError> {
+        req: &ext::accounts::list::v0_2::Payload,
+    ) -> Result<ext::accounts::list::v0_2::Response, VtaError> {
         self.external_call(
-            trust_tasks::TASK_EXTERNAL_ACCOUNTS_LIST_0_1,
+            trust_tasks::TASK_EXTERNAL_ACCOUNTS_LIST_0_2,
             req,
             EXTERNAL_TT_TIMEOUT,
         )
         .await
     }
 
-    /// `external/accounts/get/0.1`.
+    /// `external/accounts/get/0.2`.
     pub async fn external_accounts_get(
         &self,
-        req: &ext::accounts::get::v0_1::Payload,
-    ) -> Result<ext::accounts::get::v0_1::Response, VtaError> {
+        req: &ext::accounts::get::v0_2::Payload,
+    ) -> Result<ext::accounts::get::v0_2::Response, VtaError> {
         self.external_call(
-            trust_tasks::TASK_EXTERNAL_ACCOUNTS_GET_0_1,
+            trust_tasks::TASK_EXTERNAL_ACCOUNTS_GET_0_2,
             req,
             EXTERNAL_TT_TIMEOUT,
         )
         .await
     }
 
-    /// `external/accounts/create/0.1`. May be held for other administrators'
+    /// `external/accounts/create/0.2`. May be held for other administrators'
     /// consent under the VTA's approvals policy.
     pub async fn external_accounts_create(
         &self,
-        req: &ext::accounts::create::v0_1::Payload,
-    ) -> Result<ext::accounts::create::v0_1::Response, VtaError> {
+        req: &ext::accounts::create::v0_2::Payload,
+    ) -> Result<ext::accounts::create::v0_2::Response, VtaError> {
         self.external_call(
-            trust_tasks::TASK_EXTERNAL_ACCOUNTS_CREATE_0_1,
+            trust_tasks::TASK_EXTERNAL_ACCOUNTS_CREATE_0_2,
             req,
             EXTERNAL_TT_TIMEOUT,
         )
         .await
     }
 
-    /// `external/accounts/update/0.1`.
+    /// `external/accounts/update/0.2`.
     pub async fn external_accounts_update(
         &self,
-        req: &ext::accounts::update::v0_1::Payload,
-    ) -> Result<ext::accounts::update::v0_1::Response, VtaError> {
+        req: &ext::accounts::update::v0_2::Payload,
+    ) -> Result<ext::accounts::update::v0_2::Response, VtaError> {
         self.external_call(
-            trust_tasks::TASK_EXTERNAL_ACCOUNTS_UPDATE_0_1,
+            trust_tasks::TASK_EXTERNAL_ACCOUNTS_UPDATE_0_2,
             req,
             EXTERNAL_TT_TIMEOUT,
         )
@@ -108,26 +108,26 @@ impl VtaClient {
         .await
     }
 
-    /// `external/accounts/bindings/grant/0.1`.
+    /// `external/accounts/bindings/grant/0.2`.
     pub async fn external_accounts_bindings_grant(
         &self,
-        req: &ext::accounts::bindings::grant::v0_1::Payload,
-    ) -> Result<ext::accounts::bindings::grant::v0_1::Response, VtaError> {
+        req: &ext::accounts::bindings::grant::v0_2::Payload,
+    ) -> Result<ext::accounts::bindings::grant::v0_2::Response, VtaError> {
         self.external_call(
-            trust_tasks::TASK_EXTERNAL_ACCOUNTS_BINDINGS_GRANT_0_1,
+            trust_tasks::TASK_EXTERNAL_ACCOUNTS_BINDINGS_GRANT_0_2,
             req,
             EXTERNAL_TT_TIMEOUT,
         )
         .await
     }
 
-    /// `external/accounts/bindings/revoke/0.1`.
+    /// `external/accounts/bindings/revoke/0.2`.
     pub async fn external_accounts_bindings_revoke(
         &self,
-        req: &ext::accounts::bindings::revoke::v0_1::Payload,
-    ) -> Result<ext::accounts::bindings::revoke::v0_1::Response, VtaError> {
+        req: &ext::accounts::bindings::revoke::v0_2::Payload,
+    ) -> Result<ext::accounts::bindings::revoke::v0_2::Response, VtaError> {
         self.external_call(
-            trust_tasks::TASK_EXTERNAL_ACCOUNTS_BINDINGS_REVOKE_0_1,
+            trust_tasks::TASK_EXTERNAL_ACCOUNTS_BINDINGS_REVOKE_0_2,
             req,
             EXTERNAL_TT_TIMEOUT,
         )
@@ -147,79 +147,79 @@ impl VtaClient {
         .await
     }
 
-    /// `external/accounts/probe/0.1`. A provider refusal is a report with
+    /// `external/accounts/probe/0.2`. A provider refusal is a report with
     /// `ok: false`, not an error.
     pub async fn external_accounts_probe(
         &self,
-        req: &ext::accounts::probe::v0_1::Payload,
-    ) -> Result<ext::accounts::probe::v0_1::Response, VtaError> {
+        req: &ext::accounts::probe::v0_2::Payload,
+    ) -> Result<ext::accounts::probe::v0_2::Response, VtaError> {
         self.external_call(
-            trust_tasks::TASK_EXTERNAL_ACCOUNTS_PROBE_0_1,
+            trust_tasks::TASK_EXTERNAL_ACCOUNTS_PROBE_0_2,
             req,
             EXTERNAL_PROBE_TIMEOUT,
         )
         .await
     }
 
-    /// `external/accounts/keys/rotate/0.1`.
+    /// `external/accounts/keys/rotate/0.2`.
     pub async fn external_accounts_keys_rotate(
         &self,
-        req: &ext::accounts::keys::rotate::v0_1::Payload,
-    ) -> Result<ext::accounts::keys::rotate::v0_1::Response, VtaError> {
+        req: &ext::accounts::keys::rotate::v0_2::Payload,
+    ) -> Result<ext::accounts::keys::rotate::v0_2::Response, VtaError> {
         self.external_call(
-            trust_tasks::TASK_EXTERNAL_ACCOUNTS_KEYS_ROTATE_0_1,
+            trust_tasks::TASK_EXTERNAL_ACCOUNTS_KEYS_ROTATE_0_2,
             req,
             EXTERNAL_TT_TIMEOUT,
         )
         .await
     }
 
-    /// `external/accounts/suspend/0.1` — the kill switch.
+    /// `external/accounts/suspend/0.2` — the kill switch.
     pub async fn external_accounts_suspend(
         &self,
-        req: &ext::accounts::suspend::v0_1::Payload,
-    ) -> Result<ext::accounts::suspend::v0_1::Response, VtaError> {
+        req: &ext::accounts::suspend::v0_2::Payload,
+    ) -> Result<ext::accounts::suspend::v0_2::Response, VtaError> {
         self.external_call(
-            trust_tasks::TASK_EXTERNAL_ACCOUNTS_SUSPEND_0_1,
+            trust_tasks::TASK_EXTERNAL_ACCOUNTS_SUSPEND_0_2,
             req,
             EXTERNAL_TT_TIMEOUT,
         )
         .await
     }
 
-    /// `external/accounts/resume/0.1`.
+    /// `external/accounts/resume/0.2`.
     pub async fn external_accounts_resume(
         &self,
-        req: &ext::accounts::resume::v0_1::Payload,
-    ) -> Result<ext::accounts::resume::v0_1::Response, VtaError> {
+        req: &ext::accounts::resume::v0_2::Payload,
+    ) -> Result<ext::accounts::resume::v0_2::Response, VtaError> {
         self.external_call(
-            trust_tasks::TASK_EXTERNAL_ACCOUNTS_RESUME_0_1,
+            trust_tasks::TASK_EXTERNAL_ACCOUNTS_RESUME_0_2,
             req,
             EXTERNAL_TT_TIMEOUT,
         )
         .await
     }
 
-    /// `external/accounts/archive/0.1`.
+    /// `external/accounts/archive/0.2`.
     pub async fn external_accounts_archive(
         &self,
-        req: &ext::accounts::archive::v0_1::Payload,
-    ) -> Result<ext::accounts::archive::v0_1::Response, VtaError> {
+        req: &ext::accounts::archive::v0_2::Payload,
+    ) -> Result<ext::accounts::archive::v0_2::Response, VtaError> {
         self.external_call(
-            trust_tasks::TASK_EXTERNAL_ACCOUNTS_ARCHIVE_0_1,
+            trust_tasks::TASK_EXTERNAL_ACCOUNTS_ARCHIVE_0_2,
             req,
             EXTERNAL_TT_TIMEOUT,
         )
         .await
     }
 
-    /// `external/accounts/restore/0.1` — lands the account suspended.
+    /// `external/accounts/restore/0.2` — lands the account suspended.
     pub async fn external_accounts_restore(
         &self,
-        req: &ext::accounts::restore::v0_1::Payload,
-    ) -> Result<ext::accounts::restore::v0_1::Response, VtaError> {
+        req: &ext::accounts::restore::v0_2::Payload,
+    ) -> Result<ext::accounts::restore::v0_2::Response, VtaError> {
         self.external_call(
-            trust_tasks::TASK_EXTERNAL_ACCOUNTS_RESTORE_0_1,
+            trust_tasks::TASK_EXTERNAL_ACCOUNTS_RESTORE_0_2,
             req,
             EXTERNAL_TT_TIMEOUT,
         )
@@ -239,43 +239,16 @@ impl VtaClient {
         .await
     }
 
-    /// `external/credentials/issue/0.1`. Open the answer's `sealedCredential`
-    /// with [`open_external_credential`]; keep the credential in memory only.
-    pub async fn external_credentials_issue(
-        &self,
-        req: &ext::credentials::issue::v0_1::Payload,
-    ) -> Result<ext::credentials::issue::v0_1::Response, VtaError> {
-        self.external_call(
-            trust_tasks::TASK_EXTERNAL_CREDENTIALS_ISSUE_0_1,
-            req,
-            EXTERNAL_TT_TIMEOUT,
-        )
-        .await
-    }
-
-    /// `external/credentials/issue/0.2`: a credential under `scope`, or — for an
-    /// `s3-static-presign` account — a batch of presigned requests under
-    /// `presign`, whose sealed cleartext is a
+    /// `external/credentials/issue/0.3`: a credential under `scope`, or — for an
+    /// `s3-static-presign` account — a batch of at most 64 presigned requests
+    /// under `presign`, whose sealed cleartext is a
     /// [`PresignedRequests`](crate::sealed_transfer::ExternalCredentialPayload::PresignedRequests)
     /// set. Open it with [`open_external_credential`]; keep it in memory only.
-    pub async fn external_credentials_issue_v2(
-        &self,
-        req: &ext::credentials::issue::v0_2::Payload,
-    ) -> Result<ext::credentials::issue::v0_2::Response, VtaError> {
-        self.external_call(
-            trust_tasks::TASK_EXTERNAL_CREDENTIALS_ISSUE_0_2,
-            req,
-            EXTERNAL_TT_TIMEOUT,
-        )
-        .await
-    }
-
-    /// `external/credentials/issue/0.3`: as 0.2, with at most 64 operations in a
-    /// batch. A batch whose sealed answer would not fit is refused with
+    /// A batch whose sealed answer would not fit is refused with
     /// `external/credentials/issue:responseTooLarge` ([`VtaError::Rejected`]),
     /// which cost none of the binding's rate; [`Self::external_credentials_issue_presign`]
     /// splits it for you.
-    pub async fn external_credentials_issue_v3(
+    pub async fn external_credentials_issue(
         &self,
         req: &ext::credentials::issue::v0_3::Payload,
     ) -> Result<ext::credentials::issue::v0_3::Response, VtaError> {
@@ -300,9 +273,7 @@ impl VtaClient {
     /// first part included; a count the VTA named for one part is only a first
     /// guess for the next. A part carries the batch's `uploadId` only when one of
     /// its operations needs it (Conformance item 4), so cutting `upload-part`s
-    /// from a `head` does not make the `head` an `invalidBatch`. A VTA that does not
-    /// serve 0.3 (`unsupportedType` / `unsupportedVersion`) is asked at 0.2,
-    /// which takes the same batch; its answers are read as 0.3's.
+    /// from a `head` does not make the `head` an `invalidBatch`.
     pub async fn external_credentials_issue_presign(
         &self,
         req: &ext::credentials::issue::v0_3::Payload,
@@ -320,23 +291,12 @@ impl VtaClient {
         let mut answers = Vec::new();
         let mut rest = ops.as_slice();
         let mut take = rest.len();
-        let mut at_0_2 = false;
         while !rest.is_empty() {
             let n = take.min(rest.len());
             let part = presign_part(&base, &rest[..n]);
-            let answer = if at_0_2 {
-                self.issue_presign_part_0_2(&part).await
-            } else {
-                let p: v0_3::Payload = serde_json::from_value(part.clone())
-                    .map_err(|e| VtaError::Validation(format!("issue request: {e}")))?;
-                match self.external_credentials_issue_v3(&p).await {
-                    Err(VtaError::UnsupportedTaskType { .. }) => {
-                        at_0_2 = true;
-                        self.issue_presign_part_0_2(&part).await
-                    }
-                    other => other,
-                }
-            };
+            let p: v0_3::Payload = serde_json::from_value(part)
+                .map_err(|e| VtaError::Validation(format!("issue request: {e}")))?;
+            let answer = self.external_credentials_issue(&p).await;
             match answer {
                 Ok(a) => {
                     answers.push(a);
@@ -361,20 +321,6 @@ impl VtaClient {
             }
         }
         Ok(answers)
-    }
-
-    /// One part at `issue/0.2`, for a VTA that does not serve 0.3, read as 0.3's
-    /// answer (the batch asked holds at most 64, so the echo is 0.3's too).
-    async fn issue_presign_part_0_2(
-        &self,
-        part: &serde_json::Value,
-    ) -> Result<ext::credentials::issue::v0_3::Response, VtaError> {
-        let p: ext::credentials::issue::v0_2::Payload = serde_json::from_value(part.clone())
-            .map_err(|e| VtaError::Validation(format!("issue request: {e}")))?;
-        let answer = self.external_credentials_issue_v2(&p).await?;
-        serde_json::to_value(answer)
-            .and_then(serde_json::from_value)
-            .map_err(|e| VtaError::Protocol(format!("issue/0.2 answer read as 0.3's: {e}")))
     }
 }
 

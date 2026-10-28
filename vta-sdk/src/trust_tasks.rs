@@ -2224,75 +2224,67 @@ pub const TASK_MESSAGING_PING_0_1: &str = "https://trusttasks.org/spec/messaging
 // The VTA as the key authority for cloud and third-party accounts:
 // docs/05-design-notes/vta-external-accounts.md.
 
-/// `external/accounts/list/0.1` — list a context's external accounts — settings, bindings and public material, never a secret.
-pub const TASK_EXTERNAL_ACCOUNTS_LIST_0_1: &str =
-    <trust_tasks_rs::specs::external::accounts::list::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+/// `external/accounts/list/0.2` — list a context's external accounts — settings, bindings and public material, never a secret.
+pub const TASK_EXTERNAL_ACCOUNTS_LIST_0_2: &str =
+    <trust_tasks_rs::specs::external::accounts::list::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
-/// `external/accounts/get/0.1` — one external account.
-pub const TASK_EXTERNAL_ACCOUNTS_GET_0_1: &str =
-    <trust_tasks_rs::specs::external::accounts::get::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+/// `external/accounts/get/0.2` — one external account.
+pub const TASK_EXTERNAL_ACCOUNTS_GET_0_2: &str =
+    <trust_tasks_rs::specs::external::accounts::get::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
-/// `external/accounts/create/0.1` — create an external account and derive or generate its key. Consent-gated by default.
-pub const TASK_EXTERNAL_ACCOUNTS_CREATE_0_1: &str =
-    <trust_tasks_rs::specs::external::accounts::create::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+/// `external/accounts/create/0.2` — create an external account and derive or generate its key. Consent-gated by default.
+pub const TASK_EXTERNAL_ACCOUNTS_CREATE_0_2: &str =
+    <trust_tasks_rs::specs::external::accounts::create::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
-/// `external/accounts/update/0.1` — change an account's label or settings. Consent-gated by default.
-pub const TASK_EXTERNAL_ACCOUNTS_UPDATE_0_1: &str =
-    <trust_tasks_rs::specs::external::accounts::update::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+/// `external/accounts/update/0.2` — change an account's label or settings. Consent-gated by default.
+pub const TASK_EXTERNAL_ACCOUNTS_UPDATE_0_2: &str =
+    <trust_tasks_rs::specs::external::accounts::update::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
 /// `external/accounts/secret/set/0.1` — set a static model's secret from a sealed-transfer bundle; write-only, the answer is a keyed fingerprint. Consent-gated by default.
 pub const TASK_EXTERNAL_ACCOUNTS_SECRET_SET_0_1: &str =
     <trust_tasks_rs::specs::external::accounts::secret::set::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
-/// `external/accounts/bindings/grant/0.1` — bind a consumer DID to an account, with a scope ceiling, a TTL ceiling and a rate. Consent-gated by default.
-pub const TASK_EXTERNAL_ACCOUNTS_BINDINGS_GRANT_0_1: &str =
-    <trust_tasks_rs::specs::external::accounts::bindings::grant::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+/// `external/accounts/bindings/grant/0.2` — bind a consumer DID to an account, with a scope ceiling, a TTL ceiling and a rate. Consent-gated by default.
+pub const TASK_EXTERNAL_ACCOUNTS_BINDINGS_GRANT_0_2: &str =
+    <trust_tasks_rs::specs::external::accounts::bindings::grant::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
-/// `external/accounts/bindings/revoke/0.1` — remove a consumer's binding. Never consent-gated: taking authority away must be fast.
-pub const TASK_EXTERNAL_ACCOUNTS_BINDINGS_REVOKE_0_1: &str =
-    <trust_tasks_rs::specs::external::accounts::bindings::revoke::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+/// `external/accounts/bindings/revoke/0.2` — remove a consumer's binding. Never consent-gated: taking authority away must be fast.
+pub const TASK_EXTERNAL_ACCOUNTS_BINDINGS_REVOKE_0_2: &str =
+    <trust_tasks_rs::specs::external::accounts::bindings::revoke::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
 /// `external/accounts/setup/0.1` — the provider-side setup for an account, generated.
 pub const TASK_EXTERNAL_ACCOUNTS_SETUP_0_1: &str =
     <trust_tasks_rs::specs::external::accounts::setup::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
-/// `external/accounts/probe/0.1` — exercise an account end to end and report each step.
-pub const TASK_EXTERNAL_ACCOUNTS_PROBE_0_1: &str =
-    <trust_tasks_rs::specs::external::accounts::probe::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+/// `external/accounts/probe/0.2` — exercise an account end to end and report each step.
+pub const TASK_EXTERNAL_ACCOUNTS_PROBE_0_2: &str =
+    <trust_tasks_rs::specs::external::accounts::probe::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
-/// `external/accounts/keys/rotate/0.1` — stage, confirm or abandon a replacement key. Consent-gated by default.
-pub const TASK_EXTERNAL_ACCOUNTS_KEYS_ROTATE_0_1: &str =
-    <trust_tasks_rs::specs::external::accounts::keys::rotate::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+/// `external/accounts/keys/rotate/0.2` — stage, confirm or abandon a replacement key. Consent-gated by default.
+pub const TASK_EXTERNAL_ACCOUNTS_KEYS_ROTATE_0_2: &str =
+    <trust_tasks_rs::specs::external::accounts::keys::rotate::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
-/// `external/accounts/suspend/0.1` — the kill switch: refuse every issuance at once. Never consent-gated.
-pub const TASK_EXTERNAL_ACCOUNTS_SUSPEND_0_1: &str =
-    <trust_tasks_rs::specs::external::accounts::suspend::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+/// `external/accounts/suspend/0.2` — the kill switch: refuse every issuance at once. Never consent-gated.
+pub const TASK_EXTERNAL_ACCOUNTS_SUSPEND_0_2: &str =
+    <trust_tasks_rs::specs::external::accounts::suspend::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
-/// `external/accounts/resume/0.1` — return a suspended account to service. Consent-gated by default.
-pub const TASK_EXTERNAL_ACCOUNTS_RESUME_0_1: &str =
-    <trust_tasks_rs::specs::external::accounts::resume::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+/// `external/accounts/resume/0.2` — return a suspended account to service. Consent-gated by default.
+pub const TASK_EXTERNAL_ACCOUNTS_RESUME_0_2: &str =
+    <trust_tasks_rs::specs::external::accounts::resume::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
-/// `external/accounts/archive/0.1` — retire an account from service, keeping its record.
-pub const TASK_EXTERNAL_ACCOUNTS_ARCHIVE_0_1: &str =
-    <trust_tasks_rs::specs::external::accounts::archive::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+/// `external/accounts/archive/0.2` — retire an account from service, keeping its record.
+pub const TASK_EXTERNAL_ACCOUNTS_ARCHIVE_0_2: &str =
+    <trust_tasks_rs::specs::external::accounts::archive::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
-/// `external/accounts/restore/0.1` — bring an archived account back, suspended.
-pub const TASK_EXTERNAL_ACCOUNTS_RESTORE_0_1: &str =
-    <trust_tasks_rs::specs::external::accounts::restore::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+/// `external/accounts/restore/0.2` — bring an archived account back, suspended.
+pub const TASK_EXTERNAL_ACCOUNTS_RESTORE_0_2: &str =
+    <trust_tasks_rs::specs::external::accounts::restore::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
 /// `external/accounts/delete/0.1` — delete an archived account for good; its id is never reused. Consent-gated by default.
 pub const TASK_EXTERNAL_ACCOUNTS_DELETE_0_1: &str =
     <trust_tasks_rs::specs::external::accounts::delete::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
-/// `external/credentials/issue/0.1` — a short-lived, downscoped provider credential for a bound consumer, sealed to the caller.
-pub const TASK_EXTERNAL_CREDENTIALS_ISSUE_0_1: &str =
-    <trust_tasks_rs::specs::external::credentials::issue::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
-
-/// `external/credentials/issue/0.2` — a session or token under `scope`, or up to 128 presigned requests on one object under `presign` (each write bound to its length and SHA-256, multipart included), sealed to the caller.
-pub const TASK_EXTERNAL_CREDENTIALS_ISSUE_0_2: &str =
-    <trust_tasks_rs::specs::external::credentials::issue::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
-
-/// `external/credentials/issue/0.3` — as 0.2, with at most 64 presigned requests in a batch, and `responseTooLarge` (counted against no rate) for a batch whose sealed answer would not fit.
+/// `external/credentials/issue/0.3` — a session or token under `scope`, or up to 64 presigned requests on one object under `presign` (each write bound to its length and SHA-256, multipart included), sealed to the caller; `responseTooLarge` (counted against no rate) for a batch whose sealed answer would not fit.
 pub const TASK_EXTERNAL_CREDENTIALS_ISSUE_0_3: &str =
     <trust_tasks_rs::specs::external::credentials::issue::v0_3::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
@@ -2684,23 +2676,21 @@ pub const ALL_URIS: &[&str] = &[
     TASK_ROOMS_OWNER_GROUP_RENEW_0_2,
     TASK_VTA_MEMORY_DELETE_0_1,
     // External accounts (`external/*`)
-    TASK_EXTERNAL_ACCOUNTS_LIST_0_1,
-    TASK_EXTERNAL_ACCOUNTS_GET_0_1,
-    TASK_EXTERNAL_ACCOUNTS_CREATE_0_1,
-    TASK_EXTERNAL_ACCOUNTS_UPDATE_0_1,
+    TASK_EXTERNAL_ACCOUNTS_LIST_0_2,
+    TASK_EXTERNAL_ACCOUNTS_GET_0_2,
+    TASK_EXTERNAL_ACCOUNTS_CREATE_0_2,
+    TASK_EXTERNAL_ACCOUNTS_UPDATE_0_2,
     TASK_EXTERNAL_ACCOUNTS_SECRET_SET_0_1,
-    TASK_EXTERNAL_ACCOUNTS_BINDINGS_GRANT_0_1,
-    TASK_EXTERNAL_ACCOUNTS_BINDINGS_REVOKE_0_1,
+    TASK_EXTERNAL_ACCOUNTS_BINDINGS_GRANT_0_2,
+    TASK_EXTERNAL_ACCOUNTS_BINDINGS_REVOKE_0_2,
     TASK_EXTERNAL_ACCOUNTS_SETUP_0_1,
-    TASK_EXTERNAL_ACCOUNTS_PROBE_0_1,
-    TASK_EXTERNAL_ACCOUNTS_KEYS_ROTATE_0_1,
-    TASK_EXTERNAL_ACCOUNTS_SUSPEND_0_1,
-    TASK_EXTERNAL_ACCOUNTS_RESUME_0_1,
-    TASK_EXTERNAL_ACCOUNTS_ARCHIVE_0_1,
-    TASK_EXTERNAL_ACCOUNTS_RESTORE_0_1,
+    TASK_EXTERNAL_ACCOUNTS_PROBE_0_2,
+    TASK_EXTERNAL_ACCOUNTS_KEYS_ROTATE_0_2,
+    TASK_EXTERNAL_ACCOUNTS_SUSPEND_0_2,
+    TASK_EXTERNAL_ACCOUNTS_RESUME_0_2,
+    TASK_EXTERNAL_ACCOUNTS_ARCHIVE_0_2,
+    TASK_EXTERNAL_ACCOUNTS_RESTORE_0_2,
     TASK_EXTERNAL_ACCOUNTS_DELETE_0_1,
-    TASK_EXTERNAL_CREDENTIALS_ISSUE_0_1,
-    TASK_EXTERNAL_CREDENTIALS_ISSUE_0_2,
     TASK_EXTERNAL_CREDENTIALS_ISSUE_0_3,
     // Hidden-vetting PCS engine (`vta/pcs/*`)
     TASK_VTA_PCS_APPLICATIONS_CREATE_0_1,

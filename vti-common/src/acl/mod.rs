@@ -290,7 +290,7 @@ pub enum Capability {
     /// the approvals defaults sit on top of it, so holding this capability lets
     /// a caller *ask* for a change; other administrators decide it.
     ExternalAccountsManage,
-    /// Consuming an external account — `external/credentials/issue/0.1`.
+    /// Consuming an external account — `external/credentials/issue`.
     ///
     /// Necessary and not sufficient: the account must also carry a binding
     /// naming the caller, which fixes which account, how far, how long and how

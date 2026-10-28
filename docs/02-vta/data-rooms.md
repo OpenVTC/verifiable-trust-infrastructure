@@ -1109,9 +1109,9 @@ community's ACL or a session.
   ```
 - **S3 through the community's VTA** (`auth: vta-account`). The VTC holds no
   storage credential. For every object operation it asks its VTA, over the
-  messaging channel it already keeps, for one presigned request
-  (`external/credentials/issue/0.1` on an `s3-static-presign` account): one
-  method on one object of one room, valid for five minutes, checked against the
+  messaging channel it already keeps, for presigned requests
+  (`external/credentials/issue/0.3` on an `s3-static-presign` account) on one
+  object of one room, each write bound to its length and SHA-256, valid for five minutes, checked against the
   community's binding and audited at the VTA, and sealed to the community's
   key-agreement key. A download's ranges reuse one read request until shortly
   before it expires. The VTA needs no inbound surface for any of it. To set one
@@ -1127,7 +1127,7 @@ community's ACL or a session.
      upload — `maxTtlSeconds` of at least 300, and a rate per minute that covers
      a few issuances per file. A direct upload is about four (create, one per 64
      parts, the checks and completion together), whatever its size: one
-     `external/credentials/issue/0.2` batch counts once.
+     `external/credentials/issue/0.3` batch counts once.
      The access key at the store must also allow `ListMultipartUploadParts` and
      `AbortMultipartUpload` on those prefixes; `pnm external setup` prints the
      policy.
@@ -1179,7 +1179,7 @@ community's ACL or a session.
     within five minutes, never logged. The member writes each part to its target
     and begins again, with the same manifest and plan, for the rest or for any
     that lapsed. Every request is presigned by the VTA in
-    `external/credentials/issue/0.2` batches; the VTC holds no storage
+    `external/credentials/issue/0.3` batches; the VTC holds no storage
     credential. A plan of one part is one `PUT`; several parts must be at least
     5 MiB but the last (storage's floor), or the begin is answered proxied (with
     an upload key) or `noTransferMode`.
