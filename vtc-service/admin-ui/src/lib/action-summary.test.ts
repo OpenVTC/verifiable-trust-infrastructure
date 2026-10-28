@@ -89,12 +89,12 @@ describe("shared template vectors", () => {
     const v = VECTORS.find((x) => x.name === "grant an unrestricted administrator")!;
     const s = await verified({ ...v });
     expect(s.title).toBe(
-      "Make did:webvh:QmScid…xample:carol an unrestricted administrator",
+      "Make did:webvh:QmScid…xample:carol a admin",
     );
     expect(s.fields.find((f) => f.name === "subject")!.text).toBe(
       "did:webvh:QmScidExample:community.example:carol",
     );
-    expect(s.fields.find((f) => f.name === "scopes")!.text).toBe("none");
+    expect(s.fields.find((f) => f.name === "role")!.text).toBe("admin");
     expect(s.fields.find((f) => f.name === "expiresAt")!.text).toBe("—");
   });
 
@@ -141,7 +141,7 @@ describe("refusal", () => {
   it("refuses a pinned template under another task", async () => {
     const out = await verifySummary({
       ...base,
-      typeUri: "https://trusttasks.org/spec/acl/revoke/0.1",
+      typeUri: "https://trusttasks.org/spec/acl/revoke/0.2",
     });
     expect((out as SummaryRefusal).reason).toBe("unpinnedTemplate");
   });
@@ -160,15 +160,16 @@ describe("refusal", () => {
   });
 
   it("refuses a field whose value is not of its format", async () => {
-    const payload = { entry: { subject: 42, role: "admin", scopes: [] }, reason: "x" };
+    const payload = clone(base.payload) as { entry: { subject: unknown } };
+    payload.entry.subject = 42;
     const summary = clone(base.summary);
     summary.fields.subject!.value = 42;
     const out = await verifySummary({ ...base, payload, summary });
     expect((out as SummaryRefusal).reason).toBe("badFormat");
   });
 
-  it("pins exactly sixty-one (kind, typeUri) pairs, one per server template", () => {
-    expect(Object.keys(PINNED_TEMPLATE_DIGESTS)).toHaveLength(61);
+  it("pins exactly fifty-six (kind, typeUri) pairs, one per server template", () => {
+    expect(Object.keys(PINNED_TEMPLATE_DIGESTS)).toHaveLength(56);
   });
 });
 
@@ -274,7 +275,7 @@ describe("digests", () => {
   });
 
   it("the wire digest matches an independent node:crypto construction", async () => {
-    const typeUri = "https://trusttasks.org/spec/acl/grant/0.1";
+    const typeUri = "https://trusttasks.org/spec/acl/grant/0.2";
     const challenge = "c2hhbGxlbmdlLWZvci10aGlzLWRlY2lzaW9u";
     const jcs = Buffer.from(jcsCanonicalize(payload), "utf8");
     const uri = Buffer.from(typeUri, "utf8");
@@ -305,7 +306,7 @@ describe("digests", () => {
   it("fixed vector: empty payload, fixed challenge", async () => {
     // Computed by hand from the construction: tag, u64be(41), the URI,
     // u64be(2), "{}", "abc".
-    const typeUri = "https://trusttasks.org/spec/acl/grant/0.1";
+    const typeUri = "https://trusttasks.org/spec/acl/grant/0.2";
     const hex = createHash("sha256")
       .update(
         Buffer.concat([

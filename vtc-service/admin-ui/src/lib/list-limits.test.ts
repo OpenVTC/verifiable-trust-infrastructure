@@ -62,6 +62,7 @@ const GROUPS_REQUESTS = `${T}/vtc/groups/requests/list/0.2`;
 const ELECTIONS = `${T}/vtc/elections/list/0.3`;
 const AUDIT = `${T}/audit/list/0.2`;
 const POLICIES = `${T}/policy/list/0.3`;
+const ACL_LIST = `${T}/acl/list/0.3`;
 
 interface Site {
   /** The file, under `src/`. */
@@ -83,6 +84,7 @@ const SITES: Site[] = [
   { file: "plugins/audit.tsx", site: "limit: pageSize", uri: AUDIT, from: ["50"] },
   // One purpose's policy revisions (Ceremonies).
   { file: "lib/policies-api.ts", site: "limit: 100", uri: POLICIES, from: ["100"] },
+  { file: "lib/acl.ts", site: "limit: 200", uri: ACL_LIST, from: ["200"] },
   // The Directory page's entries tab: one page of the largest size.
   { file: "plugins/directory.tsx", site: "limit: 100", uri: DIRECTORY_ENTRIES, uriFile: "lib/directory.ts", from: ["100"] },
   // The directory export: the largest page, followed to the end.

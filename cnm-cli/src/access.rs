@@ -25,7 +25,7 @@ use clap::Subcommand;
 use serde_json::Value;
 use vta_cli_common::render::{DIM, GREEN, RESET, YELLOW, bin_name, is_json_output, print_json};
 use vta_sdk::session::TransportChoice;
-use vtc_client::acl::{AclGrantV02, AclListFilterV02, AclUpdateV02};
+use vtc_client::acl::{AclGrant, AclListFilter, AclUpdate};
 use vtc_client::{HolderKey, VtcError};
 
 use crate::auth;
@@ -255,7 +255,7 @@ async fn run_command(command: AccessCommands, vtc: &Connected, keyring_key: &str
                 (Some(_), None) => Some("actingIn".to_string()),
                 (_, d) => d,
             };
-            let filter = AclListFilterV02 {
+            let filter = AclListFilter {
                 role: admin_role,
                 capability,
                 resource,
@@ -263,11 +263,7 @@ async fn run_command(command: AccessCommands, vtc: &Connected, keyring_key: &str
                 subject_prefix,
                 ..Default::default()
             };
-            let entries = vtc
-                .client
-                .acl_list_all_v0_2(&filter, &key)
-                .await
-                .map_err(fail)?;
+            let entries = vtc.client.acl_list_all(&filter, &key).await.map_err(fail)?;
             let values: Vec<Value> = entries
                 .iter()
                 .map(serde_json::to_value)
@@ -283,11 +279,7 @@ async fn run_command(command: AccessCommands, vtc: &Connected, keyring_key: &str
             }
         }
         AccessCommands::Show { subject } => {
-            let shown = vtc
-                .client
-                .acl_show_v0_2(&subject, &key)
-                .await
-                .map_err(fail)?;
+            let shown = vtc.client.acl_show(&subject, &key).await.map_err(fail)?;
             let shown = serde_json::to_value(&shown)?;
             if shown["entry"].is_null() && !is_json_output() {
                 println!("{DIM}{subject} holds no entry{RESET}");
@@ -306,7 +298,7 @@ async fn run_command(command: AccessCommands, vtc: &Connected, keyring_key: &str
             expires,
             reason,
         } => {
-            let grant = AclGrantV02 {
+            let grant = AclGrant {
                 subject,
                 admin_role,
                 // No --capability: the role's full ceiling. Approve-only: none.
@@ -322,11 +314,7 @@ async fn run_command(command: AccessCommands, vtc: &Connected, keyring_key: &str
                 expires_at: expires.as_deref().map(expiry_from_now).transpose()?,
                 reason,
             };
-            let granted = vtc
-                .client
-                .acl_grant_v0_2(&grant, &key)
-                .await
-                .map_err(fail)?;
+            let granted = vtc.client.acl_grant(&grant, &key).await.map_err(fail)?;
             report(&serde_json::to_value(&granted)?, "granted")?;
         }
         AccessCommands::Update {
@@ -340,7 +328,7 @@ async fn run_command(command: AccessCommands, vtc: &Connected, keyring_key: &str
             permanent,
             reason,
         } => {
-            let update = AclUpdateV02 {
+            let update = AclUpdate {
                 subject,
                 label: if clear_label {
                     Some(None)
@@ -364,11 +352,7 @@ async fn run_command(command: AccessCommands, vtc: &Connected, keyring_key: &str
                 },
                 reason,
             };
-            let updated = vtc
-                .client
-                .acl_update_v0_2(&update, &key)
-                .await
-                .map_err(fail)?;
+            let updated = vtc.client.acl_update(&update, &key).await.map_err(fail)?;
             report(&serde_json::to_value(&updated)?, "updated")?;
         }
         AccessCommands::ChangeRole {
@@ -398,7 +382,7 @@ async fn run_command(command: AccessCommands, vtc: &Connected, keyring_key: &str
                     .await
             } else {
                 vtc.client
-                    .acl_revoke(&subject, None, reason.as_deref(), &key)
+                    .acl_revoke(&subject, reason.as_deref(), &key)
                     .await
             }
             .map_err(fail)?;

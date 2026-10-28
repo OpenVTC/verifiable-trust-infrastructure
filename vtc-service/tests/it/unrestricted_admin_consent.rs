@@ -28,9 +28,9 @@ fn tt_error_code(doc: &Value) -> Option<&str> {
 }
 
 const RP_ORIGIN: &str = "https://vtc.example.com";
-const GRANT: &str = "https://trusttasks.org/spec/acl/grant/0.1";
+const GRANT: &str = "https://trusttasks.org/spec/acl/grant/0.2";
 const CHANGE_ROLE: &str = "https://trusttasks.org/spec/acl/change-role/0.1";
-const REVOKE: &str = "https://trusttasks.org/spec/acl/revoke/0.1";
+const REVOKE: &str = "https://trusttasks.org/spec/acl/revoke/0.2";
 const PATCH: &str = "https://trusttasks.org/spec/config/patch/0.1";
 const ACTIVATE: &str = "https://trusttasks.org/spec/policy/activate/0.1";
 const UPSERT: &str = "https://trusttasks.org/spec/policy/upsert/0.3";
@@ -118,7 +118,7 @@ async fn entry(fix: &Fixture, did: &str) -> Option<VtcAclEntry> {
 }
 
 fn grant_unrestricted(subject: &str) -> Value {
-    json!({ "entry": { "subject": subject, "role": "admin", "scopes": [] } })
+    crate::common::signed::grant_payload(subject, "admin")
 }
 
 /// Send `doc` as `by`, answer the gesture it asks for, and return the reply
@@ -1065,7 +1065,12 @@ async fn the_list_shows_each_caller_what_is_theirs_to_see() {
     let id = park(
         &mut fix,
         &a,
-        &signed(&a, REVOKE, json!({ "subject": c.did })).await,
+        &signed(
+            &a,
+            REVOKE,
+            json!({ "subject": c.did , "revocation": { "kind": "entry" }}),
+        )
+        .await,
     )
     .await;
 
@@ -1202,7 +1207,12 @@ async fn vti_apv_019_a_reduction_parks_and_completes() {
     let id = park(
         &mut fix,
         &a,
-        &signed(&a, REVOKE, json!({ "subject": subject.did })).await,
+        &signed(
+            &a,
+            REVOKE,
+            json!({ "subject": subject.did , "revocation": { "kind": "entry" }}),
+        )
+        .await,
     )
     .await;
     assert_eq!(action(&fix, &a, &id).await["kind"], "acl.reduce.authority");
@@ -1357,7 +1367,7 @@ async fn a_scoped_admin_grant_needs_no_approval() {
         &signed(
             &a,
             GRANT,
-            json!({ "entry": { "subject": subject.did, "role": "moderator", "scopes": [] } }),
+            crate::common::signed::grant_payload(&subject.did, "moderator"),
         )
         .await,
     )
@@ -1472,7 +1482,12 @@ async fn vti_apv_009_a_revoke_that_would_strand_the_threshold_is_refused() {
     patch_threshold(&fix, &a, 2).await;
     let (status, body) = post(
         &fix.vtc,
-        &signed(&a, REVOKE, json!({ "subject": c.did })).await,
+        &signed(
+            &a,
+            REVOKE,
+            json!({ "subject": c.did , "revocation": { "kind": "entry" }}),
+        )
+        .await,
     )
     .await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
@@ -1491,7 +1506,12 @@ async fn a_two_admin_community_can_still_remove_one_at_the_default_threshold() {
     let (status, body) = submit(
         &mut fix,
         &a,
-        &signed(&a, REVOKE, json!({ "subject": b.did })).await,
+        &signed(
+            &a,
+            REVOKE,
+            json!({ "subject": b.did , "revocation": { "kind": "entry" }}),
+        )
+        .await,
     )
     .await;
     assert_eq!(status, StatusCode::ACCEPTED, "{body}");

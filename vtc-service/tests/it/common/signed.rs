@@ -261,3 +261,45 @@ pub async fn seed_criterion(vtc: &TestVtc, mut criterion: Value) {
         .await
         .expect("store the criterion");
 }
+
+/// `acl/grant/0.2`, `acl/update/0.2`, `acl/show/0.2`, `acl/revoke/0.2` and
+/// `acl/list/0.3` — the ACL versions this VTC serves.
+pub const ACL_GRANT: &str = "https://trusttasks.org/spec/acl/grant/0.2";
+pub const ACL_UPDATE: &str = "https://trusttasks.org/spec/acl/update/0.2";
+pub const ACL_SHOW: &str = "https://trusttasks.org/spec/acl/show/0.2";
+pub const ACL_REVOKE: &str = "https://trusttasks.org/spec/acl/revoke/0.2";
+pub const ACL_LIST: &str = "https://trusttasks.org/spec/acl/list/0.3";
+
+/// The `acl/grant/0.2` entry that holds what community role `role` implies:
+/// `admin` → `community-admin` acting everywhere at its full ceiling,
+/// `moderator` → `moderator`, `issuer` → `credential-officer`, `member` (or
+/// anything else) → no administrative role, acting nowhere. The community
+/// role is the one the administrative role implies, so no
+/// `ext["org.openvtc"].communityRole` is needed.
+pub fn acl_entry(subject: &str, role: &str) -> Value {
+    let admin_role = match role {
+        "admin" => "community-admin",
+        "moderator" => "moderator",
+        "issuer" => "credential-officer",
+        _ => "member",
+    };
+    let acts = admin_role != "member";
+    serde_json::json!({
+        "subject": subject,
+        "role": admin_role,
+        "act": { "scope": if acts { "all" } else { "none" } },
+        "keys": { "scope": "none" },
+        "capabilities": { "scope": if acts { "ceiling" } else { "none" } },
+    })
+}
+
+/// An `acl/grant/0.2` payload granting `subject` what community role `role`
+/// implies ([`acl_entry`]).
+pub fn grant_payload(subject: &str, role: &str) -> Value {
+    serde_json::json!({ "entry": acl_entry(subject, role) })
+}
+
+/// An `acl/revoke/0.2` payload removing `subject`'s entry.
+pub fn revoke_payload(subject: &str) -> Value {
+    serde_json::json!({ "subject": subject, "revocation": { "kind": "entry" } })
+}

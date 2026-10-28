@@ -38,9 +38,9 @@ fn tt_error_code(doc: &Value) -> Option<&str> {
 }
 
 const RP_ORIGIN: &str = "https://vtc.example.com";
-const GRANT: &str = "https://trusttasks.org/spec/acl/grant/0.1";
-const REVOKE: &str = "https://trusttasks.org/spec/acl/revoke/0.1";
-const UPDATE: &str = "https://trusttasks.org/spec/acl/update/0.1";
+const GRANT: &str = "https://trusttasks.org/spec/acl/grant/0.2";
+const REVOKE: &str = "https://trusttasks.org/spec/acl/revoke/0.2";
+const UPDATE: &str = "https://trusttasks.org/spec/acl/update/0.2";
 const CHANGE_ROLE: &str = "https://trusttasks.org/spec/acl/change-role/0.1";
 const ADMIN_REMOVE: &str = "https://trusttasks.org/spec/vtc/members/admin-remove/0.1";
 const PATCH: &str = "https://trusttasks.org/spec/config/patch/0.1";
@@ -574,7 +574,7 @@ async fn vti_apv_019_a_consented_revocation_sends_the_notice() {
         &signed(
             &a,
             REVOKE,
-            json!({ "subject": subject.did, "reason": "rotation" }),
+            json!({ "subject": subject.did, "revocation": { "kind": "entry" }, "reason": "rotation" }),
         )
         .await,
     )
@@ -608,7 +608,12 @@ async fn vti_apv_019_each_direct_reduction_sends_the_notice_with_its_code() {
     let (status, reply) = submit(
         &mut fix,
         &a,
-        &signed(&a, REVOKE, json!({ "subject": revoked.did })).await,
+        &signed(
+            &a,
+            REVOKE,
+            json!({ "subject": revoked.did , "revocation": { "kind": "entry" }}),
+        )
+        .await,
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{reply}");
@@ -658,7 +663,12 @@ async fn vti_apv_019_each_direct_reduction_sends_the_notice_with_its_code() {
     let moderator = seed(&fix, VtcRole::Member, &[]).await;
     let (status, _) = post(
         &fix.vtc,
-        &signed(&a, REVOKE, json!({ "subject": moderator.did })).await,
+        &signed(
+            &a,
+            REVOKE,
+            json!({ "subject": moderator.did , "revocation": { "kind": "entry" }}),
+        )
+        .await,
     )
     .await;
     assert_eq!(status, StatusCode::OK);
@@ -707,7 +717,12 @@ async fn vti_apv_019_a_two_admin_removal_cools_off_then_lands() {
     let (status, reply) = submit(
         &mut fix,
         &a,
-        &signed(&a, REVOKE, json!({ "subject": b.did })).await,
+        &signed(
+            &a,
+            REVOKE,
+            json!({ "subject": b.did , "revocation": { "kind": "entry" }}),
+        )
+        .await,
     )
     .await;
     assert_eq!(status, StatusCode::ACCEPTED, "{reply}");
@@ -829,7 +844,12 @@ async fn vti_apv_019_the_requester_cancels_a_cooling_off() {
     let id = park(
         &mut fix,
         &a,
-        &signed(&a, REVOKE, json!({ "subject": b.did })).await,
+        &signed(
+            &a,
+            REVOKE,
+            json!({ "subject": b.did , "revocation": { "kind": "entry" }}),
+        )
+        .await,
     )
     .await;
     // The subject cannot withdraw it.
@@ -879,7 +899,7 @@ async fn vti_apv_019_the_first_of_two_administrators_to_act_wins() {
         &signed(
             &b,
             GRANT,
-            json!({ "entry": { "subject": Party::new().did, "role": "admin", "scopes": [] } }),
+            crate::common::signed::grant_payload(&Party::new().did, "admin"),
         )
         .await,
     )
@@ -887,14 +907,24 @@ async fn vti_apv_019_the_first_of_two_administrators_to_act_wins() {
     let first = park(
         &mut fix,
         &a,
-        &signed(&a, REVOKE, json!({ "subject": b.did })).await,
+        &signed(
+            &a,
+            REVOKE,
+            json!({ "subject": b.did , "revocation": { "kind": "entry" }}),
+        )
+        .await,
     )
     .await;
 
     // B answers by asking to remove A: refused, because B is suspended.
     let (status, reply) = post(
         &fix.vtc,
-        &signed(&b, REVOKE, json!({ "subject": a.did })).await,
+        &signed(
+            &b,
+            REVOKE,
+            json!({ "subject": a.did , "revocation": { "kind": "entry" }}),
+        )
+        .await,
     )
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN, "{reply}");
@@ -939,7 +969,12 @@ async fn vti_apv_019_a_zero_cooling_off_lands_at_once() {
     let (status, reply) = submit(
         &mut fix,
         &a,
-        &signed(&a, REVOKE, json!({ "subject": b.did })).await,
+        &signed(
+            &a,
+            REVOKE,
+            json!({ "subject": b.did , "revocation": { "kind": "entry" }}),
+        )
+        .await,
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{reply}");
@@ -970,7 +1005,7 @@ async fn vti_apv_017_approver_signed_decision_evidence_is_verified() {
         &signed(
             &a,
             GRANT,
-            json!({ "entry": { "subject": subject.did, "role": "admin", "scopes": [] } }),
+            crate::common::signed::grant_payload(&subject.did, "admin"),
         )
         .await,
     )
@@ -1056,7 +1091,7 @@ async fn an_interrupted_execution_is_reconciled_from_its_effect() {
     let mut fix = fixture().await;
     let a = requester(&mut fix).await;
     let _b = admin(&fix).await;
-    let grant = |s: &str| json!({ "entry": { "subject": s, "role": "admin", "scopes": [] } });
+    let grant = |s: &str| crate::common::signed::grant_payload(s, "admin");
 
     // Did not land: nothing written.
     let s1 = Party::new();
@@ -1229,7 +1264,7 @@ async fn an_executed_action_records_its_effect_with_its_execution() {
         &signed(
             &a,
             GRANT,
-            json!({ "entry": { "subject": subject.did, "role": "admin", "scopes": [] } }),
+            crate::common::signed::grant_payload(&subject.did, "admin"),
         )
         .await,
     )
@@ -1300,7 +1335,7 @@ async fn a_new_administrator_is_issued_an_approver_invite() {
         &signed(
             &a,
             GRANT,
-            json!({ "entry": { "subject": subject.did, "role": "admin", "scopes": [] } }),
+            crate::common::signed::grant_payload(&subject.did, "admin"),
         )
         .await,
     )

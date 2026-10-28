@@ -58,7 +58,6 @@ export type PasskeyRevokeStartResponse = Schemas["RevokeStartResponse"];
 // ── ACL + admin invites ─────────────────────────────────────────────────
 export type AclEntry = Schemas["AclEntryResponse"];
 export type AclEntryEnvelope = Schemas["AclEntryEnvelope"];
-export type AclListResponse = Schemas["AclListResponse"];
 export type InviteSummary = Schemas["InviteSummary"];
 export type InvitesListResponse = Schemas["ListInvitesResponse"];
 export type CreateInviteResponse = Schemas["CreateInviteResponse"];

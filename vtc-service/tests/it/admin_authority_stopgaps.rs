@@ -30,8 +30,8 @@ use crate::common::second_party::{
 use crate::common::signed::{error_code, post, signed};
 
 const RP_ORIGIN: &str = "https://vtc.example.com";
-const REVOKE: &str = "https://trusttasks.org/spec/acl/revoke/0.1";
-const UPDATE: &str = "https://trusttasks.org/spec/acl/update/0.1";
+const REVOKE: &str = "https://trusttasks.org/spec/acl/revoke/0.2";
+const UPDATE: &str = "https://trusttasks.org/spec/acl/update/0.2";
 const CHANGE_ROLE: &str = "https://trusttasks.org/spec/acl/change-role/0.1";
 const ADMIN_REMOVE: &str = "https://trusttasks.org/spec/vtc/members/admin-remove/0.1";
 const PATCH: &str = "https://trusttasks.org/spec/config/patch/0.1";
@@ -168,7 +168,12 @@ async fn vti_apv_019_removing_an_unrestricted_admin_needs_a_third_party() {
     let a = requester(&mut fix).await;
     let subject = admin(&fix).await;
     let third = admin(&fix).await;
-    let revoke = signed(&a, REVOKE, json!({ "subject": subject.did })).await;
+    let revoke = signed(
+        &a,
+        REVOKE,
+        json!({ "subject": subject.did , "revocation": { "kind": "entry" }}),
+    )
+    .await;
 
     // Without the gesture: refused, nothing removed.
     let (status, reply) = post(&fix.vtc, &revoke).await;
@@ -244,7 +249,12 @@ async fn vti_apv_019_a_two_admin_removal_takes_the_step_up_and_is_audited_critic
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{reply}");
-    let revoke = signed(&a, REVOKE, json!({ "subject": b.did })).await;
+    let revoke = signed(
+        &a,
+        REVOKE,
+        json!({ "subject": b.did , "revocation": { "kind": "entry" }}),
+    )
+    .await;
 
     let (status, reply) = post(&fix.vtc, &revoke).await;
     assert_step_up(status, &reply);
@@ -269,7 +279,12 @@ async fn vti_apv_019_removing_a_scoped_admin_takes_the_gesture_and_a_non_admin_n
     let scoped = seed(&fix, VtcRole::Admin, &["ctx-a"]).await;
     let moderator = seed(&fix, VtcRole::Moderator, &["ctx-a"]).await;
 
-    let revoke = signed(&a, REVOKE, json!({ "subject": scoped.did })).await;
+    let revoke = signed(
+        &a,
+        REVOKE,
+        json!({ "subject": scoped.did , "revocation": { "kind": "entry" }}),
+    )
+    .await;
     let (status, reply) = post(&fix.vtc, &revoke).await;
     assert_step_up(status, &reply);
     let (status, reply) = fix.gesturer.send_through(&fix.vtc, &a, &[], &revoke).await;
@@ -278,7 +293,12 @@ async fn vti_apv_019_removing_a_scoped_admin_takes_the_gesture_and_a_non_admin_n
 
     let (status, reply) = post(
         &fix.vtc,
-        &signed(&a, REVOKE, json!({ "subject": moderator.did })).await,
+        &signed(
+            &a,
+            REVOKE,
+            json!({ "subject": moderator.did , "revocation": { "kind": "entry" }}),
+        )
+        .await,
     )
     .await;
     assert_eq!(status, StatusCode::OK, "unchanged for a non-admin: {reply}");
@@ -295,7 +315,12 @@ async fn vti_apv_019_removing_an_expired_admin_is_unchanged() {
     store_acl_entry(&fix.vtc.state.acl_ks, &r).await.unwrap();
     let (status, reply) = post(
         &fix.vtc,
-        &signed(&a, REVOKE, json!({ "subject": lapsed.did })).await,
+        &signed(
+            &a,
+            REVOKE,
+            json!({ "subject": lapsed.did , "revocation": { "kind": "entry" }}),
+        )
+        .await,
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{reply}");

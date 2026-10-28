@@ -124,10 +124,7 @@ pub const JOIN_REVIEW_URI: &str = "urn:openvtc:vtc:join:review";
 /// The record type a vetting withdrawal review is raised under.
 pub const VETTING_REVIEW_URI: &str = "urn:openvtc:vtc:vetting:withdrawal-review";
 
-const ACL_GRANT: &str = "https://trusttasks.org/spec/acl/grant/0.1";
-const ACL_UPDATE: &str = "https://trusttasks.org/spec/acl/update/0.1";
 const ACL_CHANGE_ROLE: &str = "https://trusttasks.org/spec/acl/change-role/0.1";
-pub(crate) const ACL_REVOKE: &str = "https://trusttasks.org/spec/acl/revoke/0.1";
 const ACL_GRANT_V0_2: &str = "https://trusttasks.org/spec/acl/grant/0.2";
 const ACL_UPDATE_V0_2: &str = "https://trusttasks.org/spec/acl/update/0.2";
 const ACL_CHANGE_ROLE_V0_2: &str = "https://trusttasks.org/spec/acl/change-role/0.2";
@@ -493,29 +490,6 @@ pub const TEMPLATES: &[Template] = &[
     },
     Template {
         kind: KIND_GRANT_AUTHORITY,
-        type_uri: ACL_GRANT,
-        title: "Make {subject} an unrestricted administrator",
-        effect: GRANT_EFFECT,
-        fields: &[
-            f("subject", "/entry/subject", "did"),
-            f("role", "/entry/role", "text"),
-            f("scopes", "/entry/scopes", "capabilityList"),
-            f("expiresAt", "/entry/expiresAt", "datetime"),
-        ],
-    },
-    Template {
-        kind: KIND_GRANT_AUTHORITY,
-        type_uri: ACL_UPDATE,
-        title: "Widen {subject} to an unrestricted administrator",
-        effect: GRANT_EFFECT,
-        fields: &[
-            f("subject", "/subject", "did"),
-            f("scopes", "/scopes", "capabilityList"),
-            f("expiresAt", "/expiresAt", "datetime"),
-        ],
-    },
-    Template {
-        kind: KIND_GRANT_AUTHORITY,
         type_uri: ACL_CHANGE_ROLE,
         title: "Promote {subject} from {fromRole} to unrestricted administrator",
         effect: GRANT_EFFECT,
@@ -534,45 +508,12 @@ pub const TEMPLATES: &[Template] = &[
     },
     Template {
         kind: KIND_REDUCE_AUTHORITY,
-        type_uri: ACL_REVOKE,
-        title: "Remove unrestricted administrator {subject}",
-        effect: REDUCE_EFFECT,
-        fields: &[
-            f("subject", "/subject", "did"),
-            f("scopes", "/scopes", "capabilityList"),
-            f("reason", "/reason", "text"),
-        ],
-    },
-    Template {
-        kind: KIND_REDUCE_AUTHORITY,
         type_uri: ACL_CHANGE_ROLE,
         title: "Demote unrestricted administrator {subject} to {toRole}",
         effect: REDUCE_EFFECT,
         fields: &[
             f("subject", "/subject", "did"),
             f("toRole", "/toRole", "text"),
-        ],
-    },
-    Template {
-        kind: KIND_REDUCE_AUTHORITY,
-        type_uri: ACL_UPDATE,
-        title: "Narrow unrestricted administrator {subject}",
-        effect: REDUCE_EFFECT,
-        fields: &[
-            f("subject", "/subject", "did"),
-            f("scopes", "/scopes", "capabilityList"),
-            f("expiresAt", "/expiresAt", "datetime"),
-        ],
-    },
-    Template {
-        kind: KIND_REDUCE_AUTHORITY,
-        type_uri: ACL_GRANT,
-        title: "Rewrite unrestricted administrator {subject} as {role}",
-        effect: REDUCE_EFFECT,
-        fields: &[
-            f("subject", "/entry/subject", "did"),
-            f("role", "/entry/role", "text"),
-            f("scopes", "/entry/scopes", "capabilityList"),
         ],
     },
     Template {
@@ -1119,16 +1060,6 @@ pub const PINNED: &[(&str, &str, &str)] = &[
     ),
     (
         KIND_GRANT_AUTHORITY,
-        ACL_GRANT,
-        "zQmPrXgyRpZ57y4AekuZPspEkunnEbEhxvZuqrfoxrgsvr4",
-    ),
-    (
-        KIND_GRANT_AUTHORITY,
-        ACL_UPDATE,
-        "zQmbvgey1akTyTq74Vhe4fuXGvpTKKTVw34mo3y4hVEKSEQ",
-    ),
-    (
-        KIND_GRANT_AUTHORITY,
         ACL_CHANGE_ROLE,
         "zQmQX9Dx7cDqLtcoTNuDSWWo5nJTGecB9CqRLKgpd4es1c9",
     ),
@@ -1139,23 +1070,8 @@ pub const PINNED: &[(&str, &str, &str)] = &[
     ),
     (
         KIND_REDUCE_AUTHORITY,
-        ACL_REVOKE,
-        "zQmbvSkPZnzCqq5idfR5DKfFyiHFRCeimT48C4c6jtZfG1Z",
-    ),
-    (
-        KIND_REDUCE_AUTHORITY,
         ACL_CHANGE_ROLE,
         "zQmfHspRZaXfEPkeAyqcFkpgqYT2RCqXjjnXVZmFhsaJQcu",
-    ),
-    (
-        KIND_REDUCE_AUTHORITY,
-        ACL_UPDATE,
-        "zQmXcYLQhsgDQEgDZuf2mvmkxDDKEd1c9C47tmRAGLofPgM",
-    ),
-    (
-        KIND_REDUCE_AUTHORITY,
-        ACL_GRANT,
-        "zQmVrvxot9bAts7S22CfXQgqR8vC5aZHWQz97UjfMWveT7o",
     ),
     (
         KIND_REDUCE_AUTHORITY,

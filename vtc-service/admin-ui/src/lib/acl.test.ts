@@ -69,22 +69,17 @@ beforeEach(() => {
 });
 
 describe("acl/list", () => {
-  it("follows the cursor to the end", async () => {
+  it("follows nextCursor to the end", async () => {
     vi.mocked(postSignedRead)
-      .mockResolvedValueOnce({ entries: [entry("a")], truncated: true, cursor: "next" })
-      .mockResolvedValueOnce({ entries: [entry("b")], truncated: false });
+      .mockResolvedValueOnce({ entries: [entry("a")], nextCursor: "next" })
+      .mockResolvedValueOnce({ entries: [entry("b")] });
     const all = await fetchAllAcl({ role: "auditor" });
     expect(all.map((e) => e.subject)).toEqual(["a", "b"]);
-    expect(ACL_LIST_TASK).toBe("https://trusttasks.org/spec/acl/list/0.2");
+    expect(ACL_LIST_TASK).toBe("https://trusttasks.org/spec/acl/list/0.3");
     expect(vi.mocked(postSignedRead).mock.calls).toEqual([
-      [ACL_LIST_TASK, { role: "auditor", pageSize: 200 }],
-      [ACL_LIST_TASK, { role: "auditor", pageSize: 200, cursor: "next" }],
+      [ACL_LIST_TASK, { role: "auditor", limit: 200 }],
+      [ACL_LIST_TASK, { role: "auditor", limit: 200, cursor: "next" }],
     ]);
-  });
-
-  it("refuses a truncated page with no cursor rather than return part of the list", async () => {
-    vi.mocked(postSignedRead).mockResolvedValueOnce({ entries: [entry("a")], truncated: true });
-    await expect(fetchAllAcl()).rejects.toThrow(/truncated page with no cursor/);
   });
 });
 
@@ -105,6 +100,7 @@ describe("acl/revoke", () => {
     await revokeAcl(ALICE, confirm);
     expect(vi.mocked(postSignedTrustTask)).toHaveBeenCalledWith(ACL_REVOKE_TASK, {
       subject: ALICE,
+      revocation: { kind: "entry" },
     });
     expect(confirm).not.toHaveBeenCalled();
   });
@@ -134,6 +130,7 @@ describe("acl/revoke", () => {
     await revokeAclNow(ALICE, ALICE, vi.fn());
     expect(vi.mocked(postSignedTrustTask)).toHaveBeenCalledWith(ACL_REVOKE_TASK, {
       subject: ALICE,
+      revocation: { kind: "entry" },
       ext: { "org.openvtc": { immediate: { confirm: ALICE } } },
     });
   });
