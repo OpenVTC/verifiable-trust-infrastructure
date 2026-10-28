@@ -145,7 +145,16 @@ metrics = "0.24"
 affinidi-tdk = { workspace = true }
 affinidi-data-integrity = { workspace = true }
 affinidi-secrets-resolver = { workspace = true }
-trust-tasks-rs = { workspace = true }
+# Spec families: see "SPEC FAMILIES ARE DECLARED PER CRATE" in the workspace Cargo.toml.
+trust-tasks-rs = { workspace = true, features = [
+  "acl",
+  "auth",
+  "config",
+  "credential-exchange",
+  "git-ns",
+  "vault",
+  "vtc",
+] }
 trust-tasks-capability-client = { workspace = true }
 # DID resolution for SIOPv2 id_token verification (auth::siop). The
 # resolver + `DocumentExt` (from affinidi-tdk) turn an `iss` DID into the
