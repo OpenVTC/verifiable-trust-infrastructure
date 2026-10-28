@@ -26,7 +26,7 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use trust_tasks_rs::specs::voting::{
     ballot::cast::v0_1 as cast,
-    election::register::v0_1::{Manifest, Revote},
+    election::register::v0_2::{Manifest, Revote},
 };
 
 use crate::{
@@ -142,6 +142,8 @@ fn canonical(v: &Value) -> Result<Vec<u8>, AuditFailure> {
 /// # Errors
 /// The first check that fails.
 pub fn audit(e: Evidence<'_>) -> Result<Verified, AuditFailure> {
+    rules::require_current_manifest(e.manifest)
+        .map_err(|err| AuditFailure::Unreadable(err.to_string()))?;
     let manifest: Manifest = serde_json::from_value(e.manifest.clone())
         .map_err(|err| AuditFailure::Unreadable(format!("manifest: {err}")))?;
     let digest = rules::manifest_digest(e.manifest)
@@ -327,8 +329,8 @@ fn check_order(manifest: &Manifest, entries: &[Value]) -> Result<usize, AuditFai
                 if opened || closing {
                     return Err(bad("voting opened twice, or after it ended"));
                 }
-                if at(e).is_none_or(|t| t < manifest.voting_opens) {
-                    return Err(bad("voting opened before votingOpens"));
+                if at(e).is_none_or(|t| t < manifest.voting_opens_at) {
+                    return Err(bad("voting opened before votingOpensAt"));
                 }
                 opened = true;
             }
@@ -344,8 +346,8 @@ fn check_order(manifest: &Manifest, entries: &[Value]) -> Result<usize, AuditFai
                 if kind == "closedEarly" && !manifest.allow_early_close {
                     return Err(bad("closed early where the manifest allows no early close"));
                 }
-                if kind == "closed" && at(e).is_none_or(|t| t < manifest.voting_closes) {
-                    return Err(bad("closed before votingCloses"));
+                if kind == "closed" && at(e).is_none_or(|t| t < manifest.voting_closes_at) {
+                    return Err(bad("closed before votingClosesAt"));
                 }
                 if kind != "cancelled" && !opened {
                     return Err(bad("closed before it opened"));
@@ -388,6 +390,8 @@ pub fn decryption(
     entries: &[Value],
     proven: &ProvenRequests,
 ) -> Result<Option<encrypted::Closing>, AuditFailure> {
+    rules::require_current_manifest(manifest_value)
+        .map_err(|err| AuditFailure::Unreadable(err.to_string()))?;
     let manifest: Manifest = serde_json::from_value(manifest_value.clone())
         .map_err(|err| AuditFailure::Unreadable(format!("manifest: {err}")))?;
     let digest = rules::manifest_digest(manifest_value)
@@ -445,6 +449,8 @@ pub fn election_key(
     entries: &[Value],
     proven: &ProvenRequests,
 ) -> Result<Option<Value>, AuditFailure> {
+    rules::require_current_manifest(manifest)
+        .map_err(|err| AuditFailure::Unreadable(err.to_string()))?;
     let typed: Manifest = serde_json::from_value(manifest.clone())
         .map_err(|err| AuditFailure::Unreadable(format!("manifest: {err}")))?;
     let digest = rules::manifest_digest(manifest)

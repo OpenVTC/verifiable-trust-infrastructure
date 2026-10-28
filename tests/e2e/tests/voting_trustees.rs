@@ -58,7 +58,10 @@ fn stamp(t: chrono::DateTime<Utc>) -> String {
 async fn signed(task: &str, to: &str, signer: &Identity, payload: Value) -> Value {
     let mut doc: TrustTask<Value> = serde_json::from_value(json!({
         "id": format!("urn:uuid:{}", uuid::Uuid::new_v4()),
-        "type": format!("https://trusttasks.org/spec/voting/{task}/0.1"),
+        "type": format!(
+            "https://trusttasks.org/spec/voting/{task}/{}",
+            if matches!(task, "election/register" | "election/show") { "0.2" } else { "0.1" }
+        ),
         "issuer": signer.did,
         "recipient": to,
         "issuedAt": stamp(Utc::now()),
@@ -158,9 +161,9 @@ async fn trustees_run_a_sealed_election_on_a_private_board_from_pnm() {
         "secrecy": "sealed",
         "trustees": { "dids": trustees, "threshold": 2 },
         "roll": { "rule": "members" },
-        "registrationOpens": stamp(now - Duration::hours(1)),
-        "votingOpens": stamp(now + Duration::seconds(25)),
-        "votingCloses": stamp(now + Duration::hours(1)),
+        "registrationOpensAt": stamp(now - Duration::hours(1)),
+        "votingOpensAt": stamp(now + Duration::seconds(25)),
+        "votingClosesAt": stamp(now + Duration::hours(1)),
         "revote": "replace",
         "board": { "visibility": "private", "auditors": [] },
         "ballotBox": box_did,
@@ -251,7 +254,7 @@ async fn trustees_run_a_sealed_election_on_a_private_board_from_pnm() {
         Threshold::new(2, 3).unwrap(),
     )
     .unwrap();
-    let typed: trust_tasks_rs::specs::voting::election::register::v0_1::Manifest =
+    let typed: trust_tasks_rs::specs::voting::election::register::v0_2::Manifest =
         serde_json::from_value(manifest.clone()).unwrap();
     let ballot = json!({ "electionId": ELECTION, "manifestDigest": digest_multibase(&digest),
                          "answers": [{ "question": "chair", "choice": ["ben"] }] });

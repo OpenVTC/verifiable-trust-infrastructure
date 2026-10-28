@@ -379,7 +379,7 @@ fn unwitnessed() -> Vec<DeclaredErrorCode> {
         // Declared for an engine that does not serve every level's cast task. This one
         // serves `vta/pcs/vote` and `vta/pcs/vote-encrypted`, so every level registers and
         // the code cannot occur here (trust-tasks-tf #845).
-        s::vta::pcs::voter::register::v0_1::error_codes::UNSUPPORTED_SECRECY,
+        s::vta::pcs::voter::register::v0_2::error_codes::UNSUPPORTED_SECRECY,
         s::vta::services::disable::v1_1::error_codes::NOT_AUTHORIZED,
         s::vta::services::disable::v1_1::error_codes::NOT_FOUND,
         s::vta::services::drain::cancel::v1_0::error_codes::CONFLICT,

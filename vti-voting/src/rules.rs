@@ -15,7 +15,7 @@ use std::collections::HashSet;
 use sha2::{Digest, Sha256};
 use trust_tasks_rs::specs::voting::{
     ballot::cast::v0_1::{Answer, Ballot},
-    election::register::v0_1::{Manifest, Question, RollRuleRule, SecrecyLevel},
+    election::register::v0_2::{Manifest, Question, RollRuleRule, SecrecyLevel},
 };
 
 /// A broken rule. Each variant is one error local part of the voting families.
@@ -36,6 +36,35 @@ pub enum RuleError {
     BallotInvalid(String),
     #[error("serialization: {0}")]
     Serialization(String),
+}
+
+/// The members a manifest registered under `voting/election/register/0.1` (voting/_shared/0.1)
+/// named its instants by, renamed `…At` in voting/_shared/0.2.
+const V0_1_INSTANTS: [&str; 3] = ["registrationOpens", "votingOpens", "votingCloses"];
+
+/// Refuse a manifest in the shape of `voting/election/register/0.1`.
+///
+/// Every party now reads only the 0.2 manifest. One registered under 0.1 cannot be read as
+/// 0.2: its digest — which every ticket, ballot and certification is bound to — is over its
+/// 0.1 member names, so renaming them would make it a different election. It is refused by
+/// name instead of failing as a manifest missing `registrationOpensAt`.
+///
+/// # Errors
+/// [`RuleError::InvalidManifest`] naming the election and what to do.
+pub fn require_current_manifest(manifest: &serde_json::Value) -> Result<(), RuleError> {
+    if V0_1_INSTANTS.iter().any(|k| manifest.get(k).is_some()) {
+        let id = manifest
+            .get("electionId")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("(unnamed)");
+        return Err(RuleError::InvalidManifest(format!(
+            "election {id} was registered under voting/election/register/0.1 (its manifest \
+             names registrationOpens, votingOpens and votingCloses); this build reads only \
+             the 0.2 manifest and cannot carry it over. Finish or cancel it on the previous \
+             release, or remove it"
+        )));
+    }
+    Ok(())
 }
 
 /// SHA-256 of the manifest's RFC 8785 (JCS) canonicalization, over the JSON as received.
@@ -197,9 +226,9 @@ pub fn check_manifest_serving(
     } else {
         check_trustees(m)?;
     }
-    if !(m.registration_opens <= m.voting_opens && m.voting_opens < m.voting_closes) {
+    if !(m.registration_opens_at <= m.voting_opens_at && m.voting_opens_at < m.voting_closes_at) {
         return Err(bad_manifest(
-            "the times must satisfy registrationOpens <= votingOpens < votingCloses",
+            "the times must satisfy registrationOpensAt <= votingOpensAt < votingClosesAt",
         ));
     }
     if let Some(own) = ballot_box

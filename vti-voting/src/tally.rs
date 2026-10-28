@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 use serde_json::{Value, json};
 use trust_tasks_rs::specs::voting::{
     ballot::cast::v0_1::Ballot,
-    election::register::v0_1::{Manifest, Question},
+    election::register::v0_2::{Manifest, Question},
     result::show::v0_1::QuestionResult,
 };
 

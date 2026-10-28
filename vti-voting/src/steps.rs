@@ -247,7 +247,7 @@ impl ProvenRequests {
 
 /// The ceremony `requests` establish — the trustees' steps in board order, each read as its
 /// trustee's ([`read`], the signer `proven` vouches for) and applied in turn — and, once
-/// `votingOpens` has come, its deadline (CONVENTIONS §9.6 item 5). What a trustee's or a voter's
+/// `votingOpensAt` has come, its deadline (CONVENTIONS §9.6 item 5). What a trustee's or a voter's
 /// VTA acts on in place of anything a ballot box reports.
 ///
 /// # Errors

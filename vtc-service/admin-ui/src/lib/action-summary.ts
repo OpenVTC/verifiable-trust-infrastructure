@@ -136,6 +136,8 @@ export const PINNED_TEMPLATE_DIGESTS: Readonly<Record<string, string>> = Object.
   // Creating a binding election (VTI-VOT-081).
   [pinKey("election.binding.create", `${SPEC}/vtc/elections/create/0.1`)]:
     "zQmRruPSiJx9JHEBJCdQiH1qXMTdqf2Dy6yL1WmUJqTU8mX",
+  [pinKey("election.binding.create", `${SPEC}/vtc/elections/create/0.3`)]:
+    "zQmSCbudt2Arz4PCwpWmzhMhA4gLfVjxmAd5UMZi8bef7hq",
   // Widening a member-directory field (VTI-DIR-024).
   [pinKey("directory.field.widen", `${SPEC}/vtc/directory/fields/update/0.1`)]:
     "zQmafxMMkTfH4kb9QgoUQEJtUs4tuZFvqM8nxhjEawj6vYZ",

@@ -95,11 +95,33 @@ enum Task {
 }
 
 impl Task {
-    fn from_type(type_uri: &str) -> Option<Self> {
+    /// The task `type_uri` names, at whatever version it names it: `Ok` when that is the
+    /// version served ([`Task::version`]), `Err(Some(task))` for a task served at another
+    /// version, `Err(None)` for anything else.
+    fn from_type(type_uri: &str) -> Result<Self, Option<Self>> {
         // A request's `#request` fragment is optional (framework SPEC §4.4.1): the generated
         // payload types, and so every peer sending through them, use the bare form.
         let bare = type_uri.strip_suffix("#request").unwrap_or(type_uri);
-        let rest = bare.strip_prefix(SPEC)?.strip_suffix("/0.1")?;
+        let path = bare.strip_prefix(SPEC).ok_or(None)?;
+        let (slug, version) = path.rsplit_once('/').ok_or(None)?;
+        let task = Self::from_slug(slug).ok_or(None)?;
+        if version == task.version() {
+            Ok(task)
+        } else {
+            Err(Some(task))
+        }
+    }
+
+    /// The version this service serves: `voting/election/{register,show}` at 0.2, whose
+    /// manifest names its instants `…At` (voting/_shared/0.2), every other task at 0.1.
+    fn version(self) -> &'static str {
+        match self {
+            Task::Register | Task::Show => "0.2",
+            _ => "0.1",
+        }
+    }
+
+    fn from_slug(rest: &str) -> Option<Self> {
         Some(match rest {
             "voting/election/register" => Task::Register,
             "voting/election/show" => Task::Show,
@@ -252,14 +274,25 @@ pub async fn answer(state: &AppState, body: &[u8], transport_sender: Option<&str
         )
         .await;
     }
-    let Some(task) = Task::from_type(&doc.type_uri.to_string()) else {
-        return refuse(
-            state,
-            &doc,
-            standard("unsupportedType"),
-            "not a task this service serves",
-        )
-        .await;
+    let task = match Task::from_type(&doc.type_uri.to_string()) {
+        Ok(task) => task,
+        Err(Some(task)) => {
+            let message = format!(
+                "this ballot box serves {} at {} only",
+                task.slug(),
+                task.version()
+            );
+            return refuse(state, &doc, standard("unsupportedVersion"), &message).await;
+        }
+        Err(None) => {
+            return refuse(
+                state,
+                &doc,
+                standard("unsupportedType"),
+                "not a task this service serves",
+            )
+            .await;
+        }
     };
     let now = Utc::now();
     if doc.expires_at.is_some_and(|t| t < now) {

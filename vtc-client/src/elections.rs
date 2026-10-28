@@ -17,8 +17,8 @@ use crate::{HolderKey, VtcClient, VtcError};
 /// The generated wire types, re-exported so a caller names the reply types without depending
 /// on `trust-tasks-rs` itself.
 pub use trust_tasks_rs::specs::vtc::elections::{
-    cancel::v0_1 as cancel, certify::v0_1 as certify, close::v0_1 as close, create::v0_1 as create,
-    list::v0_1 as list, show::v0_1 as show, tickets::issue::v0_1 as tickets_issue,
+    cancel::v0_1 as cancel, certify::v0_1 as certify, close::v0_1 as close, create::v0_3 as create,
+    list::v0_3 as list, show::v0_2 as show, tickets::issue::v0_1 as tickets_issue,
 };
 
 /// The Type URI of each task, read off the generated payloads.
@@ -35,7 +35,7 @@ pub mod task {
 }
 
 impl VtcClient {
-    /// `vtc/elections/create/0.1` — create an election from `manifest`, sent as given (its
+    /// `vtc/elections/create/0.3` — create an election from `manifest`, sent as given (its
     /// digest is taken over these bytes).
     ///
     /// # Errors
@@ -52,7 +52,7 @@ impl VtcClient {
             .await
     }
 
-    /// `vtc/elections/list/0.1` — the elections the caller may see, optionally only those in
+    /// `vtc/elections/list/0.3` — the elections the caller may see, optionally only those in
     /// `state`.
     ///
     /// # Errors
@@ -78,7 +78,7 @@ impl VtcClient {
         self.acl_task(task::LIST, payload, key, &[]).await
     }
 
-    /// `vtc/elections/show/0.1` — one election, with its parameters and disclosure.
+    /// `vtc/elections/show/0.2` — one election, with its parameters and disclosure.
     ///
     /// # Errors
     /// `electionUnknown` for an election the caller may not see; the VTC's refusal otherwise.

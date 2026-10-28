@@ -41,8 +41,8 @@ election stays `pendingRegistration` and is delivered as soon as they are.
 
 | Step | Task | Who |
 |---|---|---|
-| Create from a manifest | `vtc/elections/create/0.1` | `vtc.elections.manage` |
-| Read | `vtc/elections/list/0.1`, `vtc/elections/show/0.1` | managers see all; anyone else an election whose roll admits them now |
+| Create from a manifest | `vtc/elections/create/0.3` | `vtc.elections.manage` |
+| Read | `vtc/elections/list/0.3`, `vtc/elections/show/0.2` | managers see all; anyone else an election whose roll admits them now |
 | Take a ticket | `vtc/elections/tickets/issue/0.1` | a party the roll admits, once per election — normally through their VTA (`vta/pcs/voter/register`) |
 | Close early | `vtc/elections/close/0.1` | `vtc.elections.manage`, only where the manifest allows it |
 | Cancel | `vtc/elections/cancel/0.1` | `vtc.elections.manage` |
@@ -136,7 +136,7 @@ The trustees generate the election key on the board before voting opens (`voting
 each trustee's VTA holding its keys — see [the trustee's round](../02-vta/pcs-engine.md#the-trustees-round)).
 A trustee takes part with `pnm elections trustee step <election> --watch`, started once the
 election is registered and left running until the result is out.
-If no key has formed by `votingOpens`, the ceremony has failed: no cast is admitted, and the
+If no key has formed by `votingOpensAt`, the ceremony has failed: no cast is admitted, and the
 community cancels the election. The key forms only from at least `threshold` qualified dealers
 and confirmations, so no single trustee can be left holding it. Voters cast with
 `vta/pcs/vote-encrypted`, their VTAs forming the key from the signed steps `vtc/elections/show`

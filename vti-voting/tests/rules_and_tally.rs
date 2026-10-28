@@ -2,7 +2,7 @@
 
 use serde_json::{Value, json};
 use trust_tasks_rs::specs::voting::{
-    ballot::cast::v0_1::Ballot, election::register::v0_1::Manifest,
+    ballot::cast::v0_1::Ballot, election::register::v0_2::Manifest,
 };
 use vti_voting::{
     rules::{RuleError, check_ballot, check_manifest, digest_multibase, manifest_digest},
@@ -32,9 +32,9 @@ fn manifest_json() -> Value {
         ],
         "secrecy": "open",
         "roll": { "rule": "members" },
-        "registrationOpens": "2026-11-01T00:00:00Z",
-        "votingOpens": "2026-11-03T00:00:00Z",
-        "votingCloses": "2026-11-07T18:00:00Z",
+        "registrationOpensAt": "2026-11-01T00:00:00Z",
+        "votingOpensAt": "2026-11-03T00:00:00Z",
+        "votingClosesAt": "2026-11-07T18:00:00Z",
         "revote": "replace",
         "board": { "visibility": "private", "auditors": ["did:webvh:QmAudit:audit.example.com"] },
         "ballotBox": BOX,
@@ -77,7 +77,7 @@ fn vot_010_a_well_formed_manifest_passes() {
 #[test]
 fn vot_010_manifest_rules_are_enforced() {
     let cases: [(&str, Value); 6] = [
-        ("votingOpens", json!("2026-11-08T00:00:00Z")),
+        ("votingOpensAt", json!("2026-11-08T00:00:00Z")),
         ("ballotBox", json!("did:webvh:QmOther:other.example.net")),
         ("textReleaseThreshold", json!(10)), // control: still valid
         ("roll", json!({ "rule": "listed" })),
@@ -119,7 +119,7 @@ fn vot_010_manifest_rules_are_enforced() {
 
 #[test]
 fn vot_062_trustee_rules_are_enforced_for_the_encrypted_levels() {
-    use trust_tasks_rs::specs::voting::election::register::v0_1::SecrecyLevel;
+    use trust_tasks_rs::specs::voting::election::register::v0_2::SecrecyLevel;
     use vti_voting::rules::check_manifest_serving;
     const ALL: &[SecrecyLevel] = &[
         SecrecyLevel::Open,
@@ -303,4 +303,20 @@ fn vot_070_the_count() {
         serde_json::to_value(&early[4]).unwrap()["withheld"],
         json!(true)
     );
+}
+
+/// A manifest registered under `voting/election/register/0.1` (instants without `…At`) is
+/// refused by name, never re-read as 0.2: its digest binds the old member names.
+#[test]
+fn a_0_1_manifest_is_refused_by_name() {
+    let mut v = manifest_json();
+    vti_voting::rules::require_current_manifest(&v).expect("a 0.2 manifest is current");
+    let opens = v["votingOpensAt"].take();
+    v.as_object_mut().unwrap().remove("votingOpensAt");
+    v["votingOpens"] = opens;
+    let err = vti_voting::rules::require_current_manifest(&v)
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("register/0.1"), "{err}");
+    assert!(err.contains("agm") || err.contains("election"), "{err}");
 }

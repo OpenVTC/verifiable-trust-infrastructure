@@ -8,7 +8,7 @@ use chrono::{DateTime, Utc};
 use hkdf::Hkdf;
 use serde_json::{Value, json};
 use sha2::Sha256;
-use trust_tasks_rs::specs::voting::election::register::v0_1::Manifest;
+use trust_tasks_rs::specs::voting::election::register::v0_2::Manifest;
 use vti_voting::{
     election::{Election, ElectionId},
     registrar::Registrar,
@@ -204,9 +204,9 @@ pub async fn check_create(
         RuleError::InvalidManifest(why) => CreateError::InvalidManifest(why),
         other => CreateError::InvalidManifest(other.to_string()),
     })?;
-    if m.voting_closes <= now {
+    if m.voting_closes_at <= now {
         return Err(CreateError::InvalidManifest(
-            "votingCloses is already past".into(),
+            "votingClosesAt is already past".into(),
         ));
     }
     if m.community.as_str() != community_did(state).await {
@@ -258,9 +258,9 @@ pub async fn create(
         standing: Standing::PendingRegistration,
         binding: m.binding,
         ballot_box: m.ballot_box.as_str().to_string(),
-        registration_opens: m.registration_opens,
-        voting_opens: m.voting_opens,
-        voting_closes: m.voting_closes,
+        registration_opens: m.registration_opens_at,
+        voting_opens: m.voting_opens_at,
+        voting_closes: m.voting_closes_at,
         created_by: requester.to_string(),
         created_at: now,
         action_id,
@@ -342,7 +342,7 @@ pub async fn deliver_registration(
         Some(link) => {
             link.exchange(
                 &rec.ballot_box,
-                &format!("{SPEC}voting/election/register/0.1"),
+                &format!("{SPEC}voting/election/register/0.2"),
                 &payload,
             )
             .await

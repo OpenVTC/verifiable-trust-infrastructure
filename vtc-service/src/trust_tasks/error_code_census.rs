@@ -2159,31 +2159,31 @@ fn witnesses() -> Vec<Witness> {
     #[cfg(feature = "voting")]
     table.extend(vec![
         witness!(
-            s::elections::create::v0_1::error_codes::ELECTION_EXISTS,
+            s::elections::create::v0_3::error_codes::ELECTION_EXISTS,
             crate::trust_tasks::election_tasks::CREATE_ERR_ELECTION_EXISTS,
             "election_tasks.rs",
             "an_election_is_created_registered_shown_and_a_member_takes_a_ticket_blind"
         ),
         witness!(
-            s::elections::create::v0_1::error_codes::INVALID_MANIFEST,
+            s::elections::create::v0_3::error_codes::INVALID_MANIFEST,
             crate::trust_tasks::election_tasks::CREATE_ERR_INVALID_MANIFEST,
             "election_tasks.rs",
             "a_creation_is_refused_for_each_rule_it_breaks"
         ),
         witness!(
-            s::elections::create::v0_1::error_codes::COMMUNITY_MISMATCH,
+            s::elections::create::v0_3::error_codes::COMMUNITY_MISMATCH,
             crate::trust_tasks::election_tasks::CREATE_ERR_COMMUNITY_MISMATCH,
             "election_tasks.rs",
             "a_creation_is_refused_for_each_rule_it_breaks"
         ),
         witness!(
-            s::elections::create::v0_1::error_codes::BALLOT_BOX_NOT_TRUSTED,
+            s::elections::create::v0_3::error_codes::BALLOT_BOX_NOT_TRUSTED,
             crate::trust_tasks::election_tasks::CREATE_ERR_BALLOT_BOX_NOT_TRUSTED,
             "election_tasks.rs",
             "a_creation_is_refused_for_each_rule_it_breaks"
         ),
         witness!(
-            s::elections::create::v0_1::error_codes::BALLOT_BOX_REFUSED,
+            s::elections::create::v0_3::error_codes::BALLOT_BOX_REFUSED,
             crate::trust_tasks::election_tasks::CREATE_ERR_BALLOT_BOX_REFUSED,
             "election_tasks.rs",
             "a_creation_is_refused_for_each_rule_it_breaks"
@@ -2243,7 +2243,7 @@ fn witnesses() -> Vec<Witness> {
             "close_and_cancel_are_refused_for_each_rule_they_break"
         ),
         witness!(
-            s::elections::show::v0_1::error_codes::ELECTION_UNKNOWN,
+            s::elections::show::v0_2::error_codes::ELECTION_UNKNOWN,
             crate::trust_tasks::election_tasks::SHOW_ERR_ELECTION_UNKNOWN,
             "election_tasks.rs",
             "an_election_is_created_registered_shown_and_a_member_takes_a_ticket_blind"
@@ -2798,7 +2798,7 @@ fn unwitnessed() -> Vec<DeclaredErrorCode> {
         // Declared for a community that does not serve a level. This one certifies all
         // three (CONVENTIONS §9; trust-tasks-tf #847), so the code cannot occur here.
         #[cfg(feature = "voting")]
-        s::elections::create::v0_1::error_codes::UNSUPPORTED_SECRECY,
+        s::elections::create::v0_3::error_codes::UNSUPPORTED_SECRECY,
         // Deleting a group asks the community's VTA nothing until bindings are
         // served: its authority is revoked in the community's own list.
         s::groups::delete::v0_1::error_codes::KEY_HOLDER_UNAVAILABLE,

@@ -210,7 +210,7 @@ it:
 1. Write a manifest:
    - `"secrecy": "open"`, `"board": { "visibility": "public", "auditors": [] }`;
    - `"ballotBox"` set to this service's DID;
-   - `votingOpens` a couple of minutes ahead, so the registration lands first.
+   - `votingOpensAt` a couple of minutes ahead, so the registration lands first.
 2. Create it, then check it registered:
    ```sh
    cnm elections create poll.json

@@ -274,14 +274,14 @@ pub enum EncryptedForm {
 /// [`VotingError::Serialization`] for a ballot that cannot be canonicalized, a level that is not
 /// encrypted, or a tallied-encrypted ballot that answers anything but choice questions.
 pub fn encrypted_form<R: RngCore + CryptoRng>(
-    manifest: &trust_tasks_rs::specs::voting::election::register::v0_1::Manifest,
+    manifest: &trust_tasks_rs::specs::voting::election::register::v0_2::Manifest,
     election: &Election,
     key: &crate::trustees::ElectionKey,
     ballot: &serde_json::Value,
     tag: &str,
     rng: &mut R,
 ) -> Result<EncryptedForm, VotingError> {
-    use trust_tasks_rs::specs::voting::election::register::v0_1::{Question, SecrecyLevel};
+    use trust_tasks_rs::specs::voting::election::register::v0_2::{Question, SecrecyLevel};
     let bad = |why: String| VotingError::Serialization(why);
     let ctx = crate::trustees::cast_ctx(&election.trustee_context(), tag);
     match manifest.secrecy {

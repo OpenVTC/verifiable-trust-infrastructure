@@ -126,7 +126,7 @@ async fn run_command(command: ElectionsCommands, vtc: &Connected, keyring_key: &
                     .await
                     .map_err(|e| refusal(vtc, e, "", None))?;
                 all.extend(page.elections);
-                match page.next {
+                match page.next_cursor {
                     Some(n) => cursor = Some(n.to_string()),
                     None => break,
                 }
@@ -143,8 +143,8 @@ async fn run_command(command: ElectionsCommands, vtc: &Connected, keyring_key: &
                     "{BOLD}{}{RESET}  {}  {} → {}{}  {DIM}{title}{RESET}",
                     e.election_id.as_str(),
                     e.state,
-                    e.voting_opens,
-                    e.voting_closes,
+                    e.voting_opens_at,
+                    e.voting_closes_at,
                     if e.binding { "  binding" } else { "" },
                 );
             }
@@ -181,8 +181,8 @@ async fn run_command(command: ElectionsCommands, vtc: &Connected, keyring_key: &
             );
             println!(
                 "  voting       {} → {}",
-                v["manifest"]["votingOpens"].as_str().unwrap_or_default(),
-                v["manifest"]["votingCloses"].as_str().unwrap_or_default()
+                v["manifest"]["votingOpensAt"].as_str().unwrap_or_default(),
+                v["manifest"]["votingClosesAt"].as_str().unwrap_or_default()
             );
             if let Some(n) = v["ticketsIssued"].as_u64() {
                 println!("  tickets      {n} issued");

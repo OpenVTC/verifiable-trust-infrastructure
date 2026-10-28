@@ -80,8 +80,15 @@ const BOX: &str = "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK";
 const AUDITOR: &str = "did:key:z6MkjchhfUsD6mmvni8mCdXHw216Xrm9bQe2mBH1P5RDjVJG";
 const SPEC: &str = "https://trusttasks.org/spec/";
 
+/// The served version of each `vtc/elections/*` task: create and list at 0.3 and show at
+/// 0.2 (the voting/_shared/0.2 manifest), the rest at 0.1.
 fn uri(task: &str) -> String {
-    format!("{SPEC}vtc/elections/{task}/0.1")
+    let version = match task {
+        "create" | "list" => "0.3",
+        "show" => "0.2",
+        _ => "0.1",
+    };
+    format!("{SPEC}vtc/elections/{task}/{version}")
 }
 
 /// The code a refusal carries, from the framework's error document.
@@ -217,7 +224,7 @@ impl BallotBoxChannel for InProcessBox {
         }
         let slug = type_uri
             .strip_prefix(SPEC)
-            .and_then(|t| t.strip_suffix("/0.1"))
+            .and_then(|t| t.rsplit_once('/').map(|(slug, _)| slug))
             .expect("a voting task");
         if self.refuse.load(Ordering::SeqCst) {
             return Ok(BoxAnswer::Refused {
@@ -367,9 +374,9 @@ fn manifest(id: &str, binding: bool) -> Value {
         }],
         "secrecy": "open",
         "roll": { "rule": "members" },
-        "registrationOpens": stamp(now - Duration::hours(1)),
-        "votingOpens": stamp(now - Duration::minutes(1)),
-        "votingCloses": stamp(now + Duration::hours(1)),
+        "registrationOpensAt": stamp(now - Duration::hours(1)),
+        "votingOpensAt": stamp(now - Duration::minutes(1)),
+        "votingClosesAt": stamp(now + Duration::hours(1)),
         "revote": "replace",
         "board": { "visibility": "public", "auditors": [AUDITOR] },
         "ballotBox": BOX,
@@ -630,8 +637,8 @@ async fn a_creation_is_refused_for_each_rule_it_breaks() {
     );
 
     let mut past = manifest("past", false);
-    past["votingCloses"] = json!(stamp(Utc::now() - Duration::seconds(1)));
-    past["votingOpens"] = json!(stamp(Utc::now() - Duration::seconds(2)));
+    past["votingClosesAt"] = json!(stamp(Utc::now() - Duration::seconds(1)));
+    past["votingOpensAt"] = json!(stamp(Utc::now() - Duration::seconds(2)));
     let (_, doc) = create(&tv, &chair, past).await;
     assert_eq!(tt_error_code(&doc), CREATE_ERR_INVALID_MANIFEST, "{doc}");
     assert!(payload(&doc)["details"]["reason"].is_string(), "{doc}");
@@ -700,9 +707,9 @@ async fn a_restore_closes_ticket_issuance_on_an_election_that_was_issuing() {
     assert_eq!(status, StatusCode::OK, "{doc}");
     let mut later = manifest("later", false);
     let now = Utc::now();
-    later["registrationOpens"] = json!(stamp(now + Duration::days(1)));
-    later["votingOpens"] = json!(stamp(now + Duration::days(2)));
-    later["votingCloses"] = json!(stamp(now + Duration::days(3)));
+    later["registrationOpensAt"] = json!(stamp(now + Duration::days(1)));
+    later["votingOpensAt"] = json!(stamp(now + Duration::days(2)));
+    later["votingClosesAt"] = json!(stamp(now + Duration::days(3)));
     let (status, doc) = create(&tv, &chair, later).await;
     assert_eq!(status, StatusCode::OK, "{doc}");
 
@@ -762,7 +769,7 @@ async fn close_and_cancel_are_refused_for_each_rule_they_break() {
 
     // Not yet voting.
     let mut later = manifest("later", false);
-    later["votingOpens"] = json!(stamp(Utc::now() + Duration::minutes(30)));
+    later["votingOpensAt"] = json!(stamp(Utc::now() + Duration::minutes(30)));
     create(&tv, &chair, later).await;
     let (_, doc) = call(&tv, &chair, &uri("close"), close("later")).await;
     assert_eq!(tt_error_code(&doc), CLOSE_ERR_NOT_OPEN, "{doc}");
@@ -1138,7 +1145,7 @@ async fn a_sealed_election_is_created_decrypted_by_its_trustees_and_certified() 
     assert_eq!(tt_error_code(&doc), CREATE_ERR_INVALID_MANIFEST, "{doc}");
 
     // Voting opens a minute ago for the community; the box runs two hours behind, so the
-    // trustees generate the key before its votingOpens.
+    // trustees generate the key before its votingOpensAt.
     bx.ahead.store(-2 * 3600, Ordering::SeqCst);
     let mut m = manifest("sealed", false);
     m["community"] = json!(cdid);
@@ -1183,7 +1190,7 @@ async fn a_sealed_election_is_created_decrypted_by_its_trustees_and_certified() 
         vti_voting::trustees::Threshold::new(2, 3).unwrap(),
     )
     .expect("show carries the election key once formed");
-    let typed: trust_tasks_rs::specs::voting::election::register::v0_1::Manifest =
+    let typed: trust_tasks_rs::specs::voting::election::register::v0_2::Manifest =
         serde_json::from_value(m).unwrap();
     for (party, choice) in [(&alice, "alice"), (&bob, "alice")] {
         let (voter, ticket) = take_ticket(&tv, party, &b).await;
@@ -1387,7 +1394,7 @@ async fn an_open_election_runs_against_a_real_ballot_box_over_a_mediator() {
     m["community"] = json!(community);
     m["ballotBox"] = json!(box_did);
     m["board"]["auditors"] = json!([]);
-    m["votingOpens"] = json!(stamp(Utc::now() + Duration::seconds(4)));
+    m["votingOpensAt"] = json!(stamp(Utc::now() + Duration::seconds(4)));
 
     // Registered over the mediator: until the ballot box's session is up, the create stays
     // pending and the sweeper redelivers it.

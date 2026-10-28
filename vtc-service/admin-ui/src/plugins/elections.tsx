@@ -142,8 +142,8 @@ function ElectionsTable({ items }: { items: ElectionListItem[] }) {
           </td>
           <td>{STATE_LABEL[e.state] ?? e.state}</td>
           <td>
-            {formatIso(e.votingOpens)}
-            <div className="muted rooms-sub">to {formatIso(e.votingCloses)}</div>
+            {formatIso(e.votingOpensAt)}
+            <div className="muted rooms-sub">to {formatIso(e.votingClosesAt)}</div>
           </td>
           <td>{e.binding ? "Binding" : ""}</td>
         </tr>
@@ -264,10 +264,10 @@ function ElectionDetail({ electionId, e }: { electionId: string; e: Election }) 
             <code>{electionId}</code>
           </dd>
           <dt>Tickets from</dt>
-          <dd>{formatIso(e.manifest.registrationOpens)}</dd>
+          <dd>{formatIso(e.manifest.registrationOpensAt)}</dd>
           <dt>Voting</dt>
           <dd>
-            {formatIso(e.manifest.votingOpens)} to {formatIso(e.manifest.votingCloses)}
+            {formatIso(e.manifest.votingOpensAt)} to {formatIso(e.manifest.votingClosesAt)}
           </dd>
           <dt>Binding</dt>
           <dd>{e.manifest.binding ? "Yes — the result decides something in the community's name" : "No"}</dd>

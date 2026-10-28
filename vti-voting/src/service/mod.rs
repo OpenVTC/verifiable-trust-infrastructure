@@ -7,7 +7,7 @@
 //! (conventions §4, VTI-VOT-050), and the cast's answer is the voter's receipt (VTI-VOT-043).
 //!
 //! Time is an input: each election advances on its own clock — `opened` at
-//! `votingOpens`, `closed` and the result at `votingCloses` — and every handler advances first,
+//! `votingOpensAt`, `closed` and the result at `votingClosesAt` — and every handler advances first,
 //! so an election never answers from a state its clock has left.
 //!
 //! What the ballot box never holds is the point: no roster, no member DID, no issuance record
@@ -36,7 +36,7 @@ use trust_tasks_rs::specs::voting::{
     ballot::cast::v0_1 as cast, board::consistency::v0_1 as consistency, board::head::v0_1 as head,
     board::inclusion::v0_1 as inclusion, board::read::v0_1 as read,
     election::cancel::v0_1 as cancel, election::close::v0_1 as close,
-    election::register::v0_1 as register, election::show::v0_1 as show,
+    election::register::v0_2 as register, election::show::v0_2 as show,
     result::show::v0_1 as result,
 };
 
@@ -683,17 +683,17 @@ impl ElectionRecord {
 
     /// Run the election's clock up to `now`.
     fn advance(&mut self, now: DateTime<Utc>) -> Result<(), Failure> {
-        if self.state == State::Registered && now >= self.manifest.registration_opens {
+        if self.state == State::Registered && now >= self.manifest.registration_opens_at {
             self.state = State::Registration;
         }
-        if self.state <= State::Registration && now >= self.manifest.voting_opens {
-            let at = self.manifest.voting_opens;
+        if self.state <= State::Registration && now >= self.manifest.voting_opens_at {
+            let at = self.manifest.voting_opens_at;
             self.ceremony_deadline()?;
             self.append(&json!({ "kind": "opened", "at": time(at) }))?;
             self.state = State::Voting;
         }
-        if self.state == State::Voting && now >= self.manifest.voting_closes {
-            self.close("closed", self.manifest.voting_closes)?;
+        if self.state == State::Voting && now >= self.manifest.voting_closes_at {
+            self.close("closed", self.manifest.voting_closes_at)?;
         }
         Ok(())
     }
@@ -746,6 +746,8 @@ impl BallotBox {
         manifest_value: Value,
         parameters: Value,
     ) -> Result<ElectionRecord, Failure> {
+        rules::require_current_manifest(&manifest_value)
+            .map_err(|e| Failure::malformed(e.to_string()))?;
         let manifest: register::Manifest = parse(&manifest_value)?;
         let voting: register::VotingParameters = parse(&parameters)?;
         let community = manifest.community.as_str().to_string();

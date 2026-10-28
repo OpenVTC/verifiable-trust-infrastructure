@@ -109,8 +109,8 @@ fn manifest(id: &str, ballot_box: &str, open: bool, secrecy: &str) -> Value {
             "options": [{ "key": "yes" }, { "key": "no" }],
             "minSelections": 1, "maxSelections": 1, "optional": false }],
         "secrecy": secrecy, "roll": { "rule": "members" },
-        "registrationOpens": t(opens - chrono::Duration::days(1)), "votingOpens": t(opens),
-        "votingCloses": t(closes), "revote": "replace",
+        "registrationOpensAt": t(opens - chrono::Duration::days(1)), "votingOpensAt": t(opens),
+        "votingClosesAt": t(closes), "revote": "replace",
         "board": { "visibility": "public", "auditors": [] }, "ballotBox": ballot_box,
         "binding": false, "allowEarlyClose": false, "resultsBeforeClose": false,
         "textReleaseThreshold": 10,
@@ -127,7 +127,7 @@ fn ballot(manifest: &Value, choice: &str) -> Value {
 
 fn register_doc(params: &Value, m: &Value) -> TrustTask<Value> {
     doc(
-        uris::TASK_VTA_PCS_VOTER_REGISTER_0_1,
+        uris::TASK_VTA_PCS_VOTER_REGISTER_0_2,
         json!({ "contextId": "member", "community": COMMUNITY, "parameters": params, "manifest": m }),
     )
 }
@@ -143,7 +143,7 @@ fn accept_doc(election: &str, params: &Value, pre: &str) -> TrustTask<Value> {
 
 fn vote_doc(params: &Value, m: &Value, b: Value) -> TrustTask<Value> {
     doc(
-        uris::TASK_VTA_PCS_VOTE_0_1,
+        uris::TASK_VTA_PCS_VOTE_0_2,
         json!({ "contextId": "member", "community": COMMUNITY, "parameters": params,
                 "manifest": m, "ballot": b }),
     )
@@ -383,7 +383,7 @@ async fn the_voter_tasks_need_the_voter_capability() {
         &state,
         &auth,
         doc(
-            uris::TASK_VTA_PCS_VOTER_REGISTER_0_1,
+            uris::TASK_VTA_PCS_VOTER_REGISTER_0_2,
             json!({ "contextId": "member", "community": COMMUNITY }),
         ),
     )
@@ -419,7 +419,7 @@ async fn the_ticket_request_is_signed_as_the_member_and_kept() {
     let m = manifest("agm-2028", &box_did, true, "open");
     let with_member = |did: &str| {
         doc(
-            uris::TASK_VTA_PCS_VOTER_REGISTER_0_1,
+            uris::TASK_VTA_PCS_VOTER_REGISTER_0_2,
             json!({ "contextId": "member", "community": COMMUNITY, "parameters": params,
                     "manifest": m, "member": did }),
         )
@@ -504,7 +504,7 @@ async fn the_vta_keeps_no_clear_pairing_and_discards_after_the_election() {
         &state,
         &auth,
         doc(
-            uris::TASK_VTA_PCS_VOTER_REGISTER_0_1,
+            uris::TASK_VTA_PCS_VOTER_REGISTER_0_2,
             json!({ "contextId": "member", "community": COMMUNITY, "parameters": params,
                     "manifest": m, "member": persona.did }),
         ),
@@ -580,7 +580,7 @@ async fn the_vta_keeps_no_clear_pairing_and_discards_after_the_election() {
         async move { ks.prefix_iter_raw(prefix).await.unwrap().len() }
     };
     let closes: chrono::DateTime<chrono::Utc> =
-        m["votingCloses"].as_str().unwrap().parse().unwrap();
+        m["votingClosesAt"].as_str().unwrap().parse().unwrap();
     let sweep = |at| crate::operations::pcs_voter::sweep(&state.pcs_engine_ks, at);
 
     // Before voting closes nothing goes.
@@ -630,7 +630,7 @@ async fn an_election_read_is_signed_as_the_member() {
     .await;
     let read = |member: &str, which: &str, payload: Value| {
         doc(
-            uris::TASK_VTA_PCS_VOTER_READ_0_1,
+            uris::TASK_VTA_PCS_VOTER_READ_0_2,
             json!({ "contextId": "member", "community": COMMUNITY, "member": member,
                     "read": which, "payload": payload }),
         )
@@ -645,7 +645,7 @@ async fn an_election_read_is_signed_as_the_member() {
     let d = &shown["document"];
     assert_eq!(
         d["type"],
-        "https://trusttasks.org/spec/vtc/elections/show/0.1"
+        "https://trusttasks.org/spec/vtc/elections/show/0.2"
     );
     assert_eq!(d["issuer"], persona.did.as_str());
     assert_eq!(d["recipient"], COMMUNITY);
@@ -661,7 +661,7 @@ async fn an_election_read_is_signed_as_the_member() {
     let listed = ok(&handle_voter_read(&state, &auth, read(&persona.did, "list", json!({}))).await);
     assert_eq!(
         listed["document"]["type"],
-        "https://trusttasks.org/spec/vtc/elections/list/0.1"
+        "https://trusttasks.org/spec/vtc/elections/list/0.3"
     );
 
     // A payload the read's own schema refuses is not signed.

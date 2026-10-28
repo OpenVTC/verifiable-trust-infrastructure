@@ -495,31 +495,31 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     // ── Voter role (`vta/pcs/voter/*`, `vta/pcs/vote`) ──────────────────
     // A repeat before the ticket is held answers with the request already kept,
     // under the same key and blinding state, so a replayed answer still unblinds.
-    (trust_tasks::TASK_VTA_PCS_VOTER_REGISTER_0_1, RetrySafe),
+    (trust_tasks::TASK_VTA_PCS_VOTER_REGISTER_0_2, RetrySafe),
     // Signs a read as the member and keeps nothing: a repeat is another signed read.
-    (trust_tasks::TASK_VTA_PCS_VOTER_READ_0_1, RetrySafe),
+    (trust_tasks::TASK_VTA_PCS_VOTER_READ_0_2, RetrySafe),
     // A repeat finds no request in flight; keyed so it gets the original answer.
     (trust_tasks::TASK_VTA_PCS_VOTER_ACCEPT_0_1, Keyed),
     // Each execution is a new cast, signed by a new one-time key: keyed so a
     // retry is answered with the same document, which is what the client must
     // resend to the ballot box (a second cast would be a second board entry).
-    (trust_tasks::TASK_VTA_PCS_VOTE_0_1, Keyed),
+    (trust_tasks::TASK_VTA_PCS_VOTE_0_2, Keyed),
     // Keeping a receipt already kept stores nothing new.
     (trust_tasks::TASK_VTA_PCS_VOTER_RECEIPT_0_1, RetrySafe),
     // As vote: a new encrypted cast under a new one-time key each time; keyed so a
     // retry is answered with the same document.
-    (trust_tasks::TASK_VTA_PCS_VOTE_ENCRYPTED_0_2, Keyed),
+    (trust_tasks::TASK_VTA_PCS_VOTE_ENCRYPTED_0_3, Keyed),
     // The trustee role: the transport key and the dealing are fixed on first use and
     // derived again after, so a repeat is the same enrolment or dealing re-signed —
     // which the ballot box answers as the first. keys keeps a share that is a
     // function of the board; justify and decrypt keep nothing.
-    (trust_tasks::TASK_VTA_PCS_TRUSTEE_ENROL_0_1, RetrySafe),
-    (trust_tasks::TASK_VTA_PCS_TRUSTEE_DEAL_0_2, RetrySafe),
-    (trust_tasks::TASK_VTA_PCS_TRUSTEE_KEYS_0_2, RetrySafe),
-    (trust_tasks::TASK_VTA_PCS_TRUSTEE_JUSTIFY_0_2, RetrySafe),
+    (trust_tasks::TASK_VTA_PCS_TRUSTEE_ENROL_0_2, RetrySafe),
+    (trust_tasks::TASK_VTA_PCS_TRUSTEE_DEAL_0_3, RetrySafe),
+    (trust_tasks::TASK_VTA_PCS_TRUSTEE_KEYS_0_3, RetrySafe),
+    (trust_tasks::TASK_VTA_PCS_TRUSTEE_JUSTIFY_0_3, RetrySafe),
     (trust_tasks::TASK_VTA_PCS_TRUSTEE_DECRYPT_0_2, RetrySafe),
     // Signs a read as the trustee and keeps nothing.
-    (trust_tasks::TASK_VTA_PCS_TRUSTEE_READ_0_1, RetrySafe),
+    (trust_tasks::TASK_VTA_PCS_TRUSTEE_READ_0_2, RetrySafe),
     // ── Witnessed party (`vta/witness/*`) ───────────────────────────────
     // Each step is safe to repeat (`vta/_shared/0.6/CONVENTIONS.md` §5): a
     // repeated open is an unsent, expiring session; a repeated present builds a
