@@ -46,7 +46,7 @@ use trust_tasks_rs::specs::vtc::join_requests::{
     query::v0_1 as join_query, vetting::show::v0_1 as join_vetting_show,
 };
 use trust_tasks_rs::specs::vtc::relationships::{
-    restore::v0_1 as rel_restore, suspend::v0_1 as rel_suspend,
+    restore::v0_2 as rel_restore, suspend::v0_2 as rel_suspend,
 };
 use trust_tasks_rs::specs::vtc::rooms::list::v0_2 as rooms_list;
 use trust_tasks_rs::specs::vtc::schemas::{

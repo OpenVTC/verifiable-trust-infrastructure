@@ -215,7 +215,7 @@ spec_types! {
     MemberCredentials01Response(member_credentials::v0_1::Response);
     /// `vtc/rooms/get/0.3#response` — one hosted room's host record (instants as
     /// RFC 3339 strings), storage placement, limits and usage, with the room's
-    /// migration as `vtc/rooms/storage/migrate/0.2` reports it.
+    /// migration as `vtc/rooms/storage/migrate/0.3` reports it.
     RoomsGet03Response(rooms_get::v0_3::Response);
     /// `vtc/rooms/usage/0.1` payload — grouping, filter, sort and page.
     RoomsUsage01Payload(rooms_usage::v0_1::Payload);
@@ -225,20 +225,16 @@ spec_types! {
     RoomsLimitsSet01Payload(rooms_limits_set::v0_1::Payload);
     /// `vtc/rooms/limits/set/0.1#response` — the limits after the change.
     RoomsLimitsSet01Response(rooms_limits_set::v0_1::Response);
-    /// `vtc/rooms/storage/assign/0.1` payload — point a room at another config.
-    RoomsStorageAssign01Payload(rooms_storage_assign::v0_1::Payload);
-    /// `vtc/rooms/storage/assign/0.1#response`.
-    RoomsStorageAssign01Response(rooms_storage_assign::v0_1::Response);
-    /// `vtc/rooms/storage/migrate/0.1` payload — move a room's existing files onto its
+    /// `vtc/rooms/storage/assign/0.2` payload — point a room at another config.
+    RoomsStorageAssign02Payload(rooms_storage_assign::v0_2::Payload);
+    /// `vtc/rooms/storage/assign/0.2#response`.
+    RoomsStorageAssign02Response(rooms_storage_assign::v0_2::Response);
+    /// `vtc/rooms/storage/migrate/0.3` payload — move a room's existing files onto its
     /// assigned config.
-    RoomsStorageMigrate01Payload(rooms_storage_migrate::v0_1::Payload);
-    /// `vtc/rooms/storage/migrate/0.1#response` — the migration and its progress so far.
-    RoomsStorageMigrate01Response(rooms_storage_migrate::v0_1::Response);
-    /// `vtc/rooms/storage/migrate/0.2` payload — 0.1's, unchanged.
-    RoomsStorageMigrate02Payload(rooms_storage_migrate::v0_2::Payload);
-    /// `vtc/rooms/storage/migrate/0.2#response` — the migration, its progress, and
+    RoomsStorageMigrate03Payload(rooms_storage_migrate::v0_3::Payload);
+    /// `vtc/rooms/storage/migrate/0.3#response` — the migration, its progress, and
     /// why and until when it is paused or waiting.
-    RoomsStorageMigrate02Response(rooms_storage_migrate::v0_2::Response);
+    RoomsStorageMigrate03Response(rooms_storage_migrate::v0_3::Response);
     /// `vtc/rooms/community/create/0.4` payload — a room the community itself
     /// owns: its label, description, tags, tier, retention and the reason recorded
     /// with it.
@@ -428,40 +424,32 @@ spec_types! {
     /// `vtc/rooms/community/members/list/0.1#response` — one page of a room's
     /// members, offered, admitted or removed.
     RoomsCommunityMembersList01Response(rooms_community::members::list::v0_1::Response);
-    /// `vtc/storage/configs/create/0.1` payload. Carries no secret.
-    StorageConfigsCreate01Payload(storage_configs::create::v0_1::Payload);
-    /// `vtc/storage/configs/create/0.1#response`.
-    StorageConfigsCreate01Response(storage_configs::create::v0_1::Response);
-    /// `vtc/storage/configs/update/0.1` payload.
-    StorageConfigsUpdate01Payload(storage_configs::update::v0_1::Payload);
-    /// `vtc/storage/configs/update/0.1#response`.
-    StorageConfigsUpdate01Response(storage_configs::update::v0_1::Response);
     /// `vtc/storage/configs/list/0.2#response` — with `roleArn` and `notAllowed`.
     StorageConfigsList02Response(storage_configs::list::v0_2::Response);
     /// `vtc/storage/configs/get/0.2#response` — one config, its facts and rooms.
     StorageConfigsGet02Response(storage_configs::get::v0_2::Response);
-    /// `vtc/storage/configs/create/0.2` payload. Carries no secret.
-    StorageConfigsCreate02Payload(storage_configs::create::v0_2::Payload);
-    /// `vtc/storage/configs/create/0.2#response`.
-    StorageConfigsCreate02Response(storage_configs::create::v0_2::Response);
-    /// `vtc/storage/configs/update/0.2` payload.
-    StorageConfigsUpdate02Payload(storage_configs::update::v0_2::Payload);
-    /// `vtc/storage/configs/update/0.2#response`.
-    StorageConfigsUpdate02Response(storage_configs::update::v0_2::Response);
-    /// `vtc/storage/configs/retire/0.1#response`.
-    StorageConfigsRetire01Response(storage_configs::retire::v0_1::Response);
+    /// `vtc/storage/configs/create/0.3` payload. Carries no secret.
+    StorageConfigsCreate03Payload(storage_configs::create::v0_3::Payload);
+    /// `vtc/storage/configs/create/0.3#response`.
+    StorageConfigsCreate03Response(storage_configs::create::v0_3::Response);
+    /// `vtc/storage/configs/update/0.3` payload.
+    StorageConfigsUpdate03Payload(storage_configs::update::v0_3::Payload);
+    /// `vtc/storage/configs/update/0.3#response`.
+    StorageConfigsUpdate03Response(storage_configs::update::v0_3::Response);
+    /// `vtc/storage/configs/retire/0.3#response`.
+    StorageConfigsRetire03Response(storage_configs::retire::v0_3::Response);
     /// `vtc/storage/configs/probe/0.1#response` — each step of a canary round trip.
     StorageConfigsProbe01Response(storage_configs::probe::v0_1::Response);
-    /// `vtc/storage/credentials/set/0.2` payload — a `sealed` config's credential, sealed
+    /// `vtc/storage/credentials/set/0.3` payload — a `sealed` config's credential, sealed
     /// to the community in the administrator's own client. Never carries it in the clear.
-    StorageCredentialsSet02Payload(storage_credentials_set::v0_2::Payload);
-    /// `vtc/storage/credentials/set/0.2#response` — the config's credential state, by
+    StorageCredentialsSet03Payload(storage_credentials_set::v0_3::Payload);
+    /// `vtc/storage/credentials/set/0.3#response` — the config's credential state, by
     /// fingerprint, and the probe's outcome.
-    StorageCredentialsSet02Response(storage_credentials_set::v0_2::Response);
-    /// `vtc/storage/credentials/set/0.2`'s `SealedCredentialCleartext` — what a producer
+    StorageCredentialsSet03Response(storage_credentials_set::v0_3::Response);
+    /// `vtc/storage/credentials/set/0.3`'s `SealedCredentialCleartext` — what a producer
     /// seals inside the block. Never a payload member, never sent unsealed.
-    StorageCredentialsSet02Cleartext(storage_credentials_set::v0_2::SealedCredentialCleartext)
-        in storage_credentials_set::v0_2::Payload as "SealedCredentialCleartext";
+    StorageCredentialsSet03Cleartext(storage_credentials_set::v0_3::SealedCredentialCleartext)
+        in storage_credentials_set::v0_3::Payload as "SealedCredentialCleartext";
     /// `git-ns/view/0.1#response` — namespaces, repositories and recorded git
     /// rights. Also the body of a VTC's `GET /v1/git-ns/view`, the
     /// administrator's complete view.

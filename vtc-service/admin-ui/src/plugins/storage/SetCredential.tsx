@@ -1,4 +1,4 @@
-// Setting a `sealed` config's credential (`vtc/storage/credentials/set/0.2`).
+// Setting a `sealed` config's credential (`vtc/storage/credentials/set/0.3`).
 //
 // The credential is sealed in this browser to the community — HPKE to the X25519
 // form of the community DID's key (`lib/sealed-transfer.ts`) — before it leaves the

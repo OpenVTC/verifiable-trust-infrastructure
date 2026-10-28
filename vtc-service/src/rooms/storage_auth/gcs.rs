@@ -1,5 +1,5 @@
 //! `gcs` configs on `ambient` or `sealed` authentication
-//! (`vtc/storage/configs/create/0.2`, "Room-scoped credentials", rule 4 and the
+//! (`vtc/storage/configs/create/0.3`, "Room-scoped credentials", rule 4 and the
 //! paragraph on `sealed`).
 //!
 //! A **source token** — the machine's own (application default credentials, minted

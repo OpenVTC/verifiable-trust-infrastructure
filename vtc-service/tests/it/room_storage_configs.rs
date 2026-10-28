@@ -1,6 +1,6 @@
 //! Storage configs and room assignment (`docs/05-design-notes/data-rooms-files.md` §7):
-//! `vtc/storage/configs/{list,get,create,update,retire,probe}/0.1` and
-//! `vtc/rooms/storage/assign/0.1`, driven through the signed-document door as an
+//! `vtc/storage/configs/{list,get}/0.2`, `{create,update,retire}/0.3`, `probe/0.1`,
+//! `vtc/rooms/storage/assign/0.2` and `migrate/0.3`, driven through the signed-document door as an
 //! administrator's client does — the requester's gesture, then the other holders'
 //! approvals for every change.
 
@@ -20,11 +20,11 @@ use crate::common::signed::{error_code, post, signed};
 const RP_ORIGIN: &str = "https://vtc.example.com";
 const LIST: &str = "https://trusttasks.org/spec/vtc/storage/configs/list/0.2";
 const GET: &str = "https://trusttasks.org/spec/vtc/storage/configs/get/0.2";
-const CREATE: &str = "https://trusttasks.org/spec/vtc/storage/configs/create/0.1";
-const UPDATE: &str = "https://trusttasks.org/spec/vtc/storage/configs/update/0.1";
-const RETIRE: &str = "https://trusttasks.org/spec/vtc/storage/configs/retire/0.1";
+const CREATE: &str = "https://trusttasks.org/spec/vtc/storage/configs/create/0.3";
+const UPDATE: &str = "https://trusttasks.org/spec/vtc/storage/configs/update/0.3";
+const RETIRE: &str = "https://trusttasks.org/spec/vtc/storage/configs/retire/0.3";
 const PROBE: &str = "https://trusttasks.org/spec/vtc/storage/configs/probe/0.1";
-const ASSIGN: &str = "https://trusttasks.org/spec/vtc/rooms/storage/assign/0.1";
+const ASSIGN: &str = "https://trusttasks.org/spec/vtc/rooms/storage/assign/0.2";
 
 /// A `trust-task-error` reply's code — the census reads witnesses by this name.
 fn tt_error_code(doc: &Value) -> Option<&str> {
@@ -687,8 +687,7 @@ async fn vtc_rooms_storage_assign_refuses_with_its_declared_codes() {
 
 // ─── migrate ─────────────────────────────────────────────────────────────
 
-const MIGRATE: &str = "https://trusttasks.org/spec/vtc/rooms/storage/migrate/0.1";
-const MIGRATE_V2: &str = "https://trusttasks.org/spec/vtc/rooms/storage/migrate/0.2";
+const MIGRATE: &str = "https://trusttasks.org/spec/vtc/rooms/storage/migrate/0.3";
 const ROOM_GET: &str = "https://trusttasks.org/spec/vtc/rooms/get/0.3";
 
 /// A file of `len` bytes uploaded to `room_id`, as a member's commit leaves it: on the
@@ -872,8 +871,8 @@ async fn vtc_rooms_storage_migrate_refuses_with_its_declared_codes() {
     let room = hosted_room(&fix).await;
     upload_to(&fix, &room, 2_000, 3).await;
 
-    // Both versions declare the same codes, and are answered by one handler.
-    for uri in [MIGRATE, MIGRATE_V2] {
+    let uri = MIGRATE;
+    {
         let reply = send(
             &fix,
             &a,
@@ -890,7 +889,7 @@ async fn vtc_rooms_storage_migrate_refuses_with_its_declared_codes() {
 
     stored(&fix, "old", "draining").await;
     assign_directly(&fix, &room, "old").await;
-    for uri in [MIGRATE, MIGRATE_V2] {
+    {
         let reply = send(&fix, &a, uri, json!({ "roomId": room, "reason": "x" })).await;
         assert_eq!(
             tt_error_code(&reply),
@@ -920,7 +919,7 @@ async fn vtc_rooms_storage_migrate_refuses_with_its_declared_codes() {
             .unwrap();
     }
     assign_directly(&fix, &room, "small").await;
-    for uri in [MIGRATE, MIGRATE_V2] {
+    {
         let reply = send(&fix, &a, uri, json!({ "roomId": room, "reason": "x" })).await;
         assert_eq!(
             tt_error_code(&reply),
@@ -933,7 +932,7 @@ async fn vtc_rooms_storage_migrate_refuses_with_its_declared_codes() {
     }
 }
 
-/// `migrate/0.2` items 5, 9 and 11, and `rooms/get/0.3` item 5: a migration approved
+/// `migrate/0.3` items 5, 9 and 11, and `rooms/get/0.3` item 5: a migration approved
 /// once is the community's. Reassigned meanwhile, it keeps its target, which
 /// `rooms/get/0.3` names beside the new assignment; paused, it reports why; issued
 /// again, it is resumed at once — not parked for consent — keeping its target and
@@ -954,13 +953,13 @@ async fn a_migration_at_0_2_keeps_its_target_and_resumes_without_consent() {
         &mut fix,
         &a,
         &[&b],
-        MIGRATE_V2,
+        MIGRATE,
         json!({ "roomId": room, "reason": "to the EU" }),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{reply}");
     assert!(
-        reply["type"].as_str().unwrap().starts_with(MIGRATE_V2),
+        reply["type"].as_str().unwrap().starts_with(MIGRATE),
         "{reply}"
     );
     let id = reply["payload"]["migrationId"].clone();
@@ -993,7 +992,7 @@ async fn a_migration_at_0_2_keeps_its_target_and_resumes_without_consent() {
     let again = send(
         &fix,
         &c,
-        MIGRATE_V2,
+        MIGRATE,
         json!({ "roomId": room, "maxBytesPerSecond": 1_048_576, "reason": "go on" }),
     )
     .await;
@@ -1031,8 +1030,52 @@ async fn a_migration_at_0_2_keeps_its_target_and_resumes_without_consent() {
     assert_eq!(events[2]["configId"], "eu");
 }
 
-/// `migrate/0.2` item 13: one migration per target config at a time. A second, to the
-/// same config, is approved and `queued` (0.1 reports it `running`), copies nothing,
+/// `retire/0.3` item 3: a config cannot be retired while room files are still being
+/// moved onto it — here by a migration that kept its target after the room was
+/// reassigned, so no room is assigned to the config any more.
+#[tokio::test]
+async fn vtc_storage_configs_retire_refuses_while_files_move_onto_it() {
+    let mut fix = fixture().await;
+    let a = requester(&mut fix).await;
+    let b = seed(&fix, AdminAuthority::community_admin()).await;
+    stored(&fix, "eu", "active").await;
+    stored(&fix, "us", "active").await;
+    let room = hosted_room(&fix).await;
+    upload_to(&fix, &room, 1_000, 43).await;
+    assign_directly(&fix, &room, "eu").await;
+
+    let (status, reply) = through(
+        &mut fix,
+        &a,
+        &[&b],
+        MIGRATE,
+        json!({ "roomId": room, "reason": "to the EU" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{reply}");
+    assert_eq!(reply["payload"]["state"], "running", "{reply}");
+    assign_directly(&fix, &room, "us").await;
+
+    let reply = send(&fix, &b, RETIRE, json!({ "configId": "eu", "reason": "x" })).await;
+    assert_eq!(
+        tt_error_code(&reply),
+        Some(RETIRE_MIGRATIONS_INBOUND),
+        "{reply}"
+    );
+    assert_eq!(reply["payload"]["details"]["migrations"], 1, "{reply}");
+
+    // Finished, it no longer counts: what is left is the ordinary parked retirement.
+    vtc_service::rooms::migration::run(&fix.vtc.state, 1 << 40).await;
+    let reply = send(&fix, &b, RETIRE, json!({ "configId": "eu", "reason": "x" })).await;
+    assert_ne!(
+        tt_error_code(&reply),
+        Some(RETIRE_MIGRATIONS_INBOUND),
+        "{reply}"
+    );
+}
+
+/// `migrate/0.3` item 13: one migration per target config at a time. A second, to the
+/// same config, is approved and `queued`, copies nothing,
 /// and starts when the first is finished.
 #[tokio::test]
 async fn a_second_migration_to_one_config_is_queued() {
@@ -1051,7 +1094,7 @@ async fn a_second_migration_to_one_config_is_queued() {
         &mut fix,
         &a,
         &[&b],
-        MIGRATE_V2,
+        MIGRATE,
         json!({ "roomId": first, "reason": "first" }),
     )
     .await;
@@ -1060,23 +1103,12 @@ async fn a_second_migration_to_one_config_is_queued() {
         &mut fix,
         &a,
         &[&b],
-        MIGRATE_V2,
+        MIGRATE,
         json!({ "roomId": second, "reason": "second" }),
     )
     .await;
     assert_eq!(two["payload"]["state"], "queued", "{two}");
     assert_eq!(two["payload"]["doneFiles"], 0);
-    let old = send(
-        &fix,
-        &a,
-        MIGRATE,
-        json!({ "roomId": second, "reason": "x" }),
-    )
-    .await;
-    assert_eq!(
-        old["payload"]["state"], "running",
-        "0.1 knows no queue: {old}"
-    );
 
     vtc_service::rooms::migration::run(&fix.vtc.state, 1 << 40).await;
     for room in [&first, &second] {
@@ -1088,7 +1120,7 @@ async fn a_second_migration_to_one_config_is_queued() {
     }
 }
 
-/// `migrate/0.2` items 10 and 11: a target that stops being `active` under a running
+/// `migrate/0.3` items 10 and 11: a target that stops being `active` under a running
 /// migration is a failed attempt the community retries itself — the migration stays
 /// `running`, reporting the error and its next attempt — and pauses as `destination`
 /// only once its retries are spent. (A target retired for good leaves it paused and
@@ -1106,7 +1138,7 @@ async fn a_target_no_longer_active_is_retried_by_the_community() {
         &mut fix,
         &a,
         &[&b],
-        MIGRATE_V2,
+        MIGRATE,
         json!({ "roomId": room, "reason": "to the EU" }),
     )
     .await;
@@ -1394,59 +1426,9 @@ mod vta_account {
             }),
         )
         .await;
-        // 0.1 declares no details for `authNotAllowed`; 0.2 names the reason.
         assert_eq!(
             tt_error_code(&reply),
             Some(CREATE_AUTH_NOT_ALLOWED),
-            "{reply}"
-        );
-    }
-
-    #[tokio::test]
-    async fn vtc_storage_configs_create_v0_2_refuses_an_account_the_vta_does_not_know() {
-        let mut fix = fixture().await;
-        link(&fix).await;
-        let a = requester(&mut fix).await;
-        let reply = send(
-            &fix,
-            &a,
-            "https://trusttasks.org/spec/vtc/storage/configs/create/0.2",
-            json!({
-                "id": "eu-r2",
-                "label": "EU R2",
-                "settings": s3(),
-                "auth": through_vta("somebody-elses"),
-                "reason": "x",
-            }),
-        )
-        .await;
-        assert_eq!(
-            tt_error_code(&reply),
-            Some(CREATE_V0_2_UNKNOWN_ACCOUNT),
-            "{reply}"
-        );
-    }
-
-    #[tokio::test]
-    async fn vtc_storage_configs_update_v0_2_refuses_an_account_the_vta_does_not_know() {
-        let mut fix = fixture().await;
-        link(&fix).await;
-        stored_s3(&fix, "eu-r2").await;
-        let a = requester(&mut fix).await;
-        let reply = send(
-            &fix,
-            &a,
-            "https://trusttasks.org/spec/vtc/storage/configs/update/0.2",
-            json!({
-                "configId": "eu-r2",
-                "auth": through_vta("somebody-elses"),
-                "reason": "x",
-            }),
-        )
-        .await;
-        assert_eq!(
-            tt_error_code(&reply),
-            Some(UPDATE_V0_2_UNKNOWN_ACCOUNT),
             "{reply}"
         );
     }

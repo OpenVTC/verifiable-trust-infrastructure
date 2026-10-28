@@ -455,7 +455,7 @@ When adding a flow, add it here and a line to the root index.
   reduction nobody but requester and subject could approve; lands after
   `acl.removal_cooling_off`, cancellable by the requester only) and
   `acknowledge` items (each offline ACL write, VTI-VTC-023, record type
-  `vtc/operator/offline-write/0.1`).
+  `vtc/operator/offline-write/0.2`).
 - **Invariants to preserve**: an approval is a `task-consent/decision` signed
   by the approver's **own DID** (wallet or `cnm`), never a console key;
   `webauthn` / `approverSigned` evidence rides beside it, never instead. The
@@ -648,16 +648,16 @@ When adding a flow, add it here and a line to the root index.
   (`vtc/rooms/community/{list,get}`, `members/list`) show, so a `rooms` seam
   that moves nothing they show is no hint.
 - **Transport**: HTTPS binding 0.3 §2.1 **streamed responses** — the signed
-  `vtc/admin/events/subscribe/0.1` document POSTed to the ordinary
+  `vtc/admin/events/subscribe/0.6` document POSTed to the ordinary
   `/v1/trust-tasks` door with `Accept: text/event-stream, application/json;q=0.5`,
   answered `200 text/event-stream` with the signed `#response` as the first
-  event and `vtc/admin/events/event/0.1` documents after it (one per `data:`
+  event and `vtc/admin/events/event/0.5` documents after it (one per `data:`
   line, no `event:` field, SSE `id` = resume token, heartbeats as comments).
   Why SSE and not TSP/DIDComm: the console is a browser holding only a console
   key, and no other binding defines a streamed response — a subscribe arriving
   any other way is `streamUnavailable`. Why `fetch` and not `EventSource`:
   every (re)connection must be a freshly signed POST; resumption is in-band
-  `since` only (`Last-Event-ID` is a cross-check, mismatch → `malformedRequest`).
+  `resumeToken` only (`Last-Event-ID` is a cross-check, mismatch → `malformedRequest`).
 - **Hints only — the invariant**: an event carries `topic`, `at`,
   `resumeToken` and, on `actions` / `acknowledgements` / `joinRequests`, the
   recipient's `count`. Never a record, a record id or a DID, in any member

@@ -74,16 +74,21 @@ describe("recognising the next-step reply", () => {
     expect(parked.path).toBe("/actions?action=act-9");
   });
 
-  it("names show/0.2, and still reads an older VTC's show/0.1 hint", () => {
-    expect(ACTIONS_SHOW_TASK).toBe("https://trusttasks.org/spec/vtc/admin/actions/show/0.2");
+  it("names show/0.3, and reads no other version's hint", () => {
+    expect(ACTIONS_SHOW_TASK).toBe("https://trusttasks.org/spec/vtc/admin/actions/show/0.3");
+    const parked = parkedActionFromDocument(
+      nextStep({ ext: {}, expects: [{ typeUri: ACTIONS_SHOW_TASK, hint: { actionId: "act-7" } }] }),
+    );
+    expect(parked?.actionId).toBe("act-7");
     for (const typeUri of [
       "https://trusttasks.org/spec/vtc/admin/actions/show/0.2",
       "https://trusttasks.org/spec/vtc/admin/actions/show/0.1",
     ]) {
-      const parked = parkedActionFromDocument(
-        nextStep({ ext: {}, expects: [{ typeUri, hint: { actionId: "act-7" } }] }),
-      );
-      expect(parked?.actionId).toBe("act-7");
+      expect(
+        parkedActionFromDocument(
+          nextStep({ ext: {}, expects: [{ typeUri, hint: { actionId: "act-7" } }] }),
+        ),
+      ).toBeNull();
     }
     expect(
       parkedActionFromDocument(

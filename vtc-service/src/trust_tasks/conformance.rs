@@ -595,22 +595,6 @@ fn sample_paused_migration() -> vti_rooms::blobs::Migration {
     serde_json::from_value(m).expect("a migration record")
 }
 
-/// A stored storage config as `crate::rooms::storage_configs` keeps it.
-fn sample_storage_config() -> serde_json::Value {
-    json!({
-        "id": "local",
-        "label": "This host's disk",
-        "settings": { "kind": "local", "root": "/var/lib/vtc/room-blobs" },
-        "state": "active",
-        "isDefault": true,
-        "capacityBytes": 1_000_000,
-        "createdBy": "did:key:z6MkCommunity",
-        "createdAt": "2026-10-12T09:00:00Z",
-        "updatedBy": "did:key:z6MkAdmin",
-        "updatedAt": "2026-10-12T10:00:00Z",
-    })
-}
-
 /// An `ambient` `s3` config at 0.2, assuming a named role.
 fn sample_storage_config_v2() -> serde_json::Value {
     json!({
@@ -637,7 +621,7 @@ fn sample_storage_facts_v2() -> serde_json::Value {
 }
 
 /// An operator's offline write as an acknowledge item names it: the record
-/// type `vtc/operator/offline-write/0.1`, with the record as its payload.
+/// type `vtc/operator/offline-write/0.2`, with the record as its payload.
 /// A replaced custom role, as `crate::acl::roles` stores it.
 fn sample_role() -> crate::acl::roles::RoleDefinition {
     crate::acl::roles::RoleDefinition {
@@ -661,7 +645,7 @@ fn sample_offline_write() -> serde_json::Value {
         "command": "emergencyBootstrap",
         "dids": [DID, OTHER_DID],
         "host": "vtc-host-1",
-        "at": TS,
+        "writtenAt": TS,
     });
     json!({
         "actionId": ACTION_ID,
@@ -671,7 +655,7 @@ fn sample_offline_write() -> serde_json::Value {
         "requester": COMMUNITY_DID,
         "status": "open",
         "createdAt": TS,
-        "approvals": [{ "subject": DID, "at": TS }],
+        "approvals": [{ "subject": DID, "decidedAt": TS }],
         "approversRemaining": 1,
         "summary": summary::render(summary::KIND_OPERATOR_WRITE, OPERATOR_OFFLINE_WRITE_URI, &payload),
         "payloadDigest": summary::payload_digest(&payload).unwrap(),
@@ -1081,41 +1065,11 @@ fn table() -> Vec<Conformance> {
     #[allow(unused_mut)]
     let mut table = vec![
         // ─── the action list (`crate::admin_actions`) ────────────────
+        // `_shared/0.3` Actions: an approval, a cooling-off in the schema's own
+        // terms, and an operator's offline write (`offline-write/0.2`).
         checked!(
-            s::admin::actions::list::v0_1::Payload,
-            s::admin::actions::list::v0_1::Response,
-            json!({ "view": "waitingForMe", "limit": 25 }),
-            json!({
-                "actions": [sample_action(true)],
-                "counts": { "waitingForMe": 1, "requestedByMe": 0 },
-                "nextCursor": "djF8d2FpdGluZ0Zvck1lfHwyNQ",
-            })
-        ),
-        checked!(
-            s::admin::actions::show::v0_1::Payload,
-            s::admin::actions::show::v0_1::Response,
-            json!({ "actionId": ACTION_ID }),
-            json!({ "action": sample_action(true) })
-        ),
-        checked!(
-            s::admin::actions::cancel::v0_1::Payload,
-            s::admin::actions::cancel::v0_1::Response,
-            json!({ "actionId": ACTION_ID, "reason": "raised against the wrong DID" }),
-            json!({ "action": sample_action(false) })
-        ),
-        // Served, but every action A1 raises is an approval, so the success
-        // path is not reached yet; the response is the shape it will carry.
-        checked!(
-            s::admin::actions::acknowledge::v0_1::Payload,
-            s::admin::actions::acknowledge::v0_1::Response,
-            json!({ "actionId": ACTION_ID }),
-            json!({ "action": sample_action(false) })
-        ),
-        // 0.2: the same requests, answered with `_shared/0.2` Actions — an
-        // approval as before, and a cooling-off in the schema's own terms.
-        checked!(
-            s::admin::actions::list::v0_2::Payload,
-            s::admin::actions::list::v0_2::Response,
+            s::admin::actions::list::v0_3::Payload,
+            s::admin::actions::list::v0_3::Response,
             json!({ "view": "all", "limit": 25 }),
             json!({
                 "actions": [sample_action(true), sample_cooling_off(true, "requester")],
@@ -1128,90 +1082,40 @@ fn table() -> Vec<Conformance> {
             })
         ),
         checked!(
-            s::admin::actions::show::v0_2::Payload,
-            s::admin::actions::show::v0_2::Response,
+            s::admin::actions::show::v0_3::Payload,
+            s::admin::actions::show::v0_3::Response,
             json!({ "actionId": ACTION_ID }),
             json!({ "action": sample_cooling_off(false, "subject") })
         ),
         checked!(
-            s::admin::actions::cancel::v0_2::Payload,
-            s::admin::actions::cancel::v0_2::Response,
-            json!({ "actionId": ACTION_ID }),
+            s::admin::actions::cancel::v0_3::Payload,
+            s::admin::actions::cancel::v0_3::Response,
+            json!({ "actionId": ACTION_ID, "reason": "raised against the wrong DID" }),
             json!({ "action": sample_action(false) })
         ),
         checked!(
-            s::admin::actions::acknowledge::v0_2::Payload,
-            s::admin::actions::acknowledge::v0_2::Response,
+            s::admin::actions::acknowledge::v0_3::Payload,
+            s::admin::actions::acknowledge::v0_3::Response,
             json!({ "actionId": ACTION_ID }),
             json!({ "action": sample_offline_write() })
         ),
         // ─── the console's live channel ──────────────────────────────
         // The response is the first event of the stream it opens; the
-        // hints after it are `event/0.1` documents (`admin_events.rs`
+        // hints after it are `event/0.5` documents (`admin_events.rs`
         // holds their shape against that schema).
         checked!(
-            s::admin::events::subscribe::v0_1::Payload,
-            s::admin::events::subscribe::v0_1::Response,
-            json!({
-                "topics": ["actions", "acknowledgements", "joinRequests", "members",
-                           "singleAdminMode", "config"],
-                "since": "e1.AAAAAAAAAAAAAAAA.BBBBBBBBBBBBBBBB",
-            }),
-            json!({
-                "topics": ["actions", "acknowledgements", "members", "singleAdminMode"],
-                "heartbeatSeconds": 25,
-                "resumed": true,
-                "resumeToken": "e1.AAAAAAAAAAAAAAAA.BBBBBBBBBBBBBBBB",
-            })
-        ),
-        // 0.2: the same, plus `rooms`; its hints are `event/0.2` documents.
-        checked!(
-            s::admin::events::subscribe::v0_2::Payload,
-            s::admin::events::subscribe::v0_2::Response,
-            json!({
-                "topics": ["actions", "acknowledgements", "joinRequests", "members",
-                           "singleAdminMode", "config", "rooms"],
-                "since": "e1.AAAAAAAAAAAAAAAA.BBBBBBBBBBBBBBBB",
-            }),
-            json!({
-                "topics": ["actions", "members", "singleAdminMode", "rooms"],
-                "heartbeatSeconds": 25,
-                "resumed": false,
-                "resumeToken": "e1.AAAAAAAAAAAAAAAA.BBBBBBBBBBBBBBBB",
-            })
-        ),
-        // 0.3: the same, plus `directory` and `groups`; its hints are
-        // `event/0.3` documents.
-        checked!(
-            s::admin::events::subscribe::v0_3::Payload,
-            s::admin::events::subscribe::v0_3::Response,
-            json!({
-                "topics": ["actions", "acknowledgements", "joinRequests", "members",
-                           "singleAdminMode", "config", "rooms", "directory", "groups"],
-                "since": "e1.AAAAAAAAAAAAAAAA.BBBBBBBBBBBBBBBB",
-            }),
-            json!({
-                "topics": ["actions", "members", "directory", "groups"],
-                "heartbeatSeconds": 25,
-                "resumed": false,
-                "resumeToken": "e1.AAAAAAAAAAAAAAAA.BBBBBBBBBBBBBBBB",
-            })
-        ),
-        // 0.4: the same, plus `communityRooms`; its hints are `event/0.4`
-        // documents.
-        checked!(
-            s::admin::events::subscribe::v0_4::Payload,
-            s::admin::events::subscribe::v0_4::Response,
+            s::admin::events::subscribe::v0_6::Payload,
+            s::admin::events::subscribe::v0_6::Response,
             json!({
                 "topics": ["actions", "acknowledgements", "joinRequests", "members",
                            "singleAdminMode", "config", "rooms", "directory", "groups",
                            "communityRooms"],
-                "since": "e1.AAAAAAAAAAAAAAAA.BBBBBBBBBBBBBBBB",
+                "resumeToken": "e1.AAAAAAAAAAAAAAAA.BBBBBBBBBBBBBBBB",
             }),
             json!({
                 "topics": ["actions", "members", "communityRooms"],
                 "heartbeatSeconds": 25,
-                "resumed": false,
+                "resumed": true,
                 "resumeToken": "e1.AAAAAAAAAAAAAAAA.BBBBBBBBBBBBBBBB",
             })
         ),
@@ -1306,10 +1210,7 @@ fn table() -> Vec<Conformance> {
                 "storage": {
                     "configId": "local",
                     "earlierConfigs": [{ "configId": "old", "files": 1, "bytes": 10 }],
-                    "migration": crate::rooms::migration::progress_json(
-                        &sample_paused_migration(),
-                        crate::rooms::migration::Wire::V0_2,
-                    ),
+                    "migration": crate::rooms::migration::progress_json(&sample_paused_migration()),
                 },
                 "limits": {
                     "limits": {
@@ -1513,26 +1414,6 @@ fn table() -> Vec<Conformance> {
         ),
         // ─── storage configs (`storage_tasks`) ───────────────────────
         checked!(
-            s::storage::configs::create::v0_1::Payload,
-            s::storage::configs::create::v0_1::Response,
-            json!({
-                "id": "local",
-                "label": "This host's disk",
-                "settings": { "kind": "local", "root": "/var/lib/vtc/room-storage/local" },
-                "capacityBytes": 1_000_000,
-                "isDefault": true,
-                "reason": "the community's first storage",
-            }),
-            json!({ "config": sample_storage_config() })
-        ),
-        checked!(
-            s::storage::configs::update::v0_1::Payload,
-            s::storage::configs::update::v0_1::Response,
-            json!({ "configId": "local", "label": "Main disk", "reason": "renamed" }),
-            json!({ "config": sample_storage_config() })
-        ),
-        // 0.2 (trust-tasks-tf #866): `roleArn`, `notAllowed`, sealed credentials.
-        checked!(
             s::storage::configs::list::v0_2::Payload,
             s::storage::configs::list::v0_2::Response,
             json!({ "kind": "s3", "limit": 10 }),
@@ -1556,8 +1437,8 @@ fn table() -> Vec<Conformance> {
             })
         ),
         checked!(
-            s::storage::configs::create::v0_2::Payload,
-            s::storage::configs::create::v0_2::Response,
+            s::storage::configs::create::v0_3::Payload,
+            s::storage::configs::create::v0_3::Response,
             json!({
                 "id": "eu-s3-instance",
                 "label": "EU — S3 (instance role)",
@@ -1568,14 +1449,14 @@ fn table() -> Vec<Conformance> {
             json!({ "config": sample_storage_config_v2() })
         ),
         checked!(
-            s::storage::configs::update::v0_2::Payload,
-            s::storage::configs::update::v0_2::Response,
+            s::storage::configs::update::v0_3::Payload,
+            s::storage::configs::update::v0_3::Response,
             json!({ "configId": "eu-s3-instance", "auth": { "mode": "sealed" }, "reason": "x" }),
             json!({ "config": sample_storage_config_v2() })
         ),
         checked!(
-            s::storage::credentials::set::v0_2::Payload,
-            s::storage::credentials::set::v0_2::Response,
+            s::storage::credentials::set::v0_3::Payload,
+            s::storage::credentials::set::v0_3::Response,
             json!({
                 "configId": "r2-archive",
                 "sealed": format!("-----BEGIN VTA SEALED BUNDLE-----\n{}\n-----END VTA SEALED BUNDLE-----", "A".repeat(64)),
@@ -1593,8 +1474,8 @@ fn table() -> Vec<Conformance> {
             })
         ),
         checked!(
-            s::storage::configs::retire::v0_1::Payload,
-            s::storage::configs::retire::v0_1::Response,
+            s::storage::configs::retire::v0_3::Payload,
+            s::storage::configs::retire::v0_3::Response,
             json!({ "configId": "local", "reason": "moving to object storage" }),
             json!({ "configId": "local", "state": "draining", "blobsRemaining": 3 })
         ),
@@ -1614,8 +1495,8 @@ fn table() -> Vec<Conformance> {
             })
         ),
         checked!(
-            s::rooms::storage::assign::v0_1::Payload,
-            s::rooms::storage::assign::v0_1::Response,
+            s::rooms::storage::assign::v0_2::Payload,
+            s::rooms::storage::assign::v0_2::Response,
             json!({ "roomId": "did:key:z6MkRoom", "configId": "eu", "reason": "EU residency" }),
             json!({
                 "roomId": "did:key:z6MkRoom",
@@ -1625,30 +1506,14 @@ fn table() -> Vec<Conformance> {
             })
         ),
         checked!(
-            s::rooms::storage::migrate::v0_1::Payload,
-            s::rooms::storage::migrate::v0_1::Response,
+            s::rooms::storage::migrate::v0_3::Payload,
+            s::rooms::storage::migrate::v0_3::Response,
             json!({
                 "roomId": "did:key:z6MkRoom",
                 "maxBytesPerSecond": 1_048_576,
                 "reason": "retiring local",
             }),
-            crate::rooms::migration::response_json(
-                &sample_migration(),
-                crate::rooms::migration::Wire::V0_1,
-            )
-        ),
-        checked!(
-            s::rooms::storage::migrate::v0_2::Payload,
-            s::rooms::storage::migrate::v0_2::Response,
-            json!({
-                "roomId": "did:key:z6MkRoom",
-                "maxBytesPerSecond": 1_048_576,
-                "reason": "retiring local",
-            }),
-            crate::rooms::migration::response_json(
-                &sample_paused_migration(),
-                crate::rooms::migration::Wire::V0_2,
-            )
+            crate::rooms::migration::response_json(&sample_paused_migration())
         ),
         // ─── admin ───────────────────────────────────────────────────
         checked!(
@@ -2712,8 +2577,8 @@ fn table() -> Vec<Conformance> {
         ),
         // ─── website ─────────────────────────────────────────────────
         checked!(
-            s::website::files::list::v0_1::Payload,
-            s::website::files::list::v0_1::Response,
+            s::website::files::list::v0_3::Payload,
+            s::website::files::list::v0_3::Response,
             json!({ "cursor": "assets/logo.png", "limit": 50 }),
             // Serialised from the real `ListResponse` / `FileEntry`, per the
             // `endorsements/revoke` note below — a hand-written fixture is
@@ -2724,7 +2589,7 @@ fn table() -> Vec<Conformance> {
                     path: "index.html".into(),
                     size: 2048,
                     etag: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855".into(),
-                    modified_at: DateTime::from_timestamp(1_755_946_800, 0)
+                    updated_at: DateTime::from_timestamp(1_755_946_800, 0)
                         .expect("fixture timestamp"),
                 }],
                 next_cursor: Some("styles/main.css".into()),
@@ -3433,8 +3298,8 @@ fn table() -> Vec<Conformance> {
             })
         ),
         checked!(
-            s::relationships::suspend::v0_1::Payload,
-            s::relationships::suspend::v0_1::Response,
+            s::relationships::suspend::v0_2::Payload,
+            s::relationships::suspend::v0_2::Response,
             json!({ "id": REQUEST_ID, "reason": "under review" }),
             to_v(crate::routes::relationships::LifecycleResponse {
                 id: uuid(),
@@ -3444,8 +3309,8 @@ fn table() -> Vec<Conformance> {
             })
         ),
         checked!(
-            s::relationships::restore::v0_1::Payload,
-            s::relationships::restore::v0_1::Response,
+            s::relationships::restore::v0_2::Payload,
+            s::relationships::restore::v0_2::Response,
             json!({ "id": REQUEST_ID }),
             to_v(crate::routes::relationships::LifecycleResponse {
                 id: uuid(),

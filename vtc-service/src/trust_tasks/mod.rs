@@ -1540,10 +1540,7 @@ fn dispatch_typed<'a>(
         | crate::acl::admin_consent::DECISION_V0_2_TYPE => {
             Box::pin(async move { action_tasks::handle_decision(state, ctx, doc).await })
         }
-        event_tasks::SUBSCRIBE_TYPE
-        | event_tasks::SUBSCRIBE_V0_2_TYPE
-        | event_tasks::SUBSCRIBE_V0_3_TYPE
-        | event_tasks::SUBSCRIBE_V0_4_TYPE => {
+        event_tasks::SUBSCRIBE_TYPE => {
             Box::pin(async move { event_tasks::handle_subscribe(state, ctx, doc).await })
         }
         uri if action_tasks::URIS.contains(&uri) => Box::pin(async move {
@@ -3070,27 +3067,16 @@ pub(crate) const DISPATCHED_URIS: &[&str] = &[
     // 0.2 adds the optional extra factor and the `actionId` locator.
     crate::acl::admin_consent::DECISION_TYPE,
     crate::acl::admin_consent::DECISION_V0_2_TYPE,
-    // The action list: what is waiting, one action, withdrawing one, and
-    // acknowledging an operator's write (no producer yet).
+    // The action list (0.3): what is waiting, one action, withdrawing one,
+    // and acknowledging an operator's write.
     action_tasks::LIST_TYPE,
     action_tasks::SHOW_TYPE,
     action_tasks::CANCEL_TYPE,
     action_tasks::ACKNOWLEDGE_TYPE,
-    // 0.2: the same requests, answered with `_shared/0.2` Actions — a
-    // cooling-off as category `coolingOff` with `landsAt` (trust-tasks-tf #719).
-    action_tasks::LIST_V0_2_TYPE,
-    action_tasks::SHOW_V0_2_TYPE,
-    action_tasks::CANCEL_V0_2_TYPE,
-    action_tasks::ACKNOWLEDGE_V0_2_TYPE,
-    // The console's live channel (hints only): its success opens an event
-    // stream, which only the HTTPS door can carry — every other transport is
-    // answered `streamUnavailable`. 0.2 adds the `rooms` topic, 0.3 the
-    // `directory` and `groups` topics and 0.4 the `communityRooms` topic; each
-    // older version is still answered, at its own version.
+    // The console's live channel (hints only, subscribe 0.6 / event 0.5):
+    // its success opens an event stream, which only the HTTPS door can carry —
+    // every other transport is answered `streamUnavailable`.
     event_tasks::SUBSCRIBE_TYPE,
-    event_tasks::SUBSCRIBE_V0_2_TYPE,
-    event_tasks::SUBSCRIBE_V0_3_TYPE,
-    event_tasks::SUBSCRIBE_V0_4_TYPE,
     // Members' step-up passkeys: the invite, its redemption, an
     // administrator's revocation for the member, and an administrator's
     // listing of them. No REST route serves them.
@@ -3125,12 +3111,8 @@ pub(crate) const DISPATCHED_URIS: &[&str] = &[
     storage_tasks::PROBE_TYPE,
     storage_tasks::ASSIGN_TYPE,
     storage_tasks::MIGRATE_TYPE,
-    // 0.2 (trust-tasks-tf #866): `roleArn` on ambient auth, `notAllowed`, host gating,
-    // and the sealed credential itself. Each version answered at its own.
-    storage_tasks::CREATE_V0_2_TYPE,
-    storage_tasks::UPDATE_V0_2_TYPE,
+    // The sealed credential itself.
     storage_tasks::CREDENTIALS_SET_TYPE,
-    storage_tasks::MIGRATE_V2_TYPE,
     // What the rooms store and may store (`data-rooms-files.md` §6): reads and limit
     // overrides for a holder of `vtc.rooms.admin`, overrides audited. No REST route.
     room_admin_tasks::GET_TYPE,
@@ -4789,11 +4771,8 @@ pub(crate) async fn capable_signer(
 /// for any action it did not ask for.
 const SUSPENDED_MAY_SEND: &[&str] = &[
     action_tasks::LIST_TYPE,
-    action_tasks::LIST_V0_2_TYPE,
     action_tasks::SHOW_TYPE,
-    action_tasks::SHOW_V0_2_TYPE,
     action_tasks::CANCEL_TYPE,
-    action_tasks::CANCEL_V0_2_TYPE,
 ];
 
 /// Read `did`'s ACL row and shape it into the claims the admin verbs take.

@@ -744,7 +744,7 @@ path, whoever else could have approved it (§2.1a):
   never **Waiting for me**) and a `Critical` console banner — "*X has asked to
   reduce your authority; it takes effect at T unless they cancel*" — but cannot
   block it. If the subject is the attacker, a veto would protect them.
-- On the wire (`vtc/admin/actions/*/0.2`) it is category `coolingOff`, with
+- On the wire (`vtc/admin/actions/*/0.3`) it is category `coolingOff`, with
   `landsAt` and `cancellableBy: requester`, and no threshold or expiry. The
   console and `cnm` count down to `landsAt`. (A 0.1 caller still reads it as
   an `approval` with `ext["org.openvtc"].coolingOff`.)
@@ -795,7 +795,7 @@ or `EmergencyBootstrapInvoked`) and also raises it in the action list as an
 **acknowledge** item (VTI-VTC-023):
 
 - Its `typeUri` is the record type
-  `https://trusttasks.org/spec/vtc/operator/offline-write/0.1`, and its payload
+  `https://trusttasks.org/spec/vtc/operator/offline-write/0.2`, and its payload
   is that record: `command` (`aclAdd`, `aclRemove`, `adminInvite`,
   `createDidKeyAdmin`, `enrolApprover` or `emergencyBootstrap`), the `dids`
   whose access changed, the operator's `host` and the time `at`. The record is
@@ -811,7 +811,7 @@ or `EmergencyBootstrapInvoked`) and also raises it in the action list as an
   them — it is for every administrator there is now.
 - Until you acknowledge it, the console shows a `Critical` banner that cannot
   be dismissed, linking to **Actions**. **Acknowledge** signs
-  `vtc/admin/actions/acknowledge/0.2`; acknowledging is audited. When everyone
+  `vtc/admin/actions/acknowledge/0.3`; acknowledging is audited. When everyone
   it is for has acknowledged, it closes `completed` (`acknowledged`) and stays
   in **History** for 30 days. Acknowledging twice answers
   `alreadyAcknowledged`; anyone it is not for gets `notAcknowledgeable`.
@@ -1052,7 +1052,7 @@ requester is never the approver of their own request.
   the three queues of §3.2a (`urn:openvtc:vtc:git-ns:break-glass-review`,
   `urn:openvtc:vtc:join:review`, `urn:openvtc:vtc:vetting:withdrawal-review`)
   name their payload with a placeholder `urn:openvtc:` URI; no record type is
-  specified for them yet, as `vtc/operator/offline-write/0.1` is for offline
+  specified for them yet, as `vtc/operator/offline-write/0.2` is for offline
   writes.
 - **A join review with more than one decider.** Every queue item (§3.2a) is
   decided by one holder of the capability; a community asking for N > 1

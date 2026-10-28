@@ -2792,7 +2792,7 @@ pub async fn audit_offline_break_glass(state: &AppState) {
                 command: "vtc admin emergency-bootstrap".into(),
                 action: "emergencyBootstrap".into(),
                 // The recovery DID it installed, then the administrators it
-                // wiped (`vtc/operator/offline-write/0.1` `dids`).
+                // wiped (`vtc/operator/offline-write/0.2` `dids`).
                 dids: pending.dids.clone(),
                 operator_host: pending.operator_hostname.clone(),
                 invoked_at: pending.invoked_at,

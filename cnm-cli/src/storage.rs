@@ -1,5 +1,5 @@
 //! `cnm storage …` — where the community keeps its rooms' files
-//! (`vtc/storage/configs/*/0.2`, `vtc/storage/credentials/set/0.2`).
+//! (`vtc/storage/configs/{list,get}/0.2`, `vtc/storage/credentials/set/0.3`).
 //!
 //! Reads (`list`, `get`) answer a holder of `vtc.rooms.admin`. `credentials set` is the
 //! discouraged fallback for a community with no VTA account: it seals a `sealed`
@@ -16,7 +16,7 @@ use std::io::Read;
 use clap::Subcommand;
 use serde_json::{Value, json};
 use trust_tasks_rs::specs::vtc::storage::configs::{get::v0_2 as get, list::v0_2 as list};
-use trust_tasks_rs::specs::vtc::storage::credentials::set::v0_2 as set;
+use trust_tasks_rs::specs::vtc::storage::credentials::set::v0_3 as set;
 use vta_cli_common::render::{BOLD, DIM, RESET, bin_name, is_json_output, print_json};
 use vta_sdk::sealed_transfer::{
     AssertionProof, InMemoryNonceStore, ProducerAssertion, SealedPayloadV1,

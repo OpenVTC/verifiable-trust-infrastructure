@@ -263,29 +263,29 @@ export type RoomLimitTarget = Schemas["VtcRoomsLimitsSetV0_1LimitTarget"];
 //
 // The published `vtc/storage/configs/*` and `vtc/rooms/storage/{assign,migrate}` shapes.
 // None carries a secret: a credential is never sent to or returned by them. The
-// console speaks `list`, `get`, `create` and `update` at 0.2 (`roleArn`, `notAllowed`).
+// console speaks `list` and `get` at 0.2, and `create`, `update` and `retire` at 0.3.
 export type StorageConfigItem = Schemas["VtcStorageConfigsListV0_2ConfigItem"];
 export type StorageConfigsListResponse = Schemas["VtcStorageConfigsListV0_2Response"];
 export type StorageConfigRecord = Schemas["VtcStorageConfigsListV0_2StorageConfig"];
 export type StorageConfigFacts = Schemas["VtcStorageConfigsListV0_2StorageConfigFacts"];
 export type StorageCredentialState = Schemas["VtcStorageConfigsListV0_2CredentialState"];
 export type StorageConfigGetResponse = Schemas["VtcStorageConfigsGetV0_2Response"];
-export type StorageConfigCreatePayload = Schemas["VtcStorageConfigsCreateV0_2Payload"];
-export type StorageConfigCreateResponse = Schemas["VtcStorageConfigsCreateV0_2Response"];
-export type StorageConfigUpdatePayload = Schemas["VtcStorageConfigsUpdateV0_2Payload"];
-export type StorageConfigUpdateResponse = Schemas["VtcStorageConfigsUpdateV0_2Response"];
-export type StorageConfigRetireResponse = Schemas["VtcStorageConfigsRetireV0_1Response"];
+export type StorageConfigCreatePayload = Schemas["VtcStorageConfigsCreateV0_3Payload"];
+export type StorageConfigCreateResponse = Schemas["VtcStorageConfigsCreateV0_3Response"];
+export type StorageConfigUpdatePayload = Schemas["VtcStorageConfigsUpdateV0_3Payload"];
+export type StorageConfigUpdateResponse = Schemas["VtcStorageConfigsUpdateV0_3Response"];
+export type StorageConfigRetireResponse = Schemas["VtcStorageConfigsRetireV0_3Response"];
 export type StorageConfigProbeResponse = Schemas["VtcStorageConfigsProbeV0_1Response"];
-export type StorageSettings = Schemas["VtcStorageConfigsCreateV0_2StorageSettings"];
-export type StorageAuth = Schemas["VtcStorageConfigsCreateV0_2StorageAuth"];
-export type RoomStorageAssignResponse = Schemas["VtcRoomsStorageAssignV0_1Response"];
-export type RoomStorageMigrateResponse = Schemas["VtcRoomsStorageMigrateV0_2Response"];
-// `vtc/storage/credentials/set/0.2`: a `sealed` config's credential, sealed in this
+export type StorageSettings = Schemas["VtcStorageConfigsCreateV0_3StorageSettings"];
+export type StorageAuth = Schemas["VtcStorageConfigsCreateV0_3StorageAuth"];
+export type RoomStorageAssignResponse = Schemas["VtcRoomsStorageAssignV0_2Response"];
+export type RoomStorageMigrateResponse = Schemas["VtcRoomsStorageMigrateV0_3Response"];
+// `vtc/storage/credentials/set/0.3`: a `sealed` config's credential, sealed in this
 // browser to the community (`lib/sealed-transfer.ts`). The cleartext type is what is
 // sealed; it is never a payload member and never leaves the page unsealed.
-export type StorageCredentialsSetPayload = Schemas["VtcStorageCredentialsSetV0_2Payload"];
-export type StorageCredentialsSetResponse = Schemas["VtcStorageCredentialsSetV0_2Response"];
-export type SealedStorageCredential = Schemas["VtcStorageCredentialsSetV0_2SealedCredentialCleartext"];
+export type StorageCredentialsSetPayload = Schemas["VtcStorageCredentialsSetV0_3Payload"];
+export type StorageCredentialsSetResponse = Schemas["VtcStorageCredentialsSetV0_3Response"];
+export type SealedStorageCredential = Schemas["VtcStorageCredentialsSetV0_3SealedCredentialCleartext"];
 
 // ── Data rooms the community itself owns ────────────────────────────────
 //

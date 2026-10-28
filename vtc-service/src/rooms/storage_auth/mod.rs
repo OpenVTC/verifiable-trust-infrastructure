@@ -1,7 +1,7 @@
 //! Room-scoped credentials for the storage configs whose authority this community
 //! holds itself: `ambient` (the machine's own cloud identity) and `sealed` (a
 //! long-lived credential set with `vtc/storage/credentials/set`)
-//! (`vtc/storage/configs/create/0.2`, "Room-scoped credentials").
+//! (`vtc/storage/configs/create/0.3`, "Room-scoped credentials").
 //!
 //! With `vta-account` the community's VTA mints and downscopes every credential. With
 //! `ambient` and `sealed` the community does what the VTA would:
@@ -51,7 +51,7 @@ pub const REQUESTED_LIFETIME_SECS: i32 = 900;
 const RENEW_MARGIN: Duration = Duration::from_secs(120);
 
 /// The host operator's permission for the modes that hold authority on this machine
-/// (`vtc/storage/configs/create/0.2` item 9), and how its ambient identity is used.
+/// (`vtc/storage/configs/create/0.3` item 9), and how its ambient identity is used.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct HostAuth {
     pub ambient: bool,

@@ -656,7 +656,7 @@ export const PAUSE_SAYS: Record<NonNullable<Migration["pausedCause"]>, string> =
 
 /**
  * Move the room's existing files onto the storage it is assigned to
- * (`vtc/rooms/storage/migrate/0.2`): each is copied, checked against what its
+ * (`vtc/rooms/storage/migrate/0.3`): each is copied, checked against what its
  * uploader committed to, and switched; the old copies are deleted after the
  * grace window. Readers notice nothing. Like an assignment it takes the
  * requester's passkey and is parked for another holder of the room-hosting
@@ -840,7 +840,7 @@ function MoveExistingFiles({
 
 /**
  * Point the room's new uploads at another storage location
- * (`vtc/rooms/storage/assign/0.1`). Its existing files stay where they are and
+ * (`vtc/rooms/storage/assign/0.2`). Its existing files stay where they are and
  * keep working, since each remembers its own location. Decides where members'
  * files go, so it takes the requester's passkey and is parked for another
  * holder of the room-hosting capability (§7.4).

@@ -182,7 +182,7 @@ describe("the redesigned dashboard", () => {
         actionId: "ack-1",
         category: "acknowledge",
         kind: "operatorWrite",
-        typeUri: "https://trusttasks.org/spec/vtc/operator/offline-write/0.1",
+        typeUri: "https://trusttasks.org/spec/vtc/operator/offline-write/0.2",
         requester: "did:webvh:Qm1:vtc.example",
         status: "open",
         createdAt: new Date(Date.now() - 2 * 3600_000).toISOString(),

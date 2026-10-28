@@ -28,9 +28,9 @@ use crate::common::signed::{error_code, post, signed};
 const RP_ORIGIN: &str = "https://vtc.example.com";
 const LIST: &str = "https://trusttasks.org/spec/vtc/storage/configs/list/0.2";
 const GET: &str = "https://trusttasks.org/spec/vtc/storage/configs/get/0.2";
-const CREATE: &str = "https://trusttasks.org/spec/vtc/storage/configs/create/0.2";
-const UPDATE: &str = "https://trusttasks.org/spec/vtc/storage/configs/update/0.2";
-const SET: &str = "https://trusttasks.org/spec/vtc/storage/credentials/set/0.2";
+const CREATE: &str = "https://trusttasks.org/spec/vtc/storage/configs/create/0.3";
+const UPDATE: &str = "https://trusttasks.org/spec/vtc/storage/configs/update/0.3";
+const SET: &str = "https://trusttasks.org/spec/vtc/storage/credentials/set/0.3";
 
 const ROLE: &str = "arn:aws:iam::123456789012:role/northwind-rooms-writer";
 const SECRET: &str = "example-secret-not-a-real-one";
@@ -357,11 +357,7 @@ async fn vtc_storage_configs_list_v0_2_refuses_a_foreign_cursor() {
     let fix = fixture(permits(false, false)).await;
     let a = admin(&fix).await;
     let reply = send(&fix, &a, LIST, json!({ "cursor": "not-ours" })).await;
-    assert_eq!(
-        tt_error_code(&reply),
-        Some(LIST_V0_2_INVALID_CURSOR),
-        "{reply}"
-    );
+    assert_eq!(tt_error_code(&reply), Some(LIST_INVALID_CURSOR), "{reply}");
 }
 
 #[tokio::test]
@@ -369,7 +365,7 @@ async fn vtc_storage_configs_get_v0_2_answers_not_found() {
     let fix = fixture(permits(false, false)).await;
     let a = admin(&fix).await;
     let reply = send(&fix, &a, GET, json!({ "configId": "nowhere" })).await;
-    assert_eq!(tt_error_code(&reply), Some(GET_V0_2_NOT_FOUND), "{reply}");
+    assert_eq!(tt_error_code(&reply), Some(GET_NOT_FOUND), "{reply}");
 }
 
 /// `create/0.2`'s codes, and `authNotAllowed`'s three reasons, each refused before
@@ -393,7 +389,7 @@ async fn vtc_storage_configs_create_v0_2_refuses_with_its_declared_codes() {
         create("local", json!({ "kind": "local", "root": "/x/y" }), None),
     )
     .await;
-    assert_eq!(tt_error_code(&reply), Some(CREATE_V0_2_EXISTS), "{reply}");
+    assert_eq!(tt_error_code(&reply), Some(CREATE_EXISTS), "{reply}");
 
     let reply = send(
         &fix,
@@ -404,7 +400,7 @@ async fn vtc_storage_configs_create_v0_2_refuses_with_its_declared_codes() {
     .await;
     assert_eq!(
         tt_error_code(&reply),
-        Some(CREATE_V0_2_INVALID_SETTINGS),
+        Some(CREATE_INVALID_SETTINGS),
         "{reply}"
     );
 
@@ -421,7 +417,7 @@ async fn vtc_storage_configs_create_v0_2_refuses_with_its_declared_codes() {
         let reply = send(&fix, &a, CREATE, create("amb", settings, auth)).await;
         assert_eq!(
             tt_error_code(&reply),
-            Some(CREATE_V0_2_AUTH_NOT_ALLOWED),
+            Some(CREATE_AUTH_NOT_ALLOWED),
             "{reply}"
         );
         assert_eq!(
@@ -446,11 +442,7 @@ async fn vtc_storage_configs_update_v0_2_refuses_with_its_declared_codes() {
         json!({ "configId": "nowhere", "label": "x", "reason": "x" }),
     )
     .await;
-    assert_eq!(
-        tt_error_code(&reply),
-        Some(UPDATE_V0_2_NOT_FOUND),
-        "{reply}"
-    );
+    assert_eq!(tt_error_code(&reply), Some(UPDATE_NOT_FOUND), "{reply}");
 
     let reply = send(
         &fix,
@@ -461,7 +453,7 @@ async fn vtc_storage_configs_update_v0_2_refuses_with_its_declared_codes() {
     .await;
     assert_eq!(
         tt_error_code(&reply),
-        Some(UPDATE_V0_2_KIND_IMMUTABLE),
+        Some(UPDATE_KIND_IMMUTABLE),
         "{reply}"
     );
 
@@ -474,7 +466,7 @@ async fn vtc_storage_configs_update_v0_2_refuses_with_its_declared_codes() {
     .await;
     assert_eq!(
         tt_error_code(&reply),
-        Some(UPDATE_V0_2_INVALID_SETTINGS),
+        Some(UPDATE_INVALID_SETTINGS),
         "{reply}"
     );
 
@@ -488,7 +480,7 @@ async fn vtc_storage_configs_update_v0_2_refuses_with_its_declared_codes() {
     .await;
     assert_eq!(
         tt_error_code(&reply),
-        Some(UPDATE_V0_2_AUTH_NOT_ALLOWED),
+        Some(UPDATE_AUTH_NOT_ALLOWED),
         "{reply}"
     );
     assert_eq!(reply["payload"]["details"]["reason"], "disabledByHost");
@@ -513,11 +505,7 @@ async fn vtc_storage_configs_update_v0_2_refuses_with_its_declared_codes() {
         json!({ "configId": "eu-amb", "capacityBytes": 5, "reason": "x" }),
     )
     .await;
-    assert_eq!(
-        tt_error_code(&reply),
-        Some(UPDATE_V0_2_NOT_ACTIVE),
-        "{reply}"
-    );
+    assert_eq!(tt_error_code(&reply), Some(UPDATE_NOT_ACTIVE), "{reply}");
 }
 
 /// A blob is found where it was written: the bucket cannot move under it.
@@ -553,7 +541,7 @@ async fn vtc_storage_configs_update_v0_2_refuses_to_move_a_config_holding_blobs(
     .await;
     assert_eq!(
         tt_error_code(&reply),
-        Some(UPDATE_V0_2_LOCATION_IMMUTABLE),
+        Some(UPDATE_LOCATION_IMMUTABLE),
         "{reply}"
     );
 }

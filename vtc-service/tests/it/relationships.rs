@@ -343,8 +343,8 @@ async fn revoke_by_the_direct_issuer_needs_no_pop() {
 // that the verbs are gated the way revocation is — the edge's issuer, or an
 // administrator — that the log is persisted, and that the graph read changes.
 
-const SUSPEND_TASK: &str = "https://trusttasks.org/spec/vtc/relationships/suspend/0.1";
-const RESTORE_TASK: &str = "https://trusttasks.org/spec/vtc/relationships/restore/0.1";
+const SUSPEND_TASK: &str = "https://trusttasks.org/spec/vtc/relationships/suspend/0.2";
+const RESTORE_TASK: &str = "https://trusttasks.org/spec/vtc/relationships/restore/0.2";
 
 /// Send a lifecycle verb signed by `by`, with no reason: an edge needs no
 /// authorization object, because its issuer's own proof is the authorization.

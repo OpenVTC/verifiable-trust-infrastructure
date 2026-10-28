@@ -34,7 +34,6 @@ use vti_rooms::{Room, Visibility};
 use super::helpers::{TrustTaskOutcome, app_error_to_reject};
 use super::storage_tasks::{malformed, refuse, respond, rooms_admin};
 use super::{JoinAuthCtx, parse_spec_payload};
-use crate::rooms::migration::Wire;
 use crate::server::AppState;
 
 pub(crate) const GET_TYPE: &str = <get::Payload as Payload>::TYPE_URI;
@@ -125,7 +124,7 @@ pub(super) async fn assigned_config(state: &AppState, room_id: &str) -> Result<S
 // ─── vtc/rooms/get ───────────────────────────────────────────────────────
 
 /// `vtc/rooms/get/0.3`: `storage.migration` is the migration as
-/// `vtc/rooms/storage/migrate/0.2` reports it (`toConfig`, `queued`, the pause
+/// `vtc/rooms/storage/migrate/0.3` reports it (`toConfig`, `queued`, the pause
 /// members), and the host record's instants are RFC 3339 strings.
 async fn handle_get(
     state: &AppState,
@@ -139,7 +138,7 @@ async fn handle_get(
         Ok(p) => p.room_id.as_str().to_string(),
         Err(reject) => return reject,
     };
-    match get_body(state, &doc, &room_id, Wire::V0_2).await {
+    match get_body(state, &doc, &room_id).await {
         Ok(body) => respond::<get::Response>(&doc, body),
         Err(reject) => reject,
     }
@@ -149,7 +148,6 @@ async fn get_body(
     state: &AppState,
     doc: &TrustTask<Value>,
     room_id: &str,
-    wire: Wire,
 ) -> Result<Value, TrustTaskOutcome> {
     let fail = |e: AppError| app_error_to_reject(doc, &e);
     let room = hosted(state, doc, room_id, get::error_codes::NOT_FOUND.code).await?;
@@ -190,7 +188,7 @@ async fn get_body(
     // queued, running or paused (0.2 item 5), and the most recent one after it finished,
     // which 0.2 permits, so a console sees one complete or fail as well as run.
     if let Some(m) = files.migration(room_id).await.map_err(fail)? {
-        storage["migration"] = crate::rooms::migration::progress_json(&m, wire);
+        storage["migration"] = crate::rooms::migration::progress_json(&m);
     }
     let mut body = json!({
         "room": host_record,

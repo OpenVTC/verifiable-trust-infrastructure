@@ -20,8 +20,8 @@ use crate::common::second_party::decide;
 use crate::common::signed::{assert_conforms, post, signed};
 
 const RP_ORIGIN: &str = "https://vtc.example.com";
-const LIST: &str = "https://trusttasks.org/spec/vtc/admin/actions/list/0.1";
-const LIST_V0_2: &str = "https://trusttasks.org/spec/vtc/admin/actions/list/0.2";
+const LIST: &str = "https://trusttasks.org/spec/vtc/admin/actions/list/0.3";
+const LIST_V0_2: &str = "https://trusttasks.org/spec/vtc/admin/actions/list/0.3";
 const JOINS_LIST: &str = "https://trusttasks.org/spec/vtc/join-requests/list/0.2";
 const MEMBERS_LIST: &str = "https://trusttasks.org/spec/vtc/members/list/0.2";
 

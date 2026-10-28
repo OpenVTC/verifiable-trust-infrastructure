@@ -622,8 +622,8 @@ async fn the_lifecycle_and_join_codes_are_answered() {
     let issuer = party_with_role(&vtc, VtcRole::Member, &[]).await;
     let stranger = party_with_role(&vtc, VtcRole::Member, &[]).await;
     let id = edge(&vtc, &issuer.did, "did:key:z6MkSurfaceSubject").await;
-    let suspend = t("relationships/suspend/0.1");
-    let restore = t("relationships/restore/0.1");
+    let suspend = t("relationships/suspend/0.2");
+    let restore = t("relationships/restore/0.2");
     let on = json!({ "id": id.to_string() });
 
     // Neither the issuer nor an administrator: as if there were no edge.

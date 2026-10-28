@@ -391,7 +391,7 @@ pub async fn import_backup(
 
     // A restore never carries a sealed storage credential: every one held is destroyed,
     // and a restored `sealed` config reports `required` until an administrator sets it
-    // again (`vtc/storage/credentials/set/0.2` item 7). Before the reload, so no store
+    // again (`vtc/storage/credentials/set/0.3` item 7). Before the reload, so no store
     // is built over a credential that was set for the community as it was.
     if let Some(sealed) = state.room_storage.sealed_credentials() {
         match sealed.clear().await {

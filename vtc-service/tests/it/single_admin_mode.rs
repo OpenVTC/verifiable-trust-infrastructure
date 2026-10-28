@@ -25,7 +25,7 @@ const REVOKE: &str = "https://trusttasks.org/spec/acl/revoke/0.1";
 const PATCH: &str = "https://trusttasks.org/spec/config/patch/0.1";
 const UPSERT: &str = "https://trusttasks.org/spec/policy/upsert/0.2";
 const CREATE_INVITE: &str = "https://trusttasks.org/spec/vtc/admin/invites/create/0.1";
-const LIST: &str = "https://trusttasks.org/spec/vtc/admin/actions/list/0.1";
+const LIST: &str = "https://trusttasks.org/spec/vtc/admin/actions/list/0.3";
 const THRESHOLD_KEY: &str = "acl.unrestricted_admin_consent_threshold";
 
 struct Fixture {

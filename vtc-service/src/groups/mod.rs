@@ -351,7 +351,7 @@ pub fn new_group_id() -> String {
 }
 
 /// Tell open consoles a group changed (the `groups` topic of
-/// `vtc/admin/events/subscribe/0.3`). A hint, carrying nothing: each stream's
+/// `vtc/admin/events/subscribe/0.6`). A hint, carrying nothing: each stream's
 /// fingerprint decides whether it concerns a group its recipient manages.
 fn changed() {
     crate::admin_events::notify(crate::admin_events::Topic::Groups);

@@ -173,7 +173,7 @@ impl Gesturer {
 }
 
 const NEXT_STEP: &str = "https://trusttasks.org/spec/trust-task-next-step/0.1";
-const SHOW: &str = "https://trusttasks.org/spec/vtc/admin/actions/show/0.1";
+const SHOW: &str = "https://trusttasks.org/spec/vtc/admin/actions/show/0.3";
 const DECISION_V0_2: &str = "https://trusttasks.org/spec/task-consent/decision/0.2";
 
 /// The action a `trust-task-next-step/0.1` reply parked the operation as.
@@ -194,7 +194,7 @@ async fn recipient(vtc: &TestVtc) -> String {
         .unwrap_or_else(|| vtc_service::test_support::TEST_VTC_DID.to_string())
 }
 
-/// `vtc/admin/actions/show/0.1` as `who`: the whole reply.
+/// `vtc/admin/actions/show/0.3` as `who`: the whole reply.
 pub async fn show_action(vtc: &TestVtc, who: &Party, action_id: &str) -> (StatusCode, Value) {
     let doc = super::signed::signed_to(
         who,

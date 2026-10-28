@@ -417,19 +417,19 @@
     "kind": "operator.offlineWrite",
     "name": "operator added an access control entry offline",
     "payload": {
-      "at": "2026-10-02T08:30:00Z",
       "command": "aclAdd",
       "dids": [
         "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK"
       ],
-      "host": "vtc-host-1"
+      "host": "vtc-host-1",
+      "writtenAt": "2026-10-02T08:30:00Z"
     },
     "summary": {
       "effect": "Written at {at}, while the service was stopped. It is already in effect: acknowledging records that you have seen it, and changes nothing.",
       "fields": {
         "at": {
           "format": "datetime",
-          "pointer": "/at",
+          "pointer": "/writtenAt",
           "value": "2026-10-02T08:30:00Z"
         },
         "command": {
@@ -450,29 +450,29 @@
           "value": "vtc-host-1"
         }
       },
-      "templateDigest": "zQmQZTPg2MeWt1C8oAvoLMGJNY9DpxvB6bRjvQwJT7ns9Ah",
+      "templateDigest": "zQmaFWSdUF1Ais5qw1yGuSM6oxkarq9VQ4ZKd52ikKXiRcR",
       "title": "The operator ran {command} on {host}, changing access for {dids}"
     },
-    "typeUri": "https://trusttasks.org/spec/vtc/operator/offline-write/0.1"
+    "typeUri": "https://trusttasks.org/spec/vtc/operator/offline-write/0.2"
   },
   {
     "kind": "operator.offlineWrite",
     "name": "operator ran an emergency bootstrap",
     "payload": {
-      "at": "2026-10-02T09:00:00Z",
       "command": "emergencyBootstrap",
       "dids": [
         "did:key:z6MkpTHR8VNsBxYAAWHut2Geadd9jSwuBV8xRoAnwWsdvktH",
         "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK"
       ],
-      "host": "vtc-host-1"
+      "host": "vtc-host-1",
+      "writtenAt": "2026-10-02T09:00:00Z"
     },
     "summary": {
       "effect": "Written at {at}, while the service was stopped. It is already in effect: acknowledging records that you have seen it, and changes nothing.",
       "fields": {
         "at": {
           "format": "datetime",
-          "pointer": "/at",
+          "pointer": "/writtenAt",
           "value": "2026-10-02T09:00:00Z"
         },
         "command": {
@@ -494,10 +494,10 @@
           "value": "vtc-host-1"
         }
       },
-      "templateDigest": "zQmQZTPg2MeWt1C8oAvoLMGJNY9DpxvB6bRjvQwJT7ns9Ah",
+      "templateDigest": "zQmaFWSdUF1Ais5qw1yGuSM6oxkarq9VQ4ZKd52ikKXiRcR",
       "title": "The operator ran {command} on {host}, changing access for {dids}"
     },
-    "typeUri": "https://trusttasks.org/spec/vtc/operator/offline-write/0.1"
+    "typeUri": "https://trusttasks.org/spec/vtc/operator/offline-write/0.2"
   },
   {
     "kind": "gitNs.breakGlass.review",

@@ -2,7 +2,7 @@
 //
 // Three kinds are served: `local` (a directory beneath one of the host's
 // `local_storage_bases`), `s3` and `gcs`. An object store authenticates one of three
-// ways (`vtc/storage/configs/create/0.2`):
+// ways (`vtc/storage/configs/create/0.3`):
 //
 // - `vta-account` (S3, recommended): an external account at the community's VTA,
 //   named by its context and identifier; the VTA keeps the key.

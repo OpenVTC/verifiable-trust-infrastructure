@@ -167,13 +167,13 @@ describe("refusal", () => {
     expect((out as SummaryRefusal).reason).toBe("badFormat");
   });
 
-  it("pins exactly fifty-four (kind, typeUri) pairs, one per server template", () => {
-    expect(Object.keys(PINNED_TEMPLATE_DIGESTS)).toHaveLength(54);
+  it("pins exactly sixty (kind, typeUri) pairs, one per server template", () => {
+    expect(Object.keys(PINNED_TEMPLATE_DIGESTS)).toHaveLength(60);
   });
 });
 
 // The operator's offline writes (VTI-VTC-023): one template over the
-// `vtc/operator/offline-write/0.1` record, exactly as
+// `vtc/operator/offline-write/0.2` record, exactly as
 // `vtc-service/src/admin_actions/summary.rs` declares it. Its digest is
 // recomputed here, so a pin that drifted from the template text fails.
 describe("operator offline-write template", () => {
@@ -188,7 +188,7 @@ describe("operator offline-write template", () => {
       command: f("/command", "text"),
       dids: f("/dids", "capabilityList"),
       host: f("/host", "text"),
-      at: f("/at", "datetime"),
+      at: f("/writtenAt", "datetime"),
     },
   };
 

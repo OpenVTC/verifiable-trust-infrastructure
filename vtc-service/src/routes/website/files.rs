@@ -37,17 +37,21 @@ pub struct FileEntry {
     pub etag: String,
     /// `format: date-time`, not unix seconds. This was a `u64` until #1095 —
     /// a type mismatch, not merely a format one: the schema says `string`.
-    pub modified_at: DateTime<Utc>,
+    /// `updatedAt` from `files/list/0.3`, the registry's one name for "when this
+    /// was last changed" (`modifiedAt` before it).
+    pub updated_at: DateTime<Utc>,
 }
 
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ListResponse {
     pub items: Vec<FileEntry>,
+    /// Absent on the last page, never `null` (`files/list/0.2` onward).
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub next_cursor: Option<String>,
 }
 
-/// `vtc/website/files/list/0.1` — a paginated listing of the site's
+/// `vtc/website/files/list/0.3` — a paginated listing of the site's
 /// servable files, called from `trust_tasks::website_tasks`.
 pub(crate) async fn list(
     state: &AppState,
@@ -192,7 +196,7 @@ fn hash_window(window: Vec<FileMeta>) -> Vec<FileEntry> {
                 path: m.rel,
                 size: m.size,
                 etag: hex::encode(Sha256::digest(&bytes)),
-                modified_at: m.modified_at,
+                updated_at: m.modified_at,
             })
         })
         .collect()

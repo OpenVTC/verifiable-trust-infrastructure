@@ -592,7 +592,7 @@ pub struct RoomFilesConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub migration_max_bytes_per_second: Option<u64>,
     /// Which storage authentication modes this host permits beyond `vta-account`
-    /// (`[rooms.files.auth]`, `vtc/storage/configs/create/0.2` item 9). Absent, neither
+    /// (`[rooms.files.auth]`, `vtc/storage/configs/create/0.3` item 9). Absent, neither
     /// `ambient` nor `sealed` is offered: both put backend authority on this machine,
     /// so whether they exist at all is the host operator's choice, never the
     /// administrators'.
@@ -601,7 +601,7 @@ pub struct RoomFilesConfig {
 }
 
 /// `[rooms.files.auth]`: the storage authentication modes this host permits and how
-/// its ambient identity is used (`vtc/storage/configs/create/0.2` items 9–10,
+/// its ambient identity is used (`vtc/storage/configs/create/0.3` items 9–10,
 /// "Room-scoped credentials"). Every member is optional and off by default, so a
 /// configuration written before these modes existed starts unchanged.
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
