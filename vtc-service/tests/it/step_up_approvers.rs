@@ -27,7 +27,7 @@ use crate::common::signed::{
 use crate::common::webauthn_harness::SoftEd25519Authenticator;
 
 const RP_ORIGIN: &str = "https://vtc.example.com";
-const INVITE: &str = "https://trusttasks.org/spec/auth/step-up/approver/invite/0.1";
+const INVITE: &str = "https://trusttasks.org/spec/auth/step-up/approver/invite/0.2";
 const REDEEM_START: &str = "https://trusttasks.org/spec/auth/step-up/approver/redeem/start/0.1";
 const REDEEM_FINISH: &str = "https://trusttasks.org/spec/auth/step-up/approver/redeem/finish/0.1";
 const ENROLL: &str = "https://trusttasks.org/spec/auth/step-up/approver/enroll/0.1";
@@ -682,7 +682,7 @@ async fn an_invite_is_refused_before_any_step_up_for_self_strangers_and_long_ttl
         ),
         (
             &admin,
-            json!({ "subject": member.did, "ttl": 86401 }),
+            json!({ "subject": member.did, "ttlSeconds": 86401 }),
             "auth/step-up/approver/invite:ttlTooLong",
         ),
         (&member, json!({ "subject": admin.did }), "permissionDenied"),

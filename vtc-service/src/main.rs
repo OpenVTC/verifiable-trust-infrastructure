@@ -950,7 +950,7 @@ async fn run_enrol_approver_cli(
             return Err(format!(
                 "{e}.\n\nWhile the daemon runs, another community administrator issues this \
                  invite instead: the admin console, Members → the member → Invite to enrol an \
-                 approver (`auth/step-up/approver/invite/0.1`)."
+                 approver (`auth/step-up/approver/invite/0.2`)."
             )
             .into());
         }

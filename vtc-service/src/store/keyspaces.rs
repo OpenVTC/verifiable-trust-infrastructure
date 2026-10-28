@@ -204,7 +204,7 @@ pub const CONSOLE_KEYS: &str = "console_keys";
 /// `crate::acl::bound_step_up`.
 pub const STEP_UP_MARKS: &str = "step_up_marks";
 
-/// Members' step-up passkeys (`auth/passkey/enroll/invite/0.2`,
+/// Members' step-up passkeys (`auth/passkey/enroll/invite/0.3`,
 /// `purpose: stepUp`): the invites (`invite:<tokenHash>`), redemption and
 /// revocation ceremonies, and the credentials themselves in the passkey
 /// store's own row format. A keyspace of its own **by construction**: login and

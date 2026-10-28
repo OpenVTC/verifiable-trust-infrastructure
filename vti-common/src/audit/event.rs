@@ -208,7 +208,7 @@ pub enum AuditEvent {
     OperationStepUpRecorded(OperationStepUpData),
 
     /// A step in the life of a member's **step-up passkey**
-    /// (`auth/passkey/enroll/invite/0.2`, `purpose: stepUp`): an administrator
+    /// (`auth/passkey/enroll/invite/0.3`, `purpose: stepUp`): an administrator
     /// invited the member to enrol one, the member redeemed the invite, an
     /// invite was invalidated after too many wrong claim codes, or the
     /// credential was revoked. A step-up passkey never opens a session; it

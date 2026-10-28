@@ -813,14 +813,14 @@ admits it and it is recorded in the VTI specification's divergence register
 
 A member who is no console user acts only through signed documents and has no
 passkey, so without one they could never answer a break-glass step-up. They
-enrol a **step-up passkey** (`auth/passkey/enroll/invite/0.2`, `purpose:
+enrol a **step-up passkey** (`auth/passkey/enroll/invite/0.3`, `purpose:
 stepUp`; `vtc-service/src/step_up_passkey.rs`). Every step is a Trust Task on
 the spine (`trust_tasks::step_up_passkey_tasks`), served the same way over TSP,
 DIDComm and HTTPS; no REST route issues, redeems or revokes one.
 
 1. A community administrator opens the member's page (Members → the member →
    *Step-up passkeys*) and clicks *Invite…*. The console signs
-   `auth/passkey/enroll/invite/0.2` with its console key, and the VTC asks for
+   `auth/passkey/enroll/invite/0.3` with its console key, and the VTC asks for
    a passkey gesture bound to that one document before it issues anything. The
    console then shows a link and, separately, a **claim code**. It shows the
    code once, and the code is never part of the link.

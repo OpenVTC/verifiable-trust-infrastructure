@@ -207,18 +207,10 @@ pub struct SupersededTask {
 /// told a Rust caller to migrate and told a wire caller nothing at all, and no
 /// instrument anywhere said whether anyone was still sending them.
 ///
-/// `auth/passkey/login/{start,finish}/0.1` are deprecated too and are
-/// deliberately **absent**: they are `REST_ROUTED_URIS`, served by dedicated
-/// unauthenticated routes the dispatcher never sees, so a row here would count
-/// nothing and read a permanent zero.
-///
-/// Naming the gap rather than hiding it: those two are covered by *neither*
-/// instrument. The route table above excludes `/auth/*` on purpose (genuinely
-/// REST, and the pre-login bootstrap that has to work before a Trust Task can
-/// be authenticated at all), and a per-route counter could not separate 0.1
-/// from 0.2 anyway — one path serves both and the only difference is the
-/// casing of a `purpose` value inside the body. Distinguishing them needs a
-/// counter inside those two handlers, which is its own change.
+/// `auth/passkey/login/{start,finish}` are `REST_ROUTED_URIS`, served by
+/// dedicated unauthenticated routes the dispatcher never sees, so they could
+/// never be rows here. Only 0.2 is declared; 0.1 differed only in spelling
+/// the `purpose` value `step-up`, which these routes never read.
 ///
 /// Empty since every superseded version this VTA served was retired outright
 /// (the `trust-tasks-rs` 0.35 sweep). The machinery stays, because the next

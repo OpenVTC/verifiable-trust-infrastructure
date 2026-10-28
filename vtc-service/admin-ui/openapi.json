@@ -5046,6 +5046,8 @@
         "type": "object",
         "required": [
           "credentialId",
+          "subject",
+          "purpose",
           "revokedAt",
           "remaining"
         ],
@@ -5053,15 +5055,23 @@
           "credentialId": {
             "type": "string"
           },
+          "purpose": {
+            "type": "string",
+            "description": "Always `session`: these are an administrator's login passkeys.\nStep-up credentials are [`crate::step_up_passkey`]'s."
+          },
           "remaining": {
             "type": "integer",
-            "description": "How many passkeys the subject has left.\n\nRequired by `auth/passkey/revoke/finish/0.1` and absent until #1112.\nIt is the number the caller most needs and the one this endpoint is\nuniquely placed to give: the last-passkey guard refuses to leave an\nadmin at zero, so a client that cannot see the count cannot tell\nwhether the next revoke will succeed without attempting it.",
+            "description": "How many **session** passkeys the subject has left\n(`auth/passkey/revoke/finish/0.2` counts per purpose).\n\nRequired since `auth/passkey/revoke/finish/0.1`, and absent until #1112.\nIt is the number the caller most needs and the one this endpoint is\nuniquely placed to give: the last-passkey guard refuses to leave an\nadmin at zero, so a client that cannot see the count cannot tell\nwhether the next revoke will succeed without attempting it.",
             "minimum": 0
           },
           "revokedAt": {
             "type": "string",
             "format": "date-time",
             "description": "When the credential was revoked."
+          },
+          "subject": {
+            "type": "string",
+            "description": "Whose credential it was — always the producer's own here: a session\ncredential is revoked only by its owner on this door."
           }
         }
       },

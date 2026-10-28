@@ -5,7 +5,7 @@
 // always beside the member's own signature. It never signs anyone in. A member
 // who is no console user can get one only through a community administrator's
 // invite, so this card is where it starts: the administrator signs the invite
-// (`auth/passkey/enroll/invite/0.2`), confirms it with a passkey gesture bound
+// (`auth/passkey/enroll/invite/0.3`), confirms it with a passkey gesture bound
 // to that one document, and delivers the URL and the claim code to the member
 // **over two different channels**. The administrator also revokes one here
 // (`auth/passkey/revoke/{start,finish}/0.2`) — verifying with their own

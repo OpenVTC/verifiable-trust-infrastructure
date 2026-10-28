@@ -69,7 +69,7 @@ export function ApproverDevicesCard({ did, self = false }: { did: string; self?:
   const invite = useMutation({
     mutationFn: () =>
       inviteApprover(
-        { subject: did, label: label.trim() || undefined, ttl: DEFAULT_INVITE_TTL_SECS },
+        { subject: did, label: label.trim() || undefined, ttlSeconds: DEFAULT_INVITE_TTL_SECS },
         gesture,
       ),
     onSuccess: (inv) => {
