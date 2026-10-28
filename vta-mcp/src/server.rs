@@ -62,8 +62,8 @@ use vta_sdk::protocols::key_management::sign::SignAlgorithm;
 mod wire {
     use vta_sdk::trust_tasks as t;
 
-    /// `trust-task-discovery/0.1` — what `supported_trust_tasks` asks.
-    pub const DISCOVERY: &str = t::TASK_TRUST_TASK_DISCOVERY_0_1;
+    /// `trust-task-discovery/0.3` — what `supported_trust_tasks` asks.
+    pub const DISCOVERY: &str = t::TASK_TRUST_TASK_DISCOVERY_0_3;
     /// `keys/list/0.2`.
     pub const KEYS_LIST: &str = t::TASK_KEYS_LIST_0_2;
     /// `keys/sign/0.1` — the signing oracle.

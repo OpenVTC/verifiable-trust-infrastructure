@@ -91,6 +91,15 @@ A rule that could never be satisfied is refused at the point you create it:
 - `--set` / `--min` / `--exclude-requester` on a `--reauth` rule (there is no
   third party to configure)
 - two rules for the same task type whose context scopes overlap
+- a task type naming a version this VTA no longer serves — a rule matches the
+  exact versioned Type URI, so it would never fire; the refusal names the
+  version that replaced it
+
+A rule written before an upgrade retired its task's version is moved to the
+successor when the VTA boots (and logged), so the gate keeps firing: rules for
+`policy/upsert/0.2`, for instance, become rules for `policy/upsert/0.3`. If both
+versions already had rules the move cannot be made; the VTA logs it as a
+security alert and the rules must be edited by hand.
 
 This is deliberate. The failure that motivated this design was a step-up floor
 in `delegated` mode with no approver registered anywhere — perfectly acceptable
@@ -177,7 +186,7 @@ rules `pnm approvals list` shows are always the rules that actually decide.
 ## If you lock yourself out
 
 Approval rules apply to policy management too, which is a feature: a `consent`
-rule on `https://trusttasks.org/spec/policy/upsert/0.2` gives you two-person
+rule on `https://trusttasks.org/spec/policy/upsert/0.3` gives you two-person
 control over changes to the gate itself. It also means a set of approvers whose
 keys are all lost can wedge you — as can a hand-authored module that denies the
 `policy/delete` which would remove it, or `enforcement = true` with no policy
@@ -194,7 +203,7 @@ the machine, which is the point.
 vta approvals list
 
 # Drop the one rule that wedged you, keeping every other control.
-vta approvals remove https://trusttasks.org/spec/policy/upsert/0.2
+vta approvals remove https://trusttasks.org/spec/policy/upsert/0.3
 
 # Or, when no single rule is identifiable: delete the whole row.
 # Every task goes back to running on the caller's own authority.
@@ -254,7 +263,7 @@ convenient one:
   elevating anything.
 - The approver only ever sees the challenge-salted digest, never the bundle.
 
-It also leaves better evidence than an audit row: `task-consent/decision/0.1` is
+It also leaves better evidence than an audit row: `task-consent/decision/0.2` is
 signed by the approver, so an approved recovery produces a second independently
 verifiable artifact beside the sealed bundle's own producer assertion.
 

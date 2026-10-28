@@ -794,14 +794,14 @@ async fn a_non_admin_signer_cannot_change_roles() {
     }
 }
 
-// ─── auth/signing-key/{enroll,list,revoke}/0.1 ──────────────────────────
+// ─── auth/signing-key/enroll/0.2, {list,revoke}/0.1 ─────────────────────
 //
 // The console enrols its key with nothing but the key and a passkey: the
 // enrolment is signed by the key (proof of possession), and control of the
 // identity it names is a passkey gesture of that identity bound to that one
 // document, answered unsigned from the requester's own browser.
 
-const ENROLL: &str = "https://trusttasks.org/spec/auth/signing-key/enroll/0.1";
+const ENROLL: &str = "https://trusttasks.org/spec/auth/signing-key/enroll/0.2";
 const KEY_LIST: &str = "https://trusttasks.org/spec/auth/signing-key/list/0.1";
 const KEY_REVOKE: &str = "https://trusttasks.org/spec/auth/signing-key/revoke/0.1";
 const ACL_LIST: &str = "https://trusttasks.org/spec/acl/list/0.1";
@@ -1043,8 +1043,12 @@ async fn an_identity_holds_a_bounded_number_of_keys() {
         reply["details"]["maxActiveKeys"],
         vtc_service::acl::console_key::MAX_ACTIVE_PER_IDENTITY
     );
-    // 0.1's `details` schema holds one member; the list is 0.2's.
-    assert!(reply["details"].get("activeKeys").is_none(), "{reply}");
+    // 0.2 lists the active keys, so the caller can choose one to replace.
+    assert_eq!(
+        reply["details"]["activeKeys"].as_array().map(Vec::len),
+        Some(vtc_service::acl::console_key::MAX_ACTIVE_PER_IDENTITY),
+        "{reply}"
+    );
 }
 
 // ─── auth/signing-key/enroll/0.2 ────────────────────────────────────────

@@ -128,8 +128,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tracing::warn;
-use trust_tasks_rs::specs::task_consent::decision::v0_1 as decision;
-use trust_tasks_rs::specs::task_consent::decision::v0_2 as decision_v0_2;
+use trust_tasks_rs::specs::task_consent::decision::v0_2 as decision;
 use trust_tasks_rs::specs::task_consent::request::v0_1 as request;
 use vti_common::audit::AuditEvent;
 use vti_common::error::AppError;
@@ -149,13 +148,10 @@ pub const APPROVER_SET: &str = "capability-holders";
 /// approver, best-effort, when an action is raised.
 pub(crate) const REQUEST_TYPE: &str = <request::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
-/// `task-consent/decision/0.1` — what an approver answers with.
+/// `task-consent/decision/0.2` — what an approver answers with: the decision,
+/// an optional `evidence` factor and an optional `actionId` locator. 0.1 is no
+/// longer served; every 0.1 payload is a valid 0.2 payload.
 pub(crate) const DECISION_TYPE: &str = <decision::Payload as trust_tasks_rs::Payload>::TYPE_URI;
-
-/// `task-consent/decision/0.2` — 0.1 plus an optional `evidence` factor and
-/// an optional `actionId` locator.
-pub(crate) const DECISION_V0_2_TYPE: &str =
-    <decision_v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
 /// The approver set a request to take authority-conferring capabilities away
 /// from another subject names (VTI-APV-019): their holders other than the

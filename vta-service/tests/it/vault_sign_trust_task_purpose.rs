@@ -219,11 +219,11 @@ async fn operational_documents_are_signed_for_authentication() {
     for type_uri in [
         "https://trusttasks.org/spec/acl/grant/0.1",
         "https://trusttasks.org/spec/did-management/did/list/0.2",
-        "https://trusttasks.org/spec/auth/step-up/approve-request/0.3",
+        "https://trusttasks.org/spec/auth/step-up/approve-request/0.5",
         // The executor's reply to a decision is an operational message too.
-        "https://trusttasks.org/spec/task-consent/decision/0.1#response",
+        "https://trusttasks.org/spec/task-consent/decision/0.2#response",
         // A private registry does not inherit the registry's attestation slugs.
-        "https://registry.example/spec/auth/step-up/approve-response/0.5",
+        "https://registry.example/spec/auth/step-up/approve-response/0.6",
     ] {
         assert_signed_for(type_uri, "authentication").await;
     }
@@ -232,8 +232,8 @@ async fn operational_documents_are_signed_for_authentication() {
 #[tokio::test]
 async fn approver_decisions_are_signed_for_assertion_method() {
     for type_uri in [
-        "https://trusttasks.org/spec/auth/step-up/approve-response/0.5",
-        "https://trusttasks.org/spec/task-consent/decision/0.1",
+        "https://trusttasks.org/spec/auth/step-up/approve-response/0.6",
+        "https://trusttasks.org/spec/task-consent/decision/0.2",
         "https://trusttasks.org/spec/confirm/response/0.1",
     ] {
         assert_signed_for(type_uri, "assertionMethod").await;

@@ -171,7 +171,7 @@ pub fn rest_exceptions_table() -> &'static [RestException] {
 // `messaging/*` tasks were retired upstream. `trust-tasks-rs` (0.11) exposes
 // none of it — `schema_index` maps URI → payload schema and nothing else,
 // `Payload` carries `IS_BEARER` / `IS_PROOF_REQUIRED` and no lifecycle
-// constant, and `trust-task-discovery/0.1`'s expanded `supportedTypes` entry is
+// constant, and `trust-task-discovery/0.3`'s expanded `supportedTypes` entry is
 // `additionalProperties: false` over `{type, requiredExt}`. So a consumer
 // cannot read a task's retirement status at runtime and a producer has nowhere
 // framework-defined to announce one. This stays local machinery until that
@@ -266,14 +266,6 @@ const SUPERSEDED_TASKS: &[SupersededTask] = &[
         successor: trust_tasks::TASK_CONTEXTS_UPDATE_DID_1_1,
         reason: "1.1 accepts `did: null`, which clears the context's DID, and requires a \
                  string `did` to be a DID; 1.0 can only replace one",
-    },
-    // ── auth ────────────────────────────────────────────────────────────
-    SupersededTask {
-        uri: trust_tasks::TASK_AUTH_STEP_UP_APPROVE_RESPONSE_0_1,
-        successor: trust_tasks::TASK_AUTH_STEP_UP_APPROVE_RESPONSE_0_2,
-        reason: "0.2 spells the evidence enum `didSigned` in camelCase; the payload is \
-                 signed, so the two versions have separate typed handlers rather than \
-                 an edge transform",
     },
 ];
 

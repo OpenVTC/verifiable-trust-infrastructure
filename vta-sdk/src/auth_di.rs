@@ -1,5 +1,5 @@
 //! Shared building blocks for the **canonical Trust-Task auth transport**: a
-//! `auth/authenticate/0.2` Trust Task whose holder `eddsa-jcs-2022`
+//! `auth/authenticate/0.3` Trust Task whose holder `eddsa-jcs-2022`
 //! Data-Integrity proof *is* the authentication, and its unsigned
 //! `auth/refresh/0.2` counterpart.
 //!
@@ -24,14 +24,14 @@
 
 use serde_json::Value;
 use trust_tasks_rs::TrustTask;
-use trust_tasks_rs::specs::auth::authenticate::v0_2 as authenticate;
+use trust_tasks_rs::specs::auth::authenticate::v0_3 as authenticate;
 use trust_tasks_rs::specs::auth::challenge::v0_1 as challenge;
 use trust_tasks_rs::specs::auth::refresh::v0_2 as refresh;
 
 use crate::protocols::auth::AuthenticateResponse;
 use crate::trust_task_sign::{self, TrustTaskSignError};
 use crate::trust_tasks::{
-    TASK_AUTH_AUTHENTICATE_0_2, TASK_AUTH_CHALLENGE_0_1, TASK_AUTH_REFRESH_0_2,
+    TASK_AUTH_AUTHENTICATE_0_3, TASK_AUTH_CHALLENGE_0_1, TASK_AUTH_REFRESH_0_2,
 };
 
 /// Build an `auth/challenge/0.1` Trust Task, returning the JSON body to POST
@@ -97,7 +97,7 @@ impl std::fmt::Display for AuthDiError {
 
 impl std::error::Error for AuthDiError {}
 
-/// Build and sign an `auth/authenticate/0.2` Trust Task, returning the JSON
+/// Build and sign an `auth/authenticate/0.3` Trust Task, returning the JSON
 /// body to POST to `/trust-tasks`.
 ///
 /// `challenge` / `session_id` come from `auth/challenge`. The payload is built
@@ -130,7 +130,7 @@ pub async fn sign_authenticate_doc(
         .try_into()
         .map_err(|e| AuthDiError::Payload(format!("authenticate payload: {e}")))?;
     Ok(trust_task_sign::build_signed(
-        TASK_AUTH_AUTHENTICATE_0_2,
+        TASK_AUTH_AUTHENTICATE_0_3,
         serde_json::to_value(&payload).map_err(|e| AuthDiError::Payload(e.to_string()))?,
         client_did,
         private_key_multibase,
@@ -236,7 +236,7 @@ mod tests {
             .expect("sign");
         let v: Value = serde_json::from_str(&body).unwrap();
 
-        assert_eq!(v["type"], TASK_AUTH_AUTHENTICATE_0_2);
+        assert_eq!(v["type"], TASK_AUTH_AUTHENTICATE_0_3);
         assert_eq!(v["payload"]["challenge"], CHALLENGE);
         assert_eq!(v["payload"]["sessionId"], "sess-1");
         assert_eq!(v["issuer"], did);
@@ -316,7 +316,7 @@ mod tests {
 
         let wrapped = json!({
             "id": "urn:uuid:1",
-            "type": "https://trusttasks.org/spec/auth/authenticate/0.2#response",
+            "type": "https://trusttasks.org/spec/auth/authenticate/0.3#response",
             "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
             "payload": tokens,
         });

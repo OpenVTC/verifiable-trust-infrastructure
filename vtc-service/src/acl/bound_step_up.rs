@@ -27,8 +27,9 @@
 //!    `auth/step-up/approve-request/0.4` payload with `boundTo` and no
 //!    `sessionId` ([`refusal_details`]). The spine releases the refused
 //!    document's `id`, so the identical document can be sent again.
-//! 2. The admin answers with `auth/step-up/approve-response` — `0.4`/`0.5`
-//!    with `evidence.kind = webauthn` ([`approve`]), or `0.6` with
+//! 2. The admin answers with `auth/step-up/approve-response` — `0.4` (the
+//!    console's unsigned session-passkey answer) or `0.6` with
+//!    `evidence.kind = webauthn` ([`approve`]), or `0.6` with
 //!    `evidence.kind = approverSigned` ([`approve_with_statement`]). The
 //!    pending mark becomes a **redeemable mark**; the answer is `recorded`,
 //!    and nothing is elevated.
@@ -522,7 +523,7 @@ pub(crate) async fn request_step_up(
     Ok(request)
 }
 
-/// Park a ceremony for a signing-key enrolment (`auth/signing-key/enroll/0.1`)
+/// Park a ceremony for a signing-key enrolment (`auth/signing-key/enroll/0.2`)
 /// of a key acting for `identity_did`, requested by `requester` — the key
 /// being enrolled — and return the inline approve-request.
 ///
@@ -787,7 +788,7 @@ pub enum Approved {
     Declined { reason: String },
 }
 
-/// Process an `auth/step-up/approve-response/0.4` (or the 0.5/0.6 equivalent,
+/// Process an `auth/step-up/approve-response/0.4` (or the 0.6 equivalent,
 /// for a passkey or a refusal) for a pending mark.
 ///
 /// The pending mark is removed first, whatever follows, so a challenge is

@@ -419,7 +419,7 @@ fn build_api_router(trust_xff_cidrs: &[IpNetwork], quotas: QuotaSource) -> OpenA
     // any caller) and `vta/restore/status/0.1` (version + restore record,
     // administrators only), both via `POST <base>/trust-tasks` like every other
     // task. `GET /capabilities` went the same way in #1039: capability
-    // discovery is `spec/trust-task-discovery/0.1`.
+    // discovery is `spec/trust-task-discovery/0.3`.
     router
 }
 

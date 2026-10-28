@@ -1,4 +1,5 @@
-//! `auth/signing-key/{enroll,list,revoke}/0.1` — the administration console's
+//! `auth/signing-key/enroll/0.2` and `auth/signing-key/{list,revoke}/0.1` —
+//! the administration console's
 //! signing keys, as delegations of an identity ([`crate::acl::console_key`]).
 //!
 //! These replace `/v1/admin/console-keys`. The console can now enrol a key
@@ -6,7 +7,10 @@
 //! key signs (proof of possession), and control of the identity it names is a
 //! passkey gesture by that identity bound to that one document.
 //!
-//! # Enrolment, against `auth/signing-key/enroll/0.1`
+//! # Enrolment, against `auth/signing-key/enroll/0.2`
+//!
+//! 0.1 is no longer served; every 0.1 payload is a valid 0.2 payload (0.2 adds
+//! the identity's own `authorization` and `replaces`).
 //!
 //! | item | here |
 //! |---|---|
@@ -40,8 +44,8 @@ use std::time::{Duration, Instant};
 use chrono::{DateTime, Utc};
 use serde_json::{Value, json};
 use trust_tasks_rs::specs::auth::signing_key::{
-    authorize::v0_1 as authorize, enroll::v0_1 as enroll, enroll::v0_2 as enroll_v0_2,
-    list::v0_1 as list, revoke::v0_1 as revoke,
+    authorize::v0_1 as authorize, enroll::v0_2 as enroll, list::v0_1 as list,
+    revoke::v0_1 as revoke,
 };
 use trust_tasks_rs::{Payload, RejectReason, StandardCode, TrustTask, TrustTaskCode};
 use vti_common::audit::{AdminConsoleKeyData, AuditEvent};
@@ -56,16 +60,16 @@ use crate::acl::console_key::{self, ConsoleKeyDelegation, EnrolError};
 use crate::error::AppError;
 use crate::server::AppState;
 
+/// `auth/signing-key/enroll/0.2`: with the identity's own `authorization`,
+/// and `replaces`.
 pub(crate) const ENROLL_TYPE: &str = <enroll::Payload as Payload>::TYPE_URI;
-/// 0.2: the identity's own `authorization`, and `replaces`. Served beside 0.1.
-pub(crate) const ENROLL_V0_2_TYPE: &str = <enroll_v0_2::Payload as Payload>::TYPE_URI;
 /// Never dispatched: carried inside an `enroll/0.2` as its `authorization`.
 pub(crate) const AUTHORIZE_TYPE: &str = <authorize::Payload as Payload>::TYPE_URI;
 pub(crate) const LIST_TYPE: &str = <list::Payload as Payload>::TYPE_URI;
 pub(crate) const REVOKE_TYPE: &str = <revoke::Payload as Payload>::TYPE_URI;
 
 /// Exactly what [`dispatch`] routes.
-pub(crate) const URIS: &[&str] = &[ENROLL_TYPE, ENROLL_V0_2_TYPE, LIST_TYPE, REVOKE_TYPE];
+pub(crate) const URIS: &[&str] = &[ENROLL_TYPE, LIST_TYPE, REVOKE_TYPE];
 
 pub(crate) const ENROLL_ERR_KEY_NOT_ISSUER: &str = enroll::error_codes::KEY_NOT_ISSUER.code;
 pub(crate) const ENROLL_ERR_SELF_DELEGATION: &str = enroll::error_codes::SELF_DELEGATION.code;
@@ -75,9 +79,8 @@ pub(crate) const ENROLL_ERR_KEY_REVOKED: &str = enroll::error_codes::KEY_REVOKED
 pub(crate) const ENROLL_ERR_EXPIRY_IN_PAST: &str = enroll::error_codes::EXPIRY_IN_PAST.code;
 pub(crate) const ENROLL_ERR_TOO_MANY_KEYS: &str = enroll::error_codes::TOO_MANY_KEYS.code;
 pub(crate) const ENROLL_ERR_AUTHORIZATION_INVALID: &str =
-    enroll_v0_2::error_codes::AUTHORIZATION_INVALID.code;
-pub(crate) const ENROLL_ERR_REPLACE_NOT_FOUND: &str =
-    enroll_v0_2::error_codes::REPLACE_NOT_FOUND.code;
+    enroll::error_codes::AUTHORIZATION_INVALID.code;
+pub(crate) const ENROLL_ERR_REPLACE_NOT_FOUND: &str = enroll::error_codes::REPLACE_NOT_FOUND.code;
 
 /// The most active keys `tooManyKeys` lists (`details.activeKeys`, 0.2).
 const MAX_LISTED_ACTIVE_KEYS: usize = 16;
@@ -90,7 +93,7 @@ pub(super) async fn dispatch(
     type_uri: &str,
 ) -> Option<TrustTaskOutcome> {
     Some(match type_uri {
-        ENROLL_TYPE | ENROLL_V0_2_TYPE => handle_enroll(state, ctx, doc).await,
+        ENROLL_TYPE => handle_enroll(state, ctx, doc).await,
         LIST_TYPE => handle_list(state, ctx, doc).await,
         REVOKE_TYPE => handle_revoke(state, ctx, doc).await,
         _ => return None,
@@ -213,40 +216,28 @@ async fn identity_of(state: &AppState, signer: &str) -> Result<Option<String>, A
 
 // ─── enroll ──────────────────────────────────────────────────────────────
 
-/// The terms of an enrolment, from either version's payload.
+/// The terms of an enrolment.
 struct EnrolTerms {
     key: String,
     identity: String,
     label: Option<String>,
     expires_at: Option<DateTime<Utc>>,
-    /// 0.2: an active key of the same identity to revoke in the same step.
+    /// An active key of the same identity to revoke in the same step.
     replaces: Option<String>,
-    /// 0.2: the enrolment can list active keys in `tooManyKeys`.
+    /// The enrolment can list active keys in `tooManyKeys`.
     lists_active_keys: bool,
 }
 
 fn enrol_terms(doc: &TrustTask<Value>) -> Result<EnrolTerms, TrustTaskOutcome> {
-    if doc.type_uri.to_string().starts_with(ENROLL_V0_2_TYPE) {
-        let p: enroll_v0_2::Payload = parse_spec_payload(doc)?;
-        Ok(EnrolTerms {
-            key: p.signing_key_did.to_string(),
-            identity: p.identity_did.to_string(),
-            label: p.device_label.as_ref().map(|l| l.to_string()),
-            expires_at: p.expires_at,
-            replaces: p.replaces.as_ref().map(|k| k.to_string()),
-            lists_active_keys: true,
-        })
-    } else {
-        let p: enroll::Payload = parse_spec_payload(doc)?;
-        Ok(EnrolTerms {
-            key: p.signing_key_did.to_string(),
-            identity: p.identity_did.to_string(),
-            label: p.device_label.as_ref().map(|l| l.to_string()),
-            expires_at: p.expires_at,
-            replaces: None,
-            lists_active_keys: false,
-        })
-    }
+    let p: enroll::Payload = parse_spec_payload(doc)?;
+    Ok(EnrolTerms {
+        key: p.signing_key_did.to_string(),
+        identity: p.identity_did.to_string(),
+        label: p.device_label.as_ref().map(|l| l.to_string()),
+        expires_at: p.expires_at,
+        replaces: p.replaces.as_ref().map(|k| k.to_string()),
+        lists_active_keys: true,
+    })
 }
 
 async fn handle_enroll(

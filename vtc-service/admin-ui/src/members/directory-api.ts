@@ -2,7 +2,7 @@
 // signed by the portal's sign-in key (`K_b`).
 //
 // A wallet sign-in at `auth/oob/*/0.2` asks the member to let `K_b` sign
-// directory documents as them, for that session (`auth/oob/grant/0.2`
+// directory documents as them, for that session (`auth/oob/grant/0.3`
 // `signingScope: ["vtc/directory"]`). The portal keeps `K_b` for the session
 // (`@/lib/console-key` `loadMemberSessionKey`) and signs every directory
 // document with it; the VTC reads each as the member's while the session that

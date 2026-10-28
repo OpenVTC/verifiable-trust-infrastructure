@@ -2711,7 +2711,7 @@ pub async fn derive_and_sign(
 ///
 /// Uses the same `DataIntegrityProof::sign` the VTA uses to issue VCs, so the
 /// proof is correct-by-construction for any `affinidi-data-integrity` verifier.
-/// This is how a fleet manager has its fleet VTA sign an `auth/authenticate/0.1`
+/// This is how a fleet manager has its fleet VTA sign an `auth/authenticate/0.3`
 /// document as a per-VTA super-admin (`m/26'/9'/<idx>'`) — the seed never leaves
 /// the VTA. **Super-admin only, inside `m/26'/9'`**, for the reasons given on
 /// [`derive_and_sign`]. Audited with a digest of the signed document.
@@ -3630,7 +3630,7 @@ mod tests {
         let h = TestHarness::new().await;
         let auth = h.super_admin_auth();
         let doc = serde_json::json!({
-            "type": "https://trusttasks.org/spec/auth/authenticate/0.1",
+            "type": "https://trusttasks.org/spec/auth/authenticate/0.3",
             "payload": { "challenge": "abc", "sessionId": "s1" },
         });
 

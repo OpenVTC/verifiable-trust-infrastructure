@@ -17,7 +17,7 @@
 
 use chrono::DateTime;
 use trust_tasks_rs::TrustTask;
-use trust_tasks_rs::specs::auth::step_up::approve_response::v0_2 as approve_response;
+use trust_tasks_rs::specs::auth::step_up::approve_response::v0_6 as approve_response;
 
 use crate::error::FfiError;
 use crate::keys::Signer;
@@ -52,6 +52,9 @@ pub struct ApproveResponseDraft {
     pub issued_at: String,
     /// Echoed verbatim from the request.
     pub subject: String,
+    /// Echoed verbatim from the request; empty when the request carried none
+    /// (a bound approval may have no session), in which case the response
+    /// carries none either.
     pub session_id: String,
     /// The step-up challenge; the gate signs/binds over it.
     pub challenge: String,
@@ -59,7 +62,7 @@ pub struct ApproveResponseDraft {
     pub granted_acr: Option<String>,
 }
 
-/// Build a passkey-backed `auth/step-up/approve-response/0.2`: decision
+/// Build a passkey-backed `auth/step-up/approve-response/0.6`: decision
 /// `approved`, `evidence.kind = webauthn` carrying `assertion`. The assertion is
 /// the gate. The document additionally carries the approver's framework proof
 /// (via `signer`, whose DID must be `draft.issuer_did`), because the VTA refuses
@@ -90,7 +93,9 @@ pub fn build_approve_response_webauthn(
             .client_extension_results(serde_json::Map::new())
             .try_into()
             .map_err(conv)?;
-    let evidence = approve_response::Evidence::Webauthn(assertion_response);
+    let evidence = approve_response::Evidence::Webauthn {
+        assertion: assertion_response,
+    };
     let mut doc = assemble_doc(
         &draft,
         evidence,
@@ -101,7 +106,7 @@ pub fn build_approve_response_webauthn(
     serialize(&doc)
 }
 
-/// Build a DID-signed `auth/step-up/approve-response/0.2`: decision `approved`,
+/// Build a DID-signed `auth/step-up/approve-response/0.6`: decision `approved`,
 /// `evidence.kind = didSigned`, gated by a Data Integrity proof
 /// (`eddsa-jcs-2022`) over the document. `signer` is the native enclave key
 /// (the holder/subject key) — its private material never enters this crate;
@@ -121,7 +126,7 @@ pub fn build_approve_response_did_signed(
     serialize(&doc)
 }
 
-/// Build a DID-signed **denial** `auth/step-up/approve-response/0.2`: decision
+/// Build a DID-signed **denial** `auth/step-up/approve-response/0.6`: decision
 /// `denied`, carrying the human `reason`, gated by the same `eddsa-jcs-2022`
 /// proof as an approval. A denial is a *signed refusal* — the VTA verifies the
 /// gate (so an injection can't forge it), audits `step_up_denied`, and elevates
@@ -159,7 +164,10 @@ fn assemble_doc(
     let payload: approve_response::Payload = approve_response::Payload::builder()
         .subject(approve_response::PayloadSubject::try_from(draft.subject.clone()).map_err(conv)?)
         .session_id(
-            approve_response::PayloadSessionId::try_from(draft.session_id.clone()).map_err(conv)?,
+            (!draft.session_id.is_empty())
+                .then(|| approve_response::PayloadSessionId::try_from(draft.session_id.clone()))
+                .transpose()
+                .map_err(conv)?,
         )
         .challenge(
             approve_response::PayloadChallenge::try_from(draft.challenge.clone()).map_err(conv)?,
@@ -263,7 +271,7 @@ mod tests {
         let v: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(
             v["type"],
-            "https://trusttasks.org/spec/auth/step-up/approve-response/0.2"
+            "https://trusttasks.org/spec/auth/step-up/approve-response/0.6"
         );
         assert_eq!(v["payload"]["decision"], "approved");
         assert_eq!(v["payload"]["evidence"]["kind"], "webauthn");
@@ -281,7 +289,7 @@ mod tests {
         let doc: TrustTask<approve_response::Payload> = serde_json::from_str(&json).unwrap();
         assert!(matches!(
             doc.payload.evidence,
-            Some(approve_response::Evidence::Webauthn(_))
+            Some(approve_response::Evidence::Webauthn { .. })
         ));
     }
 
@@ -361,12 +369,12 @@ mod tests {
         )
         .unwrap();
 
-        // 0.2 wire form: the type URI is `/0.2` and did-signed evidence
-        // serializes as the camelCase `didSigned` (the sole 0.1→0.2 change).
+        // 0.6 wire form: the type URI is `/0.6` and did-signed evidence
+        // serializes as the camelCase `didSigned`.
         let raw: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(
             raw["type"],
-            "https://trusttasks.org/spec/auth/step-up/approve-response/0.2"
+            "https://trusttasks.org/spec/auth/step-up/approve-response/0.6"
         );
         assert_eq!(raw["payload"]["evidence"]["kind"], "didSigned");
 
@@ -437,7 +445,7 @@ mod tests {
         let raw: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(
             raw["type"],
-            "https://trusttasks.org/spec/auth/step-up/approve-response/0.2"
+            "https://trusttasks.org/spec/auth/step-up/approve-response/0.6"
         );
         assert_eq!(raw["payload"]["decision"], "denied");
         assert_eq!(raw["payload"]["deniedReason"], "not something I authorized");

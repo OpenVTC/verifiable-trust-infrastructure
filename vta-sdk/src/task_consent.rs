@@ -28,8 +28,8 @@
 
 use serde_json::Value;
 
-/// The generated `task-consent/decision/0.1` types.
-pub use trust_tasks_rs::specs::task_consent::decision::v0_1 as decision;
+/// The generated `task-consent/decision/0.2` types.
+pub use trust_tasks_rs::specs::task_consent::decision::v0_2 as decision;
 /// The generated `task-consent/request/0.1` types.
 pub use trust_tasks_rs::specs::task_consent::request::v0_1 as request;
 

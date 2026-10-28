@@ -248,7 +248,7 @@ When adding a flow, add it here and a line to the root index.
 - **Wire** (`POST /auth/` content-negotiates on the body shape; all paths
   converge on `vti_common::auth::handlers::handle_authenticate`):
   - **DI-signed Trust Task (canonical REST)** — a plain JSON
-    `auth/authenticate/0.1` document whose holder `eddsa-jcs-2022`
+    `auth/authenticate/0.3` document whose holder `eddsa-jcs-2022`
     Data-Integrity proof *is* the authentication. No DIDComm packing /
     mediator needed, so a REST-only VTA (no `atm`) can authenticate. The
     proof's `verificationMethod` DID is the proven signer; `did:key`
@@ -262,7 +262,7 @@ When adding a flow, add it here and a line to the root index.
     (no-op freshness check), the DIDComm path enforces a 60s window on the
     envelope's `created_time`.
   - **`POST /auth/refresh` content-negotiates the same way**: a plain
-    `auth/refresh/0.1` Trust Task (canonical REST) **or** a DIDComm envelope.
+    `auth/refresh/0.2` Trust Task (canonical REST) **or** a DIDComm envelope.
     Refresh carries *no proof* — the opaque refresh token in the payload is the
     bearer credential (OAuth2 §10.4 rotation), so the Trust Task path passes
     `signer_did: None`. Together with the authenticate path above, the mobile
@@ -534,14 +534,14 @@ When adding a flow, add it here and a line to the root index.
   cannot carry them (`WizardInputs` is `deny_unknown_fields`).
 - **Runtime surface**: `pnm approvals {list,require,remove,approvers,
   explain}` and `pnm policy {list,show,upsert,delete}` — read-modify-write
-  of the reserved row over `policy/get/0.1` + `policy/upsert/0.2`.
+  of the reserved row over `policy/get/0.1` + `policy/upsert/0.3`.
   **Trust-Task transport only**; the SDK's REST arm is unimplemented and
   no `/policies` axum route exists, so a REST client gets a 404.
 - **Offline break-glass**: `vta approvals {list,remove,delete-all}` +
   `vta policy {list,delete}`. Deliberately **cannot create** a rule; daemon
   stopped; not available in TEE.
 - **Ceremony**: `task-consent/request/0.1` (outbound push, VTA-signed),
-  `task-consent/decision/0.1` (**the only dispatched one**, DI-signed by
+  `task-consent/decision/0.2` (**the only dispatched one**, DI-signed by
   the approver), `task-consent/granted/0.1` (notice). Approver-set
   membership alone authorizes a decision — an ACL entry is **not** required
   (#907). Ceremony tasks are exempt from PDP re-gating

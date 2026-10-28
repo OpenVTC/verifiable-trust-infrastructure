@@ -7,7 +7,7 @@
 //! | `vtc/registry/diagnostics/0.1` | an administrator | `Admin` |
 //! | `vtc/registry/sync-jobs/{list,retry}/0.2`, `vtc/registry/sync-jobs/discard/0.1` | an administrator | `Admin` |
 //! | `vtc/registry/records/list/0.2` | an administrator | `Admin` |
-//! | `audit/list/0.1`, `audit/verify/0.1` | an unrestricted administrator | `Admin`, no context scope |
+//! | `audit/list/0.2`, `audit/verify/0.1` | an unrestricted administrator | `Admin`, no context scope |
 //! | `config/show/0.1` | an administrator | `Admin` |
 //! | `config/{patch,reload,restart}/0.1` | an unrestricted administrator | `Admin`, no context scope: the configuration is the whole community's, and it holds the unrestricted-admin consent threshold |
 //! | `vtc/admin/invites/{list,revoke}/0.1` | an unrestricted administrator | `Admin`, no context scope: an admin invite confers unrestricted authority, so only an unrestricted admin manages them |
@@ -29,7 +29,7 @@
 //! instead bound to this one document ([`crate::acl::bound_step_up`]).
 
 use serde_json::Value;
-use trust_tasks_rs::specs::audit::{list::v0_1 as audit_list, verify::v0_1 as audit_verify};
+use trust_tasks_rs::specs::audit::{list::v0_2 as audit_list, verify::v0_1 as audit_verify};
 use trust_tasks_rs::specs::auth::revoke_session::v0_2 as revoke_session;
 use trust_tasks_rs::specs::auth::sessions::list::v0_1 as sessions_list;
 use trust_tasks_rs::specs::config::{
@@ -267,7 +267,7 @@ async fn handle_records_list(
 
 // ─── the audit log ───────────────────────────────────────────────────────
 
-/// `audit/list/0.1`. Unrestricted administrators only: the envelopes carry
+/// `audit/list/0.2`. Unrestricted administrators only: the envelopes carry
 /// plaintext actor and target DIDs, the audit keyspace's own tier.
 async fn handle_audit_list(
     state: &AppState,

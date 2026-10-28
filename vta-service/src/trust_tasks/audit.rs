@@ -18,7 +18,7 @@ use crate::server::AppState;
 
 use super::helpers::{TRANSPORT_TRUST_TASK, app_error_to_reject, parse_payload, success_response};
 
-/// Handler for canonical `audit/list/0.1`.
+/// Handler for canonical `audit/list/0.2`.
 ///
 /// Auth: unrestricted admin for the whole-log tail; a context-scoped
 /// admin must supply `contextId` within their own scope. The finer gate
@@ -131,7 +131,7 @@ pub(super) async fn handle_update_retention(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use trust_tasks_rs::specs::audit::list::v0_1 as canonical;
+    use trust_tasks_rs::specs::audit::list::v0_2 as canonical;
     use vta_sdk::protocols::audit_management::list::{
         AuditEnvelope, AuditLogEntry, ListAuditLogsResultBody,
     };
@@ -155,12 +155,12 @@ mod tests {
             actor: Some("did:key:z6MkActor".into()),
             outcome: Some("success".into()),
             context_id: Some("ctx1".into()),
-            page_size: Some(25),
+            limit: Some(25),
             cursor: Some("opaque".into()),
         };
         let json = serde_json::to_value(&req).expect("serialize request");
         serde_json::from_value::<canonical::Payload>(json.clone())
-            .unwrap_or_else(|e| panic!("request is not canonical `audit/list/0.1`: {e}\n{json:#}"));
+            .unwrap_or_else(|e| panic!("request is not canonical `audit/list/0.2`: {e}\n{json:#}"));
 
         // An all-defaults request must also be valid — every filter is
         // optional, and omitted members must be absent rather than null.
@@ -185,12 +185,11 @@ mod tests {
         };
         let resp = ListAuditLogsResultBody {
             entries: vec![AuditEnvelope::from(&row)],
-            truncated: true,
-            cursor: Some("opaque".into()),
+            next_cursor: Some("opaque".into()),
         };
         let json = serde_json::to_value(&resp).expect("serialize response");
         serde_json::from_value::<canonical::Response>(json.clone()).unwrap_or_else(|e| {
-            panic!("response is not canonical `audit/list/0.1`: {e}\n{json:#}")
+            panic!("response is not canonical `audit/list/0.2`: {e}\n{json:#}")
         });
 
         // Guard against a vacuous check: the canonical types must

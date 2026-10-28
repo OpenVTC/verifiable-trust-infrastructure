@@ -39,13 +39,13 @@ function stubService(redeems: Array<() => Response>) {
       if (url.endsWith("/v1/member/sign-out")) return new Response(null, { status: 204 });
       const doc = JSON.parse(String(init?.body));
       posted.push({ type: doc.type, payload: doc.payload, proofPurpose: doc.proof.proofPurpose });
-      if (doc.type.endsWith("/request/0.1")) {
+      if (doc.type.endsWith("/request/0.2")) {
         return json(200, {
           type: `${doc.type}#response`,
-          payload: { requestId: RID, claimDeadline: Math.floor(Date.now() / 1000) + 120 },
+          payload: { requestId: RID, claimClosesAt: new Date(Date.now() + 120_000).toISOString() },
         });
       }
-      if (doc.type.endsWith("/redeem/0.1")) {
+      if (doc.type.endsWith("/redeem/0.2")) {
         const next = redeems[Math.min(poll, redeems.length - 1)]!;
         poll += 1;
         return next();
@@ -66,8 +66,8 @@ describe("wallet sign-in", () => {
     expect(triggerLink(CFG, RID, 1760000000)).toBe(
       `https://link.trustoverip.org/t#_from=${VTC}&_id=${RID}&_exp=1760000000&_type=/vti/flow/sign-in/0.1`,
     );
-    expect(epochOf(1760000000)).toBe(1760000000);
-    expect(epochOf("2025-10-09T08:53:20Z")).toBeNull();
+    expect(epochOf("2025-10-09T08:53:20Z")).toBe(1760000000);
+    expect(epochOf(1760000000)).toBeNull();
   });
 
   it("shows a clickable code, then the number, then asks 'Continue as …?'", async () => {
@@ -83,10 +83,10 @@ describe("wallet sign-in", () => {
     const number = screen.getByText("47");
     expect(number.getAttribute("data-oob-request-id")).toBe(RID);
     expect(number.getAttribute("data-oob-match-number")).toBe("47");
-    expect(posted[0]!.type).toMatch(/auth\/oob\/request\/0\.1$/);
+    expect(posted[0]!.type).toMatch(/auth\/oob\/request\/0\.2$/);
     expect(posted[0]!.payload).toEqual({ purpose: "login", mode: "scan" });
     expect(posted[0]!.proofPurpose).toBe("authentication");
-    expect(posted[1]!.type).toMatch(/auth\/oob\/redeem\/0\.1$/);
+    expect(posted[1]!.type).toMatch(/auth\/oob\/redeem\/0\.2$/);
     expect(posted[1]!.payload).toEqual({ requestId: RID });
   });
 
@@ -116,11 +116,11 @@ describe("wallet sign-in", () => {
     stubService([
       () =>
         json(200, {
-          type: "https://trusttasks.org/spec/auth/oob/redeem/0.1#response",
+          type: "https://trusttasks.org/spec/auth/oob/redeem/0.2#response",
           payload: {
             subject: "did:webvh:x:alice",
             displayName: "Alice",
-            notAfter: Math.floor(Date.now() / 1000) + 3600,
+            sessionEndsAt: new Date(Date.now() + 3_600_000).toISOString(),
             amr: ["did", "oob", "uv"],
           },
         }),
@@ -142,11 +142,11 @@ describe("wallet sign-in", () => {
   it("lets a browser straight in as the identity it last continued as, and asks for any other", async () => {
     const redeemed = (subject: string, displayName: string) => () =>
       json(200, {
-        type: "https://trusttasks.org/spec/auth/oob/redeem/0.1#response",
+        type: "https://trusttasks.org/spec/auth/oob/redeem/0.2#response",
         payload: {
           subject,
           displayName,
-          notAfter: Math.floor(Date.now() / 1000) + 3600,
+          sessionEndsAt: new Date(Date.now() + 3_600_000).toISOString(),
           amr: ["did", "oob", "uv"],
         },
       });
@@ -205,7 +205,7 @@ describe("wallet sign-in", () => {
     const posted = stubService([() => err("auth/oob/redeem:requestExpired")]);
     render(<WalletSignIn onSignedIn={() => {}} />);
     expect(await screen.findByText(/code expired/i)).toBeTruthy();
-    expect(posted.filter((p) => p.type.endsWith("/request/0.1"))).toHaveLength(1);
+    expect(posted.filter((p) => p.type.endsWith("/request/0.2"))).toHaveLength(1);
   });
 
   describe("renewing an unclaimed code", () => {
@@ -216,9 +216,9 @@ describe("wallet sign-in", () => {
       });
     };
     const requests = (posted: Array<{ type: string }>) =>
-      posted.filter((p) => p.type.endsWith("/request/0.1")).length;
+      posted.filter((p) => p.type.endsWith("/request/0.2")).length;
     const redeems = (posted: Array<{ type: string }>) =>
-      posted.filter((p) => p.type.endsWith("/redeem/0.1")).length;
+      posted.filter((p) => p.type.endsWith("/redeem/0.2")).length;
     /** Let pending promises and effects run out. */
     const settle = () => act(() => new Promise<void>((r) => setTimeout(r, 20)));
 
@@ -362,15 +362,15 @@ describe("wallet sign-in", () => {
             return pick(opts.configs, count.config++, () => json(200, CFG));
           }
           const doc = JSON.parse(String(init?.body));
-          if (doc.type.endsWith("/request/0.1")) {
+          if (doc.type.endsWith("/request/0.2")) {
             return pick(opts.requests, count.request++, () =>
               json(200, {
                 type: `${doc.type}#response`,
-                payload: { requestId: RID, claimDeadline: Math.floor(Date.now() / 1000) + 120 },
+                payload: { requestId: RID, claimClosesAt: new Date(Date.now() + 120_000).toISOString() },
               }),
             );
           }
-          if (doc.type.endsWith("/redeem/0.1")) {
+          if (doc.type.endsWith("/redeem/0.2")) {
             return pick(
               opts.redeems,
               count.redeem++,
@@ -404,8 +404,8 @@ describe("wallet sign-in", () => {
           limited,
           () =>
             json(200, {
-              type: "https://trusttasks.org/spec/auth/oob/request/0.1#response",
-              payload: { requestId: RID, claimDeadline: Math.floor(Date.now() / 1000) + 120 },
+              type: "https://trusttasks.org/spec/auth/oob/request/0.2#response",
+              payload: { requestId: RID, claimClosesAt: new Date(Date.now() + 120_000).toISOString() },
             }),
         ],
       });

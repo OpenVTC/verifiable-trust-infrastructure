@@ -1391,6 +1391,35 @@ pub async fn run(
                 .await?;
             }
 
+            // A rule naming a task version this VTA no longer serves would never
+            // match again, leaving the task it gated ungated: move it to the
+            // successor (`vta_policy::approvals::RETIRED_TASK_TYPES`). A move
+            // that cannot be made (rules for both versions) is reported loudly
+            // rather than stopping the VTA, which would leave the operator no
+            // online way to fix the rules.
+            match vta_policy::approvals::migrate_retired_task_types(
+                &app_state.policy_ks,
+                &chrono::Utc::now().to_rfc3339(),
+            )
+            .await
+            {
+                Ok(moved) => {
+                    for (old, new) in moved {
+                        tracing::warn!(
+                            from = %old,
+                            to = %new,
+                            "approval rule moved from a retired task version to its successor"
+                        );
+                    }
+                }
+                Err(e) => tracing::error!(
+                    error = %e,
+                    security_alert = true,
+                    "approval rules name a retired task version and could not be moved; the \
+                     task they gate runs ungated until the rules are edited"
+                ),
+            }
+
             // Enforcement is opt-in and stays off by default (flipping it would
             // turn every written-but-unintended policy into a gate on upgrade).
             // The cost is that a rule written with `pnm approvals` is stored,

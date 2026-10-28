@@ -56,7 +56,7 @@ const CANCEL_V0_2: &str = "https://trusttasks.org/spec/vtc/admin/actions/cancel/
 const ACKNOWLEDGE_V0_2: &str = "https://trusttasks.org/spec/vtc/admin/actions/acknowledge/0.3";
 /// The record type an operator's offline write is named by (VTI-VTC-023).
 const OFFLINE_WRITE: &str = "https://trusttasks.org/spec/vtc/operator/offline-write/0.2";
-const UPSERT: &str = "https://trusttasks.org/spec/policy/upsert/0.2";
+const UPSERT: &str = "https://trusttasks.org/spec/policy/upsert/0.3";
 const COOLING_OFF_KEY: &str = "acl.removal_cooling_off";
 
 struct Fixture {

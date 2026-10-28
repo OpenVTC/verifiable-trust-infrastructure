@@ -26,7 +26,7 @@
 //!
 //! The member tasks (`fields/list`, `card/*` but `assert`, `entries/*`) also
 //! accept a document signed by a member-portal sign-in key the member
-//! delegated `vtc/directory` to (`auth/oob/grant/0.2`,
+//! delegated `vtc/directory` to (`auth/oob/grant/0.3`,
 //! [`crate::member_portal::delegation`]), read as the member's. Such a key can
 //! never make a value `public` or publish the card beyond the community
 //! ([`Writer::Delegated`]). It may upload a picture for the member's card and

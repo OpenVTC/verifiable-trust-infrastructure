@@ -103,7 +103,7 @@ async fn handle(state: &AppState, ctx: &JoinAuthCtx, doc: TrustTask<Value>) -> T
     };
     // The browser key to bind to this session, so the console can sign
     // `auth/whoami/0.1` for it. Inside the payload, so the signer's proof
-    // covers it — the footing `auth/authenticate/0.2`'s `sessionKey` has.
+    // covers it — the footing `auth/authenticate/0.3`'s `sessionKey` has.
     let session_key = match crate::routes::auth::session_key_from_ext(doc.payload.get("ext")) {
         Ok(k) => k,
         Err(e) => return app_error_to_reject(&doc, &e),
@@ -126,7 +126,7 @@ async fn handle(state: &AppState, ctx: &JoinAuthCtx, doc: TrustTask<Value>) -> T
 /// Bind `key` (an Ed25519 multikey) to the token's session.
 ///
 /// A session with no key, or already this one, takes it. A session bound to a
-/// **different** key — by `auth/authenticate/0.2`, say — is rebound only on
+/// **different** key — by `auth/authenticate/0.3`, say — is rebound only on
 /// the subject's own signature: a console key acts for its administrator, but
 /// does not get to take a session key away from the subject's own client.
 /// A session that has ended is refused, and nothing is set.

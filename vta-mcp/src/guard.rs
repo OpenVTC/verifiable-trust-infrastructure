@@ -600,7 +600,7 @@ mod tests {
         assert_eq!(slug_of(ACL_GRANT), Some("acl/grant"));
         assert_eq!(slug_of(CONTEXTS_LIST), Some("vta/contexts/list"));
         assert_eq!(
-            slug_of("https://trusttasks.org/spec/trust-task-discovery/0.1"),
+            slug_of("https://trusttasks.org/spec/trust-task-discovery/0.3"),
             Some("trust-task-discovery")
         );
     }

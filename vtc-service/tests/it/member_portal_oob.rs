@@ -30,8 +30,34 @@ const UA: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/53
                   (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36";
 const SEED: [u8; 32] = [42; 32];
 
+/// The served version of each `auth/oob` task.
 fn t(task: &str) -> String {
-    format!("{BASE}/{task}/0.1")
+    let version = match task {
+        "request" | "claim" | "redeem" => "0.2",
+        "prove" | "respond" | "grant" => "0.3",
+        _ => "0.1", // identify, cancel
+    };
+    format!("{BASE}/{task}/{version}")
+}
+
+/// What a member sign-in's step 2 offers, and so what its grant must carry.
+fn portal_scope() -> Value {
+    json!([
+        "vtc/directory",
+        "vtc/groups",
+        "git-ns/view",
+        "git-ns/account/link-status"
+    ])
+}
+
+/// An RFC 3339 instant from epoch seconds.
+fn at(epoch: u64) -> String {
+    oob::rfc3339(epoch)
+}
+
+/// Epoch seconds from an RFC 3339 instant in a reply.
+fn epoch(v: &Value) -> u64 {
+    oob::epoch_of(v).unwrap_or_else(|| panic!("an RFC 3339 instant, got {v}"))
 }
 
 struct Fixture {
@@ -198,8 +224,9 @@ async fn start(f: &Fixture, b: &Browser) -> String {
     let p = &r.body["payload"];
     let id = p["requestId"].as_str().unwrap().to_string();
     assert_eq!(id.len(), 22);
-    // C9: epoch seconds, the trigger link's `_exp`, inside the 120 s window.
-    let deadline = p["claimDeadline"].as_u64().expect("integer claimDeadline");
+    // RFC 3339 (`claimClosesAt`), inside the 120 s window; the trigger
+    // link's `_exp` is its epoch seconds.
+    let deadline = epoch(&p["claimClosesAt"]);
     assert!(deadline > now_epoch() && deadline <= now_epoch() + 120);
     id
 }
@@ -266,11 +293,40 @@ async fn grant(
         context_digest,
         purpose,
         now_epoch() + 3600,
+        Some(portal_scope()),
     )
     .await
 }
 
-/// [`grant`] with the `notAfter` the member approves the session until.
+/// [`grant`] for an operator-console sign-in, whose step 2 offers no scope.
+#[allow(clippy::too_many_arguments)]
+async fn admin_grant(
+    member: &Party,
+    id: &str,
+    decision: &str,
+    session_key: &str,
+    approver: &str,
+    origin: &str,
+    context_digest: &str,
+    purpose: &str,
+) -> Value {
+    grant_until(
+        member,
+        id,
+        decision,
+        session_key,
+        approver,
+        origin,
+        context_digest,
+        purpose,
+        now_epoch() + 3600,
+        None,
+    )
+    .await
+}
+
+/// [`grant`] with the `sessionEndsAt` the member approves the session until,
+/// and the `signingScope` step 2 offered (`None` when it offered none).
 #[allow(clippy::too_many_arguments)]
 async fn grant_until(
     member: &Party,
@@ -282,23 +338,21 @@ async fn grant_until(
     context_digest: &str,
     purpose: &str,
     not_after: u64,
+    scope: Option<Value>,
 ) -> Value {
-    doc(
-        member,
-        &t("grant"),
-        json!({
-            "requestId": id,
-            "decision": decision,
-            "sessionKey": session_key,
-            "approverKey": approver,
-            "origin": origin,
-            "contextDigest": context_digest,
-            "notAfter": not_after,
-        }),
-        None,
-        purpose,
-    )
-    .await
+    let mut payload = json!({
+        "requestId": id,
+        "decision": decision,
+        "sessionKey": session_key,
+        "approverKey": approver,
+        "origin": origin,
+        "contextDigest": context_digest,
+        "sessionEndsAt": at(not_after),
+    });
+    if let Some(scope) = scope {
+        payload["signingScope"] = scope;
+    }
+    doc(member, &t("grant"), payload, None, purpose).await
 }
 
 async fn respond(f: &Fixture, p: &Phone, grant: Value) -> Reply {
@@ -374,7 +428,7 @@ async fn wallet_sign_in_end_to_end_sets_a_member_session_bound_to_k_b() {
     assert_eq!(s1["service"]["did"], VTC_DID);
     assert_eq!(s1["origin"], PORTAL);
     assert_eq!(s1["purpose"], "login");
-    assert!(s1["decisionDeadline"].as_u64().is_some());
+    assert!(oob::epoch_of(&s1["decisionClosesAt"]).is_some());
     // Step 1 says nothing about the browser.
     assert!(s1.get("sessionKey").is_none() && s1.get("requester").is_none());
 
@@ -387,7 +441,7 @@ async fn wallet_sign_in_end_to_end_sets_a_member_session_bound_to_k_b() {
         "service",
         "origin",
         "purpose",
-        "decisionDeadline",
+        "decisionClosesAt",
     ] {
         assert_eq!(s2[k], s1[k], "step 2 repeats step 1's {k}");
     }
@@ -428,7 +482,7 @@ async fn wallet_sign_in_end_to_end_sets_a_member_session_bound_to_k_b() {
     assert_eq!(body["subject"], member.did.as_str());
     assert_eq!(body["displayName"], "Alice");
     assert_eq!(body["amr"], json!(["did", "oob", "uv"]));
-    assert!(body["notAfter"].as_u64().unwrap() <= now_epoch() + 3600);
+    assert!(epoch(&body["sessionEndsAt"]) <= now_epoch() + 3600);
     // No tokens in the body; the session is in HttpOnly cookies.
     assert!(body.get("accessToken").is_none() && body.get("sessionId").is_none());
     let session = done
@@ -1123,7 +1177,7 @@ async fn approve(f: &Fixture, b: &Browser, p: &Phone, who: &Party, id: &str) -> 
     approve_until(f, b, p, who, id, now_epoch() + 3600).await
 }
 
-/// [`approve`] with a grant whose `notAfter` is `not_after`.
+/// [`approve`] with a grant whose `sessionEndsAt` is `not_after`.
 async fn approve_until(
     f: &Fixture,
     b: &Browser,
@@ -1146,6 +1200,7 @@ async fn approve_until(
         &digest,
         "assertionMethod",
         not_after,
+        pr.body["payload"].get("signingScope").cloned(),
     )
     .await;
     let rs = respond(f, p, g).await;
@@ -1222,7 +1277,7 @@ async fn an_admin_request_by_an_administrator_opens_a_console_session() {
     assert_vtc_attested(&f, &pr.body);
     assert_eq!(pr.body["payload"]["ext"], admin_ext());
     let digest = oob::context_digest(&pr.body).unwrap();
-    let g = grant(
+    let g = admin_grant(
         &admin,
         &id,
         "approve",
@@ -1480,7 +1535,7 @@ async fn the_audience_cannot_be_altered_after_the_claim() {
     assert_eq!(pr.status, StatusCode::OK, "{}", pr.body);
     let mut altered = pr.body.clone();
     altered["payload"]["ext"] = admin_ext();
-    let g = grant(
+    let g = admin_grant(
         &admin,
         &id,
         "approve",
@@ -1667,13 +1722,13 @@ async fn a_bootstrap_admin_made_a_member_signs_in_to_the_member_portal() {
     );
 }
 
-// ─── The grant's `notAfter` bounds the whole session ──────────────────
+// ─── The grant's `sessionEndsAt` bounds the whole session ─────────────
 //
-// A wallet sign-in's grant carries `notAfter`, the latest moment the member
+// A wallet sign-in's grant carries `sessionEndsAt`, the latest moment the member
 // approved the session for. Refresh rotation must stay inside it — not only
 // the first window — and be refused once it has passed, for both audiences.
 
-const REFRESH_TASK: &str = "https://trusttasks.org/spec/auth/refresh/0.1";
+const REFRESH_TASK: &str = "https://trusttasks.org/spec/auth/refresh/0.2";
 
 /// `Max-Age` of the named cookie among `cookies`.
 fn max_age(cookies: &[String], name: &str) -> u64 {
@@ -1811,7 +1866,7 @@ async fn a_member_session_is_bounded_by_the_grants_not_after_across_refreshes() 
     let (member, done) = member_signed_in_until(&f, "198.51.100.110", not_after).await;
 
     // Redeem reports the session's true end, and that is what is stored.
-    assert_eq!(done.body["payload"]["notAfter"].as_u64(), Some(not_after));
+    assert_eq!(epoch(&done.body["payload"]["sessionEndsAt"]), not_after);
     let row = session_row(&f.vtc.state.member_sessions_ks, &member.did).await;
     assert_eq!(row.not_after, Some(not_after));
     assert!(row.refresh_expires_at.unwrap() <= not_after);
@@ -1844,7 +1899,7 @@ async fn a_member_session_is_bounded_by_the_grants_not_after_across_refreshes() 
         assert_eq!(row.not_after, Some(not_after), "the end never moves");
         assert!(
             row.refresh_expires_at.unwrap() <= not_after,
-            "refresh extended the session past notAfter"
+            "refresh extended the session past sessionEndsAt"
         );
         refresh = cookie_in(&r.cookies, "vtc_member_refresh")
             .unwrap()
@@ -1860,7 +1915,7 @@ async fn a_member_refresh_near_the_end_is_clamped_to_it() {
     let start = now_epoch();
     let not_after = start + 30;
     let (member, done) = member_signed_in_until(&f, "198.51.100.111", not_after).await;
-    assert_eq!(done.body["payload"]["notAfter"].as_u64(), Some(not_after));
+    assert_eq!(epoch(&done.body["payload"]["sessionEndsAt"]), not_after);
     assert!(start + max_age(&done.cookies, "vtc_member_session") <= not_after);
 
     let refresh = cookie_in(&done.cookies, "vtc_member_refresh").unwrap();
@@ -1910,7 +1965,7 @@ async fn a_console_session_is_bounded_by_the_grants_not_after() {
     let refresh_cookie = vti_common::auth::extractor::ADMIN_REFRESH_COOKIE;
 
     // Redeem reports the true end; the console row and every cookie keep it.
-    assert_eq!(done.body["payload"]["notAfter"].as_u64(), Some(not_after));
+    assert_eq!(epoch(&done.body["payload"]["sessionEndsAt"]), not_after);
     let row = session_row(&f.vtc.state.sessions_ks, &admin.did).await;
     assert_eq!(row.not_after, Some(not_after));
     assert!(start + max_age(&done.cookies, refresh_cookie) <= not_after);
@@ -1948,7 +2003,7 @@ async fn a_console_refresh_near_the_end_is_clamped_to_it() {
     let f = fixture().await;
     let not_after = now_epoch() + 30;
     let (_, done) = admin_signed_in_until(&f, "198.51.100.114", not_after).await;
-    assert_eq!(done.body["payload"]["notAfter"].as_u64(), Some(not_after));
+    assert_eq!(epoch(&done.body["payload"]["sessionEndsAt"]), not_after);
 
     let refresh = cookie_in(
         &done.cookies,
@@ -2005,17 +2060,13 @@ async fn a_session_stored_before_not_after_existed_still_refreshes() {
     );
 }
 
-// ── 0.2: delegated signing (auth/oob/grant/0.2 `signingScope`) ───────────────
-
-fn t2(task: &str) -> String {
-    format!("{BASE}/{task}/0.2")
-}
+// ── Delegated signing (auth/oob/grant/0.3 `signingScope`) ────────────────────
 
 const DIRECTORY: &str = "https://trusttasks.org/spec/vtc/directory";
 
-/// Sign in at 0.2, approving the scope step 2 offers (or `scope` instead),
+/// Sign in, approving the scope step 2 offers (or `scope` instead),
 /// and return the browser, the member and the redeem reply.
-async fn sign_in_v0_2(f: &Fixture, scope: Option<Value>) -> (Browser, Party, Reply, Reply) {
+async fn sign_in_delegating(f: &Fixture, scope: Option<Value>) -> (Browser, Party, Reply, Reply) {
     vtc_service::policy::default::install_defaults(
         &f.vtc.state.policies_ks,
         &f.vtc.state.active_policies_ks,
@@ -2039,7 +2090,7 @@ async fn sign_in_v0_2(f: &Fixture, scope: Option<Value>) -> (Browser, Party, Rep
         &f.vtc,
         &doc(
             &p.key,
-            &t2("prove"),
+            &t("prove"),
             json!({ "identify": identify }),
             None,
             "authentication",
@@ -2051,7 +2102,7 @@ async fn sign_in_v0_2(f: &Fixture, scope: Option<Value>) -> (Browser, Party, Rep
     .await;
     assert_eq!(pr.status, StatusCode::OK, "{}", pr.body);
     assert_vtc_attested(f, &pr.body);
-    assert_eq!(pr.body["type"], format!("{}#response", t2("prove")));
+    assert_eq!(pr.body["type"], format!("{}#response", t("prove")));
     assert_eq!(
         pr.body["payload"]["signingScope"],
         json!([
@@ -2065,7 +2116,7 @@ async fn sign_in_v0_2(f: &Fixture, scope: Option<Value>) -> (Browser, Party, Rep
     let scope = scope.unwrap_or_else(|| pr.body["payload"]["signingScope"].clone());
     let grant = doc(
         &member,
-        &t2("grant"),
+        &t("grant"),
         json!({
             "requestId": id,
             "decision": "approve",
@@ -2073,7 +2124,7 @@ async fn sign_in_v0_2(f: &Fixture, scope: Option<Value>) -> (Browser, Party, Rep
             "approverKey": p.key.did,
             "origin": PORTAL,
             "contextDigest": digest,
-            "notAfter": now_epoch() + 3600,
+            "sessionEndsAt": at(now_epoch() + 3600),
             "signingScope": scope,
         }),
         None,
@@ -2084,7 +2135,7 @@ async fn sign_in_v0_2(f: &Fixture, scope: Option<Value>) -> (Browser, Party, Rep
         &f.vtc,
         &doc(
             &p.key,
-            &t2("respond"),
+            &t("respond"),
             json!({ "grant": grant }),
             None,
             "authentication",
@@ -2118,14 +2169,14 @@ async fn as_portal(f: &Fixture, b: &Browser, type_uri: &str, payload: Value) -> 
     .await
 }
 
-/// auth/oob/grant/0.2 consumer item 4: once the member approves a grant
+/// auth/oob/grant/0.3 consumer item 4: once the member approves a grant
 /// carrying `signingScope`, `K_b` signs directory documents as the member for
 /// that session — and nothing outside the scope, and never a value made
 /// public (item 6, `card/update`'s producer rule).
 #[tokio::test]
 async fn a_scoped_grant_lets_the_portal_key_sign_directory_documents_as_the_member() {
     let f = fixture().await;
-    let (b, member, rs, done) = sign_in_v0_2(&f, None).await;
+    let (b, member, rs, done) = sign_in_delegating(&f, None).await;
     assert_eq!(rs.body["payload"]["status"], "approved", "{}", rs.body);
     assert_vtc_attested(&f, &rs.body);
     assert_eq!(done.status, StatusCode::OK, "{}", done.body);
@@ -2180,7 +2231,7 @@ async fn a_scoped_grant_lets_the_portal_key_sign_directory_documents_as_the_memb
 #[tokio::test]
 async fn a_portal_key_browsing_the_directory_is_charged_to_its_member_not_the_anonymous_burst() {
     let f = fixture().await;
-    let (b, _member, _rs, done) = sign_in_v0_2(&f, None).await;
+    let (b, _member, _rs, done) = sign_in_delegating(&f, None).await;
     assert_eq!(done.status, StatusCode::OK, "{}", done.body);
 
     for i in 0..30 {
@@ -2199,7 +2250,7 @@ async fn a_portal_key_browsing_the_directory_is_charged_to_its_member_not_the_an
 #[tokio::test]
 async fn a_portal_key_outside_its_scope_still_pays_the_anonymous_burst() {
     let f = fixture().await;
-    let (b, _member, _rs, done) = sign_in_v0_2(&f, None).await;
+    let (b, _member, _rs, done) = sign_in_delegating(&f, None).await;
     assert_eq!(done.status, StatusCode::OK, "{}", done.body);
 
     let mut refused = false;
@@ -2227,7 +2278,7 @@ async fn a_portal_key_outside_its_scope_still_pays_the_anonymous_burst() {
 async fn the_portal_key_uploads_a_picture_larger_than_the_default_document_limit() {
     use base64::Engine as _;
     let f = fixture().await;
-    let (b, _member, _, done) = sign_in_v0_2(&f, None).await;
+    let (b, _member, _, done) = sign_in_delegating(&f, None).await;
     assert_eq!(done.status, StatusCode::OK, "{}", done.body);
 
     // Noise does not compress: about 190 KB of PNG, under the 256 KiB a
@@ -2293,7 +2344,7 @@ const GIT_NS: &str = "https://trusttasks.org/spec/git-ns";
 #[tokio::test]
 async fn the_portal_key_reads_the_members_repos_and_never_changes_them() {
     let f = fixture().await;
-    let (b, member, _, done) = sign_in_v0_2(&f, None).await;
+    let (b, member, _, done) = sign_in_delegating(&f, None).await;
     assert_eq!(done.status, StatusCode::OK, "{}", done.body);
 
     let admin = Party::new();
@@ -2410,7 +2461,7 @@ async fn audit_events(f: &Fixture) -> Vec<vti_common::audit::AuditEvent> {
 async fn every_document_the_portal_key_signs_is_audited_with_its_grant() {
     use vti_common::audit::AuditEvent;
     let f = fixture().await;
-    let (b, member, _, done) = sign_in_v0_2(&f, None).await;
+    let (b, member, _, done) = sign_in_delegating(&f, None).await;
     assert_eq!(done.status, StatusCode::OK, "{}", done.body);
 
     let card = as_portal(&f, &b, &format!("{DIRECTORY}/card/show/0.1"), json!({})).await;
@@ -2477,7 +2528,7 @@ async fn every_document_the_portal_key_signs_is_audited_with_its_grant() {
 #[tokio::test]
 async fn a_grant_widening_the_offered_scope_is_refused() {
     let f = fixture().await;
-    let (_, _, rs, _) = sign_in_v0_2(
+    let (_, _, rs, _) = sign_in_delegating(
         &f,
         Some(json!([
             "vtc/directory",
@@ -2499,7 +2550,7 @@ async fn a_grant_widening_the_offered_scope_is_refused() {
 #[tokio::test]
 async fn ending_the_session_disarms_the_portal_key() {
     let f = fixture().await;
-    let (b, member, _, done) = sign_in_v0_2(&f, None).await;
+    let (b, member, _, done) = sign_in_delegating(&f, None).await;
     assert_eq!(done.status, StatusCode::OK, "{}", done.body);
     let sessions = vti_common::auth::session::list_sessions(&f.vtc.state.member_sessions_ks)
         .await
@@ -2509,53 +2560,6 @@ async fn ending_the_session_disarms_the_portal_key() {
             .await
             .unwrap();
     }
-    let shown = as_portal(&f, &b, &format!("{DIRECTORY}/card/show/0.1"), json!({})).await;
-    assert_eq!(
-        code(&shown),
-        "vtc/directory/card/show:notMember",
-        "{}",
-        shown.body
-    );
-}
-
-/// A 0.1 sign-in delegates nothing: `K_b` is no member.
-#[tokio::test]
-async fn a_0_1_sign_in_delegates_no_signing() {
-    let f = fixture().await;
-    vtc_service::policy::default::install_defaults(
-        &f.vtc.state.policies_ks,
-        &f.vtc.state.active_policies_ks,
-    )
-    .await
-    .unwrap();
-    let member = Party::new();
-    enrol_member(&f.vtc, &member.did, None).await;
-    let b = Browser {
-        key: Party::new(),
-        ip: "198.51.100.9",
-    };
-    let p = Phone {
-        key: Party::new(),
-        ip: "198.51.100.9",
-    };
-    let id = start(&f, &b).await;
-    let (_, number) = claim_and_number(&f, &b, &p, &id).await;
-    let pr = prove(&f, &p, identify(&member, &id, &p.key.did, &number).await).await;
-    assert!(pr.body["payload"].get("signingScope").is_none());
-    let digest = oob::context_digest(&pr.body).unwrap();
-    let g = grant(
-        &member,
-        &id,
-        "approve",
-        &b.key.did,
-        &p.key.did,
-        PORTAL,
-        &digest,
-        "assertionMethod",
-    )
-    .await;
-    assert_eq!(respond(&f, &p, g).await.status, StatusCode::OK);
-    assert_eq!(redeem(&f, &b, &id).await.status, StatusCode::OK);
     let shown = as_portal(&f, &b, &format!("{DIRECTORY}/card/show/0.1"), json!({})).await;
     assert_eq!(
         code(&shown),

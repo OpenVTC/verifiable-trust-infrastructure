@@ -93,7 +93,7 @@ mod tests {
         let now = crate::test_support::javascript_whole_second_now();
         let mut doc = json!({
             "id": "urn:uuid:45454545-4545-4545-8545-000000000001",
-            "type": "https://trusttasks.org/spec/task-consent/decision/0.1",
+            "type": "https://trusttasks.org/spec/task-consent/decision/0.2",
             "issuer": crate::test_support::test_admin_did().0,
             "recipient": "did:key:z6MkVta",
             "issuedAt": now,

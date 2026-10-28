@@ -31,7 +31,7 @@ const SYNC_LIST: &str = "https://trusttasks.org/spec/vtc/registry/sync-jobs/list
 const SYNC_RETRY: &str = "https://trusttasks.org/spec/vtc/registry/sync-jobs/retry/0.2";
 const SYNC_DISCARD: &str = "https://trusttasks.org/spec/vtc/registry/sync-jobs/discard/0.1";
 const RECORDS: &str = "https://trusttasks.org/spec/vtc/registry/records/list/0.2";
-const AUDIT_LIST: &str = "https://trusttasks.org/spec/audit/list/0.1";
+const AUDIT_LIST: &str = "https://trusttasks.org/spec/audit/list/0.2";
 const AUDIT_VERIFY: &str = "https://trusttasks.org/spec/audit/verify/0.1";
 const CONFIG_SHOW: &str = "https://trusttasks.org/spec/config/show/0.1";
 const CONFIG_PATCH: &str = "https://trusttasks.org/spec/config/patch/0.1";
@@ -82,7 +82,7 @@ fn verbs(job_id: &str, jti: &str) -> Vec<(&'static str, Value, bool)> {
         (SYNC_RETRY, json!({ "allFailed": true }), false),
         (SYNC_DISCARD, json!({ "jobId": job_id }), false),
         (RECORDS, json!({ "source": "local" }), false),
-        (AUDIT_LIST, json!({ "pageSize": 5 }), true),
+        (AUDIT_LIST, json!({ "limit": 5 }), true),
         (AUDIT_VERIFY, json!({}), true),
         (CONFIG_SHOW, json!({}), false),
         (

@@ -103,11 +103,11 @@ const PREDATES_GENERATED: &[(&str, &str)] = &[
     (
         "vta-sdk/src/protocols/audit_management/list.rs",
         "ListAuditLogsBody",
-    ), // audit/list/0.1
+    ), // audit/list/0.2
     (
         "vta-sdk/src/protocols/audit_management/list.rs",
         "ListAuditLogsResultBody",
-    ), // audit/list/0.1
+    ), // audit/list/0.2
     (
         "vta-sdk/src/protocols/audit_management/verify.rs",
         "VerifyChainBody",
@@ -119,7 +119,7 @@ const PREDATES_GENERATED: &[(&str, &str)] = &[
     (
         "vta-sdk/src/protocols/discovery.rs",
         "SupportedTasksResponse",
-    ), // trust-task-discovery/0.1
+    ), // trust-task-discovery/0.3
     (
         "vta-sdk/src/protocols/key_management/create.rs",
         "CreateKeyResponseBody",
@@ -151,19 +151,19 @@ const PREDATES_GENERATED: &[(&str, &str)] = &[
     (
         "vta-sdk/src/protocols/policy_management.rs",
         "ListPoliciesBody",
-    ), // policy/list/0.2
+    ), // policy/list/0.3
     (
         "vta-sdk/src/protocols/policy_management.rs",
         "ListPoliciesResultBody",
-    ), // policy/list/0.2
+    ), // policy/list/0.3
     (
         "vta-sdk/src/protocols/policy_management.rs",
         "UpsertPolicyBody",
-    ), // policy/upsert/0.2
+    ), // policy/upsert/0.3
     (
         "vta-sdk/src/protocols/policy_management.rs",
         "UpsertPolicyResultBody",
-    ), // policy/upsert/0.2
+    ), // policy/upsert/0.3
     (
         "vta-sdk/src/protocols/vta_management/get_config.rs",
         "GetConfigBody",

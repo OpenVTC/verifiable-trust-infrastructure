@@ -564,7 +564,7 @@ mod tests {
         Mock::given(method("POST"))
             .and(path("/trust-tasks"))
             .and(body_partial_json(
-                json!({"type": crate::trust_tasks::TASK_AUTH_AUTHENTICATE_0_2}),
+                json!({"type": crate::trust_tasks::TASK_AUTH_AUTHENTICATE_0_3}),
             ))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
                 "session": {
@@ -748,7 +748,7 @@ mod tests {
         Mock::given(method("POST"))
             .and(path("/trust-tasks"))
             .and(body_partial_json(
-                json!({"type": crate::trust_tasks::TASK_AUTH_AUTHENTICATE_0_2}),
+                json!({"type": crate::trust_tasks::TASK_AUTH_AUTHENTICATE_0_3}),
             ))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
                 "session": {
@@ -789,9 +789,9 @@ mod tests {
             .and(path("/trust-tasks"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
                 "id": "urn:uuid:11111111-1111-4111-8111-111111111111",
-                "type": "https://trusttasks.org/spec/trust-task-discovery/0.1#response",
+                "type": "https://trusttasks.org/spec/trust-task-discovery/0.3#response",
                 "payload": {
-                    "frameworkVersion": "0.2",
+                    "frameworkVersion": "0.6.0",
                     "supportedTypes": [
                         "https://trusttasks.org/spec/provision/integration/0.2"
                     ]
@@ -853,13 +853,13 @@ mod tests {
         Mock::given(method("POST"))
             .and(path("/trust-tasks"))
             .and(body_partial_json(json!({
-                "type": "https://trusttasks.org/spec/trust-task-discovery/0.1"
+                "type": "https://trusttasks.org/spec/trust-task-discovery/0.3"
             })))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
                 "id": "urn:uuid:11111111-1111-4111-8111-111111111111",
-                "type": "https://trusttasks.org/spec/trust-task-discovery/0.1#response",
+                "type": "https://trusttasks.org/spec/trust-task-discovery/0.3#response",
                 "payload": {
-                    "frameworkVersion": "0.2",
+                    "frameworkVersion": "0.6.0",
                     "supportedTypes": [
                         "https://trusttasks.org/spec/provision/integration/0.2"
                     ]
@@ -985,7 +985,7 @@ mod tests {
         Mock::given(method("POST"))
             .and(path("/trust-tasks"))
             .and(body_partial_json(
-                json!({"type": crate::trust_tasks::TASK_AUTH_AUTHENTICATE_0_2}),
+                json!({"type": crate::trust_tasks::TASK_AUTH_AUTHENTICATE_0_3}),
             ))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
                 "session": {

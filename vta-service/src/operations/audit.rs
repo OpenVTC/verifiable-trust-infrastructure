@@ -130,7 +130,7 @@ fn authorize(auth: &AuthClaims, params: &ListAuditLogsBody) -> Result<(), AppErr
 }
 
 /// List audit logs, newest first, with optional filters and opaque
-/// cursor pagination — canonical `audit/list/0.1`.
+/// cursor pagination — canonical `audit/list/0.2`.
 /// Verify the audit log's chain, in storage order.
 ///
 /// Reads ascending by key, which is write order, because the chain is a strict
@@ -325,16 +325,16 @@ fn flatten(env: &vti_common::audit::AuditEnvelope) -> AuditLogEntry {
 /// List audit entries, newest first, filtered and paged.
 ///
 /// **A selective filter reads to the end of the log.** The walk stops early
-/// only once it holds `limit` matches *and* one more, so `truncated` means
+/// only once it holds `limit` matches *and* one more, so a `nextCursor` means
 /// "more *matching* entries remain" rather than "more rows remain". The price
 /// is that a log which cannot satisfy a filter `limit + 1` times is answered
 /// by reading every remaining row — "there is nothing further" is a claim
 /// about everything this call does not return. It applies to successful
-/// queries too: three matches return three entries, `truncated: false`, after
+/// queries too: three matches return three entries and no `nextCursor`, after
 /// scanning to the end. An unfiltered list exits after one page.
 ///
 /// Deliberately unbounded. A row budget would have to report
-/// `truncated: true` at its cut-off without knowing whether anything further
+/// a `nextCursor` at its cut-off without knowing whether anything further
 /// matches, handing back a cursor whose next page may be empty — the reading
 /// as results-withheld this ordering exists to prevent. Revisit the budget
 /// and the guarantee together, or not at all.
@@ -347,7 +347,7 @@ pub async fn list_audit_logs(
     authorize(auth, params)?;
 
     let limit = params
-        .page_size
+        .limit
         .unwrap_or(DEFAULT_PAGE_SIZE)
         .clamp(1, MAX_LIMIT as u64) as usize;
 
@@ -399,7 +399,7 @@ pub async fn list_audit_logs(
             } else if let Some(row) = read_row(value)
                 && matches(params, &row)
             {
-                // `truncated` must mean "more *matching* entries remain", not
+                // A `nextCursor` must mean "more *matching* entries remain", not
                 // "more rows remain": under a filter the tail may hold nothing
                 // that matches, and handing back a cursor for an empty next
                 // page would read as results being withheld. So the scan runs
@@ -414,7 +414,7 @@ pub async fn list_audit_logs(
         }
     }
 
-    let cursor = if more_matches {
+    let next_cursor = if more_matches {
         last_seen_key.map(|k| Cursor::new(k, scanned_rows).encode_bound(&cursor_key, &binding))
     } else {
         None
@@ -422,8 +422,7 @@ pub async fn list_audit_logs(
 
     Ok(ListAuditLogsResultBody {
         entries,
-        truncated: cursor.is_some(),
-        cursor,
+        next_cursor,
     })
 }
 
@@ -893,7 +892,7 @@ mod paged_reader_tests {
         let auth = crate::test_support::super_admin_claims();
         let params = ListAuditLogsBody {
             action: Some("target".into()),
-            page_size: Some(2),
+            limit: Some(2),
             ..Default::default()
         };
         let first = list_audit_logs(&audit_ks, &auth, &params, "test")
@@ -902,14 +901,14 @@ mod paged_reader_tests {
 
         assert_eq!(first.entries.len(), 2);
         assert!(first.entries.iter().all(|row| row.action == "target"));
-        let cursor = first.cursor.clone().expect("second page cursor");
+        let cursor = first.next_cursor.clone().expect("second page cursor");
 
         let second = list_audit_logs(
             &audit_ks,
             &auth,
             &ListAuditLogsBody {
                 action: Some("target".into()),
-                page_size: Some(2),
+                limit: Some(2),
                 cursor: Some(cursor.clone()),
                 ..Default::default()
             },
@@ -920,14 +919,14 @@ mod paged_reader_tests {
 
         assert_eq!(second.entries.len(), 1);
         assert!(second.entries.iter().all(|row| row.action == "target"));
-        assert!(second.cursor.is_none());
+        assert!(second.next_cursor.is_none());
 
         let error = list_audit_logs(
             &audit_ks,
             &auth,
             &ListAuditLogsBody {
                 action: Some("other".into()),
-                page_size: Some(2),
+                limit: Some(2),
                 cursor: Some(cursor),
                 ..Default::default()
             },

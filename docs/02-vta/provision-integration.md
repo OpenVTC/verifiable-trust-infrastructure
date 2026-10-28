@@ -121,7 +121,7 @@ the VTA (`/auth/challenge` runs `check_acl_full`), which is why only that row
 says "Authenticate".
 
 **"Verify authorization with the VTA" is the row that asks.** It dispatches
-`trust-task-discovery/0.1` — any authenticated caller, answered from the VTA's
+`trust-task-discovery/0.3` — any authenticated caller, answered from the VTA's
 own dispatch table — before anything is minted:
 
 | what you see | what it means | what to do |

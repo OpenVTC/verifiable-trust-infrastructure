@@ -301,7 +301,7 @@ async function identityFor(keypair: CryptoKeyPair): Promise<ConsoleSigningKey> {
 /**
  * Generate a fresh console signing key, **without** storing it.
  *
- * Every enrolment uses a fresh key: `auth/signing-key/enroll/0.1` is "a
+ * Every enrolment uses a fresh key: `auth/signing-key/enroll/0.2` is "a
  * freshly generated key asks to be enrolled", and the VTC refuses any key it
  * has a delegation for — `keyRevoked`, and `alreadyEnrolled`, which an
  * *expired* delegation still is. So a browser whose delegation lapsed cannot
@@ -654,7 +654,7 @@ export async function forgetBrowserSessionKey(): Promise<void> {
 //
 // A member-portal wallet sign-in at `auth/oob/*/0.2` may delegate signing to
 // its `K_b` for the task families the member approved (today
-// `vtc/directory`), for that session only (`auth/oob/grant/0.2`). The portal
+// `vtc/directory`), for that session only (`auth/oob/grant/0.3`). The portal
 // keeps `K_b` once the sign-in has bound it, so a reload still reads and
 // edits the directory, and forgets it at sign-out. Same custody as the keys
 // above: non-extractable, stored as `CryptoKey` objects. The VTC decides on

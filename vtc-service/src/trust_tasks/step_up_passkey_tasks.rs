@@ -317,7 +317,7 @@ mod tests {
     use super::super::members_admin_tests::{error_code, payload_of, seed_acl, signed, unsigned};
     use super::super::soft_authenticator::SoftEd25519Authenticator;
     use super::super::{
-        JoinAuthCtx, STEP_UP_APPROVE_RESPONSE_TYPE, STEP_UP_APPROVE_RESPONSE_V0_5_TYPE,
+        JoinAuthCtx, STEP_UP_APPROVE_RESPONSE_TYPE, STEP_UP_APPROVE_RESPONSE_V0_6_TYPE,
         TrustTaskOutcome, dispatch_trust_task_core,
     };
     use super::revoke_start;
@@ -964,7 +964,7 @@ mod tests {
     // ── use: auth/step-up/approve-response ───────────────────────────────
 
     /// The passkey is in addition to the member's `assertionMethod` proof,
-    /// never instead of it (approve-response 0.5).
+    /// never instead of it (approve-response 0.5 onward).
     #[tokio::test]
     async fn approve_response_with_a_step_up_passkey_still_needs_the_members_own_proof() {
         for t in TRANSPORTS {
@@ -1011,14 +1011,14 @@ mod tests {
         }
     }
 
-    /// `auth/step-up/approve-response/0.5`, served alongside 0.4: a webauthn
+    /// `auth/step-up/approve-response/0.6`, served alongside 0.4: a webauthn
     /// gate alone is never enough — unlike 0.4, which still admits an
-    /// unsigned console-passkey answer, 0.5 requires the approver's proof on
-    /// every response, so an unsigned 0.5 document is refused before its
-    /// evidence is even looked at. Signed by the subject, it is recorded
+    /// unsigned console-passkey answer, 0.5 onward requires the approver's
+    /// proof on every response, so an unsigned 0.6 document is refused before
+    /// its evidence is even looked at. Signed by the subject, it is recorded
     /// exactly as 0.4 records it.
     #[tokio::test]
-    async fn approve_response_0_5_requires_the_subjects_proof_even_for_a_webauthn_gate() {
+    async fn approve_response_0_6_requires_the_subjects_proof_even_for_a_webauthn_gate() {
         for t in TRANSPORTS {
             let mut fix = fixture().await;
             let member = fix.member.did.clone();
@@ -1036,25 +1036,25 @@ mod tests {
                 "evidence": { "kind": "webauthn", "assertion": published(&assertion) },
             });
 
-            let bare = unsigned(&fix.member, STEP_UP_APPROVE_RESPONSE_V0_5_TYPE, evidence);
+            let bare = unsigned(&fix.member, STEP_UP_APPROVE_RESPONSE_V0_6_TYPE, evidence);
             let out = dispatch_doc(&fix, t, &fix.member, &bare).await;
             assert_code(
                 &out,
                 "proofRequired",
-                "0.5 admits no unsigned answer, webauthn evidence or not",
+                "0.6 admits no unsigned answer, webauthn evidence or not",
             );
 
             let out = approve_as(
                 &fix,
                 t,
-                STEP_UP_APPROVE_RESPONSE_V0_5_TYPE,
+                STEP_UP_APPROVE_RESPONSE_V0_6_TYPE,
                 &fix.member,
                 &request,
                 &assertion,
             )
             .await;
             assert_eq!(
-                ok(&out, "0.5, signed by the subject")["status"],
+                ok(&out, "0.6, signed by the subject")["status"],
                 "recorded",
                 "{t:?}"
             );

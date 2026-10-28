@@ -45,28 +45,30 @@ use crate::error::AppError;
 
 // ── Wire types ──────────────────────────────────────────────────────────────
 
-/// The `auth/oob/*` 0.1 wire types, generated from the specification
+/// The `auth/oob/*` wire types, generated from the specification
 /// (trust-tasks-tf #738) and re-exported under the names this module's callers
 /// use. Behaviour stays hand-written over them; a type URI comes from the
 /// generated payload's `TYPE_URI`.
+///
+/// One version of each task is served — the current one: `request/0.2`,
+/// `claim/0.2`, `prove/0.3`, `respond/0.3` carrying a `grant/0.3`,
+/// `redeem/0.2`, and `identify/0.1` / `cancel/0.1`. The 0.2/0.3 revisions
+/// spell every instant an RFC 3339 `…At` (`claimClosesAt`, `decisionClosesAt`,
+/// `sessionEndsAt`) where 0.1 had integer epoch seconds; the record keeps
+/// epoch seconds and converts at the wire.
 pub mod types {
     use trust_tasks_rs::specs::auth::oob as spec;
 
     pub use spec::cancel::v0_1::{Payload as CancelPayload, Response as CancelResponse};
-    pub use spec::claim::v0_1::{
+    pub use spec::claim::v0_2::{
         Payload as ClaimPayload, Response as Step1, Service as ServiceRef,
     };
-    pub use spec::grant::v0_1::{Payload as GrantPayload, PayloadDecision as GrantDecision};
+    pub use spec::grant::v0_3::{Payload as GrantPayload, PayloadDecision as GrantDecision};
     pub use spec::identify::v0_1::Payload as IdentifyPayload;
-    pub use spec::prove::v0_1::{Payload as ProvePayload, Requester, Response as Step2};
-    pub use spec::redeem::v0_1::{Payload as RedeemPayload, Response as RedeemResponse};
-    pub use spec::request::v0_1::{Payload as RequestPayload, Response as RequestResponse};
-    pub use spec::respond::v0_1::{Payload as RespondPayload, Response as RespondResponse};
-    // 0.2: step 2 may offer a `signingScope`, which the grant copies to
-    // delegate signing for those task families (auth/oob/grant/0.2).
-    pub use spec::grant::v0_2::Payload as GrantPayloadV0_2;
-    pub use spec::prove::v0_2::{Payload as ProvePayloadV0_2, Response as Step2V0_2};
-    pub use spec::respond::v0_2::{Payload as RespondPayloadV0_2, Response as RespondResponseV0_2};
+    pub use spec::prove::v0_3::{Payload as ProvePayload, Requester, Response as Step2};
+    pub use spec::redeem::v0_2::{Payload as RedeemPayload, Response as RedeemResponse};
+    pub use spec::request::v0_2::{Payload as RequestPayload, Response as RequestResponse};
+    pub use spec::respond::v0_3::{Payload as RespondPayload, Response as RespondResponse};
 
     pub const REQUEST_TYPE: &str = <RequestPayload as trust_tasks_rs::Payload>::TYPE_URI;
     pub const CLAIM_TYPE: &str = <ClaimPayload as trust_tasks_rs::Payload>::TYPE_URI;
@@ -76,9 +78,6 @@ pub mod types {
     pub const GRANT_TYPE: &str = <GrantPayload as trust_tasks_rs::Payload>::TYPE_URI;
     pub const REDEEM_TYPE: &str = <RedeemPayload as trust_tasks_rs::Payload>::TYPE_URI;
     pub const CANCEL_TYPE: &str = <CancelPayload as trust_tasks_rs::Payload>::TYPE_URI;
-    pub const PROVE_V0_2_TYPE: &str = <ProvePayloadV0_2 as trust_tasks_rs::Payload>::TYPE_URI;
-    pub const RESPOND_V0_2_TYPE: &str = <RespondPayloadV0_2 as trust_tasks_rs::Payload>::TYPE_URI;
-    pub const GRANT_V0_2_TYPE: &str = <GrantPayloadV0_2 as trust_tasks_rs::Payload>::TYPE_URI;
 }
 
 // ── Which session a request asks for ────────────────────────────────────────
@@ -275,7 +274,7 @@ pub struct OobRequest {
     /// [`context_digest`] of the signed step 2 response.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub step2_digest: Option<String>,
-    /// The step 1 fields (`auth/oob/claim/0.1#response`) as signed, so step 2
+    /// The step 1 fields (`auth/oob/claim/0.2#response`) as signed, so step 2
     /// repeats them byte for byte. Kept as JSON: step 2 is a different
     /// generated type with the same members.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -295,8 +294,8 @@ pub struct OobRequest {
     #[serde(default, skip_serializing_if = "SessionAudience::is_member")]
     pub audience: SessionAudience,
     /// The task families step 2 offered to let `K_b` sign for, as the member
-    /// (`auth/oob/prove/0.2`). `None`: a 0.1 step 2, or an operator-console
-    /// sign-in, which offers none.
+    /// (`auth/oob/prove/0.3`). `None`: an operator-console sign-in, which
+    /// offers none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub signing_scope: Option<Vec<String>>,
     /// Why a request was declined, when the starter is told (today only
@@ -694,9 +693,14 @@ pub fn same_digest(a: &str, b: &str) -> bool {
     }
 }
 
-/// An instant on the wire: integer epoch seconds only (contract C9).
+/// An instant on the wire — an RFC 3339 `…At` member (`sessionEndsAt`,
+/// `claimClosesAt`, `decisionClosesAt`) — as epoch seconds. Contract C9 spelt
+/// these as integer epoch seconds; the current `auth/oob` revisions spell them
+/// RFC 3339, so an integer is no longer one. An instant before the epoch reads
+/// as 0, which every caller compares as already past.
 pub fn epoch_of(v: &serde_json::Value) -> Option<u64> {
-    v.as_u64()
+    let t = chrono::DateTime::parse_from_rfc3339(v.as_str()?).ok()?;
+    Some(u64::try_from(t.timestamp()).unwrap_or(0))
 }
 
 /// RFC 3339 at whole seconds, UTC.
@@ -1133,10 +1137,10 @@ mod tests {
         assert!(!same_digest(&d, &hex::encode(&bytes)));
         assert!(!same_digest(&d, "zabc"));
         assert_eq!(
-            epoch_of(&serde_json::json!(1_760_000_000u64)),
+            epoch_of(&serde_json::json!("2025-10-09T08:53:20Z")),
             Some(1_760_000_000)
         );
-        assert_eq!(epoch_of(&serde_json::json!("2025-10-09T08:53:20Z")), None);
+        assert_eq!(epoch_of(&serde_json::json!(1_760_000_000u64)), None);
     }
 
     #[test]

@@ -596,4 +596,82 @@ mod tests {
             .unwrap();
         assert!(unenforced_policies(&ks).await.unwrap().is_empty());
     }
+
+    // ── Retired task versions ──────────────────────────────────────────────
+
+    const POLICY_UPSERT_0_2: &str = "https://trusttasks.org/spec/policy/upsert/0.2";
+    const POLICY_UPSERT_0_3: &str = "https://trusttasks.org/spec/policy/upsert/0.3";
+
+    /// A rule written against a task version this VTA stopped serving would
+    /// never match again — the gate would fail open. Boot moves it to the
+    /// successor, keeping everything else about it, and the moved row still
+    /// verifies against its own module.
+    #[tokio::test]
+    async fn a_rule_naming_a_retired_version_moves_to_its_successor() {
+        let (ks, _d) = temp_ks().await;
+        let sets = std::collections::HashMap::from([(
+            "ops".to_string(),
+            vec!["did:key:z6MkOps".to_string()],
+        )]);
+        let mut rule = vta_sdk::approvals::ApprovalRule::consent(POLICY_UPSERT_0_2, "ops");
+        rule.min_approvals = Some(1);
+        seed_declarative_approvals(&ks, &[rule.clone()], &sets, "2026-10-01T00:00:00Z")
+            .await
+            .unwrap();
+
+        let moved = crate::approvals::migrate_retired_task_types(&ks, "2026-10-02T00:00:00Z")
+            .await
+            .unwrap();
+        assert_eq!(
+            moved,
+            vec![(POLICY_UPSERT_0_2.to_string(), POLICY_UPSERT_0_3.to_string())]
+        );
+        let row = storage::get_policy(&ks, vta_sdk::approvals::DECLARATIVE_POLICY_ID)
+            .await
+            .unwrap()
+            .expect("row");
+        assert_eq!(row.version, 2);
+        let model = crate::approvals::verify_declarative_row(&row.ext, &row.module)
+            .expect("the moved row verifies against its own module");
+        let mut expected = rule;
+        expected.task_type = POLICY_UPSERT_0_3.to_string();
+        assert_eq!(model.rules, vec![expected]);
+
+        // Idempotent: nothing left to move, nothing written.
+        assert!(
+            crate::approvals::migrate_retired_task_types(&ks, "2026-10-03T00:00:00Z")
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        let again = storage::get_policy(&ks, vta_sdk::approvals::DECLARATIVE_POLICY_ID)
+            .await
+            .unwrap()
+            .expect("row");
+        assert_eq!(again.version, 2);
+    }
+
+    /// Rules for both the retired version and its successor would collide once
+    /// moved. The row is left alone and boot is told why, rather than either
+    /// rule being dropped.
+    #[tokio::test]
+    async fn a_move_that_would_collide_is_refused_and_the_row_kept() {
+        let (ks, _d) = temp_ks().await;
+        let rules = vec![
+            vta_sdk::approvals::ApprovalRule::reauth(POLICY_UPSERT_0_2),
+            vta_sdk::approvals::ApprovalRule::reauth(POLICY_UPSERT_0_3),
+        ];
+        seed_declarative_approvals(&ks, &rules, &Default::default(), "2026-10-01T00:00:00Z")
+            .await
+            .unwrap();
+        let err = crate::approvals::migrate_retired_task_types(&ks, "2026-10-02T00:00:00Z")
+            .await
+            .expect_err("two rules for one task type cannot both stand");
+        assert!(err.to_string().contains("no longer serves"), "{err}");
+        let row = storage::get_policy(&ks, vta_sdk::approvals::DECLARATIVE_POLICY_ID)
+            .await
+            .unwrap()
+            .expect("row");
+        assert_eq!(row.version, 1, "the row is left as it was");
+    }
 }

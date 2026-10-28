@@ -65,7 +65,7 @@ const VTC_DID: &str = "did:webvh:vtc.example.com:abc";
 /// Member seed shared by `applicant_pair` (so a `LocalSigner` over the
 /// same seed signs reciprocal VCs that verify against the member did:key).
 const MEMBER_SEED: [u8; 32] = [0xCD; 32];
-const POLICY_UPLOAD_TASK: &str = "https://trusttasks.org/spec/policy/upsert/0.2";
+const POLICY_UPLOAD_TASK: &str = "https://trusttasks.org/spec/policy/upsert/0.3";
 const POLICY_ACTIVATE_TASK: &str = "https://trusttasks.org/spec/policy/activate/0.1";
 
 const ADMIN_DID: &str = "did:key:zAdmin1";

@@ -243,7 +243,7 @@ pub enum AuditEvent {
     AdminWalletSignIn(MemberWalletSignInData),
 
     /// A document a **member-portal sign-in key** signed was accepted as the
-    /// member's (`auth/oob/grant/0.2` consumer item 7): one row per document,
+    /// member's (`auth/oob/grant/0.3` consumer item 7): one row per document,
     /// against the member, naming the key that acted and the grant that let it.
     /// Written before the document's own effect, and the document is refused
     /// when it cannot be — a delegated document is never unaudited.
@@ -2055,7 +2055,7 @@ pub struct MemberPortalKeyUsedData {
     /// The portal sign-in key that signed it (`K_b`, a `did:key`): the
     /// acting credential.
     pub start_key_did: String,
-    /// The `id` of the `auth/oob/grant/0.2` that delegated to the key: the
+    /// The `id` of the `auth/oob/grant/0.3` that delegated to the key: the
     /// authority. Absent only for a delegation armed before it was recorded.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub grant_id: Option<String>,

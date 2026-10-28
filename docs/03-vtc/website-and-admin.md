@@ -810,7 +810,7 @@ with the same `no-referrer`, `no-store` and CSP as the portal's.
 
 The SIOPv2 path is two calls, both on canonical Trust Tasks:
 
-1. `POST /v1/auth/` (`spec/auth/authenticate/0.1`) — the DIDComm-packed or
+1. `POST /v1/auth/` (`spec/auth/authenticate/0.3`) — the DIDComm-packed or
    SIOP challenge response, returning `{ session, tokens }` with a bearer
    access token.
 2. `spec/vtc/auth/admin-session/0.2`, a signed document on
@@ -1059,7 +1059,7 @@ Every document the portal then signs with the browser's sign-in key and
 the community accepts as the member's — a directory read, a card edit, a
 group join, a repository view — is audited as `MemberPortalKeyUsed`
 against the member, naming the key (`startKeyDid`), the grant that delegated
-to it (`grantId`, the `id` of the approved `auth/oob/grant/0.2`), the
+to it (`grantId`, the `id` of the approved `auth/oob/grant/0.3`), the
 task type and the document's id (grant 0.2 consumer item 7). The row is
 written before the document takes effect, and a community without an
 audit writer refuses the document rather than accept it unaudited. The
@@ -1189,7 +1189,7 @@ console shows in the console).
 
 **Linking or unlinking a forge account** is not signed by the portal key.
 It binds the account the forge then gives the member's roles to, so
-`auth/oob/grant/0.2` consumer item 6 excludes it from a delegated key,
+`auth/oob/grant/0.3` consumer item 6 excludes it from a delegated key,
 as it does every right change. The page asks the member's wallet instead
 (`window.vtaWallet.git.linkAccount` / `unlinkAccount`), which asks the
 member, signs `git-ns/account/link` or `git-ns/account/unlink` as their

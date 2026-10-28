@@ -90,7 +90,7 @@ lets act for them in the directory when they sign in with their wallet:
 
 - The VTC serves `auth/oob/{prove,respond}/0.2`. A member sign-in's step 2
   offers `signingScope: ["vtc/directory"]`, and the member's wallet shows it
-  and copies it into the `auth/oob/grant/0.2` their VTA signs.
+  and copies it into the `auth/oob/grant/0.3` their VTA signs.
 - At `redeem` the VTC records the delegation for the browser key
   (`member_portal::delegation`). Directory documents that key signs are read
   as the member's while the session lives; signing out or revoking the session

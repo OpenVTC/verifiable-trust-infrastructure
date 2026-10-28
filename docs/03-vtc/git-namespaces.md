@@ -604,7 +604,7 @@ The member portal's **Repositories** page (`/members/#/repos`) does the same
 from the browser: it lists the member's rights and linked accounts
 (`git-ns/view/0.6`) and follows a link (`link-status`) with its sign-in key,
 and asks the member's wallet to sign the `link` and `unlink` themselves — a
-portal key never may (`auth/oob/grant/0.2` consumer item 6;
+portal key never may (`auth/oob/grant/0.3` consumer item 6;
 [website-and-admin.md](website-and-admin.md#member-portal)).
 
 `cnm git unlink --forge <host>` removes it (`git-ns/account/unlink`). It reads

@@ -10,7 +10,7 @@
 //! browser's own plumbing, the same class as the console's wallet aliases and
 //! sign-out: a WebAuthn ceremony (a foreign protocol), the wallet's header-less
 //! SIOP round-trip — whose `{type, payload}` body already names the canonical
-//! `auth/authenticate/0.1` / `auth/refresh/0.1` — and the cookies a browser
+//! `auth/authenticate/0.3` / `auth/refresh/0.2` — and the cookies a browser
 //! keeps its session in, which no Trust Task describes. Nothing here confers
 //! or exercises community authority; anything a member *does* in the portal
 //! belongs on the Trust Task surface, signed by the member's own DID.
@@ -23,7 +23,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 use trust_tasks_rs::TrustTask;
-use trust_tasks_rs::specs::auth::refresh::v0_1 as refresh_spec;
+use trust_tasks_rs::specs::auth::refresh::v0_2 as refresh_spec;
 use uuid::Uuid;
 use vta_sdk::protocols::auth::{AuthenticateResponse, ChallengeRequest, ChallengeResponse};
 use vti_common::audit::{AuditEvent, MemberPasskeyData};
@@ -43,7 +43,7 @@ use crate::member_portal::{
 };
 use crate::server::AppState;
 
-const REFRESH_TASK_URI: &str = "https://trusttasks.org/spec/auth/refresh/0.1";
+const REFRESH_TASK_URI: &str = "https://trusttasks.org/spec/auth/refresh/0.2";
 
 /// Labels a member gives a passkey are display text, not data: capped so the
 /// row stays small.
@@ -100,16 +100,16 @@ pub async fn wallet_authenticate(
 }
 
 /// `POST /v1/member/wallet/auth/refresh` — the wallet spending the refresh
-/// token it was handed, as an `auth/refresh/0.1` document.
+/// token it was handed, as an `auth/refresh/0.2` document.
 pub async fn wallet_refresh(
     State(state): State<AppState>,
     body: String,
 ) -> Result<Json<AuthenticateResponse>, AppError> {
     let doc: TrustTask<serde_json::Value> = serde_json::from_str(&body)
-        .map_err(|_| AppError::Authentication("expected an auth/refresh/0.1 document".into()))?;
+        .map_err(|_| AppError::Authentication("expected an auth/refresh/0.2 document".into()))?;
     if doc.type_uri.to_string() != REFRESH_TASK_URI {
         return Err(AppError::Authentication(
-            "expected an auth/refresh/0.1 document".into(),
+            "expected an auth/refresh/0.2 document".into(),
         ));
     }
     let payload: refresh_spec::Payload = serde_json::from_value(doc.payload)

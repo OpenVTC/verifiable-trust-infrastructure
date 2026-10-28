@@ -17,9 +17,9 @@
 //! framework members only, and a payload of `requestId`, `approverKey` and
 //! `enteredNumber` with nothing else (`additionalProperties: false`, no `ext`).
 //!
-//! # `auth/oob/grant/0.1` — only on the device's UV approval
+//! # `auth/oob/grant/0.3` — only on the device's UV approval
 //!
-//! "Let this browser key act as me at this origin until `notAfter`." Signed
+//! "Let this browser key act as me at this origin until `sessionEndsAt`." Signed
 //! for `assertionMethod`, and only when the request carries, under
 //! [`EXT_UV_CONSENT`], a `task-consent/decision/0.2` approving **this** grant:
 //! its `payloadDigest` (and `challenge`) is [`grant_digest`] of the unsigned
@@ -43,7 +43,7 @@
 //!   `{ "remote": true }` and carries no decision. The VTA raises a
 //!   `task-consent` request bound to the enrolled approver and this grant's
 //!   digest, pushes it to the phone, and answers `oobUvPending` (with the match
-//!   code the phone shows) until the phone's `task-consent/decision/0.1`
+//!   code the phone shows) until the phone's `task-consent/decision/0.2`
 //!   approves it; the resulting single-use grant is then consumed here.
 //!
 //! The same grant `id` is never signed twice.
@@ -131,68 +131,55 @@ const GRANT_REPLAY_PREFIX: &str = "oob-grant:";
 
 // ─── Wire types ─────────────────────────────────────────────────────────────
 
-/// `auth/oob/grant/0.1` payload, generated from the specification.
-pub use trust_tasks_rs::specs::auth::oob::grant::v0_1::Payload as GrantPayload;
+/// `auth/oob/grant/0.3` payload, generated from the specification: the
+/// session's end is `sessionEndsAt` (RFC 3339), and the task families the
+/// browser key may sign for as the member are `signingScope`. 0.1 and 0.2 are
+/// not signed.
+pub use trust_tasks_rs::specs::auth::oob::grant::v0_3::Payload as GrantPayload;
 /// The member's answer, as the grant states it.
-pub use trust_tasks_rs::specs::auth::oob::grant::v0_1::PayloadDecision as GrantDecision;
+pub use trust_tasks_rs::specs::auth::oob::grant::v0_3::PayloadDecision as GrantDecision;
 /// `auth/oob/identify/0.1` payload, generated from the specification. Its
 /// newtypes enforce the schema's patterns (`requestId`, `approverKey`,
 /// `enteredNumber`) when the payload is parsed.
 pub use trust_tasks_rs::specs::auth::oob::identify::v0_1::Payload as IdentifyPayload;
 
-/// `auth/oob/grant/0.2` payload: 0.1's, plus the task families the browser
-/// key may sign for as the member (`signingScope`).
-pub use trust_tasks_rs::specs::auth::oob::grant::v0_2::Payload as GrantPayloadV0_2;
-
-/// Families a grant may never delegate signing for (auth/oob/grant/0.2, wallet
+/// Families a grant may never delegate signing for (auth/oob/grant/0.3, wallet
 /// item 5): signing in, access control and consent. A grant naming one, or a
 /// family under one, is refused whatever the service offered.
 const UNDELEGABLE_FAMILIES: &[&str] = &["auth", "acl", "consent", "task-consent", "confirm"];
 
-/// What the vault checks of a grant, from its 0.1 or 0.2 payload.
+/// What the vault checks of a grant, from its payload.
 struct GrantFields {
     request_id: String,
     session_key: String,
     approver_key: String,
     origin: String,
     context_digest: String,
+    /// `sessionEndsAt`, as epoch seconds (0 for an instant before the epoch).
     not_after: u64,
     signing_scope: Vec<String>,
 }
 
 impl GrantFields {
-    fn read(payload: Value, v0_2: bool) -> Result<Self, OobError> {
+    fn read(payload: Value) -> Result<Self, OobError> {
         let bad = |e: serde_json::Error| OobError::DocumentInvalid(format!("grant payload: {e}"));
-        Ok(if v0_2 {
-            let p: GrantPayloadV0_2 = serde_json::from_value(payload).map_err(bad)?;
-            Self {
-                request_id: p.request_id.to_string(),
-                session_key: p.session_key.to_string(),
-                approver_key: p.approver_key.to_string(),
-                origin: p.origin.to_string(),
-                context_digest: p.context_digest.to_string(),
-                not_after: p.not_after,
-                signing_scope: p
-                    .signing_scope
-                    .map(|s| s.iter().map(|f| f.to_string()).collect())
-                    .unwrap_or_default(),
-            }
-        } else {
-            let p: GrantPayload = serde_json::from_value(payload).map_err(bad)?;
-            Self {
-                request_id: p.request_id.to_string(),
-                session_key: p.session_key.to_string(),
-                approver_key: p.approver_key.to_string(),
-                origin: p.origin.to_string(),
-                context_digest: p.context_digest.to_string(),
-                not_after: p.not_after,
-                signing_scope: Vec::new(),
-            }
+        let p: GrantPayload = serde_json::from_value(payload).map_err(bad)?;
+        Ok(Self {
+            request_id: p.request_id.to_string(),
+            session_key: p.session_key.to_string(),
+            approver_key: p.approver_key.to_string(),
+            origin: p.origin.to_string(),
+            context_digest: p.context_digest.to_string(),
+            not_after: u64::try_from(p.session_ends_at.timestamp()).unwrap_or(0),
+            signing_scope: p
+                .signing_scope
+                .map(|s| s.iter().map(|f| f.to_string()).collect())
+                .unwrap_or_default(),
         })
     }
 }
 
-/// `notAfter` as an instant: integer epoch seconds (contract C9).
+/// `sessionEndsAt` (as epoch seconds) as an instant.
 fn not_after_instant(not_after: u64) -> Option<chrono::DateTime<chrono::Utc>> {
     i64::try_from(not_after)
         .ok()
@@ -256,8 +243,7 @@ pub struct OobAuthorization {
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum OobError {
-    /// An `auth/oob/*` document other than `identify/0.1` and `grant/0.1` or
-    /// `0.2`.
+    /// An `auth/oob/*` document other than `identify/0.1` and `grant/0.3`.
     UnsupportedType,
     /// The envelope or payload is not exactly the schema's shape.
     DocumentInvalid(String),
@@ -315,7 +301,7 @@ impl OobError {
         match self {
             OobError::UnsupportedType => (
                 "oobUnsupportedType",
-                "a persona signs only auth/oob/identify/0.1 and auth/oob/grant/0.1 or 0.2".into(),
+                "a persona signs only auth/oob/identify/0.1 and auth/oob/grant/0.3".into(),
             ),
             OobError::DocumentInvalid(why) => ("oobDocumentInvalid", why.clone()),
             OobError::IssuerNotPrincipal => (
@@ -449,7 +435,7 @@ pub struct RemoteAsk {
     pub device_name: String,
     /// The persona signing in.
     pub persona: String,
-    /// The grant's `notAfter` (unix seconds).
+    /// The grant's `sessionEndsAt` (unix seconds).
     pub not_after: u64,
 }
 
@@ -478,7 +464,7 @@ pub struct OobDeps<'a> {
 /// `Ok(None)` for every other document — including a `type` that is not a Type
 /// URI and a private registry's reuse of the slug, both of which the ordinary
 /// signing path handles. An `auth/oob/*` document of the registry that is not
-/// exactly `identify/0.1` or `grant/0.1` or `0.2` (another version, a `#response`, a
+/// exactly `identify/0.1` or `grant/0.3` (another version, a `#response`, a
 /// `#request` spelling, `claim`, `respond`, …) is refused rather than signed
 /// unattended.
 pub fn classify(envelope: &Value) -> Result<Option<OobDocument>, OobError> {
@@ -489,18 +475,16 @@ pub fn classify(envelope: &Value) -> Result<Option<OobDocument>, OobError> {
     else {
         return Ok(None);
     };
-    let canonical = |slug: &str| TypeUri::canonical(slug, 0, 1).ok();
-    let canonical_v0_2 = |slug: &str| TypeUri::canonical(slug, 0, 2).ok();
+    let identify = TypeUri::canonical(IDENTIFY_SLUG, 0, 1).ok();
+    let grant = TypeUri::canonical(GRANT_SLUG, 0, 3).ok();
     let on_registry = TypeUri::canonical(type_uri.slug(), type_uri.major(), type_uri.minor())
         .is_ok_and(|c| c == type_uri.bare());
     if !on_registry || !type_uri.slug().starts_with(FAMILY_PREFIX) {
         return Ok(None);
     }
-    if canonical(IDENTIFY_SLUG).as_ref() == Some(&type_uri) {
+    if identify.as_ref() == Some(&type_uri) {
         Ok(Some(OobDocument::Identify))
-    } else if canonical(GRANT_SLUG).as_ref() == Some(&type_uri)
-        || canonical_v0_2(GRANT_SLUG).as_ref() == Some(&type_uri)
-    {
+    } else if grant.as_ref() == Some(&type_uri) {
         Ok(Some(OobDocument::Grant))
     } else {
         Err(OobError::UnsupportedType)
@@ -610,11 +594,7 @@ pub async fn authorize(
             (p.request_id.to_string(), None)
         }
         OobDocument::Grant => {
-            let v0_2 = obj
-                .get("type")
-                .and_then(Value::as_str)
-                .is_some_and(|t| t.ends_with("/auth/oob/grant/0.2"));
-            let p = GrantFields::read(payload, v0_2)?;
+            let p = GrantFields::read(payload)?;
             check_grant(&p, now)?;
             let grant_ctx = GrantContext {
                 envelope_id: &envelope_id,
@@ -774,8 +754,8 @@ fn check_grant(p: &GrantFields, now: chrono::DateTime<chrono::Utc>) -> Result<()
     }
     match not_after_instant(p.not_after) {
         Some(t) if t > now => Ok(()),
-        Some(_) => invalid("notAfter is in the past"),
-        None => invalid("notAfter must be integer epoch seconds"),
+        Some(_) => invalid("sessionEndsAt is in the past"),
+        None => invalid("sessionEndsAt is out of range"),
     }
 }
 
@@ -1411,22 +1391,20 @@ mod tests {
             Some(OobDocument::Identify)
         );
         assert_eq!(
-            classify(&with_type(&spec("auth/oob/grant/0.1"))).unwrap(),
-            Some(OobDocument::Grant)
-        );
-        // 0.2 adds the signing scope; it is the same document, gated the same.
-        assert_eq!(
-            classify(&with_type(&spec("auth/oob/grant/0.2"))).unwrap(),
+            classify(&with_type(&spec("auth/oob/grant/0.3"))).unwrap(),
             Some(OobDocument::Grant)
         );
         // Another version, a variant, or another document of the family is
-        // refused, never signed unattended.
+        // refused, never signed unattended — the superseded grant versions
+        // included.
         for t in [
-            "auth/oob/grant/0.3",
-            "auth/oob/grant/0.1#response",
+            "auth/oob/grant/0.1",
+            "auth/oob/grant/0.2",
+            "auth/oob/grant/0.4",
+            "auth/oob/grant/0.3#response",
             "auth/oob/identify/1.0",
-            "auth/oob/claim/0.1",
-            "auth/oob/respond/0.1",
+            "auth/oob/claim/0.2",
+            "auth/oob/respond/0.3",
         ] {
             assert!(
                 matches!(
@@ -1438,8 +1416,8 @@ mod tests {
         }
         // Not sign-in documents: the ordinary path applies.
         for t in [
-            spec("acl/grant/0.1"),
-            "https://registry.example/spec/auth/oob/grant/0.1".to_string(),
+            spec("acl/grant/0.2"),
+            "https://registry.example/spec/auth/oob/grant/0.3".to_string(),
             "not a uri".to_string(),
         ] {
             assert_eq!(classify(&with_type(&t)).unwrap(), None, "{t}");
@@ -1541,7 +1519,7 @@ mod tests {
         assert_eq!(rp_id_hashed("other", ext), "other");
     }
 
-    /// Wallet item 5 (auth/oob/grant/0.2): a grant never delegates signing in,
+    /// Wallet item 5 (auth/oob/grant/0.3): a grant never delegates signing in,
     /// access control or consent, whatever the service offered.
     #[test]
     fn a_grant_never_delegates_sign_in_access_control_or_consent() {

@@ -341,7 +341,7 @@ const AWAITING_CANONICAL_FOLD: &[(&str, &str)] = &[
     // `authenticate_and_mint` as `POST /v1/auth/` and only appended the
     // `Set-Cookie` pair, which `spec/vtc/auth/admin-session/0.2` already mints
     // from an access token the caller holds. Login is
-    // `spec/auth/authenticate/0.1` then `spec/vtc/auth/admin-session/0.2` —
+    // `spec/auth/authenticate/0.3` then `spec/vtc/auth/admin-session/0.2` —
     // the path the admin SPA already used. Nothing called `admin-login`.
     //
     // `config/legacy/manage/1.0` is GONE — `GET, PATCH /v1/config` deleted.
@@ -729,11 +729,10 @@ const SIGNED_DOCUMENT_TYPES: &[&str] = &[
 /// (`walletApiBase()`, `admin-ui/src/lib/wallet.ts`). The server checks this
 /// value against its own constant (`AUTHENTICATE_TASK_URI`) independently of
 /// the Trust-Task-header router, so it has no route to be "enforced" by; it
-/// is unaffected by which REST mounts carry that header. `0.1`, the only
-/// version this envelope ever spoke, is deliberately un-migrated (see
-/// `trust_tasks::auth_tasks`'s module doc).
+/// is unaffected by which REST mounts carry that header. It moved from `0.1`
+/// to `0.3` with the rest of `auth/authenticate`.
 const SIOP_BODY_DISCRIMINATOR_TYPES: &[&str] =
-    &["https://trusttasks.org/spec/auth/authenticate/0.1"];
+    &["https://trusttasks.org/spec/auth/authenticate/0.3"];
 
 /// Document types the console builds only to embed in another document, never
 /// to send on their own: the wallet-signed `auth/signing-key/authorize/0.1`
@@ -833,8 +832,8 @@ const SPINE_DOCUMENT_TYPES: &[&str] = &[
     // The member portal's wallet sign-in (`trust_tasks::oob_tasks`): the
     // starter's request, long-poll redeem and cancel, signed by the browser's
     // `K_b` (`admin-ui/src/members/oob.ts`).
-    "https://trusttasks.org/spec/auth/oob/request/0.1",
-    "https://trusttasks.org/spec/auth/oob/redeem/0.1",
+    "https://trusttasks.org/spec/auth/oob/request/0.2",
+    "https://trusttasks.org/spec/auth/oob/redeem/0.2",
     "https://trusttasks.org/spec/auth/oob/cancel/0.1",
     // What this VTC serves (`trust_tasks::discovery`): the dashboard reads it
     // to say whether the build does hidden vetting.
@@ -906,7 +905,7 @@ const SPINE_DOCUMENT_TYPES: &[&str] = &[
     "https://trusttasks.org/spec/vtc/registry/sync-jobs/retry/0.2",
     "https://trusttasks.org/spec/vtc/registry/sync-jobs/discard/0.1",
     "https://trusttasks.org/spec/vtc/registry/records/list/0.2",
-    "https://trusttasks.org/spec/audit/list/0.1",
+    "https://trusttasks.org/spec/audit/list/0.2",
     "https://trusttasks.org/spec/config/show/0.1",
     "https://trusttasks.org/spec/config/patch/0.1",
     "https://trusttasks.org/spec/config/reload/0.1",
@@ -932,9 +931,9 @@ const SPINE_DOCUMENT_TYPES: &[&str] = &[
     "https://trusttasks.org/spec/vtc/invitations/revoke/0.1",
     "https://trusttasks.org/spec/vtc/invitations/deliver/0.1",
     // The policy log (`trust_tasks::policy_tasks`).
-    "https://trusttasks.org/spec/policy/list/0.2",
+    "https://trusttasks.org/spec/policy/list/0.3",
     "https://trusttasks.org/spec/policy/active/0.1",
-    "https://trusttasks.org/spec/policy/upsert/0.2",
+    "https://trusttasks.org/spec/policy/upsert/0.3",
     "https://trusttasks.org/spec/policy/activate/0.1",
     "https://trusttasks.org/spec/vtc/policies/test/0.1",
     // The administration surfaces that had only bearer REST
@@ -1088,11 +1087,11 @@ fn every_admin_ui_task_is_enforced_by_a_route() {
     // and four website admin verbs moved their `tt`/`ttl` mounts onto the
     // signed-document spine (`trust_tasks::{auth_tasks,install_tasks,
     // recognise_tasks,website_tasks}` / `member_tasks`); `auth/challenge` and
-    // `auth/authenticate/0.1` keep theirs (see `routes/mod.rs`'s comment on
+    // `auth/authenticate/0.3` keep theirs (see `routes/mod.rs`'s comment on
     // those mounts). It fell again with #1641's last batch, which moved an
     // administrator's own passkeys and `vtc/auth/admin-session` to the
     // spine: what is left is `auth/passkey/login/{start,finish}`
-    // and `auth/refresh/0.1` (`auth/whoami/0.1` went to the spine with the
+    // and `auth/refresh/0.2` (`auth/whoami/0.1` went to the spine with the
     // browser key a sign-in binds).
     assert!(
         enforced.len() >= 3,

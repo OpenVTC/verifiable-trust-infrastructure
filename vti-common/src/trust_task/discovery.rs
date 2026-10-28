@@ -12,12 +12,12 @@
 //! value again for every task, and discovery 0.3's *Correlation* section notes
 //! that per-entry windows add to a deployment's fingerprint.
 
-use trust_tasks_rs::specs::trust_task_discovery::{v0_1, v0_3};
+use trust_tasks_rs::specs::trust_task_discovery::v0_3;
 
 use super::acceptance::VTI_ACCEPTANCE_WINDOW;
 
-/// `trust-task-discovery/0.3`: `trust-task-discovery/0.1` plus the responder's
-/// acceptance window.
+/// `trust-task-discovery/0.3`: which Trust Tasks a node serves, and the
+/// responder's acceptance window. 0.1 is no longer answered.
 pub const DISCOVERY_V0_3: &str = <v0_3::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
 /// The Trust Tasks framework release (SPEC.md) a VTI node targets, in the
@@ -26,13 +26,9 @@ pub const DISCOVERY_V0_3: &str = <v0_3::Payload as trust_tasks_rs::Payload>::TYP
 /// its target.
 pub const FRAMEWORK_VERSION: &str = "0.6.0";
 
-/// [`FRAMEWORK_VERSION`] without its PATCH, as `trust-task-discovery/0.1`
-/// writes it (its schema admits only `MAJOR.MINOR`).
-pub const FRAMEWORK_VERSION_MAJOR_MINOR: &str = "0.6";
-
 /// The slug of a Type URI — everything after the registry prefix.
 ///
-/// `https://trusttasks.org/spec/acl/grant/0.1` → `acl/grant/0.1`. A URI that
+/// `https://trusttasks.org/spec/acl/grant/0.2` → `acl/grant/0.2`. A URI that
 /// does not carry the prefix is returned whole, so a non-conforming entry can
 /// still be matched exactly rather than silently dropping out of every
 /// response.
@@ -75,24 +71,6 @@ pub fn matching<'a, S: AsRef<str>>(
     matched
 }
 
-/// Answer a `trust-task-discovery/0.1` query.
-pub fn respond_v0_1<'a>(
-    served: impl IntoIterator<Item = &'a str>,
-    query: &v0_1::Payload,
-) -> v0_1::Response {
-    let patterns: Vec<&str> = query.patterns.iter().map(|p| p.as_str()).collect();
-    v0_1::Response::builder()
-        .supported_types(
-            matching(served, &patterns)
-                .into_iter()
-                .map(v0_1::ResponseSupportedTypesItem::Uri)
-                .collect::<Vec<_>>(),
-        )
-        .framework_version(FRAMEWORK_VERSION_MAJOR_MINOR.parse().ok())
-        .try_into()
-        .expect("every member of a 0.1 response is set")
-}
-
 /// Answer a `trust-task-discovery/0.3` query, advertising
 /// [`VTI_ACCEPTANCE_WINDOW`] at response level (VTI-TRN-047): the window this
 /// node applies to every Type URI it lists.
@@ -120,7 +98,7 @@ mod tests {
     use crate::trust_task::acceptance::AcceptanceWindow;
     use trust_tasks_rs::validate::ValidatedPayload;
 
-    const GRANT: &str = "https://trusttasks.org/spec/acl/grant/0.1";
+    const GRANT: &str = "https://trusttasks.org/spec/acl/grant/0.2";
 
     /// Patterns match the **slug**, not the whole URI. If this regressed to
     /// matching the full URI, `acl/*` would match nothing and every narrowed
@@ -128,7 +106,7 @@ mod tests {
     #[test]
     fn patterns_match_the_slug_not_the_whole_uri() {
         assert!(matches_any(GRANT, &["acl/*"]));
-        assert!(matches_any(GRANT, &["acl/grant/0.1"]));
+        assert!(matches_any(GRANT, &["acl/grant/0.2"]));
         assert!(!matches_any(GRANT, &["vta/acl/*"]));
         assert!(!matches_any(GRANT, &["keys/*"]));
     }
@@ -143,7 +121,7 @@ mod tests {
     /// Interior wildcards are literal, so they never match.
     #[test]
     fn interior_wildcards_are_not_globs() {
-        assert!(!matches_any(GRANT, &["*/grant/0.1"]));
+        assert!(!matches_any(GRANT, &["*/grant/0.2"]));
     }
 
     /// A URI without the registry prefix is still matchable exactly.
@@ -156,12 +134,12 @@ mod tests {
     /// Duplicates collapse and the order is stable.
     #[test]
     fn matching_is_sorted_and_deduplicated() {
-        let served = [GRANT, "https://trusttasks.org/spec/acl/list/0.1", GRANT];
+        let served = [GRANT, "https://trusttasks.org/spec/acl/list/0.3", GRANT];
         assert_eq!(
             matching(served, &["acl/*"]),
             vec![
                 GRANT.to_string(),
-                "https://trusttasks.org/spec/acl/list/0.1".to_string()
+                "https://trusttasks.org/spec/acl/list/0.3".to_string()
             ]
         );
     }
@@ -180,22 +158,5 @@ mod tests {
             AcceptanceWindow::from_advertised(&advertised),
             VTI_ACCEPTANCE_WINDOW
         );
-    }
-
-    /// The 0.1 answer validates against its schema and carries no window,
-    /// which 0.1 cannot express.
-    #[test]
-    fn the_v0_1_answer_is_schema_valid_and_two_part() {
-        let response = respond_v0_1([GRANT], &v0_1::Payload::default());
-        let json = serde_json::to_value(&response).expect("serialise");
-        v0_1::Response::validate_value(&json).expect("schema-valid 0.1 response");
-        assert_eq!(json["frameworkVersion"], FRAMEWORK_VERSION_MAJOR_MINOR);
-        assert!(json.get("acceptanceWindow").is_none());
-    }
-
-    /// The two framework-version forms name the same release.
-    #[test]
-    fn the_two_framework_version_forms_agree() {
-        assert!(FRAMEWORK_VERSION.starts_with(&format!("{FRAMEWORK_VERSION_MAJOR_MINOR}.")));
     }
 }

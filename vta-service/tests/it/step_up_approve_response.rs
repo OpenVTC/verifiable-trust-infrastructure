@@ -1,8 +1,8 @@
-//! Integration tests for `auth/step-up/approve-response/0.1` **and** `/0.2` —
-//! the full HTTP round-trip: an AAL1 session holder POSTs a did-signed
-//! approve-response to `/trust-tasks` and the VTA elevates their session
-//! to AAL2. The request leg is minted as `/0.2`; both response minors are
-//! accepted (mixed-version deployments during the transition).
+//! Integration tests for `auth/step-up/approve-response/0.6` — the full HTTP
+//! round-trip: an AAL1 session holder POSTs a did-signed approve-response to
+//! `/trust-tasks` and the VTA elevates their session to AAL2. The request leg
+//! is minted as `auth/step-up/approve-request/0.2`; 0.1–0.5 responses are no
+//! longer served.
 //!
 //! Exercises the real route → bearer auth → trust-task dispatcher → step-up
 //! handler → pending-store consume → did-signed gate verification → session
@@ -126,7 +126,7 @@ async fn did_signed_approve_response_elevates_session_to_aal2() {
     //    VTA's vta_did from test_support).
     let doc_json = json!({
         "id": "approve-resp-itest-1",
-        "type": "https://trusttasks.org/spec/auth/step-up/approve-response/0.1",
+        "type": "https://trusttasks.org/spec/auth/step-up/approve-response/0.6",
         "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
         "issuer": did,
         "recipient": "did:key:z6MkfMo6gxqdBhaHMNnmfhgZFBjpCDTkmJMJLoypsBZS9PwD",
@@ -226,13 +226,11 @@ async fn did_signed_approve_response_elevates_session_to_aal2() {
     );
 }
 
-/// Dual-accept: the **0.2** approve-response carries the camelCase
-/// `evidence.kind` (`didSigned`) and a `…/0.2` type URI. The VTA must accept
-/// it, verify the approver's signature over the *0.2* bytes (the document is
-/// never down-converted), elevate the session, and reply with a
-/// `…/0.2#response`.
+/// An approve-response naming its gate explicitly (`evidence.kind =
+/// didSigned`): the VTA verifies the approver's signature over the bytes as
+/// received, elevates the session, and replies with a `…/0.6#response`.
 #[tokio::test]
-async fn did_signed_approve_response_0_2_elevates_session_to_aal2() {
+async fn explicit_did_signed_approve_response_elevates_session_to_aal2() {
     let (router, ctx) = build_test_app().await;
 
     let sk = SigningKey::from_bytes(&[11u8; 32]);
@@ -284,11 +282,11 @@ async fn did_signed_approve_response_0_2_elevates_session_to_aal2() {
         .await
         .unwrap();
 
-    // 0.2 document: camelCase `evidence.kind` + the /0.2 type URI. The signature
-    // covers THIS (0.2) form — the VTA must not mutate it before verifying.
+    // The signature covers this form as sent — the VTA must not mutate it
+    // before verifying.
     let doc_json = json!({
         "id": "approve-resp-itest-0-2",
-        "type": "https://trusttasks.org/spec/auth/step-up/approve-response/0.2",
+        "type": "https://trusttasks.org/spec/auth/step-up/approve-response/0.6",
         "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
         "issuer": did,
         "recipient": "did:key:z6MkfMo6gxqdBhaHMNnmfhgZFBjpCDTkmJMJLoypsBZS9PwD",
@@ -330,10 +328,10 @@ async fn did_signed_approve_response_0_2_elevates_session_to_aal2() {
     let v: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
 
     assert_eq!(status, StatusCode::OK, "expected 200, got {status}: {v}");
-    // The response document echoes the 0.2 type with a #response fragment.
+    // The response document echoes the request's type with a #response fragment.
     assert_eq!(
-        v["type"], "https://trusttasks.org/spec/auth/step-up/approve-response/0.2#response",
-        "0.2 request must yield a 0.2 response: {v}"
+        v["type"], "https://trusttasks.org/spec/auth/step-up/approve-response/0.6#response",
+        "a 0.6 request must yield a 0.6 response: {v}"
     );
     assert_eq!(v["payload"]["status"], "elevated", "{v}");
     assert_eq!(v["payload"]["session"]["acr"], "aal2", "{v}");
@@ -462,16 +460,13 @@ async fn trust_task_acl_mutation_requires_step_up() {
     );
 }
 
-/// Full transition-window round trip: the gate mints a **0.2** approve-request
-/// (the migrated wire form), the minted document's VTA proof verifies
-/// end-to-end (the #870 pattern — did:key signing, `di_proof` verification),
-/// and an approver still speaking **0.1** answers it — kebab `did-signed`
-/// evidence discriminator and the `…/0.1` type URI — against the 0.2-minted
-/// pending step-up. The session must elevate and the ack must echo the
-/// approver's own (0.1) version family. This is exactly the mixed-version
-/// deployment the dual-accept inbound exists for.
+/// Full round trip: the gate mints an `approve-request/0.2`, the minted
+/// document's VTA proof verifies end-to-end (the #870 pattern — did:key
+/// signing, `di_proof` verification), and the approver answers it with an
+/// `approve-response/0.6`. The session must elevate and the ack must echo the
+/// approver's own version.
 #[tokio::test]
-async fn v0_2_minted_request_completes_with_a_0_1_flavored_response() {
+async fn v0_2_minted_request_completes_with_a_0_6_response() {
     // Signing app: the minted approve-request carries the real VTA proof.
     let (router, ctx) = build_provisionable_test_app().await;
 
@@ -569,12 +564,12 @@ async fn v0_2_minted_request_completes_with_a_0_1_flavored_response() {
         .expect("minted 0.2 approve-request proof verifies");
     assert_eq!(signer, ctx.vta_did, "proof VM DID == issuing VTA");
 
-    // 4. The approver answers in the OLD (0.1) dialect: kebab `did-signed`
-    //    evidence + the /0.1 type URI, echoing the 0.2 request's challenge.
+    // 4. The approver answers with a 0.6 approve-response, echoing the
+    //    request's challenge.
     let challenge = ar["payload"]["challenge"].as_str().unwrap().to_string();
     let doc_json = json!({
         "id": "approve-resp-roundtrip-1",
-        "type": "https://trusttasks.org/spec/auth/step-up/approve-response/0.1",
+        "type": "https://trusttasks.org/spec/auth/step-up/approve-response/0.6",
         "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
         "issuer": did,
         "recipient": ctx.vta_did,
@@ -584,7 +579,7 @@ async fn v0_2_minted_request_completes_with_a_0_1_flavored_response() {
             "challenge": challenge,
             "decision": "approved",
             "grantedAcr": "aal2",
-            "evidence": { "kind": "did-signed" },
+            "evidence": { "kind": "didSigned" },
         },
     });
     let mut doc: TrustTask<Value> = serde_json::from_value(doc_json).unwrap();
@@ -615,14 +610,14 @@ async fn v0_2_minted_request_completes_with_a_0_1_flavored_response() {
     let bytes = resp.into_body().collect().await.unwrap().to_bytes();
     let v: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
 
-    // 5. The 0.1-flavored answer completes the 0.2-minted step-up…
+    // 5. The answer completes the minted step-up…
     assert_eq!(status, StatusCode::OK, "expected 200, got {status}: {v}");
     assert_eq!(v["payload"]["status"], "elevated", "{v}");
     assert_eq!(v["payload"]["session"]["acr"], "aal2", "{v}");
-    // …and the ack echoes the APPROVER's version family (0.1), not the mint's.
+    // …and the ack echoes the approver's version.
     assert_eq!(
-        v["type"], "https://trusttasks.org/spec/auth/step-up/approve-response/0.1#response",
-        "0.1 response must yield a 0.1 ack: {v}"
+        v["type"], "https://trusttasks.org/spec/auth/step-up/approve-response/0.6#response",
+        "a 0.6 response must yield a 0.6 ack: {v}"
     );
 
     // 6. The stored session is elevated.
@@ -720,7 +715,7 @@ async fn delegated_approve_response_elevates_the_subjects_session() {
     // The approver signs: issuer == approver, payload.subject == the requester.
     let doc_json = json!({
         "id": "approve-resp-delegated-1",
-        "type": "https://trusttasks.org/spec/auth/step-up/approve-response/0.1",
+        "type": "https://trusttasks.org/spec/auth/step-up/approve-response/0.6",
         "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
         "issuer": approver_did,
         "recipient": "did:key:z6MkfMo6gxqdBhaHMNnmfhgZFBjpCDTkmJMJLoypsBZS9PwD",
@@ -865,7 +860,7 @@ async fn unauthorized_approver_cannot_elevate() {
     // C signs its own well-formed approve-response for the subject's session.
     let doc_json = json!({
         "id": "approve-resp-rogue-1",
-        "type": "https://trusttasks.org/spec/auth/step-up/approve-response/0.1",
+        "type": "https://trusttasks.org/spec/auth/step-up/approve-response/0.6",
         "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
         "issuer": rogue_did,
         "recipient": "did:key:z6MkfMo6gxqdBhaHMNnmfhgZFBjpCDTkmJMJLoypsBZS9PwD",

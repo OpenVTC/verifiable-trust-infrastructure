@@ -199,7 +199,7 @@ fn detail_str(entry: &AuditEnvelope, key: &str) -> Option<String> {
 /// is no page count to show — the only thing an operator can act on is
 /// whether another page exists and the token that fetches it.
 fn print_cursor_footer(result: &ListAuditLogsResultBody) {
-    if let Some(cursor) = &result.cursor {
+    if let Some(cursor) = &result.next_cursor {
         println!(
             "\n  \x1b[2mMore entries \u{2014} fetch the next page with --cursor {cursor}\x1b[0m"
         );

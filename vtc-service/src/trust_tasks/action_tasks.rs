@@ -295,7 +295,7 @@ async fn handle_acknowledge(
     }
 }
 
-/// `task-consent/decision/0.1` and `/0.2` — an approver's answer to an action.
+/// `task-consent/decision/0.2` — an approver's answer to an action.
 ///
 /// The approver is the document's proven signer: their own DID (the spine has
 /// already refused a delegated console key here), resolved through the ACL as
@@ -308,14 +308,12 @@ pub(super) async fn handle_decision(
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
     use decision::error_codes as codes;
-    use trust_tasks_rs::specs::task_consent::decision::v0_1 as decision_v0_1;
 
-    let v0_2 = doc.type_uri.to_string() == crate::acl::admin_consent::DECISION_V0_2_TYPE;
     let approver = match admin_signer(state, ctx, &doc).await {
         Ok(a) => a,
         Err(reject) => return reject,
     };
-    let input = if v0_2 {
+    let input = {
         let p: decision::Payload = match parse_spec_payload(&doc) {
             Ok(p) => p,
             Err(reject) => return reject,
@@ -328,19 +326,6 @@ pub(super) async fn handle_decision(
             action_id: p.action_id.as_ref().map(|a| a.to_string()),
             evidence: doc.payload.get("evidence").cloned(),
         }
-    } else {
-        let p: decision_v0_1::Payload = match parse_spec_payload(&doc) {
-            Ok(p) => p,
-            Err(reject) => return reject,
-        };
-        DecisionInput {
-            challenge: p.challenge.to_string(),
-            payload_digest: p.payload_digest.to_string(),
-            approve: p.decision == decision_v0_1::Decision::Approve,
-            reason: p.reason.as_ref().map(|r| r.to_string()),
-            action_id: None,
-            evidence: None,
-        }
     };
 
     let answer = |status: &str, digest: &str, action_id: &str, extra: Value| {
@@ -350,11 +335,7 @@ pub(super) async fn handle_decision(
                 body[k] = v.clone();
             }
         }
-        if v0_2 {
-            body["actionId"] = json!(action_id);
-        } else if let Some(map) = body.as_object_mut() {
-            map.remove("ext");
-        }
+        body["actionId"] = json!(action_id);
         success_response(&doc, body)
     };
 

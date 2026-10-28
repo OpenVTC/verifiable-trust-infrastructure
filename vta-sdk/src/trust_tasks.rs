@@ -71,20 +71,15 @@
 /// see [`REST_ROUTED_URIS`].
 pub const TASK_AUTH_CHALLENGE_0_1: &str = "https://trusttasks.org/spec/auth/challenge/0.1";
 
-/// `spec/auth/authenticate/0.2` — present the signed challenge inside a
-/// proof-bearing Trust Task document; the proof IS the authentication. 0.2
-/// adds an optional `sessionKey` a producer may ask the VTA to bind (not yet
-/// honoured — refused as `sessionKeyUnsupported`). Supersedes 0.1, which this
-/// VTA no longer serves. Pre-session; see [`TASK_AUTH_CHALLENGE_0_1`].
-pub const TASK_AUTH_AUTHENTICATE_0_2: &str =
-    <trust_tasks_rs::specs::auth::authenticate::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
-
-/// `spec/auth/authenticate/0.3` — adds an optional `principal` +
-/// `delegationEvidence` for a proxied login (a delegate authenticating on a
-/// principal's behalf). This VTA recognizes no delegation-evidence kind yet —
-/// a `principal` unequal to the document's own signer is refused as
-/// `delegationNotRecognized`; the ordinary (non-delegated) case behaves like
-/// 0.2. Pre-session; see [`TASK_AUTH_CHALLENGE_0_1`].
+/// `spec/auth/authenticate/0.3` — present the signed challenge inside a
+/// proof-bearing Trust Task document; the proof IS the authentication. An
+/// optional `sessionKey` a producer may ask the VTA to bind is not yet
+/// honoured (refused as `sessionKeyUnsupported`), and an optional `principal`
+/// with `delegationEvidence` for a proxied login (a delegate authenticating on a
+/// principal's behalf) is refused as `delegationNotRecognized` when the
+/// `principal` is not the document's own signer: this VTA recognizes no
+/// delegation-evidence kind yet. Supersedes 0.1 and 0.2, which this VTA no
+/// longer serves. Pre-session; see [`TASK_AUTH_CHALLENGE_0_1`].
 pub const TASK_AUTH_AUTHENTICATE_0_3: &str =
     <trust_tasks_rs::specs::auth::authenticate::v0_3::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
@@ -142,34 +137,19 @@ pub const TASK_AUTH_PASSKEY_LOGIN_FINISH_0_1: &str =
 pub const TASK_AUTH_PASSKEY_LOGIN_FINISH_0_2: &str =
     "https://trusttasks.org/spec/auth/passkey/login/finish/0.2";
 
-/// `spec/auth/step-up/approve-response/0.1` — an approver's signed
+/// `spec/auth/step-up/approve-response/0.6` — an approver's signed
 /// ratification of a pending AAL step-up. The relying party verifies the
-/// carried gate (did-signed Data Integrity proof, or a WebAuthn assertion)
-/// and elevates the session's `amr`/`acr`.
-#[deprecated(note = "0.1 is superseded by the 0.2 wire form (the evidence \
-    enum uses the camelCase `didSigned` value). The VTA still accepts 0.1 \
-    during the migration window but it will be removed in a future release — \
-    prefer TASK_AUTH_STEP_UP_APPROVE_RESPONSE_0_2.")]
-pub const TASK_AUTH_STEP_UP_APPROVE_RESPONSE_0_1: &str =
-    "https://trusttasks.org/spec/auth/step-up/approve-response/0.1";
-
-/// `spec/auth/step-up/approve-response/0.2` — successor to
-/// [`TASK_AUTH_STEP_UP_APPROVE_RESPONSE_0_1`]; camelCase `didSigned` evidence.
-pub const TASK_AUTH_STEP_UP_APPROVE_RESPONSE_0_2: &str =
-    "https://trusttasks.org/spec/auth/step-up/approve-response/0.2";
-
-/// `spec/auth/step-up/approve-response/0.3` — successor to
-/// [`TASK_AUTH_STEP_UP_APPROVE_RESPONSE_0_2`]; adds the `recorded`
-/// acknowledgement for an approval bound to a single operation.
+/// carried gate (did-signed Data Integrity proof, or a WebAuthn assertion) and
+/// elevates the session's `amr`/`acr` — or, for a step-up bound to one
+/// operation, records the approval (`recorded`) and elevates nothing.
 ///
-/// **A relying party cannot reach for this on its own.** A response document's
-/// `type` is the request's `type` plus `#response`, so an approver that mints
-/// 0.2 gets a 0.2 answer, which has no word for "applied, nothing elevated".
-/// The maintainer must accept 0.3 *before* any approver mints it, never the
-/// other way round — an approver that moved first would have every step-up
-/// refused as an unsupported type.
-pub const TASK_AUTH_STEP_UP_APPROVE_RESPONSE_0_3: &str =
-    "https://trusttasks.org/spec/auth/step-up/approve-response/0.3";
+/// Supersedes 0.1–0.5, which this VTA no longer serves: 0.2 spelt the evidence
+/// enum `didSigned`, 0.3 added `recorded`, 0.4 let a bound approval carry no
+/// `sessionId`, 0.5 required the approver's proof on every response (which
+/// this VTA already did), and 0.6 adds the `approverSigned` gate, which this
+/// VTA never offers and so refuses as `noGate`.
+pub const TASK_AUTH_STEP_UP_APPROVE_RESPONSE_0_6: &str =
+    <trust_tasks_rs::specs::auth::step_up::approve_response::v0_6::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
 // ─── Device slice (spec/device/*) ────────────────────────────────────────
 // Canonical Trust Task registry shapes (dtgwg `device/*`). Companion/Service
@@ -626,13 +606,16 @@ pub const TASK_SERVICES_REPORT_0_1: &str =
 /// learning whether it has been altered.
 pub const TASK_AUDIT_VERIFY_0_1: &str = "https://trusttasks.org/spec/audit/verify/0.1";
 
-/// `audit/list/0.1` — page through the audit log, newest first, with
+/// `audit/list/0.2` — page through the audit log, newest first, with
 /// optional filters and an opaque continuation cursor. Payload:
 /// [`crate::protocols::audit_management::list::ListAuditLogsBody`].
+/// Supersedes 0.1 (`pageSize` → `limit`, `cursor`/`truncated` → `nextCursor`),
+/// which this VTA no longer serves.
 ///
 /// Auth: unrestricted admin for the whole-log tail; a context-scoped
 /// admin must supply `contextId` within their own scope.
-pub const TASK_AUDIT_LIST_0_1: &str = "https://trusttasks.org/spec/audit/list/0.1";
+pub const TASK_AUDIT_LIST_0_2: &str =
+    <trust_tasks_rs::specs::audit::list::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
 /// `spec/vta/audit/get-retention/1.0` — read the current retention
 /// period. Payload:
@@ -648,7 +631,7 @@ pub const TASK_AUDIT_GET_RETENTION_1_0: &str =
 pub const TASK_AUDIT_UPDATE_RETENTION_1_0: &str =
     "https://trusttasks.org/spec/vta/audit/update-retention/1.0";
 
-/// `spec/trust-task-discovery/0.1` — **the canonical capability negotiation.**
+/// `spec/trust-task-discovery/0.3` — **the canonical capability negotiation.**
 ///
 /// A client asks which Trust Task types this agent serves, optionally narrowed
 /// by slug-glob patterns (`*`, `acl/*`, or an exact slug), and receives the
@@ -667,20 +650,15 @@ pub const TASK_AUDIT_UPDATE_RETENTION_1_0: &str =
 /// `base_path`, which is what #1033 was. Discovery is not a substitute for
 /// moving a wire change through the published schema.
 ///
-/// Auth: any authenticated user.
-pub const TASK_TRUST_TASK_DISCOVERY_0_1: &str =
-    "https://trusttasks.org/spec/trust-task-discovery/0.1";
-
-/// `spec/trust-task-discovery/0.3` — 0.1's answer plus the responder's
-/// **acceptance window**: how long after `issuedAt` it still accepts a
-/// document, and its clock-skew tolerance, in whole seconds.
-///
+/// 0.3 adds the responder's **acceptance window**: how long after `issuedAt` it
+/// still accepts a document, and its clock-skew tolerance, in whole seconds.
 /// A VTI node advertises the window it applies, at response level
 /// (VTI-TRN-047); a sender holding a document before delivery uses it to
 /// decide when to issue a new attempt instead (VTI-TRN-045). Absence means the
-/// discoverer learnt nothing, never "no window".
+/// discoverer learnt nothing, never "no window". Supersedes 0.1, which this
+/// VTA no longer serves.
 ///
-/// Auth: any authenticated user, as 0.1.
+/// Auth: any authenticated user.
 pub const TASK_TRUST_TASK_DISCOVERY_0_3: &str =
     <trust_tasks_rs::specs::trust_task_discovery::v0_3::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
@@ -2098,15 +2076,20 @@ pub const TASK_CONSENT_REQUEST_1_0: &str = "https://trusttasks.org/spec/consent/
 /// bridge-attested).
 pub const TASK_CONSENT_DECISION_1_0: &str = "https://trusttasks.org/spec/consent/decision/1.0";
 
-/// `task-consent/decision/0.1` — an approver signs approval (or denial) of a
+/// `task-consent/decision/0.2` — an approver signs approval (or denial) of a
 /// specific privileged **task execution**, bound to the task's payload digest.
 /// Distinct from `consent/decision` (messaging-bridge conversation consent):
 /// this feeds the Policy Decision Point's `requireConsent` disposition. The
 /// proof's signer must belong to the policy-named approver set; at the required
 /// threshold the VTA issues a single-use grant the requester's re-submit
 /// consumes. Auth: a member of the approver set (Data-Integrity signed).
-pub const TASK_TASK_CONSENT_DECISION_0_1: &str =
-    "https://trusttasks.org/spec/task-consent/decision/0.1";
+///
+/// Supersedes 0.1, which this VTA no longer serves; every 0.1 payload is a
+/// valid 0.2 payload. 0.2's optional `actionId` names a VTC action, which a
+/// VTA request never belongs to (`actionMismatch`), and this VTA verifies no
+/// `evidence` kind, so a decision carrying one is refused (`evidenceInvalid`).
+pub const TASK_TASK_CONSENT_DECISION_0_2: &str =
+    <trust_tasks_rs::specs::task_consent::decision::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
 /// `consent/revoke/1.0` — an operator withdraws a standing grant, reverting the
 /// conversation to default-deny.
@@ -2136,18 +2119,22 @@ pub const TASK_CONSENT_APPROVER_LIST_1_0: &str =
 // maintainer does not have — the active set here is every enabled row in
 // priority order. See `crate::protocols::policy_management`.
 
-/// `policy/list/0.2` — enumerate stored policy modules, optionally filtered to
-/// a context or to enabled rows. Auth: admin.
-pub const TASK_POLICY_LIST_0_2: &str = "https://trusttasks.org/spec/policy/list/0.2";
+/// `policy/list/0.3` — enumerate stored policy modules, optionally filtered to
+/// a context or to enabled rows. Auth: admin. Supersedes 0.2 (`pageSize` →
+/// `limit`, `truncated`/`cursor` → `nextCursor`), which is no longer served.
+pub const TASK_POLICY_LIST_0_3: &str =
+    <trust_tasks_rs::specs::policy::list::v0_3::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
 /// `policy/get/0.1` — read one policy module by id. Auth: admin.
 pub const TASK_POLICY_GET_0_1: &str = "https://trusttasks.org/spec/policy/get/0.1";
 
-/// `policy/upsert/0.2` — create or revise a policy module. `module` (Rego) is
+/// `policy/upsert/0.3` — create or revise a policy module. `module` (Rego) is
 /// client-authored and authoritative; a declarative approvals row additionally
 /// carries its rules in `ext` and is byte-compared against them.
 /// Auth: **super-admin** — whoever can write policy can remove their own gate.
-pub const TASK_POLICY_UPSERT_0_2: &str = "https://trusttasks.org/spec/policy/upsert/0.2";
+/// Supersedes 0.2 (response `created` → `wasCreated`), which is no longer served.
+pub const TASK_POLICY_UPSERT_0_3: &str =
+    <trust_tasks_rs::specs::policy::upsert::v0_3::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
 /// `policy/delete/0.1` — remove a policy module. Auth: super-admin.
 pub const TASK_POLICY_DELETE_0_1: &str = "https://trusttasks.org/spec/policy/delete/0.1";
@@ -2396,7 +2383,6 @@ pub const TASK_VTA_WITNESS_LIST_0_1: &str =
 pub const ALL_URIS: &[&str] = &[
     // Auth slice
     TASK_AUTH_CHALLENGE_0_1,
-    TASK_AUTH_AUTHENTICATE_0_2,
     TASK_AUTH_AUTHENTICATE_0_3,
     TASK_AUTH_REFRESH_0_2,
     TASK_AUTH_REVOKE_SESSION_0_2,
@@ -2406,9 +2392,7 @@ pub const ALL_URIS: &[&str] = &[
     TASK_AUTH_PASSKEY_LOGIN_START_0_2,
     TASK_AUTH_PASSKEY_LOGIN_FINISH_0_1,
     TASK_AUTH_PASSKEY_LOGIN_FINISH_0_2,
-    TASK_AUTH_STEP_UP_APPROVE_RESPONSE_0_1,
-    TASK_AUTH_STEP_UP_APPROVE_RESPONSE_0_2,
-    TASK_AUTH_STEP_UP_APPROVE_RESPONSE_0_3,
+    TASK_AUTH_STEP_UP_APPROVE_RESPONSE_0_6,
     // Device slice
     TASK_DEVICE_REGISTER_0_2,
     TASK_DEVICE_HEARTBEAT_0_3,
@@ -2469,12 +2453,11 @@ pub const ALL_URIS: &[&str] = &[
     TASK_SERVICES_DRAIN_CANCEL_1_0,
     TASK_SERVICES_REPORT_0_1,
     // Audit slice
-    TASK_AUDIT_LIST_0_1,
+    TASK_AUDIT_LIST_0_2,
     TASK_AUDIT_VERIFY_0_1,
     TASK_AUDIT_GET_RETENTION_1_0,
     TASK_AUDIT_UPDATE_RETENTION_1_0,
     // Discovery
-    TASK_TRUST_TASK_DISCOVERY_0_1,
     TASK_TRUST_TASK_DISCOVERY_0_3,
     // Vault slice (0.1 + 0.2 + 0.3 dual-accept; delete is 0.1-only upstream)
     TASK_VAULT_LIST_0_4,
@@ -2590,7 +2573,7 @@ pub const ALL_URIS: &[&str] = &[
     // Consent slice
     TASK_CONSENT_REQUEST_1_0,
     TASK_CONSENT_DECISION_1_0,
-    TASK_TASK_CONSENT_DECISION_0_1,
+    TASK_TASK_CONSENT_DECISION_0_2,
     TASK_CONSENT_REVOKE_1_0,
     TASK_CONSENT_LIST_1_1,
     TASK_CONSENT_APPROVER_SET_1_0,
@@ -2730,9 +2713,9 @@ pub const ALL_URIS: &[&str] = &[
     TASK_PERSONA_LOCAL_PROFILE_DELETE_1_0,
     TASK_PERSONA_LOCAL_BINDING_SET_1_0,
     // Policy slice (spec/policy/*)
-    TASK_POLICY_LIST_0_2,
+    TASK_POLICY_LIST_0_3,
     TASK_POLICY_GET_0_1,
-    TASK_POLICY_UPSERT_0_2,
+    TASK_POLICY_UPSERT_0_3,
     TASK_POLICY_DELETE_0_1,
 ];
 
@@ -2764,7 +2747,6 @@ pub const ALL_URIS: &[&str] = &[
 #[allow(deprecated)] // intentionally names the deprecated passkey-login 0.1 URIs
 pub const REST_ROUTED_URIS: &[&str] = &[
     TASK_AUTH_CHALLENGE_0_1,
-    TASK_AUTH_AUTHENTICATE_0_2,
     TASK_AUTH_AUTHENTICATE_0_3,
     TASK_AUTH_REFRESH_0_2,
     TASK_AUTH_PASSKEY_LOGIN_START_0_1,
@@ -2899,7 +2881,7 @@ mod tests {
             // read and written, so it is also the surface that made approval
             // posture editable at runtime instead of via config + restart.
             "https://trusttasks.org/spec/policy/",
-            // Canonical capability negotiation — `trust-task-discovery/0.1`.
+            // Canonical capability negotiation — `trust-task-discovery/0.3`.
             // Top-level and framework-level rather than VTA-private: "which
             // Trust Tasks do you serve" is a question about any responder, not
             // about an agent's domain, which is why the registry puts it beside

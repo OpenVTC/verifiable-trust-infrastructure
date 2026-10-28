@@ -329,7 +329,7 @@ mod tests {
     use vti_common::config::StoreConfig;
     use vti_common::store::{KeyspaceHandle, Store};
 
-    const POLICY_UPSERT: &str = "https://trusttasks.org/spec/policy/upsert/0.1";
+    const POLICY_UPSERT: &str = "https://trusttasks.org/spec/policy/upsert/0.3";
     const ACL_GRANT: &str = "https://trusttasks.org/spec/acl/grant/0.1";
 
     async fn ks() -> (KeyspaceHandle, tempfile::TempDir) {

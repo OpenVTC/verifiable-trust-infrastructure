@@ -160,6 +160,124 @@ pub fn declarative_row(
     }
 }
 
+/// Task types this VTA no longer serves, each with the version that replaced
+/// it.
+///
+/// An approval rule names a task by its exact versioned Type URI (the
+/// synthesized Rego compares `input.request.typeUri` for equality), so a rule
+/// left naming a version the VTA stopped serving would never match again: the
+/// task it was written to gate would run ungated, with nothing to say so. That
+/// is a gate failing **open** on an upgrade. [`migrate_retired_task_types`]
+/// moves such rules to the successor at boot, and the policy write path refuses
+/// a new rule naming a retired type ([`retired_task_type_in`]).
+///
+/// Extend this table whenever a dispatched task version is retired.
+pub const RETIRED_TASK_TYPES: &[(&str, &str)] = &[
+    (
+        "https://trusttasks.org/spec/audit/list/0.1",
+        "https://trusttasks.org/spec/audit/list/0.2",
+    ),
+    (
+        "https://trusttasks.org/spec/auth/authenticate/0.1",
+        "https://trusttasks.org/spec/auth/authenticate/0.3",
+    ),
+    (
+        "https://trusttasks.org/spec/auth/authenticate/0.2",
+        "https://trusttasks.org/spec/auth/authenticate/0.3",
+    ),
+    (
+        "https://trusttasks.org/spec/auth/step-up/approve-response/0.1",
+        "https://trusttasks.org/spec/auth/step-up/approve-response/0.6",
+    ),
+    (
+        "https://trusttasks.org/spec/auth/step-up/approve-response/0.2",
+        "https://trusttasks.org/spec/auth/step-up/approve-response/0.6",
+    ),
+    (
+        "https://trusttasks.org/spec/auth/step-up/approve-response/0.3",
+        "https://trusttasks.org/spec/auth/step-up/approve-response/0.6",
+    ),
+    (
+        "https://trusttasks.org/spec/policy/list/0.2",
+        "https://trusttasks.org/spec/policy/list/0.3",
+    ),
+    (
+        "https://trusttasks.org/spec/policy/upsert/0.2",
+        "https://trusttasks.org/spec/policy/upsert/0.3",
+    ),
+    (
+        "https://trusttasks.org/spec/task-consent/decision/0.1",
+        "https://trusttasks.org/spec/task-consent/decision/0.2",
+    ),
+    (
+        "https://trusttasks.org/spec/trust-task-discovery/0.1",
+        "https://trusttasks.org/spec/trust-task-discovery/0.3",
+    ),
+];
+
+/// The version that replaced `task_type`, when it names a retired one.
+pub fn successor_of(task_type: &str) -> Option<&'static str> {
+    RETIRED_TASK_TYPES
+        .iter()
+        .find(|(old, _)| *old == task_type)
+        .map(|(_, new)| *new)
+}
+
+/// The first rule in `model` naming a retired task type, with its successor.
+pub fn retired_task_type_in(model: &DeclarativeModel) -> Option<(&str, &'static str)> {
+    model
+        .rules
+        .iter()
+        .find_map(|r| successor_of(&r.task_type).map(|new| (r.task_type.as_str(), new)))
+}
+
+/// Move every declarative rule naming a retired task type to its successor,
+/// rewriting the reserved row (new version, re-synthesized module). Returns the
+/// `(old, new)` pairs moved; empty when nothing named a retired type, in which
+/// case nothing is written.
+///
+/// Run at boot, after the row is seeded, so neither a stored row nor a config
+/// seed written against an older release leaves a gate that can no longer
+/// fire. The moved model is validated and its module compile-checked before it
+/// is written: if the move would make two rules collide (an operator who had
+/// written rules for both versions), the row is left as it is and the error is
+/// returned, so the operator is told at boot rather than discovering it later.
+pub async fn migrate_retired_task_types(
+    policy_ks: &KeyspaceHandle,
+    now_rfc3339: &str,
+) -> Result<Vec<(String, String)>, AppError> {
+    let Some(row) = storage::get_policy(policy_ks, DECLARATIVE_POLICY_ID).await? else {
+        return Ok(Vec::new());
+    };
+    let mut model = model_from_ext(&row.ext)?;
+    let mut moved = Vec::new();
+    for rule in &mut model.rules {
+        if let Some(new) = successor_of(&rule.task_type) {
+            moved.push((rule.task_type.clone(), new.to_string()));
+            rule.task_type = new.to_string();
+        }
+    }
+    if moved.is_empty() {
+        return Ok(moved);
+    }
+    validate(&model.rules, &model.approver_sets).map_err(|e| {
+        AppError::Validation(format!(
+            "approval rules name task versions this VTA no longer serves ({}), and moving them \
+             to the current versions would make them invalid: {e}. Edit the rules with `pnm \
+             approvals` so each names a current version",
+            moved
+                .iter()
+                .map(|(old, new)| format!("{old} → {new}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ))
+    })?;
+    let migrated = declarative_row(&model, row.version + 1, now_rfc3339, &row.created_at);
+    super::engine::compile(&migrated.module, DECLARATIVE_POLICY_ID)?;
+    storage::store_policy(policy_ks, &migrated).await?;
+    Ok(moved)
+}
+
 /// Read the declarative model from the policy keyspace.
 ///
 /// A missing row is an empty model, not an error: a VTA that has never had an

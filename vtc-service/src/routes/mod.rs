@@ -937,13 +937,13 @@ fn build_unauth_routes(trust_xff_cidrs: &[IpNetwork]) -> OpenApiRouter<AppState>
             routes!(credential_exchange::request),
             <trust_tasks_rs::specs::credential_exchange::request::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
         ))
-        // `auth/challenge/0.1` and `auth/authenticate/0.1`'s dedicated,
+        // `auth/challenge/0.1` and `auth/authenticate/0.3`'s dedicated,
         // `Trust-Task`-header-gated REST mounts had no caller left once
         // `vta_sdk::auth_light` (shared by the VTA client and `cnm
         // vetting`'s bearer-session login, `VtcClient::connect`) switched to
-        // signing `auth/challenge/0.1` / `authenticate/0.2` documents against
+        // signing `auth/challenge/0.1` / `authenticate/0.3` documents against
         // `POST /v1/trust-tasks` instead (#1858) — the same door
-        // `trust_tasks::auth_tasks` already dispatched `0.2`/`0.3` on. See
+        // `trust_tasks::auth_tasks` dispatches `0.3` on. See
         // that module's doc for the pre-session dispatch this family gets.
         // VTA-wallet login surface. The browser wallet extension drives
         // the SIOPv2 round-trip itself and posts to `<base>/auth/challenge`
@@ -963,16 +963,16 @@ fn build_unauth_routes(trust_xff_cidrs: &[IpNetwork]) -> OpenApiRouter<AppState>
         // round-trip on every access-token expiry instead. Same handler; the
         // op `type` rides in the body exactly as it does on `/wallet/auth/`.
         .route("/wallet/auth/refresh", post(auth::refresh))
-        // `auth/refresh/0.1`'s dedicated REST mount stays: it is also the
+        // `auth/refresh/0.2`'s dedicated REST mount stays: it is also the
         // admin console's own **cookie**-bound session renewal
         // (`vtc_admin_refresh`), which has no signed-document equivalent — a
-        // browser cookie carries no DID key to sign with. `auth/refresh/0.2`
-        // (`trust_tasks::auth_tasks`) adds the signed-document path beside
-        // it for TSP/DIDComm/HTTPS callers that hold a key; see that
+        // browser cookie carries no DID key to sign with. The spine's
+        // `auth/refresh/0.2` (`trust_tasks::auth_tasks`) is the signed-document
+        // path beside it for TSP/DIDComm/HTTPS callers that hold a key; see that
         // module's doc for the full argument.
         .routes(tt(
             routes!(auth::refresh),
-            "https://trusttasks.org/spec/auth/refresh/0.1",
+            "https://trusttasks.org/spec/auth/refresh/0.2",
         ))
         // Sign-out ends the browser's cookie session: it clears the cookie
         // pair `auth/admin-session` set, which no Trust Task describes. It had
@@ -1505,12 +1505,12 @@ mod openapi_tests {
     /// (`build_unauth_routes`): tower-governor rate limit + [`UNAUTH_BODY_SIZE`]
     /// body cap. Attacker-driven crypto / IO belongs here.
     const GOVERNED_UNAUTH: &[(&str, &str)] = &[
-        // `auth/refresh/0.1` keeps its dedicated mount: it is also the admin
+        // `auth/refresh/0.2` keeps its dedicated mount: it is also the admin
         // console's cookie-bound session renewal, which has no
         // signed-document equivalent. `auth/challenge/0.1` and
-        // `auth/authenticate/0.1` lost theirs — `vta_sdk::auth_light` (and
+        // `auth/authenticate/0.3` lost theirs — `vta_sdk::auth_light` (and
         // `cnm vetting`'s bearer-session login through it) now signs
-        // `auth/challenge/0.1` / `authenticate/0.2` documents against the
+        // `auth/challenge/0.1` / `authenticate/0.3` documents against the
         // single Trust Task endpoint below instead (#1858). First-admin
         // onboarding (`install/claim/*`, `admin/bootstrap`) and
         // cross-community recognition (`auth/recognise/*`) moved there too —

@@ -1807,7 +1807,7 @@ struct VaultSignTrustTaskResponseBody {
 /// designation, `operations::device::uv_approver_eligible`), and the signed
 /// `task-consent/request` pushed to them — the same document, and the same push
 /// path, as a consent the PDP raises, so the phone app answers it with the
-/// `task-consent/decision/0.1` it already sends.
+/// `task-consent/decision/0.2` it already sends.
 /// The sentence the phone shows: where, from which browser, until when. At
 /// most 500 characters, the schema's bound on an effect's `summary`.
 fn sign_in_summary(ask: &crate::operations::vault::oob_sign_in::RemoteAsk, until: &str) -> String {
@@ -2436,7 +2436,7 @@ mod remote_approval_tests {
 
         let task =
             serde_json::json!({ "grantDigest": "zQmX", "device": BROWSER, "approver": PHONE });
-        let type_uri = "https://trusttasks.org/spec/auth/oob/grant/0.1";
+        let type_uri = "https://trusttasks.org/spec/auth/oob/grant/0.3";
         let challenge = "0123456789abcdef0123456789abcdef".to_string();
         let now = u64::try_from(chrono::Utc::now().timestamp()).unwrap();
         let pending = PendingTaskConsent {

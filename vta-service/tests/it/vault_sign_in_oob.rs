@@ -40,7 +40,7 @@ const KEYS_CREATE: &str = "https://trusttasks.org/spec/keys/create/0.1";
 const REGISTER: &str = "https://trusttasks.org/spec/device/register/0.2";
 const HEARTBEAT: &str = "https://trusttasks.org/spec/device/heartbeat/0.3";
 const IDENTIFY: &str = "https://trusttasks.org/spec/auth/oob/identify/0.1";
-const GRANT: &str = "https://trusttasks.org/spec/auth/oob/grant/0.1";
+const GRANT: &str = "https://trusttasks.org/spec/auth/oob/grant/0.3";
 const DECISION: &str = "https://trusttasks.org/spec/task-consent/decision/0.2";
 const REQUEST_ID: &str = "q1w2e3r4t5y6u7i8o9p0aA";
 const RP_ID: &str = "abcdefghijklmnopabcdefghijklmnop";
@@ -263,7 +263,8 @@ fn grant(app: &App) -> Value {
             "approverKey": k_a(),
             "origin": "https://portal.vtc.example",
             "contextDigest": "zQmbWqxBEKC3P8tqsKc98xmWNzrzDtRLMiMPL8wBuTGsMnR",
-            "notAfter": chrono::Utc::now().timestamp() + 3600,
+            "sessionEndsAt": (chrono::Utc::now() + chrono::TimeDelta::hours(1))
+                .to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
         },
     })
 }
@@ -570,7 +571,13 @@ async fn a_grant_must_match_the_schema_exactly() {
     let app = app_with_hardware(&uv).await;
     for (field, bad) in [
         ("decision", json!("deny")),
-        ("notAfter", json!(chrono::Utc::now().timestamp() - 10)),
+        (
+            "sessionEndsAt",
+            json!(
+                (chrono::Utc::now() - chrono::TimeDelta::seconds(10))
+                    .to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+            ),
+        ),
         ("contextDigest", json!("sha-256:abc")),
         ("origin", json!("https://portal.vtc.example/members")),
         ("sessionKey", json!("did:web:browser.example")),
@@ -1504,9 +1511,7 @@ async fn a_locked_pin_cannot_be_replaced() {
 //
 // The browser names the member's phone; the VTA pushes a VTA-signed
 // `task-consent/request` to it and answers `oobUvPending` until the phone's
-// `task-consent/decision/0.1` approves it.
-
-const DECISION_0_1: &str = "https://trusttasks.org/spec/task-consent/decision/0.1";
+// `task-consent/decision/0.2` approves it.
 
 fn remote_enrolment(approver: &str) -> Value {
     json!({ "kind": "remoteApprover", "approver": approver,
@@ -1559,7 +1564,7 @@ async fn raised(app: &App) -> Vec<vti_common::task_consent::PendingTaskConsent> 
         .collect()
 }
 
-/// The phone's `task-consent/decision/0.1`, as Cierge sends it.
+/// The phone's `task-consent/decision/0.2`, as Cierge sends it.
 async fn phone_decides(
     app: &App,
     by: &Device,
@@ -1569,7 +1574,7 @@ async fn phone_decides(
     call_as(
         app,
         by,
-        DECISION_0_1,
+        DECISION,
         json!({
             "challenge": pending.challenge,
             "payloadDigest": pending.wire_digest,

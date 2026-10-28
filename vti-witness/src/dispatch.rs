@@ -7,7 +7,7 @@
 //!
 //! | type | answer |
 //! |---|---|
-//! | `trust-task-discovery/0.3`, `/0.1` | this identity's own task list |
+//! | `trust-task-discovery/0.3` | this identity's own task list |
 //! | `witness/session/0.2` | a session and its challenge ([`crate::witness`]) |
 //! | `witness/session/submit/0.2` | the VWC and its digest ([`crate::witness`]) |
 //!
@@ -64,7 +64,7 @@ use chrono::{DateTime, Utc};
 use serde::Serialize;
 use serde_json::Value;
 use std::sync::Arc;
-use trust_tasks_rs::specs::trust_task_discovery::{v0_1, v0_3};
+use trust_tasks_rs::specs::trust_task_discovery::v0_3;
 use trust_tasks_rs::specs::witness::session;
 use trust_tasks_rs::validate::ValidatedPayload;
 
@@ -81,8 +81,6 @@ use crate::witness::Witnessing;
 
 /// `trust-task-discovery/0.3` — the version the VTA and VTC both answer.
 pub const DISCOVERY_V0_3: &str = discovery::DISCOVERY_V0_3;
-/// `trust-task-discovery/0.1` — still what `VtaClient` asks.
-pub const DISCOVERY_V0_1: &str = <v0_1::Payload as Payload>::TYPE_URI;
 /// `witness/session/0.2`.
 pub const WITNESS_SESSION_V0_2: &str = <session::v0_2::Payload as Payload>::TYPE_URI;
 /// `witness/session/submit/0.2`.
@@ -91,7 +89,6 @@ pub const WITNESS_SESSION_SUBMIT_V0_2: &str = <session::submit::v0_2::Payload as
 /// Every type a witness identity serves — the one table routing and the
 /// discovery answer both read, so discovery cannot list a task nobody routes.
 pub const SERVED: &[&str] = &[
-    DISCOVERY_V0_1,
     DISCOVERY_V0_3,
     WITNESS_SESSION_V0_2,
     WITNESS_SESSION_SUBMIT_V0_2,
@@ -346,18 +343,6 @@ async fn evaluate(
             }
             match serde_json::from_value::<v0_3::Payload>(doc.payload.clone()) {
                 Ok(query) => answered(to_value(discovery::respond_v0_3(
-                    SERVED.iter().copied(),
-                    &query,
-                ))),
-                Err(e) => reject(malformed(format!("payload: {e}"))),
-            }
-        }
-        DISCOVERY_V0_1 => {
-            if let Err(e) = v0_1::Payload::validate_value(&doc.payload) {
-                return reject(malformed(format!("payload: {e}")));
-            }
-            match serde_json::from_value::<v0_1::Payload>(doc.payload.clone()) {
-                Ok(query) => answered(to_value(discovery::respond_v0_1(
                     SERVED.iter().copied(),
                     &query,
                 ))),

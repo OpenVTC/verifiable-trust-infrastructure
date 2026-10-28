@@ -196,11 +196,11 @@ pub async fn offline_atm_with(secrets: &[Secret]) -> affinidi_tdk::messaging::AT
     .expect("offline ATM")
 }
 
-/// A DIDComm `auth/authenticate/0.1` plaintext answering `challenge` for
+/// A DIDComm `auth/authenticate/0.3` plaintext answering `challenge` for
 /// `session_id`, claiming `from`, stamped now — ready to be authcrypted.
 pub fn authenticate_plaintext(from: &str, to: &str, challenge: &str, session_id: &str) -> Vec<u8> {
     plaintext_message(
-        "https://trusttasks.org/spec/auth/authenticate/0.1",
+        "https://trusttasks.org/spec/auth/authenticate/0.3",
         from,
         to,
         serde_json::json!({ "challenge": challenge, "session_id": session_id }),
@@ -232,10 +232,10 @@ pub fn plaintext_message(type_uri: &str, from: &str, to: &str, body: serde_json:
     serde_json::to_vec(&msg).expect("serialize message")
 }
 
-/// A DIDComm `auth/refresh/0.1` plaintext carrying `refresh_token`.
+/// A DIDComm `auth/refresh/0.2` plaintext carrying `refresh_token`.
 pub fn refresh_plaintext(from: &str, to: &str, refresh_token: &str) -> Vec<u8> {
     plaintext_message(
-        "https://trusttasks.org/spec/auth/refresh/0.1",
+        "https://trusttasks.org/spec/auth/refresh/0.2",
         from,
         to,
         serde_json::json!({ "refresh_token": refresh_token }),

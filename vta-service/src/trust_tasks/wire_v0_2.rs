@@ -23,8 +23,8 @@
 //!
 //! **Not** used for specs whose payload carries a signature over the document
 //! (e.g. `auth/step-up/approve-response`, where the approver signs the
-//! payload) — mutating those bytes would void the proof. A signed spec parses a
-//! kebabized *copy* instead ([`kebabize_paths`]).
+//! payload) — mutating those bytes would void the proof. A signed spec is
+//! parsed at its own version, whose generated type reads the camelCase values.
 
 use serde_json::Value;
 
@@ -240,17 +240,6 @@ fn apply_paths(payload: &mut Value, paths: &[&str], f: fn(&str) -> String) {
 /// `spec.request_paths` to kebab so the handler's storage-form types parse it.
 pub(super) fn downconvert_request(payload: &mut Value, spec: &WireSpecV02) {
     apply_paths(payload, spec.request_paths, kebabize);
-}
-
-/// Down-convert (camel→kebab) the enum values at `paths` in `payload`.
-///
-/// Exposed for the **typed** slices (e.g. step-up) whose payload is signed:
-/// they can't mutate the document itself (it would void the proof), so they
-/// down-convert a *copy* of the payload purely to parse it with the v0_1
-/// types, while proof verification and the echoed response still use the
-/// original 0.2 document.
-pub(super) fn kebabize_paths(payload: &mut Value, paths: &[&str]) {
-    apply_paths(payload, paths, kebabize);
 }
 
 /// Up-convert (kebab→camel) the enum values at `paths` in `payload`.

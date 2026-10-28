@@ -1321,7 +1321,7 @@ enum ApprovalsCommands {
     /// Drop the rule(s) for one task type — the surgical fix.
     Remove {
         /// Trust Task Type URI, e.g.
-        /// `https://trusttasks.org/spec/policy/upsert/0.1`.
+        /// `https://trusttasks.org/spec/policy/upsert/0.3`.
         task_type: String,
         /// Remove only the rule scoped to exactly these contexts.
         #[arg(long, value_delimiter = ',')]

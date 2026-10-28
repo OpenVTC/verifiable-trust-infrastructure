@@ -16,7 +16,7 @@
 //! client dispatches. Both faults were invisible until the mint call failed,
 //! and the failure it produced named neither of them.
 //!
-//! [`verify_authorization`] asks `trust-task-discovery/0.1` — any authenticated
+//! [`verify_authorization`] asks `trust-task-discovery/0.3` — any authenticated
 //! caller, answered from the VTA's own dispatch table — and so settles three
 //! questions in one call, before anything is minted:
 //!
@@ -28,7 +28,7 @@
 //!
 //! # Why it is mostly not a gate
 //!
-//! `trust-task-discovery/0.1` is published and canonical, but it is not
+//! `trust-task-discovery/0.3` is published and canonical, but it is not
 //! ancient. A VTA that does not serve it is not a VTA we should refuse to
 //! provision — that would turn a diagnostic into an outage, which is the one
 //! way this module could be worse than not existing.
@@ -144,7 +144,7 @@ pub(super) async fn verify_authorization(
             let _ = tx.send(VtaEvent::CheckDone(
                 DiagCheck::VerifyAuthorization,
                 DiagStatus::Skipped(
-                    "this VTA does not serve trust-task-discovery/0.1, so its task list \
+                    "this VTA does not serve trust-task-discovery/0.3, so its task list \
                      could not be checked in advance"
                         .into(),
                 ),

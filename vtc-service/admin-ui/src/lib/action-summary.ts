@@ -140,8 +140,8 @@ export const PINNED_TEMPLATE_DIGESTS: Readonly<Record<string, string>> = Object.
   [pinKey("directory.field.widen", `${SPEC}/vtc/directory/fields/update/0.1`)]:
     "zQmafxMMkTfH4kb9QgoUQEJtUs4tuZFvqM8nxhjEawj6vYZ",
   // Replacing or activating the personhood policy (VTI-APV-023).
-  [pinKey("policy.recognition.change", `${SPEC}/policy/upsert/0.2`)]:
-    "zQmT4hA8bE6Z1G2PDPPTvzH9ZTGrKdnyS3UBhhEXZkeDLhm",
+  [pinKey("policy.recognition.change", `${SPEC}/policy/upsert/0.3`)]:
+    "zQmbvZxPwfxKg7j3MNguVQNJXVwVcfrRbBQZiWrWyfszTm3",
   [pinKey("policy.recognition.change", `${SPEC}/policy/activate/0.1`)]:
     "zQmSdYoQSJ79w1Di8LMr3QJKcjLt47c2DdH2F9gbfoLF6hv",
   // Publishing or withdrawing hidden vetting on a join criterion (VTI-APV-023).
@@ -154,8 +154,8 @@ export const PINNED_TEMPLATE_DIGESTS: Readonly<Record<string, string>> = Object.
     "zQmbgGnKd4rpcj5dPZsKGTrL48wFiL5jGnyyUe9o3JcP5mr",
   [pinKey("join.criteria.change", `${SPEC}/vtc/schemas/accepts/delete/0.1`)]:
     "zQmaKTFtV3fF3hBkeWwduWohd35nePzqcEvBP95HLa3e7Pu",
-  [pinKey("policy.authority.change", `${SPEC}/policy/upsert/0.2`)]:
-    "zQma1zFb7cvRpSH7erp14W83wYZW5vP7cke1yLwcwQZdEie",
+  [pinKey("policy.authority.change", `${SPEC}/policy/upsert/0.3`)]:
+    "zQmTE3m6nY2PUjccPc1kXE8E3qUg1B44XhN2Tvgy5JHNPLv",
   [pinKey("policy.authority.change", `${SPEC}/policy/activate/0.1`)]:
     "zQmTqKd5UoQZfTy7giJU9KFWFyhUbqxAtr5XWoUB9BLncBL",
   // An operator's offline write, raised for acknowledgement (VTI-VTC-023).

@@ -25,13 +25,13 @@ use crate::protocols::policy_management::{
 
 #[cfg(feature = "client")]
 impl VtaClient {
-    /// `policy/list/0.2` — enumerate stored policy modules.
+    /// `policy/list/0.3` — enumerate stored policy modules.
     pub async fn list_policies(
         &self,
         req: ListPoliciesBody,
     ) -> Result<ListPoliciesResultBody, VtaError> {
         self.rpc_tt(
-            crate::trust_tasks::TASK_POLICY_LIST_0_2,
+            crate::trust_tasks::TASK_POLICY_LIST_0_3,
             serde_json::to_value(&req)?,
             30,
             // No `.query(&req)`: reqwest is built without default features here,
@@ -55,7 +55,7 @@ impl VtaClient {
         .await
     }
 
-    /// `policy/upsert/0.2` — create or revise a policy module. Super-admin.
+    /// `policy/upsert/0.3` — create or revise a policy module. Super-admin.
     ///
     /// For the declarative approvals row, build the request with
     /// [`crate::approvals::synthesize_rego`] over the rules and put the same
@@ -66,7 +66,7 @@ impl VtaClient {
         req: UpsertPolicyBody,
     ) -> Result<UpsertPolicyResultBody, VtaError> {
         self.rpc_tt(
-            crate::trust_tasks::TASK_POLICY_UPSERT_0_2,
+            crate::trust_tasks::TASK_POLICY_UPSERT_0_3,
             serde_json::to_value(&req)?,
             30,
         )

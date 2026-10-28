@@ -1,5 +1,7 @@
-//! Wallet sign-in started by a trigger link: `auth/oob/{request,claim,prove,
-//! respond,redeem,cancel}/0.1` on the signed-document spine.
+//! Wallet sign-in started by a trigger link: `auth/oob/request/0.2`,
+//! `claim/0.2`, `prove/0.3`, `respond/0.3` (carrying a `grant/0.3`),
+//! `redeem/0.2` and `cancel/0.1` on the signed-document spine. Earlier
+//! versions are not served.
 //!
 //! The state, clocks and connection plumbing are
 //! [`crate::member_portal::oob`]; this module is the check order of base
@@ -26,7 +28,7 @@
 //!
 //! A request is a member-portal sign-in unless the starter asks otherwise in
 //! `ext["org.openvtc.session"].audience` (`"admin"`: the operator console's
-//! login page). `purpose` stays `login`, the only value `auth/oob/0.1`
+//! login page). `purpose` stays `login`, the only value `auth/oob/request`
 //! defines. The audience is fixed at `request`, stored on the record, and
 //! repeated by the VTC under the same `ext` member in the signed step 1 and
 //! step 2 responses, so the grant's `contextDigest` covers it: an approval
@@ -57,11 +59,9 @@ use super::helpers::{
 };
 use crate::member_portal::oob::types::{
     CANCEL_TYPE, CLAIM_TYPE, CancelPayload, CancelResponse, ClaimPayload, GRANT_TYPE,
-    GRANT_V0_2_TYPE, GrantDecision, GrantPayload, GrantPayloadV0_2, IDENTIFY_TYPE, IdentifyPayload,
-    PROVE_TYPE, PROVE_V0_2_TYPE, ProvePayload, ProvePayloadV0_2, REDEEM_TYPE, REQUEST_TYPE,
-    RESPOND_TYPE, RESPOND_V0_2_TYPE, RedeemPayload, RedeemResponse, RequestPayload,
-    RequestResponse, RespondPayload, RespondPayloadV0_2, RespondResponse, RespondResponseV0_2,
-    Step1, Step2, Step2V0_2,
+    GrantDecision, GrantPayload, IDENTIFY_TYPE, IdentifyPayload, PROVE_TYPE, ProvePayload,
+    REDEEM_TYPE, REQUEST_TYPE, RESPOND_TYPE, RedeemPayload, RedeemResponse, RequestPayload,
+    RequestResponse, RespondPayload, RespondResponse, Step1, Step2,
 };
 use crate::member_portal::oob::{
     self, CLAIM_WINDOW_SECS, DECISION_WINDOW_SECS, HttpContext, MAX_PENDING_PER_ADDRESS,
@@ -81,19 +81,17 @@ pub(crate) const URIS: &[&str] = &[
     RESPOND_TYPE,
     REDEEM_TYPE,
     CANCEL_TYPE,
-    PROVE_V0_2_TYPE,
-    RESPOND_V0_2_TYPE,
 ];
 
 /// The task families a member-portal sign-in offers to let `K_b` sign for as
-/// the member (`auth/oob/prove/0.2` `signingScope`): the member directory, so
+/// the member (`auth/oob/prove/0.3` `signingScope`): the member directory, so
 /// the portal can read it and edit the member's own card, and the community's
 /// groups, so it can list, join and leave them, without asking the wallet for
 /// every document — and the member's own view of the community's repositories
 /// (`git-ns/view`) with where a forge-account link they began stands
 /// (`git-ns/account/link-status`), never another `git-ns` task: linking,
 /// unlinking and every right change take the member's own signature, through
-/// their wallet (`auth/oob/grant/0.2` consumer item 6). Fixed for the surface,
+/// their wallet (`auth/oob/grant/0.3` consumer item 6). Fixed for the surface,
 /// as the specification requires; the operator console offers none.
 pub(crate) const PORTAL_SIGNING_SCOPE: &[&str] = &[
     "vtc/directory",
@@ -127,8 +125,8 @@ fn task_of(type_uri: &str) -> &'static str {
     match type_uri {
         REQUEST_TYPE => "request",
         CLAIM_TYPE => "claim",
-        PROVE_TYPE | PROVE_V0_2_TYPE => "prove",
-        RESPOND_TYPE | RESPOND_V0_2_TYPE => "respond",
+        PROVE_TYPE => "prove",
+        RESPOND_TYPE => "respond",
         REDEEM_TYPE => "redeem",
         _ => "cancel",
     }
@@ -166,10 +164,8 @@ pub(super) async fn dispatch(
     Some(match type_uri {
         REQUEST_TYPE => handle_request(state, doc, signer).await,
         CLAIM_TYPE => handle_claim(state, doc, signer).await,
-        PROVE_TYPE => handle_prove(state, doc, signer, false).await,
-        PROVE_V0_2_TYPE => handle_prove(state, doc, signer, true).await,
-        RESPOND_TYPE => handle_respond(state, doc, signer, false).await,
-        RESPOND_V0_2_TYPE => handle_respond(state, doc, signer, true).await,
+        PROVE_TYPE => handle_prove(state, doc, signer).await,
+        RESPOND_TYPE => handle_respond(state, doc, signer).await,
         REDEEM_TYPE => handle_redeem(state, doc, signer).await,
         CANCEL_TYPE => handle_cancel(state, doc, signer).await,
         _ => return None,
@@ -479,7 +475,7 @@ async fn handle_request(
         );
     };
     // A purpose or mode this service does not serve has its own code (auth/oob/
-    // request 0.1), so it is read before the generated payload, whose enums
+    // request 0.2), so it is read before the generated payload, whose enums
     // would refuse it as malformed.
     let raw = |k: &str| {
         doc.payload
@@ -606,8 +602,7 @@ async fn handle_request(
     }
     audit(state, &start_key, "requested", &rec, None, None, None).await;
     let response: RequestResponse = match wire(&doc, "the request response", {
-        let mut r =
-            serde_json::json!({ "requestId": rec.request_id, "claimDeadline": rec.claim_deadline });
+        let mut r = serde_json::json!({ "requestId": rec.request_id, "claimClosesAt": oob::rfc3339(rec.claim_deadline) });
         // Echoed for an operator-console request, so the page knows this
         // VTC read the extension: a VTC that predates it carries `ext`
         // through unread and would open a member sign-in instead.
@@ -692,7 +687,7 @@ async fn handle_claim(
         "service": { "did": vtc_did, "name": service_name },
         "origin": rec.origin,
         "purpose": rec.purpose,
-        "decisionDeadline": decision_deadline,
+        "decisionClosesAt": oob::rfc3339(decision_deadline),
     });
     // The audience, signed: the wallet can say "operator console", and step 2
     // repeats it so the grant's `contextDigest` binds it. None for a member
@@ -746,18 +741,10 @@ async fn handle_prove(
     state: &AppState,
     doc: TrustTask<Value>,
     approver: String,
-    v0_2: bool,
 ) -> TrustTaskOutcome {
-    let identify = if v0_2 {
-        match parse_payload::<ProvePayloadV0_2>(&doc) {
-            Ok(p) => Value::Object(p.identify),
-            Err(e) => return e,
-        }
-    } else {
-        match parse_payload::<ProvePayload>(&doc) {
-            Ok(p) => Value::Object(p.identify),
-            Err(e) => return e,
-        }
+    let identify = match parse_payload::<ProvePayload>(&doc) {
+        Ok(p) => Value::Object(p.identify),
+        Err(e) => return e,
     };
     let Some(request_id) = request_id_hint(&doc, &identify) else {
         return not_found(&doc, "prove");
@@ -925,23 +912,16 @@ async fn handle_prove(
         }),
     );
     step2_json.insert("identifiedAs".into(), Value::String(member.clone()));
-    // 0.2: a member sign-in offers the portal's signing scope. The console
-    // offers none, and neither does a 0.1 step 2.
-    let offered: Option<Vec<String>> = (v0_2 && rec.audience == SessionAudience::Member)
+    // A member sign-in offers the portal's signing scope. The console offers
+    // none.
+    let offered: Option<Vec<String>> = (rec.audience == SessionAudience::Member)
         .then(|| PORTAL_SIGNING_SCOPE.iter().map(|s| s.to_string()).collect());
     if let Some(scope) = &offered {
         step2_json.insert("signingScope".into(), serde_json::json!(scope));
     }
-    let attested_step2 = if v0_2 {
-        match wire::<Step2V0_2>(&doc, "step 2", Value::Object(step2_json)) {
-            Ok(s) => attested(state, &doc, &s).await,
-            Err(e) => return e,
-        }
-    } else {
-        match wire::<Step2>(&doc, "step 2", Value::Object(step2_json)) {
-            Ok(s) => attested(state, &doc, &s).await,
-            Err(e) => return e,
-        }
+    let attested_step2 = match wire::<Step2>(&doc, "step 2", Value::Object(step2_json)) {
+        Ok(s) => attested(state, &doc, &s).await,
+        Err(e) => return e,
     };
     let (signed, outcome) = match attested_step2 {
         Ok(s) => s,
@@ -989,20 +969,12 @@ async fn handle_respond(
     state: &AppState,
     doc: TrustTask<Value>,
     approver: String,
-    v0_2: bool,
 ) -> TrustTaskOutcome {
-    let grant_doc = if v0_2 {
-        match parse_payload::<RespondPayloadV0_2>(&doc) {
-            Ok(p) => Value::Object(p.grant),
-            Err(e) => return e,
-        }
-    } else {
-        match parse_payload::<RespondPayload>(&doc) {
-            Ok(p) => Value::Object(p.grant),
-            Err(e) => return e,
-        }
+    let grant_doc = match parse_payload::<RespondPayload>(&doc) {
+        Ok(p) => Value::Object(p.grant),
+        Err(e) => return e,
     };
-    let grant_type = if v0_2 { GRANT_V0_2_TYPE } else { GRANT_TYPE };
+    let grant_type = GRANT_TYPE;
     let Some(request_id) = request_id_hint(&doc, &grant_doc) else {
         return not_found(&doc, "respond");
     };
@@ -1070,14 +1042,14 @@ async fn handle_respond(
         fail(reason).await;
         return not_authorized(&doc, "respond");
     }
-    let Some(grant) = GrantView::read(&grant_doc, v0_2) else {
+    let Some(grant) = GrantView::read(&grant_doc) else {
         fail("grant payload is malformed").await;
         return not_authorized(&doc, "respond");
     };
 
     // 3–4. The lock, the browser key, the origin and the context it was shown.
-    // 0.2 item 3: the grant's `signingScope` is step 2's, both absent or the
-    // same families in the same order. A 0.1 grant carries none and arms none.
+    // Item 3: the grant's `signingScope` is step 2's, both absent or the same
+    // families in the same order.
     let context_ok = grant.request_id == rec.request_id
         && grant.approver_key == approver
         && grant.session_key == rec.start_key
@@ -1086,7 +1058,7 @@ async fn handle_respond(
             .step2_digest
             .as_deref()
             .is_some_and(|d| oob::same_digest(d, &grant.context_digest))
-        && (!v0_2 || grant.signing_scope == rec.signing_scope);
+        && grant.signing_scope == rec.signing_scope;
     if !context_ok {
         fail("grant context mismatch").await;
         return reject_with_code(
@@ -1104,7 +1076,7 @@ async fn handle_respond(
     if decision == OobState::Approved {
         let not_after = grant.not_after;
         if not_after <= now_epoch() {
-            fail("grant notAfter has passed").await;
+            fail("grant sessionEndsAt has passed").await;
             return not_authorized(&doc, "respond");
         }
         // 5. Still a member — or, for the console, still an administrator.
@@ -1174,16 +1146,9 @@ async fn handle_respond(
             // Signed like steps 1 and 2: every reply to the wallet is this
             // community's attestation, and the wallet refuses one that is not.
             let body = serde_json::json!({ "status": stage });
-            let answered = if v0_2 {
-                match wire::<RespondResponseV0_2>(&doc, "the respond response", body) {
-                    Ok(r) => attested(state, &doc, &r).await,
-                    Err(e) => return e,
-                }
-            } else {
-                match wire::<RespondResponse>(&doc, "the respond response", body) {
-                    Ok(r) => attested(state, &doc, &r).await,
-                    Err(e) => return e,
-                }
+            let answered = match wire::<RespondResponse>(&doc, "the respond response", body) {
+                Ok(r) => attested(state, &doc, &r).await,
+                Err(e) => return e,
             };
             match answered {
                 Ok((_, outcome)) => outcome,
@@ -1200,7 +1165,7 @@ async fn handle_respond(
     }
 }
 
-/// What a grant says, read from its 0.1 or 0.2 generated payload.
+/// What a grant says, read from its `auth/oob/grant/0.3` generated payload.
 struct GrantView {
     request_id: String,
     approver_key: String,
@@ -1208,54 +1173,35 @@ struct GrantView {
     origin: String,
     context_digest: String,
     approve: bool,
+    /// `sessionEndsAt`, as epoch seconds.
     not_after: u64,
-    /// 0.2 only: the families `K_b` may sign for as the member.
+    /// The families `K_b` may sign for as the member.
     signing_scope: Option<Vec<String>>,
 }
 
 impl GrantView {
-    /// `None` for a payload its version's schema does not admit, or an
-    /// unknown decision.
-    fn read(grant_doc: &Value, v0_2: bool) -> Option<Self> {
+    /// `None` for a payload the schema does not admit, or an unknown decision.
+    fn read(grant_doc: &Value) -> Option<Self> {
         let payload = grant_doc.get("payload")?.clone();
-        if v0_2 {
-            let g: GrantPayloadV0_2 = serde_json::from_value(payload).ok()?;
-            let approve = match serde_json::to_value(g.decision).ok()?.as_str()? {
-                "approve" => true,
-                "decline" => false,
-                _ => return None,
-            };
-            Some(Self {
-                request_id: g.request_id.to_string(),
-                approver_key: g.approver_key.to_string(),
-                session_key: g.session_key.to_string(),
-                origin: g.origin.to_string(),
-                context_digest: g.context_digest.to_string(),
-                approve,
-                not_after: g.not_after,
-                signing_scope: g
-                    .signing_scope
-                    .map(|s| s.iter().map(|f| f.to_string()).collect()),
-            })
-        } else {
-            let g: GrantPayload = serde_json::from_value(payload).ok()?;
-            let approve = match g.decision {
-                GrantDecision::Approve => true,
-                GrantDecision::Decline => false,
-                #[allow(unreachable_patterns)]
-                _ => return None,
-            };
-            Some(Self {
-                request_id: g.request_id.to_string(),
-                approver_key: g.approver_key.to_string(),
-                session_key: g.session_key.to_string(),
-                origin: g.origin.to_string(),
-                context_digest: g.context_digest.to_string(),
-                approve,
-                not_after: g.not_after,
-                signing_scope: None,
-            })
-        }
+        let g: GrantPayload = serde_json::from_value(payload).ok()?;
+        let approve = match g.decision {
+            GrantDecision::Approve => true,
+            GrantDecision::Decline => false,
+            #[allow(unreachable_patterns)]
+            _ => return None,
+        };
+        Some(Self {
+            request_id: g.request_id.to_string(),
+            approver_key: g.approver_key.to_string(),
+            session_key: g.session_key.to_string(),
+            origin: g.origin.to_string(),
+            context_digest: g.context_digest.to_string(),
+            approve,
+            not_after: u64::try_from(g.session_ends_at.timestamp()).unwrap_or(0),
+            signing_scope: g
+                .signing_scope
+                .map(|s| s.iter().map(|f| f.to_string()).collect()),
+        })
     }
 }
 
@@ -1480,16 +1426,16 @@ async fn handle_redeem(
 /// `amr = ["did", "oob", "uv"]`.
 ///
 /// - **Member portal:** a member session, ending at the earlier of the
-///   grant's `notAfter` and the member session limit.
+///   grant's `sessionEndsAt` and the member session limit.
 /// - **Operator console:** the console session every console sign-in issues
 ///   ([`crate::routes::auth::mint_admin_cookie_session`]), for a DID the ACL
 ///   holds as an administrator now, ending no later than the grant's
-///   `notAfter`.
+///   `sessionEndsAt`.
 ///
-/// Either way the grant's `notAfter` is stored as the session's absolute end
+/// Either way the grant's `sessionEndsAt` is stored as the session's absolute end
 /// ([`vti_common::auth::session::Session::not_after`]): refresh rotates the
 /// tokens inside it and refuses once it has passed, so the member's approval
-/// bounds the whole session, not only its first window. The `notAfter`
+/// bounds the whole session, not only its first window. The `sessionEndsAt`
 /// reported here is the session's true end. Anyone else is `declined` with
 ///   `details.reason: notAnAdmin`, and the request stays spent.
 ///
@@ -1551,7 +1497,7 @@ async fn redeem_approved(
         .grant
         .as_ref()
         .and_then(|g| g.get("payload"))
-        .and_then(|p| p.get("notAfter"))
+        .and_then(|p| p.get("sessionEndsAt"))
         .and_then(oob::epoch_of)
         .unwrap_or(now);
     if not_after <= now {
@@ -1583,8 +1529,8 @@ async fn redeem_member(
     };
     match mint_session(state, &member_did, &consumed.start_key, not_after).await {
         Ok((session_id, session_end, set)) => {
-            // A 0.2 grant with `signingScope` arms `K_b` to sign those
-            // families as the member, for this session (auth/oob/grant/0.2).
+            // A grant with `signingScope` arms `K_b` to sign those families
+            // as the member, for this session (auth/oob/grant/0.3).
             if let Some(scope) = armed_scope(consumed) {
                 let delegation = crate::member_portal::delegation::Delegation {
                     member_did: member_did.clone(),
@@ -1631,7 +1577,7 @@ async fn redeem_member(
                 serde_json::json!({
                     "subject": member_did,
                     "displayName": display_name,
-                    "notAfter": session_end,
+                    "sessionEndsAt": oob::rfc3339(session_end),
                     "amr": amr(),
                 }),
             ) {
@@ -1643,11 +1589,11 @@ async fn redeem_member(
     }
 }
 
-/// The `signingScope` of the approved grant, when it is a 0.2 grant carrying
-/// one — `respond` already held it equal to what step 2 offered.
+/// The `signingScope` of the approved grant, when it carries one — `respond`
+/// already held it equal to what step 2 offered.
 fn armed_scope(consumed: &OobRequest) -> Option<Vec<String>> {
     let grant = consumed.grant.as_ref()?;
-    if grant.get("type").and_then(Value::as_str) != Some(GRANT_V0_2_TYPE) {
+    if grant.get("type").and_then(Value::as_str) != Some(GRANT_TYPE) {
         return None;
     }
     let scope: Vec<String> = grant
@@ -1729,7 +1675,7 @@ async fn redeem_admin(
             "ext": SessionAudience::Admin.to_ext(),
             "subject": admin_did,
             "displayName": display_name,
-            "notAfter": minted.minted.refresh_expires_at,
+            "sessionEndsAt": oob::rfc3339(minted.minted.refresh_expires_at),
             "amr": amr(),
         }),
     ) {
@@ -1755,7 +1701,7 @@ async fn mint_session(
     let session_id = uuid::Uuid::new_v4().to_string();
     let amr = amr();
     let acr = "aal2".to_string();
-    // The grant's `notAfter` bounds the session: both tokens are minted to
+    // The grant's `sessionEndsAt` bounds the session: both tokens are minted to
     // end by it, and it is stored as the session's absolute end, so refresh
     // rotation (`handle_refresh`) cannot extend it either.
     let minted = vti_common::auth::handlers::mint_session_tokens_until(

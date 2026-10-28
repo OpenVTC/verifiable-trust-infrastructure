@@ -29,7 +29,7 @@ use vti_common::auth::authcrypt_test_support::{
 };
 
 const CHALLENGE_TASK: &str = "https://trusttasks.org/spec/auth/challenge/0.1";
-const AUTHENTICATE_TASK: &str = "https://trusttasks.org/spec/auth/authenticate/0.1";
+const AUTHENTICATE_TASK: &str = "https://trusttasks.org/spec/auth/authenticate/0.3";
 
 fn admin_entry(did: &str) -> VtcAclEntry {
     VtcAclEntry {
@@ -297,7 +297,7 @@ async fn anoncrypt_wrapped_authcrypt_is_refused() {
 /// The refresh routes bind their sender with the same guard.
 #[tokio::test]
 async fn refresh_with_forged_apu_sender_is_refused() {
-    const REFRESH_TASK: &str = "https://trusttasks.org/spec/auth/refresh/0.1";
+    const REFRESH_TASK: &str = "https://trusttasks.org/spec/auth/refresh/0.2";
     let f = fixture().await;
     let vtc_pub = f.vtc.public();
     for path in ["/v1/auth/refresh", "/v1/wallet/auth/refresh"] {

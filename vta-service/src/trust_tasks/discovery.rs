@@ -1,13 +1,12 @@
 //! Discovery slice. One URI family, one question: **which Trust Tasks does this
 //! agent serve?**
 //!
-//! `spec/trust-task-discovery/0.1` and `/0.3` — the published canonical family
-//! from the dtgwg-trust-tasks-tf registry, carried by `trust-tasks-rs`. Any
+//! `spec/trust-task-discovery/0.3` — the published canonical family from the
+//! dtgwg-trust-tasks-tf registry, carried by `trust-tasks-rs`. Any
 //! authenticated caller. This is what a client should ask before assuming a
-//! task exists. Each version is answered in the version it was asked
-//! (discovery 0.3, *Relationship to 0.2 and 0.1*).
+//! task exists. 0.1 is no longer served.
 //!
-//! 0.3 adds the acceptance window this VTA applies to `issuedAt`, at response
+//! 0.3 carries the acceptance window this VTA applies to `issuedAt`, at response
 //! level (VTI-TRN-047). It is built by
 //! [`vti_common::trust_task::discovery::respond_v0_3`] from the same
 //! [`VTI_ACCEPTANCE_WINDOW`](vti_common::trust_task::acceptance::VTI_ACCEPTANCE_WINDOW)
@@ -29,8 +28,9 @@ use crate::server::AppState;
 
 use super::helpers::{parse_payload, success_response};
 
-/// Handler for `spec/trust-task-discovery/0.1` — canonical capability
-/// negotiation.
+/// Handler for `spec/trust-task-discovery/0.3` — canonical capability
+/// negotiation, with this VTA's acceptance window at response level
+/// (VTI-TRN-047).
 ///
 /// The answer is **derived from the dispatch table**, so it cannot claim a task
 /// this service does not actually route. A hand-maintained list would be a
@@ -38,26 +38,6 @@ use super::helpers::{parse_payload, success_response};
 /// none: a client believes a task is available and finds out on a live call,
 /// which on DIDComm is a 30-second timeout with no explanation.
 pub(super) async fn handle_trust_task_discovery(
-    _state: &AppState,
-    _auth: &AuthClaims,
-    doc: TrustTask<Value>,
-) -> TrustTaskOutcome {
-    use trust_tasks_rs::specs::trust_task_discovery::v0_1 as wire;
-
-    let req: wire::Payload = match parse_payload(&doc) {
-        Ok(r) => r,
-        Err(resp) => return resp,
-    };
-    success_response(
-        &doc,
-        discovery::respond_v0_1(super::dispatched_uris(), &req),
-    )
-}
-
-/// Handler for `spec/trust-task-discovery/0.3` — the 0.1 answer, with the
-/// framework release in three parts and this VTA's acceptance window at
-/// response level (VTI-TRN-047).
-pub(super) async fn handle_trust_task_discovery_v0_3(
     _state: &AppState,
     _auth: &AuthClaims,
     doc: TrustTask<Value>,
@@ -119,7 +99,7 @@ mod tests {
         let doc = |issued| {
             let mut d = trust_tasks_rs::TrustTask::new(
                 "urn:uuid:00000000-0000-4000-8000-000000000000".to_string(),
-                "https://trusttasks.org/spec/acl/list/0.1".parse().unwrap(),
+                "https://trusttasks.org/spec/acl/list/0.3".parse().unwrap(),
                 serde_json::json!({}),
             );
             d.issued_at = Some(issued);
@@ -150,15 +130,11 @@ mod tests {
              table rather than this floor",
             all.len()
         );
-        for version in [
-            vta_sdk::trust_tasks::TASK_TRUST_TASK_DISCOVERY_0_1,
-            vta_sdk::trust_tasks::TASK_TRUST_TASK_DISCOVERY_0_3,
-        ] {
-            assert!(
-                all.contains(&version),
-                "discovery must advertise itself ({version}) — a client that \
-                 cannot see it cannot know to ask again"
-            );
-        }
+        let version = vta_sdk::trust_tasks::TASK_TRUST_TASK_DISCOVERY_0_3;
+        assert!(
+            all.contains(&version),
+            "discovery must advertise itself ({version}) — a client that \
+             cannot see it cannot know to ask again"
+        );
     }
 }

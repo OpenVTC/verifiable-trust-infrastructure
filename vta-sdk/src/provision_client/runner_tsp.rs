@@ -56,7 +56,7 @@
 //!
 //! Which is why the socket open is **not** the ACL proof, and was never a
 //! safe thing to render as one. [`DiagCheck::VerifyAuthorization`] runs
-//! immediately after it on every intent: one `trust-task-discovery/0.1`
+//! immediately after it on every intent: one `trust-task-discovery/0.3`
 //! round-trip that answers "am I granted on this VTA", "is this the VTA I
 //! meant" and "do we agree on the provisioning version" before any key is
 //! minted. See [`super::authz`].

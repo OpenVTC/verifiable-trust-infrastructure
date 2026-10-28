@@ -15,7 +15,7 @@ out of one never spends another.
 | Limiter (`x-rate-limit-scope`) | Routes | Default |
 |---|---|---|
 | `auth` | **Anonymous** `POST /trust-tasks` requests other than the two below — `auth/challenge/0.1` and the public Trust Tasks (`vta/attestation/{status,report,config-report}/0.1`) — plus passkey login start/finish and `POST /bootstrap/request`. Authenticated `/trust-tasks` calls stay off every limiter | burst 10, then 1 token every 5 s |
-| `auth-authenticate` | Anonymous `POST /trust-tasks` carrying `auth/authenticate/0.2` or `0.3` | same quota as `auth` |
+| `auth-authenticate` | Anonymous `POST /trust-tasks` carrying `auth/authenticate/0.3` | same quota as `auth` |
 | `auth-refresh` | Anonymous `POST /trust-tasks` carrying `auth/refresh/0.2` | same quota as `auth` |
 | `did-log` | `GET /.well-known/did.jsonl`, the canonical `GET /<path>/did.jsonl` for a pathful self-hosted DID (and every other unmatched `GET`, which answers 404), `GET /did/{did}/log`, and under TEE `GET /attestation/did-log` | burst 60, then 1 token every 1 s |
 | `backup-blob` | `GET` / `POST /backup/blob/{bundle_id}` (token-gated, not JWT-gated) | same quota as `auth` |

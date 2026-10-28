@@ -49,7 +49,7 @@ operations are gated, the operator believing it, and nothing enforcing it.
 ## What did *not* change
 
 The step-up **ceremony** is untouched: `auth/step-up/approve-request/0.2` and
-`auth/step-up/approve-response/0.1`|`0.2`, the did-signed and WebAuthn gates,
+`auth/step-up/approve-response` (now `0.6`), the did-signed and WebAuthn gates,
 the pending-step-up store, the bounded elevation window, and the push to an
 approver's device all work exactly as before. What changed is only what decides
 that a ceremony is needed — which is now the rules, and only the rules.

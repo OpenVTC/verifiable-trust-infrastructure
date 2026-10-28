@@ -769,23 +769,8 @@ fn table() -> Vec<(&'static str, Conformance)> {
         // rather than its data. The request pins a real slug-glob rather than
         // `*`, so the witness exercises the pattern grammar the handler
         // implements; the response pins the shorthand (bare Type URI) form.
-        (
-            uris::TASK_TRUST_TASK_DISCOVERY_0_1,
-            checked!(
-                specs::trust_task_discovery::v0_1::Payload,
-                specs::trust_task_discovery::v0_1::Response,
-                json!({ "patterns": ["acl/*"] }),
-                json!({
-                    "frameworkVersion": "0.6",
-                    "supportedTypes": [
-                        "https://trusttasks.org/spec/acl/grant/0.1",
-                        "https://trusttasks.org/spec/acl/revoke/0.1"
-                    ]
-                })
-            ),
-        ),
-        // 0.3: the response is the one the handler builds, not a literal, so
-        // the witness pins the advertised acceptance window (VTI-TRN-047) as
+        // The response is the one the handler builds, not a literal, so the
+        // witness pins the advertised acceptance window (VTI-TRN-047) as
         // it is actually written — whole seconds, at response level.
         (
             uris::TASK_TRUST_TASK_DISCOVERY_0_3,
@@ -795,8 +780,8 @@ fn table() -> Vec<(&'static str, Conformance)> {
                 json!({ "patterns": ["acl/*"] }),
                 to_v(vti_common::trust_task::discovery::respond_v0_3(
                     [
-                        "https://trusttasks.org/spec/acl/grant/0.1",
-                        "https://trusttasks.org/spec/acl/revoke/0.1",
+                        "https://trusttasks.org/spec/acl/grant/0.2",
+                        "https://trusttasks.org/spec/acl/revoke/0.2",
                     ],
                     &specs::trust_task_discovery::v0_3::Payload::default(),
                 ))
@@ -834,52 +819,10 @@ fn table() -> Vec<(&'static str, Conformance)> {
             ),
         ),
         (
-            uris::TASK_AUTH_STEP_UP_APPROVE_RESPONSE_0_1,
+            uris::TASK_AUTH_STEP_UP_APPROVE_RESPONSE_0_6,
             checked!(
-                specs::auth::step_up::approve_response::v0_1::Payload,
-                specs::auth::step_up::approve_response::v0_1::Response,
-                // 0.1 wire: kebab-case evidence discriminator.
-                json!({
-                    "subject": SUBJECT,
-                    "sessionId": "sess-1",
-                    "challenge": "chal-0123456789abcdef",
-                    "decision": "approved",
-                    "grantedAcr": "aal2",
-                    "evidence": { "kind": "did-signed" },
-                }),
-                json!({ "status": "elevated", "session": session_json() })
-            ),
-        ),
-        (
-            uris::TASK_AUTH_STEP_UP_APPROVE_RESPONSE_0_3,
-            checked!(
-                specs::auth::step_up::approve_response::v0_3::Payload,
-                specs::auth::step_up::approve_response::v0_3::Response,
-                // The request is field-for-field 0.2. Only the acknowledgement
-                // moved, which is the whole reason the version had to.
-                json!({
-                    "subject": SUBJECT,
-                    "sessionId": "sess-1",
-                    "challenge": "chal-0123456789abcdef",
-                    "decision": "approved",
-                    "grantedAcr": "aal2",
-                    "evidence": { "kind": "didSigned" },
-                }),
-                // The witness is the BOUND form deliberately: `elevated` is
-                // already witnessed by 0.2 above, and `recorded` is the member
-                // this version exists for. No `session` — it changes none, and
-                // a snapshot here would witness an elevation that does not
-                // happen.
-                json!({ "status": "recorded", "boundTo": "01J0000000000000000000000A" })
-            ),
-        ),
-        (
-            uris::TASK_AUTH_STEP_UP_APPROVE_RESPONSE_0_2,
-            checked!(
-                specs::auth::step_up::approve_response::v0_2::Payload,
-                specs::auth::step_up::approve_response::v0_2::Response,
-                // 0.2 wire: camelCase evidence discriminator — the member the
-                // handler kebabizes on a copy (`wire_v0_2::kebabize_paths`).
+                specs::auth::step_up::approve_response::v0_6::Payload,
+                specs::auth::step_up::approve_response::v0_6::Response,
                 json!({
                     "subject": SUBJECT,
                     "sessionId": "sess-1",
@@ -995,12 +938,12 @@ fn table() -> Vec<(&'static str, Conformance)> {
                 }] })
             ),
         ),
-        // ─── task-consent (types are task_consent.rs-private) ─────
+        // ─── task-consent ────────────────────────────────────────
         (
-            uris::TASK_TASK_CONSENT_DECISION_0_1,
+            uris::TASK_TASK_CONSENT_DECISION_0_2,
             checked!(
-                specs::task_consent::decision::v0_1::Payload,
-                specs::task_consent::decision::v0_1::Response,
+                specs::task_consent::decision::v0_2::Payload,
+                specs::task_consent::decision::v0_2::Response,
                 json!({
                     "challenge": "chal-0123456789abcdef",
                     "payloadDigest": DIGEST_MULTIBASE,
@@ -1683,10 +1626,10 @@ fn table() -> Vec<(&'static str, Conformance)> {
         ),
         // ─── audit ───────────────────────────────────────────────
         (
-            uris::TASK_AUDIT_LIST_0_1,
+            uris::TASK_AUDIT_LIST_0_2,
             checked!(
-                specs::audit::list::v0_1::Payload,
-                specs::audit::list::v0_1::Response,
+                specs::audit::list::v0_2::Payload,
+                specs::audit::list::v0_2::Response,
                 to_v(ListAuditLogsBody {
                     from: Some(dt()),
                     to: Some(dt()),
@@ -1694,7 +1637,7 @@ fn table() -> Vec<(&'static str, Conformance)> {
                     actor: Some(SUBJECT.into()),
                     outcome: Some("success".into()),
                     context_id: Some("ctx-a".into()),
-                    page_size: Some(100),
+                    limit: Some(100),
                     cursor: Some("cur-1".into()),
                 }),
                 to_v(ListAuditLogsResultBody {
@@ -1708,8 +1651,7 @@ fn table() -> Vec<(&'static str, Conformance)> {
                         context_id: Some("ctx-a".into()),
                         detail: serde_json::Map::new(),
                     }],
-                    truncated: true,
-                    cursor: Some("cur-2".into()),
+                    next_cursor: Some("cur-2".into()),
                 })
             ),
         ),
@@ -2951,20 +2893,19 @@ fn table() -> Vec<(&'static str, Conformance)> {
         // from the canonical `ExtKey` pattern (lowercase reverse-DNS, which is
         // why the key is `openvtc.approver-sets` and not `approverSets`).
         (
-            uris::TASK_POLICY_LIST_0_2,
+            uris::TASK_POLICY_LIST_0_3,
             checked!(
-                specs::policy::list::v0_2::Payload,
-                specs::policy::list::v0_2::Response,
+                specs::policy::list::v0_3::Payload,
+                specs::policy::list::v0_3::Response,
                 to_v({
             let mut b = ListPoliciesBody::new(true);
             b.context_id = Some("ctx-a".into());
-            b.page_size = Some(50);
+            b.limit = Some(50);
             b
         }),
                 to_v(ListPoliciesResultBody {
                     policies: vec![policy_module_view()],
-                    truncated: false,
-                    cursor: None,
+                    next_cursor: Some("cur-2".into()),
                 })
             ),
         ),
@@ -2980,10 +2921,10 @@ fn table() -> Vec<(&'static str, Conformance)> {
             ),
         ),
         (
-            uris::TASK_POLICY_UPSERT_0_2,
+            uris::TASK_POLICY_UPSERT_0_3,
             checked!(
-                specs::policy::upsert::v0_2::Payload,
-                specs::policy::upsert::v0_2::Response,
+                specs::policy::upsert::v0_3::Payload,
+                specs::policy::upsert::v0_3::Response,
                 to_v(UpsertPolicyBody {
                     id: Some("approvals".into()),
                     name: "Declarative approvals".into(),
@@ -2997,7 +2938,7 @@ fn table() -> Vec<(&'static str, Conformance)> {
                 }),
                 to_v(UpsertPolicyResultBody {
                     policy: policy_module_view(),
-                    created: false,
+                    was_created: false,
                 })
             ),
         ),
