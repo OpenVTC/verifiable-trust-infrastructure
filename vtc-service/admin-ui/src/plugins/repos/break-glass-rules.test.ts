@@ -247,9 +247,9 @@ const STEP_UP = {
   boundTo: "zBoundDigest",
   reason: "Break glass: git.repo.own on github.com/acme/docs",
   targetAcr: "aal2",
-  acceptableEvidence: ["webauthn"],
+  accepts: ["webauthn"],
   webauthn: { challenge: "c2FtcGxlLWNoYWxsZW5nZS0xMjM0NQ", allowCredentials: [], userVerification: "required" },
-  ttl: 300,
+  ttlSeconds: 300,
 };
 
 describe("sendTask and a bound step-up", () => {

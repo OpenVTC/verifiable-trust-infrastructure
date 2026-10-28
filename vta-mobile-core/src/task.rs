@@ -1,7 +1,7 @@
 //! Trust Task parsing — wraps `trust-tasks-rs` generated types.
 //!
 //! Parses the two inbound documents a person is shown and asked to answer:
-//! `auth/step-up/approve-request` (`0.1` or `0.2`), so the native app can show
+//! `auth/step-up/approve-request/0.5`, so the native app can show
 //! the reason and decide which evidence gate to satisfy, and
 //! `consent/approve-request/0.1`, the prompt asking whether an agent may read
 //! or take part in one conversation.
@@ -17,7 +17,7 @@
 //! [`crate::stepup`].
 
 use trust_tasks_rs::TrustTask;
-use trust_tasks_rs::specs::auth::step_up::approve_request::{v0_1, v0_2};
+use trust_tasks_rs::specs::auth::step_up::approve_request::v0_5;
 use trust_tasks_rs::specs::consent::approve_request::v0_1 as consent_v0_1;
 
 use crate::error::FfiError;
@@ -32,7 +32,10 @@ pub struct StepUpRequest {
     pub relying_party: String,
     /// The VID whose session is being elevated.
     pub subject: String,
-    /// Opaque session id; echoed back verbatim in the response.
+    /// Opaque session id; echoed back verbatim in the response. Empty when the
+    /// request names no session (0.5 makes `sessionId` optional: a step-up
+    /// bound to one operation elevates none) — the same convention
+    /// [`crate::stepup`]'s response draft reads, where empty means absent.
     pub session_id: String,
     /// base64url challenge the response must bind.
     pub challenge: String,
@@ -40,11 +43,12 @@ pub struct StepUpRequest {
     pub reason: String,
     /// The acr the relying party wants (e.g. `"aal2"`), if specified.
     pub target_acr: Option<String>,
-    /// Evidence gates the relying party will accept (`"did-signed"` /
-    /// `"webauthn"`). Empty when the request did not constrain it (any
-    /// supported kind is allowed). The `0.2` wire spelling `didSigned` is
-    /// normalised to `did-signed`, so the native layer switches on one set of
-    /// strings regardless of the request version.
+    /// Evidence gates the relying party will accept, from the request's
+    /// required `accepts`: `"did-signed"`, `"webauthn"`, or
+    /// `"approver-signed"`. The wire's camelCase is normalised to the kebab
+    /// form the native layers switch on; a kind they do not implement
+    /// (`approver-signed`) is surfaced rather than dropped, so the UI can say
+    /// it cannot answer instead of offering a gate the request did not list.
     pub acceptable_evidence: Vec<String>,
     /// Whether the request carried WebAuthn options — i.e. the relying party
     /// wants a passkey-backed elevation and supplied the ceremony parameters.
@@ -62,14 +66,14 @@ pub struct StepUpRequest {
 /// (`vta-service` `EXT_KEY_AUTHZ_CONTEXT`).
 const EXT_KEY_AUTHZ_CONTEXT: &str = "org.openvtc.authorization-context";
 
-/// Type URIs of the request document versions this approver renders. `0.2`
-/// differs from `0.1` only in the `acceptableEvidence` spelling
-/// (`didSigned` vs `did-signed`).
-const STEP_UP_REQUEST_0_1: &str = "https://trusttasks.org/spec/auth/step-up/approve-request/0.1";
-const STEP_UP_REQUEST_0_2: &str = "https://trusttasks.org/spec/auth/step-up/approve-request/0.2";
+/// Type URI of the request this approver renders: approve-request 0.5, the one
+/// the VTA, the did-hosting RP and vtc-service all mint. One version, matched
+/// exactly — an approver offering a gate a superseded request named would be
+/// answering a question nobody asked.
+const STEP_UP_REQUEST: &str = <v0_5::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
-/// Verify and parse an inbound `auth/step-up/approve-request/0.1` or `/0.2`
-/// Trust Task document.
+/// Verify and parse an inbound `auth/step-up/approve-request/0.5` Trust Task
+/// document.
 ///
 /// `trusted_issuers` is the enrolled-executor allowlist the native layer holds:
 /// the enrolled VTA's DID plus any granted executor DIDs. The request's Data
@@ -92,9 +96,9 @@ pub async fn parse_step_up_request(
     })?;
 
     let type_uri = v.get("type").and_then(|t| t.as_str()).unwrap_or_default();
-    if type_uri != STEP_UP_REQUEST_0_1 && type_uri != STEP_UP_REQUEST_0_2 {
+    if type_uri != STEP_UP_REQUEST {
         return Err(FfiError::Decode {
-            reason: "not an auth/step-up/approve-request/0.1 or /0.2 document".to_string(),
+            reason: format!("not an {STEP_UP_REQUEST} document"),
         });
     }
 
@@ -111,39 +115,25 @@ pub async fn parse_step_up_request(
         .and_then(|e| e.get(EXT_KEY_AUTHZ_CONTEXT))
         .map(|c| c.to_string());
 
-    // Typed parse per version. The two payloads are field-for-field identical;
-    // only the `acceptableEvidence` enum spelling differs, normalised by
-    // `normalize_evidence` so the FFI surface is version-independent.
-    macro_rules! surface {
-        ($payload_ty:ty) => {{
-            let doc: TrustTask<$payload_ty> =
-                serde_json::from_str(&json).map_err(|e| FfiError::Decode {
-                    reason: format!("not a valid auth/step-up/approve-request document: {e}"),
-                })?;
-            let p = doc.payload;
-            StepUpRequest {
-                relying_party,
-                subject: p.subject.to_string(),
-                session_id: p.session_id.to_string(),
-                challenge: p.challenge.to_string(),
-                reason: p.reason.to_string(),
-                target_acr: p.target_acr,
-                acceptable_evidence: p
-                    .acceptable_evidence
-                    .unwrap_or_default()
-                    .iter()
-                    .map(|e| normalize_evidence(e.to_string()))
-                    .collect(),
-                webauthn_requested: p.webauthn.is_some(),
-                authorization_context,
-            }
-        }};
-    }
-
-    Ok(if type_uri == STEP_UP_REQUEST_0_1 {
-        surface!(v0_1::Payload)
-    } else {
-        surface!(v0_2::Payload)
+    let doc: TrustTask<v0_5::Payload> =
+        serde_json::from_str(&json).map_err(|e| FfiError::Decode {
+            reason: format!("not a valid {STEP_UP_REQUEST} document: {e}"),
+        })?;
+    let p = doc.payload;
+    Ok(StepUpRequest {
+        relying_party,
+        subject: p.subject.to_string(),
+        session_id: p.session_id.map(|s| s.to_string()).unwrap_or_default(),
+        challenge: p.challenge.to_string(),
+        reason: p.reason.to_string(),
+        target_acr: p.target_acr,
+        acceptable_evidence: p
+            .accepts
+            .iter()
+            .map(|e| normalize_evidence(e.to_string()))
+            .collect(),
+        webauthn_requested: p.webauthn.is_some(),
+        authorization_context,
     })
 }
 
@@ -267,13 +257,13 @@ pub async fn parse_consent_request(
     })
 }
 
-/// Map the `0.2` camelCase evidence spelling onto the `0.1` form the native
-/// layers already switch on. `webauthn` is spelled identically in both.
+/// Map the wire's camelCase evidence kinds onto the kebab form the native
+/// layers switch on. `webauthn` is spelled identically in both.
 fn normalize_evidence(kind: String) -> String {
-    if kind == "didSigned" {
-        "did-signed".to_string()
-    } else {
-        kind
+    match kind.as_str() {
+        "didSigned" => "did-signed".to_string(),
+        "approverSigned" => "approver-signed".to_string(),
+        _ => kind,
     }
 }
 
@@ -290,7 +280,7 @@ mod tests {
     // The passkey-backed request example from the approve-request spec.
     const PASSKEY_REQUEST: &str = r#"{
       "id": "step-up-2345-6789-01bc-def123456789",
-      "type": "https://trusttasks.org/spec/auth/step-up/approve-request/0.1",
+      "type": "https://trusttasks.org/spec/auth/step-up/approve-request/0.5",
       "issuer": "did:web:bank.example",
       "recipient": "did:web:alice.example",
       "issuedAt": "2026-05-23T14:00:00Z",
@@ -300,14 +290,14 @@ mod tests {
         "challenge": "VHJhbnNmZXJDb25maXJtTm9uY2VYWQ",
         "reason": "Confirm transfer of $1,000 to did:web:bob.example",
         "targetAcr": "aal2",
-        "acceptableEvidence": ["webauthn"],
+        "accepts": ["webauthn"],
         "webauthn": {
           "challenge": "VHJhbnNmZXJDb25maXJtTm9uY2VYWQ",
           "rpId": "bank.example",
           "userVerification": "required",
           "allowCredentials": [{ "type": "public-key", "id": "Y3JlZF8xYTJiM2M" }]
         },
-        "ttl": 120
+        "ttlSeconds": 120
       }
     }"#;
 
@@ -449,23 +439,26 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn parses_a_signed_0_2_request_normalising_evidence() {
-        // 0.2 spells the DID-signed gate `didSigned`; the surface stays
-        // `did-signed` so native switch statements are version-independent.
+    async fn parses_a_signed_request_normalising_evidence() {
+        // The wire spells the gates `didSigned` / `approverSigned`; the
+        // surface is the kebab form native switch statements use.
         let json = r#"{
           "id": "x",
-          "type": "https://trusttasks.org/spec/auth/step-up/approve-request/0.2",
+          "type": "https://trusttasks.org/spec/auth/step-up/approve-request/0.5",
           "payload": {
             "subject": "did:web:alice.example",
             "sessionId": "s1",
             "challenge": "VHJhbnNmZXJDb25maXJtTm9uY2VYWQ",
             "reason": "Approve sign-in",
-            "acceptableEvidence": ["didSigned"]
+            "accepts": ["didSigned", "approverSigned"]
           }
         }"#;
         let json = issued_by(json, EXECUTOR, Some(EXECUTOR)).await;
         let r = parse_step_up_request(json, enrolled()).await.unwrap();
-        assert_eq!(r.acceptable_evidence, vec!["did-signed".to_string()]);
+        assert_eq!(
+            r.acceptable_evidence,
+            vec!["did-signed".to_string(), "approver-signed".to_string()]
+        );
         assert!(!r.webauthn_requested);
         assert_eq!(r.target_acr, None);
         // No ext → no structured context (the UI falls back to `reason`).
@@ -477,12 +470,13 @@ mod tests {
         // A Cierge share ask carried under the reverse-DNS `ext` key.
         let json = r#"{
           "id": "x",
-          "type": "https://trusttasks.org/spec/auth/step-up/approve-request/0.1",
+          "type": "https://trusttasks.org/spec/auth/step-up/approve-request/0.5",
           "payload": {
             "subject": "did:webvh:operator",
             "sessionId": "s1",
             "challenge": "VHJhbnNmZXJDb25maXJtTm9uY2VYWQ",
             "reason": "finance wants to share salaryBand with travel",
+            "accepts": ["didSigned"],
             "ext": {
               "org.openvtc.authorization-context": {
                 "type": "https://openvtc.org/cierge/authorization-context/0.1",
@@ -506,6 +500,45 @@ mod tests {
             v["summary"],
             "finance wants to share salaryBand with travel"
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_request_naming_no_session_surfaces_an_empty_session_id() {
+        // An operation-bound step-up (0.5: `boundTo`, no `sessionId`).
+        let json = r#"{
+          "id": "x",
+          "type": "https://trusttasks.org/spec/auth/step-up/approve-request/0.5",
+          "payload": {
+            "subject": "did:web:alice.example",
+            "challenge": "VHJhbnNmZXJDb25maXJtTm9uY2VYWQ",
+            "boundTo": "zQmBound",
+            "reason": "Approve this grant",
+            "accepts": ["webauthn"]
+          }
+        }"#;
+        let json = issued_by(json, EXECUTOR, Some(EXECUTOR)).await;
+        let r = parse_step_up_request(json, enrolled()).await.unwrap();
+        assert_eq!(r.session_id, "");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn refuses_a_superseded_request_version() {
+        // Superseded versions are not this approver's: one version, matched exactly.
+        for (version, evidence) in [
+            ("0.1", "did-signed"),
+            ("0.2", "didSigned"),
+            ("0.4", "didSigned"),
+        ] {
+            let json = format!(
+                r#"{{"id":"x","type":"https://trusttasks.org/spec/auth/step-up/approve-request/{version}",
+                   "payload":{{"subject":"did:web:alice.example","sessionId":"s1",
+                   "challenge":"VHJhbnNmZXJDb25maXJtTm9uY2VYWQ","reason":"r",
+                   "acceptableEvidence":["{evidence}"]}}}}"#
+            );
+            let json = issued_by(&json, EXECUTOR, Some(EXECUTOR)).await;
+            let err = parse_step_up_request(json, enrolled()).await.unwrap_err();
+            assert!(matches!(err, FfiError::Decode { .. }), "{version}: {err:?}");
+        }
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

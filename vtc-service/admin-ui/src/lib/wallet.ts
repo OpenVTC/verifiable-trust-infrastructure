@@ -187,7 +187,7 @@ export interface ApproverSignedEvidence {
 }
 
 /** The step-up request handed to the plugin's `approveStepUp` — the VTC's
- *  inline `auth/step-up/approve-request/0.4` payload, as received. */
+ *  inline `auth/step-up/approve-request/0.5` payload, as received. */
 export interface ApproverStepUpRequest {
   subject: string;
   challenge: string;

@@ -110,10 +110,10 @@ function StepUpPageSurface() {
               </dd>
             </>
           )}
-          {request.ttl && (
+          {request.ttlSeconds && (
             <>
               <dt>Expires</dt>
-              <dd>{Math.round(request.ttl / 60)} minutes after it was asked</dd>
+              <dd>{Math.round(request.ttlSeconds / 60)} minutes after it was asked</dd>
             </>
           )}
         </dl>

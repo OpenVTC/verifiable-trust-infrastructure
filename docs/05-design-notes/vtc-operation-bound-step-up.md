@@ -96,7 +96,7 @@ signer ──(5) the same document, re-sent────────────�
    `(acting admin, digest)`.
 2. **It refuses with `stepUpRequired`** and parks a pending mark: a 256-bit
    challenge, the internal digest, the acting admin's DID, the type URI and an
-   expiry — **300 s**, decided: shorter than a session elevation's 900 s, because a mark authorizes one known act and has no reason to wait. The refusal's `details.stepUpRequest` — an inline `approve-request/0.3` payload — carries the challenge, the **wire
+   expiry — **300 s**, decided: shorter than a session elevation's 900 s, because a mark authorizes one known act and has no reason to wait. The refusal's `details.stepUpRequest` — an inline `approve-request/0.5` payload — carries the challenge, the **wire
    digest** (the payload digest salted with the challenge — all a client ever
    sees, since an unsalted digest over a low-entropy `acl/grant` payload is a
    confirmation oracle) and WebAuthn request options restricted to the acting

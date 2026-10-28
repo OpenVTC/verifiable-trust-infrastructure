@@ -889,7 +889,7 @@ pub struct AclEntry {
     #[serde(default)]
     pub version: u32,
     /// VID authorized to ratify an AAL2 step-up for this subject — the
-    /// `recipient` the VTA addresses an `auth/step-up/approve-request/0.1` to
+    /// `recipient` the VTA addresses an `auth/step-up/approve-request/0.5` to
     /// when a gated operation resolves to `delegated` mode (the holder's
     /// mobile authenticator or browser companion). `None` means no delegated
     /// approver is configured: under a `delegated` floor the operation

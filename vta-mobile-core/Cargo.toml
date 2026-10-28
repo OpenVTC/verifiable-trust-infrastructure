@@ -30,7 +30,7 @@ base64 = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 # Generated Trust Task payload types (incl. the step-up `Evidence` union and
-# `acceptableEvidence`, available from 0.1.3).
+# `approve-request/0.5`'s `accepts`).
 # Spec families: see "SPEC FAMILIES ARE DECLARED PER CRATE" in the workspace Cargo.toml.
 trust-tasks-rs = { workspace = true, features = [
   "auth",

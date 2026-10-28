@@ -51,6 +51,7 @@ const STEP_UP: StepUpRequest = {
   challenge: "c".repeat(32),
   boundTo: "urn:sha256:grant",
   reason: "Grant admin to Alice",
+  accepts: ["webauthn"],
 };
 const SIGNED = { type: ACL_GRANT_TASK, proof: {} } as unknown as SignedTrustTaskDocument;
 const stepUpRefusal = (): ApiError => ({
