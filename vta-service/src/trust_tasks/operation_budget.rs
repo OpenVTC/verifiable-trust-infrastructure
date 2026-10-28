@@ -71,10 +71,10 @@ use governor::state::{InMemoryState, NotKeyed};
 use governor::{Quota, RateLimiter};
 use metrics::counter;
 use vta_config::ServerConfig;
-#[allow(deprecated)] // `vault/release/0.1` is still served, so still charged.
+#[allow(deprecated)] // `vta/webvh/dids/create/1.0` is still served, so still charged.
 use vta_sdk::trust_tasks::{
-    TASK_VAULT_RELEASE_0_1, TASK_VAULT_RELEASE_0_2, TASK_WEBVH_DIDS_CREATE_1_0,
-    TASK_WEBVH_DIDS_CREATE_1_1, TASK_WEBVH_DIDS_DELETE_1_0,
+    TASK_VAULT_RELEASE_0_2, TASK_WEBVH_DIDS_CREATE_1_0, TASK_WEBVH_DIDS_CREATE_1_1,
+    TASK_WEBVH_DIDS_DELETE_1_0,
 };
 
 /// The heaviest weight in [`weight`]. No burst is below it, or that task could
@@ -145,7 +145,7 @@ type KeyedLimiter =
 pub(crate) fn weight(type_uri: &str) -> u32 {
     let bare = type_uri.split('#').next().unwrap_or(type_uri);
     match bare {
-        TASK_VAULT_RELEASE_0_1 | TASK_VAULT_RELEASE_0_2 => 2,
+        TASK_VAULT_RELEASE_0_2 => 2,
         TASK_WEBVH_DIDS_CREATE_1_0 | TASK_WEBVH_DIDS_CREATE_1_1 | TASK_WEBVH_DIDS_DELETE_1_0 => {
             MAX_WEIGHT
         }

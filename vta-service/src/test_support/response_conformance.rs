@@ -369,7 +369,7 @@ mod tests {
     #[test]
     fn a_non_conforming_payload_is_reported() {
         let body = br#"{
-            "type": "https://trusttasks.org/spec/vault/list/0.1#response",
+            "type": "https://trusttasks.org/spec/vault/list/0.4#response",
             "payload": {"nope": 1}
         }"#;
         let out = check(StatusCode::OK, body);
@@ -400,7 +400,7 @@ mod tests {
     #[test]
     fn an_error_outcome_is_exempt() {
         let body = br#"{
-            "type": "https://trusttasks.org/spec/vault/list/0.1#response",
+            "type": "https://trusttasks.org/spec/vault/list/0.4#response",
             "payload": {"nope": 1}
         }"#;
         assert!(
@@ -414,7 +414,7 @@ mod tests {
     fn a_violation_replaces_the_response() {
         clear_violations();
         let body = br#"{
-            "type": "https://trusttasks.org/spec/vault/list/0.1#response",
+            "type": "https://trusttasks.org/spec/vault/list/0.4#response",
             "payload": {"nope": 1}
         }"#;
         let out = observe(StatusCode::OK, body).expect("a violation must be fatal");

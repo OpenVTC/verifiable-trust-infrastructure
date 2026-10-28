@@ -1,22 +1,16 @@
-//! Trust-Task **0.2 dual-accept** edge transform.
+//! The `vault/*` wire-casing edge transform.
 //!
-//! The 0.2 wire form of a spec differs from 0.1 in exactly two ways: the
-//! `TYPE_URI` minor bumps to `/0.2`, and a fixed set of enum *values* switch
-//! from kebab-case to camelCase (`vault-read` → `vaultRead`,
-//! `apple-app-attest` → `appleAppAttest`, …). The Rust struct shapes are
-//! otherwise identical.
+//! The vault handlers model their wire bodies with the `vti_common::vault`
+//! types, which serialise their enum *values* kebab-case — the form entries are
+//! stored in. The versions the VTA serves (`vault/list/0.4`, `get/0.3`,
+//! `upsert/0.4`, `release/0.2`, `proxy-login/0.2`, `sign-trust-task/0.2`) spell
+//! a fixed set of those values in camelCase (`oauth-tokens` → `oauthTokens`,
+//! `web-origin` → `webOrigin`, `didcomm-authcrypt` → `didcommAuthcrypt`).
 //!
-//! For specs whose payload is **not** signed (bearer-authenticated:
-//! device/*, vault/*, passkey login) we exploit that by reusing the existing
-//! 0.1 handlers unchanged:
-//!
-//! 1. **Down-convert** an inbound 0.2 request — rewrite the enum values at the
-//!    spec's known enum field paths back to kebab ([`kebabize`]), and retype
-//!    the envelope to the 0.1 URI — then dispatch it through the ordinary 0.1
-//!    machinery.
-//! 2. **Up-convert** the handler's (kebab) response — rewrite the enum values
-//!    at the response's known enum field paths to camel ([`camelize`]) and
-//!    retype the response document to `…/0.2#response`.
+//! So the spine rewrites the values at each spec's declared enum paths on the
+//! way in ([`kebabize`]) and on the way out ([`camelize`]). The Type URI is
+//! never rewritten: the dispatch table registers the served version itself, so
+//! a superseded version is simply not dispatched.
 //!
 //! Why path-targeted and not a blanket value rewrite: a free-text field
 //! (a display name, a label) could coincidentally equal an enum token. By
@@ -25,208 +19,149 @@
 //!
 //! `kebabize`/`camelize` are deterministic inverses and each is idempotent on
 //! its own target form, so a path that happens to carry an unchanged
-//! single-word value (`mediator`, `companion`) is a safe no-op.
+//! single-word value (`password`, `did`) is a safe no-op.
 //!
 //! **Not** used for specs whose payload carries a signature over the document
 //! (e.g. `auth/step-up/approve-response`, where the approver signs the
-//! payload) — mutating those bytes would void the proof, so they get genuine
-//! version-matched typed handlers instead.
+//! payload) — mutating those bytes would void the proof. A signed spec parses a
+//! kebabized *copy* instead ([`kebabize_paths`]).
 
 use serde_json::Value;
 
 use super::TrustTaskOutcome;
 
-/// The Trust-Task wire version a request was received under. Threaded to the
-/// two vault handlers that seal values *inside* a JWE (`vault/release`,
-/// `vault/proxy-login`): the edge transform can rewrite plaintext enum paths
-/// but not ciphertext, so those handlers serialise the sealed cleartext in a
-/// version-aware way — kebab for 0.1, camelCase for 0.2.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum WireVersion {
-    V0_1,
-    V0_2,
-}
-
-tokio::task_local! {
-    /// Request-scoped negotiated wire version. Set by the dispatcher
-    /// ([`super::dispatch_trust_task_core`]) around each `dispatch_typed`
-    /// call and read by the JWE-sealing handlers via [`current_wire_version`].
-    ///
-    /// A `task_local` rather than a threaded parameter because only two of the
-    /// ~25 dispatch handlers need it; plumbing an unused `WireVersion` through
-    /// every handler signature (or pulling these two out of the `dispatch_table!`
-    /// macro, which would desync the `dispatched_uris()` parity harness) would
-    /// be far more invasive than this one contained read.
-    pub(crate) static WIRE_VERSION: WireVersion;
-}
-
-/// The wire version for the in-flight request, defaulting to [`WireVersion::V0_1`]
-/// when read outside a [`WIRE_VERSION`] scope (e.g. a direct unit test).
-pub(crate) fn current_wire_version() -> WireVersion {
-    WIRE_VERSION.try_with(|v| *v).unwrap_or(WireVersion::V0_1)
-}
-
-/// One spec's 0.1 ⇄ 0.2 mapping. Paths are `.`-separated and relative to the
+/// One served spec's casing map. Paths are `.`-separated and relative to the
 /// document `payload`; a `*` segment fans out over every array element or
 /// object value.
 pub(super) struct WireSpecV02 {
-    /// Canonical 0.1 type URI the request is down-converted to.
-    pub uri_0_1: &'static str,
-    /// Wire type URIs this entry matches, newest first.
-    ///
-    /// A list rather than one URI because a spec can minor-bump again without
-    /// changing anything this transform touches. `vault/*` 0.3 is the worked
-    /// example: it differs from 0.2 only in `AttachmentRef` (`sha256` hex
-    /// becomes a multibase `digestMultibase`), which is not an enum value and
-    /// not at any path here — so 0.3 down-converts to the same 0.1 handler by
-    /// the same casing rules, and giving it its own row would have duplicated
-    /// every path to keep them in step by hand.
-    pub uris_wire: &'static [&'static str],
+    /// The served Type URI — the one its `dispatch_table!` entry registers.
+    pub uri: &'static str,
     /// Enum field paths in the **request** payload (down-converted camel→kebab).
     pub request_paths: &'static [&'static str],
     /// Enum field paths in the **response** payload (up-converted kebab→camel).
     pub response_paths: &'static [&'static str],
+    /// Paths to the `VaultEntry` objects in the **response** payload, whose
+    /// archival-lifecycle members move into `ext` ([`LIFECYCLE_EXT`]).
+    pub entry_paths: &'static [&'static str],
 }
 
-/// Registry of dual-accepted, edge-transformed specs. Signed-payload specs
-/// (step-up) are intentionally absent — they get typed handlers.
+/// The `ext` member carrying a vault entry's archival lifecycle
+/// (`status`, `archivedAt`, `deletedAt`, `graceUntil`).
+///
+/// `vault/_shared/0.1`'s `VaultEntry` declared those members; 0.2 and 0.3, the
+/// component the served versions pin, do not, and the component is
+/// `additionalProperties: false`. The lifecycle is this VTA's extension (the
+/// `vault/{archive,unarchive,restore,purge}` tasks are openvtc's own), so it
+/// travels where SPEC §4.5.1 puts an ecosystem's members: a namespaced `ext`
+/// entry. An `active` entry carries none, exactly as it carried no lifecycle
+/// members before.
+pub(super) const LIFECYCLE_EXT: &str = "org.openvtc.vault-lifecycle";
+
+const LIFECYCLE_MEMBERS: &[&str] = &["status", "archivedAt", "deletedAt", "graceUntil"];
+
+/// Move a `VaultEntry`'s lifecycle members into `ext[LIFECYCLE_EXT]`.
+fn relocate_lifecycle(entry: &mut Value) {
+    let Value::Object(map) = entry else {
+        return;
+    };
+    let mut lifecycle = serde_json::Map::new();
+    for member in LIFECYCLE_MEMBERS {
+        if let Some(v) = map.remove(*member) {
+            lifecycle.insert((*member).to_string(), v);
+        }
+    }
+    if lifecycle.is_empty() {
+        return;
+    }
+    let ext = map
+        .entry("ext")
+        .or_insert_with(|| Value::Object(serde_json::Map::new()));
+    if let Value::Object(ext) = ext {
+        ext.insert(LIFECYCLE_EXT.to_string(), Value::Object(lifecycle));
+    }
+}
+
+fn apply_at_path_mut(v: &mut Value, segments: &[&str], f: fn(&mut Value)) {
+    match segments.split_first() {
+        None => f(v),
+        Some((&"*", rest)) => match v {
+            Value::Array(items) => {
+                for it in items.iter_mut() {
+                    apply_at_path_mut(it, rest, f);
+                }
+            }
+            Value::Object(map) => {
+                for val in map.values_mut() {
+                    apply_at_path_mut(val, rest, f);
+                }
+            }
+            _ => {}
+        },
+        Some((seg, rest)) => {
+            if let Value::Object(map) = v
+                && let Some(child) = map.get_mut(*seg)
+            {
+                apply_at_path_mut(child, rest, f);
+            }
+        }
+    }
+}
+
+/// Registry of edge-transformed specs. Signed-payload specs (step-up) are
+/// intentionally absent.
+///
+/// SecretKind (`oauth-tokens`, `did-self-issued`, …) and the SiteTarget `kind`
+/// discriminator (`web-origin`, `ios-app`, `android-app`) carry the renamed
+/// values, as does the `sealedSecret`/`sealedSessionBlob` envelope tag
+/// (`didcommAuthcrypt`/`hpkeArmored`/`tspMessage`) — it sits next to the opaque
+/// JWE as a plaintext object key, so it is reachable on an enum path. What the
+/// transform CANNOT reach are the values sealed *inside* the JWE ciphertext
+/// (the released `VaultSecret.kind`, the `SessionBlob.refreshHint`,
+/// `PasswordLoginConfig.format`); those are camelCased at seal time (see
+/// `operations::vault::{release,proxy_login}`). The step-up proof / signed-
+/// envelope payloads are opaque and on no enum path, so they pass through
+/// byte-exact.
 pub(super) const WIRE_SPECS_V0_2: &[WireSpecV02] = &[
-    // ── device slice ────────────────────────────────────────────────
     WireSpecV02 {
-        uri_0_1: "https://trusttasks.org/spec/device/register/0.1",
-        uris_wire: &["https://trusttasks.org/spec/device/register/0.2"],
-        request_paths: &["consumerKind.serviceKind", "attestation.kind"],
-        response_paths: &["binding.consumerKind.serviceKind", "binding.capabilities.*"],
-    },
-    WireSpecV02 {
-        uri_0_1: "https://trusttasks.org/spec/device/heartbeat/0.1",
-        uris_wire: &["https://trusttasks.org/spec/device/heartbeat/0.2"],
-        request_paths: &[],
-        response_paths: &["queuedOperations.*.kind", "syncHint"],
-    },
-    WireSpecV02 {
-        uri_0_1: "https://trusttasks.org/spec/device/list/0.1",
-        uris_wire: &["https://trusttasks.org/spec/device/list/0.2"],
-        request_paths: &[
-            "capabilityFilter",
-            "consumerKindFilter",
-            "formFactorFilter",
-            "serviceKindFilter",
-        ],
-        response_paths: &[
-            "devices.*.consumerKind.serviceKind",
-            "devices.*.capabilities.*",
-        ],
-    },
-    WireSpecV02 {
-        // No enum fields in either direction — pure minor-version bump.
-        uri_0_1: "https://trusttasks.org/spec/device/set-wake/0.1",
-        uris_wire: &["https://trusttasks.org/spec/device/set-wake/0.2"],
-        request_paths: &[],
-        response_paths: &[],
-    },
-    WireSpecV02 {
-        uri_0_1: "https://trusttasks.org/spec/device/wipe/0.1",
-        uris_wire: &["https://trusttasks.org/spec/device/wipe/0.2"],
-        // The whole of the 0.1 → 0.2 change: `cache-and-keys` → `cacheAndKeys`.
-        request_paths: &["scope"],
-        response_paths: &[],
-    },
-    // ── vault slice ─────────────────────────────────────────────────
-    // SecretKind (`oauth-tokens`, `did-self-issued`, …) and the SiteTarget
-    // `kind` discriminator (`web-origin`, `ios-app`, `android-app`) carry the
-    // renamed values. The `sealedSecret`/`sealedSessionBlob` envelope tag
-    // (`didcomm-authcrypt`, …) IS renamed in 0.2 (the canonical 0.2
-    // `sealed-envelope.schema.json` declares `didcommAuthcrypt`/`hpkeArmored`/
-    // `tspMessage`) — it sits next to the opaque JWE as a plaintext object key,
-    // so it's reachable on an enum path (`sealedSecret.envelope`) and handled
-    // by this transform. What the transform CANNOT reach are the values sealed
-    // *inside* the JWE ciphertext (the released `VaultSecret.kind`, the
-    // `SessionBlob.refreshHint`, `PasswordLoginConfig.format`); those get
-    // version-aware serialisation at seal time (see [`WireVersion`] +
-    // `operations::vault::{release,proxy_login}`). The step-up proof / signed-
-    // envelope payloads are opaque and on no enum path, so they pass through
-    // byte-exact.
-    WireSpecV02 {
-        uri_0_1: "https://trusttasks.org/spec/vault/list/0.1",
-        uris_wire: &[
-            "https://trusttasks.org/spec/vault/list/0.3",
-            "https://trusttasks.org/spec/vault/list/0.2",
-        ],
+        uri: "https://trusttasks.org/spec/vault/list/0.4",
         request_paths: &["secretKind"],
         response_paths: &["entries.*.secretKind", "entries.*.targets.*.kind"],
+        entry_paths: &["entries.*"],
     },
     WireSpecV02 {
-        uri_0_1: "https://trusttasks.org/spec/vault/get/0.1",
-        uris_wire: &[
-            "https://trusttasks.org/spec/vault/get/0.3",
-            "https://trusttasks.org/spec/vault/get/0.2",
-        ],
+        uri: "https://trusttasks.org/spec/vault/get/0.3",
         request_paths: &[],
         response_paths: &["entry.secretKind", "entry.targets.*.kind"],
+        entry_paths: &["entry"],
     },
     WireSpecV02 {
-        uri_0_1: "https://trusttasks.org/spec/vault/upsert/0.1",
-        uris_wire: &[
-            "https://trusttasks.org/spec/vault/upsert/0.3",
-            "https://trusttasks.org/spec/vault/upsert/0.2",
-        ],
+        uri: "https://trusttasks.org/spec/vault/upsert/0.4",
         request_paths: &["secretKind", "targets.*.kind", "sealedSecret.envelope"],
         response_paths: &["entry.secretKind", "entry.targets.*.kind"],
+        entry_paths: &["entry"],
     },
     WireSpecV02 {
-        uri_0_1: "https://trusttasks.org/spec/vault/release/0.1",
-        uris_wire: &["https://trusttasks.org/spec/vault/release/0.2"],
+        uri: "https://trusttasks.org/spec/vault/release/0.2",
         request_paths: &["target.kind"],
         // `secretKind` is the outer echo; `sealedSecret.envelope` is the
         // pluggable-cipher tag wrapping the JWE. The `VaultSecret.kind` *inside*
         // the JWE is camelCased at seal time, not here (it's ciphertext).
         response_paths: &["secretKind", "sealedSecret.envelope"],
+        entry_paths: &[],
     },
     WireSpecV02 {
-        uri_0_1: "https://trusttasks.org/spec/vault/proxy-login/0.1",
-        uris_wire: &["https://trusttasks.org/spec/vault/proxy-login/0.2"],
+        uri: "https://trusttasks.org/spec/vault/proxy-login/0.2",
         request_paths: &["target.kind"],
         // The `sealedSessionBlob.envelope` tag wraps the JWE; the
         // `SessionBlob.refreshHint` inside it is camelCased at seal time.
         response_paths: &["sealedSessionBlob.envelope"],
-    },
-    WireSpecV02 {
-        // Request/response carry the unsigned/signed Trust-Task envelope verbatim
-        // (signed bytes — must not be mutated); no SecretKind/SiteTarget fields.
-        uri_0_1: "https://trusttasks.org/spec/vault/sign-trust-task/0.1",
-        uris_wire: &["https://trusttasks.org/spec/vault/sign-trust-task/0.2"],
-        request_paths: &[],
-        response_paths: &[],
+        entry_paths: &[],
     },
 ];
 
-/// Every 0.2 URI handled by the edge transform — consumed by the dispatcher's
-/// parity harness (these are "tracked" without a `dispatch_typed` arm).
-#[allow(dead_code)] // consumed by the test-only parity harness
-pub(super) const WIRE_V0_2_URIS: &[&str] = &[
-    "https://trusttasks.org/spec/device/register/0.2",
-    "https://trusttasks.org/spec/device/heartbeat/0.2",
-    "https://trusttasks.org/spec/device/list/0.2",
-    "https://trusttasks.org/spec/device/set-wake/0.2",
-    "https://trusttasks.org/spec/device/wipe/0.2",
-    "https://trusttasks.org/spec/vault/list/0.3",
-    "https://trusttasks.org/spec/vault/list/0.2",
-    "https://trusttasks.org/spec/vault/get/0.3",
-    "https://trusttasks.org/spec/vault/get/0.2",
-    "https://trusttasks.org/spec/vault/upsert/0.3",
-    "https://trusttasks.org/spec/vault/upsert/0.2",
-    "https://trusttasks.org/spec/vault/release/0.2",
-    "https://trusttasks.org/spec/vault/proxy-login/0.2",
-    "https://trusttasks.org/spec/vault/sign-trust-task/0.2",
-];
-
-/// Look up the edge-transform spec for an inbound type URI, if it's a
-/// dual-accepted 0.2 URI.
+/// Look up the edge-transform spec for an inbound type URI.
 pub(super) fn lookup_0_2(type_uri: &str) -> Option<&'static WireSpecV02> {
-    WIRE_SPECS_V0_2
-        .iter()
-        .find(|s| s.uris_wire.contains(&type_uri))
+    WIRE_SPECS_V0_2.iter().find(|s| s.uri == type_uri)
 }
 
 /// kebab-case → camelCase (`apple-app-attest` → `appleAppAttest`). Idempotent
@@ -301,8 +236,8 @@ fn apply_paths(payload: &mut Value, paths: &[&str], f: fn(&str) -> String) {
     }
 }
 
-/// Down-convert a 0.2 request `payload` in place — rewrite the enum values at
-/// `spec.request_paths` to kebab so the existing 0.1 handler parses it.
+/// Down-convert a request `payload` in place — rewrite the enum values at
+/// `spec.request_paths` to kebab so the handler's storage-form types parse it.
 pub(super) fn downconvert_request(payload: &mut Value, spec: &WireSpecV02) {
     apply_paths(payload, spec.request_paths, kebabize);
 }
@@ -323,24 +258,21 @@ pub(super) fn kebabize_paths(payload: &mut Value, paths: &[&str]) {
 /// Exposed for the JWE-sealing operations (`vault/release`, `vault/proxy-login`):
 /// the released `VaultSecret` / `SessionBlob` cleartext rides inside ciphertext
 /// the edge transform can't reach, so the seal step camelizes the relevant
-/// enum paths itself when emitting a 0.2 response. Reuses the same
-/// path-targeted [`camelize`] the response up-converter uses, so a 0.1 seal is
-/// a no-op (kebab is left intact).
+/// enum paths itself. Reuses the same path-targeted [`camelize`] the response
+/// up-converter uses.
 pub(crate) fn camelize_paths(payload: &mut Value, paths: &[&str]) {
     apply_paths(payload, paths, camelize);
 }
 
-/// Up-convert a dispatch outcome: retype `…/0.1#response` → `…/0.2#response`
-/// and rewrite the response payload's enum values to camel. Error/reject
-/// documents (a different `type`) are passed through with only the type
-/// prefix swapped, since their payload carries no spec enums.
+/// Up-convert a dispatch outcome: rewrite a success response's payload enum
+/// values to camel. Error/reject documents (a different `type`) are passed
+/// through untouched, since their payload carries no spec enums.
 ///
 /// Operates on the typed [`TrustTaskOutcome`] body directly — the status is
 /// preserved untouched and there is no round-trip through an `axum::Response`.
 pub(super) fn upconvert_response(
     outcome: TrustTaskOutcome,
     spec: &WireSpecV02,
-    uri_wire: &str,
 ) -> TrustTaskOutcome {
     let TrustTaskOutcome {
         status,
@@ -359,23 +291,24 @@ pub(super) fn upconvert_response(
         }
     };
 
-    // Retype the response document. A success response echoes the (now 0.1)
-    // request type with a `#response` fragment; rejects carry their own error
-    // type and are left as-is apart from a 0.1→0.2 prefix swap if present.
-    let mut is_success_response = false;
-    if let Some(Value::String(t)) = doc.get_mut("type")
-        && let Some(fragment) = t.strip_prefix(spec.uri_0_1)
-    {
-        is_success_response = fragment == "#response";
-        // Answer as the version the caller *sent*, not a fixed one. A spec
-        // can carry several wire URIs (`vault/*` 0.2 and 0.3), and a response
-        // retyped to the wrong one would be refused by a client validating
-        // against the version it asked for.
-        *t = format!("{uri_wire}{fragment}");
+    let is_success_response = doc
+        .get("type")
+        .and_then(Value::as_str)
+        .and_then(|t| t.strip_prefix(spec.uri))
+        == Some("#response");
+    if !is_success_response {
+        return TrustTaskOutcome {
+            status,
+            body,
+            restart,
+        };
     }
-
-    if is_success_response && let Some(payload) = doc.get_mut("payload") {
+    if let Some(payload) = doc.get_mut("payload") {
         apply_paths(payload, spec.response_paths, camelize);
+        for path in spec.entry_paths {
+            let segments: Vec<&str> = path.split('.').collect();
+            apply_at_path_mut(payload, &segments, relocate_lifecycle);
+        }
     }
 
     let new_body = serde_json::to_vec(&doc).unwrap_or(body);
@@ -453,74 +386,11 @@ mod tests {
         );
     }
 
-    #[test]
-    fn device_list_request_downconverts_enums() {
-        // A 0.2 device/list request carries camelCase enum values; after
-        // down-convert the existing v0_1 handler must see kebab.
-        let spec = lookup_0_2("https://trusttasks.org/spec/device/list/0.2").unwrap();
-        let mut payload = serde_json::json!({
-            "capabilityFilter": "vaultRead",
-            "serviceKindFilter": "aiAgent",
-            "consumerKindFilter": "service",
-            "includeDisabled": false
-        });
-        downconvert_request(&mut payload, spec);
-        assert_eq!(payload["capabilityFilter"], "vault-read");
-        assert_eq!(payload["serviceKindFilter"], "ai-agent");
-        assert_eq!(payload["consumerKindFilter"], "service"); // unchanged single word
-        assert_eq!(payload["includeDisabled"], false); // non-enum untouched
-    }
-
-    #[tokio::test]
-    async fn device_list_response_upconverts_and_retypes() {
-        // The v0_1 handler echoes a `…/device/list/0.1#response` doc with
-        // kebab enum values; up-convert must retype to 0.2 and camelCase the
-        // enum values at the declared response paths.
-        let spec = lookup_0_2("https://trusttasks.org/spec/device/list/0.2").unwrap();
-        let doc = serde_json::json!({
-            "id": "urn:uuid:1",
-            "type": "https://trusttasks.org/spec/device/list/0.1#response",
-            "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
-            "issuer": "did:web:vta",
-            "recipient": "did:key:zClient",
-            "payload": {
-                "devices": [
-                    { "deviceId": "d1", "displayName": "vault-read",
-                      "consumerKind": { "kind": "service", "serviceKind": "ai-agent" },
-                      "capabilities": ["vault-read", "sign"] }
-                ],
-                "truncated": false
-            }
-        });
-        let outcome = TrustTaskOutcome {
-            status: axum::http::StatusCode::OK,
-            body: serde_json::to_vec(&doc).unwrap(),
-            restart: false,
-        };
-
-        let out = upconvert_response(outcome, spec, "https://trusttasks.org/spec/device/list/0.2");
-        let v: Value = serde_json::from_slice(&out.body).unwrap();
-
-        assert_eq!(
-            v["type"],
-            "https://trusttasks.org/spec/device/list/0.2#response"
-        );
-        assert_eq!(
-            v["payload"]["devices"][0]["consumerKind"]["serviceKind"],
-            "aiAgent"
-        );
-        assert_eq!(v["payload"]["devices"][0]["capabilities"][0], "vaultRead");
-        assert_eq!(v["payload"]["devices"][0]["capabilities"][1], "sign");
-        // A free-text field that coincidentally equals an enum token must NOT
-        // be rewritten — it isn't on a declared response path.
-        assert_eq!(v["payload"]["devices"][0]["displayName"], "vault-read");
-    }
-
     #[tokio::test]
     async fn upconvert_passes_through_reject_documents() {
         // A reject carries a different `type`; up-convert must not camelCase
         // its payload, only (harmlessly) leave it intact.
-        let spec = lookup_0_2("https://trusttasks.org/spec/device/list/0.2").unwrap();
+        let spec = lookup_0_2("https://trusttasks.org/spec/vault/get/0.3").unwrap();
         let doc = serde_json::json!({
             "id": "urn:uuid:2",
             "type": "https://trusttasks.org/spec/trust-task-error/0.3",
@@ -532,7 +402,7 @@ mod tests {
             body: serde_json::to_vec(&doc).unwrap(),
             restart: false,
         };
-        let out = upconvert_response(outcome, spec, "https://trusttasks.org/spec/device/list/0.2");
+        let out = upconvert_response(outcome, spec);
         let v: Value = serde_json::from_slice(&out.body).unwrap();
         assert_eq!(
             v["type"],
@@ -543,7 +413,7 @@ mod tests {
 
     #[test]
     fn vault_upsert_request_downconverts_secretkind_and_target() {
-        let spec = lookup_0_2("https://trusttasks.org/spec/vault/upsert/0.2").unwrap();
+        let spec = lookup_0_2("https://trusttasks.org/spec/vault/upsert/0.4").unwrap();
         let mut payload = serde_json::json!({
             "contextId": "personal",
             "label": "did-self-issued", // free-text label that LOOKS like a token
@@ -567,17 +437,16 @@ mod tests {
 
     #[tokio::test]
     async fn vault_list_response_upconverts_nested_enums() {
-        let spec = lookup_0_2("https://trusttasks.org/spec/vault/list/0.2").unwrap();
+        let spec = lookup_0_2("https://trusttasks.org/spec/vault/list/0.4").unwrap();
         let doc = serde_json::json!({
             "id": "urn:uuid:9",
-            "type": "https://trusttasks.org/spec/vault/list/0.1#response",
+            "type": "https://trusttasks.org/spec/vault/list/0.4#response",
             "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
             "payload": {
                 "entries": [
                     { "id": "v1", "label": "oauth-tokens", "secretKind": "oauth-tokens",
                       "targets": [ { "kind": "ios-app", "bundleId": "x" } ] }
-                ],
-                "truncated": false
+                ]
             }
         });
         let outcome = TrustTaskOutcome {
@@ -585,11 +454,11 @@ mod tests {
             body: serde_json::to_vec(&doc).unwrap(),
             restart: false,
         };
-        let out = upconvert_response(outcome, spec, "https://trusttasks.org/spec/vault/list/0.2");
+        let out = upconvert_response(outcome, spec);
         let v: Value = serde_json::from_slice(&out.body).unwrap();
         assert_eq!(
             v["type"],
-            "https://trusttasks.org/spec/vault/list/0.2#response"
+            "https://trusttasks.org/spec/vault/list/0.4#response"
         );
         assert_eq!(v["payload"]["entries"][0]["secretKind"], "oauthTokens");
         assert_eq!(v["payload"]["entries"][0]["targets"][0]["kind"], "iosApp");
@@ -606,7 +475,7 @@ mod tests {
         let spec = lookup_0_2("https://trusttasks.org/spec/vault/release/0.2").unwrap();
         let doc = serde_json::json!({
             "id": "urn:uuid:7",
-            "type": "https://trusttasks.org/spec/vault/release/0.1#response",
+            "type": "https://trusttasks.org/spec/vault/release/0.2#response",
             "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
             "payload": {
                 "sealedSecret": { "envelope": "didcomm-authcrypt", "jwe": "opaque.jwe.bytes" },
@@ -619,11 +488,7 @@ mod tests {
             body: serde_json::to_vec(&doc).unwrap(),
             restart: false,
         };
-        let out = upconvert_response(
-            outcome,
-            spec,
-            "https://trusttasks.org/spec/vault/release/0.2",
-        );
+        let out = upconvert_response(outcome, spec);
         let v: Value = serde_json::from_slice(&out.body).unwrap();
         assert_eq!(
             v["type"],
@@ -644,7 +509,7 @@ mod tests {
         let spec = lookup_0_2("https://trusttasks.org/spec/vault/proxy-login/0.2").unwrap();
         let doc = serde_json::json!({
             "id": "urn:uuid:8",
-            "type": "https://trusttasks.org/spec/vault/proxy-login/0.1#response",
+            "type": "https://trusttasks.org/spec/vault/proxy-login/0.2#response",
             "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
             "payload": {
                 "sealedSessionBlob": { "envelope": "didcomm-authcrypt", "jwe": "opaque" },
@@ -657,11 +522,7 @@ mod tests {
             body: serde_json::to_vec(&doc).unwrap(),
             restart: false,
         };
-        let out = upconvert_response(
-            outcome,
-            spec,
-            "https://trusttasks.org/spec/vault/proxy-login/0.2",
-        );
+        let out = upconvert_response(outcome, spec);
         let v: Value = serde_json::from_slice(&out.body).unwrap();
         assert_eq!(
             v["payload"]["sealedSessionBlob"]["envelope"],
@@ -671,9 +532,9 @@ mod tests {
 
     #[test]
     fn vault_upsert_request_downconverts_sealed_secret_envelope_tag() {
-        // A 0.2 producer sends `sealedSecret.envelope: "didcommAuthcrypt"`;
-        // down-convert hands the existing 0.1 handler the kebab tag it parses.
-        let spec = lookup_0_2("https://trusttasks.org/spec/vault/upsert/0.2").unwrap();
+        // A producer sends `sealedSecret.envelope: "didcommAuthcrypt"`;
+        // down-convert hands the handler the kebab tag it parses.
+        let spec = lookup_0_2("https://trusttasks.org/spec/vault/upsert/0.4").unwrap();
         let mut payload = serde_json::json!({
             "contextId": "personal",
             "secretKind": "oauthTokens",
@@ -687,9 +548,8 @@ mod tests {
     }
 
     #[test]
-    fn camelize_paths_is_a_noop_on_kebab_for_v0_1_seal() {
-        // The seal path calls `camelize_paths` only for 0.2; on a 0.1 secret
-        // body the values are already kebab and untouched.
+    fn camelize_paths_camelizes_a_sealed_secret_body() {
+        // The seal path camelizes the storage-form (kebab) secret body.
         let mut secret = serde_json::json!({
             "kind": "oauth-tokens",
             "loginConfig": { "format": "form-urlencoded" }
@@ -699,39 +559,52 @@ mod tests {
         assert_eq!(secret["loginConfig"]["format"], "formUrlencoded");
     }
 
-    #[tokio::test]
-    async fn current_wire_version_reads_scoped_value_and_defaults_to_v0_1() {
-        assert_eq!(
-            current_wire_version(),
-            WireVersion::V0_1,
-            "default outside scope"
-        );
-        WIRE_VERSION
-            .scope(WireVersion::V0_2, async {
-                assert_eq!(current_wire_version(), WireVersion::V0_2);
-            })
-            .await;
+    /// Every edge-transformed URI is a served one: the transform no longer
+    /// rewrites the Type URI, so a row the dispatch table does not register
+    /// would rewrite a payload nothing then handles.
+    #[test]
+    fn every_transformed_uri_is_dispatched() {
+        let dispatched = super::super::dispatched_uris();
+        for spec in WIRE_SPECS_V0_2 {
+            assert!(
+                dispatched.contains(&spec.uri),
+                "{} is not dispatched",
+                spec.uri
+            );
+            assert!(lookup_0_2(spec.uri).is_some());
+        }
     }
 
-    #[test]
-    fn registry_uris_are_consistent() {
-        // Every spec's 0.2 URI is in the parity list, and 0.1/0.2 differ only
-        // by the minor version.
-        for spec in WIRE_SPECS_V0_2 {
-            for wire in spec.uris_wire {
-                assert!(WIRE_V0_2_URIS.contains(wire), "{wire}");
-                assert!(lookup_0_2(wire).is_some());
-                // Same slug, later version: the transform reuses the canonical
-                // handler, so a row pointing at a *different* task would send a
-                // request somewhere it was never meant to go.
-                let canonical_slug = spec.uri_0_1.rsplit_once('/').expect("versioned uri").0;
-                assert_eq!(
-                    wire.rsplit_once('/').expect("versioned uri").0,
-                    canonical_slug,
-                    "{wire} is not a later version of {}",
-                    spec.uri_0_1
-                );
+    /// An archived or deleted entry's lifecycle members travel in `ext`, which
+    /// the served `VaultEntry` component allows; an active entry has none.
+    #[tokio::test]
+    async fn lifecycle_members_move_into_ext() {
+        let spec = lookup_0_2("https://trusttasks.org/spec/vault/list/0.4").unwrap();
+        let doc = serde_json::json!({
+            "id": "urn:uuid:10",
+            "type": "https://trusttasks.org/spec/vault/list/0.4#response",
+            "payload": {
+                "entries": [
+                    { "id": "v1", "secretKind": "password", "targets": [],
+                      "status": "deleted", "deletedAt": "2026-01-01T00:00:00Z",
+                      "graceUntil": "2026-02-01T00:00:00Z" },
+                    { "id": "v2", "secretKind": "password", "targets": [] }
+                ]
             }
-        }
+        });
+        let outcome = TrustTaskOutcome {
+            status: axum::http::StatusCode::OK,
+            body: serde_json::to_vec(&doc).unwrap(),
+            restart: false,
+        };
+        let v: Value = serde_json::from_slice(&upconvert_response(outcome, spec).body).unwrap();
+        let deleted = &v["payload"]["entries"][0];
+        assert!(deleted.get("status").is_none(), "{deleted}");
+        assert_eq!(deleted["ext"][LIFECYCLE_EXT]["status"], "deleted");
+        assert_eq!(
+            deleted["ext"][LIFECYCLE_EXT]["graceUntil"],
+            "2026-02-01T00:00:00Z"
+        );
+        assert!(v["payload"]["entries"][1].get("ext").is_none());
     }
 }

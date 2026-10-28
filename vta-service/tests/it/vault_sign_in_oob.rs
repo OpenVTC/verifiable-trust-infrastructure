@@ -38,7 +38,7 @@ const VTC: &str = "did:web:vtc.example";
 const SIGN_TT: &str = "https://trusttasks.org/spec/vault/sign-trust-task/0.2";
 const KEYS_CREATE: &str = "https://trusttasks.org/spec/keys/create/0.1";
 const REGISTER: &str = "https://trusttasks.org/spec/device/register/0.2";
-const HEARTBEAT: &str = "https://trusttasks.org/spec/device/heartbeat/0.2";
+const HEARTBEAT: &str = "https://trusttasks.org/spec/device/heartbeat/0.3";
 const IDENTIFY: &str = "https://trusttasks.org/spec/auth/oob/identify/0.1";
 const GRANT: &str = "https://trusttasks.org/spec/auth/oob/grant/0.1";
 const DECISION: &str = "https://trusttasks.org/spec/task-consent/decision/0.2";
@@ -671,7 +671,7 @@ const BROWSER_B: u8 = 0x82;
 const PHONE: u8 = 0x83;
 const DISABLE: &str = "https://trusttasks.org/spec/device/disable/0.1";
 const WIPE: &str = "https://trusttasks.org/spec/device/wipe/0.2";
-const LIST: &str = "https://trusttasks.org/spec/device/list/0.2";
+const LIST: &str = "https://trusttasks.org/spec/device/list/0.3";
 
 /// One of the member's devices: an ACL entry of its own in the member's
 /// context, as onboarding writes one for every wallet install.

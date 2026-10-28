@@ -275,7 +275,7 @@ async fn every_optional_argument_unset_still_builds_a_conforming_payload() {
                         "id": "secret-1",
                         "contextId": "openvtc",
                         // `SiteTarget` is a `kind`-tagged union, not a bare URL.
-                        "targets": [{"kind": "web-origin", "origin": "https://example.test"}],
+                        "targets": [{"kind": "webOrigin", "origin": "https://example.test"}],
                         "label": "example login",
                         "secretKind": "password",
                     }),

@@ -474,6 +474,8 @@ fn device_binding_json() -> Value {
         "consumerDid": SUBJECT,
         "platform": "macOS",
         "pushCapable": false,
+        // `device/_shared/0.2` spells capabilities in camelCase.
+        "capabilities": ["vaultRead", "signTrustTask"],
     })
 }
 
@@ -489,6 +491,14 @@ fn consent_subject_json() -> Value {
 
 /// A fully-populated wire `VaultEntry` (`vti_common::vault::VaultEntry`,
 /// authored against the canonical `vault/_shared` component).
+/// [`vault_entry`] on the wire: the `wire_v0_2` edge transform spells the
+/// target `kind` in camelCase.
+fn vault_entry_wire() -> Value {
+    let mut v = to_v(vault_entry());
+    v["targets"][0]["kind"] = json!("webOrigin");
+    v
+}
+
 fn vault_entry() -> vti_common::vault::VaultEntry {
     use vti_common::vault::{SecretKind, SiteTarget, VaultEntry};
     VaultEntry {
@@ -1582,10 +1592,10 @@ fn table() -> Vec<(&'static str, Conformance)> {
         // ─── device (handlers parse the generated Payloads directly;
         //     responses mirror operations::device's json! emissions) ──
         (
-            uris::TASK_DEVICE_REGISTER_0_1,
+            uris::TASK_DEVICE_REGISTER_0_2,
             checked!(
-                specs::device::register::v0_1::Payload,
-                specs::device::register::v0_1::Response,
+                specs::device::register::v0_2::Payload,
+                specs::device::register::v0_2::Response,
                 // The producer's own body, with its optionals unset — the
                 // shape `device_register(kind, name, None, None)` emits, and
                 // the one a caller reaches for first. The fixture used to set
@@ -1601,23 +1611,23 @@ fn table() -> Vec<(&'static str, Conformance)> {
             ),
         ),
         (
-            uris::TASK_DEVICE_HEARTBEAT_0_1,
+            uris::TASK_DEVICE_HEARTBEAT_0_3,
             checked!(
-                specs::device::heartbeat::v0_1::Payload,
-                specs::device::heartbeat::v0_1::Response,
+                specs::device::heartbeat::v0_3::Payload,
+                specs::device::heartbeat::v0_3::Response,
                 // A bare "still here" — every member unset, which must
                 // serialize to `{}` rather than a map of nulls.
                 to_v(DeviceHeartbeatBody::default()),
-                json!({ "serverTime": TS, "queuedOperations": [], "syncHint": "up-to-date" })
+                json!({ "respondedAt": TS, "queuedOperations": [], "syncHint": "upToDate" })
             ),
         ),
         (
-            uris::TASK_DEVICE_LIST_0_1,
+            uris::TASK_DEVICE_LIST_0_3,
             checked!(
-                specs::device::list::v0_1::Payload,
-                specs::device::list::v0_1::Response,
-                json!({ "consumerKindFilter": "companion", "includeDisabled": true }),
-                json!({ "devices": [device_binding_json()], "truncated": false })
+                specs::device::list::v0_3::Payload,
+                specs::device::list::v0_3::Response,
+                json!({ "consumerKindFilter": "companion", "includeDisabled": true, "limit": 50 }),
+                json!({ "devices": [device_binding_json()], "nextCursor": "d1.opaque" })
             ),
         ),
         (
@@ -1633,23 +1643,23 @@ fn table() -> Vec<(&'static str, Conformance)> {
             ),
         ),
         (
-            uris::TASK_DEVICE_WIPE_0_1,
+            uris::TASK_DEVICE_WIPE_0_2,
             checked!(
-                specs::device::wipe::v0_1::Payload,
-                specs::device::wipe::v0_1::Response,
+                specs::device::wipe::v0_2::Payload,
+                specs::device::wipe::v0_2::Response,
                 to_v(DeviceWipeBody {
                     device_id: "dev-1".into(),
-                    scope: "full".into(),
+                    scope: "cacheAndKeys".into(),
                     reason: "stolen".into(),
                 }),
-                json!({ "deviceId": "dev-1", "scope": "full", "completedAt": TS })
+                json!({ "deviceId": "dev-1", "scope": "cacheAndKeys", "completedAt": TS })
             ),
         ),
         (
-            uris::TASK_DEVICE_SET_WAKE_0_1,
+            uris::TASK_DEVICE_SET_WAKE_0_2,
             checked!(
-                specs::device::set_wake::v0_1::Payload,
-                specs::device::set_wake::v0_1::Response,
+                specs::device::set_wake::v0_2::Payload,
+                specs::device::set_wake::v0_2::Response,
                 to_v(DeviceSetWakeBody {
                     wake_handle: Some(WakeHandle {
                         gateway: "did:web:gateway.example".into(),
@@ -1853,35 +1863,35 @@ fn table() -> Vec<(&'static str, Conformance)> {
         // ─── vault (types are vault.rs-private; fixtures mirror them,
         //     entries via the shared vti_common::vault::VaultEntry) ──
         (
-            uris::TASK_VAULT_LIST_0_1,
+            uris::TASK_VAULT_LIST_0_4,
             checked!(
-                specs::vault::list::v0_1::Payload,
-                specs::vault::list::v0_1::Response,
+                specs::vault::list::v0_4::Payload,
+                specs::vault::list::v0_4::Response,
                 json!({
                     "contextId": "ctx-a",
                     "targetOriginPrefix": "https://example.com",
                     "secretKind": "password",
                     "tag": "work",
                     "status": "active",
-                    "pageSize": 20,
+                    "limit": 20,
                 }),
-                json!({ "entries": [to_v(vault_entry())], "truncated": false })
+                json!({ "entries": [vault_entry_wire()], "nextCursor": "v1.0011223344556677.MDFIVkFVTFRFTlRSWQ" })
             ),
         ),
         (
-            uris::TASK_VAULT_GET_0_1,
+            uris::TASK_VAULT_GET_0_3,
             checked!(
-                specs::vault::get::v0_1::Payload,
-                specs::vault::get::v0_1::Response,
+                specs::vault::get::v0_3::Payload,
+                specs::vault::get::v0_3::Response,
                 json!({ "id": "01HVAULTENTRY" }),
-                json!({ "entry": to_v(vault_entry()) })
+                json!({ "entry": vault_entry_wire() })
             ),
         ),
         (
-            uris::TASK_VAULT_UPSERT_0_1,
+            uris::TASK_VAULT_UPSERT_0_4,
             checked!(
-                specs::vault::upsert::v0_1::Payload,
-                specs::vault::upsert::v0_1::Response,
+                specs::vault::upsert::v0_4::Payload,
+                specs::vault::upsert::v0_4::Response,
                 {
                     // Built from the producer's body — the minimal create,
                     // with every optional unset. `sealedSecret` is not on the
@@ -1890,7 +1900,7 @@ fn table() -> Vec<(&'static str, Conformance)> {
                     let mut v = to_v(VaultUpsertBody {
                         context_id: "ctx-a".into(),
                         targets: vec![
-                            json!({ "kind": "web-origin", "origin": "https://example.com" }),
+                            json!({ "kind": "webOrigin", "origin": "https://example.com" }),
                         ],
                         label: "example.com login".into(),
                         secret_kind: "password".into(),
@@ -1903,11 +1913,11 @@ fn table() -> Vec<(&'static str, Conformance)> {
                     });
                     v.as_object_mut().expect("body is an object").insert(
                         "sealedSecret".into(),
-                        json!({ "envelope": "didcomm-authcrypt", "jwe": "eyJ0eXAiOiJKV0UifQ" }),
+                        json!({ "envelope": "didcommAuthcrypt", "jwe": "eyJ0eXAiOiJKV0UifQ" }),
                     );
                     v
                 },
-                json!({ "entry": to_v(vault_entry()), "created": false })
+                json!({ "entry": vault_entry_wire(), "wasCreated": false })
             ),
         ),
         (
@@ -1928,31 +1938,31 @@ fn table() -> Vec<(&'static str, Conformance)> {
             ),
         ),
         (
-            uris::TASK_VAULT_RELEASE_0_1,
+            uris::TASK_VAULT_RELEASE_0_2,
             checked!(
-                specs::vault::release::v0_1::Payload,
-                specs::vault::release::v0_1::Response,
+                specs::vault::release::v0_2::Payload,
+                specs::vault::release::v0_2::Response,
                 json!({
                     "entryId": "01HVAULTENTRY",
-                    "target": { "kind": "web-origin", "origin": "https://example.com" },
+                    "target": { "kind": "webOrigin", "origin": "https://example.com" },
                     "consumerContext": { "deviceId": "dev-1", "networkClass": "home" },
                     "ttlSecondsHint": 60,
                 }),
                 json!({
-                    "sealedSecret": { "envelope": "didcomm-authcrypt", "jwe": "eyJwcm90ZWN0ZWQiOiJ..." },
+                    "sealedSecret": { "envelope": "didcommAuthcrypt", "jwe": "eyJwcm90ZWN0ZWQiOiJ..." },
                     "secretKind": "password",
                     "ttlSeconds": 60,
                 })
             ),
         ),
         (
-            uris::TASK_VAULT_PROXY_LOGIN_0_1,
+            uris::TASK_VAULT_PROXY_LOGIN_0_2,
             checked!(
-                specs::vault::proxy_login::v0_1::Payload,
-                specs::vault::proxy_login::v0_1::Response,
+                specs::vault::proxy_login::v0_2::Payload,
+                specs::vault::proxy_login::v0_2::Response,
                 json!({
                     "entryId": "01HVAULTENTRY",
-                    "target": { "kind": "web-origin", "origin": "https://example.com" },
+                    "target": { "kind": "webOrigin", "origin": "https://example.com" },
                     "nonce": "n-1",
                     "ttlSecondsHint": 60,
                 }),
@@ -1960,16 +1970,16 @@ fn table() -> Vec<(&'static str, Conformance)> {
                 // in the vendor-namespaced `ext` (the canonical response object
                 // is closed; #857).
                 json!({
-                    "sealedSessionBlob": { "envelope": "didcomm-authcrypt", "jwe": "eyJwcm90ZWN0ZWQiOiJ..." },
+                    "sealedSessionBlob": { "envelope": "didcommAuthcrypt", "jwe": "eyJwcm90ZWN0ZWQiOiJ..." },
                     "ext": { "org.openvtc.vault-session": { "sessionId": "vs-1", "expiresAt": TS } },
                 })
             ),
         ),
         (
-            uris::TASK_VAULT_SIGN_TRUST_TASK_0_1,
+            uris::TASK_VAULT_SIGN_TRUST_TASK_0_2,
             checked!(
-                specs::vault::sign_trust_task::v0_1::Payload,
-                specs::vault::sign_trust_task::v0_1::Response,
+                specs::vault::sign_trust_task::v0_2::Payload,
+                specs::vault::sign_trust_task::v0_2::Response,
                 json!({
                     "entryId": "01HVAULTENTRY",
                     "unsignedEnvelope": {
@@ -2145,16 +2155,14 @@ fn table() -> Vec<(&'static str, Conformance)> {
             ),
         ),
         (
-            uris::TASK_VAULT_CREDENTIALS_GET_0_1,
+            uris::TASK_VAULT_CREDENTIALS_GET_0_2,
             checked!(
-                specs::vault::credentials::get::v0_1::Payload,
-                specs::vault::credentials::get::v0_1::Response,
-                to_v(cred_vault::GetBody { id: "cred-1".into() }),
-                to_v(cred_vault::GetResponse {
-                    credential: json!({
-                        "@context": ["https://www.w3.org/ns/credentials/v2"],
-                        "type": ["VerifiableCredential"],
-                    }),
+                specs::vault::credentials::get::v0_2::Payload,
+                specs::vault::credentials::get::v0_2::Response,
+                json!({ "id": "cred-1" }),
+                json!({
+                    "format": "dc+sd-jwt",
+                    "credentialBase64": "ZXlKaGJHY2lPaUpGWkVSVFFTSjkuZTMwLmMybG5-",
                 })
             ),
         ),

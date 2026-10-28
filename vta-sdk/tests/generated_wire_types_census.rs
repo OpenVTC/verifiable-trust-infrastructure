@@ -180,14 +180,11 @@ const PREDATES_GENERATED: &[(&str, &str)] = &[
         "vta-sdk/src/protocols/vta_management/update_config.rs",
         "UpdateConfigResultBody",
     ), // config/patch/0.1
+    ("vta-service/src/trust_tasks/vault.rs", "VaultListBody"), // vault/list/0.4
     (
         "vta-service/src/trust_tasks/vault.rs",
         "VaultListResponseBody",
-    ), // vault/list/0.1
-    (
-        "vta-service/src/trust_tasks/vault.rs",
-        "VaultListStatusFilter",
-    ), // vault/list/0.1
+    ), // vault/list/0.4
     (
         "vta-service/src/trust_tasks/vault.rs",
         "VaultProxyLoginBody",

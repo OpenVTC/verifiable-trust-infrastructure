@@ -91,7 +91,7 @@ mod tests {
     fn input(side_effects: SideEffectLevel) -> PolicyInput {
         PolicyInput {
             request: PolicyRequest {
-                type_uri: "https://trusttasks.org/spec/vault/release/0.1".into(),
+                type_uri: "https://trusttasks.org/spec/vault/release/0.2".into(),
                 kind: Some("release".into()),
                 subject: None,
                 payload_digest: None,

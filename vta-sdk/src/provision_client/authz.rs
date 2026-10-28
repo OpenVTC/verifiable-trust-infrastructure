@@ -253,7 +253,7 @@ mod tests {
     /// must not be reported as a skew — there is no version to upgrade to.
     #[test]
     fn an_absent_family_is_not_reported_as_a_skew() {
-        let served = vec!["https://trusttasks.org/spec/vault/list/0.1".to_string()];
+        let served = vec!["https://trusttasks.org/spec/vault/list/0.4".to_string()];
         let msg = version_skew_message(V0_3, &served, "did:webvh:example");
         assert!(!msg.contains("version skew"), "{msg}");
         assert!(msg.contains("not the VTA you meant"), "{msg}");

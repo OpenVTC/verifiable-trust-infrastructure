@@ -35,20 +35,14 @@ use crate::auth::AuthClaims;
 use crate::error::AppError;
 use crate::server::AppState;
 
-use super::helpers::{app_error_to_reject, parse_payload, reject_with, success_response};
+use super::helpers::{
+    app_error_to_reject, parse_payload, reject_declared, reject_with, success_response,
+};
 use trust_tasks_rs::RejectReason;
 
-/// Request body for `vault/list/0.1`. Mirrors the canonical
-/// `payload.schema.json` of the spec; field names are camelCase to match
-/// the wire form Companions emit from `@openvtc/trust-tasks`.
-///
-/// Pagination is accepted but currently single-page — the maintainer
-/// returns up to `page_size` entries with `truncated: false` and no cursor.
-/// Real cursor-based pagination lands when the vault grows past a few
-/// thousand entries; for M1 with hand-seeded test data it's overkill.
 /// Archival-lifecycle view selector on `vault/list`. Omitted → `Active`
 /// (archived and soft-deleted entries are hidden from the normal listing).
-#[derive(Debug, Clone, Copy, Deserialize)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 enum VaultListStatusFilter {
     Active,
@@ -57,7 +51,10 @@ enum VaultListStatusFilter {
     All,
 }
 
-#[derive(Debug, Default, Deserialize)]
+/// Request body for `vault/list/0.4`. Mirrors the canonical
+/// `payload.schema.json` of the spec (enum values arrive kebab-cased by the
+/// `wire_v0_2` edge transform); field names are camelCase to match the wire.
+#[derive(Debug, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct VaultListBody {
     context_id: Option<String>,
@@ -74,22 +71,22 @@ struct VaultListBody {
     /// Lifecycle view: `active` (default), `archived`, `deleted`, or `all`.
     #[serde(default)]
     status: Option<VaultListStatusFilter>,
-    page_size: Option<u32>,
-    // `cursor` accepted on the wire for forward-compat but ignored in M1.
+    /// At most this many entries per page (1–1000; the schema bounds it).
+    limit: Option<u32>,
+    /// The previous page's `nextCursor`.
     #[serde(default)]
-    #[allow(dead_code)]
     cursor: Option<String>,
 }
 
-/// Response body for `vault/list/0.1`. Wraps the entries the
-/// canonical schema declares under `$defs.Response`.
+/// Response body for `vault/list/0.4`. Wraps the entries the
+/// canonical schema declares under `$defs.Response`; `nextCursor` is present
+/// exactly when more matching entries remain.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct VaultListResponseBody {
     entries: Vec<VaultEntry>,
-    truncated: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
-    cursor: Option<String>,
+    next_cursor: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     redacted_fields: Option<Vec<String>>,
 }
@@ -149,7 +146,7 @@ struct VaultUpsertBody {
 #[serde(rename_all = "camelCase")]
 struct VaultUpsertResponseBody {
     entry: VaultEntry,
-    created: bool,
+    was_created: bool,
 }
 
 /// Wire form of `vault/_shared/0.2/sealed-envelope#/$defs/SealedEnvelope`
@@ -581,7 +578,7 @@ fn refuse_if_not_active(
     ))
 }
 
-/// Handler for `spec/vault/list/0.1`.
+/// Handler for `spec/vault/list/0.4`.
 pub(super) async fn handle_list(
     state: &AppState,
     auth: &AuthClaims,
@@ -655,23 +652,86 @@ pub(super) async fn handle_list(
         entries.retain(|e| auth.has_context_access(&e.context_id));
     }
 
-    // M1 pagination: single page. Apply page_size as a hard truncation.
-    let page_size = req.page_size.unwrap_or(100) as usize;
-    let truncated = entries.len() > page_size;
-    entries.truncate(page_size);
+    // Keyset pagination (`vault/list/0.4`): entries in `id` order, a page
+    // resuming strictly after the last id the previous one returned, under the
+    // filters its cursor was minted for. A maintainer with more matching
+    // entries MUST return a `nextCursor`.
+    entries.sort_by(|a, b| a.id.cmp(&b.id));
+    let filters = list_cursor_filters(&req);
+    if let Some(cursor) = req.cursor.as_deref() {
+        let Some(after) = open_list_cursor(cursor, &filters) else {
+            return reject_declared(
+                &doc,
+                trust_tasks_rs::specs::vault::list::v0_4::error_codes::CURSOR_INVALID,
+                "vault/list: the cursor was not issued by this VTA for these filters; list \
+                 again from the first page",
+            );
+        };
+        entries.retain(|e| e.id > after);
+    }
+    let limit = req.limit.map(|n| n as usize).unwrap_or(DEFAULT_LIST_LIMIT);
+    let more = entries.len() > limit;
+    entries.truncate(limit);
+    let next_cursor = more
+        .then(|| entries.last().map(|e| list_cursor(&filters, &e.id)))
+        .flatten();
 
     success_response(
         &doc,
         VaultListResponseBody {
             entries,
-            truncated,
-            cursor: None,
+            next_cursor,
             redacted_fields: None,
         },
     )
 }
 
-/// Handler for `spec/vault/get/0.1`.
+/// The page size `vault/list` uses when the request names none.
+const DEFAULT_LIST_LIMIT: usize = 100;
+
+/// The filters of a `vault/list` request, as its cursor binds them.
+fn list_cursor_filters(req: &VaultListBody) -> Value {
+    let mut v = serde_json::to_value(req).unwrap_or(Value::Null);
+    if let Some(o) = v.as_object_mut() {
+        o.remove("cursor");
+        o.remove("limit");
+    }
+    v
+}
+
+fn list_filter_digest(filters: &Value) -> String {
+    use sha2::{Digest, Sha256};
+    let bytes = serde_json::to_vec(filters).unwrap_or_default();
+    hex::encode(&Sha256::digest(bytes)[..8])
+}
+
+/// `v1.<filter digest>.<base64url of the last entry id returned>`. Encodes no
+/// secret state, so a cursor replayed weeks later is harmless.
+fn list_cursor(filters: &Value, last_id: &str) -> String {
+    use base64::Engine as _;
+    format!(
+        "v1.{}.{}",
+        list_filter_digest(filters),
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(last_id)
+    )
+}
+
+/// The entry id a cursor resumes after, or `None` for one these filters were
+/// not given.
+fn open_list_cursor(cursor: &str, filters: &Value) -> Option<String> {
+    use base64::Engine as _;
+    let rest = cursor.strip_prefix("v1.")?;
+    let (digest, id) = rest.split_once('.')?;
+    if digest != list_filter_digest(filters) {
+        return None;
+    }
+    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(id)
+        .ok()?;
+    String::from_utf8(bytes).ok()
+}
+
+/// Handler for `spec/vault/get/0.3`.
 pub(super) async fn handle_get(
     state: &AppState,
     auth: &AuthClaims,
@@ -710,7 +770,7 @@ pub(super) async fn handle_get(
     )
 }
 
-/// Handler for `spec/vault/upsert/0.1`. Create or update a vault entry;
+/// Handler for `spec/vault/upsert/0.4`. Create or update a vault entry;
 /// secret material rides inside the pluggable `sealedSecret` envelope and
 /// is unsealed server-side via [`unseal_secret`]. See the spec for the
 /// full payload shape; this implementation honours every required field
@@ -1158,7 +1218,7 @@ pub(super) async fn handle_upsert(
         &doc,
         VaultUpsertResponseBody {
             entry,
-            created: is_create,
+            was_created: is_create,
         },
     )
 }
@@ -1374,7 +1434,7 @@ pub(super) async fn handle_purge(
     )
 }
 
-/// Handler for `spec/vault/release/0.1`. Releases the cleartext secret
+/// Handler for `spec/vault/release/0.2`. Releases the cleartext secret
 /// material of an entry to the requesting consumer, wrapped in a
 /// DIDComm-authcrypt envelope sealed to the caller's keyAgreement key.
 ///
@@ -1503,10 +1563,9 @@ pub(super) async fn handle_release(
         }
     };
 
-    // Seal the secret to the holder (operations layer; P2.4). The negotiated
-    // wire version decides whether the `VaultSecret.kind` sealed inside the JWE
-    // is emitted kebab (0.1) or camelCase (0.2) — the edge transform can't
-    // reach ciphertext, so the seal step does it.
+    // Seal the secret to the holder (operations layer; P2.4). The seal step
+    // camelCases the `VaultSecret.kind` sealed inside the JWE — the edge
+    // transform can't reach ciphertext.
     match crate::operations::vault::release::release_secret(
         atm,
         &state.vault_ks,
@@ -1515,7 +1574,6 @@ pub(super) async fn handle_release(
         &auth.did,
         stored,
         req.ttl_seconds_hint,
-        super::wire_v0_2::current_wire_version(),
         super::transport::audit_channel(),
     )
     .await
@@ -1532,7 +1590,7 @@ pub(super) async fn handle_release(
     }
 }
 
-/// Handler for `spec/vault/proxy-login/0.1`. Two drivers wired today:
+/// Handler for `spec/vault/proxy-login/0.2`. Two drivers wired today:
 ///
 /// - **`did-self-issued`** (M2B.2b): VTA mints a SIOPv2 id_token on
 ///   the entry's behalf, wraps it in a [`SessionBlob`] with a single
@@ -1658,7 +1716,6 @@ pub(super) async fn handle_proxy_login(
         req.target,
         req.nonce,
         req.ttl_seconds_hint,
-        super::wire_v0_2::current_wire_version(),
     )
     .await
     {
@@ -1824,7 +1881,7 @@ impl crate::operations::vault::oob_sign_in::RemoteApproval for StateRemoteApprov
     }
 }
 
-/// Handler for `spec/vault/sign-trust-task/0.1`. Attaches an
+/// Handler for `spec/vault/sign-trust-task/0.2`. Attaches an
 /// `eddsa-jcs-2022` Data Integrity proof to a Trust Task envelope,
 /// signing as the principal DID of a `did-self-issued` or
 /// `didcomm-peer` vault entry.
@@ -2186,7 +2243,7 @@ mod context_scope_tests {
     }
 
     fn doc() -> TrustTask<serde_json::Value> {
-        let uri: TypeUri = vta_sdk::trust_tasks::TASK_VAULT_LIST_0_3
+        let uri: TypeUri = vta_sdk::trust_tasks::TASK_VAULT_LIST_0_4
             .parse()
             .expect("list uri");
         TrustTask::new("urn:uuid:test", uri, json!({}))
@@ -2300,11 +2357,11 @@ mod tsp_unseal_tests {
     use crate::test_support::{build_signing_test_app_state, super_admin_claims};
     use serde_json::json;
     use trust_tasks_rs::{TrustTask, TypeUri};
-    use vta_sdk::trust_tasks::TASK_VAULT_UPSERT_0_3;
+    use vta_sdk::trust_tasks::TASK_VAULT_UPSERT_0_4;
 
     /// A `vault/upsert` document carrying a `tspMessage` sealed secret.
     fn upsert_tsp_doc() -> TrustTask<serde_json::Value> {
-        let uri: TypeUri = TASK_VAULT_UPSERT_0_3.parse().expect("upsert uri");
+        let uri: TypeUri = TASK_VAULT_UPSERT_0_4.parse().expect("upsert uri");
         let payload = json!({
             "contextId": "ctx-test",
             "targets": [{ "kind": "web-origin", "origin": "https://example.com" }],

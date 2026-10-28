@@ -28,6 +28,7 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use trust_tasks_rs::specs::vault::credentials::get::v0_2 as get_0_2;
 use trust_tasks_rs::{RejectReason, TrustTask};
 use uuid::Uuid;
 use vti_common::acl::Capability;
@@ -36,7 +37,7 @@ use vti_common::vault::{LifecycleError, VaultStatus};
 use crate::auth::AuthClaims;
 use crate::error::AppError;
 use crate::server::AppState;
-use crate::vault::model::{CredentialPurpose, CredentialStatus};
+use crate::vault::model::{BodyEncoding, CredentialPurpose, CredentialStatus, StoredCredential};
 use crate::vault::query::{CredentialDescriptor, CredentialQuery, search};
 use crate::vault::{receive, storage};
 
@@ -107,19 +108,6 @@ pub(super) struct ReceiveResponse {
 #[serde(rename_all = "camelCase")]
 pub(super) struct QueryResponse {
     pub(super) credentials: Vec<CredentialDescriptor>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub(super) struct GetBody {
-    pub(super) id: String,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(super) struct GetResponse {
-    /// The stored credential's full body, for presentation.
-    pub(super) credential: Value,
 }
 
 /// Handler for `spec/vault/credentials/receive/0.1`.
@@ -416,20 +404,16 @@ fn resolve_custody_context(
     }
 }
 
-/// Handler for `spec/vault/credentials/get/0.1`.
-pub(super) async fn handle_get(
+/// The stored credential `id` names, if this caller may read it. Every other
+/// outcome is the refusal to send.
+async fn readable_credential(
     state: &AppState,
     auth: &AuthClaims,
-    doc: TrustTask<Value>,
-) -> TrustTaskOutcome {
-    if let Err(r) = require_cap(state, auth, &doc, Capability::VaultRead, "get").await {
-        return r;
-    }
-    let req: GetBody = match parse_payload(&doc) {
-        Ok(r) => r,
-        Err(resp) => return resp,
-    };
-    match storage::get(&state.vault_ks, &req.id).await {
+    doc: &TrustTask<Value>,
+    id: &str,
+) -> Result<StoredCredential, TrustTaskOutcome> {
+    require_cap(state, auth, doc, Capability::VaultRead, "get").await?;
+    match storage::get(&state.vault_ks, id).await {
         // Custody gate first: a credential owned by another context is
         // conflated with not-found, exactly like an archived or absent one, so
         // the caller cannot probe for ids outside their contexts.
@@ -440,26 +424,64 @@ pub(super) async fn handle_get(
                     stored.context_id.as_deref(),
                 ) =>
         {
-            match serde_json::from_slice::<Value>(&stored.body) {
-                Ok(credential) => success_response(&doc, GetResponse { credential }),
-                Err(e) => reject_with(
-                    &doc,
-                    RejectReason::InternalError {
-                        reason: format!("stored credential body is not JSON: {e}"),
-                    },
-                ),
-            }
+            Ok(stored)
         }
         // Conflate not-found (and not-active) with permission-denied to deny enumeration.
-        Ok(_) => reject_with(
-            &doc,
+        Ok(_) => Err(reject_with(
+            doc,
             RejectReason::TaskFailed {
                 reason: "credential not found".to_string(),
                 details: None,
             },
-        ),
-        Err(e) => app_error_to_reject(&doc, e),
+        )),
+        Err(e) => Err(app_error_to_reject(doc, e)),
     }
+}
+
+/// Handler for `spec/vault/credentials/get/0.2`: the body as stored, in the
+/// member its format calls for — `credential` for a JSON object,
+/// `credentialBase64` for an SD-JWT or an mdoc — with that format named.
+pub(super) async fn handle_get(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    let req: get_0_2::Payload = match parse_payload(&doc) {
+        Ok(r) => r,
+        Err(resp) => return resp,
+    };
+    let stored = match readable_credential(state, auth, &doc, &req.id).await {
+        Ok(s) => s,
+        Err(r) => return r,
+    };
+    match get_0_2_response(&stored) {
+        Ok(response) => success_response(&doc, response),
+        Err(reason) => reject_with(&doc, RejectReason::InternalError { reason }),
+    }
+}
+
+/// The `get` 0.2 answer for a stored credential. The body is carried
+/// verbatim — never re-serialised — because it carries a proof over itself.
+fn get_0_2_response(stored: &StoredCredential) -> Result<get_0_2::Response, String> {
+    let Some((format, encoding)) = stored.format.wire_form() else {
+        return Err(format!(
+            "stored credential has format {:?}, which has no wire form",
+            stored.format
+        ));
+    };
+    let response = match encoding {
+        BodyEncoding::Json => {
+            let credential = serde_json::from_slice::<Value>(&stored.body)
+                .map_err(|e| format!("stored {format} body is not JSON: {e}"))?;
+            serde_json::json!({ "format": format, "credential": credential })
+        }
+        BodyEncoding::Bytes => serde_json::json!({
+            "format": format,
+            "credentialBase64": URL_SAFE_NO_PAD.encode(&stored.body),
+        }),
+    };
+    serde_json::from_value(response)
+        .map_err(|e| format!("stored {format} credential does not fit the response: {e}"))
 }
 
 /// Handler for `spec/vault/credentials/present/0.1`. Auth: `CredentialPresent`,
@@ -834,7 +856,9 @@ pub(super) async fn handle_purge(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::vault::model::CredentialFormat;
     use serde_json::json;
+    use trust_tasks_rs::validate::ValidatedPayload;
 
     #[test]
     fn storage_id_prefers_explicit_then_vc_id_then_uuid() {
@@ -864,11 +888,29 @@ mod tests {
         id: &str,
         context_id: Option<&str>,
     ) {
-        use crate::vault::model::{CredentialFormat, CredentialStatus, StoredCredential};
+        let body = serde_json::to_vec(&json!({"id": id})).unwrap();
+        seed_body(
+            vault_ks,
+            id,
+            context_id,
+            CredentialFormat::EddsaJcs2022,
+            body,
+        )
+        .await;
+    }
+
+    async fn seed_body(
+        vault_ks: &crate::store::KeyspaceHandle,
+        id: &str,
+        context_id: Option<&str>,
+        format: CredentialFormat,
+        body: Vec<u8>,
+    ) {
+        use crate::vault::model::{CredentialStatus, StoredCredential};
         use vti_common::vault::VaultStatus;
         let cred = StoredCredential {
             id: id.into(),
-            format: CredentialFormat::EddsaJcs2022,
+            format,
             types: vec!["MembershipCredential".into()],
             schema_id: None,
             community_did: None,
@@ -882,7 +924,7 @@ mod tests {
             received_at: "2026-01-01T00:00:00Z".into(),
             source: None,
             tags: Default::default(),
-            body: serde_json::to_vec(&json!({"id": id})).unwrap(),
+            body,
             lifecycle: VaultStatus::Active,
             archived_at: None,
             deleted_at: None,
@@ -892,10 +934,61 @@ mod tests {
     }
 
     fn get_doc(id: &str) -> TrustTask<Value> {
-        let uri: trust_tasks_rs::TypeUri = vta_sdk::trust_tasks::TASK_VAULT_CREDENTIALS_GET_0_1
+        let uri: trust_tasks_rs::TypeUri = vta_sdk::trust_tasks::TASK_VAULT_CREDENTIALS_GET_0_2
             .parse()
             .expect("get uri");
         TrustTask::new("urn:uuid:test-get", uri, json!({ "id": id }))
+    }
+
+    fn get_payload(outcome: &TrustTaskOutcome) -> Value {
+        let doc: Value = serde_json::from_slice(&outcome.body).expect("response json");
+        doc["payload"].clone()
+    }
+
+    /// get 0.2 carries a Data Integrity credential as the JSON object it is,
+    /// named `ldp_vc`, and the answer fits the specification's response.
+    #[tokio::test]
+    async fn get_0_2_returns_a_data_integrity_credential_as_an_object() {
+        let (state, _dir) = crate::test_support::build_signing_test_app_state().await;
+        seed_credential(&state.vault_ks, "cred-di", Some("ctx-a")).await;
+
+        let auth = auth_scoped(&["ctx-a"]);
+        let payload = get_payload(&handle_get(&state, &auth, get_doc("cred-di")).await);
+        assert_eq!(payload["format"], "ldp_vc");
+        assert_eq!(payload["credential"], json!({ "id": "cred-di" }));
+        assert!(payload.get("credentialBase64").is_none());
+        get_0_2::Response::validate_value(&payload).expect("fits get/0.2's response schema");
+    }
+
+    /// The defect 0.2 exists for: an SD-JWT is a compact string, not an
+    /// object, so 0.1 had no answer for it. 0.2 returns its stored bytes
+    /// verbatim — every disclosure included — as `credentialBase64`.
+    #[tokio::test]
+    async fn get_0_2_returns_an_sd_jwt_as_its_stored_bytes() {
+        let (state, _dir) = crate::test_support::build_signing_test_app_state().await;
+        let compact = b"eyJhbGciOiJFZERTQSJ9.eyJzdWIiOiJkaWQ6ZXhhbXBsZTpob2xkZXIifQ.c2ln~WyJzYWx0IiwibmFtZSIsIkFsaWNlIl0~";
+        seed_body(
+            &state.vault_ks,
+            "cred-sd",
+            Some("ctx-a"),
+            CredentialFormat::SdJwtVc,
+            compact.to_vec(),
+        )
+        .await;
+
+        let auth = auth_scoped(&["ctx-a"]);
+        let payload = get_payload(&handle_get(&state, &auth, get_doc("cred-sd")).await);
+        assert_eq!(payload["format"], "dc+sd-jwt");
+        assert!(payload.get("credential").is_none());
+        let carried = URL_SAFE_NO_PAD
+            .decode(
+                payload["credentialBase64"]
+                    .as_str()
+                    .expect("credentialBase64"),
+            )
+            .expect("base64url");
+        assert_eq!(carried, compact, "the body travels byte for byte");
+        get_0_2::Response::validate_value(&payload).expect("fits get/0.2's response schema");
     }
 
     fn query_doc() -> TrustTask<Value> {

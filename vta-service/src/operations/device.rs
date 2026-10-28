@@ -1,7 +1,7 @@
 //! `device/*` family operations — Companion/Service lifecycle.
 //!
 //! A [`DeviceBinding`] is the device-facing half of an [`AclEntry`], co-stored
-//! under the `acl` keyspace. `device/register/0.1` attaches the binding to the
+//! under the `acl` keyspace. `device/register/0.2` attaches the binding to the
 //! caller's existing ACL entry (placed there by provision-integration +
 //! acl/swap-key). See dtgwg `device/*`.
 
@@ -27,9 +27,9 @@ use crate::auth::AuthClaims;
 use crate::error::AppError;
 use crate::store::KeyspaceHandle;
 
-use trust_tasks_rs::specs::device::heartbeat::v0_1 as heartbeat_spec;
-use trust_tasks_rs::specs::device::list::v0_1 as list_spec;
-use trust_tasks_rs::specs::device::register::v0_1 as register_spec;
+use trust_tasks_rs::specs::device::heartbeat::v0_3 as heartbeat_spec;
+use trust_tasks_rs::specs::device::list::v0_3 as list_spec;
+use trust_tasks_rs::specs::device::register::v0_2 as register_spec;
 
 // The extension key a device uses to correct its own `displayName`
 // (`org.openvtc.device-name`) is defined by the SDK that produces it, and
@@ -212,7 +212,7 @@ pub async fn register_device(
 /// sampling).
 ///
 /// `queuedOperations` is empty until `device/wipe` lands (C3); `syncHint` is
-/// `up-to-date` until vault/sync is wired (the `vaultSeq` hint is accepted but
+/// `upToDate` until vault/sync is wired (the `vaultSeq` hint is accepted but
 /// not yet acted on).
 pub async fn heartbeat_device(
     acl_ks: &KeyspaceHandle,
@@ -395,9 +395,9 @@ pub async fn heartbeat_device_checked(
     }
 
     let mut out = json!({
-        "serverTime": now_rfc3339,
+        "respondedAt": now_rfc3339,
         "queuedOperations": [],
-        "syncHint": "up-to-date",
+        "syncHint": "upToDate",
     });
     // The device's own UV key summary — never the key — so a browser whose
     // local state was cleared can recover a PIN's salt and iterations, and see
@@ -626,12 +626,9 @@ pub async fn uv_approver_permitted(
 /// Requires management rights **in the binding's context**: a super-admin sees
 /// every device, a context admin only those whose ACL entry acts in a context
 /// they hold, and an entry authorized nowhere sees none. Disabled/wiped devices
-/// are omitted unless explicitly included. Returns `{ devices, cursor,
-/// truncated }`.
-///
-/// Cursor pagination is not yet implemented — `pageSize` truncates and sets
-/// `truncated`, with no continuation `cursor` (operators narrow filters). This
-/// is the only deviation from the spec's pagination and is called out here.
+/// are omitted unless explicitly included. Returns `{ devices, nextCursor? }`
+/// (`device/list/0.3`): at most `limit` devices in `deviceId` order, and a
+/// `nextCursor` exactly when more matching devices remain.
 pub async fn list_devices(
     acl_ks: &KeyspaceHandle,
     auth: &AuthClaims,
@@ -640,7 +637,7 @@ pub async fn list_devices(
     auth.require_manage()?;
 
     let entries = list_acl_entries(acl_ks).await?;
-    let mut devices: Vec<Value> = Vec::new();
+    let mut devices: Vec<(String, Value)> = Vec::new();
     for entry in &entries {
         let Some(b) = entry.device.as_ref() else {
             continue;
@@ -663,6 +660,14 @@ pub async fn list_devices(
             let want_companion = matches!(ckf, list_spec::PayloadConsumerKindFilter::Companion);
             if is_companion != want_companion {
                 continue;
+            }
+        }
+        if let Some(skf) = &payload.service_kind_filter {
+            match &entry.kind {
+                ConsumerKind::Service { service_kind }
+                    if service_kind_matches(skf, service_kind) => {}
+                // A service-kind filter excludes Companions and other services.
+                _ => continue,
             }
         }
         if let Some(fff) = &payload.form_factor_filter {
@@ -695,13 +700,93 @@ pub async fn list_devices(
             Some(key) => pin_status(acl_ks, &entry.did, key, chrono::Utc::now().timestamp()).await,
             None => None,
         };
-        devices.push(to_wire_binding_with(entry, pin));
+        devices.push((b.device_id.clone(), to_wire_binding_with(entry, pin)));
     }
 
-    let limit = payload.page_size.map(|n| n.get() as usize).unwrap_or(200);
-    let truncated = devices.len() > limit;
+    // A page resumes strictly after the last `deviceId` the previous one
+    // returned, under the filters it was minted for: a cursor carried to other
+    // filters, or one this VTA did not issue, is refused (`device/list/0.3`
+    // consumer conformance).
+    devices.sort_by(|a, b| a.0.cmp(&b.0));
+    let filters = list_filters(payload);
+    if let Some(cursor) = payload.cursor.as_deref() {
+        let after = open_list_cursor(cursor, &filters).ok_or_else(|| {
+            AppError::Validation(
+                "device/list: the cursor was not issued by this VTA for these filters; list \
+                 again from the first page"
+                    .into(),
+            )
+        })?;
+        devices.retain(|(id, _)| *id > after);
+    }
+    let limit = payload
+        .limit
+        .map(|n| usize::try_from(n.get()).unwrap_or(usize::MAX))
+        .unwrap_or(DEFAULT_LIST_LIMIT);
+    let more = devices.len() > limit;
     devices.truncate(limit);
-    Ok(json!({ "devices": devices, "truncated": truncated }))
+    let mut out = json!({});
+    if more && let Some((last, _)) = devices.last() {
+        out["nextCursor"] = json!(list_cursor(&filters, last));
+    }
+    out["devices"] = Value::Array(devices.into_iter().map(|(_, d)| d).collect());
+    Ok(out)
+}
+
+/// The page size `device/list` uses when the request names none.
+const DEFAULT_LIST_LIMIT: usize = 200;
+
+/// The filters of a `device/list` request, as the cursor binds them.
+fn list_filters(payload: &list_spec::Payload) -> Value {
+    let mut p = serde_json::to_value(payload).unwrap_or(Value::Null);
+    if let Some(o) = p.as_object_mut() {
+        o.remove("cursor");
+        o.remove("limit");
+        o.remove("ext");
+    }
+    p
+}
+
+fn list_filter_digest(filters: &Value) -> String {
+    use sha2::{Digest, Sha256};
+    let bytes = serde_json::to_vec(filters).unwrap_or_default();
+    hex::encode(&Sha256::digest(bytes)[..8])
+}
+
+/// `d1.<filter digest>.<base64url of the last deviceId returned>`.
+fn list_cursor(filters: &Value, last_device_id: &str) -> String {
+    use base64::Engine as _;
+    format!(
+        "d1.{}.{}",
+        list_filter_digest(filters),
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(last_device_id)
+    )
+}
+
+/// The `deviceId` a cursor resumes after, or `None` for one these filters were
+/// not given.
+fn open_list_cursor(cursor: &str, filters: &Value) -> Option<String> {
+    use base64::Engine as _;
+    let mut parts = cursor.splitn(3, '.');
+    match (parts.next(), parts.next(), parts.next()) {
+        (Some("d1"), Some(d), Some(id)) if d == list_filter_digest(filters) => {
+            let raw = base64::engine::general_purpose::URL_SAFE_NO_PAD
+                .decode(id)
+                .ok()?;
+            String::from_utf8(raw).ok().filter(|s| !s.is_empty())
+        }
+        _ => None,
+    }
+}
+
+fn service_kind_matches(filter: &list_spec::PayloadServiceKindFilter, sk: &ServiceKind) -> bool {
+    use list_spec::PayloadServiceKindFilter as F;
+    matches!(
+        (filter, sk),
+        (F::Mediator, ServiceKind::Mediator)
+            | (F::AiAgent, ServiceKind::AiAgent)
+            | (F::Daemon, ServiceKind::Daemon)
+    )
 }
 
 fn form_factor_matches(
@@ -795,11 +880,11 @@ pub async fn disable_device(
     Ok(json!({ "deviceId": device_id, "disabledAt": disabled_at }))
 }
 
-/// `device/wipe/0.1` — issue a remote wipe for a lost/compromised device.
+/// `device/wipe/0.2` — issue a remote wipe for a lost/compromised device.
 ///
 /// Marks the binding `wiped_at` **and** `disabled_at` (a wiped device must not
 /// be able to authenticate) and bumps the entry version. `reason` and `scope`
-/// (`cache` | `cache-and-keys` | `full`) are logged and echoed back; the device
+/// (`cache` | `cacheAndKeys` | `full`) are logged and echoed back; the device
 /// observes the wiped state on its next `device/list` / heartbeat. Idempotent:
 /// re-wiping a wiped device keeps the original `wiped_at`. Requires management
 /// rights over the binding's own entry — see `find_manageable_device`.
@@ -843,7 +928,7 @@ pub async fn wipe_device(
     )
     .await;
 
-    // Canonical `device/wipe/0.1` response: `{deviceId, scope, completedAt}`
+    // Canonical `device/wipe/0.2` response: `{deviceId, scope, completedAt}`
     // (additionalProperties: false — the previous `wipedAt`/`disabledAt`/
     // `reason` members are not in the schema; #857). The wipe both marks and
     // disables in the same instant, so `completedAt` is that timestamp; the
@@ -856,7 +941,7 @@ pub async fn wipe_device(
 }
 
 /// Set (or clear) the caller device's push **wake channel** from a
-/// `device/set-wake/0.1`. The caller MUST be a registered device. The VTA
+/// `device/set-wake/0.2`. The caller MUST be a registered device. The VTA
 /// **owns the trigger allowlist**: it computes `{ vta_did } ∪ suggested` (the
 /// device's `suggestedTriggers` hint — typically its mediator — which the VTA
 /// MAY honor) and records it on the binding. `wake = None` clears the channel.
@@ -948,9 +1033,10 @@ pub async fn set_wake_device(
 /// that carries a [`DeviceBinding`]. Reused by `device/list`.
 ///
 /// Built as JSON directly: the internal [`ConsumerKind`] serialises its
-/// Companion `formFactor` field as kebab-case (`form-factor`), which does not
-/// match the wire schema's camelCase `formFactor`, so the discriminator is
-/// mapped explicitly here ([`kind_to_wire`]) rather than via serde.
+/// Companion `formFactor` field as kebab-case (`form-factor`) and its values in
+/// kebab-case (`ai-agent`), which do not match the wire schema's camelCase
+/// (`device/_shared/0.2`), so the discriminator is mapped explicitly here
+/// ([`kind_to_wire`]) rather than via serde.
 ///
 /// # Panics
 /// If `entry.device` is `None` — callers must check first.
@@ -1100,7 +1186,8 @@ pub fn wire_kind_to_internal(w: &register_spec::ConsumerKind) -> Result<Consumer
     })
 }
 
-/// Internal [`ConsumerKind`] → wire JSON (camelCase `formFactor`/`serviceKind`).
+/// Internal [`ConsumerKind`] → wire JSON (`device/_shared/0.2`: camelCase
+/// `formFactor`/`serviceKind` and camelCase values).
 fn kind_to_wire(kind: &ConsumerKind) -> Value {
     match kind {
         ConsumerKind::Companion { form_factor } => json!({
@@ -1115,11 +1202,16 @@ fn kind_to_wire(kind: &ConsumerKind) -> Value {
             "kind": "service",
             "serviceKind": match service_kind {
                 ServiceKind::Mediator => "mediator",
-                ServiceKind::AiAgent => "ai-agent",
+                ServiceKind::AiAgent => "aiAgent",
                 ServiceKind::Daemon => "daemon",
                 // `ServiceKind` is `#[non_exhaustive]`: its kebab-case serde
-                // name is the wire value.
-                other => return json!({ "kind": "service", "serviceKind": other }),
+                // name, camel-cased, is the wire value.
+                other => {
+                    return json!({
+                        "kind": "service",
+                        "serviceKind": camelize(&serde_json::to_value(other).unwrap_or(Value::Null)),
+                    });
+                }
             },
         }),
         // `ConsumerKind` is `#[non_exhaustive]`: its serde form is the wire form.
@@ -1143,8 +1235,30 @@ fn kind_to_wire(kind: &ConsumerKind) -> Value {
 fn is_published_capability(cap: &Capability) -> bool {
     serde_json::to_value(cap)
         .ok()
+        .map(|v| camelize(&v))
         .and_then(|v| serde_json::from_value::<list_spec::Capability>(v).ok())
         .is_some()
+}
+
+/// A kebab-case string value in camelCase (`sign-trust-task` → `signTrustTask`),
+/// the casing `device/_shared/0.2` and SPEC §4.10 give enum values. The
+/// internal types keep their kebab-case serde names, which are what the ACL
+/// keyspace stores.
+fn camelize(v: &Value) -> Value {
+    let s = v.as_str().unwrap_or_default();
+    let mut out = String::with_capacity(s.len());
+    let mut upper = false;
+    for ch in s.chars() {
+        match ch {
+            '-' => upper = true,
+            c if upper => {
+                out.extend(c.to_uppercase());
+                upper = false;
+            }
+            c => out.push(c),
+        }
+    }
+    Value::String(out)
 }
 
 /// The capabilities an ACL entry confers, split into what the published
@@ -1166,32 +1280,13 @@ fn split_capabilities(entry: &AclEntry) -> (Vec<Value>, Vec<Value>) {
     let caps = effective_capabilities(&entry.role, &entry.capabilities);
     let (published, local): (Vec<_>, Vec<_>) =
         caps.iter().partition(|c| is_published_capability(c));
-    let to_value = |c: &Capability| serde_json::to_value(c).expect("Capability serialises");
-    // The published list is re-cased kebab -> camel on the way out by the 0.2
-    // dual-accept layer (`wire_v0_2`), which only knows the members the
-    // specification defines. An `ext` member is invisible to it, so these are
-    // camel-cased here — a document that spelled `deviceAdmin` beside
-    // `sign-trust-task` would be answering in two dialects at once, and
-    // SPEC §4.10 asks for lowerCamelCase either way.
-    let to_camel = |c: &Capability| {
-        let kebab = to_value(c);
-        let s = kebab.as_str().unwrap_or_default();
-        let mut out = String::with_capacity(s.len());
-        let mut upper = false;
-        for ch in s.chars() {
-            match ch {
-                '-' => upper = true,
-                c if upper => {
-                    out.extend(c.to_uppercase());
-                    upper = false;
-                }
-                c => out.push(c),
-            }
-        }
-        Value::String(out)
-    };
+    // Both lists in lowerCamelCase (SPEC §4.10, `device/_shared/0.2`): a
+    // document that spelled `deviceAdmin` beside `sign-trust-task` would be
+    // answering in two dialects at once.
+    let to_camel =
+        |c: &Capability| camelize(&serde_json::to_value(c).expect("Capability serialises"));
     (
-        published.iter().map(to_value).collect(),
+        published.iter().map(to_camel).collect(),
         local.iter().map(to_camel).collect(),
     )
 }
@@ -1302,11 +1397,11 @@ mod tests {
             Capability::Sign,
         ];
         let (p, l) = split_strs(&e);
-        assert!(p.contains(&"vault-read".to_string()), "{p:?}");
+        assert!(p.contains(&"vaultRead".to_string()), "{p:?}");
         assert!(p.contains(&"sign".to_string()), "{p:?}");
         // `keyExport` was ecosystem-local until the specification registered it
         // (trust-tasks 0.23), so it is published now, not carried under `ext`.
-        assert!(p.contains(&"key-export".to_string()), "{p:?}");
+        assert!(p.contains(&"keyExport".to_string()), "{p:?}");
         assert!(l.is_empty(), "every capability is registered: {l:?}");
     }
 
@@ -1320,21 +1415,21 @@ mod tests {
         e.role = Role::Admin;
         let (p, l) = split_strs(&e);
         for cap in [
-            "sign-trust-task",
-            "credential-write",
-            "memory-read",
-            "memory-write",
-            "room-present",
-            "room-open",
-            "key-export",
-            "external-accounts-manage",
-            "external-auth-use",
-            "pcs-vetter",
-            "pcs-applicant",
-            "witness-request",
-            "pcs-voter",
-            "pcs-trustee",
-            "credential-present",
+            "signTrustTask",
+            "credentialWrite",
+            "memoryRead",
+            "memoryWrite",
+            "roomPresent",
+            "roomOpen",
+            "keyExport",
+            "externalAccountsManage",
+            "externalAuthUse",
+            "pcsVetter",
+            "pcsApplicant",
+            "witnessRequest",
+            "pcsVoter",
+            "pcsTrustee",
+            "credentialPresent",
         ] {
             assert!(
                 p.contains(&cap.to_string()),
@@ -1352,7 +1447,7 @@ mod tests {
         let mut e = entry_with_binding(); // Role::Application
         e.capabilities = vec![Capability::PersonaHolder];
         let (p, l) = split_strs(&e);
-        for cap in ["vault-read", "sign", "sign-trust-task", "memory-read"] {
+        for cap in ["vaultRead", "sign", "signTrustTask", "memoryRead"] {
             assert!(
                 p.contains(&cap.to_string()),
                 "role-derived {cap} missing: {p:?}"
@@ -1368,18 +1463,18 @@ mod tests {
         let mut e = entry_with_binding(); // Role::Application
         e.capabilities = vec![Capability::VaultRead, Capability::KeyMint];
         let (p, l) = split_strs(&e);
-        assert_eq!(p, vec!["vault-read".to_string()], "{p:?}");
+        assert_eq!(p, vec!["vaultRead".to_string()], "{p:?}");
         assert!(l.is_empty(), "{l:?}");
     }
 
     #[test]
     fn consumer_kind_round_trips_through_explicit_maps() {
-        // service / ai-agent survives wire→internal→wire.
+        // service / aiAgent survives wire→internal→wire.
         let internal = ConsumerKind::Service {
             service_kind: ServiceKind::AiAgent,
         };
         let wire = kind_to_wire(&internal);
-        assert_eq!(wire["serviceKind"], "ai-agent");
+        assert_eq!(wire["serviceKind"], "aiAgent");
     }
 
     // ── register_device (enrolment) ─────────────────────────────────
@@ -1526,9 +1621,9 @@ mod tests {
         )
         .await
         .expect("heartbeat on a registered device succeeds");
-        assert_eq!(body["syncHint"], "up-to-date");
+        assert_eq!(body["syncHint"], "upToDate");
         assert!(body["queuedOperations"].as_array().unwrap().is_empty());
-        assert!(body["serverTime"].is_string());
+        assert!(body["respondedAt"].is_string());
 
         // Platform update + lastSeenAt are persisted; version is NOT bumped.
         let entry = get_acl_entry(&acl_ks, did).await.unwrap().unwrap();
@@ -2140,6 +2235,67 @@ mod tests {
         .unwrap();
     }
 
+    /// `device/list/0.3`: `limit` bounds a page, `nextCursor` is present exactly
+    /// when more matching devices remain, following it returns the rest once
+    /// each, and a cursor carried to other filters — or not issued here — is
+    /// refused.
+    #[tokio::test]
+    async fn list_pages_by_limit_and_next_cursor() {
+        let (acl_ks, audit, _dir) = fresh().await;
+        for (did, name) in [
+            ("did:key:zPageA", "A"),
+            ("did:key:zPageB", "B"),
+            ("did:key:zPageC", "C"),
+        ] {
+            seed_and_register(&acl_ks, &audit, did, CompanionFormFactor::Mobile, name).await;
+        }
+        let first = list_devices(&acl_ks, &admin_auth(), &list_payload(json!({ "limit": 2 })))
+            .await
+            .unwrap();
+        assert_eq!(first["devices"].as_array().unwrap().len(), 2, "{first}");
+        let cursor = first["nextCursor"]
+            .as_str()
+            .expect("more remain")
+            .to_string();
+        let second = list_devices(
+            &acl_ks,
+            &admin_auth(),
+            &list_payload(json!({ "limit": 2, "cursor": cursor })),
+        )
+        .await
+        .unwrap();
+        assert_eq!(second["devices"].as_array().unwrap().len(), 1, "{second}");
+        assert!(
+            second.get("nextCursor").is_none(),
+            "the last page: {second}"
+        );
+        let mut ids: Vec<String> = first["devices"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .chain(second["devices"].as_array().unwrap())
+            .map(|d| d["deviceId"].as_str().unwrap().to_string())
+            .collect();
+        ids.sort();
+        ids.dedup();
+        assert_eq!(ids.len(), 3, "every device once");
+
+        for (cursor, filters) in [
+            (cursor.as_str(), json!({ "formFactorFilter": "mobile" })),
+            ("d1.not-ours.eA", json!({})),
+            ("anything", json!({})),
+        ] {
+            let mut p = filters;
+            p["cursor"] = json!(cursor);
+            assert!(
+                list_devices(&acl_ks, &admin_auth(), &list_payload(p))
+                    .await
+                    .is_err(),
+                "{cursor} is refused"
+            );
+        }
+    }
+
     #[tokio::test]
     async fn list_filters_then_disable_hides_device() {
         let (acl_ks, audit, _dir) = fresh().await;
@@ -2230,7 +2386,7 @@ mod tests {
         let w = wipe_device(&acl_ks, &audit, &admin_auth(), &id, "stolen", "full")
             .await
             .unwrap();
-        // Canonical `device/wipe/0.1` response shape (#857): exactly
+        // Canonical `device/wipe/0.2` response shape (#857): exactly
         // `{deviceId, scope, completedAt}` — the schema is closed, so the
         // pre-fix `wipedAt`/`disabledAt`/`reason` members must be gone.
         assert_eq!(w["deviceId"], id.as_str());

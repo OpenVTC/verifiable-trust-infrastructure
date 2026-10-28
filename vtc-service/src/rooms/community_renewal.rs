@@ -76,7 +76,7 @@ use trust_tasks_rs::specs::rooms::owner::{
     issue_authority::v0_2 as owner_authority, issue_membership::v0_1 as owner_membership,
 };
 use trust_tasks_rs::specs::vault::credentials::{
-    get::v0_1 as vault_get, query::v0_1 as vault_query, receive::v0_1 as vault_receive,
+    get::v0_2 as vault_get, query::v0_1 as vault_query, receive::v0_1 as vault_receive,
 };
 use vti_common::audit::{AuditEvent, CommunityRoomChangedData};
 use vti_common::error::AppError;
@@ -583,13 +583,16 @@ async fn held(
         let get = typed::<vault_get::Payload>(json!({ "id": id }))?;
         let answer = ask(holder, VAULT_GET, "vault/credentials/get", get).await?;
         let got = read::<vault_get::Response>("vault/credentials/get", answer)?;
-        if got
-            .credential
-            .get("credentialSubject")
-            .and_then(|s| s.get("id"))
-            .and_then(Value::as_str)
-            == Some(vtc_did)
-        {
+        // A room's credentials are Data Integrity credentials, so the body is a
+        // JSON object; one carried as bytes is some other credential.
+        let subject = match &got {
+            vault_get::Response::Variant0 { credential, .. } => credential
+                .get("credentialSubject")
+                .and_then(|s| s.get("id"))
+                .and_then(Value::as_str),
+            _ => None,
+        };
+        if subject == Some(vtc_did) {
             mine.push(id);
         }
     }
