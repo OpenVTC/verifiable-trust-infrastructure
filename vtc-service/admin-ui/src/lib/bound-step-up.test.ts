@@ -165,7 +165,7 @@ describe("answering a step-up", () => {
 describe("answering with a step-up approver (approve-response 0.6)", () => {
   const APPROVER = "did:key:z6MkpTHR8VNsBxYAAWHut2Geadd9jSwuBV8xRoAnwWsdvktH";
   const OPERATION = {
-    type: "https://trusttasks.org/spec/acl/grant/0.1",
+    type: "https://trusttasks.org/spec/acl/grant/0.2",
     payload: { entry: { subject: "did:key:z6MkBob", role: "admin", scopes: [] } },
   };
   const APPROVER_REQUEST: StepUpRequest = {

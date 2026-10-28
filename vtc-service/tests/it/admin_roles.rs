@@ -30,14 +30,9 @@ use crate::common::signed::{error_code, post, signed};
 
 const GRANT_V2: &str = "https://trusttasks.org/spec/acl/grant/0.2";
 const UPDATE_V2: &str = "https://trusttasks.org/spec/acl/update/0.2";
-const SHOW_V2: &str = "https://trusttasks.org/spec/acl/show/0.2";
-const LIST_V2: &str = "https://trusttasks.org/spec/acl/list/0.2";
+const LIST_V2: &str = "https://trusttasks.org/spec/acl/list/0.3";
 const REVOKE_V2: &str = "https://trusttasks.org/spec/acl/revoke/0.2";
 const CHANGE_ROLE_V2: &str = "https://trusttasks.org/spec/acl/change-role/0.2";
-const SHOW_V1: &str = "https://trusttasks.org/spec/acl/show/0.1";
-const LIST_V1: &str = "https://trusttasks.org/spec/acl/list/0.1";
-const GRANT_V1: &str = "https://trusttasks.org/spec/acl/grant/0.1";
-const UPDATE_V1: &str = "https://trusttasks.org/spec/acl/update/0.1";
 
 async fn fixture() -> TestVtc {
     let vtc = TestVtc::builder()
@@ -693,100 +688,6 @@ async fn vti_apv_009_the_last_role_assigner_is_never_removed() {
             &ca,
             REVOKE_V2,
             json!({ "subject": ca.did, "revocation": {"kind": "entry"} }),
-        )
-        .await,
-    )
-    .await;
-    assert!(error_code(&reply).is_some(), "{reply}");
-}
-
-// ─── reading, 0.1 ↔ 0.2 ──────────────────────────────────────────────────
-
-/// `acl/_shared/0.2` CONVENTIONS §8: 0.2 states every axis; 0.1 shows only
-/// what it can express and refuses the rest rather than render it lossily.
-#[tokio::test]
-async fn a_0_1_reader_sees_only_what_0_1_can_express() {
-    let vtc = fixture().await;
-    let ca = party_with(&vtc, AdminAuthority::community_admin()).await;
-    // Conventional: a community administrator whose community role is admin.
-    let conventional = Party::new();
-    store_acl_entry(
-        &vtc.state.acl_ks,
-        &entry(
-            &conventional.did,
-            VtcRole::Admin,
-            AdminAuthority::community_admin(),
-        ),
-    )
-    .await
-    .unwrap();
-    // Not expressible at 0.1: a member holding the auditor role.
-    let auditor = party_with(&vtc, AdminAuthority::for_role(AdminRole::Auditor)).await;
-
-    let (_, reply) = post(
-        &vtc,
-        &signed(&ca, SHOW_V2, json!({ "subject": auditor.did })).await,
-    )
-    .await;
-    let e = &reply["payload"]["entry"];
-    assert_eq!(e["role"], "auditor", "{reply}");
-    assert_eq!(e["act"], json!({"scope": "all"}));
-    assert_eq!(e["capabilities"], json!({"scope": "ceiling"}));
-    assert_eq!(e["keys"], json!({"scope": "none"}));
-    assert_eq!(e["ext"]["org.openvtc"]["communityRole"], "member");
-
-    let (_, reply) = post(
-        &vtc,
-        &signed(&ca, SHOW_V1, json!({ "subject": auditor.did })).await,
-    )
-    .await;
-    assert!(error_code(&reply).is_some(), "0.1 refuses it: {reply}");
-    let (_, reply) = post(
-        &vtc,
-        &signed(&ca, SHOW_V1, json!({ "subject": conventional.did })).await,
-    )
-    .await;
-    assert_eq!(reply["payload"]["entry"]["role"], "admin", "{reply}");
-    assert_eq!(reply["payload"]["entry"]["scopes"], json!([]));
-
-    let (_, reply) = post(&vtc, &signed(&ca, LIST_V1, json!({})).await).await;
-    let subjects: Vec<&str> = reply["payload"]["entries"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter_map(|e| e["subject"].as_str())
-        .collect();
-    assert!(subjects.contains(&conventional.did.as_str()));
-    assert!(!subjects.contains(&auditor.did.as_str()), "{reply}");
-
-    let (_, reply) = post(&vtc, &signed(&ca, LIST_V2, json!({})).await).await;
-    let subjects: Vec<&str> = reply["payload"]["entries"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter_map(|e| e["subject"].as_str())
-        .collect();
-    assert!(subjects.contains(&auditor.did.as_str()), "{reply}");
-
-    // A 0.1 write to an entry 0.1 cannot express is refused too.
-    let (_, reply) = post(
-        &vtc,
-        &signed(
-            &ca,
-            UPDATE_V1,
-            json!({ "subject": auditor.did, "label": "x" }),
-        )
-        .await,
-    )
-    .await;
-    assert!(error_code(&reply).is_some(), "{reply}");
-    // And a 0.1 grant naming contexts is refused (VTI-VTC-010).
-    let (_, reply) = post(
-        &vtc,
-        &signed(
-            &ca,
-            GRANT_V1,
-            json!({ "entry": { "subject": Party::new().did, "role": "member", "scopes": ["ctx-a"] } }),
         )
         .await,
     )

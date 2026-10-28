@@ -1,8 +1,8 @@
-//! The community's ACL: the canonical `acl/{list,show,grant,update,change-role,
-//! revoke}` tasks, at **0.2** for the reads and the writes that state
-//! administrative authority (role-based administration:
-//! `docs/05-design-notes/vtc-admin-roles.md`) and at 0.1 for the community-role
-//! change and the removal.
+//! The community's ACL: the canonical `acl/*` tasks — `list/0.3`, and
+//! `show`, `grant`, `update` and `revoke` at 0.2 (role-based administration:
+//! `docs/05-design-notes/vtc-admin-roles.md`) — and `acl/change-role/0.1` for
+//! the **community**-role change, which 0.2 (an administrative-role change)
+//! does not express.
 //!
 //! At 0.2 an entry's `role` is its **administrative role** (`community-admin`,
 //! `moderator`, `vetting-lead`, `repo-manager`, `credential-officer`,
@@ -38,10 +38,9 @@ use crate::{HolderKey, MAX_DOCUMENT_RESPONSE_BYTES, VtcClient, VtcError, decode_
 /// The generated wire types for the family, re-exported so a caller names the
 /// reply types without depending on `trust-tasks-rs` itself.
 pub use trust_tasks_rs::specs::acl::{
-    change_role::v0_1 as change_role, grant::v0_1 as grant, grant::v0_2 as grant_v0_2,
-    list::v0_1 as list, list::v0_2 as list_v0_2, revoke::v0_1 as revoke, show::v0_1 as show,
-    show::v0_2 as show_v0_2, swap_key::v0_1 as swap_key, update::v0_1 as update,
-    update::v0_2 as update_v0_2,
+    change_role::v0_1 as change_role, grant::v0_2 as grant, list::v0_3 as list,
+    revoke::v0_2 as revoke, show::v0_2 as show, swap_key::v0_1 as swap_key,
+    update::v0_2 as update,
 };
 
 /// The Type URI of each task in the family, read off the generated payloads.
@@ -54,10 +53,6 @@ pub mod task {
     pub const UPDATE: &str = <super::update::Payload as Payload>::TYPE_URI;
     pub const CHANGE_ROLE: &str = <super::change_role::Payload as Payload>::TYPE_URI;
     pub const REVOKE: &str = <super::revoke::Payload as Payload>::TYPE_URI;
-    pub const LIST_V0_2: &str = <super::list_v0_2::Payload as Payload>::TYPE_URI;
-    pub const SHOW_V0_2: &str = <super::show_v0_2::Payload as Payload>::TYPE_URI;
-    pub const GRANT_V0_2: &str = <super::grant_v0_2::Payload as Payload>::TYPE_URI;
-    pub const UPDATE_V0_2: &str = <super::update_v0_2::Payload as Payload>::TYPE_URI;
     pub const SWAP_KEY: &str = <super::swap_key::Payload as Payload>::TYPE_URI;
 }
 
@@ -65,12 +60,12 @@ pub mod task {
 /// fifteen minutes (VTI-CLT-026, short-lived), and the swap is sent at once.
 pub const SWAP_LINK_PROOF_TTL_SECS: u64 = 300;
 
-/// `acl/list/0.2` filters. Every member is optional. `resource` (and the
+/// `acl/list/0.3` filters. Every member is optional. `resource` (and the
 /// unused-at-a-community `context`) need a `direction`: `actingIn`, `subtree`
 /// or `any`.
 #[derive(Debug, Clone, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct AclListFilterV02 {
+pub struct AclListFilter {
     /// An administrative role, or `member` for entries holding none.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub role: Option<String>,
@@ -85,8 +80,8 @@ pub struct AclListFilterV02 {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub subject_prefix: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub page_size: Option<u32>,
-    /// The previous page's `cursor`, verbatim.
+    pub limit: Option<u32>,
+    /// The previous page's `nextCursor`, verbatim.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cursor: Option<String>,
 }
@@ -94,7 +89,7 @@ pub struct AclListFilterV02 {
 /// An `acl/grant/0.2` entry: the administrative authority the subject should
 /// hold, every axis stated.
 #[derive(Debug, Clone, Default)]
-pub struct AclGrantV02 {
+pub struct AclGrant {
     pub subject: String,
     /// The administrative role, or `member` for none.
     pub admin_role: String,
@@ -118,7 +113,7 @@ pub struct AclGrantV02 {
 
 /// An `acl/update/0.2` amendment. `None` leaves a member unchanged.
 #[derive(Debug, Clone, Default)]
-pub struct AclUpdateV02 {
+pub struct AclUpdate {
     pub subject: String,
     /// Replace the capability set: `Some(None)` returns it to the role's full
     /// ceiling, `Some(Some(list))` lists it (empty: none).
@@ -151,152 +146,7 @@ fn explicit_scope(on: bool) -> serde_json::Value {
     serde_json::json!({ "scope": if on { "all" } else { "none" } })
 }
 
-/// `acl/list/0.1` filters. Every member is optional; an empty filter lists the
-/// first page of every entry the caller may see.
-#[derive(Debug, Clone, Default, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AclListFilter {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub role: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub scope: Option<String>,
-    /// `acting-in` (the default), `subtree` or `any`.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub direction: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub subject_prefix: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub page_size: Option<u32>,
-    /// The previous page's `cursor`, verbatim.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub cursor: Option<String>,
-}
-
-/// An `acl/grant/0.1` entry: what the subject should hold.
-#[derive(Debug, Clone, Default)]
-pub struct AclGrant {
-    pub subject: String,
-    pub role: String,
-    pub scopes: Vec<String>,
-    pub label: Option<String>,
-    pub expires_at: Option<DateTime<Utc>>,
-    pub reason: Option<String>,
-}
-
-/// An `acl/update/0.1` amendment. `None` leaves a member unchanged; for
-/// `label` and `expires_at`, `Some(None)` clears it — which for the expiry
-/// makes the entry permanent.
-#[derive(Debug, Clone, Default)]
-pub struct AclUpdate {
-    pub subject: String,
-    pub label: Option<Option<String>>,
-    /// The **whole** intended set. A set that drops a scope the entry holds is
-    /// refused (`acl/update:narrowingNotPermitted`); use [`VtcClient::acl_revoke`].
-    pub scopes: Option<Vec<String>>,
-    pub expires_at: Option<Option<DateTime<Utc>>>,
-    pub reason: Option<String>,
-}
-
 impl VtcClient {
-    /// One page of the ACL entries this caller may see. Manage authority.
-    pub async fn acl_list(
-        &self,
-        filter: &AclListFilter,
-        key: &HolderKey,
-    ) -> Result<list::Response, VtcError> {
-        let payload = checked::<list::Payload>(serde_json::to_value(filter).map_err(bad)?)?;
-        self.acl_task(task::LIST, payload, key, &[]).await
-    }
-
-    /// Every ACL entry this caller may see, following the cursor to the end.
-    pub async fn acl_list_all(
-        &self,
-        filter: &AclListFilter,
-        key: &HolderKey,
-    ) -> Result<Vec<list::AclEntry>, VtcError> {
-        let mut filter = filter.clone();
-        let mut out = Vec::new();
-        loop {
-            let page = self.acl_list(&filter, key).await?;
-            out.extend(page.entries);
-            match (page.truncated, page.cursor) {
-                (true, Some(cursor)) => filter.cursor = Some(cursor),
-                // Truncated with no cursor: the VTC cannot page from here. Say
-                // so rather than return a partial list that reads as complete.
-                (true, None) => {
-                    return Err(VtcError::Http {
-                        status: 200,
-                        body: "acl/list answered a truncated page with no cursor".into(),
-                    });
-                }
-                (false, _) => return Ok(out),
-            }
-        }
-    }
-
-    /// One entry. [`VtcError::Http`] 404 (or the document's `notFound`) when
-    /// the subject holds none this caller may see.
-    pub async fn acl_show(
-        &self,
-        subject: &str,
-        key: &HolderKey,
-    ) -> Result<show::Response, VtcError> {
-        let payload = checked::<show::Payload>(serde_json::json!({ "subject": subject }))?;
-        self.acl_task(task::SHOW, payload, key, &[]).await
-    }
-
-    /// Write the entry `grant.subject` should hold. Conferring administrator
-    /// authority needs a passkey gesture bound to this grant, and
-    /// community-wide authority another administrator's consent; the refusal
-    /// carries the ceremony in its `details`.
-    pub async fn acl_grant(
-        &self,
-        grant: &AclGrant,
-        key: &HolderKey,
-    ) -> Result<grant::Response, VtcError> {
-        let mut entry = serde_json::json!({
-            "subject": grant.subject,
-            "role": grant.role,
-            "scopes": grant.scopes,
-        });
-        if let Some(label) = &grant.label {
-            entry["label"] = serde_json::json!(label);
-        }
-        if let Some(at) = grant.expires_at {
-            entry["expiresAt"] = serde_json::json!(at.to_rfc3339());
-        }
-        let mut body = serde_json::json!({ "entry": entry });
-        if let Some(reason) = &grant.reason {
-            body["reason"] = serde_json::json!(reason);
-        }
-        let payload = checked::<grant::Payload>(body)?;
-        self.acl_task(task::GRANT, payload, key, &[]).await
-    }
-
-    /// Amend an existing entry's label, scopes or expiry.
-    pub async fn acl_update(
-        &self,
-        update: &AclUpdate,
-        key: &HolderKey,
-    ) -> Result<update::Response, VtcError> {
-        let mut body = serde_json::json!({ "subject": update.subject });
-        if let Some(label) = &update.label {
-            body["label"] = serde_json::json!(label);
-        }
-        if let Some(scopes) = &update.scopes {
-            body["scopes"] = serde_json::json!(scopes);
-        }
-        if let Some(at) = &update.expires_at {
-            body["expiresAt"] = serde_json::json!(at.map(|t| t.to_rfc3339()));
-        }
-        if let Some(reason) = &update.reason {
-            body["reason"] = serde_json::json!(reason);
-        }
-        let payload = checked::<update::Payload>(body)?;
-        self.acl_task(task::UPDATE, payload, key, update::ERROR_CODES)
-            .await
-    }
-
     /// Move `subject` from `from_role` to `to_role`, compare-and-swapped on
     /// `from_role`. A promotion to admin needs a bound passkey gesture.
     pub async fn acl_change_role(
@@ -319,20 +169,18 @@ impl VtcClient {
         self.acl_task(task::CHANGE_ROLE, payload, key, &[]).await
     }
 
-    /// Remove `subject`'s entry, or — with `scopes` — only those scopes. The
-    /// reply's `entry` is `None` after a removal and the reduced entry after a
-    /// reduction.
+    /// Remove `subject`'s entry (`acl/revoke/0.2`, `revocation: {kind: entry}`).
+    /// The reply's `entry` is `None`.
     pub async fn acl_revoke(
         &self,
         subject: &str,
-        scopes: Option<&[String]>,
         reason: Option<&str>,
         key: &HolderKey,
     ) -> Result<revoke::Response, VtcError> {
-        let mut body = serde_json::json!({ "subject": subject });
-        if let Some(scopes) = scopes {
-            body["scopes"] = serde_json::json!(scopes);
-        }
+        let mut body = serde_json::json!({
+            "subject": subject,
+            "revocation": { "kind": "entry" },
+        });
         if let Some(reason) = reason {
             body["reason"] = serde_json::json!(reason);
         }
@@ -361,6 +209,7 @@ impl VtcClient {
         }
         let mut body = serde_json::json!({
             "subject": subject,
+            "revocation": { "kind": "entry" },
             "ext": { "org.openvtc": { "immediate": immediate } },
         });
         if let Some(reason) = reason {
@@ -371,61 +220,55 @@ impl VtcClient {
             .await
     }
 
-    /// One page of the ACL at 0.2 — every entry with every axis stated. Any
-    /// administrative role may read it.
-    pub async fn acl_list_v0_2(
+    /// One page of the ACL (`acl/list/0.3`) — every entry with every axis
+    /// stated. Any administrative role may read it.
+    pub async fn acl_list(
         &self,
-        filter: &AclListFilterV02,
+        filter: &AclListFilter,
         key: &HolderKey,
-    ) -> Result<list_v0_2::Response, VtcError> {
-        let payload = checked::<list_v0_2::Payload>(serde_json::to_value(filter).map_err(bad)?)?;
-        self.acl_task(task::LIST_V0_2, payload, key, list_v0_2::ERROR_CODES)
+    ) -> Result<list::Response, VtcError> {
+        let payload = checked::<list::Payload>(serde_json::to_value(filter).map_err(bad)?)?;
+        self.acl_task(task::LIST, payload, key, list::ERROR_CODES)
             .await
     }
 
-    /// Every ACL entry at 0.2, following the cursor to the end.
-    pub async fn acl_list_all_v0_2(
+    /// Every ACL entry, following `nextCursor` to the end.
+    pub async fn acl_list_all(
         &self,
-        filter: &AclListFilterV02,
+        filter: &AclListFilter,
         key: &HolderKey,
-    ) -> Result<Vec<list_v0_2::AclEntry>, VtcError> {
+    ) -> Result<Vec<list::AclEntry>, VtcError> {
         let mut filter = filter.clone();
         let mut out = Vec::new();
         loop {
-            let page = self.acl_list_v0_2(&filter, key).await?;
+            let page = self.acl_list(&filter, key).await?;
             out.extend(page.entries);
-            match (page.truncated, page.cursor) {
-                (true, Some(cursor)) => filter.cursor = Some(cursor.to_string()),
-                (true, None) => {
-                    return Err(VtcError::Http {
-                        status: 200,
-                        body: "acl/list answered a truncated page with no cursor".into(),
-                    });
-                }
-                (false, _) => return Ok(out),
+            match page.next_cursor {
+                Some(cursor) => filter.cursor = Some(cursor.to_string()),
+                None => return Ok(out),
             }
         }
     }
 
-    /// One entry at 0.2; `entry` is `None` when the subject holds none.
-    pub async fn acl_show_v0_2(
+    /// One entry (`acl/show/0.2`); `entry` is `None` when the subject holds none.
+    pub async fn acl_show(
         &self,
         subject: &str,
         key: &HolderKey,
-    ) -> Result<show_v0_2::Response, VtcError> {
-        let payload = checked::<show_v0_2::Payload>(serde_json::json!({ "subject": subject }))?;
-        self.acl_task(task::SHOW_V0_2, payload, key, &[]).await
+    ) -> Result<show::Response, VtcError> {
+        let payload = checked::<show::Payload>(serde_json::json!({ "subject": subject }))?;
+        self.acl_task(task::SHOW, payload, key, &[]).await
     }
 
-    /// Write the entry `grant.subject` should hold, at 0.2. A grant is bounded
+    /// Write the entry `grant.subject` should hold (`acl/grant/0.2`). A grant is bounded
     /// by the caller's own entry; widening administrative authority needs a
     /// passkey gesture bound to it, and an authority-conferring capability its
     /// other holders' consent (the refusal or the parked action says so).
-    pub async fn acl_grant_v0_2(
+    pub async fn acl_grant(
         &self,
-        grant: &AclGrantV02,
+        grant: &AclGrant,
         key: &HolderKey,
-    ) -> Result<grant_v0_2::Response, VtcError> {
+    ) -> Result<grant::Response, VtcError> {
         let mut entry = serde_json::json!({
             "subject": grant.subject,
             "role": grant.admin_role,
@@ -450,18 +293,18 @@ impl VtcClient {
         if let Some(reason) = &grant.reason {
             body["reason"] = serde_json::json!(reason);
         }
-        let payload = checked::<grant_v0_2::Payload>(body)?;
-        self.acl_task(task::GRANT_V0_2, payload, key, grant_v0_2::ERROR_CODES)
+        let payload = checked::<grant::Payload>(body)?;
+        self.acl_task(task::GRANT, payload, key, grant::ERROR_CODES)
             .await
     }
 
-    /// Amend an existing entry at 0.2: its capabilities, approve scope, label
+    /// Amend an existing entry (`acl/update/0.2`): its capabilities, approve scope, label
     /// or expiry. Narrowing is a privilege reduction applied at once.
-    pub async fn acl_update_v0_2(
+    pub async fn acl_update(
         &self,
-        update: &AclUpdateV02,
+        update: &AclUpdate,
         key: &HolderKey,
-    ) -> Result<update_v0_2::Response, VtcError> {
+    ) -> Result<update::Response, VtcError> {
         let mut body = serde_json::json!({ "subject": update.subject });
         if let Some(caps) = &update.capabilities {
             body["capabilities"] = capability_scope(caps.as_deref());
@@ -483,8 +326,8 @@ impl VtcClient {
         if let Some(reason) = &update.reason {
             body["reason"] = serde_json::json!(reason);
         }
-        let payload = checked::<update_v0_2::Payload>(body)?;
-        self.acl_task(task::UPDATE_V0_2, payload, key, update_v0_2::ERROR_CODES)
+        let payload = checked::<update::Payload>(body)?;
+        self.acl_task(task::UPDATE, payload, key, update::ERROR_CODES)
             .await
     }
 
@@ -646,15 +489,19 @@ mod tests {
     #[test]
     fn a_list_filter_is_the_canonical_payload() {
         let filter = AclListFilter {
-            scope: Some("ctx-a".into()),
+            resource: Some("git-ns:github.com/acme".into()),
             direction: Some("subtree".into()),
-            page_size: Some(10),
+            limit: Some(10),
             ..Default::default()
         };
         let v = checked::<list::Payload>(serde_json::to_value(&filter).unwrap()).unwrap();
         assert_eq!(
             v,
-            serde_json::json!({ "scope": "ctx-a", "direction": "subtree", "pageSize": 10 })
+            serde_json::json!({
+                "resource": "git-ns:github.com/acme",
+                "direction": "subtree",
+                "limit": 10
+            })
         );
     }
 
@@ -668,11 +515,21 @@ mod tests {
     }
 
     #[test]
-    fn an_empty_scope_reduction_is_refused_before_sending() {
-        // `minItems: 1` — an empty list must never reach the VTC, where it
-        // would be ambiguous with a full removal.
-        let body = serde_json::json!({ "subject": "did:key:z6MkA", "scopes": [] });
-        assert!(checked::<revoke::Payload>(body).is_err());
+    fn a_revocation_states_what_it_revokes() {
+        // 0.2 has no implicit full removal: `revocation` is required, and an
+        // empty act narrowing is not a scope.
+        let bare = serde_json::json!({ "subject": "did:key:z6MkA" });
+        assert!(checked::<revoke::Payload>(bare).is_err());
+        let empty = serde_json::json!({
+            "subject": "did:key:z6MkA",
+            "revocation": { "kind": "act", "act": { "scope": "contexts", "contexts": [] } },
+        });
+        assert!(checked::<revoke::Payload>(empty).is_err());
+        let entry = serde_json::json!({
+            "subject": "did:key:z6MkA",
+            "revocation": { "kind": "entry" },
+        });
+        assert!(checked::<revoke::Payload>(entry).is_ok());
     }
 
     /// A 0.2 grant states every axis, and the capability strings become
@@ -702,7 +559,7 @@ mod tests {
             "capabilities": scope,
             "approve": explicit_scope(false),
         }});
-        assert!(checked::<grant_v0_2::Payload>(body).is_ok());
+        assert!(checked::<grant::Payload>(body).is_ok());
     }
 
     #[test]
@@ -714,10 +571,6 @@ mod tests {
             task::UPDATE,
             task::CHANGE_ROLE,
             task::REVOKE,
-            task::LIST_V0_2,
-            task::SHOW_V0_2,
-            task::GRANT_V0_2,
-            task::UPDATE_V0_2,
         ] {
             assert!(uri.starts_with("https://trusttasks.org/spec/acl/"), "{uri}");
         }

@@ -25,7 +25,7 @@ const coolingReply = (message?: string) => ({
   payload: {
     continuation: "proceed",
     expects: [{ typeUri: ACTIONS_SHOW_TASK, hint: { actionId: "act-c" } }],
-    inResponseTo: { id: "urn:uuid:req", typeUri: "https://trusttasks.org/spec/acl/revoke/0.1" },
+    inResponseTo: { id: "urn:uuid:req", typeUri: "https://trusttasks.org/spec/acl/revoke/0.2" },
     ...(message ? { message } : {}),
     ext: {
       "org.openvtc": {

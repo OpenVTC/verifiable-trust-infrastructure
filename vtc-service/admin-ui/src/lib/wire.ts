@@ -296,15 +296,6 @@ export interface components {
             updatedAt?: string | null;
             updatedBy?: string | null;
         };
-        AclListResponse: {
-            cursor?: string | null;
-            entries: components["schemas"]["AclEntryResponse"][];
-            /**
-             * @description True when more entries match beyond this page; `cursor` is then
-             *     present. Required by canonical `acl/list`.
-             */
-            truncated: boolean;
-        };
         /**
          * @description `POST /v1/auth/passkey-login/finish`.
          *

@@ -15,7 +15,7 @@
 
 #![cfg(feature = "transport-harness")]
 
-use vtc_client::acl::{AclGrantV02, AclUpdateV02};
+use vtc_client::acl::{AclGrant, AclUpdate};
 use vtc_client::{HolderKey, VtcClient, VtcError};
 use vtc_service::acl::{VtcAclEntry, VtcRole, store_acl_entry};
 use vtc_service::server::AppState;
@@ -70,8 +70,8 @@ async fn grant_show_widen_refuse_revoke(client: &VtcClient, key: &HolderKey, ove
     let subject = format!("did:key:z6MkSubject{over}");
 
     let granted = client
-        .acl_grant_v0_2(
-            &AclGrantV02 {
+        .acl_grant(
+            &AclGrant {
                 subject: subject.clone(),
                 admin_role: "member".into(),
                 capabilities: Some(vec![]),
@@ -87,15 +87,15 @@ async fn grant_show_widen_refuse_revoke(client: &VtcClient, key: &HolderKey, ove
     assert_eq!(granted["entry"]["role"], "member", "over {over}");
 
     let shown = client
-        .acl_show_v0_2(&subject, key)
+        .acl_show(&subject, key)
         .await
         .unwrap_or_else(|e| panic!("show over {over}: {e}"));
     let shown = serde_json::to_value(&shown).unwrap();
     assert_eq!(shown["entry"]["subject"], subject, "over {over}");
 
     let amended = client
-        .acl_update_v0_2(
-            &AclUpdateV02 {
+        .acl_update(
+            &AclUpdate {
                 subject: subject.clone(),
                 label: Some(Some("ops".into())),
                 ..Default::default()
@@ -111,8 +111,8 @@ async fn grant_show_widen_refuse_revoke(client: &VtcClient, key: &HolderKey, ove
     // `trust-task-error` document, on every transport: an entry with no
     // administrative role has an empty ceiling.
     let refused = client
-        .acl_update_v0_2(
-            &AclUpdateV02 {
+        .acl_update(
+            &AclUpdate {
                 subject: subject.clone(),
                 capabilities: Some(Some(vec!["vtc.audit.read".into()])),
                 ..Default::default()
@@ -127,21 +127,18 @@ async fn grant_show_widen_refuse_revoke(client: &VtcClient, key: &HolderKey, ove
     );
 
     let revoked = client
-        .acl_revoke(&subject, None, None, key)
+        .acl_revoke(&subject, None, key)
         .await
         .unwrap_or_else(|e| panic!("revoke over {over}: {e}"));
     assert!(revoked.entry.is_none(), "over {over}: {revoked:?}");
 
-    // Gone for good: a show afterwards is refused, not a success with a null
-    // entry, and the refusal names the subject on every transport.
+    // Gone for good: `acl/show/0.2` answers a subject holding no entry with
+    // `entry: null`, on every transport.
     let missing = client
         .acl_show(&subject, key)
         .await
-        .expect_err("a revoked subject holds no entry to show");
-    assert!(
-        missing.to_string().contains(&subject),
-        "over {over}: {missing}"
-    );
+        .unwrap_or_else(|e| panic!("show over {over}: {e}"));
+    assert!(missing.entry.is_none(), "over {over}: {missing:?}");
 }
 
 /// Over a session the VTC accepts a document only from the DID that signed

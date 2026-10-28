@@ -31,7 +31,7 @@ const nextStep = (overrides: Record<string, unknown> = {}) => ({
     expects: [
       { typeUri: ACTIONS_SHOW_TASK, hint: { actionId: "act-9" }, reason: "await approval" },
     ],
-    inResponseTo: { id: "urn:uuid:req", typeUri: "https://trusttasks.org/spec/acl/grant/0.1" },
+    inResponseTo: { id: "urn:uuid:req", typeUri: "https://trusttasks.org/spec/acl/grant/0.2" },
     message: MESSAGE,
     ext: {
       "org.openvtc": {
@@ -49,7 +49,7 @@ const nextStep = (overrides: Record<string, unknown> = {}) => ({
 
 const SIGNED = {
   id: "urn:uuid:req",
-  type: "https://trusttasks.org/spec/acl/grant/0.1",
+  type: "https://trusttasks.org/spec/acl/grant/0.2",
   issuer: "did:key:z6MkConsole",
   recipient: "did:webvh:x:vtc",
   issuedAt: "2026-10-02T10:00:00Z",
@@ -70,7 +70,7 @@ describe("recognising the next-step reply", () => {
     expect(parked.threshold).toBe(1);
     expect(parked.approvers).toBe(2);
     expect(parked.kind).toBe("acl.grant.authority");
-    expect(parked.typeUri).toBe("https://trusttasks.org/spec/acl/grant/0.1");
+    expect(parked.typeUri).toBe("https://trusttasks.org/spec/acl/grant/0.2");
     expect(parked.path).toBe("/actions?action=act-9");
   });
 

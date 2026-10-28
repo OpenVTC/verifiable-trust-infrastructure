@@ -479,8 +479,14 @@ const ACTION_ID: &str = "act-5b8f1d4e9c2a4f6b8e317a0c5d9e2f14";
 /// challenge, or closed. The summary and digest are the real renderer's.
 fn sample_action(open: bool) -> serde_json::Value {
     use crate::admin_actions::summary;
-    let type_uri = "https://trusttasks.org/spec/acl/grant/0.1";
-    let payload = json!({ "entry": { "subject": OTHER_DID, "role": "admin", "scopes": [] } });
+    let type_uri = "https://trusttasks.org/spec/acl/grant/0.2";
+    let payload = json!({ "entry": {
+        "subject": OTHER_DID,
+        "role": "community-admin",
+        "act": { "scope": "all" },
+        "keys": { "scope": "none" },
+        "capabilities": { "scope": "ceiling" },
+    } });
     let mut action = json!({
         "actionId": ACTION_ID,
         "category": "approval",
@@ -514,8 +520,8 @@ fn sample_action(open: bool) -> serde_json::Value {
 /// and cancellable by its requester, or landed.
 fn sample_cooling_off(open: bool, caller_role: &str) -> serde_json::Value {
     use crate::admin_actions::summary;
-    let type_uri = "https://trusttasks.org/spec/acl/revoke/0.1";
-    let payload = json!({ "subject": OTHER_DID });
+    let type_uri = "https://trusttasks.org/spec/acl/revoke/0.2";
+    let payload = json!({ "subject": OTHER_DID, "revocation": { "kind": "entry" } });
     let mut action = json!({
         "actionId": ACTION_ID,
         "category": "coolingOff",

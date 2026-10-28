@@ -1101,7 +1101,7 @@ mod p0_14_role_change_policy_tests {
             "member",
             "admin",
             Some(crate::acl::admin_consent::Operation {
-                type_uri: crate::trust_tasks::ACL_CHANGE_ROLE_TYPE,
+                type_uri: crate::trust_tasks::ACL_CHANGE_COMMUNITY_ROLE_TYPE,
                 payload: &payload,
             }),
         )
@@ -1222,7 +1222,7 @@ mod p0_14_role_change_policy_tests {
             "member",
             "moderator",
             Some(crate::acl::admin_consent::Operation {
-                type_uri: crate::trust_tasks::ACL_CHANGE_ROLE_TYPE,
+                type_uri: crate::trust_tasks::ACL_CHANGE_COMMUNITY_ROLE_TYPE,
                 payload: &payload,
             }),
         )

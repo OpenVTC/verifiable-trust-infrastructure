@@ -228,17 +228,8 @@ use trust_tasks_rs::specs::vtc::endorsement_types::{
 };
 // Batch 5: the backup export. Its `import` partner waits — see the design note.
 use trust_tasks_rs::specs::vtc::backup::export::v0_1 as backup_export;
-// The first verb that confers administrative authority on this door, and the
-// answer to the operation-bound step-up it asks for (#1641; design note
-// `vtc-operation-bound-step-up.md`).
-use trust_tasks_rs::specs::acl::change_role::v0_1 as acl_change_role;
-use trust_tasks_rs::specs::acl::grant::v0_1 as acl_grant;
-// The rest of the canonical family: reading and amending an entry, and taking
-// authority away — which until these were bound here existed only on bearer REST.
-use trust_tasks_rs::specs::acl::{
-    list::v0_1 as acl_list, revoke::v0_1 as acl_revoke, show::v0_1 as acl_show,
-    update::v0_1 as acl_update,
-};
+// The answer to the operation-bound step-up an ACL write asks for (#1641;
+// design note `vtc-operation-bound-step-up.md`).
 use trust_tasks_rs::specs::auth::step_up::approve_response::v0_4 as step_up_approve_response;
 // 0.6 adds `approverSigned` evidence — a step-up approver's statement — beside
 // the passkey (design note `vtc-approver-step-up.md`).
@@ -1495,28 +1486,13 @@ fn dispatch_typed<'a>(
         ACL_CHANGE_ROLE_TYPE => {
             Box::pin(async move { acl_tasks::handle_change_role(state, ctx, doc).await })
         }
+        ACL_CHANGE_COMMUNITY_ROLE_TYPE => {
+            Box::pin(async move { acl_tasks::handle_change_community_role(state, ctx, doc).await })
+        }
         ACL_SHOW_TYPE => Box::pin(async move { acl_tasks::handle_show(state, ctx, doc).await }),
         ACL_LIST_TYPE => Box::pin(async move { acl_tasks::handle_list(state, ctx, doc).await }),
         ACL_UPDATE_TYPE => Box::pin(async move { acl_tasks::handle_update(state, ctx, doc).await }),
         ACL_REVOKE_TYPE => Box::pin(async move { acl_tasks::handle_revoke(state, ctx, doc).await }),
-        ACL_GRANT_V0_2_TYPE => {
-            Box::pin(async move { acl_tasks::handle_grant_v0_2(state, ctx, doc).await })
-        }
-        ACL_CHANGE_ROLE_V0_2_TYPE => {
-            Box::pin(async move { acl_tasks::handle_change_role_v0_2(state, ctx, doc).await })
-        }
-        ACL_SHOW_V0_2_TYPE => {
-            Box::pin(async move { acl_tasks::handle_show_v0_2(state, ctx, doc).await })
-        }
-        ACL_LIST_V0_2_TYPE => {
-            Box::pin(async move { acl_tasks::handle_list_v0_2(state, ctx, doc).await })
-        }
-        ACL_UPDATE_V0_2_TYPE => {
-            Box::pin(async move { acl_tasks::handle_update_v0_2(state, ctx, doc).await })
-        }
-        ACL_REVOKE_V0_2_TYPE => {
-            Box::pin(async move { acl_tasks::handle_revoke_v0_2(state, ctx, doc).await })
-        }
         ACL_SWAP_KEY_TYPE => {
             Box::pin(async move { acl_tasks::handle_swap_key(state, ctx, doc).await })
         }
@@ -2151,11 +2127,11 @@ mod spine_proof_tests {
             "reads ACL rows; the handler authorizes from the signer's own entry, so an unsigned caller is refused regardless",
         ),
         (
-            ACL_SHOW_V0_2_TYPE,
+            ACL_SHOW_TYPE,
             "reads an ACL row; the handler authorizes from the signer's own entry, so an unsigned caller is refused regardless",
         ),
         (
-            ACL_LIST_V0_2_TYPE,
+            ACL_LIST_TYPE,
             "reads ACL rows; the handler authorizes from the signer's own entry, so an unsigned caller is refused regardless",
         ),
         (
@@ -2988,21 +2964,14 @@ pub(crate) const DISPATCHED_URIS: &[&str] = &[
     ACL_GRANT_TYPE,
     // A role transition; promotion to admin takes the same bound gesture.
     ACL_CHANGE_ROLE_TYPE,
+    // The community-role move (member <-> admin), through the role-change
+    // ceremony. `acl/change-role/0.2` moves the administrative role only.
+    ACL_CHANGE_COMMUNITY_ROLE_TYPE,
     // The rest of the canonical family.
     ACL_SHOW_TYPE,
     ACL_LIST_TYPE,
     ACL_UPDATE_TYPE,
     ACL_REVOKE_TYPE,
-    // AclEntry 0.2: role-based administration — explicit act scope,
-    // capabilities with resource qualifiers, approve scope
-    // (`docs/05-design-notes/vtc-admin-roles.md`). 0.1 keeps working by the
-    // CONVENTIONS §8 mapping (`routes::acl` module docs).
-    ACL_GRANT_V0_2_TYPE,
-    ACL_CHANGE_ROLE_V0_2_TYPE,
-    ACL_SHOW_V0_2_TYPE,
-    ACL_LIST_V0_2_TYPE,
-    ACL_UPDATE_V0_2_TYPE,
-    ACL_REVOKE_V0_2_TYPE,
     // The gesture that operation-bound step-up asks for.
     STEP_UP_APPROVE_RESPONSE_TYPE,
     // 0.6: a step-up approver's signed statement as the factor
@@ -3383,49 +3352,37 @@ pub(crate) const ENDORSEMENT_TYPE_DELETE_TYPE: &str =
 pub(crate) const BACKUP_EXPORT_TYPE: &str =
     <backup_export::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
-/// `acl/grant/0.1` — the entry the maintainer should hold for a subject.
-pub(crate) const ACL_GRANT_TYPE: &str = <acl_grant::Payload as trust_tasks_rs::Payload>::TYPE_URI;
-
-/// `acl/change-role/0.1` — move a subject between roles, compare-and-swap on
-/// `fromRole`.
-pub(crate) const ACL_CHANGE_ROLE_TYPE: &str =
-    <acl_change_role::Payload as trust_tasks_rs::Payload>::TYPE_URI;
-
-/// `acl/show/0.1` — one entry, as the caller may see it.
-pub(crate) const ACL_SHOW_TYPE: &str = <acl_show::Payload as trust_tasks_rs::Payload>::TYPE_URI;
-
-/// `acl/list/0.1` — the entries the caller may see, filtered and paged.
-pub(crate) const ACL_LIST_TYPE: &str = <acl_list::Payload as trust_tasks_rs::Payload>::TYPE_URI;
-
-/// `acl/update/0.1` — amend an existing entry's non-role attributes.
-pub(crate) const ACL_UPDATE_TYPE: &str = <acl_update::Payload as trust_tasks_rs::Payload>::TYPE_URI;
-
-/// `acl/revoke/0.1` — remove an entry, or reduce its scopes.
-pub(crate) const ACL_REVOKE_TYPE: &str = <acl_revoke::Payload as trust_tasks_rs::Payload>::TYPE_URI;
-
 /// `acl/grant/0.2` — AclEntry 0.2: an administrative role, explicit act scope,
-/// capabilities and approve scope.
-pub(crate) const ACL_GRANT_V0_2_TYPE: &str =
+/// capabilities and approve scope. 0.1 is no longer served.
+pub(crate) const ACL_GRANT_TYPE: &str =
     <trust_tasks_rs::specs::acl::grant::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
 /// `acl/change-role/0.2` — move the administrative role, compare-and-swap.
-pub(crate) const ACL_CHANGE_ROLE_V0_2_TYPE: &str =
+pub(crate) const ACL_CHANGE_ROLE_TYPE: &str =
     <trust_tasks_rs::specs::acl::change_role::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
+/// `acl/change-role/0.1` — move a subject's **community** role through the
+/// role-change ceremony (role-VAC re-mint, promotion serialisation). Still
+/// served beside 0.2 because `acl/change-role/0.2` moves the administrative
+/// role, and the community role has no 0.2 task of its own.
+pub(crate) const ACL_CHANGE_COMMUNITY_ROLE_TYPE: &str =
+    <trust_tasks_rs::specs::acl::change_role::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
 /// `acl/show/0.2` — one entry, every axis stated.
-pub(crate) const ACL_SHOW_V0_2_TYPE: &str =
+pub(crate) const ACL_SHOW_TYPE: &str =
     <trust_tasks_rs::specs::acl::show::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
-/// `acl/list/0.2` — the entries, filterable by capability and resource.
-pub(crate) const ACL_LIST_V0_2_TYPE: &str =
-    <trust_tasks_rs::specs::acl::list::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+/// `acl/list/0.3` — the entries, filterable by capability and resource, paged
+/// by `limit` / `nextCursor`.
+pub(crate) const ACL_LIST_TYPE: &str =
+    <trust_tasks_rs::specs::acl::list::v0_3::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
 /// `acl/update/0.2` — amend act, capabilities, approve, label, expiry.
-pub(crate) const ACL_UPDATE_V0_2_TYPE: &str =
+pub(crate) const ACL_UPDATE_TYPE: &str =
     <trust_tasks_rs::specs::acl::update::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
 /// `acl/revoke/0.2` — remove an entry, or narrow its act scope.
-pub(crate) const ACL_REVOKE_V0_2_TYPE: &str =
+pub(crate) const ACL_REVOKE_TYPE: &str =
     <trust_tasks_rs::specs::acl::revoke::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
 /// `acl/swap-key/0.1` — a subject rolls its own entry to a new key, its

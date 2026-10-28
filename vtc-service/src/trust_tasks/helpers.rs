@@ -610,14 +610,14 @@ mod tests {
     use serde_json::json;
 
     /// A probe request to reject. Deliberately typed with a URI this crate
-    /// **already binds** (`acl/list/0.1`): `trust_task_manifest`'s census scans
+    /// **already binds** (`acl/list/0.3`): `trust_task_manifest`'s census scans
     /// this source tree for `trusttasks.org/spec/` literals and asserts every
     /// one is served by the registry, so inventing a plausible-looking type
     /// here — even in a test — adds a binding the registry has never published
     /// and fails the build. Which is the census working: a URI written down is
     /// a claim about what the registry serves, wherever it is written.
     fn doc() -> TrustTask<Value> {
-        let uri: TypeUri = "https://trusttasks.org/spec/acl/list/0.1"
+        let uri: TypeUri = "https://trusttasks.org/spec/acl/list/0.3"
             .parse()
             .expect("acl/list Type URI parses");
         TrustTask::new("urn:uuid:test", uri, json!({}))
@@ -740,7 +740,7 @@ mod tests {
         // refused before any signature check runs.
         let resolver_fail_doc: TrustTask<Value> = serde_json::from_value(json!({
             "id": "urn:uuid:00000000-0000-4000-8000-000000000020",
-            "type": "https://trusttasks.org/spec/acl/list/0.1",
+            "type": "https://trusttasks.org/spec/acl/list/0.3",
             "issuer": "did:webvh:QmScid:example.com:glenn",
             "recipient": "did:webvh:vtc.example.com:abc",
             "payload": {},
@@ -758,7 +758,7 @@ mod tests {
         // Bad signature: a real did:key, signed, then corrupted.
         let (signer_did, secret_mb) = did_key_from_seed(31);
         let signed = vta_sdk::trust_task_sign::build_signed(
-            "https://trusttasks.org/spec/acl/list/0.1",
+            "https://trusttasks.org/spec/acl/list/0.3",
             json!({}),
             &signer_did,
             &secret_mb,

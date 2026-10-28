@@ -1,9 +1,10 @@
 //! The canonical `acl/*` family on the signed-document spine:
-//! `acl/{grant,change-role,show,list,update,revoke}` at **0.1 and 0.2**.
+//! `acl/{grant,change-role,show,update,revoke}/0.2` and `acl/list/0.3`.
 //!
-//! 0.2 is AclEntry 0.2 — role-based administration with every axis stated
-//! (`docs/05-design-notes/vtc-admin-roles.md`). 0.1 keeps working through the
-//! mapping `acl/_shared/0.2` CONVENTIONS §8 describes, in [`crate::routes::acl`].
+//! These carry AclEntry 0.2 — role-based administration with every axis stated
+//! (`docs/05-design-notes/vtc-admin-roles.md`). 0.1 (and `acl/list/0.2`) are
+//! no longer served, with one exception: `acl/change-role/0.1` remains the door
+//! onto the **community**-role ceremony, which no 0.2 task moves.
 //!
 //! Every handler is the same shape: authority from the **verified signer's ACL
 //! row**, read now ([`super::admin_signer`]); the payload held to its
@@ -20,18 +21,18 @@
 
 use serde_json::{Value, json};
 use trust_tasks_rs::specs::acl::{
-    change_role::v0_1 as acl_change_role, change_role::v0_2 as acl_change_role_v0_2,
-    grant::v0_1 as acl_grant, grant::v0_2 as acl_grant_v0_2, list::v0_1 as acl_list,
-    list::v0_2 as acl_list_v0_2, revoke::v0_1 as acl_revoke, revoke::v0_2 as acl_revoke_v0_2,
-    show::v0_1 as acl_show, show::v0_2 as acl_show_v0_2, update::v0_1 as acl_update,
-    update::v0_2 as acl_update_v0_2,
+    change_role::v0_2 as acl_change_role, grant::v0_2 as acl_grant, list::v0_3 as acl_list,
+    revoke::v0_2 as acl_revoke, show::v0_2 as acl_show, update::v0_2 as acl_update,
 };
+// The community-role move: `acl/change-role/0.2` moves the administrative role
+// only, so the role-change ceremony keeps its 0.1 door.
+use trust_tasks_rs::specs::acl::change_role::v0_1 as acl_change_community_role;
 use trust_tasks_rs::{RejectReason, StandardCode, TrustTask, TrustTaskCode};
 use vti_common::auth::extractor::AuthClaims;
 
 use super::helpers::{
-    TrustTaskOutcome, app_error_to_reject, extended_code, parse_payload, reject_with,
-    reject_with_code, success_response, task_error_to_reject,
+    TrustTaskOutcome, app_error_to_reject, extended_code, reject_with, reject_with_code,
+    success_response, task_error_to_reject,
 };
 use super::{JoinAuthCtx, admin_signer, parse_spec_payload};
 use crate::acl::capability::CeilingError;
@@ -42,8 +43,7 @@ use crate::server::AppState;
 
 // ─── reading ─────────────────────────────────────────────────────────────
 
-/// `acl/show/0.1` — one entry. An entry 0.1 cannot express is refused, naming
-/// `acl/show/0.2`.
+/// `acl/show/0.2` — one entry with every axis stated, or `entry: null`.
 pub(super) async fn handle_show(
     state: &AppState,
     ctx: &JoinAuthCtx,
@@ -57,13 +57,19 @@ pub(super) async fn handle_show(
         Ok(p) => p,
         Err(reject) => return reject,
     };
-    match ops::show_entry(state, &actor, checked.subject.as_str()).await {
-        Ok(envelope) => success_response(&doc, envelope),
+    let rendered = ops::show_entry(state, &actor.did, checked.subject.as_str())
+        .await
+        .and_then(ops::conform::<acl_show::Response>);
+    match rendered {
+        Ok(response) => success_response(&doc, response),
         Err(e) => app_error_to_reject(&doc, &e),
     }
 }
 
-/// `acl/list/0.1` — the entries 0.1 can express, filtered and paged.
+/// `acl/list/0.3` — every entry the filters match. The filters include
+/// `capability` and `resource` (with `direction`), the questions role-based
+/// administration asks: who holds `git.repo.manage` inside a namespace, who can
+/// assign roles.
 pub(super) async fn handle_list(
     state: &AppState,
     ctx: &JoinAuthCtx,
@@ -73,68 +79,18 @@ pub(super) async fn handle_list(
         Ok(a) => a,
         Err(reject) => return reject,
     };
-    let _checked: acl_list::Payload = match parse_spec_payload(&doc) {
+    let query: acl_list::Payload = match parse_spec_payload(&doc) {
         Ok(p) => p,
         Err(reject) => return reject,
     };
-    let query: ops::ListAclQuery = match parse_payload(&doc) {
-        Ok(q) => q,
-        Err(reject) => return reject,
-    };
-    match ops::list_entries(state, &actor, &query).await {
-        Ok(page) => success_response(&doc, page),
-        Err(e) => app_error_to_reject(&doc, &e),
-    }
-}
-
-/// `acl/show/0.2` — one entry with every axis stated, or `entry: null`.
-pub(super) async fn handle_show_v0_2(
-    state: &AppState,
-    ctx: &JoinAuthCtx,
-    doc: TrustTask<Value>,
-) -> TrustTaskOutcome {
-    let actor = match admin_signer(state, ctx, &doc).await {
-        Ok(a) => a,
-        Err(reject) => return reject,
-    };
-    let checked: acl_show_v0_2::Payload = match parse_spec_payload(&doc) {
-        Ok(p) => p,
-        Err(reject) => return reject,
-    };
-    let rendered = ops::show_entry_v0_2(state, &actor.did, checked.subject.as_str())
+    let rendered = ops::list_entries(state, &actor.did, &query)
         .await
-        .and_then(ops::conform::<acl_show_v0_2::Response>);
-    match rendered {
-        Ok(response) => success_response(&doc, response),
-        Err(e) => app_error_to_reject(&doc, &e),
-    }
-}
-
-/// `acl/list/0.2` — every entry the filters match. The filters include
-/// `capability` and `resource` (with `direction`), the questions role-based
-/// administration asks: who holds `git.repo.manage` inside a namespace, who can
-/// assign roles.
-pub(super) async fn handle_list_v0_2(
-    state: &AppState,
-    ctx: &JoinAuthCtx,
-    doc: TrustTask<Value>,
-) -> TrustTaskOutcome {
-    let actor = match admin_signer(state, ctx, &doc).await {
-        Ok(a) => a,
-        Err(reject) => return reject,
-    };
-    let query: acl_list_v0_2::Payload = match parse_spec_payload(&doc) {
-        Ok(p) => p,
-        Err(reject) => return reject,
-    };
-    let rendered = ops::list_entries_v0_2(state, &actor.did, &query)
-        .await
-        .and_then(ops::conform::<acl_list_v0_2::Response>);
+        .and_then(ops::conform::<acl_list::Response>);
     match rendered {
         Ok(response) => success_response(&doc, response),
         Err(AppError::InvalidCursor) => reject_with_code(
             &doc,
-            extended_code(acl_list_v0_2::error_codes::CURSOR_MISMATCH.code),
+            extended_code(acl_list::error_codes::CURSOR_MISMATCH.code),
             "the cursor was minted under other filters, or by another node",
             None,
         ),
@@ -142,238 +98,7 @@ pub(super) async fn handle_list_v0_2(
     }
 }
 
-// ─── writing, 0.1 ────────────────────────────────────────────────────────
-
-/// Render a write refusal for a 0.1 door. 0.1 declares only
-/// `roleNotRecognized` (grant); every bound the granter's entry sets is
-/// `permissionDenied`, with the reason in the message.
-fn refuse_v0_1(
-    doc: &TrustTask<Value>,
-    e: WriteError,
-    role_not_recognized: Option<&'static str>,
-) -> TrustTaskOutcome {
-    match e {
-        WriteError::Task(t) => task_error_to_reject(doc, &t),
-        WriteError::Refused(GrantRefusal::Ceiling(CeilingError::RoleNotRecognized(r)))
-            if role_not_recognized.is_some() =>
-        {
-            reject_with_code(
-                doc,
-                extended_code(role_not_recognized.unwrap_or_default()),
-                format!("'{r}' is not a role this community can grant"),
-                None,
-            )
-        }
-        WriteError::Refused(r) => app_error_to_reject(doc, &AppError::Forbidden(r.to_string())),
-    }
-}
-
-/// `acl/grant/0.1` — write the entry the maintainer should hold for a subject.
-///
-/// The 0.1 entry is a community role: its administrative authority is what the
-/// role implies (`routes::acl` module docs). A grant that confers
-/// administrative authority needs a passkey gesture **bound to this grant**,
-/// and one that confers an authority-conferring capability also the consent of
-/// its other holders.
-pub(super) async fn handle_grant(
-    state: &AppState,
-    ctx: &JoinAuthCtx,
-    doc: TrustTask<Value>,
-) -> TrustTaskOutcome {
-    let actor = match admin_signer(state, ctx, &doc).await {
-        Ok(a) => a,
-        Err(reject) => return reject,
-    };
-    let _checked: acl_grant::Payload = match parse_spec_payload(&doc) {
-        Ok(b) => b,
-        Err(reject) => return reject,
-    };
-    // The generated entry also carries the VTA's `approve`, `stepUp` and
-    // `allowedKeys`, which a 0.1 VTC entry has no field for, so they are
-    // refused rather than dropped.
-    let body: ops::CreateAclRequest = match parse_payload(&doc) {
-        Ok(b) => b,
-        Err(reject) => return reject,
-    };
-    let plan = match ops::plan_grant(state, &actor, body).await {
-        Ok(p) => p,
-        Err(e) => {
-            return refuse_v0_1(
-                &doc,
-                e,
-                Some(acl_grant::error_codes::ROLE_NOT_RECOGNIZED.code),
-            );
-        }
-    };
-    let reduced = match settle_signed_gate(state, &actor, &doc, &plan).await {
-        Ok(u) => u,
-        Err(refusal) => return refusal,
-    };
-    commit_settled(state, &actor, &doc, plan, reduced, Render::V0_1).await
-}
-
-/// `acl/update/0.1` — amend an existing entry's label or expiry.
-///
-/// `scopes` names contexts a community does not hold, and is refused. An entry
-/// 0.1 cannot express is refused too: use `acl/update/0.2`.
-pub(super) async fn handle_update(
-    state: &AppState,
-    ctx: &JoinAuthCtx,
-    doc: TrustTask<Value>,
-) -> TrustTaskOutcome {
-    use acl_update::error_codes;
-
-    let actor = match admin_signer(state, ctx, &doc).await {
-        Ok(a) => a,
-        Err(reject) => return reject,
-    };
-    // Named before the schema check, which would otherwise answer "unknown
-    // field" for the one mistake this task declares a code for.
-    if doc.payload.get("role").is_some() {
-        return task_error_to_reject(
-            &doc,
-            &TaskError::declared(
-                error_codes::ROLE_CHANGE_NOT_PERMITTED.code,
-                AppError::Validation(
-                    "acl/update does not change a role — use acl/change-role, which takes the \
-                     current role as a compare-and-swap"
-                        .into(),
-                ),
-            ),
-        );
-    }
-    let _checked: acl_update::Payload = match parse_spec_payload(&doc) {
-        Ok(p) => p,
-        Err(reject) => return reject,
-    };
-    for member in ["allowedKeys", "approve", "stepUp"] {
-        if doc.payload.get(member).is_some() {
-            return app_error_to_reject(
-                &doc,
-                &AppError::Validation(format!(
-                    "acl/update/0.1 cannot set `{member}` on a community entry — use \
-                     acl/update/0.2, which states every axis"
-                )),
-            );
-        }
-    }
-    let req: ops::UpdateEntryRequest = match parse_payload(&doc) {
-        Ok(r) => r,
-        Err(reject) => return reject,
-    };
-    let plan = match ops::plan_update(state, &actor, req).await {
-        Ok(p) => p,
-        Err(e) => return refuse_v0_1(&doc, e, None),
-    };
-    let reduced = match settle_signed_gate(state, &actor, &doc, &plan).await {
-        Ok(u) => u,
-        Err(refusal) => return refusal,
-    };
-    commit_settled(state, &actor, &doc, plan, reduced, Render::V0_1).await
-}
-
-/// `acl/revoke/0.1` — remove an entry. A community entry holds no scopes, so
-/// a scope reduction names nothing held.
-///
-/// The last holder of `vtc.roles.assign` is protected
-/// (`acl/revoke:lastAuthorityProtected`, VTI-APV-009), and a member's entry is
-/// refused in favour of the leave ceremony. Revoking an **administrator** takes
-/// a passkey gesture bound to this document, and taking authority-conferring
-/// capabilities away also the consent of another of their holders
-/// (**VTI-APV-019**).
-pub(super) async fn handle_revoke(
-    state: &AppState,
-    ctx: &JoinAuthCtx,
-    doc: TrustTask<Value>,
-) -> TrustTaskOutcome {
-    let actor = match admin_signer(state, ctx, &doc).await {
-        Ok(a) => a,
-        Err(reject) => return reject,
-    };
-    let req: acl_revoke::Payload = match parse_spec_payload(&doc) {
-        Ok(p) => p,
-        Err(reject) => return reject,
-    };
-    let scopes: Vec<String> = req.scopes.iter().map(|s| s.to_string()).collect();
-    let reason = req.reason.as_ref().map(|r| r.to_string());
-    match ops::revoke_entry(
-        state,
-        &actor,
-        &req.subject,
-        (!scopes.is_empty()).then_some(scopes.as_slice()),
-        reason.as_deref(),
-        crate::acl::admin_consent::Operation {
-            type_uri: super::ACL_REVOKE_TYPE,
-            payload: &doc.payload,
-        },
-    )
-    .await
-    {
-        Ok(response) => success_response(&doc, response),
-        Err(e) => task_error_to_reject(&doc, &e),
-    }
-}
-
-/// `acl/change-role/0.1` — move a subject's **community** role, with the
-/// administrative authority it implies, through the role-change ceremony.
-pub(super) async fn handle_change_role(
-    state: &AppState,
-    ctx: &JoinAuthCtx,
-    doc: TrustTask<Value>,
-) -> TrustTaskOutcome {
-    let actor = match admin_signer(state, ctx, &doc).await {
-        Ok(a) => a,
-        Err(reject) => return reject,
-    };
-    let checked: acl_change_role::Payload = match parse_spec_payload(&doc) {
-        Ok(b) => b,
-        Err(reject) => return reject,
-    };
-    let mut body = doc.payload.clone();
-    if let Some(map) = body.as_object_mut() {
-        map.remove("subject");
-    }
-    let req: ops::UpdateAclRequest = match serde_json::from_value(body) {
-        Ok(r) => r,
-        Err(e) => {
-            return reject_with(
-                &doc,
-                RejectReason::MalformedRequest {
-                    reason: format!("payload parse: {e}"),
-                },
-            );
-        }
-    };
-    match ops::change_role_inner(
-        state,
-        &actor,
-        checked.subject.as_str(),
-        req,
-        crate::ceremony::StepUpSource::BoundTo {
-            type_uri: super::ACL_CHANGE_ROLE_TYPE,
-            payload: &doc.payload,
-        },
-    )
-    .await
-    {
-        Ok(ops::ChangeRoleOutcome::Changed(envelope)) => success_response(&doc, *envelope),
-        Ok(ops::ChangeRoleOutcome::StepUpRequired(request)) => reject_with_code(
-            &doc,
-            TrustTaskCode::Standard(StandardCode::PermissionDenied),
-            "a passkey gesture bound to this role change is required",
-            Some(crate::acl::bound_step_up::refusal_details(&request)),
-        ),
-        Err(AppError::Conflict(m)) if m.starts_with("state mismatch") => reject_with_code(
-            &doc,
-            extended_code(acl_change_role::error_codes::STATE_MISMATCH.code),
-            m,
-            None,
-        ),
-        Err(e) => app_error_to_reject(&doc, &e),
-    }
-}
-
-// ─── writing, 0.2 ────────────────────────────────────────────────────────
+// ─── writing ────────────────────────────────────────────────────────
 
 /// The declared codes of the 0.2 write task being answered: each `None` where
 /// the task declares no such code, which then answers `permissionDenied` or
@@ -392,7 +117,7 @@ struct V02Codes {
 }
 
 const GRANT_V0_2: V02Codes = {
-    use acl_grant_v0_2::error_codes as c;
+    use acl_grant::error_codes as c;
     V02Codes {
         role_not_recognized: Some(c::ROLE_NOT_RECOGNIZED.code),
         invalid_act_scope: Some(c::INVALID_ACT_SCOPE.code),
@@ -406,7 +131,7 @@ const GRANT_V0_2: V02Codes = {
 };
 
 const UPDATE_V0_2: V02Codes = {
-    use acl_update_v0_2::error_codes as c;
+    use acl_update::error_codes as c;
     V02Codes {
         role_not_recognized: None,
         invalid_act_scope: Some(c::INVALID_ACT_SCOPE.code),
@@ -420,7 +145,7 @@ const UPDATE_V0_2: V02Codes = {
 };
 
 const CHANGE_ROLE_V0_2: V02Codes = {
-    use acl_change_role_v0_2::error_codes as c;
+    use acl_change_role::error_codes as c;
     V02Codes {
         role_not_recognized: Some(c::ROLE_NOT_RECOGNIZED.code),
         invalid_act_scope: None,
@@ -547,7 +272,7 @@ fn refuse_write(
 }
 
 /// `acl/grant/0.2` — the entry the maintainer should hold, every axis stated.
-pub(super) async fn handle_grant_v0_2(
+pub(super) async fn handle_grant(
     state: &AppState,
     ctx: &JoinAuthCtx,
     doc: TrustTask<Value>,
@@ -567,7 +292,7 @@ pub(super) async fn handle_grant_v0_2(
             }
         }
     }
-    let _checked: acl_grant_v0_2::Payload = match parse_spec_payload(&doc) {
+    let _checked: acl_grant::Payload = match parse_spec_payload(&doc) {
         Ok(p) => p,
         Err(reject) => return reject,
     };
@@ -591,12 +316,12 @@ pub(super) async fn handle_grant_v0_2(
 /// `acl/update/0.2` — replace axes of an existing entry. Narrowing `act` is a
 /// revocation (`narrowingNotPermitted`); every other axis may narrow here, as
 /// a privilege reduction applied at the subject's next decision.
-pub(super) async fn handle_update_v0_2(
+pub(super) async fn handle_update(
     state: &AppState,
     ctx: &JoinAuthCtx,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    use acl_update_v0_2::error_codes;
+    use acl_update::error_codes;
     let actor = match admin_signer(state, ctx, &doc).await {
         Ok(a) => a,
         Err(reject) => return reject,
@@ -619,7 +344,7 @@ pub(super) async fn handle_update_v0_2(
             return refuse_parse(&doc, err, UPDATE_V0_2);
         }
     }
-    let _checked: acl_update_v0_2::Payload = match parse_spec_payload(&doc) {
+    let _checked: acl_update::Payload = match parse_spec_payload(&doc) {
         Ok(p) => p,
         Err(reject) => return reject,
     };
@@ -657,17 +382,17 @@ pub(super) async fn handle_update_v0_2(
 /// `acl/change-role/0.2` — move the **administrative** role, compare-and-swap
 /// on `fromRole`. Every other axis is carried over and re-checked against the
 /// new role's ceiling; the community role is unchanged.
-pub(super) async fn handle_change_role_v0_2(
+pub(super) async fn handle_change_role(
     state: &AppState,
     ctx: &JoinAuthCtx,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    use acl_change_role_v0_2::error_codes;
+    use acl_change_role::error_codes;
     let actor = match admin_signer(state, ctx, &doc).await {
         Ok(a) => a,
         Err(reject) => return reject,
     };
-    let checked: acl_change_role_v0_2::Payload = match parse_spec_payload(&doc) {
+    let checked: acl_change_role::Payload = match parse_spec_payload(&doc) {
         Ok(p) => p,
         Err(reject) => return reject,
     };
@@ -713,24 +438,24 @@ pub(super) async fn handle_change_role_v0_2(
 
 /// `acl/revoke/0.2` — `{kind: entry}` removes the entry; `{kind: act}` narrows
 /// its act scope (at a community node, `all` → `none`).
-pub(super) async fn handle_revoke_v0_2(
+pub(super) async fn handle_revoke(
     state: &AppState,
     ctx: &JoinAuthCtx,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    use acl_revoke_v0_2::error_codes;
+    use acl_revoke::error_codes;
     let actor = match admin_signer(state, ctx, &doc).await {
         Ok(a) => a,
         Err(reject) => return reject,
     };
-    let checked: acl_revoke_v0_2::Payload = match parse_spec_payload(&doc) {
+    let checked: acl_revoke::Payload = match parse_spec_payload(&doc) {
         Ok(p) => p,
         Err(reject) => return reject,
     };
     let subject = checked.subject.to_string();
     let revocation = &doc.payload["revocation"];
     let op = crate::acl::admin_consent::Operation {
-        type_uri: super::ACL_REVOKE_V0_2_TYPE,
+        type_uri: super::ACL_REVOKE_TYPE,
         payload: &doc.payload,
     };
     if revocation["kind"] == "entry" {
@@ -795,6 +520,66 @@ pub(super) async fn handle_revoke_v0_2(
         Err(refusal) => return refusal,
     };
     commit_settled(state, &actor, &doc, plan, reduced, Render::Revoke).await
+}
+
+/// `acl/change-role/0.1` — move a subject's **community** role, with the
+/// administrative authority it implies, through the role-change ceremony.
+/// `acl/change-role/0.2` ([`handle_change_role`]) moves the administrative role.
+pub(super) async fn handle_change_community_role(
+    state: &AppState,
+    ctx: &JoinAuthCtx,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    let actor = match admin_signer(state, ctx, &doc).await {
+        Ok(a) => a,
+        Err(reject) => return reject,
+    };
+    let checked: acl_change_community_role::Payload = match parse_spec_payload(&doc) {
+        Ok(b) => b,
+        Err(reject) => return reject,
+    };
+    let mut body = doc.payload.clone();
+    if let Some(map) = body.as_object_mut() {
+        map.remove("subject");
+    }
+    let req: ops::UpdateAclRequest = match serde_json::from_value(body) {
+        Ok(r) => r,
+        Err(e) => {
+            return reject_with(
+                &doc,
+                RejectReason::MalformedRequest {
+                    reason: format!("payload parse: {e}"),
+                },
+            );
+        }
+    };
+    match ops::change_role_inner(
+        state,
+        &actor,
+        checked.subject.as_str(),
+        req,
+        crate::ceremony::StepUpSource::BoundTo {
+            type_uri: super::ACL_CHANGE_COMMUNITY_ROLE_TYPE,
+            payload: &doc.payload,
+        },
+    )
+    .await
+    {
+        Ok(ops::ChangeRoleOutcome::Changed(envelope)) => success_response(&doc, *envelope),
+        Ok(ops::ChangeRoleOutcome::StepUpRequired(request)) => reject_with_code(
+            &doc,
+            TrustTaskCode::Standard(StandardCode::PermissionDenied),
+            "a passkey gesture bound to this role change is required",
+            Some(crate::acl::bound_step_up::refusal_details(&request)),
+        ),
+        Err(AppError::Conflict(m)) if m.starts_with("state mismatch") => reject_with_code(
+            &doc,
+            extended_code(acl_change_community_role::error_codes::STATE_MISMATCH.code),
+            m,
+            None,
+        ),
+        Err(e) => app_error_to_reject(&doc, &e),
+    }
 }
 
 // ─── rolling one's own entry to a new key ────────────────────────────────
@@ -868,8 +653,9 @@ pub(super) async fn handle_swap_key(
     let body = json!({
         "entry": ops::render_v0_1(entry.clone()),
         "previousSubject": previous,
-        // 0.1's AclEntry cannot state an administrative role; the entry as it
-        // now stands, every axis explicit, rides beside it.
+        // `acl/swap-key/0.1` (the current version) still carries the 0.1
+        // AclEntry, which cannot state an administrative role; the entry as it
+        // now stands, every axis explicit (AclEntry 0.2), rides beside it.
         "ext": { "org.openvtc": {
             "entry": ops::render_v0_2(&entry, review.as_ref()),
             "delegationsRepointed": repointed,
@@ -1120,11 +906,9 @@ pub(super) async fn settle_witness_list_gate(
     .await
 }
 
-/// How a committed write is answered: the 0.1 envelope, or the 0.2 response of
-/// the task asked.
+/// How a committed write is answered: the response of the task asked.
 #[derive(Clone, Copy)]
 enum Render {
-    V0_1,
     Grant,
     Update,
     ChangeRole,
@@ -1173,23 +957,14 @@ async fn commit_settled(
     }
     let v = || json!({ "entry": ops::render_v0_2(&entry, None) });
     let response = match render {
-        Render::V0_1 => return success_response(doc, ops_v0_1(&entry)),
-        Render::Grant => ops::conform::<acl_grant_v0_2::Response>(v()).map(|r| json!(r)),
-        Render::Update => ops::conform::<acl_update_v0_2::Response>(v()).map(|r| json!(r)),
-        Render::ChangeRole => ops::conform::<acl_change_role_v0_2::Response>(v()).map(|r| json!(r)),
-        Render::Revoke => ops::conform::<acl_revoke_v0_2::Response>(v()).map(|r| json!(r)),
+        Render::Grant => ops::conform::<acl_grant::Response>(v()).map(|r| json!(r)),
+        Render::Update => ops::conform::<acl_update::Response>(v()).map(|r| json!(r)),
+        Render::ChangeRole => ops::conform::<acl_change_role::Response>(v()).map(|r| json!(r)),
+        Render::Revoke => ops::conform::<acl_revoke::Response>(v()).map(|r| json!(r)),
     };
     match response {
         Ok(r) => success_response(doc, r),
         Err(e) => app_error_to_reject(doc, &e),
-    }
-}
-
-/// The 0.1 rendering of a just-written entry. A 0.1 write writes only what
-/// 0.1 can express, so it always renders.
-fn ops_v0_1(entry: &crate::acl::VtcAclEntry) -> ops::AclEntryEnvelope {
-    ops::AclEntryEnvelope {
-        entry: ops::render_v0_1(entry.clone()),
     }
 }
 
@@ -1209,10 +984,10 @@ mod tests {
         assert_conforms, error_code, payload_of, signed, unsigned,
     };
     use super::super::{
-        ACL_GRANT_V0_2_TYPE, ACL_LIST_V0_2_TYPE, ACL_REVOKE_V0_2_TYPE, ACL_SHOW_V0_2_TYPE,
-        ACL_UPDATE_V0_2_TYPE, JoinAuthCtx, TrustTaskOutcome, dispatch_trust_task_core,
+        ACL_GRANT_TYPE, ACL_LIST_TYPE, ACL_REVOKE_TYPE, ACL_SHOW_TYPE, ACL_UPDATE_TYPE,
+        JoinAuthCtx, TrustTaskOutcome, dispatch_trust_task_core,
     };
-    use super::{acl_list_v0_2, acl_revoke_v0_2, acl_show_v0_2};
+    use super::{acl_list, acl_revoke, acl_show};
     use crate::acl::{
         AdminAuthority, AdminRole, VtcAclEntry, VtcRole, get_acl_entry, store_acl_entry,
     };
@@ -1333,11 +1108,11 @@ mod tests {
                 .unwrap_or_else(|| panic!("{uri} has no published policy"))
                 .is_proof_required
         };
-        assert!(required(ACL_GRANT_V0_2_TYPE));
-        assert!(required(ACL_UPDATE_V0_2_TYPE));
-        assert!(required(ACL_REVOKE_V0_2_TYPE));
-        assert!(!required(ACL_SHOW_V0_2_TYPE));
-        assert!(!required(ACL_LIST_V0_2_TYPE));
+        assert!(required(ACL_GRANT_TYPE));
+        assert!(required(ACL_UPDATE_TYPE));
+        assert!(required(ACL_REVOKE_TYPE));
+        assert!(!required(ACL_SHOW_TYPE));
+        assert!(!required(ACL_LIST_TYPE));
     }
 
     /// `acl/show/0.2` and `acl/list/0.2` answer an administrator on every
@@ -1351,19 +1126,19 @@ mod tests {
                 &fix.vtc,
                 t,
                 &fix.admin,
-                ACL_SHOW_V0_2_TYPE,
+                ACL_SHOW_TYPE,
                 json!({ "subject": TARGET }),
             )
             .await;
             assert!(out.status.is_success(), "{t:?}: {}", payload_of(&out));
-            assert_conforms::<acl_show_v0_2::Response>(&out);
+            assert_conforms::<acl_show::Response>(&out);
             assert_eq!(payload_of(&out)["entry"]["role"], "auditor");
 
-            let out = send(&fix.vtc, t, &fix.admin, ACL_LIST_V0_2_TYPE, json!({})).await;
+            let out = send(&fix.vtc, t, &fix.admin, ACL_LIST_TYPE, json!({})).await;
             assert!(out.status.is_success(), "{t:?}: {}", payload_of(&out));
-            assert_conforms::<acl_list_v0_2::Response>(&out);
+            assert_conforms::<acl_list::Response>(&out);
 
-            let out = send(&fix.vtc, t, &fix.member, ACL_LIST_V0_2_TYPE, json!({})).await;
+            let out = send(&fix.vtc, t, &fix.member, ACL_LIST_TYPE, json!({})).await;
             assert!(!out.status.is_success(), "{t:?}: a member reads nothing");
         }
     }
@@ -1378,7 +1153,7 @@ mod tests {
             &fix.vtc,
             JoinTransport::Rest,
             &fix.admin,
-            ACL_UPDATE_V0_2_TYPE,
+            ACL_UPDATE_TYPE,
             json!({ "subject": TARGET, "capabilities": {"scope": "none"} }),
         )
         .await;
@@ -1411,7 +1186,7 @@ mod tests {
             &fix.vtc,
             JoinTransport::Rest,
             &fix.admin,
-            ACL_GRANT_V0_2_TYPE,
+            ACL_GRANT_TYPE,
             json!({ "entry": {
                 "subject": subject.did,
                 "role": "member",
@@ -1439,25 +1214,25 @@ mod tests {
             &fix.vtc,
             JoinTransport::Rest,
             &fix.admin,
-            ACL_REVOKE_V0_2_TYPE,
+            ACL_REVOKE_TYPE,
             json!({ "subject": fix.member.did, "revocation": {"kind": "act", "act": {"scope": "none"}} }),
         )
         .await;
         assert_eq!(
             error_code(&out).as_deref(),
-            Some(acl_revoke_v0_2::error_codes::NOT_NARROWING.code)
+            Some(acl_revoke::error_codes::NOT_NARROWING.code)
         );
         let out = send(
             &fix.vtc,
             JoinTransport::Rest,
             &fix.admin,
-            ACL_REVOKE_V0_2_TYPE,
+            ACL_REVOKE_TYPE,
             json!({ "subject": "did:key:zNobody", "revocation": {"kind": "entry"} }),
         )
         .await;
         assert_eq!(
             error_code(&out).as_deref(),
-            Some(acl_revoke_v0_2::error_codes::SUBJECT_NOT_PRESENT.code)
+            Some(acl_revoke::error_codes::SUBJECT_NOT_PRESENT.code)
         );
     }
 
@@ -1469,7 +1244,7 @@ mod tests {
             let fix = fixture().await;
             let doc = unsigned(
                 &fix.admin,
-                ACL_UPDATE_V0_2_TYPE,
+                ACL_UPDATE_TYPE,
                 json!({ "subject": TARGET, "label": "x" }),
             );
             let out = dispatch_doc(&fix.vtc, t, &fix.admin, &doc).await;
@@ -1484,7 +1259,7 @@ mod tests {
             let fix = fixture().await;
             let doc = signed(
                 &fix.admin,
-                ACL_REVOKE_V0_2_TYPE,
+                ACL_REVOKE_TYPE,
                 json!({ "subject": TARGET, "revocation": {"kind": "entry"} }),
             )
             .await;
@@ -1511,7 +1286,7 @@ mod tests {
                 &fix.vtc,
                 t,
                 &fix.admin,
-                ACL_UPDATE_V0_2_TYPE,
+                ACL_UPDATE_TYPE,
                 json!({ "subject": fix.admin.did, "label": "my laptop" }),
             )
             .await;
@@ -1527,13 +1302,13 @@ mod tests {
                 true,
                 "{t:?}"
             );
-            assert_conforms::<super::acl_update_v0_2::Response>(&out);
+            assert_conforms::<super::acl_update::Response>(&out);
 
             let out = send(
                 &fix.vtc,
                 t,
                 &fix.admin,
-                ACL_UPDATE_V0_2_TYPE,
+                ACL_UPDATE_TYPE,
                 json!({ "subject": fix.admin.did, "label": "x", "approve": {"scope": "none"} }),
             )
             .await;
@@ -1564,7 +1339,7 @@ mod tests {
                 &fix.vtc,
                 t,
                 &fix.admin,
-                ACL_UPDATE_V0_2_TYPE,
+                ACL_UPDATE_TYPE,
                 json!({
                     "subject": fix.admin.did,
                     "approve": {"scope": "none"},

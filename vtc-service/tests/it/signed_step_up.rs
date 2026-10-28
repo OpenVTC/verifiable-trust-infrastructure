@@ -30,7 +30,7 @@ use vtc_service::test_support::{TEST_VTC_DID, TestVtc};
 use crate::common::webauthn_harness::SoftEd25519Authenticator;
 
 const RP_ORIGIN: &str = "https://vtc.example.com";
-const GRANT: &str = "https://trusttasks.org/spec/acl/grant/0.1";
+const GRANT: &str = "https://trusttasks.org/spec/acl/grant/0.2";
 const APPROVE_RESPONSE: &str = "https://trusttasks.org/spec/auth/step-up/approve-response/0.4";
 const CHANGE_ROLE: &str = "https://trusttasks.org/spec/acl/change-role/0.1";
 
@@ -152,7 +152,7 @@ async fn post(fix: &Fixture, doc: &Value) -> (StatusCode, Value) {
 /// authority-conferring capability also needs another holder's consent
 /// (VTI-APV-018), which `unrestricted_admin_consent.rs` drives.
 fn grant_admin(subject: &str) -> Value {
-    json!({ "entry": { "subject": subject, "role": "moderator" } })
+    crate::common::signed::grant_payload(subject, "moderator")
 }
 
 /// The inline approve-request a refusal carries, checked for the shape
@@ -570,9 +570,33 @@ async fn a_grant_that_confers_nothing_needs_no_gesture() {
         .await
         .unwrap();
 
-    let relabel = json!({
-        "entry": { "subject": colleague.did, "role": "admin", "scopes": [], "label": "ops" }
-    });
+    // The colleague's entry restated exactly, with a label: nothing widens.
+    let (_, shown) = post(
+        &fix,
+        &signed(
+            &admin,
+            "https://trusttasks.org/spec/acl/show/0.2",
+            json!({ "subject": colleague.did }),
+        )
+        .await,
+    )
+    .await;
+    let held = &shown["entry"];
+    let mut entry = json!({ "label": "ops" });
+    for k in [
+        "subject",
+        "role",
+        "act",
+        "keys",
+        "capabilities",
+        "approve",
+        "approveCapabilities",
+    ] {
+        if let Some(v) = held.get(k) {
+            entry[k] = v.clone();
+        }
+    }
+    let relabel = json!({ "entry": entry });
     let (status, reply) = post(&fix, &signed(&admin, GRANT, relabel).await).await;
     assert_eq!(status, StatusCode::OK, "{reply}");
     assert_eq!(reply["entry"]["label"], "ops");
@@ -599,13 +623,19 @@ async fn a_refused_grant_never_asks_for_a_gesture() {
         &signed(
             &admin,
             GRANT,
-            json!({ "entry": { "subject": moderator.did, "role": "issuer" } }),
+            crate::common::signed::grant_payload(&moderator.did, "issuer"),
         )
         .await,
     )
     .await;
     assert_ne!(status, StatusCode::OK, "{reply}");
-    assert_ne!(reply["code"], "permissionDenied", "{reply}");
+    // `acl/grant/0.2` item 6 answers it `permissionDenied`, naming the task.
+    assert!(
+        reply["message"]
+            .as_str()
+            .is_some_and(|m| m.contains("change-role")),
+        "refused as the wrong task: {reply}"
+    );
     assert!(
         reply["details"].get("stepUpRequest").is_none(),
         "a doomed grant must not ask for a passkey gesture: {reply}"
@@ -804,7 +834,7 @@ async fn a_non_admin_signer_cannot_change_roles() {
 const ENROLL: &str = "https://trusttasks.org/spec/auth/signing-key/enroll/0.2";
 const KEY_LIST: &str = "https://trusttasks.org/spec/auth/signing-key/list/0.1";
 const KEY_REVOKE: &str = "https://trusttasks.org/spec/auth/signing-key/revoke/0.1";
-const ACL_LIST: &str = "https://trusttasks.org/spec/acl/list/0.1";
+const ACL_LIST: &str = "https://trusttasks.org/spec/acl/list/0.3";
 
 fn enrolment(key: &Party, identity: &str, label: &str) -> Value {
     json!({

@@ -786,7 +786,7 @@ async fn the_acl_listing_marks_entries_without_a_membership() {
 
     let doc = signed(
         &actor,
-        "https://trusttasks.org/spec/acl/list/0.2",
+        "https://trusttasks.org/spec/acl/list/0.3",
         json!({}),
     )
     .await;
@@ -802,7 +802,7 @@ async fn the_acl_listing_marks_entries_without_a_membership() {
     };
     assert_eq!(membership(&actor.did), Some(json!("none")));
     assert_eq!(membership(&member.did), Some(json!("active")));
-    crate::common::signed::assert_conforms("https://trusttasks.org/spec/acl/list/0.2", &list);
+    crate::common::signed::assert_conforms("https://trusttasks.org/spec/acl/list/0.3", &list);
 }
 
 /// The spine enforces the document requirements the two specifications

@@ -7,20 +7,20 @@
 // beside the community role its membership carries. The reads and the writes
 // that state administrative authority speak `acl/*/0.2`, where every axis is
 // explicit (`act`, `capabilities`, `approve`, `approveCapabilities`, `keys`)
-// and the community role travels in `ext["org.openvtc"].communityRole`. The
-// community-role move (`acl/change-role/0.1`) and the removal
-// (`acl/revoke/0.1`) stay at 0.1.
+// and the community role travels in `ext["org.openvtc"].communityRole`; the
+// listing is `acl/list/0.3`. The community-role move (`acl/change-role/0.1`)
+// stays at 0.1: `acl/change-role/0.2` moves the administrative role only.
 
 import { postSignedRead } from "./api";
 import { withImmediate } from "./immediate";
 import { postSignedWithStepUp, type ConfirmGesture } from "./signed-act";
 
-export const ACL_LIST_TASK = "https://trusttasks.org/spec/acl/list/0.2";
+export const ACL_LIST_TASK = "https://trusttasks.org/spec/acl/list/0.3";
 export const ACL_SHOW_TASK = "https://trusttasks.org/spec/acl/show/0.2";
 export const ACL_GRANT_TASK = "https://trusttasks.org/spec/acl/grant/0.2";
 export const ACL_UPDATE_TASK = "https://trusttasks.org/spec/acl/update/0.2";
 export const ACL_CHANGE_ROLE_TASK = "https://trusttasks.org/spec/acl/change-role/0.1";
-export const ACL_REVOKE_TASK = "https://trusttasks.org/spec/acl/revoke/0.1";
+export const ACL_REVOKE_TASK = "https://trusttasks.org/spec/acl/revoke/0.2";
 
 // ── the model, as the wire states it (`acl/_shared/0.2`) ─────────────────
 
@@ -84,18 +84,18 @@ export interface AclSuspension {
 
 export interface AclListResponse {
   entries: AclEntry[];
-  truncated: boolean;
-  cursor?: string;
+  /** Present iff more entries match beyond this page. */
+  nextCursor?: string;
 }
 
-/** `acl/list/0.2` payload. `resource` needs a `direction`. */
+/** `acl/list/0.3` payload. `resource` needs a `direction`. */
 export interface AclListFilter {
   role?: string;
   capability?: string;
   resource?: string;
   direction?: "actingIn" | "subtree" | "any";
   subjectPrefix?: string;
-  pageSize?: number;
+  limit?: number;
   cursor?: string;
 }
 
@@ -303,21 +303,17 @@ export const fetchAclPage = (filter: AclListFilter = {}): Promise<AclListRespons
 const MAX_ACL_PAGES = 100;
 
 /**
- * Every entry, following the cursor to the end. A page that is truncated with
- * no cursor, or a list longer than the walk allows, is an error rather than a
- * partial list that reads as complete.
+ * Every entry, following `nextCursor` to the end. A list longer than the walk
+ * allows is an error rather than a partial list that reads as complete.
  */
 export async function fetchAllAcl(filter: AclListFilter = {}): Promise<AclEntry[]> {
   const out: AclEntry[] = [];
   let cursor: string | undefined;
   for (let page = 0; page < MAX_ACL_PAGES; page++) {
-    const body = await fetchAclPage({ ...filter, pageSize: 200, ...(cursor ? { cursor } : {}) });
+    const body = await fetchAclPage({ ...filter, limit: 200, ...(cursor ? { cursor } : {}) });
     out.push(...body.entries);
-    if (!body.truncated) return out;
-    if (!body.cursor) {
-      throw new Error("acl/list answered a truncated page with no cursor");
-    }
-    cursor = body.cursor;
+    if (!body.nextCursor) return out;
+    cursor = body.nextCursor;
   }
   throw new Error(`the ACL is longer than ${MAX_ACL_PAGES} pages; narrow the filter`);
 }
@@ -432,7 +428,7 @@ export async function changeAclRole(
 export async function revokeAcl(subject: string, confirmGesture: ConfirmGesture): Promise<void> {
   await postSignedWithStepUp<{ entry: AclEntry | null }>(
     ACL_REVOKE_TASK,
-    { subject },
+    { subject, revocation: { kind: "entry" } },
     confirmGesture,
   );
 }
@@ -450,7 +446,7 @@ export async function revokeAclNow(
 ): Promise<void> {
   await postSignedWithStepUp<{ entry: AclEntry | null }>(
     ACL_REVOKE_TASK,
-    withImmediate({ subject }, typed),
+    withImmediate({ subject, revocation: { kind: "entry" } }, typed),
     confirmGesture,
   );
 }

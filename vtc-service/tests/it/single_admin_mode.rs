@@ -20,8 +20,8 @@ use crate::common::second_party::{Gesturer, parked_action, step_up_request};
 use crate::common::signed::{post, signed};
 
 const RP_ORIGIN: &str = "https://vtc.example.com";
-const GRANT: &str = "https://trusttasks.org/spec/acl/grant/0.1";
-const REVOKE: &str = "https://trusttasks.org/spec/acl/revoke/0.1";
+const GRANT: &str = "https://trusttasks.org/spec/acl/grant/0.2";
+const REVOKE: &str = "https://trusttasks.org/spec/acl/revoke/0.2";
 const PATCH: &str = "https://trusttasks.org/spec/config/patch/0.1";
 const UPSERT: &str = "https://trusttasks.org/spec/policy/upsert/0.3";
 const CREATE_INVITE: &str = "https://trusttasks.org/spec/vtc/admin/invites/create/0.1";
@@ -162,7 +162,7 @@ async fn vti_apv_022_a_sole_admin_grants_on_their_own_gesture() {
     let doc = signed(
         &a,
         GRANT,
-        json!({ "entry": { "subject": subject.did, "role": "admin", "scopes": [] } }),
+        crate::common::signed::grant_payload(&subject.did, "admin"),
     )
     .await;
 
@@ -379,7 +379,7 @@ async fn vti_apv_022_a_second_admins_entry_does_not_bring_consent_back() {
         &signed(
             &a,
             GRANT,
-            json!({ "entry": { "subject": subject.did, "role": "admin", "scopes": [] } }),
+            crate::common::signed::grant_payload(&subject.did, "admin"),
         )
         .await,
     )
@@ -402,7 +402,7 @@ async fn without_the_mode_a_sole_admin_is_refused_as_before() {
         &signed(
             &a,
             GRANT,
-            json!({ "entry": { "subject": Party::new().did, "role": "admin", "scopes": [] } }),
+            crate::common::signed::grant_payload(&Party::new().did, "admin"),
         )
         .await,
     )
@@ -427,7 +427,12 @@ async fn vti_apv_022_a_reduction_keeps_its_cooling_off() {
     let (status, reply) = submit(
         &mut fix,
         &a,
-        &signed(&a, REVOKE, json!({ "subject": b.did })).await,
+        &signed(
+            &a,
+            REVOKE,
+            json!({ "subject": b.did , "revocation": { "kind": "entry" }}),
+        )
+        .await,
     )
     .await;
     assert_eq!(status, StatusCode::ACCEPTED, "cooling off: {reply}");

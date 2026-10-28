@@ -24,10 +24,10 @@ use crate::common::signed::{post, signed};
 
 const RP_ORIGIN: &str = "https://vtc.example.com";
 const UPDATE: &str = "https://trusttasks.org/spec/acl/update/0.2";
-const UPDATE_V0_1: &str = "https://trusttasks.org/spec/acl/update/0.1";
+const UPDATE_V0_1: &str = "https://trusttasks.org/spec/acl/update/0.2";
 const SHOW: &str = "https://trusttasks.org/spec/acl/show/0.2";
-const GRANT: &str = "https://trusttasks.org/spec/acl/grant/0.1";
-const REVOKE: &str = "https://trusttasks.org/spec/acl/revoke/0.1";
+const GRANT: &str = "https://trusttasks.org/spec/acl/grant/0.2";
+const REVOKE: &str = "https://trusttasks.org/spec/acl/revoke/0.2";
 const MEMBER_UPDATE: &str = "https://trusttasks.org/spec/vtc/members/update/0.1";
 
 struct Fixture {
@@ -206,7 +206,7 @@ async fn vti_acl_052_subject_may_relabel_own_entry() {
     );
 }
 
-/// VTI-ACL-052 item 2 on `acl/update/0.1` and `vtc/members/update`: the same
+/// VTI-ACL-052 item 2 on `acl/update/0.2` and `vtc/members/update`: the same
 /// decision on every door that can write the label.
 #[tokio::test]
 async fn vti_acl_052_subject_may_relabel_own_entry_on_every_door() {
@@ -439,7 +439,7 @@ async fn vti_apv_022_consent_is_waived_beside_other_administrators() {
         &signed(
             &a,
             GRANT,
-            json!({ "entry": { "subject": subject.did, "role": "admin", "scopes": [] } }),
+            crate::common::signed::grant_payload(&subject.did, "admin"),
         )
         .await,
     )
@@ -467,7 +467,12 @@ async fn vti_apv_022_a_reduction_cools_off_instead_of_waiting_for_consent() {
     let (status, reply) = submit(
         &mut fix,
         &a,
-        &signed(&a, REVOKE, json!({ "subject": b.did })).await,
+        &signed(
+            &a,
+            REVOKE,
+            json!({ "subject": b.did , "revocation": { "kind": "entry" }}),
+        )
+        .await,
     )
     .await;
     assert_eq!(status, StatusCode::ACCEPTED, "cooling off: {reply}");

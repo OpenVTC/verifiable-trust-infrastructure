@@ -441,31 +441,6 @@
           }
         }
       },
-      "AclListResponse": {
-        "type": "object",
-        "required": [
-          "entries",
-          "truncated"
-        ],
-        "properties": {
-          "cursor": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "entries": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/AclEntryResponse"
-            }
-          },
-          "truncated": {
-            "type": "boolean",
-            "description": "True when more entries match beyond this page; `cursor` is then\npresent. Required by canonical `acl/list`."
-          }
-        }
-      },
       "AdminPasskeyLoginFinishRequest": {
         "type": "object",
         "description": "`POST /v1/auth/passkey-login/finish`.\n\nVerifies the WebAuthn assertion, looks up the registered\nadmin DID by credential ID, and mints the cookie session.\nSets the same `vtc_admin_session` + `csrf` cookies as\n`admin_session` does for the bearer-token bridge. Returns the\nbearer token in the body for clients that want to also use it\nprogrammatically.",

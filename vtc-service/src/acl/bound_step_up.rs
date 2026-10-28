@@ -1270,7 +1270,7 @@ pub async fn record_mark_for_test(
 mod tests {
     use super::*;
 
-    const GRANT: &str = "https://trusttasks.org/spec/acl/grant/0.1";
+    const GRANT: &str = "https://trusttasks.org/spec/acl/grant/0.2";
     const CHANGE_ROLE: &str = "https://trusttasks.org/spec/acl/change-role/0.1";
 
     fn payload(subject: &str) -> Value {

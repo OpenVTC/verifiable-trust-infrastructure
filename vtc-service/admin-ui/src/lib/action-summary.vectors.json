@@ -4,15 +4,33 @@
     "name": "grant an unrestricted administrator",
     "payload": {
       "entry": {
+        "subject": "did:webvh:QmScidExample:community.example:carol",
         "role": "admin",
-        "scopes": [],
-        "subject": "did:webvh:QmScidExample:community.example:carol"
+        "act": {
+          "scope": "all"
+        },
+        "keys": {
+          "scope": "all"
+        },
+        "capabilities": {
+          "scope": "ceiling"
+        },
+        "approve": {
+          "scope": "none"
+        }
       },
       "reason": "carol runs the membership desk"
     },
     "summary": {
-      "effect": "{subject} will be able to grant and remove any authority in this community, including yours.",
+      "effect": "{subject} will hold capabilities that create authority in this community: they can grant, change or approve what others hold.",
       "fields": {
+        "capabilities": {
+          "format": "text",
+          "pointer": "/entry/capabilities",
+          "value": {
+            "scope": "ceiling"
+          }
+        },
         "expiresAt": {
           "format": "datetime",
           "pointer": "/entry/expiresAt",
@@ -23,21 +41,16 @@
           "pointer": "/entry/role",
           "value": "admin"
         },
-        "scopes": {
-          "format": "capabilityList",
-          "pointer": "/entry/scopes",
-          "value": []
-        },
         "subject": {
           "format": "did",
           "pointer": "/entry/subject",
           "value": "did:webvh:QmScidExample:community.example:carol"
         }
       },
-      "templateDigest": "zQmPrXgyRpZ57y4AekuZPspEkunnEbEhxvZuqrfoxrgsvr4",
-      "title": "Make {subject} an unrestricted administrator"
+      "templateDigest": "zQmNiciJtH7xnKdQUxEwp44mpbCrVt8tfBrt1XKg7VfAc71",
+      "title": "Make {subject} a {role}"
     },
-    "typeUri": "https://trusttasks.org/spec/acl/grant/0.1"
+    "typeUri": "https://trusttasks.org/spec/acl/grant/0.2"
   },
   {
     "kind": "acl.grant.authority",
@@ -101,20 +114,25 @@
     "kind": "acl.reduce.authority",
     "name": "remove an unrestricted administrator",
     "payload": {
-      "subject": "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK"
+      "subject": "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
+      "revocation": {
+        "kind": "entry"
+      }
     },
     "summary": {
-      "effect": "{subject} loses unrestricted authority in this community. They are not asked: a party to a removal never decides it.",
+      "effect": "{subject} loses capabilities that create authority in this community. They are not asked: a party to a removal never decides it.",
       "fields": {
         "reason": {
           "format": "text",
           "pointer": "/reason",
           "value": null
         },
-        "scopes": {
-          "format": "capabilityList",
-          "pointer": "/scopes",
-          "value": null
+        "revocation": {
+          "format": "text",
+          "pointer": "/revocation",
+          "value": {
+            "kind": "entry"
+          }
         },
         "subject": {
           "format": "did",
@@ -122,10 +140,10 @@
           "value": "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK"
         }
       },
-      "templateDigest": "zQmbvSkPZnzCqq5idfR5DKfFyiHFRCeimT48C4c6jtZfG1Z",
-      "title": "Remove unrestricted administrator {subject}"
+      "templateDigest": "zQmfJss7J6uNUdyZPUC64BoJ971CdnTfgd6BVEQd7aFjYwD",
+      "title": "Revoke {subject}"
     },
-    "typeUri": "https://trusttasks.org/spec/acl/revoke/0.1"
+    "typeUri": "https://trusttasks.org/spec/acl/revoke/0.2"
   },
   {
     "kind": "config.threshold.lower",

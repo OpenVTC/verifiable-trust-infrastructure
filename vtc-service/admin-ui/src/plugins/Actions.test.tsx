@@ -159,7 +159,7 @@ describe("the Actions page", () => {
     render();
     const card = await screen.findByRole("article", { name: "Action act-1" });
     expect(
-      await within(card).findByText(/^Make did:webvh:QmScid…xample:carol an unrestricted administrator$/),
+      await within(card).findByText(/^Make did:webvh:QmScid…xample:carol a admin$/),
     ).toBeTruthy();
     expect(within(card).getByText(`Code: ${matchCode(waiting.payloadDigest)}`)).toBeTruthy();
     expect(within(card).getByText(/0 of 2/)).toBeTruthy();
@@ -530,7 +530,7 @@ describe("an operator's offline write", () => {
 
 const REDUCE = {
   kind: "acl.reduce.authority",
-  typeUri: "https://trusttasks.org/spec/acl/revoke/0.1",
+  typeUri: "https://trusttasks.org/spec/acl/revoke/0.2",
 };
 
 /** A 0.2 `coolingOff` action: `landsAt` and `cancellableBy` on the action

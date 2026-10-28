@@ -262,9 +262,17 @@ mod tests {
         let prior = admin();
         let cases = [
             (
-                format!("{SPEC}/acl/revoke/0.1"),
-                json!({ "subject": "did:key:zCarol" }),
+                format!("{SPEC}/acl/revoke/0.2"),
+                json!({ "subject": "did:key:zCarol", "revocation": { "kind": "entry" } }),
                 ("revoked", None),
+            ),
+            (
+                format!("{SPEC}/acl/revoke/0.2"),
+                json!({
+                    "subject": "did:key:zCarol",
+                    "revocation": { "kind": "act", "act": { "scope": "none" } },
+                }),
+                ("narrowed", Some("community-admin".to_string())),
             ),
             (
                 format!("{SPEC}/vtc/members/admin-remove/0.1"),
@@ -277,13 +285,13 @@ mod tests {
                 ("demoted", Some("member".to_string())),
             ),
             (
-                format!("{SPEC}/acl/update/0.1"),
-                json!({ "subject": "did:key:zCarol", "scopes": ["ctx-a"] }),
+                format!("{SPEC}/acl/update/0.2"),
+                json!({ "subject": "did:key:zCarol", "capabilities": { "scope": "none" } }),
                 ("narrowed", Some("community-admin".to_string())),
             ),
             (
-                format!("{SPEC}/acl/grant/0.1"),
-                json!({ "entry": { "subject": "did:key:zCarol", "role": "admin", "scopes": ["a"] } }),
+                format!("{SPEC}/acl/grant/0.2"),
+                json!({ "entry": { "subject": "did:key:zCarol", "role": "community-admin" } }),
                 ("narrowed", Some("community-admin".to_string())),
             ),
         ];
@@ -300,8 +308,12 @@ mod tests {
         let p = notice_payload(
             "act-5b8f1d4e9c2a4f6b8e317a0c5d9e2f14",
             &prior,
-            &format!("{SPEC}/acl/revoke/0.1"),
-            &json!({ "subject": "did:key:zCarol", "reason": "compromised laptop" }),
+            &format!("{SPEC}/acl/revoke/0.2"),
+            &json!({
+                "subject": "did:key:zCarol",
+                "revocation": { "kind": "entry" },
+                "reason": "compromised laptop",
+            }),
             "did:key:zDana",
             at("2026-10-03T09:00:00Z"),
             at("2026-10-04T09:00:00Z"),

@@ -22,7 +22,7 @@ vi.mock("@/lib/signed-act", async (original) => ({
 }));
 
 const GRANT = "https://trusttasks.org/spec/acl/grant/0.2";
-const LIST = "https://trusttasks.org/spec/acl/list/0.2";
+const LIST = "https://trusttasks.org/spec/acl/list/0.3";
 
 // The payload schema types `label` and `expiresAt` as strings, so a blank
 // optional field must be absent from the request, never `null` (a 400).
@@ -287,7 +287,7 @@ describe("Access control — your own entry (VTI-ACL-052)", () => {
 // gesture bound to the immediate removal.
 describe("Access control — suspension and remove now", () => {
   const OTHER = "did:example:other";
-  const REVOKE = "https://trusttasks.org/spec/acl/revoke/0.1";
+  const REVOKE = "https://trusttasks.org/spec/acl/revoke/0.2";
   const ACTIONS_LIST = "https://trusttasks.org/spec/vtc/admin/actions/list/0.3";
   const LANDS_AT = "2026-10-05T09:00:00Z";
   const other = (suspended = false) => ({
@@ -351,6 +351,7 @@ describe("Access control — suspension and remove now", () => {
     await waitFor(() => expect(sentPayloads(requests, REVOKE)).toHaveLength(1));
     expect(sentPayloads(requests, REVOKE)[0]).toEqual({
       subject: OTHER,
+      revocation: { kind: "entry" },
       ext: { "org.openvtc": { immediate: { confirm: OTHER } } },
     });
   });

@@ -106,22 +106,12 @@ export const PINNED_TEMPLATE_DIGESTS: Readonly<Record<string, string>> = Object.
     "zQmNWjHGRwDCfUsvVFxx6o6eXczqjQTepMEKwkS3qqNo1N6",
   [pinKey("acl.reduce.authority", `${SPEC}/acl/change-role/0.2`)]:
     "zQmaAjJC1L9w3pbUTEbWfhzfBdUpv8pofDZvL6mWSpU2eWk",
-  [pinKey("acl.grant.authority", `${SPEC}/acl/grant/0.1`)]:
-    "zQmPrXgyRpZ57y4AekuZPspEkunnEbEhxvZuqrfoxrgsvr4",
-  [pinKey("acl.grant.authority", `${SPEC}/acl/update/0.1`)]:
-    "zQmbvgey1akTyTq74Vhe4fuXGvpTKKTVw34mo3y4hVEKSEQ",
   [pinKey("acl.grant.authority", `${SPEC}/acl/change-role/0.1`)]:
     "zQmQX9Dx7cDqLtcoTNuDSWWo5nJTGecB9CqRLKgpd4es1c9",
   [pinKey("admin.invite.create", `${SPEC}/vtc/admin/invites/create/0.1`)]:
     "zQmSXC2GaMpizs4kKRhz4nBchZikWjqHAoeDfA5D7fVizgp",
-  [pinKey("acl.reduce.authority", `${SPEC}/acl/revoke/0.1`)]:
-    "zQmbvSkPZnzCqq5idfR5DKfFyiHFRCeimT48C4c6jtZfG1Z",
   [pinKey("acl.reduce.authority", `${SPEC}/acl/change-role/0.1`)]:
     "zQmfHspRZaXfEPkeAyqcFkpgqYT2RCqXjjnXVZmFhsaJQcu",
-  [pinKey("acl.reduce.authority", `${SPEC}/acl/update/0.1`)]:
-    "zQmXcYLQhsgDQEgDZuf2mvmkxDDKEd1c9C47tmRAGLofPgM",
-  [pinKey("acl.reduce.authority", `${SPEC}/acl/grant/0.1`)]:
-    "zQmVrvxot9bAts7S22CfXQgqR8vC5aZHWQz97UjfMWveT7o",
   [pinKey("acl.reduce.authority", `${SPEC}/vtc/members/admin-remove/0.1`)]:
     "zQmc2FGMz27Bqiu3CPpy5BrVBWyst3RkfWhfk322QWzu6mR",
   [pinKey("config.threshold.lower", `${SPEC}/config/patch/0.1`)]:

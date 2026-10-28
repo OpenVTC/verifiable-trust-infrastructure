@@ -29,11 +29,11 @@ use vti_rooms_dtg::test_support::Party;
 
 use vtc_service::test_support::TestVtc;
 
-const LIST: &str = "https://trusttasks.org/spec/acl/list/0.1";
-const GRANT: &str = "https://trusttasks.org/spec/acl/grant/0.1";
-const SHOW: &str = "https://trusttasks.org/spec/acl/show/0.1";
+const LIST: &str = "https://trusttasks.org/spec/acl/list/0.3";
+const GRANT: &str = "https://trusttasks.org/spec/acl/grant/0.2";
+const SHOW: &str = "https://trusttasks.org/spec/acl/show/0.2";
 const CHANGE_ROLE: &str = "https://trusttasks.org/spec/acl/change-role/0.1";
-const REVOKE: &str = "https://trusttasks.org/spec/acl/revoke/0.1";
+const REVOKE: &str = "https://trusttasks.org/spec/acl/revoke/0.2";
 
 struct Fixture {
     router: axum::Router,
@@ -184,12 +184,13 @@ async fn call(
         ("GET", None) => {
             let mut filter = serde_json::Map::new();
             for (k, v) in &params {
-                let v = if *k == "pageSize" {
-                    json!(v.parse::<u64>().unwrap())
+                // 0.3 pages by `limit` (0.2's `pageSize`).
+                let (k, v) = if *k == "pageSize" || *k == "limit" {
+                    ("limit", json!(v.parse::<u64>().unwrap()))
                 } else {
-                    json!(v)
+                    (*k, json!(v))
                 };
-                filter.insert((*k).to_string(), v);
+                filter.insert(k.to_string(), v);
             }
             (LIST, Value::Object(filter))
         }
@@ -201,7 +202,11 @@ async fn call(
             (CHANGE_ROLE, payload)
         }
         ("DELETE", Some(subject)) => {
-            let mut payload = json!({ "subject": subject });
+            // 0.2 states what is revoked; a removal is `{kind: entry}`.
+            let mut payload = body.unwrap_or_else(
+                || json!({ "subject": subject, "revocation": { "kind": "entry" } }),
+            );
+            payload["subject"] = json!(subject);
             for (k, v) in &params {
                 match *k {
                     "scopes" => {
@@ -221,14 +226,64 @@ async fn call(
     (status, doc["payload"].clone())
 }
 
-async fn grant(fix: &Fixture, token: &str, subject: &str, role: &str, scopes: Value) -> StatusCode {
+/// The `acl/grant/0.2` entry for community role `role`: the administrative
+/// role it implies ([`crate::common::signed::acl_entry`]), and for a community
+/// role no administrative role implies (`member`, `custom:*`) an entry that
+/// holds no administrative authority, naming the community role in
+/// `ext["org.openvtc"].communityRole`.
+fn community_entry(subject: &str, role: &str) -> Value {
+    let mut entry = crate::common::signed::acl_entry(subject, role);
+    if !matches!(role, "admin" | "moderator" | "issuer") {
+        entry["ext"] = json!({ "org.openvtc": { "communityRole": role } });
+    }
+    entry
+}
+
+/// The entry `subject` holds, as an `acl/grant/0.2` would restate it: the
+/// writable members only (provenance and read-only `ext` dropped).
+async fn restated(fix: &Fixture, token: &str, subject: &str) -> Value {
+    let (status, body) = call(fix, "GET", &format!("/v1/acl/{subject}"), SHOW, token, None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let held = &body["entry"];
+    let mut entry = serde_json::Map::new();
+    for k in [
+        "subject",
+        "role",
+        "act",
+        "keys",
+        "capabilities",
+        "approve",
+        "approveCapabilities",
+        "label",
+        "expiresAt",
+    ] {
+        if let Some(v) = held.get(k) {
+            entry.insert(k.to_string(), v.clone());
+        }
+    }
+    if let Some(role) = held["ext"]["org.openvtc"]["communityRole"].as_str() {
+        entry.insert(
+            "ext".into(),
+            json!({ "org.openvtc": { "communityRole": role } }),
+        );
+    }
+    Value::Object(entry)
+}
+
+async fn grant(
+    fix: &Fixture,
+    token: &str,
+    subject: &str,
+    role: &str,
+    _scopes: Value,
+) -> StatusCode {
     call(
         fix,
         "POST",
         "/v1/acl",
         GRANT,
         token,
-        Some(json!({ "entry": { "subject": subject, "role": role, "scopes": scopes } })),
+        Some(json!({ "entry": community_entry(subject, role) })),
     )
     .await
     .0
@@ -245,10 +300,9 @@ async fn entries_use_canonical_names_and_rfc3339_timestamps() {
 
     let (status, body) = call(&fix, "GET", "/v1/acl", LIST, &token, None).await;
     assert_eq!(status, StatusCode::OK);
-    assert!(
-        body.get("truncated").is_some(),
-        "truncated required: {body}"
-    );
+    // 0.3: one page, so no `nextCursor`; 0.2's `truncated` is gone.
+    assert!(body.get("nextCursor").is_none(), "one page: {body}");
+    assert!(body.get("truncated").is_none(), "{body}");
 
     let entry = body["entries"]
         .as_array()
@@ -256,12 +310,14 @@ async fn entries_use_canonical_names_and_rfc3339_timestamps() {
         .iter()
         .find(|e| e["subject"] == "did:key:z6MkAlice")
         .expect("granted entry present");
-    assert_eq!(entry["scopes"], json!([]));
+    // Every axis explicit (AclEntry 0.2): a member acts nowhere.
+    assert_eq!(entry["act"], json!({ "scope": "none" }));
+    assert_eq!(entry["capabilities"], json!({ "scope": "none" }));
     assert!(
         entry["createdAt"].as_str().unwrap().contains('T'),
         "createdAt must be RFC3339: {entry}"
     );
-    for old in ["did", "allowed_contexts", "created_at"] {
+    for old in ["did", "allowed_contexts", "created_at", "scopes"] {
         assert!(entry.get(old).is_none(), "{old} must be gone: {entry}");
     }
 }
@@ -284,12 +340,14 @@ async fn grant_refuses_to_change_an_existing_role() {
         "/v1/acl",
         GRANT,
         &token,
-        Some(
-            json!({ "entry": { "subject": "did:key:z6MkBob", "role": "moderator", "scopes": [] } }),
-        ),
+        Some(crate::common::signed::grant_payload(
+            "did:key:z6MkBob",
+            "moderator",
+        )),
     )
     .await;
-    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    // `acl/grant/0.2` item 6: `permissionDenied`, naming the task.
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
     let msg = body["message"].as_str().unwrap_or_default();
     assert!(
         msg.contains("change-role"),
@@ -311,7 +369,11 @@ async fn grant_with_the_same_role_rewrites_the_entry() {
         "/v1/acl",
         GRANT,
         &token,
-        Some(json!({ "entry": { "subject": "did:key:z6MkCarol", "role": "member", "scopes": [], "label": "Carol" } })),
+        Some({
+            let mut entry = community_entry("did:key:z6MkCarol", "member");
+            entry["label"] = json!("Carol");
+            json!({ "entry": entry })
+        }),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "rewrite, not create: {body}");
@@ -382,8 +444,10 @@ async fn revoke_without_scopes_removes_the_entry() {
     // A full removal leaves nothing: `entry` is `null`, not absent.
     assert!(body.get("entry").is_some_and(Value::is_null), "{body}");
 
-    let (status, _) = call(&fix, "GET", "/v1/acl/did:key:z6MkFred", SHOW, &token, None).await;
-    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    // 0.2: "no such entry" is a successful `entry: null`, not `notFound`.
+    let (status, body) = call(&fix, "GET", "/v1/acl/did:key:z6MkFred", SHOW, &token, None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(body["entry"].is_null(), "{body}");
 }
 
 /// The ACL has no REST route, under any method.
@@ -430,18 +494,18 @@ async fn list_filters_and_paginates() {
     for who in ["did:key:z6MkP1", "did:key:z6MkP2", "did:key:z6MkP3"] {
         grant(&fix, &token, who, "member", json!([])).await;
     }
-    grant(&fix, &token, "did:key:z6MkQ1", "custom:editor", json!([])).await;
-
-    // Role filter actually filters.
-    let (_, body) = call(
-        &fix,
-        "GET",
-        "/v1/acl?role=custom:editor",
-        LIST,
-        &token,
+    // Seeded rather than granted: a moderator grant asks for a gesture.
+    seed_entry(
+        &fix.vtc,
+        "did:key:z6MkQ1",
+        vtc_service::acl::VtcRole::Moderator,
+        vec![],
         None,
     )
     .await;
+
+    // Role filter actually filters. In 0.3 it reads the administrative role.
+    let (_, body) = call(&fix, "GET", "/v1/acl?role=moderator", LIST, &token, None).await;
     let subjects: Vec<&str> = body["entries"]
         .as_array()
         .unwrap()
@@ -460,8 +524,11 @@ async fn list_filters_and_paginates() {
         None,
     )
     .await;
-    assert_eq!(page1["truncated"], true, "{page1}");
-    let cursor = page1["cursor"].as_str().expect("cursor").to_string();
+    // 0.3: more remains iff `nextCursor` is present.
+    let cursor = page1["nextCursor"]
+        .as_str()
+        .expect("nextCursor")
+        .to_string();
 
     let (status, _) = call(
         &fix,
@@ -477,7 +544,7 @@ async fn list_filters_and_paginates() {
     let (status, body) = call(
         &fix,
         "GET",
-        &format!("/v1/acl?role=moderator&pageSize=1&cursor={cursor}"),
+        &format!("/v1/acl?role=community-admin&pageSize=1&cursor={cursor}"),
         LIST,
         &token,
         None,
@@ -751,7 +818,10 @@ async fn vti_ops_051_granting_the_admin_role_without_a_step_up_is_refused() {
         "/v1/acl",
         GRANT,
         &token,
-        Some(json!({ "entry": { "subject": "did:key:z6MkFreshAdmin", "role": "moderator", "scopes": [] } })),
+        Some(crate::common::signed::grant_payload(
+            "did:key:z6MkFreshAdmin",
+            "moderator",
+        )),
     )
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
@@ -802,10 +872,12 @@ async fn re_granting_an_admin_at_the_same_scopes_needs_no_step_up() {
         "/v1/acl",
         GRANT,
         &plain,
-        Some(
-            json!({ "entry": { "subject": DID, "role": "moderator", "scopes": [],
-                                "label": "Ops on-call", "expiresAt": at } }),
-        ),
+        Some({
+            let mut entry = restated(&fix, &plain, DID).await;
+            entry["label"] = json!("Ops on-call");
+            entry["expiresAt"] = json!(at);
+            json!({ "entry": entry })
+        }),
     )
     .await;
     assert_eq!(
@@ -825,7 +897,11 @@ async fn re_granting_an_admin_at_the_same_scopes_needs_no_step_up() {
         // Lifting the expiry: a longer life is authority never granted, and a
         // moderator confers nothing authority-conferring, so the gesture is
         // the whole gate.
-        Some(json!({ "entry": { "subject": DID, "role": "moderator", "scopes": [] } })),
+        Some({
+            let mut entry = restated(&fix, &plain, DID).await;
+            entry.as_object_mut().unwrap().remove("expiresAt");
+            json!({ "entry": entry })
+        }),
     )
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
@@ -852,7 +928,14 @@ async fn vti_ops_050_granting_yourself_the_admin_role_is_refused() {
         "/v1/acl",
         GRANT,
         &token,
-        Some(json!({ "entry": { "subject": fix.admin.did, "role": "admin", "scopes": [] } })),
+        // The caller's own authority restated exactly, so nothing narrows and
+        // the self-edit is the refusal (0.2's grant refuses a narrowing first).
+        Some(json!({ "entry": {
+            "subject": fix.admin.did, "role": "community-admin",
+            "act": { "scope": "all" }, "keys": { "scope": "none" },
+            "capabilities": { "scope": "ceiling" },
+            "approve": { "scope": "all" }, "approveCapabilities": { "scope": "ceiling" },
+        } })),
     )
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
@@ -897,7 +980,7 @@ async fn vti_acl_052_an_admin_cannot_rewrite_its_own_entry() {
         "/v1/acl",
         GRANT,
         &token,
-        Some(json!({ "entry": { "subject": me, "role": "moderator", "scopes": [] } })),
+        Some(crate::common::signed::grant_payload(me, "moderator")),
     )
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
@@ -943,15 +1026,12 @@ async fn vti_acl_053_an_expiring_admin_cannot_grant_past_its_own_expiry() {
     };
 
     for (what, entry) in [
-        (
-            "permanent",
-            json!({ "subject": "did:key:z6MkSib1", "role": "member", "scopes": [] }),
-        ),
-        (
-            "later",
-            json!({ "subject": "did:key:z6MkSib2", "role": "member", "scopes": [],
-                    "expiresAt": at(expires + 60) }),
-        ),
+        ("permanent", community_entry("did:key:z6MkSib1", "member")),
+        ("later", {
+            let mut e = community_entry("did:key:z6MkSib2", "member");
+            e["expiresAt"] = json!(at(expires + 60));
+            e
+        }),
     ] {
         let (status, body) = call(
             &fix,
@@ -962,7 +1042,17 @@ async fn vti_acl_053_an_expiring_admin_cannot_grant_past_its_own_expiry() {
             Some(json!({ "entry": entry })),
         )
         .await;
-        assert_eq!(status, StatusCode::FORBIDDEN, "{what}: {body}");
+        // 0.2 declares the bound: `delegationExceedsGranter` on `expiresAt`.
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{what}: {body}");
+        assert_eq!(
+            body["code"], "acl/grant:delegationExceedsGranter",
+            "{what}: {body}"
+        );
+        assert_eq!(
+            body["details"]["axes"],
+            json!(["expiresAt"]),
+            "{what}: {body}"
+        );
     }
 
     let (status, body) = call(
@@ -971,10 +1061,11 @@ async fn vti_acl_053_an_expiring_admin_cannot_grant_past_its_own_expiry() {
         "/v1/acl",
         GRANT,
         &token,
-        Some(
-            json!({ "entry": { "subject": "did:key:z6MkSib3", "role": "member",
-                                "scopes": [], "expiresAt": at(expires) } }),
-        ),
+        Some({
+            let mut e = community_entry("did:key:z6MkSib3", "member");
+            e["expiresAt"] = json!(at(expires));
+            json!({ "entry": e })
+        }),
     )
     .await;
     assert_eq!(
@@ -993,7 +1084,7 @@ async fn vti_acl_053_an_expiring_admin_cannot_grant_past_its_own_expiry() {
 // success, the same declared refusal on failure.
 // ---------------------------------------------------------------------------
 
-const UPDATE: &str = "https://trusttasks.org/spec/acl/update/0.1";
+const UPDATE: &str = "https://trusttasks.org/spec/acl/update/0.2";
 
 /// A signed document from `from`, addressed to the test VTC.
 async fn signed_doc(from: &vti_rooms_dtg::test_support::Party, uri: &str, payload: Value) -> Value {
@@ -1100,13 +1191,13 @@ async fn acl_show_and_list_answer_the_same_on_both_doors() {
         None,
     )
     .await;
-    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(status, StatusCode::OK);
     let (_, doc) = post_doc(
         &fix,
         &signed_doc(&admin, SHOW, json!({ "subject": "did:key:z6MkNobody" })).await,
     )
     .await;
-    assert_eq!(doc["payload"]["details"]["reason"], "not_found", "{doc}");
+    assert!(doc["payload"]["entry"].is_null(), "{doc}");
 }
 
 #[tokio::test]
@@ -1140,7 +1231,7 @@ async fn acl_revoke_answers_the_same_on_both_doors() {
         &signed_doc(
             &admin,
             REVOKE,
-            json!({ "subject": "did:key:z6MkParityDoc" }),
+            json!({ "subject": "did:key:z6MkParityDoc" , "revocation": { "kind": "entry" }}),
         )
         .await,
     )
@@ -1166,7 +1257,7 @@ async fn acl_revoke_answers_the_same_on_both_doors() {
         &signed_doc(
             &admin,
             REVOKE,
-            json!({ "subject": "did:key:z6MkParityDoc" }),
+            json!({ "subject": "did:key:z6MkParityDoc" , "revocation": { "kind": "entry" }}),
         )
         .await,
     )
@@ -1208,7 +1299,7 @@ async fn acl_revoke_refuses_the_same_on_both_doors() {
         &signed_doc(
             &scoped,
             REVOKE,
-            json!({ "subject": "did:key:z6MkParityStraddle" }),
+            json!({ "subject": "did:key:z6MkParityStraddle" , "revocation": { "kind": "entry" }}),
         )
         .await,
     )
@@ -1233,7 +1324,12 @@ async fn acl_revoke_refuses_the_same_on_both_doors() {
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{rest}");
     let (_, doc) = post_doc(
         &fix,
-        &signed_doc(&scoped, REVOKE, json!({ "subject": scoped.did })).await,
+        &signed_doc(
+            &scoped,
+            REVOKE,
+            json!({ "subject": scoped.did , "revocation": { "kind": "entry" }}),
+        )
+        .await,
     )
     .await;
     for said in [doc["payload"]["message"].as_str(), rest["message"].as_str()] {
@@ -1281,7 +1377,7 @@ async fn acl_revoke_with_an_empty_scope_list_removes_nothing() {
         &signed_doc(
             &admin,
             REVOKE,
-            json!({ "subject": "did:key:z6MkParityEmpty", "scopes": [] }),
+            json!({ "subject": "did:key:z6MkParityEmpty", "revocation": { "kind": "entry" }, "scopes": [] }),
         )
         .await,
     )
@@ -1317,10 +1413,11 @@ async fn acl_update_writes_what_the_equivalent_grant_writes() {
         "/v1/acl",
         GRANT,
         &token,
-        Some(json!({ "entry": {
-            "subject": "did:key:z6MkParityGrant", "role": "member",
-            "scopes": [], "label": "ops",
-        } })),
+        Some({
+            let mut e = community_entry("did:key:z6MkParityGrant", "member");
+            e["label"] = json!("ops");
+            json!({ "entry": e })
+        }),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{rest}");
