@@ -1156,6 +1156,9 @@ pub async fn run_context_delete(
         let cleanup = crate::operations::contexts::ContextDidCleanup {
             deps: &deps,
             vta_did: app_config.vta_did.as_deref(),
+            // The break-glass path keeps the 1.0 contract it always had, and
+            // prints every orphan below.
+            host_copies: crate::operations::contexts::HostCopies::ReportAfter,
         };
         let result = crate::operations::contexts::delete_context(
             &ks,

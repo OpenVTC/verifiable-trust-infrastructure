@@ -316,7 +316,6 @@ fn unwitnessed() -> Vec<DeclaredErrorCode> {
         s::vta::backup::put_chunk::v1_0::error_codes::TERMINAL_STATE,
         s::vta::contexts::create::v1_0::error_codes::PARENT_NOT_FOUND,
         s::vta::contexts::delete::v1_0::error_codes::NOT_FOUND,
-        s::vta::contexts::get::v1_0::error_codes::NOT_FOUND,
         s::vta::contexts::preview_delete::v1_0::error_codes::NOT_FOUND,
         s::vta::contexts::secrets::v1_0::error_codes::NOT_FOUND,
         s::vta::contexts::secrets::v1_0::error_codes::NOT_RELEASABLE,
@@ -434,7 +433,7 @@ fn unwitnessed() -> Vec<DeclaredErrorCode> {
 /// The ceiling [`unwitnessed`]'s length may never exceed — a ratchet, not a
 /// count. Only *growing* the baseline past it needs an edit, which always
 /// wants a human decision.
-const UNWITNESSED_CEILING: usize = 374;
+const UNWITNESSED_CEILING: usize = 373;
 
 /// Every declared code in scope, keyed by code, with the URI declaring it.
 fn declared_in_scope() -> BTreeMap<&'static str, (&'static str, DeclaredErrorCode)> {

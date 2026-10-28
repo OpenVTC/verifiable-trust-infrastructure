@@ -559,10 +559,16 @@ pub fn confirm_destructive(prompt: &str) -> Result<bool, Box<dyn std::error::Err
     Ok(input == "y" || input == "yes")
 }
 
+/// `abandon_host_copies` is the operator saying, before the fact, that a DID
+/// whose hosting server cannot confirm removing its log may be left behind.
+/// Without it the deletion is tried with host copies required gone, and if one
+/// is not, the operator is shown which and asked — `force` (`--yes`) skips the
+/// *deletion* prompt, never this one, because it is a different decision.
 pub async fn cmd_context_delete(
     client: &VtaClient,
     id: &str,
     force: bool,
+    abandon_host_copies: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Fetch a preview of what will be removed
     let preview = client.preview_delete_context(id).await?;
@@ -581,21 +587,82 @@ pub async fn cmd_context_delete(
         return Ok(());
     }
 
-    let result = client.delete_context_with_outcome(id, true).await?;
+    let orphans = match client
+        .delete_context_settling_hosts(id, true, abandon_host_copies)
+        .await
+    {
+        Ok(result) => result.daemon_cleanup_errors,
+        // A VTA that predates 1.1 cannot refuse over a host copy; it reports
+        // one after the fact, which is all it can do.
+        Err(VtaError::UnsupportedTaskType { .. }) => {
+            client
+                .delete_context_with_outcome(id, true)
+                .await?
+                .daemon_cleanup_errors
+        }
+        Err(e) => {
+            let Some(failures) =
+                vta_sdk::protocols::context_management::delete::host_cleanup_failures(&e)
+            else {
+                return Err(e.into());
+            };
+            render_host_cleanup_failures(id, &failures);
+            let asked = io::IsTerminal::is_terminal(&io::stdin())
+                && confirm_destructive(
+                    "Delete the context anyway, leaving these logs published for you to remove?",
+                )?;
+            if !asked {
+                let bin = crate::render::bin_name();
+                println!(
+                    "Nothing was deleted. Retry once the host is back:\n  \
+                     {bin} contexts delete {id}\nor finish now, leaving those logs behind:\n  \
+                     {bin} contexts delete {id} --yes --abandon-host-copies"
+                );
+                return Err(e.into());
+            }
+            client
+                .delete_context_settling_hosts(id, true, true)
+                .await?
+                .daemon_cleanup_errors
+        }
+    };
     println!("Context deleted: {id}");
     // The deletion succeeded and is still not finished. Said plainly, and
     // last, so it is the thing left on screen.
-    if !result.daemon_cleanup_errors.is_empty() {
+    if !orphans.is_empty() {
         eprintln!(
             "\nwarning: {} DID(s) may still resolve — their hosting server did not confirm \
              removal of the published log. Clean these up out-of-band:",
-            result.daemon_cleanup_errors.len()
+            orphans.len()
         );
-        for line in &result.daemon_cleanup_errors {
+        for line in &orphans {
             eprintln!("  - {line}");
         }
     }
     Ok(())
+}
+
+/// Say, loudly and on stderr, which DIDs' logs a refused deletion could not
+/// get removed — before asking whether to leave them.
+fn render_host_cleanup_failures(
+    id: &str,
+    failures: &[vta_sdk::protocols::context_management::delete::HostCleanupFailure],
+) {
+    eprintln!(
+        "\nwarning: context `{id}` was NOT deleted — {} published DID(s) could not be removed \
+         from their hosting server:",
+        failures.len()
+    );
+    for f in failures {
+        match &f.server {
+            Some(server) => eprintln!("  - {} (server `{server}`): {}", f.did, f.reason),
+            None => eprintln!("  - {}: {}", f.did, f.reason),
+        }
+    }
+    eprintln!(
+        "\nIf the host may come back, wait and retry. If you go ahead now, these DIDs may keep \
+         resolving, and removing them from their host is up to you.\n"
+    );
 }
 
 pub async fn cmd_context_provision(

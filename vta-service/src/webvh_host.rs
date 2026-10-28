@@ -84,9 +84,11 @@ pub(crate) fn host_refusal(code: &str, message: &str) -> AppError {
         "notOwner" | "forbidden" | "permissionDenied" | "stepUpRequired" | "unauthorized" => {
             AppError::Forbidden(detail)
         }
-        "pathTaken" | "nameTaken" | "nameReserved" | "alreadyDeleted" | "conflict" => {
-            AppError::Conflict(detail)
-        }
+        // `did/delete:alreadyDeleted` is the slot already being where the
+        // request wanted it, not a clash: a context deletion counts it as the
+        // host copy removed, so it must not read as a refusal.
+        "alreadyDeleted" => AppError::Gone(detail),
+        "pathTaken" | "nameTaken" | "nameReserved" | "conflict" => AppError::Conflict(detail),
         "invalidPath"
         | "invalidLog"
         | "invalidName"
@@ -523,6 +525,21 @@ mod tests {
     const SERVER: &str = "did:webvh:scid:host.example";
     const VTA: &str = "did:webvh:scid:vta.example";
     const REQ: &str = "urn:uuid:11111111-1111-4111-8111-111111111111";
+
+    /// A slot already deleted is where a delete wanted it: `Gone`, which a
+    /// context deletion counts as the host copy removed — not a `Conflict`,
+    /// which it would report as a copy the host refused to remove.
+    #[test]
+    fn an_already_deleted_slot_is_gone_not_a_conflict() {
+        assert!(matches!(
+            host_refusal("did-management/did/delete:alreadyDeleted", "slot deleted"),
+            AppError::Gone(_)
+        ));
+        assert!(matches!(
+            host_refusal("did-management/did/register:pathTaken", "taken"),
+            AppError::Conflict(_)
+        ));
+    }
 
     fn record(mnemonic: &str) -> Value {
         json!({

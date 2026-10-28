@@ -63,3 +63,54 @@ pub struct DeleteContextPreviewResultBody {
     #[serde(default, alias = "did_templates")]
     pub did_templates: Vec<String>,
 }
+
+/// One DID whose published log a context deletion could not confirm removed
+/// from its hosting server — an entry of the `hostCleanupFailures` array that
+/// `vta/contexts/delete:hostCleanupFailed` carries in its error `details`.
+///
+/// Read from the error rather than a response, so it is a hand-written mirror
+/// of the code's `detailsSchema`, which the codegen does not turn into a type.
+/// Read leniently: this only decides what an operator is shown before being
+/// asked, so an unexpected member must not hide the DIDs it came with.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HostCleanupFailure {
+    pub did: String,
+    /// The VTA's id for the hosting server, when it records one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub server: Option<String>,
+    /// Why removal was not confirmed, for a human.
+    pub reason: String,
+}
+
+impl std::fmt::Display for HostCleanupFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}: {}", self.did, self.reason)
+    }
+}
+
+/// The DIDs a `vta/contexts/delete:hostCleanupFailed` refusal names, or `None`
+/// when `err` is any other error.
+///
+/// The refusal means nothing local was deleted, so the caller can wait for
+/// the host and retry, or retry with `abandonHostCopies` — and the
+/// specification asks a producer to show these to a human before choosing the
+/// second.
+pub fn host_cleanup_failures(err: &crate::error::VtaError) -> Option<Vec<HostCleanupFailure>> {
+    use trust_tasks_rs::specs::vta::contexts::delete::v1_1::error_codes::HOST_CLEANUP_FAILED;
+    let crate::error::VtaError::Rejected { code, details, .. } = err else {
+        return None;
+    };
+    if code != HOST_CLEANUP_FAILED.code {
+        return None;
+    }
+    // A refusal with this code and unreadable details is still this refusal;
+    // an empty list keeps the caller on the right branch.
+    Some(
+        details
+            .as_ref()
+            .and_then(|d| d.get("hostCleanupFailures"))
+            .and_then(|v| serde_json::from_value(v.clone()).ok())
+            .unwrap_or_default(),
+    )
+}
