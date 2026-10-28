@@ -12,7 +12,6 @@ use std::sync::Arc;
 
 use serde_json::Value;
 use trust_tasks_rs::specs::rooms::records::get::v0_2 as get_v2_spec;
-use trust_tasks_rs::specs::rooms::records::list::v0_2 as list_v2_spec;
 use trust_tasks_rs::{DeclaredErrorCode, ErrorPayload, RejectReason, TrustTask, TrustTaskCode};
 use uuid::Uuid;
 use vti_rooms::Room;
@@ -27,9 +26,9 @@ use vti_rooms::wire::AuthorityPresentation;
 use super::{Answer, HostState, from_app_error, now, reject, respond};
 
 pub(crate) use vti_rooms::blob_tasks::{
-    BLOB_GET_V2_TYPE, DOWNLOAD_CHUNK_TYPE, GET_V2_TYPE, INFO_TYPE, LIST_V2_TYPE, PUT_V2_TYPE,
-    PUT_V3_TYPE, UPLOAD_ABORT_V2_TYPE, UPLOAD_BEGIN_V2_TYPE, UPLOAD_CHUNK_V2_TYPE,
-    UPLOAD_COMMIT_V2_TYPE, USAGE_TYPE,
+    BLOB_GET_V2_TYPE, DOWNLOAD_CHUNK_TYPE, GET_V2_TYPE, INFO_TYPE, PUT_V2_TYPE, PUT_V3_TYPE,
+    UPLOAD_ABORT_V2_TYPE, UPLOAD_BEGIN_V2_TYPE, UPLOAD_CHUNK_V2_TYPE, UPLOAD_COMMIT_V2_TYPE,
+    USAGE_TYPE,
 };
 
 /// Refuse with a code the task's specification declares.
@@ -410,26 +409,19 @@ pub(crate) async fn get_v2(state: &HostState, doc: &TrustTask<Value>, payload: V
     super::get_versioned(state, doc, blob_tasks::as_v0_1(payload)).await
 }
 
-/// `rooms/records/list/0.2`: the 0.1 listing, each row naming its blobs.
-pub(crate) async fn list_v2(state: &HostState, doc: &TrustTask<Value>, payload: Value) -> Answer {
-    if let Err(r) = blob_tasks::parse::<list_v2_spec::Payload>(&payload) {
-        return refused(doc, r);
-    }
-    super::list_versioned(state, doc, blob_tasks::as_v0_1(payload), 2).await
-}
-
-/// `rooms/records/list/0.3`: the 0.2 listing, and the room's `lastPrune` on every page.
-pub(crate) async fn list_v3(state: &HostState, doc: &TrustTask<Value>, payload: Value) -> Answer {
+/// `rooms/records/list/0.5`: the 0.1 listing, each row naming its blobs, the room's
+/// `lastPrune` on every page and the continuation token named `nextCursor`.
+pub(crate) async fn list_v5(state: &HostState, doc: &TrustTask<Value>, payload: Value) -> Answer {
     if let Err(r) =
-        blob_tasks::parse::<trust_tasks_rs::specs::rooms::records::list::v0_3::Payload>(&payload)
+        blob_tasks::parse::<trust_tasks_rs::specs::rooms::records::list::v0_5::Payload>(&payload)
     {
         return refused(doc, r);
     }
-    super::list_versioned(state, doc, blob_tasks::as_v0_1(payload), 3).await
+    super::list_versioned(state, doc, blob_tasks::as_v0_1(payload), 5).await
 }
 
-/// A 0.2 listing with the room's `lastPrune` added, answered as 0.3.
-pub(crate) async fn list_v3_response(
+/// A 0.1 listing answered as 0.5.
+pub(crate) async fn list_v5_response(
     snapshot: &vti_rooms::blobs::ReadSnapshot<'_>,
     doc: &TrustTask<Value>,
     room: &Room,
@@ -437,7 +429,7 @@ pub(crate) async fn list_v3_response(
 ) -> Answer {
     render(
         doc,
-        record_tasks::list_v3_response(snapshot, room, response).await,
+        record_tasks::list_v5_response(snapshot, room, response).await,
     )
 }
 
@@ -450,9 +442,9 @@ pub(crate) fn create_v2_response(
     render(doc, record_tasks::create_v2_response(response, recorded))
 }
 
-/// `rooms/info/0.2`: 0.1's answer, the record retention in force and the latest prune.
-pub(crate) async fn info_v2(state: &HostState, doc: &TrustTask<Value>, payload: Value) -> Answer {
-    if let Err(r) = blob_tasks::parse::<trust_tasks_rs::specs::rooms::info::v0_2::Payload>(&payload)
+/// `rooms/info/0.3`: 0.1's answer, the record retention in force and the latest prune.
+pub(crate) async fn info_v3(state: &HostState, doc: &TrustTask<Value>, payload: Value) -> Answer {
+    if let Err(r) = blob_tasks::parse::<trust_tasks_rs::specs::rooms::info::v0_3::Payload>(&payload)
     {
         return refused(doc, r);
     }
@@ -462,11 +454,11 @@ pub(crate) async fn info_v2(state: &HostState, doc: &TrustTask<Value>, payload: 
     };
     render(
         doc,
-        record_tasks::info_v2(&state.files, &room, &authorized, &payload).await,
+        record_tasks::info_v3(&state.files, &room, &authorized, &payload).await,
     )
 }
 
-/// `rooms/records/prune/0.1`: remove what the room's record retention makes eligible.
+/// `rooms/records/prune/0.2`: remove what the room's record retention makes eligible.
 /// Needs `admin` — never `curate` or `write`.
 pub(crate) async fn records_prune(
     state: &HostState,
@@ -474,7 +466,7 @@ pub(crate) async fn records_prune(
     payload: Value,
 ) -> Answer {
     if let Err(r) =
-        blob_tasks::parse::<trust_tasks_rs::specs::rooms::records::prune::v0_1::Payload>(&payload)
+        blob_tasks::parse::<trust_tasks_rs::specs::rooms::records::prune::v0_2::Payload>(&payload)
     {
         return refused(doc, r);
     }
@@ -561,19 +553,6 @@ pub(crate) async fn get_v2_response(
     render(
         doc,
         blob_tasks::get_v2_response(snapshot, room_id, key, response).await,
-    )
-}
-
-/// A 0.1 listing with each row's `blobs` added, answered as 0.2.
-pub(crate) async fn list_v2_response(
-    snapshot: &vti_rooms::blobs::ReadSnapshot<'_>,
-    doc: &TrustTask<Value>,
-    room_id: &str,
-    response: impl serde::Serialize,
-) -> Answer {
-    render(
-        doc,
-        blob_tasks::list_v2_response(snapshot, room_id, response).await,
     )
 }
 
@@ -2280,7 +2259,7 @@ mod tests {
 
         let (status, listed) = call(
             &h.app,
-            LIST_V2_TYPE,
+            vti_rooms::record_tasks::LIST_V5_TYPE,
             json!({ "roomId": f.room.room_id, "presentation": f.as_owner() }),
             &f.owner,
         )
@@ -2372,7 +2351,7 @@ mod tests {
             }
             let (status, listed) = call(
                 &h.app,
-                LIST_V2_TYPE,
+                vti_rooms::record_tasks::LIST_V5_TYPE,
                 json!({ "roomId": f.room.room_id, "prefix": "flip", "presentation": f.as_owner() }),
                 &f.owner,
             )
@@ -2795,7 +2774,7 @@ mod tests {
         k
     }
 
-    /// `rooms/records/prune/0.1` items 3–6: a dry run changes nothing; a prune removes exactly
+    /// `rooms/records/prune/0.2` items 3–6: a dry run changes nothing; a prune removes exactly
     /// what the retention makes eligible — an old tombstone and an old unpinned record — and
     /// keeps a young tombstone, an old pinned record and a fresh one; it takes the next
     /// version as its mark, which list 0.3, `headVersion` and info 0.2 all report, and which
@@ -2861,11 +2840,11 @@ mod tests {
             "the prune moves the head"
         );
         assert!(
-            listing(&h, &f, LIST_V2_TYPE)
+            listing(&h, &f, vti_rooms::wire::ROOMS_RECORDS_LIST_TYPE)
                 .await
                 .get("lastPrune")
                 .is_none(),
-            "0.2 is unchanged"
+            "0.1 is unchanged"
         );
 
         let info = listing(&h, &f, INFO_V2).await;
@@ -3052,6 +3031,6 @@ mod tests {
 
     const PRUNE: &str = vti_rooms::record_tasks::PRUNE_TYPE;
     const RETENTION_SET: &str = vti_rooms::record_tasks::RETENTION_SET_TYPE;
-    const LIST_V3: &str = vti_rooms::record_tasks::LIST_V3_TYPE;
-    const INFO_V2: &str = vti_rooms::record_tasks::INFO_V2_TYPE;
+    const LIST_V3: &str = vti_rooms::record_tasks::LIST_V5_TYPE;
+    const INFO_V2: &str = vti_rooms::record_tasks::INFO_V3_TYPE;
 }

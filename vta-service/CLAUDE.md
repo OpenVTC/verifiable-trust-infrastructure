@@ -899,8 +899,8 @@ When adding a flow, add it here and a line to the root index.
   `confidence`, `evidence`, `validFor`, `validUntil` — inside the signed sealed body, or
   an open room's cleartext at `rooms/records/put/0.3`; trust-tasks-tf #865); a room
   states how long it keeps its records and an `admin` prunes what that makes eligible
-  (`rooms/records/{prune,retention/set}`, `rooms/create/0.2`, `rooms/info/0.2`,
-  `rooms/records/list/0.3`, `rooms/keys/browse/0.2`; #868); an epoch prune leaves an
+  (`rooms/records/{prune,retention/set}`, `rooms/create/0.2`, `rooms/info/0.3`,
+  `rooms/records/list/0.5`, `rooms/keys/browse/0.3`; #868); an epoch prune leaves an
   epoch floor that members' key holders apply (`rooms/epoch/{prune,chain}/0.2`,
   `rooms/keys/{chain,backfill}/0.2`; #869).
 - **Invariants to preserve**: provenance is display and weighting, **never authority**,

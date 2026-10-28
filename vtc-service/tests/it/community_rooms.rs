@@ -42,7 +42,7 @@ const GET: &str = "https://trusttasks.org/spec/vtc/rooms/community/get/0.3";
 const ADD: &str = "https://trusttasks.org/spec/vtc/rooms/community/members/add/0.1";
 const REMOVE: &str = "https://trusttasks.org/spec/vtc/rooms/community/members/remove/0.2";
 const MEMBERS: &str = "https://trusttasks.org/spec/vtc/rooms/community/members/list/0.1";
-const OFFERS: &str = "https://trusttasks.org/spec/vtc/rooms/offers/list/0.1";
+const OFFERS: &str = "https://trusttasks.org/spec/vtc/rooms/offers/list/0.4";
 const UPDATE: &str = "https://trusttasks.org/spec/vtc/rooms/community/update/0.3";
 const OFFERS_V0_2: &str = "https://trusttasks.org/spec/vtc/rooms/offers/list/0.2";
 const ACCEPT: &str = "https://trusttasks.org/spec/vtc/rooms/offers/accept/0.1";
@@ -2292,7 +2292,7 @@ async fn vtc_rooms_community_reads_carry_the_details_and_rfc3339_instants() {
 }
 
 /// `vtc/rooms/offers/list/0.2` item 4: the room's current label and description — a rename
-/// reaches an open offer — and never its tags. 0.1 shows the label only.
+/// reaches an open offer — and never its tags. 0.4 shows the same.
 #[tokio::test]
 async fn vtc_rooms_offers_list_shows_the_rooms_description_and_never_its_tags() {
     let mut fix = fixture().await;
@@ -2323,7 +2323,10 @@ async fn vtc_rooms_offers_list_shows_the_rooms_description_and_never_its_tags() 
     let offers = call_as(&fix, &alice, OFFERS, json!({})).await;
     let offer = &offers["payload"]["items"][0];
     assert_eq!(offer["label"], "Board pack — 2027");
-    assert!(offer.get("description").is_none(), "{offer}");
+    assert_eq!(
+        offer["description"],
+        "Agendas, minutes and the finance pack."
+    );
 }
 
 // ─── the room's own profile (create, update) ─────────────────────────
@@ -2909,7 +2912,6 @@ async fn an_acceptance_after_an_earlier_removal_the_vta_gave_up_is_refused_and_r
 const BINDINGS_ADD: &str = "https://trusttasks.org/spec/vtc/groups/bindings/add/0.1";
 const BINDINGS_REMOVE: &str = "https://trusttasks.org/spec/vtc/groups/bindings/remove/0.1";
 const BINDINGS_LIST: &str = "https://trusttasks.org/spec/vtc/groups/bindings/list/0.1";
-const OFFERS_V0_3: &str = "https://trusttasks.org/spec/vtc/rooms/offers/list/0.3";
 const BINDINGS_ADD_ERR_NOT_FOUND: &str =
     trust_tasks_rs::specs::vtc::groups::bindings::add::v0_1::error_codes::NOT_FOUND.code;
 const BINDINGS_ADD_ERR_ROOM_NOT_FOUND: &str =
@@ -2999,7 +3001,7 @@ async fn reconcile(fix: &Fixture) -> vtc_service::groups::bindings::Report {
 
 /// A room binding offers every member of the group admission; they accept as from any
 /// offer; before their authority lapses the community renews it into
-/// `offers/list/0.3`'s `renewals`; and leaving the group owes their removal.
+/// `offers/list/0.4`'s `renewals`; and leaving the group owes their removal.
 #[tokio::test]
 async fn a_room_binding_admits_renews_and_withdraws_a_groups_members() {
     let mut fix = fixture().await;
@@ -3015,7 +3017,7 @@ async fn a_room_binding_admits_renews_and_withdraws_a_groups_members() {
     assert_eq!(report.offered, vec![(room.clone(), alice.did.clone())]);
     assert!(reconcile(&fix).await.offered.is_empty(), "offered once");
 
-    let offers = call_as(&fix, &alice, OFFERS_V0_3, json!({})).await;
+    let offers = call_as(&fix, &alice, OFFERS, json!({})).await;
     assert_eq!(
         offers["payload"]["items"][0]["roomId"],
         room.as_str(),
@@ -3041,10 +3043,10 @@ async fn a_room_binding_admits_renews_and_withdraws_a_groups_members() {
         vec![ISSUE_MEMBERSHIP.to_string(), ISSUE_AUTHORITY.to_string()],
         "a renewal is a membership and an authority, never an invitation"
     );
-    let offers = call_as(&fix, &alice, OFFERS_V0_3, json!({})).await;
+    let offers = call_as(&fix, &alice, OFFERS, json!({})).await;
     let renewal = &offers["payload"]["renewals"][0];
     assert_eq!(renewal["roomId"], room.as_str(), "{offers}");
-    assert_eq!(renewal["renews"], old_until.as_str());
+    assert_eq!(renewal["renewsAt"], old_until.as_str());
     assert!(renewal["credentials"]["authority"].is_string());
     assert!(renewal["credentials"].get("invitation").is_none());
     let record = rooms.member(&room, &alice.did).await.unwrap().unwrap();

@@ -173,13 +173,12 @@ pub(crate) fn dispatcher() -> AsyncDispatcher<RoomCtx, TrustTaskOutcome> {
         .on_async(handle_transfer_owner)
         .on_async(handle_claim_owner)
         .on_async(super::files::handle_put_record_v2)
-        .on_async(super::files::handle_info_v2)
-        .on_async(super::files::handle_list_records_v3)
+        .on_async(super::files::handle_info_v3)
+        .on_async(super::files::handle_list_records_v5)
         .on_async(super::files::handle_records_prune)
         .on_async(super::files::handle_epoch_chain_v2)
         .on_async(super::files::handle_epoch_prune_v2)
         .on_async(super::files::handle_get_record_v2)
-        .on_async(super::files::handle_list_records_v2)
         .on_async(super::files::handle_download_chunk)
         .on_async(super::files::handle_info)
         .on_async(super::files::handle_usage)
@@ -769,16 +768,12 @@ pub(super) async fn list_records<P>(
     };
     match minor {
         1 => success_response(doc, response),
-        2 => super::files::render(
-            doc,
-            vti_rooms::blob_tasks::list_v2_response(&snapshot, &req.room_id, response).await,
-        ),
         _ => match storage::get_room(&state.rooms_ks, &req.room_id).await {
             // The room as it stands under the lock: its `lastPrune` is the one the page and
             // head were taken with.
             Ok(now_room) => super::files::render(
                 doc,
-                vti_rooms::record_tasks::list_v3_response(&snapshot, &now_room, response).await,
+                vti_rooms::record_tasks::list_v5_response(&snapshot, &now_room, response).await,
             ),
             Err(e) => app_error_to_reject(doc, &e),
         },
@@ -3052,12 +3047,12 @@ mod tests {
 
         let out = send(
             state,
-            vti_rooms::wire::ROOMS_RECORDS_LIST_V2_TYPE,
+            vti_rooms::wire::ROOMS_RECORDS_LIST_V5_TYPE,
             json!({ "roomId": f.room.room_id, "presentation": f.as_owner() }),
             &f,
         )
         .await;
-        assert!(out.status.is_success(), "list 0.2: {}", payload_of(&out));
+        assert!(out.status.is_success(), "list 0.5: {}", payload_of(&out));
         assert_eq!(payload_of(&out)["records"][0]["blobs"], json!([blob_ref]));
 
         let out = send(
@@ -3341,7 +3336,7 @@ mod tests {
         };
         let out = send(
             state,
-            vti_rooms::wire::ROOMS_RECORDS_PRUNE_TYPE,
+            vti_rooms::wire::ROOMS_RECORDS_PRUNE_V2_TYPE,
             prune(true),
             &f,
         )
@@ -3349,7 +3344,7 @@ mod tests {
         assert_eq!(payload_of(&out)["removed"], 2, "{}", payload_of(&out));
         let out = send(
             state,
-            vti_rooms::wire::ROOMS_RECORDS_PRUNE_TYPE,
+            vti_rooms::wire::ROOMS_RECORDS_PRUNE_V2_TYPE,
             prune(false),
             &f,
         )
@@ -3361,7 +3356,7 @@ mod tests {
         let read = json!({ "roomId": f.room.room_id, "presentation": f.as_owner() });
         let out = send(
             state,
-            vti_rooms::wire::ROOMS_RECORDS_LIST_V3_TYPE,
+            vti_rooms::wire::ROOMS_RECORDS_LIST_V5_TYPE,
             read.clone(),
             &f,
         )
@@ -3370,7 +3365,7 @@ mod tests {
         assert_eq!(listing["records"].as_array().unwrap().len(), 2, "{listing}");
         assert_eq!(listing["lastPrune"], mark);
         assert_eq!(listing["headVersion"], mark["version"]);
-        let out = send(state, vti_rooms::wire::ROOMS_INFO_V2_TYPE, read.clone(), &f).await;
+        let out = send(state, vti_rooms::wire::ROOMS_INFO_V3_TYPE, read.clone(), &f).await;
         let info = payload_of(&out);
         assert_eq!(info["recordRetention"], retention, "{info}");
         assert_eq!(info["lastPrune"], mark);

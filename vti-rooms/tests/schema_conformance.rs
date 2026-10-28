@@ -947,16 +947,16 @@ fn every_dispatched_uri_is_the_published_one() {
             <rooms::create::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI,
         ),
         (
-            ROOMS_INFO_V2_TYPE,
-            <rooms::info::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+            ROOMS_INFO_V3_TYPE,
+            <rooms::info::v0_3::Payload as trust_tasks_rs::Payload>::TYPE_URI,
         ),
         (
-            ROOMS_RECORDS_LIST_V3_TYPE,
-            <rooms::records::list::v0_3::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+            ROOMS_RECORDS_LIST_V5_TYPE,
+            <rooms::records::list::v0_5::Payload as trust_tasks_rs::Payload>::TYPE_URI,
         ),
         (
-            ROOMS_RECORDS_PRUNE_TYPE,
-            <rooms::records::prune::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+            ROOMS_RECORDS_PRUNE_V2_TYPE,
+            <rooms::records::prune::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI,
         ),
         (
             ROOMS_RECORDS_RETENTION_SET_TYPE,
@@ -965,10 +965,6 @@ fn every_dispatched_uri_is_the_published_one() {
         (
             ROOMS_RECORDS_GET_V2_TYPE,
             <rooms::records::get::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI,
-        ),
-        (
-            ROOMS_RECORDS_LIST_V2_TYPE,
-            <rooms::records::list::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI,
         ),
         (
             ROOMS_BLOBS_CHUNK_TYPE,

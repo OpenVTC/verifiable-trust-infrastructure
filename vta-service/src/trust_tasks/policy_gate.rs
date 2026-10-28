@@ -113,11 +113,8 @@ async fn task_subject(
     payload: &Value,
 ) -> Option<String> {
     let bare = type_uri.split('#').next().unwrap_or(type_uri);
-    if bare == vta_sdk::trust_tasks::TASK_ROOMS_KEYS_ACT_0_2
-        || bare == vta_sdk::trust_tasks::TASK_ROOMS_KEYS_ACT_0_3
-        || bare == vta_sdk::trust_tasks::TASK_ROOMS_KEYS_ACT_0_4
-        || bare == vta_sdk::trust_tasks::TASK_ROOMS_KEYS_ACT_0_5
-        || bare == vta_sdk::trust_tasks::TASK_ROOMS_KEYS_ACT_0_6
+    if bare == vta_sdk::trust_tasks::TASK_ROOMS_KEYS_ACT_0_5
+        || bare == vta_sdk::trust_tasks::TASK_ROOMS_KEYS_ACT_0_8
     {
         return super::room_act::act_subject(state, auth, payload).await;
     }
@@ -902,7 +899,7 @@ mod tests {
     /// same request naming another member is refused.
     #[tokio::test]
     async fn act_0_2_is_gated_on_the_member_as_its_subject() {
-        const ACT: &str = vta_sdk::trust_tasks::TASK_ROOMS_KEYS_ACT_0_2;
+        const ACT: &str = vta_sdk::trust_tasks::TASK_ROOMS_KEYS_ACT_0_8;
         const MEMBER: &str = "did:webvh:example.com:people:alice";
         let (state, _dir) = crate::test_support::build_signing_test_app_state().await;
         let auth = crate::test_support::super_admin_claims();

@@ -263,7 +263,7 @@ fn audit_room(
 
 /// [`audit_room`] for a retention act — a prune or a change to the rule — with what the
 /// specification asks a host to keep: the mark, the reason, the retention applied and the
-/// kinds asked, and never anything a removed record said (`rooms/records/prune/0.1` *The
+/// kinds asked, and never anything a removed record said (`rooms/records/prune/0.2` *The
 /// audit trail*). The requester is the tier's to disclose, as for every operation.
 fn audit_room_detail(
     room: &Room,
@@ -592,8 +592,8 @@ async fn route(state: &Arc<HostState>, doc: TrustTask<Value>) -> Answer {
     let payload = doc.payload.clone();
     match doc.type_uri.to_string().as_str() {
         vti_rooms::record_tasks::CREATE_V2_TYPE => create(state, &doc, payload).await,
-        vti_rooms::record_tasks::INFO_V2_TYPE => files::info_v2(state, &doc, payload).await,
-        vti_rooms::record_tasks::LIST_V3_TYPE => files::list_v3(state, &doc, payload).await,
+        vti_rooms::record_tasks::INFO_V3_TYPE => files::info_v3(state, &doc, payload).await,
+        vti_rooms::record_tasks::LIST_V5_TYPE => files::list_v5(state, &doc, payload).await,
         vti_rooms::record_tasks::PRUNE_TYPE => files::records_prune(state, &doc, payload).await,
         vti_rooms::record_tasks::RETENTION_SET_TYPE => {
             files::retention_set(state, &doc, payload).await
@@ -627,7 +627,6 @@ async fn route(state: &Arc<HostState>, doc: TrustTask<Value>) -> Answer {
         files::PUT_V2_TYPE => files::put_v2(state, &doc, payload).await,
         files::PUT_V3_TYPE => files::put_v3(state, &doc, payload).await,
         files::GET_V2_TYPE => files::get_v2(state, &doc, payload).await,
-        files::LIST_V2_TYPE => files::list_v2(state, &doc, payload).await,
         files::DOWNLOAD_CHUNK_TYPE => files::download_chunk(state, &doc, payload).await,
         files::INFO_TYPE => files::info(state, &doc, payload).await,
         files::USAGE_TYPE => files::usage(state, &doc, payload).await,
@@ -667,9 +666,8 @@ fn is_consequential(type_uri: &str) -> bool {
             | files::INFO_TYPE
             | files::USAGE_TYPE
             | files::GET_V2_TYPE
-            | files::LIST_V2_TYPE
-            | vti_rooms::record_tasks::LIST_V3_TYPE
-            | vti_rooms::record_tasks::INFO_V2_TYPE
+            | vti_rooms::record_tasks::LIST_V5_TYPE
+            | vti_rooms::record_tasks::INFO_V3_TYPE
             | vti_rooms::revocation_tasks::GET_TYPE
     )
 }
@@ -1056,13 +1054,12 @@ async fn list_versioned(
             };
             match minor {
                 1 => respond(doc, response),
-                2 => files::list_v2_response(&snapshot, doc, &req.room_id, response).await,
                 _ => {
                     // The room as it stands under the lock: its `lastPrune` is the one the
                     // page and head were taken with.
                     match storage::get_room(&state.rooms, &req.room_id).await {
                         Ok(now_room) => {
-                            files::list_v3_response(&snapshot, doc, &now_room, response).await
+                            files::list_v5_response(&snapshot, doc, &now_room, response).await
                         }
                         Err(e) => from_app_error(doc, &e),
                     }

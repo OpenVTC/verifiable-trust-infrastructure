@@ -54,7 +54,7 @@ pub mod codes {
         update::v0_3 as update,
     };
     use trust_tasks_rs::specs::vtc::rooms::memberships::list::v0_1 as memberships_list;
-    use trust_tasks_rs::specs::vtc::rooms::offers::{accept::v0_1 as accept, list::v0_1 as list};
+    use trust_tasks_rs::specs::vtc::rooms::offers::{accept::v0_1 as accept, list::v0_4 as list};
 
     pub const UPDATE_NOT_FOUND: &str = update::error_codes::NOT_FOUND.code;
 

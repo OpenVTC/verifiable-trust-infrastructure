@@ -38,16 +38,18 @@ use serde::{Deserialize, Serialize};
 
 use crate::{Record, RecordStatus, Visibility};
 
-/// `rooms/records/put/0.1`. Still served, with 0.2, only because `rooms/keys/act` 0.6 —
-/// the newest a member's VTA completes — completes no later version; a direct writer
-/// sends 0.3 ([`ROOMS_RECORDS_PUT_V3_TYPE`]). Goes with act 0.7.
+/// `rooms/records/put/0.1`. Still served, with 0.2, because `pnm-browser-plugin`
+/// (`@openvtc/pnm-core`) writes through `rooms/keys/act` 0.1 and 0.5, whose tables complete
+/// no later version; every writer in this workspace sends 0.3 ([`ROOMS_RECORDS_PUT_V3_TYPE`]).
 pub const ROOMS_RECORDS_PUT_TYPE: &str = "https://trusttasks.org/spec/rooms/records/put/0.1";
-/// `rooms/records/list/0.1`.
+/// `rooms/records/list/0.1`. Still served because `pnm-browser-plugin` sends it through
+/// `rooms/keys/act` 0.1 and 0.5; every reader in this workspace sends 0.5
+/// ([`ROOMS_RECORDS_LIST_V5_TYPE`]).
 pub const ROOMS_RECORDS_LIST_TYPE: &str = "https://trusttasks.org/spec/rooms/records/list/0.1";
 /// `rooms/epoch/mint/0.1`.
 pub const ROOMS_EPOCH_MINT_TYPE: &str = "https://trusttasks.org/spec/rooms/epoch/mint/0.1";
-/// `rooms/epoch/chain/0.1`. Still served only because `rooms/keys/act` 0.6 completes no
-/// later version; a direct reader sends 0.2 ([`ROOMS_EPOCH_CHAIN_V2_TYPE`]). Goes with act 0.7.
+/// `rooms/epoch/chain/0.1`. Still served because `pnm-browser-plugin` reads the chain at
+/// 0.1; every reader in this workspace sends 0.2 ([`ROOMS_EPOCH_CHAIN_V2_TYPE`]).
 pub const ROOMS_EPOCH_CHAIN_TYPE: &str = "https://trusttasks.org/spec/rooms/epoch/chain/0.1";
 /// `rooms/owner/transfer/0.1`.
 pub const ROOMS_OWNER_TRANSFER_TYPE: &str = "https://trusttasks.org/spec/rooms/owner/transfer/0.1";
@@ -76,25 +78,24 @@ pub const ROOMS_EPOCH_PRUNE_V2_TYPE: &str =
 /// `rooms/create/0.2`: a room states its record retention at creation (trust-tasks-tf #868).
 pub const ROOMS_CREATE_V2_TYPE: &str =
     <trust_tasks_rs::specs::rooms::create::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
-/// `rooms/info/0.2`: also the record retention in force and the room's latest prune.
-pub const ROOMS_INFO_V2_TYPE: &str =
-    <trust_tasks_rs::specs::rooms::info::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
-/// `rooms/records/list/0.3`: every page carries the room's `lastPrune`.
-pub const ROOMS_RECORDS_LIST_V3_TYPE: &str =
-    <trust_tasks_rs::specs::rooms::records::list::v0_3::Payload as trust_tasks_rs::Payload>::TYPE_URI;
-/// `rooms/records/prune/0.1`: an administrator removes what the record retention makes
+/// `rooms/info/0.3`: also the record retention in force and the room's latest prune, its
+/// instant named `prunedAt` (`rooms/_shared/0.2`).
+pub const ROOMS_INFO_V3_TYPE: &str =
+    <trust_tasks_rs::specs::rooms::info::v0_3::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+/// `rooms/records/list/0.5`: rows name their blobs, every page carries the room's
+/// `lastPrune`, and the continuation token is `nextCursor`.
+pub const ROOMS_RECORDS_LIST_V5_TYPE: &str =
+    <trust_tasks_rs::specs::rooms::records::list::v0_5::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+/// `rooms/records/prune/0.2`: an administrator removes what the record retention makes
 /// eligible.
-pub const ROOMS_RECORDS_PRUNE_TYPE: &str =
-    <trust_tasks_rs::specs::rooms::records::prune::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+pub const ROOMS_RECORDS_PRUNE_V2_TYPE: &str =
+    <trust_tasks_rs::specs::rooms::records::prune::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 /// `rooms/records/retention/set/0.1`: an administrator replaces the record retention.
 pub const ROOMS_RECORDS_RETENTION_SET_TYPE: &str =
     <trust_tasks_rs::specs::rooms::records::retention::set::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 /// `rooms/records/get/0.2`: a read that names the record's blobs.
 pub const ROOMS_RECORDS_GET_V2_TYPE: &str =
     <trust_tasks_rs::specs::rooms::records::get::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
-/// `rooms/records/list/0.2`: a listing whose rows name their blobs.
-pub const ROOMS_RECORDS_LIST_V2_TYPE: &str =
-    <trust_tasks_rs::specs::rooms::records::list::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 /// `rooms/blobs/chunk/0.1`.
 pub const ROOMS_BLOBS_CHUNK_TYPE: &str =
     <trust_tasks_rs::specs::rooms::blobs::chunk::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
@@ -140,14 +141,14 @@ pub const ROOMS_DISPATCHED_URIS: &[&str] = &[
     // Room files (data-rooms-files.md §5).
     ROOMS_RECORDS_PUT_V2_TYPE,
     ROOMS_RECORDS_GET_V2_TYPE,
-    ROOMS_RECORDS_LIST_V2_TYPE,
     // Record provenance and expiry on the open tier (trust-tasks-tf #865).
     ROOMS_RECORDS_PUT_V3_TYPE,
     // Record retention and prune (trust-tasks-tf #868).
     ROOMS_CREATE_V2_TYPE,
-    ROOMS_INFO_V2_TYPE,
-    ROOMS_RECORDS_LIST_V3_TYPE,
-    ROOMS_RECORDS_PRUNE_TYPE,
+    // Prunes named `prunedAt` (`rooms/_shared/0.2`); list 0.5's `nextCursor`.
+    ROOMS_INFO_V3_TYPE,
+    ROOMS_RECORDS_LIST_V5_TYPE,
+    ROOMS_RECORDS_PRUNE_V2_TYPE,
     ROOMS_RECORDS_RETENTION_SET_TYPE,
     // The epoch floor (trust-tasks-tf #869).
     ROOMS_EPOCH_CHAIN_V2_TYPE,

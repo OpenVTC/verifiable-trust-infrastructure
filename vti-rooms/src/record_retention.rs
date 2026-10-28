@@ -170,11 +170,12 @@ pub struct RecordPrune {
 }
 
 impl RecordPrune {
-    /// The wire form: `at` as RFC 3339, as every timestamp on the wire is.
+    /// The wire form (`rooms/_shared/0.2` `RecordPrune`): `at` as `prunedAt`, RFC 3339, as
+    /// every timestamp on the wire is.
     pub fn to_wire(&self) -> Value {
         serde_json::json!({
             "version": self.version,
-            "at": crate::rfc3339(self.at),
+            "prunedAt": crate::rfc3339(self.at),
             "removed": self.removed,
         })
     }
@@ -310,7 +311,7 @@ mod tests {
         };
         assert_eq!(
             mark.to_wire(),
-            json!({ "version": 413, "at": "1970-01-01T00:00:00Z", "removed": 14 })
+            json!({ "version": 413, "prunedAt": "1970-01-01T00:00:00Z", "removed": 14 })
         );
     }
 }

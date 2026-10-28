@@ -801,7 +801,7 @@ pub(crate) enum RoomCommands {
     /// Every room the community has offered you and where each stands — offered,
     /// joined, accepted but not finished, or removed — as your member portal and
     /// OpenVTC show it too: the community's record (`vtc/rooms/memberships/list`),
-    /// signed as you by your VTA (`rooms/keys/act/0.6`), beside your VTA's own
+    /// signed as you by your VTA (`rooms/keys/act/0.8`), beside your VTA's own
     /// (`rooms/keys/list`).
     Memberships {
         /// Base URL of the community's Trust Task endpoint (e.g.
@@ -1287,7 +1287,7 @@ pub(crate) enum RoomOffersCommands {
         #[arg(long)]
         key_package: Option<String>,
     },
-    /// Collect a renewal of a room you are in (`vtc/rooms/offers/list/0.3`): store its
+    /// Collect a renewal of a room you are in (`vtc/rooms/offers/list/0.4`): store its
     /// membership and authority in your VTA in place of the ones they renew.
     Renew {
         /// The room's DID.
@@ -1548,7 +1548,7 @@ pub(crate) enum RoomRecordsCommands {
 #[derive(Subcommand)]
 pub(crate) enum RoomRetentionCommands {
     /// Show the record retention in force and the room's latest prune
-    /// (`rooms/info/0.2`). Needs `read`.
+    /// (`rooms/info/0.3`). Needs `read`.
     Show {
         #[arg(long = "room")]
         room_id: String,

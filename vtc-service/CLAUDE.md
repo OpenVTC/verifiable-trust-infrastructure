@@ -376,7 +376,7 @@ When adding a flow, add it here and a line to the root index.
   after the VTA answered), keeps `MemberRecord::sources` (`gb_…` ids, plus
   `direct` for an administrator's admission), owes a `LeftGroup` removal
   through `rooms::departures` when no source is left — never removing a direct
-  admission — and renews bound admissions into `offers/list/0.3` `renewals`
+  admission — and renews bound admissions into `offers/list/0.4` `renewals`
   (membership + authority, never an invitation; the renewed `validUntil` becomes
   the admission's own).
 - **Group grants** (`acl::group_grant`, `groups::authority`, VTI-DIR-100 – 105):

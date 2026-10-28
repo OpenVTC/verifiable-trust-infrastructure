@@ -252,7 +252,7 @@ the community's offer label, then the DID — and keeps the room's own name
 visible beside yours.
 
 Your own client never reaches a host as itself: it builds each room request
-unsigned and your VTA completes it **as the persona** (`rooms/keys/act/0.3`,
+unsigned and your VTA completes it **as the persona** (`rooms/keys/act/0.8`,
 §9). The one place a client DID does appear is as a *presenter* (§7): an
 agent your VTA equips with a four-hour, one-action leaf narrowed **from** your
 persona's grant. That leaf is a delegation, signed by your persona; the agent
@@ -823,7 +823,7 @@ it holds and when it began enforcing it), `refused` (with its code) or
 
 **Two different parties reach a host, and they use two different tasks.** Your
 own client — `pnm`, the browser extension, your phone — *is* you, and acts as
-your persona through `rooms/keys/act/0.3` (§9): the host records the persona.
+your persona through `rooms/keys/act/0.8` (§9): the host records the persona.
 An **agent** you equip is a different party, rightly recorded as itself: it
 asks for a presentation with `rooms/keys/present/0.2`, signs its own requests
 and its own record bodies, and is refused `act` and `seal`'s `signAsPrincipal`
@@ -1360,7 +1360,7 @@ pnm rooms file get <record-key> --room <room-did> --host … [--out ./term-sheet
 The CLI **never holds a room credential, a group key or a key of your
 persona's**. For `list`, `get`, `put`, `curate`, the `rooms/info` lookup and
 `keys commit --host`, it builds the room request **unsigned** — no
-presentation, no proof — and hands it to your VTA with `rooms/keys/act/0.3`
+presentation, no proof — and hands it to your VTA with `rooms/keys/act/0.8`
 (falling back to `0.1` for a VTA that does not serve it).
 The VTA completes it **as your persona**: it inserts the persona's own
 authority narrowed to exactly the action the request's type needs (`read`,
@@ -1436,24 +1436,20 @@ KeyPackage minted anywhere else would become the member's leaf with keys
 somebody else holds. 0.1 and 0.2 refuse the offer types. `pnm rooms offers
 {list,accept}` drives them (see `docs/03-vtc/community-rooms.md`).
 
-**The listing with descriptions (0.4).** `rooms/keys/act/0.4` adds
-`vtc/rooms/offers/list/0.2` — which shows each offered room's description — to
-the same row as `0.1`, on the same terms. Nothing else changes, but 0.3's table
-is closed, so a 0.3 request wrapping a `0.2` listing is still refused
-`typeNotActable`. The SDK's `room_act` asks 0.4 first; it falls back to 0.3 for
-the 0.3 offer types and further for room requests, never for a `0.2` listing,
-and `pnm` lists at 0.1 when either the VTA or the community does not serve the
-newer version.
+**The listings, the community's record and the renewals (0.4–0.7).** `0.4` adds
+`vtc/rooms/offers/list/0.2` (each offered room's description), `0.5`
+`vtc/rooms/memberships/list/0.1` (where each admission stands), `0.6`
+`vtc/rooms/offers/list/0.3` and `0.7` `0.4`, which also carry the renewals of the
+admissions a member holds. Each is in the offer row, on the same terms; each table is
+closed, so an older version refuses a newer type `typeNotActable`.
 
-**The community's record and the renewals (0.5, 0.6).** `rooms/keys/act/0.5` adds
-`vtc/rooms/memberships/list/0.1`, the community's record of where each admission
-stands, and `0.6` adds `vtc/rooms/offers/list/0.3`, which also carries the
-renewals of the admissions a member holds — fresh membership and authority
-credentials the community issues before the ones held expire. Each is in the
-offer row, on the same terms; each earlier table is closed, so a `0.5` request
-wrapping a `0.3` listing is refused `typeNotActable`. The SDK's
-`room_act_community` asks 0.6 first and falls back version by version, never
-below 0.6 for a `0.3` listing.
+**The widened table (0.7, 0.8).** `0.7` adds the newer versions of the host-bound
+requests (`records/put/0.3`, `records/list/0.3`–`0.5`, `info/0.2`–`0.3`,
+`epoch/chain/0.2`) and `0.8` the room's retention requests (`records/prune/0.1`
+and `0.2`, `records/retention/set/0.1`) as `admin`, with a presentation. This VTA
+serves act 0.1, 0.5 and 0.8 — 0.1 and 0.5 because `pnm-browser-plugin` sends them
+— and the SDK's `room_act` and `room_act_community` send 0.8 only, never falling
+back.
 
 `act` is not a signing oracle: only the table's host-bound room requests are
 completed, never `rooms/epoch/prune`, ownership changes, `rooms/create` or a
@@ -1850,7 +1846,7 @@ pnm rooms records prune --room <room-did> --host <host-url> \
 ```
 
 - **Two halves, both required.** The rule is the room's, stated in advance and
-  served to every member (`rooms/info/0.2`); the act is an administrator's
+  served to every member (`rooms/info/0.3`); the act is an administrator's
   (`admin`, never `curate`), with a reason. A host never prunes on its own, on a
   timer or at a quota, and removes only what the rule in force makes eligible at
   the moment of the prune — by the age a host can see, `updatedAt` (a curation
@@ -1869,11 +1865,11 @@ pnm rooms records prune --room <room-did> --host <host-url> \
   (`lastPrune`: the version the prune took, when, how many), never which records.
   `pnm rooms records prune` always asks the host for a dry run first, prints what
   would go, and asks before the real one; without a terminal it needs `--yes`.
-- **Readers learn of it.** `rooms/records/list/0.3` carries `lastPrune` on every
+- **Readers learn of it.** `rooms/records/list/0.5` carries `lastPrune` on every
   page, and `headVersion` is the higher of the highest record and the latest
   prune, so a root before and a root after are never labelled alike. A reader
   whose copy was synced below the mark rebuilds from a full listing and drops
-  what is gone. `rooms/keys/browse/0.2` passes the mark through; at `0.1` a VTA
+  what is gone. `rooms/keys/browse/0.3` passes the mark through; at `0.1` a VTA
   ignores a `sinceVersion` below a prune and lists the whole room.
 - **What it is not.** It removes records from this host, not from the world:
   what a member read, exported or cached stays; a mirror is pruned separately;
@@ -1938,10 +1934,10 @@ and `vtc-service`:
 | `rooms/records/put/0.3` | `write` — an `open` room's cleartext may carry provenance and `validUntil`, stored as received and never acted on |
 | `rooms/records/get/0.2` | `read` — and the record's `blobs` |
 | `rooms/records/list/0.1`, `0.2` | `read` |
-| `rooms/records/list/0.3` | `read` — every page carries the room's `lastPrune` |
+| `rooms/records/list/0.5` | `read` — every page carries the room's `lastPrune` |
 | `rooms/create/0.2` | no chain — the signer must be the `ownerDid` (§8.4); records the room's `recordRetention` as given |
 | `rooms/info/0.1`, `0.2` | `read` — 0.2 adds `recordRetention` and `lastPrune` |
-| `rooms/records/prune/0.1` | `admin` — removes what the record retention makes eligible (§10.5) |
+| `rooms/records/prune/0.2` | `admin` — removes what the record retention makes eligible (§10.5) |
 | `rooms/records/retention/set/0.1` | `admin` — replaces the record retention (§10.5) |
 | `rooms/records/curate/0.1` | `curate` |
 | `rooms/epoch/mint/0.1` | `admin` |

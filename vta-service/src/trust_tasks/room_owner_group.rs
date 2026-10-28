@@ -4191,11 +4191,11 @@ mod tests {
         o.host.state.lock().unwrap().log.clear();
 
         let out = body(
-            super::super::room_owner::handle_register(
+            super::super::room_owner::handle_register_v0_2(
                 &o.state,
                 &crate::test_support::super_admin_claims(),
                 request(
-                    vta_sdk::trust_tasks::TASK_ROOMS_OWNER_REGISTER_0_1,
+                    vta_sdk::trust_tasks::TASK_ROOMS_OWNER_REGISTER_0_2,
                     serde_json::json!({
                         "roomId": o.room.did, "host": o.host.did,
                         "visibility": "attributed", "ownerDid": o.member,
@@ -4322,13 +4322,7 @@ mod tests {
             }),
         );
         let auth = crate::test_support::super_admin_claims();
-        body(
-            if uri == vta_sdk::trust_tasks::TASK_ROOMS_OWNER_REGISTER_0_2 {
-                super::super::room_owner::handle_register_v0_2(&o.state, &auth, doc).await
-            } else {
-                super::super::room_owner::handle_register(&o.state, &auth, doc).await
-            },
-        )
+        body(super::super::room_owner::handle_register_v0_2(&o.state, &auth, doc).await)
     }
 
     async fn register_0_2(o: &Owner) -> Value {
@@ -4617,36 +4611,6 @@ mod tests {
             puts(&o),
             0,
             "no list follows a registration that did not take effect"
-        );
-    }
-
-    /// 0.1 is still served, as it was: a list that did not reach the host refuses the
-    /// request, with a message saying the room is registered and naming the remedy.
-    #[tokio::test]
-    async fn register_0_1_still_refuses_a_failed_delivery_saying_the_room_is_registered() {
-        let o = owner().await;
-        revoke(&o, serde_json::json!([{ "kind": "room" }])).await;
-        o.host.state.lock().unwrap().list_mode = Mode::Unreachable;
-        let out = register_at(&o, vta_sdk::trust_tasks::TASK_ROOMS_OWNER_REGISTER_0_1).await;
-        assert_eq!(
-            out["payload"]["code"], "rooms/owner/register:hostUnreachable",
-            "{out}"
-        );
-        let message = out["payload"]["message"].as_str().unwrap();
-        assert!(
-            message.contains("is registered") && message.contains("rooms/owner/revoke"),
-            "{message}"
-        );
-        assert!(
-            outstanding(&o).await.is_empty(),
-            "0.1 keeps nothing outstanding"
-        );
-
-        o.host.state.lock().unwrap().list_mode = Mode::Refuse;
-        let out = register_at(&o, vta_sdk::trust_tasks::TASK_ROOMS_OWNER_REGISTER_0_1).await;
-        assert_eq!(
-            out["payload"]["code"], "rooms/owner/register:hostRefused",
-            "{out}"
         );
     }
 

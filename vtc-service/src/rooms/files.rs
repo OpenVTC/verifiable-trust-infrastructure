@@ -20,13 +20,11 @@ use trust_tasks_rs::specs::rooms::blobs::upload::{
     commit::v0_2 as upload_commit_v2,
 };
 use trust_tasks_rs::specs::rooms::info::v0_1 as rooms_info;
-use trust_tasks_rs::specs::rooms::records::{
-    get::v0_2 as get_v2, list::v0_2 as list_v2, put::v0_2 as put_v2,
-};
+use trust_tasks_rs::specs::rooms::records::{get::v0_2 as get_v2, put::v0_2 as put_v2};
 use trust_tasks_rs::specs::rooms::usage::v0_1 as rooms_usage;
 use trust_tasks_rs::specs::rooms::{
     epoch::chain::v0_2 as epoch_chain_v2, epoch::prune::v0_2 as epoch_prune_v2,
-    info::v0_2 as info_v2, records::list::v0_3 as list_v3, records::prune::v0_1 as records_prune,
+    info::v0_3 as info_v3, records::list::v0_5 as list_v5, records::prune::v0_2 as records_prune,
 };
 use trust_tasks_rs::{RejectReason, TrustTask};
 use vti_common::error::AppError;
@@ -466,28 +464,17 @@ pub(crate) async fn handle_get_record_v2(
     super::handlers::get_record(&doc, &ctx, req).await
 }
 
-/// `rooms/records/list/0.2`: the 0.1 listing, each row naming its blobs.
-pub(crate) async fn handle_list_records_v2(
-    doc: TrustTask<list_v2::Payload>,
+/// `rooms/records/list/0.5`: the 0.1 listing, each row naming its blobs, the room's
+/// `lastPrune` on every page and the continuation token named `nextCursor`.
+pub(crate) async fn handle_list_records_v5(
+    doc: TrustTask<list_v5::Payload>,
     ctx: RoomCtx,
 ) -> TrustTaskOutcome {
     let req: ListRecordsBody = match payload_json(&doc).and_then(|p| as_v0_1(&doc, p)) {
         Ok(r) => r,
         Err(o) => return o,
     };
-    super::handlers::list_records(&doc, &ctx, req, 2).await
-}
-
-/// `rooms/records/list/0.3`: the 0.2 listing, and the room's `lastPrune` on every page.
-pub(crate) async fn handle_list_records_v3(
-    doc: TrustTask<list_v3::Payload>,
-    ctx: RoomCtx,
-) -> TrustTaskOutcome {
-    let req: ListRecordsBody = match payload_json(&doc).and_then(|p| as_v0_1(&doc, p)) {
-        Ok(r) => r,
-        Err(o) => return o,
-    };
-    super::handlers::list_records(&doc, &ctx, req, 3).await
+    super::handlers::list_records(&doc, &ctx, req, 5).await
 }
 
 /// `rooms/create/0.2`: 0.1, and the room's record retention, recorded as given.
@@ -538,10 +525,10 @@ pub(crate) async fn handle_epoch_prune_v2(
     super::handlers::epoch_prune(&doc, &ctx, &req).await
 }
 
-/// `rooms/info/0.2`. Needs `read`: 0.1's answer, the record retention in force and the
-/// room's latest prune.
-pub(crate) async fn handle_info_v2(
-    doc: TrustTask<info_v2::Payload>,
+/// `rooms/info/0.3`. Needs `read`: 0.1's answer, the record retention in force and the
+/// room's latest prune (`prunedAt`).
+pub(crate) async fn handle_info_v3(
+    doc: TrustTask<info_v3::Payload>,
     ctx: RoomCtx,
 ) -> TrustTaskOutcome {
     let payload = match payload_json(&doc) {
@@ -554,11 +541,11 @@ pub(crate) async fn handle_info_v2(
     };
     render(
         &doc,
-        record_tasks::info_v2(&ctx.state.room_files, &room, &authorized, &payload).await,
+        record_tasks::info_v3(&ctx.state.room_files, &room, &authorized, &payload).await,
     )
 }
 
-/// `rooms/records/prune/0.1`: remove what the room's record retention makes eligible.
+/// `rooms/records/prune/0.2`: remove what the room's record retention makes eligible.
 /// Needs `admin` — never `curate` or `write`.
 pub(crate) async fn handle_records_prune(
     doc: TrustTask<records_prune::Payload>,
