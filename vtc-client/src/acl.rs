@@ -39,8 +39,7 @@ use crate::{HolderKey, MAX_DOCUMENT_RESPONSE_BYTES, VtcClient, VtcError, decode_
 /// reply types without depending on `trust-tasks-rs` itself.
 pub use trust_tasks_rs::specs::acl::{
     change_role::v0_1 as change_role, grant::v0_2 as grant, list::v0_3 as list,
-    revoke::v0_2 as revoke, show::v0_2 as show, swap_key::v0_1 as swap_key,
-    update::v0_2 as update,
+    revoke::v0_2 as revoke, show::v0_2 as show, swap_key::v0_1 as swap_key, update::v0_2 as update,
 };
 
 /// The Type URI of each task in the family, read off the generated payloads.
