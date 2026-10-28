@@ -25,8 +25,13 @@
 //! `registry/record/query/0.3`, the lowerCamelCase versions whose records carry
 //! a validity window (`validFrom` / `validUntil`). A registry that predates
 //! them answers `unsupportedVersion`, and is then sent the 0.1 versions (see
-//! [`MessagingRegistryClient::round_trip_versioned`]). The other tasks are
-//! still sent at 0.1.
+//! [`MessagingRegistryClient::round_trip_versioned`]). Every other read and
+//! write goes the same way: `registry/record/delete/0.2` and
+//! `registry/recognition/0.2` first, 0.1 to a registry that predates them. The
+//! fallback stays while released trust registries (affinidi-trust-registry-rs
+//! 0.28 and earlier) answer only 0.1. Records travel lowerCamelCase on the
+//! newer versions; [`record_to_v0_3`] and [`record_from_v0_3`] convert at the
+//! wire so the git-namespace projection keeps one shape.
 //!
 //! ## Transport selection
 //!
@@ -101,6 +106,44 @@ const RECOGNITION: &str = "https://trusttasks.org/spec/registry/recognition/0.1"
 /// The lowerCamelCase versions, whose records carry a validity window.
 const RECORD_PUT_0_3: &str = "https://trusttasks.org/spec/registry/record/put/0.3";
 const RECORD_QUERY_0_3: &str = "https://trusttasks.org/spec/registry/record/query/0.3";
+const RECORD_DELETE_0_2: &str = "https://trusttasks.org/spec/registry/record/delete/0.2";
+const RECOGNITION_0_2: &str = "https://trusttasks.org/spec/registry/recognition/0.2";
+
+/// The registry/* 0.1 members renamed lowerCamelCase from 0.2/0.3 (registry
+/// `_shared/0.2`). Everything else keeps its name.
+const RENAMED: [(&str, &str); 3] = [
+    ("entity_id", "entityId"),
+    ("authority_id", "authorityId"),
+    ("record_type", "recordType"),
+];
+
+/// A 0.1-shaped record (or key) as `registry/record/put/0.3` and
+/// `record/delete/0.2` spell it.
+fn record_to_v0_3(v: &Value) -> Value {
+    let mut out = v.clone();
+    if let Some(map) = out.as_object_mut() {
+        for (old, new) in RENAMED {
+            if let Some(x) = map.remove(old) {
+                map.insert(new.to_string(), x);
+            }
+        }
+    }
+    out
+}
+
+/// A `registry/record/query/0.3` record in the 0.1 shape callers of the
+/// projection read.
+fn record_from_v0_3(v: &Value) -> Value {
+    let mut out = v.clone();
+    if let Some(map) = out.as_object_mut() {
+        for (old, new) in RENAMED {
+            if let Some(x) = map.remove(new) {
+                map.insert(old.to_string(), x);
+            }
+        }
+    }
+    out
+}
 /// `governance/capability/{enable,disable}/0.1`, read off the generated types.
 const CAPABILITY_ENABLE: &str = <trust_tasks_rs::specs::governance::capability::enable::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 const CAPABILITY_DISABLE: &str = <trust_tasks_rs::specs::governance::capability::disable::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
@@ -833,7 +876,13 @@ impl TrustRegistryClient for MessagingRegistryClient {
                     "action": RECOGNISE_ACTION,
                     "resource": TRUST_GRAPH_RESOURCE,
                 });
-                let reply = self.round_trip(RECORD_DELETE, payload, protocol).await?;
+                let (reply, _) = self
+                    .round_trip_versioned(
+                        (RECORD_DELETE_0_2, record_to_v0_3(&payload)),
+                        (RECORD_DELETE, payload),
+                        protocol,
+                    )
+                    .await?;
                 match classify(&reply, "registry/record/delete") {
                     // Already absent is the effect a delete wants — the same
                     // tolerance `delete_trust_record` gives. Without it, a
@@ -983,7 +1032,13 @@ impl TrustRegistryClient for MessagingRegistryClient {
                     "action": RECOGNISE_ACTION,
                     "resource": TRUST_GRAPH_RESOURCE,
                 });
-                let reply = self.round_trip(RECOGNITION, payload, protocol).await?;
+                let (reply, _) = self
+                    .round_trip_versioned(
+                        (RECOGNITION_0_2, record_to_v0_3(&payload)),
+                        (RECOGNITION, payload),
+                        protocol,
+                    )
+                    .await?;
                 classify(&reply, "registry/recognition")?;
                 // Absence is "not recognised", never "recognised" — the
                 // restrictive reading a missing scope field always gets
@@ -1018,8 +1073,13 @@ impl TrustRegistryClient for MessagingRegistryClient {
                     .into(),
             )),
             protocol => {
-                let payload = json!({ "record": record });
-                let reply = self.round_trip(RECORD_PUT, payload, protocol).await?;
+                let (reply, _) = self
+                    .round_trip_versioned(
+                        (RECORD_PUT_0_3, json!({ "record": record_to_v0_3(record) })),
+                        (RECORD_PUT, json!({ "record": record })),
+                        protocol,
+                    )
+                    .await?;
                 classify(&reply, "registry/record/put")
             }
         }
@@ -1053,7 +1113,13 @@ impl TrustRegistryClient for MessagingRegistryClient {
                     "action": action,
                     "resource": resource,
                 });
-                let reply = self.round_trip(RECORD_DELETE, payload, protocol).await?;
+                let (reply, _) = self
+                    .round_trip_versioned(
+                        (RECORD_DELETE_0_2, record_to_v0_3(&payload)),
+                        (RECORD_DELETE, payload),
+                        protocol,
+                    )
+                    .await?;
                 match classify(&reply, "registry/record/delete") {
                     // Already absent is the effect a delete wants.
                     Err(RegistryError::Permanent(m))
@@ -1161,7 +1227,15 @@ impl TrustRegistryClient for MessagingRegistryClient {
                 // Still re-falsifiable: upgrade the registry and the next tick
                 // flips back to active on its own.
                 let payload = json!({ "limit": 1 });
-                match self.round_trip(RECORD_QUERY, payload, protocol).await {
+                let probe = self
+                    .round_trip_versioned(
+                        (RECORD_QUERY_0_3, payload.clone()),
+                        (RECORD_QUERY, payload),
+                        protocol,
+                    )
+                    .await
+                    .map(|(reply, _)| reply);
+                match probe {
                     Ok(_) => Ok(()),
                     Err(RegistryError::Permanent(e)) => {
                         // A rejection still proves the registry is answering.
@@ -1178,7 +1252,8 @@ impl TrustRegistryClient for MessagingRegistryClient {
 impl MessagingRegistryClient {
     /// Every record the registry holds under this community's authority,
     /// for one `action` or (with `None`) for all of them, paged to the end
-    /// with `registry/record/query/0.1`.
+    /// with `registry/record/query/0.3` (0.1 to a registry that predates it),
+    /// each in the 0.1 shape the projection reads.
     ///
     /// Bounded as `list_records` is, and for the same reason: a partial
     /// enumeration compared against the mirror would invent missing tuples,
@@ -1205,7 +1280,13 @@ impl MessagingRegistryClient {
                     if let Some(c) = &cursor {
                         payload["cursor"] = json!(c);
                     }
-                    let reply = self.round_trip(RECORD_QUERY, payload, protocol).await?;
+                    let (reply, current) = self
+                        .round_trip_versioned(
+                            (RECORD_QUERY_0_3, record_to_v0_3(&payload)),
+                            (RECORD_QUERY, payload),
+                            protocol,
+                        )
+                        .await?;
                     classify(&reply, "registry/record/query")?;
                     out.extend(
                         reply
@@ -1214,7 +1295,13 @@ impl MessagingRegistryClient {
                             .and_then(Value::as_array)
                             .into_iter()
                             .flatten()
-                            .cloned(),
+                            .map(|r| {
+                                if current {
+                                    record_from_v0_3(r)
+                                } else {
+                                    r.clone()
+                                }
+                            }),
                     );
                     cursor = reply
                         .payload
@@ -1508,6 +1595,28 @@ mod tests {
         assert_eq!(back.member_did, record.member_did);
         assert_eq!(back.status, RegistryStatus::Active);
         assert_eq!(back.active_from.timestamp(), record.active_from.timestamp());
+    }
+
+    /// The projection's records keep their 0.1 shape on either side of the
+    /// wire: renamed going out to 0.3 / 0.2, renamed back coming in, and every
+    /// other member untouched.
+    #[test]
+    fn a_record_crosses_the_lower_camel_case_versions_and_back() {
+        let v1 = json!({
+            "entity_id": "did:key:zMember",
+            "authority_id": "did:web:community.example",
+            "action": "git.repo.own",
+            "resource": "git-ns:github.com/acme",
+            "record_type": "authorization",
+            "recognized": true,
+        });
+        let v3 = record_to_v0_3(&v1);
+        assert_eq!(v3["entityId"], "did:key:zMember");
+        assert_eq!(v3["authorityId"], "did:web:community.example");
+        assert_eq!(v3["recordType"], "authorization");
+        assert!(v3.get("entity_id").is_none(), "{v3}");
+        assert_eq!(v3["action"], "git.repo.own");
+        assert_eq!(record_from_v0_3(&v3), v1);
     }
 
     #[test]

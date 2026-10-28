@@ -1905,7 +1905,7 @@ mod tests {
     fn a_tsp_reply_is_recognised_bare_and_enveloped() {
         let doc = json!({
             "id": "urn:uuid:reply",
-            "type": "https://trusttasks.org/spec/registry/record/put/0.1#response",
+            "type": "https://trusttasks.org/spec/registry/record/put/0.3#response",
             "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
             "threadId": "urn:uuid:request",
             "payload": { "ok": true, "created": true },
@@ -1938,7 +1938,7 @@ mod tests {
         // census checks every one of them — including the ones in tests.
         let request = serde_json::to_vec(&json!({
             "id": "urn:uuid:req",
-            "type": "https://trusttasks.org/spec/registry/record/query/0.1",
+            "type": "https://trusttasks.org/spec/registry/record/query/0.3",
             "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
             "payload": {},
         }))
@@ -1949,7 +1949,7 @@ mod tests {
         // either — completing a waiter needs the thread id.
         let unthreaded = serde_json::to_vec(&json!({
             "id": "urn:uuid:resp",
-            "type": "https://trusttasks.org/spec/registry/record/put/0.1#response",
+            "type": "https://trusttasks.org/spec/registry/record/put/0.3#response",
             "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
             "payload": { "ok": true },
         }))
