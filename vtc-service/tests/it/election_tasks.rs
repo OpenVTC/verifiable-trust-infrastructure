@@ -80,8 +80,15 @@ const BOX: &str = "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK";
 const AUDITOR: &str = "did:key:z6MkjchhfUsD6mmvni8mCdXHw216Xrm9bQe2mBH1P5RDjVJG";
 const SPEC: &str = "https://trusttasks.org/spec/";
 
+/// The served version of each `vtc/elections/*` task: create and list at 0.3 and show at
+/// 0.2 (the voting/_shared/0.2 manifest), the rest at 0.1.
 fn uri(task: &str) -> String {
-    format!("{SPEC}vtc/elections/{task}/0.1")
+    let version = match task {
+        "create" | "list" => "0.3",
+        "show" => "0.2",
+        _ => "0.1",
+    };
+    format!("{SPEC}vtc/elections/{task}/{version}")
 }
 
 /// The code a refusal carries, from the framework's error document.
@@ -217,7 +224,7 @@ impl BallotBoxChannel for InProcessBox {
         }
         let slug = type_uri
             .strip_prefix(SPEC)
-            .and_then(|t| t.strip_suffix("/0.1"))
+            .and_then(|t| t.rsplit_once('/').map(|(slug, _)| slug))
             .expect("a voting task");
         if self.refuse.load(Ordering::SeqCst) {
             return Ok(BoxAnswer::Refused {
