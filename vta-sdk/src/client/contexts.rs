@@ -155,4 +155,38 @@ impl VtaClient {
         )
         .await
     }
+
+    /// Delete a context over `vta/contexts/delete/1.1`.
+    ///
+    /// The VTA removes every `did:webvh` host copy in the subtree **before**
+    /// anything local. If one cannot be confirmed removed — the host is down,
+    /// refuses, or is no longer registered — and `abandon_host_copies` is
+    /// false, the call fails with a `vta/contexts/delete:hostCleanupFailed`
+    /// rejection and nothing local is deleted; read the DIDs with
+    /// [`host_cleanup_failures`](crate::protocols::context_management::delete::host_cleanup_failures),
+    /// show them to the operator, then wait and retry or retry abandoning
+    /// them. With `abandon_host_copies` the deletion completes and the
+    /// abandoned copies come back in `daemon_cleanup_errors`.
+    ///
+    /// A VTA that predates 1.1 answers `unsupportedType`; fall back to
+    /// [`delete_context_with_outcome`](Self::delete_context_with_outcome).
+    pub async fn delete_context_settling_hosts(
+        &self,
+        id: &str,
+        force: bool,
+        abandon_host_copies: bool,
+    ) -> Result<trust_tasks_rs::specs::vta::contexts::delete::v1_1::Response, VtaError> {
+        // 60s: the VTA spends up to 20s on hosts before it touches anything
+        // local, then deletes the subtree.
+        self.rpc_tt(
+            crate::trust_tasks::TASK_CONTEXTS_DELETE_1_1,
+            serde_json::json!({
+                "id": id,
+                "force": force,
+                "abandonHostCopies": abandon_host_copies,
+            }),
+            60,
+        )
+        .await
+    }
 }

@@ -2498,7 +2498,11 @@ dispatch_table! {
         [ Mutating None false ],
     vta_sdk::trust_tasks::TASK_CONTEXTS_PREVIEW_DELETE_1_0 => contexts::handle_preview_delete
         [ None Metadata false ],
-    vta_sdk::trust_tasks::TASK_CONTEXTS_DELETE_1_0 => contexts::handle_delete
+    // 1.0 and 1.1 share the handler: 1.1 settles every host copy before any
+    // local record goes, and refuses (`hostCleanupFailed`) unless the caller
+    // chose `abandonHostCopies`.
+    vta_sdk::trust_tasks::TASK_CONTEXTS_DELETE_1_0 | vta_sdk::trust_tasks::TASK_CONTEXTS_DELETE_1_1
+        => contexts::handle_delete
         [ Destructive None false ],
     // ─── Keys slice ──────────────────────────────────────────────
     vta_sdk::trust_tasks::TASK_KEYS_LIST_0_2 => keys::handle_list
@@ -6237,6 +6241,213 @@ mod response_coverage {
         assert_eq!(still["id"], "cov-notempty/sub");
     }
 
+    /// Plant a `did:webvh` record in `context` published on `server_id`, and
+    /// give the state a resolver so the deletion takes the full webvh path.
+    #[cfg(feature = "webvh")]
+    async fn a_hosted_did(
+        state: &mut crate::server::AppState,
+        context: &str,
+        server_id: &str,
+    ) -> String {
+        if state.did_resolver.is_none() {
+            state.did_resolver = Some(
+                affinidi_did_resolver_cache_sdk::DIDCacheClient::new(
+                    affinidi_did_resolver_cache_sdk::config::DIDCacheConfigBuilder::default()
+                        .build(),
+                )
+                .await
+                .expect("resolver"),
+            );
+        }
+        let did = format!(
+            "did:webvh:QmGone:host.example:{}",
+            context.replace('/', ":")
+        );
+        let now = chrono::Utc::now();
+        crate::webvh_store::store_did(
+            &state.webvh_ks,
+            &vta_sdk::webvh::WebvhDidRecord {
+                did: did.clone(),
+                server_id: server_id.to_string(),
+                mnemonic: format!("{context}-slot"),
+                scid: "QmGone".to_string(),
+                context_id: context.to_string(),
+                portable: false,
+                log_entry_count: 1,
+                pre_rotation_count: 0,
+                next_fragment_id: 2,
+                created_at: now,
+                updated_at: now,
+            },
+        )
+        .await
+        .expect("plant the DID record");
+        did
+    }
+
+    /// Dispatch as a super-admin and return the whole response document.
+    #[cfg(feature = "webvh")]
+    async fn answer(state: &crate::server::AppState, uri: &str, payload: Value) -> Value {
+        let vta_did = state.config.read().await.vta_did.clone().expect("vta_did");
+        let outcome = super::dispatch_trust_task_core(
+            state,
+            &crate::test_support::super_admin_claims(),
+            &signed_body(uri, &vta_did, payload),
+            transport::TransportConfidentiality::HopByHop,
+        )
+        .await;
+        serde_json::from_slice(&outcome.body).expect("a response document")
+    }
+
+    /// The deletion that used to be stuck: a context whose DID's hosting
+    /// server is no longer registered. 1.0 still refuses it (its contract);
+    /// 1.1 refuses with `hostCleanupFailed`, naming the DID and deleting
+    /// nothing, so the operator can wait or abandon.
+    #[cfg(feature = "webvh")]
+    #[tokio::test]
+    async fn a_gone_host_refuses_1_1_with_host_cleanup_failed_and_deletes_nothing() {
+        let (mut state, _dir) = build_signing_test_app_state().await;
+        a_context(&state, "gone-host").await;
+        let did = a_hosted_did(&mut state, "gone-host", "decommissioned").await;
+
+        let v1_0 = answer(
+            &state,
+            t::TASK_CONTEXTS_DELETE_1_0,
+            json!({ "id": "gone-host", "force": true }),
+        )
+        .await;
+        assert_ne!(
+            v1_0["type"],
+            format!("{}#response", t::TASK_CONTEXTS_DELETE_1_0),
+            "1.0 keeps refusing an unregistered host: {v1_0}"
+        );
+
+        let doc = answer(
+            &state,
+            t::TASK_CONTEXTS_DELETE_1_1,
+            json!({ "id": "gone-host", "force": true }),
+        )
+        .await;
+        assert_eq!(
+            doc["payload"]["code"], "vta/contexts/delete:hostCleanupFailed",
+            "{doc}"
+        );
+        let failures = &doc["payload"]["details"]["hostCleanupFailures"];
+        assert_eq!(failures[0]["did"], did, "{doc}");
+        assert_eq!(failures[0]["server"], "decommissioned", "{doc}");
+        assert!(
+            failures[0]["reason"]
+                .as_str()
+                .is_some_and(|r| r.contains("no longer registered")),
+            "{doc}"
+        );
+
+        // Nothing local went: the context and the DID record that could still
+        // remove the host copy are both there for a retry.
+        ok(
+            &state,
+            t::TASK_CONTEXTS_GET_1_0,
+            json!({ "id": "gone-host" }),
+        )
+        .await;
+        assert!(
+            crate::webvh_store::get_did(&state.webvh_ks, &did)
+                .await
+                .expect("read")
+                .is_some(),
+            "the DID record must survive a refusal"
+        );
+    }
+
+    /// `abandonHostCopies` completes the deletion the refusal above stopped,
+    /// and names the abandoned copy in `daemonCleanupErrors`.
+    #[cfg(feature = "webvh")]
+    #[tokio::test]
+    async fn abandon_host_copies_completes_the_deletion_and_reports_the_orphan() {
+        let (mut state, _dir) = build_signing_test_app_state().await;
+        a_context(&state, "abandon").await;
+        let did = a_hosted_did(&mut state, "abandon", "decommissioned").await;
+
+        let payload = ok(
+            &state,
+            t::TASK_CONTEXTS_DELETE_1_1,
+            json!({ "id": "abandon", "force": true, "abandonHostCopies": true }),
+        )
+        .await;
+        assert_eq!(payload["deleted"], true, "{payload}");
+        let orphans = payload["daemonCleanupErrors"]
+            .as_array()
+            .expect("the abandoned copy is reported");
+        assert_eq!(orphans.len(), 1, "{payload}");
+        assert!(
+            orphans[0].as_str().is_some_and(|o| o.starts_with(&did)),
+            "{payload}"
+        );
+
+        let gone = answer(&state, t::TASK_CONTEXTS_GET_1_0, json!({ "id": "abandon" })).await;
+        assert_eq!(
+            gone["payload"]["code"], "vta/contexts/get:notFound",
+            "{gone}"
+        );
+        assert!(
+            crate::webvh_store::get_did(&state.webvh_ks, &did)
+                .await
+                .expect("read")
+                .is_none(),
+            "the DID record goes with the context"
+        );
+    }
+
+    /// A registered host that cannot be reached is unconfirmed too, and is
+    /// found within the settle budget rather than one reply timeout per DID.
+    /// The server's DID is a `did:key` with no services, so the VTA has no
+    /// transport to it — the same answer an offline host gives, without a
+    /// network.
+    #[cfg(feature = "webvh")]
+    #[tokio::test]
+    async fn an_unreachable_registered_host_is_unconfirmed_and_answered_promptly() {
+        let (mut state, _dir) = build_signing_test_app_state().await;
+        a_context(&state, "unreachable").await;
+        let now = chrono::Utc::now();
+        crate::webvh_store::store_server(
+            &state.webvh_ks,
+            &vta_sdk::webvh::WebvhServerRecord {
+                id: "dark".into(),
+                did: "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK".into(),
+                label: None,
+                created_at: now,
+                updated_at: now,
+            },
+        )
+        .await
+        .expect("register the server");
+        let did = a_hosted_did(&mut state, "unreachable", "dark").await;
+
+        let started = std::time::Instant::now();
+        let doc = answer(
+            &state,
+            t::TASK_CONTEXTS_DELETE_1_1,
+            json!({ "id": "unreachable", "force": true }),
+        )
+        .await;
+        assert!(
+            started.elapsed() < crate::operations::contexts::HOST_SETTLE_BUDGET,
+            "a host with no transport must not wait out the budget"
+        );
+        assert_eq!(
+            doc["payload"]["code"], "vta/contexts/delete:hostCleanupFailed",
+            "{doc}"
+        );
+        assert_eq!(
+            doc["payload"]["details"]["hostCleanupFailures"][0]["did"],
+            did
+        );
+        assert_eq!(
+            doc["payload"]["details"]["hostCleanupFailures"][0]["server"],
+            "dark"
+        );
+    }
+
     /// Every id-taking task in the contexts family answers its own
     /// `<task>:notFound`, and says nothing about whether the id exists.
     ///
@@ -6283,6 +6494,11 @@ mod response_coverage {
             ),
             (
                 t::TASK_CONTEXTS_DELETE_1_0,
+                "vta/contexts/delete",
+                json!({ "id": "PLACEHOLDER", "force": true }),
+            ),
+            (
+                t::TASK_CONTEXTS_DELETE_1_1,
                 "vta/contexts/delete",
                 json!({ "id": "PLACEHOLDER", "force": true }),
             ),

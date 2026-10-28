@@ -314,6 +314,13 @@ pub const TASK_CONTEXTS_PREVIEW_DELETE_1_0: &str =
 /// Auth: Super Admin only.
 pub const TASK_CONTEXTS_DELETE_1_0: &str = "https://trusttasks.org/spec/vta/contexts/delete/1.0";
 
+/// `spec/vta/contexts/delete/1.1` — as 1.0, except every `did:webvh` host
+/// copy in the subtree is removed before anything local goes, and one that
+/// cannot be confirmed removed refuses the deletion
+/// (`vta/contexts/delete:hostCleanupFailed`) unless `abandonHostCopies` is set.
+pub const TASK_CONTEXTS_DELETE_1_1: &str =
+    <trust_tasks_rs::specs::vta::contexts::delete::v1_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
 // ─── Keys slice (spec/vta/keys/*) ────────────────────────────────────────
 
 /// `spec/vta/keys/list/1.0` — list key records (paginated, filterable).
@@ -2420,6 +2427,7 @@ pub const ALL_URIS: &[&str] = &[
     TASK_CONTEXTS_SECRETS_1_0,
     TASK_CONTEXTS_PREVIEW_DELETE_1_0,
     TASK_CONTEXTS_DELETE_1_0,
+    TASK_CONTEXTS_DELETE_1_1,
     // Keys slice
     TASK_KEYS_LIST_0_2,
     TASK_KEYS_CREATE_0_1,

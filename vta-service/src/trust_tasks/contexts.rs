@@ -7,6 +7,7 @@
 use super::helpers::TrustTaskOutcome;
 use serde_json::Value;
 use trust_tasks_rs::TrustTask;
+use trust_tasks_rs::specs::vta::contexts::delete::v1_1::Payload as DeletePayload;
 use trust_tasks_rs::specs::vta::contexts::update_did::v1_1::Payload as UpdateDidPayload;
 use vta_sdk::protocols::context_management::create::CreateContextBody;
 use vta_sdk::protocols::context_management::delete::{DeleteContextBody, DeleteContextPreviewBody};
@@ -89,6 +90,26 @@ fn reject_context_error(
                 "webvhDids": holds.webvh_dids,
                 "aclEntries": holds.acl_entries,
                 "didTemplates": holds.did_templates,
+            })),
+        ),
+        // Only 1.1 asks for this refusal, so only `vta/contexts/delete` emits
+        // it; the details are the shape its `detailsSchema` pins, so a
+        // consumer can show the DIDs and ask before abandoning them.
+        ContextError::HostCleanupFailed(failures) => reject_with_code(
+            doc,
+            ext(&slug, "hostCleanupFailed"),
+            operations::contexts::host_cleanup_summary(&failures),
+            Some(serde_json::json!({
+                "hostCleanupFailures": failures
+                    .iter()
+                    .map(|f| {
+                        let mut entry = serde_json::json!({ "did": f.did, "reason": f.reason });
+                        if let Some(server) = &f.server {
+                            entry["server"] = server.clone().into();
+                        }
+                        entry
+                    })
+                    .collect::<Vec<_>>(),
             })),
         ),
         ContextError::Other(e) => app_error_to_reject(doc, e),
@@ -340,7 +361,7 @@ pub(super) async fn handle_preview_delete(
     }
 }
 
-/// Handler for `spec/vta/contexts/delete/1.0`. Admin role; the operation
+/// Handler for `spec/vta/contexts/delete/1.0` and `1.1`. Admin role; the operation
 /// enforces access to the context or an ancestor (folder authority) and
 /// cascades the subtree with `force`.
 pub(super) async fn handle_delete(
@@ -352,10 +373,38 @@ pub(super) async fn handle_delete(
         return app_error_to_reject(&doc, e);
     }
     // Step-up (context/delete floor) is enforced centrally by the PDP gate.
-    let req: DeleteContextBody = match parse_payload(&doc) {
-        Ok(r) => r,
-        Err(resp) => return resp,
+    //
+    // 1.1 adds `abandonHostCopies`, and with it the refusal 1.0 never makes:
+    // a host copy that cannot be confirmed removed stops the deletion before
+    // anything local goes, unless the caller chose to leave it. 1.0 keeps its
+    // own contract — report the orphan after the fact.
+    let v1_1 = doc.type_uri.to_string() == vta_sdk::trust_tasks::TASK_CONTEXTS_DELETE_1_1;
+    let (req, abandon_host_copies) = if v1_1 {
+        let req: DeletePayload = match parse_payload(&doc) {
+            Ok(r) => r,
+            Err(resp) => return resp,
+        };
+        (
+            DeleteContextBody {
+                id: req.id.to_string(),
+                force: req.force,
+            },
+            req.abandon_host_copies,
+        )
+    } else {
+        match parse_payload::<DeleteContextBody>(&doc) {
+            Ok(r) => (r, false),
+            Err(resp) => return resp,
+        }
     };
+    #[cfg(feature = "webvh")]
+    let host_copies = match (v1_1, abandon_host_copies) {
+        (false, _) => operations::contexts::HostCopies::ReportAfter,
+        (true, false) => operations::contexts::HostCopies::RequireRemoved,
+        (true, true) => operations::contexts::HostCopies::Abandon,
+    };
+    #[cfg(not(feature = "webvh"))]
+    let _ = abandon_host_copies;
     let ks = operations::keyspaces_from_app_state(state);
     // A context's DIDs are deleted through the full webvh path, which needs a
     // resolver to reach their hosting servers. Without one the deletion is
@@ -370,6 +419,7 @@ pub(super) async fn handle_delete(
                 let cleanup = operations::contexts::ContextDidCleanup {
                     deps: &deps,
                     vta_did: vta_did.as_deref(),
+                    host_copies,
                 };
                 operations::contexts::delete_context(
                     &ks,

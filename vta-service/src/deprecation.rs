@@ -267,6 +267,16 @@ const SUPERSEDED_TASKS: &[SupersededTask] = &[
         reason: "1.1 accepts `did: null`, which clears the context's DID, and requires a \
                  string `did` to be a DID; 1.0 can only replace one",
     },
+    // 1.0 keeps its contract — orphans reported after the fact, an
+    // unregistered host refused — through the same handler.
+    SupersededTask {
+        uri: trust_tasks::TASK_CONTEXTS_DELETE_1_0,
+        successor: trust_tasks::TASK_CONTEXTS_DELETE_1_1,
+        reason: "1.1 removes every host copy before anything local and refuses \
+                 (`hostCleanupFailed`) when one cannot be confirmed removed, unless the \
+                 caller sets `abandonHostCopies`; 1.0 can only report orphans afterwards, \
+                 and cannot delete a context whose DID's host is no longer registered",
+    },
 ];
 
 /// The table, for the dispatch spine and for tests that assert on its contents.

@@ -158,6 +158,9 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     (trust_tasks::TASK_CONTEXTS_UPDATE_DID_1_1, RetrySafe),
     (trust_tasks::TASK_CONTEXTS_PREVIEW_DELETE_1_0, ReadOnly),
     (trust_tasks::TASK_CONTEXTS_DELETE_1_0, RetrySafe),
+    // A retry after a `hostCleanupFailed` refusal is the point of the code:
+    // nothing local went, and host copies already removed count as removed.
+    (trust_tasks::TASK_CONTEXTS_DELETE_1_1, RetrySafe),
     // ── Services ────────────────────────────────────────────────────────
     //
     // Every mutation here republishes the agent's did:webvh log, and that log

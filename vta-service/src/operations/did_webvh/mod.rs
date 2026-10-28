@@ -2063,6 +2063,15 @@ pub struct DeleteDidOptions<'a> {
     /// switching the check off, so a DID that some *other* context still acts
     /// as is refused during a cascade exactly as it is anywhere else.
     pub contexts_being_deleted: &'a [String],
+    /// The caller has already dealt with the host copy — removed it through
+    /// [`remove_host_copy`], or decided to leave it — and answers for it
+    /// itself. The deletion neither refuses over an unregistered server nor
+    /// contacts the host, and reports no `daemon_cleanup_error`.
+    ///
+    /// For `vta/contexts/delete/1.1`, which settles every host copy in the
+    /// subtree *before* any local record goes (so a refusal destroys nothing)
+    /// and so must not have each DID's deletion try the host a second time.
+    pub host_copy_settled: bool,
 }
 
 impl<'a> DeleteDidOptions<'a> {
@@ -2084,6 +2093,84 @@ impl<'a> DeleteDidOptions<'a> {
             contexts_being_deleted: contexts,
             ..Self::default()
         }
+    }
+
+    /// The same, for a cascade that has already settled every host copy. See
+    /// [`DeleteDidOptions::host_copy_settled`].
+    #[must_use]
+    pub fn with_host_copy_settled(self) -> Self {
+        Self {
+            host_copy_settled: true,
+            ..self
+        }
+    }
+}
+
+/// What became of a DID's published log when a deletion tried to remove it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HostCopy {
+    /// There is none: the DID is serverless.
+    None,
+    /// The host removed the log, or answered that it no longer holds it.
+    Removed,
+    /// Removal was not confirmed. The log may still resolve.
+    Unconfirmed {
+        /// The hosting server's id here, when the record names one.
+        server: Option<String>,
+        /// Why, for a human.
+        reason: String,
+    },
+}
+
+/// Remove `did`'s published log from its hosting server, and say what
+/// happened rather than failing.
+///
+/// Every way the host copy can fail to go — the server no longer registered
+/// here, no VTA DID to authenticate as, the host refusing or not answering —
+/// is [`HostCopy::Unconfirmed`], because the caller decides what an orphan
+/// means; an `Err` is reserved for this VTA's own store failing. A host that
+/// answers `notFound` or `alreadyDeleted` has, for this purpose, removed it:
+/// the state the caller asked for is the state the host is in.
+///
+/// Nothing local is touched, so running it again is harmless.
+pub async fn remove_host_copy(
+    deps: &WebvhDeps<'_>,
+    did: &str,
+    vta_did: Option<&str>,
+) -> Result<HostCopy, AppError> {
+    let record = webvh_store::get_did(deps.webvh_ks, did)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("webvh DID not found: {did}")))?;
+    if record.server_id == SERVERLESS_SERVER_ID {
+        return Ok(HostCopy::None);
+    }
+    let unconfirmed = |reason: String| HostCopy::Unconfirmed {
+        server: Some(record.server_id.clone()),
+        reason,
+    };
+    let Some(server) = webvh_store::get_server(deps.webvh_ks, &record.server_id).await? else {
+        return Ok(unconfirmed(format!(
+            "hosting server `{}` is no longer registered here, so the log could not be \
+             removed there",
+            record.server_id
+        )));
+    };
+    let Some(vta_did) = vta_did else {
+        return Ok(unconfirmed(format!(
+            "this VTA has no DID configured to authenticate to hosting server `{}`",
+            server.id
+        )));
+    };
+    match delete_log_on_server(deps, vta_did, &server, &record.mnemonic, None).await {
+        Ok(()) => Ok(HostCopy::Removed),
+        Err(AppError::NotFound(_) | AppError::Gone(_)) => {
+            info!(did = %did, server_id = %server.id, "host no longer holds the log; treating it as removed");
+            Ok(HostCopy::Removed)
+        }
+        Err(e) => Ok(unconfirmed(format!(
+            "hosting server `{}` did not remove the log: {e}",
+            server.id
+        ))),
     }
 }
 
@@ -2195,7 +2282,8 @@ pub async fn delete_did_webvh_with(
     // local cleanup succeed silently. (Spec / audit H4: surface the
     // failure on the result body.)
     let mut daemon_cleanup_error: Option<String> = None;
-    let server = if record.server_id == SERVERLESS_SERVER_ID {
+    // Already removed (or knowingly left) by the caller, who reports it.
+    let server = if record.server_id == SERVERLESS_SERVER_ID || options.host_copy_settled {
         None
     } else {
         match webvh_store::get_server(deps.webvh_ks, &record.server_id).await? {
@@ -2428,7 +2516,12 @@ async fn delete_blockers(
     // delete it, leaving a live log nobody can update or remove. VTI R2.1
     // (Remote-First): no local commit before the remote effect, so refuse
     // unless the caller opted in to leaving the host copy behind.
-    if let Some(record) = webvh_store::get_did(deps.webvh_ks, did).await? {
+    // Skipped when the caller settled the host copy itself: an unregistered
+    // server is then one more unconfirmed copy it reports, not a blocker.
+    if let Some(record) = webvh_store::get_did(deps.webvh_ks, did)
+        .await?
+        .filter(|_| !options.host_copy_settled)
+    {
         let serverless = record.server_id == SERVERLESS_SERVER_ID;
         let registered = serverless
             || webvh_store::get_server(deps.webvh_ks, &record.server_id)

@@ -761,6 +761,13 @@ enum ContextCommands {
         /// hidden aliases.
         #[arg(long = "yes", short = 'y', alias = "force", short_alias = 'f')]
         yes: bool,
+        /// Finish the deletion even if a DID's hosting server cannot confirm
+        /// removing its published log (down, refusing, or no longer
+        /// registered). Those DIDs may keep resolving and removing them is
+        /// then up to you. Without it you are shown them and asked; `--yes`
+        /// does not answer that question.
+        #[arg(long)]
+        abandon_host_copies: bool,
     },
     /// Create a context and mint a sealed admin credential for its first admin.
     ///
@@ -1552,9 +1559,11 @@ async fn main() {
                 Some(did) if !clear => contexts::cmd_context_update_did(&client, &id, &did).await,
                 _ => contexts::cmd_context_clear_did(&client, &id).await,
             },
-            ContextCommands::Delete { id, yes } => {
-                contexts::cmd_context_delete(&client, &id, yes).await
-            }
+            ContextCommands::Delete {
+                id,
+                yes,
+                abandon_host_copies,
+            } => contexts::cmd_context_delete(&client, &id, yes, abandon_host_copies).await,
             ContextCommands::Bootstrap {
                 id,
                 name,

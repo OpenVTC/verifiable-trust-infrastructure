@@ -388,7 +388,40 @@ pub enum ContextError {
     /// Refused because the subtree holds something and `force` was absent —
     /// `vta/contexts/delete:notEmpty`.
     NotEmpty(NotEmpty),
+    /// Refused because the published log of at least one `did:webvh` DID in
+    /// the subtree could not be confirmed removed from its host, and the
+    /// caller did not choose to abandon it — `vta/contexts/delete:hostCleanupFailed`.
+    /// Nothing local was deleted.
+    HostCleanupFailed(Vec<HostCleanupFailure>),
     Other(AppError),
+}
+
+/// One host copy a context deletion could not confirm removed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HostCleanupFailure {
+    pub did: String,
+    /// The hosting server's id here, when the record names one.
+    pub server: Option<String>,
+    pub reason: String,
+}
+
+impl std::fmt::Display for HostCleanupFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}: {}", self.did, self.reason)
+    }
+}
+
+/// Says how many host copies were left, for a refusal's message.
+pub(crate) fn host_cleanup_summary(failures: &[HostCleanupFailure]) -> String {
+    let n = failures.len();
+    format!(
+        "{n} published DID{} could not be removed from {} hosting server; nothing was \
+         deleted. Retry once the host is reachable, or retry abandoning the host \
+         cop{} — they may then keep resolving, and removing them is yours to do",
+        if n == 1 { "" } else { "s" },
+        if n == 1 { "its" } else { "their" },
+        if n == 1 { "y" } else { "ies" },
+    )
 }
 
 impl From<AppError> for ContextError {
@@ -413,6 +446,18 @@ impl From<ContextError> for AppError {
                 "context holds {}; use force=true to delete the whole subtree, or preview first",
                 n.summary()
             )),
+            // Bad gateway, not Conflict: the request is fine and the state is
+            // fine — a host this VTA does not control did not do its part, and
+            // retrying later is a legitimate fix.
+            ContextError::HostCleanupFailed(failures) => crate::error::bad_gateway_error(format!(
+                "{}:\n{}",
+                host_cleanup_summary(&failures),
+                failures
+                    .iter()
+                    .map(|f| format!("  - {f}"))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            )),
             ContextError::Other(e) => e,
         }
     }
@@ -424,6 +469,7 @@ impl std::fmt::Display for ContextError {
             Self::Unreachable => write!(f, "context not found"),
             Self::ParentUnreachable => write!(f, "parent context not found"),
             Self::NotEmpty(n) => write!(f, "context holds {}", n.summary()),
+            Self::HostCleanupFailed(failures) => f.write_str(&host_cleanup_summary(failures)),
             Self::Other(e) => write!(f, "{e}"),
         }
     }
@@ -474,6 +520,104 @@ pub struct ContextDidCleanup<'a> {
     /// This VTA's DID, which authenticates the delete to the hosting daemon.
     /// Absent, the host copy cannot be removed and the deletion says so.
     pub vta_did: Option<&'a str>,
+    /// What to do about a host copy that cannot be confirmed removed.
+    pub host_copies: HostCopies,
+}
+
+/// What a context deletion does about a `did:webvh` log whose hosting server
+/// does not confirm removing it.
+///
+/// Every policy removes host copies **first**, all at once and within
+/// [`HOST_SETTLE_BUDGET`], before any local record goes: the records are the
+/// only means of removing a host copy later (VTI R2.1), and a host that never
+/// answers must not hold the deletion past the caller's patience — it used to
+/// cost a full reply timeout per DID, one after another, which outlasted the
+/// client's own timeout and left the operator unable to finish the deletion.
+#[cfg(feature = "webvh")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HostCopies {
+    /// `vta/contexts/delete/1.0`: a DID whose hosting server is no longer
+    /// registered refuses the deletion; any other unconfirmed copy is
+    /// reported in `daemonCleanupErrors` and the deletion completes.
+    ReportAfter,
+    /// `vta/contexts/delete/1.1` without `abandonHostCopies`: any unconfirmed
+    /// copy refuses with `hostCleanupFailed`, and nothing local is deleted.
+    RequireRemoved,
+    /// `vta/contexts/delete/1.1` with `abandonHostCopies`: the deletion
+    /// completes, and each unconfirmed copy is reported.
+    Abandon,
+}
+
+/// The whole time a context deletion spends on hosting servers, however many
+/// DIDs it holds. Under the 30 seconds a 1.0 client waits, with room for the
+/// local work after it; a host that has not answered by then is unconfirmed.
+#[cfg(feature = "webvh")]
+pub const HOST_SETTLE_BUDGET: std::time::Duration = std::time::Duration::from_secs(20);
+
+/// How many hosts a deletion talks to at once.
+#[cfg(feature = "webvh")]
+const HOST_SETTLE_CONCURRENCY: usize = 8;
+
+/// Remove the host copy of every DID in `dids`, at most
+/// [`HOST_SETTLE_CONCURRENCY`] at a time and all within
+/// [`HOST_SETTLE_BUDGET`], returning the ones not confirmed removed.
+#[cfg(feature = "webvh")]
+async fn settle_host_copies(
+    cleanup: &ContextDidCleanup<'_>,
+    dids: &[String],
+) -> Result<Vec<HostCleanupFailure>, AppError> {
+    use crate::operations::did_webvh::HostCopy;
+
+    let deadline = tokio::time::Instant::now() + HOST_SETTLE_BUDGET;
+    let mut failures = Vec::new();
+    // A chunk at a time under one deadline: a later chunk gets whatever the
+    // budget has left, and a host reached after it is unconfirmed, not waited on.
+    for chunk in dids.chunks(HOST_SETTLE_CONCURRENCY) {
+        let outcomes = futures_util::future::join_all(
+            chunk
+                .iter()
+                .map(|did| settle_host_copy(cleanup, did, deadline)),
+        )
+        .await;
+        for (did, outcome) in chunk.iter().zip(outcomes) {
+            if let HostCopy::Unconfirmed { server, reason } = outcome? {
+                failures.push(HostCleanupFailure {
+                    did: did.clone(),
+                    server,
+                    reason,
+                });
+            }
+        }
+    }
+    Ok(failures)
+}
+
+/// One DID's host copy, given up on at `deadline`.
+#[cfg(feature = "webvh")]
+async fn settle_host_copy(
+    cleanup: &ContextDidCleanup<'_>,
+    did: &str,
+    deadline: tokio::time::Instant,
+) -> Result<crate::operations::did_webvh::HostCopy, AppError> {
+    use crate::operations::did_webvh::{HostCopy, remove_host_copy};
+
+    match tokio::time::timeout_at(
+        deadline,
+        remove_host_copy(cleanup.deps, did, cleanup.vta_did),
+    )
+    .await
+    {
+        Ok(outcome) => outcome,
+        Err(_) => Ok(HostCopy::Unconfirmed {
+            server: crate::webvh_store::get_did(cleanup.deps.webvh_ks, did)
+                .await?
+                .map(|r| r.server_id),
+            reason: format!(
+                "the hosting server did not answer within {}s",
+                HOST_SETTLE_BUDGET.as_secs()
+            ),
+        }),
+    }
 }
 
 /// Delete a context and, with `force`, everything below it.
@@ -550,6 +694,14 @@ pub async fn delete_context(
         return Err(ContextError::NotEmpty(holds));
     }
 
+    // Host copies the deletion did not get confirmed removed. Deletion carries
+    // on only where the caller's policy says so — the alternative is a subtree
+    // half gone — and the orphans are named rather than counted, because an
+    // operator cleaning up out-of-band needs the identifiers and a count tells
+    // them only that they have a problem.
+    #[allow(unused_mut)]
+    let mut orphans: Vec<String> = Vec::new();
+
     // ---- Refuse before destroying anything --------------------------------
     //
     // Every DID in the subtree is checked for blockers *first*, across the
@@ -570,8 +722,15 @@ pub async fn delete_context(
                 subtree_dids.len()
             ))
         })?;
+        // 1.0 keeps its refusal for a server no longer registered; 1.1 counts
+        // that as one more unconfirmed host copy, settled below.
         let options =
             crate::operations::did_webvh::DeleteDidOptions::within_context_deletion(&to_delete);
+        let options = if cleanup.host_copies == HostCopies::ReportAfter {
+            options
+        } else {
+            options.with_host_copy_settled()
+        };
         let mut blockers = Vec::new();
         for did in &subtree_dids {
             let plan = crate::operations::did_webvh::plan_did_deletion_with(
@@ -596,26 +755,43 @@ pub async fn delete_context(
                     .join("\n")
             ))));
         }
+
+        // ---- Host copies, before anything local ----------------------------
+        //
+        // Every one at once, within one budget. A local record removed before
+        // its host copy is the one state from which the host copy can never be
+        // removed at all (VTI R2.1), so a refusal here must come while every
+        // record is still in place — a retry then completes the deletion, and
+        // finds the copies that did go already gone.
+        let failures = settle_host_copies(cleanup, &subtree_dids).await?;
+        if !failures.is_empty() {
+            if cleanup.host_copies == HostCopies::RequireRemoved {
+                tracing::warn!(
+                    channel,
+                    id = %id,
+                    unconfirmed = failures.len(),
+                    detail = %failures.iter().map(ToString::to_string).collect::<Vec<_>>().join("; "),
+                    "context deletion refused: host copies not confirmed removed; nothing deleted"
+                );
+                return Err(ContextError::HostCleanupFailed(failures));
+            }
+            orphans = failures.iter().map(ToString::to_string).collect();
+        }
     }
 
     let (mut keys, mut acl_removed, mut acl_updated, mut templates) = (0, 0, 0, 0);
     #[allow(unused_mut)]
     let mut dids = 0usize;
-    // Host copies the daemon would not remove. Deletion carries on — the
-    // alternative is a subtree half gone — but the orphans are named rather
-    // than counted, because an operator cleaning up out-of-band needs the
-    // identifiers and a count tells them only that they have a problem.
-    #[allow(unused_mut)]
-    let mut orphans: Vec<String> = Vec::new();
 
     for ctx_id in &to_delete {
-        // DIDs first, and remotely first within that: a local record removed
-        // before its host copy is the one state from which the host copy can
-        // never be removed at all (VTI R2.1).
+        // DIDs first. Their host copies were settled above, so each deletion
+        // goes straight to the local cascade: credentials, records, keys,
+        // authority and sessions.
         #[cfg(feature = "webvh")]
         if let Some(cleanup) = webvh {
             let options =
-                crate::operations::did_webvh::DeleteDidOptions::within_context_deletion(&to_delete);
+                crate::operations::did_webvh::DeleteDidOptions::within_context_deletion(&to_delete)
+                    .with_host_copy_settled();
             for did in context_webvh_dids(webvh_ks, ctx_id).await? {
                 let result = crate::operations::did_webvh::delete_did_webvh_with(
                     cleanup.deps,

@@ -5553,6 +5553,20 @@ fn webvh_and_context_witnesses() -> Vec<(&'static str, ReqParts, RespParts)> {
             ),
         ),
         (
+            // 1.1: `abandonHostCopies`, and the orphans it leaves reported.
+            uris::TASK_CONTEXTS_DELETE_1_1,
+            (
+                json!({ "id": "personal", "force": true, "abandonHostCopies": true }),
+                parses::<ctx::delete::v1_1::Payload>,
+                validates::<ctx::delete::v1_1::Payload>,
+            ),
+            (
+                json!({ "id": "personal", "deleted": true,
+                        "daemonCleanupErrors": ["did:webvh:QmX:host.example:p: host down"] }),
+                parses::<ctx::delete::v1_1::Response>,
+            ),
+        ),
+        (
             uris::TASK_WEBVH_DIDS_LIST_1_0,
             (
                 json!({}),
