@@ -29,7 +29,7 @@ fn tt_error_code(doc: &serde_json::Value) -> Option<&str> {
 }
 
 const DELETE_TASK: &str = "https://trusttasks.org/spec/vtc/website/files/delete/0.1";
-const LIST_TASK: &str = "https://trusttasks.org/spec/vtc/website/files/list/0.1";
+const LIST_TASK: &str = "https://trusttasks.org/spec/vtc/website/files/list/0.3";
 const GENERATIONS_TASK: &str = "https://trusttasks.org/spec/vtc/website/generations/list/0.1";
 const ROLLBACK_TASK: &str = "https://trusttasks.org/spec/vtc/website/rollback/0.1";
 

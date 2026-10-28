@@ -40,7 +40,7 @@ export const KIND_OPERATOR_WRITE = "operator.offlineWrite";
  * document type (payload `{command, dids, host, at}`), never a task anybody
  * sends.
  */
-export const OPERATOR_OFFLINE_WRITE_URI = "https://trusttasks.org/spec/vtc/operator/offline-write/0.1";
+export const OPERATOR_OFFLINE_WRITE_URI = "https://trusttasks.org/spec/vtc/operator/offline-write/0.2";
 
 /** The `typeUri` the boot-time ACL migration's acknowledge item is recorded under. */
 export const OPERATOR_ACL_MIGRATION_URI = "urn:openvtc:vtc:operator:acl-migration";
@@ -160,7 +160,7 @@ export const PINNED_TEMPLATE_DIGESTS: Readonly<Record<string, string>> = Object.
     "zQmTqKd5UoQZfTy7giJU9KFWFyhUbqxAtr5XWoUB9BLncBL",
   // An operator's offline write, raised for acknowledgement (VTI-VTC-023).
   [pinKey(KIND_OPERATOR_WRITE, OPERATOR_OFFLINE_WRITE_URI)]:
-    "zQmQZTPg2MeWt1C8oAvoLMGJNY9DpxvB6bRjvQwJT7ns9Ah",
+    "zQmaFWSdUF1Ais5qw1yGuSM6oxkarq9VQ4ZKd52ikKXiRcR",
   [pinKey(KIND_OPERATOR_WRITE, OPERATOR_ACL_MIGRATION_URI)]:
     "zQmcx336K693LHuAKosCP9avuLZWauw1vome6VBxWBFDiqK",
   // Custom administrative roles (`vtc-admin-roles.md` §6.2).
@@ -207,6 +207,20 @@ export const PINNED_TEMPLATE_DIGESTS: Readonly<Record<string, string>> = Object.
     "zQmTzhrbBfZEaijm2CMzMvNzeYzPBA4RW1DBJRWPTwJc3XL",
   [pinKey("rooms.storage.migrate", `${SPEC}/vtc/rooms/storage/migrate/0.2`)]:
     "zQmR7m9q28aLudzaema3wPTgyt9VJnPAVoSykoCL14YiVAN",
+  // The current versions the community parks storage operations under; the
+  // versions above stay pinned so an action recorded under one still renders.
+  [pinKey("storage.config.create", `${SPEC}/vtc/storage/configs/create/0.3`)]:
+    "zQmPUm3o1m98v5TKrsQ6RsAXMRWw1fqSDnwN3iFrJK5Awrx",
+  [pinKey("storage.config.update", `${SPEC}/vtc/storage/configs/update/0.3`)]:
+    "zQmc2DLfT3ZNgo31ctpTvACDFoy1yiWAbdEBmtAbswkFfKT",
+  [pinKey("storage.credential.set", `${SPEC}/vtc/storage/credentials/set/0.3`)]:
+    "zQmf4q7oZzgLTPjF4bavNePfvEhwPdG53CG2XVMgYfKHYex",
+  [pinKey("storage.config.retire", `${SPEC}/vtc/storage/configs/retire/0.3`)]:
+    "zQmdCZnjZerPoDQQaiDinpjZbxKPkB1d5MLLwV1iYDbt75M",
+  [pinKey("rooms.storage.assign", `${SPEC}/vtc/rooms/storage/assign/0.2`)]:
+    "zQmer3KKgKaxJV2UUTH3jyEVyQeaQ2MuBHZvfYxAerEka2L",
+  [pinKey("rooms.storage.migrate", `${SPEC}/vtc/rooms/storage/migrate/0.3`)]:
+    "zQmdLkFUd8giwGZH79H1htDfCrSxJWE9mKwpSSkbhhQRjGy",
 });
 
 function pinKey(kind: string, typeUri: string): string {

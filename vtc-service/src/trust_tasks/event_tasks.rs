@@ -1,12 +1,7 @@
-//! `vtc/admin/events/subscribe/0.1`, `/0.2`, `/0.3` and `/0.4` — an
-//! administrator's console opens its live channel of hints
-//! (`crate::admin_events`).
-//!
-//! All four versions are served, each answered at its own version: 0.2 adds
-//! the `rooms` topic, 0.3 the `directory` and `groups` topics and 0.4 the
-//! `communityRooms` topic, and nothing else, so an older console keeps working
-//! unchanged (subscribe 0.2 *What 0.2 adds*, 0.3 *What 0.3 adds*, 0.4 *What 0.4
-//! adds*).
+//! `vtc/admin/events/subscribe/0.6` — an administrator's console opens its
+//! live channel of hints (`crate::admin_events`), carried as
+//! `vtc/admin/events/event/0.5` documents. Older versions are refused
+//! `unsupportedVersion`.
 //!
 //! The task's success response opens a stream, which only the HTTPS door can
 //! carry (binding 0.3 §2.1). This handler decides everything a refusal could
@@ -24,7 +19,7 @@
 //! 3. a delivery that can carry the stream, or `streamUnavailable` (rule 3);
 //! 4. the proven caller holds an administrative role, or `notAdministrator`
 //!    (rule 1);
-//! 5. a `Last-Event-ID` header that disagrees with `since` is
+//! 5. a `Last-Event-ID` header that disagrees with `resumeToken` is
 //!    `malformedRequest` (binding 0.3 §2.1.3 item 3) — resumption is in-band
 //!    only;
 //! 6. at least one requested topic the caller may read, or `permissionDenied`
@@ -39,10 +34,7 @@
 use std::collections::BTreeSet;
 
 use serde_json::Value;
-use trust_tasks_rs::specs::vtc::admin::events::subscribe::v0_1 as subscribe;
-use trust_tasks_rs::specs::vtc::admin::events::subscribe::v0_2 as subscribe_v0_2;
-use trust_tasks_rs::specs::vtc::admin::events::subscribe::v0_3 as subscribe_v0_3;
-use trust_tasks_rs::specs::vtc::admin::events::subscribe::v0_4 as subscribe_v0_4;
+use trust_tasks_rs::specs::vtc::admin::events::subscribe::v0_6 as subscribe;
 use trust_tasks_rs::{ErrorPayload, Payload, RejectReason, TrustTask};
 
 use super::helpers::{
@@ -50,22 +42,14 @@ use super::helpers::{
     success_response,
 };
 use super::{JoinAuthCtx, TrustTaskOutcome, parse_spec_payload};
-use crate::admin_events::{self, Refusal, Topic, Version};
+use crate::admin_events::{self, Refusal, Topic};
 use crate::server::AppState;
 
 pub(crate) const SUBSCRIBE_TYPE: &str = <subscribe::Payload as Payload>::TYPE_URI;
-pub(crate) const SUBSCRIBE_V0_2_TYPE: &str = <subscribe_v0_2::Payload as Payload>::TYPE_URI;
-pub(crate) const SUBSCRIBE_V0_3_TYPE: &str = <subscribe_v0_3::Payload as Payload>::TYPE_URI;
-pub(crate) const SUBSCRIBE_V0_4_TYPE: &str = <subscribe_v0_4::Payload as Payload>::TYPE_URI;
 /// Responses the duplicate-execution record keeps no body for: answering a
 /// replayed subscribe with its old `#response` and no stream behind it would
-/// break subscribe consumer rule 3 (every version).
-pub(crate) const UNRECORDED_RESPONSES: &[&str] = &[
-    SUBSCRIBE_TYPE,
-    SUBSCRIBE_V0_2_TYPE,
-    SUBSCRIBE_V0_3_TYPE,
-    SUBSCRIBE_V0_4_TYPE,
-];
+/// break subscribe consumer rule 3.
+pub(crate) const UNRECORDED_RESPONSES: &[&str] = &[SUBSCRIBE_TYPE];
 
 /// The subscribe acceptance window: four minutes of age plus the spine's
 /// 60 seconds of skew — five minutes in all (consumer rule 2).
@@ -80,70 +64,21 @@ pub(super) async fn handle_subscribe(
     ctx: &JoinAuthCtx,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    // Every version declares the same codes under the same names.
     use subscribe::error_codes as codes;
 
-    // The payload against its version's schema — which is where a `rooms`
-    // topic in a 0.1 subscribe is refused — then one shape for both.
-    let type_uri = doc.type_uri.to_string();
-    let (version, requested, since): (Version, BTreeSet<Topic>, Option<String>) =
-        if type_uri == SUBSCRIBE_V0_4_TYPE {
-            let payload: subscribe_v0_4::Payload = match parse_spec_payload(&doc) {
-                Ok(p) => p,
-                Err(reject) => return reject,
-            };
-            (
-                Version::V0_4,
-                payload
-                    .topics
-                    .iter()
-                    .filter_map(Topic::from_subscribe_v0_4)
-                    .collect(),
-                payload.since.as_ref().map(|t| t.as_str().to_string()),
-            )
-        } else if type_uri == SUBSCRIBE_V0_3_TYPE {
-            let payload: subscribe_v0_3::Payload = match parse_spec_payload(&doc) {
-                Ok(p) => p,
-                Err(reject) => return reject,
-            };
-            (
-                Version::V0_3,
-                payload
-                    .topics
-                    .iter()
-                    .filter_map(Topic::from_subscribe_v0_3)
-                    .collect(),
-                payload.since.as_ref().map(|t| t.as_str().to_string()),
-            )
-        } else if type_uri == SUBSCRIBE_V0_2_TYPE {
-            let payload: subscribe_v0_2::Payload = match parse_spec_payload(&doc) {
-                Ok(p) => p,
-                Err(reject) => return reject,
-            };
-            (
-                Version::V0_2,
-                payload
-                    .topics
-                    .iter()
-                    .filter_map(Topic::from_subscribe_v0_2)
-                    .collect(),
-                payload.since.as_ref().map(|t| t.as_str().to_string()),
-            )
-        } else {
-            let payload: subscribe::Payload = match parse_spec_payload(&doc) {
-                Ok(p) => p,
-                Err(reject) => return reject,
-            };
-            (
-                Version::V0_1,
-                payload
-                    .topics
-                    .iter()
-                    .filter_map(Topic::from_subscribe)
-                    .collect(),
-                payload.since.as_ref().map(|t| t.as_str().to_string()),
-            )
-        };
+    let payload: subscribe::Payload = match parse_spec_payload(&doc) {
+        Ok(p) => p,
+        Err(reject) => return reject,
+    };
+    let requested: BTreeSet<Topic> = payload
+        .topics
+        .iter()
+        .filter_map(Topic::from_subscribe)
+        .collect();
+    let resume_token: Option<String> = payload
+        .resume_token
+        .as_ref()
+        .map(|t| t.as_str().to_string());
 
     let mut window = super::freshness_policy();
     window.max_age = Some(MAX_SUBSCRIBE_AGE);
@@ -184,15 +119,15 @@ pub(super) async fn handle_subscribe(
         Err(e) => return app_error_to_reject(&doc, &e),
     };
 
-    let since = since.as_deref();
-    if let (Some(header), Some(since)) = (slot.last_event_id(), since)
-        && header != since
+    let resume_token = resume_token.as_deref();
+    if let (Some(header), Some(token)) = (slot.last_event_id(), resume_token)
+        && header != token
     {
         return reject_with(
             &doc,
             RejectReason::MalformedRequest {
-                reason: "Last-Event-ID disagrees with the payload's `since`; resumption is \
-                         in-band only (HTTPS binding 0.3 §2.1.3)"
+                reason: "Last-Event-ID disagrees with the payload's `resumeToken`; \
+                         resumption is in-band only (HTTPS binding 0.3 §2.1.3)"
                     .to_string(),
             },
         );
@@ -203,9 +138,8 @@ pub(super) async fn handle_subscribe(
         state,
         &signer,
         &standing,
-        version,
         &requested,
-        since,
+        resume_token,
         parent_thread,
         doc.expires_at,
     )

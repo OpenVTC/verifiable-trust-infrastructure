@@ -4,12 +4,11 @@
 //!
 //! ## Versions
 //!
-//! Served at 0.1, 0.2, 0.3 and 0.4. The topic set is closed per version
-//! (subscribe 0.2 *What 0.2 adds*, 0.3 *What 0.3 adds*, 0.4 *What 0.4 adds*):
-//! 0.2 adds `rooms`, 0.3 adds `directory` and `groups`, and 0.4 adds
-//! `communityRooms`, so a console asks for each only at the version that has
-//! it, and a stream answers — its `#response` and every hint after it — at the
-//! version it was opened with ([`Version`]). An older console is unchanged.
+//! Served at subscribe 0.6 only, whose stream carries `event/0.5` hints; every
+//! older subscribe is refused `unsupportedVersion`. 0.6's topic set is 0.4's —
+//! `rooms`, `directory`, `groups` and `communityRooms` beside 0.1's — its
+//! request names the resume token `resumeToken` (0.5), and its hints name
+//! their instant `observedAt` (event 0.5).
 //!
 //! ## What travels on it
 //!
@@ -113,9 +112,7 @@ use sha2::{Digest, Sha256};
 use tokio::sync::{broadcast, mpsc};
 use trust_tasks_rs::TrustTask;
 use trust_tasks_rs::specs::vtc::admin::events::{
-    event::v0_1 as event, event::v0_2 as event_v0_2, event::v0_3 as event_v0_3,
-    event::v0_4 as event_v0_4, subscribe::v0_1 as subscribe, subscribe::v0_2 as subscribe_v0_2,
-    subscribe::v0_3 as subscribe_v0_3, subscribe::v0_4 as subscribe_v0_4,
+    event::v0_5 as event, subscribe::v0_6 as subscribe,
 };
 use vti_common::error::AppError;
 
@@ -123,9 +120,9 @@ use crate::server::AppState;
 
 /// The declared error codes of `vtc/admin/events/subscribe`, read off the
 /// generated specification — what the tests that witness each one compare
-/// against. 0.1 – 0.4 declare the same three, under the same codes.
+/// against.
 pub mod codes {
-    use trust_tasks_rs::specs::vtc::admin::events::subscribe::v0_1::error_codes as e;
+    use trust_tasks_rs::specs::vtc::admin::events::subscribe::v0_6::error_codes as e;
 
     pub const NOT_ADMINISTRATOR: &str = e::NOT_ADMINISTRATOR.code;
     pub const STREAM_UNAVAILABLE: &str = e::STREAM_UNAVAILABLE.code;
@@ -134,21 +131,11 @@ pub mod codes {
 
 // ─── topics ──────────────────────────────────────────────────────────────
 
-/// The version a stream was opened at: its `#response` and its hints are
-/// documents of that version, and its topics are that version's.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub(crate) enum Version {
-    V0_1,
-    V0_2,
-    V0_3,
-    V0_4,
-}
-
 /// One kind of change a console can be told about — the shared `Topic` of
 /// `vtc/admin/events/_shared/0.4` (0.1's, plus `rooms`, `directory`, `groups`
-/// and `communityRooms`). The generated modules
-/// each carry their own copy of that enum; this one is the service's, with a
-/// conversion to each through the wire name.
+/// and `communityRooms`). The generated modules each carry their own copy of
+/// that enum; this one is the service's, with a conversion through the wire
+/// name.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Topic {
     Actions,
@@ -205,21 +192,6 @@ impl Topic {
         Topic::ALL.into_iter().find(|t| t.wire() == name)
     }
 
-    /// Whether `version`'s closed topic set holds it.
-    pub(crate) fn in_version(self, version: Version) -> bool {
-        version >= self.since()
-    }
-
-    /// The version that added it.
-    fn since(self) -> Version {
-        match self {
-            Topic::Rooms => Version::V0_2,
-            Topic::Directory | Topic::Groups => Version::V0_3,
-            Topic::CommunityRooms => Version::V0_4,
-            _ => Version::V0_1,
-        }
-    }
-
     /// The topics a stream keeps a digest of, hinting only when it moves: the
     /// count topics, `rooms` (event 0.2 producer rule 4), `groups`, whose
     /// digest is of the groups the recipient may manage, and `communityRooms`
@@ -255,18 +227,6 @@ impl Topic {
     pub(crate) fn from_subscribe(t: &subscribe::Topic) -> Option<Topic> {
         // A topic a newer specification adds is one this service cannot say it
         // reads; it is never effective.
-        Topic::from_wire(&t.to_string()).filter(|t| t.in_version(Version::V0_1))
-    }
-
-    pub(crate) fn from_subscribe_v0_2(t: &subscribe_v0_2::Topic) -> Option<Topic> {
-        Topic::from_wire(&t.to_string()).filter(|t| t.in_version(Version::V0_2))
-    }
-
-    pub(crate) fn from_subscribe_v0_3(t: &subscribe_v0_3::Topic) -> Option<Topic> {
-        Topic::from_wire(&t.to_string()).filter(|t| t.in_version(Version::V0_3))
-    }
-
-    pub(crate) fn from_subscribe_v0_4(t: &subscribe_v0_4::Topic) -> Option<Topic> {
         Topic::from_wire(&t.to_string())
     }
 }
@@ -790,7 +750,6 @@ async fn observe(
             None,
             0,
             0,
-            crate::admin_actions::WireVersion::V0_2,
         )
         .await?;
         if topics.contains(&Topic::Actions) {
@@ -1201,7 +1160,6 @@ pub(crate) struct Grant {
     vtc_did: String,
     parent_thread: String,
     topics: BTreeSet<Topic>,
-    version: Version,
     backlog: Vec<(Topic, DateTime<Utc>)>,
     baseline: HashMap<Topic, Observed>,
     wakes: HashMap<Topic, DateTime<Utc>>,
@@ -1211,7 +1169,7 @@ pub(crate) struct Grant {
 }
 
 /// What the subscribe handler answers with, the `#response` payload — the
-/// generated `Response` of the stream's version, serialised — and the stream
+/// generated `subscribe/0.6` `Response`, serialised — and the stream
 /// behind it.
 pub(crate) struct Opened {
     pub response: Value,
@@ -1228,24 +1186,17 @@ pub(crate) enum Refusal {
     Internal(AppError),
 }
 
-/// Grant a stream of `requested ∩ standing.topics` to `signer`, at
-/// `version`.
-#[allow(clippy::too_many_arguments)]
+/// Grant a stream of `requested ∩ standing.topics` to `signer`.
 pub(crate) async fn open(
     state: &AppState,
     signer: &str,
     standing: &Standing,
-    version: Version,
     requested: &BTreeSet<Topic>,
     since: Option<&str>,
     parent_thread: String,
     document_expires: Option<DateTime<Utc>>,
 ) -> Result<Opened, Refusal> {
-    let topics: BTreeSet<Topic> = requested
-        .intersection(&standing.topics)
-        .copied()
-        .filter(|t| t.in_version(version))
-        .collect();
+    let topics: BTreeSet<Topic> = requested.intersection(&standing.topics).copied().collect();
     if topics.is_empty() {
         return Err(Refusal::NoTopics);
     }
@@ -1291,8 +1242,7 @@ pub(crate) async fn open(
         .unwrap_or(now + lifetime);
 
     let first_id = mint_token(signer, position, 0);
-    let response =
-        subscribe_response(version, &topics, resumed, &first_id).map_err(Refusal::Internal)?;
+    let response = subscribe_response(&topics, resumed, &first_id).map_err(Refusal::Internal)?;
 
     let vtc_did = state
         .config
@@ -1310,7 +1260,6 @@ pub(crate) async fn open(
             vtc_did,
             parent_thread,
             topics,
-            version,
             backlog,
             baseline,
             wakes: observation.wakes,
@@ -1321,10 +1270,8 @@ pub(crate) async fn open(
     })
 }
 
-/// The generated `#response` payload of `version`, serialised. The two
-/// versions' shapes are the same; only the topic set differs.
+/// The generated `subscribe/0.6#response` payload, serialised.
 fn subscribe_response(
-    version: Version,
     topics: &BTreeSet<Topic>,
     resumed: bool,
     token: &str,
@@ -1345,17 +1292,12 @@ fn subscribe_response(
             serde_json::to_value(response).map_err(|e| internal(&e))
         }};
     }
-    match version {
-        Version::V0_1 => build!(subscribe),
-        Version::V0_2 => build!(subscribe_v0_2),
-        Version::V0_3 => build!(subscribe_v0_3),
-        Version::V0_4 => build!(subscribe_v0_4),
-    }
+    build!(subscribe)
 }
 
-/// One hint as the generated `event` document of `grant`'s version,
-/// unsigned: the topic, `at`, `count` on a count topic, and the resume token
-/// — nothing else (event 0.2 producer rules 3 and 5).
+/// One hint as the generated `event/0.5` document, unsigned: the topic,
+/// `observedAt`, `count` on a count topic, and the resume token — nothing else
+/// (event 0.5 producer rules 3 and 5).
 fn hint_document(
     grant: &Grant,
     topic: Topic,
@@ -1367,7 +1309,7 @@ fn hint_document(
         ($m:ident) => {{
             let mut builder = $m::Payload::builder()
                 .topic(topic.wire().parse::<$m::Topic>().ok()?)
-                .at(at)
+                .observed_at(at)
                 .resume_token($m::ResumeToken::try_from(token).ok()?);
             if let Some(c) = count {
                 builder = builder.count(Some(c));
@@ -1382,12 +1324,7 @@ fn hint_document(
             serde_json::to_value(&doc).ok()
         }};
     }
-    match grant.version {
-        Version::V0_1 => build!(event),
-        Version::V0_2 => build!(event_v0_2),
-        Version::V0_3 => build!(event_v0_3),
-        Version::V0_4 => build!(event_v0_4),
-    }
+    build!(event)
 }
 
 // ─── the stream ──────────────────────────────────────────────────────────
@@ -1731,9 +1668,9 @@ impl Stream {
         Ok(wrote)
     }
 
-    /// One `vtc/admin/events/event` document of the stream's version,
-    /// framed. Carries the topic, `at`, `count` on a count topic, and the
-    /// resume token — nothing else (event 0.2 producer rules 3 and 5).
+    /// One `vtc/admin/events/event/0.5` document, framed. Carries the topic,
+    /// `observedAt`, `count` on a count topic, and the resume token — nothing
+    /// else (event 0.5 producer rules 3 and 5).
     async fn hint(
         &self,
         topic: Topic,
@@ -1834,40 +1771,13 @@ mod tests {
     }
 
     #[test]
-    fn the_topic_set_is_closed_per_version() {
+    fn the_topic_set_is_the_published_one() {
         for t in Topic::ALL {
             assert_eq!(Topic::from_wire(t.wire()), Some(t));
-            assert!(t.wire().parse::<subscribe_v0_4::Topic>().is_ok());
-            assert!(t.wire().parse::<event_v0_4::Topic>().is_ok());
-            assert_eq!(
-                t.wire().parse::<subscribe_v0_3::Topic>().is_ok(),
-                t.in_version(Version::V0_3)
-            );
-            assert_eq!(
-                t.wire().parse::<event_v0_3::Topic>().is_ok(),
-                t.in_version(Version::V0_3)
-            );
-            assert_eq!(
-                t.wire().parse::<subscribe_v0_2::Topic>().is_ok(),
-                t.in_version(Version::V0_2)
-            );
-            assert_eq!(
-                t.wire().parse::<event_v0_2::Topic>().is_ok(),
-                t.in_version(Version::V0_2)
-            );
-            assert_eq!(
-                t.wire().parse::<subscribe::Topic>().is_ok(),
-                t.in_version(Version::V0_1)
-            );
-            assert_eq!(
-                t.wire().parse::<event::Topic>().is_ok(),
-                t.in_version(Version::V0_1)
-            );
+            assert!(t.wire().parse::<subscribe::Topic>().is_ok());
+            assert!(t.wire().parse::<event::Topic>().is_ok());
         }
-        assert!(!Topic::Rooms.in_version(Version::V0_1));
         assert!(!Topic::Rooms.is_count(), "rooms carries no count");
-        assert!(!Topic::CommunityRooms.in_version(Version::V0_3));
-        assert!(Topic::CommunityRooms.in_version(Version::V0_4));
         assert!(
             !Topic::CommunityRooms.is_count(),
             "communityRooms is not a count topic (subscribe 0.4)"

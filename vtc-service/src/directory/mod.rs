@@ -80,7 +80,7 @@ fn admit(
 }
 
 /// Tell open consoles the directory changed (the `directory` topic of
-/// `vtc/admin/events/subscribe/0.3`): every write a directory read would show
+/// `vtc/admin/events/subscribe/0.6`): every write a directory read would show
 /// passes here. A hint, carrying nothing.
 pub(crate) fn changed() {
     crate::admin_events::notify(crate::admin_events::Topic::Directory);

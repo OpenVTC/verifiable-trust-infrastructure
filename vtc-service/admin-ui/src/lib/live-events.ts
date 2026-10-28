@@ -17,7 +17,7 @@
 // Why `fetch` and not `EventSource`: the binding accepts only a signed
 // `POST /v1/trust-tasks`. `EventSource` can only `GET`, cannot carry the
 // document, and reconnects by itself without one — so this reads the body as
-// a stream and reconnects with a freshly signed subscribe carrying `since`.
+// a stream and reconnects with a freshly signed subscribe carrying `resumeToken`.
 //
 // Live or offline, never latched (subscribe 0.1 rules 8–10, R6.2): `live`
 // only while bytes arrive at intervals no longer than twice
@@ -29,14 +29,9 @@
 // `notAdministrator`, `permissionDenied`) stops trying; `tooManyStreams` backs
 // off and tries again.
 
-export const SUBSCRIBE_TASK = "https://trusttasks.org/spec/vtc/admin/events/subscribe/0.1";
-export const EVENT_TASK = "https://trusttasks.org/spec/vtc/admin/events/event/0.1";
-export const SUBSCRIBE_TASK_V0_2 = "https://trusttasks.org/spec/vtc/admin/events/subscribe/0.2";
-export const EVENT_TASK_V0_2 = "https://trusttasks.org/spec/vtc/admin/events/event/0.2";
-export const SUBSCRIBE_TASK_V0_3 = "https://trusttasks.org/spec/vtc/admin/events/subscribe/0.3";
-export const EVENT_TASK_V0_3 = "https://trusttasks.org/spec/vtc/admin/events/event/0.3";
-export const SUBSCRIBE_TASK_V0_4 = "https://trusttasks.org/spec/vtc/admin/events/subscribe/0.4";
-export const EVENT_TASK_V0_4 = "https://trusttasks.org/spec/vtc/admin/events/event/0.4";
+/** `vtc/admin/events/subscribe/0.6`, whose stream carries `event/0.5` hints. */
+export const SUBSCRIBE_TASK = "https://trusttasks.org/spec/vtc/admin/events/subscribe/0.6";
+export const EVENT_TASK = "https://trusttasks.org/spec/vtc/admin/events/event/0.5";
 
 /** What the binding asks for: a stream, or JSON from a server that cannot. */
 export const STREAM_ACCEPT = "text/event-stream, application/json;q=0.5";
@@ -69,55 +64,20 @@ export const ALL_TOPICS: readonly Topic[] = [
   "communityRooms",
 ];
 
-/** The topics 0.3 adds. */
-const V0_3_TOPICS: readonly Topic[] = ["directory", "groups"];
-/** The topic 0.4 adds. */
-const V0_4_TOPICS: readonly Topic[] = ["communityRooms"];
-
-/** One version of the channel: the task it subscribes with, the hints it
- * accepts, and its closed topic set. */
+/** The channel: the task it subscribes with, the hints it accepts, and its
+ * closed topic set. The console is served by the community it talks to, so it
+ * speaks the one version that community serves. */
 export interface LiveVersion {
   subscribe: string;
   event: string;
   topics: readonly Topic[];
 }
 
-export const LIVE_V0_1: LiveVersion = {
+export const LIVE: LiveVersion = {
   subscribe: SUBSCRIBE_TASK,
   event: EVENT_TASK,
-  topics: ALL_TOPICS.filter(
-    (t) => t !== "rooms" && !V0_3_TOPICS.includes(t) && !V0_4_TOPICS.includes(t),
-  ),
-};
-
-/** 0.2 adds `rooms`: the rooms this community hosts and where their files are kept. */
-export const LIVE_V0_2: LiveVersion = {
-  subscribe: SUBSCRIBE_TASK_V0_2,
-  event: EVENT_TASK_V0_2,
-  topics: ALL_TOPICS.filter((t) => !V0_3_TOPICS.includes(t) && !V0_4_TOPICS.includes(t)),
-};
-
-/** 0.3 adds `directory` and `groups`: the member directory and the community's groups. */
-export const LIVE_V0_3: LiveVersion = {
-  subscribe: SUBSCRIBE_TASK_V0_3,
-  event: EVENT_TASK_V0_3,
-  topics: ALL_TOPICS.filter((t) => !V0_4_TOPICS.includes(t)),
-};
-
-/** 0.4 adds `communityRooms`: the rooms the community itself owns, as their
- * owner sees them — for holders of `vtc.rooms.manage`. */
-export const LIVE_V0_4: LiveVersion = {
-  subscribe: SUBSCRIBE_TASK_V0_4,
-  event: EVENT_TASK_V0_4,
   topics: ALL_TOPICS,
 };
-
-/** The version to subscribe at, from what `trust-task-discovery` lists. */
-export function liveVersionFor(served: readonly unknown[]): LiveVersion {
-  if (served.includes(SUBSCRIBE_TASK_V0_4)) return LIVE_V0_4;
-  if (served.includes(SUBSCRIBE_TASK_V0_3)) return LIVE_V0_3;
-  return served.includes(SUBSCRIBE_TASK_V0_2) ? LIVE_V0_2 : LIVE_V0_1;
-}
 
 /** The topics whose hints carry a count; any other's `count` is ignored. */
 export const COUNT_TOPICS: readonly Topic[] = ["actions", "acknowledgements", "joinRequests"];
@@ -140,7 +100,7 @@ export interface SignedSubscribe {
 
 export interface LiveEventsDeps {
   /** Sign a fresh subscribe document (new `id`, `issuedAt`, proof). */
-  sign: (payload: { topics: Topic[]; since?: string }) => Promise<SignedSubscribe>;
+  sign: (payload: { topics: Topic[]; resumeToken?: string }) => Promise<SignedSubscribe>;
   fetch: typeof fetch;
   csrf?: () => string | null;
   /** `[0, 1)`; jitter. */
@@ -271,7 +231,7 @@ export class LiveEvents {
     topics: readonly Topic[],
     private readonly handlers: LiveEventsHandlers,
     private readonly deps: LiveEventsDeps,
-    private readonly version: LiveVersion = LIVE_V0_1,
+    private readonly version: LiveVersion = LIVE,
   ) {
     // The version's topic set is closed: never ask it for one it lacks.
     this.topics = topics.filter((t) => version.topics.includes(t));
@@ -366,7 +326,7 @@ export class LiveEvents {
     try {
       doc = await this.deps.sign({
         topics: [...this.topics],
-        ...(this.since ? { since: this.since } : {}),
+        ...(this.since ? { resumeToken: this.since } : {}),
       });
     } catch (e) {
       // No key or no Ed25519 in this browser: nothing to sign with, so
@@ -379,7 +339,7 @@ export class LiveEvents {
     };
     const csrf = this.deps.csrf?.();
     if (csrf) headers["X-CSRF-Token"] = csrf;
-    // Diagnostics only: the server resumes from `since`, in-band.
+    // Diagnostics only: the server resumes from `resumeToken`, in-band.
     if (this.since) headers["Last-Event-ID"] = this.since;
 
     const res = await this.deps.fetch("/v1/trust-tasks", {

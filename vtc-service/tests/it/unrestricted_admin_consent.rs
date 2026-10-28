@@ -35,16 +35,16 @@ const PATCH: &str = "https://trusttasks.org/spec/config/patch/0.1";
 const ACTIVATE: &str = "https://trusttasks.org/spec/policy/activate/0.1";
 const UPSERT: &str = "https://trusttasks.org/spec/policy/upsert/0.2";
 const CREATE_INVITE: &str = "https://trusttasks.org/spec/vtc/admin/invites/create/0.1";
-const LIST: &str = "https://trusttasks.org/spec/vtc/admin/actions/list/0.1";
-const CANCEL: &str = "https://trusttasks.org/spec/vtc/admin/actions/cancel/0.1";
-const ACKNOWLEDGE: &str = "https://trusttasks.org/spec/vtc/admin/actions/acknowledge/0.1";
+const LIST: &str = "https://trusttasks.org/spec/vtc/admin/actions/list/0.3";
+const CANCEL: &str = "https://trusttasks.org/spec/vtc/admin/actions/cancel/0.3";
+const ACKNOWLEDGE: &str = "https://trusttasks.org/spec/vtc/admin/actions/acknowledge/0.3";
 const DECISION_V0_1: &str = "https://trusttasks.org/spec/task-consent/decision/0.1";
 const DECISION_V0_2: &str = "https://trusttasks.org/spec/task-consent/decision/0.2";
 const NEXT_STEP: &str = "https://trusttasks.org/spec/trust-task-next-step/0.1";
-const SHOW: &str = "https://trusttasks.org/spec/vtc/admin/actions/show/0.1";
+const SHOW: &str = "https://trusttasks.org/spec/vtc/admin/actions/show/0.3";
 /// What a parked operation's next step expects: the 0.2 read, which can say a
 /// cooling-off in its own terms.
-const SHOW_V0_2: &str = "https://trusttasks.org/spec/vtc/admin/actions/show/0.2";
+const SHOW_V0_2: &str = "https://trusttasks.org/spec/vtc/admin/actions/show/0.3";
 const THRESHOLD_KEY: &str = "acl.unrestricted_admin_consent_threshold";
 
 struct Fixture {

@@ -200,7 +200,7 @@ describe("Access control — roles and capabilities", () => {
 describe("Access control — your own entry (VTI-ACL-052)", () => {
   const ME = "did:example:me";
   const UPDATE = "https://trusttasks.org/spec/acl/update/0.2";
-  const ACTIONS_LIST = "https://trusttasks.org/spec/vtc/admin/actions/list/0.2";
+  const ACTIONS_LIST = "https://trusttasks.org/spec/vtc/admin/actions/list/0.3";
   const whoami = {
     session: {
       id: "s1",
@@ -288,7 +288,7 @@ describe("Access control — your own entry (VTI-ACL-052)", () => {
 describe("Access control — suspension and remove now", () => {
   const OTHER = "did:example:other";
   const REVOKE = "https://trusttasks.org/spec/acl/revoke/0.1";
-  const ACTIONS_LIST = "https://trusttasks.org/spec/vtc/admin/actions/list/0.2";
+  const ACTIONS_LIST = "https://trusttasks.org/spec/vtc/admin/actions/list/0.3";
   const LANDS_AT = "2026-10-05T09:00:00Z";
   const other = (suspended = false) => ({
     subject: OTHER,

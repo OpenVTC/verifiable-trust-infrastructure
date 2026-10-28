@@ -463,7 +463,7 @@ pub struct CommunityRooms {
 static DEPARTURES: tokio::sync::Notify = tokio::sync::Notify::const_new();
 
 /// Tell open consoles that what the owner's reads show of the community's rooms changed
-/// (the `communityRooms` topic of `vtc/admin/events/subscribe/0.4`). Called after the
+/// (the `communityRooms` topic of `vtc/admin/events/subscribe/0.6`). Called after the
 /// record lands, from every write to this keyspace those reads show. A hint, carrying
 /// nothing: no room, member or record is named (event 0.4 producer rule 9).
 pub(crate) fn changed() {

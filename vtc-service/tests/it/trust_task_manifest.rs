@@ -753,18 +753,12 @@ const EMBEDDED_DOCUMENT_TYPES: &[&str] = &[
     // `typeUri` for an operator's offline write, whose `payload` is the record
     // (VTI-VTC-023, trust-tasks-tf #719). The console only reads it, to pin
     // the summary template; a document of this type answers `unsupportedType`.
-    "https://trusttasks.org/spec/vtc/operator/offline-write/0.1",
+    "https://trusttasks.org/spec/vtc/operator/offline-write/0.2",
     // A streamed document the console receives on its live channel and never
     // sends: hints the VTC writes after the subscribe's `#response`
     // (`crate::admin_events`). A document of this type answers
     // `unsupportedType`.
-    "https://trusttasks.org/spec/vtc/admin/events/event/0.1",
-    // …and at 0.2, on a stream opened at 0.2 (the `rooms` topic).
-    "https://trusttasks.org/spec/vtc/admin/events/event/0.2",
-    // …and at 0.3, on a stream opened at 0.3 (`directory`, `groups`).
-    "https://trusttasks.org/spec/vtc/admin/events/event/0.3",
-    // …and at 0.4, on a stream opened at 0.4 (`communityRooms`).
-    "https://trusttasks.org/spec/vtc/admin/events/event/0.4",
+    "https://trusttasks.org/spec/vtc/admin/events/event/0.5",
 ];
 
 /// Document types the console sends that the spine dispatches only in a build
@@ -848,22 +842,15 @@ const SPINE_DOCUMENT_TYPES: &[&str] = &[
     // The administrator action list (`trust_tasks::action_tasks`): its reads
     // and withdrawal, signed by the console key, and an approver's decision,
     // signed by the approver's own DID through the wallet.
-    // At 0.2 (`_shared/0.2`, a cooling-off in its own terms); the spine still
-    // answers 0.1, which the console no longer sends.
-    "https://trusttasks.org/spec/vtc/admin/actions/list/0.2",
-    "https://trusttasks.org/spec/vtc/admin/actions/show/0.2",
-    "https://trusttasks.org/spec/vtc/admin/actions/cancel/0.2",
+    // At 0.3 (`_shared/0.3`: a cooling-off in its own terms, `decidedAt`).
+    "https://trusttasks.org/spec/vtc/admin/actions/list/0.3",
+    "https://trusttasks.org/spec/vtc/admin/actions/show/0.3",
+    "https://trusttasks.org/spec/vtc/admin/actions/cancel/0.3",
     // An operator's offline write, acknowledged (VTI-VTC-023).
-    "https://trusttasks.org/spec/vtc/admin/actions/acknowledge/0.2",
+    "https://trusttasks.org/spec/vtc/admin/actions/acknowledge/0.3",
     // The console's live channel (`trust_tasks::event_tasks`): its success is
     // a streamed response on this door (HTTPS binding 0.3 §2.1).
-    "https://trusttasks.org/spec/vtc/admin/events/subscribe/0.1",
-    // At 0.2 (adds `rooms`) when `trust-task-discovery` lists it.
-    "https://trusttasks.org/spec/vtc/admin/events/subscribe/0.2",
-    // At 0.3 (adds `directory` and `groups`) when discovery lists it.
-    "https://trusttasks.org/spec/vtc/admin/events/subscribe/0.3",
-    // At 0.4 (adds `communityRooms`) when discovery lists it.
-    "https://trusttasks.org/spec/vtc/admin/events/subscribe/0.4",
+    "https://trusttasks.org/spec/vtc/admin/events/subscribe/0.6",
     // Custom administrative roles (`trust_tasks::role_tasks`): the Roles
     // page's reads, and the definitions it sends for approval.
     "https://trusttasks.org/spec/vtc/roles/list/0.1",
@@ -1021,13 +1008,13 @@ const SPINE_DOCUMENT_TYPES: &[&str] = &[
     // Storage, and a room's "other storage" (`trust_tasks::storage_tasks`).
     "https://trusttasks.org/spec/vtc/storage/configs/list/0.2",
     "https://trusttasks.org/spec/vtc/storage/configs/get/0.2",
-    "https://trusttasks.org/spec/vtc/storage/configs/create/0.2",
-    "https://trusttasks.org/spec/vtc/storage/configs/update/0.2",
-    "https://trusttasks.org/spec/vtc/storage/configs/retire/0.1",
+    "https://trusttasks.org/spec/vtc/storage/configs/create/0.3",
+    "https://trusttasks.org/spec/vtc/storage/configs/update/0.3",
+    "https://trusttasks.org/spec/vtc/storage/configs/retire/0.3",
     "https://trusttasks.org/spec/vtc/storage/configs/probe/0.1",
-    "https://trusttasks.org/spec/vtc/storage/credentials/set/0.2",
-    "https://trusttasks.org/spec/vtc/rooms/storage/assign/0.1",
-    "https://trusttasks.org/spec/vtc/rooms/storage/migrate/0.2",
+    "https://trusttasks.org/spec/vtc/storage/credentials/set/0.3",
+    "https://trusttasks.org/spec/vtc/rooms/storage/assign/0.2",
+    "https://trusttasks.org/spec/vtc/rooms/storage/migrate/0.3",
     // Community rooms, the Community rooms tab (`trust_tasks::community_room_tasks`).
     // Each room with its description, tags and who last changed them; a create or update
     // also writes the label and description into the room as its profile.

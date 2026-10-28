@@ -38,7 +38,7 @@ const FILES: Record<string, string> = Object.fromEntries(
 );
 
 const T = "https://trusttasks.org/spec";
-const ACTIONS = `${T}/vtc/admin/actions/list/0.2`;
+const ACTIONS = `${T}/vtc/admin/actions/list/0.3`;
 const JOINS = `${T}/vtc/join-requests/list/0.2`;
 const MEMBERS = `${T}/vtc/members/list/0.2`;
 const REGISTRY_RECORDS = `${T}/vtc/registry/records/list/0.2`;

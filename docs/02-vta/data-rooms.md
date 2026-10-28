@@ -1003,9 +1003,9 @@ community's ACL or a session.
   reassigning a room strands nothing. On first start the VTC seeds one, `local`,
   at `blob_dir`, as the default; every room is assigned to the default when it
   is created. A holder of `vtc.rooms.admin` manages them with
-  `vtc/storage/configs/{list,get,create,update,retire,probe}/0.1` (list, get,
-  create and update also at 0.2), `vtc/storage/credentials/set/0.2`,
-  `vtc/rooms/storage/assign/0.1` and `vtc/rooms/storage/migrate/{0.1,0.2}`. Creating,
+  `vtc/storage/configs/{list,get}/0.2`, `{create,update,retire}/0.3` and
+  `probe/0.1`, `vtc/storage/credentials/set/0.3`,
+  `vtc/rooms/storage/assign/0.2` and `vtc/rooms/storage/migrate/0.3`. Creating,
   changing and retiring a config, setting a sealed credential, and reassigning a
   room or moving its files, are **parked for the other holders' consent** in the
   administrator action list. This build stores to `local` configs, to `s3` configs
@@ -1027,8 +1027,8 @@ community's ACL or a session.
   budget as any other large document; a chunk arriving at `POST /v1/trust-tasks`
   is under the room budgets below instead (over DIDComm or TSP it still takes the
   large-document budget).
-- **Moving a room's files** (`vtc/rooms/storage/migrate/0.2`, and 0.1 for older
-  clients, §7.3 of the design note). Reassigning a room leaves its existing files where they are; a
+- **Moving a room's files** (`vtc/rooms/storage/migrate/0.3`, §7.3 of the
+  design note). Reassigning a room leaves its existing files where they are; a
   migration moves them onto the config the room is assigned to, one at a time:
   each is copied, read back from the new config and checked against every chunk
   digest and the whole-blob digest of its committed manifest, and only then

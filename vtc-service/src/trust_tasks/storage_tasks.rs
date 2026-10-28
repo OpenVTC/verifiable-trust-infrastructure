@@ -1,7 +1,7 @@
-//! Where this community keeps its rooms' files — `vtc/storage/configs/{create,update,
-//! retire,probe}/0.1`, `vtc/storage/configs/{list,get,create,update}/0.2`,
-//! `vtc/storage/credentials/set/0.2`, `vtc/rooms/storage/assign/0.1` and
-//! `vtc/rooms/storage/migrate/{0.1,0.2}`
+//! Where this community keeps its rooms' files — `vtc/storage/configs/{list,get}/0.2`,
+//! `vtc/storage/configs/{create,update,retire}/0.3`, `vtc/storage/configs/probe/0.1`,
+//! `vtc/storage/credentials/set/0.3`, `vtc/rooms/storage/assign/0.2` and
+//! `vtc/rooms/storage/migrate/0.3`
 //! (`docs/05-design-notes/data-rooms-files.md` §7; [`crate::rooms::storage_configs`]).
 //!
 //! The authority is `vtc.rooms.admin`, read from the signer's own entry at execution
@@ -20,26 +20,24 @@
 //!   paused one: it is the same, already approved, migration) or has nothing to move.
 //!
 //! No member of any of these tasks carries a credential in the clear, and no answer
-//! returns one. `vtc/storage/credentials/set/0.2` carries one sealed to this community,
+//! returns one. `vtc/storage/credentials/set/0.3` carries one sealed to this community,
 //! which only [`crate::rooms::storage_credentials`] opens.
 //!
-//! **Versions.** Each version is answered at its own version. 0.2 (trust-tasks-tf #866)
-//! adds `roleArn` on `ambient`, the `notAllowed` credential status, and
-//! `authNotAllowed`'s `details.reason`; a 0.1 reader is answered in 0.1's shape — a
-//! config's `roleArn` left out, and `notAllowed` reported as `required`, its nearest
-//! 0.1 status (neither is usable).
+//! **Versions.** Only the versions above are served; an older one is refused
+//! `unsupportedVersion`. The parked-operation answers of `create`, `update`, `retire`,
+//! `credentials/set`, `assign` and `migrate` name `vtc/admin/actions/show/0.3` in their
+//! `expects`, the version that names an approval's instant `decidedAt`.
 
 use std::collections::HashMap;
 
 use serde_json::{Value, json};
-use trust_tasks_rs::specs::vtc::rooms::storage::assign::v0_1 as assign;
-use trust_tasks_rs::specs::vtc::rooms::storage::migrate::v0_1 as migrate;
-use trust_tasks_rs::specs::vtc::rooms::storage::migrate::v0_2 as migrate_v2;
+use trust_tasks_rs::specs::vtc::rooms::storage::assign::v0_2 as assign;
+use trust_tasks_rs::specs::vtc::rooms::storage::migrate::v0_3 as migrate;
 use trust_tasks_rs::specs::vtc::storage::configs::{
-    create::v0_1 as create, create::v0_2 as create2, get::v0_2 as get, list::v0_2 as list,
-    probe::v0_1 as probe, retire::v0_1 as retire, update::v0_1 as update, update::v0_2 as update2,
+    create::v0_3 as create, get::v0_2 as get, list::v0_2 as list, probe::v0_1 as probe,
+    retire::v0_3 as retire, update::v0_3 as update,
 };
-use trust_tasks_rs::specs::vtc::storage::credentials::set::v0_2 as set;
+use trust_tasks_rs::specs::vtc::storage::credentials::set::v0_3 as set;
 use trust_tasks_rs::{Payload, RejectReason, TrustTask};
 use vti_common::audit::{AuditEvent, RoomStorageChangedData};
 use vti_common::auth::extractor::AuthClaims;
@@ -54,7 +52,6 @@ use super::helpers::{
 use super::{JoinAuthCtx, admin_signer, parse_spec_payload};
 use crate::acl::Capability;
 use crate::acl::admin_consent::Act;
-use crate::rooms::migration::Wire;
 use crate::rooms::storage_configs::{SettingsError, kind_of, mode_of, state_of};
 use crate::rooms::storage_credentials::SealedRefusal;
 use crate::routes::acl::conform;
@@ -68,10 +65,7 @@ pub(crate) const RETIRE_TYPE: &str = <retire::Payload as Payload>::TYPE_URI;
 pub(crate) const PROBE_TYPE: &str = <probe::Payload as Payload>::TYPE_URI;
 pub(crate) const ASSIGN_TYPE: &str = <assign::Payload as Payload>::TYPE_URI;
 pub(crate) const MIGRATE_TYPE: &str = <migrate::Payload as Payload>::TYPE_URI;
-pub(crate) const CREATE_V0_2_TYPE: &str = <create2::Payload as Payload>::TYPE_URI;
-pub(crate) const UPDATE_V0_2_TYPE: &str = <update2::Payload as Payload>::TYPE_URI;
 pub(crate) const CREDENTIALS_SET_TYPE: &str = <set::Payload as Payload>::TYPE_URI;
-pub(crate) const MIGRATE_V2_TYPE: &str = <migrate_v2::Payload as Payload>::TYPE_URI;
 
 /// Every URI this module routes.
 pub(crate) const URIS: &[&str] = &[
@@ -79,14 +73,11 @@ pub(crate) const URIS: &[&str] = &[
     GET_TYPE,
     CREATE_TYPE,
     UPDATE_TYPE,
-    CREATE_V0_2_TYPE,
-    UPDATE_V0_2_TYPE,
     CREDENTIALS_SET_TYPE,
     RETIRE_TYPE,
     PROBE_TYPE,
     ASSIGN_TYPE,
     MIGRATE_TYPE,
-    MIGRATE_V2_TYPE,
 ];
 
 /// At most this many room identifiers in a `get` (`vtc/storage/configs/get` item 2).
@@ -107,45 +98,15 @@ pub(super) async fn dispatch(
     Some(match type_uri {
         LIST_TYPE => handle_list(state, ctx, doc).await,
         GET_TYPE => handle_get(state, ctx, doc).await,
-        CREATE_TYPE => handle_create(state, ctx, doc, V::One).await,
-        UPDATE_TYPE => handle_update(state, ctx, doc, V::One).await,
-        CREATE_V0_2_TYPE => handle_create(state, ctx, doc, V::Two).await,
-        UPDATE_V0_2_TYPE => handle_update(state, ctx, doc, V::Two).await,
+        CREATE_TYPE => handle_create(state, ctx, doc).await,
+        UPDATE_TYPE => handle_update(state, ctx, doc).await,
         CREDENTIALS_SET_TYPE => handle_credentials_set(state, ctx, doc).await,
         RETIRE_TYPE => handle_retire(state, ctx, doc).await,
         PROBE_TYPE => handle_probe(state, ctx, doc).await,
         ASSIGN_TYPE => handle_assign(state, ctx, doc).await,
-        MIGRATE_TYPE => handle_migrate(state, ctx, doc, Wire::V0_1).await,
-        MIGRATE_V2_TYPE => handle_migrate(state, ctx, doc, Wire::V0_2).await,
+        MIGRATE_TYPE => handle_migrate(state, ctx, doc).await,
         _ => return None,
     })
-}
-
-/// The version of a `vtc/storage/configs/*` task being answered.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum V {
-    One,
-    Two,
-}
-
-/// A stored config, as a 0.1 reader may be shown it: 0.1's `ambient` is closed, so
-/// `roleArn` is left out.
-fn config_at(v: V, mut config: Value) -> Value {
-    if v == V::One
-        && let Some(auth) = config.get_mut("auth").and_then(Value::as_object_mut)
-    {
-        auth.remove("roleArn");
-    }
-    config
-}
-
-/// A config's facts at `v`: 0.1 has no `notAllowed`, so a mode the host no longer
-/// permits reads as `required` — not usable, in the nearest words 0.1 has.
-fn facts_at(v: V, mut facts: Value) -> Value {
-    if v == V::One && facts["credential"]["status"] == "notAllowed" {
-        facts["credential"] = json!({ "status": "required" });
-    }
-    facts
 }
 
 pub(super) fn refuse(
@@ -189,11 +150,10 @@ pub(super) async fn rooms_admin(
     Ok(actor)
 }
 
-/// A refusal of proposed settings, under the codes `task` declares. At 0.2,
-/// `authNotAllowed` names its reason in `details`; 0.1 declares no details for it.
+/// A refusal of proposed settings, under the codes `task` declares; `authNotAllowed`
+/// names its reason in `details`.
 fn settings_refusal(
     doc: &TrustTask<Value>,
-    v: V,
     invalid: &str,
     auth_not_allowed: &str,
     unknown_account: &str,
@@ -210,7 +170,7 @@ fn settings_refusal(
             doc,
             auth_not_allowed,
             reason,
-            (v == V::Two).then(|| json!({ "reason": why.as_str() })),
+            Some(json!({ "reason": why.as_str() })),
         ),
         SettingsError::UnknownAccount(reason) => refuse(doc, unknown_account, reason, None),
     }
@@ -336,8 +296,8 @@ async fn handle_list(
             Err(e) => return app_error_to_reject(&doc, &e),
         };
         items.push(json!({
-            "config": config_at(V::Two, config),
-            "facts": facts_at(V::Two, facts),
+            "config": config,
+            "facts": facts,
         }));
     }
     let mut body = json!({ "items": items });
@@ -388,8 +348,8 @@ async fn handle_get(
         Err(e) => return app_error_to_reject(&doc, &e),
     };
     let body = json!({
-        "config": config_at(V::Two, config),
-        "facts": facts_at(V::Two, facts),
+        "config": config,
+        "facts": facts,
         "assignedRoomsTruncated": rooms.len() > ASSIGNED_ROOMS_SHOWN,
         "assignedRooms": rooms.into_iter().take(ASSIGNED_ROOMS_SHOWN).collect::<Vec<_>>(),
     });
@@ -407,45 +367,31 @@ struct CreateAsk {
     reason: String,
 }
 
-/// `vtc/storage/configs/create/{0.1,0.2}`.
+/// `vtc/storage/configs/create/0.3`.
 async fn handle_create(
     state: &AppState,
     ctx: &JoinAuthCtx,
     doc: TrustTask<Value>,
-    v: V,
 ) -> TrustTaskOutcome {
     let actor = match rooms_admin(state, ctx, &doc).await {
         Ok(a) => a,
         Err(reject) => return reject,
     };
-    let checked = match v {
-        V::One => match parse_spec_payload::<create::Payload>(&doc) {
-            Ok(p) => CreateAsk {
-                id: p.id.to_string(),
-                label: p.label.to_string(),
-                capacity_bytes: p.capacity_bytes,
-                is_default: p.is_default,
-                reason: p.reason.to_string(),
-            },
-            Err(reject) => return reject,
+    let checked = match parse_spec_payload::<create::Payload>(&doc) {
+        Ok(p) => CreateAsk {
+            id: p.id.to_string(),
+            label: p.label.to_string(),
+            capacity_bytes: p.capacity_bytes,
+            is_default: p.is_default,
+            reason: p.reason.to_string(),
         },
-        V::Two => match parse_spec_payload::<create2::Payload>(&doc) {
-            Ok(p) => CreateAsk {
-                id: p.id.to_string(),
-                label: p.label.to_string(),
-                capacity_bytes: p.capacity_bytes,
-                is_default: p.is_default,
-                reason: p.reason.to_string(),
-            },
-            Err(reject) => return reject,
-        },
+        Err(reject) => return reject,
     };
     let id = checked.id.clone();
     let settings = doc.payload["settings"].clone();
     let auth = doc.payload.get("auth").cloned();
 
-    if let Some(reject) = create_refusal(state, &doc, v, &id, &settings, auth.as_ref(), false).await
-    {
+    if let Some(reject) = create_refusal(state, &doc, &id, &settings, auth.as_ref(), false).await {
         return reject;
     }
 
@@ -465,8 +411,7 @@ async fn handle_create(
 
     let _guard = state.room_storage.lock().await;
     // Every check again, against the community as it is now, and the root prepared.
-    if let Some(reject) = create_refusal(state, &doc, v, &id, &settings, auth.as_ref(), true).await
-    {
+    if let Some(reject) = create_refusal(state, &doc, &id, &settings, auth.as_ref(), true).await {
         return reject;
     }
     let mut record = json!({
@@ -510,11 +455,7 @@ async fn handle_create(
     if state.room_storage.usable(&record) {
         let _ = run_probe(state, &id).await;
     }
-    let body = json!({ "config": config_at(v, record) });
-    match v {
-        V::One => respond::<create::Response>(&doc, body),
-        V::Two => respond::<create2::Response>(&doc, body),
-    }
+    respond::<create::Response>(&doc, json!({ "config": record }))
 }
 
 /// Why a create cannot run now, if it cannot. With `prepare`, a `local` root that passes
@@ -522,26 +463,17 @@ async fn handle_create(
 async fn create_refusal(
     state: &AppState,
     doc: &TrustTask<Value>,
-    v: V,
     id: &str,
     settings: &Value,
     auth: Option<&Value>,
     prepare: bool,
 ) -> Option<TrustTaskOutcome> {
-    let (exists, invalid, not_allowed, unknown) = match v {
-        V::One => (
-            create::error_codes::EXISTS.code,
-            create::error_codes::INVALID_SETTINGS.code,
-            create::error_codes::AUTH_NOT_ALLOWED.code,
-            create::error_codes::UNKNOWN_ACCOUNT.code,
-        ),
-        V::Two => (
-            create2::error_codes::EXISTS.code,
-            create2::error_codes::INVALID_SETTINGS.code,
-            create2::error_codes::AUTH_NOT_ALLOWED.code,
-            create2::error_codes::UNKNOWN_ACCOUNT.code,
-        ),
-    };
+    let (exists, invalid, not_allowed, unknown) = (
+        create::error_codes::EXISTS.code,
+        create::error_codes::INVALID_SETTINGS.code,
+        create::error_codes::AUTH_NOT_ALLOWED.code,
+        create::error_codes::UNKNOWN_ACCOUNT.code,
+    );
     match state.room_storage.config(id).await {
         Ok(Some(_)) => {
             return Some(refuse(
@@ -559,70 +491,27 @@ async fn create_refusal(
         .validate(settings, auth, None, prepare)
         .await
     {
-        return Some(settings_refusal(doc, v, invalid, not_allowed, unknown, e));
+        return Some(settings_refusal(doc, invalid, not_allowed, unknown, e));
     }
     None
 }
 
 // ─── update ──────────────────────────────────────────────────────────────
 
-/// The codes an update refuses with, at its version.
-struct UpdateCodes {
-    not_found: &'static str,
-    kind_immutable: &'static str,
-    location_immutable: &'static str,
-    invalid: &'static str,
-    not_allowed: &'static str,
-    unknown: &'static str,
-    not_active: &'static str,
-}
-
-impl UpdateCodes {
-    fn at(v: V) -> Self {
-        match v {
-            V::One => {
-                use update::error_codes as c;
-                Self {
-                    not_found: c::NOT_FOUND.code,
-                    kind_immutable: c::KIND_IMMUTABLE.code,
-                    location_immutable: c::LOCATION_IMMUTABLE.code,
-                    invalid: c::INVALID_SETTINGS.code,
-                    not_allowed: c::AUTH_NOT_ALLOWED.code,
-                    unknown: c::UNKNOWN_ACCOUNT.code,
-                    not_active: c::NOT_ACTIVE.code,
-                }
-            }
-            V::Two => {
-                use update2::error_codes as c;
-                Self {
-                    not_found: c::NOT_FOUND.code,
-                    kind_immutable: c::KIND_IMMUTABLE.code,
-                    location_immutable: c::LOCATION_IMMUTABLE.code,
-                    invalid: c::INVALID_SETTINGS.code,
-                    not_allowed: c::AUTH_NOT_ALLOWED.code,
-                    unknown: c::UNKNOWN_ACCOUNT.code,
-                    not_active: c::NOT_ACTIVE.code,
-                }
-            }
-        }
-    }
-}
-
 /// What an update would store, or why it cannot.
 async fn plan_update(
     state: &AppState,
     doc: &TrustTask<Value>,
-    v: V,
     id: &str,
     prepare: bool,
 ) -> Result<(Value, Value), TrustTaskOutcome> {
-    let c = UpdateCodes::at(v);
+    use update::error_codes as c;
     let current = match state.room_storage.config(id).await {
         Ok(Some(c)) => c,
         Ok(None) => {
             return Err(refuse(
                 doc,
-                c.not_found,
+                c::NOT_FOUND.code,
                 format!("no storage config `{id}`"),
                 None,
             ));
@@ -638,7 +527,7 @@ async fn plan_update(
     {
         return Err(refuse(
             doc,
-            c.kind_immutable,
+            c::KIND_IMMUTABLE.code,
             format!(
                 "`{id}` stores to `{}`; a config's kind never changes — create another config",
                 kind_of(&current["settings"])
@@ -652,7 +541,7 @@ async fn plan_update(
     if state_of(&current) != "active" && beyond_label {
         return Err(refuse(
             doc,
-            c.not_active,
+            c::NOT_ACTIVE.code,
             format!(
                 "`{id}` is {}; only its label can change",
                 state_of(&current)
@@ -679,7 +568,7 @@ async fn plan_update(
             if held.get(id).is_some_and(|h| h.files > 0) {
                 return Err(refuse(
                     doc,
-                    c.location_immutable,
+                    c::LOCATION_IMMUTABLE.code,
                     format!(
                         "blobs on `{id}` are found by {}; it cannot move while it holds any — \
                          create a config at the new location and migrate the rooms",
@@ -702,10 +591,9 @@ async fn plan_update(
         {
             return Err(settings_refusal(
                 doc,
-                v,
-                c.invalid,
-                c.not_allowed,
-                c.unknown,
+                c::INVALID_SETTINGS.code,
+                c::AUTH_NOT_ALLOWED.code,
+                c::UNKNOWN_ACCOUNT.code,
                 e,
             ));
         }
@@ -730,28 +618,21 @@ async fn plan_update(
     Ok((current, next))
 }
 
-/// `vtc/storage/configs/update/{0.1,0.2}`.
+/// `vtc/storage/configs/update/0.3`.
 async fn handle_update(
     state: &AppState,
     ctx: &JoinAuthCtx,
     doc: TrustTask<Value>,
-    v: V,
 ) -> TrustTaskOutcome {
     let actor = match rooms_admin(state, ctx, &doc).await {
         Ok(a) => a,
         Err(reject) => return reject,
     };
-    let (id, reason) = match v {
-        V::One => match parse_spec_payload::<update::Payload>(&doc) {
-            Ok(p) => (p.config_id.to_string(), p.reason.to_string()),
-            Err(reject) => return reject,
-        },
-        V::Two => match parse_spec_payload::<update2::Payload>(&doc) {
-            Ok(p) => (p.config_id.to_string(), p.reason.to_string()),
-            Err(reject) => return reject,
-        },
+    let (id, reason) = match parse_spec_payload::<update::Payload>(&doc) {
+        Ok(p) => (p.config_id.to_string(), p.reason.to_string()),
+        Err(reject) => return reject,
     };
-    if let Err(reject) = plan_update(state, &doc, v, &id, false).await {
+    if let Err(reject) = plan_update(state, &doc, &id, false).await {
         return reject;
     }
     if let Err(reject) = super::acl_tasks::settle_consent_gate(
@@ -769,7 +650,7 @@ async fn handle_update(
     }
 
     let guard = state.room_storage.lock().await;
-    let (previous, mut next) = match plan_update(state, &doc, v, &id, true).await {
+    let (previous, mut next) = match plan_update(state, &doc, &id, true).await {
         Ok(p) => p,
         Err(reject) => return reject,
     };
@@ -794,11 +675,7 @@ async fn handle_update(
         },
     )
     .await;
-    let body = json!({ "config": config_at(v, next) });
-    match v {
-        V::One => respond::<update::Response>(&doc, body),
-        V::Two => respond::<update2::Response>(&doc, body),
-    }
+    respond::<update::Response>(&doc, json!({ "config": next }))
 }
 
 // ─── credentials ─────────────────────────────────────────────────────────
@@ -879,7 +756,7 @@ fn open_sealed(
         })
 }
 
-/// `vtc/storage/credentials/set/0.2`: a `sealed` config's long-lived credential, sealed
+/// `vtc/storage/credentials/set/0.3`: a `sealed` config's long-lived credential, sealed
 /// to this community in the administrator's client. Parked for the other holders'
 /// consent like every storage change; on execution every check runs again, the
 /// credential replaces (destroys) any before it, the config is probed with it, and the
@@ -1026,11 +903,32 @@ async fn plan_retire(
             None,
         ));
     }
+    // Item 3: not while room files are still being moved onto it. A migration off the
+    // config, or one complete or failed, does not count.
+    let inbound = match state.room_files.migrations().await {
+        Ok(all) => all
+            .iter()
+            .filter(|m| m.to_config == id && m.state.is_open())
+            .count(),
+        Err(e) => return Err(app_error_to_reject(doc, &e)),
+    };
+    if inbound > 0 {
+        return Err(refuse(
+            doc,
+            c::MIGRATIONS_INBOUND.code,
+            format!(
+                "{inbound} migration(s) of room files onto `{id}` have not finished; let them \
+                 finish, or move the rooms' files elsewhere, first"
+            ),
+            Some(json!({ "migrations": inbound })),
+        ));
+    }
     let next = if remaining > 0 { "draining" } else { "retired" };
     Ok((current, Some(next), remaining))
 }
 
-/// `vtc/storage/configs/retire/0.1`.
+/// `vtc/storage/configs/retire/0.3`. Its check runs again under the storage lock when
+/// a parked retirement executes, as one step with any migration starting (item 3).
 async fn handle_retire(
     state: &AppState,
     ctx: &JoinAuthCtx,
@@ -1338,7 +1236,7 @@ async fn plan_assign(
     Ok(current)
 }
 
-/// `vtc/rooms/storage/assign/0.1`.
+/// `vtc/rooms/storage/assign/0.2`.
 async fn handle_assign(
     state: &AppState,
     ctx: &JoinAuthCtx,
@@ -1496,68 +1394,31 @@ fn capacity_refusal(
     )
 }
 
-/// The request as both versions state it: 0.2's request is 0.1's unchanged.
-struct MigrateAsk {
-    room_id: String,
-    reason: String,
-    max_bytes_per_second: Option<u64>,
+/// The migration, as the `#response`.
+fn migrate_answer(doc: &TrustTask<Value>, m: &Migration) -> TrustTaskOutcome {
+    respond::<migrate::Response>(doc, crate::rooms::migration::response_json(m))
 }
 
-fn parse_migrate(doc: &TrustTask<Value>, wire: Wire) -> Result<MigrateAsk, TrustTaskOutcome> {
-    let rate = |v: Option<i64>| v.map(|v| v.max(0) as u64);
-    Ok(match wire {
-        Wire::V0_1 => {
-            let p: migrate::Payload = parse_spec_payload(doc)?;
-            MigrateAsk {
-                room_id: p.room_id.as_str().to_string(),
-                reason: p.reason.as_str().to_string(),
-                max_bytes_per_second: rate(p.max_bytes_per_second),
-            }
-        }
-        Wire::V0_2 => {
-            let p: migrate_v2::Payload = parse_spec_payload(doc)?;
-            MigrateAsk {
-                room_id: p.room_id.as_str().to_string(),
-                reason: p.reason.as_str().to_string(),
-                max_bytes_per_second: rate(p.max_bytes_per_second),
-            }
-        }
-    })
-}
-
-/// The migration, as `wire`'s `#response`.
-fn migrate_answer(doc: &TrustTask<Value>, m: &Migration, wire: Wire) -> TrustTaskOutcome {
-    let body = crate::rooms::migration::response_json(m, wire);
-    match wire {
-        Wire::V0_1 => respond::<migrate::Response>(doc, body),
-        Wire::V0_2 => respond::<migrate_v2::Response>(doc, body),
-    }
-}
-
-/// `vtc/rooms/storage/migrate/0.1` and `/0.2`: move a room's existing blobs onto its
-/// assigned config (`data-rooms-files.md` §7.3). The work is the migration runner's
+/// `vtc/rooms/storage/migrate/0.3`: move a room's existing blobs onto its assigned
+/// config (`data-rooms-files.md` §7.3). The work is the migration runner's
 /// ([`crate::rooms::migration`]); this answers with the migration and its progress so far.
-/// Both versions drive one engine and are answered each at its own version; 0.2 states
-/// what 0.1 left open (reassignment, retry ownership, resumption, orphans, pause
-/// reporting, queueing), and this host behaves the 0.2 way whichever is asked. The
-/// declared error codes are the same three at both versions.
 async fn handle_migrate(
     state: &AppState,
     ctx: &JoinAuthCtx,
     doc: TrustTask<Value>,
-    wire: Wire,
 ) -> TrustTaskOutcome {
     use migrate::error_codes as c;
     let actor = match rooms_admin(state, ctx, &doc).await {
         Ok(a) => a,
         Err(reject) => return reject,
     };
-    let ask = match parse_migrate(&doc, wire) {
-        Ok(a) => a,
+    let ask: migrate::Payload = match parse_spec_payload(&doc) {
+        Ok(p) => p,
         Err(reject) => return reject,
     };
-    let room_id = ask.room_id;
-    let reason = ask.reason;
+    let room_id = ask.room_id.as_str().to_string();
+    let reason = ask.reason.as_str().to_string();
+    let max_bytes_per_second = ask.max_bytes_per_second.map(|v| v.max(0) as u64);
 
     match vti_rooms::storage::get_room(&state.rooms_ks, &room_id).await {
         Ok(_) => {}
@@ -1579,8 +1440,8 @@ async fn handle_migrate(
     match state.room_files.migration(&room_id).await {
         Ok(Some(m)) if m.state.is_open() => {
             let mut again = MigrationRequest::new(room_id, m.to_config, &actor.did, m.reason);
-            again.max_bytes_per_second = ask.max_bytes_per_second;
-            return start(state, &doc, &actor.did, again, wire).await;
+            again.max_bytes_per_second = max_bytes_per_second;
+            return start(state, &doc, &actor.did, again, false).await;
         }
         Ok(_) => {}
         Err(e) => return app_error_to_reject(&doc, &e),
@@ -1612,7 +1473,7 @@ async fn handle_migrate(
     }
     let mut req = MigrationRequest::new(&room_id, &to_config, &actor.did, &reason);
     req.capacity_bytes = capacity;
-    req.max_bytes_per_second = ask.max_bytes_per_second;
+    req.max_bytes_per_second = max_bytes_per_second;
 
     // Item 7: nothing to move completes at once and changes nothing, so parks nothing.
     if plan.files > 0 {
@@ -1641,23 +1502,33 @@ async fn handle_migrate(
         };
         req.approvers = crate::admin_actions::executing_approvers(state).await;
     }
-    start(state, &doc, &actor.did, req, wire).await
+    start(state, &doc, &actor.did, req, true).await
 }
 
 /// Start, or resume, the migration `req` describes, audit what changed and wake the
 /// runner. Under the host's lock a migration approved meanwhile for the same room is
 /// the answer instead (item 5).
+///
+/// A `fresh` migration's target is checked once more under the storage lock a
+/// retirement holds, so no migration onto a config begins between a retirement's
+/// `migrationsInbound` check and the config leaving `active` (`retire/0.3` item 3).
 async fn start(
     state: &AppState,
     doc: &TrustTask<Value>,
     actor: &str,
     req: MigrationRequest,
-    wire: Wire,
+    fresh: bool,
 ) -> TrustTaskOutcome {
     let to_config = req.to_config.clone();
-    let outcome = match state.room_files.start_migration(req).await {
-        Ok(o) => o,
-        Err(e) => return app_error_to_reject(doc, &e),
+    let outcome = {
+        let _guard = state.room_storage.lock().await;
+        if fresh && let Err(reject) = check_target(state, doc, &to_config).await {
+            return reject;
+        }
+        match state.room_files.start_migration(req).await {
+            Ok(o) => o,
+            Err(e) => return app_error_to_reject(doc, &e),
+        }
     };
     let m = match outcome {
         MigrationStart::Started(m) => {
@@ -1688,7 +1559,7 @@ async fn start(
     if matches!(m.state, MigrationState::Running | MigrationState::Queued) {
         crate::rooms::migration::kick();
     }
-    migrate_answer(doc, &m, wire)
+    migrate_answer(doc, &m)
 }
 
 #[cfg(test)]

@@ -151,7 +151,7 @@ instead:
   for the administrators who held an admin role when the write was made and
   still hold one, and a `Critical` console banner, naming the command, the
   DIDs, the host and the time. The banner can't be dismissed; acknowledging
-  (`vtc/admin/actions/acknowledge/0.1`) is audited. Administrators can't undo
+  (`vtc/admin/actions/acknowledge/0.3`) is audited. Administrators can't undo
   the operator's act, but they can't fail to learn of it.
 - `emergency-bootstrap` wipes every admin, so it has nobody to tell at that
   moment. Its item is raised for the new administrators (as is any item whose

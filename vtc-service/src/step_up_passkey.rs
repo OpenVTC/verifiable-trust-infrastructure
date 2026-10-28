@@ -954,7 +954,7 @@ pub async fn redeem_finish(
     // Tell the member, best-effort and after the fact: an invite is always an
     // administrator acting (`check_invite` refuses one to oneself), so `by`
     // here is always someone other than the subject — the case
-    // `vtc/members/step-up-passkey-notice/0.1` exists to surface.
+    // `vtc/members/step-up-passkey-notice/0.2` exists to surface.
     crate::ceremony::step_up_passkey_notice::send(
         state,
         &c.subject,
@@ -1178,7 +1178,7 @@ pub async fn revoke_finish(
     let revoked_at = Utc::now();
     // Tell the member, best-effort and after the fact: `by` is the producer —
     // the member's own DID for a self-revoke, the administrator's otherwise —
-    // so the recipient can tell which this was (step-up-passkey-notice/0.1,
+    // so the recipient can tell which this was (step-up-passkey-notice/0.2,
     // producer requirement 3).
     crate::ceremony::step_up_passkey_notice::send(
         state,

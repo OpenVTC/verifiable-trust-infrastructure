@@ -384,76 +384,82 @@ fn witnesses() -> Vec<Witness> {
             "vtc_storage_configs_get_answers_not_found"
         ),
         witness!(
-            s::storage::configs::create::v0_1::error_codes::EXISTS,
+            s::storage::configs::create::v0_3::error_codes::EXISTS,
             crate::rooms::storage_configs::codes::CREATE_EXISTS,
             "room_storage_configs.rs",
             "vtc_storage_configs_create_refuses_with_its_declared_codes"
         ),
         witness!(
-            s::storage::configs::create::v0_1::error_codes::INVALID_SETTINGS,
+            s::storage::configs::create::v0_3::error_codes::INVALID_SETTINGS,
             crate::rooms::storage_configs::codes::CREATE_INVALID_SETTINGS,
             "room_storage_configs.rs",
             "vtc_storage_configs_create_refuses_with_its_declared_codes"
         ),
         witness!(
-            s::storage::configs::create::v0_1::error_codes::AUTH_NOT_ALLOWED,
+            s::storage::configs::create::v0_3::error_codes::AUTH_NOT_ALLOWED,
             crate::rooms::storage_configs::codes::CREATE_AUTH_NOT_ALLOWED,
             "room_storage_configs.rs",
             "vtc_storage_configs_create_refuses_with_its_declared_codes"
         ),
         witness!(
-            s::storage::configs::update::v0_1::error_codes::NOT_FOUND,
+            s::storage::configs::update::v0_3::error_codes::NOT_FOUND,
             crate::rooms::storage_configs::codes::UPDATE_NOT_FOUND,
             "room_storage_configs.rs",
             "vtc_storage_configs_update_refuses_with_its_declared_codes"
         ),
         witness!(
-            s::storage::configs::update::v0_1::error_codes::KIND_IMMUTABLE,
+            s::storage::configs::update::v0_3::error_codes::KIND_IMMUTABLE,
             crate::rooms::storage_configs::codes::UPDATE_KIND_IMMUTABLE,
             "room_storage_configs.rs",
             "vtc_storage_configs_update_refuses_with_its_declared_codes"
         ),
         witness!(
-            s::storage::configs::update::v0_1::error_codes::LOCATION_IMMUTABLE,
+            s::storage::configs::update::v0_3::error_codes::LOCATION_IMMUTABLE,
             crate::rooms::storage_configs::codes::UPDATE_LOCATION_IMMUTABLE,
             "room_storage_configs.rs",
             "vtc_storage_configs_update_refuses_with_its_declared_codes"
         ),
         witness!(
-            s::storage::configs::update::v0_1::error_codes::INVALID_SETTINGS,
+            s::storage::configs::update::v0_3::error_codes::INVALID_SETTINGS,
             crate::rooms::storage_configs::codes::UPDATE_INVALID_SETTINGS,
             "room_storage_configs.rs",
             "vtc_storage_configs_update_refuses_with_its_declared_codes"
         ),
         witness!(
-            s::storage::configs::update::v0_1::error_codes::AUTH_NOT_ALLOWED,
+            s::storage::configs::update::v0_3::error_codes::AUTH_NOT_ALLOWED,
             crate::rooms::storage_configs::codes::UPDATE_AUTH_NOT_ALLOWED,
             "room_storage_configs.rs",
             "vtc_storage_configs_update_refuses_with_its_declared_codes"
         ),
         witness!(
-            s::storage::configs::update::v0_1::error_codes::NOT_ACTIVE,
+            s::storage::configs::update::v0_3::error_codes::NOT_ACTIVE,
             crate::rooms::storage_configs::codes::UPDATE_NOT_ACTIVE,
             "room_storage_configs.rs",
             "vtc_storage_configs_update_refuses_with_its_declared_codes"
         ),
         witness!(
-            s::storage::configs::retire::v0_1::error_codes::NOT_FOUND,
+            s::storage::configs::retire::v0_3::error_codes::NOT_FOUND,
             crate::rooms::storage_configs::codes::RETIRE_NOT_FOUND,
             "room_storage_configs.rs",
             "vtc_storage_configs_retire_refuses_with_its_declared_codes"
         ),
         witness!(
-            s::storage::configs::retire::v0_1::error_codes::ROOMS_ASSIGNED,
+            s::storage::configs::retire::v0_3::error_codes::ROOMS_ASSIGNED,
             crate::rooms::storage_configs::codes::RETIRE_ROOMS_ASSIGNED,
             "room_storage_configs.rs",
             "vtc_storage_configs_retire_refuses_with_its_declared_codes"
         ),
         witness!(
-            s::storage::configs::retire::v0_1::error_codes::IS_DEFAULT,
+            s::storage::configs::retire::v0_3::error_codes::IS_DEFAULT,
             crate::rooms::storage_configs::codes::RETIRE_IS_DEFAULT,
             "room_storage_configs.rs",
             "vtc_storage_configs_retire_refuses_with_its_declared_codes"
+        ),
+        witness!(
+            s::storage::configs::retire::v0_3::error_codes::MIGRATIONS_INBOUND,
+            crate::rooms::storage_configs::codes::RETIRE_MIGRATIONS_INBOUND,
+            "room_storage_configs.rs",
+            "vtc_storage_configs_retire_refuses_while_files_move_onto_it"
         ),
         witness!(
             s::storage::configs::probe::v0_1::error_codes::NOT_FOUND,
@@ -462,82 +468,82 @@ fn witnesses() -> Vec<Witness> {
             "vtc_storage_configs_probe_answers_not_found"
         ),
         witness!(
-            s::rooms::storage::assign::v0_1::error_codes::ROOM_NOT_FOUND,
+            s::rooms::storage::assign::v0_2::error_codes::ROOM_NOT_FOUND,
             crate::rooms::storage_configs::codes::ASSIGN_ROOM_NOT_FOUND,
             "room_storage_configs.rs",
             "vtc_rooms_storage_assign_refuses_with_its_declared_codes"
         ),
         witness!(
-            s::rooms::storage::assign::v0_1::error_codes::CONFIG_NOT_FOUND,
+            s::rooms::storage::assign::v0_2::error_codes::CONFIG_NOT_FOUND,
             crate::rooms::storage_configs::codes::ASSIGN_CONFIG_NOT_FOUND,
             "room_storage_configs.rs",
             "vtc_rooms_storage_assign_refuses_with_its_declared_codes"
         ),
         witness!(
-            s::rooms::storage::assign::v0_1::error_codes::CONFIG_NOT_ACTIVE,
+            s::rooms::storage::assign::v0_2::error_codes::CONFIG_NOT_ACTIVE,
             crate::rooms::storage_configs::codes::ASSIGN_CONFIG_NOT_ACTIVE,
             "room_storage_configs.rs",
             "vtc_rooms_storage_assign_refuses_with_its_declared_codes"
         ),
         witness!(
-            s::rooms::storage::migrate::v0_1::error_codes::ROOM_NOT_FOUND,
+            s::rooms::storage::migrate::v0_3::error_codes::ROOM_NOT_FOUND,
             crate::rooms::storage_configs::codes::MIGRATE_ROOM_NOT_FOUND,
             "room_storage_configs.rs",
             "vtc_rooms_storage_migrate_refuses_with_its_declared_codes"
         ),
         witness!(
-            s::rooms::storage::migrate::v0_1::error_codes::CONFIG_NOT_ACTIVE,
+            s::rooms::storage::migrate::v0_3::error_codes::CONFIG_NOT_ACTIVE,
             crate::rooms::storage_configs::codes::MIGRATE_CONFIG_NOT_ACTIVE,
             "room_storage_configs.rs",
             "vtc_rooms_storage_migrate_refuses_with_its_declared_codes"
         ),
         witness!(
-            s::rooms::storage::migrate::v0_1::error_codes::CAPACITY_EXCEEDED,
+            s::rooms::storage::migrate::v0_3::error_codes::CAPACITY_EXCEEDED,
             crate::rooms::storage_configs::codes::MIGRATE_CAPACITY_EXCEEDED,
             "room_storage_configs.rs",
             "vtc_rooms_storage_migrate_refuses_with_its_declared_codes"
         ),
-        // `vtc/storage/credentials/set/0.2` (trust-tasks-tf #866). The configs tasks'
+        // `vtc/storage/credentials/set/0.3` (trust-tasks-tf #866). The configs tasks'
         // codes are the same at 0.2 as at 0.1 (a code names its task, not its version),
         // witnessed above; `room_storage_auth.rs` drives them at 0.2 as well.
         witness!(
-            s::storage::credentials::set::v0_2::error_codes::NOT_FOUND,
+            s::storage::credentials::set::v0_3::error_codes::NOT_FOUND,
             crate::rooms::storage_configs::codes::SET_NOT_FOUND,
             "room_storage_auth.rs",
             "vtc_storage_credentials_set_refuses_with_its_declared_codes"
         ),
         witness!(
-            s::storage::credentials::set::v0_2::error_codes::NOT_SEALED_MODE,
+            s::storage::credentials::set::v0_3::error_codes::NOT_SEALED_MODE,
             crate::rooms::storage_configs::codes::SET_NOT_SEALED_MODE,
             "room_storage_auth.rs",
             "vtc_storage_credentials_set_refuses_with_its_declared_codes"
         ),
         witness!(
-            s::storage::credentials::set::v0_2::error_codes::CANNOT_OPEN,
+            s::storage::credentials::set::v0_3::error_codes::CANNOT_OPEN,
             crate::rooms::storage_configs::codes::SET_CANNOT_OPEN,
             "room_storage_auth.rs",
             "vtc_storage_credentials_set_refuses_with_its_declared_codes"
         ),
         witness!(
-            s::storage::credentials::set::v0_2::error_codes::INVALID_CREDENTIAL,
+            s::storage::credentials::set::v0_3::error_codes::INVALID_CREDENTIAL,
             crate::rooms::storage_configs::codes::SET_INVALID_CREDENTIAL,
             "room_storage_auth.rs",
             "vtc_storage_credentials_set_refuses_with_its_declared_codes"
         ),
         witness!(
-            s::storage::credentials::set::v0_2::error_codes::AUTH_NOT_ALLOWED,
+            s::storage::credentials::set::v0_3::error_codes::AUTH_NOT_ALLOWED,
             crate::rooms::storage_configs::codes::SET_AUTH_NOT_ALLOWED,
             "room_storage_auth.rs",
             "vtc_storage_credentials_set_refuses_with_its_declared_codes"
         ),
         witness!(
-            s::storage::configs::create::v0_1::error_codes::UNKNOWN_ACCOUNT,
+            s::storage::configs::create::v0_3::error_codes::UNKNOWN_ACCOUNT,
             crate::rooms::storage_configs::codes::CREATE_UNKNOWN_ACCOUNT,
             "room_storage_configs.rs",
             "vtc_storage_configs_create_refuses_an_account_the_vta_does_not_know"
         ),
         witness!(
-            s::storage::configs::update::v0_1::error_codes::UNKNOWN_ACCOUNT,
+            s::storage::configs::update::v0_3::error_codes::UNKNOWN_ACCOUNT,
             crate::rooms::storage_configs::codes::UPDATE_UNKNOWN_ACCOUNT,
             "room_storage_configs.rs",
             "vtc_storage_configs_update_refuses_an_account_the_vta_does_not_know"
@@ -549,7 +555,7 @@ fn witnesses() -> Vec<Witness> {
             "vtc_storage_configs_probe_refuses_a_config_without_a_usable_credential"
         ),
         witness!(
-            s::rooms::storage::assign::v0_1::error_codes::CREDENTIAL_REQUIRED,
+            s::rooms::storage::assign::v0_2::error_codes::CREDENTIAL_REQUIRED,
             crate::rooms::storage_configs::codes::ASSIGN_CREDENTIAL_REQUIRED,
             "room_storage_configs.rs",
             "vtc_rooms_storage_assign_refuses_a_config_without_a_usable_credential"
@@ -1948,37 +1954,37 @@ fn witnesses() -> Vec<Witness> {
             "the_presentation_and_registry_codes_are_answered"
         ),
         witness!(
-            s::relationships::suspend::v0_1::error_codes::NOT_FOUND,
+            s::relationships::suspend::v0_2::error_codes::NOT_FOUND,
             crate::trust_tasks::surface_tasks::SUSPEND_ERR_NOT_FOUND,
             "surface_verbs_spine.rs",
             "the_lifecycle_and_join_codes_are_answered"
         ),
         witness!(
-            s::relationships::suspend::v0_1::error_codes::ALREADY_SUSPENDED,
+            s::relationships::suspend::v0_2::error_codes::ALREADY_SUSPENDED,
             crate::trust_tasks::surface_tasks::SUSPEND_ERR_ALREADY_SUSPENDED,
             "surface_verbs_spine.rs",
             "the_lifecycle_and_join_codes_are_answered"
         ),
         witness!(
-            s::relationships::suspend::v0_1::error_codes::TERMINAL,
+            s::relationships::suspend::v0_2::error_codes::TERMINAL,
             crate::trust_tasks::surface_tasks::SUSPEND_ERR_TERMINAL,
             "surface_verbs_spine.rs",
             "the_lifecycle_and_join_codes_are_answered"
         ),
         witness!(
-            s::relationships::restore::v0_1::error_codes::NOT_FOUND,
+            s::relationships::restore::v0_2::error_codes::NOT_FOUND,
             crate::trust_tasks::surface_tasks::RESTORE_ERR_NOT_FOUND,
             "surface_verbs_spine.rs",
             "the_lifecycle_and_join_codes_are_answered"
         ),
         witness!(
-            s::relationships::restore::v0_1::error_codes::NOT_SUSPENDED,
+            s::relationships::restore::v0_2::error_codes::NOT_SUSPENDED,
             crate::trust_tasks::surface_tasks::RESTORE_ERR_NOT_SUSPENDED,
             "surface_verbs_spine.rs",
             "the_lifecycle_and_join_codes_are_answered"
         ),
         witness!(
-            s::relationships::restore::v0_1::error_codes::TERMINAL,
+            s::relationships::restore::v0_2::error_codes::TERMINAL,
             crate::trust_tasks::surface_tasks::RESTORE_ERR_TERMINAL,
             "surface_verbs_spine.rs",
             "the_lifecycle_and_join_codes_are_answered"
@@ -2408,11 +2414,11 @@ fn admission_witnesses() -> Vec<Witness> {
 }
 
 /// The live console channel's declared codes
-/// (`vtc/admin/events/subscribe/0.1`), each driven over the HTTPS door in
+/// (`vtc/admin/events/subscribe/0.6`), each driven over the HTTPS door in
 /// `admin_events.rs`.
 fn event_witnesses() -> Vec<Witness> {
     use crate::admin_events::codes as c;
-    use trust_tasks_rs::specs::vtc::admin::events::subscribe::v0_1::error_codes as e;
+    use trust_tasks_rs::specs::vtc::admin::events::subscribe::v0_6::error_codes as e;
     vec![
         witness!(
             e::NOT_ADMINISTRATOR,
@@ -2442,67 +2448,67 @@ fn action_witnesses() -> Vec<Witness> {
     use trust_tasks_rs::specs::vtc::admin::actions as a;
     vec![
         witness!(
-            a::list::v0_1::error_codes::NOT_ADMINISTRATOR,
+            a::list::v0_3::error_codes::NOT_ADMINISTRATOR,
             c::LIST_NOT_ADMINISTRATOR,
             "unrestricted_admin_consent.rs",
             "the_list_shows_each_caller_what_is_theirs_to_see"
         ),
         witness!(
-            a::list::v0_1::error_codes::INVALID_CURSOR,
+            a::list::v0_3::error_codes::INVALID_CURSOR,
             c::LIST_INVALID_CURSOR,
             "unrestricted_admin_consent.rs",
             "the_list_shows_each_caller_what_is_theirs_to_see"
         ),
         witness!(
-            a::list::v0_1::error_codes::INVALID_FILTER,
+            a::list::v0_3::error_codes::INVALID_FILTER,
             c::LIST_INVALID_FILTER,
             "unrestricted_admin_consent.rs",
             "the_list_shows_each_caller_what_is_theirs_to_see"
         ),
         witness!(
-            a::show::v0_1::error_codes::NOT_FOUND,
+            a::show::v0_3::error_codes::NOT_FOUND,
             c::SHOW_NOT_FOUND,
             "unrestricted_admin_consent.rs",
             "the_list_shows_each_caller_what_is_theirs_to_see"
         ),
         witness!(
-            a::show::v0_1::error_codes::NOT_ADMINISTRATOR,
+            a::show::v0_3::error_codes::NOT_ADMINISTRATOR,
             c::SHOW_NOT_ADMINISTRATOR,
             "unrestricted_admin_consent.rs",
             "the_list_shows_each_caller_what_is_theirs_to_see"
         ),
         witness!(
-            a::cancel::v0_1::error_codes::NOT_FOUND,
+            a::cancel::v0_3::error_codes::NOT_FOUND,
             c::CANCEL_NOT_FOUND,
             "unrestricted_admin_consent.rs",
             "the_requester_cancels_and_nobody_else_can"
         ),
         witness!(
-            a::cancel::v0_1::error_codes::NOT_REQUESTER,
+            a::cancel::v0_3::error_codes::NOT_REQUESTER,
             c::CANCEL_NOT_REQUESTER,
             "unrestricted_admin_consent.rs",
             "the_requester_cancels_and_nobody_else_can"
         ),
         witness!(
-            a::cancel::v0_1::error_codes::NOT_OPEN,
+            a::cancel::v0_3::error_codes::NOT_OPEN,
             c::CANCEL_NOT_OPEN,
             "unrestricted_admin_consent.rs",
             "the_requester_cancels_and_nobody_else_can"
         ),
         witness!(
-            a::acknowledge::v0_1::error_codes::NOT_FOUND,
+            a::acknowledge::v0_3::error_codes::NOT_FOUND,
             c::ACKNOWLEDGE_NOT_FOUND,
             "unrestricted_admin_consent.rs",
             "an_approval_action_is_not_acknowledgeable"
         ),
         witness!(
-            a::acknowledge::v0_1::error_codes::NOT_ACKNOWLEDGEABLE,
+            a::acknowledge::v0_3::error_codes::NOT_ACKNOWLEDGEABLE,
             c::ACKNOWLEDGE_NOT_ACKNOWLEDGEABLE,
             "unrestricted_admin_consent.rs",
             "an_approval_action_is_not_acknowledgeable"
         ),
         witness!(
-            a::acknowledge::v0_1::error_codes::ALREADY_ACKNOWLEDGED,
+            a::acknowledge::v0_3::error_codes::ALREADY_ACKNOWLEDGED,
             c::ACKNOWLEDGE_ALREADY_ACKNOWLEDGED,
             "action_list_a2.rs",
             "vti_vtc_023_every_offline_writer_raises_an_acknowledge_item"

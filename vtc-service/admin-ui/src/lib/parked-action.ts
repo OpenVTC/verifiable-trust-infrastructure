@@ -23,19 +23,15 @@ export const NEXT_STEP_TYPE = "https://trusttasks.org/spec/trust-task-next-step/
 
 /** The task the next-step reply names as what to do next — and the one this
  *  console reads an action with. */
-export const ACTIONS_SHOW_TASK = "https://trusttasks.org/spec/vtc/admin/actions/show/0.2";
+export const ACTIONS_SHOW_TASK = "https://trusttasks.org/spec/vtc/admin/actions/show/0.3";
 
 /**
- * Whether `typeUri` is `vtc/admin/actions/show` at a version whose next-step
- * hint names an action the same way: 0.2, or the 0.1 an older VTC still names.
- * Only *recognised* here — the console never sends 0.1 — so the older URI is
- * matched by shape rather than kept as a bound literal.
+ * Whether `typeUri` is the `vtc/admin/actions/show` a next-step names an action
+ * by. The console is served by the community it reads, so it is that
+ * community's one version, 0.3.
  */
 export function isActionsShowTask(typeUri: unknown): boolean {
-  return (
-    typeof typeUri === "string" &&
-    (typeUri === ACTIONS_SHOW_TASK || typeUri === ACTIONS_SHOW_TASK.replace(/\/0\.2$/, "/0.1"))
-  );
+  return typeUri === ACTIONS_SHOW_TASK;
 }
 
 /** Where the console shows one action. */

@@ -399,7 +399,7 @@ describe("the Actions page", () => {
 const OP_GRANT = (vectors as unknown as Vector[]).find(
   (v) =>
     v.kind === "operator.offlineWrite" &&
-    v.typeUri === "https://trusttasks.org/spec/vtc/operator/offline-write/0.1" &&
+    v.typeUri === "https://trusttasks.org/spec/vtc/operator/offline-write/0.2" &&
     (v.payload as { command?: string }).command === "aclAdd",
 )!;
 
@@ -412,7 +412,7 @@ async function operatorWrite(overrides: Partial<Action> = {}): Promise<Action> {
     requester: VTC,
     status: "open",
     createdAt: "2026-10-02T08:31:00Z",
-    approvals: [{ subject: REQUESTER, at: "2026-10-02T09:00:00Z" }],
+    approvals: [{ subject: REQUESTER, decidedAt: "2026-10-02T09:00:00Z" }],
     approversRemaining: 2,
     callerRole: "acknowledger",
     payload: OP_GRANT.payload,
@@ -951,11 +951,11 @@ describe("landsIn", () => {
 
 describe("the 0.2 wire", () => {
   it("lists, shows, cancels and acknowledges at 0.2", () => {
-    expect(ACTIONS_LIST_TASK).toBe("https://trusttasks.org/spec/vtc/admin/actions/list/0.2");
-    expect(ACTIONS_SHOW_TASK).toBe("https://trusttasks.org/spec/vtc/admin/actions/show/0.2");
-    expect(ACTIONS_CANCEL_TASK).toBe("https://trusttasks.org/spec/vtc/admin/actions/cancel/0.2");
+    expect(ACTIONS_LIST_TASK).toBe("https://trusttasks.org/spec/vtc/admin/actions/list/0.3");
+    expect(ACTIONS_SHOW_TASK).toBe("https://trusttasks.org/spec/vtc/admin/actions/show/0.3");
+    expect(ACTIONS_CANCEL_TASK).toBe("https://trusttasks.org/spec/vtc/admin/actions/cancel/0.3");
     expect(ACTIONS_ACKNOWLEDGE_TASK).toBe(
-      "https://trusttasks.org/spec/vtc/admin/actions/acknowledge/0.2",
+      "https://trusttasks.org/spec/vtc/admin/actions/acknowledge/0.3",
     );
   });
 
@@ -966,7 +966,7 @@ describe("the 0.2 wire", () => {
     const types = requests
       .filter((r) => r.url === "/v1/trust-tasks")
       .map((r) => (r.body as { type?: string })?.type);
-    expect(types).toContain("https://trusttasks.org/spec/vtc/admin/actions/list/0.2");
+    expect(types).toContain("https://trusttasks.org/spec/vtc/admin/actions/list/0.3");
     expect(types.some((t) => t?.endsWith("/actions/list/0.1"))).toBe(false);
   });
 });

@@ -1,31 +1,31 @@
-//! The administrator console's live channel — `vtc/admin/events/subscribe/0.1`
+//! The administrator console's live channel — `vtc/admin/events/subscribe/0.6`
 //! answered as a streamed response (HTTPS binding 0.3 §2.1), carrying
-//! `vtc/admin/events/event/0.1` hints (`crate::admin_events`).
+//! `vtc/admin/events/event/0.5` hints (`crate::admin_events`).
 //!
 //! What these hold, against the two specifications:
 //!
 //! - the signed `#response` is the stream's **first** event, its SSE `id` the
 //!   resume token, one document per `data:` line, no `event:` field;
-//! - a hint follows a change, carries only `topic`, `at`, `resumeToken` and —
-//!   on a count topic — `count`, and never a record, an identifier or a DID;
+//! - a hint follows a change, carries only `topic`, `observedAt`,
+//!   `resumeToken` and — on a count topic — `count`, and never a record, an
+//!   identifier or a DID;
 //! - effective topics are the requested ones the caller may read: a caller
 //!   without `vtc.join.decide` hears nothing about join requests;
 //! - a refusal is JSON and opens no stream (`streamUnavailable`,
 //!   `notAdministrator`, `tooManyStreams`, a `Last-Event-ID` disagreeing with
-//!   `since`);
-//! - an unknown `since` opens `resumed: false`; a known one resumes;
+//!   `resumeToken`);
+//! - an unknown `resumeToken` opens `resumed: false`; a known one resumes;
 //! - heartbeats are SSE comments;
 //! - the stream ends when the caller's readable topics shrink and when the
 //!   credential it was opened on expires;
-//! - 0.2 (`rooms`): served beside 0.1, each answered at its own version; the
-//!   topic is effective only for a holder of `vtc.rooms.admin`, is refused in
-//!   a 0.1 subscribe, follows a room registered, a storage config written and
-//!   a room's lifecycle moving with the clock, and never names a room;
-//! - 0.3 (`directory`, `groups`) and 0.4 (`communityRooms`): each only at its
-//!   version; `communityRooms` is effective only for a holder of
-//!   `vtc.rooms.manage` (`vtc.rooms.admin` alone does not qualify), follows the
-//!   owner's record of a community room, and is fingerprinted so a `rooms`
-//!   seam that moves nothing the owner sees is no hint.
+//! - `rooms` is effective only for a holder of `vtc.rooms.admin`, follows a
+//!   room registered, a storage config written and a room's lifecycle moving
+//!   with the clock, and never names a room;
+//! - `communityRooms` is effective only for a holder of `vtc.rooms.manage`
+//!   (`vtc.rooms.admin` alone does not qualify), follows the owner's record of
+//!   a community room, and is fingerprinted so a `rooms` seam that moves
+//!   nothing the owner sees is no hint;
+//! - an older subscribe (0.1 – 0.5) is refused `unsupportedVersion`.
 
 use std::time::Duration;
 
@@ -47,14 +47,8 @@ fn tt_error_code(doc: &Value) -> Option<&str> {
     error_code(doc)
 }
 
-const SUBSCRIBE: &str = "https://trusttasks.org/spec/vtc/admin/events/subscribe/0.1";
-const EVENT: &str = "https://trusttasks.org/spec/vtc/admin/events/event/0.1";
-const SUBSCRIBE_V0_2: &str = "https://trusttasks.org/spec/vtc/admin/events/subscribe/0.2";
-const EVENT_V0_2: &str = "https://trusttasks.org/spec/vtc/admin/events/event/0.2";
-const SUBSCRIBE_V0_3: &str = "https://trusttasks.org/spec/vtc/admin/events/subscribe/0.3";
-const EVENT_V0_3: &str = "https://trusttasks.org/spec/vtc/admin/events/event/0.3";
-const SUBSCRIBE_V0_4: &str = "https://trusttasks.org/spec/vtc/admin/events/subscribe/0.4";
-const EVENT_V0_4: &str = "https://trusttasks.org/spec/vtc/admin/events/event/0.4";
+const SUBSCRIBE: &str = "https://trusttasks.org/spec/vtc/admin/events/subscribe/0.6";
+const EVENT: &str = "https://trusttasks.org/spec/vtc/admin/events/event/0.5";
 const STREAM_ACCEPT: &str = "text/event-stream, application/json;q=0.5";
 
 use vtc_service::admin_events::codes::{NOT_ADMINISTRATOR, STREAM_UNAVAILABLE, TOO_MANY_STREAMS};
@@ -311,18 +305,10 @@ async fn open_stream_at(
     (request, sse, id, first)
 }
 
-/// A hint, held to everything its event version says one may carry — and
-/// nothing else. A stream's hints are of the version it was opened at.
+/// A hint, held to everything `event/0.5` says one may carry — and nothing
+/// else.
 fn assert_hint_shape(hint: &Value, id: Option<&str>, request: &Value, subscriber: &str) {
-    let event = if request["type"] == SUBSCRIBE_V0_4 {
-        EVENT_V0_4
-    } else if request["type"] == SUBSCRIBE_V0_3 {
-        EVENT_V0_3
-    } else if request["type"] == SUBSCRIBE_V0_2 {
-        EVENT_V0_2
-    } else {
-        EVENT
-    };
+    let event = EVENT;
     assert_eq!(hint["type"], event);
     let schema = trust_tasks_rs::schema_index::schema_for(event).expect("event schema");
     trust_tasks_rs::validate::against_schema(schema, &hint["payload"])
@@ -330,8 +316,8 @@ fn assert_hint_shape(hint: &Value, id: Option<&str>, request: &Value, subscriber
     let payload = hint["payload"].as_object().unwrap();
     for key in payload.keys() {
         assert!(
-            ["topic", "at", "count", "resumeToken"].contains(&key.as_str()),
-            "a hint carries nothing but topic, at, count and resumeToken: {key}"
+            ["topic", "observedAt", "count", "resumeToken"].contains(&key.as_str()),
+            "a hint carries nothing but topic, observedAt, count and resumeToken: {key}"
         );
     }
     let topic = payload["topic"].as_str().unwrap();
@@ -593,11 +579,11 @@ async fn refusals_are_json_and_open_no_stream() {
     let (_, doc) = json_refusal(res).await;
     assert_eq!(tt_error_code(&doc), Some(NOT_ADMINISTRATOR));
 
-    // Resumption is in-band: a Last-Event-ID that disagrees with `since`.
+    // Resumption is in-band: a Last-Event-ID that disagrees with `resumeToken`.
     let (_, res) = subscribe(
         &vtc,
         &admin,
-        json!({ "topics": ["actions"], "since": "e1.AAAA.BBBB" }),
+        json!({ "topics": ["actions"], "resumeToken": "e1.AAAA.BBBB" }),
         Some(STREAM_ACCEPT),
         Some("e1.CCCC.DDDD"),
     )
@@ -625,14 +611,14 @@ async fn a_replayed_subscribe_opens_nothing() {
 }
 
 #[tokio::test]
-async fn an_unknown_since_starts_fresh_and_a_known_one_resumes() {
+async fn an_unknown_resume_token_starts_fresh_and_a_known_one_resumes() {
     let vtc = vtc().await;
     let admin = community_admin(&vtc).await;
 
     let (_, _s, _, first) = open_stream(
         &vtc,
         &admin,
-        json!({ "topics": ["config"], "since": "e1.not-a-token.at-all" }),
+        json!({ "topics": ["config"], "resumeToken": "e1.not-a-token.at-all" }),
     )
     .await;
     assert_eq!(
@@ -646,7 +632,7 @@ async fn an_unknown_since_starts_fresh_and_a_known_one_resumes() {
     let (_, _s2, _, first) = open_stream(
         &vtc,
         &admin,
-        json!({ "topics": ["config"], "since": others_token.unwrap() }),
+        json!({ "topics": ["config"], "resumeToken": others_token.unwrap() }),
     )
     .await;
     assert_eq!(first["payload"]["resumed"], false);
@@ -663,7 +649,7 @@ async fn an_unknown_since_starts_fresh_and_a_known_one_resumes() {
     let (request, res) = subscribe(
         &vtc,
         &admin,
-        json!({ "topics": ["config"], "since": token }),
+        json!({ "topics": ["config"], "resumeToken": token }),
         Some(STREAM_ACCEPT),
         Some(&token),
     )
@@ -754,7 +740,7 @@ async fn streams_past_the_cap_are_refused_too_many_streams() {
     assert!(reopened, "a closed stream releases its place under the cap");
 }
 
-// ─── 0.2: the `rooms` topic ──────────────────────────────────────────────
+// ─── the `rooms` topic ──────────────────────────────────────────────────
 
 /// A room as the host registers it, its epoch expiring at `epoch_expires_at`.
 fn hosted_room(epoch_expires_at: Option<u64>) -> vtc_service::rooms::Room {
@@ -795,7 +781,7 @@ async fn a_room_registered_is_a_countless_rooms_hint_at_0_2() {
     let admin = community_admin(&vtc).await;
     let (request, mut sse, _, first) = open_stream_at(
         &vtc,
-        SUBSCRIBE_V0_2,
+        SUBSCRIBE,
         &admin,
         json!({ "topics": ["rooms", "actions"] }),
     )
@@ -821,7 +807,7 @@ async fn a_storage_config_written_is_a_rooms_hint() {
     let vtc = vtc().await;
     let admin = community_admin(&vtc).await;
     let (request, mut sse, _, _) =
-        open_stream_at(&vtc, SUBSCRIBE_V0_2, &admin, json!({ "topics": ["rooms"] })).await;
+        open_stream_at(&vtc, SUBSCRIBE, &admin, json!({ "topics": ["rooms"] })).await;
 
     let storage = &vtc.state.room_storage;
     let mut config = storage.configs().await.unwrap().remove(0);
@@ -849,7 +835,7 @@ async fn a_room_lapsing_with_the_clock_is_hinted_without_a_write() {
         .unwrap();
     // Opened after the registration: only the lapse is left to hint.
     let (request, mut sse, _, _) =
-        open_stream_at(&vtc, SUBSCRIBE_V0_2, &admin, json!({ "topics": ["rooms"] })).await;
+        open_stream_at(&vtc, SUBSCRIBE, &admin, json!({ "topics": ["rooms"] })).await;
     let (id, hint) = next_rooms_hint(&mut sse, Duration::from_secs(8))
         .await
         .expect("the room lapsing is hinted");
@@ -868,7 +854,7 @@ async fn a_renewal_of_a_live_room_is_no_hint() {
         .await
         .unwrap();
     let (_, mut sse, _, _) =
-        open_stream_at(&vtc, SUBSCRIBE_V0_2, &admin, json!({ "topics": ["rooms"] })).await;
+        open_stream_at(&vtc, SUBSCRIBE, &admin, json!({ "topics": ["rooms"] })).await;
     vtc_service::rooms::storage::advance_epoch(&vtc.state.rooms_ks, &room.room_id, 2, now)
         .await
         .unwrap();
@@ -888,7 +874,7 @@ async fn rooms_is_effective_only_for_a_rooms_administrator() {
     let moderator = with_role(&vtc, Some(AdminRole::Moderator), None).await;
     let (_, _sse, _, first) = open_stream_at(
         &vtc,
-        SUBSCRIBE_V0_2,
+        SUBSCRIBE,
         &moderator,
         json!({ "topics": ["rooms", "actions"] }),
     )
@@ -904,36 +890,31 @@ async fn rooms_is_effective_only_for_a_rooms_administrator() {
     assert_eq!(tt_error_code(&refused), Some("permissionDenied"));
 }
 
-/// The topic set is closed per version: a 0.1 subscribe cannot ask for
-/// `rooms`, and a 0.1 stream is answered at 0.1 throughout.
+/// Only 0.6 is served: an older subscribe is told which version is, and opens
+/// no stream.
 #[tokio::test]
-async fn a_0_1_subscribe_cannot_ask_for_rooms_and_stays_at_0_1() {
+async fn an_older_subscribe_is_refused_unsupported_version() {
     let vtc = vtc().await;
     let admin = community_admin(&vtc).await;
-    let (_, res) = subscribe(
-        &vtc,
-        &admin,
-        json!({ "topics": ["rooms"] }),
-        Some(STREAM_ACCEPT),
-        None,
-    )
-    .await;
-    let (status, doc) = json_refusal(res).await;
-    assert_eq!(status, StatusCode::BAD_REQUEST);
-    assert_eq!(tt_error_code(&doc), Some("malformedRequest"));
-
-    let (request, mut sse, _, first) =
-        open_stream(&vtc, &admin, json!({ "topics": ["members"] })).await;
-    assert_eq!(first["payload"]["topics"], json!(["members"]));
-    vtc_service::members::store_member(
-        &vtc.state.members_ks,
-        &vtc_service::members::Member::fresh(&Party::new().did),
-    )
-    .await
-    .unwrap();
-    let (id, hint) = sse.next_event(Duration::from_secs(5)).await.unwrap();
-    assert_hint_shape(&hint, id.as_deref(), &request, &admin.did);
-    assert_eq!(hint["type"], EVENT);
+    for version in ["0.1", "0.2", "0.3", "0.4", "0.5"] {
+        let task = format!("https://trusttasks.org/spec/vtc/admin/events/subscribe/{version}");
+        let (_, res) = subscribe_at(
+            &vtc,
+            &task,
+            &admin,
+            json!({ "topics": ["members"] }),
+            Some(STREAM_ACCEPT),
+            None,
+        )
+        .await;
+        let (status, doc) = json_refusal(res).await;
+        assert_ne!(status, StatusCode::OK, "{version}");
+        assert_eq!(
+            tt_error_code(&doc),
+            Some("unsupportedVersion"),
+            "{version}: {doc}"
+        );
+    }
 }
 
 /// A resumed stream hints a fingerprinted topic that changed while away, even
@@ -943,7 +924,7 @@ async fn a_resumed_rooms_change_is_hinted_after_the_response() {
     let vtc = vtc().await;
     let admin = community_admin(&vtc).await;
     let (_, sse, token, _) =
-        open_stream_at(&vtc, SUBSCRIBE_V0_2, &admin, json!({ "topics": ["rooms"] })).await;
+        open_stream_at(&vtc, SUBSCRIBE, &admin, json!({ "topics": ["rooms"] })).await;
     drop(sse);
     vtc_service::rooms::storage::create_room(&vtc.state.rooms_ks, &hosted_room(None))
         .await
@@ -951,9 +932,9 @@ async fn a_resumed_rooms_change_is_hinted_after_the_response() {
     let token = token.unwrap();
     let (request, res) = subscribe_at(
         &vtc,
-        SUBSCRIBE_V0_2,
+        SUBSCRIBE,
         &admin,
-        json!({ "topics": ["rooms"], "since": token }),
+        json!({ "topics": ["rooms"], "resumeToken": token }),
         Some(STREAM_ACCEPT),
         Some(&token),
     )
@@ -967,7 +948,7 @@ async fn a_resumed_rooms_change_is_hinted_after_the_response() {
     assert_hint_shape(&hint, id.as_deref(), &request, &admin.did);
 }
 
-// ─── 0.3: `directory` and `groups` ───────────────────────────────────────
+// ─── `directory` and `groups` ───────────────────────────────────────────
 
 /// The next hint of `topic`, skipping any other topic's.
 async fn next_hint_of(
@@ -1007,7 +988,7 @@ async fn directory_and_groups_are_countless_hints_at_0_3_naming_nothing() {
     let admin = community_admin(&vtc).await;
     let (request, mut sse, _, first) = open_stream_at(
         &vtc,
-        SUBSCRIBE_V0_3,
+        SUBSCRIBE,
         &admin,
         json!({ "topics": ["groups", "directory"] }),
     )
@@ -1045,26 +1026,6 @@ async fn directory_and_groups_are_countless_hints_at_0_3_naming_nothing() {
     assert!(!hint.to_string().contains("grp_"), "no group is named");
 }
 
-#[tokio::test]
-async fn a_0_2_subscribe_cannot_ask_for_directory_or_groups() {
-    let vtc = vtc().await;
-    let admin = community_admin(&vtc).await;
-    for topic in ["directory", "groups"] {
-        let (_, res) = subscribe_at(
-            &vtc,
-            SUBSCRIBE_V0_2,
-            &admin,
-            json!({ "topics": [topic] }),
-            Some(STREAM_ACCEPT),
-            None,
-        )
-        .await;
-        let (status, doc) = json_refusal(res).await;
-        assert_eq!(status, StatusCode::BAD_REQUEST, "{topic}");
-        assert_eq!(tt_error_code(&doc), Some("malformedRequest"), "{topic}");
-    }
-}
-
 /// A manager qualified to one group (`group:<id>`) is sent a hint only for a
 /// change to that group (subscribe 0.3 §Authorization), and an administrator
 /// holding neither directory capability is not sent `directory` at all.
@@ -1096,7 +1057,7 @@ async fn a_manager_of_one_group_is_hinted_only_about_that_group() {
 
     let (request, mut sse, _, first) = open_stream_at(
         &vtc,
-        SUBSCRIBE_V0_3,
+        SUBSCRIBE,
         &manager,
         json!({ "topics": ["groups", "directory", "actions"] }),
     )
@@ -1122,7 +1083,7 @@ async fn a_manager_of_one_group_is_hinted_only_about_that_group() {
     assert_hint_shape(&hint, id.as_deref(), &request, &manager.did);
 }
 
-// ─── 0.4: `communityRooms` ───────────────────────────────────────────────
+// ─── `communityRooms` ───────────────────────────────────────────────────
 
 fn owned_room(room_id: &str) -> vtc_service::rooms::community::OwnedRoom {
     vtc_service::rooms::community::OwnedRoom {
@@ -1168,7 +1129,7 @@ async fn a_community_room_change_is_a_countless_hint_at_0_4_naming_nothing() {
     let admin = community_admin(&vtc).await;
     let (request, mut sse, _, first) = open_stream_at(
         &vtc,
-        SUBSCRIBE_V0_4,
+        SUBSCRIBE,
         &admin,
         json!({ "topics": ["communityRooms", "actions"] }),
     )
@@ -1264,7 +1225,7 @@ async fn community_rooms_ignores_what_the_owners_reads_do_not_show() {
 
     let (_, mut sse, _, _) = open_stream_at(
         &vtc,
-        SUBSCRIBE_V0_4,
+        SUBSCRIBE,
         &admin,
         json!({ "topics": ["communityRooms"] }),
     )
@@ -1308,7 +1269,7 @@ async fn community_rooms_is_effective_only_for_a_rooms_manager() {
     let host_admin = holding(&vtc, &[Capability::RoomsAdmin]).await;
     let (_, _sse, _, first) = open_stream_at(
         &vtc,
-        SUBSCRIBE_V0_4,
+        SUBSCRIBE,
         &host_admin,
         json!({ "topics": ["communityRooms", "rooms", "actions"] }),
     )
@@ -1318,7 +1279,7 @@ async fn community_rooms_is_effective_only_for_a_rooms_manager() {
     let manager = holding(&vtc, &[Capability::RoomsManage]).await;
     let (_, _sse, _, first) = open_stream_at(
         &vtc,
-        SUBSCRIBE_V0_4,
+        SUBSCRIBE,
         &manager,
         json!({ "topics": ["communityRooms", "rooms", "actions"] }),
     )
@@ -1332,7 +1293,7 @@ async fn community_rooms_is_effective_only_for_a_rooms_manager() {
     let moderator = with_role(&vtc, Some(AdminRole::Moderator), None).await;
     let (_, res) = subscribe_at(
         &vtc,
-        SUBSCRIBE_V0_4,
+        SUBSCRIBE,
         &moderator,
         json!({ "topics": ["communityRooms"] }),
         Some(STREAM_ACCEPT),
@@ -1342,24 +1303,4 @@ async fn community_rooms_is_effective_only_for_a_rooms_manager() {
     let (status, doc) = json_refusal(res).await;
     assert_eq!(status, StatusCode::FORBIDDEN);
     assert_eq!(tt_error_code(&doc), Some("permissionDenied"));
-}
-
-/// The topic set is closed per version: a 0.3 subscribe cannot ask for
-/// `communityRooms`, which only 0.4 has.
-#[tokio::test]
-async fn a_0_3_subscribe_cannot_ask_for_community_rooms() {
-    let vtc = vtc().await;
-    let admin = community_admin(&vtc).await;
-    let (_, res) = subscribe_at(
-        &vtc,
-        SUBSCRIBE_V0_3,
-        &admin,
-        json!({ "topics": ["communityRooms"] }),
-        Some(STREAM_ACCEPT),
-        None,
-    )
-    .await;
-    let (status, doc) = json_refusal(res).await;
-    assert_eq!(status, StatusCode::BAD_REQUEST);
-    assert_eq!(tt_error_code(&doc), Some("malformedRequest"));
 }

@@ -144,7 +144,7 @@
   background: var(--warning-soft);
 }
 
-/* A `sealed` config's label (`vtc/storage/configs/create/0.2` item 9): no
+/* A `sealed` config's label (`vtc/storage/configs/create/0.3` item 9): no
    protection against whoever operates the community's machine. */
 .storage-warning {
   border-left: 3px solid var(--warning);

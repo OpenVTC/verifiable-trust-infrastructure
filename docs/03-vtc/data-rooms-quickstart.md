@@ -487,12 +487,12 @@ in single-administrator mode runs at once. The documents behind those two
 buttons:
 
 ```json
-// vtc/storage/configs/create/0.1
+// vtc/storage/configs/create/0.3
 {"id": "localstack", "label": "LocalStack S3 (via the community VTA)", "reason": "…",
  "settings": {"kind": "s3", "bucket": "vdr-rooms", "region": "us-east-1",
               "endpoint": "https://localhost.localstack.cloud:4566", "pathStyle": true},
  "auth": {"mode": "vta-account", "context": "vtc", "account": "localstack-rooms"}}
-// vtc/rooms/storage/assign/0.1
+// vtc/rooms/storage/assign/0.2
 {"roomId": "$ROOM", "configId": "localstack", "reason": "…"}
 ```
 
@@ -508,7 +508,7 @@ Creating the config asks VTA C once and probes the bucket through it;
 assignment, then run in the background):
 
 ```json
-// vtc/rooms/storage/migrate/0.2
+// vtc/rooms/storage/migrate/0.3
 {"roomId": "$ROOM", "reason": "…", "maxBytesPerSecond": 1048576}
 ```
 

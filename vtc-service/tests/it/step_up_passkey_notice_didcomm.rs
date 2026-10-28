@@ -1,5 +1,5 @@
 //! A step-up passkey change notice actually reaches the member, over a real
-//! mediator (`spec/vtc/members/step-up-passkey-notice/0.1`).
+//! mediator (`spec/vtc/members/step-up-passkey-notice/0.2`).
 //!
 //! What this pins that the unit tests
 //! (`ceremony::step_up_passkey_notice::tests`) cannot: those assert the
@@ -31,7 +31,7 @@ use crate::common::webauthn_harness::SoftEd25519Authenticator;
 
 const RP_ORIGIN: &str = "https://vtc.test";
 const WAIT: Duration = Duration::from_secs(20);
-const NOTICE_TYPE: &str = "https://trusttasks.org/spec/vtc/members/step-up-passkey-notice/0.1";
+const NOTICE_TYPE: &str = "https://trusttasks.org/spec/vtc/members/step-up-passkey-notice/0.2";
 
 async fn seed(mock: &MockVtcTransport, did: &str, role: VtcRole) {
     store_acl_entry(

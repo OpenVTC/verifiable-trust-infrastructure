@@ -85,7 +85,7 @@ pub const STORAGE_CONFIGS: &str = "storage_configs";
 
 /// `sealed` storage configs' credentials (`crate::rooms::storage_credentials`), one per
 /// config, encrypted at rest under the storage key. **Never backed up**
-/// (`vtc/storage/credentials/set/0.2` item 3), and cleared when a backup is imported,
+/// (`vtc/storage/credentials/set/0.3` item 3), and cleared when a backup is imported,
 /// so a restored config reports its credential `required` until it is set again (item 7).
 pub const STORAGE_CREDENTIALS: &str = "storage_credentials";
 

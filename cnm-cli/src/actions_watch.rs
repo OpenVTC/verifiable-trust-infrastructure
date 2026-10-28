@@ -1,13 +1,13 @@
 //! `cnm actions watch` — the administrator console's live channel, on a
-//! terminal: `vtc/admin/events/subscribe/0.1` over the HTTPS binding's
-//! streamed response (0.3 §2.1), printing each hint as it arrives.
+//! terminal: `vtc/admin/events/subscribe/0.6` over the HTTPS binding's
+//! streamed response (0.3 §2.1), printing each `event/0.5` hint as it arrives.
 //!
 //! A hint says which topic changed and, for the badge topics, your count —
 //! never what changed. Read the topic to see it (`cnm actions list`, `cnm
 //! vtc join-requests`, …). HTTPS only: no other binding defines a streamed
 //! response, so `--transport` does not apply.
 //!
-//! The stream is re-opened with a freshly signed subscribe carrying `since`
+//! The stream is re-opened with a freshly signed subscribe carrying `resumeToken`
 //! whenever it ends or goes silent for twice its heartbeat, backing off
 //! exponentially. A refusal retrying cannot fix (`streamUnavailable`,
 //! `notAdministrator`, `permissionDenied`, `unsupportedType`) ends the command.
@@ -22,8 +22,8 @@ use crate::vtc::VtcTarget;
 
 type CliResult<T> = Result<T, Box<dyn std::error::Error>>;
 
-const SUBSCRIBE: &str = "https://trusttasks.org/spec/vtc/admin/events/subscribe/0.1";
-const EVENT: &str = "https://trusttasks.org/spec/vtc/admin/events/event/0.1";
+const SUBSCRIBE: &str = <trust_tasks_rs::specs::vtc::admin::events::subscribe::v0_6::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+const EVENT: &str = <trust_tasks_rs::specs::vtc::admin::events::event::v0_5::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 const STREAM_ACCEPT: &str = "text/event-stream, application/json;q=0.5";
 const ALL_TOPICS: [&str; 6] = [
     "actions",
@@ -154,7 +154,7 @@ async fn once(
 ) -> Result<bool, Stop> {
     let mut payload = json!({ "topics": topics });
     if let Some(s) = since.as_deref() {
-        payload["since"] = json!(s);
+        payload["resumeToken"] = json!(s);
     }
     // A fresh document every time: a re-sent one is a retry of a request
     // already answered, not a reconnection (binding 0.3 §2.1.3).
@@ -287,7 +287,7 @@ async fn once(
             if as_json {
                 println!(
                     "{}",
-                    json!({ "topic": p["topic"], "at": p["at"], "count": p.get("count") })
+                    json!({ "topic": p["topic"], "observedAt": p["observedAt"], "count": p.get("count") })
                 );
             } else {
                 let count = p
@@ -297,7 +297,7 @@ async fn once(
                     .unwrap_or_default();
                 println!(
                     "{DIM}{}{RESET}  {}{count}",
-                    p["at"].as_str().unwrap_or_default(),
+                    p["observedAt"].as_str().unwrap_or_default(),
                     p["topic"].as_str().unwrap_or_default()
                 );
             }

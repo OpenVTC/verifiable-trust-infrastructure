@@ -35,9 +35,9 @@ const RP_ORIGIN: &str = "https://vtc.example.com";
 const GRANT: &str = "https://trusttasks.org/spec/acl/grant/0.1";
 const REVOKE: &str = "https://trusttasks.org/spec/acl/revoke/0.1";
 const ACL_SHOW: &str = "https://trusttasks.org/spec/acl/show/0.2";
-const LIST: &str = "https://trusttasks.org/spec/vtc/admin/actions/list/0.1";
-const SHOW_V0_2: &str = "https://trusttasks.org/spec/vtc/admin/actions/show/0.2";
-const CANCEL_V0_2: &str = "https://trusttasks.org/spec/vtc/admin/actions/cancel/0.2";
+const LIST: &str = "https://trusttasks.org/spec/vtc/admin/actions/list/0.3";
+const SHOW_V0_2: &str = "https://trusttasks.org/spec/vtc/admin/actions/show/0.3";
+const CANCEL_V0_2: &str = "https://trusttasks.org/spec/vtc/admin/actions/cancel/0.3";
 const DECISION_V0_2: &str = "https://trusttasks.org/spec/task-consent/decision/0.2";
 
 struct Fixture {

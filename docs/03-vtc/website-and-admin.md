@@ -109,7 +109,7 @@ file bytes**.
 
 | Endpoint | `Trust-Task` header |
 |---|---|
-| `GET /v1/website/files` | `spec/vtc/website/files/list/0.1` |
+| `GET /v1/website/files` | `spec/vtc/website/files/list/0.3` |
 | `GET /v1/website/files/{path}` | **none** — file bytes out |
 | `PUT /v1/website/files/{path}` | **none** — file bytes in |
 | `DELETE /v1/website/files/{path}` | `spec/vtc/website/files/delete/0.1` |

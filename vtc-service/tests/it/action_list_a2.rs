@@ -44,18 +44,18 @@ const UPDATE: &str = "https://trusttasks.org/spec/acl/update/0.1";
 const CHANGE_ROLE: &str = "https://trusttasks.org/spec/acl/change-role/0.1";
 const ADMIN_REMOVE: &str = "https://trusttasks.org/spec/vtc/members/admin-remove/0.1";
 const PATCH: &str = "https://trusttasks.org/spec/config/patch/0.1";
-const LIST: &str = "https://trusttasks.org/spec/vtc/admin/actions/list/0.1";
-const SHOW: &str = "https://trusttasks.org/spec/vtc/admin/actions/show/0.1";
-const CANCEL: &str = "https://trusttasks.org/spec/vtc/admin/actions/cancel/0.1";
-const ACKNOWLEDGE: &str = "https://trusttasks.org/spec/vtc/admin/actions/acknowledge/0.1";
+const LIST: &str = "https://trusttasks.org/spec/vtc/admin/actions/list/0.3";
+const SHOW: &str = "https://trusttasks.org/spec/vtc/admin/actions/show/0.3";
+const CANCEL: &str = "https://trusttasks.org/spec/vtc/admin/actions/cancel/0.3";
+const ACKNOWLEDGE: &str = "https://trusttasks.org/spec/vtc/admin/actions/acknowledge/0.3";
 const DECISION_V0_2: &str = "https://trusttasks.org/spec/task-consent/decision/0.2";
 const ATTEST: &str = "https://trusttasks.org/spec/auth/step-up/approver/attest/0.1";
-const LIST_V0_2: &str = "https://trusttasks.org/spec/vtc/admin/actions/list/0.2";
-const SHOW_V0_2: &str = "https://trusttasks.org/spec/vtc/admin/actions/show/0.2";
-const CANCEL_V0_2: &str = "https://trusttasks.org/spec/vtc/admin/actions/cancel/0.2";
-const ACKNOWLEDGE_V0_2: &str = "https://trusttasks.org/spec/vtc/admin/actions/acknowledge/0.2";
+const LIST_V0_2: &str = "https://trusttasks.org/spec/vtc/admin/actions/list/0.3";
+const SHOW_V0_2: &str = "https://trusttasks.org/spec/vtc/admin/actions/show/0.3";
+const CANCEL_V0_2: &str = "https://trusttasks.org/spec/vtc/admin/actions/cancel/0.3";
+const ACKNOWLEDGE_V0_2: &str = "https://trusttasks.org/spec/vtc/admin/actions/acknowledge/0.3";
 /// The record type an operator's offline write is named by (VTI-VTC-023).
-const OFFLINE_WRITE: &str = "https://trusttasks.org/spec/vtc/operator/offline-write/0.1";
+const OFFLINE_WRITE: &str = "https://trusttasks.org/spec/vtc/operator/offline-write/0.2";
 const UPSERT: &str = "https://trusttasks.org/spec/policy/upsert/0.2";
 const COOLING_OFF_KEY: &str = "acl.removal_cooling_off";
 
@@ -173,7 +173,7 @@ async fn list(fix: &Fixture, who: &Party, view: &str) -> Value {
     reply["payload"].clone()
 }
 
-/// `vtc/admin/actions/show/0.2` as `who`: the action, held to the 0.2 schema.
+/// `vtc/admin/actions/show/0.3` as `who`: the action, held to its schema.
 async fn action_v0_2(fix: &Fixture, who: &Party, id: &str) -> Value {
     let (status, reply) = post(
         &fix.vtc,
@@ -376,7 +376,7 @@ async fn vti_vtc_023_every_offline_writer_raises_an_acknowledge_item() {
         assert_eq!(item["typeUri"], OFFLINE_WRITE, "{item}");
         {
             use trust_tasks_rs::validate::ValidatedPayload as _;
-            trust_tasks_rs::specs::vtc::operator::offline_write::v0_1::Payload::validate_value(
+            trust_tasks_rs::specs::vtc::operator::offline_write::v0_2::Payload::validate_value(
                 &item["payload"],
             )
             .unwrap_or_else(|e| panic!("not an offline-write record: {e}\n{item}"));
@@ -531,7 +531,7 @@ async fn vti_vtc_023_an_emergency_bootstrap_is_acknowledged_by_the_new_administr
     assert_eq!(history["actions"].as_array().unwrap().len(), 1);
 }
 
-/// `vtc/operator/offline-write/0.1` is a record type: an acknowledge item
+/// `vtc/operator/offline-write/0.2` is a record type: an acknowledge item
 /// names it, nobody sends it. A document of that type, even from an
 /// administrator, is not dispatched — it answers `unsupportedType`, like every
 /// other embedded-only type.
@@ -730,16 +730,6 @@ async fn vti_apv_019_a_two_admin_removal_cools_off_then_lands() {
         "the reduced notice waits for the landing"
     );
 
-    let mine = action(&fix, &a, &id).await;
-    assert_eq!(mine["category"], "approval");
-    assert_eq!(mine["callerRole"], "requester");
-    assert!(
-        mine.get("threshold").is_none(),
-        "nobody can approve: {mine}"
-    );
-    assert!(mine.get("expiresAt").is_none(), "it lands, never lapses");
-    assert_eq!(mine["approversRemaining"], 0);
-    assert!(mine["ext"]["org.openvtc"]["coolingOff"]["landsAt"].is_string());
     assert_eq!(
         list(&fix, &a, "requestedByMe").await["counts"]["requestedByMe"],
         1
@@ -752,19 +742,14 @@ async fn vti_apv_019_a_two_admin_removal_cools_off_then_lands() {
     let against = &theirs["ext"]["org.openvtc"]["coolingOffAgainstMe"];
     assert_eq!(against[0]["actionId"], id.as_str(), "{theirs}");
     assert_eq!(against[0]["requester"], a.did.as_str());
-    let seen = action(&fix, &b, &id).await;
-    assert_eq!(seen["callerRole"], "observer");
-    assert!(seen.get("challenge").is_none());
-    assert_eq!(seen["ext"]["org.openvtc"]["coolingOff"]["againstYou"], true);
-
     // Not due yet: the sweep leaves it.
     vtc_service::admin_actions::sweep_once(&fix.vtc.state)
         .await
         .unwrap();
     assert!(entry(&fix, &b.did).await.is_some());
 
-    // 0.2 says it in the schema's own terms (trust-tasks-tf #719): category
-    // `coolingOff`, `landsAt`, cancellable by the requester, no ext workaround.
+    // Said in the schema's own terms (`_shared/0.2` onward, trust-tasks-tf
+    // #719): category `coolingOff`, `landsAt`, cancellable by the requester.
     let mine = action_v0_2(&fix, &a, &id).await;
     assert_eq!(mine["category"], "coolingOff", "{mine}");
     assert_eq!(mine["callerRole"], "requester");
@@ -801,8 +786,6 @@ async fn vti_apv_019_a_two_admin_removal_cools_off_then_lands() {
     assert!(entry(&fix, &b.did).await.is_none(), "landed");
     let done = action(&fix, &a, &id).await;
     assert_eq!(done["status"], "completed", "{done}");
-    // 0.1 can only say `thresholdMet`; 0.2 says what happened.
-    assert_eq!(done["closedReason"], "thresholdMet");
     let landed = action_v0_2(&fix, &a, &id).await;
     assert_eq!(landed["closedReason"], "landedAfterCoolingOff", "{landed}");
     assert_eq!(landed["category"], "coolingOff");

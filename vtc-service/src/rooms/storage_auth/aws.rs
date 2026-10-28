@@ -1,6 +1,6 @@
 //! `s3` configs on `ambient` or `sealed` authentication: every object request is a
 //! SigV4 presigned request made here with a credential scoped to one room's prefix
-//! (`vtc/storage/configs/create/0.2`, "Room-scoped credentials", rules 3 and 5, and
+//! (`vtc/storage/configs/create/0.3`, "Room-scoped credentials", rules 3 and 5, and
 //! the paragraph on `sealed`).
 //!
 //! - **`ambient`**: STS `AssumeRole` of the config's `roleArn` (else the host's

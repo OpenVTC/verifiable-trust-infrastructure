@@ -600,7 +600,7 @@ function ApprovalList({ action, book }: { action: Action; book: NameBook }) {
     <ul className="action-approvers">
       {action.approvals.map((a) => (
         <li key={a.subject}>
-          <NamedDid book={book} did={a.subject} /> <small>{formatIso(a.at)}</small>
+          <NamedDid book={book} did={a.subject} /> <small>{formatIso(a.decidedAt)}</small>
         </li>
       ))}
     </ul>

@@ -462,19 +462,13 @@ impl Act {
             }
             Self::DirectAdmission => s::KIND_MEMBER_ADMIT,
             Self::ChangeStorage => match type_uri {
-                crate::trust_tasks::storage_tasks::CREATE_TYPE
-                | crate::trust_tasks::storage_tasks::CREATE_V0_2_TYPE => {
-                    s::KIND_STORAGE_CONFIG_CREATE
-                }
+                crate::trust_tasks::storage_tasks::CREATE_TYPE => s::KIND_STORAGE_CONFIG_CREATE,
                 crate::trust_tasks::storage_tasks::CREDENTIALS_SET_TYPE => {
                     s::KIND_STORAGE_CREDENTIAL_SET
                 }
                 crate::trust_tasks::storage_tasks::RETIRE_TYPE => s::KIND_STORAGE_CONFIG_RETIRE,
                 crate::trust_tasks::storage_tasks::ASSIGN_TYPE => s::KIND_ROOM_STORAGE_ASSIGN,
-                crate::trust_tasks::storage_tasks::MIGRATE_TYPE
-                | crate::trust_tasks::storage_tasks::MIGRATE_V2_TYPE => {
-                    s::KIND_ROOM_STORAGE_MIGRATE
-                }
+                crate::trust_tasks::storage_tasks::MIGRATE_TYPE => s::KIND_ROOM_STORAGE_MIGRATE,
                 _ => s::KIND_STORAGE_CONFIG_UPDATE,
             },
             Self::ChangeTrustedWitnesses => s::KIND_WITNESSES_CHANGE,

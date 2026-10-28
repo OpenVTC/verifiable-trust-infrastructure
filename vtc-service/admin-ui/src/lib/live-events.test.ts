@@ -1,5 +1,5 @@
 // The live channel against a mocked stream: the `#response` first, hints
-// after, the session's one subscription re-signed with `since` on reconnect,
+// after, the session's one subscription re-signed with `resumeToken` on reconnect,
 // offline at once on silence or an ended stream, and refusals that stop or
 // back off as subscribe 0.1 rule 10 says.
 
@@ -9,18 +9,8 @@ import { QueryClient } from "@tanstack/react-query";
 import {
   ALL_TOPICS,
   EVENT_TASK,
-  EVENT_TASK_V0_2,
-  LIVE_V0_1,
-  LIVE_V0_2,
-  LIVE_V0_3,
-  LIVE_V0_4,
+  LIVE,
   LiveEvents,
-  liveVersionFor,
-  SUBSCRIBE_TASK_V0_2,
-  SUBSCRIBE_TASK_V0_3,
-  EVENT_TASK_V0_3,
-  SUBSCRIBE_TASK_V0_4,
-  EVENT_TASK_V0_4,
   SseParser,
   STREAM_ACCEPT,
   SUBSCRIBE_TASK,
@@ -82,7 +72,7 @@ function hint(
     recipient: CONSOLE,
     payload: {
       topic,
-      at: "2026-10-03T09:12:40Z",
+      observedAt: "2026-10-03T09:12:40Z",
       resumeToken: token,
       ...(count !== undefined ? { count } : {}),
     },
@@ -109,13 +99,13 @@ interface Harness {
   hints: Array<[Topic, number | undefined]>;
   resyncs: Array<readonly Topic[]>;
   statuses: LiveStatus[];
-  signed: Array<{ topics: Topic[]; since?: string }>;
+  signed: Array<{ topics: Topic[]; resumeToken?: string }>;
   fetch: ReturnType<typeof vi.fn>;
 }
 
 function harness(
   responses: Array<() => Response>,
-  version: LiveVersion = LIVE_V0_1,
+  version: LiveVersion = LIVE,
 ): Harness {
   const h: Omit<Harness, "client" | "fetch"> = {
     hints: [],
@@ -188,9 +178,8 @@ describe("LiveEvents", () => {
     expect(headers.Accept).toBe(STREAM_ACCEPT);
     expect(headers["X-CSRF-Token"]).toBe("csrf-token");
     expect((init as RequestInit).method).toBe("POST");
-    // At 0.1 the topic set has no `rooms`: it is never asked for.
-    expect(h.signed[0]).toEqual({ topics: [...LIVE_V0_1.topics] });
-    expect(h.signed[0]!.topics).not.toContain("rooms");
+    // Every topic the console renders, in one subscription.
+    expect(h.signed[0]).toEqual({ topics: [...ALL_TOPICS] });
 
     s.push(sse(response({ topics: ["actions", "members"] }), "tok0"));
     await settle();
@@ -211,7 +200,7 @@ describe("LiveEvents", () => {
     h.client.stop();
   });
 
-  it("shows offline at once when the stream ends, then re-subscribes with a fresh signature and `since`", async () => {
+  it("shows offline at once when the stream ends, then re-subscribes with a fresh signature and `resumeToken`", async () => {
     const first = controlledStream();
     const second = controlledStream();
     const h = harness([() => streamResponse(first.stream), () => streamResponse(second.stream)]);
@@ -230,7 +219,7 @@ describe("LiveEvents", () => {
 
     await vi.advanceTimersByTimeAsync(2_000);
     expect(h.fetch).toHaveBeenCalledTimes(2);
-    expect(h.signed[1]).toEqual({ topics: [...LIVE_V0_1.topics], since: "tok1" });
+    expect(h.signed[1]).toEqual({ topics: [...ALL_TOPICS], resumeToken: "tok1" });
     const [, init] = h.fetch.mock.calls[1]!;
     expect(((init as RequestInit).headers as Record<string, string>)["Last-Event-ID"]).toBe("tok1");
 
@@ -313,136 +302,71 @@ describe("LiveEvents", () => {
   });
 });
 
-describe("0.2 and the rooms topic", () => {
-  it("subscribes at 0.2 only when discovery lists it", () => {
-    expect(liveVersionFor([SUBSCRIBE_TASK_V0_2, SUBSCRIBE_TASK])).toBe(LIVE_V0_2);
-    expect(liveVersionFor([SUBSCRIBE_TASK])).toBe(LIVE_V0_1);
-    expect(liveVersionFor([])).toBe(LIVE_V0_1);
+describe("subscribe 0.6 and event 0.5", () => {
+  it("subscribes at 0.6 and accepts only 0.5 hints", () => {
+    expect(LIVE.subscribe).toBe("https://trusttasks.org/spec/vtc/admin/events/subscribe/0.6");
+    expect(LIVE.event).toBe("https://trusttasks.org/spec/vtc/admin/events/event/0.5");
+    expect(LIVE.topics).toEqual(ALL_TOPICS);
   });
 
-  it("asks for rooms at 0.2, reads a 0.2 #response and hands on 0.2 rooms hints", async () => {
+  it("hands on rooms, directory, groups and communityRooms hints, none with a count", async () => {
     const s = controlledStream();
-    const h = harness([() => streamResponse(s.stream)], LIVE_V0_2);
+    const h = harness([() => streamResponse(s.stream)]);
     h.client.start();
     await settle();
-    expect(h.signed[0]).toEqual({ topics: [...LIVE_V0_2.topics] });
-    expect(h.signed[0]!.topics).toContain("rooms");
-    expect(h.signed[0]!.topics).not.toContain("groups");
+    s.push(
+      sse(response({ topics: ["rooms", "directory", "groups", "communityRooms"] }), "tok0"),
+    );
+    await settle();
+    expect(h.client.effectiveTopics).toEqual(["rooms", "directory", "groups", "communityRooms"]);
+    s.push(sse(hint("rooms", "tok1", 4), "tok1"));
+    s.push(sse(hint("groups", "tok2"), "tok2"));
+    s.push(sse(hint("directory", "tok3"), "tok3"));
+    s.push(sse(hint("communityRooms", "tok4"), "tok4"));
+    await settle();
+    expect(h.hints).toEqual([
+      ["rooms", undefined],
+      ["groups", undefined],
+      ["directory", undefined],
+      ["communityRooms", undefined],
+    ]);
+    h.client.stop();
+  });
 
+  it("discards a hint of another event version", async () => {
+    const s = controlledStream();
+    const h = harness([() => streamResponse(s.stream)]);
+    h.client.start();
+    await settle();
+    s.push(sse(response({ topics: ["actions"] }), "tok0"));
+    await settle();
     s.push(
       sse(
-        response(
-          { topics: ["actions", "rooms"] },
-          { type: `${SUBSCRIBE_TASK_V0_2}#response` },
-        ),
-        "tok0",
+        hint("actions", "tok1", 1, { type: "https://trusttasks.org/spec/vtc/admin/events/event/0.4" }),
+        "tok1",
       ),
     );
     await settle();
-    expect(h.client.status).toBe("live");
-    expect(h.client.effectiveTopics).toEqual(["actions", "rooms"]);
-
-    // A 0.1 hint on a 0.2 stream is not one of its hints: discarded.
-    s.push(sse(hint("actions", "tok1", 1), "tok1"));
-    // A count on rooms is ignored: it has none.
-    s.push(sse(hint("rooms", "tok2", 4, { type: EVENT_TASK_V0_2 }), "tok2"));
-    await settle();
-    expect(h.hints).toEqual([["rooms", undefined]]);
+    expect(h.hints).toEqual([]);
     h.client.stop();
-    expect(h.client.effectiveTopics).toEqual([]);
   });
 
   it("closes a stream whose #response is not of the version it subscribed at", async () => {
     const s = controlledStream();
-    const h = harness([() => streamResponse(s.stream)], LIVE_V0_2);
+    const h = harness([() => streamResponse(s.stream)]);
     h.client.start();
     await settle();
-    s.push(sse(response({ topics: ["actions"] }), "tok0")); // a 0.1 #response
+    s.push(
+      sse(
+        response(
+          { topics: ["actions"] },
+          { type: "https://trusttasks.org/spec/vtc/admin/events/subscribe/0.4#response" },
+        ),
+        "tok0",
+      ),
+    );
     await settle();
     expect(h.client.status).not.toBe("live");
-    h.client.stop();
-  });
-});
-
-describe("0.3 and the directory and groups topics", () => {
-  it("subscribes at the newest version discovery lists", () => {
-    expect(liveVersionFor([SUBSCRIBE_TASK_V0_3, SUBSCRIBE_TASK_V0_2, SUBSCRIBE_TASK])).toBe(
-      LIVE_V0_3,
-    );
-    expect(liveVersionFor([SUBSCRIBE_TASK_V0_2])).toBe(LIVE_V0_2);
-  });
-
-  it("asks for directory and groups only from 0.3", () => {
-    expect(LIVE_V0_1.topics).not.toContain("directory");
-    expect(LIVE_V0_2.topics).not.toContain("groups");
-    expect(LIVE_V0_3.topics).toContain("directory");
-    expect(LIVE_V0_3.topics).toContain("groups");
-  });
-
-  it("hands on 0.3 groups and directory hints", async () => {
-    const s = controlledStream();
-    const h = harness([() => streamResponse(s.stream)], LIVE_V0_3);
-    h.client.start();
-    await settle();
-    expect(h.signed[0]).toEqual({ topics: [...LIVE_V0_3.topics] });
-    expect(h.signed[0]!.topics).not.toContain("communityRooms");
-    s.push(
-      sse(
-        response(
-          { topics: ["directory", "groups"] },
-          { type: `${SUBSCRIBE_TASK_V0_3}#response` },
-        ),
-        "tok0",
-      ),
-    );
-    await settle();
-    expect(h.client.effectiveTopics).toEqual(["directory", "groups"]);
-    s.push(sse(hint("groups", "tok1", undefined, { type: EVENT_TASK_V0_3 }), "tok1"));
-    s.push(sse(hint("directory", "tok2", undefined, { type: EVENT_TASK_V0_3 }), "tok2"));
-    await settle();
-    expect(h.hints).toEqual([
-      ["groups", undefined],
-      ["directory", undefined],
-    ]);
-    h.client.stop();
-  });
-});
-
-describe("0.4 and the communityRooms topic", () => {
-  it("subscribes at 0.4 when discovery lists it", () => {
-    expect(
-      liveVersionFor([SUBSCRIBE_TASK_V0_4, SUBSCRIBE_TASK_V0_3, SUBSCRIBE_TASK_V0_2, SUBSCRIBE_TASK]),
-    ).toBe(LIVE_V0_4);
-    expect(liveVersionFor([SUBSCRIBE_TASK_V0_3, SUBSCRIBE_TASK])).toBe(LIVE_V0_3);
-  });
-
-  it("asks for communityRooms only at 0.4", () => {
-    for (const v of [LIVE_V0_1, LIVE_V0_2, LIVE_V0_3]) {
-      expect(v.topics).not.toContain("communityRooms");
-    }
-    expect(LIVE_V0_4.topics).toEqual(ALL_TOPICS);
-  });
-
-  it("hands on a 0.4 communityRooms hint, which carries no count", async () => {
-    const s = controlledStream();
-    const h = harness([() => streamResponse(s.stream)], LIVE_V0_4);
-    h.client.start();
-    await settle();
-    expect(h.signed[0]).toEqual({ topics: [...ALL_TOPICS] });
-    s.push(
-      sse(
-        response(
-          { topics: ["actions", "communityRooms"] },
-          { type: `${SUBSCRIBE_TASK_V0_4}#response` },
-        ),
-        "tok0",
-      ),
-    );
-    await settle();
-    expect(h.client.effectiveTopics).toEqual(["actions", "communityRooms"]);
-    s.push(sse(hint("communityRooms", "tok1", undefined, { type: EVENT_TASK_V0_4 }), "tok1"));
-    await settle();
-    expect(h.hints).toEqual([["communityRooms", undefined]]);
     h.client.stop();
   });
 });

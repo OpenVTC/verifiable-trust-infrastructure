@@ -123,7 +123,7 @@ pub enum SealedPayloadV1 {
     /// Additive variant — no existing variant changes.
     ExternalCredential(Box<super::external::ExternalCredentialPayload>),
     /// A community's storage credential, sealed in an administrator's client to the
-    /// community for `vtc/storage/credentials/set/0.2`: a `SealedStorageCredential`
+    /// community for `vtc/storage/credentials/set/0.3`: a `SealedStorageCredential`
     /// (`vtc/_shared/0.2/room-storage`), kept as the JSON it was sealed as so the
     /// community reads it as received. Write-only: no task ever returns it. Additive
     /// variant — no existing variant changes.

@@ -1,4 +1,4 @@
-//! Sealed storage credentials (`vtc/storage/credentials/set/0.2`): the discouraged
+//! Sealed storage credentials (`vtc/storage/credentials/set/0.3`): the discouraged
 //! fallback for a community with no VTA account.
 //!
 //! An administrator's client seals a `SealedStorageCredential` to this community's
@@ -193,11 +193,11 @@ impl SealedCredentials {
     }
 }
 
-/// The `SealedStorageCredential` schema, out of `vtc/storage/credentials/set/0.2`'s own
+/// The `SealedStorageCredential` schema, out of `vtc/storage/credentials/set/0.3`'s own
 /// payload schema, which declares it for exactly this.
 fn cleartext_schema() -> Option<String> {
     use trust_tasks_rs::Payload;
-    use trust_tasks_rs::specs::vtc::storage::credentials::set::v0_2 as set;
+    use trust_tasks_rs::specs::vtc::storage::credentials::set::v0_3 as set;
     let mut schema: Value = serde_json::from_str(set::Payload::PAYLOAD_SCHEMA?).ok()?;
     let defs = schema.get("$defs")?.as_object()?;
     let name = ["SealedCredentialCleartext", "SealedStorageCredential"]
