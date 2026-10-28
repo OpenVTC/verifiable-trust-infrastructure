@@ -36,7 +36,12 @@ affinidi-did-resolver-cache-sdk = { workspace = true }
 # `tsp` (which includes `didcomm`): `cnm backup` reaches the VTC only end to end.
 vtc-client = { path = "../vtc-client", version = "0.29", features = ["tsp"] }
 # `cnm rooms`: a request's type URI is read off its generated payload type.
-trust-tasks-rs = { workspace = true }
+# Spec families: see "SPEC FAMILIES ARE DECLARED PER CRATE" in the workspace Cargo.toml.
+trust-tasks-rs = { workspace = true, features = [
+  "acl",
+  "task-consent",
+  "vtc",
+] }
 # `cnm vetting bootstrap-pgp`: parse an OpenPGP keyring, verify third-party
 # certifications and cleartext-signed link statements.
 pgp = { workspace = true }

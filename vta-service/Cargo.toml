@@ -243,7 +243,31 @@ vti-webauthn = { path = "../vti-webauthn", version = "0.3" }
 # mapping for the framework's error vocabulary.
 # `trust-tasks-proof` provides AffinidiVerifier for embedded
 # Data-Integrity proofs on trust-tasks themselves.
-trust-tasks-rs = { workspace = true }
+# Spec families: see "SPEC FAMILIES ARE DECLARED PER CRATE" in the workspace Cargo.toml.
+trust-tasks-rs = { workspace = true, features = [
+  "acl",
+  "audit",
+  "auth",
+  "confirm",
+  "consent",
+  "credential-exchange",
+  "device",
+  "did-management",
+  "external",
+  "keys",
+  "messaging",
+  "persona",
+  "policy",
+  "provision",
+  "push",
+  "rooms",
+  "task-consent",
+  "vault",
+  "voting",
+  "vta",
+  "vtc",
+  "witness",
+] }
 trust-tasks-https = { workspace = true }
 trust-tasks-didcomm = { workspace = true }
 trust-tasks-tsp = { workspace = true }
