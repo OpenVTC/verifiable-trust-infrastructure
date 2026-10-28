@@ -743,7 +743,7 @@ async fn create_did(
         .expect("seed the default context");
 
     let doc = envelope(
-        vta_sdk::trust_tasks::TASK_WEBVH_DIDS_CREATE_1_0,
+        vta_sdk::trust_tasks::TASK_WEBVH_DIDS_CREATE_1_2,
         caller,
         &ctx.vta_did,
         json!({ "contextId": "default", "url": "https://example.com/acme" }),

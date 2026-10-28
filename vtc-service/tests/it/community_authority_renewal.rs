@@ -32,7 +32,7 @@ const CREATE: &str = "https://trusttasks.org/spec/vtc/rooms/community/create/0.4
 const GET: &str = "https://trusttasks.org/spec/vtc/rooms/community/get/0.3";
 const LIST: &str = "https://trusttasks.org/spec/vtc/rooms/community/list/0.3";
 
-const MINT: &str = "https://trusttasks.org/spec/vta/webvh/dids/create/1.1";
+const MINT: &str = "https://trusttasks.org/spec/vta/webvh/dids/create/1.2";
 const GROUP_CREATE: &str = "https://trusttasks.org/spec/rooms/owner/group/create/0.1";
 const ISSUE_MEMBERSHIP: &str = "https://trusttasks.org/spec/rooms/owner/issue-membership/0.1";
 const ISSUE_AUTHORITY: &str = "https://trusttasks.org/spec/rooms/owner/issue-authority/0.2";

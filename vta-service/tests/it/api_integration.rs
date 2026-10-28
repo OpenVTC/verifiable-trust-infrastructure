@@ -992,7 +992,7 @@ async fn create_test_webvh_did(
     context_id: &str,
 ) -> (String, String, String) {
     let token = setup_webvh_context(app, ctx, context_id).await;
-    // `POST /webvh/dids` is gone — `webvh/dids/create/1.0` on `/trust-tasks` is
+    // `POST /webvh/dids` is gone — `webvh/dids/create/1.2` on `/trust-tasks` is
     // the only way in now, on every transport.
     let (status, body) = app
         .request(post_auth(
@@ -1001,7 +1001,7 @@ async fn create_test_webvh_did(
             signed_doc(
                 ctx,
                 &format!("urn:uuid:{}", uuid::Uuid::new_v4()),
-                vta_sdk::trust_tasks::TASK_WEBVH_DIDS_CREATE_1_0,
+                vta_sdk::trust_tasks::TASK_WEBVH_DIDS_CREATE_1_2,
                 json!({
                     "contextId": context_id,
                     "url": "https://example.com/.well-known/did/did.jsonl",

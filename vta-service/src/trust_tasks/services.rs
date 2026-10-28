@@ -178,8 +178,8 @@ async fn run_first_enable_handshake(
 /// `drains_until` has no SDK counterpart on the state record — a drain is
 /// reported by `vta/services/drain/list`, which reads a different store — so it
 /// is left absent here rather than guessed.
-fn state(s: &SdkState) -> spec::list::v1_0::ServiceState {
-    use spec::list::v1_0::{ServiceKind as K, ServiceState as Out};
+fn state(s: &SdkState) -> spec::list::v1_1::ServiceState {
+    use spec::list::v1_1::{ServiceKind as K, ServiceState as Out};
     let (kind, enabled, mediator_did, url) = match s {
         SdkState::Tsp {
             enabled,
@@ -193,7 +193,7 @@ fn state(s: &SdkState) -> spec::list::v1_0::ServiceState {
         } => (K::Didcomm, *enabled, mediator_did.clone(), None),
         SdkState::Webauthn { enabled, url } => (K::Webauthn, *enabled, None, url.clone()),
     };
-    // `drainsUntil` unset: a state snapshot says nothing about drains, which
+    // `drainEndsAt` unset: a state snapshot says nothing about drains, which
     // `services/drain/list` answers.
     Out::builder()
         .kind(kind)
@@ -222,7 +222,7 @@ where
         .map_err(|e| AppError::Internal(format!("couldn't build a services response: {e}")))
 }
 
-fn kind_of(s: &SdkState) -> spec::list::v1_0::ServiceKind {
+fn kind_of(s: &SdkState) -> spec::list::v1_1::ServiceKind {
     state(s).kind
 }
 
@@ -249,7 +249,7 @@ pub(super) async fn handle_list(
     auth: &AuthClaims,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    let _req: spec::list::v1_0::Payload = match parse_payload(&doc) {
+    let _req: spec::list::v1_1::Payload = match parse_payload(&doc) {
         Ok(r) => r,
         Err(resp) => return resp,
     };
@@ -258,8 +258,8 @@ pub(super) async fn handle_list(
     match crate::operations::protocol::list::list_services(&state_.config, &state_.webvh_ks, auth)
         .await
     {
-        Ok(body) => match built::<spec::list::v1_0::Response, _>(
-            spec::list::v1_0::Response::builder()
+        Ok(body) => match built::<spec::list::v1_1::Response, _>(
+            spec::list::v1_1::Response::builder()
                 .services(body.services.iter().map(state).collect::<Vec<_>>()),
         ) {
             Ok(r) => success_response(&doc, r),
@@ -274,7 +274,7 @@ pub(super) async fn handle_get(
     auth: &AuthClaims,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    let req: spec::get::v1_0::Payload = match parse_payload(&doc) {
+    let req: spec::get::v1_1::Payload = match parse_payload(&doc) {
         Ok(r) => r,
         Err(resp) => return resp,
     };
@@ -286,10 +286,10 @@ pub(super) async fn handle_get(
             // agent holds one state record per transport, so querying twice
             // could disagree with itself.
             let want = match req.service {
-                spec::get::v1_0::ServiceKind::Didcomm => spec::list::v1_0::ServiceKind::Didcomm,
-                spec::get::v1_0::ServiceKind::Rest => spec::list::v1_0::ServiceKind::Rest,
-                spec::get::v1_0::ServiceKind::Tsp => spec::list::v1_0::ServiceKind::Tsp,
-                spec::get::v1_0::ServiceKind::Webauthn => spec::list::v1_0::ServiceKind::Webauthn,
+                spec::get::v1_1::ServiceKind::Didcomm => spec::list::v1_1::ServiceKind::Didcomm,
+                spec::get::v1_1::ServiceKind::Rest => spec::list::v1_1::ServiceKind::Rest,
+                spec::get::v1_1::ServiceKind::Tsp => spec::list::v1_1::ServiceKind::Tsp,
+                spec::get::v1_1::ServiceKind::Webauthn => spec::list::v1_1::ServiceKind::Webauthn,
                 // The generated enum is `#[non_exhaustive]`: a caller on a
                 // newer registry can name a transport this build does not
                 // serve. Refuse rather than fall through to one of the four —
@@ -308,9 +308,9 @@ pub(super) async fn handle_get(
                 }
             };
             match body.services.iter().find(|s| kind_of(s) == want) {
-                Some(found) => match built::<spec::get::v1_0::Response, _>(
-                    spec::get::v1_0::Response::builder().state(
-                        serde_json::from_value::<spec::get::v1_0::ServiceState>(
+                Some(found) => match built::<spec::get::v1_1::Response, _>(
+                    spec::get::v1_1::Response::builder().state(
+                        serde_json::from_value::<spec::get::v1_1::ServiceState>(
                             serde_json::to_value(state(found)).unwrap_or(Value::Null),
                         )
                         .expect("the two generated ServiceState shapes are identical"),
@@ -390,11 +390,11 @@ fn need_mediator(mediator_did: Option<String>) -> Result<String, AppError> {
     })
 }
 
-fn restarting_ext() -> Result<spec::enable::v1_0::Ext, AppError> {
+fn restarting_ext() -> Result<spec::enable::v1_1::Ext, AppError> {
     let key = "org.openvtc"
         .parse()
         .map_err(|e| AppError::Internal(format!("invalid restart extension namespace: {e}")))?;
-    Ok(spec::enable::v1_0::Ext(std::collections::HashMap::from([
+    Ok(spec::enable::v1_1::Ext(std::collections::HashMap::from([
         (key, serde_json::json!({ "restarting": true })),
     ])))
 }
@@ -409,11 +409,11 @@ fn mutation(
     serverless: bool,
     drain_until: Option<chrono::DateTime<chrono::Utc>>,
     draining_mediator: Option<String>,
-) -> Result<spec::enable::v1_0::ServiceMutationResult, AppError> {
+) -> Result<spec::enable::v1_1::ServiceMutationResult, AppError> {
     built(
-        spec::enable::v1_0::ServiceMutationResult::builder()
+        spec::enable::v1_1::ServiceMutationResult::builder()
             .log_entry_version_id(
-                spec::enable::v1_0::ServiceMutationResultLogEntryVersionId::try_from(
+                spec::enable::v1_1::ServiceMutationResultLogEntryVersionId::try_from(
                     log_entry_version_id,
                 )
                 .map_err(|_| {
@@ -421,7 +421,7 @@ fn mutation(
                 })?,
             )
             .effective_at(chrono::Utc::now())
-            .drain_until(drain_until)
+            .drain_ends_at(drain_until)
             .draining_mediator(draining_mediator)
             .vta_did((!vta_did.is_empty()).then_some(vta_did))
             .serverless(serverless),
@@ -468,7 +468,7 @@ pub(super) async fn handle_enable(
     if let Err(e) = auth.require_super_admin() {
         return app_error_to_reject(&doc, e);
     }
-    let req: spec::enable::v1_0::Payload = match parse_payload(&doc) {
+    let req: spec::enable::v1_1::Payload = match parse_payload(&doc) {
         Ok(r) => r,
         Err(resp) => return resp,
     };
@@ -477,7 +477,7 @@ pub(super) async fn handle_enable(
         Err(e) => return app_error_to_reject(&doc, e),
     };
     let deps = ServiceOpDeps::from_app_state(state_, &resolver);
-    use spec::enable::v1_0::ServiceKind as K;
+    use spec::enable::v1_1::ServiceKind as K;
     let setup_acl = match setup_acl_from_ext(req.ext.as_ref()) {
         Ok(value) => value,
         Err(e) => return app_error_to_reject(&doc, e),
@@ -547,7 +547,7 @@ pub(super) async fn handle_enable(
                 };
             let force = req.config.force.unwrap_or(false);
             let handshake_timeout = std::time::Duration::from_secs(
-                req.config.handshake_timeout_secs.map_or(10, u64::from),
+                req.config.handshake_timeout_seconds.map_or(10, u64::from),
             );
             #[cfg(feature = "didcomm")]
             if !force
@@ -606,8 +606,8 @@ pub(super) async fn handle_enable(
         }
     };
     match result {
-        Ok(result) => match built::<spec::enable::v1_0::Response, _>(
-            spec::enable::v1_0::Response::builder().result(result),
+        Ok(result) => match built::<spec::enable::v1_1::Response, _>(
+            spec::enable::v1_1::Response::builder().result(result),
         ) {
             Ok(r) => {
                 let response = success_response(&doc, r);
@@ -631,21 +631,21 @@ pub(super) async fn handle_update(
     if let Err(e) = auth.require_super_admin() {
         return app_error_to_reject(&doc, e);
     }
-    // 1.1 is 1.0 plus an optional `drainTtlSecs`, so one parse serves both:
+    // 1.1 is 1.0 plus an optional `drainTtlSeconds`, so one parse serves both:
     // a 1.0 document (validated against 1.0's schema on the spine) reads as a
     // 1.1 payload with no drain requested.
-    let req: spec::update::v1_1::Payload = match parse_payload(&doc) {
+    let req: spec::update::v1_2::Payload = match parse_payload(&doc) {
         Ok(r) => r,
         Err(resp) => return resp,
     };
-    use spec::update::v1_1::ServiceKind as K;
+    use spec::update::v1_2::ServiceKind as K;
     // The drain belongs to the mediated transports; a member that does not
     // apply to the named service makes the request malformed, not ignored.
-    if req.drain_ttl_secs.is_some() && matches!(req.service, K::Rest | K::Webauthn) {
+    if req.drain_ttl_seconds.is_some() && matches!(req.service, K::Rest | K::Webauthn) {
         return app_error_to_reject(
             &doc,
             AppError::Validation(
-                "drainTtlSecs applies only to a mediated transport (didcomm, tsp)".into(),
+                "drainTtlSeconds applies only to a mediated transport (didcomm, tsp)".into(),
             ),
         );
     }
@@ -761,7 +761,7 @@ pub(super) async fn handle_update(
             // spec's MUST — since cutting that mediator discards the reply.
             let floor = crate::operations::protocol::disable_didcomm::MIN_DRAIN_TTL_OVER_DIDCOMM;
             let transport = arrival_transport();
-            let drain_ttl = match req.drain_ttl_secs {
+            let drain_ttl = match req.drain_ttl_seconds {
                 None => floor,
                 Some(secs) => {
                     let asked = std::time::Duration::from_secs(secs);
@@ -779,7 +779,7 @@ pub(super) async fn handle_update(
                 setup_acl,
                 force,
                 handshake_timeout: std::time::Duration::from_secs(
-                    req.config.handshake_timeout_secs.map_or(10, u64::from),
+                    req.config.handshake_timeout_seconds.map_or(10, u64::from),
                 ),
                 audit_kind: crate::operations::protocol::update_didcomm::MigrateAuditKind::Forward,
                 transport,
@@ -821,10 +821,10 @@ pub(super) async fn handle_update(
     match result {
         // Annotated: the target type used to be pinned by the response struct
         // literal, and the builder's `TryInto` setter no longer pins it.
-        Ok(result) => match retype::<spec::update::v1_0::ServiceMutationResult>(result) {
+        Ok(result) => match retype::<spec::update::v1_2::ServiceMutationResult>(result) {
             Ok(result) => {
-                match built::<spec::update::v1_0::Response, _>(
-                    spec::update::v1_0::Response::builder().result(result),
+                match built::<spec::update::v1_2::Response, _>(
+                    spec::update::v1_2::Response::builder().result(result),
                 ) {
                     Ok(r) => success_response(&doc, r),
                     Err(e) => app_error_to_reject(&doc, e),
@@ -844,7 +844,7 @@ pub(super) async fn handle_disable(
     if let Err(e) = auth.require_super_admin() {
         return app_error_to_reject(&doc, e);
     }
-    let req: spec::disable::v1_0::Payload = match parse_payload(&doc) {
+    let req: spec::disable::v1_1::Payload = match parse_payload(&doc) {
         Ok(r) => r,
         Err(resp) => return resp,
     };
@@ -853,7 +853,7 @@ pub(super) async fn handle_disable(
         Err(e) => return app_error_to_reject(&doc, e),
     };
     let deps = ServiceOpDeps::from_app_state(state_, &resolver);
-    use spec::disable::v1_0::ServiceKind as K;
+    use spec::disable::v1_1::ServiceKind as K;
 
     let result = match req.service {
         K::Rest => {
@@ -896,12 +896,12 @@ pub(super) async fn handle_disable(
             mutation(r.new_version_id, r.vta_did, r.serverless, None, None)
         }
         K::Didcomm => {
-            // `drainTtlSecs` is a REQUEST, not an instruction — the operation
+            // `drainTtlSeconds` is a REQUEST, not an instruction — the operation
             // raises it to the 1h floor when `transport` says the task arrived
-            // end-to-end. The spec says so, and the result's `drainUntil` is
+            // end-to-end. The spec says so, and the result's `drainEndsAt` is
             // what a caller must read to learn what actually happened.
             let params = DisableDidcommParams {
-                drain_ttl: std::time::Duration::from_secs(req.drain_ttl_secs.unwrap_or(0)),
+                drain_ttl: std::time::Duration::from_secs(req.drain_ttl_seconds.unwrap_or(0)),
                 transport: arrival_transport(),
             };
             let r = op!(
@@ -933,10 +933,10 @@ pub(super) async fn handle_disable(
         }
     };
     match result {
-        Ok(result) => match retype::<spec::disable::v1_0::ServiceMutationResult>(result) {
+        Ok(result) => match retype::<spec::disable::v1_1::ServiceMutationResult>(result) {
             Ok(result) => {
-                match built::<spec::disable::v1_0::Response, _>(
-                    spec::disable::v1_0::Response::builder().result(result),
+                match built::<spec::disable::v1_1::Response, _>(
+                    spec::disable::v1_1::Response::builder().result(result),
                 ) {
                     Ok(r) => success_response(&doc, r),
                     Err(e) => app_error_to_reject(&doc, e),
@@ -958,7 +958,7 @@ pub(super) async fn handle_disable(
 macro_rules! rollback_kind {
     ($m:ident, $k:expr) => {{
         use crate::operations::protocol::$m::RollbackKind as K;
-        use spec::rollback::v1_0::RollbackResultKind as Out;
+        use spec::rollback::v1_2::RollbackResultKind as Out;
         match $k {
             K::Disabled => Out::Disabled,
             K::Enabled => Out::Enabled,
@@ -976,14 +976,14 @@ macro_rules! rollback_kind {
 /// says so. That is a **success** — the requested state holds — so reporting it
 /// as a failure would be wrong, and inventing a log entry id would be worse.
 fn rollback_result(
-    kind: spec::rollback::v1_0::RollbackResultKind,
+    kind: spec::rollback::v1_2::RollbackResultKind,
     new_version_id: Option<String>,
     vta_did: String,
     serverless: bool,
     draining_mediator: Option<String>,
-) -> spec::rollback::v1_0::RollbackResult {
+) -> spec::rollback::v1_2::RollbackResult {
     let wrote_an_entry = new_version_id.is_some();
-    spec::rollback::v1_0::RollbackResult::builder()
+    spec::rollback::v1_2::RollbackResult::builder()
         .kind(kind)
         .log_entry_version_id(new_version_id)
         .effective_at(wrote_an_entry.then(chrono::Utc::now))
@@ -1002,21 +1002,21 @@ pub(super) async fn handle_rollback(
     if let Err(e) = auth.require_super_admin() {
         return app_error_to_reject(&doc, e);
     }
-    // 1.1 is 1.0 plus an optional `drainTtlSecs`, so one parse serves both: a
+    // 1.1 is 1.0 plus an optional `drainTtlSeconds`, so one parse serves both: a
     // 1.0 document (validated against 1.0's schema on the spine) reads as a 1.1
     // payload with no drain requested.
-    let req: spec::rollback::v1_1::Payload = match parse_payload(&doc) {
+    let req: spec::rollback::v1_2::Payload = match parse_payload(&doc) {
         Ok(r) => r,
         Err(resp) => return resp,
     };
-    use spec::rollback::v1_1::ServiceKind as K;
+    use spec::rollback::v1_2::ServiceKind as K;
     // As `update/1.1`: the drain belongs to the mediated transports, and a
     // member that cannot apply to the named service is malformed, not ignored.
-    if req.drain_ttl_secs.is_some() && matches!(req.service, K::Rest | K::Webauthn) {
+    if req.drain_ttl_seconds.is_some() && matches!(req.service, K::Rest | K::Webauthn) {
         return app_error_to_reject(
             &doc,
             AppError::Validation(
-                "drainTtlSecs applies only to a mediated transport (didcomm, tsp)".into(),
+                "drainTtlSeconds applies only to a mediated transport (didcomm, tsp)".into(),
             ),
         );
     }
@@ -1076,7 +1076,7 @@ pub(super) async fn handle_rollback(
             // draining is accepted and does nothing.
             let floor = crate::operations::protocol::disable_didcomm::MIN_DRAIN_TTL_OVER_DIDCOMM;
             let transport = arrival_transport();
-            let drain_ttl = match req.drain_ttl_secs {
+            let drain_ttl = match req.drain_ttl_seconds {
                 None => floor,
                 Some(secs) => {
                     let asked = std::time::Duration::from_secs(secs);
@@ -1131,8 +1131,8 @@ pub(super) async fn handle_rollback(
             );
         }
     };
-    match built::<spec::rollback::v1_0::Response, _>(
-        spec::rollback::v1_0::Response::builder().result(result),
+    match built::<spec::rollback::v1_2::Response, _>(
+        spec::rollback::v1_2::Response::builder().result(result),
     ) {
         Ok(r) => success_response(&doc, r),
         Err(e) => app_error_to_reject(&doc, e),
@@ -1149,7 +1149,7 @@ pub(super) async fn handle_drain_list(
     if let Err(e) = auth.require_super_admin() {
         return app_error_to_reject(&doc, e);
     }
-    let _req: spec::drain::list::v1_0::Payload = match parse_payload(&doc) {
+    let _req: spec::drain::list::v1_1::Payload = match parse_payload(&doc) {
         Ok(r) => r,
         Err(resp) => return resp,
     };
@@ -1160,9 +1160,9 @@ pub(super) async fn handle_drain_list(
                 .into_iter()
                 .map(|e| {
                     built(
-                        spec::drain::list::v1_0::DrainEntry::builder()
+                        spec::drain::list::v1_1::DrainEntry::builder()
                             .mediator_did(
-                                spec::drain::list::v1_0::DrainEntryMediatorDid::try_from(
+                                spec::drain::list::v1_1::DrainEntryMediatorDid::try_from(
                                     e.mediator_did,
                                 )
                                 .map_err(|_| {
@@ -1172,7 +1172,7 @@ pub(super) async fn handle_drain_list(
                                 })?,
                             )
                             .endpoint(e.endpoint)
-                            .drains_until(
+                            .drain_ends_at(
                                 e.drains_until
                                     .parse::<chrono::DateTime<chrono::Utc>>()
                                     .map_err(|_| {
@@ -1185,8 +1185,8 @@ pub(super) async fn handle_drain_list(
                 })
                 .collect::<Result<Vec<_>, AppError>>();
             match entries {
-                Ok(entries) => match built::<spec::drain::list::v1_0::Response, _>(
-                    spec::drain::list::v1_0::Response::builder().entries(entries),
+                Ok(entries) => match built::<spec::drain::list::v1_1::Response, _>(
+                    spec::drain::list::v1_1::Response::builder().entries(entries),
                 ) {
                     Ok(r) => success_response(&doc, r),
                     Err(e) => app_error_to_reject(&doc, e),
@@ -1254,7 +1254,7 @@ pub(super) async fn handle_report(
     if let Err(e) = auth.require_super_admin() {
         return app_error_to_reject(&doc, e);
     }
-    let req: spec::report::v0_1::Payload = match parse_payload(&doc) {
+    let req: spec::report::v0_2::Payload = match parse_payload(&doc) {
         Ok(r) => r,
         Err(resp) => return resp,
     };
@@ -1263,7 +1263,7 @@ pub(super) async fn handle_report(
     {
         return super::helpers::reject_declared(
             &doc,
-            spec::report::v0_1::error_codes::INVALID_WINDOW,
+            spec::report::v0_2::error_codes::INVALID_WINDOW,
             "`since` is after `until`",
         );
     }
@@ -1288,8 +1288,8 @@ pub(super) async fn handle_report(
         "mediators": report.mediators.iter().map(|m| serde_json::json!({
             "mediatorDid": m.mediator_did,
             "inboundCount": m.inbound_count,
-            "firstSeen": ts(m.first_seen),
-            "lastSeen": ts(m.last_seen),
+            "firstSeenAt": ts(m.first_seen),
+            "lastSeenAt": ts(m.last_seen),
         })).collect::<Vec<_>>(),
         "senders": report.senders.iter().map(|s| serde_json::json!({
             "senderDid": s.sender_did,
@@ -1303,7 +1303,7 @@ pub(super) async fn handle_report(
     {
         obj.remove("since");
     }
-    match serde_json::from_value::<spec::report::v0_1::Response>(body) {
+    match serde_json::from_value::<spec::report::v0_2::Response>(body) {
         Ok(r) => success_response(&doc, r),
         Err(e) => app_error_to_reject(
             &doc,
@@ -1318,7 +1318,7 @@ mod setup_acl_extension_tests {
 
     #[test]
     fn reads_setup_acl_from_the_openvtc_extension() {
-        let payload: spec::update::v1_1::Payload = serde_json::from_value(serde_json::json!({
+        let payload: spec::update::v1_2::Payload = serde_json::from_value(serde_json::json!({
             "service": "didcomm",
             "config": { "mediatorDid": "did:web:mediator.example" },
             "ext": { "org.openvtc": { "setupAcl": true } }
@@ -1329,7 +1329,7 @@ mod setup_acl_extension_tests {
 
     #[test]
     fn rejects_a_non_boolean_setup_acl_extension() {
-        let payload: spec::update::v1_1::Payload = serde_json::from_value(serde_json::json!({
+        let payload: spec::update::v1_2::Payload = serde_json::from_value(serde_json::json!({
             "service": "didcomm",
             "config": { "mediatorDid": "did:web:mediator.example" },
             "ext": { "org.openvtc": { "setupAcl": "yes" } }

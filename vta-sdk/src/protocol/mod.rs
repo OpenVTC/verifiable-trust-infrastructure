@@ -218,7 +218,7 @@ mod via_trust_tasks {
                         c["force"] = json!(f);
                     }
                     if let Some(t) = handshake_timeout_secs {
-                        c["handshakeTimeoutSecs"] = json!(t);
+                        c["handshakeTimeoutSeconds"] = json!(t);
                     }
                     c
                 }
@@ -264,12 +264,12 @@ mod via_trust_tasks {
         }
     }
 
-    impl From<spec::enable::v1_0::ServiceMutationResult> for Mutation {
-        fn from(r: spec::enable::v1_0::ServiceMutationResult) -> Self {
+    impl From<spec::enable::v1_1::ServiceMutationResult> for Mutation {
+        fn from(r: spec::enable::v1_1::ServiceMutationResult) -> Self {
             Self {
                 log_entry_version_id: r.log_entry_version_id.to_string(),
                 effective_at: ts(r.effective_at),
-                drain_until: r.drain_until.map(ts),
+                drain_until: r.drain_ends_at.map(ts),
                 draining_mediator: r.draining_mediator,
                 vta_did: r.vta_did.unwrap_or_default(),
                 serverless: r.serverless,
@@ -294,7 +294,7 @@ mod via_trust_tasks {
     // `enable`, `update` and `disable` each have their own generated
     // `ServiceMutationResult`, identical in shape; the response is decoded as
     // `enable`'s, which the JSON of all three satisfies by construction.
-    type MutationResponse = spec::enable::v1_0::Response;
+    type MutationResponse = spec::enable::v1_1::Response;
 
     impl VtaClient {
         pub(super) async fn services_enable(
@@ -305,7 +305,7 @@ mod via_trust_tasks {
         ) -> Result<Mutation, VtaError> {
             let payload = service_payload(kind, config);
             let r: MutationResponse = self
-                .rpc_tt(uri::TASK_SERVICES_ENABLE_1_0, payload, timeout)
+                .rpc_tt(uri::TASK_SERVICES_ENABLE_1_1, payload, timeout)
                 .await?;
             Ok(r.result.into())
         }
@@ -319,10 +319,10 @@ mod via_trust_tasks {
         ) -> Result<Mutation, VtaError> {
             let mut payload = service_payload(kind, config);
             if let Some(ttl) = drain_ttl_secs {
-                payload["drainTtlSecs"] = json!(ttl);
+                payload["drainTtlSeconds"] = json!(ttl);
             }
             let r: MutationResponse = self
-                .rpc_tt(uri::TASK_SERVICES_UPDATE_1_1, payload, timeout)
+                .rpc_tt(uri::TASK_SERVICES_UPDATE_1_2, payload, timeout)
                 .await?;
             Ok(r.result.into())
         }
@@ -335,10 +335,10 @@ mod via_trust_tasks {
         ) -> Result<Mutation, VtaError> {
             let mut payload = json!({ "service": kind.wire() });
             if let Some(ttl) = drain_ttl_secs {
-                payload["drainTtlSecs"] = json!(ttl);
+                payload["drainTtlSeconds"] = json!(ttl);
             }
             let r: MutationResponse = self
-                .rpc_tt(uri::TASK_SERVICES_DISABLE_1_0, payload, timeout)
+                .rpc_tt(uri::TASK_SERVICES_DISABLE_1_1, payload, timeout)
                 .await?;
             Ok(r.result.into())
         }
@@ -351,17 +351,17 @@ mod via_trust_tasks {
         ) -> Result<RollbackResponse, VtaError> {
             let mut payload = json!({ "service": kind.wire() });
             if let Some(secs) = drain_ttl_secs {
-                payload["drainTtlSecs"] = secs.into();
+                payload["drainTtlSeconds"] = secs.into();
             }
-            let r: spec::rollback::v1_1::Response = self
-                .rpc_tt(uri::TASK_SERVICES_ROLLBACK_1_1, payload, timeout)
+            let r: spec::rollback::v1_2::Response = self
+                .rpc_tt(uri::TASK_SERVICES_ROLLBACK_1_2, payload, timeout)
                 .await?;
             let r = r.result;
             Ok(RollbackResponse {
                 log_entry_version_id: r.log_entry_version_id.unwrap_or_default(),
                 effective_at: r.effective_at.map(ts).unwrap_or_default(),
                 kind: rollback_kind(r.kind).into(),
-                drain_until: r.drain_until.map(ts),
+                drain_until: r.drain_ends_at.map(ts),
                 draining_mediator: r.draining_mediator,
                 vta_did: r.vta_did.unwrap_or_default(),
                 serverless: r.serverless,
@@ -369,8 +369,8 @@ mod via_trust_tasks {
         }
 
         pub(super) async fn services_list(&self) -> Result<ServicesListResponse, VtaError> {
-            let r: spec::list::v1_0::Response = self
-                .rpc_tt(uri::TASK_SERVICES_LIST_1_0, json!({}), 30)
+            let r: spec::list::v1_1::Response = self
+                .rpc_tt(uri::TASK_SERVICES_LIST_1_1, json!({}), 30)
                 .await?;
             Ok(ServicesListResponse {
                 services: r.services.into_iter().filter_map(state).collect(),
@@ -383,9 +383,9 @@ mod via_trust_tasks {
             &self,
             kind: Kind,
         ) -> Result<Option<ServiceState>, VtaError> {
-            let r: Result<spec::get::v1_0::Response, VtaError> = self
+            let r: Result<spec::get::v1_1::Response, VtaError> = self
                 .rpc_tt(
-                    uri::TASK_SERVICES_GET_1_0,
+                    uri::TASK_SERVICES_GET_1_1,
                     json!({ "service": kind.wire() }),
                     30,
                 )
@@ -393,7 +393,7 @@ mod via_trust_tasks {
             match r {
                 Ok(r) => Ok(serde_json::to_value(r.state)
                     .ok()
-                    .and_then(|v| serde_json::from_value::<spec::list::v1_0::ServiceState>(v).ok())
+                    .and_then(|v| serde_json::from_value::<spec::list::v1_1::ServiceState>(v).ok())
                     .and_then(state)),
                 Err(VtaError::NotFound(_)) => Ok(None),
                 Err(e) => Err(e),
@@ -401,8 +401,8 @@ mod via_trust_tasks {
         }
 
         pub(super) async fn services_drain_list(&self) -> Result<DrainListResponse, VtaError> {
-            let r: spec::drain::list::v1_0::Response = self
-                .rpc_tt(uri::TASK_SERVICES_DRAIN_LIST_1_0, json!({}), 30)
+            let r: spec::drain::list::v1_1::Response = self
+                .rpc_tt(uri::TASK_SERVICES_DRAIN_LIST_1_1, json!({}), 30)
                 .await?;
             Ok(DrainListResponse {
                 entries: r
@@ -411,7 +411,7 @@ mod via_trust_tasks {
                     .map(|e| DrainEntry {
                         mediator_did: e.mediator_did.to_string(),
                         endpoint: e.endpoint,
-                        drains_until: ts(e.drains_until),
+                        drains_until: ts(e.drain_ends_at),
                     })
                     .collect(),
             })
@@ -443,8 +443,8 @@ mod via_trust_tasks {
             if let Some(u) = until {
                 payload["until"] = json!(u);
             }
-            let r: spec::report::v0_1::Response = self
-                .rpc_tt(uri::TASK_SERVICES_REPORT_0_1, payload, 30)
+            let r: spec::report::v0_2::Response = self
+                .rpc_tt(uri::TASK_SERVICES_REPORT_0_2, payload, 30)
                 .await?;
             Ok(MediatorReport {
                 since: r.since.map(ts),
@@ -455,8 +455,8 @@ mod via_trust_tasks {
                     .map(|m| MediatorStats {
                         mediator_did: m.mediator_did.to_string(),
                         inbound_count: m.inbound_count,
-                        first_seen: ts(m.first_seen),
-                        last_seen: ts(m.last_seen),
+                        first_seen: ts(m.first_seen_at),
+                        last_seen: ts(m.last_seen_at),
                     })
                     .collect(),
                 senders: r
@@ -475,8 +475,8 @@ mod via_trust_tasks {
     /// [`RollbackResponse::kind`]'s documented snake_case form. The wire says
     /// `noOp`, and the CLI (like any caller reading the documented values)
     /// tests for `no_op`, so this is spelled out rather than serialised.
-    fn rollback_kind(k: spec::rollback::v1_1::RollbackResultKind) -> &'static str {
-        use spec::rollback::v1_1::RollbackResultKind as K;
+    fn rollback_kind(k: spec::rollback::v1_2::RollbackResultKind) -> &'static str {
+        use spec::rollback::v1_2::RollbackResultKind as K;
         match k {
             K::Disabled => "disabled",
             K::Enabled => "enabled",
@@ -490,8 +490,8 @@ mod via_trust_tasks {
     /// The published flat state as the SDK's tagged enum. A kind this build
     /// does not know (the generated enum is `#[non_exhaustive]`) is dropped
     /// rather than guessed at.
-    fn state(s: spec::list::v1_0::ServiceState) -> Option<ServiceState> {
-        use spec::list::v1_0::ServiceKind as K;
+    fn state(s: spec::list::v1_1::ServiceState) -> Option<ServiceState> {
+        use spec::list::v1_1::ServiceKind as K;
         Some(match s.kind {
             K::Rest => ServiceState::Rest {
                 enabled: s.enabled,
@@ -522,7 +522,7 @@ mod via_trust_tasks {
         /// is what the CLI tests for to print "nothing to do".
         #[test]
         fn a_no_op_rollback_reads_as_the_documented_no_op() {
-            let r: spec::rollback::v1_1::RollbackResultKind =
+            let r: spec::rollback::v1_2::RollbackResultKind =
                 serde_json::from_value(json!("noOp")).unwrap();
             assert_eq!(rollback_kind(r), "no_op");
         }

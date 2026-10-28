@@ -841,7 +841,7 @@ pub struct UpdateWebvhServerRequest {
 
 // ── WebVH DID types ─────────────────────────────────────────────────
 
-/// Sent as the `vta/webvh/dids/create/1.0` payload. That schema was published
+/// Sent as the `vta/webvh/dids/create/1.2` payload. The 1.0 schema was published
 /// in trust-tasks #240 and this struct predates it, which is why it carried
 /// snake_case members the agent would have rejected as `malformedRequest`;
 /// client-side validation only started catching it once trust-tasks-rs 0.11

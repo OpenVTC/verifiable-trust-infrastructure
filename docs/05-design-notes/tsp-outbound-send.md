@@ -105,7 +105,7 @@ that device. See the outbound-send tracks below / the Phase-2 plan.
 No new probe is needed. `pnm-cli`'s `health::tsp_probe` (compiled by default —
 `tsp` is in the crate's `default` features) already performs the load-bearing
 test: it opens the client's TSP websocket to the mediator and does a **cold
-`atm.tsp().send_routed`** of a `messaging/ping/0.1` Trust Task to the VTA with
+`atm.tsp().send_routed`** of a `messaging/ping/0.2` Trust Task to the VTA with
 **no `form_relationship` call first**, then awaits the routed reply. `pnm health`
 runs it automatically whenever the target VTA's DID document advertises a
 `#tsp` (`TSPTransport`) service. Run against a live TSP-enabled VTA:

@@ -100,7 +100,7 @@ impl TspMediatorSession {
             })
     }
 
-    // There is no `announce`. It sent an unsigned `messaging/ping/0.1`, which
+    // There is no `announce`. It sent an unsigned `messaging/ping/0.2`, which
     // the VTA now refuses (`proofRequired`) like any other unsigned document.
     // Announce reachability by sending a signed ping instead:
     // `send_trust_task(vta, mediator, build_messaging_ping(env, signer))`.

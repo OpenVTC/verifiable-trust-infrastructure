@@ -157,7 +157,7 @@ pub struct AppStateGetResponse {
 // put
 // ---------------------------------------------------------------------------
 
-/// `spec/vta/app-state/put/1.0` request body.
+/// `spec/vta/app-state/put/1.1` request body.
 ///
 /// Exactly one of [`value`](Self::value) or [`merge_patch`](Self::merge_patch)
 /// is supplied; the handler rejects both-or-neither rather than picking one.
@@ -206,7 +206,7 @@ pub struct AppStatePutBody {
     pub ext: Option<Value>,
 }
 
-/// `spec/vta/app-state/put/1.0` response body.
+/// `spec/vta/app-state/put/1.1` response body.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AppStatePutResponse {
@@ -221,7 +221,7 @@ pub struct AppStatePutResponse {
     pub version: u64,
     /// True when no live record existed beforehand — including when the
     /// address held a tombstone, which is not a live record.
-    pub created: bool,
+    pub was_created: bool,
     /// When the write was applied.
     pub updated_at: String,
     /// Size of the stored value as measured against the per-record cap.
@@ -233,7 +233,7 @@ pub struct AppStatePutResponse {
 // list
 // ---------------------------------------------------------------------------
 
-/// `spec/vta/app-state/list/1.0` request body.
+/// `spec/vta/app-state/list/1.1` request body.
 ///
 /// Two modes, selected by whether [`since_version`](Self::since_version) is
 /// supplied. Without it this is a key-ordered **snapshot** of live records.
@@ -271,7 +271,7 @@ pub struct AppStateListBody {
     /// Caller's upper bound on records per page. The VTA applies its own
     /// ceiling and may return fewer.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub page_size: Option<usize>,
+    pub limit: Option<usize>,
     /// Opaque continuation token from a previous response.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cursor: Option<String>,
@@ -290,7 +290,7 @@ pub struct AppStateListBody {
     pub ext: Option<Value>,
 }
 
-/// `spec/vta/app-state/list/1.0` response body.
+/// `spec/vta/app-state/list/1.1` response body.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AppStateListResponse {
@@ -298,11 +298,10 @@ pub struct AppStateListResponse {
     /// version order in change-feed mode so that applying them in order
     /// reaches the state the VTA holds.
     pub records: Vec<AppStateRecord>,
-    /// True when more matching records exist beyond this page.
-    pub truncated: bool,
-    /// Opaque continuation token, present only when `truncated`.
+    /// Opaque continuation token, present exactly when more matching records
+    /// exist beyond this page; send it back as the next request's `cursor`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cursor: Option<String>,
+    pub next_cursor: Option<String>,
     /// The namespace's current counter value, present whenever `namespace` was
     /// supplied and has been written to. Absent for a namespace with no writes
     /// yet; keep the `since_version` you sent.
@@ -513,7 +512,7 @@ impl AppStateWrite {
     }
 }
 
-/// `spec/vta/app-state/put-many/1.0` request body.
+/// `spec/vta/app-state/put-many/1.1` request body.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AppStatePutManyBody {
@@ -577,7 +576,7 @@ pub struct WriteResult {
     pub version: Option<u64>,
     /// On `Written`: true when no live record existed beforehand.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub created: Option<bool>,
+    pub was_created: Option<bool>,
     /// On `Conflict`: the version the VTA actually holds.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub current_version: Option<u64>,
@@ -602,7 +601,7 @@ pub struct WriteResult {
     pub actual_bytes: Option<u64>,
 }
 
-/// `spec/vta/app-state/put-many/1.0` response body (independent mode).
+/// `spec/vta/app-state/put-many/1.1` response body (independent mode).
 ///
 /// A batch in which some writes conflicted is a **success**: the task did what
 /// it promised — applied each write on its own merits — and the per-record

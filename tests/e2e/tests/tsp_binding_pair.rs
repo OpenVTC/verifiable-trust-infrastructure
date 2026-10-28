@@ -9,7 +9,7 @@
 //! ```text
 //! refused a TSP frame that is not a binding envelope
 //!   reason=TSP payload is not a `…/binding/tsp/0.1/envelope` envelope
-//!          (got `…/spec/messaging/ping/0.1`)
+//!          (got `…/spec/messaging/ping/0.2`)
 //! ```
 //!
 //! Nothing was red. `tsp_round_trip` and `tsp_dual_leg` send *and* receive
@@ -54,12 +54,12 @@ fn did_key_from_seed(seed_byte: u8) -> (String, String) {
     (did, priv_mb)
 }
 
-/// A `messaging/ping/0.1` document — the task the failing log line named, and
+/// A `messaging/ping/0.2` document — the task the failing log line named, and
 /// the one probe that needs no session and no capability.
 fn ping_document(issuer: &str, recipient: &str, id: &str) -> Vec<u8> {
     serde_json::to_vec(&serde_json::json!({
         "id": id,
-        "type": "https://trusttasks.org/spec/messaging/ping/0.1",
+        "type": "https://trusttasks.org/spec/messaging/ping/0.2",
         "issuer": issuer,
         "recipient": recipient,
         "issuedAt": chrono::Utc::now().to_rfc3339(),

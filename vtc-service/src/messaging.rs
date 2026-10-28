@@ -2009,7 +2009,7 @@ mod tests {
             vti_common::capability_client::TRUST_TASK_ENVELOPE_TYPE.to_string(),
             json!({
                 "id": "urn:uuid:stray-doc",
-                "type": "https://trusttasks.org/spec/messaging/message/status/0.1#response",
+                "type": "https://trusttasks.org/spec/messaging/message/status/0.2#response",
                 "threadId": "urn:uuid:long-gone",
                 "payload": {}
             }),

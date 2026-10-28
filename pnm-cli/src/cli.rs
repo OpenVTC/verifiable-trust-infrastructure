@@ -2185,7 +2185,7 @@ pub(crate) enum VtaCommands {
     },
     /// Restart the VTA service (soft restart — reloads config and reconnects)
     Restart,
-    /// Open a sealed `vta/attestation/mnemonic-export/1.0` backup bundle.
+    /// Open a sealed `vta/attestation/mnemonic-export/1.1` backup bundle.
     Mnemonic {
         #[command(subcommand)]
         command: MnemonicCommands,

@@ -70,7 +70,7 @@ const NO_EXT_BY_DESIGN: &[(&str, &str)] = &[
     (
         "IssuedCredentialSummary",
         "`vault`-style list row, not a payload root. \
-     `vta/credentials/list/0.1`'s published schema closes \
+     `vta/credentials/list/0.2`'s published schema closes \
      `IssuedCredentialSummary` with `additionalProperties: false` and declares \
      no `ext` slot on it — SPEC §4.5.1 gives the slot to the payload, which \
      this type is a member of rather than being. So no conforming producer can \

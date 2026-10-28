@@ -4192,7 +4192,7 @@ mod idempotency_document_tests {
         IDEMPOTENCY_KEY
             .scope("urn:uuid:k".to_string(), async {
                 let doc = build_task_document(
-                    trust_tasks::TASK_WEBVH_DIDS_CREATE_1_0,
+                    trust_tasks::TASK_WEBVH_DIDS_CREATE_1_2,
                     serde_json::json!({}),
                     None,
                 );
@@ -4220,7 +4220,7 @@ mod idempotency_document_tests {
     #[tokio::test]
     async fn outside_a_scope_no_document_carries_a_key() {
         let doc = build_task_document(
-            trust_tasks::TASK_WEBVH_DIDS_CREATE_1_0,
+            trust_tasks::TASK_WEBVH_DIDS_CREATE_1_2,
             serde_json::json!({}),
             None,
         );
@@ -4264,7 +4264,7 @@ mod client_identity_tests {
     use super::*;
     use crate::trust_tasks;
 
-    const TYPE: &str = trust_tasks::TASK_WEBVH_DIDS_CREATE_1_0;
+    const TYPE: &str = trust_tasks::TASK_WEBVH_DIDS_CREATE_1_2;
 
     fn did_key_from_seed(seed_byte: u8) -> (String, String) {
         let seed = [seed_byte; 32];

@@ -437,7 +437,7 @@ mod tests {
     /// A conforming response passes through untouched.
     #[test]
     fn a_conforming_response_is_not_replaced() {
-        // `messaging/ping/0.1` is bound and published; an empty payload object
+        // `messaging/ping/0.2` is bound and published; an empty payload object
         // is not valid for it, so use a task whose response really does pass:
         // the exemption paths are covered above, so assert the shape that
         // matters here — no violation, no replacement.

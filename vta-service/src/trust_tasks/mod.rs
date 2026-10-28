@@ -188,18 +188,18 @@ const KNOWN_FEATURE_GATED_URIS: &[&str] = &[
     // parity harness when both features are on; this allowlist covers builds
     // where either feature is off.
     vta_sdk::trust_tasks::TASK_PASSKEY_VMS_ENROLL_CHALLENGE_0_1,
-    vta_sdk::trust_tasks::TASK_PASSKEY_VMS_ENROLL_SUBMIT_0_1,
+    vta_sdk::trust_tasks::TASK_PASSKEY_VMS_ENROLL_SUBMIT_0_2,
     vta_sdk::trust_tasks::TASK_PASSKEY_VMS_LIST_0_1,
     vta_sdk::trust_tasks::TASK_PASSKEY_VMS_REVOKE_0_1,
     // Provision-integration — requires `webvh`.
     vta_sdk::trust_tasks::TASK_PROVISION_INTEGRATION_0_3,
     // The attestation slice — requires `tee`: the mnemonic export and the
     // three public reads.
-    vta_sdk::trust_tasks::TASK_ATTESTATION_MNEMONIC_EXPORT_1_0,
+    vta_sdk::trust_tasks::TASK_ATTESTATION_MNEMONIC_EXPORT_1_1,
     vta_sdk::trust_tasks::TASK_ATTESTATION_STATUS_0_1,
     vta_sdk::trust_tasks::TASK_ATTESTATION_REPORT_0_1,
     vta_sdk::trust_tasks::TASK_ATTESTATION_CONFIG_REPORT_0_1,
-    vta_sdk::trust_tasks::TASK_ATTESTATION_MNEMONIC_STATUS_0_1,
+    vta_sdk::trust_tasks::TASK_ATTESTATION_MNEMONIC_STATUS_0_2,
     // WebVH-DID-lifecycle slice — requires `webvh`. The `dispatch_table!`
     // entries list the same URIs and are tracked by the parity harness when
     // `webvh` is on; this allowlist covers builds where `webvh` is off.
@@ -207,15 +207,13 @@ const KNOWN_FEATURE_GATED_URIS: &[&str] = &[
     vta_sdk::trust_tasks::TASK_WEBVH_SERVERS_REGISTER_1_0,
     vta_sdk::trust_tasks::TASK_WEBVH_SERVERS_REMOVE_1_0,
     vta_sdk::trust_tasks::TASK_WEBVH_DIDS_LIST_1_0,
-    vta_sdk::trust_tasks::TASK_WEBVH_DIDS_CREATE_1_0,
-    vta_sdk::trust_tasks::TASK_WEBVH_DIDS_CREATE_1_1,
     vta_sdk::trust_tasks::TASK_WEBVH_DIDS_CREATE_1_2,
     vta_sdk::trust_tasks::TASK_WEBVH_DIDS_GET_1_0,
     vta_sdk::trust_tasks::TASK_WEBVH_DIDS_DELETE_1_0,
     vta_sdk::trust_tasks::TASK_WEBVH_DIDS_UPDATE_1_0,
     vta_sdk::trust_tasks::TASK_WEBVH_DIDS_ROTATE_KEYS_1_0,
     vta_sdk::trust_tasks::TASK_WEBVH_DIDS_REGISTER_WITH_SERVER_1_0,
-    vta_sdk::trust_tasks::TASK_WEBVH_AGENT_NAME_LIST_1_0,
+    vta_sdk::trust_tasks::TASK_WEBVH_AGENT_NAME_LIST_1_1,
     vta_sdk::trust_tasks::TASK_WEBVH_AGENT_NAME_CHECK_1_0,
     vta_sdk::trust_tasks::TASK_WEBVH_AGENT_NAME_SET_1_0,
     vta_sdk::trust_tasks::TASK_WEBVH_AGENT_NAME_REMOVE_1_0,
@@ -2436,7 +2434,7 @@ dispatch_table! {
     vta_sdk::trust_tasks::TASK_DEVICE_SET_WAKE_0_2 => device::handle_set_wake
         [ Mutating None false ],
     // ─── Messaging slice ──────────────────────────────────────────
-    vta_sdk::trust_tasks::TASK_MESSAGING_PING_0_1 => messaging::handle_ping
+    vta_sdk::trust_tasks::TASK_MESSAGING_PING_0_2 => messaging::handle_ping
         [ None None false ],
     // ─── Services slice ──────────────────────────────────────────
     //
@@ -2445,36 +2443,36 @@ dispatch_table! {
     // messages still in flight through the mediator, which is precisely what
     // the drain window existed to prevent.
     #[cfg(feature = "webvh")]
-    vta_sdk::trust_tasks::TASK_SERVICES_LIST_1_0 => services::handle_list
+    vta_sdk::trust_tasks::TASK_SERVICES_LIST_1_1 => services::handle_list
         [ None Metadata false ],
     #[cfg(feature = "webvh")]
-    vta_sdk::trust_tasks::TASK_SERVICES_GET_1_0 => services::handle_get
+    vta_sdk::trust_tasks::TASK_SERVICES_GET_1_1 => services::handle_get
         [ None Metadata false ],
     #[cfg(feature = "webvh")]
-    vta_sdk::trust_tasks::TASK_SERVICES_ENABLE_1_0 => services::handle_enable
+    vta_sdk::trust_tasks::TASK_SERVICES_ENABLE_1_1 => services::handle_enable
         [ Mutating None false ],
     // 1.0 and 1.1 share the handler: 1.1 only adds the optional drain window.
     #[cfg(feature = "webvh")]
-    vta_sdk::trust_tasks::TASK_SERVICES_UPDATE_1_0 | vta_sdk::trust_tasks::TASK_SERVICES_UPDATE_1_1
+    vta_sdk::trust_tasks::TASK_SERVICES_UPDATE_1_2
         => services::handle_update
         [ Mutating None false ],
     #[cfg(feature = "webvh")]
-    vta_sdk::trust_tasks::TASK_SERVICES_DISABLE_1_0 => services::handle_disable
+    vta_sdk::trust_tasks::TASK_SERVICES_DISABLE_1_1 => services::handle_disable
         [ Mutating None false ],
     // 1.0 and 1.1 share the handler: 1.1 only adds the optional drain window.
     #[cfg(feature = "webvh")]
-    vta_sdk::trust_tasks::TASK_SERVICES_ROLLBACK_1_0 | vta_sdk::trust_tasks::TASK_SERVICES_ROLLBACK_1_1
+    vta_sdk::trust_tasks::TASK_SERVICES_ROLLBACK_1_2
         => services::handle_rollback
         [ Mutating None false ],
     #[cfg(feature = "webvh")]
-    vta_sdk::trust_tasks::TASK_SERVICES_DRAIN_LIST_1_0 => services::handle_drain_list
+    vta_sdk::trust_tasks::TASK_SERVICES_DRAIN_LIST_1_1 => services::handle_drain_list
         [ None Metadata false ],
     #[cfg(feature = "webvh")]
     vta_sdk::trust_tasks::TASK_SERVICES_DRAIN_CANCEL_1_0 => services::handle_drain_cancel
         [ Destructive None false ],
     // A contact log of other parties' DIDs — metadata, read-only.
     #[cfg(feature = "webvh")]
-    vta_sdk::trust_tasks::TASK_SERVICES_REPORT_0_1 => services::handle_report
+    vta_sdk::trust_tasks::TASK_SERVICES_REPORT_0_2 => services::handle_report
         [ None Metadata false ],
     // ─── Contexts slice ──────────────────────────────────────────
     vta_sdk::trust_tasks::TASK_CONTEXTS_LIST_1_0 => contexts::handle_list
@@ -2492,9 +2490,8 @@ dispatch_table! {
     // existing keys and mints, rotates and revokes nothing.
     vta_sdk::trust_tasks::TASK_CONTEXTS_SECRETS_1_0 => contexts::handle_secrets
         [ None Secret false ],
-    // 1.0 and 1.1 share the handler: 1.1 only lets `did` be `null` (clear it).
-    vta_sdk::trust_tasks::TASK_CONTEXTS_UPDATE_DID_1_0 | vta_sdk::trust_tasks::TASK_CONTEXTS_UPDATE_DID_1_1
-        => contexts::handle_update_did
+    // 1.1 lets `did` be `null` (clear it).
+    vta_sdk::trust_tasks::TASK_CONTEXTS_UPDATE_DID_1_1 => contexts::handle_update_did
         [ Mutating None false ],
     vta_sdk::trust_tasks::TASK_CONTEXTS_PREVIEW_DELETE_1_0 => contexts::handle_preview_delete
         [ None Metadata false ],
@@ -2538,7 +2535,7 @@ dispatch_table! {
     // The mnemonic export (end-to-end only) and the three public reads, which
     // any caller may send with no identity (`vta_sdk::trust_tasks::PUBLIC_URIS`).
     #[cfg(feature = "tee")]
-    vta_sdk::trust_tasks::TASK_ATTESTATION_MNEMONIC_EXPORT_1_0 => attestation::handle_mnemonic_export
+    vta_sdk::trust_tasks::TASK_ATTESTATION_MNEMONIC_EXPORT_1_1 => attestation::handle_mnemonic_export
         [ Mutating Secret false ],
     #[cfg(feature = "tee")]
     vta_sdk::trust_tasks::TASK_ATTESTATION_STATUS_0_1 => attestation::handle_status
@@ -2552,7 +2549,7 @@ dispatch_table! {
     // Super-admin only, same as the export it watches over; carries no
     // secret itself.
     #[cfg(feature = "tee")]
-    vta_sdk::trust_tasks::TASK_ATTESTATION_MNEMONIC_STATUS_0_1 => attestation::handle_mnemonic_status
+    vta_sdk::trust_tasks::TASK_ATTESTATION_MNEMONIC_STATUS_0_2 => attestation::handle_mnemonic_status
         [ None Metadata false ],
     // ─── Metrics slice ────────────────────────────────────────────
     // Admin only: operational counters, not a public read. Was
@@ -2687,7 +2684,7 @@ dispatch_table! {
     // of question as "who may act at it". What it discloses is the issuer's
     // holder set rather than any one credential's claims — bodies are never
     // returned — so the exposure class stays `None` too.
-    vta_sdk::trust_tasks::TASK_VTA_CREDENTIALS_LIST_0_1 => credentials::handle_list
+    vta_sdk::trust_tasks::TASK_VTA_CREDENTIALS_LIST_0_2 => credentials::handle_list
         [ None None false ],
     // ─── Agent-memory slice (spec/vta/memory/*) ──────────────────
     // Per-context key/value store; gated on context access (require_context),
@@ -2790,7 +2787,7 @@ dispatch_table! {
         [ Mutating Metadata true ],
     vta_sdk::trust_tasks::TASK_VTA_WITNESS_ACCEPT_0_2 => witness::handle_accept
         [ Mutating Metadata false ],
-    vta_sdk::trust_tasks::TASK_VTA_WITNESS_LIST_0_1 => witness::handle_list
+    vta_sdk::trust_tasks::TASK_VTA_WITNESS_LIST_0_2 => witness::handle_list
         [ None Metadata false ],
     vta_sdk::trust_tasks::TASK_VTA_MEMORY_PUT_0_1 => memory::handle_put
         [ Mutating None false ],
@@ -2930,15 +2927,15 @@ dispatch_table! {
     // once the tombstone is reaped, nothing records the record ever existed.
     vta_sdk::trust_tasks::TASK_VTA_APP_STATE_GET_1_0 => app_state::handle_get
         [ None Metadata false ],
-    vta_sdk::trust_tasks::TASK_VTA_APP_STATE_PUT_1_0 => app_state::handle_put
+    vta_sdk::trust_tasks::TASK_VTA_APP_STATE_PUT_1_1 => app_state::handle_put
         [ Mutating None false ],
-    vta_sdk::trust_tasks::TASK_VTA_APP_STATE_LIST_1_0 => app_state::handle_list
+    vta_sdk::trust_tasks::TASK_VTA_APP_STATE_LIST_1_1 => app_state::handle_list
         [ None Metadata false ],
     vta_sdk::trust_tasks::TASK_VTA_APP_STATE_DELETE_1_0 => app_state::handle_delete
         [ Destructive None false ],
     vta_sdk::trust_tasks::TASK_VTA_APP_STATE_GET_MANY_1_0 => app_state::handle_get_many
         [ None Metadata false ],
-    vta_sdk::trust_tasks::TASK_VTA_APP_STATE_PUT_MANY_1_0 => app_state::handle_put_many
+    vta_sdk::trust_tasks::TASK_VTA_APP_STATE_PUT_MANY_1_1 => app_state::handle_put_many
         [ Mutating None false ],
     // ─── Persona slice (spec/persona/*) ──────────────────────────
     // The holder's own identity. Eleven of the family's tasks are gated on an
@@ -3064,18 +3061,11 @@ dispatch_table! {
     vta_sdk::trust_tasks::TASK_MANAGEMENT_RELOAD_SERVICES_1_0 => management::handle_reload_services
         [ Mutating None false ],
     // ─── Backup slice (descriptor pattern) ───────────────────────
-    vta_sdk::trust_tasks::TASK_BACKUP_INITIATE_EXPORT_1_0 => backup::handle_initiate_export
-        [ Mutating None false ],
     vta_sdk::trust_tasks::TASK_BACKUP_COMPLETE_EXPORT_1_0 => backup::handle_complete_export
         [ Mutating Secret false ],
-    vta_sdk::trust_tasks::TASK_BACKUP_INITIATE_IMPORT_1_0 => backup::handle_initiate_import
-        [ Mutating None false ],
-    vta_sdk::trust_tasks::TASK_BACKUP_FINALIZE_IMPORT_1_0 => backup::handle_finalize_import
-        [ Destructive None false ],
     vta_sdk::trust_tasks::TASK_BACKUP_ABORT_1_0 => backup::handle_abort
         [ Mutating None false ],
-    // The `chunkedTrustTask` algorithm. The 1.1 initiators serve `stream` through
-    // the 1.0 path unchanged. `get-chunk` releases part of the encrypted export,
+    // The 1.1 initiators serve `stream` and the `chunkedTrustTask` algorithm. `get-chunk` releases part of the encrypted export,
     // so it discloses Secret like `complete-export`; it is Mutating because it
     // records the index as served and slides the bundle's expiry. `put-chunk`
     // stages inert bytes checked against a pre-committed manifest.
@@ -3089,33 +3079,21 @@ dispatch_table! {
         [ Mutating Secret false ],
     vta_sdk::trust_tasks::TASK_BACKUP_PUT_CHUNK_1_0 => backup::handle_put_chunk
         [ Mutating None false ],
-    // ─── DID-templates slice (2.0 — optional contextId selects the
-    // scope; the twelve retired 1.0 URIs now get UnsupportedType) ──
-    vta_sdk::trust_tasks::TASK_DID_TEMPLATES_LIST_2_0 => did_templates::handle_list
+    // ─── DID-templates slice (optional contextId selects the scope).
+    // `delete` and `render` carry no template shape, so they stay on 2.0;
+    // the four that do are served at 3.1 ──
+    vta_sdk::trust_tasks::TASK_DID_TEMPLATES_LIST_3_1 => did_templates::handle_list
         [ None Metadata false ],
-    vta_sdk::trust_tasks::TASK_DID_TEMPLATES_CREATE_2_0 => did_templates::handle_create
+    vta_sdk::trust_tasks::TASK_DID_TEMPLATES_CREATE_3_1 => did_templates::handle_create
         [ Mutating None false ],
-    vta_sdk::trust_tasks::TASK_DID_TEMPLATES_GET_2_0 => did_templates::handle_get
+    vta_sdk::trust_tasks::TASK_DID_TEMPLATES_GET_3_1 => did_templates::handle_get
         [ None Metadata false ],
-    vta_sdk::trust_tasks::TASK_DID_TEMPLATES_UPDATE_2_0 => did_templates::handle_update
+    vta_sdk::trust_tasks::TASK_DID_TEMPLATES_UPDATE_3_1 => did_templates::handle_update
         [ Mutating None false ],
     vta_sdk::trust_tasks::TASK_DID_TEMPLATES_DELETE_2_0 => did_templates::handle_delete
         [ Mutating None false ],
     vta_sdk::trust_tasks::TASK_DID_TEMPLATES_RENDER_2_0 => did_templates::handle_render
         [ None Metadata false ],
-    // ─── DID-templates 3.0 — same handlers, wider template schema ──
-    //
-    // Only the four that carry a template shape. `delete` takes a name and
-    // `render` returns a rendered document, so neither is affected by the
-    // `keys` block and neither gained a 3.0 spec.
-    vta_sdk::trust_tasks::TASK_DID_TEMPLATES_LIST_3_0 => did_templates::handle_list
-        [ None Metadata false ],
-    vta_sdk::trust_tasks::TASK_DID_TEMPLATES_CREATE_3_0 => did_templates::handle_create
-        [ Mutating None false ],
-    vta_sdk::trust_tasks::TASK_DID_TEMPLATES_GET_3_0 => did_templates::handle_get
-        [ None Metadata false ],
-    vta_sdk::trust_tasks::TASK_DID_TEMPLATES_UPDATE_3_0 => did_templates::handle_update
-        [ Mutating None false ],
     // ─── Passkey-VMs slice (feature-gated: webvh + didcomm) ─────
     //
     // Canonical 0.1 only — the pre-spec 1.0 aliases were removed (the browser
@@ -3125,7 +3103,7 @@ dispatch_table! {
         => passkey_vms::handle_enroll_challenge
         [ None None false ],
     #[cfg(all(feature = "webvh", feature = "didcomm"))]
-    vta_sdk::trust_tasks::TASK_PASSKEY_VMS_ENROLL_SUBMIT_0_1 => passkey_vms::handle_enroll_submit
+    vta_sdk::trust_tasks::TASK_PASSKEY_VMS_ENROLL_SUBMIT_0_2 => passkey_vms::handle_enroll_submit
         [ Mutating None false ],
     #[cfg(all(feature = "webvh", feature = "didcomm"))]
     vta_sdk::trust_tasks::TASK_PASSKEY_VMS_LIST_0_1 => passkey_vms::handle_list
@@ -3172,12 +3150,6 @@ dispatch_table! {
     #[cfg(feature = "webvh")]
     vta_sdk::trust_tasks::TASK_WEBVH_DIDS_LIST_1_0 => webvh::handle_dids_list
         [ None Metadata false ],
-    #[cfg(feature = "webvh")]
-    vta_sdk::trust_tasks::TASK_WEBVH_DIDS_CREATE_1_0 => webvh::handle_dids_create_1_0
-        [ Mutating None false ],
-    #[cfg(feature = "webvh")]
-    vta_sdk::trust_tasks::TASK_WEBVH_DIDS_CREATE_1_1 => webvh::handle_dids_create_1_1
-        [ Mutating None false ],
     #[cfg(feature = "webvh")]
     vta_sdk::trust_tasks::TASK_WEBVH_DIDS_CREATE_1_2 => webvh::handle_dids_create
         [ Mutating None false ],
@@ -3228,7 +3200,7 @@ dispatch_table! {
     // in the DID document, so `list` is the only way to see one — and `check`
     // is what lets a client report a collision before it signs a new version.
     #[cfg(feature = "webvh")]
-    vta_sdk::trust_tasks::TASK_WEBVH_AGENT_NAME_LIST_1_0 => webvh::handle_agent_name_list
+    vta_sdk::trust_tasks::TASK_WEBVH_AGENT_NAME_LIST_1_1 => webvh::handle_agent_name_list
         [ None Metadata false ],
     #[cfg(feature = "webvh")]
     vta_sdk::trust_tasks::TASK_WEBVH_AGENT_NAME_CHECK_1_0 => webvh::handle_agent_name_check
@@ -3935,21 +3907,28 @@ mod tests {
         }
     }
 
-    /// Passkey-VMs: the canonical `…/0.1` URIs are dispatched. The pre-spec
-    /// `…/1.0` aliases were removed (the browser plugin migrated to 0.1), so a
-    /// 1.0 document now falls through to `UnsupportedType`.
+    /// Passkey-VMs: the canonical URIs are dispatched — `enroll-submit` at 0.2
+    /// (`clientDataJSON`), the rest at 0.1. The pre-spec `…/1.0` aliases were
+    /// removed (the browser plugin migrated), so a 1.0 document now falls
+    /// through to `UnsupportedType`.
     #[test]
-    fn passkey_vms_0_1_dispatched() {
+    fn passkey_vms_current_versions_dispatched() {
         let dispatched = dispatched_uris();
         let tracked = |u: &&str| dispatched.contains(u) || KNOWN_FEATURE_GATED_URIS.contains(u);
-        for v0_1 in [
-            vta_sdk::trust_tasks::TASK_PASSKEY_VMS_ENROLL_CHALLENGE_0_1,
-            vta_sdk::trust_tasks::TASK_PASSKEY_VMS_ENROLL_SUBMIT_0_1,
-            vta_sdk::trust_tasks::TASK_PASSKEY_VMS_LIST_0_1,
-            vta_sdk::trust_tasks::TASK_PASSKEY_VMS_REVOKE_0_1,
+        for (uri, version) in [
+            (
+                vta_sdk::trust_tasks::TASK_PASSKEY_VMS_ENROLL_CHALLENGE_0_1,
+                "/0.1",
+            ),
+            (
+                vta_sdk::trust_tasks::TASK_PASSKEY_VMS_ENROLL_SUBMIT_0_2,
+                "/0.2",
+            ),
+            (vta_sdk::trust_tasks::TASK_PASSKEY_VMS_LIST_0_1, "/0.1"),
+            (vta_sdk::trust_tasks::TASK_PASSKEY_VMS_REVOKE_0_1, "/0.1"),
         ] {
-            assert!(tracked(&v0_1), "canonical 0.1 URI not dispatched: {v0_1}");
-            assert!(v0_1.ends_with("/0.1"), "version-label mismatch for {v0_1}");
+            assert!(tracked(&uri), "canonical URI not dispatched: {uri}");
+            assert!(uri.ends_with(version), "version-label mismatch for {uri}");
         }
     }
 
@@ -4271,9 +4250,9 @@ mod superseded_task_dispatch_tests {
     }
 
     #[tokio::test]
-    #[allow(deprecated)] // sends a deprecated URI on purpose — that is the subject
+    // Against the test-only stand-in table (`deprecation::TEST_SUPERSEDED_TASKS`).
     async fn a_superseded_task_names_its_successor_in_the_response() {
-        let uri = vta_sdk::trust_tasks::TASK_DID_TEMPLATES_LIST_2_0;
+        let uri = vta_sdk::trust_tasks::TASK_DID_TEMPLATES_LIST_3_1;
         let doc = dispatch(uri, json!({})).await;
 
         // Non-vacuity: a rejection document would also carry the notice (that
@@ -4289,7 +4268,7 @@ mod superseded_task_dispatch_tests {
         let notice = &doc[DEPRECATION_MEMBER];
         assert_eq!(
             notice["supersededBy"],
-            vta_sdk::trust_tasks::TASK_DID_TEMPLATES_LIST_3_0,
+            vta_sdk::trust_tasks::TASK_DID_TEMPLATES_GET_3_1,
             "the response must name what to send instead, so a client can act \
              rather than guess; got document: {doc}"
         );
@@ -4300,13 +4279,13 @@ mod superseded_task_dispatch_tests {
     }
 
     #[tokio::test]
-    #[allow(deprecated)] // sends a deprecated URI on purpose — that is the subject
+    // Against the test-only stand-in table (`deprecation::TEST_SUPERSEDED_TASKS`).
     async fn a_rejected_superseded_task_still_names_its_successor() {
         // A client whose request was refused is the client most in need of the
         // successor: it is about to retry, and it can retry onto the right URI.
-        // `vta/did-templates/create/2.0` requires members an empty payload
+        // `vta/did-templates/create/3.1` requires members an empty payload
         // does not carry, so this is a schema rejection, not a handler failure.
-        let uri = vta_sdk::trust_tasks::TASK_DID_TEMPLATES_CREATE_2_0;
+        let uri = vta_sdk::trust_tasks::TASK_DID_TEMPLATES_CREATE_3_1;
         let doc = dispatch(uri, json!({})).await;
 
         assert_eq!(
@@ -4315,7 +4294,7 @@ mod superseded_task_dispatch_tests {
         );
         assert_eq!(
             doc[DEPRECATION_MEMBER]["supersededBy"],
-            vta_sdk::trust_tasks::TASK_DID_TEMPLATES_CREATE_3_0,
+            vta_sdk::trust_tasks::TASK_DID_TEMPLATES_UPDATE_3_1,
             "a rejection must carry the successor too: {doc}"
         );
     }
@@ -4339,7 +4318,7 @@ mod superseded_task_dispatch_tests {
         // types are `deny_unknown_fields`. Assert it on a real dispatch, not
         // just on the annotation helper.
         #[allow(deprecated)]
-        let uri = vta_sdk::trust_tasks::TASK_DID_TEMPLATES_LIST_2_0;
+        let uri = vta_sdk::trust_tasks::TASK_DID_TEMPLATES_LIST_3_1;
         let doc = dispatch(uri, json!({})).await;
 
         let payload = doc.get("payload").expect("a response carries a payload");
@@ -4821,25 +4800,25 @@ mod response_coverage {
     /// ignored — the rule both 1.1 specifications state.
     #[cfg(feature = "webvh")]
     #[tokio::test]
-    async fn services_1_1_refuses_a_drain_on_an_unmediated_transport() {
+    async fn services_refuses_a_drain_on_an_unmediated_transport() {
         let (state, _dir) = crate::test_support::build_signing_test_app_state().await;
         let vta_did = state.config.read().await.vta_did.clone().expect("vta_did");
         for (uri, service, payload) in [
             (
-                t::TASK_SERVICES_UPDATE_1_1,
+                t::TASK_SERVICES_UPDATE_1_2,
                 "rest",
                 json!({ "service": "rest", "config": { "url": "https://vta.example.com" },
-                        "drainTtlSecs": 60 }),
+                        "drainTtlSeconds": 60 }),
             ),
             (
-                t::TASK_SERVICES_ROLLBACK_1_1,
+                t::TASK_SERVICES_ROLLBACK_1_2,
                 "rest",
-                json!({ "service": "rest", "drainTtlSecs": 60 }),
+                json!({ "service": "rest", "drainTtlSeconds": 60 }),
             ),
             (
-                t::TASK_SERVICES_ROLLBACK_1_1,
+                t::TASK_SERVICES_ROLLBACK_1_2,
                 "webauthn",
-                json!({ "service": "webauthn", "drainTtlSecs": 60 }),
+                json!({ "service": "webauthn", "drainTtlSeconds": 60 }),
             ),
         ] {
             let body = signed_body(uri, &vta_did, payload);
@@ -5000,7 +4979,7 @@ mod response_coverage {
         )
         .await;
 
-        ok(&state, t::TASK_MESSAGING_PING_0_1, json!({})).await;
+        ok(&state, t::TASK_MESSAGING_PING_0_2, json!({})).await;
         // `auth/revoke-session` has its own test with real session rows:
         // `revoke_all_ends_the_callers_sessions_and_all_false_is_malformed`.
     }
@@ -5039,7 +5018,7 @@ mod response_coverage {
         a_context(&state, "cov-update-did").await;
         ok(
             &state,
-            t::TASK_CONTEXTS_UPDATE_DID_1_0,
+            t::TASK_CONTEXTS_UPDATE_DID_1_1,
             json!({ "id": "cov-update-did", "did": "did:key:z6MkCovContextDid" }),
         )
         .await;
@@ -5047,14 +5026,14 @@ mod response_coverage {
 
     /// `update-did/1.1`: `did: null` clears the context's DID and the record
     /// comes back with `did` absent — not `null`, not `""` — and clearing again
-    /// succeeds. 1.0 is still served by the same handler.
+    /// succeeds.
     #[tokio::test]
     async fn contexts_update_did_1_1_clears() {
         let (state, _dir) = build_signing_test_app_state().await;
         a_context(&state, "cov-clear-did").await;
         ok(
             &state,
-            t::TASK_CONTEXTS_UPDATE_DID_1_0,
+            t::TASK_CONTEXTS_UPDATE_DID_1_1,
             json!({ "id": "cov-clear-did", "did": "did:key:z6MkCovContextDid" }),
         )
         .await;
@@ -5227,7 +5206,7 @@ mod response_coverage {
         let now = crate::test_support::javascript_whole_second_now();
         let mut doc = json!({
             "id": format!("urn:uuid:{}", uuid::Uuid::new_v4()),
-            "type": t::TASK_MESSAGING_PING_0_1,
+            "type": t::TASK_MESSAGING_PING_0_2,
             "issuer": crate::test_support::test_admin_did().0,
             "recipient": vta_did,
             "issuedAt": now,
@@ -5272,7 +5251,7 @@ mod response_coverage {
         let v: Value = serde_json::from_slice(&outcome.body).expect("a response");
         assert_eq!(
             v["type"],
-            format!("{}#response", t::TASK_MESSAGING_PING_0_1),
+            format!("{}#response", t::TASK_MESSAGING_PING_0_2),
             "{v}"
         );
         assert_ne!(v["payload"]["code"], "proofInvalid", "{v}");
@@ -5962,17 +5941,17 @@ mod response_coverage {
     #[tokio::test]
     async fn services_read_paths() {
         let (state, _dir) = build_signing_test_app_state().await;
-        ok(&state, t::TASK_SERVICES_LIST_1_0, json!({})).await;
+        ok(&state, t::TASK_SERVICES_LIST_1_1, json!({})).await;
         ok(
             &state,
-            t::TASK_SERVICES_GET_1_0,
+            t::TASK_SERVICES_GET_1_1,
             json!({ "service": "rest" }),
         )
         .await;
         // Drain is DIDComm-only and empty here; an empty list is still a
         // response shape, and an empty one is the shape most likely to be got
         // wrong (`[]` against absent).
-        ok(&state, t::TASK_SERVICES_DRAIN_LIST_1_0, json!({})).await;
+        ok(&state, t::TASK_SERVICES_DRAIN_LIST_1_1, json!({})).await;
     }
 
     /// The webvh read paths that need no hosting server.
@@ -6045,19 +6024,19 @@ mod response_coverage {
 
         ok(
             &state,
-            t::TASK_DID_TEMPLATES_CREATE_2_0,
+            t::TASK_DID_TEMPLATES_CREATE_3_1,
             json!({ "contextId": "cov-templates", "template": template }),
         )
         .await;
         ok(
             &state,
-            t::TASK_DID_TEMPLATES_LIST_2_0,
+            t::TASK_DID_TEMPLATES_LIST_3_1,
             json!({ "contextId": "cov-templates" }),
         )
         .await;
         ok(
             &state,
-            t::TASK_DID_TEMPLATES_GET_2_0,
+            t::TASK_DID_TEMPLATES_GET_3_1,
             json!({ "contextId": "cov-templates", "name": "cov-template" }),
         )
         .await;
@@ -6066,7 +6045,7 @@ mod response_coverage {
         updated["description"] = json!("renamed");
         ok(
             &state,
-            t::TASK_DID_TEMPLATES_UPDATE_2_0,
+            t::TASK_DID_TEMPLATES_UPDATE_3_1,
             json!({ "contextId": "cov-templates", "name": "cov-template", "template": updated }),
         )
         .await;
@@ -6267,11 +6246,6 @@ mod response_coverage {
                 json!({ "id": "PLACEHOLDER" }),
             ),
             (
-                t::TASK_CONTEXTS_UPDATE_DID_1_0,
-                "vta/contexts/update-did",
-                json!({ "id": "PLACEHOLDER", "did": "did:key:z6MkTest" }),
-            ),
-            (
                 t::TASK_CONTEXTS_UPDATE_DID_1_1,
                 "vta/contexts/update-did",
                 json!({ "id": "PLACEHOLDER", "did": null }),
@@ -6326,17 +6300,17 @@ mod response_coverage {
 
         let mut put = base.clone();
         put["value"] = json!({ "hello": "world" });
-        ok(&state, t::TASK_VTA_APP_STATE_PUT_1_0, put).await;
+        ok(&state, t::TASK_VTA_APP_STATE_PUT_1_1, put).await;
         ok(&state, t::TASK_VTA_APP_STATE_GET_1_0, base.clone()).await;
         ok(
             &state,
-            t::TASK_VTA_APP_STATE_LIST_1_0,
+            t::TASK_VTA_APP_STATE_LIST_1_1,
             json!({ "contextId": "cov-appstate", "includeValues": true }),
         )
         .await;
         ok(
             &state,
-            t::TASK_VTA_APP_STATE_PUT_MANY_1_0,
+            t::TASK_VTA_APP_STATE_PUT_MANY_1_1,
             json!({
                 "contextId": "cov-appstate",
                 "namespace": "cov",
@@ -6598,7 +6572,7 @@ mod didcomm_sender_binding {
         let (state, _dir, victim, _attacker, _vta_did) = setup().await;
         let body = serde_json::to_vec(&serde_json::json!({
             "id": "urn:uuid:stray",
-            "type": "https://trusttasks.org/spec/messaging/message/status/0.1#response",
+            "type": "https://trusttasks.org/spec/messaging/message/status/0.2#response",
             "threadId": "urn:uuid:long-gone",
             "payload": {},
         }))

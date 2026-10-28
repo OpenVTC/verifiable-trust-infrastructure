@@ -121,8 +121,8 @@ pub fn presented_did(
 }
 
 /// Add what the community states to a `vta/webvh/dids/create` payload, and the
-/// type URI to send it as: 1.2 when it states anything, so a community that
-/// states nothing sends exactly what it did before.
+/// type URI to send it as (`create/1.2`). A member the community leaves
+/// unstated is left to the VTA's `[dids]` configuration.
 pub fn with_presentation(
     payload: &mut Value,
     presentation: (Option<vta_sdk::did_scid::DidMethod>, Option<bool>),
@@ -134,11 +134,7 @@ pub fn with_presentation(
     if let Some(alias) = alias {
         payload["scidAlsoKnownAs"] = Value::Bool(alias);
     }
-    if method.is_some() || alias.is_some() {
-        vta_sdk::trust_tasks::TASK_WEBVH_DIDS_CREATE_1_2
-    } else {
-        vta_sdk::trust_tasks::TASK_WEBVH_DIDS_CREATE_1_1
-    }
+    vta_sdk::trust_tasks::TASK_WEBVH_DIDS_CREATE_1_2
 }
 
 /// A value [`DIDS_WEBVH_SERVER`] may hold: `"local"`, or a server id —
@@ -214,11 +210,11 @@ mod tests {
     }
 
     #[test]
-    fn a_stated_presentation_takes_the_create_to_1_2() {
+    fn a_presentation_is_stated_only_when_the_community_states_it() {
         let mut payload = json!({ "contextId": "c" });
         assert_eq!(
             with_presentation(&mut payload, (None, None)),
-            vta_sdk::trust_tasks::TASK_WEBVH_DIDS_CREATE_1_1
+            vta_sdk::trust_tasks::TASK_WEBVH_DIDS_CREATE_1_2
         );
         assert_eq!(payload, json!({ "contextId": "c" }));
         assert_eq!(

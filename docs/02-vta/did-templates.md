@@ -258,7 +258,7 @@ template without explicit scope is **context → global → builtin**:
   - `ai-agent` — personal AI agent identity (open-claw / nano-claw / hermes).
     Signing + key-agreement methods and a single `DIDCommMessaging` service
     routing inbound traffic through the operator's mediator, so the agent is
-    reachable over DIDComm as a Service consumer (`serviceKind: ai-agent`).
+    reachable over DIDComm as a Service consumer (`serviceKind: aiAgent`).
     Requires `MEDIATOR_DID`. See `personal-ai-agents.md` for the full
     enablement runbook.
   - `didcomm-mediator` — DIDComm v2 routing mediator with a URL-based service

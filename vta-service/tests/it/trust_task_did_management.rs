@@ -265,7 +265,7 @@ async fn did_templates_list_empty_for_fresh_vta() {
         .task(
             &ctx,
             &reader,
-            vta_sdk::trust_tasks::TASK_DID_TEMPLATES_LIST_2_0,
+            vta_sdk::trust_tasks::TASK_DID_TEMPLATES_LIST_3_1,
             json!({}),
         )
         .await;
@@ -289,7 +289,7 @@ async fn did_templates_create_requires_super_admin() {
         .task(
             &ctx,
             &scoped,
-            vta_sdk::trust_tasks::TASK_DID_TEMPLATES_CREATE_2_0,
+            vta_sdk::trust_tasks::TASK_DID_TEMPLATES_CREATE_3_1,
             create_req(None, sample_template("forbidden")),
         )
         .await;
@@ -305,7 +305,7 @@ async fn did_templates_create_get_list_delete_roundtrip() {
         .task(
             &ctx,
             &super_admin,
-            vta_sdk::trust_tasks::TASK_DID_TEMPLATES_CREATE_2_0,
+            vta_sdk::trust_tasks::TASK_DID_TEMPLATES_CREATE_3_1,
             create_req(None, sample_template("rt")),
         )
         .await;
@@ -319,7 +319,7 @@ async fn did_templates_create_get_list_delete_roundtrip() {
         .task(
             &ctx,
             &super_admin,
-            vta_sdk::trust_tasks::TASK_DID_TEMPLATES_CREATE_2_0,
+            vta_sdk::trust_tasks::TASK_DID_TEMPLATES_CREATE_3_1,
             create_req(None, sample_template("rt")),
         )
         .await;
@@ -331,7 +331,7 @@ async fn did_templates_create_get_list_delete_roundtrip() {
         .task(
             &ctx,
             &super_admin,
-            vta_sdk::trust_tasks::TASK_DID_TEMPLATES_GET_2_0,
+            vta_sdk::trust_tasks::TASK_DID_TEMPLATES_GET_3_1,
             json!({"name": "rt"}),
         )
         .await;
@@ -342,7 +342,7 @@ async fn did_templates_create_get_list_delete_roundtrip() {
         .task(
             &ctx,
             &super_admin,
-            vta_sdk::trust_tasks::TASK_DID_TEMPLATES_LIST_2_0,
+            vta_sdk::trust_tasks::TASK_DID_TEMPLATES_LIST_3_1,
             json!({}),
         )
         .await;
@@ -363,7 +363,7 @@ async fn did_templates_create_get_list_delete_roundtrip() {
         .task(
             &ctx,
             &super_admin,
-            vta_sdk::trust_tasks::TASK_DID_TEMPLATES_GET_2_0,
+            vta_sdk::trust_tasks::TASK_DID_TEMPLATES_GET_3_1,
             json!({"name": "rt"}),
         )
         .await;
@@ -380,7 +380,7 @@ async fn did_templates_update_replaces_body() {
         .task(
             &ctx,
             &super_admin,
-            vta_sdk::trust_tasks::TASK_DID_TEMPLATES_CREATE_2_0,
+            vta_sdk::trust_tasks::TASK_DID_TEMPLATES_CREATE_3_1,
             create_req(None, sample_template("evolving")),
         )
         .await;
@@ -392,7 +392,7 @@ async fn did_templates_update_replaces_body() {
         .task(
             &ctx,
             &super_admin,
-            vta_sdk::trust_tasks::TASK_DID_TEMPLATES_UPDATE_2_0,
+            vta_sdk::trust_tasks::TASK_DID_TEMPLATES_UPDATE_3_1,
             update_req(None, "evolving", updated),
         )
         .await;
@@ -408,7 +408,7 @@ async fn did_templates_render_injects_ambient_and_merges_caller_vars() {
     app.task(
         &ctx,
         &super_admin,
-        vta_sdk::trust_tasks::TASK_DID_TEMPLATES_CREATE_2_0,
+        vta_sdk::trust_tasks::TASK_DID_TEMPLATES_CREATE_3_1,
         create_req(None, sample_template("renderable")),
     )
     .await;
@@ -451,7 +451,7 @@ async fn did_templates_render_missing_required_var_errors() {
     app.task(
         &ctx,
         &super_admin,
-        vta_sdk::trust_tasks::TASK_DID_TEMPLATES_CREATE_2_0,
+        vta_sdk::trust_tasks::TASK_DID_TEMPLATES_CREATE_3_1,
         create_req(None, sample_template("needs-url")),
     )
     .await;
@@ -480,7 +480,7 @@ async fn did_templates_invalid_body_rejected_at_create() {
         .task(
             &ctx,
             &super_admin,
-            vta_sdk::trust_tasks::TASK_DID_TEMPLATES_CREATE_2_0,
+            vta_sdk::trust_tasks::TASK_DID_TEMPLATES_CREATE_3_1,
             create_req(None, bad),
         )
         .await;
@@ -504,7 +504,7 @@ async fn ctx_did_templates_create_requires_context_admin_or_super() {
         .task(
             &ctx,
             &reader,
-            vta_sdk::trust_tasks::TASK_DID_TEMPLATES_CREATE_2_0,
+            vta_sdk::trust_tasks::TASK_DID_TEMPLATES_CREATE_3_1,
             create_req(Some("tpl-ctx"), sample_template("rejected")),
         )
         .await;
@@ -518,7 +518,7 @@ async fn ctx_did_templates_create_requires_context_admin_or_super() {
         .task(
             &ctx,
             &other_admin,
-            vta_sdk::trust_tasks::TASK_DID_TEMPLATES_CREATE_2_0,
+            vta_sdk::trust_tasks::TASK_DID_TEMPLATES_CREATE_3_1,
             create_req(Some("tpl-ctx"), sample_template("rejected")),
         )
         .await;
@@ -538,7 +538,7 @@ async fn ctx_did_templates_context_admin_can_crud() {
         .task(
             &ctx,
             &ctx_admin,
-            vta_sdk::trust_tasks::TASK_DID_TEMPLATES_CREATE_2_0,
+            vta_sdk::trust_tasks::TASK_DID_TEMPLATES_CREATE_3_1,
             create_req(Some("cx-admin-test"), sample_template("scoped-tpl")),
         )
         .await;
@@ -551,7 +551,7 @@ async fn ctx_did_templates_context_admin_can_crud() {
         .task(
             &ctx,
             &ctx_admin,
-            vta_sdk::trust_tasks::TASK_DID_TEMPLATES_GET_2_0,
+            vta_sdk::trust_tasks::TASK_DID_TEMPLATES_GET_3_1,
             json!({"name": "scoped-tpl", "contextId": "cx-admin-test"}),
         )
         .await;
@@ -562,7 +562,7 @@ async fn ctx_did_templates_context_admin_can_crud() {
         .task(
             &ctx,
             &ctx_admin,
-            vta_sdk::trust_tasks::TASK_DID_TEMPLATES_LIST_2_0,
+            vta_sdk::trust_tasks::TASK_DID_TEMPLATES_LIST_3_1,
             json!({"contextId": "cx-admin-test"}),
         )
         .await;
@@ -575,7 +575,7 @@ async fn ctx_did_templates_context_admin_can_crud() {
         .task(
             &ctx,
             &ctx_admin,
-            vta_sdk::trust_tasks::TASK_DID_TEMPLATES_UPDATE_2_0,
+            vta_sdk::trust_tasks::TASK_DID_TEMPLATES_UPDATE_3_1,
             update_req(Some("cx-admin-test"), "scoped-tpl", updated),
         )
         .await;
@@ -596,7 +596,7 @@ async fn ctx_did_templates_context_admin_can_crud() {
         .task(
             &ctx,
             &ctx_admin,
-            vta_sdk::trust_tasks::TASK_DID_TEMPLATES_GET_2_0,
+            vta_sdk::trust_tasks::TASK_DID_TEMPLATES_GET_3_1,
             json!({"name": "scoped-tpl", "contextId": "cx-admin-test"}),
         )
         .await;
@@ -612,7 +612,7 @@ async fn ctx_did_templates_rejects_missing_context() {
         .task(
             &ctx,
             &super_admin,
-            vta_sdk::trust_tasks::TASK_DID_TEMPLATES_CREATE_2_0,
+            vta_sdk::trust_tasks::TASK_DID_TEMPLATES_CREATE_3_1,
             create_req(Some("does-not-exist"), sample_template("orphan")),
         )
         .await;
@@ -631,7 +631,7 @@ async fn ctx_did_templates_shadow_global_without_conflict() {
         .task(
             &ctx,
             &super_admin,
-            vta_sdk::trust_tasks::TASK_DID_TEMPLATES_CREATE_2_0,
+            vta_sdk::trust_tasks::TASK_DID_TEMPLATES_CREATE_3_1,
             create_req(None, global),
         )
         .await;
@@ -641,7 +641,7 @@ async fn ctx_did_templates_shadow_global_without_conflict() {
         .task(
             &ctx,
             &super_admin,
-            vta_sdk::trust_tasks::TASK_DID_TEMPLATES_CREATE_2_0,
+            vta_sdk::trust_tasks::TASK_DID_TEMPLATES_CREATE_3_1,
             create_req(Some("shadow-ctx"), sample_template("mediator")),
         )
         .await;
@@ -652,7 +652,7 @@ async fn ctx_did_templates_shadow_global_without_conflict() {
         .task(
             &ctx,
             &super_admin,
-            vta_sdk::trust_tasks::TASK_DID_TEMPLATES_GET_2_0,
+            vta_sdk::trust_tasks::TASK_DID_TEMPLATES_GET_3_1,
             json!({"name": "mediator"}),
         )
         .await;
@@ -660,7 +660,7 @@ async fn ctx_did_templates_shadow_global_without_conflict() {
         .task(
             &ctx,
             &super_admin,
-            vta_sdk::trust_tasks::TASK_DID_TEMPLATES_GET_2_0,
+            vta_sdk::trust_tasks::TASK_DID_TEMPLATES_GET_3_1,
             json!({"name": "mediator", "contextId": "shadow-ctx"}),
         )
         .await;
@@ -679,7 +679,7 @@ async fn ctx_did_templates_render_injects_context_vars() {
         .task(
             &ctx,
             &super_admin,
-            vta_sdk::trust_tasks::TASK_DID_TEMPLATES_CREATE_2_0,
+            vta_sdk::trust_tasks::TASK_DID_TEMPLATES_CREATE_3_1,
             create_req(Some("render-ctx"), tpl),
         )
         .await;
@@ -714,7 +714,7 @@ async fn ctx_did_templates_deleted_when_parent_context_deleted() {
     app.task(
         &ctx,
         &super_admin,
-        vta_sdk::trust_tasks::TASK_DID_TEMPLATES_CREATE_2_0,
+        vta_sdk::trust_tasks::TASK_DID_TEMPLATES_CREATE_3_1,
         create_req(Some("cascade-ctx"), sample_template("will-be-deleted")),
     )
     .await;
@@ -745,7 +745,7 @@ async fn ctx_did_templates_deleted_when_parent_context_deleted() {
         .task(
             &ctx,
             &super_admin,
-            vta_sdk::trust_tasks::TASK_DID_TEMPLATES_GET_2_0,
+            vta_sdk::trust_tasks::TASK_DID_TEMPLATES_GET_3_1,
             json!({"name": "will-be-deleted", "contextId": "cascade-ctx"}),
         )
         .await;
@@ -767,7 +767,7 @@ async fn webvh_create(
     app.task(
         ctx,
         caller,
-        vta_sdk::trust_tasks::TASK_WEBVH_DIDS_CREATE_1_0,
+        vta_sdk::trust_tasks::TASK_WEBVH_DIDS_CREATE_1_2,
         payload,
     )
     .await
@@ -826,64 +826,36 @@ async fn create_did_webvh_accepts_path_mode_field() {
     assert!(body["did"].as_str().is_some(), "response has did");
 }
 
-/// Keyring VTI-20: `create/1.1` states `serverless`, so a client need not infer
-/// it from an absent `serverId`. A serverless mint answers `serverless: true`
-/// with the log entry and no `serverId`, and the answer is a valid 1.1
-/// response. The same mint over 1.0 keeps 1.0's shape, whose response refuses
-/// unknown members.
+/// Keyring VTI-20: `create` states `serverless`, so a client need not infer it
+/// from an absent `serverId`. A serverless mint answers `serverless: true` with
+/// the log entry and no `serverId`, and the answer is a valid 1.2 response.
 #[cfg(feature = "webvh")]
 #[tokio::test]
-async fn vti_20_create_1_1_states_serverless_and_1_0_keeps_its_shape() {
-    use trust_tasks_rs::specs::vta::webvh::dids::create::{v1_0, v1_1};
+async fn vti_20_create_states_serverless() {
+    use trust_tasks_rs::specs::vta::webvh::dids::create::v1_2;
 
     let (app, ctx) = TestApp::new().await;
     let admin = setup_context(&app, &ctx, "test-serverless").await;
-    let payload = |host: &str| {
-        json!({
-            "contextId": "test-serverless",
-            "url": format!("https://{host}/.well-known/did/did.jsonl"),
-        })
-    };
-
     let (status, body) = app
         .task(
             &ctx,
             &admin,
-            vta_sdk::trust_tasks::TASK_WEBVH_DIDS_CREATE_1_1,
-            payload("one.example.com"),
+            vta_sdk::trust_tasks::TASK_WEBVH_DIDS_CREATE_1_2,
+            json!({
+                "contextId": "test-serverless",
+                "url": "https://one.example.com/.well-known/did/did.jsonl",
+            }),
         )
         .await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["serverless"], json!(true), "{body}");
     assert!(body.get("serverId").is_none(), "{body}");
     assert!(body["logEntry"].as_str().is_some(), "{body}");
-    serde_json::from_value::<v1_1::Response>(body.clone())
-        .unwrap_or_else(|e| panic!("a valid create/1.1 response: {e}: {body}"));
+    serde_json::from_value::<v1_2::Response>(body.clone())
+        .unwrap_or_else(|e| panic!("a valid create/1.2 response: {e}: {body}"));
     let sdk: vta_sdk::protocols::did_management::create::CreateDidWebvhResultBody =
         serde_json::from_value(body).expect("the SDK reads it");
     assert!(sdk.is_serverless());
-
-    let (status, body) = app
-        .task(
-            &ctx,
-            &admin,
-            vta_sdk::trust_tasks::TASK_WEBVH_DIDS_CREATE_1_0,
-            payload("two.example.com"),
-        )
-        .await;
-    assert_eq!(status, StatusCode::OK, "{body}");
-    assert!(
-        body.get("serverless").is_none(),
-        "1.0 has no such member: {body}"
-    );
-    serde_json::from_value::<v1_0::Response>(body.clone())
-        .unwrap_or_else(|e| panic!("a valid create/1.0 response: {e}: {body}"));
-    let sdk: vta_sdk::protocols::did_management::create::CreateDidWebvhResultBody =
-        serde_json::from_value(body).expect("the SDK reads a 1.0 answer");
-    assert!(
-        sdk.is_serverless(),
-        "from a 1.0 answer, is_serverless falls back to the absent serverId"
-    );
 }
 
 #[cfg(feature = "webvh")]
@@ -1212,7 +1184,7 @@ async fn create_did_webvh_context_scoped_template_shadows_global() {
         .task(
             &ctx,
             &admin,
-            vta_sdk::trust_tasks::TASK_DID_TEMPLATES_CREATE_2_0,
+            vta_sdk::trust_tasks::TASK_DID_TEMPLATES_CREATE_3_1,
             create_req(None, global),
         )
         .await;
@@ -1224,7 +1196,7 @@ async fn create_did_webvh_context_scoped_template_shadows_global() {
         .task(
             &ctx,
             &admin,
-            vta_sdk::trust_tasks::TASK_DID_TEMPLATES_CREATE_2_0,
+            vta_sdk::trust_tasks::TASK_DID_TEMPLATES_CREATE_3_1,
             create_req(Some("shadow-didcreate"), local),
         )
         .await;
@@ -1273,11 +1245,10 @@ fn serverless(context: &str, host: &str) -> Value {
 }
 
 /// VTI-VTA-036 defaults: did:webvh, with the did:scid alias listed (VTI-KEY-166).
-/// The same defaults reach a 1.1 caller, whose answer keeps 1.1's shape.
 #[cfg(feature = "webvh")]
 #[tokio::test]
 async fn vti_vta_036_create_1_2_defaults_to_webvh_with_the_scid_alias() {
-    use trust_tasks_rs::specs::vta::webvh::dids::create::{v1_1, v1_2};
+    use trust_tasks_rs::specs::vta::webvh::dids::create::v1_2;
 
     let (app, ctx) = TestApp::new().await;
     let admin = setup_context(&app, &ctx, "scid-defaults").await;
@@ -1301,25 +1272,6 @@ async fn vti_vta_036_create_1_2_defaults_to_webvh_with_the_scid_alias() {
     let (_, url) = vta_sdk::did_scid::scid_forms(did).unwrap();
     assert_eq!(body["scidDidUrl"], url.as_str(), "{body}");
     assert!(log_aliases(&body).contains(&url), "{body}");
-
-    let (status, body) = app
-        .task(
-            &ctx,
-            &admin,
-            vta_sdk::trust_tasks::TASK_WEBVH_DIDS_CREATE_1_1,
-            serverless("scid-defaults", "two.example.com"),
-        )
-        .await;
-    assert_eq!(status, StatusCode::OK, "{body}");
-    serde_json::from_value::<v1_1::Response>(body.clone())
-        .unwrap_or_else(|e| panic!("a valid create/1.1 response: {e}: {body}"));
-    let did = body["did"].as_str().unwrap();
-    assert!(did.starts_with("did:webvh:"), "{body}");
-    let (_, url) = vta_sdk::did_scid::scid_forms(did).unwrap();
-    assert!(
-        log_aliases(&body).contains(&url),
-        "the alias default reaches 1.1: {body}"
-    );
 }
 
 /// VTI-KEY-165: `didMethod: scid` presents the identity as the bare did:scid.
@@ -1385,12 +1337,10 @@ async fn vti_key_165_create_1_2_presents_the_did_scid_identity() {
 }
 
 /// VTI-VTA-034 and VTI-VTA-036: `[dids]` applies where the request says
-/// nothing — to 1.1 as to 1.2 — and the request wins over it.
+/// nothing, and the request wins over it.
 #[cfg(feature = "webvh")]
 #[tokio::test]
 async fn vti_vta_036_config_applies_and_the_request_wins() {
-    use trust_tasks_rs::specs::vta::webvh::dids::create::v1_1;
-
     let (app, ctx) = TestApp::new().await;
     let admin = setup_context(&app, &ctx, "scid-config").await;
     {
@@ -1433,22 +1383,6 @@ async fn vti_vta_036_config_applies_and_the_request_wins() {
         "the configured alias applies: {body}"
     );
     assert!(log_aliases(&body).is_empty(), "{body}");
-
-    let (status, body) = app
-        .task(
-            &ctx,
-            &admin,
-            vta_sdk::trust_tasks::TASK_WEBVH_DIDS_CREATE_1_1,
-            serverless("scid-config", "c.example.com"),
-        )
-        .await;
-    assert_eq!(status, StatusCode::OK, "{body}");
-    assert!(
-        vta_sdk::did_scid::is_scid(body["did"].as_str().unwrap()),
-        "{body}"
-    );
-    serde_json::from_value::<v1_1::Response>(body.clone())
-        .unwrap_or_else(|e| panic!("still a valid create/1.1 response: {e}: {body}"));
 }
 
 /// VTI-KEY-166: a did:scid identity always lists its alias, so a request that
@@ -1483,7 +1417,7 @@ async fn vti_key_166_scid_alias_required() {
         .task(
             &ctx,
             &admin,
-            vta_sdk::trust_tasks::TASK_DID_TEMPLATES_CREATE_2_0,
+            vta_sdk::trust_tasks::TASK_DID_TEMPLATES_CREATE_3_1,
             create_req(None, template),
         )
         .await;
@@ -1525,20 +1459,26 @@ async fn vti_key_166_scid_alias_required() {
     assert!(log_aliases(&body).is_empty(), "{body}");
 }
 
-/// 1.0 and 1.1 refuse 1.2's request members rather than act on them.
+/// 1.0 and 1.1 are no longer served: a client on either is told the version
+/// is unsupported, not handed a DID minted under a schema it cannot read.
 #[cfg(feature = "webvh")]
 #[tokio::test]
-async fn create_1_1_refuses_the_1_2_members() {
+async fn superseded_create_versions_are_an_unsupported_version() {
     let (app, ctx) = TestApp::new().await;
     let admin = setup_context(&app, &ctx, "scid-strict").await;
     for uri in [
-        vta_sdk::trust_tasks::TASK_WEBVH_DIDS_CREATE_1_0,
-        vta_sdk::trust_tasks::TASK_WEBVH_DIDS_CREATE_1_1,
+        "https://trusttasks.org/spec/vta/webvh/dids/create/1.0",
+        "https://trusttasks.org/spec/vta/webvh/dids/create/1.1",
     ] {
-        let mut payload = serverless("scid-strict", "a.example.com");
-        payload["didMethod"] = json!("scid");
-        let (status, body) = app.task(&ctx, &admin, uri, payload).await;
+        let (status, body) = app
+            .task(
+                &ctx,
+                &admin,
+                uri,
+                serverless("scid-strict", "a.example.com"),
+            )
+            .await;
         assert_ne!(status, StatusCode::OK, "{uri}: {body}");
-        assert_eq!(body["code"], "malformedRequest", "{uri}: {body}");
+        assert_eq!(body["code"], "unsupportedVersion", "{uri}: {body}");
     }
 }

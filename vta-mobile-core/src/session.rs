@@ -49,7 +49,7 @@ use trust_tasks_rs::specs::auth::{
     authenticate::v0_3 as authenticate, challenge::v0_1 as challenge, refresh::v0_2 as refresh,
     revoke_session::v0_2 as revoke_session, whoami::v0_1 as whoami,
 };
-use trust_tasks_rs::specs::messaging::ping::v0_1 as ping;
+use trust_tasks_rs::specs::messaging::ping::v0_2 as ping;
 use trust_tasks_rs::{Payload, TrustTask};
 
 use crate::error::FfiError;
@@ -296,7 +296,7 @@ pub fn parse_whoami_response(json: String) -> Result<SessionInfo, FfiError> {
     })
 }
 
-/// Build a signed `messaging/ping/0.1` liveness probe to the VTA.
+/// Build a signed `messaging/ping/0.2` liveness probe to the VTA.
 ///
 /// Over TSP this is how the device announces its reachability: the VTA records
 /// the sealed sender of any inbound frame as TSP-reachable (learn-from-inbound)
@@ -895,7 +895,7 @@ mod tests {
         };
         let json = build_messaging_ping(e, signer).unwrap();
         let v: serde_json::Value = serde_json::from_str(&json).unwrap();
-        assert_eq!(v["type"], "https://trusttasks.org/spec/messaging/ping/0.1");
+        assert_eq!(v["type"], "https://trusttasks.org/spec/messaging/ping/0.2");
         assert_eq!(v["issuer"], did.as_str());
         assert_eq!(v["recipient"], "did:web:vta.example");
         assert_eq!(v["payload"]["nonce"], "urn:uuid:ping-1");

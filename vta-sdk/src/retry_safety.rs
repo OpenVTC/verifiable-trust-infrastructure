@@ -132,7 +132,7 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     (trust_tasks::TASK_DEVICE_WIPE_0_2, RetrySafe),
     (trust_tasks::TASK_DEVICE_SET_WAKE_0_2, RetrySafe),
     // ── Messaging ───────────────────────────────────────────────────────
-    (trust_tasks::TASK_MESSAGING_PING_0_1, ReadOnly),
+    (trust_tasks::TASK_MESSAGING_PING_0_2, ReadOnly),
     // ── ACL ─────────────────────────────────────────────────────────────
     (trust_tasks::TASK_ACL_LIST_0_1, ReadOnly),
     // Grant is addressed by subject DID + context, so a repeat overwrites the
@@ -153,7 +153,6 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     (trust_tasks::TASK_CONTEXTS_CREATE_1_0, Keyed),
     (trust_tasks::TASK_CONTEXTS_GET_1_0, ReadOnly),
     (trust_tasks::TASK_CONTEXTS_UPDATE_1_0, RetrySafe),
-    (trust_tasks::TASK_CONTEXTS_UPDATE_DID_1_0, RetrySafe),
     // Clearing is a set-to-absent: repeating it leaves the same state.
     (trust_tasks::TASK_CONTEXTS_UPDATE_DID_1_1, RetrySafe),
     (trust_tasks::TASK_CONTEXTS_PREVIEW_DELETE_1_0, ReadOnly),
@@ -169,18 +168,16 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     // rather than a duplicate, which reads like RetrySafe. It is Keyed anyway:
     // the caller who lost the reply cannot tell that conflict apart from "it
     // never landed", and the cached response is exactly what resolves that.
-    (trust_tasks::TASK_SERVICES_LIST_1_0, ReadOnly),
-    (trust_tasks::TASK_SERVICES_GET_1_0, ReadOnly),
-    (trust_tasks::TASK_SERVICES_ENABLE_1_0, Keyed),
-    (trust_tasks::TASK_SERVICES_UPDATE_1_0, Keyed),
-    (trust_tasks::TASK_SERVICES_UPDATE_1_1, Keyed),
-    (trust_tasks::TASK_SERVICES_REPORT_0_1, ReadOnly),
+    (trust_tasks::TASK_SERVICES_LIST_1_1, ReadOnly),
+    (trust_tasks::TASK_SERVICES_GET_1_1, ReadOnly),
+    (trust_tasks::TASK_SERVICES_ENABLE_1_1, Keyed),
+    (trust_tasks::TASK_SERVICES_UPDATE_1_2, Keyed),
+    (trust_tasks::TASK_SERVICES_REPORT_0_2, ReadOnly),
     // Disable schedules a drain, and a repeat inside the window would restart
     // it — extending the life of a mediator the operator is decommissioning.
-    (trust_tasks::TASK_SERVICES_DISABLE_1_0, Keyed),
-    (trust_tasks::TASK_SERVICES_ROLLBACK_1_0, Keyed),
-    (trust_tasks::TASK_SERVICES_ROLLBACK_1_1, Keyed),
-    (trust_tasks::TASK_SERVICES_DRAIN_LIST_1_0, ReadOnly),
+    (trust_tasks::TASK_SERVICES_DISABLE_1_1, Keyed),
+    (trust_tasks::TASK_SERVICES_ROLLBACK_1_2, Keyed),
+    (trust_tasks::TASK_SERVICES_DRAIN_LIST_1_1, ReadOnly),
     // Destructive and not undoable: the messages the cancelled drain was
     // protecting are already gone by the time a retry arrives.
     (trust_tasks::TASK_SERVICES_DRAIN_CANCEL_1_0, Keyed),
@@ -342,7 +339,7 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     ),
     // Enrolment adds a verification method to the DID document — a second
     // submission adds a second.
-    (trust_tasks::TASK_PASSKEY_VMS_ENROLL_SUBMIT_0_1, Keyed),
+    (trust_tasks::TASK_PASSKEY_VMS_ENROLL_SUBMIT_0_2, Keyed),
     (trust_tasks::TASK_PASSKEY_VMS_LIST_0_1, ReadOnly),
     (trust_tasks::TASK_PASSKEY_VMS_REVOKE_0_1, RetrySafe),
     // ── Provisioning ────────────────────────────────────────────────────
@@ -370,8 +367,6 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     // path: the first DID stays published in the log with no local reference.
     // An explicit path would collide and surface as a Conflict; auto-assign
     // silently orphans.
-    (trust_tasks::TASK_WEBVH_DIDS_CREATE_1_0, Keyed),
-    (trust_tasks::TASK_WEBVH_DIDS_CREATE_1_1, Keyed),
     (trust_tasks::TASK_WEBVH_DIDS_CREATE_1_2, Keyed),
     (trust_tasks::TASK_WEBVH_DIDS_GET_1_0, ReadOnly),
     // Deleting an already-deleted DID answers not-found, which is deterministic
@@ -389,28 +384,24 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     // in `operations::did_webvh::realign` is that property, pinned.
     (trust_tasks::TASK_WEBVH_DIDS_REALIGN_KEYS_1_0, RetrySafe),
     (trust_tasks::TASK_WEBVH_DIDS_REGISTER_WITH_SERVER_1_0, Keyed),
-    (trust_tasks::TASK_WEBVH_AGENT_NAME_LIST_1_0, ReadOnly),
+    (trust_tasks::TASK_WEBVH_AGENT_NAME_LIST_1_1, ReadOnly),
     (trust_tasks::TASK_WEBVH_AGENT_NAME_CHECK_1_0, ReadOnly),
     (trust_tasks::TASK_WEBVH_AGENT_NAME_SET_1_0, RetrySafe),
     (trust_tasks::TASK_WEBVH_AGENT_NAME_REMOVE_1_0, RetrySafe),
     (trust_tasks::TASK_WEBVH_AGENT_NAME_DISABLE_1_0, RetrySafe),
     (trust_tasks::TASK_WEBVH_AGENT_NAME_ENABLE_1_0, RetrySafe),
     // ── DID templates ───────────────────────────────────────────────────
-    (trust_tasks::TASK_DID_TEMPLATES_LIST_2_0, ReadOnly),
+    (trust_tasks::TASK_DID_TEMPLATES_LIST_3_1, ReadOnly),
     // Addressed by template name, so a repeat overwrites rather than duplicates.
-    (trust_tasks::TASK_DID_TEMPLATES_CREATE_2_0, RetrySafe),
-    (trust_tasks::TASK_DID_TEMPLATES_GET_2_0, ReadOnly),
-    (trust_tasks::TASK_DID_TEMPLATES_UPDATE_2_0, RetrySafe),
+    (trust_tasks::TASK_DID_TEMPLATES_CREATE_3_1, RetrySafe),
+    (trust_tasks::TASK_DID_TEMPLATES_GET_3_1, ReadOnly),
+    (trust_tasks::TASK_DID_TEMPLATES_UPDATE_3_1, RetrySafe),
     (trust_tasks::TASK_DID_TEMPLATES_DELETE_2_0, RetrySafe),
     // Render is a pure function of template + variables.
     (trust_tasks::TASK_DID_TEMPLATES_RENDER_2_0, ReadOnly),
     // 3.0 carries the same operations with a wider template schema, so the
     // retry properties are identical — a create is still addressed by name and
     // still overwrites rather than duplicates.
-    (trust_tasks::TASK_DID_TEMPLATES_LIST_3_0, ReadOnly),
-    (trust_tasks::TASK_DID_TEMPLATES_CREATE_3_0, RetrySafe),
-    (trust_tasks::TASK_DID_TEMPLATES_GET_3_0, ReadOnly),
-    (trust_tasks::TASK_DID_TEMPLATES_UPDATE_3_0, RetrySafe),
     // ── Backup ──────────────────────────────────────────────────────────
     // The descriptor flow. `initiate-export` stages the encrypted state and
     // answers with the descriptor — including `transportToken`, the bearer
@@ -420,17 +411,13 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     // comment used to say complete returned the encrypted state, and the two
     // classifications were swapped to match.) All four non-abort verbs are
     // non-convergent: a repeat mints another bundle or re-commits.
-    (trust_tasks::TASK_BACKUP_INITIATE_EXPORT_1_0, KeyedSecret),
-    (trust_tasks::TASK_BACKUP_COMPLETE_EXPORT_1_0, Keyed),
-    (trust_tasks::TASK_BACKUP_INITIATE_IMPORT_1_0, Keyed),
-    (trust_tasks::TASK_BACKUP_FINALIZE_IMPORT_1_0, Keyed),
-    (trust_tasks::TASK_BACKUP_ABORT_1_0, RetrySafe),
-    // `chunkedTrustTask`. The 1.1 initiators mint a bundle exactly as 1.0 does.
     // `initiate-export/1.1`'s chunked reply carries no bearer token, but its
     // `stream` reply does, and one classification covers the URI.
     (trust_tasks::TASK_BACKUP_INITIATE_EXPORT_1_1, KeyedSecret),
+    (trust_tasks::TASK_BACKUP_COMPLETE_EXPORT_1_0, Keyed),
     (trust_tasks::TASK_BACKUP_INITIATE_IMPORT_1_1, Keyed),
     (trust_tasks::TASK_BACKUP_FINALIZE_IMPORT_1_1, Keyed),
+    (trust_tasks::TASK_BACKUP_ABORT_1_0, RetrySafe),
     // Non-consuming: a repeat returns the same bytes and at most slides the
     // bundle's expiry again, within its ceiling. Not `ReadOnly` because it does
     // record the index as served and extend that expiry.
@@ -450,12 +437,12 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     // One-time: a repeat is refused once the entropy is gone, and the reply is
     // the (sealed) root mnemonic, which never sits in the dedup store.
     (
-        trust_tasks::TASK_ATTESTATION_MNEMONIC_EXPORT_1_0,
+        trust_tasks::TASK_ATTESTATION_MNEMONIC_EXPORT_1_1,
         KeyedSecret,
     ),
     // A status read over the export window: no durable effect, no secret in
     // the reply.
-    (trust_tasks::TASK_ATTESTATION_MNEMONIC_STATUS_0_1, ReadOnly),
+    (trust_tasks::TASK_ATTESTATION_MNEMONIC_STATUS_0_2, ReadOnly),
     // ── Consent (DTTE) ──────────────────────────────────────────────────
     // A consent request is addressed by the payload digest it binds, so a
     // repeat lands on the same pending request.
@@ -474,7 +461,7 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     // A read, like `acl/list` and `policy/list`. No durable effect, nothing to
     // dedup, and `status` is derived at read time — so a retry is not merely
     // safe, it is the way to get a fresher answer.
-    (trust_tasks::TASK_VTA_CREDENTIALS_LIST_0_1, ReadOnly),
+    (trust_tasks::TASK_VTA_CREDENTIALS_LIST_0_2, ReadOnly),
     // ── Memory ──────────────────────────────────────────────────────────
     (trust_tasks::TASK_VTA_MEMORY_PUT_0_1, RetrySafe),
     (trust_tasks::TASK_VTA_MEMORY_LIST_0_1, ReadOnly),
@@ -543,7 +530,7 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     (trust_tasks::TASK_VTA_WITNESS_PRESENT_0_2, RetrySafe),
     (trust_tasks::TASK_VTA_WITNESS_ACCEPT_0_2, RetrySafe),
     // A read of what accept stored.
-    (trust_tasks::TASK_VTA_WITNESS_LIST_0_1, ReadOnly),
+    (trust_tasks::TASK_VTA_WITNESS_LIST_0_2, ReadOnly),
     // ── External accounts (`external/*`) ────────────────────────────────
     (trust_tasks::TASK_EXTERNAL_ACCOUNTS_LIST_0_2, ReadOnly),
     (trust_tasks::TASK_EXTERNAL_ACCOUNTS_GET_0_2, ReadOnly),
@@ -777,11 +764,11 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     // `existed: false`, and deliberately does NOT take a new counter value,
     // so a watcher sees nothing.
     (trust_tasks::TASK_VTA_APP_STATE_GET_1_0, ReadOnly),
-    (trust_tasks::TASK_VTA_APP_STATE_PUT_1_0, Keyed),
-    (trust_tasks::TASK_VTA_APP_STATE_LIST_1_0, ReadOnly),
+    (trust_tasks::TASK_VTA_APP_STATE_PUT_1_1, Keyed),
+    (trust_tasks::TASK_VTA_APP_STATE_LIST_1_1, ReadOnly),
     (trust_tasks::TASK_VTA_APP_STATE_DELETE_1_0, RetrySafe),
     (trust_tasks::TASK_VTA_APP_STATE_GET_MANY_1_0, ReadOnly),
-    (trust_tasks::TASK_VTA_APP_STATE_PUT_MANY_1_0, Keyed),
+    (trust_tasks::TASK_VTA_APP_STATE_PUT_MANY_1_1, Keyed),
     // ── Policy ──────────────────────────────────────────────────────────
     (trust_tasks::TASK_POLICY_LIST_0_3, ReadOnly),
     (trust_tasks::TASK_POLICY_GET_0_1, ReadOnly),
@@ -1079,7 +1066,7 @@ mod tests {
     #[test]
     fn the_operations_that_prompted_this_are_keyed() {
         for uri in [
-            trust_tasks::TASK_WEBVH_DIDS_CREATE_1_0,
+            trust_tasks::TASK_WEBVH_DIDS_CREATE_1_2,
             trust_tasks::TASK_KEYS_CREATE_0_1,
             trust_tasks::TASK_CONTEXTS_CREATE_1_0,
             trust_tasks::TASK_ACL_SWAP_KEY_0_1,

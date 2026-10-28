@@ -1037,7 +1037,7 @@ fn skipped(key: &str) -> WriteResult {
         key: key.to_string(),
         outcome: WriteOutcome::Skipped,
         version: None,
-        created: None,
+        was_created: None,
         current_version: None,
         current_value: None,
         current_deleted: None,
@@ -1090,7 +1090,7 @@ async fn dry_run_atomic(
                     key: w.key.clone(),
                     outcome: WriteOutcome::Conflict,
                     version: None,
-                    created: None,
+                    was_created: None,
                     current_version: cur
                         .map(|c| c.version)
                         .or(existing.as_ref().map(|r| r.version)),
@@ -1110,7 +1110,7 @@ async fn dry_run_atomic(
                     key: w.key.clone(),
                     outcome: WriteOutcome::NotFound,
                     version: None,
-                    created: None,
+                    was_created: None,
                     current_version: None,
                     current_value: None,
                     current_deleted: None,
@@ -1142,7 +1142,7 @@ async fn dry_run_atomic(
                     key: w.key.clone(),
                     outcome: WriteOutcome::TooLarge,
                     version: None,
-                    created: None,
+                    was_created: None,
                     current_version: None,
                     current_value: None,
                     current_deleted: None,
@@ -1166,7 +1166,7 @@ fn write_result(
         key: key.to_string(),
         outcome: o,
         version: None,
-        created: None,
+        was_created: None,
         current_version: None,
         current_value: None,
         current_deleted: None,
@@ -1176,7 +1176,7 @@ fn write_result(
     match outcome {
         Ok(o) => Ok(WriteResult {
             version: Some(o.version),
-            created: Some(o.created),
+            was_created: Some(o.created),
             ..base(WriteOutcome::Written)
         }),
         Err(AppStateError::VersionConflict {

@@ -71,10 +71,8 @@ use governor::state::{InMemoryState, NotKeyed};
 use governor::{Quota, RateLimiter};
 use metrics::counter;
 use vta_config::ServerConfig;
-#[allow(deprecated)] // `vta/webvh/dids/create/1.0` is still served, so still charged.
 use vta_sdk::trust_tasks::{
-    TASK_VAULT_RELEASE_0_2, TASK_WEBVH_DIDS_CREATE_1_0, TASK_WEBVH_DIDS_CREATE_1_1,
-    TASK_WEBVH_DIDS_DELETE_1_0,
+    TASK_VAULT_RELEASE_0_2, TASK_WEBVH_DIDS_CREATE_1_2, TASK_WEBVH_DIDS_DELETE_1_0,
 };
 
 /// The heaviest weight in [`weight`]. No burst is below it, or that task could
@@ -146,9 +144,7 @@ pub(crate) fn weight(type_uri: &str) -> u32 {
     let bare = type_uri.split('#').next().unwrap_or(type_uri);
     match bare {
         TASK_VAULT_RELEASE_0_2 => 2,
-        TASK_WEBVH_DIDS_CREATE_1_0 | TASK_WEBVH_DIDS_CREATE_1_1 | TASK_WEBVH_DIDS_DELETE_1_0 => {
-            MAX_WEIGHT
-        }
+        TASK_WEBVH_DIDS_CREATE_1_2 | TASK_WEBVH_DIDS_DELETE_1_0 => MAX_WEIGHT,
         _ => 1,
     }
 }
@@ -476,7 +472,7 @@ mod tests {
         );
 
         let b = budget(20, Some(20));
-        assert_eq!(b.charge(ALICE, TASK_WEBVH_DIDS_CREATE_1_1), Ok(()));
+        assert_eq!(b.charge(ALICE, TASK_WEBVH_DIDS_CREATE_1_2), Ok(()));
         assert_eq!(b.charge(ALICE, TASK_WEBVH_DIDS_DELETE_1_0), Ok(()));
         assert!(
             b.charge(ALICE, TASK_KEYS_SIGN_0_1).is_err(),
@@ -488,7 +484,7 @@ mod tests {
     fn the_burst_is_never_below_the_heaviest_task() {
         let b = budget(1, Some(1));
         assert_eq!(
-            b.charge(ALICE, TASK_WEBVH_DIDS_CREATE_1_0),
+            b.charge(ALICE, TASK_WEBVH_DIDS_CREATE_1_2),
             Ok(()),
             "an idle appliance serves a DID create whatever the budget"
         );
@@ -500,7 +496,7 @@ mod tests {
         for _ in 0..10 {
             b.charge(ALICE, TASK_KEYS_SIGN_0_1).unwrap();
         }
-        let refused = b.charge(ALICE, TASK_WEBVH_DIDS_CREATE_1_0).unwrap_err();
+        let refused = b.charge(ALICE, TASK_WEBVH_DIDS_CREATE_1_2).unwrap_err();
         assert_eq!(refused.scope, Scope::Appliance);
         assert!(refused.retry_after <= Duration::from_secs(1), "{refused:?}");
         assert_eq!(refused.retry_after_secs(), 1);

@@ -450,7 +450,7 @@ els.enrolStart.addEventListener("click", async () => {
       publicKeyMultibase,
       coseAlgorithm: alg,
       attestationObject: b64urlEncode(ao),
-      clientDataJson: b64urlEncode(cd),
+      clientDataJSON: b64urlEncode(cd),
       authenticatorData: b64urlEncode(ad),
       transports,
       label,

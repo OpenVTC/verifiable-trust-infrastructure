@@ -21,8 +21,6 @@
 //! | `webvh/servers/update/1.0`          | super-admin |
 //! | `webvh/servers/remove/1.0`          | super-admin |
 //! | `webvh/dids/list/1.0`               | any authed  |
-//! | `webvh/dids/create/1.0`             | `key-mint`  |
-//! | `webvh/dids/create/1.1`             | `key-mint`  |
 //! | `webvh/dids/create/1.2`             | `key-mint`  |
 //! | `webvh/dids/get/1.0`                | any authed  |
 //! | `webvh/dids/get-log/1.0`            | any authed  |
@@ -40,8 +38,7 @@ use trust_tasks_rs::{RejectReason, TrustTask};
 
 use vta_sdk::protocols::did_management::{
     agent_name::{
-        AgentNameBody, AgentNameCheckBody, AgentNameCheckResultBody, AgentNameEntry,
-        AgentNameListBody, AgentNameListResultBody, AgentNameResultBody,
+        AgentNameBody, AgentNameCheckBody, AgentNameCheckResultBody, AgentNameResultBody,
     },
     create::CreateDidWebvhBody,
     delete::DeleteDidWebvhBody,
@@ -235,62 +232,10 @@ pub(super) async fn handle_dids_create(
     auth: &AuthClaims,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    create_dids(state, auth, doc, CreateVersion::V1_2).await
-}
-
-/// `webvh/dids/create/1.1` — [`handle_dids_create`] answered in 1.1's shape:
-/// `serverless` stated (Keyring VTI-20), and none of 1.2's members, which 1.1's
-/// schema refuses in both directions. `[dids]` still applies, as to a 1.2
-/// request naming neither member.
-pub(super) async fn handle_dids_create_1_1(
-    state: &AppState,
-    auth: &AuthClaims,
-    doc: TrustTask<Value>,
-) -> TrustTaskOutcome {
-    create_dids(state, auth, doc, CreateVersion::V1_1).await
-}
-
-/// `webvh/dids/create/1.0` — [`handle_dids_create`] answered in 1.0's shape.
-/// 1.0's response refuses members it does not define, `serverless` among them,
-/// so it is left out; a 1.0 client reads serverless from the absent `serverId`.
-pub(super) async fn handle_dids_create_1_0(
-    state: &AppState,
-    auth: &AuthClaims,
-    doc: TrustTask<Value>,
-) -> TrustTaskOutcome {
-    create_dids(state, auth, doc, CreateVersion::V1_0).await
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum CreateVersion {
-    V1_0,
-    V1_1,
-    V1_2,
-}
-
-async fn create_dids(
-    state: &AppState,
-    auth: &AuthClaims,
-    doc: TrustTask<Value>,
-    version: CreateVersion,
-) -> TrustTaskOutcome {
     let body: CreateDidWebvhBody = match parse_payload(&doc) {
         Ok(r) => r,
         Err(resp) => return resp,
     };
-    // 1.0 and 1.1 refuse members they do not define; the hand-written body
-    // reads 1.2's, so refuse them here rather than act on them.
-    if version != CreateVersion::V1_2
-        && (body.did_method.is_some() || body.scid_also_known_as.is_some())
-    {
-        return reject_with(
-            &doc,
-            RejectReason::MalformedRequest {
-                reason: "didMethod and scidAlsoKnownAs are vta/webvh/dids/create/1.2 members"
-                    .into(),
-            },
-        );
-    }
     let config = state.config.read().await;
     let did_resolver = match state.did_resolver.as_ref() {
         Some(r) => r,
@@ -305,19 +250,8 @@ async fn create_dids(
     let deps =
         operations::did_webvh::CreateDidWebvhDeps::from_app_state(state, &config, did_resolver);
     match operations::did_webvh::create_did_webvh(&deps, auth, params, TRANSPORT_TRUST_TASK).await {
-        Ok(body) => match version {
-            CreateVersion::V1_2 => success_response(&doc, body),
-            CreateVersion::V1_1 => success_response(&doc, body.without_1_2_members()),
-            CreateVersion::V1_0 => {
-                let mut body = body.without_1_2_members();
-                body.serverless = None;
-                success_response(&doc, body)
-            }
-        },
-        Err(e)
-            if version == CreateVersion::V1_2
-                && operations::did_webvh::presentation::is_scid_alias_required(&e) =>
-        {
+        Ok(body) => success_response(&doc, body),
+        Err(e) if operations::did_webvh::presentation::is_scid_alias_required(&e) => {
             reject_declared(
                 &doc,
                 trust_tasks_rs::specs::vta::webvh::dids::create::v1_2::error_codes::SCID_ALIAS_REQUIRED,
@@ -474,18 +408,19 @@ pub(super) async fn handle_dids_update(
     }
 }
 
-/// `spec/vta/webvh/agent-name/list/1.0` — read the DID's agent-name registry
+/// `spec/vta/webvh/agent-name/list/1.1` — read the DID's agent-name registry
 /// from the hosting control plane, parked names included. Read-only.
 pub(super) async fn handle_agent_name_list(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    let req: AgentNameListBody = match parse_payload(&doc) {
+    use trust_tasks_rs::specs::vta::webvh::agent_name::list::v1_1 as t;
+    let req: t::Payload = match parse_payload(&doc) {
         Ok(r) => r,
         Err(resp) => return resp,
     };
-    let log_did = match log_did_of(state, &doc, &req.did).await {
+    let log_did = match log_did_of(state, &doc, req.did.as_str()).await {
         Ok(did) => did,
         Err(reject) => return reject,
     };
@@ -501,22 +436,28 @@ pub(super) async fn handle_agent_name_list(
     let vta_did = state.config.read().await.vta_did.clone();
     let deps = operations::did_webvh::WebvhDeps::from_app_state(state, did_resolver);
     match operations::did_webvh::list_agent_names(&deps, auth, &log_did, vta_did.as_deref()).await {
-        Ok((did, names)) => success_response(
-            &doc,
-            AgentNameListResultBody {
-                did,
-                names: names
-                    .into_iter()
-                    .map(|e| AgentNameEntry {
-                        name: e.name,
-                        enabled: e.enabled,
-                        // The host speaks RFC 3339; the canonical entry the
-                        // VTA relays speaks Unix seconds.
-                        created_at: e.created_at.timestamp().max(0) as u64,
+        Ok((did, names)) => {
+            let names: Vec<Value> = names
+                .into_iter()
+                .map(|e| {
+                    // The host speaks RFC 3339, and so does 1.1's entry.
+                    serde_json::json!({
+                        "name": e.name,
+                        "enabled": e.enabled,
+                        "createdAt": e.created_at.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
                     })
-                    .collect(),
-            },
-        ),
+                })
+                .collect();
+            match serde_json::from_value::<t::Response>(
+                serde_json::json!({ "did": did, "names": names }),
+            ) {
+                Ok(body) => success_response(&doc, body),
+                Err(e) => app_error_to_reject(
+                    &doc,
+                    AppError::Internal(format!("agent-name/list response: {e}")),
+                ),
+            }
+        }
         Err(e) => app_error_to_reject(&doc, AppError::from(e)),
     }
 }
