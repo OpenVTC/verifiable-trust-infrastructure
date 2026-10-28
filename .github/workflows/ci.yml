@@ -634,14 +634,14 @@ jobs:
 
   semver-checks:
     # Compare each published crate's public API against the version on
-    # crates.io. release-plz runs this too when it builds the Release PR, but
-    # by then the change has already merged — here the author still has it in
-    # hand.
+    # crates.io. `release bump is large enough` runs this too on the Release
+    # PR, but by then the change has already merged — here the author still
+    # has it in hand.
     #
     # It reports; it does not fail the build. A breaking change is allowed in
     # this workspace (every crate is 0.x); what matters is that it is KNOWN, so
     # the release moves the compatibility field instead of shipping it as a
-    # patch. release-plz enforces that automatically from the same signal.
+    # patch. The guard below enforces that from the same signal.
     #
     # A third instance of that same confusion is recorded in
     # scripts/semver-report.sh: for several releases this job checked two crates
@@ -722,6 +722,13 @@ jobs:
     # reconciled the two verdicts. This does.
     #
     # NO continue-on-error, unlike the report above. That is the entire point.
+    #
+    # It is also the ONLY API check a release gets: release-plz's own was
+    # switched off (`semver_check = false`, release-plz.toml), because it ran
+    # these same checks on every merge to main, slower, and was the one this
+    # job exists to overrule. A crate whose proposed version is already a
+    # breaking bump over crates.io is not checked (no finding can ask for
+    # more), and the output lists it; see scripts/semver-report.sh.
     name: release bump is large enough
     if: github.event_name == 'pull_request' && startsWith(github.head_ref, 'release-plz-')
     runs-on: ubuntu-latest
@@ -732,6 +739,10 @@ jobs:
     # 180, not 90: the Release PR for #2282 (every crate on TSP 1.0) hit 90.
     # With the build and test jobs skipped on a Release PR (ci-affects.sh) this
     # is the one long job left on it.
+    #
+    # Kept at 180 although most Release PRs now take minutes: every crate the
+    # PR raises to a breaking version is skipped, so the hours are spent only
+    # when many crates are proposed as patches — the case this job exists for.
     timeout-minutes: 180
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -754,10 +765,113 @@ jobs:
       - uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2.87.29
         with:
           tool: cargo-semver-checks
+
+      # The crates.io baselines' rustdoc JSON, which cargo-semver-checks keeps
+      # in target/semver-checks/cache. A baseline is a published version, so it
+      # changes only when a release does, and a cache hit skips one of the two
+      # cold dependency-tree builds each crate costs. Nothing else from target/
+      # is cached: each check builds in a placeholder workspace of its own,
+      # resolved without the lockfile, so a Cargo.lock-keyed build cache does
+      # not line up with it, and the repository's 25 GB cache allowance is
+      # already held by main's CI caches (25.7 GB on 2026-10-28) — a
+      # dependency-tree cache saved here would evict theirs.
+      #
+      # Keyed by the toolchain (cargo-semver-checks refuses JSON from another
+      # rustdoc anyway) and by the file names held, which name each crate,
+      # version, target and flags. Saved on this PR's ref only, so later pushes
+      # to the same Release PR restore it and no other branch can. Saved only
+      # when it gained a baseline, so each Release PR stores it once or twice.
+      - name: Key the baseline cache
+        id: rustc
+        run: echo "key=semver-baselines-v1-$(rustc -V | sha256sum | cut -c1-12)" >> "$GITHUB_OUTPUT"
+      - name: Restore crates.io baselines
+        id: baselines
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: target/semver-checks/cache
+          key: ${{ steps.rustc.outputs.key }}-restore
+          restore-keys: ${{ steps.rustc.outputs.key }}-
+
       - name: Check the proposed versions cover their API changes
+        id: guard
         env:
           SEMVER_MODE: enforce
         run: bash scripts/semver-report.sh
+
+      - name: Name the baselines held
+        id: held
+        if: always()
+        env:
+          PREFIX: ${{ steps.rustc.outputs.key }}
+        run: |
+          d=target/semver-checks/cache
+          [ -d "$d" ] || exit 0
+          names=$(find "$d" -maxdepth 1 -type f -printf '%f\n' | sort)
+          if [ -n "$names" ]; then
+            echo "key=${PREFIX}-$(printf '%s\n' "$names" | sha256sum | cut -c1-16)" >> "$GITHUB_OUTPUT"
+            du -sh "$d"
+          fi
+      - name: Save crates.io baselines
+        if: always() && steps.held.outputs.key != '' && steps.held.outputs.key != steps.baselines.outputs.cache-matched-key
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: target/semver-checks/cache
+          key: ${{ steps.held.outputs.key }}
+
+      # The guard's finding, applied. semver-report.sh writes each crate whose
+      # API change needs a breaking bump to semver-raise.txt, and
+      # fix-release-bump-sizes.py --raise is the whole fix: it raises each one
+      # to its next breaking version, moves its dependents' requirements, and
+      # converges the cascade the other release guards would ask for. Pushed
+      # onto the Release PR with RELEASE_PLZ_TOKEN so CI runs on it, where this
+      # job then skips the raised crates (already breaking) and passes.
+      #
+      # This run stays red: the verdict is the run on the pushed commit. Only
+      # when the branch is still at the commit checked (a newer push has its
+      # own run), and never for a fork or without the token. The token is
+      # given to git, not to the script. release-plz rewrites the Release PR
+      # on every merge to main, which drops the raise; the next run of this
+      # job applies it again.
+      - name: Raise the under-bumped crates on the Release PR
+        if: failure() && steps.guard.outcome == 'failure' && github.event.pull_request.head.repo.full_name == github.repository
+        env:
+          PUSH_TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN }}
+          HEAD_REF: ${{ github.head_ref }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          if [ ! -s semver-raise.txt ]; then
+            echo "no breaking finding to apply; the failure above is for a person to read"
+            exit 0
+          fi
+          if [ -z "$PUSH_TOKEN" ]; then
+            echo "::warning::RELEASE_PLZ_TOKEN is not set; apply the fix named above by hand"
+            exit 0
+          fi
+          crates=()
+          while IFS= read -r c; do
+            [[ "$c" =~ ^[A-Za-z0-9_-]+$ ]] || { echo "::error::unexpected crate name '$c'"; exit 1; }
+            crates+=("$c")
+          done < semver-raise.txt
+          url="https://x-access-token:${PUSH_TOKEN}@github.com/${REPO}.git"
+          git fetch --quiet "$url" "+refs/heads/$HEAD_REF:refs/remotes/origin/$HEAD_REF"
+          if [ "$(git rev-parse "origin/$HEAD_REF")" != "$HEAD_SHA" ]; then
+            echo "$HEAD_REF has moved on from $HEAD_SHA; the run on the newer commit decides"
+            exit 0
+          fi
+          git switch --quiet --force -C "$HEAD_REF" "$HEAD_SHA"
+          env -u PUSH_TOKEN python3 scripts/fix-release-bump-sizes.py --raise "${crates[@]}"
+          if git diff --quiet; then
+            echo "nothing to change"; exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -qas -m "chore(release): raise under-bumped crates to breaking versions" \
+            -m "Applied by ci.yml's release bump guard: cargo-semver-checks found API changes in ${crates[*]} that a compatible bump cannot carry."
+          git push --quiet "$url" "HEAD:refs/heads/$HEAD_REF"
+          git diff --stat HEAD~1 HEAD
+          echo "::notice::raised ${crates[*]} and pushed to $HEAD_REF; the run on that commit is the verdict"
 
   lockfile-self-pins:
     # Sibling guard to release-guards: the version bump can be correct and the
