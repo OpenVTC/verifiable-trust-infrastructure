@@ -32,7 +32,7 @@ use crate::common::webauthn_harness::SoftEd25519Authenticator;
 const RP_ORIGIN: &str = "https://vtc.example.com";
 /// The operation these tests bind gestures to. Which task it is does not
 /// matter to any assertion here — only who may answer for the subject does.
-const BREAK_GLASS: &str = "https://trusttasks.org/spec/git-ns/right/break-glass/0.1";
+const BREAK_GLASS: &str = "https://trusttasks.org/spec/git-ns/right/break-glass/0.2";
 
 /// A distinct payload per gesture — `redeem_or_request` keys its mark on the
 /// digest of type + payload, so reusing one across calls in the same test

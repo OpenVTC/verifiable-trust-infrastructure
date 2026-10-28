@@ -2024,7 +2024,7 @@ mod tests {
     /// profile ask and its git-ns view can be told apart in the log.
     #[test]
     fn the_request_log_names_the_enveloped_task() {
-        const VIEW: &str = "https://trusttasks.org/spec/git-ns/view/0.4";
+        const VIEW: &str = "https://trusttasks.org/spec/git-ns/view/0.6";
         let enveloped = Message::build(
             "m1".to_string(),
             vti_common::capability_client::TRUST_TASK_ENVELOPE_TYPE.to_string(),

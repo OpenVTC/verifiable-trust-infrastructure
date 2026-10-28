@@ -96,8 +96,8 @@ use crate::server::AppState;
         crate::git_ns::admin_reads::GitNsProjection,
         crate::git_ns::admin_reads::GitNsAccountList,
         crate::git_ns::admin_reads::GitNsActivity,
-        // A repository's drift, as `git-ns/view/0.5`'s `repos[].sync` carries it.
-        vta_sdk::openapi::GitNsView01DriftItem,
+        // A repository's drift, as `git-ns/view/0.6`'s `repos[].sync` carries it.
+        vta_sdk::openapi::GitNsView06DriftItem,
         acl::AclListResponse,
         acl::AclEntryEnvelope,
         vta_sdk::openapi::VetterList01Payload,

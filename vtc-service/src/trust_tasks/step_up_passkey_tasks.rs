@@ -333,7 +333,7 @@ mod tests {
     use trust_tasks_rs::validate::ValidatedPayload;
 
     const RP_ORIGIN: &str = "https://vtc.example.com";
-    const BREAK_GLASS: &str = "https://trusttasks.org/spec/git-ns/right/break-glass/0.1";
+    const BREAK_GLASS: &str = "https://trusttasks.org/spec/git-ns/right/break-glass/0.2";
 
     const TRANSPORTS: [JoinTransport; 3] = [
         JoinTransport::Rest,

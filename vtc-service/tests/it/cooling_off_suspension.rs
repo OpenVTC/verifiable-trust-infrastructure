@@ -760,8 +760,8 @@ async fn land_now_on_open_cooling_off() {
 
 // ─── the git projection during a cooling-off (§8.2) ───────────────────────
 
-const GIT_BIND: &str = "https://trusttasks.org/spec/git-ns/namespace/bind/0.1";
-const GIT_GRANT: &str = "https://trusttasks.org/spec/git-ns/right/grant/0.3";
+const GIT_BIND: &str = "https://trusttasks.org/spec/git-ns/namespace/bind/0.2";
+const GIT_GRANT: &str = "https://trusttasks.org/spec/git-ns/right/grant/0.4";
 const ADMIN_REMOVE: &str = "https://trusttasks.org/spec/vtc/members/admin-remove/0.1";
 
 /// A removal policy that allows every removal, tombstoning the member.

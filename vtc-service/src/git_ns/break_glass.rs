@@ -30,7 +30,7 @@ use chrono::{DateTime, Duration, Utc};
 use serde_json::{Value, json};
 use tracing::{error, info, warn};
 use trust_tasks_rs::specs::git_ns::right::{
-    break_glass::v0_1 as break_glass, break_glass_notice::v0_1 as notice, ratify::v0_1 as ratify,
+    break_glass::v0_2 as break_glass, break_glass_notice::v0_2 as notice, ratify::v0_2 as ratify,
 };
 use vti_common::audit::{AuditEvent, GitNsBreakGlassData};
 use vti_common::capability_client::build_document;
@@ -221,7 +221,7 @@ fn notice_payload(
         "namespace": ns.id,
         "record": wire::right_record_full(row, resource, true),
         "by": by,
-        "at": wire::timestamp(at),
+        "occurredAt": wire::timestamp(at),
     });
     if let Some(s) = statement.filter(|s| !s.trim().is_empty()) {
         v["statement"] = json!(s);

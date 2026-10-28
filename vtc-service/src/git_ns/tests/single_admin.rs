@@ -1,5 +1,5 @@
 //! **Single-administrator mode on the git side** (VTI-APV-022 applied to fixed
-//! rule 7 of `git-ns/right/grant/0.3`, `super::super::single_admin`).
+//! rule 7 of `git-ns/right/grant/0.4`, `super::super::single_admin`).
 //!
 //! With `[acl] single_admin_mode` on, an elevated self-grant is waived — on the
 //! requester's operation-bound step-up, with a `Critical` `SingleAdminMode {
@@ -10,9 +10,9 @@
 
 use serde::Serialize;
 use serde::de::DeserializeOwned;
-use trust_tasks_rs::specs::git_ns::drift::resolve::v0_3 as resolve3;
-use trust_tasks_rs::specs::git_ns::repo::{adopt::v0_1 as adopt, create::v0_3 as create};
-use trust_tasks_rs::specs::git_ns::right::grant::v0_3 as grant3;
+use trust_tasks_rs::specs::git_ns::drift::resolve::v0_4 as resolve3;
+use trust_tasks_rs::specs::git_ns::repo::{adopt::v0_3 as adopt, create::v0_4 as create};
+use trust_tasks_rs::specs::git_ns::right::grant::v0_4 as grant3;
 use vti_common::audit::{AuditEvent, AuditSeverity, SingleAdminModeData};
 
 use super::*;
@@ -122,7 +122,7 @@ async fn vti_apv_022_a_sole_administrator_adopts_for_themselves_on_step_up_audit
     let snap = Snapshot::load(&f.vtc.state.git_ns).await.unwrap();
     let row = own_row(&snap, GADGETS, &f.admin.did).unwrap();
     let mark = row.single_admin.as_ref().expect("the record is marked");
-    assert!(mark.task.ends_with("/git-ns/repo/adopt/0.1"));
+    assert!(mark.task.ends_with("/git-ns/repo/adopt/0.3"));
     assert!(row.break_glass.is_none(), "a waiver is no break-glass");
 
     // The Critical row names the rule, the task, the action, the right and
@@ -132,7 +132,7 @@ async fn vti_apv_022_a_sole_administrator_adopts_for_themselves_on_step_up_audit
     let r = &rows[0];
     assert_eq!(
         r.requirement.as_deref(),
-        Some("git-ns/right/grant/0.3#rule-7")
+        Some("git-ns/right/grant/0.4#rule-7")
     );
     assert_eq!(r.kind.as_deref(), Some("repo.adopt"));
     assert_eq!(r.right.as_deref(), Some("git.repo.own"));
@@ -141,7 +141,7 @@ async fn vti_apv_022_a_sole_administrator_adopts_for_themselves_on_step_up_audit
         r.task
             .as_deref()
             .unwrap()
-            .ends_with("/git-ns/repo/adopt/0.1")
+            .ends_with("/git-ns/repo/adopt/0.3")
     );
     assert!(r.digest.is_some());
     let events = audit_events(&f).await;
@@ -168,7 +168,7 @@ async fn vti_apv_022_a_sole_administrator_adopts_for_themselves_on_step_up_audit
         &f.vtc.state,
         &f.admin,
         "view",
-        "0.5",
+        "0.6",
         json!({ "scope": "administrator" }),
     )
     .await);
@@ -439,6 +439,6 @@ async fn vti_apv_022_a_drift_adoption_for_oneself_is_waived_for_the_sole_adminis
             .task
             .as_deref()
             .unwrap()
-            .ends_with("/git-ns/drift/resolve/0.3")
+            .ends_with("/git-ns/drift/resolve/0.4")
     );
 }

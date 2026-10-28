@@ -1180,7 +1180,7 @@ namespace, with who gave each and any expiry; on the repositories they
 own or administer, what every other member holds there, with the
 granter's reason; every repository the community governs, with its
 owners; and the forge accounts linked to them. The page reads
-`git-ns/view/0.4` and `git-ns/account/link-status/0.1`, signed by the
+`git-ns/view/0.6` and `git-ns/account/link-status/0.1`, signed by the
 portal's sign-in key: a wallet sign-in offers `git-ns/view` and
 `git-ns/account/link-status` in its `signingScope` beside the directory
 and groups, and nothing else under `git-ns`. The view is the member's

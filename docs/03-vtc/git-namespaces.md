@@ -5,9 +5,20 @@ Forgejo instance such as Codeberg — and publish who may do what there to its
 Trust Registry, where CI checks such as `did-git-sign verify-trust` read it.
 
 - **Normative:** the `git-ns/*` Trust Tasks in dtgwg-trust-tasks-tf
-  (`specs/git-ns/**`). The rights model is in `git-ns/right/grant/0.3`.
+  (`specs/git-ns/**`). The rights model is in `git-ns/right/grant/0.4`.
 - **Design:** `design-docs/vtc-git-namespaces-design.md`.
 - **Code:** `vtc-service/src/git_ns/`.
+- **Versions:** every member- and administrator-facing task is served at its
+  current version only (an older one is refused `unsupportedVersion`). The
+  bridge's own tasks keep their older versions beside the current ones,
+  because the released bridge still speaks them: `git-ns/bridge/event` 0.1 to
+  0.5 and `git-ns/bridge/result` 0.1 and 0.2 are accepted, and jobs go out at
+  0.4, 0.5 or 0.6 as the bridge lists them.
+- **Nested repository paths** (`git-ns/_shared/0.6`): on a forge with nested
+  groups (GitLab), `gitlab.com/acme/platform/tools/cli` is one repository of
+  the namespace `gitlab.com/acme` — up to 21 path segments, each up to 255
+  characters. A subgroup is not a resource, and a right on one repository is
+  never a right on another whose path it prefixes.
 
 ## The model in one screen
 
@@ -278,7 +289,7 @@ Grants with no granter to depart are never reviewed: a binding's first admin,
 a creator's own ownership, a break-glass (each granted by its own subject) and
 the bridge's service grant (granted by the community). A policy setting
 `cascade_on_departure` still revokes them at once instead. They are also listed
-under *issued by departed members* (`git-ns/right/issued-by-departed/0.1`).
+under *issued by departed members* (`git-ns/right/issued-by-departed/0.3`).
 Only the granter's **departure** raises a review: narrowing a granter's entry
 leaves the git grants they issued in force (an ACL entry's own grants, by
 contrast, also go to review when their granter is narrowed or expires —
@@ -359,7 +370,7 @@ projector sends the complete `desiredRoles` again — and a repository leaves
 Re-projecting changes no right: the bridge would apply the map at the next
 projection anyway. To re-project on demand — a bridge too old to report, a
 forge suspected of drifting — a community administrator or a namespace admin
-(by explicit record) sends `git-ns/roles/reproject/0.1` for a namespace or
+(by explicit record) sends `git-ns/roles/reproject/0.2` for a namespace or
 one repository, and a repository's owner (`git.repo.own`, explicit or
 implied) for that repository:
 
@@ -372,13 +383,16 @@ It is normal-class, audited as `gitNs.roles.reprojected`, and refused in
 manual mode (`manualMode`) and while the bridge has lost its access
 (`noForgeAccess`). The shipped policy evaluates it as `roles.reproject`.
 
-Every job goes out as `git-ns/bridge/job/0.5` to a bridge that lists 0.5
-when asked with `trust-task-discovery`, and as `git-ns/bridge/job/0.4`
+Every job goes out as the newest `git-ns/bridge/job` version the bridge lists
+when asked with `trust-task-discovery`: `0.6` (nested repository paths,
+`git-ns/_shared/0.6`) to a bridge that lists it, `0.5` to one that lists 0.5
+but not 0.6 — the released `vgi-bridge` — and `git-ns/bridge/job/0.4`
 ([trust-tasks #635](https://github.com/trustoverip/dtgwg-trust-tasks-tf/pull/635))
 to one that lists only 0.4 (asked again hourly, so an upgrade is noticed). 0.5
 is 0.4 plus `closePullRequest`, with the same meaning for every other kind, so
 a 0.4-only bridge is unaffected; `closePullRequest` goes to no bridge without
-0.5. A bridge that lists neither is sent nothing: in-line jobs (binding,
+0.5, and a job naming a nested repository path to no bridge without 0.6. A
+bridge that lists none of the three is sent nothing: in-line jobs (binding,
 account links, a `roleAdded` revert) are refused with "upgrade the bridge",
 and queued jobs wait with that as their last error. A bridge before 0.4 would
 read a `git.ns.admin` entry as ownership, which is why there is no downgrade.
@@ -482,7 +496,7 @@ characters.
 
 Only the closes. Each close the VTC orders is a `closePullRequest` job,
 which appears in `git-ns/activity/list` as `gitNs.job.closePullRequest` with
-its state, and in `git-ns/bridge/job/list/0.2` with the pull request's
+its state, and in `git-ns/bridge/job/list/0.4` with the pull request's
 `number` (0.1, whose job-kind list predates job 0.5, leaves it out); when the bridge reports the pull request closed
 (`succeeded`, `close` applied), the VTC audits
 `gitNs.pullRequest.closed` with the repository and a detail of `{number,
@@ -503,7 +517,7 @@ row in their activity feed. It is told again only if the bridge later takes
 0.5 and then loses it.
 
 The configured level is not yet shown on the namespace card or in `cnm git
-view --admin`: `git-ns/namespace/list/0.1`'s namespace rows admit no further
+view --admin`: `git-ns/namespace/list/0.2`'s namespace rows admit no further
 members. Read the active `gitNamespace` policy instead (the admin console's
 policy view, or `GET /v1/policies`).
 
@@ -571,7 +585,7 @@ knows which forge account is theirs. A member links it with
 ```sh
 cnm git link --forge github.com      # prints the URL (and on GitHub a device code), then waits
 cnm git link --status lnk_4Tq9Xw2P   # follow a link begun earlier
-cnm git link --list                  # the accounts linked to this DID (git-ns/view/0.2)
+cnm git link --list                  # the accounts linked to this DID (git-ns/view/0.6)
 ```
 
 It polls every five seconds until the link is `linked`, `expired` or
@@ -588,7 +602,7 @@ replaces the account linked on that forge.
 
 The member portal's **Repositories** page (`/members/#/repos`) does the same
 from the browser: it lists the member's rights and linked accounts
-(`git-ns/view/0.4`) and follows a link (`link-status`) with its sign-in key,
+(`git-ns/view/0.6`) and follows a link (`link-status`) with its sign-in key,
 and asks the member's wallet to sign the `link` and `unlink` themselves — a
 portal key never may (`auth/oob/grant/0.2` consumer item 6;
 [website-and-admin.md](website-and-admin.md#member-portal)).
@@ -644,7 +658,7 @@ is waived on your passkey gesture instead ([below](#single-administrator-mode-wa
 
 Nobody grants themselves an **elevated** right — `git.ns.admin`,
 `git.repo.create` or `git.repo.own` — even when their own rights carry the
-authority to grant it to anyone else (`git-ns/right/grant/0.3`, fixed rule
+authority to grant it to anyone else (`git-ns/right/grant/0.4`, fixed rule
 7). It is refused with `git-ns:selfGrantNotAllowed`, and the same rule binds
 every task that records a right on the actor's own authority: an adopted
 drift item whose linked member is the resolver, `repo/adopt` naming oneself
@@ -679,7 +693,7 @@ member DIDs held by one person are out of scope for the DID comparison. This VTC
 that skips the rule or a record without its `breakGlass` flag.
 
 When nobody else can grant it, the actor **breaks the glass**
-(`git-ns/right/break-glass/0.1`):
+(`git-ns/right/break-glass/0.2`):
 
 ```sh
 cnm git break-glass --right=git.repo.own --resource=github.com/acme/widgets \
@@ -708,17 +722,17 @@ cnm git break-glass --right=git.repo.own --resource=github.com/acme/widgets \
   `AuditSeverity::Critical` with the justification, the entitlement, the
   step-up evidence (credential id, bound digest), the policy version and who
   could not be told; a `gitNs.right.breakGlass` activity item; a signed
-  `git-ns/right/break-glass-notice/0.1` to every community administrator and
+  `git-ns/right/break-glass-notice/0.2` to every community administrator and
   every live namespace admin except the actor, over the VTC's mediator
-  connection; the flag in `git-ns/view/0.4` to every administrator it
+  connection; the flag in `git-ns/view/0.6` to every administrator it
   concerns; and the console's banner and *Break-glass grants* list
-  (`git-ns/view/0.5` with `scope: administrator` and `breakGlass: true`). If
+  (`git-ns/view/0.6` with `scope: administrator` and `breakGlass: true`). If
   the audit row cannot be written, the
   break-glass is undone.
 - **Ratify or revoke**: another administrator — a community administrator, or
   someone whose *confirmed* rights carry grant authority over it — ratifies
   it with `cnm git ratify --subject=<did> --right=<right> --resource=<res>
-  --break-glass-at=<rfc3339>` (`git-ns/right/ratify/0.1`; bound to the
+  --break-glass-at=<rfc3339>` (`git-ns/right/ratify/0.2`; bound to the
   `breakGlass.at` they read). Any community administrator may revoke an
   unratified one with the ordinary `git-ns/right/revoke`, and no policy can
   refuse that. Both are audited and announced like the break-glass.
@@ -767,7 +781,7 @@ waived for the one operation under the same discipline as the consent waiver
   the `<vtc>/admin/step-up#request=…` link, and send the identical document
   again — the same flow as `cnm git break-glass`.
 - **Audited first**: a `Critical` `SingleAdminMode { event: selfGrantWaived }`
-  row naming the rule (`git-ns/right/grant/0.3#rule-7`), the task, its digest,
+  row naming the rule (`git-ns/right/grant/0.4#rule-7`), the task, its digest,
   the git-ns action (`right.grant`, `repo.create`, `repo.adopt`,
   `namespace.reseat`, `drift.adopt`), the right and the resource, written
   **before** the record. If it cannot be written the operation is refused and
@@ -786,7 +800,7 @@ waived for the one operation under the same discipline as the consent waiver
 With the mode off, self-grants are refused and go through another
 administrator or break-glass.
 
-**Specification status.** `git-ns/right/grant/0.3` states rule 7 as a MUST
+**Specification status.** `git-ns/right/grant/0.4` states rule 7 as a MUST
 and names break-glass as "the one way" to self-grant; it does not yet carve out
 VTI-APV-022's single-administrator mode. This waiver is host configuration, not
 community policy (which still cannot waive the rule), but it is a divergence
@@ -911,16 +925,16 @@ is refused `malformedRequest` rather than silently reinterpreted.
 
 | Task | Answer | `cnm` |
 |---|---|---|
-| `git-ns/namespace/list/0.1` (`namespace?`) | administered namespaces with admins, bridge, headless flag, bridge-reported app/plan status, effective `role_drift` / `cascade_on_departure`, role map (`roleMap`, absent while unknown; `roleMapSource`: `reported` or `unknown`) | `cnm git namespace list` |
-| `git-ns/repo/list/0.1` (`namespace?`) | repositories in them with owners, right counts, bootstrap, sync, guard in force, step outcomes, last check, effective role map, `roleMapStale`; for a community administrator also those an unbound namespace left | `cnm git repos [--namespace <id>]` |
-| `git-ns/view/0.5` (`scope: administrator`) | every record and reason in the administered namespaces (0.4's response shape) | `cnm git view --admin` |
-| `git-ns/view/0.5` (`breakGlass: true`) | only break-glass records, ratified ones included, and the namespaces holding them | `cnm git break-glass-list` |
-| `git-ns/right/list/0.1` (`resource?`, `subject?`) | every right the VTC knows of, recorded and role-derived, across every namespace, with `subjectMember` / `granterDeparted` | — |
-| `git-ns/right/issued-by-departed/0.1` | recorded rights whose granter has since left, grouped by granter, plus `cascadeOnDeparture` | — |
-| `git-ns/bridge/job/list/0.2` (`namespace?`, `state?`) | bridge jobs in the administered namespaces, with kind, queue state, attempts and last error, and a `closePullRequest` job's pull request `number`. 0.1 is still served and leaves `closePullRequest` jobs out | — |
-| `git-ns/projection/show/0.1` (`resource?`) | what is published to the Trust Registry, `registryConfigured` and `pendingChanges` | — |
-| `git-ns/account/list/0.1` (`member?`, `forge?`) | every member's linked forge account, community-wide, each with `memberCurrent` | — |
-| `git-ns/activity/list/0.1` (`namespace?`) | rights changes, drift and bridge jobs in the administered namespaces, newest first | — |
+| `git-ns/namespace/list/0.2` (`namespace?`) | administered namespaces with admins, bridge, headless flag, bridge-reported app/plan status, effective `role_drift` / `cascade_on_departure`, role map (`roleMap`, absent while unknown; `roleMapSource`: `reported` or `unknown`) | `cnm git namespace list` |
+| `git-ns/repo/list/0.2` (`namespace?`) | repositories in them with owners, right counts, bootstrap, sync, guard in force, step outcomes, last check, effective role map, `roleMapStale`; for a community administrator also those an unbound namespace left | `cnm git repos [--namespace <id>]` |
+| `git-ns/view/0.6` (`scope: administrator`) | every record and reason in the administered namespaces (the member view's response shape) | `cnm git view --admin` |
+| `git-ns/view/0.6` (`breakGlass: true`) | only break-glass records, ratified ones included, and the namespaces holding them | `cnm git break-glass-list` |
+| `git-ns/right/list/0.3` (`resource?`, `subject?`) | every right the VTC knows of, recorded and role-derived, across every namespace, with `subjectMember` / `granterDeparted` | — |
+| `git-ns/right/issued-by-departed/0.3` | recorded rights whose granter has since left, grouped by granter, plus `cascadeOnDeparture` | — |
+| `git-ns/bridge/job/list/0.4` (`namespace?`, `state?`) | bridge jobs in the administered namespaces, with kind, queue state, attempts and last error, and a `closePullRequest` job's pull request `number`. 0.1 is still served and leaves `closePullRequest` jobs out | — |
+| `git-ns/projection/show/0.3` (`resource?`) | what is published to the Trust Registry, `registryConfigured` and `pendingChanges` | — |
+| `git-ns/account/list/0.2` (`member?`, `forge?`) | every member's linked forge account, community-wide, each with `memberCurrent` | — |
+| `git-ns/activity/list/0.3` (`namespace?`) | rights changes, drift and bridge jobs in the administered namespaces, newest first | — |
 
 `view/0.5`, `namespace/list/0.1` and `repo/list/0.1` (trustoverip/dtgwg-trust-tasks-tf#659,
 trust-tasks-rs 0.23.4) and the other six (trustoverip/dtgwg-trust-tasks-tf#686,
@@ -993,7 +1007,7 @@ administrator without it sees that said instead of the column.
 
 - **No member step-up** — see *Consent classes* above.
 - **A namespace with no admin.** The last-admin and last-owner invariants count
-  only records with no expiry (`git-ns/namespace/reseat/0.3`), so an expiring
+  only records with no expiry (`git-ns/namespace/reseat/0.4`), so an expiring
   `ns.admin` or `own` cannot be the one that keeps them. A departure can still
   leave a namespace headless; it is recovered with a reseat (above).
 - **No binding credential.** `git-ns/account/link` says the VTC SHOULD issue a

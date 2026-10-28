@@ -221,12 +221,12 @@ export type GitNsRightRow = Schemas["GitNsRightRow"];
 export type GitNsRightList = Schemas["GitNsRightList"];
 export type GitNsDepartedGrants = Schemas["GitNsDepartedGrants"];
 export type GitNsDepartedGranter = Schemas["GitNsDepartedGranter"];
-export type GitNsDriftItem = Schemas["GitNsViewV0_1DriftItem"];
+export type GitNsDriftItem = Schemas["GitNsViewV0_6DriftItem"];
 export type GitNsJobList = Schemas["GitNsJobList"];
 export type GitNsJobRow = Schemas["GitNsJobRow"];
 export type GitNsProjection = Schemas["GitNsProjection"];
 export type GitNsPublishedRow = Schemas["GitNsPublishedRow"];
-export type GitNsRight = Schemas["GitNsViewV0_1Right"];
+export type GitNsRight = Schemas["GitNsViewV0_6Right"];
 export type GitNsForgeStatus = Schemas["GitNsForgeStatus"];
 export type GitNsStepOutcome = Schemas["GitNsStepOutcome"];
 export type GitNsLastCheck = Schemas["GitNsLastCheck"];
@@ -236,10 +236,10 @@ export type GitNsActivity = Schemas["GitNsActivity"];
 export type GitNsActivityItem = Schemas["GitNsActivityItem"];
 export type GitNsBreakGlassMark = Schemas["GitNsBreakGlassMark"];
 // The member's own view (`git-ns/view`), as the portal's Repos page reads it.
-export type GitNsViewNamespace = Schemas["GitNsViewV0_1GitNamespace"];
-export type GitNsRepoSummary = Schemas["GitNsViewV0_1RepoSummary"];
-export type GitNsRightRecord = Schemas["GitNsViewV0_1RightRecord"];
-export type GitNsForgeAccount = Schemas["GitNsViewV0_1ForgeAccount"];
+export type GitNsViewNamespace = Schemas["GitNsViewV0_6GitNamespace"];
+export type GitNsRepoSummary = Schemas["GitNsViewV0_6RepoSummary"];
+export type GitNsRightRecord = Schemas["GitNsViewV0_6RightRecord"];
+export type GitNsForgeAccount = Schemas["GitNsViewV0_6ForgeAccount"];
 
 // ── Data rooms: the room-hosting administrator's reads ──────────────────
 //

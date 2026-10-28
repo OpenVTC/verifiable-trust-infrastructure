@@ -88,8 +88,8 @@ export function BreakGlassChip({ mark }: { mark: GitNsBreakGlassMark | null | un
   if (!mark || !state) return null;
   const title =
     state === "ratified"
-      ? `Self-granted ${formatDay(mark.at)}, ratified ${formatDay(mark.ratifiedAt)}`
-      : `Self-granted ${formatDay(mark.at)} — awaiting another administrator's ratification or revocation. Justification: ${mark.justification}`;
+      ? `Self-granted ${formatDay(mark.recordedAt)}, ratified ${formatDay(mark.ratifiedAt)}`
+      : `Self-granted ${formatDay(mark.recordedAt)} — awaiting another administrator's ratification or revocation. Justification: ${mark.justification}`;
   return (
     <span className={state === "ratified" ? "chip" : "chip danger gitns-breakglass"} title={title}>
       <Siren aria-hidden="true" size={12} /> {BREAK_GLASS_STATE_LABEL[state]}

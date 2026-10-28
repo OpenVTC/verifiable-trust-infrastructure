@@ -208,7 +208,7 @@ struct RedeemableMark {
     expires_at: u64,
     /// Which factor answered, and what it was shown — carried so an act that
     /// must record its step-up evidence (a git break-glass,
-    /// `git-ns/right/break-glass/0.1` step 9) can. Absent on a mark written
+    /// `git-ns/right/break-glass/0.2` step 9) can. Absent on a mark written
     /// before this was recorded; such a mark still authorizes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     credential_id: Option<String>,

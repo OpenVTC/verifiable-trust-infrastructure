@@ -100,10 +100,9 @@ pub fn timestamp(t: DateTime<Utc>) -> String {
     t.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
 }
 
-/// `RightRecord` of `git-ns/_shared/0.4`: [`right_record`], plus the record's
-/// `breakGlass` in full. Only for the task versions pinning `_shared/0.4`
-/// (grant 0.3, revoke 0.3, view 0.4, break-glass, ratify, the notice) — the
-/// older versions' records refuse the member.
+/// `RightRecord` of `git-ns/_shared/0.6`: [`right_record`], plus the record's
+/// `breakGlass` in full, its instant named `recordedAt` (`_shared/0.6`; `at`
+/// in 0.4 and 0.5).
 ///
 /// The justification goes wherever the record goes: every caller entitled to
 /// see a break-glass record is either an administrator of its namespace, an
@@ -113,7 +112,7 @@ pub fn right_record_full(row: &RightRow, resource: &Resource, with_reason: bool)
     if let Some(bg) = &row.break_glass {
         let mut b = json!({
             "by": bg.by,
-            "at": timestamp(bg.at),
+            "recordedAt": timestamp(bg.at),
             "justification": bg.justification,
         });
         if let Some(e) = bg.effective_at {

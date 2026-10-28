@@ -13,7 +13,7 @@
 //! projector sends each repository's complete `desiredRoles` again.
 
 use serde_json::json;
-use trust_tasks_rs::specs::git_ns::roles::reproject::v0_1 as reproject;
+use trust_tasks_rs::specs::git_ns::roles::reproject::v0_2 as reproject;
 
 use crate::server::AppState;
 

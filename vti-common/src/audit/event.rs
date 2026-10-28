@@ -821,7 +821,7 @@ pub enum AuditEvent {
     /// right and the reason is the granter's, not the community's.
     GitNsOperation(GitNsOperationData),
 
-    /// A **break-glass** on a git right (`git-ns/right/break-glass/0.1`): a
+    /// A **break-glass** on a git right (`git-ns/right/break-glass/0.2`): a
     /// member recorded an elevated right for themselves, bypassing separation
     /// of duties — or another administrator ratified or revoked such a record.
     ///
@@ -1507,7 +1507,7 @@ pub struct SingleAdminModeData {
     /// where another party's consent would otherwise be required;
     /// `selfGrantWaived` — a VTC recorded an elevated git right for the
     /// requester themselves (separation of duties, fixed rule 7 of
-    /// `git-ns/right/grant/0.3`) under the mode; `selfEditWaived` — a subject
+    /// `git-ns/right/grant/0.4`) under the mode; `selfEditWaived` — a subject
     /// with unrestricted act scope modified its own ACL entry under the mode
     /// (VTI-ACL-052 item 3); `reductionImmediate` — a VTC reduced another
     /// administrator now, or landed an open cooling-off now, under the mode
@@ -1515,7 +1515,7 @@ pub struct SingleAdminModeData {
     pub event: String,
     /// For `consentWaived`: the requirement whose consent was waived
     /// (`VTI-APV-018`, `VTI-APV-020`, `VTI-VTC-022`). For `selfGrantWaived`:
-    /// the rule waived (`git-ns/right/grant/0.3#rule-7`). For
+    /// the rule waived (`git-ns/right/grant/0.4#rule-7`). For
     /// `selfEditWaived`: `VTI-ACL-052`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub requirement: Option<String>,
@@ -1573,7 +1573,7 @@ pub struct GitNsBreakGlassData {
     /// The record's `breakGlass.at` — which break-glass this row is about.
     pub break_glass_at: DateTime<Utc>,
     /// The subject's justification, verbatim. Required by
-    /// `git-ns/right/break-glass/0.1` step 9 to be in the audit record.
+    /// `git-ns/right/break-glass/0.2` step 9 to be in the audit record.
     pub justification: String,
     /// The ratifier's statement or the revoker's reason, where given.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1595,7 +1595,7 @@ pub struct GitNsBreakGlassData {
     #[serde(default)]
     pub notified: u32,
     /// The administrators whose notice could not be queued
-    /// (`git-ns/right/break-glass-notice/0.1`, producer requirement 5). A
+    /// (`git-ns/right/break-glass-notice/0.2`, producer requirement 5). A
     /// break-glass nobody could be told about has `notified == 0`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub undeliverable: Vec<String>,
@@ -3279,8 +3279,8 @@ mod tests {
         assert_eq!(boot.severity(), AuditSeverity::Critical);
         let self_grant = AuditEvent::SingleAdminMode(SingleAdminModeData {
             event: "selfGrantWaived".into(),
-            requirement: Some("git-ns/right/grant/0.3#rule-7".into()),
-            task: Some("https://trusttasks.org/spec/git-ns/repo/adopt/0.1".into()),
+            requirement: Some("git-ns/right/grant/0.4#rule-7".into()),
+            task: Some("https://trusttasks.org/spec/git-ns/repo/adopt/0.3".into()),
             digest: Some("zQm".into()),
             kind: Some("repo.adopt".into()),
             right: Some("git.repo.own".into()),
@@ -4063,7 +4063,7 @@ mod tests {
             member: "did:webvh:x".into(),
             start_key_did: "did:key:z6Mk".into(),
             grant_id: Some("urn:uuid:g".into()),
-            task_type: "https://trusttasks.org/spec/git-ns/view/0.4".into(),
+            task_type: "https://trusttasks.org/spec/git-ns/view/0.6".into(),
             document_id: "urn:uuid:d".into(),
         });
         let v = wire_value(&e);

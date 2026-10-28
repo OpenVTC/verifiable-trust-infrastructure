@@ -637,15 +637,15 @@ export function guardFor(ns: GitNsNamespaceRow, repo: GitNsRepoRow): Guard {
 }
 
 /** The last verify-trust check the bridge saw. Carried as an object whose
- *  documented members are `{conclusion, at, sha?}`; anything else is ignored. */
+ *  documented members are `{conclusion, concludedAt, sha?}`; anything else is ignored. */
 export function lastCheckOf(
   repo: GitNsRepoRow,
-): { conclusion: string; at?: string; sha?: string } | null {
+): { conclusion: string; concludedAt?: string; sha?: string } | null {
   const c = repo.lastCheck as Record<string, unknown> | null | undefined;
   if (!c || typeof c.conclusion !== "string") return null;
   return {
     conclusion: c.conclusion,
-    at: typeof c.at === "string" ? c.at : undefined,
+    concludedAt: typeof c.concludedAt === "string" ? c.concludedAt : undefined,
     sha: typeof c.sha === "string" ? c.sha : undefined,
   };
 }
@@ -1104,7 +1104,7 @@ const ACTIVITY: Record<string, string> = {
 };
 
 /** A bridge job's kind in words, for the job list
- *  (`git-ns/bridge/job/list/0.2`): a `closePullRequest` job names the pull
+ *  (`git-ns/bridge/job/list/0.4`): a `closePullRequest` job names the pull
  *  request it closes. */
 export function jobKindLabel(job: { kind: string; number?: number }): string {
   switch (job.kind) {
@@ -1170,7 +1170,7 @@ export interface GitNsSelfGrantWaived {
   resource: string;
   /** When it was recorded. */
   at: string;
-  /** The task that recorded it (`git-ns/right/grant/0.3`, …). */
+  /** The task that recorded it (`git-ns/right/grant/0.4`, …). */
   task: string;
 }
 
@@ -1207,7 +1207,7 @@ export function waiverFor(
 export type BreakGlassState = "unratified" | "pending" | "ratified";
 
 /**
- * One break-glass record, as the console lists it: a `git-ns/view/0.5`
+ * One break-glass record, as the console lists it: a `git-ns/view/0.6`
  * record carrying `breakGlass`, with the namespace it is in and its state
  * now (`api.ts`, `breakGlassItems`). A console view model, not a wire shape.
  */
@@ -1268,7 +1268,7 @@ export function countsTowardInvariant(row: GitNsRightRow, now = Date.now()): boo
 export function awaitingItems(items: GitNsBreakGlassItem[]): GitNsBreakGlassItem[] {
   return items
     .filter((i) => awaitsDecision(i.state))
-    .sort((a, b) => a.breakGlass.at.localeCompare(b.breakGlass.at));
+    .sort((a, b) => a.breakGlass.recordedAt.localeCompare(b.breakGlass.recordedAt));
 }
 
 export type Standing = { may: true } | { may: false; why: string };

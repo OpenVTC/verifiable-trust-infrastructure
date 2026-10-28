@@ -2,26 +2,26 @@
 //! Trust Tasks — what the admin console's *Repos* plugin and `cnm git`'s
 //! listings render:
 //!
-//! - `git-ns/namespace/list/0.1` — the administered namespaces, with their
+//! - `git-ns/namespace/list/0.2` — the administered namespaces, with their
 //!   admins, bridge, role map and forge status ([`namespace_list`]);
-//! - `git-ns/repo/list/0.1` — the repositories in them, with owners, right
+//! - `git-ns/repo/list/0.2` — the repositories in them, with owners, right
 //!   counts, bootstrap, sync and the bridge's report ([`repo_list`]);
-//! - `git-ns/view/0.5` — `git-ns/view` with `scope: administrator` (every
+//! - `git-ns/view/0.6` — `git-ns/view` with `scope: administrator` (every
 //!   record and reason in the administered namespaces) and `breakGlass: true`
 //!   (only break-glass records) ([`view_v5`]);
-//! - `git-ns/right/list/0.1` — every right the VTC knows of, recorded and
+//! - `git-ns/right/list/0.3` — every right the VTC knows of, recorded and
 //!   role-derived, across every namespace ([`right_list`]);
-//! - `git-ns/right/issued-by-departed/0.1` — recorded rights whose granter has
+//! - `git-ns/right/issued-by-departed/0.3` — recorded rights whose granter has
 //!   since left, grouped by granter ([`right_issued_by_departed`]);
-//! - `git-ns/bridge/job/list/0.1` and `0.2` — bridge jobs in the namespaces the caller
+//! - `git-ns/bridge/job/list/0.4` — bridge jobs in the namespaces the caller
 //!   administers, with kind, queue state and last error
 //!   ([`bridge_job_list`]);
-//! - `git-ns/projection/show/0.1` — what is published to the Trust Registry,
+//! - `git-ns/projection/show/0.3` — what is published to the Trust Registry,
 //!   and how many records the next reconciliation pass will change
 //!   ([`projection_show`]);
-//! - `git-ns/account/list/0.1` — every member's linked forge account,
+//! - `git-ns/account/list/0.2` — every member's linked forge account,
 //!   community-wide ([`account_list`]);
-//! - `git-ns/activity/list/0.1` — rights changes, drift and bridge jobs in the
+//! - `git-ns/activity/list/0.3` — rights changes, drift and bridge jobs in the
 //!   namespaces the caller administers, newest first ([`activity_list`]).
 //!
 //! They replace the bearer-authenticated `GET /v1/git-ns/{namespaces,repos,
@@ -61,18 +61,19 @@
 //!
 //! # Generated types
 //!
-//! `view_v0_5`, `namespace_list_v0_1`, `repo_list_v0_1`, `right_list_v0_1`,
-//! `right_issued_by_departed_v0_1`, `bridge_job_list_v0_1`,
-//! `projection_show_v0_1`, `account_list_v0_1` and `activity_list_v0_1` are
-//! the generated `trust_tasks_rs::specs::git_ns::*` modules (trust-tasks-rs
-//! 0.23.4 for the first three, trustoverip/dtgwg-trust-tasks-tf#659; 0.24.7
-//! for the other six, trustoverip/dtgwg-trust-tasks-tf#686): their `Payload`s
+//! `view_wire`, `namespace_list`, `repo_list`, `right_list`,
+//! `right_issued_by_departed`, `bridge_job_list`, `projection_show`,
+//! `account_list` and `activity_list` are the generated
+//! `trust_tasks_rs::specs::git_ns::*` modules at each task's current version
+//! — the only one served, older ones being refused `unsupportedVersion`
+//! (first generated in trust-tasks-rs 0.23.4, trustoverip/dtgwg-trust-tasks-tf#659,
+//! and 0.24.7, trustoverip/dtgwg-trust-tasks-tf#686): their `Payload`s
 //! already declare the proof REQUIRED, so the dispatch spine refuses an
 //! unsigned document before a handler runs — no handler-level refusal is
 //! needed here. Each op still builds the console's own row types (registered
 //! as OpenAPI components below, for the admin-ui's generated wire types) and
 //! converts them into the generated `Response` through [`wire::into`], the
-//! same way `view_v5` already did for 0.4.
+//! same way `read_view` does.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -80,17 +81,15 @@ use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use serde::Serialize;
 use serde_json::{Value, json};
-pub(crate) use trust_tasks_rs::specs::git_ns::account::list::v0_1 as account_list_v0_1;
-pub(crate) use trust_tasks_rs::specs::git_ns::activity::list::v0_1 as activity_list_v0_1;
-pub(crate) use trust_tasks_rs::specs::git_ns::bridge::job::list::v0_1 as bridge_job_list_v0_1;
-pub(crate) use trust_tasks_rs::specs::git_ns::bridge::job::list::v0_2 as bridge_job_list_v0_2;
-pub(crate) use trust_tasks_rs::specs::git_ns::namespace::list::v0_1 as namespace_list_v0_1;
-pub(crate) use trust_tasks_rs::specs::git_ns::projection::show::v0_1 as projection_show_v0_1;
-pub(crate) use trust_tasks_rs::specs::git_ns::repo::list::v0_1 as repo_list_v0_1;
-pub(crate) use trust_tasks_rs::specs::git_ns::right::issued_by_departed::v0_1 as right_issued_by_departed_v0_1;
-pub(crate) use trust_tasks_rs::specs::git_ns::right::list::v0_1 as right_list_v0_1;
-use trust_tasks_rs::specs::git_ns::view::v0_4 as view4;
-pub(crate) use trust_tasks_rs::specs::git_ns::view::v0_5 as view_v0_5;
+pub(crate) use trust_tasks_rs::specs::git_ns::account::list::v0_2 as account_list;
+pub(crate) use trust_tasks_rs::specs::git_ns::activity::list::v0_3 as activity_list;
+pub(crate) use trust_tasks_rs::specs::git_ns::bridge::job::list::v0_4 as bridge_job_list;
+pub(crate) use trust_tasks_rs::specs::git_ns::namespace::list::v0_2 as namespace_list;
+pub(crate) use trust_tasks_rs::specs::git_ns::projection::show::v0_3 as projection_show;
+pub(crate) use trust_tasks_rs::specs::git_ns::repo::list::v0_2 as repo_list;
+pub(crate) use trust_tasks_rs::specs::git_ns::right::issued_by_departed::v0_3 as right_issued_by_departed;
+pub(crate) use trust_tasks_rs::specs::git_ns::right::list::v0_3 as right_list;
+pub(crate) use trust_tasks_rs::specs::git_ns::view::v0_6 as view_wire;
 
 use super::bridge::{self, BridgeJob};
 use super::model::{RepoState, Resource, Right, RightRow, Scope};
@@ -298,10 +297,12 @@ pub struct GitNsStepOutcome {
 
 /// The last verify-trust check run the bridge saw on a repository.
 #[derive(Debug, Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct GitNsLastCheck {
     /// In the forge's words (`success`, `failure`).
     pub conclusion: String,
-    pub at: String,
+    /// When the check run concluded (`git-ns/repo/list/0.2`; `at` in 0.1).
+    pub concluded_at: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sha: Option<String>,
 }
@@ -463,21 +464,21 @@ fn bounded_opt(s: Option<&String>, max: usize) -> Option<String> {
     s.map(|s| bounded(s, max)).filter(|s| !s.is_empty())
 }
 
-// ── git-ns/namespace/list/0.1 ───────────────────────────────────────────────
+// ── git-ns/namespace/list/0.2 ───────────────────────────────────────────────
 
-/// `git-ns/namespace/list/0.1`.
+/// `git-ns/namespace/list/0.2`.
 pub(crate) async fn namespace_list(
     state: &AppState,
     actor: &str,
-    p: namespace_list_v0_1::Payload,
-) -> OpResult<namespace_list_v0_1::Response> {
+    p: namespace_list::Payload,
+) -> OpResult<namespace_list::Response> {
     let snap = Snapshot::load(&state.git_ns).await?;
     let admin = administered(state, &snap, actor).await?;
     let named = p.namespace.map(String::from);
     let covered = covered(
         &admin,
         named.as_deref(),
-        namespace_list_v0_1::error_codes::NOT_ADMINISTRATOR.code,
+        namespace_list::error_codes::NOT_ADMINISTRATOR.code,
     )?;
     let t = now();
     let headless = lifecycle::headless(&snap);
@@ -551,21 +552,21 @@ pub(crate) async fn namespace_list(
     )?)
 }
 
-// ── git-ns/repo/list/0.1 ────────────────────────────────────────────────────
+// ── git-ns/repo/list/0.2 ────────────────────────────────────────────────────
 
-/// `git-ns/repo/list/0.1`.
+/// `git-ns/repo/list/0.2`.
 pub(crate) async fn repo_list(
     state: &AppState,
     actor: &str,
-    p: repo_list_v0_1::Payload,
-) -> OpResult<repo_list_v0_1::Response> {
+    p: repo_list::Payload,
+) -> OpResult<repo_list::Response> {
     let snap = Snapshot::load(&state.git_ns).await?;
     let admin = administered(state, &snap, actor).await?;
     let named = p.namespace.map(String::from);
     let covered = covered(
         &admin,
         named.as_deref(),
-        repo_list_v0_1::error_codes::NOT_ADMINISTRATOR.code,
+        repo_list::error_codes::NOT_ADMINISTRATOR.code,
     )?;
     // A community administrator's whole listing also carries the repositories
     // an unbound namespace left behind: nobody else administers those.
@@ -653,21 +654,25 @@ fn last_check(v: &Value) -> Option<GitNsLastCheck> {
     let s = |k: &str| v.get(k).and_then(Value::as_str).filter(|x| !x.is_empty());
     Some(GitNsLastCheck {
         conclusion: bounded(s("conclusion")?, 64),
-        at: s("at")?.to_string(),
+        // The bridge's report as the VTC stored it, which names it `at`.
+        concluded_at: s("at")?.to_string(),
         sha: s("sha").map(|x| bounded(x, 64)),
     })
 }
 
-// ── git-ns/view/0.5 ─────────────────────────────────────────────────────────
+// ── git-ns/view/0.6 ─────────────────────────────────────────────────────────
 
-/// `git-ns/view/0.5`: 0.4's member view, or with `scope: administrator`
-/// every record in the namespaces the caller administers; either narrowed to
-/// break-glass records with `breakGlass: true`.
-pub(crate) async fn view_v5(
+/// `git-ns/view/0.6`: the member's view, or with `scope: administrator` every
+/// record in the namespaces the caller administers; either narrowed to
+/// break-glass records with `breakGlass: true`. `delegated` is a member-portal
+/// sign-in key reading as `actor` ([`super::tasks::handle_view`]), which gets
+/// the member's view alone.
+pub(crate) async fn read_view(
     state: &AppState,
     actor: &str,
-    p: view_v0_5::Payload,
-) -> OpResult<view4::Response> {
+    delegated: bool,
+    p: view_wire::Payload,
+) -> OpResult<view_wire::Response> {
     let standing = ops::standing(state, actor).await?;
     if !standing.member {
         return Err(OpError::PermissionDenied(
@@ -680,8 +685,15 @@ pub(crate) async fn view_v5(
     };
     let snap = Snapshot::load(&state.git_ns).await?;
     let member = crate::members::get_member(&state.members_ks, actor).await?;
-    let mut v = match p.scope.unwrap_or(view_v0_5::PayloadScope::Member) {
-        view_v0_5::PayloadScope::Administrator => {
+    let mut v = match p.scope.unwrap_or(view_wire::PayloadScope::Member) {
+        view_wire::PayloadScope::Administrator if delegated => {
+            return Err(OpError::PermissionDenied(
+                "a member-portal sign-in key reads the member's view only; scope: administrator \
+                 is the console's, signed by the administrator"
+                    .into(),
+            ));
+        }
+        view_wire::PayloadScope::Administrator => {
             let admin = administered(state, &snap, actor).await?;
             let within = if admin.community_admin {
                 None
@@ -697,22 +709,25 @@ pub(crate) async fn view_v5(
                     .any(|n| admin.namespaces.contains(&n.id) && related(&n.resource()));
                 if !any {
                     return Err(declared(
-                        view_v0_5::error_codes::NOT_ADMINISTRATOR.code,
+                        view_wire::error_codes::NOT_ADMINISTRATOR.code,
                         "scope: administrator answers for the namespaces you administer, and you \
                          administer none within this resource",
                     ));
                 }
                 Some(admin.namespaces)
             };
-            view::administrator_v5(&snap, within.as_ref(), filter.as_ref(), member.as_ref())
+            view::administrator(&snap, within.as_ref(), filter.as_ref(), member.as_ref())
         }
         // `member` (the schema's default), and any future variant this build
         // does not know: the narrowest reading, never administrator scope by
         // default.
-        _ => view::member_v4(
+        _ => view::member(
             &snap,
             actor,
-            standing.community_admin,
+            // The portal is the member's surface: what a community
+            // administrator sees beyond that is the console's (grant 0.2
+            // consumer item 5).
+            standing.community_admin && !delegated,
             filter.as_ref(),
             member.as_ref(),
         ),
@@ -723,7 +738,7 @@ pub(crate) async fn view_v5(
     Ok(wire::into(v)?)
 }
 
-// ── git-ns/right/list/0.1 and git-ns/right/issued-by-departed/0.1 ──────────
+// ── git-ns/right/list/0.3 and git-ns/right/issued-by-departed/0.3 ──────────
 
 /// One git right, recorded or role-derived — `AdminRightRow` of the shared
 /// schema. Both tasks below produce it; only `git-ns/right/list` fills
@@ -752,17 +767,19 @@ pub struct GitNsRightRow {
     /// Whether the granter has since left the community.
     pub granter_departed: bool,
     /// Present exactly when the subject gave themselves this right through
-    /// `git-ns/right/break-glass/0.1`. Unratified while `ratifiedBy` is absent.
+    /// `git-ns/right/break-glass/0.2`. Unratified while `ratifiedBy` is absent.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub break_glass: Option<GitNsBreakGlassMark>,
 }
 
-/// A record's `breakGlass` (`git-ns/_shared/0.5` `BreakGlass`).
+/// A record's `breakGlass` (`git-ns/_shared/0.6` `BreakGlass`).
 #[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct GitNsBreakGlassMark {
     pub by: String,
-    pub at: String,
+    /// When the VTC recorded the break-glass (`git-ns/_shared/0.6`; `at`
+    /// before it).
+    pub recorded_at: String,
     pub justification: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub effective_at: Option<String>,
@@ -776,7 +793,7 @@ impl From<&crate::git_ns::model::BreakGlassMark> for GitNsBreakGlassMark {
     fn from(b: &crate::git_ns::model::BreakGlassMark) -> Self {
         Self {
             by: b.by.clone(),
-            at: wire::timestamp(b.at),
+            recorded_at: wire::timestamp(b.at),
             justification: b.justification.clone(),
             effective_at: b.effective_at.map(wire::timestamp),
             ratified_by: b.ratified_by.clone(),
@@ -853,16 +870,16 @@ async fn right_row(
     })
 }
 
-/// `git-ns/right/list/0.1`.
+/// `git-ns/right/list/0.3`.
 pub(crate) async fn right_list(
     state: &AppState,
     actor: &str,
-    p: right_list_v0_1::Payload,
-) -> OpResult<right_list_v0_1::Response> {
+    p: right_list::Payload,
+) -> OpResult<right_list::Response> {
     let caller = ops::standing(state, actor).await?;
     if !caller.community_admin {
         return Err(declared(
-            right_list_v0_1::error_codes::NOT_COMMUNITY_ADMINISTRATOR.code,
+            right_list::error_codes::NOT_COMMUNITY_ADMINISTRATOR.code,
             "this lists every right the VTC knows of, across every namespace: it needs the \
              community-administrator capability, not git.ns.admin on a namespace",
         ));
@@ -941,16 +958,16 @@ pub(crate) async fn right_list(
     )?)
 }
 
-/// `git-ns/right/issued-by-departed/0.1`.
+/// `git-ns/right/issued-by-departed/0.3`.
 pub(crate) async fn right_issued_by_departed(
     state: &AppState,
     actor: &str,
-    p: right_issued_by_departed_v0_1::Payload,
-) -> OpResult<right_issued_by_departed_v0_1::Response> {
+    p: right_issued_by_departed::Payload,
+) -> OpResult<right_issued_by_departed::Response> {
     let caller = ops::standing(state, actor).await?;
     if !caller.community_admin {
         return Err(declared(
-            right_issued_by_departed_v0_1::error_codes::NOT_COMMUNITY_ADMINISTRATOR.code,
+            right_issued_by_departed::error_codes::NOT_COMMUNITY_ADMINISTRATOR.code,
             "a departed granter's surviving rights are not scoped to any namespace a caller \
              might administer: this needs the community-administrator capability",
         ));
@@ -982,7 +999,7 @@ pub(crate) async fn right_issued_by_departed(
     )?)
 }
 
-// ── git-ns/bridge/job/list/0.1 ──────────────────────────────────────────────
+// ── git-ns/bridge/job/list/0.4 ──────────────────────────────────────────────
 
 /// One bridge job, as the administrator's console shows it.
 #[derive(Debug, Serialize, utoipa::ToSchema)]
@@ -992,7 +1009,7 @@ pub struct GitNsJobRow {
     pub namespace: String,
     pub bridge_did: String,
     /// `projectRoles` | `createRepo` | `bootstrap` | `archive` | `inspect` |
-    /// `beginBind` | `beginAccountLink` | `closePullRequest` (0.2 only).
+    /// `beginBind` | `beginAccountLink` | `closePullRequest`.
     pub kind: String,
     /// `pending` | `accepted` | `succeeded` | `partial` | `failed` |
     /// `cancelled`.
@@ -1048,29 +1065,26 @@ fn job_row(j: &BridgeJob) -> GitNsJobRow {
     }
 }
 
-/// The administrator's job list, as `git-ns/bridge/job/list` 0.1 and 0.2
-/// both answer it. `with_pull_requests` is 0.2: 0.1's `JobKind` is job 0.4's
-/// seven kinds, so a 0.1 answer MUST leave `closePullRequest` jobs out
-/// (`git-ns/bridge/job/list/0.2`, *Which version a VTC answers*) — before
-/// paging, so `limit` and `nextCursor` still apply to the jobs it returns.
-async fn job_list(
+/// The administrator's job list (`git-ns/bridge/job/list/0.4`): every job,
+/// `closePullRequest` with its pull request's `number`.
+pub(crate) async fn bridge_job_list(
     state: &AppState,
     actor: &str,
-    namespace: Option<String>,
-    state_filter: Option<String>,
-    cursor: Option<&str>,
-    limit: Option<std::num::NonZeroU64>,
-    not_administrator: &'static str,
-    with_pull_requests: bool,
-) -> OpResult<GitNsJobList> {
+    p: bridge_job_list::Payload,
+) -> OpResult<bridge_job_list::Response> {
+    let namespace = p.namespace.as_ref().map(|n| n.to_string());
+    let state_filter = p.state.as_ref().map(|s| s.to_string());
     let snap = Snapshot::load(&state.git_ns).await?;
     let admin = administered(state, &snap, actor).await?;
-    let covered = covered(&admin, namespace.as_deref(), not_administrator)?;
+    let covered = covered(
+        &admin,
+        namespace.as_deref(),
+        bridge_job_list::error_codes::NOT_ADMINISTRATOR.code,
+    )?;
     let mut jobs: Vec<BridgeJob> = bridge::list_jobs(&state.git_ns.jobs_ks)
         .await?
         .into_iter()
         .filter(|j| covered.contains(&j.namespace_id))
-        .filter(|j| with_pull_requests || j.kind != bridge::JobKind::ClosePullRequest)
         .filter(|j| {
             state_filter
                 .as_deref()
@@ -1080,59 +1094,17 @@ async fn job_list(
     jobs.sort_by_key(|j| std::cmp::Reverse(j.created_at));
     let rows: Vec<GitNsJobRow> = jobs.iter().map(job_row).collect();
     let filters = json!({ "namespace": namespace, "state": state_filter });
-    let (page, next_cursor) = page_of(rows, &filters, cursor, limit)?;
-    Ok(GitNsJobList {
+    let (page, next_cursor) = page_of(rows, &filters, p.cursor.as_deref(), p.limit)?;
+    let list = GitNsJobList {
         jobs: page,
         next_cursor,
-    })
-}
-
-/// `git-ns/bridge/job/list/0.1` — every job but `closePullRequest`.
-pub(crate) async fn bridge_job_list(
-    state: &AppState,
-    actor: &str,
-    p: bridge_job_list_v0_1::Payload,
-) -> OpResult<bridge_job_list_v0_1::Response> {
-    let list = job_list(
-        state,
-        actor,
-        p.namespace.as_ref().map(|n| n.to_string()),
-        p.state.as_ref().map(|s| s.to_string()),
-        p.cursor.as_deref(),
-        p.limit,
-        bridge_job_list_v0_1::error_codes::NOT_ADMINISTRATOR.code,
-        false,
-    )
-    .await?;
+    };
     Ok(wire::into(
         serde_json::to_value(&list).map_err(vti_common::error::AppError::from)?,
     )?)
 }
 
-/// `git-ns/bridge/job/list/0.2` — every job, `closePullRequest` with its
-/// pull request's `number`.
-pub(crate) async fn bridge_job_list_v2(
-    state: &AppState,
-    actor: &str,
-    p: bridge_job_list_v0_2::Payload,
-) -> OpResult<bridge_job_list_v0_2::Response> {
-    let list = job_list(
-        state,
-        actor,
-        p.namespace.as_ref().map(|n| n.to_string()),
-        p.state.as_ref().map(|s| s.to_string()),
-        p.cursor.as_deref(),
-        p.limit,
-        bridge_job_list_v0_2::error_codes::NOT_ADMINISTRATOR.code,
-        true,
-    )
-    .await?;
-    Ok(wire::into(
-        serde_json::to_value(&list).map_err(vti_common::error::AppError::from)?,
-    )?)
-}
-
-// ── git-ns/projection/show/0.1 ──────────────────────────────────────────────
+// ── git-ns/projection/show/0.3 ──────────────────────────────────────────────
 
 /// One record published to the Trust Registry.
 #[derive(Debug, Serialize, utoipa::ToSchema)]
@@ -1167,12 +1139,12 @@ pub struct GitNsProjection {
 pub(crate) async fn projection_show(
     state: &AppState,
     actor: &str,
-    p: projection_show_v0_1::Payload,
-) -> OpResult<projection_show_v0_1::Response> {
+    p: projection_show::Payload,
+) -> OpResult<projection_show::Response> {
     let caller = ops::standing(state, actor).await?;
     if !caller.community_admin {
         return Err(declared(
-            projection_show_v0_1::error_codes::NOT_COMMUNITY_ADMINISTRATOR.code,
+            projection_show::error_codes::NOT_COMMUNITY_ADMINISTRATOR.code,
             "publishing configuration and the projection mirror are community-wide facts: this \
              needs the community-administrator capability",
         ));
@@ -1222,7 +1194,7 @@ pub(crate) async fn projection_show(
     )?)
 }
 
-// ── git-ns/account/list/0.1 ──────────────────────────────────────────────────
+// ── git-ns/account/list/0.2 ──────────────────────────────────────────────────
 
 /// One member's account on one forge, as linked through `git-ns/account/link`.
 #[derive(Debug, Serialize, utoipa::ToSchema)]
@@ -1261,12 +1233,12 @@ pub struct GitNsAccountList {
 pub(crate) async fn account_list(
     state: &AppState,
     actor: &str,
-    p: account_list_v0_1::Payload,
-) -> OpResult<account_list_v0_1::Response> {
+    p: account_list::Payload,
+) -> OpResult<account_list::Response> {
     let caller = ops::standing(state, actor).await?;
     if !caller.community_admin {
         return Err(declared(
-            account_list_v0_1::error_codes::NOT_COMMUNITY_ADMINISTRATOR.code,
+            account_list::error_codes::NOT_COMMUNITY_ADMINISTRATOR.code,
             "a linked account is not scoped to any namespace: this community-wide roster needs \
              the community-administrator capability",
         ));
@@ -1322,13 +1294,14 @@ pub(crate) async fn account_list(
     )?)
 }
 
-// ── git-ns/activity/list/0.1 ────────────────────────────────────────────────
+// ── git-ns/activity/list/0.3 ────────────────────────────────────────────────
 
 /// One thing that happened in a namespace.
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct GitNsActivityItem {
-    pub at: String,
+    /// When it happened (`git-ns/activity/list/0.3`; `at` before it).
+    pub occurred_at: String,
     /// `gitNs.right.granted`, `gitNs.repo.renamed`, `gitNs.drift.reported`,
     /// `gitNs.job.createRepo`, …
     pub action: String,
@@ -1364,15 +1337,15 @@ pub struct GitNsActivity {
 pub(crate) async fn activity_list(
     state: &AppState,
     actor: &str,
-    p: activity_list_v0_1::Payload,
-) -> OpResult<activity_list_v0_1::Response> {
+    p: activity_list::Payload,
+) -> OpResult<activity_list::Response> {
     let snap = Snapshot::load(&state.git_ns).await?;
     let admin = administered(state, &snap, actor).await?;
     let named = p.namespace.as_ref().map(|n| n.to_string());
     let covered = covered(
         &admin,
         named.as_deref(),
-        activity_list_v0_1::error_codes::NOT_ADMINISTRATOR.code,
+        activity_list::error_codes::NOT_ADMINISTRATOR.code,
     )?;
     let mut items: Vec<(chrono::DateTime<chrono::Utc>, GitNsActivityItem)> = Vec::new();
     for (_, v) in state.audit_ks.prefix_iter_raw(Vec::new()).await? {
@@ -1395,7 +1368,7 @@ pub(crate) async fn activity_list(
         items.push((
             env.timestamp,
             GitNsActivityItem {
-                at: wire::timestamp(env.timestamp),
+                occurred_at: wire::timestamp(env.timestamp),
                 action: d.action,
                 source: "audit".into(),
                 namespace: d.namespace,
@@ -1416,7 +1389,7 @@ pub(crate) async fn activity_list(
         items.push((
             at,
             GitNsActivityItem {
-                at: wire::timestamp(at),
+                occurred_at: wire::timestamp(at),
                 action: format!("gitNs.job.{}", job.kind.as_str()),
                 source: "job".into(),
                 namespace: Some(job.namespace_id.clone()),

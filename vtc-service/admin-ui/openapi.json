@@ -1795,7 +1795,7 @@
         "type": "object",
         "description": "One thing that happened in a namespace.",
         "required": [
-          "at",
+          "occurredAt",
           "action",
           "source"
         ],
@@ -1811,9 +1811,6 @@
             ],
             "description": "Who acted. Absent when an erasure has removed it from the audit row."
           },
-          "at": {
-            "type": "string"
-          },
           "detail": {
             "type": [
               "string",
@@ -1826,6 +1823,10 @@
               "string",
               "null"
             ]
+          },
+          "occurredAt": {
+            "type": "string",
+            "description": "When it happened (`git-ns/activity/list/0.3`; `at` before it)."
           },
           "resource": {
             "type": [
@@ -1878,16 +1879,13 @@
       },
       "GitNsBreakGlassMark": {
         "type": "object",
-        "description": "A record's `breakGlass` (`git-ns/_shared/0.5` `BreakGlass`).",
+        "description": "A record's `breakGlass` (`git-ns/_shared/0.6` `BreakGlass`).",
         "required": [
           "by",
-          "at",
+          "recordedAt",
           "justification"
         ],
         "properties": {
-          "at": {
-            "type": "string"
-          },
           "by": {
             "type": "string"
           },
@@ -1911,6 +1909,10 @@
               "string",
               "null"
             ]
+          },
+          "recordedAt": {
+            "type": "string",
+            "description": "When the VTC recorded the break-glass (`git-ns/_shared/0.6`; `at`\nbefore it)."
           }
         }
       },
@@ -2110,7 +2112,7 @@
           },
           "kind": {
             "type": "string",
-            "description": "`projectRoles` | `createRepo` | `bootstrap` | `archive` | `inspect` |\n`beginBind` | `beginAccountLink` | `closePullRequest` (0.2 only)."
+            "description": "`projectRoles` | `createRepo` | `bootstrap` | `archive` | `inspect` |\n`beginBind` | `beginAccountLink` | `closePullRequest`."
           },
           "lastError": {
             "type": [
@@ -2147,11 +2149,12 @@
         "description": "The last verify-trust check run the bridge saw on a repository.",
         "required": [
           "conclusion",
-          "at"
+          "concludedAt"
         ],
         "properties": {
-          "at": {
-            "type": "string"
+          "concludedAt": {
+            "type": "string",
+            "description": "When the check run concluded (`git-ns/repo/list/0.2`; `at` in 0.1)."
           },
           "conclusion": {
             "type": "string",
@@ -2564,7 +2567,7 @@
             "oneOf": [
               {
                 "$ref": "#/components/schemas/GitNsBreakGlassMark",
-                "description": "Present exactly when the subject gave themselves this right through\n`git-ns/right/break-glass/0.1`. Unratified while `ratifiedBy` is absent."
+                "description": "Present exactly when the subject gave themselves this right through\n`git-ns/right/break-glass/0.2`. Unratified while `ratifiedBy` is absent."
               },
               {
                 "type": "null"
@@ -2661,7 +2664,7 @@
           }
         }
       },
-      "GitNsViewV0_1Bootstrap": {
+      "GitNsViewV0_6Bootstrap": {
         "type": "object",
         "description": "Whether each step that turns commit trust on for a repository is in place, as last reported. A step that this forge's plan does not need reads `true`.",
         "required": [
@@ -2690,13 +2693,53 @@
         },
         "additionalProperties": false
       },
-      "GitNsViewV0_1Did": {
-        "type": "string",
-        "description": "A DID, compared by exact string equality.",
-        "maxLength": 2048,
-        "pattern": "^did:[a-z0-9]+:\\S+$"
+      "GitNsViewV0_6BreakGlass": {
+        "type": "object",
+        "description": "How a self-granted right came to be, and whether another administrator has since ratified it. A record whose `breakGlass` has no `ratifiedBy` is **unratified**: it is live and published like any other right, it does not count toward the last-owner or last-admin invariants, and any community administrator or namespace admin of its namespace may revoke it. Ratification (git-ns/right/ratify) sets `ratifiedBy` and `ratifiedAt`; from then on the record is an ordinary grant, and `breakGlass` stays as its history. Never published to the Trust Registry.",
+        "required": [
+          "by",
+          "recordedAt",
+          "justification"
+        ],
+        "properties": {
+          "by": {
+            "$ref": "#/components/schemas/GitNsViewV0_6Did"
+          },
+          "effectiveAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the right takes effect, where the community's policy imposed a delay. Absent: it took effect at `recordedAt`. Until this instant the record confers nothing and is not published, and any administrator who may revoke it may do so."
+          },
+          "justification": {
+            "type": "string",
+            "description": "The actor's statement of why nobody else could grant this right. Shown to every community administrator, every namespace admin of the namespace and every owner of the resource; kept in the audit record; never published.",
+            "maxLength": 2048,
+            "minLength": 1,
+            "pattern": "\\S"
+          },
+          "ratifiedAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When it was ratified. Present exactly when `ratifiedBy` is."
+          },
+          "ratifiedBy": {
+            "$ref": "#/components/schemas/GitNsViewV0_6Did"
+          },
+          "recordedAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the VTC recorded the break-glass."
+          }
+        },
+        "additionalProperties": false
       },
-      "GitNsViewV0_1DriftItem": {
+      "GitNsViewV0_6Did": {
+        "type": "string",
+        "description": "A bare DID in the W3C DID Core syntax (§3.1): `did:`, a method name of lowercase letters and digits, `:`, and a method-specific id of colon-separated segments drawn from `A-Z a-z 0-9 . - _` and percent-encoded octets, the last segment non-empty. A DID URL is not a DID: no path, query or fragment (`/`, `?`, `#`), so a verification-method id such as `did:key:z6Mk…#z6Mk…` is refused. Compared by exact string equality — no case folding or percent-decoding. A consumer MUST still treat the value as data: the pattern keeps shell metacharacters, whitespace and quotes out of the wire form, but it does not make a DID safe to splice into a command or markup.",
+        "maxLength": 2048,
+        "pattern": "^did:[a-z0-9]+:(?:(?:[A-Za-z0-9._-]|%[0-9A-Fa-f]{2})*:)*(?:[A-Za-z0-9._-]|%[0-9A-Fa-f]{2})+$"
+      },
+      "GitNsViewV0_6DriftItem": {
         "type": "object",
         "description": "One difference between the forge's observed state and the VTC's projection of a repository.",
         "required": [
@@ -2705,7 +2748,7 @@
         ],
         "properties": {
           "account": {
-            "$ref": "#/components/schemas/GitNsViewV0_1ForgeAccount"
+            "$ref": "#/components/schemas/GitNsViewV0_6ForgeAccount"
           },
           "expected": {
             "type": "string",
@@ -2718,7 +2761,7 @@
             "maxLength": 256
           },
           "resource": {
-            "$ref": "#/components/schemas/GitNsViewV0_1RepoResource"
+            "$ref": "#/components/schemas/GitNsViewV0_6RepoResource"
           },
           "type": {
             "type": "string",
@@ -2735,13 +2778,13 @@
         },
         "additionalProperties": false
       },
-      "GitNsViewV0_1Ext": {
+      "GitNsViewV0_6Ext": {
         "type": "object",
         "description": "Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework.",
         "additionalProperties": true,
         "minProperties": 1
       },
-      "GitNsViewV0_1ForgeAccount": {
+      "GitNsViewV0_6ForgeAccount": {
         "type": "object",
         "description": "A person's account on one forge. `id` is authoritative; `login` is for display only, because logins can be renamed and re-registered.",
         "required": [
@@ -2751,10 +2794,10 @@
         ],
         "properties": {
           "forge": {
-            "$ref": "#/components/schemas/GitNsViewV0_1ForgeHost"
+            "$ref": "#/components/schemas/GitNsViewV0_6ForgeHost"
           },
           "id": {
-            "$ref": "#/components/schemas/GitNsViewV0_1ForgeId"
+            "$ref": "#/components/schemas/GitNsViewV0_6ForgeId"
           },
           "login": {
             "type": "string",
@@ -2765,20 +2808,20 @@
         },
         "additionalProperties": false
       },
-      "GitNsViewV0_1ForgeHost": {
+      "GitNsViewV0_6ForgeHost": {
         "type": "string",
-        "description": "The lowercased DNS host of a forge: `github.com`, a GitHub Enterprise Server host, `codeberg.org`, or a self-hosted Forgejo instance such as `git.example.org`. No scheme, no port, no path. The host is a segment of every resource, so a right never crosses forges.",
+        "description": "The lowercased DNS host of a forge: `github.com`, a GitHub Enterprise Server host, `codeberg.org`, `gitlab.com`, or a self-hosted Forgejo or GitLab instance such as `git.example.org`. No scheme, no port, no path. The host is a segment of every resource, so a right never crosses forges.",
         "maxLength": 253,
         "minLength": 3,
         "pattern": "^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$"
       },
-      "GitNsViewV0_1ForgeId": {
+      "GitNsViewV0_6ForgeId": {
         "type": "string",
-        "description": "An identifier the forge itself assigns — a repository id, a user or organisation id — carried as a string so a forge whose ids are not numbers needs no new version. GitHub and Forgejo ids are decimal integers written as strings (`\"812736451\"`). Unlike a name, it survives renames and transfers, which is why rights and bindings are keyed by it.",
+        "description": "An identifier the forge itself assigns — a repository id, a user or organisation id — carried as a string so a forge whose ids are not numbers needs no new version. GitHub, Forgejo and GitLab ids are decimal integers written as strings (`\"812736451\"`). Unlike a name, it survives renames and transfers, which is why rights and bindings are keyed by it.",
         "maxLength": 64,
         "minLength": 1
       },
-      "GitNsViewV0_1GitNamespace": {
+      "GitNsViewV0_6GitNamespace": {
         "type": "object",
         "description": "The VTC's binding to one owner on one forge.",
         "required": [
@@ -2790,14 +2833,14 @@
         ],
         "properties": {
           "forge": {
-            "$ref": "#/components/schemas/GitNsViewV0_1ForgeHost"
+            "$ref": "#/components/schemas/GitNsViewV0_6ForgeHost"
           },
           "id": {
-            "$ref": "#/components/schemas/GitNsViewV0_1NamespaceId"
+            "$ref": "#/components/schemas/GitNsViewV0_6NamespaceId"
           },
           "kind": {
             "type": "string",
-            "description": "Whether the owner is an organisation or a personal account, as the forge reports it. Present once known: a bridge-mode namespace learns it when binding completes, and a manual-mode namespace MAY never learn it.",
+            "description": "Whether the owner is an organisation or a personal account, as the forge reports it; a GitLab top-level group is an `organization`. Present once known: a bridge-mode namespace learns it when binding completes, and a manual-mode namespace MAY never learn it.",
             "enum": [
               "organization",
               "user"
@@ -2812,7 +2855,7 @@
             ]
           },
           "owner": {
-            "$ref": "#/components/schemas/GitNsViewV0_1Segment"
+            "$ref": "#/components/schemas/GitNsViewV0_6Segment"
           },
           "state": {
             "type": "string",
@@ -2825,19 +2868,38 @@
         },
         "additionalProperties": false
       },
-      "GitNsViewV0_1NamespaceId": {
+      "GitNsViewV0_6LinkedAccount": {
+        "type": "object",
+        "description": "A forge account linked to the caller's DID with git-ns/account/link, and when the link completed.",
+        "required": [
+          "account",
+          "linkedAt"
+        ],
+        "properties": {
+          "account": {
+            "$ref": "#/components/schemas/GitNsViewV0_6ForgeAccount"
+          },
+          "linkedAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the link completed: when the VTC recorded the account against the caller's DID."
+          }
+        },
+        "additionalProperties": false
+      },
+      "GitNsViewV0_6NamespaceId": {
         "type": "string",
         "description": "The VTC's opaque identifier for a namespace, assigned when it is bound. Stable for the life of the binding; never reused for another binding.",
         "maxLength": 128,
         "minLength": 1
       },
-      "GitNsViewV0_1RepoResource": {
+      "GitNsViewV0_6RepoResource": {
         "type": "string",
-        "description": "A forge-qualified resource naming exactly one repository: `<forge-host>/<owner>/<repo>`, lowercase.",
-        "maxLength": 455,
-        "pattern": "^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+/[a-z0-9_-][a-z0-9._-]{0,99}/[a-z0-9_-][a-z0-9._-]{0,99}$"
+        "description": "A forge-qualified resource naming exactly one repository: `<forge-host>/<owner>/<repo-path>`, lowercase, where the repository path has 1 to 21 segments (see `Resource`).",
+        "maxLength": 5885,
+        "pattern": "^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+/[a-z0-9_-][a-z0-9._-]{0,254}(?:/[a-z0-9_-][a-z0-9._-]{0,254}){1,21}$"
       },
-      "GitNsViewV0_1RepoSummary": {
+      "GitNsViewV0_6RepoSummary": {
         "type": "object",
         "description": "One repository as the VTC records it.",
         "required": [
@@ -2850,21 +2912,21 @@
         ],
         "properties": {
           "bootstrap": {
-            "$ref": "#/components/schemas/GitNsViewV0_1Bootstrap"
+            "$ref": "#/components/schemas/GitNsViewV0_6Bootstrap"
           },
           "forgeId": {
-            "$ref": "#/components/schemas/GitNsViewV0_1ForgeId"
+            "$ref": "#/components/schemas/GitNsViewV0_6ForgeId"
           },
           "owners": {
             "type": "array",
             "items": {
-              "$ref": "#/components/schemas/GitNsViewV0_1Did"
+              "$ref": "#/components/schemas/GitNsViewV0_6Did"
             },
             "description": "The DIDs holding `git.repo.own` on this repository by an explicit grant. Empty only for an `unmanaged` repository, and for an `orphaned` one whose ownership rests with the namespace admins by implication.",
             "uniqueItems": true
           },
           "resource": {
-            "$ref": "#/components/schemas/GitNsViewV0_1RepoResource"
+            "$ref": "#/components/schemas/GitNsViewV0_6RepoResource"
           },
           "state": {
             "type": "string",
@@ -2879,15 +2941,15 @@
             ]
           },
           "sync": {
-            "$ref": "#/components/schemas/GitNsViewV0_1Sync"
+            "$ref": "#/components/schemas/GitNsViewV0_6Sync"
           },
           "visibility": {
-            "$ref": "#/components/schemas/GitNsViewV0_1RepoVisibility"
+            "$ref": "#/components/schemas/GitNsViewV0_6RepoVisibility"
           }
         },
         "additionalProperties": false
       },
-      "GitNsViewV0_1RepoVisibility": {
+      "GitNsViewV0_6RepoVisibility": {
         "type": "string",
         "description": "Repository visibility on the forge.",
         "enum": [
@@ -2895,49 +2957,57 @@
           "private"
         ]
       },
-      "GitNsViewV0_1Resource": {
+      "GitNsViewV0_6Resource": {
         "type": "string",
-        "description": "A forge-qualified resource: `<forge-host>/<owner>` for a namespace, or `<forge-host>/<owner>/<repo>` for one repository, all lowercase — `github.com/acme`, `github.com/acme/widgets`, `codeberg.org/acme`. The forge is never implied: `acme/widgets` alone is not a resource. Containment is by whole segment: `github.com/acme` contains `github.com/acme/widgets` and does not contain `github.com/acme-labs/x` or `codeberg.org/acme/widgets`.",
-        "maxLength": 455,
-        "pattern": "^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+(?:/[a-z0-9_-][a-z0-9._-]{0,99}){1,2}$"
+        "description": "A forge-qualified resource, all lowercase: `<forge-host>/<owner>` for a namespace, or `<forge-host>/<owner>/<repo-path>` for one repository — `github.com/acme`, `github.com/acme/widgets`, `codeberg.org/acme`. On a forge with nested groups (GitLab) the repository path holds the subgroups between the top-level owner and the project: `gitlab.com/acme/platform/tools/cli` is one repository of the namespace `gitlab.com/acme`, and a subgroup such as `gitlab.com/acme/platform` is not a resource. A repository path has 1 to 21 segments (GitLab: 20 levels of subgroup and the project); GitHub and Forgejo repository paths are always one. The forge is never implied: `acme/widgets` alone is not a resource. Containment is by whole segment: `github.com/acme` contains `github.com/acme/widgets` and does not contain `github.com/acme-labs/x` or `codeberg.org/acme/widgets`.",
+        "maxLength": 5885,
+        "pattern": "^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+/[a-z0-9_-][a-z0-9._-]{0,254}(?:/[a-z0-9_-][a-z0-9._-]{0,254}){0,21}$"
       },
-      "GitNsViewV0_1Response": {
+      "GitNsViewV0_6Response": {
         "type": "object",
-        "description": "What the caller may see.",
+        "description": "What the caller may see — or, with `scope: administrator`, everything in the namespaces they administer — and the caller's own linked forge accounts.",
         "required": [
           "namespaces",
           "repos",
-          "rights"
+          "rights",
+          "accounts"
         ],
         "properties": {
+          "accounts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/GitNsViewV0_6LinkedAccount"
+            },
+            "description": "The forge accounts linked to the caller's own DID — never another member's — at most one per forge. With `resource`, only the account on that resource's forge. Empty when the caller has linked none."
+          },
           "ext": {
-            "$ref": "#/components/schemas/GitNsViewV0_1Ext"
+            "$ref": "#/components/schemas/GitNsViewV0_6Ext"
           },
           "namespaces": {
             "type": "array",
             "items": {
-              "$ref": "#/components/schemas/GitNsViewV0_1GitNamespace"
+              "$ref": "#/components/schemas/GitNsViewV0_6GitNamespace"
             },
-            "description": "Namespaces bound to this VTC that contain, or are contained by, `resource`."
+            "description": "Namespaces bound to this VTC that contain, or are contained by, `resource`. With `scope: administrator`, only those the caller administers. With `breakGlass: true`, only those containing a returned record."
           },
           "repos": {
             "type": "array",
             "items": {
-              "$ref": "#/components/schemas/GitNsViewV0_1RepoSummary"
+              "$ref": "#/components/schemas/GitNsViewV0_6RepoSummary"
             },
-            "description": "Repositories within `resource`. `unmanaged` repositories are included only for callers holding `git.ns.admin` over them."
+            "description": "Repositories within `resource`. `unmanaged` repositories are included only for callers holding `git.ns.admin` over them, or with `scope: administrator`. With `breakGlass: true`, only those carrying a returned record."
           },
           "rights": {
             "type": "array",
             "items": {
-              "$ref": "#/components/schemas/GitNsViewV0_1RightRecord"
+              "$ref": "#/components/schemas/GitNsViewV0_6RightRecord"
             },
-            "description": "Rights within `resource` the caller may see: always the caller's own; every right on a resource the caller owns or administers. `reason` is omitted except on resources the caller owns or administers."
+            "description": "Rights within `resource` the caller may see: always the caller's own; every right on a resource the caller owns or administers; every unratified break-glass record in a namespace they administer or on a resource they own. With `scope: administrator`, every recorded right in the namespaces the caller administers. `reason` is omitted except on resources the caller owns or administers. With `breakGlass: true`, only records carrying `breakGlass`."
           }
         },
         "additionalProperties": false
       },
-      "GitNsViewV0_1Right": {
+      "GitNsViewV0_6Right": {
         "type": "string",
         "description": "One of the five git rights. Each string is also the TRQP `action` the VTC publishes the right under in its Trust Registry, so it is carried verbatim. `git.ns.admin` and `git.repo.create` apply to a namespace resource; `git.repo.own` and `git.repo.maintain` to a repository resource; `git.commit.sign` to either.",
         "enum": [
@@ -2948,9 +3018,9 @@
           "git.commit.sign"
         ]
       },
-      "GitNsViewV0_1RightRecord": {
+      "GitNsViewV0_6RightRecord": {
         "type": "object",
-        "description": "One recorded right. Implied rights (§4.2 of the rights model: `own` implies `maintain` implies `commit.sign` on the same resource; `ns.admin` implies `repo.create` and `own` across its namespace) are not records and never appear as RightRecords.",
+        "description": "One recorded right. Implied rights (§4.2 of the rights model: `own` implies `maintain` implies `commit.sign` on the same resource; `ns.admin` implies `repo.create` and `own` across its namespace) are not records and never appear as RightRecords. A record carrying `breakGlass` was given by its subject to themselves through git-ns/right/break-glass; it is a real right, published like any other, and is shown with that flag on every surface that shows the record.",
         "required": [
           "subject",
           "right",
@@ -2959,6 +3029,9 @@
           "grantedAt"
         ],
         "properties": {
+          "breakGlass": {
+            "$ref": "#/components/schemas/GitNsViewV0_6BreakGlass"
+          },
           "expiresAt": {
             "type": "string",
             "format": "date-time",
@@ -2969,7 +3042,7 @@
             "format": "date-time"
           },
           "grantedBy": {
-            "$ref": "#/components/schemas/GitNsViewV0_1Did"
+            "$ref": "#/components/schemas/GitNsViewV0_6Did"
           },
           "reason": {
             "type": "string",
@@ -2977,25 +3050,25 @@
             "maxLength": 1024
           },
           "resource": {
-            "$ref": "#/components/schemas/GitNsViewV0_1Resource"
+            "$ref": "#/components/schemas/GitNsViewV0_6Resource"
           },
           "right": {
-            "$ref": "#/components/schemas/GitNsViewV0_1Right"
+            "$ref": "#/components/schemas/GitNsViewV0_6Right"
           },
           "subject": {
-            "$ref": "#/components/schemas/GitNsViewV0_1Did"
+            "$ref": "#/components/schemas/GitNsViewV0_6Did"
           }
         },
         "additionalProperties": false
       },
-      "GitNsViewV0_1Segment": {
+      "GitNsViewV0_6Segment": {
         "type": "string",
-        "description": "One lowercased owner or repository name. Forges compare these case-insensitively, so the wire form is always lowercase and a producer lowercases before sending. A leading `.` is refused, which rules out `.` and `..`.",
-        "maxLength": 100,
+        "description": "One lowercased owner, group or repository name. Forges compare these case-insensitively, so the wire form is always lowercase and a producer lowercases before sending. A leading `.` is refused, which rules out `.` and `..`. Up to 255 characters, the longest name GitLab allows; GitHub and Forgejo names are shorter.",
+        "maxLength": 255,
         "minLength": 1,
         "pattern": "^[a-z0-9_-][a-z0-9._-]*$"
       },
-      "GitNsViewV0_1Sync": {
+      "GitNsViewV0_6Sync": {
         "type": "object",
         "description": "How the forge compares with the VTC's projection for one repository.",
         "required": [
@@ -3011,7 +3084,7 @@
           "drift": {
             "type": "array",
             "items": {
-              "$ref": "#/components/schemas/GitNsViewV0_1DriftItem"
+              "$ref": "#/components/schemas/GitNsViewV0_6DriftItem"
             },
             "description": "Outstanding drift. Empty unless `state` is `drift`."
           },

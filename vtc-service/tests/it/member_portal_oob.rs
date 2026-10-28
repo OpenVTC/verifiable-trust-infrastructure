@@ -2286,7 +2286,7 @@ async fn the_portal_key_uploads_a_picture_larger_than_the_default_document_limit
 
 const GIT_NS: &str = "https://trusttasks.org/spec/git-ns";
 
-/// The portal's Repos page: `K_b` reads the member's own `git-ns/view/0.4` and
+/// The portal's Repos page: `K_b` reads the member's own `git-ns/view/0.6` and
 /// where a link they began stands, as the member — and nothing that changes a
 /// right or an account binding, whatever the scope names (grant 0.2 consumer
 /// item 6). Those are the member's own signature, through their wallet.
@@ -2300,11 +2300,11 @@ async fn the_portal_key_reads_the_members_repos_and_never_changes_them() {
     enrol_as(&f.vtc, &admin.did, None, VtcRole::Admin).await;
     for (task, payload) in [
         (
-            "namespace/bind/0.1",
+            "namespace/bind/0.2",
             json!({ "forge": "github.com", "owner": "acme", "mode": "manual" }),
         ),
         (
-            "right/grant/0.3",
+            "right/grant/0.4",
             json!({
                 "subject": member.did,
                 "right": "git.commit.sign",
@@ -2329,7 +2329,7 @@ async fn the_portal_key_reads_the_members_repos_and_never_changes_them() {
         assert_eq!(r.status, StatusCode::OK, "{task}: {}", r.body);
     }
 
-    let view = as_portal(&f, &b, &format!("{GIT_NS}/view/0.4"), json!({})).await;
+    let view = as_portal(&f, &b, &format!("{GIT_NS}/view/0.6"), json!({})).await;
     assert_eq!(view.status, StatusCode::OK, "{}", view.body);
     let p = &view.body["payload"];
     assert_eq!(p["namespaces"][0]["owner"], "acme", "{p}");
@@ -2355,7 +2355,7 @@ async fn the_portal_key_reads_the_members_repos_and_never_changes_them() {
         ("account/link/0.1", json!({ "forge": "github.com" })),
         ("account/unlink/0.1", json!({ "forge": "github.com" })),
         (
-            "right/grant/0.3",
+            "right/grant/0.4",
             json!({
                 "subject": member.did,
                 "right": "git.repo.create",
@@ -2366,7 +2366,7 @@ async fn the_portal_key_reads_the_members_repos_and_never_changes_them() {
         let r = as_portal(&f, &b, &format!("{GIT_NS}/{task}"), payload).await;
         assert_ne!(r.status, StatusCode::OK, "{task}: {}", r.body);
     }
-    let again = as_portal(&f, &b, &format!("{GIT_NS}/view/0.4"), json!({})).await;
+    let again = as_portal(&f, &b, &format!("{GIT_NS}/view/0.6"), json!({})).await;
     assert_eq!(
         again.body["payload"]["rights"].as_array().map(Vec::len),
         Some(1),
@@ -2385,7 +2385,7 @@ async fn the_portal_key_reads_the_members_repos_and_never_changes_them() {
             .await
             .unwrap();
     }
-    let gone = as_portal(&f, &b, &format!("{GIT_NS}/view/0.4"), json!({})).await;
+    let gone = as_portal(&f, &b, &format!("{GIT_NS}/view/0.6"), json!({})).await;
     assert_eq!(code(&gone), "permissionDenied", "{}", gone.body);
 }
 
@@ -2423,7 +2423,7 @@ async fn every_document_the_portal_key_signs_is_audited_with_its_grant() {
     )
     .await;
     assert_eq!(groups.status, StatusCode::OK, "{}", groups.body);
-    let view = as_portal(&f, &b, &format!("{GIT_NS}/view/0.4"), json!({})).await;
+    let view = as_portal(&f, &b, &format!("{GIT_NS}/view/0.6"), json!({})).await;
     assert_eq!(view.status, StatusCode::OK, "{}", view.body);
     // Outside the scope: the key is nobody, and nothing is accepted.
     let refused = as_portal(
@@ -2459,7 +2459,7 @@ async fn every_document_the_portal_key_signs_is_audited_with_its_grant() {
     assert_eq!(
         types,
         [
-            "https://trusttasks.org/spec/git-ns/view/0.4",
+            "https://trusttasks.org/spec/git-ns/view/0.6",
             "https://trusttasks.org/spec/vtc/directory/card/show/0.1",
             "https://trusttasks.org/spec/vtc/groups/list/0.2",
         ],

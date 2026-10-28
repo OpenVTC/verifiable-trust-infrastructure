@@ -34,7 +34,7 @@
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use trust_tasks_rs::specs::git_ns::bridge::event::v0_3 as event_wire;
+use trust_tasks_rs::specs::git_ns::bridge::event::v0_5 as event_wire;
 
 use super::model::{Namespace, OwnerKind, Resource, Right};
 

@@ -18,17 +18,17 @@ use serde_json::json;
 use trust_tasks_rs::specs::git_ns::account::{
     link::v0_1 as link, link_status::v0_1 as link_status, unlink::v0_1 as unlink,
 };
-use trust_tasks_rs::specs::git_ns::bridge::job::v0_4 as job_wire;
+use trust_tasks_rs::specs::git_ns::bridge::job::v0_6 as job_wire;
 use trust_tasks_rs::specs::git_ns::namespace::{
-    bind::v0_1 as bind, reseat::v0_3 as reseat, unbind::v0_1 as unbind,
+    bind::v0_2 as bind, reseat::v0_4 as reseat, unbind::v0_1 as unbind,
 };
 use trust_tasks_rs::specs::git_ns::repo::{
-    adopt::v0_1 as adopt, archive::v0_1 as archive, create::v0_3 as create,
-    transfer::v0_1 as transfer,
+    adopt::v0_3 as adopt, archive::v0_3 as archive, create::v0_4 as create,
+    transfer::v0_3 as transfer,
 };
 use trust_tasks_rs::specs::git_ns::right::{
-    break_glass::v0_1 as break_glass, grant::v0_3 as grant, ratify::v0_1 as ratify,
-    revoke::v0_3 as revoke,
+    break_glass::v0_2 as break_glass, grant::v0_4 as grant, ratify::v0_2 as ratify,
+    revoke::v0_4 as revoke,
 };
 use vti_common::audit::{AuditEvent, GitNsOperationData};
 use vti_common::error::AppError;

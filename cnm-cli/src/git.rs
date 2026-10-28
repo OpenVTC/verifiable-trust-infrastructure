@@ -142,7 +142,7 @@ pub enum GitCommands {
     },
     /// Break the glass: record for this profile's DID an elevated right it
     /// may already grant but, under separation of duties, not to itself
-    /// (`git-ns/right/break-glass/0.1`). Needs a passkey gesture bound to this
+    /// (`git-ns/right/break-glass/0.2`). Needs a passkey gesture bound to this
     /// one request, takes effect at once, never lapses, and is announced to
     /// every other administrator until one ratifies or revokes it.
     BreakGlass {
@@ -169,7 +169,7 @@ pub enum GitCommands {
         invite: String,
     },
     /// Ratify another member's break-glass, turning it into an ordinary grant
-    /// (`git-ns/right/ratify/0.1`).
+    /// (`git-ns/right/ratify/0.2`).
     Ratify {
         /// Who broke the glass.
         #[arg(long)]
@@ -179,7 +179,7 @@ pub enum GitCommands {
         /// The resource exactly as recorded.
         #[arg(long)]
         resource: String,
-        /// The record's `breakGlass.at`, as `break-glass-list` shows it: binds
+        /// The record's `breakGlass.recordedAt`, as `break-glass-list` shows it: binds
         /// the ratification to the break-glass you read.
         #[arg(long)]
         break_glass_at: String,
@@ -920,7 +920,7 @@ fn finish_link(
     }
 }
 
-/// `git-ns/view/0.2`'s `accounts`, one line each.
+/// `git-ns/view/0.6`'s `accounts`, one line each.
 fn account_lines(accounts: &Value) -> Vec<String> {
     accounts
         .as_array()
@@ -938,7 +938,7 @@ fn account_lines(accounts: &Value) -> Vec<String> {
         .collect()
 }
 
-/// The forge id of the account linked on `forge`, from `git-ns/view/0.2`'s
+/// The forge id of the account linked on `forge`, from `git-ns/view/0.6`'s
 /// `accounts`.
 fn linked_account_id(accounts: &Value, forge: &str) -> Option<String> {
     accounts
@@ -1277,12 +1277,12 @@ fn break_glass_flag(record: &Value) -> String {
         Some(by) => format!("  [break-glass, ratified by {}]", terminal_safe(by)),
         None => format!(
             "  {BOLD}[BREAK-GLASS, UNRATIFIED since {}]{RESET}",
-            terminal_safe(bg["at"].as_str().unwrap_or_default())
+            terminal_safe(bg["recordedAt"].as_str().unwrap_or_default())
         ),
     }
 }
 
-/// The break-glass records of a `git-ns/view/0.5` answer asked for with
+/// The break-glass records of a `git-ns/view/0.6` answer asked for with
 /// `breakGlass: true`, each with its `namespace` and its `state` —
 /// `unratified`, `pending` (not yet in effect) or `ratified` — unratified and
 /// pending first, newest first within each.
@@ -1337,9 +1337,9 @@ fn break_glass_items(view: &Value, now: chrono::DateTime<chrono::Utc>) -> Vec<Va
         (a["state"] == "ratified")
             .cmp(&(b["state"] == "ratified"))
             .then_with(|| {
-                b.pointer("/breakGlass/at")
+                b.pointer("/breakGlass/recordedAt")
                     .and_then(Value::as_str)
-                    .cmp(&a.pointer("/breakGlass/at").and_then(Value::as_str))
+                    .cmp(&a.pointer("/breakGlass/recordedAt").and_then(Value::as_str))
             })
     });
     items
@@ -1356,7 +1356,7 @@ fn ratify_command(record: &Value) -> String {
         shell_word(record["resource"].as_str().unwrap_or_default()),
         shell_word(
             record
-                .pointer("/breakGlass/at")
+                .pointer("/breakGlass/recordedAt")
                 .and_then(Value::as_str)
                 .unwrap_or_default()
         ),
@@ -1486,7 +1486,7 @@ async fn run_task(
             if let Some(r) = reason {
                 payload["reason"] = json!(r);
             }
-            let payload: specs::right::grant::v0_3::Payload = serde_json::from_value(payload)
+            let payload: specs::right::grant::v0_4::Payload = serde_json::from_value(payload)
                 .map_err(|e| format!("that grant is not well formed: {e}"))?;
             let v = send_change(
                 client,
@@ -1515,7 +1515,7 @@ async fn run_task(
             if let Some(r) = reason {
                 payload["reason"] = json!(r);
             }
-            let payload: specs::right::revoke::v0_3::Payload = serde_json::from_value(payload)
+            let payload: specs::right::revoke::v0_4::Payload = serde_json::from_value(payload)
                 .map_err(|e| format!("that revocation is not well formed: {e}"))?;
             let resp = client
                 .git_ns_revoke(&payload, &key)
@@ -1548,7 +1548,7 @@ async fn run_task(
             if !owners.is_empty() {
                 payload["owners"] = json!(owners);
             }
-            let payload: specs::repo::create::v0_3::Payload = serde_json::from_value(payload)
+            let payload: specs::repo::create::v0_4::Payload = serde_json::from_value(payload)
                 .map_err(|e| format!("that repository is not well formed: {e}"))?;
             let v = send_change(
                 client,
@@ -1621,7 +1621,7 @@ async fn run_task(
         GitCommands::BreakGlassList { resource } => {
             let (did, key) = signing_key(keyring_key)?;
             let resp = client
-                .git_ns_view_v5(
+                .git_ns_view(
                     resource.map(|r| r.to_lowercase()).as_deref(),
                     true,
                     true,
@@ -1683,7 +1683,7 @@ async fn run_task(
         GitCommands::View { resource, admin } => {
             let (did, key) = signing_key(keyring_key)?;
             let resp = client
-                .git_ns_view_v5(resource.as_deref(), admin, false, &key)
+                .git_ns_view(resource.as_deref(), admin, false, &key)
                 .await
                 .map_err(|e| explain(e, &did))?;
             let v = serde_json::to_value(&resp)?;
@@ -1813,7 +1813,7 @@ async fn run_task(
                 "resource": resource.to_lowercase(),
                 "justification": justification,
             });
-            let payload: specs::right::break_glass::v0_1::Payload = serde_json::from_value(payload)
+            let payload: specs::right::break_glass::v0_2::Payload = serde_json::from_value(payload)
                 .map_err(|e| format!("that break-glass is not well formed: {e}"))?;
             let type_uri = vtc_client::git_ns::GIT_NS_BREAK_GLASS_TYPE;
             let doc = client.git_ns_sign(type_uri, &payload, &key).await?;
@@ -1843,7 +1843,7 @@ async fn run_task(
             if let Some(s) = statement {
                 payload["statement"] = json!(s);
             }
-            let payload: specs::right::ratify::v0_1::Payload = serde_json::from_value(payload)
+            let payload: specs::right::ratify::v0_2::Payload = serde_json::from_value(payload)
                 .map_err(|e| format!("that ratification is not well formed: {e}"))?;
             let resp = client
                 .git_ns_ratify(&payload, &key)
@@ -1861,7 +1861,7 @@ async fn run_task(
             let json_mode = is_json_output();
             if list {
                 let resp = client
-                    .git_ns_view_v2(None, &key)
+                    .git_ns_view(None, false, false, &key)
                     .await
                     .map_err(|e| explain(e, &did))?;
                 let accounts = serde_json::to_value(&resp)?["accounts"].take();
@@ -1941,12 +1941,13 @@ async fn run_task(
             let forge = forge.to_lowercase();
             // Name the account being unlinked: the one linked now, unless the
             // operator named it. Either way the request carries the guard.
-            let account_id = match account_id {
-                Some(id) => id,
-                None => {
-                    // `git view` answers current members only; a member whose
-                    // access lapsed may still unlink, naming the account.
-                    let resp = client.git_ns_view_v2(None, &key).await.map_err(|e| {
+            let account_id =
+                match account_id {
+                    Some(id) => id,
+                    None => {
+                        // `git view` answers current members only; a member whose
+                        // access lapsed may still unlink, naming the account.
+                        let resp = client.git_ns_view(None, false, false, &key).await.map_err(|e| {
                         format!(
                             "{}\nIf you are no longer a current member you can still unlink, \
                              naming the account:\n  {} git unlink --forge {} --account-id <id>",
@@ -1955,18 +1956,18 @@ async fn run_task(
                             shell_word(&terminal_safe(&forge))
                         )
                     })?;
-                    let accounts = serde_json::to_value(&resp)?["accounts"].take();
-                    linked_account_id(&accounts, &forge).ok_or_else(|| {
-                        format!(
-                            "no account is linked to {} on {}. See what is linked:\n  {} git \
+                        let accounts = serde_json::to_value(&resp)?["accounts"].take();
+                        linked_account_id(&accounts, &forge).ok_or_else(|| {
+                            format!(
+                                "no account is linked to {} on {}. See what is linked:\n  {} git \
                              link --list",
-                            terminal_safe(&did),
-                            terminal_safe(&forge),
-                            shell_word(bin_name())
-                        )
-                    })?
-                }
-            };
+                                terminal_safe(&did),
+                                terminal_safe(&forge),
+                                shell_word(bin_name())
+                            )
+                        })?
+                    }
+                };
             let v = serde_json::to_value(
                 client
                     .git_ns_unlink_account(&forge, Some(&account_id), &key)
@@ -2006,12 +2007,12 @@ async fn run_task(
                 subject,
                 reason,
             )?;
-            let payload: specs::drift::resolve::v0_3::Payload = serde_json::from_value(payload)
+            let payload: specs::drift::resolve::v0_4::Payload = serde_json::from_value(payload)
                 .map_err(|e| format!("that resolution is not well formed: {e}"))?;
             let v = send_change(
                 client,
                 &target.base,
-                vtc_client::git_ns::GIT_NS_DRIFT_RESOLVE_V3_TYPE,
+                vtc_client::git_ns::GIT_NS_DRIFT_RESOLVE_TYPE,
                 &payload,
                 &did,
                 &key,
@@ -2149,7 +2150,7 @@ mod tests {
                 }
             })
         );
-        let _: specs::drift::resolve::v0_3::Payload = serde_json::from_value(p).unwrap();
+        let _: specs::drift::resolve::v0_4::Payload = serde_json::from_value(p).unwrap();
 
         // An adopt names its recipient (drift/resolve 0.3).
         let p = drift_payload(
@@ -2165,7 +2166,7 @@ mod tests {
         .unwrap();
         assert_eq!(p["subject"], json!(BOB));
         assert_eq!(p["action"], "adopt");
-        let _: specs::drift::resolve::v0_3::Payload = serde_json::from_value(p).unwrap();
+        let _: specs::drift::resolve::v0_4::Payload = serde_json::from_value(p).unwrap();
 
         let err =
             |action, kind, id: Option<&str>, observed: Option<&str>, subject: Option<&str>| {
@@ -2269,7 +2270,7 @@ mod tests {
             "repo": { "resource": "github.com/acme/gadgets" },
             "ext": { "org.openvtc": { "selfGrantWaived": {
                 "mode": "singleAdministrator",
-                "requirement": "git-ns/right/grant/0.3#rule-7",
+                "requirement": "git-ns/right/grant/0.4#rule-7",
                 "right": "git.repo.own",
                 "resource": "github.com/acme/gadgets",
             } } },
@@ -2868,7 +2869,7 @@ mod tests {
             "subject": "did:key:z6MkAbc",
             "right": "git.repo.own",
             "resource": "github.com/acme/widgets",
-            "breakGlass": { "at": "2026-09-25T02:10:31Z" },
+            "breakGlass": { "recordedAt": "2026-09-25T02:10:31Z" },
         });
         let cmd = ratify_command(&record);
         assert!(
@@ -2879,7 +2880,7 @@ mod tests {
             cmd.ends_with("--break-glass-at=2026-09-25T02:10:31Z"),
             "{cmd}"
         );
-        let evil = json!({ "subject": "did:key:z'; rm -rf ~", "right": "git.repo.own", "resource": "x", "breakGlass": { "at": "t" } });
+        let evil = json!({ "subject": "did:key:z'; rm -rf ~", "right": "git.repo.own", "resource": "x", "breakGlass": { "recordedAt": "t" } });
         assert!(ratify_command(&evil).contains("'did:key:z'\"'\"'; rm -rf ~'"));
     }
 
@@ -2909,18 +2910,18 @@ mod tests {
                 { "subject": "did:key:za", "right": "git.repo.own",
                   "resource": "github.com/acme/widgets", "grantedBy": "did:key:za",
                   "grantedAt": "2026-09-20T00:00:00Z",
-                  "breakGlass": { "by": "did:key:za", "at": "2026-09-20T00:00:00Z",
+                  "breakGlass": { "by": "did:key:za", "recordedAt": "2026-09-20T00:00:00Z",
                                   "justification": "old", "ratifiedBy": "did:key:zb",
                                   "ratifiedAt": "2026-09-21T00:00:00Z" } },
                 { "subject": "did:key:zc", "right": "git.ns.admin",
                   "resource": "github.com/acme", "grantedBy": "did:key:zc",
                   "grantedAt": "2026-09-25T00:00:00Z",
-                  "breakGlass": { "by": "did:key:zc", "at": "2026-09-25T00:00:00Z",
+                  "breakGlass": { "by": "did:key:zc", "recordedAt": "2026-09-25T00:00:00Z",
                                   "justification": "now" } },
                 { "subject": "did:key:zd", "right": "git.repo.create",
                   "resource": "github.com/acme", "grantedBy": "did:key:zd",
                   "grantedAt": "2026-09-26T11:00:00Z",
-                  "breakGlass": { "by": "did:key:zd", "at": "2026-09-26T11:00:00Z",
+                  "breakGlass": { "by": "did:key:zd", "recordedAt": "2026-09-26T11:00:00Z",
                                   "justification": "later",
                                   "effectiveAt": "2026-09-27T11:00:00Z" } },
                 { "subject": "did:key:ze", "right": "git.commit.sign",

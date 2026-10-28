@@ -12,8 +12,8 @@ use std::time::Duration;
 use async_trait::async_trait;
 use serde_json::{Value, json};
 use trust_tasks_rs::TrustTask;
-use trust_tasks_rs::specs::git_ns::bridge::job::v0_4 as job_wire;
-use trust_tasks_rs::specs::git_ns::namespace::reseat::v0_3 as reseat3;
+use trust_tasks_rs::specs::git_ns::bridge::job::v0_6 as job_wire;
+use trust_tasks_rs::specs::git_ns::namespace::reseat::v0_4 as reseat3;
 use vti_rooms_dtg::test_support::Party;
 
 use crate::acl::{VtcAclEntry, VtcRole, store_acl_entry};
@@ -29,14 +29,28 @@ use super::projection::{self, Backoff};
 use super::store::{self, Snapshot};
 
 const URI: &str = "https://trusttasks.org/spec/git-ns";
-/// `git-ns/namespace/reseat/0.3`, the only reseat version served.
+/// `git-ns/namespace/reseat/0.4`, the only reseat version served.
 const RESEAT_URI: &str = <reseat3::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
-/// The version of each task this VTC serves: grant and revoke only at 0.3
-/// (0.1 is not served), everything else at 0.1.
+/// The current version of each task, the one these tests send. Every member-
+/// and administrator-facing task is served at it only; the bridge's own tasks
+/// also at their older versions, which the released bridge still sends.
 fn uri(task: &str) -> String {
     let version = match task {
-        "right/grant" | "right/revoke" | "repo/create" => "0.3",
+        "namespace/bind" | "namespace/list" | "repo/list" | "account/list" | "bridge/result"
+        | "right/break-glass" | "right/ratify" | "roles/reproject" => "0.2",
+        "repo/adopt"
+        | "repo/transfer"
+        | "repo/archive"
+        | "right/list"
+        | "right/issued-by-departed"
+        | "projection/show"
+        | "activity/list" => "0.3",
+        "right/grant" | "right/revoke" | "repo/create" | "drift/resolve" | "namespace/reseat"
+        | "bridge/job/list" => "0.4",
+        "bridge/event" => "0.5",
+        "view" => "0.6",
+        "bridge/job" => "0.6",
         _ => "0.1",
     };
     format!("{URI}/{task}/{version}")
@@ -75,6 +89,8 @@ struct FakeBridge {
     discoveries: Mutex<u32>,
     /// When set, the bridge lists `git-ns/bridge/job/0.5` beside 0.4.
     takes_v0_5: Mutex<bool>,
+    /// When set, the bridge lists `git-ns/bridge/job/0.6` too.
+    takes_v0_6: Mutex<bool>,
 }
 
 #[async_trait]
@@ -94,6 +110,9 @@ impl BridgeClient for FakeBridge {
         let mut types = vec![super::bridge::JOB_TYPE.to_string()];
         if *self.takes_v0_5.lock().unwrap() {
             types.push(super::bridge::JOB_TYPE_V0_5.to_string());
+        }
+        if *self.takes_v0_6.lock().unwrap() {
+            types.push(super::bridge::JOB_TYPE_V0_6.to_string());
         }
         Ok(types)
     }
@@ -1782,29 +1801,38 @@ fn every_git_ns_task_is_served() {
     ] {
         assert!(served.contains(&uri(task).as_str()), "{task} is not served");
     }
-    assert!(
-        served.contains(&uri3("drift/resolve").as_str()),
-        "drift/resolve 0.3 is not served"
-    );
-    assert!(served.contains(&RESEAT_URI), "reseat 0.3 is not served");
-    assert!(
-        !served.contains(&uri("namespace/reseat").as_str()),
-        "reseat 0.1 is still served"
-    );
-    for task in ["view", "bridge/event"] {
+    assert!(served.contains(&RESEAT_URI), "reseat 0.4 is not served");
+    // Only the current version of a member- or administrator-facing task.
+    for (task, old) in [
+        ("namespace/bind", "0.1"),
+        ("namespace/reseat", "0.3"),
+        ("repo/adopt", "0.1"),
+        ("repo/create", "0.3"),
+        ("drift/resolve", "0.1"),
+        ("drift/resolve", "0.3"),
+        ("view", "0.1"),
+        ("view", "0.2"),
+        ("view", "0.4"),
+        ("view", "0.5"),
+        ("roles/reproject", "0.1"),
+    ] {
         assert!(
-            served.contains(&format!("{URI}/{task}/0.2").as_str()),
-            "{task} 0.2 is not served"
+            !served.contains(&format!("{URI}/{task}/{old}").as_str()),
+            "{task} {old} is still served"
         );
     }
-    assert!(served.contains(&format!("{URI}/bridge/event/0.3").as_str()));
+    // The bridge's own tasks keep the versions the released bridge sends.
+    for v in ["0.1", "0.2", "0.3", "0.4"] {
+        assert!(served.contains(&format!("{URI}/bridge/event/{v}").as_str()));
+    }
+    assert!(served.contains(&format!("{URI}/bridge/result/0.1").as_str()));
     assert!(served.contains(&uri("roles/reproject").as_str()));
     // `bridge/job` is the VTC's to send, never to serve.
     assert!(!served.contains(&uri("bridge/job").as_str()));
-    // Grant and revoke are served at 0.3 only: an older version would skip
+    // Grant and revoke are served at 0.4 only: an older version would skip
     // fixed rule 7 and the `breakGlass` flag on the records it answers.
     for task in ["right/grant", "right/revoke"] {
-        for old in ["0.1", "0.2"] {
+        for old in ["0.1", "0.2", "0.3"] {
             assert!(
                 !served.contains(&format!("{URI}/{task}/{old}").as_str()),
                 "{task} {old} is still served"
@@ -1832,20 +1860,16 @@ async fn a_proof_required_git_ns_task_is_refused_unsigned() {
     assert_eq!(code(&out), "proofRequired");
 }
 
-/// `git-ns/view/0.4` used to declare its proof RECOMMENDED and answer an
-/// unsigned read from the transport's authenticated sender; trust-tasks
-/// 0.23.1 made it REQUIRED like every other served version, and the spine
-/// now refuses it before `handle_view_v4` ever sees it.
+/// `git-ns/view` once declared its proof RECOMMENDED and answered an
+/// unsigned read from the transport's authenticated sender; every version
+/// since 0.4 requires it, and the spine refuses it before `handle_view`
+/// ever sees it.
 #[tokio::test]
-async fn view_0_4_is_refused_unsigned() {
+async fn view_is_refused_unsigned() {
     let f = fixture().await;
-    let doc: TrustTask<Value> = vta_sdk::trust_task_sign::build_unsigned(
-        &format!("{URI}/view/0.4"),
-        json!({}),
-        &f.bob.did,
-        TEST_VTC_DID,
-    )
-    .unwrap();
+    let doc: TrustTask<Value> =
+        vta_sdk::trust_task_sign::build_unsigned(&uri("view"), json!({}), &f.bob.did, TEST_VTC_DID)
+            .unwrap();
     let out = dispatch_trust_task_core(
         &f.vtc.state,
         &JoinAuthCtx::rest(),
@@ -4068,7 +4092,7 @@ async fn send_v(state: &AppState, who: &Party, type_uri: &str, payload: Value) -
 }
 
 #[tokio::test]
-async fn view_0_2_returns_only_the_callers_own_linked_accounts() {
+async fn view_returns_only_the_callers_own_linked_accounts() {
     let f = fixture().await;
     let ns = bind_bridge(&f).await;
     link_account(&f, &ns, &f.bob, "9120045", "bob-builds").await;
@@ -4082,7 +4106,7 @@ async fn view_0_2_returns_only_the_callers_own_linked_accounts() {
     .unwrap();
     link_account(&f, &ns, &f.carol, "5550001", "carol-c").await;
 
-    let bob = ok(&send_v(&f.vtc.state, &f.bob, &uri2("view"), json!({})).await);
+    let bob = ok(&send_v(&f.vtc.state, &f.bob, &uri("view"), json!({})).await);
     let accounts = bob["accounts"].as_array().unwrap();
     assert_eq!(accounts.len(), 2, "{bob}");
     assert!(accounts.iter().all(|a| a["account"]["login"] != "carol-c"));
@@ -4092,7 +4116,7 @@ async fn view_0_2_returns_only_the_callers_own_linked_accounts() {
     let bob = ok(&send_v(
         &f.vtc.state,
         &f.bob,
-        &uri2("view"),
+        &uri("view"),
         json!({ "resource": "github.com/acme" }),
     )
     .await);
@@ -4102,15 +4126,15 @@ async fn view_0_2_returns_only_the_callers_own_linked_accounts() {
     );
 
     // An admin sees their own — none — never a member's.
-    let admin = ok(&send_v(&f.vtc.state, &f.admin, &uri2("view"), json!({})).await);
+    let admin = ok(&send_v(&f.vtc.state, &f.admin, &uri("view"), json!({})).await);
     assert_eq!(admin["accounts"], json!([]));
 
-    // 0.1 is still served, without `accounts`.
-    let v1 = ok(&send(&f.vtc.state, &f.bob, "view", json!({})).await);
-    assert!(v1.get("accounts").is_none());
+    // 0.1 is no longer served.
+    let v1 = send_v(&f.vtc.state, &f.bob, &format!("{URI}/view/0.1"), json!({})).await;
+    assert_eq!(code(&v1), "unsupportedVersion");
 
     // Members only.
-    let out = send_v(&f.vtc.state, &f.stranger, &uri2("view"), json!({})).await;
+    let out = send_v(&f.vtc.state, &f.stranger, &uri("view"), json!({})).await;
     assert_eq!(code(&out), "permissionDenied");
 }
 
@@ -4360,7 +4384,7 @@ async fn resolve_naming(
     if let Some(s) = subject {
         p["subject"] = json!(s);
     }
-    send_v(&f.vtc.state, who, &uri3("drift/resolve"), p).await
+    send_v(&f.vtc.state, who, &uri("drift/resolve"), p).await
 }
 
 #[tokio::test]
@@ -4685,7 +4709,7 @@ async fn a_namespace_admin_alone_has_no_projected_right() {
 async fn an_adopted_grant_rechecks_the_link_where_it_is_written() {
     let (f, _ns) = drift_fixture(json!([])).await;
     let holds = |_: &Snapshot| -> super::ops::OpResult<()> { Ok(()) };
-    let grant_to = |subject: String| -> trust_tasks_rs::specs::git_ns::right::grant::v0_3::Payload {
+    let grant_to = |subject: String| -> trust_tasks_rs::specs::git_ns::right::grant::v0_4::Payload {
         serde_json::from_value(
             json!({ "subject": subject, "right": "git.repo.maintain", "resource": RES }),
         )
@@ -4760,21 +4784,23 @@ async fn an_adopted_grant_rechecks_the_link_where_it_is_written() {
 
 /// 0.1 names no recipient: it still reverts, and no longer adopts.
 #[tokio::test]
-async fn drift_resolve_0_1_reverts_but_does_not_adopt() {
+async fn drift_resolve_before_0_4_is_refused_and_changes_nothing() {
     let (f, _ns) = drift_fixture(json!([
         { "type": "roleAdded", "resource": RES, "account": carol_acct(), "observed": "maintain" },
         { "type": "requiredCheckMissing", "resource": RES }
     ]))
     .await;
-    let out = send(
-        &f.vtc.state,
-        &f.bob,
-        "drift/resolve",
-        json!({ "resource": RES, "action": "adopt",
-                "drift": { "type": "roleAdded", "account": carol_acct(), "observed": "maintain" } }),
-    )
-    .await;
-    assert_eq!(code(&out), "unsupportedVersion");
+    for old in ["0.1", "0.3"] {
+        let out = send_ver(
+            &f.vtc.state,
+            &f.bob,
+            "drift/resolve",
+            old,
+            json!({ "resource": RES, "action": "revert", "drift": { "type": "requiredCheckMissing" } }),
+        )
+        .await;
+        assert_eq!(code(&out), "unsupportedVersion", "drift/resolve {old}");
+    }
     let snap = Snapshot::load(&f.vtc.state.git_ns).await.unwrap();
     let repo = snap.repo_at(RES).unwrap();
     assert!(
@@ -5435,7 +5461,7 @@ async fn an_adoption_whose_item_changed_grants_nothing() {
             message: "changed".into(),
         })
     };
-    let payload: trust_tasks_rs::specs::git_ns::right::grant::v0_3::Payload =
+    let payload: trust_tasks_rs::specs::git_ns::right::grant::v0_4::Payload =
         serde_json::from_value(
             json!({ "subject": f.carol.did, "right": "git.repo.maintain", "resource": RES }),
         )
@@ -5621,7 +5647,7 @@ async fn break_glass(f: &Fixture, who: &Party, right: &str, resource: &str) -> T
     )
     .await
     .unwrap();
-    send_ver(&f.vtc.state, who, "right/break-glass", "0.1", p).await
+    send_ver(&f.vtc.state, who, "right/break-glass", "0.2", p).await
 }
 
 async fn bg_audit_rows(f: &Fixture) -> Vec<vti_common::audit::GitNsBreakGlassData> {
@@ -5671,7 +5697,7 @@ async fn grant_rule_7_refuses_an_elevated_self_grant_and_names_break_glass() {
             &f.vtc.state,
             &f.carol,
             "right/grant",
-            "0.3",
+            "0.4",
             json!({ "subject": f.carol.did, "right": right, "resource": res }),
         )
         .await;
@@ -5790,7 +5816,7 @@ async fn break_glass_needs_the_bound_step_up_and_then_records_a_flagged_right() 
         &f.vtc.state,
         &f.carol,
         "right/break-glass",
-        "0.1",
+        "0.2",
         bg_payload("git.repo.own", "github.com/acme/widgets"),
     )
     .await;
@@ -5851,11 +5877,11 @@ async fn break_glass_needs_the_bound_step_up_and_then_records_a_flagged_right() 
         &f.vtc.state,
         &f.carol,
         "right/break-glass",
-        "0.1",
+        "0.2",
         bg_payload("git.repo.own", "github.com/acme/widgets"),
     )
     .await);
-    assert_eq!(again["right"]["breakGlass"]["at"], bg["at"]);
+    assert_eq!(again["right"]["breakGlass"]["recordedAt"], bg["recordedAt"]);
     assert_eq!(
         bg_audit_rows(&f).await.len(),
         1,
@@ -5868,7 +5894,7 @@ async fn ratify_as(f: &Fixture, who: &Party, subject: &str, at: Value) -> TrustT
         &f.vtc.state,
         who,
         "right/ratify",
-        "0.1",
+        "0.2",
         json!({
             "subject": subject,
             "right": "git.repo.own",
@@ -5938,7 +5964,7 @@ default decision := {{"effect": "allow"}}
         &f.vtc.state,
         &f.admin,
         "right/revoke",
-        "0.3",
+        "0.4",
         json!({ "subject": f.carol.did, "right": "git.repo.own", "resource": "github.com/acme/widgets" }),
     )
     .await);
@@ -5974,7 +6000,7 @@ async fn a_community_administrator_breaks_the_glass_only_on_a_headless_namespace
 async fn ratify_is_someone_elses_bound_to_the_break_glass_read() {
     let f = carol_admin_fixture().await;
     let body = ok(&break_glass(&f, &f.carol, "git.repo.own", "github.com/acme/widgets").await);
-    let at = body["right"]["breakGlass"]["at"].clone();
+    let at = body["right"]["breakGlass"]["recordedAt"].clone();
     assert_eq!(
         code(&ratify_as(&f, &f.carol, &f.carol.did, at.clone()).await),
         "git-ns/right/ratify:selfRatification"
@@ -6055,7 +6081,7 @@ async fn an_unratified_break_glass_never_counts_toward_the_invariants() {
         &f.vtc.state,
         &f.bob,
         "right/revoke",
-        "0.3",
+        "0.4",
         json!({ "subject": f.bob.did, "right": "git.repo.own", "resource": "github.com/acme/widgets" }),
     )
     .await;
@@ -6068,7 +6094,7 @@ async fn an_unratified_break_glass_never_counts_toward_the_invariants() {
         &f.vtc.state,
         &dana,
         "right/revoke",
-        "0.3",
+        "0.4",
         json!({ "subject": f.carol.did, "right": "git.repo.own", "resource": "github.com/acme/widgets", "reason": "not needed" }),
     )
     .await);
@@ -6114,17 +6140,17 @@ async fn view_0_4_shows_an_unratified_break_glass_to_every_administrator_it_conc
             .any(|r| r["breakGlass"]["justification"].is_string())
     };
     // A community administrator with no git right sees it.
-    let v = ok(&send_ver(&f.vtc.state, &dana, "view", "0.4", json!({})).await);
+    let v = ok(&send_ver(&f.vtc.state, &dana, "view", "0.6", json!({})).await);
     assert!(flagged(&v), "{v}");
     // Bob, owner of the repository, sees it.
-    let v = ok(&send_ver(&f.vtc.state, &f.bob, "view", "0.4", json!({})).await);
+    let v = ok(&send_ver(&f.vtc.state, &f.bob, "view", "0.6", json!({})).await);
     assert!(flagged(&v), "{v}");
     // A member with nothing to do with it does not.
-    let v = ok(&send_ver(&f.vtc.state, &dan, "view", "0.4", json!({})).await);
+    let v = ok(&send_ver(&f.vtc.state, &dan, "view", "0.6", json!({})).await);
     assert!(!flagged(&v), "{v}");
-    // 0.2 carries no breakGlass member at all.
-    let v = ok(&send_ver(&f.vtc.state, &f.bob, "view", "0.2", json!({})).await);
-    assert!(!v.to_string().contains("breakGlass"));
+    // 0.2 is no longer served.
+    let out = send_ver(&f.vtc.state, &f.bob, "view", "0.2", json!({})).await;
+    assert_eq!(code(&out), "unsupportedVersion");
 
     // The console list: the community administrator and Carol's co-admin read
     // it; a plain member session is refused.
@@ -6132,7 +6158,7 @@ async fn view_0_4_shows_an_unratified_break_glass_to_every_administrator_it_conc
     let body = ok(&send_v(
         &f.vtc.state,
         &dana,
-        <view_v0_5::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+        <view_wire::Payload as trust_tasks_rs::Payload>::TYPE_URI,
         bg.clone(),
     )
     .await);
@@ -6144,11 +6170,11 @@ async fn view_0_4_shows_an_unratified_break_glass_to_every_administrator_it_conc
     let out = send_v(
         &f.vtc.state,
         &f.bob,
-        <view_v0_5::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+        <view_wire::Payload as trust_tasks_rs::Payload>::TYPE_URI,
         bg,
     )
     .await;
-    assert_eq!(code(&out), view_v0_5::error_codes::NOT_ADMINISTRATOR.code);
+    assert_eq!(code(&out), view_wire::error_codes::NOT_ADMINISTRATOR.code);
     let body = ok(&send(&f.vtc.state, &f.admin, "right/list", json!({})).await);
     assert!(
         body["rights"]
@@ -6534,7 +6560,7 @@ async fn adopt_is_refused_after_binding_until_the_bridge_reports_its_map() {
     let body = ok(&send_v(
         &f.vtc.state,
         &f.admin,
-        <namespace_list_v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+        <namespace_list::Payload as trust_tasks_rs::Payload>::TYPE_URI,
         json!({}),
     )
     .await);
@@ -7019,13 +7045,13 @@ async fn a_role_change_is_measured_against_the_projected_right_as_drift_resolve_
     assert_eq!(code(&out), "git-ns:selfGrantNotAllowed");
 }
 
-// ── the administrator's reads: view/0.5, namespace/list/0.1, repo/list/0.1 ──
+// ── the administrator's reads: view/0.6, namespace/list/0.2, repo/list/0.2 ──
 //
 // Each runs through the spine as each transport hands it in: REST (the
 // holder proven by the proof alone), and DIDComm and TSP (the sender claimed
 // by the envelope, bound to the proof by the spine).
 
-use super::admin_reads::{namespace_list_v0_1, repo_list_v0_1, view_v0_5};
+use super::admin_reads::{namespace_list, repo_list, view_wire};
 use crate::join::JoinTransport;
 
 const TRANSPORTS: [JoinTransport; 3] = [
@@ -7136,7 +7162,7 @@ async fn namespace_list_answers_each_administrator_the_namespaces_they_administe
             &f,
             t,
             &f.admin,
-            <namespace_list_v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+            <namespace_list::Payload as trust_tasks_rs::Payload>::TYPE_URI,
             json!({}),
             true,
         )
@@ -7166,7 +7192,7 @@ async fn namespace_list_answers_each_administrator_the_namespaces_they_administe
             &f,
             t,
             &f.carol,
-            <namespace_list_v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+            <namespace_list::Payload as trust_tasks_rs::Payload>::TYPE_URI,
             json!({}),
             true,
         )
@@ -7180,7 +7206,7 @@ async fn namespace_list_answers_each_administrator_the_namespaces_they_administe
             &f,
             t,
             &f.carol,
-            <namespace_list_v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+            <namespace_list::Payload as trust_tasks_rs::Payload>::TYPE_URI,
             json!({ "namespace": acme }),
             true,
         )
@@ -7204,14 +7230,14 @@ async fn namespace_list_refuses_a_caller_who_administers_nothing() {
                 &f,
                 t,
                 who,
-                <namespace_list_v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+                <namespace_list::Payload as trust_tasks_rs::Payload>::TYPE_URI,
                 json!({}),
                 true,
             )
             .await;
             assert_eq!(
                 code(&out),
-                namespace_list_v0_1::error_codes::NOT_ADMINISTRATOR.code,
+                namespace_list::error_codes::NOT_ADMINISTRATOR.code,
                 "{t:?}"
             );
         }
@@ -7228,14 +7254,14 @@ async fn namespace_list_refuses_a_namespace_admin_outside_their_namespace() {
                 &f,
                 t,
                 &f.carol,
-                <namespace_list_v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+                <namespace_list::Payload as trust_tasks_rs::Payload>::TYPE_URI,
                 json!({ "namespace": named }),
                 true,
             )
             .await;
             assert_eq!(
                 code(&out),
-                namespace_list_v0_1::error_codes::NOT_ADMINISTRATOR.code,
+                namespace_list::error_codes::NOT_ADMINISTRATOR.code,
                 "{t:?}: {named} — an unknown namespace is answered as one not administered"
             );
         }
@@ -7251,7 +7277,7 @@ async fn namespace_list_refuses_an_unsigned_document() {
             &f,
             t,
             &f.admin,
-            <namespace_list_v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+            <namespace_list::Payload as trust_tasks_rs::Payload>::TYPE_URI,
             json!({}),
             false,
         )
@@ -7271,7 +7297,7 @@ async fn repo_list_answers_each_administrator_the_repositories_they_administer()
             &f,
             t,
             &f.admin,
-            <repo_list_v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+            <repo_list::Payload as trust_tasks_rs::Payload>::TYPE_URI,
             json!({}),
             true,
         )
@@ -7293,7 +7319,7 @@ async fn repo_list_answers_each_administrator_the_repositories_they_administer()
             &f,
             t,
             &f.carol,
-            <repo_list_v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+            <repo_list::Payload as trust_tasks_rs::Payload>::TYPE_URI,
             json!({}),
             true,
         )
@@ -7308,7 +7334,7 @@ async fn repo_list_answers_each_administrator_the_repositories_they_administer()
             &f,
             t,
             &f.admin,
-            <repo_list_v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+            <repo_list::Payload as trust_tasks_rs::Payload>::TYPE_URI,
             json!({ "namespace": other }),
             true,
         )
@@ -7331,14 +7357,14 @@ async fn repo_list_refuses_a_caller_who_administers_nothing() {
                 &f,
                 t,
                 who,
-                <repo_list_v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+                <repo_list::Payload as trust_tasks_rs::Payload>::TYPE_URI,
                 json!({}),
                 true,
             )
             .await;
             assert_eq!(
                 code(&out),
-                repo_list_v0_1::error_codes::NOT_ADMINISTRATOR.code,
+                repo_list::error_codes::NOT_ADMINISTRATOR.code,
                 "{t:?}"
             );
         }
@@ -7354,14 +7380,14 @@ async fn repo_list_refuses_a_namespace_admin_outside_their_namespace() {
             &f,
             t,
             &f.carol,
-            <repo_list_v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+            <repo_list::Payload as trust_tasks_rs::Payload>::TYPE_URI,
             json!({ "namespace": other }),
             true,
         )
         .await;
         assert_eq!(
             code(&out),
-            repo_list_v0_1::error_codes::NOT_ADMINISTRATOR.code,
+            repo_list::error_codes::NOT_ADMINISTRATOR.code,
             "{t:?}"
         );
     }
@@ -7376,7 +7402,7 @@ async fn repo_list_refuses_an_unsigned_document() {
             &f,
             t,
             &f.admin,
-            <repo_list_v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+            <repo_list::Payload as trust_tasks_rs::Payload>::TYPE_URI,
             json!({}),
             false,
         )
@@ -7398,7 +7424,7 @@ async fn view_0_5_administrator_scope_answers_every_record_and_reason_in_the_adm
             &f,
             t,
             &f.admin,
-            <view_v0_5::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+            <view_wire::Payload as trust_tasks_rs::Payload>::TYPE_URI,
             admin_scope.clone(),
             true,
         )
@@ -7423,7 +7449,7 @@ async fn view_0_5_administrator_scope_answers_every_record_and_reason_in_the_adm
             &f,
             t,
             &f.carol,
-            <view_v0_5::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+            <view_wire::Payload as trust_tasks_rs::Payload>::TYPE_URI,
             admin_scope,
             true,
         )
@@ -7460,7 +7486,7 @@ async fn view_0_5_administrator_scope_answers_every_record_and_reason_in_the_adm
             &f,
             t,
             &f.bob,
-            <view_v0_5::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+            <view_wire::Payload as trust_tasks_rs::Payload>::TYPE_URI,
             json!({}),
             true,
         )
@@ -7478,14 +7504,14 @@ async fn view_0_5_administrator_scope_refuses_a_member_who_administers_nothing()
             &f,
             t,
             &f.bob,
-            <view_v0_5::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+            <view_wire::Payload as trust_tasks_rs::Payload>::TYPE_URI,
             json!({ "scope": "administrator" }),
             true,
         )
         .await;
         assert_eq!(
             code(&out),
-            view_v0_5::error_codes::NOT_ADMINISTRATOR.code,
+            view_wire::error_codes::NOT_ADMINISTRATOR.code,
             "{t:?}"
         );
         // A non-member has no view at all.
@@ -7493,7 +7519,7 @@ async fn view_0_5_administrator_scope_refuses_a_member_who_administers_nothing()
             &f,
             t,
             &f.stranger,
-            <view_v0_5::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+            <view_wire::Payload as trust_tasks_rs::Payload>::TYPE_URI,
             json!({}),
             true,
         )
@@ -7516,14 +7542,14 @@ async fn view_0_5_administrator_scope_refuses_a_namespace_admin_outside_their_na
                 &f,
                 t,
                 &f.carol,
-                <view_v0_5::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+                <view_wire::Payload as trust_tasks_rs::Payload>::TYPE_URI,
                 json!({ "scope": "administrator", "resource": resource }),
                 true,
             )
             .await;
             assert_eq!(
                 code(&out),
-                view_v0_5::error_codes::NOT_ADMINISTRATOR.code,
+                view_wire::error_codes::NOT_ADMINISTRATOR.code,
                 "{t:?}: {resource}"
             );
         }
@@ -7539,7 +7565,7 @@ async fn view_0_5_refuses_an_unsigned_document() {
             &f,
             t,
             &f.admin,
-            <view_v0_5::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+            <view_wire::Payload as trust_tasks_rs::Payload>::TYPE_URI,
             json!({ "scope": "administrator" }),
             false,
         )
@@ -7566,7 +7592,7 @@ async fn view_0_5_break_glass_lists_only_break_glass_records_to_their_administra
                 &f,
                 t,
                 who,
-                <view_v0_5::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+                <view_wire::Payload as trust_tasks_rs::Payload>::TYPE_URI,
                 q.clone(),
                 true,
             )
@@ -7582,14 +7608,14 @@ async fn view_0_5_break_glass_lists_only_break_glass_records_to_their_administra
             &f,
             t,
             &f.bob,
-            <view_v0_5::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+            <view_wire::Payload as trust_tasks_rs::Payload>::TYPE_URI,
             q,
             true,
         )
         .await;
         assert_eq!(
             code(&out),
-            view_v0_5::error_codes::NOT_ADMINISTRATOR.code,
+            view_wire::error_codes::NOT_ADMINISTRATOR.code,
             "{t:?}"
         );
     }
@@ -7622,7 +7648,7 @@ async fn namespace_list_signed_by_a_console_key_answers_its_administrator() {
         &f,
         JoinTransport::Rest,
         &console,
-        <namespace_list_v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+        <namespace_list::Payload as trust_tasks_rs::Payload>::TYPE_URI,
         json!({}),
         true,
     )

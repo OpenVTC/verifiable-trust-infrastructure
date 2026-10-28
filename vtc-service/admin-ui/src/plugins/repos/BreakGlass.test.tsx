@@ -130,7 +130,7 @@ describe("the break-glass read", () => {
         ![ACL_LIST_TASK, MEMBERS_LIST_TASK].includes((r.body as { type?: string }).type ?? ""),
     );
     expect(read?.body).toEqual({
-      type: "https://trusttasks.org/spec/git-ns/view/0.5",
+      type: "https://trusttasks.org/spec/git-ns/view/0.6",
       payload: { scope: "administrator", breakGlass: true },
     });
   });
@@ -162,12 +162,12 @@ describe("break-glass grants list", () => {
     const sign = await screen.findByRole("dialog", { name: "Ratify break-glass: owner on acme/docs" });
     const doc = JSON.parse(within(sign).getByLabelText("Document").textContent ?? "{}");
     expect(doc).toEqual({
-      type: "https://trusttasks.org/spec/git-ns/right/ratify/0.1",
+      type: "https://trusttasks.org/spec/git-ns/right/ratify/0.2",
       payload: {
         subject: ALICE,
         right: "git.repo.own",
         resource: DOCS.resource,
-        breakGlassAt: ALICE_BREAK_GLASS.breakGlass.at,
+        breakGlassAt: ALICE_BREAK_GLASS.breakGlass.recordedAt,
         statement: "Confirmed with Bob",
       },
     });
@@ -365,7 +365,7 @@ describe("single-administrator mode (VTI-APV-022)", () => {
     const sign = await screen.findByRole("dialog", { name: "Grant owner on acme/docs" });
     expect(sign.textContent).toMatch(NOTICE);
     expect(JSON.parse(within(sign).getByLabelText("Document").textContent ?? "{}")).toEqual({
-      type: "https://trusttasks.org/spec/git-ns/right/grant/0.3",
+      type: "https://trusttasks.org/spec/git-ns/right/grant/0.4",
       payload: { subject: ALICE, right: "git.repo.own", resource: DOCS.resource },
     });
     fireEvent.click(await within(sign).findByRole("button", { name: "Sign and send" }));
@@ -457,7 +457,7 @@ describe("single-administrator mode (VTI-APV-022)", () => {
             right: "git.repo.own",
             resource: DOCS.resource,
             at: "2026-10-03T12:00:00Z",
-            task: "https://trusttasks.org/spec/git-ns/right/grant/0.3",
+            task: "https://trusttasks.org/spec/git-ns/right/grant/0.4",
           },
         ],
       }),
