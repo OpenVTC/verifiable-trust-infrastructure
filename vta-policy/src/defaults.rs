@@ -366,9 +366,13 @@ mod tests {
         )
         .await
         .unwrap();
+        // The retired reconciler's row omits `minApprovals` and
+        // `excludeRequester`, which `policy/_shared/0.4` requires, so it now
+        // fails closed (`deny`) rather than demanding consent — still a gate
+        // in force that no config declares.
         assert_eq!(
             decide_for(&ks, UPDATE_URI).await.decision,
-            Disposition::RequireConsent,
+            Disposition::Deny,
             "precondition: the stale row is in force before the upgrade boot"
         );
 

@@ -24,7 +24,7 @@
 //! ## Layering
 //!
 //! - [`engine`] — the thin `regorus` wrapper (compile + evaluate one module).
-//! - [`types`] — the Rust mirror of `policy/_shared/0.3`.
+//! - [`types`] — the Rust mirror of `policy/_shared/0.4`.
 //! - [`decide`] — orchestration across the active policy set (this module).
 //!
 //! Persistence (the `policy:` keyspace), the `policy/*` Trust Task handlers,
