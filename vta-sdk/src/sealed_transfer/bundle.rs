@@ -119,7 +119,7 @@ pub enum SealedPayloadV1 {
     /// it. Additive variant — no existing variant changes.
     ExternalSecret(Box<super::external::ExternalSecretPayload>),
     /// A short-lived, downscoped provider credential issued by
-    /// `external/credentials/issue/0.1`, sealed to the consumer that asked.
+    /// `external/credentials/issue`, sealed to the consumer that asked.
     /// Additive variant — no existing variant changes.
     ExternalCredential(Box<super::external::ExternalCredentialPayload>),
     /// A community's storage credential, sealed in an administrator's client to the

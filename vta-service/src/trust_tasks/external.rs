@@ -206,13 +206,13 @@ fn context_and_id(doc: &TrustTask<Value>) -> (String, String) {
 
 const LIST_DEFAULT_LIMIT: usize = 50;
 
-/// `external/accounts/list/0.1`.
+/// `external/accounts/list/0.2`.
 pub(super) async fn handle_list(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    use ext::accounts::list::v0_1 as t;
+    use ext::accounts::list::v0_2 as t;
     let req: t::Payload = match parse_payload(&doc) {
         Ok(r) => r,
         Err(resp) => return resp,
@@ -285,13 +285,13 @@ pub(super) async fn handle_list(
     respond::<t::Response>(&doc, out)
 }
 
-/// `external/accounts/get/0.1`.
+/// `external/accounts/get/0.2`.
 pub(super) async fn handle_get(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    use ext::accounts::get::v0_1 as t;
+    use ext::accounts::get::v0_2 as t;
     let req: t::Payload = match parse_payload(&doc) {
         Ok(r) => r,
         Err(resp) => return resp,
@@ -356,13 +356,13 @@ pub(super) async fn handle_setup(
 
 // ─── Create / update ─────────────────────────────────────────────────────────
 
-/// `external/accounts/create/0.1`.
+/// `external/accounts/create/0.2`.
 pub(super) async fn handle_create(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    use ext::accounts::create::v0_1 as t;
+    use ext::accounts::create::v0_2 as t;
     let req: t::Payload = match parse_payload(&doc) {
         Ok(r) => r,
         Err(resp) => return resp,
@@ -457,13 +457,13 @@ fn declared(code: trust_tasks_rs::DeclaredErrorCode) -> trust_tasks_rs::TrustTas
     }
 }
 
-/// `external/accounts/update/0.1`.
+/// `external/accounts/update/0.2`.
 pub(super) async fn handle_update(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    use ext::accounts::update::v0_1 as t;
+    use ext::accounts::update::v0_2 as t;
     let req: t::Payload = match parse_payload(&doc) {
         Ok(r) => r,
         Err(resp) => return resp,
@@ -690,13 +690,13 @@ fn verify_producer(
 
 // ─── Bindings ────────────────────────────────────────────────────────────────
 
-/// `external/accounts/bindings/grant/0.1`.
+/// `external/accounts/bindings/grant/0.2`.
 pub(super) async fn handle_bindings_grant(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    use ext::accounts::bindings::grant::v0_1 as t;
+    use ext::accounts::bindings::grant::v0_2 as t;
     let req: t::Payload = match parse_payload(&doc) {
         Ok(r) => r,
         Err(resp) => return resp,
@@ -755,14 +755,14 @@ pub(super) async fn handle_bindings_grant(
     respond::<t::Response>(&doc, json!({ "account": wire(&rec) }))
 }
 
-/// `external/accounts/bindings/revoke/0.1`. Never consent-gated by design:
+/// `external/accounts/bindings/revoke/0.2`. Never consent-gated by design:
 /// taking authority away must be fast and possible alone.
 pub(super) async fn handle_bindings_revoke(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    use ext::accounts::bindings::revoke::v0_1 as t;
+    use ext::accounts::bindings::revoke::v0_2 as t;
     let req: t::Payload = match parse_payload(&doc) {
         Ok(r) => r,
         Err(resp) => return resp,
@@ -806,14 +806,14 @@ pub(super) async fn handle_bindings_revoke(
 
 // ─── Probe and keys ──────────────────────────────────────────────────────────
 
-/// `external/accounts/probe/0.1`. A provider refusal is a successful response
+/// `external/accounts/probe/0.2`. A provider refusal is a successful response
 /// with `ok: false`.
 pub(super) async fn handle_probe(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    use ext::accounts::probe::v0_1 as t;
+    use ext::accounts::probe::v0_2 as t;
     let req: t::Payload = match parse_payload(&doc) {
         Ok(r) => r,
         Err(resp) => return resp,
@@ -886,7 +886,7 @@ pub(super) async fn handle_probe(
     respond::<t::Response>(&doc, json!({ "report": report }))
 }
 
-/// `external/accounts/keys/rotate/0.1`. No model this build serves holds a key
+/// `external/accounts/keys/rotate/0.2`. No model this build serves holds a key
 /// (`s3-static-presign` holds a secret, rotated with `secret/set`), so every
 /// account is refused with `notKeyModel`.
 pub(super) async fn handle_keys_rotate(
@@ -894,7 +894,7 @@ pub(super) async fn handle_keys_rotate(
     auth: &AuthClaims,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    use ext::accounts::keys::rotate::v0_1 as t;
+    use ext::accounts::keys::rotate::v0_2 as t;
     let req: t::Payload = match parse_payload(&doc) {
         Ok(r) => r,
         Err(resp) => return resp,
@@ -1005,13 +1005,13 @@ async fn transition<R: DeserializeOwned + Serialize>(
     respond::<R>(doc, json!({ "account": wire(&rec) }))
 }
 
-/// `external/accounts/suspend/0.1` — the kill switch. Never consent-gated.
+/// `external/accounts/suspend/0.2` — the kill switch. Never consent-gated.
 pub(super) async fn handle_suspend(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    use ext::accounts::suspend::v0_1 as t;
+    use ext::accounts::suspend::v0_2 as t;
     if let Err(resp) = parse_payload::<t::Payload>(&doc) {
         return resp;
     }
@@ -1030,13 +1030,13 @@ pub(super) async fn handle_suspend(
     .await
 }
 
-/// `external/accounts/resume/0.1`.
+/// `external/accounts/resume/0.2`.
 pub(super) async fn handle_resume(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    use ext::accounts::resume::v0_1 as t;
+    use ext::accounts::resume::v0_2 as t;
     if let Err(resp) = parse_payload::<t::Payload>(&doc) {
         return resp;
     }
@@ -1069,13 +1069,13 @@ pub(super) async fn handle_resume(
     .await
 }
 
-/// `external/accounts/archive/0.1`.
+/// `external/accounts/archive/0.2`.
 pub(super) async fn handle_archive(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    use ext::accounts::archive::v0_1 as t;
+    use ext::accounts::archive::v0_2 as t;
     if let Err(resp) = parse_payload::<t::Payload>(&doc) {
         return resp;
     }
@@ -1094,14 +1094,14 @@ pub(super) async fn handle_archive(
     .await
 }
 
-/// `external/accounts/restore/0.1` — back from the archive, **suspended**:
+/// `external/accounts/restore/0.2` — back from the archive, **suspended**:
 /// turning an account on again always goes through `resume`.
 pub(super) async fn handle_restore(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    use ext::accounts::restore::v0_1 as t;
+    use ext::accounts::restore::v0_2 as t;
     if let Err(resp) = parse_payload::<t::Payload>(&doc) {
         return resp;
     }
@@ -1175,246 +1175,8 @@ pub(super) async fn handle_delete(
 
 // ─── Issuance ────────────────────────────────────────────────────────────────
 
-/// `external/credentials/issue/0.1`.
-pub(super) async fn handle_issue(
-    state: &AppState,
-    auth: &AuthClaims,
-    doc: TrustTask<Value>,
-) -> TrustTaskOutcome {
-    use ext::credentials::issue::v0_1 as t;
-    let req: t::Payload = match parse_payload(&doc) {
-        Ok(r) => r,
-        Err(resp) => return resp,
-    };
-    let context = req.context.to_string();
-    let id = req.account.to_string();
-    let requested: RequestedScope = match serde_json::from_value(json_of(&req.scope)) {
-        Ok(s) => s,
-        Err(e) => {
-            return reject_with(
-                &doc,
-                RejectReason::MalformedRequest {
-                    reason: format!("scope: {e}"),
-                },
-            );
-        }
-    };
-    let ttl = u32::try_from(req.ttl_seconds).unwrap_or(u32::MAX);
-    let resource = format!("{context}/{id}");
-
-    // 1. The caller is a binding's consumer on the named account — the DID the
-    //    proof or the transport established (`auth.did`), never one named in
-    //    the payload. Every other caller, and every caller naming an account
-    //    that does not exist, gets the same `notFound`: issuance is no oracle
-    //    for which accounts exist or what state they are in.
-    let rec = match store::get(&state.external_accounts_ks, &context, &id).await {
-        Ok(r) => r,
-        Err(e) => return app_error_to_reject(&doc, e),
-    };
-    let bound = rec
-        .as_ref()
-        .and_then(|r| r.binding_for(&auth.did).cloned().map(|b| (r, b)));
-    let Some((rec, binding)) = bound else {
-        // A caller that holds the capability and is still unbound is what a
-        // compromised or misconfigured consumer looks like.
-        if holds(state, auth, Capability::ExternalAuthUse).await {
-            tracing::warn!(security_alert = true, consumer = %auth.did, account = %resource,
-                "external credential requested by a DID with no binding on the account");
-            audit_detail(
-                state,
-                "external.credential.issue",
-                auth,
-                &resource,
-                "denied",
-                &context,
-                "notBound",
-            )
-            .await;
-        }
-        return reject_declared(
-            &doc,
-            t::error_codes::NOT_FOUND,
-            format!("no external account {id} in context {context} is bound to the caller"),
-        );
-    };
-
-    // 2. The capability, in the account's context, through the act scope.
-    if !(holds(state, auth, Capability::ExternalAuthUse).await && auth.has_context_access(&context))
-    {
-        audit_detail(
-            state,
-            "external.credential.issue",
-            auth,
-            &resource,
-            "denied",
-            &context,
-            "permissionDenied",
-        )
-        .await;
-        return reject_with(
-            &doc,
-            RejectReason::PermissionDenied {
-                reason: format!(
-                    "{} does not hold external-auth-use in context {context}",
-                    auth.did
-                ),
-            },
-        );
-    }
-
-    // 3. Only now, to a bound consumer: the account's state.
-    if rec.state != AccountState::Active {
-        return reject_declared(
-            &doc,
-            t::error_codes::NOT_ACTIVE,
-            format!("account {id} is {}", rec.state.as_str()),
-        );
-    }
-    let Some(d) = driver::driver_for(rec.model()).filter(|d| d.brokered()) else {
-        return reject_declared(
-            &doc,
-            t::error_codes::NOT_BROKERED,
-            format!(
-                "a {} account is not used through credential issuance",
-                rec.model()
-            ),
-        );
-    };
-    if rec.provider_setup_required {
-        return reject_declared(
-            &doc,
-            t::error_codes::PROVIDER_SETUP_REQUIRED,
-            format!("account {id} needs its provider setup completed and a complete probe"),
-        );
-    }
-
-    // 4. and 5. Scope inside the ceiling; TTL under the binding's maximum.
-    match scope::check_against_binding(rec.model(), &binding, &requested, ttl) {
-        Ok(()) => {}
-        Err(ScopeRefusal::TtlTooLong { requested, max }) => {
-            return reject_declared(
-                &doc,
-                t::error_codes::TTL_TOO_LONG,
-                format!("ttlSeconds {requested} exceeds the binding's maxTtlSeconds {max}"),
-            );
-        }
-        Err(refusal) => {
-            tracing::warn!(security_alert = true, consumer = %auth.did, account = %resource, refusal = %refusal,
-                "external credential requested outside the binding's ceiling");
-            audit_detail(
-                state,
-                "external.credential.issue",
-                auth,
-                &resource,
-                "denied",
-                &context,
-                "scopeOutsideCeiling",
-            )
-            .await;
-            return reject_declared(
-                &doc,
-                t::error_codes::SCOPE_OUTSIDE_CEILING,
-                refusal.to_string(),
-            );
-        }
-    }
-
-    // 6. The binding's rate.
-    if !state
-        .external_rate
-        .try_acquire(&context, &id, &auth.did, binding.rate_per_minute)
-    {
-        return reject_declared(
-            &doc,
-            t::error_codes::RATE_LIMITED,
-            format!(
-                "the binding's rate of {} per minute is exhausted",
-                binding.rate_per_minute
-            ),
-        );
-    }
-
-    // The key to seal to, found before the provider is contacted: a credential
-    // that cannot be delivered is never minted.
-    let recipient = match sealing_key(&auth.did).await {
-        Ok(k) => k,
-        Err(why) => return reject_declared(&doc, t::error_codes::NO_KEY_AGREEMENT, why),
-    };
-
-    // Build the credential.
-    let secret = match load_secret(state, rec).await {
-        Ok(s) => s,
-        Err(e) => return app_error_to_reject(&doc, e),
-    };
-    let issued = d
-        .issue(IssueRequest {
-            account: rec,
-            secret: secret.as_deref().map(String::as_str),
-            scope: &requested,
-            ttl_seconds: ttl,
-            source_cidrs: &binding.source_cidrs,
-            now: Utc::now(),
-        })
-        .await;
-    drop(secret);
-    let issued = match issued {
-        Ok(i) => i,
-        Err(DriverError::SetupRequired(m)) => {
-            return reject_declared(&doc, t::error_codes::PROVIDER_SETUP_REQUIRED, m);
-        }
-        Err(DriverError::Refused(m)) => {
-            return reject_declared(&doc, t::error_codes::PROVIDER_REFUSED, m);
-        }
-        Err(DriverError::Unavailable(m)) => {
-            return reject_declared(&doc, t::error_codes::PROVIDER_UNAVAILABLE, m);
-        }
-        Err(DriverError::Internal(m)) => return app_error_to_reject(&doc, AppError::Internal(m)),
-        // `DriverError` is `#[non_exhaustive]`: a class this task does not map
-        // is a fault of the custodian's own.
-        Err(other) => return app_error_to_reject(&doc, AppError::Internal(other.to_string())),
-    };
-
-    let scope_json = serde_json::to_value(&requested).unwrap_or(Value::Null);
-    let expires_at = rfc3339(issued.expires_at);
-    let sealed = match seal_credential(state, &recipient, &sealed_payload(issued)).await {
-        Ok(s) => s,
-        Err(e) => return app_error_to_reject(&doc, e),
-    };
-
-    // The audit row names the issuance, never the credential.
-    audit_detail(
-        state,
-        "external.credential.issue",
-        auth,
-        &resource,
-        "success",
-        &context,
-        &format!("scope:{scope_json} expiresAt:{expires_at}"),
-    )
-    .await;
-    respond::<t::Response>(
-        &doc,
-        json!({ "sealedCredential": sealed, "expiresAt": expires_at, "scope": scope_json }),
-    )
-}
-
-/// `sealedCredential`'s bound in `external/credentials/issue/0.2`'s and `0.3`'s
-/// response.
+/// `sealedCredential`'s bound in `external/credentials/issue/0.3`'s response.
 const MAX_SEALED_CREDENTIAL: usize = 262_144;
-
-/// Which version of `external/credentials/issue` a `scope`-or-`presign` request
-/// arrived at. They share every check but two: 0.3 holds a batch to 64
-/// operations, and it sizes a batch's sealed answer **before** the binding's
-/// rate, refusing one that would not fit with `responseTooLarge` (items 7 and
-/// 8). 0.2 keeps its own order — the rate, then the key, then the answer, an
-/// oversized one refused as `invalidBatch` — because `responseTooLarge` is not
-/// one of 0.2's codes and no standard code says it; a VTC still on 0.2 gets
-/// exactly what it got before.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum IssueVersion {
-    V0_2,
-    V0_3,
-}
 
 /// The binding's rate, counted once for this issuance.
 fn take_rate(
@@ -1433,7 +1195,7 @@ fn take_rate(
     }
     Err(reject_declared_with(
         doc,
-        ext::credentials::issue::v0_2::error_codes::RATE_LIMITED,
+        ext::credentials::issue::v0_3::error_codes::RATE_LIMITED,
         format!("the binding's rate of {per_minute} per minute is exhausted"),
         json!({ "retryAfterSeconds": 60 }),
     ))
@@ -1489,7 +1251,7 @@ fn max_operations_that_fit(
     (lo > 0).then_some(lo)
 }
 
-/// `issue/0.2` item 5 refused: alerted and audited, as the specification asks.
+/// `issue/0.3` item 5 refused: alerted and audited, as the specification asks.
 async fn refuse_outside(
     state: &AppState,
     auth: &AuthClaims,
@@ -1512,12 +1274,12 @@ async fn refuse_outside(
     .await;
     reject_declared(
         doc,
-        ext::credentials::issue::v0_2::error_codes::SCOPE_OUTSIDE_CEILING,
+        ext::credentials::issue::v0_3::error_codes::SCOPE_OUTSIDE_CEILING,
         refusal,
     )
 }
 
-/// A declared refusal with `details`, as `issue/0.2` declares several.
+/// A declared refusal with `details`, as `issue/0.3` declares several.
 fn reject_declared_with(
     doc: &TrustTask<Value>,
     code: trust_tasks_rs::DeclaredErrorCode,
@@ -1535,72 +1297,46 @@ fn reject_declared_with(
     )
 }
 
-/// `external/credentials/issue/0.2`: a credential under `scope`, or a batch of
-/// presigned requests under `presign` for an `s3-static-presign` account.
+/// `external/credentials/issue/0.3`: a credential under `scope`, or a batch of
+/// at most 64 presigned requests under `presign` for an `s3-static-presign`
+/// account.
 ///
 /// The checks run in the specification's order, before anything is signed:
 /// the binding (1), the capability (2), the account (3), the request's shape and
-/// the batch rules (4), the ceiling (5), the TTL (6), the rate — one issuance,
-/// whatever the size of the batch (7) — and the key to seal to. A batch is signed
-/// exactly as the table says (`vta_external::batch`, `s3_presign`), sealed as a
-/// `PresignedRequestSet`, and audited by its object, upload id and operations,
-/// never by a URL.
-pub(super) async fn handle_issue_v2(
-    state: &AppState,
-    auth: &AuthClaims,
-    doc: TrustTask<Value>,
-) -> TrustTaskOutcome {
-    issue_scope_or_presign(state, auth, doc, IssueVersion::V0_2).await
-}
-
-/// `external/credentials/issue/0.3`: 0.2's checks and signing, a batch of at
-/// most 64, and — for `presign` — the sealed answer sized before the rate is
-/// counted (items 7 and 8). The custodian resolves the caller's key-agreement
-/// key, presigns and seals (none of which contacts the provider), and refuses a
-/// set whose armor would exceed `sealedCredential`'s bound with
-/// `responseTooLarge`, naming in `details.maxOperations` how many of the batch's
-/// operations, in order, would fit. Only a batch that fits counts against the
-/// binding's rate; one refused anywhere before that, `responseTooLarge`
-/// included, has obtained nothing and spent nothing. A refused set is dropped
+/// the batch rules (4), the ceiling (5) and the TTL (6). A `scope` then counts
+/// against the binding's rate before the provider is asked. For `presign`, the
+/// custodian resolves the caller's key-agreement key, presigns and seals (none
+/// of which contacts the provider), and refuses a set whose armor would exceed
+/// `sealedCredential`'s bound with `responseTooLarge`, naming in
+/// `details.maxOperations` how many of the batch's operations, in order, would
+/// fit (item 7). Only a batch that fits counts against the binding's rate
+/// (item 8); one refused anywhere before that has obtained nothing and spent
+/// nothing. A batch is signed exactly as the table says (`vta_external::batch`,
+/// `s3_presign`), sealed as a `PresignedRequestSet`, and audited by its object,
+/// upload id and operations, never by a URL; a refused set is dropped
 /// unreturned and never logged (each entry zeroizes its URL).
-pub(super) async fn handle_issue_v3(
+pub(super) async fn handle_issue(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    issue_scope_or_presign(state, auth, doc, IssueVersion::V0_3).await
-}
-
-/// The handler `issue/0.2` and `0.3` share; [`IssueVersion`] says where they
-/// differ.
-async fn issue_scope_or_presign(
-    state: &AppState,
-    auth: &AuthClaims,
-    doc: TrustTask<Value>,
-    version: IssueVersion,
-) -> TrustTaskOutcome {
-    use ext::credentials::issue::v0_2 as t;
+    use ext::credentials::issue::v0_3 as t;
     use vta_external::batch::{self, BatchRefusal};
-    // A 0.3 payload is read against 0.3's own type first; it is then a 0.2
-    // payload (0.3 only narrows the batch), which the domain checks take.
-    if version == IssueVersion::V0_3 {
-        if let Err(resp) = parse_payload::<ext::credentials::issue::v0_3::Payload>(&doc) {
-            return resp;
-        }
-        let ops = doc.payload["presign"]["requests"]
-            .as_array()
-            .map_or(0, Vec::len);
-        if ops > batch::MAX_OPERATIONS_0_3 {
-            return reject_with(
-                &doc,
-                RejectReason::MalformedRequest {
-                    reason: format!(
-                        "a batch holds at most {} operations, not {ops}",
-                        batch::MAX_OPERATIONS_0_3
-                    ),
-                },
-            );
-        }
+    // The schema bounds a batch at 64; refused as the malformed request it is,
+    // before any domain check.
+    let ops = doc.payload["presign"]["requests"]
+        .as_array()
+        .map_or(0, Vec::len);
+    if ops > batch::MAX_OPERATIONS {
+        return reject_with(
+            &doc,
+            RejectReason::MalformedRequest {
+                reason: format!(
+                    "a batch holds at most {} operations, not {ops}",
+                    batch::MAX_OPERATIONS
+                ),
+            },
+        );
     }
     let req: t::Payload = match parse_payload(&doc) {
         Ok(r) => r,
@@ -1814,11 +1550,10 @@ async fn issue_scope_or_presign(
         }
     }
 
-    // The binding's rate: one issuance, whatever the size of the batch. At 0.2
-    // (item 7) and for a 0.3 `scope`, here, before the provider is asked. A 0.3
-    // batch counts only once its sealed answer is known to fit (items 7 and 8),
-    // below.
-    let rate_after_sizing = version == IssueVersion::V0_3 && batch_req.is_some();
+    // The binding's rate: one issuance, whatever the size of the batch. For a
+    // `scope`, here, before the provider is asked. A batch counts only once its
+    // sealed answer is known to fit (items 7 and 8), below.
+    let rate_after_sizing = batch_req.is_some();
     if !rate_after_sizing
         && let Err(refused) = take_rate(
             state,
@@ -1832,8 +1567,8 @@ async fn issue_scope_or_presign(
         return refused;
     }
 
-    // The key to seal to, before anything is presigned (item 13): at 0.3 a
-    // caller with none is refused before the answer is sized (item 7).
+    // The key to seal to, before anything is presigned (item 13): a caller with
+    // none is refused before the answer is sized (item 7).
     let recipient = match sealing_key(&auth.did).await {
         Ok(k) => k,
         Err(why) => return reject_declared(&doc, t::error_codes::NO_KEY_AGREEMENT, why),
@@ -1940,35 +1675,21 @@ async fn issue_scope_or_presign(
     if sealed.len() > MAX_SEALED_CREDENTIAL {
         let len = sealed.len();
         drop(sealed);
-        return match version {
-            IssueVersion::V0_2 => reject_declared(
-                &doc,
-                t::error_codes::INVALID_BATCH,
-                format!(
-                    "the batch's presigned requests, sealed, are {len} bytes, over the \
-                     response's {MAX_SEALED_CREDENTIAL}; ask for fewer operations at once"
-                ),
-            ),
-            // Item 7: refused before the rate (item 8), so it costs nothing.
-            IssueVersion::V0_3 => {
-                let fits = max_operations_that_fit(&payload, &producer_assertion(state).await);
-                drop(payload);
-                let message = format!(
-                    "the sealed answer to this batch would be {len} characters, over the \
-                     {MAX_SEALED_CREDENTIAL} `sealedCredential` allows; split the batch"
-                );
-                let code = ext::credentials::issue::v0_3::error_codes::RESPONSE_TOO_LARGE;
-                match fits {
-                    Some(n) => {
-                        reject_declared_with(&doc, code, message, json!({ "maxOperations": n }))
-                    }
-                    None => reject_declared(&doc, code, message),
-                }
-            }
+        // Item 7: refused before the rate (item 8), so it costs nothing.
+        let fits = max_operations_that_fit(&payload, &producer_assertion(state).await);
+        drop(payload);
+        let message = format!(
+            "the sealed answer to this batch would be {len} characters, over the \
+             {MAX_SEALED_CREDENTIAL} `sealedCredential` allows; split the batch"
+        );
+        let code = t::error_codes::RESPONSE_TOO_LARGE;
+        return match fits {
+            Some(n) => reject_declared_with(&doc, code, message, json!({ "maxOperations": n })),
+            None => reject_declared(&doc, code, message),
         };
     }
     drop(payload);
-    // Item 8, for a 0.3 batch: it fits, so now it counts.
+    // Item 8, for a batch: it fits, so now it counts.
     if rate_after_sizing
         && let Err(refused) = take_rate(
             state,
@@ -1992,10 +1713,7 @@ async fn issue_scope_or_presign(
     )
     .await;
     let answer = json!({ "sealedCredential": sealed, "expiresAt": expires_at, echo_key: echo });
-    match version {
-        IssueVersion::V0_2 => respond::<t::Response>(&doc, answer),
-        IssueVersion::V0_3 => respond::<ext::credentials::issue::v0_3::Response>(&doc, answer),
-    }
+    respond::<t::Response>(&doc, answer)
 }
 
 /// The consumer's key-agreement key: for a `did:key`, the X25519 derivation of
@@ -2125,7 +1843,7 @@ mod tests {
             &state,
             &manager(),
             doc(
-                uris::TASK_EXTERNAL_ACCOUNTS_CREATE_0_1,
+                uris::TASK_EXTERNAL_ACCOUNTS_CREATE_0_2,
                 json!({ "context": CTX, "id": id, "label": "R2 main", "settings": settings() }),
             ),
         )
@@ -2170,7 +1888,7 @@ mod tests {
             state,
             &manager(),
             doc(
-                uris::TASK_EXTERNAL_ACCOUNTS_BINDINGS_GRANT_0_1,
+                uris::TASK_EXTERNAL_ACCOUNTS_BINDINGS_GRANT_0_2,
                 json!({ "context": CTX, "id": id, "binding": {
                     "consumer": consumer,
                     "scopeCeiling": { "prefixes": ["rooms/"], "actions": ["put", "get"] },
@@ -2192,11 +1910,18 @@ mod tests {
         store::put(&state.external_accounts_ks, &rec).await.unwrap();
     }
 
+    /// One operation on one object, as a batch of one: `action` is the
+    /// `PresignOperation` (`put` writes three bytes of [`SUM`]).
     fn issue_doc(id: &str, prefix: &str, action: &str, key: &str, ttl: u32) -> TrustTask<Value> {
+        let op = if action == "put" {
+            json!({ "operation": "put", "contentLength": 3, "checksumSha256": SUM })
+        } else {
+            json!({ "operation": action })
+        };
         doc(
-            uris::TASK_EXTERNAL_CREDENTIALS_ISSUE_0_1,
+            uris::TASK_EXTERNAL_CREDENTIALS_ISSUE_0_3,
             json!({ "context": CTX, "account": id,
-                    "scope": { "prefix": prefix, "actions": [action], "objectKey": key },
+                    "presign": { "prefix": prefix, "objectKey": key, "requests": [op] },
                     "ttlSeconds": ttl }),
         )
     }
@@ -2231,7 +1956,7 @@ mod tests {
         .await;
         let payload = body(&out);
         assert_eq!(code(&out), "<success>", "{payload}");
-        assert_eq!(payload["scope"]["objectKey"], "blob");
+        assert_eq!(payload["presign"]["objectKey"], "blob");
         assert!(payload["expiresAt"].is_string());
 
         let armored = payload["sealedCredential"].as_str().unwrap();
@@ -2243,12 +1968,12 @@ mod tests {
         let c = vta_sdk::client::open_external_credential(armored, &x_secret)
             .expect("the consumer opens what was sealed to it");
         match &c {
-            ExternalCredentialPayload::PresignedRequest {
-                method,
-                url,
+            ExternalCredentialPayload::PresignedRequests {
+                requests,
                 expires_at,
-                ..
             } => {
+                assert_eq!(requests.len(), 1);
+                let (method, url) = (&requests[0].method, &requests[0].url);
                 assert_eq!(method, "PUT");
                 assert!(
                     url.starts_with("https://s3.example.invalid/rooms/rooms/3f9a/blob?"),
@@ -2258,7 +1983,7 @@ mod tests {
                 assert!(url.contains("X-Amz-Signature="), "{url}");
                 assert_eq!(expires_at, payload["expiresAt"].as_str().unwrap());
             }
-            _ => panic!("expected a presigned request"),
+            _ => panic!("expected a presigned request set"),
         }
     }
 
@@ -2361,7 +2086,7 @@ mod tests {
 
     fn batch_doc(id: &str, presign: Value, ttl: u32) -> TrustTask<Value> {
         doc(
-            uris::TASK_EXTERNAL_CREDENTIALS_ISSUE_0_2,
+            uris::TASK_EXTERNAL_CREDENTIALS_ISSUE_0_3,
             json!({ "context": CTX, "account": id, "presign": presign, "ttlSeconds": ttl }),
         )
     }
@@ -2377,7 +2102,7 @@ mod tests {
         let parts: Vec<Value> = (1..=64)
             .map(|n| json!({ "operation": "upload-part", "partNumber": n, "contentLength": 5_242_880, "checksumSha256": SUM }))
             .collect();
-        let out = handle_issue_v2(
+        let out = handle_issue(
             &state,
             &consumer(),
             batch_doc(
@@ -2408,7 +2133,7 @@ mod tests {
             assert_eq!(r.headers["x-amz-checksum-sha256"], SUM);
         }
         // The rate was one: a second batch is refused.
-        let again = handle_issue_v2(
+        let again = handle_issue(
             &state,
             &consumer(),
             batch_doc(
@@ -2421,18 +2146,18 @@ mod tests {
         assert_eq!(code(&again), "external:rateLimited");
     }
 
-    /// `issue/0.2` items 1, 4, 5 and 6, in order: a stranger learns nothing, a
+    /// `issue/0.3` items 1, 4, 5 and 6, in order: a stranger learns nothing, a
     /// scope for an `s3-static-presign` account is the wrong shape, a batch that
     /// breaks its rules is `invalidBatch`, an operation whose ceiling action the
     /// binding lacks is outside it, and a long TTL says the binding's maximum.
     #[tokio::test]
-    async fn issuance_0_2_refuses_in_the_specified_order() {
+    async fn a_batch_is_refused_in_the_specified_order() {
         let (state, _dir) = ready("r2-order2", 60).await;
         let stranger = claims(&did_for_seed(0x52).0, Role::Application);
         let create = json!({ "prefix": "rooms/a/", "objectKey": "o", "requests": [{ "operation": "create-multipart" }] });
         assert_eq!(
             code(
-                &handle_issue_v2(
+                &handle_issue(
                     &state,
                     &stranger,
                     batch_doc("r2-order2", create.clone(), 60)
@@ -2442,11 +2167,11 @@ mod tests {
             "external:notFound"
         );
         let scope = doc(
-            uris::TASK_EXTERNAL_CREDENTIALS_ISSUE_0_2,
+            uris::TASK_EXTERNAL_CREDENTIALS_ISSUE_0_3,
             json!({ "context": CTX, "account": "r2-order2",
                     "scope": { "prefix": "rooms/a/", "actions": ["get"] }, "ttlSeconds": 60 }),
         );
-        let out = handle_issue_v2(&state, &consumer(), scope).await;
+        let out = handle_issue(&state, &consumer(), scope).await;
         assert_eq!(
             code(&out),
             "external/credentials/issue:requestShapeMismatch"
@@ -2454,40 +2179,22 @@ mod tests {
         assert_eq!(body(&out)["details"]["expected"], "presign");
         let no_id = json!({ "prefix": "rooms/a/", "objectKey": "o", "requests": [{ "operation": "list-parts" }] });
         assert_eq!(
-            code(&handle_issue_v2(&state, &consumer(), batch_doc("r2-order2", no_id, 60)).await),
+            code(&handle_issue(&state, &consumer(), batch_doc("r2-order2", no_id, 60)).await),
             "external/credentials/issue:invalidBatch"
         );
         // The binding grants put and get, not delete: abort-multipart is outside it.
         let abort = json!({ "prefix": "rooms/a/", "objectKey": "o", "uploadId": "u", "requests": [{ "operation": "abort-multipart" }] });
         assert_eq!(
-            code(&handle_issue_v2(&state, &consumer(), batch_doc("r2-order2", abort, 60)).await),
+            code(&handle_issue(&state, &consumer(), batch_doc("r2-order2", abort, 60)).await),
             "external/credentials/issue:scopeOutsideCeiling"
         );
-        let out = handle_issue_v2(&state, &consumer(), batch_doc("r2-order2", create, 901)).await;
+        let out = handle_issue(&state, &consumer(), batch_doc("r2-order2", create, 901)).await;
         assert_eq!(code(&out), "external/credentials/issue:ttlTooLong");
         assert_eq!(body(&out)["details"]["maxTtlSeconds"], 900);
-        // A batch whose sealed answer would not fit the response is refused, not
-        // answered out of schema.
-        let parts: Vec<Value> = (1..=128)
-            .map(|n| json!({ "operation": "upload-part", "partNumber": n, "contentLength": 5_242_880, "checksumSha256": SUM }))
-            .collect();
-        let big =
-            json!({ "prefix": "rooms/a/", "objectKey": "o", "uploadId": "u", "requests": parts });
-        assert_eq!(
-            code(&handle_issue_v2(&state, &consumer(), batch_doc("r2-order2", big, 60)).await),
-            "external/credentials/issue:invalidBatch"
-        );
         let put = json!({ "prefix": "rooms/a/", "objectKey": "o",
             "requests": [{ "operation": "put", "contentLength": 3, "checksumSha256": SUM }] });
-        let out = handle_issue_v2(&state, &consumer(), batch_doc("r2-order2", put, 60)).await;
+        let out = handle_issue(&state, &consumer(), batch_doc("r2-order2", put, 60)).await;
         assert_eq!(code(&out), "<success>", "{}", body(&out));
-    }
-
-    fn batch_doc_v3(id: &str, presign: Value, ttl: u32) -> TrustTask<Value> {
-        doc(
-            uris::TASK_EXTERNAL_CREDENTIALS_ISSUE_0_3,
-            json!({ "context": CTX, "account": id, "presign": presign, "ttlSeconds": ttl }),
-        )
     }
 
     /// `n` part writes on an object whose key and upload id are as long as the
@@ -2540,10 +2247,10 @@ mod tests {
         // Learn the split.
         let (probe, _d) = ready("r2-large", 60).await;
         let max = refused(
-            &handle_issue_v3(
+            &handle_issue(
                 &probe,
                 &consumer(),
-                batch_doc_v3("r2-large", longest_parts(1, 64), 300),
+                batch_doc("r2-large", longest_parts(1, 64), 300),
             )
             .await,
         );
@@ -2553,10 +2260,10 @@ mod tests {
         let (state, _dir) = ready("r2-large", parts).await;
         assert_eq!(
             refused(
-                &handle_issue_v3(
+                &handle_issue(
                     &state,
                     &consumer(),
-                    batch_doc_v3("r2-large", longest_parts(1, 64), 300),
+                    batch_doc("r2-large", longest_parts(1, 64), 300),
                 )
                 .await
             ),
@@ -2567,10 +2274,10 @@ mod tests {
         let mut issued = 0usize;
         while first <= 64 {
             let n = max.min(65 - first);
-            let out = handle_issue_v3(
+            let out = handle_issue(
                 &state,
                 &consumer(),
-                batch_doc_v3("r2-large", longest_parts(first, n), 300),
+                batch_doc("r2-large", longest_parts(first, n), 300),
             )
             .await;
             assert_eq!(code(&out), "<success>", "part at {first}: {}", body(&out));
@@ -2578,10 +2285,10 @@ mod tests {
             first += n;
         }
         assert_eq!(issued, 64);
-        let next = handle_issue_v3(
+        let next = handle_issue(
             &state,
             &consumer(),
-            batch_doc_v3("r2-large", longest_parts(1, 1), 300),
+            batch_doc("r2-large", longest_parts(1, 1), 300),
         )
         .await;
         assert_eq!(code(&next), "external:rateLimited");
@@ -2604,7 +2311,7 @@ mod tests {
                 "external/credentials/issue:requestShapeMismatch",
             ),
             (
-                batch_doc_v3(
+                batch_doc(
                     "r2-rate3",
                     json!({ "prefix": "rooms/a/", "objectKey": "o", "requests": [{ "operation": "list-parts" }] }),
                     60,
@@ -2612,7 +2319,7 @@ mod tests {
                 "external/credentials/issue:invalidBatch",
             ),
             (
-                batch_doc_v3(
+                batch_doc(
                     "r2-rate3",
                     json!({ "prefix": "rooms/a/", "objectKey": "o", "uploadId": "u", "requests": [{ "operation": "abort-multipart" }] }),
                     60,
@@ -2620,7 +2327,7 @@ mod tests {
                 "external/credentials/issue:scopeOutsideCeiling",
             ),
             (
-                batch_doc_v3(
+                batch_doc(
                     "r2-rate3",
                     json!({ "prefix": "rooms/a/", "objectKey": "o", "requests": [{ "operation": "head" }] }),
                     901,
@@ -2628,18 +2335,18 @@ mod tests {
                 "external/credentials/issue:ttlTooLong",
             ),
             (
-                batch_doc_v3("r2-rate3", longest_parts(1, 64), 300),
+                batch_doc("r2-rate3", longest_parts(1, 64), 300),
                 "external/credentials/issue:responseTooLarge",
             ),
         ];
         for (d, expected) in refusals {
-            let out = handle_issue_v3(&state, &consumer(), d).await;
+            let out = handle_issue(&state, &consumer(), d).await;
             assert_eq!(code(&out), expected, "{}", body(&out));
         }
-        let ok = handle_issue_v3(
+        let ok = handle_issue(
             &state,
             &consumer(),
-            batch_doc_v3(
+            batch_doc(
                 "r2-rate3",
                 json!({ "prefix": "rooms/a/", "objectKey": "o", "requests": [{ "operation": "head" }] }),
                 60,
@@ -2649,10 +2356,10 @@ mod tests {
         assert_eq!(code(&ok), "<success>", "{}", body(&ok));
         let payload = body(&ok);
         assert_eq!(payload["presign"]["requests"][0]["operation"], "head");
-        let again = handle_issue_v3(
+        let again = handle_issue(
             &state,
             &consumer(),
-            batch_doc_v3(
+            batch_doc(
                 "r2-rate3",
                 json!({ "prefix": "rooms/a/", "objectKey": "o", "requests": [{ "operation": "head" }] }),
                 60,
@@ -2672,7 +2379,7 @@ mod tests {
             .collect();
         let presign =
             json!({ "prefix": "rooms/a/", "objectKey": "o", "uploadId": "u", "requests": parts });
-        let d = batch_doc_v3("r2-65", presign.clone(), 300);
+        let d = batch_doc("r2-65", presign.clone(), 300);
         let reject = crate::trust_tasks::validate_payload(
             &state,
             uris::TASK_EXTERNAL_CREDENTIALS_ISSUE_0_3,
@@ -2681,18 +2388,8 @@ mod tests {
         .await
         .expect("65 operations do not conform to issue/0.3");
         assert_eq!(code(&reject), "malformedRequest");
-        let out = handle_issue_v3(&state, &consumer(), d).await;
+        let out = handle_issue(&state, &consumer(), d).await;
         assert_eq!(code(&out), "malformedRequest", "{}", body(&out));
-        // 0.2 still takes it (up to 128).
-        assert!(
-            crate::trust_tasks::validate_payload(
-                &state,
-                uris::TASK_EXTERNAL_CREDENTIALS_ISSUE_0_2,
-                &batch_doc("r2-65", presign, 300),
-            )
-            .await
-            .is_none()
-        );
     }
 
     #[tokio::test]
@@ -2702,7 +2399,7 @@ mod tests {
         let out = handle_suspend(
             &state,
             &manager(),
-            lifecycle(uris::TASK_EXTERNAL_ACCOUNTS_SUSPEND_0_1),
+            lifecycle(uris::TASK_EXTERNAL_ACCOUNTS_SUSPEND_0_2),
         )
         .await;
         assert_eq!(body(&out)["account"]["state"], "suspended");
@@ -2722,7 +2419,7 @@ mod tests {
                 &handle_suspend(
                     &state,
                     &manager(),
-                    lifecycle(uris::TASK_EXTERNAL_ACCOUNTS_SUSPEND_0_1)
+                    lifecycle(uris::TASK_EXTERNAL_ACCOUNTS_SUSPEND_0_2)
                 )
                 .await
             ),
@@ -2731,7 +2428,7 @@ mod tests {
         let out = handle_resume(
             &state,
             &manager(),
-            lifecycle(uris::TASK_EXTERNAL_ACCOUNTS_RESUME_0_1),
+            lifecycle(uris::TASK_EXTERNAL_ACCOUNTS_RESUME_0_2),
         )
         .await;
         assert_eq!(body(&out)["account"]["state"], "active", "{}", body(&out));
@@ -2763,14 +2460,14 @@ mod tests {
         let out = handle_archive(
             &state,
             &manager(),
-            lifecycle(uris::TASK_EXTERNAL_ACCOUNTS_ARCHIVE_0_1),
+            lifecycle(uris::TASK_EXTERNAL_ACCOUNTS_ARCHIVE_0_2),
         )
         .await;
         assert_eq!(body(&out)["account"]["state"], "archived");
         let out = handle_restore(
             &state,
             &manager(),
-            lifecycle(uris::TASK_EXTERNAL_ACCOUNTS_RESTORE_0_1),
+            lifecycle(uris::TASK_EXTERNAL_ACCOUNTS_RESTORE_0_2),
         )
         .await;
         assert_eq!(
@@ -2781,7 +2478,7 @@ mod tests {
         handle_archive(
             &state,
             &manager(),
-            lifecycle(uris::TASK_EXTERNAL_ACCOUNTS_ARCHIVE_0_1),
+            lifecycle(uris::TASK_EXTERNAL_ACCOUNTS_ARCHIVE_0_2),
         )
         .await;
         let out = handle_delete(
@@ -2795,7 +2492,7 @@ mod tests {
             &state,
             &manager(),
             doc(
-                uris::TASK_EXTERNAL_ACCOUNTS_CREATE_0_1,
+                uris::TASK_EXTERNAL_ACCOUNTS_CREATE_0_2,
                 json!({ "context": CTX, "id": "r2-life", "label": "again", "settings": settings() }),
             ),
         )
@@ -2810,7 +2507,7 @@ mod tests {
         grant(&state, "r2-read", "did:key:z6MkOtherConsumer", 60).await;
         let get = || {
             doc(
-                uris::TASK_EXTERNAL_ACCOUNTS_GET_0_1,
+                uris::TASK_EXTERNAL_ACCOUNTS_GET_0_2,
                 json!({ "context": CTX, "id": "r2-read" }),
             )
         };
@@ -2834,7 +2531,7 @@ mod tests {
             &state,
             &stranger,
             doc(
-                uris::TASK_EXTERNAL_ACCOUNTS_LIST_0_1,
+                uris::TASK_EXTERNAL_ACCOUNTS_LIST_0_2,
                 json!({ "context": CTX }),
             ),
         )
@@ -2873,7 +2570,7 @@ mod tests {
                 &state,
                 &manager(),
                 doc(
-                    uris::TASK_EXTERNAL_ACCOUNTS_GET_0_1,
+                    uris::TASK_EXTERNAL_ACCOUNTS_GET_0_2,
                     json!({ "context": CTX, "id": "r2-secret" }),
                 ),
             )
@@ -2894,7 +2591,7 @@ mod tests {
             &state,
             &manager(),
             doc(
-                uris::TASK_EXTERNAL_ACCOUNTS_CREATE_0_1,
+                uris::TASK_EXTERNAL_ACCOUNTS_CREATE_0_2,
                 json!({ "context": CTX, "id": "gcs", "label": "GCS", "settings": {
                     "model": "gcp-wif-pinned", "projectNumber": "123456789012",
                     "poolId": "vta-pool", "providerId": "vta-provider" }}),
@@ -2917,7 +2614,7 @@ mod tests {
             &state,
             &initiator,
             doc(
-                uris::TASK_EXTERNAL_ACCOUNTS_SUSPEND_0_1,
+                uris::TASK_EXTERNAL_ACCOUNTS_SUSPEND_0_2,
                 json!({ "context": CTX, "id": "r2-cap" }),
             ),
         )
@@ -2947,12 +2644,13 @@ mod tests {
         let (did, _) = did_for_seed(CONSUMER_SEED);
         let mut doc: TrustTask<Value> = serde_json::from_value(json!({
             "id": format!("urn:uuid:{}", uuid::Uuid::new_v4()),
-            "type": uris::TASK_EXTERNAL_CREDENTIALS_ISSUE_0_1,
+            "type": uris::TASK_EXTERNAL_CREDENTIALS_ISSUE_0_3,
             "issuer": did,
             "recipient": vta_did,
             "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
             "payload": { "context": CTX, "account": "r2-spine",
-                         "scope": { "prefix": "rooms/ab/", "actions": ["get"], "objectKey": "blob" },
+                         "presign": { "prefix": "rooms/ab/", "objectKey": "blob",
+                                      "requests": [{ "operation": "get" }] },
                          "ttlSeconds": 300 },
         }))
         .unwrap();
@@ -2983,7 +2681,7 @@ mod tests {
             &state,
             &manager(),
             doc(
-                uris::TASK_EXTERNAL_ACCOUNTS_CREATE_0_1,
+                uris::TASK_EXTERNAL_ACCOUNTS_CREATE_0_2,
                 json!({ "context": CTX, "id": "r2-bad", "label": "bad", "settings": bad }),
             ),
         )
@@ -3001,14 +2699,14 @@ mod tests {
         handle_archive(
             &state,
             &manager(),
-            doc(uris::TASK_EXTERNAL_ACCOUNTS_ARCHIVE_0_1, base.clone()),
+            doc(uris::TASK_EXTERNAL_ACCOUNTS_ARCHIVE_0_2, base.clone()),
         )
         .await;
         let update = handle_update(
             &state,
             &manager(),
             doc(
-                uris::TASK_EXTERNAL_ACCOUNTS_UPDATE_0_1,
+                uris::TASK_EXTERNAL_ACCOUNTS_UPDATE_0_2,
                 json!({ "context": CTX, "id": "r2-arch", "label": "renamed" }),
             ),
         )
@@ -3017,14 +2715,14 @@ mod tests {
         let suspend = handle_suspend(
             &state,
             &manager(),
-            doc(uris::TASK_EXTERNAL_ACCOUNTS_SUSPEND_0_1, base.clone()),
+            doc(uris::TASK_EXTERNAL_ACCOUNTS_SUSPEND_0_2, base.clone()),
         )
         .await;
         assert_eq!(code(&suspend), "external:archived");
         let probe = handle_probe(
             &state,
             &manager(),
-            doc(uris::TASK_EXTERNAL_ACCOUNTS_PROBE_0_1, base.clone()),
+            doc(uris::TASK_EXTERNAL_ACCOUNTS_PROBE_0_2, base.clone()),
         )
         .await;
         assert_eq!(code(&probe), "external:archived");
@@ -3043,7 +2741,7 @@ mod tests {
         let get = handle_get(
             &state,
             &manager(),
-            doc(uris::TASK_EXTERNAL_ACCOUNTS_GET_0_1, base),
+            doc(uris::TASK_EXTERNAL_ACCOUNTS_GET_0_2, base),
         )
         .await;
         assert_eq!(body(&get)["account"]["state"], "archived");
@@ -3087,7 +2785,7 @@ mod tests {
             &state,
             &manager(),
             doc(
-                uris::TASK_EXTERNAL_ACCOUNTS_PROBE_0_1,
+                uris::TASK_EXTERNAL_ACCOUNTS_PROBE_0_2,
                 json!({ "context": CTX, "id": "r2-probe" }),
             ),
         )
@@ -3138,7 +2836,7 @@ mod tests {
             &state,
             &manager(),
             doc(
-                uris::TASK_EXTERNAL_ACCOUNTS_CREATE_0_1,
+                uris::TASK_EXTERNAL_ACCOUNTS_CREATE_0_2,
                 json!({ "context": CTX, "id": "r2", "label": "R2", "settings": settings() }),
             ),
         )

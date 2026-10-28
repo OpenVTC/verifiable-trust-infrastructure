@@ -55,13 +55,13 @@ pub async fn cmd_list(
     if let Some(m) = model {
         v["model"] = json!(m);
     }
-    let req = payload::<ext::accounts::list::v0_1::Payload>("external/accounts/list", v)?;
+    let req = payload::<ext::accounts::list::v0_2::Payload>("external/accounts/list", v)?;
     show(&client.external_accounts_list(&req).await?)
 }
 
 /// `get`.
 pub async fn cmd_get(client: &VtaClient, context: &str, id: &str) -> CliResult {
-    let req = payload::<ext::accounts::get::v0_1::Payload>(
+    let req = payload::<ext::accounts::get::v0_2::Payload>(
         "external/accounts/get",
         json!({ "context": context, "id": id }),
     )?;
@@ -76,7 +76,7 @@ pub async fn cmd_create(
     label: &str,
     settings: &str,
 ) -> CliResult {
-    let req = payload::<ext::accounts::create::v0_1::Payload>(
+    let req = payload::<ext::accounts::create::v0_2::Payload>(
         "external/accounts/create",
         json!({ "context": context, "id": id, "label": label, "settings": settings_arg(settings)? }),
     )?;
@@ -98,7 +98,7 @@ pub async fn cmd_update(
     if let Some(s) = settings {
         v["settings"] = settings_arg(s)?;
     }
-    let req = payload::<ext::accounts::update::v0_1::Payload>("external/accounts/update", v)?;
+    let req = payload::<ext::accounts::update::v0_2::Payload>("external/accounts/update", v)?;
     show(&client.external_accounts_update(&req).await?)
 }
 
@@ -165,7 +165,7 @@ pub async fn cmd_bind(
     if !prefixes.is_empty() || !actions.is_empty() {
         binding["scopeCeiling"] = json!({ "prefixes": prefixes, "actions": actions });
     }
-    let req = payload::<ext::accounts::bindings::grant::v0_1::Payload>(
+    let req = payload::<ext::accounts::bindings::grant::v0_2::Payload>(
         "external/accounts/bindings/grant",
         json!({ "context": context, "id": id, "binding": binding }),
     )?;
@@ -174,7 +174,7 @@ pub async fn cmd_bind(
 
 /// `unbind`.
 pub async fn cmd_unbind(client: &VtaClient, context: &str, id: &str, consumer: &str) -> CliResult {
-    let req = payload::<ext::accounts::bindings::revoke::v0_1::Payload>(
+    let req = payload::<ext::accounts::bindings::revoke::v0_2::Payload>(
         "external/accounts/bindings/revoke",
         json!({ "context": context, "id": id, "consumer": consumer }),
     )?;
@@ -192,7 +192,7 @@ pub async fn cmd_setup(client: &VtaClient, context: &str, id: &str) -> CliResult
 
 /// `probe`.
 pub async fn cmd_probe(client: &VtaClient, context: &str, id: &str) -> CliResult {
-    let req = payload::<ext::accounts::probe::v0_1::Payload>(
+    let req = payload::<ext::accounts::probe::v0_2::Payload>(
         "external/accounts/probe",
         json!({ "context": context, "id": id }),
     )?;
@@ -250,7 +250,9 @@ pub async fn cmd_lifecycle(
     }
 }
 
-/// `issue`: a credential for this CLI's own identity, as a bound consumer.
+/// `issue`: a credential for this CLI's own identity, as a bound consumer
+/// (`external/credentials/issue/0.3`, `scope`: every brokered model but
+/// `s3-static-presign`, which takes [`cmd_issue_presign`]).
 /// The answer is printed still sealed — it is for the consumer's process, and
 /// a terminal is not where a provider credential should be opened.
 pub async fn cmd_issue(
@@ -259,7 +261,6 @@ pub async fn cmd_issue(
     account: &str,
     prefix: Option<&str>,
     actions: &[String],
-    object_key: Option<&str>,
     ttl_seconds: u32,
 ) -> CliResult {
     let mut scope = json!({});
@@ -269,10 +270,7 @@ pub async fn cmd_issue(
     if !actions.is_empty() {
         scope["actions"] = json!(actions);
     }
-    if let Some(k) = object_key {
-        scope["objectKey"] = json!(k);
-    }
-    let req = payload::<ext::credentials::issue::v0_1::Payload>(
+    let req = payload::<ext::credentials::issue::v0_3::Payload>(
         "external/credentials/issue",
         json!({ "context": context, "account": account, "scope": scope, "ttlSeconds": ttl_seconds }),
     )?;
@@ -280,9 +278,9 @@ pub async fn cmd_issue(
 }
 
 /// `issue --presign`: a batch of presigned requests on one object of an
-/// `s3-static-presign` account (`external/credentials/issue/0.3`, 0.2 from a VTA
-/// that does not serve it). `batch` is the `PresignBatch` JSON, or `@path` to
-/// read it; at most 64 operations. Printed still sealed, like `issue`.
+/// `s3-static-presign` account (`external/credentials/issue/0.3`). `batch` is
+/// the `PresignBatch` JSON, or `@path` to read it; at most 64 operations.
+/// Printed still sealed, like `issue`.
 ///
 /// A batch whose sealed answer would not fit is refused `responseTooLarge`, at
 /// no cost to the binding's rate, and asked for again in parts (consumer item

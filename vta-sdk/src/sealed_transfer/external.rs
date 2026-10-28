@@ -12,7 +12,7 @@
 //!   key from `keys/import-wrapping-key`, for `external/accounts/secret/set/0.1`.
 //! - [`ExternalCredentialPayload`] — the custodian seals a short-lived,
 //!   downscoped credential to the consumer that asked for it in
-//!   `external/credentials/issue/0.1`.
+//!   `external/credentials/issue`.
 
 use std::collections::BTreeMap;
 
@@ -95,7 +95,8 @@ pub enum ExternalCredentialPayload {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         provider_request_id: Option<String>,
     },
-    /// One presigned request (`s3-static-presign`): exactly one method on one
+    /// One presigned request (`s3-static-presign`, `external/credentials/issue/0.1`
+    /// only — no current version issues it): exactly one method on one
     /// object. The URL carries its own signature; `headers` are the ones the
     /// request must carry for it to verify.
     PresignedRequest {
@@ -107,7 +108,7 @@ pub enum ExternalCredentialPayload {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         provider_request_id: Option<String>,
     },
-    /// `PresignedRequestSet` (`s3-static-presign`, `external/credentials/issue/0.2`+):
+    /// `PresignedRequestSet` (`s3-static-presign`, `external/credentials/issue/0.3`):
     /// one presigned request per requested operation, all on one object, in the
     /// order requested. Each is a bearer credential for its one request until it
     /// expires; `expires_at` is the earliest of them.

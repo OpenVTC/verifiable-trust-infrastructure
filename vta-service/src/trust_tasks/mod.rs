@@ -2704,41 +2704,37 @@ dispatch_table! {
     // NOT operator step-up.
     // ─── External accounts (`external/*`) ──────────────────────────
     // Classes match each specification's own declarations.
-    vta_sdk::trust_tasks::TASK_EXTERNAL_ACCOUNTS_LIST_0_1 => external::handle_list
+    vta_sdk::trust_tasks::TASK_EXTERNAL_ACCOUNTS_LIST_0_2 => external::handle_list
         [ None Metadata false ],
-    vta_sdk::trust_tasks::TASK_EXTERNAL_ACCOUNTS_GET_0_1 => external::handle_get
+    vta_sdk::trust_tasks::TASK_EXTERNAL_ACCOUNTS_GET_0_2 => external::handle_get
         [ None Metadata false ],
     vta_sdk::trust_tasks::TASK_EXTERNAL_ACCOUNTS_SETUP_0_1 => external::handle_setup
         [ None Metadata false ],
-    vta_sdk::trust_tasks::TASK_EXTERNAL_ACCOUNTS_CREATE_0_1 => external::handle_create
+    vta_sdk::trust_tasks::TASK_EXTERNAL_ACCOUNTS_CREATE_0_2 => external::handle_create
         [ Mutating Metadata false ],
-    vta_sdk::trust_tasks::TASK_EXTERNAL_ACCOUNTS_UPDATE_0_1 => external::handle_update
+    vta_sdk::trust_tasks::TASK_EXTERNAL_ACCOUNTS_UPDATE_0_2 => external::handle_update
         [ Mutating Metadata false ],
     vta_sdk::trust_tasks::TASK_EXTERNAL_ACCOUNTS_SECRET_SET_0_1 => external::handle_secret_set
         [ Mutating None false ],
-    vta_sdk::trust_tasks::TASK_EXTERNAL_ACCOUNTS_BINDINGS_GRANT_0_1 => external::handle_bindings_grant
+    vta_sdk::trust_tasks::TASK_EXTERNAL_ACCOUNTS_BINDINGS_GRANT_0_2 => external::handle_bindings_grant
         [ Mutating Metadata false ],
-    vta_sdk::trust_tasks::TASK_EXTERNAL_ACCOUNTS_BINDINGS_REVOKE_0_1 => external::handle_bindings_revoke
+    vta_sdk::trust_tasks::TASK_EXTERNAL_ACCOUNTS_BINDINGS_REVOKE_0_2 => external::handle_bindings_revoke
         [ Mutating Metadata false ],
-    vta_sdk::trust_tasks::TASK_EXTERNAL_ACCOUNTS_PROBE_0_1 => external::handle_probe
+    vta_sdk::trust_tasks::TASK_EXTERNAL_ACCOUNTS_PROBE_0_2 => external::handle_probe
         [ Mutating Metadata true ],
-    vta_sdk::trust_tasks::TASK_EXTERNAL_ACCOUNTS_KEYS_ROTATE_0_1 => external::handle_keys_rotate
+    vta_sdk::trust_tasks::TASK_EXTERNAL_ACCOUNTS_KEYS_ROTATE_0_2 => external::handle_keys_rotate
         [ Mutating Metadata false ],
-    vta_sdk::trust_tasks::TASK_EXTERNAL_ACCOUNTS_SUSPEND_0_1 => external::handle_suspend
+    vta_sdk::trust_tasks::TASK_EXTERNAL_ACCOUNTS_SUSPEND_0_2 => external::handle_suspend
         [ Mutating Metadata false ],
-    vta_sdk::trust_tasks::TASK_EXTERNAL_ACCOUNTS_RESUME_0_1 => external::handle_resume
+    vta_sdk::trust_tasks::TASK_EXTERNAL_ACCOUNTS_RESUME_0_2 => external::handle_resume
         [ Mutating Metadata false ],
-    vta_sdk::trust_tasks::TASK_EXTERNAL_ACCOUNTS_ARCHIVE_0_1 => external::handle_archive
+    vta_sdk::trust_tasks::TASK_EXTERNAL_ACCOUNTS_ARCHIVE_0_2 => external::handle_archive
         [ Mutating Metadata false ],
-    vta_sdk::trust_tasks::TASK_EXTERNAL_ACCOUNTS_RESTORE_0_1 => external::handle_restore
+    vta_sdk::trust_tasks::TASK_EXTERNAL_ACCOUNTS_RESTORE_0_2 => external::handle_restore
         [ Mutating Metadata false ],
     vta_sdk::trust_tasks::TASK_EXTERNAL_ACCOUNTS_DELETE_0_1 => external::handle_delete
         [ Destructive Metadata false ],
-    vta_sdk::trust_tasks::TASK_EXTERNAL_CREDENTIALS_ISSUE_0_1 => external::handle_issue
-        [ Mutating Secret true ],
-    vta_sdk::trust_tasks::TASK_EXTERNAL_CREDENTIALS_ISSUE_0_2 => external::handle_issue_v2
-        [ Mutating Secret true ],
-    vta_sdk::trust_tasks::TASK_EXTERNAL_CREDENTIALS_ISSUE_0_3 => external::handle_issue_v3
+    vta_sdk::trust_tasks::TASK_EXTERNAL_CREDENTIALS_ISSUE_0_3 => external::handle_issue
         [ Mutating Secret true ],
     // ─── Hidden-vetting PCS engine (`vta/pcs/*`) ───────────────────
     // Classes match each specification's own declarations. `actsAsSubject` is

@@ -30,7 +30,7 @@ pub struct IssueRequest<'a> {
     pub now: DateTime<Utc>,
 }
 
-/// What a presign-batch issuance (`external/credentials/issue/0.2`, `presign`)
+/// What a presign-batch issuance (`external/credentials/issue/0.3`, `presign`)
 /// asks of a driver. The binding and batch checks have already passed.
 pub struct BatchIssueRequest<'a> {
     pub account: &'a AccountRecord,
@@ -119,12 +119,12 @@ pub trait ExternalAuthDriver: Send + Sync {
     async fn issue(&self, req: IssueRequest<'_>) -> Result<Issued, DriverError>;
 
     /// Whether this model takes `presign` rather than `scope` in
-    /// `external/credentials/issue/0.2` (item 4).
+    /// `external/credentials/issue/0.3` (item 4).
     fn takes_presign(&self) -> bool {
         false
     }
 
-    /// Presign every operation of a batch (`issue/0.2`, `presign`). Only a model
+    /// Presign every operation of a batch (`issue/0.3`, `presign`). Only a model
     /// that [`takes_presign`](Self::takes_presign) is asked.
     async fn issue_batch(&self, req: BatchIssueRequest<'_>) -> Result<Issued, DriverError> {
         let _ = req;

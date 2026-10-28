@@ -9,7 +9,7 @@
 //!   context carrying `sign-jws`;
 //! - room files in a `vta-account` storage config are read and written with
 //!   presigned requests the VTA issues one object at a time
-//!   (`external/credentials/issue/0.1`, [`crate::rooms::vta_storage`]).
+//!   (`external/credentials/issue/0.3`, [`crate::rooms::vta_storage`]).
 //!
 //! In both the VTA decides, as for any other caller.
 //!

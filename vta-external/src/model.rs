@@ -132,7 +132,7 @@ impl AccountRecord {
             });
         }
         if let Some(probe) = &self.last_probe {
-            out["lastProbe"] = probe.clone();
+            out["lastProbe"] = probe_on_the_wire(probe);
         }
         // `grantedAt` is a date-time in the schema; chrono's default form is
         // RFC 3339 already, but render it the same way as every other instant.
@@ -145,6 +145,23 @@ impl AccountRecord {
         }
         out
     }
+}
+
+/// A stored probe report as `external/_shared/0.2`'s `AccountProbeReport`.
+///
+/// A report recorded before the move to the 0.2 tasks names when it ran `at`;
+/// 0.2 renamed that member `probedAt`, with the same type and meaning. The
+/// stored report is rendered under the current name rather than rewritten, so
+/// an account probed by an older VTA answers in the current schema.
+fn probe_on_the_wire(probe: &Value) -> Value {
+    let mut out = probe.clone();
+    if let Some(obj) = out.as_object_mut()
+        && !obj.contains_key("probedAt")
+        && let Some(at) = obj.remove("at")
+    {
+        obj.insert("probedAt".into(), at);
+    }
+    out
 }
 
 /// The `model` member of a settings object; empty if absent.
@@ -196,6 +213,17 @@ mod tests {
             created_at: now,
             updated_at: now,
         }
+    }
+
+    /// A report stored under 0.1's `at` is answered under 0.2's `probedAt`.
+    #[test]
+    fn a_report_stored_before_0_2_is_answered_as_probed_at() {
+        let mut rec = record();
+        rec.last_probe =
+            Some(json!({"at": "2026-10-10T09:00:00Z", "ok": true, "complete": true, "steps": []}));
+        let wire = rec.to_wire(&[]);
+        assert_eq!(wire["lastProbe"]["probedAt"], "2026-10-10T09:00:00Z");
+        assert!(wire["lastProbe"].get("at").is_none(), "{wire}");
     }
 
     /// The seed generation stays in the record and never reaches the wire.

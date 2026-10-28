@@ -2267,37 +2267,37 @@ fn table() -> Vec<(&'static str, Conformance)> {
         ),
         // ─── external/* — responses rendered by the slice's own projection
         (
-            uris::TASK_EXTERNAL_ACCOUNTS_LIST_0_1,
+            uris::TASK_EXTERNAL_ACCOUNTS_LIST_0_2,
             checked!(
-                specs::external::accounts::list::v0_1::Payload,
-                specs::external::accounts::list::v0_1::Response,
+                specs::external::accounts::list::v0_2::Payload,
+                specs::external::accounts::list::v0_2::Response,
                 json!({ "context": "community", "limit": 10 }),
                 json!({ "accounts": [external_account()], "nextCursor": "r2-main" })
             ),
         ),
         (
-            uris::TASK_EXTERNAL_ACCOUNTS_GET_0_1,
+            uris::TASK_EXTERNAL_ACCOUNTS_GET_0_2,
             checked!(
-                specs::external::accounts::get::v0_1::Payload,
-                specs::external::accounts::get::v0_1::Response,
+                specs::external::accounts::get::v0_2::Payload,
+                specs::external::accounts::get::v0_2::Response,
                 json!({ "context": "community", "id": "r2-main" }),
                 json!({ "account": external_account() })
             ),
         ),
         (
-            uris::TASK_EXTERNAL_ACCOUNTS_CREATE_0_1,
+            uris::TASK_EXTERNAL_ACCOUNTS_CREATE_0_2,
             checked!(
-                specs::external::accounts::create::v0_1::Payload,
-                specs::external::accounts::create::v0_1::Response,
+                specs::external::accounts::create::v0_2::Payload,
+                specs::external::accounts::create::v0_2::Response,
                 json!({ "context": "community", "id": "r2-main", "label": "R2", "settings": external_settings() }),
                 json!({ "account": external_account() })
             ),
         ),
         (
-            uris::TASK_EXTERNAL_ACCOUNTS_UPDATE_0_1,
+            uris::TASK_EXTERNAL_ACCOUNTS_UPDATE_0_2,
             checked!(
-                specs::external::accounts::update::v0_1::Payload,
-                specs::external::accounts::update::v0_1::Response,
+                specs::external::accounts::update::v0_2::Payload,
+                specs::external::accounts::update::v0_2::Response,
                 json!({ "context": "community", "id": "r2-main", "label": "R2 (EU)" }),
                 json!({ "account": external_account() })
             ),
@@ -2312,19 +2312,19 @@ fn table() -> Vec<(&'static str, Conformance)> {
             ),
         ),
         (
-            uris::TASK_EXTERNAL_ACCOUNTS_BINDINGS_GRANT_0_1,
+            uris::TASK_EXTERNAL_ACCOUNTS_BINDINGS_GRANT_0_2,
             checked!(
-                specs::external::accounts::bindings::grant::v0_1::Payload,
-                specs::external::accounts::bindings::grant::v0_1::Response,
+                specs::external::accounts::bindings::grant::v0_2::Payload,
+                specs::external::accounts::bindings::grant::v0_2::Response,
                 json!({ "context": "community", "id": "r2-main", "binding": { "consumer": SUBJECT, "scopeCeiling": { "prefixes": ["rooms/"], "actions": ["get"] }, "maxTtlSeconds": 900, "ratePerMinute": 60 } }),
                 json!({ "account": external_account() })
             ),
         ),
         (
-            uris::TASK_EXTERNAL_ACCOUNTS_BINDINGS_REVOKE_0_1,
+            uris::TASK_EXTERNAL_ACCOUNTS_BINDINGS_REVOKE_0_2,
             checked!(
-                specs::external::accounts::bindings::revoke::v0_1::Payload,
-                specs::external::accounts::bindings::revoke::v0_1::Response,
+                specs::external::accounts::bindings::revoke::v0_2::Payload,
+                specs::external::accounts::bindings::revoke::v0_2::Response,
                 json!({ "context": "community", "id": "r2-main", "consumer": SUBJECT }),
                 json!({ "account": external_account() })
             ),
@@ -2339,55 +2339,55 @@ fn table() -> Vec<(&'static str, Conformance)> {
             ),
         ),
         (
-            uris::TASK_EXTERNAL_ACCOUNTS_PROBE_0_1,
+            uris::TASK_EXTERNAL_ACCOUNTS_PROBE_0_2,
             checked!(
-                specs::external::accounts::probe::v0_1::Payload,
-                specs::external::accounts::probe::v0_1::Response,
+                specs::external::accounts::probe::v0_2::Payload,
+                specs::external::accounts::probe::v0_2::Response,
                 json!({ "context": "community", "id": "r2-main" }),
-                json!({ "report": { "at": TS, "ok": false, "complete": false, "steps": [{ "step": "sign", "ok": true, "durationMs": 1 }, { "step": "put", "ok": false, "providerError": "HTTP 403: AccessDenied" }] } })
+                json!({ "report": { "probedAt": TS, "ok": false, "complete": false, "steps": [{ "step": "sign", "ok": true, "durationMs": 1 }, { "step": "put", "ok": false, "providerError": "HTTP 403: AccessDenied" }] } })
             ),
         ),
         (
-            uris::TASK_EXTERNAL_ACCOUNTS_KEYS_ROTATE_0_1,
+            uris::TASK_EXTERNAL_ACCOUNTS_KEYS_ROTATE_0_2,
             checked!(
-                specs::external::accounts::keys::rotate::v0_1::Payload,
-                specs::external::accounts::keys::rotate::v0_1::Response,
+                specs::external::accounts::keys::rotate::v0_2::Payload,
+                specs::external::accounts::keys::rotate::v0_2::Response,
                 json!({ "context": "community", "id": "r2-main", "phase": "stage" }),
                 json!({ "account": external_account() })
             ),
         ),
         (
-            uris::TASK_EXTERNAL_ACCOUNTS_SUSPEND_0_1,
+            uris::TASK_EXTERNAL_ACCOUNTS_SUSPEND_0_2,
             checked!(
-                specs::external::accounts::suspend::v0_1::Payload,
-                specs::external::accounts::suspend::v0_1::Response,
+                specs::external::accounts::suspend::v0_2::Payload,
+                specs::external::accounts::suspend::v0_2::Response,
                 json!({ "context": "community", "id": "r2-main" }),
                 json!({ "account": external_account() })
             ),
         ),
         (
-            uris::TASK_EXTERNAL_ACCOUNTS_RESUME_0_1,
+            uris::TASK_EXTERNAL_ACCOUNTS_RESUME_0_2,
             checked!(
-                specs::external::accounts::resume::v0_1::Payload,
-                specs::external::accounts::resume::v0_1::Response,
+                specs::external::accounts::resume::v0_2::Payload,
+                specs::external::accounts::resume::v0_2::Response,
                 json!({ "context": "community", "id": "r2-main" }),
                 json!({ "account": external_account() })
             ),
         ),
         (
-            uris::TASK_EXTERNAL_ACCOUNTS_ARCHIVE_0_1,
+            uris::TASK_EXTERNAL_ACCOUNTS_ARCHIVE_0_2,
             checked!(
-                specs::external::accounts::archive::v0_1::Payload,
-                specs::external::accounts::archive::v0_1::Response,
+                specs::external::accounts::archive::v0_2::Payload,
+                specs::external::accounts::archive::v0_2::Response,
                 json!({ "context": "community", "id": "r2-main" }),
                 json!({ "account": external_account() })
             ),
         ),
         (
-            uris::TASK_EXTERNAL_ACCOUNTS_RESTORE_0_1,
+            uris::TASK_EXTERNAL_ACCOUNTS_RESTORE_0_2,
             checked!(
-                specs::external::accounts::restore::v0_1::Payload,
-                specs::external::accounts::restore::v0_1::Response,
+                specs::external::accounts::restore::v0_2::Payload,
+                specs::external::accounts::restore::v0_2::Response,
                 json!({ "context": "community", "id": "r2-main" }),
                 json!({ "account": external_account() })
             ),
@@ -2399,24 +2399,6 @@ fn table() -> Vec<(&'static str, Conformance)> {
                 specs::external::accounts::delete::v0_1::Response,
                 json!({ "context": "community", "id": "r2-main" }),
                 json!({ "id": "r2-main", "deletedAt": TS })
-            ),
-        ),
-        (
-            uris::TASK_EXTERNAL_CREDENTIALS_ISSUE_0_1,
-            checked!(
-                specs::external::credentials::issue::v0_1::Payload,
-                specs::external::credentials::issue::v0_1::Response,
-                json!({ "context": "community", "account": "r2-main", "scope": { "prefix": "rooms/3f9a/", "actions": ["get"], "objectKey": "blob" }, "ttlSeconds": 600 }),
-                json!({ "sealedCredential": SEALED_ARMOR, "expiresAt": TS, "scope": { "prefix": "rooms/3f9a/", "actions": ["get"], "objectKey": "blob" } })
-            ),
-        ),
-        (
-            uris::TASK_EXTERNAL_CREDENTIALS_ISSUE_0_2,
-            checked!(
-                specs::external::credentials::issue::v0_2::Payload,
-                specs::external::credentials::issue::v0_2::Response,
-                json!({ "context": "community", "account": "r2-main", "presign": { "prefix": "rooms/3f9a/", "objectKey": "blob", "requests": [{ "operation": "create-multipart" }] }, "ttlSeconds": 300 }),
-                json!({ "sealedCredential": SEALED_ARMOR, "expiresAt": TS, "presign": { "prefix": "rooms/3f9a/", "objectKey": "blob", "requests": [{ "operation": "create-multipart" }] } })
             ),
         ),
         (

@@ -1139,13 +1139,13 @@ mod vta_account {
     use affinidi_secrets_resolver::{SecretsResolver, ThreadedSecretsResolver};
     use trust_tasks_rs::TrustTask;
     use vta_sdk::sealed_transfer::{
-        AssertionProof, ExternalCredentialPayload, InMemoryNonceStore, ProducerAssertion,
-        SealedPayloadV1, armor, seal_payload,
+        AssertionProof, ExternalCredentialPayload, InMemoryNonceStore, PresignedEntry,
+        ProducerAssertion, SealedPayloadV1, armor, seal_payload,
     };
     use vtc_service::rooms::vta_storage::{PeerError, VtaChannel, VtaStorage};
-    use vti_common::blob_store::presigned::PresignAction;
+    use vti_common::blob_store::StorageOp;
 
-    const ISSUE: &str = "https://trusttasks.org/spec/external/credentials/issue/0.1";
+    const ISSUE: &str = "https://trusttasks.org/spec/external/credentials/issue/0.3";
     const BUCKET_URL: &str = "https://rooms.invalid/";
 
     /// A VTA holding one account, `known`, this community is bound to: it presigns
@@ -1175,19 +1175,40 @@ mod vta_account {
                     json!({ "code": "external:notFound", "message": "no such account" }),
                 ));
             }
-            let scope = &payload["scope"];
+            let presign = &payload["presign"];
             let object = format!(
                 "{}{}",
-                scope["prefix"].as_str().unwrap(),
-                scope["objectKey"].as_str().unwrap()
+                presign["prefix"].as_str().unwrap(),
+                presign["objectKey"].as_str().unwrap()
             );
+            let expires_at = (chrono::Utc::now() + chrono::Duration::minutes(5)).to_rfc3339();
+            let requests = presign["requests"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .enumerate()
+                .map(|(i, op)| {
+                    let operation = op["operation"].as_str().unwrap();
+                    PresignedEntry {
+                        index: i as u32,
+                        operation: operation.into(),
+                        method: match operation {
+                            "put" => "PUT",
+                            "head" => "HEAD",
+                            "delete" => "DELETE",
+                            _ => "GET",
+                        }
+                        .into(),
+                        url: format!("{BUCKET_URL}{object}?X-Amz-Signature=sig"),
+                        headers: Default::default(),
+                        expires_at: expires_at.clone(),
+                    }
+                })
+                .collect();
             let credential = SealedPayloadV1::ExternalCredential(Box::new(
-                ExternalCredentialPayload::PresignedRequest {
-                    method: scope["actions"][0].as_str().unwrap().to_uppercase(),
-                    url: format!("{BUCKET_URL}{object}?X-Amz-Signature=sig"),
-                    headers: Default::default(),
-                    expires_at: (chrono::Utc::now() + chrono::Duration::minutes(5)).to_rfc3339(),
-                    provider_request_id: None,
+                ExternalCredentialPayload::PresignedRequests {
+                    requests,
+                    expires_at,
                 },
             ));
             let bundle = seal_payload(
@@ -1208,7 +1229,7 @@ mod vta_account {
                 json!({
                     "sealedCredential": armor::encode(&bundle),
                     "expiresAt": "2030-01-01T00:00:00Z",
-                    "scope": scope,
+                    "presign": presign,
                 }),
             ))
         }
@@ -1308,9 +1329,18 @@ mod vta_account {
         let link = link(&fix).await;
         let request = link
             .presigner("community", "eu-r2", "rooms", None)
-            .presign(PresignAction::Put, "community/rooms/abc/", "zObject")
+            .presign_ops(
+                "community/rooms/abc/",
+                "zObject",
+                None,
+                &[StorageOp::Put {
+                    len: 3,
+                    sha256: [7; 32],
+                }],
+            )
             .await
-            .unwrap();
+            .unwrap()
+            .remove(0);
         assert_eq!(request.method, "PUT");
         assert!(
             request
