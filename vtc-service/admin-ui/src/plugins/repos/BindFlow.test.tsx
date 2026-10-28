@@ -107,7 +107,7 @@ describe("Bind namespace", () => {
 
     await waitFor(() =>
       expect(postSignedTrustTask).toHaveBeenCalledWith(
-        "https://trusttasks.org/spec/git-ns/namespace/bind/0.1",
+        "https://trusttasks.org/spec/git-ns/namespace/bind/0.2",
         { forge: "github.com", owner: "acme", mode: "bridge" },
       ),
     );

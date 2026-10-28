@@ -4,17 +4,14 @@
 //! would; **revert** has the bridge undo the forge-side change and changes no
 //! right.
 //!
-//! Served at 0.3, and at 0.1 for `revert` only. A 0.3 adopt carries
-//! `subject`, the member the resolver read as linked to the item's account,
-//! and adopts only while the account is still linked to exactly that member
-//! (`subjectChanged` otherwise), checked again under the store lock the right
-//! is written under — the same lock every link and unlink is written under
-//! (`bridge::handle_event`, `lifecycle::sweep_departures`), so no relink can
-//! fall between the check and the write. A 0.1 adopt names no recipient, and
-//! the VTC would have to pick one from the link as it stands when the task
-//! runs, which may not be the member the resolver saw; it is refused
-//! (`unsupportedVersion`) rather than granted to someone nobody named
-//! (drift/resolve 0.3, *Security & Privacy*, "Binding the recipient").
+//! Served at 0.4 only. An adopt carries `subject`, the member the resolver
+//! read as linked to the item's account, and adopts only while the account is
+//! still linked to exactly that member (`subjectChanged` otherwise), checked
+//! again under the store lock the right is written under — the same lock
+//! every link and unlink is written under (`bridge::handle_event`,
+//! `lifecycle::sweep_departures`), so no relink can fall between the check and
+//! the write (drift/resolve 0.3, *Security & Privacy*, "Binding the
+//! recipient").
 //!
 //! Drift items have no identifier. They are selected by `type`, by the
 //! account for the three role types (at most one role item per account), and
@@ -28,8 +25,8 @@
 //! or 0.5 to a bridge that lists 0.5 (`bridge::send_versioned`).
 
 use serde_json::{Value, json};
-use trust_tasks_rs::specs::git_ns::drift::resolve::{v0_1 as resolve1, v0_3 as resolve};
-use trust_tasks_rs::specs::git_ns::right::grant::v0_3 as grant;
+use trust_tasks_rs::specs::git_ns::drift::resolve::v0_4 as resolve;
+use trust_tasks_rs::specs::git_ns::right::grant::v0_4 as grant;
 
 use crate::server::AppState;
 use vti_common::error::AppError;
@@ -51,11 +48,13 @@ pub const NO_MATCHING_RIGHT: &str = resolve::error_codes::NO_MATCHING_RIGHT.code
 pub const NOT_REVERTIBLE: &str = resolve::error_codes::NOT_REVERTIBLE.code;
 pub const SUBJECT_CHANGED: &str = resolve::error_codes::SUBJECT_CHANGED.code;
 pub const SELF_GRANT_NOT_ALLOWED: &str = resolve::error_codes::SELF_GRANT_NOT_ALLOWED.code;
-/// `git-ns:roleMapUnknown`, a namespace-wide code. The 0.1 and 0.2 specs
-/// declare it; 0.3 (authored in parallel) does not re-declare it, so it is
-/// taken from 0.1's generated codes. An adopt under either version is refused
-/// with it while the bridge has not reported its role map.
-pub const ROLE_MAP_UNKNOWN: &str = resolve1::error_codes::ROLE_MAP_UNKNOWN.code;
+/// `git-ns:roleMapUnknown`, a namespace-wide code. `git-ns/drift/resolve`
+/// 0.1 and 0.2 declare it; 0.3 and 0.4 do not re-declare it, and read an
+/// unreported map as the default one (*Definitions*, "Projected right of a
+/// role"). This VTC still refuses an adopt with it while the bridge has not
+/// reported its map — failing closed rather than assuming the default — so
+/// the code is named here rather than taken from a superseded module.
+pub const ROLE_MAP_UNKNOWN: &str = "git-ns:roleMapUnknown";
 
 const ROLE_TYPES: [&str; 3] = ["roleAdded", "roleRemoved", "roleChanged"];
 
@@ -136,30 +135,6 @@ struct Decided {
     items: Vec<Value>,
     /// For `adopt`: the member the resolver named.
     subject: Option<String>,
-}
-
-/// `git-ns/drift/resolve/0.1`: `revert` only. A 0.1 document is a 0.3 one
-/// without `subject`, answered in 0.1's own response shape (identical to
-/// 0.3's).
-pub async fn drift_resolve_v1(
-    state: &AppState,
-    actor_did: &str,
-    p: resolve1::Payload,
-) -> OpResult<resolve1::Response> {
-    if matches!(p.action, resolve1::PayloadAction::Adopt) {
-        return Err(OpError::UnsupportedVersion(
-            "an adoption over git-ns/drift/resolve 0.1 names no recipient, so this VTC would \
-             grant the right to whoever the account is linked to now, who may not be the member \
-             you saw. Adopt with git-ns/drift/resolve 0.3, which names the member (`subject`); \
-             0.1 still reverts"
-                .into(),
-        ));
-    }
-    let p3: resolve::Payload = wire::into(serde_json::to_value(&p).map_err(AppError::from)?)?;
-    let r = drift_resolve(state, actor_did, p3).await?;
-    Ok(wire::into(
-        serde_json::to_value(&r).map_err(AppError::from)?,
-    )?)
 }
 
 pub async fn drift_resolve(

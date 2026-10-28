@@ -40,7 +40,7 @@
 //! confers nothing over the repositories already in it: a creator owns what it
 //! creates by a separate `own` grant, never by the namespace qualifier. The
 //! grade is what keeps owner and maintainer apart for the forge roles and for
-//! the fixed rules of `git-ns/right/grant/0.3`, which this module does not
+//! the fixed rules of `git-ns/right/grant/0.4`, which this module does not
 //! re-implement: they run in `crate::git_ns::rules` over the same grants.
 //!
 //! Implication follows the rights model: `git.ns.admin` at a namespace implies
@@ -105,7 +105,7 @@ pub struct ResourceGrant {
     #[serde(default)]
     pub granter_was_member: bool,
     /// Present exactly when the subject gave this to itself through
-    /// `git-ns/right/break-glass/0.1`.
+    /// `git-ns/right/break-glass/0.2`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub break_glass: Option<BreakGlassMark>,
     /// Open while the granter has departed and nobody has re-affirmed it.
@@ -250,7 +250,7 @@ pub fn repo_id_of(q: &ResourceQualifier) -> Option<&str> {
 /// on its own live entry, the capability `right` is held as at a qualifier
 /// covering `at` — a grant may never be wider than what its granter holds.
 ///
-/// The fixed rules of `git-ns/right/grant/0.3` decide *which* holdings carry
+/// The fixed rules of `git-ns/right/grant/0.4` decide *which* holdings carry
 /// grant authority (a committer grants nothing, `git.repo.create` is not
 /// re-delegable); this is the floor under them, read from the ACL entry.
 pub fn granter_covers(granter: &super::VtcAclEntry, right: Right, at: &ResourceQualifier) -> bool {

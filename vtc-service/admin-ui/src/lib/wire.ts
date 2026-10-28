@@ -1200,13 +1200,14 @@ export interface components {
             action: string;
             /** @description Who acted. Absent when an erasure has removed it from the audit row. */
             actor?: string | null;
-            at: string;
             /**
              * @description A machine-readable qualifier (`departed`, the old name of a rename, a
              *     job's state, a drift count).
              */
             detail?: string | null;
             namespace?: string | null;
+            /** @description When it happened (`git-ns/activity/list/0.3`; `at` before it). */
+            occurredAt: string;
             resource?: string | null;
             right?: string | null;
             /** @description `audit` or `job`. */
@@ -1221,14 +1222,18 @@ export interface components {
             variables: boolean;
             workflow: boolean;
         };
-        /** @description A record's `breakGlass` (`git-ns/_shared/0.5` `BreakGlass`). */
+        /** @description A record's `breakGlass` (`git-ns/_shared/0.6` `BreakGlass`). */
         GitNsBreakGlassMark: {
-            at: string;
             by: string;
             effectiveAt?: string | null;
             justification: string;
             ratifiedAt?: string | null;
             ratifiedBy?: string | null;
+            /**
+             * @description When the VTC recorded the break-glass (`git-ns/_shared/0.6`; `at`
+             *     before it).
+             */
+            recordedAt: string;
         };
         /** @description The grants one departed member issued. */
         GitNsDepartedGranter: {
@@ -1289,7 +1294,7 @@ export interface components {
             jobId: string;
             /**
              * @description `projectRoles` | `createRepo` | `bootstrap` | `archive` | `inspect` |
-             *     `beginBind` | `beginAccountLink` | `closePullRequest` (0.2 only).
+             *     `beginBind` | `beginAccountLink` | `closePullRequest`.
              */
             kind: string;
             lastError?: string | null;
@@ -1309,7 +1314,8 @@ export interface components {
         };
         /** @description The last verify-trust check run the bridge saw on a repository. */
         GitNsLastCheck: {
-            at: string;
+            /** @description When the check run concluded (`git-ns/repo/list/0.2`; `at` in 0.1). */
+            concludedAt: string;
             /** @description In the forge's words (`success`, `failure`). */
             conclusion: string;
             sha?: string | null;
@@ -1491,7 +1497,7 @@ export interface components {
             step: string;
         };
         /** @description Whether each step that turns commit trust on for a repository is in place, as last reported. A step that this forge's plan does not need reads `true`. */
-        GitNsViewV0_1Bootstrap: {
+        GitNsViewV0_6Bootstrap: {
             /** @description The exempt platform keyring for forge-signed merge commits is committed, or the forge's plan does not need one. */
             keyring: boolean;
             /** @description The forge refuses to merge into the default branch unless the verify-trust check passes, with no bypass, and a pull request cannot change what that check runs: an organisation-required workflow, code-owner review of workflow files, or protected workflow paths, as the forge allows. */
@@ -1501,16 +1507,38 @@ export interface components {
             /** @description The verify-trust check runs on the repository's pull requests — from a workflow committed to it, or, where the forge supports it, required on it from the namespace's own bridge-managed workflow repository at a pinned commit. */
             workflow: boolean;
         };
-        /** @description A DID, compared by exact string equality. */
-        GitNsViewV0_1Did: string;
+        /** @description How a self-granted right came to be, and whether another administrator has since ratified it. A record whose `breakGlass` has no `ratifiedBy` is **unratified**: it is live and published like any other right, it does not count toward the last-owner or last-admin invariants, and any community administrator or namespace admin of its namespace may revoke it. Ratification (git-ns/right/ratify) sets `ratifiedBy` and `ratifiedAt`; from then on the record is an ordinary grant, and `breakGlass` stays as its history. Never published to the Trust Registry. */
+        GitNsViewV0_6BreakGlass: {
+            by: components["schemas"]["GitNsViewV0_6Did"];
+            /**
+             * Format: date-time
+             * @description When the right takes effect, where the community's policy imposed a delay. Absent: it took effect at `recordedAt`. Until this instant the record confers nothing and is not published, and any administrator who may revoke it may do so.
+             */
+            effectiveAt?: string;
+            /** @description The actor's statement of why nobody else could grant this right. Shown to every community administrator, every namespace admin of the namespace and every owner of the resource; kept in the audit record; never published. */
+            justification: string;
+            /**
+             * Format: date-time
+             * @description When it was ratified. Present exactly when `ratifiedBy` is.
+             */
+            ratifiedAt?: string;
+            ratifiedBy?: components["schemas"]["GitNsViewV0_6Did"];
+            /**
+             * Format: date-time
+             * @description When the VTC recorded the break-glass.
+             */
+            recordedAt: string;
+        };
+        /** @description A bare DID in the W3C DID Core syntax (§3.1): `did:`, a method name of lowercase letters and digits, `:`, and a method-specific id of colon-separated segments drawn from `A-Z a-z 0-9 . - _` and percent-encoded octets, the last segment non-empty. A DID URL is not a DID: no path, query or fragment (`/`, `?`, `#`), so a verification-method id such as `did:key:z6Mk…#z6Mk…` is refused. Compared by exact string equality — no case folding or percent-decoding. A consumer MUST still treat the value as data: the pattern keeps shell metacharacters, whitespace and quotes out of the wire form, but it does not make a DID safe to splice into a command or markup. */
+        GitNsViewV0_6Did: string;
         /** @description One difference between the forge's observed state and the VTC's projection of a repository. */
-        GitNsViewV0_1DriftItem: {
-            account?: components["schemas"]["GitNsViewV0_1ForgeAccount"];
+        GitNsViewV0_6DriftItem: {
+            account?: components["schemas"]["GitNsViewV0_6ForgeAccount"];
             /** @description What the projection calls for, in the forge's own vocabulary. Absent when the projection calls for nothing. */
             expected?: string;
             /** @description What the forge shows, in the forge's own vocabulary (a role name such as `maintain`, a setting name). Absent when nothing is there. */
             observed?: string;
-            resource: components["schemas"]["GitNsViewV0_1RepoResource"];
+            resource: components["schemas"]["GitNsViewV0_6RepoResource"];
             /**
              * @description `roleAdded` — someone holds a forge role the projection does not give them. `roleRemoved` — a projected role is missing. `roleChanged` — a projected role is present at another level. `requiredCheckMissing` — the verify-trust check is no longer required. `protectionWeakened` — branch protection or a ruleset is weaker than the projection in another way (force-push allowed, bypass actors added). `bootstrapMissing` — a bootstrap file or variable is gone.
              * @enum {string}
@@ -1518,26 +1546,26 @@ export interface components {
             type: "roleAdded" | "roleRemoved" | "roleChanged" | "requiredCheckMissing" | "protectionWeakened" | "bootstrapMissing";
         };
         /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
-        GitNsViewV0_1Ext: {
+        GitNsViewV0_6Ext: {
             [key: string]: unknown;
         };
         /** @description A person's account on one forge. `id` is authoritative; `login` is for display only, because logins can be renamed and re-registered. */
-        GitNsViewV0_1ForgeAccount: {
-            forge: components["schemas"]["GitNsViewV0_1ForgeHost"];
-            id: components["schemas"]["GitNsViewV0_1ForgeId"];
+        GitNsViewV0_6ForgeAccount: {
+            forge: components["schemas"]["GitNsViewV0_6ForgeHost"];
+            id: components["schemas"]["GitNsViewV0_6ForgeId"];
             /** @description The account's current login, as the forge reported it when last seen. Display only. */
             login: string;
         };
-        /** @description The lowercased DNS host of a forge: `github.com`, a GitHub Enterprise Server host, `codeberg.org`, or a self-hosted Forgejo instance such as `git.example.org`. No scheme, no port, no path. The host is a segment of every resource, so a right never crosses forges. */
-        GitNsViewV0_1ForgeHost: string;
-        /** @description An identifier the forge itself assigns — a repository id, a user or organisation id — carried as a string so a forge whose ids are not numbers needs no new version. GitHub and Forgejo ids are decimal integers written as strings (`"812736451"`). Unlike a name, it survives renames and transfers, which is why rights and bindings are keyed by it. */
-        GitNsViewV0_1ForgeId: string;
+        /** @description The lowercased DNS host of a forge: `github.com`, a GitHub Enterprise Server host, `codeberg.org`, `gitlab.com`, or a self-hosted Forgejo or GitLab instance such as `git.example.org`. No scheme, no port, no path. The host is a segment of every resource, so a right never crosses forges. */
+        GitNsViewV0_6ForgeHost: string;
+        /** @description An identifier the forge itself assigns — a repository id, a user or organisation id — carried as a string so a forge whose ids are not numbers needs no new version. GitHub, Forgejo and GitLab ids are decimal integers written as strings (`"812736451"`). Unlike a name, it survives renames and transfers, which is why rights and bindings are keyed by it. */
+        GitNsViewV0_6ForgeId: string;
         /** @description The VTC's binding to one owner on one forge. */
-        GitNsViewV0_1GitNamespace: {
-            forge: components["schemas"]["GitNsViewV0_1ForgeHost"];
-            id: components["schemas"]["GitNsViewV0_1NamespaceId"];
+        GitNsViewV0_6GitNamespace: {
+            forge: components["schemas"]["GitNsViewV0_6ForgeHost"];
+            id: components["schemas"]["GitNsViewV0_6NamespaceId"];
             /**
-             * @description Whether the owner is an organisation or a personal account, as the forge reports it. Present once known: a bridge-mode namespace learns it when binding completes, and a manual-mode namespace MAY never learn it.
+             * @description Whether the owner is an organisation or a personal account, as the forge reports it; a GitLab top-level group is an `organization`. Present once known: a bridge-mode namespace learns it when binding completes, and a manual-mode namespace MAY never learn it.
              * @enum {string}
              */
             kind?: "organization" | "user";
@@ -1546,56 +1574,68 @@ export interface components {
              * @enum {string}
              */
             mode: "bridge" | "manual";
-            owner: components["schemas"]["GitNsViewV0_1Segment"];
+            owner: components["schemas"]["GitNsViewV0_6Segment"];
             /**
              * @description `pending` — binding has started and the forge-side proof has not arrived yet. `bound` — the VTC governs rights under this namespace.
              * @enum {string}
              */
             state: "pending" | "bound";
         };
+        /** @description A forge account linked to the caller's DID with git-ns/account/link, and when the link completed. */
+        GitNsViewV0_6LinkedAccount: {
+            account: components["schemas"]["GitNsViewV0_6ForgeAccount"];
+            /**
+             * Format: date-time
+             * @description When the link completed: when the VTC recorded the account against the caller's DID.
+             */
+            linkedAt: string;
+        };
         /** @description The VTC's opaque identifier for a namespace, assigned when it is bound. Stable for the life of the binding; never reused for another binding. */
-        GitNsViewV0_1NamespaceId: string;
-        /** @description A forge-qualified resource naming exactly one repository: `<forge-host>/<owner>/<repo>`, lowercase. */
-        GitNsViewV0_1RepoResource: string;
+        GitNsViewV0_6NamespaceId: string;
+        /** @description A forge-qualified resource naming exactly one repository: `<forge-host>/<owner>/<repo-path>`, lowercase, where the repository path has 1 to 21 segments (see `Resource`). */
+        GitNsViewV0_6RepoResource: string;
         /** @description One repository as the VTC records it. */
-        GitNsViewV0_1RepoSummary: {
-            bootstrap: components["schemas"]["GitNsViewV0_1Bootstrap"];
-            forgeId?: components["schemas"]["GitNsViewV0_1ForgeId"];
+        GitNsViewV0_6RepoSummary: {
+            bootstrap: components["schemas"]["GitNsViewV0_6Bootstrap"];
+            forgeId?: components["schemas"]["GitNsViewV0_6ForgeId"];
             /** @description The DIDs holding `git.repo.own` on this repository by an explicit grant. Empty only for an `unmanaged` repository, and for an `orphaned` one whose ownership rests with the namespace admins by implication. */
-            owners: components["schemas"]["GitNsViewV0_1Did"][];
-            resource: components["schemas"]["GitNsViewV0_1RepoResource"];
+            owners: components["schemas"]["GitNsViewV0_6Did"][];
+            resource: components["schemas"]["GitNsViewV0_6RepoResource"];
             /**
              * @description `pendingCreate` — the name is reserved and the repository is not yet confirmed on the forge. `active` — managed. `archived` — archived through git-ns/repo/archive; commit rights on it are revoked. `detached` — no longer governed: its namespace was unbound, or it moved outside the namespace. `orphaned` — its last owner left the community and ownership passed to the namespace admins, who have not yet named a new owner. `unmanaged` — it exists on the forge inside a bound namespace but was never created or adopted through the VTC.
              * @enum {string}
              */
             state: "pendingCreate" | "active" | "archived" | "detached" | "orphaned" | "unmanaged";
-            sync: components["schemas"]["GitNsViewV0_1Sync"];
-            visibility: components["schemas"]["GitNsViewV0_1RepoVisibility"];
+            sync: components["schemas"]["GitNsViewV0_6Sync"];
+            visibility: components["schemas"]["GitNsViewV0_6RepoVisibility"];
         };
         /**
          * @description Repository visibility on the forge.
          * @enum {string}
          */
-        GitNsViewV0_1RepoVisibility: "public" | "private";
-        /** @description A forge-qualified resource: `<forge-host>/<owner>` for a namespace, or `<forge-host>/<owner>/<repo>` for one repository, all lowercase — `github.com/acme`, `github.com/acme/widgets`, `codeberg.org/acme`. The forge is never implied: `acme/widgets` alone is not a resource. Containment is by whole segment: `github.com/acme` contains `github.com/acme/widgets` and does not contain `github.com/acme-labs/x` or `codeberg.org/acme/widgets`. */
-        GitNsViewV0_1Resource: string;
-        /** @description What the caller may see. */
-        GitNsViewV0_1Response: {
-            ext?: components["schemas"]["GitNsViewV0_1Ext"];
-            /** @description Namespaces bound to this VTC that contain, or are contained by, `resource`. */
-            namespaces: components["schemas"]["GitNsViewV0_1GitNamespace"][];
-            /** @description Repositories within `resource`. `unmanaged` repositories are included only for callers holding `git.ns.admin` over them. */
-            repos: components["schemas"]["GitNsViewV0_1RepoSummary"][];
-            /** @description Rights within `resource` the caller may see: always the caller's own; every right on a resource the caller owns or administers. `reason` is omitted except on resources the caller owns or administers. */
-            rights: components["schemas"]["GitNsViewV0_1RightRecord"][];
+        GitNsViewV0_6RepoVisibility: "public" | "private";
+        /** @description A forge-qualified resource, all lowercase: `<forge-host>/<owner>` for a namespace, or `<forge-host>/<owner>/<repo-path>` for one repository — `github.com/acme`, `github.com/acme/widgets`, `codeberg.org/acme`. On a forge with nested groups (GitLab) the repository path holds the subgroups between the top-level owner and the project: `gitlab.com/acme/platform/tools/cli` is one repository of the namespace `gitlab.com/acme`, and a subgroup such as `gitlab.com/acme/platform` is not a resource. A repository path has 1 to 21 segments (GitLab: 20 levels of subgroup and the project); GitHub and Forgejo repository paths are always one. The forge is never implied: `acme/widgets` alone is not a resource. Containment is by whole segment: `github.com/acme` contains `github.com/acme/widgets` and does not contain `github.com/acme-labs/x` or `codeberg.org/acme/widgets`. */
+        GitNsViewV0_6Resource: string;
+        /** @description What the caller may see — or, with `scope: administrator`, everything in the namespaces they administer — and the caller's own linked forge accounts. */
+        GitNsViewV0_6Response: {
+            /** @description The forge accounts linked to the caller's own DID — never another member's — at most one per forge. With `resource`, only the account on that resource's forge. Empty when the caller has linked none. */
+            accounts: components["schemas"]["GitNsViewV0_6LinkedAccount"][];
+            ext?: components["schemas"]["GitNsViewV0_6Ext"];
+            /** @description Namespaces bound to this VTC that contain, or are contained by, `resource`. With `scope: administrator`, only those the caller administers. With `breakGlass: true`, only those containing a returned record. */
+            namespaces: components["schemas"]["GitNsViewV0_6GitNamespace"][];
+            /** @description Repositories within `resource`. `unmanaged` repositories are included only for callers holding `git.ns.admin` over them, or with `scope: administrator`. With `breakGlass: true`, only those carrying a returned record. */
+            repos: components["schemas"]["GitNsViewV0_6RepoSummary"][];
+            /** @description Rights within `resource` the caller may see: always the caller's own; every right on a resource the caller owns or administers; every unratified break-glass record in a namespace they administer or on a resource they own. With `scope: administrator`, every recorded right in the namespaces the caller administers. `reason` is omitted except on resources the caller owns or administers. With `breakGlass: true`, only records carrying `breakGlass`. */
+            rights: components["schemas"]["GitNsViewV0_6RightRecord"][];
         };
         /**
          * @description One of the five git rights. Each string is also the TRQP `action` the VTC publishes the right under in its Trust Registry, so it is carried verbatim. `git.ns.admin` and `git.repo.create` apply to a namespace resource; `git.repo.own` and `git.repo.maintain` to a repository resource; `git.commit.sign` to either.
          * @enum {string}
          */
-        GitNsViewV0_1Right: "git.ns.admin" | "git.repo.create" | "git.repo.own" | "git.repo.maintain" | "git.commit.sign";
-        /** @description One recorded right. Implied rights (§4.2 of the rights model: `own` implies `maintain` implies `commit.sign` on the same resource; `ns.admin` implies `repo.create` and `own` across its namespace) are not records and never appear as RightRecords. */
-        GitNsViewV0_1RightRecord: {
+        GitNsViewV0_6Right: "git.ns.admin" | "git.repo.create" | "git.repo.own" | "git.repo.maintain" | "git.commit.sign";
+        /** @description One recorded right. Implied rights (§4.2 of the rights model: `own` implies `maintain` implies `commit.sign` on the same resource; `ns.admin` implies `repo.create` and `own` across its namespace) are not records and never appear as RightRecords. A record carrying `breakGlass` was given by its subject to themselves through git-ns/right/break-glass; it is a real right, published like any other, and is shown with that flag on every surface that shows the record. */
+        GitNsViewV0_6RightRecord: {
+            breakGlass?: components["schemas"]["GitNsViewV0_6BreakGlass"];
             /**
              * Format: date-time
              * @description When the right lapses. Absent: no expiry.
@@ -1603,24 +1643,24 @@ export interface components {
             expiresAt?: string;
             /** Format: date-time */
             grantedAt: string;
-            grantedBy: components["schemas"]["GitNsViewV0_1Did"];
+            grantedBy: components["schemas"]["GitNsViewV0_6Did"];
             /** @description The granter's free-text reason. Disclosed only to holders of `git.repo.own` on the resource and of `git.ns.admin` over it. */
             reason?: string;
-            resource: components["schemas"]["GitNsViewV0_1Resource"];
-            right: components["schemas"]["GitNsViewV0_1Right"];
-            subject: components["schemas"]["GitNsViewV0_1Did"];
+            resource: components["schemas"]["GitNsViewV0_6Resource"];
+            right: components["schemas"]["GitNsViewV0_6Right"];
+            subject: components["schemas"]["GitNsViewV0_6Did"];
         };
-        /** @description One lowercased owner or repository name. Forges compare these case-insensitively, so the wire form is always lowercase and a producer lowercases before sending. A leading `.` is refused, which rules out `.` and `..`. */
-        GitNsViewV0_1Segment: string;
+        /** @description One lowercased owner, group or repository name. Forges compare these case-insensitively, so the wire form is always lowercase and a producer lowercases before sending. A leading `.` is refused, which rules out `.` and `..`. Up to 255 characters, the longest name GitLab allows; GitHub and Forgejo names are shorter. */
+        GitNsViewV0_6Segment: string;
         /** @description How the forge compares with the VTC's projection for one repository. */
-        GitNsViewV0_1Sync: {
+        GitNsViewV0_6Sync: {
             /**
              * Format: date-time
              * @description When the forge was last compared. Absent if never.
              */
             checkedAt?: string;
             /** @description Outstanding drift. Empty unless `state` is `drift`. */
-            drift: components["schemas"]["GitNsViewV0_1DriftItem"][];
+            drift: components["schemas"]["GitNsViewV0_6DriftItem"][];
             /**
              * @description `inSync` — the last comparison found no drift. `drift` — it found some, listed in `drift`. `pending` — a change has been sent to the forge and not yet confirmed. `unchecked` — nothing compares this repository (a manual-mode namespace).
              * @enum {string}

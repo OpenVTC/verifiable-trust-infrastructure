@@ -106,8 +106,13 @@ impl std::fmt::Display for Right {
 }
 
 /// A forge-qualified resource: `<forge-host>/<owner>` or
-/// `<forge-host>/<owner>/<repo>`, lowercase (`git-ns/right/grant/0.3`,
-/// *Resources*).
+/// `<forge-host>/<owner>/<repo-path>`, lowercase (`git-ns/_shared/0.6`,
+/// `Resource`). On a forge with nested groups (GitLab) the repository path
+/// holds the subgroups between the top-level owner and the project —
+/// `gitlab.com/acme/platform/tools/cli` is one repository of the namespace
+/// `gitlab.com/acme` — so `repo` is that whole path, `/`-joined. A subgroup
+/// is not a resource: two segments are a namespace, three or more a
+/// repository.
 ///
 /// Parsed, never assumed: an unqualified `owner/repo` is refused, because the
 /// forge host is the segment that keeps `github.com/acme` and
@@ -135,10 +140,13 @@ impl Resource {
         let parts: Vec<&str> = raw.split('/').collect();
         let (forge, owner, repo) = match parts.as_slice() {
             [f, o] => (*f, *o, None),
-            [f, o, r] => (*f, *o, Some(*r)),
+            [f, o, path @ ..] if path.len() <= MAX_REPO_PATH_SEGMENTS => {
+                (*f, *o, Some(path.join("/")))
+            }
             _ => {
                 return Err(format!(
-                    "`{raw}` is not `<forge-host>/<owner>` or `<forge-host>/<owner>/<repo>`"
+                    "`{raw}` is not `<forge-host>/<owner>` or `<forge-host>/<owner>/<repo-path>` \
+                     (a repository path of 1 to {MAX_REPO_PATH_SEGMENTS} segments)"
                 ));
             }
         };
@@ -151,15 +159,15 @@ impl Resource {
         if !is_segment(owner) {
             return Err(format!("`{owner}` is not a valid owner name"));
         }
-        if let Some(r) = repo
-            && !is_segment(r)
+        if let Some(r) = &repo
+            && let Some(bad) = r.split('/').find(|seg| !is_segment(seg))
         {
-            return Err(format!("`{r}` is not a valid repository name"));
+            return Err(format!("`{bad}` is not a valid repository or group name"));
         }
         Ok(Resource {
             forge: forge.to_string(),
             owner: owner.to_string(),
-            repo: repo.map(str::to_string),
+            repo,
         })
     }
 
@@ -196,7 +204,16 @@ impl Resource {
     /// The same rule, and the same function, the ACL gate uses for contexts —
     /// a second segment matcher here is a second place for the
     /// `acme`/`acme-labs` confusion to come back.
+    ///
+    /// A repository contains only itself. With nested repository paths
+    /// (`git-ns/_shared/0.6`) one repository's path can prefix another's —
+    /// `gitlab.com/acme/platform` and `gitlab.com/acme/platform/tools/cli` —
+    /// and a right on the first is no right on the second: a subgroup is not
+    /// a resource, so nothing is held on it.
     pub fn contains(&self, other: &Resource) -> bool {
+        if !self.is_namespace() {
+            return self == other;
+        }
         vta_sdk::context_path::is_ancestor_or_self(&self.to_string(), &other.to_string())
     }
 }
@@ -227,14 +244,19 @@ pub fn is_forge_host(s: &str) -> bool {
         })
 }
 
-/// `Segment` in the shared schema: `^[a-z0-9_-][a-z0-9._-]*$`, 1–100 chars.
+/// The most segments a repository path has (`git-ns/_shared/0.6`: GitLab's
+/// 20 levels of subgroup and the project).
+pub const MAX_REPO_PATH_SEGMENTS: usize = 21;
+
+/// `Segment` in the shared schema: `^[a-z0-9_-][a-z0-9._-]*$`, 1–255 chars
+/// (`git-ns/_shared/0.6`; 100 before it).
 /// A leading `.` is refused, which rules out `.` and `..`.
 pub fn is_segment(s: &str) -> bool {
     let mut chars = s.chars();
     let Some(first) = chars.next() else {
         return false;
     };
-    s.len() <= 100
+    s.len() <= 255
         && (first.is_ascii_lowercase() || first.is_ascii_digit() || first == '_' || first == '-')
         && chars.all(|c| {
             c.is_ascii_lowercase() || c.is_ascii_digit() || c == '.' || c == '_' || c == '-'
@@ -812,7 +834,28 @@ mod tests {
     fn a_dot_segment_is_refused() {
         assert!(Resource::parse("github.com/acme/..").is_err());
         assert!(Resource::parse("github.com/./x").is_err());
-        assert!(Resource::parse("github.com/acme/x/y").is_err());
+        assert!(Resource::parse("github.com/acme/x/..").is_err());
+    }
+
+    #[test]
+    fn a_nested_repository_path_is_one_repository_of_the_top_level_namespace() {
+        let r = Resource::parse("gitlab.com/acme/platform/tools/cli").unwrap();
+        assert_eq!(r.owner, "acme");
+        assert_eq!(r.repo.as_deref(), Some("platform/tools/cli"));
+        assert_eq!(r.to_string(), "gitlab.com/acme/platform/tools/cli");
+        assert_eq!(r.namespace_resource().to_string(), "gitlab.com/acme");
+        let ns = Resource::parse("gitlab.com/acme").unwrap();
+        assert!(ns.contains(&r));
+        // A repository whose path prefixes another's does not contain it.
+        let platform = Resource::parse("gitlab.com/acme/platform").unwrap();
+        assert!(!platform.contains(&r));
+        // 21 segments at most; a segment up to 255 characters.
+        let deep = format!("gitlab.com/acme/{}", vec!["g"; 21].join("/"));
+        assert!(Resource::parse(&deep).is_ok());
+        let deeper = format!("gitlab.com/acme/{}", vec!["g"; 22].join("/"));
+        assert!(Resource::parse(&deeper).is_err());
+        assert!(Resource::parse(&format!("gitlab.com/acme/{}", "a".repeat(255))).is_ok());
+        assert!(Resource::parse(&format!("gitlab.com/acme/{}", "a".repeat(256))).is_err());
     }
 
     #[test]

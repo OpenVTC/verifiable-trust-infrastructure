@@ -1,4 +1,4 @@
-// The community's repositories in the member portal (`git-ns/view/0.4`):
+// The community's repositories in the member portal (`git-ns/view/0.6`):
 //
 //   #/repos   What you may do on the community's repositories, what others
 //             hold on the ones you own, every repository the community

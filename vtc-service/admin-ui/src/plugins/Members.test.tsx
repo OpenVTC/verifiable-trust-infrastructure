@@ -142,7 +142,7 @@ describe("Members — git rights (UI-13)", () => {
   it("flags a right Bob granted himself by break-glass until it is ratified", async () => {
     const mark = {
       by: BOB,
-      at: "2026-09-25T02:10:31Z",
+      recordedAt: "2026-09-25T02:10:31Z",
       justification: "Both owners unreachable; CVE fix must ship tonight.",
     };
     const rights = RIGHTS.map((r) =>

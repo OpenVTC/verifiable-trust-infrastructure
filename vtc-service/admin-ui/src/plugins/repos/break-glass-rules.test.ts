@@ -87,15 +87,15 @@ describe("break-glass state", () => {
 
   it("reads unratified, delayed and ratified", () => {
     expect(breakGlassState(null)).toBeNull();
-    expect(breakGlassState({ by: ALICE, at, justification: "j" }, now)).toBe("unratified");
+    expect(breakGlassState({ by: ALICE, recordedAt: at, justification: "j" }, now)).toBe("unratified");
     expect(
-      breakGlassState({ by: ALICE, at, justification: "j", effectiveAt: "2026-09-25T04:00:00Z" }, now),
+      breakGlassState({ by: ALICE, recordedAt: at, justification: "j", effectiveAt: "2026-09-25T04:00:00Z" }, now),
     ).toBe("pending");
     expect(
-      breakGlassState({ by: ALICE, at, justification: "j", effectiveAt: "2026-09-25T02:40:00Z" }, now),
+      breakGlassState({ by: ALICE, recordedAt: at, justification: "j", effectiveAt: "2026-09-25T02:40:00Z" }, now),
     ).toBe("unratified");
     expect(
-      breakGlassState({ by: ALICE, at, justification: "j", ratifiedBy: BOB, ratifiedAt: at }, now),
+      breakGlassState({ by: ALICE, recordedAt: at, justification: "j", ratifiedBy: BOB, ratifiedAt: at }, now),
     ).toBe("ratified");
   });
 
@@ -104,11 +104,11 @@ describe("break-glass state", () => {
     expect(countsTowardInvariant(rightRow(own))).toBe(true);
     expect(countsTowardInvariant(rightRow({ ...own, expiresAt: "2099-01-01T00:00:00Z" }))).toBe(false);
     expect(
-      countsTowardInvariant(rightRow({ ...own, breakGlass: { by: ALICE, at, justification: "j" } })),
+      countsTowardInvariant(rightRow({ ...own, breakGlass: { by: ALICE, recordedAt: at, justification: "j" } })),
     ).toBe(false);
     expect(
       countsTowardInvariant(
-        rightRow({ ...own, breakGlass: { by: ALICE, at, justification: "j", ratifiedBy: BOB } }),
+        rightRow({ ...own, breakGlass: { by: ALICE, recordedAt: at, justification: "j", ratifiedBy: BOB } }),
       ),
     ).toBe(true);
   });
@@ -117,7 +117,7 @@ describe("break-glass state", () => {
     const later: GitNsBreakGlassItem = {
       ...ALICE_BREAK_GLASS,
       resource: "github.com/acme/widgets",
-      breakGlass: { ...ALICE_BREAK_GLASS.breakGlass, at: "2026-09-25T05:00:00Z" },
+      breakGlass: { ...ALICE_BREAK_GLASS.breakGlass, recordedAt: "2026-09-25T05:00:00Z" },
       state: "pending",
     };
     const done: GitNsBreakGlassItem = { ...ALICE_BREAK_GLASS, state: "ratified" };
@@ -131,7 +131,7 @@ describe("who may ratify and revoke (ratify 0.1, revoke 0.3)", () => {
       subject: did,
       right: "git.ns.admin",
       resource: "github.com/acme",
-      ...(breakGlass ? { breakGlass: { by: did, at: "2026-09-24T00:00:00Z", justification: "j" } } : {}),
+      ...(breakGlass ? { breakGlass: { by: did, recordedAt: "2026-09-24T00:00:00Z", justification: "j" } } : {}),
     });
 
   it("never lets the holder ratify their own break-glass, even as a community administrator", () => {
@@ -171,7 +171,7 @@ describe("who may ratify and revoke (ratify 0.1, revoke 0.3)", () => {
 describe("break-glass and ratify tasks", () => {
   it("builds a break-glass with no subject and no expiry, as cnm will sign it", () => {
     const t = breakGlassTask("git.repo.own", "github.com/acme/docs", "  CVE fix tonight  ");
-    expect(t.taskUri).toBe("https://trusttasks.org/spec/git-ns/right/break-glass/0.1");
+    expect(t.taskUri).toBe("https://trusttasks.org/spec/git-ns/right/break-glass/0.2");
     expect(t.payload).toEqual({
       right: "git.repo.own",
       resource: "github.com/acme/docs",
@@ -209,8 +209,8 @@ describe("break-glass and ratify tasks", () => {
   });
 
   it("sends grant and revoke at 0.3, where separation of duties is specified", () => {
-    expect(TASK_URI["right.grant"]).toBe("https://trusttasks.org/spec/git-ns/right/grant/0.3");
-    expect(TASK_URI["right.revoke"]).toBe("https://trusttasks.org/spec/git-ns/right/revoke/0.3");
+    expect(TASK_URI["right.grant"]).toBe("https://trusttasks.org/spec/git-ns/right/grant/0.4");
+    expect(TASK_URI["right.revoke"]).toBe("https://trusttasks.org/spec/git-ns/right/revoke/0.4");
   });
 });
 

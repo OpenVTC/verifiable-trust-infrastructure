@@ -26,31 +26,37 @@ use serde_json::Value;
 use trust_tasks_rs::specs::git_ns::account::{
     link::v0_1 as link, link_status::v0_1 as link_status, unlink::v0_1 as unlink,
 };
+// The bridge's own tasks keep their older versions beside the current ones:
+// the released bridge (OpenVTC/verifiable-git-infrastructure `vgi-bridge`
+// v0.25.0) sends `git-ns/bridge/event` 0.3 by default (0.1, 0.2 or 0.4 as
+// configured) and `git-ns/bridge/result` 0.1, so refusing them would cut every
+// deployed bridge off. Every member- and administrator-facing task is served at
+// its current version only.
+#[allow(deprecated)]
 use trust_tasks_rs::specs::git_ns::bridge::{
     event::v0_1 as event, event::v0_2 as event2, event::v0_3 as event3, event::v0_4 as event4,
     result::v0_1 as result,
 };
-use trust_tasks_rs::specs::git_ns::drift::resolve::{
-    v0_1 as drift_resolve, v0_3 as drift_resolve3,
-};
+use trust_tasks_rs::specs::git_ns::bridge::{event::v0_5 as event5, result::v0_2 as result2};
+use trust_tasks_rs::specs::git_ns::drift::resolve::v0_4 as drift_resolve;
 use trust_tasks_rs::specs::git_ns::namespace::{
-    bind::v0_1 as bind, reseat::v0_3 as reseat, unbind::v0_1 as unbind,
+    bind::v0_2 as bind, reseat::v0_4 as reseat, unbind::v0_1 as unbind,
 };
 use trust_tasks_rs::specs::git_ns::repo::{
-    adopt::v0_1 as adopt, archive::v0_1 as archive, create::v0_3 as create,
-    transfer::v0_1 as transfer,
+    adopt::v0_3 as adopt, archive::v0_3 as archive, create::v0_4 as create,
+    transfer::v0_3 as transfer,
 };
 use trust_tasks_rs::specs::git_ns::right::{
-    break_glass::v0_1 as break_glass, grant::v0_3 as grant, ratify::v0_1 as ratify,
-    revoke::v0_3 as revoke,
+    break_glass::v0_2 as break_glass, grant::v0_4 as grant, ratify::v0_2 as ratify,
+    revoke::v0_4 as revoke,
 };
-use trust_tasks_rs::specs::git_ns::roles::reproject::v0_1 as reproject;
-use trust_tasks_rs::specs::git_ns::view::{v0_1 as view, v0_2 as view2, v0_4 as view4};
+use trust_tasks_rs::specs::git_ns::roles::reproject::v0_2 as reproject;
+use trust_tasks_rs::specs::git_ns::view::v0_6 as view;
 use trust_tasks_rs::{AsyncDispatcher, RejectReason, StandardCode, TrustTask, TrustTaskCode};
 
 use super::admin_reads::{
-    account_list_v0_1, activity_list_v0_1, bridge_job_list_v0_1, bridge_job_list_v0_2,
-    projection_show_v0_1, right_issued_by_departed_v0_1, right_list_v0_1,
+    account_list, activity_list, bridge_job_list, namespace_list, projection_show, repo_list,
+    right_issued_by_departed, right_list,
 };
 
 use crate::server::AppState;
@@ -60,7 +66,6 @@ use crate::trust_tasks::helpers::{
 };
 
 use super::ops::{self, OpError};
-use super::store::Snapshot;
 
 static GIT_NS: std::sync::LazyLock<AsyncDispatcher<GitNsCtx, TrustTaskOutcome>> =
     std::sync::LazyLock::new(dispatcher);
@@ -126,22 +131,19 @@ pub(crate) fn dispatcher() -> AsyncDispatcher<GitNsCtx, TrustTaskOutcome> {
         .on_async(handle_revoke)
         .on_async(handle_break_glass)
         .on_async(handle_ratify)
+        // `git-ns/view/0.6`: the member's view, or with `scope: administrator`
+        // the administrator's (`super::admin_reads::read_view`).
         .on_async(handle_view)
-        .on_async(handle_view_v2)
-        .on_async(handle_view_v4)
-        // The three administrator reads (`super::admin_reads`), on the
-        // generated payload types (trust-tasks-rs 0.23.4, trust-tasks #659).
-        .on_async(handle_view_v5)
         .on_async(handle_namespace_list)
         .on_async(handle_repo_list)
         .on_async(handle_drift_resolve)
-        .on_async(handle_drift_resolve_v3)
         .on_async(handle_reseat)
         .on_async(handle_reproject)
         .on_async(handle_link)
         .on_async(handle_link_status)
         .on_async(handle_unlink)
         .on_async(handle_result)
+        .on_async(handle_result_v2)
         .on_async(handle_event)
         .on_async(handle_event_v2)
         .on_async(handle_event_v3)
@@ -149,15 +151,11 @@ pub(crate) fn dispatcher() -> AsyncDispatcher<GitNsCtx, TrustTaskOutcome> {
         // listed in `trust-task-discovery` — beside 0.1 to 0.3, which is what
         // tells a bridge it may report pull requests here.
         .on_async(handle_event_v4)
-        // The six community-administrator and administrator reads that once
-        // had only bearer REST (`super::admin_reads`, trust-tasks-rs 0.24.7,
-        // trustoverip/dtgwg-trust-tasks-tf#686).
+        // 0.5: 0.4 with nested repository paths (`git-ns/_shared/0.6`).
+        .on_async(handle_event_v5)
         .on_async(handle_right_list)
         .on_async(handle_right_issued_by_departed)
         .on_async(handle_bridge_job_list)
-        // 0.2 (trust-tasks-rs 0.27.4, trust-tasks-tf #727): 0.1 plus
-        // `closePullRequest` jobs and their `number`.
-        .on_async(handle_bridge_job_list_v2)
         .on_async(handle_projection_show)
         .on_async(handle_account_list)
         .on_async(handle_activity_list)
@@ -367,18 +365,29 @@ signed_handler!(
 );
 signed_handler!(handle_link, link::Payload, ops::account_link);
 signed_handler!(handle_unlink, unlink::Payload, ops::account_unlink);
-bridge_handler!(handle_result, result::Payload, super::bridge::handle_result);
+bridge_handler!(
+    handle_result_v2,
+    result2::Payload,
+    super::bridge::handle_result
+);
+/// `git-ns/bridge/result/0.1`, read as 0.2: a 0.1 document is a valid 0.2
+/// document (0.2 only admits nested repository paths), and the
+/// acknowledgement goes back as 0.1's, member for member.
+async fn result_v1(
+    state: &crate::server::AppState,
+    issuer: &str,
+    p: result::Payload,
+) -> Result<result::Response, OpError> {
+    let r = super::bridge::handle_result(state, issuer, convert(&p)?).await?;
+    convert(&r)
+}
+bridge_handler!(handle_result, result::Payload, result_v1);
 signed_handler!(
     handle_drift_resolve,
     drift_resolve::Payload,
-    super::drift::drift_resolve_v1
-);
-signed_handler!(
-    handle_drift_resolve_v3,
-    drift_resolve3::Payload,
     super::drift::drift_resolve
 );
-// `git-ns/namespace/reseat/0.3` — the only reseat version served (0.1 and
+// `git-ns/namespace/reseat/0.4` — the only reseat version served (0.1 and
 // 0.2 queued a namespace-level forge projection that no longer exists).
 signed_handler!(handle_reseat, reseat::Payload, ops::namespace_reseat);
 // The administrator's reads (`super::admin_reads`). Each refuses an unsigned
@@ -386,55 +395,43 @@ signed_handler!(handle_reseat, reseat::Payload, ops::namespace_reseat);
 // spine their proof is REQUIRED; a console key acts as the admin DID that
 // delegated it, exactly as for the family's changes.
 signed_handler!(
-    handle_view_v5,
-    super::admin_reads::view_v0_5::Payload,
-    super::admin_reads::view_v5
-);
-signed_handler!(
     handle_namespace_list,
-    super::admin_reads::namespace_list_v0_1::Payload,
+    namespace_list::Payload,
     super::admin_reads::namespace_list
 );
 signed_handler!(
     handle_repo_list,
-    super::admin_reads::repo_list_v0_1::Payload,
+    repo_list::Payload,
     super::admin_reads::repo_list
 );
-// The six reads that once had only bearer REST (`super::admin_reads`,
-// trust-tasks-rs 0.24.7, trustoverip/dtgwg-trust-tasks-tf#686).
 signed_handler!(
     handle_right_list,
-    right_list_v0_1::Payload,
+    right_list::Payload,
     super::admin_reads::right_list
 );
 signed_handler!(
     handle_right_issued_by_departed,
-    right_issued_by_departed_v0_1::Payload,
+    right_issued_by_departed::Payload,
     super::admin_reads::right_issued_by_departed
 );
 signed_handler!(
     handle_bridge_job_list,
-    bridge_job_list_v0_1::Payload,
+    bridge_job_list::Payload,
     super::admin_reads::bridge_job_list
 );
 signed_handler!(
-    handle_bridge_job_list_v2,
-    bridge_job_list_v0_2::Payload,
-    super::admin_reads::bridge_job_list_v2
-);
-signed_handler!(
     handle_projection_show,
-    projection_show_v0_1::Payload,
+    projection_show::Payload,
     super::admin_reads::projection_show
 );
 signed_handler!(
     handle_account_list,
-    account_list_v0_1::Payload,
+    account_list::Payload,
     super::admin_reads::account_list
 );
 signed_handler!(
     handle_activity_list,
-    activity_list_v0_1::Payload,
+    activity_list::Payload,
     super::admin_reads::activity_list
 );
 signed_handler!(
@@ -443,14 +440,20 @@ signed_handler!(
     super::reproject::roles_reproject
 );
 
-/// `git-ns/bridge/event` 0.1, 0.2 and 0.3, read as 0.4. The four share every
-/// event type but 0.3's `roleMapReported` and 0.4's `pullRequestOpened`, and
-/// 0.2 changed only what the VTC does with a transfer, a reused name and a
-/// resource outside the namespace — rules this VTC applies to a 0.1 event too.
-/// So an older payload is carried as 0.4 (which it is a valid instance of)
-/// into the one handler, and its acknowledgement goes back in the version it
-/// was sent.
-async fn event_as_v4<P, R>(
+/// Re-read `value` as another version's generated type, through its JSON.
+fn convert<T: serde::Serialize, U: serde::de::DeserializeOwned>(value: &T) -> Result<U, OpError> {
+    serde_json::from_value(serde_json::to_value(value).map_err(vti_common::error::AppError::from)?)
+        .map_err(|e| OpError::Malformed(format!("bridge payload: {e}")))
+}
+
+/// `git-ns/bridge/event` 0.1 to 0.4, read as 0.5. The five share every
+/// event type but 0.3's `roleMapReported` and 0.4's `pullRequestOpened`; 0.2
+/// changed only what the VTC does with a transfer, a reused name and a
+/// resource outside the namespace — rules this VTC applies to a 0.1 event too
+/// — and 0.5 only admits nested repository paths (`git-ns/_shared/0.6`). So an
+/// older payload is carried as 0.5 (which it is a valid instance of) into the
+/// one handler, and its acknowledgement goes back in the version it was sent.
+async fn event_as_v5<P, R>(
     state: &crate::server::AppState,
     issuer: &str,
     issued_at: chrono::DateTime<chrono::Utc>,
@@ -460,11 +463,8 @@ where
     P: serde::Serialize,
     R: serde::de::DeserializeOwned,
 {
-    let v4: event4::Payload = serde_json::from_value(
-        serde_json::to_value(&p).map_err(vti_common::error::AppError::from)?,
-    )
-    .map_err(|e| OpError::Malformed(format!("bridge/event payload: {e}")))?;
-    let ack = super::bridge::handle_event(state, issuer, issued_at, v4).await?;
+    let v5: event5::Payload = convert(&p)?;
+    let ack = super::bridge::handle_event(state, issuer, issued_at, v5).await?;
     Ok(serde_json::from_value(
         serde_json::to_value(&ack).map_err(vti_common::error::AppError::from)?,
     )
@@ -476,7 +476,7 @@ async fn event_v1(
     issued_at: chrono::DateTime<chrono::Utc>,
     p: event::Payload,
 ) -> Result<event::Response, OpError> {
-    event_as_v4(state, issuer, issued_at, p).await
+    event_as_v5(state, issuer, issued_at, p).await
 }
 async fn event_v2(
     state: &crate::server::AppState,
@@ -484,7 +484,7 @@ async fn event_v2(
     issued_at: chrono::DateTime<chrono::Utc>,
     p: event2::Payload,
 ) -> Result<event2::Response, OpError> {
-    event_as_v4(state, issuer, issued_at, p).await
+    event_as_v5(state, issuer, issued_at, p).await
 }
 async fn event_v3(
     state: &crate::server::AppState,
@@ -492,7 +492,15 @@ async fn event_v3(
     issued_at: chrono::DateTime<chrono::Utc>,
     p: event3::Payload,
 ) -> Result<event3::Response, OpError> {
-    event_as_v4(state, issuer, issued_at, p).await
+    event_as_v5(state, issuer, issued_at, p).await
+}
+async fn event_v4(
+    state: &crate::server::AppState,
+    issuer: &str,
+    issued_at: chrono::DateTime<chrono::Utc>,
+    p: event4::Payload,
+) -> Result<event4::Response, OpError> {
+    event_as_v5(state, issuer, issued_at, p).await
 }
 
 /// As [`bridge_handler`], passing the document's `issuedAt` too: it orders
@@ -518,105 +526,29 @@ macro_rules! event_handler {
 event_handler!(handle_event, event::Payload, event_v1);
 event_handler!(handle_event_v2, event2::Payload, event_v2);
 event_handler!(handle_event_v3, event3::Payload, event_v3);
+event_handler!(handle_event_v4, event4::Payload, event_v4);
 event_handler!(
-    handle_event_v4,
-    event4::Payload,
+    handle_event_v5,
+    event5::Payload,
     super::bridge::handle_event
 );
 
-/// `git-ns/view/0.1` — any member, what they may see.
+/// `git-ns/view/0.6` — any member, what they may see; with `scope:
+/// administrator`, everything in the namespaces they administer
+/// ([`super::admin_reads::read_view`]).
+///
+/// A member-portal sign-in key reads as the member it signs for (grant 0.2
+/// consumer item 5: the portal is the member's surface), so it is given the
+/// member's view only — never what a community administrator sees beyond it,
+/// and never `scope: administrator`.
 pub(crate) async fn handle_view(doc: TrustTask<view::Payload>, ctx: GitNsCtx) -> TrustTaskOutcome {
     let who = match signer(&doc, &ctx) {
         Ok(w) => w,
         Err(r) => return r,
     };
     let r = async {
-        let who = acting_as(&ctx.state, &who).await?;
-        let standing = ops::standing(&ctx.state, &who).await?;
-        if !standing.member {
-            return Err(OpError::PermissionDenied(
-                "git-ns/view answers members of this community".into(),
-            ));
-        }
-        let filter = match &doc.payload.resource {
-            Some(r) => Some(super::model::Resource::parse(r).map_err(OpError::Malformed)?),
-            None => None,
-        };
-        let snap = Snapshot::load(&ctx.state.git_ns).await?;
-        Ok(super::view::for_member(&snap, &who, filter.as_ref())?)
-    }
-    .await;
-    respond(&doc, r)
-}
-
-/// `git-ns/view/0.2` — 0.1's answer, plus the caller's own linked accounts.
-pub(crate) async fn handle_view_v2(
-    doc: TrustTask<view2::Payload>,
-    ctx: GitNsCtx,
-) -> TrustTaskOutcome {
-    let who = match signer(&doc, &ctx) {
-        Ok(w) => w,
-        Err(r) => return r,
-    };
-    let r = async {
-        let who = acting_as(&ctx.state, &who).await?;
-        let standing = ops::standing(&ctx.state, &who).await?;
-        if !standing.member {
-            return Err(OpError::PermissionDenied(
-                "git-ns/view answers members of this community".into(),
-            ));
-        }
-        let filter = match &doc.payload.resource {
-            Some(r) => Some(super::model::Resource::parse(r).map_err(OpError::Malformed)?),
-            None => None,
-        };
-        let snap = Snapshot::load(&ctx.state.git_ns).await?;
-        let member = crate::members::get_member(&ctx.state.members_ks, &who).await?;
-        Ok(super::view::for_member_v2(
-            &snap,
-            &who,
-            filter.as_ref(),
-            member.as_ref(),
-        )?)
-    }
-    .await;
-    respond(&doc, r)
-}
-
-/// `git-ns/view/0.4` — 0.2's answer, with every record's `breakGlass`, and
-/// every unratified break-glass record to every administrator it concerns.
-pub(crate) async fn handle_view_v4(
-    doc: TrustTask<view4::Payload>,
-    ctx: GitNsCtx,
-) -> TrustTaskOutcome {
-    let who = match signer(&doc, &ctx) {
-        Ok(w) => w,
-        Err(r) => return r,
-    };
-    let r = async {
         let (who, delegated) = reader_as(&ctx.state, &who, &doc).await?;
-        let standing = ops::standing(&ctx.state, &who).await?;
-        if !standing.member {
-            return Err(OpError::PermissionDenied(
-                "git-ns/view answers members of this community".into(),
-            ));
-        }
-        let filter = match &doc.payload.resource {
-            Some(r) => Some(super::model::Resource::parse(r).map_err(OpError::Malformed)?),
-            None => None,
-        };
-        let snap = Snapshot::load(&ctx.state.git_ns).await?;
-        let member = crate::members::get_member(&ctx.state.members_ks, &who).await?;
-        Ok(super::view::for_member_v4(
-            &snap,
-            &who,
-            // The portal is the member's surface: what a community
-            // administrator sees beyond that is the console's (grant 0.2
-            // consumer item 5).
-            standing.community_admin && !delegated,
-            filter.as_ref(),
-            member.as_ref(),
-        )?)
+        super::admin_reads::read_view(&ctx.state, &who, delegated, doc.payload.clone()).await
     }
     .await;
     respond(&doc, r)

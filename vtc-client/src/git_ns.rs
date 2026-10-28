@@ -23,10 +23,12 @@
 //! `trust-task-error` document whichever transport carried it.
 //!
 //! **Reads are signed Trust Tasks too**, and go the same way: a member's
-//! `git-ns/view`, and the administrator's reads — `git-ns/view/0.5` with
-//! `scope: administrator` or `breakGlass: true`, `git-ns/namespace/list/0.1`
-//! and `git-ns/repo/list/0.1` — which the VTC answers to a namespace's
+//! `git-ns/view`, and the administrator's reads — `git-ns/view/0.6` with
+//! `scope: administrator` or `breakGlass: true`, `git-ns/namespace/list/0.2`
+//! and `git-ns/repo/list/0.2` — which the VTC answers to a namespace's
 //! administrators only, from the signer's standing, never from a bearer token.
+//!
+//! Every task is sent at its current version, the only one the VTC serves.
 //!
 //! The payload and response types are the specification's own, generated
 //! into `trust_tasks_rs::specs::git_ns` and re-exported here as [`specs`].
@@ -43,36 +45,34 @@ pub use trust_tasks_rs::specs::git_ns as specs;
 use specs::account::{
     link::v0_1 as link, link_status::v0_1 as link_status, unlink::v0_1 as unlink,
 };
-use specs::drift::resolve::{v0_1 as drift_resolve, v0_3 as drift_resolve3};
+use specs::drift::resolve::v0_4 as drift_resolve;
 use specs::namespace::{
-    bind::v0_1 as bind, list::v0_1 as namespace_list, reseat::v0_3 as reseat,
+    bind::v0_2 as bind, list::v0_2 as namespace_list, reseat::v0_4 as reseat,
     unbind::v0_1 as unbind,
 };
 
-/// `git-ns/namespace/reseat/0.3`, the only reseat version the VTC serves.
+/// `git-ns/namespace/reseat/0.4`, the only reseat version the VTC serves.
 pub const RESEAT_TYPE_URI: &str = <reseat::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 use specs::repo::{
-    adopt::v0_1 as adopt, archive::v0_1 as archive, create::v0_3 as create,
-    list::v0_1 as repo_list, transfer::v0_1 as transfer,
+    adopt::v0_3 as adopt, archive::v0_3 as archive, create::v0_4 as create,
+    list::v0_2 as repo_list, transfer::v0_3 as transfer,
 };
 use specs::right::{
-    break_glass::v0_1 as break_glass, grant::v0_3 as grant, ratify::v0_1 as ratify,
-    revoke::v0_3 as revoke,
+    break_glass::v0_2 as break_glass, grant::v0_4 as grant, ratify::v0_2 as ratify,
+    revoke::v0_4 as revoke,
 };
-use specs::roles::reproject::v0_1 as reproject;
-use specs::view::{v0_1 as view, v0_2 as view2, v0_4 as view4, v0_5 as view5};
+use specs::roles::reproject::v0_2 as reproject;
+use specs::view::v0_6 as view;
 
-/// `git-ns/view/0.1`'s type URI.
+/// `git-ns/view/0.6`'s type URI: a member's view, or with `scope:
+/// administrator` the administrator's.
 pub const GIT_NS_VIEW_TYPE: &str = <view::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
-/// `git-ns/view/0.5`: 0.4 plus `scope: administrator` and `breakGlass`.
-pub const GIT_NS_VIEW_V5_TYPE: &str = <view5::Payload as trust_tasks_rs::Payload>::TYPE_URI;
-
-/// `git-ns/namespace/list/0.1`: the namespaces the signer administers.
+/// `git-ns/namespace/list/0.2`: the namespaces the signer administers.
 pub const GIT_NS_NAMESPACE_LIST_TYPE: &str =
     <namespace_list::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
-/// `git-ns/repo/list/0.1`: the repositories in the namespaces the signer
+/// `git-ns/repo/list/0.2`: the repositories in the namespaces the signer
 /// administers.
 pub const GIT_NS_REPO_LIST_TYPE: &str = <repo_list::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
@@ -238,7 +238,7 @@ impl VtcClient {
         })
     }
 
-    /// `git-ns/namespace/bind/0.1`. `mode` is `bridge` or `manual`.
+    /// `git-ns/namespace/bind/0.2`. `mode` is `bridge` or `manual`.
     pub async fn git_ns_bind(
         &self,
         forge: &str,
@@ -270,7 +270,7 @@ impl VtcClient {
         .await
     }
 
-    /// `git-ns/repo/create/0.3`.
+    /// `git-ns/repo/create/0.4`.
     pub async fn git_ns_create_repo(
         &self,
         payload: &create::Payload,
@@ -284,7 +284,8 @@ impl VtcClient {
         .await
     }
 
-    /// `git-ns/repo/adopt/0.1`.
+    /// `git-ns/repo/adopt/0.3` — a nested repository path
+    /// (`gitlab.com/acme/platform/tools/cli`) included.
     pub async fn git_ns_adopt(
         &self,
         resource: &str,
@@ -300,7 +301,7 @@ impl VtcClient {
         .await
     }
 
-    /// `git-ns/repo/transfer/0.1` — hand `key`'s ownership of `resource` to
+    /// `git-ns/repo/transfer/0.3` — hand `key`'s ownership of `resource` to
     /// `to`.
     pub async fn git_ns_transfer(
         &self,
@@ -317,7 +318,7 @@ impl VtcClient {
         .await
     }
 
-    /// `git-ns/repo/archive/0.1`.
+    /// `git-ns/repo/archive/0.3`.
     pub async fn git_ns_archive(
         &self,
         resource: &str,
@@ -332,7 +333,7 @@ impl VtcClient {
         .await
     }
 
-    /// `git-ns/right/grant/0.3` — separation of duties: an elevated right
+    /// `git-ns/right/grant/0.4` — separation of duties: an elevated right
     /// (`git.ns.admin`, `git.repo.create`, `git.repo.own`) is refused
     /// `git-ns:selfGrantNotAllowed` when the subject is the signer.
     pub async fn git_ns_grant(
@@ -348,7 +349,7 @@ impl VtcClient {
         .await
     }
 
-    /// `git-ns/right/revoke/0.3`.
+    /// `git-ns/right/revoke/0.4`.
     pub async fn git_ns_revoke(
         &self,
         payload: &revoke::Payload,
@@ -362,7 +363,7 @@ impl VtcClient {
         .await
     }
 
-    /// `git-ns/right/ratify/0.1` — ratify another member's break-glass.
+    /// `git-ns/right/ratify/0.2` — ratify another member's break-glass.
     pub async fn git_ns_ratify(
         &self,
         payload: &ratify::Payload,
@@ -376,37 +377,21 @@ impl VtcClient {
         .await
     }
 
-    /// `git-ns/view/0.4` — as [`Self::git_ns_view_v2`], with each record's
-    /// `breakGlass`, and every unratified break-glass record the signer
-    /// administers.
-    pub async fn git_ns_view_v4(
-        &self,
-        resource: Option<&str>,
-        key: &HolderKey,
-    ) -> Result<view4::Response, VtcError> {
-        let payload = match resource {
-            Some(r) => serde_json::json!({ "resource": r }),
-            None => serde_json::json!({}),
-        };
-        self.git_ns_task(
-            <view4::Payload as trust_tasks_rs::Payload>::TYPE_URI,
-            &payload,
-            key,
-        )
-        .await
-    }
-
-    /// `git-ns/view/0.5` — 0.4's answer, or with `administrator` every record
-    /// and reason in the namespaces `key`'s DID administers; with
-    /// `break_glass`, only break-glass records (ratified ones included). The
-    /// response is 0.4's.
-    pub async fn git_ns_view_v5(
+    /// `git-ns/view/0.6` — what `key`'s DID may see as a member: the
+    /// namespaces and repositories within `resource`, the records it holds or
+    /// governs (each with its `breakGlass`), every unratified break-glass
+    /// record it administers, and its own linked forge accounts. With
+    /// `administrator`, every record and reason in the namespaces it
+    /// administers (`git-ns/view:notAdministrator` when it administers none
+    /// there); with `break_glass`, only break-glass records (ratified ones
+    /// included).
+    pub async fn git_ns_view(
         &self,
         resource: Option<&str>,
         administrator: bool,
         break_glass: bool,
         key: &HolderKey,
-    ) -> Result<view4::Response, VtcError> {
+    ) -> Result<view::Response, VtcError> {
         let mut payload = serde_json::Map::new();
         if let Some(r) = resource {
             payload.insert("resource".into(), r.into());
@@ -417,11 +402,11 @@ impl VtcClient {
         if break_glass {
             payload.insert("breakGlass".into(), true.into());
         }
-        self.git_ns_task(GIT_NS_VIEW_V5_TYPE, &Value::Object(payload), key)
+        self.git_ns_task(GIT_NS_VIEW_TYPE, &Value::Object(payload), key)
             .await
     }
 
-    /// `git-ns/namespace/list/0.1` — the namespaces `key`'s DID administers,
+    /// `git-ns/namespace/list/0.2` — the namespaces `key`'s DID administers,
     /// or only `namespace`, with admins, bridge, role map and forge status.
     pub async fn git_ns_namespace_list(
         &self,
@@ -436,7 +421,7 @@ impl VtcClient {
             .await
     }
 
-    /// `git-ns/repo/list/0.1` — the repositories in the namespaces `key`'s DID
+    /// `git-ns/repo/list/0.2` — the repositories in the namespaces `key`'s DID
     /// administers, or in `namespace` only, with owners, right counts,
     /// bootstrap, sync and the bridge's report.
     pub async fn git_ns_repo_list(
@@ -451,77 +436,20 @@ impl VtcClient {
         self.git_ns_task(GIT_NS_REPO_LIST_TYPE, &payload, key).await
     }
 
-    /// `git-ns/view/0.1` — what `key`'s DID may see, as a member.
-    pub async fn git_ns_view(
-        &self,
-        resource: Option<&str>,
-        key: &HolderKey,
-    ) -> Result<view::Response, VtcError> {
-        let payload = match resource {
-            Some(r) => serde_json::json!({ "resource": r }),
-            None => serde_json::json!({}),
-        };
-        self.git_ns_task(GIT_NS_VIEW_TYPE, &payload, key).await
-    }
-
-    /// `git-ns/view/0.2` — as [`Self::git_ns_view`], plus the forge accounts
-    /// linked to `key`'s own DID.
-    pub async fn git_ns_view_v2(
-        &self,
-        resource: Option<&str>,
-        key: &HolderKey,
-    ) -> Result<view2::Response, VtcError> {
-        let payload = match resource {
-            Some(r) => serde_json::json!({ "resource": r }),
-            None => serde_json::json!({}),
-        };
-        self.git_ns_task(
-            <view2::Payload as trust_tasks_rs::Payload>::TYPE_URI,
-            &payload,
-            key,
-        )
-        .await
-    }
-
-    /// `git-ns/drift/resolve/0.3` — adopt or revert one reported drift item.
+    /// `git-ns/drift/resolve/0.4` — adopt or revert one reported drift item.
     /// An adopt names the member who receives the right (`subject`); the VTC
     /// adopts nothing unless the account is still linked to exactly them.
-    pub async fn git_ns_drift_resolve_v3(
-        &self,
-        payload: &drift_resolve3::Payload,
-        key: &HolderKey,
-    ) -> Result<drift_resolve3::Response, VtcError> {
-        self.git_ns_task(
-            <drift_resolve3::Payload as trust_tasks_rs::Payload>::TYPE_URI,
-            payload,
-            key,
-        )
-        .await
-    }
-
-    /// `git-ns/drift/resolve/0.1` — revert one reported drift item. A 0.1
-    /// adopt names no recipient, and a VTC that serves 0.3 refuses it
-    /// (`unsupportedVersion`); adopt with [`Self::git_ns_drift_resolve_v3`].
-    #[deprecated(
-        note = "a drift/resolve 0.1 adopt names no recipient and is refused; use git_ns_drift_resolve_v3"
-    )]
     pub async fn git_ns_drift_resolve(
         &self,
         payload: &drift_resolve::Payload,
         key: &HolderKey,
     ) -> Result<drift_resolve::Response, VtcError> {
-        self.git_ns_task(
-            <drift_resolve::Payload as trust_tasks_rs::Payload>::TYPE_URI,
-            payload,
-            key,
-        )
-        .await
+        self.git_ns_task(GIT_NS_DRIFT_RESOLVE_TYPE, payload, key)
+            .await
     }
 
-    /// `git-ns/namespace/reseat/0.3` — a community administrator restores an
-    /// admin to a headless namespace. 0.3 is wire-identical to 0.2, whose
-    /// generated types are used until a `trust-tasks-rs` release carries
-    /// 0.3's (TODO, with trust-tasks #635).
+    /// `git-ns/namespace/reseat/0.4` — a community administrator restores an
+    /// admin to a headless namespace.
     pub async fn git_ns_reseat(
         &self,
         namespace: &str,
@@ -537,7 +465,7 @@ impl VtcClient {
         self.git_ns_task(RESEAT_TYPE_URI, &payload, key).await
     }
 
-    /// `git-ns/roles/reproject/0.1` — a community administrator or namespace
+    /// `git-ns/roles/reproject/0.2` — a community administrator or namespace
     /// admin has the bridge re-apply the forge roles of a namespace's
     /// repositories, or of one repository. No right changes.
     pub async fn git_ns_reproject(
@@ -612,26 +540,26 @@ impl VtcClient {
     }
 }
 
-/// The type URI of `git-ns/right/break-glass/0.1`.
+/// The type URI of `git-ns/right/break-glass/0.2`.
 pub const GIT_NS_BREAK_GLASS_TYPE: &str =
     <break_glass::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
-/// The type URI of `git-ns/right/grant/0.3`. Signed with
+/// The type URI of `git-ns/right/grant/0.4`. Signed with
 /// [`VtcClient::git_ns_sign`] and sent with [`VtcClient::git_ns_send_signed`]
 /// when the caller must be able to answer an operation-bound step-up and
 /// re-send the identical document — a self-grant under single-administrator
 /// mode, which carries `ext.org.openvtc.selfGrantWaived` in its answer.
 pub const GIT_NS_GRANT_TYPE: &str = <grant::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
-/// The type URI of `git-ns/repo/create/0.3` (see [`GIT_NS_GRANT_TYPE`]).
+/// The type URI of `git-ns/repo/create/0.4` (see [`GIT_NS_GRANT_TYPE`]).
 pub const GIT_NS_REPO_CREATE_TYPE: &str = <create::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
-/// The type URI of `git-ns/repo/adopt/0.1` (see [`GIT_NS_GRANT_TYPE`]).
+/// The type URI of `git-ns/repo/adopt/0.3` (see [`GIT_NS_GRANT_TYPE`]).
 pub const GIT_NS_REPO_ADOPT_TYPE: &str = <adopt::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
-/// The type URI of `git-ns/drift/resolve/0.3` (see [`GIT_NS_GRANT_TYPE`]).
-pub const GIT_NS_DRIFT_RESOLVE_V3_TYPE: &str =
-    <drift_resolve3::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+/// The type URI of `git-ns/drift/resolve/0.4` (see [`GIT_NS_GRANT_TYPE`]).
+pub const GIT_NS_DRIFT_RESOLVE_TYPE: &str =
+    <drift_resolve::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
 /// The `ext.org.openvtc.selfGrantWaived` member of a `git-ns/*` answer: present
 /// exactly when the VTC, in single-administrator mode, recorded an elevated

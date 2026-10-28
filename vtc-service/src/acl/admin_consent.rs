@@ -212,8 +212,8 @@ pub enum Act {
     GrantsReview,
     /// A **queue** item (`vtc-action-list.md` §8.2, *Existing queues*): an
     /// unratified git-ns break-glass, for another administrator of the
-    /// namespace to ratify or revoke (`git-ns/right/ratify/0.1`,
-    /// `git-ns/right/revoke/0.3`). The subject is the record's subject, who
+    /// namespace to ratify or revoke (`git-ns/right/ratify/0.2`,
+    /// `git-ns/right/revoke/0.4`). The subject is the record's subject, who
     /// never decides it. A decision, not a consent: it never expires into
     /// acceptance and is never gated (`crate::admin_actions::queues`).
     BreakGlassReview,

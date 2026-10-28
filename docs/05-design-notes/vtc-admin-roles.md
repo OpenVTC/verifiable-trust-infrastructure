@@ -43,7 +43,7 @@ separate rights store is gone, migrated at boot and on backup import
   administrative role, external signers and the bridge; and each git grant is
   separately a delegation. So a grant is bounded at write time by the
   granter's own holding at a covering qualifier (VTI-ACL-037, -071), and by the
-  fixed rules of `git-ns/right/grant/0.3`, not by a role ceiling. The
+  fixed rules of `git-ns/right/grant/0.4`, not by a role ceiling. The
   `repo-manager` role is unchanged: a qualified administrative ceiling for
   someone who administers repositories through `acl/*`.
 - **Grades narrow `git.repo.manage`.** `own` is the capability in full on one

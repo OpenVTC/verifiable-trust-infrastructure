@@ -120,10 +120,13 @@ async fn audited(f: &Fixture, action: &str) -> Vec<Option<String>> {
     out
 }
 
+/// The released bridge (`vgi-bridge` v0.25.0) sends `bridge/event` 0.3 by
+/// default and 0.1, 0.2 or 0.4 as configured, so every version stays served
+/// beside 0.5; the administrator's `bridge/job/list` is served at 0.4 only.
 #[test]
-fn event_0_4_is_served_beside_the_earlier_versions() {
+fn every_bridge_event_version_is_served_and_job_list_only_at_0_4() {
     let served = super::super::tasks::served_uris();
-    for v in ["0.1", "0.2", "0.3", "0.4"] {
+    for v in ["0.1", "0.2", "0.3", "0.4", "0.5"] {
         assert!(
             served.contains(&format!("{URI}/bridge/event/{v}").as_str()),
             "bridge/event {v} is not served"
@@ -131,8 +134,15 @@ fn event_0_4_is_served_beside_the_earlier_versions() {
     }
     for v in ["0.1", "0.2"] {
         assert!(
-            served.contains(&format!("{URI}/bridge/job/list/{v}").as_str()),
-            "bridge/job/list {v} is not served"
+            served.contains(&format!("{URI}/bridge/result/{v}").as_str()),
+            "bridge/result {v} is not served"
+        );
+    }
+    assert!(served.contains(&format!("{URI}/bridge/job/list/0.4").as_str()));
+    for v in ["0.1", "0.2", "0.3"] {
+        assert!(
+            !served.contains(&format!("{URI}/bridge/job/list/{v}").as_str()),
+            "bridge/job/list {v} is still served"
         );
     }
 }
@@ -186,56 +196,39 @@ async fn an_outsiders_pull_request_is_closed_by_a_0_5_job_with_the_rendered_mess
         .expect("the close was sent");
     assert_eq!(ty, JOB_TYPE_V0_5);
 
-    // `bridge/job/list` 0.1 cannot carry the kind and leaves it out — before
-    // paging; 0.2 lists it with its pull request's number.
-    let v1 = ok(&send_ver(
+    // `bridge/job/list/0.4` lists it with its pull request's number; 0.1 and
+    // 0.2 are no longer served.
+    for old in ["0.1", "0.2"] {
+        let out = send_ver(
+            &f.vtc.state,
+            &f.admin,
+            "bridge/job/list",
+            old,
+            json!({ "namespace": ns }),
+        )
+        .await;
+        assert_eq!(code(&out), "unsupportedVersion", "bridge/job/list {old}");
+    }
+    let listed = ok(&send_ver(
         &f.vtc.state,
         &f.admin,
         "bridge/job/list",
-        "0.1",
+        "0.4",
         json!({ "namespace": ns }),
     )
     .await);
-    let v1_jobs = v1["jobs"].as_array().unwrap();
-    assert!(!v1_jobs.is_empty(), "{v1}");
-    assert!(
-        v1_jobs
-            .iter()
-            .all(|j| j["kind"] != "closePullRequest" && j.get("number").is_none()),
-        "{v1}"
-    );
-    let v1_one = ok(&send_ver(
-        &f.vtc.state,
-        &f.admin,
-        "bridge/job/list",
-        "0.1",
-        json!({ "namespace": ns, "limit": 1 }),
-    )
-    .await);
-    assert_eq!(v1_one["jobs"].as_array().unwrap().len(), 1);
-    assert_ne!(v1_one["jobs"][0]["kind"], "closePullRequest");
-    let v2 = ok(&send_ver(
-        &f.vtc.state,
-        &f.admin,
-        "bridge/job/list",
-        "0.2",
-        json!({ "namespace": ns }),
-    )
-    .await);
-    let v2_jobs = v2["jobs"].as_array().unwrap();
-    assert_eq!(v2_jobs.len(), v1_jobs.len() + 1, "{v2}");
-    let close = v2_jobs
+    let jobs = listed["jobs"].as_array().unwrap();
+    let close = jobs
         .iter()
         .find(|j| j["kind"] == "closePullRequest")
-        .expect("0.2 lists the close");
+        .expect("0.4 lists the close");
     assert_eq!(close["number"], 42);
     assert_eq!(close["repo"], RES);
     assert!(
-        v2_jobs
-            .iter()
+        jobs.iter()
             .filter(|j| j["kind"] != "closePullRequest")
             .all(|j| j.get("number").is_none()),
-        "{v2}"
+        "{listed}"
     );
 
     // The bridge reports it closed: one audit row, without a DID.

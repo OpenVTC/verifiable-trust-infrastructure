@@ -479,7 +479,7 @@ async fn execute(
     match rec.act {
         Act::BreakGlassReview => {
             use trust_tasks_rs::specs::git_ns::right::{
-                ratify::v0_1 as ratify, revoke::v0_3 as revoke,
+                ratify::v0_2 as ratify, revoke::v0_4 as revoke,
             };
             if approve {
                 let mut body = json!({

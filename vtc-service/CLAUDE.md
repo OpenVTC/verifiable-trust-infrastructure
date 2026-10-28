@@ -723,7 +723,7 @@ When adding a flow, add it here and a line to the root index.
   on backup import (`git_ns::migrate`); unmappable ones are kept inert under
   `rights-unmapped:*` with an acknowledge item. The admin REST routes (`/v1/git-ns/*`) are read-only
   console projections; the administrator's view, namespace and repository
-  listings and break-glass list are signed reads (`git-ns/view/0.5`,
+  listings and break-glass list are signed reads (`git-ns/view/0.6`,
   `git-ns/namespace/list`, `git-ns/repo/list` in `git_ns::admin_reads`),
   answered to a namespace's administrators only, never to a bearer session.
 - **Invariants to preserve**: the fixed rules of `git-ns/right/grant` live in

@@ -69,7 +69,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tracing::{debug, info, warn};
-use trust_tasks_rs::specs::git_ns::bridge::event::v0_4 as event_wire;
+use trust_tasks_rs::specs::git_ns::bridge::event::v0_5 as event_wire;
 
 use crate::acl::VtcRole;
 use crate::server::AppState;
@@ -656,7 +656,7 @@ pub async fn on_pull_request_opened(
     // decides here; a bridge not yet asked is asked by the dispatcher, which
     // drops the job if it says no.
     match bridge::cached_job_support(state, &bridge_did).await {
-        Some(s) if !s.takes_v0_5 => {
+        Some(s) if !s.closes_pull_requests() => {
             note_unenforced(state, &ns.id, &bridge_did).await;
             return Ok(());
         }

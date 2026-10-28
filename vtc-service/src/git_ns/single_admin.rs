@@ -59,7 +59,7 @@ use super::rules::RuleSettings;
 use super::store::Snapshot;
 
 /// The rule the waiver lifts, as the audit row names it.
-pub const REQUIREMENT: &str = "git-ns/right/grant/0.3#rule-7";
+pub const REQUIREMENT: &str = "git-ns/right/grant/0.4#rule-7";
 /// The `SingleAdminMode` audit row's `event`.
 pub const AUDIT_EVENT: &str = "selfGrantWaived";
 /// The `ext.org.openvtc` member that marks a waived operation and record.

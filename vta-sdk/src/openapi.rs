@@ -450,24 +450,23 @@ spec_types! {
     /// seals inside the block. Never a payload member, never sent unsealed.
     StorageCredentialsSet03Cleartext(storage_credentials_set::v0_3::SealedCredentialCleartext)
         in storage_credentials_set::v0_3::Payload as "SealedCredentialCleartext";
-    /// `git-ns/view/0.1#response` — namespaces, repositories and recorded git
-    /// rights. Also the body of a VTC's `GET /v1/git-ns/view`, the
-    /// administrator's complete view.
-    GitNsView01Response(git_ns_view::v0_1::Response);
-    /// `git-ns/view/0.1`'s `RepoSummary` — one repository as the VTC records it.
-    GitNsView01RepoSummary(git_ns_view::v0_1::RepoSummary)
-        in git_ns_view::v0_1::Response as "RepoSummary";
-    /// `git-ns/view/0.1`'s `RightRecord` — one recorded git right.
-    GitNsView01RightRecord(git_ns_view::v0_1::RightRecord)
-        in git_ns_view::v0_1::Response as "RightRecord";
-    /// `git-ns/view/0.1`'s `GitNamespace` — the VTC's binding to one owner on
+    /// `git-ns/view/0.6#response` — namespaces, repositories and recorded git
+    /// rights.
+    GitNsView06Response(git_ns_view::v0_6::Response);
+    /// `git-ns/view/0.6`'s `RepoSummary` — one repository as the VTC records it.
+    GitNsView06RepoSummary(git_ns_view::v0_6::RepoSummary)
+        in git_ns_view::v0_6::Response as "RepoSummary";
+    /// `git-ns/view/0.6`'s `RightRecord` — one recorded git right.
+    GitNsView06RightRecord(git_ns_view::v0_6::RightRecord)
+        in git_ns_view::v0_6::Response as "RightRecord";
+    /// `git-ns/view/0.6`'s `GitNamespace` — the VTC's binding to one owner on
     /// one forge.
-    GitNsView01GitNamespace(git_ns_view::v0_1::GitNamespace)
-        in git_ns_view::v0_1::Response as "GitNamespace";
-    /// `git-ns/view/0.1`'s `DriftItem` — one difference between the forge
+    GitNsView06GitNamespace(git_ns_view::v0_6::GitNamespace)
+        in git_ns_view::v0_6::Response as "GitNamespace";
+    /// `git-ns/view/0.6`'s `DriftItem` — one difference between the forge
     /// and the projection.
-    GitNsView01DriftItem(git_ns_view::v0_1::DriftItem)
-        in git_ns_view::v0_1::Response as "DriftItem";
+    GitNsView06DriftItem(git_ns_view::v0_6::DriftItem)
+        in git_ns_view::v0_6::Response as "DriftItem";
 }
 
 /// One type's component, and every other definition of its schema, which the
