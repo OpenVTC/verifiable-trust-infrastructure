@@ -943,10 +943,11 @@ pub const TASK_ROOMS_KEYS_READ_0_1: &str = "https://trusttasks.org/spec/rooms/ke
 /// and is why browsing and reading are two. Auth: `roomOpen` capability.
 pub const TASK_ROOMS_KEYS_BROWSE_0_1: &str = "https://trusttasks.org/spec/rooms/keys/browse/0.1";
 
-/// `spec/rooms/keys/browse/0.2` — 0.1, and the room's `lastPrune` passed through from the
-/// host's `rooms/records/list/0.3`, so a caller keeping its own copy of the room knows to
-/// rebuild it (trust-tasks-tf #868). Auth: `roomOpen` capability.
-pub const TASK_ROOMS_KEYS_BROWSE_0_2: &str = "https://trusttasks.org/spec/rooms/keys/browse/0.2";
+/// `spec/rooms/keys/browse/0.3` — 0.1, and the room's `lastPrune` passed through from the
+/// host's `rooms/records/list/0.5`, its instant named `prunedAt` (`rooms/_shared/0.2`), so a
+/// caller keeping its own copy of the room knows to rebuild it. Auth: `roomOpen` capability.
+pub const TASK_ROOMS_KEYS_BROWSE_0_3: &str =
+    <trust_tasks_rs::specs::rooms::keys::browse::v0_3::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
 /// `spec/rooms/keys/seal/0.2` — seal one record body with the room's current epoch key;
 /// it does not write. With `signAsPrincipal` the VTA signs the
@@ -964,38 +965,18 @@ pub const TASK_ROOMS_KEYS_SEAL_0_2: &str =
 pub const TASK_ROOMS_KEYS_ACT_0_1: &str =
     <trust_tasks_rs::specs::rooms::keys::act::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
-/// `spec/rooms/keys/act/0.2` — `act` 0.1, with the member as the task's subject
-/// (`subjectPath: /document/issuer`) and `issuer` required on a document whose type
-/// names no room (`rooms/blobs/chunk/0.1`, `rooms/blobs/upload/{commit,abort}/0.2`):
-/// the VTA never picks the member for one. Auth: as 0.1.
-pub const TASK_ROOMS_KEYS_ACT_0_2: &str =
-    <trust_tasks_rs::specs::rooms::keys::act::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
-
-/// `spec/rooms/keys/act/0.3` — `act` 0.2, and a member's reply to a community's offer of a
-/// room (`vtc/rooms/offers/{list,accept}/0.1`): completed as the DID the offer is addressed
-/// to, which the document names in `issuer` (required), with no presentation; an acceptance
-/// only with a KeyPackage the same VTA minted for that room and member
-/// (`keyPackageNotHeld` otherwise). Auth: as 0.1.
-pub const TASK_ROOMS_KEYS_ACT_0_3: &str =
-    <trust_tasks_rs::specs::rooms::keys::act::v0_3::Payload as trust_tasks_rs::Payload>::TYPE_URI;
-
-/// `spec/rooms/keys/act/0.4` — `act` 0.3, with `vtc/rooms/offers/list/0.2` (each offered
-/// room's description) in the offer row beside `0.1`, on the same terms: `issuer`
-/// required, no presentation. 0.3's table stays closed to it. Auth: as 0.1.
-pub const TASK_ROOMS_KEYS_ACT_0_4: &str =
-    <trust_tasks_rs::specs::rooms::keys::act::v0_4::Payload as trust_tasks_rs::Payload>::TYPE_URI;
-
 /// `spec/rooms/keys/act/0.5` — `act` 0.4, and `vtc/rooms/memberships/list/0.1`: every
 /// request a member makes to a community about the rooms it offers them, completed as the
 /// `issuer` named, with no presentation. Auth: as 0.1.
 pub const TASK_ROOMS_KEYS_ACT_0_5: &str =
     <trust_tasks_rs::specs::rooms::keys::act::v0_5::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
-/// `spec/rooms/keys/act/0.6` — `act` 0.5, and `vtc/rooms/offers/list/0.3`: the offer listing
-/// that also carries the renewals of the admissions a member holds, completed on the offer
-/// types' terms. Auth: as 0.1.
-pub const TASK_ROOMS_KEYS_ACT_0_6: &str =
-    <trust_tasks_rs::specs::rooms::keys::act::v0_6::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+/// `spec/rooms/keys/act/0.8` — `act` 0.6's request and response, with a widened table:
+/// `vtc/rooms/offers/list/0.4`, `rooms/records/put/0.3`, `rooms/records/list/0.3`–`0.5`,
+/// `rooms/info/0.2`–`0.3` and `rooms/epoch/chain/0.2` (0.7), and `rooms/records/prune/0.1`
+/// and `0.2` and `rooms/records/retention/set/0.1` as `admin` (0.8). Auth: as 0.1.
+pub const TASK_ROOMS_KEYS_ACT_0_8: &str =
+    <trust_tasks_rs::specs::rooms::keys::act::v0_8::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
 /// `spec/rooms/keys/file-key/0.2` — one file's key, for the member's own client to
 /// seal or open that file itself, so file bytes never pass through the VTA. A third
@@ -1039,13 +1020,9 @@ pub const TASK_ROOMS_KEYS_PROFILE_WRITE_0_1: &str =
 /// naming the room's signing key.
 pub const TASK_ROOMS_OWNER_INVITE_0_1: &str = "https://trusttasks.org/spec/rooms/owner/invite/0.1";
 
-/// `spec/rooms/owner/register/0.1` — ask this agent to register a room with a
-/// host. `rooms/create` performed by the agent, for the surfaces that cannot
-/// reach a host themselves.
-pub const TASK_ROOMS_OWNER_REGISTER_0_1: &str =
-    "https://trusttasks.org/spec/rooms/owner/register/0.1";
-
-/// `spec/rooms/owner/register/0.2` — 0.1, and a registration the host accepted is answered
+/// `spec/rooms/owner/register/0.2` — ask this agent to register a room with a host
+/// (`rooms/create` performed by the agent, for the surfaces that cannot reach a host
+/// themselves). A registration the host accepted is answered
 /// with success whatever became of the room's revocation list, reported in `revocation`
 /// (`inForce`, `pending` or `refused`). Anything but `inForce` is a room its host serves
 /// without its withdrawals; the agent goes on delivering a `pending` list on its own.
@@ -2684,21 +2661,17 @@ pub const ALL_URIS: &[&str] = &[
     TASK_ROOMS_KEYS_BACKFILL_0_2,
     TASK_ROOMS_KEYS_READ_0_1,
     TASK_ROOMS_KEYS_BROWSE_0_1,
-    TASK_ROOMS_KEYS_BROWSE_0_2,
+    TASK_ROOMS_KEYS_BROWSE_0_3,
     TASK_ROOMS_KEYS_SEAL_0_2,
     TASK_ROOMS_KEYS_ACT_0_1,
-    TASK_ROOMS_KEYS_ACT_0_2,
-    TASK_ROOMS_KEYS_ACT_0_3,
-    TASK_ROOMS_KEYS_ACT_0_4,
     TASK_ROOMS_KEYS_ACT_0_5,
-    TASK_ROOMS_KEYS_ACT_0_6,
+    TASK_ROOMS_KEYS_ACT_0_8,
     TASK_ROOMS_KEYS_FILE_KEY_0_2,
     TASK_ROOMS_KEYS_LIST_0_2,
     TASK_ROOMS_KEYS_LABEL_0_1,
     TASK_ROOMS_KEYS_PROFILE_READ_0_1,
     TASK_ROOMS_KEYS_PROFILE_WRITE_0_1,
     TASK_ROOMS_OWNER_INVITE_0_1,
-    TASK_ROOMS_OWNER_REGISTER_0_1,
     TASK_ROOMS_OWNER_REGISTER_0_2,
     TASK_ROOMS_OWNER_ANCHOR_0_1,
     TASK_ROOMS_OWNER_ISSUE_MEMBERSHIP_0_1,

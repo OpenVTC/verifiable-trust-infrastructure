@@ -2319,40 +2319,6 @@ fn task_type(uri: &'static str) -> impl Fn(&wiremock::Request) -> bool {
     }
 }
 
-/// A VTA that predates the 0.2 versions: it refuses them `unsupportedType` and answers
-/// 0.1 with `ok`.
-async fn mount_only_0_1(
-    server: &MockServer,
-    v0_2: &'static str,
-    v0_1: &'static str,
-    ok: Value,
-) -> (wiremock::MockGuard, wiremock::MockGuard) {
-    let refused = Mock::given(method("POST"))
-        .and(path("/trust-tasks"))
-        .and(task_type(v0_2))
-        .respond_with(ResponseTemplate::new(400).set_body_json(json!({
-            "id": "urn:uuid:00000000-0000-4000-8000-000000000001",
-            "type": "https://trusttasks.org/spec/trust-task-error/0.5",
-            "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
-            "payload": {
-                "code": "unsupportedType",
-                "message": format!("unsupported type: {v0_2}"),
-                "retryable": false,
-            },
-        })))
-        .expect(1)
-        .mount_as_scoped(server)
-        .await;
-    let answered = Mock::given(method("POST"))
-        .and(path("/trust-tasks"))
-        .and(task_type(v0_1))
-        .respond_with(ResponseTemplate::new(200).set_body_json(signed_response(ok).await))
-        .expect(1)
-        .mount_as_scoped(server)
-        .await;
-    (refused, answered)
-}
-
 /// A VTA refusing `uri` `unsupportedType`, exactly `times` times.
 async fn mount_unsupported(
     server: &MockServer,
@@ -2377,31 +2343,34 @@ async fn mount_unsupported(
         .await
 }
 
-/// `rooms/keys/act/0.4` first, then 0.3, then 0.2, then 0.1 with the same document.
+/// `rooms/keys/act/0.8` only: answered there, and never asked at an older version.
 #[tokio::test]
-async fn room_act_falls_back_to_0_1() {
+async fn room_act_goes_at_0_8_only() {
     let server = MockServer::start().await;
     let member = "did:webvh:example.com:people:alice";
-    let _v4 = mount_unsupported(&server, "https://trusttasks.org/spec/rooms/keys/act/0.4", 1).await;
-    let _v3 = mount_unsupported(&server, "https://trusttasks.org/spec/rooms/keys/act/0.3", 1).await;
-    let _m = mount_only_0_1(
-        &server,
-        "https://trusttasks.org/spec/rooms/keys/act/0.2",
-        "https://trusttasks.org/spec/rooms/keys/act/0.1",
-        json!({
-            "principal": member,
-            "document": {
-                "id": "urn:uuid:00000000-0000-4000-8000-0000000000a2",
-                "type": "https://trusttasks.org/spec/rooms/blobs/upload/commit/0.2",
-                "issuer": member,
-                "recipient": "did:key:zHost",
-                "issuedAt": "2026-01-01T00:05:00Z",
-                "payload": { "uploadId": "u" },
-                "proof": { "type": "DataIntegrityProof" }
-            }
-        }),
-    )
-    .await;
+    let _v8 = Mock::given(method("POST"))
+        .and(path("/trust-tasks"))
+        .and(task_type("https://trusttasks.org/spec/rooms/keys/act/0.8"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(
+                signed_response(json!({
+                    "principal": member,
+                    "document": {
+                        "id": "urn:uuid:00000000-0000-4000-8000-0000000000a2",
+                        "type": "https://trusttasks.org/spec/rooms/blobs/upload/commit/0.2",
+                        "issuer": member,
+                        "recipient": "did:key:zHost",
+                        "issuedAt": "2026-01-01T00:05:00Z",
+                        "payload": { "uploadId": "u" },
+                        "proof": { "type": "DataIntegrityProof" }
+                    }
+                }))
+                .await,
+            ),
+        )
+        .expect(1)
+        .mount_as_scoped(&server)
+        .await;
     let c = client(&server).await;
     let doc = unsigned_room_request(
         "https://trusttasks.org/spec/rooms/blobs/upload/commit/0.2",
@@ -2410,8 +2379,41 @@ async fn room_act_falls_back_to_0_1() {
         json!({ "uploadId": "u" }),
     )
     .unwrap();
-    let resp = c.room_act(&doc).await.expect("answered at 0.1");
+    let resp = c.room_act(&doc).await.expect("answered at 0.8");
     assert_eq!(resp.principal.as_str(), member);
+}
+
+/// A VTA that does not serve `rooms/keys/act/0.8` is reported as such, for a room request
+/// and for a reply to a community's offer alike: nothing older is asked.
+#[tokio::test]
+async fn room_act_never_falls_back_to_a_superseded_version() {
+    let server = MockServer::start().await;
+    let _v8 = mount_unsupported(&server, "https://trusttasks.org/spec/rooms/keys/act/0.8", 2).await;
+    let _v5 = mount_unsupported(&server, "https://trusttasks.org/spec/rooms/keys/act/0.5", 0).await;
+    let _v1 = mount_unsupported(&server, "https://trusttasks.org/spec/rooms/keys/act/0.1", 0).await;
+    let c = client(&server).await;
+    for (type_uri, recipient, payload) in [
+        (
+            "https://trusttasks.org/spec/rooms/records/get/0.2",
+            "did:key:zHost",
+            json!({ "roomId": "did:key:zRoom", "key": "k" }),
+        ),
+        (
+            "https://trusttasks.org/spec/vtc/rooms/offers/list/0.4",
+            "did:webvh:example.com:northwind-community",
+            json!({}),
+        ),
+    ] {
+        let doc = unsigned_room_request(
+            type_uri,
+            recipient,
+            Some("did:webvh:example.com:people:alice"),
+            payload,
+        )
+        .unwrap();
+        let err = c.room_act(&doc).await.expect_err("no 0.8");
+        assert!(matches!(err, VtaError::UnsupportedTaskType { .. }), "{err}");
+    }
 }
 
 /// The owner's group tasks go at their current version only: a VTA that does not serve it
@@ -2528,117 +2530,35 @@ async fn an_earlier_removal_refused_is_final_and_never_falls_back() {
     }
 }
 
-/// `rooms/owner/register/0.2` first; a VTA that does not serve it is asked at 0.1, the
-/// same request, and its answer — 0.2's without `revocation` — read as 0.2's.
+/// `rooms/owner/register/0.2` only: a VTA that does not serve it is reported as such and
+/// never asked at 0.1.
 #[tokio::test]
-async fn room_owner_register_falls_back_to_0_1() {
+async fn room_owner_register_never_falls_back_to_0_1() {
     let server = MockServer::start().await;
-    let room = "did:webvh:example.com:rooms:northwind";
-    let host = "did:webvh:example.com:northwind-community";
-    let _m = mount_only_0_1(
+    let _v2 = mount_unsupported(
         &server,
         "https://trusttasks.org/spec/rooms/owner/register/0.2",
+        1,
+    )
+    .await;
+    let _v1 = mount_unsupported(
+        &server,
         "https://trusttasks.org/spec/rooms/owner/register/0.1",
-        json!({ "roomId": room, "host": host, "epoch": 1 }),
+        0,
     )
     .await;
     let c = client(&server).await;
-    let resp = c
+    let err = c
         .room_owner_register(vta_sdk::client::RoomRegistration {
-            room_id: room,
-            host_did: host,
+            room_id: "did:webvh:example.com:rooms:northwind",
+            host_did: "did:webvh:example.com:northwind-community",
             visibility: "attributed".parse().unwrap(),
             owner_did: Some("did:webvh:example.com:people:alice"),
             retention_days: None,
             retention_policy: None,
         })
         .await
-        .expect("answered at 0.1");
-    assert_eq!(resp.epoch.get(), 1);
-    assert!(resp.revocation.is_none());
-}
-
-/// A reply to a community's offer is completed at `rooms/keys/act/0.4` or 0.3, or not at
-/// all: the earlier versions' schema refuses its type, so a VTA without either is reported
-/// as such and never asked at 0.2.
-#[tokio::test]
-async fn room_act_for_an_offer_does_not_fall_back_past_0_3() {
-    let server = MockServer::start().await;
-    let _v4 = mount_unsupported(&server, "https://trusttasks.org/spec/rooms/keys/act/0.4", 1).await;
-    let _v3 = mount_unsupported(&server, "https://trusttasks.org/spec/rooms/keys/act/0.3", 1).await;
-    let _v2 = mount_unsupported(&server, "https://trusttasks.org/spec/rooms/keys/act/0.2", 0).await;
-    let c = client(&server).await;
-    let doc = unsigned_room_request(
-        "https://trusttasks.org/spec/vtc/rooms/offers/list/0.1",
-        "did:webvh:example.com:northwind-community",
-        Some("did:webvh:example.com:people:alice"),
-        json!({}),
-    )
-    .unwrap();
-    let err = c.room_act(&doc).await.expect_err("no 0.3");
-    assert!(matches!(err, VtaError::UnsupportedTaskType { .. }), "{err}");
-}
-
-/// A member's VTA that serves `rooms/keys/act/0.3` but not 0.4 still completes
-/// `vtc/rooms/offers/list/0.1`: asked at 0.4, refused, asked at 0.3.
-#[tokio::test]
-async fn room_act_for_offers_list_0_1_falls_back_to_0_3() {
-    let server = MockServer::start().await;
-    let member = "did:webvh:example.com:people:alice";
-    let _v4 = mount_unsupported(&server, "https://trusttasks.org/spec/rooms/keys/act/0.4", 1).await;
-    let _v3 = Mock::given(method("POST"))
-        .and(path("/trust-tasks"))
-        .and(task_type("https://trusttasks.org/spec/rooms/keys/act/0.3"))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_json(
-                signed_response(json!({
-                    "principal": member,
-                    "document": {
-                        "id": "urn:uuid:00000000-0000-4000-8000-0000000000a4",
-                        "type": "https://trusttasks.org/spec/vtc/rooms/offers/list/0.1",
-                        "issuer": member,
-                        "recipient": "did:webvh:example.com:northwind-community",
-                        "issuedAt": "2026-01-01T00:09:00Z",
-                        "payload": {},
-                        "proof": { "type": "DataIntegrityProof" }
-                    }
-                }))
-                .await,
-            ),
-        )
-        .expect(1)
-        .mount_as_scoped(&server)
-        .await;
-    let c = client(&server).await;
-    let doc = unsigned_room_request(
-        "https://trusttasks.org/spec/vtc/rooms/offers/list/0.1",
-        "did:webvh:example.com:northwind-community",
-        Some(member),
-        json!({}),
-    )
-    .unwrap();
-    let resp = c.room_act(&doc).await.expect("answered at 0.3");
-    assert_eq!(resp.principal.as_str(), member);
-}
-
-/// `vtc/rooms/offers/list/0.2` is completed at `rooms/keys/act/0.4` only: 0.3's closed
-/// table refuses it (`typeNotActable`), so a VTA without 0.4 is reported as
-/// [`VtaError::UnsupportedTaskType`] — the caller's cue to list at 0.1 — and never asked
-/// at 0.3.
-#[tokio::test]
-async fn room_act_for_offers_list_0_2_goes_at_0_4_only() {
-    let server = MockServer::start().await;
-    let _v4 = mount_unsupported(&server, "https://trusttasks.org/spec/rooms/keys/act/0.4", 1).await;
-    let _v3 = mount_unsupported(&server, "https://trusttasks.org/spec/rooms/keys/act/0.3", 0).await;
-    let c = client(&server).await;
-    let doc = unsigned_room_request(
-        "https://trusttasks.org/spec/vtc/rooms/offers/list/0.2",
-        "did:webvh:example.com:northwind-community",
-        Some("did:webvh:example.com:people:alice"),
-        json!({}),
-    )
-    .unwrap();
-    let err = c.room_act(&doc).await.expect_err("no 0.4");
+        .expect_err("no 0.2");
     assert!(matches!(err, VtaError::UnsupportedTaskType { .. }), "{err}");
 }
 

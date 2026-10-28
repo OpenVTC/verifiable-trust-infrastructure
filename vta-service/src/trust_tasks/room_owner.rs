@@ -410,39 +410,19 @@ async fn anchor_inner(
     }
 }
 
-/// Which `rooms/owner/register` is answered. The request schemas are the same; they differ
-/// in what becomes of the room's revocation list (`0.2`, *The room's revocation list*).
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum RegisterVersion {
-    V0_1,
-    V0_2,
-}
-
-/// `rooms/owner/register/0.1` — tell a host about a room that already exists.
-///
-/// A list that did not reach the host is refused `hostUnreachable` / `hostRefused` with a
-/// message saying the room **is** registered and naming the remedy: 0.1 declares no other
-/// outcome, and `0.2` says that is the least harmful answer it can give.
-pub(super) async fn handle_register(
-    state: &AppState,
-    auth: &AuthClaims,
-    doc: TrustTask<Value>,
-) -> TrustTaskOutcome {
-    register_at(state, auth, doc, RegisterVersion::V0_1).await
-}
-
-/// `rooms/owner/register/0.2` — 0.1, and a registration the host accepted is answered with
-/// success whatever became of the room's revocation list, which `revocation` reports:
-/// `inForce` only when the host answered with the list's head (trust-tasks-tf #821).
+/// `rooms/owner/register/0.2` — tell a host about a room that already exists. A
+/// registration the host accepted is answered with success whatever became of the room's
+/// revocation list, which `revocation` reports: `inForce` only when the host answered with
+/// the list's head (trust-tasks-tf #821). 0.1 is not served.
 pub(super) async fn handle_register_v0_2(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    register_at(state, auth, doc, RegisterVersion::V0_2).await
+    register_at(state, auth, doc).await
 }
 
-/// `rooms/owner/register`, at either version — tell a host about a room that already exists.
+/// `rooms/owner/register/0.2` — tell a host about a room that already exists.
 ///
 /// `rooms/create` performed by the agent, for the same reason as
 /// [`super::room_group::handle_backfill`]: the surfaces owners create rooms from
@@ -464,7 +444,6 @@ async fn register_at(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
-    at: RegisterVersion,
 ) -> TrustTaskOutcome {
     // Both versions declare the same two codes under the same strings (the slug carries no
     // version), so 0.2's generated constants serve both.
@@ -613,36 +592,19 @@ async fn register_at(
     // it holds for the room to that host **after** the host accepted the registration and
     // **before answering** — a room moving hosts would otherwise arrive without its
     // withdrawals, and its new host honour what the old one refused (trust-tasks-tf #804).
-    match at {
-        RegisterVersion::V0_1 => {
-            if let Err(r) =
-                deliver_held_list(state, auth, &doc, &resolver, &req.room_id, &req.host).await
-            {
-                return r;
-            }
-        }
-        RegisterVersion::V0_2 => {
-            let delivered = deliver_after_registration(
-                state,
-                auth,
-                &resolver,
-                &req.room_id,
-                &req.host,
-                &owner_did,
-            )
+    let delivered =
+        deliver_after_registration(state, auth, &resolver, &req.room_id, &req.host, &owner_did)
             .await;
-            match delivered {
-                Ok(Some(revocation)) => body["revocation"] = revocation,
-                Ok(None) => {}
-                // Item 2: the registration took effect, so this answers a `#response`
-                // whatever became of the delivery. Reading the list this agent holds is the
-                // one thing that can fail before a delivery is known to be owed at all.
-                Err(e) => {
-                    tracing::error!(room = %req.room_id, host = %req.host, error = %e,
-                        "could not read the room's revocation list after registering it");
-                    return app_error_to_reject(&doc, e);
-                }
-            }
+    match delivered {
+        Ok(Some(revocation)) => body["revocation"] = revocation,
+        Ok(None) => {}
+        // Item 2: the registration took effect, so this answers a `#response`
+        // whatever became of the delivery. Reading the list this agent holds is the
+        // one thing that can fail before a delivery is known to be owed at all.
+        Err(e) => {
+            tracing::error!(room = %req.room_id, host = %req.host, error = %e,
+                    "could not read the room's revocation list after registering it");
+            return app_error_to_reject(&doc, e);
         }
     }
 
@@ -734,53 +696,4 @@ async fn deliver_after_registration(
             }
         },
     ))
-}
-
-/// Deliver the revocation list this agent holds for `room_id`, if any, to `host`, for
-/// `rooms/owner/register/0.1`. The room is registered whatever this answers; a failure says so
-/// and names the remedy, which is re-delivering with `rooms/owner/revoke` and no `withdraw`.
-async fn deliver_held_list(
-    state: &AppState,
-    auth: &AuthClaims,
-    doc: &TrustTask<Value>,
-    resolver: &affinidi_did_resolver_cache_sdk::DIDCacheClient,
-    room_id: &str,
-    host: &str,
-) -> Result<(), TrustTaskOutcome> {
-    use super::room_owner_group::{Delivery, HostCall};
-    use trust_tasks_rs::specs::rooms::owner::register::v0_1::error_codes as codes;
-    let Some(list) = crate::operations::room_revocation::held(&state.room_groups_ks, room_id)
-        .await
-        .map_err(|e| app_error_to_reject(doc, e))?
-    else {
-        return Ok(());
-    };
-    let remedy = format!(
-        "Room `{room_id}` is registered at `{host}`, but the room's revocation list (sequence \
-         {}) is not in force there yet: deliver it with rooms/owner/revoke naming that host and \
-         no `withdraw`",
-        list.sequence()
-    );
-    let host_call =
-        HostCall::as_owner(state, auth, resolver, room_id, doc, codes::HOST_REFUSED).await?;
-    let presentation = host_call
-        .admin_presentation(doc, codes::HOST_REFUSED)
-        .await?;
-    match host_call.deliver_list(host, &list, &presentation).await {
-        Delivery::Accepted { .. } => Ok(()),
-        Delivery::Refused { code, reason } => Err(super::helpers::reject_with_code(
-            doc,
-            super::room_group::declared(codes::HOST_REFUSED),
-            format!(
-                "host `{host}` declined the room's revocation list: {code}: {reason}. {remedy}"
-            ),
-            Some(serde_json::json!({ "code": code })),
-        )),
-        Delivery::Unreachable(why) => Err(super::helpers::reject_with_code(
-            doc,
-            super::room_group::declared(codes::HOST_UNREACHABLE),
-            format!("host `{host}` did not answer the room's revocation list: {why}. {remedy}"),
-            None,
-        )),
-    }
 }

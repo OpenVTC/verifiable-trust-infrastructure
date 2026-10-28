@@ -6,7 +6,7 @@
 //!
 //! - the operator's **VTA**, over the client's existing session, to complete each
 //!   host-bound request **as the member** ([`VtaClient::room_act`],
-//!   `rooms/keys/act/0.3`), to seal a record body signed as the member
+//!   `rooms/keys/act/0.8`), to seal a record body signed as the member
 //!   ([`VtaClient::room_seal_as_principal`]) and to open a sealed record
 //!   ([`VtaClient::room_open`]);
 //! - the room's **host**, unauthenticated, receiving the completed document unchanged.
@@ -149,7 +149,7 @@ pub fn session_from_minted(
 }
 
 /// Send one room request to the host **as the member**: built here without presentation
-/// or proof, completed by the VTA with `rooms/keys/act/0.3`, sent unchanged. Returns the
+/// or proof, completed by the VTA with `rooms/keys/act/0.8`, sent unchanged. Returns the
 /// member the VTA acted as and the host's response payload.
 ///
 /// Nothing this client holds goes to the host: not its DID, not its key.
@@ -318,13 +318,19 @@ async fn list_page(
     if let Some(c) = cursor {
         payload["cursor"] = serde_json::json!(c);
     }
-    let (_, reply) = act_and_send(
+    let (_, mut reply) = act_and_send(
         client,
         target,
-        vti_rooms::wire::ROOMS_RECORDS_LIST_TYPE,
+        vti_rooms::wire::ROOMS_RECORDS_LIST_V5_TYPE,
         payload,
     )
     .await?;
+    // List 0.5 names the continuation token `nextCursor`; the listing type reads `cursor`.
+    if let Some(obj) = reply.as_object_mut()
+        && let Some(next) = obj.remove("nextCursor")
+    {
+        obj.insert("cursor".into(), next);
+    }
     parse_reply("rooms/records/list", reply)
 }
 
@@ -441,7 +447,7 @@ pub async fn cmd_rooms_put(
         let (_, reply) = act_and_send(
             client,
             &target,
-            vti_rooms::wire::ROOMS_RECORDS_PUT_TYPE,
+            vti_rooms::wire::ROOMS_RECORDS_PUT_V3_TYPE,
             payload,
         )
         .await?;
@@ -548,14 +554,13 @@ impl RecordProvenance {
 
 /// Why `rooms put` will not state provenance on an `open` room, and what to do instead.
 ///
-/// An open room carries provenance in `rooms/records/put/0.3`'s cleartext, and this client
-/// writes as the member through `rooms/keys/act`, whose table (0.1 to 0.6) completes put only
-/// at 0.1 and 0.2. Writing 0.3 any other way would record this client's key as the author.
+/// An open room carries provenance in `rooms/records/put/0.3`'s cleartext. `rooms/keys/act/0.8`
+/// completes put 0.3, which this client now sends, but it does not yet put the provenance
+/// members into the cleartext; until it does, it refuses rather than drop them.
 fn open_tier_provenance_refused(target: &RoomTarget<'_>) -> String {
     format!(
-        "room {} is `open`: a record's provenance there rides `rooms/records/put/0.3`, which \
-         `rooms/keys/act` does not complete yet, so pnm cannot write it as your persona. Write \
-         it without --basis, --confidence, --cite-record, --cite-credential, --purpose, \
+        "room {} is `open`: a record's provenance there rides `rooms/records/put/0.3`'s \
+         cleartext, which pnm does not write yet. Write it without --basis, --confidence, --cite-record, --cite-credential, --purpose, \
          --use-note and --valid-until, or in a sealed (`attributed` or `private`) room, where \
          they travel inside the signed body.",
         target.room_id
@@ -934,7 +939,7 @@ fn prune_outcome(r: &vtc_client::rooms::PruneResponse) -> String {
 }
 
 /// `rooms records prune` — remove the records the room's record retention makes eligible
-/// (`rooms/records/prune/0.1`, trust-tasks-tf #868).
+/// (`rooms/records/prune/0.2`, trust-tasks-tf #868).
 ///
 /// Needs `admin` and moves the way `prune` does: the VTA presents for this client and this
 /// client signs (`rooms/keys/act` completes neither task). The specification asks a surface
@@ -1109,13 +1114,13 @@ fn records_prune_refused(e: vtc_client::VtcError, target: &RoomTarget<'_>) -> St
 }
 
 /// `rooms records retention show` — the record retention in force and the latest prune
-/// (`rooms/info/0.2`).
+/// (`rooms/info/0.3`).
 pub async fn cmd_rooms_retention_show(
     client: &VtaClient,
     target: RoomTarget<'_>,
     signer: RoomSigner<'_>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let info = read_info_v2(client, &target, &signer).await?;
+    let info = read_info(client, &target, &signer).await?;
     if crate::render::is_json_output() {
         crate::render::print_json(&serde_json::json!({
             "recordRetention": info.get("recordRetention"),
@@ -1147,7 +1152,7 @@ pub async fn cmd_rooms_retention_set(
                 .into(),
         );
     }
-    let info = read_info_v2(client, &target, &signer).await?;
+    let info = read_info(client, &target, &signer).await?;
     let expected = info
         .get("recordRetention")
         .cloned()
@@ -1197,8 +1202,8 @@ pub async fn cmd_rooms_retention_set(
     Ok(())
 }
 
-/// `rooms/info/0.2` as JSON, read under `read`.
-async fn read_info_v2(
+/// `rooms/info/0.3` as JSON, read under `read`.
+async fn read_info(
     client: &VtaClient,
     target: &RoomTarget<'_>,
     signer: &RoomSigner<'_>,
@@ -1206,9 +1211,9 @@ async fn read_info_v2(
     let read = present(client, target, "read").await?;
     let info = target
         .client()
-        .room_info_v2(&read, signer.did, signer.key_multibase)
+        .room_info(&read, signer.did, signer.key_multibase)
         .await
-        .map_err(|e| format!("could not read the room (rooms/info/0.2): {e}"))?;
+        .map_err(|e| format!("could not read the room (rooms/info/0.3): {e}"))?;
     Ok(serde_json::to_value(&info)?)
 }
 
@@ -1228,7 +1233,7 @@ fn retention_text(rule: &Value) -> String {
     }
 }
 
-/// The retention and latest prune `rooms/info/0.2` reports, as lines.
+/// The retention and latest prune `rooms/info/0.3` reports, as lines.
 fn retention_lines(info: &Value) -> String {
     let rule = info.get("recordRetention").cloned().unwrap_or(Value::Null);
     let mut out = format!("Record retention: {}", retention_text(&rule));
@@ -1236,7 +1241,7 @@ fn retention_lines(info: &Value) -> String {
         Some(p) => out.push_str(&format!(
             "\nLast prune: {} record(s) at {}, version {}",
             p["removed"],
-            p["at"].as_str().unwrap_or("?"),
+            p["prunedAt"].as_str().unwrap_or("?"),
             p["version"]
         )),
         None => out.push_str("\nLast prune: never"),
@@ -1473,7 +1478,7 @@ async fn room_tier(
     let (member, reply) = act_and_send(
         client,
         target,
-        trust_tasks_rs::specs::rooms::info::v0_1::Payload::TYPE_URI,
+        trust_tasks_rs::specs::rooms::info::v0_3::Payload::TYPE_URI,
         serde_json::json!({ "roomId": target.room_id }),
     )
     .await
@@ -1486,7 +1491,7 @@ async fn room_tier(
 }
 
 /// Have the VTA sign `content` **as the member** and seal it (`rooms/keys/seal/0.2`), and
-/// put it as the member (`rooms/keys/act/0.3`), re-sealing at the version the host assigned
+/// put it as the member (`rooms/keys/act/0.8`), re-sealing at the version the host assigned
 /// whenever that is not the one sealed for. Returns the version written.
 ///
 /// The record's associated data and its signed body both name the version, and the host
@@ -1538,13 +1543,10 @@ async fn write_sealed_naming(
         if let Some(v) = expected {
             payload["expectedVersion"] = serde_json::json!(v);
         }
-        let put_type = match &blobs {
-            Some(b) => {
-                payload["blobs"] = serde_json::json!(b);
-                vti_rooms::wire::ROOMS_RECORDS_PUT_V2_TYPE
-            }
-            None => vti_rooms::wire::ROOMS_RECORDS_PUT_TYPE,
-        };
+        if let Some(b) = &blobs {
+            payload["blobs"] = serde_json::json!(b);
+        }
+        let put_type = vti_rooms::wire::ROOMS_RECORDS_PUT_V3_TYPE;
         let (_, reply) = act_and_send(client, target, put_type, payload)
             .await
             .map_err(|e| put_refused(e, target))?;
@@ -2556,30 +2558,10 @@ pub async fn cmd_rooms_owner_group_add(
 // document goes to the community over its Trust Task HTTPS endpoint, unchanged: a
 // persona-signed document rides HTTPS, never this client's own DIDComm session.
 //
-// The listing is `vtc/rooms/offers/list/0.3`, completed at `rooms/keys/act/0.6` — the first
-// version whose table lists it — which adds the renewals of the rooms the member is already
-// in to 0.2's offers and their descriptions. Members and communities upgrade on their own
-// schedules, so a VTA or a community that does not serve 0.3 (`unsupportedType` /
-// `unsupportedVersion` from either) is read at 0.2 (act 0.4), and failing that at 0.1 (act
-// 0.3): those listings carry no renewals, and 0.1's offers no description.
-//
-// A renewal is collected with `pnm rooms offers renew`: its membership and authority are
-// stored in the member's VTA **in place of** the ones they renew — never beside them, since
-// a key holder holding two authorities from one room cannot choose between them.
-//
-// On a sealed tier the acceptance carries a KeyPackage, and the VTA completes it only with
-// one it minted itself for that member and room (act 0.3 recipient item 10) — so this
-// client asks for it there (`rooms/keys/key-package`, against the offer's invitation),
-// never makes it itself.
-//
-// **This is one surface of several.** The member may accept the same offer in their
-// community's member portal, or in OpenVTC, and each reads the same two records — the
-// community's (`vtc/rooms/memberships/list`) and the VTA's (`rooms/keys/list`) — and keeps
-// none of its own. So an acceptance is a sequence each of whose steps answers a repeat with
-// its first answer: `key-package/0.2` returns the KeyPackage another surface may already
-// have sent, the community answers it with the Welcome it kept, and the VTA answers a
-// Welcome it already processed `alreadyJoined`. Whatever another surface began, this one
-// finishes; and a room already joined is said to be, not accepted again.
+// The listing is `vtc/rooms/offers/list/0.4`, completed at `rooms/keys/act/0.8`: the
+// community's offers with their descriptions, and the renewals of the rooms the member is
+// already in (`renewsAt`). A VTA or a community that serves neither is reported, never
+// read at an older version.
 
 /// The community an offer came from, and the DID it is addressed to.
 pub struct OfferTarget<'a> {
@@ -2605,28 +2587,14 @@ enum OfferStepError {
 }
 
 impl OfferStepError {
-    /// Whether the party that answered does not serve the task at the version asked
-    /// (`unsupportedType` / `unsupportedVersion`): the cue to ask at an older one.
-    fn unsupported(&self) -> bool {
-        match self {
-            Self::Act(e) => matches!(e, VtaError::UnsupportedTaskType { .. }),
-            Self::Community(e) => vtc_client::git_ns::task_error(e).is_some_and(|(code, _)| {
-                let local = code.rsplit(':').next().unwrap_or(&code);
-                local == "unsupportedType" || local == "unsupportedVersion"
-            }),
-            Self::Local(_) => false,
-        }
-    }
-
     /// The error to report, with a hint where the operator's fix is known.
     fn report(self, target: &OfferTarget<'_>) -> Box<dyn std::error::Error> {
         match self {
             Self::Act(e) => {
                 let text = e.to_string();
                 let hint = if matches!(e, VtaError::UnsupportedTaskType { .. }) {
-                    "\n\nYour VTA does not serve the rooms/keys/act version that signs this \
-                     request as you (0.6 for offers/list 0.3, 0.5 for memberships, 0.4 for \
-                     offers/list 0.2, 0.3 for the rest): upgrade it."
+                    "\n\nYour VTA does not serve rooms/keys/act/0.8, which signs this request \
+                     as you: upgrade it."
                         .to_string()
                 } else if text.contains("issuerNotPrincipal") {
                     format!(
@@ -2651,7 +2619,7 @@ impl OfferStepError {
 }
 
 /// Have the VTA complete a request to the community as `target.member`
-/// (`rooms/keys/act/0.6`, or the newest version below it that completes the type) and send
+/// (`rooms/keys/act/0.8`) and send
 /// it to the community. Returns the community's response
 /// payload, or the party that failed.
 async fn act_and_send_offer(
@@ -2679,40 +2647,42 @@ async fn act_and_send_offer(
         .map_err(OfferStepError::Community)
 }
 
-/// One offer as this client shows it: `vtc/rooms/offers/list/0.2`'s, which is 0.1's with
-/// the room's `description` when it has one. An offer read at 0.1 has none.
-type CommunityOffer = trust_tasks_rs::specs::vtc::rooms::offers::list::v0_2::OfferV2;
+/// One offer as this client shows it: `vtc/rooms/offers/list/0.4`'s, with the room's
+/// `description` when it has one.
+type CommunityOffer = trust_tasks_rs::specs::vtc::rooms::offers::list::v0_4::OfferV2;
 
-/// A renewal of an admission the member holds (`vtc/rooms/offers/list/0.3`).
-type CommunityRenewal = trust_tasks_rs::specs::vtc::rooms::offers::list::v0_3::Renewal;
+/// A renewal of an admission the member holds (`vtc/rooms/offers/list/0.4`).
+type CommunityRenewal = trust_tasks_rs::specs::vtc::rooms::offers::list::v0_4::Renewal;
 
-/// The listing version asked: 0.3 (with renewals) through act 0.6, 0.2 (with descriptions)
-/// through act 0.4, or 0.1 through act 0.3, for a VTA or a community that does not serve the
-/// newer one.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum OffersListVersion {
-    V0_3,
-    V0_2,
-    V0_1,
-}
-
-/// What a listing answered: the offers, and at 0.3 the renewals.
+/// What a listing answered: the offers, and the renewals.
 type OffersListing = (Vec<CommunityOffer>, Vec<CommunityRenewal>);
 
-/// `vtc/rooms/offers/list` at `at`, signed as the member: every offer (one page at a time),
-/// read as [`CommunityOffer`], and at 0.3 the renewals the first page carries.
-async fn list_offers_at(
+/// One page of the community's `vtc/rooms/offers/list/0.4` answer: its offers, the next
+/// cursor, and its renewals.
+#[allow(clippy::type_complexity)]
+fn offers_page(
+    reply: Value,
+) -> Result<(Vec<CommunityOffer>, Option<String>, Vec<CommunityRenewal>), Box<dyn std::error::Error>>
+{
+    use trust_tasks_rs::specs::vtc::rooms::offers::list::v0_4;
+    let page: v0_4::Response = parse_reply("vtc/rooms/offers/list/0.4", reply)?;
+    Ok((
+        page.items,
+        page.next_cursor.map(|c| c.to_string()),
+        page.renewals,
+    ))
+}
+
+/// Every offer the community has made to the member, and the renewals of the rooms they are
+/// in: `vtc/rooms/offers/list/0.4`, signed as the member through `rooms/keys/act/0.8`, one
+/// page at a time. A VTA or a community that serves neither is told so; nothing older is
+/// asked.
+async fn list_offers(
     client: &VtaClient,
     target: &OfferTarget<'_>,
-    at: OffersListVersion,
-) -> Result<OffersListing, OfferStepError> {
+) -> Result<OffersListing, Box<dyn std::error::Error>> {
     use trust_tasks_rs::Payload as _;
-    use trust_tasks_rs::specs::vtc::rooms::offers::list::{v0_1, v0_2, v0_3};
-    let type_uri = match at {
-        OffersListVersion::V0_3 => v0_3::Payload::TYPE_URI,
-        OffersListVersion::V0_2 => v0_2::Payload::TYPE_URI,
-        OffersListVersion::V0_1 => v0_1::Payload::TYPE_URI,
-    };
+    let type_uri = trust_tasks_rs::specs::vtc::rooms::offers::list::v0_4::Payload::TYPE_URI;
     let mut items = Vec::new();
     let mut renewals = Vec::new();
     let mut cursor: Option<String> = None;
@@ -2721,8 +2691,10 @@ async fn list_offers_at(
             Some(c) => serde_json::json!({ "cursor": c }),
             None => serde_json::json!({}),
         };
-        let reply = act_and_send_offer(client, target, type_uri, payload).await?;
-        let page = offers_page(at, reply).map_err(OfferStepError::Local)?;
+        let reply = act_and_send_offer(client, target, type_uri, payload)
+            .await
+            .map_err(|e| e.report(target))?;
+        let page = offers_page(reply)?;
         items.extend(page.0);
         renewals.extend(page.2);
         match page.1 {
@@ -2732,88 +2704,13 @@ async fn list_offers_at(
     }
 }
 
-/// One page of the community's answer at `at`: its offers, each read as a [`CommunityOffer`]
-/// (an `Offer` is an `OfferV2` without `description`, and 0.3's `OfferV2` is 0.2's), the
-/// next cursor, and at 0.3 its renewals.
-#[allow(clippy::type_complexity)]
-fn offers_page(
-    at: OffersListVersion,
-    reply: Value,
-) -> Result<(Vec<CommunityOffer>, Option<String>, Vec<CommunityRenewal>), Box<dyn std::error::Error>>
-{
-    use trust_tasks_rs::specs::vtc::rooms::offers::list::{v0_1, v0_2, v0_3};
-    match at {
-        OffersListVersion::V0_3 => {
-            let page: v0_3::Response = parse_reply("vtc/rooms/offers/list/0.3", reply)?;
-            let items = page
-                .items
-                .into_iter()
-                .map(|o| {
-                    serde_json::to_value(o)
-                        .and_then(serde_json::from_value::<CommunityOffer>)
-                        .map_err(|e| format!("an offer read at 0.3 does not read as 0.2's: {e}"))
-                })
-                .collect::<Result<_, _>>()?;
-            Ok((
-                items,
-                page.next_cursor.map(|c| c.to_string()),
-                page.renewals,
-            ))
-        }
-        OffersListVersion::V0_2 => {
-            let page: v0_2::Response = parse_reply("vtc/rooms/offers/list/0.2", reply)?;
-            Ok((
-                page.items,
-                page.next_cursor.map(|c| c.to_string()),
-                Vec::new(),
-            ))
-        }
-        OffersListVersion::V0_1 => {
-            let page: v0_1::Response = parse_reply("vtc/rooms/offers/list/0.1", reply)?;
-            let items = page
-                .items
-                .into_iter()
-                .map(|o| {
-                    serde_json::to_value(o)
-                        .and_then(serde_json::from_value::<CommunityOffer>)
-                        .map_err(|e| format!("an offer read at 0.1 does not read as 0.2's: {e}"))
-                })
-                .collect::<Result<_, _>>()?;
-            Ok((items, page.next_cursor.map(|c| c.to_string()), Vec::new()))
-        }
-    }
-}
-
-/// Every offer the community has made to the member, and the renewals of the rooms they are
-/// in: at `vtc/rooms/offers/list/0.3` (act 0.6), else 0.2 (act 0.4), else 0.1 (act 0.3),
-/// each tried when the member's VTA or the community does not serve the one before. Which
-/// one answered is returned beside them.
-async fn list_offers(
-    client: &VtaClient,
-    target: &OfferTarget<'_>,
-) -> Result<(OffersListing, OffersListVersion), Box<dyn std::error::Error>> {
-    let mut last = None;
-    for at in [
-        OffersListVersion::V0_3,
-        OffersListVersion::V0_2,
-        OffersListVersion::V0_1,
-    ] {
-        match list_offers_at(client, target, at).await {
-            Ok(listing) => return Ok((listing, at)),
-            Err(e) if e.unsupported() => last = Some(e),
-            Err(e) => return Err(e.report(target)),
-        }
-    }
-    Err(last.expect("every version tried").report(target))
-}
-
 /// `pnm rooms offers list` — the rooms the community has offered you, each with what it is
 /// for when the community says.
 pub async fn cmd_rooms_offers_list(
     client: &VtaClient,
     target: OfferTarget<'_>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let ((offers, renewals), _) = list_offers(client, &target).await?;
+    let (offers, renewals) = list_offers(client, &target).await?;
     if offers.is_empty() && renewals.is_empty() {
         println!(
             "No offers from {} are addressed to {}.",
@@ -2841,7 +2738,7 @@ fn renewal_lines(r: &CommunityRenewal, target: &OfferTarget<'_>) -> String {
         r.visibility,
         actions.join(","),
         r.valid_until.to_rfc3339(),
-        r.renews.to_rfc3339(),
+        r.renews_at.to_rfc3339(),
         renew_command(r.room_id.as_str(), target),
     )
 }
@@ -2905,28 +2802,15 @@ async fn held_room_credential(
 }
 
 /// `pnm rooms offers renew` — collect a renewal of a room you are in: store its membership
-/// and authority in your VTA in place of the ones they renew (`vtc/rooms/offers/list/0.3`
-/// surface items 1–3). Storing one already stored is success, so any surface may collect it
+/// and authority in your VTA in place of the ones they renew (`vtc/rooms/offers/list/0.4`
+/// surface items 1–3, carried unchanged into 0.4). Storing one already stored is success, so any surface may collect it
 /// first.
 pub async fn cmd_rooms_offers_renew(
     client: &VtaClient,
     target: OfferTarget<'_>,
     room_id: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let ((_, renewals), at) = list_offers(client, &target).await?;
-    if at != OffersListVersion::V0_3 {
-        return Err(format!(
-            "{} answered at vtc/rooms/offers/list/{}, which carries no renewals: the \
-             community, or your VTA (rooms/keys/act 0.6 signs list 0.3), predates them",
-            target.vtc_did,
-            if at == OffersListVersion::V0_2 {
-                "0.2"
-            } else {
-                "0.1"
-            }
-        )
-        .into());
-    }
+    let (_, renewals) = list_offers(client, &target).await?;
     let renewal = renewals
         .into_iter()
         .find(|r| r.room_id.as_str() == room_id)
@@ -2963,7 +2847,7 @@ pub async fn cmd_rooms_offers_renew(
         "Renewed {room_id} for {}: valid until {} (it was until {}).",
         target.member,
         renewal.valid_until.to_rfc3339(),
-        renewal.renews.to_rfc3339(),
+        renewal.renews_at.to_rfc3339(),
     );
     Ok(())
 }
@@ -2972,7 +2856,7 @@ pub async fn cmd_rooms_offers_renew(
 /// the community's text: control characters in them never reach the terminal, and the
 /// description is kept to one line.
 fn offer_lines(o: &CommunityOffer, target: &OfferTarget<'_>) -> String {
-    use trust_tasks_rs::specs::vtc::rooms::offers::list::v0_2::OfferV2State;
+    use trust_tasks_rs::specs::vtc::rooms::offers::list::v0_4::OfferV2State;
     let actions: Vec<String> = o.actions.0.iter().map(ToString::to_string).collect();
     let mut out = format!(
         "{}  {}  [{}]  {}  {}  until {}\n",
@@ -3047,7 +2931,7 @@ pub async fn cmd_rooms_offers_accept(
     use trust_tasks_rs::Payload as _;
     use trust_tasks_rs::specs::vtc::rooms::offers::accept::v0_1 as accept;
 
-    let ((offers, _), _) = list_offers(client, &target).await?;
+    let (offers, _) = list_offers(client, &target).await?;
     let offer = offers
         .into_iter()
         .find(|o| o.room_id.as_str() == room_id)
@@ -3580,51 +3464,21 @@ mod tests {
         assert!(!offer_lines(&bare, &offer_target()).contains("about:"));
     }
 
-    /// An offer read at `vtc/rooms/offers/list/0.1` reads as 0.2's, with no description.
+    /// `vtc/rooms/offers/list/0.4`: the offers, and the renewals of rooms the member is in
+    /// (`renewsAt`), each printed with the command that collects it.
     #[test]
-    fn an_offers_list_0_1_page_reads_as_0_2() {
-        let mut v1 = offer_v2(None);
-        v1["label"] = json!("Board");
-        let (items, next, _) = offers_page(
-            OffersListVersion::V0_1,
-            json!({ "items": [v1], "nextCursor": "c2" }),
-        )
-        .expect("a 0.1 page");
-        assert_eq!(items.len(), 1);
-        assert!(items[0].description.is_none());
-        assert_eq!(next.as_deref(), Some("c2"));
-
-        let (items, next, renewals) = offers_page(
-            OffersListVersion::V0_2,
-            json!({ "items": [offer_v2(Some("What it is for"))] }),
-        )
-        .expect("a 0.2 page");
-        assert_eq!(
-            items[0].description.as_ref().map(|d| d.as_str()),
-            Some("What it is for")
-        );
-        assert!(next.is_none());
-        assert!(renewals.is_empty(), "0.2 carries no renewals");
-    }
-
-    /// `vtc/rooms/offers/list/0.3`: the offers, and the renewals of rooms the member is in,
-    /// each printed with the command that collects it.
-    #[test]
-    fn an_offers_list_0_3_page_carries_renewals_and_their_renew_command() {
-        let (items, _, renewals) = offers_page(
-            OffersListVersion::V0_3,
-            json!({
-                "items": [offer_v2(None)],
-                "renewals": [{
-                    "roomId": "did:webvh:Qm:rooms.example:wg", "host": "did:example:community",
-                    "label": "Working group", "visibility": "attributed", "actions": ["read"],
-                    "validUntil": "2027-11-10T00:00:00Z", "renews": "2026-11-10T00:00:00Z",
-                    "issuedAt": "2026-10-20T09:00:00Z",
-                    "credentials": { "membership": "{}", "authority": "{}" },
-                }],
-            }),
-        )
-        .expect("a 0.3 page");
+    fn an_offers_list_0_4_page_carries_renewals_and_their_renew_command() {
+        let (items, _, renewals) = offers_page(json!({
+            "items": [offer_v2(None)],
+            "renewals": [{
+                "roomId": "did:webvh:Qm:rooms.example:wg", "host": "did:example:community",
+                "label": "Working group", "visibility": "attributed", "actions": ["read"],
+                "validUntil": "2027-11-10T00:00:00Z", "renewsAt": "2026-11-10T00:00:00Z",
+                "issuedAt": "2026-10-20T09:00:00Z",
+                "credentials": { "membership": "{}", "authority": "{}" },
+            }],
+        }))
+        .expect("a 0.4 page");
         assert_eq!(items.len(), 1);
         assert_eq!(renewals.len(), 1);
         let lines = renewal_lines(&renewals[0], &offer_target());
@@ -3632,49 +3486,6 @@ mod tests {
         assert!(
             lines.contains("pnm rooms offers renew --room did:webvh:Qm:rooms.example:wg"),
             "{lines}"
-        );
-    }
-
-    /// The fallback cue: `unsupportedType` / `unsupportedVersion` from either party — the
-    /// member's VTA (act 0.4) or the community (offers/list 0.2) — and nothing else.
-    #[test]
-    fn only_an_unsupported_answer_falls_back_to_offers_list_0_1() {
-        let community = |code: &str| {
-            OfferStepError::Community(vtc_client::VtcError::Http {
-                status: 400,
-                body: json!({
-                    "type": "https://trusttasks.org/spec/trust-task-error/0.5",
-                    "payload": { "code": code, "message": "no" }
-                })
-                .to_string(),
-            })
-        };
-        assert!(community("unsupportedType").unsupported());
-        assert!(community("unsupportedVersion").unsupported());
-        assert!(!community("vtc/rooms/offers/list:notAMember").unsupported());
-        assert!(!community("permissionDenied").unsupported());
-        assert!(
-            !OfferStepError::Community(vtc_client::VtcError::Http {
-                status: 502,
-                body: "bad gateway".into(),
-            })
-            .unsupported()
-        );
-
-        assert!(
-            OfferStepError::Act(VtaError::UnsupportedTaskType {
-                type_uri: "https://trusttasks.org/spec/rooms/keys/act/0.4".into(),
-                served_versions: vec![],
-            })
-            .unsupported()
-        );
-        assert!(
-            !OfferStepError::Act(VtaError::Rejected {
-                code: "rooms/keys/act:issuerNotPrincipal".into(),
-                message: "no".into(),
-                details: None,
-            })
-            .unsupported()
         );
     }
 

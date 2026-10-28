@@ -441,21 +441,16 @@ remove that member again if that is still wanted.
 ### From `pnm`
 
 The persona an offer names is held by the member's VTA, so `pnm` builds each request and
-has the VTA sign it as that persona with `rooms/keys/act/0.6` (0.5, 0.4 or 0.3, against an
-older VTA, for the types those complete) — no presentation inserted,
+has the VTA sign it as that persona with `rooms/keys/act/0.8` — no presentation inserted,
 and an acceptance completed only with a KeyPackage that VTA minted itself for that member
 and room (`keyPackageNotHeld` otherwise). The signed document goes to the VTC over its
 Trust Task HTTPS endpoint, unchanged.
 
-`list` asks for `vtc/rooms/offers/list/0.3`, signed with `rooms/keys/act/0.6` — the first
-version whose table lists it — so each offer shows what its room is for, on an `about:` line
-under it (control characters replaced, as in the label), and each room you are in that the
-community has renewed shows as a `renewal` line with the command that collects it. Members
-and communities upgrade on their own schedules: when the member's VTA or the VTC does not
-serve 0.3 (`unsupportedType` / `unsupportedVersion` from either), `pnm` lists at 0.2 through
-act 0.4, and failing that at 0.1 through act 0.3; those listings carry no renewals, and 0.1's
-offers no description. `accept` reads the offer the same way before it accepts
-(`vtc/rooms/offers/accept/0.1`).
+`list` asks for `vtc/rooms/offers/list/0.4`, signed with `rooms/keys/act/0.8`, so each
+offer shows what its room is for, on an `about:` line under it (control characters
+replaced, as in the label), and each room you are in that the community has renewed shows
+as a `renewal` line with the command that collects it. A member's VTA or a VTC that does
+not serve those versions is reported, and nothing older is tried.
 
 ```bash
 pnm rooms offers list   --vtc https://vtc.example.com/v1 --vtc-did <vtc-did> --member <persona-did>
@@ -553,10 +548,6 @@ already created can also mean the community's own authority over it has lapsed
 
 ## What is not here yet
 
-- **The description from an older member VTA**: `pnm rooms offers list` shows a room's
-  description only when the member's VTA serves `rooms/keys/act/0.4` (the first version
-  that signs `vtc/rooms/offers/list/0.2`) and the VTC serves list 0.2; otherwise it lists
-  at 0.1, label only, until both are upgraded.
 - **A member-side read of rooms they are in**: an admitted member sees the label and
   description only while their offer is listed.
 

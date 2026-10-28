@@ -23,7 +23,6 @@ use trust_tasks_rs::specs::rooms::blobs::upload::chunk::v0_2 as upload_chunk_v2;
 use trust_tasks_rs::specs::rooms::blobs::upload::commit::v0_2 as upload_commit_v2;
 use trust_tasks_rs::specs::rooms::info::v0_1 as rooms_info;
 use trust_tasks_rs::specs::rooms::records::get::v0_2 as get_v2;
-use trust_tasks_rs::specs::rooms::records::list::v0_2 as list_v2;
 use trust_tasks_rs::specs::rooms::records::put::v0_2 as put_v2;
 use trust_tasks_rs::specs::rooms::records::put::v0_3 as put_v3;
 use trust_tasks_rs::specs::rooms::usage::v0_1 as rooms_usage;
@@ -39,9 +38,8 @@ use crate::{Room, Visibility};
 /// The URIs these tasks are dispatched under, from [`crate::wire`].
 pub use crate::wire::{
     ROOMS_BLOBS_CHUNK_TYPE as DOWNLOAD_CHUNK_TYPE, ROOMS_INFO_TYPE as INFO_TYPE,
-    ROOMS_RECORDS_GET_V2_TYPE as GET_V2_TYPE, ROOMS_RECORDS_LIST_V2_TYPE as LIST_V2_TYPE,
-    ROOMS_RECORDS_PUT_V2_TYPE as PUT_V2_TYPE, ROOMS_RECORDS_PUT_V3_TYPE as PUT_V3_TYPE,
-    ROOMS_USAGE_TYPE as USAGE_TYPE,
+    ROOMS_RECORDS_GET_V2_TYPE as GET_V2_TYPE, ROOMS_RECORDS_PUT_V2_TYPE as PUT_V2_TYPE,
+    ROOMS_RECORDS_PUT_V3_TYPE as PUT_V3_TYPE, ROOMS_USAGE_TYPE as USAGE_TYPE,
 };
 pub use crate::wire::{
     ROOMS_BLOBS_GET_V2_TYPE as BLOB_GET_V2_TYPE,
@@ -395,7 +393,7 @@ pub async fn info(
 }
 
 /// What `rooms/info` 0.1 answers, before its schema check: 0.2 adds to it
-/// ([`crate::record_tasks::info_v2`]).
+/// ([`crate::record_tasks::info_v3`]).
 pub(crate) async fn info_body(
     files: &BlobHost,
     room: &Room,
@@ -668,17 +666,8 @@ pub async fn get_v2_response(
     checked::<get_v2::Response>(body)
 }
 
-/// A 0.1 listing with each row's `blobs` added, as `rooms/records/list/0.2` answers.
-pub async fn list_v2_response(
-    snapshot: &ReadSnapshot<'_>,
-    room_id: &str,
-    response: impl serde::Serialize,
-) -> TaskResult {
-    checked::<list_v2::Response>(list_v2_body(snapshot, room_id, response).await?)
-}
-
-/// What `rooms/records/list` 0.2 answers, before its schema check: 0.3 adds to it
-/// ([`crate::record_tasks::list_v3_response`]).
+/// A listing with each row's `blobs`, before its schema check: 0.5 adds to it
+/// ([`crate::record_tasks::list_v5_response`]).
 pub(crate) async fn list_v2_body(
     snapshot: &ReadSnapshot<'_>,
     room_id: &str,

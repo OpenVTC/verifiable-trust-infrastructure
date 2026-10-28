@@ -658,8 +658,8 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     // tries can differ — that is the room changing, not the task misbehaving,
     // and `headVersion` is what tells them apart.
     (trust_tasks::TASK_ROOMS_KEYS_BROWSE_0_1, RetrySafe),
-    // 0.2 passes the host's `lastPrune` through: still a read, stores nothing.
-    (trust_tasks::TASK_ROOMS_KEYS_BROWSE_0_2, RetrySafe),
+    // 0.3 passes the host's `lastPrune` through: still a read, stores nothing.
+    (trust_tasks::TASK_ROOMS_KEYS_BROWSE_0_3, RetrySafe),
     // Sealing is a pure function of the key and the bytes, and it stores nothing:
     // a lost reply costs the caller a round trip, never any state. Re-sealing the
     // same body yields a different nonce, which is correct and changes nothing. The
@@ -674,19 +674,13 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     // answer would buy nothing a host does not already dedupe, and the client that lost
     // the reply legitimately needs it again.
     (trust_tasks::TASK_ROOMS_KEYS_ACT_0_1, RetrySafe),
-    // 0.2 changes whom the VTA acts as for a room-less type (always the named
-    // `issuer`) and what the subject is, not what a completion stores: still nothing.
-    (trust_tasks::TASK_ROOMS_KEYS_ACT_0_2, RetrySafe),
-    // 0.3 adds the offer types, which also store nothing: completing an acceptance checks
-    // the KeyPackage this VTA minted and leaves it unused — a Welcome consumes it — so a
-    // repeat completes it again, as the lost-answer retry of the acceptance needs.
-    (trust_tasks::TASK_ROOMS_KEYS_ACT_0_3, RetrySafe),
-    // 0.4 adds `vtc/rooms/offers/list/0.2` to the offer row, a listing: still nothing stored.
-    (trust_tasks::TASK_ROOMS_KEYS_ACT_0_4, RetrySafe),
-    // 0.5 adds `vtc/rooms/memberships/list/0.1`, a read: still nothing stored.
+    // 0.5 adds the community types: completing an acceptance checks the KeyPackage this
+    // VTA minted and leaves it unused — a Welcome consumes it — so a repeat completes it
+    // again, as the lost-answer retry of the acceptance needs. Still nothing stored.
     (trust_tasks::TASK_ROOMS_KEYS_ACT_0_5, RetrySafe),
-    // 0.6 adds `vtc/rooms/offers/list/0.3`, a listing: still nothing stored.
-    (trust_tasks::TASK_ROOMS_KEYS_ACT_0_6, RetrySafe),
+    // 0.8 widens the table (newer host-bound versions, the retention requests): a
+    // completion still stores nothing.
+    (trust_tasks::TASK_ROOMS_KEYS_ACT_0_8, RetrySafe),
     // A read: names each entry's member and can carry the member's own labels.
     (trust_tasks::TASK_ROOMS_KEYS_LIST_0_2, RetrySafe),
     // Idempotent by specification (`rooms/keys/label/0.1` *Retry safety*): each detail is
@@ -719,8 +713,7 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     // retry can report an error over a registration that in fact succeeded.
     // That is a worse *message*, not a worse world, which is the distinction
     // this axis is about.
-    (trust_tasks::TASK_ROOMS_OWNER_REGISTER_0_1, RetrySafe),
-    // Convergent as 0.1, and a second execution also delivers the room's list again, which
+    // A second execution also delivers the room's list again, which
     // a host answers as accepted. Its `revocation` reports the list at the host *now*, so a
     // retry's answer is the more current one, not a worse one.
     (trust_tasks::TASK_ROOMS_OWNER_REGISTER_0_2, RetrySafe),

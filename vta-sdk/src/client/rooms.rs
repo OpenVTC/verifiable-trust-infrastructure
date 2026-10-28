@@ -109,31 +109,6 @@ impl VtaClient {
         .await
     }
 
-    /// Send `payload` at `current`, and at `previous` when the VTA does not serve
-    /// `current` (`unsupportedType` / `unsupportedVersion`, typed as
-    /// [`VtaError::UnsupportedTaskType`]).
-    ///
-    /// For a version pair whose payloads are identical and whose operation is the same:
-    /// asking again at the older version is not a retry of a failed operation, because the
-    /// first was never routed.
-    async fn dispatch_at_or_before(
-        &self,
-        current: &str,
-        previous: &str,
-        payload: Value,
-    ) -> Result<Value, VtaError> {
-        match self
-            .dispatch_trust_task(current, payload.clone(), ROOM_TT_TIMEOUT)
-            .await
-        {
-            Err(VtaError::UnsupportedTaskType { .. }) => {
-                self.dispatch_trust_task(previous, payload, ROOM_TT_TIMEOUT)
-                    .await
-            }
-            other => other,
-        }
-    }
-
     /// `rooms/keys/seal/0.2` — seal one record body under the room's current
     /// epoch, ready for `rooms/records/put`.
     ///
@@ -215,24 +190,13 @@ impl VtaClient {
         })
     }
 
-    /// `rooms/keys/act/0.4` — have the VTA complete one host-bound room request, or a reply
+    /// `rooms/keys/act/0.8` — have the VTA complete one host-bound room request, or a reply
     /// to a community's offer of a room, **as the member**, and get it back to send.
     ///
-    /// Which versions are asked depends on the document's type, because each version's table
-    /// is closed:
-    ///
-    /// - a **room request** goes at 0.4, then — to a VTA that does not serve that
-    ///   (`unsupportedType` / `unsupportedVersion`) — at 0.3, 0.2 and 0.1 in turn, with the
-    ///   same document;
-    /// - `vtc/rooms/offers/list/0.1` and `vtc/rooms/offers/accept/0.1` go at 0.4, then 0.3,
-    ///   and no earlier: 0.1 and 0.2's schema refuses them;
-    /// - `vtc/rooms/offers/list/0.2` goes at 0.4 **only**, the first version whose table
-    ///   lists it (0.3 would refuse it `typeNotActable`).
-    ///
-    /// A VTA that serves none of the versions a type may go at is reported as
-    /// [`VtaError::UnsupportedTaskType`]; for `offers/list/0.2` that is the cue to list at
-    /// `0.1` instead. Every answer reads as 0.4's, whose response schema is every earlier
-    /// version's.
+    /// Sent at 0.8 only, whose table completes every type a member's client sends —
+    /// the newest version of each host-bound request and of the offer listing among them.
+    /// A VTA that does not serve 0.8 answers [`VtaError::UnsupportedTaskType`], and is
+    /// upgraded rather than asked at an older version.
     ///
     /// For an offer type, `issuer` is required — the DID the offer is addressed to — and an
     /// acceptance's `keyPackage` must be the one this VTA minted for the member and the room
@@ -254,94 +218,37 @@ impl VtaClient {
     /// Nothing in it names this client: the host records the member.
     pub async fn room_act(
         &self,
-        document: &trust_tasks_rs::specs::rooms::keys::act::v0_4::UnsignedRoomRequest,
-    ) -> Result<trust_tasks_rs::specs::rooms::keys::act::v0_4::Response, VtaError> {
-        // The request schemas are the same at every version a type may go at (0.3 widened
-        // only the `type` pattern, to admit the offer types; 0.4 changed only the table), so
-        // the same JSON goes at each and any answer reads as 0.4's. Asking again at an older
-        // version is not a retry: the first ask was never routed.
-        let payload = json!({ "document": document });
-        let type_uri = document.type_.as_str();
-        let value = match self
-            .dispatch_trust_task(
-                trust_tasks::TASK_ROOMS_KEYS_ACT_0_4,
-                payload.clone(),
-                ROOM_TT_TIMEOUT,
-            )
-            .await
-        {
-            Err(e @ VtaError::UnsupportedTaskType { .. }) if needs_act_0_4(type_uri) => {
-                return Err(e);
-            }
-            Err(VtaError::UnsupportedTaskType { .. }) => {
-                match self
-                    .dispatch_trust_task(
-                        trust_tasks::TASK_ROOMS_KEYS_ACT_0_3,
-                        payload.clone(),
-                        ROOM_TT_TIMEOUT,
-                    )
-                    .await
-                {
-                    Err(VtaError::UnsupportedTaskType { .. }) if !is_offer_type(type_uri) => {
-                        self.dispatch_at_or_before(
-                            trust_tasks::TASK_ROOMS_KEYS_ACT_0_2,
-                            trust_tasks::TASK_ROOMS_KEYS_ACT_0_1,
-                            payload,
-                        )
-                        .await?
-                    }
-                    other => other?,
-                }
-            }
-            other => other?,
-        };
-        serde_json::from_value(value).map_err(|e| {
-            VtaError::Protocol(format!(
-                "rooms/keys/act response does not match its schema: {e}"
-            ))
-        })
+        document: &trust_tasks_rs::specs::rooms::keys::act::v0_8::UnsignedRoomRequest,
+    ) -> Result<trust_tasks_rs::specs::rooms::keys::act::v0_8::Response, VtaError> {
+        self.act_v0_8(json!({ "document": document })).await
     }
 
-    /// `rooms/keys/act/0.6` — have the VTA complete one of a member's requests to a
+    /// `rooms/keys/act/0.8` — have the VTA complete one of a member's requests to a
     /// community about the rooms it offers them ([`is_community_type`]) **as the member**,
     /// and get it back to send to the community unaltered. Build `document` with
     /// [`unsigned_community_request`].
     ///
-    /// A VTA that does not serve 0.6 is asked at the newest version that completes the
-    /// type, with the same document, and the answer read as 0.5's (0.6's request and
-    /// response schemas are 0.5's; only the table widens): 0.5 for every community type but
-    /// `vtc/rooms/offers/list/0.3`, 0.4 for the offer types and `vtc/rooms/offers/list/0.2`,
-    /// 0.3 for `vtc/rooms/offers/{list,accept}/0.1`. For a type no version it serves
-    /// completes — `vtc/rooms/offers/list/0.3` below 0.6, `vtc/rooms/memberships/list/0.1`
-    /// below 0.5 — it is [`VtaError::UnsupportedTaskType`].
+    /// Sent at 0.8 only: a VTA that does not serve it answers
+    /// [`VtaError::UnsupportedTaskType`], and is upgraded rather than asked at an older
+    /// version.
     pub async fn room_act_community(
         &self,
-        document: &trust_tasks_rs::specs::rooms::keys::act::v0_5::UnsignedRoomRequest,
-    ) -> Result<trust_tasks_rs::specs::rooms::keys::act::v0_5::Response, VtaError> {
-        let payload = json!({ "document": document });
-        let type_uri = document.type_.as_str();
-        let mut versions = vec![trust_tasks::TASK_ROOMS_KEYS_ACT_0_6];
-        if !needs_act_0_6(type_uri) {
-            versions.push(trust_tasks::TASK_ROOMS_KEYS_ACT_0_5);
-            if is_offer_type(type_uri) {
-                versions.push(trust_tasks::TASK_ROOMS_KEYS_ACT_0_4);
-            }
-            if is_offer_type(type_uri) && !needs_act_0_4(type_uri) {
-                versions.push(trust_tasks::TASK_ROOMS_KEYS_ACT_0_3);
-            }
-        }
-        let mut versions = versions.into_iter().peekable();
-        let value = loop {
-            let task = versions.next().expect("0.6 is always asked");
-            match self
-                .dispatch_trust_task(task, payload.clone(), ROOM_TT_TIMEOUT)
-                .await
-            {
-                // Not a retry: the ask was never routed.
-                Err(VtaError::UnsupportedTaskType { .. }) if versions.peek().is_some() => {}
-                other => break other?,
-            }
-        };
+        document: &trust_tasks_rs::specs::rooms::keys::act::v0_8::UnsignedRoomRequest,
+    ) -> Result<trust_tasks_rs::specs::rooms::keys::act::v0_8::Response, VtaError> {
+        self.act_v0_8(json!({ "document": document })).await
+    }
+
+    async fn act_v0_8(
+        &self,
+        payload: Value,
+    ) -> Result<trust_tasks_rs::specs::rooms::keys::act::v0_8::Response, VtaError> {
+        let value = self
+            .dispatch_trust_task(
+                trust_tasks::TASK_ROOMS_KEYS_ACT_0_8,
+                payload,
+                ROOM_TT_TIMEOUT,
+            )
+            .await?;
         serde_json::from_value(value).map_err(|e| {
             VtaError::Protocol(format!(
                 "rooms/keys/act response does not match its schema: {e}"
@@ -685,9 +592,8 @@ impl VtaClient {
     /// caller MUST treat it so: say so rather than present the room as ready. The VTA goes
     /// on delivering a `pending` list on its own; bring the host up to date at once with
     /// [`Self::room_owner_revoke`] naming it and no withdrawal. Never register again to
-    /// repair it. A 0.1 VTA answers no `revocation`: it refuses a delivery that failed, with
-    /// a message saying the room is registered, so its successful answer means the list —
-    /// if it holds one — reached the host.
+    /// repair it. Sent at 0.2 only: a VTA that does not serve it answers
+    /// [`VtaError::UnsupportedTaskType`] and is upgraded rather than asked at 0.1.
     pub async fn room_owner_register(
         &self,
         request: RoomRegistration<'_>,
@@ -696,27 +602,9 @@ impl VtaClient {
         // One host round trip for the registration and one for the room's list, over
         // whatever transport the host speaks.
         let timeout = ROOM_TT_TIMEOUT * 3;
-        // A VTA that does not serve 0.2 never routed the first ask, so asking again at 0.1 is
-        // not a second registration.
-        let value = match self
-            .dispatch_trust_task(
-                trust_tasks::TASK_ROOMS_OWNER_REGISTER_0_2,
-                payload.clone(),
-                timeout,
-            )
-            .await
-        {
-            Err(VtaError::UnsupportedTaskType { .. }) => {
-                self.dispatch_trust_task(
-                    trust_tasks::TASK_ROOMS_OWNER_REGISTER_0_1,
-                    payload,
-                    timeout,
-                )
-                .await?
-            }
-            other => other?,
-        };
-        // 0.1's response is 0.2's without `revocation`.
+        let value = self
+            .dispatch_trust_task(trust_tasks::TASK_ROOMS_OWNER_REGISTER_0_2, payload, timeout)
+            .await?;
         parse_response(value, "rooms/owner/register")
     }
 
@@ -1391,7 +1279,7 @@ pub fn unsigned_room_request(
     host: &str,
     issuer: Option<&str>,
     payload: Value,
-) -> Result<trust_tasks_rs::specs::rooms::keys::act::v0_4::UnsignedRoomRequest, VtaError> {
+) -> Result<trust_tasks_rs::specs::rooms::keys::act::v0_8::UnsignedRoomRequest, VtaError> {
     if issuer.is_none() && is_offer_type(type_uri) {
         return Err(VtaError::Validation(format!(
             "`{type_uri}` is a reply to a community's offer: name the DID the offer is \
@@ -1418,9 +1306,9 @@ pub fn unsigned_room_request(
         .map_err(|e| VtaError::Validation(format!("not a room request this can complete: {e}")))
 }
 
-/// Whether `type_uri` is an offer type `rooms/keys/act` completes at some version —
-/// `vtc/rooms/offers/list/{0.1,0.2,0.3}` or `vtc/rooms/offers/accept/0.1`, with or without
-/// `#request`.
+/// Whether `type_uri` is an offer type `rooms/keys/act/0.8` completes —
+/// `vtc/rooms/offers/list/{0.1,0.2,0.3,0.4}` or `vtc/rooms/offers/accept/0.1`, with or
+/// without `#request`.
 pub fn is_offer_type(type_uri: &str) -> bool {
     use trust_tasks_rs::Payload as _;
     use trust_tasks_rs::specs::vtc::rooms::offers::{accept, list};
@@ -1428,28 +1316,13 @@ pub fn is_offer_type(type_uri: &str) -> bool {
     bare == list::v0_1::Payload::TYPE_URI
         || bare == list::v0_2::Payload::TYPE_URI
         || bare == list::v0_3::Payload::TYPE_URI
+        || bare == list::v0_4::Payload::TYPE_URI
         || bare == accept::v0_1::Payload::TYPE_URI
 }
 
-/// Whether `type_uri` is one only `rooms/keys/act/0.6` (and later) completes —
-/// `vtc/rooms/offers/list/0.3`, which 0.5's closed table refuses `typeNotActable`.
-fn needs_act_0_6(type_uri: &str) -> bool {
-    use trust_tasks_rs::Payload as _;
-    let bare = type_uri.strip_suffix("#request").unwrap_or(type_uri);
-    bare == trust_tasks_rs::specs::vtc::rooms::offers::list::v0_3::Payload::TYPE_URI
-}
-
-/// Whether `type_uri` is one only `rooms/keys/act/0.4` (and later) completes —
-/// `vtc/rooms/offers/list/0.2`, which 0.3's closed table refuses `typeNotActable`.
-fn needs_act_0_4(type_uri: &str) -> bool {
-    use trust_tasks_rs::Payload as _;
-    let bare = type_uri.strip_suffix("#request").unwrap_or(type_uri);
-    bare == trust_tasks_rs::specs::vtc::rooms::offers::list::v0_2::Payload::TYPE_URI
-}
-
-/// Whether `type_uri` is one of the community types `rooms/keys/act/0.6` completes —
-/// `vtc/rooms/offers/list/{0.1,0.2,0.3}`, `vtc/rooms/offers/accept/0.1` and
-/// `vtc/rooms/memberships/list/0.1`, with or without `#request`.
+/// Whether `type_uri` is one of the community types `rooms/keys/act/0.8` completes —
+/// the offer types ([`is_offer_type`]) and `vtc/rooms/memberships/list/0.1`, with or
+/// without `#request`.
 pub fn is_community_type(type_uri: &str) -> bool {
     use trust_tasks_rs::Payload as _;
     use trust_tasks_rs::specs::vtc::rooms::memberships;
@@ -1471,7 +1344,7 @@ pub fn unsigned_community_request(
     community: &str,
     issuer: &str,
     payload: Value,
-) -> Result<trust_tasks_rs::specs::rooms::keys::act::v0_5::UnsignedRoomRequest, VtaError> {
+) -> Result<trust_tasks_rs::specs::rooms::keys::act::v0_8::UnsignedRoomRequest, VtaError> {
     if !is_community_type(type_uri) {
         return Err(VtaError::Validation(format!(
             "`{type_uri}` is not a request to a community about the rooms it offers you"
@@ -1579,13 +1452,14 @@ mod act_tests {
         );
     }
 
-    /// `rooms/keys/act/0.6`: the community types, and nothing else of the `vtc` family.
+    /// `rooms/keys/act/0.8`: the community types, and nothing else of the `vtc` family.
     #[test]
     fn a_community_request_is_one_of_the_community_types() {
         for t in [
             "https://trusttasks.org/spec/vtc/rooms/offers/list/0.1",
             "https://trusttasks.org/spec/vtc/rooms/offers/list/0.2",
             "https://trusttasks.org/spec/vtc/rooms/offers/list/0.3",
+            "https://trusttasks.org/spec/vtc/rooms/offers/list/0.4",
             "https://trusttasks.org/spec/vtc/rooms/offers/accept/0.1",
             "https://trusttasks.org/spec/vtc/rooms/memberships/list/0.1",
         ] {

@@ -2860,8 +2860,9 @@ dispatch_table! {
     // of the room to the host it is shown to.
     vta_sdk::trust_tasks::TASK_ROOMS_KEYS_BROWSE_0_1 => room_group::handle_browse
         [ None Metadata true ],
-    // 0.2 adds the room's `lastPrune`, passed through from list 0.3 (trust-tasks-tf #868).
-    vta_sdk::trust_tasks::TASK_ROOMS_KEYS_BROWSE_0_2 => room_group::handle_browse_v0_2
+    // 0.3 adds the room's `lastPrune` (as `prunedAt`), passed through from list 0.5. 0.1
+    // stays for `pnm-browser-plugin`, which sends it.
+    vta_sdk::trust_tasks::TASK_ROOMS_KEYS_BROWSE_0_3 => room_group::handle_browse_v0_3
         [ None Metadata true ],
     // `actsAsSubject`: under `signAsPrincipal` it signs the record body as the member.
     vta_sdk::trust_tasks::TASK_ROOMS_KEYS_SEAL_0_2 => room_act::handle_seal_v0_2
@@ -2870,23 +2871,13 @@ dispatch_table! {
     // nothing and sends nothing — the caller sends what comes back.
     vta_sdk::trust_tasks::TASK_ROOMS_KEYS_ACT_0_1 => room_act::handle_act
         [ None Metadata true ],
-    // 0.2: the member is the subject (`/document/issuer`), for policy and audit.
-    vta_sdk::trust_tasks::TASK_ROOMS_KEYS_ACT_0_2 => room_act::handle_act_v0_2
-        [ None Metadata true ],
-    // 0.3: a member's reply to a community's offer of a room, as the DID it is
-    // addressed to; an acceptance only with a KeyPackage this VTA minted.
-    vta_sdk::trust_tasks::TASK_ROOMS_KEYS_ACT_0_3 => room_act::handle_act_v0_3
-        [ None Metadata true ],
-    // 0.4: 0.3, and `vtc/rooms/offers/list/0.2` — the offer listing with each room's
-    // description — on the same terms as 0.1 (trust-tasks-tf #810).
-    vta_sdk::trust_tasks::TASK_ROOMS_KEYS_ACT_0_4 => room_act::handle_act_v0_4
-        [ None Metadata true ],
     // 0.5: also `vtc/rooms/memberships/list/0.1`.
     vta_sdk::trust_tasks::TASK_ROOMS_KEYS_ACT_0_5 => room_act::handle_act_v0_5
         [ None Metadata true ],
-    // 0.6: also `vtc/rooms/offers/list/0.3`, which carries the renewals of the admissions
-    // a member holds (trust-tasks-tf #843).
-    vta_sdk::trust_tasks::TASK_ROOMS_KEYS_ACT_0_6 => room_act::handle_act_v0_6
+    // 0.8: 0.6's request with the table widened by 0.7 and 0.8 — the newer host-bound
+    // versions, `vtc/rooms/offers/list/0.4`, and the room's retention requests as `admin`.
+    // 0.1 and 0.5 stay for `pnm-browser-plugin`, which sends them; 0.2–0.4 and 0.6 are gone.
+    vta_sdk::trust_tasks::TASK_ROOMS_KEYS_ACT_0_8 => room_act::handle_act_v0_8
         [ None Metadata true ],
     // 0.2: each entry names its member; `includePersonal` adds the member's own label.
     vta_sdk::trust_tasks::TASK_ROOMS_KEYS_LIST_0_2 => room_label::handle_list_v0_2
@@ -2907,8 +2898,6 @@ dispatch_table! {
     // `actsAsSubject`, unlike the issuance verbs beside it: those sign as the
     // room and return the credential to the caller, while this one speaks to a
     // third party as its principal.
-    vta_sdk::trust_tasks::TASK_ROOMS_OWNER_REGISTER_0_1 => room_owner::handle_register
-        [ Mutating Metadata true ],
     // 0.2: a registration the host accepted answers success whatever became of the room's
     // revocation list, which `revocation` reports; a `pending` list is redelivered by
     // `room_list_delivery`, the one retry owner (trust-tasks-tf #821).

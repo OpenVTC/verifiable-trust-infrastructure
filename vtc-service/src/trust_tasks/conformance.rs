@@ -1353,18 +1353,6 @@ fn table() -> Vec<Conformance> {
             }] })
         ),
         checked!(
-            s::rooms::offers::list::v0_1::Payload,
-            s::rooms::offers::list::v0_1::Response,
-            json!({}),
-            json!({ "items": [{
-                "roomId": "did:key:z6MkRoom", "host": "did:example:community",
-                "label": "Board pack", "visibility": "attributed", "actions": ["read"],
-                "validUntil": "2027-10-01T00:00:00Z", "offeredAt": "2026-10-14T10:00:00Z",
-                "state": "open",
-                "credentials": { "invitation": "{}", "membership": "{}", "authority": "{}" },
-            }] })
-        ),
-        checked!(
             s::rooms::offers::list::v0_2::Payload,
             s::rooms::offers::list::v0_2::Response,
             json!({}),
@@ -1377,18 +1365,18 @@ fn table() -> Vec<Conformance> {
                 "credentials": { "invitation": "{}", "membership": "{}", "authority": "{}" },
             }] })
         ),
-        // 0.3: the same offers, and on the first page the renewals of the
-        // admissions the member holds (`groups::bindings`).
+        // 0.4: the same offers, and on the first page the renewals of the
+        // admissions the member holds (`groups::bindings`), `renewsAt` (0.4).
         checked!(
-            s::rooms::offers::list::v0_3::Payload,
-            s::rooms::offers::list::v0_3::Response,
+            s::rooms::offers::list::v0_4::Payload,
+            s::rooms::offers::list::v0_4::Response,
             json!({}),
             json!({
                 "items": [],
                 "renewals": [{
                     "roomId": "did:key:z6MkRoom", "host": "did:example:community",
                     "label": "Board pack", "visibility": "attributed", "actions": ["read"],
-                    "validUntil": "2027-11-10T00:00:00Z", "renews": "2026-11-10T00:00:00Z",
+                    "validUntil": "2027-11-10T00:00:00Z", "renewsAt": "2026-11-10T00:00:00Z",
                     "issuedAt": "2026-10-20T09:00:00Z",
                     "credentials": { "membership": "{}", "authority": "{}" },
                 }],

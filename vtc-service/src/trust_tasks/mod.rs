@@ -3130,10 +3130,10 @@ pub(crate) const DISPATCHED_URIS: &[&str] = &[
     community_room_tasks::MEMBERS_ADD_TYPE,
     community_room_tasks::MEMBERS_REMOVE_TYPE,
     community_room_tasks::MEMBERS_LIST_TYPE,
+    // 0.4: also the renewals of the admissions the member holds (`renewsAt`). 0.2 stays
+    // for `pnm-browser-plugin`.
     community_room_tasks::OFFERS_LIST_TYPE,
     community_room_tasks::OFFERS_LIST_V0_2_TYPE,
-    // 0.3: also the renewals of the admissions the member holds.
-    community_room_tasks::OFFERS_LIST_V0_3_TYPE,
     community_room_tasks::OFFERS_ACCEPT_TYPE,
     community_room_tasks::MEMBERSHIPS_LIST_TYPE,
     // The OpenID4VP verifier identities, as a holder of `vtc.config.admin`

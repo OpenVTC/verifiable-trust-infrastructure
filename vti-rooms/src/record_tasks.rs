@@ -10,9 +10,9 @@
 
 use serde_json::{Value, json};
 use trust_tasks_rs::specs::rooms::create::v0_2 as create_v2;
-use trust_tasks_rs::specs::rooms::info::v0_2 as info_v2;
-use trust_tasks_rs::specs::rooms::records::list::v0_3 as list_v3;
-use trust_tasks_rs::specs::rooms::records::prune::v0_1 as prune_spec;
+use trust_tasks_rs::specs::rooms::info::v0_3 as info_v3;
+use trust_tasks_rs::specs::rooms::records::list::v0_5 as list_v5;
+use trust_tasks_rs::specs::rooms::records::prune::v0_2 as prune_spec;
 use trust_tasks_rs::specs::rooms::records::retention::set::v0_1 as set_spec;
 use vti_common::error::AppError;
 use vti_common::store::KeyspaceHandle;
@@ -25,13 +25,13 @@ use crate::record_retention::{PruneKind, RecordPrune, RecordRetention};
 use crate::storage;
 
 pub use crate::wire::{
-    ROOMS_CREATE_V2_TYPE as CREATE_V2_TYPE, ROOMS_INFO_V2_TYPE as INFO_V2_TYPE,
-    ROOMS_RECORDS_LIST_V3_TYPE as LIST_V3_TYPE, ROOMS_RECORDS_PRUNE_TYPE as PRUNE_TYPE,
+    ROOMS_CREATE_V2_TYPE as CREATE_V2_TYPE, ROOMS_INFO_V3_TYPE as INFO_V3_TYPE,
+    ROOMS_RECORDS_LIST_V5_TYPE as LIST_V5_TYPE, ROOMS_RECORDS_PRUNE_V2_TYPE as PRUNE_TYPE,
     ROOMS_RECORDS_RETENTION_SET_TYPE as RETENTION_SET_TYPE,
 };
 
 /// What a prune or a retention change leaves in the host's audit trail
-/// (`rooms/records/prune/0.1` *The audit trail*; `retention/set/0.1` item 5): the mark, the
+/// (`rooms/records/prune/0.2` *The audit trail*; `retention/set/0.1` item 5): the mark, the
 /// reason, the retention applied and the kinds asked — never a removed record's key or
 /// anything it said. The requester is the host's to add, where the tier discloses one
 /// ([`crate::audit::for_operation`]).
@@ -97,7 +97,8 @@ fn kinds_of(payload: &Value) -> Vec<PruneKind> {
         .unwrap_or_default()
 }
 
-/// `rooms/records/prune/0.1`, once the chain has been verified for `admin`.
+/// `rooms/records/prune/0.2`, once the chain has been verified for `admin`. Its `prune`
+/// names the mark's instant `prunedAt` (`rooms/_shared/0.2`).
 ///
 /// Holds the record-write lock ([`BlobHost::records_lock`]) for the whole decision and
 /// removal, so eligibility is decided over exactly the records it removes and no read sees
@@ -330,15 +331,15 @@ pub fn create_v2_response(
     checked::<create_v2::Response>(body)
 }
 
-/// `rooms/info/0.2`: 0.1's answer, and the record retention in force (omitted when there is
-/// none — item 6) and the room's latest prune (item 7).
-pub async fn info_v2(
+/// `rooms/info/0.3`: 0.1's answer, and the record retention in force (omitted when there is
+/// none) and the room's latest prune, its instant named `prunedAt` (`rooms/_shared/0.2`).
+pub async fn info_v3(
     files: &BlobHost,
     room: &Room,
     authorized: &AuthorizedAction,
     payload: &Value,
 ) -> TaskResult {
-    parse::<info_v2::Payload>(payload)?;
+    parse::<info_v3::Payload>(payload)?;
     let mut body = crate::blob_tasks::info_body(files, room, authorized).await?;
     if let Some(r) = room
         .record_retention
@@ -350,21 +351,28 @@ pub async fn info_v2(
     if let Some(mark) = &room.last_prune {
         body["lastPrune"] = mark.to_wire();
     }
-    checked::<info_v2::Response>(body)
+    checked::<info_v3::Response>(body)
 }
 
-/// A 0.2 listing with the room's `lastPrune` added, as `rooms/records/list/0.3` answers: on
-/// every page of every listing once the room has been pruned, omitted otherwise.
-pub async fn list_v3_response(
+/// A listing as `rooms/records/list/0.5` answers: each record's `blobs`, the room's
+/// `lastPrune` on every page once the room has been pruned (omitted otherwise), and the
+/// continuation token named `nextCursor` (0.4), absent on the last page.
+pub async fn list_v5_response(
     snapshot: &ReadSnapshot<'_>,
     room: &Room,
     response: impl serde::Serialize,
 ) -> TaskResult {
     let mut body = crate::blob_tasks::list_v2_body(snapshot, &room.room_id, response).await?;
+    if let Some(obj) = body.as_object_mut()
+        && let Some(cursor) = obj.remove("cursor")
+        && !cursor.is_null()
+    {
+        obj.insert("nextCursor".into(), cursor);
+    }
     if let Some(mark) = &room.last_prune {
         body["lastPrune"] = mark.to_wire();
     }
-    checked::<list_v3::Response>(body)
+    checked::<list_v5::Response>(body)
 }
 
 /// A `rooms/epoch/chain/0.1` response answered as 0.2: the same rungs (a host serves none at

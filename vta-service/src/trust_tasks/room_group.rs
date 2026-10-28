@@ -1231,10 +1231,10 @@ pub(super) async fn handle_browse(
     browse_at(state, auth, doc, false).await
 }
 
-/// `rooms/keys/browse/0.2`: 0.1, and the room's `lastPrune` passed through exactly as the
-/// host served it (trust-tasks-tf #868), so a caller keeping its own copy of the room knows
-/// to rebuild it.
-pub(super) async fn handle_browse_v0_2(
+/// `rooms/keys/browse/0.3`: 0.1, and the room's `lastPrune` passed through exactly as the
+/// host served it (its instant `prunedAt`, `rooms/_shared/0.2`), so a caller keeping its
+/// own copy of the room knows to rebuild it.
+pub(super) async fn handle_browse_v0_3(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
@@ -1242,7 +1242,7 @@ pub(super) async fn handle_browse_v0_2(
     browse_at(state, auth, doc, true).await
 }
 
-/// The request members `browse` reads — the same at 0.1 and 0.2, each parsed through its
+/// The request members `browse` reads — the same at 0.1 and 0.3, each parsed through its
 /// own version's generated type.
 struct BrowseRequest {
     room_id: String,
@@ -1253,7 +1253,7 @@ struct BrowseRequest {
 }
 
 /// Whether a host's refusal says it does not serve the task asked — the signal to fall
-/// back from `rooms/records/list/0.3` to `0.1` for a host that predates it.
+/// back from `rooms/records/list/0.5` to `0.1` for a host that predates it.
 pub(super) fn not_served(e: &MemberSendError) -> bool {
     matches!(
         e,
@@ -1264,9 +1264,9 @@ pub(super) fn not_served(e: &MemberSendError) -> bool {
 
 /// `rooms/keys/browse`, at either version.
 ///
-/// Lists with `rooms/records/list/0.3` where the host serves it (0.2 *The room's prunes*),
-/// else 0.1. At 0.1 a `sinceVersion` below a prune the host reports is ignored and the whole
-/// room listed (0.2 *What changed from 0.1*): a 0.1 caller cannot be told to drop what a
+/// Lists with `rooms/records/list/0.5` where the host serves it (*The room's prunes*), else
+/// 0.1. At browse 0.1 a `sinceVersion` below a prune the host reports is ignored and the
+/// whole room listed: a 0.1 caller cannot be told to drop what a
 /// prune removed, but is at least handed the full set.
 async fn browse_at(
     state: &AppState,
@@ -1287,7 +1287,7 @@ async fn browse_at(
     }
 
     let parsed = if v2 {
-        parse_payload::<trust_tasks_rs::specs::rooms::keys::browse::v0_2::Payload>(&doc).map(|r| {
+        parse_payload::<trust_tasks_rs::specs::rooms::keys::browse::v0_3::Payload>(&doc).map(|r| {
             BrowseRequest {
                 room_id: r.room_id.to_string(),
                 host: r.host.to_string(),
@@ -1331,7 +1331,7 @@ async fn browse_at(
     let mut cursor: Option<String> = None;
     let mut head: Option<Value> = None;
     let mut complete = false;
-    // The host's `lastPrune`, exactly as served; and whether it serves list 0.3 at all.
+    // The host's `lastPrune`, exactly as served; and whether it serves list 0.5 at all.
     let mut last_prune: Option<Value> = None;
     let mut list_v3 = true;
     // A listing is read to its END, and absence of the cursor is the only thing
@@ -1354,7 +1354,7 @@ async fn browse_at(
         }
 
         let task = if list_v3 {
-            vti_rooms::wire::ROOMS_RECORDS_LIST_V3_TYPE
+            vti_rooms::wire::ROOMS_RECORDS_LIST_V5_TYPE
         } else {
             vti_rooms::wire::ROOMS_RECORDS_LIST_TYPE
         };
@@ -1370,7 +1370,7 @@ async fn browse_at(
         .await
         {
             Ok(v) => v,
-            // A host that predates list 0.3: the same listing at 0.1, with no prune to report.
+            // A host that predates list 0.5: the same listing at 0.1, with no prune to report.
             Err(e) if list_v3 && page == 0 && not_served(&e) => {
                 list_v3 = false;
                 match send_as_member(
@@ -1404,6 +1404,13 @@ async fn browse_at(
             last_prune = Some(mark.clone());
         }
 
+        // List 0.5 names the continuation token `nextCursor` (0.4); 0.1 names it `cursor`.
+        let mut reply = reply;
+        if let Some(obj) = reply.as_object_mut()
+            && let Some(next) = obj.remove("nextCursor")
+        {
+            obj.insert("cursor".into(), next);
+        }
         let listing: vti_rooms::wire::ListRecordsResponse = match serde_json::from_value(reply) {
             Ok(l) => l,
             Err(e) => {

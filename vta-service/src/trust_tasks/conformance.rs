@@ -3259,10 +3259,10 @@ fn table() -> Vec<(&'static str, Conformance)> {
             ),
         ),
         (
-            uris::TASK_ROOMS_KEYS_BROWSE_0_2,
+            uris::TASK_ROOMS_KEYS_BROWSE_0_3,
             checked!(
-                specs::rooms::keys::browse::v0_2::Payload,
-                specs::rooms::keys::browse::v0_2::Response,
+                specs::rooms::keys::browse::v0_3::Payload,
+                specs::rooms::keys::browse::v0_3::Response,
                 json!({
                     "roomId": "did:webvh:example.com:rooms:northwind",
                     "host": "did:webvh:example.com:northwind-community"
@@ -3278,7 +3278,7 @@ fn table() -> Vec<(&'static str, Conformance)> {
                         "updatedAt": "2026-01-01T00:00:00Z"
                     }],
                     "complete": true,
-                    "lastPrune": { "version": 413, "at": "2026-10-01T00:00:05Z", "removed": 14 },
+                    "lastPrune": { "version": 413, "prunedAt": "2026-10-01T00:00:05Z", "removed": 14 },
                     "verification": {
                         "priorRoots": "notChecked",
                         "anchor": "ahead",
@@ -3347,103 +3347,6 @@ fn table() -> Vec<(&'static str, Conformance)> {
             ),
         ),
         (
-            uris::TASK_ROOMS_KEYS_ACT_0_2,
-            checked!(
-                specs::rooms::keys::act::v0_2::Payload,
-                specs::rooms::keys::act::v0_2::Response,
-                json!({
-                    "document": {
-                        "id": "urn:uuid:00000000-0000-4000-8000-0000000000a1",
-                        "type": "https://trusttasks.org/spec/rooms/records/put/0.2",
-                        "recipient": "did:webvh:example.com:northwind-community",
-                        "issuedAt": "2026-01-01T00:00:00Z",
-                        "payload": {
-                            "roomId": "did:webvh:example.com:rooms:northwind",
-                            "key": "giXFLTGBdnnQJRoIsktuIg",
-                            "expectedVersion": 0
-                        }
-                    }
-                }),
-                json!({
-                    "principal": "did:webvh:example.com:people:alice",
-                    "expiresAt": "2026-01-01T01:00:01Z",
-                    "document": {
-                        "id": "urn:uuid:00000000-0000-4000-8000-0000000000a1",
-                        "type": "https://trusttasks.org/spec/rooms/records/put/0.2",
-                        "issuer": "did:webvh:example.com:people:alice",
-                        "recipient": "did:webvh:example.com:northwind-community",
-                        "issuedAt": "2026-01-01T00:00:00Z",
-                        "payload": { "roomId": "did:webvh:example.com:rooms:northwind" },
-                        "proof": { "type": "DataIntegrityProof" }
-                    }
-                })
-            ),
-        ),
-        (
-            uris::TASK_ROOMS_KEYS_ACT_0_3,
-            checked!(
-                specs::rooms::keys::act::v0_3::Payload,
-                specs::rooms::keys::act::v0_3::Response,
-                json!({
-                    "document": {
-                        "id": "urn:uuid:00000000-0000-4000-8000-0000000000a3",
-                        "type": "https://trusttasks.org/spec/vtc/rooms/offers/accept/0.1#request",
-                        "issuer": "did:webvh:example.com:people:alice",
-                        "recipient": "did:webvh:example.com:northwind-community",
-                        "issuedAt": "2026-01-01T00:10:00Z",
-                        "payload": {
-                            "roomId": "did:webvh:example.com:rooms:board",
-                            "keyPackage": "AAEAAgADAAQ"
-                        }
-                    }
-                }),
-                json!({
-                    "principal": "did:webvh:example.com:people:alice",
-                    "document": {
-                        "id": "urn:uuid:00000000-0000-4000-8000-0000000000a3",
-                        "type": "https://trusttasks.org/spec/vtc/rooms/offers/accept/0.1#request",
-                        "issuer": "did:webvh:example.com:people:alice",
-                        "recipient": "did:webvh:example.com:northwind-community",
-                        "issuedAt": "2026-01-01T00:10:00Z",
-                        "payload": {
-                            "roomId": "did:webvh:example.com:rooms:board",
-                            "keyPackage": "AAEAAgADAAQ"
-                        },
-                        "proof": { "type": "DataIntegrityProof" }
-                    }
-                })
-            ),
-        ),
-        (
-            uris::TASK_ROOMS_KEYS_ACT_0_4,
-            checked!(
-                specs::rooms::keys::act::v0_4::Payload,
-                specs::rooms::keys::act::v0_4::Response,
-                json!({
-                    "document": {
-                        "id": "urn:uuid:00000000-0000-4000-8000-0000000000a4",
-                        "type": "https://trusttasks.org/spec/vtc/rooms/offers/list/0.2#request",
-                        "issuer": "did:webvh:example.com:people:alice",
-                        "recipient": "did:webvh:example.com:northwind-community",
-                        "issuedAt": "2026-01-01T00:09:00Z",
-                        "payload": {}
-                    }
-                }),
-                json!({
-                    "principal": "did:webvh:example.com:people:alice",
-                    "document": {
-                        "id": "urn:uuid:00000000-0000-4000-8000-0000000000a4",
-                        "type": "https://trusttasks.org/spec/vtc/rooms/offers/list/0.2#request",
-                        "issuer": "did:webvh:example.com:people:alice",
-                        "recipient": "did:webvh:example.com:northwind-community",
-                        "issuedAt": "2026-01-01T00:09:00Z",
-                        "payload": {},
-                        "proof": { "type": "DataIntegrityProof" }
-                    }
-                })
-            ),
-        ),
-        (
             uris::TASK_ROOMS_KEYS_ACT_0_5,
             checked!(
                 specs::rooms::keys::act::v0_5::Payload,
@@ -3473,14 +3376,14 @@ fn table() -> Vec<(&'static str, Conformance)> {
             ),
         ),
         (
-            uris::TASK_ROOMS_KEYS_ACT_0_6,
+            uris::TASK_ROOMS_KEYS_ACT_0_8,
             checked!(
-                specs::rooms::keys::act::v0_6::Payload,
-                specs::rooms::keys::act::v0_6::Response,
+                specs::rooms::keys::act::v0_8::Payload,
+                specs::rooms::keys::act::v0_8::Response,
                 json!({
                     "document": {
                         "id": "urn:uuid:00000000-0000-4000-8000-0000000000a6",
-                        "type": "https://trusttasks.org/spec/vtc/rooms/offers/list/0.3#request",
+                        "type": "https://trusttasks.org/spec/vtc/rooms/offers/list/0.4#request",
                         "issuer": "did:webvh:example.com:people:alice",
                         "recipient": "did:webvh:example.com:northwind-community",
                         "issuedAt": "2026-01-01T00:11:00Z",
@@ -3491,7 +3394,7 @@ fn table() -> Vec<(&'static str, Conformance)> {
                     "principal": "did:webvh:example.com:people:alice",
                     "document": {
                         "id": "urn:uuid:00000000-0000-4000-8000-0000000000a6",
-                        "type": "https://trusttasks.org/spec/vtc/rooms/offers/list/0.3#request",
+                        "type": "https://trusttasks.org/spec/vtc/rooms/offers/list/0.4#request",
                         "issuer": "did:webvh:example.com:people:alice",
                         "recipient": "did:webvh:example.com:northwind-community",
                         "issuedAt": "2026-01-01T00:11:00Z",
@@ -3611,26 +3514,6 @@ fn table() -> Vec<(&'static str, Conformance)> {
                 }),
                 json!({ "credential": "eyJhbGciOiJFZERTQSJ9.room-credential",
                     "credentialId": "urn:uuid:11111111-1111-4111-8111-111111111111" })
-            ),
-        ),
-        (
-            uris::TASK_ROOMS_OWNER_REGISTER_0_1,
-            checked!(
-                specs::rooms::owner::register::v0_1::Payload,
-                specs::rooms::owner::register::v0_1::Response,
-                json!({
-                    "roomId": "did:webvh:example.com:rooms:northwind",
-                    "host": "did:webvh:example.com:northwind-community",
-                    "visibility": "private",
-                    "retentionDays": 90
-                }),
-                // `host` echoed, per the specification: a caller records where
-                // its room actually landed rather than where it asked for.
-                json!({
-                    "roomId": "did:webvh:example.com:rooms:northwind",
-                    "host": "did:webvh:example.com:northwind-community",
-                    "epoch": 1
-                })
             ),
         ),
         (

@@ -1,4 +1,5 @@
-//! Acting **as** the member — `rooms/keys/act/{0.1,0.2,0.3,0.4}` and `rooms/keys/seal/0.2`.
+//! Acting **as** the member — `rooms/keys/act` at 0.1, 0.5 and 0.8, and `rooms/keys/seal/0.2`.
+//! 0.1 and 0.5 are served because `pnm-browser-plugin` sends them; 0.8 is the current version.
 //!
 //! The member's own client (a `pnm` session, a wallet extension, a phone) holds no key of
 //! the persona the room admitted. These two tasks are how it writes and reads as that
@@ -23,18 +24,19 @@
 //!    ([`crate::operations::persona`]) — a DID this VTA holds in a context the caller acts
 //!    in — holding the room's credentials.
 //!
-//! # The subject (`rooms/keys/act/0.2`)
+//! # The subject (0.2 onward)
 //!
-//! 0.2's `subjectPath` is `/document/issuer`: the member, never the room. Where `issuer`
+//! From 0.2 `subjectPath` is `/document/issuer`: the member, never the room. Where `issuer`
 //! is absent (a type that names a room, a caller who may act as exactly one of its
 //! members) the subject is the member recipient item 2 resolves — [`act_subject`] for the
 //! policy gate, which runs before this handler, and the completed document's `issuer` for
 //! the audit row. 0.1 keeps the room as its row's resource, as it always has.
 //!
-//! # A community's offer (`rooms/keys/act/0.3`)
+//! # A community's types (0.3 onward)
 //!
-//! 0.3 adds `vtc/rooms/offers/{list,accept}/0.1`: a member's reply to a community's offer of
-//! a room, signed as the DID the offer is addressed to. No presentation is inserted and no
+//! A member's reply to a community's offer of a room, and its record of the member's
+//! admissions ([`room_act::COMMUNITY_TYPES`] at 0.5, [`room_act::COMMUNITY_TYPES_0_8`] at
+//! 0.8), signed as the DID the offer is addressed to. No presentation is inserted and no
 //! room credential is required — the member is not in the room yet — so the member is the
 //! named `issuer`, acted as only where this VTA holds a key its DID document lists for
 //! `authentication` and the caller may act as it (recipient item 2b). An acceptance's
@@ -42,12 +44,11 @@
 //! holds its private half (item 10, `keyPackageNotHeld`): a KeyPackage minted anywhere else
 //! would become the member's leaf with keys somebody else holds.
 //!
-//! # The offer listing with descriptions (`rooms/keys/act/0.4`)
+//! # The widened table (0.7, 0.8)
 //!
-//! 0.4 adds `vtc/rooms/offers/list/0.2` — the listing that shows each offered room's
-//! description — in the same row as `0.1` and on the same terms
-//! ([`room_act::OFFER_TYPES_0_4`]). Nothing else changes. 0.3's table stays closed: a 0.3
-//! request wrapping a `0.2` listing is `typeNotActable`, as 0.3 recipient item 1 requires.
+//! 0.8 completes 0.6's host-bound types and the newer versions 0.7 adds, and the room's
+//! retention requests as `admin` with a presentation ([`room_act::ACT_TABLE_0_8`]). Each
+//! version's table is closed: 0.1 and 0.5 refuse them `typeNotActable`.
 
 use chrono::Utc;
 use serde_json::Value;
@@ -160,32 +161,34 @@ pub(super) async fn act_subject(
     }
 }
 
-/// Which `rooms/keys/act` is being answered. 0.2 names the member as the subject, which
-/// this VTA records as the audit row's resource; 0.3 also completes the offer types
-/// ([`room_act::OFFER_TYPES`]), which 0.1 and 0.2's schema refuses; 0.4 also
-/// `vtc/rooms/offers/list/0.2` ([`room_act::OFFER_TYPES_0_4`]), which 0.3's table refuses;
-/// 0.5 also `vtc/rooms/memberships/list/0.1` ([`room_act::COMMUNITY_TYPES`]), which 0.4's
-/// schema refuses; 0.6 also `vtc/rooms/offers/list/0.3` ([`room_act::COMMUNITY_TYPES_0_6`]),
-/// which 0.5's table refuses.
+/// Which `rooms/keys/act` is being answered. Each version's table is closed (recipient
+/// item 1): 0.1 completes [`room_act::ACT_TABLE`] and no community type; 0.5 the same
+/// host-bound table and [`room_act::COMMUNITY_TYPES`]; 0.8 the widened
+/// [`room_act::ACT_TABLE_0_8`] and [`room_act::COMMUNITY_TYPES_0_8`]. 0.1 and 0.5 are kept
+/// because `pnm-browser-plugin` (`@openvtc/pnm-core`) sends them; 0.2–0.4, 0.6 and 0.7
+/// are not served.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ActVersion {
     V0_1,
-    V0_2,
-    V0_3,
-    V0_4,
     V0_5,
-    V0_6,
+    V0_8,
 }
 
 impl ActVersion {
     /// Whether this version completes `type_uri` as one of the community's types.
     fn completes_community_type(self, type_uri: &str) -> bool {
         match self {
-            Self::V0_1 | Self::V0_2 => false,
-            Self::V0_3 => room_act::is_offer_type(type_uri),
-            Self::V0_4 => room_act::is_offer_type_0_4(type_uri),
+            Self::V0_1 => false,
             Self::V0_5 => room_act::is_community_type(type_uri),
-            Self::V0_6 => room_act::is_community_type_0_6(type_uri),
+            Self::V0_8 => room_act::is_community_type_0_8(type_uri),
+        }
+    }
+
+    /// This version's row for a host-bound `type_uri`.
+    fn actable(self, type_uri: &str) -> Option<Option<&'static str>> {
+        match self {
+            Self::V0_1 | Self::V0_5 => room_act::actable(type_uri),
+            Self::V0_8 => room_act::actable_0_8(type_uri),
         }
     }
 }
@@ -199,39 +202,6 @@ pub(super) async fn handle_act(
     act_at(state, auth, doc, ActVersion::V0_1).await
 }
 
-/// `rooms/keys/act/0.2`: 0.1, with the member as the task's subject. For a type that
-/// names no room the member is `issuer`, required and never picked here (recipient item
-/// 2a) — which 0.1 already did in this VTA.
-pub(super) async fn handle_act_v0_2(
-    state: &AppState,
-    auth: &AuthClaims,
-    doc: TrustTask<Value>,
-) -> TrustTaskOutcome {
-    act_at(state, auth, doc, ActVersion::V0_2).await
-}
-
-/// `rooms/keys/act/0.3`: 0.2, and a member's reply to a community's offer of a room —
-/// `vtc/rooms/offers/{list,accept}/0.1` — completed as the DID the offer is addressed to
-/// (recipient item 2b), an acceptance only with a KeyPackage this VTA minted (item 10).
-pub(super) async fn handle_act_v0_3(
-    state: &AppState,
-    auth: &AuthClaims,
-    doc: TrustTask<Value>,
-) -> TrustTaskOutcome {
-    act_at(state, auth, doc, ActVersion::V0_3).await
-}
-
-/// `rooms/keys/act/0.4`: 0.3, with `vtc/rooms/offers/list/0.2` in the offer row beside
-/// `0.1` — the listing that shows each offered room's description, completed on the same
-/// terms (trust-tasks-tf #810).
-pub(super) async fn handle_act_v0_4(
-    state: &AppState,
-    auth: &AuthClaims,
-    doc: TrustTask<Value>,
-) -> TrustTaskOutcome {
-    act_at(state, auth, doc, ActVersion::V0_4).await
-}
-
 /// `rooms/keys/act/0.5`: 0.4, and `vtc/rooms/memberships/list/0.1` — the member's own read
 /// of where each admission stands, which every surface shows alike. An acceptance's
 /// KeyPackage is one minted by `rooms/keys/key-package` at 0.1 or 0.2 (item 10).
@@ -243,15 +213,16 @@ pub(super) async fn handle_act_v0_5(
     act_at(state, auth, doc, ActVersion::V0_5).await
 }
 
-/// `rooms/keys/act/0.6`: 0.5, with `vtc/rooms/offers/list/0.3` in the offer row beside `0.1`
-/// and `0.2` — the listing that also carries the renewals of the admissions a member holds,
-/// completed on the same terms (trust-tasks-tf #843).
-pub(super) async fn handle_act_v0_6(
+/// `rooms/keys/act/0.8`: 0.6's request and response, with the table widened by 0.7
+/// (`vtc/rooms/offers/list/0.4`, `rooms/records/put/0.3`, `rooms/records/list/0.3`–`0.5`,
+/// `rooms/info/0.2`–`0.3`, `rooms/epoch/chain/0.2`) and 0.8 (`rooms/records/prune/0.1`
+/// and `0.2`, `rooms/records/retention/set/0.1`, each `admin` with a presentation).
+pub(super) async fn handle_act_v0_8(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    act_at(state, auth, doc, ActVersion::V0_6).await
+    act_at(state, auth, doc, ActVersion::V0_8).await
 }
 
 /// `rooms/keys/act`, at any version. The request is checked against the asked version's
@@ -264,7 +235,7 @@ async fn act_at(
     doc: TrustTask<Value>,
     at: ActVersion,
 ) -> TrustTaskOutcome {
-    use trust_tasks_rs::specs::rooms::keys::act::v0_6 as spec;
+    use trust_tasks_rs::specs::rooms::keys::act::v0_8 as spec;
 
     if let Err(r) = super::helpers::require_capability(
         state,
@@ -281,24 +252,11 @@ async fn act_at(
         return r;
     }
 
-    let narrower = match at {
-        ActVersion::V0_1 | ActVersion::V0_2 => {
-            parse_payload::<trust_tasks_rs::specs::rooms::keys::act::v0_2::Payload>(&doc).err()
-        }
-        ActVersion::V0_3 => {
-            parse_payload::<trust_tasks_rs::specs::rooms::keys::act::v0_3::Payload>(&doc).err()
-        }
-        ActVersion::V0_4 => {
-            parse_payload::<trust_tasks_rs::specs::rooms::keys::act::v0_4::Payload>(&doc).err()
-        }
-        ActVersion::V0_5 | ActVersion::V0_6 => None,
-    };
-    if let Some(resp) = narrower {
-        return resp;
-    }
-    if at == ActVersion::V0_3
+    // 0.1's schema refuses the community types; 0.5's and 0.8's are the same as each other
+    // but for their tables, which item 1 below applies.
+    if at == ActVersion::V0_1
         && let Err(resp) =
-            parse_payload::<trust_tasks_rs::specs::rooms::keys::act::v0_3::Payload>(&doc)
+            parse_payload::<trust_tasks_rs::specs::rooms::keys::act::v0_1::Payload>(&doc)
     {
         return resp;
     }
@@ -319,7 +277,7 @@ async fn act_at(
     let Some(action) = (if offer {
         Some(None)
     } else {
-        room_act::actable(type_uri)
+        at.actable(type_uri)
     }) else {
         return reject_with_code(
             &doc,
@@ -523,11 +481,7 @@ async fn act_at(
     let bare = room_act::bare_type(type_uri);
     let (resource, detail) = match at {
         ActVersion::V0_1 => (room_id.clone(), format!("type={bare}")),
-        ActVersion::V0_2
-        | ActVersion::V0_3
-        | ActVersion::V0_4
-        | ActVersion::V0_5
-        | ActVersion::V0_6 => (
+        ActVersion::V0_5 | ActVersion::V0_8 => (
             Some(principal.clone()),
             match &room_id {
                 Some(room) => format!("type={bare} roomId={room}"),
@@ -562,23 +516,11 @@ async fn act_at(
             trust_tasks_rs::specs::rooms::keys::act::v0_1::Response,
         >(response)
         .and_then(serde_json::to_value),
-        ActVersion::V0_2 => serde_json::from_value::<
-            trust_tasks_rs::specs::rooms::keys::act::v0_2::Response,
-        >(response)
-        .and_then(serde_json::to_value),
-        ActVersion::V0_3 => serde_json::from_value::<
-            trust_tasks_rs::specs::rooms::keys::act::v0_3::Response,
-        >(response)
-        .and_then(serde_json::to_value),
-        ActVersion::V0_4 => serde_json::from_value::<
-            trust_tasks_rs::specs::rooms::keys::act::v0_4::Response,
-        >(response)
-        .and_then(serde_json::to_value),
         ActVersion::V0_5 => serde_json::from_value::<
             trust_tasks_rs::specs::rooms::keys::act::v0_5::Response,
         >(response)
         .and_then(serde_json::to_value),
-        ActVersion::V0_6 => {
+        ActVersion::V0_8 => {
             serde_json::from_value::<spec::Response>(response).and_then(serde_json::to_value)
         }
     };
@@ -604,7 +546,7 @@ async fn complete_offer(
     room_id: Option<&str>,
     document: Value,
 ) -> Result<room_act::Completed, TrustTaskOutcome> {
-    use trust_tasks_rs::specs::rooms::keys::act::v0_4::error_codes as codes;
+    use trust_tasks_rs::specs::rooms::keys::act::v0_8::error_codes as codes;
 
     // Item 2b: the named `issuer`, never one picked for the caller — not the only persona
     // held, not one inferred from the offer.
@@ -978,15 +920,13 @@ mod tests {
     use crate::operations::room_oracle::{AUTHORITY_TYPE, MEMBERSHIP_TYPE};
 
     const ACT: &str = vta_sdk::trust_tasks::TASK_ROOMS_KEYS_ACT_0_1;
-    const ACT_0_2: &str = vta_sdk::trust_tasks::TASK_ROOMS_KEYS_ACT_0_2;
-    const ACT_0_3: &str = vta_sdk::trust_tasks::TASK_ROOMS_KEYS_ACT_0_3;
-    const ACT_0_4: &str = vta_sdk::trust_tasks::TASK_ROOMS_KEYS_ACT_0_4;
     const OFFERS_LIST: &str = "https://trusttasks.org/spec/vtc/rooms/offers/list/0.1";
     const OFFERS_LIST_0_2: &str = "https://trusttasks.org/spec/vtc/rooms/offers/list/0.2";
     const MEMBERSHIPS_LIST: &str = "https://trusttasks.org/spec/vtc/rooms/memberships/list/0.1";
     const ACT_0_5: &str = vta_sdk::trust_tasks::TASK_ROOMS_KEYS_ACT_0_5;
-    const ACT_0_6: &str = vta_sdk::trust_tasks::TASK_ROOMS_KEYS_ACT_0_6;
+    const ACT_0_8: &str = vta_sdk::trust_tasks::TASK_ROOMS_KEYS_ACT_0_8;
     const OFFERS_LIST_0_3: &str = "https://trusttasks.org/spec/vtc/rooms/offers/list/0.3";
+    const OFFERS_LIST_0_4: &str = "https://trusttasks.org/spec/vtc/rooms/offers/list/0.4";
     const OFFERS_ACCEPT: &str = "https://trusttasks.org/spec/vtc/rooms/offers/accept/0.1";
     const COMMUNITY: &str = "did:webvh:example.com:northwind-community";
     const SEAL: &str = vta_sdk::trust_tasks::TASK_ROOMS_KEYS_SEAL_0_2;
@@ -1147,28 +1087,6 @@ mod tests {
         body(handle_act(state, auth, request(ACT, json!({ "document": document }))).await)
     }
 
-    async fn act_v0_3(state: &AppState, auth: &AuthClaims, document: Value) -> Value {
-        body(
-            handle_act_v0_3(
-                state,
-                auth,
-                request(ACT_0_3, json!({ "document": document })),
-            )
-            .await,
-        )
-    }
-
-    async fn act_v0_4(state: &AppState, auth: &AuthClaims, document: Value) -> Value {
-        body(
-            handle_act_v0_4(
-                state,
-                auth,
-                request(ACT_0_4, json!({ "document": document })),
-            )
-            .await,
-        )
-    }
-
     async fn act_v0_5(state: &AppState, auth: &AuthClaims, document: Value) -> Value {
         body(
             handle_act_v0_5(
@@ -1180,12 +1098,12 @@ mod tests {
         )
     }
 
-    async fn act_v0_6(state: &AppState, auth: &AuthClaims, document: Value) -> Value {
+    async fn act_v0_8(state: &AppState, auth: &AuthClaims, document: Value) -> Value {
         body(
-            handle_act_v0_6(
+            handle_act_v0_8(
                 state,
                 auth,
-                request(ACT_0_6, json!({ "document": document })),
+                request(ACT_0_8, json!({ "document": document })),
             )
             .await,
         )
@@ -1223,7 +1141,7 @@ mod tests {
     /// presentation inserted and no room credential needed — the member is not in the room
     /// yet — signed for `authentication`. The document goes back otherwise unchanged.
     #[tokio::test]
-    async fn act_0_3_completes_an_offer_type_as_its_issuer_without_a_presentation() {
+    async fn act_0_8_completes_an_offer_type_as_its_issuer_without_a_presentation() {
         let f = fixture(&["read"]).await;
         let board = Party::new(); // a room alice holds nothing from
         for (type_uri, payload) in [
@@ -1231,7 +1149,7 @@ mod tests {
             (OFFERS_ACCEPT, json!({ "roomId": board.did })),
         ] {
             let document = offer(type_uri, Some(&f.alice.did), payload.clone());
-            let out = act_v0_3(&f.state, &alice_client(), document.clone()).await;
+            let out = act_v0_8(&f.state, &alice_client(), document.clone()).await;
             assert_eq!(
                 out["payload"]["principal"], f.alice.did,
                 "{type_uri}: {out}"
@@ -1246,7 +1164,7 @@ mod tests {
                 "{out}"
             );
             assert!(out["payload"].get("expiresAt").is_none(), "{out}");
-            serde_json::from_value::<trust_tasks_rs::specs::rooms::keys::act::v0_3::Response>(
+            serde_json::from_value::<trust_tasks_rs::specs::rooms::keys::act::v0_8::Response>(
                 out["payload"].clone(),
             )
             .expect("a 0.3 response");
@@ -1258,7 +1176,7 @@ mod tests {
     /// act as exactly one persona. A DID the caller may not act as, or one this VTA holds no
     /// `authentication` key for, is `issuerNotPrincipal`.
     #[tokio::test]
-    async fn act_0_3_an_offer_type_is_completed_only_as_a_named_issuer_the_caller_acts_as() {
+    async fn act_0_8_an_offer_type_is_completed_only_as_a_named_issuer_the_caller_acts_as() {
         let f = fixture(&["read"]).await;
         for type_uri in [OFFERS_LIST, OFFERS_ACCEPT] {
             let payload = if type_uri == OFFERS_LIST {
@@ -1266,7 +1184,7 @@ mod tests {
             } else {
                 json!({ "roomId": f.room.did })
             };
-            let out = act_v0_3(
+            let out = act_v0_8(
                 &f.state,
                 &alice_client(),
                 offer(type_uri, None, payload.clone()),
@@ -1274,7 +1192,7 @@ mod tests {
             .await;
             assert_eq!(code(&out), "rooms/keys/act:principalAmbiguous", "{out}");
 
-            let out = act_v0_3(
+            let out = act_v0_8(
                 &f.state,
                 &alice_client(),
                 offer(type_uri, Some(&f.bob.did), payload.clone()),
@@ -1284,7 +1202,7 @@ mod tests {
             assert_eq!(out["payload"]["details"]["issuer"], f.bob.did, "{out}");
 
             let stranger = Party::new().did;
-            let out = act_v0_3(
+            let out = act_v0_8(
                 &f.state,
                 &alice_client(),
                 offer(type_uri, Some(&stranger), payload),
@@ -1334,18 +1252,19 @@ mod tests {
     /// completed as its named `issuer`, with nothing inserted, and the response is 0.6's.
     /// `issuer` is still required, and never picked.
     #[tokio::test]
-    async fn act_0_6_completes_every_community_type_as_its_issuer() {
+    async fn act_0_8_completes_every_community_type_as_its_issuer() {
         let f = fixture(&["read"]).await;
         let board = Party::new();
         for (type_uri, payload) in [
             (OFFERS_LIST, json!({})),
             (OFFERS_LIST_0_2, json!({})),
             (OFFERS_LIST_0_3, json!({ "limit": 10 })),
+            (OFFERS_LIST_0_4, json!({ "limit": 10 })),
             (MEMBERSHIPS_LIST, json!({ "limit": 10 })),
             (OFFERS_ACCEPT, json!({ "roomId": board.did })),
         ] {
             let document = offer(type_uri, Some(&f.alice.did), payload.clone());
-            let out = act_v0_6(&f.state, &alice_client(), document.clone()).await;
+            let out = act_v0_8(&f.state, &alice_client(), document.clone()).await;
             assert_eq!(
                 out["payload"]["principal"], f.alice.did,
                 "{type_uri}: {out}"
@@ -1357,72 +1276,64 @@ mod tests {
                 completed["proof"]["proofPurpose"], "authentication",
                 "{out}"
             );
-            serde_json::from_value::<trust_tasks_rs::specs::rooms::keys::act::v0_6::Response>(
+            serde_json::from_value::<trust_tasks_rs::specs::rooms::keys::act::v0_8::Response>(
                 out["payload"].clone(),
             )
-            .expect("a 0.6 response");
+            .expect("a 0.8 response");
 
-            let out = act_v0_6(&f.state, &alice_client(), offer(type_uri, None, payload)).await;
+            let out = act_v0_8(&f.state, &alice_client(), offer(type_uri, None, payload)).await;
             assert_eq!(code(&out), "rooms/keys/act:principalAmbiguous", "{out}");
         }
     }
 
-    /// 0.5 and below do not complete `offers/list/0.3`: 0.5's table is closed at
-    /// `offers/list` 0.1 and 0.2, so it is `typeNotActable` there, and refused below it.
+    /// 0.5 and 0.1 do not complete `offers/list/0.3`: 0.5's table is closed at
+    /// `offers/list` 0.1 and 0.2, so it is `typeNotActable` there; 0.1's schema refuses it.
     #[tokio::test]
-    async fn act_0_5_and_below_do_not_complete_offers_list_0_3() {
+    async fn act_0_5_and_0_1_do_not_complete_offers_list_0_3() {
         let f = fixture(&["read"]).await;
         let document = offer(OFFERS_LIST_0_3, Some(&f.alice.did), json!({}));
         let out = act_v0_5(&f.state, &alice_client(), document.clone()).await;
         assert_eq!(code(&out), "rooms/keys/act:typeNotActable", "{out}");
-        for out in [
-            act_v0_3(&f.state, &alice_client(), document.clone()).await,
-            act_v0_4(&f.state, &alice_client(), document).await,
-        ] {
-            assert!(out["payload"].get("principal").is_none(), "{out}");
-            assert!(!code(&out).is_empty(), "{out}");
-        }
-    }
-
-    /// 0.3 and 0.4 do not complete `memberships/list`, which their schema's `type` pattern
-    /// refuses.
-    #[tokio::test]
-    async fn act_0_3_and_0_4_do_not_complete_memberships() {
-        let f = fixture(&["read"]).await;
-        let document = offer(MEMBERSHIPS_LIST, Some(&f.alice.did), json!({}));
-        for out in [
-            act_v0_3(&f.state, &alice_client(), document.clone()).await,
-            act_v0_4(&f.state, &alice_client(), document).await,
-        ] {
-            assert!(out["payload"].get("principal").is_none(), "{out}");
-            assert!(!code(&out).is_empty(), "{out}");
-        }
-    }
-
-    /// 0.1 and 0.2 do not complete the offer types: their schema refuses the `type`.
-    #[tokio::test]
-    async fn act_0_2_does_not_complete_an_offer_type() {
-        let f = fixture(&["read"]).await;
-        let document = offer(OFFERS_LIST, Some(&f.alice.did), json!({}));
-        for out in [
-            act_v0_2(&f.state, &alice_client(), document.clone()).await,
-            act(&f.state, &alice_client(), document.clone()).await,
-        ] {
-            assert!(out["payload"].get("principal").is_none(), "{out}");
-            assert!(!code(&out).is_empty(), "{out}");
-        }
-        // And at 0.3 an administrator's task is still not actable: only the offer types are.
-        let out = act_v0_3(
-            &f.state,
-            &alice_client(),
-            offer(
-                "https://trusttasks.org/spec/vtc/rooms/community/members/add/0.1",
-                Some(&f.alice.did),
-                json!({ "roomId": f.room.did, "member": f.bob.did }),
-            ),
-        )
-        .await;
+        // And 0.1, whose schema admits no community type at all.
+        let out = act(&f.state, &alice_client(), document).await;
         assert!(out["payload"].get("principal").is_none(), "{out}");
+        assert!(!code(&out).is_empty(), "{out}");
+    }
+
+    /// 0.8's table adds the newer host-bound versions (`rooms/info/0.3` here, `read`) and the
+    /// retention requests (`rooms/records/prune/0.2`, `admin`); 0.5's and 0.1's closed table
+    /// refuses both, and 0.8 narrows a prune to `admin`, which a reader does not hold.
+    #[tokio::test]
+    async fn act_0_8_completes_the_newer_host_bound_versions_and_0_5_does_not() {
+        let f = fixture(&["read"]).await;
+        let info = unsigned(
+            vti_rooms::wire::ROOMS_INFO_V3_TYPE,
+            "did:key:zHost",
+            json!({ "roomId": f.room.did }),
+        );
+        let out = act_v0_8(&f.state, &alice_client(), info.clone()).await;
+        assert_eq!(out["payload"]["principal"], f.alice.did, "{out}");
+        assert!(
+            out["payload"]["document"]["payload"]["presentation"].is_object(),
+            "{out}"
+        );
+        for out in [
+            act_v0_5(&f.state, &alice_client(), info.clone()).await,
+            act(&f.state, &alice_client(), info).await,
+        ] {
+            assert_eq!(code(&out), "rooms/keys/act:typeNotActable", "{out}");
+        }
+
+        let prune = unsigned(
+            vti_rooms::wire::ROOMS_RECORDS_PRUNE_V2_TYPE,
+            "did:key:zHost",
+            json!({ "roomId": f.room.did, "kinds": ["retracted"], "reason": "agreed" }),
+        );
+        let out = act_v0_8(&f.state, &alice_client(), prune.clone()).await;
+        assert_eq!(code(&out), "rooms/keys/act:actionNotHeld", "{out}");
+        assert_eq!(out["payload"]["details"]["action"], "admin", "{out}");
+        let out = act_v0_5(&f.state, &alice_client(), prune).await;
+        assert_eq!(code(&out), "rooms/keys/act:typeNotActable", "{out}");
     }
 
     /// Recipient item 10: an acceptance's `keyPackage` is completed only when this VTA
@@ -1431,7 +1342,7 @@ mod tests {
     /// for another room or another member, one already used by a Welcome, and one expired
     /// are all `keyPackageNotHeld`, and nothing is signed.
     #[tokio::test]
-    async fn act_0_3_an_acceptance_carries_only_a_key_package_this_vta_minted() {
+    async fn act_0_8_an_acceptance_carries_only_a_key_package_this_vta_minted() {
         let f = fixture(&["read"]).await;
         let board = Party::new().did;
         let accept = |kp: &str| {
@@ -1449,26 +1360,26 @@ mod tests {
         // Foreign: made by somebody else, its leaf naming alice.
         let (_, foreign) = vti_rooms::mls::IdentitySnapshot::mint(&f.alice.did).unwrap();
         let foreign = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(foreign);
-        not_held(&act_v0_3(&f.state, &alice_client(), accept(&foreign)).await);
+        not_held(&act_v0_8(&f.state, &alice_client(), accept(&foreign)).await);
         // Not a KeyPackage at all.
-        not_held(&act_v0_3(&f.state, &alice_client(), accept("AAEAAgADAAQ")).await);
+        not_held(&act_v0_8(&f.state, &alice_client(), accept("AAEAAgADAAQ")).await);
 
         // Minted here, for another room.
         let other_room = minted(&f, &Party::new().did, &f.alice.did, 3600, unix_now()).await;
-        not_held(&act_v0_3(&f.state, &alice_client(), accept(&other_room)).await);
+        not_held(&act_v0_8(&f.state, &alice_client(), accept(&other_room)).await);
 
         // Minted here, for this room, for another member.
         let bobs = minted(&f, &board, &f.bob.did, 3600, unix_now()).await;
-        not_held(&act_v0_3(&f.state, &alice_client(), accept(&bobs)).await);
+        not_held(&act_v0_8(&f.state, &alice_client(), accept(&bobs)).await);
 
         // Expired.
         let expired = minted(&f, &board, &f.alice.did, 60, unix_now() - 120).await;
-        not_held(&act_v0_3(&f.state, &alice_client(), accept(&expired)).await);
+        not_held(&act_v0_8(&f.state, &alice_client(), accept(&expired)).await);
 
         // Held: completed — and still held, so a retry after a lost answer completes again.
         let held = minted(&f, &board, &f.alice.did, 3600, unix_now()).await;
         for _ in 0..2 {
-            let out = act_v0_3(&f.state, &alice_client(), accept(&held)).await;
+            let out = act_v0_8(&f.state, &alice_client(), accept(&held)).await;
             assert_eq!(out["payload"]["principal"], f.alice.did, "{out}");
             assert_eq!(
                 out["payload"]["document"]["payload"]["keyPackage"], held,
@@ -1493,14 +1404,14 @@ mod tests {
         )
         .await
         .expect("joins");
-        not_held(&act_v0_3(&f.state, &alice_client(), accept(&held)).await);
+        not_held(&act_v0_8(&f.state, &alice_client(), accept(&held)).await);
     }
 
     /// An open room's acceptance carries no KeyPackage, and item 10 has nothing to check.
     #[tokio::test]
-    async fn act_0_3_an_open_rooms_acceptance_needs_no_key_package() {
+    async fn act_0_8_an_open_rooms_acceptance_needs_no_key_package() {
         let f = fixture(&["read"]).await;
-        let out = act_v0_3(
+        let out = act_v0_8(
             &f.state,
             &alice_client(),
             offer(
@@ -1513,37 +1424,16 @@ mod tests {
         assert_eq!(out["payload"]["principal"], f.alice.did, "{out}");
     }
 
-    /// 0.3 completes a host-bound room request as 0.2 did.
-    #[tokio::test]
-    async fn act_0_3_completes_a_room_request_as_0_2_did() {
-        let f = fixture(&["read"]).await;
-        let out = act_v0_3(
-            &f.state,
-            &alice_client(),
-            unsigned(
-                vti_rooms::wire::ROOMS_RECORDS_GET_V2_TYPE,
-                "did:key:zHost",
-                json!({ "roomId": f.room.did, "key": KEY }),
-            ),
-        )
-        .await;
-        assert_eq!(out["payload"]["principal"], f.alice.did, "{out}");
-        assert!(
-            out["payload"]["document"]["payload"]["presentation"].is_object(),
-            "{out}"
-        );
-    }
-
     /// `rooms/keys/act/0.4` adds `vtc/rooms/offers/list/0.2` to the offer row, on 0.1's
     /// terms: completed as its named `issuer`, nothing inserted, signed for
     /// `authentication`, answered as a 0.4 response.
     #[tokio::test]
-    async fn act_0_4_completes_offers_list_0_2_as_its_issuer_without_a_presentation() {
+    async fn act_0_8_completes_offers_list_0_2_as_its_issuer_without_a_presentation() {
         let f = fixture(&["read"]).await;
         let document = offer(OFFERS_LIST_0_2, Some(&f.alice.did), json!({}));
-        let out = act_v0_4(&f.state, &alice_client(), document.clone()).await;
+        let out = act_v0_8(&f.state, &alice_client(), document.clone()).await;
         assert!(
-            out["type"].as_str().is_some_and(|t| t.starts_with(ACT_0_4)),
+            out["type"].as_str().is_some_and(|t| t.starts_with(ACT_0_8)),
             "{out}"
         );
         assert_eq!(out["payload"]["principal"], f.alice.did, "{out}");
@@ -1558,110 +1448,26 @@ mod tests {
             "{out}"
         );
         assert!(out["payload"].get("expiresAt").is_none(), "{out}");
-        serde_json::from_value::<trust_tasks_rs::specs::rooms::keys::act::v0_4::Response>(
+        serde_json::from_value::<trust_tasks_rs::specs::rooms::keys::act::v0_8::Response>(
             out["payload"].clone(),
         )
         .expect("a 0.4 response");
 
         // Recipient item 2b holds for it as for 0.1: named, and only a DID the caller acts as.
-        let out = act_v0_4(
+        let out = act_v0_8(
             &f.state,
             &alice_client(),
             offer(OFFERS_LIST_0_2, None, json!({})),
         )
         .await;
         assert_eq!(code(&out), "rooms/keys/act:principalAmbiguous", "{out}");
-        let out = act_v0_4(
+        let out = act_v0_8(
             &f.state,
             &alice_client(),
             offer(OFFERS_LIST_0_2, Some(&f.bob.did), json!({})),
         )
         .await;
         assert_eq!(code(&out), "rooms/keys/act:issuerNotPrincipal", "{out}");
-    }
-
-    /// `rooms/keys/act/0.3`'s table is closed (recipient item 1): a `vtc/rooms/offers/list/0.2`
-    /// it wraps is `typeNotActable`, `details.type` repeating it, and nothing is signed —
-    /// although the same VTA completes it at 0.4.
-    #[tokio::test]
-    async fn act_0_3_refuses_offers_list_0_2_as_not_actable() {
-        let f = fixture(&["read"]).await;
-        let document = offer(OFFERS_LIST_0_2, Some(&f.alice.did), json!({}));
-        let out = act_v0_3(&f.state, &alice_client(), document).await;
-        assert_eq!(code(&out), "rooms/keys/act:typeNotActable", "{out}");
-        assert_eq!(out["payload"]["details"]["type"], OFFERS_LIST_0_2, "{out}");
-        assert!(out["payload"].get("document").is_none(), "{out}");
-        assert!(out["payload"].get("principal").is_none(), "{out}");
-
-        // And 0.1 / 0.2, whose schema admits no offer type at all.
-        let document = offer(OFFERS_LIST_0_2, Some(&f.alice.did), json!({}));
-        for out in [
-            act_v0_2(&f.state, &alice_client(), document.clone()).await,
-            act(&f.state, &alice_client(), document).await,
-        ] {
-            assert!(out["payload"].get("principal").is_none(), "{out}");
-            assert!(!code(&out).is_empty(), "{out}");
-        }
-    }
-
-    /// 0.4 completes everything 0.3 does: the 0.1 listing, an acceptance, and a host-bound
-    /// room request with its presentation.
-    #[tokio::test]
-    async fn act_0_4_completes_what_0_3_does() {
-        let f = fixture(&["read"]).await;
-        for (type_uri, payload) in [
-            (OFFERS_LIST, json!({})),
-            (OFFERS_ACCEPT, json!({ "roomId": Party::new().did })),
-        ] {
-            let out = act_v0_4(
-                &f.state,
-                &alice_client(),
-                offer(type_uri, Some(&f.alice.did), payload),
-            )
-            .await;
-            assert_eq!(
-                out["payload"]["principal"], f.alice.did,
-                "{type_uri}: {out}"
-            );
-        }
-        let out = act_v0_4(
-            &f.state,
-            &alice_client(),
-            unsigned(
-                vti_rooms::wire::ROOMS_RECORDS_GET_V2_TYPE,
-                "did:key:zHost",
-                json!({ "roomId": f.room.did, "key": KEY }),
-            ),
-        )
-        .await;
-        assert_eq!(out["payload"]["principal"], f.alice.did, "{out}");
-        assert!(
-            out["payload"]["document"]["payload"]["presentation"].is_object(),
-            "{out}"
-        );
-        // An administrator's task is still not actable at 0.4.
-        let out = act_v0_4(
-            &f.state,
-            &alice_client(),
-            offer(
-                "https://trusttasks.org/spec/vtc/rooms/community/members/add/0.1",
-                Some(&f.alice.did),
-                json!({ "roomId": f.room.did, "member": f.bob.did }),
-            ),
-        )
-        .await;
-        assert!(out["payload"].get("principal").is_none(), "{out}");
-    }
-
-    async fn act_v0_2(state: &AppState, auth: &AuthClaims, document: Value) -> Value {
-        body(
-            handle_act_v0_2(
-                state,
-                auth,
-                request(ACT_0_2, json!({ "document": document })),
-            )
-            .await,
-        )
     }
 
     /// Every `rooms.keys.act` audit row as `(target, detail)`, oldest first. A DID
@@ -1692,7 +1498,7 @@ mod tests {
     /// caller may act as exactly one member — the VTA never picks one; a member the caller
     /// may not act as is `issuerNotPrincipal`.
     #[tokio::test]
-    async fn act_0_2_completes_a_room_less_type_only_as_its_named_issuer() {
+    async fn act_0_8_completes_a_room_less_type_only_as_its_named_issuer() {
         let f = fixture(&["read"]).await;
         let chunk = |issuer: Option<&str>| {
             let mut d = unsigned(
@@ -1706,21 +1512,21 @@ mod tests {
             d
         };
 
-        let out = act_v0_2(&f.state, &alice_client(), chunk(None)).await;
+        let out = act_v0_8(&f.state, &alice_client(), chunk(None)).await;
         assert_eq!(code(&out), "rooms/keys/act:principalAmbiguous", "{out}");
 
-        let out = act_v0_2(&f.state, &alice_client(), chunk(Some(&f.bob.did))).await;
+        let out = act_v0_8(&f.state, &alice_client(), chunk(Some(&f.bob.did))).await;
         assert_eq!(code(&out), "rooms/keys/act:issuerNotPrincipal", "{out}");
         assert_eq!(out["payload"]["details"]["issuer"], f.bob.did, "{out}");
 
-        let out = act_v0_2(&f.state, &alice_client(), chunk(Some(&f.alice.did))).await;
+        let out = act_v0_8(&f.state, &alice_client(), chunk(Some(&f.alice.did))).await;
         assert_eq!(out["payload"]["principal"], f.alice.did, "{out}");
         assert_eq!(out["payload"]["document"]["issuer"], f.alice.did, "{out}");
         assert!(
-            out["type"].as_str().is_some_and(|t| t.starts_with(ACT_0_2)),
+            out["type"].as_str().is_some_and(|t| t.starts_with(ACT_0_8)),
             "{out}"
         );
-        serde_json::from_value::<trust_tasks_rs::specs::rooms::keys::act::v0_2::Response>(
+        serde_json::from_value::<trust_tasks_rs::specs::rooms::keys::act::v0_8::Response>(
             out["payload"].clone(),
         )
         .expect("a 0.2 response");
@@ -1735,7 +1541,7 @@ mod tests {
     /// resolves — when `issuer` is absent, the one member of the room the caller may act as —
     /// never the room, and never "no subject". 0.1 keeps the room as its row's resource.
     #[tokio::test]
-    async fn act_0_2_records_and_gates_the_resolved_member_as_the_subject() {
+    async fn act_0_8_records_and_gates_the_resolved_member_as_the_subject() {
         let f = fixture(&["read"]).await;
         let get = || {
             unsigned(
@@ -1764,7 +1570,7 @@ mod tests {
             "no member resolves, so the handler refuses"
         );
 
-        let out = act_v0_2(&f.state, &alice_client(), get()).await;
+        let out = act_v0_8(&f.state, &alice_client(), get()).await;
         assert_eq!(out["payload"]["principal"], f.alice.did, "{out}");
         let out = act(&f.state, &alice_client(), get()).await;
         assert_eq!(out["payload"]["principal"], f.alice.did, "{out}");
@@ -2495,7 +2301,7 @@ mod tests {
                         }
                         record
                     } else if task == vti_rooms::wire::ROOMS_RECORDS_LIST_TYPE
-                        || task == vti_rooms::wire::ROOMS_RECORDS_LIST_V3_TYPE
+                        || task == vti_rooms::wire::ROOMS_RECORDS_LIST_V5_TYPE
                     {
                         json!({ "records": [] })
                     } else {

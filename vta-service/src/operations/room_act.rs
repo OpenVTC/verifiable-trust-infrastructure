@@ -1,8 +1,8 @@
-//! Completing a host-bound room request **as the member** — `rooms/keys/act/{0.1,…,0.5}`,
-//! and the documents `rooms/keys/{read,browse,backfill}` send on the member's behalf. At 0.3
-//! also a member's reply to a community's offer of a room ([`OFFER_TYPES`]), at 0.4 the
-//! listing that shows each offered room's description too ([`OFFER_TYPES_0_4`]), and at 0.5
-//! the community's record of the member's admissions ([`COMMUNITY_TYPES`]).
+//! Completing a host-bound room request **as the member** — `rooms/keys/act` at 0.1, 0.5
+//! and 0.8 — and the documents `rooms/keys/{read,browse,backfill}` send on the member's
+//! behalf. At 0.5 also the community's types ([`COMMUNITY_TYPES`]): a member's reply to a
+//! community's offer of a room and its record of the member's admissions; at 0.8 the
+//! widened tables [`ACT_TABLE_0_8`] and [`COMMUNITY_TYPES_0_8`].
 //!
 //! # Why this exists
 //!
@@ -85,23 +85,51 @@ pub const ACT_TABLE: &[ActRow] = &[
     (spec::blobs::upload::abort::v0_2::Payload::TYPE_URI, None),
 ];
 
-/// The two offer types `rooms/keys/act/0.3` adds to the table: a member's reply to a
-/// community's offer of a room, addressed to the community rather than to a room's host,
-/// by a party the room has not yet admitted. Neither takes a presentation — there is no
-/// room credential to insert — and the member is the document's `issuer`, required
-/// (producer item 2) and resolved by recipient item 2b. Not in [`ACT_TABLE`]: 0.1 and 0.2
-/// do not complete them, and nothing else of the `vtc` family is actable at any version.
-///
-/// 0.3's table is closed at exactly these two: a 0.3 request wrapping
-/// `vtc/rooms/offers/list/0.2` is `typeNotActable` (0.3 recipient item 1). 0.4 admits that
-/// one too ([`OFFER_TYPES_0_4`]).
-pub const OFFER_TYPES: &[&str] = &[OFFERS_LIST_0_1, OFFERS_ACCEPT_0_1];
-
-/// The offer types `rooms/keys/act/0.4` completes: 0.3's, and `vtc/rooms/offers/list/0.2`
-/// in the same row as `0.1` and on the same terms — no presentation, `issuer` required and
-/// resolved without a room credential (0.4 *What changed from 0.3*). 0.2 changes only what
-/// the community answers (each room's description); its request is the same empty payload.
-pub const OFFER_TYPES_0_4: &[&str] = &[OFFERS_LIST_0_1, OFFERS_LIST_0_2, OFFERS_ACCEPT_0_1];
+/// `rooms/keys/act/0.8`'s table: 0.6's ([`ACT_TABLE`]), and the newer versions of the
+/// host-bound requests 0.7 adds (`records/put/0.3`, `records/list/0.3`–`0.5`, `info/0.2`
+/// and `0.3`, `epoch/chain/0.2`), and the two retention requests 0.8 adds
+/// (`records/prune/0.1` and `0.2`, `records/retention/set/0.1`), each `admin` with a
+/// presentation inserted. Closed like every version's: 0.1 and 0.5 complete [`ACT_TABLE`]
+/// and nothing more.
+pub const ACT_TABLE_0_8: &[ActRow] = &[
+    (spec::records::put::v0_1::Payload::TYPE_URI, Some("write")),
+    (spec::records::put::v0_2::Payload::TYPE_URI, Some("write")),
+    (spec::records::put::v0_3::Payload::TYPE_URI, Some("write")),
+    (spec::records::get::v0_1::Payload::TYPE_URI, Some("read")),
+    (spec::records::get::v0_2::Payload::TYPE_URI, Some("read")),
+    (spec::records::list::v0_1::Payload::TYPE_URI, Some("read")),
+    (spec::records::list::v0_2::Payload::TYPE_URI, Some("read")),
+    (spec::records::list::v0_3::Payload::TYPE_URI, Some("read")),
+    (spec::records::list::v0_4::Payload::TYPE_URI, Some("read")),
+    (spec::records::list::v0_5::Payload::TYPE_URI, Some("read")),
+    (
+        spec::records::curate::v0_1::Payload::TYPE_URI,
+        Some("curate"),
+    ),
+    (
+        spec::records::retention::set::v0_1::Payload::TYPE_URI,
+        Some("admin"),
+    ),
+    (spec::records::prune::v0_1::Payload::TYPE_URI, Some("admin")),
+    (spec::records::prune::v0_2::Payload::TYPE_URI, Some("admin")),
+    (spec::info::v0_1::Payload::TYPE_URI, Some("read")),
+    (spec::info::v0_2::Payload::TYPE_URI, Some("read")),
+    (spec::info::v0_3::Payload::TYPE_URI, Some("read")),
+    (spec::usage::v0_1::Payload::TYPE_URI, Some("admin")),
+    (spec::epoch::chain::v0_1::Payload::TYPE_URI, Some("read")),
+    (spec::epoch::chain::v0_2::Payload::TYPE_URI, Some("read")),
+    (spec::epoch::commits::v0_1::Payload::TYPE_URI, Some("read")),
+    (spec::epoch::mint::v0_1::Payload::TYPE_URI, Some("admin")),
+    (spec::blobs::get::v0_1::Payload::TYPE_URI, Some("read")),
+    (spec::blobs::get::v0_2::Payload::TYPE_URI, Some("read")),
+    (spec::blobs::chunk::v0_1::Payload::TYPE_URI, None),
+    (
+        spec::blobs::upload::begin::v0_2::Payload::TYPE_URI,
+        Some("write"),
+    ),
+    (spec::blobs::upload::commit::v0_2::Payload::TYPE_URI, None),
+    (spec::blobs::upload::abort::v0_2::Payload::TYPE_URI, None),
+];
 
 const OFFERS_LIST_0_1: &str =
     <trust_tasks_rs::specs::vtc::rooms::offers::list::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
@@ -110,20 +138,8 @@ const OFFERS_LIST_0_2: &str =
 const OFFERS_ACCEPT_0_1: &str =
     <trust_tasks_rs::specs::vtc::rooms::offers::accept::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
-/// Whether `type_uri` is one of [`OFFER_TYPES`] — an offer type `rooms/keys/act/0.3`
-/// completes.
-pub fn is_offer_type(type_uri: &str) -> bool {
-    OFFER_TYPES.contains(&bare_type(type_uri))
-}
-
-/// Whether `type_uri` is one of [`OFFER_TYPES_0_4`] — an offer type `rooms/keys/act/0.4`
-/// completes.
-pub fn is_offer_type_0_4(type_uri: &str) -> bool {
-    OFFER_TYPES_0_4.contains(&bare_type(type_uri))
-}
-
-/// The community types `rooms/keys/act/0.5` completes: 0.4's [`OFFER_TYPES_0_4`], and
-/// `vtc/rooms/memberships/list/0.1` — the community's record of the member's admissions,
+/// The community types `rooms/keys/act/0.5` completes: the offer types (`vtc/rooms/offers/
+/// list/0.1` and `0.2`, `vtc/rooms/offers/accept/0.1`), and `vtc/rooms/memberships/list/0.1` — the community's record of the member's admissions,
 /// which every surface reads. All are made to the community as the DID it addresses its
 /// offers to, with no presentation, and resolved by recipient item 2b.
 pub const COMMUNITY_TYPES: &[&str] = &[
@@ -141,24 +157,26 @@ pub fn is_community_type(type_uri: &str) -> bool {
     COMMUNITY_TYPES.contains(&bare_type(type_uri))
 }
 
-/// The community types `rooms/keys/act/0.6` completes: 0.5's [`COMMUNITY_TYPES`], and
-/// `vtc/rooms/offers/list/0.3` in the offer types' row and on their terms (0.6 *What
-/// changed from 0.5*). 0.3 also returns the renewals of the admissions a member holds;
-/// its request is the same empty payload.
-pub const COMMUNITY_TYPES_0_6: &[&str] = &[
+/// The community types `rooms/keys/act/0.8` completes: 0.5's [`COMMUNITY_TYPES`], and
+/// `vtc/rooms/offers/list/0.3` (0.6) and `0.4` (0.7) in the offer types' row and on their
+/// terms — no presentation, `issuer` required and resolved by recipient item 2b.
+pub const COMMUNITY_TYPES_0_8: &[&str] = &[
     OFFERS_LIST_0_1,
     OFFERS_LIST_0_2,
     OFFERS_LIST_0_3,
+    OFFERS_LIST_0_4,
     OFFERS_ACCEPT_0_1,
     MEMBERSHIPS_LIST_0_1,
 ];
 
 const OFFERS_LIST_0_3: &str =
     <trust_tasks_rs::specs::vtc::rooms::offers::list::v0_3::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+const OFFERS_LIST_0_4: &str =
+    <trust_tasks_rs::specs::vtc::rooms::offers::list::v0_4::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
-/// Whether `type_uri` is one of [`COMMUNITY_TYPES_0_6`].
-pub fn is_community_type_0_6(type_uri: &str) -> bool {
-    COMMUNITY_TYPES_0_6.contains(&bare_type(type_uri))
+/// Whether `type_uri` is one of [`COMMUNITY_TYPES_0_8`].
+pub fn is_community_type_0_8(type_uri: &str) -> bool {
+    COMMUNITY_TYPES_0_8.contains(&bare_type(type_uri))
 }
 
 /// Whether `type_uri` is `vtc/rooms/offers/accept/0.1` — the one offer type that can carry
@@ -175,8 +193,17 @@ pub fn bare_type(type_uri: &str) -> &str {
 /// The table's row for `type_uri`: `Some(action)` where the type is actable (`action` is
 /// `None` for one that takes no presentation), `None` where it is not.
 pub fn actable(type_uri: &str) -> Option<Option<&'static str>> {
+    row(ACT_TABLE, type_uri)
+}
+
+/// [`actable`], in `rooms/keys/act/0.8`'s table ([`ACT_TABLE_0_8`]).
+pub fn actable_0_8(type_uri: &str) -> Option<Option<&'static str>> {
+    row(ACT_TABLE_0_8, type_uri)
+}
+
+fn row(table: &[ActRow], type_uri: &str) -> Option<Option<&'static str>> {
     let bare = bare_type(type_uri);
-    ACT_TABLE
+    table
         .iter()
         .find(|(t, _)| *t == bare)
         .map(|(_, action)| *action)
@@ -330,11 +357,11 @@ pub async fn complete_as(
 mod tests {
     use super::*;
 
-    /// Every row of the table names a type the registry carries a schema for — the check a
-    /// completed document is validated against.
+    /// Every row of both tables names a type the registry carries a schema for — the check
+    /// a completed document is validated against.
     #[test]
     fn every_actable_type_has_a_schema() {
-        for (t, _) in ACT_TABLE {
+        for (t, _) in ACT_TABLE.iter().chain(ACT_TABLE_0_8) {
             assert!(
                 trust_tasks_rs::schema_index::schema_for(t).is_some(),
                 "{t} has no schema"
@@ -342,95 +369,75 @@ mod tests {
         }
     }
 
-    /// The offer types are actable at 0.3 and later only, apart from the host-bound table,
-    /// and they are the only `vtc` types that are: an administrator's `members/add` is not.
+    /// 0.8's host-bound table is 0.6's, widened by exactly 0.7's and 0.8's rows, and every
+    /// row it shares with 0.6 keeps its action.
     #[test]
-    fn the_offer_types_are_apart_from_the_host_bound_table() {
-        for t in OFFER_TYPES_0_4 {
-            assert!(is_offer_type_0_4(t), "{t}");
-            assert_eq!(actable(t), None, "{t} is not in the 0.1/0.2 table");
-            assert!(
-                trust_tasks_rs::schema_index::schema_for(t).is_some(),
-                "{t} has no schema"
-            );
+    fn rooms_keys_act_0_8_widens_the_table_by_exactly_its_new_rows() {
+        for (t, action) in ACT_TABLE {
+            assert_eq!(actable_0_8(t), Some(*action), "{t}");
         }
-        for t in OFFER_TYPES {
-            assert!(is_offer_type(t) && is_offer_type_0_4(t), "{t}");
-        }
-        assert!(is_offer_accept(&format!("{OFFERS_ACCEPT_0_1}#request")));
-        assert!(!is_offer_accept(OFFERS_LIST_0_1));
-        assert!(!is_offer_accept(OFFERS_LIST_0_2));
-        let members_add = "https://trusttasks.org/spec/vtc/rooms/community/members/add/0.1";
-        assert!(!is_offer_type(members_add) && !is_offer_type_0_4(members_add));
-    }
-
-    /// `rooms/keys/act/0.4` widens the table by exactly `vtc/rooms/offers/list/0.2`, and
-    /// 0.3's closed table still refuses it (0.3 recipient item 1).
-    #[test]
-    fn rooms_keys_act_0_4_adds_only_offers_list_0_2() {
-        assert!(!is_offer_type(OFFERS_LIST_0_2));
-        assert!(is_offer_type_0_4(&format!("{OFFERS_LIST_0_2}#request")));
-        let added: Vec<_> = OFFER_TYPES_0_4
+        let mut added: Vec<_> = ACT_TABLE_0_8
             .iter()
-            .filter(|t| !OFFER_TYPES.contains(t))
+            .filter(|row| !ACT_TABLE.contains(row))
+            .copied()
             .collect();
-        assert_eq!(added, [&OFFERS_LIST_0_2]);
+        added.sort();
+        let mut want = vec![
+            (spec::records::put::v0_3::Payload::TYPE_URI, Some("write")),
+            (spec::records::list::v0_3::Payload::TYPE_URI, Some("read")),
+            (spec::records::list::v0_4::Payload::TYPE_URI, Some("read")),
+            (spec::records::list::v0_5::Payload::TYPE_URI, Some("read")),
+            (spec::info::v0_2::Payload::TYPE_URI, Some("read")),
+            (spec::info::v0_3::Payload::TYPE_URI, Some("read")),
+            (spec::epoch::chain::v0_2::Payload::TYPE_URI, Some("read")),
+            (spec::records::prune::v0_1::Payload::TYPE_URI, Some("admin")),
+            (spec::records::prune::v0_2::Payload::TYPE_URI, Some("admin")),
+            (
+                spec::records::retention::set::v0_1::Payload::TYPE_URI,
+                Some("admin"),
+            ),
+        ];
+        want.sort();
+        assert_eq!(added, want);
+        // 0.1's and 0.5's closed table still refuses them.
+        for (t, _) in &want {
+            assert_eq!(actable(t), None, "{t}");
+        }
     }
 
-    /// `rooms/keys/act/0.5` widens 0.4's table by exactly `vtc/rooms/memberships/list/0.1`,
-    /// and 0.4's table still refuses it; still no administrator's task, and only one of them
-    /// can carry key material.
+    /// The community types are apart from the host-bound tables; 0.8's are 0.5's plus
+    /// exactly `vtc/rooms/offers/list/0.3` and `0.4`; only one of them carries key material.
     #[test]
-    fn rooms_keys_act_0_5_adds_only_memberships_list() {
+    fn the_community_types_are_apart_and_0_8_adds_only_the_newer_listings() {
+        for t in COMMUNITY_TYPES_0_8 {
+            assert!(is_community_type_0_8(t), "{t}");
+            assert_eq!(actable(t), None, "{t}");
+            assert_eq!(actable_0_8(t), None, "{t}");
+            assert!(
+                trust_tasks_rs::schema_index::schema_for(t).is_some(),
+                "{t} has no schema"
+            );
+        }
         for t in COMMUNITY_TYPES {
-            assert!(is_community_type(t), "{t}");
-            assert_eq!(actable(t), None, "{t} is not in the 0.1/0.2 table");
-            assert!(
-                trust_tasks_rs::schema_index::schema_for(t).is_some(),
-                "{t} has no schema"
-            );
+            assert!(is_community_type_0_8(t), "{t}");
         }
-        let added: Vec<_> = COMMUNITY_TYPES
+        let added: Vec<_> = COMMUNITY_TYPES_0_8
             .iter()
-            .filter(|t| !OFFER_TYPES_0_4.contains(t))
+            .filter(|t| !COMMUNITY_TYPES.contains(t))
             .collect();
-        assert_eq!(added, [&MEMBERSHIPS_LIST_0_1]);
-        assert!(is_community_type(&format!(
-            "{MEMBERSHIPS_LIST_0_1}#request"
-        )));
-        assert!(!is_offer_type_0_4(MEMBERSHIPS_LIST_0_1));
+        assert_eq!(added, [&OFFERS_LIST_0_3, &OFFERS_LIST_0_4]);
+        assert!(!is_community_type(OFFERS_LIST_0_4));
+        assert!(is_community_type_0_8(&format!("{OFFERS_LIST_0_4}#request")));
+        assert!(is_offer_accept(&format!("{OFFERS_ACCEPT_0_1}#request")));
         assert_eq!(
-            COMMUNITY_TYPES
+            COMMUNITY_TYPES_0_8
                 .iter()
                 .filter(|t| is_offer_accept(t))
                 .count(),
             1
         );
-        assert!(!is_community_type(
-            "https://trusttasks.org/spec/vtc/rooms/community/members/list/0.1"
-        ));
-    }
-
-    /// `rooms/keys/act/0.6` widens 0.5's table by exactly `vtc/rooms/offers/list/0.3`, and
-    /// 0.5's closed table still refuses it.
-    #[test]
-    fn rooms_keys_act_0_6_adds_only_offers_list_0_3() {
-        for t in COMMUNITY_TYPES_0_6 {
-            assert!(is_community_type_0_6(t), "{t}");
-            assert_eq!(actable(t), None, "{t} is not in the 0.1/0.2 table");
-            assert!(
-                trust_tasks_rs::schema_index::schema_for(t).is_some(),
-                "{t} has no schema"
-            );
-        }
-        let added: Vec<_> = COMMUNITY_TYPES_0_6
-            .iter()
-            .filter(|t| !COMMUNITY_TYPES.contains(t))
-            .collect();
-        assert_eq!(added, [&OFFERS_LIST_0_3]);
-        assert!(is_community_type_0_6(&format!("{OFFERS_LIST_0_3}#request")));
-        assert!(!is_community_type(OFFERS_LIST_0_3));
-        assert!(!is_offer_type_0_4(OFFERS_LIST_0_3));
+        let members_add = "https://trusttasks.org/spec/vtc/rooms/community/members/add/0.1";
+        assert!(!is_community_type_0_8(members_add));
     }
 
     /// The deliberate absences: chunk uploads (bytes never pass through the key holder),
@@ -451,6 +458,7 @@ mod tests {
             "https://trusttasks.org/spec/keys/sign/0.1",
         ] {
             assert_eq!(actable(t), None, "{t}");
+            assert_eq!(actable_0_8(t), None, "{t}");
         }
         assert_eq!(
             actable(&format!(

@@ -260,14 +260,21 @@ impl VtcClient {
         if let Some(c) = cursor {
             payload["cursor"] = serde_json::json!(c);
         }
-        let value = self
+        let mut value = self
             .room_task(
-                ROOMS_RECORDS_LIST_TYPE,
+                vti_rooms::wire::ROOMS_RECORDS_LIST_V5_TYPE,
                 payload,
                 signer_did,
                 private_key_multibase,
             )
             .await?;
+        // `rooms/records/list/0.5` names the continuation token `nextCursor`; the listing
+        // type reads it as `cursor`.
+        if let Some(obj) = value.as_object_mut()
+            && let Some(next) = obj.remove("nextCursor")
+        {
+            obj.insert("cursor".into(), next);
+        }
         serde_json::from_value(value).map_err(|e| VtcError::Http {
             status: 200,
             body: format!("list response is not a ListRecordsResponse: {e}"),
@@ -764,12 +771,11 @@ fn is_room_read(type_uri: &str) -> bool {
         ROOMS_RECORDS_LIST_TYPE,
         ROOMS_EPOCH_CHAIN_V2_TYPE,
         ROOMS_EPOCH_COMMITS_TYPE,
-        rooms::records::list::v0_2::Payload::TYPE_URI,
+        rooms::records::list::v0_5::Payload::TYPE_URI,
         rooms::blobs::get::v0_2::Payload::TYPE_URI,
         rooms::blobs::chunk::v0_1::Payload::TYPE_URI,
         rooms::info::v0_1::Payload::TYPE_URI,
-        rooms::info::v0_2::Payload::TYPE_URI,
-        rooms::records::list::v0_3::Payload::TYPE_URI,
+        rooms::info::v0_3::Payload::TYPE_URI,
     ]
     .contains(&type_uri)
 }

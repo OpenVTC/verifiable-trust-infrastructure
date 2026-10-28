@@ -247,7 +247,7 @@ to the group: every member of the group is offered admission to it with the bind
   removed because a binding that also covered it went.
 - **Renewal.** Within a third of `validFor` of an admitted member's expiry, the community
   issues a fresh membership and authority with the same actions. The member collects them
-  from `vtc/rooms/offers/list/0.3`'s `renewals` and stores them in place of the ones they
+  from `vtc/rooms/offers/list/0.4`'s `renewals` and stores them in place of the ones they
   renew ([community rooms](community-rooms.md#the-members-half--vtcroomsoffers)).
 - **Ending a binding** puts it into `removing`: what only it covered is withdrawn, then it
   is deleted. One that covered nobody is deleted at once. Deleting the group ends all of
