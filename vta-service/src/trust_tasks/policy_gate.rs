@@ -1063,7 +1063,7 @@ mod tests {
     // whole point: without a type binding in the digest they collide.
     const OTHER_UNGATED_URI: &str = "https://trusttasks.org/spec/vta/memory/delete/0.1";
 
-    const REQUIRE_CONSENT: &str = "package vta.policy\nimport rego.v1\ndecision := {\"decision\": \"requireConsent\", \"requireConsent\": {\"approverSet\": \"ops\"}}";
+    const REQUIRE_CONSENT: &str = "package vta.policy\nimport rego.v1\ndecision := {\"decision\": \"requireConsent\", \"requireConsent\": {\"approverSet\": \"ops\", \"minApprovals\": 1, \"excludeRequester\": false}}";
 
     /// The reject must carry VTA-**signed** consent requests.
     ///
@@ -1281,7 +1281,7 @@ mod tests {
         );
     }
 
-    const REQUIRE_CONSENT_EXCLUDE_REQUESTER: &str = "package vta.policy\nimport rego.v1\ndecision := {\"decision\": \"requireConsent\", \"requireConsent\": {\"approverSet\": \"ops\", \"excludeRequester\": true}}";
+    const REQUIRE_CONSENT_EXCLUDE_REQUESTER: &str = "package vta.policy\nimport rego.v1\ndecision := {\"decision\": \"requireConsent\", \"requireConsent\": {\"approverSet\": \"ops\", \"minApprovals\": 1, \"excludeRequester\": true}}";
 
     /// The push must follow the *question*, not the submit.
     ///

@@ -1,4 +1,4 @@
-//! Rust mirror of the Trust Tasks `policy/_shared/0.3` schema.
+//! Rust mirror of the Trust Tasks `policy/_shared/0.4` schema.
 //!
 //! These types are the wire contract between the maintainer's Policy Decision
 //! Point and the Rego evaluator. [`PolicyInput`] is what the VTA assembles per
@@ -10,7 +10,7 @@
 //! because the JSON we build is fed verbatim to Rego and referenced by rule
 //! authors as `input.request.sideEffects`, `input.consumer.deviceId`, etc.
 //!
-//! Source of truth: `dtgwg-trust-tasks-tf/specs/policy/_shared/0.3/policy.schema.json`.
+//! Source of truth: `dtgwg-trust-tasks-tf/specs/policy/_shared/0.4/policy.schema.json`.
 
 use serde::{Deserialize, Serialize};
 
@@ -135,7 +135,7 @@ pub struct Consumer {
 
 /// The structured input fed to the evaluator before dispatching a task.
 ///
-/// NOTE: the 0.3 schema still marks `site` as required (inherited from the
+/// NOTE: the schema (0.3 and 0.4 alike) still marks `site` as required (inherited from the
 /// vault-flow origin of PolicyInput). For a generic task there is no site, so
 /// this mirror makes it optional and omits it when absent — regorus does not
 /// validate against the JSON schema, and the `policy/evaluate` dry-run is the
@@ -173,18 +173,21 @@ pub struct StepUp {
     pub ttl_seconds: Option<u32>,
 }
 
-fn default_min_approvals() -> u32 {
-    1
-}
-
 /// `PolicyDecision.requireConsent` — the approver constraint to satisfy.
+///
+/// `policy/_shared/0.4` makes `excludeRequester` and `minApprovals` REQUIRED
+/// with no default (SPEC §6.6 rule 5: a shared component supplies no
+/// governance default). 0.3 defaulted them to `false` and `1`, so a decision
+/// that omitted either silently meant "a quorum of one" or "the requester may
+/// approve itself". A decision omitting either no longer deserialises, and the
+/// PDP fails closed on it ([`crate::decide`] → `deny`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RequireConsent {
     #[serde(rename = "approverSet")]
     pub approver_set: String,
-    #[serde(rename = "excludeRequester", default)]
+    #[serde(rename = "excludeRequester")]
     pub exclude_requester: bool,
-    #[serde(rename = "minApprovals", default = "default_min_approvals")]
+    #[serde(rename = "minApprovals")]
     pub min_approvals: u32,
 }
 
@@ -330,12 +333,30 @@ mod tests {
         // The shape a Rego `decision` rule would emit for a consent demand.
         let j = serde_json::json!({
             "decision": "requireConsent",
-            "requireConsent": { "approverSet": "operators", "excludeRequester": true }
+            "requireConsent": {
+                "approverSet": "operators",
+                "excludeRequester": true,
+                "minApprovals": 2
+            }
         });
         let d: PolicyDecision = serde_json::from_value(j).unwrap();
         assert_eq!(d.decision, Disposition::RequireConsent);
         let rc = d.require_consent.unwrap();
         assert!(rc.exclude_requester);
-        assert_eq!(rc.min_approvals, 1, "minApprovals defaults to 1");
+        assert_eq!(rc.min_approvals, 2);
+    }
+
+    /// `policy/_shared/0.4`: neither member has a default any more, so a
+    /// decision that omits either is malformed rather than "a quorum of one"
+    /// or "the requester may approve itself".
+    #[test]
+    fn require_consent_without_quorum_or_exclusion_does_not_deserialise() {
+        for rc in [
+            serde_json::json!({ "approverSet": "operators", "excludeRequester": true }),
+            serde_json::json!({ "approverSet": "operators", "minApprovals": 1 }),
+        ] {
+            let j = serde_json::json!({ "decision": "requireConsent", "requireConsent": rc });
+            assert!(serde_json::from_value::<PolicyDecision>(j).is_err());
+        }
     }
 }

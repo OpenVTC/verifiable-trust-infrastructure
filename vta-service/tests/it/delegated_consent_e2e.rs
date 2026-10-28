@@ -49,7 +49,7 @@ const TASK_CONSENT_DECISION: &str = vta_sdk::trust_tasks::TASK_TASK_CONSENT_DECI
 /// Policy: this task needs a human, and it must not be the requester.
 const REQUIRE_CONSENT: &str = r#"package vta.policy
 import rego.v1
-decision := {"decision": "requireConsent", "requireConsent": {"approverSet": "operators", "excludeRequester": true}}
+decision := {"decision": "requireConsent", "requireConsent": {"approverSet": "operators", "minApprovals": 1, "excludeRequester": true}}
 "#;
 
 // ─── wire helpers ────────────────────────────────────────────────────────────

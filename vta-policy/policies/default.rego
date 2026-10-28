@@ -31,7 +31,8 @@ decision := {"decision": "allow", "explanation": "read-only baseline"} if {
 # State-changing / disclosing / acting tasks: allowed by this baseline, but this
 # is exactly where an operator policy would return "requireStepUp" (for
 # destructive or secret-disclosing ops) or "requireConsent" (with an
-# approverSet, optionally excludeRequester) instead.
+# approverSet, minApprovals and excludeRequester — policy/_shared/0.4 requires
+# all three) instead.
 decision := {
 	"decision": "allow",
 	"explanation": "default baseline — layer a higher-priority policy to require step-up or consent",
