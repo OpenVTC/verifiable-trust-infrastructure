@@ -165,23 +165,23 @@ vti-common = { path = "../vti-common", version = "0.51", features = ["encryption
 # Seed-store backends + `create_seed_store` factory + `SecretsConfig` (lifted
 # from this crate into a shared crate so external integrations can reuse them).
 # Per-backend features are activated by this crate's matching features below.
-vti-secrets = { path = "../vti-secrets", version = "0.23" }
-vta-keyspaces = { path = "../vta-keyspaces", version = "0.23" }
+vti-secrets = { path = "../vti-secrets", version = "0.24" }
+vta-keyspaces = { path = "../vta-keyspaces", version = "0.24" }
 # Structured audit logging (the `audit!` macro + audit-keyspace helpers),
 # extracted and re-exported as `crate::audit`.
-vta-audit = { path = "../vta-audit", version = "0.22" }
+vta-audit = { path = "../vta-audit", version = "0.23" }
 # VTA configuration types (AppConfig + sub-configs), extracted and re-exported
 # as `crate::config`. `vta-config/tee` is always on: it only adds the
 # `AppConfig.tee` field and its types, and a sibling crate (vta-tee) turns it
 # on anyway, so gating our struct literals on this crate's own `tee` feature
 # broke any build that unified the two. Behaviour stays behind `tee`.
-vta-config = { path = "../vta-config", version = "0.27", features = ["tee"] }
+vta-config = { path = "../vta-config", version = "0.28", features = ["tee"] }
 # Shared mid-layer services (contexts, seal, sealed_nonce_store), re-exported
 # as crate::{contexts,seal,sealed_nonce_store}.
-vta-support = { path = "../vta-support", version = "0.24" }
+vta-support = { path = "../vta-support", version = "0.25" }
 # Key management (seed store, BIP-32 derivation, wrapping), extracted and
 # re-exported as `crate::keys`. Backend features chain to `vta-keys/*`.
-vta-keys = { path = "../vta-keys", version = "0.27" }
+vta-keys = { path = "../vta-keys", version = "0.28" }
 # Holder credential vault (storage/query/receive/present/status), extracted to
 # its own crate and re-exported as `crate::vault`. Feature edges: this crate's
 # `bbs` / `webvh` features enable `vta-vault/bbs` / `vta-vault/webvh`.
@@ -212,10 +212,10 @@ dtg-credentials = { workspace = true }
 vti-rooms = { path = "../vti-rooms", version = "0.22", default-features = false, features = [
   "mls",
 ] }
-vti-rooms-dtg = { path = "../vti-rooms-dtg", version = "0.23" }
+vti-rooms-dtg = { path = "../vti-rooms-dtg", version = "0.24" }
 # Background TTL sweepers (acl/consent/vault), extracted and re-exported as
 # crate::{acl_sweeper,consent_sweeper,vault_sweeper}.
-vta-sweepers = { path = "../vta-sweepers", version = "0.22" }
+vta-sweepers = { path = "../vta-sweepers", version = "0.23" }
 # Backup/restore subsystem (export/import ops + backup-bundle store/sweeper),
 # extracted and re-exported as crate::operations::backup +
 # crate::{backup_bundle_store,backup_bundle_sweeper}. Feature edges: this
@@ -223,13 +223,13 @@ vta-sweepers = { path = "../vta-sweepers", version = "0.22" }
 vta-backup = { path = "../vta-backup", version = "0.27" }
 # TEE bootstrap subsystem (attestation, KMS, anchor MAC, DID autogen),
 # extracted and re-exported as crate::tee behind this crate's `tee` feature.
-vta-tee = { path = "../vta-tee", version = "0.26", optional = true }
+vta-tee = { path = "../vta-tee", version = "0.27", optional = true }
 # Policy subsystem (regorus engine, default bundle, consent model), extracted
 # and re-exported as crate::policy.
 vta-policy = { path = "../vta-policy", version = "0.23" }
 # The local did:webvh store, extracted to its own crate and re-exported as
 # crate::webvh_store behind this crate's `webvh` feature.
-vta-webvh = { path = "../vta-webvh", version = "0.23", optional = true }
+vta-webvh = { path = "../vta-webvh", version = "0.24", optional = true }
 vta-sdk = { path = "../vta-sdk", version = "0.75", features = ["didcomm", "sealed-transfer", "provision-integration", "openapi", "crypto-provider", "acl-setup", "x509-issuers"] }
 # DID-VM-resolved WebAuthn assertion verifier — drives the new
 # `vta/auth/passkey-login-{start,finish}/1.0` trust-task handlers.
@@ -445,7 +445,7 @@ rcgen = { version = "0.14", features = ["x509-parser"] }
 # The signed room fixtures, for the oracle round-trip test. A dev-dependency so
 # the feature never reaches a release build — a permissive fixture is exactly
 # what should not ship, which is why the crate gates it.
-vti-rooms-dtg = { path = "../vti-rooms-dtg", version = "0.23", features = ["test-support"] }
+vti-rooms-dtg = { path = "../vti-rooms-dtg", version = "0.24", features = ["test-support"] }
 # An in-process community (`vtc::Vtc`) for driving the PCS engine end to end:
 # enrolment, the drip, attestation, the proof and the community's decision.
 vti-vetting-pcs = { path = "../vti-vetting-pcs", version = "0.8", features = ["harness"] }

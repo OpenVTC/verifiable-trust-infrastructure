@@ -21,8 +21,8 @@ repository.workspace = true
 
 [dependencies]
 vti-common = { path = "../vti-common", version = "0.51" }
-vta-config = { path = "../vta-config", version = "0.27" }
-vta-keyspaces = { path = "../vta-keyspaces", version = "0.23" }
+vta-config = { path = "../vta-config", version = "0.28" }
+vta-keyspaces = { path = "../vta-keyspaces", version = "0.24" }
 # Types only (default features off): the declarative approvals model + its Rego
 # synthesizer, shared with the CLI so both sides derive the same module.
 vta-sdk = { path = "../vta-sdk", version = "0.75", default-features = false }

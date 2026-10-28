@@ -33,10 +33,10 @@ vti-common = { path = "../vti-common", version = "0.51" }
 # own and was borrowing one from its cipher.
 rand = { workspace = true }
 vta-sdk = { path = "../vta-sdk", version = "0.75" }
-vta-keyspaces = { path = "../vta-keyspaces", version = "0.23" }
-vta-keys = { path = "../vta-keys", version = "0.27" }
-vta-config = { path = "../vta-config", version = "0.27", features = ["tee"] }
-vta-support = { path = "../vta-support", version = "0.24" }
+vta-keyspaces = { path = "../vta-keyspaces", version = "0.24" }
+vta-keys = { path = "../vta-keys", version = "0.28" }
+vta-config = { path = "../vta-config", version = "0.28", features = ["tee"] }
+vta-support = { path = "../vta-support", version = "0.25" }
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
