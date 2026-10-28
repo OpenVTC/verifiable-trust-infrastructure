@@ -1,7 +1,7 @@
 //! Integration tests for `auth/step-up/approve-response/0.6` — the full HTTP
 //! round-trip: an AAL1 session holder POSTs a did-signed approve-response to
 //! `/trust-tasks` and the VTA elevates their session to AAL2. The request leg
-//! is minted as `auth/step-up/approve-request/0.2`; 0.1–0.5 responses are no
+//! is minted as `auth/step-up/approve-request/0.5`; 0.1–0.5 responses are no
 //! longer served.
 //!
 //! Exercises the real route → bearer auth → trust-task dispatcher → step-up
@@ -441,7 +441,7 @@ async fn trust_task_acl_mutation_requires_step_up() {
     );
     assert_eq!(
         details["approveRequest"]["type"],
-        "https://trusttasks.org/spec/auth/step-up/approve-request/0.2",
+        "https://trusttasks.org/spec/auth/step-up/approve-request/0.5",
         "reject must carry the approve-request: {v}"
     );
     assert_eq!(details["approveRequest"]["recipient"], did, "{v}");
@@ -462,7 +462,7 @@ async fn trust_task_acl_mutation_requires_step_up() {
     );
 }
 
-/// Full round trip: the gate mints an `approve-request/0.2`, the minted
+/// Full round trip: the gate mints an `approve-request/0.5`, the minted
 /// document's VTA proof verifies end-to-end (the #870 pattern — did:key
 /// signing, `di_proof` verification), and the approver answers it with an
 /// `approve-response/0.6`. The session must elevate and the ack must echo the
@@ -549,23 +549,25 @@ async fn v0_2_minted_request_completes_with_a_0_6_response() {
     let v: Value = serde_json::from_slice(&bytes).unwrap();
     let ar = v["payload"]["details"]["approveRequest"].clone();
 
-    // 2. The minted request is 0.2: /0.2 type URI + camelCase evidence enum.
+    // 2. The minted request is 0.5: /0.5 type URI, `accepts` with the
+    //    camelCase evidence enum, `ttlSeconds`.
     assert_eq!(
-        ar["type"], "https://trusttasks.org/spec/auth/step-up/approve-request/0.2",
+        ar["type"], "https://trusttasks.org/spec/auth/step-up/approve-request/0.5",
         "{v}"
     );
     assert_eq!(
-        ar["payload"]["acceptableEvidence"],
+        ar["payload"]["accepts"],
         json!(["didSigned", "webauthn"]),
         "{v}"
     );
+    assert!(ar["payload"]["ttlSeconds"].is_u64(), "{v}");
 
     // 3. …and it verifies end-to-end: the VTA's eddsa-jcs-2022 proof checks
-    //    out over the served 0.2 bytes, attributable to the issuing VTA.
+    //    out over the served 0.5 bytes, attributable to the issuing VTA.
     let minted: TrustTask<Value> = serde_json::from_value(ar.clone()).unwrap();
     let signer = vta_service::auth::verify_trust_task_proof(&minted)
         .await
-        .expect("minted 0.2 approve-request proof verifies");
+        .expect("minted 0.5 approve-request proof verifies");
     assert_eq!(signer, ctx.vta_did, "proof VM DID == issuing VTA");
 
     // 4. The approver answers with a 0.6 approve-response, echoing the

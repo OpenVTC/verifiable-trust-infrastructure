@@ -33,9 +33,9 @@ const REQUEST: StepUpRequest = {
   challenge: "c2FtcGxlLWNoYWxsZW5nZS0xMjM0NQ",
   boundTo: "zBoundDigest",
   reason: "Break glass: git.ns.admin on github.com/acme",
-  acceptableEvidence: ["webauthn"],
+  accepts: ["webauthn"],
   webauthn: { challenge: "c2FtcGxlLWNoYWxsZW5nZS0xMjM0NQ" },
-  ttl: 300,
+  ttlSeconds: 300,
 };
 
 const who = (subject: string): WhoamiResponse => ({

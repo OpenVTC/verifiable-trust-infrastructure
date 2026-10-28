@@ -1,6 +1,6 @@
 // The passkey gesture a signed document needs before the VTC will act on it —
 // an **operation-bound** step-up (`crate::acl::bound_step_up`,
-// `auth/step-up/approve-request/0.3` with `boundTo`).
+// `auth/step-up/approve-request/0.5` with `boundTo`).
 //
 // ## The flow
 //
@@ -43,7 +43,7 @@
 // ## Or with a step-up approver
 //
 // A wallet administrator holds no passkey here. When the request `accepts`
-// `approverSigned` (approve-request 0.4) and the VTA browser plugin exposes
+// `approverSigned` (approve-request 0.5) and the VTA browser plugin exposes
 // `approveStepUp`, the plugin's **approver** — a `did:key` bound to the
 // subject as their step-up factor, unlocked only by a user gesture — signs an
 // `auth/step-up/approver/attest/0.1` statement over the challenge and
@@ -78,8 +78,8 @@ export const APPROVE_RESPONSE_V0_6_URI =
 /** Where the console answers a step-up handed over from `cnm`. */
 export const STEP_UP_PATH = "/step-up";
 
-/** `auth/step-up/approve-request/0.4` (or 0.3), as the VTC sends it for a
- *  bound step-up. */
+/** `auth/step-up/approve-request/0.5`, as the VTC sends it for a bound
+ *  step-up. */
 export interface StepUpRequest {
   subject: string;
   challenge: string;
@@ -87,13 +87,11 @@ export interface StepUpRequest {
   sessionId?: string;
   reason: string;
   targetAcr?: string;
-  /** 0.4: every evidence kind the VTC will take for this step-up. */
-  accepts?: string[];
-  /** 0.4: the subject's bound approver DIDs, present iff `accepts` lists
+  /** Every evidence kind the VTC will take for this step-up. Required. */
+  accepts: string[];
+  /** The subject's bound approver DIDs, present iff `accepts` lists
    *  `approverSigned`. */
   approvers?: string[];
-  /** 0.3's spelling of `accepts`, still read for a request from an older VTC. */
-  acceptableEvidence?: string[];
   webauthn?: {
     challenge: string;
     allowCredentials?: { type: string; id: string }[];
@@ -101,7 +99,8 @@ export interface StepUpRequest {
     rpId?: string;
     timeout?: number;
   };
-  ttl?: number;
+  /** How long the request stands, in seconds. */
+  ttlSeconds?: number;
 }
 
 function isStepUpRequest(v: unknown): v is StepUpRequest {
@@ -112,6 +111,8 @@ function isStepUpRequest(v: unknown): v is StepUpRequest {
     typeof r.challenge === "string" &&
     r.challenge.length >= 16 &&
     typeof r.reason === "string" &&
+    Array.isArray(r.accepts) &&
+    r.accepts.every((k) => typeof k === "string") &&
     (r.webauthn === undefined || (typeof r.webauthn === "object" && r.webauthn !== null))
   );
 }
@@ -125,11 +126,9 @@ export function stepUpRequestOf(err: unknown): StepUpRequest | null {
   return isStepUpRequest(req) ? req : null;
 }
 
-/** The evidence kinds `req` accepts: 0.4's `accepts`, else 0.3's
- *  `acceptableEvidence`, else (neither stated) a passkey if it carries
- *  options for one. */
+/** The evidence kinds `req` accepts — its `accepts`, which 0.5 requires. */
 export function acceptedKinds(req: StepUpRequest): string[] {
-  return req.accepts ?? req.acceptableEvidence ?? (req.webauthn ? ["webauthn"] : []);
+  return req.accepts;
 }
 
 /** Whether this request can be answered here with a passkey: webauthn

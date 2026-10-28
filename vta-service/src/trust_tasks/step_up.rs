@@ -21,7 +21,7 @@
 //! pending step-up, dispatches on `evidence.kind`, and elevates the session
 //! lands alongside it.
 //!
-//! The *request* leg (`auth/step-up/approve-request/0.2`, minted by
+//! The *request* leg (`auth/step-up/approve-request/0.5`, minted by
 //! [`mint_pending_step_up`]) is **signed by this VTA** — `eddsa-jcs-2022`,
 //! `authentication` by its operational key, issuer DID == the proof's
 //! `verificationMethod` DID —
@@ -42,6 +42,7 @@ use affinidi_secrets_resolver::secrets::Secret;
 use base64::Engine as _;
 use base64::engine::general_purpose;
 use serde_json::{Value, json};
+use trust_tasks_rs::specs::auth::step_up::approve_request::v0_5 as approve_request;
 use trust_tasks_rs::specs::auth::step_up::approve_response::v0_6 as approve_response;
 // Only the DIDComm sends name the envelope; TSP carries the document bytes
 // directly, so this is unused when the binding is compiled out. Imported from the
@@ -699,14 +700,15 @@ async fn subject_has_passkey(_state: &AppState, _did: &str) -> bool {
 }
 
 /// Mint a pending step-up and build the **signed**
-/// `auth/step-up/approve-request/0.2` document the AAL1 caller hands to its
-/// approver (wallet / VTA). 0.2 differs from 0.1 only in the type URI and the
-/// `acceptableEvidence` spelling (`did-signed` → `didSigned`); every fielded
-/// receiver (vta-mobile-core, the browser plugin) accepts both request
-/// flavors, so the mint moved cleanly to 0.2 (#870's deferred follow-up).
+/// `auth/step-up/approve-request/0.5` document the AAL1 caller hands to its
+/// approver (wallet / VTA) — the version the did-hosting RP and vtc-service
+/// mint too, so an approver speaks one request whoever asks. Over 0.2 that is
+/// `acceptableEvidence` → a required `accepts` and `ttl` → `ttlSeconds`; the
+/// payload is built through the generated type, so the request this VTA signs
+/// is one the specification admits.
 ///
 /// A fresh challenge is bound server-side to the caller's
-/// `{session_id, subject, targetAcr=aal2, acceptableEvidence}` via the
+/// `{session_id, subject, targetAcr=aal2, accepts}` via the
 /// pending-step-up store; the approver's `approve-response` is later consumed by
 /// [`handle_approve_response`]. One caller: [`initiate_self_step_up`], reached
 /// from the gate's `requireStepUp` disposition — the two floor-driven wrappers
@@ -752,7 +754,7 @@ async fn mint_pending_step_up(
 ) -> Result<Value, ()> {
     // The *stored* pending record keeps the kebab canonical form
     // (`did-signed`) that `vti_common::auth::step_up` documents — it's internal
-    // state, not wire. The 0.2 wire spelling is camelCase (`didSigned`).
+    // state, not wire. The wire spelling is camelCase (`didSigned`).
     let (acceptable, acceptable_wire) = if approver_has_passkey {
         (vec!["webauthn".to_string()], vec!["webauthn".to_string()])
     } else {
@@ -789,20 +791,25 @@ async fn mint_pending_step_up(
         return Err(());
     }
 
+    let payload = match approve_request_payload(
+        subject,
+        session_id,
+        &challenge,
+        reason,
+        &acceptable_wire,
+    ) {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::error!(error = %e, "step-up approve-request does not conform to its specification");
+            return Err(());
+        }
+    };
     let mut doc = json!({
         "id": format!("urn:uuid:{}", Uuid::new_v4()),
         "type": STEP_UP_APPROVE_REQUEST_TYPE,
         "issuer": vta_did,
         "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
-        "payload": {
-            "subject": subject,
-            "sessionId": session_id,
-            "challenge": challenge,
-            "reason": reason,
-            "targetAcr": STEP_UP_TARGET_ACR,
-            "acceptableEvidence": acceptable_wire,
-            "ttl": STEP_UP_TTL_SECS,
-        },
+        "payload": payload,
     });
     // Address the request to the approver for `self`/`delegated`; `delegated-any`
     // has no single recipient (any qualifying admin may ratify), so the field is
@@ -845,9 +852,8 @@ async fn mint_pending_step_up(
     Ok(doc)
 }
 
-/// Trust Task `type` of a step-up approve-request. 0.2 — both fielded approver
-/// stacks (vta-mobile-core #871, the browser plugin) accept 0.1 and 0.2 request
-/// URIs.
+/// Trust Task `type` of a step-up approve-request, from the generated module
+/// the payload is built with.
 ///
 /// This is the **document's** type, and only that. It is no longer the DIDComm
 /// message type: that is `trust_tasks_didcomm::ENVELOPE_TYPE`, and naming this
@@ -856,7 +862,32 @@ async fn mint_pending_step_up(
 /// this name cannot drift apart — which is why the gate came off, the mint site
 /// not being DIDComm-specific.
 const STEP_UP_APPROVE_REQUEST_TYPE: &str =
-    "https://trusttasks.org/spec/auth/step-up/approve-request/0.2";
+    <approve_request::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// The approve-request payload, built as JSON and read back through the
+/// generated type's schema check — the same shape as vtc-service's
+/// `approve_request_payload`. `sessionId` is present: this is a session
+/// step-up, whose response echoes it (`handle_approve_response`).
+fn approve_request_payload(
+    subject: &str,
+    session_id: &str,
+    challenge: &str,
+    reason: &str,
+    accepts: &[String],
+) -> Result<approve_request::Payload, String> {
+    use trust_tasks_rs::validate::ValidatedPayload as _;
+    let value = json!({
+        "subject": subject,
+        "sessionId": session_id,
+        "challenge": challenge,
+        "reason": reason,
+        "targetAcr": STEP_UP_TARGET_ACR,
+        "accepts": accepts,
+        "ttlSeconds": STEP_UP_TTL_SECS,
+    });
+    approve_request::Payload::validate_value(&value).map_err(|e| e.to_string())?;
+    serde_json::from_value(value).map_err(|e| e.to_string())
+}
 
 /// How long [`approver_mediator`] will wait to read an approver's DID document
 /// before giving up on the push. Deliberately short: the caller is on a request
@@ -1528,18 +1559,28 @@ mod tests {
 
         assert_eq!(
             v["approveRequest"]["type"],
-            "https://trusttasks.org/spec/auth/step-up/approve-request/0.2"
+            "https://trusttasks.org/spec/auth/step-up/approve-request/0.5"
         );
         assert_eq!(v["approveRequest"]["issuer"], vta_did);
         assert_eq!(v["approveRequest"]["recipient"], "did:key:zHolder");
         assert_eq!(v["approveRequest"]["payload"]["sessionId"], "sess-9");
         assert_eq!(v["approveRequest"]["payload"]["targetAcr"], "aal2");
         assert_eq!(v["approveRequest"]["payload"]["reason"], "rotate keys");
-        // 0.2 wire spelling: camelCase `didSigned` (0.1 said `did-signed`).
+        // 0.5: `accepts`, camelCase `didSigned`; `ttl` is `ttlSeconds`.
         assert_eq!(
-            v["approveRequest"]["payload"]["acceptableEvidence"],
+            v["approveRequest"]["payload"]["accepts"],
             json!(["didSigned", "webauthn"])
         );
+        assert!(
+            v["approveRequest"]["payload"]
+                .get("acceptableEvidence")
+                .is_none()
+        );
+        assert_eq!(
+            v["approveRequest"]["payload"]["ttlSeconds"],
+            json!(STEP_UP_TTL_SECS)
+        );
+        assert!(v["approveRequest"]["payload"].get("ttl").is_none());
         let challenge = v["approveRequest"]["payload"]["challenge"]
             .as_str()
             .expect("challenge string");
@@ -1945,7 +1986,7 @@ mod tests {
         .await
         .expect("mint succeeds");
 
-        assert_eq!(doc["payload"]["acceptableEvidence"], json!(["webauthn"]));
+        assert_eq!(doc["payload"]["accepts"], json!(["webauthn"]));
 
         let challenge = doc["payload"]["challenge"]
             .as_str()
@@ -2108,7 +2149,7 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(req1["payload"]["acceptableEvidence"], json!(["webauthn"]));
+        assert_eq!(req1["payload"]["accepts"], json!(["webauthn"]));
         let challenge1 = req1["payload"]["challenge"].as_str().unwrap().to_string();
 
         let did_signed_payload = json!({

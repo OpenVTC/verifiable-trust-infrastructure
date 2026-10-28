@@ -24,7 +24,7 @@
 //!    [`redeem_or_request`]. No mark exists for `(acting admin, digest)`, so a
 //!    ceremony is parked as a **pending mark** and the handler refuses
 //!    `permissionDenied` with it inline as `details.stepUpRequest` — an
-//!    `auth/step-up/approve-request/0.4` payload with `boundTo` and no
+//!    `auth/step-up/approve-request/0.5` payload with `boundTo` and no
 //!    `sessionId` ([`refusal_details`]). The spine releases the refused
 //!    document's `id`, so the identical document can be sent again.
 //! 2. The admin answers with `auth/step-up/approve-response` — `0.4` (the
@@ -45,7 +45,7 @@
 //! can sign the document and can redeem a mark, but possession of a signing key
 //! is one factor, and it is never allowed to stand in for the second.
 //!
-//! ## A step-up approver's statement (approve-request 0.4, approve-response 0.6)
+//! ## A step-up approver's statement (approve-request 0.5, approve-response 0.6)
 //!
 //! A wallet administrator acts as a DID this community knows no passkey for.
 //! Their factor is a **step-up approver** ([`super::approver`]): a `did:key`
@@ -73,7 +73,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tracing::{info, warn};
-use trust_tasks_rs::specs::auth::step_up::approve_request::v0_4 as approve_request;
+use trust_tasks_rs::specs::auth::step_up::approve_request::v0_5 as approve_request;
 use trust_tasks_rs::specs::auth::step_up::approve_response::v0_4 as approve_response;
 use trust_tasks_rs::specs::auth::step_up::approver::attest::v0_1 as attest;
 use vti_common::audit::{AuditEvent, OperationStepUpApprovedData, OperationStepUpData};
@@ -138,7 +138,7 @@ fn digest_with(
     vti_common::task_consent::domain_digest(DIGEST_DOMAIN, type_uri, payload, challenge)
 }
 
-/// The inline `auth/step-up/approve-request/0.4` payload a gated operation
+/// The inline `auth/step-up/approve-request/0.5` payload a gated operation
 /// refuses with.
 pub type ApproveRequest = approve_request::Payload;
 
@@ -427,7 +427,7 @@ fn fresh_challenge() -> String {
 }
 
 /// Park a ceremony for `(admin_did, this operation)` and return the
-/// approve-request 0.4 that asks for it, without looking for a recorded
+/// approve-request 0.5 that asks for it, without looking for a recorded
 /// gesture first. [`redeem_or_request_with_evidence`] is the usual door; a
 /// gate that reads the mark itself ([`peek_mark`]) asks here.
 ///
@@ -671,11 +671,11 @@ pub async fn peek_mark(
     }))
 }
 
-/// The inline `auth/step-up/approve-request/0.4` payload: `boundTo` present,
+/// The inline `auth/step-up/approve-request/0.5` payload: `boundTo` present,
 /// `sessionId` absent, `accepts` exactly the kinds this gate will take for this
 /// subject — `approverSigned` with its `approvers` when they hold any,
 /// `webauthn` with its options when a passkey of theirs counts — and no other
-/// (approve-request 0.4, producer item 8).
+/// (approve-request 0.5, producer item 8).
 ///
 /// Built as JSON and read back through the generated type's schema check, so a
 /// request this service emits is one the specification admits.
@@ -694,7 +694,7 @@ fn approve_request_payload(
         "boundTo": bound_to,
         "reason": reason,
         "targetAcr": "aal2",
-        "ttl": MARK_TTL_SECS,
+        "ttlSeconds": MARK_TTL_SECS,
     });
     if !approvers.is_empty() {
         accepts.push(EVIDENCE_APPROVER_SIGNED);
@@ -739,7 +739,7 @@ fn approve_request_payload(
 }
 
 /// The refusal a gated operation answers with while no gesture is recorded:
-/// `permissionDenied`, with the ceremony inline (approve-request 0.4, *Inline
+/// `permissionDenied`, with the ceremony inline (approve-request 0.5, *Inline
 /// delivery*).
 pub fn refusal_details(request: &approve_request::Payload) -> Value {
     json!({ "stepUpRequest": request })
@@ -1352,7 +1352,7 @@ mod tests {
         assert!(v.get("approvers").is_none(), "{v}");
     }
 
-    /// approve-request 0.4, producer item 8: `approvers` exactly when
+    /// approve-request 0.5, producer item 8: `approvers` exactly when
     /// `approverSigned` is accepted, WebAuthn options exactly when `webauthn`
     /// is.
     #[test]

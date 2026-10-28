@@ -483,7 +483,7 @@ mod tests {
 
         let msg = serde_json::json!({
             "id": "m-stepup",
-            "type": "https://trusttasks.org/spec/auth/step-up/approve-request/0.1",
+            "type": "https://trusttasks.org/spec/auth/step-up/approve-request/0.5",
             "from": alice_did,
             "to": [bob_did],
             "body": { "challenge": "abc" }

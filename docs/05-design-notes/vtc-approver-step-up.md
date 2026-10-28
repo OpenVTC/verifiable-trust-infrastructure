@@ -167,7 +167,7 @@ label, enrolled_at, enrolled_via, last_used_at }`, `subject:<did>` → list.
 
 ```
 console ──(1) signed acl/grant (console key)──────────────▶ VTC gate
-        ◀─(2) stepUpRequired: approve-request 0.4
+        ◀─(2) stepUpRequired: approve-request 0.5
               {subject, challenge, wireDigest,
                accepts: [approverSigned, webauthn?],
                approvers: [did:key:…]}───────────────────── parks a pending mark

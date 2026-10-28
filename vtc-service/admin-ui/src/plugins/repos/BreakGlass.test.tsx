@@ -227,7 +227,7 @@ describe("the flag and the self-grant", () => {
       challenge: "c2FtcGxlLWNoYWxsZW5nZS0xMjM0NQ",
       boundTo: "zBoundDigest",
       reason: "Break glass: git.repo.own on github.com/acme/docs",
-      acceptableEvidence: ["webauthn"],
+      accepts: ["webauthn"],
       webauthn: { challenge: "c2FtcGxlLWNoYWxsZW5nZS0xMjM0NQ" },
     };
     vi.mocked(postSignedTrustTask).mockRejectedValue({
@@ -338,7 +338,7 @@ describe("single-administrator mode (VTI-APV-022)", () => {
       challenge: "c2FtcGxlLWNoYWxsZW5nZS0xMjM0NQ",
       boundTo: "zWaiverDigest",
       reason: "Single-administrator mode: self-grant git.repo.own on github.com/acme/docs",
-      acceptableEvidence: ["webauthn"],
+      accepts: ["webauthn"],
       webauthn: { challenge: "c2FtcGxlLWNoYWxsZW5nZS0xMjM0NQ" },
     };
     vi.mocked(postSignedTrustTask).mockRejectedValue({

@@ -30,14 +30,14 @@ const REQUEST: StepUpRequest = {
   boundTo: "zBoundDigest",
   reason: "Break glass: git.repo.own on github.com/acme/docs — “CVE fix”",
   targetAcr: "aal2",
-  acceptableEvidence: ["webauthn"],
+  accepts: ["webauthn"],
   webauthn: {
     challenge: CHALLENGE,
     allowCredentials: [{ type: "public-key", id: "AQID" }],
     userVerification: "required",
     rpId: "community.example",
   },
-  ttl: 300,
+  ttlSeconds: 300,
 };
 
 afterEach(async () => {
@@ -176,7 +176,7 @@ describe("answering with a step-up approver (approve-response 0.6)", () => {
     accepts: ["approverSigned", "webauthn"],
     approvers: [APPROVER],
     webauthn: REQUEST.webauthn,
-    ttl: 300,
+    ttlSeconds: 300,
   };
   const STATEMENT = {
     id: "urn:uuid:statement-1",
@@ -302,10 +302,12 @@ describe("answering with a step-up approver (approve-response 0.6)", () => {
     expect(creds.get).not.toHaveBeenCalled();
   });
 
-  it("reads 0.4's accepts and 0.3's acceptableEvidence alike", () => {
-    const bare = { ...REQUEST, acceptableEvidence: undefined };
-    expect(answerableHere({ ...bare, accepts: ["webauthn"] })).toBe(true);
-    expect(answerableHere({ ...bare, accepts: ["approverSigned"] })).toBe(false);
-    expect(answerableHere(REQUEST)).toBe(true);
+  it("reads the kinds from accepts, and a refusal without accepts is not a 0.5 request", () => {
+    expect(answerableHere({ ...REQUEST, accepts: ["webauthn"] })).toBe(true);
+    expect(answerableHere({ ...REQUEST, accepts: ["approverSigned"] })).toBe(false);
+    const { accepts: _, ...older } = REQUEST;
+    const refusal = { details: { stepUpRequest: { ...older, acceptableEvidence: ["webauthn"] } } };
+    expect(stepUpRequestOf(refusal)).toBeNull();
+    expect(stepUpRequestOf({ details: { stepUpRequest: REQUEST } })).toEqual(REQUEST);
   });
 });
