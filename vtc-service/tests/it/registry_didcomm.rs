@@ -86,7 +86,6 @@ async fn serve_once(
 }
 
 const RECORD_PUT: &str = "https://trusttasks.org/spec/registry/record/put/0.1";
-const RECORD_QUERY: &str = "https://trusttasks.org/spec/registry/record/query/0.1";
 /// The lowerCamelCase versions membership records are written and read with.
 const RECORD_PUT_0_3: &str = "https://trusttasks.org/spec/registry/record/put/0.3";
 const RECORD_QUERY_0_3: &str = "https://trusttasks.org/spec/registry/record/query/0.3";
