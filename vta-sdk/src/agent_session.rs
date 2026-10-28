@@ -15,7 +15,7 @@
 //! let agent = AgentSession::enroll(cfg).await?;
 //!
 //! // Use the VTA directly when you need to (sign, vault, …):
-//! let _keys = agent.client().list_keys(0, 50, None, None).await?;
+//! let _keys = agent.client().list_keys(None, 50, None, None).await?;
 //!
 //! // Or run the event loop: heartbeat + handle inbound wake/step-up messages.
 //! agent.run(|msg| async move {

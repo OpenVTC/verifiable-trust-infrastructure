@@ -350,6 +350,10 @@ const DESTRUCTIVE_VERBS: &[&str] = &[
     "revoke-session",
     "wipe",
     "disable",
+    // `did-management/{did,domain}/set-state`: disables (or re-enables) a DID or
+    // a whole domain — the retired `disable` folded into one task, so it takes
+    // `disable`'s confirmation.
+    "set-state",
     "deregister",
     "unassign",
     "retire-orphan",

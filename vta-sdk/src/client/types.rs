@@ -382,7 +382,14 @@ pub use crate::protocols::key_management::sign::SignResultBody as SignResponse;
 #[non_exhaustive]
 pub struct ListKeysResponse {
     pub keys: Vec<KeyRecord>,
-    pub total: u64,
+    /// `keys/list/0.2`: present exactly when more records remain; pass it back
+    /// as the next request's `cursor`.
+    #[serde(
+        default,
+        rename = "nextCursor",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub next_cursor: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

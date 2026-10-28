@@ -4307,9 +4307,9 @@ pub(crate) enum KeyCommands {
         /// Maximum number of keys to return
         #[arg(long, default_value = "50")]
         limit: u64,
-        /// Number of keys to skip
-        #[arg(long, default_value = "0")]
-        offset: u64,
+        /// Continue from a previous page: the `nextCursor` it printed
+        #[arg(long)]
+        cursor: Option<String>,
         /// FILTER: only keys with this status (`active` or `revoked`).
         #[arg(long)]
         status: Option<String>,

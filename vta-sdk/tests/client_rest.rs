@@ -32,7 +32,7 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 // the payload is what the VTA actually acts on.
 
 const TASK_ACL_LIST: &str = "https://trusttasks.org/spec/acl/list/0.1";
-const TASK_KEYS_LIST: &str = "https://trusttasks.org/spec/keys/list/0.1";
+const TASK_KEYS_LIST: &str = "https://trusttasks.org/spec/keys/list/0.2";
 const TASK_AUDIT_LIST: &str = "https://trusttasks.org/spec/audit/list/0.1";
 /// `get_key_secret` dispatches this: the operation moved to the seeds slice
 /// because it acts on the seed behind the key, not the key itself.
@@ -462,14 +462,14 @@ async fn list_keys_paginates_query_params() {
         .and(body_partial_json(json!({
             "type": TASK_KEYS_LIST,
             "payload": {
-                "offset": 10, "limit": 5,
+                "cursor": "k1.page", "limit": 5,
                 "status": "active", "contextId": "ctx-a"
             }
         })))
         .respond_with(
             tt_ok(json!({
                 "keys": [key_record_json("k1")],
-                "total": 1
+                "nextCursor": "k1.next"
             }))
             .await,
         )
@@ -478,10 +478,10 @@ async fn list_keys_paginates_query_params() {
         .await;
     let c = client(&server).await;
     let resp = c
-        .list_keys(10, 5, Some("active"), Some("ctx-a"))
+        .list_keys(Some("k1.page"), 5, Some("active"), Some("ctx-a"))
         .await
         .unwrap();
-    assert_eq!(resp.total, 1);
+    assert_eq!(resp.next_cursor.as_deref(), Some("k1.next"));
     assert_eq!(resp.keys.len(), 1);
 }
 
@@ -1943,7 +1943,7 @@ async fn check_auth_false_when_401() {
 async fn fetch_context_secrets_walks_all_pages() {
     let server = MockServer::start().await;
 
-    // Page 1: 100 keys, total = 101
+    // Page 1: 100 keys and a cursor to the rest
     let mut page1_keys = Vec::new();
     for i in 0..100 {
         page1_keys.push(key_record_json(&format!("k{i}")));
@@ -1953,15 +1953,18 @@ async fn fetch_context_secrets_walks_all_pages() {
         .and(auth_match())
         .and(body_partial_json(json!({
             "type": TASK_KEYS_LIST,
-            "payload": {"offset": 0}
+            "payload": {"limit": 100}
         })))
         .respond_with(
             tt_ok(json!({
                 "keys": page1_keys,
-                "total": 101
+                "nextCursor": "k1.page-2"
             }))
             .await,
         )
+        // The second page's request carries `limit` too, so this mock would
+        // match it: answer the first page once and let the next fall through.
+        .up_to_n_times(1)
         .expect(1)
         .mount(&server)
         .await;
@@ -1972,12 +1975,11 @@ async fn fetch_context_secrets_walks_all_pages() {
         .and(auth_match())
         .and(body_partial_json(json!({
             "type": TASK_KEYS_LIST,
-            "payload": {"offset": 100}
+            "payload": {"cursor": "k1.page-2"}
         })))
         .respond_with(
             tt_ok(json!({
-                "keys": [key_record_json("k100")],
-                "total": 101
+                "keys": [key_record_json("k100")]
             }))
             .await,
         )

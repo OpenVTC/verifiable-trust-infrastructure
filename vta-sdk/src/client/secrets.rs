@@ -12,12 +12,17 @@ impl VtaClient {
         context_id: &str,
     ) -> Result<Vec<affinidi_tdk::secrets_resolver::secrets::Secret>, VtaError> {
         let page_size = 100u64;
-        let mut offset = 0u64;
+        let mut cursor: Option<String> = None;
         let mut secrets = Vec::new();
 
         loop {
             let resp = self
-                .list_keys(offset, page_size, Some("active"), Some(context_id))
+                .list_keys(
+                    cursor.as_deref(),
+                    page_size,
+                    Some("active"),
+                    Some(context_id),
+                )
                 .await?;
 
             if resp.keys.is_empty() {
@@ -30,9 +35,9 @@ impl VtaClient {
                 secrets.push(secret);
             }
 
-            offset += resp.keys.len() as u64;
-            if offset >= resp.total {
-                break;
+            match resp.next_cursor {
+                Some(next) => cursor = Some(next),
+                None => break,
             }
         }
 

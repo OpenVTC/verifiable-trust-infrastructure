@@ -268,10 +268,10 @@ async fn get_config_via_didcomm() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn list_keys_via_didcomm() {
     let (mediator, responder, client) = build_didcomm(|msg_type, body| {
-        if is_tt(msg_type, body, trust_tasks::TASK_KEYS_LIST_0_1) {
+        if is_tt(msg_type, body, trust_tasks::TASK_KEYS_LIST_0_2) {
             tt_ok(
-                trust_tasks::TASK_KEYS_LIST_0_1,
-                json!({"keys": [key_record_json("k1"), key_record_json("k2")], "total": 2}),
+                trust_tasks::TASK_KEYS_LIST_0_2,
+                json!({"keys": [key_record_json("k1"), key_record_json("k2")]}),
             )
         } else {
             no_handler()
@@ -279,8 +279,8 @@ async fn list_keys_via_didcomm() {
     })
     .await;
 
-    let resp = client.list_keys(0, 10, None, None).await.unwrap();
-    assert_eq!(resp.total, 2);
+    let resp = client.list_keys(None, 10, None, None).await.unwrap();
+    assert_eq!(resp.keys.len(), 2);
     assert_eq!(resp.keys.len(), 2);
 
     shutdown_all(client, responder, mediator).await;
@@ -1136,7 +1136,7 @@ async fn list_keys_problem_report_maps_to_typed_error() {
     })
     .await;
 
-    let err = client.list_keys(0, 10, None, None).await.unwrap_err();
+    let err = client.list_keys(None, 10, None, None).await.unwrap_err();
     assert!(matches!(err, VtaError::Auth(_)), "got {err:?}");
 
     shutdown_all(client, responder, mediator).await;
@@ -1149,7 +1149,7 @@ async fn list_keys_unknown_problem_code_via_didcomm() {
     })
     .await;
 
-    let err = client.list_keys(0, 10, None, None).await.unwrap_err();
+    let err = client.list_keys(None, 10, None, None).await.unwrap_err();
     match err {
         VtaError::DidcommRemote { code, .. } => assert_eq!(code, "e.custom.weird"),
         other => panic!("expected DidcommRemote, got {other:?}"),

@@ -64,8 +64,8 @@ mod wire {
 
     /// `trust-task-discovery/0.1` — what `supported_trust_tasks` asks.
     pub const DISCOVERY: &str = t::TASK_TRUST_TASK_DISCOVERY_0_1;
-    /// `keys/list/0.1`.
-    pub const KEYS_LIST: &str = t::TASK_KEYS_LIST_0_1;
+    /// `keys/list/0.2`.
+    pub const KEYS_LIST: &str = t::TASK_KEYS_LIST_0_2;
     /// `keys/sign/0.1` — the signing oracle.
     pub const KEYS_SIGN: &str = t::TASK_KEYS_SIGN_0_1;
     /// `vault/list/0.4`.
@@ -116,9 +116,9 @@ pub struct SupportedTasksParams {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ListKeysParams {
-    /// Pagination offset (default 0).
+    /// The previous page's `nextCursor` (omit for the first page).
     #[serde(default)]
-    pub offset: Option<u64>,
+    pub cursor: Option<String>,
     /// Max keys to return (default 50).
     #[serde(default)]
     pub limit: Option<u64>,
@@ -568,7 +568,7 @@ impl VtaMcp {
                 "list_keys",
                 Some(wire::KEYS_LIST),
                 json!({
-                    "offset": p.offset,
+                    "cursor": p.cursor,
                     "limit": p.limit,
                     "status": p.status,
                     "contextId": p.context_id,
@@ -583,7 +583,7 @@ impl VtaMcp {
         let result = match self.client() {
             Ok(client) => client
                 .list_keys(
-                    p.offset.unwrap_or(0),
+                    p.cursor.as_deref(),
                     p.limit.unwrap_or(50),
                     p.status.as_deref(),
                     p.context_id.as_deref(),

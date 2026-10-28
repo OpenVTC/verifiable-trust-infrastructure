@@ -408,11 +408,16 @@ impl VtaIdentitySource<'_> {
         primary: Option<&str>,
     ) -> affinidi_messaging_mediator_admin::Result<Vec<String>> {
         let mut dids = std::collections::BTreeSet::new();
-        let mut offset = 0;
+        let mut cursor: Option<String> = None;
         loop {
             let page = self
                 .client
-                .list_keys(offset, KEY_PAGE, Some("active"), Some(context_id))
+                .list_keys(
+                    cursor.as_deref(),
+                    KEY_PAGE,
+                    Some("active"),
+                    Some(context_id),
+                )
                 .await
                 .map_err(|e| {
                     ConsoleError::Identity(format!("listing keys of {context_id}: {e}"))
@@ -425,9 +430,9 @@ impl VtaIdentitySource<'_> {
                     dids.insert(did);
                 }
             }
-            offset += page.keys.len() as u64;
-            if offset >= page.total {
-                break;
+            match page.next_cursor {
+                Some(next) => cursor = Some(next),
+                None => break,
             }
         }
         Ok(order_dids(dids, primary))
@@ -443,11 +448,16 @@ impl VtaIdentitySource<'_> {
         did: &str,
     ) -> affinidi_messaging_mediator_admin::Result<Vec<Secret>> {
         let mut secrets = Vec::new();
-        let mut offset = 0;
+        let mut cursor: Option<String> = None;
         loop {
             let page = self
                 .client
-                .list_keys(offset, KEY_PAGE, Some("active"), Some(context_id))
+                .list_keys(
+                    cursor.as_deref(),
+                    KEY_PAGE,
+                    Some("active"),
+                    Some(context_id),
+                )
                 .await
                 .map_err(|e| {
                     ConsoleError::Identity(format!("listing keys of {context_id}: {e}"))
@@ -475,9 +485,9 @@ impl VtaIdentitySource<'_> {
                     .map_err(|e| ConsoleError::Identity(format!("{kid}: {e}")))?;
                 secrets.push(secret);
             }
-            offset += page.keys.len() as u64;
-            if offset >= page.total {
-                break;
+            match page.next_cursor {
+                Some(next) => cursor = Some(next),
+                None => break,
             }
         }
         if secrets.is_empty() {

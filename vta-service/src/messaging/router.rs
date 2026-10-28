@@ -466,7 +466,7 @@ mod keyring_vti_09_27 {
     use serde_json::{Value, json};
     use trust_tasks_didcomm::ENVELOPE_TYPE;
 
-    const KEYS_LIST: &str = "https://trusttasks.org/spec/keys/list/0.1";
+    const KEYS_LIST: &str = "https://trusttasks.org/spec/keys/list/0.2";
 
     /// Send `body` as the DIDComm envelope body from `sender`, through the
     /// router the inbound loop calls, and return the reply.

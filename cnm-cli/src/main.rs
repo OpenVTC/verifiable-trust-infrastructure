@@ -959,9 +959,9 @@ enum KeyCommands {
         /// Maximum number of keys to return
         #[arg(long, default_value = "50")]
         limit: u64,
-        /// Number of keys to skip
-        #[arg(long, default_value = "0")]
-        offset: u64,
+        /// Continue from a previous page: the `nextCursor` it printed
+        #[arg(long)]
+        cursor: Option<String>,
         /// FILTER: only keys with this status (`active` or `revoked`).
         #[arg(long)]
         status: Option<String>,
@@ -1861,10 +1861,10 @@ async fn main() {
             }
             KeyCommands::List {
                 limit,
-                offset,
+                cursor,
                 status,
                 context,
-            } => keys::cmd_key_list(&client, offset, limit, status, context).await,
+            } => keys::cmd_key_list(&client, cursor, limit, status, context).await,
             KeyCommands::Secrets { key_ids, context } => {
                 keys::cmd_key_secrets(&client, key_ids, context).await
             }
@@ -2567,7 +2567,7 @@ mod tests {
         let cmd = Commands::Keys {
             command: KeyCommands::List {
                 limit: 50,
-                offset: 0,
+                cursor: None,
                 status: None,
                 context: None,
             },

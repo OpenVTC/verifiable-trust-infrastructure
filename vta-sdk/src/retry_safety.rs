@@ -188,7 +188,7 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     // protecting are already gone by the time a retry arrives.
     (trust_tasks::TASK_SERVICES_DRAIN_CANCEL_1_0, Keyed),
     // ── Keys ────────────────────────────────────────────────────────────
-    (trust_tasks::TASK_KEYS_LIST_0_1, ReadOnly),
+    (trust_tasks::TASK_KEYS_LIST_0_2, ReadOnly),
     // The orphan-key case the OpenVTC retry helper already documents: a lost
     // reply mints a second key nobody references.
     (trust_tasks::TASK_KEYS_CREATE_0_1, Keyed),
@@ -278,11 +278,12 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     // ── did-management (remote DID-hosting control plane) ───────────────
     // Register/publish create a hosted record and a log entry respectively.
     (trust_tasks::TASK_DID_MANAGEMENT_DID_REGISTER_0_1, Keyed),
-    (trust_tasks::TASK_DID_MANAGEMENT_DID_PUBLISH_0_1, Keyed),
     (trust_tasks::TASK_DID_MANAGEMENT_DID_DELETE_0_1, RetrySafe),
-    (trust_tasks::TASK_DID_MANAGEMENT_DID_ENABLE_0_1, RetrySafe),
-    (trust_tasks::TASK_DID_MANAGEMENT_DID_DISABLE_0_1, RetrySafe),
-    (trust_tasks::TASK_DID_MANAGEMENT_DID_LIST_0_1, ReadOnly),
+    (
+        trust_tasks::TASK_DID_MANAGEMENT_DID_SET_STATE_0_1,
+        RetrySafe,
+    ),
+    (trust_tasks::TASK_DID_MANAGEMENT_DID_LIST_0_2, ReadOnly),
     (trust_tasks::TASK_DID_MANAGEMENT_DID_INFO_0_1, ReadOnly),
     (
         trust_tasks::TASK_DID_MANAGEMENT_DID_CHECK_NAME_0_1,
@@ -304,7 +305,7 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
         RetrySafe,
     ),
     (
-        trust_tasks::TASK_DID_MANAGEMENT_DOMAIN_DISABLE_0_1,
+        trust_tasks::TASK_DID_MANAGEMENT_DOMAIN_SET_STATE_0_1,
         RetrySafe,
     ),
     (trust_tasks::TASK_DID_MANAGEMENT_DOMAIN_PURGE_0_1, RetrySafe),
@@ -320,14 +321,14 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
         trust_tasks::TASK_DID_MANAGEMENT_DOMAIN_UNASSIGN_0_1,
         RetrySafe,
     ),
-    (trust_tasks::TASK_DID_MANAGEMENT_SERVER_REGISTER_0_1, Keyed),
+    (trust_tasks::TASK_DID_MANAGEMENT_SERVER_REGISTER_0_2, Keyed),
     (trust_tasks::TASK_DID_MANAGEMENT_SERVER_HEALTH_0_1, ReadOnly),
     (
         trust_tasks::TASK_DID_MANAGEMENT_SERVER_STATS_SYNC_0_1,
         RetrySafe,
     ),
     (
-        trust_tasks::TASK_DID_MANAGEMENT_REGISTRY_ADMIN_REGISTER_0_1,
+        trust_tasks::TASK_DID_MANAGEMENT_REGISTRY_ADMIN_REGISTER_0_2,
         Keyed,
     ),
     (
@@ -466,7 +467,7 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     (trust_tasks::TASK_CONSENT_DECISION_1_0, RetrySafe),
     (trust_tasks::TASK_TASK_CONSENT_DECISION_0_1, RetrySafe),
     (trust_tasks::TASK_CONSENT_REVOKE_1_0, RetrySafe),
-    (trust_tasks::TASK_CONSENT_LIST_1_0, ReadOnly),
+    (trust_tasks::TASK_CONSENT_LIST_1_1, ReadOnly),
     (trust_tasks::TASK_CONSENT_APPROVER_SET_1_0, RetrySafe),
     (trust_tasks::TASK_CONSENT_APPROVER_LIST_1_0, ReadOnly),
     // ── Credentials ─────────────────────────────────────────────────────
@@ -855,7 +856,7 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
         RetrySafety::ReadOnly,
     ),
     (
-        trust_tasks::TASK_PERSONA_PROFILE_TIMELINE_1_0,
+        trust_tasks::TASK_PERSONA_PROFILE_TIMELINE_1_1,
         RetrySafety::ReadOnly,
     ),
     // Each execution makes a new face with a new id.
@@ -879,8 +880,6 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
         trust_tasks::TASK_PERSONA_PROFILE_DELETE_1_0,
         RetrySafety::RetrySafe,
     ),
-    // The world tasks and the `facet` spellings they supersede classify alike:
-    // they are the same operation under two names for one release.
     (trust_tasks::TASK_PERSONA_WORLD_PUT_1_1, RetrySafety::Keyed),
     (
         trust_tasks::TASK_PERSONA_WORLD_LIST_1_0,
@@ -888,15 +887,6 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     ),
     (
         trust_tasks::TASK_PERSONA_WORLD_DELETE_1_0,
-        RetrySafety::RetrySafe,
-    ),
-    (trust_tasks::TASK_PERSONA_FACET_PUT_1_0, RetrySafety::Keyed),
-    (
-        trust_tasks::TASK_PERSONA_FACET_LIST_1_0,
-        RetrySafety::ReadOnly,
-    ),
-    (
-        trust_tasks::TASK_PERSONA_FACET_DELETE_1_0,
         RetrySafety::RetrySafe,
     ),
     (
@@ -956,11 +946,7 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
         RetrySafety::ReadOnly,
     ),
     (
-        trust_tasks::TASK_PERSONA_CORRELATION_ANALYZE_1_0,
-        RetrySafety::ReadOnly,
-    ),
-    (
-        trust_tasks::TASK_PERSONA_CORRELATION_ANALYZE_1_1,
+        trust_tasks::TASK_PERSONA_CORRELATION_ANALYZE_1_2,
         RetrySafety::ReadOnly,
     ),
     (

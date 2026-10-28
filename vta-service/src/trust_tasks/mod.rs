@@ -234,11 +234,9 @@ const KNOWN_FEATURE_GATED_URIS: &[&str] = &[
     // an entry here without a corresponding dispatcher addition will
     // surface as a parity-harness failure pointing back at this list.
     vta_sdk::trust_tasks::TASK_DID_MANAGEMENT_DID_REGISTER_0_1,
-    vta_sdk::trust_tasks::TASK_DID_MANAGEMENT_DID_PUBLISH_0_1,
     vta_sdk::trust_tasks::TASK_DID_MANAGEMENT_DID_DELETE_0_1,
-    vta_sdk::trust_tasks::TASK_DID_MANAGEMENT_DID_ENABLE_0_1,
-    vta_sdk::trust_tasks::TASK_DID_MANAGEMENT_DID_DISABLE_0_1,
-    vta_sdk::trust_tasks::TASK_DID_MANAGEMENT_DID_LIST_0_1,
+    vta_sdk::trust_tasks::TASK_DID_MANAGEMENT_DID_SET_STATE_0_1,
+    vta_sdk::trust_tasks::TASK_DID_MANAGEMENT_DID_LIST_0_2,
     vta_sdk::trust_tasks::TASK_DID_MANAGEMENT_DID_INFO_0_1,
     vta_sdk::trust_tasks::TASK_DID_MANAGEMENT_DID_CHECK_NAME_0_1,
     vta_sdk::trust_tasks::TASK_DID_MANAGEMENT_DID_CHANGE_OWNER_0_1,
@@ -246,15 +244,15 @@ const KNOWN_FEATURE_GATED_URIS: &[&str] = &[
     vta_sdk::trust_tasks::TASK_DID_MANAGEMENT_DID_PROBLEM_REPORT_0_1,
     vta_sdk::trust_tasks::TASK_DID_MANAGEMENT_DOMAIN_CREATE_0_1,
     vta_sdk::trust_tasks::TASK_DID_MANAGEMENT_DOMAIN_UPDATE_0_1,
-    vta_sdk::trust_tasks::TASK_DID_MANAGEMENT_DOMAIN_DISABLE_0_1,
+    vta_sdk::trust_tasks::TASK_DID_MANAGEMENT_DOMAIN_SET_STATE_0_1,
     vta_sdk::trust_tasks::TASK_DID_MANAGEMENT_DOMAIN_PURGE_0_1,
     vta_sdk::trust_tasks::TASK_DID_MANAGEMENT_DOMAIN_SET_DEFAULT_0_1,
     vta_sdk::trust_tasks::TASK_DID_MANAGEMENT_DOMAIN_ASSIGN_0_1,
     vta_sdk::trust_tasks::TASK_DID_MANAGEMENT_DOMAIN_UNASSIGN_0_1,
-    vta_sdk::trust_tasks::TASK_DID_MANAGEMENT_SERVER_REGISTER_0_1,
+    vta_sdk::trust_tasks::TASK_DID_MANAGEMENT_SERVER_REGISTER_0_2,
     vta_sdk::trust_tasks::TASK_DID_MANAGEMENT_SERVER_HEALTH_0_1,
     vta_sdk::trust_tasks::TASK_DID_MANAGEMENT_SERVER_STATS_SYNC_0_1,
-    vta_sdk::trust_tasks::TASK_DID_MANAGEMENT_REGISTRY_ADMIN_REGISTER_0_1,
+    vta_sdk::trust_tasks::TASK_DID_MANAGEMENT_REGISTRY_ADMIN_REGISTER_0_2,
     vta_sdk::trust_tasks::TASK_DID_MANAGEMENT_REGISTRY_DEREGISTER_0_1,
 ];
 
@@ -2404,7 +2402,7 @@ dispatch_table! {
         [ Mutating None false ],
     vta_sdk::trust_tasks::TASK_CONSENT_REVOKE_1_0 => consent::handle_revoke
         [ Mutating None false ],
-    vta_sdk::trust_tasks::TASK_CONSENT_LIST_1_0 => consent::handle_list
+    vta_sdk::trust_tasks::TASK_CONSENT_LIST_1_1 => consent::handle_list
         [ None Metadata false ],
     vta_sdk::trust_tasks::TASK_CONSENT_APPROVER_SET_1_0 => consent::handle_approver_set
         [ Mutating None false ],
@@ -2509,7 +2507,7 @@ dispatch_table! {
     vta_sdk::trust_tasks::TASK_CONTEXTS_DELETE_1_0 => contexts::handle_delete
         [ Destructive None false ],
     // ─── Keys slice ──────────────────────────────────────────────
-    vta_sdk::trust_tasks::TASK_KEYS_LIST_0_1 => keys::handle_list
+    vta_sdk::trust_tasks::TASK_KEYS_LIST_0_2 => keys::handle_list
         [ None Metadata false ],
     vta_sdk::trust_tasks::TASK_KEYS_CREATE_0_1 => keys::handle_create
         [ Mutating None false ],
@@ -2982,7 +2980,7 @@ dispatch_table! {
     // Holder-only reads of where a face is worn and what it has done.
     vta_sdk::trust_tasks::TASK_PERSONA_PROFILE_USAGE_1_0 => persona::handle_profile_usage
         [ None Metadata false ],
-    vta_sdk::trust_tasks::TASK_PERSONA_PROFILE_TIMELINE_1_0 => persona::handle_profile_timeline
+    vta_sdk::trust_tasks::TASK_PERSONA_PROFILE_TIMELINE_1_1 => persona::handle_profile_timeline
         [ None Metadata false ],
     vta_sdk::trust_tasks::TASK_PERSONA_PROFILE_PUT_1_1 => persona::handle_profile_put
         [ Mutating None false ],
@@ -3000,21 +2998,8 @@ dispatch_table! {
         [ None Metadata false ],
     vta_sdk::trust_tasks::TASK_PERSONA_WORLD_DELETE_1_0 => persona::handle_world_delete
         [ Destructive None false ],
-    // The retired `persona/facet/*` spellings, routed to the same handlers for
-    // one release. The specifications are retired rather than deleted
-    // (`supersededBy`), so a document already issued against one still
-    // validates; refusing it here would break a client that has not moved yet
-    // for a rename that costs it nothing. The payloads are identical but for
-    // `facetId`, which the handlers read through the generated type of
-    // whichever URI arrived.
     vta_sdk::trust_tasks::TASK_PERSONA_ATTRIBUTE_GET_1_0 => persona::handle_attribute_get
         [ None Metadata false ],
-    vta_sdk::trust_tasks::TASK_PERSONA_FACET_PUT_1_0 => persona::handle_facet_put
-        [ Mutating None false ],
-    vta_sdk::trust_tasks::TASK_PERSONA_FACET_LIST_1_0 => persona::handle_facet_list
-        [ None Metadata false ],
-    vta_sdk::trust_tasks::TASK_PERSONA_FACET_DELETE_1_0 => persona::handle_facet_delete
-        [ Destructive None false ],
     vta_sdk::trust_tasks::TASK_PERSONA_PROFILE_DELETE_1_0 => persona::handle_profile_delete
         [ Destructive None false ],
     // The critical gate. Holder-only, and Mutating because it materialises a
@@ -3058,11 +3043,7 @@ dispatch_table! {
     // The only task in the family that releases personal data to a third party.
     vta_sdk::trust_tasks::TASK_PERSONA_DISCLOSURE_PRESENT_1_0 => persona::handle_disclosure_present
         [ Mutating Secret true ],
-    vta_sdk::trust_tasks::TASK_PERSONA_CORRELATION_ANALYZE_1_1 => persona::handle_correlation_analyze
-        [ None Metadata false ],
-    // 1.0, retired: the same handler, answering in the words that version
-    // names its members by.
-    vta_sdk::trust_tasks::TASK_PERSONA_CORRELATION_ANALYZE_1_0 => persona::handle_correlation_analyze
+    vta_sdk::trust_tasks::TASK_PERSONA_CORRELATION_ANALYZE_1_2 => persona::handle_correlation_analyze
         [ None Metadata false ],
     // Describes the agent's capabilities, not the holder. Discloses nothing.
     vta_sdk::trust_tasks::TASK_PERSONA_RENDERERS_LIST_1_0 => persona::handle_renderers_list

@@ -30,7 +30,7 @@ use super::helpers::{
     success_response,
 };
 
-/// Handler for `keys/list/0.1`.
+/// Handler for `keys/list/0.2`.
 pub(super) async fn handle_list(
     state: &AppState,
     auth: &AuthClaims,
@@ -44,7 +44,7 @@ pub(super) async fn handle_list(
         &state.keys_ks,
         auth,
         operations::keys::ListKeysParams {
-            offset: req.offset,
+            cursor: req.cursor,
             limit: req.limit,
             status: req.status,
             context_id: req.context_id,

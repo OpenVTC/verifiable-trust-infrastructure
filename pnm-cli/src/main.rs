@@ -619,7 +619,7 @@ mod tests {
         let cmd = Commands::Keys {
             command: KeyCommands::List {
                 limit: 50,
-                offset: 0,
+                cursor: None,
                 status: None,
                 context: None,
             },

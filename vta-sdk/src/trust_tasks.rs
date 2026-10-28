@@ -338,7 +338,7 @@ pub const TASK_CONTEXTS_DELETE_1_0: &str = "https://trusttasks.org/spec/vta/cont
 
 /// `spec/vta/keys/list/1.0` — list key records (paginated, filterable).
 /// Payload: [`crate::protocols::key_management::list::ListKeysBody`].
-pub const TASK_KEYS_LIST_0_1: &str = "https://trusttasks.org/spec/keys/list/0.1";
+pub const TASK_KEYS_LIST_0_2: &str = "https://trusttasks.org/spec/keys/list/0.2";
 
 /// `spec/vta/keys/create/1.0` — derive a new key from the active seed.
 /// Payload: [`crate::protocols::key_management::create::CreateKeyBody`].
@@ -1162,9 +1162,10 @@ pub const TASK_PERSONA_PROFILE_REINSTATE_1_0: &str =
 pub const TASK_PERSONA_PROFILE_USAGE_1_0: &str =
     "https://trusttasks.org/spec/persona/profile/usage/1.0";
 
-/// `spec/persona/profile/timeline/1.0`
-pub const TASK_PERSONA_PROFILE_TIMELINE_1_0: &str =
-    "https://trusttasks.org/spec/persona/profile/timeline/1.0";
+/// `spec/persona/profile/timeline/1.1` — what has happened to a face; each
+/// event names its instant `occurredAt`.
+pub const TASK_PERSONA_PROFILE_TIMELINE_1_1: &str =
+    "https://trusttasks.org/spec/persona/profile/timeline/1.1";
 
 /// `spec/persona/profile/put/1.1`
 pub const TASK_PERSONA_PROFILE_PUT_1_1: &str =
@@ -1191,27 +1192,6 @@ pub const TASK_PERSONA_WORLD_LIST_1_0: &str = "https://trusttasks.org/spec/perso
 /// `spec/persona/world/delete/1.0`
 pub const TASK_PERSONA_WORLD_DELETE_1_0: &str =
     "https://trusttasks.org/spec/persona/world/delete/1.0";
-
-// The retired `persona/facet/*` spellings of the three above. An arrangement of
-// faces is a **world**; `facet` shared a stem with `face` while naming
-// something else. The specifications are retired rather than deleted
-// (`supersededBy`), so a document already issued against one still validates,
-// and an agent keeps routing it for a release. New work uses the constants
-// above; these exist so a client that has not moved yet is answered rather than
-// refused, and they go when the window closes.
-
-/// `spec/persona/facet/put/1.0` — retired, superseded by
-/// [`TASK_PERSONA_WORLD_PUT_1_1`].
-pub const TASK_PERSONA_FACET_PUT_1_0: &str = "https://trusttasks.org/spec/persona/facet/put/1.0";
-
-/// `spec/persona/facet/list/1.0` — retired, superseded by
-/// [`TASK_PERSONA_WORLD_LIST_1_0`].
-pub const TASK_PERSONA_FACET_LIST_1_0: &str = "https://trusttasks.org/spec/persona/facet/list/1.0";
-
-/// `spec/persona/facet/delete/1.0` — retired, superseded by
-/// [`TASK_PERSONA_WORLD_DELETE_1_0`].
-pub const TASK_PERSONA_FACET_DELETE_1_0: &str =
-    "https://trusttasks.org/spec/persona/facet/delete/1.0";
 
 /// `spec/persona/binding/set/1.0`
 pub const TASK_PERSONA_BINDING_SET_1_0: &str =
@@ -1269,18 +1249,10 @@ pub const TASK_PERSONA_DISCLOSURE_PRESENT_1_0: &str =
 pub const TASK_PERSONA_DISCLOSURE_HISTORY_1_0: &str =
     "https://trusttasks.org/spec/persona/disclosure/history/1.0";
 
-/// `spec/persona/correlation/analyze/1.1`
-///
-/// 1.1 renames three response members and nothing else: `facetId`, `facetIds`
-/// and `crossesFacets` are `worldId`, `worldIds` and `crossesWorlds`.
-pub const TASK_PERSONA_CORRELATION_ANALYZE_1_1: &str =
-    "https://trusttasks.org/spec/persona/correlation/analyze/1.1";
-
-/// `spec/persona/correlation/analyze/1.0` — retired, superseded by
-/// [`TASK_PERSONA_CORRELATION_ANALYZE_1_1`]. Answered for a release, with the
-/// response members spelled the way the version asked for them.
-pub const TASK_PERSONA_CORRELATION_ANALYZE_1_0: &str =
-    "https://trusttasks.org/spec/persona/correlation/analyze/1.0";
+/// `spec/persona/correlation/analyze/1.2` — where the holder's identities
+/// link. Each finding names its plain-language cause `reason` (1.1's `why`).
+pub const TASK_PERSONA_CORRELATION_ANALYZE_1_2: &str =
+    "https://trusttasks.org/spec/persona/correlation/analyze/1.2";
 
 /// `spec/persona/claim-types/list/1.0`
 pub const TASK_PERSONA_CLAIM_TYPES_LIST_1_0: &str =
@@ -1382,12 +1354,6 @@ pub const TASK_VTA_APP_STATE_PUT_MANY_1_0: &str =
 pub const TASK_DID_MANAGEMENT_DID_REGISTER_0_1: &str =
     "https://trusttasks.org/spec/did-management/did/register/0.1";
 
-/// `spec/did-management/did/publish/0.1` — publish a new log entry for
-/// an existing DID. Used for key rotation, service-endpoint updates,
-/// and any other did-document mutation the owner needs to record.
-pub const TASK_DID_MANAGEMENT_DID_PUBLISH_0_1: &str =
-    "https://trusttasks.org/spec/did-management/did/publish/0.1";
-
 /// `spec/did-management/did/delete/0.1` — soft-delete a DID. The
 /// `did.jsonl` log is preserved (the chain is append-only); the
 /// resolved endpoint returns a tombstone. Hard-delete requires
@@ -1395,23 +1361,18 @@ pub const TASK_DID_MANAGEMENT_DID_PUBLISH_0_1: &str =
 pub const TASK_DID_MANAGEMENT_DID_DELETE_0_1: &str =
     "https://trusttasks.org/spec/did-management/did/delete/0.1";
 
-/// `spec/did-management/did/enable/0.1` — re-enable a previously
-/// disabled DID. The owner reclaims operational control without
-/// re-registering.
-pub const TASK_DID_MANAGEMENT_DID_ENABLE_0_1: &str =
-    "https://trusttasks.org/spec/did-management/did/enable/0.1";
+/// `spec/did-management/did/set-state/0.1` — disable or re-enable a DID
+/// (successor to the retired `did/disable` and `did/enable`, and to the
+/// retired `did/publish` for a state change). Resolution of a disabled DID
+/// returns a `disabled` marker; disabling is reversible, unlike delete.
+pub const TASK_DID_MANAGEMENT_DID_SET_STATE_0_1: &str =
+    "https://trusttasks.org/spec/did-management/did/set-state/0.1";
 
-/// `spec/did-management/did/disable/0.1` — temporarily disable a DID.
-/// Resolution returns a `disabled` marker; the owner can re-enable
-/// later. Distinct from delete: delete is final, disable is reversible.
-pub const TASK_DID_MANAGEMENT_DID_DISABLE_0_1: &str =
-    "https://trusttasks.org/spec/did-management/did/disable/0.1";
-
-/// `spec/did-management/did/list/0.1` — list DIDs owned by the caller
-/// at the hosting service. Paginated; supports filtering by domain
-/// and status.
-pub const TASK_DID_MANAGEMENT_DID_LIST_0_1: &str =
-    "https://trusttasks.org/spec/did-management/did/list/0.1";
+/// `spec/did-management/did/list/0.2` — list DIDs owned by the caller
+/// at the hosting service, paged by `cursor` + `limit` → `nextCursor`;
+/// supports filtering by domain.
+pub const TASK_DID_MANAGEMENT_DID_LIST_0_2: &str =
+    "https://trusttasks.org/spec/did-management/did/list/0.2";
 
 /// `spec/did-management/did/info/0.1` — fetch metadata for a specific
 /// owned DID (current did-document, log digest, status, owner DID,
@@ -1460,11 +1421,12 @@ pub const TASK_DID_MANAGEMENT_DOMAIN_CREATE_0_1: &str =
 pub const TASK_DID_MANAGEMENT_DOMAIN_UPDATE_0_1: &str =
     "https://trusttasks.org/spec/did-management/domain/update/0.1";
 
-/// `spec/did-management/domain/disable/0.1` — freeze a domain. Existing
-/// DIDs resolve as `disabled`; no new DIDs can be registered under it.
-/// Required precondition for `domain/purge/0.1`.
-pub const TASK_DID_MANAGEMENT_DOMAIN_DISABLE_0_1: &str =
-    "https://trusttasks.org/spec/did-management/domain/disable/0.1";
+/// `spec/did-management/domain/set-state/0.1` — freeze or unfreeze a domain
+/// (successor to the retired `domain/disable`). A frozen domain's DIDs
+/// resolve as `disabled` and no new DIDs register under it; freezing is the
+/// precondition for `domain/purge/0.1`.
+pub const TASK_DID_MANAGEMENT_DOMAIN_SET_STATE_0_1: &str =
+    "https://trusttasks.org/spec/did-management/domain/set-state/0.1";
 
 /// `spec/did-management/domain/purge/0.1` — hard-delete a disabled
 /// domain + every DID under it. Irreversible. Grace window enforced
@@ -1490,11 +1452,11 @@ pub const TASK_DID_MANAGEMENT_DOMAIN_UNASSIGN_0_1: &str =
 
 // ─── DID-management — server/* (3 tasks) ─────────────────────────────────
 
-/// `spec/did-management/server/register/0.1` — register a new hosting
+/// `spec/did-management/server/register/0.2` — register a new hosting
 /// server with a control plane. Control-plane → server bootstrap path
 /// for distributed deployments.
-pub const TASK_DID_MANAGEMENT_SERVER_REGISTER_0_1: &str =
-    "https://trusttasks.org/spec/did-management/server/register/0.1";
+pub const TASK_DID_MANAGEMENT_SERVER_REGISTER_0_2: &str =
+    "https://trusttasks.org/spec/did-management/server/register/0.2";
 
 /// `spec/did-management/server/health/0.1` — control-plane → server
 /// health probe. Returns aliveness + outstanding-sync metrics so the
@@ -1511,11 +1473,11 @@ pub const TASK_DID_MANAGEMENT_SERVER_STATS_SYNC_0_1: &str =
 
 // ─── DID-management — registry/* (2 tasks) ───────────────────────────────
 
-/// `spec/did-management/registry/admin-register/0.1` — admin-side
+/// `spec/did-management/registry/admin-register/0.2` — admin-side
 /// registration of a server into the trust registry. Used by operators
 /// to seed a deployment.
-pub const TASK_DID_MANAGEMENT_REGISTRY_ADMIN_REGISTER_0_1: &str =
-    "https://trusttasks.org/spec/did-management/registry/admin-register/0.1";
+pub const TASK_DID_MANAGEMENT_REGISTRY_ADMIN_REGISTER_0_2: &str =
+    "https://trusttasks.org/spec/did-management/registry/admin-register/0.2";
 
 /// `spec/did-management/registry/deregister/0.1` — remove a server
 /// from the registry. The server's DIDs continue to resolve from cache
@@ -2150,9 +2112,9 @@ pub const TASK_TASK_CONSENT_DECISION_0_1: &str =
 /// conversation to default-deny.
 pub const TASK_CONSENT_REVOKE_1_0: &str = "https://trusttasks.org/spec/consent/revoke/1.0";
 
-/// `consent/list/1.0` — a bridge syncs / point-checks the grants it enforces,
+/// `consent/list/1.1` — a bridge syncs / point-checks the grants it enforces,
 /// so steady-state inbound is a local Allow/Deny lookup. Read-only.
-pub const TASK_CONSENT_LIST_1_0: &str = "https://trusttasks.org/spec/consent/list/1.0";
+pub const TASK_CONSENT_LIST_1_1: &str = "https://trusttasks.org/spec/consent/list/1.1";
 
 /// `consent/approver-set/1.0` — an admin binds the operator who approves consent
 /// for a platform within a context (and how the prompt routes). Admin-gated.
@@ -2475,7 +2437,7 @@ pub const ALL_URIS: &[&str] = &[
     TASK_CONTEXTS_PREVIEW_DELETE_1_0,
     TASK_CONTEXTS_DELETE_1_0,
     // Keys slice
-    TASK_KEYS_LIST_0_1,
+    TASK_KEYS_LIST_0_2,
     TASK_KEYS_CREATE_0_1,
     TASK_KEYS_IMPORT_0_1,
     TASK_KEYS_IMPORT_WRAPPING_KEY_0_1,
@@ -2529,11 +2491,9 @@ pub const ALL_URIS: &[&str] = &[
     TASK_VAULT_SIGN_TRUST_TASK_0_2,
     // DID-management slice (canonical spec/did-management/*)
     TASK_DID_MANAGEMENT_DID_REGISTER_0_1,
-    TASK_DID_MANAGEMENT_DID_PUBLISH_0_1,
     TASK_DID_MANAGEMENT_DID_DELETE_0_1,
-    TASK_DID_MANAGEMENT_DID_ENABLE_0_1,
-    TASK_DID_MANAGEMENT_DID_DISABLE_0_1,
-    TASK_DID_MANAGEMENT_DID_LIST_0_1,
+    TASK_DID_MANAGEMENT_DID_SET_STATE_0_1,
+    TASK_DID_MANAGEMENT_DID_LIST_0_2,
     TASK_DID_MANAGEMENT_DID_INFO_0_1,
     TASK_DID_MANAGEMENT_DID_CHECK_NAME_0_1,
     TASK_DID_MANAGEMENT_DID_CHANGE_OWNER_0_1,
@@ -2541,15 +2501,15 @@ pub const ALL_URIS: &[&str] = &[
     TASK_DID_MANAGEMENT_DID_PROBLEM_REPORT_0_1,
     TASK_DID_MANAGEMENT_DOMAIN_CREATE_0_1,
     TASK_DID_MANAGEMENT_DOMAIN_UPDATE_0_1,
-    TASK_DID_MANAGEMENT_DOMAIN_DISABLE_0_1,
+    TASK_DID_MANAGEMENT_DOMAIN_SET_STATE_0_1,
     TASK_DID_MANAGEMENT_DOMAIN_PURGE_0_1,
     TASK_DID_MANAGEMENT_DOMAIN_SET_DEFAULT_0_1,
     TASK_DID_MANAGEMENT_DOMAIN_ASSIGN_0_1,
     TASK_DID_MANAGEMENT_DOMAIN_UNASSIGN_0_1,
-    TASK_DID_MANAGEMENT_SERVER_REGISTER_0_1,
+    TASK_DID_MANAGEMENT_SERVER_REGISTER_0_2,
     TASK_DID_MANAGEMENT_SERVER_HEALTH_0_1,
     TASK_DID_MANAGEMENT_SERVER_STATS_SYNC_0_1,
-    TASK_DID_MANAGEMENT_REGISTRY_ADMIN_REGISTER_0_1,
+    TASK_DID_MANAGEMENT_REGISTRY_ADMIN_REGISTER_0_2,
     TASK_DID_MANAGEMENT_REGISTRY_DEREGISTER_0_1,
     // Config slice
     TASK_CONFIG_SHOW_0_1,
@@ -2632,7 +2592,7 @@ pub const ALL_URIS: &[&str] = &[
     TASK_CONSENT_DECISION_1_0,
     TASK_TASK_CONSENT_DECISION_0_1,
     TASK_CONSENT_REVOKE_1_0,
-    TASK_CONSENT_LIST_1_0,
+    TASK_CONSENT_LIST_1_1,
     TASK_CONSENT_APPROVER_SET_1_0,
     TASK_CONSENT_APPROVER_LIST_1_0,
     // Issued-credential lifecycle (spec/vta/credentials/*)
@@ -2739,14 +2699,11 @@ pub const ALL_URIS: &[&str] = &[
     TASK_PERSONA_PROFILE_RETIRE_1_0,
     TASK_PERSONA_PROFILE_REINSTATE_1_0,
     TASK_PERSONA_PROFILE_USAGE_1_0,
-    TASK_PERSONA_PROFILE_TIMELINE_1_0,
+    TASK_PERSONA_PROFILE_TIMELINE_1_1,
     TASK_PERSONA_PROFILE_PUT_1_1,
     TASK_PERSONA_PROFILE_GET_1_0,
     TASK_PERSONA_PROFILE_LIST_1_0,
     TASK_PERSONA_PROFILE_DELETE_1_0,
-    TASK_PERSONA_FACET_PUT_1_0,
-    TASK_PERSONA_FACET_LIST_1_0,
-    TASK_PERSONA_FACET_DELETE_1_0,
     TASK_PERSONA_WORLD_PUT_1_1,
     TASK_PERSONA_WORLD_LIST_1_0,
     TASK_PERSONA_WORLD_DELETE_1_0,
@@ -2764,8 +2721,7 @@ pub const ALL_URIS: &[&str] = &[
     TASK_PERSONA_DISCLOSURE_PREVIEW_1_0,
     TASK_PERSONA_DISCLOSURE_PRESENT_1_0,
     TASK_PERSONA_DISCLOSURE_HISTORY_1_0,
-    TASK_PERSONA_CORRELATION_ANALYZE_1_0,
-    TASK_PERSONA_CORRELATION_ANALYZE_1_1,
+    TASK_PERSONA_CORRELATION_ANALYZE_1_2,
     TASK_PERSONA_RENDERERS_LIST_1_0,
     TASK_PERSONA_CLAIM_TYPES_LIST_1_0,
     TASK_PERSONA_LOCAL_PROFILE_PUT_1_1,

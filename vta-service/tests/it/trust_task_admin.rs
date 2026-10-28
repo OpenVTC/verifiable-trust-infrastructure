@@ -807,7 +807,7 @@ async fn key_create_and_list() {
         .task(
             &ctx,
             &admin,
-            vta_sdk::trust_tasks::TASK_KEYS_LIST_0_1,
+            vta_sdk::trust_tasks::TASK_KEYS_LIST_0_2,
             json!({}),
         )
         .await;
@@ -932,7 +932,7 @@ async fn reader_can_list_keys() {
         .task(
             &ctx,
             &reader,
-            vta_sdk::trust_tasks::TASK_KEYS_LIST_0_1,
+            vta_sdk::trust_tasks::TASK_KEYS_LIST_0_2,
             json!({"contextId": "test-ctx"}),
         )
         .await;
