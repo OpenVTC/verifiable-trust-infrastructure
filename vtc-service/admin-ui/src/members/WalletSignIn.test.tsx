@@ -23,7 +23,7 @@ const json = (status: number, body: unknown) =>
 
 const err = (code: string, details: Record<string, unknown> = {}) =>
   json(422, {
-    type: "https://trusttasks.org/spec/trust-task-error/0.5",
+    type: "https://trusttasks.org/spec/trust-task-error/0.6",
     payload: { code, message: code, details },
   });
 

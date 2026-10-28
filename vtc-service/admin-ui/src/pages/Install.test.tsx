@@ -136,7 +136,7 @@ describe("install claim 0.3 with a VTA wallet", () => {
         task: TRUST_TASK_START_V0_3,
         status: 401,
         body: {
-          type: "https://trusttasks.org/spec/trust-task-error/0.5",
+          type: "https://trusttasks.org/spec/trust-task-error/0.6",
           payload: {
             code: "vtc/install/claim/start:invalidToken",
             message: "this install token and claim code do not open a claim",
