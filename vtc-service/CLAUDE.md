@@ -762,10 +762,10 @@ When adding a flow, add it here and a line to the root index.
   A namespace admin gets no forge role: role projection (`bridge::highest_repo_rights`) counts only rights held in the person's own
   name, sends an admin with none as `git.ns.admin` (no role), one entry per
   account, and never a namespace-level `projectRoles` job. Jobs are
-  `git-ns/bridge/job` 0.5 to a bridge that lists 0.5 in
-  `trust-task-discovery`, else 0.4 (`bridge::send_versioned`); never
-  downgrade, and `closePullRequest` (the pull-request gate,
-  `git_ns::pr_gate`) is never sent to a bridge without 0.5.
+  `git-ns/bridge/job` 0.6 only, sent only to a bridge that lists 0.6 in
+  `trust-task-discovery` 0.3 (`bridge::send_versioned`); never downgrade.
+  The bridge's `event` (0.5) and `result` (0.2) are served at their current
+  version only.
 - **Code**: `vtc-service/src/git_ns/` (`rules`, `ops`, `tasks`, `projection`,
   `bridge`, `lifecycle`), `vtc-service/src/routes/git_ns.rs`,
   `cnm-cli/src/git.rs`, `vtc-client/src/git_ns.rs`.

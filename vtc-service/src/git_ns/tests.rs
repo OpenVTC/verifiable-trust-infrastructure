@@ -32,9 +32,8 @@ const URI: &str = "https://trusttasks.org/spec/git-ns";
 /// `git-ns/namespace/reseat/0.4`, the only reseat version served.
 const RESEAT_URI: &str = <reseat3::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
-/// The current version of each task, the one these tests send. Every member-
-/// and administrator-facing task is served at it only; the bridge's own tasks
-/// also at their older versions, which the released bridge still sends.
+/// The current version of each task, the one these tests send. Every task is
+/// served at it only.
 fn uri(task: &str) -> String {
     let version = match task {
         "namespace/bind" | "namespace/list" | "repo/list" | "account/list" | "bridge/result"
@@ -87,10 +86,9 @@ struct FakeBridge {
     types: Mutex<Vec<String>>,
     /// Discovery requests answered.
     discoveries: Mutex<u32>,
-    /// When set, the bridge lists `git-ns/bridge/job/0.5` beside 0.4.
-    takes_v0_5: Mutex<bool>,
-    /// When set, the bridge lists `git-ns/bridge/job/0.6` too.
-    takes_v0_6: Mutex<bool>,
+    /// When set, the bridge predates `git-ns/bridge/job` 0.6 (`vgi-bridge`
+    /// before v0.26.0): it lists 0.4 and 0.5 only, and refuses 0.6.
+    pre_v0_6: Mutex<bool>,
 }
 
 #[async_trait]
@@ -107,14 +105,12 @@ impl BridgeClient for FakeBridge {
                 message: "this bridge handles git-ns/bridge/job only".into(),
             });
         }
-        let mut types = vec![super::bridge::JOB_TYPE.to_string()];
-        if *self.takes_v0_5.lock().unwrap() {
-            types.push(super::bridge::JOB_TYPE_V0_5.to_string());
+        if *self.pre_v0_6.lock().unwrap() {
+            return Ok(["0.4", "0.5"]
+                .map(|v| format!("{URI}/bridge/job/{v}"))
+                .to_vec());
         }
-        if *self.takes_v0_6.lock().unwrap() {
-            types.push(super::bridge::JOB_TYPE_V0_6.to_string());
-        }
-        Ok(types)
+        Ok(vec![super::bridge::JOB_TYPE.to_string()])
     }
 
     async fn send_job(
@@ -128,6 +124,12 @@ impl BridgeClient for FakeBridge {
             return Err(BridgeSendError::Rejected {
                 code: "unsupportedType".into(),
                 message: "this bridge handles git-ns/bridge/job 0.1 and 0.2".into(),
+            });
+        }
+        if *self.pre_v0_6.lock().unwrap() {
+            return Err(BridgeSendError::Rejected {
+                code: "unsupportedVersion".into(),
+                message: "this bridge handles git-ns/bridge/job 0.4 and 0.5".into(),
             });
         }
         self.jobs
@@ -1821,11 +1823,15 @@ fn every_git_ns_task_is_served() {
             "{task} {old} is still served"
         );
     }
-    // The bridge's own tasks keep the versions the released bridge sends.
+    // The bridge's own tasks too: `vgi-bridge` sends nothing older than
+    // event 0.5 and result 0.2 since v0.26.0.
     for v in ["0.1", "0.2", "0.3", "0.4"] {
-        assert!(served.contains(&format!("{URI}/bridge/event/{v}").as_str()));
+        assert!(
+            !served.contains(&format!("{URI}/bridge/event/{v}").as_str()),
+            "bridge/event {v} is still served"
+        );
     }
-    assert!(served.contains(&format!("{URI}/bridge/result/0.1").as_str()));
+    assert!(!served.contains(&format!("{URI}/bridge/result/0.1").as_str()));
     assert!(served.contains(&uri("roles/reproject").as_str()));
     // `bridge/job` is the VTC's to send, never to serve.
     assert!(!served.contains(&uri("bridge/job").as_str()));
@@ -4074,10 +4080,6 @@ async fn link_account(f: &Fixture, ns: &str, who: &Party, id: &str, login: &str)
     .await);
 }
 
-fn uri2(task: &str) -> String {
-    format!("{URI}/{task}/0.2")
-}
-
 async fn send_v(state: &AppState, who: &Party, type_uri: &str, payload: Value) -> TrustTaskOutcome {
     let mut doc: TrustTask<Value> =
         vta_sdk::trust_task_sign::build_unsigned(type_uri, payload, &who.did, TEST_VTC_DID)
@@ -4360,10 +4362,6 @@ fn carol_acct() -> Value {
 
 fn eve_acct() -> Value {
     json!({ "forge": "github.com", "id": "5550123", "login": "eve-dev" })
-}
-
-fn uri3(task: &str) -> String {
-    format!("{URI}/{task}/0.3")
 }
 
 /// `git-ns/drift/resolve` 0.3. An adopt names Carol — the one member whose
@@ -5008,7 +5006,7 @@ async fn reverting_a_role_added_on_the_forge_sends_bridge_job_0_2_with_remove_ac
     assert_eq!(job["kind"], "projectRoles");
     assert_eq!(job["repo"], RES);
     assert_eq!(job["removeAccounts"], json!([eve_acct()]));
-    // A bridge that takes 0.4 gets every job as 0.4.
+    // Every job goes out as 0.6.
     assert!(
         f.bridge
             .types
@@ -5092,6 +5090,42 @@ async fn a_queued_job_waits_for_a_bridge_before_0_4_to_be_upgraded() {
             .unwrap()
             .contains("upgrade the bridge")
     );
+}
+
+/// A bridge before `vgi-bridge` v0.26.0 lists job 0.4 and 0.5 only. The VTC
+/// sends 0.6 alone, so it is sent nothing — never a downgraded job — and the
+/// job waits for the upgrade.
+#[tokio::test]
+async fn a_bridge_that_lists_only_job_0_4_and_0_5_is_sent_nothing() {
+    let (f, _ns) = drift_fixture(json!([])).await;
+    *f.bridge.pre_v0_6.lock().unwrap() = true;
+    f.vtc
+        .state
+        .git_ns
+        .jobs_ks
+        .remove(format!("bridgever:{}", f.bridge_party.did))
+        .await
+        .unwrap();
+    let before = f.bridge.jobs.lock().unwrap().len();
+    super::bridge::project_roles(&f.vtc.state, true)
+        .await
+        .unwrap();
+    super::bridge::dispatch_due(&f.vtc.state).await.unwrap();
+    assert_eq!(
+        f.bridge.jobs.lock().unwrap().len(),
+        before,
+        "nothing is sent"
+    );
+    let jobs = super::bridge::list_jobs(&f.vtc.state.git_ns.jobs_ks)
+        .await
+        .unwrap();
+    let job = jobs
+        .iter()
+        .rev()
+        .find(|j| j.kind == super::bridge::JobKind::ProjectRoles)
+        .unwrap();
+    assert_eq!(job.state, super::bridge::JobState::Pending);
+    assert!(job.last_error.as_deref().unwrap().contains("0.6"));
 }
 
 #[tokio::test]
@@ -5236,7 +5270,7 @@ async fn a_manual_namespace_has_no_bridge_to_revert_with() {
 // ── follow-ups: git-ns/bridge/event 0.2 (trust-tasks #627) ──────────────────
 
 #[tokio::test]
-async fn bridge_event_0_2_is_served_and_a_transfer_detaches_wherever_it_goes() {
+async fn a_transfer_detaches_wherever_it_goes() {
     let f = fixture().await;
     let ns = bind_bridge(&f).await;
     adopt_with_forge_id(&f, RES, "100").await;
@@ -5245,7 +5279,7 @@ async fn bridge_event_0_2_is_served_and_a_transfer_detaches_wherever_it_goes() {
     ok(&send_v(
         &f.vtc.state,
         &f.bridge_party,
-        &uri2("bridge/event"),
+        &uri("bridge/event"),
         json!({ "namespace": ns, "event": { "type": "repoTransferred", "forgeId": "100", "from": RES, "to": "github.com/acme/elsewhere" } }),
     )
     .await);
@@ -5261,20 +5295,18 @@ async fn an_event_with_a_drift_item_outside_its_namespace_applies_nothing() {
     let f = fixture().await;
     let ns = bind_bridge(&f).await;
     adopt_with_forge_id(&f, RES, "100").await;
-    for v in [uri("bridge/event"), uri2("bridge/event")] {
-        let out = send_v(
-            &f.vtc.state,
-            &f.bridge_party,
-            &v,
-            json!({
-                "namespace": ns,
-                "event": { "type": "repoDeleted", "forgeId": "100", "resource": RES },
-                "drift": [{ "type": "bootstrapMissing", "resource": "github.com/beta/tools" }],
-            }),
-        )
-        .await;
-        assert_eq!(code(&out), "permissionDenied", "{v}");
-    }
+    let out = send_v(
+        &f.vtc.state,
+        &f.bridge_party,
+        &uri("bridge/event"),
+        json!({
+            "namespace": ns,
+            "event": { "type": "repoDeleted", "forgeId": "100", "resource": RES },
+            "drift": [{ "type": "bootstrapMissing", "resource": "github.com/beta/tools" }],
+        }),
+    )
+    .await;
+    assert_eq!(code(&out), "permissionDenied");
     let snap = Snapshot::load(&f.vtc.state.git_ns).await.unwrap();
     assert_eq!(snap.repo_at(RES).unwrap().state, RepoState::Active);
 }
@@ -6213,7 +6245,7 @@ async fn report_role_map_from(
         event["ladder"] = org_ladder();
     }
     let mut doc: TrustTask<Value> = vta_sdk::trust_task_sign::build_unsigned(
-        &uri3("bridge/event"),
+        &uri("bridge/event"),
         json!({ "namespace": ns, "event": event }),
         &bridge.did,
         TEST_VTC_DID,
@@ -6361,7 +6393,7 @@ async fn a_role_map_report_is_refused_unordered_or_outside_its_namespace() {
     let out = send_v(
         &f.vtc.state,
         &f.stranger,
-        &uri3("bridge/event"),
+        &uri("bridge/event"),
         json!({ "namespace": ns, "event": { "type": "roleMapReported", "roleMap": { "own": "admin", "maintain": "maintain", "commit": "none" }, "ladder": org_ladder() } }),
     )
     .await;

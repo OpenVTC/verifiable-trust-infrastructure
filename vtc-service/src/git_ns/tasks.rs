@@ -26,18 +26,10 @@ use serde_json::Value;
 use trust_tasks_rs::specs::git_ns::account::{
     link::v0_1 as link, link_status::v0_1 as link_status, unlink::v0_1 as unlink,
 };
-// The bridge's own tasks keep their older versions beside the current ones:
-// the released bridge (OpenVTC/verifiable-git-infrastructure `vgi-bridge`
-// v0.25.0) sends `git-ns/bridge/event` 0.3 by default (0.1, 0.2 or 0.4 as
-// configured) and `git-ns/bridge/result` 0.1, so refusing them would cut every
-// deployed bridge off. Every member- and administrator-facing task is served at
-// its current version only.
-#[allow(deprecated)]
-use trust_tasks_rs::specs::git_ns::bridge::{
-    event::v0_1 as event, event::v0_2 as event2, event::v0_3 as event3, event::v0_4 as event4,
-    result::v0_1 as result,
-};
-use trust_tasks_rs::specs::git_ns::bridge::{event::v0_5 as event5, result::v0_2 as result2};
+// The bridge's own tasks are served at their current versions only, like
+// every other task: `vgi-bridge` has sent nothing older than
+// `git-ns/bridge/event` 0.5 and `git-ns/bridge/result` 0.2 since v0.26.0.
+use trust_tasks_rs::specs::git_ns::bridge::{event::v0_5 as event, result::v0_2 as result};
 use trust_tasks_rs::specs::git_ns::drift::resolve::v0_4 as drift_resolve;
 use trust_tasks_rs::specs::git_ns::namespace::{
     bind::v0_2 as bind, reseat::v0_4 as reseat, unbind::v0_1 as unbind,
@@ -143,16 +135,10 @@ pub(crate) fn dispatcher() -> AsyncDispatcher<GitNsCtx, TrustTaskOutcome> {
         .on_async(handle_link_status)
         .on_async(handle_unlink)
         .on_async(handle_result)
-        .on_async(handle_result_v2)
+        // `git-ns/bridge/event/0.5`: serving it — and so listing it in
+        // `trust-task-discovery` — is what tells a bridge it may report pull
+        // requests (`pullRequestOpened`) here.
         .on_async(handle_event)
-        .on_async(handle_event_v2)
-        .on_async(handle_event_v3)
-        // `git-ns/bridge/event/0.4` (`pullRequestOpened`): served — and so
-        // listed in `trust-task-discovery` — beside 0.1 to 0.3, which is what
-        // tells a bridge it may report pull requests here.
-        .on_async(handle_event_v4)
-        // 0.5: 0.4 with nested repository paths (`git-ns/_shared/0.6`).
-        .on_async(handle_event_v5)
         .on_async(handle_right_list)
         .on_async(handle_right_issued_by_departed)
         .on_async(handle_bridge_job_list)
@@ -365,23 +351,7 @@ signed_handler!(
 );
 signed_handler!(handle_link, link::Payload, ops::account_link);
 signed_handler!(handle_unlink, unlink::Payload, ops::account_unlink);
-bridge_handler!(
-    handle_result_v2,
-    result2::Payload,
-    super::bridge::handle_result
-);
-/// `git-ns/bridge/result/0.1`, read as 0.2: a 0.1 document is a valid 0.2
-/// document (0.2 only admits nested repository paths), and the
-/// acknowledgement goes back as 0.1's, member for member.
-async fn result_v1(
-    state: &crate::server::AppState,
-    issuer: &str,
-    p: result::Payload,
-) -> Result<result::Response, OpError> {
-    let r = super::bridge::handle_result(state, issuer, convert(&p)?).await?;
-    convert(&r)
-}
-bridge_handler!(handle_result, result::Payload, result_v1);
+bridge_handler!(handle_result, result::Payload, super::bridge::handle_result);
 signed_handler!(
     handle_drift_resolve,
     drift_resolve::Payload,
@@ -440,69 +410,6 @@ signed_handler!(
     super::reproject::roles_reproject
 );
 
-/// Re-read `value` as another version's generated type, through its JSON.
-fn convert<T: serde::Serialize, U: serde::de::DeserializeOwned>(value: &T) -> Result<U, OpError> {
-    serde_json::from_value(serde_json::to_value(value).map_err(vti_common::error::AppError::from)?)
-        .map_err(|e| OpError::Malformed(format!("bridge payload: {e}")))
-}
-
-/// `git-ns/bridge/event` 0.1 to 0.4, read as 0.5. The five share every
-/// event type but 0.3's `roleMapReported` and 0.4's `pullRequestOpened`; 0.2
-/// changed only what the VTC does with a transfer, a reused name and a
-/// resource outside the namespace — rules this VTC applies to a 0.1 event too
-/// — and 0.5 only admits nested repository paths (`git-ns/_shared/0.6`). So an
-/// older payload is carried as 0.5 (which it is a valid instance of) into the
-/// one handler, and its acknowledgement goes back in the version it was sent.
-async fn event_as_v5<P, R>(
-    state: &crate::server::AppState,
-    issuer: &str,
-    issued_at: chrono::DateTime<chrono::Utc>,
-    p: P,
-) -> Result<R, OpError>
-where
-    P: serde::Serialize,
-    R: serde::de::DeserializeOwned,
-{
-    let v5: event5::Payload = convert(&p)?;
-    let ack = super::bridge::handle_event(state, issuer, issued_at, v5).await?;
-    Ok(serde_json::from_value(
-        serde_json::to_value(&ack).map_err(vti_common::error::AppError::from)?,
-    )
-    .map_err(vti_common::error::AppError::from)?)
-}
-async fn event_v1(
-    state: &crate::server::AppState,
-    issuer: &str,
-    issued_at: chrono::DateTime<chrono::Utc>,
-    p: event::Payload,
-) -> Result<event::Response, OpError> {
-    event_as_v5(state, issuer, issued_at, p).await
-}
-async fn event_v2(
-    state: &crate::server::AppState,
-    issuer: &str,
-    issued_at: chrono::DateTime<chrono::Utc>,
-    p: event2::Payload,
-) -> Result<event2::Response, OpError> {
-    event_as_v5(state, issuer, issued_at, p).await
-}
-async fn event_v3(
-    state: &crate::server::AppState,
-    issuer: &str,
-    issued_at: chrono::DateTime<chrono::Utc>,
-    p: event3::Payload,
-) -> Result<event3::Response, OpError> {
-    event_as_v5(state, issuer, issued_at, p).await
-}
-async fn event_v4(
-    state: &crate::server::AppState,
-    issuer: &str,
-    issued_at: chrono::DateTime<chrono::Utc>,
-    p: event4::Payload,
-) -> Result<event4::Response, OpError> {
-    event_as_v5(state, issuer, issued_at, p).await
-}
-
 /// As [`bridge_handler`], passing the document's `issuedAt` too: it orders
 /// role-map reports (`git-ns/bridge/event/0.3`, request step 5.2). The spine
 /// refuses a document without one before any handler runs.
@@ -523,15 +430,7 @@ macro_rules! event_handler {
         }
     };
 }
-event_handler!(handle_event, event::Payload, event_v1);
-event_handler!(handle_event_v2, event2::Payload, event_v2);
-event_handler!(handle_event_v3, event3::Payload, event_v3);
-event_handler!(handle_event_v4, event4::Payload, event_v4);
-event_handler!(
-    handle_event_v5,
-    event5::Payload,
-    super::bridge::handle_event
-);
+event_handler!(handle_event, event::Payload, super::bridge::handle_event);
 
 /// `git-ns/view/0.6` — any member, what they may see; with `scope:
 /// administrator`, everything in the namespaces they administer

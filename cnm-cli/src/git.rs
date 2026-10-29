@@ -689,8 +689,8 @@ fn guidance(code: &str, message: &str, did: &str) -> String {
              {bin} git revoke --subject <did> --right <right> --resource <repository>"
         ),
         "git-ns/drift/resolve:notRevertible" => "\nThe bridge cannot undo this change: it \
-             refused the job, or takes neither git-ns/bridge/job 0.4 nor 0.5, the versions this \
-             VTC sends. Remove it on the forge, or upgrade the bridge."
+             refused the job, or does not take git-ns/bridge/job 0.6, the version this VTC \
+             sends. Remove it on the forge, or upgrade the bridge."
             .to_string(),
         "git-ns/account/link:unsupportedForge" => format!(
             "\nA link is completed by a bridge, so it needs a bridge-mode namespace on that \
@@ -2235,7 +2235,7 @@ mod tests {
     #[test]
     fn a_not_revertible_refusal_explains_the_bridge_version() {
         let g = guidance("git-ns/drift/resolve:notRevertible", "refused", "did:key:z");
-        assert!(g.contains("bridge/job 0.4"), "{g}");
+        assert!(g.contains("bridge/job 0.6"), "{g}");
     }
 
     #[test]
