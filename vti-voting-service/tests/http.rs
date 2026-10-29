@@ -137,11 +137,11 @@ async fn only_a_served_community_registers_and_within_its_quota() {
     assert_eq!(answer["payload"]["code"], "unavailable");
 }
 
-/// The box serves `voting/election/{register,show}` at 0.2 only — the manifest names its
-/// instants `…At` (voting/_shared/0.2) — and says so to a 0.1 request rather than reading
-/// one it cannot.
+/// The box serves `voting/election/{register,show}` and `voting/board/read` at 0.2 only — the
+/// manifest and the lifecycle entries name their instants `…At` (voting/_shared/0.2) — and says
+/// so to a 0.1 request rather than reading one it cannot.
 #[tokio::test]
-async fn a_0_1_registration_or_show_is_unsupported_version() {
+async fn a_0_1_registration_show_or_board_read_is_unsupported_version() {
     let dir = std::env::temp_dir().join(format!("vti-voting-service-{}", Uuid::new_v4()));
     let community = Identity::from_seed(&[0x33; 32]).unwrap();
     let svc = state_serving(
@@ -153,15 +153,22 @@ async fn a_0_1_registration_or_show_is_unsupported_version() {
     );
     let box_did = svc.identity.did.clone();
     for (task, payload) in [
-        ("register", registration(&community, &box_did, "agm")),
         (
-            "show",
+            "election/register",
+            registration(&community, &box_did, "agm"),
+        ),
+        (
+            "election/show",
             json!({ "community": community.did, "electionId": "agm" }),
         ),
+        (
+            "board/read",
+            json!({ "community": community.did, "electionId": "agm", "from": 0, "limit": 1 }),
+        ),
     ] {
-        let mut d = doc(&format!("election/{task}"), &box_did, None, payload).await;
+        let mut d = doc(task, &box_did, None, payload).await;
         d["type"] = json!(format!(
-            "https://trusttasks.org/spec/voting/election/{task}/0.1#request"
+            "https://trusttasks.org/spec/voting/{task}/0.1#request"
         ));
         d["issuer"] = json!(community.did);
         let mut typed: TrustTask<Value> = serde_json::from_value(d).unwrap();
@@ -198,7 +205,11 @@ async fn doc(task: &str, to: &str, signer: Option<&Identity>, payload: Value) ->
         "id": format!("urn:uuid:{}", Uuid::new_v4()),
         "type": format!(
             "https://trusttasks.org/spec/voting/{task}/{}#request",
-            if matches!(task, "election/register" | "election/show") { "0.2" } else { "0.1" }
+            if matches!(task, "election/register" | "election/show" | "board/read") {
+                "0.2"
+            } else {
+                "0.1"
+            }
         ),
         "recipient": to,
         "issuedAt": Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),

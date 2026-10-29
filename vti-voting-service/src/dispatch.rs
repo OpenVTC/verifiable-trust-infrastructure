@@ -112,11 +112,12 @@ impl Task {
         }
     }
 
-    /// The version this service serves: `voting/election/{register,show}` at 0.2, whose
-    /// manifest names its instants `…At` (voting/_shared/0.2), every other task at 0.1.
+    /// The version this service serves: `voting/election/{register,show}` and
+    /// `voting/board/read` at 0.2, whose manifest and lifecycle entries name their instants
+    /// `…At` (voting/_shared/0.2), every other task at 0.1.
     fn version(self) -> &'static str {
         match self {
-            Task::Register | Task::Show => "0.2",
+            Task::Register | Task::Show | Task::Read => "0.2",
             _ => "0.1",
         }
     }

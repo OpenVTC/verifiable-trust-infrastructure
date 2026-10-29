@@ -67,6 +67,28 @@ pub fn require_current_manifest(manifest: &serde_json::Value) -> Result<(), Rule
     Ok(())
 }
 
+/// Why a board entry written under `voting/board/read/0.1` cannot be served or audited, if it is
+/// one: a lifecycle entry (`opened`, `closed`, `closedEarly`, `cancelled`) naming its instant `at`
+/// (voting/_shared/0.1) where voting/_shared/0.2 names it `occurredAt`.
+///
+/// The leaf hash is over the entry's member names, so renaming it would change the board's root
+/// and break every receipt and checkpoint already issued against it. It is refused by name
+/// instead.
+pub(crate) fn v0_1_lifecycle_entry(index: u64, entry: &serde_json::Value) -> Option<String> {
+    let lifecycle = matches!(
+        entry.get("kind").and_then(serde_json::Value::as_str),
+        Some("opened" | "closed" | "closedEarly" | "cancelled")
+    );
+    (lifecycle && entry.get("at").is_some() && entry.get("occurredAt").is_none()).then(|| {
+        format!(
+            "board entry {index} names its instant `at` (voting/board/read/0.1); this build \
+             serves and reads only voting/board/read/0.2, whose lifecycle entries name it \
+             `occurredAt`, and cannot rename it without changing the board. Finish or cancel \
+             the election on the previous release, or remove it"
+        )
+    })
+}
+
 /// SHA-256 of the manifest's RFC 8785 (JCS) canonicalization, over the JSON as received.
 ///
 /// # Errors
@@ -416,4 +438,23 @@ pub fn check_ballot(m: &Manifest, manifest_digest: &[u8; 32], b: &Ballot) -> Res
         )));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::v0_1_lifecycle_entry;
+
+    /// A lifecycle entry written under `voting/board/read/0.1` (`at`) is refused by name; one
+    /// written under 0.2 (`occurredAt`), and every other kind, is read.
+    #[test]
+    fn a_0_1_lifecycle_entry_is_refused_by_name() {
+        let old = json!({ "kind": "opened", "at": "2026-11-09T09:00:00Z" });
+        assert!(v0_1_lifecycle_entry(3, &old).is_some_and(|why| why.contains("board entry 3")));
+        let new = json!({ "kind": "closed", "occurredAt": "2026-11-09T09:00:00Z" });
+        assert!(v0_1_lifecycle_entry(0, &new).is_none());
+        let cast = json!({ "kind": "cast", "cast": {} });
+        assert!(v0_1_lifecycle_entry(0, &cast).is_none());
+    }
 }

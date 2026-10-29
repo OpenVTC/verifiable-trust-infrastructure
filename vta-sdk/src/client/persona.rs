@@ -434,7 +434,7 @@ impl VtaClient {
         since: Option<&str>,
         cursor: Option<&str>,
         limit: Option<u64>,
-    ) -> Result<trust_tasks_rs::specs::persona::profile::timeline::v1_0::Response, VtaError> {
+    ) -> Result<trust_tasks_rs::specs::persona::profile::timeline::v1_1::Response, VtaError> {
         let mut payload = serde_json::json!({ "profileId": profile_id });
         if let Some(c) = context_id {
             payload["contextId"] = c.into();
