@@ -345,6 +345,7 @@ pub(super) async fn handle_add_v0_3(
 
 /// `rooms/owner/group/remove/0.1` — remove a member's leaf, advancing the room at its host
 /// first. The mirror of [`handle_add`], on the same machinery.
+#[allow(deprecated)] // group/remove/0.1: a private room has no successor yet (spec gap).
 pub(super) async fn handle_remove(
     state: &AppState,
     auth: &AuthClaims,
@@ -943,7 +944,7 @@ impl<'a> HostCall<'a> {
         let info = self
             .send(
                 host,
-                vti_rooms::wire::ROOMS_INFO_TYPE,
+                vti_rooms::wire::ROOMS_INFO_V3_TYPE,
                 serde_json::json!({ "roomId": self.room_id, "presentation": minted.presentation }),
             )
             .await?;
@@ -1511,7 +1512,7 @@ impl HostCall<'_> {
         let info = self
             .send(
                 host,
-                vti_rooms::wire::ROOMS_INFO_TYPE,
+                vti_rooms::wire::ROOMS_INFO_V3_TYPE,
                 serde_json::json!({ "roomId": self.room_id, "presentation": minted.presentation }),
             )
             .await
@@ -1994,7 +1995,7 @@ mod tests {
                     let answer = {
                         let mut h = shared.lock().unwrap();
                         h.log.push(task.clone());
-                        if task == vti_rooms::wire::ROOMS_INFO_TYPE {
+                        if task == vti_rooms::wire::ROOMS_INFO_V3_TYPE {
                             Ok(serde_json::json!({
                                 "roomId": room_id, "visibility": h.visibility,
                                 "retentionPolicy": "chained", "epoch": h.epoch,

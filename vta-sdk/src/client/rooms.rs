@@ -392,6 +392,7 @@ impl VtaClient {
     /// and the specification still sends here. Call this inside [`VtaClient::idempotent`]: the task is `Keyed`, and a
     /// retry after a lost reply gets the first answer back instead of a `notMember`
     /// refusal that reads as though the wrong member had been named.
+    #[allow(deprecated)] // group/remove/0.1: a private room has no successor yet (spec gap).
     pub async fn room_group_remove(
         &self,
         room_id: &str,
@@ -1308,7 +1309,9 @@ pub fn unsigned_room_request(
 
 /// Whether `type_uri` is an offer type `rooms/keys/act/0.8` completes —
 /// `vtc/rooms/offers/list/{0.1,0.2,0.3,0.4}` or `vtc/rooms/offers/accept/0.1`, with or
-/// without `#request`.
+/// without `#request`. 0.8's table is the specification's, so it still names the
+/// superseded listings, though a community serves only 0.4.
+#[allow(deprecated)] // rooms/keys/act/0.8's own table names offers/list 0.1–0.3.
 pub fn is_offer_type(type_uri: &str) -> bool {
     use trust_tasks_rs::Payload as _;
     use trust_tasks_rs::specs::vtc::rooms::offers::{accept, list};

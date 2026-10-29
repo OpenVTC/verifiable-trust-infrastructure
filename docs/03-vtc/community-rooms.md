@@ -151,7 +151,7 @@ is the one an administrator most needs to recognise. There is no version precond
 administrators renaming at once, the later wins, and both are in the audit trail.
 
 A member offered a place sees the room's **current** label and description in
-`vtc/rooms/offers/list/0.2` — a rename reaches an open offer. Once they have accepted, no
+`vtc/rooms/offers/list/0.4` — a rename reaches an open offer. Once they have accepted, no
 member-side read shows a later rename yet. Other open consoles are told through the live
 channel's `communityRooms` topic (`vtc/admin/events` 0.4, to holders of
 `vtc.rooms.manage`) and re-read; the `rooms` topic is the host's, so a rename produces no
@@ -409,10 +409,10 @@ and a returning member is admitted to a room again only by an administrator.
 
 The member, signed with **their own DID** (the persona named in the offer):
 
-1. `vtc/rooms/offers/list/0.1` — their offers, each with the three credentials. They
-   store the membership and authority in their own VTA's vault
-   (`pnm cred-vault receive`). At `0.2` each offer also carries the room's current
-   description; never its tags. At `0.3` the first page also carries `renewals`: for a
+1. `vtc/rooms/offers/list/0.4` — their offers, each with the three credentials and the
+   room's current description, never its tags; the only version the community serves.
+   They store the membership and authority in their own VTA's vault
+   (`pnm cred-vault receive`). The first page also carries `renewals`: for a
    room they are in through a group's room binding
    ([groups](groups.md#room-bindings)), a fresh membership and authority issued before the
    ones they hold expire. They store each **in place of** the one it renews, never beside

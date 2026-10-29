@@ -339,7 +339,7 @@ async fn anchor_inner(
         &presenting,
         &resolver,
         &req.host,
-        vti_rooms::wire::ROOMS_RECORDS_LIST_TYPE,
+        vti_rooms::wire::ROOMS_RECORDS_LIST_V5_TYPE,
         // One record is enough: the head travels with any page, and asking for the room
         // would move a lot of metadata to learn three numbers.
         serde_json::json!({ "roomId": req.room_id, "limit": 1 }),
@@ -349,19 +349,20 @@ async fn anchor_inner(
         Ok(v) => v,
         Err(e) => return app_error_to_reject(&doc, e),
     };
-    let head: vti_rooms::wire::ListRecordsResponse = match serde_json::from_value(reply) {
-        Ok(h) => h,
-        Err(e) => {
-            return app_error_to_reject(
-                &doc,
-                vti_common::error::AppError::Validation(format!(
-                    "room host `{}` served a head this agent cannot read: {e}",
-                    req.host
-                )),
-            );
-        }
-    };
-    let Some(head_version) = head.head_version else {
+    let head: trust_tasks_rs::specs::rooms::records::list::v0_5::Response =
+        match serde_json::from_value(reply) {
+            Ok(h) => h,
+            Err(e) => {
+                return app_error_to_reject(
+                    &doc,
+                    vti_common::error::AppError::Validation(format!(
+                        "room host `{}` served a head this agent cannot read: {e}",
+                        req.host
+                    )),
+                );
+            }
+        };
+    let Some(head_version) = head.head_version.map(|h| h.0) else {
         return app_error_to_reject(
             &doc,
             vti_common::error::AppError::Validation(format!(
@@ -381,8 +382,8 @@ async fn anchor_inner(
             epoch,
             epoch_authenticator,
             head_version,
-            data_commitment: head.data_commitment.clone(),
-            record_count: head.record_count,
+            data_commitment: head.data_commitment.clone().map(|d| String::from(d.0)),
+            record_count: head.record_count.as_ref().map(|c| c.0),
         },
     )
     .await
@@ -401,8 +402,8 @@ async fn anchor_inner(
                     // misbehaving host benefits from.
                     "reconciled": head
                         .record_count
-                        .is_none_or(|committed| committed == head.records.len() as u64
-                            || head.cursor.is_some()),
+                        .is_none_or(|committed| committed.0 == head.records.len() as u64
+                            || head.next_cursor.is_some()),
                 }),
             )
         }

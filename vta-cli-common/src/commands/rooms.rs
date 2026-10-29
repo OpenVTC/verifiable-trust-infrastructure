@@ -2273,6 +2273,7 @@ fn earlier_removal_refused(
 /// redelivery, is reported as `earlierRemovalRefused`: that removal did not take effect, and
 /// nothing of this one was done — this says which member, and what to run.
 #[allow(clippy::too_many_arguments)]
+#[allow(deprecated)] // group/remove/0.1: a private room has no successor yet (spec gap).
 pub async fn cmd_rooms_owner_group_remove(
     client: &VtaClient,
     room_id: &str,

@@ -53,7 +53,7 @@ pub use vti_rooms::wire::{
     PutRecordResponse, ROOMS_CREATE_V2_TYPE, ROOMS_EPOCH_CHAIN_V2_TYPE, ROOMS_EPOCH_COMMITS_TYPE,
     ROOMS_EPOCH_MINT_TYPE, ROOMS_EPOCH_PRUNE_V2_TYPE, ROOMS_OWNER_CLAIM_TYPE,
     ROOMS_OWNER_TRANSFER_TYPE, ROOMS_RECORDS_CURATE_TYPE, ROOMS_RECORDS_GET_V2_TYPE,
-    ROOMS_RECORDS_LIST_TYPE, ROOMS_RECORDS_PUT_V3_TYPE, RelayedCommit, SealedContent,
+    ROOMS_RECORDS_PUT_V3_TYPE, RelayedCommit, SealedContent,
 };
 
 /// A caller's standing in one room.
@@ -768,13 +768,11 @@ fn is_room_read(type_uri: &str) -> bool {
     use trust_tasks_rs::specs::rooms;
     [
         ROOMS_RECORDS_GET_V2_TYPE,
-        ROOMS_RECORDS_LIST_TYPE,
         ROOMS_EPOCH_CHAIN_V2_TYPE,
         ROOMS_EPOCH_COMMITS_TYPE,
         rooms::records::list::v0_5::Payload::TYPE_URI,
         rooms::blobs::get::v0_2::Payload::TYPE_URI,
         rooms::blobs::chunk::v0_1::Payload::TYPE_URI,
-        rooms::info::v0_1::Payload::TYPE_URI,
         rooms::info::v0_3::Payload::TYPE_URI,
     ]
     .contains(&type_uri)

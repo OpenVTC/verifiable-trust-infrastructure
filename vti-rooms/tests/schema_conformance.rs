@@ -62,7 +62,7 @@ fn presentation() -> AuthorityPresentation {
 
 #[test]
 fn put_record_conforms_on_both_tiers() {
-    use trust_tasks_rs::specs::rooms::records::put::v0_1::Payload;
+    use trust_tasks_rs::specs::rooms::records::put::v0_3::Payload;
 
     let sealed = PutRecordBody {
         room_id: "did:webvh:example.com:rooms:northwind".into(),
@@ -104,7 +104,7 @@ fn put_record_conforms_on_both_tiers() {
 #[test]
 fn get_and_list_requests_conform() {
     use trust_tasks_rs::specs::rooms::records::get::v0_2::Payload as GetPayload;
-    use trust_tasks_rs::specs::rooms::records::list::v0_1::Payload as ListPayload;
+    use trust_tasks_rs::specs::rooms::records::list::v0_5::Payload as ListPayload;
 
     let get = GetRecordBody {
         room_id: "did:webvh:example.com:rooms:northwind".into(),
@@ -185,7 +185,7 @@ fn epoch_link(epoch: u32) -> EpochLink {
 /// `rooms/epoch/chain/0.1` — the request a joining member makes, and the rungs served back.
 #[test]
 fn epoch_chain_conforms() {
-    use trust_tasks_rs::specs::rooms::epoch::chain::v0_1::{Payload, Response};
+    use trust_tasks_rs::specs::rooms::epoch::chain::v0_2::{Payload, Response};
 
     let body = ChainBody {
         room_id: "did:webvh:example.com:rooms:northwind".into(),
@@ -246,8 +246,8 @@ fn a_subject_binding_conforms_under_its_published_name() {
 fn responses_conform() {
     use trust_tasks_rs::specs::rooms::create::v0_2::Response as CreateResponse;
     use trust_tasks_rs::specs::rooms::epoch::mint::v0_1::Response as MintResponse;
-    use trust_tasks_rs::specs::rooms::records::list::v0_1::Response as ListResponse;
-    use trust_tasks_rs::specs::rooms::records::put::v0_1::Response as PutResponse;
+    use trust_tasks_rs::specs::rooms::records::list::v0_5::Response as ListResponse;
+    use trust_tasks_rs::specs::rooms::records::put::v0_3::Response as PutResponse;
 
     check::<CreateResponse>(
         "CreateRoomResponse",
@@ -350,18 +350,22 @@ fn responses_conform() {
 
     // And with a cursor, which is what a host serves when more remain. The
     // member was in the published schema and this implementation never emitted
-    // it, so a caller could not tell a page from a room.
-    check::<ListResponse>(
-        "ListRecordsResponse mid-listing",
-        &serde_json::to_value(ListRecordsResponse {
-            records: records.clone(),
-            cursor: Some("v412".into()),
-            data_commitment: None,
-            record_count: None,
-            head_version: None,
-        })
-        .expect("serialise"),
-    );
+    // it, so a caller could not tell a page from a room. A host answers it as
+    // 0.5's `nextCursor` (`record_tasks::list_v5_response`).
+    let mut mid = serde_json::to_value(ListRecordsResponse {
+        records: records.clone(),
+        cursor: Some("v412".into()),
+        data_commitment: None,
+        record_count: None,
+        head_version: None,
+    })
+    .expect("serialise");
+    let cursor = mid
+        .as_object_mut()
+        .and_then(|o| o.remove("cursor"))
+        .expect("a cursor");
+    mid["nextCursor"] = cursor;
+    check::<ListResponse>("ListRecordsResponse mid-listing", &mid);
 }
 
 /// The single-record read, on every tier and on a tombstone.
@@ -895,12 +899,12 @@ fn every_dispatched_uri_is_the_published_one() {
 
     let published: Vec<(&str, &str)> = vec![
         (
-            ROOMS_RECORDS_PUT_TYPE,
-            <rooms::records::put::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+            ROOMS_RECORDS_PUT_V3_TYPE,
+            <rooms::records::put::v0_3::Payload as trust_tasks_rs::Payload>::TYPE_URI,
         ),
         (
-            ROOMS_RECORDS_LIST_TYPE,
-            <rooms::records::list::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+            ROOMS_RECORDS_LIST_V5_TYPE,
+            <rooms::records::list::v0_5::Payload as trust_tasks_rs::Payload>::TYPE_URI,
         ),
         (
             ROOMS_RECORDS_CURATE_TYPE,
@@ -911,8 +915,8 @@ fn every_dispatched_uri_is_the_published_one() {
             <rooms::epoch::mint::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
         ),
         (
-            ROOMS_EPOCH_CHAIN_TYPE,
-            <rooms::epoch::chain::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+            ROOMS_EPOCH_CHAIN_V2_TYPE,
+            <rooms::epoch::chain::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI,
         ),
         (
             ROOMS_OWNER_TRANSFER_TYPE,
@@ -927,18 +931,6 @@ fn every_dispatched_uri_is_the_published_one() {
             <rooms::epoch::commits::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
         ),
         (
-            ROOMS_RECORDS_PUT_V2_TYPE,
-            <rooms::records::put::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI,
-        ),
-        (
-            ROOMS_RECORDS_PUT_V3_TYPE,
-            <rooms::records::put::v0_3::Payload as trust_tasks_rs::Payload>::TYPE_URI,
-        ),
-        (
-            ROOMS_EPOCH_CHAIN_V2_TYPE,
-            <rooms::epoch::chain::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI,
-        ),
-        (
             ROOMS_EPOCH_PRUNE_V2_TYPE,
             <rooms::epoch::prune::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI,
         ),
@@ -949,10 +941,6 @@ fn every_dispatched_uri_is_the_published_one() {
         (
             ROOMS_INFO_V3_TYPE,
             <rooms::info::v0_3::Payload as trust_tasks_rs::Payload>::TYPE_URI,
-        ),
-        (
-            ROOMS_RECORDS_LIST_V5_TYPE,
-            <rooms::records::list::v0_5::Payload as trust_tasks_rs::Payload>::TYPE_URI,
         ),
         (
             ROOMS_RECORDS_PRUNE_V2_TYPE,
@@ -969,10 +957,6 @@ fn every_dispatched_uri_is_the_published_one() {
         (
             ROOMS_BLOBS_CHUNK_TYPE,
             <rooms::blobs::chunk::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
-        ),
-        (
-            ROOMS_INFO_TYPE,
-            <rooms::info::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
         ),
         (
             ROOMS_USAGE_TYPE,

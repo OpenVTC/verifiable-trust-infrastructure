@@ -51,7 +51,7 @@ use trust_tasks_rs::specs::vtc::rooms::community::{
 };
 use trust_tasks_rs::specs::vtc::rooms::memberships::list::v0_1 as memberships_list;
 use trust_tasks_rs::specs::vtc::rooms::offers::{
-    accept::v0_1 as accept, list::v0_2 as offers_list_v0_2, list::v0_4 as offers_list,
+    accept::v0_1 as accept, list::v0_4 as offers_list,
 };
 use trust_tasks_rs::{Payload, RejectReason, TrustTask};
 use vti_common::audit::{AuditEvent, CommunityRoomChangedData, FieldChange};
@@ -91,9 +91,6 @@ const ADD_EARLIER_REMOVAL_REFUSED: &str = owner_add::error_codes::EARLIER_REMOVA
 pub(crate) const MEMBERS_LIST_TYPE: &str = <members_list::Payload as Payload>::TYPE_URI;
 /// `vtc/rooms/offers/list/0.4` — the current listing, with renewals (`renewsAt`).
 pub(crate) const OFFERS_LIST_TYPE: &str = <offers_list::Payload as Payload>::TYPE_URI;
-/// `vtc/rooms/offers/list/0.2`, kept because `pnm-browser-plugin` (`@openvtc/pnm-core`)
-/// sends it; 0.1 and 0.3 are not served.
-pub(crate) const OFFERS_LIST_V0_2_TYPE: &str = <offers_list_v0_2::Payload as Payload>::TYPE_URI;
 pub(crate) const OFFERS_ACCEPT_TYPE: &str = <accept::Payload as Payload>::TYPE_URI;
 pub(crate) const MEMBERSHIPS_LIST_TYPE: &str = <memberships_list::Payload as Payload>::TYPE_URI;
 
@@ -107,7 +104,6 @@ pub(crate) const URIS: &[&str] = &[
     MEMBERS_REMOVE_TYPE,
     MEMBERS_LIST_TYPE,
     OFFERS_LIST_TYPE,
-    OFFERS_LIST_V0_2_TYPE,
     OFFERS_ACCEPT_TYPE,
     MEMBERSHIPS_LIST_TYPE,
 ];
@@ -143,8 +139,7 @@ pub(super) async fn dispatch(
         MEMBERS_ADD_TYPE => handle_members_add(state, ctx, doc).await,
         MEMBERS_REMOVE_TYPE => handle_members_remove(state, ctx, doc).await,
         MEMBERS_LIST_TYPE => handle_members_list(state, ctx, doc).await,
-        OFFERS_LIST_TYPE => handle_offers_list(state, ctx, doc, OffersShape::V0_4).await,
-        OFFERS_LIST_V0_2_TYPE => handle_offers_list(state, ctx, doc, OffersShape::V0_2).await,
+        OFFERS_LIST_TYPE => handle_offers_list(state, ctx, doc).await,
         OFFERS_ACCEPT_TYPE => handle_offers_accept(state, ctx, doc).await,
         MEMBERSHIPS_LIST_TYPE => handle_memberships_list(state, ctx, doc).await,
         _ => return None,
@@ -152,15 +147,6 @@ pub(super) async fn dispatch(
 }
 
 // ─── shared ──────────────────────────────────────────────────────────────
-
-/// The version of `vtc/rooms/offers/list` being answered: 0.2, each room with its
-/// description; 0.4, also the renewals of the admissions the member holds (0.3's, with
-/// `renews` named `renewsAt`).
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum OffersShape {
-    V0_2,
-    V0_4,
-}
 
 fn now() -> DateTime<Utc> {
     Utc::now()
@@ -1641,19 +1627,14 @@ async fn handle_offers_list(
     state: &AppState,
     ctx: &JoinAuthCtx,
     doc: TrustTask<Value>,
-    shape: OffersShape,
 ) -> TrustTaskOutcome {
     use crate::rooms::community::codes as c;
     let signer = match active_signer(state, ctx, &doc, c::OFFERS_LIST_NOT_A_MEMBER).await {
         Ok(s) => s,
         Err(reject) => return reject,
     };
-    let parsed = match shape {
-        OffersShape::V0_2 => parse_spec_payload::<offers_list_v0_2::Payload>(&doc)
-            .map(|p| (p.cursor.map(|c| c.to_string()), p.limit)),
-        OffersShape::V0_4 => parse_spec_payload::<offers_list::Payload>(&doc)
-            .map(|p| (p.cursor.map(|c| c.to_string()), p.limit)),
-    };
+    let parsed = parse_spec_payload::<offers_list::Payload>(&doc)
+        .map(|p| (p.cursor.map(|c| c.to_string()), p.limit));
     let (cursor, limit) = match parsed {
         Ok(p) => p,
         Err(reject) => return reject,
@@ -1675,7 +1656,7 @@ async fn handle_offers_list(
     // 0.4 (0.3 item 6): the latest renewal of each admission the member holds, until
     // what it renews expires — on the first page only, in full.
     let mut renewals = Vec::new();
-    if shape == OffersShape::V0_4 && cursor.is_none() {
+    if cursor.is_none() {
         for r in all.iter().filter(|r| r.state == MemberRecord::ADMITTED) {
             let Some(renewal) = &r.renewal else {
                 continue;
@@ -1763,10 +1744,7 @@ async fn handle_offers_list(
     if let Some(n) = next {
         body["nextCursor"] = json!(n);
     }
-    match shape {
-        OffersShape::V0_2 => respond::<offers_list_v0_2::Response>(&doc, body),
-        OffersShape::V0_4 => respond::<offers_list::Response>(&doc, body),
-    }
+    respond::<offers_list::Response>(&doc, body)
 }
 
 /// `vtc/rooms/memberships/list/0.1`: the community's own record of the signer's

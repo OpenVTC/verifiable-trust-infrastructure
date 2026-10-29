@@ -113,9 +113,7 @@ async fn task_subject(
     payload: &Value,
 ) -> Option<String> {
     let bare = type_uri.split('#').next().unwrap_or(type_uri);
-    if bare == vta_sdk::trust_tasks::TASK_ROOMS_KEYS_ACT_0_5
-        || bare == vta_sdk::trust_tasks::TASK_ROOMS_KEYS_ACT_0_8
-    {
+    if bare == vta_sdk::trust_tasks::TASK_ROOMS_KEYS_ACT_0_8 {
         return super::room_act::act_subject(state, auth, payload).await;
     }
     // `rooms/keys/label/0.1`'s `subjectPath` is `/member`: the member whose label it is,

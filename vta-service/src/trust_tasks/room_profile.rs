@@ -192,7 +192,7 @@ impl<'a> Speaker<'a> {
         }
         let info = self
             .send(
-                vti_rooms::wire::ROOMS_INFO_TYPE,
+                vti_rooms::wire::ROOMS_INFO_V3_TYPE,
                 serde_json::json!({ "roomId": self.room_id() }),
                 "read",
             )
@@ -306,13 +306,13 @@ impl<'a> Speaker<'a> {
     async fn head_version(&self, key: &str) -> Result<u64, ProfileError> {
         let reply = self
             .send(
-                vti_rooms::wire::ROOMS_RECORDS_LIST_TYPE,
+                vti_rooms::wire::ROOMS_RECORDS_LIST_V5_TYPE,
                 serde_json::json!({ "roomId": self.room_id(), "prefix": key, "limit": 1 }),
                 "read",
             )
             .await
             .map_err(|e| host_error(self.host, e))?;
-        let listing: vti_rooms::wire::ListRecordsResponse =
+        let listing: trust_tasks_rs::specs::rooms::records::list::v0_5::Response =
             serde_json::from_value(reply).map_err(|e| {
                 ProfileError::App(AppError::Internal(format!(
                     "room host `{}` served a listing this agent cannot read: {e}",
@@ -321,14 +321,17 @@ impl<'a> Speaker<'a> {
             })?;
         // Without a tree the host names no head; the newest version of the location itself
         // is then the best floor there is, and a miss is corrected by the version race.
-        Ok(listing.head_version.unwrap_or_else(|| {
-            listing
-                .records
-                .iter()
-                .filter_map(|r| r.get("version").and_then(Value::as_u64))
-                .max()
-                .unwrap_or(0)
-        }))
+        Ok(listing.head_version.map_or_else(
+            || {
+                listing
+                    .records
+                    .iter()
+                    .map(|r| r.version.get())
+                    .max()
+                    .unwrap_or(0)
+            },
+            |h| h.0,
+        ))
     }
 
     /// The `verification` member `rooms/keys/read` gives a record, for this one.
@@ -763,7 +766,7 @@ pub(super) async fn write(
             payload["expectedVersion"] = serde_json::json!(v);
         }
         let reply = sp
-            .send(vti_rooms::wire::ROOMS_RECORDS_PUT_TYPE, payload, "write")
+            .send(vti_rooms::wire::ROOMS_RECORDS_PUT_V3_TYPE, payload, "write")
             .await
             .map_err(|e| host_error(sp.host, e))?;
         let put: vti_rooms::wire::PutRecordResponse =

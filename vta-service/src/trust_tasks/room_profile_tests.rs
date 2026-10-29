@@ -58,7 +58,7 @@ async fn start_host_with(contend: bool) -> Host {
             async move {
                 if contend {
                     let doc: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
-                    if doc["type"] == vti_rooms::wire::ROOMS_RECORDS_PUT_TYPE
+                    if doc["type"] == vti_rooms::wire::ROOMS_RECORDS_PUT_V3_TYPE
                         && let Some(room) = doc["payload"]["roomId"].as_str()
                     {
                         let noise = vti_rooms::Record {
@@ -620,11 +620,11 @@ async fn browse_and_read_keep_the_profile_out_of_the_records() {
     let key = w["payload"]["key"].as_str().unwrap().to_string();
 
     let listed = body(
-        super::super::room_group::handle_browse(
+        super::super::room_group::handle_browse_v0_3(
             &s.owner.state,
             &admin(),
             request(
-                vta_sdk::trust_tasks::TASK_ROOMS_KEYS_BROWSE_0_1,
+                vta_sdk::trust_tasks::TASK_ROOMS_KEYS_BROWSE_0_3,
                 json!({ "roomId": s.room.did, "host": s.host.did }),
             ),
         )

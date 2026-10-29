@@ -76,10 +76,9 @@ use vti_rooms::wire::{
     ChainBody, ChainResponse, ClaimOwnerBody, CommitsBody, CommitsResponse, CreateRoomBody,
     CreateRoomResponse, CurateRecordBody, CurateRecordResponse, GetRecordBody, GetRecordResponse,
     ListRecordsBody, ListRecordsResponse, MintEpochBody, MintEpochResponse, OwnerResponse,
-    PruneBody, PruneResponse, PutRecordBody, PutRecordResponse, ROOMS_EPOCH_CHAIN_TYPE,
-    ROOMS_EPOCH_COMMITS_TYPE, ROOMS_EPOCH_MINT_TYPE, ROOMS_OWNER_CLAIM_TYPE,
-    ROOMS_OWNER_TRANSFER_TYPE, ROOMS_RECORDS_CURATE_TYPE, ROOMS_RECORDS_LIST_TYPE,
-    ROOMS_RECORDS_PUT_TYPE, TransferOwnerBody,
+    PruneBody, PruneResponse, PutRecordBody, PutRecordResponse, ROOMS_EPOCH_COMMITS_TYPE,
+    ROOMS_EPOCH_MINT_TYPE, ROOMS_OWNER_CLAIM_TYPE, ROOMS_OWNER_TRANSFER_TYPE,
+    ROOMS_RECORDS_CURATE_TYPE, TransferOwnerBody,
 };
 use vti_rooms::{
     ROOM_RECORDS_KEYSPACE, ROOMS_KEYSPACE, Record, RecordStatus, Room,
@@ -598,16 +597,13 @@ async fn route(state: &Arc<HostState>, doc: TrustTask<Value>) -> Answer {
         vti_rooms::record_tasks::RETENTION_SET_TYPE => {
             files::retention_set(state, &doc, payload).await
         }
-        ROOMS_RECORDS_PUT_TYPE => put(state, &doc, payload).await,
-        ROOMS_RECORDS_LIST_TYPE => list(state, &doc, payload).await,
         ROOMS_RECORDS_CURATE_TYPE => curate(state, &doc, payload).await,
         ROOMS_EPOCH_MINT_TYPE => mint(state, &doc, payload).await,
-        ROOMS_EPOCH_CHAIN_TYPE => epoch_chain(state, &doc, payload, false).await,
         vti_rooms::wire::ROOMS_EPOCH_CHAIN_V2_TYPE => {
             match files::checked_v0_1::<trust_tasks_rs::specs::rooms::epoch::chain::v0_2::Payload>(
                 &doc, payload,
             ) {
-                Ok(p) => epoch_chain(state, &doc, p, true).await,
+                Ok(p) => epoch_chain(state, &doc, p).await,
                 Err(a) => a,
             }
         }
@@ -624,11 +620,9 @@ async fn route(state: &Arc<HostState>, doc: TrustTask<Value>) -> Answer {
         ROOMS_OWNER_CLAIM_TYPE => claim_owner(state, &doc, payload).await,
         vti_rooms::revocation_tasks::PUT_TYPE => files::revocations_put(state, &doc, payload).await,
         vti_rooms::revocation_tasks::GET_TYPE => files::revocations_get(state, &doc, payload).await,
-        files::PUT_V2_TYPE => files::put_v2(state, &doc, payload).await,
         files::PUT_V3_TYPE => files::put_v3(state, &doc, payload).await,
         files::GET_V2_TYPE => files::get_v2(state, &doc, payload).await,
         files::DOWNLOAD_CHUNK_TYPE => files::download_chunk(state, &doc, payload).await,
-        files::INFO_TYPE => files::info(state, &doc, payload).await,
         files::USAGE_TYPE => files::usage(state, &doc, payload).await,
         files::UPLOAD_BEGIN_V2_TYPE => files::begin_v2(state, &doc, payload).await,
         files::UPLOAD_CHUNK_V2_TYPE => files::upload_chunk_v2(state, &doc, payload).await,
@@ -657,13 +651,10 @@ async fn route(state: &Arc<HostState>, doc: TrustTask<Value>) -> Answer {
 fn is_consequential(type_uri: &str) -> bool {
     !matches!(
         type_uri,
-        ROOMS_RECORDS_LIST_TYPE
-            | ROOMS_EPOCH_CHAIN_TYPE
-            | vti_rooms::wire::ROOMS_EPOCH_CHAIN_V2_TYPE
+        vti_rooms::wire::ROOMS_EPOCH_CHAIN_V2_TYPE
             | ROOMS_EPOCH_COMMITS_TYPE
             | files::BLOB_GET_V2_TYPE
             | files::DOWNLOAD_CHUNK_TYPE
-            | files::INFO_TYPE
             | files::USAGE_TYPE
             | files::GET_V2_TYPE
             | vti_rooms::record_tasks::LIST_V5_TYPE
@@ -786,19 +777,12 @@ async fn create(state: &HostState, doc: &TrustTask<Value>, payload: Value) -> An
     }
 }
 
-async fn put(state: &HostState, doc: &TrustTask<Value>, payload: Value) -> Answer {
-    put_with_blobs(state, doc, payload, None, None).await
-}
-
-/// Write a record: `rooms/records/put` 0.1 (`blobs: None`), 0.2, or 0.3.
+/// Write a record: `rooms/records/put/0.3`, read as [`PutRecordBody`] with its `blobs`.
+/// A write that names no blobs releases any the record's previous version named.
 ///
-/// A 0.1 write names no blobs, so rewriting a record that carried a file under
-/// 0.1 releases it — the new version does not name it, which is what 0.2 says a
-/// release is.
-///
-/// `cleartext_as_received` is a 0.3 write's `cleartext`, provenance and expiry included,
-/// which is stored in place of the 0.1 body's — exactly as the writer sent it (0.3 consumer
-/// item 11). The 0.1 body still decides the shape checks.
+/// `cleartext_as_received` is the write's `cleartext`, provenance and expiry included,
+/// which is stored in place of the body's — exactly as the writer sent it (consumer item
+/// 11). [`PutRecordBody`] still decides the shape checks.
 async fn put_with_blobs(
     state: &HostState,
     doc: &TrustTask<Value>,
@@ -971,18 +955,9 @@ async fn get_versioned(state: &HostState, doc: &TrustTask<Value>, payload: Value
     }
 }
 
-async fn list(state: &HostState, doc: &TrustTask<Value>, payload: Value) -> Answer {
-    list_versioned(state, doc, payload, 1).await
-}
-
-/// `rooms/records/list` 0.1; 0.2, whose rows also name their blobs; or 0.3, whose every
-/// page also carries the room's `lastPrune`.
-async fn list_versioned(
-    state: &HostState,
-    doc: &TrustTask<Value>,
-    payload: Value,
-    minor: u8,
-) -> Answer {
+/// `rooms/records/list/0.5`, read as [`ListRecordsBody`]: rows name their blobs, every page
+/// carries the room's `lastPrune`, and the continuation token is `nextCursor`.
+async fn list_records(state: &HostState, doc: &TrustTask<Value>, payload: Value) -> Answer {
     let req: ListRecordsBody = match serde_json::from_value(payload) {
         Ok(r) => r,
         Err(e) => {
@@ -1052,18 +1027,11 @@ async fn list_versioned(
                 record_count: head.as_ref().map(|h| h.record_count),
                 head_version: head.as_ref().map(|h| h.head_version),
             };
-            match minor {
-                1 => respond(doc, response),
-                _ => {
-                    // The room as it stands under the lock: its `lastPrune` is the one the
-                    // page and head were taken with.
-                    match storage::get_room(&state.rooms, &req.room_id).await {
-                        Ok(now_room) => {
-                            files::list_v5_response(&snapshot, doc, &now_room, response).await
-                        }
-                        Err(e) => from_app_error(doc, &e),
-                    }
-                }
+            // The room as it stands under the lock: its `lastPrune` is the one the page and
+            // head were taken with.
+            match storage::get_room(&state.rooms, &req.room_id).await {
+                Ok(now_room) => files::list_v5_response(&snapshot, doc, &now_room, response).await,
+                Err(e) => from_app_error(doc, &e),
             }
         }
         Err(e) => from_app_error(doc, &e),
@@ -1139,12 +1107,7 @@ async fn room_head(state: &HostState, room_id: &str) -> Option<vti_rooms::merkle
 /// same act. What leaves is ciphertext — the key that opens a rung is a storage key this
 /// host never holds — so a party with the whole chain and no epoch key learns only how many
 /// epochs the room has had, which its epoch number already told them.
-async fn epoch_chain(
-    state: &HostState,
-    doc: &TrustTask<Value>,
-    payload: Value,
-    v2: bool,
-) -> Answer {
+async fn epoch_chain(state: &HostState, doc: &TrustTask<Value>, payload: Value) -> Answer {
     let req: ChainBody = match serde_json::from_value(payload) {
         Ok(r) => r,
         Err(e) => {
@@ -1198,9 +1161,6 @@ async fn epoch_chain(
         room_id: req.room_id,
         links,
     };
-    if !v2 {
-        return respond(doc, response);
-    }
     files::record_refused_or(
         doc,
         vti_rooms::record_tasks::epoch_chain_v2_response(response, &room),
@@ -1873,7 +1833,7 @@ mod tests {
         // did:key-only host — refused before any signature check runs.
         let resolver_fail_doc: TrustTask<Value> = serde_json::from_value(json!({
             "id": "urn:uuid:00000000-0000-4000-8000-000000000030",
-            "type": ROOMS_RECORDS_PUT_TYPE,
+            "type": vti_rooms::wire::ROOMS_RECORDS_PUT_V3_TYPE,
             "issuer": "did:webvh:QmScid:example.com:glenn",
             "recipient": "did:key:zHost",
             "payload": {},
@@ -1891,7 +1851,7 @@ mod tests {
         // Bad signature: a real did:key, signed, then corrupted.
         let (signer_did, secret_mb) = did_key_from_seed(41);
         let signed = vta_sdk::trust_task_sign::build_signed(
-            ROOMS_RECORDS_PUT_TYPE,
+            vti_rooms::wire::ROOMS_RECORDS_PUT_V3_TYPE,
             json!({}),
             &signer_did,
             &secret_mb,
@@ -1991,7 +1951,7 @@ mod tests {
         for (key, body) in [("decision/one", "first"), ("decision/two", "second")] {
             let (status, out) = call(
                 &primary_app,
-                ROOMS_RECORDS_PUT_TYPE,
+                vti_rooms::wire::ROOMS_RECORDS_PUT_V3_TYPE,
                 serde_json::json!({
                     "roomId": f.room.room_id,
                     "key": key,
@@ -2114,7 +2074,7 @@ mod tests {
         let app = router(st);
         let (status, body) = call(
             &app,
-            ROOMS_RECORDS_PUT_TYPE,
+            vti_rooms::wire::ROOMS_RECORDS_PUT_V3_TYPE,
             serde_json::json!({
                 "roomId": f.room.room_id,
                 "key": "decision/three",
@@ -2171,7 +2131,7 @@ mod tests {
         // the thread included; only the per-document `id` differs.
         let request = async || {
             let mut doc = vta_sdk::trust_task_sign::build_unsigned(
-                ROOMS_RECORDS_LIST_TYPE,
+                vti_rooms::wire::ROOMS_RECORDS_LIST_V5_TYPE,
                 serde_json::json!({
                     "roomId": f.room.room_id,
                     "presentation": f.as_owner(),
@@ -2259,7 +2219,7 @@ mod tests {
         register(&app, &f).await;
 
         let document = vta_sdk::trust_task_sign::build_signed(
-            ROOMS_RECORDS_LIST_TYPE,
+            vti_rooms::wire::ROOMS_RECORDS_LIST_V5_TYPE,
             serde_json::json!({ "roomId": f.room.room_id, "presentation": f.as_owner() }),
             &f.owner.did,
             &f.owner.secret_multibase,
@@ -2394,7 +2354,7 @@ mod tests {
 
         let (status, body) = call(
             &app,
-            ROOMS_RECORDS_PUT_TYPE,
+            vti_rooms::wire::ROOMS_RECORDS_PUT_V3_TYPE,
             serde_json::json!({
                 "roomId": f.room.room_id,
                 "key": "decision/pricing",
@@ -2465,7 +2425,7 @@ mod tests {
         register(&app, &f).await;
 
         let doc = vta_sdk::trust_task_sign::build_signed(
-            ROOMS_RECORDS_PUT_TYPE,
+            vti_rooms::wire::ROOMS_RECORDS_PUT_V3_TYPE,
             serde_json::json!({
                 "roomId": f.room.room_id,
                 "key": "decision/pricing",
@@ -2523,7 +2483,7 @@ mod tests {
 
         let sign = async |body: &str| {
             vta_sdk::trust_task_sign::build_signed(
-                ROOMS_RECORDS_PUT_TYPE,
+                vti_rooms::wire::ROOMS_RECORDS_PUT_V3_TYPE,
                 serde_json::json!({
                     "roomId": f.room.room_id,
                     "key": "decision/pricing",
@@ -2570,7 +2530,7 @@ mod tests {
         register(&app, &f).await;
 
         let doc = vta_sdk::trust_task_sign::build_signed(
-            ROOMS_RECORDS_LIST_TYPE,
+            vti_rooms::wire::ROOMS_RECORDS_LIST_V5_TYPE,
             serde_json::json!({ "roomId": f.room.room_id, "presentation": f.as_owner() }),
             &f.owner.did,
             &f.owner.secret_multibase,
@@ -2594,7 +2554,7 @@ mod tests {
         // not per question.
         let (status, again) = call(
             &app,
-            ROOMS_RECORDS_LIST_TYPE,
+            vti_rooms::wire::ROOMS_RECORDS_LIST_V5_TYPE,
             serde_json::json!({ "roomId": f.room.room_id, "presentation": f.as_owner() }),
             &f.owner,
         )
@@ -2610,7 +2570,7 @@ mod tests {
         edit: impl FnOnce(&mut TrustTask<Value>),
     ) -> Vec<u8> {
         let mut doc = vta_sdk::trust_task_sign::build_unsigned(
-            ROOMS_RECORDS_LIST_TYPE,
+            vti_rooms::wire::ROOMS_RECORDS_LIST_V5_TYPE,
             serde_json::json!({ "roomId": f.room.room_id, "presentation": f.as_owner() }),
             &f.owner.did,
             "did:key:zHost",
@@ -2708,7 +2668,7 @@ mod tests {
         register(&app, &f).await;
         call(
             &app,
-            ROOMS_RECORDS_PUT_TYPE,
+            vti_rooms::wire::ROOMS_RECORDS_PUT_V3_TYPE,
             serde_json::json!({
                 "roomId": f.room.room_id,
                 "key": "k",
@@ -2734,7 +2694,7 @@ mod tests {
 
         let (status, body) = call(
             &app,
-            ROOMS_RECORDS_PUT_TYPE,
+            vti_rooms::wire::ROOMS_RECORDS_PUT_V3_TYPE,
             serde_json::json!({
                 "roomId": f.room.room_id,
                 "key": "k2",
@@ -2802,7 +2762,7 @@ mod tests {
 
         let (status, _) = call(
             &app,
-            ROOMS_RECORDS_PUT_TYPE,
+            vti_rooms::wire::ROOMS_RECORDS_PUT_V3_TYPE,
             serde_json::json!({
                 "roomId": f.room.room_id,
                 "key": "k",
@@ -2856,7 +2816,7 @@ mod tests {
         register(&app, &f).await;
         call(
             &app,
-            ROOMS_RECORDS_PUT_TYPE,
+            vti_rooms::wire::ROOMS_RECORDS_PUT_V3_TYPE,
             serde_json::json!({
                 "roomId": f.room.room_id,
                 "key": "a",
@@ -2869,7 +2829,7 @@ mod tests {
 
         let (status, body) = call(
             &app,
-            ROOMS_RECORDS_LIST_TYPE,
+            vti_rooms::wire::ROOMS_RECORDS_LIST_V5_TYPE,
             serde_json::json!({
                 "roomId": f.room.room_id,
                 "presentation": f.as_owner(),
@@ -3096,10 +3056,6 @@ mod tests {
         let (_, out) = call(&app, &uri, p, &f.owner).await;
         assert!(epochs(&out).is_empty(), "{out}");
         assert_eq!(out["epochFloor"], 3);
-        let (uri, p) = chain("0.1", None);
-        let (_, out) = call(&app, &uri, p, &f.owner).await;
-        assert_eq!(epochs(&out), [5, 4]);
-        assert!(out.get("epochFloor").is_none(), "0.1 is unchanged: {out}");
 
         // Monotonic: a lower prune changes nothing.
         let (uri, p) = prune("0.2", 2);
@@ -3220,7 +3176,7 @@ mod tests {
 
         let (status, body) = call(
             &app,
-            ROOMS_RECORDS_PUT_TYPE,
+            vti_rooms::wire::ROOMS_RECORDS_PUT_V3_TYPE,
             serde_json::json!({
                 "roomId": f.room.room_id,
                 "key": "k",
