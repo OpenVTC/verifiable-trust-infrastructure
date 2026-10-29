@@ -1197,7 +1197,10 @@ async fn delete_context_with_force_query() {
     Mock::given(method("POST"))
         .and(path("/trust-tasks"))
         .and(auth_match())
-        .respond_with(ResponseTemplate::new(200).set_body_json(signed_response(json!({})).await))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(signed_response(json!({ "id": "primary", "deleted": true })).await),
+        )
         .expect(1)
         .mount(&server)
         .await;
@@ -1211,7 +1214,10 @@ async fn delete_context_no_force_omits_query() {
     Mock::given(method("POST"))
         .and(path("/trust-tasks"))
         .and(auth_match())
-        .respond_with(ResponseTemplate::new(200).set_body_json(signed_response(json!({})).await))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(signed_response(json!({ "id": "primary", "deleted": true })).await),
+        )
         .expect(1)
         .mount(&server)
         .await;

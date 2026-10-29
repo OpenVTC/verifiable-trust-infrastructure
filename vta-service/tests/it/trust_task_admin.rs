@@ -935,7 +935,7 @@ async fn context_create_get_update_list_delete() {
         .task(
             &ctx,
             &super_admin,
-            vta_sdk::trust_tasks::TASK_CONTEXTS_DELETE_1_0,
+            vta_sdk::trust_tasks::TASK_CONTEXTS_DELETE_1_1,
             json!({"id": "lifecycle"}),
         )
         .await;

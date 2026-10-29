@@ -735,7 +735,7 @@ async fn ctx_did_templates_deleted_when_parent_context_deleted() {
         .task(
             &ctx,
             &super_admin,
-            vta_sdk::trust_tasks::TASK_CONTEXTS_DELETE_1_0,
+            vta_sdk::trust_tasks::TASK_CONTEXTS_DELETE_1_1,
             json!({"id": "cascade-ctx", "force": true}),
         )
         .await;

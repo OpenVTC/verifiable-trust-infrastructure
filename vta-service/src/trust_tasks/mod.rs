@@ -2495,11 +2495,9 @@ dispatch_table! {
         [ Mutating None false ],
     vta_sdk::trust_tasks::TASK_CONTEXTS_PREVIEW_DELETE_1_0 => contexts::handle_preview_delete
         [ None Metadata false ],
-    // 1.0 and 1.1 share the handler: 1.1 settles every host copy before any
-    // local record goes, and refuses (`hostCleanupFailed`) unless the caller
-    // chose `abandonHostCopies`.
-    vta_sdk::trust_tasks::TASK_CONTEXTS_DELETE_1_0 | vta_sdk::trust_tasks::TASK_CONTEXTS_DELETE_1_1
-        => contexts::handle_delete
+    // 1.1 settles every host copy before any local record goes, and refuses
+    // (`hostCleanupFailed`) unless the caller chose `abandonHostCopies`.
+    vta_sdk::trust_tasks::TASK_CONTEXTS_DELETE_1_1 => contexts::handle_delete
         [ Destructive None false ],
     // ─── Keys slice ──────────────────────────────────────────────
     vta_sdk::trust_tasks::TASK_KEYS_LIST_0_2 => keys::handle_list
@@ -6162,7 +6160,7 @@ mod response_coverage {
         // refusal the preview above exists to warn about.
         ok(
             &state,
-            t::TASK_CONTEXTS_DELETE_1_0,
+            t::TASK_CONTEXTS_DELETE_1_1,
             json!({ "id": "cov-contexts", "force": true }),
         )
         .await;
@@ -6193,7 +6191,7 @@ mod response_coverage {
 
         let vta_did = state.config.read().await.vta_did.clone().expect("vta_did");
         let body = signed_body(
-            t::TASK_CONTEXTS_DELETE_1_0,
+            t::TASK_CONTEXTS_DELETE_1_1,
             &vta_did,
             json!({ "id": "cov-notempty" }),
         );
@@ -6282,8 +6280,7 @@ mod response_coverage {
     }
 
     /// The deletion that used to be stuck: a context whose DID's hosting
-    /// server is no longer registered. 1.0 still refuses it (its contract);
-    /// 1.1 refuses with `hostCleanupFailed`, naming the DID and deleting
+    /// server is no longer registered. 1.1 refuses with `hostCleanupFailed`, naming the DID and deleting
     /// nothing, so the operator can wait or abandon.
     #[cfg(feature = "webvh")]
     #[tokio::test]
@@ -6291,18 +6288,6 @@ mod response_coverage {
         let (mut state, _dir) = build_signing_test_app_state().await;
         a_context(&state, "gone-host").await;
         let did = a_hosted_did(&mut state, "gone-host", "decommissioned").await;
-
-        let v1_0 = answer(
-            &state,
-            t::TASK_CONTEXTS_DELETE_1_0,
-            json!({ "id": "gone-host", "force": true }),
-        )
-        .await;
-        assert_ne!(
-            v1_0["type"],
-            format!("{}#response", t::TASK_CONTEXTS_DELETE_1_0),
-            "1.0 keeps refusing an unregistered host: {v1_0}"
-        );
 
         let doc = answer(
             &state,
@@ -6468,11 +6453,6 @@ mod response_coverage {
                 t::TASK_CONTEXTS_PREVIEW_DELETE_1_0,
                 "vta/contexts/preview-delete",
                 json!({ "id": "PLACEHOLDER" }),
-            ),
-            (
-                t::TASK_CONTEXTS_DELETE_1_0,
-                "vta/contexts/delete",
-                json!({ "id": "PLACEHOLDER", "force": true }),
             ),
             (
                 t::TASK_CONTEXTS_DELETE_1_1,

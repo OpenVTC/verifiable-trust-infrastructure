@@ -592,14 +592,6 @@ pub async fn cmd_context_delete(
         .await
     {
         Ok(result) => result.daemon_cleanup_errors,
-        // A VTA that predates 1.1 cannot refuse over a host copy; it reports
-        // one after the fact, which is all it can do.
-        Err(VtaError::UnsupportedTaskType { .. }) => {
-            client
-                .delete_context_with_outcome(id, true)
-                .await?
-                .daemon_cleanup_errors
-        }
         Err(e) => {
             let Some(failures) =
                 vta_sdk::protocols::context_management::delete::host_cleanup_failures(&e)

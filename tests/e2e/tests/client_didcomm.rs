@@ -1029,9 +1029,12 @@ async fn create_context_via_didcomm() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn delete_context_via_didcomm() {
     let (mediator, responder, client) = build_didcomm(|msg_type, body| {
-        if is_tt(msg_type, body, trust_tasks::TASK_CONTEXTS_DELETE_1_0) {
+        if is_tt(msg_type, body, trust_tasks::TASK_CONTEXTS_DELETE_1_1) {
             assert_eq!(body["payload"]["force"], true);
-            tt_ok(trust_tasks::TASK_CONTEXTS_DELETE_1_0, json!({}))
+            tt_ok(
+                trust_tasks::TASK_CONTEXTS_DELETE_1_1,
+                json!({ "id": "primary", "deleted": true }),
+            )
         } else {
             no_handler()
         }

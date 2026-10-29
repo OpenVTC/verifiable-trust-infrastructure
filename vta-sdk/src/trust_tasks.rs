@@ -285,16 +285,12 @@ pub const TASK_CONTEXTS_UPDATE_DID_1_1: &str =
 pub const TASK_CONTEXTS_PREVIEW_DELETE_1_0: &str =
     "https://trusttasks.org/spec/vta/contexts/preview-delete/1.0";
 
-/// `spec/vta/contexts/delete/1.0` — delete a context and its
-/// associated resources. Payload:
-/// [`crate::protocols::context_management::delete::DeleteContextBody`].
-/// Auth: Super Admin only.
-pub const TASK_CONTEXTS_DELETE_1_0: &str = "https://trusttasks.org/spec/vta/contexts/delete/1.0";
-
-/// `spec/vta/contexts/delete/1.1` — as 1.0, except every `did:webvh` host
-/// copy in the subtree is removed before anything local goes, and one that
-/// cannot be confirmed removed refuses the deletion
-/// (`vta/contexts/delete:hostCleanupFailed`) unless `abandonHostCopies` is set.
+/// `spec/vta/contexts/delete/1.1` — delete a context and its associated
+/// resources. Every `did:webvh` host copy in the subtree is removed before
+/// anything local goes, and one that cannot be confirmed removed refuses the
+/// deletion (`vta/contexts/delete:hostCleanupFailed`) unless
+/// `abandonHostCopies` is set. Supersedes 1.0, which is no longer served or
+/// sent.
 pub const TASK_CONTEXTS_DELETE_1_1: &str =
     <trust_tasks_rs::specs::vta::contexts::delete::v1_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
@@ -2336,7 +2332,6 @@ pub const ALL_URIS: &[&str] = &[
     TASK_CONTEXTS_UPDATE_DID_1_1,
     TASK_CONTEXTS_SECRETS_1_0,
     TASK_CONTEXTS_PREVIEW_DELETE_1_0,
-    TASK_CONTEXTS_DELETE_1_0,
     TASK_CONTEXTS_DELETE_1_1,
     // Keys slice
     TASK_KEYS_LIST_0_2,
