@@ -1,8 +1,7 @@
-//! Completing a host-bound room request **as the member** — `rooms/keys/act` at 0.1, 0.5
-//! and 0.8 — and the documents `rooms/keys/{read,browse,backfill}` send on the member's
-//! behalf. At 0.5 also the community's types ([`COMMUNITY_TYPES`]): a member's reply to a
-//! community's offer of a room and its record of the member's admissions; at 0.8 the
-//! widened tables [`ACT_TABLE_0_8`] and [`COMMUNITY_TYPES_0_8`].
+//! Completing a host-bound room request **as the member** — `rooms/keys/act/0.8` — and the
+//! documents `rooms/keys/{read,browse,backfill}` send on the member's behalf. Also the
+//! community's types ([`COMMUNITY_TYPES_0_8`]): a member's reply to a community's offer of
+//! a room and its record of the member's admissions.
 //!
 //! # Why this exists
 //!
@@ -23,7 +22,7 @@
 //!
 //! # Not a signing oracle
 //!
-//! [`ACT_TABLE`] is the specification's closed table: only those types are completed, and
+//! [`ACT_TABLE_0_8`] is the specification's closed table: only those types are completed, and
 //! each is narrowed to the one action the table fixes for it. A caller cannot ask for a
 //! presentation wider than its document's type needs, nor have anything but a room request
 //! signed as the member. The key is reached only through the gated oracle
@@ -46,51 +45,23 @@ use trust_tasks_rs::specs::rooms as spec;
 /// presentation is narrowed to — `None` for the types that take no presentation.
 pub type ActRow = (&'static str, Option<&'static str>);
 
-/// The table, exactly as `rooms/keys/act/0.1` states it — and 0.2, which leaves it
-/// unchanged and adds only that its three room-less types (`rooms/blobs/chunk/0.1`,
-/// `rooms/blobs/upload/{commit,abort}/0.2`) name their member in `issuer`. Type URIs come
-/// from the generated payload types, never a literal.
+/// `rooms/keys/act/0.8`'s table, exactly as the specification states it (*The table*):
+/// the host-bound room requests, each with the action its inserted presentation is
+/// narrowed to — `None` for the types that take no presentation. Type URIs come from the
+/// generated payload types, never a literal.
 ///
 /// `rooms/epoch/mint/0.1` is in the table, and refused for any room this VTA holds group
 /// state for (`sealedRoomMint`, recipient item 9, checked in the handler): a mint carries
 /// no group commit, so on a sealed room it would leave the room's epoch ahead of its MLS
 /// epoch. A sealed room is renewed with `rooms/owner/group/renew`.
-pub const ACT_TABLE: &[ActRow] = &[
-    (spec::records::put::v0_1::Payload::TYPE_URI, Some("write")),
-    (spec::records::put::v0_2::Payload::TYPE_URI, Some("write")),
-    (spec::records::get::v0_1::Payload::TYPE_URI, Some("read")),
-    (spec::records::get::v0_2::Payload::TYPE_URI, Some("read")),
-    (spec::records::list::v0_1::Payload::TYPE_URI, Some("read")),
-    (spec::records::list::v0_2::Payload::TYPE_URI, Some("read")),
-    (
-        spec::records::curate::v0_1::Payload::TYPE_URI,
-        Some("curate"),
-    ),
-    (spec::info::v0_1::Payload::TYPE_URI, Some("read")),
-    (spec::usage::v0_1::Payload::TYPE_URI, Some("admin")),
-    (spec::epoch::chain::v0_1::Payload::TYPE_URI, Some("read")),
-    (spec::epoch::commits::v0_1::Payload::TYPE_URI, Some("read")),
-    (spec::epoch::mint::v0_1::Payload::TYPE_URI, Some("admin")),
-    (spec::blobs::get::v0_1::Payload::TYPE_URI, Some("read")),
-    (spec::blobs::get::v0_2::Payload::TYPE_URI, Some("read")),
-    // A download chunk's authority is the open download the member's `blobs/get` opened.
-    (spec::blobs::chunk::v0_1::Payload::TYPE_URI, None),
-    (
-        spec::blobs::upload::begin::v0_2::Payload::TYPE_URI,
-        Some("write"),
-    ),
-    // Their authority is the open upload the member's begin opened. Signed as the member
-    // only for a direct-mode upload; a host refuses the member's on a proxied one.
-    (spec::blobs::upload::commit::v0_2::Payload::TYPE_URI, None),
-    (spec::blobs::upload::abort::v0_2::Payload::TYPE_URI, None),
-];
-
-/// `rooms/keys/act/0.8`'s table: 0.6's ([`ACT_TABLE`]), and the newer versions of the
-/// host-bound requests 0.7 adds (`records/put/0.3`, `records/list/0.3`–`0.5`, `info/0.2`
-/// and `0.3`, `epoch/chain/0.2`), and the two retention requests 0.8 adds
-/// (`records/prune/0.1` and `0.2`, `records/retention/set/0.1`), each `admin` with a
-/// presentation inserted. Closed like every version's: 0.1 and 0.5 complete [`ACT_TABLE`]
-/// and nothing more.
+///
+/// The table still names versions the registry has superseded (`records/put` 0.1 and 0.2,
+/// `records/get/0.1`, `records/list` 0.1–0.4, `records/prune/0.1`, `info` 0.1 and 0.2,
+/// `epoch/chain/0.1`, `blobs/get/0.1`), which no host in this workspace serves any more.
+/// Recipient item 1 makes the table closed and the table is the specification's, so
+/// they stay until a later `rooms/keys/act` drops them; refusing them here would be a
+/// silent divergence.
+#[allow(deprecated)] // rooms/keys/act/0.8's own table names the superseded versions.
 pub const ACT_TABLE_0_8: &[ActRow] = &[
     (spec::records::put::v0_1::Payload::TYPE_URI, Some("write")),
     (spec::records::put::v0_2::Payload::TYPE_URI, Some("write")),
@@ -131,35 +102,12 @@ pub const ACT_TABLE_0_8: &[ActRow] = &[
     (spec::blobs::upload::abort::v0_2::Payload::TYPE_URI, None),
 ];
 
-const OFFERS_LIST_0_1: &str =
-    <trust_tasks_rs::specs::vtc::rooms::offers::list::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
-const OFFERS_LIST_0_2: &str =
-    <trust_tasks_rs::specs::vtc::rooms::offers::list::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
-const OFFERS_ACCEPT_0_1: &str =
-    <trust_tasks_rs::specs::vtc::rooms::offers::accept::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
-
-/// The community types `rooms/keys/act/0.5` completes: the offer types (`vtc/rooms/offers/
-/// list/0.1` and `0.2`, `vtc/rooms/offers/accept/0.1`), and `vtc/rooms/memberships/list/0.1` — the community's record of the member's admissions,
-/// which every surface reads. All are made to the community as the DID it addresses its
-/// offers to, with no presentation, and resolved by recipient item 2b.
-pub const COMMUNITY_TYPES: &[&str] = &[
-    OFFERS_LIST_0_1,
-    OFFERS_LIST_0_2,
-    OFFERS_ACCEPT_0_1,
-    MEMBERSHIPS_LIST_0_1,
-];
-
-const MEMBERSHIPS_LIST_0_1: &str =
-    <trust_tasks_rs::specs::vtc::rooms::memberships::list::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
-
-/// Whether `type_uri` is one of [`COMMUNITY_TYPES`].
-pub fn is_community_type(type_uri: &str) -> bool {
-    COMMUNITY_TYPES.contains(&bare_type(type_uri))
-}
-
-/// The community types `rooms/keys/act/0.8` completes: 0.5's [`COMMUNITY_TYPES`], and
-/// `vtc/rooms/offers/list/0.3` (0.6) and `0.4` (0.7) in the offer types' row and on their
-/// terms — no presentation, `issuer` required and resolved by recipient item 2b.
+/// The community types `rooms/keys/act/0.8` completes — the offer types
+/// (`vtc/rooms/offers/list` 0.1–0.4, `vtc/rooms/offers/accept/0.1`) and
+/// `vtc/rooms/memberships/list/0.1` — made to the community as the DID it addresses its
+/// offers to, with no presentation, `issuer` required and resolved by recipient item 2b.
+/// The community serves only `vtc/rooms/offers/list/0.4`; 0.1–0.3 stay here because the
+/// table is the specification's (see [`ACT_TABLE_0_8`]).
 pub const COMMUNITY_TYPES_0_8: &[&str] = &[
     OFFERS_LIST_0_1,
     OFFERS_LIST_0_2,
@@ -169,10 +117,22 @@ pub const COMMUNITY_TYPES_0_8: &[&str] = &[
     MEMBERSHIPS_LIST_0_1,
 ];
 
+#[allow(deprecated)] // rooms/keys/act/0.8's table names it (see ACT_TABLE_0_8).
+const OFFERS_LIST_0_1: &str =
+    <trust_tasks_rs::specs::vtc::rooms::offers::list::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+#[allow(deprecated)] // rooms/keys/act/0.8's table names it (see ACT_TABLE_0_8).
+const OFFERS_LIST_0_2: &str =
+    <trust_tasks_rs::specs::vtc::rooms::offers::list::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+#[allow(deprecated)] // rooms/keys/act/0.8's table names it (see ACT_TABLE_0_8).
 const OFFERS_LIST_0_3: &str =
     <trust_tasks_rs::specs::vtc::rooms::offers::list::v0_3::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 const OFFERS_LIST_0_4: &str =
     <trust_tasks_rs::specs::vtc::rooms::offers::list::v0_4::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+const OFFERS_ACCEPT_0_1: &str =
+    <trust_tasks_rs::specs::vtc::rooms::offers::accept::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+const MEMBERSHIPS_LIST_0_1: &str =
+    <trust_tasks_rs::specs::vtc::rooms::memberships::list::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
 /// Whether `type_uri` is one of [`COMMUNITY_TYPES_0_8`].
 pub fn is_community_type_0_8(type_uri: &str) -> bool {
@@ -190,13 +150,9 @@ pub fn bare_type(type_uri: &str) -> &str {
     type_uri.strip_suffix("#request").unwrap_or(type_uri)
 }
 
-/// The table's row for `type_uri`: `Some(action)` where the type is actable (`action` is
-/// `None` for one that takes no presentation), `None` where it is not.
-pub fn actable(type_uri: &str) -> Option<Option<&'static str>> {
-    row(ACT_TABLE, type_uri)
-}
-
-/// [`actable`], in `rooms/keys/act/0.8`'s table ([`ACT_TABLE_0_8`]).
+/// The row of `rooms/keys/act/0.8`'s table ([`ACT_TABLE_0_8`]) for `type_uri`:
+/// `Some(action)` where the type is actable (`action` is `None` for one that takes no
+/// presentation), `None` where it is not.
 pub fn actable_0_8(type_uri: &str) -> Option<Option<&'static str>> {
     row(ACT_TABLE_0_8, type_uri)
 }
@@ -357,11 +313,15 @@ pub async fn complete_as(
 mod tests {
     use super::*;
 
-    /// Every row of both tables names a type the registry carries a schema for — the check
+    /// Every row of the table names a type the registry carries a schema for — the check
     /// a completed document is validated against.
     #[test]
     fn every_actable_type_has_a_schema() {
-        for (t, _) in ACT_TABLE.iter().chain(ACT_TABLE_0_8) {
+        for t in ACT_TABLE_0_8
+            .iter()
+            .map(|(t, _)| *t)
+            .chain(COMMUNITY_TYPES_0_8.iter().copied())
+        {
             assert!(
                 trust_tasks_rs::schema_index::schema_for(t).is_some(),
                 "{t} has no schema"
@@ -369,64 +329,49 @@ mod tests {
         }
     }
 
-    /// 0.8's host-bound table is 0.6's, widened by exactly 0.7's and 0.8's rows, and every
-    /// row it shares with 0.6 keeps its action.
+    /// The version of each host-bound request this workspace's hosts serve is in the table,
+    /// with the action the specification fixes for it.
     #[test]
-    fn rooms_keys_act_0_8_widens_the_table_by_exactly_its_new_rows() {
-        for (t, action) in ACT_TABLE {
-            assert_eq!(actable_0_8(t), Some(*action), "{t}");
-        }
-        let mut added: Vec<_> = ACT_TABLE_0_8
-            .iter()
-            .filter(|row| !ACT_TABLE.contains(row))
-            .copied()
-            .collect();
-        added.sort();
-        let mut want = vec![
+    fn the_served_versions_are_actable_with_their_actions() {
+        for (t, action) in [
             (spec::records::put::v0_3::Payload::TYPE_URI, Some("write")),
-            (spec::records::list::v0_3::Payload::TYPE_URI, Some("read")),
-            (spec::records::list::v0_4::Payload::TYPE_URI, Some("read")),
+            (spec::records::get::v0_2::Payload::TYPE_URI, Some("read")),
             (spec::records::list::v0_5::Payload::TYPE_URI, Some("read")),
-            (spec::info::v0_2::Payload::TYPE_URI, Some("read")),
-            (spec::info::v0_3::Payload::TYPE_URI, Some("read")),
-            (spec::epoch::chain::v0_2::Payload::TYPE_URI, Some("read")),
-            (spec::records::prune::v0_1::Payload::TYPE_URI, Some("admin")),
+            (
+                spec::records::curate::v0_1::Payload::TYPE_URI,
+                Some("curate"),
+            ),
             (spec::records::prune::v0_2::Payload::TYPE_URI, Some("admin")),
             (
                 spec::records::retention::set::v0_1::Payload::TYPE_URI,
                 Some("admin"),
             ),
-        ];
-        want.sort();
-        assert_eq!(added, want);
-        // 0.1's and 0.5's closed table still refuses them.
-        for (t, _) in &want {
-            assert_eq!(actable(t), None, "{t}");
+            (spec::info::v0_3::Payload::TYPE_URI, Some("read")),
+            (spec::usage::v0_1::Payload::TYPE_URI, Some("admin")),
+            (spec::epoch::chain::v0_2::Payload::TYPE_URI, Some("read")),
+            (spec::epoch::commits::v0_1::Payload::TYPE_URI, Some("read")),
+            (spec::epoch::mint::v0_1::Payload::TYPE_URI, Some("admin")),
+            (spec::blobs::get::v0_2::Payload::TYPE_URI, Some("read")),
+            (spec::blobs::chunk::v0_1::Payload::TYPE_URI, None),
+            (
+                spec::blobs::upload::begin::v0_2::Payload::TYPE_URI,
+                Some("write"),
+            ),
+            (spec::blobs::upload::commit::v0_2::Payload::TYPE_URI, None),
+            (spec::blobs::upload::abort::v0_2::Payload::TYPE_URI, None),
+        ] {
+            assert_eq!(actable_0_8(t), Some(action), "{t}");
         }
     }
 
-    /// The community types are apart from the host-bound tables; 0.8's are 0.5's plus
-    /// exactly `vtc/rooms/offers/list/0.3` and `0.4`; only one of them carries key material.
+    /// The community types are apart from the host-bound table; only one of them carries
+    /// key material.
     #[test]
-    fn the_community_types_are_apart_and_0_8_adds_only_the_newer_listings() {
+    fn the_community_types_are_apart_from_the_host_bound_table() {
         for t in COMMUNITY_TYPES_0_8 {
             assert!(is_community_type_0_8(t), "{t}");
-            assert_eq!(actable(t), None, "{t}");
             assert_eq!(actable_0_8(t), None, "{t}");
-            assert!(
-                trust_tasks_rs::schema_index::schema_for(t).is_some(),
-                "{t} has no schema"
-            );
         }
-        for t in COMMUNITY_TYPES {
-            assert!(is_community_type_0_8(t), "{t}");
-        }
-        let added: Vec<_> = COMMUNITY_TYPES_0_8
-            .iter()
-            .filter(|t| !COMMUNITY_TYPES.contains(t))
-            .collect();
-        assert_eq!(added, [&OFFERS_LIST_0_3, &OFFERS_LIST_0_4]);
-        assert!(!is_community_type(OFFERS_LIST_0_4));
         assert!(is_community_type_0_8(&format!("{OFFERS_LIST_0_4}#request")));
         assert!(is_offer_accept(&format!("{OFFERS_ACCEPT_0_1}#request")));
         assert_eq!(
@@ -441,29 +386,23 @@ mod tests {
     }
 
     /// The deliberate absences: chunk uploads (bytes never pass through the key holder),
-    /// the 0.1 uploads that bind every chunk to the member, and the operations that prune
-    /// or change ownership.
+    /// and the operations that prune a room's keys or change its ownership.
     #[test]
     fn the_absent_types_are_not_actable() {
         for t in [
             spec::blobs::upload::chunk::v0_2::Payload::TYPE_URI,
-            spec::blobs::upload::chunk::v0_1::Payload::TYPE_URI,
-            spec::blobs::upload::begin::v0_1::Payload::TYPE_URI,
-            spec::blobs::upload::commit::v0_1::Payload::TYPE_URI,
-            spec::blobs::upload::abort::v0_1::Payload::TYPE_URI,
-            spec::epoch::prune::v0_1::Payload::TYPE_URI,
+            spec::epoch::prune::v0_2::Payload::TYPE_URI,
             spec::owner::transfer::v0_1::Payload::TYPE_URI,
             spec::owner::claim::v0_1::Payload::TYPE_URI,
-            spec::create::v0_1::Payload::TYPE_URI,
+            spec::create::v0_2::Payload::TYPE_URI,
             "https://trusttasks.org/spec/keys/sign/0.1",
         ] {
-            assert_eq!(actable(t), None, "{t}");
             assert_eq!(actable_0_8(t), None, "{t}");
         }
         assert_eq!(
-            actable(&format!(
+            actable_0_8(&format!(
                 "{}#request",
-                spec::records::put::v0_2::Payload::TYPE_URI
+                spec::records::put::v0_3::Payload::TYPE_URI
             )),
             Some(Some("write"))
         );

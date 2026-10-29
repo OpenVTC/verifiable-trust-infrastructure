@@ -138,8 +138,6 @@ pub fn read_reply_typed(doc: &Value, expected: &str, host: &str) -> Result<Value
 /// serve all of these, and what changes is whether *this* agent is willing to
 /// hand it more material.
 const MUTATING_ROOM_TASKS: &[&str] = &[
-    vti_rooms::wire::ROOMS_RECORDS_PUT_TYPE,
-    vti_rooms::wire::ROOMS_RECORDS_PUT_V2_TYPE,
     vti_rooms::wire::ROOMS_RECORDS_PUT_V3_TYPE,
     vti_rooms::wire::ROOMS_RECORDS_CURATE_TYPE,
     vti_rooms::wire::ROOMS_RECORDS_PRUNE_V2_TYPE,
@@ -702,7 +700,7 @@ mod write_gate_tests {
         observe_head(&ks, &member(), 412, A).await.unwrap();
         observe_head(&ks, &member(), 412, B).await.unwrap();
 
-        let refused = refuse_if_caught(&ks, &member(), vti_rooms::wire::ROOMS_RECORDS_PUT_TYPE)
+        let refused = refuse_if_caught(&ks, &member(), vti_rooms::wire::ROOMS_RECORDS_PUT_V3_TYPE)
             .await
             .expect_err("a write to a caught host must be refused");
         let said = refused.to_string();
@@ -714,7 +712,7 @@ mod write_gate_tests {
         refuse_if_caught(&ks, &member(), vti_rooms::wire::ROOMS_RECORDS_GET_V2_TYPE)
             .await
             .expect("reads are served");
-        refuse_if_caught(&ks, &member(), vti_rooms::wire::ROOMS_RECORDS_LIST_TYPE)
+        refuse_if_caught(&ks, &member(), vti_rooms::wire::ROOMS_RECORDS_LIST_V5_TYPE)
             .await
             .expect("listings are served");
     }
@@ -725,7 +723,7 @@ mod write_gate_tests {
         let (_d, ks) = open().await;
         observe_head(&ks, &member(), 412, A).await.unwrap();
         observe_head(&ks, &member(), 413, B).await.unwrap();
-        refuse_if_caught(&ks, &member(), vti_rooms::wire::ROOMS_RECORDS_PUT_TYPE)
+        refuse_if_caught(&ks, &member(), vti_rooms::wire::ROOMS_RECORDS_PUT_V3_TYPE)
             .await
             .expect("two moments are not a contradiction");
     }
@@ -745,7 +743,7 @@ mod write_gate_tests {
             observe_head(&ks, &member(), v, A).await.unwrap();
         }
         assert!(
-            refuse_if_caught(&ks, &member(), vti_rooms::wire::ROOMS_RECORDS_PUT_TYPE)
+            refuse_if_caught(&ks, &member(), vti_rooms::wire::ROOMS_RECORDS_PUT_V3_TYPE)
                 .await
                 .is_err(),
             "reading past a conflict must not clear it"
@@ -756,7 +754,7 @@ mod write_gate_tests {
     #[tokio::test]
     async fn a_room_with_no_history_at_all_is_written_to() {
         let (_d, ks) = open().await;
-        refuse_if_caught(&ks, &member(), vti_rooms::wire::ROOMS_RECORDS_PUT_TYPE)
+        refuse_if_caught(&ks, &member(), vti_rooms::wire::ROOMS_RECORDS_PUT_V3_TYPE)
             .await
             .expect("nothing observed is not something caught");
     }

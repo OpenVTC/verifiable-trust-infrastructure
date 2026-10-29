@@ -164,15 +164,11 @@ pub(crate) struct RoomCtx {
 /// version hint the service emitted was wrong about it.
 pub(crate) fn dispatcher() -> AsyncDispatcher<RoomCtx, TrustTaskOutcome> {
     AsyncDispatcher::new()
-        .on_async(handle_put_record)
-        .on_async(handle_list_records)
         .on_async(handle_curate_record)
         .on_async(handle_mint_epoch)
-        .on_async(handle_epoch_chain)
         .on_async(handle_epoch_commits)
         .on_async(handle_transfer_owner)
         .on_async(handle_claim_owner)
-        .on_async(super::files::handle_put_record_v2)
         .on_async(super::files::handle_info_v3)
         .on_async(super::files::handle_list_records_v5)
         .on_async(super::files::handle_records_prune)
@@ -180,7 +176,6 @@ pub(crate) fn dispatcher() -> AsyncDispatcher<RoomCtx, TrustTaskOutcome> {
         .on_async(super::files::handle_epoch_prune_v2)
         .on_async(super::files::handle_get_record_v2)
         .on_async(super::files::handle_download_chunk)
-        .on_async(super::files::handle_info)
         .on_async(super::files::handle_usage)
         .on_async(super::files::handle_upload_begin_v2)
         .on_async(super::files::handle_upload_chunk_v2)
@@ -486,22 +481,11 @@ pub(super) async fn create_room<P>(
     )
 }
 
-/// `rooms/records/put/0.1`.
-pub(crate) async fn handle_put_record(
-    doc: TrustTask<PutRecordBody>,
-    ctx: RoomCtx,
-) -> TrustTaskOutcome {
-    let req = doc.payload.clone();
-    put_record(&doc, &ctx, req, Vec::new(), None).await
-}
-
-/// Write a record: `rooms/records/put` 0.1 (no `blobs`), 0.2, or 0.3.
+/// Write a record: `rooms/records/put/0.3`, read as [`PutRecordBody`] with its `blobs`. A
+/// write that names no blobs releases any the record's previous version named.
 ///
-/// A 0.1 write names no blobs, so rewriting a record that carried a file under 0.1
-/// releases it: the new version does not name it, which is what 0.2 says a release is.
-///
-/// `cleartext_as_received` is a 0.3 write's `cleartext`, provenance and expiry included,
-/// stored in place of the 0.1 body's exactly as the writer sent it (0.3 consumer item 11).
+/// `cleartext_as_received` is the write's `cleartext`, provenance and expiry included,
+/// stored in place of the body's exactly as the writer sent it (consumer item 11).
 pub(super) async fn put_record<P>(
     doc: &TrustTask<P>,
     ctx: &RoomCtx,
@@ -686,25 +670,15 @@ pub(super) async fn get_record<P>(
     }
 }
 
-/// `rooms/records/list/0.1`.
+/// `rooms/records/list/0.5`: rows name their blobs, every page carries the room's
+/// `lastPrune`, and the continuation token is `nextCursor`.
 ///
 /// Returns metadata, never bodies — and returns tombstones to a watermark caller, because a
 /// puller that never sees a retraction resurrects the record on its next full rebuild.
-pub(crate) async fn handle_list_records(
-    doc: TrustTask<ListRecordsBody>,
-    ctx: RoomCtx,
-) -> TrustTaskOutcome {
-    let req = doc.payload.clone();
-    list_records(&doc, &ctx, req, 1).await
-}
-
-/// List records: `rooms/records/list` 0.1; 0.2, whose rows also name their blobs; or 0.3,
-/// whose every page also carries the room's `lastPrune`.
 pub(super) async fn list_records<P>(
     doc: &TrustTask<P>,
     ctx: &RoomCtx,
     req: ListRecordsBody,
-    minor: u8,
 ) -> TrustTaskOutcome {
     let state = &ctx.state;
 
@@ -766,17 +740,14 @@ pub(super) async fn list_records<P>(
         record_count: head.as_ref().map(|h| h.record_count),
         head_version: head.as_ref().map(|h| h.head_version),
     };
-    match minor {
-        1 => success_response(doc, response),
-        _ => match storage::get_room(&state.rooms_ks, &req.room_id).await {
-            // The room as it stands under the lock: its `lastPrune` is the one the page and
-            // head were taken with.
-            Ok(now_room) => super::files::render(
-                doc,
-                vti_rooms::record_tasks::list_v5_response(&snapshot, &now_room, response).await,
-            ),
-            Err(e) => app_error_to_reject(doc, &e),
-        },
+    match storage::get_room(&state.rooms_ks, &req.room_id).await {
+        // The room as it stands under the lock: its `lastPrune` is the one the page and head
+        // were taken with.
+        Ok(now_room) => super::files::render(
+            doc,
+            vti_rooms::record_tasks::list_v5_response(&snapshot, &now_room, response).await,
+        ),
+        Err(e) => app_error_to_reject(doc, &e),
     }
 }
 
@@ -1082,9 +1053,7 @@ pub(crate) async fn handle_epoch_commits(
     )
 }
 
-/// `rooms/epoch/chain/0.1`.
-///
-/// Serves the room's epoch key chain so a member can read what was written before they
+/// `rooms/epoch/chain/0.2`: serves the room's epoch key chain so a member can read what was written before they
 /// joined, or before the last membership change they were absent for.
 ///
 /// # Why `read`, and why serving this is safe
@@ -1097,21 +1066,13 @@ pub(crate) async fn handle_epoch_commits(
 ///
 /// That is the property that lets a *host* answer this at all, rather than requiring the
 /// room's owner to be online whenever somebody joins.
-pub(crate) async fn handle_epoch_chain(
-    doc: TrustTask<ChainBody>,
-    ctx: RoomCtx,
-) -> TrustTaskOutcome {
-    let req = doc.payload.clone();
-    epoch_chain(&doc, &ctx, &req, false).await
-}
-
-/// Serve the chain: `rooms/epoch/chain` 0.1, or 0.2 (`v2`), which carries the room's epoch
-/// floor. Neither serves a rung at or below it (trust-tasks-tf #869).
+///
+/// Every response carries the room's epoch floor, and no rung at or below it
+/// (trust-tasks-tf #869).
 pub(super) async fn epoch_chain<P>(
     doc: &TrustTask<P>,
     ctx: &RoomCtx,
     req: &ChainBody,
-    v2: bool,
 ) -> TrustTaskOutcome {
     let state = &ctx.state;
     let presenter = ctx.presenter.as_str();
@@ -1159,9 +1120,6 @@ pub(super) async fn epoch_chain<P>(
         room_id: req.room_id.clone(),
         links,
     };
-    if !v2 {
-        return success_response(doc, response);
-    }
     super::files::render(
         doc,
         vti_rooms::record_tasks::epoch_chain_v2_response(response, &room),
@@ -1969,7 +1927,7 @@ mod tests {
             state,
             doc(
                 state,
-                vti_rooms::wire::ROOMS_RECORDS_PUT_TYPE,
+                vti_rooms::wire::ROOMS_RECORDS_PUT_V3_TYPE,
                 json!({
                     "roomId": f.room.room_id, "key": "k1", "presentation": f.as_owner(),
                     "cleartext": { "body": "a decision" }
@@ -2023,7 +1981,7 @@ mod tests {
             state,
             doc(
                 state,
-                vti_rooms::wire::ROOMS_RECORDS_PUT_TYPE,
+                vti_rooms::wire::ROOMS_RECORDS_PUT_V3_TYPE,
                 json!({
                     "roomId": f.room.room_id, "key": "k1", "presentation": f.as_owner(),
                     "sealed": {
@@ -2087,7 +2045,7 @@ mod tests {
             state,
             doc(
                 state,
-                vti_rooms::wire::ROOMS_RECORDS_PUT_TYPE,
+                vti_rooms::wire::ROOMS_RECORDS_PUT_V3_TYPE,
                 json!({
                     "roomId": f.room.room_id, "key": "k", "presentation": f.as_owner(),
                     "cleartext": { "body": "for the agent" }
@@ -2121,7 +2079,7 @@ mod tests {
             state,
             doc(
                 state,
-                vti_rooms::wire::ROOMS_RECORDS_PUT_TYPE,
+                vti_rooms::wire::ROOMS_RECORDS_PUT_V3_TYPE,
                 json!({
                     "roomId": f.room.room_id, "key": "k2", "presentation": f.as_agent(),
                     "cleartext": { "body": "but must not write" }
@@ -2219,7 +2177,7 @@ mod tests {
             state,
             doc(
                 state,
-                vti_rooms::wire::ROOMS_RECORDS_PUT_TYPE,
+                vti_rooms::wire::ROOMS_RECORDS_PUT_V3_TYPE,
                 json!({
                     "roomId": f.room.room_id, "key": "k", "presentation": f.as_owner(),
                     "cleartext": { "body": "x" }
@@ -2446,7 +2404,7 @@ mod tests {
             state,
             doc(
                 state,
-                vti_rooms::wire::ROOMS_RECORDS_PUT_TYPE,
+                vti_rooms::wire::ROOMS_RECORDS_PUT_V3_TYPE,
                 json!({
                     "roomId": f.room.room_id, "key": "k", "presentation": f.as_owner(),
                     "cleartext": { "body": "a decision" }
@@ -2515,7 +2473,7 @@ mod tests {
             state,
             doc(
                 state,
-                vti_rooms::wire::ROOMS_RECORDS_PUT_TYPE,
+                vti_rooms::wire::ROOMS_RECORDS_PUT_V3_TYPE,
                 json!({
                     "roomId": f.room.room_id, "key": "k", "presentation": f.as_owner(),
                     "cleartext": { "body": "secret-body-text" }
@@ -2547,7 +2505,7 @@ mod tests {
             state,
             doc(
                 state,
-                vti_rooms::wire::ROOMS_RECORDS_LIST_TYPE,
+                vti_rooms::wire::ROOMS_RECORDS_LIST_V5_TYPE,
                 json!({ "roomId": f.room.room_id, "presentation": f.as_owner() }),
                 &f.owner.did,
                 &f.owner.secret_multibase,
@@ -2591,7 +2549,7 @@ mod tests {
             state,
             doc(
                 state,
-                vti_rooms::wire::ROOMS_RECORDS_PUT_TYPE,
+                vti_rooms::wire::ROOMS_RECORDS_PUT_V3_TYPE,
                 json!({
                     "roomId": f.room.room_id, "key": "a", "presentation": f.as_owner(),
                     "cleartext": { "body": "secret-body-text" }
@@ -2607,7 +2565,7 @@ mod tests {
             state,
             doc(
                 state,
-                vti_rooms::wire::ROOMS_RECORDS_LIST_TYPE,
+                vti_rooms::wire::ROOMS_RECORDS_LIST_V5_TYPE,
                 json!({ "roomId": f.room.room_id, "presentation": f.as_owner() }),
                 &f.owner.did,
                 &f.owner.secret_multibase,
@@ -2994,7 +2952,7 @@ mod tests {
     async fn room_files(state: &AppState, f: &RoomFixture) -> u64 {
         let out = send(
             state,
-            vti_rooms::wire::ROOMS_INFO_TYPE,
+            vti_rooms::wire::ROOMS_INFO_V3_TYPE,
             json!({ "roomId": f.room.room_id, "presentation": f.as_owner() }),
             f,
         )
@@ -3011,7 +2969,7 @@ mod tests {
     ) -> TrustTaskOutcome {
         send(
             state,
-            vti_rooms::wire::ROOMS_RECORDS_PUT_V2_TYPE,
+            vti_rooms::wire::ROOMS_RECORDS_PUT_V3_TYPE,
             json!({
                 "roomId": f.room.room_id, "key": key, "presentation": f.as_owner(),
                 "cleartext": { "body": "a file" }, "blobs": blobs,
@@ -3140,7 +3098,7 @@ mod tests {
 
         let out = send(
             state,
-            vti_rooms::wire::ROOMS_RECORDS_PUT_TYPE,
+            vti_rooms::wire::ROOMS_RECORDS_PUT_V3_TYPE,
             json!({
                 "roomId": f.room.room_id, "key": "b", "presentation": f.as_owner(),
                 "cleartext": { "body": "no file any more" },
@@ -3243,16 +3201,6 @@ mod tests {
             got["cleartext"].clone()
         };
         assert_eq!(served, cleartext, "{got}");
-
-        let out = send(
-            state,
-            vti_rooms::wire::ROOMS_RECORDS_PUT_V2_TYPE,
-            json!({ "roomId": f.room.room_id, "key": "note2", "presentation": f.as_owner(),
-                    "cleartext": { "body": "x", "basis": "declared" } }),
-            &f,
-        )
-        .await;
-        assert!(!out.status.is_success(), "0.2 must refuse provenance");
     }
 
     /// The record-retention tasks on the VTC's host, as room-host holds them
@@ -3425,13 +3373,7 @@ mod tests {
         assert_eq!(pruned["earliestRung"], 3);
 
         let read = json!({ "roomId": f.room.room_id, "presentation": f.as_owner() });
-        let out = send(
-            state,
-            vti_rooms::wire::ROOMS_EPOCH_CHAIN_V2_TYPE,
-            read.clone(),
-            &f,
-        )
-        .await;
+        let out = send(state, vti_rooms::wire::ROOMS_EPOCH_CHAIN_V2_TYPE, read, &f).await;
         let chain = payload_of(&out);
         assert_eq!(chain["epochFloor"], 2, "{chain}");
         let epochs: Vec<u64> = chain["links"]
@@ -3441,10 +3383,5 @@ mod tests {
             .map(|l| l["epoch"].as_u64().unwrap())
             .collect();
         assert_eq!(epochs, [4, 3]);
-        let out = send(state, vti_rooms::wire::ROOMS_EPOCH_CHAIN_TYPE, read, &f).await;
-        assert!(
-            payload_of(&out).get("epochFloor").is_none(),
-            "0.1 is unchanged"
-        );
     }
 }

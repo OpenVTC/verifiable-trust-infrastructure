@@ -575,7 +575,7 @@ mod tests {
     fn document() -> serde_json::Value {
         json!({
             "id": "urn:uuid:11111111-1111-1111-1111-111111111111",
-            "type": "https://trusttasks.org/spec/rooms/records/list/0.1",
+            "type": "https://trusttasks.org/spec/rooms/records/list/0.5",
             "issuedAt": "2026-09-09T00:00:00Z",
             "payload": { "roomId": "did:key:zRoom" },
         })
@@ -638,7 +638,7 @@ mod tests {
             // The near-miss: a caller sending the *task* type instead of the binding's
             // envelope type. This is the mistake the shared `ENVELOPE_TYPE` constant exists
             // to prevent, and a conformant peer drops it silently — so it must drop here too.
-            "https://trusttasks.org/spec/rooms/records/list/0.1",
+            "https://trusttasks.org/spec/rooms/records/list/0.5",
         ] {
             let payload =
                 serde_json::to_vec(&json!({ "id": "urn:uuid:x", "type": typ, "body": {} }))

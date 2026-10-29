@@ -24,8 +24,8 @@ use vtc_service::test_support::TestVtc;
 
 use crate::common::signed::signed;
 
-const INFO: &str = "https://trusttasks.org/spec/rooms/info/0.1";
-const LIST: &str = "https://trusttasks.org/spec/rooms/records/list/0.1";
+const INFO: &str = "https://trusttasks.org/spec/rooms/info/0.3";
+const LIST: &str = "https://trusttasks.org/spec/rooms/records/list/0.5";
 const BLOB_GET: &str = "https://trusttasks.org/spec/rooms/blobs/get/0.2";
 const BLOB_CHUNK: &str = "https://trusttasks.org/spec/rooms/blobs/chunk/0.1";
 

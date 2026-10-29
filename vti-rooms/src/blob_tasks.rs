@@ -21,9 +21,7 @@ use trust_tasks_rs::specs::rooms::blobs::upload::abort::v0_2 as upload_abort_v2;
 use trust_tasks_rs::specs::rooms::blobs::upload::begin::v0_2 as upload_begin_v2;
 use trust_tasks_rs::specs::rooms::blobs::upload::chunk::v0_2 as upload_chunk_v2;
 use trust_tasks_rs::specs::rooms::blobs::upload::commit::v0_2 as upload_commit_v2;
-use trust_tasks_rs::specs::rooms::info::v0_1 as rooms_info;
 use trust_tasks_rs::specs::rooms::records::get::v0_2 as get_v2;
-use trust_tasks_rs::specs::rooms::records::put::v0_2 as put_v2;
 use trust_tasks_rs::specs::rooms::records::put::v0_3 as put_v3;
 use trust_tasks_rs::specs::rooms::usage::v0_1 as rooms_usage;
 use vti_common::error::AppError;
@@ -37,8 +35,7 @@ use crate::{Room, Visibility};
 
 /// The URIs these tasks are dispatched under, from [`crate::wire`].
 pub use crate::wire::{
-    ROOMS_BLOBS_CHUNK_TYPE as DOWNLOAD_CHUNK_TYPE, ROOMS_INFO_TYPE as INFO_TYPE,
-    ROOMS_RECORDS_GET_V2_TYPE as GET_V2_TYPE, ROOMS_RECORDS_PUT_V2_TYPE as PUT_V2_TYPE,
+    ROOMS_BLOBS_CHUNK_TYPE as DOWNLOAD_CHUNK_TYPE, ROOMS_RECORDS_GET_V2_TYPE as GET_V2_TYPE,
     ROOMS_RECORDS_PUT_V3_TYPE as PUT_V3_TYPE, ROOMS_USAGE_TYPE as USAGE_TYPE,
 };
 pub use crate::wire::{
@@ -381,19 +378,8 @@ pub async fn get_v2(
     }
 }
 
-/// `rooms/info/0.1`, once the chain has been verified for `read`.
-pub async fn info(
-    files: &BlobHost,
-    room: &Room,
-    authorized: &AuthorizedAction,
-    payload: &Value,
-) -> TaskResult {
-    parse::<rooms_info::Payload>(payload)?;
-    checked::<rooms_info::Response>(info_body(files, room, authorized).await?)
-}
-
-/// What `rooms/info` 0.1 answers, before its schema check: 0.2 adds to it
-/// ([`crate::record_tasks::info_v3`]).
+/// The room, its limits and its usage — what every `rooms/info` answers, before its schema
+/// check; [`crate::record_tasks::info_v3`] adds the record retention and the latest prune.
 pub(crate) async fn info_body(
     files: &BlobHost,
     room: &Room,
@@ -515,17 +501,6 @@ pub async fn usage(
     checked::<rooms_usage::Response>(body)
 }
 
-/// The `blobs` a `rooms/records/put/0.2` names, after checking the payload is that task's.
-pub fn put_v2_blobs(payload: &Value) -> Result<Vec<String>, Refusal> {
-    let req: put_v2::Payload = parse(payload)?;
-    Ok(req
-        .blobs
-        .unwrap_or_default()
-        .iter()
-        .map(|b| b.as_str().to_string())
-        .collect())
-}
-
 /// What a `rooms/records/put/0.3` carries beyond the 0.1 body, after checking the payload
 /// is that task's: the `blobs` it names, and on an `open` room its `cleartext` **exactly as
 /// received** — provenance and `validUntil` included (consumer item 11: stored and served as
@@ -578,16 +553,16 @@ pub fn as_v0_1(mut payload: Value) -> Value {
     payload
 }
 
-/// Why `rooms/records/put` 0.2 refused a record's `blobs`, as that task's declared codes.
+/// Why `rooms/records/put/0.3` refused a record's `blobs`, as that task's declared codes.
 pub fn record_blobs_refused(e: BlobError) -> Refusal {
     match e {
         BlobError::NotFound => declared(
-            put_v2::error_codes::BLOB_NOT_FOUND,
+            put_v3::error_codes::BLOB_NOT_FOUND,
             "a `blobs` entry names no blob committed in this room",
             None,
         ),
         BlobError::LimitExceeded(l) => declared(
-            put_v2::error_codes::LIMIT_EXCEEDED,
+            put_v3::error_codes::LIMIT_EXCEEDED,
             BlobError::LimitExceeded(l.clone()).to_string(),
             Some(l.details()),
         ),
@@ -595,14 +570,14 @@ pub fn record_blobs_refused(e: BlobError) -> Refusal {
     }
 }
 
-/// `rooms/records/put` (0.1 and 0.2) refusing a sealed record whose epoch is not the room's
+/// `rooms/records/put/0.3` refusing a sealed record whose epoch is not the room's
 /// current one, as the task's declared `epochMismatch` — or `None` when the epoch is not the
 /// reason to refuse it.
 ///
 /// The usual cause is a writer whose key holder missed the commit that moved the room on
 /// (a renewal, a removal); the remedy is to apply it and write again. Declared so the writer
-/// can say that from the code, never from this message. Both versions declare the code with
-/// the same string. The store re-checks the epoch under its own read of the room
+/// can say that from the code, never from this message. The store re-checks the epoch
+/// under its own read of the room
 /// ([`crate::storage::put_record`]), which is the backstop for a room that moves between
 /// this check and the write.
 pub fn record_epoch_refused(room: &Room, sealed_epoch: Option<u32>) -> Option<Refusal> {
@@ -612,7 +587,7 @@ pub fn record_epoch_refused(room: &Room, sealed_epoch: Option<u32>) -> Option<Re
     let sealed = sealed_epoch?;
     (sealed != room.epoch).then(|| {
         declared(
-            put_v2::error_codes::EPOCH_MISMATCH,
+            put_v3::error_codes::EPOCH_MISMATCH,
             format!(
                 "record is sealed under epoch {sealed}, room `{}` is at {}",
                 room.room_id, room.epoch
@@ -696,7 +671,6 @@ pub(crate) async fn list_v2_body(
 pub fn is_file_task(type_uri: &str) -> bool {
     [
         DOWNLOAD_CHUNK_TYPE,
-        INFO_TYPE,
         USAGE_TYPE,
         UPLOAD_BEGIN_V2_TYPE,
         UPLOAD_CHUNK_V2_TYPE,

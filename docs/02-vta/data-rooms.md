@@ -92,7 +92,7 @@ knowing which half you are standing on saves an afternoon.
 | **Reading across a membership change** | **Works, including for a member who has just joined.** Records are sealed per epoch, and the *epoch key chain* carries a member back across every advance. The owner hands each rung to the host on `rooms/epoch/mint`; a joiner fetches the chain with `rooms/epoch/chain` and reads everything the room retains. Rungs are ciphertext — the key that opens one is a storage key no host holds |
 | **An agent reading history through its VTA** | **Works.** `rooms/keys/open` resolves from the chain the VTA holds, which it accrues from every commit it applies — and a member who *joined* fills the rest with `rooms/keys/chain/0.2`, handing their own VTA the rungs they fetched from the host. The response says how far back it can now read, which is the only number worth having: a rung extends reach only if every rung above it is present too |
 | **Cryptographic deletion** | **At the host, and at members' key holders as far as they conform.** `rooms/epoch/prune` (`admin`, 0.1 and 0.2) erases the epoch key chain below an epoch at a host, and the host keeps the room's **epoch floor** (`beforeEpoch − 1`), which `rooms/epoch/chain/0.2` serves. A member's VTA that learns it — `rooms/keys/backfill/0.2`, `rooms/keys/chain/0.2`, a read's catch-up — discards every rung at or below it, refuses to derive below it (`beyondChain`), and never stores such a rung again from any source (trust-tasks-tf #869). Both hosts serve it (audited `room.epoch.prune`, `notAhead` for a floor at the current epoch); `pnm rooms prune` sends 0.2, warns, and asks first (§10.4). Nothing already read is recalled |
-| **Record retention and pruning records** | **Work, on both hosts.** A room states how long it keeps tombstones and records (`rooms/create/0.2`, `rooms/records/retention/set/0.1`, served by `rooms/info/0.2`), and an administrator removes what that makes eligible (`rooms/records/prune/0.1`), leaving a `lastPrune` mark that `rooms/records/list/0.3` and `rooms/keys/browse/0.2` carry. `pnm rooms records {prune,retention}` (§10.5) |
+| **Record retention and pruning records** | **Work, on both hosts.** A room states how long it keeps tombstones and records (`rooms/create/0.2`, `rooms/records/retention/set/0.1`, served by `rooms/info/0.3`), and an administrator removes what that makes eligible (`rooms/records/prune/0.2`), leaving a `lastPrune` mark that `rooms/records/list/0.5` and `rooms/keys/browse/0.3` carry. `pnm rooms records {prune,retention}` (§10.5) |
 | **Record provenance and expiry** | **Work.** `basis`, `confidence`, `evidence`, `validFor`, `validUntil` inside a sealed body, or in an open room's cleartext at `rooms/records/put/0.3`; readers hide an expired record by default (§9) |
 | **Witnessed renewal anchoring** | **Blocked on a decision**, not on effort: §9 says a renewal anchors the epoch authenticator and version watermark in the room's witnessed log, but not *where in the log entry*. See [`epoch anchoring`](../05-design-notes/data-rooms-epoch-anchoring.md) |
 
@@ -1399,10 +1399,8 @@ what `evidence` names, and nothing `evidence` names is ever fetched. Expiry
 hides, it never deletes — the record stays until a curator retracts it or a
 prune removes it (§10.5). On an `open` room the same members ride
 `rooms/records/put/0.3`'s cleartext, unsigned, stored and served exactly as
-received; both hosts serve 0.3 beside 0.2 and 0.1. `pnm` does not write 0.3 yet:
-`rooms/keys/act` (0.1–0.6) completes `put` only at 0.1 and 0.2, so it refuses
-provenance flags on an `open` room rather than signing as itself. A client with
-its own presentation uses `VtcClient::put_cleartext_record_v3`.
+received; both hosts serve 0.3 and no earlier `put`. A client with its own
+presentation uses `VtcClient::put_cleartext_record_v3`.
 
 **A request that names no room names its member.** A download chunk
 (`rooms/blobs/chunk/0.1`) and a direct upload's commit or abort
@@ -1418,8 +1416,7 @@ never picks the member itself (act 0.2 recipient item 2a).
 `/document/issuer`, not the room. A policy over `rooms/keys/act/0.2` sees the
 member as `input.request.subject` — where `issuer` is absent, the one member of
 the room the caller may act as — and the audit row (`rooms.keys.act`) names the
-member as its target, the type and room in its detail. A 0.1 row still names
-the room.
+member as its target, the type and room in its detail.
 
 **A community's offer (0.3).** `rooms/keys/act/0.3` also completes a member's
 reply to a community's offer of a room — `vtc/rooms/offers/list/0.1` and
@@ -1447,9 +1444,10 @@ closed, so an older version refuses a newer type `typeNotActable`.
 requests (`records/put/0.3`, `records/list/0.3`–`0.5`, `info/0.2`–`0.3`,
 `epoch/chain/0.2`) and `0.8` the room's retention requests (`records/prune/0.1`
 and `0.2`, `records/retention/set/0.1`) as `admin`, with a presentation. This VTA
-serves act 0.1, 0.5 and 0.8 — 0.1 and 0.5 because `pnm-browser-plugin` sends them
-— and the SDK's `room_act` and `room_act_community` send 0.8 only, never falling
-back.
+serves act 0.8 only, and the SDK's `room_act` and `room_act_community` send 0.8
+only, never falling back. 0.8's table still names superseded versions of the
+host-bound requests and of `vtc/rooms/offers/list`; it is the specification's, so
+the VTA completes them, though no host in this workspace serves them any more.
 
 `act` is not a signing oracle: only the table's host-bound room requests are
 completed, never `rooms/epoch/prune`, ownership changes, `rooms/create` or a
@@ -1580,7 +1578,7 @@ use to whoever hosts it. Depth is capped at `MAX_CHAIN_DEPTH` (8).
 |---|---|---|
 | Write | `rooms/records/put/0.3` | `write` |
 | Read | `rooms/records/get/0.2` | `read` |
-| List | `rooms/records/list/0.1` | `read` |
+| List | `rooms/records/list/0.5` | `read` |
 | Curate | `rooms/records/curate/0.1` | `curate` |
 | Mint an epoch | `rooms/epoch/mint/0.1` | `admin` |
 | Transfer ownership | `rooms/owner/transfer/0.1` | `admin` |
@@ -1869,8 +1867,7 @@ pnm rooms records prune --room <room-did> --host <host-url> \
   page, and `headVersion` is the higher of the highest record and the latest
   prune, so a root before and a root after are never labelled alike. A reader
   whose copy was synced below the mark rebuilds from a full listing and drops
-  what is gone. `rooms/keys/browse/0.3` passes the mark through; at `0.1` a VTA
-  ignores a `sinceVersion` below a prune and lists the whole room.
+  what is gone. `rooms/keys/browse/0.3` passes the mark through.
 - **What it is not.** It removes records from this host, not from the world:
   what a member read, exported or cached stays; a mirror is pruned separately;
   the ciphertext of a sealed record may survive in a backup, and only pruning
@@ -1930,19 +1927,16 @@ and `vtc-service`:
 
 | URI | Action required |
 |---|---|
-| `rooms/records/put/0.1`, `0.2` | `write` — served only for `rooms/keys/act` ≤ 0.6, which completes no later version; a direct writer sends 0.3 |
 | `rooms/records/put/0.3` | `write` — an `open` room's cleartext may carry provenance and `validUntil`, stored as received and never acted on |
 | `rooms/records/get/0.2` | `read` — and the record's `blobs` |
-| `rooms/records/list/0.1`, `0.2` | `read` |
 | `rooms/records/list/0.5` | `read` — every page carries the room's `lastPrune` |
 | `rooms/create/0.2` | no chain — the signer must be the `ownerDid` (§8.4); records the room's `recordRetention` as given |
-| `rooms/info/0.1`, `0.2` | `read` — 0.2 adds `recordRetention` and `lastPrune` |
+| `rooms/info/0.3` | `read` — adds `recordRetention` and `lastPrune` |
 | `rooms/records/prune/0.2` | `admin` — removes what the record retention makes eligible (§10.5) |
 | `rooms/records/retention/set/0.1` | `admin` — replaces the record retention (§10.5) |
 | `rooms/records/curate/0.1` | `curate` |
 | `rooms/epoch/mint/0.1` | `admin` |
-| `rooms/epoch/chain/0.1` | `read` — reading the room and reading what was written before you joined are the same act; no rung at or below the epoch floor. Served only for `rooms/keys/act` ≤ 0.6; a direct reader sends 0.2 |
-| `rooms/epoch/chain/0.2` | `read` — and the room's `epochFloor` on every response once pruned |
+| `rooms/epoch/chain/0.2` | `read` — reading the room and reading what was written before you joined are the same act; the room's `epochFloor` on every response once pruned, and no rung at or below it |
 | `rooms/epoch/prune/0.2` | `admin` — raises the epoch floor and returns it (§10.4) |
 | `rooms/owner/transfer/0.1` | `admin` |
 | `rooms/owner/claim/0.1` | nomination + membership + dormancy |
@@ -1958,10 +1952,10 @@ and `vtc-service`:
 | `rooms/keys/open/0.2` | `roomOpen` capability |
 | `rooms/keys/file-key/0.2` | `roomOpen` capability |
 | `rooms/keys/seal/0.2` | `roomOpen` capability; `signAsPrincipal` refused to a delegate |
-| `rooms/keys/act/0.1` – `0.6` | `roomPresent` capability; refused to a delegate |
+| `rooms/keys/act/0.8` | `roomPresent` capability; refused to a delegate |
 | `rooms/keys/list/0.2` | `roomOpen` capability; a delegate is listed nothing, and `personal` only with `includePersonal` |
 | `rooms/keys/label/0.1` | `roomOpen` capability + acting as `member`; refused to a delegate |
-| `rooms/keys/browse/0.1`, `0.2` | `roomOpen` capability; 0.2 passes the host's `lastPrune` through |
+| `rooms/keys/browse/0.3` | `roomOpen` capability; passes the host's `lastPrune` through |
 | `rooms/keys/chain/0.2` | `roomOpen` capability; applies a relayed `epochFloor` (alone or with rungs) and reports the floor held |
 | `rooms/keys/backfill/0.2` | `roomOpen` capability; fetches with `rooms/epoch/chain/0.2`, applies and reports the floor |
 | `rooms/keys/present/0.2` | `roomPresent` capability + acting in the persona's context |

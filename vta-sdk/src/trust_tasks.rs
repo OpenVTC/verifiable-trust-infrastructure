@@ -892,16 +892,13 @@ pub const TASK_ROOMS_OWNER_ANCHOR_0_1: &str = "https://trusttasks.org/spec/rooms
 /// Auth: `roomOpen` capability.
 pub const TASK_ROOMS_KEYS_READ_0_1: &str = "https://trusttasks.org/spec/rooms/keys/read/0.1";
 
-/// `spec/rooms/keys/browse/0.1` — list a room's records at its host, and check
-/// the listing against what the host committed to.
+/// `spec/rooms/keys/browse/0.3` — list a room's records at its host, and check the
+/// listing against what the host committed to, with the room's `lastPrune` passed through
+/// from the host's `rooms/records/list/0.5`, its instant named `prunedAt`
+/// (`rooms/_shared/0.2`), so a caller keeping its own copy of the room knows to rebuild it.
 ///
 /// Never returns bodies; that is a property of the task rather than of the tier,
 /// and is why browsing and reading are two. Auth: `roomOpen` capability.
-pub const TASK_ROOMS_KEYS_BROWSE_0_1: &str = "https://trusttasks.org/spec/rooms/keys/browse/0.1";
-
-/// `spec/rooms/keys/browse/0.3` — 0.1, and the room's `lastPrune` passed through from the
-/// host's `rooms/records/list/0.5`, its instant named `prunedAt` (`rooms/_shared/0.2`), so a
-/// caller keeping its own copy of the room knows to rebuild it. Auth: `roomOpen` capability.
 pub const TASK_ROOMS_KEYS_BROWSE_0_3: &str =
     <trust_tasks_rs::specs::rooms::keys::browse::v0_3::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
@@ -913,24 +910,15 @@ pub const TASK_ROOMS_KEYS_BROWSE_0_3: &str =
 pub const TASK_ROOMS_KEYS_SEAL_0_2: &str =
     <trust_tasks_rs::specs::rooms::keys::seal::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
-/// `spec/rooms/keys/act/0.1` — the member's own client hands the VTA an unsigned
-/// host-bound room request; the VTA completes it **as the member** (the member's own
-/// authority narrowed to the one action the type needs and granted to the member, issuer
-/// = member, the member's `authentication` proof) and returns it to send unchanged. Auth:
-/// `roomPresent` capability; refused to a delegate, which uses `present`.
-pub const TASK_ROOMS_KEYS_ACT_0_1: &str =
-    <trust_tasks_rs::specs::rooms::keys::act::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
-
-/// `spec/rooms/keys/act/0.5` — `act` 0.4, and `vtc/rooms/memberships/list/0.1`: every
-/// request a member makes to a community about the rooms it offers them, completed as the
-/// `issuer` named, with no presentation. Auth: as 0.1.
-pub const TASK_ROOMS_KEYS_ACT_0_5: &str =
-    <trust_tasks_rs::specs::rooms::keys::act::v0_5::Payload as trust_tasks_rs::Payload>::TYPE_URI;
-
-/// `spec/rooms/keys/act/0.8` — `act` 0.6's request and response, with a widened table:
-/// `vtc/rooms/offers/list/0.4`, `rooms/records/put/0.3`, `rooms/records/list/0.3`–`0.5`,
-/// `rooms/info/0.2`–`0.3` and `rooms/epoch/chain/0.2` (0.7), and `rooms/records/prune/0.1`
-/// and `0.2` and `rooms/records/retention/set/0.1` as `admin` (0.8). Auth: as 0.1.
+/// `spec/rooms/keys/act/0.8` — the member's own client hands the VTA an unsigned
+/// host-bound room request, or a request to a community about the rooms it offers the
+/// member; the VTA completes it **as the member** (the member's own authority narrowed to
+/// the one action the type needs and granted to the member, issuer = member, the member's
+/// `authentication` proof) and returns it to send unchanged. Its table has
+/// `vtc/rooms/offers/list/0.4`, `rooms/records/put/0.3`, `rooms/records/list/0.5`,
+/// `rooms/info/0.3`, `rooms/epoch/chain/0.2`, and `rooms/records/prune/0.2` and
+/// `rooms/records/retention/set/0.1` as `admin`. Auth: `roomPresent` capability; refused to
+/// a delegate, which uses `present`.
 pub const TASK_ROOMS_KEYS_ACT_0_8: &str =
     <trust_tasks_rs::specs::rooms::keys::act::v0_8::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
@@ -2497,11 +2485,8 @@ pub const ALL_URIS: &[&str] = &[
     TASK_ROOMS_KEYS_CHAIN_0_2,
     TASK_ROOMS_KEYS_BACKFILL_0_2,
     TASK_ROOMS_KEYS_READ_0_1,
-    TASK_ROOMS_KEYS_BROWSE_0_1,
     TASK_ROOMS_KEYS_BROWSE_0_3,
     TASK_ROOMS_KEYS_SEAL_0_2,
-    TASK_ROOMS_KEYS_ACT_0_1,
-    TASK_ROOMS_KEYS_ACT_0_5,
     TASK_ROOMS_KEYS_ACT_0_8,
     TASK_ROOMS_KEYS_FILE_KEY_0_2,
     TASK_ROOMS_KEYS_LIST_0_2,

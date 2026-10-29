@@ -26,9 +26,8 @@ use vti_rooms::wire::AuthorityPresentation;
 use super::{Answer, HostState, from_app_error, now, reject, respond};
 
 pub(crate) use vti_rooms::blob_tasks::{
-    BLOB_GET_V2_TYPE, DOWNLOAD_CHUNK_TYPE, GET_V2_TYPE, INFO_TYPE, PUT_V2_TYPE, PUT_V3_TYPE,
-    UPLOAD_ABORT_V2_TYPE, UPLOAD_BEGIN_V2_TYPE, UPLOAD_CHUNK_V2_TYPE, UPLOAD_COMMIT_V2_TYPE,
-    USAGE_TYPE,
+    BLOB_GET_V2_TYPE, DOWNLOAD_CHUNK_TYPE, GET_V2_TYPE, PUT_V3_TYPE, UPLOAD_ABORT_V2_TYPE,
+    UPLOAD_BEGIN_V2_TYPE, UPLOAD_CHUNK_V2_TYPE, UPLOAD_COMMIT_V2_TYPE, USAGE_TYPE,
 };
 
 /// Refuse with a code the task's specification declares.
@@ -329,21 +328,6 @@ pub(crate) async fn get_blob_v2(
     )
 }
 
-pub(crate) async fn info(state: &HostState, doc: &TrustTask<Value>, payload: Value) -> Answer {
-    if let Err(r) = blob_tasks::parse::<trust_tasks_rs::specs::rooms::info::v0_1::Payload>(&payload)
-    {
-        return refused(doc, r);
-    }
-    let (room, _presenter, authorized) = match authorize(state, doc, &payload, Action::Read).await {
-        Ok(r) => r,
-        Err(a) => return a,
-    };
-    render(
-        doc,
-        blob_tasks::info(&state.files, &room, &authorized, &payload).await,
-    )
-}
-
 /// `rooms/usage/0.1`: who is using the room's space, for its owner. Needs `admin`.
 pub(crate) async fn usage(state: &HostState, doc: &TrustTask<Value>, payload: Value) -> Answer {
     if let Err(r) =
@@ -360,22 +344,6 @@ pub(crate) async fn usage(state: &HostState, doc: &TrustTask<Value>, payload: Va
         doc,
         blob_tasks::usage(&state.files, &room, &authorized, &payload).await,
     )
-}
-
-/// `rooms/records/put/0.2`: a record that may name committed blobs.
-///
-/// Parsed with the generated type, then handed to the same write path 0.1
-/// takes, with its `blobs`.
-pub(crate) async fn put_v2(
-    state: &Arc<HostState>,
-    doc: &TrustTask<Value>,
-    payload: Value,
-) -> Answer {
-    let blobs = match blob_tasks::put_v2_blobs(&payload) {
-        Ok(b) => b,
-        Err(r) => return refused(doc, r),
-    };
-    super::put_with_blobs(state, doc, blob_tasks::as_v0_1(payload), Some(blobs), None).await
 }
 
 /// `rooms/records/put/0.3`: 0.2, and an `open` room's `cleartext` may carry the record's
@@ -417,7 +385,7 @@ pub(crate) async fn list_v5(state: &HostState, doc: &TrustTask<Value>, payload: 
     {
         return refused(doc, r);
     }
-    super::list_versioned(state, doc, blob_tasks::as_v0_1(payload), 5).await
+    super::list_records(state, doc, blob_tasks::as_v0_1(payload)).await
 }
 
 /// A 0.1 listing answered as 0.5.
@@ -766,7 +734,7 @@ mod tests {
     ) -> (StatusCode, Value) {
         call(
             &h.app,
-            PUT_V2_TYPE,
+            PUT_V3_TYPE,
             json!({
                 "roomId": f.room.room_id,
                 "key": key,
@@ -864,7 +832,7 @@ mod tests {
         assert_eq!(status, StatusCode::FORBIDDEN, "{out}");
         let (status, out) = call(
             &h.app,
-            INFO_TYPE,
+            vti_rooms::record_tasks::INFO_V3_TYPE,
             json!({ "roomId": f.room.room_id, "presentation": f.as_owner() }),
             &f.owner,
         )
@@ -886,7 +854,7 @@ mod tests {
     async fn info(h: &Host, f: &RoomFixture) -> Value {
         let (status, out) = call(
             &h.app,
-            INFO_TYPE,
+            vti_rooms::record_tasks::INFO_V3_TYPE,
             json!({ "roomId": f.room.room_id, "presentation": f.as_owner() }),
             &f.owner,
         )
@@ -1834,7 +1802,7 @@ mod tests {
         // A 0.1 write names no blobs.
         let (status, out) = call(
             &h.app,
-            vti_rooms::wire::ROOMS_RECORDS_PUT_TYPE,
+            vti_rooms::wire::ROOMS_RECORDS_PUT_V3_TYPE,
             json!({
                 "roomId": f.room.room_id,
                 "key": "doc",
@@ -2312,7 +2280,7 @@ mod tests {
                     let (title, b) = if i % 2 == 0 { ("A", &ra) } else { ("B", &rb) };
                     let (status, out) = call(
                         &h.app,
-                        PUT_V2_TYPE,
+                        PUT_V3_TYPE,
                         json!({
                             "roomId": f.room.room_id,
                             "key": "flip",
@@ -2623,30 +2591,31 @@ mod tests {
         assert_eq!(served, cleartext, "served exactly as received: {got}");
     }
 
-    /// 0.2's `cleartext` is closed, so a 0.2 write carrying provenance is refused rather
-    /// than stored without it — the reason 0.3 is a new version — and 0.2 is still served.
+    /// `rooms/records/put` 0.1 and 0.2, `rooms/records/list/0.1`, `rooms/info/0.1` and
+    /// `rooms/epoch/chain/0.1` are superseded and no longer served: each is refused as a
+    /// type this host does not implement.
     #[tokio::test]
-    async fn put_0_2_still_refuses_provenance_and_is_still_served() {
+    async fn the_superseded_versions_are_not_served() {
         let h = host(eager());
         let f = room(&h).await;
-        let (status, out) = call(
-            &h.app,
-            PUT_V2_TYPE,
-            json!({ "roomId": f.room.room_id, "key": "note", "presentation": f.as_owner(),
-                    "cleartext": { "body": "x", "basis": "declared" } }),
-            &f.owner,
-        )
-        .await;
-        assert_ne!(status, StatusCode::OK, "{out}");
-        let (status, out) = call(
-            &h.app,
-            PUT_V2_TYPE,
-            json!({ "roomId": f.room.room_id, "key": "note", "presentation": f.as_owner(),
-                    "cleartext": { "body": "x" } }),
-            &f.owner,
-        )
-        .await;
-        assert_eq!(status, StatusCode::OK, "{out}");
+        for uri in [
+            "https://trusttasks.org/spec/rooms/records/put/0.1",
+            "https://trusttasks.org/spec/rooms/records/put/0.2",
+            "https://trusttasks.org/spec/rooms/records/list/0.1",
+            "https://trusttasks.org/spec/rooms/info/0.1",
+            "https://trusttasks.org/spec/rooms/epoch/chain/0.1",
+        ] {
+            let (status, out) = call(
+                &h.app,
+                uri,
+                json!({ "roomId": f.room.room_id, "key": "note", "presentation": f.as_owner(),
+                        "cleartext": { "body": "x" } }),
+                &f.owner,
+            )
+            .await;
+            assert_ne!(status, StatusCode::OK, "{uri}: {out}");
+            assert!(out.to_string().contains("unsupportedType"), "{uri}: {out}");
+        }
     }
 
     /// A provenance member the specification refuses is refused at 0.3.
@@ -2839,21 +2808,12 @@ mod tests {
             v3["headVersion"], done["prune"]["version"],
             "the prune moves the head"
         );
-        assert!(
-            listing(&h, &f, vti_rooms::wire::ROOMS_RECORDS_LIST_TYPE)
-                .await
-                .get("lastPrune")
-                .is_none(),
-            "0.1 is unchanged"
-        );
-
         let info = listing(&h, &f, INFO_V2).await;
         assert_eq!(
             info["recordRetention"],
             json!({ "tombstoneDays": 30, "recordDays": 365 })
         );
         assert_eq!(info["lastPrune"], done["prune"]);
-        assert!(listing(&h, &f, INFO_TYPE).await.get("lastPrune").is_none());
 
         // A second prune finds nothing eligible: a success, no version, no new mark.
         let (status, again) = call(
@@ -3003,7 +2963,7 @@ mod tests {
         let blob_ref = upload(&h, &f, &b).await;
         let (status, out) = call(
             &h.app,
-            PUT_V2_TYPE,
+            PUT_V3_TYPE,
             json!({ "roomId": f.room.room_id, "key": "with-file", "presentation": f.as_owner(),
                     "cleartext": { "body": "x" }, "blobs": [blob_ref] }),
             &f.owner,

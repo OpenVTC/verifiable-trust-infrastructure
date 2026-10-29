@@ -22,7 +22,7 @@ use crate::operations::room_groups::{self, OpenError};
 use crate::server::AppState;
 use vti_common::auth::AuthClaims;
 
-use super::room_group::{PresentingMember, not_served, send_as_member, send_as_member_typed};
+use super::room_group::{PresentingMember, send_as_member, send_as_member_typed};
 
 /// The most pages one repair asks for. A host serving a page that moves nothing is
 /// stopped by the progress check; this bounds a host that keeps moving one step at a time.
@@ -174,32 +174,17 @@ async fn extend_chain(
     for _ in 0..MAX_PAGES {
         let payload = serde_json::json!({ "roomId": room_id, "fromEpoch": reach });
         // `rooms/epoch/chain/0.2` carries the room's epoch floor, which a key holder catching
-        // up SHOULD learn (`EpochFloor`); 0.1 only for a host that does not serve 0.2.
-        let reply = match send_as_member_typed(
+        // up SHOULD learn (`EpochFloor`). A host that does not serve 0.2 is not read from.
+        let reply = send_as_member_typed(
             state,
             auth,
             member,
             resolver,
             host,
             vti_rooms::wire::ROOMS_EPOCH_CHAIN_V2_TYPE,
-            payload.clone(),
+            payload,
         )
         .await
-        {
-            Err(e) if not_served(&e) => {
-                send_as_member_typed(
-                    state,
-                    auth,
-                    member,
-                    resolver,
-                    host,
-                    vti_rooms::wire::ROOMS_EPOCH_CHAIN_TYPE,
-                    payload,
-                )
-                .await
-            }
-            other => other,
-        }
         .map_err(|e| format!("fetching the room's epoch links: {}", e.into_app_error()))?;
         // The floor before the rungs: nothing at or below it is kept, and a repair never
         // restores what lies below it (`rooms/keys/read/0.1`).

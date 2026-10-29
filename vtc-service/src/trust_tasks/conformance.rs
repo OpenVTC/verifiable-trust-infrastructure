@@ -1358,27 +1358,21 @@ fn table() -> Vec<Conformance> {
                 "offeredAt": "2026-10-14T10:00:00Z", "admittedAt": "2026-10-14T11:00:00Z",
             }] })
         ),
-        checked!(
-            s::rooms::offers::list::v0_2::Payload,
-            s::rooms::offers::list::v0_2::Response,
-            json!({}),
-            json!({ "items": [{
-                "roomId": "did:key:z6MkRoom", "host": "did:example:community",
-                "label": "Board pack", "description": "Papers for the board's meetings.",
-                "visibility": "attributed", "actions": ["read"],
-                "validUntil": "2027-10-01T00:00:00Z", "offeredAt": "2026-10-14T10:00:00Z",
-                "state": "open",
-                "credentials": { "invitation": "{}", "membership": "{}", "authority": "{}" },
-            }] })
-        ),
-        // 0.4: the same offers, and on the first page the renewals of the
-        // admissions the member holds (`groups::bindings`), `renewsAt` (0.4).
+        // The offers, and on the first page the renewals of the admissions the
+        // member holds (`groups::bindings`), `renewsAt` (0.4).
         checked!(
             s::rooms::offers::list::v0_4::Payload,
             s::rooms::offers::list::v0_4::Response,
             json!({}),
             json!({
-                "items": [],
+                "items": [{
+                    "roomId": "did:key:z6MkRoom", "host": "did:example:community",
+                    "label": "Board pack", "description": "Papers for the board's meetings.",
+                    "visibility": "attributed", "actions": ["read"],
+                    "validUntil": "2027-10-01T00:00:00Z", "offeredAt": "2026-10-14T10:00:00Z",
+                    "state": "open",
+                    "credentials": { "invitation": "{}", "membership": "{}", "authority": "{}" },
+                }],
                 "renewals": [{
                     "roomId": "did:key:z6MkRoom", "host": "did:example:community",
                     "label": "Board pack", "visibility": "attributed", "actions": ["read"],

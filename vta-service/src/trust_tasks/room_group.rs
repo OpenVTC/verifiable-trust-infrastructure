@@ -1218,19 +1218,6 @@ async fn is_profile_location(
     }
 }
 
-/// `rooms/keys/browse/0.1`.
-///
-/// Metadata, never bodies — a property of the task rather than of the tier, and
-/// why browsing and reading are two: looking at a room's shelf should not
-/// decrypt the room.
-pub(super) async fn handle_browse(
-    state: &AppState,
-    auth: &AuthClaims,
-    doc: TrustTask<Value>,
-) -> TrustTaskOutcome {
-    browse_at(state, auth, doc, false).await
-}
-
 /// `rooms/keys/browse/0.3`: 0.1, and the room's `lastPrune` passed through exactly as the
 /// host served it (its instant `prunedAt`, `rooms/_shared/0.2`), so a caller keeping its
 /// own copy of the room knows to rebuild it.
@@ -1239,11 +1226,10 @@ pub(super) async fn handle_browse_v0_3(
     auth: &AuthClaims,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    browse_at(state, auth, doc, true).await
+    browse_at(state, auth, doc).await
 }
 
-/// The request members `browse` reads — the same at 0.1 and 0.3, each parsed through its
-/// own version's generated type.
+/// The request members `browse` reads.
 struct BrowseRequest {
     room_id: String,
     host: String,
@@ -1252,28 +1238,9 @@ struct BrowseRequest {
     limit: Option<u64>,
 }
 
-/// Whether a host's refusal says it does not serve the task asked — the signal to fall
-/// back from `rooms/records/list/0.5` to `0.1` for a host that predates it.
-pub(super) fn not_served(e: &MemberSendError) -> bool {
-    matches!(
-        e,
-        MemberSendError::Host(crate::operations::room_host::RoomTaskError::Refused { code, .. })
-            if code.ends_with("unsupportedType") || code.ends_with("unsupportedVersion")
-    )
-}
-
-/// `rooms/keys/browse`, at either version.
-///
-/// Lists with `rooms/records/list/0.5` where the host serves it (*The room's prunes*), else
-/// 0.1. At browse 0.1 a `sinceVersion` below a prune the host reports is ignored and the
-/// whole room listed: a 0.1 caller cannot be told to drop what a
-/// prune removed, but is at least handed the full set.
-async fn browse_at(
-    state: &AppState,
-    auth: &AuthClaims,
-    doc: TrustTask<Value>,
-    v2: bool,
-) -> TrustTaskOutcome {
+/// `rooms/keys/browse/0.3`, listing with `rooms/records/list/0.5` (*The room's prunes*): a
+/// host that predates it is not read from. 0.1 and 0.2 are not served.
+async fn browse_at(state: &AppState, auth: &AuthClaims, doc: TrustTask<Value>) -> TrustTaskOutcome {
     if let Err(r) = super::helpers::require_capability(
         state,
         auth,
@@ -1286,28 +1253,15 @@ async fn browse_at(
         return r;
     }
 
-    let parsed = if v2 {
-        parse_payload::<trust_tasks_rs::specs::rooms::keys::browse::v0_3::Payload>(&doc).map(|r| {
-            BrowseRequest {
-                room_id: r.room_id.to_string(),
-                host: r.host.to_string(),
-                prefix: r.prefix.map(|p| p.to_string()),
-                since_version: r.since_version,
-                limit: r.limit.map(u64::from),
-            }
-        })
-    } else {
-        parse_payload::<trust_tasks_rs::specs::rooms::keys::browse::v0_1::Payload>(&doc).map(|r| {
-            BrowseRequest {
-                room_id: r.room_id.to_string(),
-                host: r.host.to_string(),
-                prefix: r.prefix.map(|p| p.to_string()),
-                since_version: r.since_version,
-                limit: r.limit.map(u64::from),
-            }
-        })
-    };
-    let mut req = match parsed {
+    let parsed = parse_payload::<trust_tasks_rs::specs::rooms::keys::browse::v0_3::Payload>(&doc)
+        .map(|r| BrowseRequest {
+            room_id: r.room_id.to_string(),
+            host: r.host.to_string(),
+            prefix: r.prefix.map(|p| p.to_string()),
+            since_version: r.since_version,
+            limit: r.limit.map(u64::from),
+        });
+    let req = match parsed {
         Ok(r) => r,
         Err(resp) => return resp,
     };
@@ -1331,9 +1285,8 @@ async fn browse_at(
     let mut cursor: Option<String> = None;
     let mut head: Option<Value> = None;
     let mut complete = false;
-    // The host's `lastPrune`, exactly as served; and whether it serves list 0.5 at all.
+    // The host's `lastPrune`, exactly as served.
     let mut last_prune: Option<Value> = None;
-    let mut list_v3 = true;
     // A listing is read to its END, and absence of the cursor is the only thing
     // that says so. A short page says nothing — which is exactly why the count
     // check below is conditioned on having reached the end.
@@ -1353,58 +1306,26 @@ async fn browse_at(
             payload["cursor"] = serde_json::json!(c);
         }
 
-        let task = if list_v3 {
-            vti_rooms::wire::ROOMS_RECORDS_LIST_V5_TYPE
-        } else {
-            vti_rooms::wire::ROOMS_RECORDS_LIST_TYPE
-        };
         let reply = match send_as_member_typed(
             state,
             auth,
             &presenting,
             &resolver,
             &req.host,
-            task,
-            payload.clone(),
+            vti_rooms::wire::ROOMS_RECORDS_LIST_V5_TYPE,
+            payload,
         )
         .await
         {
             Ok(v) => v,
-            // A host that predates list 0.5: the same listing at 0.1, with no prune to report.
-            Err(e) if list_v3 && page == 0 && not_served(&e) => {
-                list_v3 = false;
-                match send_as_member(
-                    state,
-                    auth,
-                    &presenting,
-                    &resolver,
-                    &req.host,
-                    vti_rooms::wire::ROOMS_RECORDS_LIST_TYPE,
-                    payload,
-                )
-                .await
-                {
-                    Ok(v) => v,
-                    Err(e) => return app_error_to_reject(&doc, e),
-                }
-            }
             Err(e) => return app_error_to_reject(&doc, e.into_app_error()),
         };
         if let Some(mark) = reply.get("lastPrune") {
-            // A 0.1 caller synced below a prune would merge an incremental page and keep
-            // what the prune removed: list the whole room instead, once, from the top.
-            let pruned_past = req
-                .since_version
-                .is_some_and(|since| mark["version"].as_u64().is_some_and(|v| v > since));
-            if !v2 && page == 0 && pruned_past {
-                req.since_version = None;
-                last_prune = Some(mark.clone());
-                continue;
-            }
             last_prune = Some(mark.clone());
         }
 
-        // List 0.5 names the continuation token `nextCursor` (0.4); 0.1 names it `cursor`.
+        // List 0.5 names the continuation token `nextCursor`; the stored listing shape
+        // (`ListRecordsResponse`) still calls it `cursor`.
         let mut reply = reply;
         if let Some(obj) = reply.as_object_mut()
             && let Some(next) = obj.remove("nextCursor")
@@ -1492,7 +1413,7 @@ async fn browse_at(
         "complete": complete,
         "verification": verification,
     });
-    if v2 && let Some(mark) = last_prune {
+    if let Some(mark) = last_prune {
         body["lastPrune"] = mark;
     }
     success_response(&doc, body)

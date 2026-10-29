@@ -38,19 +38,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::{Record, RecordStatus, Visibility};
 
-/// `rooms/records/put/0.1`. Still served, with 0.2, because `pnm-browser-plugin`
-/// (`@openvtc/pnm-core`) writes through `rooms/keys/act` 0.1 and 0.5, whose tables complete
-/// no later version; every writer in this workspace sends 0.3 ([`ROOMS_RECORDS_PUT_V3_TYPE`]).
-pub const ROOMS_RECORDS_PUT_TYPE: &str = "https://trusttasks.org/spec/rooms/records/put/0.1";
-/// `rooms/records/list/0.1`. Still served because `pnm-browser-plugin` sends it through
-/// `rooms/keys/act` 0.1 and 0.5; every reader in this workspace sends 0.5
-/// ([`ROOMS_RECORDS_LIST_V5_TYPE`]).
-pub const ROOMS_RECORDS_LIST_TYPE: &str = "https://trusttasks.org/spec/rooms/records/list/0.1";
 /// `rooms/epoch/mint/0.1`.
 pub const ROOMS_EPOCH_MINT_TYPE: &str = "https://trusttasks.org/spec/rooms/epoch/mint/0.1";
-/// `rooms/epoch/chain/0.1`. Still served because `pnm-browser-plugin` reads the chain at
-/// 0.1; every reader in this workspace sends 0.2 ([`ROOMS_EPOCH_CHAIN_V2_TYPE`]).
-pub const ROOMS_EPOCH_CHAIN_TYPE: &str = "https://trusttasks.org/spec/rooms/epoch/chain/0.1";
 /// `rooms/owner/transfer/0.1`.
 pub const ROOMS_OWNER_TRANSFER_TYPE: &str = "https://trusttasks.org/spec/rooms/owner/transfer/0.1";
 /// `rooms/owner/claim/0.1`.
@@ -60,9 +49,6 @@ pub const ROOMS_RECORDS_CURATE_TYPE: &str = "https://trusttasks.org/spec/rooms/r
 /// `rooms/epoch/commits/0.1`.
 pub const ROOMS_EPOCH_COMMITS_TYPE: &str = "https://trusttasks.org/spec/rooms/epoch/commits/0.1";
 
-/// `rooms/records/put/0.2`: a record that may name blobs.
-pub const ROOMS_RECORDS_PUT_V2_TYPE: &str =
-    <trust_tasks_rs::specs::rooms::records::put::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 /// `rooms/records/put/0.3`: an `open` room's cleartext may say what kind of claim the
 /// record is and when it lapses — `basis`, `confidence`, `evidence`, `validFor` and
 /// `validUntil`, stored and served as received and never acted on (trust-tasks-tf #865).
@@ -114,9 +100,6 @@ pub const ROOMS_BLOBS_UPLOAD_ABORT_V2_TYPE: &str =
 /// `rooms/blobs/get/0.2`: a download, direct from storage or through the host.
 pub const ROOMS_BLOBS_GET_V2_TYPE: &str =
     <trust_tasks_rs::specs::rooms::blobs::get::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
-/// `rooms/info/0.1`.
-pub const ROOMS_INFO_TYPE: &str =
-    <trust_tasks_rs::specs::rooms::info::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 /// `rooms/usage/0.1`.
 pub const ROOMS_USAGE_TYPE: &str =
     <trust_tasks_rs::specs::rooms::usage::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
@@ -130,16 +113,12 @@ pub const ROOMS_REVOCATIONS_GET_TYPE: &str =
 
 /// Every `rooms/*` URI this service dispatches.
 pub const ROOMS_DISPATCHED_URIS: &[&str] = &[
-    ROOMS_RECORDS_PUT_TYPE,
-    ROOMS_RECORDS_LIST_TYPE,
     ROOMS_EPOCH_MINT_TYPE,
-    ROOMS_EPOCH_CHAIN_TYPE,
     ROOMS_RECORDS_CURATE_TYPE,
     ROOMS_OWNER_TRANSFER_TYPE,
     ROOMS_OWNER_CLAIM_TYPE,
     ROOMS_EPOCH_COMMITS_TYPE,
     // Room files (data-rooms-files.md §5).
-    ROOMS_RECORDS_PUT_V2_TYPE,
     ROOMS_RECORDS_GET_V2_TYPE,
     // Record provenance and expiry on the open tier (trust-tasks-tf #865).
     ROOMS_RECORDS_PUT_V3_TYPE,
@@ -154,9 +133,8 @@ pub const ROOMS_DISPATCHED_URIS: &[&str] = &[
     ROOMS_EPOCH_CHAIN_V2_TYPE,
     ROOMS_EPOCH_PRUNE_V2_TYPE,
     ROOMS_BLOBS_CHUNK_TYPE,
-    ROOMS_INFO_TYPE,
     ROOMS_USAGE_TYPE,
-    // Direct-to-storage transfer (`rooms/blobs/*` 0.2), beside 0.1.
+    // Direct-to-storage transfer (`rooms/blobs/*` 0.2).
     ROOMS_BLOBS_UPLOAD_BEGIN_V2_TYPE,
     ROOMS_BLOBS_UPLOAD_CHUNK_V2_TYPE,
     ROOMS_BLOBS_UPLOAD_COMMIT_V2_TYPE,
@@ -407,7 +385,8 @@ pub struct CreateRoomResponse {
     pub anchor_cadence: Option<crate::AnchorCadence>,
 }
 
-/// `rooms/records/put/0.1` request.
+/// `rooms/records/put/0.3` request, as the host reads it once it has taken `blobs`, `ext`
+/// and an open record's provenance apart.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PutRecordBody {
@@ -422,7 +401,7 @@ pub struct PutRecordBody {
     pub cleartext: Option<CleartextContent>,
 }
 
-/// `rooms/records/put/0.1#response`.
+/// The `rooms/records/put` response — the same at every version.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PutRecordResponse {
@@ -441,7 +420,7 @@ pub struct GetRecordBody {
     pub presentation: AuthorityPresentation,
 }
 
-/// `rooms/records/list/0.1` request.
+/// `rooms/records/list/0.5` request, without `ext`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ListRecordsBody {
@@ -597,7 +576,9 @@ impl GetRecordResponse {
     }
 }
 
-/// `rooms/records/list/0.1#response`.
+/// A `rooms/records/list` page as the store produces it, before the host answers it as
+/// `list/0.5` (whose continuation token is `nextCursor`, and whose every page names the
+/// room's `lastPrune`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ListRecordsResponse {
@@ -759,7 +740,7 @@ pub struct MintEpochBody {
     pub reason: Option<String>,
 }
 
-/// `rooms/epoch/chain/0.1` request.
+/// `rooms/epoch/chain/0.2` request, without `ext`.
 ///
 /// A member asks a host for the room's epoch key chain, so records sealed before they
 /// joined can still be opened. The chain is walked *downwards*, which is why this pages with
@@ -776,7 +757,7 @@ pub struct ChainBody {
     pub limit: Option<u32>,
 }
 
-/// `rooms/epoch/chain/0.1#response`.
+/// A `rooms/epoch/chain` page, before the host adds the room's `epochFloor` (`chain/0.2`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ChainResponse {
@@ -894,18 +875,6 @@ pub struct MintEpochResponse {
 // and `u64`, exhaustive, no builders — exactly as the storage layer needs it.
 // The generated bindings remain the authority on the *schema*, which
 // `payload_flags_match_the_published_spec` below checks against.
-impl trust_tasks_rs::Payload for PutRecordBody {
-    const TYPE_URI: &'static str = ROOMS_RECORDS_PUT_TYPE;
-    const IS_PROOF_REQUIRED: bool = true;
-    const IS_RECIPIENT_REQUIRED: bool = true;
-    const IS_ISSUED_AT_REQUIRED: bool = true;
-}
-impl trust_tasks_rs::Payload for ListRecordsBody {
-    const TYPE_URI: &'static str = ROOMS_RECORDS_LIST_TYPE;
-    const IS_PROOF_REQUIRED: bool = true;
-    const IS_RECIPIENT_REQUIRED: bool = true;
-    const IS_ISSUED_AT_REQUIRED: bool = true;
-}
 impl trust_tasks_rs::Payload for CurateRecordBody {
     const TYPE_URI: &'static str = ROOMS_RECORDS_CURATE_TYPE;
     const IS_PROOF_REQUIRED: bool = true;
@@ -926,12 +895,6 @@ impl trust_tasks_rs::Payload for ClaimOwnerBody {
 }
 impl trust_tasks_rs::Payload for MintEpochBody {
     const TYPE_URI: &'static str = ROOMS_EPOCH_MINT_TYPE;
-    const IS_PROOF_REQUIRED: bool = true;
-    const IS_RECIPIENT_REQUIRED: bool = true;
-    const IS_ISSUED_AT_REQUIRED: bool = true;
-}
-impl trust_tasks_rs::Payload for ChainBody {
-    const TYPE_URI: &'static str = ROOMS_EPOCH_CHAIN_TYPE;
     const IS_PROOF_REQUIRED: bool = true;
     const IS_RECIPIENT_REQUIRED: bool = true;
     const IS_ISSUED_AT_REQUIRED: bool = true;
@@ -959,13 +922,10 @@ mod payload_impl_tests {
             assert_eq!(P::TYPE_URI, expected);
         }
         check::<CreateRoomBody>(ROOMS_CREATE_V2_TYPE);
-        check::<PutRecordBody>(ROOMS_RECORDS_PUT_TYPE);
-        check::<ListRecordsBody>(ROOMS_RECORDS_LIST_TYPE);
         check::<CurateRecordBody>(ROOMS_RECORDS_CURATE_TYPE);
         check::<TransferOwnerBody>(ROOMS_OWNER_TRANSFER_TYPE);
         check::<ClaimOwnerBody>(ROOMS_OWNER_CLAIM_TYPE);
         check::<MintEpochBody>(ROOMS_EPOCH_MINT_TYPE);
-        check::<ChainBody>(ROOMS_EPOCH_CHAIN_TYPE);
         check::<CommitsBody>(ROOMS_EPOCH_COMMITS_TYPE);
     }
 
@@ -1014,13 +974,10 @@ mod payload_impl_tests {
             );
         }
         check::<CreateRoomBody>(ROOMS_CREATE_V2_TYPE);
-        check::<PutRecordBody>(ROOMS_RECORDS_PUT_TYPE);
-        check::<ListRecordsBody>(ROOMS_RECORDS_LIST_TYPE);
         check::<CurateRecordBody>(ROOMS_RECORDS_CURATE_TYPE);
         check::<TransferOwnerBody>(ROOMS_OWNER_TRANSFER_TYPE);
         check::<ClaimOwnerBody>(ROOMS_OWNER_CLAIM_TYPE);
         check::<MintEpochBody>(ROOMS_EPOCH_MINT_TYPE);
-        check::<ChainBody>(ROOMS_EPOCH_CHAIN_TYPE);
         check::<CommitsBody>(ROOMS_EPOCH_COMMITS_TYPE);
     }
 }

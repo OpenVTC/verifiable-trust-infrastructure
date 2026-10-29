@@ -2842,26 +2842,17 @@ dispatch_table! {
     vta_sdk::trust_tasks::TASK_ROOMS_KEYS_READ_0_1 => room_group::handle_read
         [ None Secret true ],
     // Metadata only, and still `actsAsSubject`: the presentation names a member
-    // of the room to the host it is shown to.
-    vta_sdk::trust_tasks::TASK_ROOMS_KEYS_BROWSE_0_1 => room_group::handle_browse
-        [ None Metadata true ],
-    // 0.3 adds the room's `lastPrune` (as `prunedAt`), passed through from list 0.5. 0.1
-    // stays for `pnm-browser-plugin`, which sends it.
+    // of the room to the host it is shown to. 0.3 adds the room's `lastPrune` (as
+    // `prunedAt`), passed through from list 0.5; 0.1 and 0.2 are not served.
     vta_sdk::trust_tasks::TASK_ROOMS_KEYS_BROWSE_0_3 => room_group::handle_browse_v0_3
         [ None Metadata true ],
     // `actsAsSubject`: under `signAsPrincipal` it signs the record body as the member.
     vta_sdk::trust_tasks::TASK_ROOMS_KEYS_SEAL_0_2 => room_act::handle_seal_v0_2
         [ None Metadata true ],
     // Signs a host-bound document as the member and presents their authority; stores
-    // nothing and sends nothing — the caller sends what comes back.
-    vta_sdk::trust_tasks::TASK_ROOMS_KEYS_ACT_0_1 => room_act::handle_act
-        [ None Metadata true ],
-    // 0.5: also `vtc/rooms/memberships/list/0.1`.
-    vta_sdk::trust_tasks::TASK_ROOMS_KEYS_ACT_0_5 => room_act::handle_act_v0_5
-        [ None Metadata true ],
-    // 0.8: 0.6's request with the table widened by 0.7 and 0.8 — the newer host-bound
-    // versions, `vtc/rooms/offers/list/0.4`, and the room's retention requests as `admin`.
-    // 0.1 and 0.5 stay for `pnm-browser-plugin`, which sends them; 0.2–0.4 and 0.6 are gone.
+    // nothing and sends nothing — the caller sends what comes back. 0.8 only: its table
+    // has the newer host-bound versions, `vtc/rooms/offers/list/0.4`, and the room's
+    // retention requests as `admin`; 0.1–0.7 are not served.
     vta_sdk::trust_tasks::TASK_ROOMS_KEYS_ACT_0_8 => room_act::handle_act_v0_8
         [ None Metadata true ],
     // 0.2: each entry names its member; `includePersonal` adds the member's own label.

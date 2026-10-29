@@ -638,8 +638,7 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     // Same, over a listing. The room may have moved between attempts, so two
     // tries can differ — that is the room changing, not the task misbehaving,
     // and `headVersion` is what tells them apart.
-    (trust_tasks::TASK_ROOMS_KEYS_BROWSE_0_1, RetrySafe),
-    // 0.3 passes the host's `lastPrune` through: still a read, stores nothing.
+    // `lastPrune` passes through from the host: still a read, stores nothing.
     (trust_tasks::TASK_ROOMS_KEYS_BROWSE_0_3, RetrySafe),
     // Sealing is a pure function of the key and the bytes, and it stores nothing:
     // a lost reply costs the caller a round trip, never any state. Re-sealing the
@@ -653,14 +652,9 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     // signature over the SAME document `id`, so whichever copy reaches the host is the one
     // operation the host's duplicate-execution record keys on. Not `Keyed`: caching the
     // answer would buy nothing a host does not already dedupe, and the client that lost
-    // the reply legitimately needs it again.
-    (trust_tasks::TASK_ROOMS_KEYS_ACT_0_1, RetrySafe),
-    // 0.5 adds the community types: completing an acceptance checks the KeyPackage this
-    // VTA minted and leaves it unused — a Welcome consumes it — so a repeat completes it
-    // again, as the lost-answer retry of the acceptance needs. Still nothing stored.
-    (trust_tasks::TASK_ROOMS_KEYS_ACT_0_5, RetrySafe),
-    // 0.8 widens the table (newer host-bound versions, the retention requests): a
-    // completion still stores nothing.
+    // the reply legitimately needs it again. Completing an acceptance checks the
+    // KeyPackage this VTA minted and leaves it unused — a Welcome consumes it — so a
+    // repeat completes it again, as the lost-answer retry of the acceptance needs.
     (trust_tasks::TASK_ROOMS_KEYS_ACT_0_8, RetrySafe),
     // A read: names each entry's member and can carry the member's own labels.
     (trust_tasks::TASK_ROOMS_KEYS_LIST_0_2, RetrySafe),

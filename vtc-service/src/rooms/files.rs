@@ -19,8 +19,7 @@ use trust_tasks_rs::specs::rooms::blobs::upload::{
     abort::v0_2 as upload_abort_v2, begin::v0_2 as upload_begin_v2, chunk::v0_2 as upload_chunk_v2,
     commit::v0_2 as upload_commit_v2,
 };
-use trust_tasks_rs::specs::rooms::info::v0_1 as rooms_info;
-use trust_tasks_rs::specs::rooms::records::{get::v0_2 as get_v2, put::v0_2 as put_v2};
+use trust_tasks_rs::specs::rooms::records::get::v0_2 as get_v2;
 use trust_tasks_rs::specs::rooms::usage::v0_1 as rooms_usage;
 use trust_tasks_rs::specs::rooms::{
     epoch::chain::v0_2 as epoch_chain_v2, epoch::prune::v0_2 as epoch_prune_v2,
@@ -405,26 +404,6 @@ fn as_v0_1<P, B: serde::de::DeserializeOwned>(
     })
 }
 
-/// `rooms/records/put/0.2`: a record that may name blobs committed in its room.
-pub(crate) async fn handle_put_record_v2(
-    doc: TrustTask<put_v2::Payload>,
-    ctx: RoomCtx,
-) -> TrustTaskOutcome {
-    let payload = match payload_json(&doc) {
-        Ok(p) => p,
-        Err(o) => return o,
-    };
-    let blobs = match blob_tasks::put_v2_blobs(&payload) {
-        Ok(b) => b,
-        Err(r) => return refused(&doc, r),
-    };
-    let req: PutRecordBody = match as_v0_1(&doc, payload) {
-        Ok(r) => r,
-        Err(o) => return o,
-    };
-    super::handlers::put_record(&doc, &ctx, req, blobs, None).await
-}
-
 /// `rooms/records/put/0.3`: 0.2, and an `open` room's `cleartext` may carry the record's
 /// provenance and `validUntil` — stored and served exactly as received, never acted on
 /// (consumer item 11). A sealed write is 0.2's: those members travel inside the body.
@@ -474,7 +453,7 @@ pub(crate) async fn handle_list_records_v5(
         Ok(r) => r,
         Err(o) => return o,
     };
-    super::handlers::list_records(&doc, &ctx, req, 5).await
+    super::handlers::list_records(&doc, &ctx, req).await
 }
 
 /// `rooms/create/0.2`: 0.1, and the room's record retention, recorded as given.
@@ -510,7 +489,7 @@ pub(crate) async fn handle_epoch_chain_v2(
         Ok(r) => r,
         Err(o) => return o,
     };
-    super::handlers::epoch_chain(&doc, &ctx, &req, true).await
+    super::handlers::epoch_chain(&doc, &ctx, &req).await
 }
 
 /// `rooms/epoch/prune/0.2`: the 0.1 prune, and the room's epoch floor it leaves.
@@ -785,25 +764,6 @@ pub(crate) async fn handle_usage(
     render(
         &doc,
         blob_tasks::usage(&ctx.state.room_files, &room, &authorized, &payload).await,
-    )
-}
-
-/// `rooms/info/0.1`. Needs `read`.
-pub(crate) async fn handle_info(
-    doc: TrustTask<rooms_info::Payload>,
-    ctx: RoomCtx,
-) -> TrustTaskOutcome {
-    let payload = match payload_json(&doc) {
-        Ok(p) => p,
-        Err(o) => return o,
-    };
-    let (room, authorized) = match authorize(&doc, &ctx, &payload, Action::Read).await {
-        Ok(r) => r,
-        Err(o) => return o,
-    };
-    render(
-        &doc,
-        blob_tasks::info(&ctx.state.room_files, &room, &authorized, &payload).await,
     )
 }
 

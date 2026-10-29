@@ -78,6 +78,7 @@ pub const REMOVAL_NOTICE: &str = "Removal ends access to what is written from no
      nothing the member already read, and their authority credential is not revoked: a host \
      honours it until it expires, though on a sealed room it opens nothing written after this.";
 
+#[allow(deprecated)] // group/remove/0.1: a private room has no successor yet (spec gap).
 const OWNER_GROUP_REMOVE: &str = <owner_remove::Payload as Payload>::TYPE_URI;
 const OWNER_GROUP_REMOVE_V0_3: &str = <owner_remove_v0_3::Payload as Payload>::TYPE_URI;
 const OWNER_REVOKE: &str = <owner_revoke::Payload as Payload>::TYPE_URI;
@@ -260,6 +261,7 @@ fn rfc3339(t: DateTime<Utc>) -> String {
 /// true. A host that did not answer the VTA, or an answer that cannot be read, is
 /// [`HolderError::Unavailable`]: the outcome is unknown and the VTA settles its own pending
 /// advance on the next request.
+#[allow(deprecated)] // group/remove/0.1: a private room has no successor yet (spec gap).
 pub async fn remove_from_group(
     holder: &KeyHolder,
     room_id: &str,

@@ -44,7 +44,6 @@ const REMOVE: &str = "https://trusttasks.org/spec/vtc/rooms/community/members/re
 const MEMBERS: &str = "https://trusttasks.org/spec/vtc/rooms/community/members/list/0.1";
 const OFFERS: &str = "https://trusttasks.org/spec/vtc/rooms/offers/list/0.4";
 const UPDATE: &str = "https://trusttasks.org/spec/vtc/rooms/community/update/0.3";
-const OFFERS_V0_2: &str = "https://trusttasks.org/spec/vtc/rooms/offers/list/0.2";
 const ACCEPT: &str = "https://trusttasks.org/spec/vtc/rooms/offers/accept/0.1";
 const MEMBERSHIPS: &str = "https://trusttasks.org/spec/vtc/rooms/memberships/list/0.1";
 
@@ -707,7 +706,7 @@ async fn an_open_community_room_from_creation_to_use_to_removal() {
     let put = call_as(
         &fix,
         &alice,
-        vti_rooms::wire::ROOMS_RECORDS_PUT_TYPE,
+        vti_rooms::wire::ROOMS_RECORDS_PUT_V3_TYPE,
         json!({
             "roomId": room, "key": "minutes", "presentation": presentation,
             "cleartext": { "body": "the board met" },
@@ -2291,8 +2290,8 @@ async fn vtc_rooms_community_reads_carry_the_details_and_rfc3339_instants() {
     assert_eq!(both, want);
 }
 
-/// `vtc/rooms/offers/list/0.2` item 4: the room's current label and description — a rename
-/// reaches an open offer — and never its tags. 0.4 shows the same.
+/// `vtc/rooms/offers/list/0.4`: the room's current label and description — a rename
+/// reaches an open offer — and never its tags.
 #[tokio::test]
 async fn vtc_rooms_offers_list_shows_the_rooms_description_and_never_its_tags() {
     let mut fix = fixture().await;
@@ -2310,7 +2309,7 @@ async fn vtc_rooms_offers_list_shows_the_rooms_description_and_never_its_tags() 
     )
     .await;
 
-    let offers = call_as(&fix, &alice, OFFERS_V0_2, json!({})).await;
+    let offers = call_as(&fix, &alice, OFFERS, json!({})).await;
     let offer = &offers["payload"]["items"][0];
     assert_eq!(offer["label"], "Board pack — 2027", "{offers}");
     assert_eq!(
@@ -2319,14 +2318,6 @@ async fn vtc_rooms_offers_list_shows_the_rooms_description_and_never_its_tags() 
     );
     assert!(offer.get("tags").is_none(), "{offer}");
     assert!(!offers.to_string().contains("\"board\""), "{offers}");
-
-    let offers = call_as(&fix, &alice, OFFERS, json!({})).await;
-    let offer = &offers["payload"]["items"][0];
-    assert_eq!(offer["label"], "Board pack — 2027");
-    assert_eq!(
-        offer["description"],
-        "Agendas, minutes and the finance pack."
-    );
 }
 
 // ─── the room's own profile (create, update) ─────────────────────────
@@ -2624,7 +2615,7 @@ async fn read_as(fix: &Fixture, who: &Party, room: &str, presentation: &Value) -
     call_as(
         fix,
         who,
-        vti_rooms::wire::ROOMS_RECORDS_LIST_TYPE,
+        vti_rooms::wire::ROOMS_RECORDS_LIST_V5_TYPE,
         json!({ "roomId": room, "presentation": presentation }),
     )
     .await
@@ -3055,10 +3046,6 @@ async fn a_room_binding_admits_renews_and_withdraws_a_groups_members() {
         renewal["validUntil"].as_str().unwrap(),
         "the renewed expiry is the admission's own"
     );
-    // 0.2 never shows a renewal.
-    let older = call_as(&fix, &alice, OFFERS_V0_2, json!({})).await;
-    assert!(older["payload"].get("renewals").is_none());
-
     // Leaving the group: nothing else covers her, so her removal is owed.
     vtc_service::groups::remove_membership(
         fix.vtc.state.directory.ks(),
