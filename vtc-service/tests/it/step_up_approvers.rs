@@ -35,7 +35,6 @@ const LIST: &str = "https://trusttasks.org/spec/auth/step-up/approver/list/0.1";
 const REVOKE: &str = "https://trusttasks.org/spec/auth/step-up/approver/revoke/0.1";
 const ATTEST: &str = "https://trusttasks.org/spec/auth/step-up/approver/attest/0.1";
 const APPROVE_V06: &str = "https://trusttasks.org/spec/auth/step-up/approve-response/0.6";
-const APPROVE_V04: &str = "https://trusttasks.org/spec/auth/step-up/approve-response/0.4";
 
 async fn vtc() -> TestVtc {
     TestVtc::builder()
@@ -532,7 +531,7 @@ async fn a_dedicated_factor_supersedes_the_subjects_session_passkeys() {
     let (_, out) = call(
         &vtc,
         &admin,
-        APPROVE_V04,
+        APPROVE_V06,
         json!({
             "subject": admin.did,
             "challenge": request["challenge"],

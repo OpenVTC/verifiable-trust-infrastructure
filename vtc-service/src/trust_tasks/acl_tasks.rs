@@ -25,7 +25,8 @@ use trust_tasks_rs::specs::acl::{
     revoke::v0_2 as acl_revoke, show::v0_2 as acl_show, update::v0_2 as acl_update,
 };
 // The community-role move: `acl/change-role/0.2` moves the administrative role
-// only, so the role-change ceremony keeps its 0.1 door.
+// only, so the role-change ceremony keeps its 0.1 door (a specification gap).
+#[allow(deprecated)]
 use trust_tasks_rs::specs::acl::change_role::v0_1 as acl_change_community_role;
 use trust_tasks_rs::{RejectReason, StandardCode, TrustTask, TrustTaskCode};
 use vti_common::auth::extractor::AuthClaims;
@@ -525,6 +526,8 @@ pub(super) async fn handle_revoke(
 /// `acl/change-role/0.1` — move a subject's **community** role, with the
 /// administrative authority it implies, through the role-change ceremony.
 /// `acl/change-role/0.2` ([`handle_change_role`]) moves the administrative role.
+// acl/change-role/0.1 is the community-role door; 0.2 cannot express it (spec gap).
+#[allow(deprecated)]
 pub(super) async fn handle_change_community_role(
     state: &AppState,
     ctx: &JoinAuthCtx,

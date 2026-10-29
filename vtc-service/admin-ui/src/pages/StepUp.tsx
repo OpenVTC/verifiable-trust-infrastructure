@@ -31,7 +31,7 @@ import {
   noFactorGuidance,
   answerCodeOf,
   answerStepUp,
-  APPROVE_RESPONSE_URI,
+  APPROVE_RESPONSE_V0_6_URI,
   decodeStepUpRequest,
   runStepUpCeremony,
 } from "@/lib/bound-step-up";
@@ -61,7 +61,7 @@ function StepUpPageSurface() {
   });
   const decline = useMutation({
     mutationFn: () =>
-      postSignedTrustTask(APPROVE_RESPONSE_URI, {
+      postSignedTrustTask(APPROVE_RESPONSE_V0_6_URI, {
         subject: request!.subject,
         challenge: request!.challenge,
         decision: "denied",

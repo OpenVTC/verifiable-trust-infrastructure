@@ -38,9 +38,12 @@ use crate::{HolderKey, MAX_DOCUMENT_RESPONSE_BYTES, VtcClient, VtcError, decode_
 /// The generated wire types for the family, re-exported so a caller names the
 /// reply types without depending on `trust-tasks-rs` itself.
 pub use trust_tasks_rs::specs::acl::{
-    change_role::v0_1 as change_role, grant::v0_2 as grant, list::v0_3 as list,
-    revoke::v0_2 as revoke, show::v0_2 as show, swap_key::v0_1 as swap_key, update::v0_2 as update,
+    grant::v0_2 as grant, list::v0_3 as list, revoke::v0_2 as revoke, show::v0_2 as show,
+    swap_key::v0_1 as swap_key, update::v0_2 as update,
 };
+// acl/change-role/0.1 is the community-role door; 0.2 cannot express it (spec gap).
+#[allow(deprecated)]
+pub use trust_tasks_rs::specs::acl::change_role::v0_1 as change_role;
 
 /// The Type URI of each task in the family, read off the generated payloads.
 pub mod task {
@@ -50,6 +53,8 @@ pub mod task {
     pub const SHOW: &str = <super::show::Payload as Payload>::TYPE_URI;
     pub const GRANT: &str = <super::grant::Payload as Payload>::TYPE_URI;
     pub const UPDATE: &str = <super::update::Payload as Payload>::TYPE_URI;
+    // acl/change-role/0.1 is the community-role door; 0.2 cannot express it (spec gap).
+    #[allow(deprecated)]
     pub const CHANGE_ROLE: &str = <super::change_role::Payload as Payload>::TYPE_URI;
     pub const REVOKE: &str = <super::revoke::Payload as Payload>::TYPE_URI;
     pub const SWAP_KEY: &str = <super::swap_key::Payload as Payload>::TYPE_URI;
@@ -148,6 +153,8 @@ fn explicit_scope(on: bool) -> serde_json::Value {
 impl VtcClient {
     /// Move `subject` from `from_role` to `to_role`, compare-and-swapped on
     /// `from_role`. A promotion to admin needs a bound passkey gesture.
+    // acl/change-role/0.1 is the community-role door; 0.2 cannot express it (spec gap).
+    #[allow(deprecated)]
     pub async fn acl_change_role(
         &self,
         subject: &str,

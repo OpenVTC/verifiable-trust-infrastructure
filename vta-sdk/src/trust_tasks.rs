@@ -2651,7 +2651,6 @@ pub const ALL_URIS: &[&str] = &[
 ///
 /// Canonical list: `vta-service`'s dispatcher consumes this as its `REST_ROUTED`
 /// allowlist, so the two can't drift.
-#[allow(deprecated)] // intentionally names the deprecated passkey-login 0.1 URIs
 pub const REST_ROUTED_URIS: &[&str] = &[
     TASK_AUTH_CHALLENGE_0_1,
     TASK_AUTH_AUTHENTICATE_0_3,
@@ -2690,7 +2689,6 @@ mod tests {
     use super::*;
 
     #[test]
-    #[allow(deprecated)] // references the deprecated 0.1 URIs by const on purpose
     fn rest_routed_uris_partition_all_uris() {
         // Every REST-routed URI must be a real catalog entry, else the filter is
         // a silent no-op against ALL_URIS.

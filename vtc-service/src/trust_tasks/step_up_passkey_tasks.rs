@@ -380,7 +380,7 @@ mod tests {
     use super::super::members_admin_tests::{error_code, payload_of, seed_acl, signed, unsigned};
     use super::super::soft_authenticator::SoftEd25519Authenticator;
     use super::super::{
-        JoinAuthCtx, STEP_UP_APPROVE_RESPONSE_TYPE, STEP_UP_APPROVE_RESPONSE_V0_6_TYPE,
+        JoinAuthCtx, STEP_UP_APPROVE_RESPONSE_V0_4_TYPE, STEP_UP_APPROVE_RESPONSE_V0_6_TYPE,
         TrustTaskOutcome, dispatch_trust_task_core,
     };
     use super::revoke_start;
@@ -580,8 +580,9 @@ mod tests {
         .await
     }
 
-    /// The `auth/step-up/approve-response/0.4` `signer` sends for `request`,
-    /// carrying an assertion from `key`.
+    /// The `auth/step-up/approve-response/0.6` `signer` sends for `request`,
+    /// carrying an assertion from `key`. A signed answer is always 0.6: 0.4 is
+    /// served only for the console's unsigned session-passkey answer.
     async fn approve(
         fix: &Fixture,
         transport: JoinTransport,
@@ -592,7 +593,7 @@ mod tests {
         approve_as(
             fix,
             transport,
-            STEP_UP_APPROVE_RESPONSE_TYPE,
+            STEP_UP_APPROVE_RESPONSE_V0_6_TYPE,
             signer,
             request,
             assertion,
@@ -1047,9 +1048,29 @@ mod tests {
                 "evidence": { "kind": "webauthn", "assertion": published(&assertion) },
             });
 
-            let bare = unsigned(&fix.member, STEP_UP_APPROVE_RESPONSE_TYPE, evidence.clone());
+            let bare = unsigned(
+                &fix.member,
+                STEP_UP_APPROVE_RESPONSE_V0_4_TYPE,
+                evidence.clone(),
+            );
             let out = dispatch_doc(&fix, t, &fix.member, &bare).await;
             assert_code(&out, "proofRequired", "the passkey alone");
+            // 0.4 is the console's unsigned door only: signed, it is refused
+            // and pointed at 0.6, leaving the challenge unspent.
+            let out = approve_as(
+                &fix,
+                t,
+                STEP_UP_APPROVE_RESPONSE_V0_4_TYPE,
+                &fix.member,
+                &request,
+                &assertion,
+            )
+            .await;
+            assert!(
+                String::from_utf8_lossy(&out.body).contains("approve-response/0.6"),
+                "a signed 0.4 is pointed at 0.6: {}",
+                String::from_utf8_lossy(&out.body)
+            );
             for (signer, what) in [(&fix.other, "another member"), (&fix.admin, "an admin")] {
                 let out = approve(&fix, t, signer, &request, &assertion).await;
                 assert_code(
@@ -1074,12 +1095,11 @@ mod tests {
         }
     }
 
-    /// `auth/step-up/approve-response/0.6`, served alongside 0.4: a webauthn
-    /// gate alone is never enough — unlike 0.4, which still admits an
-    /// unsigned console-passkey answer, 0.5 onward requires the approver's
-    /// proof on every response, so an unsigned 0.6 document is refused before
-    /// its evidence is even looked at. Signed by the subject, it is recorded
-    /// exactly as 0.4 records it.
+    /// `auth/step-up/approve-response/0.6`: a webauthn gate alone is never
+    /// enough — unlike 0.4, kept only for an unsigned console-passkey answer,
+    /// 0.5 onward requires the approver's proof on every response, so an
+    /// unsigned 0.6 document is refused before its evidence is even looked at.
+    /// Signed by the subject, it is recorded.
     #[tokio::test]
     async fn approve_response_0_6_requires_the_subjects_proof_even_for_a_webauthn_gate() {
         for t in TRANSPORTS {

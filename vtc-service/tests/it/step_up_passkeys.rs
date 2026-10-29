@@ -41,7 +41,7 @@ use crate::common::webauthn_harness::SoftEd25519Authenticator;
 
 const REDEEM_START: &str = "https://trusttasks.org/spec/auth/passkey/enroll/redeem/start/0.1";
 const REDEEM_FINISH: &str = "https://trusttasks.org/spec/auth/passkey/enroll/redeem/finish/0.1";
-const APPROVE_RESPONSE: &str = "https://trusttasks.org/spec/auth/step-up/approve-response/0.4";
+const APPROVE_RESPONSE: &str = "https://trusttasks.org/spec/auth/step-up/approve-response/0.6";
 const BREAK_GLASS: &str = "https://trusttasks.org/spec/git-ns/right/break-glass/0.2";
 /// `MockVtcTransport`'s WebAuthn relying party.
 const RP_ORIGIN: &str = "https://vtc.test";

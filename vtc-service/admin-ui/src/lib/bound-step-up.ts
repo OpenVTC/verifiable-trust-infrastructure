@@ -69,9 +69,13 @@ import {
   type JsonPublicKeyOptions,
 } from "./webauthn";
 
+/** The console's **unsigned** passkey answer — the only answer the VTC
+ *  still hears on 0.4, since 0.5 onward require a proof this browser cannot
+ *  make. Every signed answer is {@link APPROVE_RESPONSE_V0_6_URI}. */
 export const APPROVE_RESPONSE_URI =
   "https://trusttasks.org/spec/auth/step-up/approve-response/0.4";
-/** The approve-response version that carries `approverSigned` evidence. */
+/** The approve-response version for every signed answer — a refusal, or one
+ *  carrying `approverSigned` evidence. */
 export const APPROVE_RESPONSE_V0_6_URI =
   "https://trusttasks.org/spec/auth/step-up/approve-response/0.6";
 

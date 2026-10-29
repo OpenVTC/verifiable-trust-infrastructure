@@ -78,7 +78,7 @@ describe("step-up page", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Decline" }));
     await waitFor(() =>
       expect(postSignedTrustTask).toHaveBeenCalledWith(
-        "https://trusttasks.org/spec/auth/step-up/approve-response/0.4",
+        "https://trusttasks.org/spec/auth/step-up/approve-response/0.6",
         expect.objectContaining({ decision: "denied", challenge: REQUEST.challenge, subject: ADMIN }),
       ),
     );
