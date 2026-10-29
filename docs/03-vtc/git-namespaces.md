@@ -8,12 +8,11 @@ Trust Registry, where CI checks such as `did-git-sign verify-trust` read it.
   (`specs/git-ns/**`). The rights model is in `git-ns/right/grant/0.4`.
 - **Design:** `design-docs/vtc-git-namespaces-design.md`.
 - **Code:** `vtc-service/src/git_ns/`.
-- **Versions:** every member- and administrator-facing task is served at its
-  current version only (an older one is refused `unsupportedVersion`). The
-  bridge's own tasks keep their older versions beside the current ones,
-  because the released bridge still speaks them: `git-ns/bridge/event` 0.1 to
-  0.5 and `git-ns/bridge/result` 0.1 and 0.2 are accepted, and jobs go out at
-  0.4, 0.5 or 0.6 as the bridge lists them.
+- **Versions:** every task is served at its current version only (an older
+  one is refused `unsupportedVersion`), the bridge's own included:
+  `git-ns/bridge/event` 0.5 and `git-ns/bridge/result` 0.2 are accepted, and
+  jobs go out at `git-ns/bridge/job` 0.6 only. `vgi-bridge` has spoken these
+  since v0.26.0; an older bridge must be upgraded.
 - **Nested repository paths** (`git-ns/_shared/0.6`): on a forge with nested
   groups (GitLab), `gitlab.com/acme/platform/tools/cli` is one repository of
   the namespace `gitlab.com/acme` — up to 21 path segments, each up to 255
@@ -324,11 +323,11 @@ whose resources — its drift items' included — lies outside the namespace is
 refused whole, before anything is applied; a transfer's `to` alone is exempt,
 recorded as where the repository went. This is `git-ns/bridge/event/0.2`
 ([trust-tasks #627](https://github.com/trustoverip/dtgwg-trust-tasks-tf/pull/627)).
-The VTC serves 0.1, 0.2, 0.3 and 0.4 — 0.3 only adds `roleMapReported`
-(below), 0.4 only `pullRequestOpened` ([The pull-request
-gate](#the-pull-request-gate)) — and applies 0.2's rules to all four. Serving
-0.4 is what lists it in the VTC's `trust-task-discovery` answer, which is how a
-bridge learns it may report pull requests here.
+The VTC serves 0.5 only — 0.3 added `roleMapReported` (below), 0.4
+`pullRequestOpened` ([The pull-request gate](#the-pull-request-gate)), 0.5
+nested repository paths — and 0.2's rules still apply. Serving 0.5 is what
+lists it in the VTC's `trust-task-discovery` answer, which is how a bridge
+learns it may report pull requests here.
 
 ### The bridge's role map, and re-projecting roles
 
@@ -383,19 +382,16 @@ It is normal-class, audited as `gitNs.roles.reprojected`, and refused in
 manual mode (`manualMode`) and while the bridge has lost its access
 (`noForgeAccess`). The shipped policy evaluates it as `roles.reproject`.
 
-Every job goes out as the newest `git-ns/bridge/job` version the bridge lists
-when asked with `trust-task-discovery`: `0.6` (nested repository paths,
-`git-ns/_shared/0.6`) to a bridge that lists it, `0.5` to one that lists 0.5
-but not 0.6 — the released `vgi-bridge` — and `git-ns/bridge/job/0.4`
-([trust-tasks #635](https://github.com/trustoverip/dtgwg-trust-tasks-tf/pull/635))
-to one that lists only 0.4 (asked again hourly, so an upgrade is noticed). 0.5
-is 0.4 plus `closePullRequest`, with the same meaning for every other kind, so
-a 0.4-only bridge is unaffected; `closePullRequest` goes to no bridge without
-0.5, and a job naming a nested repository path to no bridge without 0.6. A
-bridge that lists none of the three is sent nothing: in-line jobs (binding,
-account links, a `roleAdded` revert) are refused with "upgrade the bridge",
-and queued jobs wait with that as their last error. A bridge before 0.4 would
-read a `git.ns.admin` entry as ownership, which is why there is no downgrade.
+Every job goes out as `git-ns/bridge/job/0.6` (nested repository paths,
+`git-ns/_shared/0.6`), and only to a bridge that lists 0.6 when asked with
+`trust-task-discovery/0.3` (asked again hourly, so an upgrade is noticed).
+`vgi-bridge` has listed it since v0.26.0. A bridge that does not list 0.6 —
+one that lists only 0.4 and 0.5 included — is sent nothing: in-line jobs
+(binding, account links, a `roleAdded` revert) are refused with "upgrade the
+bridge", queued jobs wait with that as their last error, and a queued
+`closePullRequest` is dropped ([The pull-request gate](#the-pull-request-gate)).
+A bridge before job 0.4 would read a `git.ns.admin` entry as ownership, which
+is why there is no downgrade.
 
 Jobs are queued in `git_ns_jobs`; role projection retries
 forever, everything else within a budget. `GET /v1/git-ns/jobs` shows them.
@@ -415,7 +411,7 @@ then `close`. The specification is
 **This is hygiene, not the merge gate.** The required commit-trust check that
 bootstrapping installs (`requiredCheck`) is still what keeps untrusted commits
 out of a governed repository, and nothing here weakens it. The gate fails
-open: if the VTC or the bridge is down, if the bridge does not take job 0.5,
+open: if the VTC or the bridge is down, if the bridge does not take job 0.6,
 or if a setting cannot be read, the pull request stays open — and nothing the
 required check refuses can be merged through it. A pull request the gate left
 open is not "approved" by anything.
@@ -506,11 +502,11 @@ maintainer, leaves no record. A failed close is the job's `failed` or
 
 ### Bridge requirements
 
-The bridge must take `git-ns/bridge/job/0.5` (and report events at
-`git-ns/bridge/event/0.4`), and its forge credentials must be able to comment
+The bridge must take `git-ns/bridge/job/0.6` (and report events at
+`git-ns/bridge/event/0.5`), and its forge credentials must be able to comment
 on and close pull requests — for a GitHub App, the **Pull requests: write**
 permission and the `pull_request` webhook event. If the gate is configured
-for a namespace whose bridge does not list job 0.5, the VTC sends it no
+for a namespace whose bridge does not list job 0.6, the VTC sends it no
 `closePullRequest`, drops any it had queued, and tells the namespace's
 administrators once: a warning in the log and a `gitNs.pullRequest.gateUnenforced`
 row in their activity feed. It is told again only if the bridge later takes

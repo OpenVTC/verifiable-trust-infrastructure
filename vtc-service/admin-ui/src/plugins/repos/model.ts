@@ -1100,7 +1100,7 @@ const ACTIVITY: Record<string, string> = {
   "gitNs.right.selfGrantWaived": "self-granted — single-administrator mode",
   "gitNs.pullRequest.closed": "pull request closed — its author may not open one here",
   "gitNs.job.closePullRequest": "bridge job close pull request",
-  "gitNs.pullRequest.gateUnenforced": "pull-request policy not enforced — the bridge cannot close pull requests (needs git-ns/bridge/job 0.5)",
+  "gitNs.pullRequest.gateUnenforced": "pull-request policy not enforced — the bridge cannot close pull requests (needs git-ns/bridge/job 0.6)",
 };
 
 /** A bridge job's kind in words, for the job list

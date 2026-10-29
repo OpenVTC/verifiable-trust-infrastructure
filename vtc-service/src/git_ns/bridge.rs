@@ -38,12 +38,6 @@ use sha2::{Digest, Sha256};
 use tokio::sync::OnceCell;
 use tracing::{debug, info, warn};
 use trust_tasks_rs::TrustTask;
-// `git-ns/bridge/job` 0.4 and 0.5 are kept beside 0.6 for the bridges that
-// list nothing newer: the released bridge (OpenVTC/verifiable-git-infrastructure
-// `vgi-bridge` v0.25.0) takes 0.4 and 0.5 only, and a bridge is never sent a
-// version it has not listed (`bridge_job_support`).
-#[allow(deprecated)]
-use trust_tasks_rs::specs::git_ns::bridge::job::{v0_4 as job_wire4, v0_5 as job_wire5};
 use trust_tasks_rs::specs::git_ns::bridge::{
     event::v0_5 as event_wire, job::v0_6 as job_wire, result::v0_2 as result_wire,
 };
@@ -66,24 +60,13 @@ use super::rules;
 use super::store::{self, Snapshot};
 use super::wire;
 
-/// `git-ns/bridge/job/0.4` — what the VTC sends a bridge that lists 0.4 and
-/// nothing newer.
-pub const JOB_TYPE: &str = <job_wire4::Payload as trust_tasks_rs::Payload>::TYPE_URI;
-/// `git-ns/bridge/job/0.5` — 0.4 plus `closePullRequest`. A 0.4 document is a
-/// valid 0.5 document with the same meaning, so a bridge that lists 0.5 is
-/// sent every job as 0.5 (it only SHOULD keep accepting 0.4), and
-/// `closePullRequest` goes to no bridge that lists only 0.4.
-pub const JOB_TYPE_V0_5: &str = <job_wire5::Payload as trust_tasks_rs::Payload>::TYPE_URI;
-/// `git-ns/bridge/job/0.6` — 0.5 with nested repository paths
-/// (`git-ns/_shared/0.6`). A 0.5 document is a valid 0.6 document, so a
-/// bridge that lists 0.6 is sent every job as 0.6. A job naming a repository
-/// 0.5 cannot carry — a repository path of more than one segment, or a
-/// segment longer than 100 characters — goes to no other bridge (job 0.6,
-/// *Changes from 0.5*).
-pub const JOB_TYPE_V0_6: &str = <job_wire::Payload as trust_tasks_rs::Payload>::TYPE_URI;
-/// `trust-task-discovery/0.2`: the VTC asks a bridge whether it takes
-/// [`JOB_TYPE_V0_6`], [`JOB_TYPE_V0_5`] or [`JOB_TYPE`] before sending it a job.
-pub const DISCOVERY_TYPE: &str = "https://trusttasks.org/spec/trust-task-discovery/0.2";
+/// `git-ns/bridge/job/0.6` — the only job version the VTC sends. A bridge is
+/// sent a job only once it has listed 0.6 in its `trust-task-discovery`
+/// answer ([`bridge_job_support`]); `vgi-bridge` has taken 0.6 since v0.26.0.
+pub const JOB_TYPE: &str = <job_wire::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+/// `trust-task-discovery/0.3`: the VTC asks a bridge whether it takes
+/// [`JOB_TYPE`] before sending it a job.
+pub const DISCOVERY_TYPE: &str = "https://trusttasks.org/spec/trust-task-discovery/0.3";
 
 /// How long to wait for a bridge's `trust-task-discovery` answer.
 const DISCOVERY_TIMEOUT: Duration = Duration::from_secs(30);
@@ -448,14 +431,12 @@ pub trait BridgeClient: Send + Sync {
 // ── the bridge's job version ────────────────────────────────────────────────
 
 /// What a bridge answered when asked which job versions it takes.
+///
+/// A record written by an earlier VTC also carries `takesV04` / `takesV05`;
+/// they are ignored, since no job goes out at either version any more.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BridgeJobSupport {
-    pub takes_v0_4: bool,
-    /// Lists `git-ns/bridge/job/0.5`. Absent in a record written before 0.5
-    /// existed, which reads as "no" until the record is next refreshed.
-    #[serde(default)]
-    pub takes_v0_5: bool,
     /// Lists `git-ns/bridge/job/0.6`. Absent in a record written before 0.6
     /// existed, which reads as "no" until the record is next refreshed.
     #[serde(default)]
@@ -464,36 +445,20 @@ pub struct BridgeJobSupport {
 }
 
 impl BridgeJobSupport {
-    /// The version `payload` goes out as, or `None` when this bridge may be
-    /// sent no such job. The newest version the bridge lists — each is a
-    /// superset of the one before with the same meaning — so 0.6, else 0.5,
-    /// else 0.4; `closePullRequest` exists only from 0.5, and a repository
-    /// path only 0.6 can carry goes to a bridge that lists 0.6.
-    pub fn type_for(&self, payload: &Value) -> Option<&'static str> {
-        use trust_tasks_rs::validate::ValidatedPayload as _;
-        if self.takes_v0_6 {
-            return Some(JOB_TYPE_V0_6);
-        }
-        // Whether the older schema admits the job is what decides, rather
-        // than a parse of its resources here: the schema is the one the
-        // bridge validates the document against.
-        if self.takes_v0_5 && job_wire5::Payload::validate_value(payload).is_ok() {
-            Some(JOB_TYPE_V0_5)
-        } else if self.takes_v0_4 && job_wire4::Payload::validate_value(payload).is_ok() {
-            Some(JOB_TYPE)
-        } else {
-            None
-        }
+    /// The version a job goes out as, or `None` when this bridge may be sent
+    /// no job: 0.6, to a bridge that lists it.
+    pub fn job_type(&self) -> Option<&'static str> {
+        self.takes_v0_6.then_some(JOB_TYPE)
     }
 
-    /// Whether the bridge lists a job version with `closePullRequest` (0.5 on).
+    /// Whether the bridge lists a job version with `closePullRequest`.
     pub fn closes_pull_requests(&self) -> bool {
-        self.takes_v0_5 || self.takes_v0_6
+        self.takes_v0_6
     }
 
-    /// Whether the bridge lists any job version at all.
+    /// Whether the bridge lists any job version the VTC sends.
     pub fn takes_any(&self) -> bool {
-        self.takes_v0_4 || self.takes_v0_5 || self.takes_v0_6
+        self.takes_v0_6
     }
 }
 
@@ -503,16 +468,8 @@ fn support_key(bridge_did: &str) -> String {
 
 fn outdated(bridge_did: &str) -> BridgeSendError {
     BridgeSendError::Outdated(format!(
-        "the git-ns bridge {bridge_did} takes no git-ns/bridge/job version that can carry this \
-         job (this VTC sends 0.4, 0.5 and 0.6; a repository path of more than one segment \
-         needs 0.6); upgrade the bridge"
-    ))
-}
-
-fn outdated_for_pull_requests(bridge_did: &str) -> BridgeSendError {
-    BridgeSendError::Outdated(format!(
-        "the git-ns bridge {bridge_did} does not take git-ns/bridge/job 0.5, so it cannot close \
-         pull requests; upgrade the bridge"
+        "the git-ns bridge {bridge_did} does not take git-ns/bridge/job 0.6, the only version \
+         this VTC sends; upgrade the bridge (vgi-bridge v0.26.0 or later)"
     ))
 }
 
@@ -533,12 +490,11 @@ pub async fn cached_job_support(state: &AppState, bridge_did: &str) -> Option<Br
 /// Which `git-ns/bridge/job` versions `bridge_did` takes, asking it with
 /// `trust-task-discovery` when the last answer is missing or stale.
 ///
-/// `git-ns/bridge/job` 0.4 forbids sending 0.4 to a bridge that has not
+/// `git-ns/bridge/job` forbids sending a version to a bridge that has not
 /// shown it takes it: a bridge before 0.4 — including one that reads later
 /// minor versions forward-compatibly — would take a `git.ns.admin` entry as
-/// ownership. 0.5 says the same of itself. So a bridge that refuses
-/// discovery, or lists neither, is sent nothing. Only a transient failure is
-/// passed on as one.
+/// ownership. So a bridge that refuses discovery, or does not list 0.6, is
+/// sent nothing. Only a transient failure is passed on as one.
 pub async fn bridge_job_support(
     state: &AppState,
     bridge_did: &str,
@@ -550,26 +506,20 @@ pub async fn bridge_job_support(
     {
         return Ok(c.clone());
     }
-    let (takes_v0_4, takes_v0_5, takes_v0_6) = match state
+    let takes_v0_6 = match state
         .git_ns
         .bridge
         .discover_jobs(bridge_did, DISCOVERY_TIMEOUT)
         .await
     {
-        Ok(types) => (
-            types.iter().any(|t| t == JOB_TYPE),
-            types.iter().any(|t| t == JOB_TYPE_V0_5),
-            types.iter().any(|t| t == JOB_TYPE_V0_6),
-        ),
+        Ok(types) => types.iter().any(|t| t == JOB_TYPE),
         Err(BridgeSendError::Rejected { code, .. }) => {
             debug!(bridge = %bridge_did, %code, "the bridge refused trust-task-discovery");
-            (false, false, false)
+            false
         }
         Err(e) => return Err(e),
     };
     let record = BridgeJobSupport {
-        takes_v0_4,
-        takes_v0_5,
         takes_v0_6,
         checked_at: now(),
     };
@@ -578,8 +528,8 @@ pub async fn bridge_job_support(
     if !takes && took.is_none_or(|t| t) {
         warn!(
             bridge = %bridge_did,
-            "the git-ns bridge takes no git-ns/bridge/job version this VTC sends (0.4, 0.5, \
-             0.6); no job is sent to it until it is upgraded"
+            "the git-ns bridge does not take git-ns/bridge/job 0.6, the only version this VTC \
+             sends; no job is sent to it until it is upgraded"
         );
     } else if takes && took == Some(false) {
         info!(bridge = %bridge_did, "the git-ns bridge now takes git-ns/bridge/job");
@@ -590,36 +540,18 @@ pub async fn bridge_job_support(
     Ok(record)
 }
 
-/// The kind a job payload carries.
-fn kind_of(payload: &Value) -> Option<JobKind> {
-    payload
-        .get("kind")
-        .cloned()
-        .and_then(|k| serde_json::from_value(k).ok())
-}
-
-/// Send one job as the newest `git-ns/bridge/job` version the bridge lists
-/// and the job fits ([`BridgeJobSupport::type_for`]) — once the bridge has
-/// shown it takes the version. A `closePullRequest` goes only to a bridge
-/// that lists 0.5 or 0.6.
+/// Send one job as `git-ns/bridge/job/0.6` — once the bridge has shown it
+/// takes 0.6 ([`bridge_job_support`]).
 pub async fn send_versioned(
     state: &AppState,
     bridge_did: &str,
     payload: &Value,
     timeout: Duration,
 ) -> Result<job_wire::Response, BridgeSendError> {
-    let kind = kind_of(payload);
     let support = bridge_job_support(state, bridge_did).await?;
-    let Some(type_uri) = support.type_for(payload) else {
-        return Err(
-            if kind == Some(JobKind::ClosePullRequest) && support.takes_v0_4 {
-                outdated_for_pull_requests(bridge_did)
-            } else {
-                outdated(bridge_did)
-            },
-        );
+    let Some(type_uri) = support.job_type() else {
+        return Err(outdated(bridge_did));
     };
-    // The acknowledgement of 0.4, 0.5 and 0.6 is the same, member for member.
     let out = state
         .git_ns
         .bridge
@@ -631,11 +563,7 @@ pub async fn send_versioned(
         && matches!(code.as_str(), "unsupportedType" | "unsupportedVersion")
     {
         let _ = state.git_ns.jobs_ks.remove(support_key(bridge_did)).await;
-        return Err(if kind == Some(JobKind::ClosePullRequest) {
-            outdated_for_pull_requests(bridge_did)
-        } else {
-            outdated(bridge_did)
-        });
+        return Err(outdated(bridge_did));
     }
     out
 }
@@ -1314,7 +1242,7 @@ fn projects_roles(ns: &Namespace) -> bool {
     ns.mode == Mode::Bridge && ns.state == NamespaceState::Bound && !ns.installation_removed
 }
 
-// ── git-ns/bridge/result/0.2 (0.1 read as 0.2) ──────────────────────────────
+// ── git-ns/bridge/result/0.2 ────────────────────────────────────────────────
 
 fn step_ok(outcome: &str) -> bool {
     matches!(outcome, "applied" | "unchanged")
@@ -2663,60 +2591,31 @@ async fn complete_account_link(
 mod tests {
     use super::*;
 
-    fn support(v4: bool, v5: bool, v6: bool) -> BridgeJobSupport {
-        BridgeJobSupport {
-            takes_v0_4: v4,
-            takes_v0_5: v5,
-            takes_v0_6: v6,
-            checked_at: now(),
-        }
-    }
-
-    fn bootstrap(repo: &str) -> Value {
-        json!({
-            "jobId": "job_01J8ZC9D4H",
-            "namespace": "ns_01J8Z6Q4M2",
-            "kind": "bootstrap",
-            "repo": repo,
-            "steps": ["requiredCheck"],
-        })
-    }
-
-    /// The newest version the bridge lists goes out, and a job only 0.6 can
-    /// carry — a nested repository path — goes to no bridge without it
-    /// (`git-ns/bridge/job/0.6`, *Changes from 0.5*).
+    /// Only 0.6 goes out, and only to a bridge that lists it; a record
+    /// written by an earlier VTC — `takesV04` / `takesV05` beside it —
+    /// still reads, and a bridge it says took only 0.4 and 0.5 is sent
+    /// nothing (`git-ns/bridge/job/0.6`).
     #[test]
-    fn a_job_goes_out_at_the_newest_version_the_bridge_lists_that_can_carry_it() {
-        let flat = bootstrap("github.com/acme/widgets");
-        let nested = bootstrap("gitlab.com/acme/platform/tools/cli");
+    fn a_job_goes_out_as_0_6_only_to_a_bridge_that_lists_it() {
+        let takes = BridgeJobSupport {
+            takes_v0_6: true,
+            checked_at: now(),
+        };
+        assert_eq!(takes.job_type(), Some(JOB_TYPE));
+        assert!(takes.closes_pull_requests());
+        let old: BridgeJobSupport = serde_json::from_value(json!({
+            "takesV04": true,
+            "takesV05": true,
+            "checkedAt": "2026-09-25T12:00:00Z",
+        }))
+        .unwrap();
+        assert_eq!(old.job_type(), None);
+        assert!(!old.closes_pull_requests());
+        assert!(!old.takes_any());
         assert_eq!(
-            support(true, true, true).type_for(&nested),
-            Some(JOB_TYPE_V0_6)
+            JOB_TYPE,
+            "https://trusttasks.org/spec/git-ns/bridge/job/0.6"
         );
-        assert_eq!(
-            support(true, true, true).type_for(&flat),
-            Some(JOB_TYPE_V0_6)
-        );
-        // The released bridge: 0.4 and 0.5.
-        assert_eq!(
-            support(true, true, false).type_for(&flat),
-            Some(JOB_TYPE_V0_5)
-        );
-        assert_eq!(support(true, true, false).type_for(&nested), None);
-        assert_eq!(support(true, false, false).type_for(&flat), Some(JOB_TYPE));
-        assert_eq!(support(true, false, false).type_for(&nested), None);
-        let close = json!({
-            "jobId": "job_01J8ZC9D4J",
-            "namespace": "ns_01J8Z6Q4M2",
-            "kind": "closePullRequest",
-            "repo": "github.com/acme/widgets",
-            "number": 7,
-            "message": "This repository takes pull requests from members only.",
-        });
-        assert_eq!(support(true, false, false).type_for(&close), None);
-        assert!(support(false, false, true).closes_pull_requests());
-        assert!(!support(true, false, false).closes_pull_requests());
-        assert_eq!(support(false, false, false).type_for(&flat), None);
     }
 
     const ADMIN: &str = "did:key:admin";
