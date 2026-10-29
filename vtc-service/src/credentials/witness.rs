@@ -510,19 +510,15 @@ pub enum Pairing {
 }
 
 /// The terminal response a `witness/session` document's own version declares as
-/// its outcome evidence (`witness/session/0.2`, *how the versions pair*): 0.1
-/// closes with `submit/0.1#response`, 0.2 with `submit/0.2#response`. `None`
-/// for any other document.
+/// its outcome evidence (`witness/session/0.2`, *how the versions pair*):
+/// `submit/0.2#response` for a 0.2 session. `None` for any other document,
+/// a `witness/session/0.1` one included — every witness this VTC reads serves
+/// only 0.2 (superseded 0.1 is not read).
 fn declared_outcome_type(session_type: &str) -> Option<&'static str> {
     use trust_tasks_rs::Payload;
     use trust_tasks_rs::specs::witness::session;
-    if session_type == <session::v0_1::Payload as Payload>::TYPE_URI {
-        Some(<session::submit::v0_1::Response as Payload>::TYPE_URI)
-    } else if session_type == <session::v0_2::Payload as Payload>::TYPE_URI {
-        Some(<session::submit::v0_2::Response as Payload>::TYPE_URI)
-    } else {
-        None
-    }
+    (session_type == <session::v0_2::Payload as Payload>::TYPE_URI)
+        .then_some(<session::submit::v0_2::Response as Payload>::TYPE_URI)
 }
 
 /// Pair a VWC issued by `issuer` with the outcome evidence of the session it
@@ -571,8 +567,8 @@ fn str_at<'a>(doc: &'a JsonValue, key: &str) -> Option<&'a str> {
 ///    binding `witness/session/submit` declares — the VWC it delivers cites the
 ///    same document, which holds because it is this VWC (below);
 /// 3. its type is the outcome evidence the session document's own version
-///    declares — `witness/session/submit/0.1#response` for a 0.1 session,
-///    `/0.2#response` for a 0.2 one, never the other;
+///    declares — `witness/session/submit/0.2#response` for a 0.2 session, the
+///    only version read;
 /// 4. its proof verifies under the initiating document's `recipient`.
 ///
 /// Then what makes it *this* VWC's evidence: the `recipient` is the VWC's
@@ -592,7 +588,7 @@ async fn check_pair(
 
     let declared = str_at(session, "type")
         .and_then(declared_outcome_type)
-        .ok_or("the initiating document is not a witness/session")?;
+        .ok_or("the initiating document is not a witness/session/0.2")?;
     // Check 1, the digest half.
     let cited_digest =
         str_at(vwc, "taskDigestMultibase").ok_or("the VWC carries no taskDigestMultibase")?;
@@ -1693,59 +1689,38 @@ mod tests {
         assert!(outcome_evidence_from_payload(&payload).unwrap().is_empty());
     }
 
-    /// The versions pair one to one (`witness/session/0.2`): a 0.1 session
-    /// pairs with a `submit/0.1#response`, and with nothing else.
+    /// The versions pair one to one (`witness/session/0.2`): a 0.2 session
+    /// pairs with a `submit/0.2#response` and nothing else, and a superseded
+    /// `witness/session/0.1` session pairs with nothing.
     #[tokio::test]
     async fn the_terminal_type_follows_the_sessions_own_version() {
-        use trust_tasks_rs::Payload;
-        use trust_tasks_rs::specs::witness::session;
+        const V01: &str = "https://trusttasks.org/spec/witness/session/0.1";
+        const V01_OUT: &str = "https://trusttasks.org/spec/witness/session/submit/0.1#response";
         let resolver = TrustTaskVmResolver::did_key_only();
-        let v01 = <session::v0_1::Payload as Payload>::TYPE_URI;
-        let v01_out = <session::submit::v0_1::Response as Payload>::TYPE_URI;
         let v02_out = fixtures::submit_response_type();
 
-        let w = fixtures::witnessed_at(&witnessed_edge(), BOB, v01, v01_out, |_| {}).await;
-        assert_eq!(
-            pair_outcome(
-                std::slice::from_ref(&w.evidence),
-                &w.witness.did,
-                &w.vwc,
-                &resolver
-            )
-            .await,
-            Pairing::Paired,
-            "a 0.1 session under its own declaration"
-        );
-
-        let crossed = fixtures::witnessed_at(&witnessed_edge(), BOB, v01, v02_out, |_| {}).await;
-        assert!(matches!(
-            pair_outcome(
-                std::slice::from_ref(&crossed.evidence),
-                &crossed.witness.did,
-                &crossed.vwc,
-                &resolver
-            )
-            .await,
-            Pairing::Invalid(reason) if reason.contains("is not")
-        ));
-        let crossed = fixtures::witnessed_at(
-            &witnessed_edge(),
-            BOB,
-            fixtures::session_type(),
-            v01_out,
-            |_| {},
-        )
-        .await;
-        assert!(matches!(
-            pair_outcome(
-                std::slice::from_ref(&crossed.evidence),
-                &crossed.witness.did,
-                &crossed.vwc,
-                &resolver
-            )
-            .await,
-            Pairing::Invalid(_)
-        ));
+        for (session_type, outcome_type) in [
+            (V01, V01_OUT),
+            (V01, v02_out),
+            (fixtures::session_type(), V01_OUT),
+        ] {
+            let w =
+                fixtures::witnessed_at(&witnessed_edge(), BOB, session_type, outcome_type, |_| {})
+                    .await;
+            assert!(
+                matches!(
+                    pair_outcome(
+                        std::slice::from_ref(&w.evidence),
+                        &w.witness.did,
+                        &w.vwc,
+                        &resolver
+                    )
+                    .await,
+                    Pairing::Invalid(_)
+                ),
+                "{session_type} with {outcome_type}"
+            );
+        }
     }
 
     /// A witness is classified by its predicate. A single-string `type` is

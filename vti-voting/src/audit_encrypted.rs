@@ -265,7 +265,7 @@ impl<'a> Recount<'a> {
                 }
                 self.closing = Some(Closing {
                     index,
-                    at: entry["at"].as_str().unwrap_or_default().to_string(),
+                    at: entry["occurredAt"].as_str().unwrap_or_default().to_string(),
                     targets,
                 });
             }

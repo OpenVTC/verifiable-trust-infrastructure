@@ -297,7 +297,7 @@ pub fn audit(e: Evidence<'_>) -> Result<Verified, AuditFailure> {
 /// `result` entry.
 fn check_order(manifest: &Manifest, entries: &[Value]) -> Result<usize, AuditFailure> {
     let at = |e: &Value| {
-        e["at"]
+        e["occurredAt"]
             .as_str()
             .and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok())
             .map(|t| t.with_timezone(&chrono::Utc))
@@ -314,6 +314,9 @@ fn check_order(manifest: &Manifest, entries: &[Value]) -> Result<usize, AuditFai
         };
         if result.is_some() {
             return Err(bad("an entry after the result"));
+        }
+        if let Some(why) = rules::v0_1_lifecycle_entry(i as u64, e) {
+            return Err(AuditFailure::Unreadable(why));
         }
         match e["kind"].as_str() {
             Some(crate::steps::KIND) if key => {

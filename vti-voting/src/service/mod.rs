@@ -34,7 +34,7 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use trust_tasks_rs::specs::voting::{
     ballot::cast::v0_1 as cast, board::consistency::v0_1 as consistency, board::head::v0_1 as head,
-    board::inclusion::v0_1 as inclusion, board::read::v0_1 as read,
+    board::inclusion::v0_1 as inclusion, board::read::v0_2 as read,
     election::cancel::v0_1 as cancel, election::close::v0_1 as close,
     election::register::v0_2 as register, election::show::v0_2 as show,
     result::show::v0_1 as result,
@@ -585,6 +585,9 @@ impl ElectionRecord {
             let leaf = self.board.append(&bytes) as u64;
             let entry: Value = serde_json::from_slice(&bytes)
                 .map_err(|e| journal_failure(format!("entry {leaf}: {e}")))?;
+            if let Some(why) = crate::rules::v0_1_lifecycle_entry(leaf, &entry) {
+                return Err(journal_failure(why));
+            }
             if self.replay_encrypted(&entry, leaf, receipts)? {
                 self.entries.push(bytes);
                 continue;
@@ -613,8 +616,10 @@ impl ElectionRecord {
                 }
                 Some("closed" | "closedEarly") => {
                     self.state = State::Closed;
-                    self.closing =
-                        Some((leaf, entry["at"].as_str().unwrap_or_default().to_string()));
+                    self.closing = Some((
+                        leaf,
+                        entry["occurredAt"].as_str().unwrap_or_default().to_string(),
+                    ));
                     self.start_decryption();
                 }
                 Some("result") => {
@@ -666,7 +671,7 @@ impl ElectionRecord {
     /// Close at `at` and publish the result on the board — at the encrypted levels, once the
     /// trustees have decrypted it.
     fn close(&mut self, kind: &str, at: DateTime<Utc>) -> Result<(), Failure> {
-        let leaf = self.append(&json!({ "kind": kind, "at": time(at) }))?;
+        let leaf = self.append(&json!({ "kind": kind, "occurredAt": time(at) }))?;
         self.closing = Some((leaf, time(at)));
         if self.ceremony.is_some() {
             self.state = State::Closed;
@@ -689,7 +694,7 @@ impl ElectionRecord {
         if self.state <= State::Registration && now >= self.manifest.voting_opens_at {
             let at = self.manifest.voting_opens_at;
             self.ceremony_deadline()?;
-            self.append(&json!({ "kind": "opened", "at": time(at) }))?;
+            self.append(&json!({ "kind": "opened", "occurredAt": time(at) }))?;
             self.state = State::Voting;
         }
         if self.state == State::Voting && now >= self.manifest.voting_closes_at {
@@ -971,7 +976,7 @@ impl BallotBox {
                 "the election has closed or was cancelled",
             ));
         }
-        e.append(&json!({ "kind": "cancelled", "at": time(now) }))?;
+        e.append(&json!({ "kind": "cancelled", "occurredAt": time(now) }))?;
         e.state = State::Cancelled;
         respond::<cancel::Response>(json!({ "election": e.summary(now) }))
     }

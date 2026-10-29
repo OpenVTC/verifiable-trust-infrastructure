@@ -1095,12 +1095,26 @@ async fn exchange(
     }
     match state.elections.link() {
         Some(link) => {
-            link.exchange(ballot_box, &format!("{SPEC}{task}/0.1"), payload)
-                .await
+            link.exchange(
+                ballot_box,
+                &format!("{SPEC}{task}/{}", box_version(task)),
+                payload,
+            )
+            .await
         }
         None => Err(LinkError::Unavailable(
             "this VTC has no messaging link to ballot boxes".into(),
         )),
+    }
+}
+
+/// The version of a ballot-box task the community sends: `voting/board/read` at 0.2, whose
+/// lifecycle entries name their instant `occurredAt` (voting/_shared/0.2), every other task this
+/// path sends at 0.1, its current version. `voting/election/register` is sent at 0.2 directly.
+fn box_version(task: &str) -> &'static str {
+    match task {
+        "voting/board/read" => "0.2",
+        _ => "0.1",
     }
 }
 
