@@ -18,6 +18,8 @@ import { useQuery } from "@tanstack/react-query";
 
 import { fetchBranding, vettingKeys } from "@/plugins/vetting/api";
 
+import { displayableLogo } from "./display-logo";
+
 export interface PublicProfileView {
   readonly name: string | null;
   readonly logoUrl: string | null;
@@ -40,21 +42,7 @@ async function fetchPublicProfile(): Promise<PublicProfileView> {
   };
 }
 
-/**
- * A logo the console may show. The console's CSP is `img-src 'self' data:`,
- * so a logo on another origin would only be blocked (and reported); those fall
- * back to the gradient mark rather than a broken image.
- */
-export function displayableLogo(url: string | null | undefined, origin?: string): string | null {
-  if (!url) return null;
-  if (url.startsWith("/") && !url.startsWith("//")) return url;
-  try {
-    const here = origin ?? window.location.origin;
-    return new URL(url).origin === here ? url : null;
-  } catch {
-    return null;
-  }
-}
+export { displayableLogo } from "./display-logo";
 
 const HEX = /^#[0-9a-f]{6}$/i;
 
