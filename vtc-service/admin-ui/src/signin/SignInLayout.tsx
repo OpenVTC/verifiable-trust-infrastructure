@@ -8,9 +8,10 @@
 // The theme switcher it carries is the console's component, which depends on
 // nothing but `lib/theme.ts`.
 
-import type { ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 
 import { ThemeSwitcher } from "@/components/ThemeSwitcher";
+import { displayableLogo } from "@/lib/display-logo";
 
 /** The community's top bar. The brand links to the community's home page;
  *  the colour-theme switcher sits at the far end, after `children`. */
@@ -27,12 +28,17 @@ export function CommunityTopbar({
   /** Anything on the right, such as the signed-in identity. */
   children?: ReactNode;
 }) {
+  // The page's CSP is `img-src 'self' data:`: an off-origin logo would only be
+  // blocked, and one that fails to load (not an image) would show broken.
+  // Both fall back to the gradient mark, as in the console's top bar.
+  const [logoFailed, setLogoFailed] = useState(false);
+  const logo = logoFailed ? null : displayableLogo(logoUrl);
   return (
     <header className="topbar">
       <div className="topbar-inner">
         <a className="brand" href="/">
-          {logoUrl ? (
-            <img src={logoUrl} alt="" className="brand-logo" />
+          {logo ? (
+            <img src={logo} alt="" className="brand-logo" onError={() => setLogoFailed(true)} />
           ) : (
             <span className="brand-mark" aria-hidden="true" />
           )}
