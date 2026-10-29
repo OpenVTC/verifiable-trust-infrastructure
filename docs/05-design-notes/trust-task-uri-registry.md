@@ -129,7 +129,7 @@ URL was misleading). See `spec/vta/seeds/export-mnemonic/1.0`.
 | `spec/vta/contexts/update/1.0` | `PATCH /contexts/{id}` + DIDComm `update-context` |
 | `spec/vta/contexts/update-did/1.0` | DIDComm `update-context-did` (and REST equivalent) |
 | `spec/vta/contexts/preview-delete/1.0` | DIDComm `preview-delete-context` + REST |
-| `spec/vta/contexts/delete/1.0` | `DELETE /contexts/{id}` + DIDComm `delete-context` |
+| `spec/vta/contexts/delete/1.1` | `DELETE /contexts/{id}` + DIDComm `delete-context` |
 
 ### ACL slice (`spec/vta/acl/*`)
 
@@ -442,7 +442,7 @@ REST:
   POST   /contexts                                  → vta/contexts/create/1.0
   GET    /contexts/{id}                             → vta/contexts/get/1.0
   PATCH  /contexts/{id}                             → vta/contexts/update/1.0
-  DELETE /contexts/{id}                             → vta/contexts/delete/1.0
+  DELETE /contexts/{id}                             → vta/contexts/delete/1.1
   GET    /acl                                       → acl/list/0.1
   POST   /acl                                       → acl/grant/0.1
   PATCH  /acl/{did}                                 → acl/update/0.1

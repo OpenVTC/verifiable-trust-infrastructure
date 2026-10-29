@@ -322,7 +322,6 @@ fn unwitnessed() -> Vec<DeclaredErrorCode> {
         s::vta::backup::put_chunk::v1_0::error_codes::NOT_FOUND,
         s::vta::backup::put_chunk::v1_0::error_codes::TERMINAL_STATE,
         s::vta::contexts::create::v1_0::error_codes::PARENT_NOT_FOUND,
-        s::vta::contexts::delete::v1_0::error_codes::NOT_FOUND,
         s::vta::contexts::preview_delete::v1_0::error_codes::NOT_FOUND,
         s::vta::contexts::secrets::v1_0::error_codes::NOT_FOUND,
         s::vta::contexts::secrets::v1_0::error_codes::NOT_RELEASABLE,

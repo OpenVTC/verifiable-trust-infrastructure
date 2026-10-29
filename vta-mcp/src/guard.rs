@@ -8,7 +8,7 @@
 //!
 //! A host approves a *tool*, not a *call*. Once an operator answers "always
 //! allow" to `vta_call`, every Trust Task URI the VTA serves is reachable with
-//! no further prompt — `contexts/delete/1.0` on the same approval as
+//! no further prompt — `contexts/delete/1.1` on the same approval as
 //! `contexts/list/1.0`. The host cannot tell those apart; it sees one tool
 //! name. So the per-operation decision has to be made here, where the URI is
 //! known.
@@ -592,7 +592,7 @@ mod tests {
 
     const ACL_GRANT: &str = "https://trusttasks.org/spec/acl/grant/0.1";
     const CONTEXTS_LIST: &str = "https://trusttasks.org/spec/vta/contexts/list/1.0";
-    const CONTEXTS_DELETE: &str = "https://trusttasks.org/spec/vta/contexts/delete/1.0";
+    const CONTEXTS_DELETE: &str = "https://trusttasks.org/spec/vta/contexts/delete/1.1";
     const KEYS_SIGN: &str = "https://trusttasks.org/spec/keys/sign/0.1";
 
     #[test]

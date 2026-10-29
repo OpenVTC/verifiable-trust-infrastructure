@@ -77,7 +77,7 @@ meaningful.
 ### 2.2 The gap layer 4 closes
 
 **An MCP host approves a tool, not a call.** The moment an operator answers
-"always allow" to `vta_call`, `contexts/delete/1.0` rides the same approval as
+"always allow" to `vta_call`, `contexts/delete/1.1` rides the same approval as
 `contexts/list/1.0` — the host sees one tool name and cannot tell them apart.
 
 So `vta-mcp` classifies each Trust Task URI itself and decides per call:
@@ -262,7 +262,7 @@ startup line, no call log, no error.) Every call logs twice:
 
 ```
 INFO vta_mcp::server: call start seq=3 tool="vta_call"
-  operation="…/vta/contexts/delete/1.0" risk="destructive" decision="deny"
+  operation="…/vta/contexts/delete/1.1" risk="destructive" decision="deny"
   args={"operation":"…","payload":{"id":"x"}}
 WARN vta_mcp::server: call failed seq=3 … outcome="denied" duration_ms=0
   error="'vta/contexts/delete' is destructive and this bridge runs with --read-only…"
@@ -281,7 +281,7 @@ One redacted JSON object per line, appended, created **owner-only (0600)**:
 
 ```json
 {"ts":"2026-08-25T03:30:20.963Z","seq":3,"tool":"vta_call",
- "operation":"https://trusttasks.org/spec/vta/contexts/delete/1.0",
+ "operation":"https://trusttasks.org/spec/vta/contexts/delete/1.1",
  "risk":"destructive","decision":"confirm","outcome":"denied","durationMs":0,
  "args":{"operation":"…","payload":{"id":"x"}},"error":"…"}
 ```

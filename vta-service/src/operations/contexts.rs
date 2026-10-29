@@ -536,8 +536,9 @@ pub struct ContextDidCleanup<'a> {
 #[cfg(feature = "webvh")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HostCopies {
-    /// `vta/contexts/delete/1.0`: a DID whose hosting server is no longer
-    /// registered refuses the deletion; any other unconfirmed copy is
+    /// The offline break-glass `vta contexts delete` (the contract of the
+    /// retired `vta/contexts/delete/1.0`): a DID whose hosting server is no
+    /// longer registered refuses the deletion; any other unconfirmed copy is
     /// reported in `daemonCleanupErrors` and the deletion completes.
     ReportAfter,
     /// `vta/contexts/delete/1.1` without `abandonHostCopies`: any unconfirmed
@@ -549,8 +550,9 @@ pub enum HostCopies {
 }
 
 /// The whole time a context deletion spends on hosting servers, however many
-/// DIDs it holds. Under the 30 seconds a 1.0 client waits, with room for the
-/// local work after it; a host that has not answered by then is unconfirmed.
+/// DIDs it holds. Under the 30 seconds a client may wait (the SDK waits 60),
+/// with room for the local work after it; a host that has not answered by then
+/// is unconfirmed.
 #[cfg(feature = "webvh")]
 pub const HOST_SETTLE_BUDGET: std::time::Duration = std::time::Duration::from_secs(20);
 
@@ -722,8 +724,9 @@ pub async fn delete_context(
                 subtree_dids.len()
             ))
         })?;
-        // 1.0 keeps its refusal for a server no longer registered; 1.1 counts
-        // that as one more unconfirmed host copy, settled below.
+        // The break-glass CLI keeps its refusal for a server no longer
+        // registered; 1.1 counts that as one more unconfirmed host copy,
+        // settled below.
         let options =
             crate::operations::did_webvh::DeleteDidOptions::within_context_deletion(&to_delete);
         let options = if cleanup.host_copies == HostCopies::ReportAfter {

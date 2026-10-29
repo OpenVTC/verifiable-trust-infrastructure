@@ -5410,18 +5410,6 @@ fn webvh_and_context_witnesses() -> Vec<(&'static str, ReqParts, RespParts)> {
             ),
         ),
         (
-            uris::TASK_CONTEXTS_DELETE_1_0,
-            (
-                json!({ "id": "personal" }),
-                parses::<ctx::delete::v1_0::Payload>,
-                validates::<ctx::delete::v1_0::Payload>,
-            ),
-            (
-                json!({ "id": "personal", "deleted": true }),
-                parses::<ctx::delete::v1_0::Response>,
-            ),
-        ),
-        (
             // 1.1: `abandonHostCopies`, and the orphans it leaves reported.
             uris::TASK_CONTEXTS_DELETE_1_1,
             (

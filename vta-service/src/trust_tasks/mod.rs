@@ -2495,11 +2495,9 @@ dispatch_table! {
         [ Mutating None false ],
     vta_sdk::trust_tasks::TASK_CONTEXTS_PREVIEW_DELETE_1_0 => contexts::handle_preview_delete
         [ None Metadata false ],
-    // 1.0 and 1.1 share the handler: 1.1 settles every host copy before any
-    // local record goes, and refuses (`hostCleanupFailed`) unless the caller
-    // chose `abandonHostCopies`.
-    vta_sdk::trust_tasks::TASK_CONTEXTS_DELETE_1_0 | vta_sdk::trust_tasks::TASK_CONTEXTS_DELETE_1_1
-        => contexts::handle_delete
+    // 1.1 settles every host copy before any local record goes, and refuses
+    // (`hostCleanupFailed`) unless the caller chose `abandonHostCopies`.
+    vta_sdk::trust_tasks::TASK_CONTEXTS_DELETE_1_1 => contexts::handle_delete
         [ Destructive None false ],
     // ─── Keys slice ──────────────────────────────────────────────
     vta_sdk::trust_tasks::TASK_KEYS_LIST_0_2 => keys::handle_list
@@ -6162,7 +6160,7 @@ mod response_coverage {
         // refusal the preview above exists to warn about.
         ok(
             &state,
-            t::TASK_CONTEXTS_DELETE_1_0,
+            t::TASK_CONTEXTS_DELETE_1_1,
             json!({ "id": "cov-contexts", "force": true }),
         )
         .await;
@@ -6193,7 +6191,7 @@ mod response_coverage {
 
         let vta_did = state.config.read().await.vta_did.clone().expect("vta_did");
         let body = signed_body(
-            t::TASK_CONTEXTS_DELETE_1_0,
+            t::TASK_CONTEXTS_DELETE_1_1,
             &vta_did,
             json!({ "id": "cov-notempty" }),
         );
@@ -6221,6 +6219,31 @@ mod response_coverage {
         )
         .await;
         assert_eq!(still["id"], "cov-notempty/sub");
+    }
+
+    /// `vta/contexts/delete:notFound` reaches the wire for a context that does
+    /// not exist, typed rather than as a bare `taskFailed`.
+    #[tokio::test]
+    async fn a_delete_of_an_unknown_context_answers_not_found_on_the_wire() {
+        let (state, _dir) = build_signing_test_app_state().await;
+        let vta_did = state.config.read().await.vta_did.clone().expect("vta_did");
+        let body = signed_body(
+            t::TASK_CONTEXTS_DELETE_1_1,
+            &vta_did,
+            json!({ "id": "cov-never-created", "force": true }),
+        );
+        let outcome = super::dispatch_trust_task_core(
+            &state,
+            &crate::test_support::super_admin_claims(),
+            &body,
+            transport::TransportConfidentiality::HopByHop,
+        )
+        .await;
+        let doc: Value = serde_json::from_slice(&outcome.body).expect("a response document");
+        assert_eq!(
+            doc["payload"]["code"], "vta/contexts/delete:notFound",
+            "the specification names this code for this refusal: {doc}"
+        );
     }
 
     /// Plant a `did:webvh` record in `context` published on `server_id`, and
@@ -6282,8 +6305,7 @@ mod response_coverage {
     }
 
     /// The deletion that used to be stuck: a context whose DID's hosting
-    /// server is no longer registered. 1.0 still refuses it (its contract);
-    /// 1.1 refuses with `hostCleanupFailed`, naming the DID and deleting
+    /// server is no longer registered. 1.1 refuses with `hostCleanupFailed`, naming the DID and deleting
     /// nothing, so the operator can wait or abandon.
     #[cfg(feature = "webvh")]
     #[tokio::test]
@@ -6291,18 +6313,6 @@ mod response_coverage {
         let (mut state, _dir) = build_signing_test_app_state().await;
         a_context(&state, "gone-host").await;
         let did = a_hosted_did(&mut state, "gone-host", "decommissioned").await;
-
-        let v1_0 = answer(
-            &state,
-            t::TASK_CONTEXTS_DELETE_1_0,
-            json!({ "id": "gone-host", "force": true }),
-        )
-        .await;
-        assert_ne!(
-            v1_0["type"],
-            format!("{}#response", t::TASK_CONTEXTS_DELETE_1_0),
-            "1.0 keeps refusing an unregistered host: {v1_0}"
-        );
 
         let doc = answer(
             &state,
@@ -6468,11 +6478,6 @@ mod response_coverage {
                 t::TASK_CONTEXTS_PREVIEW_DELETE_1_0,
                 "vta/contexts/preview-delete",
                 json!({ "id": "PLACEHOLDER" }),
-            ),
-            (
-                t::TASK_CONTEXTS_DELETE_1_0,
-                "vta/contexts/delete",
-                json!({ "id": "PLACEHOLDER", "force": true }),
             ),
             (
                 t::TASK_CONTEXTS_DELETE_1_1,
