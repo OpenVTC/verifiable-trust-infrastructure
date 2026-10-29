@@ -6221,6 +6221,31 @@ mod response_coverage {
         assert_eq!(still["id"], "cov-notempty/sub");
     }
 
+    /// `vta/contexts/delete:notFound` reaches the wire for a context that does
+    /// not exist, typed rather than as a bare `taskFailed`.
+    #[tokio::test]
+    async fn a_delete_of_an_unknown_context_answers_not_found_on_the_wire() {
+        let (state, _dir) = build_signing_test_app_state().await;
+        let vta_did = state.config.read().await.vta_did.clone().expect("vta_did");
+        let body = signed_body(
+            t::TASK_CONTEXTS_DELETE_1_1,
+            &vta_did,
+            json!({ "id": "cov-never-created", "force": true }),
+        );
+        let outcome = super::dispatch_trust_task_core(
+            &state,
+            &crate::test_support::super_admin_claims(),
+            &body,
+            transport::TransportConfidentiality::HopByHop,
+        )
+        .await;
+        let doc: Value = serde_json::from_slice(&outcome.body).expect("a response document");
+        assert_eq!(
+            doc["payload"]["code"], "vta/contexts/delete:notFound",
+            "the specification names this code for this refusal: {doc}"
+        );
+    }
+
     /// Plant a `did:webvh` record in `context` published on `server_id`, and
     /// give the state a resolver so the deletion takes the full webvh path.
     #[cfg(feature = "webvh")]
