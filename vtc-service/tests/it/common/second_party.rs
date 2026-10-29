@@ -24,7 +24,7 @@ use vtc_service::test_support::TestVtc;
 use super::signed::{post, signed};
 use super::webauthn_harness::SoftEd25519Authenticator;
 
-const APPROVE_RESPONSE: &str = "https://trusttasks.org/spec/auth/step-up/approve-response/0.4";
+const APPROVE_RESPONSE: &str = "https://trusttasks.org/spec/auth/step-up/approve-response/0.6";
 /// The document type a [`Gesturer::approval`] payload is sent as.
 pub const APPROVE_RESPONSE_TYPE: &str = APPROVE_RESPONSE;
 

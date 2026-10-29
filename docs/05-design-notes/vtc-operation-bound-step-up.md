@@ -303,7 +303,13 @@ upstream spec and a `trust-tasks-rs` bump first).
   `evidence` is refused `noGate` — a proof is possession of a key, which a
   console key already has.
 - **`approve-response/0.4` declares no proof**, so the dispatcher does not
-  require one; its gate is the assertion. A console may sign it anyway.
+  require one; its gate is the assertion. It is served **only** for that: the
+  console's unsigned answer with a session passkey. A signed answer is
+  `approve-response/0.6` (0.5 onward require the approver's own proof), and a
+  signed 0.4 is refused and pointed there. 0.4 stays until the specification
+  gives the console's unsigned answer a successor: a console holds only a
+  delegated key, which `auth/signing-key/enroll/0.2` item 7 refuses as an
+  approver's attestation.
 - **WebAuthn challenge = step-up challenge.** webauthn-rs mints the challenge
   when the ceremony starts, and the pending mark is keyed by it, so the
   assertion binds the same nonce the mark does.

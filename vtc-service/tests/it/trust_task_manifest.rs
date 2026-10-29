@@ -871,8 +871,9 @@ const SPINE_DOCUMENT_TYPES: &[&str] = &[
     // route had no other caller and was retired once the console moved onto
     // the signed door.
     "https://trusttasks.org/spec/vtc/relationships/list/0.3",
+    // 0.4: only the console's unsigned session-passkey answer (no successor).
     "https://trusttasks.org/spec/auth/step-up/approve-response/0.4",
-    // 0.6: the wallet-signed answer carrying a step-up approver's statement.
+    // 0.6: every signed answer — a passkey, a refusal, an approver's statement.
     "https://trusttasks.org/spec/auth/step-up/approve-response/0.6",
     // Step-up approvers (`trust_tasks::step_up_approver_tasks`).
     "https://trusttasks.org/spec/auth/step-up/approver/list/0.1",

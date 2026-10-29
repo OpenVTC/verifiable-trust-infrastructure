@@ -3243,7 +3243,7 @@ mod tests {
     #[test]
     fn vti_apv_019_an_unopposed_authority_reduction_is_critical_and_round_trips() {
         let e = AuditEvent::AuthorityReducedUnopposed(AuthorityReducedUnopposedData {
-            task: "https://trusttasks.org/spec/acl/revoke/0.1".into(),
+            task: "https://trusttasks.org/spec/acl/revoke/0.2".into(),
             prior_role: "admin".into(),
             prior_scopes: vec![],
         });

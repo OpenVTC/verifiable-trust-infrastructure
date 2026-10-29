@@ -74,7 +74,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tracing::{info, warn};
 use trust_tasks_rs::specs::auth::step_up::approve_request::v0_5 as approve_request;
-use trust_tasks_rs::specs::auth::step_up::approve_response::v0_4 as approve_response;
+use trust_tasks_rs::specs::auth::step_up::approve_response::v0_6 as approve_response;
 use trust_tasks_rs::specs::auth::step_up::approver::attest::v0_1 as attest;
 use vti_common::audit::{AuditEvent, OperationStepUpApprovedData, OperationStepUpData};
 use vti_common::auth::passkey::store::{
@@ -788,8 +788,9 @@ pub enum Approved {
     Declined { reason: String },
 }
 
-/// Process an `auth/step-up/approve-response/0.4` (or the 0.6 equivalent,
-/// for a passkey or a refusal) for a pending mark.
+/// Process an `auth/step-up/approve-response/0.6` passkey answer or refusal
+/// for a pending mark. The console's unsigned 0.4 answer reaches here as the
+/// 0.6 payload it is wire-identical to (`handle_step_up_approve_response`).
 ///
 /// The pending mark is removed first, whatever follows, so a challenge is
 /// answerable once. The operation the gesture authorizes is read from **this
@@ -836,9 +837,10 @@ pub async fn approve(
     }
 
     let assertion = match payload.evidence.as_ref() {
-        Some(approve_response::Evidence::Webauthn(assertion)) => assertion,
-        // `didSigned` explicitly or by omission, and any kind this build does
-        // not know. `Evidence` is generated from a tagged union that may grow,
+        Some(approve_response::Evidence::Webauthn { assertion }) => assertion,
+        // `didSigned` explicitly or by omission, `approverSigned` (which
+        // [`approve_with_statement`] takes), and any kind this build does not
+        // know. `Evidence` is generated from a tagged union that may grow,
         // so there is no arm here that could fall through to a gate the
         // approver did not present.
         _ => return Err(ApproveError::NoGate),
