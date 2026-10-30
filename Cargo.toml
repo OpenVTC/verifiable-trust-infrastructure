@@ -1001,13 +1001,6 @@ panic = "abort"
 # but visible in review.
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "warn"
-# trust-tasks-rs 0.35 marks every superseded spec version deprecated
-# (trust-tasks-tf #921), and VTI still names many of them while it moves to the
-# current versions. A superseded version is withdrawn about 90 days after it is
-# superseded, so the move has to finish first; remove this allow when it has,
-# and the compiler lists whatever is left. It also silences unrelated
-# deprecations meanwhile, so keep the window short.
-deprecated = "allow"
 
 [workspace.lints.clippy]
 # Style/escape-hatch fences. Crates that want the broader clippy::all

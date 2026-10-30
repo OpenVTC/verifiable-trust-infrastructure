@@ -149,6 +149,7 @@ pub fn build_approve_response_denied(
 
 /// Build the approve-response envelope + payload (no proof) for a given gate +
 /// decision.
+#[allow(deprecated)] // auth/step-up/approve-response 0.6 is superseded by 0.7; VTI speaks 0.6 until it moves
 fn assemble_doc(
     draft: &ApproveResponseDraft,
     evidence: approve_response::Evidence,
@@ -192,6 +193,7 @@ fn assemble_doc(
     Ok(doc)
 }
 
+#[allow(deprecated)] // auth/step-up/approve-response 0.6 is superseded by 0.7; VTI speaks 0.6 until it moves
 fn serialize(doc: &TrustTask<approve_response::Payload>) -> Result<String, FfiError> {
     serde_json::to_string(doc).map_err(|e| FfiError::InvalidInput {
         reason: format!("failed to serialize approve-response: {e}"),
@@ -281,6 +283,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)] // auth/step-up/approve-response 0.6 is superseded by 0.7; VTI speaks 0.6 until it moves
     fn webauthn_output_round_trips_back_through_the_typed_parser() {
         let signer = enclave(5);
         let json =
@@ -331,6 +334,7 @@ mod tests {
     /// `affinidi-data-integrity` against that key. Proves the canonicalization +
     /// proofValue assembly are correct (a real RP would verify the same way).
     #[test]
+    #[allow(deprecated)] // auth/step-up/approve-response 0.6 is superseded by 0.7; VTI speaks 0.6 until it moves
     fn did_signed_response_verifies_against_the_holder_key() {
         use affinidi_data_integrity::DataIntegrityProof;
         use ed25519_dalek::{Signer as _, SigningKey};
@@ -404,6 +408,7 @@ mod tests {
     /// A denial is a *signed* refusal: decision `denied`, the human reason, a
     /// didSigned gate, and a verifiable proof (so an injection can't forge it).
     #[test]
+    #[allow(deprecated)] // auth/step-up/approve-response 0.6 is superseded by 0.7; VTI speaks 0.6 until it moves
     fn denied_response_is_signed_and_carries_the_reason() {
         use affinidi_data_integrity::DataIntegrityProof;
         use ed25519_dalek::{Signer as _, SigningKey};

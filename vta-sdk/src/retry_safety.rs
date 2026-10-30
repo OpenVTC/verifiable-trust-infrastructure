@@ -94,7 +94,6 @@ use RetrySafety::{Keyed, KeyedSecret, ReadOnly, RetrySafe};
 /// Pinned exhaustively by `every_uri_is_classified` — a new task cannot reach
 /// the catalog without an entry here, which is the point. Same discipline as
 /// [`trust_tasks::REST_ROUTED_URIS`].
-#[allow(deprecated)] // names the deprecated 0.1 URIs on purpose — they are still served
 pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     // ── Auth ────────────────────────────────────────────────────────────
     // A spare challenge is inert and expires on its own.

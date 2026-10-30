@@ -782,10 +782,10 @@ fn external_account() -> Value {
 /// One entry per URI in [`resolved_uris`] — the coverage assertion below
 /// holds the two in lockstep, in both directions.
 ///
-/// `#[allow(deprecated)]` for the same reason the dispatch table carries it:
-/// the 0.1 constants are deprecated in favour of their 0.2 siblings but are
-/// still dispatched during the migration window, so they are still in the
-/// census this table must cover.
+/// `#[allow(deprecated)]`: the table witnesses every version this VTA still
+/// serves, and some are superseded — `vta/webvh/dids/update/1.0` and
+/// `rotate-keys/1.0` (whether to move is a pending decision), and
+/// `auth/step-up/approve-response/0.6` (0.7 not adopted yet).
 #[allow(deprecated)]
 fn table() -> Vec<(&'static str, Conformance)> {
     let mut t: Vec<(&'static str, Conformance)> = vec![
@@ -5169,6 +5169,7 @@ fn backup_and_management_witnesses() -> Vec<(&'static str, ReqParts, RespParts)>
     ]
 }
 
+#[allow(deprecated)] // vta/webvh/dids/rotate-keys/1.0: still served; whether to move is a pending decision
 fn webvh_and_context_witnesses() -> Vec<(&'static str, ReqParts, RespParts)> {
     use specs::vta::{contexts as ctx, services as svc, webvh as wv};
 

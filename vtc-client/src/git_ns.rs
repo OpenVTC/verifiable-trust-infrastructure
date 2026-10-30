@@ -577,6 +577,7 @@ pub fn self_grant_waived(answer: &Value) -> Option<&Value> {
 /// the actor with its `assertionMethod` key, to the operation-bound step-up a
 /// signed change can be refused for. The passkey assertion it carries is in
 /// addition to that proof, never instead of it.
+#[allow(deprecated)] // auth/step-up/approve-response 0.6 is superseded by 0.7; VTI speaks 0.6 until it moves
 pub const STEP_UP_APPROVE_RESPONSE_TYPE: &str =
     <vti_specs::auth::step_up::approve_response::v0_6::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 

@@ -139,7 +139,6 @@ type KeyedLimiter =
 /// What a task costs against a budget, in signs. A task not listed costs one,
 /// measured or not: tasks that publish a DID log entry other than create and
 /// delete (update, key rotation) and `provision/integration` were not measured.
-#[allow(deprecated)]
 pub(crate) fn weight(type_uri: &str) -> u32 {
     let bare = type_uri.split('#').next().unwrap_or(type_uri);
     match bare {

@@ -47,6 +47,5 @@ chacha20poly1305 = "0.11"
 [dev-dependencies]
 rand = { version = "0.8", features = ["std", "std_rng"] }
 
-[lints.rust]
-# See `[workspace.lints.rust]` in the workspace Cargo.toml.
-deprecated = "allow"
+[lints]
+workspace = true

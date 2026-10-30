@@ -143,6 +143,5 @@ getrandom_02 = { package = "getrandom", version = "0.2", features = ["js"], opti
 tempfile = "3"
 tokio = { workspace = true }
 
-[lints.rust]
-# See `[workspace.lints.rust]` in the workspace Cargo.toml.
-deprecated = "allow"
+[lints]
+workspace = true

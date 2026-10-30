@@ -28,7 +28,6 @@ use vti_specs::acl::{
 // only, so the role-change ceremony keeps its 0.1 door (a specification gap).
 use trust_tasks_rs::{RejectReason, StandardCode, TrustTask, TrustTaskCode};
 use vti_common::auth::extractor::AuthClaims;
-#[allow(deprecated)]
 use vti_specs::acl::change_role::v0_1 as acl_change_community_role;
 
 use super::helpers::{

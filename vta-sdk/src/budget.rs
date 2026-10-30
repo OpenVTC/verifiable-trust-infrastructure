@@ -140,7 +140,6 @@ pub const fn min_relay_budget_secs() -> u64 {
 /// a reply, add its URI here.** The transport it relays over does not matter:
 /// TSP is the worst case this floor is sized for, and DIDComm and REST both sit
 /// inside it.
-#[allow(deprecated)] // names the deprecated 0.1 proxy-login URI on purpose — still served
 pub const RELAYS_ONWARD: &[&str] = &[
     // ── did:webvh, server-managed ───────────────────────────────────────
     // Each of these publishes to, or reads from, the DID hosting server that
