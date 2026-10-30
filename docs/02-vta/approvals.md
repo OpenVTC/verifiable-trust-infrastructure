@@ -47,6 +47,12 @@ pnm approvals require https://trusttasks.org/spec/vta/webvh/dids/update/1.0 \
     --consent --set webvh-approvers --min 2 --exclude-requester
 ```
 
+A rule naming a version holds every version served that `extends` it through
+the same handler: `vta/webvh/dids/update/1.1` is decided as itself **and** as
+`update/1.0`, the stricter answer winning (`policy_gate::GATED_AS`). So the
+1.0 rule above also holds a 1.1 request, and a rule naming 1.1 alone still
+holds 1.1.
+
 Rules can be scoped to contexts with `--context a,b`. An unscoped rule applies
 everywhere; a scoped rule wins over an unscoped one for the same task in the
 contexts it names.

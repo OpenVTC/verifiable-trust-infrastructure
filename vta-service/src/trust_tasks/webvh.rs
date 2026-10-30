@@ -25,7 +25,7 @@
 //! | `webvh/dids/get/1.0`                | any authed  |
 //! | `webvh/dids/get-log/1.0`            | any authed  |
 //! | `webvh/dids/delete/1.0`             | admin       |
-//! | `webvh/dids/update/1.0`             | admin       |
+//! | `webvh/dids/update/1.0`, `1.1`      | admin       |
 //! | `webvh/dids/rotate-keys/1.0`        | admin       |
 //! | `webvh/dids/register-with-server/1.0` | super-admin |
 
@@ -336,8 +336,11 @@ pub(super) async fn handle_dids_delete(
     }
 }
 
-/// `webvh/dids/update/1.0` — apply a generic DID-doc patch. Admin
-/// role on the DID's context.
+/// `webvh/dids/update/1.0` and `1.1` — apply a generic DID-doc patch. Admin
+/// role on the DID's context. 1.1 adds `scidAlsoKnownAs` (list or remove the
+/// log's did:scid alias, VTI-KEY-164) and reports `scidAlsoKnownAs` /
+/// `scidDidUrl`; it extends 1.0, so one handler serves both and the two are
+/// gated alike (see `policy_gate`).
 ///
 /// The SDK wire body
 /// (`vta_sdk::protocols::did_management::update::UpdateDidWebvhBody`)
@@ -360,6 +363,18 @@ pub(super) async fn handle_dids_update(
         Err(resp) => return resp,
     };
     let UpdateDidWithDid { did, body } = req;
+    // 1.1 extends 1.0 and one handler serves both. The spine has already read
+    // the payload against the version's closed schema, so a 1.0 request cannot
+    // carry `scidAlsoKnownAs`; this restates it rather than rely on it.
+    let v1_1 = is_update_1_1(&doc);
+    if !v1_1 && body.scid_also_known_as.is_some() {
+        return reject_with(
+            &doc,
+            RejectReason::MalformedRequest {
+                reason: "scidAlsoKnownAs is a vta/webvh/dids/update/1.1 member; send 1.1".into(),
+            },
+        );
+    }
     let did = match log_did_of(state, &doc, &did).await {
         Ok(did) => did,
         Err(reject) => return reject,
@@ -389,7 +404,23 @@ pub(super) async fn handle_dids_update(
     )
     .await
     {
+        Ok(body) if v1_1 => match with_scid_alias_report(body) {
+            Ok(body) => success_response(&doc, body),
+            Err(e) => app_error_to_reject(&doc, e),
+        },
         Ok(body) => success_response(&doc, body),
+        Err(operations::did_webvh::UpdateDidWebvhError::ScidAliasRequired(msg)) if v1_1 => {
+            reject_declared(
+                &doc,
+                vti_specs::vta::webvh::dids::update::v1_1::error_codes::SCID_ALIAS_REQUIRED,
+                msg,
+            )
+        }
+        Err(operations::did_webvh::UpdateDidWebvhError::NoChange(msg)) if v1_1 => reject_declared(
+            &doc,
+            vti_specs::vta::webvh::dids::update::v1_1::error_codes::NO_CHANGE,
+            msg,
+        ),
         Err(e) => {
             // A Destructive update that passed the consent gate and then failed
             // in execute previously vanished into a bare 422 — no line named the
@@ -805,7 +836,34 @@ pub(crate) fn update_body_to_options(
         ttl: body.ttl,
         label: body.label,
         expected_version_id: body.expected_version_id,
+        scid_also_known_as: body.scid_also_known_as,
     })
+}
+
+/// Whether `doc` is a `vta/webvh/dids/update/1.1` request (rather than 1.0).
+fn is_update_1_1(doc: &TrustTask<Value>) -> bool {
+    let uri = doc.type_uri.to_string();
+    uri.split('#').next() == Some(vta_sdk::trust_tasks::TASK_WEBVH_DIDS_UPDATE_1_1)
+}
+
+/// Add the `update/1.1` response members, read from the entry just published:
+/// `scidAlsoKnownAs` as that document has it, and `scidDidUrl` always (update
+/// 1.1 item 6).
+fn with_scid_alias_report(
+    mut body: vta_sdk::protocols::did_management::update::UpdateDidWebvhResultBody,
+) -> Result<vta_sdk::protocols::did_management::update::UpdateDidWebvhResultBody, AppError> {
+    let entry: Value = serde_json::from_str(&body.new_log_entry)
+        .map_err(|e| AppError::Internal(format!("read the published entry: {e}")))?;
+    let document = entry
+        .get("state")
+        .ok_or_else(|| AppError::Internal("the published entry has no state".into()))?;
+    let (_, url) = vta_sdk::did_scid::scid_forms(&body.did)
+        .ok_or_else(|| AppError::Internal(format!("{} has no did:scid form", body.did)))?;
+    body.scid_also_known_as = Some(operations::did_webvh::presentation::document_lists_alias(
+        document,
+    ));
+    body.scid_did_url = Some(url);
+    Ok(body)
 }
 
 /// Wrapper carrying `RotateDidWebvhKeysBody` plus the target `did`.

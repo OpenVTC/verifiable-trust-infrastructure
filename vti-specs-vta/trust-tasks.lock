@@ -603,6 +603,12 @@ type_uri = "https://trusttasks.org/spec/vta/webvh/dids/update/1.0"
 digest = "sha256:0b138a951683d5411e2a8b0659c8b1ae5778ba29a5181874d09759dff9ad0d3e"
 
 [[task]]
+slug = "vta/webvh/dids/update"
+version = "1.1"
+type_uri = "https://trusttasks.org/spec/vta/webvh/dids/update/1.1"
+digest = "sha256:92f28b5b324f02541f128ce2cb9cff9f4e213bf8f142ddc32592cea927ecb805"
+
+[[task]]
 slug = "vta/webvh/servers/domains"
 version = "0.1"
 type_uri = "https://trusttasks.org/spec/vta/webvh/servers/domains/0.1"

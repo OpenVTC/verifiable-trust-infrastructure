@@ -214,6 +214,7 @@ const KNOWN_FEATURE_GATED_URIS: &[&str] = &[
     vta_sdk::trust_tasks::TASK_WEBVH_DIDS_GET_1_0,
     vta_sdk::trust_tasks::TASK_WEBVH_DIDS_DELETE_1_0,
     vta_sdk::trust_tasks::TASK_WEBVH_DIDS_UPDATE_1_0,
+    vta_sdk::trust_tasks::TASK_WEBVH_DIDS_UPDATE_1_1,
     vta_sdk::trust_tasks::TASK_WEBVH_DIDS_ROTATE_KEYS_1_0,
     vta_sdk::trust_tasks::TASK_WEBVH_DIDS_REGISTER_WITH_SERVER_1_0,
     vta_sdk::trust_tasks::TASK_WEBVH_AGENT_NAME_LIST_1_1,
@@ -3166,6 +3167,13 @@ dispatch_table! {
     #[cfg(feature = "webvh")]
     vta_sdk::trust_tasks::TASK_WEBVH_DIDS_UPDATE_1_0 => webvh::handle_dids_update
         [ Destructive None false ],
+    // 1.1 extends 1.0 (`scidAlsoKnownAs`) and is the same handler, the same
+    // class and — through `gated_as` — the same approval rules. Listing or
+    // removing the did:scid alias is a document change, so it rotates the
+    // update key exactly as 1.0's `document` does.
+    #[cfg(feature = "webvh")]
+    vta_sdk::trust_tasks::TASK_WEBVH_DIDS_UPDATE_1_1 => webvh::handle_dids_update
+        [ Destructive None false ],
     #[cfg(feature = "webvh")]
     vta_sdk::trust_tasks::TASK_WEBVH_DIDS_ROTATE_KEYS_1_0 => webvh::handle_dids_rotate_keys
         [ Destructive None false ],
@@ -4051,6 +4059,36 @@ mod payload_validation_tests {
                 .await
                 .is_none(),
             "closed payloads must still admit `ext`, or the relay cannot stamp an origin"
+        );
+    }
+
+    /// `scidAlsoKnownAs` is a 1.1 member: the 1.0 schema refuses it, so a 1.0
+    /// request can never reach the handler asking for the alias, and 1.1
+    /// accepts it (VTI-KEY-164, `vta/webvh/dids/update/1.1`).
+    #[tokio::test]
+    async fn the_scid_alias_is_a_1_1_member_only() {
+        let (state, _dir) = crate::test_support::build_signing_test_app_state().await;
+        let payload = json!({
+            "did": "did:webvh:QmScid:example.com:acme",
+            "scidAlsoKnownAs": true
+        });
+        assert!(
+            super::validate_payload(&state, WEBVH_UPDATE, &doc(payload.clone()))
+                .await
+                .is_some(),
+            "1.0 is closed and has no scidAlsoKnownAs"
+        );
+        let mut d = doc(payload);
+        d.type_uri = vta_sdk::trust_tasks::TASK_WEBVH_DIDS_UPDATE_1_1
+            .parse()
+            .expect("1.1 uri");
+        let reject =
+            super::validate_payload(&state, vta_sdk::trust_tasks::TASK_WEBVH_DIDS_UPDATE_1_1, &d)
+                .await;
+        assert!(
+            reject.is_none(),
+            "1.1 accepts scidAlsoKnownAs, got: {:?}",
+            reject.map(|r| String::from_utf8_lossy(&r.body).into_owned())
         );
     }
 

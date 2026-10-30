@@ -19,6 +19,7 @@ use super::keys::{
 };
 use super::options::{UpdateDidWebvhOptions, UpdateDidWebvhResult};
 use super::plan::UpdatePlan;
+use super::scid_alias;
 use super::state::{find_record_by_scid, state_from_jsonl, state_to_jsonl};
 use super::validate::{validate_document_for_update, validate_watchers, validate_witnesses};
 use crate::audit;
@@ -736,7 +737,7 @@ async fn run_update(
     }
 
     // 3. Validate caller-supplied inputs (cheap; do before key derivation).
-    let new_doc = match opts.document {
+    let mut new_doc = match opts.document {
         Some(doc) => Some(validate_document_for_update(doc, &record.did)?),
         None => None,
     };
@@ -886,6 +887,86 @@ async fn run_update(
     // than this one — `next_version_time` clamps against it directly, making
     // no assumption about how the previous entry itself was stamped.
     let prior_version_time = last_state.log_entry.get_version_time();
+
+    // 4c. The did:scid alias (`vta/webvh/dids/update/1.1`, VTI-KEY-164/166).
+    //
+    //     Applied here — after the chain is loaded and before a key is derived —
+    //     so the plan and the execution see the same document, and a refusal
+    //     costs nothing. Listing or removing the alias is a document change:
+    //     it goes through `new_doc` and so rotates the update key exactly as a
+    //     supplied `document` does (the spec keeps the task `destructive` for
+    //     that reason). An alias request that leaves the current document as it
+    //     is sets no document, so it cannot rotate the key by itself.
+    if let Some(list) = opts.scid_also_known_as {
+        let supplied = new_doc.is_some();
+        let mut doc = new_doc.take().unwrap_or_else(|| prior_document.clone());
+        if scid_alias::apply(&mut doc, &record.did, list).is_none() {
+            return Err(UpdateDidWebvhError::InvalidDocument(format!(
+                "{} is not a did:webvh:<scid>:<host> DID, so it has no did:scid alias",
+                record.did
+            )));
+        }
+        new_doc = (supplied || doc != prior_document)
+            .then(|| validate_document_for_update(doc, &record.did))
+            .transpose()?;
+    }
+    // A presented did:scid identity keeps its alias, whichever way the request
+    // would drop it — `scidAlsoKnownAs: false`, or a `document` without it,
+    // with or without `scidAlsoKnownAs` (update 1.1 item 4).
+    if (opts.scid_also_known_as == Some(false) || new_doc.is_some())
+        && scid_alias::presented_as_scid(webvh_ks, &record.did, vta_did).await?
+    {
+        let drops = opts.scid_also_known_as == Some(false)
+            || new_doc.as_ref().is_some_and(|d| {
+                !crate::operations::did_webvh::presentation::document_lists_alias(d)
+            });
+        if drops {
+            return Err(UpdateDidWebvhError::ScidAliasRequired(format!(
+                "this VTA presents {} as its did:scid DID, which exists only while the \
+                 did:webvh document lists it in alsoKnownAs (VTI-KEY-166); the update would \
+                 remove it",
+                record.did
+            )));
+        }
+    }
+    // An alias request that would publish an entry identical to the latest —
+    // same document, same parameters — publishes nothing and rotates nothing
+    // (update 1.1 item 5).
+    if opts.scid_also_known_as.is_some() {
+        let document_unchanged = new_doc.as_ref().is_none_or(|d| *d == prior_document);
+        let witnesses_unchanged = opts.witnesses.as_ref().is_none_or(|w| {
+            serde_json::to_value(w).ok()
+                == last_params
+                    .active_witness
+                    .as_deref()
+                    .and_then(|c| serde_json::to_value(c).ok())
+        });
+        let watchers_unchanged = opts
+            .watchers
+            .as_ref()
+            .is_none_or(|w| *w == last_params.watchers.as_deref().cloned().unwrap_or_default());
+        let ttl_unchanged = opts.ttl.is_none_or(|t| Some(t) == last_params.ttl);
+        let pre_rotation_unchanged = opts
+            .pre_rotation_count
+            .is_none_or(|n| n == record.pre_rotation_count);
+        if document_unchanged
+            && witnesses_unchanged
+            && watchers_unchanged
+            && ttl_unchanged
+            && pre_rotation_unchanged
+        {
+            return Err(UpdateDidWebvhError::NoChange(format!(
+                "{} already {} its did:scid alias and nothing else would change; nothing was \
+                 published and the update key was not rotated",
+                record.did,
+                if opts.scid_also_known_as == Some(true) {
+                    "lists"
+                } else {
+                    "omits"
+                }
+            )));
+        }
+    }
     // Pre-rotation is "active" when the previous entry committed
     // `next_key_hashes`. The library's `check_signing_key` consults
     // `previous.next_key_hashes` (not `previous.update_keys`) for the
@@ -1367,6 +1448,11 @@ async fn run_update(
             .map_err(|e| UpdateDidWebvhError::Persistence(format!("supersede: {e}")))?;
     }
 
+    // The recorded did:scid identity follows the document just committed, so
+    // the did:scid DID addresses this log exactly while the alias links the
+    // forms (VTI-KEY-164).
+    scid_alias::record_identity(webvh_ks, &record.did, new_log_entry.get_state()).await?;
+
     record.log_entry_count += 1;
     record.pre_rotation_count = derived_pre_rotation.len() as u32;
     record.updated_at = Utc::now();
@@ -1498,6 +1584,11 @@ async fn run_update(
         // gates on and that step 13 above used to decide whether
         // to call the host transport.
         serverless: record.server_id == "serverless",
+        // Reported by the `update/1.1` handler only, from the published entry:
+        // 1.0, rotate-keys and the agent-name tasks answer closed schemas
+        // without these members.
+        scid_also_known_as: None,
+        scid_did_url: None,
     }))
 }
 

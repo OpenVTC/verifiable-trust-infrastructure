@@ -148,6 +148,7 @@ pub const RELAYS_ONWARD: &[&str] = &[
     trust_tasks::TASK_WEBVH_DIDS_CREATE_1_2,
     trust_tasks::TASK_WEBVH_DIDS_DELETE_1_0,
     trust_tasks::TASK_WEBVH_DIDS_UPDATE_1_0,
+    trust_tasks::TASK_WEBVH_DIDS_UPDATE_1_1,
     trust_tasks::TASK_WEBVH_DIDS_ROTATE_KEYS_1_0,
     trust_tasks::TASK_WEBVH_DIDS_REGISTER_WITH_SERVER_1_0,
     // Agent names live on the hosting server, so every verb is a round trip —

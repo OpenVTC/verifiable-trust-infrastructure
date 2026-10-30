@@ -373,6 +373,7 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     (trust_tasks::TASK_WEBVH_DIDS_DELETE_1_0, RetrySafe),
     // Each update appends a log entry; two updates append two.
     (trust_tasks::TASK_WEBVH_DIDS_UPDATE_1_0, Keyed),
+    (trust_tasks::TASK_WEBVH_DIDS_UPDATE_1_1, Keyed),
     (trust_tasks::TASK_WEBVH_DIDS_ROTATE_KEYS_1_0, Keyed),
     // `RetrySafe` where its two neighbours above are `Keyed`, and the difference
     // is convergence rather than caution. `update` and `rotate-keys` append a
