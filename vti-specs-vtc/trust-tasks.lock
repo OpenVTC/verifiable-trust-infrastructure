@@ -502,21 +502,21 @@ digest = "sha256:62688d10394a8378688e83e43619f8358efe52b6013009f5f7f9db005c2dbeb
 
 [[task]]
 slug = "vtc/install/claim/finish"
-version = "0.2"
-type_uri = "https://trusttasks.org/spec/vtc/install/claim/finish/0.2"
-digest = "sha256:8c92ea036483900e9b294c02e80f98102dfd9da829781b34482a56a7909c79cc"
-
-[[task]]
-slug = "vtc/install/claim/finish"
 version = "0.3"
 type_uri = "https://trusttasks.org/spec/vtc/install/claim/finish/0.3"
 digest = "sha256:147b4ae6eb122c71cde056aaf649eee0f4652d6ec233002f1fdc867e4fbf9686"
 
 [[task]]
-slug = "vtc/install/claim/start"
-version = "0.2"
-type_uri = "https://trusttasks.org/spec/vtc/install/claim/start/0.2"
-digest = "sha256:cb80d3de681a474d16a20aa5fbd3c110f614e0e1d5866807cee9523d5864be81"
+slug = "vtc/install/claim/passkey/finish"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/install/claim/passkey/finish/0.1"
+digest = "sha256:a3a142bd013650c8c3d692e3f333e23d44dbc5728ccb0278a045a6f79fad776b"
+
+[[task]]
+slug = "vtc/install/claim/passkey/start"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/install/claim/passkey/start/0.1"
+digest = "sha256:3ba6fe9add8494021d7185a23a10a34781dddc42a831f7be4c458032493e8cf9"
 
 [[task]]
 slug = "vtc/install/claim/start"
