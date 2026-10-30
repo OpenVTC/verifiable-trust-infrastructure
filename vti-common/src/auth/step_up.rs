@@ -4,7 +4,7 @@
 //! (the VTA) mints a **pending step-up**: a short-lived, single-use record
 //! binding a fresh `challenge` to the `session_id`/`subject` being elevated and
 //! the `targetAcr` requested. It is keyed by the challenge so the matching
-//! `auth/step-up/approve-response/0.6` can be located by its echoed challenge.
+//! `auth/step-up/approve-response/0.7` can be located by its echoed challenge.
 //!
 //! Stored under `stepup:{challenge}` in the sessions keyspace, mirroring the
 //! `nonce:`/`refresh:` index conventions in [`crate::auth::session`]. Records

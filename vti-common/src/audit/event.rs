@@ -259,10 +259,10 @@ pub enum AuditEvent {
     StepUpApproverChanged(StepUpApproverData),
 
     /// An operation-bound step-up answered by a **step-up approver's signed
-    /// statement** (`auth/step-up/approve-response/0.6`, evidence
+    /// statement** (`auth/step-up/approve-response/0.7`, evidence
     /// `approverSigned`) rather than a passkey. Kept beside
     /// [`Self::OperationStepUpRecorded`] so the row names the evidence kind and
-    /// the approver DID (approve-response 0.6, consumer item 7). Nothing is
+    /// the approver DID (approve-response 0.7, consumer item 7). Nothing is
     /// elevated, exactly as for a passkey.
     OperationStepUpApproved(OperationStepUpApprovedData),
 

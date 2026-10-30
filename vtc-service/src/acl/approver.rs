@@ -413,7 +413,7 @@ pub async fn record_use(ks: &KeyspaceHandle, approver_did: &str) -> Result<(), A
 #[derive(Debug, Clone, Copy)]
 pub enum ExpectedApprover<'a> {
     /// A live approver bound to the subject, and one of those the relying
-    /// party offered when it minted the challenge (approve-response 0.6 step
+    /// party offered when it minted the challenge (approve-response 0.7 step
     /// 4.2). For `stepUp` and `decision`.
     BoundAmong(&'a [String]),
     /// The approver the carrying task is enrolling, not yet bound to anyone.
@@ -444,7 +444,7 @@ pub enum StatementError {
     /// `statementInvalid`. The reason is for the log only.
     Invalid(&'static str),
     /// Signed by a DID that is not a live, distinct approver of the subject
-    /// that was offered — approve-response 0.6's `approverNotBound`.
+    /// that was offered — approve-response 0.7's `approverNotBound`.
     NotBound,
     Internal(AppError),
 }
@@ -488,7 +488,7 @@ impl VerifiedApproverStatement {
     }
 }
 
-/// Constant-time equality, for the challenge (approve-response 0.6 step 3).
+/// Constant-time equality, for the challenge (approve-response 0.7 step 3).
 fn ct_eq(a: &str, b: &str) -> bool {
     let (a, b) = (a.as_bytes(), b.as_bytes());
     if a.len() != b.len() {

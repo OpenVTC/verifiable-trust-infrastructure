@@ -3,8 +3,8 @@
 //! `acl/grant` conferring admin authority needs a passkey gesture. On the
 //! bearer route that gesture is a live session elevation; a signed document
 //! has no session, so the gesture is **bound to the one grant** by a digest of
-//! its type and payload, recorded by `auth/step-up/approve-response/0.6` (or the
-//! console's unsigned 0.4), and
+//! its type and payload, recorded by `auth/step-up/approve-response/0.7` (signed,
+//! or the console's unsigned answer), and
 //! spent by the grant. Design: `docs/05-design-notes/vtc-operation-bound-step-up.md`.
 //!
 //! These drive the whole loop end to end — refusal with the ceremony inline, a
@@ -32,10 +32,7 @@ use crate::common::webauthn_harness::SoftEd25519Authenticator;
 
 const RP_ORIGIN: &str = "https://vtc.example.com";
 const GRANT: &str = "https://trusttasks.org/spec/acl/grant/0.2";
-const APPROVE_RESPONSE: &str = "https://trusttasks.org/spec/auth/step-up/approve-response/0.6";
-/// Served only for the console's unsigned session-passkey answer.
-const APPROVE_RESPONSE_UNSIGNED: &str =
-    "https://trusttasks.org/spec/auth/step-up/approve-response/0.4";
+const APPROVE_RESPONSE: &str = "https://trusttasks.org/spec/auth/step-up/approve-response/0.7";
 /// `vtc/members/role/set/0.1` — the community-role move.
 const CHANGE_ROLE: &str = "https://trusttasks.org/spec/vtc/members/role/set/0.1";
 
@@ -233,7 +230,7 @@ async fn approve_unsigned(
     cred: &PublicKeyCredential,
 ) -> (StatusCode, Value) {
     let doc = vta_sdk::trust_task_sign::build_unsigned(
-        APPROVE_RESPONSE_UNSIGNED,
+        APPROVE_RESPONSE,
         json!({
             "subject": request["subject"],
             "challenge": request["challenge"],
@@ -450,7 +447,8 @@ async fn a_console_key_redeems_its_admins_gesture_but_cannot_make_one() {
         .authenticate(&options(&request), RP_ORIGIN);
     let (status, refused) = approve(&fix, &console, &request, &cred).await;
     assert_ne!(status, StatusCode::OK, "{refused}");
-    // 0.6 names the case: the proof is not the subject's own (0.6 item 1a).
+    // 0.7 names the case: a delegated key's proof is never the approver's
+    // (0.7 consumer item 1a).
     assert_eq!(
         refused["code"], "auth/step-up/approve-response:subjectMismatch",
         "{refused}"

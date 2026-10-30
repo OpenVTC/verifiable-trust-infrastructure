@@ -2371,7 +2371,7 @@ dispatch_table! {
     // the approver's signature.
     //
     // A bound approval is acknowledged `recorded` and elevates nothing.
-    vta_sdk::trust_tasks::TASK_AUTH_STEP_UP_APPROVE_RESPONSE_0_6
+    vta_sdk::trust_tasks::TASK_AUTH_STEP_UP_APPROVE_RESPONSE_0_7
         => step_up::handle_approve_response
         [ Mutating None false ],
     // ─── Policy slice (runtime PDP management) ────────────────────

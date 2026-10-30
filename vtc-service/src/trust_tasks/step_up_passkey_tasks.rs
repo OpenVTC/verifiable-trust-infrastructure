@@ -380,8 +380,7 @@ mod tests {
     use super::super::members_admin_tests::{error_code, payload_of, seed_acl, signed, unsigned};
     use super::super::soft_authenticator::SoftEd25519Authenticator;
     use super::super::{
-        JoinAuthCtx, STEP_UP_APPROVE_RESPONSE_V0_4_TYPE, STEP_UP_APPROVE_RESPONSE_V0_6_TYPE,
-        TrustTaskOutcome, dispatch_trust_task_core,
+        JoinAuthCtx, STEP_UP_APPROVE_RESPONSE_TYPE, TrustTaskOutcome, dispatch_trust_task_core,
     };
     use super::revoke_start;
     use super::{ADMIN_LIST_TYPE, admin_list};
@@ -556,11 +555,11 @@ mod tests {
             })
     }
 
-    /// [`approve`], against whichever approve-response version `uri` names.
-    async fn approve_as(
+    /// The `auth/step-up/approve-response/0.7` `signer` sends for `request`,
+    /// carrying an assertion from `key`, signed by `signer`.
+    async fn approve(
         fix: &Fixture,
         transport: JoinTransport,
-        uri: &str,
         signer: &Party,
         request: &Value,
         assertion: &PublicKeyCredential,
@@ -569,34 +568,13 @@ mod tests {
             fix,
             transport,
             signer,
-            uri,
+            STEP_UP_APPROVE_RESPONSE_TYPE,
             json!({
                 "subject": request["subject"],
                 "challenge": request["challenge"],
                 "decision": "approved",
                 "evidence": { "kind": "webauthn", "assertion": published(assertion) },
             }),
-        )
-        .await
-    }
-
-    /// The `auth/step-up/approve-response/0.6` `signer` sends for `request`,
-    /// carrying an assertion from `key`. A signed answer is always 0.6: 0.4 is
-    /// served only for the console's unsigned session-passkey answer.
-    async fn approve(
-        fix: &Fixture,
-        transport: JoinTransport,
-        signer: &Party,
-        request: &Value,
-        assertion: &PublicKeyCredential,
-    ) -> TrustTaskOutcome {
-        approve_as(
-            fix,
-            transport,
-            STEP_UP_APPROVE_RESPONSE_V0_6_TYPE,
-            signer,
-            request,
-            assertion,
         )
         .await
     }
@@ -1027,117 +1005,92 @@ mod tests {
 
     // ── use: auth/step-up/approve-response ───────────────────────────────
 
-    /// The passkey is in addition to the member's `assertionMethod` proof,
-    /// never instead of it (approve-response 0.5 onward).
+    /// approve-response 0.7: a user-verified assertion by the member's own
+    /// step-up passkey is evidence on its own, so the answer may come unsigned
+    /// (over HTTPS — a messaging document always carries a proof). Unsigned,
+    /// it must name the subject as its issuer; signed, the signer must be the
+    /// subject. Every refusal comes before the pending step-up is taken, and
+    /// leaves the challenge for the member's own answer.
     #[tokio::test]
-    async fn approve_response_with_a_step_up_passkey_still_needs_the_members_own_proof() {
-        for t in TRANSPORTS {
-            let mut fix = fixture().await;
-            let member = fix.member.did.clone();
-            let issued = invite_over(&mut fix, t, &member).await;
-            redeem_over(&mut fix, t, &issued).await;
+    async fn approve_response_0_7_a_step_up_passkey_answers_unsigned_or_beside_the_members_proof() {
+        let mut fix = fixture().await;
+        let member = fix.member.did.clone();
+        let issued = invite_over(&mut fix, JoinTransport::Rest, &member).await;
+        redeem_over(&mut fix, JoinTransport::Rest, &issued).await;
 
-            let request = bound_request(&fix, &member).await;
-            let assertion = fix
-                .member_key
-                .authenticate(&request_options(&request["webauthn"]), RP_ORIGIN);
-            let evidence = json!({
-                "subject": request["subject"],
-                "challenge": request["challenge"],
-                "decision": "approved",
-                "evidence": { "kind": "webauthn", "assertion": published(&assertion) },
-            });
+        let request = bound_request(&fix, &member).await;
+        let assertion = fix
+            .member_key
+            .authenticate(&request_options(&request["webauthn"]), RP_ORIGIN);
+        let evidence = json!({
+            "subject": request["subject"],
+            "challenge": request["challenge"],
+            "decision": "approved",
+            "evidence": { "kind": "webauthn", "assertion": published(&assertion) },
+        });
 
-            let bare = unsigned(
-                &fix.member,
-                STEP_UP_APPROVE_RESPONSE_V0_4_TYPE,
-                evidence.clone(),
-            );
-            let out = dispatch_doc(&fix, t, &fix.member, &bare).await;
-            assert_code(&out, "proofRequired", "the passkey alone");
-            // 0.4 is the console's unsigned door only: signed, it is refused
-            // and pointed at 0.6, leaving the challenge unspent.
-            let out = approve_as(
-                &fix,
-                t,
-                STEP_UP_APPROVE_RESPONSE_V0_4_TYPE,
-                &fix.member,
-                &request,
-                &assertion,
-            )
-            .await;
-            assert!(
-                String::from_utf8_lossy(&out.body).contains("approve-response/0.6"),
-                "a signed 0.4 is pointed at 0.6: {}",
-                String::from_utf8_lossy(&out.body)
-            );
-            for (signer, what) in [(&fix.other, "another member"), (&fix.admin, "an admin")] {
-                let out = approve(&fix, t, signer, &request, &assertion).await;
-                assert_code(
-                    &out,
-                    "auth/step-up/approve-response:subjectMismatch",
-                    &format!("{what} signing the member's gesture"),
-                );
-            }
-            // The refusals left the challenge unspent.
-            let out = approve(&fix, t, &fix.member, &request, &assertion).await;
-            assert_eq!(ok(&out, "the member's own")["status"], "recorded", "{t:?}");
-            let spent = bound_step_up::redeem_or_request(
-                &fix.vtc.state,
-                &member,
-                BREAK_GLASS,
-                &break_glass(),
-                "break the glass",
-            )
-            .await
-            .unwrap();
-            assert!(matches!(spent, Gate::Satisfied), "{t:?}");
-        }
-    }
-
-    /// `auth/step-up/approve-response/0.6`: a webauthn gate alone is never
-    /// enough — unlike 0.4, kept only for an unsigned console-passkey answer,
-    /// 0.5 onward requires the approver's proof on every response, so an
-    /// unsigned 0.6 document is refused before its evidence is even looked at.
-    /// Signed by the subject, it is recorded.
-    #[tokio::test]
-    async fn approve_response_0_6_requires_the_subjects_proof_even_for_a_webauthn_gate() {
-        for t in TRANSPORTS {
-            let mut fix = fixture().await;
-            let member = fix.member.did.clone();
-            let issued = invite_over(&mut fix, t, &member).await;
-            redeem_over(&mut fix, t, &issued).await;
-
-            let request = bound_request(&fix, &member).await;
-            let assertion = fix
-                .member_key
-                .authenticate(&request_options(&request["webauthn"]), RP_ORIGIN);
-            let evidence = json!({
-                "subject": request["subject"],
-                "challenge": request["challenge"],
-                "decision": "approved",
-                "evidence": { "kind": "webauthn", "assertion": published(&assertion) },
-            });
-
-            let bare = unsigned(&fix.member, STEP_UP_APPROVE_RESPONSE_V0_6_TYPE, evidence);
-            let out = dispatch_doc(&fix, t, &fix.member, &bare).await;
+        for (signer, what) in [(&fix.other, "another member"), (&fix.admin, "an admin")] {
+            let out = approve(&fix, JoinTransport::Rest, signer, &request, &assertion).await;
             assert_code(
                 &out,
-                "proofRequired",
-                "0.6 admits no unsigned answer, webauthn evidence or not",
+                "auth/step-up/approve-response:subjectMismatch",
+                &format!("{what} signing the member's gesture"),
             );
-
-            let out = approve_as(
+            let out = dispatch_doc(
                 &fix,
-                t,
-                STEP_UP_APPROVE_RESPONSE_V0_6_TYPE,
-                &fix.member,
-                &request,
-                &assertion,
+                JoinTransport::Rest,
+                signer,
+                &unsigned(signer, STEP_UP_APPROVE_RESPONSE_TYPE, evidence.clone()),
             )
             .await;
+            assert_code(
+                &out,
+                "auth/step-up/approve-response:subjectMismatch",
+                &format!("{what} as the unsigned answer's issuer"),
+            );
+        }
+        // Over messaging a document always carries a proof (VTI-OPS-021).
+        for t in [JoinTransport::DIDComm, JoinTransport::Tsp] {
+            let bare = unsigned(&fix.member, STEP_UP_APPROVE_RESPONSE_TYPE, evidence.clone());
+            let out = dispatch_doc(&fix, t, &fix.member, &bare).await;
+            assert_code(&out, "proofRequired", "unsigned over messaging");
+        }
+
+        let bare = unsigned(&fix.member, STEP_UP_APPROVE_RESPONSE_TYPE, evidence);
+        let out = dispatch_doc(&fix, JoinTransport::Rest, &fix.member, &bare).await;
+        assert_eq!(
+            ok(&out, "the member's unsigned answer")["status"],
+            "recorded"
+        );
+        let spent = bound_step_up::redeem_or_request(
+            &fix.vtc.state,
+            &member,
+            BREAK_GLASS,
+            &break_glass(),
+            "break the glass",
+        )
+        .await
+        .unwrap();
+        assert!(matches!(spent, Gate::Satisfied));
+    }
+
+    /// approve-response 0.7, signed by the subject beside a webauthn gate, is
+    /// recorded on every transport.
+    #[tokio::test]
+    async fn approve_response_0_7_a_webauthn_answer_signed_by_the_subject_is_recorded() {
+        for t in TRANSPORTS {
+            let mut fix = fixture().await;
+            let member = fix.member.did.clone();
+            let issued = invite_over(&mut fix, t, &member).await;
+            redeem_over(&mut fix, t, &issued).await;
+
+            let request = bound_request(&fix, &member).await;
+            let assertion = fix
+                .member_key
+                .authenticate(&request_options(&request["webauthn"]), RP_ORIGIN);
+            let out = approve(&fix, t, &fix.member, &request, &assertion).await;
             assert_eq!(
-                ok(&out, "0.6, signed by the subject")["status"],
+                ok(&out, "0.7, signed by the subject")["status"],
                 "recorded",
                 "{t:?}"
             );

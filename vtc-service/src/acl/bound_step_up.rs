@@ -27,9 +27,9 @@
 //!    `auth/step-up/approve-request/0.5` payload with `boundTo` and no
 //!    `sessionId` ([`refusal_details`]). The spine releases the refused
 //!    document's `id`, so the identical document can be sent again.
-//! 2. The admin answers with `auth/step-up/approve-response` — `0.4` (the
-//!    console's unsigned session-passkey answer) or `0.6` with
-//!    `evidence.kind = webauthn` ([`approve`]), or `0.6` with
+//! 2. The admin answers with `auth/step-up/approve-response/0.7` — with
+//!    `evidence.kind = webauthn` ([`approve`]), unsigned (the console's answer:
+//!    the assertion is the evidence) or beside the admin's own proof, or with
 //!    `evidence.kind = approverSigned` ([`approve_with_statement`]). The
 //!    pending mark becomes a **redeemable mark**; the answer is `recorded`,
 //!    and nothing is elevated.
@@ -45,7 +45,7 @@
 //! can sign the document and can redeem a mark, but possession of a signing key
 //! is one factor, and it is never allowed to stand in for the second.
 //!
-//! ## A step-up approver's statement (approve-request 0.5, approve-response 0.6)
+//! ## A step-up approver's statement (approve-request 0.5, approve-response 0.7)
 //!
 //! A wallet administrator acts as a DID this community knows no passkey for.
 //! Their factor is a **step-up approver** ([`super::approver`]): a `did:key`
@@ -57,7 +57,7 @@
 //! holds a live approver, `webauthn` when a passkey of theirs counts) and names
 //! the approvers it will take. The answer is still signed by the subject's
 //! **own** DID — never a console key — so the proof and the factor are two
-//! different keys (approve-response 0.6, *Why the subject's own DID*).
+//! different keys (approve-response 0.7, *Why the subject's own DID*).
 //!
 //! ## Which factors count (approver design note §4, *Supersedes*)
 //!
@@ -80,7 +80,7 @@ use vti_common::auth::passkey::store::{
 use vti_common::error::AppError;
 use vti_common::store::KeyspaceHandle;
 use vti_specs::auth::step_up::approve_request::v0_5 as approve_request;
-use vti_specs::auth::step_up::approve_response::v0_6 as approve_response;
+use vti_specs::auth::step_up::approve_response::v0_7 as approve_response;
 use vti_specs::auth::step_up::approver::attest::v0_1 as attest;
 use webauthn_rs::prelude::{Passkey, PasskeyAuthentication, PublicKeyCredential};
 
@@ -94,7 +94,7 @@ pub const MARK_TTL_SECS: u64 = 300;
 
 /// Evidence kind of a passkey assertion.
 pub const EVIDENCE_WEBAUTHN: &str = "webauthn";
-/// Evidence kind of a step-up approver's statement (approve-response 0.6).
+/// Evidence kind of a step-up approver's statement (approve-response 0.7).
 pub const EVIDENCE_APPROVER_SIGNED: &str = "approverSigned";
 
 /// Domain separation for [`operation_digest`], so this digest cannot collide
@@ -162,7 +162,7 @@ struct PendingMark {
     /// The step-up approvers the request offered (`approvers`), when it
     /// accepted `approverSigned`. A statement is accepted only from one of
     /// these, and only while it is still a live, distinct approver of the
-    /// subject (approve-response 0.6, step 4.2).
+    /// subject (approve-response 0.7, step 4.2).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     approvers: Vec<String>,
     /// When the ceremony was minted — the start of the lifetime a statement's
@@ -758,17 +758,18 @@ pub enum ApproveError {
     /// and `approverSigned` count only where the request listed them.
     NoGate,
     /// The assertion failed. The hint is the machine-readable
-    /// `details.reason` the code declares; the cause is logged, not sent.
+    /// `details.reason` the code declares (approve-response 0.7's enum, see
+    /// [`assertion_reason`]); the cause is logged, not sent.
     AssertionInvalid(&'static str),
     /// The answer needs its approver's own signature and carries none: a
-    /// refusal is an approver-signed statement, and a member's step-up passkey
-    /// is only ever beside the member's proof, never instead of it.
+    /// refusal is an approver-signed statement (approve-response 0.7 producer
+    /// item 6, consumer item 1a).
     ProofRequired,
     /// The `approverSigned` statement is not a valid attest/0.1 document for
-    /// this step-up (approve-response 0.6 `statementInvalid`).
+    /// this step-up (approve-response 0.7 `statementInvalid`).
     StatementInvalid,
     /// Its signer is not a live, distinct approver of the subject that was
-    /// offered (approve-response 0.6 `approverNotBound`).
+    /// offered (approve-response 0.7 `approverNotBound`).
     ApproverNotBound,
     Internal(AppError),
 }
@@ -788,16 +789,17 @@ pub enum Approved {
     Declined { reason: String },
 }
 
-/// Process an `auth/step-up/approve-response/0.6` passkey answer or refusal
-/// for a pending mark. The console's unsigned 0.4 answer reaches here as the
-/// 0.6 payload it is wire-identical to (`handle_step_up_approve_response`).
+/// Process an `auth/step-up/approve-response/0.7` passkey answer or refusal
+/// for a pending mark — signed by the subject, or (the console's answer)
+/// unsigned, the assertion its only evidence.
 ///
 /// The pending mark is removed first, whatever follows, so a challenge is
 /// answerable once. The operation the gesture authorizes is read from **this
 /// service's own record** of the refusal, never from the approve-response,
 /// whose producer could otherwise nominate a different act (approve-request 0.3,
-/// *A bound step-up elevates nothing*).
-#[allow(deprecated)] // auth/step-up/approve-response 0.6 is superseded by 0.7; VTI speaks 0.6 until it moves
+/// *A bound step-up elevates nothing*). An unsigned answer decides nothing
+/// else either (approve-response 0.7 consumer item 4a): a refusal needs a
+/// proof, and `grantedAcr` and `ext` are never read here.
 pub async fn approve(
     state: &AppState,
     payload: &approve_response::Payload,
@@ -847,7 +849,7 @@ pub async fn approve(
         _ => return Err(ApproveError::NoGate),
     };
     // `webauthn` was not among what this step-up accepted (the subject holds
-    // only approvers, or the community no relying party): approve-response 0.6
+    // only approvers, or the community no relying party): approve-response 0.7
     // consumer item 1, a kind not listed in `accepts` is `noGate`.
     let Some(auth_state) = pending.auth_state.as_ref() else {
         return Err(ApproveError::NoGate);
@@ -861,11 +863,13 @@ pub async fn approve(
         .finish_passkey_authentication(&credential, auth_state)
         .map_err(|e| {
             warn!(admin = %pending.admin_did, error = %e, "operation-bound step-up assertion did not verify");
-            ApproveError::AssertionInvalid("verificationFailed")
+            ApproveError::AssertionInvalid(assertion_reason(&e))
         })?;
 
     // Possession alone is one factor. The design's whole premise is a human
-    // gesture, and a silent assertion is not one.
+    // gesture, and a silent assertion is not one — an unsigned answer without
+    // the user-verified flag is refused by approve-response 0.7 consumer item
+    // 4 in any case.
     if !result.user_verified() {
         return Err(ApproveError::AssertionInvalid("userNotVerified"));
     }
@@ -877,7 +881,14 @@ pub async fn approve(
     //
     // A session passkey, or a step-up passkey of the subject's. A step-up
     // passkey revoked since the ceremony began has lost its mapping, so it
-    // resolves to nobody and is refused here.
+    // resolves to nobody and is refused here (`credentialUnknown`).
+    //
+    // Either answers signed or unsigned: approve-response 0.7 makes a
+    // user-verified assertion by the approver's own registered passkey
+    // evidence on its own. A step-up passkey is the stronger of the two — a
+    // dedicated factor — and once a subject holds one their session passkeys
+    // stop counting ([`factors_of`]), so refusing it unsigned would leave a
+    // console administrator who enrolled one no way to answer at all.
     let cred_id_hex = hex::encode(<_ as AsRef<[u8]>>::as_ref(result.cred_id()));
     let (mut user, step_up) =
         match get_passkey_user_by_cred(&state.passkey_ks, &cred_id_hex).await? {
@@ -885,23 +896,20 @@ pub async fn approve(
             None => (
                 get_passkey_user_by_cred(&state.step_up_passkeys_ks, &cred_id_hex)
                     .await?
-                    .ok_or(ApproveError::AssertionInvalid("credentialUnregistered"))?,
+                    .ok_or(ApproveError::AssertionInvalid("credentialUnknown"))?,
                 true,
             ),
         };
-    // A member's step-up passkey is only ever beside the member's own proof.
-    // An unsigned answer is a console user's session passkey, the one gate an
-    // administrator's browser holds that script in the origin cannot forge.
-    if step_up && !signed_by_subject {
-        return Err(ApproveError::ProofRequired);
-    }
+    // The party the passkey is registered to is the approver, and it must be
+    // the subject this step-up was asked of (approve-response 0.7 consumer
+    // item 4, `webauthn`: `subjectMismatch`).
     if user.did != pending.admin_did {
         warn!(
             admin = %pending.admin_did,
             asserted = %user.did,
             "operation-bound step-up refused: another subject's passkey answered"
         );
-        return Err(ApproveError::AssertionInvalid("notSubjectPasskey"));
+        return Err(ApproveError::SubjectMismatch);
     }
     // Belt and suspenders on the factor-union rule `factors_of` already
     // enforces by never offering a session passkey once a dedicated factor
@@ -915,7 +923,7 @@ pub async fn approve(
             "operation-bound step-up refused: a session passkey answered for a subject who \
              holds a dedicated step-up factor"
         );
-        return Err(ApproveError::AssertionInvalid("notSubjectPasskey"));
+        return Err(ApproveError::AssertionInvalid("credentialNotAccepted"));
     }
     // WebAuthn's replay defence is the signature counter, so persist it.
     if step_up {
@@ -962,13 +970,13 @@ pub async fn approve(
     })
 }
 
-/// Process an `auth/step-up/approve-response/0.6` approval carrying
+/// Process an `auth/step-up/approve-response/0.7` approval carrying
 /// `evidence.kind = approverSigned` — a step-up approver's statement.
 ///
 /// The caller has already verified the document's own proof and held its
 /// signer to `subject` **by the subject's own DID**, never a console key's
-/// delegation (approve-response 0.6, consumer item 1a: before the pending
-/// step-up is looked up, so nobody else can spend it). Then, in the order 0.6
+/// delegation (approve-response 0.7, consumer item 1a: before the pending
+/// step-up is looked up, so nobody else can spend it). Then, in the order 0.7
 /// gives:
 ///
 /// - step 2: the pending step-up, by challenge, taken atomically (single
@@ -1069,6 +1077,22 @@ pub async fn approve_with_statement(
     })
 }
 
+/// approve-response 0.7's `assertionInvalid` `details.reason` for a webauthn-rs
+/// verification failure. The enum is closed, so a failure with no reason of
+/// its own is reported as the signature not verifying.
+fn assertion_reason(e: &webauthn_rs::prelude::WebauthnError) -> &'static str {
+    use webauthn_rs::prelude::WebauthnError as E;
+    match e {
+        E::MismatchedChallenge | E::ChallengeNotFound => "challengeMismatch",
+        E::InvalidRPOrigin | E::CredentialCrossOrigin => "originMismatch",
+        E::InvalidRPIDHash => "rpIdMismatch",
+        E::UserNotVerified => "userNotVerified",
+        E::CredentialPossibleCompromise => "counterRegressed",
+        E::CredentialNotFound => "credentialUnknown",
+        _ => "signatureInvalid",
+    }
+}
+
 /// The published `AssertionResponse` as webauthn-rs's `PublicKeyCredential`.
 ///
 /// The two describe the same `navigator.credentials.get` result; they differ
@@ -1099,7 +1123,7 @@ fn public_key_credential(
     });
     serde_json::from_value(value).map_err(|e| {
         warn!(error = %e, "operation-bound step-up assertion does not parse");
-        ApproveError::AssertionInvalid("unparseable")
+        ApproveError::AssertionInvalid("signatureInvalid")
     })
 }
 

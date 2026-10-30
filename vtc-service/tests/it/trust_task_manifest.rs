@@ -791,7 +791,7 @@ const SIOP_BODY_DISCRIMINATOR_TYPES: &[&str] =
 const EMBEDDED_DOCUMENT_TYPES: &[&str] = &[
     "https://trusttasks.org/spec/auth/signing-key/authorize/0.1",
     "https://trusttasks.org/spec/trust-task-next-step/0.1",
-    // A step-up approver's statement, carried inside approve-response 0.6,
+    // A step-up approver's statement, carried inside approve-response 0.7,
     // redeem/finish, enroll or install claim/finish 0.3 — never acted on alone
     // (attest/0.1 consumer item 1).
     "https://trusttasks.org/spec/auth/step-up/approver/attest/0.1",
@@ -918,10 +918,9 @@ const SPINE_DOCUMENT_TYPES: &[&str] = &[
     // route had no other caller and was retired once the console moved onto
     // the signed door.
     "https://trusttasks.org/spec/vtc/relationships/list/0.3",
-    // 0.4: only the console's unsigned session-passkey answer (no successor).
-    "https://trusttasks.org/spec/auth/step-up/approve-response/0.4",
-    // 0.6: every signed answer — a passkey, a refusal, an approver's statement.
-    "https://trusttasks.org/spec/auth/step-up/approve-response/0.6",
+    // Every answer to a bound step-up: the console's unsigned passkey answer,
+    // a signed passkey answer or refusal, an approver's statement.
+    "https://trusttasks.org/spec/auth/step-up/approve-response/0.7",
     // Step-up approvers (`trust_tasks::step_up_approver_tasks`).
     "https://trusttasks.org/spec/auth/step-up/approver/list/0.1",
     "https://trusttasks.org/spec/auth/step-up/approver/revoke/0.1",

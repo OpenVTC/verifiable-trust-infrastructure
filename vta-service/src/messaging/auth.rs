@@ -363,7 +363,7 @@ mod tests {
     // a human gave, the wallet sent, and the VTA silently discarded.
 
     const DECISION: &str = vta_sdk::trust_tasks::TASK_TASK_CONSENT_DECISION_0_2;
-    const STEP_UP: &str = vta_sdk::trust_tasks::TASK_AUTH_STEP_UP_APPROVE_RESPONSE_0_6;
+    const STEP_UP: &str = vta_sdk::trust_tasks::TASK_AUTH_STEP_UP_APPROVE_RESPONSE_0_7;
     const ORDINARY: &str = "https://trusttasks.org/spec/vta/webvh/dids/update/1.0";
     const APPROVER: &str = "did:key:zApproverNotInAcl";
 

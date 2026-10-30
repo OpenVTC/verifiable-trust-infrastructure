@@ -257,7 +257,7 @@ export function isWalletSigningAvailable(): boolean {
 
 /** True iff the wallet can answer a step-up with its approver **and** sign the
  *  approve-response as the subject — both halves of an `approverSigned`
- *  answer (`auth/step-up/approve-response/0.6`). */
+ *  answer (`auth/step-up/approve-response/0.7`). */
 export function isWalletApproverAvailable(): boolean {
   return isWalletSigningAvailable() && typeof window.vtaWallet?.approveStepUp === "function";
 }

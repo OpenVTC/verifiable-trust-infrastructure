@@ -176,7 +176,7 @@ console ──(3) approveStepUp(request, operation)──▶ plugin
                  renders the operation, user gesture unwraps the approver key,
                  approver signs the step-up statement
         ◀────────── evidence {kind: approverSigned, statement} ──
-console ──(4) approve-response 0.6 {subject, challenge, decision: approved,
+console ──(4) approve-response 0.7 {subject, challenge, decision: approved,
               evidence}, signed by the SUBJECT DID
               (wallet signTrustTask {asDid: subject})──────▶ VTC verifies both,
         ◀─(5) {status: recorded, boundTo}─────────────────── records the mark

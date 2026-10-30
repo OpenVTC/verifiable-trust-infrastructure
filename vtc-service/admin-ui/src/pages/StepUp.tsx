@@ -13,25 +13,31 @@
 // options: what the gesture authorizes is the VTC's own record of the refusal,
 // keyed by the challenge, never this page's copy of it.
 //
-// Every answer is signed by the approver. A browser holding a console key
-// signs it here. One that holds none — a member answering with a step-up
-// passkey — runs the ceremony and shows an **answer code** instead, which the
-// member pastes back into `cnm` to be signed with their own key: the passkey
-// is in addition to that signature, never instead of it.
+// A console user approves here with their passkey, unsigned: the assertion is
+// the evidence (`auth/step-up/approve-response/0.7`, `evidence.kind =
+// webauthn`), and the console key — a delegation — signs nothing. One without
+// a console key — a member answering for `cnm` — runs the ceremony and shows
+// an **answer code** instead, which the member pastes back into `cnm` to be
+// signed into the answer with their own key.
+//
+// Declining is a statement only the subject's own DID can sign (0.7 producer
+// item 6), so it is offered only where the VTA wallet plugin can sign as the
+// subject; otherwise the operator declines by not answering.
 
 import { useMemo, useState } from "react";
 import { useLocation } from "react-router-dom";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { Fingerprint } from "lucide-react";
 
-import { postSignedTrustTask, signingAvailable } from "@/lib/api";
+import { signingAvailable } from "@/lib/api";
 import {
   acceptedKinds,
   answerableHere,
   noFactorGuidance,
   answerCodeOf,
   answerStepUp,
-  APPROVE_RESPONSE_V0_6_URI,
+  declinableHere,
+  declineStepUp,
   decodeStepUpRequest,
   runStepUpCeremony,
 } from "@/lib/bound-step-up";
@@ -59,14 +65,11 @@ function StepUpPageSurface() {
   const handOver = useMutation({
     mutationFn: async () => answerCodeOf(await runStepUpCeremony(request!)),
   });
+  // A refusal is proved by the subject's own DID, never the console key
+  // (approve-response 0.7 producer item 6): only the wallet plugin can.
+  const canDecline = declinableHere();
   const decline = useMutation({
-    mutationFn: () =>
-      postSignedTrustTask(APPROVE_RESPONSE_V0_6_URI, {
-        subject: request!.subject,
-        challenge: request!.challenge,
-        decision: "denied",
-        deniedReason: "declined in the admin console",
-      }),
+    mutationFn: () => declineStepUp(request!),
     onSuccess: () => setDeclined(true),
   });
 
@@ -190,7 +193,7 @@ function StepUpPageSurface() {
 
         {!done && canSign.isSuccess && (
           <div className="form-actions">
-            {signing ? (
+            {canDecline ? (
               <button
                 type="button"
                 className="secondary"
