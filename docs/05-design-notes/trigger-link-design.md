@@ -1,8 +1,9 @@
 # Trigger links — why this shape, and what it does and does not interoperate with
 
 **Status:** Explanatory. No change to the specification is proposed. This note
-explains design choices in the trigger-link chapter of the VTI specification
-(`spec/07a-links.md`, VTI-LNK-001 to VTI-LNK-124) that the chapter states as
+explains design choices in the [Trigger Links](https://trustoverip.github.io/dtgwg-vti-spec/)
+chapter of the VTI specification (`spec/07a-links.md`, VTI-LNK-001 to
+VTI-LNK-124) that the chapter states as
 rules but does not argue at length, chiefly why a trigger link is not a DIDComm
 out-of-band URL. Where this note and the chapter differ, the chapter is correct.
 
@@ -58,10 +59,9 @@ transport comes from the contact's verified DID document and never from the
 link, and the reader's own preference order chooses among the bindings the
 document offers (VTI-LNK-053).
 
-The transport chapter takes the same stance: an authorization decision must
-not depend on the transport a request arrived over, and a node must not expose
-an operation on one transport that it refuses on another except on the
-caller's authority (VTI-TRN-002, VTI-TRN-003).
+This is consistent with the transport chapter, which keeps an authorization
+decision independent of the transport a request arrived over (VTI-TRN-002,
+VTI-TRN-003), though those requirements do not themselves govern links.
 
 A DIDComm out-of-band invitation is a DIDComm message. Making it the link would
 make every flow a DIDComm flow at the first step, and every other protocol a
@@ -330,6 +330,19 @@ protocol. That would be a VCALM-side choice, it would not change the
 trigger-link format, and the reader would already have fetched the interaction
 URL by then.
 
+## In this workspace
+
+The `sign-in` flow is the one this workspace serves. Where it shows up:
+
+- [`did-templates.md`](../02-vta/did-templates.md#wallet-sign-in-on-a-did-hosting-node-signinportal):
+  the `SignInPortal` and `TrustTaskHTTPS` services a DID-hosting node publishes
+  so that a wallet can select them (VTI-LNK-053, VTI-LNK-102, VTI-LNK-105).
+- [`wallet-sign-in-uv-keys.md`](../02-vta/wallet-sign-in-uv-keys.md): the
+  `auth/oob/identify` and `auth/oob/grant` documents a wallet's VTA signs.
+- [`website-and-admin.md`](../03-vtc/website-and-admin.md#admin-login) and
+  [`member-directory.md`](../03-vtc/member-directory.md): a VTC's console and
+  member-portal sign-in with a wallet.
+
 ## What is not verified
 
 - **No phone has been tested.** Every statement here about which app opens a
@@ -347,7 +360,8 @@ URL by then.
 
 ## References
 
-- VTI specification, Trigger Links, `spec/07a-links.md`:
+- VTI specification, Trigger Links, `spec/07a-links.md`,
+  <https://trustoverip.github.io/dtgwg-vti-spec/>:
   VTI-LNK-010 to 013, 020, 021, 040, 041, 050 to 054, 057, 060, 070 to 072,
   081, 090 to 092, 120 to 123. Transports: VTI-TRN-002, VTI-TRN-003.
 - DIDComm Messaging v2, Out Of Band Messages: "Standard Message Encoding",
