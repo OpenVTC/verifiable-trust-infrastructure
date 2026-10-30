@@ -1,0 +1,22 @@
+[package]
+name = "vti-specs"
+description = "VTI's generated Trust Task wire types, one module per spec family, and a Type URI index over exactly the versions VTI pins"
+readme = "README.md"
+version = "0.1.0"
+edition.workspace = true
+# Published, because `vta-sdk` is and re-exports this crate as `vta_sdk::specs`.
+publish.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+trust-tasks-rs = { workspace = true }
+vti-specs-core = { path = "../vti-specs-core", version = "0.1" }
+vti-specs-rooms = { path = "../vti-specs-rooms", version = "0.1" }
+vti-specs-vta = { path = "../vti-specs-vta", version = "0.1" }
+vti-specs-vtc = { path = "../vti-specs-vtc", version = "0.1" }
+
+[lints]
+workspace = true

@@ -27,7 +27,9 @@ it. Where they disagree, the specification is correct and the code changes.
 ## Workspace layout
 
 Rust workspace (edition 2024, resolver 3, MSRV 1.95.0). Dependencies flow
-strictly downward — no cycles. There are two leaf crates with no internal
+strictly downward — no cycles. Below everything sit the generated Trust Task
+crates (`vti-specs-*` and their facade `vti-specs`), which depend only on
+`trust-tasks-rs`. Above them are two leaf crates with no other internal
 workspace deps (`vti-common`, `vta-sdk`); everything else depends on one
 or both of them, plus optionally on `vta-cli-common`.
 
@@ -39,6 +41,10 @@ not reach through the facade. Before proposing a further extraction, read
 and — importantly — where the program stops.
 
 ```
+Generated (below the leaves; trust-tasks-rs only):
+  vti-specs-rooms, vti-specs-vta, vti-specs-vtc, vti-specs-core
+  vti-specs       → the four above (re-exports + one merged Type URI index)
+
 Layer 0 (leaves):
   vti-common   (no internal deps)
   vta-sdk      (no internal deps)
@@ -80,6 +86,8 @@ Layer 4 (the spine + consumers):
 
 | Crate | Role |
 |---|---|
+| `vti-specs-{rooms,vta,vtc,core}` | **Generated Trust Task wire types** (`trust-tasks-build` in `build.rs`), one crate per family group, each version pinned exactly once in its `trust-tasks.lock` and vendored under `trust-tasks/`. `rooms` stands alone so `vti-rooms-wasm` compiles nothing else |
+| `vti-specs` | Facade: re-exports every family at its `trust_tasks_rs::specs` path and merges the four `schema_index` tables (`schema_for`, `spec_policy_for`, `error_codes_for`, `max_document_bytes_for`, `is_pinned`). `vta-sdk` re-exports it as `vta_sdk::specs` |
 | `vti-common` | Shared foundation: `host_session` (a host service identity's mediator session), JWT auth, ACL, `Store` (local fjall + vsock), `AppError`, config types, identifier validation, `secure_file`, telemetry sink, `SeedStore`, `guards` |
 | `vta-sdk` | Public SDK: types, REST + DIDComm client, `sealed_transfer`, `did_templates`, `provision_integration`, attestation verification, `protocol` (DIDComm protocol-management types) |
 | `vti-secrets` | Shared secret-store backends (AWS / GCP / Azure / Vault / Kubernetes / keyring / config-seed / TEE-KMS / plaintext) + the `create_seed_store(&secrets, &data_dir)` factory + `SecretsConfig`, all behind the same feature flags, shared by the VTA (`vta-keys::seed_store`) and the VTC (its own factory, `vtc-service::keys::seed_store`). Feature `onboarding`: `IntegrationOnboarding`, the ephemeral-`did:key` → ACL-grant → auto-rotate cold-start helper for external integrations |
@@ -299,6 +307,28 @@ the registry, published by `trust-tasks-rs` under `trust_tasks_rs::specs`.
   Document a REST body with a wrapper in `vta_sdk::openapi`, whose schema is
   rendered from the specification's own.
 
+### Pinning a task version
+
+The versions VTI speaks are pinned with the `trust-tasks` CLI
+(`cargo install trust-tasks-cli`), per generated crate — `vti-specs-rooms` for
+`rooms/*`, `-vta` for `vta/*`, `-vtc` for `vtc/*`, `-core` for everything else:
+
+```sh
+trust-tasks -C vti-specs-vtc add vtc/members/list/0.3   # a version; `<slug>` alone pins the latest
+git add vti-specs-vtc/trust-tasks.toml vti-specs-vtc/trust-tasks.lock vti-specs-vtc/trust-tasks/
+trust-tasks -C vti-specs-vtc check                     # offline: bundles match the lock
+```
+
+Commit all three. The next build generates the new module
+(`vti_specs::vtc::members::list::v0_3`) and its index entries. Pin a version in
+exactly one crate (the facade test `the_generated_tables_are_disjoint` fails
+otherwise), unpin one VTI no longer sends or serves (`trust-tasks remove
+<slug>/<M.N>`), and never pin a framework specification (`trust-task-*`): those
+stay in `trust_tasks_rs`. An unpinned Type URI answers `None` from
+`vti_specs::schema_index`, and a gate reading `None` as "nothing to check" fails
+open — so `vta-service`'s and `vtc-service`'s `trust_tasks::spec_pin_census`
+fail on any served, sent or `TASK_*` Type URI that is not pinned.
+
 `vta-sdk/tests/generated_wire_types_census.rs` enforces the first rule: it fails
 on a serde type whose doc summary names a generated task as its payload,
 request, response or body. So name the task in a wire type's summary. Its
@@ -502,7 +532,7 @@ Mechanics: [`RELEASING.md`](RELEASING.md).
   baseline resolves without a lockfile. Read what
   `scripts/semver-build-failure.py` attributes it to before blaming our crate
   (#1667).
-- **27 of 37 crates publish**; the ten that do not set `publish = false` with a
+- **32 of 42 crates publish**; the ten that do not set `publish = false` with a
   comment saying why. `vtc-service` publishes as a binary with pre-built web
   bundles — a new `include_dir!` / `include_str!` outside tests must sit inside
   its `include` list. `vta-service` publishes because `openvtc-core`

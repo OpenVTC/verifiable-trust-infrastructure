@@ -453,6 +453,9 @@ tempfile = { version = "3", optional = true }
 qrcode = { version = "0.14", default-features = false, features = ["svg"] }
 
 [dev-dependencies]
+# `trust_tasks::spec_pin_census` holds every served Type URI to the versions
+# the generated `vti-specs` crates pin.
+vti-specs = { path = "../vti-specs", version = "0.1" }
 trust-tasks-rs = { workspace = true }
 # Signs ES256K holder signatures in tests; the service only verifies them,
 # through `vta_sdk::jws`.

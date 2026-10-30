@@ -203,6 +203,10 @@ mod conformance;
 #[cfg(test)]
 mod error_code_census;
 
+// Every served Type URI is a version the generated `vti-specs` crates pin.
+#[cfg(test)]
+mod spec_pin_census;
+
 use serde_json::Value;
 use trust_tasks_rs::specs::vtc::members::personhood::{assert::v0_2 as pa, challenge::v0_1 as pc};
 // The admin-facing member verbs (#1641 phase 2). Their wire types are

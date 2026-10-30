@@ -156,6 +156,11 @@ COPY vti-rooms/ vti-rooms/
 COPY vti-rooms-dtg/ vti-rooms-dtg/
 COPY vti-rooms-wasm/ vti-rooms-wasm/
 COPY vti-secrets/ vti-secrets/
+COPY vti-specs/ vti-specs/
+COPY vti-specs-core/ vti-specs-core/
+COPY vti-specs-rooms/ vti-specs-rooms/
+COPY vti-specs-vta/ vti-specs-vta/
+COPY vti-specs-vtc/ vti-specs-vtc/
 COPY vti-vetting-pcs/ vti-vetting-pcs/
 COPY vti-voting/ vti-voting/
 COPY vti-voting-service/ vti-voting-service/

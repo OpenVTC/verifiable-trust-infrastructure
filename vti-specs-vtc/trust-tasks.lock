@@ -1,0 +1,1263 @@
+# Written by `trust-tasks`. Do not edit by hand.
+version = 1
+registry = "https://trusttasks.org"
+
+[[task]]
+slug = "vtc/admin/actions/acknowledge"
+version = "0.3"
+type_uri = "https://trusttasks.org/spec/vtc/admin/actions/acknowledge/0.3"
+digest = "sha256:9a708397a3fe2f8868a53675d06eb607faf18be227feb73b9e428b635676f085"
+
+[[task]]
+slug = "vtc/admin/actions/cancel"
+version = "0.3"
+type_uri = "https://trusttasks.org/spec/vtc/admin/actions/cancel/0.3"
+digest = "sha256:a05ac35677b12f03a841808ae7eb79e86dfad32ddcff8ec2031ca91776e66451"
+
+[[task]]
+slug = "vtc/admin/actions/list"
+version = "0.3"
+type_uri = "https://trusttasks.org/spec/vtc/admin/actions/list/0.3"
+digest = "sha256:70d1e207021e283a568a275617126fe542a3f0f8d89b385afc88c8562b6b3b8d"
+
+[[task]]
+slug = "vtc/admin/actions/show"
+version = "0.3"
+type_uri = "https://trusttasks.org/spec/vtc/admin/actions/show/0.3"
+digest = "sha256:29cbaad3c5dc2778117f41c5292f47965050cb8c2b1562abbc13b2bba70203f6"
+
+[[task]]
+slug = "vtc/admin/bootstrap"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/admin/bootstrap/0.1"
+digest = "sha256:2ce56adfb89bddfd335d108dce09055e5495232d36f8e10cdc0b45f53d747284"
+
+[[task]]
+slug = "vtc/admin/events/event"
+version = "0.5"
+type_uri = "https://trusttasks.org/spec/vtc/admin/events/event/0.5"
+digest = "sha256:9728cc649ae40f9c3e0cad5f186f3afd43095aceee6fb1778b1152a3dba371e6"
+
+[[task]]
+slug = "vtc/admin/events/subscribe"
+version = "0.6"
+type_uri = "https://trusttasks.org/spec/vtc/admin/events/subscribe/0.6"
+digest = "sha256:136a9acaf6d9a45c74a90ca1c9959a6d15ce5b21caf0944994896449b8367811"
+
+[[task]]
+slug = "vtc/admin/invites/create"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/admin/invites/create/0.1"
+digest = "sha256:b99ad5161e3a3c6028cb5d37532f2da79bd4f1c6d3eae6423b133a66646bf36c"
+
+[[task]]
+slug = "vtc/admin/invites/list"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/admin/invites/list/0.1"
+digest = "sha256:e176fb1e54d1c6eec3403431894e1e5af7ae0e19ab977d0b80d17323361646a4"
+
+[[task]]
+slug = "vtc/admin/invites/revoke"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/admin/invites/revoke/0.1"
+digest = "sha256:07e5be5db93245b171164a80825591d360c49d734e46eaeed2f939b614809350"
+
+[[task]]
+slug = "vtc/auth/admin-session"
+version = "0.2"
+type_uri = "https://trusttasks.org/spec/vtc/auth/admin-session/0.2"
+digest = "sha256:a39c95d5fa707ee2af9eb9bc4c30e3d042a246333980420d0150b98fab0da3f3"
+
+[[task]]
+slug = "vtc/auth/recognise"
+version = "0.3"
+type_uri = "https://trusttasks.org/spec/vtc/auth/recognise/0.3"
+digest = "sha256:54bfd14d7a96f6614a4b742f6b9872c1c514e99c085190a9690763ebd044008b"
+
+[[task]]
+slug = "vtc/auth/recognise/challenge"
+version = "0.2"
+type_uri = "https://trusttasks.org/spec/vtc/auth/recognise/challenge/0.2"
+digest = "sha256:137bc10dc05c58e85279a996cdc371af1fd155ec493c704e75b26ac2016d9363"
+
+[[task]]
+slug = "vtc/backup/export"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/backup/export/0.1"
+digest = "sha256:1ddefdb8a5d81a73f24cb1be2d118fa0b2db7155ad043c9ac726d1e9286af74a"
+
+[[task]]
+slug = "vtc/backup/import"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/backup/import/0.1"
+digest = "sha256:0802d5681f03edace3e5754836cedca9ae6c1216e868fe1823cbdbf0c4dcc56e"
+
+[[task]]
+slug = "vtc/ceremonies/list"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/ceremonies/list/0.1"
+digest = "sha256:2f7508d0ac9250a75f42777f9ecb1fa7335fd9f6e940246dbd08a2b6cb569335"
+
+[[task]]
+slug = "vtc/community/branding/show"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/community/branding/show/0.1"
+digest = "sha256:f2a31285292e00d36f39a15d9c054d79a850d505a361ee67937be81f26ba96f1"
+
+[[task]]
+slug = "vtc/community/branding/update"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/community/branding/update/0.1"
+digest = "sha256:ea7ca12f4740211e8a3e7281d0ab8910b72fa082b63d619287d2fba680fc1dc0"
+
+[[task]]
+slug = "vtc/community/join-discovery/show"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/community/join-discovery/show/0.1"
+digest = "sha256:e23d666ca474bbed635e006cea5bb7f3874e81379a8d46086710a5471bcc2bd5"
+
+[[task]]
+slug = "vtc/community/join-discovery/update"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/community/join-discovery/update/0.1"
+digest = "sha256:6d431d36340836f5c7c0f468bbd9b0ee31d3138af5d1ece6170996848866f78e"
+
+[[task]]
+slug = "vtc/community/profile/show"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/community/profile/show/0.1"
+digest = "sha256:2d80d2a3e329f8839fe034fa7b7c2c00fa3540b092e23c109369768df632e259"
+
+[[task]]
+slug = "vtc/community/profile/update"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/community/profile/update/0.1"
+digest = "sha256:90f7d93ad743e4f68c60f69611a56e8c1e0514e7231c291fd45d5a0884067807"
+
+[[task]]
+slug = "vtc/community/requested-attributes/show"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/community/requested-attributes/show/0.1"
+digest = "sha256:0e1e5056461ab681b5e2e0a792e1044147439a8a9b80f7bbdc6f5bba538068e3"
+
+[[task]]
+slug = "vtc/community/requested-attributes/update"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/community/requested-attributes/update/0.1"
+digest = "sha256:518a95c2d611e07223abd893d8709a4ab95f114f373a4a059b05ae2c3eeb2af5"
+
+[[task]]
+slug = "vtc/community/theme/show"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/community/theme/show/0.1"
+digest = "sha256:197dd677069b783e88feeaba7bc255102d74a58c3a1c3ef5ae03b09b168db0a0"
+
+[[task]]
+slug = "vtc/community/theme/update"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/community/theme/update/0.1"
+digest = "sha256:29b7cfa9f88fc1ef59f80ddc0bbcc4337b2dedb8c37d6743fcf969ed4e60d7fc"
+
+[[task]]
+slug = "vtc/config/did-hosting/list"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/config/did-hosting/list/0.1"
+digest = "sha256:5cca51098cce5156c68c3b66cbadc3e9cd0b1538db19a3151dac957a64889b9d"
+
+[[task]]
+slug = "vtc/config/export"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/config/export/0.1"
+digest = "sha256:5b4e4f498be29a3d7b36e18a527592e7d0f0cf133e0276be762c3f7a50db47cb"
+
+[[task]]
+slug = "vtc/config/import"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/config/import/0.1"
+digest = "sha256:6856ce376007991931f124def269a184bb2f488ddb734cf2c53b99da7d64bc8d"
+
+[[task]]
+slug = "vtc/directory/card/assert"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/directory/card/assert/0.1"
+digest = "sha256:affd35e2d34a1af1ebfef5aa712069e6274af4c4a07552734c78bb047e3da08c"
+
+[[task]]
+slug = "vtc/directory/card/present"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/directory/card/present/0.1"
+digest = "sha256:7d449a7630477da644f4ee5612967bd7faf8b023735c8c67d6d97784fcb71fe4"
+
+[[task]]
+slug = "vtc/directory/card/public"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/directory/card/public/0.1"
+digest = "sha256:5a9a01ac9fe9c95b051a9451118559ef3afc50cfccc9c7b0f35bc7c1f617f4b3"
+
+[[task]]
+slug = "vtc/directory/card/publish"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/directory/card/publish/0.1"
+digest = "sha256:ea3c91e8c103d8271c9b5e7647fcdca48db0e1ec6229f1b7f7a824539e8d4a6b"
+
+[[task]]
+slug = "vtc/directory/card/show"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/directory/card/show/0.1"
+digest = "sha256:25ba4592958363af6a0527d6b83347248e8d98579155841e248178d211272a70"
+
+[[task]]
+slug = "vtc/directory/card/update"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/directory/card/update/0.1"
+digest = "sha256:0d67689c65ad95741ad1dcac2f0a67d88194fa80e3ed02887349a2e6de8e751f"
+
+[[task]]
+slug = "vtc/directory/disclosure"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/directory/disclosure/0.1"
+digest = "sha256:425c9770f38eed1df1e59305349a8c4a59cb18e79c47b298584a9245c5a7158b"
+
+[[task]]
+slug = "vtc/directory/entries/list"
+version = "0.2"
+type_uri = "https://trusttasks.org/spec/vtc/directory/entries/list/0.2"
+digest = "sha256:8cc9ce6232cc9b1208b747ab493fa78d5ee67bffcd0eee03645e50738487bf5f"
+
+[[task]]
+slug = "vtc/directory/entries/show"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/directory/entries/show/0.1"
+digest = "sha256:609c7c3973265deae38cbfb6b9e1a5a12fd034fcc433b5b5855fbec6e407aa03"
+
+[[task]]
+slug = "vtc/directory/export"
+version = "0.2"
+type_uri = "https://trusttasks.org/spec/vtc/directory/export/0.2"
+digest = "sha256:eb5ea650ebf33f383ab28ba86763fee77191b961bf2c6edc221737697482b1c2"
+
+[[task]]
+slug = "vtc/directory/fields/define"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/directory/fields/define/0.1"
+digest = "sha256:f7e5c8aef96b8ea71b5f2500e9f65e269c0bf7bd9f2fcd30fdd9b6afd735f148"
+
+[[task]]
+slug = "vtc/directory/fields/list"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/directory/fields/list/0.1"
+digest = "sha256:ef250a0b3569bbf4f53ca0d5b702d41423f9a24ad0519bc165bfbfb83426d8dc"
+
+[[task]]
+slug = "vtc/directory/fields/retire"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/directory/fields/retire/0.1"
+digest = "sha256:605e4029c460bce54081199ebcc4993f40afafadf85ef53d3b4489937a57b3cd"
+
+[[task]]
+slug = "vtc/directory/fields/update"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/directory/fields/update/0.1"
+digest = "sha256:32c30aca2d856cdd80c3f79ee7f65449cb96585bdbbfe3133a1f3001ec5e7380"
+
+[[task]]
+slug = "vtc/directory/images/get"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/directory/images/get/0.1"
+digest = "sha256:997327ce07b3db604e1fe81933ea861490c44c594455bc7d28c25abd92381919"
+
+[[task]]
+slug = "vtc/directory/images/upload"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/directory/images/upload/0.1"
+digest = "sha256:02cf758ae2e6eced248dc75b27ea3731a9f503ac0409f52426ab8bce1bf45ad9"
+
+[[task]]
+slug = "vtc/directory/notes/append"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/directory/notes/append/0.1"
+digest = "sha256:03bc55c3e7b535ba7ab8e564db4de0f4b6fea223cb4ac25879b8de1d3c853779"
+
+[[task]]
+slug = "vtc/directory/notes/export"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/directory/notes/export/0.1"
+digest = "sha256:993f43982effaf8c88e3f542317f7dc52a84d63e0772941dab73f7351c090ecd"
+
+[[task]]
+slug = "vtc/directory/notes/list"
+version = "0.2"
+type_uri = "https://trusttasks.org/spec/vtc/directory/notes/list/0.2"
+digest = "sha256:7017dff00520ee26a9d6ce5ff06162c17aa3e45a880a9ddda3108e7aa29e54bc"
+
+[[task]]
+slug = "vtc/directory/query"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/directory/query/0.1"
+digest = "sha256:208b03398401c434bc94b99039e1f6ee3a9b4cbfae86064549c7eb71f679e641"
+
+[[task]]
+slug = "vtc/elections/cancel"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/elections/cancel/0.1"
+digest = "sha256:22e593fcdd8446ab6ae953e05e0df6a11702de4acf9a101f69316782cc5d191c"
+
+[[task]]
+slug = "vtc/elections/certify"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/elections/certify/0.1"
+digest = "sha256:35e550807007495f970b598e1810e0ee6208db426f09c506060d7ae4c55da44a"
+
+[[task]]
+slug = "vtc/elections/close"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/elections/close/0.1"
+digest = "sha256:46f1ac38808f2fd1acec932e56db3fc2b81d3f951a3fdc501faa3901d190fa03"
+
+[[task]]
+slug = "vtc/elections/create"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/elections/create/0.1"
+digest = "sha256:87615e2587b084e9da61558f6fa9a1daa4c6e72f142205c0b6bc0a6ca5f99964"
+
+[[task]]
+slug = "vtc/elections/create"
+version = "0.3"
+type_uri = "https://trusttasks.org/spec/vtc/elections/create/0.3"
+digest = "sha256:7508bae610391e15f06b56ad7d83ed5107064b1d6fe56f66eddbddfc26c0ac42"
+
+[[task]]
+slug = "vtc/elections/list"
+version = "0.3"
+type_uri = "https://trusttasks.org/spec/vtc/elections/list/0.3"
+digest = "sha256:a66efb7922b1717a500bd5a17d033b2957c808ff64398e654b553f5a5fdf61ea"
+
+[[task]]
+slug = "vtc/elections/show"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/elections/show/0.1"
+digest = "sha256:943980831295f2a3616252a882f064c2e4bbc58d96ca6651922e7fea219bf991"
+
+[[task]]
+slug = "vtc/elections/show"
+version = "0.2"
+type_uri = "https://trusttasks.org/spec/vtc/elections/show/0.2"
+digest = "sha256:bb50aacbee2aaea2065937a478b8b37d9babea3242e5aeaa76ff7bd89040aab0"
+
+[[task]]
+slug = "vtc/elections/tickets/issue"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/elections/tickets/issue/0.1"
+digest = "sha256:8e444558c1c218277178fe668a2e1b4efbd52556b33b139b3f2eabe4547c4eaf"
+
+[[task]]
+slug = "vtc/endorsement-types/delete"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/endorsement-types/delete/0.1"
+digest = "sha256:6d80577e165f4079c23f5dfa940bfae9a5750fbb504b86b9a8fbcda0d00e1d91"
+
+[[task]]
+slug = "vtc/endorsement-types/list"
+version = "0.2"
+type_uri = "https://trusttasks.org/spec/vtc/endorsement-types/list/0.2"
+digest = "sha256:59c86b69ee284b8d5f5935f1d9eb609e265b976bec2c270eadac68dd0197d182"
+
+[[task]]
+slug = "vtc/endorsement-types/register"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/endorsement-types/register/0.1"
+digest = "sha256:e4f852a1313ae2890e7cd4f1812e6dda9d24b2e5b9140f1519d6708050cfadae"
+
+[[task]]
+slug = "vtc/endorsements/issue"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/endorsements/issue/0.1"
+digest = "sha256:7591cdc41e29964f41449a70e1672f35866784d2aac1fc9ea8bc636a99790ac8"
+
+[[task]]
+slug = "vtc/endorsements/list"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/endorsements/list/0.1"
+digest = "sha256:504cd19f18c339449ab41203ad9308819c71b20f3651ef31873a2d26214ccbb7"
+
+[[task]]
+slug = "vtc/endorsements/list"
+version = "0.2"
+type_uri = "https://trusttasks.org/spec/vtc/endorsements/list/0.2"
+digest = "sha256:3c0d983cde628de5c3250022a293744e3cfbb929f4d942bf26cd3125ef8103d9"
+
+[[task]]
+slug = "vtc/endorsements/revoke"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/endorsements/revoke/0.1"
+digest = "sha256:167ed93adc52a6edd468500cdc1bbd3ca4b9e80fcb6628ffcfc39af2334c3306"
+
+[[task]]
+slug = "vtc/endorsements/show"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/endorsements/show/0.1"
+digest = "sha256:20ddb14572f04abd5afce0e3ca42ba5adffea55a8a3388629b757dc2e7064ff0"
+
+[[task]]
+slug = "vtc/groups/bindings/add"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/groups/bindings/add/0.1"
+digest = "sha256:d8fb6a72e320e42f2b50253c591457adba2310a7b906ca510def6891b4c75497"
+
+[[task]]
+slug = "vtc/groups/bindings/list"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/groups/bindings/list/0.1"
+digest = "sha256:cd984ad9f4846f5c301735a9dbc58df7f1fb066ba91b45f1918d8f336526bf48"
+
+[[task]]
+slug = "vtc/groups/bindings/remove"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/groups/bindings/remove/0.1"
+digest = "sha256:7ed75809505c874d13119118ef0c53288cd9812e8083a1223f4046dc0ab30ce0"
+
+[[task]]
+slug = "vtc/groups/create"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/groups/create/0.1"
+digest = "sha256:c93270a370699cfc721b95b29575b3ffeba4df3e3a58f2d58f6d6a60c3600437"
+
+[[task]]
+slug = "vtc/groups/delete"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/groups/delete/0.1"
+digest = "sha256:64e8ec810bf6e1f3dacfe75ad6245d6e9eacbbaeeff751d3dc00af4ff1b7e1c9"
+
+[[task]]
+slug = "vtc/groups/join"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/groups/join/0.1"
+digest = "sha256:afa2d5b95af7da14a1a5256764d1a90fed1fa602ac683572f1c68f79de31cafd"
+
+[[task]]
+slug = "vtc/groups/leave"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/groups/leave/0.1"
+digest = "sha256:cb01097dd67b21c52d949d0284629c5ca4a47a43fc3f1d327ac4fa78282e3624"
+
+[[task]]
+slug = "vtc/groups/list"
+version = "0.2"
+type_uri = "https://trusttasks.org/spec/vtc/groups/list/0.2"
+digest = "sha256:ee690f927ab00c4c1f4775e6c1011f4e80a56044b2937ce90e8e0a6f1eca6732"
+
+[[task]]
+slug = "vtc/groups/managers/add"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/groups/managers/add/0.1"
+digest = "sha256:892120771dbd3161ee648ed746573eac78f69b281d054e578618790f188b68cc"
+
+[[task]]
+slug = "vtc/groups/managers/remove"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/groups/managers/remove/0.1"
+digest = "sha256:73cec5d7472dea03c68c02aaaf02dd52d7e4312eb99650e739c3647f4a58c049"
+
+[[task]]
+slug = "vtc/groups/members/add"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/groups/members/add/0.1"
+digest = "sha256:299122ae62844e12e90848c71ec23c1ec5b4fd28ef767f3e856f4068519d2a50"
+
+[[task]]
+slug = "vtc/groups/members/list"
+version = "0.2"
+type_uri = "https://trusttasks.org/spec/vtc/groups/members/list/0.2"
+digest = "sha256:9d4b543fae4266e227e31b73460859534bb9182c155e58d01f7f0a728221ec27"
+
+[[task]]
+slug = "vtc/groups/members/remove"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/groups/members/remove/0.1"
+digest = "sha256:656cffa4b3e33d270256a107a607dff31f5e78c8909c64060515fc5b38158ac5"
+
+[[task]]
+slug = "vtc/groups/requests/decide"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/groups/requests/decide/0.1"
+digest = "sha256:a393a09158a3eb0885b75f340c8d85546d374fd4a8b4d6068f4a2a26009ff819"
+
+[[task]]
+slug = "vtc/groups/requests/list"
+version = "0.2"
+type_uri = "https://trusttasks.org/spec/vtc/groups/requests/list/0.2"
+digest = "sha256:27d5c2e271612eff50fb06c34f86b8dc446d0488f215b5085c83056f2c9b2f06"
+
+[[task]]
+slug = "vtc/groups/show"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/groups/show/0.1"
+digest = "sha256:81d0511651ca8520e776b1ada3348725d107df1ef2fe3c3ff6134017d294a652"
+
+[[task]]
+slug = "vtc/groups/update"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/groups/update/0.1"
+digest = "sha256:62688d10394a8378688e83e43619f8358efe52b6013009f5f7f9db005c2dbeb9"
+
+[[task]]
+slug = "vtc/install/claim/finish"
+version = "0.2"
+type_uri = "https://trusttasks.org/spec/vtc/install/claim/finish/0.2"
+digest = "sha256:8c92ea036483900e9b294c02e80f98102dfd9da829781b34482a56a7909c79cc"
+
+[[task]]
+slug = "vtc/install/claim/finish"
+version = "0.3"
+type_uri = "https://trusttasks.org/spec/vtc/install/claim/finish/0.3"
+digest = "sha256:147b4ae6eb122c71cde056aaf649eee0f4652d6ec233002f1fdc867e4fbf9686"
+
+[[task]]
+slug = "vtc/install/claim/start"
+version = "0.2"
+type_uri = "https://trusttasks.org/spec/vtc/install/claim/start/0.2"
+digest = "sha256:cb80d3de681a474d16a20aa5fbd3c110f614e0e1d5866807cee9523d5864be81"
+
+[[task]]
+slug = "vtc/install/claim/start"
+version = "0.3"
+type_uri = "https://trusttasks.org/spec/vtc/install/claim/start/0.3"
+digest = "sha256:3cabed457e8f4a3a0acc40d330054c645f3f2e52cd89cef1d4b7bf32c8c444c5"
+
+[[task]]
+slug = "vtc/invitations/deliver"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/invitations/deliver/0.1"
+digest = "sha256:7cf936faf55744ed65ca009e5349c0d490014bb75042fe4b74aeacab08ba53e9"
+
+[[task]]
+slug = "vtc/invitations/issue"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/invitations/issue/0.1"
+digest = "sha256:0a6262973ddb142af88dd929bd5b5d1f1bbb744592aebdfa3b7fe021e3d44790"
+
+[[task]]
+slug = "vtc/invitations/list"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/invitations/list/0.1"
+digest = "sha256:8a7cf20870bb8164af12abc94e8178728e46876d79a9ec8d74d40d6ce24a3b96"
+
+[[task]]
+slug = "vtc/invitations/revoke"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/invitations/revoke/0.1"
+digest = "sha256:918bc05d6776361ded4b4c4429bc1a3f7980a3c87694d09007bc1ad412dedef5"
+
+[[task]]
+slug = "vtc/join-requests/decide"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/join-requests/decide/0.1"
+digest = "sha256:a6fd9bd132f0f983599541c0a4f74e9d3e93d3bd602161881fc9a67c8f816dcc"
+
+[[task]]
+slug = "vtc/join-requests/list"
+version = "0.2"
+type_uri = "https://trusttasks.org/spec/vtc/join-requests/list/0.2"
+digest = "sha256:95e92cd346dfb1f6f2d91270d28f28e10b186a41d1874bd2f9ca8d67d1aba27c"
+
+[[task]]
+slug = "vtc/join-requests/manifest"
+version = "0.4"
+type_uri = "https://trusttasks.org/spec/vtc/join-requests/manifest/0.4"
+digest = "sha256:fee773f63e837fc07aab487d6b1ecd121ba7f8b116c9dd93ba4770059879e03a"
+
+[[task]]
+slug = "vtc/join-requests/query"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/join-requests/query/0.1"
+digest = "sha256:5de1a830d63dd6c6896cf7350ed46492cf1cee9c5eacd86fe96236c4f1b05a98"
+
+[[task]]
+slug = "vtc/join-requests/show"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/join-requests/show/0.1"
+digest = "sha256:6a88fddefcc5ce1d17a3604c1090e5cbbfa9d2a56fc7526d40eabcb6fd570608"
+
+[[task]]
+slug = "vtc/join-requests/status"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/join-requests/status/0.1"
+digest = "sha256:b90efe9c7f8a4a0a864b4fb0445ee6f7ece9648d688683e8268ffc1d1ce2e2c6"
+
+[[task]]
+slug = "vtc/join-requests/submit"
+version = "0.3"
+type_uri = "https://trusttasks.org/spec/vtc/join-requests/submit/0.3"
+digest = "sha256:d0b34745253ba1d9997886de8e3c2af39ca5c7c0fdd59b24101ae496f14fe5ee"
+
+[[task]]
+slug = "vtc/join-requests/submit-receipt"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/join-requests/submit-receipt/0.1"
+digest = "sha256:0e8f724ebb7024d8b7c8cefd4aef73796ed1a02add75a46fb6ff64fdff313779"
+
+[[task]]
+slug = "vtc/join-requests/supplement"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/join-requests/supplement/0.1"
+digest = "sha256:6222b7f4667e5fa9ed104c78a27b709b4fb6a99417bfb5fa6dcf9bf8aa651c52"
+
+[[task]]
+slug = "vtc/join-requests/vetting/show"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/join-requests/vetting/show/0.1"
+digest = "sha256:c04ed1f6a15cd63107c0a48aba60890318cff11e8d68f1c192af7071444c2534"
+
+[[task]]
+slug = "vtc/join-requests/wallet-session/start"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/join-requests/wallet-session/start/0.1"
+digest = "sha256:78f362dd09d9a765705896d3be537c15d522d63ae300cba5762e838a6566c5c8"
+
+[[task]]
+slug = "vtc/join-requests/wallet-session/status"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/join-requests/wallet-session/status/0.1"
+digest = "sha256:285483423318884026d2e7c5b8d3410f21ee5172b74a5bba141e29cac40c1081"
+
+[[task]]
+slug = "vtc/join-requests/withdraw"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/join-requests/withdraw/0.1"
+digest = "sha256:109373a42eafb70d9357ff40dd6b5f8f7705a1ab477d4ee0027fafc9243b5c7e"
+
+[[task]]
+slug = "vtc/members/admin-remove"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/members/admin-remove/0.1"
+digest = "sha256:e2d4f70820e4fd00c3be4731b117f7608be39f05f66101287cb8146f5a4e1992"
+
+[[task]]
+slug = "vtc/members/admit"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/members/admit/0.1"
+digest = "sha256:0e68537e31c19e999109dd7eb359fa13780f1ef9138ac819cfa9b7d1c3401fa9"
+
+[[task]]
+slug = "vtc/members/authority-reduced-notice"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/members/authority-reduced-notice/0.1"
+digest = "sha256:5767e8a5693b3e015c867836656628aab5682753fe043c27a83707700c08ce2e"
+
+[[task]]
+slug = "vtc/members/authority-reduction-pending-notice"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/members/authority-reduction-pending-notice/0.1"
+digest = "sha256:a6ea2a6bd3c2fb5f7bee0072572a037f653182c624c0e2760b32e62e0eda5743"
+
+[[task]]
+slug = "vtc/members/credentials"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/members/credentials/0.1"
+digest = "sha256:4e287fdcbab179894662292e051d13f323e22ec08bdaeec070ab0245e6df7459"
+
+[[task]]
+slug = "vtc/members/list"
+version = "0.2"
+type_uri = "https://trusttasks.org/spec/vtc/members/list/0.2"
+digest = "sha256:6e63d3ebb0f7eaa311e0c44edb49aaf5f723c80bde16f6642c595f1de38c4952"
+
+[[task]]
+slug = "vtc/members/make-membership"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/members/make-membership/0.1"
+digest = "sha256:039cb55e3016fd16eda48234580401dba46579926db9919d8c40ac5b1d8867eb"
+
+[[task]]
+slug = "vtc/members/personhood/assert"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/members/personhood/assert/0.1"
+digest = "sha256:298b83a0056e805f25254054fa8bb1c4e5fab118107f348a6c6427e029cfa5cf"
+
+[[task]]
+slug = "vtc/members/personhood/assert"
+version = "0.2"
+type_uri = "https://trusttasks.org/spec/vtc/members/personhood/assert/0.2"
+digest = "sha256:3b1060695a33764ebdb657fbf5a18330b3aefa41ad4fcc6a020184e500e8da64"
+
+[[task]]
+slug = "vtc/members/personhood/challenge"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/members/personhood/challenge/0.1"
+digest = "sha256:65b42e63995ba62dd7661a68976cb05a212c59fcb262dafd98723a3c5be55f0b"
+
+[[task]]
+slug = "vtc/members/personhood/revoke"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/members/personhood/revoke/0.1"
+digest = "sha256:ab3d56f055c92de9b0a31233f45d15c486340f750af3fb4a1f8dcf35b965e5b8"
+
+[[task]]
+slug = "vtc/members/purge"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/members/purge/0.1"
+digest = "sha256:7b6ef23ee618fa39bfaec4e4c394da3aa62fe0628bd82f0b08a21e200dcbfb26"
+
+[[task]]
+slug = "vtc/members/removal-notice"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/members/removal-notice/0.1"
+digest = "sha256:34ba9bbc0759c5ecad3c486f4ef8f31197d8656215dcba32052dbda2c9bae14d"
+
+[[task]]
+slug = "vtc/members/removed"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/members/removed/0.1"
+digest = "sha256:f0644bbb853d4bcd94703b37c181dcdd116bcc8698cc6774ce2d0bf6e723ee90"
+
+[[task]]
+slug = "vtc/members/renew"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/members/renew/0.1"
+digest = "sha256:bacc4292668ab09cae4ba8c90ffcfbed85a855096d882cd132c7da596003cbf0"
+
+[[task]]
+slug = "vtc/members/request-vmc"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/members/request-vmc/0.1"
+digest = "sha256:6b2671a298be9f782620ef75e50f664a4e266d28a7aa24473d039969cca46f31"
+
+[[task]]
+slug = "vtc/members/rotate"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/members/rotate/0.1"
+digest = "sha256:8defaac2e1c706bd18d10c6d41e509322d722ac55470f82f6f09eee92d179d06"
+
+[[task]]
+slug = "vtc/members/rotate-challenge"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/members/rotate-challenge/0.1"
+digest = "sha256:8099a571c396f312c27fe5626fb6adae637b29688dc3114ef7b8f445f4378056"
+
+[[task]]
+slug = "vtc/members/self-remove"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/members/self-remove/0.1"
+digest = "sha256:619f5d84c9759ee4560d7df42cb32d4eb25ee0818358655fdb4cb579a157d2fa"
+
+[[task]]
+slug = "vtc/members/self-remove-receipt"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/members/self-remove-receipt/0.1"
+digest = "sha256:5084469f9377b6eff6693e0ecf3fdaa6c11b0196bb57990d8a45a50144bd1ada"
+
+[[task]]
+slug = "vtc/members/show"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/members/show/0.1"
+digest = "sha256:d404debf6484f8488d70e4ed4ebfbf6b0a54833492cdb692a2ffa4a28471e6d7"
+
+[[task]]
+slug = "vtc/members/solicit-vmc"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/members/solicit-vmc/0.1"
+digest = "sha256:75b140e4ecf46440e099496d2125f1ae759e879b10fead16bd7e1afc5a97fcbe"
+
+[[task]]
+slug = "vtc/members/step-up-passkey-notice"
+version = "0.2"
+type_uri = "https://trusttasks.org/spec/vtc/members/step-up-passkey-notice/0.2"
+digest = "sha256:ecf9f1e042319a6799fcefc189f2aae55b42bc56e26dc43ed80a81c79f711010"
+
+[[task]]
+slug = "vtc/members/update"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/members/update/0.1"
+digest = "sha256:55913f44682f1d3cc2702fd27baf1d6496019db852211eb1858283074e35491b"
+
+[[task]]
+slug = "vtc/members/vmc"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/members/vmc/0.1"
+digest = "sha256:1a24ae31b8e99bdb1025d5533b8904ca41e75da598d4fb28efdb23ec53f2c375"
+
+[[task]]
+slug = "vtc/oid4vp/identities/list"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/oid4vp/identities/list/0.1"
+digest = "sha256:725c786d9f4f841f09e881ceed628aa067244ce4afe39364bc3b13f122b117ae"
+
+[[task]]
+slug = "vtc/operator/offline-write"
+version = "0.2"
+type_uri = "https://trusttasks.org/spec/vtc/operator/offline-write/0.2"
+digest = "sha256:2b51051336e6d52e256cba8f5cdf7be1b56faa8a932f6d3b5b52f0d3fcf04efa"
+
+[[task]]
+slug = "vtc/policies/test"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/policies/test/0.1"
+digest = "sha256:974e3ed12947253cf6a27e0ae59bb9445b9d1b37f0b2d38d58bac23a3dee17de"
+
+[[task]]
+slug = "vtc/recognition/check"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/recognition/check/0.1"
+digest = "sha256:6d33dddefd5cff3b95b0388b8b14fea6a7099690235c9513443140fc691627da"
+
+[[task]]
+slug = "vtc/registry/diagnostics"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/registry/diagnostics/0.1"
+digest = "sha256:6f374ee6a26f314c83efa953d408736784e04dc5273f4630535dc9768e3a4f11"
+
+[[task]]
+slug = "vtc/registry/records/list"
+version = "0.2"
+type_uri = "https://trusttasks.org/spec/vtc/registry/records/list/0.2"
+digest = "sha256:01426a2dfc15b1464e0a8a068a16bcb55bba49329d9f6511dcdea139b8e6545e"
+
+[[task]]
+slug = "vtc/registry/sync-jobs/discard"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/registry/sync-jobs/discard/0.1"
+digest = "sha256:a5e351c7bec7d127aa23248498f75d4c475134c7819fc3635e4d5218d4db6fec"
+
+[[task]]
+slug = "vtc/registry/sync-jobs/list"
+version = "0.2"
+type_uri = "https://trusttasks.org/spec/vtc/registry/sync-jobs/list/0.2"
+digest = "sha256:614e4d440f0c4f1198d41236e062c69ecdf6189b737165faef1d30cf8bd88476"
+
+[[task]]
+slug = "vtc/registry/sync-jobs/retry"
+version = "0.2"
+type_uri = "https://trusttasks.org/spec/vtc/registry/sync-jobs/retry/0.2"
+digest = "sha256:f3e1383628e10730142e30736b9d4ee374e75a8b13a3e840a3ee20e6f9c7a974"
+
+[[task]]
+slug = "vtc/relationships/graph"
+version = "0.2"
+type_uri = "https://trusttasks.org/spec/vtc/relationships/graph/0.2"
+digest = "sha256:8b0f96dbf414aea35d74ab2d2a8e96ebddeb5f79e869ac8aa00bab766d86036e"
+
+[[task]]
+slug = "vtc/relationships/list"
+version = "0.3"
+type_uri = "https://trusttasks.org/spec/vtc/relationships/list/0.3"
+digest = "sha256:30550001511e6e2f57fe702faa5b0a918609a255fd0aefd0d7198c1963e04135"
+
+[[task]]
+slug = "vtc/relationships/publish"
+version = "0.2"
+type_uri = "https://trusttasks.org/spec/vtc/relationships/publish/0.2"
+digest = "sha256:7461a4efc3e1bdf21ba5bf8041d7532f98cfa7e2e5243376b5a306cdc8651e27"
+
+[[task]]
+slug = "vtc/relationships/restore"
+version = "0.2"
+type_uri = "https://trusttasks.org/spec/vtc/relationships/restore/0.2"
+digest = "sha256:e9e05e96c353bffbac71386502244adde2b0e5b15d92201c4d6d1c9650621bf2"
+
+[[task]]
+slug = "vtc/relationships/revoke"
+version = "0.2"
+type_uri = "https://trusttasks.org/spec/vtc/relationships/revoke/0.2"
+digest = "sha256:591f2b8e25b64128b1d1e4c44cff0b9662356e57bacb4c7a2e7c9c8d2fdbdf4f"
+
+[[task]]
+slug = "vtc/relationships/suspend"
+version = "0.2"
+type_uri = "https://trusttasks.org/spec/vtc/relationships/suspend/0.2"
+digest = "sha256:bfe9ff11e786c9f5a045892e0d3779d0f9d57fb864e80c11dc7e9396bf725134"
+
+[[task]]
+slug = "vtc/roles/define"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/roles/define/0.1"
+digest = "sha256:be081557a4783b37ad34c09c6d07f83715d98dcc629da80c8219e30015212833"
+
+[[task]]
+slug = "vtc/roles/delete"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/roles/delete/0.1"
+digest = "sha256:d2e9d1a1ad9a06a4395213095f3e987e11f2ad17de7370e43a26b2d86ae121a4"
+
+[[task]]
+slug = "vtc/roles/list"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/roles/list/0.1"
+digest = "sha256:0d8eda10088d4ac0f7d10c78eaab526a8971d9cfa051b163c4aa43e5a615f13b"
+
+[[task]]
+slug = "vtc/roles/show"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/roles/show/0.1"
+digest = "sha256:ed69782258e0ba1a1d1689247f631a54bc9fce1a7a03f860fb56fdb353f14672"
+
+[[task]]
+slug = "vtc/rooms/community/create"
+version = "0.4"
+type_uri = "https://trusttasks.org/spec/vtc/rooms/community/create/0.4"
+digest = "sha256:dc38f206b5b8b3c2178c16f9d280f9aed3b4fd75bc3adaea6129acac659a371e"
+
+[[task]]
+slug = "vtc/rooms/community/get"
+version = "0.3"
+type_uri = "https://trusttasks.org/spec/vtc/rooms/community/get/0.3"
+digest = "sha256:ecc9697493ade7016151a907762ecb6d9abaf4da93cc1f34feb310a978389704"
+
+[[task]]
+slug = "vtc/rooms/community/list"
+version = "0.3"
+type_uri = "https://trusttasks.org/spec/vtc/rooms/community/list/0.3"
+digest = "sha256:2dd63beab08c7e7c8c69dbb6baeac2d65d0d50699a51db62e28c7df6b5334adc"
+
+[[task]]
+slug = "vtc/rooms/community/members/add"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/rooms/community/members/add/0.1"
+digest = "sha256:1fa9ac0392b93f018b18269004771f3f55637d885471fb4739838bd316f6d265"
+
+[[task]]
+slug = "vtc/rooms/community/members/list"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/rooms/community/members/list/0.1"
+digest = "sha256:741762c5b9f8692a2e35ded3c6fe4296af88256d3ed7ded33fe58490a6605755"
+
+[[task]]
+slug = "vtc/rooms/community/members/remove"
+version = "0.2"
+type_uri = "https://trusttasks.org/spec/vtc/rooms/community/members/remove/0.2"
+digest = "sha256:72866c9ce3050974c85e99676fe8ea3257169333d0b0aca8985aac7d484d1430"
+
+[[task]]
+slug = "vtc/rooms/community/update"
+version = "0.3"
+type_uri = "https://trusttasks.org/spec/vtc/rooms/community/update/0.3"
+digest = "sha256:9e5bebf73ee898064aea2f4c4c50b172e982512c1d9eda2cb4faff19294e9a57"
+
+[[task]]
+slug = "vtc/rooms/get"
+version = "0.3"
+type_uri = "https://trusttasks.org/spec/vtc/rooms/get/0.3"
+digest = "sha256:5396965fb70a10fd4b2b759ba7796b7df3ed05d08adbdc6ea2dab148af316b7d"
+
+[[task]]
+slug = "vtc/rooms/limits/set"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/rooms/limits/set/0.1"
+digest = "sha256:09368307d5ddcd8956c965342667984eb22b52468cc11735a1e39dcdb793c859"
+
+[[task]]
+slug = "vtc/rooms/list"
+version = "0.2"
+type_uri = "https://trusttasks.org/spec/vtc/rooms/list/0.2"
+digest = "sha256:e226a2735e97b2260a7757cd0373868ecb4a2c3d0d73b88e6f559ef01491ad9d"
+
+[[task]]
+slug = "vtc/rooms/memberships/list"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/rooms/memberships/list/0.1"
+digest = "sha256:e9f3391572fea47054b34bc4e14bd0cb1ea1c620ed66c3084e91cb791d8dd814"
+
+[[task]]
+slug = "vtc/rooms/offers/accept"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/rooms/offers/accept/0.1"
+digest = "sha256:6ce811c6e2cd87f931c7b544d3523746b0313543a9d4bd6b3925b4e1a53c47e1"
+
+[[task]]
+slug = "vtc/rooms/offers/list"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/rooms/offers/list/0.1"
+digest = "sha256:10db79cf12aa3399e4cc6d845dee469960dea30f7de152998bd22b444a2248da"
+
+[[task]]
+slug = "vtc/rooms/offers/list"
+version = "0.2"
+type_uri = "https://trusttasks.org/spec/vtc/rooms/offers/list/0.2"
+digest = "sha256:7867fba6dd6e6f71a6b612f9758e62ae8589aa29d0270126009e909648183c1b"
+
+[[task]]
+slug = "vtc/rooms/offers/list"
+version = "0.3"
+type_uri = "https://trusttasks.org/spec/vtc/rooms/offers/list/0.3"
+digest = "sha256:71ba25f7b004d6f159aa783f180fc5074f77ee6e62601a212a60dec637453d25"
+
+[[task]]
+slug = "vtc/rooms/offers/list"
+version = "0.4"
+type_uri = "https://trusttasks.org/spec/vtc/rooms/offers/list/0.4"
+digest = "sha256:aa3618469b8bcfeda1084a4868a170743c3b3c762411f610e2617b11234cf65d"
+
+[[task]]
+slug = "vtc/rooms/storage/assign"
+version = "0.2"
+type_uri = "https://trusttasks.org/spec/vtc/rooms/storage/assign/0.2"
+digest = "sha256:7a5f3ef7ccf49419ea03f7008e40e13f6d49865758c6168ed326f6bbe0310d8d"
+
+[[task]]
+slug = "vtc/rooms/storage/migrate"
+version = "0.3"
+type_uri = "https://trusttasks.org/spec/vtc/rooms/storage/migrate/0.3"
+digest = "sha256:c0173f60e50446b2cacd6ba21f62aeca0cea727685408c9fd2cba8fac77b2b07"
+
+[[task]]
+slug = "vtc/rooms/usage"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/rooms/usage/0.1"
+digest = "sha256:0881e110256e7982fcb8f529529e0ff5c7df47f9126bfea9c8d5362d50d167f2"
+
+[[task]]
+slug = "vtc/schemas/accepts/delete"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/schemas/accepts/delete/0.1"
+digest = "sha256:bc70d8d48c58b38b9c1de026ec5b02a5aa8975503d90ed7ceddc599ed07a1a58"
+
+[[task]]
+slug = "vtc/schemas/accepts/list"
+version = "0.2"
+type_uri = "https://trusttasks.org/spec/vtc/schemas/accepts/list/0.2"
+digest = "sha256:2483c05daa6704c47b6ea1878064654f6c859d07b09e8ea72ec2490e17f8d794"
+
+[[task]]
+slug = "vtc/schemas/accepts/register"
+version = "0.2"
+type_uri = "https://trusttasks.org/spec/vtc/schemas/accepts/register/0.2"
+digest = "sha256:28be281030fe9c6ef660d10f9bd4526bcdfcb4e4e0506338c89ef14333b8682a"
+
+[[task]]
+slug = "vtc/schemas/accepts/show"
+version = "0.2"
+type_uri = "https://trusttasks.org/spec/vtc/schemas/accepts/show/0.2"
+digest = "sha256:994d97e6fbfb508a1cf170b806dfc93bf80f335be8797b2848bd95542720bf71"
+
+[[task]]
+slug = "vtc/schemas/delete"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/schemas/delete/0.1"
+digest = "sha256:aaa41bed89e02949827afa94f82449b8551ff02c5263ece90833492084872b97"
+
+[[task]]
+slug = "vtc/schemas/list"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/schemas/list/0.1"
+digest = "sha256:5c8308a60d4c03ddc9832910120424aa654ab2463c619a38db586b4502b8ba44"
+
+[[task]]
+slug = "vtc/schemas/register"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/schemas/register/0.1"
+digest = "sha256:7cd187f1d9ae51eb4016879cf4f86be37c18b8bbc78a3f0022d57e7c3f1146ca"
+
+[[task]]
+slug = "vtc/schemas/show"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/schemas/show/0.1"
+digest = "sha256:6d66d608ae5b00a0067f4c4a04bf4bdb9ddf595925b2ef798a572110646d64a0"
+
+[[task]]
+slug = "vtc/storage/configs/create"
+version = "0.2"
+type_uri = "https://trusttasks.org/spec/vtc/storage/configs/create/0.2"
+digest = "sha256:809f2020bf88d4007f70eaaf408d3c06830d582b36041ef6e6189533cfcb7577"
+
+[[task]]
+slug = "vtc/storage/configs/create"
+version = "0.3"
+type_uri = "https://trusttasks.org/spec/vtc/storage/configs/create/0.3"
+digest = "sha256:475c5fa7c98b321c36cabb27a6b8c5ba26a789f7078e4860dd6cfbd425c0c380"
+
+[[task]]
+slug = "vtc/storage/configs/get"
+version = "0.2"
+type_uri = "https://trusttasks.org/spec/vtc/storage/configs/get/0.2"
+digest = "sha256:479451768c71eb86dfd3f9011f06aacfdaad52156f40b6b4e1a7422525d8f52e"
+
+[[task]]
+slug = "vtc/storage/configs/list"
+version = "0.2"
+type_uri = "https://trusttasks.org/spec/vtc/storage/configs/list/0.2"
+digest = "sha256:a3d4d371698f3ff4a216083ee4f74ed941ceb8e995a38ddc160f46efaa927a47"
+
+[[task]]
+slug = "vtc/storage/configs/probe"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/storage/configs/probe/0.1"
+digest = "sha256:9ad6976dd54c428ad123c106faa79a69f851bab66463b85ca444c9aa532703df"
+
+[[task]]
+slug = "vtc/storage/configs/retire"
+version = "0.3"
+type_uri = "https://trusttasks.org/spec/vtc/storage/configs/retire/0.3"
+digest = "sha256:f2ed0ac99f6a32ce98b9083e496a6a9673abb912b2fa655ca8577aa424a154fe"
+
+[[task]]
+slug = "vtc/storage/configs/update"
+version = "0.3"
+type_uri = "https://trusttasks.org/spec/vtc/storage/configs/update/0.3"
+digest = "sha256:ad5fb22ec8620c9455e65630b37b34cd9ddf6e54ae2f4d5fe04af32c51471e2e"
+
+[[task]]
+slug = "vtc/storage/credentials/set"
+version = "0.3"
+type_uri = "https://trusttasks.org/spec/vtc/storage/credentials/set/0.3"
+digest = "sha256:8f8d226c155d3e6f4eaed2143b84d8d1d1758f7bb67b4b1c64cc6324b4e291d8"
+
+[[task]]
+slug = "vtc/vetting/auto-grant/show"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/vetting/auto-grant/show/0.1"
+digest = "sha256:92abb883c997d13476176fc5a8258805b538538d63aec5d4be0386eb87787c01"
+
+[[task]]
+slug = "vtc/vetting/auto-grant/update"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/vetting/auto-grant/update/0.1"
+digest = "sha256:f35e25c181268588e661572ca70319966324626be0d45a10117fe4444279ec52"
+
+[[task]]
+slug = "vtc/vetting/hidden/publish"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/vetting/hidden/publish/0.1"
+digest = "sha256:2d92ca9da7913814b9f69fcc6783b9c9493456590fd64a95ce1751f52b789cab"
+
+[[task]]
+slug = "vtc/vetting/hidden/show"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/vetting/hidden/show/0.1"
+digest = "sha256:d73e0404d32ef232018509c81be9ba815d9fe6bdfd5d239bab7d7ea3eccae505"
+
+[[task]]
+slug = "vtc/vetting/hidden/withdraw"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/vetting/hidden/withdraw/0.1"
+digest = "sha256:768fc4e46d186547731368e348b96d26450d5e4f0c4b4a7cb4749d12bc7a27bf"
+
+[[task]]
+slug = "vtc/vetting/pcs-challenge"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/vetting/pcs-challenge/0.1"
+digest = "sha256:9f85ea521be1fcc86acd47d198d4e6a4aa0892fc83a775d18fd6b6c36710c54f"
+
+[[task]]
+slug = "vtc/vetting/revocations/list"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/vetting/revocations/list/0.1"
+digest = "sha256:9ba6b9710d7e8c88977ca82f01df20c3a45ddcc8861f0693570df3cbf97d630e"
+
+[[task]]
+slug = "vtc/vetting/revoke-statement"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/vetting/revoke-statement/0.1"
+digest = "sha256:bb5c527074766792dbbb8c08a7ce0d7188c52349715817f191ec9fc5517847d8"
+
+[[task]]
+slug = "vtc/vetting/vetters/event-mode"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/vetting/vetters/event-mode/0.1"
+digest = "sha256:e2997fe0bfaa40b1af0171a6c3d8f001f597163418eac6875de0824fc946e4a5"
+
+[[task]]
+slug = "vtc/vetting/vetters/grant"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/vetting/vetters/grant/0.1"
+digest = "sha256:73574d59a3dfd0cd6c3f164bd0706b9bb9cd6366db42864347cb96ec78bafdc7"
+
+[[task]]
+slug = "vtc/vetting/vetters/grants/list"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/vetting/vetters/grants/list/0.1"
+digest = "sha256:33acf39da6c0c8ddca5d40c4535006402311bfe9f65245d4267d7d560f4aacaa"
+
+[[task]]
+slug = "vtc/vetting/vetters/list"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/vetting/vetters/list/0.1"
+digest = "sha256:03f496842a89190d7a7c5c0843071757817ecf15f6f0bc792d1a572b2e13fb35"
+
+[[task]]
+slug = "vtc/vetting/vetters/pcs-root"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/vetting/vetters/pcs-root/0.1"
+digest = "sha256:45a78536b0288002a010d7d2e9d5b92ef841a23ad586a3cca1eb1eb172cf2a81"
+
+[[task]]
+slug = "vtc/vetting/vetters/pcs-tokens"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/vetting/vetters/pcs-tokens/0.1"
+digest = "sha256:813ac90f4ee802cdb14e643f8c96c13063ab32b3c5581b59898f51ac69319120"
+
+[[task]]
+slug = "vtc/vetting/vetters/profile"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/vetting/vetters/profile/0.1"
+digest = "sha256:2103e7c9ff581e80a803dccf8091e840287dae4628fab6c64e0b223bcf87f288"
+
+[[task]]
+slug = "vtc/vetting/vetters/resend"
+version = "0.2"
+type_uri = "https://trusttasks.org/spec/vtc/vetting/vetters/resend/0.2"
+digest = "sha256:88bef14d7491323467b1440af1f757d7724dc0cf5118b072f6bf8031e2434915"
+
+[[task]]
+slug = "vtc/vetting/vetters/show"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/vetting/vetters/show/0.1"
+digest = "sha256:f5cd77f05a955476b3d0bccd7c52267e769c147203af1ea23fa2b17db7e5382a"
+
+[[task]]
+slug = "vtc/website/deploy"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/website/deploy/0.1"
+digest = "sha256:d358d18b2fecc29701b14958e8bd220b0dce7dc215a3e394d6650496f7e9bfee"
+
+[[task]]
+slug = "vtc/website/files/delete"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/website/files/delete/0.1"
+digest = "sha256:59e292713ac7cc9776e045a9181aab9a47ea69bef30ee6ad5ed672f8b82aca10"
+
+[[task]]
+slug = "vtc/website/files/list"
+version = "0.3"
+type_uri = "https://trusttasks.org/spec/vtc/website/files/list/0.3"
+digest = "sha256:d6ccd2f42a731a8148aeed2105798952d5042d69666cdbd58df0d7ff2f0ca568"
+
+[[task]]
+slug = "vtc/website/files/show"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/website/files/show/0.1"
+digest = "sha256:59e702f0e83f4d8f3c39bf6c68bbf3e2f5ebfcf4dd63719f494a7559c6374bc7"
+
+[[task]]
+slug = "vtc/website/generations/list"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/website/generations/list/0.1"
+digest = "sha256:ae0ec109ad52911284d199aa2027bd44df287780915ead5a457a8b6d82523d47"
+
+[[task]]
+slug = "vtc/website/rollback"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/website/rollback/0.1"
+digest = "sha256:83a0ab697e6ab55aa89ac1bac8632a440a9eaec9f6ec7e9363eb0de85816036b"
+
+[[task]]
+slug = "vtc/website/upload/abort"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/website/upload/abort/0.1"
+digest = "sha256:fe196ae16dc25d94d663be13e638064d9648269c082ee62b28090aab6ac3c8f6"
+
+[[task]]
+slug = "vtc/website/upload/begin"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/website/upload/begin/0.1"
+digest = "sha256:2bbea32f411c3cd69cc30e7670283463318cb9dc7cff30042859d1851df81f70"
+
+[[task]]
+slug = "vtc/website/upload/chunk"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/website/upload/chunk/0.1"
+digest = "sha256:bce96afd67c469cbbbfa7efa585612348ad6e4f19970afbb8f8d1fba66449bc1"
+
+[[task]]
+slug = "vtc/website/upload/commit"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/website/upload/commit/0.1"
+digest = "sha256:dbffe51689d6f46493ce87048901119951f12390b4b626091bac105c3f005170"

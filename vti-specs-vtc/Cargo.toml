@@ -1,0 +1,33 @@
+[package]
+name = "vti-specs-vtc"
+description = "VTI's generated Trust Task wire types: the vtc/* family, at the versions trust-tasks.lock pins"
+readme = "README.md"
+version = "0.1.0"
+edition.workspace = true
+# Published, because `vta-sdk` is and re-exports these types through
+# `vti-specs` (`vta_sdk::specs`): a published crate's whole closure must be.
+publish.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+# build.rs reads the lock and the vendored bundles, so the package carries them.
+include = [
+  "/src/**",
+  "/build.rs",
+  "/README.md",
+  "/trust-tasks.toml",
+  "/trust-tasks.lock",
+  "/trust-tasks/**",
+]
+
+[dependencies]
+# The runtime only (no prebuilt specification modules): the generated code
+# reaches serde, serde_json, regress and chrono through it.
+trust-tasks-rs = { workspace = true }
+
+[build-dependencies]
+trust-tasks-build = { workspace = true }
+
+[lints]
+workspace = true

@@ -3503,7 +3503,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c54e03a951783e8b327515db3f2a2fd0e3bed362a96b066f341ce66ed49b4ead"
 dependencies = [
  "data-encoding",
- "syn 1.0.109",
+ "syn 3.0.9",
 ]
 
 [[package]]
@@ -7878,7 +7878,7 @@ dependencies = [
  "aes-gcm 0.10.3",
  "aes-kw",
  "argon2 0.5.3",
- "base64 0.21.7",
+ "base64 0.22.1",
  "bitfields",
  "block-padding 0.3.3",
  "blowfish",
@@ -9587,7 +9587,7 @@ checksum = "7bd22781911de0ca6debda95f073c8f18bec65d1a94f1fa9573f3102e514cea4"
 dependencies = [
  "ahash",
  "annotate-snippets",
- "base64 0.21.7",
+ "base64 0.22.1",
  "encoding_rs_io",
  "getrandom 0.3.4",
  "granit-parser",
@@ -10951,9 +10951,9 @@ dependencies = [
 
 [[package]]
 name = "trust-tasks-build"
-version = "0.1.2"
+version = "0.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c9b7c7c19d0bf6b8d8069a61bfe116a5b5de58d752e93d1f7ef02f7757b7861e"
+checksum = "6736227b796ed33289a450db554cc6ae2ade853322e6e89cc0f5ef94f2970024"
 dependencies = [
  "anyhow",
  "heck",
@@ -11038,9 +11038,9 @@ dependencies = [
 
 [[package]]
 name = "trust-tasks-rs"
-version = "0.36.1"
+version = "0.36.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "51fce4c6d89b5c953dfb584350575bae5f787c312078dfdcc20529fb8da0c370"
+checksum = "6c418082b9af84ccdeacecf9f903d36cc4dc14ad35c778675a0bcd26eb7890fc"
 dependencies = [
  "async-trait",
  "chrono",
@@ -12058,6 +12058,7 @@ dependencies = [
  "url",
  "utoipa",
  "uuid",
+ "vti-specs",
  "windows-native-keyring-store",
  "wiremock",
  "x25519-dalek 3.0.0",
@@ -12175,6 +12176,7 @@ dependencies = [
  "vti-rooms",
  "vti-rooms-dtg",
  "vti-secrets",
+ "vti-specs",
  "vti-vetting-pcs",
  "vti-voting",
  "vti-webauthn",
@@ -12432,6 +12434,7 @@ dependencies = [
  "vti-rooms",
  "vti-rooms-dtg",
  "vti-secrets",
+ "vti-specs",
  "vti-vetting-pcs",
  "vti-voting",
  "vti-voting-service",
@@ -12649,6 +12652,49 @@ dependencies = [
  "vta-sdk",
  "vti-common",
  "zeroize",
+]
+
+[[package]]
+name = "vti-specs"
+version = "0.1.0"
+dependencies = [
+ "trust-tasks-rs",
+ "vti-specs-core",
+ "vti-specs-rooms",
+ "vti-specs-vta",
+ "vti-specs-vtc",
+]
+
+[[package]]
+name = "vti-specs-core"
+version = "0.1.0"
+dependencies = [
+ "trust-tasks-build",
+ "trust-tasks-rs",
+]
+
+[[package]]
+name = "vti-specs-rooms"
+version = "0.1.0"
+dependencies = [
+ "trust-tasks-build",
+ "trust-tasks-rs",
+]
+
+[[package]]
+name = "vti-specs-vta"
+version = "0.1.0"
+dependencies = [
+ "trust-tasks-build",
+ "trust-tasks-rs",
+]
+
+[[package]]
+name = "vti-specs-vtc"
+version = "0.1.0"
+dependencies = [
+ "trust-tasks-build",
+ "trust-tasks-rs",
 ]
 
 [[package]]
