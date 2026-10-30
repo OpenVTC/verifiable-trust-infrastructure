@@ -1,6 +1,7 @@
 //! The owner's half of a sealed room's MLS group — `rooms/owner/group/create/0.1`,
-//! `rooms/owner/group/add/0.3`, `rooms/owner/group/remove/0.1` and `0.3` (0.1 is a
-//! `private` room's removal, which 0.3 refuses) and `rooms/owner/group/renew/0.2`.
+//! `rooms/owner/group/add/0.3`, `rooms/owner/group/remove/0.4` (both sealed tiers: an
+//! `attributed` room's member is withdrawn at the host first, a `private` room's leaves the
+//! group alone) and `rooms/owner/group/renew/0.2`.
 //!
 //! Every member reaches a room's group by a Welcome (`rooms/keys/welcome`), except the
 //! owner, whom nobody can welcome: `create` founds the group with the owner as its only
@@ -137,7 +138,7 @@ pub(super) async fn handle_create(
 /// request that repeats the admission this agent last applied for the room (same `member`,
 /// a KeyPackage with the same `KeyPackageRef`) is answered with that admission's epoch and
 /// Welcome, changing nothing (item 8). An earlier removal left pending is settled by
-/// `rooms/owner/group/remove/0.3` item 8 and reported as this task's own (item 6.1):
+/// `rooms/owner/group/remove/0.4` item 8 and reported as this task's own (item 6.1):
 /// `earlierRemovalRefused` `{member, code, listKept}` when settling discards it,
 /// `hostUnreachable` at `stage: revocation` when its list goes unanswered. `hostRefused`
 /// means only that the host declined this request's own advance (trust-tasks-tf #824).
@@ -343,155 +344,10 @@ pub(super) async fn handle_add_v0_3(
     )
 }
 
-/// `rooms/owner/group/remove/0.1` — remove a member's leaf, advancing the room at its host
-/// first. The mirror of [`handle_add`], on the same machinery.
-#[allow(deprecated)] // group/remove/0.1: a private room has no successor yet (spec gap).
-pub(super) async fn handle_remove(
-    state: &AppState,
-    auth: &AuthClaims,
-    doc: TrustTask<Value>,
-) -> TrustTaskOutcome {
-    use spec_remove::v0_1::error_codes as codes;
-    const ADVANCE: AdvanceCodes = AdvanceCodes::unstaged(
-        codes::NO_AUTHORITY,
-        codes::EPOCH_CONFLICT,
-        codes::HOST_UNREACHABLE,
-        codes::HOST_REFUSED,
-    );
-    if let Err(r) = super::helpers::require_capability(
-        state,
-        auth,
-        &doc,
-        Capability::CredentialWrite,
-        "removing a member from a room's group",
-    )
-    .await
-    {
-        return r;
-    }
-    let req: spec_remove::v0_1::Payload = match parse_payload(&doc) {
-        Ok(r) => r,
-        Err(resp) => return resp,
-    };
-    let room_id = req.room_id.as_str().to_string();
-    let host = req.host.as_str().to_string();
-    let member = req.member.as_str().to_string();
-
-    // Item 1, the parts that need nobody else: no group, and this agent's own leaf. A key
-    // holder never removes itself — an owner leaving hands the room on with
-    // rooms/owner/transfer — and that answer does not wait on a host.
-    match require_group(state, auth, &doc, &room_id, codes::NO_GROUP).await {
-        Err(r) => return r,
-        // The leaf of the persona the caller holds the group as — never another persona's
-        // this VTA holds for somebody else, who is a member like any other.
-        Ok(Some(held)) if held.persona() == member => return own_leaf(&doc, &room_id, &member),
-        Ok(_) => {}
-    }
-
-    let (_, resolver) = match outbound_identity(state, &doc).await {
-        Ok(v) => v,
-        Err(resp) => return resp,
-    };
-    let host_call = match HostCall::as_owner(
-        state,
-        auth,
-        &resolver,
-        &room_id,
-        &doc,
-        ADVANCE.no_authority,
-    )
-    .await
-    {
-        Ok(h) => h,
-        Err(r) => return r,
-    };
-
-    // Item 3/6: a pending advance — an admission as readily as a removal — is settled
-    // before this one is built. Membership is read after it, so removing a member whose
-    // admission was pending sees the admission the host actually took.
-    if let Err(r) = host_call.settle_pending(&doc, &ADVANCE).await {
-        return r;
-    }
-    let presentation = match host_call
-        .admin_presentation(&doc, ADVANCE.no_authority)
-        .await
-    {
-        Ok(p) => p,
-        Err(r) => return r,
-    };
-
-    // The profile, read before the advance, to write again after it.
-    let profile = host_call.profile_speaker(&host);
-    let carried = super::room_profile::carry_before_advance(&profile).await;
-
-    // Items 1 to 3: refused, or built on a copy and retained durably before the host is
-    // contacted.
-    let pending = match room_groups::prepare_remove(
-        &state.room_groups_ks,
-        &host_call.owner_member,
-        &host,
-        &member,
-        now(),
-    )
-    .await
-    {
-        Ok(p) => p,
-        Err(PrepareRemoveError::NoGroup) => {
-            return reject_with_code(
-                &doc,
-                declared(codes::NO_GROUP),
-                format!("this agent holds no group for room `{room_id}`"),
-                None,
-            );
-        }
-        Err(PrepareRemoveError::NotMember) => {
-            return reject_with_code(
-                &doc,
-                declared(codes::NOT_MEMBER),
-                format!("`{member}` has no leaf in room `{room_id}`'s group"),
-                None,
-            );
-        }
-        Err(PrepareRemoveError::OwnLeaf) => return own_leaf(&doc, &room_id, &member),
-        Err(PrepareRemoveError::App(e)) => return app_error_to_reject(&doc, e),
-    };
-
-    // Items 4 and 5.
-    if let Err(r) = host_call
-        .advance(
-            &doc,
-            &ADVANCE,
-            &host,
-            &pending,
-            presentation,
-            req.reason.as_ref().map(|r| r.as_str()),
-        )
-        .await
-    {
-        return r;
-    }
-
-    // The removed member cannot open what is sealed from here on, the profile included —
-    // and the re-write supersedes whatever they wrote under the epoch they left.
-    super::room_profile::rewrite_after_advance(&profile, carried).await;
-
-    // The room only. The audit row is this agent's; who left is the owner's business and
-    // the host never learns it either (it sees an opaque commit).
-    record(state, "rooms.owner.group.remove", auth, &room_id).await;
-    success_response(
-        &doc,
-        serde_json::json!({
-            "roomId": room_id,
-            "member": member,
-            "epoch": pending.epoch,
-        }),
-    )
-}
-
 /// `rooms/owner/group/renew/0.2` — advance a sealed room's group with a commit that adds
 /// and removes nobody, advancing the room at its host first. The third advance beside
-/// [`handle_add_v0_3`] and [`handle_remove`], on the same machinery. An earlier removal
-/// left pending is settled by `rooms/owner/group/remove/0.3` item 8 and reported as this
+/// [`handle_add_v0_3`] and [`handle_remove_v0_4`], on the same machinery. An earlier removal
+/// left pending is settled by `rooms/owner/group/remove/0.4` item 8 and reported as this
 /// task's own (item 6.1), as `rooms/owner/group/add/0.3` reports it (trust-tasks-tf #824).
 pub(super) async fn handle_renew_v0_2(
     state: &AppState,
@@ -614,7 +470,7 @@ pub(super) async fn handle_renew_v0_2(
 fn own_leaf(doc: &TrustTask<Value>, room_id: &str, member: &str) -> TrustTaskOutcome {
     reject_with_code(
         doc,
-        declared(spec_remove::v0_1::error_codes::OWN_LEAF),
+        declared(spec_remove::v0_4::error_codes::OWN_LEAF),
         format!(
             "`{member}` is this agent's own leaf in room `{room_id}`'s group; a key holder \
              does not remove itself — hand the room on with rooms/owner/transfer"
@@ -659,43 +515,18 @@ pub(super) struct AdvanceCodes {
     pub(super) epoch_conflict: DeclaredErrorCode,
     pub(super) host_unreachable: DeclaredErrorCode,
     pub(super) host_refused: DeclaredErrorCode,
-    /// `hostUnreachable` carries `details.stage` (`revocation` or `advance`), which its
-    /// schema requires: `rooms/owner/group/remove/0.3`, `add/0.3`, `renew/0.2`.
-    /// `remove/0.1` declares no `details` for it, and gets none.
-    pub(super) unreachable_staged: bool,
     /// `hostRefused` of this request's own advance carries `{stage: advance, code}`
-    /// (`rooms/owner/group/remove/0.3`, whose details are closed to those two)
-    /// rather than `{code, reason}` (`add/0.3`, `renew/0.2`, and every version declaring no
-    /// `details` shape). Kept apart from [`Self::unreachable_staged`] because `add/0.3` and
-    /// `renew/0.2` stage the one and not the other.
+    /// (`rooms/owner/group/remove/0.4`, whose details are closed to those two)
+    /// rather than `{code, reason}` (`add/0.3`, `renew/0.2`). Every version served declares
+    /// `details.stage` on `hostUnreachable`; only `remove` stages `hostRefused` too.
     pub(super) refused_staged: bool,
-    /// How this task reports an earlier removal that settling had to discard
-    /// (`rooms/owner/group/remove/0.3` item 8.2).
-    pub(super) earlier_refused: EarlierRefused,
+    /// This task's own `earlierRemovalRefused`, with `{member, code, listKept}` — how it
+    /// reports an earlier removal that settling had to discard
+    /// (`rooms/owner/group/remove/0.4` item 8.2).
+    pub(super) earlier_removal_refused: DeclaredErrorCode,
 }
 
 impl AdvanceCodes {
-    /// A version that declares neither a `stage` nor `earlierRemovalRefused` — `remove/0.1`,
-    /// kept for a `private` room: `hostUnreachable` with no `details`, and an
-    /// earlier removal reported as this task's own `hostRefused` with `{member, code,
-    /// listKept}` (`rooms/owner/group/remove/0.3` item 8.2, "otherwise").
-    pub(super) const fn unstaged(
-        no_authority: DeclaredErrorCode,
-        epoch_conflict: DeclaredErrorCode,
-        host_unreachable: DeclaredErrorCode,
-        host_refused: DeclaredErrorCode,
-    ) -> Self {
-        Self {
-            no_authority,
-            epoch_conflict,
-            host_unreachable,
-            host_refused,
-            unreachable_staged: false,
-            refused_staged: false,
-            earlier_refused: EarlierRefused::HostRefused,
-        }
-    }
-
     /// `rooms/owner/group/add/0.3` and `renew/0.2` (trust-tasks-tf #824): `hostUnreachable`
     /// at a `stage`, an earlier removal as their own `earlierRemovalRefused`, and
     /// `hostRefused` — this request's own advance only — with `{code, reason}`.
@@ -711,16 +542,14 @@ impl AdvanceCodes {
             epoch_conflict,
             host_unreachable,
             host_refused,
-            unreachable_staged: true,
             refused_staged: false,
-            earlier_refused: EarlierRefused::Own(earlier_removal_refused),
+            earlier_removal_refused,
         }
     }
 
-    /// `details` for `hostUnreachable` at `stage`, where this version declares one.
+    /// `details` for `hostUnreachable` at `stage`.
     fn unreachable_details(&self, stage: &str) -> Option<Value> {
-        self.unreachable_staged
-            .then(|| serde_json::json!({ "stage": stage }))
+        Some(serde_json::json!({ "stage": stage }))
     }
 }
 
@@ -731,21 +560,6 @@ fn bounded(s: &str, max: usize) -> &str {
         Some((i, _)) => &s[..i],
         None => s,
     }
-}
-
-/// The code a request answers with when the pending removal it settles is refused at
-/// redelivery and settling discards it, or its advance (`rooms/owner/group/remove/0.3`
-/// item 8.2: "at this task, with `earlierRemovalRefused` …; at another task, with that
-/// task's own `earlierRemovalRefused` where its version declares one …, and otherwise with
-/// its own `hostRefused`, carrying the same three members in `details`").
-#[derive(Clone, Copy)]
-pub(super) enum EarlierRefused {
-    /// `rooms/owner/group/remove/0.3`, `add/0.3`, `renew/0.2`: the task's own
-    /// `earlierRemovalRefused`, with `{member, code, listKept}`.
-    Own(DeclaredErrorCode),
-    /// `remove/0.1` (kept for a `private` room, which 0.3 refuses), whose `hostRefused`
-    /// declares no details schema: `hostRefused` with `{member, code, listKept}`.
-    HostRefused,
 }
 
 /// `noAuthority`: the caller acts as no persona holding the room's `admin` authority.
@@ -964,7 +778,7 @@ impl<'a> HostCall<'a> {
     /// surely as a removal found at an admission.
     ///
     /// A pending **removal** whose list the host has not confirmed is settled by
-    /// `rooms/owner/group/remove/0.3` item 8, whichever task and version found it: the list
+    /// `rooms/owner/group/remove/0.4` item 8, whichever task and version found it: the list
     /// is delivered again, and a refusal of the repeat discards only what that refusal shows
     /// no host took. Whatever is discarded, this request is refused and does not go on to
     /// its own work — the owner was told that removal was pending, and it must not vanish
@@ -1218,26 +1032,18 @@ impl<'a> HostCall<'a> {
              remove `{member}` again if that is still wanted",
             pending.host
         );
-        match codes.earlier_refused {
-            EarlierRefused::Own(earlier) => reject_with_code(
-                doc,
-                declared(earlier),
-                message,
-                Some(serde_json::json!({
-                    "member": bounded(member, 2048),
-                    "code": bounded(code, 128),
-                    "listKept": list_kept,
-                })),
-            ),
-            EarlierRefused::HostRefused => reject_with_code(
-                doc,
-                declared(codes.host_refused),
-                message,
-                Some(serde_json::json!({
-                    "member": member, "code": code, "listKept": list_kept,
-                })),
-            ),
-        }
+        // Item 8.2: at every task and version served, that task's own
+        // `earlierRemovalRefused` (`remove/0.4`, `add/0.3`, `renew/0.2`).
+        reject_with_code(
+            doc,
+            declared(codes.earlier_removal_refused),
+            message,
+            Some(serde_json::json!({
+                "member": bounded(member, 2048),
+                "code": bounded(code, 128),
+                "listKept": list_kept,
+            })),
+        )
     }
 
     /// The owner persona's `admin` presentation for the room, or `noAuthority` — minted as
@@ -1376,7 +1182,7 @@ impl<'a> HostCall<'a> {
 
 use trust_tasks_rs::specs::rooms::revocations::put::v0_1::error_codes as put_codes;
 
-/// What a host's refusal of a redelivered list shows (`rooms/owner/group/remove/0.3` item
+/// What a host's refusal of a redelivered list shows (`rooms/owner/group/remove/0.4` item
 /// 8.2).
 enum ListRefusal {
     /// `listInvalid`, `entryNotPermitted`, `sequenceConflict`: a refusal of the list itself,
@@ -1492,7 +1298,7 @@ impl HostCall<'_> {
 
     /// The room's tier: as this agent registered it, else from `rooms/info` at `host`
     /// under the owner persona's `read` grant (`rooms/owner/revoke` item 2,
-    /// `rooms/owner/group/remove/0.3` item 2).
+    /// `rooms/owner/group/remove/0.4` item 2).
     pub(super) async fn tier(&self, host: &str) -> Result<String, AppError> {
         if let Some(t) =
             crate::operations::room_revocation::known_tier(&self.state.room_groups_ks, self.room_id)
@@ -1549,26 +1355,32 @@ impl HostCall<'_> {
     }
 }
 
-/// `rooms/owner/group/remove/0.3` — withdraw the member's credentials at the host, then
-/// remove their leaf and advance the room: there is no instant where they are outside the
-/// group but still credentialed (trust-tasks-tf #804). A pending removal whose redelivered
-/// list the host refuses is settled by what that refusal shows (item 8.2), the request
-/// refused with `earlierRemovalRefused` whenever settling discards it (trust-tasks-tf #821).
-pub(super) async fn handle_remove_v0_3(
+/// `rooms/owner/group/remove/0.4` — remove a member from a sealed room, either tier
+/// (trust-tasks-tf #975).
+///
+/// On an `attributed` room it withdraws the member's credentials at the host, then removes
+/// their leaf and advances the room: there is no instant where they are outside the group
+/// but still credentialed (trust-tasks-tf #804). On a `private` room, whose host cannot be
+/// told whom to refuse without being told who was a member, it removes the leaf and
+/// advances the room alone, builds no revocation list, and answers `withdrawn: false`
+/// (items 4 and 10). A pending removal whose redelivered list the host refuses is settled
+/// by what that refusal shows (item 8.2), the request refused with
+/// `earlierRemovalRefused` whenever settling discards it (trust-tasks-tf #821); one that
+/// carries no list — a private room's — is settled by item 8.3 alone.
+pub(super) async fn handle_remove_v0_4(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
     use crate::operations::room_revocation as revocation;
-    use spec_remove::v0_3::error_codes as codes;
+    use spec_remove::v0_4::error_codes as codes;
     let advance = AdvanceCodes {
         no_authority: codes::NO_AUTHORITY,
         epoch_conflict: codes::EPOCH_CONFLICT,
         host_unreachable: codes::HOST_UNREACHABLE,
         host_refused: codes::HOST_REFUSED,
-        unreachable_staged: true,
         refused_staged: true,
-        earlier_refused: EarlierRefused::Own(codes::EARLIER_REMOVAL_REFUSED),
+        earlier_removal_refused: codes::EARLIER_REMOVAL_REFUSED,
     };
     if let Err(r) = super::helpers::require_capability(
         state,
@@ -1581,14 +1393,14 @@ pub(super) async fn handle_remove_v0_3(
     {
         return r;
     }
-    let req: spec_remove::v0_3::Payload = match parse_payload(&doc) {
+    let req: spec_remove::v0_4::Payload = match parse_payload(&doc) {
         Ok(r) => r,
         Err(resp) => return resp,
     };
     let room_id = req.room_id.as_str().to_string();
     let host = req.host.as_str().to_string();
     let member = req.member.as_str().to_string();
-    let signing_key_id = req.signing_key_id.as_str().to_string();
+    let signing_key_id = req.signing_key_id.as_ref().map(|k| k.as_str().to_string());
     let mirrors: Vec<String> = req
         .mirrors
         .iter()
@@ -1602,20 +1414,17 @@ pub(super) async fn handle_remove_v0_3(
         Ok(Some(held)) if held.persona() == member => return own_leaf(&doc, &room_id, &member),
         Ok(_) => {}
     }
-    if let Err(e) = crate::operations::keys::require_key_nameable(
-        &state.keys_ks,
-        &state.acl_ks,
-        auth,
-        &signing_key_id,
-    )
-    .await
+    // A named key is checked whatever the tier: one the caller may not name is refused
+    // before anything else.
+    if let Some(key) = signing_key_id.as_deref()
+        && let Err(e) =
+            crate::operations::keys::require_key_nameable(&state.keys_ks, &state.acl_ks, auth, key)
+                .await
     {
         return reject_with_code(
             &doc,
             declared(codes::NO_SIGNING_KEY),
-            format!(
-                "this agent will not sign as room `{room_id}` with key `{signing_key_id}`: {e}"
-            ),
+            format!("this agent will not sign as room `{room_id}` with key `{key}`: {e}"),
             None,
         );
     }
@@ -1648,22 +1457,11 @@ pub(super) async fn handle_remove_v0_3(
         return r;
     }
 
-    // Item 2: never a private room — its host could not be told whom to refuse without
-    // being told who was a member. Nothing has changed.
-    match host_call.tier(&host).await {
-        Ok(t) if t == "private" => {
-            return reject_with_code(
-                &doc,
-                declared(codes::PRIVATE_ROOM),
-                format!(
-                    "room `{room_id}` is private: a member cannot be withdrawn one at a time \
-                     there. Remove them with rooms/owner/group/remove 0.1, and reset every \
-                     credential with rooms/owner/revoke if the room needs that too"
-                ),
-                None,
-            );
-        }
-        Ok(_) => {}
+    // Item 2: the room's tier. A private room's host could not be told whom to refuse
+    // without being told who was a member, so there the member leaves the group and nothing
+    // is withdrawn; every other tier withdraws, and needs the room's key to sign it.
+    let private = match host_call.tier(&host).await {
+        Ok(t) => t == "private",
         Err(e) => {
             return reject_with_code(
                 &doc,
@@ -1672,7 +1470,23 @@ pub(super) async fn handle_remove_v0_3(
                 Some(serde_json::json!({ "stage": "revocation" })),
             );
         }
-    }
+    };
+    let signing_key_id = match (private, signing_key_id) {
+        (true, _) => None,
+        (false, Some(key)) => Some(key),
+        (false, None) => {
+            return reject_with_code(
+                &doc,
+                declared(codes::NO_SIGNING_KEY),
+                format!(
+                    "room `{room_id}` is not private: removing `{member}` withdraws their \
+                     credentials at the host, signed as the room — name the room's key in \
+                     signingKeyId. Nothing changed"
+                ),
+                None,
+            );
+        }
+    };
 
     // The room's profile, read before the advance, to write again after it — as every
     // advance does (`rooms/keys/profile/write/0.1`, *Keeping the profile readable across
@@ -1710,6 +1524,37 @@ pub(super) async fn handle_remove_v0_3(
         }
         Err(PrepareRemoveError::OwnLeaf) => return own_leaf(&doc, &room_id, &member),
         Err(PrepareRemoveError::App(e)) => return app_error_to_reject(&doc, e),
+    };
+
+    // A private room: items 4, 6 and 9 do not apply — no list naming the member is built or
+    // sent anywhere. Item 7, then item 10's `withdrawn: false`.
+    let Some(signing_key_id) = signing_key_id else {
+        if let Err(r) = host_call
+            .advance(
+                &doc,
+                &advance,
+                &host,
+                &pending,
+                presentation,
+                req.reason.as_ref().map(|r| r.as_str()),
+            )
+            .await
+        {
+            return r;
+        }
+        super::room_profile::rewrite_after_advance(&profile, carried).await;
+        // The room only: who left is the owner's business, and the host never learns it
+        // either (it sees an opaque commit).
+        record(state, "rooms.owner.group.remove", auth, &room_id).await;
+        return success_response(
+            &doc,
+            serde_json::json!({
+                "roomId": room_id,
+                "member": member,
+                "withdrawn": false,
+                "epoch": pending.epoch,
+            }),
+        );
     };
 
     // Item 4, and item 5's second half: the room's next list, one `subject` entry for the
@@ -1884,6 +1729,7 @@ pub(super) async fn handle_remove_v0_3(
     let mut body = serde_json::json!({
         "roomId": room_id,
         "member": member,
+        "withdrawn": true,
         "revocation": head,
         "revokedAt": revoked_at,
         "epoch": pending.epoch,
@@ -2286,13 +2132,16 @@ mod tests {
         )
     }
 
+    /// A `private` room's removal at 0.4: the leaf alone, no signing key, nothing withdrawn.
+    /// The stub host reports the room private from here on.
     async fn remove(o: &Owner, member: &str) -> Value {
+        o.host.state.lock().unwrap().visibility = "private";
         body(
-            handle_remove(
+            handle_remove_v0_4(
                 &o.state,
                 &crate::test_support::super_admin_claims(),
                 request(
-                    vta_sdk::trust_tasks::TASK_ROOMS_OWNER_GROUP_REMOVE_0_1,
+                    vta_sdk::trust_tasks::TASK_ROOMS_OWNER_GROUP_REMOVE_0_4,
                     serde_json::json!({
                         "roomId": o.room.did, "host": o.host.did, "member": member,
                         "reason": "left the deal team",
@@ -2303,13 +2152,14 @@ mod tests {
         )
     }
 
+    /// An `attributed` room's removal at 0.4: withdrawn at the host first, then advanced.
     async fn remove_withdrawing(o: &Owner, member: &str, mirrors: &[&str]) -> Value {
         body(
-            handle_remove_v0_3(
+            handle_remove_v0_4(
                 &o.state,
                 &crate::test_support::super_admin_claims(),
                 request(
-                    vta_sdk::trust_tasks::TASK_ROOMS_OWNER_GROUP_REMOVE_0_3,
+                    vta_sdk::trust_tasks::TASK_ROOMS_OWNER_GROUP_REMOVE_0_4,
                     serde_json::json!({
                         "roomId": o.room.did, "host": o.host.did, "member": member,
                         "signingKeyId": o.room_key, "mirrors": mirrors,
@@ -2941,7 +2791,7 @@ mod tests {
         );
     }
 
-    // ─── rooms/owner/group/remove/0.1 ────────────────────────────────────────────────
+    // ─── rooms/owner/group/remove/0.4 on a private room ─────────────────────────────
 
     /// Item 1: no group.
     #[tokio::test]
@@ -3921,13 +3771,13 @@ mod tests {
         assert_eq!(other_epoch(&o.state).await, 3);
     }
 
-    // ─── rooms/owner/group/remove/0.3 (trust-tasks-tf #804) ──────────────────────────
+    // ─── rooms/owner/group/remove/0.4 (trust-tasks-tf #804) ──────────────────────────
 
     /// Items 4–7: the member is withdrawn at the host first — one `subject` entry, signed as
     /// the room and kept — and only then does the room advance; the answer carries the
     /// list's head and the withdrawal's time.
     #[tokio::test]
-    async fn remove_0_3_withdraws_at_the_host_first_then_advances() {
+    async fn remove_0_4_withdraws_at_the_host_first_then_advances() {
         let o = owner().await;
         create(&o, &o.room_key).await;
         let (_s, _d, did) = admitted(&o).await;
@@ -3967,7 +3817,7 @@ mod tests {
     /// Item 6: a host that refuses the list refuses the removal — nothing advanced, the
     /// whole pending removal discarded, the list included.
     #[tokio::test]
-    async fn remove_0_3_a_refused_withdrawal_changes_nothing() {
+    async fn remove_0_4_a_refused_withdrawal_changes_nothing() {
         let o = owner().await;
         create(&o, &o.room_key).await;
         let (_s, _d, did) = admitted(&o).await;
@@ -3995,7 +3845,7 @@ mod tests {
     /// delivers the list again first (a repeat is accepted), and the advance that was never
     /// sent is discarded — the member stays withdrawn, and a repeated removal advances.
     #[tokio::test]
-    async fn remove_0_3_an_unanswered_withdrawal_is_delivered_again_by_the_next_request() {
+    async fn remove_0_4_an_unanswered_withdrawal_is_delivered_again_by_the_next_request() {
         let o = owner().await;
         create(&o, &o.room_key).await;
         let (_s, _d, did) = admitted(&o).await;
@@ -4024,7 +3874,7 @@ mod tests {
     /// Item 7: an advance the host refuses discards the advance, never the withdrawal,
     /// which is in force at the host and is the room's.
     #[tokio::test]
-    async fn remove_0_3_a_refused_advance_keeps_the_withdrawal() {
+    async fn remove_0_4_a_refused_advance_keeps_the_withdrawal() {
         let o = owner().await;
         create(&o, &o.room_key).await;
         let (_s, _d, did) = admitted(&o).await;
@@ -4041,17 +3891,62 @@ mod tests {
         assert!(live_group(&o).await.leaf_of(&did).is_some());
     }
 
-    /// Item 2: a private room is refused, changing nothing.
+    /// Items 4 and 10 (trust-tasks-tf #975): a private room's member leaves the group and
+    /// nothing is withdrawn — no list is signed, kept or sent anywhere, even when the
+    /// request names the room's key and a mirror — and the answer says `withdrawn: false`.
     #[tokio::test]
-    async fn remove_0_3_refuses_a_private_room() {
+    async fn remove_0_4_on_a_private_room_advances_and_withdraws_nothing() {
         let o = owner().await;
         create(&o, &o.room_key).await;
         let (_s, _d, did) = admitted(&o).await;
         o.host.state.lock().unwrap().visibility = "private";
 
-        let out = remove_withdrawing(&o, &did, &[]).await;
+        let mirror = Party::new().did;
+        let out = remove_withdrawing(&o, &did, &[&mirror]).await;
+        let p = &out["payload"];
+        assert_eq!(p["withdrawn"], false, "{out}");
+        assert_eq!(p["epoch"], 3, "{out}");
+        for absent in ["revocation", "revokedAt", "mirrorsPending"] {
+            assert!(p.get(absent).is_none(), "{absent}: {out}");
+        }
+        assert!(held_list(&o).await.is_none());
+        assert!(pending(&o).await.is_none());
+        assert!(live_group(&o).await.leaf_of(&did).is_none());
+        let host = o.host.state.lock().unwrap();
+        assert!(host.lists.is_empty());
+        assert!(
+            !host
+                .log
+                .iter()
+                .any(|t| t == vti_rooms::wire::ROOMS_REVOCATIONS_PUT_TYPE),
+            "{:?}",
+            host.log
+        );
+    }
+
+    /// Item 2: a room that is not private is refused `noSigningKey` when the request names
+    /// no key — the withdrawal could not be signed — changing nothing.
+    #[tokio::test]
+    async fn remove_0_4_without_a_key_refuses_an_attributed_room() {
+        let o = owner().await;
+        create(&o, &o.room_key).await;
+        let (_s, _d, did) = admitted(&o).await;
+
+        let out = body(
+            handle_remove_v0_4(
+                &o.state,
+                &crate::test_support::super_admin_claims(),
+                request(
+                    vta_sdk::trust_tasks::TASK_ROOMS_OWNER_GROUP_REMOVE_0_4,
+                    serde_json::json!({
+                        "roomId": o.room.did, "host": o.host.did, "member": did,
+                    }),
+                ),
+            )
+            .await,
+        );
         assert_eq!(
-            out["payload"]["code"], "rooms/owner/group/remove:privateRoom",
+            out["payload"]["code"], "rooms/owner/group/remove:noSigningKey",
             "{out}"
         );
         assert!(held_list(&o).await.is_none());
@@ -4059,9 +3954,20 @@ mod tests {
         assert!(live_group(&o).await.leaf_of(&did).is_some());
     }
 
+    /// Item 10: an attributed room's answer says the member was withdrawn.
+    #[tokio::test]
+    async fn remove_0_4_on_an_attributed_room_answers_withdrawn() {
+        let o = owner().await;
+        create(&o, &o.room_key).await;
+        let (_s, _d, did) = admitted(&o).await;
+        let out = remove_withdrawing(&o, &did, &[]).await;
+        assert_eq!(out["payload"]["withdrawn"], true, "{out}");
+        assert_eq!(out["payload"]["revocation"]["sequence"], 1, "{out}");
+    }
+
     /// Item 9: a mirror that does not confirm is named in `mirrorsPending`, not waited for.
     #[tokio::test]
-    async fn remove_0_3_names_a_mirror_that_did_not_confirm() {
+    async fn remove_0_4_names_a_mirror_that_did_not_confirm() {
         let o = owner().await;
         create(&o, &o.room_key).await;
         let (_s, _d, did) = admitted(&o).await;
@@ -4215,20 +4121,20 @@ mod tests {
         );
     }
 
-    /// `rooms/owner/group/remove/0.3` item 1: a key the caller may not name is
+    /// `rooms/owner/group/remove/0.4` item 1: a key the caller may not name is
     /// `noSigningKey`, before anything is built or sent.
     #[tokio::test]
-    async fn remove_0_3_refuses_a_key_the_caller_cannot_name() {
+    async fn remove_0_4_refuses_a_key_the_caller_cannot_name() {
         let o = owner().await;
         create(&o, &o.room_key).await;
         let (_s, _d, did) = admitted(&o).await;
         o.host.state.lock().unwrap().log.clear();
         let out = body(
-            handle_remove_v0_3(
+            handle_remove_v0_4(
                 &o.state,
                 &crate::test_support::super_admin_claims(),
                 request(
-                    vta_sdk::trust_tasks::TASK_ROOMS_OWNER_GROUP_REMOVE_0_3,
+                    vta_sdk::trust_tasks::TASK_ROOMS_OWNER_GROUP_REMOVE_0_4,
                     serde_json::json!({
                         "roomId": o.room.did, "host": o.host.did, "member": did,
                         "signingKeyId": "no-such-key",
@@ -4615,15 +4521,15 @@ mod tests {
         );
     }
 
-    // ─── rooms/owner/group/remove/0.3 item 8 (trust-tasks-tf #821) ───────────────────
+    // ─── rooms/owner/group/remove/0.4 item 8 (trust-tasks-tf #821) ───────────────────
 
-    async fn remove_v0_3(o: &Owner, member: &str) -> Value {
+    async fn remove_v0_4(o: &Owner, member: &str) -> Value {
         body(
-            handle_remove_v0_3(
+            handle_remove_v0_4(
                 &o.state,
                 &crate::test_support::super_admin_claims(),
                 request(
-                    vta_sdk::trust_tasks::TASK_ROOMS_OWNER_GROUP_REMOVE_0_3,
+                    vta_sdk::trust_tasks::TASK_ROOMS_OWNER_GROUP_REMOVE_0_4,
                     serde_json::json!({
                         "roomId": o.room.did, "host": o.host.did, "member": member,
                         "signingKeyId": o.room_key, "reason": "left the deal team",
@@ -4640,7 +4546,7 @@ mod tests {
         create(o, &o.room_key).await;
         let (_s, _d, did) = admitted(o).await;
         o.host.state.lock().unwrap().list_mode = Mode::Unreachable;
-        let out = remove_v0_3(o, &did).await;
+        let out = remove_v0_4(o, &did).await;
         assert_eq!(
             out["payload"]["code"], "rooms/owner/group/remove:hostUnreachable",
             "{out}"
@@ -4668,7 +4574,7 @@ mod tests {
     /// included, and the request is refused `earlierRemovalRefused` — `sequenceConflict`
     /// among them, surfaced as the room's key possibly in more than one party's hands.
     #[tokio::test]
-    async fn remove_0_3_a_refusal_of_the_list_itself_discards_the_whole_removal() {
+    async fn remove_0_4_a_refusal_of_the_list_itself_discards_the_whole_removal() {
         for code in [
             "rooms/revocations/put:listInvalid",
             "rooms/revocations/put:entryNotPermitted",
@@ -4678,7 +4584,7 @@ mod tests {
             let did = pending_removal(&o).await;
             refuse_lists(&o, code);
             let other = Party::new().did;
-            let out = remove_v0_3(&o, &other).await;
+            let out = remove_v0_4(&o, &other).await;
             let p = &out["payload"];
             assert_eq!(
                 p["code"], "rooms/owner/group/remove:earlierRemovalRefused",
@@ -4705,7 +4611,7 @@ mod tests {
     /// Item 8.2, first case: the list is discarded only while it is still the one held — a
     /// later list signed on it carries its withdrawal, and is kept (`listKept`).
     #[tokio::test]
-    async fn remove_0_3_a_list_built_on_is_kept_when_the_removal_is_discarded() {
+    async fn remove_0_4_a_list_built_on_is_kept_when_the_removal_is_discarded() {
         let o = owner().await;
         let did = pending_removal(&o).await;
         let elsewhere = Party::new().did;
@@ -4718,7 +4624,7 @@ mod tests {
         )
         .await;
         refuse_lists(&o, "rooms/revocations/put:listInvalid");
-        let out = remove_v0_3(&o, &Party::new().did).await;
+        let out = remove_v0_4(&o, &Party::new().did).await;
         assert_eq!(out["payload"]["details"]["listKept"], true, "{out}");
         assert_eq!(out["payload"]["details"]["member"], did.as_str(), "{out}");
         assert_eq!(held_list(&o).await.unwrap().sequence(), 2);
@@ -4727,7 +4633,7 @@ mod tests {
     /// Item 8.2, second case: `stale` with a later list this agent signed delivers that list
     /// instead; the withdrawal is confirmed through it, and the request goes on.
     #[tokio::test]
-    async fn remove_0_3_stale_with_a_later_list_confirms_through_it_and_goes_on() {
+    async fn remove_0_4_stale_with_a_later_list_confirms_through_it_and_goes_on() {
         let o = owner().await;
         let did = pending_removal(&o).await;
         let elsewhere = Party::new().did;
@@ -4745,7 +4651,7 @@ mod tests {
             h.stale_below = 2;
         }
         // The removal never advanced, so the request — removing them again — proceeds.
-        let out = remove_v0_3(&o, &did).await;
+        let out = remove_v0_4(&o, &did).await;
         assert_eq!(out["payload"]["epoch"], 3, "{out}");
         assert_eq!(out["payload"]["revocation"]["sequence"], 3, "{out}");
         assert!(live_group(&o).await.leaf_of(&did).is_none());
@@ -4763,7 +4669,7 @@ mod tests {
     /// Item 8.2, last case: `stale` with no later list of this agent's own, and any refusal
     /// of the delivery rather than the list, keep the list and discard the advance.
     #[tokio::test]
-    async fn remove_0_3_any_other_refusal_keeps_the_list_and_discards_the_advance() {
+    async fn remove_0_4_any_other_refusal_keeps_the_list_and_discards_the_advance() {
         for code in [
             "rooms/revocations/put:stale",
             "permissionDenied",
@@ -4779,7 +4685,7 @@ mod tests {
             } else {
                 refuse_lists(&o, code);
             }
-            let out = remove_v0_3(&o, &Party::new().did).await;
+            let out = remove_v0_4(&o, &Party::new().did).await;
             let p = &out["payload"];
             assert_eq!(
                 p["code"], "rooms/owner/group/remove:earlierRemovalRefused",
@@ -4807,11 +4713,11 @@ mod tests {
     /// Item 8.1: a host that does not answer the redelivery leaves the removal pending, and
     /// the request is refused `hostUnreachable` at `revocation`, doing none of its own work.
     #[tokio::test]
-    async fn remove_0_3_an_unanswered_redelivery_stays_pending() {
+    async fn remove_0_4_an_unanswered_redelivery_stays_pending() {
         let o = owner().await;
         pending_removal(&o).await;
         o.host.state.lock().unwrap().log.clear();
-        let out = remove_v0_3(&o, &Party::new().did).await;
+        let out = remove_v0_4(&o, &Party::new().did).await;
         assert_eq!(
             out["payload"]["code"], "rooms/owner/group/remove:hostUnreachable",
             "{out}"
@@ -4821,17 +4727,20 @@ mod tests {
         assert_eq!(mints(&o), 0);
     }
 
-    /// At `remove/0.1` (a `private` room's removal), which declares no
-    /// `earlierRemovalRefused`, the earlier removal is reported as its own `hostRefused`,
-    /// with the same three members — and its own work does not proceed.
+    /// A private room's removal settles a pending removal like any other (item 8): when it
+    /// is discarded, the request is refused with its own `earlierRemovalRefused` — the
+    /// code 0.1 lacked — and its own work does not proceed.
     #[tokio::test]
-    async fn remove_0_1_reports_an_earlier_removal_as_its_own_host_refused() {
+    async fn remove_0_4_on_a_private_room_reports_an_earlier_removal_as_its_own() {
         let o = owner().await;
         let did = pending_removal(&o).await;
         refuse_lists(&o, "permissionDenied");
         let out = remove(&o, &Party::new().did).await;
         let p = &out["payload"];
-        assert_eq!(p["code"], "rooms/owner/group/remove:hostRefused", "{out}");
+        assert_eq!(
+            p["code"], "rooms/owner/group/remove:earlierRemovalRefused",
+            "{out}"
+        );
         assert_eq!(
             p["details"],
             serde_json::json!({ "member": did, "code": "permissionDenied", "listKept": true }),
@@ -5144,12 +5053,12 @@ mod tests {
     /// Remove 0.2 and 0.3 keep their own shapes: `hostRefused` of the advance is `{stage:
     /// advance, code}`, and an unanswered advance is `hostUnreachable` at `advance`.
     #[tokio::test]
-    async fn remove_0_3_keeps_its_staged_host_refused_and_host_unreachable() {
+    async fn remove_0_4_keeps_its_staged_host_refused_and_host_unreachable() {
         let o = owner().await;
         create(&o, &o.room_key).await;
         let (_s, _d, did) = admitted(&o).await;
         o.host.state.lock().unwrap().mode = Mode::Refuse;
-        let out = remove_v0_3(&o, &did).await;
+        let out = remove_v0_4(&o, &did).await;
         assert_eq!(
             out["payload"]["code"], "rooms/owner/group/remove:hostRefused",
             "{out}"
@@ -5164,7 +5073,7 @@ mod tests {
         create(&o, &o.room_key).await;
         let (_s, _d, did) = admitted(&o).await;
         o.host.state.lock().unwrap().mode = Mode::Unreachable;
-        let out = remove_v0_3(&o, &did).await;
+        let out = remove_v0_4(&o, &did).await;
         assert_eq!(
             out["payload"]["code"], "rooms/owner/group/remove:hostUnreachable",
             "{out}"

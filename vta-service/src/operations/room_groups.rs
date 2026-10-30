@@ -1324,7 +1324,7 @@ impl AdvanceKind {
 }
 
 /// An epoch advance the host has not yet confirmed — items 3 to 6 of
-/// `rooms/owner/group/add/0.3`, `rooms/owner/group/remove/0.1` and `0.3`, and
+/// `rooms/owner/group/add/0.3`, `rooms/owner/group/remove/0.4`, and
 /// `rooms/owner/group/renew/0.2`.
 ///
 /// # Why the whole advanced group, and not just the commit
@@ -1376,15 +1376,16 @@ pub struct PendingAdvance {
     pub key_package_ref: Option<String>,
     /// Unix seconds it was built.
     pub created_at: u64,
-    /// A removal at `rooms/owner/group/remove/0.3`: the revocation list withdrawing the
-    /// member, signed and kept before anything was sent (item 5), and delivered to the host
-    /// **before** the advance (item 6). Absent on every other advance, and on a removal at
-    /// 0.1.
+    /// A removal at `rooms/owner/group/remove/0.4` on an attributed room: the revocation
+    /// list withdrawing the member, signed and kept before anything was sent (item 5), and
+    /// delivered to the host **before** the advance (item 6). Absent on every other
+    /// advance, on a private room's removal, and on one left pending by 0.1 — each settled
+    /// by item 8.3 alone.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub revocation: Option<PendingRevocation>,
 }
 
-/// The withdrawal half of a pending removal (`rooms/owner/group/remove/0.3`).
+/// The withdrawal half of a pending removal (`rooms/owner/group/remove/0.4`).
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PendingRevocation {
@@ -1523,7 +1524,7 @@ pub async fn prepare_add(
     Ok(pending)
 }
 
-/// Why a removal could not be built — `rooms/owner/group/remove/0.1` item 1.
+/// Why a removal could not be built — `rooms/owner/group/remove/0.4` item 1.
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum PrepareRemoveError {
@@ -1538,7 +1539,7 @@ pub enum PrepareRemoveError {
 
 /// Build the removal of `member`'s leaf from `owner`'s group and retain it, durably, as a
 /// [`PendingAdvance`] — **before** anything is sent to a host
-/// (`rooms/owner/group/remove/0.1` items 1 to 3). The live group is unchanged:
+/// (`rooms/owner/group/remove/0.4` items 1 to 3). The live group is unchanged:
 /// the commit and the link are made on a copy, which is what is kept.
 ///
 /// `ownLeaf` is `owner`'s own persona only. Another persona this VTA holds for somebody

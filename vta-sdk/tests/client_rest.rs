@@ -2524,7 +2524,7 @@ async fn room_group_tasks_never_fall_back_to_a_superseded_version() {
     .await;
     let _remove = mount_unsupported(
         &server,
-        "https://trusttasks.org/spec/rooms/owner/group/remove/0.3",
+        "https://trusttasks.org/spec/rooms/owner/group/remove/0.4",
         1,
     )
     .await;
@@ -2538,7 +2538,15 @@ async fn room_group_tasks_never_fall_back_to_a_superseded_version() {
         .await
         .map(|_| ());
     let remove = c
-        .room_group_remove_v0_3(room, "did:key:zHost", member, "room-key", &[], None, None)
+        .room_group_remove(
+            room,
+            "did:key:zHost",
+            member,
+            Some("room-key"),
+            &[],
+            None,
+            None,
+        )
         .await
         .map(|_| ());
     for (task, r) in [("add", add), ("renew", renew), ("remove", remove)] {

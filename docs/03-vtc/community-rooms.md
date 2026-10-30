@@ -289,7 +289,7 @@ cnm rooms members remove <room DID> --member <DID> --reason "left the board"
   the member — it signs the room's next revocation list as the room (one `subject`
   entry) and delivers it to this community, the room's host (`rooms/owner/revoke`). On
   an `attributed` room it does that first and then removes their leaf and advances the
-  room (`rooms/owner/group/remove/0.3`). From
+  room (`rooms/owner/group/remove/0.4`). From
   the answer's `revokedAt` the host refuses
   every credential the room issued them — and anything they delegated to an agent — on
   every task; the answer carries the list's head (`revocation`). An open offer is
@@ -302,7 +302,8 @@ cnm rooms members remove <room DID> --member <DID> --reason "left the board"
   member — repeat the removal, then remove them again if that is still wanted.
   On a `private` room a member cannot be withdrawn one at a time — the host verifies
   membership in zero knowledge and does not know who they are — so they leave the
-  group (`group/remove/0.1`) and their credentials are honoured until `validUntil`.
+  group (`group/remove/0.4`, which answers `withdrawn: false` there) and their credentials
+  are honoured until `validUntil`.
   **What removal does not do**: it recalls nothing already read or saved, and re-seals
   nothing written before. Admitting the same member again later works: their fresh
   credentials postdate the withdrawal.
@@ -372,9 +373,10 @@ recorded:
   VTA signs the room's revocation list (`rooms/owner/revoke`) and this community, the
   room's host, refuses their credentials from then on;
 - on an `attributed` room, an admission is withdrawn and then removed from the group,
-  the room advancing past them (`rooms/owner/group/remove/0.3`, 0.2 on an older VTA); an open offer is
+  the room advancing past them (`rooms/owner/group/remove/0.4`); an open offer is
   withdrawn at the host;
-- on a `private` room, an admission leaves the group (`group/remove/0.1`) and an open
+- on a `private` room, an admission leaves the group (`group/remove/0.4`, nothing
+  withdrawn) and an open
   offer is withdrawn here; their credentials last until they expire.
 
 Each is audited as `memberRemoved` / `offerWithdrawn` with actor `vtc:member-departure` and

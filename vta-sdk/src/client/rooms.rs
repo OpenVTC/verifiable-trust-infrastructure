@@ -381,86 +381,53 @@ impl VtaClient {
         })
     }
 
-    /// `rooms/owner/group/remove/0.1` — remove `member`'s leaf from a room's group, so
-    /// nothing sealed from then on is readable to them.
+    /// `rooms/owner/group/remove/0.4` — remove `member` from a sealed room, `attributed` or
+    /// `private` (trust-tasks-tf #975).
     ///
-    /// The VTA advances the room's epoch at `host_did` first, and only then its own group.
-    /// It recalls nothing the member already read, and on a `chained` room they keep the
-    /// epochs they were in; their credentials are untouched at the host. On an `open` or
-    /// `attributed` room use [`Self::room_group_remove_v0_3`], which withdraws them
-    /// first; 0.1 is the removal for a `private` room, which 0.3 refuses (`privateRoom`)
-    /// and the specification still sends here. Call this inside [`VtaClient::idempotent`]: the task is `Keyed`, and a
-    /// retry after a lost reply gets the first answer back instead of a `notMember`
-    /// refusal that reads as though the wrong member had been named.
-    #[allow(deprecated)] // group/remove/0.1: a private room has no successor yet (spec gap).
+    /// On an `attributed` room it **withdraws their credentials at the host at once**: the
+    /// VTA signs the room's next revocation list with `signing_key_id` (one `subject` entry
+    /// for `member`), delivers it to `host_did` and to each of `mirrors`, and only then
+    /// removes their leaf and advances the room. From the answer's `revokedAt` the host
+    /// refuses every credential the room issued the member before then — and anything they
+    /// delegated; their fresh credentials, if the room re-admits them, are not affected.
+    /// `signing_key_id` is required there (`noSigningKey` without it).
+    ///
+    /// On a `private` room it removes their leaf and advances the room alone, and answers
+    /// `withdrawn: false`: such a host cannot be told whom to refuse, so the member's
+    /// credentials stay valid there until they expire — opening nothing sealed from the new
+    /// epoch on. `signing_key_id`, `mirrors` and `until` are not needed. Never report
+    /// `withdrawn: false` as a withdrawal; [`Self::room_owner_revoke`] with a `room` entry
+    /// resets every credential the room has issued if that is needed too.
+    ///
+    /// It recalls nothing the member already read. A removal left pending by an earlier
+    /// request is settled safely: when the host refuses its list on redelivery, this request
+    /// is refused `rooms/owner/group/remove:earlierRemovalRefused` (`details`: `member`, the
+    /// host's `code`, `listKept`), does nothing of its own, and can simply be repeated — the
+    /// earlier removal is no longer pending and did not take effect, so remove that member
+    /// again if that is still wanted.
+    ///
+    /// Call inside [`VtaClient::idempotent`]: the task is `Keyed`, and a retry after a lost
+    /// reply gets the first answer back instead of a `notMember` refusal that reads as
+    /// though the wrong member had been named.
+    #[allow(clippy::too_many_arguments)]
     pub async fn room_group_remove(
         &self,
         room_id: &str,
         host_did: &str,
         member: &str,
-        reason: Option<&str>,
-    ) -> Result<trust_tasks_rs::specs::rooms::owner::group::remove::v0_1::Response, VtaError> {
-        let mut payload = json!({
-            "roomId": room_id,
-            "host": host_did,
-            "member": member,
-        });
-        if let Some(r) = reason {
-            payload["reason"] = json!(r);
-        }
-        let value = self
-            .dispatch_trust_task(
-                trust_tasks::TASK_ROOMS_OWNER_GROUP_REMOVE_0_1,
-                payload,
-                // As for add: an earlier advance settled, then this one.
-                ROOM_TT_TIMEOUT * 4,
-            )
-            .await?;
-        serde_json::from_value(value).map_err(|e| {
-            VtaError::Protocol(format!(
-                "rooms/owner/group/remove response does not match its schema: {e}"
-            ))
-        })
-    }
-
-    /// `rooms/owner/group/remove/0.3` — remove `member` from a room **and withdraw their
-    /// credentials at its host at once**: the VTA signs the room's next revocation list
-    /// with `signing_key_id` (one `subject` entry for `member`), delivers it to `host_did`
-    /// and to each of `mirrors`, and only then removes their leaf and advances the room.
-    ///
-    /// From the answer's `revokedAt` the host refuses every credential the room issued the
-    /// member before then — and anything they delegated — on every task; their fresh
-    /// credentials, if the room re-admits them, are not affected. A `private` room is
-    /// refused `privateRoom`: there a member is removed from the group alone with
-    /// [`Self::room_group_remove`] (0.1), and every credential reset with
-    /// [`Self::room_owner_revoke`] if the room needs that too. Deliberately no silent
-    /// fall back to 0.1 on any other refusal: 0.1 withdraws nothing at the host.
-    ///
-    /// A removal left pending by an earlier request is settled safely: when the host
-    /// refuses its list on redelivery, this request is refused
-    /// `rooms/owner/group/remove:earlierRemovalRefused` (`details`: `member`, the host's
-    /// `code`, `listKept`), does nothing of its own, and can simply be repeated — the
-    /// earlier removal is no longer pending and did not take effect, so remove that member
-    /// again if that is still wanted.
-    ///
-    /// Call inside [`VtaClient::idempotent`]: the task is `Keyed`.
-    #[allow(clippy::too_many_arguments)]
-    pub async fn room_group_remove_v0_3(
-        &self,
-        room_id: &str,
-        host_did: &str,
-        member: &str,
-        signing_key_id: &str,
+        signing_key_id: Option<&str>,
         mirrors: &[String],
         until: Option<chrono::DateTime<chrono::Utc>>,
         reason: Option<&str>,
-    ) -> Result<trust_tasks_rs::specs::rooms::owner::group::remove::v0_3::Response, VtaError> {
+    ) -> Result<trust_tasks_rs::specs::rooms::owner::group::remove::v0_4::Response, VtaError> {
         let mut payload = json!({
             "roomId": room_id,
             "host": host_did,
             "member": member,
-            "signingKeyId": signing_key_id,
         });
+        if let Some(k) = signing_key_id {
+            payload["signingKeyId"] = json!(k);
+        }
         if !mirrors.is_empty() {
             payload["mirrors"] = json!(mirrors);
         }
@@ -470,11 +437,12 @@ impl VtaClient {
         if let Some(r) = reason {
             payload["reason"] = json!(r);
         }
-        // An earlier advance settled, the list delivered, the advance, the mirrors.
+        // An earlier advance settled, the tier read, the list delivered, the advance, the
+        // mirrors.
         let timeout = ROOM_TT_TIMEOUT * 6;
         let value = self
             .dispatch_trust_task(
-                trust_tasks::TASK_ROOMS_OWNER_GROUP_REMOVE_0_3,
+                trust_tasks::TASK_ROOMS_OWNER_GROUP_REMOVE_0_4,
                 payload,
                 timeout,
             )
