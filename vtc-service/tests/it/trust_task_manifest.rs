@@ -938,7 +938,7 @@ const SPINE_DOCUMENT_TYPES: &[&str] = &[
     "https://trusttasks.org/spec/acl/show/0.2",
     "https://trusttasks.org/spec/acl/grant/0.2",
     "https://trusttasks.org/spec/acl/update/0.2",
-    "https://trusttasks.org/spec/acl/change-role/0.1",
+    "https://trusttasks.org/spec/vtc/members/role/set/0.1",
     "https://trusttasks.org/spec/acl/revoke/0.2",
     "https://trusttasks.org/spec/vtc/community/profile/update/0.1",
     "https://trusttasks.org/spec/vtc/members/purge/0.1",

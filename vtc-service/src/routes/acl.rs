@@ -26,7 +26,7 @@
 
 use axum::http::StatusCode;
 use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use serde_json::{Value, json};
 
 use tracing::info;
@@ -41,7 +41,9 @@ use crate::auth::{AuthClaims, session::now_epoch};
 use crate::error::{AppError, TaskError};
 use crate::members::get_member;
 use crate::server::AppState;
-use vti_common::audit::{AclChangeData, AclRevokedData, AdminPromotedData, AuditEvent};
+use vti_common::audit::{
+    AclChangeData, AclRevokedData, AdminPromotedData, AuditEvent, CommunityRoleSetData,
+};
 use vti_common::pagination::{Cursor, MAX_LIMIT};
 
 /// The `ext` namespace this community's own members live under.
@@ -96,16 +98,6 @@ fn epoch_to_rfc3339(secs: u64) -> String {
 #[must_use]
 pub(crate) fn expressible_in_v0_1(e: &VtcAclEntry) -> bool {
     e.admin == e.role.implied_authority()
-}
-
-/// The refusal for an entry 0.1 cannot express.
-fn inexpressible(did: &str, verb: &str) -> AppError {
-    AppError::Conflict(format!(
-        "the ACL entry for {did} carries administrative authority acl/*/0.1 cannot express — a \
-         narrowed or qualified capability set, or a role its community role does not imply — \
-         so it cannot be {verb} at 0.1. Use the 0.2 task instead (acl/_shared/0.2 \
-         CONVENTIONS §8)"
-    ))
 }
 
 /// Render `e` for a 0.1 reader (see [`AclEntryResponse::v0_1`]).
@@ -637,7 +629,7 @@ pub(crate) fn self_edit_refusal(what: &str, single_admin_mode: bool) -> AppError
 }
 
 /// The refusal for a subject moving its own role on a door that carries
-/// neither exception of VTI-ACL-052 (`acl/change-role/0.1`,
+/// neither exception of VTI-ACL-052 (`vtc/members/role/set/0.1`,
 /// `vtc/members/update`), naming the doors that do.
 pub(crate) fn own_role_refusal(single_admin_mode: bool) -> AppError {
     let mode = if single_admin_mode {
@@ -1335,154 +1327,125 @@ pub(crate) enum UpdateV02Error {
     Write(WriteError),
 }
 
-// ---------- acl/change-role ----------
+// ---------- vtc/members/role/set ----------
 
-/// Canonical `acl/change-role` request: a **community** role move, with
-/// `fromRole` as a compare-and-swap guard. The administrative authority follows
-/// the role under the 0.1 convention ([`VtcRole::implied_authority`]).
-#[derive(Debug, Deserialize, Serialize, utoipa::ToSchema)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct UpdateAclRequest {
-    pub from_role: VtcRole,
-    pub to_role: VtcRole,
-    /// Operator rationale, emitted on the service log line for this change.
-    #[serde(default)]
-    pub reason: Option<String>,
-}
-
-/// What [`change_role_inner`] produced.
+/// What [`set_community_role`] produced.
 #[derive(Debug)]
-pub(crate) enum ChangeRoleOutcome {
-    Changed(Box<AclEntryEnvelope>),
-    /// A promotion that needs a gesture bound to it, and has none yet. Nothing
-    /// was written.
+pub(crate) enum RoleSetOutcome {
+    /// The move landed: the entry as it now stands, and what the ceremony
+    /// returned (the role credential, how it was allowed).
+    Changed {
+        entry: Box<VtcAclEntry>,
+        result: Box<crate::ceremony::RoleChangeResult>,
+    },
+    /// A move that needs a gesture bound to it, and has none yet. Nothing was
+    /// written.
     StepUpRequired(Box<crate::acl::bound_step_up::ApproveRequest>),
+    /// Refused for a reason the task declares a code for. Nothing was written.
+    Refused(crate::ceremony::RoleChangeRefusal),
 }
 
-/// `acl/change-role/0.1`: the community role-change ceremony, carrying the
-/// administrative authority the role implies.
+/// `vtc/members/role/set/0.1` items 8–18: the community role-change ceremony,
+/// carrying the administrative authority the role implies where the entry's
+/// authority is exactly the one its current role implies.
 ///
-/// The ceremony owns the role-change policy, the role-VAC re-mint and the
-/// promotion serialisation; the granting bounds (§6.3), the consent for an
-/// authority-conferring capability (**VTI-APV-018**) and the reduction gate
-/// (**VTI-APV-019**) run inside it ([`crate::ceremony::role_change_via_pipeline`]).
-pub(crate) async fn change_role_inner(
+/// The caller has made items 1–7 (the requester's capability, no self-move,
+/// the entry, the roles, the compare-and-swap, covering, the no-op). The
+/// ceremony owns the bound, the last-role-assigner check, the role-change
+/// policy, the gesture and consent bound to this document (**VTI-OPS-050/051**,
+/// **VTI-APV-018**, **VTI-APV-019**), the serialised write and the role
+/// credential ([`crate::ceremony::role_change_via_bound_step_up`]); this then
+/// applies the move at once and audits it.
+pub(crate) async fn set_community_role(
     state: &AppState,
     actor: &AuthClaims,
-    did: &str,
-    req: UpdateAclRequest,
-    source: crate::ceremony::StepUpSource<'_>,
-) -> Result<ChangeRoleOutcome, AppError> {
-    let did = did.to_string();
-    // VTI-ACL-052: in either direction. A role move is not a label (item 2),
-    // and item 3 is carried by `acl/update/0.2` and `acl/change-role/0.2`,
-    // whose shared plan (`plan_self_write`) holds the unrestricted-entry
-    // invariant; this door runs the role-change ceremony, which does not.
-    if actor.did == did {
-        return Err(own_role_refusal(
-            crate::acl::admin_consent::single_admin_mode(state).await,
-        ));
-    }
-    let op_payload = {
-        let mut v = serde_json::to_value(&req)
-            .map_err(|e| AppError::Internal(format!("serialise acl/change-role body: {e}")))?;
-        if let Some(map) = v.as_object_mut() {
-            map.insert("subject".into(), Value::String(did.clone()));
+    prior: &VtcAclEntry,
+    to_role: &VtcRole,
+    reason: Option<&str>,
+    type_uri: &str,
+    payload: &Value,
+) -> Result<RoleSetOutcome, AppError> {
+    let did = prior.did.as_str();
+    let result = match crate::ceremony::role_change_via_bound_step_up(
+        state,
+        actor,
+        did,
+        &prior.role.to_string(),
+        &to_role.to_string(),
+        type_uri,
+        payload,
+    )
+    .await?
+    {
+        crate::ceremony::RoleChangeOutcome::Changed(result) => result,
+        crate::ceremony::RoleChangeOutcome::StepUpRequired(request) => {
+            return Ok(RoleSetOutcome::StepUpRequired(request));
         }
-        v
+        crate::ceremony::RoleChangeOutcome::Refused(refusal) => {
+            return Ok(RoleSetOutcome::Refused(refusal));
+        }
     };
+
+    // The ceremony's executor owns the write; re-read and stamp provenance
+    // (item 15: `updatedAt`, `updatedBy`).
     let acl = state.acl_ks.clone();
-    let entry = get_acl_entry(&acl, &did)
-        .await?
-        .ok_or_else(|| AppError::NotFound(format!("ACL entry not found for DID: {did}")))?;
-    if entry.role != req.from_role {
-        return Err(AppError::Conflict(format!(
-            "state mismatch: {did} currently holds role {}, not {}",
-            entry.role, req.from_role
-        )));
-    }
-    if !expressible_in_v0_1(&entry) {
-        return Err(inexpressible(&did, "moved"));
-    }
-    let actor_e = actor_entry(state, &actor.did).await?;
-    if !granting::covers_entry(&actor_e, &entry, now_epoch()) {
-        return Err(not_covered(&did, "change the role of"));
-    }
-
-    req.to_role.refuse_unassignable()?;
-    let promoting = matches!(req.to_role, VtcRole::Admin);
-    let granted = match source {
-        crate::ceremony::StepUpSource::Session { .. } => {
-            crate::ceremony::role_change_via_pipeline(
-                state,
-                actor,
-                &did,
-                &entry.role.to_string(),
-                &req.to_role.to_string(),
-                Some(crate::acl::admin_consent::Operation {
-                    type_uri: crate::trust_tasks::ACL_CHANGE_COMMUNITY_ROLE_TYPE,
-                    payload: &op_payload,
-                }),
-            )
-            .await?
-        }
-        crate::ceremony::StepUpSource::BoundTo { type_uri, payload } => {
-            match crate::ceremony::role_change_via_bound_step_up(
-                state,
-                actor,
-                &did,
-                &entry.role.to_string(),
-                &req.to_role.to_string(),
-                type_uri,
-                payload,
-            )
-            .await?
-            {
-                crate::ceremony::RoleChangeOutcome::Changed(result) => result,
-                crate::ceremony::RoleChangeOutcome::StepUpRequired(request) => {
-                    return Ok(ChangeRoleOutcome::StepUpRequired(request));
-                }
-            }
-        }
-    };
-
-    // The ceremony's executor owns the write; re-read and stamp provenance.
-    let mut written = get_acl_entry(&acl, &did)
+    let mut written = get_acl_entry(&acl, did)
         .await?
         .ok_or_else(|| AppError::NotFound(format!("ACL entry not found for DID: {did}")))?;
     written.updated_at = Some(now_epoch());
     written.updated_by = Some(actor.did.clone());
-    if written.admin.is_administrator() && written.admin != entry.admin {
+    if written.admin.is_administrator() && written.admin != prior.admin {
         written.delegated_by = Some(actor.did.clone());
     }
     store_acl_entry(&acl, &written).await?;
 
     if written.admin.is_administrator() {
-        ensure_admin_sister_record(state, &did).await?;
+        ensure_admin_sister_record(state, did).await?;
     }
-    let reduced = written.admin.narrows_from(&entry.admin);
+    // Item 15: a withdrawal applies at the subject's next decision — its
+    // sessions end now — and the entries it delegated are re-evaluated.
+    let reduced = written.admin.narrows_from(&prior.admin);
     if reduced {
-        let revoked = super::auth::revoke_sessions_for_did(&state.sessions_ks, &did).await?;
+        let revoked = super::auth::revoke_sessions_for_did(&state.sessions_ks, did).await?;
         info!(did = %did, revoked, "subject sessions revoked after ACL privilege reduction");
-        delegation::on_granter_changed(state, &did, Some(&written)).await?;
+        delegation::on_granter_changed(state, did, Some(&written)).await?;
     }
-    delegation::clear(state, &did).await?;
+    delegation::clear(state, did).await?;
 
+    // Item 18.
     if let Some(writer) = state.audit_writer.as_ref() {
         writer
             .write(
                 &actor.did,
-                Some(&did),
+                Some(did),
                 AuditEvent::AclUpdated(audit_data(&written)),
             )
             .await?;
-        if promoting {
+        writer
+            .write(
+                &actor.did,
+                Some(did),
+                AuditEvent::CommunityRoleSet({
+                    let mut data = CommunityRoleSetData::new(
+                        result.previous_role.clone(),
+                        result.new_role.clone(),
+                        crate::acl_cli::describe_authority(&prior.admin),
+                        crate::acl_cli::describe_authority(&written.admin),
+                        result.approval.as_str(),
+                    );
+                    data.action_id = crate::admin_actions::executing().map(|e| e.action_id);
+                    data.reason = reason.map(str::to_string);
+                    data
+                }),
+            )
+            .await?;
+        if matches!(to_role, VtcRole::Admin) {
             writer
                 .write(
                     &actor.did,
-                    Some(&did),
+                    Some(did),
                     AuditEvent::AdminPromoted(AdminPromotedData {
-                        previous_role: granted.previous_role.clone(),
+                        previous_role: result.previous_role.clone(),
                         authorising_credential_id: String::new(),
                         authorising_session_id: actor.session_id.clone(),
                     }),
@@ -1492,14 +1455,16 @@ pub(crate) async fn change_role_inner(
     }
     info!(
         did = %did,
-        from = %granted.previous_role,
-        to = %granted.new_role,
-        reason = req.reason.as_deref().unwrap_or(""),
-        "ACL role changed",
+        from = %result.previous_role,
+        to = %result.new_role,
+        approval = result.approval.as_str(),
+        reason = reason.unwrap_or(""),
+        "community role set",
     );
-    Ok(ChangeRoleOutcome::Changed(Box::new(AclEntryEnvelope {
-        entry: AclEntryResponse::v0_1(written),
-    })))
+    Ok(RoleSetOutcome::Changed {
+        entry: Box::new(written),
+        result: Box::new(result),
+    })
 }
 
 /// The admin sister record that lets a new administrator enrol a device for
@@ -2078,16 +2043,6 @@ mod tests {
             label_set_by_subject: false,
             suspension: None,
         }
-    }
-
-    #[test]
-    fn change_role_request_requires_both_roles() {
-        let ok: UpdateAclRequest =
-            serde_json::from_value(json!({ "fromRole": "member", "toRole": "moderator" }))
-                .expect("both roles");
-        assert_eq!(ok.to_role, VtcRole::Moderator);
-        serde_json::from_value::<UpdateAclRequest>(json!({ "toRole": "admin" }))
-            .expect_err("fromRole is mandatory");
     }
 
     /// CONVENTIONS §8: an entry renders to 0.1 only when its role says

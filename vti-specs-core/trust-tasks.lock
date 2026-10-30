@@ -4,12 +4,6 @@ registry = "https://trusttasks.org"
 
 [[task]]
 slug = "acl/change-role"
-version = "0.1"
-type_uri = "https://trusttasks.org/spec/acl/change-role/0.1"
-digest = "sha256:0a114714c2af05872d907258179ff0aa58e6b45ebf29bb0223693b5b9d80e8d0"
-
-[[task]]
-slug = "acl/change-role"
 version = "0.2"
 type_uri = "https://trusttasks.org/spec/acl/change-role/0.2"
 digest = "sha256:51afd47c891195d46100737ef888bd8e3dbb60879494e66c663ef491aedf238e"

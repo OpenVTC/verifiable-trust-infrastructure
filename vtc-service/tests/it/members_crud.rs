@@ -4,7 +4,7 @@
 //!
 //! Promotion to admin is **not** here: `vtc/members/update/0.1` declares
 //! `adminRoleForbidden` and refuses `role: admin` (#1645). What remains of it
-//! on this route is that refusal; the operation itself is `acl/change-role`
+//! on this route is that refusal; the operation itself is `vtc/members/role/set`
 //! (`tests/acl_canonical.rs`), and the passkey ceremony that elevates a
 //! session for it lives in `tests/passkey_step_up.rs`.
 
@@ -789,7 +789,7 @@ async fn patch_member_role_member_to_a_custom_role_succeeds_and_emits_audit() {
 
 /// `moderator` implies the `moderator` administrative role, so moving to it
 /// changes administrative authority (VTI-ACL-030): this metadata door refuses
-/// it with `adminRoleForbidden`, naming `acl/change-role`, which carries the
+/// it with `adminRoleForbidden`, naming `vtc/members/role/set`, which carries the
 /// passkey gesture bound to the move — and changes nothing.
 #[tokio::test]
 async fn patch_member_role_to_a_role_implying_admin_authority_is_refused() {
@@ -815,7 +815,7 @@ async fn patch_member_role_to_a_role_implying_admin_authority_is_refused() {
         body["error"]
             .as_str()
             .unwrap_or_default()
-            .contains("acl/change-role"),
+            .contains("vtc/members/role/set"),
         "{body}"
     );
     let entry = vtc_service::acl::get_acl_entry(&fix.acl_ks, "did:key:zM1")
@@ -829,7 +829,7 @@ async fn patch_member_role_to_a_role_implying_admin_authority_is_refused() {
 /// conformance is "if `role` is `admin`, return it and change nothing".
 ///
 /// This route carried the promotion — and its step-up — until #1645. What made
-/// that untenable was not the wire shape: `acl/change-role` reached the same
+/// that untenable was not the wire shape: the community-role move reached the same
 /// ACL row with no step-up at all, so the gate bounded one route rather than
 /// the operation. Promotion now lives on the task defined for role
 /// transitions, and the refusal here names it.
@@ -861,7 +861,7 @@ async fn the_update_task_answers_with_the_admin_role_forbidden_code_its_spec_dec
         body["error"]
             .as_str()
             .unwrap_or_default()
-            .contains("acl/change-role"),
+            .contains("vtc/members/role/set"),
         "the refusal must name the replacement task: {body}"
     );
 
@@ -1181,7 +1181,7 @@ async fn patch_member_404_for_unknown_did() {
 // Admin promotion is no longer reachable from this route (#1645). The checks
 // the retired fused `promote-to-admin` endpoint carried — self-promotion
 // refused, serialised, policy-governed, behind a live elevation — moved with
-// it to `acl/change-role` and are covered in `tests/acl_canonical.rs`; the
+// it to `vtc/members/role/set` and are covered in `tests/acl_canonical.rs`; the
 // invariants themselves are unit-tested in `ceremony::invariant`.
 // ---------------------------------------------------------------------------
 

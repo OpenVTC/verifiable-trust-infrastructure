@@ -10,8 +10,8 @@
 //! whose ceiling `--capability` may narrow, optionally to a resource
 //! (`git.repo.manage@git-ns:github.com/acme`). `list`, `show`, `grant` and
 //! `update` speak `acl/*/0.2`; `change-role` moves the **community** role
-//! (`member`, `moderator`, `issuer`, `admin`) at 0.1, and `revoke` removes an
-//! entry.
+//! (`member`, `moderator`, `issuer`, `admin`) with `vtc/members/role/set/0.1`,
+//! and `revoke` removes an entry.
 //!
 //! Every verb is a canonical `acl/*` Trust Task, signed with this profile's own
 //! key. They reach the VTC over TSP when it advertises it, else DIDComm, else
@@ -127,8 +127,8 @@ pub enum AccessCommands {
         reason: Option<String>,
     },
     /// Move a subject's community role (member, moderator, issuer, admin) —
-    /// with the administrative role it implies; `--from` must be its current
-    /// role.
+    /// with the administrative role it implies — with
+    /// `vtc/members/role/set/0.1`; `--from` must be its current role.
     ChangeRole {
         /// The subject DID.
         subject: String,
@@ -363,7 +363,7 @@ async fn run_command(command: AccessCommands, vtc: &Connected, keyring_key: &str
         } => {
             let changed = vtc
                 .client
-                .acl_change_role(&subject, &from_role, &to_role, reason.as_deref(), &key)
+                .members_role_set(&subject, &from_role, &to_role, reason.as_deref(), &key)
                 .await
                 .map_err(fail)?;
             report(&serde_json::to_value(&changed)?, "role changed")?;

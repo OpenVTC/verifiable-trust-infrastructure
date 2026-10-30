@@ -326,7 +326,7 @@ administrative authority takes a fresh second factor, not just a live
 session):
 
 - **Promote an existing member.** Console → **Members → *the member* → Promote
-  to admin**. Over the API this is a signed `acl/change-role/0.1` document
+  to admin**. Over the API this is a signed `vtc/members/role/set/0.1` document
   (`POST /v1/trust-tasks`, or any transport the VTC serves) with
   `{"subject": "<did>", "fromRole": "<their current role>", "toRole":
   "admin"}`; the ACL has no REST route. `fromRole` is a compare-and-swap guard — if their role moved since

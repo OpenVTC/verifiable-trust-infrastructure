@@ -504,7 +504,7 @@ the last one is allowed — it costs the ability to step up with it, not the
 subject's authority — and is recovered through another invite.
 
 Every administrator made by a completed action (§3.2: an `acl/grant`,
-`acl/update` or `acl/change-role` to community-admin) is issued an approver
+`acl/update`, `acl/change-role` or `vtc/members/role/set` to community-admin) is issued an approver
 enrolment invite automatically. The requester sees it once, on the completed
 action (the URL and a claim code), and delivers the claim code to the new
 administrator by a separate channel.
@@ -515,8 +515,8 @@ These operations need the consent of **other** administrators:
 
 | Operation | Approvers | Requirement |
 |---|---|---|
-| granting or widening an entry to an **authority-conferring capability** it did not hold: `acl/grant`, `acl/update`, `acl/change-role`, `vtc/admin/invites/create` | holders of the same capabilities at a covering resource | VTI-APV-018 (the generalised VTI-APV-014) |
-| taking authority-conferring capabilities away from **another** entry: `acl/revoke`, a downward `acl/change-role`, a narrowing `acl/update`, `vtc/members/admin-remove` | the same, the subject excluded | VTI-APV-019 |
+| granting or widening an entry to an **authority-conferring capability** it did not hold: `acl/grant`, `acl/update`, `acl/change-role`, `vtc/members/role/set`, `vtc/admin/invites/create` | holders of the same capabilities at a covering resource | VTI-APV-018 (the generalised VTI-APV-014) |
+| taking authority-conferring capabilities away from **another** entry: `acl/revoke`, a downward `acl/change-role` or `vtc/members/role/set`, a narrowing `acl/update`, `vtc/members/admin-remove` | the same, the subject excluded | VTI-APV-019 |
 | lowering `acl.unrestricted_admin_consent_threshold`, by `config/patch` or `vtc/config/import` (raising it stays immediate) | holders of `vtc.roles.assign` | VTI-APV-020 |
 | any change to the trusted-witness list `witnesses.trusted` — adding, removing or relabelling a witness — by `config/patch` or `vtc/config/import` (kind `config.witnesses.change`; [trusted-witnesses.md](trusted-witnesses.md)) | holders of `vtc.config.admin` | VTI-CMP-090, VTI-APV-023 |
 | `policy/upsert` and `policy/activate` for the purposes that decide authority | holders of `vtc.policy.admin` at that purpose | VTI-VTC-022 |
@@ -562,9 +562,11 @@ their holders' entries at the same boot.
 An expiry put on a permanent entry, or brought forward, is a reduction of
 everything the entry holds: it takes every capability away sooner. A move of a
 community role that implies an administrative role (`moderator`, `issuer`, or
-`admin`) is made with `acl/change-role` only; `vtc/members/update` refuses it
-with `adminRoleForbidden`, because only `acl/change-role` carries the step-up
-bound to the move.
+`admin`) is made with `vtc/members/role/set/0.1` only; `vtc/members/update`
+refuses it with `adminRoleForbidden`, because only `vtc/members/role/set`
+carries the step-up bound to the move. (`acl/change-role/0.2` moves an entry's
+administrative role and leaves its community role alone; `acl/change-role/0.1`,
+which moved the community role, is no longer served.)
 
 1. Administrator A sends the operation. Every check runs, and A's step-up is
    asked for **first**, so a thief holding only A's signing key cannot make the
@@ -770,7 +772,8 @@ When an administrator loses privilege, their sessions are revoked and they are
 told with a VTC-signed notice:
 
 - **A reduction** — `acl/revoke` (whole entry or part of its scope), a
-  downward `acl/change-role`, or an `acl/update` or `acl/grant` that narrows
+  downward `acl/change-role` or `vtc/members/role/set`, or an `acl/update` or
+  `acl/grant` that narrows
   the entry — sends `vtc/members/authority-reduced-notice/0.1` (VTI-APV-019),
   a durable push over TSP, DIDComm or REST, in that order of preference. It
   says what happened (`revoked`, `demoted` or `narrowed`), the previous and

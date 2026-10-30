@@ -17,7 +17,7 @@
 //!
 //! ## Where each gate lives
 //!
-//! - `acl/change-role` is a role **transition**, so it runs the role-change
+//! - `vtc/members/role/set` is a role **transition**, so it runs the role-change
 //!   ceremony, and its gate is the host invariant
 //!   [`Invariant::StepUpForAdmin`](crate::ceremony::Invariant). [`verified`]
 //!   supplies the fact it reads.

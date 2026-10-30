@@ -8,8 +8,9 @@
 // that state administrative authority speak `acl/*/0.2`, where every axis is
 // explicit (`act`, `capabilities`, `approve`, `approveCapabilities`, `keys`)
 // and the community role travels in `ext["org.openvtc"].communityRole`; the
-// listing is `acl/list/0.3`. The community-role move (`acl/change-role/0.1`)
-// stays at 0.1: `acl/change-role/0.2` moves the administrative role only.
+// listing is `acl/list/0.3`. The community-role move is
+// `vtc/members/role/set/0.1`: `acl/change-role/0.2` moves the administrative
+// role only.
 
 import { postSignedRead } from "./api";
 import { withImmediate } from "./immediate";
@@ -19,7 +20,7 @@ export const ACL_LIST_TASK = "https://trusttasks.org/spec/acl/list/0.3";
 export const ACL_SHOW_TASK = "https://trusttasks.org/spec/acl/show/0.2";
 export const ACL_GRANT_TASK = "https://trusttasks.org/spec/acl/grant/0.2";
 export const ACL_UPDATE_TASK = "https://trusttasks.org/spec/acl/update/0.2";
-export const ACL_CHANGE_ROLE_TASK = "https://trusttasks.org/spec/acl/change-role/0.1";
+export const MEMBERS_ROLE_SET_TASK = "https://trusttasks.org/spec/vtc/members/role/set/0.1";
 export const ACL_REVOKE_TASK = "https://trusttasks.org/spec/acl/revoke/0.2";
 
 // ── the model, as the wire states it (`acl/_shared/0.2`) ─────────────────
@@ -401,22 +402,35 @@ export async function updateAcl(
 }
 
 /**
- * Change an entry's **community** role (member, moderator, issuer, admin) —
- * with the administrative role it implies. `fromRole` is a compare-and-swap
- * guard. Promotion to `admin` confers `vtc.roles.assign` and is parked for
+ * Move an entry's **community** role (member, moderator, issuer, admin) with
+ * `vtc/members/role/set/0.1` — carrying the administrative role it implies
+ * where the entry's authority is exactly its current role's. `fromRole` is a
+ * compare-and-swap guard: the role read from the community, never assumed. Promotion to `admin` confers `vtc.roles.assign` and is parked for
  * other administrators' approval; a demotion from it needs a gesture too
  * (VTI-APV-019).
  */
-export async function changeAclRole(
+export async function setCommunityRole(
   args: { subject: string; fromRole: string; toRole: string; reason?: string },
   confirmGesture: ConfirmGesture,
-): Promise<{ subject: string; role: string }> {
-  const body = await postSignedWithStepUp<{ entry: { subject: string; role: string } }>(
-    ACL_CHANGE_ROLE_TASK,
-    args,
-    confirmGesture,
-  );
-  return body.entry;
+): Promise<RoleSetResult> {
+  return postSignedWithStepUp<RoleSetResult>(MEMBERS_ROLE_SET_TASK, args, confirmGesture);
+}
+
+/** `vtc/members/role/set/0.1#response`. */
+export interface RoleSetResult {
+  subject: string;
+  /** The community role the subject now holds. */
+  role: string;
+  /** The community role it held before. */
+  previousRole: string;
+  /** False when it already held `role`: nothing was written. */
+  changed: boolean;
+  /** How the move was allowed; absent when nothing changed. */
+  approval?: "policyAllowed" | "approved" | "waived";
+  /** The entry as it now stands — `entry.role` is the administrative role. */
+  entry: AclEntry;
+  /** The role credential issued at the new role, for a member. */
+  roleVac?: Record<string, unknown>;
 }
 
 /**

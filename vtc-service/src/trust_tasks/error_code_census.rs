@@ -2182,6 +2182,7 @@ fn witnesses() -> Vec<Witness> {
     table.extend(event_witnesses());
     table.extend(role_witnesses());
     table.extend(admission_witnesses());
+    table.extend(role_set_witnesses());
     #[cfg(feature = "vetting-pcs")]
     table.extend(pcs_witnesses());
     // Community elections, driven by the election suite, which CI runs under `--features voting`.
@@ -2369,6 +2370,57 @@ fn witnesses() -> Vec<Witness> {
         ),
     ]);
     table
+}
+
+/// `vtc/members/role/set/0.1`'s declared codes, each driven through the signed
+/// door in `members_role_set.rs`.
+fn role_set_witnesses() -> Vec<Witness> {
+    use crate::trust_tasks::member_role_tasks::codes as c;
+    use vti_specs::vtc::members::role::set::v0_1::error_codes as e;
+    vec![
+        witness!(
+            e::NOT_FOUND,
+            c::ROLE_SET_NOT_FOUND,
+            "members_role_set.rs",
+            "role_set_refuses_unknown_subjects_and_unassignable_roles"
+        ),
+        witness!(
+            e::ROLE_NOT_RECOGNIZED,
+            c::ROLE_SET_ROLE_NOT_RECOGNIZED,
+            "members_role_set.rs",
+            "role_set_refuses_unknown_subjects_and_unassignable_roles"
+        ),
+        witness!(
+            e::ROLE_NOT_ASSIGNABLE,
+            c::ROLE_SET_ROLE_NOT_ASSIGNABLE,
+            "members_role_set.rs",
+            "role_set_refuses_unknown_subjects_and_unassignable_roles"
+        ),
+        witness!(
+            e::STATE_MISMATCH,
+            c::ROLE_SET_STATE_MISMATCH,
+            "members_role_set.rs",
+            "role_set_state_mismatch_names_the_current_role"
+        ),
+        witness!(
+            e::DELEGATION_EXCEEDS_GRANTER,
+            c::ROLE_SET_DELEGATION_EXCEEDS_GRANTER,
+            "members_role_set.rs",
+            "role_set_is_bounded_by_the_requesters_own_authority"
+        ),
+        witness!(
+            e::LAST_ROLE_ASSIGNER,
+            c::ROLE_SET_LAST_ROLE_ASSIGNER,
+            "members_role_set.rs",
+            "vti_apv_009_role_set_refuses_to_end_the_last_role_assigners"
+        ),
+        witness!(
+            e::DENIED_BY_POLICY,
+            c::ROLE_SET_DENIED_BY_POLICY,
+            "members_role_set.rs",
+            "role_set_a_refusing_policy_refuses_with_its_code"
+        ),
+    ]
 }
 
 /// Direct admission's declared codes (`vtc/members/admit/0.1`,

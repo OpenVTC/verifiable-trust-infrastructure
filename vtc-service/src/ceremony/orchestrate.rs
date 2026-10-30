@@ -32,6 +32,44 @@ use crate::server::AppState;
 pub struct RoleChangeResult {
     pub previous_role: String,
     pub new_role: String,
+    /// The role credential issued at the new role, for a subject with a member
+    /// record (`vtc/members/role/set/0.1` item 16).
+    pub role_vac: Option<Box<affinidi_vc::VerifiableCredential>>,
+    /// How the move came to execute.
+    pub approval: super::admission::Approval,
+}
+
+/// Why a role move was refused, where the refusal has a code of its own on the
+/// signed door (`vtc/members/role/set/0.1`). A surface that has no code to give
+/// renders it as the `AppError` it always did ([`From`]).
+#[derive(Debug)]
+pub enum RoleChangeRefusal {
+    /// Item 5: the entry no longer holds the role the move was read at.
+    StateMismatch { current: String },
+    /// Item 9: the resulting entry would hold authority the requester does not.
+    DelegationExceedsGranter {
+        axes: Vec<&'static str>,
+        message: String,
+    },
+    /// Item 10: the move would end the last holders of `vtc.roles.assign`.
+    LastRoleAssigner(String),
+    /// Item 11: the community's role-change policy refuses it.
+    DeniedByPolicy(String),
+}
+
+impl From<RoleChangeRefusal> for AppError {
+    fn from(r: RoleChangeRefusal) -> Self {
+        match r {
+            RoleChangeRefusal::StateMismatch { current } => AppError::Conflict(format!(
+                "state mismatch: the subject currently holds role {current}"
+            )),
+            RoleChangeRefusal::DelegationExceedsGranter { message, .. } => {
+                AppError::Forbidden(message)
+            }
+            RoleChangeRefusal::LastRoleAssigner(m) => AppError::Conflict(m),
+            RoleChangeRefusal::DeniedByPolicy(m) => AppError::Forbidden(m),
+        }
+    }
 }
 
 /// Serialises admin promotions per-process, across **every** entry point.
@@ -40,7 +78,7 @@ pub struct RoleChangeResult {
 /// window between the already-admin check and the ACL write, and held by
 /// `vtc/members/update` after that. It lives here now because the window is a
 /// property of the *operation*, not of one route: with the lock on the handler,
-/// a second door onto the same ACL row (`acl/change-role`) raced the first.
+/// a second door onto the same ACL row (`vtc/members/role/set`) raced the first.
 /// fjall is not multi-process safe, so a process-wide lock is the right
 /// granularity.
 static PROMOTE_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
@@ -89,6 +127,7 @@ pub async fn role_change_via_pipeline(
     .await?
     {
         RoleChangeOutcome::Changed(result) => Ok(result),
+        RoleChangeOutcome::Refused(refusal) => Err(refusal.into()),
         // Only a bound source parks a ceremony; the session source refuses
         // with `step_up_required` instead.
         RoleChangeOutcome::StepUpRequired(_) => Err(AppError::Internal(
@@ -128,6 +167,9 @@ pub enum RoleChangeOutcome {
     /// yet. Nothing was written; a ceremony is parked, and this is the
     /// approve-request to refuse with.
     StepUpRequired(Box<crate::acl::bound_step_up::ApproveRequest>),
+    /// Refused, for a reason the signed door answers with a code of its own.
+    /// Nothing was written.
+    Refused(RoleChangeRefusal),
 }
 
 /// [`role_change_via_pipeline`] for the signed-document door: the promotion's
@@ -162,11 +204,23 @@ async fn run_role_change(
 ) -> Result<RoleChangeOutcome, AppError> {
     let actor_did = actor.did.as_str();
     let promoting = target_role == super::invariant::ADMIN_ROLE;
+    let target: VtcRole = target_role
+        .parse()
+        .map_err(|_| AppError::Validation(format!("unknown role {target_role}")))?;
+    let expected: VtcRole = current_role
+        .parse()
+        .map_err(|_| AppError::Validation(format!("unknown role {current_role}")))?;
 
     // Held across the decision *and* the effect, because the effect is what
-    // performs the write. Only promotions contend: every other transition is
-    // already serialised by the executor's own `LAST_ADMIN_LOCK`.
-    let _guard = if promoting {
+    // performs the write. Only a move onto a role implying `vtc.roles.assign`
+    // contends here (`vtc/members/role/set/0.1` item 14: every move conferring
+    // it is serialised with every other, so the attrition count cannot
+    // interleave); every write is also serialised by the executor's own
+    // `LAST_ADMIN_LOCK`, under which the compare-and-swap is re-checked.
+    let confers_assigner = target
+        .implied_authority()
+        .can_any(crate::acl::Capability::RolesAssign);
+    let _guard = if promoting || confers_assigner {
         Some(PROMOTE_LOCK.lock().await)
     } else {
         None
@@ -174,26 +228,24 @@ async fn run_role_change(
 
     // Re-read under the lock. The caller's `current_role` came from a read
     // taken before it, so an interleaved role write could have landed since —
-    // which is exactly the compare-and-swap `acl/change-role` promises and the
-    // already-an-admin re-check `members/update` used to do by hand.
+    // which is exactly the compare-and-swap `vtc/members/role/set` promises
+    // and the already-an-admin re-check `members/update` used to do by hand.
     let live = get_acl_entry(&state.acl_ks, subject_did).await?;
     if let Some(live) = live.as_ref()
-        && live.role.to_string() != current_role
+        && live.role != expected
     {
-        return Err(AppError::Conflict(format!(
-            "state mismatch: {subject_did} currently holds role {}, not {current_role}",
-            live.role
-        )));
+        return Ok(RoleChangeOutcome::Refused(
+            RoleChangeRefusal::StateMismatch {
+                current: live.role.to_string(),
+            },
+        ));
     }
 
-    // The administrative authority the move carries. An entry whose authority
-    // is what its community role implies follows the role (the `acl/*/0.1`
-    // convention, `routes::acl` module docs); one with authority stated on its
-    // own (0.2) keeps it, and only its community role moves.
+    // The administrative authority the move carries (`vtc/members/role/set/0.1`
+    // item 8). An entry whose authority is exactly what its community role
+    // implies follows the role; one with authority stated on its own keeps it,
+    // and only its community role moves.
     let now = crate::auth::session::now_epoch();
-    let target: VtcRole = target_role
-        .parse()
-        .map_err(|_| AppError::Validation(format!("unknown role {target_role}")))?;
     let next = live.as_ref().map(|prior| {
         let mut next = prior.clone();
         next.role = target.clone();
@@ -214,8 +266,8 @@ async fn run_role_change(
     if authority_moves && actor_did == subject_did {
         return Err(AppError::Forbidden(
             "you cannot promote yourself or move your own administrative authority \
-             (VTI-ACL-052) — another administrator must run acl/change-role for you. You may \
-             change your own entry's label"
+             (VTI-ACL-052) — another administrator must send vtc/members/role/set for you. You \
+             may change your own entry's label"
                 .into(),
         ));
     }
@@ -229,8 +281,38 @@ async fn run_role_change(
                  vtc.roles.assign over everything it holds can move its role (VTI-ACL-050)"
             )));
         }
-        if let Err(refusal) = crate::acl::granting::check_write(&actor_entry, next, now) {
-            return Err(AppError::Forbidden(refusal.to_string()));
+        match crate::acl::granting::check_write(&actor_entry, next, now) {
+            Ok(()) => {}
+            Err(refusal @ crate::acl::granting::GrantRefusal::DelegationExceedsGranter { .. }) => {
+                let message = refusal.to_string();
+                let crate::acl::granting::GrantRefusal::DelegationExceedsGranter { axes, .. } =
+                    refusal
+                else {
+                    unreachable!("matched above")
+                };
+                return Ok(RoleChangeOutcome::Refused(
+                    RoleChangeRefusal::DelegationExceedsGranter { axes, message },
+                ));
+            }
+            Err(refusal) => return Err(AppError::Forbidden(refusal.to_string())),
+        }
+    }
+    // A move that would end the subject's `vtc.roles.assign` and leave too few
+    // holders of it (`vtc/members/role/set/0.1` item 10, VTI-APV-009) is
+    // refused here, before the policy is asked or anyone is asked for a
+    // gesture. The executor checks it again under the lock its write takes.
+    if let (Some(prior), Some(next)) = (live.as_ref(), next.as_ref())
+        && crate::acl::admin_consent::is_live_role_assigner(prior, now)
+        && !crate::acl::admin_consent::is_live_role_assigner(next, now)
+    {
+        match crate::acl::admin_consent::check_attrition(state, subject_did).await {
+            Ok(()) => {}
+            Err(AppError::Conflict(m)) => {
+                return Ok(RoleChangeOutcome::Refused(
+                    RoleChangeRefusal::LastRoleAssigner(m),
+                ));
+            }
+            Err(e) => return Err(e),
         }
     }
     // A move *down* — authority taken from a live administrator — takes the
@@ -254,6 +336,10 @@ async fn run_role_change(
     let widens = matches!(
         (live.as_ref(), next.as_ref()),
         (Some(p), Some(n)) if n.admin.widens_from(&p.admin)
+    );
+    let narrows = matches!(
+        (live.as_ref(), next.as_ref()),
+        (Some(p), Some(n)) if n.admin.narrows_from(&p.admin)
     );
     // The fact the host invariant reads, resolved from host state rather than
     // taken on trust. Only promotions need it, and reading it only for them
@@ -280,6 +366,8 @@ async fn run_role_change(
         current_role,
         target_role,
         step_up,
+        widens,
+        narrows,
     )
     .await?;
     let verified = VerifiedFacts::assemble(facts)?;
@@ -312,15 +400,17 @@ async fn run_role_change(
         Verdict::Deny(d) if d.code == super::Invariant::SelfPromotion.code() => {
             return Err(AppError::Forbidden(
                 "you cannot promote yourself; admin elevation requires a separate admin \
-                 caller to run acl/change-role for you"
+                 caller to send vtc/members/role/set for you"
                     .into(),
             ));
         }
         Verdict::Deny(d) => {
-            return Err(AppError::Forbidden(format!(
-                "role change denied by policy ({})",
-                d.code
-            )));
+            return Ok(RoleChangeOutcome::Refused(
+                RoleChangeRefusal::DeniedByPolicy(format!(
+                    "role change denied by policy ({})",
+                    d.code
+                )),
+            ));
         }
         Verdict::RequestMore(_) => {
             return Err(AppError::Internal(
@@ -332,6 +422,17 @@ async fn run_role_change(
     let granted = allow
         .role
         .ok_or_else(|| AppError::Internal("role-change allow carried no role".into()))?;
+    // The policy decides whether, never which (`vtc/members/role/set/0.1`
+    // item 11): an allow naming another role is refused, not applied.
+    if granted != target_role {
+        return Ok(RoleChangeOutcome::Refused(
+            RoleChangeRefusal::DeniedByPolicy(format!(
+                "the role-change policy allowed {granted}, not the requested {target_role}; a \
+                 policy may not choose a different role"
+            )),
+        ));
+    }
+    let mut approval = super::admission::Approval::PolicyAllowed;
 
     // Spend the bound gesture now — after the decision, before the write — or
     // park the ceremony that asks for one. Still under `PROMOTE_LOCK`, so the
@@ -359,7 +460,7 @@ async fn run_role_change(
             StepUpSource::Session { op: None } => {
                 return Err(AppError::Forbidden(format!(
                     "promoting {subject_did} to unrestricted admin needs another admin's consent, \
-                     which only acl/change-role can carry"
+                     which only vtc/members/role/set can carry"
                 )));
             }
             StepUpSource::BoundTo { type_uri, payload } => {
@@ -380,6 +481,11 @@ async fn run_role_change(
                     }
                 }
             }
+        };
+        approval = if ready.is_waived() {
+            super::admission::Approval::Waived
+        } else {
+            super::admission::Approval::Approved
         };
         ready.spend(state).await?;
     } else if widens {
@@ -415,7 +521,7 @@ async fn run_role_change(
 
     // A demotion of an administrator: the gesture, bound to this operation,
     // and for another unrestricted admin a third party's consent too
-    // (VTI-APV-019). Only the signed `acl/change-role` door carries an
+    // (VTI-APV-019). Only the signed `vtc/members/role/set` door carries an
     // operation to bind them to; a door that has none (`vtc/members/update`)
     // is refused rather than let through.
     let mut demotion = None;
@@ -423,9 +529,9 @@ async fn run_role_change(
         let StepUpSource::BoundTo { type_uri, payload } = source else {
             return Err(AppError::Forbidden(format!(
                 "demoting administrator {subject_did} needs a passkey gesture bound to the \
-                 operation (VTI-APV-019), which only acl/change-role can carry — send \
-                 acl/change-role {{\"subject\": \"{subject_did}\", \"fromRole\": \"{current_role}\", \
-                 \"toRole\": \"{target_role}\"}}"
+                 operation (VTI-APV-019), which only vtc/members/role/set can carry — send \
+                 vtc/members/role/set {{\"subject\": \"{subject_did}\", \"fromRole\": \
+                 \"{current_role}\", \"toRole\": \"{target_role}\"}}"
             )));
         };
         match crate::acl::admin_consent::settle_reduction(
@@ -439,7 +545,20 @@ async fn run_role_change(
         )
         .await
         {
-            Ok(Some(agreement)) => demotion = Some((prior.clone(), type_uri, agreement)),
+            Ok(Some(agreement)) => {
+                approval = match agreement {
+                    crate::acl::admin_consent::Agreement::Consented => {
+                        super::admission::Approval::Approved
+                    }
+                    crate::acl::admin_consent::Agreement::Unopposed
+                        if crate::acl::admin_consent::single_admin_mode(state).await =>
+                    {
+                        super::admission::Approval::Waived
+                    }
+                    _ => approval,
+                };
+                demotion = Some((prior.clone(), type_uri, agreement));
+            }
             Ok(None) => {}
             Err(crate::error::TaskError::StepUp { request, .. }) => {
                 return Ok(RoleChangeOutcome::StepUpRequired(request));
@@ -448,14 +567,24 @@ async fn run_role_change(
         }
     }
 
-    let plan = EffectPlan::Remint {
-        subject: subject_did.to_string(),
-        role: granted.clone(),
-    };
-    let EffectOutcome::Reminted(outcome) = execute::apply(state, plan, actor_did).await? else {
-        return Err(AppError::Internal(
-            "remint effect did not produce an outcome".into(),
-        ));
+    // The write, with the compare-and-swap re-checked under the lock it takes
+    // (`vtc/members/role/set/0.1` item 14).
+    target.refuse_unassignable()?;
+    let outcome = match execute::remint_from(state, subject_did, target, Some(&expected)).await {
+        Ok(outcome) => outcome,
+        Err(execute::RemintError::StateMismatch(current)) => {
+            return Ok(RoleChangeOutcome::Refused(
+                RoleChangeRefusal::StateMismatch {
+                    current: current.to_string(),
+                },
+            ));
+        }
+        Err(execute::RemintError::LastRoleAssigner(e)) => {
+            return Ok(RoleChangeOutcome::Refused(
+                RoleChangeRefusal::LastRoleAssigner(e.to_string()),
+            ));
+        }
+        Err(execute::RemintError::App(e)) => return Err(e),
     };
     // A demotion of an administrator, once it has landed: the subject is sent
     // `vtc/members/authority-reduced-notice` (`demoted`, whether anyone else
@@ -498,6 +627,8 @@ async fn run_role_change(
     Ok(RoleChangeOutcome::Changed(RoleChangeResult {
         previous_role: outcome.previous_role.to_string(),
         new_role: granted,
+        role_vac: outcome.role_vac.map(Box::new),
+        approval,
     }))
 }
 
@@ -512,6 +643,8 @@ async fn assemble_role_change_facts(
     current_role: &str,
     target_role: &str,
     step_up: bool,
+    confers_authority: bool,
+    withdraws_authority: bool,
 ) -> Result<super::Facts, AppError> {
     let subject_member = get_member(&state.members_ks, subject_did).await?;
 
@@ -532,7 +665,15 @@ async fn assemble_role_change_facts(
                 vetting: None,
                 invitation: None,
                 presentation: None,
-                request: Some(json!({ "target_role": target_role, "step_up": step_up })),
+                // What the policy sees (`vtc/members/role/set/0.1` item 11):
+                // the target, and whether the move confers or withdraws
+                // administrative authority.
+                request: Some(json!({
+                    "target_role": target_role,
+                    "step_up": step_up,
+                    "confers_authority": confers_authority,
+                    "withdraws_authority": withdraws_authority,
+                })),
                 criterion: None,
             },
             // A role change is a synchronous admin action, not a trust task
@@ -1086,7 +1227,7 @@ mod p0_14_role_change_policy_tests {
     }
 
     /// A promotion through the session source, carrying the operation a consent
-    /// would be bound to — what the bearer `acl/change-role` route passes.
+    /// would be bound to — what the signed `vtc/members/role/set` door passes.
     async fn promote(
         vtc: &TestVtc,
         actor: &AuthClaims,
@@ -1101,7 +1242,7 @@ mod p0_14_role_change_policy_tests {
             "member",
             "admin",
             Some(crate::acl::admin_consent::Operation {
-                type_uri: crate::trust_tasks::ACL_CHANGE_COMMUNITY_ROLE_TYPE,
+                type_uri: crate::trust_tasks::member_role_tasks::ROLE_SET_TYPE,
                 payload: &payload,
             }),
         )
@@ -1171,7 +1312,7 @@ mod p0_14_role_change_policy_tests {
             .expect_err("nobody promotes themselves");
         match err {
             AppError::Forbidden(msg) => assert!(
-                msg.contains("acl/change-role"),
+                msg.contains("vtc/members/role/set"),
                 "the refusal should name the replacement path, got {msg}"
             ),
             other => panic!("expected Forbidden, got {other:?}"),
@@ -1222,7 +1363,7 @@ mod p0_14_role_change_policy_tests {
             "member",
             "moderator",
             Some(crate::acl::admin_consent::Operation {
-                type_uri: crate::trust_tasks::ACL_CHANGE_COMMUNITY_ROLE_TYPE,
+                type_uri: crate::trust_tasks::member_role_tasks::ROLE_SET_TYPE,
                 payload: &payload,
             }),
         )
@@ -1272,7 +1413,7 @@ mod p0_14_role_change_policy_tests {
             .await
             .expect_err("no operation, no consent, no promotion");
         match err {
-            AppError::Forbidden(msg) => assert!(msg.contains("acl/change-role"), "{msg}"),
+            AppError::Forbidden(msg) => assert!(msg.contains("vtc/members/role/set"), "{msg}"),
             other => panic!("expected Forbidden, got {other:?}"),
         }
     }

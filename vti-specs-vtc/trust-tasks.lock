@@ -723,6 +723,12 @@ type_uri = "https://trusttasks.org/spec/vtc/members/request-vmc/0.1"
 digest = "sha256:6b2671a298be9f782620ef75e50f664a4e266d28a7aa24473d039969cca46f31"
 
 [[task]]
+slug = "vtc/members/role/set"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/members/role/set/0.1"
+digest = "sha256:45358c70418a4b16898f1e74649bac6da75daa4d819b04175f44dadc9ca0fc53"
+
+[[task]]
 slug = "vtc/members/rotate"
 version = "0.1"
 type_uri = "https://trusttasks.org/spec/vtc/members/rotate/0.1"

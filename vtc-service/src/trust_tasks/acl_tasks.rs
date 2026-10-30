@@ -3,8 +3,8 @@
 //!
 //! These carry AclEntry 0.2 — role-based administration with every axis stated
 //! (`docs/05-design-notes/vtc-admin-roles.md`). 0.1 (and `acl/list/0.2`) are
-//! no longer served, with one exception: `acl/change-role/0.1` remains the door
-//! onto the **community**-role ceremony, which no 0.2 task moves.
+//! no longer served. The **community** role moves with
+//! `vtc/members/role/set/0.1` ([`super::member_role_tasks`]).
 //!
 //! Every handler is the same shape: authority from the **verified signer's ACL
 //! row**, read now ([`super::admin_signer`]); the payload held to its
@@ -20,15 +20,12 @@
 //! (**VTI-APV-018**).
 
 use serde_json::{Value, json};
+use trust_tasks_rs::{RejectReason, StandardCode, TrustTask, TrustTaskCode};
+use vti_common::auth::extractor::AuthClaims;
 use vti_specs::acl::{
     change_role::v0_2 as acl_change_role, grant::v0_2 as acl_grant, list::v0_3 as acl_list,
     revoke::v0_2 as acl_revoke, show::v0_2 as acl_show, update::v0_2 as acl_update,
 };
-// The community-role move: `acl/change-role/0.2` moves the administrative role
-// only, so the role-change ceremony keeps its 0.1 door (a specification gap).
-use trust_tasks_rs::{RejectReason, StandardCode, TrustTask, TrustTaskCode};
-use vti_common::auth::extractor::AuthClaims;
-use vti_specs::acl::change_role::v0_1 as acl_change_community_role;
 
 use super::helpers::{
     TrustTaskOutcome, app_error_to_reject, extended_code, reject_with, reject_with_code,
@@ -520,68 +517,6 @@ pub(super) async fn handle_revoke(
         Err(refusal) => return refusal,
     };
     commit_settled(state, &actor, &doc, plan, reduced, Render::Revoke).await
-}
-
-/// `acl/change-role/0.1` — move a subject's **community** role, with the
-/// administrative authority it implies, through the role-change ceremony.
-/// `acl/change-role/0.2` ([`handle_change_role`]) moves the administrative role.
-// acl/change-role/0.1 is the community-role door; 0.2 cannot express it (spec gap).
-#[allow(deprecated)]
-pub(super) async fn handle_change_community_role(
-    state: &AppState,
-    ctx: &JoinAuthCtx,
-    doc: TrustTask<Value>,
-) -> TrustTaskOutcome {
-    let actor = match admin_signer(state, ctx, &doc).await {
-        Ok(a) => a,
-        Err(reject) => return reject,
-    };
-    let checked: acl_change_community_role::Payload = match parse_spec_payload(&doc) {
-        Ok(b) => b,
-        Err(reject) => return reject,
-    };
-    let mut body = doc.payload.clone();
-    if let Some(map) = body.as_object_mut() {
-        map.remove("subject");
-    }
-    let req: ops::UpdateAclRequest = match serde_json::from_value(body) {
-        Ok(r) => r,
-        Err(e) => {
-            return reject_with(
-                &doc,
-                RejectReason::MalformedRequest {
-                    reason: format!("payload parse: {e}"),
-                },
-            );
-        }
-    };
-    match ops::change_role_inner(
-        state,
-        &actor,
-        checked.subject.as_str(),
-        req,
-        crate::ceremony::StepUpSource::BoundTo {
-            type_uri: super::ACL_CHANGE_COMMUNITY_ROLE_TYPE,
-            payload: &doc.payload,
-        },
-    )
-    .await
-    {
-        Ok(ops::ChangeRoleOutcome::Changed(envelope)) => success_response(&doc, *envelope),
-        Ok(ops::ChangeRoleOutcome::StepUpRequired(request)) => reject_with_code(
-            &doc,
-            TrustTaskCode::Standard(StandardCode::PermissionDenied),
-            "a passkey gesture bound to this role change is required",
-            Some(crate::acl::bound_step_up::refusal_details(&request)),
-        ),
-        Err(AppError::Conflict(m)) if m.starts_with("state mismatch") => reject_with_code(
-            &doc,
-            extended_code(acl_change_community_role::error_codes::STATE_MISMATCH.code),
-            m,
-            None,
-        ),
-        Err(e) => app_error_to_reject(&doc, &e),
-    }
 }
 
 // ─── rolling one's own entry to a new key ────────────────────────────────

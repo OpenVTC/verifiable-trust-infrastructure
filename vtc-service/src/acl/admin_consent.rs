@@ -23,7 +23,7 @@
 //! approver set fixed by the requirement rather than by a configured rule:
 //!
 //! - **Trigger** ([`newly_conferred`]): an `acl/grant`, `acl/update` or
-//!   `acl/change-role` whose resulting entry holds an authority-conferring
+//!   `vtc/members/role/set` whose resulting entry holds an authority-conferring
 //!   capability, at a covering qualifier, that the entry before it did not.
 //! - **Stake**: the capabilities conferred. **Approvers**: every other live
 //!   entry that holds *and may approve* each of them at a covering qualifier
@@ -979,7 +979,7 @@ pub enum ReductionGate {
 }
 
 /// The gate on removing, demoting or narrowing an **administrator**'s entry —
-/// `acl/revoke`, a downward `acl/change-role`, a narrowing `acl/update` or
+/// `acl/revoke`, a downward `vtc/members/role/set`, a narrowing `acl/update` or
 /// `acl/grant` rewrite, `vtc/members/admin-remove` (`vtc-action-list.md` §7b).
 ///
 /// Every such act takes the requester's operation-bound gesture. When the
@@ -2005,11 +2005,14 @@ mod tests {
             (Act::GrantUnrestricted, tt::ACL_GRANT_TYPE),
             (Act::GrantUnrestricted, tt::ACL_CHANGE_ROLE_TYPE),
             (Act::GrantUnrestricted, tt::ACL_UPDATE_TYPE),
-            (Act::GrantUnrestricted, tt::ACL_CHANGE_COMMUNITY_ROLE_TYPE),
+            (Act::GrantUnrestricted, tt::member_role_tasks::ROLE_SET_TYPE),
             (Act::GrantUnrestricted, tt::admin_tasks::INVITES_CREATE_TYPE),
             (Act::ReduceUnrestricted, tt::ACL_REVOKE_TYPE),
             (Act::ReduceUnrestricted, tt::ACL_CHANGE_ROLE_TYPE),
-            (Act::ReduceUnrestricted, tt::ACL_CHANGE_COMMUNITY_ROLE_TYPE),
+            (
+                Act::ReduceUnrestricted,
+                tt::member_role_tasks::ROLE_SET_TYPE,
+            ),
             (Act::ReduceUnrestricted, tt::ACL_UPDATE_TYPE),
             // `acl/grant/0.2` never narrows (grant item 6), so it raises no
             // reduction — unlike 0.1, whose grant could rewrite an entry.

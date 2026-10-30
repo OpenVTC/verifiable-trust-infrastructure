@@ -748,6 +748,26 @@ fn member_credentials_response() -> Value {
 
 /// A completed direct admission, as `ceremony::admission::admit_directly`
 /// returns one, with the credentials [`credential`] stands for.
+/// A moderator's entry, as a completed `vtc/members/role/set` leaves it.
+fn role_set_entry() -> crate::acl::VtcAclEntry {
+    crate::acl::VtcAclEntry {
+        did: DID.into(),
+        role: crate::acl::VtcRole::Moderator,
+        label: None,
+        admin: crate::acl::VtcRole::Moderator.implied_authority(),
+        delegated_by: Some(COMMUNITY_DID.into()),
+        created_at: 1_700_000_000,
+        created_by: COMMUNITY_DID.into(),
+        updated_at: Some(1_700_000_100),
+        updated_by: Some(COMMUNITY_DID.into()),
+        expires_at: None,
+        resource_grants: Vec::new(),
+        group_grants: Vec::new(),
+        label_set_by_subject: false,
+        suspension: None,
+    }
+}
+
 fn admitted(label: Option<&str>) -> crate::ceremony::admission::Admitted {
     let vc = || serde_json::from_value(credential()).expect("the fixture credential parses");
     crate::ceremony::admission::Admitted {
@@ -2228,6 +2248,26 @@ fn table() -> Vec<Conformance> {
                 crate::trust_tasks::admission_tasks::admit_response(admitted(Some("Ada")))
                     .expect("a completed admission projects")
             )
+        ),
+        checked!(
+            s::members::role::set::v0_1::Payload,
+            s::members::role::set::v0_1::Response,
+            json!({
+                "subject": DID,
+                "fromRole": "member",
+                "toRole": "moderator",
+                "reason": "runs the events programme"
+            }),
+            // The handler's own projection of a completed move.
+            crate::trust_tasks::member_role_tasks::role_set_response(
+                &role_set_entry(),
+                &crate::acl::VtcRole::Member,
+                &crate::acl::VtcRole::Moderator,
+                true,
+                Some("policyAllowed"),
+                Some(json!({ "type": ["VerifiableCredential"] })),
+            )
+            .expect("a completed move projects")
         ),
         checked!(
             s::members::make_membership::v0_1::Payload,

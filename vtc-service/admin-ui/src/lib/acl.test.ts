@@ -6,13 +6,13 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ApiError } from "./api";
 import { postSignedDocument, postSignedRead, postSignedTrustTask } from "./api";
 import {
-  ACL_CHANGE_ROLE_TASK,
+  MEMBERS_ROLE_SET_TASK,
   ACL_GRANT_TASK,
   ACL_LIST_TASK,
   ACL_REVOKE_TASK,
   ACL_UPDATE_TASK,
   type AclEntry,
-  changeAclRole,
+  setCommunityRole,
   describeAuthority,
   fetchAllAcl,
   grantAcl,
@@ -152,7 +152,19 @@ describe("acl/revoke", () => {
   });
 });
 
-describe("acl/change-role, demoting an administrator", () => {
+/** A `vtc/members/role/set/0.1#response` moving ALICE `from` → `to`. */
+function roleSet(from: string, to: string) {
+  return {
+    subject: ALICE,
+    role: to,
+    previousRole: from,
+    changed: true,
+    approval: "approved",
+    entry: entry(ALICE, to === "admin" ? "community-admin" : "member"),
+  };
+}
+
+describe("vtc/members/role/set, demoting an administrator", () => {
   it("asks for the gesture, then surfaces the parked action", async () => {
     vi.mocked(postSignedTrustTask).mockRejectedValueOnce(stepUpRefusal());
     vi.mocked(answerStepUp).mockResolvedValueOnce({ status: "recorded" });
@@ -160,10 +172,10 @@ describe("acl/change-role, demoting an administrator", () => {
     const confirm = vi.fn(async () => true);
 
     await expect(
-      changeAclRole({ subject: ALICE, fromRole: "admin", toRole: "member" }, confirm),
+      setCommunityRole({ subject: ALICE, fromRole: "admin", toRole: "member" }, confirm),
     ).rejects.toBeInstanceOf(ParkedAction);
     expect(confirm).toHaveBeenCalledWith(STEP_UP);
-    expect(vi.mocked(postSignedTrustTask)).toHaveBeenCalledWith(ACL_CHANGE_ROLE_TASK, {
+    expect(vi.mocked(postSignedTrustTask)).toHaveBeenCalledWith(MEMBERS_ROLE_SET_TASK, {
       subject: ALICE,
       fromRole: "admin",
       toRole: "member",
@@ -173,9 +185,9 @@ describe("acl/change-role, demoting an administrator", () => {
   it("goes through once both are given", async () => {
     vi.mocked(postSignedTrustTask).mockRejectedValueOnce(stepUpRefusal());
     vi.mocked(answerStepUp).mockResolvedValueOnce({ status: "recorded" });
-    vi.mocked(postSignedDocument).mockResolvedValueOnce({ entry: entry(ALICE, "member") });
+    vi.mocked(postSignedDocument).mockResolvedValueOnce(roleSet("admin", "member"));
 
-    const got = await changeAclRole(
+    const got = await setCommunityRole(
       { subject: ALICE, fromRole: "admin", toRole: "member" },
       async () => true,
     );
@@ -197,16 +209,16 @@ describe("an act that needs a passkey gesture", () => {
   it("asks the operator, records the gesture, and re-sends the same signed document", async () => {
     vi.mocked(postSignedTrustTask).mockRejectedValueOnce(stepUpRefusal());
     vi.mocked(answerStepUp).mockResolvedValueOnce({ status: "recorded" });
-    vi.mocked(postSignedDocument).mockResolvedValueOnce({ entry: entry(ALICE, "admin") });
+    vi.mocked(postSignedDocument).mockResolvedValueOnce(roleSet("member", "admin"));
     const confirm = vi.fn(async () => true);
 
-    const got = await changeAclRole(
+    const got = await setCommunityRole(
       { subject: ALICE, fromRole: "member", toRole: "admin" },
       confirm,
     );
 
     expect(got.role).toBe("admin");
-    expect(vi.mocked(postSignedTrustTask)).toHaveBeenCalledWith(ACL_CHANGE_ROLE_TASK, {
+    expect(vi.mocked(postSignedTrustTask)).toHaveBeenCalledWith(MEMBERS_ROLE_SET_TASK, {
       subject: ALICE,
       fromRole: "member",
       toRole: "admin",

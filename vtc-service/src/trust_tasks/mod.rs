@@ -162,6 +162,8 @@ pub(crate) mod community_room_tasks;
 pub(crate) mod directory_tasks;
 pub(crate) mod group_tasks;
 pub(crate) mod role_tasks;
+// `vtc/members/role/set/0.1` — the community-role move.
+pub mod member_role_tasks;
 pub(crate) mod room_admin_tasks;
 // The administrators' view of the OpenID4VP verifier identities (#1988).
 pub(crate) mod oid4vp_tasks;
@@ -1498,8 +1500,8 @@ fn dispatch_typed<'a>(
         ACL_CHANGE_ROLE_TYPE => {
             Box::pin(async move { acl_tasks::handle_change_role(state, ctx, doc).await })
         }
-        ACL_CHANGE_COMMUNITY_ROLE_TYPE => {
-            Box::pin(async move { acl_tasks::handle_change_community_role(state, ctx, doc).await })
+        member_role_tasks::ROLE_SET_TYPE => {
+            Box::pin(async move { member_role_tasks::handle_role_set(state, ctx, doc).await })
         }
         ACL_SHOW_TYPE => Box::pin(async move { acl_tasks::handle_show(state, ctx, doc).await }),
         ACL_LIST_TYPE => Box::pin(async move { acl_tasks::handle_list(state, ctx, doc).await }),
@@ -2961,7 +2963,7 @@ pub(crate) const DISPATCHED_URIS: &[&str] = &[
     ACL_CHANGE_ROLE_TYPE,
     // The community-role move (member <-> admin), through the role-change
     // ceremony. `acl/change-role/0.2` moves the administrative role only.
-    ACL_CHANGE_COMMUNITY_ROLE_TYPE,
+    member_role_tasks::ROLE_SET_TYPE,
     // The rest of the canonical family.
     ACL_SHOW_TYPE,
     ACL_LIST_TYPE,
@@ -3355,15 +3357,6 @@ pub(crate) const ACL_GRANT_TYPE: &str =
 /// `acl/change-role/0.2` — move the administrative role, compare-and-swap.
 pub(crate) const ACL_CHANGE_ROLE_TYPE: &str =
     <vti_specs::acl::change_role::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
-
-/// `acl/change-role/0.1` — move a subject's **community** role through the
-/// role-change ceremony (role-VAC re-mint, promotion serialisation). Still
-/// served beside 0.2 because `acl/change-role/0.2` moves the administrative
-/// role, and the community role has no 0.2 task of its own.
-// acl/change-role/0.1 is the community-role door; 0.2 cannot express it (spec gap).
-#[allow(deprecated)]
-pub(crate) const ACL_CHANGE_COMMUNITY_ROLE_TYPE: &str =
-    <vti_specs::acl::change_role::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
 /// `acl/show/0.2` — one entry, every axis stated.
 pub(crate) const ACL_SHOW_TYPE: &str =
