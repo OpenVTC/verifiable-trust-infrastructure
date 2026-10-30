@@ -1109,7 +1109,7 @@ mod envelope_push_tests {
         // someone's phone rather than as a failing build here. That is the
         // shape of both shipped payload defects this workspace has had
         // (#895, #919): found by a person, from a rejected request.
-        let schema = trust_tasks_rs::schema_index::schema_for(super::CONSENT_APPROVE_REQUEST_TYPE)
+        let schema = vti_specs::schema_index::schema_for(super::CONSENT_APPROVE_REQUEST_TYPE)
             .expect("consent/approve-request/0.1 is published");
         trust_tasks_rs::validate::against_schema(schema, &pushed[0].body["payload"])
             .expect("the prompt we send validates against the schema we published");

@@ -89,7 +89,7 @@ impl std::fmt::Display for HostCleanupFailure {
 /// specification asks a producer to show these to a human before choosing the
 /// second.
 pub fn host_cleanup_failures(err: &crate::error::VtaError) -> Option<Vec<HostCleanupFailure>> {
-    use trust_tasks_rs::specs::vta::contexts::delete::v1_1::error_codes::HOST_CLEANUP_FAILED;
+    use vti_specs::vta::contexts::delete::v1_1::error_codes::HOST_CLEANUP_FAILED;
     let crate::error::VtaError::Rejected { code, details, .. } = err else {
         return None;
     };

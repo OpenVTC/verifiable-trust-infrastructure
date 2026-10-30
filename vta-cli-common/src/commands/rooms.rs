@@ -45,7 +45,6 @@
 //! calls to the VTA holding that key.
 
 use serde_json::Value;
-use trust_tasks_rs::specs::vault::credentials::get::v0_2 as vault_get;
 use vta_sdk::prelude::*;
 use vtc_client::VtcClient;
 pub use vtc_client::rooms::body::RecordBasis;
@@ -53,6 +52,7 @@ use vtc_client::rooms::body::{
     RecordLocation, SealedRecordBody, VerifiedRecordBody, verify_record_body,
 };
 use vtc_client::rooms::{CleartextContent, RoomSession, SealedContent, Visibility};
+use vti_specs::vault::credentials::get::v0_2 as vault_get;
 
 /// Everything a room command needs to reach both parties.
 ///
@@ -1312,7 +1312,7 @@ fn chunk_path(dir: &std::path::Path, index: usize) -> std::path::PathBuf {
 }
 
 fn file_key_bytes(
-    resp: &trust_tasks_rs::specs::rooms::keys::file_key::v0_2::Response,
+    resp: &vti_specs::rooms::keys::file_key::v0_2::Response,
 ) -> Result<vti_rooms::files::FileKey, Box<dyn std::error::Error>> {
     use base64::Engine as _;
     let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(resp.key.as_str())?;
@@ -1478,7 +1478,7 @@ async fn room_tier(
     let (member, reply) = act_and_send(
         client,
         target,
-        trust_tasks_rs::specs::rooms::info::v0_3::Payload::TYPE_URI,
+        vti_specs::rooms::info::v0_3::Payload::TYPE_URI,
         serde_json::json!({ "roomId": target.room_id }),
     )
     .await
@@ -1603,7 +1603,7 @@ fn put_refused(
 
 /// The operator-facing text for a `rooms/records/put` refusal `code`, when there is one.
 fn put_refusal_hint(code: &str, message: &str, target: &RoomTarget<'_>) -> Option<String> {
-    use trust_tasks_rs::specs::rooms::records::put;
+    use vti_specs::rooms::records::put;
     let epoch_mismatch = [
         put::v0_1::error_codes::EPOCH_MISMATCH.code,
         put::v0_2::error_codes::EPOCH_MISMATCH.code,
@@ -1622,14 +1622,14 @@ fn put_refusal_hint(code: &str, message: &str, target: &RoomTarget<'_>) -> Optio
 
 /// The operator-facing text for a `rooms/keys/open` refusal.
 fn open_refusal_hint(e: &VtaError, target: &RoomTarget<'_>) -> String {
-    use trust_tasks_rs::specs::rooms::keys::open::v0_2::error_codes::UNKNOWN_EPOCH;
+    use vti_specs::rooms::keys::open::v0_2::error_codes::UNKNOWN_EPOCH;
     epoch_refusal_hint(e, target, UNKNOWN_EPOCH.code, Sealed::Record)
 }
 
 /// The operator-facing text for a `rooms/keys/file-key` refusal, as `pnm rooms file
 /// get` and `file open` print it — the same remedies a record's refusal names.
 fn file_key_refusal_hint(e: &VtaError, target: &RoomTarget<'_>) -> String {
-    use trust_tasks_rs::specs::rooms::keys::file_key::v0_2::error_codes::UNKNOWN_EPOCH;
+    use vti_specs::rooms::keys::file_key::v0_2::error_codes::UNKNOWN_EPOCH;
     epoch_refusal_hint(e, target, UNKNOWN_EPOCH.code, Sealed::File)
 }
 
@@ -1820,8 +1820,8 @@ pub async fn cmd_rooms_file_put(
     padme: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use trust_tasks_rs::Payload as _;
-    use trust_tasks_rs::specs::rooms::blobs::upload;
     use vti_rooms::files::{self, FileBinding, Padding};
+    use vti_specs::rooms::blobs::upload;
 
     let (sealed_tier, member) = room_tier(client, &target).await?;
     if !sealed_tier {
@@ -2057,8 +2057,8 @@ pub async fn cmd_rooms_file_get(
     out: Option<&std::path::Path>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use trust_tasks_rs::Payload as _;
-    use trust_tasks_rs::specs::rooms::blobs::{chunk as blob_chunk, get as blob_get};
     use vti_rooms::files::{self, BlobManifest};
+    use vti_specs::rooms::blobs::{chunk as blob_chunk, get as blob_get};
 
     let (member, record) = act_and_send(
         client,
@@ -2384,7 +2384,7 @@ pub async fn cmd_rooms_owner_revoke(
     until: Option<chrono::DateTime<chrono::Utc>>,
     reason: Option<&str>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    use trust_tasks_rs::specs::rooms::owner::revoke::v0_1::Withdrawal;
+    use vti_specs::rooms::owner::revoke::v0_1::Withdrawal;
     let until = until.map(|u| u.to_rfc3339_opts(chrono::SecondsFormat::Secs, true));
     let mut raw: Vec<serde_json::Value> = Vec::new();
     for s in subjects {
@@ -2647,10 +2647,10 @@ async fn act_and_send_offer(
 
 /// One offer as this client shows it: `vtc/rooms/offers/list/0.4`'s, with the room's
 /// `description` when it has one.
-type CommunityOffer = trust_tasks_rs::specs::vtc::rooms::offers::list::v0_4::OfferV2;
+type CommunityOffer = vti_specs::vtc::rooms::offers::list::v0_4::OfferV2;
 
 /// A renewal of an admission the member holds (`vtc/rooms/offers/list/0.4`).
-type CommunityRenewal = trust_tasks_rs::specs::vtc::rooms::offers::list::v0_4::Renewal;
+type CommunityRenewal = vti_specs::vtc::rooms::offers::list::v0_4::Renewal;
 
 /// What a listing answered: the offers, and the renewals.
 type OffersListing = (Vec<CommunityOffer>, Vec<CommunityRenewal>);
@@ -2662,7 +2662,7 @@ fn offers_page(
     reply: Value,
 ) -> Result<(Vec<CommunityOffer>, Option<String>, Vec<CommunityRenewal>), Box<dyn std::error::Error>>
 {
-    use trust_tasks_rs::specs::vtc::rooms::offers::list::v0_4;
+    use vti_specs::vtc::rooms::offers::list::v0_4;
     let page: v0_4::Response = parse_reply("vtc/rooms/offers/list/0.4", reply)?;
     Ok((
         page.items,
@@ -2680,7 +2680,7 @@ async fn list_offers(
     target: &OfferTarget<'_>,
 ) -> Result<OffersListing, Box<dyn std::error::Error>> {
     use trust_tasks_rs::Payload as _;
-    let type_uri = trust_tasks_rs::specs::vtc::rooms::offers::list::v0_4::Payload::TYPE_URI;
+    let type_uri = vti_specs::vtc::rooms::offers::list::v0_4::Payload::TYPE_URI;
     let mut items = Vec::new();
     let mut renewals = Vec::new();
     let mut cursor: Option<String> = None;
@@ -2854,7 +2854,7 @@ pub async fn cmd_rooms_offers_renew(
 /// the community's text: control characters in them never reach the terminal, and the
 /// description is kept to one line.
 fn offer_lines(o: &CommunityOffer, target: &OfferTarget<'_>) -> String {
-    use trust_tasks_rs::specs::vtc::rooms::offers::list::v0_4::OfferV2State;
+    use vti_specs::vtc::rooms::offers::list::v0_4::OfferV2State;
     let actions: Vec<String> = o.actions.0.iter().map(ToString::to_string).collect();
     let mut out = format!(
         "{}  {}  [{}]  {}  {}  until {}\n",
@@ -2927,7 +2927,7 @@ pub async fn cmd_rooms_offers_accept(
     key_package: Option<&str>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use trust_tasks_rs::Payload as _;
-    use trust_tasks_rs::specs::vtc::rooms::offers::accept::v0_1 as accept;
+    use vti_specs::vtc::rooms::offers::accept::v0_1 as accept;
 
     let (offers, _) = list_offers(client, &target).await?;
     let offer = offers
@@ -3083,11 +3083,11 @@ async fn list_memberships(
     client: &VtaClient,
     target: &OfferTarget<'_>,
 ) -> Result<
-    Vec<trust_tasks_rs::specs::vtc::rooms::memberships::list::v0_1::RoomMembership>,
+    Vec<vti_specs::vtc::rooms::memberships::list::v0_1::RoomMembership>,
     Box<dyn std::error::Error>,
 > {
     use trust_tasks_rs::Payload as _;
-    use trust_tasks_rs::specs::vtc::rooms::memberships::list::v0_1 as list;
+    use vti_specs::vtc::rooms::memberships::list::v0_1 as list;
     let mut items = Vec::new();
     let mut cursor: Option<String> = None;
     loop {

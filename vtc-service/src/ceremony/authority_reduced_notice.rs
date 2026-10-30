@@ -23,8 +23,8 @@
 use chrono::{DateTime, Utc};
 use serde_json::{Value, json};
 use tracing::{info, warn};
-use trust_tasks_rs::specs::vtc::members::authority_reduced_notice::v0_1 as notice;
 use vti_common::capability_client::build_document;
+use vti_specs::vtc::members::authority_reduced_notice::v0_1 as notice;
 
 use crate::acl::VtcAclEntry;
 use crate::acl::admin_consent::Agreement;

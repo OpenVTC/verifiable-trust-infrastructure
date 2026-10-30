@@ -197,7 +197,7 @@ impl SealedCredentials {
 /// payload schema, which declares it for exactly this.
 fn cleartext_schema() -> Option<String> {
     use trust_tasks_rs::Payload;
-    use trust_tasks_rs::specs::vtc::storage::credentials::set::v0_3 as set;
+    use vti_specs::vtc::storage::credentials::set::v0_3 as set;
     let mut schema: Value = serde_json::from_str(set::Payload::PAYLOAD_SCHEMA?).ok()?;
     let defs = schema.get("$defs")?.as_object()?;
     let name = ["SealedCredentialCleartext", "SealedStorageCredential"]

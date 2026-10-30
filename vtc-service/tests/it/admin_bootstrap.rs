@@ -498,9 +498,9 @@ async fn an_unknown_document_type_is_unsupported() {
 // ---------------------------------------------------------------------------
 
 const BOOTSTRAP_ERR_INVALID_TOKEN: &str =
-    trust_tasks_rs::specs::vtc::admin::bootstrap::v0_1::error_codes::INVALID_TOKEN.code;
+    vti_specs::vtc::admin::bootstrap::v0_1::error_codes::INVALID_TOKEN.code;
 const BOOTSTRAP_ERR_ALREADY_BOOTSTRAPPED: &str =
-    trust_tasks_rs::specs::vtc::admin::bootstrap::v0_1::error_codes::ALREADY_BOOTSTRAPPED.code;
+    vti_specs::vtc::admin::bootstrap::v0_1::error_codes::ALREADY_BOOTSTRAPPED.code;
 
 /// A token this community did not sign, or signed for another audience, is
 /// `invalidToken`; a second bootstrap once an admin exists is

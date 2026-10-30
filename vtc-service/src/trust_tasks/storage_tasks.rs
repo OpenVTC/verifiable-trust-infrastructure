@@ -31,13 +31,6 @@
 use std::collections::HashMap;
 
 use serde_json::{Value, json};
-use trust_tasks_rs::specs::vtc::rooms::storage::assign::v0_2 as assign;
-use trust_tasks_rs::specs::vtc::rooms::storage::migrate::v0_3 as migrate;
-use trust_tasks_rs::specs::vtc::storage::configs::{
-    create::v0_3 as create, get::v0_2 as get, list::v0_2 as list, probe::v0_1 as probe,
-    retire::v0_3 as retire, update::v0_3 as update,
-};
-use trust_tasks_rs::specs::vtc::storage::credentials::set::v0_3 as set;
 use trust_tasks_rs::{Payload, RejectReason, TrustTask};
 use vti_common::audit::{AuditEvent, RoomStorageChangedData};
 use vti_common::auth::extractor::AuthClaims;
@@ -45,6 +38,13 @@ use vti_common::blob_store::{BlobKey, PROBE_PREFIX};
 use vti_rooms::blobs::{
     ConfigHoldings, Migration, MigrationRequest, MigrationStart, MigrationState,
 };
+use vti_specs::vtc::rooms::storage::assign::v0_2 as assign;
+use vti_specs::vtc::rooms::storage::migrate::v0_3 as migrate;
+use vti_specs::vtc::storage::configs::{
+    create::v0_3 as create, get::v0_2 as get, list::v0_2 as list, probe::v0_1 as probe,
+    retire::v0_3 as retire, update::v0_3 as update,
+};
+use vti_specs::vtc::storage::credentials::set::v0_3 as set;
 
 use super::helpers::{
     TrustTaskOutcome, app_error_to_reject, extended_code, reject_with, reject_with_code,

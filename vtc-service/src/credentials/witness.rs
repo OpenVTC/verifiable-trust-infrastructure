@@ -516,7 +516,7 @@ pub enum Pairing {
 /// only 0.2 (superseded 0.1 is not read).
 fn declared_outcome_type(session_type: &str) -> Option<&'static str> {
     use trust_tasks_rs::Payload;
-    use trust_tasks_rs::specs::witness::session;
+    use vti_specs::witness::session;
     (session_type == <session::v0_2::Payload as Payload>::TYPE_URI)
         .then_some(<session::submit::v0_2::Response as Payload>::TYPE_URI)
 }
@@ -694,12 +694,12 @@ pub(crate) mod fixtures {
 
     /// The 0.2 session type, which the fixtures build unless told otherwise.
     pub fn session_type() -> &'static str {
-        <trust_tasks_rs::specs::witness::session::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI
+        <vti_specs::witness::session::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI
     }
 
     /// The outcome evidence a 0.2 session declares.
     pub fn submit_response_type() -> &'static str {
-        <trust_tasks_rs::specs::witness::session::submit::v0_2::Response as trust_tasks_rs::Payload>::TYPE_URI
+        <vti_specs::witness::session::submit::v0_2::Response as trust_tasks_rs::Payload>::TYPE_URI
     }
 
     pub struct Witnessed {

@@ -65,8 +65,7 @@ pub(super) async fn handle_present(
         return r;
     }
 
-    let req: trust_tasks_rs::specs::rooms::keys::present::v0_2::Payload = match parse_payload(&doc)
-    {
+    let req: vti_specs::rooms::keys::present::v0_2::Payload = match parse_payload(&doc) {
         Ok(r) => r,
         Err(resp) => return resp,
     };

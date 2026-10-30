@@ -34,7 +34,7 @@ use vti_voting::{
 use crate::common::signed::{admin, call, party_with_role, payload, post, signed_to};
 
 // The declared codes, read from the generated bindings.
-use trust_tasks_rs::specs::vtc::elections as el;
+use vti_specs::vtc::elections as el;
 const CREATE_ERR_ELECTION_EXISTS: &str = el::create::v0_1::error_codes::ELECTION_EXISTS.code;
 const CREATE_ERR_INVALID_MANIFEST: &str = el::create::v0_1::error_codes::INVALID_MANIFEST.code;
 const CREATE_ERR_COMMUNITY_MISMATCH: &str = el::create::v0_1::error_codes::COMMUNITY_MISMATCH.code;
@@ -1190,7 +1190,7 @@ async fn a_sealed_election_is_created_decrypted_by_its_trustees_and_certified() 
         vti_voting::trustees::Threshold::new(2, 3).unwrap(),
     )
     .expect("show carries the election key once formed");
-    let typed: trust_tasks_rs::specs::voting::election::register::v0_2::Manifest =
+    let typed: vti_specs::voting::election::register::v0_2::Manifest =
         serde_json::from_value(m).unwrap();
     for (party, choice) in [(&alice, "alice"), (&bob, "alice")] {
         let (voter, ticket) = take_ticket(&tv, party, &b).await;

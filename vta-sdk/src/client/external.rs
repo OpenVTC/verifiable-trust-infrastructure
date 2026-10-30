@@ -2,7 +2,7 @@
 //! the key authority for cloud and third-party accounts.
 //!
 //! Every method takes the task's generated payload type and returns its
-//! generated response type (`trust_tasks_rs::specs::external`), so a caller
+//! generated response type (`vti_specs::external`), so a caller
 //! cannot build a request the schema would refuse.
 //!
 //! Two helpers carry the family's sealed material:
@@ -13,7 +13,7 @@
 
 use serde::Serialize;
 use serde::de::DeserializeOwned;
-use trust_tasks_rs::specs::external as ext;
+use vti_specs::external as ext;
 
 use super::VtaClient;
 use crate::error::VtaError;
@@ -489,10 +489,8 @@ mod tests {
         let p = presign_part(&plain, &[json!({ "operation": "create-multipart" })]);
         assert!(p["presign"].get("uploadId").is_none());
         // Every part of the presign is still a valid 0.3 payload.
-        serde_json::from_value::<
-            trust_tasks_rs::specs::external::credentials::issue::v0_3::Payload,
-        >(rest)
-        .expect("conforms to issue 0.3");
+        serde_json::from_value::<vti_specs::external::credentials::issue::v0_3::Payload>(rest)
+            .expect("conforms to issue 0.3");
     }
 
     /// `issue/0.3` consumer item 5: to `maxOperations` when given, else in half;

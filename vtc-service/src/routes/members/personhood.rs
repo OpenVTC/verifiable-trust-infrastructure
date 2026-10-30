@@ -88,7 +88,7 @@ use crate::policy::{
 use crate::server::AppState;
 use crate::status_list;
 
-use trust_tasks_rs::specs::vtc::members::personhood as personhood_spec;
+use vti_specs::vtc::members::personhood as personhood_spec;
 
 /// `vtc/members/personhood/challenge:notFound` — no member with that DID.
 pub const CHALLENGE_ERR_NOT_FOUND: &str =

@@ -45,7 +45,7 @@ const RESEND_ENQUEUE_TIMEOUT: std::time::Duration = std::time::Duration::from_se
 /// `vtc/join-requests/status:notFound` — no join request with that id, or one
 /// that does not belong to the caller.
 pub const STATUS_ERR_NOT_FOUND: &str =
-    trust_tasks_rs::specs::vtc::join_requests::status::v0_1::error_codes::NOT_FOUND.code;
+    vti_specs::vtc::join_requests::status::v0_1::error_codes::NOT_FOUND.code;
 
 /// The poll for a named request, answered only to its applicant.
 pub async fn status_inner(

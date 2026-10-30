@@ -233,7 +233,7 @@ pub struct ImportKeyResponse {
 /// What [`super::VtaClient::get_wrapping_key`] returns: the generated
 /// `keys/import-wrapping-key/0.1` response — `wrappingKey` (an Ed25519
 /// `did:key`; seal to its X25519 counterpart), `keyId` and `expiresAt`.
-pub type WrappingKeyResponse = trust_tasks_rs::specs::keys::import_wrapping_key::v0_1::Response;
+pub type WrappingKeyResponse = vti_specs::keys::import_wrapping_key::v0_1::Response;
 
 /// Which sessions [`super::VtaClient::revoke_sessions`] ends — the three forms
 /// of `auth/revoke-session/0.2`.

@@ -272,7 +272,7 @@ fn check(status: axum::http::StatusCode, body: &[u8]) -> Option<String> {
     // spine is a better vantage point than middleware: nothing has to be
     // threaded in alongside the bytes.
     let ty = doc.get("type")?.as_str()?;
-    let schema = trust_tasks_rs::schema_index::schema_for(ty)?;
+    let schema = vti_specs::schema_index::schema_for(ty)?;
     let payload = doc.get("payload")?;
     let Err(e) = trust_tasks_rs::validate::against_schema(schema, payload) else {
         return None;
@@ -289,7 +289,7 @@ fn check(status: axum::http::StatusCode, body: &[u8]) -> Option<String> {
 pub fn checkable_tasks() -> Vec<&'static str> {
     crate::trust_tasks::dispatched_uris()
         .into_iter()
-        .filter(|u| trust_tasks_rs::schema_index::schema_for(&format!("{u}#response")).is_some())
+        .filter(|u| vti_specs::schema_index::schema_for(&format!("{u}#response")).is_some())
         .collect()
 }
 
@@ -463,7 +463,7 @@ mod tests {
         );
         for (uri, why) in KNOWN_VIOLATIONS {
             assert!(
-                trust_tasks_rs::schema_index::schema_for(&format!("{uri}#response")).is_some(),
+                vti_specs::schema_index::schema_for(&format!("{uri}#response")).is_some(),
                 "{uri} has no published response schema, so it cannot be \
                  violating one — the entry is stale"
             );

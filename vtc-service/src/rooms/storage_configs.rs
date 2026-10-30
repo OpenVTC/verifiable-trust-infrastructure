@@ -51,12 +51,12 @@ use axum::http::StatusCode;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
-use trust_tasks_rs::specs::vtc::storage::configs::create::v0_2 as wire;
 use vti_common::blob_store::BlobStore;
 use vti_common::blob_store::local::LocalDirStore;
 use vti_common::error::AppError;
 use vti_common::store::KeyspaceHandle;
 use vti_rooms::blobs::{BlobStores, ConfigHoldings, UploadTarget};
+use vti_specs::vtc::storage::configs::create::v0_2 as wire;
 
 use super::storage_auth::{HostAuth, Scope, aws, gcs};
 use super::storage_credentials::SealedCredentials;
@@ -65,13 +65,13 @@ use super::vta_storage::{AccountCheck, VtaStorage};
 /// The declared error codes of the storage tasks, read off the generated
 /// specifications — what the tests that witness each one compare against.
 pub mod codes {
-    use trust_tasks_rs::specs::vtc::rooms::storage::assign::v0_2 as assign;
-    use trust_tasks_rs::specs::vtc::rooms::storage::migrate::v0_3 as migrate;
-    use trust_tasks_rs::specs::vtc::storage::configs::{
+    use vti_specs::vtc::rooms::storage::assign::v0_2 as assign;
+    use vti_specs::vtc::rooms::storage::migrate::v0_3 as migrate;
+    use vti_specs::vtc::storage::configs::{
         create::v0_3 as create, get::v0_2 as get, list::v0_2 as list, probe::v0_1 as probe,
         retire::v0_3 as retire, update::v0_3 as update,
     };
-    use trust_tasks_rs::specs::vtc::storage::credentials::set::v0_3 as set;
+    use vti_specs::vtc::storage::credentials::set::v0_3 as set;
 
     pub const LIST_INVALID_CURSOR: &str = list::error_codes::INVALID_CURSOR.code;
     pub const GET_NOT_FOUND: &str = get::error_codes::NOT_FOUND.code;
@@ -107,7 +107,7 @@ pub mod codes {
     pub const SET_AUTH_NOT_ALLOWED: &str = set::error_codes::AUTH_NOT_ALLOWED.code;
 
     // What rooms store and may store (`vtc/rooms/{get,usage,limits/set}`).
-    use trust_tasks_rs::specs::vtc::rooms::{
+    use vti_specs::vtc::rooms::{
         get::v0_3 as room_get, limits::set::v0_1 as limits_set, usage::v0_1 as usage,
     };
     pub const ROOM_GET_NOT_FOUND: &str = room_get::error_codes::NOT_FOUND.code;

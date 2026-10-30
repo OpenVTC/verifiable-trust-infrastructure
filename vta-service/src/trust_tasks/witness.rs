@@ -21,9 +21,9 @@
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
-use trust_tasks_rs::specs::vta::witness as spec;
 use trust_tasks_rs::{DeclaredErrorCode, RejectReason, TrustTask};
 use vti_common::acl::Capability;
+use vti_specs::vta::witness as spec;
 
 use crate::auth::AuthClaims;
 use crate::operations::witness::{self as engine, WitnessError};

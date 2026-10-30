@@ -8,7 +8,7 @@ use chrono::{DateTime, Utc};
 use hkdf::Hkdf;
 use serde_json::{Value, json};
 use sha2::Sha256;
-use trust_tasks_rs::specs::voting::election::register::v0_2::Manifest;
+use vti_specs::voting::election::register::v0_2::Manifest;
 use vti_voting::{
     election::{Election, ElectionId},
     registrar::Registrar,

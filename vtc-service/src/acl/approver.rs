@@ -46,9 +46,9 @@ use sha2::{Digest, Sha256};
 use tokio::sync::{Mutex, MutexGuard};
 use tracing::warn;
 use trust_tasks_rs::TrustTask;
-use trust_tasks_rs::specs::auth::step_up::approver::attest::v0_1 as attest;
 use vti_common::error::AppError;
 use vti_common::store::KeyspaceHandle;
+use vti_specs::auth::step_up::approver::attest::v0_1 as attest;
 
 use crate::server::AppState;
 

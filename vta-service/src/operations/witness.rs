@@ -44,12 +44,12 @@ use chrono::{DateTime, TimeDelta, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
-use trust_tasks_rs::specs::witness::session;
 use vta_sdk::trust_task_proof::{
     ProofPurpose, TrustTaskVmResolver, verify_proof_set, verify_trust_task_proof_value,
 };
 use vti_common::error::AppError;
 use vti_common::store::{Batch, KeyspaceHandle};
+use vti_specs::witness::session;
 
 use crate::auth::AuthClaims;
 use crate::operations::persona::{PersonaStores, Relationship, persona_key_for};

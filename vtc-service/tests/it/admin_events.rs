@@ -310,7 +310,7 @@ async fn open_stream_at(
 fn assert_hint_shape(hint: &Value, id: Option<&str>, request: &Value, subscriber: &str) {
     let event = EVENT;
     assert_eq!(hint["type"], event);
-    let schema = trust_tasks_rs::schema_index::schema_for(event).expect("event schema");
+    let schema = vti_specs::schema_index::schema_for(event).expect("event schema");
     trust_tasks_rs::validate::against_schema(schema, &hint["payload"])
         .unwrap_or_else(|e| panic!("hint does not match its schema: {e}\n{hint}"));
     let payload = hint["payload"].as_object().unwrap();

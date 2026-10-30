@@ -48,13 +48,13 @@ use crate::server::AppState;
 /// The declared codes this module's tasks answer with, named once for the handlers and
 /// the error-code census.
 pub mod codes {
-    use trust_tasks_rs::specs::vtc::rooms::community::{
+    use vti_specs::vtc::rooms::community::{
         create::v0_4 as create, get::v0_3 as get, members::add::v0_1 as add,
         members::list::v0_1 as members_list, members::remove::v0_2 as remove,
         update::v0_3 as update,
     };
-    use trust_tasks_rs::specs::vtc::rooms::memberships::list::v0_1 as memberships_list;
-    use trust_tasks_rs::specs::vtc::rooms::offers::{accept::v0_1 as accept, list::v0_4 as list};
+    use vti_specs::vtc::rooms::memberships::list::v0_1 as memberships_list;
+    use vti_specs::vtc::rooms::offers::{accept::v0_1 as accept, list::v0_4 as list};
 
     pub const UPDATE_NOT_FOUND: &str = update::error_codes::NOT_FOUND.code;
 

@@ -6,7 +6,7 @@
 //! structured subject and the key's own public key, and signs its
 //! `CertificationRequestInfo`; nothing else the producer sends reaches it.
 
-pub use trust_tasks_rs::specs::keys::sign_csr::v0_1::{
+pub use vti_specs::keys::sign_csr::v0_1::{
     Payload as SignCsrPayload, PayloadSubjectAltNames as SignCsrSubjectAltNames,
     RdnAttribute as SignCsrRdnAttribute, RdnAttributeType as SignCsrRdnType,
     Response as SignCsrResponse, error_codes,

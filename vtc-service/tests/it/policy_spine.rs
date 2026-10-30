@@ -55,10 +55,9 @@ const ACTIVATE: &str = "https://trusttasks.org/spec/policy/activate/0.1";
 const TEST: &str = "https://trusttasks.org/spec/vtc/policies/test/0.1";
 const DID_REGISTER: &str = "https://trusttasks.org/spec/did-management/did/register/0.1";
 
-const TEST_ERR_NOT_FOUND: &str =
-    trust_tasks_rs::specs::vtc::policies::test::v0_1::error_codes::NOT_FOUND.code;
+const TEST_ERR_NOT_FOUND: &str = vti_specs::vtc::policies::test::v0_1::error_codes::NOT_FOUND.code;
 const TEST_ERR_EVALUATION_FAILED: &str =
-    trust_tasks_rs::specs::vtc::policies::test::v0_1::error_codes::EVALUATION_FAILED.code;
+    vti_specs::vtc::policies::test::v0_1::error_codes::EVALUATION_FAILED.code;
 
 /// A refusal's declared code.
 fn tt_error_code(doc: &Value) -> Option<&str> {

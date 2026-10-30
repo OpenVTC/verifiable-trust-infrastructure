@@ -20,9 +20,6 @@ use std::collections::BTreeMap;
 use chrono::{Days, NaiveDate, Utc};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
-use trust_tasks_rs::specs::vtc::rooms::get::v0_3 as get;
-use trust_tasks_rs::specs::vtc::rooms::limits::set::v0_1 as set;
-use trust_tasks_rs::specs::vtc::rooms::usage::v0_1 as usage;
 use trust_tasks_rs::{Payload, TrustTask};
 use vti_common::audit::{AuditEvent, RoomLimitsChangedData};
 use vti_common::error::AppError;
@@ -30,6 +27,9 @@ use vti_rooms::blobs::{
     Activity, EffectiveLimits, LimitSource, LimitTarget, OverrideError, ScopeLimits, Usage,
 };
 use vti_rooms::{Room, Visibility};
+use vti_specs::vtc::rooms::get::v0_3 as get;
+use vti_specs::vtc::rooms::limits::set::v0_1 as set;
+use vti_specs::vtc::rooms::usage::v0_1 as usage;
 
 use super::helpers::{TrustTaskOutcome, app_error_to_reject};
 use super::storage_tasks::{malformed, refuse, respond, rooms_admin};

@@ -709,8 +709,8 @@ mod tests {
         // for this task is a hand-built fixture, so only here does the library's own encoding
         // of a root request meet the schema.
         {
-            use trust_tasks_rs::specs::vtc::vetting::vetters::pcs_root::v0_1 as spec;
             use trust_tasks_rs::validate::ValidatedPayload;
+            use vti_specs::vtc::vetting::vetters::pcs_root::v0_1 as spec;
             spec::Payload::validate_value(&serde_json::to_value(req).unwrap())
                 .expect("a vetter's root request is what the specification describes");
             spec::Response::validate_value(&serde_json::to_value(&answer).unwrap())
@@ -798,8 +798,8 @@ mod tests {
             .expect("a tick of the drip");
         assert_eq!(served.pre_credentials.len(), 3);
         {
-            use trust_tasks_rs::specs::vtc::vetting::vetters::pcs_tokens::v0_1 as spec;
             use trust_tasks_rs::validate::ValidatedPayload;
+            use vti_specs::vtc::vetting::vetters::pcs_tokens::v0_1 as spec;
             spec::Payload::validate_value(&serde_json::to_value(&batch).unwrap())
                 .expect("a vetter's token batch is what the specification describes");
             spec::Response::validate_value(&serde_json::to_value(&served).unwrap())
@@ -915,8 +915,8 @@ mod tests {
                 .unwrap_or_else(|e| panic!("re-issue {n}: {e}"));
             assert_eq!(answer.label, label);
             {
-                use trust_tasks_rs::specs::vtc::vetting::vetters::pcs_root::v0_1 as spec;
                 use trust_tasks_rs::validate::ValidatedPayload;
+                use vti_specs::vtc::vetting::vetters::pcs_root::v0_1 as spec;
                 spec::Response::validate_value(&serde_json::to_value(&answer).unwrap())
                     .expect("a re-issue answers in the first enrolment's shape");
             }

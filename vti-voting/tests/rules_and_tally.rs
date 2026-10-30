@@ -1,9 +1,7 @@
 //! Manifest and ballot rules, and the count, over the generated wire types.
 
 use serde_json::{Value, json};
-use trust_tasks_rs::specs::voting::{
-    ballot::cast::v0_1::Ballot, election::register::v0_2::Manifest,
-};
+use vti_specs::voting::{ballot::cast::v0_1::Ballot, election::register::v0_2::Manifest};
 use vti_voting::{
     rules::{RuleError, check_ballot, check_manifest, digest_multibase, manifest_digest},
     tally::tally,
@@ -119,7 +117,7 @@ fn vot_010_manifest_rules_are_enforced() {
 
 #[test]
 fn vot_062_trustee_rules_are_enforced_for_the_encrypted_levels() {
-    use trust_tasks_rs::specs::voting::election::register::v0_2::SecrecyLevel;
+    use vti_specs::voting::election::register::v0_2::SecrecyLevel;
     use vti_voting::rules::check_manifest_serving;
     const ALL: &[SecrecyLevel] = &[
         SecrecyLevel::Open,

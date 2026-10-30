@@ -43,13 +43,13 @@ const ADMIN_DID: &str = "did:key:zVrcAdmin";
 // The codes the relationship tasks declare (#1600), read from the generated
 // bindings rather than spelled here.
 const LIST_ERR_NOT_FOUND: &str =
-    trust_tasks_rs::specs::vtc::relationships::list::v0_3::error_codes::NOT_FOUND.code;
+    vti_specs::vtc::relationships::list::v0_3::error_codes::NOT_FOUND.code;
 const REVOKE_ERR_NOT_FOUND: &str =
-    trust_tasks_rs::specs::vtc::relationships::revoke::v0_2::error_codes::NOT_FOUND.code;
+    vti_specs::vtc::relationships::revoke::v0_2::error_codes::NOT_FOUND.code;
 const PUBLISH_ERR_VRC_INVALID: &str =
-    trust_tasks_rs::specs::vtc::relationships::publish::v0_2::error_codes::VRC_INVALID.code;
+    vti_specs::vtc::relationships::publish::v0_2::error_codes::VRC_INVALID.code;
 const PUBLISH_ERR_SUBJECT_NOT_MEMBER: &str =
-    trust_tasks_rs::specs::vtc::relationships::publish::v0_2::error_codes::SUBJECT_NOT_MEMBER.code;
+    vti_specs::vtc::relationships::publish::v0_2::error_codes::SUBJECT_NOT_MEMBER.code;
 
 /// The extended error code carried by a REST error body (`{"error", "code"}`).
 fn rest_error_code(body: &Value) -> &str {

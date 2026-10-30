@@ -5,24 +5,24 @@
 //! name: a file is sealed before [`VtcClient::begin_upload`] and opened after
 //! [`VtcClient::download_chunk`], by a party holding that one file's key (`vti_rooms::files`).
 //!
-//! The payloads and responses are the generated `trust_tasks_rs::specs::rooms` types. Each
+//! The payloads and responses are the generated `vti_specs::rooms` types. Each
 //! payload is built through its generated type, so a value the schema refuses is refused
 //! here rather than by the host.
 
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use trust_tasks_rs::Payload as _;
-use trust_tasks_rs::specs::rooms::blobs::chunk::v0_1 as download_chunk;
-use trust_tasks_rs::specs::rooms::blobs::get::v0_2 as blob_get_v2;
-use trust_tasks_rs::specs::rooms::blobs::upload::{
+use vti_specs::rooms::blobs::chunk::v0_1 as download_chunk;
+use vti_specs::rooms::blobs::get::v0_2 as blob_get_v2;
+use vti_specs::rooms::blobs::upload::{
     abort::v0_2 as upload_abort_v2, begin::v0_2 as upload_begin_v2, chunk::v0_2 as upload_chunk_v2,
     commit::v0_2 as upload_commit_v2,
 };
-use trust_tasks_rs::specs::rooms::info::v0_3 as room_info;
-use trust_tasks_rs::specs::rooms::records::get::v0_2 as get_v2;
-use trust_tasks_rs::specs::rooms::records::prune::v0_2 as records_prune;
-use trust_tasks_rs::specs::rooms::records::put::v0_3 as put_v3;
-use trust_tasks_rs::specs::rooms::records::retention::set::v0_1 as retention_set;
+use vti_specs::rooms::info::v0_3 as room_info;
+use vti_specs::rooms::records::get::v0_2 as get_v2;
+use vti_specs::rooms::records::prune::v0_2 as records_prune;
+use vti_specs::rooms::records::put::v0_3 as put_v3;
+use vti_specs::rooms::records::retention::set::v0_1 as retention_set;
 
 use super::{RoomSession, SealedContent};
 use crate::{VtcClient, VtcError};

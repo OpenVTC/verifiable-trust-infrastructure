@@ -16,7 +16,7 @@
 //! The census is **derived, not hand-maintained**. Its scope is the sweep's
 //! dispatched ∩ published URI set ([`super::conformance::resolved_uris`]), and
 //! each URI's declared codes come from
-//! `trust_tasks_rs::schema_index::error_codes_for`, generated from the
+//! `vti_specs::schema_index::error_codes_for`, generated from the
 //! specification's `errorCodes` front matter.
 //!
 //! A code is **witnessed** when a test in this crate (a `#[cfg(test)]` module
@@ -45,7 +45,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use trust_tasks_rs::DeclaredErrorCode;
-use trust_tasks_rs::schema_index::error_codes_for;
+use vti_specs::schema_index::error_codes_for;
 
 use super::conformance::resolved_uris;
 
@@ -54,7 +54,7 @@ use super::conformance::resolved_uris;
 /// Typed paths, not strings: a code the specification stops declaring is a
 /// compile error here, not a stale row.
 fn unwitnessed() -> Vec<DeclaredErrorCode> {
-    use trust_tasks_rs::specs as s;
+    use vti_specs as s;
     vec![
         // BASELINE-BEGIN — generated from this test's own failure output.
         // AclEntry 0.2 codes for bounds the shared operations still answer as
@@ -567,7 +567,7 @@ fn asserted(sources: &[(PathBuf, String)]) -> Asserted {
                     .unwrap_or(after.len());
                 out.constant_paths.push(format!(
                     "{}::error_codes::{}",
-                    rest[start..at].trim_start_matches("trust_tasks_rs::specs::"),
+                    rest[start..at].trim_start_matches("vti_specs::"),
                     &after[..end]
                 ));
                 rest = &after[end..];

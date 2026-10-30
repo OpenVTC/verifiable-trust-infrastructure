@@ -42,17 +42,17 @@ use affinidi_secrets_resolver::secrets::Secret;
 use base64::Engine as _;
 use base64::engine::general_purpose;
 use serde_json::{Value, json};
-use trust_tasks_rs::specs::auth::step_up::approve_request::v0_5 as approve_request;
-use trust_tasks_rs::specs::auth::step_up::approve_response::v0_6 as approve_response;
+use vti_specs::auth::step_up::approve_request::v0_5 as approve_request;
+use vti_specs::auth::step_up::approve_response::v0_6 as approve_response;
 // Only the DIDComm sends name the envelope; TSP carries the document bytes
 // directly, so this is unused when the binding is compiled out. Imported from the
 // binding crate rather than copied — one source, no local literals (#900).
 #[cfg(feature = "didcomm")]
 use trust_tasks_didcomm::ENVELOPE_TYPE as TRUST_TASK_ENVELOPE_TYPE;
-#[cfg(feature = "didcomm")]
-use trust_tasks_rs::specs::push::wake::v0_2 as push_wake;
 use trust_tasks_rs::{RejectReason, TrustTask};
 use uuid::Uuid;
+#[cfg(feature = "didcomm")]
+use vti_specs::push::wake::v0_2 as push_wake;
 
 use crate::audit::audit;
 use crate::auth::AuthClaims;

@@ -780,7 +780,7 @@ async fn an_unknown_document_type_is_unsupported() {
 // read from the generated bindings.
 // ---------------------------------------------------------------------------
 
-use trust_tasks_rs::specs::vtc::install::claim::passkey as claim_spec;
+use vti_specs::vtc::install::claim::passkey as claim_spec;
 
 const START_ERR_INVALID_TOKEN: &str = claim_spec::start::v0_1::error_codes::INVALID_TOKEN.code;
 const FINISH_ERR_INVALID_TOKEN: &str = claim_spec::finish::v0_1::error_codes::INVALID_TOKEN.code;

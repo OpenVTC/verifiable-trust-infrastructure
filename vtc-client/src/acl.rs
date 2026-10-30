@@ -37,13 +37,13 @@ use crate::{HolderKey, MAX_DOCUMENT_RESPONSE_BYTES, VtcClient, VtcError, decode_
 
 /// The generated wire types for the family, re-exported so a caller names the
 /// reply types without depending on `trust-tasks-rs` itself.
-pub use trust_tasks_rs::specs::acl::{
+pub use vti_specs::acl::{
     grant::v0_2 as grant, list::v0_3 as list, revoke::v0_2 as revoke, show::v0_2 as show,
     swap_key::v0_1 as swap_key, update::v0_2 as update,
 };
 // acl/change-role/0.1 is the community-role door; 0.2 cannot express it (spec gap).
 #[allow(deprecated)]
-pub use trust_tasks_rs::specs::acl::change_role::v0_1 as change_role;
+pub use vti_specs::acl::change_role::v0_1 as change_role;
 
 /// The Type URI of each task in the family, read off the generated payloads.
 pub mod task {

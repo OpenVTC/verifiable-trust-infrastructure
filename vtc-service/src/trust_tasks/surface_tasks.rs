@@ -36,20 +36,20 @@
 
 use serde::Serialize;
 use serde_json::{Value, json};
-use trust_tasks_rs::specs::vtc::community::{
+use trust_tasks_rs::{Payload, RejectReason, TrustTask};
+use uuid::Uuid;
+use vti_specs::vtc::community::{
     branding::{show::v0_1 as branding_show, update::v0_1 as branding_update},
     join_discovery::{show::v0_1 as join_discovery_show, update::v0_1 as join_discovery_update},
     requested_attributes::{show::v0_1 as requested_show, update::v0_1 as requested_update},
     theme::{show::v0_1 as theme_show, update::v0_1 as theme_update},
 };
-use trust_tasks_rs::specs::vtc::join_requests::{
+use vti_specs::vtc::join_requests::{
     query::v0_1 as join_query, vetting::show::v0_1 as join_vetting_show,
 };
-use trust_tasks_rs::specs::vtc::relationships::{
-    restore::v0_2 as rel_restore, suspend::v0_2 as rel_suspend,
-};
-use trust_tasks_rs::specs::vtc::rooms::list::v0_2 as rooms_list;
-use trust_tasks_rs::specs::vtc::schemas::{
+use vti_specs::vtc::relationships::{restore::v0_2 as rel_restore, suspend::v0_2 as rel_suspend};
+use vti_specs::vtc::rooms::list::v0_2 as rooms_list;
+use vti_specs::vtc::schemas::{
     accepts::{
         delete::v0_1 as accepts_delete, list::v0_2 as accepts_list,
         register::v0_2 as accepts_register, show::v0_2 as accepts_show,
@@ -59,13 +59,11 @@ use trust_tasks_rs::specs::vtc::schemas::{
     register::v0_1 as schemas_register,
     show::v0_1 as schemas_show,
 };
-use trust_tasks_rs::specs::vtc::vetting::{
+use vti_specs::vtc::vetting::{
     auto_grant::{show::v0_1 as auto_grant_show, update::v0_1 as auto_grant_update},
     revocations::list::v0_1 as revocations_list,
     vetters::grants::list::v0_1 as grants_list,
 };
-use trust_tasks_rs::{Payload, RejectReason, TrustTask};
-use uuid::Uuid;
 
 use super::admin_tasks::member_signer;
 use super::helpers::{

@@ -28,9 +28,9 @@
 //! bound key, and is not answered here.
 
 use serde_json::Value;
-use trust_tasks_rs::specs::auth::whoami::v0_1 as whoami;
 use trust_tasks_rs::{Payload, RejectReason, StandardCode, TrustTask, TrustTaskCode};
 use vti_common::auth::session::{Session, SessionState, list_sessions, now_epoch};
+use vti_specs::auth::whoami::v0_1 as whoami;
 
 use super::helpers::{
     TrustTaskOutcome, app_error_to_reject, reject_with, reject_with_code, success_response,

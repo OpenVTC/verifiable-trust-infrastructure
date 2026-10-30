@@ -1,7 +1,7 @@
 //! The records the VTC keeps for its forge namespaces.
 //!
 //! These are **storage** shapes, not wire shapes. What goes on the wire is the
-//! generated type of the task being answered (`trust_tasks_rs::specs::git_ns`),
+//! generated type of the task being answered (`vti_specs::git_ns`),
 //! built from these by [`super::wire`]. Keeping the two apart is what lets a
 //! repository's rights stay keyed by an internal identifier — and so survive a
 //! rename on the forge — while every task still speaks in resources.

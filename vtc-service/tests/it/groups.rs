@@ -27,7 +27,7 @@ use vtc_service::test_support::{TEST_VTC_DID, TestVtc};
 
 use crate::common::signed::{call, error_code, seed_role};
 
-use trust_tasks_rs::specs::vtc::groups as g;
+use vti_specs::vtc::groups as g;
 
 const CREATE_ERR_RULE_INVALID: &str = g::create::v0_1::error_codes::RULE_INVALID.code;
 const CREATE_ERR_SETTINGS_INVALID: &str = g::create::v0_1::error_codes::SETTINGS_INVALID.code;
@@ -96,13 +96,11 @@ const SIGN_DOCUMENT: &str = "https://trusttasks.org/spec/keys/sign-document/0.1"
 const WEBVH_SERVERS_LIST: &str = "https://trusttasks.org/spec/vta/webvh/servers/list/1.0";
 const DID_HOSTING_LIST: &str = "https://trusttasks.org/spec/vtc/config/did-hosting/list/0.1";
 const DID_HOSTING_ERR_NO_KEY_HOLDER: &str =
-    trust_tasks_rs::specs::vtc::config::did_hosting::list::v0_1::error_codes::NO_KEY_HOLDER.code;
+    vti_specs::vtc::config::did_hosting::list::v0_1::error_codes::NO_KEY_HOLDER.code;
 const DID_HOSTING_ERR_KEY_HOLDER_UNAVAILABLE: &str =
-    trust_tasks_rs::specs::vtc::config::did_hosting::list::v0_1::error_codes::KEY_HOLDER_UNAVAILABLE
-        .code;
+    vti_specs::vtc::config::did_hosting::list::v0_1::error_codes::KEY_HOLDER_UNAVAILABLE.code;
 const DID_HOSTING_ERR_KEY_HOLDER_REFUSED: &str =
-    trust_tasks_rs::specs::vtc::config::did_hosting::list::v0_1::error_codes::KEY_HOLDER_REFUSED
-        .code;
+    vti_specs::vtc::config::did_hosting::list::v0_1::error_codes::KEY_HOLDER_REFUSED.code;
 const UNKNOWN_GROUP: &str = "grp_UnknownUnknownUnknown";
 
 fn task(name: &str) -> String {

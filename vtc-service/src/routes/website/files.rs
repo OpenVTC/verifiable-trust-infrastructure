@@ -339,7 +339,7 @@ pub(crate) async fn write_file(
 
 /// `vtc/website/files/delete:notFound` — no file exists at the supplied path.
 pub const FILES_DELETE_ERR_NOT_FOUND: &str =
-    trust_tasks_rs::specs::vtc::website::files::delete::v0_1::error_codes::NOT_FOUND.code;
+    vti_specs::vtc::website::files::delete::v0_1::error_codes::NOT_FOUND.code;
 
 /// `vtc/website/files/delete/0.1` — called from `trust_tasks::website_tasks`
 /// with `actor` the verified signer's DID (the audit trail's actor, in place

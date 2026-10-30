@@ -550,7 +550,7 @@ When adding a flow, add it here and a line to the root index.
   authority-conferring roles are never seated; an administrative role takes the
   bound gesture; `application` entries and removed records are refused for
   make-membership. Wire types, document policy and error codes are the
-  generated `trust_tasks_rs::specs::vtc::members::{admit, make_membership}`
+  generated `vti_specs::vtc::members::{admit, make_membership}`
   (trust-tasks-tf #784); a payload is schema-checked before it is parsed, so an
   out-of-schema `subject` / `role` is `malformedRequest`, never
   `roleNotPermitted`.
@@ -705,7 +705,7 @@ When adding a flow, add it here and a line to the root index.
   truth; the registry and the forge (through a per-community bridge) are
   projections of it.
 - **Wire**: the `git-ns/*` Trust Tasks, generated types under
-  `trust_tasks_rs::specs::git_ns`, served on the document dispatcher. Authority
+  `vti_specs::git_ns`, served on the document dispatcher. Authority
   is the proof signer's **git rights**, read at execution time — never a bearer
   token, and never the community-admin role (whose community-wide
   `git.ns.admin` only binds, reseats a headless namespace and ratifies). **One

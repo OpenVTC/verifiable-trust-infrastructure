@@ -132,10 +132,10 @@ pub(crate) const MAX_TTL_SECONDS: u64 = 24 * 60 * 60;
 /// `vtc/admin/invites/create:ttlTooLong` — `ttlSeconds` exceeds the 24-hour
 /// maximum.
 pub const CREATE_INVITE_ERR_TTL_TOO_LONG: &str =
-    trust_tasks_rs::specs::vtc::admin::invites::create::v0_1::error_codes::TTL_TOO_LONG.code;
+    vti_specs::vtc::admin::invites::create::v0_1::error_codes::TTL_TOO_LONG.code;
 /// `vtc/admin/invites/revoke:notFound` — no invite with that `jti`.
 pub const REVOKE_INVITE_ERR_NOT_FOUND: &str =
-    trust_tasks_rs::specs::vtc::admin::invites::revoke::v0_1::error_codes::NOT_FOUND.code;
+    vti_specs::vtc::admin::invites::revoke::v0_1::error_codes::NOT_FOUND.code;
 
 /// What [`check_invite`] decided, carried to [`commit_invite`] once the
 /// caller has settled whatever the invite costs.

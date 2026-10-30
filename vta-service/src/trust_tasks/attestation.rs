@@ -15,10 +15,10 @@
 //!   this spec landed.
 
 use serde_json::Value;
-use trust_tasks_rs::specs::vta::attestation::mnemonic_export::v1_1 as mnemonic_export_spec;
 use trust_tasks_rs::{RejectReason, TrustTask};
 use vta_sdk::sealed_transfer::BootstrapRequest;
 use vti_common::error::AppError;
+use vti_specs::vta::attestation::mnemonic_export::v1_1 as mnemonic_export_spec;
 
 use super::helpers::{
     TrustTaskOutcome, app_error_to_reject, parse_payload, reject_declared, reject_with,
@@ -28,7 +28,7 @@ use super::transport::{self, TransportConfidentiality};
 use crate::auth::AuthClaims;
 use crate::operations;
 use crate::server::AppState;
-use trust_tasks_rs::specs::vta::attestation::{
+use vti_specs::vta::attestation::{
     config_report::v0_1 as config_report_spec, mnemonic_status::v0_2 as mnemonic_status_spec,
     report::v0_1 as report_spec, status::v0_1 as status_spec,
 };

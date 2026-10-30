@@ -1834,7 +1834,7 @@ impl VtaClient {
     /// the failure moves earlier and gets more legible, it does not get more
     /// frequent.
     fn check_payload_conforms(type_uri: &str, payload: &serde_json::Value) -> Result<(), VtaError> {
-        let Some(schema) = trust_tasks_rs::schema_index::schema_for(type_uri) else {
+        let Some(schema) = vti_specs::schema_index::schema_for(type_uri) else {
             return Ok(());
         };
         trust_tasks_rs::validate::against_schema(schema, payload).map_err(|e| {
@@ -2877,7 +2877,7 @@ impl VtaClient {
     #[cfg(feature = "client")]
     pub async fn health_details(
         &self,
-    ) -> Result<trust_tasks_rs::specs::vta::health::details::v0_1::Response, VtaError> {
+    ) -> Result<vti_specs::vta::health::details::v0_1::Response, VtaError> {
         self.rpc_tt(
             crate::trust_tasks::TASK_VTA_HEALTH_DETAILS_0_1,
             serde_json::json!({}),
@@ -2898,8 +2898,8 @@ impl VtaClient {
     #[cfg(feature = "client")]
     pub async fn restore_status(
         &self,
-    ) -> Result<trust_tasks_rs::specs::vta::restore::status::v0_1::Response, VtaError> {
-        let resp: trust_tasks_rs::specs::vta::restore::status::v0_1::Response = self
+    ) -> Result<vti_specs::vta::restore::status::v0_1::Response, VtaError> {
+        let resp: vti_specs::vta::restore::status::v0_1::Response = self
             .rpc_tt(
                 crate::trust_tasks::TASK_VTA_RESTORE_STATUS_0_1,
                 serde_json::json!({}),
@@ -2928,7 +2928,7 @@ impl VtaClient {
     #[cfg(feature = "client")]
     pub async fn list_my_sessions(
         &self,
-    ) -> Result<trust_tasks_rs::specs::auth::sessions::list::v0_1::Response, VtaError> {
+    ) -> Result<vti_specs::auth::sessions::list::v0_1::Response, VtaError> {
         self.rpc_tt(
             crate::trust_tasks::TASK_AUTH_SESSIONS_LIST_0_1,
             serde_json::json!({}),
@@ -2960,7 +2960,7 @@ impl VtaClient {
         if let Some(reason) = reason {
             payload["reason"] = serde_json::Value::String(reason.to_string());
         }
-        let resp: trust_tasks_rs::specs::auth::revoke_session::v0_2::Response = self
+        let resp: vti_specs::auth::revoke_session::v0_2::Response = self
             .rpc_tt(
                 crate::trust_tasks::TASK_AUTH_REVOKE_SESSION_0_2,
                 payload,
@@ -4405,7 +4405,7 @@ mod client_identity_tests {
         let mut saw_proof_required = false;
 
         for uri in URIS {
-            let policy = trust_tasks_rs::schema_index::spec_policy_for(uri).unwrap_or_else(|| {
+            let policy = vti_specs::schema_index::spec_policy_for(uri).unwrap_or_else(|| {
                 panic!("{uri} has no published policy — the registry moved under this test")
             });
             saw_proof_required |= policy.is_proof_required;

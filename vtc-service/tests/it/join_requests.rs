@@ -4472,7 +4472,7 @@ async fn requested_attributes_are_published_enforced_and_kept_with_the_request()
 // test looks at the constant it claims to.
 // ---------------------------------------------------------------------------
 
-use trust_tasks_rs::specs::vtc as spec;
+use vti_specs::vtc as spec;
 
 const DECIDE_ERR_NOT_FOUND: &str = spec::join_requests::decide::v0_1::error_codes::NOT_FOUND.code;
 const DECIDE_ERR_NOT_PENDING: &str =

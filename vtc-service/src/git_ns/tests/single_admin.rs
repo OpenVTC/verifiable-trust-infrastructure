@@ -10,10 +10,10 @@
 
 use serde::Serialize;
 use serde::de::DeserializeOwned;
-use trust_tasks_rs::specs::git_ns::drift::resolve::v0_4 as resolve3;
-use trust_tasks_rs::specs::git_ns::repo::{adopt::v0_3 as adopt, create::v0_4 as create};
-use trust_tasks_rs::specs::git_ns::right::grant::v0_4 as grant3;
 use vti_common::audit::{AuditEvent, AuditSeverity, SingleAdminModeData};
+use vti_specs::git_ns::drift::resolve::v0_4 as resolve3;
+use vti_specs::git_ns::repo::{adopt::v0_3 as adopt, create::v0_4 as create};
+use vti_specs::git_ns::right::grant::v0_4 as grant3;
 
 use super::*;
 use crate::git_ns::model::Right;

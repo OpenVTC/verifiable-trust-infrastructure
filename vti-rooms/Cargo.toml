@@ -62,8 +62,10 @@ test-support = ["host", "dep:tempfile"]
 # Note this does not adopt the generated `specs::rooms` types; see `wire.rs`'s
 # header for why these stay hand-written. The dependency buys the trait and the
 # schema index, not a replacement for the shapes.
-# Spec families: see "SPEC FAMILIES ARE DECLARED PER CRATE" in the workspace Cargo.toml.
-trust-tasks-rs = { workspace = true, features = ["rooms"] }
+trust-tasks-rs = { workspace = true }
+# The generated Trust Task wire types, at the versions VTI pins (CLAUDE.md,
+# "Pinning a task version").
+vti-specs-rooms = { path = "../vti-specs-rooms", version = "0.1" }
 # The store abstraction and AppError. This crate's only internal dependency:
 # a room's storage and authorization need nothing from a community service,
 # which is the whole reason they are extractable.

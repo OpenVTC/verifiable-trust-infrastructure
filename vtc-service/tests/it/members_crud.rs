@@ -26,9 +26,9 @@ use vtc_service::test_support::TestVtc;
 /// The code `vtc/members/credentials/0.1` declares for an unknown member, read
 /// from the generated bindings rather than spelled out (#1600).
 const MEMBER_CREDENTIALS_ERR_NOT_FOUND: &str =
-    trust_tasks_rs::specs::vtc::members::credentials::v0_1::error_codes::NOT_FOUND.code;
+    vti_specs::vtc::members::credentials::v0_1::error_codes::NOT_FOUND.code;
 
-use trust_tasks_rs::specs::vtc::members as members_spec;
+use vti_specs::vtc::members as members_spec;
 
 /// The codes the other `vtc/members/*` tasks declare, likewise generated.
 const SHOW_ERR_NOT_FOUND: &str = members_spec::show::v0_1::error_codes::NOT_FOUND.code;

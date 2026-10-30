@@ -20,9 +20,9 @@
 
 use serde_json::Value;
 use trust_tasks_rs::TrustTask;
-use trust_tasks_rs::specs::rooms::keys::profile::{read as spec_read, write as spec_write};
 use vti_common::acl::Capability;
 use vti_common::error::AppError;
+use vti_specs::rooms::keys::profile::{read as spec_read, write as spec_write};
 
 use crate::auth::AuthClaims;
 use crate::operations::room_groups::{self, Member};
@@ -312,7 +312,7 @@ impl<'a> Speaker<'a> {
             )
             .await
             .map_err(|e| host_error(self.host, e))?;
-        let listing: trust_tasks_rs::specs::rooms::records::list::v0_5::Response =
+        let listing: vti_specs::rooms::records::list::v0_5::Response =
             serde_json::from_value(reply).map_err(|e| {
                 ProfileError::App(AppError::Internal(format!(
                     "room host `{}` served a listing this agent cannot read: {e}",

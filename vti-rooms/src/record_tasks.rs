@@ -9,13 +9,13 @@
 //! so the two hosts cannot answer one task two ways.
 
 use serde_json::{Value, json};
-use trust_tasks_rs::specs::rooms::create::v0_2 as create_v2;
-use trust_tasks_rs::specs::rooms::info::v0_3 as info_v3;
-use trust_tasks_rs::specs::rooms::records::list::v0_5 as list_v5;
-use trust_tasks_rs::specs::rooms::records::prune::v0_2 as prune_spec;
-use trust_tasks_rs::specs::rooms::records::retention::set::v0_1 as set_spec;
 use vti_common::error::AppError;
 use vti_common::store::KeyspaceHandle;
+use vti_specs_rooms::rooms::create::v0_2 as create_v2;
+use vti_specs_rooms::rooms::info::v0_3 as info_v3;
+use vti_specs_rooms::rooms::records::list::v0_5 as list_v5;
+use vti_specs_rooms::rooms::records::prune::v0_2 as prune_spec;
+use vti_specs_rooms::rooms::records::retention::set::v0_1 as set_spec;
 
 use crate::Room;
 use crate::authz::{Action, AuthorizedAction};
@@ -385,7 +385,7 @@ pub fn epoch_chain_v2_response(response: impl serde::Serialize, room: &Room) -> 
     if let Some(floor) = room.epoch_floor {
         body["epochFloor"] = json!(floor);
     }
-    checked::<trust_tasks_rs::specs::rooms::epoch::chain::v0_2::Response>(body)
+    checked::<vti_specs_rooms::rooms::epoch::chain::v0_2::Response>(body)
 }
 
 /// The 0.1 members of a `rooms/epoch/prune` response, answered as 0.2: and the room's epoch floor after the
@@ -394,7 +394,7 @@ pub fn epoch_prune_v2_response(response: impl serde::Serialize, floor: u32) -> T
     let mut body =
         serde_json::to_value(response).map_err(|e| Refusal::App(AppError::Serialization(e)))?;
     body["epochFloor"] = json!(floor);
-    checked::<trust_tasks_rs::specs::rooms::epoch::prune::v0_2::Response>(body)
+    checked::<vti_specs_rooms::rooms::epoch::prune::v0_2::Response>(body)
 }
 
 /// Whether a task is one of these, which a host routes here.

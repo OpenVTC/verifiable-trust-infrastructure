@@ -7,13 +7,13 @@
 use super::helpers::TrustTaskOutcome;
 use serde_json::Value;
 use trust_tasks_rs::TrustTask;
-use trust_tasks_rs::specs::vta::contexts::delete::v1_1::Payload as DeletePayload;
-use trust_tasks_rs::specs::vta::contexts::update_did::v1_1::Payload as UpdateDidPayload;
 use vta_sdk::protocols::context_management::create::CreateContextBody;
 use vta_sdk::protocols::context_management::delete::DeleteContextPreviewBody;
 use vta_sdk::protocols::context_management::get::GetContextBody;
 use vta_sdk::protocols::context_management::list::ListContextsBody;
 use vta_sdk::protocols::context_management::update::UpdateContextBody;
+use vti_specs::vta::contexts::delete::v1_1::Payload as DeletePayload;
+use vti_specs::vta::contexts::update_did::v1_1::Payload as UpdateDidPayload;
 
 use crate::auth::AuthClaims;
 use crate::operations;

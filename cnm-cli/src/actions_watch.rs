@@ -22,8 +22,10 @@ use crate::vtc::VtcTarget;
 
 type CliResult<T> = Result<T, Box<dyn std::error::Error>>;
 
-const SUBSCRIBE: &str = <trust_tasks_rs::specs::vtc::admin::events::subscribe::v0_6::Payload as trust_tasks_rs::Payload>::TYPE_URI;
-const EVENT: &str = <trust_tasks_rs::specs::vtc::admin::events::event::v0_5::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+const SUBSCRIBE: &str =
+    <vti_specs::vtc::admin::events::subscribe::v0_6::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+const EVENT: &str =
+    <vti_specs::vtc::admin::events::event::v0_5::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 const STREAM_ACCEPT: &str = "text/event-stream, application/json;q=0.5";
 const ALL_TOPICS: [&str; 6] = [
     "actions",

@@ -63,11 +63,11 @@ use chrono::{DateTime, TimeDelta, Utc};
 use dtg_credentials::{DTGCredential, IssuerScope};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use trust_tasks_rs::specs::witness::session;
 use trust_tasks_rs::validate::ValidatedPayload;
 use trust_tasks_rs::{ErrorPayload, RejectReason, StandardCode, TrustTask};
 use vta_sdk::trust_task_proof::TrustTaskVmResolver;
 use vta_sdk::trust_task_sign::{HolderKey, sign_object_for_assertion};
+use vti_specs::witness::session;
 
 use crate::config::{ANY_COMMUNITY, SessionLimits, WitnessConfig, WitnessIdentity};
 use crate::presentation::{self, Expected};

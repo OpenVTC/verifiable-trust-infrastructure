@@ -29,12 +29,12 @@
 //! is: a room holds at most one.
 
 use serde_json::Value;
-use trust_tasks_rs::specs::rooms::owner::group::{
-    add as spec_add, create as spec_create, remove as spec_remove, renew as spec_renew,
-};
 use trust_tasks_rs::{DeclaredErrorCode, TrustTask};
 use vti_common::acl::Capability;
 use vti_common::error::AppError;
+use vti_specs::rooms::owner::group::{
+    add as spec_add, create as spec_create, remove as spec_remove, renew as spec_renew,
+};
 
 use crate::auth::AuthClaims;
 use crate::operations::room_groups::{
@@ -1180,7 +1180,7 @@ impl<'a> HostCall<'a> {
     }
 }
 
-use trust_tasks_rs::specs::rooms::revocations::put::v0_1::error_codes as put_codes;
+use vti_specs::rooms::revocations::put::v0_1::error_codes as put_codes;
 
 /// What a host's refusal of a redelivered list shows (`rooms/owner/group/remove/0.4` item
 /// 8.2).

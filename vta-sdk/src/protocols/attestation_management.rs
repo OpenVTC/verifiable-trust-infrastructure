@@ -2,7 +2,7 @@
 //!
 //! The attestation reads are Trust Tasks — `spec/vta/attestation/{status,
 //! report,config-report}/0.1`, generated under
-//! `trust_tasks_rs::specs::vta::attestation` — dispatched on the VTA's spine
+//! `vti_specs::vta::attestation` — dispatched on the VTA's spine
 //! over every transport. The bespoke `firstperson.network/vta/1.0/attestation/*`
 //! DIDComm messages that used to sit here are gone: nothing sent them, and a
 //! bare protocol message is not a carriage the Trust Task bindings allow.

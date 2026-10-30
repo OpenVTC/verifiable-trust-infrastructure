@@ -27,9 +27,9 @@ use crate::auth::AuthClaims;
 use crate::error::AppError;
 use crate::store::KeyspaceHandle;
 
-use trust_tasks_rs::specs::device::heartbeat::v0_3 as heartbeat_spec;
-use trust_tasks_rs::specs::device::list::v0_3 as list_spec;
-use trust_tasks_rs::specs::device::register::v0_2 as register_spec;
+use vti_specs::device::heartbeat::v0_3 as heartbeat_spec;
+use vti_specs::device::list::v0_3 as list_spec;
+use vti_specs::device::register::v0_2 as register_spec;
 
 // The extension key a device uses to correct its own `displayName`
 // (`org.openvtc.device-name`) is defined by the SDK that produces it, and

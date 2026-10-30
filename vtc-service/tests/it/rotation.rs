@@ -614,7 +614,7 @@ async fn rotation_without_a_reason_records_none() {
 // the generated bindings.
 // ---------------------------------------------------------------------------
 
-use trust_tasks_rs::specs::vtc::members::{rotate, rotate_challenge};
+use vti_specs::vtc::members::{rotate, rotate_challenge};
 
 const ROTATE_CHALLENGE_ERR_NOT_MEMBER: &str = rotate_challenge::v0_1::error_codes::NOT_MEMBER.code;
 const ROTATE_ERR_ROTATION_EXPIRED: &str = rotate::v0_1::error_codes::ROTATION_EXPIRED.code;

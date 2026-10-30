@@ -128,11 +128,11 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tracing::warn;
-use trust_tasks_rs::specs::task_consent::decision::v0_2 as decision;
-use trust_tasks_rs::specs::task_consent::request::v0_1 as request;
 use vti_common::audit::AuditEvent;
 use vti_common::error::AppError;
 use vti_common::task_consent::{self, effects::StatePin};
+use vti_specs::task_consent::decision::v0_2 as decision;
+use vti_specs::task_consent::request::v0_1 as request;
 
 use super::{CapRef, Capability, ResourceQualifier, VtcAclEntry, get_acl_entry, list_acl_entries};
 use crate::auth::session::now_epoch;

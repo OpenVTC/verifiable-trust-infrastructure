@@ -51,11 +51,11 @@ use crate::protocols::persona::{
     PersonaRenderersListBody, ProfileEntry, Provenance, ValueType,
 };
 use crate::trust_tasks;
-use trust_tasks_rs::specs::persona::attribute::get::v1_0 as attribute_get;
-use trust_tasks_rs::specs::persona::claim_types::list::v1_0 as claim_types_list;
-use trust_tasks_rs::specs::persona::world::delete::v1_0 as world_delete;
-use trust_tasks_rs::specs::persona::world::list::v1_0 as world_list;
-use trust_tasks_rs::specs::persona::world::put::v1_1 as world_put;
+use vti_specs::persona::attribute::get::v1_0 as attribute_get;
+use vti_specs::persona::claim_types::list::v1_0 as claim_types_list;
+use vti_specs::persona::world::delete::v1_0 as world_delete;
+use vti_specs::persona::world::list::v1_0 as world_list;
+use vti_specs::persona::world::put::v1_1 as world_put;
 
 /// Round-trip timeout (seconds) for persona trust tasks. Matches the
 /// application-state and memory slices: these are local store operations, and
@@ -241,8 +241,7 @@ impl VtaClient {
         &self,
         attribute_id: &str,
         versions: Option<&[u64]>,
-    ) -> Result<trust_tasks_rs::specs::persona::attribute::purge_version::v1_0::Response, VtaError>
-    {
+    ) -> Result<vti_specs::persona::attribute::purge_version::v1_0::Response, VtaError> {
         let mut payload = serde_json::json!({ "attributeId": attribute_id });
         if let Some(v) = versions {
             payload["versions"] = serde_json::json!(v);
@@ -268,7 +267,7 @@ impl VtaClient {
         profile_id: &str,
         entries: &[u64],
         expected_version: u64,
-    ) -> Result<trust_tasks_rs::specs::persona::attribute::promote::v1_1::Response, VtaError> {
+    ) -> Result<vti_specs::persona::attribute::promote::v1_1::Response, VtaError> {
         self.rpc_tt(
             trust_tasks::TASK_PERSONA_ATTRIBUTE_PROMOTE_1_1,
             serde_json::json!({
@@ -295,8 +294,8 @@ impl VtaClient {
     /// in `scope`.
     pub async fn persona_profile_compose(
         &self,
-        payload: &trust_tasks_rs::specs::persona::profile::compose::v1_1::Payload,
-    ) -> Result<trust_tasks_rs::specs::persona::profile::compose::v1_1::Response, VtaError> {
+        payload: &vti_specs::persona::profile::compose::v1_1::Payload,
+    ) -> Result<vti_specs::persona::profile::compose::v1_1::Response, VtaError> {
         self.rpc_tt(
             trust_tasks::TASK_PERSONA_PROFILE_COMPOSE_1_1,
             body(payload)?,
@@ -314,7 +313,7 @@ impl VtaClient {
         name: &str,
         entries: Vec<ProfileEntry>,
         credential_refs: Vec<String>,
-        reach: Option<trust_tasks_rs::specs::persona::profile::put::v1_1::FaceReach>,
+        reach: Option<vti_specs::persona::profile::put::v1_1::FaceReach>,
         profile_id: Option<&str>,
         expected_version: Option<u64>,
     ) -> Result<Value, VtaError> {
@@ -412,7 +411,7 @@ impl VtaClient {
         &self,
         profile_id: &str,
         context_id: Option<&str>,
-    ) -> Result<trust_tasks_rs::specs::persona::profile::usage::v1_0::Response, VtaError> {
+    ) -> Result<vti_specs::persona::profile::usage::v1_0::Response, VtaError> {
         let mut payload = serde_json::json!({ "profileId": profile_id });
         if let Some(c) = context_id {
             payload["contextId"] = c.into();
@@ -434,7 +433,7 @@ impl VtaClient {
         since: Option<&str>,
         cursor: Option<&str>,
         limit: Option<u64>,
-    ) -> Result<trust_tasks_rs::specs::persona::profile::timeline::v1_1::Response, VtaError> {
+    ) -> Result<vti_specs::persona::profile::timeline::v1_1::Response, VtaError> {
         let mut payload = serde_json::json!({ "profileId": profile_id });
         if let Some(c) = context_id {
             payload["contextId"] = c.into();
@@ -464,7 +463,7 @@ impl VtaClient {
         profile_id: &str,
         context_id: Option<&str>,
         expected_version: Option<u64>,
-    ) -> Result<trust_tasks_rs::specs::persona::profile::retire::v1_0::Response, VtaError> {
+    ) -> Result<vti_specs::persona::profile::retire::v1_0::Response, VtaError> {
         let mut payload = serde_json::json!({ "profileId": profile_id });
         if let Some(c) = context_id {
             payload["contextId"] = c.into();
@@ -487,7 +486,7 @@ impl VtaClient {
         profile_id: &str,
         context_id: Option<&str>,
         expected_version: Option<u64>,
-    ) -> Result<trust_tasks_rs::specs::persona::profile::reinstate::v1_0::Response, VtaError> {
+    ) -> Result<vti_specs::persona::profile::reinstate::v1_0::Response, VtaError> {
         let mut payload = serde_json::json!({ "profileId": profile_id });
         if let Some(c) = context_id {
             payload["contextId"] = c.into();

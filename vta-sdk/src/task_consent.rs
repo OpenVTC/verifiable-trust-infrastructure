@@ -29,9 +29,9 @@
 use serde_json::Value;
 
 /// The generated `task-consent/decision/0.2` types.
-pub use trust_tasks_rs::specs::task_consent::decision::v0_2 as decision;
+pub use vti_specs::task_consent::decision::v0_2 as decision;
 /// The generated `task-consent/request/0.1` types.
-pub use trust_tasks_rs::specs::task_consent::request::v0_1 as request;
+pub use vti_specs::task_consent::request::v0_1 as request;
 
 /// Type URI of the request document an approver answers.
 pub const REQUEST_TYPE: &str = <request::Payload as trust_tasks_rs::Payload>::TYPE_URI;

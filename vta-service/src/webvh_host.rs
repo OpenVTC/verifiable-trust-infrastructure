@@ -25,7 +25,7 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 use trust_tasks_rs::RequestPayload;
-use trust_tasks_rs::specs::did_management as dm;
+use vti_specs::did_management as dm;
 
 use crate::didcomm_bridge::DIDCommBridge;
 use crate::error::{AppError, bad_gateway_error};

@@ -48,25 +48,25 @@ use utoipa::openapi::schema::{
 use utoipa::openapi::{Ref, RefOr};
 
 use crate::protocols::vetting::vetters;
-use trust_tasks_rs::specs::credential_exchange;
-use trust_tasks_rs::specs::did_management::did::register;
-use trust_tasks_rs::specs::git_ns::view as git_ns_view;
-use trust_tasks_rs::specs::vtc::config;
-use trust_tasks_rs::specs::vtc::directory;
-use trust_tasks_rs::specs::vtc::endorsement_types;
-use trust_tasks_rs::specs::vtc::groups;
-use trust_tasks_rs::specs::vtc::invitations::deliver as invitation_deliver;
-use trust_tasks_rs::specs::vtc::join_requests::manifest;
-use trust_tasks_rs::specs::vtc::members::credentials as member_credentials;
-use trust_tasks_rs::specs::vtc::registry::{records, sync_jobs};
-use trust_tasks_rs::specs::vtc::rooms::{
+use vti_specs::credential_exchange;
+use vti_specs::did_management::did::register;
+use vti_specs::git_ns::view as git_ns_view;
+use vti_specs::vtc::config;
+use vti_specs::vtc::directory;
+use vti_specs::vtc::endorsement_types;
+use vti_specs::vtc::groups;
+use vti_specs::vtc::invitations::deliver as invitation_deliver;
+use vti_specs::vtc::join_requests::manifest;
+use vti_specs::vtc::members::credentials as member_credentials;
+use vti_specs::vtc::registry::{records, sync_jobs};
+use vti_specs::vtc::rooms::{
     community as rooms_community, get as rooms_get, limits::set as rooms_limits_set,
     storage::assign as rooms_storage_assign, storage::migrate as rooms_storage_migrate,
     usage as rooms_usage,
 };
-use trust_tasks_rs::specs::vtc::schemas::accepts;
-use trust_tasks_rs::specs::vtc::storage::configs as storage_configs;
-use trust_tasks_rs::specs::vtc::storage::credentials::set as storage_credentials_set;
+use vti_specs::vtc::schemas::accepts;
+use vti_specs::vtc::storage::configs as storage_configs;
+use vti_specs::vtc::storage::credentials::set as storage_credentials_set;
 
 /// Transparent wrappers documenting generated types, one per line.
 macro_rules! spec_types {

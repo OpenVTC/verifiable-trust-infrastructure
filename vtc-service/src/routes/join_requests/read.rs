@@ -13,7 +13,7 @@ use crate::server::AppState;
 
 /// `vtc/join-requests/show:notFound` — no join request with the supplied id.
 pub const SHOW_ERR_NOT_FOUND: &str =
-    trust_tasks_rs::specs::vtc::join_requests::show::v0_1::error_codes::NOT_FOUND.code;
+    vti_specs::vtc::join_requests::show::v0_1::error_codes::NOT_FOUND.code;
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]

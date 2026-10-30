@@ -173,7 +173,7 @@ pub async fn call(
 
 /// `doc`'s payload validates against `type_uri`'s published `#response` schema.
 pub fn assert_conforms(type_uri: &str, doc: &Value) {
-    let schema = trust_tasks_rs::schema_index::schema_for(&format!("{type_uri}#response"))
+    let schema = vti_specs::schema_index::schema_for(&format!("{type_uri}#response"))
         .unwrap_or_else(|| panic!("{type_uri} publishes no #response schema"));
     trust_tasks_rs::validate::against_schema(schema, &doc["payload"]).unwrap_or_else(|e| {
         panic!("{type_uri}: the response does not match its published schema: {e}\n{doc}")

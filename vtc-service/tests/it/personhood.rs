@@ -472,7 +472,7 @@ async fn revoke_returns_the_declared_not_found_for_unknown_member() {
 //
 // Read from the generated bindings, never spelled here.
 
-use trust_tasks_rs::specs::vtc::members::personhood as personhood_spec;
+use vti_specs::vtc::members::personhood as personhood_spec;
 
 const CHALLENGE_ERR_NOT_FOUND: &str = personhood_spec::challenge::v0_1::error_codes::NOT_FOUND.code;
 const ASSERT_ERR_NOT_FOUND: &str = personhood_spec::assert::v0_1::error_codes::NOT_FOUND.code;

@@ -33,11 +33,11 @@
 
 use super::helpers::TrustTaskOutcome;
 use serde_json::{Value, json};
-use trust_tasks_rs::specs::auth::authenticate::v0_3 as authenticate_v3;
-use trust_tasks_rs::specs::auth::refresh::v0_2 as refresh_v2;
-use trust_tasks_rs::specs::auth::revoke_session::v0_2 as revoke_session_spec;
 use trust_tasks_rs::{RejectReason, TrustTask};
 use vta_sdk::protocols::auth::epoch_to_rfc3339;
+use vti_specs::auth::authenticate::v0_3 as authenticate_v3;
+use vti_specs::auth::refresh::v0_2 as refresh_v2;
+use vti_specs::auth::revoke_session::v0_2 as revoke_session_spec;
 
 use crate::acl::{check_acl_entry, effective_capabilities};
 use crate::audit::audit;
@@ -85,7 +85,7 @@ pub(crate) async fn dispatch_pre_session(state: &AppState, body: &[u8]) -> Trust
     // The generic dispatch spine runs this too (`dispatch_trust_task_validated`);
     // this family bypasses that spine entirely, so it runs its own copy rather
     // than silently going without.
-    if let Some(policy) = trust_tasks_rs::schema_index::spec_policy_for(&type_uri)
+    if let Some(policy) = vti_specs::schema_index::spec_policy_for(&type_uri)
         && let Err(reason) = policy.enforce(&doc)
     {
         return reject_with(&doc, reason);

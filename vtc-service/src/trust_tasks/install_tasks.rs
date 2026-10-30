@@ -36,13 +36,13 @@
 //! adaptation; it already took nothing but the setup-session token.
 
 use serde_json::Value;
-use trust_tasks_rs::specs::vtc::admin::bootstrap::v0_1 as bootstrap;
-use trust_tasks_rs::specs::vtc::install::claim::{
+use trust_tasks_rs::{Payload, RejectReason, TrustTask};
+use vti_specs::vtc::admin::bootstrap::v0_1 as bootstrap;
+use vti_specs::vtc::install::claim::{
     finish::v0_3 as claim_finish_v0_3,
     passkey::{finish::v0_1 as claim_finish, start::v0_1 as claim_start},
     start::v0_3 as claim_start_v0_3,
 };
-use trust_tasks_rs::{Payload, RejectReason, TrustTask};
 
 use super::helpers::{TrustTaskOutcome, reject_with, success_response, task_error_to_reject};
 use super::{JoinAuthCtx, parse_spec_payload};

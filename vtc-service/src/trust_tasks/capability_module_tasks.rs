@@ -44,11 +44,11 @@
 //! `parse_capability_reply` reads.
 
 use serde_json::{Value, json};
-use trust_tasks_rs::specs::governance::capability::{
-    disable::v0_1 as disable, enable::v0_1 as enable, list::v0_1 as list,
-};
 use trust_tasks_rs::validate::ValidatedPayload;
 use trust_tasks_rs::{Payload, RejectReason, TrustTask};
+use vti_specs::governance::capability::{
+    disable::v0_1 as disable, enable::v0_1 as enable, list::v0_1 as list,
+};
 
 use super::helpers::{
     TrustTaskOutcome, app_error_to_reject, extended_code, reject_with, reject_with_code,

@@ -13,18 +13,6 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use serde_json::Value;
-use trust_tasks_rs::specs::rooms::blobs::chunk::v0_1 as download_chunk;
-use trust_tasks_rs::specs::rooms::blobs::get::v0_2 as blob_get_v2;
-use trust_tasks_rs::specs::rooms::blobs::upload::{
-    abort::v0_2 as upload_abort_v2, begin::v0_2 as upload_begin_v2, chunk::v0_2 as upload_chunk_v2,
-    commit::v0_2 as upload_commit_v2,
-};
-use trust_tasks_rs::specs::rooms::records::get::v0_2 as get_v2;
-use trust_tasks_rs::specs::rooms::usage::v0_1 as rooms_usage;
-use trust_tasks_rs::specs::rooms::{
-    epoch::chain::v0_2 as epoch_chain_v2, epoch::prune::v0_2 as epoch_prune_v2,
-    info::v0_3 as info_v3, records::list::v0_5 as list_v5, records::prune::v0_2 as records_prune,
-};
 use trust_tasks_rs::{RejectReason, TrustTask};
 use vti_common::error::AppError;
 use vti_common::store::Store;
@@ -34,6 +22,18 @@ use vti_rooms::blobs::{BlobHost, UploadCaller};
 use vti_rooms::record_tasks;
 use vti_rooms::wire::{AuthorityPresentation, GetRecordBody, ListRecordsBody, PutRecordBody};
 use vti_rooms::{Room, storage};
+use vti_specs::rooms::blobs::chunk::v0_1 as download_chunk;
+use vti_specs::rooms::blobs::get::v0_2 as blob_get_v2;
+use vti_specs::rooms::blobs::upload::{
+    abort::v0_2 as upload_abort_v2, begin::v0_2 as upload_begin_v2, chunk::v0_2 as upload_chunk_v2,
+    commit::v0_2 as upload_commit_v2,
+};
+use vti_specs::rooms::records::get::v0_2 as get_v2;
+use vti_specs::rooms::usage::v0_1 as rooms_usage;
+use vti_specs::rooms::{
+    epoch::chain::v0_2 as epoch_chain_v2, epoch::prune::v0_2 as epoch_prune_v2,
+    info::v0_3 as info_v3, records::list::v0_5 as list_v5, records::prune::v0_2 as records_prune,
+};
 
 use super::handlers::{RoomCtx, charged, now, presenter_and_verifier};
 use super::storage_configs::RoomStorage;

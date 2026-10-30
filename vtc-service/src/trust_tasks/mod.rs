@@ -199,7 +199,7 @@ mod conformance;
 // The declared-error-code census (#1600): every extended error code a bound,
 // published `spec/vtc/*` task declares must be witnessed by a test that
 // observes the service emitting it. Derived from the same census as
-// `conformance`, and from `trust_tasks_rs::schema_index::error_codes_for`.
+// `conformance`, and from `vti_specs::schema_index::error_codes_for`.
 #[cfg(test)]
 mod error_code_census;
 
@@ -208,40 +208,40 @@ mod error_code_census;
 mod spec_pin_census;
 
 use serde_json::Value;
-use trust_tasks_rs::specs::vtc::members::personhood::{assert::v0_2 as pa, challenge::v0_1 as pc};
+use vti_specs::vtc::members::personhood::{assert::v0_2 as pa, challenge::v0_1 as pc};
 // The admin-facing member verbs (#1641 phase 2). Their wire types are
 // generated from the published schemas, so there is no hand-written SDK
 // constant to import and the Type URIs below are read off the payload types.
-use trust_tasks_rs::specs::vtc::members::{
+use vti_specs::vtc::members::{
     admin_remove::v0_1 as member_admin_remove, credentials::v0_1 as member_credentials,
     purge::v0_1 as member_purge, update::v0_1 as member_update,
 };
 // The admin verbs #1641 phase 2 batch 2 moved: the join decision and the
 // community profile edit. Same story — generated wire types, Type URIs read
 // off the payload types.
-use trust_tasks_rs::specs::vtc::community::profile::update::v0_1 as community_profile_update;
-use trust_tasks_rs::specs::vtc::join_requests::decide::v0_1 as join_decide;
+use vti_specs::vtc::community::profile::update::v0_1 as community_profile_update;
+use vti_specs::vtc::join_requests::decide::v0_1 as join_decide;
 // Batch 3: the portable-configuration pair.
-use trust_tasks_rs::specs::vtc::config::{
+use vti_specs::vtc::config::{
     did_hosting::list::v0_1 as did_hosting_list, export::v0_1 as config_export,
     import::v0_1 as config_import,
 };
 // Batch 4: the endorsement-type registry's two writes.
-use trust_tasks_rs::specs::vtc::endorsement_types::{
+use vti_specs::vtc::endorsement_types::{
     delete::v0_1 as endorsement_type_delete, register::v0_1 as endorsement_type_register,
 };
 // Batch 5: the backup export. Its `import` partner waits — see the design note.
-use trust_tasks_rs::specs::vtc::backup::export::v0_1 as backup_export;
+use vti_specs::vtc::backup::export::v0_1 as backup_export;
 // The answer to the operation-bound step-up an ACL write asks for (#1641;
 // design note `vtc-operation-bound-step-up.md`). 0.6 is the version served;
 // it adds `approverSigned` evidence — a step-up approver's statement — beside
 // the passkey (design note `vtc-approver-step-up.md`).
-use trust_tasks_rs::specs::auth::step_up::approve_response::v0_6 as step_up_approve_response_v0_6;
+use vti_specs::auth::step_up::approve_response::v0_6 as step_up_approve_response_v0_6;
 // 0.4 only for the console's unsigned session-passkey answer: 0.5 onward
 // requires a proof the console cannot make (no successor yet — a spec gap).
-#[allow(deprecated)]
-use trust_tasks_rs::specs::auth::step_up::approve_response::v0_4 as step_up_approve_response_v0_4;
 use trust_tasks_rs::{RejectReason, TrustTask};
+#[allow(deprecated)]
+use vti_specs::auth::step_up::approve_response::v0_4 as step_up_approve_response_v0_4;
 
 use vta_sdk::protocols::trust_task_reject_reasons as reasons;
 use vti_common::error::AppError;
@@ -888,7 +888,7 @@ async fn dispatch_trust_task_validated(
 /// The document requirements (SPEC §7.2 items 5b, 7a, 8; §7.3 item 17) of
 /// `type_uri`: its published specification's, read off the registry.
 pub(crate) fn spec_policy_for(type_uri: &str) -> Option<trust_tasks_rs::SpecPolicy> {
-    trust_tasks_rs::schema_index::spec_policy_for(type_uri)
+    vti_specs::schema_index::spec_policy_for(type_uri)
 }
 
 /// The acceptance window this VTC is willing to act inside — **VTI-OPS-024**,
@@ -1612,7 +1612,7 @@ mod spine_proof_tests {
     /// says so first.
     #[test]
     fn the_task_under_test_declares_a_proof_required() {
-        let policy = trust_tasks_rs::schema_index::spec_policy_for(UNDER_TEST)
+        let policy = vti_specs::schema_index::spec_policy_for(UNDER_TEST)
             .expect("the task under test has a published spec policy");
         assert!(
             policy.is_proof_required,
@@ -2012,7 +2012,7 @@ mod spine_proof_tests {
     #[test]
     fn every_rooms_task_declares_the_proof_its_arm_requires() {
         for uri in vti_rooms::wire::ROOMS_DISPATCHED_URIS {
-            let policy = trust_tasks_rs::schema_index::spec_policy_for(uri)
+            let policy = vti_specs::schema_index::spec_policy_for(uri)
                 .unwrap_or_else(|| panic!("{uri} has no published spec policy"));
             assert!(
                 policy.is_proof_required,
@@ -3369,11 +3369,11 @@ pub(crate) const BACKUP_EXPORT_TYPE: &str =
 /// `acl/grant/0.2` — AclEntry 0.2: an administrative role, explicit act scope,
 /// capabilities and approve scope. 0.1 is no longer served.
 pub(crate) const ACL_GRANT_TYPE: &str =
-    <trust_tasks_rs::specs::acl::grant::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+    <vti_specs::acl::grant::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
 /// `acl/change-role/0.2` — move the administrative role, compare-and-swap.
 pub(crate) const ACL_CHANGE_ROLE_TYPE: &str =
-    <trust_tasks_rs::specs::acl::change_role::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+    <vti_specs::acl::change_role::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
 /// `acl/change-role/0.1` — move a subject's **community** role through the
 /// role-change ceremony (role-VAC re-mint, promotion serialisation). Still
@@ -3382,29 +3382,29 @@ pub(crate) const ACL_CHANGE_ROLE_TYPE: &str =
 // acl/change-role/0.1 is the community-role door; 0.2 cannot express it (spec gap).
 #[allow(deprecated)]
 pub(crate) const ACL_CHANGE_COMMUNITY_ROLE_TYPE: &str =
-    <trust_tasks_rs::specs::acl::change_role::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+    <vti_specs::acl::change_role::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
 /// `acl/show/0.2` — one entry, every axis stated.
 pub(crate) const ACL_SHOW_TYPE: &str =
-    <trust_tasks_rs::specs::acl::show::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+    <vti_specs::acl::show::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
 /// `acl/list/0.3` — the entries, filterable by capability and resource, paged
 /// by `limit` / `nextCursor`.
 pub(crate) const ACL_LIST_TYPE: &str =
-    <trust_tasks_rs::specs::acl::list::v0_3::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+    <vti_specs::acl::list::v0_3::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
 /// `acl/update/0.2` — amend act, capabilities, approve, label, expiry.
 pub(crate) const ACL_UPDATE_TYPE: &str =
-    <trust_tasks_rs::specs::acl::update::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+    <vti_specs::acl::update::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
 /// `acl/revoke/0.2` — remove an entry, or narrow its act scope.
 pub(crate) const ACL_REVOKE_TYPE: &str =
-    <trust_tasks_rs::specs::acl::revoke::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+    <vti_specs::acl::revoke::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
 /// `acl/swap-key/0.1` — a subject rolls its own entry to a new key, its
 /// authority exactly preserved (VTI-CLT-025 – 032, VTI-ACL-052).
 pub(crate) const ACL_SWAP_KEY_TYPE: &str =
-    <trust_tasks_rs::specs::acl::swap_key::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+    <vti_specs::acl::swap_key::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
 /// `auth/step-up/approve-response/0.4` — served **only** for the admin
 /// console's unsigned session-passkey answer. 0.5 onward require the
@@ -3857,7 +3857,7 @@ async fn handle_hidden_publish(
         Ok(claims) => claims,
         Err(reject) => return reject,
     };
-    let payload: trust_tasks_rs::specs::vtc::vetting::hidden::publish::v0_1::Payload =
+    let payload: vti_specs::vtc::vetting::hidden::publish::v0_1::Payload =
         match parse_spec_payload(&doc) {
             Ok(p) => p,
             Err(reject) => return reject,
@@ -3932,7 +3932,7 @@ async fn handle_hidden_withdraw(
         Ok(claims) => claims,
         Err(reject) => return reject,
     };
-    let payload: trust_tasks_rs::specs::vtc::vetting::hidden::withdraw::v0_1::Payload =
+    let payload: vti_specs::vtc::vetting::hidden::withdraw::v0_1::Payload =
         match parse_spec_payload(&doc) {
             Ok(p) => p,
             Err(reject) => return reject,
@@ -3971,7 +3971,7 @@ async fn handle_hidden_show(
     {
         return reject;
     }
-    let payload: trust_tasks_rs::specs::vtc::vetting::hidden::show::v0_1::Payload =
+    let payload: vti_specs::vtc::vetting::hidden::show::v0_1::Payload =
         match parse_spec_payload(&doc) {
             Ok(p) => p,
             Err(reject) => return reject,
@@ -6067,7 +6067,7 @@ mod tests {
                 spec_policy_for(uri).is_some(),
                 "`{uri}` is dispatched but the spec registry has no policy for it — either it \
                  is misspelled, or its specification is not published where \
-                 `trust_tasks_rs::schema_index` can answer `spec_policy_for` for it (or, for a \
+                 `vti_specs::schema_index` can answer `spec_policy_for` for it (or, for a \
                  task bound ahead of its specification, a local policy stands in for it)"
             );
         }
@@ -6700,7 +6700,7 @@ mod members_admin_tests {
             MEMBER_ADMIN_REMOVE_TYPE,
             MEMBER_PURGE_TYPE,
         ] {
-            let policy = trust_tasks_rs::schema_index::spec_policy_for(uri)
+            let policy = vti_specs::schema_index::spec_policy_for(uri)
                 .unwrap_or_else(|| panic!("{uri} has no published spec policy"));
             assert!(
                 policy.is_proof_required,
@@ -7620,7 +7620,7 @@ mod join_decide_profile_tests {
     #[test]
     fn every_moved_task_declares_the_proof_these_tests_assume() {
         for uri in [JOIN_DECIDE_TYPE, COMMUNITY_PROFILE_UPDATE_TYPE] {
-            let policy = trust_tasks_rs::schema_index::spec_policy_for(uri)
+            let policy = vti_specs::schema_index::spec_policy_for(uri)
                 .unwrap_or_else(|| panic!("{uri} has no published spec policy"));
             assert!(
                 policy.is_proof_required,
@@ -8254,7 +8254,7 @@ mod config_pair_tests {
     #[test]
     fn every_moved_task_declares_the_proof_these_tests_assume() {
         for uri in [CONFIG_EXPORT_TYPE, CONFIG_IMPORT_TYPE] {
-            let policy = trust_tasks_rs::schema_index::spec_policy_for(uri)
+            let policy = vti_specs::schema_index::spec_policy_for(uri)
                 .unwrap_or_else(|| panic!("{uri} has no published spec policy"));
             assert!(
                 policy.is_proof_required,
@@ -8640,7 +8640,7 @@ mod endorsement_type_tests {
     #[test]
     fn every_moved_task_declares_the_proof_these_tests_assume() {
         for uri in [ENDORSEMENT_TYPE_REGISTER_TYPE, ENDORSEMENT_TYPE_DELETE_TYPE] {
-            let policy = trust_tasks_rs::schema_index::spec_policy_for(uri)
+            let policy = vti_specs::schema_index::spec_policy_for(uri)
                 .unwrap_or_else(|| panic!("{uri} has no published spec policy"));
             assert!(
                 policy.is_proof_required,
@@ -8972,7 +8972,7 @@ mod backup_export_tests {
 
     #[test]
     fn the_moved_task_declares_the_proof_these_tests_assume() {
-        let policy = trust_tasks_rs::schema_index::spec_policy_for(BACKUP_EXPORT_TYPE)
+        let policy = vti_specs::schema_index::spec_policy_for(BACKUP_EXPORT_TYPE)
             .expect("backup/export has a published spec policy");
         assert!(
             policy.is_proof_required,
@@ -9052,10 +9052,7 @@ mod backup_export_tests {
         let out = dispatch_didcomm(&fix.vtc, &doc).await;
         assert_eq!(
             error_code(&out).as_deref(),
-            Some(
-                trust_tasks_rs::specs::vtc::backup::export::v0_1::error_codes::PASSWORD_TOO_SHORT
-                    .code
-            ),
+            Some(vti_specs::vtc::backup::export::v0_1::error_codes::PASSWORD_TOO_SHORT.code),
             "{}",
             String::from_utf8_lossy(&out.body)
         );

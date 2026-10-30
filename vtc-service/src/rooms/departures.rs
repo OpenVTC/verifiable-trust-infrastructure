@@ -44,10 +44,10 @@ use std::time::Duration;
 use chrono::{DateTime, Utc};
 use serde_json::{Value, json};
 use trust_tasks_rs::Payload;
-use trust_tasks_rs::specs::rooms::owner::group::remove::v0_4 as owner_remove;
-use trust_tasks_rs::specs::rooms::owner::revoke::v0_1 as owner_revoke;
 use vti_common::audit::{AuditEvent, CommunityRoomChangedData};
 use vti_common::error::AppError;
+use vti_specs::rooms::owner::group::remove::v0_4 as owner_remove;
+use vti_specs::rooms::owner::revoke::v0_1 as owner_revoke;
 
 use super::community::{
     ADVANCE_TIMEOUT, CommunityRooms, DepartureCause, HolderError, KeyHolder, MemberRecord,

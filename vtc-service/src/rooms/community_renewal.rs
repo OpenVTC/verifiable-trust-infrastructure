@@ -72,14 +72,14 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use trust_tasks_rs::Payload;
-use trust_tasks_rs::specs::rooms::owner::{
-    issue_authority::v0_2 as owner_authority, issue_membership::v0_1 as owner_membership,
-};
-use trust_tasks_rs::specs::vault::credentials::{
-    get::v0_2 as vault_get, query::v0_1 as vault_query, receive::v0_1 as vault_receive,
-};
 use vti_common::audit::{AuditEvent, CommunityRoomChangedData};
 use vti_common::error::AppError;
+use vti_specs::rooms::owner::{
+    issue_authority::v0_2 as owner_authority, issue_membership::v0_1 as owner_membership,
+};
+use vti_specs::vault::credentials::{
+    get::v0_2 as vault_get, query::v0_1 as vault_query, receive::v0_1 as vault_receive,
+};
 
 use super::community::{CommunityRooms, HolderError, KeyHolder, OwnedRoom, SIGN_TIMEOUT};
 use crate::config::CommunityRoomsConfig;

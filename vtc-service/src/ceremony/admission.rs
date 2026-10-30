@@ -161,8 +161,8 @@ pub enum MakeMembershipRefusal {
 /// The declared error codes of the two tasks, read off their specifications
 /// (trust-tasks-tf #784) so none is spelled here.
 pub mod codes {
-    use trust_tasks_rs::specs::vtc::members::admit::v0_1::error_codes as admit;
-    use trust_tasks_rs::specs::vtc::members::make_membership::v0_1::error_codes as make;
+    use vti_specs::vtc::members::admit::v0_1::error_codes as admit;
+    use vti_specs::vtc::members::make_membership::v0_1::error_codes as make;
 
     pub const ADMIT_HAS_ENTRY: &str = admit::HAS_ENTRY.code;
     pub const ADMIT_ALREADY_MEMBER: &str = admit::ALREADY_MEMBER.code;

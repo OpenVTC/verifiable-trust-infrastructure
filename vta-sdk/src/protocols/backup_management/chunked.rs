@@ -13,7 +13,7 @@
 //! caller passes the 32 raw SHA-256 bytes in. The encoding — a sha2-256
 //! multihash, base58btc multibase — lives here so there is one of it.
 
-pub use trust_tasks_rs::specs::vta::backup::{
+pub use vti_specs::vta::backup::{
     finalize_import::v1_1 as finalize_import_1_1, get_chunk::v1_0 as get_chunk,
     initiate_export::v1_1 as initiate_export_1_1, initiate_import::v1_1 as initiate_import_1_1,
     put_chunk::v1_0 as put_chunk,

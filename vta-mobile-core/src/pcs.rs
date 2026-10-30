@@ -32,8 +32,8 @@
 
 use serde::Serialize;
 use serde::de::DeserializeOwned;
-use trust_tasks_rs::specs::vta::pcs;
 use trust_tasks_rs::{Payload, TrustTask};
+use vti_specs::vta::pcs;
 
 use crate::error::FfiError;
 use crate::keys::Signer;

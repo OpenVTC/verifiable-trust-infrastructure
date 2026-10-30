@@ -38,24 +38,22 @@ use chrono::{DateTime, Utc};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
-use trust_tasks_rs::specs::rooms::owner::{
+use trust_tasks_rs::{Payload, RejectReason, TrustTask};
+use vti_common::audit::{AuditEvent, CommunityRoomChangedData, FieldChange};
+use vti_common::error::AppError;
+use vti_specs::rooms::owner::{
     group::{add::v0_3 as owner_add, create::v0_1 as owner_group_create},
     invite::v0_1 as owner_invite,
     issue_authority::v0_2 as owner_authority,
     issue_membership::v0_1 as owner_membership,
 };
-use trust_tasks_rs::specs::vault::credentials::receive::v0_1 as vault_receive;
-use trust_tasks_rs::specs::vtc::rooms::community::{
+use vti_specs::vault::credentials::receive::v0_1 as vault_receive;
+use vti_specs::vtc::rooms::community::{
     create::v0_4 as create, get::v0_3 as get, list::v0_3 as list, members::add::v0_1 as add,
     members::list::v0_1 as members_list, members::remove::v0_2 as remove, update::v0_3 as update,
 };
-use trust_tasks_rs::specs::vtc::rooms::memberships::list::v0_1 as memberships_list;
-use trust_tasks_rs::specs::vtc::rooms::offers::{
-    accept::v0_1 as accept, list::v0_4 as offers_list,
-};
-use trust_tasks_rs::{Payload, RejectReason, TrustTask};
-use vti_common::audit::{AuditEvent, CommunityRoomChangedData, FieldChange};
-use vti_common::error::AppError;
+use vti_specs::vtc::rooms::memberships::list::v0_1 as memberships_list;
+use vti_specs::vtc::rooms::offers::{accept::v0_1 as accept, list::v0_4 as offers_list};
 
 use super::helpers::{TrustTaskOutcome, app_error_to_reject, reject_with, task_error_to_reject};
 use super::storage_tasks::{malformed, refuse, respond};
@@ -83,8 +81,7 @@ pub(crate) const MEMBERS_REMOVE_TYPE: &str = <remove::Payload as Payload>::TYPE_
 /// The VTA's refusal when an earlier removal it was settling did not take effect
 /// (`rooms/owner/group/remove/0.4` item 8.2).
 const EARLIER_REMOVAL_REFUSED: &str =
-    trust_tasks_rs::specs::rooms::owner::group::remove::v0_3::error_codes::EARLIER_REMOVAL_REFUSED
-        .code;
+    vti_specs::rooms::owner::group::remove::v0_3::error_codes::EARLIER_REMOVAL_REFUSED.code;
 /// The same refusal at an admission (`rooms/owner/group/add/0.3` item 6.1): an earlier
 /// removal from the room did not take effect, and nothing of the admission was done.
 const ADD_EARLIER_REMOVAL_REFUSED: &str = owner_add::error_codes::EARLIER_REMOVAL_REFUSED.code;

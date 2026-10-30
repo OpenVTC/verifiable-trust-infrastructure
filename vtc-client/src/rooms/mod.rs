@@ -378,7 +378,7 @@ impl VtcClient {
         reason: Option<&str>,
         signer_did: &str,
         private_key_multibase: &str,
-    ) -> Result<trust_tasks_rs::specs::rooms::epoch::prune::v0_2::Response, VtcError> {
+    ) -> Result<vti_specs::rooms::epoch::prune::v0_2::Response, VtcError> {
         let value = self
             .room_task(
                 ROOMS_EPOCH_PRUNE_V2_TYPE,
@@ -417,7 +417,7 @@ impl VtcClient {
         limit: Option<u32>,
         signer_did: &str,
         private_key_multibase: &str,
-    ) -> Result<trust_tasks_rs::specs::rooms::epoch::chain::v0_2::Response, VtcError> {
+    ) -> Result<vti_specs::rooms::epoch::chain::v0_2::Response, VtcError> {
         let mut payload = serde_json::json!({
             "roomId": session.room_id,
             "presentation": session.presentation,
@@ -765,7 +765,7 @@ fn prune_payload(
 
 fn is_room_read(type_uri: &str) -> bool {
     use trust_tasks_rs::Payload as _;
-    use trust_tasks_rs::specs::rooms;
+    use vti_specs::rooms;
     [
         ROOMS_RECORDS_GET_V2_TYPE,
         ROOMS_EPOCH_CHAIN_V2_TYPE,
@@ -800,7 +800,7 @@ mod tests {
     #[test]
     fn only_room_reads_are_retried() {
         use trust_tasks_rs::Payload as _;
-        use trust_tasks_rs::specs::rooms;
+        use vti_specs::rooms;
         assert!(is_room_read(ROOMS_RECORDS_GET_V2_TYPE));
         assert!(is_room_read(rooms::blobs::chunk::v0_1::Payload::TYPE_URI));
         for write in [
@@ -820,7 +820,7 @@ mod tests {
     /// type parses it, with the floor, the reason and the presentation intact.
     #[test]
     fn a_prune_payload_is_the_generated_wire_type() {
-        use trust_tasks_rs::specs::rooms::epoch::prune::v0_2 as prune;
+        use vti_specs::rooms::epoch::prune::v0_2 as prune;
         let session = RoomSession::new("did:key:zRoom", "vmc", vec!["vac".into()]).unwrap();
 
         let with = prune_payload(&session, 5, Some("retention window"));

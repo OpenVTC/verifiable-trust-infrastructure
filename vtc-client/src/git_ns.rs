@@ -31,7 +31,7 @@
 //! Every task is sent at its current version, the only one the VTC serves.
 //!
 //! The payload and response types are the specification's own, generated
-//! into `trust_tasks_rs::specs::git_ns` and re-exported here as [`specs`].
+//! into `vti_specs::git_ns` and re-exported here as [`specs`].
 
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -40,7 +40,7 @@ use serde_json::Value;
 use crate::{HolderKey, VtcClient, VtcError};
 
 /// The generated `git-ns/*` wire types.
-pub use trust_tasks_rs::specs::git_ns as specs;
+pub use vti_specs::git_ns as specs;
 
 use specs::account::{
     link::v0_1 as link, link_status::v0_1 as link_status, unlink::v0_1 as unlink,
@@ -578,13 +578,13 @@ pub fn self_grant_waived(answer: &Value) -> Option<&Value> {
 /// signed change can be refused for. The passkey assertion it carries is in
 /// addition to that proof, never instead of it.
 pub const STEP_UP_APPROVE_RESPONSE_TYPE: &str =
-    <trust_tasks_rs::specs::auth::step_up::approve_response::v0_6::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+    <vti_specs::auth::step_up::approve_response::v0_6::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
 /// The type URI of `auth/passkey/enroll/redeem/start/0.1`: a member redeeming
 /// a community administrator's invite to enrol a step-up passkey, signed as
 /// the member the invite names.
 pub const STEP_UP_PASSKEY_REDEEM_START_TYPE: &str =
-    <trust_tasks_rs::specs::auth::passkey::enroll::redeem::start::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+    <vti_specs::auth::passkey::enroll::redeem::start::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
 /// The `trust-task-error` document a refusal carries, whichever transport
 /// carried it: [`VtcError::Refused`] over a session, [`VtcError::Http`]'s body

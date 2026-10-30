@@ -273,7 +273,7 @@ impl AclEntry {
 
 // ─── payloads ────────────────────────────────────────────────────────────
 //
-// The task payloads themselves are the generated `trust_tasks_rs::specs::acl`
+// The task payloads themselves are the generated `vti_specs::acl`
 // types; these build them as JSON from the shared components above, so a
 // client and the VTA spell each member one way.
 
@@ -498,7 +498,7 @@ mod tests {
     fn payloads_conform_to_the_published_schemas() {
         use crate::trust_tasks::*;
         let check = |uri: &str, v: Value| {
-            let schema = trust_tasks_rs::schema_index::schema_for(uri)
+            let schema = vti_specs::schema_index::schema_for(uri)
                 .unwrap_or_else(|| panic!("{uri} has a published schema"));
             trust_tasks_rs::validate::against_schema(schema, &v)
                 .unwrap_or_else(|e| panic!("not canonical {uri}: {e}\n{v:#}"));

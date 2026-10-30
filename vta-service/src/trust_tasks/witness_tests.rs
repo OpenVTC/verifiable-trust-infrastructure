@@ -597,7 +597,7 @@ async fn a_vwc_from_another_session_is_refused() {
     // The witness's own key, answering this session with the other session's VWC.
     let mut forged: TrustTask<Value> = serde_json::from_value(json!({
         "id": urn(),
-        "type": <trust_tasks_rs::specs::witness::session::submit::v0_2::Response
+        "type": <vti_specs::witness::session::submit::v0_2::Response
             as trust_tasks_rs::Payload>::TYPE_URI,
         "issuer": w.witness.did(),
         "recipient": w.relationship,

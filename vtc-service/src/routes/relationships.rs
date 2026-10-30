@@ -119,7 +119,7 @@ impl IdentifierForm {
     }
 }
 
-use trust_tasks_rs::specs::vtc::relationships as relationships_spec;
+use vti_specs::vtc::relationships as relationships_spec;
 
 /// `vtc/relationships/publish:vrcInvalid` — the VRC failed verification, or
 /// its issuer did not match the proof signer.

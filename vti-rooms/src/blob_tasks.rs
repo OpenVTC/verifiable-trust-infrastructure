@@ -15,16 +15,16 @@
 use base64::Engine as _;
 use serde_json::{Value, json};
 use trust_tasks_rs::DeclaredErrorCode;
-use trust_tasks_rs::specs::rooms::blobs::chunk::v0_1 as download_chunk_spec;
-use trust_tasks_rs::specs::rooms::blobs::get::v0_2 as blob_get_v2;
-use trust_tasks_rs::specs::rooms::blobs::upload::abort::v0_2 as upload_abort_v2;
-use trust_tasks_rs::specs::rooms::blobs::upload::begin::v0_2 as upload_begin_v2;
-use trust_tasks_rs::specs::rooms::blobs::upload::chunk::v0_2 as upload_chunk_v2;
-use trust_tasks_rs::specs::rooms::blobs::upload::commit::v0_2 as upload_commit_v2;
-use trust_tasks_rs::specs::rooms::records::get::v0_2 as get_v2;
-use trust_tasks_rs::specs::rooms::records::put::v0_3 as put_v3;
-use trust_tasks_rs::specs::rooms::usage::v0_1 as rooms_usage;
 use vti_common::error::AppError;
+use vti_specs_rooms::rooms::blobs::chunk::v0_1 as download_chunk_spec;
+use vti_specs_rooms::rooms::blobs::get::v0_2 as blob_get_v2;
+use vti_specs_rooms::rooms::blobs::upload::abort::v0_2 as upload_abort_v2;
+use vti_specs_rooms::rooms::blobs::upload::begin::v0_2 as upload_begin_v2;
+use vti_specs_rooms::rooms::blobs::upload::chunk::v0_2 as upload_chunk_v2;
+use vti_specs_rooms::rooms::blobs::upload::commit::v0_2 as upload_commit_v2;
+use vti_specs_rooms::rooms::records::get::v0_2 as get_v2;
+use vti_specs_rooms::rooms::records::put::v0_3 as put_v3;
+use vti_specs_rooms::rooms::usage::v0_1 as rooms_usage;
 
 use crate::authz::{Action, AuthorizedAction};
 use crate::blobs::{
@@ -608,7 +608,7 @@ pub fn record_epoch_refused(room: &Room, sealed_epoch: Option<u32>) -> Option<Re
 pub fn prune_floor_refused(room: &Room, before_epoch: u32) -> Option<Refusal> {
     (before_epoch >= room.epoch).then(|| {
         declared(
-            trust_tasks_rs::specs::rooms::epoch::prune::v0_2::error_codes::NOT_AHEAD,
+            vti_specs_rooms::rooms::epoch::prune::v0_2::error_codes::NOT_AHEAD,
             format!(
                 "`beforeEpoch` {before_epoch} is at or above the current epoch {} of `{}`; \
                  pruning there would drop the whole chain, not shorten it",

@@ -60,20 +60,20 @@ use chrono::Utc;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
-use trust_tasks_rs::specs::vtc::endorsements::{
-    issue::v0_1 as end_issue, list::v0_2 as end_list, revoke::v0_1 as end_revoke,
-    show::v0_1 as end_show,
-};
-use trust_tasks_rs::specs::vtc::members::{
-    personhood::revoke::v0_1 as personhood_revoke, renew::v0_1 as renew, rotate::v0_1 as rotate,
-    rotate_challenge::v0_1 as rotate_challenge,
-};
-use trust_tasks_rs::specs::vtc::relationships::{
-    list::v0_3 as rel_list, publish::v0_2 as rel_publish, revoke::v0_2 as rel_revoke,
-};
 use trust_tasks_rs::validate::ValidatedPayload;
 use trust_tasks_rs::{RejectReason, StandardCode, TrustTask, TrustTaskCode};
 use uuid::Uuid;
+use vti_specs::vtc::endorsements::{
+    issue::v0_1 as end_issue, list::v0_2 as end_list, revoke::v0_1 as end_revoke,
+    show::v0_1 as end_show,
+};
+use vti_specs::vtc::members::{
+    personhood::revoke::v0_1 as personhood_revoke, renew::v0_1 as renew, rotate::v0_1 as rotate,
+    rotate_challenge::v0_1 as rotate_challenge,
+};
+use vti_specs::vtc::relationships::{
+    list::v0_3 as rel_list, publish::v0_2 as rel_publish, revoke::v0_2 as rel_revoke,
+};
 
 use super::helpers::{
     TrustTaskOutcome, app_error_to_reject, parse_payload, reject_with, reject_with_code,
@@ -976,7 +976,7 @@ mod tests {
             ENDORSEMENTS_SHOW_TYPE,
         ];
         for uri in URIS {
-            let required = trust_tasks_rs::schema_index::spec_policy_for(uri)
+            let required = vti_specs::schema_index::spec_policy_for(uri)
                 .unwrap_or_else(|| panic!("{uri} has no published policy"))
                 .is_proof_required;
             assert_eq!(required, !reads.contains(uri), "{uri}");

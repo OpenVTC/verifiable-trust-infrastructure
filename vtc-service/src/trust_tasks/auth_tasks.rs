@@ -61,11 +61,11 @@
 //! ordinary case: self-authentication, as every `0.2` document was.
 
 use serde_json::Value;
-use trust_tasks_rs::specs::auth::{
-    authenticate::v0_3 as authenticate_v0_3, challenge::v0_1 as challenge, refresh::v0_2 as refresh,
-};
 use trust_tasks_rs::{Payload, RejectReason, TrustTask};
 use vti_common::auth::{AudienceBinding, AuthenticateInput, ChallengeInput, RefreshInput};
+use vti_specs::auth::{
+    authenticate::v0_3 as authenticate_v0_3, challenge::v0_1 as challenge, refresh::v0_2 as refresh,
+};
 
 use super::helpers::{
     TrustTaskOutcome, app_error_to_reject, extended_code, reject_with, reject_with_code,

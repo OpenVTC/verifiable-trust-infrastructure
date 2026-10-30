@@ -106,7 +106,7 @@ pub mod summary;
 /// The declared error codes of `vtc/admin/actions/*`, read off the generated
 /// specifications — what the tests that witness each one compare against.
 pub mod codes {
-    use trust_tasks_rs::specs::vtc::admin::actions as a;
+    use vti_specs::vtc::admin::actions as a;
 
     pub const LIST_NOT_ADMINISTRATOR: &str = a::list::v0_3::error_codes::NOT_ADMINISTRATOR.code;
     pub const LIST_INVALID_CURSOR: &str = a::list::v0_3::error_codes::INVALID_CURSOR.code;
@@ -2810,7 +2810,8 @@ async fn verify_evidence(
                 state,
                 statement,
                 &crate::acl::approver::ExpectedStatement {
-                    purpose: trust_tasks_rs::specs::auth::step_up::approver::attest::v0_1::PayloadPurpose::Decision,
+                    purpose:
+                        vti_specs::auth::step_up::approver::attest::v0_1::PayloadPurpose::Decision,
                     subject: approver,
                     challenge,
                     bound_to: wire_digest,
@@ -3507,7 +3508,7 @@ pub async fn operator_item_raised(state: &AppState, marker: &str) -> Result<bool
 /// arriving at the spine answers `unsupportedType`, like every embedded-only
 /// type (`trust_task_manifest::EMBEDDED_ONLY`).
 pub const OPERATOR_OFFLINE_WRITE_URI: &str =
-    <trust_tasks_rs::specs::vtc::operator::offline_write::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+    <vti_specs::vtc::operator::offline_write::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
 /// The record type an operator's write was raised under before
 /// `offline-write/0.2` renamed the record's `at` to `writtenAt`. Items already
@@ -3580,12 +3581,13 @@ pub(crate) fn offline_write_record(
         "host": host,
         "writtenAt": write.invoked_at.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
     });
-    trust_tasks_rs::specs::vtc::operator::offline_write::v0_2::Payload::validate_value(&record)
-        .map_err(|e| {
+    vti_specs::vtc::operator::offline_write::v0_2::Payload::validate_value(&record).map_err(
+        |e| {
             AppError::Internal(format!(
                 "offline-write record rejected by its own schema: {e}"
             ))
-        })?;
+        },
+    )?;
     Ok(record)
 }
 
@@ -4272,10 +4274,9 @@ pub(crate) async fn sign_requests(
         });
         {
             use trust_tasks_rs::validate::ValidatedPayload as _;
-            trust_tasks_rs::specs::task_consent::request::v0_1::Payload::validate_value(&payload)
-                .map_err(|e| {
-                AppError::Internal(format!("task-consent request does not conform: {e}"))
-            })?;
+            vti_specs::task_consent::request::v0_1::Payload::validate_value(&payload).map_err(
+                |e| AppError::Internal(format!("task-consent request does not conform: {e}")),
+            )?;
         }
         let mut doc = vti_common::capability_client::build_document(
             &vtc_did,

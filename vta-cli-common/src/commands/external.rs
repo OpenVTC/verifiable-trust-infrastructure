@@ -15,8 +15,8 @@ use std::io::{IsTerminal, Read};
 
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
-use trust_tasks_rs::specs::external as ext;
 use vta_sdk::prelude::*;
+use vti_specs::external as ext;
 
 use crate::render::print_json;
 

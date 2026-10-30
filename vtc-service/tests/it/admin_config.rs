@@ -416,9 +416,9 @@ const IMPORT_TASK: &str = "https://trusttasks.org/spec/vtc/config/import/0.1";
 // #1600 — the codes `vtc/config/import/0.1` declares, from the generated
 // bindings.
 const IMPORT_ERR_COMMUNITY_DID_MISMATCH: &str =
-    trust_tasks_rs::specs::vtc::config::import::v0_1::error_codes::COMMUNITY_DID_MISMATCH.code;
+    vti_specs::vtc::config::import::v0_1::error_codes::COMMUNITY_DID_MISMATCH.code;
 const IMPORT_ERR_UNSUPPORTED_SCHEMA_VERSION: &str =
-    trust_tasks_rs::specs::vtc::config::import::v0_1::error_codes::UNSUPPORTED_SCHEMA_VERSION.code;
+    vti_specs::vtc::config::import::v0_1::error_codes::UNSUPPORTED_SCHEMA_VERSION.code;
 
 /// The community DID every fixture profile carries — the test VTC's own.
 const COMMUNITY_DID: &str = vtc_service::test_support::TEST_VTC_DID;

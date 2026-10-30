@@ -67,11 +67,11 @@ pub struct BootstrapResponse {
 /// `vtc/admin/bootstrap:invalidToken` — the setup-session token is missing,
 /// malformed, expired, or not one this community signed.
 pub const BOOTSTRAP_ERR_INVALID_TOKEN: &str =
-    trust_tasks_rs::specs::vtc::admin::bootstrap::v0_1::error_codes::INVALID_TOKEN.code;
+    vti_specs::vtc::admin::bootstrap::v0_1::error_codes::INVALID_TOKEN.code;
 /// `vtc/admin/bootstrap:alreadyBootstrapped` — the community already has an
 /// admin; bootstrap is single-use.
 pub const BOOTSTRAP_ERR_ALREADY_BOOTSTRAPPED: &str =
-    trust_tasks_rs::specs::vtc::admin::bootstrap::v0_1::error_codes::ALREADY_BOOTSTRAPPED.code;
+    vti_specs::vtc::admin::bootstrap::v0_1::error_codes::ALREADY_BOOTSTRAPPED.code;
 
 /// `vtc/admin/bootstrap/0.1` — finalises the install flow. Pre-session: the
 /// setup-session token is the credential. Called from

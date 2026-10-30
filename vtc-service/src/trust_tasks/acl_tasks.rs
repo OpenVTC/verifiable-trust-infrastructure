@@ -20,16 +20,16 @@
 //! (**VTI-APV-018**).
 
 use serde_json::{Value, json};
-use trust_tasks_rs::specs::acl::{
+use vti_specs::acl::{
     change_role::v0_2 as acl_change_role, grant::v0_2 as acl_grant, list::v0_3 as acl_list,
     revoke::v0_2 as acl_revoke, show::v0_2 as acl_show, update::v0_2 as acl_update,
 };
 // The community-role move: `acl/change-role/0.2` moves the administrative role
 // only, so the role-change ceremony keeps its 0.1 door (a specification gap).
-#[allow(deprecated)]
-use trust_tasks_rs::specs::acl::change_role::v0_1 as acl_change_community_role;
 use trust_tasks_rs::{RejectReason, StandardCode, TrustTask, TrustTaskCode};
 use vti_common::auth::extractor::AuthClaims;
+#[allow(deprecated)]
+use vti_specs::acl::change_role::v0_1 as acl_change_community_role;
 
 use super::helpers::{
     TrustTaskOutcome, app_error_to_reject, extended_code, reject_with, reject_with_code,
@@ -600,7 +600,7 @@ pub(super) async fn handle_swap_key(
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
     use swap::error_codes as c;
-    use trust_tasks_rs::specs::acl::swap_key::v0_1 as swap;
+    use vti_specs::acl::swap_key::v0_1 as swap;
     let checked: swap::Payload = match parse_spec_payload(&doc) {
         Ok(p) => p,
         Err(reject) => return reject,
@@ -1107,7 +1107,7 @@ mod tests {
     #[test]
     fn the_0_2_writes_declare_a_proof_and_the_reads_do_not() {
         let required = |uri| {
-            trust_tasks_rs::schema_index::spec_policy_for(uri)
+            vti_specs::schema_index::spec_policy_for(uri)
                 .unwrap_or_else(|| panic!("{uri} has no published policy"))
                 .is_proof_required
         };

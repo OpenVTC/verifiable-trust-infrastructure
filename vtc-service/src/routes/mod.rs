@@ -934,7 +934,7 @@ fn build_unauth_routes(trust_xff_cidrs: &[IpNetwork]) -> OpenApiRouter<AppState>
         // bound what an unauthenticated caller can make it verify.
         .routes(tt(
             routes!(credential_exchange::request),
-            <trust_tasks_rs::specs::credential_exchange::request::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+            <vti_specs::credential_exchange::request::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
         ))
         // `auth/challenge/0.1` and `auth/authenticate/0.3`'s dedicated,
         // `Trust-Task`-header-gated REST mounts had no caller left once

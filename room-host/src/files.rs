@@ -11,7 +11,6 @@
 use std::sync::Arc;
 
 use serde_json::Value;
-use trust_tasks_rs::specs::rooms::records::get::v0_2 as get_v2_spec;
 use trust_tasks_rs::{DeclaredErrorCode, ErrorPayload, RejectReason, TrustTask, TrustTaskCode};
 use uuid::Uuid;
 use vti_rooms::Room;
@@ -22,6 +21,7 @@ use vti_rooms::record_tasks;
 use vti_rooms::revocation_tasks;
 use vti_rooms::storage;
 use vti_rooms::wire::AuthorityPresentation;
+use vti_specs::rooms::records::get::v0_2 as get_v2_spec;
 
 use super::{Answer, HostState, from_app_error, now, reject, respond};
 
@@ -244,9 +244,8 @@ pub(crate) async fn download_chunk(
 /// cannot issue storage URLs, so every upload is proxied: a producer offering only
 /// `directParts` is refused `noTransferMode`.
 pub(crate) async fn begin_v2(state: &HostState, doc: &TrustTask<Value>, payload: Value) -> Answer {
-    if let Err(r) = blob_tasks::parse::<
-        trust_tasks_rs::specs::rooms::blobs::upload::begin::v0_2::Payload,
-    >(&payload)
+    if let Err(r) =
+        blob_tasks::parse::<vti_specs::rooms::blobs::upload::begin::v0_2::Payload>(&payload)
     {
         return refused(doc, r);
     }
@@ -313,9 +312,7 @@ pub(crate) async fn get_blob_v2(
     doc: &TrustTask<Value>,
     payload: Value,
 ) -> Answer {
-    if let Err(r) =
-        blob_tasks::parse::<trust_tasks_rs::specs::rooms::blobs::get::v0_2::Payload>(&payload)
-    {
+    if let Err(r) = blob_tasks::parse::<vti_specs::rooms::blobs::get::v0_2::Payload>(&payload) {
         return refused(doc, r);
     }
     let (room, presenter, authorized) = match authorize(state, doc, &payload, Action::Read).await {
@@ -330,9 +327,7 @@ pub(crate) async fn get_blob_v2(
 
 /// `rooms/usage/0.1`: who is using the room's space, for its owner. Needs `admin`.
 pub(crate) async fn usage(state: &HostState, doc: &TrustTask<Value>, payload: Value) -> Answer {
-    if let Err(r) =
-        blob_tasks::parse::<trust_tasks_rs::specs::rooms::usage::v0_1::Payload>(&payload)
-    {
+    if let Err(r) = blob_tasks::parse::<vti_specs::rooms::usage::v0_1::Payload>(&payload) {
         return refused(doc, r);
     }
     let (room, _presenter, authorized) = match authorize(state, doc, &payload, Action::Admin).await
@@ -380,9 +375,7 @@ pub(crate) async fn get_v2(state: &HostState, doc: &TrustTask<Value>, payload: V
 /// `rooms/records/list/0.5`: the 0.1 listing, each row naming its blobs, the room's
 /// `lastPrune` on every page and the continuation token named `nextCursor`.
 pub(crate) async fn list_v5(state: &HostState, doc: &TrustTask<Value>, payload: Value) -> Answer {
-    if let Err(r) =
-        blob_tasks::parse::<trust_tasks_rs::specs::rooms::records::list::v0_5::Payload>(&payload)
-    {
+    if let Err(r) = blob_tasks::parse::<vti_specs::rooms::records::list::v0_5::Payload>(&payload) {
         return refused(doc, r);
     }
     super::list_records(state, doc, blob_tasks::as_v0_1(payload)).await
@@ -412,8 +405,7 @@ pub(crate) fn create_v2_response(
 
 /// `rooms/info/0.3`: 0.1's answer, the record retention in force and the latest prune.
 pub(crate) async fn info_v3(state: &HostState, doc: &TrustTask<Value>, payload: Value) -> Answer {
-    if let Err(r) = blob_tasks::parse::<trust_tasks_rs::specs::rooms::info::v0_3::Payload>(&payload)
-    {
+    if let Err(r) = blob_tasks::parse::<vti_specs::rooms::info::v0_3::Payload>(&payload) {
         return refused(doc, r);
     }
     let (room, _presenter, authorized) = match authorize(state, doc, &payload, Action::Read).await {
@@ -433,9 +425,7 @@ pub(crate) async fn records_prune(
     doc: &TrustTask<Value>,
     payload: Value,
 ) -> Answer {
-    if let Err(r) =
-        blob_tasks::parse::<trust_tasks_rs::specs::rooms::records::prune::v0_2::Payload>(&payload)
-    {
+    if let Err(r) = blob_tasks::parse::<vti_specs::rooms::records::prune::v0_2::Payload>(&payload) {
         return refused(doc, r);
     }
     let (room, _presenter, authorized) = match authorize(state, doc, &payload, Action::Admin).await
@@ -475,9 +465,8 @@ pub(crate) async fn retention_set(
     doc: &TrustTask<Value>,
     payload: Value,
 ) -> Answer {
-    if let Err(r) = blob_tasks::parse::<
-        trust_tasks_rs::specs::rooms::records::retention::set::v0_1::Payload,
-    >(&payload)
+    if let Err(r) =
+        blob_tasks::parse::<vti_specs::rooms::records::retention::set::v0_1::Payload>(&payload)
     {
         return refused(doc, r);
     }

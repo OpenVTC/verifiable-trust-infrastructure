@@ -254,7 +254,7 @@ pub(super) async fn handle_dids_create(
         Err(e) if operations::did_webvh::presentation::is_scid_alias_required(&e) => {
             reject_declared(
                 &doc,
-                trust_tasks_rs::specs::vta::webvh::dids::create::v1_2::error_codes::SCID_ALIAS_REQUIRED,
+                vti_specs::vta::webvh::dids::create::v1_2::error_codes::SCID_ALIAS_REQUIRED,
                 e.to_string(),
             )
         }
@@ -415,7 +415,7 @@ pub(super) async fn handle_agent_name_list(
     auth: &AuthClaims,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    use trust_tasks_rs::specs::vta::webvh::agent_name::list::v1_1 as t;
+    use vti_specs::vta::webvh::agent_name::list::v1_1 as t;
     let req: t::Payload = match parse_payload(&doc) {
         Ok(r) => r,
         Err(resp) => return resp,

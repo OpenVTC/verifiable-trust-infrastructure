@@ -145,8 +145,9 @@ fn record_from_v0_3(v: &Value) -> Value {
     out
 }
 /// `governance/capability/{enable,disable}/0.1`, read off the generated types.
-const CAPABILITY_ENABLE: &str = <trust_tasks_rs::specs::governance::capability::enable::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
-const CAPABILITY_DISABLE: &str = <trust_tasks_rs::specs::governance::capability::disable::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+const CAPABILITY_ENABLE: &str =
+    <vti_specs::governance::capability::enable::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+const CAPABILITY_DISABLE: &str = <vti_specs::governance::capability::disable::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
 /// Default wait for the registry's reply before a call is deemed transient.
 /// Matches the hook writer's window — same mediator, same round trip.
@@ -711,12 +712,12 @@ fn classify_capability_toggle(
             .unwrap_or_default();
         let (extended, legacy) = if enabled {
             (
-                trust_tasks_rs::specs::governance::capability::enable::v0_1::error_codes::ALREADY_ENABLED.code,
+                vti_specs::governance::capability::enable::v0_1::error_codes::ALREADY_ENABLED.code,
                 "already_enabled",
             )
         } else {
             (
-                trust_tasks_rs::specs::governance::capability::disable::v0_1::error_codes::NOT_ENABLED.code,
+                vti_specs::governance::capability::disable::v0_1::error_codes::NOT_ENABLED.code,
                 "not_enabled",
             )
         };
@@ -1137,10 +1138,8 @@ impl TrustRegistryClient for MessagingRegistryClient {
         &self,
         change: &CapabilityModuleChange,
     ) -> Result<(), RegistryError> {
-        use trust_tasks_rs::specs::governance::capability::{
-            disable::v0_1 as disable, enable::v0_1 as enable,
-        };
         use trust_tasks_rs::validate::ValidatedPayload;
+        use vti_specs::governance::capability::{disable::v0_1 as disable, enable::v0_1 as enable};
         self.authority()?;
         let (type_uri, slug, payload) = if change.enabled {
             let mut payload = json!({

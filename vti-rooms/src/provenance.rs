@@ -26,7 +26,7 @@
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
-use trust_tasks_rs::specs::rooms::records::put::v0_3 as spec;
+use vti_specs_rooms::rooms::records::put::v0_3 as spec;
 
 /// The five members, as they are spelled on the wire.
 pub const MEMBERS: [&str; 5] = ["basis", "confidence", "evidence", "validFor", "validUntil"];

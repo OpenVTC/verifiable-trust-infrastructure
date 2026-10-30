@@ -37,7 +37,14 @@ use std::collections::BTreeMap;
 use base64::Engine as _;
 use chrono::Utc;
 use serde_json::{Value, json};
-use trust_tasks_rs::specs::vtc::directory::{
+use trust_tasks_rs::{Payload, RejectReason, TrustTask};
+use vti_common::audit::{
+    AuditEvent, DirectoryCardChangedData, DirectoryCardPublicationData, DirectoryExportedData,
+    DirectoryFieldChangedData, DirectoryImageStoredData, DirectoryNoteAccessData,
+};
+use vti_common::auth::extractor::AuthClaims;
+use vti_common::error::AppError;
+use vti_specs::vtc::directory::{
     card::{
         assert::v0_1 as card_assert, present::v0_1 as card_present, public::v0_1 as card_public,
         publish::v0_1 as card_publish, show::v0_1 as card_show, update::v0_1 as card_update,
@@ -52,13 +59,6 @@ use trust_tasks_rs::specs::vtc::directory::{
     images::{get::v0_1 as images_get, upload::v0_1 as images_upload},
     notes::{append::v0_1 as notes_append, export::v0_1 as notes_export, list::v0_2 as notes_list},
 };
-use trust_tasks_rs::{Payload, RejectReason, TrustTask};
-use vti_common::audit::{
-    AuditEvent, DirectoryCardChangedData, DirectoryCardPublicationData, DirectoryExportedData,
-    DirectoryFieldChangedData, DirectoryImageStoredData, DirectoryNoteAccessData,
-};
-use vti_common::auth::extractor::AuthClaims;
-use vti_common::error::AppError;
 
 use super::admin_tasks::member_signer;
 use super::helpers::{

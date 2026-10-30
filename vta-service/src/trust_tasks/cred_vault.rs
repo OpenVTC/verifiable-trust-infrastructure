@@ -28,11 +28,11 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use trust_tasks_rs::specs::vault::credentials::get::v0_2 as get_0_2;
 use trust_tasks_rs::{RejectReason, TrustTask};
 use uuid::Uuid;
 use vti_common::acl::Capability;
 use vti_common::vault::{LifecycleError, VaultStatus};
+use vti_specs::vault::credentials::get::v0_2 as get_0_2;
 
 use crate::auth::AuthClaims;
 use crate::error::AppError;
@@ -495,8 +495,8 @@ pub(super) async fn handle_present(
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
     use crate::operations::credential_exchange::{PresentToError, present_to_audience};
-    use trust_tasks_rs::specs::vault::credentials::present::v0_1 as spec;
-    use trust_tasks_rs::specs::vault::credentials::present::v0_1::error_codes as code;
+    use vti_specs::vault::credentials::present::v0_1 as spec;
+    use vti_specs::vault::credentials::present::v0_1::error_codes as code;
 
     if let Err(r) = require_cap(state, auth, &doc, Capability::CredentialPresent, "present").await {
         return r;

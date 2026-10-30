@@ -30,8 +30,8 @@ use uuid::Uuid;
 
 use vti_common::error::AppError;
 
-use trust_tasks_rs::specs::vtc::registry::records::list as records_list;
-use trust_tasks_rs::specs::vtc::registry::sync_jobs::{
+use vti_specs::vtc::registry::records::list as records_list;
+use vti_specs::vtc::registry::sync_jobs::{
     discard as discard_spec, list as list_spec, retry as retry_spec,
 };
 

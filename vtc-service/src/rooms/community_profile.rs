@@ -41,10 +41,8 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use trust_tasks_rs::Payload;
-use trust_tasks_rs::specs::rooms::keys::profile::{
-    read::v0_1 as profile_read, write::v0_1 as profile_write,
-};
 use vti_common::error::AppError;
+use vti_specs::rooms::keys::profile::{read::v0_1 as profile_read, write::v0_1 as profile_write};
 
 use super::community::{CommunityRooms, HolderError, KeyHolder, OwnedRoom};
 use crate::server::AppState;

@@ -24,9 +24,9 @@
 
 use serde_json::Value;
 use trust_tasks_rs::TrustTask;
-use trust_tasks_rs::specs::auth::authenticate::v0_3 as authenticate;
-use trust_tasks_rs::specs::auth::challenge::v0_1 as challenge;
-use trust_tasks_rs::specs::auth::refresh::v0_2 as refresh;
+use vti_specs::auth::authenticate::v0_3 as authenticate;
+use vti_specs::auth::challenge::v0_1 as challenge;
+use vti_specs::auth::refresh::v0_2 as refresh;
 
 use crate::protocols::auth::AuthenticateResponse;
 use crate::trust_task_sign::{self, TrustTaskSignError};

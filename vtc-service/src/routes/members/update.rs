@@ -45,10 +45,10 @@ use crate::error::{AppError, TaskError};
 
 /// `vtc/members/update:notFound` — no member with that DID.
 pub const UPDATE_ERR_NOT_FOUND: &str =
-    trust_tasks_rs::specs::vtc::members::update::v0_1::error_codes::NOT_FOUND.code;
+    vti_specs::vtc::members::update::v0_1::error_codes::NOT_FOUND.code;
 /// `vtc/members/update:adminRoleForbidden` — `role` was `admin`.
 pub const UPDATE_ERR_ADMIN_ROLE_FORBIDDEN: &str =
-    trust_tasks_rs::specs::vtc::members::update::v0_1::error_codes::ADMIN_ROLE_FORBIDDEN.code;
+    vti_specs::vtc::members::update::v0_1::error_codes::ADMIN_ROLE_FORBIDDEN.code;
 /// `vtc/members/update:consentGrantForbidden` — `publishConsent: true` for a
 /// member whose consent is `false`.
 ///
@@ -59,7 +59,7 @@ pub const UPDATE_ERR_ADMIN_ROLE_FORBIDDEN: &str =
 /// member's record — but never grant it, or an administrator could publish
 /// someone who said no. Declared by the specification (trust-tasks-tf #789).
 pub const UPDATE_ERR_CONSENT_GRANT_FORBIDDEN: &str =
-    trust_tasks_rs::specs::vtc::members::update::v0_1::error_codes::CONSENT_GRANT_FORBIDDEN.code;
+    vti_specs::vtc::members::update::v0_1::error_codes::CONSENT_GRANT_FORBIDDEN.code;
 use crate::members::{Disposition, Member, get_member, store_member};
 use crate::routes::members::read::{MemberEnvelope, MemberResponse};
 use crate::server::AppState;

@@ -7,10 +7,10 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use trust_tasks_rs::TrustTask;
-use trust_tasks_rs::specs::auth::passkey::login::start::v0_2 as start_spec;
-use trust_tasks_rs::specs::auth::refresh::v0_2 as refresh;
 use uuid::Uuid;
 use vti_common::auth::extractor::ADMIN_REFRESH_COOKIE;
+use vti_specs::auth::passkey::login::start::v0_2 as start_spec;
+use vti_specs::auth::refresh::v0_2 as refresh;
 
 use vta_sdk::protocols::auth::{
     AuthenticateResponse, ChallengeRequest, ChallengeResponse, Session as WireSession, TokenBundle,
@@ -360,7 +360,7 @@ async fn authenticate_trust_task(
     state: &AppState,
     body: &str,
 ) -> Result<Option<AuthenticateResponse>, AppError> {
-    use trust_tasks_rs::specs::auth::authenticate::v0_3 as authenticate;
+    use vti_specs::auth::authenticate::v0_3 as authenticate;
 
     let doc: TrustTask<serde_json::Value> = match serde_json::from_str(body) {
         Ok(doc) => doc,
@@ -497,7 +497,7 @@ pub struct AdminSessionResponse {
 /// `vtc/auth/admin_session:invalidToken` — the mirrored access token did not
 /// verify (signature, this VTC's audience, or expiry).
 pub const ADMIN_SESSION_ERR_INVALID_TOKEN: &str =
-    trust_tasks_rs::specs::vtc::auth::admin_session::v0_2::error_codes::INVALID_TOKEN.code;
+    vti_specs::vtc::auth::admin_session::v0_2::error_codes::INVALID_TOKEN.code;
 
 /// The access token's claims, verified: signature, this VTC's audience
 /// (audience isolation — a foreign-audience token is refused here exactly as

@@ -34,7 +34,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256, Sha512};
-use trust_tasks_rs::specs::voting::election::register::v0_2 as register;
+use vti_specs::voting::election::register::v0_2 as register;
 use vti_voting::{
     election::{Election, ElectionId},
     rand::{SeedableRng, rngs::OsRng, rngs::StdRng},

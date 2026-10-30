@@ -43,12 +43,12 @@
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
-use trust_tasks_rs::specs::vta::witness as vta_witness;
-use trust_tasks_rs::specs::witness::session;
 use trust_tasks_rs::validate::ValidatedPayload;
 use trust_tasks_rs::{ErrorPayload, Payload, TrustTask};
 use vta_sdk::inbound::{Inbound, classify};
 use vta_sdk::protocol::matching::{Protocol, ServiceCapabilities, select_protocol};
+use vti_specs::vta::witness as vta_witness;
+use vti_specs::witness::session;
 
 use crate::error::FfiError;
 use crate::keys::Signer;

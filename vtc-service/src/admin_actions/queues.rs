@@ -478,9 +478,7 @@ async fn execute(
     let reason = reason.filter(|r| !r.trim().is_empty());
     match rec.act {
         Act::BreakGlassReview => {
-            use trust_tasks_rs::specs::git_ns::right::{
-                ratify::v0_2 as ratify, revoke::v0_4 as revoke,
-            };
+            use vti_specs::git_ns::right::{ratify::v0_2 as ratify, revoke::v0_4 as revoke};
             if approve {
                 let mut body = json!({
                     "right": p["right"],

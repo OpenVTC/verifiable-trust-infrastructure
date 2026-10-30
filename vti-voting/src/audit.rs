@@ -24,7 +24,7 @@ use std::collections::HashMap;
 
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use trust_tasks_rs::specs::voting::{
+use vti_specs::voting::{
     ballot::cast::v0_1 as cast,
     election::register::v0_2::{Manifest, Revote},
 };

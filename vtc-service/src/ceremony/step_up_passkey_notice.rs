@@ -46,8 +46,8 @@
 use chrono::{DateTime, Utc};
 use serde_json::{Value, json};
 use tracing::{info, warn};
-use trust_tasks_rs::specs::vtc::members::step_up_passkey_notice::v0_2 as notice;
 use vti_common::capability_client::build_document;
+use vti_specs::vtc::members::step_up_passkey_notice::v0_2 as notice;
 
 use crate::error::AppError;
 use crate::server::AppState;

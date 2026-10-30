@@ -103,11 +103,10 @@ pub(super) async fn handle_key_package_v0_2(
     auth: &AuthClaims,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    let req: trust_tasks_rs::specs::rooms::keys::key_package::v0_2::Payload =
-        match parse_payload(&doc) {
-            Ok(r) => r,
-            Err(resp) => return resp,
-        };
+    let req: vti_specs::rooms::keys::key_package::v0_2::Payload = match parse_payload(&doc) {
+        Ok(r) => r,
+        Err(resp) => return resp,
+    };
     let room_id = req.room_id.to_string();
     // Item 1: never without a valid invitation to the room. Item 2: the member is its
     // subject, and the caller must act as them.
@@ -153,8 +152,7 @@ pub(super) async fn handle_welcome(
     auth: &AuthClaims,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    let req: trust_tasks_rs::specs::rooms::keys::welcome::v0_1::Payload = match parse_payload(&doc)
-    {
+    let req: vti_specs::rooms::keys::welcome::v0_1::Payload = match parse_payload(&doc) {
         Ok(r) => r,
         Err(resp) => return resp,
     };
@@ -186,7 +184,7 @@ pub(super) async fn handle_welcome(
             if joined {
                 return super::helpers::reject_declared(
                     &doc,
-                    trust_tasks_rs::specs::rooms::keys::welcome::v0_1::error_codes::ALREADY_JOINED,
+                    vti_specs::rooms::keys::welcome::v0_1::error_codes::ALREADY_JOINED,
                     format!(
                         "this VTA already holds group state for `{}` in room `{}`, joined with \
                          this invitation",
@@ -218,7 +216,7 @@ pub(super) async fn handle_welcome(
         Err(room_groups::JoinError::AlreadyJoined) => {
             return super::helpers::reject_declared(
                 &doc,
-                trust_tasks_rs::specs::rooms::keys::welcome::v0_1::error_codes::ALREADY_JOINED,
+                vti_specs::rooms::keys::welcome::v0_1::error_codes::ALREADY_JOINED,
                 format!(
                     "this VTA already holds group state for `{}` in room `{}`; leaving and \
                      rejoining is a removal and a fresh invitation, not a second welcome",
@@ -230,7 +228,7 @@ pub(super) async fn handle_welcome(
         Err(room_groups::JoinError::KeyPackageExpired) => {
             return super::helpers::reject_declared(
                 &doc,
-                trust_tasks_rs::specs::rooms::keys::welcome::v0_1::error_codes::WELCOME_INVALID,
+                vti_specs::rooms::keys::welcome::v0_1::error_codes::WELCOME_INVALID,
                 format!(
                     "the key package this welcome is sealed to expired and has been discarded; \
                      mint a fresh one for room `{}` (rooms/keys/key-package) and have the owner \
@@ -265,7 +263,7 @@ pub(super) async fn handle_commit(
     auth: &AuthClaims,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    let req: trust_tasks_rs::specs::rooms::keys::commit::v0_1::Payload = match parse_payload(&doc) {
+    let req: vti_specs::rooms::keys::commit::v0_1::Payload = match parse_payload(&doc) {
         Ok(r) => r,
         Err(resp) => return resp,
     };
@@ -389,9 +387,7 @@ pub(super) async fn handle_chain_v0_2(
     }
 
     use trust_tasks_rs::validate::ValidatedPayload as _;
-    if let Err(e) =
-        trust_tasks_rs::specs::rooms::keys::chain::v0_2::Payload::validate_value(&doc.payload)
-    {
+    if let Err(e) = vti_specs::rooms::keys::chain::v0_2::Payload::validate_value(&doc.payload) {
         return super::helpers::malformed_request_response(format!(
             "payload refused by its schema: {}",
             e.messages().join("; ")
@@ -513,8 +509,7 @@ pub(super) async fn handle_backfill_v0_2(
         return r;
     }
 
-    let req: trust_tasks_rs::specs::rooms::keys::backfill::v0_2::Payload = match parse_payload(&doc)
-    {
+    let req: vti_specs::rooms::keys::backfill::v0_2::Payload = match parse_payload(&doc) {
         Ok(r) => r,
         Err(resp) => return resp,
     };
@@ -569,7 +564,7 @@ pub(super) async fn handle_backfill_v0_2(
     let reply = match fetched {
         Ok(v) => v,
         Err(e) => {
-            use trust_tasks_rs::specs::rooms::keys::backfill::v0_2::error_codes as codes;
+            use vti_specs::rooms::keys::backfill::v0_2::error_codes as codes;
             return host_failure(
                 &doc,
                 e,
@@ -975,7 +970,7 @@ pub(super) async fn handle_read(
         return r;
     }
 
-    let req: trust_tasks_rs::specs::rooms::keys::read::v0_1::Payload = match parse_payload(&doc) {
+    let req: vti_specs::rooms::keys::read::v0_1::Payload = match parse_payload(&doc) {
         Ok(r) => r,
         Err(resp) => return resp,
     };
@@ -1000,7 +995,7 @@ pub(super) async fn handle_read(
         Err(e) => return app_error_to_reject(&doc, e),
     };
 
-    use trust_tasks_rs::specs::rooms::keys::read::v0_1::error_codes as read_codes;
+    use vti_specs::rooms::keys::read::v0_1::error_codes as read_codes;
     let reply = match send_as_member_typed(
         state,
         auth,
@@ -1253,14 +1248,15 @@ async fn browse_at(state: &AppState, auth: &AuthClaims, doc: TrustTask<Value>) -
         return r;
     }
 
-    let parsed = parse_payload::<trust_tasks_rs::specs::rooms::keys::browse::v0_3::Payload>(&doc)
-        .map(|r| BrowseRequest {
+    let parsed = parse_payload::<vti_specs::rooms::keys::browse::v0_3::Payload>(&doc).map(|r| {
+        BrowseRequest {
             room_id: r.room_id.to_string(),
             host: r.host.to_string(),
             prefix: r.prefix.map(|p| p.to_string()),
             since_version: r.since_version,
             limit: r.limit.map(u64::from),
-        });
+        }
+    });
     let req = match parsed {
         Ok(r) => r,
         Err(resp) => return resp,
@@ -1439,7 +1435,7 @@ pub(super) async fn handle_open_v0_2(
         return r;
     }
 
-    let req: trust_tasks_rs::specs::rooms::keys::open::v0_2::Payload = match parse_payload(&doc) {
+    let req: vti_specs::rooms::keys::open::v0_2::Payload = match parse_payload(&doc) {
         Ok(r) => r,
         Err(resp) => return resp,
     };
@@ -1507,7 +1503,7 @@ pub(super) async fn handle_file_key_v0_2(
     auth: &AuthClaims,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    use trust_tasks_rs::specs::rooms::keys::file_key::v0_2 as spec;
+    use vti_specs::rooms::keys::file_key::v0_2 as spec;
 
     if let Err(r) = super::helpers::require_capability(
         state,
@@ -1688,7 +1684,7 @@ fn read_cannot_open(
     epoch: u32,
     repair_failed: Option<String>,
 ) -> TrustTaskOutcome {
-    use trust_tasks_rs::specs::rooms::keys::read::v0_1::error_codes::CANNOT_OPEN;
+    use vti_specs::rooms::keys::read::v0_1::error_codes::CANNOT_OPEN;
     let mut message = e.to_string();
     let mut details = match e {
         room_groups::OpenError::NotDelivered { held, .. } => {
@@ -1716,7 +1712,7 @@ fn read_cannot_open(
 /// `removed` (nothing will — this member was removed) and `beyondChain` (the retained
 /// chain does not reach back). A client tells them apart by reason, never by message.
 fn open_refused(doc: &TrustTask<Value>, e: room_groups::OpenError) -> TrustTaskOutcome {
-    use trust_tasks_rs::specs::rooms::keys::open::v0_2::error_codes::UNKNOWN_EPOCH;
+    use vti_specs::rooms::keys::open::v0_2::error_codes::UNKNOWN_EPOCH;
     let message = e.to_string();
     match e {
         room_groups::OpenError::NotDelivered { held, .. } => super::helpers::reject_with_code(
@@ -2019,7 +2015,7 @@ mod file_key_refusal_tests {
         let details = &doc["payload"]["details"];
         assert_eq!(details["reason"], "removed", "{doc}");
         assert_eq!(details["removedAtEpoch"], 3, "{doc}");
-        trust_tasks_rs::specs::rooms::keys::file_key::v0_2::error_codes::UNKNOWN_EPOCH
+        vti_specs::rooms::keys::file_key::v0_2::error_codes::UNKNOWN_EPOCH
             .check_details(details)
             .unwrap_or_else(|e| panic!("0.2 detailsSchema: {e}: {details}"));
     }
@@ -2044,7 +2040,7 @@ mod file_key_refusal_tests {
         )
         .await;
         assert_eq!(doc["payload"]["details"]["reason"], "beyondChain", "{doc}");
-        trust_tasks_rs::specs::rooms::keys::file_key::v0_2::error_codes::UNKNOWN_EPOCH
+        vti_specs::rooms::keys::file_key::v0_2::error_codes::UNKNOWN_EPOCH
             .check_details(&doc["payload"]["details"])
             .unwrap();
     }
@@ -2064,7 +2060,7 @@ mod file_key_refusal_tests {
         let details = &doc["payload"]["details"];
         assert_eq!(details["reason"], "beyondChain", "{doc}");
         assert_eq!(details["earliestEpoch"], 2, "{doc}");
-        trust_tasks_rs::specs::rooms::keys::open::v0_2::error_codes::UNKNOWN_EPOCH
+        vti_specs::rooms::keys::open::v0_2::error_codes::UNKNOWN_EPOCH
             .check_details(details)
             .unwrap_or_else(|e| panic!("0.2 detailsSchema: {e}: {details}"));
     }
@@ -2080,7 +2076,7 @@ mod file_key_refusal_tests {
                 "{doc}"
             );
             assert_eq!(doc["payload"]["details"]["reason"], reason, "{doc}");
-            trust_tasks_rs::specs::rooms::keys::open::v0_2::error_codes::UNKNOWN_EPOCH
+            vti_specs::rooms::keys::open::v0_2::error_codes::UNKNOWN_EPOCH
                 .check_details(&doc["payload"]["details"])
                 .unwrap_or_else(|e| panic!("0.2 detailsSchema: {e}: {doc}"));
         };
@@ -2104,7 +2100,7 @@ mod file_key_refusal_tests {
         assert_eq!(details["reason"], reason, "{doc}");
         // Checked against the schema the specification declares, carried by the
         // generated code, rather than a copy of it kept here.
-        trust_tasks_rs::specs::rooms::keys::file_key::v0_2::error_codes::UNKNOWN_EPOCH
+        vti_specs::rooms::keys::file_key::v0_2::error_codes::UNKNOWN_EPOCH
             .check_details(details)
             .unwrap_or_else(|e| {
                 panic!("details must match the declared detailsSchema: {e}: {details}")
@@ -2160,7 +2156,7 @@ mod file_key_refusal_tests {
             serde_json::json!({ "roomId": ROOM, "fileId": FILE_ID, "purpose": "seal" }),
         )
         .await;
-        let response: trust_tasks_rs::specs::rooms::keys::file_key::v0_2::Response =
+        let response: vti_specs::rooms::keys::file_key::v0_2::Response =
             serde_json::from_value(doc["payload"].clone()).expect("a typed response");
         assert_eq!(response.epoch.get(), 2);
     }
@@ -3015,7 +3011,7 @@ mod per_member_tests {
         );
         assert_eq!(
             refused["payload"]["code"],
-            trust_tasks_rs::specs::rooms::keys::welcome::v0_1::error_codes::WELCOME_INVALID.code,
+            vti_specs::rooms::keys::welcome::v0_1::error_codes::WELCOME_INVALID.code,
             "{refused}"
         );
         assert!(

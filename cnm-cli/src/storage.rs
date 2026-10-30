@@ -15,8 +15,6 @@ use std::io::Read;
 
 use clap::Subcommand;
 use serde_json::{Value, json};
-use trust_tasks_rs::specs::vtc::storage::configs::{get::v0_2 as get, list::v0_2 as list};
-use trust_tasks_rs::specs::vtc::storage::credentials::set::v0_3 as set;
 use vta_cli_common::render::{BOLD, DIM, RESET, bin_name, is_json_output, print_json};
 use vta_sdk::sealed_transfer::{
     AssertionProof, InMemoryNonceStore, ProducerAssertion, SealedPayloadV1,
@@ -25,6 +23,8 @@ use vta_sdk::sealed_transfer::{
 use vta_sdk::session::TransportChoice;
 use vtc_client::git_ns::task_error;
 use vtc_client::{HolderKey, VtcClient, VtcError};
+use vti_specs::vtc::storage::configs::{get::v0_2 as get, list::v0_2 as list};
+use vti_specs::vtc::storage::credentials::set::v0_3 as set;
 
 use crate::git::{send_change, signing_key, terminal_safe};
 use crate::vtc::{self as vtc_target, VtcTarget};

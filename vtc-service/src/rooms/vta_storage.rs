@@ -29,11 +29,11 @@ use affinidi_secrets_resolver::{SecretsResolver, ThreadedSecretsResolver};
 use async_trait::async_trait;
 use axum::http::StatusCode;
 use serde_json::{Value, json};
-use trust_tasks_rs::specs::external::credentials::issue::v0_3 as issue;
 use vta_sdk::sealed_transfer::ExternalCredentialPayload;
 use vti_common::blob_store::StorageOp;
 use vti_common::blob_store::presigned::{PresignAction, PresignedRequest, Presigner, checksum_b64};
 use vti_common::error::AppError;
+use vti_specs::external::credentials::issue::v0_3 as issue;
 use zeroize::Zeroizing;
 
 pub use crate::outbound::PeerError;
