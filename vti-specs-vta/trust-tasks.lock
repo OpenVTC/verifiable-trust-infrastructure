@@ -600,7 +600,7 @@ digest = "sha256:c0cbd1626353f859024f043385f2dd105916e95e1ec5a082b52bf16bfe41a8b
 slug = "vta/webvh/dids/update"
 version = "1.0"
 type_uri = "https://trusttasks.org/spec/vta/webvh/dids/update/1.0"
-digest = "sha256:0b138a951683d5411e2a8b0659c8b1ae5778ba29a5181874d09759dff9ad0d3e"
+digest = "sha256:49c531fd820abbc06c53eaee93c994dd73881c8ccbfa3cc24437a86c380cefc2"
 
 [[task]]
 slug = "vta/webvh/dids/update"
