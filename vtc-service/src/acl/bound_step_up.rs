@@ -797,6 +797,7 @@ pub enum Approved {
 /// service's own record** of the refusal, never from the approve-response,
 /// whose producer could otherwise nominate a different act (approve-request 0.3,
 /// *A bound step-up elevates nothing*).
+#[allow(deprecated)] // auth/step-up/approve-response 0.6 is superseded by 0.7; VTI speaks 0.6 until it moves
 pub async fn approve(
     state: &AppState,
     payload: &approve_response::Payload,

@@ -177,6 +177,5 @@ getrandom = "0.4"
 reqwest = { workspace = true }
 uuid = { workspace = true }
 
-[lints.rust]
-# See `[workspace.lints.rust]` in the workspace Cargo.toml.
-deprecated = "allow"
+[lints]
+workspace = true

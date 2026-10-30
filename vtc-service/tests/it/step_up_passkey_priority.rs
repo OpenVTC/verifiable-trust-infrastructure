@@ -181,6 +181,7 @@ fn options(request: &Value) -> RequestChallengeResponse {
     serde_json::from_value(json!({ "publicKey": inner })).expect("options re-wrap")
 }
 
+#[allow(deprecated)] // auth/step-up/approve-response 0.6 is superseded by 0.7; VTI speaks 0.6 until it moves
 fn approve_payload(
     did: &str,
     request: &Value,
@@ -301,6 +302,7 @@ async fn a_subject_with_no_step_up_passkey_keeps_the_session_passkey_route() {
 /// A non-passkey (`didSigned`, or absent `evidence`) answer never counts on
 /// this door, whether or not the subject holds a step-up passkey.
 #[tokio::test]
+#[allow(deprecated)] // auth/step-up/approve-response 0.6 is superseded by 0.7; VTI speaks 0.6 until it moves
 async fn a_wallet_signed_answer_never_satisfies_the_gesture() {
     let vtc = TestVtc::builder().with_public_url(RP_ORIGIN).build().await;
     let admin = Party::new();

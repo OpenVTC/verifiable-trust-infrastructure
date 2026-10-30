@@ -185,7 +185,6 @@ const REST_ROUTED: &[&str] = vta_sdk::trust_tasks::REST_ROUTED_URIS;
 // consumed by the dispatcher's test-only parity harness
 // Names deprecated URIs on purpose: this VTA still serves them, and the census
 // is what proves an entry has not outlived its handler.
-#[allow(deprecated)]
 const KNOWN_FEATURE_GATED_URIS: &[&str] = &[
     // Passkey-VMs slice — requires `webvh` + `didcomm` features. The
     // `dispatch_table!` entries list the same URIs and are tracked by the
@@ -363,7 +362,6 @@ macro_rules! dispatch_table {
         /// `#[allow(deprecated)]`: some arms still match a deprecated URI
         /// constant on purpose (a version kept for a peer outside this
         /// workspace).
-        #[allow(deprecated)]
         async fn dispatch_typed(
             state: &AppState,
             auth: &AuthClaims,
@@ -413,7 +411,7 @@ macro_rules! dispatch_table {
         /// Every dispatch entry MUST carry a class — the macro grammar makes
         /// omission a compile error, so a new handler cannot be added without
         /// a deliberate classification.
-        #[allow(deprecated, dead_code)]
+        #[allow(dead_code)]
         pub(crate) fn class_for(type_uri: &str) -> Option<$crate::policy::TaskClass> {
             match type_uri {
                 $(
@@ -440,7 +438,6 @@ macro_rules! dispatch_table {
         /// without remembering it exists. A discovery response that overstates
         /// the server is worse than none — a client believes a task is
         /// available and finds out otherwise on a live call.
-        #[allow(deprecated)]
         pub(crate) fn dispatched_uris() -> Vec<&'static str> {
             let mut v: Vec<&'static str> = Vec::new();
             $(
@@ -3595,7 +3592,6 @@ mod tests {
     /// feeds into PolicyInput, independent of the published registry. An
     /// unknown URI is unclassified so callers apply the fail-safe floor.
     #[test]
-    #[allow(deprecated)]
     fn class_for_carries_authoritative_classification() {
         use crate::policy::{Discloses, SideEffectLevel};
 
@@ -4301,7 +4297,6 @@ mod superseded_task_dispatch_tests {
         // schema is `additionalProperties: false` and the generated `Response`
         // types are `deny_unknown_fields`. Assert it on a real dispatch, not
         // just on the annotation helper.
-        #[allow(deprecated)]
         let uri = vta_sdk::trust_tasks::TASK_DID_TEMPLATES_LIST_3_1;
         let doc = dispatch(uri, json!({})).await;
 
@@ -5681,7 +5676,6 @@ mod response_coverage {
     /// The vault write and release paths.
     // Names the deprecated 0.1 URI on purpose: it is the canonical form this
     // covers, and it is still dispatched.
-    #[allow(deprecated)]
     #[tokio::test]
     async fn vault_entry_lifecycle() {
         let (state, _dir) = build_signing_test_app_state().await;

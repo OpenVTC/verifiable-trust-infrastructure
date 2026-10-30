@@ -58,7 +58,6 @@ use vta_sdk::protocols::key_management::sign::SignAlgorithm;
 /// `VtaClient`'s call sites rather than the freshest constant. Several are the
 /// deprecated `0.1` forms for exactly that reason; they move when
 /// `vta_sdk::client` moves, not before.
-#[allow(deprecated)]
 mod wire {
     use vta_sdk::trust_tasks as t;
 

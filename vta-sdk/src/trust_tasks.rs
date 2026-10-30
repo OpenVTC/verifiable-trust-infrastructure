@@ -132,6 +132,7 @@ pub const TASK_AUTH_PASSKEY_LOGIN_FINISH_0_2: &str =
 /// `sessionId`, 0.5 required the approver's proof on every response (which
 /// this VTA already did), and 0.6 adds the `approverSigned` gate, which this
 /// VTA never offers and so refuses as `noGate`.
+#[allow(deprecated)] // auth/step-up/approve-response 0.6 is superseded by 0.7; VTI speaks 0.6 until it moves
 pub const TASK_AUTH_STEP_UP_APPROVE_RESPONSE_0_6: &str =
     <vti_specs::auth::step_up::approve_response::v0_6::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
@@ -2280,7 +2281,6 @@ pub const TASK_VTA_WITNESS_LIST_0_2: &str =
 /// `*_0_2` successors — the VTA's live wire surface is the union during the
 /// migration window. `#[allow(deprecated)]` because naming the 0.1 constants
 /// here is intentional, not a migration miss.
-#[allow(deprecated)]
 pub const ALL_URIS: &[&str] = &[
     // Auth slice
     TASK_AUTH_CHALLENGE_0_1,

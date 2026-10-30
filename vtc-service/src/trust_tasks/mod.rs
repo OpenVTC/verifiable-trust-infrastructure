@@ -240,7 +240,6 @@ use vti_specs::auth::step_up::approve_response::v0_6 as step_up_approve_response
 // 0.4 only for the console's unsigned session-passkey answer: 0.5 onward
 // requires a proof the console cannot make (no successor yet — a spec gap).
 use trust_tasks_rs::{RejectReason, TrustTask};
-#[allow(deprecated)]
 use vti_specs::auth::step_up::approve_response::v0_4 as step_up_approve_response_v0_4;
 
 use vta_sdk::protocols::trust_task_reject_reasons as reasons;
@@ -3418,6 +3417,7 @@ pub(crate) const STEP_UP_APPROVE_RESPONSE_V0_4_TYPE: &str =
 
 /// `auth/step-up/approve-response/0.6` — adds a step-up approver's statement
 /// (`evidence.kind = approverSigned`) as the factor (VTI-APV-015).
+#[allow(deprecated)] // auth/step-up/approve-response 0.6 is superseded by 0.7; VTI speaks 0.6 until it moves
 pub(crate) const STEP_UP_APPROVE_RESPONSE_V0_6_TYPE: &str =
     <step_up_approve_response_v0_6::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
@@ -5485,6 +5485,10 @@ pub(super) fn refuse_hop_by_hop_backup(
 ///
 /// This service only issues bound step-ups on this door, so the answer is
 /// `recorded` or `rejected` — never `elevated`.
+// approve-response 0.4 (the console's unsigned answer: 0.5 onward requires a
+// proof the console cannot make — a spec gap) and 0.6 are both superseded by
+// 0.7; VTI speaks them until it moves.
+#[allow(deprecated)]
 async fn handle_step_up_approve_response(
     state: &AppState,
     ctx: &JoinAuthCtx,
@@ -5495,7 +5499,6 @@ async fn handle_step_up_approve_response(
 
     // 0.4's schema is the gate on what this door accepts; its members are
     // 0.6's, so the 0.6 type carries it from here on.
-    #[allow(deprecated)]
     if let Err(reject) = parse_spec_payload::<step_up_approve_response_v0_4::Payload>(&doc) {
         return reject;
     }
@@ -5606,6 +5609,7 @@ async fn handle_step_up_approve_response(
 /// - an approval carrying `approverSigned` goes to
 ///   [`crate::acl::bound_step_up::approve_with_statement`]; everything else
 ///   (`webauthn`, a refusal) to [`crate::acl::bound_step_up::approve`].
+#[allow(deprecated)] // auth/step-up/approve-response 0.6 is superseded by 0.7; VTI speaks 0.6 until it moves
 async fn handle_step_up_approve_response_v0_6(
     state: &AppState,
     ctx: &JoinAuthCtx,
@@ -5726,6 +5730,7 @@ async fn handle_step_up_approve_response_v0_6(
 /// from a console user's session passkey. A member's step-up passkey is only
 /// ever beside the member's own proof. [`crate::acl::bound_step_up::approve`]
 /// checks the credential again once the assertion has verified.
+#[allow(deprecated)] // auth/step-up/approve-response 0.6 is superseded by 0.7; VTI speaks 0.6 until it moves
 async fn unsigned_answer_admissible(
     state: &AppState,
     payload: &step_up_approve_response_v0_6::Payload,

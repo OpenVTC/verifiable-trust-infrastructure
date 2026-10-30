@@ -105,6 +105,5 @@ vti-common = { path = "../vti-common", features = ["test-support"] }
 # Signing the presentations the tests submit (`authentication` proofs).
 affinidi-data-integrity = { workspace = true }
 
-[lints.rust]
-# See `[workspace.lints.rust]` in the workspace Cargo.toml.
-deprecated = "allow"
+[lints]
+workspace = true

@@ -42,7 +42,6 @@ pub use vti_specs::acl::{
     swap_key::v0_1 as swap_key, update::v0_2 as update,
 };
 // acl/change-role/0.1 is the community-role door; 0.2 cannot express it (spec gap).
-#[allow(deprecated)]
 pub use vti_specs::acl::change_role::v0_1 as change_role;
 
 /// The Type URI of each task in the family, read off the generated payloads.

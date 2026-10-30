@@ -267,6 +267,7 @@ async fn verify_webauthn_gate(
 ///
 /// 0.1–0.5 are no longer served. 0.6's `approverSigned` gate is never offered
 /// by this VTA, so it is refused as `noGate` like any gate not offered.
+#[allow(deprecated)] // auth/step-up/approve-response 0.6 is superseded by 0.7; VTI speaks 0.6 until it moves
 pub(super) async fn handle_approve_response(
     state: &AppState,
     auth: &AuthClaims,
