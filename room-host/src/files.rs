@@ -26,8 +26,9 @@ use vti_specs::rooms::records::get::v0_2 as get_v2_spec;
 use super::{Answer, HostState, from_app_error, now, reject, respond};
 
 pub(crate) use vti_rooms::blob_tasks::{
-    BLOB_GET_V2_TYPE, DOWNLOAD_CHUNK_TYPE, GET_V2_TYPE, PUT_V3_TYPE, UPLOAD_ABORT_V2_TYPE,
-    UPLOAD_BEGIN_V2_TYPE, UPLOAD_CHUNK_V2_TYPE, UPLOAD_COMMIT_V2_TYPE, USAGE_TYPE,
+    BLOB_GET_V2_TYPE, DOWNLOAD_CHUNK_TYPE, GET_V2_TYPE, PUT_V3_TYPE, PUT_V4_TYPE,
+    UPLOAD_ABORT_V2_TYPE, UPLOAD_BEGIN_V2_TYPE, UPLOAD_CHUNK_V2_TYPE, UPLOAD_COMMIT_V2_TYPE,
+    USAGE_TYPE,
 };
 
 /// Refuse with a code the task's specification declares.
@@ -359,6 +360,30 @@ pub(crate) async fn put_v3(
         blob_tasks::put_v3_as_v0_1(payload),
         Some(blobs),
         cleartext,
+        false,
+    )
+    .await
+}
+
+/// `rooms/records/put/0.4`: 0.3, and an `open` room's `cleartext` may carry a `file` — its
+/// manifest and the random key its blob is sealed under — stored and served as received
+/// (Host item 13), once the record's `blobs` is checked against it (Host item 12).
+pub(crate) async fn put_v4(
+    state: &Arc<HostState>,
+    doc: &TrustTask<Value>,
+    payload: Value,
+) -> Answer {
+    let (blobs, cleartext) = match blob_tasks::put_v4_parts(&payload) {
+        Ok(parts) => parts,
+        Err(r) => return refused(doc, r),
+    };
+    super::put_with_blobs(
+        state,
+        doc,
+        blob_tasks::put_v4_as_v0_1(payload),
+        Some(blobs),
+        cleartext,
+        true,
     )
     .await
 }
@@ -2333,6 +2358,7 @@ mod tests {
     /// the file. Only the VTA is absent: the file key and the record's seal are local here,
     /// which the host cannot tell apart, since it never holds either.
     #[tokio::test]
+    #[allow(deprecated)] // the client writes a sealed file with records/put/0.3
     async fn a_file_round_trips_through_the_client_with_a_signed_body() {
         use vtc_client::VtcClient;
         use vtc_client::rooms::RoomSession;
@@ -2628,6 +2654,153 @@ mod tests {
             .await;
             assert_ne!(status, StatusCode::OK, "{bad}: {out}");
         }
+    }
+
+    // ─── rooms/records/put/0.4 (trust-tasks-tf #987) ─────────────────────
+
+    /// An open room's file manifest, describing `blob_ref`, with the random key 0.4 carries.
+    fn open_file(blob_ref: &str) -> Value {
+        json!({
+            "fileId": "q0Kf7m3xV2s9Yh1cT8bN4wL6pR5dE2uJ7aZ0iO3gH1k",
+            "name": "brochure-2026.pdf",
+            "mediaType": "application/pdf",
+            "size": 3000,
+            "digest": "zQmeX7fPr6A8m5jF9XKfXgGv3cP4qTn2Cb6XnPLtE9hVjqD",
+            "epoch": 1,
+            "segmentSize": 65520,
+            "blobRef": blob_ref,
+            "fileKey": "Xv4Qn8pL2mW7rT1yU9sK3dF6gH0jB5cZ8aE2iO4uY7w",
+        })
+    }
+
+    async fn put_v4(
+        h: &Host,
+        f: &RoomFixture,
+        cleartext: Value,
+        blobs: &[&str],
+    ) -> (StatusCode, Value) {
+        call(
+            &h.app,
+            PUT_V4_TYPE,
+            json!({ "roomId": f.room.room_id, "key": "brochure", "presentation": f.as_owner(),
+                    "cleartext": cleartext, "blobs": blobs }),
+            &f.owner,
+        )
+        .await
+    }
+
+    /// Host item 13: an open room's file is stored and served back exactly as received, and
+    /// the record names its blob.
+    #[tokio::test]
+    async fn put_0_4_stores_an_open_rooms_file_as_received() {
+        let h = host(eager());
+        let f = room(&h).await;
+        let blob_ref = upload(&h, &f, &blob(3000, 7)).await;
+        let cleartext =
+            json!({ "title": "2026 brochure", "body": "", "file": open_file(&blob_ref) });
+
+        let (status, out) = put_v4(&h, &f, cleartext.clone(), &[&blob_ref]).await;
+        assert_eq!(status, StatusCode::OK, "{out}");
+
+        let (status, got) = call(
+            &h.app,
+            vti_rooms::wire::ROOMS_RECORDS_GET_V2_TYPE,
+            json!({ "roomId": f.room.room_id, "key": "brochure", "presentation": f.as_owner() }),
+            &f.owner,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{got}");
+        let served = if got["cleartext"].is_null() {
+            got["record"]["cleartext"].clone()
+        } else {
+            got["cleartext"].clone()
+        };
+        assert_eq!(served, cleartext, "served exactly as received: {got}");
+        assert_eq!(got["blobs"], json!([blob_ref]), "{got}");
+    }
+
+    /// Host item 12: on an open room, a `blobs` that is not exactly the described file's
+    /// blob, or a file with no `fileKey`, is `malformedRequest` — before `blobNotFound`, so a
+    /// blob that was never committed is refused for the mismatch, not its absence.
+    #[tokio::test]
+    async fn put_0_4_refuses_an_open_record_whose_blobs_are_not_its_file() {
+        let h = host(eager());
+        let f = room(&h).await;
+        let blob_ref = upload(&h, &f, &blob(3000, 7)).await;
+        let other = upload(&h, &f, &blob(2000, 9)).await;
+        let never_committed = "zQmbWqxBEKC3P8tqsKc98xmWNzrzDtRLMiMPL8wBuTGsMnR";
+        let mut keyless = open_file(&blob_ref);
+        keyless.as_object_mut().unwrap().remove("fileKey");
+
+        for (why, cleartext, blobs) in [
+            (
+                "a blob with no file",
+                json!({ "body": "x" }),
+                vec![blob_ref.as_str()],
+            ),
+            (
+                "a file with no blob",
+                json!({ "body": "", "file": open_file(&blob_ref) }),
+                vec![],
+            ),
+            (
+                "another blob",
+                json!({ "body": "", "file": open_file(&blob_ref) }),
+                vec![other.as_str()],
+            ),
+            (
+                "an extra blob",
+                json!({ "body": "", "file": open_file(&blob_ref) }),
+                vec![blob_ref.as_str(), other.as_str()],
+            ),
+            (
+                "no fileKey",
+                json!({ "body": "", "file": keyless }),
+                vec![blob_ref.as_str()],
+            ),
+            (
+                "an uncommitted blob it does not describe",
+                json!({ "body": "", "file": open_file(&blob_ref) }),
+                vec![never_committed],
+            ),
+        ] {
+            let (status, out) = put_v4(&h, &f, cleartext, &blobs).await;
+            assert_ne!(status, StatusCode::OK, "{why}: {out}");
+            assert!(out.to_string().contains("malformedRequest"), "{why}: {out}");
+        }
+
+        // Nothing changed: no record was written.
+        let (status, got) = call(
+            &h.app,
+            vti_rooms::wire::ROOMS_RECORDS_GET_V2_TYPE,
+            json!({ "roomId": f.room.room_id, "key": "brochure", "presentation": f.as_owner() }),
+            &f.owner,
+        )
+        .await;
+        assert_ne!(status, StatusCode::OK, "{got}");
+    }
+
+    /// A 0.4 `fileKey` that is not 32 bytes of base64url is refused by the schema.
+    #[tokio::test]
+    async fn put_0_4_refuses_a_file_key_the_schema_refuses() {
+        let h = host(eager());
+        let f = room(&h).await;
+        let blob_ref = upload(&h, &f, &blob(3000, 7)).await;
+        let mut file = open_file(&blob_ref);
+        file["fileKey"] = json!("too-short");
+        let (status, out) = put_v4(&h, &f, json!({ "body": "", "file": file }), &[&blob_ref]).await;
+        assert_ne!(status, StatusCode::OK, "{out}");
+    }
+
+    /// Item 12 is the open tier's: 0.3 on an open room keeps its rules, so a writer that
+    /// predates 0.4 is not refused for what 0.3 never asked of it.
+    #[tokio::test]
+    async fn put_0_3_on_an_open_room_is_unchanged_by_0_4() {
+        let h = host(eager());
+        let f = room(&h).await;
+        let blob_ref = upload(&h, &f, &blob(3000, 7)).await;
+        let (status, out) = put_record(&h, &f, "k", &[&blob_ref]).await;
+        assert_eq!(status, StatusCode::OK, "{out}");
     }
 
     // ─── record retention and prune (trust-tasks-tf #868) ─────────────────

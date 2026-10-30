@@ -2851,10 +2851,12 @@ dispatch_table! {
     vta_sdk::trust_tasks::TASK_ROOMS_KEYS_SEAL_0_2 => room_act::handle_seal_v0_2
         [ None Metadata true ],
     // Signs a host-bound document as the member and presents their authority; stores
-    // nothing and sends nothing — the caller sends what comes back. 0.8 only: its table
-    // has the newer host-bound versions, `vtc/rooms/offers/list/0.4`, and the room's
-    // retention requests as `admin`; 0.1–0.7 are not served.
+    // nothing and sends nothing — the caller sends what comes back. 0.9, whose table adds
+    // `rooms/records/put/0.4`, and 0.8, which `pnm-browser-plugin` sends, each with its own
+    // closed table; 0.1–0.7 are not served.
     vta_sdk::trust_tasks::TASK_ROOMS_KEYS_ACT_0_8 => room_act::handle_act_v0_8
+        [ None Metadata true ],
+    vta_sdk::trust_tasks::TASK_ROOMS_KEYS_ACT_0_9 => room_act::handle_act_v0_9
         [ None Metadata true ],
     // 0.2: each entry names its member; `includePersonal` adds the member's own label.
     vta_sdk::trust_tasks::TASK_ROOMS_KEYS_LIST_0_2 => room_label::handle_list_v0_2

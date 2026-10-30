@@ -52,8 +52,13 @@ pub const ROOMS_EPOCH_COMMITS_TYPE: &str = "https://trusttasks.org/spec/rooms/ep
 /// `rooms/records/put/0.3`: an `open` room's cleartext may say what kind of claim the
 /// record is and when it lapses — `basis`, `confidence`, `evidence`, `validFor` and
 /// `validUntil`, stored and served as received and never acted on (trust-tasks-tf #865).
+#[allow(deprecated)] // superseded by 0.4, and still served: rooms/keys/act/0.8 completes put only to 0.3
 pub const ROOMS_RECORDS_PUT_V3_TYPE: &str =
     <vti_specs_rooms::rooms::records::put::v0_3::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+/// `rooms/records/put/0.4`: an `open` room's record may carry a file — its manifest, and
+/// the random key its blob is sealed under, in `cleartext.file` (trust-tasks-tf #987).
+pub const ROOMS_RECORDS_PUT_V4_TYPE: &str =
+    <vti_specs_rooms::rooms::records::put::v0_4::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 /// `rooms/epoch/chain/0.2`: every response carries the room's epoch floor once it has been
 /// pruned, and no rung at or below it (trust-tasks-tf #869).
 pub const ROOMS_EPOCH_CHAIN_V2_TYPE: &str =
@@ -122,6 +127,8 @@ pub const ROOMS_DISPATCHED_URIS: &[&str] = &[
     ROOMS_RECORDS_GET_V2_TYPE,
     // Record provenance and expiry on the open tier (trust-tasks-tf #865).
     ROOMS_RECORDS_PUT_V3_TYPE,
+    // A file on the open tier (trust-tasks-tf #987).
+    ROOMS_RECORDS_PUT_V4_TYPE,
     // Record retention and prune (trust-tasks-tf #868).
     ROOMS_CREATE_V2_TYPE,
     // Prunes named `prunedAt` (`rooms/_shared/0.2`); list 0.5's `nextCursor`.
@@ -386,7 +393,7 @@ pub struct CreateRoomResponse {
 }
 
 /// `rooms/records/put/0.3` request, as the host reads it once it has taken `blobs`, `ext`
-/// and an open record's provenance apart.
+/// and an open record's provenance apart — and 0.4's, once it has taken the file apart too.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PutRecordBody {

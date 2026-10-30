@@ -24,6 +24,7 @@ use vti_specs_rooms::rooms::blobs::upload::chunk::v0_2 as upload_chunk_v2;
 use vti_specs_rooms::rooms::blobs::upload::commit::v0_2 as upload_commit_v2;
 use vti_specs_rooms::rooms::records::get::v0_2 as get_v2;
 use vti_specs_rooms::rooms::records::put::v0_3 as put_v3;
+use vti_specs_rooms::rooms::records::put::v0_4 as put_v4;
 use vti_specs_rooms::rooms::usage::v0_1 as rooms_usage;
 
 use crate::authz::{Action, AuthorizedAction};
@@ -36,7 +37,8 @@ use crate::{Room, Visibility};
 /// The URIs these tasks are dispatched under, from [`crate::wire`].
 pub use crate::wire::{
     ROOMS_BLOBS_CHUNK_TYPE as DOWNLOAD_CHUNK_TYPE, ROOMS_RECORDS_GET_V2_TYPE as GET_V2_TYPE,
-    ROOMS_RECORDS_PUT_V3_TYPE as PUT_V3_TYPE, ROOMS_USAGE_TYPE as USAGE_TYPE,
+    ROOMS_RECORDS_PUT_V3_TYPE as PUT_V3_TYPE, ROOMS_RECORDS_PUT_V4_TYPE as PUT_V4_TYPE,
+    ROOMS_USAGE_TYPE as USAGE_TYPE,
 };
 pub use crate::wire::{
     ROOMS_BLOBS_GET_V2_TYPE as BLOB_GET_V2_TYPE,
@@ -509,19 +511,38 @@ pub async fn usage(
 /// The cleartext is read from the JSON, never from the generated type: some generated
 /// constructors normalise what they parse (a `validUntil` comes back in another spelling),
 /// and a host that rewrote a member would be serving the writer something they did not write.
+#[allow(deprecated)] // superseded by 0.4, and still served: rooms/keys/act/0.8 completes put only to 0.3
 pub fn put_v3_parts(payload: &Value) -> Result<(Vec<String>, Option<Value>), Refusal> {
-    let req: put_v3::Payload = parse(payload)?;
+    parse::<put_v3::Payload>(payload)?;
+    put_parts(payload)
+}
+
+/// [`put_v3_parts`] for `rooms/records/put/0.4`, whose open-room `cleartext` may also carry
+/// a `file`. The host checks that file against the record's `blobs` once it knows the room
+/// ([`open_file_refused`]).
+pub fn put_v4_parts(payload: &Value) -> Result<(Vec<String>, Option<Value>), Refusal> {
+    parse::<put_v4::Payload>(payload)?;
+    put_parts(payload)
+}
+
+/// The `blobs` and the `cleartext` as received, of a payload already checked against its
+/// generated type.
+fn put_parts(payload: &Value) -> Result<(Vec<String>, Option<Value>), Refusal> {
     // The bounds the generated type does not carry (`confidence` in [0, 1], a set of
     // purposes), against the schema itself.
     if let Some(cleartext) = payload.get("cleartext").and_then(Value::as_object) {
         crate::provenance::check(cleartext).map_err(Refusal::Malformed)?;
     }
-    let blobs = req
-        .blobs
-        .unwrap_or_default()
-        .iter()
-        .map(|b| b.as_str().to_string())
-        .collect();
+    let blobs = payload
+        .get("blobs")
+        .and_then(Value::as_array)
+        .map(|b| {
+            b.iter()
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default();
     Ok((blobs, payload.get("cleartext").cloned()))
 }
 
@@ -541,6 +562,53 @@ pub fn put_v3_as_v0_1(payload: Value) -> Value {
         }
     }
     payload
+}
+
+/// A 0.4 put read as the 0.1 body: [`put_v3_as_v0_1`], and an open record's `file` taken
+/// out of `cleartext` too. The host stores the cleartext [`put_v4_parts`] returned.
+pub fn put_v4_as_v0_1(payload: Value) -> Value {
+    let mut payload = put_v3_as_v0_1(payload);
+    if let Some(cleartext) = payload.get_mut("cleartext").and_then(Value::as_object_mut) {
+        cleartext.remove("file");
+    }
+    payload
+}
+
+/// `rooms/records/put/0.4` Host item 12: on an `open` room, which can read the record, a
+/// `blobs` that is not exactly the blob `cleartext.file` describes, or a file with no
+/// `fileKey`, is refused as malformed — before `blobNotFound`, and before anything changes.
+/// `None` on a sealed room, whose body the host cannot see, and for a record that passes.
+///
+/// A blob the record does not describe would be kept alive by a record no reader can
+/// connect it to; a file with no key is one no reader can open, since on this tier there is
+/// no room key to derive it from.
+pub fn open_file_refused(
+    room: &Room,
+    blobs: &[String],
+    cleartext: Option<&Value>,
+) -> Option<Refusal> {
+    if !room.visibility.stores_cleartext() {
+        return None;
+    }
+    let reason = match cleartext.and_then(|c| c.get("file")) {
+        None if blobs.is_empty() => return None,
+        None => {
+            "`blobs` names a blob but `cleartext.file` describes none: an open room's record \
+             names only the file it describes"
+        }
+        Some(file) if file.get("fileKey").is_none() => {
+            "`cleartext.file` has no `fileKey`: an open room's file is sealed under a random \
+             key its record carries"
+        }
+        Some(file) => {
+            let described = file.get("blobRef").and_then(Value::as_str);
+            if matches!((blobs, described), ([named], Some(r)) if named == r) {
+                return None;
+            }
+            "`blobs` must be exactly `[cleartext.file.blobRef]`"
+        }
+    };
+    Some(Refusal::Malformed(reason.to_string()))
 }
 
 /// The members a 0.1 request shares with its 0.2 successor: everything but `blobs` and
@@ -679,4 +747,78 @@ pub fn is_file_task(type_uri: &str) -> bool {
         BLOB_GET_V2_TYPE,
     ]
     .contains(&type_uri)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn room(visibility: Visibility) -> Room {
+        Room {
+            room_id: "did:key:zRoom".into(),
+            owner_did: "did:key:zOwner".into(),
+            visibility,
+            retention_policy: crate::RetentionPolicy::Chained,
+            anchor_cadence: Default::default(),
+            epoch: 1,
+            next_version: 1,
+            retention_days: 90,
+            epoch_expires_at: None,
+            created_at: 0,
+            updated_at: 0,
+            mirror_of: None,
+            record_retention: None,
+            last_prune: None,
+            epoch_floor: None,
+        }
+    }
+
+    /// `rooms/records/put/0.4` Host item 12 is the open tier's: a sealed room's host cannot
+    /// see the body, so it checks nothing of the kind — even a `blobs` with no cleartext.
+    #[test]
+    fn open_file_rules_do_not_reach_a_sealed_room() {
+        let blobs = vec!["zBlob".to_string()];
+        for visibility in [Visibility::Attributed, Visibility::Private] {
+            assert!(open_file_refused(&room(visibility), &blobs, None).is_none());
+        }
+    }
+
+    /// On an open room: a record with neither file nor blob passes, as does one naming
+    /// exactly the blob its keyed file describes; anything else is malformed.
+    #[test]
+    fn open_file_rules_on_an_open_room() {
+        let open = room(Visibility::Open);
+        let file = json!({ "blobRef": "zBlob", "fileKey": "k" });
+        let named = |b: &[&str]| b.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+
+        assert!(open_file_refused(&open, &[], Some(&json!({ "body": "x" }))).is_none());
+        assert!(open_file_refused(&open, &[], None).is_none());
+        assert!(
+            open_file_refused(&open, &named(&["zBlob"]), Some(&json!({ "file": file }))).is_none()
+        );
+
+        for (why, blobs, cleartext) in [
+            ("blob, no file", named(&["zBlob"]), json!({ "body": "x" })),
+            ("file, no blob", named(&[]), json!({ "file": file })),
+            ("another blob", named(&["zOther"]), json!({ "file": file })),
+            (
+                "extra blob",
+                named(&["zBlob", "zOther"]),
+                json!({ "file": file }),
+            ),
+            (
+                "no fileKey",
+                named(&["zBlob"]),
+                json!({ "file": { "blobRef": "zBlob" } }),
+            ),
+        ] {
+            assert!(
+                matches!(
+                    open_file_refused(&open, &blobs, Some(&cleartext)),
+                    Some(Refusal::Malformed(_))
+                ),
+                "{why}"
+            );
+        }
+    }
 }

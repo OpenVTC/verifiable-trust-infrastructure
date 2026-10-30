@@ -1,5 +1,6 @@
-//! Acting **as** the member — `rooms/keys/act/0.8` and `rooms/keys/seal/0.2`. No earlier
-//! `act` is served: every client in this workspace and `pnm-browser-plugin` send 0.8.
+//! Acting **as** the member — `rooms/keys/act` 0.8 and 0.9, and `rooms/keys/seal/0.2`. No
+//! earlier `act` is served. Every client in this workspace sends 0.9; `pnm-browser-plugin`
+//! sends 0.8, which keeps its own table until the plugin moves.
 //!
 //! The member's own client (a `pnm` session, a wallet extension, a phone) holds no key of
 //! the persona the room admitted. These two tasks are how it writes and reads as that
@@ -168,7 +169,29 @@ pub(super) async fn handle_act_v0_8(
     auth: &AuthClaims,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    use vti_specs::rooms::keys::act::v0_8 as spec;
+    handle_act(state, auth, doc, room_act::actable_0_8).await
+}
+
+/// `rooms/keys/act/0.9`: 0.8, with `rooms/records/put/0.4` in the table, so a member
+/// writes an open room's file record (trust-tasks-tf #990).
+pub(super) async fn handle_act_v0_9(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    handle_act(state, auth, doc, room_act::actable_0_9).await
+}
+
+/// One `rooms/keys/act` request, against the closed table of the version it names
+/// (Recipient item 1). 0.9 extends 0.8 — the same request, response and error codes — so
+/// both are read and answered as 0.9's types; only the table differs.
+async fn handle_act(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+    actable: fn(&str) -> Option<Option<&'static str>>,
+) -> TrustTaskOutcome {
+    use vti_specs::rooms::keys::act::v0_9 as spec;
 
     if let Err(r) = super::helpers::require_capability(
         state,
@@ -198,11 +221,7 @@ pub(super) async fn handle_act_v0_8(
     // too, with no action: they take no presentation.
     let type_uri = req.document.type_.as_str();
     let offer = room_act::is_community_type_0_8(type_uri);
-    let Some(action) = (if offer {
-        Some(None)
-    } else {
-        room_act::actable_0_8(type_uri)
-    }) else {
+    let Some(action) = (if offer { Some(None) } else { actable(type_uri) }) else {
         return reject_with_code(
             &doc,
             declared(spec::error_codes::TYPE_NOT_ACTABLE),
@@ -453,7 +472,7 @@ async fn complete_offer(
     room_id: Option<&str>,
     document: Value,
 ) -> Result<room_act::Completed, TrustTaskOutcome> {
-    use vti_specs::rooms::keys::act::v0_8::error_codes as codes;
+    use vti_specs::rooms::keys::act::v0_9::error_codes as codes;
 
     // Item 2b: the named `issuer`, never one picked for the caller — not the only persona
     // held, not one inferred from the offer.
@@ -830,6 +849,7 @@ mod tests {
     const OFFERS_LIST_0_2: &str = "https://trusttasks.org/spec/vtc/rooms/offers/list/0.2";
     const MEMBERSHIPS_LIST: &str = "https://trusttasks.org/spec/vtc/rooms/memberships/list/0.1";
     const ACT_0_8: &str = vta_sdk::trust_tasks::TASK_ROOMS_KEYS_ACT_0_8;
+    const ACT_0_9: &str = vta_sdk::trust_tasks::TASK_ROOMS_KEYS_ACT_0_9;
     const OFFERS_LIST_0_3: &str = "https://trusttasks.org/spec/vtc/rooms/offers/list/0.3";
     const OFFERS_LIST_0_4: &str = "https://trusttasks.org/spec/vtc/rooms/offers/list/0.4";
     const OFFERS_ACCEPT: &str = "https://trusttasks.org/spec/vtc/rooms/offers/accept/0.1";
@@ -989,7 +1009,18 @@ mod tests {
     }
 
     async fn act(state: &AppState, auth: &AuthClaims, document: Value) -> Value {
-        act_v0_8(state, auth, document).await
+        act_v0_9(state, auth, document).await
+    }
+
+    async fn act_v0_9(state: &AppState, auth: &AuthClaims, document: Value) -> Value {
+        body(
+            handle_act_v0_9(
+                state,
+                auth,
+                request(ACT_0_9, json!({ "document": document })),
+            )
+            .await,
+        )
     }
 
     async fn act_v0_8(state: &AppState, auth: &AuthClaims, document: Value) -> Value {
@@ -1058,7 +1089,7 @@ mod tests {
                 "{out}"
             );
             assert!(out["payload"].get("expiresAt").is_none(), "{out}");
-            serde_json::from_value::<vti_specs::rooms::keys::act::v0_8::Response>(
+            serde_json::from_value::<vti_specs::rooms::keys::act::v0_9::Response>(
                 out["payload"].clone(),
             )
             .expect("a 0.3 response");
@@ -1134,7 +1165,7 @@ mod tests {
                 completed["proof"]["proofPurpose"], "authentication",
                 "{out}"
             );
-            serde_json::from_value::<vti_specs::rooms::keys::act::v0_8::Response>(
+            serde_json::from_value::<vti_specs::rooms::keys::act::v0_9::Response>(
                 out["payload"].clone(),
             )
             .expect("a 0.8 response");
@@ -1284,7 +1315,7 @@ mod tests {
             "{out}"
         );
         assert!(out["payload"].get("expiresAt").is_none(), "{out}");
-        serde_json::from_value::<vti_specs::rooms::keys::act::v0_8::Response>(
+        serde_json::from_value::<vti_specs::rooms::keys::act::v0_9::Response>(
             out["payload"].clone(),
         )
         .expect("a 0.4 response");
@@ -1362,7 +1393,7 @@ mod tests {
             out["type"].as_str().is_some_and(|t| t.starts_with(ACT_0_8)),
             "{out}"
         );
-        serde_json::from_value::<vti_specs::rooms::keys::act::v0_8::Response>(
+        serde_json::from_value::<vti_specs::rooms::keys::act::v0_9::Response>(
             out["payload"].clone(),
         )
         .expect("a 0.2 response");
@@ -1788,6 +1819,35 @@ mod tests {
         assert_eq!(entry.charged_to.as_deref(), Some(f.alice.did.as_str()));
         let raw = serde_json::to_string(&entry).unwrap();
         assert!(!raw.contains(&key_did) && !raw.contains(&client.did));
+    }
+
+    /// `rooms/keys/act/0.9` adds `rooms/records/put/0.4` to the put row, `write`, and 0.8
+    /// keeps its own closed table: the same open-room file record is completed at 0.9 with
+    /// a presentation inserted, and refused `typeNotActable` at 0.8 (Recipient item 1).
+    #[tokio::test]
+    async fn act_0_9_completes_put_0_4_and_0_8_does_not() {
+        let f = fixture(&["read", "write"]).await;
+        let put = || {
+            unsigned(
+                vti_rooms::wire::ROOMS_RECORDS_PUT_V4_TYPE,
+                "did:key:zHost",
+                json!({ "roomId": f.room.did, "key": "brochure",
+                        "cleartext": { "body": "" }, "expectedVersion": 0 }),
+            )
+        };
+
+        let out = act_v0_8(&f.state, &alice_client(), put()).await;
+        assert_eq!(code(&out), "rooms/keys/act:typeNotActable", "{out}");
+
+        let out = act_v0_9(&f.state, &alice_client(), put()).await;
+        assert_eq!(out["payload"]["principal"], f.alice.did, "{out}");
+        assert!(
+            out["type"].as_str().is_some_and(|t| t.starts_with(ACT_0_9)),
+            "{out}"
+        );
+        let completed = &out["payload"]["document"];
+        assert_eq!(completed["issuer"], f.alice.did, "{out}");
+        assert!(completed["payload"]["presentation"].is_object(), "{out}");
     }
 
     /// Item 1: a type outside the table is refused before anything is resolved.

@@ -2430,14 +2430,14 @@ async fn mount_unsupported(
         .await
 }
 
-/// `rooms/keys/act/0.8` only: answered there, and never asked at an older version.
+/// `rooms/keys/act/0.9` only: answered there, and never asked at an older version.
 #[tokio::test]
 async fn room_act_goes_at_0_8_only() {
     let server = MockServer::start().await;
     let member = "did:webvh:example.com:people:alice";
     let _v8 = Mock::given(method("POST"))
         .and(path("/trust-tasks"))
-        .and(task_type("https://trusttasks.org/spec/rooms/keys/act/0.8"))
+        .and(task_type("https://trusttasks.org/spec/rooms/keys/act/0.9"))
         .respond_with(
             ResponseTemplate::new(200).set_body_json(
                 signed_response(json!({
@@ -2470,12 +2470,12 @@ async fn room_act_goes_at_0_8_only() {
     assert_eq!(resp.principal.as_str(), member);
 }
 
-/// A VTA that does not serve `rooms/keys/act/0.8` is reported as such, for a room request
+/// A VTA that does not serve `rooms/keys/act/0.9` is reported as such, for a room request
 /// and for a reply to a community's offer alike: nothing older is asked.
 #[tokio::test]
 async fn room_act_never_falls_back_to_a_superseded_version() {
     let server = MockServer::start().await;
-    let _v8 = mount_unsupported(&server, "https://trusttasks.org/spec/rooms/keys/act/0.8", 2).await;
+    let _v9 = mount_unsupported(&server, "https://trusttasks.org/spec/rooms/keys/act/0.9", 2).await;
     let _v5 = mount_unsupported(&server, "https://trusttasks.org/spec/rooms/keys/act/0.5", 0).await;
     let _v1 = mount_unsupported(&server, "https://trusttasks.org/spec/rooms/keys/act/0.1", 0).await;
     let c = client(&server).await;

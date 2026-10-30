@@ -68,12 +68,13 @@ pub(crate) fn serves(type_uri: &str) -> bool {
 
 /// Tasks whose payload carries members a host stores and serves back **exactly as
 /// received**, so they are read from the document's JSON rather than a typed round trip
-/// (which rewrites a `validUntil`, or an `ext` it does not model): `rooms/records/put/0.3`
-/// (an open room's cleartext, consumer item 11), `rooms/create/0.2` and
+/// (which rewrites a `validUntil`, or an `ext` it does not model): `rooms/records/put` 0.3
+/// and 0.4 (an open room's cleartext, consumer item 11), `rooms/create/0.2` and
 /// `rooms/records/retention/set/0.1` (the record retention, recorded as given). Each is
 /// still checked against its generated type before anything is stored.
 const AS_RECEIVED_URIS: &[&str] = &[
     vti_rooms::wire::ROOMS_RECORDS_PUT_V3_TYPE,
+    vti_rooms::wire::ROOMS_RECORDS_PUT_V4_TYPE,
     vti_rooms::wire::ROOMS_CREATE_V2_TYPE,
     vti_rooms::wire::ROOMS_RECORDS_RETENTION_SET_TYPE,
 ];
@@ -115,6 +116,9 @@ pub(crate) async fn dispatch(
         return match type_uri.as_str() {
             vti_rooms::wire::ROOMS_RECORDS_PUT_V3_TYPE => {
                 super::files::handle_put_record_v3(doc, ctx).await
+            }
+            vti_rooms::wire::ROOMS_RECORDS_PUT_V4_TYPE => {
+                super::files::handle_put_record_v4(doc, ctx).await
             }
             vti_rooms::wire::ROOMS_CREATE_V2_TYPE => super::files::handle_create_v2(doc, ctx).await,
             _ => super::files::handle_retention_set(doc, ctx).await,
@@ -481,17 +485,20 @@ pub(super) async fn create_room<P>(
     )
 }
 
-/// Write a record: `rooms/records/put/0.3`, read as [`PutRecordBody`] with its `blobs`. A
-/// write that names no blobs releases any the record's previous version named.
+/// Write a record: `rooms/records/put` 0.3 or 0.4, read as [`PutRecordBody`] with its
+/// `blobs`. A write that names no blobs releases any the record's previous version named.
 ///
-/// `cleartext_as_received` is the write's `cleartext`, provenance and expiry included,
-/// stored in place of the body's exactly as the writer sent it (consumer item 11).
+/// `cleartext_as_received` is the write's `cleartext`, provenance, expiry and file
+/// included, stored in place of the body's exactly as the writer sent it (consumer item
+/// 11). `open_files` is 0.4's: an open room's `blobs` must be the file its cleartext
+/// describes.
 pub(super) async fn put_record<P>(
     doc: &TrustTask<P>,
     ctx: &RoomCtx,
     req: PutRecordBody,
     blobs: Vec<String>,
     cleartext_as_received: Option<Value>,
+    open_files: bool,
 ) -> TrustTaskOutcome {
     let state = &ctx.state;
 
@@ -522,6 +529,13 @@ pub(super) async fn put_record<P>(
     // from the code alone.
     if let Some(refusal) =
         vti_rooms::blob_tasks::record_epoch_refused(&room, req.sealed.as_ref().map(|s| s.epoch))
+    {
+        return super::files::refused(doc, refusal);
+    }
+    // Before `blobNotFound`, and before anything changes (put 0.4 Host item 12).
+    if open_files
+        && let Some(refusal) =
+            vti_rooms::blob_tasks::open_file_refused(&room, &blobs, cleartext_as_received.as_ref())
     {
         return super::files::refused(doc, refusal);
     }
@@ -3201,6 +3215,49 @@ mod tests {
             got["cleartext"].clone()
         };
         assert_eq!(served, cleartext, "{got}");
+    }
+
+    /// `rooms/records/put/0.4` Host item 12 on the VTC's host, as room-host holds it: on an
+    /// open room a `blobs` the cleartext does not describe is `malformedRequest`, checked
+    /// before `blobNotFound` — and a record whose keyed file names its blob passes that check
+    /// and reaches the blob lookup.
+    #[tokio::test]
+    async fn put_0_4_checks_an_open_records_blobs_against_its_file() {
+        let tv = build_test_vtc().await;
+        let state = &tv.state;
+        let f = RoomFixture::new(Visibility::Open).await;
+        assert!(create(state, &f).await.status.is_success());
+        let blob_ref = "zQmbWqxBEKC3P8tqsKc98xmWNzrzDtRLMiMPL8wBuTGsMnR";
+        let file = json!({
+            "fileId": "q0Kf7m3xV2s9Yh1cT8bN4wL6pR5dE2uJ7aZ0iO3gH1k",
+            "name": "brochure-2026.pdf",
+            "mediaType": "application/pdf",
+            "size": 3000,
+            "digest": "zQmeX7fPr6A8m5jF9XKfXgGv3cP4qTn2Cb6XnPLtE9hVjqD",
+            "epoch": 1,
+            "segmentSize": 65520,
+            "blobRef": blob_ref,
+            "fileKey": "Xv4Qn8pL2mW7rT1yU9sK3dF6gH0jB5cZ8aE2iO4uY7w",
+        });
+        let put = |cleartext: Value| {
+            send(
+                state,
+                vti_rooms::wire::ROOMS_RECORDS_PUT_V4_TYPE,
+                json!({ "roomId": f.room.room_id, "key": "brochure", "presentation": f.as_owner(),
+                        "cleartext": cleartext, "blobs": [blob_ref] }),
+                &f,
+            )
+        };
+
+        let out = put(json!({ "body": "x" })).await;
+        let refused = payload_of(&out).to_string();
+        assert!(!out.status.is_success(), "{refused}");
+        assert!(refused.contains("malformedRequest"), "{refused}");
+
+        let out = put(json!({ "body": "", "file": file })).await;
+        let refused = payload_of(&out).to_string();
+        assert!(!out.status.is_success(), "{refused}");
+        assert!(refused.contains("blobNotFound"), "{refused}");
     }
 
     /// The record-retention tasks on the VTC's host, as room-host holds them

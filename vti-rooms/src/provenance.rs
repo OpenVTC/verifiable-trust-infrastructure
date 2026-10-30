@@ -26,7 +26,7 @@
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
-use vti_specs_rooms::rooms::records::put::v0_3 as spec;
+use vti_specs_rooms::rooms::records::put::v0_4 as spec;
 
 /// The five members, as they are spelled on the wire.
 pub const MEMBERS: [&str; 5] = ["basis", "confidence", "evidence", "validFor", "validUntil"];
@@ -104,7 +104,7 @@ pub fn check(object: &Map<String, Value>) -> Result<(), String> {
     }
     // The schema itself first: the generated types do not carry every bound it states
     // (`confidence` in [0, 1], `uniqueItems`). The members are checked inside the one
-    // payload that publishes them all, `rooms/records/put/0.3`'s open-room `cleartext`.
+    // payload that publishes them all, `rooms/records/put/0.4`'s open-room `cleartext`.
     // One member per probe, so a refusal names the member it is about.
     for member in MEMBERS {
         let Some(v) = object.get(member) else {

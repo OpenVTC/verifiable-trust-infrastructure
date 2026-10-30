@@ -921,8 +921,15 @@ pub const TASK_ROOMS_KEYS_SEAL_0_2: &str =
 /// `rooms/info/0.3`, `rooms/epoch/chain/0.2`, and `rooms/records/prune/0.2` and
 /// `rooms/records/retention/set/0.1` as `admin`. Auth: `roomPresent` capability; refused to
 /// a delegate, which uses `present`.
+#[allow(deprecated)] // superseded by 0.9, and still served: pnm-browser-plugin sends 0.8
 pub const TASK_ROOMS_KEYS_ACT_0_8: &str =
     <vti_specs::rooms::keys::act::v0_8::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `spec/rooms/keys/act/0.9` — [`TASK_ROOMS_KEYS_ACT_0_8`], with `rooms/records/put/0.4`
+/// in its table, so a member writes an open room's file record. The version this SDK
+/// sends; a VTA still serves 0.8, which `pnm-browser-plugin` sends.
+pub const TASK_ROOMS_KEYS_ACT_0_9: &str =
+    <vti_specs::rooms::keys::act::v0_9::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
 /// `spec/rooms/keys/file-key/0.2` — one file's key, for the member's own client to
 /// seal or open that file itself, so file bytes never pass through the VTA. A third
@@ -2486,6 +2493,7 @@ pub const ALL_URIS: &[&str] = &[
     TASK_ROOMS_KEYS_BROWSE_0_3,
     TASK_ROOMS_KEYS_SEAL_0_2,
     TASK_ROOMS_KEYS_ACT_0_8,
+    TASK_ROOMS_KEYS_ACT_0_9,
     TASK_ROOMS_KEYS_FILE_KEY_0_2,
     TASK_ROOMS_KEYS_LIST_0_2,
     TASK_ROOMS_KEYS_LABEL_0_1,
