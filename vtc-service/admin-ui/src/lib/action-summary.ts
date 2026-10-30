@@ -110,6 +110,9 @@ export const PINNED_TEMPLATE_DIGESTS: Readonly<Record<string, string>> = Object.
     "zQmQX9Dx7cDqLtcoTNuDSWWo5nJTGecB9CqRLKgpd4es1c9",
   [pinKey("admin.invite.create", `${SPEC}/vtc/admin/invites/create/0.1`)]:
     "zQmSXC2GaMpizs4kKRhz4nBchZikWjqHAoeDfA5D7fVizgp",
+  // create 0.2: a passkey invitation names no DID, so the title names none.
+  [pinKey("admin.invite.create", `${SPEC}/vtc/admin/invites/create/0.2`)]:
+    "zQmXg9RsQh74pTGLccB8ENC4trXmhB5MfYzN8VG7Mzb6Zuw",
   [pinKey("acl.reduce.authority", `${SPEC}/acl/change-role/0.1`)]:
     "zQmfHspRZaXfEPkeAyqcFkpgqYT2RCqXjjnXVZmFhsaJQcu",
   [pinKey("acl.reduce.authority", `${SPEC}/vtc/members/admin-remove/0.1`)]:

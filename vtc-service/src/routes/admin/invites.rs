@@ -1,16 +1,24 @@
-//! `vtc/admin/invites/{create,list,revoke}/0.1` — admin onboarding.
+//! `vtc/admin/invites/{create,list}/0.2` and `vtc/admin/invites/revoke/0.1` —
+//! admin onboarding.
 //!
 //! Mirrors the `vtc admin invite` CLI, from the running daemon. Each is a
 //! signed document served by the spine on every transport
 //! (`trust_tasks::admin_tasks`); none has a REST route.
 //!
-//! - `create` mints a fresh single-use install URL for `did`, ensuring an
-//!   `Admin` ACL grant exists first (so the new admin can actually log in
-//!   once they claim the passkey). Writing that grant confers unrestricted
-//!   authority, so it takes the inviter's passkey gesture bound to the
-//!   invite and another unrestricted admin's consent.
-//! - `list` lists every persisted install-token row with a derived status
-//!   (`issued` / `consumed` / `expired`).
+//! - `create` mints a fresh single-use install URL and claim code. With `did`
+//!   it is a **wallet** invitation: the token names `did`, claimed by signing
+//!   as it (`vtc/install/claim/{start,finish}/0.3`), and an `Admin` ACL grant
+//!   is written for it now if it holds none. Without `did` it is a **passkey**
+//!   invitation: the token names no DID, the administrator's DID is derived
+//!   from the passkey registered at `vtc/install/claim/passkey/finish/0.1`,
+//!   and the authority that entry will carry is recorded with the invitation
+//!   ([`InvitedAuthority`]) for finish (item 9) to write. Either way the
+//!   invitation confers unrestricted authority, so writing that grant — or,
+//!   for a passkey invitation, always — takes the inviter's passkey gesture
+//!   bound to the invite and another unrestricted admin's consent (create 0.2
+//!   item 4).
+//! - `list` lists every persisted install-token row with its kind and a
+//!   derived status (`issued` / `consumed` / `expired`).
 //! - `revoke` removes an invite by deleting its install-token row.
 
 use std::sync::Arc;
@@ -28,8 +36,8 @@ use crate::acl::{VtcAclEntry, VtcRole, get_acl_entry, store_acl_entry};
 use crate::auth::session::now_epoch;
 use crate::error::TaskError;
 use crate::install::{
-    INSTALL_TOKEN_DEFAULT_TTL_SECS, InstallTokenSigner, InstallTokenState, claim_secret,
-    mint_install_token,
+    INSTALL_TOKEN_DEFAULT_TTL_SECS, InstallTokenSigner, InstallTokenState, InvitedAuthority,
+    claim_secret, mint_install_token, mint_passkey_install_token,
 };
 use crate::server::AppState;
 
@@ -41,16 +49,20 @@ use crate::server::AppState;
 #[serde(rename_all = "camelCase")]
 #[derive(utoipa::ToSchema)]
 pub struct CreateInviteRequest {
-    /// Admin DID the install URL grants a passkey for.
-    pub did: String,
+    /// The DID a **wallet** invitation is for. Absent, the invitation is a
+    /// **passkey** invitation: the administrator's DID is derived from the
+    /// passkey the invitee registers.
+    #[serde(default)]
+    pub did: Option<String>,
     /// Token TTL in seconds. Defaults to
     /// [`INSTALL_TOKEN_DEFAULT_TTL_SECS`] (15 minutes) when omitted.
     /// Cap at 24 h to keep stale invites from accumulating in the
     /// keyspace.
     #[serde(default)]
     pub ttl_seconds: Option<u64>,
-    /// Operator-supplied label for the ACL entry if one needs to be
-    /// created. Ignored when the ACL entry already exists.
+    /// Operator-supplied label for the ACL entry the invitation writes — now
+    /// for a wallet invitation whose DID has none, at the claim for a passkey
+    /// invitation. Ignored when a wallet invitation's DID already has one.
     #[serde(default)]
     pub label: Option<String>,
 }
@@ -62,6 +74,8 @@ pub struct CreateInviteResponse {
     /// `jti` of the minted install token — also the key the GET +
     /// DELETE surfaces use.
     pub jti: String,
+    /// Whether this is a wallet or a passkey invitation.
+    pub kind: InviteKind,
     /// Clickable install URL pointing at the admin SPA's install
     /// page on this daemon's `public_url`.
     pub install_url: String,
@@ -73,8 +87,9 @@ pub struct CreateInviteResponse {
     pub claim_code: String,
     /// Wall-clock expiry for the token.
     pub expires_at: DateTime<Utc>,
-    /// `true` when the call also wrote the ACL entry; `false` when
-    /// the target DID was already an admin (idempotent).
+    /// `true` when the call also wrote the ACL entry; `false` when a wallet
+    /// invitation's DID was already an admin (idempotent), and always for a
+    /// passkey invitation, whose entry is written when it is claimed.
     pub acl_entry_created: bool,
 }
 
@@ -83,10 +98,13 @@ pub struct CreateInviteResponse {
 #[derive(utoipa::ToSchema)]
 pub struct InviteSummary {
     pub jti: String,
+    /// Whether this is a wallet or a passkey invitation.
+    pub kind: InviteKind,
     pub status: InviteStatus,
-    /// Admin DID the invite was minted for. `None` only on
-    /// legacy rows persisted before the field landed (those are
-    /// safe to clean up via revoke). New invites always carry it.
+    /// The administrator's DID: a wallet invitation's always (but for legacy
+    /// rows persisted before the field landed, safe to clean up via revoke);
+    /// a passkey invitation's once it is consumed — the DID derived from the
+    /// passkey that claimed it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub target_did: Option<String>,
     /// `Issued` token expiry. `None` for `Consumed` rows (the
@@ -97,6 +115,19 @@ pub struct InviteSummary {
     /// ceremony succeeded.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub consumed_at: Option<DateTime<Utc>>,
+}
+
+/// `vtc/_shared/0.2/invite#InviteKind`: whether an invitation names the DID
+/// that claims it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+#[derive(utoipa::ToSchema)]
+pub enum InviteKind {
+    /// Names a DID, claimed by signing as it (`vtc/install/claim/*/0.3`).
+    Wallet,
+    /// Names none; the administrator's DID is the claiming passkey's own
+    /// `did:key` (`vtc/install/claim/passkey/*/0.1`).
+    Passkey,
 }
 
 #[derive(Debug, Serialize)]
@@ -132,7 +163,7 @@ pub(crate) const MAX_TTL_SECONDS: u64 = 24 * 60 * 60;
 /// `vtc/admin/invites/create:ttlTooLong` — `ttlSeconds` exceeds the 24-hour
 /// maximum.
 pub const CREATE_INVITE_ERR_TTL_TOO_LONG: &str =
-    vti_specs::vtc::admin::invites::create::v0_1::error_codes::TTL_TOO_LONG.code;
+    vti_specs::vtc::admin::invites::create::v0_2::error_codes::TTL_TOO_LONG.code;
 /// `vtc/admin/invites/revoke:notFound` — no invite with that `jti`.
 pub const REVOKE_INVITE_ERR_NOT_FOUND: &str =
     vti_specs::vtc::admin::invites::revoke::v0_1::error_codes::NOT_FOUND.code;
@@ -142,13 +173,21 @@ pub const REVOKE_INVITE_ERR_NOT_FOUND: &str =
 #[derive(Debug)]
 pub(crate) struct InvitePlan {
     ttl_seconds: u64,
-    /// `true` when the invited DID holds no ACL entry, so the invite writes an
-    /// **unrestricted** admin entry for it: a grant of unrestricted authority,
-    /// which costs what one costs on `acl/grant` — the caller's passkey gesture
-    /// bound to this invite, and another unrestricted admin's consent
+    /// `true` when the invite grants an **unrestricted** admin entry: a
+    /// wallet invitation whose DID holds no ACL entry, or any passkey
+    /// invitation (create 0.2 item 4: issuing it is the grant, since nobody
+    /// is present to authorise it at the claim). A grant of unrestricted
+    /// authority costs what one costs on `acl/grant` — the caller's passkey
+    /// gesture bound to this invite, and another unrestricted admin's consent
     /// (VTI-APV-014). The caller settles both before [`commit_invite`].
     pub(crate) grants_admin: bool,
 }
+
+/// The subject a passkey invitation's consent is parked under, where a wallet
+/// invitation's is its DID: the administrator's DID does not exist until the
+/// claim. Stable, so the approved action re-checks against the same subject,
+/// and not a DID, so it can name no ACL entry.
+pub(crate) const PASSKEY_INVITATION_SUBJECT: &str = "urn:openvtc:vtc:admin-invite:passkey";
 
 /// Every check that decides whether `actor` may invite `req.did`, before the
 /// invite costs anything.
@@ -157,12 +196,12 @@ pub(crate) async fn check_invite(
     actor: &AuthClaims,
     req: &CreateInviteRequest,
 ) -> Result<InvitePlan, TaskError> {
-    if !req.did.starts_with("did:") {
-        return Err(AppError::Validation(format!(
-            "did must start with 'did:' (got '{}')",
-            req.did
-        ))
-        .into());
+    if let Some(did) = req.did.as_deref()
+        && !did.starts_with("did:")
+    {
+        return Err(
+            AppError::Validation(format!("did must start with 'did:' (got '{did}')")).into(),
+        );
     }
 
     let ttl_seconds = req.ttl_seconds.unwrap_or(INSTALL_TOKEN_DEFAULT_TTL_SECS);
@@ -191,8 +230,12 @@ pub(crate) async fn check_invite(
     let inviter = crate::acl::get_acl_entry(&state.acl_ks, &actor.did)
         .await?
         .ok_or_else(|| AppError::Forbidden(format!("{} has no ACL entry", actor.did)))?;
+    // A passkey invitation's DID does not exist yet; the check is of the
+    // authority, which is the same for either kind.
     let mut invited = VtcAclEntry::new(
-        req.did.clone(),
+        req.did
+            .clone()
+            .unwrap_or_else(|| "did:key:passkey-invitation".into()),
         VtcRole::Admin,
         crate::acl::AdminAuthority::community_admin(),
         actor.did.clone(),
@@ -215,13 +258,20 @@ pub(crate) async fn check_invite(
     // idempotent — leaves a pre-existing grant untouched (we don't downgrade
     // non-Admin DIDs here, since that would mean a separate role change is
     // needed first).
-    let grants_admin = match get_acl_entry(&state.acl_ks, &req.did).await? {
+    let Some(did) = req.did.as_deref() else {
+        // A passkey invitation always confers the authority (create 0.2
+        // item 4).
+        return Ok(InvitePlan {
+            ttl_seconds,
+            grants_admin: true,
+        });
+    };
+    let grants_admin = match get_acl_entry(&state.acl_ks, did).await? {
         Some(existing) if existing.is_community_admin() => false,
         Some(_) => {
             return Err(AppError::Conflict(format!(
-                "did {} already has a non-admin ACL grant; revoke it first \
-                 (acl/revoke) before inviting",
-                req.did
+                "did {did} already has a non-admin ACL grant; revoke it first \
+                 (acl/revoke) before inviting"
             ))
             .into());
         }
@@ -249,45 +299,8 @@ pub(crate) async fn commit_invite(
     let signer = require_install_signer(state)?;
     let base_url = require_public_url(state).await?;
     let vtc_did = require_vtc_did(state).await?;
+    let issued_via = format!("admin-ui/{}", env!("CARGO_PKG_VERSION"));
 
-    let acl_entry_created = if grants_admin {
-        // Re-read under the commit: an entry written for this DID since the
-        // check must not be overwritten by an unrestricted admin row.
-        if get_acl_entry(&state.acl_ks, &req.did).await?.is_some() {
-            return Err(AppError::Conflict(format!(
-                "did {} gained an ACL entry while this invite was being approved; send it again",
-                req.did
-            ))
-            .into());
-        }
-        let label = req
-            .label
-            .clone()
-            .unwrap_or_else(|| "admin invite (web)".into());
-        let entry = VtcAclEntry {
-            did: req.did.clone(),
-            role: VtcRole::Admin,
-            label: Some(label),
-            admin: crate::acl::AdminAuthority::community_admin(),
-            // A grant is a delegation (vtc-admin-roles.md §6.3).
-            delegated_by: Some(actor.did.clone()),
-            created_at: now_epoch(),
-            created_by: format!("admin-ui/{}", env!("CARGO_PKG_VERSION")),
-            updated_at: None,
-            updated_by: None,
-            expires_at: None,
-            resource_grants: Vec::new(),
-            group_grants: Vec::new(),
-            label_set_by_subject: false,
-            suspension: None,
-        };
-        store_acl_entry(&state.acl_ks, &entry).await?;
-        true
-    } else {
-        false
-    };
-
-    let minted = mint_install_token(signer.as_ref(), &vtc_did, &req.did, ttl_seconds)?;
     let claim_code = claim_secret::generate();
     // Argon2id hashing is CPU-bound (~50–200 ms); keep it off the async REST
     // runtime so a burst of invite mints doesn't stall other requests (P0.10).
@@ -298,17 +311,89 @@ pub(crate) async fn commit_invite(
             .map_err(|e| AppError::Internal(format!("claim-secret hash task failed: {e}")))??
     };
     let expires_at = Utc::now() + ChronoDuration::seconds(ttl_seconds as i64);
-    state
-        .install_store
-        .record_issued(
-            &minted.jti,
-            minted.cnonce_bytes,
-            *minted.ephemeral_signing_key,
-            expires_at,
-            Some(claim_code_hash),
-            Some(req.did.clone()),
-        )
-        .await?;
+
+    let (minted, kind, acl_entry_created) = match req.did.as_deref() {
+        None => {
+            // A passkey invitation: nothing in the ACL until the claim, whose
+            // DID nobody knows yet. The authority it will confer — what a
+            // wallet invitation writes now — is recorded with it, delegated by
+            // the inviter (create 0.2 item 3).
+            let minted = mint_passkey_install_token(signer.as_ref(), &vtc_did, ttl_seconds)?;
+            state
+                .install_store
+                .record_issued_passkey(
+                    &minted.jti,
+                    minted.cnonce_bytes,
+                    *minted.ephemeral_signing_key,
+                    expires_at,
+                    Some(claim_code_hash),
+                    InvitedAuthority {
+                        admin: crate::acl::AdminAuthority::community_admin(),
+                        invited_by: Some(actor.did.clone()),
+                        issued_via,
+                        label: Some(
+                            req.label
+                                .clone()
+                                .unwrap_or_else(|| "admin invite (passkey)".into()),
+                        ),
+                    },
+                )
+                .await?;
+            (minted, InviteKind::Passkey, false)
+        }
+        Some(did) => {
+            let acl_entry_created = if grants_admin {
+                // Re-read under the commit: an entry written for this DID
+                // since the check must not be overwritten by an unrestricted
+                // admin row.
+                if get_acl_entry(&state.acl_ks, did).await?.is_some() {
+                    return Err(AppError::Conflict(format!(
+                        "did {did} gained an ACL entry while this invite was being approved; \
+                         send it again"
+                    ))
+                    .into());
+                }
+                let label = req
+                    .label
+                    .clone()
+                    .unwrap_or_else(|| "admin invite (web)".into());
+                let entry = VtcAclEntry {
+                    did: did.to_string(),
+                    role: VtcRole::Admin,
+                    label: Some(label),
+                    admin: crate::acl::AdminAuthority::community_admin(),
+                    // A grant is a delegation (vtc-admin-roles.md §6.3).
+                    delegated_by: Some(actor.did.clone()),
+                    created_at: now_epoch(),
+                    created_by: issued_via,
+                    updated_at: None,
+                    updated_by: None,
+                    expires_at: None,
+                    resource_grants: Vec::new(),
+                    group_grants: Vec::new(),
+                    label_set_by_subject: false,
+                    suspension: None,
+                };
+                store_acl_entry(&state.acl_ks, &entry).await?;
+                true
+            } else {
+                false
+            };
+            let minted = mint_install_token(signer.as_ref(), &vtc_did, did, ttl_seconds)?;
+            state
+                .install_store
+                .record_issued(
+                    &minted.jti,
+                    minted.cnonce_bytes,
+                    *minted.ephemeral_signing_key,
+                    expires_at,
+                    Some(claim_code_hash),
+                    Some(did.to_string()),
+                )
+                .await?;
+            (minted, InviteKind::Wallet, acl_entry_created)
+        }
+    };
     crate::admin_actions::record_effect(state).await;
 
     let install_url = format!(
@@ -321,24 +406,26 @@ pub(crate) async fn commit_invite(
         writer
             .write(
                 &actor.did,
-                Some(&req.did),
+                req.did.as_deref(),
                 AuditEvent::AdminInviteCreated(AdminInviteData {
                     jti: minted.jti.to_string(),
-                    admin_did: Some(req.did.clone()),
+                    admin_did: req.did.clone(),
                 }),
             )
             .await?;
     }
 
     info!(
-        target_did = %req.did,
+        target_did = req.did.as_deref().unwrap_or("(passkey)"),
         jti = %minted.jti,
+        ?kind,
         ttl_seconds,
         "admin invite minted"
     );
 
     Ok(CreateInviteResponse {
         jti: minted.jti.to_string(),
+        kind,
         install_url,
         claim_code,
         expires_at,
@@ -350,7 +437,7 @@ pub(crate) async fn commit_invite(
 // GET handler
 // ---------------------------------------------------------------------------
 
-/// `vtc/admin/invites/list/0.1`.
+/// `vtc/admin/invites/list/0.2`.
 pub(crate) async fn list_invites(state: &AppState) -> Result<ListInvitesResponse, AppError> {
     let now = Utc::now();
     let mut invites: Vec<InviteSummary> = state
@@ -440,7 +527,12 @@ pub(crate) async fn revoke_invite(
 
 fn summarise(jti: Uuid, state: InstallTokenState, now: DateTime<Utc>) -> InviteSummary {
     match state {
-        InstallTokenState::Issued { exp, admin_did, .. } => {
+        InstallTokenState::Issued {
+            exp,
+            admin_did,
+            authority,
+            ..
+        } => {
             let status = if exp < now {
                 InviteStatus::Expired
             } else {
@@ -448,19 +540,35 @@ fn summarise(jti: Uuid, state: InstallTokenState, now: DateTime<Utc>) -> InviteS
             };
             InviteSummary {
                 jti: jti.to_string(),
+                kind: kind_of(authority.is_some()),
                 status,
                 target_did: admin_did,
                 expires_at: Some(exp),
                 consumed_at: None,
             }
         }
-        InstallTokenState::Consumed { at, admin_did } => InviteSummary {
+        InstallTokenState::Consumed {
+            at,
+            admin_did,
+            passkey,
+        } => InviteSummary {
             jti: jti.to_string(),
+            kind: kind_of(passkey),
             status: InviteStatus::Consumed,
             target_did: admin_did,
             expires_at: None,
             consumed_at: Some(at),
         },
+    }
+}
+
+/// A row that recorded an [`InvitedAuthority`] is a passkey invitation; every
+/// other row named its DID.
+fn kind_of(passkey: bool) -> InviteKind {
+    if passkey {
+        InviteKind::Passkey
+    } else {
+        InviteKind::Wallet
     }
 }
 

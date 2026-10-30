@@ -11,11 +11,11 @@ use vtc_service::acl::VtcRole;
 use vtc_service::install::InstallTokenSigner;
 use vtc_service::test_support::TestVtc;
 
-const CREATE_TASK: &str = "https://trusttasks.org/spec/vtc/admin/invites/create/0.1";
+const CREATE_TASK: &str = "https://trusttasks.org/spec/vtc/admin/invites/create/0.2";
 const REVOKE_TASK: &str = "https://trusttasks.org/spec/vtc/admin/invites/revoke/0.1";
 
 const CREATE_INVITE_ERR_TTL_TOO_LONG: &str =
-    vti_specs::vtc::admin::invites::create::v0_1::error_codes::TTL_TOO_LONG.code;
+    vti_specs::vtc::admin::invites::create::v0_2::error_codes::TTL_TOO_LONG.code;
 const REVOKE_INVITE_ERR_NOT_FOUND: &str =
     vti_specs::vtc::admin::invites::revoke::v0_1::error_codes::NOT_FOUND.code;
 

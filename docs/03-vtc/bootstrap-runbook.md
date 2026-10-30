@@ -88,11 +88,15 @@ for the passkey's DID, as a community administrator. With `--did <DID>` it is a
 by signing as it (Path C), and the DID is granted an admin ACL entry now if it
 has none. `--ttl <seconds>` changes the default 900. It needs the daemon stopped because it opens the store
 directly. Once an admin exists, invite further admins from the running console
-(**Access control → Admin invites → Invite admin**) or with a signed
-`vtc/admin/invites/create/0.1` document, sent over any transport the VTC
-serves. An invite for a DID with no entry makes a new community
-administrator, so it waits in **Actions** for a second administrator's
-approval ([`admin-access.md`](admin-access.md) §3.2).
+(**Access control → Admin invites → Invite admin**, choosing *with a passkey*
+or *with a wallet*) or with a signed `vtc/admin/invites/create/0.2` document,
+sent over any transport the VTC serves — `did` omitted for a passkey
+invitation, given for a wallet one. A passkey invitation, and a wallet
+invitation for a DID with no entry, makes a new community administrator, so it
+waits in **Actions** for a second administrator's approval
+([`admin-access.md`](admin-access.md) §3.2). A passkey invitation's authority
+is recorded with it, delegated by the inviting administrator, and written for
+the passkey's DID when it is claimed.
 
 > **Adding another admin first is safe.** `vtc/admin/bootstrap/0.1` refuses
 > with `alreadyBootstrapped` once *any* admin ACL entry exists, and the install

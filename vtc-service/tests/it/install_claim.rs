@@ -523,6 +523,17 @@ async fn an_invitation_writes_the_derived_did_entry_at_finish() {
         .expect("finish writes the invited administrator");
     assert!(entry.is_community_admin(), "{entry:?}");
     assert_eq!(entry.label.as_deref(), Some("passkey invitation"));
+    // The spent row still says it was a passkey invitation, for
+    // `vtc/admin/invites/list/0.2`'s `kind`, and names the derived DID.
+    match fix._vtc.state.install_store.get_token(&jti).await.unwrap() {
+        Some(InstallTokenState::Consumed {
+            admin_did, passkey, ..
+        }) => {
+            assert!(passkey);
+            assert_eq!(admin_did.as_deref(), Some(derived.as_str()));
+        }
+        other => panic!("expected a consumed row, got {other:?}"),
+    }
 }
 
 /// A token that names a DID was issued for the wallet ceremony (0.3), and a

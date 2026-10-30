@@ -836,15 +836,16 @@ async fn run_invite_cli(
     let store = match vtc_service::store::offline::open_offline(&config.store) {
         Ok(store) => store,
         Err(e @ vtc_service::store::offline::OfflineStoreError::DaemonRunning { .. }) => {
+            // A passkey invitation names no DID (create 0.2).
             let body = match admin_did.as_deref() {
                 Some(did) => format!("{{\"did\": \"{did}\"}}"),
-                None => "{\"did\": \"<the invitee's DID>\"}".to_string(),
+                None => "{}".to_string(),
             };
             return Err(format!(
                 "{e}.\n\nYou do not need to stop it to invite an administrator. Mint the \
                  invite through the running daemon instead:\n  \
-                 • the admin console: Access → Invite\n  \
-                 • or `vtc/admin/invites/create/0.1` with payload {body}, as an existing \
+                 • the admin console: Access → Invite admin\n  \
+                 • or `vtc/admin/invites/create/0.2` with payload {body}, as an existing \
                  administrator"
             )
             .into());

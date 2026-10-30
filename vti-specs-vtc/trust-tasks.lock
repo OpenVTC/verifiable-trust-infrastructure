@@ -46,15 +46,15 @@ digest = "sha256:136a9acaf6d9a45c74a90ca1c9959a6d15ce5b21caf0944994896449b836781
 
 [[task]]
 slug = "vtc/admin/invites/create"
-version = "0.1"
-type_uri = "https://trusttasks.org/spec/vtc/admin/invites/create/0.1"
-digest = "sha256:b99ad5161e3a3c6028cb5d37532f2da79bd4f1c6d3eae6423b133a66646bf36c"
+version = "0.2"
+type_uri = "https://trusttasks.org/spec/vtc/admin/invites/create/0.2"
+digest = "sha256:309ec288e5a7d98125c4ef2b29054eb9f15650b5b3e3a3e204a8ea65fa954979"
 
 [[task]]
 slug = "vtc/admin/invites/list"
-version = "0.1"
-type_uri = "https://trusttasks.org/spec/vtc/admin/invites/list/0.1"
-digest = "sha256:e176fb1e54d1c6eec3403431894e1e5af7ae0e19ab977d0b80d17323361646a4"
+version = "0.2"
+type_uri = "https://trusttasks.org/spec/vtc/admin/invites/list/0.2"
+digest = "sha256:e6fb4f6e9708d90f08762394020f6c238b0b1bce0b6ed59ed8283d91944c13cc"
 
 [[task]]
 slug = "vtc/admin/invites/revoke"

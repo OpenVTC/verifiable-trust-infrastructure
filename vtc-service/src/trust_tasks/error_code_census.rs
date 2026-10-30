@@ -955,7 +955,7 @@ fn witnesses() -> Vec<Witness> {
             "the_bootstrap_task_answers_with_the_codes_its_spec_declares"
         ),
         witness!(
-            s::admin::invites::create::v0_1::error_codes::TTL_TOO_LONG,
+            s::admin::invites::create::v0_2::error_codes::TTL_TOO_LONG,
             crate::routes::admin::invites::CREATE_INVITE_ERR_TTL_TOO_LONG,
             "admin_invites.rs",
             "the_create_task_answers_with_the_code_its_spec_declares"
