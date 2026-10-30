@@ -233,6 +233,12 @@ are implementer-facing rather than operator-facing.
   rather than adding a PATCH component, and explains why the sender speaking
   *down* is what lets `deny_unknown_fields` stay. Design only; §2 is a proposal
   for the shared registry.
+- **[Key roles — implementation plan](05-design-notes/key-roles-implementation.md)** —
+  the ordered PRs that implement method-neutral key roles (`vta/dids/*`): method
+  profiles, `keyRoles`, generated role keys outside the seed and every backup,
+  the external recovery key, preview-bound approval, and passkeys as
+  `authenticator` keys on a person's identity only. Each step is mapped to the
+  VTI-KEY requirements it satisfies and the Appendix F rows it closes.
 - **[Application-state store](05-design-notes/appstate-store.md)** — the
   proposed third store (beside the secrets and credential vaults) for
   versioned, namespaced, per-context application JSON: why agent memory
