@@ -171,9 +171,9 @@ pub const RELAYS_ONWARD: &[&str] = &[
     // Admission advances the room's epoch at its host (and may first ask it which
     // epoch it is at).
     trust_tasks::TASK_ROOMS_OWNER_GROUP_ADD_0_3,
-    // So does removal — at 0.2 after delivering the room's revocation list there.
-    trust_tasks::TASK_ROOMS_OWNER_GROUP_REMOVE_0_1,
-    trust_tasks::TASK_ROOMS_OWNER_GROUP_REMOVE_0_3,
+    // So does removal — on an attributed room after delivering the room's revocation list
+    // there.
+    trust_tasks::TASK_ROOMS_OWNER_GROUP_REMOVE_0_4,
     // Withdrawal delivers the room's list to every host serving it (and first asks them
     // for a later one).
     trust_tasks::TASK_ROOMS_OWNER_REVOKE_0_1,

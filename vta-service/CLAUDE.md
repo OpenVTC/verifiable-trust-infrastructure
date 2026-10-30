@@ -620,22 +620,22 @@ When adding a flow, add it here and a line to the root index.
   payload **as received** (a generated-type round trip rewrites its timestamps). The VTA
   keeps the list with the room key (`room_groups`, `room-revocations/<roomId>`), signs one
   list per sequence under `room_revocation::signing_lock`, through the gated oracle, and
-  delivers it before answering `rooms/owner/register`. `group/remove/0.3` withdraws
-  first, then advances; a private room is never withdrawn per member.
+  delivers it before answering `rooms/owner/register`. `group/remove/0.4` withdraws
+  first, then advances; a private room is never withdrawn per member — 0.4 drops its
+  leaf alone and answers `withdrawn: false` (trust-tasks-tf #975).
   `register/0.2` answers success once the host took the registration, with
   `revocation.status` `inForce` only when the host answered with the list's head; a
   `pending` list is retained (room, host, sequence, persona) **before** the delivery and
   redelivered by `trust_tasks::room_list_delivery`, the one retry owner — latest list,
   capped backoff + jitter, never a `refused` one. A pending removal's list refused on
-  redelivery is settled by `group/remove/0.3` item 8 at **every** version and task
+  redelivery is settled by `group/remove/0.4` item 8 at **every** version and task
   (`HostCall::settle_refused_list`): only `listInvalid`/`entryNotPermitted`/
   `sequenceConflict` discard the list (and only while still held); the request is then
-  refused and never goes on to its own work — `earlierRemovalRefused` at `remove/0.3`,
-  `add/0.3` and `renew/0.2` (trust-tasks-tf #824), the task's own `hostRefused` with
-  `{member, code, listKept}` at the versions declaring no such code. `AdvanceCodes`
-  stages `hostUnreachable` and `hostRefused` independently: `add/0.3` / `renew/0.2`
-  stage the first and give `hostRefused` `{code, reason}`; only `remove/0.2`/`0.3`
-  give it `{stage, code}`.
+  refused and never goes on to its own work — `earlierRemovalRefused` at `remove/0.4`,
+  `add/0.3` and `renew/0.2` (trust-tasks-tf #824), the only versions served. A pending
+  removal with no list (a private room's) is settled by item 8.3 alone. `AdvanceCodes`:
+  every version stages `hostUnreachable`; `add/0.3` / `renew/0.2` give `hostRefused`
+  `{code, reason}`, only `remove/0.4` gives it `{stage, code}`.
 - **Code**: `vti-rooms/src/{revocation,revocation_tasks,authz}.rs`,
   `vti-rooms-dtg/src/lib.rs` (`verify_room_signed`, `credential_facts`),
   `room-host/src/files.rs`, `vtc-service/src/rooms/{handlers,files}.rs`,

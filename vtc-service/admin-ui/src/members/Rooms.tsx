@@ -402,6 +402,21 @@ function RoomList({ wallet, hostDid, member }: { wallet: WalletRooms; hostDid: s
   );
 }
 
+/**
+ * What the member's agent holds of a shared room. An open room has no keys and
+ * no epoch — the wallet reads it with the room's credentials and reports it held
+ * without one — so it says so rather than an epoch it does not have.
+ */
+function holding(room: PageRoom): string {
+  if (!room.held) {
+    return room.visibility === "open" ? "you are no longer in this room" : "your agent no longer holds this room's keys";
+  }
+  if (room.visibility === "open" || room.epoch === undefined) return "open room";
+  const history =
+    room.earliestReadableEpoch && room.earliestReadableEpoch > 1 ? ` · history from epoch ${room.earliestReadableEpoch}` : "";
+  return `epoch ${room.epoch}${history}`;
+}
+
 function RoomRow({ room, me }: { room: PageRoom; me?: string }) {
   // A community room by the name its administrators gave it, the DID beneath;
   // any other room by its DID.
@@ -417,9 +432,7 @@ function RoomRow({ room, me }: { room: PageRoom; me?: string }) {
         </code>
       )}
       <span className="muted small">
-        {room.held
-          ? `epoch ${room.epoch ?? "?"}${room.earliestReadableEpoch && room.earliestReadableEpoch > 1 ? ` · history from epoch ${room.earliestReadableEpoch}` : ""}`
-          : "your agent no longer holds this room's keys"}
+        {holding(room)}
         {room.member ? (room.member === me ? " · as you" : ` · as ${shortDid(room.member)}`) : ""}
         {" · shared until "}
         {new Date(room.expiresAt).toLocaleDateString()}
@@ -1172,37 +1185,42 @@ function AddToRoom({ wallet, hostDid, info }: { wallet: WalletRooms; hostDid: st
         <FilePlus2 size={18} aria-hidden="true" />
         <h2 id="add-heading">Add to this room</h2>
       </div>
+      <p className="muted small">
+        Your wallet shows you what will be added, signed as <b title={info.member}>{authorName(info.member)}</b>,
+        before anything is sent.
+      </p>
+      {!sealedTier && (
+        <p className="muted small">
+          This room is open: a note is stored in the clear, so its host can read it as well as its members.
+        </p>
+      )}
+      <label className="field">
+        <span>Title</span>
+        <input value={title} maxLength={512} onChange={(e) => setTitle(e.target.value)} />
+      </label>
+      <label className="field">
+        <span>Note</span>
+        <textarea value={body} rows={5} onChange={(e) => setBody(e.target.value)} />
+      </label>
+      <div className="actions">
+        <button
+          type="button"
+          className="btn btn-primary"
+          disabled={!title.trim() || note.isPending}
+          onClick={() => {
+            setDone(null);
+            note.mutate();
+          }}
+        >
+          <NotebookPen size={14} aria-hidden="true" /> {note.isPending ? "Waiting for your wallet…" : "Add note"}
+        </button>
+      </div>
       {!sealedTier ? (
-        <p className="muted">
-          This room is open: what is in it is readable by its host. Adding from the portal is for attributed rooms.
+        <p className="muted small">
+          Files go in attributed and private rooms: a file's description is sealed inside its record.
         </p>
       ) : (
         <>
-          <p className="muted small">
-            Your wallet shows you what will be added, signed as <b title={info.member}>{authorName(info.member)}</b>,
-            before anything is sent.
-          </p>
-          <label className="field">
-            <span>Title</span>
-            <input value={title} maxLength={512} onChange={(e) => setTitle(e.target.value)} />
-          </label>
-          <label className="field">
-            <span>Note</span>
-            <textarea value={body} rows={5} onChange={(e) => setBody(e.target.value)} />
-          </label>
-          <div className="actions">
-            <button
-              type="button"
-              className="btn btn-primary"
-              disabled={!title.trim() || note.isPending}
-              onClick={() => {
-                setDone(null);
-                note.mutate();
-              }}
-            >
-              <NotebookPen size={14} aria-hidden="true" /> {note.isPending ? "Waiting for your wallet…" : "Add note"}
-            </button>
-          </div>
           <label className="field">
             <span>Or a file</span>
             <input type="file" onChange={(e) => setFile(e.target.files?.[0] ?? null)} />

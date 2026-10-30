@@ -81,7 +81,7 @@ pub(crate) const MEMBERS_ADD_TYPE: &str = <add::Payload as Payload>::TYPE_URI;
 pub(crate) const MEMBERS_REMOVE_TYPE: &str = <remove::Payload as Payload>::TYPE_URI;
 
 /// The VTA's refusal when an earlier removal it was settling did not take effect
-/// (`rooms/owner/group/remove/0.3` item 8.2).
+/// (`rooms/owner/group/remove/0.4` item 8.2).
 const EARLIER_REMOVAL_REFUSED: &str =
     trust_tasks_rs::specs::rooms::owner::group::remove::v0_3::error_codes::EARLIER_REMOVAL_REFUSED
         .code;
@@ -1474,7 +1474,7 @@ async fn handle_members_remove(
                 return refuse(&doc, c::REMOVE_KEY_HOLDER_UNAVAILABLE, why, None);
             }
             Err(HolderError::Refused { code, message }) => {
-                // `rooms/owner/group/remove/0.3` item 8.2: an earlier removal from this room
+                // `rooms/owner/group/remove/0.4` item 8.2: an earlier removal from this room
                 // did not take effect, and nothing of this one was done. The administrator
                 // has two things to do, and the VTA's message names the member.
                 let said = if code == EARLIER_REMOVAL_REFUSED {

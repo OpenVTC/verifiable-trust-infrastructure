@@ -85,7 +85,7 @@ knowing which half you are standing on saves an afternoon.
 | Succession: nomination, transfer, claim | **Work**, including the "renewing defeats a pending claim" property |
 | **A CLI** | **`pnm rooms {list,get,put,curate,renew,prune,file}`** — the member's surface, driven through the oracle so the CLI holds no room credentials and no group key; `put` seals on `attributed` and `private` (§9). **`pnm rooms owner {register,invite,issue-membership,issue-authority,group-create,group-add,group-remove,group-renew,revoke}`** — the owner's, run by the owner's VTA. **`pnm rooms keys {key-package,welcome,commit,list}`** — the joiner's key holder. A sealed room can be run end to end from the CLI (§5, §6) |
 | **Credential issuance** | **Works, on the owner's own VTA.** `rooms/owner/{invite,issue-membership,issue-authority}` mint the VIC, VMC and VAC in the *room's* name, signing through the gated key oracle so the room's key never materialises (§5.3). `pnm rooms owner {invite,issue-membership,issue-authority}` drive them, over `VtaClient::room_owner_*` |
-| **The owner's MLS half** | **Works, in the owner's VTA.** `rooms/owner/group/create` founds the group with the owner as its only member; `rooms/owner/group/add` admits a member's KeyPackage, advances the room's epoch at its host first, and returns the Welcome to deliver; `rooms/owner/group/remove` (0.3, and 0.2) withdraws the member's credentials at the host and then drops their leaf, host first; `rooms/owner/revoke` withdraws credentials alone, signed as the room; `rooms/owner/group/renew` renews a sealed room with a commit that changes no membership, host first. `pnm rooms owner group-create` / `group-add` / `group-remove` / `group-renew` drive them (§5.4, §6, §10.1) |
+| **The owner's MLS half** | **Works, in the owner's VTA.** `rooms/owner/group/create` founds the group with the owner as its only member; `rooms/owner/group/add` admits a member's KeyPackage, advances the room's epoch at its host first, and returns the Welcome to deliver; `rooms/owner/group/remove/0.4` withdraws an attributed room's member's credentials at the host and then drops their leaf, host first — and on a private room drops the leaf alone; `rooms/owner/revoke` withdraws credentials alone, signed as the room; `rooms/owner/group/renew` renews a sealed room with a commit that changes no membership, host first. `pnm rooms owner group-create` / `group-add` / `group-remove` / `group-renew` drive them (§5.4, §6, §10.1) |
 | **A browser as a member** | **Works.** `vti-rooms-wasm` compiles the member half — group custody, sealing, opening, the epoch chain — to WebAssembly; `room-host --allow-origin` is what lets a page reach a host at all. No key ever crosses into JavaScript |
 | **Governance (`rooms.rego`)** | **On a VTC.** A community decides who may create a room on it, in Rego, with the shipped default hosting `open`/`attributed` for its own members. A standalone `room-host` has no policy engine — T1's governance is its owner (§8.4) |
 | **Read mirrors** (T3) | **`room-host --mirror-config`** — a host serves a read-only copy fed by `sinceVersion` pulls and refuses every write, naming the primary. A mirror pulls **as a member**, presenting a room-issued `read` chain |
@@ -696,8 +696,8 @@ serve it.
 
 ### Remove a member
 
-Removal is two acts, and at `rooms/owner/group/remove/0.3` the owner's VTA does
-both, **withdrawing first** (trust-tasks-tf #804):
+Removal is two acts, and on an `attributed` room `rooms/owner/group/remove/0.4`
+does both, **withdrawing first** (trust-tasks-tf #804, #975):
 
 1. **Withdraw their credentials at the host.** A host authorizes from the
    credentials the room issued and keeps no roster, so without this a removed
@@ -727,11 +727,14 @@ the host as your owner persona:
   `rooms/owner/transfer` — when it will not let you name the room's key
   (`noSigningKey`), and without an `admin` grant naming a persona you act as
   (`noAuthority`).
-- **A private room is refused** (`privateRoom`, nothing changed): its host
-  verifies membership in zero knowledge and cannot be told whom to refuse
-  without being told who was a member. `pnm` then removes them from the group
-  alone, at `0.1`; reset every credential with `pnm rooms owner revoke --reset`
-  if the room needs that too.
+- **A private room is removed from the group alone** (trust-tasks-tf #975):
+  its host verifies membership in zero knowledge and cannot be told whom to
+  refuse without being told who was a member. The same version drops the leaf
+  and advances the room, signs and sends no list (no `--signing-key` needed),
+  and answers `withdrawn: false`; `pnm` says the member's credentials stay valid
+  at the host until they expire. Reset every credential with
+  `pnm rooms owner revoke --reset` if the room needs that too. On any other
+  room, a removal naming no `--signing-key` is refused `noSigningKey`.
 - **Withdrawal before advance.** The commit, the epoch link and the signed list
   are kept as the room's pending advance before anything is sent. If the host
   **refuses the list**, the whole removal is discarded, list included
@@ -756,12 +759,9 @@ the host as your owner persona:
   so do `group-add` at 0.3 and `group-renew` at 0.2, each under its own slug
   (trust-tasks-tf #824), where `hostRefused` means only that the host declined
   that request's own advance (`{code, reason}`), and an unanswered redelivery is
-  their `hostUnreachable` at `stage: revocation`. The earlier versions —
-  `group-add` 0.1/0.2, `group-renew` 0.1, `group-remove` 0.1 — answer their own
-  `hostRefused` with the same three details, and `hostUnreachable` with none;
-  `group-remove` 0.2, which has no such code, answers `hostRefused` at
-  `stage: revocation` with the member in the message. `pnm` asks the newest
-  version and explains every one of these alike. Repeat the request — the
+  their `hostUnreachable` at `stage: revocation`. `pnm` explains each alike.
+  A pending removal that carries no list — a private room's — is settled by
+  asking the host's epoch alone. Repeat the request — the
   earlier removal is no longer pending — and remove that member again if that is
   still wanted. A VTC's `members/remove` reports it as `keyHolderRefused`, saying
   the same.
@@ -771,10 +771,6 @@ the host as your owner persona:
 - **One pending advance per room** (per owner persona). An admission, a
   removal and a renewal (§10.1) share one slot, so whichever is pending is
   settled before another is built.
-
-Without `--signing-key`, `group-remove` is `0.1`: the group alone, and the
-member's credentials are **not** withdrawn at the host — they stay valid until
-they expire.
 
 Every remaining member's VTA applies the commit (`rooms/keys/commit/0.1`) as
 for any other change; the host relays it (`rooms/epoch/commits`), and

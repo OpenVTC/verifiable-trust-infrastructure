@@ -24,7 +24,9 @@ export interface PageRoom {
   member?: string;
   epoch?: number;
   earliestReadableEpoch?: number;
-  /** False when the member's VTA no longer holds keys for it. */
+  /** False when the member's VTA no longer holds keys for it. True with no
+   *  `epoch` for an open room the member is in: it has no keys, and the wallet
+   *  reads it with the room's credentials. */
   held: boolean;
   sharedAt: string;
   expiresAt: string;

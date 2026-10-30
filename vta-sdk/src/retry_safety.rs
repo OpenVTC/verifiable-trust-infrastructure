@@ -711,17 +711,13 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     // as the code's meaning says.
     (trust_tasks::TASK_ROOMS_OWNER_GROUP_ADD_0_3, Keyed),
     // `Keyed`, like add. A second execution after a lost reply is refused
-    // `notMember` — the removal happened, but the caller is told the member was
-    // never there, and an operator reading that may conclude the wrong person
-    // was named. Replaying the first answer reports what was done. Nothing in
-    // the answer is secret.
-    (trust_tasks::TASK_ROOMS_OWNER_GROUP_REMOVE_0_1, Keyed),
-    // `Keyed`, like 0.1. A second execution after a lost reply signs nothing new (the
-    // member has no leaf: `notMember`), and reads as though the wrong member was named;
-    // the first answer — the list in force and the epoch — is what happened. An
+    // `notMember` — the removal happened, but the caller is told the member was never
+    // there, and an operator reading that may conclude the wrong person was named; on an
+    // attributed room it signs nothing new either. The first answer — `withdrawn`, the
+    // list in force and the epoch — is what happened. Nothing in it is secret. An
     // `earlierRemovalRefused` refusal changed nothing of the request, so its repeat under
     // a new key is a new request, as the code's meaning says.
-    (trust_tasks::TASK_ROOMS_OWNER_GROUP_REMOVE_0_3, Keyed),
+    (trust_tasks::TASK_ROOMS_OWNER_GROUP_REMOVE_0_4, Keyed),
     // `Keyed`. With withdrawals, a second execution signs a second list carrying the same
     // withdrawals again at a later `revokedAt` — harmless to a host, but a list that grows
     // with every lost reply and a second sequence the caller asked for once. Replaying the

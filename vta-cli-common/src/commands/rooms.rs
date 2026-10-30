@@ -2218,9 +2218,8 @@ pub async fn cmd_rooms_owner_group_create(
 /// not that refusal.
 ///
 /// It is `rooms/owner/group/{add,renew,remove}:earlierRemovalRefused` at `add/0.3`,
-/// `renew/0.2` and `remove/0.3`, and at `remove/0.1` (a `private` room's removal) the
-/// task's own `hostRefused` carrying the same `details` (`member`, `code`, `listKept`) —
-/// `rooms/owner/group/remove/0.3` item 8.2. The earlier removal did not take effect, and
+/// `renew/0.2` and `remove/0.4`, with `details` `member`, `code` and `listKept` —
+/// `rooms/owner/group/remove/0.4` item 8.2. The earlier removal did not take effect, and
 /// nothing of `this` was done: the fix is to run the command again, then remove the
 /// earlier member again if that is still wanted.
 fn earlier_removal_refused(
@@ -2234,12 +2233,10 @@ fn earlier_removal_refused(
         return None;
     };
     let task = code.strip_prefix("rooms/owner/group/")?;
-    let d = details.as_ref()?;
-    let ours = task.ends_with(":earlierRemovalRefused")
-        || (task.ends_with(":hostRefused") && d.get("member").is_some());
-    if !ours {
+    if !task.ends_with(":earlierRemovalRefused") {
         return None;
     }
+    let d = details.as_ref()?;
     let earlier = d["member"].as_str().unwrap_or("an earlier member");
     let host_code = d["code"].as_str().unwrap_or("no code given");
     let kept = if d["listKept"].as_bool() == Some(true) {
@@ -2261,19 +2258,20 @@ fn earlier_removal_refused(
     ))
 }
 
-/// `rooms owner group-remove` — remove a member from a room.
+/// `rooms owner group-remove` — remove a member from a room
+/// (`rooms/owner/group/remove/0.4`, trust-tasks-tf #975).
 ///
-/// With `signing_key_id`, `rooms/owner/group/remove/0.3`: the room's key withdraws the member's credentials at the host first, and then the
-/// room advances — the removal takes effect at the host at once. On a `private` room, where
-/// the host cannot be told whom to refuse, it refuses and this falls back to 0.1, which the
-/// specification keeps as that tier's removal. Without `signing_key_id`, 0.1: the group
-/// alone, credentials left valid.
+/// On an `attributed` room the room's key (`signing_key_id`, required there) withdraws the
+/// member's credentials at the host first, and then the room advances — the removal takes
+/// effect at the host at once. On a `private` room, where the host cannot be told whom to
+/// refuse, the same version removes their leaf alone and says so (`withdrawn: false`): their
+/// credentials stay valid at the host until they expire, and this never reports that as a
+/// withdrawal.
 ///
 /// An earlier removal the VTA was still settling, whose list the host refused on
 /// redelivery, is reported as `earlierRemovalRefused`: that removal did not take effect, and
 /// nothing of this one was done — this says which member, and what to run.
 #[allow(clippy::too_many_arguments)]
-#[allow(deprecated)] // group/remove/0.1: a private room has no successor yet (spec gap).
 pub async fn cmd_rooms_owner_group_remove(
     client: &VtaClient,
     room_id: &str,
@@ -2285,89 +2283,88 @@ pub async fn cmd_rooms_owner_group_remove(
     reason: Option<&str>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let hint = |e: VtaError| {
+        let fix = match &e {
+            VtaError::Rejected { code, .. }
+                if code == "rooms/owner/group/remove:noSigningKey" && signing_key_id.is_none() =>
+            {
+                format!(
+                    "\n\n{room_id} is not private: removing {member} withdraws their credentials \
+                     at the host, signed as the room. Run\n    pnm rooms owner group-remove \
+                     --room {room_id} --host-did {host_did} --member {member} --signing-key \
+                     <the room's key>"
+                )
+            }
+            _ => String::new(),
+        };
         format!(
-            "{e}\n\n`epochConflict` means another admin advanced the room: catch up and \
+            "{e}{fix}\n\n`epochConflict` means another admin advanced the room: catch up and \
              retry. `hostUnreachable` leaves the outcome unknown; running this again \
              settles it with the host before anything else. `ownLeaf` means {member} is \
              you: hand the room on with rooms/owner/transfer instead. `noSigningKey` means \
              this VTA will not let you name the room's key — check `pnm keys list`."
         )
     };
-    if let Some(key) = signing_key_id {
-        // Under one idempotency key, so a retry after a lost reply reports the removal that
-        // happened instead of `notMember`.
-        match client
-            .idempotent(|| {
-                client
-                    .room_group_remove_v0_3(room_id, host_did, member, key, mirrors, until, reason)
-            })
-            .await
-        {
-            Ok(resp) => {
-                let r = serde_json::to_value(&resp).unwrap_or_default();
-                println!(
-                    "Removed {member} from {room_id}: withdrawn at the host from {} (revocation \
-                     list {}), and the room is now at epoch {}.",
-                    r["revokedAt"].as_str().unwrap_or("now"),
-                    r["revocation"]["sequence"],
-                    r["epoch"]
-                );
-                if let Some(pending) = r["mirrorsPending"].as_array().filter(|p| !p.is_empty()) {
-                    let pending: Vec<&str> = pending.iter().filter_map(Value::as_str).collect();
-                    println!(
-                        "  Not yet withdrawn at: {}. Deliver it with `pnm rooms owner revoke \
-                         --room {room_id} --signing-key {key} --host <did>` (no withdrawal).",
-                        pending.join(", ")
-                    );
-                }
-                println!(
-                    "  The host refuses their credentials, and anything they delegated, from \
-                     now on. Nothing they already read can be recalled."
-                );
-                return Ok(());
-            }
-            // 0.3 item 8.2: an earlier removal did not take effect, and this one was not
-            // started. Say which member, whether their withdrawal survives, and what to run.
-            Err(e)
-                if let Some(said) = earlier_removal_refused(
-                    &e,
-                    room_id,
-                    host_did,
-                    Some(key),
-                    &format!("remove {member}"),
-                ) =>
-            {
-                return Err(said.into());
-            }
-            // The one case the specification hands to 0.1: a private room's host cannot be
-            // told whom to refuse.
-            Err(VtaError::Rejected { code, .. })
-                if code == "rooms/owner/group/remove:privateRoom" =>
-            {
-                println!(
-                    "{room_id} is private: a member cannot be withdrawn one at a time there. \
-                     Removing them from the group (0.1) instead."
-                );
-            }
-            Err(e) => return Err(hint(e).into()),
-        }
-    }
+    // Under one idempotency key, so a retry after a lost reply reports the removal that
+    // happened instead of `notMember`.
     let resp = client
-        .idempotent(|| client.room_group_remove(room_id, host_did, member, reason))
+        .idempotent(|| {
+            client.room_group_remove(
+                room_id,
+                host_did,
+                member,
+                signing_key_id,
+                mirrors,
+                until,
+                reason,
+            )
+        })
         .await
         .map_err(|e| {
-            earlier_removal_refused(&e, room_id, host_did, None, &format!("remove {member}"))
-                .unwrap_or_else(|| hint(e))
+            // Item 8.2: an earlier removal did not take effect, and this one was not
+            // started. Say which member, whether their withdrawal survives, and what to run.
+            earlier_removal_refused(
+                &e,
+                room_id,
+                host_did,
+                signing_key_id,
+                &format!("remove {member}"),
+            )
+            .unwrap_or_else(|| hint(e))
         })?;
+    if !resp.withdrawn {
+        // A private room: never represented as a withdrawal (the producer requirement).
+        println!(
+            "Removed {member} from {room_id}'s group; the room is now at epoch {}.",
+            resp.epoch
+        );
+        println!(
+            "  Nothing sealed from now on is readable to them. {room_id} is private, so their \
+             credentials are NOT withdrawn at the host: they stay valid until they expire. \
+             To reset every credential the room has issued, run `pnm rooms owner revoke \
+             --reset` and re-admit those who remain."
+        );
+        return Ok(());
+    }
+    let r = serde_json::to_value(&resp).unwrap_or_default();
     println!(
-        "Removed {member} from {room_id}'s group; the room is now at epoch {}.",
-        resp.epoch
+        "Removed {member} from {room_id}: withdrawn at the host from {} (revocation list {}), \
+         and the room is now at epoch {}.",
+        r["revokedAt"].as_str().unwrap_or("now"),
+        r["revocation"]["sequence"],
+        r["epoch"]
     );
+    if !resp.mirrors_pending.is_empty() {
+        let pending: Vec<&str> = resp.mirrors_pending.iter().map(|m| m.as_str()).collect();
+        println!(
+            "  Not yet withdrawn at: {}. Deliver it with `pnm rooms owner revoke --room \
+             {room_id} --signing-key {} --host <did>` (no withdrawal).",
+            pending.join(", "),
+            signing_key_id.unwrap_or("<the room's key>")
+        );
+    }
     println!(
-        "  Nothing sealed from now on is readable to them. Their credentials are NOT \
-         withdrawn at the host and stay valid until they expire: on an open or attributed \
-         room pass --signing-key to withdraw them, or reset every credential with \
-         `pnm rooms owner revoke --reset`."
+        "  The host refuses their credentials, and anything they delegated, from now on. \
+         Nothing they already read can be recalled."
     );
     Ok(())
 }
@@ -3308,9 +3305,8 @@ mod tests {
         }
     }
 
-    /// `earlierRemovalRefused` at add 0.3 / renew 0.2 / remove 0.3, and an earlier
-    /// version's `hostRefused` carrying the same `details`, are explained alike; a
-    /// `hostRefused` of the request's own advance (`{code, reason}`) is not.
+    /// `earlierRemovalRefused` at add 0.3 / renew 0.2 / remove 0.4 is explained alike; a
+    /// `hostRefused` (`{code, reason}`, or `{stage, code}`) is not.
     #[test]
     fn an_earlier_removal_is_explained_whichever_version_reported_it() {
         let d =
@@ -3319,8 +3315,6 @@ mod tests {
             "rooms/owner/group/add:earlierRemovalRefused",
             "rooms/owner/group/renew:earlierRemovalRefused",
             "rooms/owner/group/remove:earlierRemovalRefused",
-            "rooms/owner/group/add:hostRefused",
-            "rooms/owner/group/renew:hostRefused",
         ] {
             let said = earlier_removal_refused(
                 &rejected(code, d.clone()),

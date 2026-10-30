@@ -1004,7 +1004,7 @@ pub const TASK_ROOMS_OWNER_GROUP_CREATE_0_1: &str =
 /// admission the agent last applied for the room (same `member`, same `KeyPackageRef`,
 /// within 24 hours and before the next advance) is answered with that admission's Welcome
 /// (item 8). A pending removal it settles first is
-/// settled by `rooms/owner/group/remove/0.3` item 8 and reported as this task's own: refused
+/// settled by `rooms/owner/group/remove/0.4` item 8 and reported as this task's own: refused
 /// `earlierRemovalRefused` (`{member, code, listKept}`) when settling discards it, or
 /// `hostUnreachable` at `stage: revocation` when its list goes unanswered — none of this
 /// request's own work done either way. `hostRefused` means only that the host declined this
@@ -1014,24 +1014,21 @@ pub const TASK_ROOMS_OWNER_GROUP_CREATE_0_1: &str =
 pub const TASK_ROOMS_OWNER_GROUP_ADD_0_3: &str =
     <trust_tasks_rs::specs::rooms::owner::group::add::v0_3::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
-/// `spec/rooms/owner/group/remove/0.1` — remove a member's leaf from a room's group:
-/// advance the room's epoch at its host first, then this agent's group, so nothing sealed
-/// from then on is readable to them. Recalls nothing they already read.
-/// Auth: `credentialWrite` capability, plus the caller's `admin` authority credential for
-/// the room in this agent's vault.
-pub const TASK_ROOMS_OWNER_GROUP_REMOVE_0_1: &str =
-    "https://trusttasks.org/spec/rooms/owner/group/remove/0.1";
-
-/// `spec/rooms/owner/group/remove/0.3` — withdraw first: the agent signs the room's next
-/// revocation list (a `subject` entry for the member), delivers it to the host and only
-/// then advances the room, so the host refuses the member's credentials at once. A pending
-/// removal whose list the host refuses when it is delivered again is settled by what the
-/// refusal shows; the request at which it settled is refused `earlierRemovalRefused`
-/// (`{member, code, listKept}`) and does none of its own work. Refuses a `private` room
-/// (`privateRoom`), where 0.1 remains the removal.
-/// Auth: as 0.1, plus control of the room's signing key (`signingKeyId`).
-pub const TASK_ROOMS_OWNER_GROUP_REMOVE_0_3: &str =
-    <trust_tasks_rs::specs::rooms::owner::group::remove::v0_3::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+/// `spec/rooms/owner/group/remove/0.4` — remove a member from a sealed room, either tier.
+/// On an `attributed` room, withdraw first: the agent signs the room's next revocation list
+/// (a `subject` entry for the member), delivers it to the host and only then advances the
+/// room, so the host refuses the member's credentials at once (`withdrawn: true`). On a
+/// `private` room, whose host cannot be told whom to refuse, it removes the member's leaf
+/// and advances the room alone, builds no list, and answers `withdrawn: false` — their
+/// credentials stay valid at the host until they expire. A pending removal whose list the
+/// host refuses when it is delivered again is settled by what the refusal shows; the
+/// request at which it settled is refused `earlierRemovalRefused` (`{member, code,
+/// listKept}`) and does none of its own work.
+/// Auth: `credentialWrite` capability, the caller's `admin` authority credential for the
+/// room in this agent's vault, and — on an `attributed` room — control of the room's signing
+/// key (`signingKeyId`, refused `noSigningKey` when absent there).
+pub const TASK_ROOMS_OWNER_GROUP_REMOVE_0_4: &str =
+    <trust_tasks_rs::specs::rooms::owner::group::remove::v0_4::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
 /// `spec/rooms/owner/revoke/0.1` — withdraw credentials a room issued: the agent signs the
 /// room's next revocation list as the room, keeps it, and delivers it to each host serving
@@ -2500,8 +2497,7 @@ pub const ALL_URIS: &[&str] = &[
     TASK_ROOMS_OWNER_ISSUE_AUTHORITY_0_2,
     TASK_ROOMS_OWNER_GROUP_CREATE_0_1,
     TASK_ROOMS_OWNER_GROUP_ADD_0_3,
-    TASK_ROOMS_OWNER_GROUP_REMOVE_0_1,
-    TASK_ROOMS_OWNER_GROUP_REMOVE_0_3,
+    TASK_ROOMS_OWNER_GROUP_REMOVE_0_4,
     TASK_ROOMS_OWNER_REVOKE_0_1,
     TASK_ROOMS_OWNER_GROUP_RENEW_0_2,
     TASK_VTA_MEMORY_DELETE_0_1,

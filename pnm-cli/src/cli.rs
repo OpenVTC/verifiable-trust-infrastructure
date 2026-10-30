@@ -1163,13 +1163,13 @@ pub(crate) enum RoomOwnerCommands {
         #[arg(long)]
         out: std::path::PathBuf,
     },
-    /// Remove a member from the room (`rooms/owner/group/remove`). With
-    /// `--signing-key` (0.3, or 0.2 on an older VTA) your VTA first withdraws their credentials at the
-    /// host — signed as the room, refused from then on, and anything they
-    /// delegated with them — and then removes their leaf and advances the room. A
-    /// private room cannot withdraw one member, so there it removes the leaf alone
-    /// (0.1), as it does without `--signing-key`. It recalls nothing they
-    /// already read.
+    /// Remove a member from the room (`rooms/owner/group/remove/0.4`). On an
+    /// attributed room your VTA first withdraws their credentials at the host —
+    /// signed as the room with `--signing-key`, refused from then on, and anything
+    /// they delegated with them — and then removes their leaf and advances the
+    /// room. A private room cannot withdraw one member, so there it removes the
+    /// leaf alone and their credentials stay valid until they expire. It recalls
+    /// nothing they already read.
     GroupRemove {
         #[arg(long = "room")]
         room_id: String,
@@ -1180,8 +1180,8 @@ pub(crate) enum RoomOwnerCommands {
         #[arg(long)]
         member: String,
         /// The room's signing key id, to withdraw their credentials at the host as
-        /// the room. Without it the removal is group-only and their credentials stay
-        /// valid until they expire.
+        /// the room. Required on an attributed room; not needed on a private one,
+        /// where nothing is withdrawn.
         #[arg(long = "signing-key")]
         signing_key_id: Option<String>,
         /// Another host serving the room (a mirror), delivered the withdrawal too.

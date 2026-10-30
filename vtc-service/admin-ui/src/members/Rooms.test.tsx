@@ -169,6 +169,31 @@ describe("data rooms in the portal", () => {
     expect(screen.getByText("did:webvh:QmMine:rooms.example")).toBeTruthy();
   });
 
+  it("an open room is shown as open, never as an epoch it does not have", async () => {
+    const shared = { sharedAt: "2026-10-16T00:00:00Z", expiresAt: "2026-11-15T00:00:00Z" };
+    const wallet = fakeWallet({
+      list: vi.fn(async () => ({
+        rooms: [{ roomId: ROOM, label: "Public Data Room", visibility: "open", held: true, member: MEMBER, ...shared }],
+      })),
+    });
+    (window as { vtaWallet?: unknown }).vtaWallet = { rooms: wallet };
+    const { unmount } = renderWith(<RoomsPage hostDid={HOST} member={MEMBER} />);
+    expect(await screen.findByText(/open room · as you/)).toBeTruthy();
+    expect(screen.queryByText(/epoch/)).toBeNull();
+    unmount();
+
+    // Left: no keys to blame.
+    const left = fakeWallet({
+      list: vi.fn(async () => ({
+        rooms: [{ roomId: ROOM, label: "Public Data Room", visibility: "open", held: false, member: MEMBER, ...shared }],
+      })),
+    });
+    (window as { vtaWallet?: unknown }).vtaWallet = { rooms: left };
+    renderWith(<RoomsPage hostDid={HOST} member={MEMBER} />);
+    expect(await screen.findByText(/you are no longer in this room/)).toBeTruthy();
+    expect(screen.queryByText(/keys/)).toBeNull();
+  });
+
   it("a community room's page is headed by its name, and a wallet without names leaves the DID", async () => {
     const shared = { held: true, sharedAt: "2026-10-16T00:00:00Z", expiresAt: "2026-11-15T00:00:00Z" };
     const named = fakeWallet({ list: vi.fn(async () => ({ rooms: [{ roomId: ROOM, label: "Board pack", ...shared }] })) });
@@ -364,6 +389,20 @@ describe("data rooms in the portal", () => {
     fireEvent.click(screen.getByRole("button", { name: /Add note/ }));
     await screen.findByText("Note added.");
     await waitFor(() => expect(wallet.calls.find((c) => c.method === "putNote")?.args).toEqual({ hostDid: HOST, roomId: ROOM, title: "Pricing", body: "Hold." }));
+  });
+
+  it("an open room takes a note, said to be readable by its host, and no file", async () => {
+    const wallet = fakeWallet({ info: vi.fn(async () => ({ ...INFO, visibility: "open" })) });
+    (window as { vtaWallet?: unknown }).vtaWallet = { rooms: wallet };
+    renderWith(<RoomPage hostDid={HOST} roomId={ROOM} />);
+    await screen.findByText("Add to this room");
+    expect(screen.getByText(/its host can read it as well as its members/)).toBeTruthy();
+    expect(screen.queryByLabelText("Or a file")).toBeNull();
+    expect(screen.queryByRole("button", { name: /Add file/ })).toBeNull();
+    fireEvent.change(screen.getByLabelText("Title"), { target: { value: "Hello" } });
+    fireEvent.click(screen.getByRole("button", { name: /Add note/ }));
+    await screen.findByText("Note added.");
+    await waitFor(() => expect(wallet.calls.find((c) => c.method === "putNote")?.args).toEqual({ hostDid: HOST, roomId: ROOM, title: "Hello" }));
   });
 
   it("an opened record takes the add form's place beside the list, and Add or Close brings the form back", async () => {
