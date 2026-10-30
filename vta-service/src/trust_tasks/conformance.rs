@@ -3403,24 +3403,10 @@ fn table() -> Vec<(&'static str, Conformance)> {
             ),
         ),
         (
-            uris::TASK_ROOMS_OWNER_GROUP_REMOVE_0_1,
+            uris::TASK_ROOMS_OWNER_GROUP_REMOVE_0_4,
             checked!(
-                specs::rooms::owner::group::remove::v0_1::Payload,
-                specs::rooms::owner::group::remove::v0_1::Response,
-                json!({ "roomId": "did:webvh:example.com:rooms:northwind",
-                    "host": "did:webvh:example.com:northwind-community",
-                    "member": "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
-                    "reason": "Left the deal team" }),
-                json!({ "roomId": "did:webvh:example.com:rooms:northwind",
-                    "member": "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
-                    "epoch": 4 })
-            ),
-        ),
-        (
-            uris::TASK_ROOMS_OWNER_GROUP_REMOVE_0_3,
-            checked!(
-                specs::rooms::owner::group::remove::v0_3::Payload,
-                specs::rooms::owner::group::remove::v0_3::Response,
+                specs::rooms::owner::group::remove::v0_4::Payload,
+                specs::rooms::owner::group::remove::v0_4::Response,
                 json!({ "roomId": "did:webvh:example.com:rooms:northwind",
                     "host": "did:webvh:example.com:northwind-community",
                     "member": "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
@@ -3429,6 +3415,7 @@ fn table() -> Vec<(&'static str, Conformance)> {
                     "reason": "Left the deal team" }),
                 json!({ "roomId": "did:webvh:example.com:rooms:northwind",
                     "member": "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
+                    "withdrawn": true,
                     "revocation": { "sequence": 2,
                         "digest": "zQmbWqxBEKC3P8tqsKc98xmWNzrzDtRLMiMPL8wBuTGsMnR" },
                     "revokedAt": "2026-10-16T09:29:58Z",

@@ -2893,14 +2893,11 @@ dispatch_table! {
     // `hostUnreachable` carries its `stage` (trust-tasks-tf #824).
     vta_sdk::trust_tasks::TASK_ROOMS_OWNER_GROUP_ADD_0_3 => room_owner_group::handle_add_v0_3
         [ Mutating Metadata true ],
-    // The mirror of add: same host, same authority, the other direction.
-    vta_sdk::trust_tasks::TASK_ROOMS_OWNER_GROUP_REMOVE_0_1 => room_owner_group::handle_remove
-        [ Mutating Metadata true ],
-    // 0.2: the member's credentials are withdrawn at the host first, then the room
-    // advances (trust-tasks-tf #804). Same host, same authority, and the room's key.
-    // 0.3: a pending removal whose redelivered list the host refuses is settled by what the
-    // refusal shows, and the request refused `earlierRemovalRefused` (trust-tasks-tf #821).
-    vta_sdk::trust_tasks::TASK_ROOMS_OWNER_GROUP_REMOVE_0_3 => room_owner_group::handle_remove_v0_3
+    // The mirror of add: same host, same authority, the other direction. On an attributed
+    // room the member's credentials are withdrawn at the host first, signed with the room's
+    // key (trust-tasks-tf #804, #821); on a private room the leaf alone, `withdrawn: false`
+    // (0.4, trust-tasks-tf #975). 0.1 and 0.3 are superseded by 0.4 and not served.
+    vta_sdk::trust_tasks::TASK_ROOMS_OWNER_GROUP_REMOVE_0_4 => room_owner_group::handle_remove_v0_4
         [ Mutating Metadata true ],
     // Signs as the room and delivers to every host serving it, presenting the
     // principal's `admin` authority — `actsAsSubject`, like the group verbs.

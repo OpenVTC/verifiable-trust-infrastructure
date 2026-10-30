@@ -744,10 +744,13 @@ aws-smithy-types = ">=1.6.1, <1.9"
 # 0.36.1: vta/contexts/delete/1.1 (trust-tasks-tf #967). 0.36 marks every
 # prebuilt spec module deprecated in favour of `trust-tasks-build`; the
 # workspace `deprecated = "allow"` covers it meanwhile.
+# 0.36.2: rooms/owner/group/remove/0.4 — one removal for attributed and private
+# rooms (trust-tasks-tf #975) — and vtc/install/claim/passkey/{start,finish}/0.1
+# (trust-tasks-tf #976, #978).
 # Only `validate` here; each crate lists its spec families (see "SPEC FAMILIES
 # ARE DECLARED PER CRATE" above). Never add `all-specs` back: it switches every family on
 # for every crate in the workspace, and for every consumer of a published one.
-trust-tasks-rs = { version = "0.36.1", default-features = false, features = [
+trust-tasks-rs = { version = "0.36.2", default-features = false, features = [
   "validate",
 ] }
 trust-tasks-capability-client = "0.36"
