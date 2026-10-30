@@ -2,6 +2,59 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.23.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-rooms-v0.22.0...vti-rooms-v0.23.0) — 2026-10-30
+
+
+### Changed
+
+- **specs**: Take every Trust Task wire type from the generated vti-specs crates ([#2343](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2343))
+
+Every `trust_tasks_rs::specs::<family>` path becomes `vti_specs::<family>`
+  (`vti_specs_rooms::rooms` in vti-rooms, which stays wasm-light), and every
+  `trust_tasks_rs::schema_index::*` call becomes `vti_specs::schema_index::*`,
+  which answers for exactly the versions the vti-specs-* locks pin. The
+  framework's own specs are re-exported from vti_specs unchanged.
+
+  No crate turns a trust-tasks-rs spec family on any more: the workspace
+  compiles none of the deprecated prebuilt modules, only `validate`.
+
+  The generated types are the same generator's output at the same module paths,
+  but they are distinct Rust types from the prebuilt ones: a downstream crate
+  that passes a `trust_tasks_rs::specs` value into a vta-sdk API must move its
+  import to `vta_sdk::specs` (a find-and-replace).
+
+  CLAUDE.md's rule now points at the generated crates and says how to pin a
+  version; the SPEC FAMILIES notes in Cargo.toml are replaced.
+
+- **rooms**: Serve and send only the current rooms/* and vtc/rooms/* versions ([#2335](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2335))
+
+The VTA serves rooms/keys/act 0.8 and rooms/keys/browse 0.3 only; the room
+  hosts (room-host, vtc-service) serve rooms/records/put 0.3, records/list 0.5,
+  info 0.3 and epoch/chain 0.2 only; the VTC serves vtc/rooms/offers/list 0.4
+  only. The VTA's own requests to a host (browse, catch-up, anchor, the room's
+  profile, group add/remove) send only those versions, with no fall-back for a
+  host that predates them.
+
+  pnm-browser-plugin sends only current versions since its cut-over
+  (#384-#387); openvtc, vti-rooms-wasm and vta-mobile-core send no superseded
+  room version.
+
+  Kept, with a one-line #[allow(deprecated)] reason each:
+  - rooms/owner/group/remove/0.1: 0.3 refuses a private room and points it at
+    0.1; no successor yet (spec gap).
+  - rooms/keys/act/0.8's own closed table (Recipient item 1) still names
+    superseded host-bound versions and vtc/rooms/offers/list 0.1-0.3; the VTA
+    completes them rather than diverge from the specification.
+
+  Removed public API: vta-sdk TASK_ROOMS_KEYS_ACT_0_1, TASK_ROOMS_KEYS_ACT_0_5,
+  TASK_ROOMS_KEYS_BROWSE_0_1; vti-rooms ROOMS_RECORDS_PUT_TYPE,
+  ROOMS_RECORDS_PUT_V2_TYPE, ROOMS_RECORDS_LIST_TYPE, ROOMS_EPOCH_CHAIN_TYPE,
+  ROOMS_INFO_TYPE, blob_tasks::{info, put_v2_blobs, INFO_TYPE, PUT_V2_TYPE} and
+  the Payload impls of PutRecordBody, ListRecordsBody and ChainBody; vtc-client's
+  re-export of ROOMS_RECORDS_LIST_TYPE.
+
+
+
 ## [0.22.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-rooms-v0.21.0...vti-rooms-v0.22.0) — 2026-10-28
 
 

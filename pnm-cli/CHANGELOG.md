@@ -2,6 +2,34 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.48.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/pnm-cli-v0.47.0...pnm-cli-v0.48.0) — 2026-10-30
+
+
+### Added
+
+- **rooms**: Rooms/owner/group/remove 0.4 for attributed and private rooms ([#2337](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2337))
+
+The VTA serves `rooms/owner/group/remove/0.4` (trust-tasks-tf #975), one
+  version that removes a member from either sealed tier, and no longer serves
+  0.1 or 0.3. trust-tasks-rs 0.36.2 marks both superseded by 0.4, and no client
+  outside VTI sends them.
+
+  - Attributed room: unchanged from 0.3. The member's credentials are withdrawn
+    at the host first (the room's next revocation list, signed with
+    `signingKeyId`), then the leaf is removed and the room advances. The
+    response now carries `withdrawn: true`. A request naming no
+    `signingKeyId` is refused `noSigningKey` (item 2).
+  - Private room: the leaf is removed and the room advances. No revocation list
+    is built, signed or sent, `signingKeyId`, `mirrors` and `until` are not
+    needed, and the response is `{roomId, member, withdrawn: false, epoch}`
+    (items 4 and 10). `privateRoom` is no longer declared.
+  - Pending-removal settlement (item 8) is unchanged. A private room's removal
+    now settles an earlier one with its own `earlierRemovalRefused`, where 0.1
+    answered `hostRefused`. A pending removal with no list is settled by its
+    epoch alone (item 8.3).
+
+
+
 ## [0.47.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/pnm-cli-v0.46.0...pnm-cli-v0.47.0) — 2026-10-28
 
 

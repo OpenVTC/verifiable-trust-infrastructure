@@ -2,6 +2,22 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.24.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-policy-v0.23.0...vta-policy-v0.24.0) — 2026-10-30
+
+
+### Added
+
+- **auth**: Answer step-ups with auth/step-up/approve-response/0.7, and stop serving 0.4 and 0.6 ([#2346](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2346))
+
+Every step-up answer moves to approve-response 0.7
+  (trustoverip/dtgwg-trust-tasks-tf#983). A user-verified WebAuthn assertion
+  by the approver's own registered passkey is evidence on its own, so the admin
+  console answers unsigned. A delegated key's proof never counts as the
+  approver's. A didSigned or approverSigned answer, and every denial, still
+  needs the approver's own proof.
+
+
+
 ## [0.23.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-policy-v0.22.0...vta-policy-v0.23.0) — 2026-10-28
 
 

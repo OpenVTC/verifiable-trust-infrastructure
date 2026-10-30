@@ -2,6 +2,135 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.52.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-common-v0.51.0...vti-common-v0.52.0) — 2026-10-30
+
+
+### Added
+
+- **vtc**: Move a community role with vtc/members/role/set/0.1 and stop serving acl/change-role/0.1 ([#2347](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2347))
+
+* feat(vtc)!: move a community role with vtc/members/role/set/0.1 and stop serving acl/change-role/0.1
+
+  The community-role move (member, moderator, issuer, admin, custom roles) is
+  now `vtc/members/role/set/0.1`; `acl/change-role/0.1` is no longer served,
+  sent or pinned. `acl/change-role/0.2` still moves the administrative role.
+
+  The handler makes the specification's checks 1-7 in order, each with its
+  declared code: vtc.roles.assign (permissionDenied), no self-move in either
+  direction (VTI-OPS-050, VTI-ACL-052), notFound, roleNotRecognized
+  (details.offendingRole) / roleNotAssignable (`application` onto or off),
+  stateMismatch (details.currentRole), the requester covering the entry
+  (VTI-ACL-050), and fromRole == toRole answered `changed: false` with no
+  gesture and no write (SPEC 7.2).
+
+  The role-change ceremony carries items 8-18: authority follows the role
+  only where it is exactly the one the current role implies;
+  delegationExceedsGranter (axes); lastRoleAssigner checked before the policy
+  and again under the write's lock (VTI-APV-009); the policy sees whether the
+  move confers or withdraws authority and may not choose a different role
+  (deniedByPolicy); the bound step-up and parked consent (VTI-OPS-051,
+  VTI-APV-018/019); the compare-and-swap re-checked under LAST_ADMIN_LOCK
+  (item 14); the role credential returned as roleVac; and a new
+  CommunityRoleSet audit event (from/to, authority before/after, approval,
+  action id, reason).
+
+  The response is the generated type: subject, role, previousRole, changed,
+  approval, entry (AclEntry 0.2) and roleVac. vtc-client's acl_change_role
+  becomes members_role_set; `cnm access change-role` and the admin console
+  send the new task. Approver summary templates are added for the new task
+  (server and console pins); the 0.1 templates stay for history.
+
+- **auth**: Answer step-ups with auth/step-up/approve-response/0.7, and stop serving 0.4 and 0.6 ([#2346](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2346))
+
+Every step-up answer moves to approve-response 0.7
+  (trustoverip/dtgwg-trust-tasks-tf#983). A user-verified WebAuthn assertion
+  by the approver's own registered passkey is evidence on its own, so the admin
+  console answers unsigned. A delegated key's proof never counts as the
+  approver's. A didSigned or approverSigned answer, and every denial, still
+  needs the approver's own proof.
+
+
+
+### Changed
+
+- **specs**: Take every Trust Task wire type from the generated vti-specs crates ([#2343](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2343))
+
+Every `trust_tasks_rs::specs::<family>` path becomes `vti_specs::<family>`
+  (`vti_specs_rooms::rooms` in vti-rooms, which stays wasm-light), and every
+  `trust_tasks_rs::schema_index::*` call becomes `vti_specs::schema_index::*`,
+  which answers for exactly the versions the vti-specs-* locks pin. The
+  framework's own specs are re-exported from vti_specs unchanged.
+
+  No crate turns a trust-tasks-rs spec family on any more: the workspace
+  compiles none of the deprecated prebuilt modules, only `validate`.
+
+  The generated types are the same generator's output at the same module paths,
+  but they are distinct Rust types from the prebuilt ones: a downstream crate
+  that passes a `trust_tasks_rs::specs` value into a vta-sdk API must move its
+  import to `vta_sdk::specs` (a find-and-replace).
+
+  CLAUDE.md's rule now points at the generated crates and says how to pin a
+  version; the SPEC FAMILIES notes in Cargo.toml are replaced.
+
+- **vtc**: Approve-response 0.4 only for the console's unsigned answer; drop the unused acl/revoke 0.1 OpenAPI wrapper ([#2333](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2333))
+
+The superseded auth/acl Trust Task versions, narrowed to what still needs
+  them.
+
+  auth/step-up/approve-response/0.4 (superseded by 0.6). The VTC now hears 0.4
+  only as the admin console's unsigned session-passkey answer. Every signed
+  answer — a member's step-up passkey beside their own proof, a refusal, a
+  wallet's approver statement — is 0.6, and a signed 0.4 is refused with a
+  pointer to 0.6. The 0.4 document is checked against 0.4's schema and then
+  handled as the 0.6 payload it is wire-identical to, so
+  `bound_step_up::approve` and everything past the door read 0.6 only. The
+  console's Decline now sends 0.6.
+
+  0.4 itself stays: approve-response 0.5 onward require the approver's own
+  assertionMethod proof, and the console holds only a delegated key, which
+  auth/signing-key/enroll/0.2 item 7 refuses as an approver's attestation. The
+  console's unsigned answer has no successor in the specification yet.
+
+  acl/change-role/0.1 (superseded by 0.2) stays as the community-role door,
+  as #2323 kept it: 0.2 moves an AclEntry 0.2's administrative role, and the
+  community role (member <-> admin, role-VAC re-mint, promotion serialisation)
+  has no 0.2 task. Its uses now carry a per-item #[allow(deprecated)] naming
+  that gap.
+
+
+
+### Fixed
+
+- **step-up**: One approve-request version, 0.5, across the VTA, the VTC and the mobile approver ([#2327](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2327))
+
+`auth/step-up/approve-request` was minted at three versions: the VTA at 0.2
+  (a hand-built JSON payload), vtc-service at 0.4 (inline in a refusal) and the
+  did-hosting RP at 0.5. An approver therefore had to read all three, and
+  vta-mobile-core read only 0.1 and 0.2 — so it could answer the VTA but not
+  the RP or the VTC.
+
+  - vta-service mints 0.5, built through the generated
+    `approve_request::v0_5::Payload` and its schema check (as vtc-service
+    already does) rather than a hand-written `json!`; the type URI comes from
+    `<Payload as trust_tasks_rs::Payload>::TYPE_URI`. On the wire:
+    `acceptableEvidence` -> a required `accepts`, `ttl` -> `ttlSeconds`;
+    `sessionId` is still sent, since this is a session step-up.
+  - vtc-service's inline request moves 0.4 -> 0.5 (`ttl` -> `ttlSeconds`).
+    `bound_step_up::ApproveRequest` is now the 0.5 payload, hence `!`.
+  - vta-mobile-core's `parse_step_up_request` accepts 0.5 only, matched
+    exactly, and reads `accepts`. `approverSigned` is surfaced as
+    `approver-signed` rather than dropped. The UniFFI record keeps its shape: a
+    request that names no session (0.5 makes `sessionId` optional) surfaces an
+    empty `session_id`, the convention `stepup`'s response draft already reads.
+  - The VTC console reads `accepts` only (the 0.3 `acceptableEvidence`
+    fallback is gone) and shows `ttlSeconds`.
+
+  The browser wallet cuts over with this: pnm-browser-plugin matches the
+  agent's request at 0.2 today and moves to the single 0.5 pin it already
+  holds for the RP.
+
+
+
 ## [0.51.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-common-v0.50.0...vti-common-v0.51.0) — 2026-10-28
 
 
