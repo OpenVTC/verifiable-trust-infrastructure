@@ -115,6 +115,40 @@ describe("member portal", () => {
     ).toBe("/");
   });
 
+  it("opened to join (?join), words the wallet code for joining and offers no member-only option", async () => {
+    stubFetch((url) =>
+      url.endsWith("/public-profile")
+        ? json(200, { name: "Acme Guild" })
+        : json(401, { message: "not signed in" }),
+    );
+    window.history.pushState({}, "", "/members/?join");
+    try {
+      renderPortal();
+      expect(await screen.findByRole("heading", { name: /join acme guild/i })).toBeTruthy();
+      expect(screen.getByRole("heading", { name: /join with your wallet/i })).toBeTruthy();
+      expect(screen.getByText(/an administrator reviews each request/i)).toBeTruthy();
+      // Passkeys and the older sign-in need a membership: not offered here.
+      expect(screen.queryByRole("button", { name: /sign in with a passkey/i })).toBeNull();
+      expect(screen.queryByRole("button", { name: /sign in with your vta/i })).toBeNull();
+      // A newcomer needs the wallet, so its install guide is on the page.
+      expect(screen.getByText(/install the vta wallet browser extension/i)).toBeTruthy();
+      expect(screen.getByRole("link", { name: /^sign in$/i }).getAttribute("href")).toBe("/members/");
+    } finally {
+      window.history.pushState({}, "", "/");
+    }
+  });
+
+  it("links a visitor who isn't a member yet to the join page", async () => {
+    stubFetch((url) =>
+      url.endsWith("/public-profile")
+        ? json(200, { name: "Acme Guild" })
+        : json(401, { message: "not signed in" }),
+    );
+    renderPortal();
+    const link = await screen.findByRole("link", { name: /join this community/i });
+    expect(link.getAttribute("href")).toBe("/members/?join");
+  });
+
   it("enables VTA sign-in and folds the guide away when the wallet can proxy", async () => {
     (window as { vtaWallet?: unknown }).vtaWallet = {
       login: vi.fn(),

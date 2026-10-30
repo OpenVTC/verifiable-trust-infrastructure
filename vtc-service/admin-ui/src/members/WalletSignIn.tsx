@@ -147,10 +147,16 @@ function endedMessage(reason: Extract<Phase, { kind: "ended" }>["reason"]): stri
   }
 }
 
+const JOIN_NOTE =
+  "Click it if the VTA Wallet browser extension is on this device, or scan it with " +
+  "your wallet app. Your wallet shows what this community asks for, can set up a " +
+  "new identity for it, and sends your request. Your keys stay with your wallet.";
+
 export function WalletSignIn({
   onSignedIn,
   communityName,
   audience = "member",
+  intent = "sign-in",
   onNotMe,
 }: {
   onSignedIn: () => Promise<void> | void;
@@ -158,6 +164,11 @@ export function WalletSignIn({
   /** Which session to ask for: the member portal's (default) or the
    *  operator console's. */
   audience?: SessionAudience;
+  /** What the person came to do. `join` only changes the words: the code is
+   *  the same sign-in request, and the wallet decides from the community's
+   *  answer whether to sign in or offer to join (it offers to join a
+   *  community it holds no identity for). */
+  intent?: "sign-in" | "join";
   /** End the session just issued, for "Not me". Defaults to the member
    *  portal's sign-out. */
   onNotMe?: () => Promise<unknown>;
@@ -420,7 +431,8 @@ export function WalletSignIn({
   return (
     <section className="wallet-signin" aria-labelledby="wallet-signin-heading">
       <h2 id="wallet-signin-heading" className="option-heading">
-        <Smartphone size={18} aria-hidden="true" /> Sign in with your wallet
+        <Smartphone size={18} aria-hidden="true" />{" "}
+        {intent === "join" ? "Join with your wallet" : "Sign in with your wallet"}
       </h2>
 
       {missing && phase.kind === "idle" && (
@@ -450,8 +462,10 @@ export function WalletSignIn({
             </p>
           )}
           <p className="option-note">
-            Scan it with your wallet app (Keyring is the first), or click it if your wallet
-            is on this device. Your keys stay with your wallet.
+            {intent === "join"
+              ? JOIN_NOTE
+              : "Scan it with your wallet app (Keyring is the first), or click it if your " +
+                "wallet is on this device. Your keys stay with your wallet."}
             {audience === "admin" &&
               " Approve as the identity that administers this community."}
           </p>
@@ -479,7 +493,9 @@ export function WalletSignIn({
               />
             </a>
             <p className="option-note">
-              Scan it with your wallet app, or click it if your wallet is on this device.
+              {intent === "join"
+                ? JOIN_NOTE
+                : "Scan it with your wallet app, or click it if your wallet is on this device."}
               {audience === "admin" &&
                 " Approve as the identity that administers this community."}
             </p>
