@@ -620,7 +620,10 @@ function InvitesPanel({ openRequest = 0 }: { openRequest?: number }) {
           <p className="lead acl-invites-lead">
             Mint one-shot install URLs for new community administrators.
             Each invite grants its <code>did</code> the community-admin
-            role on first passkey claim.
+            role; its holder claims the URL with the VTA wallet holding
+            that DID. To invite someone by passkey instead — their
+            passkey's own key becoming their DID — run{" "}
+            <code>vtc admin invite</code> on the host.
           </p>
           <button
             type="button"
@@ -832,7 +835,7 @@ function CreateInviteForm({ onClose }: { onClose: () => void }) {
           Send the install URL and claim code to the new admin{" "}
           <strong>through separate channels</strong> (URL via Slack,
           code via Signal — whatever doesn't share the same
-          attacker view). Both are required to claim the passkey.
+          attacker view). Both are required to claim the invite.
           Expires <strong>{formatIso(issued.expiresAt)}</strong>.
         </p>
         <Field label="Install URL">
@@ -942,7 +945,7 @@ function RegeneratedInviteCard({
         invite has been revoked. Deliver these to the new admin
         through <strong>separate channels</strong> (URL via Slack,
         code via Signal — whatever doesn't share the same attacker
-        view). Both are required to claim the passkey. Expires{" "}
+        view). Both are required to claim the invite. Expires{" "}
         <strong>{formatIso(invite.expiresAt)}</strong>.
       </p>
       <Field label="Install URL">

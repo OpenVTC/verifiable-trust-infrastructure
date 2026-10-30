@@ -392,6 +392,10 @@ thiserror = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 ed25519-dalek = { workspace = true }
+# SEC1 point validation and compression ONLY, for the did:key of a P-256
+# install passkey (`vtc/install/claim/passkey/finish/0.1` item 5). Already in
+# the dependency graph through vta-keys.
+p256 = "0.14"
 hex = { workspace = true }
 keyring-core = { workspace = true, optional = true }
 uuid = { workspace = true }

@@ -105,6 +105,16 @@ pub enum InstallTokenState {
         /// this field landed. New invites always set it.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         admin_did: Option<String>,
+        /// The authority a **passkey** invitation was issued with — one whose
+        /// token names no DID, because the administrator's DID is derived from
+        /// the passkey at `vtc/install/claim/passkey/finish/0.1`. On a
+        /// community that already has an administrator, finish writes the
+        /// derived DID's entry with exactly this authority (finish item 9);
+        /// on a fresh one `vtc/admin/bootstrap` writes the founder's.
+        /// `None` on a wallet invitation (its token names the DID, whose entry
+        /// the invite wrote) and on rows persisted before this field landed.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        authority: Option<Box<InvitedAuthority>>,
     },
     /// Ceremony succeeded — token is permanently spent. Retained for
     /// idempotency / audit; a later `start_claim` for the same JTI
@@ -121,6 +131,39 @@ pub enum InstallTokenState {
     },
 }
 
+/// The authority a passkey invitation confers on whoever completes it: the ACL
+/// entry `vtc/install/claim/passkey/finish/0.1` item 9 writes for the derived
+/// DID, decided when the invitation was issued and recorded with it.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct InvitedAuthority {
+    /// The administrative authority the entry carries.
+    pub admin: crate::acl::AdminAuthority,
+    /// The administrator who issued the invitation, recorded as the entry's
+    /// `delegated_by`; `None` when the operator issued it from the host.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub invited_by: Option<String>,
+    /// What issued it (`vtc-cli/<version>`, `vtc-setup`, …), the entry's
+    /// `created_by`.
+    pub issued_via: String,
+    /// The entry's label.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+}
+
+impl InvitedAuthority {
+    /// A community administrator with the full ceiling, issued from the host
+    /// (`vtc-admin-roles.md` §9: setup, `vtc admin invite`, the emergency
+    /// bootstrap).
+    pub fn community_admin(issued_via: impl Into<String>, label: impl Into<String>) -> Self {
+        Self {
+            admin: crate::acl::AdminAuthority::community_admin(),
+            invited_by: None,
+            issued_via: issued_via.into(),
+            label: Some(label.into()),
+        }
+    }
+}
+
 /// Written by hand so the ephemeral signing key never reaches a log: a derived `Debug` would print it.
 impl std::fmt::Debug for InstallTokenState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -132,6 +175,7 @@ impl std::fmt::Debug for InstallTokenState {
                 claimed_at,
                 claim_secret_hash,
                 admin_did,
+                authority,
             } => f
                 .debug_struct("Issued")
                 .field("exp", exp)
@@ -140,6 +184,7 @@ impl std::fmt::Debug for InstallTokenState {
                 .field("claimed_at", claimed_at)
                 .field("claim_secret_hash", claim_secret_hash)
                 .field("admin_did", admin_did)
+                .field("authority", authority)
                 .finish(),
             Self::Consumed { at, admin_did } => f
                 .debug_struct("Consumed")
@@ -246,8 +291,65 @@ impl InstallTokenStore {
             claimed_at: None,
             claim_secret_hash,
             admin_did,
+            authority: None,
         };
         self.ks.insert(token_key(jti), &state).await
+    }
+
+    /// Persist a freshly-minted **passkey** invitation: its token names no
+    /// DID, and `authority` is what the administrator it makes will hold
+    /// (`vtc/install/claim/passkey/finish/0.1` item 9).
+    pub async fn record_issued_passkey(
+        &self,
+        jti: &Uuid,
+        cnonce: [u8; 32],
+        ephemeral_signing_key: [u8; 32],
+        exp: DateTime<Utc>,
+        claim_secret_hash: Option<String>,
+        authority: InvitedAuthority,
+    ) -> Result<(), AppError> {
+        let _guard = INSTALL_TOKEN_LOCK.lock().await;
+        let state = InstallTokenState::Issued {
+            exp,
+            cnonce,
+            ephemeral_signing_key,
+            claimed_at: None,
+            claim_secret_hash,
+            admin_did: None,
+            authority: Some(Box::new(authority)),
+        };
+        self.ks.insert(token_key(jti), &state).await
+    }
+
+    /// Lift the ceremony lock [`Self::start_claim`] set, without consuming
+    /// anything: a refused passkey finish spends its challenges, and the
+    /// installer must be able to start again at once rather than wait out
+    /// the window (`vtc/install/claim/passkey/finish:possessionUnproven`).
+    pub async fn release_claim(&self, jti: &Uuid) -> Result<(), AppError> {
+        let _guard = INSTALL_TOKEN_LOCK.lock().await;
+        let key = token_key(jti);
+        if let Some(InstallTokenState::Issued {
+            exp,
+            cnonce,
+            ephemeral_signing_key,
+            claimed_at: Some(_),
+            claim_secret_hash,
+            admin_did,
+            authority,
+        }) = self.ks.get(key.clone()).await?
+        {
+            let next = InstallTokenState::Issued {
+                exp,
+                cnonce,
+                ephemeral_signing_key,
+                claimed_at: None,
+                claim_secret_hash,
+                admin_did,
+                authority,
+            };
+            self.ks.insert(key, &next).await?;
+        }
+        Ok(())
     }
 
     /// Begin a WebAuthn ceremony on `jti`.
@@ -283,6 +385,7 @@ impl InstallTokenStore {
                 claimed_at,
                 claim_secret_hash,
                 admin_did,
+                authority,
             } => {
                 let now = Utc::now();
                 if now >= exp {
@@ -303,6 +406,7 @@ impl InstallTokenStore {
                     claimed_at: Some(now),
                     claim_secret_hash: claim_secret_hash.clone(),
                     admin_did,
+                    authority,
                 };
                 self.ks.insert(key, &next).await?;
                 Ok(StartClaimOutcome {
@@ -322,6 +426,17 @@ impl InstallTokenStore {
     /// **only** after the WebAuthn assertion validates against the
     /// `cnonce` and the candidate DID signature has been verified.
     pub async fn finish_claim(&self, jti: &Uuid) -> Result<(), AppError> {
+        self.finish_claim_as(jti, None).await
+    }
+
+    /// [`Self::finish_claim`], recording `admin_did` as the DID the token was
+    /// consumed for — a passkey claim's derived DID, which the token itself
+    /// never named. `None` keeps the DID the row was issued for.
+    pub async fn finish_claim_as(
+        &self,
+        jti: &Uuid,
+        admin_did_override: Option<String>,
+    ) -> Result<(), AppError> {
         let _guard = INSTALL_TOKEN_LOCK.lock().await;
         let key = token_key(jti);
         let state: Option<InstallTokenState> = self.ks.get(key.clone()).await?;
@@ -336,7 +451,10 @@ impl InstallTokenStore {
                 if now >= exp {
                     return Err(AppError::Unauthorized("install token expired".into()));
                 }
-                let next = InstallTokenState::Consumed { at: now, admin_did };
+                let next = InstallTokenState::Consumed {
+                    at: now,
+                    admin_did: admin_did_override.or(admin_did),
+                };
                 self.ks.insert(key, &next).await
             }
         }
@@ -815,6 +933,10 @@ mod tests {
             claimed_at: Some(Utc::now()),
             claim_secret_hash: Some("$argon2id$stub".into()),
             admin_did: Some("did:key:zSerdeRoundTrip".into()),
+            authority: Some(Box::new(InvitedAuthority::community_admin(
+                "test",
+                "round trip",
+            ))),
         };
         let s = serde_json::to_string(&state).unwrap();
         let back: InstallTokenState = serde_json::from_str(&s).unwrap();

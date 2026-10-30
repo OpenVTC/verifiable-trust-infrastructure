@@ -36,15 +36,17 @@ use vtc_service::acl::{VtcRole, list_acl_entries};
 use vti_common::audit::AuditEvent;
 
 use vtc_service::acl::admin::get_admin_entry;
-use vtc_service::install::{InstallTokenSigner, InstallTokenStore, mint_install_token};
+use vtc_service::install::{
+    InstallTokenSigner, InstallTokenStore, InvitedAuthority, mint_passkey_install_token,
+};
 use vtc_service::server::AppState;
 use vtc_service::test_support::TestVtc;
 
 use crate::common::webauthn_harness::SoftEd25519Authenticator;
 
 const RP_ORIGIN: &str = "https://vtc.example.com";
-const START_TASK: &str = "https://trusttasks.org/spec/vtc/install/claim/start/0.2";
-const FINISH_TASK: &str = "https://trusttasks.org/spec/vtc/install/claim/finish/0.2";
+const START_TASK: &str = "https://trusttasks.org/spec/vtc/install/claim/passkey/start/0.1";
+const FINISH_TASK: &str = "https://trusttasks.org/spec/vtc/install/claim/passkey/finish/0.1";
 const BOOTSTRAP_TASK: &str = "https://trusttasks.org/spec/vtc/admin/bootstrap/0.1";
 
 /// Every declared code, and the app-level `Conflict`/`NotFound` taxonomy fall
@@ -74,7 +76,14 @@ async fn build_fixture(with_install_signer: bool, with_audit: bool) -> Fixture {
 
     let mut builder = TestVtc::builder()
         .with_audit(with_audit)
-        .with_public_url(RP_ORIGIN);
+        .with_public_url(RP_ORIGIN)
+        // The passkey finish's response is signed (its proof is REQUIRED).
+        .with_credential_signer(Arc::new(
+            vtc_service::credentials::LocalSigner::from_ed25519_seed(
+                vtc_service::test_support::TEST_VTC_DID.to_string(),
+                &[0x5A; 32],
+            ),
+        ));
     if let Some(sig) = &install_signer {
         builder = builder.with_install_signer(sig.clone());
     }
@@ -106,22 +115,21 @@ async fn build_fixture(with_install_signer: bool, with_audit: bool) -> Fixture {
 }
 
 async fn mint_token_and_record(fix: &Fixture, ttl_seconds: u64) -> String {
-    let minted = mint_install_token(
+    let minted = mint_passkey_install_token(
         &fix.install_signer,
         "did:webvh:vtc.example.com:abc",
-        "did:key:z6MkAdmin",
         ttl_seconds,
     )
     .expect("mint install token");
     let exp = Utc::now() + ChronoDuration::seconds(ttl_seconds as i64);
     fix.install_store
-        .record_issued(
+        .record_issued_passkey(
             &minted.jti,
             minted.cnonce_bytes,
             *minted.ephemeral_signing_key,
             exp,
             None,
-            None,
+            InvitedAuthority::community_admin("test", "first admin (install)"),
         )
         .await
         .unwrap();
@@ -173,15 +181,16 @@ fn tt_error_code(payload: &Value) -> Option<&str> {
 async fn run_claim_ceremony(fix: &Fixture) -> (String, String) {
     let token = mint_token_and_record(fix, 600).await;
 
-    let (status, payload) = post_json(fix, START_TASK, json!({ "installToken": token })).await;
-    assert_eq!(status, StatusCode::OK, "start: {payload}");
+    let (status, start) = post_json(fix, START_TASK, json!({ "installToken": token })).await;
+    assert_eq!(status, StatusCode::OK, "start: {start}");
 
-    let registration_id = payload["registrationId"].as_str().unwrap().to_string();
+    let registration_id = start["registrationId"].as_str().unwrap().to_string();
     let ccr: webauthn_rs::prelude::CreationChallengeResponse =
-        serde_json::from_value(payload["options"].clone()).unwrap();
+        serde_json::from_value(start["options"].clone()).unwrap();
 
     let mut authenticator = SoftEd25519Authenticator::new();
     let (register_cred, _ed25519_pub) = authenticator.register(&ccr, RP_ORIGIN);
+    let assertion = authenticator.install_assertion(&start, &register_cred, RP_ORIGIN);
 
     let (status, payload) = post_json(
         fix,
@@ -190,6 +199,7 @@ async fn run_claim_ceremony(fix: &Fixture) -> (String, String) {
             "installToken": token,
             "registrationId": registration_id,
             "webauthnResponse": register_cred,
+            "webauthnAssertion": assertion,
         }),
     )
     .await;

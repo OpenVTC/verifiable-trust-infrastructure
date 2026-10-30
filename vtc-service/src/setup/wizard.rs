@@ -58,7 +58,8 @@ use vti_common::store::Store;
 
 use crate::config::{AppConfig, AuthConfig, LogConfig, MessagingConfig, SecretsConfig};
 use crate::install::{
-    INSTALL_TOKEN_DEFAULT_TTL_SECS, InstallTokenSigner, InstallTokenStore, mint_install_token,
+    INSTALL_TOKEN_DEFAULT_TTL_SECS, InstallTokenSigner, InstallTokenStore,
+    mint_passkey_install_token,
 };
 use crate::keys::seed_store::create_secret_store;
 use crate::setup::VtcKeyBundle;
@@ -286,13 +287,12 @@ pub(crate) async fn apply(plan: WizardPlan) -> Result<SetupOutcome, AppError> {
     //    to pay the partition-create cost.
     open_keyspaces(&app_config)?;
 
-    // 9. Mint a one-shot install token. The operator uses this to
-    //    claim their admin passkey on the running daemon.
-    // Admin DID for the install ceremony — the rotated long-term DID
-    // the VTA returned from the bootstrap. Same identity at both VTA
-    // and VTC: a single admin credential the operator can use for
-    // either daemon's auth. The install URL attaches a passkey to this
-    // DID for browser-based admin UI access.
+    // 9. Mint a one-shot install token. The operator claims the community
+    //    with a passkey on the running daemon; the founder is that passkey's
+    //    own `did:key`. The admin DID below — the rotated long-term DID the
+    //    VTA returned from the bootstrap — is not named by the token: an
+    //    operator who wants it to administer the VTC too (CLI access) grants
+    //    it with `offline_acl_add_command`, printed in the summary.
     let admin_did = provision.admin_did().to_string();
     if let Some(warning) = single_admin_warning(&inputs) {
         eprintln!("{warning}");
@@ -306,7 +306,6 @@ pub(crate) async fn apply(plan: WizardPlan) -> Result<SetupOutcome, AppError> {
     let (install_url, claim_code) = mint_initial_install_token(
         &app_config,
         &bundle,
-        &admin_did,
         inputs.co_admin_did.as_deref(),
         &inputs.base_url,
     )
@@ -394,19 +393,21 @@ fn print_setup_summary_interactive(outcome: &SetupOutcome) -> Result<(), AppErro
     println!("\x1b[1mClaim code (required at claim time):\x1b[0m");
     println!("  {}", outcome.claim_code);
     println!();
-    println!("Both URL and code are needed to claim the passkey. The code is shown");
+    println!("Both URL and code are needed to claim the community. The code is shown");
     println!("only once and not persisted — copy it before continuing.");
     println!();
     println!("Next steps:");
     println!("  1. Run `vtc` to start the daemon.");
     println!("  2. Open the install URL in your browser.");
     println!("  3. Enter the claim code when prompted, then register your passkey.");
+    println!("     The first administrator is the passkey's own did:key.");
     println!();
-    // VTI-11: nothing is in the ACL until the install is claimed, so the
-    // admin DID cannot authenticate before then. Say how to seed it without
-    // the browser (docs/03-vtc/bootstrap-runbook.md, Path B).
-    println!("The ACL stays empty until the install URL is claimed. Without a browser,");
-    println!("seed the admin with the daemon stopped:");
+    // VTI-11: nothing is in the ACL until the install is claimed. The admin
+    // DID above is not the passkey's, so say how to grant it — for CLI access,
+    // or instead of the browser claim (docs/03-vtc/bootstrap-runbook.md,
+    // Path B).
+    println!("The admin DID above is not made an administrator by the install URL.");
+    println!("To grant it (CLI access, or instead of a browser), with the daemon stopped:");
     println!("  {}", offline_acl_add_command(outcome));
     println!();
     Ok(())
@@ -2004,19 +2005,23 @@ fn open_keyspaces(config: &AppConfig) -> Result<(), AppError> {
     Ok(())
 }
 
+/// Mint the first install token: a **passkey** invitation. Its token names no
+/// DID; the founder is the `did:key` of the passkey that claims it
+/// (`vtc/install/claim/passkey/finish/0.1` item 5), written by
+/// `vtc/admin/bootstrap`. The passkey install no longer attaches a passkey to
+/// a DID the token names (`vtc/install/claim/{start,finish}/0.2`, retired) —
+/// the setup's admin DID is granted separately (`offline_acl_add_command`).
 async fn mint_initial_install_token(
     config: &AppConfig,
     bundle: &VtcKeyBundle,
-    admin_did: &str,
     co_admin_did: Option<&str>,
     base_url: &str,
 ) -> Result<(String, String), AppError> {
     let ed25519 = bundle.ed25519_private_bytes()?;
     let signer = InstallTokenSigner::from_master_seed(&*ed25519)?;
-    let minted = mint_install_token(
+    let minted = mint_passkey_install_token(
         &signer,
         &bundle.integration_did,
-        admin_did,
         INSTALL_TOKEN_DEFAULT_TTL_SECS,
     )?;
     let claim_code = crate::install::claim_secret::generate();
@@ -2031,13 +2036,13 @@ async fn mint_initial_install_token(
     let install_store = InstallTokenStore::new(install_ks);
     let exp = Utc::now() + ChronoDuration::seconds(INSTALL_TOKEN_DEFAULT_TTL_SECS as i64);
     install_store
-        .record_issued(
+        .record_issued_passkey(
             &minted.jti,
             minted.cnonce_bytes,
             *minted.ephemeral_signing_key,
             exp,
             Some(claim_code_hash),
-            Some(admin_did.to_string()),
+            crate::install::InvitedAuthority::community_admin("vtc setup", "first admin (install)"),
         )
         .await?;
     // The install bootstrap writes the co-admin beside the first admin, in

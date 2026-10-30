@@ -286,8 +286,9 @@ enforces for step-up passkeys).
 
 ### 6b. R1 — at install, for the founding administrator
 
-Today `vtc/install/claim/{start,finish}/0.2` registers a passkey and derives the
-first administrator's `did:key` from it. A wallet founder needs a claim *under
+The passkey install (`vtc/install/claim/{start,finish}/0.2` when this was
+written, now `vtc/install/claim/passkey/{start,finish}/0.1`) registers a passkey
+and derives the first administrator's `did:key` from it. A wallet founder needs a claim *under
 a DID they already control* — which the install route's own documentation
 names as "a future version rather than approximated". This is that version:
 

@@ -1,31 +1,32 @@
-// `/admin/install?token=<jwt>` — install-claim ceremony.
+// `/admin/install?token=<jwt>` — the install claim, for the first
+// administrator of a community or one invited to administer it.
 //
-// Distinct from a plugin: the install URL is the public entry point
-// for an unauthenticated operator, so it lives outside the plugin
-// routing tree (which is gated on auth once login lands). Reads
-// `?token=` from the URL, drives `navigator.credentials.create`,
-// signs and posts `vtc/install/claim/{start,finish}/0.2` and
-// `vtc/admin/bootstrap/0.1` to the shared `POST /v1/trust-tasks` door —
-// these have no dedicated REST route any more; each verb's own bearer
-// artifact (the install JWT, the `registrationId` `start` minted, the
-// setup-session JWT `finish` minted) is the credential, not a proof, so
-// the documents are unsigned (`postUnsignedTrustTask`).
+// Distinct from a plugin: the install URL is the public entry point for an
+// unauthenticated operator, so it lives outside the plugin routing tree.
+// Reads `?token=` from the URL and runs one of two ceremonies, chosen by the
+// token itself:
 //
-// Modelled on `affinidi-webvh-service/webvh-ui/lib/passkey.ts` +
-// `app/enroll.tsx`: standard WebAuthn registration with no custom
-// binding-signature step. The admin DID is carried in the install
-// token, not derived from the passkey.
-
+// - **A passkey invitation** (the token names no DID): the passkey install,
+//   `vtc/install/claim/passkey/{start,finish}/0.1`. `start` answers WebAuthn
+//   creation options (EdDSA or ES256 only) and `assertionOptions`, a second
+//   challenge; the page creates the passkey, then signs one assertion with it
+//   over that challenge — the proof the installer holds it — and `finish`
+//   answers the administrator's DID, the `did:key` of the passkey's own key.
+//   Each verb's own bearer artifact (the install JWT, the `registrationId`,
+//   the setup-session JWT) is the credential, so the documents are unsigned
+//   (`postUnsignedTrustTask`).
+// - **A wallet invitation** (the token names a DID): a founder or invitee who
+//   holds that DID in a VTA wallet claims with **0.3**: `claim/start/0.3`
+//   (unsigned — the token and the claim code are the gate) answers the DID
+//   and a challenge; the plugin's approver signs its enrolment statement over
+//   that challenge, bound to the `claimId`; and `claim/finish/0.3` is signed
+//   by the wallet **as that DID**, carrying the statement.
 //
-// A founder who already holds a DID in a VTA wallet claims with **0.3**
-// instead ("Claim with my VTA wallet", offered when the browser plugin can
-// enrol a step-up approver): `claim/start/0.3` (unsigned — the token and the
-// claim code are the gate) answers the DID the token names and a challenge;
-// the plugin's approver signs its enrolment statement over that challenge,
-// bound to the `claimId`; and `claim/finish/0.3` is signed by the wallet **as
-// the founder's own DID**, carrying the statement. It answers the same
-// `{adminDid, setupSessionToken}` as 0.2, so the bootstrap that follows is the
-// same — and that bootstrap is what binds the approver (VTI-APV-016).
+// Both answer `{adminDid, setupSessionToken}`, and `vtc/admin/bootstrap/0.1`
+// follows: on a fresh community it writes the first administrator (and binds
+// a 0.3 founder's approver); on one that already has an administrator it
+// answers `alreadyBootstrapped`, which is fine — a passkey invitation's entry
+// was written by `finish`, a wallet invitation's by the invite.
 
 import { useState } from "react";
 import { useSearchParams } from "react-router-dom";
@@ -43,16 +44,18 @@ import {
   signWithWallet,
 } from "@/lib/wallet";
 import {
+  base64urlToBuffer,
   decodePublicKeyOptions,
+  serializeAssertion,
   serializeRegistration,
   type JsonPublicKeyOptions,
 } from "@/lib/webauthn";
 import { Field } from "@/components/Field";
 
-const TRUST_TASK_START =
-  "https://trusttasks.org/spec/vtc/install/claim/start/0.2";
-const TRUST_TASK_FINISH =
-  "https://trusttasks.org/spec/vtc/install/claim/finish/0.2";
+export const TRUST_TASK_START =
+  "https://trusttasks.org/spec/vtc/install/claim/passkey/start/0.1";
+export const TRUST_TASK_FINISH =
+  "https://trusttasks.org/spec/vtc/install/claim/passkey/finish/0.1";
 export const TRUST_TASK_START_V0_3 =
   "https://trusttasks.org/spec/vtc/install/claim/start/0.3";
 export const TRUST_TASK_FINISH_V0_3 =
@@ -60,9 +63,9 @@ export const TRUST_TASK_FINISH_V0_3 =
 export const TRUST_TASK_BOOTSTRAP =
   "https://trusttasks.org/spec/vtc/admin/bootstrap/0.1";
 
-// No browser identity exists at any point in this ceremony — the admin DID is
-// decided server-side from the install token, not derived from a console key
-// this browser holds. The framework binds a document's `issuer` to its proof
+// No browser identity signs these documents — the administrator's DID is the
+// passkey's (derived server-side from the registered key) or the wallet's,
+// never a console key this browser holds. The framework binds a document's `issuer` to its proof
 // only when one is present (SPEC §7.2 item 7); none of these three documents
 // carries one, so this placeholder claims nothing and is never checked.
 const ANONYMOUS_ISSUER = "did:key:z6MkVtcInstallAnonymous";
@@ -75,9 +78,72 @@ type Phase =
   | { kind: "success"; via: Via; adminDid: string; setupSessionToken: string }
   | { kind: "error"; title: string; message: string; hint?: string };
 
+/** `vtc/install/claim/passkey/start/0.1#response`. */
 interface ClaimStartResponse {
   registrationId: string;
   options: { publicKey: JsonPublicKeyOptions };
+  assertionOptions: { publicKey: JsonPublicKeyOptions };
+}
+
+/**
+ * Which ceremony the install token is for: a wallet invitation names the DID
+ * it is for (`admin_did`), a passkey invitation names none. `undefined` when
+ * the token cannot be read here — then both are offered and the daemon
+ * refuses the wrong one.
+ */
+export function invitationKind(token: string): Via | undefined {
+  const part = token.split(".")[1];
+  if (!part) return undefined;
+  try {
+    const claims = JSON.parse(new TextDecoder().decode(base64urlToBuffer(part))) as {
+      admin_did?: unknown;
+    };
+    if (typeof claims !== "object" || claims === null) return undefined;
+    return typeof claims.admin_did === "string" && claims.admin_did !== ""
+      ? "wallet"
+      : "passkey";
+  } catch {
+    return undefined;
+  }
+}
+
+/** What to tell an installer whose passkey claim was refused. */
+function passkeyFinishError(e: ApiError): { title: string; message: string; hint?: string } {
+  switch (e.code) {
+    case "vtc/install/claim/passkey/finish:possessionUnproven":
+      return {
+        title: "Your passkey did not prove itself",
+        message:
+          "The community needs one signature by the passkey you just created, over its challenge, before it makes you an administrator. That signature did not verify, so nothing was claimed.",
+        hint: "Re-open the install URL and try again, using the same passkey for both prompts.",
+      };
+    case "vtc/install/claim/passkey/finish:unsupportedAlgorithm":
+      return {
+        title: "This passkey cannot name an administrator",
+        message:
+          "Your administrator DID is your passkey's own key, which must be Ed25519 or P-256. Your authenticator created another kind.",
+        hint: "Re-open the install URL and use a different authenticator (a platform passkey or a security key).",
+      };
+    case "vtc/install/claim/passkey/finish:invalidToken":
+      return {
+        title: "Install URL expired or already used",
+        message: e.message || "The install token expired between start and finish, or was used.",
+        hint: "Ask the operator for a fresh URL and claim code.",
+      };
+    case "vtc/install/claim/passkey/finish:bindingInvalid":
+    case "vtc/install/claim/passkey/finish:registrationMismatch":
+      return {
+        title: "The passkey registration was refused",
+        message: e.message || "The daemon rejected the WebAuthn registration.",
+        hint: "Re-open the install URL and try again.",
+      };
+    default:
+      return {
+        title: `Install ceremony failed (${e.code ?? e.status ?? "error"})`,
+        message: e.message || "The daemon rejected the claim.",
+        hint: "Check the daemon logs for the rejection reason.",
+      };
+  }
 }
 
 /** `vtc/install/claim/start/0.3#response`. */
@@ -105,7 +171,7 @@ function walletClaimError(e: ApiError): { title: string; message: string; hint?:
       return {
         title: "This install URL is for a passkey claim",
         message:
-          "The install token names no administrator DID, so it cannot be claimed with a wallet.",
+          "The install token names no administrator DID, so it cannot be claimed with a wallet: your administrator DID will be your passkey's own key.",
         hint: "Re-open the URL and register a passkey instead.",
       };
     case "vtc/install/claim/finish:subjectMismatch":
@@ -173,6 +239,11 @@ export function Install() {
   );
   const [claimCode, setClaimCode] = useState("");
   const walletReady = isWalletApproverEnrolmentAvailable();
+  // A passkey invitation can only be claimed with a passkey; a wallet one
+  // only by the wallet holding the DID it names.
+  const kind = token ? invitationKind(token) : undefined;
+  const offerWallet = walletReady && kind !== "passkey";
+  const offerPasskey = kind !== "wallet";
 
   // ── admin/bootstrap ──
   // This is the ONLY place the first admin's ACL entry (VtcAclEntry) is
@@ -180,9 +251,8 @@ export function Install() {
   // the install link fully sets up the admin in one go — and, after a 0.3
   // claim, it is also what binds the founder's step-up approver.
   // `alreadyBootstrapped` = an admin already exists — i.e. this is an
-  // *invited* admin whose ACL was already granted by `vtc admin invite`, or a
-  // re-claim — which is fine: the factor is registered and the DID is already
-  // authorised.
+  // invitation, whose entry the passkey `finish` (or, for a wallet
+  // invitation, the invite) already wrote — which is fine.
   const bootstrapAndFinish = async (finishBody: ClaimFinishResponse, via: Via) => {
     try {
       await postUnsignedTrustTask<BootstrapResponse>(
@@ -280,12 +350,12 @@ export function Install() {
       );
     } catch (err) {
       const e = err as ApiError;
-      // `vtc/install/claim/start:invalidToken` covers a missing/wrong claim
+      // `vtc/install/claim/passkey/start:invalidToken` covers a missing/wrong claim
       // code as well as an expired or already-claimed token — the published
       // spec declares one code for the whole family (unlike the retired
       // bearer route's bespoke 401 variants), distinguished only by the
       // message this daemon still stamps with a `claim_secret_*` prefix.
-      if (e.code === "vtc/install/claim/start:invalidToken") {
+      if (e.code === "vtc/install/claim/passkey/start:invalidToken") {
         if (e.message.startsWith("claim_secret_required")) {
           setPhase({
             kind: "error",
@@ -364,7 +434,41 @@ export function Install() {
       return;
     }
 
-    // ── claim/finish ──
+    // ── prove possession: one assertion by the new passkey ──
+    // Over start's second challenge, naming only the credential just created
+    // (`assertionOptions` carries no `allowCredentials`: it did not exist).
+    let assertion: PublicKeyCredential | null = null;
+    try {
+      const request = decodePublicKeyOptions(
+        startBody.assertionOptions.publicKey,
+      ) as PublicKeyCredentialRequestOptions;
+      assertion = (await navigator.credentials.get({
+        publicKey: {
+          ...request,
+          allowCredentials: [{ type: "public-key", id: credential.rawId }],
+        },
+      })) as PublicKeyCredential | null;
+    } catch (err) {
+      const e = err as Error;
+      setPhase({
+        kind: "error",
+        title: "Passkey confirmation cancelled or failed",
+        message: e.message || String(err),
+        hint: "Your passkey must sign once to prove you hold it. Re-open the install URL and try again.",
+      });
+      return;
+    }
+    if (!assertion) {
+      setPhase({
+        kind: "error",
+        title: "Passkey confirmation returned nothing",
+        message: "Your browser dismissed the confirmation without a signature.",
+        hint: "Re-open the install URL and try again.",
+      });
+      return;
+    }
+
+    // ── claim/passkey/finish ──
     let finishBody: ClaimFinishResponse;
     try {
       finishBody = await postUnsignedTrustTask<ClaimFinishResponse>(
@@ -373,20 +477,12 @@ export function Install() {
           installToken: token,
           registrationId: startBody.registrationId,
           webauthnResponse: serializeRegistration(credential),
+          webauthnAssertion: serializeAssertion(assertion),
         },
         ANONYMOUS_ISSUER,
       );
     } catch (err) {
-      const e = err as ApiError;
-      setPhase({
-        kind: "error",
-        title: `Install ceremony failed (${e.code ?? e.status})`,
-        message: e.message || "The daemon rejected the WebAuthn response.",
-        hint:
-          e.code === "vtc/install/claim/finish:invalidToken"
-            ? "The install token may have expired between start and finish — ask the operator for a fresh URL."
-            : "Check the daemon logs for the rejection reason.",
-      });
+      setPhase({ kind: "error", ...passkeyFinishError(err as ApiError) });
       return;
     }
 
@@ -395,15 +491,16 @@ export function Install() {
 
   const onSubmitCode = (e: React.FormEvent) => {
     e.preventDefault();
-    void runCeremony(claimCode);
+    if (offerPasskey) void runCeremony(claimCode);
+    else if (offerWallet) void runWalletClaim(claimCode);
   };
 
   return (
     <section className="page install-page">
-      <h2>Claim Admin Passkey</h2>
+      <h2>Claim administrator access</h2>
       <p className="lead">
-        One-shot install ceremony for the first administrator of this
-        Verifiable Trust Community.
+        One-shot install ceremony for an administrator of this Verifiable
+        Trust Community.
       </p>
 
       {phase.kind === "awaiting-code" && (
@@ -430,15 +527,28 @@ export function Install() {
                 autoFocus
               />
             </Field>
-            {walletReady && (
+            {kind === "passkey" && (
               <p className="muted">
-                If the operator set this community up for a DID you already hold in your VTA
-                wallet, claim with the wallet: it signs the claim as that DID and enrols your
-                wallet's step-up approver. Otherwise register a passkey.
+                You will register a passkey. Your administrator DID is your passkey's own key,
+                so it needs no wallet.
+              </p>
+            )}
+            {kind === "wallet" && !walletReady && (
+              <p className="muted">
+                This invitation is for a DID held in a VTA wallet: claim it with the browser
+                plugin holding that DID, which signs the claim as it. Install or unlock the
+                plugin, then reload this page.
+              </p>
+            )}
+            {kind === undefined && walletReady && (
+              <p className="muted">
+                If the operator invited a DID you already hold in your VTA wallet, claim with
+                the wallet: it signs the claim as that DID and enrols your wallet's step-up
+                approver. Otherwise register a passkey.
               </p>
             )}
             <div className="form-actions">
-              {walletReady && (
+              {offerWallet && (
                 <button
                   type="button"
                   className="primary"
@@ -448,9 +558,11 @@ export function Install() {
                   Claim with my VTA wallet
                 </button>
               )}
-              <button type="submit" className={walletReady ? "secondary" : "primary"}>
-                {walletReady ? "Register a passkey instead" : "Continue"}
-              </button>
+              {offerPasskey && (
+                <button type="submit" className={offerWallet ? "secondary" : "primary"}>
+                  {offerWallet ? "Register a passkey instead" : "Continue"}
+                </button>
+              )}
             </div>
           </form>
         </section>
@@ -470,10 +582,11 @@ export function Install() {
         <section className="card">
           <h3>Registering passkey…</h3>
           <p>
-            Follow your browser's prompts to register a passkey for
-            this server. The admin DID is decided server-side from
-            the install token, so any passkey algorithm your
-            authenticator offers (ES256, RS256, EdDSA) is fine.
+            Follow your browser's prompts twice: once to create a passkey
+            for this community, then once to sign with it, proving you
+            hold it. Your administrator DID is the passkey's own key, so
+            the passkey must be Ed25519 or P-256 — what platform passkeys
+            and security keys create.
           </p>
         </section>
       )}
@@ -494,8 +607,8 @@ export function Install() {
             </p>
           ) : (
             <p>
-              Your passkey is registered and this DID is now an admin. Open the
-              VTC admin UI and sign in with your passkey.
+              Your passkey is registered, and this DID — your passkey's own key — is
+              now an admin. Open the VTC admin UI and sign in with your passkey.
             </p>
           )}
           <details>
@@ -534,7 +647,8 @@ export function Install() {
         <p className="lead">
           The install URL is single-use and expires after 15 minutes.
           If yours has expired, the daemon operator can mint a fresh
-          one via <code>vtc admin invite --did &lt;admin-did&gt;</code>.
+          one via <code>vtc admin invite</code> (a passkey invitation) or
+          <code>vtc admin invite --did &lt;did&gt;</code> (a wallet one).
         </p>
       </footer>
     </section>
