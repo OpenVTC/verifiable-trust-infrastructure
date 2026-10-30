@@ -2,6 +2,68 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.5.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-voting-v0.4.0...vti-voting-v0.5.0) — 2026-10-30
+
+
+### Changed
+
+- **specs**: Take every Trust Task wire type from the generated vti-specs crates ([#2343](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2343))
+
+Every `trust_tasks_rs::specs::<family>` path becomes `vti_specs::<family>`
+  (`vti_specs_rooms::rooms` in vti-rooms, which stays wasm-light), and every
+  `trust_tasks_rs::schema_index::*` call becomes `vti_specs::schema_index::*`,
+  which answers for exactly the versions the vti-specs-* locks pin. The
+  framework's own specs are re-exported from vti_specs unchanged.
+
+  No crate turns a trust-tasks-rs spec family on any more: the workspace
+  compiles none of the deprecated prebuilt modules, only `validate`.
+
+  The generated types are the same generator's output at the same module paths,
+  but they are distinct Rust types from the prebuilt ones: a downstream crate
+  that passes a `trust_tasks_rs::specs` value into a vta-sdk API must move its
+  import to `vta_sdk::specs` (a find-and-replace).
+
+  CLAUDE.md's rule now points at the generated crates and says how to pin a
+  version; the SPEC FAMILIES notes in Cargo.toml are replaced.
+
+
+
+### Fixed
+
+- **voting,witness,persona**: Board read at voting/board/read 0.2, witness evidence at witness/session 0.2 only, the persona timeline answer at 1.1 ([#2334](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2334))
+
+trust-tasks-rs marks voting/board/read/0.1, witness/session/0.1,
+  witness/session/submit/0.1 and persona/profile/timeline/1.0 superseded.
+  Every party to each is in this workspace or has already moved, so each moves
+  to its current version alone.
+
+  voting/board/read 0.1 -> 0.2. A lifecycle entry's (opened, closed,
+  closedEarly, cancelled) instant is `occurredAt`, as voting/_shared/0.2 and
+  its CONVENTIONS §1 name it, not `at`.
+  - The ballot box writes lifecycle entries with `occurredAt`, serves
+    board/read at 0.2 only (0.1 is `unsupportedVersion`), and reads
+    `occurredAt` when it replays its journal.
+  - The VTC sends board/read at 0.2; the auditor (vti_voting::audit and its
+    encrypted levels) reads `occurredAt`.
+  - A leaf hash is over the entry's member names, so an entry journalled with
+    `at` cannot be renamed without changing the board. Like a 0.1 manifest
+    ([#2317](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2317)) it is refused by name: the ballot box will not restore a journal
+    holding one, and the auditor reports it as unreadable rather than as
+    "voting opened before votingOpensAt". Finish or cancel open elections
+    before upgrading.
+
+  witness/session 0.1 and submit 0.1. vti-witness and the VTA already serve
+  only 0.2 ([#2147](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2147)), and openvtc main sends 0.2. The VTC no longer pairs outcome
+  evidence from a 0.1 session with a submit/0.1 response: such evidence pairs
+  with nothing.
+
+  persona/profile/timeline 1.0 -> 1.1. The SDK already sent 1.1 but parsed the
+  answer as the 1.0 response, whose events require `at`; a 1.1 answer names it
+  `occurredAt`, so it failed to parse. `VtaClient::persona_profile_timeline`
+  now returns the 1.1 response.
+
+
+
 ## [0.4.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-voting-v0.3.0...vti-voting-v0.4.0) — 2026-10-28
 
 

@@ -2,6 +2,32 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.12.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-external-v0.11.0...vta-external-v0.12.0) — 2026-10-30
+
+
+### Changed
+
+- **specs**: Take every Trust Task wire type from the generated vti-specs crates ([#2343](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2343))
+
+Every `trust_tasks_rs::specs::<family>` path becomes `vti_specs::<family>`
+  (`vti_specs_rooms::rooms` in vti-rooms, which stays wasm-light), and every
+  `trust_tasks_rs::schema_index::*` call becomes `vti_specs::schema_index::*`,
+  which answers for exactly the versions the vti-specs-* locks pin. The
+  framework's own specs are re-exported from vti_specs unchanged.
+
+  No crate turns a trust-tasks-rs spec family on any more: the workspace
+  compiles none of the deprecated prebuilt modules, only `validate`.
+
+  The generated types are the same generator's output at the same module paths,
+  but they are distinct Rust types from the prebuilt ones: a downstream crate
+  that passes a `trust_tasks_rs::specs` value into a vta-sdk API must move its
+  import to `vta_sdk::specs` (a find-and-replace).
+
+  CLAUDE.md's rule now points at the generated crates and says how to pin a
+  version; the SPEC FAMILIES notes in Cargo.toml are replaced.
+
+
+
 ## [0.11.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-external-v0.10.0...vta-external-v0.11.0) — 2026-10-28
 
 

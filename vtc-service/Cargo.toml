@@ -2,7 +2,7 @@
 name = "vtc-service"
 description = "Service for Verifiable Trust Communities"
 readme = "README.md"
-version = "0.15.0"
+version = "0.16.0"
 edition.workspace = true
 # Published, so an operator can install the VTC with `cargo install
 # vtc-service` (the `vtc` binary), the way `pnm-cli` and `cnm-cli` are installed.
@@ -172,11 +172,11 @@ path = "tests/it/main.rs"
 [dependencies]
 # Hidden-vetter admission (ZKP), development branch `zkp-pcs`: off by default.
 vti-vetting-pcs = { path = "../vti-vetting-pcs", version = "0.8", optional = true }
-vti-voting = { path = "../vti-voting", version = "0.4", optional = true }
+vti-voting = { path = "../vti-voting", version = "0.5", optional = true }
 predicate-credential-system = { version = "0.1", optional = true }
-vti-rooms = { path = "../vti-rooms", version = "0.22" }
+vti-rooms = { path = "../vti-rooms", version = "0.23" }
 vti-rooms-dtg = { path = "../vti-rooms-dtg", version = "0.24" }
-vti-common = { path = "../vti-common", version = "0.51", features = [
+vti-common = { path = "../vti-common", version = "0.52", features = [
   "passkey",
   # `setup` gates the shared dialoguer-driven secrets-prompt helper
   # the wizard calls into.
@@ -231,7 +231,7 @@ image = { version = "0.25", default-features = false, features = ["png", "jpeg",
 # factory + `*SecretStore` names are a thin facade over these). Per-backend
 # features are activated by this crate's matching features above.
 vti-secrets = { path = "../vti-secrets", version = "0.24" }
-vta-sdk = { path = "../vta-sdk", version = "0.75", features = [
+vta-sdk = { path = "../vta-sdk", version = "0.76", features = [
   "didcomm",
   "session",
   "config-session",
