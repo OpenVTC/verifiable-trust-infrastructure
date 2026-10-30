@@ -17,7 +17,7 @@ repository.workspace = true
 # The scheme instance (BLS12-381, Σ-PS, Tag_DDH) is the one hidden vetting
 # runs; its aliases come from there so the two can never drift apart. Voting
 # uses its own deployment label and keys (`scheme::deployment_label`).
-vti-vetting-pcs = { path = "../vti-vetting-pcs", version = "0.8" }
+vti-vetting-pcs = { path = "../vti-vetting-pcs", version = "0.9" }
 predicate-credential-system = { version = "0.1", features = ["serde"] }
 ark-serialize = { version = "0.6.0", default-features = false, features = ["std"] }
 # MUST stay 0.8: the PCS algorithms take `ark_std::rand`'s (0.8) traits.

@@ -15,8 +15,8 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-vta-keyspaces = { path = "../vta-keyspaces", version = "0.24" }
-vta-keys = { path = "../vta-keys", version = "0.28" }
+vta-keyspaces = { path = "../vta-keyspaces", version = "0.25" }
+vta-keys = { path = "../vta-keys", version = "0.29" }
 vti-common = { path = "../vti-common", version = "0.52" }
 vta-sdk = { path = "../vta-sdk", version = "0.76", features = ["client"] }
 # The generated `external/credentials/issue/0.2` types: a presign batch is read
