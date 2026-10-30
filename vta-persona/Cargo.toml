@@ -43,7 +43,7 @@ tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 trust-tasks-rs = { workspace = true }
 # The generated Trust Task wire types, at the versions VTI pins (CLAUDE.md,
 # "Pinning a task version").
-vti-specs = { path = "../vti-specs", version = "0.1" }
+vti-specs = { path = "../vti-specs" }
 
 [lints]
 workspace = true
