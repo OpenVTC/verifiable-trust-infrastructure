@@ -109,6 +109,17 @@ pub(crate) async fn run(
             };
             webvh::cmd_webvh_did_edit(client, &did, flags, no_confirm).await
         }
+        WebvhCommands::ScidAliasDid {
+            did,
+            list,
+            remove,
+            label,
+            no_confirm,
+        } => {
+            // clap's `alias` group makes exactly one of the two present.
+            debug_assert!(list != remove);
+            webvh::cmd_webvh_did_scid_alias(client, &did, list, label, no_confirm).await
+        }
         WebvhCommands::RegisterDid {
             did,
             server,

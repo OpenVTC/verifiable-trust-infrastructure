@@ -2384,6 +2384,36 @@ pub(crate) enum WebvhCommands {
         #[arg(long)]
         no_confirm: bool,
     },
+    /// List or remove the did:scid alias of an existing DID
+    /// (`vta/webvh/dids/update/1.1`).
+    ///
+    /// Every did:webvh log is also `did:scid:vh:1:<scid>`; the two are one
+    /// subject only while the document lists `did:scid:vh:1:<scid>?src=…` in
+    /// `alsoKnownAs` (VTI-KEY-164). The VTA derives the DID URL. Like any
+    /// document change this publishes an entry and ROTATES the DID's update
+    /// key. A DID this VTA presents as its did:scid cannot lose its alias.
+    #[command(group(
+        clap::ArgGroup::new("alias")
+            .required(true)
+            .args(["list", "remove"])
+    ))]
+    ScidAliasDid {
+        /// The DID (its did:webvh or did:scid form).
+        #[arg(long)]
+        did: String,
+        /// List the did:scid DID URL in `alsoKnownAs`.
+        #[arg(long, visible_alias = "on")]
+        list: bool,
+        /// Remove every did:scid entry for this log from `alsoKnownAs`.
+        #[arg(long, visible_alias = "off")]
+        remove: bool,
+        /// Audit label for this update.
+        #[arg(long)]
+        label: Option<String>,
+        /// Skip the "Publish?" confirmation prompt.
+        #[arg(long)]
+        no_confirm: bool,
+    },
     /// Register an existing serverless WebVH DID with a webvh hosting server.
     ///
     /// Pushes the local `did.jsonl` to the host atomically (single
@@ -2758,6 +2788,36 @@ pub(crate) enum DidMgmtDidCommands {
         #[arg(long)]
         no_confirm: bool,
     },
+    /// List or remove the did:scid alias of an existing DID
+    /// (`vta/webvh/dids/update/1.1`).
+    ///
+    /// Every did:webvh log is also `did:scid:vh:1:<scid>`; the two are one
+    /// subject only while the document lists `did:scid:vh:1:<scid>?src=…` in
+    /// `alsoKnownAs` (VTI-KEY-164). The VTA derives the DID URL. Like any
+    /// document change this publishes an entry and ROTATES the DID's update
+    /// key. A DID this VTA presents as its did:scid cannot lose its alias.
+    #[command(group(
+        clap::ArgGroup::new("alias")
+            .required(true)
+            .args(["list", "remove"])
+    ))]
+    ScidAlias {
+        /// The DID (its did:webvh or did:scid form).
+        #[arg(long)]
+        did: String,
+        /// List the did:scid DID URL in `alsoKnownAs`.
+        #[arg(long, visible_alias = "on")]
+        list: bool,
+        /// Remove every did:scid entry for this log from `alsoKnownAs`.
+        #[arg(long, visible_alias = "off")]
+        remove: bool,
+        /// Audit label for this update.
+        #[arg(long)]
+        label: Option<String>,
+        /// Skip the "Publish?" confirmation prompt.
+        #[arg(long)]
+        no_confirm: bool,
+    },
     /// Register an existing serverless DID with a registered
     /// DID-hosting server.
     ///
@@ -2946,6 +3006,19 @@ impl From<DidMgmtCommands> for WebvhCommands {
                     ttl,
                     watchers,
                     no_watchers,
+                    label,
+                    no_confirm,
+                },
+                DidMgmtDidCommands::ScidAlias {
+                    did,
+                    list,
+                    remove,
+                    label,
+                    no_confirm,
+                } => WebvhCommands::ScidAliasDid {
+                    did,
+                    list,
+                    remove,
                     label,
                     no_confirm,
                 },
