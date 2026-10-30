@@ -15,7 +15,7 @@
 //!    the feature-gated allowlist (the sets the reverse parity harness reads).
 //! 2. Every `TASK_*` constant in `vta_sdk::trust_tasks`, read from the source
 //!    so a constant missing from `ALL_URIS` is still counted.
-//! 3. Every `const …: &str = "https://trusttasks.org/spec/…"` in the non-test
+//! 3. Every string constant holding a `trusttasks.org/spec/<slug>/<M.N>` URI in the non-test
 //!    source of every workspace member: the strings this workspace sends.
 //!
 //! The VTC's dispatched set has its own census in `vtc-service`
