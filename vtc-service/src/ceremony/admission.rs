@@ -49,7 +49,7 @@
 //!   role;
 //! - `admin`, or any role whose authority would confer authority-conferring
 //!   capabilities, is never seated this way: admit the member, then promote
-//!   them with `acl/change-role`, which carries its own step-up and consent
+//!   them with `vtc/members/role/set`, which carries its own step-up and consent
 //!   (VTI-APV-018). A role that carries administrative authority at all takes
 //!   the requester's operation-bound gesture (VTI-OPS-051), as `acl/grant`
 //!   does;
@@ -436,7 +436,7 @@ async fn check_add(
     if matches!(role, VtcRole::Admin) {
         return Err(not_permitted(format!(
             "a direct admission never seats `admin`: add {subject} as a member, then promote them \
-             with acl/change-role, which takes its own passkey gesture and another \
+             with vtc/members/role/set, which takes its own passkey gesture and another \
              administrator's consent (VTI-APV-018)"
         )));
     }

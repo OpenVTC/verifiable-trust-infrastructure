@@ -84,6 +84,7 @@ mod member_portal;
 mod member_portal_oob;
 mod member_push_didcomm;
 mod members_crud;
+mod members_role_set;
 mod no_rebuild;
 mod openapi_response_census;
 mod openapi_schema_names;

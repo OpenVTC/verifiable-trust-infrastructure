@@ -32,7 +32,8 @@ use vtc_service::test_support::TestVtc;
 const LIST: &str = "https://trusttasks.org/spec/acl/list/0.3";
 const GRANT: &str = "https://trusttasks.org/spec/acl/grant/0.2";
 const SHOW: &str = "https://trusttasks.org/spec/acl/show/0.2";
-const CHANGE_ROLE: &str = "https://trusttasks.org/spec/acl/change-role/0.1";
+/// `vtc/members/role/set/0.1` — the community-role move.
+const CHANGE_ROLE: &str = "https://trusttasks.org/spec/vtc/members/role/set/0.1";
 const REVOKE: &str = "https://trusttasks.org/spec/acl/revoke/0.2";
 
 struct Fixture {
@@ -421,7 +422,9 @@ async fn change_role_enforces_the_from_role_guard() {
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
     // `{entry: …}` — the shape these tasks publish (#1109).
-    assert_eq!(body["entry"]["role"], "custom:editor");
+    // The community role is the response's `role`; `entry.role` is the
+    // administrative role, none for `custom:editor`.
+    assert_eq!(body["role"], "custom:editor");
     assert!(body["entry"]["updatedAt"].as_str().is_some(), "{body}");
 }
 
@@ -719,7 +722,9 @@ async fn a_role_change_runs_the_role_change_pipeline() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    assert_eq!(body["entry"]["role"], "custom:editor");
+    // The community role is the response's `role`; `entry.role` is the
+    // administrative role, none for `custom:editor`.
+    assert_eq!(body["role"], "custom:editor");
     assert!(body["entry"]["updatedAt"].as_str().is_some(), "{body}");
 
     let entry = vtc_service::acl::get_acl_entry(&fix.vtc.state.acl_ks, DID)
@@ -801,7 +806,9 @@ async fn a_non_admin_role_change_needs_no_step_up() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    assert_eq!(body["entry"]["role"], "custom:editor");
+    // The community role is the response's `role`; `entry.role` is the
+    // administrative role, none for `custom:editor`.
+    assert_eq!(body["role"], "custom:editor");
 }
 
 /// The other door onto the same authority. `acl/grant` writes an entry rather

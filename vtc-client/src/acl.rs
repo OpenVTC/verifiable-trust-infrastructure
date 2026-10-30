@@ -1,8 +1,8 @@
 //! The community's ACL: the canonical `acl/*` tasks — `list/0.3`, and
 //! `show`, `grant`, `update` and `revoke` at 0.2 (role-based administration:
-//! `docs/05-design-notes/vtc-admin-roles.md`) — and `acl/change-role/0.1` for
-//! the **community**-role change, which 0.2 (an administrative-role change)
-//! does not express.
+//! `docs/05-design-notes/vtc-admin-roles.md`) — and `vtc/members/role/set/0.1`
+//! for the **community**-role move, which `acl/change-role/0.2` (an
+//! administrative-role change) does not make.
 //!
 //! At 0.2 an entry's `role` is its **administrative role** (`community-admin`,
 //! `moderator`, `vetting-lead`, `repo-manager`, `credential-officer`,
@@ -41,8 +41,8 @@ pub use vti_specs::acl::{
     grant::v0_2 as grant, list::v0_3 as list, revoke::v0_2 as revoke, show::v0_2 as show,
     swap_key::v0_1 as swap_key, update::v0_2 as update,
 };
-// acl/change-role/0.1 is the community-role door; 0.2 cannot express it (spec gap).
-pub use vti_specs::acl::change_role::v0_1 as change_role;
+/// `vtc/members/role/set/0.1` — the community-role move.
+pub use vti_specs::vtc::members::role::set::v0_1 as role_set;
 
 /// The Type URI of each task in the family, read off the generated payloads.
 pub mod task {
@@ -52,9 +52,8 @@ pub mod task {
     pub const SHOW: &str = <super::show::Payload as Payload>::TYPE_URI;
     pub const GRANT: &str = <super::grant::Payload as Payload>::TYPE_URI;
     pub const UPDATE: &str = <super::update::Payload as Payload>::TYPE_URI;
-    // acl/change-role/0.1 is the community-role door; 0.2 cannot express it (spec gap).
-    #[allow(deprecated)]
-    pub const CHANGE_ROLE: &str = <super::change_role::Payload as Payload>::TYPE_URI;
+    /// `vtc/members/role/set/0.1`, the community-role move.
+    pub const ROLE_SET: &str = <super::role_set::Payload as Payload>::TYPE_URI;
     pub const REVOKE: &str = <super::revoke::Payload as Payload>::TYPE_URI;
     pub const SWAP_KEY: &str = <super::swap_key::Payload as Payload>::TYPE_URI;
 }
@@ -150,18 +149,19 @@ fn explicit_scope(on: bool) -> serde_json::Value {
 }
 
 impl VtcClient {
-    /// Move `subject` from `from_role` to `to_role`, compare-and-swapped on
-    /// `from_role`. A promotion to admin needs a bound passkey gesture.
-    // acl/change-role/0.1 is the community-role door; 0.2 cannot express it (spec gap).
-    #[allow(deprecated)]
-    pub async fn acl_change_role(
+    /// Move `subject`'s **community** role from `from_role` to `to_role`
+    /// (`vtc/members/role/set/0.1`), compare-and-swapped on `from_role` — the
+    /// role read from the community, never one assumed. A move that confers
+    /// or withdraws administrative authority needs a bound passkey gesture,
+    /// and may be parked for other administrators' approval.
+    pub async fn members_role_set(
         &self,
         subject: &str,
         from_role: &str,
         to_role: &str,
         reason: Option<&str>,
         key: &HolderKey,
-    ) -> Result<change_role::Response, VtcError> {
+    ) -> Result<role_set::Response, VtcError> {
         let mut body = serde_json::json!({
             "subject": subject,
             "fromRole": from_role,
@@ -170,8 +170,9 @@ impl VtcClient {
         if let Some(reason) = reason {
             body["reason"] = serde_json::json!(reason);
         }
-        let payload = checked::<change_role::Payload>(body)?;
-        self.acl_task(task::CHANGE_ROLE, payload, key, &[]).await
+        let payload = checked::<role_set::Payload>(body)?;
+        self.acl_task(task::ROLE_SET, payload, key, role_set::ERROR_CODES)
+            .await
     }
 
     /// Remove `subject`'s entry (`acl/revoke/0.2`, `revocation: {kind: entry}`).
@@ -574,10 +575,25 @@ mod tests {
             task::SHOW,
             task::GRANT,
             task::UPDATE,
-            task::CHANGE_ROLE,
             task::REVOKE,
         ] {
             assert!(uri.starts_with("https://trusttasks.org/spec/acl/"), "{uri}");
         }
+        assert_eq!(
+            task::ROLE_SET,
+            "https://trusttasks.org/spec/vtc/members/role/set/0.1"
+        );
+    }
+
+    /// `vtc/members/role/set/0.1`'s schema requires the compare-and-swap:
+    /// a move without `fromRole` is refused here, before anything is sent.
+    #[test]
+    fn a_role_move_carries_its_from_role() {
+        let ok = serde_json::json!({
+            "subject": "did:key:z6MkA", "fromRole": "member", "toRole": "admin",
+        });
+        assert!(checked::<role_set::Payload>(ok).is_ok());
+        let no_from = serde_json::json!({ "subject": "did:key:z6MkA", "toRole": "admin" });
+        assert!(checked::<role_set::Payload>(no_from).is_err());
     }
 }

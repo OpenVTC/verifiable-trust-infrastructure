@@ -108,7 +108,7 @@ pub struct RemintOutcome {
     /// unchanged; only the role assertion is re-issued.
     ///
     /// `None` when the subject holds an ACL entry but **no member row** — an
-    /// integration or operator DID reached through `acl/change-role`. A role
+    /// integration or operator DID reached through `vtc/members/role/set`. A role
     /// VAC asserts community membership at a role; there is nobody to assert
     /// it about and nothing to repoint, and minting one anyway would make an
     /// ACL role change impossible on a VTC without a credential signer.
@@ -174,8 +174,9 @@ pub async fn apply(
         }
         EffectPlan::Remint { subject, role } => {
             let role = parse_role(&role)?;
-            let outcome = remint(state, &subject, role).await?;
-            crate::admin_actions::record_effect(state).await;
+            let outcome = remint_from(state, &subject, role, None)
+                .await
+                .map_err(AppError::from)?;
             Ok(EffectOutcome::Reminted(Box::new(outcome)))
         }
         EffectPlan::NoStateChange => Ok(EffectOutcome::None),
@@ -441,16 +442,73 @@ async fn issue_member_credentials(
 /// [`LAST_ADMIN_LOCK`]: a move that would leave nobody holding
 /// `vtc.roles.assign` is refused (`Conflict` → 409) before any write
 /// (VTI-APV-009).
+///
+/// `expected` is the community role the caller read the subject at: when it is
+/// given and the entry no longer holds it, nothing is written and the role it
+/// does hold comes back as [`RemintError::StateMismatch`]. Checked here, under
+/// the lock the write takes, so two concurrent moves of one subject cannot both
+/// pass it (`vtc/members/role/set/0.1` item 14).
+///
+/// Records the effect for an approved action executing it
+/// ([`crate::admin_actions::record_effect`]) once the write has landed.
+pub async fn remint_from(
+    state: &AppState,
+    subject_did: &str,
+    new_role: VtcRole,
+    expected: Option<&VtcRole>,
+) -> Result<RemintOutcome, RemintError> {
+    let outcome = remint(state, subject_did, new_role, expected).await?;
+    crate::admin_actions::record_effect(state).await;
+    Ok(outcome)
+}
+
+/// Why a role move's write refused.
+#[derive(Debug)]
+pub enum RemintError {
+    /// The entry holds `0`, not the role the move was read at.
+    StateMismatch(VtcRole),
+    /// The move would end the last holders of `vtc.roles.assign`
+    /// (VTI-APV-009, [`crate::acl::admin_consent::check_attrition`]).
+    LastRoleAssigner(AppError),
+    /// Anything else.
+    App(AppError),
+}
+
+impl From<AppError> for RemintError {
+    fn from(e: AppError) -> Self {
+        Self::App(e)
+    }
+}
+
+/// The answer a surface with no code of its own gives: both refusals are a
+/// `409`, as they were before the move had a task declaring them.
+impl From<RemintError> for AppError {
+    fn from(e: RemintError) -> Self {
+        match e {
+            RemintError::StateMismatch(current) => AppError::Conflict(format!(
+                "state mismatch: the subject currently holds role {current}"
+            )),
+            RemintError::LastRoleAssigner(e) | RemintError::App(e) => e,
+        }
+    }
+}
+
 async fn remint(
     state: &AppState,
     subject_did: &str,
     new_role: VtcRole,
-) -> Result<RemintOutcome, AppError> {
+    expected: Option<&VtcRole>,
+) -> Result<RemintOutcome, RemintError> {
     let _guard = LAST_ADMIN_LOCK.lock().await;
 
     let mut acl = get_acl_entry(&state.acl_ks, subject_did)
         .await?
         .ok_or_else(|| AppError::NotFound(format!("member not found: {subject_did}")))?;
+    if let Some(expected) = expected
+        && acl.role != *expected
+    {
+        return Err(RemintError::StateMismatch(acl.role));
+    }
     let previous_role = acl.role.clone();
     let now = crate::auth::session::now_epoch();
     let mut next = acl.clone();
@@ -462,7 +520,12 @@ async fn remint(
     if crate::acl::admin_consent::is_live_role_assigner(&acl, now)
         && !crate::acl::admin_consent::is_live_role_assigner(&next, now)
     {
-        crate::acl::admin_consent::check_attrition(state, subject_did).await?;
+        crate::acl::admin_consent::check_attrition(state, subject_did)
+            .await
+            .map_err(|e| match e {
+                e @ AppError::Conflict(_) => RemintError::LastRoleAssigner(e),
+                e => RemintError::App(e),
+            })?;
     }
 
     acl = next;

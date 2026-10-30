@@ -106,8 +106,15 @@ export const PINNED_TEMPLATE_DIGESTS: Readonly<Record<string, string>> = Object.
     "zQmNWjHGRwDCfUsvVFxx6o6eXczqjQTepMEKwkS3qqNo1N6",
   [pinKey("acl.reduce.authority", `${SPEC}/acl/change-role/0.2`)]:
     "zQmaAjJC1L9w3pbUTEbWfhzfBdUpv8pofDZvL6mWSpU2eWk",
+  // `acl/change-role/0.1` is no longer served; kept so a move parked under it
+  // still renders in the history.
   [pinKey("acl.grant.authority", `${SPEC}/acl/change-role/0.1`)]:
     "zQmQX9Dx7cDqLtcoTNuDSWWo5nJTGecB9CqRLKgpd4es1c9",
+  // A community-role move (`vtc/members/role/set/0.1`).
+  [pinKey("acl.grant.authority", `${SPEC}/vtc/members/role/set/0.1`)]:
+    "zQmeeEJA8obiMqBSq33xo2prbmZcPzPd3SfenmT58Km7LRZ",
+  [pinKey("acl.reduce.authority", `${SPEC}/vtc/members/role/set/0.1`)]:
+    "zQmPDwBktx52yrW3HneQuL8AbdZ44d6bq5K5WkU51jN38jD",
   [pinKey("admin.invite.create", `${SPEC}/vtc/admin/invites/create/0.1`)]:
     "zQmSXC2GaMpizs4kKRhz4nBchZikWjqHAoeDfA5D7fVizgp",
   // create 0.2: a passkey invitation names no DID, so the title names none.

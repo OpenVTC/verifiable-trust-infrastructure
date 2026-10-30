@@ -2,7 +2,7 @@
 //! (`spec/vtc/members/authority-reduced-notice/0.1`) — **VTI-APV-019**.
 //!
 //! Every gated reduction of an administrator's entry — `acl/revoke`, a
-//! downward `acl/change-role`, a narrowing `acl/update` or `acl/grant`
+//! downward `vtc/members/role/set`, a narrowing `acl/update` or `acl/grant`
 //! rewrite — sends this once it has landed, whether it ran on another
 //! administrator's consent (`agreement: consented`), after a cooling-off with
 //! nobody else able to consent, or on the requester's step-up alone

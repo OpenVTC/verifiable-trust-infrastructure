@@ -41,7 +41,8 @@ const RP_ORIGIN: &str = "https://vtc.example.com";
 const GRANT: &str = "https://trusttasks.org/spec/acl/grant/0.2";
 const REVOKE: &str = "https://trusttasks.org/spec/acl/revoke/0.2";
 const UPDATE: &str = "https://trusttasks.org/spec/acl/update/0.2";
-const CHANGE_ROLE: &str = "https://trusttasks.org/spec/acl/change-role/0.1";
+/// `vtc/members/role/set/0.1` — the community-role move.
+const CHANGE_ROLE: &str = "https://trusttasks.org/spec/vtc/members/role/set/0.1";
 const ADMIN_REMOVE: &str = "https://trusttasks.org/spec/vtc/members/admin-remove/0.1";
 const PATCH: &str = "https://trusttasks.org/spec/config/patch/0.1";
 const LIST: &str = "https://trusttasks.org/spec/vtc/admin/actions/list/0.3";

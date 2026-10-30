@@ -64,6 +64,26 @@ pub fn pending_outcome(
             ("revoked", None)
         };
     }
+    // A community-role move carries the administrative authority its new role
+    // implies only where the entry's authority is exactly the one its current
+    // role implies (`vtc/members/role/set/0.1` item 8).
+    if type_uri == crate::trust_tasks::member_role_tasks::ROLE_SET_TYPE
+        && let Some(to) = payload["toRole"]
+            .as_str()
+            .and_then(|r| r.parse::<crate::acl::VtcRole>().ok())
+    {
+        let mut next = prior.clone();
+        if crate::routes::acl::expressible_in_v0_1(prior) {
+            next.admin = to.implied_authority();
+        }
+        next.role = to;
+        let resulting = crate::routes::acl::role_string(&next);
+        return if resulting != prior_role {
+            ("demoted", Some(resulting))
+        } else {
+            ("narrowed", Some(prior_role))
+        };
+    }
     if type_uri.contains("/acl/change-role/") {
         return lands_as(payload["toRole"].as_str().or(payload["role"].as_str()));
     }
@@ -280,9 +300,14 @@ mod tests {
                 ("revoked", None),
             ),
             (
-                format!("{SPEC}/acl/change-role/0.1"),
+                format!("{SPEC}/vtc/members/role/set/0.1"),
                 json!({ "subject": "did:key:zCarol", "fromRole": "admin", "toRole": "member" }),
                 ("demoted", Some("member".to_string())),
+            ),
+            (
+                format!("{SPEC}/vtc/members/role/set/0.1"),
+                json!({ "subject": "did:key:zCarol", "fromRole": "admin", "toRole": "moderator" }),
+                ("demoted", Some("moderator".to_string())),
             ),
             (
                 format!("{SPEC}/acl/update/0.2"),
@@ -327,7 +352,7 @@ mod tests {
         let p = notice_payload(
             "act-0f3e2d1c4b5a69788796a5b4c3d2e1f0",
             &prior,
-            &format!("{SPEC}/acl/change-role/0.1"),
+            &format!("{SPEC}/vtc/members/role/set/0.1"),
             &json!({ "subject": "did:key:zCarol", "fromRole": "admin", "toRole": "member", "reason": "  " }),
             "did:key:zDana",
             at("2026-10-03T09:00:00Z"),

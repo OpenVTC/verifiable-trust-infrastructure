@@ -63,7 +63,7 @@ import { PageHeader } from "@/components/PageHeader";
 import { ErrorOrParked } from "@/components/ParkedNotice";
 import { useConfirm } from "@/components/ConfirmDialog";
 import { formatIso as formatDate, shortenDid } from "@/lib/format";
-import { changeAclRole } from "@/lib/acl";
+import { setCommunityRole } from "@/lib/acl";
 import { adminRemoveMember } from "@/lib/member-removal";
 import { gestureFromConfirm, type ConfirmGesture } from "@/lib/signed-act";
 
@@ -72,12 +72,12 @@ const TRUST_TASK_LIST =
 const TRUST_TASK_SHOW =
   "https://trusttasks.org/spec/vtc/members/show/0.1";
 // Promotion is a **role transition**, so it goes to the task defined for role
-// transitions. `vtc/members/update` declares `adminRoleForbidden` and refuses
+// transitions, `vtc/members/role/set/0.1`. `vtc/members/update` declares `adminRoleForbidden` and refuses
 // `role: admin` outright (#1645): it is a metadata update, and the step-up it
-// used to carry bounded that one route while `acl/change-role` reached the
+// used to carry bounded that one route while the community-role move reached the
 // same ACL row with none. The gate now sits on the transition — a host
 // invariant in the role-change ceremony — and the passkey gesture below is
-// what satisfies it. It is sent by `changeAclRole` (`lib/acl.ts`).
+// what satisfies it. It is sent by `setCommunityRole` (`lib/acl.ts`).
 const TRUST_TASK_REMOVED =
   "https://trusttasks.org/spec/vtc/members/removed/0.1";
 const TRUST_TASK_PURGE =
@@ -219,13 +219,13 @@ async function promoteToAdmin(args: {
   fromRole: string;
   confirmGesture: ConfirmGesture;
 }): Promise<void> {
-  // A signed `acl/change-role`. The VTC asks for a passkey gesture bound to
+  // A signed `vtc/members/role/set`. The VTC asks for a passkey gesture bound to
   // this one promotion, which the operator confirms as its own click.
   // `fromRole` is a compare-and-swap guard, not decoration: the role we render
   // is a read, and the daemon refuses the change if the row has moved since.
   // A promotion that needs other administrators' approval is parked, and
-  // `changeAclRole` throws it as a `ParkedAction`.
-  await changeAclRole(
+  // `setCommunityRole` throws it as a `ParkedAction`.
+  await setCommunityRole(
     { subject: args.did, fromRole: args.fromRole, toRole: "admin" },
     args.confirmGesture,
   );

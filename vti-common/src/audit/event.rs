@@ -340,6 +340,15 @@ pub enum AuditEvent {
     /// administrator; the subject is the DID admitted.
     MemberAdmittedDirectly(MemberAdmittedDirectlyData),
 
+    /// An administrator moved a subject's **community** role (VTC
+    /// `vtc/members/role/set/0.1`, item 18): from which role to which, the
+    /// administrative authority the entry held before and after, how the move
+    /// was allowed — by the community's role-change policy outright, by other
+    /// administrators' approval of the parked action, or by
+    /// single-administrator mode's waiver — and why. The actor is the
+    /// requesting administrator; the subject is the DID whose role moved.
+    CommunityRoleSet(CommunityRoleSetData),
+
     /// Member row removed (or anonymised) per spec §10.2. Spec §5
     /// `Disposition` decides whether the row is purged outright,
     /// tombstoned with the DID retained, or kept historical.
@@ -1163,6 +1172,7 @@ impl AuditEvent {
             Self::JoinRequestSupplemented(..) => "JoinRequestSupplemented",
             Self::MemberAdded(..) => "MemberAdded",
             Self::MemberAdmittedDirectly(..) => "MemberAdmittedDirectly",
+            Self::CommunityRoleSet(..) => "CommunityRoleSet",
             Self::MemberRemoved(..) => "MemberRemoved",
             Self::MembershipReciprocated(..) => "MembershipReciprocated",
             Self::PolicyUploaded(..) => "PolicyUploaded",
@@ -2218,6 +2228,53 @@ impl MemberAdmittedDirectlyData {
             role: role.into(),
             label: None,
             returning: false,
+            approval: approval.into(),
+            action_id: None,
+            reason: None,
+        }
+    }
+}
+
+/// Payload for [`AuditEvent::CommunityRoleSet`].
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+#[non_exhaustive]
+pub struct CommunityRoleSetData {
+    /// The community role the subject held before the move.
+    pub from_role: String,
+    /// The community role the subject holds now.
+    pub to_role: String,
+    /// The administrative authority the entry held before, as the service
+    /// describes it (its administrative role and capabilities).
+    pub authority_before: String,
+    /// The administrative authority the entry holds now.
+    pub authority_after: String,
+    /// How it was allowed: `policyAllowed`, `approved` or `waived`.
+    pub approval: String,
+    /// The administrator action it ran as, when other administrators approved
+    /// it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub action_id: Option<String>,
+    /// The requester's stated reason, when they gave one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+impl CommunityRoleSetData {
+    /// A record of one community-role move. `#[non_exhaustive]`, so a field can
+    /// be added later without breaking a caller.
+    pub fn new(
+        from_role: impl Into<String>,
+        to_role: impl Into<String>,
+        authority_before: impl Into<String>,
+        authority_after: impl Into<String>,
+        approval: impl Into<String>,
+    ) -> Self {
+        Self {
+            from_role: from_role.into(),
+            to_role: to_role.into(),
+            authority_before: authority_before.into(),
+            authority_after: authority_after.into(),
             approval: approval.into(),
             action_id: None,
             reason: None,

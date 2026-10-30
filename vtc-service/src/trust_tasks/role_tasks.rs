@@ -516,7 +516,7 @@ fn in_use_refusal(doc: &TrustTask<Value>, name: &str, holders: u32) -> TrustTask
         delete::error_codes::IN_USE.code,
         format!(
             "{holders} ACL entr{} hold {name}, or wait to be granted it — move each holder to \
-             another role (acl/change-role) or revoke it first; a held role is never deleted \
+             another role (acl/change-role/0.2) or revoke it first; a held role is never deleted \
              out from under its holders",
             if holders == 1 { "y" } else { "ies" }
         ),

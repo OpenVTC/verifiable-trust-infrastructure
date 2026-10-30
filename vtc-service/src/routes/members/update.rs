@@ -11,7 +11,7 @@
 //!
 //! `role = admin` is **refused here**, with the `adminRoleForbidden` code
 //! `vtc/members/update/0.1` declares for it: promotion to admin is a separate,
-//! gated flow, not a metadata update. `acl/change-role/0.1` is the task defined
+//! gated flow, not a metadata update. `vtc/members/role/set/0.1` is the task defined
 //! for role transitions, and the refusal names it.
 //!
 //! ## Why it moved (#1645)
@@ -20,7 +20,7 @@
 //! `POST /v1/members/{did}/promote-to-admin/{start,finish}` endpoint was
 //! retired, with the step-up it carried re-expressed as an in-handler
 //! `require_fresh_step_up`. That was sound as far as this route went, and it
-//! did not go far enough: `acl/change-role` and `acl/grant` assign the same
+//! did not go far enough: the community-role move and `acl/grant` assign the same
 //! `admin` role to the same ACL row and asked for nothing at all, so an admin
 //! session could confer admin with no second factor simply by using a
 //! different door. The gate now sits on the transition rather than on the
@@ -32,7 +32,7 @@
 //! ceremony. Since role-based administration (`vtc-admin-roles.md`,
 //! VTI-ACL-030) `moderator` and `issuer` imply administrative roles, so a move
 //! to or from any role that does is refused here with the same code and sent
-//! to `acl/change-role`, whose passkey gesture is bound to the move.
+//! to `vtc/members/role/set`, whose passkey gesture is bound to the move.
 
 use serde::Deserialize;
 use serde_json::Value as JsonValue;
@@ -118,7 +118,7 @@ pub(crate) async fn update_member_inner(
             UPDATE_ERR_ADMIN_ROLE_FORBIDDEN,
             AppError::Validation(format!(
                 "`role: admin` is not a metadata update; promote {did} with the signed \
-                 acl/change-role {{\"fromRole\": \"<current role>\", \"toRole\": \"admin\"}}, \
+                 vtc/members/role/set {{\"fromRole\": \"<current role>\", \"toRole\": \"admin\"}}, \
                  which requires a passkey gesture"
             )),
         ));
@@ -127,7 +127,7 @@ pub(crate) async fn update_member_inner(
     // A role that implies an administrative role (`moderator` → moderator,
     // `issuer` → credential-officer), or a move away from one, changes
     // administrative authority (VTI-ACL-030): that takes a passkey gesture
-    // bound to the operation, which only `acl/change-role` carries. This door
+    // bound to the operation, which only `vtc/members/role/set` carries. This door
     // moves community roles that carry no administrative authority.
     if let Some(next) = &req.role {
         let held = get_acl_entry(&state.acl_ks, did)
@@ -138,7 +138,7 @@ pub(crate) async fn update_member_inner(
                 UPDATE_ERR_ADMIN_ROLE_FORBIDDEN,
                 AppError::Validation(format!(
                     "moving {did} to `{next}` changes administrative authority, which is not a \
-                     metadata update; use the signed acl/change-role {{\"fromRole\": \"<current \
+                     metadata update; use the signed vtc/members/role/set {{\"fromRole\": \"<current \
                      role>\", \"toRole\": \"{next}\"}}, which takes a passkey gesture bound to it"
                 )),
             ));
@@ -147,7 +147,7 @@ pub(crate) async fn update_member_inner(
 
     // The role and the label live on the ACL row, and a subject may not modify
     // its own entry (VTI-ACL-052) — on this door any more than on
-    // `acl/change-role` — except its label, which confers no authority (item
+    // `vtc/members/role/set` — except its label, which confers no authority (item
     // 2): that is written below, marked self-set and audited as such. The
     // member-row fields (publish consent, departure preference, extensions)
     // are not authority and stay editable.

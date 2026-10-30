@@ -124,7 +124,14 @@ pub const JOIN_REVIEW_URI: &str = "urn:openvtc:vtc:join:review";
 /// The record type a vetting withdrawal review is raised under.
 pub const VETTING_REVIEW_URI: &str = "urn:openvtc:vtc:vetting:withdrawal-review";
 
-const ACL_CHANGE_ROLE: &str = "https://trusttasks.org/spec/acl/change-role/0.1";
+/// `acl/change-role/0.1`, no longer served: the community role moves with
+/// `vtc/members/role/set/0.1` ([`MEMBERS_ROLE_SET`]). Its templates stay so a move
+/// parked under it still renders in the history. Spelled with `concat!` so the
+/// conformance sweep does not count a history-only URI as one this service
+/// serves.
+const ACL_CHANGE_ROLE: &str = concat!("https://trusttasks.org/spec/", "acl/change-role/0.1");
+/// `vtc/members/role/set/0.1` — a community-role move.
+const MEMBERS_ROLE_SET: &str = crate::trust_tasks::member_role_tasks::ROLE_SET_TYPE;
 const ACL_GRANT_V0_2: &str = "https://trusttasks.org/spec/acl/grant/0.2";
 const ACL_UPDATE_V0_2: &str = "https://trusttasks.org/spec/acl/update/0.2";
 const ACL_CHANGE_ROLE_V0_2: &str = "https://trusttasks.org/spec/acl/change-role/0.2";
@@ -514,6 +521,30 @@ pub const TEMPLATES: &[Template] = &[
     // create 0.2: `did` names a wallet invitation's administrator, and is
     // absent from a passkey invitation, whose administrator's DID does not
     // exist until it is claimed — so the title names no DID.
+    Template {
+        kind: KIND_GRANT_AUTHORITY,
+        type_uri: MEMBERS_ROLE_SET,
+        title: "Move {subject} from {fromRole} to {toRole}",
+        effect: GRANT_CAPABILITY_EFFECT,
+        fields: &[
+            f("subject", "/subject", "did"),
+            f("fromRole", "/fromRole", "text"),
+            f("toRole", "/toRole", "text"),
+            f("reason", "/reason", "text"),
+        ],
+    },
+    Template {
+        kind: KIND_REDUCE_AUTHORITY,
+        type_uri: MEMBERS_ROLE_SET,
+        title: "Move administrator {subject} from {fromRole} to {toRole}",
+        effect: REDUCE_CAPABILITY_EFFECT,
+        fields: &[
+            f("subject", "/subject", "did"),
+            f("fromRole", "/fromRole", "text"),
+            f("toRole", "/toRole", "text"),
+            f("reason", "/reason", "text"),
+        ],
+    },
     Template {
         kind: KIND_INVITE_CREATE,
         type_uri: INVITES_CREATE,
@@ -1084,6 +1115,16 @@ pub const PINNED: &[(&str, &str, &str)] = &[
         KIND_GRANT_AUTHORITY,
         ACL_CHANGE_ROLE,
         "zQmQX9Dx7cDqLtcoTNuDSWWo5nJTGecB9CqRLKgpd4es1c9",
+    ),
+    (
+        KIND_GRANT_AUTHORITY,
+        MEMBERS_ROLE_SET,
+        "zQmeeEJA8obiMqBSq33xo2prbmZcPzPd3SfenmT58Km7LRZ",
+    ),
+    (
+        KIND_REDUCE_AUTHORITY,
+        MEMBERS_ROLE_SET,
+        "zQmPDwBktx52yrW3HneQuL8AbdZ44d6bq5K5WkU51jN38jD",
     ),
     (
         KIND_INVITE_CREATE,

@@ -29,7 +29,8 @@ fn tt_error_code(doc: &Value) -> Option<&str> {
 
 const RP_ORIGIN: &str = "https://vtc.example.com";
 const GRANT: &str = "https://trusttasks.org/spec/acl/grant/0.2";
-const CHANGE_ROLE: &str = "https://trusttasks.org/spec/acl/change-role/0.1";
+/// `vtc/members/role/set/0.1` — the community-role move.
+const CHANGE_ROLE: &str = "https://trusttasks.org/spec/vtc/members/role/set/0.1";
 const REVOKE: &str = "https://trusttasks.org/spec/acl/revoke/0.2";
 const PATCH: &str = "https://trusttasks.org/spec/config/patch/0.1";
 const ACTIVATE: &str = "https://trusttasks.org/spec/policy/activate/0.1";
