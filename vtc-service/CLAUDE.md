@@ -525,6 +525,12 @@ When adding a flow, add it here and a line to the root index.
   presentation or a key, and never import the extension's code: the wallet's
   gates (the page is the `SignInPortal` origin, rooms the member shared, each
   write confirmed) are the authorization (`data-rooms-files.md` §8.5).
+- **Join page** (`/members/?join`, the landing page's *Join this community*):
+  the sign-in page's wallet code, worded for a newcomer, with no
+  membership-only option. It changes words only — the wallet decides from
+  its own vault whether a code means sign-in or join (a community it holds
+  no identity for), and the join itself is `vtc/join-requests/*`. Never give
+  this page a route or task of its own.
 - **DID self-check**: `did_self_check` resolves the VTC's own DID (boot +
   5-minute lazy cache) and warns when the published document lacks
   `TrustTaskHTTPS` / `SignInPortal`; `GET /v1/member/sign-in/config` carries

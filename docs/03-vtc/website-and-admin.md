@@ -194,9 +194,12 @@ The moment an operator sets `root_dir`, the filesystem handler
 takes over and the default is unreachable.
 
 It is written for a visitor who has never heard of a VTC: the main
-call to action is **Get started** at [openvtc.net](https://openvtc.net),
-which explains what a community is and how to get a wallet and join.
-Beside it is **Member sign-in** (`/members/`). The page then outlines
+call to action is **Join this community**, which opens the member
+portal's join page (`/members/?join`, see *Joining from the browser*
+under [Member portal](#member-portal)). Beside it is **Member sign-in**
+(`/members/`), and under both a link to
+[openvtc.net](https://openvtc.net), which explains what a community is
+and how to get a wallet. The page then outlines
 what the community runs on — git repositories governed across GitHub,
 Forgejo/Codeberg and Gitea, verifiable data rooms, access management,
 membership credentials, cross-community recognition — and ends with
@@ -1207,6 +1210,26 @@ is served on the **API's** host, since its calls go to `/v1/member/*`
 on its own origin. WebAuthn accepts the single origin derived from
 `public_url`, so portal passkeys work where that origin serves the
 portal — the default path mode does.
+
+### Joining from the browser
+
+`/members/?join` is the sign-in page worded for someone who is not a
+member yet: the same wallet code, headed **Join with your wallet**, the
+browser wallet's install guide, and none of the options that need a
+membership (portal passkeys, the older SIOPv2 sign-in). The page asks
+the daemon for nothing the sign-in page does not; the difference is
+what the wallet does with the code. A wallet holding no identity for
+this community offers to join it instead of signing in: it reads the
+join manifest (`vtc/join-requests/manifest/0.4`) as a throwaway key,
+lets the person join as a **new identity for the community** — the
+VTA Wallet browser extension sets up a context of its own at the
+person's VTA (`vtc-<portal host>`) and one new DID in it — or as one
+they already have, and sends `vtc/join-requests/submit/0.3` signed by
+that identity. Under the default join criteria the request is referred
+to an administrator, who decides it on **Join requests**; once it is
+approved, the person signs in on the ordinary page with the same
+wallet. Joining this way needs a Verifiable Trust Agent the wallet
+administers, with at least one DID hosting server for the new identity.
 
 ## Routing modes
 
