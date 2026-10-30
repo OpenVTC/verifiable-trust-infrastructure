@@ -32,9 +32,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use trust_tasks_rs::TrustTask;
-use trust_tasks_rs::specs::voting::{
-    ballot::cast::v0_1 as cast, election::register::v0_2 as register,
-};
+use vti_specs::voting::{ballot::cast::v0_1 as cast, election::register::v0_2 as register};
 use vti_voting::{
     board,
     election::{Election, ElectionId},

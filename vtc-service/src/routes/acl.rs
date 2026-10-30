@@ -347,7 +347,7 @@ fn bind(fields: &[Option<&str>]) -> Vec<u8> {
 pub(crate) async fn list_entries(
     state: &AppState,
     actor_did: &str,
-    q: &trust_tasks_rs::specs::acl::list::v0_3::Payload,
+    q: &vti_specs::acl::list::v0_3::Payload,
 ) -> Result<Value, AppError> {
     reader_entry(state, actor_did).await?;
     let capability: Option<Capability> = q.capability.as_deref().map(|c| c.parse()).transpose()?;
@@ -1260,7 +1260,7 @@ pub(crate) async fn plan_update_v0_2(
     actor_did: &str,
     payload: &Value,
 ) -> Result<GrantPlan, UpdateV02Error> {
-    use trust_tasks_rs::specs::acl::update::v0_2::error_codes;
+    use vti_specs::acl::update::v0_2::error_codes;
     let subject = payload["subject"].as_str().unwrap_or_default().to_string();
     // A subject's own entry is decided by `plan_write` (VTI-ACL-052).
     let existing = existing_for_update(state, &subject, error_codes::NOT_FOUND.code)
@@ -2139,7 +2139,7 @@ mod tests {
     /// with every axis explicit.
     #[test]
     fn a_0_2_rendering_conforms_and_states_every_axis() {
-        use trust_tasks_rs::specs::acl::show::v0_2 as show;
+        use vti_specs::acl::show::v0_2 as show;
         let mut admin = AdminAuthority::for_role(AdminRole::RepoManager);
         admin.capabilities = CapabilityScope::listed(vec![
             "git.repo.manage@git-ns:github.com/acme"
@@ -2179,7 +2179,7 @@ mod tests {
     /// only those governing the resource see (`git-ns/view`).
     #[test]
     fn resource_grants_render_in_ext_without_their_reason() {
-        use trust_tasks_rs::specs::acl::show::v0_2 as show;
+        use vti_specs::acl::show::v0_2 as show;
         let mut e = entry(VtcRole::Member, AdminAuthority::none());
         e.resource_grants
             .push(crate::acl::resource_grant::ResourceGrant {

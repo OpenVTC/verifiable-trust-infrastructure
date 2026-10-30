@@ -15,9 +15,9 @@ const CREATE_TASK: &str = "https://trusttasks.org/spec/vtc/admin/invites/create/
 const REVOKE_TASK: &str = "https://trusttasks.org/spec/vtc/admin/invites/revoke/0.1";
 
 const CREATE_INVITE_ERR_TTL_TOO_LONG: &str =
-    trust_tasks_rs::specs::vtc::admin::invites::create::v0_1::error_codes::TTL_TOO_LONG.code;
+    vti_specs::vtc::admin::invites::create::v0_1::error_codes::TTL_TOO_LONG.code;
 const REVOKE_INVITE_ERR_NOT_FOUND: &str =
-    trust_tasks_rs::specs::vtc::admin::invites::revoke::v0_1::error_codes::NOT_FOUND.code;
+    vti_specs::vtc::admin::invites::revoke::v0_1::error_codes::NOT_FOUND.code;
 
 async fn build() -> (TestVtc, Party) {
     let vtc = TestVtc::builder()

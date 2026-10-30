@@ -46,7 +46,7 @@ use vti_common::audit::{AuditEvent, EndorsementTypeDeletedData, EndorsementTypeR
 use vti_common::error::AppError;
 use vti_common::pagination::{Cursor, Paginated};
 
-use trust_tasks_rs::specs::vtc::endorsement_types::delete::v0_1::Response as DeleteTaskResponse;
+use vti_specs::vtc::endorsement_types::delete::v0_1::Response as DeleteTaskResponse;
 
 use crate::endorsement_types::{
     EndorsementType, RESERVED_TYPE_URIS, TYPE_URI_MAX_BYTES, delete_type, get_type, list_types,
@@ -59,7 +59,7 @@ use crate::server::AppState;
 
 const LIST_MAX_LIMIT: usize = 200;
 
-use trust_tasks_rs::specs::vtc::endorsement_types as et_spec;
+use vti_specs::vtc::endorsement_types as et_spec;
 
 /// `vtc/endorsement-types/register:invalidUri` — empty, or over 512 bytes.
 pub const REGISTER_ERR_INVALID_URI: &str = et_spec::register::v0_1::error_codes::INVALID_URI.code;

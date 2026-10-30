@@ -14,15 +14,15 @@
 //!   action, the caller, the context, the community or the application — never an applicant
 //!   identifier, a tag or statement metadata.
 //!
-//! Payloads are validated by parsing into the generated `trust_tasks_rs::specs::vta::pcs`
+//! Payloads are validated by parsing into the generated `vti_specs::vta::pcs`
 //! types, and responses are rendered through the generated response type, so a response that
 //! drifted from its schema fails here rather than at a consumer.
 
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
-use trust_tasks_rs::specs::vta::pcs as spec;
 use trust_tasks_rs::{DeclaredErrorCode, RejectReason, TrustTask};
+use vti_specs::vta::pcs as spec;
 
 use vti_common::acl::Capability;
 
@@ -750,8 +750,8 @@ pub(super) async fn handle_voter_read(
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
     use spec::voter::read::v0_2 as t;
-    use trust_tasks_rs::specs::vtc::elections::{list::v0_3 as list, show::v0_2 as show};
     use trust_tasks_rs::validate::ValidatedPayload as _;
+    use vti_specs::vtc::elections::{list::v0_3 as list, show::v0_2 as show};
     let (_context, community) = match voter_preamble::<t::Payload>(state, auth, &doc).await {
         Ok(v) => v,
         Err(r) => return r,

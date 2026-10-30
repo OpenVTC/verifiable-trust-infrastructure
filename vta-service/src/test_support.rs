@@ -1927,7 +1927,7 @@ async fn stub_host_answer(
 ) -> serde_json::Value {
     use serde_json::{Value, json};
     use std::sync::atomic::Ordering;
-    use trust_tasks_rs::specs::did_management as dm;
+    use vti_specs::did_management as dm;
 
     const CREATED: &str = "2026-01-01T00:00:00Z";
     const DM: &str = "https://trusttasks.org/spec/did-management/";

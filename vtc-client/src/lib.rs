@@ -272,29 +272,29 @@ const MAX_DOCUMENT_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
 /// driving the join ceremony depends on one crate.
 pub use vta_sdk::protocols::join_requests;
 
-/// `did-management/did/register` — how a self-hosted community is handed a
-/// new log for its own DID ([`VtcClient::install_did_log`]).
-pub use trust_tasks_rs::specs::did_management::did::register as did_register;
 /// Re-export of the peer identity vetting wire types — the vetter grant, the
 /// grant listing and the automatic-grant configuration this client's vetting
 /// admin verbs send and return.
 pub use vta_sdk::protocols::vetting;
+/// `did-management/did/register` — how a self-hosted community is handed a
+/// new log for its own DID ([`VtcClient::install_did_log`]).
+pub use vti_specs::did_management::did::register as did_register;
 
 /// `policy/upsert/0.3` — the body [`VtcClient::upload_policy`] sends.
-pub use trust_tasks_rs::specs::policy::upsert::v0_3 as policy_upsert;
+pub use vti_specs::policy::upsert::v0_3 as policy_upsert;
 
 /// `vtc/members/credentials/0.1` — what [`VtcClient::member_credentials`]
 /// returns, and the error code it maps to [`VtcError::NotFound`].
-pub use trust_tasks_rs::specs::vtc::members::credentials::v0_1 as members_credentials;
+pub use vti_specs::vtc::members::credentials::v0_1 as members_credentials;
 
 /// `vtc/rooms/community/*` — the rooms a community owns, as its administrators run
 /// them: create, list, get and update (a room's label, description and tags — at 0.2
 /// the reads carry them), and members add, remove and list.
-pub use trust_tasks_rs::specs::vtc::rooms::community as community_rooms;
+pub use vti_specs::vtc::rooms::community as community_rooms;
 
 /// `vtc/rooms/offers/*` — a member's offers of admission to the community's own rooms,
 /// and accepting one.
-pub use trust_tasks_rs::specs::vtc::rooms::offers as room_offers;
+pub use vti_specs::vtc::rooms::offers as room_offers;
 
 /// The `ext` key under which a VTC binds an uploaded policy module to the
 /// decision slot (purpose) it serves.
@@ -409,7 +409,7 @@ pub const NEXT_STEP_TYPE: &str =
 
 /// `vtc/admin/actions/show/0.3` — what a parked operation's next step expects
 pub const ACTION_SHOW_TYPE: &str =
-    <trust_tasks_rs::specs::vtc::admin::actions::show::v0_3::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+    <vti_specs::vtc::admin::actions::show::v0_3::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
 /// The parked action a `trust-task-next-step/0.1` document names, as
 /// [`VtcError::Parked`] — `None` for any other document.
@@ -1233,9 +1233,9 @@ impl VtcClient {
     /// approver's authority.
     pub async fn decide_task_consent(
         &self,
-        decision: &trust_tasks_rs::specs::task_consent::decision::v0_2::Payload,
-    ) -> Result<trust_tasks_rs::specs::task_consent::decision::v0_2::Response, VtcError> {
-        use trust_tasks_rs::specs::task_consent::decision::v0_2 as spec;
+        decision: &vti_specs::task_consent::decision::v0_2::Payload,
+    ) -> Result<vti_specs::task_consent::decision::v0_2::Response, VtcError> {
+        use vti_specs::task_consent::decision::v0_2 as spec;
         let payload =
             serde_json::to_value(decision).map_err(|e| VtcError::InvalidPayload(e.to_string()))?;
         let reply = self
@@ -1258,7 +1258,7 @@ impl VtcClient {
         view: &str,
         cursor: Option<&str>,
     ) -> Result<serde_json::Value, VtcError> {
-        use trust_tasks_rs::specs::vtc::admin::actions::list::v0_3 as spec;
+        use vti_specs::vtc::admin::actions::list::v0_3 as spec;
         let mut payload = serde_json::json!({ "view": view });
         if let Some(c) = cursor {
             payload["cursor"] = serde_json::json!(c);
@@ -1276,7 +1276,7 @@ impl VtcClient {
     /// the `action` member, carrying this approver's own `challenge` when they
     /// may decide it now.
     pub async fn show_action(&self, action_id: &str) -> Result<serde_json::Value, VtcError> {
-        use trust_tasks_rs::specs::vtc::admin::actions::show::v0_3 as spec;
+        use vti_specs::vtc::admin::actions::show::v0_3 as spec;
         let reply = self
             .document(
                 ACTION_SHOW_TYPE,
@@ -1294,7 +1294,7 @@ impl VtcClient {
         action_id: &str,
         reason: Option<&str>,
     ) -> Result<serde_json::Value, VtcError> {
-        use trust_tasks_rs::specs::vtc::admin::actions::cancel::v0_3 as spec;
+        use vti_specs::vtc::admin::actions::cancel::v0_3 as spec;
         let mut payload = serde_json::json!({ "actionId": action_id });
         if let Some(r) = reason {
             payload["reason"] = serde_json::json!(r);
@@ -1317,9 +1317,9 @@ impl VtcClient {
     /// by a delegated key.
     pub async fn decide_action(
         &self,
-        decision: &trust_tasks_rs::specs::task_consent::decision::v0_2::Payload,
-    ) -> Result<trust_tasks_rs::specs::task_consent::decision::v0_2::Response, VtcError> {
-        use trust_tasks_rs::specs::task_consent::decision::v0_2 as spec;
+        decision: &vti_specs::task_consent::decision::v0_2::Payload,
+    ) -> Result<vti_specs::task_consent::decision::v0_2::Response, VtcError> {
+        use vti_specs::task_consent::decision::v0_2 as spec;
         let payload =
             serde_json::to_value(decision).map_err(|e| VtcError::InvalidPayload(e.to_string()))?;
         let reply = self
@@ -2131,7 +2131,7 @@ impl VtcClient {
         password: &str,
         include_audit: bool,
     ) -> Result<serde_json::Value, VtcError> {
-        use trust_tasks_rs::specs::backup::{
+        use vti_specs::backup::{
             complete_export::v0_1 as complete, get_chunk::v0_1 as get_chunk,
             initiate_export::v0_1 as initiate,
         };
@@ -2227,7 +2227,7 @@ impl VtcClient {
         password: &str,
         confirm: bool,
     ) -> Result<serde_json::Value, VtcError> {
-        use trust_tasks_rs::specs::backup::{
+        use vti_specs::backup::{
             finalize_import::v0_1 as finalize, initiate_import::v0_1 as initiate,
             put_chunk::v0_1 as put_chunk,
         };

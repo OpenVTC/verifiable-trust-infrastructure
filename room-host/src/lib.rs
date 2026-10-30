@@ -443,7 +443,7 @@ async fn dispatch_received(state: &Arc<HostState>, body: &[u8]) -> Answer {
     // document is admitted at its bound, and nothing else is.
     let type_uri = doc.type_uri.to_string();
     let bare = type_uri.split('#').next().unwrap_or(&type_uri);
-    if let Some(max) = trust_tasks_rs::schema_index::max_document_bytes_for(bare)
+    if let Some(max) = vti_specs::schema_index::max_document_bytes_for(bare)
         && body.len() > max
     {
         return reject(
@@ -600,7 +600,7 @@ async fn route(state: &Arc<HostState>, doc: TrustTask<Value>) -> Answer {
         ROOMS_RECORDS_CURATE_TYPE => curate(state, &doc, payload).await,
         ROOMS_EPOCH_MINT_TYPE => mint(state, &doc, payload).await,
         vti_rooms::wire::ROOMS_EPOCH_CHAIN_V2_TYPE => {
-            match files::checked_v0_1::<trust_tasks_rs::specs::rooms::epoch::chain::v0_2::Payload>(
+            match files::checked_v0_1::<vti_specs::rooms::epoch::chain::v0_2::Payload>(
                 &doc, payload,
             ) {
                 Ok(p) => epoch_chain(state, &doc, p).await,
@@ -608,7 +608,7 @@ async fn route(state: &Arc<HostState>, doc: TrustTask<Value>) -> Answer {
             }
         }
         vti_rooms::wire::ROOMS_EPOCH_PRUNE_V2_TYPE => {
-            match files::checked_v0_1::<trust_tasks_rs::specs::rooms::epoch::prune::v0_2::Payload>(
+            match files::checked_v0_1::<vti_specs::rooms::epoch::prune::v0_2::Payload>(
                 &doc, payload,
             ) {
                 Ok(p) => epoch_prune(state, &doc, p).await,

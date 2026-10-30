@@ -1,7 +1,7 @@
 //! The stored account, and its projection onto the wire.
 //!
 //! [`AccountRecord`] is a **storage record**, not a wire type. The wire shape is
-//! `ExternalAccount` from `trust_tasks_rs::specs::external::*` (one copy per
+//! `ExternalAccount` from `vti_specs::external::*` (one copy per
 //! task module, as the code generator emits them); [`AccountRecord::to_wire`]
 //! renders the JSON every one of those copies parses, and the handlers
 //! deserialize it into the generated type of the task they answer. Keeping the

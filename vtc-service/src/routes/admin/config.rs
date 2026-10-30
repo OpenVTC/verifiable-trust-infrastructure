@@ -682,10 +682,10 @@ pub enum ImportStatus {
 
 /// `vtc/config/import:unsupportedSchemaVersion`.
 pub const IMPORT_ERR_UNSUPPORTED_SCHEMA_VERSION: &str =
-    trust_tasks_rs::specs::vtc::config::import::v0_1::error_codes::UNSUPPORTED_SCHEMA_VERSION.code;
+    vti_specs::vtc::config::import::v0_1::error_codes::UNSUPPORTED_SCHEMA_VERSION.code;
 /// `vtc/config/import:communityDidMismatch`.
 pub const IMPORT_ERR_COMMUNITY_DID_MISMATCH: &str =
-    trust_tasks_rs::specs::vtc::config::import::v0_1::error_codes::COMMUNITY_DID_MISMATCH.code;
+    vti_specs::vtc::config::import::v0_1::error_codes::COMMUNITY_DID_MISMATCH.code;
 
 /// The import — preview or apply — as the signed `vtc/config/import/0.1`
 /// document (`trust_tasks::handle_config_import`) runs it. `actor_did` is the

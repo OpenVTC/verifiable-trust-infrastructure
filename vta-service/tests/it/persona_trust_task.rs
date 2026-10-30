@@ -1817,7 +1817,7 @@ async fn a_correlation_finding_names_where_the_shared_value_went() {
     // exactly what `sharedWithProfileCount` was) fails here with the offending
     // name in the message.
     let payload = payload_of(&body).clone();
-    let typed: trust_tasks_rs::specs::persona::correlation::analyze::v1_2::Response =
+    let typed: vti_specs::persona::correlation::analyze::v1_2::Response =
         serde_json::from_value(payload.clone()).unwrap_or_else(|e| {
             panic!("the response does not match the published schema: {e}\n{payload:#}")
         });
@@ -2685,9 +2685,9 @@ async fn two_local_faces_sharing_a_value_are_a_finding_and_profile_id_narrows() 
                 "correlation/analyze: {status} {body}"
             );
             let payload = payload_of(&body).clone();
-            serde_json::from_value::<
-                trust_tasks_rs::specs::persona::correlation::analyze::v1_2::Response,
-            >(payload.clone())
+            serde_json::from_value::<vti_specs::persona::correlation::analyze::v1_2::Response>(
+                payload.clone(),
+            )
             .unwrap_or_else(|e| panic!("does not match the published schema: {e}\n{payload:#}"))
         }
     };
@@ -2873,9 +2873,9 @@ async fn a_name_change_is_answerable_end_to_end() {
                 "disclosure/history: {status} {body}"
             );
             let payload = payload_of(&body).clone();
-            serde_json::from_value::<
-                trust_tasks_rs::specs::persona::disclosure::history::v1_0::Response,
-            >(payload.clone())
+            serde_json::from_value::<vti_specs::persona::disclosure::history::v1_0::Response>(
+                payload.clone(),
+            )
             .unwrap_or_else(|e| panic!("does not match the published schema: {e}\n{payload:#}"));
             payload
         }
@@ -2898,10 +2898,8 @@ async fn a_name_change_is_answerable_end_to_end() {
     .await;
     assert!(!refused(status, &body), "attribute/put: {status} {body}");
     let put = payload_of(&body).clone();
-    serde_json::from_value::<trust_tasks_rs::specs::persona::attribute::put::v1_1::Response>(
-        put.clone(),
-    )
-    .unwrap_or_else(|e| panic!("does not match the published schema: {e}\n{put:#}"));
+    serde_json::from_value::<vti_specs::persona::attribute::put::v1_1::Response>(put.clone())
+        .unwrap_or_else(|e| panic!("does not match the published schema: {e}\n{put:#}"));
     assert_eq!(
         put["refreshed"],
         json!([{ "profileId": live, "contextId": CTX, "personaDid": persona }]),
@@ -2961,10 +2959,8 @@ async fn a_face_names_itself_by_slot_and_only_once() {
     .await;
     assert!(!refused(status, &body), "profile/get: {status} {body}");
     let payload = payload_of(&body).clone();
-    serde_json::from_value::<trust_tasks_rs::specs::persona::profile::get::v1_0::Response>(
-        payload.clone(),
-    )
-    .unwrap_or_else(|e| panic!("does not match the published schema: {e}\n{payload:#}"));
+    serde_json::from_value::<vti_specs::persona::profile::get::v1_0::Response>(payload.clone())
+        .unwrap_or_else(|e| panic!("does not match the published schema: {e}\n{payload:#}"));
     let named: Vec<&Value> = payload["resolved"]
         .as_array()
         .unwrap()
@@ -3132,10 +3128,8 @@ async fn a_pinned_name_survives_a_rename_until_the_holder_purges_it() {
     let (status, body) = post(&router, &holder, ATTR_LIST, json!({})).await;
     assert!(!refused(status, &body), "attribute/list: {status} {body}");
     let payload = payload_of(&body).clone();
-    serde_json::from_value::<trust_tasks_rs::specs::persona::attribute::list::v1_0::Response>(
-        payload.clone(),
-    )
-    .unwrap_or_else(|e| panic!("does not match the published schema: {e}\n{payload:#}"));
+    serde_json::from_value::<vti_specs::persona::attribute::list::v1_0::Response>(payload.clone())
+        .unwrap_or_else(|e| panic!("does not match the published schema: {e}\n{payload:#}"));
     let row = payload["attributes"]
         .as_array()
         .unwrap()
@@ -3172,9 +3166,9 @@ async fn a_pinned_name_survives_a_rename_until_the_holder_purges_it() {
     .await;
     assert!(!refused(status, &body), "purge-version: {status} {body}");
     let out = payload_of(&body).clone();
-    serde_json::from_value::<
-        trust_tasks_rs::specs::persona::attribute::purge_version::v1_0::Response,
-    >(out.clone())
+    serde_json::from_value::<vti_specs::persona::attribute::purge_version::v1_0::Response>(
+        out.clone(),
+    )
     .unwrap_or_else(|e| panic!("does not match the published schema: {e}\n{out:#}"));
     assert_eq!(out["purged"], json!([v1]));
     assert_eq!(
@@ -3196,7 +3190,7 @@ async fn a_pinned_name_survives_a_rename_until_the_holder_purges_it() {
 /// `persona-context-first.md` §2.1, §5.3.
 #[tokio::test]
 async fn a_face_composed_in_a_context_stays_there_until_promoted() {
-    use trust_tasks_rs::specs::persona::{attribute::promote, profile::compose};
+    use vti_specs::persona::{attribute::promote, profile::compose};
 
     let (router, ctx) = build_test_app().await;
     let holder = authed_holder(&ctx, "compose", &[]).await;
@@ -3404,7 +3398,7 @@ async fn a_face_composed_in_a_context_stays_there_until_promoted() {
 /// far it has spoken. Design note `persona-context-first.md` §9.4, §9.5.
 #[tokio::test]
 async fn a_face_is_retired_kept_and_reinstated_and_a_binding_can_end_on_its_own() {
-    use trust_tasks_rs::specs::persona::profile::{get, retire};
+    use vti_specs::persona::profile::{get, retire};
 
     let (router, ctx) = build_test_app().await;
     let holder = authed_holder(&ctx, "lifecycle", &[]).await;
@@ -3565,7 +3559,7 @@ async fn a_face_is_retired_kept_and_reinstated_and_a_binding_can_end_on_its_own(
 /// Design note `persona-context-first.md` §5.4, §9.6.
 #[tokio::test]
 async fn a_face_goes_only_where_its_reach_allows_and_its_timeline_says_what_it_did() {
-    use trust_tasks_rs::specs::persona::profile::{timeline, usage};
+    use vti_specs::persona::profile::{timeline, usage};
 
     let (router, ctx) = build_test_app().await;
     let holder = authed_holder(&ctx, "reach", &[]).await;

@@ -65,8 +65,8 @@ use serde::Serialize;
 use serde_json::Value;
 use std::sync::Arc;
 use trust_tasks_rs::specs::trust_task_discovery::v0_3;
-use trust_tasks_rs::specs::witness::session;
 use trust_tasks_rs::validate::ValidatedPayload;
+use vti_specs::witness::session;
 
 use trust_tasks_rs::{
     DocumentDigest, ErrorPayload, Payload, RejectReason, ReplayGuard, ReplayVerdict,
@@ -310,7 +310,7 @@ async fn evaluate(
     }
 
     // 7. What the task's own specification declares.
-    if let Some(spec) = trust_tasks_rs::schema_index::spec_policy_for(&type_uri)
+    if let Some(spec) = vti_specs::schema_index::spec_policy_for(&type_uri)
         && let Err(reason) = spec.enforce(&doc)
     {
         return reject(reason);

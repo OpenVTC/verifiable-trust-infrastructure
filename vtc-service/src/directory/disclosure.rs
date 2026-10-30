@@ -20,8 +20,8 @@
 //! widest a value can go whatever the policy says.
 
 use serde_json::{Map, Value, json};
-use trust_tasks_rs::specs::vtc::directory::disclosure::v0_1 as disclosure;
 use vti_common::error::AppError;
+use vti_specs::vtc::directory::disclosure::v0_1 as disclosure;
 
 use super::Directory;
 use super::cards;

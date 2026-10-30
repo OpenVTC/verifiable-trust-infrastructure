@@ -30,7 +30,7 @@ use super::helpers::{
 };
 use serde_json::Value;
 use trust_tasks_rs::TrustTask;
-use trust_tasks_rs::specs::vta::services as spec;
+use vti_specs::vta::services as spec;
 
 use crate::auth::AuthClaims;
 use crate::error::AppError;

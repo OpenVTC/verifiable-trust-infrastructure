@@ -23,28 +23,28 @@
 //! than removed here.
 
 use serde_json::Value;
-use trust_tasks_rs::specs::git_ns::account::{
+use vti_specs::git_ns::account::{
     link::v0_1 as link, link_status::v0_1 as link_status, unlink::v0_1 as unlink,
 };
 // The bridge's own tasks are served at their current versions only, like
 // every other task: `vgi-bridge` has sent nothing older than
 // `git-ns/bridge/event` 0.5 and `git-ns/bridge/result` 0.2 since v0.26.0.
-use trust_tasks_rs::specs::git_ns::bridge::{event::v0_5 as event, result::v0_2 as result};
-use trust_tasks_rs::specs::git_ns::drift::resolve::v0_4 as drift_resolve;
-use trust_tasks_rs::specs::git_ns::namespace::{
+use trust_tasks_rs::{AsyncDispatcher, RejectReason, StandardCode, TrustTask, TrustTaskCode};
+use vti_specs::git_ns::bridge::{event::v0_5 as event, result::v0_2 as result};
+use vti_specs::git_ns::drift::resolve::v0_4 as drift_resolve;
+use vti_specs::git_ns::namespace::{
     bind::v0_2 as bind, reseat::v0_4 as reseat, unbind::v0_1 as unbind,
 };
-use trust_tasks_rs::specs::git_ns::repo::{
+use vti_specs::git_ns::repo::{
     adopt::v0_3 as adopt, archive::v0_3 as archive, create::v0_4 as create,
     transfer::v0_3 as transfer,
 };
-use trust_tasks_rs::specs::git_ns::right::{
+use vti_specs::git_ns::right::{
     break_glass::v0_2 as break_glass, grant::v0_4 as grant, ratify::v0_2 as ratify,
     revoke::v0_4 as revoke,
 };
-use trust_tasks_rs::specs::git_ns::roles::reproject::v0_2 as reproject;
-use trust_tasks_rs::specs::git_ns::view::v0_6 as view;
-use trust_tasks_rs::{AsyncDispatcher, RejectReason, StandardCode, TrustTask, TrustTaskCode};
+use vti_specs::git_ns::roles::reproject::v0_2 as reproject;
+use vti_specs::git_ns::view::v0_6 as view;
 
 use super::admin_reads::{
     account_list, activity_list, bridge_job_list, namespace_list, projection_show, repo_list,

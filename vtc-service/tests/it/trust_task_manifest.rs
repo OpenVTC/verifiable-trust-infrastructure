@@ -522,14 +522,53 @@ const UNPUBLISHED_CANONICAL_OK: &[(&str, usize, &str)] = &[
     ),
 ];
 
-/// Every `trusttasks.org/spec/` URI the code binds must be one the registry
-/// actually publishes.
+/// Superseded or retired versions the code names — to refuse them, or to map
+/// them to their successor — that VTI neither sends nor serves, so `vti-specs`
+/// does not pin them. Each is still published; a stale entry (pinned again, or
+/// no longer named) fails the test below.
+const NAMED_NOT_PINNED: &[(&str, &str)] = &[
+    (
+        "https://trusttasks.org/spec/confirm/response/0.1",
+        "retired for task-consent/decision/0.2; named by the proof-purpose classifier",
+    ),
+    (
+        "https://trusttasks.org/spec/git-ns/drift/resolve/0.3",
+        "superseded by 0.4; named by the git-ns tests",
+    ),
+    (
+        "https://trusttasks.org/spec/git-ns/repo/adopt/0.1",
+        "superseded by 0.3; named by the git-ns rule tests",
+    ),
+    (
+        "https://trusttasks.org/spec/git-ns/right/grant/0.1",
+        "the `framework` label a projected right carries, not a task VTI sends",
+    ),
+    (
+        "https://trusttasks.org/spec/provision/integration/0.1",
+        "historical wire form `ProvisionSpecVersion::V0_1` names; never sent",
+    ),
+    (
+        "https://trusttasks.org/spec/provision/integration/0.2",
+        "historical wire form `ProvisionSpecVersion::V0_2` names; never sent",
+    ),
+    (
+        "https://trusttasks.org/spec/witness/session/0.1",
+        "superseded by 0.2; named to refuse a 0.1 session",
+    ),
+    (
+        "https://trusttasks.org/spec/witness/session/submit/0.1",
+        "superseded by 0.2; named to refuse a 0.1 submission",
+    ),
+];
+
+/// Every `trusttasks.org/spec/` URI the code binds must be one VTI pins (and
+/// so one the registry publishes).
 ///
-/// Cross-checked against the generated `trust_tasks_rs` schema index rather
-/// than a hand-maintained list, so it tracks the published registry: a typo, a
-/// stale slug, or a task repointed to a spec that was never authored all fail
-/// here instead of at runtime. `schema_for` returning `None` means this build
-/// of the registry crate knows no such task.
+/// Cross-checked against the generated `vti_specs` schema index rather than a
+/// hand-maintained list, so it tracks the pinned versions: a typo, a stale
+/// slug, or a task repointed to a spec that was never authored all fail here
+/// instead of at runtime. `schema_for` returning `None` means no `vti-specs-*`
+/// lock pins that version.
 ///
 /// **Scoped to the whole `spec/` authority, not one family (#821).** This
 /// checked only the `spec/vtc/` prefix until the `credential-exchange` family
@@ -576,9 +615,17 @@ fn every_bound_canonical_task_exists_in_the_registry() {
         "found no spec/ task bindings at all — the scan is broken, not the code"
     );
 
+    for (uri, reason) in NAMED_NOT_PINNED {
+        assert!(
+            bound.contains(*uri) && vti_specs::schema_index::schema_for(uri).is_none(),
+            "`{uri}` is in NAMED_NOT_PINNED ({reason}) but is pinned now or no \
+             longer named — remove the stale entry"
+        );
+    }
     let missing: Vec<_> = bound
         .iter()
-        .filter(|uri| trust_tasks_rs::schema_index::schema_for(uri).is_none())
+        .filter(|uri| vti_specs::schema_index::schema_for(uri).is_none())
+        .filter(|uri| !NAMED_NOT_PINNED.iter().any(|(named, _)| named == uri))
         .cloned()
         .collect();
 
@@ -606,12 +653,12 @@ fn every_bound_canonical_task_exists_in_the_registry() {
         .collect();
     assert!(
         unknown.is_empty(),
-        "these trusttasks.org/spec/ URIs are bound but the registry \
-         (trust-tasks-rs {}) publishes no such task:\n  {}\n\nEither the slug \
-         is wrong or the spec was never authored upstream. Binding a \
-         `trusttasks.org/spec/` URI asserts the registry serves it — author \
-         the spec upstream, or bind an authority we control.",
-        env!("CARGO_PKG_VERSION"),
+        "these trusttasks.org/spec/ URIs are bound but no `vti-specs-*` lock \
+         pins them:\n  {}\n\nPin the version (CLAUDE.md, \"Pinning a task \
+         version\"). If the registry has no such version, the slug is wrong or \
+         the spec was never authored upstream: binding a `trusttasks.org/spec/` \
+         URI asserts the registry serves it — author the spec upstream, or bind \
+         an authority we control.",
         unknown.join("\n  ")
     );
 }

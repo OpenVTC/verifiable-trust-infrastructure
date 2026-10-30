@@ -14,11 +14,9 @@
 
 use chrono::{DateTime, Utc};
 use tracing::info;
-use trust_tasks_rs::specs::did_management::did::register::v0_1::{
-    DidRecord, PayloadDidData, Response,
-};
 use vti_common::audit::{AuditEvent, CommunityDidLogInstalledData};
 use vti_common::error::AppError;
+use vti_specs::did_management::did::register::v0_1::{DidRecord, PayloadDidData, Response};
 
 use crate::did_log_install::{self, InstallError, InstallRefusal};
 use crate::routes::did_log::did_log_label;
@@ -71,7 +69,7 @@ fn refused(r: InstallRefusal) -> AppError {
 pub(crate) async fn register_inner(
     state: &AppState,
     actor: &str,
-    payload: trust_tasks_rs::specs::did_management::did::register::v0_1::Payload,
+    payload: vti_specs::did_management::did::register::v0_1::Payload,
 ) -> Result<Response, AppError> {
     if payload.method.as_str() != "webvh" {
         return Err(AppError::Validation(format!(

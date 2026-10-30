@@ -507,7 +507,7 @@ mod descriptor_envelope_tests {
 
         // The VTA's own dispatch spine would run this exact check; running it
         // here fails the test if the registry ever drops the requirement.
-        let policy = trust_tasks_rs::schema_index::spec_policy_for(type_uri)
+        let policy = vti_specs::schema_index::spec_policy_for(type_uri)
             .unwrap_or_else(|| panic!("{type_uri} has no published policy"));
         policy
             .enforce(&typed)

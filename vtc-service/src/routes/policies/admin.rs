@@ -499,7 +499,7 @@ pub(crate) async fn activate_inner(
 // POST /v1/policies/{id}/test
 // ---------------------------------------------------------------------------
 
-use trust_tasks_rs::specs::vtc::policies::test::v0_1::error_codes as test_codes;
+use vti_specs::vtc::policies::test::v0_1::error_codes as test_codes;
 
 /// `vtc/policies/test:notFound` — no policy module with that id.
 pub const TEST_ERR_NOT_FOUND: &str = test_codes::NOT_FOUND.code;

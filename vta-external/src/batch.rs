@@ -11,7 +11,7 @@
 
 use std::collections::BTreeSet;
 
-pub use trust_tasks_rs::specs::external::credentials::issue::v0_3::{PresignBatch, PresignRequest};
+pub use vti_specs::external::credentials::issue::v0_3::{PresignBatch, PresignRequest};
 
 use crate::model::{Binding, ScopeCeiling};
 use crate::scope::{validate_object_key, validate_prefix};

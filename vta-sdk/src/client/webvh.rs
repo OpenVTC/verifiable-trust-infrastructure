@@ -291,7 +291,7 @@ impl VtaClient {
     pub async fn delete_did_webvh_with_outcome(
         &self,
         did: &str,
-    ) -> Result<trust_tasks_rs::specs::vta::webvh::dids::delete::v1_0::Response, VtaError> {
+    ) -> Result<vti_specs::vta::webvh::dids::delete::v1_0::Response, VtaError> {
         self.rpc_tt(
             crate::trust_tasks::TASK_WEBVH_DIDS_DELETE_1_0,
             serde_json::json!({ "did": did }),
@@ -461,7 +461,7 @@ impl VtaClient {
     pub async fn list_agent_names(
         &self,
         did: &str,
-    ) -> Result<trust_tasks_rs::specs::vta::webvh::agent_name::list::v1_1::Response, VtaError> {
+    ) -> Result<vti_specs::vta::webvh::agent_name::list::v1_1::Response, VtaError> {
         self.dispatch_trust_task(
             crate::trust_tasks::TASK_WEBVH_AGENT_NAME_LIST_1_1,
             serde_json::json!({ "did": did }),

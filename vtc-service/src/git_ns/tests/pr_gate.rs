@@ -167,10 +167,8 @@ async fn an_outsiders_pull_request_is_closed_by_a_0_6_job_with_the_rendered_mess
     assert_eq!(pr.author_login, "eve-dev");
     assert_eq!(pr.level, "committers");
     // The generated job 0.6 type accepts it.
-    serde_json::from_value::<trust_tasks_rs::specs::git_ns::bridge::job::v0_6::Payload>(
-        job.payload.clone(),
-    )
-    .unwrap();
+    serde_json::from_value::<vti_specs::git_ns::bridge::job::v0_6::Payload>(job.payload.clone())
+        .unwrap();
 
     // A repeated event while the job is open queues nothing more.
     ok(&pr_event(&f, &ns, 42, "opened", EVE, EVE).await);

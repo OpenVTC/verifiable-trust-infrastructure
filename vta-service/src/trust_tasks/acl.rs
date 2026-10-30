@@ -12,14 +12,14 @@
 
 use super::helpers::TrustTaskOutcome;
 use serde_json::{Value, json};
-use trust_tasks_rs::specs::acl::{
-    change_role::v0_2 as change_role_spec, grant::v0_2 as grant_spec, list::v0_3 as list_spec,
-    revoke::v0_2 as revoke_spec, show::v0_2 as show_spec, update::v0_2 as update_spec,
-};
 use trust_tasks_rs::{DeclaredErrorCode, RejectReason, TrustTask, TrustTaskCode};
 use vta_sdk::protocols::acl_management::change_role::ChangeRoleBody;
 use vta_sdk::protocols::acl_management::swap::SwapKeyBody;
 use vta_sdk::protocols::acl_management::v0_2::{AclEntry as WireEntry, Revocation};
+use vti_specs::acl::{
+    change_role::v0_2 as change_role_spec, grant::v0_2 as grant_spec, list::v0_3 as list_spec,
+    revoke::v0_2 as revoke_spec, show::v0_2 as show_spec, update::v0_2 as update_spec,
+};
 
 use crate::auth::AuthClaims;
 use crate::error::AppError;
@@ -585,8 +585,8 @@ mod tests {
         AuthorityScope, CapabilityGrant, CapabilityScope, KeyScope,
     };
 
-    use trust_tasks_rs::specs::acl::change_role::v0_2 as canonical_change_role;
-    use trust_tasks_rs::specs::acl::update::v0_2 as canonical_update;
+    use vti_specs::acl::change_role::v0_2 as canonical_change_role;
+    use vti_specs::acl::update::v0_2 as canonical_update;
 
     /// Our wire shapes must be the canonical ones, not merely bound to the
     /// canonical URIs: the generated types carry `deny_unknown_fields` and the

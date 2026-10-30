@@ -17,7 +17,7 @@ use std::{
 use curve25519_dalek::Scalar;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
-use trust_tasks_rs::specs::voting::trustees::{
+use vti_specs::voting::trustees::{
     confirm::v0_1 as confirm, deal::v0_1 as deal, enrol::v0_1 as enrol, justify::v0_1 as justify,
 };
 

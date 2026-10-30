@@ -131,10 +131,10 @@ pub(super) async fn handle_update_retention(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use trust_tasks_rs::specs::audit::list::v0_2 as canonical;
     use vta_sdk::protocols::audit_management::list::{
         AuditEnvelope, AuditLogEntry, ListAuditLogsResultBody,
     };
+    use vti_specs::audit::list::v0_2 as canonical;
 
     /// The whole point of the fold: our wire shapes must be the
     /// canonical ones, not merely bound to the canonical URI.

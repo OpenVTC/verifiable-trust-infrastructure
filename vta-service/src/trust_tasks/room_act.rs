@@ -168,7 +168,7 @@ pub(super) async fn handle_act_v0_8(
     auth: &AuthClaims,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    use trust_tasks_rs::specs::rooms::keys::act::v0_8 as spec;
+    use vti_specs::rooms::keys::act::v0_8 as spec;
 
     if let Err(r) = super::helpers::require_capability(
         state,
@@ -241,7 +241,7 @@ pub(super) async fn handle_act_v0_8(
     // group commit, which the caller cannot make, and a host that minted anyway would leave
     // every member's key holder an epoch behind. Open rooms (no group) still mint.
     if room_act::bare_type(type_uri)
-        == <trust_tasks_rs::specs::rooms::epoch::mint::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI
+        == <vti_specs::rooms::epoch::mint::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI
         && let Some(room_id) = &room_id
     {
         let held = match holds_any_group(state, room_id).await {
@@ -453,7 +453,7 @@ async fn complete_offer(
     room_id: Option<&str>,
     document: Value,
 ) -> Result<room_act::Completed, TrustTaskOutcome> {
-    use trust_tasks_rs::specs::rooms::keys::act::v0_8::error_codes as codes;
+    use vti_specs::rooms::keys::act::v0_8::error_codes as codes;
 
     // Item 2b: the named `issuer`, never one picked for the caller — not the only persona
     // held, not one inferred from the offer.
@@ -546,7 +546,7 @@ pub(super) async fn handle_seal_v0_2(
     auth: &AuthClaims,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    use trust_tasks_rs::specs::rooms::keys::seal::v0_2 as spec;
+    use vti_specs::rooms::keys::seal::v0_2 as spec;
 
     if let Err(r) = super::helpers::require_capability(
         state,
@@ -1058,7 +1058,7 @@ mod tests {
                 "{out}"
             );
             assert!(out["payload"].get("expiresAt").is_none(), "{out}");
-            serde_json::from_value::<trust_tasks_rs::specs::rooms::keys::act::v0_8::Response>(
+            serde_json::from_value::<vti_specs::rooms::keys::act::v0_8::Response>(
                 out["payload"].clone(),
             )
             .expect("a 0.3 response");
@@ -1134,7 +1134,7 @@ mod tests {
                 completed["proof"]["proofPurpose"], "authentication",
                 "{out}"
             );
-            serde_json::from_value::<trust_tasks_rs::specs::rooms::keys::act::v0_8::Response>(
+            serde_json::from_value::<vti_specs::rooms::keys::act::v0_8::Response>(
                 out["payload"].clone(),
             )
             .expect("a 0.8 response");
@@ -1284,7 +1284,7 @@ mod tests {
             "{out}"
         );
         assert!(out["payload"].get("expiresAt").is_none(), "{out}");
-        serde_json::from_value::<trust_tasks_rs::specs::rooms::keys::act::v0_8::Response>(
+        serde_json::from_value::<vti_specs::rooms::keys::act::v0_8::Response>(
             out["payload"].clone(),
         )
         .expect("a 0.4 response");
@@ -1362,7 +1362,7 @@ mod tests {
             out["type"].as_str().is_some_and(|t| t.starts_with(ACT_0_8)),
             "{out}"
         );
-        serde_json::from_value::<trust_tasks_rs::specs::rooms::keys::act::v0_8::Response>(
+        serde_json::from_value::<vti_specs::rooms::keys::act::v0_8::Response>(
             out["payload"].clone(),
         )
         .expect("a 0.2 response");
@@ -1571,8 +1571,8 @@ mod tests {
     #[tokio::test]
     async fn a_file_moved_by_the_members_own_client_is_the_personas() {
         use sha2::{Digest, Sha256};
-        use trust_tasks_rs::specs::rooms::blobs::upload as up;
         use vti_common::blob_store::sha256_digest_multibase as mb;
+        use vti_specs::rooms::blobs::upload as up;
 
         let f = fixture(&["read", "write"]).await;
         let client = alice_client();

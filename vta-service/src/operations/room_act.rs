@@ -39,7 +39,7 @@ use crate::operations::room_oracle::{self, Principal};
 use crate::server::AppState;
 
 use trust_tasks_rs::Payload as _;
-use trust_tasks_rs::specs::rooms as spec;
+use vti_specs::rooms as spec;
 
 /// One row of `rooms/keys/act`'s table: a request type, and the action its inserted
 /// presentation is narrowed to — `None` for the types that take no presentation.
@@ -119,20 +119,20 @@ pub const COMMUNITY_TYPES_0_8: &[&str] = &[
 
 #[allow(deprecated)] // rooms/keys/act/0.8's table names it (see ACT_TABLE_0_8).
 const OFFERS_LIST_0_1: &str =
-    <trust_tasks_rs::specs::vtc::rooms::offers::list::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+    <vti_specs::vtc::rooms::offers::list::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 #[allow(deprecated)] // rooms/keys/act/0.8's table names it (see ACT_TABLE_0_8).
 const OFFERS_LIST_0_2: &str =
-    <trust_tasks_rs::specs::vtc::rooms::offers::list::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+    <vti_specs::vtc::rooms::offers::list::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 #[allow(deprecated)] // rooms/keys/act/0.8's table names it (see ACT_TABLE_0_8).
 const OFFERS_LIST_0_3: &str =
-    <trust_tasks_rs::specs::vtc::rooms::offers::list::v0_3::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+    <vti_specs::vtc::rooms::offers::list::v0_3::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 const OFFERS_LIST_0_4: &str =
-    <trust_tasks_rs::specs::vtc::rooms::offers::list::v0_4::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+    <vti_specs::vtc::rooms::offers::list::v0_4::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
 const OFFERS_ACCEPT_0_1: &str =
-    <trust_tasks_rs::specs::vtc::rooms::offers::accept::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+    <vti_specs::vtc::rooms::offers::accept::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 const MEMBERSHIPS_LIST_0_1: &str =
-    <trust_tasks_rs::specs::vtc::rooms::memberships::list::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+    <vti_specs::vtc::rooms::memberships::list::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
 /// Whether `type_uri` is one of [`COMMUNITY_TYPES_0_8`].
 pub fn is_community_type_0_8(type_uri: &str) -> bool {
@@ -250,7 +250,7 @@ pub fn check_schema(document: &Value) -> Result<(), AppError> {
         .and_then(Value::as_str)
         .ok_or_else(|| AppError::Validation("a room request names its `type`".into()))?;
     let bare = bare_type(type_uri);
-    let schema = trust_tasks_rs::schema_index::schema_for(bare).ok_or_else(|| {
+    let schema = vti_specs::schema_index::schema_for(bare).ok_or_else(|| {
         AppError::Validation(format!(
             "`{bare}` has no schema to validate the request against"
         ))
@@ -323,7 +323,7 @@ mod tests {
             .chain(COMMUNITY_TYPES_0_8.iter().copied())
         {
             assert!(
-                trust_tasks_rs::schema_index::schema_for(t).is_some(),
+                vti_specs::schema_index::schema_for(t).is_some(),
                 "{t} has no schema"
             );
         }

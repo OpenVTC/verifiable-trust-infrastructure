@@ -264,7 +264,7 @@ const KNOWN_FEATURE_GATED_URIS: &[&str] = &[
 /// The forward parity harness below asserts every vta-sdk URI is served; the
 /// reverse harness (`every_served_uri_has_a_published_spec_or_is_tracked_debt`)
 /// asserts every *served* URI resolves in the published registry, using the
-/// generated `trust_tasks_rs::schema_index` as the registry's vendored index
+/// generated `vti_specs::schema_index` as the registry's vendored index
 /// (the same source `validate_payload` consults at dispatch time, and the same
 /// one the workspace-wide census in `vtc-service/tests/trust_task_manifest.rs`
 /// checks against — that census counts per *family*; this list is per *URI*,
@@ -602,7 +602,7 @@ async fn validate_payload(
     type_uri: &str,
     doc: &TrustTask<Value>,
 ) -> Option<TrustTaskOutcome> {
-    let Some(schema) = trust_tasks_rs::schema_index::schema_for(type_uri) else {
+    let Some(schema) = vti_specs::schema_index::schema_for(type_uri) else {
         // No published spec for this task. Many of the tasks this VTA dispatches
         // are in that position, so refusing them outright would break them — but
         // the gap is real, and an operator may prefer to fail closed.
@@ -1990,7 +1990,7 @@ async fn dispatch_trust_task_validated(
     // case `validate_payload` has already decided about, per
     // `policy.require_payload_schema`. Deciding it a second time here, with a
     // different default, would make one of the two answers unreachable.
-    if let Some(policy) = trust_tasks_rs::schema_index::spec_policy_for(&type_uri)
+    if let Some(policy) = vti_specs::schema_index::spec_policy_for(&type_uri)
         && let Err(reason) = policy.enforce(&doc)
     {
         tracing::info!(
@@ -3241,7 +3241,7 @@ mod tests {
             "no public tasks — the census is vacuous"
         );
         for uri in vta_sdk::trust_tasks::PUBLIC_URIS {
-            let policy = trust_tasks_rs::schema_index::spec_policy_for(uri)
+            let policy = vti_specs::schema_index::spec_policy_for(uri)
                 .unwrap_or_else(|| panic!("{uri} is public but has no published specification"));
             assert!(
                 !policy.is_proof_required,
@@ -3754,41 +3754,32 @@ mod tests {
     /// the operation is served by a dedicated REST route rather than the
     /// dispatcher, it belongs in `deprecation::SUPERSEDED` — the route table —
     /// not here.
-    /// The schema index must be a declared dependency, not an inherited one.
+    /// The schema index must answer for the versions this VTA serves.
     ///
-    /// This workspace asks `trust-tasks-rs` for `default-features = false`. It
-    /// received every spec family regardless, because a transitive dependency
-    /// enables the default feature and cargo unions them — so the index that
-    /// `validate_payload` and `spec_policy_for` both read arrived by luck.
-    ///
-    /// Both of those fail *open* when a spec is unknown: `validate_payload`
-    /// dispatches unvalidated unless `require_payload_schema` is set, and
-    /// `spec_policy_for` returning `None` skips SPEC §7.2 entirely. So the day
-    /// that chain changed, this VTA would have quietly stopped checking
-    /// payloads and stopped enforcing proof-REQUIRED, with one `debug!` line
-    /// between it and nobody noticing.
-    ///
-    /// What this test does and does not prove, precisely: it fails when the
-    /// index is empty, which is the outcome that matters. It cannot fail when
-    /// the *declaration* is removed but the transitive path still supplies the
-    /// families — cargo unions features, so the two are indistinguishable from
-    /// inside the build. That is the right coverage anyway: an index populated
-    /// by either route is a working VTA, and this fires on the day neither
-    /// route supplies it.
+    /// `validate_payload` and `spec_policy_for` both read
+    /// `vti_specs::schema_index`, and both fail *open* when a spec is unknown:
+    /// `validate_payload` dispatches unvalidated unless
+    /// `require_payload_schema` is set, and `spec_policy_for` returning `None`
+    /// skips SPEC §7.2 entirely. The index knows exactly the versions the
+    /// `vti-specs-*` locks pin, so an empty or wrongly built index would turn
+    /// both off with one `debug!` line between it and nobody noticing. (It once
+    /// arrived by luck, from a transitive dependency's default features; it is
+    /// generated from committed locks now.) `trust_tasks::spec_pin_census` holds
+    /// every served URI; this holds the mechanism.
     #[test]
     fn the_spec_index_is_populated() {
         for uri in [
-            "https://trusttasks.org/spec/acl/grant/0.1",
+            "https://trusttasks.org/spec/acl/grant/0.2",
             "https://trusttasks.org/spec/auth/authenticate/0.3",
             "https://trusttasks.org/spec/vault/list/0.4",
         ] {
             assert!(
-                trust_tasks_rs::schema_index::schema_for(uri).is_some(),
-                "no schema for `{uri}` — this build's `trust-tasks-rs` carries no spec \
-                 families, so payload validation and SPEC §7.2 enforcement are both off"
+                vti_specs::schema_index::schema_for(uri).is_some(),
+                "no schema for `{uri}` — the `vti-specs` index does not answer for it, \
+                 so payload validation and SPEC §7.2 enforcement are both off"
             );
             assert!(
-                trust_tasks_rs::schema_index::spec_policy_for(uri).is_some(),
+                vti_specs::schema_index::spec_policy_for(uri).is_some(),
                 "no spec policy for `{uri}` — §7.2's recipient/proof/issuedAt checks \
                  cannot fire for it"
             );
@@ -3845,7 +3836,7 @@ mod tests {
     /// [`dispatcher_handles_every_vta_sdk_uri`]. Every URI this service
     /// *serves* — dispatched, REST-routed or feature-gated — must resolve to a published spec in the
     /// Trust-Tasks registry, as vendored by the generated
-    /// `trust_tasks_rs::schema_index` this build validates payloads against.
+    /// `vti_specs::schema_index` this build validates payloads against.
     ///
     /// A URI with no published spec is a live wire contract with no schema,
     /// no registry page, no generated bindings, and no discovery entry. The
@@ -3867,7 +3858,7 @@ mod tests {
         let unspecced: Vec<&&str> = served
             .iter()
             .filter(|uri| {
-                trust_tasks_rs::schema_index::schema_for(uri).is_none()
+                vti_specs::schema_index::schema_for(uri).is_none()
                     && !UNSPECCED_DISPATCHED_URIS.contains(uri)
             })
             .collect();
@@ -3888,7 +3879,7 @@ mod tests {
 
         for uri in UNSPECCED_DISPATCHED_URIS {
             assert!(
-                trust_tasks_rs::schema_index::schema_for(uri).is_none(),
+                vti_specs::schema_index::schema_for(uri).is_none(),
                 "`{uri}` is now published in the registry — remove it from \
                  UNSPECCED_DISPATCHED_URIS so the debt shrinks monotonically"
             );
@@ -4166,7 +4157,7 @@ mod payload_validation_tests {
         let Some(unspecced) = super::UNSPECCED_DISPATCHED_URIS
             .iter()
             .copied()
-            .find(|u| trust_tasks_rs::schema_index::schema_for(u).is_none())
+            .find(|u| vti_specs::schema_index::schema_for(u).is_none())
         else {
             // Every dispatched task is specced. That is the goal, and when it
             // arrives this test has nothing left to say — delete it, and the

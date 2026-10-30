@@ -17,7 +17,7 @@
 
 use chrono::DateTime;
 use trust_tasks_rs::TrustTask;
-use trust_tasks_rs::specs::auth::step_up::approve_response::v0_6 as approve_response;
+use vti_specs::auth::step_up::approve_response::v0_6 as approve_response;
 
 use crate::error::FfiError;
 use crate::keys::Signer;

@@ -146,15 +146,15 @@ const ACCEPTS_DELETE: &str = crate::trust_tasks::surface_tasks::ACCEPTS_DELETE_T
 /// `vetting::pcs_tasks`, which is compiled only with `vetting-pcs`: a build
 /// without the feature still pins the template the console holds.
 pub(crate) const HIDDEN_PUBLISH: &str =
-    <trust_tasks_rs::specs::vtc::vetting::hidden::publish::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+    <vti_specs::vtc::vetting::hidden::publish::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 /// `vtc/vetting/hidden/withdraw/0.1`.
 pub(crate) const HIDDEN_WITHDRAW: &str =
-    <trust_tasks_rs::specs::vtc::vetting::hidden::withdraw::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+    <vti_specs::vtc::vetting::hidden::withdraw::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 const DIRECTORY_FIELDS_UPDATE: &str = crate::trust_tasks::directory_tasks::FIELDS_UPDATE_TYPE;
 /// `vtc/elections/create/0.3`, off the generated type: a build without `voting`
 /// still pins the template the console holds.
 pub(crate) const ELECTIONS_CREATE: &str =
-    <trust_tasks_rs::specs::vtc::elections::create::v0_3::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+    <vti_specs::vtc::elections::create::v0_3::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 /// `vtc/elections/create/0.1`, no longer served. Its template stays so a binding
 /// election parked under it still renders in the history. Spelled with `concat!` so the
 /// conformance sweep, which reads whole `spec/vtc/…` literals as bindings, does not count

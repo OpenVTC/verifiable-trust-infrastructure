@@ -28,10 +28,10 @@ use crate::error::TaskError;
 
 /// `vtc/backup/export:passwordTooShort`.
 pub const EXPORT_ERR_PASSWORD_TOO_SHORT: &str =
-    trust_tasks_rs::specs::vtc::backup::export::v0_1::error_codes::PASSWORD_TOO_SHORT.code;
+    vti_specs::vtc::backup::export::v0_1::error_codes::PASSWORD_TOO_SHORT.code;
 /// `vtc/backup/import:decryptionFailed`.
 pub const IMPORT_ERR_DECRYPTION_FAILED: &str =
-    trust_tasks_rs::specs::vtc::backup::import::v0_1::error_codes::DECRYPTION_FAILED.code;
+    vti_specs::vtc::backup::import::v0_1::error_codes::DECRYPTION_FAILED.code;
 use vti_common::store::KeyspaceHandle;
 
 use crate::config::MessagingConfig;

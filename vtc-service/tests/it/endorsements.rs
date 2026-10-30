@@ -752,8 +752,8 @@ async fn show_wraps_the_row_in_an_endorsement_envelope() {
 // from the generated bindings.
 // ---------------------------------------------------------------------------
 
-use trust_tasks_rs::specs::vtc::endorsement_types as et_spec;
-use trust_tasks_rs::specs::vtc::endorsements as end_spec;
+use vti_specs::vtc::endorsement_types as et_spec;
+use vti_specs::vtc::endorsements as end_spec;
 
 const REGISTER_ERR_INVALID_URI: &str = et_spec::register::v0_1::error_codes::INVALID_URI.code;
 const REGISTER_ERR_RESERVED: &str = et_spec::register::v0_1::error_codes::RESERVED.code;

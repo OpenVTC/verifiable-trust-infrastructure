@@ -31,7 +31,7 @@ const MAX_LIMIT: usize = 200;
 
 /// `vtc/relationships/list:notFound` — no member with the supplied DID.
 pub const LIST_ERR_NOT_FOUND: &str =
-    trust_tasks_rs::specs::vtc::relationships::list::v0_3::error_codes::NOT_FOUND.code;
+    vti_specs::vtc::relationships::list::v0_3::error_codes::NOT_FOUND.code;
 
 /// One page of `did`'s relationships — the operation behind the
 /// `vtc/relationships/list/0.3` Trust Task. Who may read is the door's

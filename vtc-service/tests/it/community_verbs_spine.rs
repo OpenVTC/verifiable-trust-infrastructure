@@ -475,7 +475,7 @@ async fn solicit_vmc_reaches_the_member_push() {
     .await;
     assert_eq!(
         error_code(&doc),
-        Some(trust_tasks_rs::specs::vtc::members::solicit_vmc::v0_1::error_codes::NOT_FOUND.code),
+        Some(vti_specs::vtc::members::solicit_vmc::v0_1::error_codes::NOT_FOUND.code),
         "{doc}"
     );
     let (_, doc) = call(

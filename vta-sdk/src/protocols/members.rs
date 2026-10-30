@@ -64,7 +64,7 @@ pub const STATEMENT_CREDENTIAL_TYPE: &str = "StatementCredential";
 /// Declared by `vtc/members/update/0.1` since trust-tasks-tf #789, so this is
 /// the generated code.
 pub const MEMBER_UPDATE_ERR_CONSENT_GRANT_FORBIDDEN: &str =
-    trust_tasks_rs::specs::vtc::members::update::v0_1::error_codes::CONSENT_GRANT_FORBIDDEN.code;
+    vti_specs::vtc::members::update::v0_1::error_codes::CONSENT_GRANT_FORBIDDEN.code;
 
 /// VTC → member: request that the member issue and send their reciprocal VMC.
 pub const MEMBER_REQUEST_VMC_TYPE: &str = "https://trusttasks.org/spec/vtc/members/request-vmc/0.1";

@@ -19,13 +19,13 @@
 //! | `admin-list` | an administrator with authority over the member — community-wide, or scoped to a context the member's entry names | their ACL row |
 
 use serde_json::Value;
-use trust_tasks_rs::specs::auth::passkey::admin_list::v0_1 as admin_list;
-use trust_tasks_rs::specs::auth::passkey::enroll::invite::v0_3 as invite;
-use trust_tasks_rs::specs::auth::passkey::enroll::redeem::finish::v0_1 as redeem_finish;
-use trust_tasks_rs::specs::auth::passkey::enroll::redeem::start::v0_1 as redeem_start;
-use trust_tasks_rs::specs::auth::passkey::revoke::finish::v0_2 as revoke_finish;
-use trust_tasks_rs::specs::auth::passkey::revoke::start::v0_2 as revoke_start;
 use trust_tasks_rs::{RejectReason, StandardCode, TrustTask, TrustTaskCode};
+use vti_specs::auth::passkey::admin_list::v0_1 as admin_list;
+use vti_specs::auth::passkey::enroll::invite::v0_3 as invite;
+use vti_specs::auth::passkey::enroll::redeem::finish::v0_1 as redeem_finish;
+use vti_specs::auth::passkey::enroll::redeem::start::v0_1 as redeem_start;
+use vti_specs::auth::passkey::revoke::finish::v0_2 as revoke_finish;
+use vti_specs::auth::passkey::revoke::start::v0_2 as revoke_start;
 
 use super::helpers::{
     TrustTaskOutcome, app_error_to_reject, reject_with, reject_with_code, success_response,
@@ -724,7 +724,7 @@ mod tests {
     #[test]
     fn what_the_specifications_declare() {
         let required = |uri| {
-            trust_tasks_rs::schema_index::spec_policy_for(uri)
+            vti_specs::schema_index::spec_policy_for(uri)
                 .unwrap_or_else(|| panic!("{uri} has no published policy"))
                 .is_proof_required
         };

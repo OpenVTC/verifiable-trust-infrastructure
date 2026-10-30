@@ -9,12 +9,12 @@
 use super::helpers::TrustTaskOutcome;
 use serde_json::Value;
 use trust_tasks_rs::TrustTask;
-use trust_tasks_rs::specs::device::disable::v0_1 as disable_spec;
-use trust_tasks_rs::specs::device::heartbeat::v0_3 as heartbeat_spec;
-use trust_tasks_rs::specs::device::list::v0_3 as list_spec;
-use trust_tasks_rs::specs::device::register::v0_2 as register_spec;
-use trust_tasks_rs::specs::device::set_wake::v0_2 as set_wake_spec;
-use trust_tasks_rs::specs::device::wipe::v0_2 as wipe_spec;
+use vti_specs::device::disable::v0_1 as disable_spec;
+use vti_specs::device::heartbeat::v0_3 as heartbeat_spec;
+use vti_specs::device::list::v0_3 as list_spec;
+use vti_specs::device::register::v0_2 as register_spec;
+use vti_specs::device::set_wake::v0_2 as set_wake_spec;
+use vti_specs::device::wipe::v0_2 as wipe_spec;
 
 use crate::auth::AuthClaims;
 use crate::operations;

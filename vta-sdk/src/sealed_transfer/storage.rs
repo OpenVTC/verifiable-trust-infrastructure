@@ -2,7 +2,7 @@
 //! (`vtc/_shared/0.2/room-storage`, `SealedStorageCredential`).
 //!
 //! Its shape is the specification's, and the generated type
-//! (`trust_tasks_rs::specs::vtc::storage::credentials::set::v0_3::SealedStorageCredential`)
+//! (`vti_specs::vtc::storage::credentials::set::v0_3::SealedStorageCredential`)
 //! is what a producer builds and a community checks it against. It travels as the
 //! JSON value it was sealed as, not as that type: the community must read the
 //! cleartext as received and never normalise it into validity, which a round trip

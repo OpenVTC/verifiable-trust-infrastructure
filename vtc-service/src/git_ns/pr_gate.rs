@@ -69,7 +69,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tracing::{debug, info, warn};
-use trust_tasks_rs::specs::git_ns::bridge::event::v0_5 as event_wire;
+use vti_specs::git_ns::bridge::event::v0_5 as event_wire;
 
 use crate::acl::VtcRole;
 use crate::server::AppState;

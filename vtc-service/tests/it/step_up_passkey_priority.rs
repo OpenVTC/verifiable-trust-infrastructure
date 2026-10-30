@@ -15,10 +15,10 @@ use webauthn_rs::prelude::{
     CreationChallengeResponse, PublicKeyCredential, RequestChallengeResponse,
 };
 
-use trust_tasks_rs::specs::auth::passkey::enroll::invite::v0_3 as invite_spec;
-use trust_tasks_rs::specs::auth::passkey::enroll::redeem::finish::v0_1 as redeem_finish_spec;
-use trust_tasks_rs::specs::auth::passkey::enroll::redeem::start::v0_1 as redeem_start_spec;
-use trust_tasks_rs::specs::auth::step_up::approve_response::v0_6 as approve_response_spec;
+use vti_specs::auth::passkey::enroll::invite::v0_3 as invite_spec;
+use vti_specs::auth::passkey::enroll::redeem::finish::v0_1 as redeem_finish_spec;
+use vti_specs::auth::passkey::enroll::redeem::start::v0_1 as redeem_start_spec;
+use vti_specs::auth::step_up::approve_response::v0_6 as approve_response_spec;
 
 use vtc_service::acl::bound_step_up::{self, ApproveError, Approved, Gate};
 use vtc_service::acl::{VtcAclEntry, VtcRole, store_acl_entry};

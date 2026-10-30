@@ -7,7 +7,7 @@ use std::{collections::BTreeSet, sync::Arc};
 use chrono::{DateTime, Utc};
 use rand::{SeedableRng, rngs::StdRng};
 use serde_json::{Value, json};
-use trust_tasks_rs::specs::voting::{
+use vti_specs::voting::{
     election::register::v0_2::Manifest,
     trustees::{
         authorize::v0_1 as authorize, confirm::v0_1 as confirm, deal::v0_1 as deal_task,

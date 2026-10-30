@@ -376,7 +376,7 @@ async fn vti_vtc_023_every_offline_writer_raises_an_acknowledge_item() {
         assert_eq!(item["typeUri"], OFFLINE_WRITE, "{item}");
         {
             use trust_tasks_rs::validate::ValidatedPayload as _;
-            trust_tasks_rs::specs::vtc::operator::offline_write::v0_2::Payload::validate_value(
+            vti_specs::vtc::operator::offline_write::v0_2::Payload::validate_value(
                 &item["payload"],
             )
             .unwrap_or_else(|e| panic!("not an offline-write record: {e}\n{item}"));

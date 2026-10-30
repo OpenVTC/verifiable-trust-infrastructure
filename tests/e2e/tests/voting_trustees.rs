@@ -254,7 +254,7 @@ async fn trustees_run_a_sealed_election_on_a_private_board_from_pnm() {
         Threshold::new(2, 3).unwrap(),
     )
     .unwrap();
-    let typed: trust_tasks_rs::specs::voting::election::register::v0_2::Manifest =
+    let typed: vti_specs::voting::election::register::v0_2::Manifest =
         serde_json::from_value(manifest.clone()).unwrap();
     let ballot = json!({ "electionId": ELECTION, "manifestDigest": digest_multibase(&digest),
                          "answers": [{ "question": "chair", "choice": ["ben"] }] });

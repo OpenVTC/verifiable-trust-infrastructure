@@ -156,7 +156,7 @@ mod via_trust_tasks {
 
     use chrono::{DateTime, SecondsFormat, Utc};
     use serde_json::{Value, json};
-    use trust_tasks_rs::specs::vta::services as spec;
+    use vti_specs::vta::services as spec;
 
     use super::services::{
         DrainEntry, DrainListResponse, RollbackResponse, ServiceMutationResponse, ServiceState,

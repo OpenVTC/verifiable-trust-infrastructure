@@ -38,11 +38,11 @@ use sha2::{Digest, Sha256};
 use tokio::sync::OnceCell;
 use tracing::{debug, info, warn};
 use trust_tasks_rs::TrustTask;
-use trust_tasks_rs::specs::git_ns::bridge::{
-    event::v0_5 as event_wire, job::v0_6 as job_wire, result::v0_2 as result_wire,
-};
 use vti_common::error::AppError;
 use vti_common::store::KeyspaceHandle;
+use vti_specs::git_ns::bridge::{
+    event::v0_5 as event_wire, job::v0_6 as job_wire, result::v0_2 as result_wire,
+};
 
 use crate::credentials::LocalSigner;
 use crate::hooks::PendingReplies;

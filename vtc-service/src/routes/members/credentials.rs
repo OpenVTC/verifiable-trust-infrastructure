@@ -22,8 +22,8 @@ use axum::Json;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use serde_json::{Map, Value as JsonValue};
-use trust_tasks_rs::specs::vtc::members::credentials::v0_1 as wire;
 use vti_common::audit::{AuditEvent, MemberCredentialsReadData};
+use vti_specs::vtc::members::credentials::v0_1 as wire;
 
 use crate::acl::get_acl_entry;
 use crate::error::AppError;
@@ -35,7 +35,7 @@ use crate::server::AppState;
 /// specification, from a member who exists and holds no credentials — that is
 /// a successful answer with every document absent.
 pub const MEMBER_CREDENTIALS_ERR_NOT_FOUND: &str =
-    trust_tasks_rs::specs::vtc::members::credentials::v0_1::error_codes::NOT_FOUND.code;
+    vti_specs::vtc::members::credentials::v0_1::error_codes::NOT_FOUND.code;
 
 /// Why a lookup produced no answer. Kept apart from [`AppError`] so the
 /// not-found case can carry the specification's declared code.

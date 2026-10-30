@@ -3,7 +3,7 @@
 //! [`super::pcs_issue`] mints, [`super::pcs_challenge`] issues and [`super::pcs_event`] decides
 //! who may draw at an event's rate; this is how a vetter and an applicant reach them. Four
 //! exchanges, each a published specification, generated (`trust-tasks-rs` 0.22+) rather than
-//! hand-written — see [`trust_tasks_rs::specs::vtc::vetting`]:
+//! hand-written — see [`vti_specs::vtc::vetting`]:
 //!
 //! - `vtc/vetting/vetters/pcs-root/0.1` — a vetter enrols for a class label.
 //! - `vtc/vetting/vetters/pcs-tokens/0.1` — a vetter draws its tick of the drip.
@@ -13,10 +13,10 @@
 use chrono::{Duration, Utc};
 use serde_json::Value as JsonValue;
 use trust_tasks_rs::TrustTask;
-use trust_tasks_rs::specs::vtc::vetting::pcs_challenge::v0_1 as pcs_challenge_spec;
-use trust_tasks_rs::specs::vtc::vetting::vetters::event_mode::v0_1 as event_mode_spec;
-use trust_tasks_rs::specs::vtc::vetting::vetters::pcs_root::v0_1 as pcs_root_spec;
-use trust_tasks_rs::specs::vtc::vetting::vetters::pcs_tokens::v0_1 as pcs_tokens_spec;
+use vti_specs::vtc::vetting::pcs_challenge::v0_1 as pcs_challenge_spec;
+use vti_specs::vtc::vetting::vetters::event_mode::v0_1 as event_mode_spec;
+use vti_specs::vtc::vetting::vetters::pcs_root::v0_1 as pcs_root_spec;
+use vti_specs::vtc::vetting::vetters::pcs_tokens::v0_1 as pcs_tokens_spec;
 
 use vti_vetting_pcs::issuer::{
     RootCredentialWire, RootRequestWire, TokenBatchRequestWire, TokenBatchWire, TokenRequestWire,
@@ -39,11 +39,11 @@ pub const PCS_CHALLENGE_TYPE: &str = "https://trusttasks.org/spec/vtc/vetting/pc
 pub const HIDDEN_PUBLISH_TYPE: &str = "https://trusttasks.org/spec/vtc/vetting/hidden/publish/0.1";
 /// `vtc/vetting/hidden/withdraw/0.1` — an admin turns hidden-vetter admission off for a criterion.
 pub const HIDDEN_WITHDRAW_TYPE: &str =
-    <trust_tasks_rs::specs::vtc::vetting::hidden::withdraw::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+    <vti_specs::vtc::vetting::hidden::withdraw::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 /// `vtc/vetting/hidden/show/0.1` — an admin reads a criterion's stored hidden-vetting
 /// configuration, with the enrolment and event-demand counts it needs to run it.
 pub const HIDDEN_SHOW_TYPE: &str =
-    <trust_tasks_rs::specs::vtc::vetting::hidden::show::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+    <vti_specs::vtc::vetting::hidden::show::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
 // --- declared error codes --------------------------------------------------------------------
 //
@@ -72,7 +72,7 @@ pub const TOKENS_ERR_OVER_QUOTA: &str = "vtc/vetting/vetters/pcs-tokens:overQuot
 pub const TOKENS_ERR_BAD_OPENING_PROOF: &str = "vtc/vetting/vetters/pcs-tokens:badOpeningProof";
 /// `vtc/vetting/vetters/pcs-tokens:tickNotYet`: the tick named has not begun.
 pub const TOKENS_ERR_TICK_NOT_YET: &str =
-    trust_tasks_rs::specs::vtc::vetting::vetters::pcs_tokens::v0_1::error_codes::TICK_NOT_YET.code;
+    vti_specs::vtc::vetting::vetters::pcs_tokens::v0_1::error_codes::TICK_NOT_YET.code;
 /// `vtc/vetting/vetters/pcs-tokens:eventRefused`
 pub const TOKENS_ERR_EVENT_REFUSED: &str = "vtc/vetting/vetters/pcs-tokens:eventRefused";
 /// `vtc/vetting/vetters/event-mode:notAVetter`
@@ -85,32 +85,30 @@ pub const EVENT_ERR_UNKNOWN_TIER: &str = "vtc/vetting/vetters/event-mode:unknown
 pub const EVENT_ERR_BAD_WINDOW: &str = "vtc/vetting/vetters/event-mode:badWindow";
 /// `vtc/vetting/hidden/publish:noSuchCriterion`, read from the generated bindings.
 pub const HIDDEN_PUBLISH_ERR_NO_SUCH_CRITERION: &str =
-    trust_tasks_rs::specs::vtc::vetting::hidden::publish::v0_1::error_codes::NO_SUCH_CRITERION.code;
+    vti_specs::vtc::vetting::hidden::publish::v0_1::error_codes::NO_SUCH_CRITERION.code;
 /// `vtc/vetting/hidden/publish:noVetting`, read from the generated bindings.
 pub const HIDDEN_PUBLISH_ERR_NO_VETTING: &str =
-    trust_tasks_rs::specs::vtc::vetting::hidden::publish::v0_1::error_codes::NO_VETTING.code;
+    vti_specs::vtc::vetting::hidden::publish::v0_1::error_codes::NO_VETTING.code;
 /// `vtc/vetting/hidden/publish:approverNotSigner`: a new or changed `approvedBy` names someone
 /// other than the administrator publishing it.
 pub const HIDDEN_PUBLISH_ERR_APPROVER_NOT_SIGNER: &str =
-    trust_tasks_rs::specs::vtc::vetting::hidden::publish::v0_1::error_codes::APPROVER_NOT_SIGNER
-        .code;
+    vti_specs::vtc::vetting::hidden::publish::v0_1::error_codes::APPROVER_NOT_SIGNER.code;
 /// `vtc/vetting/hidden/publish:approverInEvent`: the approver has asked to vet at the event.
 pub const HIDDEN_PUBLISH_ERR_APPROVER_IN_EVENT: &str =
-    trust_tasks_rs::specs::vtc::vetting::hidden::publish::v0_1::error_codes::APPROVER_IN_EVENT.code;
+    vti_specs::vtc::vetting::hidden::publish::v0_1::error_codes::APPROVER_IN_EVENT.code;
 /// `vtc/vetting/hidden/publish:signerChanged`: the stored keys are not what the community's
 /// signer derives now.
 pub const HIDDEN_PUBLISH_ERR_SIGNER_CHANGED: &str =
-    trust_tasks_rs::specs::vtc::vetting::hidden::publish::v0_1::error_codes::SIGNER_CHANGED.code;
+    vti_specs::vtc::vetting::hidden::publish::v0_1::error_codes::SIGNER_CHANGED.code;
 /// `vtc/vetting/hidden/publish:otherCriterion`: hidden vetting is on for another criterion.
 pub const HIDDEN_PUBLISH_ERR_OTHER_CRITERION: &str =
-    trust_tasks_rs::specs::vtc::vetting::hidden::publish::v0_1::error_codes::OTHER_CRITERION.code;
+    vti_specs::vtc::vetting::hidden::publish::v0_1::error_codes::OTHER_CRITERION.code;
 /// `vtc/vetting/hidden/withdraw:noSuchCriterion`
 pub const HIDDEN_WITHDRAW_ERR_NO_SUCH_CRITERION: &str =
-    trust_tasks_rs::specs::vtc::vetting::hidden::withdraw::v0_1::error_codes::NO_SUCH_CRITERION
-        .code;
+    vti_specs::vtc::vetting::hidden::withdraw::v0_1::error_codes::NO_SUCH_CRITERION.code;
 /// `vtc/vetting/hidden/show:noSuchCriterion`
 pub const HIDDEN_SHOW_ERR_NO_SUCH_CRITERION: &str =
-    trust_tasks_rs::specs::vtc::vetting::hidden::show::v0_1::error_codes::NO_SUCH_CRITERION.code;
+    vti_specs::vtc::vetting::hidden::show::v0_1::error_codes::NO_SUCH_CRITERION.code;
 /// `vtc/vetting/vetters/event-mode:alreadyRequested`
 pub const EVENT_ERR_ALREADY_REQUESTED: &str = "vtc/vetting/vetters/event-mode:alreadyRequested";
 /// `vtc/vetting/vetters/event-mode:eventClosed`

@@ -17,8 +17,8 @@
 //! [`crate::stepup`].
 
 use trust_tasks_rs::TrustTask;
-use trust_tasks_rs::specs::auth::step_up::approve_request::v0_5;
-use trust_tasks_rs::specs::consent::approve_request::v0_1 as consent_v0_1;
+use vti_specs::auth::step_up::approve_request::v0_5;
+use vti_specs::consent::approve_request::v0_1 as consent_v0_1;
 
 use crate::error::FfiError;
 

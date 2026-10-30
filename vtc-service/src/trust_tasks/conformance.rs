@@ -7,7 +7,7 @@
 //! and both are about *identity*, not *shape*:
 //! `every_bound_task_is_published_or_excepted` (coverage) and
 //! `every_bound_canonical_task_exists_in_the_registry` (the URI resolves in
-//! `trust_tasks_rs::schema_index`). Neither looks at a payload, and there is
+//! `vti_specs::schema_index`). Neither looks at a payload, and there is
 //! no runtime validation on this side either — the document dispatcher's
 //! `parse_payload` (`trust_tasks/helpers.rs:59`) is a bare
 //! `serde_json::from_value`, and the REST layer's Trust-Task gate checks the
@@ -193,7 +193,7 @@ fn collect_from_dir(dir: &Path, out: &mut BTreeSet<String>) {
 pub(super) fn resolved_uris() -> BTreeSet<String> {
     bound_uris()
         .into_iter()
-        .filter(|u| trust_tasks_rs::schema_index::schema_for(u).is_some())
+        .filter(|u| vti_specs::schema_index::schema_for(u).is_some())
         .collect()
 }
 
@@ -1064,9 +1064,9 @@ const KNOWN_DRIFT_COUNT: usize = 0;
 /// being a nicety.
 #[allow(clippy::too_many_lines)]
 fn table() -> Vec<Conformance> {
-    use trust_tasks_rs::specs::vtc as s;
     use vta_sdk::protocols::join_requests as jr;
     use vta_sdk::protocols::members as mem;
+    use vti_specs::vtc as s;
 
     #[allow(unused_mut)]
     let mut table = vec![
@@ -3401,7 +3401,7 @@ fn table() -> Vec<Conformance> {
 /// specification's own example request and response.
 #[cfg(feature = "voting")]
 fn election_witnesses() -> Vec<Conformance> {
-    use trust_tasks_rs::specs::vtc as s;
+    use vti_specs::vtc as s;
     vec![
         checked!(
             s::elections::create::v0_3::Payload,
@@ -3457,7 +3457,7 @@ fn election_witnesses() -> Vec<Conformance> {
 /// where one exists.
 #[cfg(feature = "vetting-pcs")]
 fn pcs_witnesses() -> Vec<Conformance> {
-    use trust_tasks_rs::specs::vtc as s;
+    use vti_specs::vtc as s;
 
     /// Finish a generated builder into its `#[non_exhaustive]` type. Fixture data, so a
     /// validation failure (a placeholder that stopped matching the specification's own pattern)
@@ -3752,7 +3752,7 @@ fn every_bound_published_uri_has_a_witness() {
 #[test]
 fn status_credential_delivery_speaks_its_published_schema() {
     use vta_sdk::protocols::join_requests as jr;
-    type R = trust_tasks_rs::specs::vtc::join_requests::status::v0_1::Response;
+    type R = vti_specs::vtc::join_requests::status::v0_1::Response;
     for resend in [
         jr::CredentialResend::Queued,
         jr::CredentialResend::NotNeeded,

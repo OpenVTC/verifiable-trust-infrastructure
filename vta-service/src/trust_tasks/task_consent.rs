@@ -25,7 +25,7 @@ const GRANT_TTL_SECS: u64 = 600;
 // them, never a local mirror. The decision is an explicit two-valued enum
 // rather than a bool, so a missing or falsy value can never read as assent:
 // silence, timeouts and dismissals are denials.
-use trust_tasks_rs::specs::task_consent::decision::v0_2 as decision;
+use vti_specs::task_consent::decision::v0_2 as decision;
 
 fn now_secs() -> u64 {
     use std::time::{SystemTime, UNIX_EPOCH};

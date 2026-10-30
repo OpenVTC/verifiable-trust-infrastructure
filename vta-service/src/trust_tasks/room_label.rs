@@ -32,9 +32,9 @@
 
 use serde_json::Value;
 use trust_tasks_rs::TrustTask;
-use trust_tasks_rs::specs::rooms::keys::{label::v0_1 as label_spec, list::v0_2 as list_spec};
 use vti_common::acl::Capability;
 use vti_common::error::AppError;
+use vti_specs::rooms::keys::{label::v0_1 as label_spec, list::v0_2 as list_spec};
 
 use crate::auth::AuthClaims;
 use crate::operations::{room_groups, room_member};

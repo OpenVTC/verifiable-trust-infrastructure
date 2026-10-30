@@ -17,12 +17,12 @@
 //! `vtc/vetting/vetters/pcs-tokens`, and [`VtaClient::pcs_attest`] after a session.
 //!
 //! Every method takes the task's generated payload type and returns its generated response
-//! type (`trust_tasks_rs::specs::vta::pcs`), so a caller cannot build a request the schema would
+//! type (`vti_specs::vta::pcs`), so a caller cannot build a request the schema would
 //! refuse.
 
 use serde::Serialize;
 use serde::de::DeserializeOwned;
-use trust_tasks_rs::specs::vta::pcs;
+use vti_specs::vta::pcs;
 
 use super::VtaClient;
 use crate::error::VtaError;

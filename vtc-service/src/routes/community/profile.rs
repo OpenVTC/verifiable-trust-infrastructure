@@ -222,8 +222,7 @@ pub struct UpdateProfileResponse {
 /// `vtc/community/profile/update:validationFailed` — a supplied field failed
 /// validation.
 pub const PROFILE_UPDATE_ERR_VALIDATION_FAILED: &str =
-    trust_tasks_rs::specs::vtc::community::profile::update::v0_1::error_codes::VALIDATION_FAILED
-        .code;
+    vti_specs::vtc::community::profile::update::v0_1::error_codes::VALIDATION_FAILED.code;
 
 /// Apply a profile patch on behalf of `actor_did` — the whole of the
 /// operation, with no transport in it.

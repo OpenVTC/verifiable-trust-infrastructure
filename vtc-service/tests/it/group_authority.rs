@@ -22,7 +22,7 @@ use vtc_service::test_support::{TEST_VTC_DID, TestVtc};
 use crate::common::second_party::{Gesturer, parked_action, step_up_request};
 use crate::common::signed::{call, error_code, seed_role, signed};
 
-use trust_tasks_rs::specs::vtc::groups as g;
+use vti_specs::vtc::groups as g;
 
 const BINDINGS_ADD_ERR_GROUP_NOT_ELIGIBLE: &str =
     g::bindings::add::v0_1::error_codes::GROUP_NOT_ELIGIBLE.code;

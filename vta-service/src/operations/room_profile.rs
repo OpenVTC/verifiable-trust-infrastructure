@@ -243,9 +243,9 @@ pub async fn check_statement(
         return Err(Rejected::new(Rejection::Malformed, named));
     };
     // The profile against its own schema, through the generated type.
-    if serde_json::from_value::<
-        trust_tasks_rs::specs::rooms::keys::profile::read::v0_1::RoomProfile,
-    >(profile.clone())
+    if serde_json::from_value::<vti_specs::rooms::keys::profile::read::v0_1::RoomProfile>(
+        profile.clone(),
+    )
     .is_err()
     {
         return Err(Rejected::new(Rejection::Malformed, named));

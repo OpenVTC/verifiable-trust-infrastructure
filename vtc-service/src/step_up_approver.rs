@@ -43,20 +43,20 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use tracing::{info, warn};
-use trust_tasks_rs::specs::auth::step_up::approver::attest::v0_1 as attest;
-use trust_tasks_rs::specs::auth::step_up::approver::enroll::v0_1 as enroll;
-use trust_tasks_rs::specs::auth::step_up::approver::invite::v0_2 as invite;
-use trust_tasks_rs::specs::auth::step_up::approver::list::v0_1 as list;
-use trust_tasks_rs::specs::auth::step_up::approver::redeem::finish::v0_1 as redeem_finish;
-use trust_tasks_rs::specs::auth::step_up::approver::redeem::start::v0_1 as redeem_start;
-use trust_tasks_rs::specs::auth::step_up::approver::revoke::v0_1 as revoke;
-use trust_tasks_rs::specs::vtc::install::claim::finish::v0_3 as claim_finish;
-use trust_tasks_rs::specs::vtc::install::claim::start::v0_3 as claim_start;
 use uuid::Uuid;
 use vti_common::audit::{AuditEvent, StepUpApproverData};
 use vti_common::auth::extractor::AuthClaims;
 use vti_common::error::AppError;
 use vti_common::store::KeyspaceHandle;
+use vti_specs::auth::step_up::approver::attest::v0_1 as attest;
+use vti_specs::auth::step_up::approver::enroll::v0_1 as enroll;
+use vti_specs::auth::step_up::approver::invite::v0_2 as invite;
+use vti_specs::auth::step_up::approver::list::v0_1 as list;
+use vti_specs::auth::step_up::approver::redeem::finish::v0_1 as redeem_finish;
+use vti_specs::auth::step_up::approver::redeem::start::v0_1 as redeem_start;
+use vti_specs::auth::step_up::approver::revoke::v0_1 as revoke;
+use vti_specs::vtc::install::claim::finish::v0_3 as claim_finish;
+use vti_specs::vtc::install::claim::start::v0_3 as claim_start;
 
 use crate::acl::approver::{
     self, ApproverRecord, BindError, EnrolledVia, ExpectedApprover, ExpectedStatement,

@@ -12,7 +12,7 @@
 //!
 //! From the task's own specification: its front matter's `maxDocumentBytes`,
 //! which the codegen emits as `Payload::MAX_DOCUMENT_BYTES` and answers by Type
-//! URI through [`trust_tasks_rs::schema_index::max_document_bytes_for`]. Every
+//! URI through [`vti_specs::schema_index::max_document_bytes_for`]. Every
 //! type that declares nothing takes [`DEFAULT_MAX_DOCUMENT_BYTES`]. This module
 //! keeps no table of its own, except [`AWAITING_DECLARATION`]: the two served
 //! tasks that need more than the default and whose specifications do not yet
@@ -111,11 +111,11 @@ pub(crate) const DID_REGISTER_MAX_DOCUMENT_BYTES: usize = 1024 * 1024;
 /// (`every_awaiting_entry_is_still_undeclared_upstream`).
 pub(crate) const AWAITING_DECLARATION: &[(&str, usize)] = &[
     (
-        <trust_tasks_rs::specs::policy::upsert::v0_3::Payload as Payload>::TYPE_URI,
+        <vti_specs::policy::upsert::v0_3::Payload as Payload>::TYPE_URI,
         POLICY_UPSERT_MAX_DOCUMENT_BYTES,
     ),
     (
-        <trust_tasks_rs::specs::did_management::did::register::v0_1::Payload as Payload>::TYPE_URI,
+        <vti_specs::did_management::did::register::v0_1::Payload as Payload>::TYPE_URI,
         DID_REGISTER_MAX_DOCUMENT_BYTES,
     ),
 ];
@@ -123,7 +123,7 @@ pub(crate) const AWAITING_DECLARATION: &[(&str, usize)] = &[
 /// What `type_uri`'s specification declares, or its [`AWAITING_DECLARATION`]
 /// entry.
 fn declared(type_uri: &str) -> Option<usize> {
-    trust_tasks_rs::schema_index::max_document_bytes_for(type_uri).or_else(|| {
+    vti_specs::schema_index::max_document_bytes_for(type_uri).or_else(|| {
         AWAITING_DECLARATION
             .iter()
             .find(|(uri, _)| *uri == type_uri)
@@ -592,12 +592,11 @@ fn peek_issuer(body: &[u8]) -> Option<String> {
 mod tests {
     use super::*;
 
-    const POLICY_UPSERT: &str =
-        <trust_tasks_rs::specs::policy::upsert::v0_3::Payload as Payload>::TYPE_URI;
+    const POLICY_UPSERT: &str = <vti_specs::policy::upsert::v0_3::Payload as Payload>::TYPE_URI;
     const MEMBERS_UPDATE: &str =
-        <trust_tasks_rs::specs::vtc::members::update::v0_1::Payload as Payload>::TYPE_URI;
+        <vti_specs::vtc::members::update::v0_1::Payload as Payload>::TYPE_URI;
     const WEBSITE_CHUNK: &str =
-        <trust_tasks_rs::specs::vtc::website::upload::chunk::v0_1::Payload as Payload>::TYPE_URI;
+        <vti_specs::vtc::website::upload::chunk::v0_1::Payload as Payload>::TYPE_URI;
 
     /// `policy/upsert` as though this node served it.
     fn served_upsert(type_uri: &str) -> usize {
@@ -636,11 +635,11 @@ mod tests {
     fn every_awaiting_entry_is_still_undeclared_upstream() {
         for (uri, max) in AWAITING_DECLARATION {
             assert!(
-                trust_tasks_rs::schema_index::schema_for(uri).is_some(),
+                vti_specs::schema_index::schema_for(uri).is_some(),
                 "{uri} names no published specification"
             );
             assert!(
-                trust_tasks_rs::schema_index::max_document_bytes_for(uri).is_none(),
+                vti_specs::schema_index::max_document_bytes_for(uri).is_none(),
                 "{uri} now declares maxDocumentBytes; drop its AWAITING_DECLARATION entry"
             );
             assert!(
@@ -654,7 +653,7 @@ mod tests {
     /// 352 KiB, and a type that declares nothing takes the default.
     #[test]
     fn a_declared_limit_is_the_specifications_own() {
-        let chunk = trust_tasks_rs::schema_index::max_document_bytes_for(WEBSITE_CHUNK)
+        let chunk = vti_specs::schema_index::max_document_bytes_for(WEBSITE_CHUNK)
             .expect("the chunk declares a limit");
         assert_eq!(max_in(WEBSITE_CHUNK, &[WEBSITE_CHUNK], declared), chunk);
         assert_eq!(served_upsert(MEMBERS_UPDATE), DEFAULT_MAX_DOCUMENT_BYTES);

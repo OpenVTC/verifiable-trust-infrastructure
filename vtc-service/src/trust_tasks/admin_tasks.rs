@@ -29,23 +29,23 @@
 //! instead bound to this one document ([`crate::acl::bound_step_up`]).
 
 use serde_json::Value;
-use trust_tasks_rs::specs::audit::{list::v0_2 as audit_list, verify::v0_1 as audit_verify};
-use trust_tasks_rs::specs::auth::revoke_session::v0_2 as revoke_session;
-use trust_tasks_rs::specs::auth::sessions::list::v0_1 as sessions_list;
-use trust_tasks_rs::specs::config::{
+use trust_tasks_rs::{Payload, RejectReason, StandardCode, TrustTask, TrustTaskCode};
+use vti_common::auth::extractor::AuthClaims;
+use vti_specs::audit::{list::v0_2 as audit_list, verify::v0_1 as audit_verify};
+use vti_specs::auth::revoke_session::v0_2 as revoke_session;
+use vti_specs::auth::sessions::list::v0_1 as sessions_list;
+use vti_specs::config::{
     patch::v0_1 as config_patch, reload::v0_1 as config_reload, restart::v0_1 as config_restart,
     show::v0_1 as config_show,
 };
-use trust_tasks_rs::specs::vtc::admin::invites::{
+use vti_specs::vtc::admin::invites::{
     create::v0_1 as invite_create, list::v0_1 as invite_list, revoke::v0_1 as invite_revoke,
 };
-use trust_tasks_rs::specs::vtc::registry::{
+use vti_specs::vtc::registry::{
     diagnostics::v0_1 as diagnostics, records::list::v0_2 as records_list,
     sync_jobs::discard::v0_1 as sync_discard, sync_jobs::list::v0_2 as sync_list,
     sync_jobs::retry::v0_2 as sync_retry,
 };
-use trust_tasks_rs::{Payload, RejectReason, StandardCode, TrustTask, TrustTaskCode};
-use vti_common::auth::extractor::AuthClaims;
 
 use super::helpers::{
     TrustTaskOutcome, app_error_to_reject, parse_payload, reject_with, reject_with_code,

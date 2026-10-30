@@ -64,7 +64,7 @@
 //! `view_wire`, `namespace_list`, `repo_list`, `right_list`,
 //! `right_issued_by_departed`, `bridge_job_list`, `projection_show`,
 //! `account_list` and `activity_list` are the generated
-//! `trust_tasks_rs::specs::git_ns::*` modules at each task's current version
+//! `vti_specs::git_ns::*` modules at each task's current version
 //! — the only one served, older ones being refused `unsupportedVersion`
 //! (first generated in trust-tasks-rs 0.23.4, trustoverip/dtgwg-trust-tasks-tf#659,
 //! and 0.24.7, trustoverip/dtgwg-trust-tasks-tf#686): their `Payload`s
@@ -81,15 +81,15 @@ use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use serde::Serialize;
 use serde_json::{Value, json};
-pub(crate) use trust_tasks_rs::specs::git_ns::account::list::v0_2 as account_list;
-pub(crate) use trust_tasks_rs::specs::git_ns::activity::list::v0_3 as activity_list;
-pub(crate) use trust_tasks_rs::specs::git_ns::bridge::job::list::v0_4 as bridge_job_list;
-pub(crate) use trust_tasks_rs::specs::git_ns::namespace::list::v0_2 as namespace_list;
-pub(crate) use trust_tasks_rs::specs::git_ns::projection::show::v0_3 as projection_show;
-pub(crate) use trust_tasks_rs::specs::git_ns::repo::list::v0_2 as repo_list;
-pub(crate) use trust_tasks_rs::specs::git_ns::right::issued_by_departed::v0_3 as right_issued_by_departed;
-pub(crate) use trust_tasks_rs::specs::git_ns::right::list::v0_3 as right_list;
-pub(crate) use trust_tasks_rs::specs::git_ns::view::v0_6 as view_wire;
+pub(crate) use vti_specs::git_ns::account::list::v0_2 as account_list;
+pub(crate) use vti_specs::git_ns::activity::list::v0_3 as activity_list;
+pub(crate) use vti_specs::git_ns::bridge::job::list::v0_4 as bridge_job_list;
+pub(crate) use vti_specs::git_ns::namespace::list::v0_2 as namespace_list;
+pub(crate) use vti_specs::git_ns::projection::show::v0_3 as projection_show;
+pub(crate) use vti_specs::git_ns::repo::list::v0_2 as repo_list;
+pub(crate) use vti_specs::git_ns::right::issued_by_departed::v0_3 as right_issued_by_departed;
+pub(crate) use vti_specs::git_ns::right::list::v0_3 as right_list;
+pub(crate) use vti_specs::git_ns::view::v0_6 as view_wire;
 
 use super::bridge::{self, BridgeJob};
 use super::model::{RepoState, Resource, Right, RightRow, Scope};

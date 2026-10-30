@@ -16,14 +16,14 @@
 //! `decidedAt` (0.3).
 
 use serde_json::{Value, json};
-use trust_tasks_rs::specs::task_consent::decision::v0_2 as decision;
 use trust_tasks_rs::specs::trust_task_next_step::v0_1 as next_step;
-use trust_tasks_rs::specs::vtc::admin::actions::{
+use trust_tasks_rs::{Payload, StandardCode, TrustTask, TrustTaskCode};
+use vti_common::auth::extractor::AuthClaims;
+use vti_specs::task_consent::decision::v0_2 as decision;
+use vti_specs::vtc::admin::actions::{
     acknowledge::v0_3 as acknowledge, cancel::v0_3 as cancel, list::v0_3 as list,
     show::v0_3 as show,
 };
-use trust_tasks_rs::{Payload, StandardCode, TrustTask, TrustTaskCode};
-use vti_common::auth::extractor::AuthClaims;
 
 use super::helpers::{app_error_to_reject, extended_code, reject_with_code, success_response};
 use super::{JoinAuthCtx, TrustTaskOutcome, admin_signer, parse_spec_payload};

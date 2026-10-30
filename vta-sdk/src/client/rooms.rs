@@ -126,7 +126,7 @@ impl VtaClient {
         key: &str,
         version: u64,
         plaintext: &[u8],
-    ) -> Result<trust_tasks_rs::specs::rooms::keys::seal::v0_2::Response, VtaError> {
+    ) -> Result<vti_specs::rooms::keys::seal::v0_2::Response, VtaError> {
         let payload = json!({
             "roomId": room_id,
             "key": key,
@@ -165,7 +165,7 @@ impl VtaClient {
         key: &str,
         version: u64,
         body: &[u8],
-    ) -> Result<trust_tasks_rs::specs::rooms::keys::seal::v0_2::Response, VtaError> {
+    ) -> Result<vti_specs::rooms::keys::seal::v0_2::Response, VtaError> {
         let payload = json!({
             "roomId": room_id,
             "key": key,
@@ -218,8 +218,8 @@ impl VtaClient {
     /// Nothing in it names this client: the host records the member.
     pub async fn room_act(
         &self,
-        document: &trust_tasks_rs::specs::rooms::keys::act::v0_8::UnsignedRoomRequest,
-    ) -> Result<trust_tasks_rs::specs::rooms::keys::act::v0_8::Response, VtaError> {
+        document: &vti_specs::rooms::keys::act::v0_8::UnsignedRoomRequest,
+    ) -> Result<vti_specs::rooms::keys::act::v0_8::Response, VtaError> {
         self.act_v0_8(json!({ "document": document })).await
     }
 
@@ -233,15 +233,15 @@ impl VtaClient {
     /// version.
     pub async fn room_act_community(
         &self,
-        document: &trust_tasks_rs::specs::rooms::keys::act::v0_8::UnsignedRoomRequest,
-    ) -> Result<trust_tasks_rs::specs::rooms::keys::act::v0_8::Response, VtaError> {
+        document: &vti_specs::rooms::keys::act::v0_8::UnsignedRoomRequest,
+    ) -> Result<vti_specs::rooms::keys::act::v0_8::Response, VtaError> {
         self.act_v0_8(json!({ "document": document })).await
     }
 
     async fn act_v0_8(
         &self,
         payload: Value,
-    ) -> Result<trust_tasks_rs::specs::rooms::keys::act::v0_8::Response, VtaError> {
+    ) -> Result<vti_specs::rooms::keys::act::v0_8::Response, VtaError> {
         let value = self
             .dispatch_trust_task(
                 trust_tasks::TASK_ROOMS_KEYS_ACT_0_8,
@@ -273,7 +273,7 @@ impl VtaClient {
         room_id: &str,
         file_id: &str,
         open_epoch: Option<u64>,
-    ) -> Result<trust_tasks_rs::specs::rooms::keys::file_key::v0_2::Response, VtaError> {
+    ) -> Result<vti_specs::rooms::keys::file_key::v0_2::Response, VtaError> {
         let mut payload = json!({
             "roomId": room_id,
             "fileId": file_id,
@@ -310,7 +310,7 @@ impl VtaClient {
         room_id: &str,
         signing_key_id: &str,
         member: Option<&str>,
-    ) -> Result<trust_tasks_rs::specs::rooms::owner::group::create::v0_1::Response, VtaError> {
+    ) -> Result<vti_specs::rooms::owner::group::create::v0_1::Response, VtaError> {
         let mut payload = json!({ "roomId": room_id, "signingKeyId": signing_key_id });
         if let Some(m) = member {
             payload["member"] = json!(m);
@@ -354,7 +354,7 @@ impl VtaClient {
         member: &str,
         key_package: &str,
         reason: Option<&str>,
-    ) -> Result<trust_tasks_rs::specs::rooms::owner::group::add::v0_3::Response, VtaError> {
+    ) -> Result<vti_specs::rooms::owner::group::add::v0_3::Response, VtaError> {
         let mut payload = json!({
             "roomId": room_id,
             "host": host_did,
@@ -419,7 +419,7 @@ impl VtaClient {
         mirrors: &[String],
         until: Option<chrono::DateTime<chrono::Utc>>,
         reason: Option<&str>,
-    ) -> Result<trust_tasks_rs::specs::rooms::owner::group::remove::v0_4::Response, VtaError> {
+    ) -> Result<vti_specs::rooms::owner::group::remove::v0_4::Response, VtaError> {
         let mut payload = json!({
             "roomId": room_id,
             "host": host_did,
@@ -467,9 +467,9 @@ impl VtaClient {
         room_id: &str,
         signing_key_id: &str,
         hosts: &[String],
-        withdraw: &[trust_tasks_rs::specs::rooms::owner::revoke::v0_1::Withdrawal],
+        withdraw: &[vti_specs::rooms::owner::revoke::v0_1::Withdrawal],
         reason: Option<&str>,
-    ) -> Result<trust_tasks_rs::specs::rooms::owner::revoke::v0_1::Response, VtaError> {
+    ) -> Result<vti_specs::rooms::owner::revoke::v0_1::Response, VtaError> {
         let mut payload = json!({
             "roomId": room_id,
             "signingKeyId": signing_key_id,
@@ -515,7 +515,7 @@ impl VtaClient {
         room_id: &str,
         host_did: &str,
         reason: Option<&str>,
-    ) -> Result<trust_tasks_rs::specs::rooms::owner::group::renew::v0_2::Response, VtaError> {
+    ) -> Result<vti_specs::rooms::owner::group::renew::v0_2::Response, VtaError> {
         let mut payload = json!({
             "roomId": room_id,
             "host": host_did,
@@ -566,7 +566,7 @@ impl VtaClient {
     pub async fn room_owner_register(
         &self,
         request: RoomRegistration<'_>,
-    ) -> Result<trust_tasks_rs::specs::rooms::owner::register::v0_2::Response, VtaError> {
+    ) -> Result<vti_specs::rooms::owner::register::v0_2::Response, VtaError> {
         let payload = serde_json::to_value(room_register_payload(&request)?)?;
         // One host round trip for the registration and one for the room's list, over
         // whatever transport the host speaks.
@@ -591,8 +591,8 @@ impl VtaClient {
         signing_key_id: &str,
         subject: &str,
         valid_until: Option<chrono::DateTime<chrono::Utc>>,
-    ) -> Result<trust_tasks_rs::specs::rooms::owner::invite::v0_1::Response, VtaError> {
-        use trust_tasks_rs::specs::rooms::owner::invite::v0_1::Payload;
+    ) -> Result<vti_specs::rooms::owner::invite::v0_1::Response, VtaError> {
+        use vti_specs::rooms::owner::invite::v0_1::Payload;
         let payload = Payload::builder()
             .room_id(room_id)
             .signing_key_id(signing_key_id)
@@ -619,9 +619,8 @@ impl VtaClient {
         signing_key_id: &str,
         subject: &str,
         valid_until: Option<chrono::DateTime<chrono::Utc>>,
-    ) -> Result<trust_tasks_rs::specs::rooms::owner::issue_membership::v0_1::Response, VtaError>
-    {
-        use trust_tasks_rs::specs::rooms::owner::issue_membership::v0_1::Payload;
+    ) -> Result<vti_specs::rooms::owner::issue_membership::v0_1::Response, VtaError> {
+        use vti_specs::rooms::owner::issue_membership::v0_1::Payload;
         let payload = Payload::builder()
             .room_id(room_id)
             .signing_key_id(signing_key_id)
@@ -654,8 +653,7 @@ impl VtaClient {
         subject: &str,
         actions: Vec<RoomAction>,
         valid_until: chrono::DateTime<chrono::Utc>,
-    ) -> Result<trust_tasks_rs::specs::rooms::owner::issue_authority::v0_2::Response, VtaError>
-    {
+    ) -> Result<vti_specs::rooms::owner::issue_authority::v0_2::Response, VtaError> {
         let payload =
             room_issue_authority_payload(room_id, signing_key_id, subject, actions, valid_until)?;
         let value = self
@@ -685,8 +683,8 @@ impl VtaClient {
         &self,
         room_id: &str,
         invitation: &str,
-    ) -> Result<trust_tasks_rs::specs::rooms::keys::key_package::v0_2::Response, VtaError> {
-        use trust_tasks_rs::specs::rooms::keys::key_package::v0_2::Payload;
+    ) -> Result<vti_specs::rooms::keys::key_package::v0_2::Response, VtaError> {
+        use vti_specs::rooms::keys::key_package::v0_2::Payload;
         let payload = Payload::builder().room_id(room_id).invitation(invitation);
         let payload = Payload::try_from(payload)
             .map_err(|e| VtaError::Validation(format!("rooms/keys/key-package request: {e}")))?;
@@ -713,8 +711,8 @@ impl VtaClient {
         invitation: &str,
         welcome: &str,
         ratchet_tree: Option<&str>,
-    ) -> Result<trust_tasks_rs::specs::rooms::keys::welcome::v0_1::Response, VtaError> {
-        use trust_tasks_rs::specs::rooms::keys::welcome::v0_1::Payload;
+    ) -> Result<vti_specs::rooms::keys::welcome::v0_1::Response, VtaError> {
+        use vti_specs::rooms::keys::welcome::v0_1::Payload;
         let payload = Payload::builder()
             .room_id(room_id)
             .invitation(Some(invitation.to_string()))
@@ -745,8 +743,8 @@ impl VtaClient {
         room_id: &str,
         commit: &str,
         mls_epoch: std::num::NonZeroU64,
-    ) -> Result<trust_tasks_rs::specs::rooms::keys::commit::v0_1::Response, VtaError> {
-        use trust_tasks_rs::specs::rooms::keys::commit::v0_1::Payload;
+    ) -> Result<vti_specs::rooms::keys::commit::v0_1::Response, VtaError> {
+        use vti_specs::rooms::keys::commit::v0_1::Payload;
         let payload = Payload::builder()
             .room_id(room_id)
             .commit(commit)
@@ -780,8 +778,8 @@ impl VtaClient {
         room_id: &str,
         host_did: &str,
         from_epoch: Option<std::num::NonZeroU64>,
-    ) -> Result<trust_tasks_rs::specs::rooms::keys::backfill::v0_2::Response, VtaError> {
-        use trust_tasks_rs::specs::rooms::keys::backfill::v0_2::Payload;
+    ) -> Result<vti_specs::rooms::keys::backfill::v0_2::Response, VtaError> {
+        use vti_specs::rooms::keys::backfill::v0_2::Payload;
         let payload = Payload::builder()
             .room_id(room_id)
             .host(host_did)
@@ -808,7 +806,7 @@ impl VtaClient {
         room_id: &str,
         links: &[serde_json::Value],
         epoch_floor: Option<u32>,
-    ) -> Result<trust_tasks_rs::specs::rooms::keys::chain::v0_2::Response, VtaError> {
+    ) -> Result<vti_specs::rooms::keys::chain::v0_2::Response, VtaError> {
         let mut payload = json!({ "roomId": room_id });
         if !links.is_empty() {
             payload["links"] = json!(links);
@@ -845,8 +843,8 @@ impl VtaClient {
     pub async fn room_list(
         &self,
         include_personal: bool,
-    ) -> Result<trust_tasks_rs::specs::rooms::keys::list::v0_2::Response, VtaError> {
-        use trust_tasks_rs::specs::rooms::keys::list::v0_2::Payload;
+    ) -> Result<vti_specs::rooms::keys::list::v0_2::Response, VtaError> {
+        use vti_specs::rooms::keys::list::v0_2::Payload;
         let mut payload = json!({});
         if include_personal {
             payload["includePersonal"] = Value::Bool(true);
@@ -877,7 +875,7 @@ impl VtaClient {
         room_id: &str,
         member: &str,
         edit: &RoomLabelEdit,
-    ) -> Result<trust_tasks_rs::specs::rooms::keys::label::v0_1::Response, VtaError> {
+    ) -> Result<vti_specs::rooms::keys::label::v0_1::Response, VtaError> {
         let payload = room_label_payload(room_id, member, edit)?;
         let value = self
             .dispatch_trust_task(
@@ -911,7 +909,7 @@ impl VtaClient {
         room_id: &str,
         host_did: &str,
         member: Option<&str>,
-    ) -> Result<trust_tasks_rs::specs::rooms::keys::profile::read::v0_1::Response, VtaError> {
+    ) -> Result<vti_specs::rooms::keys::profile::read::v0_1::Response, VtaError> {
         let mut payload = json!({ "roomId": room_id, "host": host_did });
         name_member(&mut payload, member);
         let value = self
@@ -937,9 +935,9 @@ impl VtaClient {
         &self,
         room_id: &str,
         host_did: &str,
-        profile: &trust_tasks_rs::specs::rooms::keys::profile::write::v0_1::RoomProfile,
+        profile: &vti_specs::rooms::keys::profile::write::v0_1::RoomProfile,
         member: Option<&str>,
-    ) -> Result<trust_tasks_rs::specs::rooms::keys::profile::write::v0_1::Response, VtaError> {
+    ) -> Result<vti_specs::rooms::keys::profile::write::v0_1::Response, VtaError> {
         let mut payload = json!({ "roomId": room_id, "host": host_did, "profile": profile });
         name_member(&mut payload, member);
         let value = self
@@ -960,7 +958,7 @@ impl VtaClient {
         room_id: &str,
         host_did: &str,
         member: Option<&str>,
-    ) -> Result<trust_tasks_rs::specs::rooms::keys::profile::write::v0_1::Response, VtaError> {
+    ) -> Result<vti_specs::rooms::keys::profile::write::v0_1::Response, VtaError> {
         let mut payload = json!({ "roomId": room_id, "host": host_did, "clear": true });
         name_member(&mut payload, member);
         let value = self
@@ -1010,8 +1008,8 @@ pub fn room_label_payload(
     room_id: &str,
     member: &str,
     edit: &RoomLabelEdit,
-) -> Result<trust_tasks_rs::specs::rooms::keys::label::v0_1::Payload, VtaError> {
-    use trust_tasks_rs::specs::rooms::keys::label::v0_1::Payload;
+) -> Result<vti_specs::rooms::keys::label::v0_1::Payload, VtaError> {
+    use vti_specs::rooms::keys::label::v0_1::Payload;
     let mut payload = json!({ "roomId": room_id, "member": member });
     let pairs = [
         (
@@ -1062,7 +1060,7 @@ pub fn room_label_payload(
         .map_err(|e| VtaError::Validation(format!("rooms/keys/label request: {e}")))?;
     // The rules typify cannot carry (`minProperties`, `uniqueItems`, `const: true`).
     if let Some(schema) =
-        trust_tasks_rs::schema_index::schema_for(trust_tasks::TASK_ROOMS_KEYS_LABEL_0_1)
+        vti_specs::schema_index::schema_for(trust_tasks::TASK_ROOMS_KEYS_LABEL_0_1)
     {
         trust_tasks_rs::validate::against_schema(schema, &serde_json::to_value(&payload)?)
             .map_err(|e| VtaError::Validation(format!("rooms/keys/label request: {e}")))?;
@@ -1072,16 +1070,15 @@ pub fn room_label_payload(
 
 /// One room action a VAC confers — the generated `rooms/owner/issue-authority/0.2`
 /// item type (`read`, `write`, `curate`, `admin`; parse one with `str::parse`).
-pub type RoomAction =
-    trust_tasks_rs::specs::rooms::owner::issue_authority::v0_2::PayloadActionsItem;
+pub type RoomAction = vti_specs::rooms::owner::issue_authority::v0_2::PayloadActionsItem;
 
 /// A room's visibility tier, as `rooms/owner/register/0.2` names it (`open`,
 /// `attributed`, `private`; parse one with `str::parse`).
-pub type RoomVisibility = trust_tasks_rs::specs::rooms::owner::register::v0_2::Visibility;
+pub type RoomVisibility = vti_specs::rooms::owner::register::v0_2::Visibility;
 
 /// Whether a room keeps its history readable across a membership change
 /// (`chained`, `fromJoin`; parse one with `str::parse`).
-pub type RoomRetentionPolicy = trust_tasks_rs::specs::rooms::owner::register::v0_2::RetentionPolicy;
+pub type RoomRetentionPolicy = vti_specs::rooms::owner::register::v0_2::RetentionPolicy;
 
 /// What [`VtaClient::room_owner_register`] asks for.
 #[derive(Debug, Clone)]
@@ -1102,8 +1099,8 @@ pub struct RoomRegistration<'a> {
 
 fn room_register_payload(
     r: &RoomRegistration<'_>,
-) -> Result<trust_tasks_rs::specs::rooms::owner::register::v0_2::Payload, VtaError> {
-    use trust_tasks_rs::specs::rooms::owner::register::v0_2::Payload;
+) -> Result<vti_specs::rooms::owner::register::v0_2::Payload, VtaError> {
+    use vti_specs::rooms::owner::register::v0_2::Payload;
     let payload = Payload::builder()
         .room_id(r.room_id)
         .host(r.host_did)
@@ -1121,8 +1118,8 @@ fn room_issue_authority_payload(
     subject: &str,
     actions: Vec<RoomAction>,
     valid_until: chrono::DateTime<chrono::Utc>,
-) -> Result<trust_tasks_rs::specs::rooms::owner::issue_authority::v0_2::Payload, VtaError> {
-    use trust_tasks_rs::specs::rooms::owner::issue_authority::v0_2::Payload;
+) -> Result<vti_specs::rooms::owner::issue_authority::v0_2::Payload, VtaError> {
+    use vti_specs::rooms::owner::issue_authority::v0_2::Payload;
     // The schema requires at least one action; say so here, in words, rather than
     // letting "confers nothing" travel to the VTA to be refused.
     if actions.is_empty() {
@@ -1248,7 +1245,7 @@ pub fn unsigned_room_request(
     host: &str,
     issuer: Option<&str>,
     payload: Value,
-) -> Result<trust_tasks_rs::specs::rooms::keys::act::v0_8::UnsignedRoomRequest, VtaError> {
+) -> Result<vti_specs::rooms::keys::act::v0_8::UnsignedRoomRequest, VtaError> {
     if issuer.is_none() && is_offer_type(type_uri) {
         return Err(VtaError::Validation(format!(
             "`{type_uri}` is a reply to a community's offer: name the DID the offer is \
@@ -1282,7 +1279,7 @@ pub fn unsigned_room_request(
 #[allow(deprecated)] // rooms/keys/act/0.8's own table names offers/list 0.1–0.3.
 pub fn is_offer_type(type_uri: &str) -> bool {
     use trust_tasks_rs::Payload as _;
-    use trust_tasks_rs::specs::vtc::rooms::offers::{accept, list};
+    use vti_specs::vtc::rooms::offers::{accept, list};
     let bare = type_uri.strip_suffix("#request").unwrap_or(type_uri);
     bare == list::v0_1::Payload::TYPE_URI
         || bare == list::v0_2::Payload::TYPE_URI
@@ -1296,7 +1293,7 @@ pub fn is_offer_type(type_uri: &str) -> bool {
 /// without `#request`.
 pub fn is_community_type(type_uri: &str) -> bool {
     use trust_tasks_rs::Payload as _;
-    use trust_tasks_rs::specs::vtc::rooms::memberships;
+    use vti_specs::vtc::rooms::memberships;
     let bare = type_uri.strip_suffix("#request").unwrap_or(type_uri);
     is_offer_type(bare) || bare == memberships::list::v0_1::Payload::TYPE_URI
 }
@@ -1315,7 +1312,7 @@ pub fn unsigned_community_request(
     community: &str,
     issuer: &str,
     payload: Value,
-) -> Result<trust_tasks_rs::specs::rooms::keys::act::v0_8::UnsignedRoomRequest, VtaError> {
+) -> Result<vti_specs::rooms::keys::act::v0_8::UnsignedRoomRequest, VtaError> {
     if !is_community_type(type_uri) {
         return Err(VtaError::Validation(format!(
             "`{type_uri}` is not a request to a community about the rooms it offers you"

@@ -23,7 +23,11 @@
 
 use chrono::Utc;
 use serde_json::{Value, json};
-use trust_tasks_rs::specs::vtc::groups::{
+use trust_tasks_rs::{Payload, RejectReason, TrustTask};
+use vti_common::audit::{AuditEvent, GroupChangedData, GroupMembershipChangedData};
+use vti_common::error::AppError;
+use vti_common::pagination::Cursor;
+use vti_specs::vtc::groups::{
     bindings::{
         add::v0_1 as bindings_add, list::v0_1 as bindings_list, remove::v0_1 as bindings_remove,
     },
@@ -40,10 +44,6 @@ use trust_tasks_rs::specs::vtc::groups::{
     show::v0_1 as group_show,
     update::v0_1 as group_update,
 };
-use trust_tasks_rs::{Payload, RejectReason, TrustTask};
-use vti_common::audit::{AuditEvent, GroupChangedData, GroupMembershipChangedData};
-use vti_common::error::AppError;
-use vti_common::pagination::Cursor;
 
 use super::admin_tasks::member_signer;
 use super::helpers::{

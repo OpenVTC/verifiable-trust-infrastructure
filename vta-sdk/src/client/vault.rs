@@ -346,7 +346,7 @@ impl VtaClient {
     pub async fn cred_vault_get(
         &self,
         id: &str,
-    ) -> Result<trust_tasks_rs::specs::vault::credentials::get::v0_2::Response, VtaError> {
+    ) -> Result<vti_specs::vault::credentials::get::v0_2::Response, VtaError> {
         self.rpc_tt(
             trust_tasks::TASK_VAULT_CREDENTIALS_GET_0_2,
             json!({ "id": id }),
@@ -363,8 +363,8 @@ impl VtaClient {
     /// The caller carries the returned `presentation` to the verifier unchanged.
     pub async fn cred_vault_present(
         &self,
-        payload: &trust_tasks_rs::specs::vault::credentials::present::v0_1::Payload,
-    ) -> Result<trust_tasks_rs::specs::vault::credentials::present::v0_1::Response, VtaError> {
+        payload: &vti_specs::vault::credentials::present::v0_1::Payload,
+    ) -> Result<vti_specs::vault::credentials::present::v0_1::Response, VtaError> {
         let body = serde_json::to_value(payload)
             .map_err(|e| VtaError::Validation(format!("present payload: {e}")))?;
         self.rpc_tt(
@@ -484,7 +484,7 @@ mod tests {
     /// `additionalProperties: false` with `entryId` required, so it rejects both
     /// halves of the #947 defect — the missing member and the stray `id`.
     fn assert_conforms(payload: &Value) {
-        let schema = trust_tasks_rs::schema_index::schema_for(trust_tasks::TASK_VAULT_RELEASE_0_2)
+        let schema = vti_specs::schema_index::schema_for(trust_tasks::TASK_VAULT_RELEASE_0_2)
             .expect("vault/release/0.2 must have a published schema");
         trust_tasks_rs::validate::against_schema(schema, payload)
             .expect("payload must conform to vault/release/0.2");
@@ -515,7 +515,7 @@ mod tests {
     /// members, the two tests above would pass on a body the VTA refuses.
     #[test]
     fn release_body_shaped_the_old_way_is_rejected() {
-        let schema = trust_tasks_rs::schema_index::schema_for(trust_tasks::TASK_VAULT_RELEASE_0_2)
+        let schema = vti_specs::schema_index::schema_for(trust_tasks::TASK_VAULT_RELEASE_0_2)
             .expect("vault/release/0.2 must have a published schema");
         assert!(
             trust_tasks_rs::validate::against_schema(schema, &json!({ "id": "entry-1" })).is_err(),

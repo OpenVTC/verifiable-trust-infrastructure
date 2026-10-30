@@ -111,10 +111,8 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use tokio::sync::{broadcast, mpsc};
 use trust_tasks_rs::TrustTask;
-use trust_tasks_rs::specs::vtc::admin::events::{
-    event::v0_5 as event, subscribe::v0_6 as subscribe,
-};
 use vti_common::error::AppError;
+use vti_specs::vtc::admin::events::{event::v0_5 as event, subscribe::v0_6 as subscribe};
 
 use crate::server::AppState;
 
@@ -122,7 +120,7 @@ use crate::server::AppState;
 /// generated specification — what the tests that witness each one compare
 /// against.
 pub mod codes {
-    use trust_tasks_rs::specs::vtc::admin::events::subscribe::v0_6::error_codes as e;
+    use vti_specs::vtc::admin::events::subscribe::v0_6::error_codes as e;
 
     pub const NOT_ADMINISTRATOR: &str = e::NOT_ADMINISTRATOR.code;
     pub const STREAM_UNAVAILABLE: &str = e::STREAM_UNAVAILABLE.code;

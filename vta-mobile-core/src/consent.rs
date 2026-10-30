@@ -38,7 +38,7 @@
 
 use chrono::DateTime;
 use trust_tasks_rs::TrustTask;
-use trust_tasks_rs::specs::task_consent::decision::v0_2 as decision;
+use vti_specs::task_consent::decision::v0_2 as decision;
 
 use crate::error::FfiError;
 use crate::keys::Signer;

@@ -26,7 +26,7 @@ fn task(name: &str) -> String {
     format!("{SPEC}/{name}/{version}")
 }
 
-use trust_tasks_rs::specs::vtc::directory as d;
+use vti_specs::vtc::directory as d;
 
 // The declared codes, read from the generated bindings.
 const DIRECTORY_QUERY_ERR_NOT_FOUND: &str = d::query::v0_1::error_codes::NOT_FOUND.code;

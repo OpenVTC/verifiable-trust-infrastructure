@@ -34,8 +34,8 @@
 use std::collections::BTreeSet;
 
 use serde_json::Value;
-use trust_tasks_rs::specs::vtc::admin::events::subscribe::v0_6 as subscribe;
 use trust_tasks_rs::{ErrorPayload, Payload, RejectReason, TrustTask};
+use vti_specs::vtc::admin::events::subscribe::v0_6 as subscribe;
 
 use super::helpers::{
     app_error_to_reject, error_response, extended_code, reject_with, reject_with_code,

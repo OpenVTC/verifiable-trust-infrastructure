@@ -662,7 +662,7 @@ pub(super) async fn handle_list(
         let Some(after) = open_list_cursor(cursor, &filters) else {
             return reject_declared(
                 &doc,
-                trust_tasks_rs::specs::vault::list::v0_4::error_codes::CURSOR_INVALID,
+                vti_specs::vault::list::v0_4::error_codes::CURSOR_INVALID,
                 "vault/list: the cursor was not issued by this VTA for these filters; list \
                  again from the first page",
             );

@@ -62,7 +62,7 @@ fn presentation() -> AuthorityPresentation {
 
 #[test]
 fn put_record_conforms_on_both_tiers() {
-    use trust_tasks_rs::specs::rooms::records::put::v0_3::Payload;
+    use vti_specs_rooms::rooms::records::put::v0_3::Payload;
 
     let sealed = PutRecordBody {
         room_id: "did:webvh:example.com:rooms:northwind".into(),
@@ -103,8 +103,8 @@ fn put_record_conforms_on_both_tiers() {
 
 #[test]
 fn get_and_list_requests_conform() {
-    use trust_tasks_rs::specs::rooms::records::get::v0_2::Payload as GetPayload;
-    use trust_tasks_rs::specs::rooms::records::list::v0_5::Payload as ListPayload;
+    use vti_specs_rooms::rooms::records::get::v0_2::Payload as GetPayload;
+    use vti_specs_rooms::rooms::records::list::v0_5::Payload as ListPayload;
 
     let get = GetRecordBody {
         room_id: "did:webvh:example.com:rooms:northwind".into(),
@@ -146,7 +146,7 @@ fn get_and_list_requests_conform() {
 
 #[test]
 fn mint_epoch_conforms() {
-    use trust_tasks_rs::specs::rooms::epoch::mint::v0_1::Payload;
+    use vti_specs_rooms::rooms::epoch::mint::v0_1::Payload;
 
     let body = MintEpochBody {
         room_id: "did:webvh:example.com:rooms:northwind".into(),
@@ -185,7 +185,7 @@ fn epoch_link(epoch: u32) -> EpochLink {
 /// `rooms/epoch/chain/0.1` — the request a joining member makes, and the rungs served back.
 #[test]
 fn epoch_chain_conforms() {
-    use trust_tasks_rs::specs::rooms::epoch::chain::v0_2::{Payload, Response};
+    use vti_specs_rooms::rooms::epoch::chain::v0_2::{Payload, Response};
 
     let body = ChainBody {
         room_id: "did:webvh:example.com:rooms:northwind".into(),
@@ -223,7 +223,7 @@ fn epoch_chain_conforms() {
 /// serialisation under the name the schema gives it.
 #[test]
 fn a_subject_binding_conforms_under_its_published_name() {
-    use trust_tasks_rs::specs::rooms::records::get::v0_2::Payload;
+    use vti_specs_rooms::rooms::records::get::v0_2::Payload;
 
     let mut p = presentation();
     p.subject_binding = Some("urn:uuid:44444444-4444-4444-4444-444444444444".into());
@@ -244,10 +244,10 @@ fn a_subject_binding_conforms_under_its_published_name() {
 
 #[test]
 fn responses_conform() {
-    use trust_tasks_rs::specs::rooms::create::v0_2::Response as CreateResponse;
-    use trust_tasks_rs::specs::rooms::epoch::mint::v0_1::Response as MintResponse;
-    use trust_tasks_rs::specs::rooms::records::list::v0_5::Response as ListResponse;
-    use trust_tasks_rs::specs::rooms::records::put::v0_3::Response as PutResponse;
+    use vti_specs_rooms::rooms::create::v0_2::Response as CreateResponse;
+    use vti_specs_rooms::rooms::epoch::mint::v0_1::Response as MintResponse;
+    use vti_specs_rooms::rooms::records::list::v0_5::Response as ListResponse;
+    use vti_specs_rooms::rooms::records::put::v0_3::Response as PutResponse;
 
     check::<CreateResponse>(
         "CreateRoomResponse",
@@ -382,7 +382,7 @@ fn responses_conform() {
 /// with itself.
 #[test]
 fn get_record_response_conforms() {
-    use trust_tasks_rs::specs::rooms::records::get::v0_2::Response as GetResponse;
+    use vti_specs_rooms::rooms::records::get::v0_2::Response as GetResponse;
 
     // A sealed record, as `attributed` and `private` store one, answered with
     // both verification members.
@@ -627,7 +627,7 @@ fn a_record_round_trips_through_its_committed_form() {
 /// a schema without anything going red.
 #[test]
 fn a_trace_without_a_commitment_is_refused() {
-    use trust_tasks_rs::specs::rooms::records::get::v0_2::Response as GetResponse;
+    use vti_specs_rooms::rooms::records::get::v0_2::Response as GetResponse;
 
     let orphan = json!({
         "key": "giXFLTGBdnnQJRoIsktuIg",
@@ -666,10 +666,10 @@ fn a_trace_without_a_commitment_is_refused() {
 /// missing and that difference is what tells a member so.
 #[test]
 fn prune_and_commits_conform() {
-    use trust_tasks_rs::specs::rooms::epoch::commits::v0_1::{
+    use vti_specs_rooms::rooms::epoch::commits::v0_1::{
         Payload as CommitsPayload, Response as CommitsResp,
     };
-    use trust_tasks_rs::specs::rooms::epoch::prune::v0_2::{
+    use vti_specs_rooms::rooms::epoch::prune::v0_2::{
         Payload as PrunePayload, Response as PruneResp,
     };
 
@@ -765,7 +765,7 @@ fn a_half_sealed_record_loses_its_body() {
 /// someone adds to one of them.
 #[test]
 fn curate_conforms() {
-    use trust_tasks_rs::specs::rooms::records::curate::v0_1::Payload;
+    use vti_specs_rooms::rooms::records::curate::v0_1::Payload;
 
     let body = CurateRecordBody {
         room_id: "did:webvh:example.com:rooms:northwind".into(),
@@ -798,7 +798,7 @@ fn curate_conforms() {
 
 #[test]
 fn curate_response_conforms() {
-    use trust_tasks_rs::specs::rooms::records::curate::v0_1::Response;
+    use vti_specs_rooms::rooms::records::curate::v0_1::Response;
 
     check::<Response>(
         "CurateRecordResponse",
@@ -816,7 +816,7 @@ fn curate_response_conforms() {
 
 #[test]
 fn transfer_owner_conforms() {
-    use trust_tasks_rs::specs::rooms::owner::transfer::v0_1::Payload;
+    use vti_specs_rooms::rooms::owner::transfer::v0_1::Payload;
 
     check::<Payload>(
         "TransferOwnerBody",
@@ -832,7 +832,7 @@ fn transfer_owner_conforms() {
 
 #[test]
 fn claim_owner_conforms() {
-    use trust_tasks_rs::specs::rooms::owner::claim::v0_1::Payload;
+    use vti_specs_rooms::rooms::owner::claim::v0_1::Payload;
 
     let body = ClaimOwnerBody {
         room_id: "did:webvh:example.com:rooms:northwind".into(),
@@ -867,8 +867,8 @@ fn claim_owner_conforms() {
 /// documents — so "the same shape" is a claim to check, not one to assume.
 #[test]
 fn owner_responses_conform() {
-    use trust_tasks_rs::specs::rooms::owner::claim::v0_1::Response as ClaimResponse;
-    use trust_tasks_rs::specs::rooms::owner::transfer::v0_1::Response as TransferResponse;
+    use vti_specs_rooms::rooms::owner::claim::v0_1::Response as ClaimResponse;
+    use vti_specs_rooms::rooms::owner::transfer::v0_1::Response as TransferResponse;
 
     let response = serde_json::to_value(OwnerResponse {
         room_id: "did:webvh:example.com:rooms:northwind".into(),
@@ -895,7 +895,7 @@ fn owner_responses_conform() {
 /// noticing, because every test on both sides uses the same constant.
 #[test]
 fn every_dispatched_uri_is_the_published_one() {
-    use trust_tasks_rs::specs::rooms;
+    use vti_specs_rooms::rooms;
 
     let published: Vec<(&str, &str)> = vec![
         (

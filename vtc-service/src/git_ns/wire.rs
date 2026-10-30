@@ -1,7 +1,7 @@
 //! Records → the generated wire types.
 //!
 //! Every response a `git-ns/*` task returns is one of the types generated from
-//! the specification (`trust_tasks_rs::specs::git_ns`). Each task module
+//! the specification (`vti_specs::git_ns`). Each task module
 //! carries its own copy of the shared definitions (`RepoSummary`,
 //! `RightRecord`, …) and those types are `#[non_exhaustive]`, so they are
 //! reached the one way that works for all of them: the JSON the shared schema

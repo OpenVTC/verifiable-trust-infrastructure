@@ -100,7 +100,7 @@ use crate::members::get_member;
 use crate::server::AppState;
 use crate::status_list;
 
-use trust_tasks_rs::specs::vtc::members::{rotate::v0_1 as rotate_spec, rotate_challenge};
+use vti_specs::vtc::members::{rotate::v0_1 as rotate_spec, rotate_challenge};
 
 /// `vtc/members/rotate-challenge:notMember` — the caller is not a member.
 pub const ROTATE_CHALLENGE_ERR_NOT_MEMBER: &str =

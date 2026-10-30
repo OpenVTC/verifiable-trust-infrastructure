@@ -16,7 +16,7 @@ use crate::{HolderKey, VtcClient, VtcError};
 
 /// The generated wire types, re-exported so a caller names the reply types without depending
 /// on `trust-tasks-rs` itself.
-pub use trust_tasks_rs::specs::vtc::elections::{
+pub use vti_specs::vtc::elections::{
     cancel::v0_1 as cancel, certify::v0_1 as certify, close::v0_1 as close, create::v0_3 as create,
     list::v0_3 as list, show::v0_2 as show, tickets::issue::v0_1 as tickets_issue,
 };

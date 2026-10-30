@@ -16,11 +16,11 @@
 //!   defined, replaced or deleted.
 
 use serde_json::{Value, json};
-use trust_tasks_rs::specs::vtc::roles::{
-    define::v0_1 as define, delete::v0_1 as delete, list::v0_1 as list, show::v0_1 as show,
-};
 use trust_tasks_rs::{Payload, RejectReason, TrustTask};
 use vti_common::audit::{AdminRoleChangeData, AuditEvent};
+use vti_specs::vtc::roles::{
+    define::v0_1 as define, delete::v0_1 as delete, list::v0_1 as list, show::v0_1 as show,
+};
 
 use super::helpers::{
     TrustTaskOutcome, app_error_to_reject, extended_code, reject_with, reject_with_code,

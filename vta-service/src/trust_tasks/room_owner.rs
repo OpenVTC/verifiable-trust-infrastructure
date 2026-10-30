@@ -104,8 +104,7 @@ pub(super) async fn handle_invite(
         return r;
     }
 
-    let req: trust_tasks_rs::specs::rooms::owner::invite::v0_1::Payload = match parse_payload(&doc)
-    {
+    let req: vti_specs::rooms::owner::invite::v0_1::Payload = match parse_payload(&doc) {
         Ok(r) => r,
         Err(resp) => return resp,
     };
@@ -149,11 +148,10 @@ pub(super) async fn handle_issue_membership(
         return r;
     }
 
-    let req: trust_tasks_rs::specs::rooms::owner::issue_membership::v0_1::Payload =
-        match parse_payload(&doc) {
-            Ok(r) => r,
-            Err(resp) => return resp,
-        };
+    let req: vti_specs::rooms::owner::issue_membership::v0_1::Payload = match parse_payload(&doc) {
+        Ok(r) => r,
+        Err(resp) => return resp,
+    };
 
     // The grant half of the pair. Room authorization verifies this one — it compares the
     // presented membership's subject against the authority chain's root — and never looks
@@ -200,11 +198,10 @@ pub(super) async fn handle_issue_authority(
         return r;
     }
 
-    let req: trust_tasks_rs::specs::rooms::owner::issue_authority::v0_2::Payload =
-        match parse_payload(&doc) {
-            Ok(r) => r,
-            Err(resp) => return resp,
-        };
+    let req: vti_specs::rooms::owner::issue_authority::v0_2::Payload = match parse_payload(&doc) {
+        Ok(r) => r,
+        Err(resp) => return resp,
+    };
 
     let actions: Vec<String> = req.actions.iter().map(|a| a.to_string()).collect();
 
@@ -296,8 +293,7 @@ async fn anchor_inner(
         return r;
     }
 
-    let req: trust_tasks_rs::specs::rooms::owner::anchor::v0_1::Payload = match parse_payload(&doc)
-    {
+    let req: vti_specs::rooms::owner::anchor::v0_1::Payload = match parse_payload(&doc) {
         Ok(r) => r,
         Err(resp) => return resp,
     };
@@ -349,19 +345,19 @@ async fn anchor_inner(
         Ok(v) => v,
         Err(e) => return app_error_to_reject(&doc, e),
     };
-    let head: trust_tasks_rs::specs::rooms::records::list::v0_5::Response =
-        match serde_json::from_value(reply) {
-            Ok(h) => h,
-            Err(e) => {
-                return app_error_to_reject(
-                    &doc,
-                    vti_common::error::AppError::Validation(format!(
-                        "room host `{}` served a head this agent cannot read: {e}",
-                        req.host
-                    )),
-                );
-            }
-        };
+    let head: vti_specs::rooms::records::list::v0_5::Response = match serde_json::from_value(reply)
+    {
+        Ok(h) => h,
+        Err(e) => {
+            return app_error_to_reject(
+                &doc,
+                vti_common::error::AppError::Validation(format!(
+                    "room host `{}` served a head this agent cannot read: {e}",
+                    req.host
+                )),
+            );
+        }
+    };
     let Some(head_version) = head.head_version.map(|h| h.0) else {
         return app_error_to_reject(
             &doc,
@@ -448,7 +444,7 @@ async fn register_at(
 ) -> TrustTaskOutcome {
     // Both versions declare the same two codes under the same strings (the slug carries no
     // version), so 0.2's generated constants serve both.
-    use trust_tasks_rs::specs::rooms::owner::register::v0_2::error_codes as codes;
+    use vti_specs::rooms::owner::register::v0_2::error_codes as codes;
     if let Err(r) = super::helpers::require_capability(
         state,
         auth,
@@ -462,11 +458,10 @@ async fn register_at(
     }
 
     // The request schemas are identical; the envelope was validated against its own.
-    let req: trust_tasks_rs::specs::rooms::owner::register::v0_2::Payload =
-        match parse_payload(&doc) {
-            Ok(r) => r,
-            Err(resp) => return resp,
-        };
+    let req: vti_specs::rooms::owner::register::v0_2::Payload = match parse_payload(&doc) {
+        Ok(r) => r,
+        Err(resp) => return resp,
+    };
 
     let vta_did = state.config.read().await.vta_did.clone();
     let Some(resolver) = state.did_resolver.clone() else {

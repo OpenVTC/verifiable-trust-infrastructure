@@ -1219,10 +1219,8 @@ async fn end_to_end_the_vwc_verifies_as_the_vtc_verifies_it() {
         "{out:#}"
     );
     assert_eq!(out["threadId"], session["id"], "on the session's thread");
-    trust_tasks_rs::specs::witness::session::submit::v0_2::Response::validate_value(
-        &out["payload"],
-    )
-    .expect("a schema-valid submit response");
+    vti_specs::witness::session::submit::v0_2::Response::validate_value(&out["payload"])
+        .expect("a schema-valid submit response");
     let vwc_json = out["payload"]["vwc"].clone();
 
     // The VWC's own proof: the witness's assertionMethod key.

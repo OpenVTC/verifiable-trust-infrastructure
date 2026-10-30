@@ -31,8 +31,8 @@
 //! does); every other transport is refused `permissionDenied`.
 
 use serde_json::Value;
-use trust_tasks_rs::specs::vtc::auth::admin_session::v0_2 as admin_session;
 use trust_tasks_rs::{Payload, StandardCode, TrustTask, TrustTaskCode};
+use vti_specs::vtc::auth::admin_session::v0_2 as admin_session;
 
 use super::helpers::{
     TrustTaskOutcome, app_error_to_reject, reject_with, reject_with_code, success_response,

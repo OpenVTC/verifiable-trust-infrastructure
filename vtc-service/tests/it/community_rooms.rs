@@ -2903,19 +2903,19 @@ const BINDINGS_ADD: &str = "https://trusttasks.org/spec/vtc/groups/bindings/add/
 const BINDINGS_REMOVE: &str = "https://trusttasks.org/spec/vtc/groups/bindings/remove/0.1";
 const BINDINGS_LIST: &str = "https://trusttasks.org/spec/vtc/groups/bindings/list/0.1";
 const BINDINGS_ADD_ERR_NOT_FOUND: &str =
-    trust_tasks_rs::specs::vtc::groups::bindings::add::v0_1::error_codes::NOT_FOUND.code;
+    vti_specs::vtc::groups::bindings::add::v0_1::error_codes::NOT_FOUND.code;
 const BINDINGS_ADD_ERR_ROOM_NOT_FOUND: &str =
-    trust_tasks_rs::specs::vtc::groups::bindings::add::v0_1::error_codes::ROOM_NOT_FOUND.code;
+    vti_specs::vtc::groups::bindings::add::v0_1::error_codes::ROOM_NOT_FOUND.code;
 const BINDINGS_ADD_ERR_BINDING_EXISTS: &str =
-    trust_tasks_rs::specs::vtc::groups::bindings::add::v0_1::error_codes::BINDING_EXISTS.code;
+    vti_specs::vtc::groups::bindings::add::v0_1::error_codes::BINDING_EXISTS.code;
 const BINDINGS_ADD_ERR_TOO_MANY_BINDINGS: &str =
-    trust_tasks_rs::specs::vtc::groups::bindings::add::v0_1::error_codes::TOO_MANY_BINDINGS.code;
+    vti_specs::vtc::groups::bindings::add::v0_1::error_codes::TOO_MANY_BINDINGS.code;
 const BINDINGS_REMOVE_ERR_NOT_FOUND: &str =
-    trust_tasks_rs::specs::vtc::groups::bindings::remove::v0_1::error_codes::NOT_FOUND.code;
+    vti_specs::vtc::groups::bindings::remove::v0_1::error_codes::NOT_FOUND.code;
 const BINDINGS_REMOVE_ERR_BINDING_NOT_FOUND: &str =
-    trust_tasks_rs::specs::vtc::groups::bindings::remove::v0_1::error_codes::BINDING_NOT_FOUND.code;
+    vti_specs::vtc::groups::bindings::remove::v0_1::error_codes::BINDING_NOT_FOUND.code;
 const BINDINGS_LIST_ERR_NOT_FOUND: &str =
-    trust_tasks_rs::specs::vtc::groups::bindings::list::v0_1::error_codes::NOT_FOUND.code;
+    vti_specs::vtc::groups::bindings::list::v0_1::error_codes::NOT_FOUND.code;
 
 /// A closed static group stored directly, with `members` in it.
 async fn a_group_with(fix: &Fixture, members: &[&Party]) -> String {

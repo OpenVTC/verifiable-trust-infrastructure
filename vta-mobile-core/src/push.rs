@@ -33,9 +33,9 @@
 //! VTA→gateway and trigger→gateway respectively), so they are not built here.
 
 use chrono::DateTime;
-use trust_tasks_rs::specs::device::set_wake::v0_2 as set_wake;
-use trust_tasks_rs::specs::push::register::v0_2 as register;
 use trust_tasks_rs::{Payload, TrustTask};
+use vti_specs::device::set_wake::v0_2 as set_wake;
+use vti_specs::push::register::v0_2 as register;
 
 use crate::error::FfiError;
 use crate::keys::Signer;

@@ -39,10 +39,6 @@ use serde::Serialize;
 use serde_json::Value;
 use tokio::sync::Mutex;
 use tracing::info;
-use trust_tasks_rs::specs::auth::passkey::{
-    enroll::finish::v0_2 as enroll_finish, enroll::start::v0_2 as enroll_start,
-    revoke::finish::v0_2 as revoke_finish, revoke::start::v0_2 as revoke_start,
-};
 use uuid::Uuid;
 use vti_common::audit::{AdminPasskeyData, AuditEvent, AuditWriter};
 use vti_common::auth::passkey::store::{
@@ -50,6 +46,10 @@ use vti_common::auth::passkey::store::{
     store_registration_state, take_auth_state, take_registration_state,
 };
 use vti_common::error::AppError;
+use vti_specs::auth::passkey::{
+    enroll::finish::v0_2 as enroll_finish, enroll::start::v0_2 as enroll_start,
+    revoke::finish::v0_2 as revoke_finish, revoke::start::v0_2 as revoke_start,
+};
 use webauthn_rs::prelude::{Passkey, PublicKeyCredential, RegisterPublicKeyCredential, Webauthn};
 
 use crate::acl::admin::{AdminEntry, RegisteredPasskey, get_admin_entry, store_admin_entry};
@@ -71,7 +71,7 @@ static ADMIN_PASSKEY_LOCK: Mutex<()> = Mutex::const_new(());
 //
 // The responses are kept as `ToSchema` types, registered as OpenAPI components
 // in `routes::ApiDoc`, because the admin console's wire types are generated
-// from them. The requests are the generated `trust_tasks_rs::specs` payloads.
+// from them. The requests are the generated `vti_specs` payloads.
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]

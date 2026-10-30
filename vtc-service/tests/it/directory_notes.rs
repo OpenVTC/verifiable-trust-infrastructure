@@ -26,7 +26,7 @@ fn task(name: &str) -> String {
     format!("{SPEC}/{name}/{version}")
 }
 
-use trust_tasks_rs::specs::vtc::directory as d;
+use vti_specs::vtc::directory as d;
 
 const NOTES_APPEND_ERR_NOT_FOUND: &str = d::notes::append::v0_1::error_codes::NOT_FOUND.code;
 const NOTES_APPEND_ERR_NOTE_NOT_FOUND: &str =

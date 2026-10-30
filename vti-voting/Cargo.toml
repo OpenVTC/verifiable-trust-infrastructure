@@ -33,8 +33,10 @@ multibase.workspace = true
 serde_json.workspace = true
 serde_json_canonicalizer.workspace = true
 # The generated `voting/*` wire types (0.32.3+).
-# Spec families: see "SPEC FAMILIES ARE DECLARED PER CRATE" in the workspace Cargo.toml.
-trust-tasks-rs = { workspace = true, features = ["voting"] }
+trust-tasks-rs = { workspace = true }
+# The generated Trust Task wire types, at the versions VTI pins (CLAUDE.md,
+# "Pinning a task version").
+vti-specs = { path = "../vti-specs", version = "0.1" }
 # The trustees' group for the sealed and tallied-encrypted levels (`trustees`): Ristretto, the
 # same curve25519-dalek the workspace's Ed25519 keys already run on. Scalars are derived from
 # bytes, never from its `rand_core`, so the PCS stack's rand 0.8 stays independent of it.

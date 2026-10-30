@@ -138,8 +138,8 @@ impl std::fmt::Debug for ClaimedSetupSession {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
-use trust_tasks_rs::specs::vtc::install::claim as claim_spec;
-use trust_tasks_rs::specs::vtc::install::claim::passkey::{
+use vti_specs::vtc::install::claim as claim_spec;
+use vti_specs::vtc::install::claim::passkey::{
     finish::v0_1 as passkey_finish, start::v0_1 as passkey_start,
 };
 

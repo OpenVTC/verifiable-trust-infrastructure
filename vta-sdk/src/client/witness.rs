@@ -22,10 +22,10 @@
 //! session to try again. Every step is safe to repeat (`retry_safety`: `RetrySafe`).
 //!
 //! Every method takes the task's generated payload type and returns its generated response
-//! type (`trust_tasks_rs::specs::vta::witness`). Declared refusals (`sessionUnknown`,
+//! type (`vti_specs::vta::witness`). Declared refusals (`sessionUnknown`,
 //! `responseInvalid`, `vwcInvalid`, …) arrive as [`VtaError::Rejected`] with their code.
 
-use trust_tasks_rs::specs::vta::witness;
+use vti_specs::vta::witness;
 
 use super::VtaClient;
 use crate::error::VtaError;

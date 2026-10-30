@@ -2309,7 +2309,7 @@ async fn mount_presign_vta(
 fn presign_request(
     upload_id: Option<&str>,
     ops: Vec<Value>,
-) -> trust_tasks_rs::specs::external::credentials::issue::v0_3::Payload {
+) -> vti_specs::external::credentials::issue::v0_3::Payload {
     let mut presign = json!({ "prefix": "rooms/x/", "objectKey": "o", "requests": ops });
     if let Some(id) = upload_id {
         presign["uploadId"] = json!(id);

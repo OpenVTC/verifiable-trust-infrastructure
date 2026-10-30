@@ -12,9 +12,9 @@ use std::time::Duration;
 use async_trait::async_trait;
 use serde_json::{Value, json};
 use trust_tasks_rs::TrustTask;
-use trust_tasks_rs::specs::git_ns::bridge::job::v0_6 as job_wire;
-use trust_tasks_rs::specs::git_ns::namespace::reseat::v0_4 as reseat3;
 use vti_rooms_dtg::test_support::Party;
+use vti_specs::git_ns::bridge::job::v0_6 as job_wire;
+use vti_specs::git_ns::namespace::reseat::v0_4 as reseat3;
 
 use crate::acl::{VtcAclEntry, VtcRole, store_acl_entry};
 use crate::registry::MockRegistryClient;
@@ -4707,7 +4707,7 @@ async fn a_namespace_admin_alone_has_no_projected_right() {
 async fn an_adopted_grant_rechecks_the_link_where_it_is_written() {
     let (f, _ns) = drift_fixture(json!([])).await;
     let holds = |_: &Snapshot| -> super::ops::OpResult<()> { Ok(()) };
-    let grant_to = |subject: String| -> trust_tasks_rs::specs::git_ns::right::grant::v0_4::Payload {
+    let grant_to = |subject: String| -> vti_specs::git_ns::right::grant::v0_4::Payload {
         serde_json::from_value(
             json!({ "subject": subject, "right": "git.repo.maintain", "resource": RES }),
         )
@@ -5493,11 +5493,10 @@ async fn an_adoption_whose_item_changed_grants_nothing() {
             message: "changed".into(),
         })
     };
-    let payload: trust_tasks_rs::specs::git_ns::right::grant::v0_4::Payload =
-        serde_json::from_value(
-            json!({ "subject": f.carol.did, "right": "git.repo.maintain", "resource": RES }),
-        )
-        .unwrap();
+    let payload: vti_specs::git_ns::right::grant::v0_4::Payload = serde_json::from_value(
+        json!({ "subject": f.carol.did, "right": "git.repo.maintain", "resource": RES }),
+    )
+    .unwrap();
     let r = super::ops::right_grant_via(
         &f.vtc.state,
         &f.bob.did,

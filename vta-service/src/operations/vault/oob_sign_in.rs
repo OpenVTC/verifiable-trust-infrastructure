@@ -82,7 +82,6 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use trust_tasks_rs::TypeUri;
-use trust_tasks_rs::specs::task_consent::decision::v0_2 as decision_spec;
 use vta_sdk::protocols::backup_management::chunked::{
     sha256_digest_multibase, sha256_from_digest_multibase,
 };
@@ -91,6 +90,7 @@ use vti_common::acl::{AclEntry, DeviceBinding, UvKey, get_acl_entry};
 use vti_common::error::AppError;
 use vti_common::task_consent as consent;
 use vti_common::vault::{SiteTarget, VaultEntry, VaultSecret};
+use vti_specs::task_consent::decision::v0_2 as decision_spec;
 
 use crate::store::KeyspaceHandle;
 
@@ -135,13 +135,13 @@ const GRANT_REPLAY_PREFIX: &str = "oob-grant:";
 /// session's end is `sessionEndsAt` (RFC 3339), and the task families the
 /// browser key may sign for as the member are `signingScope`. 0.1 and 0.2 are
 /// not signed.
-pub use trust_tasks_rs::specs::auth::oob::grant::v0_3::Payload as GrantPayload;
+pub use vti_specs::auth::oob::grant::v0_3::Payload as GrantPayload;
 /// The member's answer, as the grant states it.
-pub use trust_tasks_rs::specs::auth::oob::grant::v0_3::PayloadDecision as GrantDecision;
+pub use vti_specs::auth::oob::grant::v0_3::PayloadDecision as GrantDecision;
 /// `auth/oob/identify/0.1` payload, generated from the specification. Its
 /// newtypes enforce the schema's patterns (`requestId`, `approverKey`,
 /// `enteredNumber`) when the payload is parsed.
-pub use trust_tasks_rs::specs::auth::oob::identify::v0_1::Payload as IdentifyPayload;
+pub use vti_specs::auth::oob::identify::v0_1::Payload as IdentifyPayload;
 
 /// Families a grant may never delegate signing for (auth/oob/grant/0.3, wallet
 /// item 5): signing in, access control and consent. A grant naming one, or a

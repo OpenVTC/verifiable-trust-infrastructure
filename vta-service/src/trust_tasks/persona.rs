@@ -309,11 +309,11 @@ fn decide(
 // same contract, free to drift from the published schema without anything
 // noticing. The generated types cannot.
 
-use trust_tasks_rs::specs::persona as spec;
 use vta_persona::{
     Listing, PersonaStore, ReleaseRequirement, Sensitivity, ValueType, ValueVisibility,
     new_attribute,
 };
+use vti_specs::persona as spec;
 
 /// Open the store for this request.
 ///

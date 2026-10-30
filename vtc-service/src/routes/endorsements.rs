@@ -66,7 +66,7 @@ const LIST_MAX_LIMIT: usize = 200;
 /// (matches the builder cap). Larger inputs surface as 400.
 const CLAIM_MAX_BYTES: usize = 8 * 1024;
 
-use trust_tasks_rs::specs::vtc::endorsements as end_spec;
+use vti_specs::vtc::endorsements as end_spec;
 
 /// `vtc/endorsements/issue:typeNotRegistered`.
 pub const ISSUE_ERR_TYPE_NOT_REGISTERED: &str =

@@ -25,8 +25,8 @@
 //! or 0.5 to a bridge that lists 0.5 (`bridge::send_versioned`).
 
 use serde_json::{Value, json};
-use trust_tasks_rs::specs::git_ns::drift::resolve::v0_4 as resolve;
-use trust_tasks_rs::specs::git_ns::right::grant::v0_4 as grant;
+use vti_specs::git_ns::drift::resolve::v0_4 as resolve;
+use vti_specs::git_ns::right::grant::v0_4 as grant;
 
 use crate::server::AppState;
 use vti_common::error::AppError;

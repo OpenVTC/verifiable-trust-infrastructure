@@ -291,7 +291,7 @@ async fn renew_default_downgrades_when_policy_drops_flag() {
 
 /// `vtc/members/renew:notMember`, read from the generated bindings (#1600).
 const RENEW_ERR_NOT_MEMBER: &str =
-    trust_tasks_rs::specs::vtc::members::renew::v0_1::error_codes::NOT_MEMBER.code;
+    vti_specs::vtc::members::renew::v0_1::error_codes::NOT_MEMBER.code;
 
 /// The extended error code carried by a refusal's payload.
 fn rest_error_code(body: &Value) -> &str {

@@ -45,12 +45,12 @@
 //! build/parse the JSON.
 
 use chrono::DateTime;
-use trust_tasks_rs::specs::auth::{
+use trust_tasks_rs::{Payload, TrustTask};
+use vti_specs::auth::{
     authenticate::v0_3 as authenticate, challenge::v0_1 as challenge, refresh::v0_2 as refresh,
     revoke_session::v0_2 as revoke_session, whoami::v0_1 as whoami,
 };
-use trust_tasks_rs::specs::messaging::ping::v0_2 as ping;
-use trust_tasks_rs::{Payload, TrustTask};
+use vti_specs::messaging::ping::v0_2 as ping;
 
 use crate::error::FfiError;
 use crate::keys::Signer;

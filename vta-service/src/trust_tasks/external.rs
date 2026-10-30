@@ -17,7 +17,7 @@
 //!   capability, the ceiling, the TTL, the rate. The credential leaves only
 //!   sealed to the caller.
 //!
-//! Wire values are parsed into the generated `trust_tasks_rs::specs::external`
+//! Wire values are parsed into the generated `vti_specs::external`
 //! types (which validates them) and answered by rendering JSON through the
 //! generated response type of each task, so a response that drifted from its
 //! schema fails here rather than at a consumer.
@@ -27,7 +27,7 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 use trust_tasks_rs::TrustTask;
-use trust_tasks_rs::specs::external as ext;
+use vti_specs::external as ext;
 
 use vti_common::acl::Capability;
 use vti_common::error::AppError;

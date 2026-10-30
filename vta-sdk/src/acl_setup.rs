@@ -75,7 +75,7 @@ use affinidi_tdk::messaging::profiles::ATMProfile;
 use sha2::{Digest, Sha256};
 use tracing::{debug, info, warn};
 // The SDK generates its own messaging/* types (affinidi-messaging-sdk 0.42+);
-// its `account_update` takes those, not `trust_tasks_rs::specs`.
+// its `account_update` takes those, not `vti_specs`.
 use affinidi_tdk::messaging::tasks::messaging::account;
 
 /// Set a client's own ACL on the mediator to accept all messages.

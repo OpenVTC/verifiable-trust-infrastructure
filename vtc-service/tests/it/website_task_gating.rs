@@ -137,7 +137,7 @@ async fn delete_refuses_a_signer_with_no_acl_row() {
 // bindings.
 // ---------------------------------------------------------------------------
 
-use trust_tasks_rs::specs::vtc::website as website_spec;
+use vti_specs::vtc::website as website_spec;
 
 const FILES_DELETE_ERR_NOT_FOUND: &str =
     website_spec::files::delete::v0_1::error_codes::NOT_FOUND.code;

@@ -39,13 +39,10 @@ axum = { workspace = true }
 serde_json_canonicalizer = { workspace = true }
 
 # `TrustTask<Value>` — the document type `vta_sdk::trust_task_sign` signs.
-# Spec families: see "SPEC FAMILIES ARE DECLARED PER CRATE" in the workspace Cargo.toml.
-trust-tasks-rs = { workspace = true, features = [
-  "acl",
-  "messaging",
-  "provision",
-  "voting",
-] }
+trust-tasks-rs = { workspace = true }
+# The generated Trust Task wire types, at the versions VTI pins (CLAUDE.md,
+# "Pinning a task version").
+vti-specs = { path = "../../vti-specs", version = "0.1" }
 
 affinidi-tdk = { workspace = true }
 affinidi-secrets-resolver = { workspace = true }

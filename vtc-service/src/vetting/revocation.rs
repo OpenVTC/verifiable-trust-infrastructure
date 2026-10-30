@@ -41,7 +41,7 @@ use crate::members::storage::get_member;
 /// `vtc/vetting/revoke-statement:notMember` — the sender is not, and has never
 /// been, a member of this community.
 pub const REVOKE_STATEMENT_ERR_NOT_MEMBER: &str =
-    trust_tasks_rs::specs::vtc::vetting::revoke_statement::v0_1::error_codes::NOT_MEMBER.code;
+    vti_specs::vtc::vetting::revoke_statement::v0_1::error_codes::NOT_MEMBER.code;
 use crate::server::AppState;
 
 /// Domain separation for notice keys.

@@ -29,12 +29,12 @@
 use chrono::{DateTime, Utc};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
-use trust_tasks_rs::specs::vtc::elections::{
+use trust_tasks_rs::{Payload, RejectReason, TrustTask};
+use vti_common::audit::{AuditEvent, ElectionChangedData, ElectionTicketIssuedData};
+use vti_specs::vtc::elections::{
     cancel::v0_1 as cancel, certify::v0_1 as certify, close::v0_1 as close, create::v0_3 as create,
     list::v0_3 as list, show::v0_2 as show, tickets::issue::v0_1 as issue,
 };
-use trust_tasks_rs::{Payload, RejectReason, TrustTask};
-use vti_common::audit::{AuditEvent, ElectionChangedData, ElectionTicketIssuedData};
 
 use super::helpers::{
     TrustTaskOutcome, app_error_to_reject, extended_code, reject_with, reject_with_code,

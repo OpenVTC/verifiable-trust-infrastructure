@@ -57,7 +57,7 @@ use crate::error::AppError;
 /// `sessionEndsAt`) where 0.1 had integer epoch seconds; the record keeps
 /// epoch seconds and converts at the wire.
 pub mod types {
-    use trust_tasks_rs::specs::auth::oob as spec;
+    use vti_specs::auth::oob as spec;
 
     pub use spec::cancel::v0_1::{Payload as CancelPayload, Response as CancelResponse};
     pub use spec::claim::v0_2::{

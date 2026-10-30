@@ -150,7 +150,7 @@ impl VtaClient {
         id: &str,
         force: bool,
         abandon_host_copies: bool,
-    ) -> Result<trust_tasks_rs::specs::vta::contexts::delete::v1_1::Response, VtaError> {
+    ) -> Result<vti_specs::vta::contexts::delete::v1_1::Response, VtaError> {
         // 60s: the VTA spends up to 20s on hosts before it touches anything
         // local, then deletes the subtree.
         self.rpc_tt(

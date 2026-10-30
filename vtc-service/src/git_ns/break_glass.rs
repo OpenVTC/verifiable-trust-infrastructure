@@ -29,12 +29,12 @@ use std::collections::BTreeSet;
 use chrono::{DateTime, Duration, Utc};
 use serde_json::{Value, json};
 use tracing::{error, info, warn};
-use trust_tasks_rs::specs::git_ns::right::{
-    break_glass::v0_2 as break_glass, break_glass_notice::v0_2 as notice, ratify::v0_2 as ratify,
-};
 use vti_common::audit::{AuditEvent, GitNsBreakGlassData};
 use vti_common::capability_client::build_document;
 use vti_common::error::AppError;
+use vti_specs::git_ns::right::{
+    break_glass::v0_2 as break_glass, break_glass_notice::v0_2 as notice, ratify::v0_2 as ratify,
+};
 
 use crate::acl::bound_step_up::{self, EvidencedGate, StepUpEvidence};
 use crate::server::AppState;

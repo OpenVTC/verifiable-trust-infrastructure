@@ -39,7 +39,7 @@ pub struct AgentNameResultBody {
 }
 
 // `vta/webvh/agent-name/list/1.1` has no hand-written type: its payload and
-// response are `trust_tasks_rs::specs::vta::webvh::agent_name::list::v1_1`.
+// response are `vti_specs::vta::webvh::agent_name::list::v1_1`.
 
 /// Body for `spec/vta/webvh/agent-name/check/1.0`.
 #[derive(Debug, Clone, Serialize, Deserialize)]

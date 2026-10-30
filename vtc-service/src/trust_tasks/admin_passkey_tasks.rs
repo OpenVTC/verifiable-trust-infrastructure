@@ -28,10 +28,10 @@
 //! which hands a session credential back to [`crate::routes::admin::passkeys`].
 
 use serde_json::Value;
-use trust_tasks_rs::specs::auth::passkey::{
+use trust_tasks_rs::{Payload, TrustTask};
+use vti_specs::auth::passkey::{
     enroll::finish::v0_2 as enroll_finish, enroll::start::v0_2 as enroll_start, list::v0_1 as list,
 };
-use trust_tasks_rs::{Payload, TrustTask};
 
 use super::helpers::{TrustTaskOutcome, success_response, task_error_to_reject};
 use super::{JoinAuthCtx, admin_signer, parse_spec_payload};

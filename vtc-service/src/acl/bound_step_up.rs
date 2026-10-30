@@ -73,15 +73,15 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tracing::{info, warn};
-use trust_tasks_rs::specs::auth::step_up::approve_request::v0_5 as approve_request;
-use trust_tasks_rs::specs::auth::step_up::approve_response::v0_6 as approve_response;
-use trust_tasks_rs::specs::auth::step_up::approver::attest::v0_1 as attest;
 use vti_common::audit::{AuditEvent, OperationStepUpApprovedData, OperationStepUpData};
 use vti_common::auth::passkey::store::{
     get_passkey_user_by_cred, get_passkey_user_by_did, store_passkey_user,
 };
 use vti_common::error::AppError;
 use vti_common::store::KeyspaceHandle;
+use vti_specs::auth::step_up::approve_request::v0_5 as approve_request;
+use vti_specs::auth::step_up::approve_response::v0_6 as approve_response;
+use vti_specs::auth::step_up::approver::attest::v0_1 as attest;
 use webauthn_rs::prelude::{Passkey, PasskeyAuthentication, PublicKeyCredential};
 
 use crate::auth::session::now_epoch;

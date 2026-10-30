@@ -135,8 +135,7 @@ mod tests {
         let plain_body: serde_json::Value =
             serde_json::from_slice(&to_bytes(plain.into_body(), 4096).await.unwrap()).unwrap();
 
-        let code =
-            trust_tasks_rs::specs::vtc::join_requests::show::v0_1::error_codes::NOT_FOUND.code;
+        let code = vti_specs::vtc::join_requests::show::v0_1::error_codes::NOT_FOUND.code;
         let declared =
             TaskError::declared(code, AppError::NotFound("join request not found: x".into()))
                 .into_response();

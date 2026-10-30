@@ -87,7 +87,7 @@ Layer 4 (the spine + consumers):
 | Crate | Role |
 |---|---|
 | `vti-specs-{rooms,vta,vtc,core}` | **Generated Trust Task wire types** (`trust-tasks-build` in `build.rs`), one crate per family group, each version pinned exactly once in its `trust-tasks.lock` and vendored under `trust-tasks/`. `rooms` stands alone so `vti-rooms-wasm` compiles nothing else |
-| `vti-specs` | Facade: re-exports every family at its `trust_tasks_rs::specs` path and merges the four `schema_index` tables (`schema_for`, `spec_policy_for`, `error_codes_for`, `max_document_bytes_for`, `is_pinned`). `vta-sdk` re-exports it as `vta_sdk::specs` |
+| `vti-specs` | Facade: re-exports every family at its (deprecated) `trust_tasks_rs::specs` path and merges the four `schema_index` tables (`schema_for`, `spec_policy_for`, `error_codes_for`, `max_document_bytes_for`, `is_pinned`). `vta-sdk` re-exports it as `vta_sdk::specs` |
 | `vti-common` | Shared foundation: `host_session` (a host service identity's mediator session), JWT auth, ACL, `Store` (local fjall + vsock), `AppError`, config types, identifier validation, `secure_file`, telemetry sink, `SeedStore`, `guards` |
 | `vta-sdk` | Public SDK: types, REST + DIDComm client, `sealed_transfer`, `did_templates`, `provision_integration`, attestation verification, `protocol` (DIDComm protocol-management types) |
 | `vti-secrets` | Shared secret-store backends (AWS / GCP / Azure / Vault / Kubernetes / keyring / config-seed / TEE-KMS / plaintext) + the `create_seed_store(&secrets, &data_dir)` factory + `SecretsConfig`, all behind the same feature flags, shared by the VTA (`vta-keys::seed_store`) and the VTC (its own factory, `vtc-service::keys::seed_store`). Feature `onboarding`: `IntegrationOnboarding`, the ephemeral-`did:key` → ACL-grant → auto-rotate cold-start helper for external integrations |
@@ -282,17 +282,29 @@ VP. Custom JSON-LD contexts for our shapes live under
 `https://openvtc.org/contexts/` — baked into crates at compile time via
 `include_str!` so verification works offline.
 
-## Trust Task wire types come from `trust_tasks_rs::specs`
+## Trust Task wire types come from the generated `vti-specs` crates
 
-The Trust Task specifications in dtgwg-trust-tasks-tf are normative, and
-`trust-tasks-codegen` generates a Rust type for every payload and response in
-the registry, published by `trust-tasks-rs` under `trust_tasks_rs::specs`.
+The Trust Task specifications in dtgwg-trust-tasks-tf are normative. VTI pins
+the versions it speaks (`vti-specs-*/trust-tasks.lock`, bundles vendored under
+`trust-tasks/`) and `trust-tasks-build` generates a Rust type for every payload
+and response of each, at the module path the deprecated prebuilt
+`trust_tasks_rs::specs` used: `vti_specs::vtc::members::list::v0_2`, re-exported
+for consumers as `vta_sdk::specs`. The prebuilt modules are deprecated and will
+be removed; never turn a `trust-tasks-rs` spec-family feature on. Framework
+specifications (`trust-task-error`, `trust-task-discovery`, …) cannot be pinned
+and stay in `trust_tasks_rs`.
 
 - **Never hand-write a payload or response type for a task that has a generated
-  module** (`trust_tasks_rs::schema_index::schema_for` says whether it does).
-  Use the generated type. A crate wanting a shorter path re-exports it, as
+  module** (`vti_specs::schema_index::schema_for` says whether a pinned one
+  does). Use the generated type. A crate wanting a shorter path re-exports it, as
   `vta_sdk::protocols::vetting` does, and takes type URI constants from
   `<Payload as trust_tasks_rs::Payload>::TYPE_URI`, not a literal.
+- **Look a Type URI up in `vti_specs::schema_index`**, never
+  `trust_tasks_rs::schema_index` (which knows only the framework's own specs).
+  It answers for exactly the pinned versions: `None` means "not pinned", and a
+  gate that reads it as "nothing to check" fails open — the
+  `trust_tasks::spec_pin_census` tests in `vta-service` and `vtc-service` exist
+  for that.
 - **Behaviour stays hand-written and operates on the generated types**: signing,
   verification, counting, and the rules JSON Schema cannot state (an event's
   `endDate` against its `startDate`) as a check over the generated type — never
@@ -301,8 +313,8 @@ the registry, published by `trust-tasks-rs` under `trust_tasks_rs::specs`.
   (`vta_sdk::protocols::vetting::read_checked`). Some generated constructors
   normalise what they parse, so only the JSON shows what was sent.
 - **A specification change lands in dtgwg-trust-tasks-tf first** and reaches
-  this workspace through a `trust-tasks-rs` bump — never as a local edit to a
-  copied type.
+  this workspace as a pin (below) — never as a local edit to a copied type or
+  a vendored bundle (the build checks every bundle against its locked digest).
 - A generated type is foreign, so `utoipa::ToSchema` cannot be derived on it.
   Document a REST body with a wrapper in `vta_sdk::openapi`, whose schema is
   rendered from the specification's own.
@@ -318,6 +330,12 @@ trust-tasks -C vti-specs-vtc add vtc/members/list/0.3   # a version; `<slug>` al
 git add vti-specs-vtc/trust-tasks.toml vti-specs-vtc/trust-tasks.lock vti-specs-vtc/trust-tasks/
 trust-tasks -C vti-specs-vtc check                     # offline: bundles match the lock
 ```
+
+To pin a second version of a task already pinned (`add` refuses a slug named
+twice), make its `trust-tasks.toml` value an array — `"vtc/members/list" =
+["0.2", "0.3"]` — and run `trust-tasks -C <crate> update`. Moving to a new
+version is the same, then `trust-tasks remove <slug>/<old>` once nothing sends
+or serves the old one.
 
 Commit all three. The next build generates the new module
 (`vti_specs::vtc::members::list::v0_3`) and its index entries. Pin a version in

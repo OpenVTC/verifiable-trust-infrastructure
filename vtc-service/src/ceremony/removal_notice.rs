@@ -254,7 +254,7 @@ mod tests {
     #[test]
     fn payload_validates_against_the_published_schema() {
         use trust_tasks_rs::validate::ValidatedPayload;
-        type Notice = trust_tasks_rs::specs::vtc::members::removal_notice::v0_1::Payload;
+        type Notice = vti_specs::vtc::members::removal_notice::v0_1::Payload;
 
         for (code, reason) in [
             (RemovalCode::AdminRemoved, Some("because".to_string())),

@@ -462,7 +462,7 @@ pub(crate) async fn withdraw_hidden_vetting_core(
     });
     // Built as JSON and read through the generated type, so the answer is the specification's
     // shape or nothing.
-    let typed: trust_tasks_rs::specs::vtc::vetting::hidden::withdraw::v0_1::Response =
+    let typed: vti_specs::vtc::vetting::hidden::withdraw::v0_1::Response =
         serde_json::from_value(response)
             .map_err(|e| AppError::Internal(format!("withdraw response: {e}")))?;
     serde_json::to_value(typed)
@@ -536,7 +536,7 @@ pub(crate) async fn show_hidden_vetting_core(
         );
         map.insert("eventStatus".into(), Value::Array(status));
     }
-    let typed: trust_tasks_rs::specs::vtc::vetting::hidden::show::v0_1::Response =
+    let typed: vti_specs::vtc::vetting::hidden::show::v0_1::Response =
         serde_json::from_value(response)
             .map_err(|e| AppError::Internal(format!("show response: {e}")))?;
     serde_json::to_value(typed)

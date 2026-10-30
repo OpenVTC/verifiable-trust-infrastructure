@@ -41,7 +41,7 @@ use serde_json::Value as JsonValue;
 use uuid::Uuid;
 
 /// The generated `vtc/join-requests/submit` module.
-pub use trust_tasks_rs::specs::vtc::join_requests::submit;
+pub use vti_specs::vtc::join_requests::submit;
 
 /// Trust Task `type` for a join-request submission (the ceremony `request`
 /// verb): `vtc/join-requests/submit/0.3`, which decides a submission under one
@@ -151,7 +151,7 @@ pub struct JoinRequestAttribute {
 /// `manifest::v0_4::CommunityBranding` is also the body of the VTC's admin
 /// `GET`/`PUT /v1/community/branding`: what an admin stores is exactly what the
 /// manifest publishes.
-pub use trust_tasks_rs::specs::vtc::join_requests::manifest;
+pub use vti_specs::vtc::join_requests::manifest;
 
 /// The generated `vtc/join-requests/withdraw` module.
 ///
@@ -161,7 +161,7 @@ pub use trust_tasks_rs::specs::vtc::join_requests::manifest;
 /// `generated_wire_types_census` enforces it. `SelfRemoveBody` and its
 /// neighbours below are hand-written because they predate their generated
 /// modules; that list only shrinks.
-pub use trust_tasks_rs::specs::vtc::join_requests::withdraw;
+pub use vti_specs::vtc::join_requests::withdraw;
 
 /// Trust Task `type` for withdrawing a join request: the applicant closes
 /// their own open request.
@@ -180,7 +180,7 @@ pub const JOIN_REQUEST_WITHDRAW_RESPONSE_TYPE: &str =
 /// Re-exported rather than mirrored by hand, for the same reason
 /// [`withdraw`] is: the task has a generated module (`trust-tasks-rs` 0.21.6,
 /// from spec PR #526).
-pub use trust_tasks_rs::specs::vtc::join_requests::supplement;
+pub use vti_specs::vtc::join_requests::supplement;
 
 /// Trust Task `type` for supplementing a join request: the applicant answers a
 /// community's request for more evidence against the request they already have
@@ -198,7 +198,7 @@ pub const JOIN_REQUEST_SUPPLEMENT_RESPONSE_TYPE: &str =
 /// opens an OpenID4VP presentation session so a swiyu or EUDI wallet — which
 /// signs no Trust Task — can present evidence for their join, and reads the
 /// session's outcome (#1988).
-pub use trust_tasks_rs::specs::vtc::join_requests::wallet_session;
+pub use vti_specs::vtc::join_requests::wallet_session;
 
 /// Trust Task `type` for opening a wallet presentation session.
 pub const JOIN_REQUEST_WALLET_SESSION_START_TYPE: &str =
@@ -308,46 +308,42 @@ pub const JOIN_REQUEST_SUBMIT_ERR_REQUEST_ALREADY_OPEN: &str =
 /// challenge for this applicant: none was asked for, or the one asked for
 /// expired and has since been cleared. `details.reason` is `not_found`.
 pub const JOIN_REQUEST_SUBMIT_ERR_CHALLENGE_NOT_ISSUED: &str =
-    trust_tasks_rs::specs::vtc::join_requests::submit::v0_3::error_codes::CHALLENGE_NOT_ISSUED.code;
+    vti_specs::vtc::join_requests::submit::v0_3::error_codes::CHALLENGE_NOT_ISSUED.code;
 
 /// `vtc/join-requests/submit:challengeAlreadyUsed` — the challenge was spent
 /// by an earlier submission; each is accepted once. `details.reason` is
 /// `gone`.
 pub const JOIN_REQUEST_SUBMIT_ERR_CHALLENGE_ALREADY_USED: &str =
-    trust_tasks_rs::specs::vtc::join_requests::submit::v0_3::error_codes::CHALLENGE_ALREADY_USED
-        .code;
+    vti_specs::vtc::join_requests::submit::v0_3::error_codes::CHALLENGE_ALREADY_USED.code;
 
 /// `vtc/join-requests/submit:challengeExpired` — the challenge's window
 /// (`expiresAt` on the `pcs-challenge` response) had passed. `details` carries
 /// `expiredAt` (RFC 3339); `details.reason` is `gone`.
 pub const JOIN_REQUEST_SUBMIT_ERR_CHALLENGE_EXPIRED: &str =
-    trust_tasks_rs::specs::vtc::join_requests::submit::v0_3::error_codes::CHALLENGE_EXPIRED.code;
+    vti_specs::vtc::join_requests::submit::v0_3::error_codes::CHALLENGE_EXPIRED.code;
 
 /// `vtc/join-requests/submit:challengeMismatch` — the proof is bound to a
 /// challenge other than the one the community holds for this applicant:
 /// usually an older one, replaced when a newer challenge was asked for.
 /// `details.reason` is `conflict`.
 pub const JOIN_REQUEST_SUBMIT_ERR_CHALLENGE_MISMATCH: &str =
-    trust_tasks_rs::specs::vtc::join_requests::submit::v0_3::error_codes::CHALLENGE_MISMATCH.code;
+    vti_specs::vtc::join_requests::submit::v0_3::error_codes::CHALLENGE_MISMATCH.code;
 
 /// [`JOIN_REQUEST_SUBMIT_ERR_CHALLENGE_NOT_ISSUED`], answering a supplement.
 pub const JOIN_REQUEST_SUPPLEMENT_ERR_CHALLENGE_NOT_ISSUED: &str =
-    trust_tasks_rs::specs::vtc::join_requests::supplement::v0_1::error_codes::CHALLENGE_NOT_ISSUED
-        .code;
+    vti_specs::vtc::join_requests::supplement::v0_1::error_codes::CHALLENGE_NOT_ISSUED.code;
 
 /// [`JOIN_REQUEST_SUBMIT_ERR_CHALLENGE_ALREADY_USED`], answering a supplement.
 pub const JOIN_REQUEST_SUPPLEMENT_ERR_CHALLENGE_ALREADY_USED: &str =
-    trust_tasks_rs::specs::vtc::join_requests::supplement::v0_1::error_codes::CHALLENGE_ALREADY_USED.code;
+    vti_specs::vtc::join_requests::supplement::v0_1::error_codes::CHALLENGE_ALREADY_USED.code;
 
 /// [`JOIN_REQUEST_SUBMIT_ERR_CHALLENGE_EXPIRED`], answering a supplement.
 pub const JOIN_REQUEST_SUPPLEMENT_ERR_CHALLENGE_EXPIRED: &str =
-    trust_tasks_rs::specs::vtc::join_requests::supplement::v0_1::error_codes::CHALLENGE_EXPIRED
-        .code;
+    vti_specs::vtc::join_requests::supplement::v0_1::error_codes::CHALLENGE_EXPIRED.code;
 
 /// [`JOIN_REQUEST_SUBMIT_ERR_CHALLENGE_MISMATCH`], answering a supplement.
 pub const JOIN_REQUEST_SUPPLEMENT_ERR_CHALLENGE_MISMATCH: &str =
-    trust_tasks_rs::specs::vtc::join_requests::supplement::v0_1::error_codes::CHALLENGE_MISMATCH
-        .code;
+    vti_specs::vtc::join_requests::supplement::v0_1::error_codes::CHALLENGE_MISMATCH.code;
 
 /// `vtc/join-requests/submit:attributesMissing` — a required requested
 /// attribute was not answered. `details.types` names them.

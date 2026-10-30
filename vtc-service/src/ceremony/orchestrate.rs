@@ -557,7 +557,7 @@ pub struct LeaveOutcome {
     pub removed: bool,
 }
 
-use trust_tasks_rs::specs::vtc::members as members_specs;
+use vti_specs::vtc::members as members_specs;
 
 /// `vtc/members/purge:notFound` — no member or tombstone for that DID.
 pub const PURGE_ERR_NOT_FOUND: &str = members_specs::purge::v0_1::error_codes::NOT_FOUND.code;

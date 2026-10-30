@@ -832,7 +832,7 @@ async fn create_did_webvh_accepts_path_mode_field() {
 #[cfg(feature = "webvh")]
 #[tokio::test]
 async fn vti_20_create_states_serverless() {
-    use trust_tasks_rs::specs::vta::webvh::dids::create::v1_2;
+    use vti_specs::vta::webvh::dids::create::v1_2;
 
     let (app, ctx) = TestApp::new().await;
     let admin = setup_context(&app, &ctx, "test-serverless").await;
@@ -1248,7 +1248,7 @@ fn serverless(context: &str, host: &str) -> Value {
 #[cfg(feature = "webvh")]
 #[tokio::test]
 async fn vti_vta_036_create_1_2_defaults_to_webvh_with_the_scid_alias() {
-    use trust_tasks_rs::specs::vta::webvh::dids::create::v1_2;
+    use vti_specs::vta::webvh::dids::create::v1_2;
 
     let (app, ctx) = TestApp::new().await;
     let admin = setup_context(&app, &ctx, "scid-defaults").await;

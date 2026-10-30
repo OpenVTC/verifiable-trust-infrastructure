@@ -23,7 +23,6 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 use trust_tasks_rs::TrustTask;
-use trust_tasks_rs::specs::auth::refresh::v0_2 as refresh_spec;
 use uuid::Uuid;
 use vta_sdk::protocols::auth::{AuthenticateResponse, ChallengeRequest, ChallengeResponse};
 use vti_common::audit::{AuditEvent, MemberPasskeyData};
@@ -35,6 +34,7 @@ use vti_common::auth::passkey::store::{
 use vti_common::auth::session::{
     Session, SessionState, delete_session, now_epoch, store_refresh_index, store_session,
 };
+use vti_specs::auth::refresh::v0_2 as refresh_spec;
 
 use crate::error::AppError;
 use crate::member_portal::{

@@ -26,7 +26,7 @@ use crate::common::signed::{
     admin, call, party_with_role, payload, post, seed_role, signed_to, unsigned,
 };
 
-use trust_tasks_rs::specs::vtc::install::claim as claim_spec;
+use vti_specs::vtc::install::claim as claim_spec;
 
 const START_V0_3_ERR_INVALID_TOKEN: &str = claim_spec::start::v0_3::error_codes::INVALID_TOKEN.code;
 const START_V0_3_ERR_TOKEN_NAMES_NO_DID: &str =
@@ -303,10 +303,7 @@ async fn claim_finish_v0_3_an_invitation_binds_the_approver_at_finish() {
     .await;
     assert_eq!(
         tt_error_code(&booted),
-        Some(
-            trust_tasks_rs::specs::vtc::admin::bootstrap::v0_1::error_codes::ALREADY_BOOTSTRAPPED
-                .code
-        ),
+        Some(vti_specs::vtc::admin::bootstrap::v0_1::error_codes::ALREADY_BOOTSTRAPPED.code),
         "{booted}"
     );
 

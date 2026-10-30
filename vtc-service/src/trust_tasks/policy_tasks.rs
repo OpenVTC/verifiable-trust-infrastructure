@@ -26,15 +26,15 @@
 //! it — the same key a revision's own `ext` names its purpose by.
 
 use serde_json::Value;
-use trust_tasks_rs::specs::did_management::did::register::v0_1 as did_register;
-use trust_tasks_rs::specs::policy::{
-    activate::v0_1 as policy_activate, active::v0_1 as policy_active, get::v0_1 as policy_get,
-    list::v0_3 as policy_list, upsert::v0_3 as policy_upsert,
-};
-use trust_tasks_rs::specs::vtc::policies::test::v0_1 as policy_test;
 use trust_tasks_rs::{Payload, TrustTask};
 use uuid::Uuid;
 use vti_common::auth::extractor::AuthClaims;
+use vti_specs::did_management::did::register::v0_1 as did_register;
+use vti_specs::policy::{
+    activate::v0_1 as policy_activate, active::v0_1 as policy_active, get::v0_1 as policy_get,
+    list::v0_3 as policy_list, upsert::v0_3 as policy_upsert,
+};
+use vti_specs::vtc::policies::test::v0_1 as policy_test;
 
 use super::helpers::{
     TrustTaskOutcome, app_error_to_reject, extended_code, parse_payload, reject_with_code,
