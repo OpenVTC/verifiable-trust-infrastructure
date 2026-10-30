@@ -223,7 +223,7 @@ fn assertion_challenge_key(jti: &Uuid) -> Vec<u8> {
 
 /// Whether the community already has an administrator — then a passkey claim
 /// is an invitation, and finish writes its entry (finish item 9).
-async fn has_administrator(state: &AppState) -> Result<bool, AppError> {
+pub(crate) async fn has_administrator(state: &AppState) -> Result<bool, AppError> {
     Ok(list_acl_entries(&state.acl_ks)
         .await?
         .iter()

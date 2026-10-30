@@ -1376,8 +1376,15 @@ pub async fn claim_finish_v0_3(
              step-up factor must be a key the founder does not already hold for signing",
         ));
     }
-    // Item 6: consume the claim and the token, park the binding for the
-    // bootstrap, mint the setup-session token.
+    // Item 7: on a community that already has an administrator the token is
+    // an invitation, whose administrator entry the invitation wrote, and
+    // vtc/admin/bootstrap answers `alreadyBootstrapped` there — a binding
+    // parked for it would never take effect, leaving the invited
+    // administrator unable to answer a step-up. Such a binding takes effect
+    // here, with the claim.
+    let invitation = crate::routes::install::has_administrator(state).await?;
+    // Item 6: consume the claim and the token, bind the approver — parked for
+    // the bootstrap on a fresh community — and mint the setup-session token.
     state
         .install_store
         .finish_claim(&claim.jti)
@@ -1386,16 +1393,30 @@ pub async fn claim_finish_v0_3(
     ks.remove(claim_key(claim_id)).await?;
     let session_expires =
         now_epoch().saturating_add(crate::install::INSTALL_SESSION_DEFAULT_TTL_SECS);
-    ks.insert(
-        pending_key(&claim.jti.to_string()),
-        &PendingInstallBinding {
-            admin_did: claim.admin_did.clone(),
-            approver_did: approver_did.clone(),
-            label: payload.label.as_ref().map(|l| l.to_string()),
-            expires_at: session_expires,
-        },
-    )
-    .await?;
+    let pending = PendingInstallBinding {
+        admin_did: claim.admin_did.clone(),
+        approver_did: approver_did.clone(),
+        label: payload.label.as_ref().map(|l| l.to_string()),
+        expires_at: session_expires,
+    };
+    let jti = claim.jti.to_string();
+    if invitation {
+        approver::write_binding(
+            ks,
+            &installed_record(&jti, &pending),
+            None,
+            &claim.admin_did,
+        )
+        .await
+        .map_err(|e| match e {
+            BindError::Internal(e) => e,
+            other => AppError::Conflict(format!(
+                "the approver claimed with this invitation cannot be bound: {other:?}"
+            )),
+        })?;
+    } else {
+        ks.insert(pending_key(&jti), &pending).await?;
+    }
     drop(_guard);
     // Item 7: the founder, the approver and the install token's jti.
     audit(
@@ -1410,7 +1431,10 @@ pub async fn claim_finish_v0_3(
         },
     )
     .await?;
-    info!(jti = %claim.jti, admin_did = %claim.admin_did, approver = %approver_did, "install claim 0.3 completed");
+    if invitation {
+        audit_installed(state, &jti, &pending).await?;
+    }
+    info!(jti = %claim.jti, admin_did = %claim.admin_did, approver = %approver_did, invitation, "install claim 0.3 completed");
     Ok(crate::routes::install::issue_setup_session(
         state,
         install_signer,
@@ -1461,22 +1485,11 @@ pub(crate) async fn bind_installed(
     install_jti: &str,
     pending: &PendingInstallBinding,
 ) -> Result<(), AppError> {
-    let record = ApproverRecord {
-        approver_did: pending.approver_did.clone(),
-        subject: pending.admin_did.clone(),
-        label: pending.label.clone(),
-        enrolled_at: Utc::now(),
-        enrolled_via: EnrolledVia::Install,
-        anchor: install_jti.to_string(),
-        last_used_at: None,
-        revoked_at: None,
-        revoked_by: None,
-    };
     {
         let _guard = approver::lock().await;
         approver::write_binding(
             &state.step_up_approvers_ks,
-            &record,
+            &installed_record(install_jti, pending),
             None,
             &pending.admin_did,
         )
@@ -1488,6 +1501,31 @@ pub(crate) async fn bind_installed(
             )),
         })?;
     }
+    audit_installed(state, install_jti, pending).await
+}
+
+/// The binding an install claim makes (`enrolledVia: install`, anchored on the
+/// install token's jti).
+fn installed_record(install_jti: &str, pending: &PendingInstallBinding) -> ApproverRecord {
+    ApproverRecord {
+        approver_did: pending.approver_did.clone(),
+        subject: pending.admin_did.clone(),
+        label: pending.label.clone(),
+        enrolled_at: Utc::now(),
+        enrolled_via: EnrolledVia::Install,
+        anchor: install_jti.to_string(),
+        last_used_at: None,
+        revoked_at: None,
+        revoked_by: None,
+    }
+}
+
+/// Audit an install claim's binding taking effect.
+async fn audit_installed(
+    state: &AppState,
+    install_jti: &str,
+    pending: &PendingInstallBinding,
+) -> Result<(), AppError> {
     audit(
         state,
         &pending.admin_did,

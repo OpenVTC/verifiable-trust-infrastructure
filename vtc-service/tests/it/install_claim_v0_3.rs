@@ -6,8 +6,10 @@
 //!
 //! The start is the token and code; the finish is signed by the DID the token
 //! names, verified against its live document, and carries the approver's
-//! enrolment statement; the approver is bound only when `vtc/admin/bootstrap`
-//! writes the administrator.
+//! enrolment statement; on a fresh community the approver is bound only when
+//! `vtc/admin/bootstrap` writes the administrator, and on an invitation — whose
+//! administrator entry the invitation wrote — at the claim itself (finish
+//! item 7).
 
 use std::sync::Arc;
 
@@ -20,7 +22,9 @@ use vtc_service::acl::VtcRole;
 use vtc_service::install::{InstallTokenSigner, mint_install_token};
 use vtc_service::test_support::TestVtc;
 
-use crate::common::signed::{call, party_with_role, payload, post, signed_to, unsigned};
+use crate::common::signed::{
+    admin, call, party_with_role, payload, post, seed_role, signed_to, unsigned,
+};
 
 use trust_tasks_rs::specs::vtc::install::claim as claim_spec;
 
@@ -247,6 +251,77 @@ async fn vti_apv_016_a_wallet_founder_claims_with_an_approver_and_steps_up_with_
     assert_eq!(payload(&ack)["status"], "recorded", "{ack}");
     let (_, issued) = post(&fix.vtc, &doc).await;
     assert!(tt_error_code(&issued).is_none(), "{issued}");
+}
+
+/// A wallet **invitation** on a community that already has an administrator:
+/// the invitation wrote the invitee's entry, and `vtc/admin/bootstrap` answers
+/// `alreadyBootstrapped` there, so a binding parked for it would never take
+/// effect and the invited administrator could answer no step-up. The claim
+/// binds the approver itself (`vtc/install/claim/finish/0.3` item 7).
+#[tokio::test]
+async fn claim_finish_v0_3_an_invitation_binds_the_approver_at_finish() {
+    let fix = fixture().await;
+    let _existing = admin(&fix.vtc).await;
+    let invitee = Party::new();
+    let approver = Party::new();
+    // What `vtc/admin/invites/create` writes for a DID with no entry.
+    seed_role(&fix.vtc, &invitee.did, VtcRole::Admin, &[]).await;
+    let (token, code) = token_for(&fix, &invitee.did).await;
+
+    let (status, opened) = start(&fix, &token, &code).await;
+    assert_eq!(status, StatusCode::OK, "{opened}");
+    let opened = payload(&opened).clone();
+    let st = enrol_statement(&fix, &approver, &invitee.did, &opened).await;
+    let (status, done) = finish(&fix, &invitee, &opened, &approver.did, st).await;
+    assert_eq!(status, StatusCode::OK, "{done}");
+
+    let bound =
+        vtc_service::acl::approver::stored_live(&fix.vtc.state.step_up_approvers_ks, &invitee.did)
+            .await
+            .unwrap();
+    assert_eq!(
+        bound.len(),
+        1,
+        "the invited administrator's approver is bound at finish"
+    );
+    assert_eq!(bound[0].approver_did, approver.did);
+    assert_eq!(
+        bound[0].enrolled_via,
+        vtc_service::acl::approver::EnrolledVia::Install
+    );
+
+    // The bootstrap is refused on this community, and binds nothing twice.
+    let session_token = payload(&done)["setupSessionToken"].as_str().unwrap();
+    let (_, booted) = post(
+        &fix.vtc,
+        &unsigned(
+            &Party::new(),
+            BOOTSTRAP,
+            json!({ "setupSessionToken": session_token }),
+        ),
+    )
+    .await;
+    assert_eq!(
+        tt_error_code(&booted),
+        Some(
+            trust_tasks_rs::specs::vtc::admin::bootstrap::v0_1::error_codes::ALREADY_BOOTSTRAPPED
+                .code
+        ),
+        "{booted}"
+    );
+
+    // The invited administrator steps up with it.
+    let member = party_with_role(&fix.vtc, VtcRole::Member, &[]).await;
+    let doc = signed_to(
+        &invitee,
+        &fix.audience,
+        INVITE,
+        json!({ "subject": member.did }),
+    )
+    .await;
+    let (_, refusal) = post(&fix.vtc, &doc).await;
+    let request = refusal["payload"]["details"]["stepUpRequest"].clone();
+    assert_eq!(request["accepts"], json!(["approverSigned"]), "{refusal}");
 }
 
 #[tokio::test]

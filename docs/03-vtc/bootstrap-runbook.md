@@ -289,6 +289,10 @@ that DID instead of registering a passkey (`vtc/install/claim/{start,finish}/0.3
    step-up factor (`enrolledVia: install`). They step up with it from then on;
    no passkey is ever registered.
 
+An **additional** administrator invited with `vtc admin invite --did` claims
+the same way, but there is no bootstrap: the invitation already wrote their
+admin row, so the claim binds their approver itself (claim/finish 0.3 item 7).
+
 ### Recovering a wallet administrator who has no step-up factor
 
 An administrator who signs in with a wallet and holds neither a passkey nor a
