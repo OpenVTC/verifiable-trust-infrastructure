@@ -303,7 +303,12 @@ impl VtaClient {
     /// Apply a generic update to an existing webvh DID, identified by the DID
     /// itself.
     ///
-    /// Sends canonical `webvh/dids/update/1.0` on **every** transport.
+    /// Sends canonical `webvh/dids/update/1.0` on **every** transport, or
+    /// `1.1` when `body.scid_also_known_as` is set — the one member 1.0 does
+    /// not have. An unset member keeps the request a 1.0 request, so it still
+    /// reaches a VTA that serves only 1.0 (the same rule as
+    /// [`create_did_webvh_presented`](Self::create_did_webvh_presented) and
+    /// `create/1.2`).
     ///
     /// The canonical task keys on the DID, not `(context_id, scid)` — which is
     /// what kept this call on the legacy message after #861. Callers already
@@ -314,10 +319,9 @@ impl VtaClient {
         did: &str,
         body: crate::protocols::did_management::update::UpdateDidWebvhBody,
     ) -> Result<crate::protocols::did_management::update::UpdateDidWebvhResultBody, VtaError> {
+        let task = update_task_for(&body);
         let payload = flatten_with_did(did, &body)?;
-        let response = self
-            .dispatch_trust_task(crate::trust_tasks::TASK_WEBVH_DIDS_UPDATE_1_0, payload, 60)
-            .await?;
+        let response = self.dispatch_trust_task(task, payload, 60).await?;
         serde_json::from_value(response)
             .map_err(|e| VtaError::Protocol(format!("webvh/dids/update response decode: {e}")))
     }
@@ -564,4 +568,46 @@ pub fn flatten_with_did<T: serde::Serialize>(
     }
     map.insert("did".into(), serde_json::Value::String(did.to_string()));
     Ok(serde_json::Value::Object(map))
+}
+
+/// The `vta/webvh/dids/update` version a body needs: `1.1` when it sets
+/// `scidAlsoKnownAs`, the one member 1.0 does not define, and `1.0` otherwise.
+pub fn update_task_for(
+    body: &crate::protocols::did_management::update::UpdateDidWebvhBody,
+) -> &'static str {
+    if body.scid_also_known_as.is_some() {
+        crate::trust_tasks::TASK_WEBVH_DIDS_UPDATE_1_1
+    } else {
+        crate::trust_tasks::TASK_WEBVH_DIDS_UPDATE_1_0
+    }
+}
+
+#[cfg(test)]
+mod update_version_tests {
+    use super::update_task_for;
+    use crate::protocols::did_management::update::UpdateDidWebvhBody;
+    use crate::trust_tasks::{TASK_WEBVH_DIDS_UPDATE_1_0, TASK_WEBVH_DIDS_UPDATE_1_1};
+
+    /// 1.1 only when stated: an ordinary update still reaches a VTA that
+    /// serves only 1.0, and the alias — either way — is never sent as 1.0,
+    /// whose closed schema would refuse it.
+    #[test]
+    fn only_the_scid_alias_selects_1_1() {
+        assert_eq!(
+            update_task_for(&UpdateDidWebvhBody {
+                label: Some("x".into()),
+                ..Default::default()
+            }),
+            TASK_WEBVH_DIDS_UPDATE_1_0
+        );
+        for on in [true, false] {
+            assert_eq!(
+                update_task_for(&UpdateDidWebvhBody {
+                    scid_also_known_as: Some(on),
+                    ..Default::default()
+                }),
+                TASK_WEBVH_DIDS_UPDATE_1_1
+            );
+        }
+    }
 }

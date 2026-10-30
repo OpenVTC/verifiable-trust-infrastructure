@@ -1652,6 +1652,18 @@ pub const TASK_WEBVH_DIDS_DELETE_1_0: &str =
 pub const TASK_WEBVH_DIDS_UPDATE_1_0: &str =
     "https://trusttasks.org/spec/vta/webvh/dids/update/1.0";
 
+/// `spec/vta/webvh/dids/update/1.1` — `update/1.0` plus `scidAlsoKnownAs`:
+/// list (`true`) or remove (`false`) the log's
+/// `did:scid:vh:1:<scid>?src=<source>` DID URL in `alsoKnownAs` (VTI-KEY-164),
+/// the VTA deriving the DID URL. The response reports `scidAlsoKnownAs` and
+/// `scidDidUrl`. 1.1 extends 1.0: every 1.0 request is a 1.1 request with the
+/// same meaning, so the VTA serves both through one handler and gates them
+/// alike. Payload:
+/// [`crate::protocols::did_management::update::UpdateDidWebvhBody`]. Auth:
+/// Admin role on the DID's context.
+pub const TASK_WEBVH_DIDS_UPDATE_1_1: &str =
+    "https://trusttasks.org/spec/vta/webvh/dids/update/1.1";
+
 /// `spec/vta/webvh/dids/rotate-keys/1.0` — rotate every
 /// verificationMethod's key bytes on a DID and apply the
 /// resulting document change as a single update. Payload:
@@ -2425,6 +2437,7 @@ pub const ALL_URIS: &[&str] = &[
     TASK_WEBVH_DIDS_GET_1_0,
     TASK_WEBVH_DIDS_DELETE_1_0,
     TASK_WEBVH_DIDS_UPDATE_1_0,
+    TASK_WEBVH_DIDS_UPDATE_1_1,
     TASK_WEBVH_DIDS_ROTATE_KEYS_1_0,
     TASK_WEBVH_DIDS_REALIGN_KEYS_1_0,
     TASK_WEBVH_DIDS_REGISTER_WITH_SERVER_1_0,

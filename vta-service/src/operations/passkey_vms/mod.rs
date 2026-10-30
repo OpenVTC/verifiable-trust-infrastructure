@@ -364,6 +364,7 @@ pub async fn finish_enrollment(
         ttl: None,
         label: Some(format!("enroll passkey VM {fragment}")),
         expected_version_id: None,
+        scid_also_known_as: None,
     };
     let result = update_did_webvh(deps, auth, &record.scid, opts, vta_did, channel).await?;
 
@@ -626,6 +627,7 @@ pub async fn revoke_passkey(
         ttl: None,
         label: Some(format!("revoke passkey VM {fragment}")),
         expected_version_id: None,
+        scid_also_known_as: None,
     };
     update_did_webvh(deps, auth, &record.scid, opts, vta_did, channel).await?;
     Ok(())

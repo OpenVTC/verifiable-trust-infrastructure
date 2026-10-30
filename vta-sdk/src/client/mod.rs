@@ -439,7 +439,7 @@ mod webvh;
 ///
 /// Re-exported so the shape can be *built* by anything that needs to assert it,
 /// rather than hand-written a second time and left to drift.
-pub use webvh::flatten_with_did;
+pub use webvh::{flatten_with_did, update_task_for};
 
 #[cfg(feature = "client")]
 mod audit;

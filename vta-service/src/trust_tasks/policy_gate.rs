@@ -129,6 +129,67 @@ async fn task_subject(
     crate::policy::input::subject_of(payload)
 }
 
+/// Versions served through the handler of a version they extend, gated by the
+/// rules that name the version they extend: `(served, extended)`.
+///
+/// An approval rule names one Type URI exactly (`input.request.typeUri ==`),
+/// and an operator's own Rego usually does too. A version that extends one
+/// already gated would otherwise arrive at the PDP as a URI no rule names and
+/// run ungated — the same operation, the same handler, a rotation of the same
+/// update key, with the operator's `pnm approvals require …/update/1.0` read as
+/// not applying. So each row here is decided as **both** URIs and the stricter
+/// answer wins: a rule naming either version gates both, and one naming the
+/// newer version alone still applies to it.
+///
+/// Only a version whose specification `extends` the other and whose dispatch
+/// row is the same handler and class belongs here; the
+/// `extended_versions_share_handler_class_and_plan` test pins the class and
+/// the dry-run.
+pub(crate) const GATED_AS: &[(&str, &str)] = &[(
+    vta_sdk::trust_tasks::TASK_WEBVH_DIDS_UPDATE_1_1,
+    vta_sdk::trust_tasks::TASK_WEBVH_DIDS_UPDATE_1_0,
+)];
+
+/// The version `type_uri` extends and is gated as, if any (see [`GATED_AS`]).
+pub(crate) fn gated_as(type_uri: &str) -> Option<&'static str> {
+    let bare = type_uri.split('#').next().unwrap_or(type_uri);
+    GATED_AS
+        .iter()
+        .find(|(served, _)| *served == bare)
+        .map(|(_, extended)| *extended)
+}
+
+/// How much a disposition asks before the task may run.
+fn strictness(d: Disposition) -> u8 {
+    match d {
+        Disposition::Allow => 0,
+        Disposition::RequireStepUp => 1,
+        Disposition::RequireConsent => 2,
+        Disposition::Deny => 3,
+    }
+}
+
+/// [`policy::decide`], with a version in [`GATED_AS`] also decided as the
+/// version it extends, the stricter answer winning (ties keep the answer for
+/// the URI actually requested).
+pub(crate) fn decide_with_extended(
+    policies: &[(i32, policy::CompiledPolicy)],
+    input: &policy::PolicyInput,
+) -> policy::PolicyDecision {
+    let own = policy::decide(policies, input);
+    let Some(extended) = gated_as(&input.request.type_uri) else {
+        return own;
+    };
+    let mut as_extended = input.clone();
+    as_extended.request.type_uri = extended.to_string();
+    let inherited = policy::decide(policies, &as_extended);
+    if strictness(inherited.decision) > strictness(own.decision) {
+        inherited
+    } else {
+        own
+    }
+}
+
 /// The gate proper: one decision, no transport.
 async fn decide(
     state: &AppState,
@@ -166,7 +227,7 @@ async fn decide(
         }
     };
 
-    let decision = policy::decide(&policies, &input);
+    let decision = decide_with_extended(&policies, &input);
     match decision.decision {
         Disposition::Allow => None,
         Disposition::Deny => Some(GateReject::Reason(RejectReason::PermissionDenied {
@@ -1685,6 +1746,213 @@ mod tests {
                 .await
                 .is_some(),
             "grant is single-use; a further submit re-requires consent"
+        );
+    }
+
+    // ── 1.1 is gated exactly as the 1.0 it extends ──────────────────────
+    //
+    // An approval rule names one Type URI. `vta/webvh/dids/update/1.1` is the
+    // same handler and rotates the same key as 1.0, so a rule an operator wrote
+    // for 1.0 must hold it too — otherwise sending 1.1 is a way around it.
+
+    const UPDATE_1_0: &str = vta_sdk::trust_tasks::TASK_WEBVH_DIDS_UPDATE_1_0;
+    const UPDATE_1_1: &str = vta_sdk::trust_tasks::TASK_WEBVH_DIDS_UPDATE_1_1;
+
+    /// The declarative approvals row for `rules`, under an allow-all baseline,
+    /// with enforcement on — the shape `pnm approvals require` leaves.
+    async fn gate_with_rules(state: &AppState, rules: &[vta_sdk::approvals::ApprovalRule]) {
+        {
+            let mut cfg = state.config.write().await;
+            cfg.policy.enforcement = true;
+            cfg.policy
+                .approver_sets
+                .insert("ops".into(), vec!["did:key:zApprover".into()]);
+        }
+        crate::policy::storage::store_policy(&state.policy_ks, &module("base", 0, ALLOW_ALL))
+            .await
+            .unwrap();
+        crate::policy::seed_declarative_approvals(
+            &state.policy_ks,
+            rules,
+            &std::collections::HashMap::from([(
+                "ops".to_string(),
+                vec!["did:key:zApprover".to_string()],
+            )]),
+            &chrono::Utc::now().to_rfc3339(),
+        )
+        .await
+        .unwrap();
+    }
+
+    #[test]
+    fn update_1_1_is_gated_as_update_1_0() {
+        assert_eq!(gated_as(UPDATE_1_1), Some(UPDATE_1_0));
+        assert_eq!(
+            gated_as(&format!("{UPDATE_1_1}#response")),
+            Some(UPDATE_1_0)
+        );
+        assert_eq!(gated_as(UPDATE_1_0), None);
+        assert_eq!(gated_as(UNGATED_URI), None);
+    }
+
+    /// Every extending version shares the extended one's authoritative class
+    /// and its dry-run planner, so the consent surface shows the same
+    /// consequences (the key rotation) for both.
+    #[test]
+    fn extended_versions_share_handler_class_and_plan() {
+        for (served, extended) in GATED_AS {
+            let a = super::super::class_for(served).expect("served version is dispatched");
+            let b = super::super::class_for(extended).expect("extended version is dispatched");
+            assert_eq!(a, b, "{served} must be classed as {extended}");
+            assert_eq!(a.side_effects, crate::policy::SideEffectLevel::Destructive);
+        }
+    }
+
+    /// A `requires: reauth` rule written for 1.0 sends an un-elevated 1.1
+    /// request to step-up, and lets an elevated one through.
+    #[tokio::test]
+    async fn a_reauth_rule_for_1_0_holds_1_1() {
+        let (state, _dir) = crate::test_support::build_signing_test_app_state().await;
+        gate_with_rules(
+            &state,
+            &[vta_sdk::approvals::ApprovalRule::reauth(UPDATE_1_0)],
+        )
+        .await;
+        let mut auth = crate::test_support::super_admin_claims();
+        auth.acr = "aal1".into();
+        assert!(
+            policy_gate(&state, &auth, UPDATE_1_1, &doc(UPDATE_1_1), &mut Vec::new())
+                .await
+                .is_some(),
+            "1.1 must not slip past a reauth rule naming 1.0"
+        );
+        assert!(
+            policy_gate(&state, &auth, UPDATE_1_0, &doc(UPDATE_1_0), &mut Vec::new())
+                .await
+                .is_some()
+        );
+        // The control: the baseline admits a task no rule names.
+        assert!(
+            policy_gate(
+                &state,
+                &auth,
+                UNGATED_URI,
+                &doc(UNGATED_URI),
+                &mut Vec::new()
+            )
+            .await
+            .is_none()
+        );
+        auth.acr = "aal2".into();
+        assert!(
+            policy_gate(&state, &auth, UPDATE_1_1, &doc(UPDATE_1_1), &mut Vec::new())
+                .await
+                .is_none(),
+            "an elevated session satisfies it, as for 1.0"
+        );
+    }
+
+    /// A `requires: consent` rule written for 1.0 requires consent for 1.1,
+    /// from the 1.0 rule's approver set — decided against the stored policy set
+    /// exactly as the gate decides it — and the gate goes on to the consent
+    /// path, whose first step is the update's own dry-run (here refusing a
+    /// payload that names no DID, which only the consent path plans).
+    #[tokio::test]
+    async fn a_consent_rule_for_1_0_holds_1_1() {
+        let (state, _dir) = crate::test_support::build_signing_test_app_state().await;
+        gate_with_rules(
+            &state,
+            &[vta_sdk::approvals::ApprovalRule::consent(UPDATE_1_0, "ops")],
+        )
+        .await;
+        let mut auth = crate::test_support::super_admin_claims();
+        auth.acr = "aal2".into();
+
+        let policies = crate::policy::load_active_for_context(&state.policy_ks, "default")
+            .await
+            .unwrap();
+        let input = crate::policy::build_policy_input(
+            UPDATE_1_1,
+            &serde_json::json!({}),
+            &auth.did,
+            &auth.acr,
+            &auth.amr,
+            super::super::class_for(UPDATE_1_1),
+        );
+        let decision = decide_with_extended(&policies, &input);
+        assert_eq!(decision.decision, Disposition::RequireConsent);
+        assert_eq!(
+            decision
+                .require_consent
+                .expect("consent terms")
+                .approver_set,
+            "ops"
+        );
+        assert_eq!(
+            crate::policy::decide(&policies, &input).decision,
+            Disposition::Allow,
+            "without the extension the 1.0 rule would not have fired"
+        );
+
+        let outcome = policy_gate(&state, &auth, UPDATE_1_1, &doc(UPDATE_1_1), &mut Vec::new())
+            .await
+            .expect("1.1 is held by the 1.0 rule");
+        let body: Value = serde_json::from_slice(&outcome.body).unwrap();
+        assert!(
+            body.to_string().contains("invalid webvh update payload"),
+            "the consent path dry-ran the update: {body}"
+        );
+    }
+
+    /// A rule naming 1.1 alone still applies to 1.1 (the stricter answer wins,
+    /// never the inherited one by default), and does not reach back to 1.0.
+    #[tokio::test]
+    async fn a_rule_naming_1_1_holds_1_1_only() {
+        let (state, _dir) = crate::test_support::build_signing_test_app_state().await;
+        gate_with_rules(
+            &state,
+            &[vta_sdk::approvals::ApprovalRule::reauth(UPDATE_1_1)],
+        )
+        .await;
+        let mut auth = crate::test_support::super_admin_claims();
+        auth.acr = "aal1".into();
+        assert!(
+            policy_gate(&state, &auth, UPDATE_1_1, &doc(UPDATE_1_1), &mut Vec::new())
+                .await
+                .is_some()
+        );
+        assert!(
+            policy_gate(&state, &auth, UPDATE_1_0, &doc(UPDATE_1_0), &mut Vec::new())
+                .await
+                .is_none()
+        );
+    }
+
+    /// The stricter of the two decisions wins, whichever URI produced it.
+    #[test]
+    fn the_stricter_decision_wins() {
+        let deny_1_0 = format!(
+            "package vta.policy\nimport rego.v1\n\
+             decision := {{\"decision\": \"deny\"}} if input.request.typeUri == \"{UPDATE_1_0}\"\n\
+             decision := {{\"decision\": \"allow\"}} if input.request.typeUri != \"{UPDATE_1_0}\""
+        );
+        let policies = vec![(0, crate::policy::compile(&deny_1_0, "deny-1-0").unwrap())];
+        let mut input = crate::policy::build_policy_input(
+            UPDATE_1_1,
+            &serde_json::json!({}),
+            "did:key:zCaller",
+            "aal2",
+            &[],
+            None,
+        );
+        assert_eq!(
+            decide_with_extended(&policies, &input).decision,
+            Disposition::Deny
+        );
+        input.request.type_uri = UNGATED_URI.into();
+        assert_eq!(
+            decide_with_extended(&policies, &input).decision,
+            Disposition::Allow
         );
     }
 }

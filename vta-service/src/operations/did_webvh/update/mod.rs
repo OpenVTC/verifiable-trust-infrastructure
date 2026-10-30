@@ -38,6 +38,7 @@ mod options;
 mod orchestrator;
 mod plan;
 mod rotate;
+mod scid_alias;
 mod state;
 mod validate;
 

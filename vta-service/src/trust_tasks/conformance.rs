@@ -4207,6 +4207,37 @@ fn table() -> Vec<(&'static str, Conformance)> {
                     update_keys_count: 1,
                     pre_rotation_key_count: 2,
                     serverless: false,
+                    scid_also_known_as: None,
+                    scid_did_url: None,
+                })
+            ),
+        ));
+        // 1.1: the alias asked for by name, and the two members a 1.1 response
+        // always reports.
+        t.push((
+            uris::TASK_WEBVH_DIDS_UPDATE_1_1,
+            checked!(
+                specs::vta::webvh::dids::update::v1_1::Payload,
+                specs::vta::webvh::dids::update::v1_1::Response,
+                vta_sdk::client::flatten_with_did(
+                    "did:webvh:scid:vta.example",
+                    &UpdateDidWebvhBody {
+                        scid_also_known_as: Some(true),
+                        expected_version_id: Some("1-zPrior".into()),
+                        ..Default::default()
+                    },
+                )
+                .expect("the producer's own shaping succeeds"),
+                to_v(UpdateDidWebvhResultBody {
+                    did: "did:webvh:scid:vta.example".into(),
+                    new_version_id: "2-zVer".into(),
+                    new_scid: "scid".into(),
+                    new_log_entry: "{}".into(),
+                    update_keys_count: 1,
+                    pre_rotation_key_count: 2,
+                    serverless: false,
+                    scid_also_known_as: Some(true),
+                    scid_did_url: Some("did:scid:vh:1:scid?src=vta.example".into()),
                 })
             ),
         ));
