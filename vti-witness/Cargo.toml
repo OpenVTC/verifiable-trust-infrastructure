@@ -43,7 +43,7 @@ vti-secrets = { path = "../vti-secrets", version = "0.25" }
 # `did_key::secrets_from_bundle`. `proof-verify` arrives with `client` (through
 # `provision-client`): `trust_task_proof` verifies an inbound document's proof,
 # `trust_task_sign` signs every reply.
-vta-sdk = { path = "../vta-sdk", version = "0.76", features = [
+vta-sdk = { path = "../vta-sdk", version = "0.77", features = [
   "didcomm",
   "provision-client",
   "tsp",

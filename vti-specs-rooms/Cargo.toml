@@ -2,7 +2,7 @@
 name = "vti-specs-rooms"
 description = "VTI's generated Trust Task wire types: the rooms/* family. Kept alone so vti-rooms-wasm compiles nothing else, at the versions trust-tasks.lock pins"
 readme = "README.md"
-version = "0.1.0"
+version = "0.2.0"
 edition.workspace = true
 # Published, because `vta-sdk` is and re-exports these types through
 # `vti-specs` (`vta_sdk::specs`): a published crate's whole closure must be.

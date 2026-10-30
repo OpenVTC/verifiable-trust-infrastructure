@@ -2,7 +2,7 @@
 name = "vtc-service"
 description = "Service for Verifiable Trust Communities"
 readme = "README.md"
-version = "0.16.0"
+version = "0.17.0"
 edition.workspace = true
 # Published, so an operator can install the VTC with `cargo install
 # vtc-service` (the `vtc` binary), the way `pnm-cli` and `cnm-cli` are installed.
@@ -174,7 +174,7 @@ path = "tests/it/main.rs"
 vti-vetting-pcs = { path = "../vti-vetting-pcs", version = "0.9", optional = true }
 vti-voting = { path = "../vti-voting", version = "0.5", optional = true }
 predicate-credential-system = { version = "0.1", optional = true }
-vti-rooms = { path = "../vti-rooms", version = "0.23" }
+vti-rooms = { path = "../vti-rooms", version = "0.24" }
 vti-rooms-dtg = { path = "../vti-rooms-dtg", version = "0.25" }
 vti-common = { path = "../vti-common", version = "0.52", features = [
   "passkey",
@@ -231,7 +231,7 @@ image = { version = "0.25", default-features = false, features = ["png", "jpeg",
 # factory + `*SecretStore` names are a thin facade over these). Per-backend
 # features are activated by this crate's matching features above.
 vti-secrets = { path = "../vti-secrets", version = "0.25" }
-vta-sdk = { path = "../vta-sdk", version = "0.76", features = [
+vta-sdk = { path = "../vta-sdk", version = "0.77", features = [
   "didcomm",
   "session",
   "config-session",
