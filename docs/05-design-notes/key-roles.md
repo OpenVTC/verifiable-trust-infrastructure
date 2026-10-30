@@ -46,6 +46,7 @@ Nothing normative changes. The additions explain the design to readers who are n
 - **§19 Principles, precedents and the balance.** Where the design follows established practice (NIST key separation and assurance levels, DNSSEC, TUF, Matrix, social recovery), and the rules by which it trades simplicity against security and privacy. Two recommendations come out of it (§19.4).
 - **§5.4 The level is set per service.** Decided 2026-10-31: the default level, and a binding floor, come from the service's DID template, because a mediator, a witness, a community and a network do not need the same custody. A proposed default for every built-in template is listed.
 - **§15 The old key on a raise.** Decided 2026-10-31: retiring or revoking it is recommended, not required. What keeping it means is spelled out.
+- **§12.7 Post-quantum custody.** FROST cannot carry a post-quantum key and no post-quantum threshold signature is standardised. The commitment is already quantum-safe; the plan is FROST now, a hybrid custodian with a policy-enforced ML-DSA threshold when wanted, and a true post-quantum threshold scheme later, each a witnessed entry on the same DID.
 
 ---
 
@@ -531,6 +532,29 @@ A Shamir split may still back up a separately held key, kind (a), as protection 
   - The PoP and the recovery proof are unchanged: a group signature is an Ed25519 signature.
 - **Deferred.** The ceremony tasks are only outlined in CONVENTIONS §19. They are `vta/threshold/dkg/{commit,share,confirm}`, `sign/{request,commit,share}`, `refresh/*` and `liveness`. Each needs its own specification before implementation.
 
+### 12.7 Post-quantum custody
+
+**FROST cannot carry a post-quantum key.** It is a Schnorr scheme over a discrete-log group: shares, nonces and aggregation all live in that group, so a quantum computer that breaks Ed25519 breaks the FROST group key with it. There is no FROST for ML-DSA, and as of October 2026 there is no standard post-quantum threshold signature of any kind:
+
+- **NIST's threshold process is open, not finished.** IR 8214C, the first call for multi-party threshold schemes, was finalised in January 2026. Preview talks ran through October 2026, and full submission packages are due at the end of 2026. A standard is years away.
+- **Lattice threshold schemes exist, with their own signature type.** Ringtail (IEEE S&P 2025) is two-round and scales to many parties; Threshold Raccoon and the NIST-call entries Tanuki and TalonG are the same family. None produces a signature a FIPS 204 verifier accepts, so every verifier would need new code.
+- **ML-DSA-compatible threshold signing is a 2026 preprint.** A FIPS 204-compatible scheme using a Shamir nonce DKG was posted in January 2026, and P-DualTS was previewed at NIST in October. Earlier attempts reached six signers. None is peer-reviewed or in an audited library.
+- **Generic MPC over ML-DSA** is possible in principle and impractical here: rejection sampling makes each signature minutes of multi-party computation, and no one ships it.
+
+**Where the quantum risk actually sits.** Signatures and encryption fail differently under a quantum adversary (§3). Traffic encrypted today to an X25519 `messaging` key can be recorded now and read later, so the `messaging` role is where a hybrid ML-KEM key matters first, and that is a transport question outside this note. A signature only needs to be unforgeable at the moment it is checked, so for signing keys the question is which key will still be relied on when a cryptographically relevant quantum computer exists. The **recovery key** is the extreme case: committed years ahead, used once, and the thing that takes the identity back. The `attestation` keys are next, through long-lived credentials. The `operational` key, checked live and rotated often, is the least exposed.
+
+One part of the design is already quantum-safe: **the commitment.** `nextKeyHashes` holds a hash of the recovery key, which reveals nothing about it until it is used. What must be post-quantum is the signature made at recovery time, and nothing else.
+
+**The plan, in three steps that never change the identifier:**
+
+1. **Now: FROST over Ed25519, as §12 specifies.** The moment of recovery is classical today, and the commitment that protects the key until then is not.
+2. **When a post-quantum side is wanted: a hybrid custodian, with the threshold enforced by policy rather than by the cryptography.** The `vtc-host` template already mints an Ed25519 key beside an ML-DSA-44 key and emits proof sets, so the pattern exists in the workspace. A hybrid recovery custodian is the FROST group key **plus one whole ML-DSA-44 key per custodian**. The recovery entry carries a proof set: the FROST signature **and** at least t ML-DSA proofs from the group's n keys, and the witness and every VTI verifier require both. Each custodian still fetches the history, checks the entry itself and approves at its own VTA (VTI-KEY-128, 206), so every operational property of §12.2 holds, including identifiable abort, since each ML-DSA proof names its signer. What is lost is the single-signature elegance: the post-quantum side reveals the group's size and threshold, which the FROST side hid (§17), and did:webvh's own log-entry proof stays `eddsa-jcs-2022`, because didwebvh 1.0 mandates it, so the ML-DSA proofs are checked by VTI verifiers and the witness beyond the method. Under did:webs the same thing is native: the `nt` threshold over whole keys, which may be post-quantum.
+3. **Later: replace the post-quantum side with a true threshold scheme**, once one is standardised and in an audited implementation. `RecoveryCommitment` already carries `custodian: thresholdGroup` and a `keyType`, so a post-quantum key type is an additive change. And because the recovery key authorises its own replacement (§14), the move is one witnessed entry, not a new identity.
+
+**Why not wait, or go hybrid from the start.** Waiting leaves identities with no recovery at all, against a threat that does not yet exist, when the commitment is already safe and the key can be swapped later. Going hybrid from the start costs every level-3 operator n post-quantum keys and a proof-set verifier before any verifier needs one. The design therefore makes step 2 an option on the custodian, not a requirement, and makes step 3 free.
+
+**Hash-based keys** (SLH-DSA, XMSS, LMS) cannot be thresholded in practice, but a single SLH-DSA key is a sound post-quantum choice for a kind (a) separately held recovery key, and its hash commitment is no different from any other.
+
 ## 13. Rotation, retirement, revocation and recovery
 
 This section is unchanged from the first design, for levels 2 and 3. At level 1, the general rotation rules apply (VTI-KEY-040 to 043).
@@ -747,3 +771,6 @@ The survey of today's code, and the build order, are in [key-roles-implementatio
 - Matrix MSC1756, *Cross-signing devices with device signing keys*.
 - Buterin, V., *Why we need wide adoption of social recovery wallets*, 2021.
 - did:webvh, <https://identity.foundation/didwebvh/>.
+- NIST IR 8214C, *First Call for Multi-Party Threshold Schemes*, January 2026, and the MPTS 2026 / TCPT preview talks, <https://csrc.nist.gov/projects/threshold-cryptography>.
+- Boschini et al., *Ringtail: Practical Two-Round Threshold Signatures from Learning with Errors*, IEEE S&P 2025, <https://eprint.iacr.org/2024/1113>.
+- del Pino et al., *Threshold Raccoon*, Eurocrypt 2024; *FIPS 204-Compatible Threshold ML-DSA via Shamir Nonce DKG*, preprint, January 2026, <https://arxiv.org/abs/2601.20917>.
