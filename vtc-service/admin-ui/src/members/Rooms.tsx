@@ -1185,37 +1185,42 @@ function AddToRoom({ wallet, hostDid, info }: { wallet: WalletRooms; hostDid: st
         <FilePlus2 size={18} aria-hidden="true" />
         <h2 id="add-heading">Add to this room</h2>
       </div>
+      <p className="muted small">
+        Your wallet shows you what will be added, signed as <b title={info.member}>{authorName(info.member)}</b>,
+        before anything is sent.
+      </p>
+      {!sealedTier && (
+        <p className="muted small">
+          This room is open: a note is stored in the clear, so its host can read it as well as its members.
+        </p>
+      )}
+      <label className="field">
+        <span>Title</span>
+        <input value={title} maxLength={512} onChange={(e) => setTitle(e.target.value)} />
+      </label>
+      <label className="field">
+        <span>Note</span>
+        <textarea value={body} rows={5} onChange={(e) => setBody(e.target.value)} />
+      </label>
+      <div className="actions">
+        <button
+          type="button"
+          className="btn btn-primary"
+          disabled={!title.trim() || note.isPending}
+          onClick={() => {
+            setDone(null);
+            note.mutate();
+          }}
+        >
+          <NotebookPen size={14} aria-hidden="true" /> {note.isPending ? "Waiting for your wallet…" : "Add note"}
+        </button>
+      </div>
       {!sealedTier ? (
-        <p className="muted">
-          This room is open: what is in it is readable by its host. Adding from the portal is for attributed rooms.
+        <p className="muted small">
+          Files go in attributed and private rooms: a file's description is sealed inside its record.
         </p>
       ) : (
         <>
-          <p className="muted small">
-            Your wallet shows you what will be added, signed as <b title={info.member}>{authorName(info.member)}</b>,
-            before anything is sent.
-          </p>
-          <label className="field">
-            <span>Title</span>
-            <input value={title} maxLength={512} onChange={(e) => setTitle(e.target.value)} />
-          </label>
-          <label className="field">
-            <span>Note</span>
-            <textarea value={body} rows={5} onChange={(e) => setBody(e.target.value)} />
-          </label>
-          <div className="actions">
-            <button
-              type="button"
-              className="btn btn-primary"
-              disabled={!title.trim() || note.isPending}
-              onClick={() => {
-                setDone(null);
-                note.mutate();
-              }}
-            >
-              <NotebookPen size={14} aria-hidden="true" /> {note.isPending ? "Waiting for your wallet…" : "Add note"}
-            </button>
-          </div>
           <label className="field">
             <span>Or a file</span>
             <input type="file" onChange={(e) => setFile(e.target.files?.[0] ?? null)} />
