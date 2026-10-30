@@ -1918,7 +1918,7 @@ fn table() -> Vec<Conformance> {
                 "webauthnResponse": { "id": "AX6nVQ8s", "type": "public-key" },
                 "webauthnAssertion": { "id": "AX6nVQ8s", "type": "public-key" },
             }),
-            // `ClaimFinishResponse` — routes/install.rs.
+            // Built from the generated type by `install_tasks`.
             json!({
                 "adminDid": "did:key:zDnaerDaTF5BXEavCrfRZEk316dpbLsfPDZ3WJ5hRTPFU2169",
                 "setupSessionToken": "eyJhbGciOiJFZERTQSJ9.e30.sig",
@@ -1948,7 +1948,7 @@ fn table() -> Vec<Conformance> {
                 "label": "Browser plugin",
                 "statement": { "id": "urn:uuid:3a6c1e0b-9d2f-4b7a-8c15-2e4f6a8b0c01" },
             }),
-            // `ClaimFinishResponse` — the same body the passkey finish answers.
+            // Built from the generated type by `install_tasks`.
             json!({ "adminDid": OTHER_DID, "setupSessionToken": "eyJhbGciOiJFZERTQSJ9.e30.sig" })
         ),
         // ─── invitations ─────────────────────────────────────────────

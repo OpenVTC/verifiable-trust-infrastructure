@@ -138,7 +138,22 @@ async fn handle_claim_finish_v0_3(
     };
     let statement = doc.payload.get("statement").cloned().unwrap_or(Value::Null);
     match crate::step_up_approver::claim_finish_v0_3(state, &signer, &payload, &statement).await {
-        Ok(resp) => success_response(&doc, resp),
+        Ok(claimed) => {
+            let built: Result<claim_finish_v0_3::Response, _> =
+                claim_finish_v0_3::Response::builder()
+                    .admin_did(claimed.admin_did)
+                    .setup_session_token(claimed.setup_session_token)
+                    .try_into();
+            match built {
+                Ok(resp) => success_response(&doc, resp),
+                Err(e) => super::helpers::app_error_to_reject(
+                    &doc,
+                    &vti_common::error::AppError::Internal(format!(
+                        "claim/finish 0.3 response: {e}"
+                    )),
+                ),
+            }
+        }
         Err(e) => approver_refusal(&doc, &e),
     }
 }
@@ -225,7 +240,21 @@ async fn handle_claim_finish(state: &AppState, doc: TrustTask<Value>) -> TrustTa
         webauthn_assertion: Value::Object(payload.webauthn_assertion),
     };
     match crate::routes::install::claim_finish(state, req).await {
-        Ok(resp) => success_response(&doc, resp),
+        Ok(claimed) => {
+            let built: Result<claim_finish::Response, _> = claim_finish::Response::builder()
+                .admin_did(claimed.admin_did)
+                .setup_session_token(claimed.setup_session_token)
+                .try_into();
+            match built {
+                Ok(resp) => success_response(&doc, resp),
+                Err(e) => super::helpers::app_error_to_reject(
+                    &doc,
+                    &vti_common::error::AppError::Internal(format!(
+                        "claim/passkey/finish response: {e}"
+                    )),
+                ),
+            }
+        }
         Err(e) => task_error_to_reject(&doc, &e),
     }
 }

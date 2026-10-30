@@ -46,7 +46,6 @@ use std::sync::Arc;
 
 use axum::http::StatusCode;
 use base64::Engine as _;
-use serde::Serialize;
 use serde_json::{Value, json};
 use tracing::{info, warn};
 use uuid::Uuid;
@@ -115,20 +114,19 @@ impl std::fmt::Debug for ClaimFinishRequest {
     }
 }
 
-/// The body of `vtc/install/claim/passkey/finish/0.1#response`, and of
-/// `vtc/install/claim/finish/0.3#response`, which answers the same two members.
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-#[derive(utoipa::ToSchema)]
-pub struct ClaimFinishResponse {
+/// What a completed claim yields — the administrator's DID and the
+/// setup-session token minted for it — for the passkey finish and the wallet
+/// finish (0.3) alike. Not a wire type: `trust_tasks::install_tasks` answers
+/// each with its own generated `#response`.
+pub struct ClaimedSetupSession {
     pub admin_did: String,
     pub setup_session_token: String,
 }
 
 /// Written by hand so the setup-session token never reaches a log: a derived `Debug` would print it.
-impl std::fmt::Debug for ClaimFinishResponse {
+impl std::fmt::Debug for ClaimedSetupSession {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ClaimFinishResponse")
+        f.debug_struct("ClaimedSetupSession")
             .field("admin_did", &self.admin_did)
             .field("setup_session_token", &"<redacted>")
             .finish()
@@ -385,7 +383,7 @@ pub(crate) async fn claim_start(
 pub(crate) async fn claim_finish(
     state: &AppState,
     req: ClaimFinishRequest,
-) -> Result<ClaimFinishResponse, TaskError> {
+) -> Result<ClaimedSetupSession, TaskError> {
     let signer = require_install_signer(state)?;
     let webauthn = require_webauthn(state)?;
     // Item 8: the response is signed. A community with nothing to sign with
@@ -659,7 +657,7 @@ pub(crate) async fn issue_setup_session(
     signer: &InstallTokenSigner,
     admin_did: String,
     jti: &Uuid,
-) -> Result<ClaimFinishResponse, AppError> {
+) -> Result<ClaimedSetupSession, AppError> {
     let issuer_did = state
         .config
         .read()
@@ -676,7 +674,7 @@ pub(crate) async fn issue_setup_session(
         INSTALL_SESSION_DEFAULT_TTL_SECS,
     )?;
 
-    Ok(ClaimFinishResponse {
+    Ok(ClaimedSetupSession {
         admin_did,
         setup_session_token,
     })
