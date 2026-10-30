@@ -34,7 +34,7 @@ serde_json = { workspace = true }
 trust-tasks-rs = { workspace = true }
 # The generated Trust Task wire types, at the versions VTI pins (CLAUDE.md,
 # "Pinning a task version").
-vti-specs = { path = "../vti-specs", version = "0.1" }
+vti-specs = { path = "../vti-specs", version = "0.2" }
 # Parsing the caller-supplied `issuedAt` (RFC 3339) into the DateTime<Utc> the
 # TrustTask envelope carries.
 chrono = { workspace = true }

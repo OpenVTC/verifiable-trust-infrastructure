@@ -73,7 +73,7 @@ vti-specs-rooms = { path = "../vti-specs-rooms", version = "0.2" }
 # Optional, and load-bearing that it is: `vti-common` is server-side by its own
 # description and pulls axum, fjall and tokio, none of which build for wasm. It
 # is the `host` feature's whole content.
-vti-common = { path = "../vti-common", version = "0.52", optional = true }
+vti-common = { path = "../vti-common", version = "0.53", optional = true }
 # Room files (`blobs`), also host-only: one lock serialising reservations and
 # reference counts, minted transfer handles, and the collection log line.
 tokio = { workspace = true, optional = true, features = ["sync", "fs"] }

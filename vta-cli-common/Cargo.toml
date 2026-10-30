@@ -21,7 +21,7 @@ agent-names = ["vta-sdk/agent-names"]
 trust-tasks-rs = { workspace = true }
 # The generated Trust Task wire types, at the versions VTI pins (CLAUDE.md,
 # "Pinning a task version").
-vti-specs = { path = "../vti-specs", version = "0.1" }
+vti-specs = { path = "../vti-specs", version = "0.2" }
 # `time` for the consent loop's bounded wait between polls.
 tokio = { workspace = true, features = ["time"] }
 vta-sdk = { path = "../vta-sdk", version = "0.77", features = [
@@ -34,7 +34,7 @@ vta-sdk = { path = "../vta-sdk", version = "0.77", features = [
   "acl-setup",
 ] }
 # Owner-only file-permission helper (`secure_file`), shared workspace-wide.
-vti-common = { path = "../vti-common", version = "0.52" }
+vti-common = { path = "../vti-common", version = "0.53" }
 # The room client. Named for the VTC, but host-neutral by construction: a room's
 # protocol is the same whether a community or a standalone `room-host` serves it,
 # and `room-host`'s own example drives itself with this crate. Taking a second
