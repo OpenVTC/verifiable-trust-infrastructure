@@ -46,6 +46,8 @@ Nothing normative changes. The additions explain the design to readers who are n
 - **§19 Principles, precedents and the balance.** Where the design follows established practice (NIST key separation and assurance levels, DNSSEC, TUF, Matrix, social recovery), and the rules by which it trades simplicity against security and privacy. Two recommendations come out of it (§19.4).
 - **§5.4 The level is set per service.** Decided 2026-10-31: the default level, and a binding floor, come from the service's DID template, because a mediator, a witness, a community and a network do not need the same custody. A proposed default for every built-in template is listed.
 - **§15 The old key on a raise.** Decided 2026-10-31: retiring or revoking it is recommended, not required. What keeping it means is spelled out.
+- **§1.1 Threat model.** The adversaries A1 to A7 the levels answer, as a primary classical model, and a secondary quantum-capable model that differs in exactly one place: the recovery custodian. Added after review.
+- **§12.0 Is threshold cryptography the right tool?** After review: a policy threshold of whole, FIPS-approved keys does the recovery job without a DKG, nonces or ceremonies, and is post-quantum with ML-DSA. Recommended as the baseline, with FROST as an option in the primary model, pending the maintainer's decision.
 - **§12.7 Post-quantum custody.** FROST cannot carry a post-quantum key and no post-quantum threshold signature is standardised. The commitment is already quantum-safe; the plan is FROST now, a hybrid custodian with a policy-enforced ML-DSA threshold when wanted, and a true post-quantum threshold scheme later, each a witnessed entry on the same DID.
 
 ---
@@ -71,6 +73,34 @@ Today one Ed25519 key signs both. `create_did_webvh` mints one key into `authent
 5. **Rotation cannot say why.** A verifier cannot tell a routine rotation from a compromise.
 
 Not every service needs every fix, and each fix costs the operator something. Mediators, witnesses, a hobby community and a national trust network do not need the same custody.
+
+### 1.1 Threat model
+
+Every "protects against" and "survives" in this note is a claim against one of the adversaries below, and means one thing: **after the event, the identity is still under its operator's control, and a verifier can tell which artefacts to distrust.** It never means the event did no harm.
+
+**Assets.** The seal (`attestation` keys), the identity (the `update` authority), the traffic keys (`operational`, `messaging`), the custody records, and every credential and status list in force.
+
+**The primary model: a classical adversary.** Ed25519, X25519, ML-DSA and SHA-256 are unbroken. This is what the design is for, and what every level is measured against.
+
+| | Adversary | Holds, or can do | Answered by |
+|---|---|---|---|
+| **A1** | Network | Reads and injects traffic; holds no key | Signed traffic, encrypted envelopes (§3). Out of scope beyond key separation |
+| **A2** | **Compromised service process** (the likeliest) | Everything the VTC or VTN process holds; can call the VTA's oracle within policy | **Level 2**: the process holds only traffic keys (T1) |
+| **A3** | Backup or seed exposure | A copy of a backup, a store or a mnemonic, offline | **Level 3**: role keys generated, in no backup, under a KEK the seed cannot make (T3) |
+| **A4** | **Compromised VTA** (host, operator credentials, an insider at the operator) | Everything the VTA holds; can publish history entries | **Level 3**: a recovery key the VTA cannot reach, and a witness that refuses an entry disarming it (T2) |
+| **A5** | Lost VTA (failure, not an attacker) | Nothing; the keys are gone | A backup at levels 1 and 2; the recovery custodian at level 3 (T4) |
+| **A6** | Colluding or compromised custodians | Fewer than the threshold of custodians, or a custodian who signs what it is handed | The threshold itself; every custodian checks the entry independently (VTI-KEY-128, 206); a hold period (open question 5) |
+| **A7** | Malicious or failed witness | Can refuse to co-sign; cannot forge | More than one witness; a witness is a liveness dependency, not an authority |
+
+**The secondary model: a quantum-capable adversary (AQ).** Shor's algorithm is available, so the adversary forges any Ed25519 or ECDSA signature and recovers any X25519 key, at the time it holds the quantum computer. It still cannot invert a hash. Consequences, by key kind (§3):
+
+- every classical **signature** becomes forgeable *from then on*: what matters is which keys will still be relied on at that time, which is the recovery key first, `attestation` keys second, and `operational` keys barely at all;
+- every **encryption key** fails *retroactively*: traffic recorded today to an X25519 `messaging` key is readable then, so that is where a hybrid ML-KEM key matters first, and that is a transport question outside this note;
+- every **hash commitment**, including `nextKeyHashes` and the recovery commitment, stays sound.
+
+The two models lead to different choices in exactly one place: the recovery custodian (§12). FROST protects in the primary model and not at all in the secondary one. A policy threshold of whole ML-DSA keys protects in both. **Which model a community designs for is the community's choice**, and the custodian form is chosen per DID, not by the specification (§12.0).
+
+**Assumptions.** The operator is honest when the identity is created. The custodians' VTAs are in distinct protection boundaries (§12.3). A verifier re-resolves within 24 hours (VTI-KEY-134). The witness is outside the VTA's boundary.
 
 ## 2. DID classes
 
@@ -469,9 +499,46 @@ Decided by the maintainer on 2026-10-30, and unchanged by this revision:
 - **An air-gap form:** `pnm dids create` (and `pnm dids upgrade`) prints the `previewId` and the exact string to sign. It takes the signature back as `--recovery-key did:key:… --recovery-pop …`. `--recovery-key-file` signs in-process.
 - **Hardware tokens** are deferred.
 
-## 12. Threshold custody with FROST
+## 12. Threshold custody
 
-### 12.1 What it is
+### 12.0 Is threshold cryptography the right tool? (review, 2026-10-31)
+
+A reviewer asked whether MPC or threshold signing is needed for the recovery mechanism at all, given that it is not post-quantum and that a satisfactory recovery mechanism exists that uses only FIPS-approved cryptography and no threshold cryptography: a threshold **condition** over whole keys, as W3C CCG Verifiable Conditions expresses it. The question is right, and the answer changes the recommendation.
+
+**What the job actually is.** The recovery key signs once in most identities' lives. It must not be usable by any single party; every party must check the entry it contributes to; the group must survive the loss of a party; and the rule must be enforceable by the witness and by verifiers, not by the VTA. Nothing in that list requires the parties' signatures to combine into one.
+
+**Two forms of a threshold custodian** meet it:
+
+| | **(c1) Policy threshold of whole keys** | **(c2) FROST, a single group key** |
+|---|---|---|
+| What each custodian holds | One whole key of its own | One share of one key |
+| What the entry carries | A proof set: at least *t* of the *n* custodians' signatures | One ordinary Ed25519 signature |
+| Who enforces *t*-of-*n* | The witness and every VTI verifier, from a declared condition. Native under did:webs (`nt`) | The mathematics; no one needs to know there was a group |
+| Cryptography | Any approved signature: Ed25519 today, **ML-DSA-44 for the secondary model**. FIPS-approved throughout | Schnorr threshold signing per RFC 9591, an IRTF informational document. Not a FIPS-approved process |
+| Post-quantum | Yes, with ML-DSA keys | No, and no path to it |
+| New machinery | None: each custodian signs with its own key, as any VTA does | A dealerless DKG, single-use nonces, refresh, identifiable abort, liveness, and the ceremony Trust Tasks of §12.6 |
+| Audited implementations | Every signature library | The Zcash Foundation's `frost` crates, audited in 2023 |
+| Privacy | The group's size and its members' public keys are visible in the entry and in the committed hashes | One key; the group is invisible (§17) |
+| did:webvh fit | The log's own proof is still made by one committed update key; the condition is enforced by the witness and VTI verifiers beyond the method | A plain update key; nothing beyond the method |
+| Independent checking by each custodian | Inherent: each signs the exact entry itself | Required by rule (VTI-KEY-128), since a share could sign a handed digest |
+| Identifiable abort | Inherent: each signature names its signer | By rule, verifying shares before aggregation |
+
+Everything §12.2 demands of the FROST form, form (c1) gets for free or does not need, except privacy of the group and the single-key fit to did:webvh.
+
+**Recommendation (pending the maintainer's decision).** Make **(c1) the baseline** form of a threshold custodian, and keep **(c2) FROST as an option within the primary threat model only**, for an operator who wants the group hidden or a key no verifier has to treat specially. Both are level 3. A community picks the form by its threat model (§1.1): a community that designs for the secondary model picks (c1) over ML-DSA; one that does not may pick either, and (c1) over Ed25519 is still the simpler choice.
+
+**Why the first draft chose FROST.** It made a threshold custodian invisible to did:webvh, to witnesses and to verifiers: no method change, no verifier change, no new proof shape. That is still true, and still worth something. It is not worth a DKG, a nonce discipline that is fatal if wrong, four ceremony specifications and no post-quantum path, when the alternative is a proof set that verifiers in this workspace already handle.
+
+**What changes if accepted.**
+- `RecoveryCommitment.custodian: thresholdGroup` gains a `form`: `condition` or `frost`. For `condition`, the commitment names *n* key commitments and a threshold, and `keyAssurance.recoveryCommitment` carries the condition rather than one hash. Verifiable Conditions' `ConditionalProof2022` shape (`threshold`, `conditionThreshold`) is the natural expression, used as a value rather than a verification method, since the recovery key is never a verification method (VTI-KEY-093).
+- VTI-KEY-210 to 221 are scoped to the FROST form. The condition form needs three new rules: a verifier and a witness MUST count only distinct custodians, each entry of the condition MUST be a committed hash in `nextKeyHashes`, and the recovery entry MUST carry a proof from at least *t* of them.
+- The deferred ceremony tasks of §12.6 are not needed for the condition form.
+- did:webvh method profile: the recovery entry's method-level proof is made by whichever custodian's key the entry names in `updateKeys`; the witness enforces the rest. did:webs profile: the condition is the `nt` threshold.
+- §12.7's hybrid step becomes simply "a condition over ML-DSA keys", with or without a FROST signature beside it.
+
+The remainder of this section specifies the FROST form, unchanged, for an operator who chooses it. §12.3 (distinct boundaries) and §12.4 (why not Shamir) apply to **both** forms.
+
+### 12.1 What FROST is
 
 A threshold custodian is n VTAs, each in its own boundary, holding shares of one Ed25519 key under **FROST(Ed25519, SHA-512)** (RFC 9591), with **2 ≤ t < n**. Any t of them sign together.
 - **t ≥ 2:** no participant signs alone.
@@ -548,7 +615,7 @@ One part of the design is already quantum-safe: **the commitment.** `nextKeyHash
 **The plan, in three steps that never change the identifier:**
 
 1. **Now: FROST over Ed25519, as §12 specifies.** The moment of recovery is classical today, and the commitment that protects the key until then is not.
-2. **When a post-quantum side is wanted: a hybrid custodian, with the threshold enforced by policy rather than by the cryptography.** The `vtc-host` template already mints an Ed25519 key beside an ML-DSA-44 key and emits proof sets, so the pattern exists in the workspace. A hybrid recovery custodian is the FROST group key **plus one whole ML-DSA-44 key per custodian**. The recovery entry carries a proof set: the FROST signature **and** at least t ML-DSA proofs from the group's n keys, and the witness and every VTI verifier require both. Each custodian still fetches the history, checks the entry itself and approves at its own VTA (VTI-KEY-128, 206), so every operational property of §12.2 holds, including identifiable abort, since each ML-DSA proof names its signer. What is lost is the single-signature elegance: the post-quantum side reveals the group's size and threshold, which the FROST side hid (§17), and did:webvh's own log-entry proof stays `eddsa-jcs-2022`, because didwebvh 1.0 mandates it, so the ML-DSA proofs are checked by VTI verifiers and the witness beyond the method. Under did:webs the same thing is native: the `nt` threshold over whole keys, which may be post-quantum.
+2. **When a post-quantum side is wanted: a condition-form custodian over ML-DSA keys (§12.0, form c1), with or without a FROST signature beside it.** The `vtc-host` template already mints an Ed25519 key beside an ML-DSA-44 key and emits proof sets, so the pattern exists in the workspace. A hybrid recovery custodian is the FROST group key **plus one whole ML-DSA-44 key per custodian**; a community designing for the secondary model from the start simply uses the condition form over ML-DSA keys alone. The recovery entry carries a proof set: the FROST signature **and** at least t ML-DSA proofs from the group's n keys, and the witness and every VTI verifier require both. Each custodian still fetches the history, checks the entry itself and approves at its own VTA (VTI-KEY-128, 206), so every operational property of §12.2 holds, including identifiable abort, since each ML-DSA proof names its signer. What is lost is the single-signature elegance: the post-quantum side reveals the group's size and threshold, which the FROST side hid (§17), and did:webvh's own log-entry proof stays `eddsa-jcs-2022`, because didwebvh 1.0 mandates it, so the ML-DSA proofs are checked by VTI verifiers and the witness beyond the method. Under did:webs the same thing is native: the `nt` threshold over whole keys, which may be post-quantum.
 3. **Later: replace the post-quantum side with a true threshold scheme**, once one is standardised and in an audited implementation. `RecoveryCommitment` already carries `custodian: thresholdGroup` and a `keyType`, so a post-quantum key type is an additive change. And because the recovery key authorises its own replacement (§14), the move is one witnessed entry, not a new identity.
 
 **Why not wait, or go hybrid from the start.** Waiting leaves identities with no recovery at all, against a threat that does not yet exist, when the commitment is already safe and the key can be swapped later. Going hybrid from the start costs every level-3 operator n post-quantum keys and a proof-set verifier before any verifier needs one. The design therefore makes step 2 an option on the custodian, not a requirement, and makes step 3 free.
@@ -648,6 +715,7 @@ A passkey is an `authenticator` key. It may sit on a **persona DID**, or on a re
 7. **`create` at level 1.** `vta/dids/create/1.1` takes levels 2 and 3 only, and level 1 stays on the method-specific creation (`vta/webvh/dids/create`). That keeps today's path untouched, and keeps level 1 out of the key-role family. The cost is two creation tasks behind one `pnm dids create --level` command. The alternative is to accept level 1 in `create`.
 8. **A threshold routine update key** under did:webvh costs a DKG per change. Should the webvh profile allow committing the same group key again, which would weaken pre-rotation? We say no.
 9. **The defaults** our tooling ships: the per-template levels proposed in §5.4, and the verifier policy (§19.4).
+10. **The baseline form of a threshold custodian** (§12.0): a policy threshold of whole keys, with FROST optional, as recommended after review; or FROST as drafted. If the former, dtgwg-trust-tasks-tf#993 and dtgwg-vti-spec#82 need the amendments §12.0 lists.
 
 ## 19. Principles, precedents and the balance
 
@@ -770,6 +838,7 @@ The survey of today's code, and the build order, are in [key-roles-implementatio
 - The Update Framework specification, <https://theupdateframework.github.io/specification/>.
 - Matrix MSC1756, *Cross-signing devices with device signing keys*.
 - Buterin, V., *Why we need wide adoption of social recovery wallets*, 2021.
+- W3C CCG, *Verifiable Conditions* (`ConditionalProof2022`), draft community group report, <https://w3c-ccg.github.io/verifiable-conditions/>.
 - did:webvh, <https://identity.foundation/didwebvh/>.
 - NIST IR 8214C, *First Call for Multi-Party Threshold Schemes*, January 2026, and the MPTS 2026 / TCPT preview talks, <https://csrc.nist.gov/projects/threshold-cryptography>.
 - Boschini et al., *Ringtail: Practical Two-Round Threshold Signatures from Learning with Errors*, IEEE S&P 2025, <https://eprint.iacr.org/2024/1113>.
