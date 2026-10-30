@@ -428,7 +428,34 @@ pub(crate) async fn handle_put_record_v3(doc: TrustTask<Value>, ctx: RoomCtx) ->
         Ok(r) => r,
         Err(o) => return o,
     };
-    super::handlers::put_record(&doc, &ctx, req, blobs, cleartext).await
+    super::handlers::put_record(&doc, &ctx, req, blobs, cleartext, false).await
+}
+
+/// `rooms/records/put/0.4`: 0.3, and an `open` room's `cleartext` may carry a `file` — its
+/// manifest and the random key its blob is sealed under — stored and served as received
+/// (Host item 13), once the record's `blobs` is checked against it (Host item 12).
+pub(crate) async fn handle_put_record_v4(doc: TrustTask<Value>, ctx: RoomCtx) -> TrustTaskOutcome {
+    let payload = match payload_json(&doc) {
+        Ok(p) => p,
+        Err(o) => return o,
+    };
+    let (blobs, cleartext) = match blob_tasks::put_v4_parts(&payload) {
+        Ok(parts) => parts,
+        Err(r) => return refused(&doc, r),
+    };
+    let req: PutRecordBody = match serde_json::from_value(blob_tasks::put_v4_as_v0_1(payload))
+        .map_err(|e| {
+            reject_with(
+                &doc,
+                RejectReason::MalformedRequest {
+                    reason: e.to_string(),
+                },
+            )
+        }) {
+        Ok(r) => r,
+        Err(o) => return o,
+    };
+    super::handlers::put_record(&doc, &ctx, req, blobs, cleartext, true).await
 }
 
 /// `rooms/records/get/0.2`: the 0.1 read, whose answer also names the record's blobs.

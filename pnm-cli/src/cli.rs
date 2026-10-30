@@ -801,7 +801,7 @@ pub(crate) enum RoomCommands {
     /// Every room the community has offered you and where each stands — offered,
     /// joined, accepted but not finished, or removed — as your member portal and
     /// OpenVTC show it too: the community's record (`vtc/rooms/memberships/list`),
-    /// signed as you by your VTA (`rooms/keys/act/0.8`), beside your VTA's own
+    /// signed as you by your VTA (`rooms/keys/act/0.9`), beside your VTA's own
     /// (`rooms/keys/list`).
     Memberships {
         /// Base URL of the community's Trust Task endpoint (e.g.
@@ -1584,11 +1584,14 @@ pub(crate) enum RoomRetentionCommands {
 /// `pnm rooms file …`.
 #[derive(Subcommand)]
 pub(crate) enum RoomFileCommands {
-    /// Put a file in a sealed room: seal it, upload the ciphertext, and write a
-    /// record whose signed, sealed body names it.
+    /// Put a file in a room: seal it, upload the ciphertext, and write a record
+    /// that names it.
     ///
-    /// The file's name, type, size and digest are inside the sealed body; the
-    /// host learns only that the record has a file, and its ciphertext size.
+    /// On `attributed` and `private` the file's name, type, size and digest are
+    /// inside the signed, sealed body; the host learns only that the record has a
+    /// file, and its ciphertext size. On `open` the file is sealed under a key
+    /// minted for it alone, and the record states the file and that key in the
+    /// clear: the host and every member can open it, the storage cannot.
     Put {
         /// The file to put.
         path: std::path::PathBuf,
@@ -1598,10 +1601,10 @@ pub(crate) enum RoomFileCommands {
         host: String,
         #[arg(long)]
         host_did: Option<String>,
-        /// A title for the record, sealed with it.
+        /// A title for the record, sealed with it (in the clear on `open`).
         #[arg(long)]
         title: Option<String>,
-        /// A one-line description, sealed with it.
+        /// A one-line description, sealed with it (in the clear on `open`).
         #[arg(long)]
         description: Option<String>,
         /// A tag, sealed with the record. Repeatable.

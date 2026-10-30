@@ -31,6 +31,7 @@ pub use blob_get_v2::Response as BlobGetV2Response;
 pub use blob_get_v2::TransferTarget as ReadTarget;
 pub use download_chunk::Response as DownloadChunkResponse;
 pub use get_v2::Response as GetRecordV2Response;
+#[allow(deprecated)] // 0.4 adds only an open room's file, which this client does not write
 pub use put_v3::Response as PutRecordV3Response;
 pub use records_prune::Response as PruneRecordsResponse;
 pub use retention_set::Response as RetentionSetResponse;
@@ -373,6 +374,7 @@ impl VtcClient {
     /// Each blob must be committed in this room first, and the record's sealed body must
     /// describe it; the host can check the first and never the second.
     #[allow(clippy::too_many_arguments)]
+    #[allow(deprecated)] // 0.4 adds only an open room's file, which this client does not write
     pub async fn put_sealed_record_with_blobs(
         &self,
         session: &RoomSession,
@@ -482,6 +484,7 @@ impl VtcClient {
     /// The payload is checked against the generated type but sent **as given**, so a
     /// `validUntil` reaches the host in the spelling the writer chose.
     #[allow(clippy::too_many_arguments)]
+    #[allow(deprecated)] // 0.4 adds only an open room's file, which this client does not write
     pub async fn put_cleartext_record_v3(
         &self,
         session: &RoomSession,

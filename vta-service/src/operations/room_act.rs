@@ -157,6 +157,17 @@ pub fn actable_0_8(type_uri: &str) -> Option<Option<&'static str>> {
     row(ACT_TABLE_0_8, type_uri)
 }
 
+/// The rows `rooms/keys/act/0.9` adds to 0.8's table: `rooms/records/put/0.4` in the put
+/// row, `write`, so a member writes an open room's file record (trust-tasks-tf #990).
+pub const ACT_TABLE_0_9_ADDS: &[ActRow] =
+    &[(spec::records::put::v0_4::Payload::TYPE_URI, Some("write"))];
+
+/// The row of `rooms/keys/act/0.9`'s table for `type_uri`: 0.8's, and
+/// [`ACT_TABLE_0_9_ADDS`]. The community types are 0.8's unchanged.
+pub fn actable_0_9(type_uri: &str) -> Option<Option<&'static str>> {
+    row(ACT_TABLE_0_9_ADDS, type_uri).or_else(|| actable_0_8(type_uri))
+}
+
 fn row(table: &[ActRow], type_uri: &str) -> Option<Option<&'static str>> {
     let bare = bare_type(type_uri);
     table
@@ -330,11 +341,14 @@ mod tests {
     }
 
     /// The version of each host-bound request this workspace's hosts serve is in the table,
-    /// with the action the specification fixes for it.
+    /// with the action the specification fixes for it (0.9's table; 0.8's lacks
+    /// `rooms/records/put/0.4`).
     #[test]
+    #[allow(deprecated)] // records/put/0.3: the newest put 0.8's table names
     fn the_served_versions_are_actable_with_their_actions() {
         for (t, action) in [
             (spec::records::put::v0_3::Payload::TYPE_URI, Some("write")),
+            (spec::records::put::v0_4::Payload::TYPE_URI, Some("write")),
             (spec::records::get::v0_2::Payload::TYPE_URI, Some("read")),
             (spec::records::list::v0_5::Payload::TYPE_URI, Some("read")),
             (
@@ -360,7 +374,7 @@ mod tests {
             (spec::blobs::upload::commit::v0_2::Payload::TYPE_URI, None),
             (spec::blobs::upload::abort::v0_2::Payload::TYPE_URI, None),
         ] {
-            assert_eq!(actable_0_8(t), Some(action), "{t}");
+            assert_eq!(actable_0_9(t), Some(action), "{t}");
         }
     }
 
@@ -385,9 +399,29 @@ mod tests {
         assert!(!is_community_type_0_8(members_add));
     }
 
+    /// 0.9's table is 0.8's and `rooms/records/put/0.4` as `write`; 0.8's does not name it.
+    #[test]
+    fn act_0_9_adds_put_0_4_to_0_8s_table() {
+        let put_0_4 = spec::records::put::v0_4::Payload::TYPE_URI;
+        assert_eq!(actable_0_8(put_0_4), None);
+        assert_eq!(actable_0_9(put_0_4), Some(Some("write")));
+        assert_eq!(
+            actable_0_9(&format!("{put_0_4}#request")),
+            Some(Some("write"))
+        );
+        for (t, action) in ACT_TABLE_0_8 {
+            assert_eq!(actable_0_9(t), Some(*action), "{t}");
+        }
+        assert_eq!(
+            actable_0_9(spec::epoch::prune::v0_2::Payload::TYPE_URI),
+            None
+        );
+    }
+
     /// The deliberate absences: chunk uploads (bytes never pass through the key holder),
     /// and the operations that prune a room's keys or change its ownership.
     #[test]
+    #[allow(deprecated)] // records/put/0.3: the newest put 0.8's table names
     fn the_absent_types_are_not_actable() {
         for t in [
             spec::blobs::upload::chunk::v0_2::Payload::TYPE_URI,

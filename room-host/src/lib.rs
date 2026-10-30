@@ -621,6 +621,7 @@ async fn route(state: &Arc<HostState>, doc: TrustTask<Value>) -> Answer {
         vti_rooms::revocation_tasks::PUT_TYPE => files::revocations_put(state, &doc, payload).await,
         vti_rooms::revocation_tasks::GET_TYPE => files::revocations_get(state, &doc, payload).await,
         files::PUT_V3_TYPE => files::put_v3(state, &doc, payload).await,
+        files::PUT_V4_TYPE => files::put_v4(state, &doc, payload).await,
         files::GET_V2_TYPE => files::get_v2(state, &doc, payload).await,
         files::DOWNLOAD_CHUNK_TYPE => files::download_chunk(state, &doc, payload).await,
         files::USAGE_TYPE => files::usage(state, &doc, payload).await,
@@ -777,18 +778,20 @@ async fn create(state: &HostState, doc: &TrustTask<Value>, payload: Value) -> An
     }
 }
 
-/// Write a record: `rooms/records/put/0.3`, read as [`PutRecordBody`] with its `blobs`.
-/// A write that names no blobs releases any the record's previous version named.
+/// Write a record: `rooms/records/put` 0.3 or 0.4, read as [`PutRecordBody`] with its
+/// `blobs`. A write that names no blobs releases any the record's previous version named.
 ///
-/// `cleartext_as_received` is the write's `cleartext`, provenance and expiry included,
-/// which is stored in place of the body's — exactly as the writer sent it (consumer item
-/// 11). [`PutRecordBody`] still decides the shape checks.
+/// `cleartext_as_received` is the write's `cleartext`, provenance, expiry and file
+/// included, which is stored in place of the body's — exactly as the writer sent it
+/// (consumer item 11). [`PutRecordBody`] still decides the shape checks. `open_files` is
+/// 0.4's: an open room's `blobs` must be the file its cleartext describes.
 async fn put_with_blobs(
     state: &HostState,
     doc: &TrustTask<Value>,
     payload: Value,
     blobs: Option<Vec<String>>,
     cleartext_as_received: Option<Value>,
+    open_files: bool,
 ) -> Answer {
     let req: PutRecordBody = match serde_json::from_value(payload) {
         Ok(r) => r,
@@ -831,6 +834,13 @@ async fn put_with_blobs(
     }
 
     let blobs = blobs.unwrap_or_default();
+    // Before `blobNotFound`, and before anything changes (put 0.4 Host item 12).
+    if open_files
+        && let Some(refusal) =
+            vti_rooms::blob_tasks::open_file_refused(&room, &blobs, cleartext_as_received.as_ref())
+    {
+        return files::record_refused(doc, refusal);
+    }
     // Held across the write: the blobs it names cannot be collected, and their
     // limits cannot change, between this check and the references it records.
     let references = match state

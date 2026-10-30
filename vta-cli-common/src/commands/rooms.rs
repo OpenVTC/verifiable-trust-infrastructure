@@ -6,7 +6,7 @@
 //!
 //! - the operator's **VTA**, over the client's existing session, to complete each
 //!   host-bound request **as the member** ([`VtaClient::room_act`],
-//!   `rooms/keys/act/0.8`), to seal a record body signed as the member
+//!   `rooms/keys/act/0.9`), to seal a record body signed as the member
 //!   ([`VtaClient::room_seal_as_principal`]) and to open a sealed record
 //!   ([`VtaClient::room_open`]);
 //! - the room's **host**, unauthenticated, receiving the completed document unchanged.
@@ -149,7 +149,7 @@ pub fn session_from_minted(
 }
 
 /// Send one room request to the host **as the member**: built here without presentation
-/// or proof, completed by the VTA with `rooms/keys/act/0.8`, sent unchanged. Returns the
+/// or proof, completed by the VTA with `rooms/keys/act/0.9`, sent unchanged. Returns the
 /// member the VTA acted as and the host's response payload.
 ///
 /// Nothing this client holds goes to the host: not its DID, not its key.
@@ -554,7 +554,7 @@ impl RecordProvenance {
 
 /// Why `rooms put` will not state provenance on an `open` room, and what to do instead.
 ///
-/// An open room carries provenance in `rooms/records/put/0.3`'s cleartext. `rooms/keys/act/0.8`
+/// An open room carries provenance in `rooms/records/put/0.3`'s cleartext. `rooms/keys/act/0.9`
 /// completes put 0.3, which this client now sends, but it does not yet put the provenance
 /// members into the cleartext; until it does, it refuses rather than drop them.
 fn open_tier_provenance_refused(target: &RoomTarget<'_>) -> String {
@@ -1474,6 +1474,16 @@ async fn room_tier(
     client: &VtaClient,
     target: &RoomTarget<'_>,
 ) -> Result<(bool, String), Box<dyn std::error::Error>> {
+    let (sealed, member, _) = room_tier_and_epoch(client, target).await?;
+    Ok((sealed, member))
+}
+
+/// [`room_tier`], and the room's current epoch — the one an open room's file is written
+/// at (`rooms/records/put/0.4` Producer item 7).
+async fn room_tier_and_epoch(
+    client: &VtaClient,
+    target: &RoomTarget<'_>,
+) -> Result<(bool, String, u64), Box<dyn std::error::Error>> {
     use trust_tasks_rs::Payload as _;
     let (member, reply) = act_and_send(
         client,
@@ -1487,11 +1497,15 @@ async fn room_tier(
         .get("visibility")
         .and_then(Value::as_str)
         .ok_or("the host's rooms/info response names no visibility")?;
-    Ok((visibility != "open", member))
+    let epoch = reply
+        .get("epoch")
+        .and_then(Value::as_u64)
+        .ok_or("the host's rooms/info response names no epoch")?;
+    Ok((visibility != "open", member, epoch))
 }
 
 /// Have the VTA sign `content` **as the member** and seal it (`rooms/keys/seal/0.2`), and
-/// put it as the member (`rooms/keys/act/0.8`), re-sealing at the version the host assigned
+/// put it as the member (`rooms/keys/act/0.9`), re-sealing at the version the host assigned
 /// whenever that is not the one sealed for. Returns the version written.
 ///
 /// The record's associated data and its signed body both name the version, and the host
@@ -1804,8 +1818,11 @@ fn direct_plan(ciphertext: &[u8]) -> (usize, Value) {
 /// `rooms file put` — seal a local file, upload its ciphertext, and write the record that
 /// names it, all **as the member** (`rooms/blobs/*/0.2` through `rooms/keys/act`).
 ///
-/// The file is sealed here under one file's key from the VTA (`rooms/keys/file-key`); its
-/// bytes never pass through the VTA, and the host receives only ciphertext. The member's
+/// On a sealed room the file is sealed here under one file's key from the VTA
+/// (`rooms/keys/file-key`), and its manifest goes inside the sealed body. On an `open` room
+/// the key is minted here at random and the manifest, key included, goes in the record's
+/// cleartext (`rooms/records/put/0.4`): the host and every member can open it, and the
+/// storage holds only ciphertext. Either way its bytes never pass through the VTA. The member's
 /// VTA signs the begin, the record and — in direct mode — the commit, as the member; the
 /// bytes go straight to the room's storage over targets the host issued (direct) or to the
 /// host as chunk documents signed by a single-use upload key minted here for this upload
@@ -1823,14 +1840,7 @@ pub async fn cmd_rooms_file_put(
     use vti_rooms::files::{self, FileBinding, Padding};
     use vti_specs::rooms::blobs::upload;
 
-    let (sealed_tier, member) = room_tier(client, &target).await?;
-    if !sealed_tier {
-        return Err(
-            "this room is `open`: its records are cleartext, and a file's manifest \
-                    belongs inside a sealed body. Files go in `attributed` and `private` rooms."
-                .into(),
-        );
-    }
+    let (sealed_tier, member, room_epoch) = room_tier_and_epoch(client, &target).await?;
 
     let plaintext = std::fs::read(path)?;
     let name = path
@@ -1840,16 +1850,23 @@ pub async fn cmd_rooms_file_put(
     // A fresh id for every file: the segment nonces are counters, so two files
     // under one key would reuse them.
     let file_id = files::new_file_id();
-    let resp = client
-        .room_file_key(target.room_id, &files::encode_file_id(&file_id), None)
-        .await?;
-    let file_key = file_key_bytes(&resp)?;
-    let sealed = files::seal_file(
+    // A sealed room's file key is derived from its storage key, by the VTA. An open room
+    // has none: the key is minted here for this file alone, and the record carries it in
+    // the clear (`rooms/records/put/0.4` Producer item 7).
+    let (file_key, epoch) = if sealed_tier {
+        let resp = client
+            .room_file_key(target.room_id, &files::encode_file_id(&file_id), None)
+            .await?;
+        (file_key_bytes(&resp)?, resp.epoch.get())
+    } else {
+        (files::new_file_key(), room_epoch)
+    };
+    let mut sealed = files::seal_file(
         &file_key,
         FileBinding {
             room_id: target.room_id.to_string(),
             file_id,
-            epoch: resp.epoch.get(),
+            epoch,
             segment_size: files::DEFAULT_SEGMENT_SIZE,
         },
         name,
@@ -1857,6 +1874,9 @@ pub async fn cmd_rooms_file_put(
         &plaintext,
         if padme { Padding::Padme } else { Padding::None },
     )?;
+    if !sealed_tier {
+        sealed.file.file_key = Some(files::encode_file_key(&file_key));
+    }
     let ciphertext: Vec<u8> = sealed.chunks.concat();
 
     // The upload key: minted here for this upload alone, from no key held for anything
@@ -1982,26 +2002,53 @@ pub async fn cmd_rooms_file_put(
     }
 
     let key = opaque_key();
-    let mut content = SealedRecordBody::new(
-        RecordLocation {
-            room_id: target.room_id,
-            key: &key,
-            version: 1,
-        },
-        &member,
-    );
-    content.title = title;
-    content.description = description;
-    content.tags = tags;
-    content.file = Some(sealed.file.clone());
-    let version = write_sealed_naming(
-        client,
-        &target,
-        content,
-        Some(0),
-        Some(vec![blob_ref.clone()]),
-    )
-    .await?;
+    let version = if sealed_tier {
+        let mut content = SealedRecordBody::new(
+            RecordLocation {
+                room_id: target.room_id,
+                key: &key,
+                version: 1,
+            },
+            &member,
+        );
+        content.title = title;
+        content.description = description;
+        content.tags = tags;
+        content.file = Some(sealed.file.clone());
+        write_sealed_naming(
+            client,
+            &target,
+            content,
+            Some(0),
+            Some(vec![blob_ref.clone()]),
+        )
+        .await?
+    } else {
+        // In the clear, the manifest and its key included: on an open room the host and
+        // every member read the record, so they open the file too.
+        let mut cleartext = serde_json::to_value(CleartextContent {
+            title,
+            description,
+            tags,
+            ..Default::default()
+        })?;
+        cleartext["file"] = serde_json::to_value(&sealed.file)?;
+        let (_, reply) = act_and_send(
+            client,
+            &target,
+            vti_rooms::wire::ROOMS_RECORDS_PUT_V4_TYPE,
+            serde_json::json!({
+                "roomId": target.room_id,
+                "key": key,
+                "cleartext": cleartext,
+                "expectedVersion": 0,
+                "blobs": [blob_ref],
+            }),
+        )
+        .await
+        .map_err(|e| put_refused(e, &target))?;
+        parse_reply::<vti_rooms::wire::PutRecordResponse>("rooms/records/put", reply)?.version
+    };
 
     if crate::render::is_json_output() {
         crate::render::print_json(&serde_json::json!({
@@ -2069,33 +2116,55 @@ pub async fn cmd_rooms_file_get(
     .await?;
     let record: vtc_client::rooms::files::GetRecordV2Response =
         parse_reply("rooms/records/get", record)?;
-    let sealed = record.sealed.as_ref().ok_or(
-        "the record has no sealed body: it is on an `open` room, or it has been retracted",
-    )?;
-    let sealed = SealedContent {
-        ciphertext: sealed.ciphertext.clone(),
-        nonce: sealed.nonce.clone(),
-        epoch: u32::try_from(sealed.epoch.get())
-            .map_err(|_| "the record's epoch is beyond what this client can represent")?,
-        // The version the body was sealed at, where a curation moved the record past it
-        // (rooms `_shared/0.1` `SealedRecord.version`): opened and verified there, and a
-        // `sealed.version` above the record's own refused by `open_and_verify`.
-        version: sealed.version.map(std::num::NonZeroU64::get),
+    // An open room's record describes its file in the clear, key included
+    // (`rooms/records/put/0.4`); a sealed room's, inside the body its author signed.
+    let (file, author, carried) = match record.cleartext.get("file") {
+        Some(file) if record.sealed.is_none() => {
+            let file: files::FileManifest = serde_json::from_value(file.clone())
+                .map_err(|e| format!("the record's file manifest does not read: {e}"))?;
+            let key = file
+                .carried_key(true)?
+                .ok_or("an open room's file manifest carries no key")?;
+            let author = record
+                .author
+                .clone()
+                .unwrap_or_else(|| "an unnamed member".to_string());
+            (file, author, Some(key))
+        }
+        _ => {
+            let sealed = record.sealed.as_ref().ok_or(
+                "the record carries no file: it has neither a sealed body nor a `cleartext.file`, \
+                 or it has been retracted",
+            )?;
+            let sealed = SealedContent {
+                ciphertext: sealed.ciphertext.clone(),
+                nonce: sealed.nonce.clone(),
+                epoch: u32::try_from(sealed.epoch.get())
+                    .map_err(|_| "the record's epoch is beyond what this client can represent")?,
+                // The version the body was sealed at, where a curation moved the record past it
+                // (rooms `_shared/0.1` `SealedRecord.version`): opened and verified there, and a
+                // `sealed.version` above the record's own refused by `open_and_verify`.
+                version: sealed.version.map(std::num::NonZeroU64::get),
+            };
+            let verified = open_and_verify(
+                client,
+                &target,
+                key,
+                record.version.get(),
+                &sealed,
+                record.author.as_deref(),
+            )
+            .await?;
+            let file = verified
+                .body()
+                .file
+                .clone()
+                .ok_or("the record carries no file")?;
+            // A sealed room's key is derived; a manifest carrying one is refused.
+            file.carried_key(false)?;
+            (file, verified.body().author.clone(), None)
+        }
     };
-    let verified = open_and_verify(
-        client,
-        &target,
-        key,
-        record.version.get(),
-        &sealed,
-        record.author.as_deref(),
-    )
-    .await?;
-    let file = verified
-        .body()
-        .file
-        .clone()
-        .ok_or("the record carries no file")?;
     let named = record
         .blobs
         .iter()
@@ -2157,11 +2226,16 @@ pub async fn cmd_rooms_file_get(
         chunks.push(chunk);
     }
 
-    let resp = client
-        .room_file_key(target.room_id, &file.file_id, Some(file.epoch))
-        .await
-        .map_err(|e| file_key_refusal_hint(&e, &target))?;
-    let file_key = file_key_bytes(&resp)?;
+    let file_key = match carried {
+        Some(key) => key,
+        None => {
+            let resp = client
+                .room_file_key(target.room_id, &file.file_id, Some(file.epoch))
+                .await
+                .map_err(|e| file_key_refusal_hint(&e, &target))?;
+            file_key_bytes(&resp)?
+        }
+    };
     let plaintext = files::open_file(&file_key, target.room_id, &file, &blob, &chunks)?;
 
     let out = match out {
@@ -2177,11 +2251,16 @@ pub async fn cmd_rooms_file_get(
     std::fs::write(&tmp, &plaintext)?;
     std::fs::rename(&tmp, &out)?;
     println!(
-        "Fetched {} ({} bytes) into {}, written by {}; it matches the digest they signed.",
+        "Fetched {} ({} bytes) into {}, written by {}; it matches the digest {}.",
         inert(&file.name).escape_debug(),
         plaintext.len(),
         out.display(),
-        verified.body().author
+        inert(&author),
+        if carried.is_some() {
+            "its record states (an open room's record is not signed by its author)"
+        } else {
+            "they signed"
+        }
     );
     Ok(())
 }
@@ -2556,7 +2635,7 @@ pub async fn cmd_rooms_owner_group_add(
 // document goes to the community over its Trust Task HTTPS endpoint, unchanged: a
 // persona-signed document rides HTTPS, never this client's own DIDComm session.
 //
-// The listing is `vtc/rooms/offers/list/0.4`, completed at `rooms/keys/act/0.8`: the
+// The listing is `vtc/rooms/offers/list/0.4`, completed at `rooms/keys/act/0.9`: the
 // community's offers with their descriptions, and the renewals of the rooms the member is
 // already in (`renewsAt`). A VTA or a community that serves neither is reported, never
 // read at an older version.
@@ -2591,7 +2670,7 @@ impl OfferStepError {
             Self::Act(e) => {
                 let text = e.to_string();
                 let hint = if matches!(e, VtaError::UnsupportedTaskType { .. }) {
-                    "\n\nYour VTA does not serve rooms/keys/act/0.8, which signs this request \
+                    "\n\nYour VTA does not serve rooms/keys/act/0.9, which signs this request \
                      as you: upgrade it."
                         .to_string()
                 } else if text.contains("issuerNotPrincipal") {
@@ -2617,7 +2696,7 @@ impl OfferStepError {
 }
 
 /// Have the VTA complete a request to the community as `target.member`
-/// (`rooms/keys/act/0.8`) and send
+/// (`rooms/keys/act/0.9`) and send
 /// it to the community. Returns the community's response
 /// payload, or the party that failed.
 async fn act_and_send_offer(
@@ -2672,7 +2751,7 @@ fn offers_page(
 }
 
 /// Every offer the community has made to the member, and the renewals of the rooms they are
-/// in: `vtc/rooms/offers/list/0.4`, signed as the member through `rooms/keys/act/0.8`, one
+/// in: `vtc/rooms/offers/list/0.4`, signed as the member through `rooms/keys/act/0.9`, one
 /// page at a time. A VTA or a community that serves neither is told so; nothing older is
 /// asked.
 async fn list_offers(

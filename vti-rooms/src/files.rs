@@ -111,6 +111,11 @@ pub enum FileError {
     /// A value on the wire that does not decode.
     #[error("{0}")]
     Decode(String),
+
+    /// A manifest whose `fileKey` does not fit the room's tier: absent on an `open` room,
+    /// or present on a sealed one (`FileManifest`, *Open room file key*).
+    #[error("{0}")]
+    KeyForTier(&'static str),
 }
 
 // ─── Digests ─────────────────────────────────────────────────────────────
@@ -254,7 +259,7 @@ impl ManifestBuilder {
 /// record and signed by its author. `FileManifest` in `rooms/_shared/0.1/blobs.schema.json`.
 ///
 /// Client-to-client: no host task carries it, because a host receives only ciphertext.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct FileManifest {
     /// 32 random bytes, base64url without padding.
@@ -272,9 +277,60 @@ pub struct FileManifest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub padding: Option<Padding>,
     pub blob_ref: String,
+    /// The key an `open` room's file is sealed under, minted at random for that file alone
+    /// and carried in the clear (`rooms/records/put/0.4`), base64url without padding.
+    /// Present on an open room and absent on the sealed tiers, where the key is derived;
+    /// [`FileManifest::carried_key`] holds a reader to that.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file_key: Option<String>,
+}
+
+/// By hand, so an open room's `fileKey` never reaches a log line, panic or test failure:
+/// the room may read it, whoever reads the log may not.
+impl std::fmt::Debug for FileManifest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FileManifest")
+            .field("file_id", &self.file_id)
+            .field("name", &self.name)
+            .field("media_type", &self.media_type)
+            .field("size", &self.size)
+            .field("digest", &self.digest)
+            .field("epoch", &self.epoch)
+            .field("segment_size", &self.segment_size)
+            .field("padding", &self.padding)
+            .field("blob_ref", &self.blob_ref)
+            .field("file_key", &self.file_key.as_ref().map(|_| "<redacted>"))
+            .finish()
+    }
 }
 
 impl FileManifest {
+    /// The key this manifest carries, held to the room's tier: on an `open` room it
+    /// **MUST** carry one, which is returned; on a sealed room it **MUST NOT**, and `None`
+    /// says the key is to be derived. Anything else is refused, never read past: a sealed
+    /// room's manifest carrying a key would have a reader trust a key no room derived.
+    pub fn carried_key(&self, open_room: bool) -> Result<Option<[u8; 32]>, FileError> {
+        use base64::Engine as _;
+        match (&self.file_key, open_room) {
+            (None, false) => Ok(None),
+            (None, true) => Err(FileError::KeyForTier(
+                "an open room's file manifest carries no `fileKey`",
+            )),
+            (Some(_), false) => Err(FileError::KeyForTier(
+                "a sealed room's file manifest carries a `fileKey`; its key is derived",
+            )),
+            (Some(encoded), true) => {
+                let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+                    .decode(encoded)
+                    .map_err(|e| FileError::Decode(format!("fileKey is not base64url: {e}")))?;
+                bytes
+                    .try_into()
+                    .map(Some)
+                    .map_err(|_| FileError::Decode("fileKey is not 32 bytes".into()))
+            }
+        }
+    }
+
     /// The `fileId` as its 32 bytes.
     pub fn file_id_bytes(&self) -> Result<FileId, FileError> {
         decode_file_id(&self.file_id)
@@ -421,6 +477,22 @@ mod keyed {
         let mut id = [0u8; 32];
         getrandom::fill(&mut id).expect("OS randomness unavailable");
         id
+    }
+
+    /// A fresh key for one file on an `open` room, which has no storage key to derive one
+    /// from (`rooms/records/put/0.4` Producer item 7): 32 bytes from the OS, never reused.
+    /// It travels in the manifest's `fileKey` ([`encode_file_key`]).
+    pub fn new_file_key() -> FileKey {
+        let mut key = [0u8; 32];
+        getrandom::fill(&mut key).expect("OS randomness unavailable");
+        key
+    }
+
+    /// A file key as `FileManifest.fileKey` spells it: base64url without padding.
+    #[must_use]
+    pub fn encode_file_key(key: &FileKey) -> String {
+        use base64::Engine as _;
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(key)
     }
 
     /// Derive one file's key from the room's storage key for `epoch`.
@@ -747,6 +819,7 @@ mod keyed {
                 segment_size: self.binding.segment_size as u64,
                 padding: (self.padding == Padding::Padme).then_some(Padding::Padme),
                 blob_ref: blob.blob_ref()?,
+                file_key: None,
             };
             Ok((out, blob, file))
         }
@@ -894,6 +967,45 @@ mod tests {
 
     fn key() -> FileKey {
         derive_file_key(&[7u8; 32], ROOM, &[1u8; 32], 3)
+    }
+
+    /// `FileManifest`, *Open room file key*: an open room's manifest carries the key and a
+    /// sealed room's does not; a reader refuses either the other way round. A file sealed
+    /// under a fresh random key opens with the key its manifest carries.
+    #[test]
+    fn a_manifests_carried_key_is_held_to_the_tier() {
+        let fresh = new_file_key();
+        let mut sealed = seal_file(
+            &fresh,
+            binding(),
+            "brochure.pdf",
+            None,
+            b"hello",
+            Padding::None,
+        )
+        .unwrap();
+        assert_eq!(sealed.file.carried_key(false), Ok(None));
+        assert!(matches!(
+            sealed.file.carried_key(true),
+            Err(FileError::KeyForTier(_))
+        ));
+
+        sealed.file.file_key = Some(encode_file_key(&fresh));
+        assert!(matches!(
+            sealed.file.carried_key(false),
+            Err(FileError::KeyForTier(_))
+        ));
+        let carried = sealed.file.carried_key(true).unwrap().unwrap();
+        assert_eq!(carried, fresh);
+        let opened = open_file(&carried, ROOM, &sealed.file, &sealed.blob, &sealed.chunks).unwrap();
+        assert_eq!(opened, b"hello");
+
+        sealed.file.file_key = Some("c2hvcnQ".into());
+        assert!(matches!(
+            sealed.file.carried_key(true),
+            Err(FileError::Decode(_))
+        ));
+        assert_ne!(new_file_key(), new_file_key());
     }
 
     fn binding() -> FileBinding {

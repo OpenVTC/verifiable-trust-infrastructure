@@ -62,7 +62,7 @@ fn presentation() -> AuthorityPresentation {
 
 #[test]
 fn put_record_conforms_on_both_tiers() {
-    use vti_specs_rooms::rooms::records::put::v0_3::Payload;
+    use vti_specs_rooms::rooms::records::put::v0_4::Payload;
 
     let sealed = PutRecordBody {
         room_id: "did:webvh:example.com:rooms:northwind".into(),
@@ -247,7 +247,7 @@ fn responses_conform() {
     use vti_specs_rooms::rooms::create::v0_2::Response as CreateResponse;
     use vti_specs_rooms::rooms::epoch::mint::v0_1::Response as MintResponse;
     use vti_specs_rooms::rooms::records::list::v0_5::Response as ListResponse;
-    use vti_specs_rooms::rooms::records::put::v0_3::Response as PutResponse;
+    use vti_specs_rooms::rooms::records::put::v0_4::Response as PutResponse;
 
     check::<CreateResponse>(
         "CreateRoomResponse",
@@ -894,6 +894,7 @@ fn owner_responses_conform() {
 /// `unsupportedType` to a document the registry says it serves — with nothing in Rust
 /// noticing, because every test on both sides uses the same constant.
 #[test]
+#[allow(deprecated)] // records/put/0.3 is superseded, and still dispatched
 fn every_dispatched_uri_is_the_published_one() {
     use vti_specs_rooms::rooms;
 
@@ -901,6 +902,10 @@ fn every_dispatched_uri_is_the_published_one() {
         (
             ROOMS_RECORDS_PUT_V3_TYPE,
             <rooms::records::put::v0_3::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+        ),
+        (
+            ROOMS_RECORDS_PUT_V4_TYPE,
+            <rooms::records::put::v0_4::Payload as trust_tasks_rs::Payload>::TYPE_URI,
         ),
         (
             ROOMS_RECORDS_LIST_V5_TYPE,

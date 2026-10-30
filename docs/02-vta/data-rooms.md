@@ -1348,7 +1348,7 @@ pnm rooms prune --room <room-did> --host … --before-epoch 3 --reason "…"   #
 pnm rooms records retention set --room <room-did> --host … --tombstone-days 30 --reason "…"  # needs `admin`, §10.5
 pnm rooms records prune --room <room-did> --host … --reason "…"           # IRREVERSIBLE (needs `admin`, §10.5)
 
-# Files, on `attributed` and `private` rooms.
+# Files. On `open` rooms the record states the file and its key in the clear (§9).
 pnm rooms file put ./term-sheet.pdf --room <room-did> --host … --title "Term sheet v3"
 pnm rooms file get <record-key> --room <room-did> --host … [--out ./term-sheet.pdf]
 ```
@@ -1356,8 +1356,7 @@ pnm rooms file get <record-key> --room <room-did> --host … [--out ./term-sheet
 The CLI **never holds a room credential, a group key or a key of your
 persona's**. For `list`, `get`, `put`, `curate`, the `rooms/info` lookup and
 `keys commit --host`, it builds the room request **unsigned** — no
-presentation, no proof — and hands it to your VTA with `rooms/keys/act/0.8`
-(falling back to `0.1` for a VTA that does not serve it).
+presentation, no proof — and hands it to your VTA with `rooms/keys/act/0.9`.
 The VTA completes it **as your persona**: it inserts the persona's own
 authority narrowed to exactly the action the request's type needs (`read`,
 `write`, `curate`, `admin`, from the specification's closed table) and granted
@@ -1395,7 +1394,7 @@ what `evidence` names, and nothing `evidence` names is ever fetched. Expiry
 hides, it never deletes — the record stays until a curator retracts it or a
 prune removes it (§10.5). On an `open` room the same members ride
 `rooms/records/put/0.3`'s cleartext, unsigned, stored and served exactly as
-received; both hosts serve 0.3 and no earlier `put`. A client with its own
+received; both hosts serve 0.3 and 0.4, and no earlier `put`. A client with its own
 presentation uses `VtcClient::put_cleartext_record_v3`.
 
 **A request that names no room names its member.** A download chunk
@@ -1492,6 +1491,21 @@ author's digest. A file's name comes from another member, so `get` writes it
 in the current directory under its last path component, never over an
 existing file. Files need a host that serves `rooms/records/put` 0.2:
 `room-host` does, and so does a VTC with a `[rooms.files]` section (§8.2).
+
+**A file on an `open` room** has no room key to be sealed under, so its
+uploader mints a random one for that file alone and the record carries it in
+the clear, beside the file's manifest, in `cleartext.file`
+(`rooms/records/put/0.4`). The blob is sealed exactly as on the other tiers,
+so it is one format and one reader; whoever holds only the storage sees
+ciphertext, while the host and every member can open it. Both hosts serve 0.4
+and, on an open room, refuse as `malformedRequest` a record whose `blobs` is
+not exactly the blob its `cleartext.file` describes, or whose file carries no
+`fileKey` — before looking for the blob, and without changing anything. A
+reader refuses a manifest whose `fileKey` does not fit the tier
+(`FileManifest::carried_key`). `pnm rooms file put` and `get` do this on an
+open room, writing through `rooms/keys/act/0.9`, whose table adds `put/0.4`;
+the VTA still serves `act/0.8`, with its own table, for clients that have not
+moved.
 
 **The owner's and the key holder's verbs are here too.** `pnm rooms owner
 {register,invite,issue-membership,issue-authority,group-create,group-add,group-remove,group-renew,revoke}`
