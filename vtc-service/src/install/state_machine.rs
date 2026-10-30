@@ -128,6 +128,12 @@ pub enum InstallTokenState {
         /// landed; new consumptions always set it.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         admin_did: Option<String>,
+        /// `true` when the token was a **passkey** invitation — its row
+        /// recorded an [`InvitedAuthority`] — so `vtc/admin/invites/list/0.2`
+        /// can still report its `kind` once it is spent. `false` on a wallet
+        /// invitation and on rows consumed before this field landed.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        passkey: bool,
     },
 }
 
@@ -186,10 +192,15 @@ impl std::fmt::Debug for InstallTokenState {
                 .field("admin_did", admin_did)
                 .field("authority", authority)
                 .finish(),
-            Self::Consumed { at, admin_did } => f
+            Self::Consumed {
+                at,
+                admin_did,
+                passkey,
+            } => f
                 .debug_struct("Consumed")
                 .field("at", at)
                 .field("admin_did", admin_did)
+                .field("passkey", passkey)
                 .finish(),
         }
     }
@@ -446,7 +457,12 @@ impl InstallTokenStore {
             InstallTokenState::Consumed { .. } => {
                 Err(AppError::Unauthorized("install token consumed".into()))
             }
-            InstallTokenState::Issued { exp, admin_did, .. } => {
+            InstallTokenState::Issued {
+                exp,
+                admin_did,
+                authority,
+                ..
+            } => {
                 let now = Utc::now();
                 if now >= exp {
                     return Err(AppError::Unauthorized("install token expired".into()));
@@ -454,6 +470,7 @@ impl InstallTokenStore {
                 let next = InstallTokenState::Consumed {
                     at: now,
                     admin_did: admin_did_override.or(admin_did),
+                    passkey: authority.is_some(),
                 };
                 self.ks.insert(key, &next).await
             }

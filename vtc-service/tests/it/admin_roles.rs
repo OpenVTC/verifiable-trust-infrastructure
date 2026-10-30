@@ -137,7 +137,7 @@ const GATES: &[Gate] = &[
         cap: Capability::BackupExport,
     },
     Gate {
-        task: "https://trusttasks.org/spec/vtc/admin/invites/list/0.1",
+        task: "https://trusttasks.org/spec/vtc/admin/invites/list/0.2",
         cap: Capability::RolesAssign,
     },
     Gate {

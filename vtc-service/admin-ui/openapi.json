@@ -896,20 +896,20 @@
       },
       "CreateInviteRequest": {
         "type": "object",
-        "required": [
-          "did"
-        ],
         "properties": {
           "did": {
-            "type": "string",
-            "description": "Admin DID the install URL grants a passkey for."
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The DID a **wallet** invitation is for. Absent, the invitation is a\n**passkey** invitation: the administrator's DID is derived from the\npasskey the invitee registers."
           },
           "label": {
             "type": [
               "string",
               "null"
             ],
-            "description": "Operator-supplied label for the ACL entry if one needs to be\ncreated. Ignored when the ACL entry already exists."
+            "description": "Operator-supplied label for the ACL entry the invitation writes — now\nfor a wallet invitation whose DID has none, at the claim for a passkey\ninvitation. Ignored when a wallet invitation's DID already has one."
           },
           "ttlSeconds": {
             "type": [
@@ -926,6 +926,7 @@
         "type": "object",
         "required": [
           "jti",
+          "kind",
           "installUrl",
           "claimCode",
           "expiresAt",
@@ -934,7 +935,7 @@
         "properties": {
           "aclEntryCreated": {
             "type": "boolean",
-            "description": "`true` when the call also wrote the ACL entry; `false` when\nthe target DID was already an admin (idempotent)."
+            "description": "`true` when the call also wrote the ACL entry; `false` when a wallet\ninvitation's DID was already an admin (idempotent), and always for a\npasskey invitation, whose entry is written when it is claimed."
           },
           "claimCode": {
             "type": "string",
@@ -952,6 +953,10 @@
           "jti": {
             "type": "string",
             "description": "`jti` of the minted install token — also the key the GET +\nDELETE surfaces use."
+          },
+          "kind": {
+            "$ref": "#/components/schemas/InviteKind",
+            "description": "Whether this is a wallet or a passkey invitation."
           }
         }
       },
@@ -3408,6 +3413,14 @@
           }
         }
       },
+      "InviteKind": {
+        "type": "string",
+        "description": "`vtc/_shared/0.2/invite#InviteKind`: whether an invitation names the DID\nthat claims it.",
+        "enum": [
+          "wallet",
+          "passkey"
+        ]
+      },
       "InviteStatus": {
         "type": "string",
         "enum": [
@@ -3420,6 +3433,7 @@
         "type": "object",
         "required": [
           "jti",
+          "kind",
           "status"
         ],
         "properties": {
@@ -3442,6 +3456,10 @@
           "jti": {
             "type": "string"
           },
+          "kind": {
+            "$ref": "#/components/schemas/InviteKind",
+            "description": "Whether this is a wallet or a passkey invitation."
+          },
           "status": {
             "$ref": "#/components/schemas/InviteStatus"
           },
@@ -3450,7 +3468,7 @@
               "string",
               "null"
             ],
-            "description": "Admin DID the invite was minted for. `None` only on\nlegacy rows persisted before the field landed (those are\nsafe to clean up via revoke). New invites always carry it."
+            "description": "The administrator's DID: a wallet invitation's always (but for legacy\nrows persisted before the field landed, safe to clean up via revoke);\na passkey invitation's once it is consumed — the DID derived from the\npasskey that claimed it."
           }
         }
       },

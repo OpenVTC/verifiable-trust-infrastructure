@@ -111,6 +111,31 @@
     "typeUri": "https://trusttasks.org/spec/vtc/admin/invites/create/0.1"
   },
   {
+    "kind": "admin.invite.create",
+    "name": "invite an administrator by passkey",
+    "payload": {
+      "label": "Carol — finance"
+    },
+    "summary": {
+      "effect": "Whoever claims this invitation becomes an unrestricted administrator, able to grant and remove any authority in this community, including yours. A wallet invitation can be claimed only by the invitee DID shown; a passkey invitation, which shows none, by whoever holds its install URL and claim code, under their passkey's own DID.",
+      "fields": {
+        "invitee": {
+          "format": "did",
+          "pointer": "/did",
+          "value": null
+        },
+        "label": {
+          "format": "text",
+          "pointer": "/label",
+          "value": "Carol — finance"
+        }
+      },
+      "templateDigest": "zQmXg9RsQh74pTGLccB8ENC4trXmhB5MfYzN8VG7Mzb6Zuw",
+      "title": "Invite a new unrestricted administrator"
+    },
+    "typeUri": "https://trusttasks.org/spec/vtc/admin/invites/create/0.2"
+  },
+  {
     "kind": "acl.reduce.authority",
     "name": "remove an unrestricted administrator",
     "payload": {

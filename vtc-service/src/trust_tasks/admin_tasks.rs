@@ -10,8 +10,8 @@
 //! | `audit/list/0.2`, `audit/verify/0.1` | an unrestricted administrator | `Admin`, no context scope |
 //! | `config/show/0.1` | an administrator | `Admin` |
 //! | `config/{patch,reload,restart}/0.1` | an unrestricted administrator | `Admin`, no context scope: the configuration is the whole community's, and it holds the unrestricted-admin consent threshold |
-//! | `vtc/admin/invites/{list,revoke}/0.1` | an unrestricted administrator | `Admin`, no context scope: an admin invite confers unrestricted authority, so only an unrestricted admin manages them |
-//! | `vtc/admin/invites/create/0.1` | an unrestricted administrator | `Admin`, no context scope; writing the invitee's unrestricted entry also takes the inviter's passkey gesture bound to this invite, and another unrestricted admin's consent |
+//! | `vtc/admin/invites/list/0.2`, `vtc/admin/invites/revoke/0.1` | an unrestricted administrator | `Admin`, no context scope: an admin invite confers unrestricted authority, so only an unrestricted admin manages them |
+//! | `vtc/admin/invites/create/0.2` | an unrestricted administrator | `Admin`, no context scope; writing the invitee's unrestricted entry — or issuing a passkey invite, which confers one at its claim — also takes the inviter's passkey gesture bound to this invite, and another unrestricted admin's consent |
 //! | `auth/sessions/list/0.1` | any member | their own sessions, and those of every subject whose access they could withdraw |
 //! | `auth/revoke-session/0.2` | any member | the same rule |
 //!
@@ -39,7 +39,7 @@ use vti_specs::config::{
     show::v0_1 as config_show,
 };
 use vti_specs::vtc::admin::invites::{
-    create::v0_1 as invite_create, list::v0_1 as invite_list, revoke::v0_1 as invite_revoke,
+    create::v0_2 as invite_create, list::v0_2 as invite_list, revoke::v0_1 as invite_revoke,
 };
 use vti_specs::vtc::registry::{
     diagnostics::v0_1 as diagnostics, records::list::v0_2 as records_list,
@@ -446,10 +446,11 @@ async fn handle_invites_list(
     }
 }
 
-/// `vtc/admin/invites/create/0.1`. Every check that decides the invite runs
-/// first ([`crate::routes::admin::invites::check_invite`]). An invite for a DID
-/// the community holds no entry for writes an **unrestricted** admin entry, so
-/// it costs what an unrestricted `acl/grant` costs on this door: the
+/// `vtc/admin/invites/create/0.2`. Every check that decides the invite runs
+/// first ([`crate::routes::admin::invites::check_invite`]). A wallet invite for
+/// a DID the community holds no entry for writes an **unrestricted** admin
+/// entry, and a passkey invite (no `did`) confers one when it is claimed, so
+/// either costs what an unrestricted `acl/grant` costs on this door: the
 /// inviter's passkey gesture bound to this document, then another
 /// unrestricted admin's consent. Without the gesture the answer is
 /// `permissionDenied` with the ceremony inline as `details.stepUpRequest`, and
@@ -503,20 +504,34 @@ async fn handle_invites_create(
         // What a community administrator holds that confers authority: what
         // the inviter's fellow holders must approve (VTI-APV-018).
         let stake = crate::acl::AdminAuthority::community_admin().conferring();
+        // A passkey invitation always grants (create 0.2 item 4), for a DID
+        // that does not exist until it is claimed.
+        let (subject, reason, summary) = match request.did.as_deref() {
+            Some(did) => (
+                did,
+                format!("Invite {did} to become a community administrator of this community"),
+                crate::routes::acl::unrestricted_grant_summary(did),
+            ),
+            None => (
+                crate::routes::admin::invites::PASSKEY_INVITATION_SUBJECT,
+                "Invite a new community administrator, who will sign in with a passkey".to_string(),
+                "Invite a new unrestricted administrator by passkey: whoever claims the \
+                 invitation's install URL and claim code becomes one, under their passkey's own \
+                 DID"
+                .to_string(),
+            ),
+        };
         let gate = admin_consent::gesture_then_consent(
             state,
             &actor.did,
-            &request.did,
+            subject,
             &stake,
             Operation {
                 type_uri: &type_uri,
                 payload: &doc.payload,
             },
-            &format!(
-                "Invite {} to become a community administrator of this community",
-                request.did
-            ),
-            &crate::routes::acl::unrestricted_grant_summary(&request.did),
+            &reason,
+            &summary,
         )
         .await;
         let ready = match gate {

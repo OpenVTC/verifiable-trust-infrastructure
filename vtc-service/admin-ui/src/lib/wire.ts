@@ -661,11 +661,16 @@ export interface components {
          */
         ConfigSource: "env" | "db" | "toml" | "default";
         CreateInviteRequest: {
-            /** @description Admin DID the install URL grants a passkey for. */
-            did: string;
             /**
-             * @description Operator-supplied label for the ACL entry if one needs to be
-             *     created. Ignored when the ACL entry already exists.
+             * @description The DID a **wallet** invitation is for. Absent, the invitation is a
+             *     **passkey** invitation: the administrator's DID is derived from the
+             *     passkey the invitee registers.
+             */
+            did?: string | null;
+            /**
+             * @description Operator-supplied label for the ACL entry the invitation writes — now
+             *     for a wallet invitation whose DID has none, at the claim for a passkey
+             *     invitation. Ignored when a wallet invitation's DID already has one.
              */
             label?: string | null;
             /**
@@ -679,8 +684,9 @@ export interface components {
         };
         CreateInviteResponse: {
             /**
-             * @description `true` when the call also wrote the ACL entry; `false` when
-             *     the target DID was already an admin (idempotent).
+             * @description `true` when the call also wrote the ACL entry; `false` when a wallet
+             *     invitation's DID was already an admin (idempotent), and always for a
+             *     passkey invitation, whose entry is written when it is claimed.
              */
             aclEntryCreated: boolean;
             /**
@@ -706,6 +712,8 @@ export interface components {
              *     DELETE surfaces use.
              */
             jti: string;
+            /** @description Whether this is a wallet or a passkey invitation. */
+            kind: components["schemas"]["InviteKind"];
         };
         /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
         CredentialExchangeIssueV0_1Ext: {
@@ -1856,6 +1864,12 @@ export interface components {
             newlyRevoked: boolean;
             revokedAt: string;
         };
+        /**
+         * @description `vtc/_shared/0.2/invite#InviteKind`: whether an invitation names the DID
+         *     that claims it.
+         * @enum {string}
+         */
+        InviteKind: "wallet" | "passkey";
         /** @enum {string} */
         InviteStatus: "issued" | "consumed" | "expired";
         InviteSummary: {
@@ -1872,11 +1886,14 @@ export interface components {
              */
             expiresAt?: string | null;
             jti: string;
+            /** @description Whether this is a wallet or a passkey invitation. */
+            kind: components["schemas"]["InviteKind"];
             status: components["schemas"]["InviteStatus"];
             /**
-             * @description Admin DID the invite was minted for. `None` only on
-             *     legacy rows persisted before the field landed (those are
-             *     safe to clean up via revoke). New invites always carry it.
+             * @description The administrator's DID: a wallet invitation's always (but for legacy
+             *     rows persisted before the field landed, safe to clean up via revoke);
+             *     a passkey invitation's once it is consumed — the DID derived from the
+             *     passkey that claimed it.
              */
             targetDid?: string | null;
         };

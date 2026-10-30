@@ -134,7 +134,14 @@ const ACL_REVOKE_V0_2: &str = "https://trusttasks.org/spec/acl/revoke/0.2";
 /// [`super::OPERATOR_OFFLINE_WRITE_URI`].
 const OFFLINE_WRITE: &str = super::OPERATOR_OFFLINE_WRITE_URI;
 const ACL_MIGRATION: &str = super::OPERATOR_ACL_MIGRATION_URI;
-const INVITES_CREATE: &str = "https://trusttasks.org/spec/vtc/admin/invites/create/0.1";
+const INVITES_CREATE: &str = crate::trust_tasks::admin_tasks::INVITES_CREATE_TYPE;
+/// `vtc/admin/invites/create/0.1`, no longer served. Its template stays so an
+/// invite parked under it still renders in the history; spelled with `concat!`
+/// for the reason [`ELECTIONS_CREATE_V0_1`] is.
+const INVITES_CREATE_V0_1: &str = concat!(
+    "https://trusttasks.org/spec/",
+    "vtc/admin/invites/create/0.1"
+);
 const ADMIN_REMOVE: &str = "https://trusttasks.org/spec/vtc/members/admin-remove/0.1";
 const CONFIG_PATCH: &str = "https://trusttasks.org/spec/config/patch/0.1";
 const CONFIG_IMPORT: &str = "https://trusttasks.org/spec/vtc/config/import/0.1";
@@ -279,6 +286,11 @@ const fn f(name: &'static str, pointer: &'static str, format: &'static str) -> F
 
 const GRANT_EFFECT: &str = "{subject} will be able to grant and remove any authority in this \
                             community, including yours.";
+const INVITE_EFFECT: &str = "Whoever claims this invitation becomes an unrestricted administrator, \
+                             able to grant and remove any authority in this community, including \
+                             yours. A wallet invitation can be claimed only by the invitee DID \
+                             shown; a passkey invitation, which shows none, by whoever holds its \
+                             install URL and claim code, under their passkey's own DID.";
 const REDUCE_EFFECT: &str = "{subject} loses unrestricted authority in this community. They are \
                              not asked: a party to a removal never decides it.";
 // Role-based administration (`vtc-admin-roles.md` §7): what the capabilities
@@ -499,9 +511,19 @@ pub const TEMPLATES: &[Template] = &[
             f("toRole", "/toRole", "text"),
         ],
     },
+    // create 0.2: `did` names a wallet invitation's administrator, and is
+    // absent from a passkey invitation, whose administrator's DID does not
+    // exist until it is claimed — so the title names no DID.
     Template {
         kind: KIND_INVITE_CREATE,
         type_uri: INVITES_CREATE,
+        title: "Invite a new unrestricted administrator",
+        effect: INVITE_EFFECT,
+        fields: &[f("invitee", "/did", "did"), f("label", "/label", "text")],
+    },
+    Template {
+        kind: KIND_INVITE_CREATE,
+        type_uri: INVITES_CREATE_V0_1,
         title: "Invite {subject} to become an unrestricted administrator",
         effect: GRANT_EFFECT,
         fields: &[f("subject", "/did", "did"), f("label", "/label", "text")],
@@ -1066,6 +1088,11 @@ pub const PINNED: &[(&str, &str, &str)] = &[
     (
         KIND_INVITE_CREATE,
         INVITES_CREATE,
+        "zQmXg9RsQh74pTGLccB8ENC4trXmhB5MfYzN8VG7Mzb6Zuw",
+    ),
+    (
+        KIND_INVITE_CREATE,
+        INVITES_CREATE_V0_1,
         "zQmSXC2GaMpizs4kKRhz4nBchZikWjqHAoeDfA5D7fVizgp",
     ),
     (

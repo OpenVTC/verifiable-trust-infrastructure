@@ -192,7 +192,10 @@ When adding a flow, add it here and a line to the root index.
   `--did` mint passkey invitations (token names no DID; the authority is
   recorded on the row, `install::InvitedAuthority`, and `finish` writes the
   entry when the community already has an administrator); `--did` mints a
-  wallet one. `co_admin_did` adds a second;
+  wallet one. The console and `vtc/admin/invites/create/0.2` mint either kind
+  (`did` absent = passkey); a passkey invitation always takes the gesture and
+  consent an unrestricted grant takes, since nobody authorises it at the
+  claim. `co_admin_did` adds a second;
   `--single-admin` writes `[acl] single_admin_mode` (see *VTC administrator
   action list*).
 - **Code**: `vtc-service/src/setup/{wizard,from_toml,phase1}.rs` (both

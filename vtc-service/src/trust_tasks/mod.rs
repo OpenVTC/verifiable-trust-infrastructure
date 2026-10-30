@@ -885,7 +885,15 @@ async fn dispatch_trust_task_validated(
 }
 
 /// The document requirements (SPEC §7.2 items 5b, 7a, 8; §7.3 item 17) of
-/// `type_uri`: its published specification's, read off the registry.
+/// `type_uri`: its published specification's, read off the version VTI pins
+/// (`vti-specs`, which answers the framework's own from `trust_tasks_rs`).
+///
+/// The deprecated prebuilt `trust_tasks_rs` index is the fallback only: a
+/// version pinned after the last `trust-tasks-rs` release is in `vti-specs`
+/// alone, and reading only the prebuilt index answered `None` for it — so the
+/// spine enforced none of its specification's proof, `recipient` or
+/// `issuedAt` requirements (fail-open; `vtc/admin/invites/create/0.2` was the
+/// first such version).
 pub(crate) fn spec_policy_for(type_uri: &str) -> Option<trust_tasks_rs::SpecPolicy> {
     vti_specs::schema_index::spec_policy_for(type_uri)
 }

@@ -190,6 +190,9 @@ fn collect_from_dir(dir: &Path, out: &mut BTreeSet<String>) {
 }
 
 /// The sweep's scope: bound ∩ published. Derived, never hand-listed.
+/// Published means a schema in either index: the deprecated prebuilt
+/// `trust_tasks_rs` one, or the versions the `vti-specs` crates pin — which
+/// alone carry a version newer than the last `trust-tasks-rs` release.
 pub(super) fn resolved_uris() -> BTreeSet<String> {
     bound_uris()
         .into_iter()
@@ -1516,13 +1519,16 @@ fn table() -> Vec<Conformance> {
             json!({ "adminDid": OTHER_DID, "eventId": REQUEST_ID })
         ),
         checked!(
-            s::admin::invites::create::v0_1::Payload,
-            s::admin::invites::create::v0_1::Response,
-            // `CreateInviteRequest` — routes/admin/invites.rs:51.
+            s::admin::invites::create::v0_2::Payload,
+            s::admin::invites::create::v0_2::Response,
+            // `CreateInviteRequest` — routes/admin/invites.rs: a wallet
+            // invitation names `did`; a passkey invitation omits it (that
+            // shape is held by `single_admin_mode.rs`'s `assert_conforms`).
             json!({ "did": OTHER_DID, "ttlSeconds": 3600, "label": "ops laptop invite" }),
-            // `CreateInviteResponse` — routes/admin/invites.rs:69.
+            // `CreateInviteResponse` — routes/admin/invites.rs.
             json!({
                 "jti": REQUEST_ID,
+                "kind": "wallet",
                 "installUrl": "https://vtc.example.org/admin/install?token=eyJ0.e30.s",
                 "claimCode": "K7QW-3M2X-9PLD",
                 "expiresAt": TS,
@@ -1530,18 +1536,17 @@ fn table() -> Vec<Conformance> {
             })
         ),
         checked!(
-            s::admin::invites::list::v0_1::Payload,
-            s::admin::invites::list::v0_1::Response,
-            // GET: the payload has no required member and the body is empty.
+            s::admin::invites::list::v0_2::Payload,
+            s::admin::invites::list::v0_2::Response,
+            // The payload has no required member.
             json!({}),
-            // `ListInvitesResponse` / `InviteSummary` —
-            // routes/admin/invites.rs:122 / :92.
+            // `ListInvitesResponse` / `InviteSummary` — routes/admin/invites.rs.
             json!({
                 "invites": [
-                    { "jti": REQUEST_ID, "status": "issued", "targetDid": OTHER_DID,
+                    { "jti": REQUEST_ID, "kind": "passkey", "status": "issued",
                       "expiresAt": TS },
-                    { "jti": "8b7a6c5d-1e2f-4a3b-9c8d-7e6f5a4b3c2d", "status": "consumed",
-                      "targetDid": DID, "consumedAt": TS },
+                    { "jti": "8b7a6c5d-1e2f-4a3b-9c8d-7e6f5a4b3c2d", "kind": "wallet",
+                      "status": "consumed", "targetDid": DID, "consumedAt": TS },
                 ]
             })
         ),
