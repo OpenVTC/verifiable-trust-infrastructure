@@ -391,6 +391,20 @@ describe("data rooms in the portal", () => {
     await waitFor(() => expect(wallet.calls.find((c) => c.method === "putNote")?.args).toEqual({ hostDid: HOST, roomId: ROOM, title: "Pricing", body: "Hold." }));
   });
 
+  it("an open room takes a note, said to be readable by its host, and no file", async () => {
+    const wallet = fakeWallet({ info: vi.fn(async () => ({ ...INFO, visibility: "open" })) });
+    (window as { vtaWallet?: unknown }).vtaWallet = { rooms: wallet };
+    renderWith(<RoomPage hostDid={HOST} roomId={ROOM} />);
+    await screen.findByText("Add to this room");
+    expect(screen.getByText(/its host can read it as well as its members/)).toBeTruthy();
+    expect(screen.queryByLabelText("Or a file")).toBeNull();
+    expect(screen.queryByRole("button", { name: /Add file/ })).toBeNull();
+    fireEvent.change(screen.getByLabelText("Title"), { target: { value: "Hello" } });
+    fireEvent.click(screen.getByRole("button", { name: /Add note/ }));
+    await screen.findByText("Note added.");
+    await waitFor(() => expect(wallet.calls.find((c) => c.method === "putNote")?.args).toEqual({ hostDid: HOST, roomId: ROOM, title: "Hello" }));
+  });
+
   it("an opened record takes the add form's place beside the list, and Add or Close brings the form back", async () => {
     const wallet = fakeWallet();
     (window as { vtaWallet?: unknown }).vtaWallet = { rooms: wallet };
