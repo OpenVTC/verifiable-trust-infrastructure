@@ -1105,14 +1105,17 @@ function FileBox({
           {errorText(error)}
         </p>
       )}
+      {/* An open room's record is not signed by its author: there the digest is the record's word. */}
       {got.data ? (
         <p className="muted small">
-          ✓ Every byte matches the digest its author signed. Its type is the author&rsquo;s word for it — open it
-          with that in mind.
+          ✓ Every byte matches the digest {rec.sealed ? "its author signed" : "its record states"}. Its type is the
+          author&rsquo;s word for it — open it with that in mind.
         </p>
       ) : (
         <p className="muted small">
-          Decrypted in your wallet and checked against what its author signed before this page receives a byte.
+          Decrypted in your wallet and checked against{" "}
+          {rec.sealed ? "what its author signed" : "the digest its record states"} before this page receives a
+          byte.
         </p>
       )}
     </div>
@@ -1177,7 +1180,7 @@ function AddToRoom({ wallet, hostDid, info }: { wallet: WalletRooms; hostDid: st
     onSettled: () => setProgress(null),
   });
   const wontFit = file ? fileWontFit(info, file.size) : null;
-  const sealedTier = info.visibility !== "open";
+  const openTier = info.visibility === "open";
 
   return (
     <section className="card" aria-labelledby="add-heading">
@@ -1189,9 +1192,10 @@ function AddToRoom({ wallet, hostDid, info }: { wallet: WalletRooms; hostDid: st
         Your wallet shows you what will be added, signed as <b title={info.member}>{authorName(info.member)}</b>,
         before anything is sent.
       </p>
-      {!sealedTier && (
+      {openTier && (
         <p className="muted small">
-          This room is open: a note is stored in the clear, so its host can read it as well as its members.
+          This room is open: a note is stored in the clear, and a file is stored encrypted under a key its record
+          carries in the clear — so the room&rsquo;s host can read both, as well as its members.
         </p>
       )}
       <label className="field">
@@ -1215,41 +1219,33 @@ function AddToRoom({ wallet, hostDid, info }: { wallet: WalletRooms; hostDid: st
           <NotebookPen size={14} aria-hidden="true" /> {note.isPending ? "Waiting for your wallet…" : "Add note"}
         </button>
       </div>
-      {!sealedTier ? (
+      <label className="field">
+        <span>Or a file</span>
+        <input type="file" onChange={(e) => setFile(e.target.files?.[0] ?? null)} />
+      </label>
+      {file && (
         <p className="muted small">
-          Files go in attributed and private rooms: a file's description is sealed inside its record.
+          {file.name} · {formatBytes(file.size)}
         </p>
-      ) : (
-        <>
-          <label className="field">
-            <span>Or a file</span>
-            <input type="file" onChange={(e) => setFile(e.target.files?.[0] ?? null)} />
-          </label>
-          {file && (
-            <p className="muted small">
-              {file.name} · {formatBytes(file.size)}
-            </p>
-          )}
-          {wontFit && (
-            <p className="error" role="alert">
-              {wontFit}
-            </p>
-          )}
-          <div className="actions">
-            <button
-              type="button"
-              className="btn btn-primary"
-              disabled={!file || !!wontFit || upload.isPending}
-              onClick={() => {
-                setDone(null);
-                if (file) upload.mutate(file);
-              }}
-            >
-              <FilePlus2 size={14} aria-hidden="true" /> {upload.isPending ? describe(progress) : "Add file"}
-            </button>
-          </div>
-        </>
       )}
+      {wontFit && (
+        <p className="error" role="alert">
+          {wontFit}
+        </p>
+      )}
+      <div className="actions">
+        <button
+          type="button"
+          className="btn btn-primary"
+          disabled={!file || !!wontFit || upload.isPending}
+          onClick={() => {
+            setDone(null);
+            if (file) upload.mutate(file);
+          }}
+        >
+          <FilePlus2 size={14} aria-hidden="true" /> {upload.isPending ? describe(progress) : "Add file"}
+        </button>
+      </div>
       {(note.isError || upload.isError) && (
         <p className="error" role="alert">
           {errorText(note.error ?? upload.error)}
