@@ -220,15 +220,15 @@ digest = "sha256:09dd2f6926669bb675b81c3672efdf96640995b5184a51672e767ec04270ee7
 
 [[task]]
 slug = "rooms/owner/group/remove"
-version = "0.1"
-type_uri = "https://trusttasks.org/spec/rooms/owner/group/remove/0.1"
-digest = "sha256:28e1a9f37624cd352d7e65447ff926a38a9a5e4be9981f50270211d7de540d7e"
-
-[[task]]
-slug = "rooms/owner/group/remove"
 version = "0.3"
 type_uri = "https://trusttasks.org/spec/rooms/owner/group/remove/0.3"
 digest = "sha256:1ea1c6e6bb8c7ea3701478bdedaab528985414a41a27d1c048f05f0e305707c6"
+
+[[task]]
+slug = "rooms/owner/group/remove"
+version = "0.4"
+type_uri = "https://trusttasks.org/spec/rooms/owner/group/remove/0.4"
+digest = "sha256:f26b10bc9cdb5056e15883c85640c898223f091633d7cc735a51725fe5193bae"
 
 [[task]]
 slug = "rooms/owner/group/renew"
