@@ -1,0 +1,54 @@
+# The Trust Task specification versions this crate generates (trust-tasks-build).
+# Edit with the `trust-tasks` CLI — see the workspace CLAUDE.md, "Pinning a task version".
+registry = "https://trusttasks.org"
+
+[tasks]
+"rooms/blobs/chunk" = "0.1"
+"rooms/blobs/get" = ["0.1", "0.2"]
+"rooms/blobs/upload/abort" = "0.2"
+"rooms/blobs/upload/begin" = "0.2"
+"rooms/blobs/upload/chunk" = "0.2"
+"rooms/blobs/upload/commit" = "0.2"
+"rooms/create" = "0.2"
+"rooms/epoch/chain" = ["0.1", "0.2"]
+"rooms/epoch/commits" = "0.1"
+"rooms/epoch/mint" = "0.1"
+"rooms/epoch/prune" = "0.2"
+"rooms/info" = ["0.1", "0.2", "0.3"]
+"rooms/keys/act" = "0.8"
+"rooms/keys/backfill" = "0.2"
+"rooms/keys/browse" = "0.3"
+"rooms/keys/chain" = "0.2"
+"rooms/keys/commit" = "0.1"
+"rooms/keys/file-key" = "0.2"
+"rooms/keys/key-package" = "0.2"
+"rooms/keys/label" = "0.1"
+"rooms/keys/list" = "0.2"
+"rooms/keys/open" = "0.2"
+"rooms/keys/present" = "0.2"
+"rooms/keys/profile/read" = "0.1"
+"rooms/keys/profile/write" = "0.1"
+"rooms/keys/read" = "0.1"
+"rooms/keys/seal" = "0.2"
+"rooms/keys/welcome" = "0.1"
+"rooms/owner/anchor" = "0.1"
+"rooms/owner/claim" = "0.1"
+"rooms/owner/group/add" = "0.3"
+"rooms/owner/group/create" = "0.1"
+"rooms/owner/group/remove" = ["0.3", "0.4"]
+"rooms/owner/group/renew" = "0.2"
+"rooms/owner/invite" = "0.1"
+"rooms/owner/issue-authority" = "0.2"
+"rooms/owner/issue-membership" = "0.1"
+"rooms/owner/register" = "0.2"
+"rooms/owner/revoke" = "0.1"
+"rooms/owner/transfer" = "0.1"
+"rooms/records/curate" = "0.1"
+"rooms/records/get" = ["0.1", "0.2"]
+"rooms/records/list" = ["0.1", "0.2", "0.3", "0.4", "0.5"]
+"rooms/records/prune" = ["0.1", "0.2"]
+"rooms/records/put" = ["0.1", "0.2", "0.3"]
+"rooms/records/retention/set" = "0.1"
+"rooms/revocations/get" = "0.1"
+"rooms/revocations/put" = "0.1"
+"rooms/usage" = "0.1"

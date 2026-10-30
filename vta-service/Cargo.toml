@@ -438,6 +438,9 @@ hmac = "0.13"
 aws-lc-rs = { version = "1", optional = true }
 
 [dev-dependencies]
+# `trust_tasks::spec_pin_census` holds every Type URI this workspace serves,
+# sends or names to the versions the generated `vti-specs` crates pin.
+vti-specs = { path = "../vti-specs" }
 # Reads back the `keys/sign-csr` request and checks its signature.
 x509-parser = { workspace = true }
 # A test CA certifying a VTA-held key, for `keys/sign-jws`'s `x5c` check.

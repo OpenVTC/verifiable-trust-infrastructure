@@ -28,6 +28,14 @@ members = [
   "vtc-client",
   "vtc-service",
   "vti-common",
+  # The generated Trust Task types (trust-tasks-build), one crate per spec
+  # family group, and the facade that merges their Type URI indexes. See the
+  # Trust Task wire types section of CLAUDE.md.
+  "vti-specs",
+  "vti-specs-core",
+  "vti-specs-rooms",
+  "vti-specs-vta",
+  "vti-specs-vtc",
   "vti-rooms",
   "vti-rooms-dtg",
   "vti-rooms-wasm",
@@ -78,6 +86,11 @@ default-members = [
   "vtc-service",
   "vti-common",
   "vti-secrets",
+  "vti-specs",
+  "vti-specs-core",
+  "vti-specs-rooms",
+  "vti-specs-vta",
+  "vti-specs-vtc",
   "vti-webauthn",
 ]
 exclude = [
@@ -754,6 +767,12 @@ trust-tasks-rs = { version = "0.36.2", default-features = false, features = [
   "validate",
 ] }
 trust-tasks-capability-client = "0.36"
+# The build-time generator behind the `vti-specs-*` crates: each one's build.rs
+# turns the versions its `trust-tasks.lock` pins into Rust types and a Type URI
+# index (`.index(true)`). 0.1.3 is the floor: the first with the index.
+# trust-tasks-rs 0.36.2 above is the runtime that index's entries need
+# (`trust_tasks_rs::type_index`).
+trust-tasks-build = "0.1.3"
 trust-tasks-https = { version = "0.36", default-features = false, features = ["server", "client", "jwt"] }
 # The DIDComm binding. Carries `ENVELOPE_TYPE` — the one `type` every
 # Trust-Task DIDComm message must use, with the `TrustTask<P>` as its body —

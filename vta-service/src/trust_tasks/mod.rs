@@ -93,6 +93,8 @@ mod policy;
 mod policy_gate;
 #[cfg(test)]
 mod produced_census;
+// Every Type URI this workspace serves, sends or names is a pinned version
+// (`vti-specs`), or the gates that read the index fail open for it.
 #[cfg(feature = "webvh")]
 mod provision_integration;
 pub(crate) mod received;
@@ -107,6 +109,8 @@ mod room_owner_group;
 mod room_owner_revoke;
 mod room_profile;
 mod seeds;
+#[cfg(test)]
+mod spec_pin_census;
 // `operations::protocol` — every service operation these handlers call — is
 // `#[cfg(feature = "webvh")]`, because advertising a transport means editing
 // the agent's did:webvh document. Without webvh there is no document to edit,
