@@ -1,7 +1,8 @@
 # Key roles — implementation plan
 
-**Status:** plan, step 0 of 13. Nothing below is implemented yet; each step
-records its PR here when it merges.
+**Status:** plan, step 0 of 13. **Paused** by the maintainer (2026-10-30): no
+step starts without a go-ahead. The design itself — why, the model, benefits
+and implications — is [key-roles.md](key-roles.md).
 
 **Normative sources.** The VTI specification's *Key roles* chapter
 (`spec/04-identity-keys.md`, dtgwg-vti-spec#79) and the method-neutral
@@ -127,11 +128,11 @@ tested against real plans; until it lands, the one change it uniquely gates
 approval. 12 last because it changes a deployed flow (passkey enrolment onto
 any DID) and needs the persona predicate settled.
 
-## 4. Open decision — how an operator supplies the recovery key
+## 4. Decided — how an operator supplies the recovery key
 
 The specification fixes *what* (an Ed25519 key in another protection boundary,
 proof of possession over the `previewId`) but not *how an operator gets one*.
-Proposed, pending the maintainer's decision:
+Decided by the maintainer on 2026-10-30, as proposed (see also [key-roles.md](key-roles.md) §5.2 for why the VTA's own BIP-32 seed cannot hold it):
 
 - A custodian command, `pnm recovery-key {generate,show,sign-commitment,sign-recovery}`,
   that keeps the key **outside the VTA's host and config**: a passphrase-encrypted

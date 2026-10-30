@@ -233,6 +233,7 @@ are implementer-facing rather than operator-facing.
   rather than adding a PATCH component, and explains why the sender speaking
   *down* is what lets `deny_unknown_fields` stay. Design only; §2 is a proposal
   for the shared registry.
+- **[Key roles — design](05-design-notes/key-roles.md)** — why durable identities split keys by role (attestation, operational, messaging, update, authenticator), protection boundaries, the external recovery key (and why not the VTA's BIP-32 seed), rotation vs revocation, approvals, method profiles, benefits and implications.
 - **[Key roles — implementation plan](05-design-notes/key-roles-implementation.md)** —
   the ordered PRs that implement method-neutral key roles (`vta/dids/*`): method
   profiles, `keyRoles`, generated role keys outside the seed and every backup,
