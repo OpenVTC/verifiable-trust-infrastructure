@@ -185,8 +185,14 @@ When adding a flow, add it here and a line to the root index.
   TEE-KMS (a permanent VTC non-goal) are supported. Factory:
   `vtc-service/src/keys/seed_store/mod.rs::create_secret_store`.
 - **First administrators**: the install claim writes the first
-  `community-admin` (passkey claim 0.2, or wallet claim 0.3 binding the
-  plugin's approver as step-up factor); `co_admin_did` adds a second;
+  `community-admin` (the passkey install `vtc/install/claim/passkey/*/0.1`,
+  whose administrator DID is the passkey's own Ed25519 or P-256 `did:key`,
+  proven by an assertion before any authority; or wallet claim 0.3 binding the
+  plugin's approver as step-up factor). Setup and `vtc admin invite` without
+  `--did` mint passkey invitations (token names no DID; the authority is
+  recorded on the row, `install::InvitedAuthority`, and `finish` writes the
+  entry when the community already has an administrator); `--did` mints a
+  wallet one. `co_admin_did` adds a second;
   `--single-admin` writes `[acl] single_admin_mode` (see *VTC administrator
   action list*).
 - **Code**: `vtc-service/src/setup/{wizard,from_toml,phase1}.rs` (both

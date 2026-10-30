@@ -321,7 +321,8 @@ The ways forward:
 4. **Add the second administrator offline**, once — the break-glass. Stop the
    daemon, then run `vtc acl add --did <did> --role admin --label "<name>"` (a
    `community-admin`; `--admin-role` and `--capability` choose another role or
-   narrow it) or `vtc admin invite --did <did>`, and start it again. Each
+   narrow it) or `vtc admin invite` (a passkey invitation; `--did <did>` for a
+   wallet one), and start it again. Each
    offline write is recorded as an `AclBreakGlassWritten` audit row at the next
    start, and raised in Actions for the administrators to acknowledge (§3.5).
 
@@ -887,23 +888,26 @@ confirms it and rotates it to a fresh key.
    co_admin_did = "did:webvh:…:bob"
    ```
 
-   Setup provisions the VTC's identity from Alice's VTA, mints her
-   administrator `did:key`, and prints a one-time install URL
-   (`<base>/admin/install?token=…`) and a separate **claim code**. Both are
-   valid for 15 minutes.
-2. Alice opens the URL ("Claim Admin Passkey"), enters the claim code and
-   registers a passkey. The VTC writes **two** community-admin entries:
-   Alice's, and Bob's labelled "co-admin (install bootstrap)". It audits
-   `CommunityInstalled`.
+   Setup provisions the VTC's identity from Alice's VTA and prints a one-time
+   install URL (`<base>/admin/install?token=…`) and a separate **claim
+   code**. Both are valid for 15 minutes.
+2. Alice opens the URL ("Claim administrator access"), enters the claim code
+   and registers a passkey, then signs once with it to prove she holds it
+   (`vtc/install/claim/passkey/{start,finish}/0.1`). Her administrator DID is
+   the `did:key` of that passkey's own key. The VTC writes **two**
+   community-admin entries: Alice's, and Bob's labelled "co-admin (install
+   bootstrap)". It audits `CommunityInstalled`.
 3. Alice signs in with **Sign in with passkey**, then completes **Set up
    signing** with her passkey.
 
-The claim code is the security of this step, not the URL. Keep them apart, and
-note that the claim proves possession of the URL and code, not control of the
-DID it names.
+The claim code is the security of this step, not the URL. Keep them apart. The
+claim proves possession of the URL, the code and the passkey; the DID it makes
+an administrator is the passkey's own, so there is no other DID to prove
+control of.
 
 A founder who uses only a wallet claims the install under their own DID
-instead — the install page offers it beside the passkey claim (claim 0.3,
+instead, with an install URL that names it — the install page offers the
+wallet claim for such a URL (claim 0.3,
 [`bootstrap-runbook.md`](bootstrap-runbook.md), Path C): the wallet signs as
 the founder's DID, and the plugin's approver device is bound as their step-up
 factor at bootstrap.
@@ -961,14 +965,16 @@ mints the same invite and is audited as a break-glass at the next start.
 
 ### Step 5b — Or: Bob registers a passkey at the community
 
-If Bob would rather step up with a passkey:
+If Bob would rather step up with a passkey, Alice invites him to enrol a
+**step-up passkey** for his DID (Members → Bob → *Step-up passkeys* →
+*Invite…*, `auth/passkey/enroll/invite/0.3`; [`git-namespaces.md`](git-namespaces.md),
+"Step-up passkeys for members"). Bob redeems it signing as his own DID, so the
+passkey is bound to that DID.
 
-1. Access control → **Admin invites** → **Invite admin** → Bob's DID →
-   **Mint invite**. Bob already holds an admin entry, so the invite grants
-   nothing, and needs neither Alice's step-up nor anyone's consent.
-2. She sends Bob the install URL and the claim code by **different channels**.
-3. Bob opens the URL, enters the code, and registers a passkey. It is recorded
-   against his DID (`AdminPasskeyRegistered`).
+An install URL does not do this any more. A passkey install
+(`vtc/install/claim/passkey/*`) makes the passkey's **own** `did:key` an
+administrator — a second administrator identity, not a factor for Bob's DID —
+and an invite naming Bob's DID is claimed with his wallet (claim 0.3).
 
 From then on Bob's step-up works whichever way he signs in, because the gesture
 is checked against the passkeys registered to his DID — until he enrols a

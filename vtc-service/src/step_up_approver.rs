@@ -1243,7 +1243,7 @@ pub async fn claim_start_v0_3(
         return Err(refused(
             claim_start::error_codes::TOKEN_NAMES_NO_DID,
             "this install token names no administrator DID; claim it with \
-             vtc/install/claim/start 0.2",
+             vtc/install/claim/passkey/start 0.1",
         ));
     }
     let audience = vtc_did(state).await?;

@@ -2095,11 +2095,11 @@ mod spine_proof_tests {
         ),
         (
             install_tasks::CLAIM_START_TYPE,
-            "first-admin onboarding, before any ACL entry exists to sign with; the one-time install token the handler requires is the credential",
+            "passkey install: no key exists to sign with until the passkey does; the one-time install token (and its claim code) the handler requires is the credential",
         ),
         (
             install_tasks::CLAIM_FINISH_TYPE,
-            "first-admin onboarding, before any ACL entry exists to sign with; the one-time install token the handler requires is the credential",
+            "passkey install: WebAuthn never exposes the passkey's key to sign a document with; the install token, the registration and an assertion by the registered key are the evidence",
         ),
         (
             install_tasks::CLAIM_START_V0_3_TYPE,
@@ -3130,8 +3130,10 @@ pub(crate) const DISPATCHED_URIS: &[&str] = &[
     auth_tasks::CHALLENGE_TYPE,
     auth_tasks::AUTHENTICATE_V0_3_TYPE,
     auth_tasks::REFRESH_V0_2_TYPE,
-    // First-admin onboarding — replaced the bearer REST routes at
-    // `POST /v1/install/claim/{start,finish}` and `POST /v1/admin/bootstrap`.
+    // Administrator onboarding by passkey
+    // (`vtc/install/claim/passkey/{start,finish}/0.1`) — the bearer REST
+    // routes at `POST /v1/install/claim/{start,finish}` and
+    // `POST /v1/admin/bootstrap` are long gone.
     install_tasks::CLAIM_START_TYPE,
     install_tasks::CLAIM_FINISH_TYPE,
     // 0.3: claim under a DID the founder already controls, with a step-up

@@ -1794,33 +1794,62 @@ fn witnesses() -> Vec<Witness> {
             "endorsements.rs",
             "an_unknown_endorsement_is_the_declared_not_found"
         ),
+        // The passkey install — `vtc/install/claim/passkey/{start,finish}/0.1`.
         witness!(
-            s::install::claim::finish::v0_2::error_codes::BINDING_INVALID,
+            s::install::claim::passkey::start::v0_1::error_codes::INVALID_TOKEN,
+            crate::routes::install::START_ERR_INVALID_TOKEN,
+            "install_claim.rs",
+            "the_claim_start_task_answers_with_the_code_its_spec_declares"
+        ),
+        witness!(
+            s::install::claim::passkey::finish::v0_1::error_codes::BINDING_INVALID,
             crate::routes::install::FINISH_ERR_BINDING_INVALID,
             "install_claim.rs",
             "the_claim_finish_task_answers_with_the_codes_its_spec_declares"
         ),
         witness!(
-            s::install::claim::finish::v0_2::error_codes::INVALID_TOKEN,
+            s::install::claim::passkey::finish::v0_1::error_codes::INVALID_TOKEN,
             crate::routes::install::FINISH_ERR_INVALID_TOKEN,
             "install_claim.rs",
             "the_claim_finish_task_answers_with_the_codes_its_spec_declares"
         ),
         witness!(
-            s::install::claim::finish::v0_2::error_codes::REGISTRATION_MISMATCH,
+            s::install::claim::passkey::finish::v0_1::error_codes::REGISTRATION_MISMATCH,
             crate::routes::install::FINISH_ERR_REGISTRATION_MISMATCH,
             "install_claim.rs",
             "the_claim_finish_task_answers_with_the_codes_its_spec_declares"
         ),
         witness!(
-            s::install::claim::start::v0_2::error_codes::INVALID_TOKEN,
-            crate::routes::install::START_ERR_INVALID_TOKEN,
+            s::install::claim::passkey::finish::v0_1::error_codes::POSSESSION_UNPROVEN,
+            crate::routes::install::FINISH_ERR_POSSESSION_UNPROVEN,
             "install_claim.rs",
-            "the_claim_start_task_answers_with_the_code_its_spec_declares"
+            "possession_is_proven_before_any_authority"
         ),
-        // 0.3 — the claim under an existing DID with a step-up approver. Its
-        // `invalidToken` and `registrationMismatch` are the same codes 0.2
-        // declares, witnessed above.
+        witness!(
+            s::install::claim::passkey::finish::v0_1::error_codes::UNSUPPORTED_ALGORITHM,
+            crate::routes::install::FINISH_ERR_UNSUPPORTED_ALGORITHM,
+            "install_claim.rs",
+            "a_passkey_no_did_key_can_name_is_unsupported_algorithm"
+        ),
+        // 0.3 — the claim under an existing DID with a step-up approver.
+        witness!(
+            s::install::claim::start::v0_3::error_codes::INVALID_TOKEN,
+            crate::routes::install::START_V0_3_ERR_INVALID_TOKEN,
+            "install_claim_v0_3.rs",
+            "claim_start_v0_3_answers_the_codes_its_spec_declares"
+        ),
+        witness!(
+            s::install::claim::finish::v0_3::error_codes::INVALID_TOKEN,
+            crate::routes::install::FINISH_V0_3_ERR_INVALID_TOKEN,
+            "install_claim_v0_3.rs",
+            "claim_finish_v0_3_answers_the_codes_its_spec_declares"
+        ),
+        witness!(
+            s::install::claim::finish::v0_3::error_codes::REGISTRATION_MISMATCH,
+            crate::routes::install::FINISH_V0_3_ERR_REGISTRATION_MISMATCH,
+            "install_claim_v0_3.rs",
+            "claim_finish_v0_3_answers_the_codes_its_spec_declares"
+        ),
         witness!(
             s::install::claim::start::v0_3::error_codes::TOKEN_NAMES_NO_DID,
             crate::routes::install::START_V0_3_ERR_TOKEN_NAMES_NO_DID,
