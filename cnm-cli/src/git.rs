@@ -1198,7 +1198,7 @@ fn assertion_from_answer_code(code: &str) -> CliResult<Value> {
 }
 
 /// Answer `request` with the passkey assertion in `answer`, signed as this
-/// profile (`auth/step-up/approve-response/0.6`).
+/// profile (`auth/step-up/approve-response/0.7`).
 async fn answer_step_up(
     client: &VtcClient,
     request: &Value,

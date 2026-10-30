@@ -121,20 +121,21 @@ pub const TASK_AUTH_PASSKEY_LOGIN_START_0_2: &str =
 pub const TASK_AUTH_PASSKEY_LOGIN_FINISH_0_2: &str =
     "https://trusttasks.org/spec/auth/passkey/login/finish/0.2";
 
-/// `spec/auth/step-up/approve-response/0.6` — an approver's signed
-/// ratification of a pending AAL step-up. The relying party verifies the
-/// carried gate (did-signed Data Integrity proof, or a WebAuthn assertion) and
-/// elevates the session's `amr`/`acr` — or, for a step-up bound to one
-/// operation, records the approval (`recorded`) and elevates nothing.
+/// `spec/auth/step-up/approve-response/0.7` — an approver's ratification of a
+/// pending AAL step-up, backed by the approver's own evidence. The relying
+/// party verifies the carried gate (a did-signed Data Integrity proof, or a
+/// WebAuthn assertion by a passkey registered to the approver) and elevates
+/// the session's `amr`/`acr` — or, for a step-up bound to one operation,
+/// records the approval (`recorded`) and elevates nothing.
 ///
-/// Supersedes 0.1–0.5, which this VTA no longer serves: 0.2 spelt the evidence
-/// enum `didSigned`, 0.3 added `recorded`, 0.4 let a bound approval carry no
-/// `sessionId`, 0.5 required the approver's proof on every response (which
-/// this VTA already did), and 0.6 adds the `approverSigned` gate, which this
-/// VTA never offers and so refuses as `noGate`.
-#[allow(deprecated)] // auth/step-up/approve-response 0.6 is superseded by 0.7; VTI speaks 0.6 until it moves
-pub const TASK_AUTH_STEP_UP_APPROVE_RESPONSE_0_6: &str =
-    <vti_specs::auth::step_up::approve_response::v0_6::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+/// Supersedes 0.1–0.6, which this VTA no longer serves. 0.6 added the
+/// `approverSigned` gate, which this VTA never offers and so refuses as
+/// `noGate`; 0.7 lets a `webauthn` approval come without a proof (the
+/// assertion is the evidence), never counts a delegated key's proof as the
+/// approver's, and still requires the approver's proof on a `didSigned`
+/// answer and on every denial.
+pub const TASK_AUTH_STEP_UP_APPROVE_RESPONSE_0_7: &str =
+    <vti_specs::auth::step_up::approve_response::v0_7::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
 // ─── Device slice (spec/device/*) ────────────────────────────────────────
 // Canonical Trust Task registry shapes (dtgwg `device/*`). Companion/Service
@@ -2291,7 +2292,7 @@ pub const ALL_URIS: &[&str] = &[
     TASK_AUTH_SESSIONS_LIST_0_1,
     TASK_AUTH_PASSKEY_LOGIN_START_0_2,
     TASK_AUTH_PASSKEY_LOGIN_FINISH_0_2,
-    TASK_AUTH_STEP_UP_APPROVE_RESPONSE_0_6,
+    TASK_AUTH_STEP_UP_APPROVE_RESPONSE_0_7,
     // Device slice
     TASK_DEVICE_REGISTER_0_2,
     TASK_DEVICE_HEARTBEAT_0_3,

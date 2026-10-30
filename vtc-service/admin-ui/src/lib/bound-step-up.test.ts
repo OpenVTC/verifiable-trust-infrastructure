@@ -9,7 +9,8 @@ import {
   answerableHere,
   answerStepUp,
   APPROVE_RESPONSE_URI,
-  APPROVE_RESPONSE_V0_6_URI,
+  declinableHere,
+  declineStepUp,
   runStepUpCeremony,
   decodeStepUpRequest,
   encodeStepUpRequest,
@@ -122,8 +123,8 @@ describe("answering a step-up", () => {
     // A bound step-up carries no session.
     expect(doc.payload).not.toHaveProperty("sessionId");
     // Unsigned, naming the subject: the console key is a delegation, and a
-    // delegated key is never accepted as an approver's attestation — the
-    // passkey assertion is the gate.
+    // delegated key's proof is never the approver's (approve-response 0.7
+    // consumer item 1a) — the passkey assertion is the evidence.
     expect(doc).not.toHaveProperty("proof");
     expect(doc.issuer).toBe(ADMIN);
   });
@@ -162,7 +163,7 @@ describe("answering a step-up", () => {
   });
 });
 
-describe("answering with a step-up approver (approve-response 0.6)", () => {
+describe("answering with a step-up approver (approve-response 0.7)", () => {
   const APPROVER = "did:key:z6MkpTHR8VNsBxYAAWHut2Geadd9jSwuBV8xRoAnwWsdvktH";
   const OPERATION = {
     type: "https://trusttasks.org/spec/acl/grant/0.2",
@@ -246,7 +247,7 @@ describe("answering with a step-up approver (approve-response 0.6)", () => {
     expect(signTrustTask.mock.calls[0]?.[0].asDid).toBe(ADMIN);
 
     const doc = requests.find((r) => r.url === "/v1/trust-tasks")!.body as SignedTrustTaskDocument;
-    expect(doc.type).toBe(APPROVE_RESPONSE_V0_6_URI);
+    expect(doc.type).toBe(APPROVE_RESPONSE_URI);
     expect(doc.issuer).toBe(ADMIN);
     expect(doc.recipient).toBe(VTC_DID);
     expect(doc.proof.verificationMethod).toBe(`${ADMIN}#key-1`);
@@ -256,6 +257,41 @@ describe("answering with a step-up approver (approve-response 0.6)", () => {
       decision: "approved",
       evidence: { kind: "approverSigned", statement: STATEMENT },
     });
+  });
+
+  it("declines as the subject, signed by the wallet — never the console key", async () => {
+    await generateConsoleKey();
+    const { signTrustTask } = installWallet(false);
+    const requests = mockFetch([
+      { path: "/health", body: { status: "ok", version: "t", vtc_did: VTC_DID } },
+      {
+        method: "POST",
+        path: "/v1/trust-tasks",
+        body: { payload: { status: "rejected", reason: "declined in the admin console" } },
+      },
+    ]);
+    const ack = await declineStepUp(REQUEST);
+    expect(ack.status).toBe("rejected");
+    // approve-response 0.7 producer item 6: a denial is didSigned, proved by
+    // the approver's own DID.
+    expect(signTrustTask.mock.calls[0]?.[0].asDid).toBe(ADMIN);
+    const doc = requests.find((r) => r.url === "/v1/trust-tasks")!.body as SignedTrustTaskDocument;
+    expect(doc.type).toBe(APPROVE_RESPONSE_URI);
+    expect(doc.issuer).toBe(ADMIN);
+    expect(doc.proof.verificationMethod).toBe(`${ADMIN}#key-1`);
+    expect(doc.payload).toEqual({
+      subject: ADMIN,
+      challenge: CHALLENGE,
+      decision: "denied",
+      deniedReason: "declined in the admin console",
+      evidence: { kind: "didSigned" },
+    });
+  });
+
+  it("cannot decline without a wallet to sign as the subject", async () => {
+    await generateConsoleKey();
+    expect(declinableHere()).toBe(false);
+    await expect(declineStepUp(REQUEST)).rejects.toThrow(/do not answer/);
   });
 
   it("refuses an approver the request did not name", async () => {

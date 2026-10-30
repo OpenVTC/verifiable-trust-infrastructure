@@ -600,9 +600,9 @@ export async function addressedDocument(
  *   no key here. Its authority is the ceremony the member's **signed**
  *   `redeem/start` opened (sent by `cnm`);
  * - a console user's answer to a bound step-up
- *   (`auth/step-up/approve-response/0.4`, `evidence.kind = webauthn`), whose
- *   gate is the passkey assertion. The console key is a delegation, and a
- *   delegated key is never accepted as an approver's attestation.
+ *   (`auth/step-up/approve-response/0.7`, `evidence.kind = webauthn`), whose
+ *   evidence is the passkey assertion. The console key is a delegation, and a
+ *   delegated key's proof is never the approver's (0.7 consumer item 1a).
  */
 export async function postUnsignedTrustTask<T>(
   typeUri: string,

@@ -10,7 +10,7 @@
 //    `details.stepUpRequest`.
 // 2. The operator answers with a passkey: `navigator.credentials.get` over the
 //    request's WebAuthn options, sent back as
-//    `auth/step-up/approve-response/0.4` with `evidence.kind = webauthn`. The
+//    `auth/step-up/approve-response/0.7` with `evidence.kind = webauthn`. The
 //    VTC records the gesture against *that one operation* — nothing is
 //    elevated, no session changes.
 // 3. The console sends the **identical** signed document again, which spends
@@ -30,15 +30,21 @@
 //
 // ## Who signs the answer
 //
-// A console user's browser holds a session passkey of the operator's and no
-// key of theirs — its console key is a delegation, and a delegated key is
-// never accepted as an approver's attestation (`auth/signing-key/enroll/0.2`
-// item 7). So it answers **unsigned**, with the passkey assertion as the gate
-// (approve-response 0.4 `evidence.kind = webauthn`). A member who is no
-// console user answers with a step-up passkey, which is only ever beside the
-// member's own proof, so this page does the ceremony and shows an **answer
-// code** — the assertion — which `cnm` signs into the approve-response with
-// the member's own key.
+// A console user's browser holds a passkey of the operator's and no key of
+// theirs — its console key is a delegation, and a delegated key's proof is
+// never the approver's evidence (`auth/signing-key/enroll/0.2` item 7,
+// approve-response 0.7 consumer item 1a). So it answers **unsigned**, with
+// the passkey assertion as the evidence (approve-response 0.7
+// `evidence.kind = webauthn`, producer item 5). A member who is no console
+// user and answers for `cnm` gets an **answer code** — the assertion — which
+// `cnm` signs into the approve-response with the member's own key.
+//
+// A refusal is different: approve-response 0.7 producer item 6 requires a
+// denial to be proved by the approver's own DID, since an assertion signs only
+// the challenge and could not say which way the human decided. The console
+// key cannot make that proof, so the console declines through the VTA wallet
+// plugin, signing as the subject ([`declineStepUp`]); without one, an
+// operator declines by not answering, and the request lapses.
 //
 // ## Or with a step-up approver
 //
@@ -48,7 +54,7 @@
 // subject as their step-up factor, unlocked only by a user gesture — signs an
 // `auth/step-up/approver/attest/0.1` statement over the challenge and
 // `boundTo`, after recomputing `boundTo` from the operation it is shown. The
-// console then has the wallet sign `auth/step-up/approve-response/0.6`
+// console then has the wallet sign `auth/step-up/approve-response/0.7`
 // carrying that statement **as the subject's own DID** — never the console
 // key, which is a delegation the VTC refuses for this (VTI-APV-015 as amended,
 // VTI-APV-016).
@@ -58,6 +64,7 @@ import type { SignedTrustTaskDocument } from "./console-key";
 import {
   approveStepUpWithWallet,
   isWalletApproverAvailable,
+  isWalletSigningAvailable,
   signWithWallet,
   type ApproverStepUpRequest,
 } from "./wallet";
@@ -69,15 +76,11 @@ import {
   type JsonPublicKeyOptions,
 } from "./webauthn";
 
-/** The console's **unsigned** passkey answer — the only answer the VTC
- *  still hears on 0.4, since 0.5 onward require a proof this browser cannot
- *  make. Every signed answer is {@link APPROVE_RESPONSE_V0_6_URI}. */
+/** `auth/step-up/approve-response/0.7`: every answer — the console's
+ *  **unsigned** passkey approval, a wallet-signed refusal, and one carrying
+ *  `approverSigned` evidence. */
 export const APPROVE_RESPONSE_URI =
-  "https://trusttasks.org/spec/auth/step-up/approve-response/0.4";
-/** The approve-response version for every signed answer — a refusal, or one
- *  carrying `approverSigned` evidence. */
-export const APPROVE_RESPONSE_V0_6_URI =
-  "https://trusttasks.org/spec/auth/step-up/approve-response/0.6";
+  "https://trusttasks.org/spec/auth/step-up/approve-response/0.7";
 
 /** Where the console answers a step-up handed over from `cnm`. */
 export const STEP_UP_PATH = "/step-up";
@@ -247,16 +250,14 @@ export async function runStepUpCeremony(
  * With `operation` (the refused document's type and payload), an
  * `approverSigned` request and a wallet plugin exposing `approveStepUp`, the
  * plugin's approver signs the statement and the wallet signs approve-response
- * 0.6 as `req.subject` ([`answerWithApprover`]). Otherwise the passkey
- * ceremony runs and approve-response 0.4 goes **unsigned**: the WebAuthn
- * assertion is the gate, and the VTC checks that it came from a console
+ * 0.7 as `req.subject` ([`answerWithApprover`]). Otherwise the passkey
+ * ceremony runs and approve-response 0.7 goes **unsigned**: the user-verified
+ * WebAuthn assertion is the evidence, and the VTC checks that it came from a
  * passkey registered to `req.subject`. With neither, it throws
  * [`noFactorGuidance`].
  *
  * Resolves once the VTC has **recorded** the gesture against the operation;
- * throws if it rejected it or the browser returned no credential. A member's
- * step-up passkey is refused this way — use [`runStepUpCeremony`] and
- * [`answerCodeOf`], and let `cnm` sign.
+ * throws if it rejected it or the browser returned no credential.
  */
 export async function answerStepUp(
   req: StepUpRequest,
@@ -284,9 +285,9 @@ export async function answerStepUp(
 /**
  * The `approverSigned` answer: the plugin's approver signs the statement over
  * `req` (after recomputing `boundTo` from `operation`), and the wallet signs
- * `auth/step-up/approve-response/0.6` around it **as `req.subject`** — the
+ * `auth/step-up/approve-response/0.7` around it **as `req.subject`** — the
  * outer proof must be the subject's own DID, never a console key's delegation
- * (approve-response 0.6, consumer step 1a).
+ * (approve-response 0.7, producer item 5b, consumer item 1a).
  */
 export async function answerWithApprover(
   req: StepUpRequest,
@@ -311,10 +312,47 @@ export async function answerWithApprover(
     evidence: { kind: "approverSigned", statement },
   };
   if (req.sessionId) payload.sessionId = req.sessionId;
-  const envelope = await addressedDocument(APPROVE_RESPONSE_V0_6_URI, payload, req.subject);
+  const envelope = await addressedDocument(APPROVE_RESPONSE_URI, payload, req.subject);
   const signed = await signWithWallet({ ...envelope }, req.subject);
   const ack = await postSignedDocument<ApproveAck>(signed as unknown as SignedTrustTaskDocument);
   return recorded(ack);
+}
+
+/** Whether this browser can decline a step-up: a refusal must be proved by
+ *  the subject's own DID (approve-response 0.7 producer item 6), which only
+ *  the VTA wallet plugin can sign here — never the console key, a delegation. */
+export function declinableHere(): boolean {
+  return isWalletSigningAvailable();
+}
+
+/**
+ * Decline the step-up `req` asks for: `decision: denied`, `didSigned`, signed
+ * by the wallet **as `req.subject`** (approve-response 0.7 producer items 5
+ * and 6). The VTC consumes the step-up, and nothing is authorized. Throws when
+ * no wallet can sign here ([`declinableHere`]) — the operator then declines by
+ * not answering.
+ */
+export async function declineStepUp(
+  req: StepUpRequest,
+  reason = "declined in the admin console",
+): Promise<ApproveAck> {
+  if (!declinableHere()) {
+    throw new Error(
+      "Declining needs your own signature, which this console cannot make. To decline, do " +
+        "not answer: the request lapses in a few minutes.",
+    );
+  }
+  const payload: Record<string, unknown> = {
+    subject: req.subject,
+    challenge: req.challenge,
+    decision: "denied",
+    deniedReason: reason,
+    evidence: { kind: "didSigned" },
+  };
+  if (req.sessionId) payload.sessionId = req.sessionId;
+  const envelope = await addressedDocument(APPROVE_RESPONSE_URI, payload, req.subject);
+  const signed = await signWithWallet({ ...envelope }, req.subject);
+  return postSignedDocument<ApproveAck>(signed as unknown as SignedTrustTaskDocument);
 }
 
 function recorded(ack: ApproveAck): ApproveAck {

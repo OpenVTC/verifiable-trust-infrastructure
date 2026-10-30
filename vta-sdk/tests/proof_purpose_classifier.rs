@@ -31,8 +31,8 @@ fn a_type_that_is_not_a_type_uri_is_not_classified() {
 #[test]
 fn approver_decisions_are_signed_for_assertion_method() {
     for uri in [
-        "https://trusttasks.org/spec/auth/step-up/approve-response/0.6",
-        "https://trusttasks.org/spec/auth/step-up/approve-response/0.6#request",
+        "https://trusttasks.org/spec/auth/step-up/approve-response/0.7",
+        "https://trusttasks.org/spec/auth/step-up/approve-response/0.7#request",
         "https://trusttasks.org/spec/task-consent/decision/0.2",
         "https://trusttasks.org/spec/confirm/response/0.1",
         // The wallet sign-in grant is the approving DID's attestation

@@ -1865,7 +1865,7 @@ async fn a_correlation_finding_names_where_the_shared_value_went() {
 // 5. `release: stepUp` — a fresh approval per disclosure
 // ---------------------------------------------------------------------------
 
-const APPROVE_RESPONSE: &str = "https://trusttasks.org/spec/auth/step-up/approve-response/0.6";
+const APPROVE_RESPONSE: &str = "https://trusttasks.org/spec/auth/step-up/approve-response/0.7";
 
 /// Build the face, bind it, preview it, and return `(scoped token, previewId)`.
 ///
@@ -2079,7 +2079,7 @@ async fn a_step_up_claim_needs_an_approval_bound_to_that_preview() {
 /// preview of the same face is gated exactly as the first was, with no memory
 /// of the approval the holder just gave.
 ///
-/// A bound approval (`auth/step-up/approve-response/0.6`) is acknowledged
+/// A bound approval (`auth/step-up/approve-response/0.7`) is acknowledged
 /// `recorded` and raises no session, so a gate that read `acr` would refuse the
 /// second disclosure here too; the property this pins is that the approval is
 /// spent with its preview rather than remembered anywhere else.
@@ -2567,7 +2567,7 @@ async fn a_bound_approval_records_without_elevating() {
     .await;
     assert!(
         !refused(status, &body),
-        "approve-response/0.6: {status} {body}"
+        "approve-response/0.7: {status} {body}"
     );
     let p = payload_of(&body);
     assert_eq!(

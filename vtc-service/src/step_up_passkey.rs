@@ -37,9 +37,10 @@
 //! ## What a step-up passkey can do
 //!
 //! Exactly one thing: be the passkey half of an operation-bound step-up issued
-//! to its own subject ([`credentials_of`], read only by `bound_step_up`). It is
-//! never a proof — the approve-response that carries its assertion must still
-//! be signed by the member's `assertionMethod` key (approve-response 0.5) — and
+//! to its own subject ([`credentials_of`], read only by `bound_step_up`). Its
+//! user-verified assertion is the approver's evidence (approve-response 0.7
+//! `webauthn`), whether the answer comes unsigned from the console or beside
+//! the member's own `assertionMethod` proof; it never proves a document, and
 //! it never opens or elevates a session, which holds **by construction**: the
 //! credentials live in [`crate::store::keyspaces::STEP_UP_PASSKEYS`], and login
 //! and session step-up read only the `passkey` keyspace. It confers no role and
