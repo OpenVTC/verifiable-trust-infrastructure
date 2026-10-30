@@ -169,6 +169,31 @@ describe("data rooms in the portal", () => {
     expect(screen.getByText("did:webvh:QmMine:rooms.example")).toBeTruthy();
   });
 
+  it("an open room is shown as open, never as an epoch it does not have", async () => {
+    const shared = { sharedAt: "2026-10-16T00:00:00Z", expiresAt: "2026-11-15T00:00:00Z" };
+    const wallet = fakeWallet({
+      list: vi.fn(async () => ({
+        rooms: [{ roomId: ROOM, label: "Public Data Room", visibility: "open", held: true, member: MEMBER, ...shared }],
+      })),
+    });
+    (window as { vtaWallet?: unknown }).vtaWallet = { rooms: wallet };
+    const { unmount } = renderWith(<RoomsPage hostDid={HOST} member={MEMBER} />);
+    expect(await screen.findByText(/open room · as you/)).toBeTruthy();
+    expect(screen.queryByText(/epoch/)).toBeNull();
+    unmount();
+
+    // Left: no keys to blame.
+    const left = fakeWallet({
+      list: vi.fn(async () => ({
+        rooms: [{ roomId: ROOM, label: "Public Data Room", visibility: "open", held: false, member: MEMBER, ...shared }],
+      })),
+    });
+    (window as { vtaWallet?: unknown }).vtaWallet = { rooms: left };
+    renderWith(<RoomsPage hostDid={HOST} member={MEMBER} />);
+    expect(await screen.findByText(/you are no longer in this room/)).toBeTruthy();
+    expect(screen.queryByText(/keys/)).toBeNull();
+  });
+
   it("a community room's page is headed by its name, and a wallet without names leaves the DID", async () => {
     const shared = { held: true, sharedAt: "2026-10-16T00:00:00Z", expiresAt: "2026-11-15T00:00:00Z" };
     const named = fakeWallet({ list: vi.fn(async () => ({ rooms: [{ roomId: ROOM, label: "Board pack", ...shared }] })) });

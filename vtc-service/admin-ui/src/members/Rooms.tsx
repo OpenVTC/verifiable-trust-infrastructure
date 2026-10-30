@@ -402,6 +402,21 @@ function RoomList({ wallet, hostDid, member }: { wallet: WalletRooms; hostDid: s
   );
 }
 
+/**
+ * What the member's agent holds of a shared room. An open room has no keys and
+ * no epoch — the wallet reads it with the room's credentials and reports it held
+ * without one — so it says so rather than an epoch it does not have.
+ */
+function holding(room: PageRoom): string {
+  if (!room.held) {
+    return room.visibility === "open" ? "you are no longer in this room" : "your agent no longer holds this room's keys";
+  }
+  if (room.visibility === "open" || room.epoch === undefined) return "open room";
+  const history =
+    room.earliestReadableEpoch && room.earliestReadableEpoch > 1 ? ` · history from epoch ${room.earliestReadableEpoch}` : "";
+  return `epoch ${room.epoch}${history}`;
+}
+
 function RoomRow({ room, me }: { room: PageRoom; me?: string }) {
   // A community room by the name its administrators gave it, the DID beneath;
   // any other room by its DID.
@@ -417,9 +432,7 @@ function RoomRow({ room, me }: { room: PageRoom; me?: string }) {
         </code>
       )}
       <span className="muted small">
-        {room.held
-          ? `epoch ${room.epoch ?? "?"}${room.earliestReadableEpoch && room.earliestReadableEpoch > 1 ? ` · history from epoch ${room.earliestReadableEpoch}` : ""}`
-          : "your agent no longer holds this room's keys"}
+        {holding(room)}
         {room.member ? (room.member === me ? " · as you" : ` · as ${shortDid(room.member)}`) : ""}
         {" · shared until "}
         {new Date(room.expiresAt).toLocaleDateString()}
