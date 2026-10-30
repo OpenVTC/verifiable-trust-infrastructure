@@ -391,14 +391,17 @@ describe("data rooms in the portal", () => {
     await waitFor(() => expect(wallet.calls.find((c) => c.method === "putNote")?.args).toEqual({ hostDid: HOST, roomId: ROOM, title: "Pricing", body: "Hold." }));
   });
 
-  it("an open room takes a note, said to be readable by its host, and no file", async () => {
+  // rooms/records/put/0.4: an open room takes files too, encrypted under a key
+  // its record carries in the clear — which the card says.
+  it("an open room takes a note and a file, both said to be readable by its host", async () => {
     const wallet = fakeWallet({ info: vi.fn(async () => ({ ...INFO, visibility: "open" })) });
     (window as { vtaWallet?: unknown }).vtaWallet = { rooms: wallet };
     renderWith(<RoomPage hostDid={HOST} roomId={ROOM} />);
     await screen.findByText("Add to this room");
-    expect(screen.getByText(/its host can read it as well as its members/)).toBeTruthy();
-    expect(screen.queryByLabelText("Or a file")).toBeNull();
-    expect(screen.queryByRole("button", { name: /Add file/ })).toBeNull();
+    expect(screen.getByText(/a file is stored encrypted under a key its record/)).toBeTruthy();
+    expect(screen.getByText(/host can read both, as well as its members/)).toBeTruthy();
+    expect(screen.getByLabelText("Or a file")).toBeTruthy();
+    expect(screen.getByRole("button", { name: /Add file/ })).toBeTruthy();
     fireEvent.change(screen.getByLabelText("Title"), { target: { value: "Hello" } });
     fireEvent.click(screen.getByRole("button", { name: /Add note/ }));
     await screen.findByText("Note added.");
@@ -422,6 +425,31 @@ describe("data rooms in the portal", () => {
     fireEvent.click(screen.getByRole("button", { name: /Term sheet/ }));
     fireEvent.click(await screen.findByRole("button", { name: "Close" }));
     await screen.findByText("Add to this room");
+  });
+
+  // An open room's record is not signed by its author, so its file is checked
+  // against the digest the record states — and the record view says so.
+  it("an open room's file is said to match its record's digest, not its author's signature", async () => {
+    const wallet = fakeWallet({
+      info: vi.fn(async () => ({ ...INFO, visibility: "open" })),
+      read: vi.fn(async () => ({
+        key: "k1",
+        version: 2,
+        status: "active",
+        updatedAt: "2026-10-16T00:00:00Z",
+        author: MEMBER,
+        title: "Term sheet",
+        file: { name: "terms.pdf", size: 1234, mediaType: "application/pdf" },
+        sealed: false,
+        verification: {},
+      })),
+    });
+    (window as { vtaWallet?: unknown }).vtaWallet = { rooms: wallet };
+    renderWith(<RoomPage hostDid={HOST} roomId={ROOM} />);
+    fireEvent.click(await screen.findByRole("button", { name: /Term sheet/ }));
+    await screen.findByRole("button", { name: /Download/ });
+    expect(screen.getByText(/checked against the digest its record states/)).toBeTruthy();
+    expect(screen.queryByText(/what its author signed/)).toBeNull();
   });
 
   it("names authors briefly — the member's own as you — and folds retracted records away", async () => {
