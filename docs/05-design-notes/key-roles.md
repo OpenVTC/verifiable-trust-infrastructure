@@ -1,6 +1,6 @@
 # Key roles: design
 
-**Status:** design, revised 2026-10-30 to key assurance levels, and expanded 2026-10-31 with the signing/encryption distinction, the per-role rationale, a worked community deployment and the design principles. Two maintainer decisions of 2026-10-31 are recorded in §5.4 (the level is set per service, through the DID template) and §15 (retiring the old key on a raise is a SHOULD, not a MUST); the draft spec PRs do not yet carry them. The first design is merged (dtgwg-vti-spec#79, dtgwg-trust-tasks-tf#986) but has not been published for working-group review. The level revision is proposed in dtgwg-vti-spec#82 and dtgwg-trust-tasks-tf#993, both drafts. The build order is in [key-roles-implementation.md](key-roles-implementation.md). **Implementation is paused:** no code has landed, and no step starts without the maintainer's go-ahead.
+**Status:** design, revised 2026-10-30 to key assurance levels, and expanded 2026-10-31 with the signing/encryption distinction, the per-role rationale, a worked community deployment and the design principles. Maintainer decisions of 2026-10-31 are recorded in §5.4 (the level is set per service, through the DID template, with the per-template defaults), §12.0 (no threshold cryptography), §15 (retiring the old key on a raise is a SHOULD), §18 item 5 (no recovery hold period) and §19.4 (the two verifier profiles). The draft spec PRs carry the normative ones. The first design is merged (dtgwg-vti-spec#79, dtgwg-trust-tasks-tf#986) but has not been published for working-group review. The level revision is proposed in dtgwg-vti-spec#82 and dtgwg-trust-tasks-tf#993, both drafts. The build order is in [key-roles-implementation.md](key-roles-implementation.md). **Implementation is paused:** no code has landed, and no step starts without the maintainer's go-ahead.
 
 **Normative sources:**
 - **The VTI specification**, chapter *Identity, DIDs and Key Management* (`spec/04-identity-keys.md`). The relevant sections run from *DID classes* through *Authenticator keys*: VTI-KEY-070 to 221.
@@ -89,7 +89,7 @@ Every "protects against" and "survives" in this note is a claim against one of t
 | **A3** | Backup or seed exposure | A copy of a backup, a store or a mnemonic, offline | **Level 3**: role keys generated, in no backup, under a KEK the seed cannot make (T3) |
 | **A4** | **Compromised VTA** (host, operator credentials, an insider at the operator) | Everything the VTA holds; can publish history entries | **Level 3**: a recovery key the VTA cannot reach, and a witness that refuses an entry disarming it (T2) |
 | **A5** | Lost VTA (failure, not an attacker) | Nothing; the keys are gone | A backup at levels 1 and 2; the recovery custodian at level 3 (T4) |
-| **A6** | Colluding or compromised custodians | Fewer than the threshold of custodians, or a custodian who signs what it is handed | The threshold itself; every custodian checks the entry independently (VTI-KEY-128, 206); a hold period (open question 5) |
+| **A6** | Colluding or compromised custodians | Fewer than the threshold of custodians, or a custodian who signs what it is handed | The threshold itself, and every custodian checking the entry independently (VTI-KEY-128, 206). A hold period was considered and declined (§18, item 5) |
 | **A7** | Malicious or failed witness | Can refuse to co-sign; cannot forge | More than one witness; a witness is a liveness dependency, not an authority |
 
 **The secondary model: a quantum-capable adversary (AQ).** Shor's algorithm is available, so the adversary forges any Ed25519 or ECDSA signature and recovers any X25519 key, at the time it holds the quantum computer. It still cannot invert a hash. Consequences, by key kind (§3):
@@ -269,7 +269,7 @@ The template is already where a service's DID shape lives (`docs/02-vta/did-temp
 
 Nothing normative changes: VTI-KEY-196 stays a SHOULD, and a verifier's policy still decides what it accepts. The template turns the specification's advice into the default an operator gets without reading it.
 
-**Proposed defaults for the built-in templates.** These are for the maintainer to confirm.
+**Defaults for the built-in templates (decided 2026-10-31).** Every floor is 1 except the VTN's, so nothing anyone runs today is refused, and the specification's recommendation arrives as the default.
 
 | Template | Service | Default | Minimum | Why |
 |---|---|---|---|---|
@@ -697,12 +697,12 @@ A passkey is an `authenticator` key. It may sit on a **persona DID**, or on a re
 2. **did:webs.** The extension routes (A) or (B) are as before. Under did:webs, level 3's recovery structure is *more* checkable (K alone satisfies `nt`), and the next-key threshold stands in for the witness.
 3. **Witness verification of a quorum replacement.** When the recovery key is lost, the witness must be shown the quorum's approvals, but nothing tells it who is eligible. This needs a witness protocol, or a rule that a level-3 identity whose recovery key is lost falls back to a new identity.
 4. **The level-1 key after a raise.** Decided on our side (§15): retire or revoke is a SHOULD, and the key may be kept as `operational`. A thief who had it can still forge level-1 artefacts, which is the risk level-1 verifiers already accept. The working group may want the default to be `retire`.
-5. **A hold period on recovery.** Social-recovery wallets delay a guardian-initiated recovery by one to several days, during which the current key can cancel it (§19.2). VTI has no equivalent: a recovery entry takes effect when the witness co-signs it. A witness-enforced hold, during which the routine `update` key may veto and the operator is notified, would protect against a colluding custodian quorum at the cost of slower recovery. Should the witness profile offer it?
+5. ~~A hold period on recovery.~~ Decided on our side, 2026-10-31: **no hold period.** Social-recovery wallets delay a guardian-initiated recovery so the current key can cancel it; here the current key is held by the VTA whose compromise is one of the two events recovery exists for, so a veto would need its own override, and the protection it adds against colluding custodians is what t independent checks already give. A recovery entry takes effect when the witness co-signs it. The working group may reopen this if it wants a veto in the witness profile.
 6. **CID `revoked`**, the **24-hour verifier cache cap** (VTI-KEY-134), the **w3id registrations** (`keyRoles`, `keyAssurance`) and **registry record proofs** (VTI-KEY-085) are unchanged from the first design.
 
 **For the maintainer:**
 7. **`create` at level 1.** `vta/dids/create/1.1` takes levels 2 and 3 only, and level 1 stays on the method-specific creation (`vta/webvh/dids/create`). That keeps today's path untouched, and keeps level 1 out of the key-role family. The cost is two creation tasks behind one `pnm dids create --level` command. The alternative is to accept level 1 in `create`.
-9. **The defaults** our tooling ships: the per-template levels proposed in §5.4, and the verifier policy (§19.4).
+9. ~~The defaults our tooling ships.~~ Decided 2026-10-31: the per-template levels of §5.4, and the verifier profiles of §19.4.
 10. ~~The form of a threshold custodian.~~ Decided 2026-10-31: a threshold of whole keys; FROST dropped (§12.0). Both draft spec PRs are amended.
 
 ## 19. Principles, precedents and the balance
@@ -732,7 +732,7 @@ None of the mechanisms here is new. Each has a well-worn precedent, and knowing 
 | **TUF, the Update Framework** | Named roles with thresholds; the root role's keys offline; online automation keys never trusted for the decision a client ultimately acts on; short expiry for the volatile roles | Roles; an offline or threshold recovery key; `attestation` kept off the online path; routine rotation of `operational` |
 | **Certificate authorities** | An offline root signs an online intermediate; the intermediate issues; transparency logs make every issuance visible | The VTA's `attestation` key behind an oracle; the witnessed did:webvh log |
 | **Matrix cross-signing** | A master key that may be kept offline, device keys that are online, and a user-held recovery key. Its lesson is usability: recovery keys that people must keep get lost, and technical names confuse the people they protect | Why a second VTA and a threshold group are custodians alongside the offline key; why the levels have plain names |
-| **Social-recovery wallets** | A daily key plus a guardian set with a threshold; recovery is delayed one to several days, during which the current key can cancel | The threshold recovery group, which is guardians with whole keys; the hold period, raised as open question 5 |
+| **Social-recovery wallets** | A daily key plus a guardian set with a threshold; recovery is delayed one to several days, during which the current key can cancel | The threshold recovery group, which is guardians with whole keys. The hold period was considered and declined (§18, item 5) |
 | **did:webvh itself** | Pre-rotation commits the next key's hash before it is used; witnesses co-sign entries | The recovery commitment in `nextKeyHashes`; the witness as the enforcer at level 3 |
 
 ### 19.3 The balance: where simplicity won, and where security did
@@ -763,7 +763,11 @@ The design trades simplicity and usability against security and privacy in a sma
 Both change a default, not a requirement, and both are for the maintainer (open question 9).
 
 1. **Let the service's template set the level** (§5.4, decided). Level 2 costs no new party and no ceremony, so it is the right default wherever a service's decisions are relied on: a community, a registry, a witness, a ballot box, the VTA itself. Level 1 is the right default wherever nothing is: a mediator, a gateway, a room. "Secure by default where it is free, opt-in where it costs a party" is the rule every precedent above applies, and the template is what knows which case a service is. `--level 1` stays available where the template allows it, with a warning naming what level 1 does not survive.
-2. **Ship the SDK verifier policy at level 1, with the recommended minimums one setting away.** A default above 1 would refuse every existing community on upgrade. A documented profile (`recommended`: 2 for membership credentials, 3 for authority-conferring ones) lets an operator raise it in one line.
+2. **Two named verifier profiles, `compatible` by default (decided 2026-10-31).** The SDK, the browser extension and openvtc ship the same two:
+   - **`compatible`**, the default: minimum level 1 for every use, so no existing community breaks on upgrade. Under it, a verifier logs a warning whenever an artefact verifies below the `recommended` minimum for its use, so an operator can see what switching would refuse before switching.
+   - **`recommended`**: 1 for operational traffic; 2 for membership and role credentials and for status lists; 3 for credentials that confer authority on others, such as vetter grants and network listings.
+
+   An operator switches with one setting, and may override any single use. A default above level 1 was rejected because it would be a flag day across the ecosystem.
 
 A third, smaller one: **rehearse recovery.** The liveness challenge (§12.2) proves the custodians can sign. It does not prove the operator knows the procedure. `vta/dids/recover` should have a rehearsal mode that runs the whole ceremony against a challenge that is never a log entry, and records that it was run.
 
