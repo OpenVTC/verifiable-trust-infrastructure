@@ -57,7 +57,7 @@ use vtc_service::server::AppState;
 use vtc_service::setup::VtcKeyBundle;
 
 const RP_ORIGIN: &str = "https://vtc.example.com";
-const CLAIM_START_TASK: &str = "https://trusttasks.org/spec/vtc/install/claim/start/0.2";
+const CLAIM_START_TASK: &str = "https://trusttasks.org/spec/vtc/install/claim/passkey/start/0.1";
 
 fn init_jwt_provider() {
     use std::sync::Once;
@@ -640,7 +640,7 @@ async fn fresh_install_url_works_for_claim_start_after_emergency_bootstrap() {
     // invites), so the operator types both URL and code at claim
     // time. Without the code the daemon returns 401
     // `claim_secret_required`.
-    // `vtc/install/claim/start/0.2` is a signed document only now
+    // `vtc/install/claim/passkey/start/0.1` is a signed document only
     // (`trust_tasks::install_tasks`) — carries no proof requirement (the
     // install token is the credential), posted to the shared document
     // endpoint.

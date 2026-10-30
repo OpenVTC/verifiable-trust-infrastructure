@@ -330,25 +330,28 @@ enum AdminCommands {
         #[arg(long)]
         context: Option<String>,
     },
-    /// Mint a fresh single-use install URL for `--did`.
+    /// Mint a fresh single-use install URL inviting another administrator.
     ///
-    /// Run on a **stopped** daemon (fjall lock). Non-destructive
-    /// to existing admins and passkeys, but DOES grant the
-    /// supplied `--did` an admin ACL entry if one doesn't already
-    /// exist — otherwise the new passkey would attach to a DID
-    /// with no role and login would 403. Operators who want to
-    /// invite an existing admin pass the same `--did` they already
-    /// granted via `pnm acl create` (or the upgrade path); this is
-    /// idempotent.
+    /// Run on a **stopped** daemon (fjall lock). Two kinds:
     ///
-    /// Pairs with the install ceremony's separation of admin DID
-    /// from passkey: operators can issue invites for any DID they
-    /// want to grant admin access, without going through the
-    /// destructive `emergency-bootstrap` path.
+    /// - **No `--did`: a passkey invitation.** The invitee registers a
+    ///   passkey (`vtc/install/claim/passkey/{start,finish}/0.1`), and their
+    ///   administrator DID is the `did:key` of that passkey's own key. The
+    ///   token names no DID and no ACL entry is written now: the daemon writes
+    ///   the derived DID's entry when the claim completes, with the authority
+    ///   recorded on the invitation (a community administrator).
+    /// - **`--did X`: a wallet invitation.** The token names X, whose holder
+    ///   claims it with their wallet by signing as X
+    ///   (`vtc/install/claim/{start,finish}/0.3`). X is granted an admin ACL
+    ///   entry now if it holds none; this is idempotent.
+    ///
+    /// Non-destructive to existing admins and passkeys, unlike
+    /// `emergency-bootstrap`.
     Invite {
-        /// Admin DID the install URL grants a passkey for.
+        /// The DID to invite, claimed with its wallet. Leave it out to invite
+        /// by passkey, whose own key becomes the administrator's DID.
         #[arg(long)]
-        did: String,
+        did: Option<String>,
         /// Token TTL in seconds (default: 900 = 15 min).
         #[arg(long, default_value_t = 900)]
         ttl: u64,
@@ -770,27 +773,38 @@ async fn run_emergency_bootstrap_cli(
     Ok(())
 }
 
-/// `vtc admin invite --did <did>` — mint a fresh single-use install
-/// URL for an admin DID. Runs on a stopped daemon (fjall lock) and
-/// is non-destructive to existing admins and passkeys, but DOES
-/// grant the supplied `--did` an Admin ACL entry if one doesn't
-/// already exist — otherwise the new passkey would attach to a DID
-/// with no role and the operator would 403 on their first login.
+/// `vtc admin invite [--did <did>]` — mint a fresh single-use install URL.
+///
+/// Without `--did` it is a **passkey** invitation: the token names no DID and
+/// nothing is written to the ACL now. The invitee's administrator DID is the
+/// `did:key` of the passkey they register, and the daemon writes its entry at
+/// `vtc/install/claim/passkey/finish/0.1` (item 9) with the authority recorded
+/// here — a community administrator, issued from the host.
+///
+/// With `--did X` it is a **wallet** invitation: the token names X, claimed by
+/// signing as X with `vtc/install/claim/{start,finish}/0.3`, and X is granted
+/// an admin ACL entry now if it holds none — otherwise the claim would leave X
+/// with no role and its first sign-in would 403.
 #[cfg(feature = "setup")]
 async fn run_invite_cli(
     config_path: Option<std::path::PathBuf>,
-    admin_did: String,
+    admin_did: Option<String>,
     ttl_seconds: u64,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use chrono::{Duration as ChronoDuration, Utc};
     use vtc_service::acl::{VtcAclEntry, VtcRole, get_acl_entry, store_acl_entry};
     use vtc_service::auth::session::now_epoch;
-    use vtc_service::install::{InstallTokenSigner, InstallTokenStore, mint_install_token};
+    use vtc_service::install::{
+        InstallTokenSigner, InstallTokenStore, InvitedAuthority, mint_install_token,
+        mint_passkey_install_token,
+    };
     use vtc_service::keys::seed_store::create_secret_store;
     use vtc_service::setup::VtcKeyBundle;
 
-    if !admin_did.starts_with("did:") {
-        return Err(format!("--did must start with 'did:' (got '{admin_did}')").into());
+    if let Some(did) = admin_did.as_deref()
+        && !did.starts_with("did:")
+    {
+        return Err(format!("--did must start with 'did:' (got '{did}')").into());
     }
 
     let config = vtc_service::config::AppConfig::load(config_path)?;
@@ -822,12 +836,16 @@ async fn run_invite_cli(
     let store = match vtc_service::store::offline::open_offline(&config.store) {
         Ok(store) => store,
         Err(e @ vtc_service::store::offline::OfflineStoreError::DaemonRunning { .. }) => {
+            let body = match admin_did.as_deref() {
+                Some(did) => format!("{{\"did\": \"{did}\"}}"),
+                None => "{\"did\": \"<the invitee's DID>\"}".to_string(),
+            };
             return Err(format!(
                 "{e}.\n\nYou do not need to stop it to invite an administrator. Mint the \
                  invite through the running daemon instead:\n  \
                  • the admin console: Access → Invite\n  \
-                 • or `POST {base_url}/v1/admin/invites` with body {{\"did\": \"{admin_did}\"}}, \
-                 as an existing administrator"
+                 • or `vtc/admin/invites/create/0.1` with payload {body}, as an existing \
+                 administrator"
             )
             .into());
         }
@@ -837,60 +855,103 @@ async fn run_invite_cli(
     let install_store = InstallTokenStore::new(install_ks);
     let acl_ks = store.keyspace(keyspaces::ACL)?;
 
-    // Ensure the ACL entry exists with Admin role. The post-login
-    // flow gates on `check_acl(acl_ks, &user.did)`, so a DID
-    // without an entry yields a `forbidden` once the passkey
-    // ceremony completes. Creating the entry up-front closes that
-    // gap and makes `vtc admin invite` the operator's one-shot
-    // way to onboard a new admin.
-    let acl_already_present = get_acl_entry(&acl_ks, &admin_did).await?.is_some();
-    if !acl_already_present {
-        let entry = VtcAclEntry {
-            did: admin_did.clone(),
-            role: VtcRole::Admin,
-            label: Some("vtc admin invite".into()),
-            // `vtc-admin-roles.md` §9: an invited administrator is a
-            // community administrator with the full ceiling.
-            admin: vtc_service::acl::AdminAuthority::community_admin(),
-            delegated_by: None,
-            created_at: now_epoch(),
-            created_by: format!("vtc-cli/{}", env!("CARGO_PKG_VERSION")),
-            updated_at: None,
-            updated_by: None,
-            expires_at: None,
-            resource_grants: Vec::new(),
-            group_grants: Vec::new(),
-            label_set_by_subject: false,
-            suspension: None,
-        };
-        store_acl_entry(&acl_ks, &entry).await?;
-        // An unrestricted admin made offline, without the consent the daemon
-        // requires (VTI-APV-014) — audited as the break-glass on the next boot.
-        vtc_service::install::record_offline_acl_write(
-            &store,
-            "vtc admin invite",
-            "grant",
-            &entry.did,
-            Some(&entry.role),
-            &entry.capability_list(),
-        )
-        .await?;
-    }
-
-    let minted = mint_install_token(&signer, &vtc_did, &admin_did, ttl_seconds)?;
     let claim_code = vtc_service::install::claim_secret::generate();
     let claim_code_hash = vtc_service::install::claim_secret::hash(&claim_code)?;
     let exp = Utc::now() + ChronoDuration::seconds(ttl_seconds as i64);
-    install_store
-        .record_issued(
-            &minted.jti,
-            minted.cnonce_bytes,
-            *minted.ephemeral_signing_key,
-            exp,
-            Some(claim_code_hash),
-            Some(admin_did.clone()),
-        )
-        .await?;
+    let issued_via = format!("vtc-cli/{}", env!("CARGO_PKG_VERSION"));
+
+    // What the operator is told the invitation does to the ACL.
+    let acl_line;
+    let minted = match admin_did.as_deref() {
+        None => {
+            // A passkey invitation: nothing in the ACL until the claim, whose
+            // DID nobody knows yet. The authority it will confer is decided
+            // here and recorded with it.
+            let minted = mint_passkey_install_token(&signer, &vtc_did, ttl_seconds)?;
+            install_store
+                .record_issued_passkey(
+                    &minted.jti,
+                    minted.cnonce_bytes,
+                    *minted.ephemeral_signing_key,
+                    exp,
+                    Some(claim_code_hash),
+                    InvitedAuthority::community_admin(issued_via, "vtc admin invite (passkey)"),
+                )
+                .await?;
+            // Issuing it confers unrestricted authority offline, without the
+            // consent the daemon requires (VTI-APV-014) — audited as the
+            // break-glass on the next boot, named by the invitation since the
+            // DID does not exist yet.
+            vtc_service::install::record_offline_acl_write(
+                &store,
+                "vtc admin invite",
+                "invite",
+                &format!("passkey-invitation:{}", minted.jti),
+                Some(&VtcRole::Admin),
+                &[],
+            )
+            .await?;
+            acl_line = "written when the invitation is claimed, for the passkey's own DID \
+                        (role=admin)"
+                .to_string();
+            minted
+        }
+        Some(admin_did) => {
+            // A wallet invitation. Ensure the ACL entry exists with Admin role:
+            // the post-login flow gates on it.
+            let acl_already_present = get_acl_entry(&acl_ks, admin_did).await?.is_some();
+            if !acl_already_present {
+                let entry = VtcAclEntry {
+                    did: admin_did.to_string(),
+                    role: VtcRole::Admin,
+                    label: Some("vtc admin invite".into()),
+                    // `vtc-admin-roles.md` §9: an invited administrator is a
+                    // community administrator with the full ceiling.
+                    admin: vtc_service::acl::AdminAuthority::community_admin(),
+                    delegated_by: None,
+                    created_at: now_epoch(),
+                    created_by: issued_via.clone(),
+                    updated_at: None,
+                    updated_by: None,
+                    expires_at: None,
+                    resource_grants: Vec::new(),
+                    group_grants: Vec::new(),
+                    label_set_by_subject: false,
+                    suspension: None,
+                };
+                store_acl_entry(&acl_ks, &entry).await?;
+                // An unrestricted admin made offline, without the consent the
+                // daemon requires (VTI-APV-014) — audited as the break-glass on
+                // the next boot.
+                vtc_service::install::record_offline_acl_write(
+                    &store,
+                    "vtc admin invite",
+                    "grant",
+                    &entry.did,
+                    Some(&entry.role),
+                    &entry.capability_list(),
+                )
+                .await?;
+            }
+            let minted = mint_install_token(&signer, &vtc_did, admin_did, ttl_seconds)?;
+            install_store
+                .record_issued(
+                    &minted.jti,
+                    minted.cnonce_bytes,
+                    *minted.ephemeral_signing_key,
+                    exp,
+                    Some(claim_code_hash),
+                    Some(admin_did.to_string()),
+                )
+                .await?;
+            acl_line = if acl_already_present {
+                "pre-existing (left untouched)".to_string()
+            } else {
+                "created (role=admin)".to_string()
+            };
+            minted
+        }
+    };
 
     // Flush the ACL entry + install-token row to disk before handing out the
     // URL — without this the token row may not survive a crash between mint and
@@ -906,15 +967,17 @@ async fn run_invite_cli(
 
     eprintln!();
     eprintln!("✅ install URL minted");
-    eprintln!("   Admin DID:   {admin_did}");
-    eprintln!(
-        "   ACL entry:   {}",
-        if acl_already_present {
-            "pre-existing (left untouched)"
-        } else {
-            "created (role=admin)"
+    match admin_did.as_deref() {
+        Some(did) => {
+            eprintln!("   Kind:        wallet invitation — claimed by signing as the DID");
+            eprintln!("   Admin DID:   {did}");
         }
-    );
+        None => {
+            eprintln!("   Kind:        passkey invitation — the passkey's own key is the DID");
+            eprintln!("   Admin DID:   derived from the passkey the invitee registers");
+        }
+    }
+    eprintln!("   ACL entry:   {acl_line}");
     eprintln!("   TTL:         {ttl_seconds}s");
     eprintln!();
     eprintln!("Install URL (one-shot):");
@@ -923,11 +986,11 @@ async fn run_invite_cli(
     eprintln!("Claim code (deliver via a SEPARATE channel — Signal/SMS/in person):");
     eprintln!("   {claim_code}");
     eprintln!();
-    eprintln!("Both the URL and the claim code are required to claim the passkey.");
+    eprintln!("Both the URL and the claim code are required to claim the invitation.");
     eprintln!("A leaked URL alone is not enough — the daemon refuses claim without the code.");
     eprintln!();
     eprintln!("Restart the daemon (`vtc`) before claiming — the daemon must be running");
-    eprintln!("for the browser to reach `/admin/install` and `/v1/install/claim/*`.");
+    eprintln!("for the browser to reach `/admin/install` and the install Trust Tasks.");
     Ok(())
 }
 

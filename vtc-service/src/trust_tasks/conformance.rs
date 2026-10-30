@@ -1895,26 +1895,34 @@ fn table() -> Vec<Conformance> {
             .expect("RevokeResponse serialises")
         ),
         // ─── install ─────────────────────────────────────────────────
+        // The passkey install (`routes::install::{claim_start,claim_finish}`,
+        // which build the start response from the generated type).
         checked!(
-            s::install::claim::start::v0_2::Payload,
-            s::install::claim::start::v0_2::Response,
-            // `ClaimStartRequest` — routes/install.rs:65. No `rename_all`.
+            s::install::claim::passkey::start::v0_1::Payload,
+            s::install::claim::passkey::start::v0_1::Response,
             json!({ "installToken": "eyJhbGciOiJFZERTQSJ9.e30.sig",
                     "claimSecret": "K7QW-3M2X-9PLD" }),
-            // `ClaimStartResponse` — routes/install.rs:81.
-            json!({ "registrationId": REQUEST_ID, "options": { "publicKey": {} } })
+            json!({
+                "registrationId": REQUEST_ID,
+                "options": { "publicKey": {} },
+                "assertionOptions": { "publicKey": {} },
+            })
         ),
         checked!(
-            s::install::claim::finish::v0_2::Payload,
-            s::install::claim::finish::v0_2::Response,
-            // `ClaimFinishRequest` — routes/install.rs:93. No `rename_all`.
+            s::install::claim::passkey::finish::v0_1::Payload,
+            s::install::claim::passkey::finish::v0_1::Response,
+            // `ClaimFinishRequest` — routes/install.rs.
             json!({
                 "installToken": "eyJhbGciOiJFZERTQSJ9.e30.sig",
                 "registrationId": REQUEST_ID,
                 "webauthnResponse": { "id": "AX6nVQ8s", "type": "public-key" },
+                "webauthnAssertion": { "id": "AX6nVQ8s", "type": "public-key" },
             }),
-            // `ClaimFinishResponse` — routes/install.rs:103.
-            json!({ "adminDid": OTHER_DID, "setupSessionToken": "eyJhbGciOiJFZERTQSJ9.e30.sig" })
+            // Built from the generated type by `install_tasks`.
+            json!({
+                "adminDid": "did:key:zDnaerDaTF5BXEavCrfRZEk316dpbLsfPDZ3WJ5hRTPFU2169",
+                "setupSessionToken": "eyJhbGciOiJFZERTQSJ9.e30.sig",
+            })
         ),
         // 0.3 — a claim under an existing DID, with a step-up approver
         // (`step_up_approver::claim_{start,finish}_v0_3`, which build their
@@ -1940,7 +1948,7 @@ fn table() -> Vec<Conformance> {
                 "label": "Browser plugin",
                 "statement": { "id": "urn:uuid:3a6c1e0b-9d2f-4b7a-8c15-2e4f6a8b0c01" },
             }),
-            // `ClaimFinishResponse` — the same body 0.2 answers with.
+            // Built from the generated type by `install_tasks`.
             json!({ "adminDid": OTHER_DID, "setupSessionToken": "eyJhbGciOiJFZERTQSJ9.e30.sig" })
         ),
         // ─── invitations ─────────────────────────────────────────────

@@ -1036,13 +1036,12 @@ const SPINE_DOCUMENT_TYPES: &[&str] = &[
     "https://trusttasks.org/spec/vtc/endorsements/list/0.2",
     "https://trusttasks.org/spec/vtc/endorsements/revoke/0.1",
     "https://trusttasks.org/spec/vtc/vetting/vetters/resend/0.2",
-    // First-admin onboarding (`trust_tasks::install_tasks`): the dedicated,
-    // `Trust-Task`-header-gated REST mounts at `POST /v1/install/claim/
-    // {start,finish}` and `POST /v1/admin/bootstrap` are gone; the console
-    // now signs these as documents pre-session (the install/setup-session
-    // token is the credential, not a proof).
-    "https://trusttasks.org/spec/vtc/install/claim/start/0.2",
-    "https://trusttasks.org/spec/vtc/install/claim/finish/0.2",
+    // The passkey install (`trust_tasks::install_tasks`): the console sends
+    // these as documents pre-session (the install/setup-session token is the
+    // credential, not a proof). They replaced `vtc/install/claim/{start,
+    // finish}/0.2`, retired by trust-tasks-tf #976.
+    "https://trusttasks.org/spec/vtc/install/claim/passkey/start/0.1",
+    "https://trusttasks.org/spec/vtc/install/claim/passkey/finish/0.1",
     // The wallet founder's claim under their own DID, with an approver device
     // (`vtc-approver-step-up.md` §6b).
     "https://trusttasks.org/spec/vtc/install/claim/start/0.3",

@@ -1,9 +1,17 @@
-//! First-admin onboarding on the signed-document spine: `vtc/install/claim/
-//! {start,finish}/0.2` and `/0.3`, and `vtc/admin/bootstrap/0.1`.
+//! Administrator onboarding on the signed-document spine: the passkey install
+//! `vtc/install/claim/passkey/{start,finish}/0.1`, the wallet install
+//! `vtc/install/claim/{start,finish}/0.3`, and `vtc/admin/bootstrap/0.1`.
+//!
+//! `vtc/install/claim/{start,finish}/0.2` — the passkey ceremony under the
+//! shared slug — are retired (trust-tasks-tf #976) and not served: a document
+//! of either type is `unsupportedVersion`, naming 0.3 as the slug's served
+//! version. Their successor is the passkey slug, whose administrator DID is the
+//! passkey's own key rather than one the token names.
 //!
 //! 0.3 claims the community under a DID the founder **already controls** — a
 //! persona their VTA wallet holds — with a step-up approver as their step-up
-//! factor (approver design note §6b, R1). Unlike 0.2 its finish is signed, by
+//! factor (approver design note §6b, R1). Unlike the passkey ceremony its
+//! finish is signed, by
 //! that DID, and verified against the DID's **live** document: the spine
 //! resolves it afresh before verifying ([`refresh_founder_did`]). The binding
 //! the finish parks takes effect only when `vtc/admin/bootstrap` consumes the
@@ -14,8 +22,10 @@
 //! community DID yet, so there is nothing for [`super::admin_signer`] to
 //! resolve. Each verb's own bearer artifact — the install JWT, the
 //! `registrationId` a `start` minted, the setup-session JWT a `finish` minted
-//! — is the credential a caller presents; no document proof is required or
-//! read (`ctx.verified_signer` is ignored throughout this module).
+//! — is the credential a caller presents; no request proof is required or
+//! read (`ctx.verified_signer` is ignored throughout this module, but for
+//! 0.3's finish). The passkey finish's *response* requires one, which the
+//! spine's `sign_response` supplies.
 //!
 //! The WebAuthn ceremony itself (`navigator.credentials.create()`) runs
 //! client-side regardless of which wire envelope carries its challenge and
@@ -28,7 +38,8 @@
 use serde_json::Value;
 use trust_tasks_rs::specs::vtc::admin::bootstrap::v0_1 as bootstrap;
 use trust_tasks_rs::specs::vtc::install::claim::{
-    finish::v0_2 as claim_finish, finish::v0_3 as claim_finish_v0_3, start::v0_2 as claim_start,
+    finish::v0_3 as claim_finish_v0_3,
+    passkey::{finish::v0_1 as claim_finish, start::v0_1 as claim_start},
     start::v0_3 as claim_start_v0_3,
 };
 use trust_tasks_rs::{Payload, RejectReason, TrustTask};
@@ -39,7 +50,9 @@ use crate::routes::admin::bootstrap::BootstrapRequest;
 use crate::routes::install::{ClaimFinishRequest, ClaimStartRequest};
 use crate::server::AppState;
 
+/// `vtc/install/claim/passkey/start/0.1`.
 pub(crate) const CLAIM_START_TYPE: &str = <claim_start::Payload as Payload>::TYPE_URI;
+/// `vtc/install/claim/passkey/finish/0.1`.
 pub(crate) const CLAIM_FINISH_TYPE: &str = <claim_finish::Payload as Payload>::TYPE_URI;
 pub(crate) const BOOTSTRAP_TYPE: &str = <bootstrap::Payload as Payload>::TYPE_URI;
 pub(crate) const CLAIM_START_V0_3_TYPE: &str = <claim_start_v0_3::Payload as Payload>::TYPE_URI;
@@ -125,7 +138,22 @@ async fn handle_claim_finish_v0_3(
     };
     let statement = doc.payload.get("statement").cloned().unwrap_or(Value::Null);
     match crate::step_up_approver::claim_finish_v0_3(state, &signer, &payload, &statement).await {
-        Ok(resp) => success_response(&doc, resp),
+        Ok(claimed) => {
+            let built: Result<claim_finish_v0_3::Response, _> =
+                claim_finish_v0_3::Response::builder()
+                    .admin_did(claimed.admin_did)
+                    .setup_session_token(claimed.setup_session_token)
+                    .try_into();
+            match built {
+                Ok(resp) => success_response(&doc, resp),
+                Err(e) => super::helpers::app_error_to_reject(
+                    &doc,
+                    &vti_common::error::AppError::Internal(format!(
+                        "claim/finish 0.3 response: {e}"
+                    )),
+                ),
+            }
+        }
         Err(e) => approver_refusal(&doc, &e),
     }
 }
@@ -209,9 +237,24 @@ async fn handle_claim_finish(state: &AppState, doc: TrustTask<Value>) -> TrustTa
         install_token: payload.install_token.to_string(),
         registration_id: payload.registration_id.to_string(),
         webauthn_response,
+        webauthn_assertion: Value::Object(payload.webauthn_assertion),
     };
     match crate::routes::install::claim_finish(state, req).await {
-        Ok(resp) => success_response(&doc, resp),
+        Ok(claimed) => {
+            let built: Result<claim_finish::Response, _> = claim_finish::Response::builder()
+                .admin_did(claimed.admin_did)
+                .setup_session_token(claimed.setup_session_token)
+                .try_into();
+            match built {
+                Ok(resp) => success_response(&doc, resp),
+                Err(e) => super::helpers::app_error_to_reject(
+                    &doc,
+                    &vti_common::error::AppError::Internal(format!(
+                        "claim/passkey/finish response: {e}"
+                    )),
+                ),
+            }
+        }
         Err(e) => task_error_to_reject(&doc, &e),
     }
 }

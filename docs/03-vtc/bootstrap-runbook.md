@@ -55,24 +55,38 @@ fails in the same way.
 2. **Open the install URL** that setup printed
    (`https://<host>/admin/install?token=…`) and enter the **claim code**. The
    URL and the code travel separately, so a leaked URL alone is not enough.
-3. **Register a passkey.** The page then runs, in order:
-   `POST /v1/install/claim/start`, `POST /v1/install/claim/finish` (which
-   registers the passkey against the admin DID), and `POST /v1/admin/bootstrap`
-   (which writes the admin ACL entry, labelled
-   `first admin (install bootstrap)`, and creates the community profile).
+3. **Register a passkey.** The browser asks twice: once to create the passkey,
+   once to sign with it. The page sends, as unsigned Trust Task documents,
+   `vtc/install/claim/passkey/start/0.1`, then
+   `vtc/install/claim/passkey/finish/0.1` — which verifies the registration,
+   verifies the signature as proof you hold the passkey, and answers the
+   administrator's DID: the **`did:key` of the passkey's own key**
+   (`did:key:z6Mk…` for Ed25519, `did:key:zDn…` for P-256, which most
+   platform passkeys use) — and `vtc/admin/bootstrap/0.1`, which writes the
+   admin ACL entry for that DID, labelled `first admin (install bootstrap)`,
+   and creates the community profile.
 4. **Sign in** at `https://<host>/admin/` with the passkey. **Access control**
    now lists the admin.
 
+The install URL does **not** make the admin DID setup printed an
+administrator; the passkey's own DID is the first administrator. To give the
+setup's admin DID administrator access too (for `cnm`), grant it as in Path B.
+
 **If the URL expired** before you claimed it, stop the daemon and mint a fresh
-URL and claim code for the same DID:
+URL and claim code:
 
 ```sh
-vtc --config /srv/vtc/config.toml admin invite --did <admin DID>
+vtc --config /srv/vtc/config.toml admin invite
 ```
 
-`admin invite` also writes an admin ACL entry for `--did` if there is none, so
-a claim through it always leaves a DID that can sign in. `--ttl <seconds>`
-changes the default 900. It needs the daemon stopped because it opens the store
+Without `--did`, `admin invite` mints a **passkey invitation**: the token names
+no DID, nothing is written to the ACL now, and the administrator is whatever
+passkey claims it. On a fresh community the bootstrap writes the entry, as
+above; on one that already has an administrator, the claim's `finish` writes it
+for the passkey's DID, as a community administrator. With `--did <DID>` it is a
+**wallet invitation** instead: the token names that DID, whose holder claims it
+by signing as it (Path C), and the DID is granted an admin ACL entry now if it
+has none. `--ttl <seconds>` changes the default 900. It needs the daemon stopped because it opens the store
 directly. Once an admin exists, invite further admins from the running console
 (**Access control → Admin invites → Invite admin**) or with a signed
 `vtc/admin/invites/create/0.1` document, sent over any transport the VTC
@@ -80,14 +94,13 @@ serves. An invite for a DID with no entry makes a new community
 administrator, so it waits in **Actions** for a second administrator's
 approval ([`admin-access.md`](admin-access.md) §3.2).
 
-> **Claim before you add any other admin.** `POST /v1/admin/bootstrap` refuses
-> with `409` once *any* admin ACL entry exists, and the install page treats
-> that `409` as success, because an invited admin sees it too. So if you add an
-> admin entry for a different DID first (for example with
-> `vtc create-did-key --admin`, below), the claim registers the passkey but
-> writes no ACL entry for the setup's admin DID, and passkey sign-in then
-> fails. To recover, stop the daemon and run `vtc admin invite --did <admin DID>`
-> or `vtc acl add --did <admin DID> --role admin`.
+> **Adding another admin first is safe.** `vtc/admin/bootstrap/0.1` refuses
+> with `alreadyBootstrapped` once *any* admin ACL entry exists, and the install
+> page treats that as success, because an invited admin sees it too. A passkey
+> claim on a community that already has an administrator is an invitation, so
+> its `finish` writes the passkey DID's entry itself, with the authority the
+> invitation recorded — the setup's install URL records a community
+> administrator.
 
 ### Path B: no browser — seed the ACL offline
 
@@ -102,9 +115,10 @@ vtc --config /srv/vtc/config.toml acl list
 ```
 
 This makes the DID able to authenticate. It does not register a passkey, and
-it does not create the community profile. The first `vtc admin invite`, or a
-later claim, is what gives that DID a way into the console. Because of the
-`409` rule above, the claim itself will not write a second ACL entry.
+it does not create the community profile. A passkey belongs to its own DID
+(the install claim makes the passkey's `did:key` an administrator beside this
+one); to sign in to the console as *this* DID, use the browser wallet holding
+it, or `vtc admin invite --did <admin DID>` and claim with the wallet.
 
 Like every offline write, this one is raised in **Actions** at the next start
 for the administrators to acknowledge. With no administrator when it ran, it
