@@ -784,8 +784,7 @@ fn external_account() -> Value {
 ///
 /// `#[allow(deprecated)]`: the table witnesses every version this VTA still
 /// serves, and some are superseded — `vta/webvh/dids/update/1.0` and
-/// `rotate-keys/1.0` (whether to move is a pending decision), and
-/// `auth/step-up/approve-response/0.6` (0.7 not adopted yet).
+/// `rotate-keys/1.0` (whether to move is a pending decision).
 #[allow(deprecated)]
 fn table() -> Vec<(&'static str, Conformance)> {
     let mut t: Vec<(&'static str, Conformance)> = vec![
@@ -845,10 +844,10 @@ fn table() -> Vec<(&'static str, Conformance)> {
             ),
         ),
         (
-            uris::TASK_AUTH_STEP_UP_APPROVE_RESPONSE_0_6,
+            uris::TASK_AUTH_STEP_UP_APPROVE_RESPONSE_0_7,
             checked!(
-                specs::auth::step_up::approve_response::v0_6::Payload,
-                specs::auth::step_up::approve_response::v0_6::Response,
+                specs::auth::step_up::approve_response::v0_7::Payload,
+                specs::auth::step_up::approve_response::v0_7::Response,
                 json!({
                     "subject": SUBJECT,
                     "sessionId": "sess-1",

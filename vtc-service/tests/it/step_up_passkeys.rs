@@ -41,7 +41,7 @@ use crate::common::webauthn_harness::SoftEd25519Authenticator;
 
 const REDEEM_START: &str = "https://trusttasks.org/spec/auth/passkey/enroll/redeem/start/0.1";
 const REDEEM_FINISH: &str = "https://trusttasks.org/spec/auth/passkey/enroll/redeem/finish/0.1";
-const APPROVE_RESPONSE: &str = "https://trusttasks.org/spec/auth/step-up/approve-response/0.6";
+const APPROVE_RESPONSE: &str = "https://trusttasks.org/spec/auth/step-up/approve-response/0.7";
 const BREAK_GLASS: &str = "https://trusttasks.org/spec/git-ns/right/break-glass/0.2";
 /// `MockVtcTransport`'s WebAuthn relying party.
 const RP_ORIGIN: &str = "https://vtc.test";
@@ -294,11 +294,12 @@ async fn a_member_enrols_and_uses_a_step_up_passkey_on_every_transport() {
     h.mock.shutdown().await;
 }
 
-/// The assertion alone is not an answer: over HTTPS an unsigned
-/// approve-response is refused before the pending step-up is touched, so the
-/// member's own signed answer still spends it.
+/// approve-response 0.7: a user-verified assertion by the member's own step-up
+/// passkey is evidence on its own, so over HTTPS the unsigned answer is
+/// recorded — once. The pending step-up is taken atomically (consumer item 2),
+/// so the same answer sent again, signed, finds no challenge.
 #[tokio::test]
-async fn an_unsigned_answer_is_refused_and_leaves_the_step_up_for_the_member() {
+async fn approve_response_0_7_an_unsigned_passkey_answer_is_recorded_once() {
     let h = harness().await;
     let did = h.https.did.clone();
     let mut key = SoftEd25519Authenticator::new();
@@ -341,11 +342,14 @@ async fn an_unsigned_answer_is_refused_and_leaves_the_step_up_for_the_member() {
         h.mock.vtc_did(),
     )
     .unwrap();
-    let refused = post(&h, &bare).await;
-    assert_eq!(refused["payload"]["code"], "proofRequired", "{refused}");
+    let recorded = post(&h, &bare).await;
+    assert_eq!(recorded["payload"]["status"], "recorded", "{recorded}");
 
-    let signed = send(&h, "https", APPROVE_RESPONSE, answer).await;
-    assert_eq!(payload_ok(&signed, "signed answer")["status"], "recorded");
+    let again = send(&h, "https", APPROVE_RESPONSE, answer).await;
+    assert_eq!(
+        again["payload"]["code"], "auth/step-up/approve-response:challengeUnknown",
+        "{again}"
+    );
     h.tsp.shutdown().await;
     h.mock.shutdown().await;
 }

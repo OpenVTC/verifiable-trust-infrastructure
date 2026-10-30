@@ -50,7 +50,7 @@ const FINISH: &str = "https://trusttasks.org/spec/vtc/install/claim/finish/0.3";
 const BOOTSTRAP: &str = "https://trusttasks.org/spec/vtc/admin/bootstrap/0.1";
 const ATTEST: &str = "https://trusttasks.org/spec/auth/step-up/approver/attest/0.1";
 const INVITE: &str = "https://trusttasks.org/spec/auth/step-up/approver/invite/0.2";
-const APPROVE_V06: &str = "https://trusttasks.org/spec/auth/step-up/approve-response/0.6";
+const APPROVE_V06: &str = "https://trusttasks.org/spec/auth/step-up/approve-response/0.7";
 
 struct Fixture {
     vtc: TestVtc,

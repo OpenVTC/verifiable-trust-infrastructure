@@ -226,7 +226,7 @@ mod tests {
             json!({"type": format!("{TRUST_TASK_ERROR_PREFIX}0.5"), "threadId": "urn:uuid:1"});
         assert!(names_a_reply(&error));
         let approval = json!({
-            "type": "https://trusttasks.org/spec/auth/step-up/approve-response/0.6",
+            "type": "https://trusttasks.org/spec/auth/step-up/approve-response/0.7",
             "threadId": "urn:uuid:1"
         });
         assert!(!names_a_reply(&approval));

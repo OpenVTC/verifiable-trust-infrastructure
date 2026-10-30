@@ -17,7 +17,7 @@
 
 use chrono::DateTime;
 use trust_tasks_rs::TrustTask;
-use vti_specs::auth::step_up::approve_response::v0_6 as approve_response;
+use vti_specs::auth::step_up::approve_response::v0_7 as approve_response;
 
 use crate::error::FfiError;
 use crate::keys::Signer;
@@ -62,7 +62,7 @@ pub struct ApproveResponseDraft {
     pub granted_acr: Option<String>,
 }
 
-/// Build a passkey-backed `auth/step-up/approve-response/0.6`: decision
+/// Build a passkey-backed `auth/step-up/approve-response/0.7`: decision
 /// `approved`, `evidence.kind = webauthn` carrying `assertion`. The assertion is
 /// the gate. The document additionally carries the approver's framework proof
 /// (via `signer`, whose DID must be `draft.issuer_did`), because the VTA refuses
@@ -106,7 +106,7 @@ pub fn build_approve_response_webauthn(
     serialize(&doc)
 }
 
-/// Build a DID-signed `auth/step-up/approve-response/0.6`: decision `approved`,
+/// Build a DID-signed `auth/step-up/approve-response/0.7`: decision `approved`,
 /// `evidence.kind = didSigned`, gated by a Data Integrity proof
 /// (`eddsa-jcs-2022`) over the document. `signer` is the native enclave key
 /// (the holder/subject key) — its private material never enters this crate;
@@ -126,7 +126,7 @@ pub fn build_approve_response_did_signed(
     serialize(&doc)
 }
 
-/// Build a DID-signed **denial** `auth/step-up/approve-response/0.6`: decision
+/// Build a DID-signed **denial** `auth/step-up/approve-response/0.7`: decision
 /// `denied`, carrying the human `reason`, gated by the same `eddsa-jcs-2022`
 /// proof as an approval. A denial is a *signed refusal* — the VTA verifies the
 /// gate (so an injection can't forge it), audits `step_up_denied`, and elevates
@@ -149,7 +149,6 @@ pub fn build_approve_response_denied(
 
 /// Build the approve-response envelope + payload (no proof) for a given gate +
 /// decision.
-#[allow(deprecated)] // auth/step-up/approve-response 0.6 is superseded by 0.7; VTI speaks 0.6 until it moves
 fn assemble_doc(
     draft: &ApproveResponseDraft,
     evidence: approve_response::Evidence,
@@ -193,7 +192,6 @@ fn assemble_doc(
     Ok(doc)
 }
 
-#[allow(deprecated)] // auth/step-up/approve-response 0.6 is superseded by 0.7; VTI speaks 0.6 until it moves
 fn serialize(doc: &TrustTask<approve_response::Payload>) -> Result<String, FfiError> {
     serde_json::to_string(doc).map_err(|e| FfiError::InvalidInput {
         reason: format!("failed to serialize approve-response: {e}"),
@@ -273,7 +271,7 @@ mod tests {
         let v: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(
             v["type"],
-            "https://trusttasks.org/spec/auth/step-up/approve-response/0.6"
+            "https://trusttasks.org/spec/auth/step-up/approve-response/0.7"
         );
         assert_eq!(v["payload"]["decision"], "approved");
         assert_eq!(v["payload"]["evidence"]["kind"], "webauthn");
@@ -283,7 +281,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(deprecated)] // auth/step-up/approve-response 0.6 is superseded by 0.7; VTI speaks 0.6 until it moves
     fn webauthn_output_round_trips_back_through_the_typed_parser() {
         let signer = enclave(5);
         let json =
@@ -334,7 +331,6 @@ mod tests {
     /// `affinidi-data-integrity` against that key. Proves the canonicalization +
     /// proofValue assembly are correct (a real RP would verify the same way).
     #[test]
-    #[allow(deprecated)] // auth/step-up/approve-response 0.6 is superseded by 0.7; VTI speaks 0.6 until it moves
     fn did_signed_response_verifies_against_the_holder_key() {
         use affinidi_data_integrity::DataIntegrityProof;
         use ed25519_dalek::{Signer as _, SigningKey};
@@ -378,7 +374,7 @@ mod tests {
         let raw: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(
             raw["type"],
-            "https://trusttasks.org/spec/auth/step-up/approve-response/0.6"
+            "https://trusttasks.org/spec/auth/step-up/approve-response/0.7"
         );
         assert_eq!(raw["payload"]["evidence"]["kind"], "didSigned");
 
@@ -408,7 +404,6 @@ mod tests {
     /// A denial is a *signed* refusal: decision `denied`, the human reason, a
     /// didSigned gate, and a verifiable proof (so an injection can't forge it).
     #[test]
-    #[allow(deprecated)] // auth/step-up/approve-response 0.6 is superseded by 0.7; VTI speaks 0.6 until it moves
     fn denied_response_is_signed_and_carries_the_reason() {
         use affinidi_data_integrity::DataIntegrityProof;
         use ed25519_dalek::{Signer as _, SigningKey};
@@ -450,7 +445,7 @@ mod tests {
         let raw: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(
             raw["type"],
-            "https://trusttasks.org/spec/auth/step-up/approve-response/0.6"
+            "https://trusttasks.org/spec/auth/step-up/approve-response/0.7"
         );
         assert_eq!(raw["payload"]["decision"], "denied");
         assert_eq!(raw["payload"]["deniedReason"], "not something I authorized");

@@ -117,7 +117,7 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     // without the caller learning it was granted.
     // No looser for being answerable with `recorded`: a bound approval is
     // still a one-shot, and a lost reply still spends it.
-    (trust_tasks::TASK_AUTH_STEP_UP_APPROVE_RESPONSE_0_6, Keyed),
+    (trust_tasks::TASK_AUTH_STEP_UP_APPROVE_RESPONSE_0_7, Keyed),
     // ── Device ──────────────────────────────────────────────────────────
     // Registration is keyed by a caller-supplied device identity, so a repeat
     // lands on the same record — but it also mints device credentials, and

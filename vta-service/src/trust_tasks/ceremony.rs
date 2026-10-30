@@ -47,7 +47,7 @@ use crate::auth::AuthClaims;
 pub(crate) fn is_ceremony_task(type_uri: &str) -> bool {
     use vta_sdk::trust_tasks as t;
     type_uri == t::TASK_TASK_CONSENT_DECISION_0_2
-        || type_uri == t::TASK_AUTH_STEP_UP_APPROVE_RESPONSE_0_6
+        || type_uri == t::TASK_AUTH_STEP_UP_APPROVE_RESPONSE_0_7
 }
 
 /// Could `sender_did` conceivably be an approver for a ceremony of this type?
@@ -177,7 +177,7 @@ mod tests {
     fn the_three_ceremony_uris_are_recognised_and_nothing_else_is() {
         use vta_sdk::trust_tasks as t;
         assert!(is_ceremony_task(t::TASK_TASK_CONSENT_DECISION_0_2));
-        assert!(is_ceremony_task(t::TASK_AUTH_STEP_UP_APPROVE_RESPONSE_0_6));
+        assert!(is_ceremony_task(t::TASK_AUTH_STEP_UP_APPROVE_RESPONSE_0_7));
 
         // The operations a ceremony authorizes are emphatically not ceremonies.
         assert!(!is_ceremony_task(t::TASK_ACL_GRANT_0_2));

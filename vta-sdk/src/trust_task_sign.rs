@@ -549,7 +549,7 @@ mod tests {
     async fn attestation_types_are_signed_for_assertion_method() {
         for uri in [
             "https://trusttasks.org/spec/task-consent/decision/0.2",
-            "https://trusttasks.org/spec/auth/step-up/approve-response/0.6",
+            "https://trusttasks.org/spec/auth/step-up/approve-response/0.7",
             "https://trusttasks.org/spec/confirm/response/0.1",
         ] {
             let (did, pk) = did_key_from_seed(0xc2);

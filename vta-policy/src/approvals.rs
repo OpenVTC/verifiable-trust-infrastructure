@@ -211,15 +211,27 @@ pub const RETIRED_TASK_TYPES: &[(&str, &str)] = &[
     ),
     (
         "https://trusttasks.org/spec/auth/step-up/approve-response/0.1",
-        "https://trusttasks.org/spec/auth/step-up/approve-response/0.6",
+        "https://trusttasks.org/spec/auth/step-up/approve-response/0.7",
     ),
     (
         "https://trusttasks.org/spec/auth/step-up/approve-response/0.2",
-        "https://trusttasks.org/spec/auth/step-up/approve-response/0.6",
+        "https://trusttasks.org/spec/auth/step-up/approve-response/0.7",
     ),
     (
         "https://trusttasks.org/spec/auth/step-up/approve-response/0.3",
+        "https://trusttasks.org/spec/auth/step-up/approve-response/0.7",
+    ),
+    (
+        "https://trusttasks.org/spec/auth/step-up/approve-response/0.4",
+        "https://trusttasks.org/spec/auth/step-up/approve-response/0.7",
+    ),
+    (
+        "https://trusttasks.org/spec/auth/step-up/approve-response/0.5",
+        "https://trusttasks.org/spec/auth/step-up/approve-response/0.7",
+    ),
+    (
         "https://trusttasks.org/spec/auth/step-up/approve-response/0.6",
+        "https://trusttasks.org/spec/auth/step-up/approve-response/0.7",
     ),
     (
         "https://trusttasks.org/spec/policy/list/0.2",

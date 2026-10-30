@@ -233,14 +233,11 @@ use vti_specs::vtc::endorsement_types::{
 // Batch 5: the backup export. Its `import` partner waits — see the design note.
 use vti_specs::vtc::backup::export::v0_1 as backup_export;
 // The answer to the operation-bound step-up an ACL write asks for (#1641;
-// design note `vtc-operation-bound-step-up.md`). 0.6 is the version served;
-// it adds `approverSigned` evidence — a step-up approver's statement — beside
-// the passkey (design note `vtc-approver-step-up.md`).
-use vti_specs::auth::step_up::approve_response::v0_6 as step_up_approve_response_v0_6;
-// 0.4 only for the console's unsigned session-passkey answer: 0.5 onward
-// requires a proof the console cannot make (no successor yet — a spec gap).
+// design note `vtc-operation-bound-step-up.md`): a passkey assertion — the
+// console's unsigned answer, or beside the subject's own proof — or a step-up
+// approver's statement (design note `vtc-approver-step-up.md`).
 use trust_tasks_rs::{RejectReason, TrustTask};
-use vti_specs::auth::step_up::approve_response::v0_4 as step_up_approve_response_v0_4;
+use vti_specs::auth::step_up::approve_response::v0_7 as step_up_approve_response;
 
 use vta_sdk::protocols::trust_task_reject_reasons as reasons;
 use vti_common::error::AppError;
@@ -641,20 +638,21 @@ async fn dispatch_trust_task_validated(
                         .await
                     {
                         Ok(None) => {}
-                        // approve-response 0.6 names this case: the proof
-                        // must be the subject DID's own, and a console key
-                        // signs as its own `did:key` — `subjectMismatch`.
-                        // Same refusal, at the same point; only the code is
-                        // the task's own.
-                        Ok(Some(_)) if type_uri == STEP_UP_APPROVE_RESPONSE_V0_6_TYPE => {
+                        // approve-response 0.7 names this case (consumer item
+                        // 1a): a delegated key's proof never establishes an
+                        // approver — `subjectMismatch`, whatever the evidence,
+                        // before the pending step-up is looked up. Same
+                        // refusal, at the same point; only the code is the
+                        // task's own.
+                        Ok(Some(_)) if type_uri == STEP_UP_APPROVE_RESPONSE_TYPE => {
                             return reject_with_code(
                                 &doc,
                                 helpers::extended_code(
-                                    step_up_approve_response_v0_6::error_codes::SUBJECT_MISMATCH
-                                        .code,
+                                    step_up_approve_response::error_codes::SUBJECT_MISMATCH.code,
                                 ),
-                                "a delegated signing key is never accepted as the subject's own \
-                                 proof; sign the approve-response with the subject DID's own key",
+                                "a delegated signing key is never the approver's evidence; \
+                                 answer with the passkey assertion alone, or sign with the \
+                                 approver's own DID",
                                 None,
                             );
                         }
@@ -1510,11 +1508,8 @@ fn dispatch_typed<'a>(
         ACL_SWAP_KEY_TYPE => {
             Box::pin(async move { acl_tasks::handle_swap_key(state, ctx, doc).await })
         }
-        STEP_UP_APPROVE_RESPONSE_V0_4_TYPE => {
+        STEP_UP_APPROVE_RESPONSE_TYPE => {
             Box::pin(async move { handle_step_up_approve_response(state, ctx, doc).await })
-        }
-        STEP_UP_APPROVE_RESPONSE_V0_6_TYPE => {
-            Box::pin(async move { handle_step_up_approve_response_v0_6(state, ctx, doc).await })
         }
         // Boxed: a decision that completes an action re-enters this dispatcher
         // with the parked document.
@@ -2161,8 +2156,8 @@ mod spine_proof_tests {
             "a read; the handler refuses an unsigned caller regardless",
         ),
         (
-            STEP_UP_APPROVE_RESPONSE_V0_4_TYPE,
-            "its gate is the WebAuthn assertion it carries — the handler still requires the approver's assertionMethod proof via `verify_approval_proof`, which is not the request-level `proof` this flag governs",
+            STEP_UP_APPROVE_RESPONSE_TYPE,
+            "approve-response 0.7 makes a user-verified WebAuthn assertion by the approver's own registered passkey evidence on its own; the handler requires a proof for every other answer (didSigned, approverSigned, any denial) and hears an unsigned one only as an approval carrying such an assertion",
         ),
         (
             step_up_passkey_tasks::REDEEM_START_TYPE,
@@ -2605,9 +2600,9 @@ mod spine_proof_tests {
         let (did, secret) = peer('A', 0x46);
         for uri in [
             crate::acl::admin_consent::DECISION_TYPE,
-            STEP_UP_APPROVE_RESPONSE_V0_4_TYPE,
+            STEP_UP_APPROVE_RESPONSE_TYPE,
         ] {
-            let payload = if uri == STEP_UP_APPROVE_RESPONSE_V0_4_TYPE {
+            let payload = if uri == STEP_UP_APPROVE_RESPONSE_TYPE {
                 approve_response_payload(&did)
             } else {
                 decision_payload()
@@ -2645,11 +2640,7 @@ mod spine_proof_tests {
         for (uri, payload) in [
             (crate::acl::admin_consent::DECISION_TYPE, decision_payload()),
             (
-                STEP_UP_APPROVE_RESPONSE_V0_4_TYPE,
-                approve_response_payload(&did),
-            ),
-            (
-                STEP_UP_APPROVE_RESPONSE_V0_6_TYPE,
+                STEP_UP_APPROVE_RESPONSE_TYPE,
                 approve_response_payload(&did),
             ),
         ] {
@@ -2672,11 +2663,7 @@ mod spine_proof_tests {
         for (uri, payload) in [
             (crate::acl::admin_consent::DECISION_TYPE, decision_payload()),
             (
-                STEP_UP_APPROVE_RESPONSE_V0_4_TYPE,
-                approve_response_payload(&did),
-            ),
-            (
-                STEP_UP_APPROVE_RESPONSE_V0_6_TYPE,
+                STEP_UP_APPROVE_RESPONSE_TYPE,
                 approve_response_payload(&did),
             ),
         ] {
@@ -2707,14 +2694,7 @@ mod spine_proof_tests {
         let secret = Secret::generate_ed25519(Some(&format!("{did}#key-1")), Some(&[0x53; 32]));
         for (uri, payload) in [
             (crate::acl::admin_consent::DECISION_TYPE, decision_payload()),
-            (
-                STEP_UP_APPROVE_RESPONSE_V0_4_TYPE,
-                approve_response_payload(did),
-            ),
-            (
-                STEP_UP_APPROVE_RESPONSE_V0_6_TYPE,
-                approve_response_payload(did),
-            ),
+            (STEP_UP_APPROVE_RESPONSE_TYPE, approve_response_payload(did)),
         ] {
             let doc = approval(uri, payload, did, &secret, "assertionMethod").await;
             let out = dispatch(&tv.state, &doc).await;
@@ -2736,14 +2716,7 @@ mod spine_proof_tests {
         for (did, secret) in &signers {
             for (uri, payload) in [
                 (crate::acl::admin_consent::DECISION_TYPE, decision_payload()),
-                (
-                    STEP_UP_APPROVE_RESPONSE_V0_4_TYPE,
-                    approve_response_payload(did),
-                ),
-                (
-                    STEP_UP_APPROVE_RESPONSE_V0_6_TYPE,
-                    approve_response_payload(did),
-                ),
+                (STEP_UP_APPROVE_RESPONSE_TYPE, approve_response_payload(did)),
             ] {
                 let doc = approval(uri, payload, did, secret, "assertionMethod").await;
                 let out = dispatch(&tv.state, &doc).await;
@@ -2757,22 +2730,24 @@ mod spine_proof_tests {
     }
 
     /// An unsigned approve-response is heard only as an approval carrying a
-    /// console user's passkey assertion; one with no evidence is refused before
-    /// any pending step-up is consulted.
+    /// passkey assertion: a `didSigned` one (here, by omission) and any denial
+    /// are `proofRequired` before any pending step-up is consulted
+    /// (approve-response 0.7 consumer item 1a).
     #[tokio::test]
-    async fn an_unsigned_approve_response_is_refused() {
+    async fn approve_response_0_7_item_1a_an_unsigned_answer_without_a_passkey_is_refused() {
         let tv = build_test_vtc().await;
         let h = holder();
-        for uri in [
-            STEP_UP_APPROVE_RESPONSE_V0_4_TYPE,
-            STEP_UP_APPROVE_RESPONSE_V0_6_TYPE,
-        ] {
-            let doc = unsigned(&h, uri, approve_response_payload(&h.did));
+        let mut denied = approve_response_payload(&h.did);
+        denied["decision"] = json!("denied");
+        denied["deniedReason"] = json!("no");
+        denied["evidence"] = json!({ "kind": "didSigned" });
+        for payload in [approve_response_payload(&h.did), denied] {
+            let doc = unsigned(&h, STEP_UP_APPROVE_RESPONSE_TYPE, payload);
             let out = dispatch(&tv.state, &doc).await;
             assert_eq!(
                 error_code(&out).as_deref(),
                 Some("proofRequired"),
-                "{uri}: {}",
+                "{}",
                 String::from_utf8_lossy(&out.body)
             );
         }
@@ -2992,11 +2967,10 @@ pub(crate) const DISPATCHED_URIS: &[&str] = &[
     ACL_LIST_TYPE,
     ACL_UPDATE_TYPE,
     ACL_REVOKE_TYPE,
-    // The gesture that operation-bound step-up asks for.
-    STEP_UP_APPROVE_RESPONSE_V0_4_TYPE,
-    // 0.6: a step-up approver's signed statement as the factor
-    // (`approverSigned`), for an administrator who signs in with a wallet.
-    STEP_UP_APPROVE_RESPONSE_V0_6_TYPE,
+    // The gesture that operation-bound step-up asks for: a passkey assertion,
+    // or a step-up approver's signed statement (`approverSigned`) for an
+    // administrator who signs in with a wallet.
+    STEP_UP_APPROVE_RESPONSE_TYPE,
     // Another admin's decision on a parked action (VTI-APV-014, -017). The
     // request it answers is pushed by this service, never dispatched here.
     // 0.2 carries the optional extra factor and the `actionId` locator.
@@ -3413,21 +3387,13 @@ pub(crate) const ACL_REVOKE_TYPE: &str =
 pub(crate) const ACL_SWAP_KEY_TYPE: &str =
     <vti_specs::acl::swap_key::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
-/// `auth/step-up/approve-response/0.4` — served **only** for the admin
-/// console's unsigned session-passkey answer. 0.5 onward require the
-/// approver's own `assertionMethod` proof, and a console holds only a
-/// delegated key, which `auth/signing-key/enroll/0.2` item 7 refuses as an
-/// approver's attestation; until the specification gives that answer a
-/// successor, this is its only door. Everything else answers with 0.6.
-#[allow(deprecated)]
-pub(crate) const STEP_UP_APPROVE_RESPONSE_V0_4_TYPE: &str =
-    <step_up_approve_response_v0_4::Payload as trust_tasks_rs::Payload>::TYPE_URI;
-
-/// `auth/step-up/approve-response/0.6` — adds a step-up approver's statement
-/// (`evidence.kind = approverSigned`) as the factor (VTI-APV-015).
-#[allow(deprecated)] // auth/step-up/approve-response 0.6 is superseded by 0.7; VTI speaks 0.6 until it moves
-pub(crate) const STEP_UP_APPROVE_RESPONSE_V0_6_TYPE: &str =
-    <step_up_approve_response_v0_6::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+/// `auth/step-up/approve-response/0.7` — the answer to an operation-bound
+/// step-up: a passkey assertion (`webauthn`) — unsigned from the admin
+/// console, whose only key is a delegation, or beside the subject's own proof
+/// — or a step-up approver's statement (`approverSigned`, VTI-APV-015), which
+/// the subject's own DID signs. 0.4 and 0.6 are no longer served.
+pub(crate) const STEP_UP_APPROVE_RESPONSE_TYPE: &str =
+    <step_up_approve_response::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
 /// `vtc/join-requests/submit:presentationInvalid` — the presentation is not
 /// the applicant's own.
@@ -5478,155 +5444,44 @@ pub(super) fn refuse_hop_by_hop_backup(
     }
 }
 
-/// `auth/step-up/approve-response/0.4` — kept **only** for the admin console's
-/// unsigned session-passkey answer ([`STEP_UP_APPROVE_RESPONSE_V0_4_TYPE`]).
-/// The document is checked against 0.4's schema, then processed as the 0.6
-/// payload it is wire-identical to, so nothing past this door reads 0.4.
+/// `auth/step-up/approve-response/0.7` — the answer to an operation-bound
+/// step-up ([`STEP_UP_APPROVE_RESPONSE_TYPE`]).
 ///
-/// The gate is the WebAuthn assertion, which only a console user's own
-/// authenticator can produce over this service's challenge, from a session
-/// passkey registered to the subject ([`unsigned_answer_admissible`]). A
-/// signed answer of any kind is refused here and belongs on 0.6
-/// ([`handle_step_up_approve_response_v0_6`]). What the gesture authorizes is
-/// read from this service's record of the refusal, never from this document.
-/// See [`crate::acl::bound_step_up::approve`].
+/// Before the pending step-up is looked up (consumer item 1a), so a refused
+/// answer leaves the challenge for the right one:
 ///
-/// This service only issues bound step-ups on this door, so the answer is
-/// `recorded` or `rejected` — never `elevated`.
-// approve-response 0.4 (the console's unsigned answer: 0.5 onward requires a
-// proof the console cannot make — a spec gap) and 0.6 are both superseded by
-// 0.7; VTI speaks them until it moves.
-#[allow(deprecated)]
+/// - **A proof, when present, is the approver's own.** The spine has verified
+///   it — made for `assertionMethod`, by a key the signer lists under
+///   `assertionMethod` — and refused a delegated signing key's (a console
+///   key's) as `subjectMismatch` before dispatch. Here the signer must be
+///   `payload.subject` itself (`subjectMismatch`): this service asks only
+///   self step-ups.
+/// - **No proof** is heard only for an approval carrying `webauthn` evidence
+///   (0.7 producer item 5a) — the admin console's answer, whose only key is a
+///   delegation. A `didSigned` or `approverSigned` answer, or any denial,
+///   without one is `proofRequired`. The unsigned answer must name the subject
+///   as its `issuer` (producer item 1, `subjectMismatch`), and its credential
+///   must be a passkey registered to someone here
+///   ([`unsigned_answer_admissible`], `assertionInvalid` /
+///   `credentialUnknown`); [`crate::acl::bound_step_up::approve`] then
+///   requires it to be the subject's and user-verified.
+///
+/// An approval carrying `approverSigned` goes to
+/// [`crate::acl::bound_step_up::approve_with_statement`]; everything else
+/// (`webauthn`, a refusal) to [`crate::acl::bound_step_up::approve`]. What the
+/// gesture authorizes is read from this service's record of the refusal,
+/// never from this document — so an unsigned answer decides nothing the
+/// assertion and that record do not (item 4a). This service only issues bound
+/// step-ups here, so the answer is `recorded` or `rejected`, never `elevated`.
 async fn handle_step_up_approve_response(
     state: &AppState,
     ctx: &JoinAuthCtx,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
     use crate::acl::bound_step_up::{self, ApproveError, Approved};
-    use step_up_approve_response_v0_6::error_codes as codes;
+    use step_up_approve_response::error_codes as codes;
 
-    // 0.4's schema is the gate on what this door accepts; its members are
-    // 0.6's, so the 0.6 type carries it from here on.
-    if let Err(reject) = parse_spec_payload::<step_up_approve_response_v0_4::Payload>(&doc) {
-        return reject;
-    }
-    let payload: step_up_approve_response_v0_6::Payload =
-        match serde_json::from_value(doc.payload.clone()) {
-            Ok(p) => p,
-            Err(e) => {
-                return app_error_to_reject(
-                    &doc,
-                    &AppError::Internal(format!(
-                        "approve-response 0.4 payload does not read as 0.6's: {e}"
-                    )),
-                );
-            }
-        };
-    let refuse = |code: trust_tasks_rs::DeclaredErrorCode, message: &str, hint: Option<&str>| {
-        reject_with_code(
-            &doc,
-            extended_code(code.code),
-            message,
-            hint.map(|h| serde_json::json!({ "reason": h })),
-        )
-    };
-    // Who answers. This door is kept for one answer only: the console's
-    // **unsigned** approval carrying a session passkey registered to the
-    // subject, the one gate a browser holding no key of the subject's has
-    // ([`bound_step_up::approve`]). A signed answer — a member's step-up
-    // passkey beside their own signature, a refusal, a wallet's — is
-    // approve-response 0.6, which every signer can send; 0.4 is not served
-    // for it.
-    if ctx.verified_signer.is_some() {
-        return app_error_to_reject(
-            &doc,
-            &AppError::Validation(
-                "a signed approve-response is auth/step-up/approve-response/0.6; this \
-                 community hears 0.4 only as the admin console's unsigned passkey answer"
-                    .into(),
-            ),
-        );
-    }
-    // Settled before the pending step-up is touched, so a refused answer
-    // leaves the challenge for the right one.
-    if !unsigned_answer_admissible(state, &payload).await {
-        return reject_with(&doc, RejectReason::ProofRequired);
-    }
-    match bound_step_up::approve(state, &payload, false).await {
-        Ok(Approved::Recorded { bound_to }) => success_response(
-            &doc,
-            serde_json::json!({ "status": "recorded", "boundTo": bound_to }),
-        ),
-        Ok(Approved::Declined { reason }) => success_response(
-            &doc,
-            serde_json::json!({ "status": "rejected", "reason": reason }),
-        ),
-        Err(ApproveError::ChallengeUnknown) => refuse(
-            codes::CHALLENGE_UNKNOWN,
-            "no pending step-up matches this challenge",
-            None,
-        ),
-        Err(ApproveError::ChallengeExpired) => refuse(
-            codes::CHALLENGE_EXPIRED,
-            "the step-up this challenge belonged to has expired; send the operation again",
-            None,
-        ),
-        Err(ApproveError::SubjectMismatch) => refuse(
-            codes::SUBJECT_MISMATCH,
-            "the subject or session does not match the pending step-up",
-            None,
-        ),
-        Err(ApproveError::NoGate) => refuse(
-            codes::NO_GATE,
-            "this step-up accepts only a passkey assertion (evidence.kind = webauthn)",
-            None,
-        ),
-        Err(ApproveError::AssertionInvalid(hint)) => refuse(
-            codes::ASSERTION_INVALID,
-            "the passkey assertion did not verify",
-            Some(hint),
-        ),
-        Err(ApproveError::ProofRequired) => reject_with(&doc, RejectReason::ProofRequired),
-        // 0.4 carries no `approverSigned`, so neither arises on this door; a
-        // gate it did not offer is `noGate`.
-        Err(ApproveError::StatementInvalid | ApproveError::ApproverNotBound) => refuse(
-            codes::NO_GATE,
-            "this version carries no step-up approver statement",
-            None,
-        ),
-        Err(ApproveError::Internal(e)) => app_error_to_reject(&doc, &e),
-    }
-}
-
-/// `auth/step-up/approve-response/0.6` — the approve-response this service
-/// serves (0.4 stays only for the console's unsigned session-passkey answer,
-/// which 0.5 onward forbids). It adds
-/// `evidence.kind = approverSigned` — a step-up approver's statement as the
-/// factor (VTI-APV-015 as amended; design note `vtc-approver-step-up.md` §5).
-///
-/// Its proof is REQUIRED by the specification, so the spine has already
-/// refused an unsigned document and verified this one's proof — made for
-/// `assertionMethod`, by a key the signer lists under `assertionMethod`, and
-/// never by a console key's delegation (the spine refuses a delegated signing
-/// key on every approval type before dispatch). Here, before the pending
-/// step-up is looked up (0.6 consumer item 1a):
-///
-/// - the signer must be `payload.subject` itself — `subjectMismatch` otherwise;
-///   for `approverSigned` that is the subject's **own** DID, the one key that
-///   says the subject answered, never a delegation;
-/// - an approval carrying `approverSigned` goes to
-///   [`crate::acl::bound_step_up::approve_with_statement`]; everything else
-///   (`webauthn`, a refusal) to [`crate::acl::bound_step_up::approve`].
-#[allow(deprecated)] // auth/step-up/approve-response 0.6 is superseded by 0.7; VTI speaks 0.6 until it moves
-async fn handle_step_up_approve_response_v0_6(
-    state: &AppState,
-    ctx: &JoinAuthCtx,
-    doc: TrustTask<Value>,
-) -> TrustTaskOutcome {
-    use crate::acl::bound_step_up::{self, ApproveError, Approved};
-    use step_up_approve_response_v0_6::error_codes as codes;
-
-    let payload: step_up_approve_response_v0_6::Payload = match parse_spec_payload(&doc) {
+    let payload: step_up_approve_response::Payload = match parse_spec_payload(&doc) {
         Ok(p) => p,
         Err(reject) => return reject,
     };
@@ -5638,8 +5493,8 @@ async fn handle_step_up_approve_response_v0_6(
             hint.map(|h| serde_json::json!({ "reason": h })),
         )
     };
-    match ctx.verified_signer.as_deref() {
-        Some(signer) if signer == payload.subject.as_str() => {}
+    let signed = match ctx.verified_signer.as_deref() {
+        Some(signer) if signer == payload.subject.as_str() => true,
         Some(_) => {
             return refuse(
                 codes::SUBJECT_MISMATCH,
@@ -5647,16 +5502,41 @@ async fn handle_step_up_approve_response_v0_6(
                 None,
             );
         }
-        None => return reject_with(&doc, RejectReason::ProofRequired),
+        None => false,
+    };
+    if !signed {
+        let passkey_approval = payload.decision
+            == step_up_approve_response::PayloadDecision::Approved
+            && matches!(
+                payload.evidence,
+                Some(step_up_approve_response::Evidence::Webauthn { .. })
+            );
+        if !passkey_approval {
+            return reject_with(&doc, RejectReason::ProofRequired);
+        }
+        if doc.issuer.as_deref() != Some(payload.subject.as_str()) {
+            return refuse(
+                codes::SUBJECT_MISMATCH,
+                "an unsigned approve-response names the approver — the subject — as its issuer",
+                None,
+            );
+        }
+        if !unsigned_answer_admissible(state, &payload).await {
+            return refuse(
+                codes::ASSERTION_INVALID,
+                "the passkey that made this assertion is not registered here",
+                Some("credentialUnknown"),
+            );
+        }
     }
 
     let approver_signed = matches!(
         payload.evidence,
-        Some(step_up_approve_response_v0_6::Evidence::ApproverSigned { .. })
+        Some(step_up_approve_response::Evidence::ApproverSigned { .. })
     );
     let outcome = if approver_signed {
-        if payload.decision != step_up_approve_response_v0_6::PayloadDecision::Approved {
-            // A refusal is the subject's signed statement (0.6 producer item
+        if payload.decision != step_up_approve_response::PayloadDecision::Approved {
+            // A refusal is the subject's signed statement (0.7 producer item
             // 6); it carries no factor.
             return refuse(
                 codes::NO_GATE,
@@ -5681,7 +5561,7 @@ async fn handle_step_up_approve_response_v0_6(
         )
         .await
     } else {
-        bound_step_up::approve(state, &payload, true).await
+        bound_step_up::approve(state, &payload, signed).await
     };
     match outcome {
         Ok(Approved::Recorded { bound_to }) => success_response(
@@ -5704,7 +5584,7 @@ async fn handle_step_up_approve_response_v0_6(
         ),
         Err(ApproveError::SubjectMismatch) => refuse(
             codes::SUBJECT_MISMATCH,
-            "the subject or session does not match the pending step-up",
+            "the subject, the session or the passkey's owner does not match the pending step-up",
             None,
         ),
         Err(ApproveError::NoGate) => refuse(
@@ -5733,21 +5613,18 @@ async fn handle_step_up_approve_response_v0_6(
     }
 }
 
-/// Whether an **unsigned** approve-response may be heard at all: an approval
-/// (a refusal is an approver-signed statement), carrying a WebAuthn assertion,
-/// from a console user's session passkey. A member's step-up passkey is only
-/// ever beside the member's own proof. [`crate::acl::bound_step_up::approve`]
-/// checks the credential again once the assertion has verified.
-#[allow(deprecated)] // auth/step-up/approve-response 0.6 is superseded by 0.7; VTI speaks 0.6 until it moves
+/// Whether an **unsigned** approve-response's assertion names a credential
+/// registered here at all — a session passkey or a step-up passkey. Settled
+/// before the pending step-up is taken, so an assertion by a stranger's
+/// authenticator cannot spend a challenge it was never asked.
+/// [`crate::acl::bound_step_up::approve`] checks, once the assertion has
+/// verified, that the credential is the subject's own.
 async fn unsigned_answer_admissible(
     state: &AppState,
-    payload: &step_up_approve_response_v0_6::Payload,
+    payload: &step_up_approve_response::Payload,
 ) -> bool {
     use base64::Engine as _;
-    if payload.decision != step_up_approve_response_v0_6::PayloadDecision::Approved {
-        return false;
-    }
-    let Some(step_up_approve_response_v0_6::Evidence::Webauthn { assertion }) =
+    let Some(step_up_approve_response::Evidence::Webauthn { assertion }) =
         payload.evidence.as_ref()
     else {
         return false;
@@ -5755,14 +5632,15 @@ async fn unsigned_answer_admissible(
     let Ok(raw) = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(&assertion.raw_id) else {
         return false;
     };
-    matches!(
-        vti_common::auth::passkey::store::get_passkey_user_by_cred(
-            &state.passkey_ks,
-            &hex::encode(raw)
-        )
-        .await,
-        Ok(Some(_))
-    )
+    let cred = hex::encode(raw);
+    for ks in [&state.passkey_ks, &state.step_up_passkeys_ks] {
+        if let Ok(Some(_)) =
+            vti_common::auth::passkey::store::get_passkey_user_by_cred(ks, &cred).await
+        {
+            return true;
+        }
+    }
+    false
 }
 
 // ─── personhood ──────────────────────────────────────────────────────────

@@ -7,6 +7,8 @@ import { postSignedTrustTask, signingAvailable, type WhoamiResponse } from "@/li
 import {
   answerCodeOf,
   answerStepUp,
+  declinableHere,
+  declineStepUp,
   encodeStepUpRequest,
   runStepUpCeremony,
   type StepUpRequest,
@@ -25,6 +27,8 @@ vi.mock("@/lib/bound-step-up", async (original) => ({
   answerStepUp: vi.fn(),
   runStepUpCeremony: vi.fn(),
   answerCodeOf: vi.fn(),
+  declinableHere: vi.fn(),
+  declineStepUp: vi.fn(),
 }));
 
 const ADMIN = "did:webvh:QmAlice:alice.dev";
@@ -52,6 +56,8 @@ beforeEach(() => {
   vi.mocked(postSignedTrustTask).mockReset();
   vi.mocked(runStepUpCeremony).mockReset();
   vi.mocked(answerCodeOf).mockReset();
+  vi.mocked(declineStepUp).mockReset();
+  vi.mocked(declinableHere).mockReturnValue(true);
   vi.mocked(signingAvailable).mockResolvedValue(true);
 });
 
@@ -72,22 +78,29 @@ describe("step-up page", () => {
     expect(screen.getByText("You are signed in as someone else")).toBeTruthy();
   });
 
-  it("can decline, which authorizes nothing", async () => {
-    vi.mocked(postSignedTrustTask).mockResolvedValue({ status: "rejected" });
+  it("can decline through the wallet, which authorizes nothing", async () => {
+    vi.mocked(declineStepUp).mockResolvedValue({ status: "rejected" });
     mount(`#request=${encodeStepUpRequest(REQUEST)}`);
     fireEvent.click(await screen.findByRole("button", { name: "Decline" }));
-    await waitFor(() =>
-      expect(postSignedTrustTask).toHaveBeenCalledWith(
-        "https://trusttasks.org/spec/auth/step-up/approve-response/0.6",
-        expect.objectContaining({ decision: "denied", challenge: REQUEST.challenge, subject: ADMIN }),
-      ),
-    );
+    await waitFor(() => expect(declineStepUp).toHaveBeenCalledWith(REQUEST));
     await screen.findByText("Declined");
     expect(answerStepUp).not.toHaveBeenCalled();
+    // Never signed with the console key: a delegation's proof is refused on
+    // any approve-response (0.7 consumer item 1a).
+    expect(postSignedTrustTask).not.toHaveBeenCalled();
+  });
+
+  it("without a wallet to sign the refusal, offers no Decline and says to let it lapse", async () => {
+    vi.mocked(declinableHere).mockReturnValue(false);
+    mount(`#request=${encodeStepUpRequest(REQUEST)}`);
+    expect(await screen.findByText(/To decline, do not answer/)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Decline" })).toBeNull();
+    expect(screen.getByRole("button", { name: /Confirm with passkey/ })).toBeTruthy();
   });
 
   it("with no console key, hands cnm an answer code to sign and sends nothing itself", async () => {
     vi.mocked(signingAvailable).mockResolvedValue(false);
+    vi.mocked(declinableHere).mockReturnValue(false);
     const credential = {} as PublicKeyCredential;
     vi.mocked(runStepUpCeremony).mockResolvedValue(credential);
     vi.mocked(answerCodeOf).mockReturnValue("sua1.AQID.YXV0aA.Y2Rq.c2ln");
