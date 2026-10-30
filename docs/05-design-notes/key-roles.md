@@ -1,6 +1,6 @@
 # Key roles: design
 
-**Status:** design, revised 2026-10-30 to key assurance levels, and expanded 2026-10-31 with the signing/encryption distinction, the per-role rationale, a worked community deployment and the design principles. The first design is merged (dtgwg-vti-spec#79, dtgwg-trust-tasks-tf#986) but has not been published for working-group review. The level revision is proposed in dtgwg-vti-spec#82 and dtgwg-trust-tasks-tf#993, both drafts. The build order is in [key-roles-implementation.md](key-roles-implementation.md). **Implementation is paused:** no code has landed, and no step starts without the maintainer's go-ahead.
+**Status:** design, revised 2026-10-30 to key assurance levels, and expanded 2026-10-31 with the signing/encryption distinction, the per-role rationale, a worked community deployment and the design principles. Two maintainer decisions of 2026-10-31 are recorded in §5.4 (the level is set per service, through the DID template) and §15 (retiring the old key on a raise is a SHOULD, not a MUST); the draft spec PRs do not yet carry them. The first design is merged (dtgwg-vti-spec#79, dtgwg-trust-tasks-tf#986) but has not been published for working-group review. The level revision is proposed in dtgwg-vti-spec#82 and dtgwg-trust-tasks-tf#993, both drafts. The build order is in [key-roles-implementation.md](key-roles-implementation.md). **Implementation is paused:** no code has landed, and no step starts without the maintainer's go-ahead.
 
 **Normative sources:**
 - **The VTI specification**, chapter *Identity, DIDs and Key Management* (`spec/04-identity-keys.md`). The relevant sections run from *DID classes* through *Authenticator keys*: VTI-KEY-070 to 221.
@@ -44,6 +44,8 @@ Nothing normative changes. The additions explain the design to readers who are n
 - **§4.2 Why each role is its own key.** For every role: what a stolen copy lets an attacker do, for how long, how the damage is undone, and therefore how the key is held.
 - **§10 A community in operation.** One VTC at level 3, the VTAs around it, and which key does what on a normal day and on a bad one.
 - **§19 Principles, precedents and the balance.** Where the design follows established practice (NIST key separation and assurance levels, DNSSEC, TUF, Matrix, social recovery), and the rules by which it trades simplicity against security and privacy. Two recommendations come out of it (§19.4).
+- **§5.4 The level is set per service.** Decided 2026-10-31: the default level, and a binding floor, come from the service's DID template, because a mediator, a witness, a community and a network do not need the same custody. A proposed default for every built-in template is listed.
+- **§15 The old key on a raise.** Decided 2026-10-31: retiring or revoking it is recommended, not required. What keeping it means is spelled out.
 
 ---
 
@@ -217,6 +219,43 @@ VTI-KEY-195 is the normative table. In short:
 | No secret derived from a signing key (114) | ✓ | ✓ | ✓ |
 | No X25519 key computed from an Ed25519 key (184) | SHOULD, new identities | ✓ | ✓ |
 | No passkey on a service DID (154) | ✓ | ✓ | ✓ |
+
+### 5.4 The level is set per service (decided)
+
+A level is a property of one DID, chosen when it is created or raised. But the *right* level depends on what the service does, and an operator should not have to work that out for every DID. Decided by the maintainer on 2026-10-31: **the default level, and a binding floor, come from the service's DID template.**
+
+The template is already where a service's DID shape lives (`docs/02-vta/did-templates.md`), and its `defaults` map already has the precedent this needs: `"portable": false` is a hint that binds in one direction only, because a template can tighten what a caller asked for but never loosen it. The level follows the same rule:
+
+```json
+"defaults": { "keyAssurance": { "level": 2, "minimum": 1 } }
+```
+
+- **`level`** is the default a creation uses when the caller names none.
+- **`minimum`** is binding: a creation below it is refused, with a message naming the flag that would raise it. A template cannot cap a level, so the caller may always go higher.
+- The CLI resolves `--level` first, then the template's `level`, then `[dids] default_level` in the VTA's config for templates that say nothing, then 1. It prints the level it resolved and where it came from.
+- An operator-uploaded template sets its own values. A template that says nothing behaves as today.
+- A VTN template does not exist yet. When it does, its default is 3 (VTI-KEY-196).
+
+Nothing normative changes: VTI-KEY-196 stays a SHOULD, and a verifier's policy still decides what it accepts. The template turns the specification's advice into the default an operator gets without reading it.
+
+**Proposed defaults for the built-in templates.** These are for the maintainer to confirm.
+
+| Template | Service | Default | Minimum | Why |
+|---|---|---|---|---|
+| `vtc-host` | a community | **2** | 1 | Its credentials and status lists are relied on by others. Level 1 stays allowed so an existing deployment pattern keeps working; 3 is the operator's choice for a community whose credentials confer authority |
+| `trust-registry` | a registry | **2** | 1 | Its records are relied on without contacting it. 3 where listings confer authority |
+| `dtg-witness` | a witness | **2** | 1 | Its proofs are what level 3 of other identities rests on |
+| `ballot-box` | a voting service | **2** | 1 | Tallies and receipts are relied on after the fact |
+| `didcomm-mediator` | a mediator | **1** | 1 | Confers no authority; relays what it cannot read |
+| `push-gateway` | a push gateway | **1** | 1 | Same |
+| `room-host`, `room` | a room host; a room's own profile | **1** | 1 | Rooms act as the member's persona; the host confers nothing |
+| `ai-agent` | an integration | **1** | 1 | Acts within an ACL grant, which is revoked by removing the grant |
+| `did-host-*` | generic hosting shapes | **1** | 1 | The shape says nothing about the use; `[dids] default_level` or `--level` decides |
+| `vtc-group` | a community group | **1** | 1 | — |
+| `swiyu-verifier` | a foreign-protocol identity | **1** | 1 | Its keys are fixed by the OpenID4VP profile; roles do not apply |
+| `vta-admin`, `ai-agent-peer` | relationship DIDs | — | — | No level, by class (§2) |
+| *(the VTA's own identity)* | the VTA | **2** | 1 | Set by the setup wizard, whichever shape it uses (VTI-KEY-196) |
+| *(a VTN template, when added)* | a network | **3** | 2 | Listings confer authority |
 
 ## 6. How a verifier determines the level
 
@@ -532,12 +571,18 @@ A `messaging` key is rotated on the same mechanics, with one difference in meani
 
 **Level 1 is conformant** (VTI-KEY-146). The old "non-conformant, refuse, replace, deactivate" rules (VTI-KEY-146 to 148) are gone.
 
-**Raising in place** (VTI-KEY-147) is `vta/dids/upgrade/1.0`. It works from level 1 to 2 or 3, or from 2 to 3, in one entry authorized by the current update authority. That entry:
+**Raising in place** (VTI-KEY-147) is `vta/dids/upgrade/1.0`. The draft spec PRs still say MUST retire or revoke; they need the amendment below. It works from level 1 to 2 or 3, or from 2 to 3, in one entry authorized by the current update authority. That entry:
 1. mints **fresh** keys for every role whose custody tightens. From level 1, that is every role, plus a routine update key and its successor. From level 2 to 3, it is the `attestation` keys and the routine update key and successor.
-2. retires the replaced keys, or revokes them if they may have been exposed (`previousKeys` is required, because the two choices have opposite effects on every credential in force);
+2. says what happens to the replaced keys: `previousKeys: retire`, `revoke` or `keep` (required, because the choices have different effects on every credential in force);
 3. declares the new level. At level 3, it also commits the recovery key and names a witness.
 
-**The level-1 key takes no role.** It signed attestations and was held by the service process. Making it the `operational` key would let anyone holding the old document keep accepting it for what it may no longer sign.
+**The old key: retire or revoke is recommended, not required (decided 2026-10-31).** The first draft made retirement or revocation a MUST. The maintainer's decision is that it is a **SHOULD**: a raise is a custody change, not evidence of compromise, and forcing the old key out forces a re-issue of everything it signed, which is the cost that stops operators raising at all. So:
+
+- **`retire`** (recommended): the key is removed with overlap, as any rotation (VTI-KEY-122). Credentials it signed stay valid as level-1 artefacts until they expire or are re-issued.
+- **`revoke`**: where the key may have been exposed. A compromise time is stated, and every artefact after it is refused. Re-issue is then required (VTI-KEY-149).
+- **`keep`**: the key stays in the document, bound as the **`operational`** key and nothing else. That is the role whose custody it already had: the service process held it. It may never become an `attestation` or `update` key at the new level, because its custody never matched those roles.
+
+Keeping it is sound for the same reason in-place raising is sound (below): VTI-KEY-201 judges every artefact at the level where its signing key was bound. Whatever the old key signed before the raise is a level-1 artefact; whatever it signs after, as `operational`, is traffic. A verifier that requires level 2 for credentials refuses both; a level-1 verifier accepted both already. What the operator gives up by keeping it is only the clean cut: the key the service process held during level 1 is still the key it holds now.
 
 **Why in-place raising is now sound, when the first design said it was not.** The first design's objections were true of the old key: it had operational custody, and it is not destroyed. But a raise never retrofits that key; it replaces it. VTI-KEY-201 judges an artefact at the level where its **signing key** is bound, and a raise keeps every attestation key to one level. So:
 - whatever the old key signs stays a **level-1 artefact**, including something backdated by a thief after the raise;
@@ -571,14 +616,14 @@ A passkey is an `authenticator` key. It may sit on a **persona DID**, or on a re
 1. **Custody evidence.** A level is a checked structure plus an unchecked custody claim. Should VTI define evidence, such as TEE attestation of the VTA, or a witness policy statement, for verifiers whose policy needs more?
 2. **did:webs.** The extension routes (A) or (B) are as before. Under did:webs, level 3's recovery structure is *more* checkable (K alone satisfies `nt`), and the next-key threshold stands in for the witness.
 3. **Witness verification of a quorum replacement.** When the recovery key is lost, the witness must be shown the quorum's approvals, but nothing tells it who is eligible. This needs a witness protocol, or a rule that a level-3 identity whose recovery key is lost falls back to a new identity.
-4. **The level-1 key after a raise** is retired, not destroyed. A thief can still forge level-1 artefacts with it. That is the risk level-1 verifiers already accept. Should a raise revoke it by default?
+4. **The level-1 key after a raise.** Decided on our side (§15): retire or revoke is a SHOULD, and the key may be kept as `operational`. A thief who had it can still forge level-1 artefacts, which is the risk level-1 verifiers already accept. The working group may want the default to be `retire`.
 5. **A hold period on recovery.** Social-recovery wallets delay a guardian-initiated recovery by one to several days, during which the current key can cancel it (§19.2). VTI has no equivalent: a recovery entry takes effect when the witness co-signs it. A witness-enforced hold, during which the routine `update` key may veto and the operator is notified, would protect against a colluding custodian quorum at the cost of slower recovery. Should the witness profile offer it?
 6. **CID `revoked`**, the **24-hour verifier cache cap** (VTI-KEY-134), the **w3id registrations** (`keyRoles`, `keyAssurance`) and **registry record proofs** (VTI-KEY-085) are unchanged from the first design.
 
 **For the maintainer:**
 7. **`create` at level 1.** `vta/dids/create/1.1` takes levels 2 and 3 only, and level 1 stays on the method-specific creation (`vta/webvh/dids/create`). That keeps today's path untouched, and keeps level 1 out of the key-role family. The cost is two creation tasks behind one `pnm dids create --level` command. The alternative is to accept level 1 in `create`.
 8. **A threshold routine update key** under did:webvh costs a DKG per change. Should the webvh profile allow committing the same group key again, which would weaken pre-rotation? We say no.
-9. **The defaults** our tooling ships: the verifier policy, and the level a new VTC or VTN is created at (§19.4).
+9. **The defaults** our tooling ships: the per-template levels proposed in §5.4, and the verifier policy (§19.4).
 
 ## 19. Principles, precedents and the balance
 
@@ -636,7 +681,7 @@ The design trades simplicity and usability against security and privacy in a sma
 
 Both change a default, not a requirement, and both are for the maintainer (open question 9).
 
-1. **Create new VTC and VTN identities at level 2 by default.** Level 2 costs no new party and no ceremony, and the specification already recommends it (VTI-KEY-196). "Secure by default where it is free, opt-in where it costs a party" is the rule every precedent above applies. `pnm dids create --level 1` stays available, with a warning naming what level 1 does not survive.
+1. **Let the service's template set the level** (§5.4, decided). Level 2 costs no new party and no ceremony, so it is the right default wherever a service's decisions are relied on: a community, a registry, a witness, a ballot box, the VTA itself. Level 1 is the right default wherever nothing is: a mediator, a gateway, a room. "Secure by default where it is free, opt-in where it costs a party" is the rule every precedent above applies, and the template is what knows which case a service is. `--level 1` stays available where the template allows it, with a warning naming what level 1 does not survive.
 2. **Ship the SDK verifier policy at level 1, with the recommended minimums one setting away.** A default above 1 would refuse every existing community on upgrade. A documented profile (`recommended`: 2 for membership credentials, 3 for authority-conferring ones) lets an operator raise it in one line.
 
 A third, smaller one: **rehearse recovery.** The liveness challenge (§12.2) proves the custodians can sign. It does not prove the operator knows the procedure. `vta/dids/recover` should have a rehearsal mode that runs the whole ceremony against a challenge that is never a log entry, and records that it was run.
@@ -683,7 +728,8 @@ A third, smaller one: **rehearse recovery.** The liveness challenge (§12.2) pro
 - One new subsystem crate, `vta-key-roles`.
 - A role-key KEK, for level 3 only.
 - A plan store, and bound step-up ported from the VTC.
-- The `vta/dids/*` family, including `upgrade`.
+- The `vta/dids/*` family, including `upgrade`, with `previousKeys: keep`.
+- `defaults.keyAssurance` in the DID template schema, the per-template values of §5.4, and the CLI's level resolution.
 - Level determination and a policy in our verifiers.
 - The VTC's issuance path moved from local signing to a signing request to its VTA.
 - Later, the FROST custodian: a crate over an audited FROST implementation, plus the ceremony tasks.
