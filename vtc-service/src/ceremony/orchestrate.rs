@@ -34,7 +34,7 @@ pub struct RoleChangeResult {
     pub new_role: String,
     /// The role credential issued at the new role, for a subject with a member
     /// record (`vtc/members/role/set/0.1` item 16).
-    pub role_vac: Option<affinidi_vc::VerifiableCredential>,
+    pub role_vac: Option<Box<affinidi_vc::VerifiableCredential>>,
     /// How the move came to execute.
     pub approval: super::admission::Approval,
 }
@@ -627,7 +627,7 @@ async fn run_role_change(
     Ok(RoleChangeOutcome::Changed(RoleChangeResult {
         previous_role: outcome.previous_role.to_string(),
         new_role: granted,
-        role_vac: outcome.role_vac,
+        role_vac: outcome.role_vac.map(Box::new),
         approval,
     }))
 }
