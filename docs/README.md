@@ -314,6 +314,9 @@ are implementer-facing rather than operator-facing.
   rather than three, and what was retired to get there.
 - **[ACL scope semantics](05-design-notes/acl-scope-semantics.md)** —
   the *act* vs *confer* axis on an ACL entry.
+- **[Trigger links](05-design-notes/trigger-link-design.md)** —
+  why a trigger link is an `https` URL with its parameters in the fragment,
+  not a DIDComm out-of-band or VCALM interaction URL.
 
 ### Part VI — Host services
 
