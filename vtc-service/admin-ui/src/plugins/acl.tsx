@@ -593,7 +593,10 @@ function InvitesPanel({ openRequest = 0 }: { openRequest?: number }) {
       // losing access to a working URL. Only after the new invite
       // is in hand do we revoke the old one.
       // A passkey invitation names no DID: its replacement names none either.
-      const fresh = await createInvite({ did: args.targetDid }, confirmGesture);
+      const fresh = await createInvite(
+        args.targetDid === undefined ? {} : { did: args.targetDid },
+        confirmGesture,
+      );
       try {
         await revokeInvite(args.oldJti);
       } catch (err) {
@@ -852,12 +855,14 @@ function CreateInviteForm({ onClose }: { onClose: () => void }) {
 
   const onSubmit = (e: React.FormEvent) => {
     e.preventDefault();
+    // The request is signed over its JCS form, which refuses an `undefined`
+    // member, so an option not given is left out rather than set undefined.
+    const req: CreateInviteRequest = {};
+    if (kind === "wallet") req.did = did.trim();
     const ttl = Number(ttlMinutes);
-    mutation.mutate({
-      did: kind === "wallet" ? did.trim() : undefined,
-      ttlSeconds: Number.isFinite(ttl) && ttl > 0 ? ttl * 60 : undefined,
-      label: label.trim() === "" ? undefined : label.trim(),
-    });
+    if (Number.isFinite(ttl) && ttl > 0) req.ttlSeconds = ttl * 60;
+    if (label.trim() !== "") req.label = label.trim();
+    mutation.mutate(req);
   };
 
   if (issued) {

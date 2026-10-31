@@ -28,7 +28,7 @@
 // answers `alreadyBootstrapped`, which is fine — a passkey invitation's entry
 // was written by `finish`, a wallet invitation's by the invite.
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 
 import {
@@ -224,6 +224,38 @@ interface BootstrapResponse {
   eventId: string;
 }
 
+/** How long the page waits for the wallet's provider before saying it has none. */
+export const WALLET_PROBE_MS = 3000;
+const WALLET_PROBE_INTERVAL_MS = 100;
+
+/**
+ * Whether the wallet can enrol its approver here, re-read until it can. The
+ * extension's content script adds its page-world provider as a module
+ * `<script>`, which may run after this page first renders, so a single read at
+ * mount says "no wallet" in a browser that has one. Probes for
+ * `WALLET_PROBE_MS`, and again on the wallet's own lifecycle events.
+ */
+function useWalletApproverEnrolment(): boolean {
+  const [ready, setReady] = useState(isWalletApproverEnrolmentAvailable);
+  useEffect(() => {
+    if (ready) return;
+    const check = () => {
+      if (isWalletApproverEnrolmentAvailable()) setReady(true);
+    };
+    const timer = window.setInterval(check, WALLET_PROBE_INTERVAL_MS);
+    const stop = window.setTimeout(() => window.clearInterval(timer), WALLET_PROBE_MS);
+    window.addEventListener("vtawallet:ready", check);
+    window.addEventListener("vtawallet:unlocked", check);
+    return () => {
+      window.clearInterval(timer);
+      window.clearTimeout(stop);
+      window.removeEventListener("vtawallet:ready", check);
+      window.removeEventListener("vtawallet:unlocked", check);
+    };
+  }, [ready]);
+  return ready;
+}
+
 export function Install() {
   const [params] = useSearchParams();
   const token = params.get("token");
@@ -238,7 +270,7 @@ export function Install() {
         },
   );
   const [claimCode, setClaimCode] = useState("");
-  const walletReady = isWalletApproverEnrolmentAvailable();
+  const walletReady = useWalletApproverEnrolment();
   // A passkey invitation can only be claimed with a passkey; a wallet one
   // only by the wallet holding the DID it names.
   const kind = token ? invitationKind(token) : undefined;
@@ -509,9 +541,8 @@ export function Install() {
           <p>
             The operator who sent you this URL also sent a short
             claim code through a separate channel (Signal, SMS, in
-            person). Type the code below to start the passkey
-            ceremony — the URL alone is not enough to claim the
-            invite.
+            person). Type the code below to claim the invite — the
+            URL alone is not enough.
           </p>
           <form onSubmit={onSubmitCode} className="form-stack">
             <Field label="Claim code">
@@ -536,8 +567,9 @@ export function Install() {
             {kind === "wallet" && !walletReady && (
               <p className="muted">
                 This invitation is for a DID held in a VTA wallet: claim it with the browser
-                plugin holding that DID, which signs the claim as it. Install or unlock the
-                plugin, then reload this page.
+                plugin holding that DID, which signs the claim as it. This page cannot see the
+                plugin: install it and make sure it has access to this site, then reload this
+                page.
               </p>
             )}
             {kind === undefined && walletReady && (

@@ -200,6 +200,17 @@ describe("which ceremony the token is for", () => {
     expect(screen.queryByRole("button", { name: /passkey|Continue/ })).toBeNull();
   });
 
+  // The extension adds its provider as a module script, which may run after
+  // the page has rendered: the button must appear when it does.
+  it("offers the wallet once a provider that arrives after the first render is there", async () => {
+    mountWith(jwt({ admin_did: FOUNDER }));
+    expect(screen.queryByRole("button", { name: "Claim with my VTA wallet" })).toBeNull();
+    expect(screen.getByText(/This page cannot see the plugin/)).toBeTruthy();
+    installWallet();
+    expect(await screen.findByRole("button", { name: "Claim with my VTA wallet" })).toBeTruthy();
+    expect(screen.queryByText(/This page cannot see the plugin/)).toBeNull();
+  });
+
   it("offers only a passkey for a passkey invitation, wallet or not", () => {
     installWallet();
     mountWith(jwt({ admin_did: "" }));
