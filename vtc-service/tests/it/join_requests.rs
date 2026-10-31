@@ -465,6 +465,53 @@ async fn rest_submit_dedups_an_open_request_for_the_same_applicant() {
 }
 
 #[tokio::test]
+async fn rest_submit_refuses_a_current_member_before_review() {
+    // A current (ACL-present) member applying again is refused at submit with
+    // the consumer-minted `alreadyMember`, and nothing is queued: before this,
+    // the request reached an administrator and failed only when they approved
+    // it (`approve_409_when_duplicate_acl_exists`).
+    let fix = build_fixture().await;
+    let (_sk, applicant_did) = applicant_pair();
+    let now = vtc_service::auth::session::now_epoch();
+    store_acl_entry(
+        &fix.acl_ks,
+        &VtcAclEntry {
+            did: applicant_did.clone(),
+            role: VtcRole::Member,
+            label: None,
+            admin: VtcRole::Member.implied_authority(),
+            delegated_by: None,
+            created_at: now,
+            created_by: "did:key:vtc-install".into(),
+            updated_at: None,
+            updated_by: None,
+            expires_at: None,
+            resource_grants: Vec::new(),
+            group_grants: Vec::new(),
+            label_set_by_subject: false,
+            suspension: None,
+        },
+    )
+    .await
+    .unwrap();
+
+    let (_did, doc) = submit_doc(&json!({ "type": "VerifiablePresentation" })).await;
+    let (status, body) = post_tt(&fix.router, doc).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "got {body}");
+    assert_eq!(
+        tt_error_code(&body),
+        vta_sdk::protocols::join_requests::JOIN_REQUEST_SUBMIT_ERR_ALREADY_MEMBER
+    );
+    assert!(
+        vtc_service::join::orchestrate::find_open_request(&fix.join_requests_ks, &applicant_did)
+            .await
+            .unwrap()
+            .is_none(),
+        "a refused member's application must not be queued for review"
+    );
+}
+
+#[tokio::test]
 async fn rest_submit_rejects_a_foreign_recipient() {
     // The replay binding is the document `recipient`: a document addressed to a
     // different community is rejected `wrongRecipient` (422), replacing the
