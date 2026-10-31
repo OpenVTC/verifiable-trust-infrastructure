@@ -2,6 +2,26 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.77.1](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-sdk-v0.77.0...vta-sdk-v0.77.1) — 2026-10-31
+
+
+### Added
+
+- **vtc**: Refuse a join submission from a current member at submit ([#2360](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2360))
+
+A join request from a DID already in the community's ACL was accepted, queued
+  for review, and refused only when an administrator approved it (the admit
+  effect's duplicate-ACL guard). The administrator spent a review on a request
+  that could never be admitted, and the applicant was never told to sign in.
+
+  submit_inner now refuses it before anything is stored, answering
+  vtc/join-requests/submit:alreadyMember — consumer-minted under SPEC.md §8.5 like
+  requestAlreadyOpen, listed in the error-code census, and exported from vta-sdk
+  as JOIN_REQUEST_SUBMIT_ERR_ALREADY_MEMBER. "Current" means ACL-present, as for
+  invitations: a departed member may apply again.
+
+
+
 ## [0.77.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-sdk-v0.76.0...vta-sdk-v0.77.0) — 2026-10-30
 
 

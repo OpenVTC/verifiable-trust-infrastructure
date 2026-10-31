@@ -2,6 +2,57 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.17.1](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vtc-service-v0.17.0...vtc-service-v0.17.1) — 2026-10-31
+
+
+### Added
+
+- **vtc**: Mark the join page's wallet code with data-oob-intent=join ([#2362](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2362))
+
+The join page's trigger link is the sign-in page's, so a browser wallet that
+  already signs in to the community signed the person straight in when they
+  clicked Join, with no way to join again as a new identity. The code's link now
+  carries data-oob-intent="join" on the join page only; the VTA Wallet extension
+  reads it and offers a new identity beside signing in. It changes only what the
+  wallet offers — the link, the request and the protocol are unchanged.
+
+- **vtc**: Refuse a join submission from a current member at submit ([#2360](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2360))
+
+A join request from a DID already in the community's ACL was accepted, queued
+  for review, and refused only when an administrator approved it (the admit
+  effect's duplicate-ACL guard). The administrator spent a review on a request
+  that could never be admitted, and the applicant was never told to sign in.
+
+  submit_inner now refuses it before anything is stored, answering
+  vtc/join-requests/submit:alreadyMember — consumer-minted under SPEC.md §8.5 like
+  requestAlreadyOpen, listed in the error-code census, and exported from vta-sdk
+  as JOIN_REQUEST_SUBMIT_ERR_ALREADY_MEMBER. "Current" means ACL-present, as for
+  invitations: a departed member may apply again.
+
+
+
+### Fixed
+
+- **admin-ui**: Passkey admin invites sign, and the wallet claim finds a late wallet ([#2359](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2359))
+
+Minting a passkey admin invite failed in the console with "JCS cannot
+  encode value of type undefined": the form sent { did: undefined }, and
+  the console signs over the JCS form, which refuses an undefined member.
+  A wallet invite failed the same way whenever the label was blank, and so
+  did regenerating a passkey invite. Optional members are now left out.
+
+  The tests missed it because the signed-post stand-in serialised with
+  JSON.stringify, which drops undefined silently; it now canonicalises
+  with the signer's JCS first, so the suite refuses what the signer does.
+
+  The install page read the wallet's presence once, at first render, but
+  the extension adds its provider as a module script that can run later,
+  so a wallet invitation showed no button at all in a browser that has
+  the wallet. The page now re-checks for a few seconds and on the wallet's
+  lifecycle events, and says what to do when it still cannot see it.
+
+
+
 ## [0.17.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vtc-service-v0.16.0...vtc-service-v0.17.0) — 2026-10-30
 
 
