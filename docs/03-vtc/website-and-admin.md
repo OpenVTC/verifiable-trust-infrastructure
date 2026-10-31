@@ -1238,6 +1238,14 @@ no administrator reviews a request that could never be admitted. The
 browser wallet takes that answer to the ordinary sign-in for the same
 code.
 
+The join page's code carries `data-oob-intent="join"` on its link. A
+browser wallet that already signs in to this community reads it as "the
+person asked to join": instead of signing straight in, it says they are
+already a member and offers to join with a new identity, made in a context
+of its own (`vtc-<portal host>-2`, …), so a person can hold a second,
+unlinked membership. The attribute changes only what the wallet offers;
+the code and the protocol are the sign-in page's.
+
 ## Routing modes
 
 ```mermaid
