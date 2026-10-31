@@ -1,7 +1,7 @@
 [package]
 name = "vti-rooms"
 description = "Data-room storage, wire types, and authorization — the parts of a room that are not a service"
-version = "0.23.0"
+version = "0.24.0"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -65,7 +65,7 @@ test-support = ["host", "dep:tempfile"]
 trust-tasks-rs = { workspace = true }
 # The generated Trust Task wire types, at the versions VTI pins (CLAUDE.md,
 # "Pinning a task version").
-vti-specs-rooms = { path = "../vti-specs-rooms", version = "0.1" }
+vti-specs-rooms = { path = "../vti-specs-rooms", version = "0.2" }
 # The store abstraction and AppError. This crate's only internal dependency:
 # a room's storage and authorization need nothing from a community service,
 # which is the whole reason they are extractable.
@@ -73,7 +73,7 @@ vti-specs-rooms = { path = "../vti-specs-rooms", version = "0.1" }
 # Optional, and load-bearing that it is: `vti-common` is server-side by its own
 # description and pulls axum, fjall and tokio, none of which build for wasm. It
 # is the `host` feature's whole content.
-vti-common = { path = "../vti-common", version = "0.52", optional = true }
+vti-common = { path = "../vti-common", version = "0.53", optional = true }
 # Room files (`blobs`), also host-only: one lock serialising reservations and
 # reference counts, minted transfer handles, and the collection log line.
 tokio = { workspace = true, optional = true, features = ["sync", "fs"] }

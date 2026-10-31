@@ -2,6 +2,58 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.69.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-service-v0.68.0...vta-service-v0.69.0) — 2026-10-30
+
+
+### Added
+
+- **vta**: Serve vta/webvh/dids/update/1.1 — list or remove an existing log's did:scid alias ([#2354](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2354))
+
+* feat(vta)!: serve vta/webvh/dids/update/1.1 — list or remove an existing log's did:scid alias
+
+  Every did:webvh log is also `did:scid:vh:1:<scid>`; the two forms are one
+  subject only while the did:webvh document lists
+  `did:scid:vh:1:<scid>?src=<source>` in `alsoKnownAs` (VTI-KEY-164).
+  create/1.2 lists it at creation. update/1.1 (trustoverip/dtgwg-trust-tasks-tf#992)
+  adds `scidAlsoKnownAs` so an operator can list or remove it on a log that
+  already exists, without building the DID URL or sending a whole document.
+
+  VTA (one handler serves 1.0 and 1.1; 1.1 extends 1.0):
+  - `<source>` derived by `vta_sdk::did_scid::scid_forms` (`:` -> `/`,
+    percent-encoding kept), applied to `document` or the current document.
+    `true` appends unless listed and replaces a stale `src` in place; `false`
+    removes every did:scid entry for the SCID.
+  - `scidAliasRequired` when the VTA presents the identity as its did:scid
+    (VTI-KEY-166): the `presented` flag create/1.2 records on the did:scid
+    identity (`webvh_store::ScidIdentity`), or `vta_did` being this log's
+    did:scid. Also refuses a supplied `document` that drops the alias, under
+    1.0 too (as a validation error).
+  - `noChange` when the resulting document and parameters equal the latest
+    entry's: nothing published, no rotation.
+  - Otherwise a document change: publishes and rotates the update key, so the
+    task stays Destructive. The response reports `scidAlsoKnownAs` and
+    `scidDidUrl`; 1.0 and rotate-keys responses are unchanged.
+  - The did:scid identity record follows the published document, so the
+    did:scid DID addresses the log exactly while the alias is listed.
+
+- **rooms**: Files in open rooms — serve rooms/records/put/0.4 and rooms/keys/act/0.9 ([#2348](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2348))
+
+An open room could hold notes and nothing else: a file's manifest only
+  travelled inside a sealed body, and its key could only be derived from a
+  storage key an open room does not have. rooms/records/put/0.4
+  (trust-tasks-tf #987) puts the manifest in cleartext.file, with the random
+  key its blob is sealed under in fileKey; rooms/keys/act/0.9 ([#990](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/990)) adds put
+  0.4 to the closed table a member's VTA completes.
+
+  Hosts (room-host, vtc-service, through vti-rooms):
+  - Serve rooms/records/put/0.4 beside 0.3. The cleartext, file included, is
+    stored and served as received (Host item 13).
+  - On an open room, refuse as malformedRequest a record whose blobs is not
+    exactly [cleartext.file.blobRef], or whose file has no fileKey — before
+    blobNotFound and before anything changes (Host item 12). 0.3 is unchanged.
+
+
+
 ## [0.68.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-service-v0.67.0...vta-service-v0.68.0) — 2026-10-30
 
 

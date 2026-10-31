@@ -2,7 +2,7 @@
 name = "vta-sdk"
 description = "SDK for Verifiable Trust Agents operating in Verifiable Trust Communities"
 readme = "README.md"
-version = "0.76.0"
+version = "0.77.0"
 edition.workspace = true
 publish.workspace = true
 authors.workspace = true
@@ -350,7 +350,7 @@ affinidi-secrets-resolver = { workspace = true, optional = true }
 # `vta_sdk::specs`, so a consumer's imports move from `trust_tasks_rs::specs` by
 # find-and-replace.
 trust-tasks-rs = { workspace = true }
-vti-specs = { path = "../vti-specs", version = "0.1" }
+vti-specs = { path = "../vti-specs", version = "0.2" }
 # The TSP binding (`tsp` feature). Carries `ENVELOPE_TYPE` — the payload wrapper
 # every Trust-Task TSP frame must use — so `tsp_binding` takes the URI from the
 # crate that defines the binding rather than writing it out locally. A binding

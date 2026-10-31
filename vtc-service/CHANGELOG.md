@@ -2,6 +2,60 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.17.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vtc-service-v0.16.0...vtc-service-v0.17.0) — 2026-10-30
+
+
+### Added
+
+- **vtc**: A Join button on the landing page and a join page in the member portal ([#2353](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2353))
+
+The default landing page's main call to action is now "Join this community",
+  opening /members/?join: the member portal's sign-in page worded for a newcomer.
+  It shows the same wallet code under "Join with your wallet", the browser
+  wallet's install guide, and none of the options that need a membership
+  (portal passkeys, the older SIOPv2 sign-in). The sign-in page links to it for
+  visitors who are not members yet.
+
+  The page changes words only. The wallet decides what a code means: for a
+  community it holds no identity for, it offers to join (vtc/join-requests/*),
+  which the VTA Wallet extension does by setting up a new identity for the
+  community at the person's VTA. Under the default join criteria an
+  administrator reviews the request, and the person then signs in on the
+  ordinary page.
+
+- **vtc**: The member portal adds files to open rooms ([#2350](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2350))
+
+#2341 hid the portal's file upload on an open room, because a file's
+  manifest could only travel inside a sealed body. rooms/records/put/0.4
+  (trust-tasks-tf #987, VTI #2348) lets an open room's record carry its file
+  and the random key it is sealed under, and the browser plugin writes and
+  reads one (vta-browser-plugin #393).
+
+  - The AddToRoom card offers a file on every tier. On an open room its note
+    says a file is stored encrypted under a key its record carries in the
+    clear, so the host can read it as well as its members.
+  - A file on an open room is checked against the digest its record states,
+    not one its author signed (the record is not signed by its author), and
+    the record view says so.
+
+- **rooms**: Files in open rooms — serve rooms/records/put/0.4 and rooms/keys/act/0.9 ([#2348](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2348))
+
+An open room could hold notes and nothing else: a file's manifest only
+  travelled inside a sealed body, and its key could only be derived from a
+  storage key an open room does not have. rooms/records/put/0.4
+  (trust-tasks-tf #987) puts the manifest in cleartext.file, with the random
+  key its blob is sealed under in fileKey; rooms/keys/act/0.9 ([#990](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/990)) adds put
+  0.4 to the closed table a member's VTA completes.
+
+  Hosts (room-host, vtc-service, through vti-rooms):
+  - Serve rooms/records/put/0.4 beside 0.3. The cleartext, file included, is
+    stored and served as received (Host item 13).
+  - On an open room, refuse as malformedRequest a record whose blobs is not
+    exactly [cleartext.file.blobRef], or whose file has no fileKey — before
+    blobNotFound and before anything changes (Host item 12). 0.3 is unchanged.
+
+
+
 ## [0.16.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vtc-service-v0.15.0...vtc-service-v0.16.0) — 2026-10-30
 
 
