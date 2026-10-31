@@ -483,8 +483,16 @@ export function WalletSignIn({
           </button>
         ) : (
           <div className="qr-wrap">
-            {/* C2: the code is also a link to the same text (VTI-LNK-086). */}
-            <a href={phase.link} className="qr-link" rel="noreferrer">
+            {/* C2: the code is also a link to the same text (VTI-LNK-086).
+                `data-oob-intent` tells a browser wallet the code was offered to
+                join: one that already signs in here offers a new identity
+                instead of signing straight in. It changes only the offer. */}
+            <a
+              href={phase.link}
+              className="qr-link"
+              rel="noreferrer"
+              {...(intent === "join" ? { "data-oob-intent": "join" } : {})}
+            >
               <QrSvg
                 text={phase.link}
                 label={`Sign-in code for ${communityName || "this community"}${

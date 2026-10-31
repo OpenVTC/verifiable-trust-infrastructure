@@ -112,6 +112,19 @@ describe("wallet sign-in", () => {
     expect(await screen.findByRole("img", { name: /sign-in code/i })).toBeTruthy();
   });
 
+  it("marks a join page's code for a browser wallet, and only a join page's", async () => {
+    stubService([() => new Promise<Response>(() => {}) as unknown as Response]);
+    const { unmount } = render(<WalletSignIn onSignedIn={() => {}} intent="join" />);
+    const joinLink = (await screen.findByRole("img", { name: /sign-in code/i })).closest("a")!;
+    expect(joinLink.getAttribute("data-oob-intent")).toBe("join");
+    unmount();
+
+    stubService([() => new Promise<Response>(() => {}) as unknown as Response]);
+    render(<WalletSignIn onSignedIn={() => {}} />);
+    const signInLink = (await screen.findByRole("img", { name: /sign-in code/i })).closest("a")!;
+    expect(signInLink.hasAttribute("data-oob-intent")).toBe(false);
+  });
+
   it("confirms the identity before use, and 'Not me' signs out", async () => {
     stubService([
       () =>
