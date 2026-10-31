@@ -138,6 +138,29 @@ describe("member portal", () => {
     }
   });
 
+  it("opened to join while signed in, still shows the join page, saying who is signed in", async () => {
+    // Joining again with a separate identity starts from the join page's code;
+    // a session must not route a member past it to their own pages.
+    stubFetch((url) =>
+      url === "/v1/member/me"
+        ? json(200, ME)
+        : url.endsWith("/public-profile")
+          ? json(200, { name: "Acme Guild" })
+          : json(404, {}),
+    );
+    window.history.pushState({}, "", "/members/?join");
+    try {
+      renderPortal();
+      expect(await screen.findByRole("heading", { name: /join with your wallet/i })).toBeTruthy();
+      expect(screen.getByTestId("join-signed-in").textContent).toContain(ME.did);
+      expect(screen.getByRole("link", { name: /go to your member pages/i }).getAttribute("href")).toBe(
+        "/members/",
+      );
+    } finally {
+      window.history.pushState({}, "", "/");
+    }
+  });
+
   it("links a visitor who isn't a member yet to the join page", async () => {
     stubFetch((url) =>
       url.endsWith("/public-profile")

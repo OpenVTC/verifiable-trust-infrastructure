@@ -1244,7 +1244,9 @@ person asked to join": instead of signing straight in, it says they are
 already a member and offers to join with a new identity, made in a context
 of its own (`vtc-<portal host>-2`, …), so a person can hold a second,
 unlinked membership. The attribute changes only what the wallet offers;
-the code and the protocol are the sign-in page's.
+the code and the protocol are the sign-in page's. The join page shows
+even in a browser already signed in to the portal — it says as whom, and
+links to the member pages — since that is where a second identity starts.
 
 ## Routing modes
 
