@@ -3495,6 +3495,18 @@ async fn handle_submit(
                 reasons::CONFLICT,
             );
         }
+        // A current member applying again. Consumer-minted beside
+        // `requestAlreadyOpen`, for the same reason: a client must be able to
+        // tell "sign in instead" from every other refusal without parsing prose.
+        Err(crate::join::SubmitRefusal::AlreadyMember) => {
+            return reject_with_code_because(
+                &doc,
+                extended_code(jr::JOIN_REQUEST_SUBMIT_ERR_ALREADY_MEMBER),
+                AppError::from(crate::join::SubmitRefusal::AlreadyMember).to_string(),
+                None,
+                reasons::CONFLICT,
+            );
+        }
         // The specification's own codes, with the types in `details`, so a
         // client can ask the applicant for exactly what is missing — or drop
         // exactly what it over-shared — without parsing a sentence.

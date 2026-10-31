@@ -1231,6 +1231,13 @@ approved, the person signs in on the ordinary page with the same
 wallet. Joining this way needs a Verifiable Trust Agent the wallet
 administers, with at least one DID hosting server for the new identity.
 
+A request from a DID that is already a current member (one in the
+community's ACL; a departed member may apply again) is refused at once
+with `vtc/join-requests/submit:alreadyMember` and nothing is queued, so
+no administrator reviews a request that could never be admitted. The
+browser wallet takes that answer to the ordinary sign-in for the same
+code.
+
 ## Routing modes
 
 ```mermaid

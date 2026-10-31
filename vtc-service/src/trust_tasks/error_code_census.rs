@@ -2912,10 +2912,16 @@ const UNWITNESSED_CEILING: usize = 19;
 /// `vtc/members/update:consentGrantForbidden` (#789).
 const CONSUMER_MINTED: &[(&str, &str)] = {
     use vta_sdk::protocols::join_requests as jr;
-    &[(
-        jr::JOIN_REQUEST_SUBMIT_TYPE,
-        jr::JOIN_REQUEST_SUBMIT_ERR_REQUEST_ALREADY_OPEN,
-    )]
+    &[
+        (
+            jr::JOIN_REQUEST_SUBMIT_TYPE,
+            jr::JOIN_REQUEST_SUBMIT_ERR_REQUEST_ALREADY_OPEN,
+        ),
+        (
+            jr::JOIN_REQUEST_SUBMIT_TYPE,
+            jr::JOIN_REQUEST_SUBMIT_ERR_ALREADY_MEMBER,
+        ),
+    ]
 };
 
 /// Every declared code in scope, keyed by code, with the URI declaring it.

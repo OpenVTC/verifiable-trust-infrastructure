@@ -287,6 +287,15 @@ pub const JOIN_REQUEST_SUPPLEMENT_ERR_ALREADY_DECIDED: &str =
 pub const JOIN_REQUEST_SUBMIT_ERR_REQUEST_ALREADY_OPEN: &str =
     "vtc/join-requests/submit:requestAlreadyOpen";
 
+/// Extended error code: the applicant is already a current member of the
+/// community, so there is nothing to apply for — the client should sign in.
+///
+/// Consumer-minted under the same SPEC.md §8.5 rule as
+/// [`JOIN_REQUEST_SUBMIT_ERR_REQUEST_ALREADY_OPEN`]; a client that does not
+/// recognise it reads `taskFailed`. "Current" means present in the community's
+/// ACL: a departed member may apply again.
+pub const JOIN_REQUEST_SUBMIT_ERR_ALREADY_MEMBER: &str = "vtc/join-requests/submit:alreadyMember";
+
 // ─── Hidden-vetting challenge refusals ──────────────────────────────────────
 //
 // A hidden-vetting proof is bound to a single-use challenge the community
