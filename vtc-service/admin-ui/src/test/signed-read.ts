@@ -10,9 +10,14 @@
 // [`unsignedTask`], where a test drives a signed change through `mockFetch`.
 
 import type { ApiError } from "@/lib/api";
+import { jcsCanonicalize } from "@/lib/jcs";
 import { parkedActionFromDocument } from "@/lib/parked-action";
 
 export async function unsignedRead<T>(typeUri: string, payload: unknown): Promise<T> {
+  // The console signs over the JCS form, which refuses what `JSON.stringify`
+  // silently drops (an `undefined` member); canonicalise first so a payload
+  // the real signer would refuse fails here too.
+  jcsCanonicalize(payload);
   const res = await fetch("/v1/trust-tasks", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
