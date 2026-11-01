@@ -86,13 +86,32 @@ export function isJoinIntent(search: string = window.location.search): boolean {
   return new URLSearchParams(search).has("join");
 }
 
-export function SignIn({ communityName }: { communityName?: string | null }) {
-  if (isJoinIntent()) return <Join communityName={communityName} />;
+export function SignIn({
+  communityName,
+  signedInAs,
+}: {
+  communityName?: string | null;
+  /** The join page only: the member this browser is already signed in as. */
+  signedInAs?: string;
+}) {
+  if (isJoinIntent()) return <Join communityName={communityName} signedInAs={signedInAs} />;
   return <SignInMember communityName={communityName} />;
 }
 
-function Join({ communityName }: { communityName?: string | null }) {
+function Join({
+  communityName,
+  signedInAs,
+}: {
+  communityName?: string | null;
+  signedInAs?: string;
+}) {
   const qc = useQueryClient();
+  // Signed in through the join page (a community that admits at once): on to
+  // the member pages, not the join page again.
+  const onSignedIn = () => {
+    window.history.replaceState({}, "", "/members/");
+    return qc.invalidateQueries({ queryKey: ["member-me"] });
+  };
   return (
     <SignInPage
       eyebrow="Join"
@@ -116,12 +135,19 @@ function Join({ communityName }: { communityName?: string | null }) {
         <HomeLink communityName={communityName} />,
       ]}
     >
+      {signedInAs && (
+        <div className="alert" role="status" data-testid="join-signed-in">
+          <p className="alert-title">You're already signed in as a member.</p>
+          <p>
+            You're signed in as <code title={signedInAs}>{signedInAs}</code>. To
+            join again with a separate identity, use the code below: your
+            wallet offers a new identity for this community.{" "}
+            <a href="/members/">Go to your member pages</a>.
+          </p>
+        </div>
+      )}
       <Protected>
-        <WalletSignIn
-          intent="join"
-          communityName={communityName}
-          onSignedIn={() => qc.invalidateQueries({ queryKey: ["member-me"] })}
-        />
+        <WalletSignIn intent="join" communityName={communityName} onSignedIn={onSignedIn} />
       </Protected>
       <p className="option-note">
         You need a Verifiable Trust Agent and its browser wallet. The wallet

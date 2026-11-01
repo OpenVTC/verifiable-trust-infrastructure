@@ -16,7 +16,7 @@ import { RoomPage, RoomsPage } from "./Rooms";
 import { Passkeys } from "./Passkeys";
 import { forgetMemberSessionKey } from "@/lib/console-key";
 import { forgetSessionKey } from "./oob";
-import { SignIn } from "./SignIn";
+import { SignIn, isJoinIntent } from "./SignIn";
 import { CommunityTopbar, fetchCommunityProfile } from "../signin/SignInLayout";
 
 async function fetchMe(): Promise<MemberMe | null> {
@@ -133,8 +133,10 @@ export function Portal() {
             <p>{(me.error as Error).message}</p>
           </div>
         </main>
-      ) : !me.data ? (
-        <SignIn communityName={communityName} />
+      ) : !me.data || isJoinIntent() ? (
+        // The join page shows even to a signed-in member: joining again with a
+        // separate identity starts here, and only the wallet can offer it.
+        <SignIn communityName={communityName} signedInAs={me.data?.did} />
       ) : (
         <SignedIn me={me.data} />
       )}
