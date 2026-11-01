@@ -21,6 +21,7 @@ use std::time::Duration;
 use rand::RngExt as _;
 use serde_json::{Value, json};
 use vta_sdk::client::VtaClient;
+use vta_sdk::trust_tasks;
 use vtc_client::VtcClient;
 
 use crate::render::{BOLD, DIM, GREEN, RESET, YELLOW, is_json_output, print_json};
@@ -42,6 +43,22 @@ pub struct VoteTarget<'a> {
 /// The longest pause before a cast is sent, so its arrival is not timed to the ticket's.
 const MAX_CAST_DELAY: Duration = Duration::from_secs(20);
 
+/// Round-trip budgets for the VTA's voter tasks, as the SDK's own wrappers use.
+const VTA_TIMEOUT_SECS: u64 = 30;
+const VTA_PROOF_TIMEOUT_SECS: u64 = 90;
+
+/// Ask the member's VTA one `vta/pcs/*` task, with the payload and the answer as JSON.
+///
+/// Not through the SDK's typed `pcs_voter_*` / `pcs_vote*` wrappers: those round-trip the
+/// payload and the answer through generated structs, which hold timestamps as chrono
+/// `DateTime`s. A manifest the community published as `…T00:00:00.000Z` would reach the VTA
+/// re-serialised as `…T00:00:00Z` — another manifest, with another digest — and a cast or a
+/// read the VTA signed would come back re-serialised, no longer the bytes its proof covers.
+/// Everything here is carried exactly as it was received.
+async fn vta_task(client: &VtaClient, uri: &str, payload: Value, timeout: u64) -> CliResult<Value> {
+    Ok(client.dispatch_trust_task(uri, payload, timeout).await?)
+}
+
 fn community(t: &VoteTarget<'_>) -> VtcClient {
     VtcClient::anonymous(t.vtc_url, t.vtc_did)
 }
@@ -53,17 +70,20 @@ async fn read(
     which: &str,
     payload: Value,
 ) -> CliResult<Value> {
-    let req = serde_json::from_value(json!({
+    let req = json!({
         "contextId": t.context, "community": t.vtc_did, "member": t.member,
         "read": which, "payload": payload,
-    }))?;
-    let signed = client
-        .pcs_voter_read(&req)
-        .await
-        .map_err(|e| hint_member(e.to_string(), t.member))?;
-    let document = serde_json::to_value(&signed.document)?;
+    });
+    let signed = vta_task(
+        client,
+        trust_tasks::TASK_VTA_PCS_VOTER_READ_0_2,
+        req,
+        VTA_TIMEOUT_SECS,
+    )
+    .await
+    .map_err(|e| hint_member(e.to_string(), t.member))?;
     Ok(community(t)
-        .send_signed_document(&document)
+        .send_signed_document(&signed["document"])
         .await
         .map_err(|e| format!("{}: {e}", t.vtc_did))?)
 }
@@ -247,14 +267,16 @@ pub(crate) async fn ballot_box_url(did: &str) -> CliResult<String> {
 /// one. True when this call took it.
 async fn take_ticket(client: &VtaClient, t: &VoteTarget<'_>, shown: &Value) -> CliResult<bool> {
     let election_id = &shown["manifest"]["electionId"];
-    let mut reg = json!({ "contextId": t.context, "community": t.vtc_did, "member": t.member });
-    reg["parameters"] = shown["parameters"].clone();
-    reg["manifest"] = shown["manifest"].clone();
-    let registered = match client
-        .pcs_voter_register(&serde_json::from_value(reg)?)
-        .await
+    let reg = register_payload(t, shown);
+    let registered = match vta_task(
+        client,
+        trust_tasks::TASK_VTA_PCS_VOTER_REGISTER_0_2,
+        reg,
+        VTA_TIMEOUT_SECS,
+    )
+    .await
     {
-        Ok(registered) => serde_json::to_value(&registered)?,
+        Ok(registered) => registered,
         Err(e) if e.to_string().contains("ticketHeld") => return Ok(false),
         Err(e) => return Err(hint_member(e.to_string(), t.member)),
     };
@@ -269,14 +291,32 @@ async fn take_ticket(client: &VtaClient, t: &VoteTarget<'_>, shown: &Value) -> C
         .send_signed_document(&registered["ticketDocument"])
         .await
         .map_err(|e| format!("{}: {e}", t.vtc_did))?;
+    // The payload of the community's answer, without its ext (voter/accept item 1).
+    let mut response = issued;
+    if let Some(obj) = response.as_object_mut() {
+        obj.remove("ext");
+    }
     let accept = json!({
         "contextId": t.context, "community": t.vtc_did, "electionId": election_id,
-        "parameters": shown["parameters"], "response": issued,
+        "parameters": shown["parameters"], "response": response,
     });
-    client
-        .pcs_voter_accept(&serde_json::from_value(accept)?)
-        .await?;
+    vta_task(
+        client,
+        trust_tasks::TASK_VTA_PCS_VOTER_ACCEPT_0_1,
+        accept,
+        VTA_TIMEOUT_SECS,
+    )
+    .await?;
     Ok(true)
+}
+
+/// `vta/pcs/voter/register` for the election `shown` describes: the manifest and parameters
+/// exactly as the community published them, so the VTA's digest is the community's.
+fn register_payload(t: &VoteTarget<'_>, shown: &Value) -> Value {
+    json!({
+        "contextId": t.context, "community": t.vtc_did, "member": t.member,
+        "parameters": shown["parameters"], "manifest": shown["manifest"],
+    })
 }
 
 /// What a member is told after taking a ticket in a run that does not cast.
@@ -368,7 +408,13 @@ pub async fn cmd_vote(
     vote["manifest"] = manifest.clone();
     vote["ballot"] = ballot;
     let cast = if manifest["secrecy"] == "open" {
-        serde_json::to_value(client.pcs_vote(&serde_json::from_value(vote)?).await?)?
+        vta_task(
+            client,
+            trust_tasks::TASK_VTA_PCS_VOTE_0_2,
+            vote,
+            VTA_PROOF_TIMEOUT_SECS,
+        )
+        .await?
     } else {
         // The trustees' signed steps, from the community (show item 6): the VTA forms the key
         // from them itself and encrypts under no other (CONVENTIONS §9.6).
@@ -376,11 +422,13 @@ pub async fn cmd_vote(
             .get("ceremony")
             .cloned()
             .ok_or("the trustees have not formed the election key yet; vote once voting opens")?;
-        serde_json::to_value(
-            client
-                .pcs_vote_encrypted(&serde_json::from_value(vote)?)
-                .await?,
-        )?
+        vta_task(
+            client,
+            trust_tasks::TASK_VTA_PCS_VOTE_ENCRYPTED_0_3,
+            vote,
+            VTA_PROOF_TIMEOUT_SECS,
+        )
+        .await?
     };
     let cast_doc = &cast["castDocument"];
 
@@ -417,11 +465,13 @@ pub async fn cmd_vote(
     let mut keep = base;
     keep["electionId"] = json!(election_id);
     keep["receipt"] = receipt.clone();
-    let kept = serde_json::to_value(
-        client
-            .pcs_voter_receipt(&serde_json::from_value(keep)?)
-            .await?,
-    )?;
+    let kept = vta_task(
+        client,
+        trust_tasks::TASK_VTA_PCS_VOTER_RECEIPT_0_1,
+        keep,
+        VTA_TIMEOUT_SECS,
+    )
+    .await?;
     if is_json_output() {
         return Ok(print_json(&json!({ "receipt": receipt, "kept": kept }))?);
     }
@@ -459,6 +509,28 @@ mod tests {
             json!({ "question": "budget", "abstain": true })
         );
         assert_eq!(b["manifestDigest"], "zDigest");
+    }
+
+    /// The manifest reaches the VTA as the community published it: a typed round trip would
+    /// rewrite `.000Z` timestamps and the VTA would compute another manifest's digest.
+    #[test]
+    fn the_manifest_is_registered_byte_for_byte() {
+        let shown = json!({
+            "manifest": { "electionId": "agm", "votingOpensAt": "2027-01-01T00:00:00.000Z" },
+            "parameters": { "suite": "ps-ddh-bls12381" },
+        });
+        let t = VoteTarget {
+            vtc_url: "https://v",
+            vtc_did: "did:web:v",
+            member: "did:web:m",
+            context: "c",
+        };
+        let reg = register_payload(&t, &shown);
+        assert_eq!(
+            serde_json::to_string(&reg["manifest"]).unwrap(),
+            r#"{"electionId":"agm","votingOpensAt":"2027-01-01T00:00:00.000Z"}"#
+        );
+        assert_eq!(reg["parameters"], shown["parameters"]);
     }
 
     #[test]
