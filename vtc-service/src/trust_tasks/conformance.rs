@@ -3485,6 +3485,12 @@ fn election_witnesses() -> Vec<Conformance> {
             serde_json::from_str::<Value>(r#"{"electionId": "board-2026", "result": {"electionId": "board-2026", "manifestDigest": "zQmbWqxBEKC3P8tqsKc98xmWNzrzDtRLMiMPL8wBuTGsMnR", "ballotsCounted": 80, "questions": [{"question": "chair", "abstained": 2, "choice": {"alice": 41, "bob": 37}}], "head": {"electionId": "board-2026", "treeSize": 84, "rootHash": "zQmPXME1oRtoT627YKaDPDQ3PwA8tdP9rWuAAweLzqSwAWT", "issuedAt": "2026-11-15T00:00:03Z"}}, "head": {"electionId": "board-2026", "treeSize": 84, "rootHash": "zQmPXME1oRtoT627YKaDPDQ3PwA8tdP9rWuAAweLzqSwAWT", "issuedAt": "2026-11-15T00:00:03Z"}, "certifiedAt": "2026-11-16T09:00:19Z", "auditAttestations": [{"@context": ["https://www.w3.org/ns/credentials/v2"], "type": ["VerifiableCredential"], "issuer": "did:web:audit.example", "validFrom": "2026-11-15T18:00:00Z", "credentialSubject": {"electionId": "board-2026", "community": "did:webvh:QmCommunity:community.example", "treeSize": 84, "rootHash": "zQmPXME1oRtoT627YKaDPDQ3PwA8tdP9rWuAAweLzqSwAWT"}}]}"#).unwrap()
         ),
         checked!(
+            s::elections::ballot_boxes::list::v0_1::Payload,
+            s::elections::ballot_boxes::list::v0_1::Response,
+            serde_json::from_str::<Value>(r#"{}"#).unwrap(),
+            serde_json::from_str::<Value>(r#"{"ballotBoxes": [{"did": "did:webvh:QmBallots:votes.example.net", "operator": "Ballots Example Ltd", "sameOperator": false}, {"did": "did:webvh:QmOwnBox:votes.community.example", "operator": "Community Example Hosting", "sameOperator": true}]}"#).unwrap()
+        ),
+        checked!(
             s::elections::tickets::issue::v0_1::Payload,
             s::elections::tickets::issue::v0_1::Response,
             serde_json::from_str::<Value>(r#"{"electionId": "board-2026", "manifestDigest": "zQmbWqxBEKC3P8tqsKc98xmWNzrzDtRLMiMPL8wBuTGsMnR", "request": {"label": "voter/board-2026", "id": "z5jokfsiZx1sk1mJyQnBnR519B9mcQhw9a8LrF9VQdAjExwoLzcdVdZ2aXaH14a3mdF", "request": {"encoding": "z6P4jNSt4qHKYhSBGSWgr6VcQGMsjmfYGUBdYWNtS7xbpGsTuiY1PDfoce4yTApuqUm", "proof": "zSzFTCny3qaXpSHTsTE877ffQfSuF9T5zo53iuZkwx9NbLYSq3GeLZpRda286SBhqwJg"}}}"#).unwrap(),

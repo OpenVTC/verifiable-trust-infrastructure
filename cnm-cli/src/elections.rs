@@ -4,6 +4,8 @@
 //! - `create` sends a manifest (a JSON file) for the community to check, record and register
 //!   with the ballot box it names. A binding election is parked for another holder of
 //!   `vtc.elections.manage` and runs itself on approval.
+//! - `ballot-boxes` lists the voting services the community trusts, which a manifest's
+//!   `ballotBox` must name.
 //! - `list` and `show` read them, `close` and `cancel` end them, and `certify` asks the
 //!   community to verify the ballot box's board from its own voting key and record the result.
 //!
@@ -46,6 +48,8 @@ pub enum ElectionsCommands {
         /// bound to.
         manifest: PathBuf,
     },
+    /// List the voting services this community trusts: a manifest's `ballotBox` names one.
+    BallotBoxes,
     /// List the community's elections.
     List {
         /// Only elections in this state (registration, voting, closed, tallied, cancelled,
@@ -305,6 +309,34 @@ async fn run_command(command: ElectionsCommands, vtc: &Connected, keyring_key: &
             }
             Ok(())
         }
+        ElectionsCommands::BallotBoxes => {
+            let listed = c
+                .elections_ballot_boxes(&key)
+                .await
+                .map_err(|e| refusal(vtc, e, "", None))?;
+            if is_json_output() {
+                return Ok(print_json(&listed)?);
+            }
+            if listed.ballot_boxes.is_empty() {
+                println!(
+                    "{DIM}no trusted ballot boxes: the host operator adds one under \
+                     [voting] trusted_ballot_boxes{RESET}"
+                );
+            }
+            for b in &listed.ballot_boxes {
+                let same = if b.same_operator {
+                    format!("  {YELLOW}also runs this community{RESET}")
+                } else {
+                    String::new()
+                };
+                println!(
+                    "{BOLD}{}{RESET}  {}{same}",
+                    b.did.as_str(),
+                    b.operator.as_str()
+                );
+            }
+            Ok(())
+        }
         ElectionsCommands::List { state } => {
             let mut all = Vec::new();
             let mut cursor: Option<String> = None;
@@ -472,7 +504,8 @@ fn suggested_fix(code: &str, election_id: &str, ballot_box: Option<&str>) -> Opt
         c if c == create::error_codes::BALLOT_BOX_NOT_TRUSTED.code => format!(
             "{} is not one of this community's trusted voting services. A host operator adds it \
              to the VTC's config.toml and restarts the VTC:\n\n  [[voting.trusted_ballot_boxes]]\n  \
-             did = \"{}\"\n  operator = \"<who runs it>\"\n  same_operator = false",
+             did = \"{}\"\n  operator = \"<who runs it>\"\n  same_operator = false\n\n\
+             Or name one it already trusts, listed by:\n\n  {bin} elections ballot-boxes",
             ballot_box.unwrap_or("the ballot box"),
             ballot_box.unwrap_or("<its DID>")
         ),

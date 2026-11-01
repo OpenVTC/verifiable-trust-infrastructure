@@ -297,6 +297,12 @@ type_uri = "https://trusttasks.org/spec/vtc/directory/query/0.1"
 digest = "sha256:208b03398401c434bc94b99039e1f6ee3a9b4cbfae86064549c7eb71f679e641"
 
 [[task]]
+slug = "vtc/elections/ballot-boxes/list"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/elections/ballot-boxes/list/0.1"
+digest = "sha256:92e2c93cc8a6d3d5471e476487e2a18787667550b3e17fd259c980fd242407e9"
+
+[[task]]
 slug = "vtc/elections/cancel"
 version = "0.1"
 type_uri = "https://trusttasks.org/spec/vtc/elections/cancel/0.1"

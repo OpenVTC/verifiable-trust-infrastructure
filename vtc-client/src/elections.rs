@@ -1,5 +1,5 @@
-//! Community elections: `vtc/elections/{create,list,show,close,cancel,certify}/0.1` and
-//! `vtc/elections/tickets/issue/0.1` (VTI-VOT-001 – 100).
+//! Community elections: `vtc/elections/{create,list,show,close,cancel,certify}/0.1`,
+//! `vtc/elections/tickets/issue/0.1` and `vtc/elections/ballot-boxes/list/0.1` (VTI-VOT-001 – 100).
 //!
 //! Signed Trust Tasks sent the way every `acl/*` call goes ([`crate::acl`]): over the client's
 //! DIDComm or TSP session when it holds one, otherwise signed with a [`HolderKey`] and posted to
@@ -17,8 +17,9 @@ use crate::{HolderKey, VtcClient, VtcError};
 /// The generated wire types, re-exported so a caller names the reply types without depending
 /// on `trust-tasks-rs` itself.
 pub use vti_specs::vtc::elections::{
-    cancel::v0_1 as cancel, certify::v0_1 as certify, close::v0_1 as close, create::v0_3 as create,
-    list::v0_3 as list, show::v0_2 as show, tickets::issue::v0_1 as tickets_issue,
+    ballot_boxes::list::v0_1 as ballot_boxes_list, cancel::v0_1 as cancel,
+    certify::v0_1 as certify, close::v0_1 as close, create::v0_3 as create, list::v0_3 as list,
+    show::v0_2 as show, tickets::issue::v0_1 as tickets_issue,
 };
 
 /// The Type URI of each task, read off the generated payloads.
@@ -32,6 +33,7 @@ pub mod task {
     pub const CANCEL: &str = <super::cancel::Payload as Payload>::TYPE_URI;
     pub const CERTIFY: &str = <super::certify::Payload as Payload>::TYPE_URI;
     pub const TICKETS_ISSUE: &str = <super::tickets_issue::Payload as Payload>::TYPE_URI;
+    pub const BALLOT_BOXES_LIST: &str = <super::ballot_boxes_list::Payload as Payload>::TYPE_URI;
 }
 
 impl VtcClient {
@@ -142,6 +144,21 @@ impl VtcClient {
             json!({ "electionId": election_id, "auditAttestations": attestations }),
         )?;
         self.acl_task(task::CERTIFY, payload, key, certify::ERROR_CODES)
+            .await
+    }
+
+    /// `vtc/elections/ballot-boxes/list/0.1` — the voting services this community trusts
+    /// (VTI-VOT-082): exactly the list `create` checks a manifest's `ballotBox` against, each
+    /// with what members are told about it.
+    ///
+    /// # Errors
+    /// `permissionDenied` without `vtc.elections.manage`; the VTC's refusal otherwise.
+    pub async fn elections_ballot_boxes(
+        &self,
+        key: &HolderKey,
+    ) -> Result<ballot_boxes_list::Response, VtcError> {
+        let payload = checked::<ballot_boxes_list::Payload>(json!({}))?;
+        self.acl_task(task::BALLOT_BOXES_LIST, payload, key, &[])
             .await
     }
 

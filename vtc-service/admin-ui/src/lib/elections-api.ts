@@ -22,6 +22,8 @@ export const ELECTIONS_SHOW_TASK = "https://trusttasks.org/spec/vtc/elections/sh
 export const ELECTIONS_CLOSE_TASK = "https://trusttasks.org/spec/vtc/elections/close/0.1";
 export const ELECTIONS_CANCEL_TASK = "https://trusttasks.org/spec/vtc/elections/cancel/0.1";
 export const ELECTIONS_CERTIFY_TASK = "https://trusttasks.org/spec/vtc/elections/certify/0.1";
+export const ELECTIONS_BALLOT_BOXES_LIST_TASK =
+  "https://trusttasks.org/spec/vtc/elections/ballot-boxes/list/0.1";
 
 /** The capability every task here takes. */
 export const ELECTIONS_MANAGE = "vtc.elections.manage";
@@ -155,6 +157,28 @@ export async function fetchElections(): Promise<ElectionListItem[]> {
     cursor = page.nextCursor;
   }
   return out;
+}
+
+/** One voting service the community trusts (VTI-VOT-082), with what its members are told about
+ *  it when an election names it (VTI-VOT-090). */
+export interface TrustedBallotBox {
+  did: string;
+  operator: string;
+  sameOperator: boolean;
+}
+
+/** `vtc/elections/ballot-boxes/list/0.1`: exactly the list `create` checks `ballotBox` against.
+ *  `null` from a VTC that predates the task, so the form falls back to a typed DID. */
+export async function fetchTrustedBallotBoxes(): Promise<TrustedBallotBox[] | null> {
+  const res = await postSignedRead<{ supportedTypes?: unknown[] }>(TASK_DISCOVERY, {
+    patterns: ["vtc/elections/*"],
+  });
+  if (!(res.supportedTypes ?? []).includes(ELECTIONS_BALLOT_BOXES_LIST_TASK)) return null;
+  const page = await postSignedRead<{ ballotBoxes: TrustedBallotBox[] }>(
+    ELECTIONS_BALLOT_BOXES_LIST_TASK,
+    {},
+  );
+  return page.ballotBoxes;
 }
 
 export function fetchElection(electionId: string): Promise<Election> {

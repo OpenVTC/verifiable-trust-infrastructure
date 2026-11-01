@@ -1,8 +1,10 @@
 //! Community elections on the signed-document spine — `vtc/elections/{create,list,show,close,
-//! cancel,certify}/0.1` and `vtc/elections/tickets/issue/0.1` ([`crate::elections`], VTI-VOT-001 – 100).
+//! cancel,certify}/0.1`, `vtc/elections/tickets/issue/0.1` and
+//! `vtc/elections/ballot-boxes/list/0.1` ([`crate::elections`], VTI-VOT-001 – 100).
 //!
 //! | task | signed by | authority (read now) |
 //! |---|---|---|
+//! | `ballot-boxes/list` | an administrator | `vtc.elections.manage` (VTI-VOT-080) |
 //! | `create`, `close`, `cancel`, `certify` | an administrator | `vtc.elections.manage` (VTI-VOT-080); a binding `create` also another holder's consent (VTI-VOT-081) |
 //! | `list`, `show` | anyone the community knows | a holder of `vtc.elections.manage` sees every election; anyone else a registered one whose roll admits them now |
 //! | `tickets/issue` | a party the roll admits | the roll, as the records stand now (VTI-VOT-021), once per election (VTI-VOT-022) |
@@ -32,8 +34,9 @@ use sha2::{Digest, Sha256};
 use trust_tasks_rs::{Payload, RejectReason, TrustTask};
 use vti_common::audit::{AuditEvent, ElectionChangedData, ElectionTicketIssuedData};
 use vti_specs::vtc::elections::{
-    cancel::v0_1 as cancel, certify::v0_1 as certify, close::v0_1 as close, create::v0_3 as create,
-    list::v0_3 as list, show::v0_2 as show, tickets::issue::v0_1 as issue,
+    ballot_boxes::list::v0_1 as ballot_boxes_list, cancel::v0_1 as cancel,
+    certify::v0_1 as certify, close::v0_1 as close, create::v0_3 as create, list::v0_3 as list,
+    show::v0_2 as show, tickets::issue::v0_1 as issue,
 };
 
 use super::helpers::{
@@ -54,6 +57,7 @@ pub(crate) const CLOSE_TYPE: &str = <close::Payload as Payload>::TYPE_URI;
 pub(crate) const CANCEL_TYPE: &str = <cancel::Payload as Payload>::TYPE_URI;
 pub(crate) const ISSUE_TYPE: &str = <issue::Payload as Payload>::TYPE_URI;
 pub(crate) const CERTIFY_TYPE: &str = <certify::Payload as Payload>::TYPE_URI;
+pub(crate) const BALLOT_BOXES_LIST_TYPE: &str = <ballot_boxes_list::Payload as Payload>::TYPE_URI;
 
 // The declared codes, read from the generated bindings: the handlers emit these, and the
 // error-code census names each as the constant its witness asserts.
@@ -107,6 +111,7 @@ pub(crate) const URIS: &[&str] = &[
     CANCEL_TYPE,
     ISSUE_TYPE,
     CERTIFY_TYPE,
+    BALLOT_BOXES_LIST_TYPE,
 ];
 
 /// Route one of [`URIS`]; `None` for any other URI.
@@ -124,6 +129,7 @@ pub(super) async fn dispatch(
         CANCEL_TYPE => handle_cancel(state, ctx, doc).await,
         ISSUE_TYPE => handle_issue(state, ctx, doc).await,
         CERTIFY_TYPE => handle_certify(state, ctx, doc).await,
+        BALLOT_BOXES_LIST_TYPE => handle_ballot_boxes_list(state, ctx, doc).await,
         _ => return None,
     })
 }
@@ -218,6 +224,43 @@ fn changed(election_id: &str, change: &str) -> ElectionChangedData {
         result_digest: None,
         attestation_issuers: Vec::new(),
     }
+}
+
+// ─── trusted ballot boxes ────────────────────────────────────────────────
+
+/// `vtc/elections/ballot-boxes/list/0.1`: the trusted ballot boxes (VTI-VOT-082), read from the
+/// live configuration — the same list `create` checks `ballotBox` against (item 2) — each with
+/// what an election naming it discloses (item 3, as [`ops::disclosure`] does).
+async fn handle_ballot_boxes_list(
+    state: &AppState,
+    ctx: &JoinAuthCtx,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    // Item 1.
+    if let Err(reject) = capable_signer(state, ctx, &doc, Capability::ElectionsManage, None).await {
+        return reject;
+    }
+    if let Err(reject) = parse_spec_payload::<ballot_boxes_list::Payload>(&doc) {
+        return reject;
+    }
+    success_response(&doc, ballot_boxes_answer(&state.config.read().await.voting))
+}
+
+/// The answer to `ballot-boxes/list`: every trusted ballot box, in configuration order, and an
+/// empty list when there are none (items 2 – 4).
+fn ballot_boxes_answer(voting: &crate::elections::VotingConfig) -> Value {
+    let boxes: Vec<Value> = voting
+        .trusted_ballot_boxes
+        .iter()
+        .map(|b| {
+            json!({
+                "did": b.did,
+                "operator": b.operator,
+                "sameOperator": b.same_operator,
+            })
+        })
+        .collect();
+    json!({ "ballotBoxes": boxes })
 }
 
 // ─── create ──────────────────────────────────────────────────────────────

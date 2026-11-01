@@ -27,6 +27,8 @@ import {
   createElection,
   fetchElection,
   fetchElections,
+  fetchTrustedBallotBoxes,
+  type TrustedBallotBox,
 } from "@/lib/elections-api";
 import {
   OPTION_PRESETS,
@@ -108,7 +110,27 @@ export function NewElection() {
   const patch = (p: Partial<ManifestDraft>) => setDraft({ ...draft, ...p });
 
   const manifest = useMemo(() => draftToManifest(draft, communityDid), [draft, communityDid]);
-  const issues = useMemo(() => checkDraft(draft, communityDid), [draft, communityDid]);
+  // The trusted ballot boxes, read live: `null` from a VTC that cannot list them (the field is
+  // then a typed DID), `undefined` while loading or after a failed read.
+  const trustedQuery = useQuery({
+    queryKey: [...ELECTIONS_KEY, "ballot-boxes"],
+    queryFn: fetchTrustedBallotBoxes,
+    retry: false,
+  });
+  const trusted = trustedQuery.data;
+  const issues = useMemo(() => {
+    const out = checkDraft(draft, communityDid);
+    const box = draft.ballotBox.trim();
+    // The list is exactly the one create checks against, so naming another is a certain refusal.
+    if (trusted && box && !out.some((i) => i.field === "ballotBox") && !trusted.some((b) => b.did === box)) {
+      out.push({
+        step: "counting",
+        field: "ballotBox",
+        message: "Not one of this community's trusted ballot boxes.",
+      });
+    }
+    return out;
+  }, [draft, communityDid, trusted]);
 
   // In the JSON view the text is what is sent; it may be anything.
   let jsonParsed: Record<string, unknown> | null = null;
@@ -241,7 +263,9 @@ export function NewElection() {
             {step === "questions" && <QuestionsStep draft={draft} patch={patch} issues={issues} />}
             {step === "voters" && <VotersStep draft={draft} patch={patch} issues={issues} />}
             {step === "schedule" && <ScheduleStep draft={draft} patch={patch} issues={issues} />}
-            {step === "counting" && <CountingStep draft={draft} patch={patch} issues={issues} />}
+            {step === "counting" && (
+              <CountingStep draft={draft} patch={patch} issues={issues} trusted={trusted} />
+            )}
             {step === "review" && (
               <ReviewStep draft={draft} manifest={manifest} issues={issues} onFix={goto} />
             )}
@@ -727,27 +751,87 @@ function ScheduleStep({ draft, patch, issues }: StepProps) {
   );
 }
 
-function CountingStep({ draft, patch, issues }: StepProps) {
+/** The `<select>` value for a DID typed rather than chosen. */
+const OTHER_BOX = "\u0000other";
+
+function CountingStep({
+  draft,
+  patch,
+  issues,
+  trusted,
+}: StepProps & { trusted: TrustedBallotBox[] | null | undefined }) {
   const hasText = draft.questions.some((q) => q.type === "text");
+  const box = draft.ballotBox.trim();
+  const listed = trusted?.find((b) => b.did === box);
+  // Typing is the fallback: a VTC that cannot list them, a failed read, or a DID not listed.
+  const [typing, setTyping] = useState(() => !!box && !listed);
+  const choosing = !!trusted && trusted.length > 0 && !typing && (!box || !!listed);
   return (
     <>
       <StepIntro title="Counting">
         The ballot box is a voting service, never this community: it admits the votes, keeps the
         board and counts.
       </StepIntro>
-      <Field
-        label="Ballot box DID"
-        hint="One of this community's trusted voting services ([voting] trusted_ballot_boxes in its configuration)."
-        error={errorFor(issues, "ballotBox")}
-      >
-        <input
-          type="text"
-          className="mono"
-          placeholder="did:webvh:…"
-          value={draft.ballotBox}
-          onChange={(e) => patch({ ballotBox: e.target.value })}
-        />
-      </Field>
+      {choosing ? (
+        <Field
+          label="Ballot box"
+          hint="This community's trusted voting services. Members are told who operates the one you choose before they take a ticket."
+          error={errorFor(issues, "ballotBox")}
+        >
+          <select
+            value={box}
+            onChange={(e) => {
+              if (e.target.value === OTHER_BOX) {
+                setTyping(true);
+                patch({ ballotBox: "" });
+              } else patch({ ballotBox: e.target.value });
+            }}
+          >
+            <option value="" disabled>
+              Choose a ballot box…
+            </option>
+            {trusted.map((b) => (
+              <option key={b.did} value={b.did}>
+                {b.operator}
+                {b.sameOperator ? " (also runs this community)" : ""} — {b.did}
+              </option>
+            ))}
+            <option value={OTHER_BOX}>Another DID…</option>
+          </select>
+        </Field>
+      ) : (
+        <Field
+          label="Ballot box DID"
+          hint={
+            trusted && trusted.length === 0
+              ? "This community trusts no ballot box yet, so it cannot create an election. The host operator adds one under [voting] trusted_ballot_boxes in its configuration."
+              : "One of this community's trusted voting services ([voting] trusted_ballot_boxes in its configuration)."
+          }
+          error={errorFor(issues, "ballotBox")}
+        >
+          <input
+            type="text"
+            className="mono"
+            placeholder="did:webvh:…"
+            value={draft.ballotBox}
+            onChange={(e) => patch({ ballotBox: e.target.value })}
+          />
+        </Field>
+      )}
+      {choosing && listed?.sameOperator && (
+        <p className="field-hint">
+          {listed.operator} runs both this community and this ballot box, so its members are told
+          that one party could link a ballot to its voter.
+        </p>
+      )}
+      {!choosing && trusted && trusted.length > 0 && (
+        <button type="button" className="link" onClick={() => {
+          setTyping(false);
+          if (!listed) patch({ ballotBox: "" });
+        }}>
+          Choose from the trusted ballot boxes
+        </button>
+      )}
       <Radios<Secrecy>
         name="secrecy"
         legend="Secrecy"

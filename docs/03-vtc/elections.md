@@ -30,7 +30,10 @@ ballot and never learns whose it is. Linking a voter to a ballot needs the two t
    `operator` and `same_operator` are shown to every member before they take a ticket
    (`Disclosure`, VTI-VOT-090): the separation above is only as good as the two operators'
    independence, so members are told when one party runs both. The list is host configuration:
-   a change is a config edit and a restart, never a Trust Task (VTI-VOT-082).
+   a change is a config edit and a restart, never a Trust Task (VTI-VOT-082). Holders of
+   `vtc.elections.manage` read it with `vtc/elections/ballot-boxes/list/0.1` — exactly the list
+   `create` checks against — which the console's manifest builder offers as a choice and
+   `cnm elections ballot-boxes` prints.
 3. Grant `vtc.elections.manage` to whoever runs elections. Community administrators hold it.
 
 The community talks to the ballot box over **TSP, then DIDComm**, signed as itself
@@ -41,6 +44,7 @@ election stays `pendingRegistration` and is delivered as soon as they are.
 
 | Step | Task | Who |
 |---|---|---|
+| Read the trusted ballot boxes | `vtc/elections/ballot-boxes/list/0.1` | `vtc.elections.manage` |
 | Create from a manifest | `vtc/elections/create/0.3` | `vtc.elections.manage` |
 | Read | `vtc/elections/list/0.3`, `vtc/elections/show/0.2` | managers see all; anyone else an election whose roll admits them now |
 | Take a ticket | `vtc/elections/tickets/issue/0.1` | a party the roll admits, once per election — normally through their VTA (`vta/pcs/voter/register`) |
@@ -71,7 +75,7 @@ tab until it is created or discarded.
 
 ### From the command line
 
-An administrator: `cnm elections create <manifest.json>`, `list`, `show <id>`,
+An administrator: `cnm elections ballot-boxes`, `create <manifest.json>`, `list`, `show <id>`,
 `close <id>`, `cancel <id> --reason …`, `certify <id> [--attestation <vc.json>]…`. The
 admin console has the same under **Governance → Elections**.
 

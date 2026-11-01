@@ -2089,6 +2089,11 @@ mod spine_proof_tests {
             community_room_tasks::GET_TYPE,
             "reads one room the community owns, with its details; the handler authorizes vtc.rooms.manage from the signer's own entry, so an unsigned caller is refused regardless",
         ),
+        #[cfg(feature = "voting")]
+        (
+            election_tasks::BALLOT_BOXES_LIST_TYPE,
+            "lists the trusted ballot boxes; the handler authorizes vtc.elections.manage from the signer's own entry (VTI-VOT-080), so an unsigned caller is refused regardless",
+        ),
         (
             room_admin_tasks::USAGE_TYPE,
             "reads rooms' usage; the handler authorizes vtc.rooms.admin from the signer's own entry, so an unsigned caller is refused regardless",
@@ -2925,6 +2930,8 @@ pub(crate) const DISPATCHED_URIS: &[&str] = &[
     election_tasks::ISSUE_TYPE,
     #[cfg(feature = "voting")]
     election_tasks::CERTIFY_TYPE,
+    #[cfg(feature = "voting")]
+    election_tasks::BALLOT_BOXES_LIST_TYPE,
     PERSONHOOD_CHALLENGE_TYPE,
     PERSONHOOD_ASSERT_TYPE,
     // The admin-facing member verbs (#1641 phase 2): the binding that holds the

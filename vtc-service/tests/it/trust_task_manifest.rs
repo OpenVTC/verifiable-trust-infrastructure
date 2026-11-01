@@ -851,6 +851,10 @@ const FEATURE_GATED_DOCUMENT_TYPES: &[(&str, bool)] = &[
         "https://trusttasks.org/spec/vtc/elections/certify/0.1",
         cfg!(feature = "voting"),
     ),
+    (
+        "https://trusttasks.org/spec/vtc/elections/ballot-boxes/list/0.1",
+        cfg!(feature = "voting"),
+    ),
 ];
 
 /// Document types the console sends that the *spine* dispatches rather than
