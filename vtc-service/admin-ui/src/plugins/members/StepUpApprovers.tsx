@@ -132,7 +132,7 @@ export function ApproverDevicesCard({ did, self = false }: { did: string; self?:
                   <td>
                     <button
                       type="button"
-                      className="danger"
+                      className="secondary destructive"
                       disabled={revoke.isPending}
                       onClick={async () => {
                         const ok = await confirm({

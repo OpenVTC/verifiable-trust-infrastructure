@@ -278,6 +278,64 @@
   margin: 0;
 }
 
+/* A card that opens on demand (`<details class="card">`): its summary is the
+ * card's heading, in the same voice as `.card h3`, with a marker that turns
+ * as it opens. Closed, the card is that heading alone. A <details> ignores
+ * `display: flex`, so the card's gap is margins here. */
+details.card {
+  display: block;
+}
+
+details.card > * + * {
+  margin-top: var(--space-4);
+}
+
+details.card > summary {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin: 0;
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+  font-weight: 600;
+  letter-spacing: var(--tracking-wide);
+  text-transform: uppercase;
+  transition: color var(--motion-fast);
+}
+
+details.card > summary::-webkit-details-marker {
+  display: none;
+}
+
+details.card > summary::before {
+  content: "";
+  flex: none;
+  width: 6px;
+  height: 6px;
+  margin: 0 2px 0 1px;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  transform: translateY(-2px) rotate(-45deg);
+  transition: transform var(--motion-fast);
+}
+
+details.card[open] > summary::before {
+  transform: translateY(-3px) rotate(45deg);
+}
+
+details.card > summary:hover {
+  color: var(--text);
+}
+
+details.card > summary:focus-visible {
+  outline: 2px solid var(--brand);
+  outline-offset: 4px;
+  border-radius: var(--radius-sm);
+}
+
 /* dl-style definition lists still used for read-only detail panels. */
 dl {
   display: grid;
@@ -299,6 +357,17 @@ dd {
   margin: 0;
   word-break: break-all;
   color: var(--text);
+}
+
+/* `<dl class="kv">` keeps each term and its definition together in a <div>;
+ * the grid still lays the pair out side by side. */
+dl.kv > div {
+  display: contents;
+}
+
+dl.kv dd {
+  word-break: normal;
+  overflow-wrap: anywhere;
 }
 
 /* ── Buttons ─────────────────────────────────────────────────── */
@@ -464,12 +533,16 @@ button.link:disabled {
   letter-spacing: var(--tracking-wide);
 }
 
+/* An <input> with no type is a text input, and most of the console's are
+ * written that way, so it must match too. */
+input:not([type]),
 input[type="text"],
 input[type="url"],
 input[type="email"],
 input[type="number"],
 input[type="search"],
 input[type="password"],
+input[type="date"],
 textarea,
 select {
   height: 36px;
@@ -538,6 +611,49 @@ select {
 
 .form-actions button {
   flex: 0 1 auto;
+}
+
+/* Two short fields side by side — a name and a kind, a count and a unit.
+ * A child with `.span-2` takes the whole width; on a narrow screen every
+ * field does. */
+.form-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-4) var(--space-5);
+  align-items: start;
+}
+
+.form-grid > .span-2 {
+  grid-column: 1 / -1;
+}
+
+@media (max-width: 720px) {
+  .form-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* A fieldset used as a form group — a set of radios or checkboxes under one
+ * `.field-label` legend — drops the browser's box. */
+fieldset.field,
+fieldset.form-stack {
+  border: 0;
+  margin: 0;
+  padding: 0;
+  min-width: 0;
+}
+
+fieldset.field > legend,
+fieldset.form-stack > legend {
+  padding: 0;
+  margin-bottom: var(--space-2);
+}
+
+/* A textarea for prose (a description, a note), not code: the body face. */
+textarea.prose {
+  font-family: inherit;
+  font-size: var(--text-md);
+  min-height: 4rem;
 }
 
 /* ── Toolbar ─────────────────────────────────────────────────── */

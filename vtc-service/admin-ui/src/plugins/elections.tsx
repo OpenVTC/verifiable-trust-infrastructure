@@ -465,7 +465,7 @@ function ElectionActions({ electionId, e }: { electionId: string; e: Election })
         {!ended && (
           <button
             type="button"
-            className="danger"
+            className="secondary destructive"
             onClick={() => cancel.mutate()}
             disabled={cancel.isPending || !reason.trim()}
           >

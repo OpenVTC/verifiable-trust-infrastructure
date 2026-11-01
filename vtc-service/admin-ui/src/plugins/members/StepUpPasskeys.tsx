@@ -137,7 +137,7 @@ export function StepUpPasskeysCard({ did }: { did: string }) {
                   <td>
                     <button
                       type="button"
-                      className="danger"
+                      className="secondary destructive"
                       disabled={revoke.isPending}
                       onClick={async () => {
                         const ok = await confirm({

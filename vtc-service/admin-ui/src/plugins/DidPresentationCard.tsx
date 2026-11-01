@@ -101,14 +101,16 @@ export function DidPresentationCard() {
               <option value="scid">did:scid</option>
             </select>
           </Field>
-          <label>
+          <label className="checkbox">
             <input
               type="checkbox"
               checked={effectiveAlias}
               disabled={method === "scid"}
               onChange={(e) => setAlias(e.target.checked)}
-            />{" "}
-            List the did:scid alias, so the identity is known by both names
+            />
+            <span className="checkbox-text">
+              List the did:scid alias, so the identity is known by both names
+            </span>
           </label>
           <div className="form-actions">
             <button
