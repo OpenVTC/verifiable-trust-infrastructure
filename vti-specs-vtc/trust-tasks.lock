@@ -324,13 +324,19 @@ digest = "sha256:46f1ac38808f2fd1acec932e56db3fc2b81d3f951a3fdc501faa3901d190fa0
 slug = "vtc/elections/create"
 version = "0.1"
 type_uri = "https://trusttasks.org/spec/vtc/elections/create/0.1"
-digest = "sha256:87615e2587b084e9da61558f6fa9a1daa4c6e72f142205c0b6bc0a6ca5f99964"
+digest = "sha256:d7379fb908330bdda0fed0bb970fe0960f82dd331227b10434dea1fc6dbf7172"
 
 [[task]]
 slug = "vtc/elections/create"
 version = "0.3"
 type_uri = "https://trusttasks.org/spec/vtc/elections/create/0.3"
-digest = "sha256:7508bae610391e15f06b56ad7d83ed5107064b1d6fe56f66eddbddfc26c0ac42"
+digest = "sha256:14aff731013cd0bd521287472ec47ed06adb7ddbc9dff73f8aee9bba245cff28"
+
+[[task]]
+slug = "vtc/elections/create"
+version = "0.4"
+type_uri = "https://trusttasks.org/spec/vtc/elections/create/0.4"
+digest = "sha256:cd3e7b2c692e9726323cc5291d633063e747d5c269be88c66b6edaec1e6d44c6"
 
 [[task]]
 slug = "vtc/elections/list"
@@ -342,13 +348,19 @@ digest = "sha256:a66efb7922b1717a500bd5a17d033b2957c808ff64398e654b553f5a5fdf61e
 slug = "vtc/elections/show"
 version = "0.1"
 type_uri = "https://trusttasks.org/spec/vtc/elections/show/0.1"
-digest = "sha256:943980831295f2a3616252a882f064c2e4bbc58d96ca6651922e7fea219bf991"
+digest = "sha256:b3482f05daa5fdb875875f00ec4c8ac4d45a45633e6379e39450f8734d355533"
 
 [[task]]
 slug = "vtc/elections/show"
 version = "0.2"
 type_uri = "https://trusttasks.org/spec/vtc/elections/show/0.2"
-digest = "sha256:bb50aacbee2aaea2065937a478b8b37d9babea3242e5aeaa76ff7bd89040aab0"
+digest = "sha256:74f184b13a1e791676c4333e733aa8514af3597797baab7c338e48aaae18878f"
+
+[[task]]
+slug = "vtc/elections/show"
+version = "0.3"
+type_uri = "https://trusttasks.org/spec/vtc/elections/show/0.3"
+digest = "sha256:3f5e46fc554445c8639220ce0b6f68a1c62f947bff86b2106e1cdf572dbde077"
 
 [[task]]
 slug = "vtc/elections/tickets/issue"
