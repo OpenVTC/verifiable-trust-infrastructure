@@ -102,8 +102,8 @@ describe("Elections", () => {
   it("shows what members are told, and warns when one operator runs both", async () => {
     mockFetch(routes([taskRoute(ELECTIONS_SHOW_TASK, shown("voting"))]));
     renderWithProviders(<Elections />, { route: "/elections/agm-2027", path: "/elections/*" });
-    expect(await screen.findByText(/Ballots Example Ltd/)).toBeTruthy();
-    expect(screen.getByText(/Run by the same operator as this community/)).toBeTruthy();
+    expect((await screen.findAllByText(/Ballots Example Ltd/)).length).toBeGreaterThan(0);
+    expect(screen.getByText(/also runs this community/)).toBeTruthy();
     expect(screen.getByText("4")).toBeTruthy();
   });
 

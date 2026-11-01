@@ -181,29 +181,41 @@ function ElectionDetail({ electionId, e }: { electionId: string; e: Election }) 
       <section className="card">
         <h2>What members are told</h2>
         <p className="muted">
-          Generated from the manifest and the trusted ballot box&rsquo;s entry, and shown to every
-          member before they take a ticket.
+          Every member sees this before taking a ticket, so they know who could learn what about
+          their vote. It comes from the election&rsquo;s settings and the ballot box you chose.
         </p>
         <dl className="detail-list">
           <dt>Ballot box</dt>
           <dd>
-            <code title={d.ballotBox}>{shorten(d.ballotBox, 16, 6)}</code>, run by {d.ballotBoxOperator}
+            Run by {d.ballotBoxOperator} (<code title={d.ballotBox}>{shorten(d.ballotBox, 16, 6)}</code>).
+            Members send their votes there directly, never through this community.
             {d.sameOperator && (
               <div className="warning-text">
-                Run by the same operator as this community: they could see who took a ticket and
-                every ballot.
+                {d.ballotBoxOperator} also runs this community. Tickets are signed blind, so a
+                ballot cannot be matched to a member from the data alone, but an operator that runs
+                both could match them by when a ticket was taken and when a vote arrived. Fine for
+                informal polls; use an independent ballot box for anything sensitive.
               </div>
             )}
           </dd>
-          <dt>Board</dt>
+          <dt>Who can see the ballots</dt>
           <dd>
-            {d.boardVisibility}
-            {d.auditors.length > 0 && `, auditors: ${d.auditors.join(", ")}`}
+            {d.boardVisibility === "public"
+              ? "Anyone. The ballot box publishes every ballot on its board, under one-time keys that never name the member."
+              : "Only this community and its auditors can read the ballot box's board."}
+            {d.auditors.length > 0 && ` Auditors: ${d.auditors.join(", ")}.`}
           </dd>
           <dt>Changing a vote</dt>
-          <dd>{d.revote === "replace" ? "A later vote replaces the earlier one" : "The first vote stands"}</dd>
-          <dt>Coercion</dt>
-          <dd>Not resisted: a member can prove how they voted.</dd>
+          <dd>
+            {d.revote === "replace"
+              ? "Allowed: a member can vote again, and only their latest vote counts."
+              : "Not allowed: a member's first vote is final."}
+          </dd>
+          <dt>Pressure to vote a certain way</dt>
+          <dd>
+            Not protected against. A member can prove how they voted, so someone could demand that
+            proof from them.
+          </dd>
         </dl>
       </section>
       {e.certified && (
@@ -220,8 +232,10 @@ function ElectionDetail({ electionId, e }: { electionId: string; e: Election }) 
       <section className="card">
         <h2>Board checkpoints</h2>
         <p className="muted">
-          Heads of the ballot box&rsquo;s board the community read and kept. Certification
-          checks the final board extends every one.
+          Each time this community reads the ballot box&rsquo;s board, it keeps a fingerprint of
+          it. Certifying the result checks the final board still holds everything every
+          fingerprint covered, so no ballot can be dropped or changed afterwards without it
+          showing.
         </p>
         {e.checkpoints.length === 0 ? (
           <p className="muted">None yet.</p>
@@ -229,8 +243,9 @@ function ElectionDetail({ electionId, e }: { electionId: string; e: Election }) 
           <ul>
             {e.checkpoints.map((c) => (
               <li key={`${c.head.treeSize}-${c.head.rootHash}`}>
-                {formatIso(c.head.issuedAt)} — {c.head.treeSize} entries,{" "}
-                <code>{shorten(c.head.rootHash, 10, 4)}</code>
+                {formatIso(c.head.issuedAt)}: {c.head.treeSize}{" "}
+                {c.head.treeSize === 1 ? "ballot" : "ballots"} on the board, fingerprint{" "}
+                <code title={c.head.rootHash}>{shorten(c.head.rootHash, 10, 4)}</code>
               </li>
             ))}
           </ul>
