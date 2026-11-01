@@ -458,6 +458,12 @@ tempfile = "3"
 # package): `tests/it/election_tasks.rs` runs a real ballot box on the harness's mediator and
 # registers, reads and certifies through the community's production link to it.
 vti-voting-service = { path = "../vti-voting-service" }
+# A member's own VTA and `pnm elections` itself, for `tests/it/election_tasks.rs`'s
+# end-to-end vote: `MockVta` holds the member's key and runs the voter engine
+# (`vta/pcs/voter/*`, `vta/pcs/vote`), and `vta-cli-common`'s `cmd_ticket` / `cmd_vote` carry
+# its documents to this community over HTTP and the cast to the ballot box. Dev-only, path-only.
+vta-service = { path = "../vta-service", features = ["test-support", "rest"] }
+vta-cli-common = { path = "../vta-cli-common" }
 # Integration tests under `tests/` exercise the route stack via
 # `Router::oneshot` — same pattern as `vta-service/tests/api_integration.rs`.
 http-body-util = "0.1"
