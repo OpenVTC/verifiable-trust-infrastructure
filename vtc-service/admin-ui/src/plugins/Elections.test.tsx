@@ -129,6 +129,70 @@ describe("Elections", () => {
     });
   });
 
+  it("shows a certified result in the members' words, and says why written answers are held back", async () => {
+    const m = {
+      ...manifest,
+      textReleaseThreshold: 10,
+      questions: [
+        { key: "chair", type: "choice", text: "Chair?", options: [{ key: "ana", label: "Ana Lopez" }, { key: "bo" }] },
+        { key: "ideas", type: "text", text: "What should we build next?" },
+      ],
+    };
+    mockFetch(
+      routes([
+        taskRoute(ELECTIONS_SHOW_TASK, {
+          ...shown("tallied"),
+          manifest: m,
+          certified: {
+            certifiedAt: "2026-11-16T00:00:00Z",
+            auditAttestations: [],
+            result: {
+              electionId: "agm-2027",
+              manifestDigest: "zQmDigest",
+              ballotsCounted: 1,
+              head,
+              questions: [
+                { question: "chair", choice: { ana: 1, bo: 0 }, abstained: 0 },
+                { question: "ideas", withheld: true, abstained: 0 },
+              ],
+            },
+          },
+        }),
+      ]),
+    );
+    renderWithProviders(<Elections />, { route: "/elections/agm-2027", path: "/elections/*" });
+    expect(await screen.findByRole("heading", { name: "What should we build next?" })).toBeTruthy();
+    expect(screen.getByText(/Ana Lopez/)).toBeTruthy();
+    expect(screen.getByText(/at least 10\s+ballots are counted, and this election counted 1/)).toBeTruthy();
+    expect(screen.getByText(/1\s+ballot counted/)).toBeTruthy();
+  });
+
+  it("lists written answers once they are released", async () => {
+    const m = { ...manifest, questions: [{ key: "ideas", type: "text", text: "Ideas?" }] };
+    mockFetch(
+      routes([
+        taskRoute(ELECTIONS_SHOW_TASK, {
+          ...shown("tallied"),
+          manifest: m,
+          certified: {
+            certifiedAt: "2026-11-16T00:00:00Z",
+            auditAttestations: [],
+            result: {
+              electionId: "agm-2027",
+              manifestDigest: "zQmDigest",
+              ballotsCounted: 12,
+              head,
+              questions: [{ question: "ideas", text: ["Dark mode", "Offline voting"], abstained: 10 }],
+            },
+          },
+        }),
+      ]),
+    );
+    renderWithProviders(<Elections />, { route: "/elections/agm-2027", path: "/elections/*" });
+    expect(await screen.findByText("Offline voting")).toBeTruthy();
+    expect(screen.getByText(/10 ballots left this question blank/)).toBeTruthy();
+  });
+
   it("shows a binding creation as sent for approval", async () => {
     mockFetch(
       routes([
