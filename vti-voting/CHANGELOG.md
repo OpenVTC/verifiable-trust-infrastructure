@@ -2,6 +2,33 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.6.1](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-voting-v0.6.0...vti-voting-v0.6.1) — 2026-11-01
+
+
+### Added
+
+- **cnm**: Offline election manifest init and check ([#2365](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2365))
+
+`cnm elections manifest init --ballot-box <DID>` writes a starting manifest
+  for the community (one yes/no question, open voting by its members for a
+  week from tomorrow); `cnm elections manifest check <file>` checks one as the
+  community will and prints its digest. Neither opens a session: the
+  community's DID comes from --vtc-did or the profile.
+
+  check validates against the pinned vtc/elections/create/0.3 schema, then
+  runs vti_voting::rules::check_new_manifest, a new shared entry point for
+  everything a community checks that needs only the manifest and the clock:
+  the current 0.2 shape, check_manifest's cross-field rules (VTI-VOT-010,
+  VTI-VOT-060 – 064) and voting not already closed. The VTC's check_create now
+  calls the same function, so the offline check and the community cannot
+  drift; a 0.1-shaped manifest is refused by name at create instead of as a
+  missing field. What needs the community itself (trusted ballot box,
+  VTI-VOT-082; unused identifier) still waits for create.
+
+  An invalidManifest refusal from create now suggests the offline check.
+
+
+
 ## [0.6.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-voting-v0.4.0...vti-voting-v0.6.0) — 2026-10-30
 
 

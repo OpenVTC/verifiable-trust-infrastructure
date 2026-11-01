@@ -2,6 +2,214 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.17.1](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vtc-service-v0.17.0...vtc-service-v0.17.1) — 2026-11-01
+
+
+### Added
+
+- **vtc**: List the trusted ballot boxes, and choose one in the manifest builder ([#2370](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2370))
+
+Pins and serves vtc/elections/ballot-boxes/list/0.1 (trustoverip/dtgwg-trust-tasks-tf#998):
+  an elections manager reads the voting services the community trusts (VTI-VOT-082), each
+  with the operator and sameOperator that members are told when an election names it
+  (VTI-VOT-090). The answer is read from the same live [voting] configuration create checks
+  ballotBox against, so the two cannot disagree; a holder without vtc.elections.manage is
+  refused with permissionDenied (VTI-VOT-080).
+
+  - vtc-service: the handler (behind `voting`), the spine registration, a conformance
+    witness, and the proof census entry (the specification recommends a proof; the
+    capability check refuses an unsigned caller regardless).
+  - vtc-client: `elections_ballot_boxes`.
+  - cnm: `cnm elections ballot-boxes`, and the ballotBoxNotTrusted fix now points at it.
+  - Console: the manifest builder's ballot-box field is a choice from the list, noting when
+    the community's own operator runs the box; "Another DID…" keeps typing available, and a
+    VTC that does not serve the task falls back to the typed field. A typed DID the list
+    does not hold is flagged before create, since create would refuse it.
+
+- **vtc**: Vote from the member portal through the member's wallet ([#2367](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2367))
+
+The member portal gains an Elections page (`#/elections`,
+  `#/elections/<electionId>`): the elections the roll admits the member to,
+  each with its questions, schedule and disclosure (VTI-VOT-090), and buttons
+  to take a ticket and to vote.
+
+  Everything goes through the member's wallet (`window.vtaWallet.elections`,
+  OpenVTC/vta-browser-plugin#404), never the portal key and never a portal
+  route. The portal is the community's own code and knows who is signed in,
+  and the community is never trusted to learn how anyone voted (VTI-VOT-001),
+  so the ballot is filled in the wallet's own window, the member's VTA builds
+  and signs the cast under a key made for that cast alone, and the wallet
+  sends it to the ballot box itself after a random pause. After a vote the
+  page learns only that the wallet's window closed, and whether a ticket had
+  to be taken first — never whether a vote was cast. Voting with no ticket
+  held takes one and stops, so ticket and cast are apart in time.
+
+  No server change: the reads and the ticket request are the member's VTA's
+  `vta/pcs/voter/{read,register}` documents, which the community already
+  serves.
+
+- **cnm**: Offline election manifest init and check ([#2365](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2365))
+
+`cnm elections manifest init --ballot-box <DID>` writes a starting manifest
+  for the community (one yes/no question, open voting by its members for a
+  week from tomorrow); `cnm elections manifest check <file>` checks one as the
+  community will and prints its digest. Neither opens a session: the
+  community's DID comes from --vtc-did or the profile.
+
+  check validates against the pinned vtc/elections/create/0.3 schema, then
+  runs vti_voting::rules::check_new_manifest, a new shared entry point for
+  everything a community checks that needs only the manifest and the clock:
+  the current 0.2 shape, check_manifest's cross-field rules (VTI-VOT-010,
+  VTI-VOT-060 – 064) and voting not already closed. The VTC's check_create now
+  calls the same function, so the offline check and the community cannot
+  drift; a 0.1-shaped manifest is refused by name at create instead of as a
+  missing field. What needs the community itself (trusted ballot box,
+  VTI-VOT-082; unused identifier) still waits for create.
+
+  An invalidManifest refusal from create now suggests the offline check.
+
+- **vtc**: Guided election manifest builder in the admin console ([#2364](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2364))
+
+New election was a JSON textarea checked only for parsing, seeded with a
+  one-question sample. A manifest has fifteen required members, four question
+  shapes and rules between fields, and its digest binds every ticket and vote,
+  so a mistake found after registration means cancelling and starting again.
+
+  The console now builds it step by step (about, questions, who votes,
+  schedule, counting) and ends on a review showing the manifest, a summary
+  and the digest computed as the community computes it. As it goes it checks
+  what create would refuse with invalidManifest: the schema's bounds, pinned
+  to the vendored vtc/elections/create/0.3 bundle by a test, and the
+  cross-field rules of vti_voting::rules::check_manifest (VTI-VOT-010,
+  VTI-VOT-060 – 064). Create stays disabled until the review is clean; the
+  community still re-checks everything.
+
+  A previous election can seed a new one with a fresh identifier and
+  schedule. The JSON view is the same value; a manifest carrying something
+  the form does not edit stays there rather than being trimmed. The draft is
+  kept in the tab until created or discarded.
+
+  Also corrects the unsupportedSecrecy hint, which still said only open
+  elections are served.
+
+- **vtc**: Mark the join page's wallet code with data-oob-intent=join ([#2362](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2362))
+
+The join page's trigger link is the sign-in page's, so a browser wallet that
+  already signs in to the community signed the person straight in when they
+  clicked Join, with no way to join again as a new identity. The code's link now
+  carries data-oob-intent="join" on the join page only; the VTA Wallet extension
+  reads it and offers a new identity beside signing in. It changes only what the
+  wallet offers — the link, the request and the protocol are unchanged.
+
+- **vtc**: Refuse a join submission from a current member at submit ([#2360](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2360))
+
+A join request from a DID already in the community's ACL was accepted, queued
+  for review, and refused only when an administrator approved it (the admit
+  effect's duplicate-ACL guard). The administrator spent a review on a request
+  that could never be admitted, and the applicant was never told to sign in.
+
+  submit_inner now refuses it before anything is stored, answering
+  vtc/join-requests/submit:alreadyMember — consumer-minted under SPEC.md §8.5 like
+  requestAlreadyOpen, listed in the error-code census, and exported from vta-sdk
+  as JOIN_REQUEST_SUBMIT_ERR_ALREADY_MEMBER. "Current" means ACL-present, as for
+  invitations: a departed member may apply again.
+
+
+
+### Fixed
+
+- **vtc**: The Groups page speaks the console's form language ([#2376](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2376))
+
+The Groups screens were written with bare `<label>` wrappers and four
+  classes no stylesheet defines (`stack`, `inline-form`, `actions`, `kv`),
+  so labels ran inline with their controls, nothing had a consistent gap,
+  and every form read as a flat column. They now use the console's `Field`,
+  `form-stack`, `form-actions`, `.checkbox` and `table-card` shapes, with
+  short fields paired in a new `form-grid`, the lists on a group's page as
+  rows with their action on the right, and the collapsible cards
+  (settings, delete, where and how identities are published) with a
+  styled summary.
+
+  Two defects in the shared stylesheet surfaced on the way and are fixed
+  here, so every screen gains from them: an `<input>` with no `type` (most
+  of the console's) matched none of the input rules and rendered as the
+  browser's default; and a `<details class="card">` ignores `display:
+  flex`, so its contents had no gap. The same undefined classes in the
+  Directory screen, administrators' notes and the identity cards are
+  replaced too, as are `btn` / `danger` button classes elsewhere that
+  named nothing (`secondary` / `destructive`).
+
+- **vtc**: The console shows every kind of certified result ([#2375](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2375))
+
+The certified result drew only choice questions, so a text, ranking or
+  score question showed as its bare key ("q1") and nothing else. Text
+  answers held back below textReleaseThreshold (VTI-VOT-065) looked like a
+  missing result rather than a deliberate one.
+
+  Each question is now headed by its text, with option labels; ranking is a
+  per-place table, score an average, text the answers once released. A
+  withheld text question says how many ballots release it and why it is
+  held. The summary pluralises and says what the board's entries are.
+
+- **vtc**: Say plainly what members are told about an election, and what checkpoints are for ([#2373](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2373))
+
+The console's election page described the disclosure and the board
+  checkpoints in protocol terms ("Coercion: not resisted", "Heads of the
+  ballot box's board"), and the shared-operator warning overstated it: blind
+  tickets keep a ballot unlinkable from the data, and the real exposure is
+  matching by timing.
+
+  Rewrite each row as what it means for a member, and the checkpoints as
+  fingerprints certification checks the final board against.
+
+- **vtc**: The portal says where a member sees their vote ([#2374](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2374))
+
+The wallet now remembers a member's vote and shows it when its ballot
+  window is opened again, with a change-vote option where the election
+  allows one. The portal page still learns nothing (VTI-VOT-001), so its
+  button and the note after a vote say to open the wallet from here to see
+  or change the vote.
+
+- **vtc**: The portal's election cards open, whatever the title ([#2372](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2372))
+
+The console's manifest builder starts from `title: ""`, and the portal
+  named an election `title ?? electionId`, so an untitled election's only
+  link had no text and the card could not be opened. The green stage pill
+  read "Take your ticket", which looked like the action but is not one.
+
+  Name an election by its id when its title is empty, give each card an
+  explicit link to the election ("Open to take your ticket", "Open to
+  vote"), and label the stage "Tickets open".
+
+- **vtc**: Show the join page to a member already signed in to the portal ([#2363](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2363))
+
+The portal checked for a member session before it looked at ?join, so a signed-in
+  member who clicked Join landed on their own pages: no code, no wallet, and so
+  no way to join again as a separate identity (#2362 / vta-browser-plugin#398 were
+  never reached). /members/?join now shows the join page whatever the session,
+  saying who is signed in and linking to the member pages; a wallet sign-in from
+  it moves the browser on to /members/.
+
+- **admin-ui**: Passkey admin invites sign, and the wallet claim finds a late wallet ([#2359](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2359))
+
+Minting a passkey admin invite failed in the console with "JCS cannot
+  encode value of type undefined": the form sent { did: undefined }, and
+  the console signs over the JCS form, which refuses an undefined member.
+  A wallet invite failed the same way whenever the label was blank, and so
+  did regenerating a passkey invite. Optional members are now left out.
+
+  The tests missed it because the signed-post stand-in serialised with
+  JSON.stringify, which drops undefined silently; it now canonicalises
+  with the signer's JCS first, so the suite refuses what the signer does.
+
+  The install page read the wallet's presence once, at first render, but
+  the extension adds its provider as a module script that can run later,
+  so a wallet invitation showed no button at all in a browser that has
+  the wallet. The page now re-checks for a few seconds and on the wallet's
+  lifecycle events, and says what to do when it still cannot see it.
+
+
+
 ## [0.17.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vtc-service-v0.16.0...vtc-service-v0.17.0) — 2026-10-30
 
 
