@@ -84,6 +84,19 @@ already closed), then that it names this community. Only what needs the communit
 trusted ballot box (VTI-VOT-082) and an unused identifier — waits for `create`. Neither command
 opens a session; the community's DID comes from `--vtc-did` or the profile.
 
+### Voting from the member portal
+
+A member with the [VTA Wallet browser extension](website-and-admin.md#member-portal) votes from
+the portal's **Elections** page (`/members/#/elections`): it lists the elections the roll admits
+them to, shows each one's questions and disclosure, and hands off to the wallet to take a ticket
+and to vote. The ballot is filled in the wallet's own window, never the portal's page — the
+portal is this community's code, and the community never sees a ballot — and the wallet sends
+the cast to the ballot box itself, after a random pause, as `pnm` does. The page is not told
+whether a vote was cast. The wallet must be allowed to reach the ballot box's address (the
+`TrustTaskHTTPS` service in its DID document) from its popup.
+
+### From the command line, as a member
+
 A member, with their membership persona held by their VTA:
 
 ```sh

@@ -1204,6 +1204,23 @@ roles. A member whose wallet has no `git` channel is shown
 `cnm git link --forge <forge>`. Granting and revoking stay in `cnm git`
 and the console.
 
+**Elections** (`/members/#/elections`, `#/elections/<electionId>`). The
+elections the community lets the member vote in, each with what it asks,
+its schedule and how it is run (the disclosure members are shown before a
+ticket, VTI-VOT-090), and buttons to take a ticket and to vote. Everything
+goes through the member's wallet (`window.vtaWallet.elections`), never the
+portal key and never a portal route: this page is the community's own code
+and knows who is signed in, and the community is never trusted to learn how
+anyone voted. So the ballot is filled in the **wallet's own window**, the
+member's VTA builds and signs the cast under a key made for that cast alone,
+and the wallet sends it to the ballot box itself after a random pause —
+never through the community. After a vote the page is told only that the
+wallet's window closed (and whether a ticket had to be taken first), never
+whether a vote was cast; the wallet shows the outcome. Voting with no
+ticket held takes one and stops, so the two are apart in time. The wallet
+must be allowed to reach the ballot box's address from its popup. See
+[Community elections](elections.md#voting-from-the-member-portal).
+
 **Routing.** The mount is fixed at `/members` and takes precedence
 over an operator website's own `/members` path. In subdomain mode it
 is served on the **API's** host, since its calls go to `/v1/member/*`

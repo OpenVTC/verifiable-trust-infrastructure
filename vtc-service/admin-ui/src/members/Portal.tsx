@@ -4,7 +4,7 @@
 
 import { useEffect, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { BadgeCheck, BookUser, Boxes, GitBranch, LogOut, Sparkles } from "lucide-react";
+import { BadgeCheck, BookUser, Boxes, GitBranch, LogOut, Sparkles, Vote } from "lucide-react";
 
 import { MemberApiError, memberFetch, postMember, vtcDid, type MemberMe } from "./api";
 import { DirectoryPage, EntryPage, MyCardPage } from "./Directory";
@@ -12,6 +12,7 @@ import { GroupPage, GroupsPage } from "./Groups";
 import { listFields, showCard } from "./directory-api";
 import { MemberAvatar, nameOf, text } from "./member-card";
 import { ReposPage } from "./Repos";
+import { ElectionPage, ElectionsPage } from "./Elections";
 import { RoomPage, RoomsPage } from "./Rooms";
 import { Passkeys } from "./Passkeys";
 import { forgetMemberSessionKey } from "@/lib/console-key";
@@ -33,7 +34,8 @@ async function fetchMe(): Promise<MemberMe | null> {
 
 /** The portal's page, from the location hash: `#/rooms`, `#/rooms/<roomId>`,
  *  `#/directory`, `#/directory/<entryId>`, `#/card`, `#/groups`,
- *  `#/groups/<groupId>`, `#/repos`, else home. */
+ *  `#/groups/<groupId>`, `#/repos`, `#/elections`, `#/elections/<electionId>`,
+ *  else home. */
 export type Route =
   | { page: "home" }
   | { page: "rooms" }
@@ -43,12 +45,17 @@ export type Route =
   | { page: "card" }
   | { page: "groups" }
   | { page: "group"; groupId: string }
-  | { page: "repos" };
+  | { page: "repos" }
+  | { page: "elections" }
+  | { page: "election"; electionId: string };
 
 export function routeOf(hash: string): Route {
   const path = hash.replace(/^#/, "");
   if (path === "/rooms") return { page: "rooms" };
   if (path === "/repos") return { page: "repos" };
+  if (path === "/elections") return { page: "elections" };
+  const election = /^\/elections\/([A-Za-z0-9._-]{1,128})$/.exec(path);
+  if (election) return { page: "election", electionId: election[1]! };
   if (path === "/directory") return { page: "directory" };
   if (path === "/card") return { page: "card" };
   if (path === "/groups") return { page: "groups" };
@@ -149,7 +156,12 @@ export function Portal() {
  *  document names. */
 function SignedIn({ me }: { me: MemberMe }) {
   const route = useRoute();
-  const walletPage = route.page === "rooms" || route.page === "room" || route.page === "repos";
+  const walletPage =
+    route.page === "rooms" ||
+    route.page === "room" ||
+    route.page === "repos" ||
+    route.page === "elections" ||
+    route.page === "election";
   const host = useQuery({
     queryKey: ["community-did"],
     queryFn: async () => me.community.did ?? (await vtcDid()),
@@ -170,6 +182,10 @@ function SignedIn({ me }: { me: MemberMe }) {
     );
   }
   if (route.page === "repos") return <ReposPage hostDid={host.data} member={me.did} />;
+  if (route.page === "elections") return <ElectionsPage hostDid={host.data} member={me.did} />;
+  if (route.page === "election") {
+    return <ElectionPage hostDid={host.data} member={me.did} electionId={route.electionId} />;
+  }
   return route.page === "rooms" ? (
     <RoomsPage hostDid={host.data} member={me.did} />
   ) : (
@@ -338,6 +354,22 @@ function Home({ me }: { me: MemberMe }) {
           <p>
             <a className="btn btn-primary" href="#/repos">
               See your repositories
+            </a>
+          </p>
+        </section>
+
+        <section className="card" aria-labelledby="elections-card-heading">
+          <div className="card-head">
+            <Vote size={18} aria-hidden="true" />
+            <h2 id="elections-card-heading">Elections</h2>
+          </div>
+          <p className="muted">
+            Polls and elections you can vote in. Your wallet takes your ticket and holds your ballot, so this site never
+            sees how you voted.
+          </p>
+          <p>
+            <a className="btn btn-primary" href="#/elections">
+              See elections
             </a>
           </p>
         </section>

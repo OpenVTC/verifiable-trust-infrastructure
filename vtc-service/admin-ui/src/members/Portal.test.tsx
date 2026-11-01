@@ -415,6 +415,9 @@ describe("portal routes", () => {
     expect(routeOf("#/groups")).toEqual({ page: "groups" });
     expect(routeOf("#/repos")).toEqual({ page: "repos" });
     expect(routeOf("#/repos/github.com")).toEqual({ page: "home" });
+    expect(routeOf("#/elections")).toEqual({ page: "elections" });
+    expect(routeOf("#/elections/agm-2027")).toEqual({ page: "election", electionId: "agm-2027" });
+    expect(routeOf("#/elections/..%2Fx")).toEqual({ page: "home" });
     expect(routeOf("#/groups/grp_W5k2N8xRb3Qz7TpLAAAAAA")).toEqual({
       page: "group",
       groupId: "grp_W5k2N8xRb3Qz7TpLAAAAAA",

@@ -525,6 +525,13 @@ When adding a flow, add it here and a line to the root index.
   presentation or a key, and never import the extension's code: the wallet's
   gates (the page is the `SignInPortal` origin, rooms the member shared, each
   write confirmed) are the authorization (`data-rooms-files.md` §8.5).
+- **Elections in the portal** (`src/members/Elections.tsx`, `wallet-elections.ts`):
+  the pages talk only to the member's wallet (`window.vtaWallet.elections`). The
+  ballot is filled in the wallet's own window and the cast goes from the wallet to
+  the ballot box; never render a ballot here, add a `/v1/member/*` route or a
+  `signingScope` family that carries a choice, a ticket or a cast, or show the
+  page whether a vote was cast — the community is never trusted to learn how
+  anyone voted (VTI-VOT-001).
 - **Join page** (`/members/?join`, the landing page's *Join this community*):
   the sign-in page's wallet code, worded for a newcomer, with no
   membership-only option. It changes words only — the wallet decides from
