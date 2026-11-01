@@ -2,6 +2,53 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.50.1](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-cli-common-v0.50.0...vta-cli-common-v0.50.1) — 2026-11-01
+
+
+### Added
+
+- **vta-sdk**: Voter tasks in JSON forms that carry signed documents byte for byte ([#2371](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2371))
+
+The typed pcs_voter_* / pcs_vote* methods round-trip through generated
+  structs holding timestamps as chrono DateTimes: a manifest published with
+  `.000Z` reaches the VTA as `Z`, another manifest with another digest, so
+  the ticket is refused (VTI-VOT-001 depends on both sides digesting the same
+  manifest). Signed reads and casts coming back are re-serialised the same way.
+
+  Adds pcs_voter_{read,register,accept,receipt}_json and pcs_vote{,_encrypted}_json,
+  schema-checked like the typed forms, and notes the hazard on the typed ones.
+  pnm drops its private raw dispatch and uses them. A loopback test in
+  vta-service pins both: the JSON form sends the manifest as given, the typed
+  form rewrites it.
+
+
+
+### Fixed
+
+- **pnm**: Carry election documents exactly as received ([#2368](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2368))
+
+`pnm elections` asked the member's VTA through the SDK's typed
+  `pcs_voter_*` / `pcs_vote*` wrappers, which round-trip the payload and the
+  answer through generated structs holding timestamps as chrono `DateTime`s.
+  Two things could change in that round trip:
+
+  - the manifest sent to `voter/register` and `vote`: a manifest the
+    community published as `…T00:00:00.000Z` reached the VTA as
+    `…T00:00:00Z`, another manifest with another digest, so taking a ticket
+    was refused ("your VTA computed another manifest digest");
+  - the documents the VTA signed — the member's read, the ticket request,
+    the cast — came back re-serialised, no longer necessarily the bytes
+    their proofs cover.
+
+  Every voter task now goes through `dispatch_trust_task` with the payload
+  and the answer as JSON, so the manifest, the parameters and every signed
+  document are carried exactly as received. The community's ticket answer
+  reaches `voter/accept` without its `ext`, as that task requires.
+
+  Found while building the same flow in OpenVTC (OpenVTC/openvtc#514).
+
+
+
 ## [0.50.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-cli-common-v0.49.0...vta-cli-common-v0.50.0) — 2026-10-30
 
 

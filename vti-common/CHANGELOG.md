@@ -2,6 +2,31 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.53.1](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-common-v0.53.0...vti-common-v0.53.1) — 2026-11-01
+
+
+### Added
+
+- **voting-service**: GET /health and /health/ready ([#2366](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2366))
+
+The voting service served only `POST /trust-tasks`, so an operator had
+  no health path, and nothing showed whether the mediator session —
+  how communities register, close and cancel elections — was up.
+
+  - `vti_common::host_session::supervise_reporting`: `supervise`, also
+    reporting on a `watch` whether the identity is reachable through its
+    mediator. True only while a session is served and its socket reports
+    `ConnState::Connected`; false again on a socket drop, a lost session,
+    or return. Driven by the transport's own state, never latched (R6.2).
+    `supervise` is unchanged and delegates to it.
+  - `GET /health`: always 200 while serving, with `messaging` in the body.
+    For a proxy's upstream check: casts arrive over HTTPS and keep working
+    while the mediator is away, so this never pulls the cast door.
+  - `GET /health/ready`: 200 only while the mediator session is connected,
+    503 otherwise (and always without an `[identity]`). For alerting.
+
+
+
 ## [0.53.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-common-v0.52.0...vti-common-v0.53.0) — 2026-10-30
 
 

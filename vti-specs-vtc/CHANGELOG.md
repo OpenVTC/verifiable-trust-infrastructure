@@ -2,6 +2,32 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.1.1](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-specs-vtc-v0.1.0...vti-specs-vtc-v0.1.1) — 2026-11-01
+
+
+### Added
+
+- **vtc**: List the trusted ballot boxes, and choose one in the manifest builder ([#2370](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2370))
+
+Pins and serves vtc/elections/ballot-boxes/list/0.1 (trustoverip/dtgwg-trust-tasks-tf#998):
+  an elections manager reads the voting services the community trusts (VTI-VOT-082), each
+  with the operator and sameOperator that members are told when an election names it
+  (VTI-VOT-090). The answer is read from the same live [voting] configuration create checks
+  ballotBox against, so the two cannot disagree; a holder without vtc.elections.manage is
+  refused with permissionDenied (VTI-VOT-080).
+
+  - vtc-service: the handler (behind `voting`), the spine registration, a conformance
+    witness, and the proof census entry (the specification recommends a proof; the
+    capability check refuses an unsigned caller regardless).
+  - vtc-client: `elections_ballot_boxes`.
+  - cnm: `cnm elections ballot-boxes`, and the ballotBoxNotTrusted fix now points at it.
+  - Console: the manifest builder's ballot-box field is a choice from the list, noting when
+    the community's own operator runs the box; "Another DID…" keeps typing available, and a
+    VTC that does not serve the task falls back to the typed field. A typed DID the list
+    does not hold is flagged before create, since create would refuse it.
+
+
+
 ## [0.1.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/releases/tag/vti-specs-vtc-v0.1.0) — 2026-10-30
 
 

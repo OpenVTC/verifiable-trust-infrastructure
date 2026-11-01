@@ -2,6 +2,52 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.43.1](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/cnm-cli-v0.43.0...cnm-cli-v0.43.1) — 2026-11-01
+
+
+### Added
+
+- **vtc**: List the trusted ballot boxes, and choose one in the manifest builder ([#2370](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2370))
+
+Pins and serves vtc/elections/ballot-boxes/list/0.1 (trustoverip/dtgwg-trust-tasks-tf#998):
+  an elections manager reads the voting services the community trusts (VTI-VOT-082), each
+  with the operator and sameOperator that members are told when an election names it
+  (VTI-VOT-090). The answer is read from the same live [voting] configuration create checks
+  ballotBox against, so the two cannot disagree; a holder without vtc.elections.manage is
+  refused with permissionDenied (VTI-VOT-080).
+
+  - vtc-service: the handler (behind `voting`), the spine registration, a conformance
+    witness, and the proof census entry (the specification recommends a proof; the
+    capability check refuses an unsigned caller regardless).
+  - vtc-client: `elections_ballot_boxes`.
+  - cnm: `cnm elections ballot-boxes`, and the ballotBoxNotTrusted fix now points at it.
+  - Console: the manifest builder's ballot-box field is a choice from the list, noting when
+    the community's own operator runs the box; "Another DID…" keeps typing available, and a
+    VTC that does not serve the task falls back to the typed field. A typed DID the list
+    does not hold is flagged before create, since create would refuse it.
+
+- **cnm**: Offline election manifest init and check ([#2365](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2365))
+
+`cnm elections manifest init --ballot-box <DID>` writes a starting manifest
+  for the community (one yes/no question, open voting by its members for a
+  week from tomorrow); `cnm elections manifest check <file>` checks one as the
+  community will and prints its digest. Neither opens a session: the
+  community's DID comes from --vtc-did or the profile.
+
+  check validates against the pinned vtc/elections/create/0.3 schema, then
+  runs vti_voting::rules::check_new_manifest, a new shared entry point for
+  everything a community checks that needs only the manifest and the clock:
+  the current 0.2 shape, check_manifest's cross-field rules (VTI-VOT-010,
+  VTI-VOT-060 – 064) and voting not already closed. The VTC's check_create now
+  calls the same function, so the offline check and the community cannot
+  drift; a 0.1-shaped manifest is refused by name at create instead of as a
+  missing field. What needs the community itself (trusted ballot box,
+  VTI-VOT-082; unused identifier) still waits for create.
+
+  An invalidManifest refusal from create now suggests the offline check.
+
+
+
 ## [0.43.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/cnm-cli-v0.42.0...cnm-cli-v0.43.0) — 2026-10-30
 
 

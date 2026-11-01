@@ -2,6 +2,40 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.77.1](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-sdk-v0.77.0...vta-sdk-v0.77.1) — 2026-11-01
+
+
+### Added
+
+- **vta-sdk**: Voter tasks in JSON forms that carry signed documents byte for byte ([#2371](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2371))
+
+The typed pcs_voter_* / pcs_vote* methods round-trip through generated
+  structs holding timestamps as chrono DateTimes: a manifest published with
+  `.000Z` reaches the VTA as `Z`, another manifest with another digest, so
+  the ticket is refused (VTI-VOT-001 depends on both sides digesting the same
+  manifest). Signed reads and casts coming back are re-serialised the same way.
+
+  Adds pcs_voter_{read,register,accept,receipt}_json and pcs_vote{,_encrypted}_json,
+  schema-checked like the typed forms, and notes the hazard on the typed ones.
+  pnm drops its private raw dispatch and uses them. A loopback test in
+  vta-service pins both: the JSON form sends the manifest as given, the typed
+  form rewrites it.
+
+- **vtc**: Refuse a join submission from a current member at submit ([#2360](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2360))
+
+A join request from a DID already in the community's ACL was accepted, queued
+  for review, and refused only when an administrator approved it (the admit
+  effect's duplicate-ACL guard). The administrator spent a review on a request
+  that could never be admitted, and the applicant was never told to sign in.
+
+  submit_inner now refuses it before anything is stored, answering
+  vtc/join-requests/submit:alreadyMember — consumer-minted under SPEC.md §8.5 like
+  requestAlreadyOpen, listed in the error-code census, and exported from vta-sdk
+  as JOIN_REQUEST_SUBMIT_ERR_ALREADY_MEMBER. "Current" means ACL-present, as for
+  invitations: a departed member may apply again.
+
+
+
 ## [0.77.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-sdk-v0.76.0...vta-sdk-v0.77.0) — 2026-10-30
 
 
