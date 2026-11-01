@@ -591,6 +591,49 @@ async fn an_election_is_created_registered_shown_and_a_member_takes_a_ticket_bli
     assert_eq!(tt_error_code(&late), ISSUE_ERR_NOT_OPEN, "{late}");
 }
 
+/// `vtc/elections/ballot-boxes/list/0.1`: the trusted ballot boxes, exactly the list create
+/// checks against, with what members are told about each — to managers only (items 1 – 4).
+#[tokio::test]
+async fn the_trusted_ballot_boxes_are_listed_to_managers_only() {
+    let tv = community(InProcessBox::new()).await;
+    let chair = admin(&tv).await;
+    let (status, listed) = call(&tv, &chair, &uri("ballot-boxes/list"), json!({})).await;
+    assert_eq!(status, StatusCode::OK, "{listed}");
+    assert_eq!(
+        payload(&listed)["ballotBoxes"],
+        json!([{ "did": BOX, "operator": "Independent Ballots Ltd", "sameOperator": false }])
+    );
+    // What is listed is what create accepts.
+    let (status, created) = create(&tv, &chair, manifest("agm", false)).await;
+    assert_eq!(status, StatusCode::OK, "{created}");
+
+    // A member is refused (item 1).
+    let alice = member(&tv).await;
+    let (_, denied) = call(&tv, &alice, &uri("ballot-boxes/list"), json!({})).await;
+    assert_eq!(tt_error_code(&denied), "permissionDenied", "{denied}");
+
+    // A filter is out of schema: the list is every trusted ballot box.
+    let (_, malformed) = call(
+        &tv,
+        &chair,
+        &uri("ballot-boxes/list"),
+        json!({ "did": BOX }),
+    )
+    .await;
+    assert_eq!(tt_error_code(&malformed), "malformedRequest", "{malformed}");
+
+    // None trusted: an empty list, never nothing (item 4).
+    let none = TestVtc::builder()
+        .with_signers(true)
+        .with_elections(VotingConfig::default(), InProcessBox::new())
+        .build()
+        .await;
+    let chair = admin(&none).await;
+    let (status, listed) = call(&none, &chair, &uri("ballot-boxes/list"), json!({})).await;
+    assert_eq!(status, StatusCode::OK, "{listed}");
+    assert_eq!(payload(&listed)["ballotBoxes"], json!([]));
+}
+
 /// SPEC §4.4.1: a request's `#request` fragment is optional, so a document typed with it routes
 /// exactly as the bare form does.
 #[tokio::test]

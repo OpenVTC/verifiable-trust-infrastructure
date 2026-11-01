@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { Elections } from "@/plugins/elections";
 import {
+  ELECTIONS_BALLOT_BOXES_LIST_TASK,
   ELECTIONS_CERTIFY_TASK,
   ELECTIONS_CREATE_TASK,
   ELECTIONS_LIST_TASK,
@@ -222,6 +223,55 @@ describe("Elections", () => {
       expect((screen.getByRole("button", { name: "Create" }) as HTMLButtonElement).disabled).toBe(true);
       fireEvent.click(screen.getByRole("button", { name: "Go to Counting" }));
       expect(screen.getByLabelText(/^Ballot box DID/)).toBeTruthy();
+    });
+
+    describe("with the trusted ballot boxes listed", () => {
+      const OWN = "did:webvh:QmOwnBox:votes.community.example";
+      const listing = (ballotBoxes: object[]): MockRoute[] => [
+        taskRoute("https://trusttasks.org/spec/trust-task-discovery/0.3", {
+          supportedTypes: [ELECTIONS_LIST_TASK, ELECTIONS_BALLOT_BOXES_LIST_TASK],
+        }),
+        taskRoute(ELECTIONS_BALLOT_BOXES_LIST_TASK, { ballotBoxes }),
+      ];
+      const boxes = [
+        { did: BOX, operator: "Ballots Example Ltd", sameOperator: false },
+        { did: OWN, operator: "Community Example Hosting", sameOperator: true },
+      ];
+
+      it("offers them to choose from, and says when one operator runs both", async () => {
+        mockFetch([...listing(boxes), ...routes()]);
+        renderWithProviders(<Elections />, { route: "/elections/new", path: "/elections/*" });
+        fireEvent.click(await screen.findByRole("button", { name: /Counting/ }));
+        const select = (await screen.findByLabelText(/^Ballot box/)) as HTMLSelectElement;
+        expect(select.tagName).toBe("SELECT");
+        fireEvent.change(select, { target: { value: OWN } });
+        expect(screen.getByText(/runs both this community and this ballot box/)).toBeTruthy();
+        fireEvent.change(select, { target: { value: BOX } });
+        expect(screen.queryByText(/runs both this community and this ballot box/)).toBeNull();
+        fireEvent.click(screen.getByRole("button", { name: /Review/ }));
+        expect(screen.queryByText("Not one of this community's trusted ballot boxes.")).toBeNull();
+      });
+
+      it("still takes a typed DID, and says when it is not trusted", async () => {
+        mockFetch([...listing(boxes), ...routes()]);
+        renderWithProviders(<Elections />, { route: "/elections/new", path: "/elections/*" });
+        fireEvent.click(await screen.findByRole("button", { name: /Counting/ }));
+        const select = await screen.findByLabelText(/^Ballot box/);
+        fireEvent.change(select, { target: { value: "\u0000other" } });
+        fireEvent.change(screen.getByLabelText(/^Ballot box DID/), {
+          target: { value: "did:web:elsewhere.example" },
+        });
+        expect(screen.getByText("Not one of this community's trusted ballot boxes.")).toBeTruthy();
+        fireEvent.click(screen.getByRole("button", { name: "Choose from the trusted ballot boxes" }));
+        expect((screen.getByLabelText(/^Ballot box/) as HTMLSelectElement).tagName).toBe("SELECT");
+      });
+
+      it("says so when the community trusts none", async () => {
+        mockFetch([...listing([]), ...routes()]);
+        renderWithProviders(<Elections />, { route: "/elections/new", path: "/elections/*" });
+        fireEvent.click(await screen.findByRole("button", { name: /Counting/ }));
+        expect(await screen.findByText(/trusts no ballot box yet/)).toBeTruthy();
+      });
     });
 
     it("keeps the draft in this tab across a reload", async () => {
