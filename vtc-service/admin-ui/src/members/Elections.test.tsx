@@ -130,9 +130,9 @@ describe("one election", () => {
     await screen.findByText("Who chairs?");
     expect(screen.getByText(/Independent Ballots Ltd/)).toBeTruthy();
     expect(screen.queryByText("Take my ticket")).toBeNull();
-    fireEvent.click(await screen.findByRole("button", { name: "Vote in my wallet" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Vote, or see my vote, in my wallet" }));
     await waitFor(() => expect(wallet.vote).toHaveBeenCalledWith({ hostDid: HOST, electionId: "agm-2027", member: ME }));
-    await screen.findByText(/this site isn.t told/);
+    await screen.findByText(/This site isn.t told/);
     expect(screen.queryByRole("radio")).toBeNull();
   });
 
@@ -166,7 +166,7 @@ describe("one election", () => {
       ),
     });
     renderWith(<ElectionPage hostDid={HOST} member={ME} electionId="agm-2027" />);
-    const vote = (await screen.findByRole("button", { name: "Vote in my wallet" })) as HTMLButtonElement;
+    const vote = (await screen.findByRole("button", { name: "Vote, or see my vote, in my wallet" })) as HTMLButtonElement;
     expect(vote.disabled).toBe(true);
     expect(screen.getByText(/same operator runs this community/)).toBeTruthy();
   });
