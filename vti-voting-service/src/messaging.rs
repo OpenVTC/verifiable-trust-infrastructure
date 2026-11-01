@@ -9,7 +9,7 @@
 use std::sync::Arc;
 
 use serde_json::Value;
-pub use vti_common::host_session::{IdentitySession, Shared, supervise};
+pub use vti_common::host_session::{IdentitySession, Shared, supervise, supervise_reporting};
 
 use crate::dispatch::{self, AppState};
 
