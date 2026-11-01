@@ -318,3 +318,33 @@ fn a_0_1_manifest_is_refused_by_name() {
     assert!(err.contains("register/0.1"), "{err}");
     assert!(err.contains("agm") || err.contains("election"), "{err}");
 }
+
+/// What a community checks of a manifest it is asked to create, needing only the manifest and
+/// the clock: the current shape, the rules, and voting not already closed.
+#[test]
+fn vot_010_a_new_manifest_is_checked_against_the_clock() {
+    use vti_voting::rules::check_new_manifest;
+    let v = manifest_json();
+    let before_close = "2026-11-07T17:59:59Z".parse().unwrap();
+    let at_close = "2026-11-07T18:00:00Z".parse().unwrap();
+    let m = check_new_manifest(&v, before_close).expect("open until votingClosesAt");
+    assert_eq!(m.election_id.as_str(), "agm-2027");
+    let err = check_new_manifest(&v, at_close).unwrap_err().to_string();
+    assert!(err.contains("votingClosesAt is already past"), "{err}");
+
+    let mut bad = v.clone();
+    bad["questions"][1]["maxSelections"] = json!(4);
+    let err = check_new_manifest(&bad, before_close)
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("workshop"), "{err}");
+
+    let mut old = v.clone();
+    let closes = old["votingClosesAt"].take();
+    old.as_object_mut().unwrap().remove("votingClosesAt");
+    old["votingCloses"] = closes;
+    let err = check_new_manifest(&old, before_close)
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("register/0.1"), "{err}");
+}

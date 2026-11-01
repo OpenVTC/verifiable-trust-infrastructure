@@ -7,13 +7,21 @@
 //! - `list` and `show` read them, `close` and `cancel` end them, and `certify` asks the
 //!   community to verify the ballot box's board from its own voting key and record the result.
 //!
-//! They travel as `cnm access` does ([`vtc_target::connect_for_tasks`]), signed with this
+//! - `manifest init` writes a starting manifest and `manifest check` checks one, both offline:
+//!   `check` validates it against the pinned `vtc/elections/create` schema and runs
+//!   [`vti_voting::rules::check_new_manifest`] — the checks the community runs that need nothing
+//!   but the manifest and the clock — plus that it names this community. What only the community
+//!   knows (its trusted ballot boxes, the identifiers it has used) is checked on `create`.
+//!
+//! The rest travel as `cnm access` does ([`vtc_target::connect_for_tasks`]), signed with this
 //! profile's own key. Members take tickets and vote through their own VTA, never through here.
 
 use std::path::PathBuf;
 
+use chrono::{DateTime, Duration, DurationRound, Utc};
 use clap::Subcommand;
-use serde_json::Value;
+use serde_json::{Value, json};
+use trust_tasks_rs::validate::ValidatedPayload;
 use vta_cli_common::render::{
     BOLD, DIM, GREEN, RESET, YELLOW, bin_name, is_json_output, print_json,
 };
@@ -27,6 +35,11 @@ type CliResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 
 #[derive(Subcommand)]
 pub enum ElectionsCommands {
+    /// Write or check a manifest, offline: nothing is sent.
+    Manifest {
+        #[command(subcommand)]
+        command: ManifestCommands,
+    },
     /// Create an election from its manifest (a JSON file, `voting/_shared` `Manifest`).
     Create {
         /// The manifest. Sent exactly as written: its digest is what every ticket and cast is
@@ -64,13 +77,185 @@ pub enum ElectionsCommands {
     },
 }
 
-/// Run one `cnm elections` command. The session is closed on every path out.
+#[derive(Subcommand)]
+pub enum ManifestCommands {
+    /// Write a starting manifest for this community: one yes/no question, open voting by its
+    /// members for a week from tomorrow. Edit it, `check` it, then `create` it.
+    Init {
+        /// The voting service that will hold the board: one of this community's trusted
+        /// ballot boxes (`[voting] trusted_ballot_boxes` in the VTC's configuration).
+        #[arg(long)]
+        ballot_box: String,
+        /// The election's identifier (letters, digits, `.`, `-`, `_`). Default: `poll-<today>`.
+        #[arg(long)]
+        id: Option<String>,
+        #[arg(long)]
+        title: Option<String>,
+        /// Where to write it. Default: standard output.
+        #[arg(long, short)]
+        out: Option<PathBuf>,
+        /// Replace `--out` if it exists.
+        #[arg(long)]
+        force: bool,
+    },
+    /// Check a manifest as the community will: its schema, the rules between its fields, that
+    /// voting has not closed, and that it names this community. Prints its digest.
+    Check { manifest: PathBuf },
+}
+
+/// A starting manifest: one yes/no question, tickets from `now`, voting for a week from a day
+/// after the next whole hour.
+pub fn starter_manifest(
+    community: &str,
+    ballot_box: &str,
+    id: Option<&str>,
+    title: Option<&str>,
+    now: DateTime<Utc>,
+) -> Value {
+    let rfc3339 = |t: DateTime<Utc>| t.to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+    let next_hour = now.duration_trunc(Duration::hours(1)).unwrap_or(now) + Duration::hours(1);
+    let opens = next_hour + Duration::days(1);
+    let mut m = json!({
+        "electionId": id.map_or_else(|| format!("poll-{}", now.format("%Y-%m-%d")), str::to_string),
+        "community": community,
+        "questions": [{
+            "key": "q1",
+            "type": "choice",
+            "text": "",
+            "options": [{ "key": "yes", "label": "Yes" }, { "key": "no", "label": "No" }],
+            "minSelections": 1,
+            "maxSelections": 1,
+            "optional": true
+        }],
+        "secrecy": "open",
+        "roll": { "rule": "members" },
+        "registrationOpensAt": rfc3339(now),
+        "votingOpensAt": rfc3339(opens),
+        "votingClosesAt": rfc3339(opens + Duration::days(7)),
+        "revote": "replace",
+        "board": { "visibility": "public", "auditors": [] },
+        "ballotBox": ballot_box,
+        "binding": false,
+        "allowEarlyClose": false,
+        "resultsBeforeClose": false,
+        "textReleaseThreshold": 10
+    });
+    if let Some(t) = title {
+        m["title"] = json!(t);
+    }
+    m
+}
+
+/// What `manifest check` finds: the digest of a manifest that passes, or the first problem.
+///
+/// # Errors
+/// The first problem, as the community would name it.
+pub fn check_manifest_offline(
+    manifest: &Value,
+    community: &str,
+    now: DateTime<Utc>,
+) -> Result<String, String> {
+    create::Payload::validate_value(&json!({ "manifest": manifest }))
+        .map_err(|e| format!("out of schema (vtc/elections/create/0.3): {e}"))?;
+    let m = vti_voting::rules::check_new_manifest(manifest, now).map_err(|e| e.to_string())?;
+    if m.community.as_str() != community {
+        return Err(format!(
+            "community is {}, not this community ({community}): a community creates only its own \
+             elections",
+            m.community.as_str()
+        ));
+    }
+    let digest = vti_voting::rules::manifest_digest(manifest).map_err(|e| e.to_string())?;
+    Ok(vti_voting::rules::digest_multibase(&digest))
+}
+
+/// Run a `cnm elections manifest` command for the community whose DID is `community`. Offline:
+/// nothing is sent and no session is opened.
+pub fn run_manifest(command: ManifestCommands, community: &str) -> CliResult {
+    let bin = bin_name();
+    match command {
+        ManifestCommands::Init {
+            ballot_box,
+            id,
+            title,
+            out,
+            force,
+        } => {
+            let m = starter_manifest(
+                community,
+                &ballot_box,
+                id.as_deref(),
+                title.as_deref(),
+                Utc::now(),
+            );
+            let text = format!("{}\n", serde_json::to_string_pretty(&m)?);
+            let Some(path) = out else {
+                print!("{text}");
+                return Ok(());
+            };
+            if path.exists() && !force {
+                return Err(format!(
+                    "{} exists. Pass --force to replace it, or choose another --out.",
+                    path.display()
+                )
+                .into());
+            }
+            std::fs::write(&path, text)
+                .map_err(|e| format!("could not write {}: {e}", path.display()))?;
+            if is_json_output() {
+                return Ok(print_json(
+                    &json!({ "written": path.display().to_string() }),
+                )?);
+            }
+            println!("{GREEN}wrote{RESET} {}", path.display());
+            println!(
+                "  {DIM}set the question, the schedule and who votes; then{RESET}\n  \
+                 {bin} elections manifest check {p}\n  {bin} elections create {p}",
+                p = path.display()
+            );
+            Ok(())
+        }
+        ManifestCommands::Check { manifest } => {
+            let m = read_json(&manifest)?;
+            let outcome = check_manifest_offline(&m, community, Utc::now());
+            if is_json_output() {
+                print_json(&match &outcome {
+                    Ok(digest) => json!({ "ok": true, "manifestDigest": digest }),
+                    Err(problem) => json!({ "ok": false, "problem": problem }),
+                })?;
+                return outcome.map(|_| ()).map_err(Into::into);
+            }
+            match outcome {
+                Ok(digest) => {
+                    println!(
+                        "{GREEN}ok{RESET} {BOLD}{}{RESET} — manifest {digest}",
+                        m["electionId"].as_str().unwrap_or_default()
+                    );
+                    println!(
+                        "  {DIM}on create the community also checks that the ballot box is one it \
+                         trusts and that the identifier is unused{RESET}"
+                    );
+                    Ok(())
+                }
+                Err(problem) => {
+                    Err(format!("{} does not pass: {problem}", manifest.display()).into())
+                }
+            }
+        }
+    }
+}
+
+/// Run one `cnm elections` command. The session is closed on every path out; `manifest`
+/// opens none.
 pub async fn run(
     command: ElectionsCommands,
     keyring_key: &str,
     target: &VtcTarget,
     transport: TransportChoice,
 ) -> CliResult {
+    if let ElectionsCommands::Manifest { command } = command {
+        return run_manifest(command, &target.did);
+    }
     let vtc = vtc_target::connect_for_tasks(keyring_key, target, transport).await?;
     let outcome = run_command(command, &vtc, keyring_key).await;
     vtc.client.shutdown().await;
@@ -87,6 +272,9 @@ async fn run_command(command: ElectionsCommands, vtc: &Connected, keyring_key: &
     let key = crate::access::signing_key(keyring_key)?;
     let c = &vtc.client;
     match command {
+        ElectionsCommands::Manifest { .. } => {
+            unreachable!("`manifest` is answered in `run`, before a session is opened")
+        }
         ElectionsCommands::Create { manifest } => {
             let manifest = read_json(&manifest)?;
             let id = manifest["electionId"]
@@ -292,6 +480,10 @@ fn suggested_fix(code: &str, election_id: &str, ballot_box: Option<&str>) -> Opt
             "this community already holds an election called {election_id}. Pick another \
              electionId, or see it with:\n  {bin} elections show {election_id}"
         ),
+        c if c == create::error_codes::INVALID_MANIFEST.code => format!(
+            "the manifest breaks the rule named below. Check it offline until it passes, then \
+             create it again:\n  {bin} elections manifest check <manifest.json>"
+        ),
         c if c == certify::error_codes::NOT_TALLIED.code => format!(
             "the ballot box has not published a final result yet. Check where it stands with:\n  \
              {bin} elections show {election_id}"
@@ -348,6 +540,74 @@ mod tests {
         let fix = suggested_fix(code, "agm", Some("did:web:ballots.example")).unwrap();
         assert!(fix.contains("[[voting.trusted_ballot_boxes]]"), "{fix}");
         assert!(fix.contains("did = \"did:web:ballots.example\""), "{fix}");
+    }
+
+    const COMMUNITY: &str = "did:webvh:QmCommunity:community.example";
+    const BOX: &str = "did:webvh:QmBallots:votes.example.net";
+
+    fn now() -> DateTime<Utc> {
+        "2027-03-04T10:20:30Z".parse().unwrap()
+    }
+
+    #[test]
+    fn the_starter_manifest_passes_as_written() {
+        let m = starter_manifest(COMMUNITY, BOX, Some("agm-2027"), Some("AGM"), now());
+        assert_eq!(m["electionId"], "agm-2027");
+        assert_eq!(m["title"], "AGM");
+        assert_eq!(m["registrationOpensAt"], "2027-03-04T10:20:30Z");
+        assert_eq!(m["votingOpensAt"], "2027-03-05T11:00:00Z");
+        assert_eq!(m["votingClosesAt"], "2027-03-12T11:00:00Z");
+        let digest = check_manifest_offline(&m, COMMUNITY, now()).unwrap();
+        assert!(digest.starts_with('z'), "{digest}");
+        let defaulted = starter_manifest(COMMUNITY, BOX, None, None, now());
+        assert_eq!(defaulted["electionId"], "poll-2027-03-04");
+        assert!(defaulted.get("title").is_none());
+    }
+
+    #[test]
+    fn check_names_what_the_community_would_refuse() {
+        let m = starter_manifest(COMMUNITY, BOX, None, None, now());
+
+        let mut out_of_schema = m.clone();
+        out_of_schema["secrecy"] = json!("secret");
+        let e = check_manifest_offline(&out_of_schema, COMMUNITY, now()).unwrap_err();
+        assert!(e.starts_with("out of schema"), "{e}");
+
+        let mut bounds = m.clone();
+        bounds["questions"][0]["maxSelections"] = json!(3);
+        let e = check_manifest_offline(&bounds, COMMUNITY, now()).unwrap_err();
+        assert!(
+            e.contains("minSelections <= maxSelections <= options"),
+            "{e}"
+        );
+
+        let later = now() + Duration::days(30);
+        let e = check_manifest_offline(&m, COMMUNITY, later).unwrap_err();
+        assert!(e.contains("votingClosesAt is already past"), "{e}");
+
+        let e = check_manifest_offline(&m, "did:web:other.example", now()).unwrap_err();
+        assert!(e.contains("not this community"), "{e}");
+    }
+
+    #[test]
+    fn check_and_the_community_agree_on_the_digest() {
+        let m = starter_manifest(COMMUNITY, BOX, None, None, now());
+        let expected =
+            vti_voting::rules::digest_multibase(&vti_voting::rules::manifest_digest(&m).unwrap());
+        assert_eq!(
+            check_manifest_offline(&m, COMMUNITY, now()).unwrap(),
+            expected
+        );
+    }
+
+    #[test]
+    fn an_invalid_manifest_points_at_the_offline_check() {
+        let code = declared_code(&refused(create::error_codes::INVALID_MANIFEST.code)).unwrap();
+        assert!(
+            suggested_fix(code, "agm", None)
+                .unwrap()
+                .contains("elections manifest check")
+        );
     }
 
     #[test]

@@ -75,6 +75,15 @@ An administrator: `cnm elections create <manifest.json>`, `list`, `show <id>`,
 `close <id>`, `cancel <id> --reason …`, `certify <id> [--attestation <vc.json>]…`. The
 admin console has the same under **Governance → Elections**.
 
+`cnm elections manifest init --ballot-box <DID> [--id …] [--title …] [--out <file>]` writes a
+starting manifest for the community — one yes/no question, open voting by its members for a
+week from tomorrow — and `cnm elections manifest check <file>` checks one offline, printing its
+digest: the schema of `vtc/elections/create/0.3`, then `vti_voting::rules::check_new_manifest`
+(the same function the community runs on create: the rules between fields and voting not
+already closed), then that it names this community. Only what needs the community itself — a
+trusted ballot box (VTI-VOT-082) and an unused identifier — waits for `create`. Neither command
+opens a session; the community's DID comes from `--vtc-did` or the profile.
+
 A member, with their membership persona held by their VTA:
 
 ```sh
