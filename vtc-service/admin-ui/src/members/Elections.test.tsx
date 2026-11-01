@@ -107,6 +107,15 @@ describe("the list", () => {
     expect(screen.getByText(/you have your ticket/)).toBeTruthy();
   });
 
+  it("an election with an empty title is named by its id and opens from its card", async () => {
+    withWallet({ list: vi.fn(async () => ({ elections: [listed({ title: "", ticketHeld: false, state: "registration", votingOpensAt: iso(Date.now() + HOUR), votingClosesAt: iso(Date.now() + 2 * HOUR) })] })) });
+    renderWith(<ElectionsPage hostDid={HOST} member={ME} />);
+    const named = await screen.findByRole("link", { name: "agm-2027" });
+    const open = screen.getByRole("link", { name: "Open to take your ticket" });
+    expect(open.getAttribute("href")).toBe(named.getAttribute("href"));
+    expect(screen.getByText("Tickets open")).toBeTruthy();
+  });
+
   it("shows the wallet's refusal", async () => {
     withWallet({ list: vi.fn(async () => Promise.reject(new Error("The wallet holds no identity you use at this community."))) });
     renderWith(<ElectionsPage hostDid={HOST} member={ME} />);

@@ -65,6 +65,14 @@ function StagePill({ election }: { election: Pick<PageElection, "state" | "votin
   return <span className={ok ? "pill pill-ok" : "pill"}>{STAGE_LABEL[stage]}</span>;
 }
 
+/** What opening an election from the list lets the member do there. */
+function openLabel(e: PageElection): string {
+  const stage = stageOf(e);
+  if (stage === "voting") return "Open to vote";
+  if (stage === "ticketsOpen" && !e.ticketHeld) return "Open to take your ticket";
+  return "Open";
+}
+
 // ── The list ────────────────────────────────────────────────────────────────
 
 /** `member`: the DID signed in to this portal — who the wallet acts as here. */
@@ -105,7 +113,7 @@ function ElectionList({ wallet, hostDid, member }: { wallet: WalletElections; ho
           <div className="card-head">
             <Vote size={18} aria-hidden="true" />
             <h2>
-              <a href={electionHref(e.electionId)}>{e.title ?? e.electionId}</a>
+              <a href={electionHref(e.electionId)}>{e.title || e.electionId}</a>
             </h2>
             <StagePill election={e} />
           </div>
@@ -114,6 +122,9 @@ function ElectionList({ wallet, hostDid, member }: { wallet: WalletElections; ho
             {e.binding ? " · binding" : ""}
             {e.ticketHeld ? " · you have your ticket" : ""}
           </p>
+          <a className="btn btn-ghost btn-sm" href={electionHref(e.electionId)}>
+            {openLabel(e)}
+          </a>
         </li>
       ))}
     </ul>
@@ -181,7 +192,7 @@ function ElectionDetail({
         <p className="eyebrow">
           Election <StagePill election={e} />
         </p>
-        <h1>{e.title ?? e.electionId}</h1>
+        <h1>{e.title || e.electionId}</h1>
         {e.description && <p className="lead election-description">{e.description}</p>}
       </section>
 
