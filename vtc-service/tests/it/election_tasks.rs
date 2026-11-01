@@ -1476,3 +1476,252 @@ async fn an_open_election_runs_against_a_real_ballot_box_over_a_mediator() {
     let _ = tokio::time::timeout(std::time::Duration::from_secs(15), session).await;
     h.shutdown().await;
 }
+
+/// The whole member path, end to end: a member votes with `pnm elections` through their own
+/// VTA, against this community and a real voting service.
+///
+/// - The community is this VTC, served over HTTP for the member and over the harness's
+///   mediator for the ballot box (registration, close and certification travel as the
+///   community, VTI-VOT-005).
+/// - The ballot box is the voting service's own host session on that mediator, and its
+///   HTTPS door on a loopback port, both named in its DID document.
+/// - The member is a key their VTA (`MockVta`) holds. `pnm`'s own `cmd_ticket` and `cmd_vote`
+///   have the VTA sign the reads and the ticket request as the member, unblind the ticket,
+///   build the cast under a one-time key, post it to the ballot box and keep the receipt.
+///
+/// Certification then re-verifies the board from the community's own key: the member's vote is
+/// on it, counted once, and the community never saw it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_member_votes_from_pnm_through_their_own_vta() {
+    use affinidi_did_resolver_cache_sdk::{DIDCacheClient, config::DIDCacheConfigBuilder};
+    use affinidi_tdk::dids::{
+        DID, KeyType, OneOrMany, PeerKeyRole, PeerService, PeerServiceEndpoint,
+        PeerServiceEndpointLong,
+    };
+    use vta_cli_common::commands::elections::{VoteTarget, cmd_ticket, cmd_vote};
+    use vta_sdk::client::{CreateContextRequest, CreateKeyRequest};
+    use vta_sdk::keys::KeyType as VtaKeyType;
+    use vta_service::test_support::MockVta;
+    use vtc_service::test_support::MockVtcTransport;
+    use vti_voting_service::{
+        AppState as BoxState,
+        identity::Identity,
+        messaging::{BallotBoxResponder, IdentitySession, Shared, supervise},
+    };
+
+    const CTX: &str = "member";
+
+    // The member's VTA, holding the member's key.
+    let vta = MockVta::start_provisionable().await;
+    let client = vta.signing_client(0x61, "admin", Vec::new()).await;
+    client
+        .create_context(CreateContextRequest::new(CTX, "Membership"))
+        .await
+        .expect("the member's context");
+    let key = client
+        .create_key(CreateKeyRequest {
+            key_type: VtaKeyType::Ed25519,
+            derivation_path: None,
+            key_id: Some("member".into()),
+            mnemonic: None,
+            label: None,
+            context_id: Some(CTX.into()),
+            internal: None,
+        })
+        .await
+        .expect("the member's key");
+    let member_did = format!("did:key:{}", key.public_key);
+
+    // The community, served over HTTP as a member reaches it.
+    let h = MockVtcTransport::start_with_elections(VotingConfig::default()).await;
+    let community = h.vtc_did().to_string();
+    let vtc_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let vtc_url = format!("http://{}/v1", vtc_listener.local_addr().unwrap());
+    let vtc_router = h.vtc.router.clone();
+    let vtc_server = tokio::spawn(async move {
+        let _ = axum::serve(
+            vtc_listener,
+            vtc_router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+        )
+        .await;
+    });
+    seed_member(&h.vtc, &member_did).await;
+
+    // The ballot box: a did:peer at the shared mediator (the community's door) that also names
+    // its HTTPS door (the member's), served by the voting service's own session and router.
+    let box_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let box_url = format!("http://{}", box_listener.local_addr().unwrap());
+    let service = |type_: &str, uri: &str| PeerService {
+        type_: type_.into(),
+        endpoint: PeerServiceEndpoint::Long(OneOrMany::One(PeerServiceEndpointLong {
+            uri: uri.into(),
+            accept: vec![],
+            routing_keys: vec![],
+        })),
+        id: None,
+    };
+    let (box_did, box_secrets) = DID::generate_did_peer_with_services(
+        vec![
+            (PeerKeyRole::Verification, KeyType::Ed25519),
+            (PeerKeyRole::Encryption, KeyType::X25519),
+        ],
+        Some(vec![
+            service("DIDCommMessaging", h.mediator_did()),
+            service("TrustTaskHTTPS", &box_url),
+        ]),
+    )
+    .expect("mint the ballot box's did:peer");
+    h.register_local_did(&box_did).await;
+    let did_resolver = DIDCacheClient::new(DIDCacheConfigBuilder::default().build())
+        .await
+        .expect("a DID resolver");
+    let box_key = vta_sdk::trust_task_sign::HolderKey::new(
+        box_secrets[0].id.clone(),
+        box_secrets[0].get_private_keymultibase().unwrap(),
+    )
+    .unwrap();
+    let box_state = Arc::new(BoxState::new(
+        BallotBox::new(&box_did),
+        Identity {
+            did: box_did.clone(),
+            key: box_key,
+        },
+        vti_common::auth::TrustTaskVmResolver::new(did_resolver.clone()),
+        vti_voting_service::config::CommunitiesConfig {
+            allowed: vec![community.clone()],
+            ..Default::default()
+        },
+    ));
+    let box_server = tokio::spawn(
+        axum::serve(box_listener, vti_voting_service::router(box_state.clone())).into_future(),
+    );
+    let (stop, stopped) = tokio::sync::watch::channel(false);
+    let session = tokio::spawn(supervise(
+        IdentitySession::new(
+            BallotBoxResponder::new(box_state.clone()),
+            h.mediator_did().to_string(),
+            box_secrets,
+        ),
+        Arc::new(Shared {
+            did_resolver,
+            resolver_url: None,
+        }),
+        stopped,
+    ));
+
+    // The community trusts the ballot box and creates an open poll, voting a little ahead.
+    h.vtc.state.config.write().await.voting = VotingConfig {
+        trusted_ballot_boxes: vec![TrustedBallotBox {
+            did: box_did.clone(),
+            operator: "E2E Ballots".into(),
+            same_operator: false,
+        }],
+    };
+    let tv = &h.vtc;
+    let chair = admin(tv).await;
+    let mut m = manifest("e2e-member", false);
+    m["community"] = json!(community);
+    m["ballotBox"] = json!(box_did);
+    m["board"]["auditors"] = json!([]);
+    let opens = Utc::now() + Duration::seconds(8);
+    m["votingOpensAt"] = json!(stamp(opens));
+    let (status, doc) = create(tv, &chair, m).await;
+    assert_eq!(status, StatusCode::OK, "{doc}");
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(60);
+    loop {
+        let (_, shown) = call(
+            tv,
+            &chair,
+            &uri("show"),
+            json!({ "electionId": "e2e-member" }),
+        )
+        .await;
+        if payload(&shown)["state"] != "pendingRegistration" {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "never registered: {shown}"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        vtc_service::elections::sweeper::pass(&tv.state, Utc::now())
+            .await
+            .unwrap();
+    }
+
+    let target = || VoteTarget {
+        vtc_url: &vtc_url,
+        vtc_did: &community,
+        member: &member_did,
+        context: CTX,
+    };
+
+    // 1. The ticket, through the member's VTA, blind.
+    cmd_ticket(&client, target(), "e2e-member")
+        .await
+        .unwrap_or_else(|e| panic!("pnm elections ticket: {e}"));
+    let (_, listed) = call(
+        tv,
+        &chair,
+        &uri("show"),
+        json!({ "electionId": "e2e-member" }),
+    )
+    .await;
+    assert_eq!(payload(&listed)["ticketsIssued"], 1, "{listed}");
+
+    // 2. Once voting opens, the vote: built in the VTA, cast at the ballot box's HTTPS door.
+    let wait = (opens - Utc::now()).num_milliseconds().max(0) as u64 + 1_000;
+    tokio::time::sleep(std::time::Duration::from_millis(wait)).await;
+    cmd_vote(
+        &client,
+        target(),
+        "e2e-member",
+        &["chair=alice".to_string()],
+        None,
+        false,
+        true,
+    )
+    .await
+    .unwrap_or_else(|e| panic!("pnm elections vote: {e}"));
+
+    // 3. Closed and certified by the community from the board it reads back: one ballot, the
+    //    member's, counted.
+    let (status, doc) = call(
+        tv,
+        &chair,
+        &uri("close"),
+        json!({ "electionId": "e2e-member" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{doc}");
+    let (status, doc) = call(
+        tv,
+        &chair,
+        &uri("certify"),
+        json!({ "electionId": "e2e-member", "auditAttestations": [] }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{doc}");
+    assert_eq!(payload(&doc)["result"]["ballotsCounted"], 1, "{doc}");
+    assert_eq!(
+        payload(&doc)["result"]["questions"][0]["choice"],
+        json!({ "alice": 1, "bob": 0 })
+    );
+
+    let _ = stop.send(true);
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(15), session).await;
+    box_server.abort();
+    vtc_server.abort();
+    h.shutdown().await;
+}
+
+/// `did` as an active member of `tv`: an ACL row and a member record.
+async fn seed_member(tv: &TestVtc, did: &str) {
+    crate::common::signed::seed_role(tv, did, VtcRole::Member, &[]).await;
+    vtc_service::members::store_member(
+        &tv.state.members_ks,
+        &vtc_service::members::Member::fresh(did.to_string()),
+    )
+    .await
+    .unwrap();
+}
