@@ -21,7 +21,6 @@ use std::time::Duration;
 use rand::RngExt as _;
 use serde_json::{Value, json};
 use vta_sdk::client::VtaClient;
-use vta_sdk::trust_tasks;
 use vtc_client::VtcClient;
 
 use crate::render::{BOLD, DIM, GREEN, RESET, YELLOW, is_json_output, print_json};
@@ -43,21 +42,9 @@ pub struct VoteTarget<'a> {
 /// The longest pause before a cast is sent, so its arrival is not timed to the ticket's.
 const MAX_CAST_DELAY: Duration = Duration::from_secs(20);
 
-/// Round-trip budgets for the VTA's voter tasks, as the SDK's own wrappers use.
-const VTA_TIMEOUT_SECS: u64 = 30;
-const VTA_PROOF_TIMEOUT_SECS: u64 = 90;
-
-/// Ask the member's VTA one `vta/pcs/*` task, with the payload and the answer as JSON.
-///
-/// Not through the SDK's typed `pcs_voter_*` / `pcs_vote*` wrappers: those round-trip the
-/// payload and the answer through generated structs, which hold timestamps as chrono
-/// `DateTime`s. A manifest the community published as `…T00:00:00.000Z` would reach the VTA
-/// re-serialised as `…T00:00:00Z` — another manifest, with another digest — and a cast or a
-/// read the VTA signed would come back re-serialised, no longer the bytes its proof covers.
-/// Everything here is carried exactly as it was received.
-async fn vta_task(client: &VtaClient, uri: &str, payload: Value, timeout: u64) -> CliResult<Value> {
-    Ok(client.dispatch_trust_task(uri, payload, timeout).await?)
-}
+// The VTA's voter tasks go through the SDK's `_json` forms (`pcs_voter_read_json`, …), never
+// the typed ones: those re-serialise timestamps, so a manifest would reach the VTA with another
+// digest and a signed read or cast would no longer be the bytes its proof covers.
 
 fn community(t: &VoteTarget<'_>) -> VtcClient {
     VtcClient::anonymous(t.vtc_url, t.vtc_did)
@@ -74,14 +61,10 @@ async fn read(
         "contextId": t.context, "community": t.vtc_did, "member": t.member,
         "read": which, "payload": payload,
     });
-    let signed = vta_task(
-        client,
-        trust_tasks::TASK_VTA_PCS_VOTER_READ_0_2,
-        req,
-        VTA_TIMEOUT_SECS,
-    )
-    .await
-    .map_err(|e| hint_member(e.to_string(), t.member))?;
+    let signed = client
+        .pcs_voter_read_json(req)
+        .await
+        .map_err(|e| hint_member(e.to_string(), t.member))?;
     Ok(community(t)
         .send_signed_document(&signed["document"])
         .await
@@ -268,14 +251,7 @@ pub(crate) async fn ballot_box_url(did: &str) -> CliResult<String> {
 async fn take_ticket(client: &VtaClient, t: &VoteTarget<'_>, shown: &Value) -> CliResult<bool> {
     let election_id = &shown["manifest"]["electionId"];
     let reg = register_payload(t, shown);
-    let registered = match vta_task(
-        client,
-        trust_tasks::TASK_VTA_PCS_VOTER_REGISTER_0_2,
-        reg,
-        VTA_TIMEOUT_SECS,
-    )
-    .await
-    {
+    let registered = match client.pcs_voter_register_json(reg).await {
         Ok(registered) => registered,
         Err(e) if e.to_string().contains("ticketHeld") => return Ok(false),
         Err(e) => return Err(hint_member(e.to_string(), t.member)),
@@ -300,13 +276,7 @@ async fn take_ticket(client: &VtaClient, t: &VoteTarget<'_>, shown: &Value) -> C
         "contextId": t.context, "community": t.vtc_did, "electionId": election_id,
         "parameters": shown["parameters"], "response": response,
     });
-    vta_task(
-        client,
-        trust_tasks::TASK_VTA_PCS_VOTER_ACCEPT_0_1,
-        accept,
-        VTA_TIMEOUT_SECS,
-    )
-    .await?;
+    client.pcs_voter_accept_json(accept).await?;
     Ok(true)
 }
 
@@ -408,13 +378,7 @@ pub async fn cmd_vote(
     vote["manifest"] = manifest.clone();
     vote["ballot"] = ballot;
     let cast = if manifest["secrecy"] == "open" {
-        vta_task(
-            client,
-            trust_tasks::TASK_VTA_PCS_VOTE_0_2,
-            vote,
-            VTA_PROOF_TIMEOUT_SECS,
-        )
-        .await?
+        client.pcs_vote_json(vote).await?
     } else {
         // The trustees' signed steps, from the community (show item 6): the VTA forms the key
         // from them itself and encrypts under no other (CONVENTIONS §9.6).
@@ -422,13 +386,7 @@ pub async fn cmd_vote(
             .get("ceremony")
             .cloned()
             .ok_or("the trustees have not formed the election key yet; vote once voting opens")?;
-        vta_task(
-            client,
-            trust_tasks::TASK_VTA_PCS_VOTE_ENCRYPTED_0_3,
-            vote,
-            VTA_PROOF_TIMEOUT_SECS,
-        )
-        .await?
+        client.pcs_vote_encrypted_json(vote).await?
     };
     let cast_doc = &cast["castDocument"];
 
@@ -465,13 +423,7 @@ pub async fn cmd_vote(
     let mut keep = base;
     keep["electionId"] = json!(election_id);
     keep["receipt"] = receipt.clone();
-    let kept = vta_task(
-        client,
-        trust_tasks::TASK_VTA_PCS_VOTER_RECEIPT_0_1,
-        keep,
-        VTA_TIMEOUT_SECS,
-    )
-    .await?;
+    let kept = client.pcs_voter_receipt_json(keep).await?;
     if is_json_output() {
         return Ok(print_json(&json!({ "receipt": receipt, "kept": kept }))?);
     }

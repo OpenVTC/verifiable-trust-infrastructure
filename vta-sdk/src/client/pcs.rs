@@ -195,8 +195,118 @@ impl VtaClient {
         .await
     }
 
+    /// One `vta/pcs/*` task with the payload and the answer as JSON, carried exactly as given
+    /// and as received.
+    async fn pcs_call_json(
+        &self,
+        uri: &str,
+        payload: serde_json::Value,
+        timeout: u64,
+    ) -> Result<serde_json::Value, VtaError> {
+        self.dispatch_trust_task(uri, payload, timeout).await
+    }
+
+    /// [`Self::pcs_voter_register`], with the payload and the answer as JSON.
+    ///
+    /// # Why the voter tasks have JSON forms
+    ///
+    /// The typed voter methods round-trip through generated structs that hold timestamps as
+    /// chrono `DateTime`s, and that changes bytes. A manifest the community published with
+    /// `votingOpensAt: "2027-01-01T00:00:00.000Z"` reaches the VTA as `…T00:00:00Z` — another
+    /// manifest, whose digest is not the community's, so the ticket is refused. A signed read, a
+    /// cast or a ticket request coming back through a typed response is re-serialised the same
+    /// way, and is no longer the bytes its proof covers.
+    ///
+    /// A caller carrying documents between the community, the VTA and the ballot box should use
+    /// the `_json` forms: [`Self::pcs_voter_read_json`], [`Self::pcs_voter_register_json`],
+    /// [`Self::pcs_voter_accept_json`], [`Self::pcs_vote_json`],
+    /// [`Self::pcs_vote_encrypted_json`] and [`Self::pcs_voter_receipt_json`]. Each is checked
+    /// against its pinned schema before it is sent, as the typed forms are.
+    pub async fn pcs_voter_register_json(
+        &self,
+        req: serde_json::Value,
+    ) -> Result<serde_json::Value, VtaError> {
+        self.pcs_call_json(
+            trust_tasks::TASK_VTA_PCS_VOTER_REGISTER_0_2,
+            req,
+            PCS_TT_TIMEOUT,
+        )
+        .await
+    }
+
+    /// [`Self::pcs_voter_read`], with the payload and the answer as JSON: the answer's
+    /// `document` is the signed read to send to the community unchanged. See
+    /// [`Self::pcs_voter_register_json`] for why.
+    pub async fn pcs_voter_read_json(
+        &self,
+        req: serde_json::Value,
+    ) -> Result<serde_json::Value, VtaError> {
+        self.pcs_call_json(
+            trust_tasks::TASK_VTA_PCS_VOTER_READ_0_2,
+            req,
+            PCS_TT_TIMEOUT,
+        )
+        .await
+    }
+
+    /// [`Self::pcs_voter_accept`], with the payload and the answer as JSON. See
+    /// [`Self::pcs_voter_register_json`] for why.
+    pub async fn pcs_voter_accept_json(
+        &self,
+        req: serde_json::Value,
+    ) -> Result<serde_json::Value, VtaError> {
+        self.pcs_call_json(
+            trust_tasks::TASK_VTA_PCS_VOTER_ACCEPT_0_1,
+            req,
+            PCS_TT_TIMEOUT,
+        )
+        .await
+    }
+
+    /// [`Self::pcs_vote`], with the payload and the answer as JSON: the answer's
+    /// `castDocument` is the bytes to post to the ballot box. See
+    /// [`Self::pcs_voter_register_json`] for why.
+    pub async fn pcs_vote_json(
+        &self,
+        req: serde_json::Value,
+    ) -> Result<serde_json::Value, VtaError> {
+        self.pcs_call_json(trust_tasks::TASK_VTA_PCS_VOTE_0_2, req, PCS_PROOF_TIMEOUT)
+            .await
+    }
+
+    /// [`Self::pcs_vote_encrypted`], with the payload and the answer as JSON. See
+    /// [`Self::pcs_voter_register_json`] for why.
+    pub async fn pcs_vote_encrypted_json(
+        &self,
+        req: serde_json::Value,
+    ) -> Result<serde_json::Value, VtaError> {
+        self.pcs_call_json(
+            trust_tasks::TASK_VTA_PCS_VOTE_ENCRYPTED_0_3,
+            req,
+            PCS_PROOF_TIMEOUT,
+        )
+        .await
+    }
+
+    /// [`Self::pcs_voter_receipt`], with the payload and the answer as JSON: the ballot box's
+    /// receipt goes in exactly as it answered. See [`Self::pcs_voter_register_json`] for why.
+    pub async fn pcs_voter_receipt_json(
+        &self,
+        req: serde_json::Value,
+    ) -> Result<serde_json::Value, VtaError> {
+        self.pcs_call_json(
+            trust_tasks::TASK_VTA_PCS_VOTER_RECEIPT_0_1,
+            req,
+            PCS_TT_TIMEOUT,
+        )
+        .await
+    }
+
     /// `vta/pcs/voter/register/0.2` — this election's voter key and the blinded ticket request
     /// to carry to `vtc/elections/tickets/issue`.
+    ///
+    /// Re-serialises timestamps; to carry signed documents byte for byte use
+    /// [`Self::pcs_voter_register_json`].
     pub async fn pcs_voter_register(
         &self,
         req: &pcs::voter::register::v0_2::Payload,
@@ -211,6 +321,9 @@ impl VtaClient {
 
     /// `vta/pcs/voter/read/0.2` — `vtc/elections/list` or `show`, signed as the member, to send
     /// to the community unchanged.
+    ///
+    /// Re-serialises timestamps; to carry signed documents byte for byte use
+    /// [`Self::pcs_voter_read_json`].
     pub async fn pcs_voter_read(
         &self,
         req: &pcs::voter::read::v0_2::Payload,
@@ -224,6 +337,9 @@ impl VtaClient {
     }
 
     /// `vta/pcs/voter/accept/0.1` — unblind the community's answer into the ticket.
+    ///
+    /// Re-serialises timestamps; to carry signed documents byte for byte use
+    /// [`Self::pcs_voter_accept_json`].
     pub async fn pcs_voter_accept(
         &self,
         req: &pcs::voter::accept::v0_1::Payload,
@@ -238,6 +354,9 @@ impl VtaClient {
 
     /// `vta/pcs/vote/0.2` — the signed cast document. Send it to the ballot box yourself, from
     /// your own connection, and resend that same document if the answer is lost.
+    ///
+    /// Re-serialises timestamps; to carry signed documents byte for byte use
+    /// [`Self::pcs_vote_json`].
     pub async fn pcs_vote(
         &self,
         req: &pcs::vote::v0_2::Payload,
@@ -248,6 +367,9 @@ impl VtaClient {
 
     /// `vta/pcs/voter/receipt/0.1` — keep a receipt, and check its inclusion in a head the
     /// community kept.
+    ///
+    /// Re-serialises timestamps; to carry signed documents byte for byte use
+    /// [`Self::pcs_voter_receipt_json`].
     pub async fn pcs_voter_receipt(
         &self,
         req: &pcs::voter::receipt::v0_1::Payload,
@@ -263,6 +385,9 @@ impl VtaClient {
     /// `vta/pcs/vote-encrypted/0.3` — the signed `voting/ballot/cast-encrypted` document for a
     /// sealed or tallied-encrypted election, under the election key `voting/trustees/status`
     /// reports. Send it as [`Self::pcs_vote`]'s.
+    ///
+    /// Re-serialises timestamps; to carry signed documents byte for byte use
+    /// [`Self::pcs_vote_encrypted_json`].
     pub async fn pcs_vote_encrypted(
         &self,
         req: &pcs::vote_encrypted::v0_3::Payload,
