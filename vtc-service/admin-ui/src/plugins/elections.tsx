@@ -30,6 +30,7 @@ import {
   type Election,
   type ElectionListItem,
   type ElectionResult,
+  type QuestionResult,
 } from "@/lib/elections-api";
 import { formatIso, shorten } from "@/lib/format";
 import { gestureFromConfirm } from "@/lib/signed-act";
@@ -222,11 +223,13 @@ function ElectionDetail({ electionId, e }: { electionId: string; e: Election }) 
         <section className="card success">
           <h2>Certified result</h2>
           <p className="muted">
-            Certified {formatIso(e.certified.certifiedAt)}: {e.certified.result.ballotsCounted}{" "}
-            ballots counted, from a board of {e.certified.result.head.treeSize} entries the
-            community verified itself.
+            Certified {formatIso(e.certified.certifiedAt)}. {e.certified.result.ballotsCounted}{" "}
+            {e.certified.result.ballotsCounted === 1 ? "ballot" : "ballots"} counted. The ballot
+            box&rsquo;s board holds {e.certified.result.head.treeSize}{" "}
+            {e.certified.result.head.treeSize === 1 ? "entry" : "entries"} (every vote cast,
+            including any a later vote replaced), and this community checked it itself.
           </p>
-          <ResultTable result={e.certified.result} />
+          <ResultTable result={e.certified.result} manifest={e.manifest} />
         </section>
       )}
       <section className="card">
@@ -256,24 +259,142 @@ function ElectionDetail({ electionId, e }: { electionId: string; e: Election }) 
   );
 }
 
-function ResultTable({ result }: { result: ElectionResult }) {
+type ManifestQuestion = Election["manifest"]["questions"][number];
+
+function optionLabel(q: ManifestQuestion | undefined, key: string): string {
+  return q?.options?.find((o) => o.key === key)?.label || key;
+}
+
+function abstainedLine(n: number) {
+  return n > 0 ? (
+    <p className="muted">
+      {n} {n === 1 ? "ballot" : "ballots"} left this question blank.
+    </p>
+  ) : null;
+}
+
+/** One question's totals, in the words the members were asked in. */
+function QuestionTotals({
+  r,
+  q,
+  counted,
+  threshold,
+}: {
+  r: QuestionResult;
+  q: ManifestQuestion | undefined;
+  counted: number;
+  threshold: number | undefined;
+}) {
+  if (r.choice) {
+    const rows = Object.entries(r.choice).sort((a, b) => b[1] - a[1]);
+    return (
+      <>
+        <ul>
+          {rows.map(([k, n]) => (
+            <li key={k}>
+              {optionLabel(q, k)}: <strong>{n}</strong>
+            </li>
+          ))}
+        </ul>
+        {abstainedLine(r.abstained)}
+      </>
+    );
+  }
+  if (r.ranking) {
+    const rows = Object.entries(r.ranking).sort((a, b) => (b[1][0] ?? 0) - (a[1][0] ?? 0));
+    return (
+      <>
+        <p className="muted">How many ballots put each option in each place.</p>
+        <table>
+          <thead>
+            <tr>
+              <th>Option</th>
+              {(rows[0]?.[1] ?? []).map((_, i) => (
+                <th key={i}>#{i + 1}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map(([k, places]) => (
+              <tr key={k}>
+                <td>{optionLabel(q, k)}</td>
+                {places.map((n, i) => (
+                  <td key={i}>{n}</td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        {abstainedLine(r.abstained)}
+      </>
+    );
+  }
+  if (r.score) {
+    return (
+      <>
+        <ul>
+          {Object.entries(r.score).map(([k, v]) => {
+            const { sum, count } = v as { sum: number; count: number };
+            return (
+              <li key={k}>
+                {optionLabel(q, k)}: average <strong>{count ? (sum / count).toFixed(1) : "—"}</strong> from{" "}
+                {count} {count === 1 ? "score" : "scores"}
+              </li>
+            );
+          })}
+        </ul>
+        {abstainedLine(r.abstained)}
+      </>
+    );
+  }
+  if (r.text) {
+    return (
+      <>
+        {r.text.length === 0 ? (
+          <p className="muted">No answers.</p>
+        ) : (
+          <ul className="election-texts">
+            {r.text.map((t, i) => (
+              <li key={i} className="election-description">
+                {String(t)}
+              </li>
+            ))}
+          </ul>
+        )}
+        {abstainedLine(r.abstained)}
+      </>
+    );
+  }
+  if (r.withheld) {
+    return (
+      <p className="muted">
+        Answers held back: written answers are shown only once at least {threshold ?? "the set number of"}{" "}
+        ballots are counted, and this election counted {counted}. With so few, an answer could point to
+        who wrote it. Set a lower &ldquo;text release threshold&rdquo; on a future election if that is
+        acceptable for it.
+      </p>
+    );
+  }
+  return abstainedLine(r.abstained);
+}
+
+function ResultTable({ result, manifest }: { result: ElectionResult; manifest: Election["manifest"] }) {
   return (
     <>
-      {result.questions.map((q) => (
-        <div key={q.question}>
-          <h3>{q.question}</h3>
-          {q.choice && (
-            <ul>
-              {Object.entries(q.choice).map(([k, n]) => (
-                <li key={k}>
-                  {k}: {n}
-                </li>
-              ))}
-              <li className="muted">abstained: {q.abstained}</li>
-            </ul>
-          )}
-        </div>
-      ))}
+      {result.questions.map((r) => {
+        const q = manifest.questions.find((x) => x.key === r.question);
+        return (
+          <div key={r.question}>
+            <h3>{q?.text || r.question}</h3>
+            <QuestionTotals
+              r={r}
+              q={q}
+              counted={result.ballotsCounted}
+              threshold={manifest.textReleaseThreshold}
+            />
+          </div>
+        );
+      })}
     </>
   );
 }

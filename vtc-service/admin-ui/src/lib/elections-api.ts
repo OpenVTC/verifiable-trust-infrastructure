@@ -78,6 +78,8 @@ export interface QuestionResult {
   ranking?: Record<string, number[]>;
   score?: Record<string, unknown>;
   text?: unknown[];
+  /** Text answers held back: fewer ballots than `textReleaseThreshold` (VTI-VOT-065). */
+  withheld?: boolean;
 }
 
 export interface ElectionResult {
@@ -108,7 +110,8 @@ export interface Election {
     registrationOpensAt: string;
     binding: boolean;
     allowEarlyClose: boolean;
-    questions: { key: string; type: string; text?: string }[];
+    questions: { key: string; type: string; text?: string; options?: { key: string; label?: string }[] }[];
+    textReleaseThreshold?: number;
   };
   manifestDigest: string;
   state: ElectionState;
