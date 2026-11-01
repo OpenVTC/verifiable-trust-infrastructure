@@ -101,3 +101,8 @@ button.primary:focus-visible {
 ::selection {
   background: var(--brand-tint-strong);
 }
+
+/* Every disclosure summary is a control. */
+summary {
+  cursor: pointer;
+}

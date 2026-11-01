@@ -178,7 +178,7 @@ export function Invitations() {
           </Field>
           <button
             type="submit"
-            className="btn primary"
+            className="primary"
             disabled={!did.trim() || mutation.isPending}
           >
             {mutation.isPending ? "Issuing…" : "Issue invitation"}
@@ -258,7 +258,7 @@ export function Invitations() {
                     <>
                       <button
                         type="button"
-                        className="btn"
+                        className="secondary"
                         disabled={deliver.isPending}
                         onClick={() =>
                           deliver.mutate({ id: inv.id, subjectDid: inv.subjectDid, channel: "message" })
@@ -269,7 +269,7 @@ export function Invitations() {
                       </button>
                       <button
                         type="button"
-                        className="btn"
+                        className="secondary"
                         disabled={deliver.isPending}
                         onClick={() =>
                           deliver.mutate({ id: inv.id, subjectDid: inv.subjectDid, channel: "offer" })
@@ -283,7 +283,7 @@ export function Invitations() {
                   {!inv.revokedAt && (
                     <button
                       type="button"
-                      className="btn"
+                      className="secondary"
                       disabled={revoke.isPending}
                       onClick={() => revoke.mutate(inv.id)}
                       title="Revoke this invitation"
@@ -312,7 +312,7 @@ function DownloadButton({ filename, text }: { filename: string; text: string }) 
     URL.revokeObjectURL(url);
   };
   return (
-    <button type="button" className="btn" onClick={onClick}>
+    <button type="button" className="secondary" onClick={onClick}>
       <Download size={16} strokeWidth={1.75} /> Download .json
     </button>
   );

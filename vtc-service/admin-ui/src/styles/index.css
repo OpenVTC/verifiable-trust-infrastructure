@@ -28,6 +28,7 @@
 @import "./plugins/repos.css";
 @import "./plugins/actions.css";
 @import "./plugins/members.css";
+@import "./plugins/groups.css";
 @import "./plugins/recognition.css";
 @import "./plugins/dashboard.css";
 @import "./plugins/audit.css";
