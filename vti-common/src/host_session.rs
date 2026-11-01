@@ -53,7 +53,7 @@ use std::time::Duration;
 use affinidi_did_resolver_cache_sdk::DIDCacheClient;
 use affinidi_did_resolver_cache_sdk::config::DIDCacheConfigBuilder;
 use affinidi_messaging_core::{
-    Inbound, InboundKind, MessageTransport, Protocol, RelationshipRequest,
+    ConnState, Inbound, InboundKind, MessageTransport, Protocol, RelationshipRequest,
 };
 use affinidi_messaging_sdk::DidCommTransport;
 use affinidi_secrets_resolver::SecretsResolver as _;
@@ -167,8 +167,27 @@ enum SessionEnd {
 pub async fn supervise(
     session: IdentitySession,
     shared: Arc<Shared>,
-    mut shutdown: watch::Receiver<bool>,
+    shutdown: watch::Receiver<bool>,
 ) {
+    supervise_reporting(session, shared, shutdown, watch::channel(false).0).await;
+}
+
+/// [`supervise`], reporting on `connected` whether the identity can be reached
+/// through its mediator right now.
+///
+/// `true` only while a session is being served **and** its socket reports
+/// [`ConnState::Connected`]; it turns `false` again when the socket drops (the
+/// messaging SDK reconnecting under a live session), when the session is lost,
+/// and when the supervisor returns. It is driven by the transport's own state,
+/// never latched at the first connect (R6.2), so a health check reading it
+/// sees an outage while it lasts.
+pub async fn supervise_reporting(
+    session: IdentitySession,
+    shared: Arc<Shared>,
+    mut shutdown: watch::Receiver<bool>,
+    connected: watch::Sender<bool>,
+) {
+    let _not_connected_on_return = NotConnectedOnDrop(&connected);
     let name = session.identity.name().to_string();
     let did = session.identity.did().to_string();
     let mut probe = SelfResolution::new(&did, shared.resolver_url.as_deref());
@@ -203,7 +222,8 @@ pub async fn supervise(
                          and DIDComm"
                     );
                     let started = tokio::time::Instant::now();
-                    let end = serve(&live, &session, &governor, &mut shutdown).await;
+                    let end = serve(&live, &session, &governor, &mut shutdown, &connected).await;
+                    connected.send_replace(false);
                     // Always: the ATM has no `Drop`, and an abandoned socket
                     // keeps this DID's one slot at the mediator.
                     live.atm.graceful_shutdown().await;
@@ -234,6 +254,15 @@ pub async fn supervise(
             return;
         }
         attempt = attempt.saturating_add(1);
+    }
+}
+
+/// Reports not-connected however the supervisor returns.
+struct NotConnectedOnDrop<'a>(&'a watch::Sender<bool>);
+
+impl Drop for NotConnectedOnDrop<'_> {
+    fn drop(&mut self) {
+        self.0.send_replace(false);
     }
 }
 
@@ -349,8 +378,11 @@ async fn serve(
     session: &IdentitySession,
     governor: &Arc<ReconnectGovernor>,
     shutdown: &mut watch::Receiver<bool>,
+    connected: &watch::Sender<bool>,
 ) -> SessionEnd {
     let mut inbound = live.transport.inbound();
+    let mut conn = live.transport.connection_state();
+    connected.send_replace(*conn.borrow_and_update() == ConnState::Connected);
     // Collect what live delivery missed, and end the session when the
     // receive leg stops delivering and a reconnect has not helped (VTI-50).
     let mut watch_task = tokio::spawn(crate::inbox::run_inbox_watch(
@@ -382,6 +414,11 @@ async fn serve(
                     let _ticket = ticket;
                     handle_frame(frame, &live, &*identity, &mediator_did).await;
                 });
+            }
+            // A dropped sender disables this arm for the iteration; the
+            // session's end is the inbound stream's or the watch's to call.
+            Ok(()) = conn.changed() => {
+                connected.send_replace(*conn.borrow_and_update() == ConnState::Connected);
             }
             exit = &mut watch_task => {
                 break SessionEnd::Lost(format!(

@@ -627,3 +627,60 @@ async fn a_request_names_its_recipient_and_a_cast_its_did_key() {
     assert_eq!(answer["payload"]["code"], "proofInvalid", "{answer}");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+async fn get(state: &Arc<AppState>, path: &str) -> (StatusCode, Value) {
+    let res = router(state.clone())
+        .oneshot(Request::get(path).body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    let status = res.status();
+    let body = res.into_body().collect().await.unwrap().to_bytes();
+    (status, serde_json::from_slice(&body).unwrap_or(Value::Null))
+}
+
+/// Without a provisioned identity no community can reach the box: alive, never ready.
+#[tokio::test]
+async fn health_without_messaging_is_alive_but_never_ready() {
+    let dir = std::env::temp_dir().join(format!("vti-voting-service-{}", Uuid::new_v4()));
+    let svc = state(&dir);
+
+    let (status, body) = get(&svc, "/health").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["status"], "ok");
+    assert_eq!(body["messaging"], "disabled");
+    assert_eq!(body["did"], svc.identity.did);
+
+    let (status, body) = get(&svc, "/health/ready").await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
+    assert_eq!(body["status"], "notReady");
+    assert_eq!(body["messaging"], "disabled");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Readiness follows the mediator session's live state both ways — never latched at the first
+/// connect (R6.2) — while liveness stays `200` throughout, so the cast door is never pulled.
+#[tokio::test]
+async fn readiness_follows_the_mediator_session_both_ways() {
+    let dir = std::env::temp_dir().join(format!("vti-voting-service-{}", Uuid::new_v4()));
+    let (connected, rx) = tokio::sync::watch::channel(false);
+    let svc = Arc::new(
+        Arc::into_inner(state(&dir))
+            .expect("sole owner")
+            .with_messaging(rx),
+    );
+
+    for (up, code, messaging) in [
+        (false, StatusCode::SERVICE_UNAVAILABLE, "notConnected"),
+        (true, StatusCode::OK, "connected"),
+        (false, StatusCode::SERVICE_UNAVAILABLE, "notConnected"),
+    ] {
+        connected.send_replace(up);
+        let (status, body) = get(&svc, "/health/ready").await;
+        assert_eq!(status, code, "{body}");
+        assert_eq!(body["messaging"], messaging);
+        let (status, body) = get(&svc, "/health").await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["messaging"], messaging);
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}

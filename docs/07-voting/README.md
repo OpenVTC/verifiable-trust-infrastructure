@@ -138,6 +138,24 @@ SIGINT or SIGTERM closes both.
 rate-limit and cap request sizes per source. The cast door is anonymous by design, and the
 service itself does neither.
 
+### Health checks
+
+Two unauthenticated `GET`s on the same listener, each answering JSON with `status`, the
+service's `did` and `messaging` (`connected`, `notConnected`, or `disabled` without an
+`[identity]`):
+
+| Path | Answers | Use it for |
+|---|---|---|
+| `/health` | always `200` while the process serves | the load balancer or proxy upstream check. Casts arrive over HTTPS and keep working while the mediator is away, so this never pulls the cast door. |
+| `/health/ready` | `200` only while the mediator session is connected; `503` otherwise, and always without an `[identity]` | alerting. While it is `503`, communities cannot register, close or cancel elections. |
+
+`messaging` is the session supervisor's live report: it turns `notConnected` when the socket
+drops and back when it reconnects, never latched at the first connect.
+
+```sh
+curl -fsS http://127.0.0.1:8740/health/ready
+```
+
 ## Letting a community use it
 
 The box's operator adds the community's DID to `[communities] allowed` and restarts the

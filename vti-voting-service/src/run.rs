@@ -13,7 +13,7 @@ use crate::config::VotingConfig;
 use crate::dispatch::AppState;
 use crate::identity::{Identity, load_keys};
 use crate::journal::FileJournal;
-use crate::messaging::{BallotBoxResponder, IdentitySession, Shared, supervise};
+use crate::messaging::{BallotBoxResponder, IdentitySession, Shared, supervise_reporting};
 
 /// How long a stop waits for the mediator session to close its socket.
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(15);
@@ -81,12 +81,18 @@ pub async fn run(config: VotingConfig) -> anyhow::Result<()> {
              this box serves in [communities] allowed"
         );
     }
-    let state = Arc::new(AppState::new(
+    let mut state = AppState::new(
         ballot_box,
         identity,
         vti_common::auth::TrustTaskVmResolver::new(did_resolver.clone()),
         config.communities.clone(),
-    ));
+    );
+    // Reported by the session's supervisor; read by `GET /health` and `GET /health/ready`.
+    let (connected, connected_rx) = watch::channel(false);
+    if session_keys.is_some() {
+        state = state.with_messaging(connected_rx);
+    }
+    let state = Arc::new(state);
 
     let (stop, stopped) = watch::channel(false);
     let session = session_keys.map(|(mediator_did, secrets)| {
@@ -99,7 +105,12 @@ pub async fn run(config: VotingConfig) -> anyhow::Result<()> {
             mediator_did,
             secrets,
         );
-        tokio::spawn(supervise(session, shared, stopped.clone()))
+        tokio::spawn(supervise_reporting(
+            session,
+            shared,
+            stopped.clone(),
+            connected,
+        ))
     });
 
     let listener = tokio::net::TcpListener::bind(&config.listen).await?;

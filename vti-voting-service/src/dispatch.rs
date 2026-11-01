@@ -27,6 +27,9 @@ pub struct AppState {
     /// One permit per cast being checked: the checks run on blocking threads, never more at
     /// once than the machine has cores.
     pub cast_checks: tokio::sync::Semaphore,
+    /// Whether the identity's mediator session is connected right now, as its supervisor
+    /// reports it; `None` without a provisioned identity (the HTTPS-only test `did:key`).
+    pub messaging: Option<tokio::sync::watch::Receiver<bool>>,
 }
 
 impl AppState {
@@ -44,7 +47,16 @@ impl AppState {
             resolver,
             communities,
             cast_checks: tokio::sync::Semaphore::new(cores),
+            messaging: None,
         }
+    }
+
+    /// The state of a service that reaches its mediator: `connected` is
+    /// [`vti_common::host_session::supervise_reporting`]'s report.
+    #[must_use]
+    pub fn with_messaging(mut self, connected: tokio::sync::watch::Receiver<bool>) -> Self {
+        self.messaging = Some(connected);
+        self
     }
 }
 
