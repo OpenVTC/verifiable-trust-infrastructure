@@ -215,7 +215,8 @@ function ElectionDetail({
           )}
           {vote.isSuccess && !vote.data.ticketTaken && (
             <p role="status" className="muted">
-              Your wallet has closed its ballot. It shows you there whether your vote was cast; this site isn&rsquo;t told.
+              Your wallet shows how your vote went, and you can open it again here at any time to see whether you
+              have voted or to change your vote. This site isn&rsquo;t told either way.
             </p>
           )}
           {failure ? (
@@ -235,7 +236,7 @@ function ElectionDetail({
               disabled={!canVote || vote.isPending}
               onClick={() => vote.mutate()}
             >
-              {vote.isPending ? "Your wallet is open…" : "Vote in my wallet"}
+              {vote.isPending ? "Your wallet is open…" : "Vote, or see my vote, in my wallet"}
             </button>
           </p>
           {!canVote && <p className="muted">Voting opens {when(e.votingOpensAt)}.</p>}
