@@ -51,6 +51,24 @@ election stays `pendingRegistration` and is delivered as soon as they are.
 Casting is between the member's VTA and the ballot box (`vta/pcs/vote`, then
 `voting/ballot/cast` over HTTPS, the one sessionless door). The community never sees it.
 
+### Writing the manifest in the console
+
+**Governance → Elections → New election** builds the manifest step by step — about, questions,
+who votes, schedule, counting — and ends on a review that shows the manifest, a plain-language
+summary and the digest every ticket and vote will be bound to. It checks as you go what the
+community would otherwise refuse with `invalidManifest`: the schema's bounds and the rules
+between fields (times in order and still ahead, a choice's bounds within its options, unique
+question and option keys, the trustee rules of a sealed or totals-only election, an auditor or
+trustee that is the community or the ballot box). Create stays disabled until the review is
+clean. The community checks everything again on create; the form's checks are a convenience,
+not the authority.
+
+*Start from a previous election* copies one's questions, voters and counting into a fresh
+identifier and schedule. The **JSON** view is the same manifest as text: anything written there
+comes back into the form, except a manifest carrying something the form does not edit, which
+stays in the JSON view rather than being trimmed. The unfinished draft is kept in the browser
+tab until it is created or discarded.
+
 ### From the command line
 
 An administrator: `cnm elections create <manifest.json>`, `list`, `show <id>`,

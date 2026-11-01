@@ -1,0 +1,137 @@
+/* Elections: the manifest builder (plugins/ElectionBuilder.tsx). */
+
+.election-stepper {
+  list-style: none;
+  margin: var(--space-4) 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2) var(--space-5);
+  font-size: var(--text-sm);
+}
+.election-stepper button.link {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--text-muted);
+  text-decoration: none;
+}
+.election-step-mark {
+  width: 22px;
+  height: 22px;
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--border-strong);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: var(--text-xs);
+}
+.election-stepper li.done button.link {
+  color: var(--text);
+}
+.election-stepper li.current button.link {
+  color: var(--brand);
+  font-weight: 600;
+}
+.election-stepper li.current .election-step-mark {
+  background: var(--brand);
+  border-color: var(--brand);
+  color: var(--brand-fg);
+}
+.election-stepper li.wrong button.link {
+  color: var(--danger);
+}
+.election-stepper li.wrong .election-step-mark {
+  border-color: var(--danger);
+}
+
+.election-builder-nav {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-3);
+  border-top: 1px solid var(--border);
+  padding-top: var(--space-4);
+}
+
+.election-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr));
+  gap: var(--space-4);
+}
+
+.election-question {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md, 8px);
+  padding: var(--space-4);
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+.election-question legend {
+  font-weight: 600;
+  padding: 0 var(--space-2);
+}
+.election-question-tools,
+.election-option-tools {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  align-items: center;
+}
+.election-question-tools {
+  justify-content: flex-end;
+  margin-top: calc(-1 * var(--space-2));
+}
+
+.election-options {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.election-option {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(0, 1fr) auto;
+  gap: var(--space-2);
+  align-items: center;
+}
+
+.election-radios {
+  border: 0;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.election-radios legend {
+  margin-bottom: var(--space-2);
+}
+
+.election-issues {
+  border: 1px solid var(--danger);
+  border-radius: var(--radius-md, 8px);
+  padding: var(--space-3) var(--space-4);
+}
+.election-issues ul {
+  margin: var(--space-2) 0 0;
+  padding-left: var(--space-5);
+}
+
+.election-review-questions {
+  margin: 0;
+  padding-left: var(--space-5);
+}
+
+.election-json {
+  max-height: 28rem;
+  overflow: auto;
+  font-size: var(--text-xs);
+  white-space: pre;
+}
+
+@media (max-width: 640px) {
+  .election-option {
+    grid-template-columns: 1fr;
+  }
+}

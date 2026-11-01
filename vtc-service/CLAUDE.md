@@ -832,6 +832,12 @@ When adding a flow, add it here and a line to the root index.
   its proof verified by the reader (`vti_voting::steps::ProvenRequests`, CONVENTIONS §9.6); the
   election key `show` carries is formed by the community from those steps alone, never taken
   from `voting/trustees/status`, which carries no proof.
+- **Console manifest builder** (`admin-ui/src/plugins/ElectionBuilder.tsx`,
+  `admin-ui/src/lib/election-manifest.ts`): a guided form whose checks mirror
+  `vti_voting::rules::check_manifest` and whose bounds are pinned to the vendored
+  `vtc/elections/create/0.3` bundle by `election-manifest.test.ts` — re-pin a new create
+  version there too. A convenience, never the authority: the community re-checks on create.
+  Never let the form silently drop a manifest member it does not edit (`manifestToDraft` refuses).
 - **Code**: `vtc-service/src/elections/`, `vtc-service/src/trust_tasks/election_tasks.rs`,
   `vtc-service/tests/it/election_tasks.rs`.
 - **Docs**: `docs/03-vtc/elections.md`.

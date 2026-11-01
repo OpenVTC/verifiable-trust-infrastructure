@@ -207,46 +207,6 @@ export function certifyElection(
   );
 }
 
-/** A manifest to start from: one choice question, open voting for a week from
- *  tomorrow, this community's DID and the given ballot box. */
-export function sampleManifest(community: string, ballotBox: string, now = new Date()): string {
-  const day = 24 * 3600 * 1000;
-  const iso = (t: number) => new Date(t).toISOString().replace(/\.\d{3}Z$/, "Z");
-  const start = now.getTime() + day;
-  return JSON.stringify(
-    {
-      electionId: `poll-${now.toISOString().slice(0, 10)}`,
-      community,
-      title: "",
-      questions: [
-        {
-          key: "q1",
-          type: "choice",
-          text: "",
-          options: [{ key: "yes", label: "Yes" }, { key: "no", label: "No" }],
-          minSelections: 1,
-          maxSelections: 1,
-          optional: true,
-        },
-      ],
-      secrecy: "open",
-      roll: { rule: "members" },
-      registrationOpensAt: iso(now.getTime()),
-      votingOpensAt: iso(start),
-      votingClosesAt: iso(start + 7 * day),
-      revote: "replace",
-      board: { visibility: "public", auditors: [] },
-      ballotBox,
-      binding: false,
-      allowEarlyClose: false,
-      resultsBeforeClose: false,
-      textReleaseThreshold: 10,
-    },
-    null,
-    2,
-  );
-}
-
 /** The declared refusals an administrator can act on, with what to do. */
 export function refusalHint(code: string | undefined): string | null {
   switch (code) {
@@ -255,7 +215,7 @@ export function refusalHint(code: string | undefined): string | null {
     case "vtc/elections/create:electionExists":
       return "This community already holds an election under that electionId. Choose another.";
     case "vtc/elections/create:unsupportedSecrecy":
-      return "Only open elections are served: set secrecy to \"open\" and remove trustees.";
+      return "This community does not serve that secrecy level. Choose another under Counting.";
     case "vtc/elections/certify:notTallied":
       return "The ballot box has not published a final result yet.";
     default:

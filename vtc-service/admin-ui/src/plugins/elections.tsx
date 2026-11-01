@@ -3,7 +3,7 @@
 //
 // The list, one election's page (its disclosure, tickets issued, board
 // checkpoints and, once certified, the result), and the administrator's four
-// acts: create from a manifest, close early, cancel, and certify. Certifying
+// acts: create from a manifest (`ElectionBuilder.tsx`), close early, cancel, and certify. Certifying
 // is the VTC re-verifying the ballot box's whole board from its own voting key,
 // so a refusal there names what the board got wrong.
 //
@@ -11,27 +11,22 @@
 // cast a ballot, and nothing here shows who took a ticket.
 
 import { useState } from "react";
-import { Link, Route, Routes, useNavigate, useParams } from "react-router-dom";
+import { Link, Route, Routes, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { useConfirm } from "@/components/ConfirmDialog";
 import { DataTable } from "@/components/DataTable";
 import { EmptyState } from "@/components/EmptyState";
-import { ErrorOrParked } from "@/components/ParkedNotice";
 import { Field } from "@/components/Field";
-import { vtcDid } from "@/lib/api";
 import {
   ELECTIONS_KEY,
   STATE_LABEL,
   cancelElection,
   certifyElection,
   closeElection,
-  createElection,
   fetchElection,
   fetchElections,
   fetchElectionsServed,
-  refusalHint,
-  sampleManifest,
   type Election,
   type ElectionListItem,
   type ElectionResult,
@@ -39,22 +34,8 @@ import {
 import { formatIso, shorten } from "@/lib/format";
 import { gestureFromConfirm } from "@/lib/signed-act";
 import { useToast } from "@/lib/toast";
-
-function codeOf(e: unknown): string | undefined {
-  const c = (e as { code?: unknown } | null)?.code;
-  return typeof c === "string" ? c : undefined;
-}
-
-function Refusal({ title, error }: { title: string; error: unknown }) {
-  if (!error) return null;
-  const hint = refusalHint(codeOf(error));
-  return (
-    <>
-      <ErrorOrParked title={title} error={error} />
-      {hint && <p className="community-fix">{hint}</p>}
-    </>
-  );
-}
+import { NewElection } from "@/plugins/ElectionBuilder";
+import { Refusal } from "@/plugins/ElectionRefusal";
 
 export function Elections() {
   const served = useQuery({
@@ -149,88 +130,6 @@ function ElectionsTable({ items }: { items: ElectionListItem[] }) {
         </tr>
       ))}
     </DataTable>
-  );
-}
-
-function NewElection() {
-  const confirm = useConfirm();
-  const toast = useToast();
-  const navigate = useNavigate();
-  const queryClient = useQueryClient();
-  const [text, setText] = useState("");
-  const [box, setBox] = useState("");
-  let parsed: Record<string, unknown> | null = null;
-  let parseError: string | undefined;
-  if (text.trim()) {
-    try {
-      const v: unknown = JSON.parse(text);
-      if (v && typeof v === "object" && !Array.isArray(v)) parsed = v as Record<string, unknown>;
-      else parseError = "The manifest is a JSON object.";
-    } catch (e) {
-      parseError = `Not JSON: ${(e as Error).message}`;
-    }
-  }
-  const create = useMutation({
-    mutationFn: () => createElection(parsed ?? {}, gestureFromConfirm(confirm)),
-    onSuccess: (r) => {
-      toast.push(
-        "success",
-        r.state === "registered"
-          ? `Created ${r.electionId}; the ballot box registered it.`
-          : `Created ${r.electionId}; the community keeps delivering it to the ballot box.`,
-      );
-      void queryClient.invalidateQueries({ queryKey: ELECTIONS_KEY });
-      navigate(`../${encodeURIComponent(r.electionId)}`);
-    },
-  });
-  return (
-    <div className="page">
-      <header className="page-header">
-        <h1>New election</h1>
-        <Link to="..">All elections</Link>
-      </header>
-      <section className="card">
-        <p className="muted">
-          The manifest says what is asked, who may vote, when, and which ballot box counts. It is
-          sent exactly as written: every ticket and every vote is bound to its digest. The ballot
-          box must be one of this community&rsquo;s trusted voting services. A binding election
-          (<code>&quot;binding&quot;: true</code>) is sent for another administrator&rsquo;s
-          approval before it is created.
-        </p>
-        <form
-          className="form-stack"
-          onSubmit={(e) => {
-            e.preventDefault();
-            create.mutate();
-          }}
-        >
-          <Field label="Ballot box DID" hint="To start from a sample manifest that names it.">
-            <input value={box} onChange={(e) => setBox(e.target.value)} placeholder="did:webvh:…" />
-          </Field>
-          <button
-            type="button"
-            className="secondary"
-            disabled={!box.trim()}
-            onClick={async () => setText(sampleManifest(await vtcDid(), box.trim()))}
-          >
-            Start from a sample
-          </button>
-          <Field label="Manifest" error={parseError}>
-            <textarea
-              rows={24}
-              spellCheck={false}
-              className="mono"
-              value={text}
-              onChange={(e) => setText(e.target.value)}
-            />
-          </Field>
-          <button type="submit" disabled={!parsed || create.isPending}>
-            Create
-          </button>
-        </form>
-      </section>
-      <Refusal title="The election was not created" error={create.error} />
-    </div>
   );
 }
 

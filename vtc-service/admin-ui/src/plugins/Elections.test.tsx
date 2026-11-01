@@ -1,5 +1,5 @@
 import { fireEvent, screen, waitFor } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { Elections } from "@/plugins/elections";
 import {
@@ -8,6 +8,7 @@ import {
   ELECTIONS_LIST_TASK,
   ELECTIONS_SHOW_TASK,
 } from "@/lib/elections-api";
+import { DRAFT_STORAGE_KEY } from "@/plugins/ElectionBuilder";
 import { ACTIONS_SHOW_TASK, NEXT_STEP_TYPE } from "@/lib/parked-action";
 import { mockFetch, renderWithProviders, sentPayloads, taskRoute, type MockRoute } from "@/test/render";
 
@@ -17,6 +18,7 @@ vi.mock("@/lib/api", async (original) => ({
   ...(await original<typeof import("@/lib/api")>()),
   postSignedRead: (await import("@/test/signed-read")).unsignedRead,
   postSignedTrustTask: (await import("@/test/signed-read")).unsignedTask,
+  vtcDid: async () => "did:webvh:QmCommunity:community.example",
 }));
 vi.mock("@/lib/signed-act", async (original) => ({
   ...(await original<typeof import("@/lib/signed-act")>()),
@@ -77,6 +79,8 @@ const routes = (extra: MockRoute[] = []): MockRoute[] => [
   }),
   ...extra,
 ];
+
+beforeEach(() => sessionStorage.removeItem(DRAFT_STORAGE_KEY));
 
 describe("Elections", () => {
   it("says so when this VTC was built without elections", async () => {
@@ -144,9 +148,104 @@ describe("Elections", () => {
       ]),
     );
     renderWithProviders(<Elections />, { route: "/elections/new", path: "/elections/*" });
+    fireEvent.click(await screen.findByRole("tab", { name: "JSON" }));
     const text = await screen.findByLabelText(/^Manifest/);
     fireEvent.change(text, { target: { value: JSON.stringify({ ...manifest, binding: true }) } });
     fireEvent.click(screen.getByRole("button", { name: "Create" }));
     expect((await screen.findByRole("status")).textContent).toContain("Sent for approval");
+  });
+
+  describe("the manifest builder", () => {
+    const next = () => fireEvent.click(screen.getByRole("button", { name: "Next" }));
+
+    it("builds the manifest step by step and creates it", async () => {
+      const requests = mockFetch(
+        routes([
+          taskRoute(ELECTIONS_CREATE_TASK, {
+            electionId: "spring-poll",
+            manifestDigest: "zQmDigest",
+            state: "registered",
+          }),
+          taskRoute(ELECTIONS_SHOW_TASK, shown("registered")),
+        ]),
+      );
+      renderWithProviders(<Elections />, { route: "/elections/new", path: "/elections/*" });
+      fireEvent.change(await screen.findByLabelText("Title"), { target: { value: "Spring poll" } });
+      expect((screen.getByLabelText(/^Identifier/) as HTMLInputElement).value).toBe("spring-poll");
+      next();
+      fireEvent.change(screen.getByLabelText("What is asked"), { target: { value: "Picnic?" } });
+      fireEvent.click(screen.getByRole("button", { name: "Use Yes / No / Abstain" }));
+      next();
+      next();
+      next();
+      fireEvent.change(screen.getByLabelText(/^Ballot box DID/), { target: { value: BOX } });
+      next();
+      expect(screen.getByRole("heading", { name: "Review" })).toBeTruthy();
+      const create = screen.getByRole("button", { name: "Create" });
+      await waitFor(() => expect((create as HTMLButtonElement).disabled).toBe(false));
+      fireEvent.click(create);
+      await waitFor(() => expect(sentPayloads(requests, ELECTIONS_CREATE_TASK)).toHaveLength(1));
+      const sent = (sentPayloads(requests, ELECTIONS_CREATE_TASK)[0] as { manifest: Record<string, unknown> }).manifest;
+      expect(sent).toMatchObject({
+        electionId: "spring-poll",
+        community: "did:webvh:QmCommunity:community.example",
+        title: "Spring poll",
+        ballotBox: BOX,
+        secrecy: "open",
+        roll: { rule: "members" },
+        binding: false,
+        questions: [
+          {
+            key: "q1",
+            type: "choice",
+            text: "Picnic?",
+            options: [
+              { key: "yes", label: "Yes" },
+              { key: "no", label: "No" },
+              { key: "abstain", label: "Abstain" },
+            ],
+            minSelections: 1,
+            maxSelections: 1,
+            optional: true,
+          },
+        ],
+      });
+      // Created: the draft is gone.
+      expect(sessionStorage.getItem(DRAFT_STORAGE_KEY)).toBeNull();
+    });
+
+    it("holds Create until the review is clean, and says what to fix", async () => {
+      mockFetch(routes());
+      renderWithProviders(<Elections />, { route: "/elections/new", path: "/elections/*" });
+      fireEvent.click(await screen.findByRole("button", { name: /Review/ }));
+      expect(screen.getByRole("alert").textContent).toContain("Name the ballot box.");
+      expect((screen.getByRole("button", { name: "Create" }) as HTMLButtonElement).disabled).toBe(true);
+      fireEvent.click(screen.getByRole("button", { name: "Go to Counting" }));
+      expect(screen.getByLabelText(/^Ballot box DID/)).toBeTruthy();
+    });
+
+    it("keeps the draft in this tab across a reload", async () => {
+      mockFetch(routes());
+      const first = renderWithProviders(<Elections />, { route: "/elections/new", path: "/elections/*" });
+      fireEvent.change(await screen.findByLabelText("Title"), { target: { value: "Kept" } });
+      first.unmount();
+      renderWithProviders(<Elections />, { route: "/elections/new", path: "/elections/*" });
+      expect(((await screen.findByLabelText("Title")) as HTMLInputElement).value).toBe("Kept");
+    });
+
+    it("keeps a manifest the form cannot represent in the JSON view", async () => {
+      mockFetch(routes());
+      renderWithProviders(<Elections />, { route: "/elections/new", path: "/elections/*" });
+      fireEvent.click(await screen.findByRole("tab", { name: "JSON" }));
+      const text = screen.getByLabelText(/^Manifest/) as HTMLTextAreaElement;
+      const m = JSON.parse(text.value) as Record<string, unknown>;
+      fireEvent.change(text, { target: { value: JSON.stringify({ ...m, extra: true }) } });
+      fireEvent.click(screen.getByRole("tab", { name: "Guided" }));
+      expect(await screen.findByText(/The form does not edit "extra"/)).toBeTruthy();
+      expect(screen.getByLabelText(/^Manifest/)).toBeTruthy();
+      fireEvent.change(text, { target: { value: JSON.stringify({ ...m, title: "From JSON" }) } });
+      fireEvent.click(screen.getByRole("tab", { name: "Guided" }));
+      expect(((await screen.findByLabelText("Title")) as HTMLInputElement).value).toBe("From JSON");
+    });
   });
 });
