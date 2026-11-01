@@ -197,18 +197,12 @@ pub async fn check_create(
     manifest: &Value,
     now: DateTime<Utc>,
 ) -> Result<CheckedManifest, CreateError> {
-    let m: Manifest = serde_json::from_value(manifest.clone())
-        .map_err(|e| CreateError::InvalidManifest(e.to_string()))?;
-    rules::check_manifest(&m, None).map_err(|e| match e {
+    // What needs only the manifest and the clock; `cnm elections manifest check` runs the same.
+    let m = rules::check_new_manifest(manifest, now).map_err(|e| match e {
         RuleError::UnsupportedSecrecy(_) => CreateError::UnsupportedSecrecy,
         RuleError::InvalidManifest(why) => CreateError::InvalidManifest(why),
         other => CreateError::InvalidManifest(other.to_string()),
     })?;
-    if m.voting_closes_at <= now {
-        return Err(CreateError::InvalidManifest(
-            "votingClosesAt is already past".into(),
-        ));
-    }
     if m.community.as_str() != community_did(state).await {
         return Err(CreateError::CommunityMismatch);
     }

@@ -1114,6 +1114,23 @@ async fn community_vtc(
     Ok((community_keyring_key(&slug), target))
 }
 
+/// The active community's DID — `--vtc-did`, else its profile's — without resolving it or
+/// reaching the VTC, for the commands that work offline.
+fn community_did_offline(
+    community: &Option<String>,
+    vtc_did: &Option<String>,
+    cnm_config: &config::CnmConfig,
+) -> Result<String, Box<dyn std::error::Error>> {
+    if let Some(did) = vtc_did {
+        return Ok(did.clone());
+    }
+    let (slug, profile) = resolve_community(community.as_deref(), cnm_config)?;
+    profile.vtc_did.clone().ok_or_else(|| {
+        format!("community '{slug}' names no VTC DID. Pass it: --vtc-did <the community's DID>")
+            .into()
+    })
+}
+
 /// `cnm bootstrap request --out <PATH> [--label <NAME>]`
 fn bootstrap_request(
     out: std::path::PathBuf,
@@ -1736,6 +1753,11 @@ async fn main() {
                 Err(e) => Err(e),
             }
         }
+        // Offline: only the community's DID is needed, and it comes from the operator.
+        Commands::Elections {
+            command: elections::ElectionsCommands::Manifest { command },
+        } => community_did_offline(&cli.community, &cli.vtc_did, &cnm_config)
+            .and_then(|did| elections::run_manifest(command, &did)),
         Commands::Elections { command } => {
             match community_vtc(&cli.community, &cli.vtc_did, &url_override, &cnm_config).await {
                 Ok((key, target)) => {

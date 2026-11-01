@@ -207,12 +207,15 @@ one), fewer than `limit` where entries are large; `next` says where to continue.
 A public poll is the shortest path to see it work. With the service running and the VTC trusting
 it:
 
-1. Write a manifest:
-   - `"secrecy": "open"`, `"board": { "visibility": "public", "auditors": [] }`;
-   - `"ballotBox"` set to this service's DID;
-   - `votingOpensAt` a couple of minutes ahead, so the registration lands first.
-2. Create it, then check it registered:
+1. Write a manifest — the console's **New election** builds one, or from the command line:
    ```sh
+   cnm elections manifest init --ballot-box <this service's DID> --out poll.json
+   ```
+   The starter is an open poll with a public board. Set the question, and move
+   `votingOpensAt` to a couple of minutes ahead so the registration lands first.
+2. Check it offline, create it, then check it registered:
+   ```sh
+   cnm elections manifest check poll.json
    cnm elections create poll.json
    cnm elections show <id>        # expect "registered"
    ```

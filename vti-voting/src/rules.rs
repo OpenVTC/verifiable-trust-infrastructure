@@ -319,6 +319,33 @@ pub fn check_manifest_serving(
     Ok(())
 }
 
+/// A manifest as received, checked as a community checks one it is asked to create
+/// (`vtc/elections/create`): the current 0.2 shape ([`require_current_manifest`]), its typed
+/// form, [`check_manifest`], and voting not already closed at `now`.
+///
+/// Everything a community checks that needs nothing but the manifest and the clock — what is
+/// left needs the community itself: that `community` is its DID, that `ballotBox` is one of its
+/// trusted voting services (VTI-VOT-082), and that `electionId` is unused. The VTC runs it on
+/// every create; an operator's tool can run it offline first (`cnm elections manifest check`).
+/// The caller validates `manifest` against the schema first.
+///
+/// # Errors
+/// As [`check_manifest`]; [`RuleError::InvalidManifest`] for a 0.1 manifest, one that does not
+/// parse, or one whose voting has already closed.
+pub fn check_new_manifest(
+    manifest: &serde_json::Value,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Result<Manifest, RuleError> {
+    require_current_manifest(manifest)?;
+    let m: Manifest =
+        serde_json::from_value(manifest.clone()).map_err(|e| bad_manifest(e.to_string()))?;
+    check_manifest(&m, None)?;
+    if m.voting_closes_at <= now {
+        return Err(bad_manifest("votingClosesAt is already past"));
+    }
+    Ok(m)
+}
+
 fn bad_ballot(why: impl Into<String>) -> RuleError {
     RuleError::BallotInvalid(why.into())
 }
