@@ -106,7 +106,7 @@ export function stageOf(e: Pick<PageElection, "state" | "votingOpensAt" | "votin
 
 export const STAGE_LABEL: Record<Stage, string> = {
   upcoming: "Not open yet",
-  ticketsOpen: "Take your ticket",
+  ticketsOpen: "Tickets open",
   voting: "Voting open",
   closed: "Closed",
   cancelled: "Cancelled",
