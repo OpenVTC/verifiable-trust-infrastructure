@@ -122,13 +122,6 @@ body {
 }
 .passkey-add input {
   flex: 1 1 12rem;
-  min-width: 0;
-  font: inherit;
-  padding: 0.5rem 0.75rem;
-  border-radius: var(--radius-md);
-  border: 1px solid var(--border);
-  background: var(--bg);
-  color: var(--text);
 }
 
 .card-soon {
@@ -222,8 +215,19 @@ body {
   color: var(--text-muted);
   font-size: 0.9rem;
 }
-.field input:not([type="file"]),
-.field textarea {
+/* Every text control in the portal, wherever it sits. These rules used to
+   live under `.field` and `.passkey-add` only, so an input, select or
+   textarea anywhere else (the directory card's choices, a group's join note,
+   your name for someone) wore the browser's default. */
+input:not([type]),
+input[type="text"],
+input[type="search"],
+input[type="url"],
+input[type="email"],
+input[type="date"],
+input[type="number"],
+select,
+textarea {
   font: inherit;
   padding: 0.5rem 0.75rem;
   border-radius: var(--radius-md);
@@ -231,6 +235,44 @@ body {
   background: var(--bg);
   color: var(--text);
   min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
+}
+textarea {
+  min-height: 4.5rem;
+  resize: vertical;
+}
+
+/* A short form on one line: an input and its button. Wraps on a narrow
+   screen. */
+.form-row {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  align-items: center;
+}
+.form-row > input {
+  flex: 1 1 12rem;
+}
+
+/* A checkbox and its label on one line. */
+.check {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  cursor: pointer;
+}
+.check > input {
+  margin: 0;
+}
+
+/* A button at the end of a stacked form keeps its own width. */
+.card-form > .btn {
+  align-self: flex-start;
+}
+/* A group of choices after a form in the same section stands apart from it. */
+.card-form + .card-field {
+  margin-top: 1rem;
 }
 .note-body {
   white-space: pre-wrap;
