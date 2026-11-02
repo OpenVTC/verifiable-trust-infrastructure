@@ -306,10 +306,10 @@ function ArchiveForm({
           if (ready) run.mutate();
         }}
       >
-        <fieldset className="community-choices">
+        <fieldset className="choice-group">
           <legend className="field-label">Members may still</legend>
           {ARCHIVE_ACCESS.map((a) => (
-            <label key={a.id}>
+            <label key={a.id} className="checkbox">
               <input
                 type="radio"
                 name="archive-access"
@@ -317,9 +317,12 @@ function ArchiveForm({
                 checked={access === a.id}
                 disabled={a.id === current}
                 onChange={() => setAccess(a.id)}
-              />{" "}
-              <b>{a.label}</b>
-              {a.id === current ? " (now)" : ""} — <span className="muted">{a.hint}</span>
+              />
+              <span className="checkbox-text">
+                <b>{a.label}</b>
+                {a.id === current ? " (now)" : ""}
+                <span className="choice-hint">{a.hint}</span>
+              </span>
             </label>
           ))}
         </fieldset>

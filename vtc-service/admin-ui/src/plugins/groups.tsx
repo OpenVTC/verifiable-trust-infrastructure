@@ -910,22 +910,20 @@ function GroupRooms({ group }: { group: Group }) {
                 onChange={(e) => setDays(e.target.value)}
               />
             </Field>
-            <fieldset className="field span-2">
+            <fieldset className="choice-group inline span-2">
               <legend className="field-label">What members may do</legend>
-              <div className="form-actions">
-                {ROOM_ACTIONS.map((a) => (
-                  <label key={a} className="checkbox">
-                    <input
-                      type="checkbox"
-                      checked={actions.includes(a)}
-                      onChange={(e) =>
-                        setActions((cur) => (e.target.checked ? [...cur, a] : cur.filter((x) => x !== a)))
-                      }
-                    />
-                    <span className="checkbox-text">{a}</span>
-                  </label>
-                ))}
-              </div>
+              {ROOM_ACTIONS.map((a) => (
+                <label key={a} className="checkbox">
+                  <input
+                    type="checkbox"
+                    checked={actions.includes(a)}
+                    onChange={(e) =>
+                      setActions((cur) => (e.target.checked ? [...cur, a] : cur.filter((x) => x !== a)))
+                    }
+                  />
+                  <span className="checkbox-text">{a}</span>
+                </label>
+              ))}
             </fieldset>
             <Field label="Why" className="span-2" hint="Recorded in the audit trail.">
               <input
@@ -1067,28 +1065,26 @@ function GroupAuthority({ group }: { group: Group }) {
             if (ready) add.mutate();
           }}
         >
-          <fieldset className="field">
+          <fieldset className="choice-group inline">
             <legend className="field-label">Give its members</legend>
-            <div className="form-actions">
-              <label className="checkbox">
-                <input
-                  type="radio"
-                  name="authority-kind"
-                  checked={kind === "grants"}
-                  onChange={() => setKind("grants")}
-                />
-                <span className="checkbox-text">Capabilities</span>
-              </label>
-              <label className="checkbox">
-                <input
-                  type="radio"
-                  name="authority-kind"
-                  checked={kind === "role"}
-                  onChange={() => setKind("role")}
-                />
-                <span className="checkbox-text">A role&rsquo;s capabilities</span>
-              </label>
-            </div>
+            <label className="checkbox">
+              <input
+                type="radio"
+                name="authority-kind"
+                checked={kind === "grants"}
+                onChange={() => setKind("grants")}
+              />
+              <span className="checkbox-text">Capabilities</span>
+            </label>
+            <label className="checkbox">
+              <input
+                type="radio"
+                name="authority-kind"
+                checked={kind === "role"}
+                onChange={() => setKind("role")}
+              />
+              <span className="checkbox-text">A role&rsquo;s capabilities</span>
+            </label>
           </fieldset>
           {kind === "grants" && (
             <fieldset className="field group-cap-list">

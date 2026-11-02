@@ -96,18 +96,6 @@
   align-items: center;
 }
 
-.election-radios {
-  border: 0;
-  margin: 0;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-}
-.election-radios legend {
-  margin-bottom: var(--space-2);
-}
-
 .election-issues {
   border: 1px solid var(--danger);
   border-radius: var(--radius-md, 8px);

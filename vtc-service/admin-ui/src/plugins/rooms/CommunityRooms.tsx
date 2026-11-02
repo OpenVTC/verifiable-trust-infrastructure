@@ -443,10 +443,10 @@ function NewCommunityRoom({ onDone }: { onDone: () => void }) {
         >
           <input placeholder="board, finance" value={tagText} onChange={(e) => setTagText(e.target.value)} />
         </Field>
-        <fieldset className="community-choices">
+        <fieldset className="choice-group">
           <legend className="field-label">Tier — fixed for the room&rsquo;s life</legend>
           {CREATE_TIERS.map((t) => (
-            <label key={t.id} className={"disabled" in t && t.disabled ? "muted" : undefined}>
+            <label key={t.id} className={"disabled" in t && t.disabled ? "checkbox muted" : "checkbox"}>
               <input
                 type="radio"
                 name="community-room-tier"
@@ -454,9 +454,11 @@ function NewCommunityRoom({ onDone }: { onDone: () => void }) {
                 checked={visibility === t.id}
                 disabled={"disabled" in t && t.disabled}
                 onChange={() => setVisibility(t.id as "attributed" | "open")}
-              />{" "}
-              {t.id}
-              <div className="muted rooms-sub">{t.note}</div>
+              />
+              <span className="checkbox-text">
+                {t.id}
+                <span className="choice-hint">{t.note}</span>
+              </span>
             </label>
           ))}
         </fieldset>

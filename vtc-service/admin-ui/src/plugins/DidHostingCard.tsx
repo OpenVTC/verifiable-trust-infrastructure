@@ -102,7 +102,7 @@ export function DidHostingCard() {
       )}
       {field && !envPinned && (
         <>
-          <fieldset className="field">
+          <fieldset className="choice-group">
             <legend className="field-label">Published by</legend>
             <label className="checkbox">
               <input
