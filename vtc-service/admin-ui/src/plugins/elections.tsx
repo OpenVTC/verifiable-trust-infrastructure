@@ -160,7 +160,7 @@ function ElectionDetail({ electionId, e }: { electionId: string; e: Election }) 
   return (
     <>
       <section className="card">
-        <dl className="detail-list">
+        <dl className="kv">
           <dt>State</dt>
           <dd>{STATE_LABEL[e.state] ?? e.state}</dd>
           <dt>Identifier</dt>
@@ -189,7 +189,7 @@ function ElectionDetail({ electionId, e }: { electionId: string; e: Election }) 
           Every member sees this before taking a ticket, so they know who could learn what about
           their vote. It comes from the election&rsquo;s settings and the ballot box you chose.
         </p>
-        <dl className="detail-list">
+        <dl className="kv">
           <dt>Ballot box</dt>
           <dd>
             Run by {d.ballotBoxOperator} (<code title={d.ballotBox}>{shorten(d.ballotBox, 16, 6)}</code>).
@@ -470,7 +470,7 @@ function ElectionActions({ electionId, e }: { electionId: string; e: Election })
       <Field label="Reason" hint="Kept in the audit trail. Required to cancel.">
         <input value={reason} onChange={(ev) => setReason(ev.target.value)} />
       </Field>
-      <div className="button-row">
+      <div className="form-actions">
         {open && e.manifest.allowEarlyClose && (
           <button type="button" className="secondary" onClick={() => close.mutate()} disabled={close.isPending}>
             Close early
@@ -502,7 +502,7 @@ function ElectionActions({ electionId, e }: { electionId: string; e: Election })
               onChange={(ev) => setAttestations(ev.target.value)}
             />
           </Field>
-          <button
+          <button className="primary"
             type="button"
             onClick={() => certify.mutate()}
             disabled={certify.isPending || parsedAttestations === null}

@@ -450,7 +450,7 @@ function FilesSwitch({ data }: { data: RoomGetResponse }) {
             <textarea rows={2} value={reason} onChange={(e) => setReason(e.target.value)} />
           </label>
           <div className="rooms-form-actions">
-            <button
+            <button className="primary"
               type="button"
               onClick={flip}
               disabled={busy || reason.trim() === "" || reason.trim().length > 500}
@@ -765,7 +765,7 @@ function MoveExistingFiles({
               )}
               Files not yet moved keep working where they are. Resuming needs no new
               approval.{" "}
-              <button type="button" onClick={() => move.mutate(true)} disabled={move.isPending}>
+              <button className="secondary" type="button" onClick={() => move.mutate(true)} disabled={move.isPending}>
                 Resume now
               </button>
             </p>
@@ -818,7 +818,7 @@ function MoveExistingFiles({
           </label>
           {!rateOk && <p className="muted">At least 0.0625 MiB (64 KiB) per second.</p>}
           <div className="rooms-form-actions">
-            <button
+            <button className="primary"
               type="button"
               onClick={() => move.mutate(false)}
               disabled={
@@ -911,7 +911,7 @@ function MoveStorage({ roomId, current }: { roomId: string; current: string }) {
         </>
       )}
       <div className="rooms-form-actions">
-        <button
+        <button className="primary"
           type="button"
           onClick={() => move.mutate()}
           disabled={

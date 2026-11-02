@@ -170,7 +170,7 @@ function StepUpPageSurface() {
               aria-label="Answer code"
               onFocus={(e) => e.currentTarget.select()}
             />
-            <button
+            <button className="secondary"
               type="button"
               onClick={() => void navigator.clipboard?.writeText(handOver.data)}
             >

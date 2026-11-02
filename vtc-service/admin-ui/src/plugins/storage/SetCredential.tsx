@@ -233,7 +233,7 @@ export function SetCredential({
   }
 
   return (
-    <form className="storage-form storage-set-credential" onSubmit={(e) => void submit(e)} noValidate>
+    <form className="form-stack" onSubmit={(e) => void submit(e)} noValidate>
       <p className="muted">
         Sealed in this browser to this community before it is sent. Nobody else can read it on the way, approvers
         see only its digest, and it cannot be read back {isSet ? "— it replaces the one stored now" : ""}.
@@ -312,8 +312,8 @@ export function SetCredential({
         </section>
       )}
       <ErrorOrParked title="Not set" error={send.error} />
-      <div className="rooms-toolbar">
-        <button type="submit" disabled={sealing || send.isPending}>
+      <div className="form-actions">
+        <button className="primary" type="submit" disabled={sealing || send.isPending}>
           {sealing ? "Sealing…" : send.isPending ? "Sending…" : "Seal and send for approval"}
         </button>
         <button type="button" className="secondary" onClick={close}>
