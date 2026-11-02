@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -444,10 +444,20 @@ const HOSTILE = [
 
 const SHELL_HOME = mkdtempSync(join(tmpdir(), "vtc-shellquote-"));
 
-/** The argv `args` (a string of shell words) gives a program in `shell`,
- *  read back through an external printf so no shell's builtin differs. */
+/** Writes its argv back, NUL-terminated. Node reads no option after the script
+ *  path; an external `printf` does — uutils' (Ubuntu 26.04) takes a `--help`
+ *  argument as its own flag and prints its help instead. */
+const ARGV_ECHO = join(SHELL_HOME, "argv.cjs");
+writeFileSync(
+  ARGV_ECHO,
+  'process.stdout.write(process.argv.slice(2).map((a) => a + "\\0").join(""));\n',
+);
+
+/** The argv `args` (a string of shell words) gives a program in `shell`, read
+ *  back through an external program so no shell's builtin differs. */
 function argvIn(shell: string, args: string): string[] {
-  const out = execFileSync(shell, ["-c", `env printf '%s\\0' ${args}`], {
+  const echo = `'${process.execPath}' '${ARGV_ECHO}'`;
+  const out = execFileSync(shell, ["-c", `${echo} ${args}`], {
     encoding: "utf8",
     // A throwaway HOME: no user rc file runs, and fish has somewhere to write.
     env: { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: SHELL_HOME },
