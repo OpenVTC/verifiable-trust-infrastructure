@@ -271,10 +271,10 @@ export function ConfigForm({
   return (
     <form className="form-stack" onSubmit={submit} noValidate>
       {!editing && (
-        <fieldset className="storage-kind">
+        <fieldset className="choice-group">
           <legend className="field-label">Kind</legend>
           {(["s3", "gcs", "local"] as const).map((k) => (
-            <label key={k}>
+            <label key={k} className="checkbox">
               <input
                 type="radio"
                 name="kind"
@@ -282,9 +282,11 @@ export function ConfigForm({
                 onChange={() =>
                   setD((x) => ({ ...x, kind: k, mode: modesFor(k).includes(x.mode) ? x.mode : (modesFor(k)[0] ?? x.mode) }))
                 }
-              />{" "}
-              {k === "s3" ? "S3-compatible" : k === "gcs" ? "Google Cloud Storage" : "A directory on this host"}
-              <div className="muted rooms-sub">{KIND_MEANS[k]}</div>
+              />
+              <span className="checkbox-text">
+                {k === "s3" ? "S3-compatible" : k === "gcs" ? "Google Cloud Storage" : "A directory on this host"}
+                <span className="choice-hint">{KIND_MEANS[k]}</span>
+              </span>
             </label>
           ))}
         </fieldset>
@@ -312,13 +314,15 @@ export function ConfigForm({
       )}
 
       {d.kind !== "local" && (
-        <fieldset className="storage-kind">
+        <fieldset className="choice-group">
           <legend className="field-label">How the community authenticates</legend>
           {modesFor(d.kind).map((m) => (
-            <label key={m}>
-              <input type="radio" name="mode" checked={d.mode === m} onChange={() => set("mode", m)} />{" "}
-              {MODE_LABEL[m]}
-              <div className="muted rooms-sub">{MODE_MEANS[m]}</div>
+            <label key={m} className="checkbox">
+              <input type="radio" name="mode" checked={d.mode === m} onChange={() => set("mode", m)} />
+              <span className="checkbox-text">
+                {MODE_LABEL[m]}
+                <span className="choice-hint">{MODE_MEANS[m]}</span>
+              </span>
             </label>
           ))}
           {err("mode") && <p className="field-error">{err("mode")}</p>}

@@ -862,6 +862,8 @@ th[aria-sort="descending"] > .sortable-th {
   width: auto;
   height: auto;
   margin: 0.2em 0 0;
+  accent-color: var(--brand);
+  cursor: pointer;
 }
 
 .checkbox-text {
@@ -869,6 +871,51 @@ th[aria-sort="descending"] > .sortable-th {
   min-width: 0;
   line-height: 1.5;
   overflow-wrap: anywhere;
+}
+
+/* A choice's explanation, on its own line under the choice's name. */
+.choice-hint {
+  display: block;
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+}
+
+/* A group of choices — radios, or checkboxes that pick from a set:
+ *
+ *   <fieldset class="choice-group">
+ *     <legend class="field-label">Kind</legend>
+ *     <label class="checkbox"><input type="radio" …/>
+ *       <span class="checkbox-text">S3-compatible
+ *         <span class="choice-hint">An object store.</span></span></label>
+ *     …
+ *   </fieldset>
+ *
+ * `.inline` lays short choices out in a row. Every console radio group is one
+ * of these; give a new one this shape rather than a class of its own. */
+.choice-group {
+  border: 0;
+  margin: 0;
+  padding: 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.choice-group > legend {
+  padding: 0;
+  margin-bottom: var(--space-2);
+}
+
+.choice-group.inline {
+  flex-direction: row;
+  flex-wrap: wrap;
+  gap: var(--space-2) var(--space-5);
+}
+
+.choice-group > .field-hint,
+.choice-group > .field-error {
+  margin: 0;
 }
 
 /* A caution said beside the thing it is about — an election's ballot box run
@@ -1490,7 +1537,6 @@ dd .copy-icon-btn {
 
 a.stat-tile:focus-visible,
 a.button:focus-visible,
-.switch-field input:focus-visible,
 .color-row input[type="color"]:focus-visible {
   outline: 2px solid var(--focus-ring);
   outline-offset: 2px;
@@ -1547,20 +1593,6 @@ select[aria-invalid="true"] {
   font-size: var(--text-xs);
 }
 
-/* A row of checkboxes that are not switches (Vetting's "Methods that count"). */
-.switch-field {
-  display: flex;
-  align-items: flex-start;
-  gap: var(--space-3);
-  cursor: pointer;
-}
-.switch-field input {
-  width: 1.1rem;
-  height: 1.1rem;
-  margin-top: 2px;
-  accent-color: var(--brand);
-  cursor: pointer;
-}
 .switch-text {
   display: flex;
   flex-direction: column;

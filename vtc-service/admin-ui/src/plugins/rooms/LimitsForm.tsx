@@ -105,25 +105,25 @@ export function LimitsForm({
 
   return (
     <form className="form-stack" onSubmit={submit}>
-      <fieldset className="rooms-limits-mode">
+      <fieldset className="choice-group inline">
         <legend className="field-label">Change</legend>
-        <label>
+        <label className="checkbox">
           <input
             type="radio"
             name="limits-mode"
             checked={mode === "set"}
             onChange={() => setMode("set")}
-          />{" "}
-          Set these limits
+          />
+          <span className="checkbox-text">Set these limits</span>
         </label>
-        <label>
+        <label className="checkbox">
           <input
             type="radio"
             name="limits-mode"
             checked={mode === "clear"}
             onChange={() => setMode("clear")}
-          />{" "}
-          Clear the override, back to the default
+          />
+          <span className="checkbox-text">Clear the override, back to the default</span>
         </label>
       </fieldset>
 

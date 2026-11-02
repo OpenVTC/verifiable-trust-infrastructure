@@ -643,17 +643,17 @@ export function CreateDialog({
         placeholder="widgets"
         error={error}
       />
-      <fieldset className="gitns-fieldset">
-        <legend>Visibility</legend>
+      <fieldset className="choice-group">
+        <legend className="field-label">Visibility</legend>
         {(["public", "private"] as const).map((v) => (
-          <label key={v} className="gitns-radio">
+          <label key={v} className="checkbox">
             <input
               type="radio"
               name="gitns-visibility"
               checked={visibility === v}
               onChange={() => setVisibility(v)}
             />
-            <span>{v === "public" ? "Public" : "Private"}</span>
+            <span className="checkbox-text">{v === "public" ? "Public" : "Private"}</span>
           </label>
         ))}
         <span className="field-hint">

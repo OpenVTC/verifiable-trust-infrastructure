@@ -594,11 +594,12 @@ function AddMember({ room, onDone }: { room: CommunityRoom; onDone: () => void }
             onChange={(e) => setMember(e.target.value)}
           />
         </Field>
-        <fieldset className="community-choices inline">
+        <fieldset className="choice-group inline">
           <legend className="field-label">Actions</legend>
           {MEMBER_ACTIONS.map((a) => (
-            <label key={a.id} title={a.hint}>
-              <input type="checkbox" checked={actions.includes(a.id)} onChange={() => toggle(a.id)} /> {a.id}
+            <label key={a.id} className="checkbox" title={a.hint}>
+              <input type="checkbox" checked={actions.includes(a.id)} onChange={() => toggle(a.id)} />
+              <span className="checkbox-text">{a.id}</span>
             </label>
           ))}
         </fieldset>

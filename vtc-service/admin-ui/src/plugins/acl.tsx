@@ -935,7 +935,7 @@ function CreateInviteForm({ onClose }: { onClose: () => void }) {
         becomes a community administrator with full authority. Mirrors the{" "}
         <code>vtc admin invite</code> CLI.
       </p>
-      <fieldset className="form-stack">
+      <fieldset className="choice-group">
         <legend className="field-label">How will they sign in?</legend>
         <label className="checkbox">
           <input

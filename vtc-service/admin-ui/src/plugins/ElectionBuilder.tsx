@@ -676,13 +676,15 @@ function Radios<T extends string>({
   options: { value: T; label: string; detail?: string }[];
 }) {
   return (
-    <fieldset className="election-radios">
+    <fieldset className="choice-group">
       <legend className="field-label">{legend}</legend>
       {options.map((o) => (
-        <label key={o.value}>
-          <input type="radio" name={name} value={o.value} checked={value === o.value} onChange={() => onChange(o.value)} />{" "}
-          <strong>{o.label}</strong>
-          {o.detail && <span className="muted"> — {o.detail}</span>}
+        <label key={o.value} className="checkbox">
+          <input type="radio" name={name} value={o.value} checked={value === o.value} onChange={() => onChange(o.value)} />
+          <span className="checkbox-text">
+            <strong>{o.label}</strong>
+            {o.detail && <span className="choice-hint">{o.detail}</span>}
+          </span>
         </label>
       ))}
     </fieldset>

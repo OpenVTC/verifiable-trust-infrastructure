@@ -219,34 +219,34 @@ export function BindFlow() {
               </Field>
             </div>
 
-            <fieldset className="gitns-fieldset">
-              <legend>How the VTC acts on the forge</legend>
-              <label className="gitns-radio">
+            <fieldset className="choice-group">
+              <legend className="field-label">How the VTC acts on the forge</legend>
+              <label className="checkbox">
                 <input
                   type="radio"
                   name="gitns-mode"
                   checked={form.mode === "bridge"}
                   onChange={() => setForm({ ...form, mode: "bridge" })}
                 />
-                <span>
+                <span className="checkbox-text">
                   <b>Through the community's GitHub App</b>
-                  <span className="muted gitns-block">
+                  <span className="choice-hint">
                     The bridge registers the App the first time, then creates, adopts,
                     projects roles and watches for drift. Needs a bridge configured for
                     this forge.
                   </span>
                 </span>
               </label>
-              <label className="gitns-radio">
+              <label className="checkbox">
                 <input
                   type="radio"
                   name="gitns-mode"
                   checked={form.mode === "manual"}
                   onChange={() => setForm({ ...form, mode: "manual" })}
                 />
-                <span>
+                <span className="checkbox-text">
                   <b>Manually</b>
-                  <span className="muted gitns-block">
+                  <span className="choice-hint">
                     No App. The VTC governs the rights; people with forge access carry
                     out the steps it names, and nothing checks the forge for drift.
                   </span>

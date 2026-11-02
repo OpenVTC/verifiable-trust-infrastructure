@@ -529,13 +529,13 @@ export function SignTaskDialog({
         )}
 
         {signing && destructive && !unavailable && (
-          <label className="gitns-radio">
+          <label className="checkbox">
             <input
               type="checkbox"
               checked={confirmed}
               onChange={(e) => setConfirmed(e.target.checked)}
             />
-            <span>I understand this is destructive and want to sign it.</span>
+            <span className="checkbox-text">I understand this is destructive and want to sign it.</span>
           </label>
         )}
 
