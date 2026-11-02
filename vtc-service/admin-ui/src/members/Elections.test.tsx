@@ -178,6 +178,30 @@ describe("one election", () => {
     expect(screen.getByText(/released once 3 ballots are counted/)).toBeTruthy();
   });
 
+  it("tells the member, before a ticket, whose membership credential counts (VTI-VOT-090)", async () => {
+    const view = shown();
+    withWallet({
+      show: vi.fn(async () => ({
+        ...view,
+        disclosure: {
+          ...view.disclosure,
+          rollCredential: { memberOf: "did:webvh:QmGroup:community.example:groups:g7", memberOfKind: "communityGroup", memberOfName: "Engineering" },
+        },
+      })),
+    });
+    renderWith(<ElectionPage hostDid={HOST} member={ME} electionId="agm-2027" />);
+    expect(await screen.findByText(/membership credential issued by/)).toBeTruthy();
+    expect(screen.getByText("Engineering", { exact: false })).toBeTruthy();
+    expect(screen.getByText(/shows this community that you are a member of/)).toBeTruthy();
+  });
+
+  it("says nothing of a credential when the wallet passes none on", async () => {
+    withWallet({ show: vi.fn(async () => shown()) });
+    renderWith(<ElectionPage hostDid={HOST} member={ME} electionId="agm-2027" />);
+    await screen.findByRole("button", { name: "Vote, or see my vote, in my wallet" });
+    expect(screen.queryByText(/membership credential issued by/)).toBeNull();
+  });
+
   it("says nothing more at 10, or when the wallet does not pass the threshold on", async () => {
     for (const view of [shown({ textReleaseThreshold: 10 }), shown()]) {
       withWallet({ show: vi.fn(async () => view) });

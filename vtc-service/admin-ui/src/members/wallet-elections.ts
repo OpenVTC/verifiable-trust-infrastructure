@@ -64,6 +64,14 @@ export interface PageElectionView {
     boardVisibility: string;
     revote: string;
     auditors: string[];
+    /** Under a credential roll, whose membership credential admits a party (voting/_shared/0.4
+     *  `RollCredentialDisclosure`, VTI-VOT-090). Absent under any other rule, and from a
+     *  wallet that does not pass it on yet. */
+    rollCredential?: {
+      memberOf: string;
+      memberOfKind: "thisCommunity" | "communityGroup" | "memberParty" | string;
+      memberOfName?: string;
+    };
   };
   ticketsIssued?: number;
   certified?: { certifiedAt: string; result: unknown };

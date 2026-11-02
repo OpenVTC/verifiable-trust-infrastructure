@@ -18,7 +18,7 @@ import {
   toLocalInput,
   type ManifestDraft,
 } from "./election-manifest";
-import bundleJson from "../../../../vti-specs-vtc/trust-tasks/vtc/elections/create/0.4.bundle.json";
+import bundleJson from "../../../../vti-specs-vtc/trust-tasks/vtc/elections/create/0.5.bundle.json";
 
 const COMMUNITY = "did:example:community";
 const BOX = "did:example:box";
@@ -55,7 +55,7 @@ describe("textReleaseWarning", () => {
 describe("MANIFEST_LIMITS", () => {
   // The builder's bounds are the schema's: a pinned version that moves one
   // fails here rather than as a refusal at create.
-  it("matches the pinned vtc/elections/create/0.4 schema", () => {
+  it("matches the pinned vtc/elections/create/0.5 schema", () => {
     const m = defs.Manifest.properties;
     const [choice, ranking, score, text] = defs.Question.oneOf;
     expect(defs.ElectionId.pattern).toBe(MANIFEST_LIMITS.electionIdPattern);
@@ -86,6 +86,12 @@ describe("MANIFEST_LIMITS", () => {
     });
     expect(defs.Trustees.properties.dids.minItems).toBe(MANIFEST_LIMITS.trusteesMin);
     expect(defs.Trustees.properties.threshold.minimum).toBe(MANIFEST_LIMITS.thresholdMin);
+    // voting/_shared/0.4: the credential roll and its one DID (VTI-VOT-025).
+    const roll = defs.RollRule;
+    expect(roll.properties.rule.enum).toEqual(["members", "membersAndListed", "listed", "credential"]);
+    expect(roll.properties.memberOf.pattern).toBe(MANIFEST_LIMITS.memberOfPattern);
+    expect(roll.properties.memberOf.minLength).toBe(MANIFEST_LIMITS.memberOfMin);
+    expect(roll.properties.memberOf.maxLength).toBe(MANIFEST_LIMITS.didMax);
   });
 
   it("renders only members the schema declares", () => {
@@ -275,5 +281,46 @@ describe("helpers", () => {
       "did:example:c",
     );
     expect(await manifestDigest(m)).toBe("zQmSBTNwH4V2g87UjMpbRDjex6KZVeSJRCEHuJNZTUPKjHs");
+  });
+});
+
+describe("the credential roll (VTI-VOT-025, VTI-VOT-026)", () => {
+  const GROUP = "did:webvh:QmGroup:community.example:groups:g7";
+
+  it("renders memberOf, and no listed, under the credential rule", () => {
+    const m = draftToManifest(valid({ roll: "credential", memberOf: ` ${GROUP} `, listed: "did:example:x" }), COMMUNITY);
+    expect(m.roll).toEqual({ rule: "credential", memberOf: GROUP });
+    expect(messages(valid({ roll: "credential", memberOf: GROUP }))).toEqual([]);
+    // Every other rule carries no memberOf.
+    const other = draftToManifest(valid({ roll: "listed", listed: "did:example:x", memberOf: GROUP }), COMMUNITY);
+    expect(other.roll).toEqual({ rule: "listed", listed: ["did:example:x"] });
+  });
+
+  it("asks for one DID", () => {
+    expect(messages(valid({ roll: "credential", memberOf: "" }))).toEqual([
+      "Name the DID whose membership credentials admit their holders.",
+    ]);
+    expect(messages(valid({ roll: "credential", memberOf: "group-7" }))).toEqual([
+      "A DID (did:method:…), 8 – 2048 characters.",
+    ]);
+    expect(messages(valid({ roll: "credential", memberOf: "did:x:a b" }))).toHaveLength(1);
+  });
+
+  it("reads a credential roll back, and refuses what the rule forbids", () => {
+    const m = draftToManifest(valid({ roll: "credential", memberOf: GROUP }), COMMUNITY);
+    const back = manifestToDraft(m);
+    if ("error" in back) throw new Error(back.error);
+    expect(back.draft.roll).toBe("credential");
+    expect(back.draft.memberOf).toBe(GROUP);
+    expect(draftToManifest(back.draft, COMMUNITY)).toEqual(m);
+
+    expect(manifestToDraft({ ...m, roll: { rule: "credential", memberOf: GROUP, listed: ["did:example:x"] } })).toEqual({
+      error: 'A credential roll lists nobody: the form cannot carry its "listed".',
+    });
+    expect(manifestToDraft({ ...m, roll: { rule: "members", memberOf: GROUP } })).toEqual({
+      error: 'Only a credential roll names "memberOf".',
+    });
+    expect("error" in manifestToDraft({ ...m, roll: { rule: "credential", memberOf: GROUP, extra: 1 } })).toBe(true);
+    expect("error" in manifestToDraft({ ...m, roll: { rule: "delegates" } })).toBe(true);
   });
 });

@@ -32,7 +32,7 @@ import {
   type ElectionResult,
   type QuestionResult,
 } from "@/lib/elections-api";
-import { textReleaseWarning } from "@/lib/election-manifest";
+import { MEMBER_OF_KIND_TEXT, textReleaseWarning } from "@/lib/election-manifest";
 import { formatIso, shorten } from "@/lib/format";
 import { gestureFromConfirm } from "@/lib/signed-act";
 import { useToast } from "@/lib/toast";
@@ -157,6 +157,8 @@ function ElectionDetail({ electionId, e }: { electionId: string; e: Election }) 
   // VTI-VOT-090: below 10, members are told that a written answer may identify its author.
   const release = e.manifest.textReleaseThreshold;
   const releaseWarning = textReleaseWarning(release);
+  // VTI-VOT-090: under a credential roll, whose membership credential counts.
+  const roll = d.rollCredential;
   return (
     <>
       <section className="card">
@@ -176,7 +178,16 @@ function ElectionDetail({ electionId, e }: { electionId: string; e: Election }) 
           <dt>Binding</dt>
           <dd>{e.manifest.binding ? "Yes — the result decides something in the community's name" : "No"}</dd>
           <dt>Tickets issued</dt>
-          <dd>{e.ticketsIssued ?? "—"}</dd>
+          <dd>
+            {e.ticketsIssued ?? "—"}
+            {roll && (
+              // VTI-VOT-028: the community cannot know how many the roll admits.
+              <div className="muted">
+                Who may vote is proven when each ticket is claimed, so there is no roll size:
+                turnout is counted ballots against tickets issued.
+              </div>
+            )}
+          </dd>
           <dt>Manifest digest</dt>
           <dd>
             <code title={e.manifestDigest}>{shorten(e.manifestDigest, 12, 6)}</code>
@@ -223,6 +234,26 @@ function ElectionDetail({ electionId, e }: { electionId: string; e: Election }) 
                 Released once {release} {release === 1 ? "ballot is" : "ballots are"} counted,
                 never while voting is open.
                 {releaseWarning && <div className="warning-text">{releaseWarning}</div>}
+              </dd>
+            </>
+          )}
+          {roll && (
+            <>
+              <dt>Whose credential counts</dt>
+              <dd>
+                A membership credential issued by{" "}
+                {roll.memberOfName ? <strong>{roll.memberOfName}</strong> : "the party"} (
+                <code title={roll.memberOf}>{shorten(roll.memberOf, 16, 6)}</code>),{" "}
+                {MEMBER_OF_KIND_TEXT[roll.memberOfKind] ?? roll.memberOfKind}. Claiming a ticket shows
+                this community the member&rsquo;s membership of that party.
+                {roll.memberOfKind === "memberParty" && (
+                  <div className="muted">
+                    Shown only to this community&rsquo;s election managers, the party itself, and a
+                    reader who presents that party&rsquo;s membership in reading it — so reading it
+                    already shows the community that membership. It never appears in members&rsquo;
+                    election lists.
+                  </div>
+                )}
               </dd>
             </>
           )}

@@ -16,9 +16,9 @@
 import { postSignedRead } from "./api";
 import { postSignedWithStepUp, type ConfirmGesture } from "./signed-act";
 
-export const ELECTIONS_CREATE_TASK = "https://trusttasks.org/spec/vtc/elections/create/0.4";
-export const ELECTIONS_LIST_TASK = "https://trusttasks.org/spec/vtc/elections/list/0.3";
-export const ELECTIONS_SHOW_TASK = "https://trusttasks.org/spec/vtc/elections/show/0.3";
+export const ELECTIONS_CREATE_TASK = "https://trusttasks.org/spec/vtc/elections/create/0.5";
+export const ELECTIONS_LIST_TASK = "https://trusttasks.org/spec/vtc/elections/list/0.5";
+export const ELECTIONS_SHOW_TASK = "https://trusttasks.org/spec/vtc/elections/show/0.6";
 export const ELECTIONS_CLOSE_TASK = "https://trusttasks.org/spec/vtc/elections/close/0.1";
 export const ELECTIONS_CANCEL_TASK = "https://trusttasks.org/spec/vtc/elections/cancel/0.1";
 export const ELECTIONS_CERTIFY_TASK = "https://trusttasks.org/spec/vtc/elections/certify/0.1";
@@ -98,9 +98,20 @@ export interface Disclosure {
   auditors: string[];
   revote: "replace" | "refuse";
   coercionResistance: false;
+  /** Under a `credential` roll: whose membership credential admits a party to a ticket
+   *  (`RollCredentialDisclosure`, VTI-VOT-090). Absent under every other rule. */
+  rollCredential?: RollCredentialDisclosure;
 }
 
-/** `vtc/elections/show/0.3`'s answer. The manifest is carried as received. */
+/** `RollCredentialDisclosure` (voting/_shared/0.4). */
+export interface RollCredentialDisclosure {
+  memberOf: string;
+  memberOfKind: "thisCommunity" | "communityGroup" | "memberParty";
+  memberOfName?: string;
+  presenterDisclosed?: true;
+}
+
+/** `vtc/elections/show/0.6`'s answer. The manifest is carried as received. */
 export interface Election {
   manifest: Record<string, unknown> & {
     electionId: string;
@@ -112,6 +123,7 @@ export interface Election {
     allowEarlyClose: boolean;
     questions: { key: string; type: string; text?: string; options?: { key: string; label?: string }[] }[];
     textReleaseThreshold?: number;
+    roll?: { rule: string; listed?: string[]; memberOf?: string };
   };
   manifestDigest: string;
   state: ElectionState;
@@ -188,7 +200,7 @@ export function fetchElection(electionId: string): Promise<Election> {
   return postSignedRead<Election>(ELECTIONS_SHOW_TASK, { electionId });
 }
 
-/** `vtc/elections/create/0.4`. Throws a `ParkedAction` for a binding election. */
+/** `vtc/elections/create/0.5`. Throws a `ParkedAction` for a binding election. */
 export function createElection(
   manifest: Record<string, unknown>,
   confirmGesture: ConfirmGesture,
