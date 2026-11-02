@@ -451,9 +451,11 @@ function RemoveForm({ room, onDone }: { room: CommunityRoom; onDone: (outcome: s
                 onChange={(e) => setDays(e.target.value)}
               />
             </Field>
-            <label>
-              <input type="checkbox" checked={now} onChange={(e) => setNow(e.target.checked)} /> Remove now — delete
-              the content at once. <b>This cannot be undone.</b>
+            <label className="checkbox">
+              <input type="checkbox" checked={now} onChange={(e) => setNow(e.target.checked)} />
+              <span className="checkbox-text">
+                Remove now — delete the content at once. <b>This cannot be undone.</b>
+              </span>
             </label>
           </>
         )}

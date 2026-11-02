@@ -242,6 +242,13 @@
   gap: var(--space-4);
 }
 
+/* A button placed straight in a card keeps its own width rather than
+ * stretching across the column. */
+.card > button,
+.card > .button {
+  align-self: flex-start;
+}
+
 .card.compact {
   padding: var(--space-3) var(--space-4);
   gap: var(--space-3);
@@ -257,6 +264,13 @@
 
 .card.error h3 {
   color: var(--danger);
+}
+
+/* A card titled with an h2 (a detail page's sections): the card's gap spaces
+ * it, not the browser's heading margins. */
+.card > h2 {
+  margin: 0;
+  font-size: var(--text-lg);
 }
 
 .card h3 {
@@ -353,9 +367,11 @@ dt {
   padding-top: 2px;
 }
 
+/* `overflow-wrap: anywhere`, not `word-break: break-all`: a DID still wraps
+ * where it must, but a sentence breaks between words, not inside them. */
 dd {
   margin: 0;
-  word-break: break-all;
+  overflow-wrap: anywhere;
   color: var(--text);
 }
 
@@ -363,11 +379,6 @@ dd {
  * the grid still lays the pair out side by side. */
 dl.kv > div {
   display: contents;
-}
-
-dl.kv dd {
-  word-break: normal;
-  overflow-wrap: anywhere;
 }
 
 /* ── Buttons ─────────────────────────────────────────────────── */
@@ -845,7 +856,8 @@ th[aria-sort="descending"] > .sortable-th {
   cursor: pointer;
 }
 
-.checkbox > input[type="checkbox"] {
+.checkbox > input[type="checkbox"],
+.checkbox > input[type="radio"] {
   flex: none;
   width: auto;
   height: auto;
@@ -857,6 +869,18 @@ th[aria-sort="descending"] > .sortable-th {
   min-width: 0;
   line-height: 1.5;
   overflow-wrap: anywhere;
+}
+
+/* A caution said beside the thing it is about — an election's ballot box run
+ * by the community itself, a low text-release threshold. */
+.warning-text {
+  margin: var(--space-2) 0 0;
+  padding: var(--space-2) var(--space-3);
+  border-left: 3px solid var(--warning);
+  background: var(--warning-soft);
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+  color: var(--text);
+  font-size: var(--text-sm);
 }
 
 .checkbox-text .chip {

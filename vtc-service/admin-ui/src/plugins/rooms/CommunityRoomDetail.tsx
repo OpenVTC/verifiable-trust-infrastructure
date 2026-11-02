@@ -389,8 +389,8 @@ function Members({ room }: { room: CommunityRoom }) {
       <div className="rooms-toolbar">
         <h2 id="community-room-members">Members</h2>
         {!adding && admits && (
-          <button type="button" onClick={() => setAdding(true)}>
-            <UserPlus aria-hidden="true" /> Add a member
+          <button className="primary" type="button" onClick={() => setAdding(true)}>
+            <UserPlus size={14} aria-hidden="true" /> Add a member
           </button>
         )}
       </div>

@@ -936,30 +936,34 @@ function CreateInviteForm({ onClose }: { onClose: () => void }) {
         <code>vtc admin invite</code> CLI.
       </p>
       <fieldset className="form-stack">
-        <legend>How will they sign in?</legend>
-        <label>
+        <legend className="field-label">How will they sign in?</legend>
+        <label className="checkbox">
           <input
             type="radio"
             name="invite-kind"
             value="passkey"
             checked={kind === "passkey"}
             onChange={() => setKind("passkey")}
-          />{" "}
-          <strong>With a passkey</strong> — they register a passkey on their
-          device when they claim the invite, and their DID is created from it.
-          You don’t need to know their DID.
+          />
+          <span className="checkbox-text">
+            <strong>With a passkey</strong> — they register a passkey on their
+            device when they claim the invite, and their DID is created from it.
+            You don’t need to know their DID.
+          </span>
         </label>
-        <label>
+        <label className="checkbox">
           <input
             type="radio"
             name="invite-kind"
             value="wallet"
             checked={kind === "wallet"}
             onChange={() => setKind("wallet")}
-          />{" "}
-          <strong>With a wallet</strong> — they already have a DID in a VTA
-          wallet, and claim the invite by signing as it. Their admin access is
-          granted to that DID now.
+          />
+          <span className="checkbox-text">
+            <strong>With a wallet</strong> — they already have a DID in a VTA
+            wallet, and claim the invite by signing as it. Their admin access is
+            granted to that DID now.
+          </span>
         </label>
       </fieldset>
       {kind === "wallet" && (

@@ -252,7 +252,7 @@ export function NewElection() {
           </Field>
           {jsonError && <p className="field-error">{jsonError}</p>}
           <div className="election-builder-nav">
-            <button type="button" disabled={!jsonParsed || create.isPending} onClick={() => create.mutate()}>
+            <button className="primary" type="button" disabled={!jsonParsed || create.isPending} onClick={() => create.mutate()}>
               Create
             </button>
           </div>
@@ -278,11 +278,11 @@ export function NewElection() {
                 </button>
               )}
               {step !== "review" ? (
-                <button type="button" onClick={() => goto(STEPS[stepIndex + 1]!.id)}>
+                <button className="primary" type="button" onClick={() => goto(STEPS[stepIndex + 1]!.id)}>
                   Next
                 </button>
               ) : (
-                <button
+                <button className="primary"
                   type="button"
                   disabled={issues.length > 0 || !communityDid || create.isPending}
                   onClick={() => create.mutate()}
@@ -963,7 +963,7 @@ function ReviewStep({
           </ul>
         </div>
       )}
-      <dl className="detail-list">
+      <dl className="kv">
         <dt>Election</dt>
         <dd>
           {draft.title || <span className="muted">(no title)</span>} — <code>{draft.electionId}</code>

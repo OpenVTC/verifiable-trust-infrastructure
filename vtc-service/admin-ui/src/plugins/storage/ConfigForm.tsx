@@ -269,7 +269,7 @@ export function ConfigForm({
   }
 
   return (
-    <form className="storage-form" onSubmit={submit} noValidate>
+    <form className="form-stack" onSubmit={submit} noValidate>
       {!editing && (
         <fieldset className="storage-kind">
           <legend className="field-label">Kind</legend>
@@ -419,8 +419,8 @@ export function ConfigForm({
         approves it on the Actions page, and it takes effect when they do — at once, if
         this community runs with a single administrator.
       </p>
-      <div className="rooms-form-actions">
-        <button type="submit" disabled={busy || unchanged}>
+      <div className="form-actions">
+        <button className="primary" type="submit" disabled={busy || unchanged}>
           {busy ? "Sending…" : editing ? "Send change for approval" : "Send for approval"}
         </button>
         <button type="button" className="secondary" onClick={onCancel} disabled={busy}>
