@@ -15,7 +15,7 @@ use std::collections::HashSet;
 use sha2::{Digest, Sha256};
 use vti_specs::voting::{
     ballot::cast::v0_1::{Answer, Ballot},
-    election::register::v0_3::{Manifest, Question, RollRuleRule, SecrecyLevel},
+    election::register::v0_4::{Manifest, Question, RollRuleRule, SecrecyLevel},
 };
 
 /// A broken rule. Each variant is one error local part of the voting families.
@@ -272,7 +272,18 @@ pub fn check_manifest_serving(
         RollRuleRule::Members if listed != 0 => {
             return Err(bad_manifest("a members-only roll lists nobody"));
         }
+        // VTI-VOT-025, VTI-VOT-026: a credential roll names exactly one DID and lists nobody.
+        // The schema states both; they are held here too, as every rule the relation needs.
+        RollRuleRule::Credential if m.roll.member_of.is_none() => {
+            return Err(bad_manifest("a credential roll names the DID in memberOf"));
+        }
+        RollRuleRule::Credential if listed != 0 => {
+            return Err(bad_manifest("a credential roll lists nobody"));
+        }
         _ => {}
+    }
+    if m.roll.member_of.is_some() && m.roll.rule != RollRuleRule::Credential {
+        return Err(bad_manifest("only a credential roll names memberOf"));
     }
     if m.board
         .auditors

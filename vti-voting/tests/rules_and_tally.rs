@@ -1,7 +1,7 @@
 //! Manifest and ballot rules, and the count, over the generated wire types.
 
 use serde_json::{Value, json};
-use vti_specs::voting::{ballot::cast::v0_1::Ballot, election::register::v0_3::Manifest};
+use vti_specs::voting::{ballot::cast::v0_1::Ballot, election::register::v0_4::Manifest};
 use vti_voting::{
     rules::{RuleError, check_ballot, check_manifest, digest_multibase, manifest_digest},
     tally::tally,
@@ -117,7 +117,7 @@ fn vot_010_manifest_rules_are_enforced() {
 
 #[test]
 fn vot_062_trustee_rules_are_enforced_for_the_encrypted_levels() {
-    use vti_specs::voting::election::register::v0_3::SecrecyLevel;
+    use vti_specs::voting::election::register::v0_4::SecrecyLevel;
     use vti_voting::rules::check_manifest_serving;
     const ALL: &[SecrecyLevel] = &[
         SecrecyLevel::Open,
@@ -385,4 +385,35 @@ fn vot_010_a_new_manifest_is_checked_against_the_clock() {
         .unwrap_err()
         .to_string();
     assert!(err.contains("register/0.1"), "{err}");
+}
+
+/// VTI-VOT-025, VTI-VOT-026: a credential roll names exactly one DID in `memberOf` and lists
+/// nobody; no other rule names `memberOf`.
+#[test]
+fn vti_vot_025_a_credential_roll_names_one_did_and_lists_nobody() {
+    let group = "did:webvh:QmGroup:vtc.example.org:groups:g7";
+    let mut v = manifest_json();
+    v["roll"] = json!({ "rule": "credential", "memberOf": group });
+    assert_eq!(check_manifest(&manifest(&v), Some(BOX)), Ok(()));
+
+    for (roll, why) in [
+        (json!({ "rule": "credential" }), "memberOf"),
+        (
+            json!({ "rule": "credential", "memberOf": group, "listed": ["did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK"] }),
+            "lists nobody",
+        ),
+        (json!({ "rule": "members", "memberOf": group }), "memberOf"),
+    ] {
+        let mut v = manifest_json();
+        v["roll"] = roll.clone();
+        // The schema refuses each; where the generated type still parses one, the rule does.
+        if let Ok(m) = serde_json::from_value::<Manifest>(v) {
+            match check_manifest(&m, Some(BOX)) {
+                Err(RuleError::InvalidManifest(reason)) => {
+                    assert!(reason.contains(why), "{roll}: {reason}")
+                }
+                other => panic!("{roll}: {other:?}"),
+            }
+        }
+    }
 }

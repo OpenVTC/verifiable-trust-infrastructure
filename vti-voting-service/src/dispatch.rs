@@ -124,14 +124,15 @@ impl Task {
             .ok_or(Some(task))
     }
 
-    /// The versions this service serves: `voting/election/{register,show}` at 0.3, whose
+    /// The versions this service serves: `voting/election/{register,show}` at 0.4, whose
+    /// manifest admits the `credential` roll (voting/_shared/0.4, VTI-VOT-025), at 0.3, whose
     /// manifest admits a `textReleaseThreshold` as low as 1 (voting/_shared/0.3, VTI-VOT-065),
-    /// and at 0.2, whose manifest admits 10 or more, for communities that send it;
+    /// and at 0.2, whose manifest admits 10 or more, for communities that send them;
     /// `voting/board/read` at 0.2, whose lifecycle entries name their instants `…At`
     /// (voting/_shared/0.2); every other task at 0.1.
     fn versions(self) -> &'static [&'static str] {
         match self {
-            Task::Register | Task::Show => &["0.3", "0.2"],
+            Task::Register | Task::Show => &["0.4", "0.3", "0.2"],
             Task::Read => &["0.2"],
             _ => &["0.1"],
         }
@@ -483,12 +484,12 @@ pub async fn answer(state: &AppState, body: &[u8], transport_sender: Option<&str
     }
 }
 
-/// The `voting/election/{register,show}` version a served `version` names: 0.2, or 0.3.
+/// The `voting/election/{register,show}` version a served `version` names: 0.2, 0.3 or 0.4.
 fn election_version(version: &str) -> ElectionVersion {
-    if version == "0.2" {
-        ElectionVersion::V0_2
-    } else {
-        ElectionVersion::V0_3
+    match version {
+        "0.2" => ElectionVersion::V0_2,
+        "0.3" => ElectionVersion::V0_3,
+        _ => ElectionVersion::V0_4,
     }
 }
 

@@ -8,7 +8,7 @@ use chrono::{DateTime, Utc};
 use rand::{SeedableRng, rngs::StdRng};
 use serde_json::{Value, json};
 use vti_specs::voting::{
-    election::register::v0_3::Manifest,
+    election::register::v0_4::Manifest,
     trustees::{
         authorize::v0_1 as authorize, confirm::v0_1 as confirm, deal::v0_1 as deal_task,
         decrypt::v0_1 as decrypt, enrol::v0_1 as enrol,

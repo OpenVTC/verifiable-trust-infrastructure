@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 use serde_json::{Value, json};
 use vti_specs::voting::{
     ballot::cast::v0_1::Ballot,
-    election::register::v0_3::{Manifest, Question},
+    election::register::v0_4::{Manifest, Question},
     result::show::v0_1::QuestionResult,
 };
 

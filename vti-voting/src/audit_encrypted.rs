@@ -9,7 +9,7 @@ use std::collections::{BTreeMap, HashMap};
 use serde_json::Value;
 use vti_specs::voting::{
     ballot::cast::v0_1 as cast,
-    election::register::v0_3::{Manifest, Question, SecrecyLevel},
+    election::register::v0_4::{Manifest, Question, SecrecyLevel},
 };
 
 use super::{AuditFailure, canonical};
