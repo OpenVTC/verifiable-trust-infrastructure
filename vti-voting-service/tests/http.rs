@@ -137,9 +137,9 @@ async fn only_a_served_community_registers_and_within_its_quota() {
     assert_eq!(answer["payload"]["code"], "unavailable");
 }
 
-/// The box serves `voting/election/{register,show}` and `voting/board/read` at 0.2 only — the
-/// manifest and the lifecycle entries name their instants `…At` (voting/_shared/0.2) — and says
-/// so to a 0.1 request rather than reading one it cannot.
+/// The box serves `voting/election/{register,show}` at 0.3 and 0.2 and `voting/board/read` at
+/// 0.2 — the manifest and the lifecycle entries name their instants `…At` (voting/_shared/0.2
+/// and later) — and says so to a 0.1 request rather than reading one it cannot.
 #[tokio::test]
 async fn a_0_1_registration_show_or_board_read_is_unsupported_version() {
     let dir = std::env::temp_dir().join(format!("vti-voting-service-{}", Uuid::new_v4()));
@@ -184,6 +184,70 @@ async fn a_0_1_registration_show_or_board_read_is_unsupported_version() {
     }
 }
 
+/// VTI-VOT-065: the box registers and shows a `textReleaseThreshold` of 1 – 9 at
+/// `voting/election/{register,show}/0.3`, and never refuses one there. Under 0.2, whose schema
+/// says 10, such a registration is malformed and such an election is not shown — 0.2 is
+/// refused `unsupportedVersion` for it — while one of 10 or more is served at both versions.
+#[tokio::test]
+async fn vti_vot_065_a_threshold_below_ten_is_registered_and_shown_at_0_3_only() {
+    let dir = std::env::temp_dir().join(format!("vti-voting-service-{}", Uuid::new_v4()));
+    let community = Identity::from_seed(&[0x34; 32]).unwrap();
+    let svc = state(&dir);
+    let box_did = svc.identity.did.clone();
+
+    let low = |id: &str| {
+        let mut r = registration(&community, &box_did, id);
+        r["manifest"]["textReleaseThreshold"] = json!(3);
+        let digest = manifest_digest(&r["manifest"]).unwrap();
+        r["manifestDigest"] = json!(digest_multibase(&digest));
+        r
+    };
+    let register_at = |version: &'static str, payload: Value| {
+        let box_did = box_did.clone();
+        let community = &community;
+        async move {
+            doc_at(
+                "election/register",
+                version,
+                &box_did,
+                Some(community),
+                payload,
+            )
+            .await
+        }
+    };
+
+    let (status, answer) = send(&svc, register_at("0.2", low("small")).await).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{answer}");
+    assert_eq!(answer["payload"]["code"], "malformedRequest");
+
+    let (status, answer) = send(&svc, register_at("0.3", low("small")).await).await;
+    assert_eq!(status, StatusCode::OK, "{answer}");
+
+    let show = |version: &'static str, id: &str| {
+        let payload = json!({ "community": community.did, "electionId": id });
+        let box_did = box_did.clone();
+        async move { doc_at("election/show", version, &box_did, None, payload).await }
+    };
+    let (status, answer) = send(&svc, show("0.3", "small").await).await;
+    assert_eq!(status, StatusCode::OK, "{answer}");
+    assert_eq!(answer["payload"]["manifest"]["textReleaseThreshold"], 3);
+    let (status, answer) = send(&svc, show("0.2", "small").await).await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{answer}");
+    assert_eq!(answer["payload"]["code"], "unsupportedVersion");
+
+    // Ten or more: registered under 0.2, as a community from before 0.3 sends it, and shown
+    // at either version.
+    let usual = registration(&community, &box_did, "usual");
+    let (status, answer) = send(&svc, register_at("0.2", usual).await).await;
+    assert_eq!(status, StatusCode::OK, "{answer}");
+    for version in ["0.2", "0.3"] {
+        let (status, answer) = send(&svc, show(version, "usual").await).await;
+        assert_eq!(status, StatusCode::OK, "{version}: {answer}");
+        assert_eq!(answer["payload"]["manifest"]["textReleaseThreshold"], 10);
+    }
+}
+
 async fn send(state: &Arc<AppState>, doc: Value) -> (StatusCode, Value) {
     let res = router(state.clone())
         .oneshot(
@@ -201,16 +265,25 @@ async fn send(state: &Arc<AppState>, doc: Value) -> (StatusCode, Value) {
 
 /// A request document, signed by `signer` when given.
 async fn doc(task: &str, to: &str, signer: Option<&Identity>, payload: Value) -> Value {
+    let version = match task {
+        "election/register" | "election/show" => "0.3",
+        "board/read" => "0.2",
+        _ => "0.1",
+    };
+    doc_at(task, version, to, signer, payload).await
+}
+
+/// [`doc`], at `version`.
+async fn doc_at(
+    task: &str,
+    version: &str,
+    to: &str,
+    signer: Option<&Identity>,
+    payload: Value,
+) -> Value {
     let mut d = json!({
         "id": format!("urn:uuid:{}", Uuid::new_v4()),
-        "type": format!(
-            "https://trusttasks.org/spec/voting/{task}/{}#request",
-            if matches!(task, "election/register" | "election/show" | "board/read") {
-                "0.2"
-            } else {
-                "0.1"
-            }
-        ),
+        "type": format!("https://trusttasks.org/spec/voting/{task}/{version}#request"),
         "recipient": to,
         "issuedAt": Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
         "payload": payload,

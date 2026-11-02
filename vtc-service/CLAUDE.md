@@ -842,7 +842,7 @@ When adding a flow, add it here and a line to the root index.
 - **Console manifest builder** (`admin-ui/src/plugins/ElectionBuilder.tsx`,
   `admin-ui/src/lib/election-manifest.ts`): a guided form whose checks mirror
   `vti_voting::rules::check_manifest` and whose bounds are pinned to the vendored
-  `vtc/elections/create/0.3` bundle by `election-manifest.test.ts` — re-pin a new create
+  `vtc/elections/create/0.4` bundle by `election-manifest.test.ts` — re-pin a new create
   version there too. A convenience, never the authority: the community re-checks on create.
   Its ballot-box field is a choice from `vtc/elections/ballot-boxes/list/0.1` (answered from the
   same live `[voting]` config `create` checks, so the two can never disagree), falling back to a

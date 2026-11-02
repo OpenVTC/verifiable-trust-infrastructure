@@ -11,6 +11,8 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { CircleAlert, TicketCheck, Vote } from "lucide-react";
 
+import { textReleaseWarning } from "@/lib/election-manifest";
+
 import { InstallWallet } from "./InstallWallet";
 import { Crumbs } from "./member-card";
 import {
@@ -184,6 +186,8 @@ function ElectionDetail({
   const stage = stageOf(e);
   const canTicket = !held && (stage === "ticketsOpen" || stage === "voting");
   const canVote = stage === "voting";
+  // VTI-VOT-090: below 10, the member is told before taking a ticket.
+  const releaseWarning = textReleaseWarning(e.textReleaseThreshold) !== null;
   const failure = [ticket.error, vote.error].find((x) => x && !declinedInWallet(x));
 
   return (
@@ -279,6 +283,13 @@ function ElectionDetail({
               </div>
             )}
           </dl>
+          {releaseWarning && (
+            <p className="alert" role="note">
+              <CircleAlert size={14} aria-hidden="true" /> Written answers are released once{" "}
+              {e.textReleaseThreshold} {e.textReleaseThreshold === 1 ? "ballot is" : "ballots are"} counted. Below 10,
+              a written answer may identify who wrote it.
+            </p>
+          )}
           {e.disclosure.sameOperator && (
             <p className="alert" role="note">
               <CircleAlert size={14} aria-hidden="true" /> The same operator runs this community and its ballot box:

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   MANIFEST_LIMITS,
+  TEXT_RELEASE_THRESHOLD_ADVISED,
   checkDraft,
   draftFromPrevious,
   draftToManifest,
@@ -13,10 +14,11 @@ import {
   retypeQuestion,
   slugKey,
   suggestElectionId,
+  textReleaseWarning,
   toLocalInput,
   type ManifestDraft,
 } from "./election-manifest";
-import bundleJson from "../../../../vti-specs-vtc/trust-tasks/vtc/elections/create/0.3.bundle.json";
+import bundleJson from "../../../../vti-specs-vtc/trust-tasks/vtc/elections/create/0.4.bundle.json";
 
 const COMMUNITY = "did:example:community";
 const BOX = "did:example:box";
@@ -37,10 +39,23 @@ function valid(over: Partial<ManifestDraft> = {}): ManifestDraft {
 
 const messages = (d: ManifestDraft) => checkDraft(d, COMMUNITY, NOW).map((i) => i.message);
 
+describe("textReleaseWarning", () => {
+  // VTI-VOT-065 SHOULD 10; below it members are told (VTI-VOT-090), and so is the administrator.
+  it("warns from 1 to 9, and not at the advised 10 or above", () => {
+    expect(emptyDraft(new Date(NOW)).textReleaseThreshold).toBe(String(TEXT_RELEASE_THRESHOLD_ADVISED));
+    for (const t of [1, 5, 9]) {
+      expect(textReleaseWarning(t)).toMatch(/may identify who wrote it/);
+    }
+    for (const t of [10, 25, undefined, null, 0, Number.NaN, 2.5]) {
+      expect(textReleaseWarning(t)).toBeNull();
+    }
+  });
+});
+
 describe("MANIFEST_LIMITS", () => {
   // The builder's bounds are the schema's: a pinned version that moves one
   // fails here rather than as a refusal at create.
-  it("matches the pinned vtc/elections/create/0.3 schema", () => {
+  it("matches the pinned vtc/elections/create/0.4 schema", () => {
     const m = defs.Manifest.properties;
     const [choice, ranking, score, text] = defs.Question.oneOf;
     expect(defs.ElectionId.pattern).toBe(MANIFEST_LIMITS.electionIdPattern);
@@ -195,7 +210,10 @@ describe("checkDraft", () => {
     expect(messages(valid({ auditors: BOX }))).toEqual([
       "Neither the community nor the ballot box audits its own election.",
     ]);
-    expect(messages(valid({ textReleaseThreshold: "9" }))).toEqual(["A whole number, 10 or more."]);
+    expect(messages(valid({ textReleaseThreshold: "0" }))).toEqual(["A whole number, 1 or more."]);
+    // VTI-VOT-065: 1 – 9 is a valid manifest; the builder warns rather than refuses.
+    expect(messages(valid({ textReleaseThreshold: "1" }))).toEqual([]);
+    expect(messages(valid({ textReleaseThreshold: "9" }))).toEqual([]);
   });
 
   it("holds the schedule in order and in the future", () => {

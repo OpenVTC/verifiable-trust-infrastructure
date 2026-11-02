@@ -2217,20 +2217,39 @@ pub const TASK_VTA_PCS_VETTER_SHOW_0_1: &str =
 // builds the cast; the client sends the cast itself, from its own connection.
 
 /// `vta/pcs/voter/register/0.2` — this election's voter key and the blinded ticket request.
+#[allow(deprecated)] // superseded by vta/pcs/voter/register/0.3, and still served: clients that send it keep working
 pub const TASK_VTA_PCS_VOTER_REGISTER_0_2: &str =
     <vti_specs::vta::pcs::voter::register::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
+/// `vta/pcs/voter/register/0.3` — [`TASK_VTA_PCS_VOTER_REGISTER_0_2`] over the voting/_shared/0.3 manifest, whose
+/// `textReleaseThreshold` may be as low as 1 (VTI-VOT-065). The version this SDK sends.
+pub const TASK_VTA_PCS_VOTER_REGISTER_0_3: &str =
+    <vti_specs::vta::pcs::voter::register::v0_3::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
 /// `vta/pcs/voter/read/0.2` — `vtc/elections/list` or `show`, signed as the member.
+#[allow(deprecated)] // superseded by vta/pcs/voter/read/0.3, and still served: clients that send it keep working
 pub const TASK_VTA_PCS_VOTER_READ_0_2: &str =
     <vti_specs::vta::pcs::voter::read::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `vta/pcs/voter/read/0.3` — [`TASK_VTA_PCS_VOTER_READ_0_2`] over the voting/_shared/0.3 manifest, whose
+/// `textReleaseThreshold` may be as low as 1 (VTI-VOT-065). Signs `vtc/elections/list/0.3`
+/// or `vtc/elections/show/0.3`. The version this SDK sends.
+pub const TASK_VTA_PCS_VOTER_READ_0_3: &str =
+    <vti_specs::vta::pcs::voter::read::v0_3::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
 /// `vta/pcs/voter/accept/0.1` — unblind the community's answer into the ticket.
 pub const TASK_VTA_PCS_VOTER_ACCEPT_0_1: &str =
     <vti_specs::vta::pcs::voter::accept::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
 /// `vta/pcs/vote/0.2` — validate a ballot and build the signed cast document.
+#[allow(deprecated)] // superseded by vta/pcs/vote/0.3, and still served: clients that send it keep working
 pub const TASK_VTA_PCS_VOTE_0_2: &str =
     <vti_specs::vta::pcs::vote::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `vta/pcs/vote/0.3` — [`TASK_VTA_PCS_VOTE_0_2`] over the voting/_shared/0.3 manifest, whose
+/// `textReleaseThreshold` may be as low as 1 (VTI-VOT-065). The version this SDK sends.
+pub const TASK_VTA_PCS_VOTE_0_3: &str =
+    <vti_specs::vta::pcs::vote::v0_3::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
 /// `vta/pcs/voter/receipt/0.1` — keep a cast's receipt and check its inclusion.
 pub const TASK_VTA_PCS_VOTER_RECEIPT_0_1: &str =
@@ -2242,24 +2261,54 @@ pub const TASK_VTA_PCS_VOTER_RECEIPT_0_1: &str =
 // documents to the ballot box; the client carries them.
 
 /// `vta/pcs/vote-encrypted/0.3` — a sealed or tallied-encrypted cast document.
+#[allow(deprecated)] // superseded by vta/pcs/vote-encrypted/0.4, and still served: clients that send it keep working
 pub const TASK_VTA_PCS_VOTE_ENCRYPTED_0_3: &str =
     <vti_specs::vta::pcs::vote_encrypted::v0_3::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
+/// `vta/pcs/vote-encrypted/0.4` — [`TASK_VTA_PCS_VOTE_ENCRYPTED_0_3`] over the voting/_shared/0.3 manifest, whose
+/// `textReleaseThreshold` may be as low as 1 (VTI-VOT-065). The version this SDK sends.
+pub const TASK_VTA_PCS_VOTE_ENCRYPTED_0_4: &str =
+    <vti_specs::vta::pcs::vote_encrypted::v0_4::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
 /// `vta/pcs/trustee/enrol/0.2` — the trustee's transport key and its enrolment, signed as it.
+#[allow(deprecated)] // superseded by vta/pcs/trustee/enrol/0.3, and still served: clients that send it keep working
 pub const TASK_VTA_PCS_TRUSTEE_ENROL_0_2: &str =
     <vti_specs::vta::pcs::trustee::enrol::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
+/// `vta/pcs/trustee/enrol/0.3` — [`TASK_VTA_PCS_TRUSTEE_ENROL_0_2`] over the voting/_shared/0.3 manifest, whose
+/// `textReleaseThreshold` may be as low as 1 (VTI-VOT-065). The version this SDK sends.
+pub const TASK_VTA_PCS_TRUSTEE_ENROL_0_3: &str =
+    <vti_specs::vta::pcs::trustee::enrol::v0_3::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
 /// `vta/pcs/trustee/deal/0.3` — the trustee's dealing, signed as it.
+#[allow(deprecated)] // superseded by vta/pcs/trustee/deal/0.4, and still served: clients that send it keep working
 pub const TASK_VTA_PCS_TRUSTEE_DEAL_0_3: &str =
     <vti_specs::vta::pcs::trustee::deal::v0_3::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
+/// `vta/pcs/trustee/deal/0.4` — [`TASK_VTA_PCS_TRUSTEE_DEAL_0_3`] over the voting/_shared/0.3 manifest, whose
+/// `textReleaseThreshold` may be as low as 1 (VTI-VOT-065). The version this SDK sends.
+pub const TASK_VTA_PCS_TRUSTEE_DEAL_0_4: &str =
+    <vti_specs::vta::pcs::trustee::deal::v0_4::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
 /// `vta/pcs/trustee/keys/0.3` — check the shares dealt, confirm, and keep the key share.
+#[allow(deprecated)] // superseded by vta/pcs/trustee/keys/0.4, and still served: clients that send it keep working
 pub const TASK_VTA_PCS_TRUSTEE_KEYS_0_3: &str =
     <vti_specs::vta::pcs::trustee::keys::v0_3::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
+/// `vta/pcs/trustee/keys/0.4` — [`TASK_VTA_PCS_TRUSTEE_KEYS_0_3`] over the voting/_shared/0.3 manifest, whose
+/// `textReleaseThreshold` may be as low as 1 (VTI-VOT-065). The version this SDK sends.
+pub const TASK_VTA_PCS_TRUSTEE_KEYS_0_4: &str =
+    <vti_specs::vta::pcs::trustee::keys::v0_4::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
 /// `vta/pcs/trustee/justify/0.3` — answer a complaint with the share that was dealt.
+#[allow(deprecated)] // superseded by vta/pcs/trustee/justify/0.4, and still served: clients that send it keep working
 pub const TASK_VTA_PCS_TRUSTEE_JUSTIFY_0_3: &str =
     <vti_specs::vta::pcs::trustee::justify::v0_3::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `vta/pcs/trustee/justify/0.4` — [`TASK_VTA_PCS_TRUSTEE_JUSTIFY_0_3`] over the voting/_shared/0.3 manifest, whose
+/// `textReleaseThreshold` may be as low as 1 (VTI-VOT-065). The version this SDK sends.
+pub const TASK_VTA_PCS_TRUSTEE_JUSTIFY_0_4: &str =
+    <vti_specs::vta::pcs::trustee::justify::v0_4::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
 /// `vta/pcs/trustee/decrypt/0.1` — the trustee's partial decryptions, signed as it.
 pub const TASK_VTA_PCS_TRUSTEE_DECRYPT_0_2: &str =
@@ -2267,8 +2316,15 @@ pub const TASK_VTA_PCS_TRUSTEE_DECRYPT_0_2: &str =
 
 /// `vta/pcs/trustee/read/0.2` — `voting/trustees/status` or `voting/election/show`, signed as
 /// the trustee.
+#[allow(deprecated)] // superseded by vta/pcs/trustee/read/0.3, and still served: clients that send it keep working
 pub const TASK_VTA_PCS_TRUSTEE_READ_0_2: &str =
     <vti_specs::vta::pcs::trustee::read::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `vta/pcs/trustee/read/0.3` — [`TASK_VTA_PCS_TRUSTEE_READ_0_2`] over the voting/_shared/0.3 manifest, whose
+/// `textReleaseThreshold` may be as low as 1 (VTI-VOT-065). Signs
+/// `voting/trustees/status/0.1` or `voting/election/show/0.3`. The version this SDK sends.
+pub const TASK_VTA_PCS_TRUSTEE_READ_0_3: &str =
+    <vti_specs::vta::pcs::trustee::read::v0_3::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
 // ─── Witnessed party (`vta/witness/*/0.2`, trust-tasks-tf #779, #799) ──────
 // The VTA is the participating party of a `witness/session` for its principal:
@@ -2554,17 +2610,26 @@ pub const ALL_URIS: &[&str] = &[
     TASK_VTA_PCS_ATTEST_0_1,
     TASK_VTA_PCS_VETTER_SHOW_0_1,
     TASK_VTA_PCS_VOTER_REGISTER_0_2,
+    TASK_VTA_PCS_VOTER_REGISTER_0_3,
     TASK_VTA_PCS_VOTER_READ_0_2,
+    TASK_VTA_PCS_VOTER_READ_0_3,
     TASK_VTA_PCS_VOTER_ACCEPT_0_1,
     TASK_VTA_PCS_VOTE_0_2,
+    TASK_VTA_PCS_VOTE_0_3,
     TASK_VTA_PCS_VOTER_RECEIPT_0_1,
     TASK_VTA_PCS_VOTE_ENCRYPTED_0_3,
+    TASK_VTA_PCS_VOTE_ENCRYPTED_0_4,
     TASK_VTA_PCS_TRUSTEE_ENROL_0_2,
+    TASK_VTA_PCS_TRUSTEE_ENROL_0_3,
     TASK_VTA_PCS_TRUSTEE_DEAL_0_3,
+    TASK_VTA_PCS_TRUSTEE_DEAL_0_4,
     TASK_VTA_PCS_TRUSTEE_KEYS_0_3,
+    TASK_VTA_PCS_TRUSTEE_KEYS_0_4,
     TASK_VTA_PCS_TRUSTEE_JUSTIFY_0_3,
+    TASK_VTA_PCS_TRUSTEE_JUSTIFY_0_4,
     TASK_VTA_PCS_TRUSTEE_DECRYPT_0_2,
     TASK_VTA_PCS_TRUSTEE_READ_0_2,
+    TASK_VTA_PCS_TRUSTEE_READ_0_3,
     TASK_VTA_WITNESS_OPEN_0_2,
     TASK_VTA_WITNESS_PRESENT_0_2,
     TASK_VTA_WITNESS_ACCEPT_0_2,

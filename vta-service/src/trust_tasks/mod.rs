@@ -2755,12 +2755,18 @@ dispatch_table! {
     vta_sdk::trust_tasks::TASK_VTA_PCS_VETTER_SHOW_0_1 => pcs::handle_vetter_show
         [ None Metadata false ],
     // The voter role (`vta/pcs/voter/*`, `vta/pcs/vote`, trust-tasks-tf #834).
+    vta_sdk::trust_tasks::TASK_VTA_PCS_VOTER_REGISTER_0_3 => pcs::handle_voter_register
+        [ Mutating Metadata true ],
     vta_sdk::trust_tasks::TASK_VTA_PCS_VOTER_REGISTER_0_2 => pcs::handle_voter_register
         [ Mutating Metadata true ],
+    vta_sdk::trust_tasks::TASK_VTA_PCS_VOTER_READ_0_3 => pcs::handle_voter_read
+        [ None Metadata false ],
     vta_sdk::trust_tasks::TASK_VTA_PCS_VOTER_READ_0_2 => pcs::handle_voter_read
         [ None Metadata false ],
     vta_sdk::trust_tasks::TASK_VTA_PCS_VOTER_ACCEPT_0_1 => pcs::handle_voter_accept
         [ Mutating None true ],
+    vta_sdk::trust_tasks::TASK_VTA_PCS_VOTE_0_3 => pcs::handle_vote
+        [ Mutating Metadata true ],
     vta_sdk::trust_tasks::TASK_VTA_PCS_VOTE_0_2 => pcs::handle_vote
         [ Mutating Metadata true ],
     vta_sdk::trust_tasks::TASK_VTA_PCS_VOTER_RECEIPT_0_1 => pcs::handle_voter_receipt
@@ -2768,17 +2774,29 @@ dispatch_table! {
     // The encrypted levels (`vta/pcs/vote-encrypted`, `vta/pcs/trustee/*`,
     // trust-tasks-tf #845): each signs one document as the voter's one-time key or
     // the trustee persona.
+    vta_sdk::trust_tasks::TASK_VTA_PCS_VOTE_ENCRYPTED_0_4 => pcs::handle_vote_encrypted
+        [ Mutating Metadata true ],
     vta_sdk::trust_tasks::TASK_VTA_PCS_VOTE_ENCRYPTED_0_3 => pcs::handle_vote_encrypted
+        [ Mutating Metadata true ],
+    vta_sdk::trust_tasks::TASK_VTA_PCS_TRUSTEE_ENROL_0_3 => pcs::handle_trustee_enrol
         [ Mutating Metadata true ],
     vta_sdk::trust_tasks::TASK_VTA_PCS_TRUSTEE_ENROL_0_2 => pcs::handle_trustee_enrol
         [ Mutating Metadata true ],
+    vta_sdk::trust_tasks::TASK_VTA_PCS_TRUSTEE_DEAL_0_4 => pcs::handle_trustee_deal
+        [ Mutating Metadata true ],
     vta_sdk::trust_tasks::TASK_VTA_PCS_TRUSTEE_DEAL_0_3 => pcs::handle_trustee_deal
+        [ Mutating Metadata true ],
+    vta_sdk::trust_tasks::TASK_VTA_PCS_TRUSTEE_KEYS_0_4 => pcs::handle_trustee_keys
         [ Mutating Metadata true ],
     vta_sdk::trust_tasks::TASK_VTA_PCS_TRUSTEE_KEYS_0_3 => pcs::handle_trustee_keys
         [ Mutating Metadata true ],
+    vta_sdk::trust_tasks::TASK_VTA_PCS_TRUSTEE_JUSTIFY_0_4 => pcs::handle_trustee_justify
+        [ None Metadata true ],
     vta_sdk::trust_tasks::TASK_VTA_PCS_TRUSTEE_JUSTIFY_0_3 => pcs::handle_trustee_justify
         [ None Metadata true ],
     vta_sdk::trust_tasks::TASK_VTA_PCS_TRUSTEE_DECRYPT_0_2 => pcs::handle_trustee_decrypt
+        [ None Metadata true ],
+    vta_sdk::trust_tasks::TASK_VTA_PCS_TRUSTEE_READ_0_3 => pcs::handle_trustee_read
         [ None Metadata true ],
     vta_sdk::trust_tasks::TASK_VTA_PCS_TRUSTEE_READ_0_2 => pcs::handle_trustee_read
         [ None Metadata true ],

@@ -150,6 +150,12 @@ fn print_disclosure(shown: &Value) {
     println!(
         "  {DIM}you can prove how you voted, so this election cannot protect you against being made to vote a certain way{RESET}"
     );
+    if let Some(release) = written_answers(m) {
+        println!("  written     {release}");
+    }
+    if let Some(warning) = written_answers_warning(m) {
+        println!("  {YELLOW}{warning}{RESET}");
+    }
     for q in m["questions"].as_array().into_iter().flatten() {
         let opts: Vec<&str> = q["options"]
             .as_array()
@@ -169,6 +175,37 @@ fn print_disclosure(shown: &Value) {
             }
         );
     }
+}
+
+/// When the manifest `m` releases written answers, if it asks for any or releases them below
+/// the SHOULD of 10 (VTI-VOT-065).
+fn written_answers(m: &Value) -> Option<String> {
+    let threshold = m["textReleaseThreshold"].as_u64()?;
+    let asks = m["questions"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .any(|q| q["type"] == "text");
+    (asks || threshold < 10).then(|| {
+        format!(
+            "released once {threshold} ballot{} counted, never while voting is open",
+            if threshold == 1 { " is" } else { "s are" }
+        )
+    })
+}
+
+/// What a member must be told before taking a ticket when `m` releases written answers after
+/// fewer than 10 ballots: that it does, and that a written answer may identify its author
+/// (VTI-VOT-065, VTI-VOT-090). `None` at 10 or more.
+fn written_answers_warning(m: &Value) -> Option<String> {
+    let threshold = m["textReleaseThreshold"].as_u64()?;
+    (threshold < 10).then(|| {
+        format!(
+            "written answers are released after only {threshold} ballot{}, fewer than the 10 \
+             recommended: a written answer may identify who wrote it",
+            if threshold == 1 { "" } else { "s" }
+        )
+    })
 }
 
 /// `pnm elections show <id>`.
@@ -492,5 +529,31 @@ mod tests {
             ballot_from_answers(&manifest(), "z", &["chair=a".into(), "nope=x".into()]).is_err()
         );
         assert!(ballot_from_answers(&manifest(), "z", &["chair".into()]).is_err());
+    }
+
+    /// VTI-VOT-090: below a threshold of 10 the member is told, before taking a ticket, that
+    /// written answers come out after so few ballots and may identify their authors.
+    #[test]
+    fn vti_vot_090_a_threshold_below_ten_is_disclosed_with_its_warning() {
+        let mut m = manifest();
+        m["textReleaseThreshold"] = json!(10);
+        assert_eq!(written_answers(&m), None, "no text question, threshold 10");
+        assert_eq!(written_answers_warning(&m), None);
+
+        m["questions"][1]["type"] = json!("text");
+        assert_eq!(
+            written_answers(&m).as_deref(),
+            Some("released once 10 ballots are counted, never while voting is open")
+        );
+        assert_eq!(written_answers_warning(&m), None);
+
+        m["textReleaseThreshold"] = json!(1);
+        assert_eq!(
+            written_answers(&m).as_deref(),
+            Some("released once 1 ballot is counted, never while voting is open")
+        );
+        let warning = written_answers_warning(&m).unwrap();
+        assert!(warning.contains("only 1 ballot,"), "{warning}");
+        assert!(warning.contains("may identify who wrote it"), "{warning}");
     }
 }

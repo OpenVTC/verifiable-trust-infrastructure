@@ -1,5 +1,6 @@
-//! Community elections on the signed-document spine — `vtc/elections/{create,list,show,close,
-//! cancel,certify}/0.1`, `vtc/elections/tickets/issue/0.1` and
+//! Community elections on the signed-document spine — `vtc/elections/create/0.4` (and 0.3),
+//! `list/0.3`, `show/0.3` (and 0.2), `{close,cancel,certify}/0.1`,
+//! `vtc/elections/tickets/issue/0.1` and
 //! `vtc/elections/ballot-boxes/list/0.1` ([`crate::elections`], VTI-VOT-001 – 100).
 //!
 //! | task | signed by | authority (read now) |
@@ -35,9 +36,13 @@ use trust_tasks_rs::{Payload, RejectReason, TrustTask};
 use vti_common::audit::{AuditEvent, ElectionChangedData, ElectionTicketIssuedData};
 use vti_specs::vtc::elections::{
     ballot_boxes::list::v0_1 as ballot_boxes_list, cancel::v0_1 as cancel,
-    certify::v0_1 as certify, close::v0_1 as close, create::v0_3 as create, list::v0_3 as list,
-    show::v0_2 as show, tickets::issue::v0_1 as issue,
+    certify::v0_1 as certify, close::v0_1 as close, create::v0_4 as create, list::v0_3 as list,
+    show::v0_3 as show, tickets::issue::v0_1 as issue,
 };
+// Still served: a client composing a manifest under voting/_shared/0.2 sends these, and their
+// schema holds `textReleaseThreshold` to 10 or more (VTI-VOT-065).
+#[allow(deprecated)]
+use vti_specs::vtc::elections::{create::v0_3 as create_0_3, show::v0_2 as show_0_2};
 
 use super::helpers::{
     TrustTaskOutcome, app_error_to_reject, extended_code, reject_with, reject_with_code,
@@ -51,8 +56,12 @@ use crate::error::AppError;
 use crate::server::AppState;
 
 pub(crate) const CREATE_TYPE: &str = <create::Payload as Payload>::TYPE_URI;
+#[allow(deprecated)] // superseded by create/0.4, and still served
+pub(crate) const CREATE_0_3_TYPE: &str = <create_0_3::Payload as Payload>::TYPE_URI;
 pub(crate) const LIST_TYPE: &str = <list::Payload as Payload>::TYPE_URI;
 pub(crate) const SHOW_TYPE: &str = <show::Payload as Payload>::TYPE_URI;
+#[allow(deprecated)] // superseded by show/0.3, and still served
+pub(crate) const SHOW_0_2_TYPE: &str = <show_0_2::Payload as Payload>::TYPE_URI;
 pub(crate) const CLOSE_TYPE: &str = <close::Payload as Payload>::TYPE_URI;
 pub(crate) const CANCEL_TYPE: &str = <cancel::Payload as Payload>::TYPE_URI;
 pub(crate) const ISSUE_TYPE: &str = <issue::Payload as Payload>::TYPE_URI;
@@ -105,8 +114,10 @@ pub(crate) const CERTIFY_ERR_RESULT_MISMATCH: &str = certify::error_codes::RESUL
 /// Every URI [`dispatch`] routes.
 pub(crate) const URIS: &[&str] = &[
     CREATE_TYPE,
+    CREATE_0_3_TYPE,
     LIST_TYPE,
     SHOW_TYPE,
+    SHOW_0_2_TYPE,
     CLOSE_TYPE,
     CANCEL_TYPE,
     ISSUE_TYPE,
@@ -122,9 +133,11 @@ pub(super) async fn dispatch(
     type_uri: &str,
 ) -> Option<TrustTaskOutcome> {
     Some(match type_uri {
-        CREATE_TYPE => handle_create(state, ctx, doc).await,
+        CREATE_TYPE => handle_create(state, ctx, doc, Shared::V0_3).await,
+        CREATE_0_3_TYPE => handle_create(state, ctx, doc, Shared::V0_2).await,
         LIST_TYPE => handle_list(state, ctx, doc).await,
-        SHOW_TYPE => handle_show(state, ctx, doc).await,
+        SHOW_TYPE => handle_show(state, ctx, doc, Shared::V0_3).await,
+        SHOW_0_2_TYPE => handle_show(state, ctx, doc, Shared::V0_2).await,
         CLOSE_TYPE => handle_close(state, ctx, doc).await,
         CANCEL_TYPE => handle_cancel(state, ctx, doc).await,
         ISSUE_TYPE => handle_issue(state, ctx, doc).await,
@@ -132,6 +145,16 @@ pub(super) async fn dispatch(
         BALLOT_BOXES_LIST_TYPE => handle_ballot_boxes_list(state, ctx, doc).await,
         _ => return None,
     })
+}
+
+/// Which voting/_shared manifest a `create` or `show` request's version carries: 0.2 (create
+/// 0.3, show 0.2), whose `textReleaseThreshold` is 10 or more, or 0.3 (create 0.4, show 0.3),
+/// whose threshold may be as low as 1 (VTI-VOT-065). The manifest is otherwise the same, so
+/// one election serves both; only the bound differs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Shared {
+    V0_2,
+    V0_3,
 }
 
 // ─── who is asking ───────────────────────────────────────────────────────
@@ -265,18 +288,26 @@ fn ballot_boxes_answer(voting: &crate::elections::VotingConfig) -> Value {
 
 // ─── create ──────────────────────────────────────────────────────────────
 
-/// `vtc/elections/create/0.3` (items 1 – 10).
+/// `vtc/elections/create/0.4` (items 1 – 10), and 0.3: the same task over a manifest whose
+/// `textReleaseThreshold` its schema holds to 10 or more. Each request is held to its own
+/// version's schema; nothing else differs.
 async fn handle_create(
     state: &AppState,
     ctx: &JoinAuthCtx,
     doc: TrustTask<Value>,
+    shared: Shared,
 ) -> TrustTaskOutcome {
     // Item 1.
     let actor = match capable_signer(state, ctx, &doc, Capability::ElectionsManage, None).await {
         Ok(a) => a,
         Err(reject) => return reject,
     };
-    if let Err(reject) = parse_spec_payload::<create::Payload>(&doc) {
+    let parsed = match shared {
+        Shared::V0_3 => parse_spec_payload::<create::Payload>(&doc).map(drop),
+        #[allow(deprecated)]
+        Shared::V0_2 => parse_spec_payload::<create_0_3::Payload>(&doc).map(drop),
+    };
+    if let Err(reject) = parsed {
         return reject;
     }
     // The manifest as received: its digest is taken over these bytes, never a re-serialisation.
@@ -534,17 +565,25 @@ fn rfc3339(t: DateTime<Utc>) -> String {
 
 // ─── show ────────────────────────────────────────────────────────────────
 
-/// `vtc/elections/show/0.2` (items 1 – 6).
+/// `vtc/elections/show/0.3` (items 1 – 6), and 0.2, whose answer's manifest holds
+/// `textReleaseThreshold` to 10 or more: an election released below that is refused
+/// `unsupportedVersion` under 0.2, naming 0.3, never answered in a shape 0.2 forbids.
 async fn handle_show(
     state: &AppState,
     ctx: &JoinAuthCtx,
     doc: TrustTask<Value>,
+    shared: Shared,
 ) -> TrustTaskOutcome {
     let (who, manager) = match caller(state, ctx, &doc).await {
         Ok(c) => c,
         Err(reject) => return reject,
     };
-    if let Err(reject) = parse_spec_payload::<show::Payload>(&doc) {
+    let parsed = match shared {
+        Shared::V0_3 => parse_spec_payload::<show::Payload>(&doc).map(drop),
+        #[allow(deprecated)]
+        Shared::V0_2 => parse_spec_payload::<show_0_2::Payload>(&doc).map(drop),
+    };
+    if let Err(reject) = parsed {
         return reject;
     }
     let election_id = doc.payload["electionId"].as_str().unwrap_or_default();
@@ -557,6 +596,23 @@ async fn handle_show(
     // cannot carry, and its digest binds the old member names: refused by name.
     if let Err(e) = vti_voting::rules::require_current_manifest(&rec.manifest) {
         return app_error_to_reject(&doc, &AppError::Conflict(e.to_string()));
+    }
+    // Only after the election is found and visible, so the refusal says nothing of one the
+    // caller may not see.
+    if shared == Shared::V0_2
+        && rec.manifest["textReleaseThreshold"]
+            .as_u64()
+            .is_some_and(|t| t < 10)
+    {
+        return reject_with_code(
+            &doc,
+            "unsupportedVersion"
+                .parse()
+                .expect("unsupportedVersion is a standard code"),
+            "this election releases written answers after fewer than 10 ballots, which \
+             vtc/elections/show/0.2 cannot carry; read it with vtc/elections/show/0.3",
+            None,
+        );
     }
     let parameters = match ops::parameters(state).await {
         Ok(p) => p,

@@ -107,6 +107,25 @@ describe("Elections", () => {
     expect(screen.getByText("4")).toBeTruthy();
   });
 
+  it("tells members when written answers are released, and warns below 10 (VTI-VOT-090)", async () => {
+    mockFetch(
+      routes([taskRoute(ELECTIONS_SHOW_TASK, shown("voting", { manifest: { ...manifest, textReleaseThreshold: 3 } }))]),
+    );
+    renderWithProviders(<Elections />, { route: "/elections/agm-2027", path: "/elections/*" });
+    expect(await screen.findByText("Written answers")).toBeTruthy();
+    expect(screen.getByText(/Released once 3 ballots are counted/)).toBeTruthy();
+    expect(screen.getByText(/a written answer may identify who wrote it/)).toBeTruthy();
+  });
+
+  it("says when written answers are released, without a warning at 10", async () => {
+    mockFetch(
+      routes([taskRoute(ELECTIONS_SHOW_TASK, shown("voting", { manifest: { ...manifest, textReleaseThreshold: 10 } }))]),
+    );
+    renderWithProviders(<Elections />, { route: "/elections/agm-2027", path: "/elections/*" });
+    expect(await screen.findByText(/Released once 10 ballots are counted/)).toBeTruthy();
+    expect(screen.queryByText(/may identify who wrote it/)).toBeNull();
+  });
+
   it("certifies a closed election and sends the attestations as given", async () => {
     const requests = mockFetch(
       routes([
@@ -277,6 +296,38 @@ describe("Elections", () => {
       });
       // Created: the draft is gone.
       expect(sessionStorage.getItem(DRAFT_STORAGE_KEY)).toBeNull();
+    });
+
+    it("takes a text release threshold below 10, and warns in Counting and in Review", async () => {
+      const requests = mockFetch(
+        routes([
+          taskRoute(ELECTIONS_CREATE_TASK, { electionId: "small-poll", manifestDigest: "zQmDigest", state: "registered" }),
+          taskRoute(ELECTIONS_SHOW_TASK, shown("registered")),
+        ]),
+      );
+      renderWithProviders(<Elections />, { route: "/elections/new", path: "/elections/*" });
+      fireEvent.change(await screen.findByLabelText("Title"), { target: { value: "Small poll" } });
+      next();
+      fireEvent.change(screen.getByLabelText("What is asked"), { target: { value: "Picnic?" } });
+      fireEvent.click(screen.getByRole("button", { name: "Use Yes / No / Abstain" }));
+      next();
+      next();
+      next();
+      fireEvent.change(screen.getByLabelText(/^Ballot box DID/), { target: { value: BOX } });
+      const threshold = screen.getByLabelText(/^Ballots counted before text answers are shown/) as HTMLInputElement;
+      expect(threshold.value).toBe("10");
+      expect(screen.queryByText(/may identify who wrote it/)).toBeNull();
+      fireEvent.change(threshold, { target: { value: "3" } });
+      expect(screen.getByText(/may identify who wrote it/)).toBeTruthy();
+      next();
+      expect(screen.getByRole("heading", { name: "Review" })).toBeTruthy();
+      expect(screen.getByText(/may identify who wrote it/)).toBeTruthy();
+      const create = screen.getByRole("button", { name: "Create" });
+      await waitFor(() => expect((create as HTMLButtonElement).disabled).toBe(false));
+      fireEvent.click(create);
+      await waitFor(() => expect(sentPayloads(requests, ELECTIONS_CREATE_TASK)).toHaveLength(1));
+      const sent = (sentPayloads(requests, ELECTIONS_CREATE_TASK)[0] as { manifest: Record<string, unknown> }).manifest;
+      expect(sent.textReleaseThreshold).toBe(3);
     });
 
     it("holds Create until the review is clean, and says what to fix", async () => {

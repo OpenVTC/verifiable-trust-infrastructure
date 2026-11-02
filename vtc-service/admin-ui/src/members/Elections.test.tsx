@@ -170,4 +170,21 @@ describe("one election", () => {
     expect(vote.disabled).toBe(true);
     expect(screen.getByText(/same operator runs this community/)).toBeTruthy();
   });
+
+  it("tells the member, before a ticket, when written answers come out below 10 (VTI-VOT-090)", async () => {
+    withWallet({ show: vi.fn(async () => shown({ textReleaseThreshold: 3 })) });
+    renderWith(<ElectionPage hostDid={HOST} member={ME} electionId="agm-2027" />);
+    expect(await screen.findByText(/a written answer may identify who wrote it/)).toBeTruthy();
+    expect(screen.getByText(/released once 3 ballots are counted/)).toBeTruthy();
+  });
+
+  it("says nothing more at 10, or when the wallet does not pass the threshold on", async () => {
+    for (const view of [shown({ textReleaseThreshold: 10 }), shown()]) {
+      withWallet({ show: vi.fn(async () => view) });
+      const { unmount } = renderWith(<ElectionPage hostDid={HOST} member={ME} electionId="agm-2027" />);
+      await screen.findByRole("button", { name: "Vote, or see my vote, in my wallet" });
+      expect(screen.queryByText(/may identify who wrote it/)).toBeNull();
+      unmount();
+    }
+  });
 });

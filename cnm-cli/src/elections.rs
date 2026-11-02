@@ -150,6 +150,20 @@ pub fn starter_manifest(
     m
 }
 
+/// The warning an administrator is given for a manifest that releases written answers after
+/// fewer than 10 counted ballots (VTI-VOT-065: at least 1, and SHOULD be at least 10); `None`
+/// at 10 or more. Members are told the same before they take a ticket (VTI-VOT-090).
+#[must_use]
+pub fn low_text_release(manifest: &Value) -> Option<String> {
+    let t = manifest["textReleaseThreshold"].as_u64()?;
+    (t < 10).then(|| {
+        format!(
+            "textReleaseThreshold is {t}: below 10, a written answer may identify who wrote it — \
+             members are told this before they take a ticket. Use only where that is acceptable."
+        )
+    })
+}
+
 /// What `manifest check` finds: the digest of a manifest that passes, or the first problem.
 ///
 /// # Errors
@@ -160,7 +174,7 @@ pub fn check_manifest_offline(
     now: DateTime<Utc>,
 ) -> Result<String, String> {
     create::Payload::validate_value(&json!({ "manifest": manifest }))
-        .map_err(|e| format!("out of schema (vtc/elections/create/0.3): {e}"))?;
+        .map_err(|e| format!("out of schema (vtc/elections/create/0.4): {e}"))?;
     let m = vti_voting::rules::check_new_manifest(manifest, now).map_err(|e| e.to_string())?;
     if m.community.as_str() != community {
         return Err(format!(
@@ -235,6 +249,9 @@ pub fn run_manifest(command: ManifestCommands, community: &str) -> CliResult {
                         "{GREEN}ok{RESET} {BOLD}{}{RESET} — manifest {digest}",
                         m["electionId"].as_str().unwrap_or_default()
                     );
+                    if let Some(warning) = low_text_release(&m) {
+                        println!("  {YELLOW}{warning}{RESET}");
+                    }
                     println!(
                         "  {DIM}on create the community also checks that the ballot box is one it \
                          trusts and that the identifier is unused{RESET}"
@@ -281,6 +298,12 @@ async fn run_command(command: ElectionsCommands, vtc: &Connected, keyring_key: &
         }
         ElectionsCommands::Create { manifest } => {
             let manifest = read_json(&manifest)?;
+            // vtc/elections/create/0.4: a composing client SHOULD warn below 10 (VTI-VOT-065).
+            if !is_json_output()
+                && let Some(warning) = low_text_release(&manifest)
+            {
+                eprintln!("{YELLOW}{warning}{RESET}");
+            }
             let id = manifest["electionId"]
                 .as_str()
                 .unwrap_or_default()
@@ -595,6 +618,19 @@ mod tests {
         let defaulted = starter_manifest(COMMUNITY, BOX, None, None, now());
         assert_eq!(defaulted["electionId"], "poll-2027-03-04");
         assert!(defaulted.get("title").is_none());
+    }
+
+    /// VTI-VOT-065: 1 – 9 passes the check, with a warning; 10 does not warn.
+    #[test]
+    fn vti_vot_065_a_threshold_below_ten_passes_with_a_warning() {
+        let mut m = starter_manifest(COMMUNITY, BOX, None, None, now());
+        assert_eq!(low_text_release(&m), None);
+        m["textReleaseThreshold"] = json!(1);
+        check_manifest_offline(&m, COMMUNITY, now()).expect("1 is a valid threshold");
+        let w = low_text_release(&m).unwrap();
+        assert!(w.contains("may identify who wrote it"), "{w}");
+        m["textReleaseThreshold"] = json!(0);
+        assert!(check_manifest_offline(&m, COMMUNITY, now()).is_err());
     }
 
     #[test]

@@ -15,7 +15,7 @@ use std::collections::HashSet;
 use sha2::{Digest, Sha256};
 use vti_specs::voting::{
     ballot::cast::v0_1::{Answer, Ballot},
-    election::register::v0_2::{Manifest, Question, RollRuleRule, SecrecyLevel},
+    election::register::v0_3::{Manifest, Question, RollRuleRule, SecrecyLevel},
 };
 
 /// A broken rule. Each variant is one error local part of the voting families.
@@ -258,9 +258,10 @@ pub fn check_manifest_serving(
     {
         return Err(bad_manifest("ballotBox names another service"));
     }
-    if m.text_release_threshold < 10 {
-        return Err(bad_manifest("textReleaseThreshold must be at least 10"));
-    }
+    // VTI-VOT-065: at least 1 (the generated type is non-zero, so the schema's `minimum`
+    // already holds it); below the SHOULD of 10 the member is told before taking a ticket
+    // (VTI-VOT-090), which the disclosure derives from the manifest. A manifest received
+    // under a version whose schema says 10 was refused by that schema before it got here.
     let listed = m.roll.listed.as_ref().map_or(0, Vec::len);
     match m.roll.rule {
         RollRuleRule::Listed | RollRuleRule::MembersAndListed if listed == 0 => {

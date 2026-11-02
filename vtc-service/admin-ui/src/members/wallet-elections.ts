@@ -52,6 +52,11 @@ export interface PageElectionView {
   votingClosesAt: string;
   binding: boolean;
   questions: PageElectionQuestion[];
+  /** The manifest's `textReleaseThreshold`: counted ballots before any written answer is
+   *  disclosed (VTI-VOT-065). Below 10 the member is told, before taking a ticket, that a
+   *  written answer may identify its author (VTI-VOT-090). Absent from a wallet that does not
+   *  pass it on yet. */
+  textReleaseThreshold?: number;
   disclosure: {
     ballotBox: string;
     ballotBoxOperator: string;

@@ -101,6 +101,15 @@ The same engine votes in a community's elections (community voting, VTI-VOT-020 
 | 5 | client → ballot box | the cast document, from the client's own connection, after a pause; resent unchanged if the answer is lost |
 | 6 | client → VTA | `vta/pcs/voter/receipt` — the ballot box's signed receipt kept, and checked for inclusion in a head the community kept |
 
+**Versions.** The voter and trustee tasks that carry the manifest take voting/_shared/0.3's,
+whose `textReleaseThreshold` may be as low as 1 (VTI-VOT-065): `voter/register/0.3`,
+`vote/0.3`, `vote-encrypted/0.4`, `trustee/enrol/0.3` and `trustee/{deal,keys,justify}/0.4`;
+`voter/read/0.3` signs `vtc/elections/show/0.3` and `trustee/read/0.3` signs
+`voting/election/show/0.3`. The previous versions are still served, held to their own schema (a
+threshold of 10 or more), and their reads sign the previous shows. A client showing a member an
+election before the ticket says so when the threshold is below 10, and that a written answer
+may identify its author (VTI-VOT-090); it reads that from the manifest.
+
 A voter key is per election, so a key recovered later links one election, never a
 member's voting history. The cast never carries the member's DID (VTI-VOT-003), and
 audit names the election, never a tag, a cast or a receipt (VTI-VOT-100). An MCP
@@ -118,7 +127,7 @@ casts and receipts 30 days later (`pcs_voter::RECEIPT_RETENTION`), with the vote
 CONVENTIONS §5 item 3.
 
 In a **sealed** or **tallied-encrypted** election (VTI-VOT-060 – 064, conventions §9) step 4
-is `vta/pcs/vote-encrypted/0.3`, given the ceremony `vtc/elections/show` carries — the
+is `vta/pcs/vote-encrypted/0.4` (0.3 still served), given the ceremony `vtc/elections/show` carries — the
 trustees' signed steps, from which the VTA forms the election key itself (at least `threshold`
 qualified dealers and confirmations), never a key the ballot box or the community merely
 reports: the ballot is sealed to that key whole, or encrypted option

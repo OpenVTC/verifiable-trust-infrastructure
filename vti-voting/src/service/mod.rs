@@ -36,7 +36,7 @@ use vti_specs::voting::{
     ballot::cast::v0_1 as cast, board::consistency::v0_1 as consistency, board::head::v0_1 as head,
     board::inclusion::v0_1 as inclusion, board::read::v0_2 as read,
     election::cancel::v0_1 as cancel, election::close::v0_1 as close,
-    election::register::v0_2 as register, election::show::v0_2 as show,
+    election::register::v0_3 as register, election::show::v0_3 as show,
     result::show::v0_1 as result,
 };
 
@@ -56,6 +56,32 @@ use crate::{
     voter::Cast,
     wire::Target,
 };
+
+/// The version of `voting/election/register` or `voting/election/show` a request named.
+///
+/// Both carry the same manifest shape; they differ only in the least `textReleaseThreshold`
+/// their schema admits: 10 under 0.2 (voting/_shared/0.2), 1 under 0.3 (voting/_shared/0.3,
+/// VTI-VOT-065). A request is held to its own version's schema, then read as 0.3, so the
+/// ballot box keeps one election whichever version registered it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum ElectionVersion {
+    /// `voting/election/{register,show}/0.2`: a threshold of at least 10.
+    V0_2,
+    /// `voting/election/{register,show}/0.3`: a threshold of at least 1.
+    V0_3,
+}
+
+impl ElectionVersion {
+    /// The least `textReleaseThreshold` this version's schema admits.
+    #[must_use]
+    pub fn least_text_release_threshold(self) -> u64 {
+        match self {
+            Self::V0_2 => 10,
+            Self::V0_3 => 1,
+        }
+    }
+}
 
 /// A refusal: the task's error local part and a reason for the operator's log. The host turns
 /// it into a `trust-task-error` with code `<task slug>:<local>`, or the framework's standard
@@ -861,6 +887,28 @@ impl BallotBox {
         payload: &Value,
         now: DateTime<Utc>,
     ) -> Result<Value, Failure> {
+        self.register_at(ElectionVersion::V0_3, signer, payload, now)
+    }
+
+    /// [`BallotBox::register`] at `version`: the payload is held to that version's schema —
+    /// under 0.2, a threshold below 10 is refused there — and then read as 0.3. A threshold of
+    /// 1 – 9 is never refused under 0.3 (VTI-VOT-065).
+    ///
+    /// # Errors
+    /// As [`BallotBox::register`].
+    #[allow(deprecated)] // voting/election/register/0.2: still served, so 0.2 clients register
+    pub fn register_at(
+        &mut self,
+        version: ElectionVersion,
+        signer: &str,
+        payload: &Value,
+        now: DateTime<Utc>,
+    ) -> Result<Value, Failure> {
+        if version == ElectionVersion::V0_2 {
+            use vti_specs::voting::election::register::v0_2 as old;
+            <old::Payload as trust_tasks_rs::validate::ValidatedPayload>::validate_value(payload)
+                .map_err(|e| Failure::malformed(e.to_string()))?;
+        }
         let p: register::Payload = parse_payload(payload)?;
         let community = p.community.as_str().to_string();
         if signer != community || p.manifest.community.as_str() != community {
@@ -914,12 +962,35 @@ impl BallotBox {
         payload: &Value,
         now: DateTime<Utc>,
     ) -> Result<Value, Failure> {
+        self.show_at(ElectionVersion::V0_3, caller, payload, now)
+    }
+
+    /// [`BallotBox::show`] at `version`. An election whose `textReleaseThreshold` is below
+    /// what `version`'s answer admits — below 10 under 0.2 — is refused `unsupportedVersion`
+    /// naming 0.3, never answered in a shape that version forbids.
+    ///
+    /// # Errors
+    /// As [`BallotBox::show`]; `unsupportedVersion` as above.
+    pub fn show_at(
+        &mut self,
+        version: ElectionVersion,
+        caller: Caller<'_>,
+        payload: &Value,
+        now: DateTime<Utc>,
+    ) -> Result<Value, Failure> {
         let p: show::Payload = parse_payload(payload)?;
         let e = self.election(p.community.as_str(), p.election_id.as_str(), now)?;
         // A trustee reads the election it takes part in on any board: its tasks take the
         // manifest, and its decryption the time voting closed (CONVENTIONS §4, §9.6).
         if !(e.readable_by(caller) || e.is_trustee(caller)) {
             return Err(Failure::unknown());
+        }
+        if e.manifest.text_release_threshold.get() < version.least_text_release_threshold() {
+            return Err(Failure::standard(
+                "unsupportedVersion",
+                "this election releases written answers after fewer than 10 ballots, which \
+                 voting/election/show/0.2 cannot carry; read it with voting/election/show/0.3",
+            ));
         }
         respond::<show::Response>(json!({
             "election": e.summary(now),

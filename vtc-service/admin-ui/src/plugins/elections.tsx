@@ -32,6 +32,7 @@ import {
   type ElectionResult,
   type QuestionResult,
 } from "@/lib/elections-api";
+import { textReleaseWarning } from "@/lib/election-manifest";
 import { formatIso, shorten } from "@/lib/format";
 import { gestureFromConfirm } from "@/lib/signed-act";
 import { useToast } from "@/lib/toast";
@@ -153,6 +154,9 @@ function ElectionPage({ electionId }: { electionId: string }) {
 
 function ElectionDetail({ electionId, e }: { electionId: string; e: Election }) {
   const d = e.disclosure;
+  // VTI-VOT-090: below 10, members are told that a written answer may identify its author.
+  const release = e.manifest.textReleaseThreshold;
+  const releaseWarning = textReleaseWarning(release);
   return (
     <>
       <section className="card">
@@ -212,6 +216,16 @@ function ElectionDetail({ electionId, e }: { electionId: string; e: Election }) 
               ? "Allowed: a member can vote again, and only their latest vote counts."
               : "Not allowed: a member's first vote is final."}
           </dd>
+          {release !== undefined && (
+            <>
+              <dt>Written answers</dt>
+              <dd>
+                Released once {release} {release === 1 ? "ballot is" : "ballots are"} counted,
+                never while voting is open.
+                {releaseWarning && <div className="warning-text">{releaseWarning}</div>}
+              </dd>
+            </>
+          )}
           <dt>Pressure to vote a certain way</dt>
           <dd>
             Not protected against. A member can prove how they voted, so someone could demand that

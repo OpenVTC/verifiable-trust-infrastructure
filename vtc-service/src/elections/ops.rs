@@ -8,7 +8,7 @@ use chrono::{DateTime, Utc};
 use hkdf::Hkdf;
 use serde_json::{Value, json};
 use sha2::Sha256;
-use vti_specs::voting::election::register::v0_2::Manifest;
+use vti_specs::voting::election::register::v0_3::Manifest;
 use vti_voting::{
     election::{Election, ElectionId},
     registrar::Registrar,
@@ -334,12 +334,31 @@ pub async fn deliver_registration(
     });
     let answer = match state.elections.link() {
         Some(link) => {
-            link.exchange(
-                &rec.ballot_box,
-                &format!("{SPEC}voting/election/register/0.2"),
-                &payload,
-            )
-            .await
+            let answer = link
+                .exchange(
+                    &rec.ballot_box,
+                    &format!("{SPEC}voting/election/register/0.3"),
+                    &payload,
+                )
+                .await;
+            // A ballot box from before voting/election/register/0.3 refuses it by version. Its
+            // 0.2 carries the same manifest wherever the threshold is 10 or more, so that
+            // registration goes there instead; one below 10 cannot (0.2's schema says 10), and
+            // the refusal stands. A different request on a definite refusal, not a retry: the
+            // sweeper stays the one owner of redelivery.
+            match answer {
+                Ok(BoxAnswer::Refused { ref code, .. })
+                    if code == "unsupportedVersion" && fits_register_0_2(&rec.manifest) =>
+                {
+                    link.exchange(
+                        &rec.ballot_box,
+                        &format!("{SPEC}voting/election/register/0.2"),
+                        &payload,
+                    )
+                    .await
+                }
+                other => other,
+            }
         }
         None => Err(LinkError::Unavailable(
             "this VTC has no messaging link to ballot boxes yet".into(),
@@ -1102,9 +1121,18 @@ async fn exchange(
     }
 }
 
+/// Whether `manifest` can be registered under `voting/election/register/0.2`, whose schema
+/// (voting/_shared/0.2) holds `textReleaseThreshold` to 10 or more (VTI-VOT-065).
+fn fits_register_0_2(manifest: &Value) -> bool {
+    manifest["textReleaseThreshold"]
+        .as_u64()
+        .is_some_and(|t| t >= 10)
+}
+
 /// The version of a ballot-box task the community sends: `voting/board/read` at 0.2, whose
 /// lifecycle entries name their instant `occurredAt` (voting/_shared/0.2), every other task this
-/// path sends at 0.1, its current version. `voting/election/register` is sent at 0.2 directly.
+/// path sends at 0.1, its current version. `voting/election/register` is sent at 0.3 directly
+/// ([`deliver_registration`]).
 fn box_version(task: &str) -> &'static str {
     match task {
         "voting/board/read" => "0.2",

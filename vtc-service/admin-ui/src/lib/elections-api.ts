@@ -16,9 +16,9 @@
 import { postSignedRead } from "./api";
 import { postSignedWithStepUp, type ConfirmGesture } from "./signed-act";
 
-export const ELECTIONS_CREATE_TASK = "https://trusttasks.org/spec/vtc/elections/create/0.3";
+export const ELECTIONS_CREATE_TASK = "https://trusttasks.org/spec/vtc/elections/create/0.4";
 export const ELECTIONS_LIST_TASK = "https://trusttasks.org/spec/vtc/elections/list/0.3";
-export const ELECTIONS_SHOW_TASK = "https://trusttasks.org/spec/vtc/elections/show/0.2";
+export const ELECTIONS_SHOW_TASK = "https://trusttasks.org/spec/vtc/elections/show/0.3";
 export const ELECTIONS_CLOSE_TASK = "https://trusttasks.org/spec/vtc/elections/close/0.1";
 export const ELECTIONS_CANCEL_TASK = "https://trusttasks.org/spec/vtc/elections/cancel/0.1";
 export const ELECTIONS_CERTIFY_TASK = "https://trusttasks.org/spec/vtc/elections/certify/0.1";
@@ -100,7 +100,7 @@ export interface Disclosure {
   coercionResistance: false;
 }
 
-/** `vtc/elections/show/0.2`'s answer. The manifest is carried as received. */
+/** `vtc/elections/show/0.3`'s answer. The manifest is carried as received. */
 export interface Election {
   manifest: Record<string, unknown> & {
     electionId: string;
@@ -188,7 +188,7 @@ export function fetchElection(electionId: string): Promise<Election> {
   return postSignedRead<Election>(ELECTIONS_SHOW_TASK, { electionId });
 }
 
-/** `vtc/elections/create/0.3`. Throws a `ParkedAction` for a binding election. */
+/** `vtc/elections/create/0.4`. Throws a `ParkedAction` for a binding election. */
 export function createElection(
   manifest: Record<string, unknown>,
   confirmGesture: ConfirmGesture,

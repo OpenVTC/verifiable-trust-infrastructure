@@ -1,6 +1,6 @@
 // The election manifest builder's model (`plugins/ElectionBuilder.tsx`).
 //
-// A manifest (`vtc/elections/create/0.3`, voting/_shared/0.2 `Manifest`) says
+// A manifest (`vtc/elections/create/0.4`, voting/_shared/0.3 `Manifest`) says
 // what an election asks and how it is decided, and every ticket and cast is
 // bound to its digest — so nothing about it can be corrected after the ballot
 // box registers it. The builder edits a **draft** (strings where the inputs
@@ -35,7 +35,7 @@ export const STEPS = [
 ] as const;
 export type StepId = (typeof STEPS)[number]["id"];
 
-/** The schema's bounds the builder enforces (vtc/elections/create/0.3). */
+/** The schema's bounds the builder enforces (vtc/elections/create/0.4). */
 export const MANIFEST_LIMITS = {
   electionIdPattern: "^[A-Za-z0-9._-]{1,128}$",
   keyPattern: "^[A-Za-z0-9._-]{1,64}$",
@@ -50,10 +50,32 @@ export const MANIFEST_LIMITS = {
   rankingOptions: { min: 2, max: 64 },
   scoreOptions: { min: 1, max: 256 },
   textMaxLength: { min: 1, max: 4096 },
-  textReleaseThresholdMin: 10,
+  textReleaseThresholdMin: 1,
   trusteesMin: 2,
   thresholdMin: 2,
 } as const;
+
+/** The `textReleaseThreshold` the specification advises (VTI-VOT-065 SHOULD): the
+ *  builder's default, and below it members are warned (VTI-VOT-090). */
+export const TEXT_RELEASE_THRESHOLD_ADVISED = 10;
+
+/** What the builder and the election page say when `threshold` releases written answers
+ *  after fewer than 10 counted ballots; `null` at 10 or more, and for anything that is not a
+ *  threshold at all (a check refuses that instead). */
+export function textReleaseWarning(threshold: number | null | undefined): string | null {
+  if (
+    threshold == null ||
+    !Number.isInteger(threshold) ||
+    threshold < MANIFEST_LIMITS.textReleaseThresholdMin ||
+    threshold >= TEXT_RELEASE_THRESHOLD_ADVISED
+  ) {
+    return null;
+  }
+  return (
+    "Below 10, a written answer may identify who wrote it — members are told this before they " +
+    "take a ticket. Use only where that is acceptable."
+  );
+}
 
 /** `vti_voting::rules::MAX_TRUSTEES`: a rule, not a schema bound. */
 export const MAX_TRUSTEES = 64;
@@ -202,7 +224,7 @@ export function emptyDraft(now = new Date()): ManifestDraft {
     auditors: "",
     revote: "replace",
     resultsBeforeClose: false,
-    textReleaseThreshold: String(MANIFEST_LIMITS.textReleaseThresholdMin),
+    textReleaseThreshold: String(TEXT_RELEASE_THRESHOLD_ADVISED),
   };
 }
 
