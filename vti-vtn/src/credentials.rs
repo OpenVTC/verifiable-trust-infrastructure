@@ -83,15 +83,16 @@ pub fn membership_offer(
 /// What a listed party (a VTC, or a VTN listed by another network) runs.
 pub mod member {
     use super::*;
+    use crate::identity::{Party, sign_credential_as};
 
-    /// Acknowledge a membership offer: the member-issued VMC, signed by `member`.
+    /// The (unsigned) acknowledgement of a membership offer, as `member`.
     ///
     /// A community's identifier is `public` (DTG Core, VMC), so the acknowledgement
     /// declares `public` too. `valid_until` must fall within the offer's; `None` takes the
     /// offer's own, so the acknowledgement lapses with the grant it answers.
-    pub async fn acknowledge(
+    pub fn acknowledgement(
         offer: &Value,
-        member: &Identity,
+        member: &str,
         valid_from: DateTime<Utc>,
         valid_until: Option<DateTime<Utc>>,
     ) -> Result<DTGCredential> {
@@ -107,23 +108,21 @@ pub mod member {
                 })
                 .transpose()?,
         };
-        let mut ack = DTGCredential::new_member_vmc_for(
+        Ok(DTGCredential::new_member_vmc_for(
             offer,
-            member.did(),
+            member,
             IssuerScope::Public,
             valid_from,
             valid_until,
         )?
-        .with_id(new_credential_id());
-        member.sign_credential(&mut ack).await?;
-        Ok(ack)
+        .with_id(new_credential_id()))
     }
 
-    /// Repudiate `target` (a listing VSC, or a membership grant to depart), signed by
-    /// `member`. The subject is the network that issued `target`.
-    pub async fn repudiate(
+    /// The (unsigned) repudiation of `target` (a listing VSC, or a membership grant to
+    /// depart), as `member`. The subject is the network that issued `target`.
+    pub fn repudiation(
         target: &Value,
-        member: &Identity,
+        member: &str,
         valid_from: DateTime<Utc>,
     ) -> Result<DTGCredential> {
         let network = target
@@ -131,8 +130,8 @@ pub mod member {
             .and_then(Value::as_str)
             .ok_or_else(|| crate::VtnError::Rejected("target has no issuer".into()))?;
         let digest = dtg_credentials::digest_multibase_json(target)?;
-        let mut vsc = DTGCredential::new_vsc(
-            member.did().to_string(),
+        Ok(DTGCredential::new_vsc(
+            member.to_string(),
             IssuerScope::Public,
             network.to_string(),
             REPUDIATES_V1,
@@ -140,8 +139,51 @@ pub mod member {
             valid_from,
             None,
         )?
-        .with_id(new_credential_id());
+        .with_id(new_credential_id()))
+    }
+
+    /// Acknowledge a membership offer, signed by `member`.
+    pub async fn acknowledge(
+        offer: &Value,
+        member: &Identity,
+        valid_from: DateTime<Utc>,
+        valid_until: Option<DateTime<Utc>>,
+    ) -> Result<DTGCredential> {
+        let mut ack = acknowledgement(offer, member.did(), valid_from, valid_until)?;
+        member.sign_credential(&mut ack).await?;
+        Ok(ack)
+    }
+
+    /// [`acknowledge`] for any [`Party`], answering the signed document (which may carry a
+    /// proof set).
+    pub async fn acknowledge_as(
+        offer: &Value,
+        member: &dyn Party,
+        valid_from: DateTime<Utc>,
+        valid_until: Option<DateTime<Utc>>,
+    ) -> Result<Value> {
+        let ack = acknowledgement(offer, member.did(), valid_from, valid_until)?;
+        sign_credential_as(member, &ack).await
+    }
+
+    /// Repudiate `target`, signed by `member`.
+    pub async fn repudiate(
+        target: &Value,
+        member: &Identity,
+        valid_from: DateTime<Utc>,
+    ) -> Result<DTGCredential> {
+        let mut vsc = repudiation(target, member.did(), valid_from)?;
         member.sign_credential(&mut vsc).await?;
         Ok(vsc)
+    }
+
+    /// [`repudiate`] for any [`Party`].
+    pub async fn repudiate_as(
+        target: &Value,
+        member: &dyn Party,
+        valid_from: DateTime<Utc>,
+    ) -> Result<Value> {
+        let vsc = repudiation(target, member.did(), valid_from)?;
+        sign_credential_as(member, &vsc).await
     }
 }

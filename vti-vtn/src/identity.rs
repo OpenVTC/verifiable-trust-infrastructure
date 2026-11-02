@@ -14,6 +14,51 @@ use serde_json::Value;
 use crate::did_key;
 use crate::error::{Result, VtnError};
 
+/// A future signing a document.
+pub type SignFuture<'a> =
+    std::pin::Pin<Box<dyn std::future::Future<Output = Result<Value>> + Send + 'a>>;
+
+/// A party that signs as its DID: the network itself, a community acting as a network
+/// member, a member's wallet. [`Identity`] is the local implementation; a service holding
+/// several keys (an Ed25519 key and a post-quantum one, say) implements it over its own signer
+/// and may answer with a proof set.
+pub trait Party: Send + Sync {
+    fn did(&self) -> &str;
+    /// Return `document` signed for `purpose` (`assertionMethod`, `authentication`): with a
+    /// `proof`, which may be a proof set.
+    fn sign_for<'a>(&'a self, document: Value, purpose: &'a str) -> SignFuture<'a>;
+}
+
+impl Party for Identity {
+    fn did(&self) -> &str {
+        &self.did
+    }
+
+    fn sign_for<'a>(&'a self, document: Value, purpose: &'a str) -> SignFuture<'a> {
+        Box::pin(self.sign_document_for(document, purpose))
+    }
+}
+
+/// Sign a DTG credential as `party`, for `assertionMethod`, after checking it is one this
+/// crate would sign. The credential's `issuer` must be the party.
+pub async fn sign_credential_as(party: &dyn Party, credential: &DTGCredential) -> Result<Value> {
+    if credential.issuer() != party.did() {
+        return Err(VtnError::Rejected(format!(
+            "credential issuer {} is not the signer {}",
+            credential.issuer(),
+            party.did()
+        )));
+    }
+    credential.validate()?;
+    let mut document = serde_json::to_value(credential)?;
+    if let Some(object) = document.as_object_mut() {
+        object.remove("proof");
+    }
+    party
+        .sign_for(document, crate::verify::ASSERTION_METHOD)
+        .await
+}
+
 /// A DID and a signer whose verification method belongs to it.
 #[derive(Clone)]
 pub struct Identity {

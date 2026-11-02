@@ -87,6 +87,44 @@ pub struct RegisteredGroup {
     pub registered_at: DateTime<Utc>,
 }
 
+/// Member side: the (unsigned) registration of `group` to serve `role` in `network`,
+/// deliveries to `endpoint`, as `member`.
+pub fn registration(
+    member: &str,
+    network: &str,
+    role: &str,
+    group: &str,
+    endpoint: &str,
+    valid_from: DateTime<Utc>,
+) -> Result<DTGCredential> {
+    if !valid_role_name(role) {
+        return Err(VtnError::Rejected(format!("invalid role name {role:?}")));
+    }
+    Ok(DTGCredential::new_vsc(
+        member.to_string(),
+        IssuerScope::Public,
+        group.to_string(),
+        SERVES_ROLE_V1,
+        StatementObject::Value(json!({ "network": network, "role": role, "endpoint": endpoint })),
+        valid_from,
+        None,
+    )?
+    .with_id(new_credential_id()))
+}
+
+/// [`registration`], signed by any [`crate::identity::Party`].
+pub async fn register_as(
+    member: &dyn crate::identity::Party,
+    network: &str,
+    role: &str,
+    group: &str,
+    endpoint: &str,
+    valid_from: DateTime<Utc>,
+) -> Result<Value> {
+    let vsc = registration(member.did(), network, role, group, endpoint, valid_from)?;
+    crate::identity::sign_credential_as(member, &vsc).await
+}
+
 /// Member side: register `group` to serve `role` in `network`, deliveries to `endpoint`.
 pub async fn register(
     member: &Identity,

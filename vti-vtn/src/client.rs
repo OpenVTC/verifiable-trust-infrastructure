@@ -87,6 +87,16 @@ impl VtnClient {
         network_did: &str,
         membership: Option<Value>,
     ) -> Result<Value> {
+        self.sign_in_as(who, network_did, membership).await
+    }
+
+    /// [`Self::sign_in`] for any [`crate::identity::Party`].
+    pub async fn sign_in_as(
+        &mut self,
+        who: &dyn crate::identity::Party,
+        network_did: &str,
+        membership: Option<Value>,
+    ) -> Result<Value> {
         let challenge = self
             .post("/v1/auth/challenge", &json!({ "did": who.did() }))
             .await?;
@@ -103,7 +113,7 @@ impl VtnClient {
             "audience": network_did,
         });
         let document = who
-            .sign_document_for(document, AUTHENTICATION)
+            .sign_for(document, AUTHENTICATION)
             .await
             .map_err(|e| ClientError::Unexpected(format!("sign the authentication: {e}")))?;
         let mut body = json!({ "authentication": document });
