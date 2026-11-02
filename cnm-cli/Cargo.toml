@@ -39,7 +39,7 @@ vtc-client = { path = "../vtc-client", version = "0.33", features = ["tsp"] }
 trust-tasks-rs = { workspace = true }
 # The generated Trust Task wire types, at the versions VTI pins (CLAUDE.md,
 # "Pinning a task version").
-vti-specs = { path = "../vti-specs", version = "0.2" }
+vti-specs = { path = "../vti-specs", version = "0.3" }
 # `cnm elections manifest check`: the manifest rules the community itself runs on create
 # (`rules::check_new_manifest`), offline, rather than a copy that could drift from them.
 vti-voting = { path = "../vti-voting", version = "0.7" }

@@ -171,7 +171,7 @@ path = "tests/it/main.rs"
 
 [dependencies]
 # Hidden-vetter admission (ZKP), development branch `zkp-pcs`: off by default.
-vti-vetting-pcs = { path = "../vti-vetting-pcs", version = "0.10", optional = true }
+vti-vetting-pcs = { path = "../vti-vetting-pcs", version = "0.11", optional = true }
 vti-voting = { path = "../vti-voting", version = "0.7", optional = true }
 predicate-credential-system = { version = "0.1", optional = true }
 vti-rooms = { path = "../vti-rooms", version = "0.25" }
@@ -230,7 +230,7 @@ image = { version = "0.25", default-features = false, features = ["png", "jpeg",
 # Shared secret-store backend implementations (the VTC's `create_secret_store`
 # factory + `*SecretStore` names are a thin facade over these). Per-backend
 # features are activated by this crate's matching features above.
-vti-secrets = { path = "../vti-secrets", version = "0.26" }
+vti-secrets = { path = "../vti-secrets", version = "0.27" }
 vta-sdk = { path = "../vta-sdk", version = "0.78", features = [
   "didcomm",
   "session",
@@ -270,7 +270,7 @@ futures-util = "0.3"
 trust-tasks-rs = { workspace = true }
 # The generated Trust Task wire types, at the versions VTI pins (CLAUDE.md,
 # "Pinning a task version").
-vti-specs = { path = "../vti-specs", version = "0.2" }
+vti-specs = { path = "../vti-specs", version = "0.3" }
 trust-tasks-https = { workspace = true }
 # W3C VC builder + Data Integrity proof signing/verification. Used
 # by `crate::credentials` for VMC + VEC issuance (Phase 2 M2.9).
