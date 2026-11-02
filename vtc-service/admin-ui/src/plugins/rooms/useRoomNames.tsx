@@ -28,7 +28,13 @@ import { communityRoomPath } from "./shared";
 export type RoomName =
   /** The community owns it, and these are the label and description it gave
    *  the room. */
-  | { readonly kind: "community"; readonly label: string; readonly description?: string }
+  | {
+      readonly kind: "community";
+      readonly label: string;
+      readonly description?: string;
+      /** Its state in its owner's lifecycle, when not `active`. */
+      readonly state?: "archived" | "removalScheduled" | "purging" | "removed";
+    }
   /** The community's own list was read in full and the room is not in it, so a
    *  member owns it — and named it, out of this community's sight. */
   | { readonly kind: "member" }
@@ -62,6 +68,7 @@ export function useRoomNames(): (roomId: string) => RoomName {
         kind: "community",
         label: r.label,
         ...(r.description ? { description: r.description } : {}),
+        ...(r.status && r.status.state !== "active" ? { state: r.status.state } : {}),
       };
     }
     return complete ? { kind: "member" } : UNKNOWN;

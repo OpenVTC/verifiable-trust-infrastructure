@@ -1015,8 +1015,10 @@ pub struct RoomLimitsChangedData {
 #[serde(rename_all = "camelCase")]
 pub struct CommunityRoomChangedData {
     /// `created`, `detailsUpdated`, `memberOffered`, `memberAdmitted`,
-    /// `memberRemoved`, `offerWithdrawn`, `authorityRenewed` or
-    /// `authorityRenewalFailed`.
+    /// `memberRemoved`, `offerWithdrawn`, `authorityRenewed`,
+    /// `authorityRenewalFailed`, or — a room's owner lifecycle — `archived`,
+    /// `unarchived`, `removalScheduled`, `removedNow`, `removalCancelled`,
+    /// `purgeStarted`, `removed` or `memberRestored`.
     pub event: String,
     /// The room: its DID.
     pub room_id: String,

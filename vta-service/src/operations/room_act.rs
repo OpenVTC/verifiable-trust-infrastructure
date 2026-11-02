@@ -131,12 +131,29 @@ const OFFERS_LIST_0_4: &str =
 
 const OFFERS_ACCEPT_0_1: &str =
     <vti_specs::vtc::rooms::offers::accept::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+#[allow(deprecated)] // rooms/keys/act 0.8–0.10's tables name it, and the VTC still serves it.
 const MEMBERSHIPS_LIST_0_1: &str =
     <vti_specs::vtc::rooms::memberships::list::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
-/// Whether `type_uri` is one of [`COMMUNITY_TYPES_0_8`].
+/// Whether `type_uri` is one of [`COMMUNITY_TYPES_0_8`] — the community types of
+/// `rooms/keys/act` 0.8 and 0.9.
 pub fn is_community_type_0_8(type_uri: &str) -> bool {
     COMMUNITY_TYPES_0_8.contains(&bare_type(type_uri))
+}
+
+/// The community type `rooms/keys/act/0.10` adds: `vtc/rooms/memberships/list/0.2`, which
+/// tells a member where each of the community's rooms stands (archived, scheduled for
+/// removal) and adds the `suspended` admission state — on the offer types' terms, with no
+/// presentation and `issuer` required (Recipient item 2b).
+pub const COMMUNITY_TYPES_0_10_ADDS: &[&str] = &[MEMBERSHIPS_LIST_0_2];
+
+const MEMBERSHIPS_LIST_0_2: &str =
+    <vti_specs::vtc::rooms::memberships::list::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// Whether `type_uri` is one of `rooms/keys/act/0.10`'s community types: 0.9's, and
+/// [`COMMUNITY_TYPES_0_10_ADDS`].
+pub fn is_community_type_0_10(type_uri: &str) -> bool {
+    COMMUNITY_TYPES_0_10_ADDS.contains(&bare_type(type_uri)) || is_community_type_0_8(type_uri)
 }
 
 /// Whether `type_uri` is `vtc/rooms/offers/accept/0.1` — the one offer type that can carry
@@ -166,6 +183,12 @@ pub const ACT_TABLE_0_9_ADDS: &[ActRow] =
 /// [`ACT_TABLE_0_9_ADDS`]. The community types are 0.8's unchanged.
 pub fn actable_0_9(type_uri: &str) -> Option<Option<&'static str>> {
     row(ACT_TABLE_0_9_ADDS, type_uri).or_else(|| actable_0_8(type_uri))
+}
+
+/// The row of `rooms/keys/act/0.10`'s table for `type_uri`: 0.9's. 0.10 adds a community
+/// type ([`is_community_type_0_10`]) and no host-bound one.
+pub fn actable_0_10(type_uri: &str) -> Option<Option<&'static str>> {
+    actable_0_9(type_uri)
 }
 
 fn row(table: &[ActRow], type_uri: &str) -> Option<Option<&'static str>> {
@@ -395,7 +418,7 @@ mod tests {
                 .count(),
             1
         );
-        let members_add = "https://trusttasks.org/spec/vtc/rooms/community/members/add/0.1";
+        let members_add = "https://trusttasks.org/spec/vtc/rooms/community/members/add/0.2";
         assert!(!is_community_type_0_8(members_add));
     }
 
@@ -416,6 +439,28 @@ mod tests {
             actable_0_9(spec::epoch::prune::v0_2::Payload::TYPE_URI),
             None
         );
+    }
+
+    /// 0.10 adds `vtc/rooms/memberships/list/0.2` to the community types; 0.8 and 0.9 do
+    /// not name it, and every type they complete 0.10 completes on the same terms.
+    #[test]
+    fn act_0_10_adds_memberships_list_0_2() {
+        assert!(!is_community_type_0_8(MEMBERSHIPS_LIST_0_2));
+        assert!(is_community_type_0_10(MEMBERSHIPS_LIST_0_2));
+        assert!(is_community_type_0_10(&format!(
+            "{MEMBERSHIPS_LIST_0_2}#request"
+        )));
+        for t in COMMUNITY_TYPES_0_8 {
+            assert!(is_community_type_0_10(t), "{t}");
+        }
+        for (t, action) in ACT_TABLE_0_8 {
+            assert_eq!(actable_0_10(t), Some(*action), "{t}");
+        }
+        assert_eq!(
+            actable_0_10(spec::records::put::v0_4::Payload::TYPE_URI),
+            Some(Some("write"))
+        );
+        assert_eq!(actable_0_10(MEMBERSHIPS_LIST_0_2), None);
     }
 
     /// The deliberate absences: chunk uploads (bytes never pass through the key holder),

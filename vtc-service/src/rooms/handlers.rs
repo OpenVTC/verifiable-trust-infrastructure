@@ -460,6 +460,7 @@ pub(super) async fn create_room<P>(
         record_retention: record_retention.filter(|r| !r.is_empty() || r.ext.is_some()),
         last_prune: None,
         epoch_floor: None,
+        frozen_at: None,
     };
 
     if let Err(e) = storage::create_room(&state.rooms_ks, &room).await {

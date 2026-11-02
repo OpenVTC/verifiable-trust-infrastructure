@@ -2089,6 +2089,14 @@ mod spine_proof_tests {
             community_room_tasks::GET_TYPE,
             "reads one room the community owns, with its details; the handler authorizes vtc.rooms.manage from the signer's own entry, so an unsigned caller is refused regardless",
         ),
+        (
+            community_room_tasks::LIST_V4_TYPE,
+            "lists the rooms the community owns, with their details and states; the handler authorizes vtc.rooms.manage from the signer's own entry, so an unsigned caller is refused regardless",
+        ),
+        (
+            community_room_tasks::GET_V4_TYPE,
+            "reads one room the community owns, with its details and state; the handler authorizes vtc.rooms.manage from the signer's own entry, so an unsigned caller is refused regardless",
+        ),
         #[cfg(feature = "voting")]
         (
             election_tasks::BALLOT_BOXES_LIST_TYPE,
@@ -3047,6 +3055,20 @@ pub(crate) const DISPATCHED_URIS: &[&str] = &[
     community_room_tasks::MEMBERS_ADD_TYPE,
     community_room_tasks::MEMBERS_REMOVE_TYPE,
     community_room_tasks::MEMBERS_LIST_TYPE,
+    // Each room's state in its owner's lifecycle, and the `suspended` member state
+    // (`vtc/_shared/0.5/community-room`). The 0.3 / 0.1 versions stay served, for
+    // surfaces not yet moved: a purged room is not in their lists, and a suspended
+    // admission reads `admitted` in them.
+    community_room_tasks::LIST_V4_TYPE,
+    community_room_tasks::GET_V4_TYPE,
+    community_room_tasks::MEMBERS_LIST_V2_TYPE,
+    community_room_tasks::MEMBERSHIPS_LIST_V2_TYPE,
+    // Archiving and removing a room the community owns, each behind the requester's
+    // bound gesture (`rooms::community_lifecycle`).
+    community_room_tasks::ARCHIVE_TYPE,
+    community_room_tasks::UNARCHIVE_TYPE,
+    community_room_tasks::REMOVE_ROOM_TYPE,
+    community_room_tasks::REMOVAL_CANCEL_TYPE,
     // 0.4: also the renewals of the admissions the member holds (`renewsAt`). 0.1–0.3
     // are not served.
     community_room_tasks::OFFERS_LIST_TYPE,

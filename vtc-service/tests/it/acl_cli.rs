@@ -294,6 +294,7 @@ async fn an_offline_removal_records_the_community_room_removals_owed() {
                 offered_at: "2026-01-01T00:00:00Z".into(),
                 admitted_at: None,
                 removed_at: None,
+                suspended_at: None,
                 credentials: None,
                 welcome: None,
                 admitted_epoch: None,

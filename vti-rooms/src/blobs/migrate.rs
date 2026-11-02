@@ -1585,6 +1585,114 @@ impl BlobHost {
         })
     }
 
+    /// The room's migration, for [`Self::purge_room`]: its unswitched copy on the target
+    /// is deleted, the reservation still held on the target is given back, and the
+    /// record, plan and done rows go — in one batch, after the copy is gone. A copy that
+    /// cannot be deleted leaves everything in place for the next call. Whether anything
+    /// changed. The caller holds the host's lock.
+    pub(super) async fn purge_migration(
+        &self,
+        room_id: &str,
+        stats: &mut PurgeStats,
+    ) -> Result<bool, AppError> {
+        let mut batch = Batch::new();
+        let mut any = false;
+        if let Some(m) = self.migration(room_id).await? {
+            if let Some(f) = &m.in_flight
+                && let Some(copy) = &f.copy
+            {
+                // Never the object an entry names (a switch landed and the record did
+                // not move on — it always does, in the same batch, but cheap to hold).
+                let live = self
+                    .blob(room_id, &f.blob_ref)
+                    .await?
+                    .is_some_and(|e| e.config_id == m.to_config && &e.backend_ref == copy);
+                if !live {
+                    let deleted = match self.stores.store_for(&m.to_config, room_id).await {
+                        Ok(store) => store.delete(copy).await,
+                        Err(e) => Err(e),
+                    };
+                    match deleted {
+                        Ok(Deletion::Deleted) | Ok(Deletion::Lapses { .. }) => stats.deleted += 1,
+                        Ok(Deletion::Unsupported) => {
+                            tracing::warn!(
+                                "store cannot delete a purged room's migration copy; forgetting it"
+                            );
+                        }
+                        Err(e) => {
+                            stats.failed("delete a migration's copy", &e);
+                            return Ok(false);
+                        }
+                    }
+                }
+            }
+            // Zero on a migration no longer open: `finish` and `fail` gave it back.
+            self.unreserve(&mut batch, &m.to_config, m.reserved_bytes)
+                .await?;
+            batch.remove(migration_key(room_id));
+            any = true;
+        }
+        for prefix in [plan_prefix(room_id), done_prefix(room_id)] {
+            for k in self.blobs.prefix_keys(prefix.into_bytes()).await? {
+                batch.remove(k);
+                any = true;
+            }
+        }
+        if any {
+            self.blobs.apply_batch(batch).await?;
+        }
+        Ok(any)
+    }
+
+    /// The old copies of the room's moved blobs, for [`Self::purge_room`]: deleted from
+    /// their stores at once — no grace — and uncounted with their rows, as
+    /// [`Self::sweep_moved`] does after the grace. One whose entry names the same object
+    /// (moved back onto it) leaves the bytes to the entry. Whether anything changed. The
+    /// caller holds the host's lock.
+    pub(super) async fn purge_moved(
+        &self,
+        room_id: &str,
+        stats: &mut PurgeStats,
+    ) -> Result<bool, AppError> {
+        let mut any = false;
+        let prefix = format!("moved:{}:", room_hash(room_id));
+        for (key, raw) in self.blobs.prefix_iter_raw(prefix.into_bytes()).await? {
+            let Ok(row) = serde_json::from_slice::<MovedCopy>(&raw) else {
+                continue;
+            };
+            if row.room_id != room_id {
+                continue;
+            }
+            let live = self
+                .blob(&row.room_id, &row.blob_ref)
+                .await?
+                .is_some_and(|e| e.config_id == row.config_id && e.backend_ref == row.backend_ref);
+            if !live {
+                let deleted = match self.stores.store_for(&row.config_id, &row.room_id).await {
+                    Ok(store) => store.delete(&row.backend_ref).await,
+                    Err(e) => Err(e),
+                };
+                match deleted {
+                    Ok(Deletion::Deleted) | Ok(Deletion::Lapses { .. }) => stats.deleted += 1,
+                    Ok(Deletion::Unsupported) => {
+                        tracing::warn!(blob = %row.blob_ref, "store cannot delete a purged room's moved copy; forgetting it");
+                    }
+                    Err(e) => {
+                        stats.failed("delete a moved blob's old copy", &e);
+                        continue;
+                    }
+                }
+            }
+            let mut batch = Batch::new();
+            batch.remove(key);
+            self.uncount_copy(&mut batch, &row.config_id, row.size)
+                .await?;
+            self.blobs.apply_batch(batch).await?;
+            any = true;
+        }
+        Ok(any)
+    }
+
     /// Delete the previous copies of moved blobs whose grace window has passed, from
     /// their stores, and stop counting them. Part of [`Self::sweep`].
     pub(super) async fn sweep_moved(&self, now: u64, grace: u64) -> Result<usize, AppError> {
@@ -1734,6 +1842,7 @@ mod tests {
             record_retention: None,
             last_prune: None,
             epoch_floor: None,
+            frozen_at: None,
         }
     }
 
@@ -2451,6 +2560,118 @@ mod tests {
         f.host.sweep_moved(now_secs() + 7_200, 3_600).await.unwrap();
         assert!(object(&f, "a", &b).exists());
         assert_eq!(read_all(&f, &b).await, blob(1_000, 8).0);
+    }
+
+    /// Every row of the blob index naming the room, by hash or by id.
+    async fn rows_of_room(f: &Fixture) -> Vec<String> {
+        let h = room_hash(&room().room_id);
+        f.host
+            .blobs
+            .prefix_iter_raw(Vec::<u8>::new())
+            .await
+            .unwrap()
+            .into_iter()
+            .filter(|(k, v)| {
+                String::from_utf8_lossy(k).contains(&h)
+                    || String::from_utf8_lossy(v).contains(&room().room_id)
+            })
+            .map(|(k, _)| String::from_utf8_lossy(&k).into_owned())
+            .collect()
+    }
+
+    /// A purge mid-migration: the switched blob's old copy (a `moved:` row, inside its
+    /// grace), its new copy, the unmoved blob and the reservation still held on the target
+    /// all go, and every counter is back at zero.
+    #[tokio::test]
+    async fn a_purge_mid_migration_deletes_both_copies_and_gives_back_the_reservation() {
+        let f = fixture(HostLimits::default());
+        let one = upload(&f, 1_000, 21).await;
+        let two = upload(&f, 2_000, 22).await;
+        reassign(&f, "b");
+        start(&f, "b").await;
+        let MigrationStep::Moved(m) = f.host.migrate_step(&room().room_id, FAST).await.unwrap()
+        else {
+            panic!("one blob moves");
+        };
+        assert_eq!(m.done_files, 1);
+        assert!(counter(&f, "usage:config:b").await.reserved_bytes > 0);
+        let moved = f.host.moved_holdings().await.unwrap();
+        assert_eq!(moved["a"].0, 1, "the old copy awaits its grace");
+
+        let stats = f.host.purge_room(&room().room_id).await.unwrap();
+        assert!(stats.is_complete(), "{stats:?}");
+        assert_eq!(stats.deleted, 3, "two entries and one old copy: {stats:?}");
+        for b in [&one, &two] {
+            for c in ["a", "b"] {
+                assert!(!object(&f, c, b).exists(), "{c}/{b}");
+            }
+        }
+        for key in [STORAGE_USAGE_KEY, "usage:config:a", "usage:config:b"] {
+            assert_eq!(counter(&f, key).await, StorageUsage::default(), "{key}");
+        }
+        assert_eq!(rows_of_room(&f).await, Vec::<String>::new());
+        assert!(f.host.migration(&room().room_id).await.unwrap().is_none());
+        assert!(matches!(
+            f.host.migrate_step(&room().room_id, FAST).await.unwrap(),
+            MigrationStep::Idle
+        ));
+        assert!(f.host.purge_room(&room().room_id).await.unwrap() == PurgeStats::default());
+    }
+
+    /// Only this room's old copies go: another room's, inside the grace, stay counted.
+    #[tokio::test]
+    async fn a_purge_leaves_another_rooms_moved_copies() {
+        let f = fixture(HostLimits::default());
+        let other = other_room("did:key:zOtherRoom");
+        upload(&f, 1_000, 31).await;
+        let theirs = upload_to(&f, &other, 1_500, 32).await;
+        reassign(&f, "b");
+        for r in [room(), other.clone()] {
+            f.host
+                .start_migration(MigrationRequest::new(
+                    r.room_id.clone(),
+                    "b",
+                    "did:key:zAdmin",
+                    "move",
+                ))
+                .await
+                .unwrap();
+        }
+        run(&f).await;
+        // The second room's migration was queued behind the first; finish it.
+        f.host.promote_queued().await.unwrap();
+        for _ in 0..20 {
+            if matches!(
+                f.host.migrate_step(&other.room_id, FAST).await.unwrap(),
+                MigrationStep::Complete(_) | MigrationStep::Idle
+            ) {
+                break;
+            }
+        }
+        assert_eq!(f.host.moved_holdings().await.unwrap()["a"], (2, 2_500));
+
+        assert!(
+            f.host
+                .purge_room(&room().room_id)
+                .await
+                .unwrap()
+                .is_complete()
+        );
+        assert_eq!(f.host.moved_holdings().await.unwrap()["a"], (1, 1_500));
+        let key = BlobKey::for_room(&other.room_id, &theirs).unwrap();
+        for c in ["a", "b"] {
+            assert!(
+                f.dir
+                    .path()
+                    .join(format!("blobs-{c}"))
+                    .join(key.as_str())
+                    .exists()
+            );
+        }
+        let a = counter(&f, "usage:config:a").await;
+        assert_eq!((a.files, a.bytes), (1, 1_500));
+        let b = counter(&f, "usage:config:b").await;
+        assert_eq!((b.files, b.bytes, b.reserved_bytes), (1, 1_500, 0));
     }
 
     #[test]

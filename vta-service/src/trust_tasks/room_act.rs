@@ -1,6 +1,7 @@
-//! Acting **as** the member — `rooms/keys/act` 0.8 and 0.9, and `rooms/keys/seal/0.2`. No
-//! earlier `act` is served. Every client in this workspace sends 0.9; `pnm-browser-plugin`
-//! sends 0.8, which keeps its own table until the plugin moves.
+//! Acting **as** the member — `rooms/keys/act` 0.8, 0.9 and 0.10, and `rooms/keys/seal/0.2`.
+//! No earlier `act` is served. Every client in this workspace sends 0.10; `pnm-browser-plugin`
+//! sends 0.8, which keeps its own table until the plugin moves, and 0.9 stays served for a
+//! client not yet moved.
 //!
 //! The member's own client (a `pnm` session, a wallet extension, a phone) holds no key of
 //! the persona the room admitted. These two tasks are how it writes and reads as that
@@ -169,7 +170,14 @@ pub(super) async fn handle_act_v0_8(
     auth: &AuthClaims,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    handle_act(state, auth, doc, room_act::actable_0_8).await
+    handle_act(
+        state,
+        auth,
+        doc,
+        room_act::actable_0_8,
+        room_act::is_community_type_0_8,
+    )
+    .await
 }
 
 /// `rooms/keys/act/0.9`: 0.8, with `rooms/records/put/0.4` in the table, so a member
@@ -179,19 +187,45 @@ pub(super) async fn handle_act_v0_9(
     auth: &AuthClaims,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    handle_act(state, auth, doc, room_act::actable_0_9).await
+    handle_act(
+        state,
+        auth,
+        doc,
+        room_act::actable_0_9,
+        room_act::is_community_type_0_8,
+    )
+    .await
+}
+
+/// `rooms/keys/act/0.10`: 0.9, with `vtc/rooms/memberships/list/0.2` among the community
+/// types, so a member reads where each of the community's rooms stands — archived,
+/// scheduled for removal, removed — and which of their admissions are `suspended`.
+pub(super) async fn handle_act_v0_10(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    handle_act(
+        state,
+        auth,
+        doc,
+        room_act::actable_0_10,
+        room_act::is_community_type_0_10,
+    )
+    .await
 }
 
 /// One `rooms/keys/act` request, against the closed table of the version it names
-/// (Recipient item 1). 0.9 extends 0.8 — the same request, response and error codes — so
-/// both are read and answered as 0.9's types; only the table differs.
+/// (Recipient item 1). 0.10 extends 0.9, which extends 0.8 — the same request, response and
+/// error codes — so all three are read and answered as 0.10's types; only the tables differ.
 async fn handle_act(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
     actable: fn(&str) -> Option<Option<&'static str>>,
+    community: fn(&str) -> bool,
 ) -> TrustTaskOutcome {
-    use vti_specs::rooms::keys::act::v0_9 as spec;
+    use vti_specs::rooms::keys::act::v0_10 as spec;
 
     if let Err(r) = super::helpers::require_capability(
         state,
@@ -220,7 +254,7 @@ async fn handle_act(
     // Item 1: the closed table, before anything is resolved. The community types are in it
     // too, with no action: they take no presentation.
     let type_uri = req.document.type_.as_str();
-    let offer = room_act::is_community_type_0_8(type_uri);
+    let offer = community(type_uri);
     let Some(action) = (if offer { Some(None) } else { actable(type_uri) }) else {
         return reject_with_code(
             &doc,
@@ -472,7 +506,7 @@ async fn complete_offer(
     room_id: Option<&str>,
     document: Value,
 ) -> Result<room_act::Completed, TrustTaskOutcome> {
-    use vti_specs::rooms::keys::act::v0_9::error_codes as codes;
+    use vti_specs::rooms::keys::act::v0_10::error_codes as codes;
 
     // Item 2b: the named `issuer`, never one picked for the caller — not the only persona
     // held, not one inferred from the offer.
@@ -1089,7 +1123,7 @@ mod tests {
                 "{out}"
             );
             assert!(out["payload"].get("expiresAt").is_none(), "{out}");
-            serde_json::from_value::<vti_specs::rooms::keys::act::v0_9::Response>(
+            serde_json::from_value::<vti_specs::rooms::keys::act::v0_10::Response>(
                 out["payload"].clone(),
             )
             .expect("a 0.3 response");
@@ -1165,7 +1199,7 @@ mod tests {
                 completed["proof"]["proofPurpose"], "authentication",
                 "{out}"
             );
-            serde_json::from_value::<vti_specs::rooms::keys::act::v0_9::Response>(
+            serde_json::from_value::<vti_specs::rooms::keys::act::v0_10::Response>(
                 out["payload"].clone(),
             )
             .expect("a 0.8 response");
@@ -1315,7 +1349,7 @@ mod tests {
             "{out}"
         );
         assert!(out["payload"].get("expiresAt").is_none(), "{out}");
-        serde_json::from_value::<vti_specs::rooms::keys::act::v0_9::Response>(
+        serde_json::from_value::<vti_specs::rooms::keys::act::v0_10::Response>(
             out["payload"].clone(),
         )
         .expect("a 0.4 response");
@@ -1393,7 +1427,7 @@ mod tests {
             out["type"].as_str().is_some_and(|t| t.starts_with(ACT_0_8)),
             "{out}"
         );
-        serde_json::from_value::<vti_specs::rooms::keys::act::v0_9::Response>(
+        serde_json::from_value::<vti_specs::rooms::keys::act::v0_10::Response>(
             out["payload"].clone(),
         )
         .expect("a 0.2 response");
@@ -1491,6 +1525,7 @@ mod tests {
                 record_retention: None,
                 last_prune: None,
                 epoch_floor: None,
+                frozen_at: None,
             },
         )
         .await
@@ -1641,6 +1676,7 @@ mod tests {
                 record_retention: None,
                 last_prune: None,
                 epoch_floor: None,
+                frozen_at: None,
             },
         )
         .await

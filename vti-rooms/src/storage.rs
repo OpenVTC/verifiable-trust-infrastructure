@@ -423,6 +423,141 @@ pub async fn set_owner(
     Ok(room)
 }
 
+/// Freeze or thaw a room ([`Room::frozen_at`]): `Some(at)` is the owner's archive
+/// (`vtc/rooms/community/archive/0.1`), `None` their unarchive.
+///
+/// Called **only on the owner's request** — a freeze is the owner's switch, never a host
+/// judgement. Bumps `updated_at` (to the freeze time, or to now on a thaw), never lowering
+/// it.
+///
+/// Idempotent: freezing a frozen room moves its `frozen_at` to the new time, thawing a room
+/// that is not frozen changes nothing a reader can see. [`AppError::NotFound`] when the
+/// room is not held.
+pub async fn set_frozen(
+    rooms: &KeyspaceHandle,
+    room_id: &str,
+    frozen_at: Option<u64>,
+) -> Result<(), AppError> {
+    let mut room = get_room(rooms, room_id).await?;
+    room.frozen_at = frozen_at;
+    room.updated_at = room.updated_at.max(frozen_at.unwrap_or_else(now_secs));
+    rooms.insert(room_key(room_id), &room).await?;
+    // Whether the room accepts writes changed (`crate::observe`).
+    crate::observe::changed();
+    Ok(())
+}
+
+fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+/// What [`purge_room_rows`] removed, by kind.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct PurgedRows {
+    /// Records, tombstones included.
+    pub records: u64,
+    /// Epoch links (rungs).
+    pub epoch_links: u64,
+    /// Relayed MLS commits.
+    pub commits: u64,
+    /// Whether a held revocation list was discarded.
+    pub revocations: bool,
+    /// Whether the `rooms:<roomId>` row itself was removed.
+    pub room: bool,
+}
+
+/// Whether `key` is exactly `<prefix><10 digits>` — an epoch-numbered row of the room
+/// whose prefix it is, and not of a room whose identifier merely *extends* that room's
+/// (`did:web:a` and `did:web:a:b` share the scan prefix `…did:web:a:`).
+fn is_epoch_row(key: &[u8], prefix: &str) -> bool {
+    key.strip_prefix(prefix.as_bytes())
+        .is_some_and(|rest| rest.len() == 10 && rest.iter().all(u8::is_ascii_digit))
+}
+
+/// Remove **every row this host's room keyspaces hold for one room**: its records
+/// (tombstones included), its epoch links and relayed MLS commits, its held revocation
+/// list, and finally the `rooms:<roomId>` row itself (`vtc/rooms/community/remove/0.1`).
+/// Blobs are [`crate::blobs::BlobHost::purge_room`]'s.
+///
+/// `epoch_links` is the keyspace both [`put_epoch_link`] and [`put_commit`] are given —
+/// each host stores a room's commits beside its rungs ([`crate::ROOM_EPOCH_LINKS_KEYSPACE`]).
+///
+/// # Idempotent and resumable
+///
+/// Every step removes what is there and tolerates what is not, so a purge that died
+/// part-way is finished by calling it again, and a purge of a room already gone removes
+/// nothing and succeeds. The room row goes **last**: while any of the room's data remains,
+/// the row that names it does too, so an interrupted purge never leaves rows no listing
+/// could find the room for.
+///
+/// # Room-exact
+///
+/// A scan prefix ends in `:`, but a room identifier is a DID and may itself contain `:`,
+/// so `room_records:did:web:a:` also covers the rows of `did:web:a:b`. Each row is therefore
+/// checked against this room before it is removed: a record by the key it carries, an
+/// epoch row by its ten-digit suffix.
+pub async fn purge_room_rows(
+    rooms: &KeyspaceHandle,
+    records: &KeyspaceHandle,
+    epoch_links: &KeyspaceHandle,
+    revocations: &KeyspaceHandle,
+    room_id: &str,
+) -> Result<PurgedRows, AppError> {
+    let mut out = PurgedRows::default();
+
+    for (k, v) in records.prefix_iter_raw(record_prefix(room_id)).await? {
+        // A row that is not a record of this room is not this purge's to remove. One that
+        // cannot be decoded cannot be shown to be this room's, so the purge fails on it
+        // rather than guessing.
+        let record: Record = serde_json::from_slice(&v).map_err(|e| {
+            AppError::Internal(format!(
+                "decode a record of `{room_id}` while purging it: {e}"
+            ))
+        })?;
+        if k != record_key(room_id, &record.key).as_bytes() {
+            continue;
+        }
+        records.remove(k).await?;
+        out.records += 1;
+    }
+
+    let links = epoch_link_prefix(room_id);
+    for k in epoch_links.prefix_keys(links.clone()).await? {
+        if is_epoch_row(&k, &links) {
+            epoch_links.remove(k).await?;
+            out.epoch_links += 1;
+        }
+    }
+
+    let commits = format!("{COMMITS_PREFIX}{room_id}:");
+    for k in epoch_links.prefix_keys(commits.clone()).await? {
+        if is_epoch_row(&k, &commits) {
+            epoch_links.remove(k).await?;
+            out.commits += 1;
+        }
+    }
+
+    // By key rather than by `held`, so a list this host can no longer decode is still
+    // discarded rather than stalling the purge for ever.
+    let revocation_key = format!("{}{room_id}", crate::revocation::REVOCATIONS_PREFIX);
+    if revocations.get_raw(revocation_key).await?.is_some() {
+        crate::revocation::discard(revocations, room_id).await?;
+        out.revocations = true;
+    }
+
+    // Last, so the room stays nameable until everything else is gone.
+    if rooms.get_raw(room_key(room_id)).await?.is_some() {
+        rooms.remove(room_key(room_id)).await?;
+        out.room = true;
+        // A room left the host's list (`crate::observe`).
+        crate::observe::changed();
+    }
+    Ok(out)
+}
+
 /// Write a record, assigning it the room's next version.
 ///
 /// `expected_version` is an optional precondition:
@@ -1131,6 +1266,7 @@ mod tests {
             record_retention: None,
             last_prune: None,
             epoch_floor: None,
+            frozen_at: None,
         }
     }
 
@@ -2057,6 +2193,7 @@ mod tests {
             record_retention: None,
             last_prune: None,
             epoch_floor: None,
+            frozen_at: None,
             ..room(id, visibility)
         }
     }
@@ -2402,5 +2539,228 @@ mod relay_and_prune_tests {
             next.iter().map(|c| c.epoch).collect::<Vec<_>>(),
             vec![4, 5, 6]
         );
+    }
+}
+
+#[cfg(test)]
+mod purge_and_freeze_tests {
+    use super::*;
+    use crate::Visibility;
+    use crate::wire::EpochLink;
+    use vti_common::config::StoreConfig;
+    use vti_common::store::Store;
+
+    /// A room, and one whose identifier extends it: the scan prefix of the first
+    /// (`…did:web:a:`) also covers the second's rows.
+    const ROOM: &str = "did:web:a";
+    const LONGER: &str = "did:web:a:b";
+
+    struct Ks {
+        _dir: tempfile::TempDir,
+        rooms: KeyspaceHandle,
+        records: KeyspaceHandle,
+        links: KeyspaceHandle,
+        revs: KeyspaceHandle,
+    }
+
+    fn open() -> Ks {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&StoreConfig {
+            data_dir: dir.path().to_path_buf(),
+        })
+        .unwrap();
+        Ks {
+            rooms: store.keyspace(crate::ROOMS_KEYSPACE).unwrap(),
+            records: store.keyspace(crate::ROOM_RECORDS_KEYSPACE).unwrap(),
+            links: store.keyspace(crate::ROOM_EPOCH_LINKS_KEYSPACE).unwrap(),
+            revs: store.keyspace(crate::ROOM_REVOCATIONS_KEYSPACE).unwrap(),
+            _dir: dir,
+        }
+    }
+
+    fn room(id: &str) -> Room {
+        Room {
+            room_id: id.into(),
+            owner_did: "did:key:zOwner".into(),
+            visibility: Visibility::Open,
+            retention_policy: crate::RetentionPolicy::Chained,
+            anchor_cadence: Default::default(),
+            epoch: 1,
+            next_version: 1,
+            retention_days: 90,
+            epoch_expires_at: None,
+            created_at: 0,
+            updated_at: 5,
+            mirror_of: None,
+            record_retention: None,
+            last_prune: None,
+            epoch_floor: None,
+            frozen_at: None,
+        }
+    }
+
+    fn record(key: &str) -> Record {
+        Record {
+            key: key.into(),
+            version: 0,
+            epoch: None,
+            status: RecordStatus::Active,
+            pinned: false,
+            sealed: None,
+            nonce: None,
+            sealed_version: None,
+            cleartext: Some(serde_json::json!({ "body": "hello" })),
+            author: Some("did:key:zBob".into()),
+            updated_at: 0,
+        }
+    }
+
+    async fn populate(ks: &Ks, id: &str) {
+        create_room(&ks.rooms, &room(id)).await.unwrap();
+        for (i, key) in ["k1", "k2", "b:k3"].iter().enumerate() {
+            put_record(&ks.rooms, &ks.records, id, record(key), None, i as u64 + 1)
+                .await
+                .unwrap();
+        }
+        for e in 2..=3 {
+            let link = EpochLink {
+                epoch: e,
+                wrapped: "d3JhcHBlZA".into(),
+                nonce: "bm9uY2U".into(),
+            };
+            put_epoch_link(&ks.links, id, &link).await.unwrap();
+            put_commit(&ks.links, id, e, "Y29tbWl0").await.unwrap();
+        }
+        ks.revs
+            .insert_raw(
+                format!("{}{id}", crate::revocation::REVOCATIONS_PREFIX),
+                b"{}".to_vec(),
+            )
+            .await
+            .unwrap();
+    }
+
+    async fn purge(ks: &Ks, id: &str) -> PurgedRows {
+        purge_room_rows(&ks.rooms, &ks.records, &ks.links, &ks.revs, id)
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_purge_removes_every_row_of_the_room_and_none_of_a_longer_ids() {
+        let ks = open();
+        populate(&ks, ROOM).await;
+        populate(&ks, LONGER).await;
+
+        let out = purge(&ks, ROOM).await;
+        assert_eq!(
+            out,
+            PurgedRows {
+                records: 3,
+                epoch_links: 2,
+                commits: 2,
+                revocations: true,
+                room: true,
+            }
+        );
+        assert!(matches!(
+            get_room(&ks.rooms, ROOM).await,
+            Err(AppError::NotFound(_))
+        ));
+        // By key: a listing of `did:web:a` scans `…did:web:a:` and so would show the
+        // longer room's rows, which is the point of keeping them.
+        for k in ["k1", "k2", "b:k3"] {
+            assert!(get_record(&ks.records, ROOM, k).await.is_err(), "{k}");
+        }
+        for e in 2..=3u32 {
+            assert!(
+                ks.links
+                    .get_raw(epoch_link_key(ROOM, e))
+                    .await
+                    .unwrap()
+                    .is_none()
+            );
+            assert!(
+                ks.links
+                    .get_raw(commit_key(ROOM, e))
+                    .await
+                    .unwrap()
+                    .is_none()
+            );
+        }
+        assert!(
+            ks.revs
+                .get_raw(format!("{}{ROOM}", crate::revocation::REVOCATIONS_PREFIX))
+                .await
+                .unwrap()
+                .is_none()
+        );
+
+        // The room whose identifier extends it keeps everything.
+        get_room(&ks.rooms, LONGER).await.unwrap();
+        for k in ["k1", "k2", "b:k3"] {
+            get_record(&ks.records, LONGER, k).await.unwrap();
+        }
+        for e in 2..=3u32 {
+            assert!(
+                ks.links
+                    .get_raw(epoch_link_key(LONGER, e))
+                    .await
+                    .unwrap()
+                    .is_some()
+            );
+            assert!(
+                ks.links
+                    .get_raw(commit_key(LONGER, e))
+                    .await
+                    .unwrap()
+                    .is_some()
+            );
+        }
+        assert!(
+            ks.revs
+                .get_raw(format!("{}{LONGER}", crate::revocation::REVOCATIONS_PREFIX))
+                .await
+                .unwrap()
+                .is_some()
+        );
+    }
+
+    #[tokio::test]
+    async fn a_purge_is_idempotent_and_resumes_after_an_interruption() {
+        let ks = open();
+        populate(&ks, ROOM).await;
+        // Interrupted after the records went: the room row is still there to name it.
+        for r in list_records(&ks.records, ROOM, None, None).await.unwrap() {
+            purge_record(&ks.records, ROOM, &r.key).await.unwrap();
+        }
+        let out = purge(&ks, ROOM).await;
+        assert_eq!(out.records, 0);
+        assert!(out.room && out.revocations && out.epoch_links == 2);
+
+        assert_eq!(purge(&ks, ROOM).await, PurgedRows::default());
+        assert_eq!(purge(&ks, "did:web:never").await, PurgedRows::default());
+    }
+
+    #[tokio::test]
+    async fn freezing_and_thawing_a_room_round_trips_and_bumps_updated_at() {
+        let ks = open();
+        create_room(&ks.rooms, &room(ROOM)).await.unwrap();
+
+        set_frozen(&ks.rooms, ROOM, Some(1_000)).await.unwrap();
+        let frozen = get_room(&ks.rooms, ROOM).await.unwrap();
+        assert_eq!(frozen.frozen_at, Some(1_000));
+        assert!(frozen.is_frozen());
+        assert_eq!(frozen.updated_at, 1_000);
+
+        set_frozen(&ks.rooms, ROOM, None).await.unwrap();
+        let thawed = get_room(&ks.rooms, ROOM).await.unwrap();
+        assert_eq!(thawed.frozen_at, None);
+        assert!(thawed.updated_at >= 1_000);
+
+        assert!(matches!(
+            set_frozen(&ks.rooms, "did:web:never", Some(1)).await,
+            Err(AppError::NotFound(_))
+        ));
     }
 }

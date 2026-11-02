@@ -34,6 +34,11 @@
 //! the VTA advanced the room. An unknown outcome is said to be one (`keyHolderUnavailable`,
 //! `admissionPending`), and the VTA settles its own pending advance on the next request.
 
+// The versions before `vtc/_shared/0.5/community-room` — `get`/`list` 0.3, `members/list`
+// and `memberships/list` 0.1 — are superseded and still served on purpose, for surfaces
+// not yet moved; their generated types are marked deprecated.
+#![allow(deprecated)]
+
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -49,10 +54,14 @@ use vti_specs::rooms::owner::{
 };
 use vti_specs::vault::credentials::receive::v0_1 as vault_receive;
 use vti_specs::vtc::rooms::community::{
-    create::v0_4 as create, get::v0_3 as get, list::v0_3 as list, members::add::v0_1 as add,
-    members::list::v0_1 as members_list, members::remove::v0_2 as remove, update::v0_3 as update,
+    archive::v0_1 as archive, create::v0_4 as create, get::v0_3 as get, get::v0_4 as get_v4,
+    list::v0_3 as list, list::v0_4 as list_v4, members::add::v0_2 as add,
+    members::list::v0_1 as members_list, members::list::v0_2 as members_list_v2,
+    members::remove::v0_2 as remove, removal::cancel::v0_1 as removal_cancel,
+    remove::v0_1 as remove_room, unarchive::v0_1 as unarchive, update::v0_3 as update,
 };
 use vti_specs::vtc::rooms::memberships::list::v0_1 as memberships_list;
+use vti_specs::vtc::rooms::memberships::list::v0_2 as memberships_list_v2;
 use vti_specs::vtc::rooms::offers::{accept::v0_1 as accept, list::v0_4 as offers_list};
 
 use super::helpers::{TrustTaskOutcome, app_error_to_reject, reject_with, task_error_to_reject};
@@ -90,19 +99,39 @@ pub(crate) const MEMBERS_LIST_TYPE: &str = <members_list::Payload as Payload>::T
 pub(crate) const OFFERS_LIST_TYPE: &str = <offers_list::Payload as Payload>::TYPE_URI;
 pub(crate) const OFFERS_ACCEPT_TYPE: &str = <accept::Payload as Payload>::TYPE_URI;
 pub(crate) const MEMBERSHIPS_LIST_TYPE: &str = <memberships_list::Payload as Payload>::TYPE_URI;
+/// 0.4 / 0.2: each room's state in its owner's lifecycle, and the `suspended` member state
+/// (`vtc/_shared/0.5/community-room`).
+pub(crate) const LIST_V4_TYPE: &str = <list_v4::Payload as Payload>::TYPE_URI;
+pub(crate) const GET_V4_TYPE: &str = <get_v4::Payload as Payload>::TYPE_URI;
+pub(crate) const MEMBERS_LIST_V2_TYPE: &str = <members_list_v2::Payload as Payload>::TYPE_URI;
+pub(crate) const MEMBERSHIPS_LIST_V2_TYPE: &str =
+    <memberships_list_v2::Payload as Payload>::TYPE_URI;
+/// Archiving and removing a room ([`crate::rooms::community_lifecycle`]).
+pub(crate) const ARCHIVE_TYPE: &str = <archive::Payload as Payload>::TYPE_URI;
+pub(crate) const UNARCHIVE_TYPE: &str = <unarchive::Payload as Payload>::TYPE_URI;
+pub(crate) const REMOVE_ROOM_TYPE: &str = <remove_room::Payload as Payload>::TYPE_URI;
+pub(crate) const REMOVAL_CANCEL_TYPE: &str = <removal_cancel::Payload as Payload>::TYPE_URI;
 
 /// Every URI [`dispatch`] routes.
 pub(crate) const URIS: &[&str] = &[
     CREATE_TYPE,
     LIST_TYPE,
+    LIST_V4_TYPE,
     GET_TYPE,
+    GET_V4_TYPE,
     UPDATE_TYPE,
     MEMBERS_ADD_TYPE,
     MEMBERS_REMOVE_TYPE,
     MEMBERS_LIST_TYPE,
+    MEMBERS_LIST_V2_TYPE,
     OFFERS_LIST_TYPE,
     OFFERS_ACCEPT_TYPE,
     MEMBERSHIPS_LIST_TYPE,
+    MEMBERSHIPS_LIST_V2_TYPE,
+    ARCHIVE_TYPE,
+    UNARCHIVE_TYPE,
+    REMOVE_ROOM_TYPE,
+    REMOVAL_CANCEL_TYPE,
 ];
 
 const OWNER_GROUP_CREATE: &str = <owner_group_create::Payload as Payload>::TYPE_URI;
@@ -130,15 +159,23 @@ pub(super) async fn dispatch(
 ) -> Option<TrustTaskOutcome> {
     Some(match type_uri {
         CREATE_TYPE => handle_create(state, ctx, doc).await,
-        LIST_TYPE => handle_list(state, ctx, doc).await,
-        GET_TYPE => handle_get(state, ctx, doc).await,
+        LIST_TYPE => handle_list(state, ctx, doc, false).await,
+        LIST_V4_TYPE => handle_list(state, ctx, doc, true).await,
+        GET_TYPE => handle_get(state, ctx, doc, false).await,
+        GET_V4_TYPE => handle_get(state, ctx, doc, true).await,
         UPDATE_TYPE => handle_update(state, ctx, doc).await,
         MEMBERS_ADD_TYPE => handle_members_add(state, ctx, doc).await,
         MEMBERS_REMOVE_TYPE => handle_members_remove(state, ctx, doc).await,
-        MEMBERS_LIST_TYPE => handle_members_list(state, ctx, doc).await,
+        MEMBERS_LIST_TYPE => handle_members_list(state, ctx, doc, false).await,
+        MEMBERS_LIST_V2_TYPE => handle_members_list(state, ctx, doc, true).await,
         OFFERS_LIST_TYPE => handle_offers_list(state, ctx, doc).await,
         OFFERS_ACCEPT_TYPE => handle_offers_accept(state, ctx, doc).await,
-        MEMBERSHIPS_LIST_TYPE => handle_memberships_list(state, ctx, doc).await,
+        MEMBERSHIPS_LIST_TYPE => handle_memberships_list(state, ctx, doc, false).await,
+        MEMBERSHIPS_LIST_V2_TYPE => handle_memberships_list(state, ctx, doc, true).await,
+        ARCHIVE_TYPE => handle_archive(state, ctx, doc).await,
+        UNARCHIVE_TYPE => handle_unarchive(state, ctx, doc).await,
+        REMOVE_ROOM_TYPE => handle_remove_room(state, ctx, doc).await,
+        REMOVAL_CANCEL_TYPE => handle_removal_cancel(state, ctx, doc).await,
         _ => return None,
     })
 }
@@ -300,14 +337,66 @@ async fn owned(
     }
 }
 
+/// The task's `wrongState` refusal for a room that is not `active`, with `details.state`.
+fn not_active(doc: &TrustTask<Value>, room: &OwnedRoom, code: &str) -> Option<TrustTaskOutcome> {
+    use crate::rooms::community_lifecycle::RoomState;
+    let state = room.status.state;
+    (state != RoomState::Active).then(|| {
+        refuse(
+            doc,
+            code,
+            format!(
+                "room `{}` is {}: it admits no one{}",
+                room.room_id,
+                match state {
+                    RoomState::Archived => "archived",
+                    RoomState::RemovalScheduled => "scheduled for removal",
+                    RoomState::Purging => "being purged",
+                    _ => "removed",
+                },
+                if state == RoomState::Archived {
+                    " until it is unarchived (`vtc/rooms/community/unarchive`)"
+                } else {
+                    ""
+                }
+            ),
+            Some(json!({ "state": state.as_str() })),
+        )
+    })
+}
+
 /// The `CommunityRoomV2` of `vtc/_shared/0.3/community-room`: the room as its host
 /// records it (instants as RFC 3339 strings), its label, description and tags, and who
 /// last changed them.
 async fn community_room(state: &AppState, room: &OwnedRoom) -> Result<Value, AppError> {
-    let hosted = crate::routes::rooms::hosted_room(state, &room.room_id).await?;
-    let (admitted, offered) = state.community_rooms.counts(&room.room_id).await?;
+    community_room_shaped(state, room, false).await
+}
+
+/// The `CommunityRoomV3` of `vtc/_shared/0.5/community-room`: `CommunityRoomV2`, the room's
+/// `status` in its owner's lifecycle, and its `suspended` admissions counted apart. A purged
+/// room's host record is the snapshot taken as its purge began.
+pub(crate) async fn community_room_v3(
+    state: &AppState,
+    room: &OwnedRoom,
+) -> Result<Value, AppError> {
+    community_room_shaped(state, room, true).await
+}
+
+async fn community_room_shaped(
+    state: &AppState,
+    room: &OwnedRoom,
+    v3: bool,
+) -> Result<Value, AppError> {
+    let hosted = match &room.hosted_snapshot {
+        Some(snapshot) if room.status.state.purged_or_purging() => snapshot.clone(),
+        _ => serde_json::to_value(crate::routes::rooms::hosted_room(state, &room.room_id).await?)?,
+    };
+    let (admitted, offered, suspended) = state.community_rooms.counts_v2(&room.room_id).await?;
+    // The shapes before 0.5 have no `suspended`: a suspended admission is still one.
+    let admitted = if v3 { admitted } else { admitted + suspended };
     let config = match state.room_storage.assignment(&room.room_id).await? {
         Some(a) => Some(a.config_id),
+        None if room.status.state.purged_or_purging() => None,
         None => state.room_storage.default_id().await?,
     };
     let mut v = json!({
@@ -331,6 +420,12 @@ async fn community_room(state: &AppState, room: &OwnedRoom) -> Result<Value, App
     if let (Some(at), Some(by)) = (&room.details_updated_at, &room.details_updated_by) {
         v["detailsUpdatedAt"] = json!(at);
         v["detailsUpdatedBy"] = json!(by);
+    }
+    if v3 {
+        v["status"] = room.status.wire(suspended);
+        if suspended > 0 {
+            v["suspended"] = json!(suspended);
+        }
     }
     Ok(v)
 }
@@ -667,6 +762,7 @@ async fn handle_create(
         record_retention: None,
         last_prune: None,
         epoch_floor: None,
+        frozen_at: None,
     };
     if let Err(e) = vti_rooms::storage::create_room(&state.rooms_ks, &room).await {
         return app_error_to_reject(&doc, &e);
@@ -699,6 +795,8 @@ async fn handle_create(
         tags: checked.tags.clone(),
         details_updated_at: None,
         details_updated_by: None,
+        status: Default::default(),
+        hosted_snapshot: None,
     };
     if let Err(e) = state.community_rooms.put_room(&owned).await {
         return app_error_to_reject(&doc, &e);
@@ -910,30 +1008,67 @@ async fn equip(
 
 // ─── vtc/rooms/community/{list,get} ──────────────────────────────────────
 
+/// `vtc/rooms/community/list` — `0.3` (`CommunityRoomV2`) and `0.4` (`CommunityRoomV3`,
+/// filtered by `states`). `0.3` has no way to say a room was purged, so it lists none that
+/// is being or has been.
 async fn handle_list(
     state: &AppState,
     ctx: &JoinAuthCtx,
     doc: TrustTask<Value>,
+    v4: bool,
 ) -> TrustTaskOutcome {
+    use crate::rooms::community_lifecycle::RoomState;
     if let Err(reject) = capable_signer(state, ctx, &doc, Capability::RoomsManage, None).await {
         return reject;
     }
-    let parsed = parse_spec_payload::<list::Payload>(&doc).map(|p| {
-        (
-            p.cursor.map(|c| c.to_string()),
-            p.limit,
-            p.tag.map(|t| t.to_string()),
-        )
-    });
-    let (cursor, limit, tag) = match parsed {
+    let parsed = if v4 {
+        parse_spec_payload::<list_v4::Payload>(&doc).map(|p| {
+            let states: Option<Vec<String>> = p.states.map(|s| {
+                s.iter()
+                    .map(|x| {
+                        serde_json::to_value(x)
+                            .ok()
+                            .and_then(|v| v.as_str().map(str::to_string))
+                            .unwrap_or_default()
+                    })
+                    .collect()
+            });
+            (
+                p.cursor.map(|c| c.to_string()),
+                p.limit,
+                p.tag.map(|t| t.to_string()),
+                states,
+            )
+        })
+    } else {
+        parse_spec_payload::<list::Payload>(&doc).map(|p| {
+            (
+                p.cursor.map(|c| c.to_string()),
+                p.limit,
+                p.tag.map(|t| t.to_string()),
+                None,
+            )
+        })
+    };
+    let (cursor, limit, tag, states) = match parsed {
         Ok(p) => p,
         Err(reject) => return reject,
+    };
+    let shown = |r: &OwnedRoom| -> bool {
+        let state = r.status.state;
+        match &states {
+            Some(wanted) => wanted.iter().any(|w| w == state.as_str()),
+            // 0.4 without `states`: every state but `removed`.
+            None if v4 => state != RoomState::Removed,
+            None => !state.purged_or_purging(),
+        }
     };
     let rooms = match state.community_rooms.rooms().await {
         // Item 4: only the rooms carrying `tag`, exact strings, paged within the filter.
         Ok(r) => r
             .into_iter()
             .filter(|r| tag.as_ref().is_none_or(|t| r.tags.contains(t)))
+            .filter(|r| shown(r))
             .collect::<Vec<_>>(),
         Err(e) => return app_error_to_reject(&doc, &e),
     };
@@ -950,10 +1085,14 @@ async fn handle_list(
     };
     let listed: Vec<String> = rooms.iter().map(|r| r.room_id.clone()).collect();
     let mut items = Vec::with_capacity(rooms.len());
+    let mut lifecycle = serde_json::Map::new();
     for room in &rooms {
-        match community_room(state, room).await {
+        match community_room_shaped(state, room, v4).await {
             Ok(v) => items.push(v),
             Err(e) => return app_error_to_reject(&doc, &e),
+        }
+        if let Some(x) = room.status.ext() {
+            lifecycle.insert(room.room_id.clone(), x);
         }
     }
     let mut body = json!({ "items": items });
@@ -997,30 +1136,65 @@ async fn handle_list(
         Ok(profiles) => body["ext"]["org.openvtc"]["roomProfile"] = profiles,
         Err(e) => return app_error_to_reject(&doc, &e),
     }
-    respond::<list::Response>(&doc, body)
+    // What a room's lifecycle shows that `RoomStatus` has no member for: a failing restore,
+    // a pending change's attempts, what became of a purged room's DID.
+    if !lifecycle.is_empty() {
+        body["ext"]["org.openvtc"]["lifecycle"] = Value::Object(lifecycle);
+    }
+    if v4 {
+        respond::<list_v4::Response>(&doc, body)
+    } else {
+        respond::<list::Response>(&doc, body)
+    }
 }
 
+/// `vtc/rooms/community/get` — `0.3` and `0.4`. `0.3` answers a purged room `notFound`: it
+/// has no way to say so.
 async fn handle_get(
     state: &AppState,
     ctx: &JoinAuthCtx,
     doc: TrustTask<Value>,
+    v4: bool,
 ) -> TrustTaskOutcome {
     use crate::rooms::community::codes as c;
     if let Err(reject) = capable_signer(state, ctx, &doc, Capability::RoomsManage, None).await {
         return reject;
     }
-    let room_id = match parse_spec_payload::<get::Payload>(&doc).map(|p| p.room_id.to_string()) {
+    let room_id = if v4 {
+        parse_spec_payload::<get_v4::Payload>(&doc).map(|p| p.room_id.to_string())
+    } else {
+        parse_spec_payload::<get::Payload>(&doc).map(|p| p.room_id.to_string())
+    };
+    let room_id = match room_id {
         Ok(r) => r,
         Err(reject) => return reject,
     };
-    let room = match owned(state, &doc, &room_id, c::GET_NOT_FOUND).await {
+    let not_found = if v4 {
+        c::GET_V4_NOT_FOUND
+    } else {
+        c::GET_NOT_FOUND
+    };
+    let room = match owned(state, &doc, &room_id, not_found).await {
+        Ok(r) if !v4 && r.status.state.purged_or_purging() => {
+            return refuse(
+                &doc,
+                not_found,
+                format!(
+                    "room `{room_id}` was removed; `vtc/rooms/community/get/0.4` reads its record"
+                ),
+                None,
+            );
+        }
         Ok(r) => r,
         Err(reject) => return reject,
     };
-    let mut body = match community_room(state, &room).await {
+    let mut body = match community_room_shaped(state, &room, v4).await {
         Ok(room) => json!({ "room": room }),
         Err(e) => return app_error_to_reject(&doc, &e),
     };
+    if let Some(x) = room.status.ext() {
+        body["ext"]["org.openvtc"]["lifecycle"] = x;
+    }
     // How the renewal of the community's own authority stands (`rooms::community_renewal`).
     match crate::rooms::community_renewal::room_ext(state, &room.room_id).await {
         Ok(Some(renewal)) => body["ext"]["org.openvtc"]["authorityRenewal"] = renewal,
@@ -1037,7 +1211,11 @@ async fn handle_get(
         Ok(None) => {}
         Err(e) => return app_error_to_reject(&doc, &e),
     }
-    respond::<get::Response>(&doc, body)
+    if v4 {
+        respond::<get_v4::Response>(&doc, body)
+    } else {
+        respond::<get::Response>(&doc, body)
+    }
 }
 
 // ─── vtc/rooms/community/update ──────────────────────────────────────────
@@ -1086,6 +1264,14 @@ async fn handle_update(
     let guard = state.community_rooms.record_lock().await;
     // Item 2: a room the community only hosts is `notFound`, and nothing is kept for it.
     let mut room = match owned(state, &doc, &room_id, c::UPDATE_NOT_FOUND).await {
+        Ok(r) if r.status.state.purged_or_purging() => {
+            return refuse(
+                &doc,
+                c::UPDATE_NOT_FOUND,
+                format!("room `{room_id}` was removed: nothing of it is left to change"),
+                None,
+            );
+        }
         Ok(r) => r,
         Err(reject) => return reject,
     };
@@ -1207,6 +1393,10 @@ async fn handle_members_add(
         Ok(r) => r,
         Err(reject) => return reject,
     };
+    // 0.2: an archived room admits no one, and a room on its way out never will again.
+    if let Some(reject) = not_active(&doc, &room, c::ADD_WRONG_STATE) {
+        return reject;
+    }
     // Item 2: a room the community owns is a community resource.
     match crate::member_portal::active_member(state, &member).await {
         Ok(Some(_)) => {}
@@ -1229,6 +1419,23 @@ async fn handle_members_add(
         );
     };
     let _guard = state.community_rooms.lock().await;
+    // Archived since it was read, under the lock every change of state takes.
+    match state.community_rooms.room(&room_id).await {
+        Ok(Some(r)) => {
+            if let Some(reject) = not_active(&doc, &r, c::ADD_WRONG_STATE) {
+                return reject;
+            }
+        }
+        Ok(None) => {
+            return refuse(
+                &doc,
+                c::ADD_NOT_FOUND,
+                format!("this community owns no room `{room_id}`"),
+                None,
+            );
+        }
+        Err(e) => return app_error_to_reject(&doc, &e),
+    }
     // Item 3.
     match state.community_rooms.member(&room_id, &member).await {
         Ok(Some(r)) if r.state != MemberRecord::REMOVED => {
@@ -1284,6 +1491,7 @@ async fn handle_members_add(
         offered_at: rfc3339(now()),
         admitted_at: None,
         removed_at: None,
+        suspended_at: None,
         credentials: Some(credentials),
         welcome: None,
         admitted_epoch: None,
@@ -1300,7 +1508,7 @@ async fn handle_members_add(
     row.actions = actions;
     row.reason = Some(checked.reason.to_string());
     audit(state, &actor.did, row).await;
-    respond::<add::Response>(&doc, json!({ "member": record.wire() }))
+    respond::<add::Response>(&doc, json!({ "member": record.wire_v2() }))
 }
 
 /// The invitation, membership and authority credentials for `member`.
@@ -1400,6 +1608,14 @@ async fn handle_members_remove(
     let reason = checked.reason.to_string();
 
     let room = match owned(state, &doc, &room_id, c::REMOVE_NOT_FOUND).await {
+        Ok(r) if r.status.state.purged_or_purging() => {
+            return refuse(
+                &doc,
+                c::REMOVE_NOT_FOUND,
+                format!("room `{room_id}` was removed: nothing of it is left to change"),
+                None,
+            );
+        }
         Ok(r) => r,
         Err(reject) => return reject,
     };
@@ -1435,7 +1651,11 @@ async fn handle_members_remove(
     let withdrawn = record.state == MemberRecord::OFFERED;
     let mut epoch = None;
     let mut revocation: Option<(Value, String)> = None;
-    if !(withdrawn && room.visibility == "private") {
+    // A room scheduled for removal was reset: the member's credentials are withdrawn
+    // already and are never restored, so nothing is asked of the VTA
+    // (`vtc/rooms/community/remove/0.1`).
+    let closed_for_good = room.status.state.withdrew_everyone_for_good();
+    if !closed_for_good && !(withdrawn && room.visibility == "private") {
         let Some(holder) = state.community_rooms.key_holder() else {
             return refuse(
                 &doc,
@@ -1545,28 +1765,61 @@ async fn handle_members_remove(
     respond::<remove::Response>(&doc, body)
 }
 
+/// `vtc/rooms/community/members/list` — `0.1` (`RoomMember`, where a suspended admission
+/// reads as `admitted`) and `0.2` (`RoomMemberV2`).
 async fn handle_members_list(
     state: &AppState,
     ctx: &JoinAuthCtx,
     doc: TrustTask<Value>,
+    v2: bool,
 ) -> TrustTaskOutcome {
     use crate::rooms::community::codes as c;
     if let Err(reject) = capable_signer(state, ctx, &doc, Capability::RoomsManage, None).await {
         return reject;
     }
-    let checked: members_list::Payload = match parse_spec_payload(&doc) {
+    let parsed = if v2 {
+        parse_spec_payload::<members_list_v2::Payload>(&doc).map(|p| {
+            (
+                p.room_id.to_string(),
+                p.state.map(|s| s.to_string()),
+                p.cursor.map(|c| c.to_string()),
+                p.limit,
+            )
+        })
+    } else {
+        parse_spec_payload::<members_list::Payload>(&doc).map(|p| {
+            (
+                p.room_id.to_string(),
+                p.state.map(|s| s.to_string()),
+                p.cursor.map(|c| c.to_string()),
+                p.limit,
+            )
+        })
+    };
+    let (room_id, want, cursor, limit) = match parsed {
         Ok(p) => p,
         Err(reject) => return reject,
     };
-    let room_id = checked.room_id.to_string();
-    if let Err(reject) = owned(state, &doc, &room_id, c::MEMBERS_LIST_NOT_FOUND).await {
+    let not_found = if v2 {
+        c::MEMBERS_LIST_V2_NOT_FOUND
+    } else {
+        c::MEMBERS_LIST_NOT_FOUND
+    };
+    if let Err(reject) = owned(state, &doc, &room_id, not_found).await {
         return reject;
     }
-    let want = checked.state.map(|s| s.to_string());
+    // As each version names it: 0.1 has no `suspended`, so its `admitted` takes them in.
+    let shown_state = |m: &MemberRecord| -> String {
+        if !v2 && m.state == MemberRecord::SUSPENDED {
+            MemberRecord::ADMITTED.to_string()
+        } else {
+            m.state.clone()
+        }
+    };
     let members = match state.community_rooms.members(&room_id).await {
         Ok(m) => m
             .into_iter()
-            .filter(|m| want.as_deref().is_none_or(|s| m.state == s))
+            .filter(|m| want.as_deref().is_none_or(|s| shown_state(m) == s))
             .collect::<Vec<_>>(),
         Err(e) => return app_error_to_reject(&doc, &e),
     };
@@ -1575,13 +1828,17 @@ async fn handle_members_list(
         members,
         |m| m.member.clone(),
         MEMBERS_CURSOR,
-        checked.cursor.as_ref().map(|c| c.as_str()),
-        checked.limit,
+        cursor.as_deref(),
+        limit,
     ) {
         Ok(p) => p,
         Err(reject) => return reject,
     };
-    let mut body = json!({ "items": members.iter().map(MemberRecord::wire).collect::<Vec<_>>() });
+    let items: Vec<Value> = members
+        .iter()
+        .map(|m| if v2 { m.wire_v2() } else { m.wire() })
+        .collect();
+    let mut body = json!({ "items": items });
     if let Some(n) = next {
         body["nextCursor"] = json!(n);
     }
@@ -1592,7 +1849,11 @@ async fn handle_members_list(
         Ok(None) => {}
         Err(e) => return app_error_to_reject(&doc, &e),
     }
-    respond::<members_list::Response>(&doc, body)
+    if v2 {
+        respond::<members_list_v2::Response>(&doc, body)
+    } else {
+        respond::<members_list::Response>(&doc, body)
+    }
 }
 
 // ─── vtc/rooms/offers/* — the member's half ──────────────────────────────
@@ -1748,17 +2009,31 @@ async fn handle_offers_list(
 /// admissions to the rooms it owns, in every state, so that every surface the member uses
 /// — the member portal through their wallet, `pnm`, OpenVTC — shows the same rooms in the
 /// same state. The same record `offers/accept` writes (item 4), never a credential.
+/// `vtc/rooms/memberships/list` — `0.1` and `0.2` (with each room's own state).
 async fn handle_memberships_list(
     state: &AppState,
     ctx: &JoinAuthCtx,
     doc: TrustTask<Value>,
+    v2: bool,
 ) -> TrustTaskOutcome {
     use crate::rooms::community::codes as c;
-    let signer = match active_signer(state, ctx, &doc, c::MEMBERSHIPS_LIST_NOT_A_MEMBER).await {
+    let not_a_member = if v2 {
+        c::MEMBERSHIPS_LIST_V2_NOT_A_MEMBER
+    } else {
+        c::MEMBERSHIPS_LIST_NOT_A_MEMBER
+    };
+    let signer = match active_signer(state, ctx, &doc, not_a_member).await {
         Ok(s) => s,
         Err(reject) => return reject,
     };
-    let checked: memberships_list::Payload = match parse_spec_payload(&doc) {
+    let parsed = if v2 {
+        parse_spec_payload::<memberships_list_v2::Payload>(&doc)
+            .map(|p| (p.cursor.map(|c| c.to_string()), p.limit))
+    } else {
+        parse_spec_payload::<memberships_list::Payload>(&doc)
+            .map(|p| (p.cursor.map(|c| c.to_string()), p.limit))
+    };
+    let (cursor, limit) = match parsed {
         Ok(p) => p,
         Err(reject) => return reject,
     };
@@ -1785,8 +2060,8 @@ async fn handle_memberships_list(
         records,
         |r| r.room_id.clone(),
         MEMBERSHIPS_CURSOR,
-        checked.cursor.as_ref().map(|c| c.as_str()),
-        checked.limit,
+        cursor.as_deref(),
+        limit,
     ) {
         Ok(p) => p,
         Err(reject) => return reject,
@@ -1798,17 +2073,35 @@ async fn handle_memberships_list(
             Ok(None) => continue,
             Err(e) => return app_error_to_reject(&doc, &e),
         };
-        items.push(membership(&host, &room, r, at));
+        items.push(membership(&host, &room, r, at, v2));
     }
     let mut body = json!({ "items": items });
     if let Some(n) = next {
         body["nextCursor"] = json!(n);
     }
-    respond::<memberships_list::Response>(&doc, body)
+    if v2 {
+        respond::<memberships_list_v2::Response>(&doc, body)
+    } else {
+        respond::<memberships_list::Response>(&doc, body)
+    }
 }
 
 /// The `RoomMembership` of `vtc/_shared/0.1/community-room` for one record, at `at`.
-fn membership(host: &str, room: &OwnedRoom, r: &MemberRecord, at: DateTime<Utc>) -> Value {
+/// `RoomMembership` (0.1), or `RoomMembershipV2` (0.2) with the room's own state.
+fn membership(
+    host: &str,
+    room: &OwnedRoom,
+    r: &MemberRecord,
+    at: DateTime<Utc>,
+    v2: bool,
+) -> Value {
+    use crate::rooms::community_lifecycle::RoomState;
+    // 0.1 has no `suspended`: the admission still is one.
+    let state = if !v2 && r.state == MemberRecord::SUSPENDED {
+        MemberRecord::ADMITTED
+    } else {
+        r.state.as_str()
+    };
     let mut v = json!({
         "roomId": r.room_id,
         "host": host,
@@ -1816,9 +2109,37 @@ fn membership(host: &str, room: &OwnedRoom, r: &MemberRecord, at: DateTime<Utc>)
         "visibility": room.visibility,
         "actions": r.actions,
         "validUntil": r.valid_until,
-        "state": r.state,
+        "state": state,
         "offeredAt": r.offered_at,
     });
+    if v2 {
+        // To a member, a room being purged is going away like one scheduled for it.
+        let room_state = match room.status.state {
+            RoomState::Purging => RoomState::RemovalScheduled,
+            s => s,
+        };
+        v["roomState"] = json!(room_state.as_str());
+        if matches!(
+            room_state,
+            RoomState::Archived | RoomState::RemovalScheduled
+        ) {
+            let access = room
+                .status
+                .access
+                .unwrap_or(crate::rooms::community_lifecycle::Access::NoAccess);
+            v["roomAccess"] = json!(access.as_str());
+        }
+        if room_state == RoomState::RemovalScheduled
+            && let Some(p) = &room.status.purge_at
+        {
+            v["purgeAt"] = json!(p);
+        }
+        if r.state == MemberRecord::SUSPENDED
+            && let Some(s) = &r.suspended_at
+        {
+            v["suspendedAt"] = json!(s);
+        }
+    }
     if let Some(a) = &r.admitted_at {
         v["admittedAt"] = json!(a);
     }
@@ -2092,4 +2413,417 @@ fn accepted(
         }
     }
     respond::<accept::Response>(doc, body)
+}
+
+// ─── archive, unarchive, remove ──────────────────────────────────────────
+
+/// The declared codes of one lifecycle task.
+struct LifecycleCodes {
+    not_found: &'static str,
+    wrong_state: &'static str,
+    unavailable: Option<&'static str>,
+    refused: Option<&'static str>,
+}
+
+/// A transition's refusal as the task declares it.
+async fn lifecycle_refusal(
+    state: &AppState,
+    doc: &TrustTask<Value>,
+    room_id: &str,
+    codes: &LifecycleCodes,
+    r: crate::rooms::community_lifecycle::Refusal,
+) -> TrustTaskOutcome {
+    use crate::rooms::community_lifecycle::{Refusal, RoomState};
+    match r {
+        Refusal::WrongState(s) => {
+            let fix = match s {
+                RoomState::Active => {
+                    " — archive it first (`vtc/rooms/community/archive`)".to_string()
+                }
+                RoomState::Archived => String::new(),
+                RoomState::RemovalScheduled => " — its removal is scheduled; cancel it first \
+                    (`vtc/rooms/community/removal/cancel`)"
+                    .to_string(),
+                RoomState::Purging | RoomState::Removed => {
+                    " — its content is being or has been deleted, which cannot be undone".into()
+                }
+            };
+            refuse(
+                doc,
+                codes.wrong_state,
+                format!("room `{room_id}` is {}{fix}", s.as_str()),
+                Some(json!({ "state": s.as_str() })),
+            )
+        }
+        Refusal::Holder(HolderError::Unavailable(why)) => match codes.unavailable {
+            Some(code) => refuse(doc, code, why, None),
+            None => app_error_to_reject(doc, &AppError::Internal(why)),
+        },
+        Refusal::Holder(HolderError::Refused { code, message }) => match codes.refused {
+            Some(c) => {
+                refuse_logged(
+                    state,
+                    doc,
+                    c,
+                    format!("the community's VTA refused: {code} {message}"),
+                    Some(HolderError::refused_details(&code, &message)),
+                )
+                .await
+            }
+            None => app_error_to_reject(
+                doc,
+                &AppError::Internal(format!("the community's VTA refused: {code} {message}")),
+            ),
+        },
+        Refusal::Internal(AppError::NotFound(m)) => refuse(doc, codes.not_found, m, None),
+        Refusal::Internal(e) => app_error_to_reject(doc, &e),
+    }
+}
+
+/// The room's answer to a lifecycle task: `{ room: CommunityRoomV3, ... }`.
+async fn lifecycle_body(
+    state: &AppState,
+    doc: &TrustTask<Value>,
+    out: &crate::rooms::community_lifecycle::Outcome,
+) -> Result<Value, TrustTaskOutcome> {
+    let room = out.room.as_ref().expect("a transition answers its room");
+    let room_v = community_room_v3(state, room)
+        .await
+        .map_err(|e| app_error_to_reject(doc, &e))?;
+    let mut body = json!({ "room": room_v });
+    if let Some(x) = room.status.ext() {
+        body["ext"] = json!({ "org.openvtc": { "lifecycle": x } });
+    }
+    Ok(body)
+}
+
+/// Read the room, refuse a room the community does not own, and take the requester's
+/// gesture bound to this document.
+async fn lifecycle_gate(
+    state: &AppState,
+    doc: &TrustTask<Value>,
+    actor: &str,
+    room_id: &str,
+    not_found: &str,
+    what: &str,
+) -> Result<OwnedRoom, TrustTaskOutcome> {
+    let room = owned(state, doc, room_id, not_found).await?;
+    bound_step_up(
+        state,
+        actor,
+        doc,
+        &format!("{what} the community room “{}”", room.label),
+    )
+    .await?;
+    Ok(room)
+}
+
+/// `vtc/rooms/community/archive/0.1`.
+async fn handle_archive(
+    state: &AppState,
+    ctx: &JoinAuthCtx,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    use crate::rooms::community::codes as c;
+    use crate::rooms::community_lifecycle::{self as lc, Access, RoomState};
+    let actor = match capable_signer(state, ctx, &doc, Capability::RoomsManage, None).await {
+        Ok(a) => a,
+        Err(reject) => return reject,
+    };
+    let checked: archive::Payload = match parse_spec_payload(&doc) {
+        Ok(p) => p,
+        Err(reject) => return reject,
+    };
+    let room_id = checked.room_id.to_string();
+    let access_s = serde_json::to_value(checked.access)
+        .ok()
+        .and_then(|v| v.as_str().map(str::to_string))
+        .unwrap_or_default();
+    let Some(access) = Access::parse(&access_s) else {
+        return malformed(
+            &doc,
+            format!("`access` `{access_s}` is not readOnly or noAccess"),
+        );
+    };
+    let reason = checked.reason.to_string();
+    let codes = LifecycleCodes {
+        not_found: c::ARCHIVE_NOT_FOUND,
+        wrong_state: c::ARCHIVE_WRONG_STATE,
+        unavailable: Some(c::ARCHIVE_KEY_HOLDER_UNAVAILABLE),
+        refused: Some(c::ARCHIVE_KEY_HOLDER_REFUSED),
+    };
+    // Refused before the gesture where the answer is already known: a room on its way out,
+    // or one already archived this way (item 2 answers it without a change).
+    match state.community_rooms.room(&room_id).await {
+        Ok(Some(r)) if r.status.state.withdrew_everyone_for_good() => {
+            return lifecycle_refusal(
+                state,
+                &doc,
+                &room_id,
+                &codes,
+                lc::Refusal::WrongState(r.status.state),
+            )
+            .await;
+        }
+        Ok(Some(r))
+            if r.status.state == RoomState::Archived
+                && r.status.access == Some(access)
+                && r.status.pending.is_none() =>
+        {
+            let out = lc::Outcome {
+                room: Some(r),
+                ..Default::default()
+            };
+            return match lifecycle_body(state, &doc, &out).await {
+                Ok(mut body) => {
+                    body["changed"] = json!(false);
+                    respond::<archive::Response>(&doc, body)
+                }
+                Err(reject) => reject,
+            };
+        }
+        _ => {}
+    }
+    if let Err(reject) = lifecycle_gate(
+        state,
+        &doc,
+        &actor.did,
+        &room_id,
+        c::ARCHIVE_NOT_FOUND,
+        "Archive",
+    )
+    .await
+    {
+        return reject;
+    }
+    let out = match lc::archive(state, &room_id, access, &actor.did, &reason).await {
+        Ok(o) => o,
+        Err(r) => return lifecycle_refusal(state, &doc, &room_id, &codes, r).await,
+    };
+    let mut body = match lifecycle_body(state, &doc, &out).await {
+        Ok(b) => b,
+        Err(reject) => return reject,
+    };
+    body["changed"] = json!(out.changed);
+    if out.withdrawn_offers > 0 {
+        body["withdrawnOffers"] = json!(out.withdrawn_offers);
+    }
+    if let Some((head, at)) = &out.revocation {
+        body["revocation"] = head.clone();
+        body["revokedAt"] = json!(at);
+    }
+    respond::<archive::Response>(&doc, body)
+}
+
+/// `vtc/rooms/community/unarchive/0.1`.
+async fn handle_unarchive(
+    state: &AppState,
+    ctx: &JoinAuthCtx,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    use crate::rooms::community::codes as c;
+    use crate::rooms::community_lifecycle::{self as lc, RoomState};
+    let actor = match capable_signer(state, ctx, &doc, Capability::RoomsManage, None).await {
+        Ok(a) => a,
+        Err(reject) => return reject,
+    };
+    let checked: unarchive::Payload = match parse_spec_payload(&doc) {
+        Ok(p) => p,
+        Err(reject) => return reject,
+    };
+    let room_id = checked.room_id.to_string();
+    let reason = checked.reason.to_string();
+    let codes = LifecycleCodes {
+        not_found: c::UNARCHIVE_NOT_FOUND,
+        wrong_state: c::UNARCHIVE_WRONG_STATE,
+        unavailable: Some(c::UNARCHIVE_KEY_HOLDER_UNAVAILABLE),
+        refused: Some(c::UNARCHIVE_KEY_HOLDER_REFUSED),
+    };
+    match state.community_rooms.room(&room_id).await {
+        // An active room is what unarchiving leads to: nothing to change (item 2).
+        Ok(Some(r)) if r.status.state == RoomState::Active && r.status.pending.is_none() => {
+            let out = lc::Outcome {
+                room: Some(r),
+                ..Default::default()
+            };
+            return match lifecycle_body(state, &doc, &out).await {
+                Ok(mut body) => {
+                    body["changed"] = json!(false);
+                    respond::<unarchive::Response>(&doc, body)
+                }
+                Err(reject) => reject,
+            };
+        }
+        Ok(Some(r)) if r.status.state != RoomState::Archived && r.status.pending.is_none() => {
+            return lifecycle_refusal(
+                state,
+                &doc,
+                &room_id,
+                &codes,
+                lc::Refusal::WrongState(r.status.state),
+            )
+            .await;
+        }
+        _ => {}
+    }
+    if let Err(reject) = lifecycle_gate(
+        state,
+        &doc,
+        &actor.did,
+        &room_id,
+        c::UNARCHIVE_NOT_FOUND,
+        "Unarchive",
+    )
+    .await
+    {
+        return reject;
+    }
+    let out = match lc::unarchive(state, &room_id, &actor.did, &reason).await {
+        Ok(o) => o,
+        Err(r) => return lifecycle_refusal(state, &doc, &room_id, &codes, r).await,
+    };
+    let mut body = match lifecycle_body(state, &doc, &out).await {
+        Ok(b) => b,
+        Err(reject) => return reject,
+    };
+    body["changed"] = json!(out.changed);
+    respond::<unarchive::Response>(&doc, body)
+}
+
+/// `vtc/rooms/community/remove/0.1`.
+async fn handle_remove_room(
+    state: &AppState,
+    ctx: &JoinAuthCtx,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    use crate::rooms::community::codes as c;
+    use crate::rooms::community_lifecycle::{self as lc, RoomState};
+    let actor = match capable_signer(state, ctx, &doc, Capability::RoomsManage, None).await {
+        Ok(a) => a,
+        Err(reject) => return reject,
+    };
+    let checked: remove_room::Payload = match parse_spec_payload(&doc) {
+        Ok(p) => p,
+        Err(reject) => return reject,
+    };
+    let room_id = checked.room_id.to_string();
+    let reason = checked.reason.to_string();
+    let default_grace = state
+        .config
+        .read()
+        .await
+        .rooms
+        .community
+        .as_ref()
+        .map(|c| c.removal_grace_days())
+        .unwrap_or(lc::DEFAULT_REMOVAL_GRACE_DAYS);
+    let grace_days = checked
+        .grace_days
+        .map(|d| u32::try_from(d).unwrap_or(0))
+        .unwrap_or(default_grace)
+        .min(lc::MAX_REMOVAL_GRACE_DAYS);
+    let codes = LifecycleCodes {
+        not_found: c::REMOVE_ROOM_NOT_FOUND,
+        wrong_state: c::REMOVE_ROOM_WRONG_STATE,
+        unavailable: Some(c::REMOVE_ROOM_KEY_HOLDER_UNAVAILABLE),
+        refused: Some(c::REMOVE_ROOM_KEY_HOLDER_REFUSED),
+    };
+    if let Ok(Some(r)) = state.community_rooms.room(&room_id).await
+        && !matches!(
+            r.status.state,
+            RoomState::Archived | RoomState::RemovalScheduled
+        )
+        && r.status.pending.is_none()
+    {
+        return lifecycle_refusal(
+            state,
+            &doc,
+            &room_id,
+            &codes,
+            lc::Refusal::WrongState(r.status.state),
+        )
+        .await;
+    }
+    let what = if grace_days == 0 {
+        "Remove now, and delete the content of,"
+    } else {
+        "Remove"
+    };
+    if let Err(reject) = lifecycle_gate(
+        state,
+        &doc,
+        &actor.did,
+        &room_id,
+        c::REMOVE_ROOM_NOT_FOUND,
+        what,
+    )
+    .await
+    {
+        return reject;
+    }
+    let grace = chrono::Duration::days(i64::from(grace_days));
+    let out = match lc::remove(state, &room_id, grace, &actor.did, &reason).await {
+        Ok(o) => o,
+        Err(r) => return lifecycle_refusal(state, &doc, &room_id, &codes, r).await,
+    };
+    let mut body = match lifecycle_body(state, &doc, &out).await {
+        Ok(b) => b,
+        Err(reject) => return reject,
+    };
+    if let Some((head, at)) = &out.revocation {
+        body["revocation"] = head.clone();
+        body["revokedAt"] = json!(at);
+    }
+    respond::<remove_room::Response>(&doc, body)
+}
+
+/// `vtc/rooms/community/removal/cancel/0.1`.
+async fn handle_removal_cancel(
+    state: &AppState,
+    ctx: &JoinAuthCtx,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    use crate::rooms::community::codes as c;
+    use crate::rooms::community_lifecycle::{self as lc, RoomState};
+    let actor = match capable_signer(state, ctx, &doc, Capability::RoomsManage, None).await {
+        Ok(a) => a,
+        Err(reject) => return reject,
+    };
+    let checked: removal_cancel::Payload = match parse_spec_payload(&doc) {
+        Ok(p) => p,
+        Err(reject) => return reject,
+    };
+    let room_id = checked.room_id.to_string();
+    let reason = checked.reason.to_string();
+    let codes = LifecycleCodes {
+        not_found: c::REMOVAL_CANCEL_NOT_FOUND,
+        wrong_state: c::REMOVAL_CANCEL_WRONG_STATE,
+        unavailable: None,
+        refused: None,
+    };
+    if let Ok(Some(r)) = state.community_rooms.room(&room_id).await
+        && r.status.state != RoomState::RemovalScheduled
+    {
+        return lifecycle_refusal(
+            state,
+            &doc,
+            &room_id,
+            &codes,
+            lc::Refusal::WrongState(r.status.state),
+        )
+        .await;
+    }
+    // No gesture: stopping a mistaken removal is never harder than making it
+    // (`removal/cancel/0.1`).
+    if let Err(reject) = owned(state, &doc, &room_id, c::REMOVAL_CANCEL_NOT_FOUND).await {
+        return reject;
+    }
+    let out = match lc::cancel_removal(state, &room_id, &actor.did, &reason).await {
+        Ok(o) => o,
+        Err(r) => return lifecycle_refusal(state, &doc, &room_id, &codes, r).await,
+    };
+    match lifecycle_body(state, &doc, &out).await {
+        Ok(body) => respond::<removal_cancel::Response>(&doc, body),
+        Err(reject) => reject,
+    }
 }

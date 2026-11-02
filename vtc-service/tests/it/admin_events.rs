@@ -760,6 +760,7 @@ fn hosted_room(epoch_expires_at: Option<u64>) -> vtc_service::rooms::Room {
         record_retention: None,
         last_prune: None,
         epoch_floor: None,
+        frozen_at: None,
     }
 }
 
@@ -1099,6 +1100,8 @@ fn owned_room(room_id: &str) -> vtc_service::rooms::community::OwnedRoom {
         tags: Vec::new(),
         details_updated_at: None,
         details_updated_by: None,
+        status: Default::default(),
+        hosted_snapshot: None,
     }
 }
 
@@ -1179,6 +1182,7 @@ async fn a_community_room_change_is_a_countless_hint_at_0_4_naming_nothing() {
             offered_at: "2026-10-22T00:00:00Z".into(),
             admitted_at: None,
             removed_at: None,
+            suspended_at: None,
             credentials: None,
             welcome: None,
             admitted_epoch: None,

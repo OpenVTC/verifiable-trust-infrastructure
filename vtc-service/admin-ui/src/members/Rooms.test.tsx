@@ -336,6 +336,47 @@ describe("data rooms in the portal", () => {
     await screen.findByText(/Joined Board pack/);
   });
 
+  it("a room the community archived, closed or is removing says so, in a member's words", async () => {
+    const wallet = fakeWallet({
+      offers: vi.fn(async () => ({
+        offers: [
+          { ...OFFER, state: "joined" as const, roomState: "archived" as const, roomAccess: "readOnly" as const },
+          {
+            ...OFFER,
+            roomId: "did:webvh:QmClosed:rooms.example",
+            label: "Closed",
+            state: "suspended" as const,
+            roomState: "archived" as const,
+            roomAccess: "noAccess" as const,
+          },
+          {
+            ...OFFER,
+            roomId: "did:webvh:QmGoing:rooms.example",
+            label: "Going",
+            state: "suspended" as const,
+            roomState: "removalScheduled" as const,
+            roomAccess: "noAccess" as const,
+            purgeAt: "2099-01-01T00:00:00Z",
+          },
+          // A wallet reading memberships/list 0.1 says nothing of the room's state.
+          { ...OFFER, roomId: "did:webvh:QmPlain:rooms.example", label: "Plain", state: "joined" as const },
+        ],
+      })),
+      acceptOffer: vi.fn(),
+    });
+    (window as { vtaWallet?: unknown }).vtaWallet = { rooms: wallet };
+    renderWith(<RoomsPage hostDid={HOST} member={MEMBER} />);
+    await screen.findByText("Closed");
+    expect(screen.getByText(/joined · read-only/)).toBeTruthy();
+    expect(screen.getByText(/you can still read it, but nothing new can be added/)).toBeTruthy();
+    expect(screen.getAllByText(/closed for now/).length).toBeGreaterThan(0);
+    expect(screen.getByText(/You are restored if it reopens/)).toBeTruthy();
+    expect(screen.getByText(/removal scheduled/)).toBeTruthy();
+    expect(screen.getByText(/deleted on that date unless the removal is cancelled/)).toBeTruthy();
+    // No accept for any of them.
+    expect(screen.queryByRole("button", { name: /Accept/ })).toBeNull();
+  });
+
   it("a member who declines in the wallet sees the offer stays open, not an error", async () => {
     const wallet = fakeWallet({
       offers: vi.fn(async () => ({ offers: [OFFER] })),

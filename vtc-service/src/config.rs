@@ -400,9 +400,22 @@ pub struct CommunityRoomsConfig {
     /// lands (`rooms::community_renewal`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub authority_renew_within_days: Option<u32>,
+    /// How long a removed room's content is kept before it is purged, in days, when the
+    /// removal names no grace period (`vtc/rooms/community/remove/0.1` `graceDays`).
+    /// Default 30; at most 365. During it the room admits nobody and the removal can be
+    /// cancelled.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub removal_grace_days: Option<u32>,
 }
 
 impl CommunityRoomsConfig {
+    /// [`Self::removal_grace_days`], defaulted and bounded.
+    pub fn removal_grace_days(&self) -> u32 {
+        self.removal_grace_days
+            .unwrap_or(crate::rooms::community_lifecycle::DEFAULT_REMOVAL_GRACE_DAYS)
+            .min(crate::rooms::community_lifecycle::MAX_REMOVAL_GRACE_DAYS)
+    }
+
     /// [`Self::authority_valid_days`], defaulted and at least one day.
     pub fn authority_valid_days(&self) -> u32 {
         self.authority_valid_days.unwrap_or(365).max(1)

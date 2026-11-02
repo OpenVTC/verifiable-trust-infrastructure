@@ -1622,6 +1622,11 @@ pub async fn run(
     // Members who left the community leave the rooms it owns (`members/add` item 6): the
     // one owner of those removals, resuming at start whatever a restart interrupted.
     crate::rooms::departures::spawn(state.clone(), shutdown_rx.clone());
+    // What archiving and removing a room the community owns leaves to do: a change whose
+    // reset landed and whose re-issue did not, a purge whose grace period ended, a purge
+    // that has not finished, and suspended members owed a restore. Always spawned: idle
+    // while no room has any of these.
+    crate::rooms::community_lifecycle::spawn(state.clone(), shutdown_rx.clone());
     // A retired directory field's values, erased once its retention period
     // has passed (`crate::directory::sweep`).
     crate::directory::sweep::spawn(state.clone(), shutdown_rx.clone());

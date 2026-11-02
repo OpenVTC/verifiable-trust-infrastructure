@@ -89,6 +89,7 @@ async fn room_owned_by(vtc: &TestVtc, visibility: Visibility, owner: &str) -> vt
         record_retention: None,
         last_prune: None,
         epoch_floor: None,
+        frozen_at: None,
     };
     vti_rooms::storage::create_room(&vtc.state.rooms_ks, &room)
         .await

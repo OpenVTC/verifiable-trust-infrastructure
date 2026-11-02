@@ -197,53 +197,77 @@ pub async fn remove_member(
         }
     }
 
+    let answer = revoke_at_host(
+        holder,
+        room,
+        host,
+        json!([{ "kind": "subject", "subject": member }]),
+        reason,
+    )
+    .await?;
+    // The withdrawal's time: the latest entry naming the member.
+    let revoked_at = latest_revoked_at(&answer, |e| {
+        e["kind"] == "subject" && e["subject"] == member
+    });
+    Ok(Removed {
+        epoch: None,
+        revocation: Some((answer["head"].clone(), revoked_at)),
+    })
+}
+
+/// Have the community's VTA sign the room's next revocation list carrying `withdraw` and
+/// deliver it to `host` (this community, the room's host) — `rooms/owner/revoke/0.1` — and
+/// answer the VTA's answer once the host **accepted** the list. A list the host refused is a
+/// refusal; one whose delivery the host did not confirm is an unknown outcome
+/// ([`HolderError::Unavailable`]): only a host that answered with the list's head enforces it
+/// (`rooms/owner/revoke` item 5).
+pub async fn revoke_at_host(
+    holder: &KeyHolder,
+    room: &OwnedRoom,
+    host: &str,
+    withdraw: Value,
+    reason: &str,
+) -> Result<Value, HolderError> {
     let req = request::<owner_revoke::Payload>(json!({
-        "roomId": room_id,
+        "roomId": room.room_id,
         "signingKeyId": room.signing_key_id,
         "hosts": [host],
-        "withdraw": [{ "kind": "subject", "subject": member }],
+        "withdraw": withdraw,
         "reason": reason,
     }))?;
     let answer = holder.ask(OWNER_REVOKE, req, ADVANCE_TIMEOUT).await?;
     shape::<owner_revoke::Response>("rooms/owner/revoke", &answer)?;
-    // Only a host that answered with the list's head enforces it (`rooms/owner/revoke`
-    // item 5).
     let delivery = answer["deliveries"]
         .as_array()
         .and_then(|d| d.first())
         .cloned()
         .unwrap_or(Value::Null);
     match delivery["outcome"].as_str() {
-        Some("accepted") => {}
-        Some("refused") => {
-            return Err(HolderError::Refused {
-                code: delivery["code"].as_str().unwrap_or_default().to_string(),
-                message: "this community, the room's host, refused the room's revocation list"
-                    .into(),
-            });
-        }
-        _ => {
-            return Err(HolderError::Unavailable(
-                "the room's revocation list was signed, but this community did not confirm it \
-                 as the room's host; it is delivered again on the next attempt"
-                    .into(),
-            ));
-        }
+        Some("accepted") => Ok(answer),
+        Some("refused") => Err(HolderError::Refused {
+            code: delivery["code"].as_str().unwrap_or_default().to_string(),
+            message: "this community, the room's host, refused the room's revocation list".into(),
+        }),
+        _ => Err(HolderError::Unavailable(
+            "the room's revocation list was signed, but this community did not confirm it \
+             as the room's host; it is delivered again on the next attempt"
+                .into(),
+        )),
     }
-    // The withdrawal's time: the latest entry naming the member.
-    let revoked_at = answer["list"]["entries"]
+}
+
+/// The latest `revokedAt` among the entries of a `rooms/owner/revoke` answer's list that
+/// `which` selects.
+pub fn latest_revoked_at(answer: &Value, which: impl Fn(&Value) -> bool) -> String {
+    answer["list"]["entries"]
         .as_array()
         .into_iter()
         .flatten()
-        .filter(|e| e["kind"] == "subject" && e["subject"] == member)
+        .filter(|e| which(e))
         .filter_map(|e| e["revokedAt"].as_str())
         .max()
         .unwrap_or_default()
-        .to_string();
-    Ok(Removed {
-        epoch: None,
-        revocation: Some((answer["head"].clone(), revoked_at)),
-    })
+        .to_string()
 }
 
 /// The delay before the next attempt, after `attempts` have failed.
@@ -442,7 +466,11 @@ async fn drive_one(
     // As an administrator's `members/remove/0.2` removes them (trust-tasks-tf #804): on
     // `open` and `attributed` rooms their credentials — an open offer's too — are withdrawn
     // at the host, and on a sealed tier the room advances past them.
-    if !(withdrawn && room.visibility == "private") {
+    // A room scheduled for removal, being purged or removed was reset: every credential it
+    // issued is already withdrawn at its host and none is ever restored, so the removal is
+    // recorded without asking the VTA (`vtc/rooms/community/remove/0.1`).
+    let closed_for_good = room.status.state.withdrew_everyone_for_good();
+    if !closed_for_good && !(withdrawn && room.visibility == "private") {
         if *vta_down {
             return Ok(());
         }

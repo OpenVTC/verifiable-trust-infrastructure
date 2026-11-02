@@ -547,6 +547,7 @@ mod tests {
             record_retention: None,
             last_prune: None,
             epoch_floor: None,
+            frozen_at: None,
         }
     }
 
@@ -820,6 +821,7 @@ mod signed {
                 record_retention: None,
                 last_prune: None,
                 epoch_floor: None,
+                frozen_at: None,
             },
             owner_chain: vec![enc(&owner_vac)],
             owner_did,
@@ -1530,6 +1532,7 @@ pub mod test_support {
                     record_retention: None,
                     last_prune: None,
                     epoch_floor: None,
+                    frozen_at: None,
                 },
                 owner_chain: vec![enc(&owner_vac)],
                 agent_chain: vec![enc(&agent_vac), enc(&owner_vac)],

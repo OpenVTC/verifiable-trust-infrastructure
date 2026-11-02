@@ -39,7 +39,9 @@ import {
   createCommunityRoom,
   daysUntil,
   fetchCommunityRooms,
+  fetchCommunityRoomsWithRemoved,
   parseTags,
+  roomStateOf,
   roomProfileNotice,
   tagsOf,
   type AuthorityRenewal,
@@ -55,7 +57,7 @@ import { useCan } from "@/lib/viewer";
 import type { CommunityRoom, CommunityRoomCreatePayload } from "@/lib/wire-types";
 
 import { RefusalCard, VtaFixCommands } from "./CommunityRefusal";
-import { LifecyclePill, TIER_BLURB, communityRoomPath } from "./shared";
+import { LifecyclePill, RoomStateChip, TIER_BLURB, communityRoomPath } from "./shared";
 
 /** The query key of the owner's reads, which a live `communityRooms` hint
  *  invalidates. Under `["rooms"]`, which a live `rooms` hint invalidates. */
@@ -176,6 +178,59 @@ export function TagChips({ tags, onPick }: { tags: readonly string[]; onPick?: (
   );
 }
 
+/** Which of a room's owner-lifecycle states the list shows. */
+type StateFilterValue = "all" | "active" | "archived" | "leaving" | "removed";
+
+const STATE_FILTERS: readonly { id: StateFilterValue; label: string }[] = [
+  { id: "all", label: "All" },
+  { id: "active", label: "Active" },
+  { id: "archived", label: "Archived" },
+  { id: "leaving", label: "Being removed" },
+  { id: "removed", label: "Removed" },
+];
+
+function shownByState(room: CommunityRoom, f: StateFilterValue): boolean {
+  const s = roomStateOf(room);
+  switch (f) {
+    case "active":
+      return s === "active";
+    case "archived":
+      return s === "archived";
+    case "leaving":
+      return s === "removalScheduled" || s === "purging";
+    case "removed":
+      return s === "removed";
+    default:
+      return s !== "removed";
+  }
+}
+
+/** Filter by owner-lifecycle state. Removed rooms are read only when asked for. */
+function StateFilter({
+  value,
+  onChange,
+}: {
+  value: StateFilterValue;
+  onChange: (v: StateFilterValue) => void;
+}) {
+  return (
+    <div className="rooms-tag-filter" role="group" aria-label="Filter by state">
+      <span className="muted rooms-sub">State:</span>
+      {STATE_FILTERS.map((f) => (
+        <button
+          key={f.id}
+          type="button"
+          className="chip"
+          aria-pressed={value === f.id}
+          onClick={() => onChange(f.id)}
+        >
+          {f.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
 /** Filter by one tag, or none. */
 function TagFilter({
   tags,
@@ -221,6 +276,7 @@ function CommunityRoomsTable({
       columns={[
         { key: "room", label: "Room" },
         { key: "tier", label: "Tier" },
+        { key: "state", label: "State" },
         { key: "lifecycle", label: "Lifecycle" },
         { key: "members", label: "Members" },
         { key: "authority", label: "Community's authority until" },
@@ -249,11 +305,15 @@ function CommunityRoomsTable({
           </td>
           <td>{r.room.visibility}</td>
           <td>
+            <RoomStateChip status={r.status} />
+          </td>
+          <td>
             <LifecyclePill value={r.room.lifecycle} />
           </td>
           <td>
             {r.admitted} admitted
             <div className="muted rooms-sub">{r.offered} offered</div>
+            {!!r.suspended && <div className="muted rooms-sub">{r.suspended} suspended</div>}
           </td>
           <td>
             <AuthorityExpiry until={r.ownerAuthorityValidUntil} />
@@ -463,9 +523,15 @@ export function CommunityRoomsList() {
   const [params, setParams] = useSearchParams();
   const creating = params.get("create") === "1";
   const pollMs = useLivePollMs("communityRooms");
+  const stateParam = params.get("state");
+  const stateFilter: StateFilterValue = STATE_FILTERS.some((f) => f.id === stateParam)
+    ? (stateParam as StateFilterValue)
+    : "all";
+  // Removed rooms are tombstones: read only when the filter asks for them.
+  const withRemoved = stateFilter === "removed";
   const q = useQuery({
-    queryKey: COMMUNITY_ROOMS_LIST_KEY,
-    queryFn: fetchCommunityRooms,
+    queryKey: withRemoved ? [...COMMUNITY_ROOMS_KEY, "list-with-removed"] : COMMUNITY_ROOMS_LIST_KEY,
+    queryFn: withRemoved ? fetchCommunityRoomsWithRemoved : fetchCommunityRooms,
     // Slow while the stream carries `communityRooms`; see the header.
     refetchInterval: pollMs,
   });
@@ -475,11 +541,19 @@ export function CommunityRoomsList() {
   // A tag no room carries any longer filters nothing: show them all.
   const wanted = params.get("tag");
   const tag = wanted !== null && tags.includes(wanted) ? wanted : null;
-  const rooms = tag === null ? all : all.filter((r) => r.tags?.includes(tag));
+  const rooms = all
+    .filter((r) => tag === null || r.tags?.includes(tag))
+    .filter((r) => shownByState(r, stateFilter));
   const setTag = (t: string | null) => {
     const next = new URLSearchParams(params);
     if (t === null) next.delete("tag");
     else next.set("tag", t);
+    setParams(next);
+  };
+  const setStateFilter = (v: StateFilterValue) => {
+    const next = new URLSearchParams(params);
+    if (v === "all") next.delete("state");
+    else next.set("state", v);
     setParams(next);
   };
 
@@ -496,7 +570,7 @@ export function CommunityRoomsList() {
       )}
       {q.isError && <RefusalCard title="The community's rooms could not be read" error={q.error} />}
 
-      {q.data && all.length === 0 && !creating && (
+      {q.data && all.length === 0 && !creating && !withRemoved && (
         <section className="card">
           <EmptyState icon={Users} title="The community owns no rooms yet">
             A room the community owns is run by its administrators and outlives any of them — the
@@ -506,9 +580,11 @@ export function CommunityRoomsList() {
         </section>
       )}
 
-      {all.length > 0 && (
+      {(all.length > 0 || withRemoved) && (
         <section className="card">
+          <StateFilter value={stateFilter} onChange={setStateFilter} />
           {tags.length > 0 && <TagFilter tags={tags} value={tag} onChange={setTag} />}
+          {rooms.length === 0 && <p className="muted">No room is in this state.</p>}
           <CommunityRoomsTable rooms={rooms} renewal={q.data?.renewal ?? {}} onTag={setTag} />
           {q.data?.truncated && (
             <p className="muted rooms-sub">More rooms exist than this page reads.</p>

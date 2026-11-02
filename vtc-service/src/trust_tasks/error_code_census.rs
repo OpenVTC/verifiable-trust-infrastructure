@@ -204,31 +204,121 @@ fn witnesses() -> Vec<Witness> {
             "vtc_rooms_community_reads_answer_not_found"
         ),
         witness!(
-            s::rooms::community::members::add::v0_1::error_codes::NOT_FOUND,
+            s::rooms::community::members::add::v0_2::error_codes::WRONG_STATE,
+            crate::rooms::community::codes::ADD_WRONG_STATE,
+            "community_rooms.rs",
+            "a_room_archived_read_only_keeps_reads_and_refuses_writes"
+        ),
+        witness!(
+            s::rooms::community::archive::v0_1::error_codes::NOT_FOUND,
+            crate::rooms::community::codes::ARCHIVE_NOT_FOUND,
+            "community_rooms.rs",
+            "vtc_rooms_community_lifecycle_tasks_refuse_with_their_declared_codes"
+        ),
+        witness!(
+            s::rooms::community::archive::v0_1::error_codes::WRONG_STATE,
+            crate::rooms::community::codes::ARCHIVE_WRONG_STATE,
+            "community_rooms.rs",
+            "an_instant_removal_purges_the_room_and_keeps_a_tombstone"
+        ),
+        witness!(
+            s::rooms::community::archive::v0_1::error_codes::KEY_HOLDER_UNAVAILABLE,
+            crate::rooms::community::codes::ARCHIVE_KEY_HOLDER_UNAVAILABLE,
+            "community_rooms.rs",
+            "a_reset_whose_reissue_failed_is_finished_by_the_worker"
+        ),
+        witness!(
+            s::rooms::community::archive::v0_1::error_codes::KEY_HOLDER_REFUSED,
+            crate::rooms::community::codes::ARCHIVE_KEY_HOLDER_REFUSED,
+            "community_rooms.rs",
+            "vtc_rooms_community_lifecycle_tasks_refuse_with_their_declared_codes"
+        ),
+        witness!(
+            s::rooms::community::unarchive::v0_1::error_codes::NOT_FOUND,
+            crate::rooms::community::codes::UNARCHIVE_NOT_FOUND,
+            "community_rooms.rs",
+            "vtc_rooms_community_lifecycle_tasks_refuse_with_their_declared_codes"
+        ),
+        witness!(
+            s::rooms::community::unarchive::v0_1::error_codes::WRONG_STATE,
+            crate::rooms::community::codes::UNARCHIVE_WRONG_STATE,
+            "community_rooms.rs",
+            "a_removal_is_scheduled_from_archived_and_can_be_cancelled"
+        ),
+        witness!(
+            s::rooms::community::unarchive::v0_1::error_codes::KEY_HOLDER_UNAVAILABLE,
+            crate::rooms::community::codes::UNARCHIVE_KEY_HOLDER_UNAVAILABLE,
+            "community_rooms.rs",
+            "vtc_rooms_community_lifecycle_tasks_refuse_with_their_declared_codes"
+        ),
+        witness!(
+            s::rooms::community::unarchive::v0_1::error_codes::KEY_HOLDER_REFUSED,
+            crate::rooms::community::codes::UNARCHIVE_KEY_HOLDER_REFUSED,
+            "community_rooms.rs",
+            "vtc_rooms_community_lifecycle_tasks_refuse_with_their_declared_codes"
+        ),
+        witness!(
+            s::rooms::community::remove::v0_1::error_codes::NOT_FOUND,
+            crate::rooms::community::codes::REMOVE_ROOM_NOT_FOUND,
+            "community_rooms.rs",
+            "vtc_rooms_community_lifecycle_tasks_refuse_with_their_declared_codes"
+        ),
+        witness!(
+            s::rooms::community::remove::v0_1::error_codes::WRONG_STATE,
+            crate::rooms::community::codes::REMOVE_ROOM_WRONG_STATE,
+            "community_rooms.rs",
+            "a_removal_is_scheduled_from_archived_and_can_be_cancelled"
+        ),
+        witness!(
+            s::rooms::community::remove::v0_1::error_codes::KEY_HOLDER_UNAVAILABLE,
+            crate::rooms::community::codes::REMOVE_ROOM_KEY_HOLDER_UNAVAILABLE,
+            "community_rooms.rs",
+            "vtc_rooms_community_lifecycle_tasks_refuse_with_their_declared_codes"
+        ),
+        witness!(
+            s::rooms::community::remove::v0_1::error_codes::KEY_HOLDER_REFUSED,
+            crate::rooms::community::codes::REMOVE_ROOM_KEY_HOLDER_REFUSED,
+            "community_rooms.rs",
+            "vtc_rooms_community_lifecycle_tasks_refuse_with_their_declared_codes"
+        ),
+        witness!(
+            s::rooms::community::removal::cancel::v0_1::error_codes::NOT_FOUND,
+            crate::rooms::community::codes::REMOVAL_CANCEL_NOT_FOUND,
+            "community_rooms.rs",
+            "vtc_rooms_community_lifecycle_tasks_refuse_with_their_declared_codes"
+        ),
+        witness!(
+            s::rooms::community::removal::cancel::v0_1::error_codes::WRONG_STATE,
+            crate::rooms::community::codes::REMOVAL_CANCEL_WRONG_STATE,
+            "community_rooms.rs",
+            "a_removal_is_scheduled_from_archived_and_can_be_cancelled"
+        ),
+        witness!(
+            s::rooms::community::members::add::v0_2::error_codes::NOT_FOUND,
             crate::rooms::community::codes::ADD_NOT_FOUND,
             "community_rooms.rs",
             "vtc_rooms_community_members_refuse_with_their_declared_codes"
         ),
         witness!(
-            s::rooms::community::members::add::v0_1::error_codes::NOT_A_MEMBER,
+            s::rooms::community::members::add::v0_2::error_codes::NOT_A_MEMBER,
             crate::rooms::community::codes::ADD_NOT_A_MEMBER,
             "community_rooms.rs",
             "vtc_rooms_community_members_refuse_with_their_declared_codes"
         ),
         witness!(
-            s::rooms::community::members::add::v0_1::error_codes::ALREADY_MEMBER,
+            s::rooms::community::members::add::v0_2::error_codes::ALREADY_MEMBER,
             crate::rooms::community::codes::ADD_ALREADY_MEMBER,
             "community_rooms.rs",
             "vtc_rooms_community_members_refuse_with_their_declared_codes"
         ),
         witness!(
-            s::rooms::community::members::add::v0_1::error_codes::KEY_HOLDER_UNAVAILABLE,
+            s::rooms::community::members::add::v0_2::error_codes::KEY_HOLDER_UNAVAILABLE,
             crate::rooms::community::codes::ADD_KEY_HOLDER_UNAVAILABLE,
             "community_rooms.rs",
             "vtc_rooms_community_members_refuse_with_their_declared_codes"
         ),
         witness!(
-            s::rooms::community::members::add::v0_1::error_codes::KEY_HOLDER_REFUSED,
+            s::rooms::community::members::add::v0_2::error_codes::KEY_HOLDER_REFUSED,
             crate::rooms::community::codes::ADD_KEY_HOLDER_REFUSED,
             "community_rooms.rs",
             "vtc_rooms_community_members_refuse_with_their_declared_codes"

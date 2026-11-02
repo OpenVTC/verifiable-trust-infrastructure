@@ -308,6 +308,84 @@ cnm rooms members remove <room DID> --member <DID> --reason "left the board"
   nothing written before. Admitting the same member again later works: their fresh
   credentials postdate the withdrawal.
 
+## Archive and remove a room
+
+A room the community owns outlives its purpose — the board's 2026 papers, a working group
+that finished. Rooms are closed in two deliberate steps: **archive** (reversible), then
+**remove** (purges the content, after a grace period you can cancel during, or at once).
+
+```text
+  active ──archive──▶ archived (read-only | no access) ──remove──▶ removal scheduled ──purgeAt──▶ purging ──▶ removed
+    ▲                    │    ▲                                       │
+    └────unarchive───────┘    └────────────── cancel-removal ─────────┘
+```
+
+| State | Members | Host | Undo |
+|---|---|---|---|
+| **active** | read and write as their credentials say | normal | — |
+| **archived, read-only** | keep reading; no writes, uploads or curation | refuses every task but a read | `unarchive` |
+| **archived, no access** | `suspended`: every credential withdrawn at the host (a room **reset**); the content is kept | refuses every member | `unarchive` (members restored) or `archive --access read-only` |
+| **removal scheduled** | `suspended`, never restored | as *no access*; content kept until `purgeAt` | `cancel-removal` → archived, no access |
+| **purging** | — | the content is being deleted at the host and every storage config | none |
+| **removed** | — | nothing; the owner's record stays as a tombstone | none |
+
+What every archival and removal does **not** do: recall anything a member already read or
+saved; on a sealed tier (`attributed`, `private`), remove anyone from the room's group or
+advance its epoch — a suspended member still holds the keys to what they could open, and
+is refused only the ciphertext.
+
+- **Archiving withdraws every open offer.** An archived room admits no one, so
+  `members add` answers `wrongState`, and group room bindings offer nothing until it
+  reopens. On an `open` or `attributed` room archived read-only, the offers' credentials
+  are withdrawn at the host too. Unarchiving does not restore offers — make them again.
+- **No access is a reset.** The community's VTA signs one revocation list withdrawing every
+  credential the room ever issued (`rooms/owner/revoke`, a `room` withdrawal) — the only
+  withdrawal a `private` room's host can apply. The reset withdraws the community's own
+  membership and authority too, so its VTA re-issues them before anything is recorded. If
+  that re-issue fails after the host accepted the reset, the room shows a `pendingChange`
+  and the community finishes it by itself (`rooms::community_lifecycle`, 30 s doubling to
+  an hour); repeating the command finishes it too.
+- **Restoring.** When a room leaves *no access* (`unarchive`, or `archive --access
+  read-only`), each suspended member's credentials are re-issued with the same actions and
+  expiry, kept for them as a **renewal** (`vtc/rooms/offers/list/0.4` `renewals`, collected
+  with `pnm rooms offers renew`); `status.restoring` counts those still owed. An admission
+  whose expiry passed while the room was closed is recorded removed instead.
+- **Removal starts from archived.** `remove` on an active room answers `wrongState` with
+  the `archive` command to run first. A read-only room is reset as it is scheduled. The
+  grace period is `--grace-days` (0–365), else `[rooms.community] removal_grace_days`
+  (default 30). `--now` is a grace period of zero: the purge begins at once and cannot be
+  undone; the CLI and console both make you type the room's label to confirm it.
+- **The purge** deletes the room's records, epoch links, commits and revocation list, every
+  file in every storage config (and old copies a migration left), its usage and limits, its
+  storage assignment, the group room bindings naming it and, for a serverless identity, the
+  DID log this community served. It asks the VTA to delete the room's DID
+  (`webvh/dids/delete/1.0`, which needs the admin role on `[rooms.community] context`); a
+  refusal there does not hold the purge and is reported under
+  `ext["org.openvtc"].lifecycle.didRetirement`. Every other step is retried until it
+  succeeds, and the room is `removed` only then. The owner's record — label, description,
+  tags, who created it, the host record as it last stood — and the members' records
+  (states and dates, no credentials) stay as the room's history; `rooms list --state
+  removed` shows them.
+
+```bash
+cnm rooms archive <room DID> --access read-only --reason "the 2026 cycle closed"
+cnm rooms archive <room DID> --access no-access --reason "kept, no longer read"
+cnm rooms unarchive <room DID> --reason "the board reopened it"
+cnm rooms remove <room DID> [--grace-days 30 | --now] --confirm "<the room's label>" --reason "…"
+cnm rooms cancel-removal <room DID> --reason "removed by mistake"
+cnm rooms list --state archived --state removal-scheduled
+```
+
+Each takes a passkey gesture bound to the one request and is audited
+(`CommunityRoomChanged`: `archived`, `unarchived`, `removalScheduled`, `removedNow`,
+`removalCancelled`, `purgeStarted`, `removed`, `memberRestored`). Tasks:
+`vtc/rooms/community/{archive,unarchive,remove}/0.1`,
+`vtc/rooms/community/removal/cancel/0.1`; the state is read with
+`vtc/rooms/community/{get,list}/0.4` (`status`), and a member sees it in
+`vtc/rooms/memberships/list/0.2` (`roomState`, `roomAccess`, `purgeAt`, the `suspended`
+state). The earlier versions stay served: `get`/`list` 0.3 hide a purging or removed room,
+and `members/list` 0.1 and `memberships/list` 0.1 show a suspended admission as `admitted`.
+
 ## Renewing the community's own authority
 
 The community's membership and `admin` authority in each room it owns are issued with an

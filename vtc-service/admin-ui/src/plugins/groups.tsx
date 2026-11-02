@@ -891,7 +891,9 @@ function GroupRooms({ group }: { group: Group }) {
             <Field label="Room">
               <select aria-label="Room to bind" value={roomId} onChange={(e) => setRoomId(e.target.value)}>
                 <option value="">Choose a community room…</option>
-                {(rooms.data?.rooms ?? []).map((r) => (
+                {/* Only an active room admits anyone: an archived one, or one being
+                    removed, is not offered for a new binding. */}
+                {(rooms.data?.rooms ?? []).filter((r) => (r.status?.state ?? "active") === "active").map((r) => (
                   <option key={r.room.roomId} value={r.room.roomId}>
                     {r.label}
                   </option>

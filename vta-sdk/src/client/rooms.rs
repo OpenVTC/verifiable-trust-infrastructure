@@ -190,12 +190,13 @@ impl VtaClient {
         })
     }
 
-    /// `rooms/keys/act/0.9` — have the VTA complete one host-bound room request, or a reply
+    /// `rooms/keys/act/0.10` — have the VTA complete one host-bound room request, or a reply
     /// to a community's offer of a room, **as the member**, and get it back to send.
     ///
-    /// Sent at 0.9 only, whose table completes every type a member's client sends —
+    /// Sent at 0.10 only, whose table completes every type a member's client sends —
     /// the newest version of each host-bound request and of the offer listing among them,
-    /// `rooms/records/put/0.4` included. A VTA that does not serve 0.9 answers
+    /// `rooms/records/put/0.4` and `vtc/rooms/memberships/list/0.2` included. A VTA that
+    /// does not serve 0.10 answers
     /// [`VtaError::UnsupportedTaskType`], and is upgraded rather than asked at an older
     /// version.
     ///
@@ -219,33 +220,33 @@ impl VtaClient {
     /// Nothing in it names this client: the host records the member.
     pub async fn room_act(
         &self,
-        document: &vti_specs::rooms::keys::act::v0_9::UnsignedRoomRequest,
-    ) -> Result<vti_specs::rooms::keys::act::v0_9::Response, VtaError> {
-        self.act_v0_9(json!({ "document": document })).await
+        document: &vti_specs::rooms::keys::act::v0_10::UnsignedRoomRequest,
+    ) -> Result<vti_specs::rooms::keys::act::v0_10::Response, VtaError> {
+        self.act_v0_10(json!({ "document": document })).await
     }
 
-    /// `rooms/keys/act/0.9` — have the VTA complete one of a member's requests to a
+    /// `rooms/keys/act/0.10` — have the VTA complete one of a member's requests to a
     /// community about the rooms it offers them ([`is_community_type`]) **as the member**,
     /// and get it back to send to the community unaltered. Build `document` with
     /// [`unsigned_community_request`].
     ///
-    /// Sent at 0.9 only: a VTA that does not serve it answers
+    /// Sent at 0.10 only: a VTA that does not serve it answers
     /// [`VtaError::UnsupportedTaskType`], and is upgraded rather than asked at an older
     /// version.
     pub async fn room_act_community(
         &self,
-        document: &vti_specs::rooms::keys::act::v0_9::UnsignedRoomRequest,
-    ) -> Result<vti_specs::rooms::keys::act::v0_9::Response, VtaError> {
-        self.act_v0_9(json!({ "document": document })).await
+        document: &vti_specs::rooms::keys::act::v0_10::UnsignedRoomRequest,
+    ) -> Result<vti_specs::rooms::keys::act::v0_10::Response, VtaError> {
+        self.act_v0_10(json!({ "document": document })).await
     }
 
-    async fn act_v0_9(
+    async fn act_v0_10(
         &self,
         payload: Value,
-    ) -> Result<vti_specs::rooms::keys::act::v0_9::Response, VtaError> {
+    ) -> Result<vti_specs::rooms::keys::act::v0_10::Response, VtaError> {
         let value = self
             .dispatch_trust_task(
-                trust_tasks::TASK_ROOMS_KEYS_ACT_0_9,
+                trust_tasks::TASK_ROOMS_KEYS_ACT_0_10,
                 payload,
                 ROOM_TT_TIMEOUT,
             )
@@ -1246,7 +1247,7 @@ pub fn unsigned_room_request(
     host: &str,
     issuer: Option<&str>,
     payload: Value,
-) -> Result<vti_specs::rooms::keys::act::v0_9::UnsignedRoomRequest, VtaError> {
+) -> Result<vti_specs::rooms::keys::act::v0_10::UnsignedRoomRequest, VtaError> {
     if issuer.is_none() && is_offer_type(type_uri) {
         return Err(VtaError::Validation(format!(
             "`{type_uri}` is a reply to a community's offer: name the DID the offer is \
@@ -1273,7 +1274,7 @@ pub fn unsigned_room_request(
         .map_err(|e| VtaError::Validation(format!("not a room request this can complete: {e}")))
 }
 
-/// Whether `type_uri` is an offer type `rooms/keys/act/0.9` completes —
+/// Whether `type_uri` is an offer type `rooms/keys/act/0.10` completes —
 /// `vtc/rooms/offers/list/{0.1,0.2,0.3,0.4}` or `vtc/rooms/offers/accept/0.1`, with or
 /// without `#request`. 0.8's table is the specification's, so it still names the
 /// superseded listings, though a community serves only 0.4.
@@ -1289,14 +1290,17 @@ pub fn is_offer_type(type_uri: &str) -> bool {
         || bare == accept::v0_1::Payload::TYPE_URI
 }
 
-/// Whether `type_uri` is one of the community types `rooms/keys/act/0.9` completes —
-/// the offer types ([`is_offer_type`]) and `vtc/rooms/memberships/list/0.1`, with or
-/// without `#request`.
+/// Whether `type_uri` is one of the community types `rooms/keys/act/0.10` completes —
+/// the offer types ([`is_offer_type`]) and `vtc/rooms/memberships/list` at 0.1 and 0.2, with
+/// or without `#request`.
+#[allow(deprecated)] // rooms/keys/act/0.10's table still names memberships/list 0.1.
 pub fn is_community_type(type_uri: &str) -> bool {
     use trust_tasks_rs::Payload as _;
     use vti_specs::vtc::rooms::memberships;
     let bare = type_uri.strip_suffix("#request").unwrap_or(type_uri);
-    is_offer_type(bare) || bare == memberships::list::v0_1::Payload::TYPE_URI
+    is_offer_type(bare)
+        || bare == memberships::list::v0_1::Payload::TYPE_URI
+        || bare == memberships::list::v0_2::Payload::TYPE_URI
 }
 
 /// An unsigned request to a community about the rooms it offers the member, for
@@ -1313,7 +1317,7 @@ pub fn unsigned_community_request(
     community: &str,
     issuer: &str,
     payload: Value,
-) -> Result<vti_specs::rooms::keys::act::v0_9::UnsignedRoomRequest, VtaError> {
+) -> Result<vti_specs::rooms::keys::act::v0_10::UnsignedRoomRequest, VtaError> {
     if !is_community_type(type_uri) {
         return Err(VtaError::Validation(format!(
             "`{type_uri}` is not a request to a community about the rooms it offers you"
@@ -1412,7 +1416,7 @@ mod act_tests {
         // Nothing else of the vtc family is a room request act completes.
         assert!(
             unsigned_room_request(
-                "https://trusttasks.org/spec/vtc/rooms/community/members/add/0.1",
+                "https://trusttasks.org/spec/vtc/rooms/community/members/add/0.2",
                 "did:key:zVtc",
                 Some("did:key:zAlice"),
                 json!({ "roomId": "did:key:zRoom" }),
@@ -1421,7 +1425,7 @@ mod act_tests {
         );
     }
 
-    /// `rooms/keys/act/0.9`: the community types, and nothing else of the `vtc` family.
+    /// `rooms/keys/act/0.10`: the community types, and nothing else of the `vtc` family.
     #[test]
     fn a_community_request_is_one_of_the_community_types() {
         for t in [
@@ -1431,6 +1435,7 @@ mod act_tests {
             "https://trusttasks.org/spec/vtc/rooms/offers/list/0.4",
             "https://trusttasks.org/spec/vtc/rooms/offers/accept/0.1",
             "https://trusttasks.org/spec/vtc/rooms/memberships/list/0.1",
+            "https://trusttasks.org/spec/vtc/rooms/memberships/list/0.2",
         ] {
             assert!(is_community_type(t), "{t}");
             let payload = if t.ends_with("accept/0.1") {

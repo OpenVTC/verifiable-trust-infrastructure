@@ -799,9 +799,10 @@ pub(crate) enum RoomCommands {
     },
 
     /// Every room the community has offered you and where each stands — offered,
-    /// joined, accepted but not finished, or removed — as your member portal and
+    /// joined, accepted but not finished, suspended or removed, and whether the room
+    /// itself is archived or being removed — as your member portal and
     /// OpenVTC show it too: the community's record (`vtc/rooms/memberships/list`),
-    /// signed as you by your VTA (`rooms/keys/act/0.9`), beside your VTA's own
+    /// signed as you by your VTA (`rooms/keys/act/0.10`), beside your VTA's own
     /// (`rooms/keys/list`).
     Memberships {
         /// Base URL of the community's Trust Task endpoint (e.g.

@@ -618,6 +618,12 @@ impl RoomStorage {
         self.ks.insert(assign_key(room_id), &a).await
     }
 
+    /// Forget `room_id`'s assignment: the room was purged and has nothing left to store.
+    pub async fn drop_assignment(&self, room_id: &str) -> Result<(), AppError> {
+        let _guard = self.lock().await;
+        self.ks.remove(assign_key(room_id)).await
+    }
+
     /// Assign a newly created room to the default config.
     pub async fn assign_new_room(&self, room_id: &str) -> Result<(), AppError> {
         let _guard = self.lock().await;
