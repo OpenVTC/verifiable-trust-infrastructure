@@ -263,6 +263,8 @@ async fn main() -> anyhow::Result<()> {
         vti_common::auth::TrustTaskVmResolver::did_key_only()
     };
     let state = open_state_with_files(&args.data_dir, resolver, args.files.config())?;
+    // Before a room is served: rows in the earlier, ambiguous key layout (#2382).
+    state.migrate_room_keys().await?;
 
     // Room files: deleted files past their grace window and abandoned uploads
     // are collected on a timer. A pass that fails is logged and retried at the

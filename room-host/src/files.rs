@@ -3140,7 +3140,7 @@ mod tests {
         h.state
             .records
             .insert(
-                format!("{}{}:with-file", storage::RECORDS_PREFIX, f.room.room_id),
+                storage::record_storage_key(&f.room.room_id, "with-file"),
                 &r,
             )
             .await

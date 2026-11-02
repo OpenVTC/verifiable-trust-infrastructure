@@ -3718,11 +3718,7 @@ async fn an_instant_removal_purges_the_room_and_keeps_a_tombstone() {
             .await
             .is_err()
     );
-    let raw = fix
-        .vtc
-        .state
-        .room_records_ks
-        .prefix_iter_raw(format!("room_records:{room}:").into_bytes())
+    let raw = vti_rooms::storage::list_records(&fix.vtc.state.room_records_ks, &room, None, None)
         .await
         .unwrap();
     assert!(raw.is_empty(), "the room's records are purged");
