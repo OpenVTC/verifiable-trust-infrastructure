@@ -1788,6 +1788,29 @@ pub fn open_state_with_files(
 }
 
 impl HostState {
+    /// Move room rows still in the earlier key layout, whose keys could name two rooms at
+    /// once (#2382), to the current one ([`vti_rooms::storage::migrate_room_keys`]). Run
+    /// at boot, before a room is served. A row that cannot be attributed to one room is
+    /// left where it is and logged; nothing reads it.
+    pub async fn migrate_room_keys(&self) -> anyhow::Result<()> {
+        let out = vti_rooms::storage::migrate_room_keys(&self.records, &self.epoch_links).await?;
+        if out.records + out.epoch_links + out.commits > 0 {
+            tracing::info!(
+                records = out.records,
+                epoch_links = out.epoch_links,
+                commits = out.commits,
+                "room rows moved to the current key layout"
+            );
+        }
+        for row in &out.left {
+            tracing::warn!(
+                row,
+                "a room row in the earlier key layout was left in place"
+            );
+        }
+        Ok(())
+    }
+
     /// Room files, for the collection task an embedder runs
     /// ([`vti_rooms::blobs::BlobHost::sweep`]).
     pub fn files(&self) -> &Arc<vti_rooms::blobs::BlobHost> {

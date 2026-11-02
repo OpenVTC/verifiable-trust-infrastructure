@@ -1137,6 +1137,8 @@ pub async fn run(
     // Any left in the old rights store move onto them now, before a git-ns
     // task is authorized from the entries (VTI-VTC-020).
     crate::git_ns::migrate::migrate_on_boot(&state).await?;
+    // Room rows in the earlier, ambiguous key layout move before a room is served (#2382).
+    crate::rooms::migrate_room_keys(&state, "the boot migration").await?;
 
     // Heal missing AdminEntries: any DID with an Admin ACL grant +
     // a PasskeyUser but no AdminEntry gets the AdminEntry synthesised

@@ -42,11 +42,12 @@ pub const ENDORSEMENTS: &str = "endorsements";
 /// here would make the room unmovable and make this service part of its membership.
 pub use vti_rooms::ROOMS_KEYSPACE as ROOMS;
 
-/// Room records at `room_records:<roomId>:<key>`. Ciphertext on the sealed tiers.
+/// Room records at `room_records/v2:<len>:<roomId>:<key>` (`vti_rooms::storage`).
+/// Ciphertext on the sealed tiers.
 pub use vti_rooms::ROOM_RECORDS_KEYSPACE as ROOM_RECORDS;
 
-/// The epoch key chain at `room_epoch_links:<roomId>:<epoch>`. Wrapped key material this
-/// service cannot read — the key that opens a rung is a storage key no host ever holds.
+/// The epoch key chain at `room_epoch_links/v2:<len>:<roomId>:<epoch>`, and relayed commits
+/// beside it. Wrapped key material this service cannot read — the key that opens a rung is a storage key no host ever holds.
 ///
 /// **Backed up, and not optionally.** A room's records survive a restore as ciphertext; the
 /// chain is what makes anything written before the last membership change openable at all.

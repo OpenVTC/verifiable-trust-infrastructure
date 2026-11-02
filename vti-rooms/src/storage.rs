@@ -3,14 +3,24 @@
 //! # Key layout
 //!
 //! ```text
-//! rooms:<roomId>                        -> Room
-//! room_records:<roomId>:<key>           -> Record
-//! room_epoch_links:<roomId>:<epoch>     -> EpochLink
+//! rooms:<roomId>                                 -> Room
+//! room_records/v2:<len>:<roomId>:<key>           -> Record
+//! room_epoch_links/v2:<len>:<roomId>:<epoch>     -> EpochLink   (room_epoch_links keyspace)
+//! room-commit/v2:<len>:<roomId>:<epoch>          -> commit      (room_epoch_links keyspace)
 //! ```
 //!
-//! The trailing `:` on the record prefix makes a scan room-exact — a prefix of `a:` never
-//! matches `ab:` — so one room's listing can never return another's, in the store layer as
-//! well as at the authorization layer above it.
+//! `<len>` is the room identifier's length in bytes, in decimal. A room identifier is a
+//! DID and contains `:` itself, so without it the key of one room's row could be the key
+//! of another's: `did:web:a`'s record `b:k` and `did:web:a:b`'s record `k` were both
+//! `room_records:did:web:a:b:k` — one row, written by either room (#2382). With the length
+//! in front, the identifier is read off by count, not by looking for a separator it may
+//! contain: two rooms' rows never share a key, and a room's scan prefix
+//! (`…/v2:<len>:<roomId>:`) is a prefix of no other room's, so one room's listing, chain
+//! and prune never reach another's, in the store layer as well as at the authorization
+//! layer above it.
+//!
+//! Rows written in the earlier layout (no `/v2`, no length) are moved by
+//! [`migrate_room_keys`], which each host runs at boot.
 //!
 //! # Version assignment
 //!
@@ -30,35 +40,59 @@ use crate::wire::EpochLink;
 
 /// `rooms:<roomId>`.
 pub const ROOMS_PREFIX: &str = "rooms:";
-/// `room_records:<roomId>:<key>`.
-pub const RECORDS_PREFIX: &str = "room_records:";
-/// `room_epoch_links:<roomId>:<epoch>`.
-pub const EPOCH_LINKS_PREFIX: &str = "room_epoch_links:";
+/// `room_records/v2:<len>:<roomId>:<key>`.
+const RECORDS_PREFIX: &str = "room_records/v2:";
+/// `room_epoch_links/v2:<len>:<roomId>:<epoch>`.
+const EPOCH_LINKS_PREFIX: &str = "room_epoch_links/v2:";
+/// `room-commit/v2:<len>:<roomId>:<epoch>`, in the epoch-links keyspace.
+const COMMITS_PREFIX: &str = "room-commit/v2:";
+
+/// The earlier layouts, `<prefix><roomId>:<…>`, which [`migrate_room_keys`] moves. Nothing
+/// else reads them: their keys are ambiguous (module docs).
+const LEGACY_RECORDS_PREFIX: &str = "room_records:";
+const LEGACY_EPOCH_LINKS_PREFIX: &str = "room_epoch_links:";
+const LEGACY_COMMITS_PREFIX: &str = "room-commit:";
 
 fn room_key(room_id: &str) -> String {
     format!("{ROOMS_PREFIX}{room_id}")
 }
 
+/// `<prefix><len>:<roomId>:` — every row of one room and of no other (module docs).
+fn room_scope(prefix: &str, room_id: &str) -> String {
+    format!("{prefix}{}:{room_id}:", room_id.len())
+}
+
 fn record_key(room_id: &str, key: &str) -> String {
-    format!("{RECORDS_PREFIX}{room_id}:{key}")
+    format!("{}{key}", record_prefix(room_id))
 }
 
-/// Every record in one room. The trailing `:` is what makes this room-exact.
+/// The storage key of record `key` in `room_id`, for a host that has to reach the row
+/// directly (a test ageing a record, say). Everything else goes through this module.
+pub fn record_storage_key(room_id: &str, key: &str) -> String {
+    record_key(room_id, key)
+}
+
+/// Every record in one room.
 fn record_prefix(room_id: &str) -> String {
-    format!("{RECORDS_PREFIX}{room_id}:")
+    room_scope(RECORDS_PREFIX, room_id)
 }
 
-/// `room_epoch_links:<roomId>:<epoch>`, zero-padded so a scan is ordered.
+/// `room_epoch_links/v2:<len>:<roomId>:<epoch>`, zero-padded so a scan is ordered.
 ///
 /// Ten digits: `u32::MAX` is ten, so no epoch a room can reach sorts out of place. A chain
 /// scanned in the wrong order is a chain walked in the wrong order.
 fn epoch_link_key(room_id: &str, epoch: u32) -> String {
-    format!("{EPOCH_LINKS_PREFIX}{room_id}:{epoch:010}")
+    format!("{}{epoch:010}", epoch_link_prefix(room_id))
 }
 
-/// Every link in one room. The trailing `:` is what makes this room-exact.
+/// Every link in one room.
 fn epoch_link_prefix(room_id: &str) -> String {
-    format!("{EPOCH_LINKS_PREFIX}{room_id}:")
+    room_scope(EPOCH_LINKS_PREFIX, room_id)
+}
+
+/// Every relayed commit of one room.
+fn commit_prefix(room_id: &str) -> String {
+    room_scope(COMMITS_PREFIX, room_id)
 }
 
 /// Store one epoch link.
@@ -238,12 +272,9 @@ pub async fn put_epoch_link_above_floor(
     put_epoch_link(links, &room.room_id, link).await
 }
 
-/// Prefix for the commits a host relays.
-const COMMITS_PREFIX: &str = "room-commit:";
-
 /// Storage key for one relayed commit. Zero-padded so a prefix scan is ordered.
 fn commit_key(room_id: &str, epoch: u32) -> String {
-    format!("{COMMITS_PREFIX}{room_id}:{epoch:010}")
+    format!("{}{epoch:010}", commit_prefix(room_id))
 }
 
 /// Store the commit that produced an epoch, for members who were not online.
@@ -284,9 +315,7 @@ pub async fn commits_since(
     since_epoch: u32,
     limit: usize,
 ) -> Result<Vec<crate::wire::RelayedCommit>, AppError> {
-    let pairs = commits
-        .prefix_iter_raw(format!("{COMMITS_PREFIX}{room_id}:"))
-        .await?;
+    let pairs = commits.prefix_iter_raw(commit_prefix(room_id)).await?;
     let mut held: Vec<(u32, String)> = Vec::with_capacity(pairs.len());
     for (k, v) in pairs {
         let key = String::from_utf8(k)
@@ -454,6 +483,144 @@ fn now_secs() -> u64 {
         .unwrap_or(0)
 }
 
+/// What [`migrate_room_keys`] did.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct MigratedKeys {
+    /// Records moved to the current layout.
+    pub records: u64,
+    /// Epoch links moved.
+    pub epoch_links: u64,
+    /// Relayed commits moved.
+    pub commits: u64,
+    /// Rows left in the earlier layout, each with why: one that cannot be attributed to
+    /// exactly one room (a record that does not decode, or whose key does not end in the
+    /// key it carries; an epoch row without a ten-digit epoch), or whose key in the
+    /// current layout is already taken. Nothing reads them; the host reports them.
+    pub left: Vec<String>,
+}
+
+impl MigratedKeys {
+    /// Whether there was anything to do.
+    pub fn is_empty(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
+/// The room identifier of a row in an earlier layout, `<prefix><roomId>:<suffix>`, where
+/// `suffix` is what the row itself says it is (a record's key, an epoch's ten digits). The
+/// key alone is ambiguous (module docs); with the suffix fixed by the row, it is not.
+fn legacy_room_of(key: &[u8], prefix: &str, suffix: &[u8]) -> Option<String> {
+    let room = key
+        .strip_prefix(prefix.as_bytes())?
+        .strip_suffix(suffix)?
+        .strip_suffix(b":")?;
+    let room = std::str::from_utf8(room).ok()?;
+    (!room.is_empty()).then(|| room.to_string())
+}
+
+/// The trailing ten-digit epoch of a row in an earlier layout.
+fn legacy_epoch(key: &[u8]) -> Option<(u32, &[u8])> {
+    let digits = key.get(key.len().checked_sub(10)?..)?;
+    if !digits.iter().all(u8::is_ascii_digit) {
+        return None;
+    }
+    let epoch = std::str::from_utf8(digits).ok()?.parse().ok()?;
+    Some((epoch, digits))
+}
+
+/// Move one row from `old` to `new`, byte for byte, in one atomic batch that holds only
+/// while `old` is as read and `new` is empty. `Err(reason)` when it did not move.
+async fn move_row(
+    ks: &KeyspaceHandle,
+    old: Vec<u8>,
+    value: Vec<u8>,
+    new: String,
+) -> Result<Result<(), String>, AppError> {
+    let mut batch = vti_common::store::Batch::new();
+    batch
+        .require_unchanged(old.clone(), value.clone())
+        .require_absent(new.clone())
+        .insert_raw(new.clone(), value)
+        .remove(old.clone());
+    Ok(match ks.apply_batch(batch).await? {
+        vti_common::store::BatchOutcome::Applied => Ok(()),
+        vti_common::store::BatchOutcome::Refused { check: 0 } => {
+            Err("changed while it was being moved".into())
+        }
+        vti_common::store::BatchOutcome::Refused { .. } => Err(format!("`{new}` is already held")),
+    })
+}
+
+/// Move every room row still in the earlier key layout — `<prefix><roomId>:<…>`, whose
+/// keys are ambiguous because a room identifier contains `:` (#2382) — to the current one
+/// (module docs). Each host runs it at boot, before it serves a room, and after a restore.
+///
+/// # Attribution
+///
+/// The room a legacy row belongs to is read with the row's own help: a record carries its
+/// key, so the identifier is what lies between the prefix and `:<key>`; an epoch link or a
+/// commit ends in its ten-digit epoch. A row that cannot be attributed that way is left
+/// where it is and reported in [`MigratedKeys::left`], never guessed at. A record two rooms
+/// both wrote to under the old layout is one row; it moves to the room whose write it holds.
+///
+/// # Idempotent and resumable
+///
+/// Each row moves in one atomic batch, so an interrupted migration is finished by running
+/// it again, and a store with nothing left in the earlier layout moves nothing.
+pub async fn migrate_room_keys(
+    records: &KeyspaceHandle,
+    epoch_links: &KeyspaceHandle,
+) -> Result<MigratedKeys, AppError> {
+    let mut out = MigratedKeys::default();
+    let lossy = |k: &[u8]| String::from_utf8_lossy(k).into_owned();
+
+    for (k, v) in records.prefix_iter_raw(LEGACY_RECORDS_PREFIX).await? {
+        let Ok(record) = serde_json::from_slice::<Record>(&v) else {
+            out.left
+                .push(format!("{}: does not decode as a record", lossy(&k)));
+            continue;
+        };
+        let Some(room_id) = legacy_room_of(&k, LEGACY_RECORDS_PREFIX, record.key.as_bytes()) else {
+            out.left.push(format!(
+                "{}: does not end in the key it carries, `{}`",
+                lossy(&k),
+                record.key
+            ));
+            continue;
+        };
+        let new = record_key(&room_id, &record.key);
+        match move_row(records, k.clone(), v, new).await? {
+            Ok(()) => out.records += 1,
+            Err(why) => out.left.push(format!("{}: {why}", lossy(&k))),
+        }
+    }
+
+    for (legacy, current, count) in [
+        (
+            LEGACY_EPOCH_LINKS_PREFIX,
+            EPOCH_LINKS_PREFIX,
+            &mut out.epoch_links,
+        ),
+        (LEGACY_COMMITS_PREFIX, COMMITS_PREFIX, &mut out.commits),
+    ] {
+        for (k, v) in epoch_links.prefix_iter_raw(legacy).await? {
+            let Some((room_id, epoch)) = legacy_epoch(&k)
+                .and_then(|(epoch, digits)| Some((legacy_room_of(&k, legacy, digits)?, epoch)))
+            else {
+                out.left
+                    .push(format!("{}: does not end in a ten-digit epoch", lossy(&k)));
+                continue;
+            };
+            let new = format!("{}{epoch:010}", room_scope(current, &room_id));
+            match move_row(epoch_links, k.clone(), v, new).await? {
+                Ok(()) => *count += 1,
+                Err(why) => out.left.push(format!("{}: {why}", lossy(&k))),
+            }
+        }
+    }
+    Ok(out)
+}
+
 /// What [`purge_room_rows`] removed, by kind.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct PurgedRows {
@@ -467,14 +634,6 @@ pub struct PurgedRows {
     pub revocations: bool,
     /// Whether the `rooms:<roomId>` row itself was removed.
     pub room: bool,
-}
-
-/// Whether `key` is exactly `<prefix><10 digits>` — an epoch-numbered row of the room
-/// whose prefix it is, and not of a room whose identifier merely *extends* that room's
-/// (`did:web:a` and `did:web:a:b` share the scan prefix `…did:web:a:`).
-fn is_epoch_row(key: &[u8], prefix: &str) -> bool {
-    key.strip_prefix(prefix.as_bytes())
-        .is_some_and(|rest| rest.len() == 10 && rest.iter().all(u8::is_ascii_digit))
 }
 
 /// Remove **every row this host's room keyspaces hold for one room**: its records
@@ -495,10 +654,8 @@ fn is_epoch_row(key: &[u8], prefix: &str) -> bool {
 ///
 /// # Room-exact
 ///
-/// A scan prefix ends in `:`, but a room identifier is a DID and may itself contain `:`,
-/// so `room_records:did:web:a:` also covers the rows of `did:web:a:b`. Each row is therefore
-/// checked against this room before it is removed: a record by the key it carries, an
-/// epoch row by its ten-digit suffix.
+/// Each scan prefix carries the identifier's length (module docs), so it covers this room's
+/// rows and none of a room whose identifier extends this one's.
 pub async fn purge_room_rows(
     rooms: &KeyspaceHandle,
     records: &KeyspaceHandle,
@@ -508,36 +665,17 @@ pub async fn purge_room_rows(
 ) -> Result<PurgedRows, AppError> {
     let mut out = PurgedRows::default();
 
-    for (k, v) in records.prefix_iter_raw(record_prefix(room_id)).await? {
-        // A row that is not a record of this room is not this purge's to remove. One that
-        // cannot be decoded cannot be shown to be this room's, so the purge fails on it
-        // rather than guessing.
-        let record: Record = serde_json::from_slice(&v).map_err(|e| {
-            AppError::Internal(format!(
-                "decode a record of `{room_id}` while purging it: {e}"
-            ))
-        })?;
-        if k != record_key(room_id, &record.key).as_bytes() {
-            continue;
-        }
+    for k in records.prefix_keys(record_prefix(room_id)).await? {
         records.remove(k).await?;
         out.records += 1;
     }
-
-    let links = epoch_link_prefix(room_id);
-    for k in epoch_links.prefix_keys(links.clone()).await? {
-        if is_epoch_row(&k, &links) {
-            epoch_links.remove(k).await?;
-            out.epoch_links += 1;
-        }
+    for k in epoch_links.prefix_keys(epoch_link_prefix(room_id)).await? {
+        epoch_links.remove(k).await?;
+        out.epoch_links += 1;
     }
-
-    let commits = format!("{COMMITS_PREFIX}{room_id}:");
-    for k in epoch_links.prefix_keys(commits.clone()).await? {
-        if is_epoch_row(&k, &commits) {
-            epoch_links.remove(k).await?;
-            out.commits += 1;
-        }
+    for k in epoch_links.prefix_keys(commit_prefix(room_id)).await? {
+        epoch_links.remove(k).await?;
+        out.commits += 1;
     }
 
     // By key rather than by `held`, so a list this host can no longer decode is still
@@ -2550,8 +2688,9 @@ mod purge_and_freeze_tests {
     use vti_common::config::StoreConfig;
     use vti_common::store::Store;
 
-    /// A room, and one whose identifier extends it: the scan prefix of the first
-    /// (`…did:web:a:`) also covers the second's rows.
+    /// A room, and one whose identifier extends it. Under the earlier key layout the scan
+    /// prefix of the first (`…did:web:a:`) also covered the second's rows, and the first's
+    /// record `b:k` was the second's record `k` (#2382).
     const ROOM: &str = "did:web:a";
     const LONGER: &str = "did:web:a:b";
 
@@ -2762,5 +2901,221 @@ mod purge_and_freeze_tests {
             set_frozen(&ks.rooms, "did:web:never", Some(1)).await,
             Err(AppError::NotFound(_))
         ));
+    }
+
+    fn body(r: &Record) -> serde_json::Value {
+        r.cleartext.clone().unwrap()["body"].clone()
+    }
+
+    fn keys(rs: &[Record]) -> Vec<&str> {
+        let mut k: Vec<&str> = rs.iter().map(|r| r.key.as_str()).collect();
+        k.sort();
+        k
+    }
+
+    /// #2382: `did:web:a`'s record `b:k` and `did:web:a:b`'s record `k` were one row, so
+    /// either room overwrote the other's.
+    #[tokio::test]
+    async fn a_room_never_writes_the_record_of_a_room_whose_id_extends_its_own() {
+        let ks = open();
+        create_room(&ks.rooms, &room(ROOM)).await.unwrap();
+        create_room(&ks.rooms, &room(LONGER)).await.unwrap();
+        let mut mine = record("b:k");
+        mine.cleartext = Some(serde_json::json!({ "body": "a's" }));
+        let mut theirs = record("k");
+        theirs.cleartext = Some(serde_json::json!({ "body": "a:b's" }));
+        put_record(&ks.rooms, &ks.records, LONGER, theirs, None, 1)
+            .await
+            .unwrap();
+        put_record(&ks.rooms, &ks.records, ROOM, mine, None, 2)
+            .await
+            .unwrap();
+
+        let got = get_record(&ks.records, LONGER, "k").await.unwrap();
+        assert_eq!(body(&got), "a:b's", "the other room's record is untouched");
+        let got = get_record(&ks.records, ROOM, "b:k").await.unwrap();
+        assert_eq!(body(&got), "a's");
+        let a = list_records(&ks.records, ROOM, None, None).await.unwrap();
+        let ab = list_records(&ks.records, LONGER, None, None).await.unwrap();
+        assert_eq!((keys(&a), keys(&ab)), (vec!["b:k"], vec!["k"]));
+        // A key-prefix listing is bounded by the room too.
+        let b = list_records(&ks.records, ROOM, Some("b"), None)
+            .await
+            .unwrap();
+        assert_eq!(keys(&b), vec!["b:k"]);
+    }
+
+    /// #2382: a room's chain, relay and prune never reach a room whose identifier extends
+    /// its own.
+    #[tokio::test]
+    async fn a_rooms_chain_relay_and_prune_stay_in_that_room() {
+        let ks = open();
+        populate(&ks, ROOM).await;
+        populate(&ks, LONGER).await;
+
+        assert_eq!(list_epoch_links(&ks.links, ROOM).await.unwrap().len(), 2);
+        let relayed = commits_since(&ks.links, ROOM, 1, 10).await.unwrap();
+        assert_eq!(
+            relayed.iter().map(|c| c.epoch).collect::<Vec<_>>(),
+            vec![2, 3]
+        );
+
+        assert_eq!(
+            prune_epoch_links_before(&ks.links, ROOM, 3).await.unwrap(),
+            2
+        );
+        assert!(list_epoch_links(&ks.links, ROOM).await.unwrap().is_empty());
+        assert_eq!(
+            list_epoch_links(&ks.links, LONGER).await.unwrap().len(),
+            2,
+            "the longer room's chain is not pruned"
+        );
+    }
+
+    async fn put_legacy(ks: &KeyspaceHandle, key: &str, value: Vec<u8>) {
+        ks.insert_raw(key.to_string(), value).await.unwrap();
+    }
+
+    fn legacy_record(key: &str, body: &str) -> Vec<u8> {
+        let mut r = record(key);
+        r.cleartext = Some(serde_json::json!({ "body": body }));
+        serde_json::to_vec(&r).unwrap()
+    }
+
+    fn legacy_link(epoch: u32) -> Vec<u8> {
+        serde_json::to_vec(&EpochLink {
+            epoch,
+            wrapped: "d3JhcHBlZA".into(),
+            nonce: "bm9uY2U".into(),
+        })
+        .unwrap()
+    }
+
+    /// Rows in the earlier layout move to the room each one's own contents name, and what
+    /// cannot be attributed stays put and is reported.
+    #[tokio::test]
+    async fn the_migration_moves_each_legacy_row_to_the_room_it_belongs_to() {
+        let ks = open();
+        create_room(&ks.rooms, &room(ROOM)).await.unwrap();
+        create_room(&ks.rooms, &room(LONGER)).await.unwrap();
+        // `did:web:a`'s `b:k` and `did:web:a:b`'s `x`: the keys alone cannot tell which.
+        put_legacy(
+            &ks.records,
+            "room_records:did:web:a:b:k",
+            legacy_record("b:k", "a's"),
+        )
+        .await;
+        put_legacy(
+            &ks.records,
+            "room_records:did:web:a:b:x",
+            legacy_record("x", "a:b's"),
+        )
+        .await;
+        put_legacy(
+            &ks.records,
+            "room_records:did:web:a:k1",
+            legacy_record("k1", "a's"),
+        )
+        .await;
+        put_legacy(
+            &ks.records,
+            "room_records:did:web:z:junk",
+            b"not json".to_vec(),
+        )
+        .await;
+        put_legacy(
+            &ks.records,
+            "room_records:did:web:z:k9",
+            legacy_record("other", "?"),
+        )
+        .await;
+        put_legacy(
+            &ks.links,
+            "room_epoch_links:did:web:a:0000000002",
+            legacy_link(2),
+        )
+        .await;
+        put_legacy(
+            &ks.links,
+            "room_epoch_links:did:web:a:b:0000000002",
+            legacy_link(2),
+        )
+        .await;
+        put_legacy(
+            &ks.links,
+            "room_epoch_links:did:web:a:latest",
+            legacy_link(9),
+        )
+        .await;
+        put_legacy(
+            &ks.links,
+            "room-commit:did:web:a:b:0000000003",
+            serde_json::to_vec("Y29tbWl0").unwrap(),
+        )
+        .await;
+
+        let out = migrate_room_keys(&ks.records, &ks.links).await.unwrap();
+        assert_eq!((out.records, out.epoch_links, out.commits), (3, 2, 1));
+        assert_eq!(out.left.len(), 3, "{:?}", out.left);
+
+        let a = list_records(&ks.records, ROOM, None, None).await.unwrap();
+        let ab = list_records(&ks.records, LONGER, None, None).await.unwrap();
+        assert_eq!((keys(&a), keys(&ab)), (vec!["b:k", "k1"], vec!["x"]));
+        assert_eq!(body(&ab[0]), "a:b's");
+        assert_eq!(list_epoch_links(&ks.links, ROOM).await.unwrap().len(), 1);
+        assert_eq!(list_epoch_links(&ks.links, LONGER).await.unwrap().len(), 1);
+        let relayed = commits_since(&ks.links, LONGER, 2, 10).await.unwrap();
+        assert_eq!(relayed.iter().map(|c| c.epoch).collect::<Vec<_>>(), vec![3]);
+        assert!(
+            commits_since(&ks.links, ROOM, 0, 10)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+
+        // Only what could not be attributed is still in the earlier layout.
+        assert_eq!(
+            ks.records.prefix_keys("room_records:").await.unwrap().len(),
+            2
+        );
+
+        // Run again: nothing more moves, and the same rows are reported.
+        let again = migrate_room_keys(&ks.records, &ks.links).await.unwrap();
+        assert_eq!((again.records, again.epoch_links, again.commits), (0, 0, 0));
+        assert_eq!(again.left, out.left);
+    }
+
+    /// A legacy row whose current key is already held is left, not written over.
+    #[tokio::test]
+    async fn the_migration_never_replaces_a_row_in_the_current_layout() {
+        let ks = open();
+        create_room(&ks.rooms, &room(ROOM)).await.unwrap();
+        put_record(&ks.rooms, &ks.records, ROOM, record("k1"), None, 1)
+            .await
+            .unwrap();
+        put_legacy(
+            &ks.records,
+            "room_records:did:web:a:k1",
+            legacy_record("k1", "old"),
+        )
+        .await;
+
+        let out = migrate_room_keys(&ks.records, &ks.links).await.unwrap();
+        assert_eq!(out.records, 0);
+        assert!(out.left[0].contains("already held"), "{:?}", out.left);
+        let got = get_record(&ks.records, ROOM, "k1").await.unwrap();
+        assert_eq!(body(&got), "hello");
+    }
+
+    #[tokio::test]
+    async fn a_store_with_nothing_legacy_migrates_nothing() {
+        let ks = open();
+        populate(&ks, ROOM).await;
+        assert!(
+            migrate_room_keys(&ks.records, &ks.links)
+                .await
+                .unwrap()
+                .is_empty()
+        );
     }
 }

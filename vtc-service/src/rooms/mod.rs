@@ -28,3 +28,33 @@ pub use vti_rooms::{
     ROOM_RECORDS_KEYSPACE, ROOMS_KEYSPACE, Record, RecordStatus, Room, Visibility, authz, storage,
     wire,
 };
+
+/// Move room rows still in the earlier key layout, whose keys could name two rooms at once
+/// (#2382), to the current one ([`storage::migrate_room_keys`]). Run at boot, before a room
+/// is served, and after a backup import, which may restore rows written in that layout. A
+/// row that cannot be attributed to exactly one room is left where it is and logged;
+/// nothing reads it. `how` names the caller in the log.
+pub async fn migrate_room_keys(
+    state: &crate::server::AppState,
+    how: &str,
+) -> Result<storage::MigratedKeys, vti_common::error::AppError> {
+    let out =
+        storage::migrate_room_keys(&state.room_records_ks, &state.room_epoch_links_ks).await?;
+    if out.records + out.epoch_links + out.commits > 0 {
+        tracing::info!(
+            how,
+            records = out.records,
+            epoch_links = out.epoch_links,
+            commits = out.commits,
+            "room rows moved to the current key layout"
+        );
+    }
+    for row in &out.left {
+        tracing::warn!(
+            how,
+            row,
+            "a room row in the earlier key layout was left in place"
+        );
+    }
+    Ok(out)
+}

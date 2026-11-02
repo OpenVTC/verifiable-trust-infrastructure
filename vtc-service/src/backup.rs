@@ -422,6 +422,11 @@ pub async fn import_backup(
     if let Err(e) = crate::acl::resource_grant::rebuild_holder_index(&state.acl_ks).await {
         tracing::warn!(error = %e, "backup import: the git grant-holder index could not be rebuilt; boot rebuilds it");
     }
+    // A backup taken before #2382 holds its room rows in the earlier key layout. Boot
+    // runs the same migration, so a failure here is logged and finished there.
+    if let Err(e) = crate::rooms::migrate_room_keys(state, "backup import").await {
+        tracing::warn!(error = %e, "backup import: room rows not yet moved to the current key layout; boot finishes it");
+    }
     if let Err(e) = crate::git_ns::migrate::migrate_rights(state, "backup import").await {
         tracing::warn!(error = %e, "backup import: git-namespace rights not yet moved onto the ACL entries; boot finishes it");
     }
