@@ -445,9 +445,13 @@ const HOSTILE = [
 const SHELL_HOME = mkdtempSync(join(tmpdir(), "vtc-shellquote-"));
 
 /** The argv `args` (a string of shell words) gives a program in `shell`,
- *  read back through an external printf so no shell's builtin differs. */
+ *  read back by one fixed `sh` loop so no shell's builtin differs. Each word
+ *  reaches printf only as an argument after its format, never where a printf
+ *  could read it as an option: uutils' printf (ubuntu-26.04) answers a lone
+ *  `printf '%s\0' --help` with its own help. */
 function argvIn(shell: string, args: string): string[] {
-  const out = execFileSync(shell, ["-c", `env printf '%s\\0' ${args}`], {
+  const echo = `env sh -c 'for a; do printf "%s\\0" "$a"; done' argv`;
+  const out = execFileSync(shell, ["-c", `${echo} ${args}`], {
     encoding: "utf8",
     // A throwaway HOME: no user rc file runs, and fish has somewhere to write.
     env: { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: SHELL_HOME },
