@@ -2,6 +2,21 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.33.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vtc-client-v0.32.1...vtc-client-v0.33.0) — 2026-11-02
+
+
+### Added
+
+- **voting**: TextReleaseThreshold may be as low as 1, disclosed below 10 (VTI-VOT-065) ([#2379](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2379))
+
+* build(specs): pin voting/election register+show 0.3, vta/pcs voter/vote/trustee next versions, vtc/elections create 0.4 + show 0.3
+
+  The voting/_shared/0.3 manifest lets textReleaseThreshold be as low as 1
+  (VTI-VOT-065); every task carrying the manifest moves a version. The old
+  versions stay pinned; their bundles take the registry's deprecation note.
+
+
+
 ## [0.32.1](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vtc-client-v0.32.0...vtc-client-v0.32.1) — 2026-11-01
 
 

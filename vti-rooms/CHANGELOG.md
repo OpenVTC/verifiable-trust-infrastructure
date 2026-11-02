@@ -2,6 +2,68 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.25.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-rooms-v0.24.0...vti-rooms-v0.25.0) — 2026-11-02
+
+
+### Added
+
+- **vtc**: Archive, unarchive and remove a community-owned data room ([#2380](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2380))
+
+A community could create, describe and staff a room it owns, but never close
+  or remove one. This adds the owner's lifecycle beside the host's computed one,
+  stored on the owner's record: active -> archived (readOnly | noAccess) ->
+  removalScheduled -> purging -> removed
+  (vtc/rooms/community/{archive,unarchive,remove}/0.1,
+  vtc/rooms/community/removal/cancel/0.1).
+
+  - readOnly freezes the host record (vti_rooms::Room::frozen_at): the host
+    refuses every task but a read, except the owner's own Admin acts. Open
+    offers are withdrawn.
+  - noAccess, and every removal, resets the room: one `room` withdrawal through
+    rooms/owner/revoke, the only withdrawal a private room's host applies.
+    Admitted members become `suspended`. The community's own credentials are
+    re-issued after the second the reset falls in, because a credential whose
+    validFrom is before revokedAt is withdrawn. The reset is recorded as a
+    pending change before it is asked for, and rooms::community_lifecycle (the
+    one retry owner) finishes it; a reset the host accepted is never repeated.
+  - Unarchiving restores suspended members with fresh credentials (same actions
+    and expiry), delivered as an offers/list renewal.
+  - Removal only from archived, with a grace period (default 30 days,
+    `[rooms.community] removal_grace_days`) or at once. The purge deletes host
+    rows, every blob (including moved copies), usage, the storage assignment,
+    group bindings and the served DID log; it asks the VTA to delete the DID (a
+    SHOULD, reported and never holding the purge); and it keeps a tombstone.
+  - get/list 0.4 carry `status`, members/list 0.2 and memberships/list 0.2 the
+    `suspended` state, and members/add 0.2 refuses `wrongState`. The 0.3 and 0.1
+    reads stay served: purged rooms are hidden from them, and a suspended
+    admission reads as admitted. members/add 0.1 is no longer served.
+  - The VTA serves rooms/keys/act 0.10, which adds memberships/list 0.2.
+    vta-sdk and pnm move to it.
+  - cnm rooms archive|unarchive|remove|cancel-removal, list --state; the admin
+    console's state chips, filter, Lifecycle card and dialogs (remove requires
+    typing the room's label); the member portal's room-state wording.
+
+
+
+### Fixed
+
+- **rooms**: Key a room's rows by length-prefixed room ID, so no two rooms share a row ([#2386](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2386))
+
+Room records, epoch links and relayed commits were stored at
+  `<prefix><roomId>:<…>`. A room identifier is a DID and contains `:`, and a
+  record key may too, so the key was ambiguous: `did:web:a`'s record `b:k` and
+  `did:web:a:b`'s record `k` were one row, which either room could overwrite,
+  and one room's scan prefix covered every room whose identifier extends it —
+  its listing, tree head, chain and relay read the other's rows, and its prune
+  deleted the other's epoch links.
+
+  Rows are now stored at `<prefix>/v2:<len>:<roomId>:<…>`, where `<len>` is
+  the identifier's length in bytes. The identifier is read by count, not by a
+  separator it may contain, so two rooms never share a key or a scan prefix.
+  `purge_room_rows` no longer needs to check each row against the room.
+
+
+
 ## [0.24.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-rooms-v0.23.0...vti-rooms-v0.24.0) — 2026-10-30
 
 
